@@ -52,6 +52,9 @@ defmodule Helyx.SessionTest do
     await(fn -> Registry.lookup(registry, session.id) == [] end, "the registry entry to free")
   end
 
+  # The messages in the mailbox now, in order.
+  defp mailbox, do: elem(Process.info(self(), :messages), 1)
+
   # Polls a condition every 10 ms, for at most 5 s by default.
   defp await(condition, what, tries \\ 500)
   defp await(_condition, what, 0), do: flunk("timed out waiting for #{what}")
@@ -1752,7 +1755,8 @@ defmodule Helyx.SessionTest do
       {:ok, _} = Session.subscribe(session)
       {:ok, _} = Session.subscribe(session)
       registry = Helyx.Core.events_registry(core)
-      assert Registry.values(registry, session.id, self()) == [nil]
+      assert [watch] = Registry.values(registry, session.id, self())
+      assert is_pid(watch)
 
       pid = Session.pid(session)
       queued = fn n -> Process.info(pid, :message_queue_len) == {:message_queue_len, n} end
@@ -1778,7 +1782,7 @@ defmodule Helyx.SessionTest do
 
       # The accepted hole: the events sent before the stop stay, each once.
       seqs =
-        for {:helyx_event, %Event{seq: seq}} <- Process.info(self(), :messages) |> elem(1),
+        for {:helyx_event, %Event{seq: seq}} <- mailbox(),
             do: seq
 
       assert seqs != []
@@ -1848,6 +1852,243 @@ defmodule Helyx.SessionTest do
       session = %Session{id: "never", core: core}
       assert Session.steer(session, <<0xFF>>) == {:error, :invalid_utf8}
       assert Session.set_model(session, "bad") == {:error, {:invalid_model_ref, "bad"}}
+    end
+  end
+
+  describe "the end signal (#189)" do
+    defp watches(core, id),
+      do: Registry.lookup(Helyx.Core.events_registry(core), {Helyx.Session.Watch, id})
+
+    # Waits for the signal, then checks that no event follows it and that no
+    # second signal follows.
+    defp assert_end(id, reason) do
+      await(fn -> Enum.any?(mailbox(), &match?({:helyx_session_end, _, _}, &1)) end, "the signal")
+      after_signal = Enum.drop_while(mailbox(), &(not match?({:helyx_session_end, _, _}, &1)))
+      assert [{:helyx_session_end, ^id, ^reason} | rest] = after_signal
+      refute Enum.any?(rest, &match?({:helyx_event, _}, &1))
+      assert_receive {:helyx_session_end, ^id, ^reason}
+      refute_receive {:helyx_session_end, ^id, _}, 50
+    end
+
+    test "a normal stop gives :stopped, after the last event", %{core: core} do
+      {:ok, session} = Session.start(core, model: "test/ok")
+      {:ok, _} = Session.subscribe(session)
+      :ok = Session.prompt(session, "hi")
+      assert_receive {:helyx_event, %Event{type: :message_start}}, 1_000
+      :ok = GenServer.stop(Session.pid(session))
+
+      assert_end(session.id, :stopped)
+      await(fn -> watches(core, session.id) == [] end, "the watch to leave")
+    end
+
+    @tag :capture_log
+    test "a kill and a raise give :crashed", %{core: core} do
+      {:ok, killed} = Session.start(core, model: "test/ok")
+      {:ok, _} = Session.subscribe(killed)
+      :ok = Session.prompt(killed, "hi")
+      assert_receive {:helyx_event, %Event{type: :message_start}}, 1_000
+      Process.exit(Session.pid(killed), :kill)
+      assert_end(killed.id, :crashed)
+
+      # No clause takes this message, so the session raises.
+      {:ok, raised} = Session.start(core, model: "test/ok")
+      {:ok, _} = Session.subscribe(raised)
+      :ok = Session.prompt(raised, "hi")
+      assert_receive {:helyx_event, %Event{type: :message_start}}, 1_000
+      send(Session.pid(raised), :unexpected)
+      assert_end(raised.id, :crashed)
+    end
+
+    test "a Core that stops gives :stopped", %{core: core} do
+      {:ok, session} = Session.start(core, model: "test/ok")
+      {:ok, _} = Session.subscribe(session)
+      # The link of the events Registry would end the test process.
+      Process.flag(:trap_exit, true)
+      :ok = Supervisor.stop(core)
+      assert_end(session.id, :stopped)
+    end
+
+    @tag :capture_log
+    test "a subscribe that gets a snapshot gets the end signal after it", %{core: core} do
+      {:ok, session} = Session.start(core, model: "test/ok")
+      pid = Session.pid(session)
+      :ok = :sys.suspend(pid)
+      queued = fn n -> Process.info(pid, :message_queue_len) == {:message_queue_len, n} end
+
+      # The session traps exits, so the exit signal is a message behind the
+      # snapshot call: the session answers the call, then stops.
+      spawn(fn ->
+        await(fn -> queued.(1) end, "the call")
+        Process.exit(pid, :shutdown)
+        await(fn -> queued.(2) end, "the exit")
+        :ok = :sys.resume(pid)
+      end)
+
+      assert {:ok, _snapshot} = Session.subscribe(session)
+      assert_end(session.id, :stopped)
+    end
+
+    @tag :capture_log
+    test "a subscribe that fails as the session ends leaves no signal and no watch", %{
+      core: core
+    } do
+      {:ok, session} = Session.start(core, model: "test/ok")
+      {:ok, _} = Session.subscribe(session)
+      pid = Session.pid(session)
+      :ok = :sys.suspend(pid)
+
+      spawn(fn ->
+        await(
+          fn -> Process.info(pid, :message_queue_len) == {:message_queue_len, 1} end,
+          "the call"
+        )
+
+        Process.exit(pid, :kill)
+      end)
+
+      assert Session.subscribe(session) == {:error, :session_not_found}
+      refute_received {:helyx_session_end, _, _}
+      await(fn -> watches(core, session.id) == [] end, "the watch to leave")
+    end
+
+    test "a subscribe to a session that never ran starts no watch", %{core: core} do
+      assert Session.subscribe(%Session{id: "never", core: core}) ==
+               {:error, :session_not_found}
+
+      assert watches(core, "never") == []
+    end
+
+    # The lost signal waits until the supervisor that restarts the Registry
+    # has handled the exit: the test holds that supervisor suspended. A
+    # crash of the partition: the Registry supervisor restarts it. A crash
+    # of the Registry supervisor: the Core restarts it.
+    for name <- [:partition, :registry] do
+      @tag :capture_log
+      test "a restart of the events Registry (#{name}) gives a lost signal, and the session runs",
+           %{core: core} do
+        Process.flag(:trap_exit, true)
+        {:ok, session} = Session.start(core, model: "test/ok")
+        pid = Session.pid(session)
+        {:ok, _} = Session.subscribe(session)
+        registry = Helyx.Core.events_registry(core)
+        [{_, partition, _, _}] = Supervisor.which_children(registry)
+
+        {restarter, target} =
+          case unquote(name) do
+            :partition -> {Process.whereis(registry), partition}
+            :registry -> {Process.whereis(core), Process.whereis(registry)}
+          end
+
+        :ok = :sys.suspend(restarter)
+        Process.exit(target, :kill)
+        id = session.id
+        refute_receive {:helyx_subscription_lost, ^id}, 200
+        :ok = :sys.resume(restarter)
+        assert_receive {:helyx_subscription_lost, ^id}, 1_000
+        refute_receive {:helyx_subscription_lost, _}, 50
+        refute_received {:helyx_session_end, _, _}
+
+        assert {:ok, _snapshot} = Session.subscribe(session)
+        assert Session.pid(session) == pid
+        :ok = Session.prompt(session, "hi")
+        seqs = Enum.map(collect_until(:agent_end), & &1.seq)
+        assert seqs == Enum.uniq(seqs)
+        refute_received {:helyx_event, _}
+
+        :ok = GenServer.stop(pid)
+        assert_end(id, :stopped)
+      end
+    end
+
+    # The old entry is gone from the new Registry, but its watch still waits
+    # to send a lost signal. A subscribe in that window stops it, so the
+    # signal does not reach the new subscription.
+    @tag :capture_log
+    test "a subscribe after a restart stops the old watch that has not signalled",
+         %{core: core} do
+      Process.flag(:trap_exit, true)
+      {:ok, session} = Session.start(core, model: "test/ok")
+      {:ok, _} = Session.subscribe(session)
+      [{old, nil}] = watches(core, session.id)
+      registry = Helyx.Core.events_registry(core)
+      supervisor = Process.whereis(registry)
+      [{_, partition, _, _}] = Supervisor.which_children(registry)
+      # `:messages` also counts the signals that a suspended process has not
+      # fetched; `:message_queue_len` does not.
+      queued = fn pid, n -> length(elem(Process.info(pid, :messages), 1)) == n end
+
+      # The old watch calls the suspended supervisor behind the exit. The BIF
+      # suspend holds it inside that call after the Registry is back.
+      :ok = :sys.suspend(supervisor)
+      Process.exit(partition, :kill)
+      await(fn -> queued.(supervisor, 2) end, "the exit and the call")
+      true = :erlang.suspend_process(old)
+      :ok = :sys.resume(supervisor)
+      await(fn -> queued.(old, 1) end, "the reply")
+
+      assert {:ok, _snapshot} = Session.subscribe(session)
+      refute Process.alive?(old)
+      id = session.id
+      refute_receive {:helyx_subscription_lost, ^id}, 100
+      assert [{new, nil}] = watches(core, id)
+      assert new != old
+
+      :ok = GenServer.stop(Session.pid(session))
+      assert_end(id, :stopped)
+    end
+
+    # Each subscribe gets a live watch of its session, also when the watch
+    # of the last one is gone (a lost signal that raced the register).
+    test "a second subscribe replaces the watch", %{core: core} do
+      {:ok, session} = Session.start(core, model: "test/ok")
+      {:ok, _} = Session.subscribe(session)
+      [{first, nil}] = watches(core, session.id)
+      ref = Process.monitor(first)
+      Process.exit(first, :kill)
+      assert_receive {:DOWN, ^ref, :process, ^first, :killed}
+
+      {:ok, _} = Session.subscribe(session)
+      registry = Helyx.Core.events_registry(core)
+      assert [second] = Registry.values(registry, session.id, self())
+      assert second != first
+      assert [{^second, nil}] = watches(core, session.id)
+
+      :ok = GenServer.stop(Session.pid(session))
+      assert_end(session.id, :stopped)
+    end
+
+    test "a subscribe removes the entries of dead watches and keeps their signals",
+         %{core: core} do
+      {:ok, ended} = Session.start(core, model: "test/ok")
+      {:ok, _} = Session.subscribe(ended)
+      :ok = GenServer.stop(Session.pid(ended))
+      id = ended.id
+      assert_receive {:helyx_session_end, ^id, :stopped} = signal
+      send(self(), signal)
+
+      {:ok, other} = Session.start(core, model: "test/ok")
+      {:ok, _} = Session.subscribe(other)
+      assert Process.get({Helyx.Session.Watch, core, ended.id}) == nil
+      assert is_pid(Process.get({Helyx.Session.Watch, core, other.id}))
+      assert_received {:helyx_session_end, ^id, :stopped}
+    end
+
+    test "a subscriber that exits stops its watch", %{core: core} do
+      {:ok, session} = Session.start(core, model: "test/ok")
+      test = self()
+
+      subscriber =
+        spawn(fn ->
+          {:ok, _} = Session.subscribe(session)
+          send(test, :subscribed)
+          Process.sleep(:infinity)
+        end)
+
+      assert_receive :subscribed
+      [{watch, nil}] = watches(core, session.id)
+      ref = Process.monitor(watch)
+      Process.exit(subscriber, :kill)
+      assert_receive {:DOWN, ^ref, :process, ^watch, :normal}
     end
   end
 

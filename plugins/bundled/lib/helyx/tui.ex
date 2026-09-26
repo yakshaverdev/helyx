@@ -189,41 +189,26 @@ if Helyx.TUI.Available.available?() do
 
       # The screen starts from the snapshot: the history of a resumed
       # session, and the turn a late client joins.
-      snapshot =
-        case Session.subscribe(session) do
-          {:ok, snapshot} -> snapshot
-          {:error, :session_not_found} -> exit({:session_down, :session_not_found})
-        end
+      snapshot = subscribe!(session)
 
-      # A monitor surfaces a dying session through run/1. A session that
-      # ended after the subscribe has nothing to monitor; exit now rather
-      # than hang idle. Ticket 2 of ADR 0006 replaces the monitor.
-      monitor =
-        case Session.pid(session) do
-          nil -> exit({:session_down, :session_not_found})
-          pid -> {Process.monitor(pid), pid}
-        end
-
+      # The end signal of the subscription ends the TUI (see handle_info/2).
       case snapshot do
         %Session.Snapshot{contract_version: @contract_version} ->
-          session_state(session, monitor, snapshot, opts)
+          session_state(session, snapshot, opts)
 
         # ADR 0006, section 5: say so, and do not read or render the session.
         %Session.Snapshot{} ->
-          {:ok, %{unsupported: true, monitor: monitor}}
+          {:ok, %{unsupported: true, session: session}}
       end
     end
 
-    defp session_state(session, monitor, snapshot, opts) do
+    defp session_state(session, snapshot, opts) do
       vm = ViewModel.from_snapshot(snapshot)
       vm = if opts[:resumed], do: ViewModel.notice(vm, "resumed session"), else: vm
 
       {:ok,
        %{
          session: session,
-         # The reference and pid of the session monitor. Only its `:DOWN`
-         # ends the TUI.
-         monitor: monitor,
          vm: vm,
          input: ExRatatui.textarea_new(),
          # Marker text to the full paste it stands for. Emptied with the
@@ -237,8 +222,14 @@ if Helyx.TUI.Available.available?() do
        }}
     end
 
-    # An unsupported session shows only its message; its events do nothing.
+    # A dead session leaves nothing to render; exiting surfaces the reason
+    # through run/1 instead of an idle screen that rejects every key. The
+    # events before the signal are already applied.
     @impl true
+    def handle_info({:helyx_session_end, id, reason}, %{session: %Session{id: id}}),
+      do: exit({:session_down, reason})
+
+    # An unsupported session shows only its message; its events do nothing.
     def handle_info({:helyx_event, _event}, %{unsupported: true} = state),
       do: {:noreply, state}
 
@@ -246,16 +237,30 @@ if Helyx.TUI.Available.available?() do
       {:noreply, settle(%{state | vm: ViewModel.apply(state.vm, event)})}
     end
 
-    # A dead session leaves nothing to render; exiting surfaces the reason
-    # through run/1 instead of an idle screen that rejects every key. Plugin
-    # code also runs in this process: `/model` calls the provider's `turn/0`
-    # here (`Session.set_model/2`). A `:DOWN` of a monitor that such code
-    # leaves is not the session's, so the next clause ignores it.
-    def handle_info({:DOWN, ref, :process, pid, reason}, %{monitor: {ref, pid}}) do
-      exit({:session_down, reason})
-    end
+    # The reconnect rule of ADR 0006, section 3: subscribe again, so the end
+    # signal still comes, and the new snapshot replaces the view model.
+    def handle_info(
+          {:helyx_subscription_lost, id},
+          %{session: %Session{id: id} = session} = state
+        ),
+        do: {:noreply, resubscribed(state, subscribe!(session))}
 
     def handle_info(_msg, state), do: {:noreply, state}
+
+    # A session that is not running leaves nothing to render.
+    defp subscribe!(session) do
+      case Session.subscribe(session) do
+        {:ok, snapshot} -> snapshot
+        {:error, :session_not_found} -> exit({:session_down, :session_not_found})
+      end
+    end
+
+    defp resubscribed(%{unsupported: true} = state, _snapshot), do: state
+
+    # Notices go too, and the composer keeps its text. The snapshot comes
+    # from the build that the mount checked, so another version is a bug.
+    defp resubscribed(state, %Session.Snapshot{contract_version: @contract_version} = snapshot),
+      do: %{state | vm: ViewModel.from_snapshot(snapshot), scroll: nil}
 
     # The next key press or paste clears the reason of the last reject, then
     # runs as usual, so it can set a new reason. The release and the repeat of
@@ -506,7 +511,7 @@ if Helyx.TUI.Available.available?() do
         {:error, :queue_full} ->
           %{state | vm: ViewModel.reject(state.vm, "not sent: the queue is full")}
 
-        # The `:DOWN` of the session monitor ends the TUI next.
+        # The end signal of the session ends the TUI next.
         {:error, :session_not_found} ->
           %{state | vm: ViewModel.reject(state.vm, "not sent: the session ended")}
       end
