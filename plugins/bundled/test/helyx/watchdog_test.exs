@@ -204,6 +204,80 @@ defmodule Helyx.WatchdogTest do
       assert group_gone_within?(group, 200)
     end
 
+    test "open input: a command that does not read is stopped over the stdin cap (#196)" do
+      # The watchdog can exit while a part of the write still waits in the
+      # port: the port then closes with `:epipe` and sends no exit status.
+      Process.flag(:trap_exit, true)
+      port = open("echo ready; sleep 30", "bash", -2)
+      {group, rest} = read_marker(port)
+      true = Port.command(port, "go\nready\n")
+      assert "" = await(port, rest, "nonce 1\nready\n")
+
+      # The pipe takes some bytes; the watchdog's buffer takes the rest.
+      true = Port.command(port, :binary.copy("x", 2 * Helyx.Watchdog.stdin_max_bytes()))
+
+      receive do
+        {^port, {:exit_status, status}} -> assert status == 143
+        {:EXIT, ^port, reason} -> assert reason == :epipe
+      after
+        5_000 -> flunk("the watchdog did not stop the command")
+      end
+
+      assert group_gone_within?(group, 200)
+    end
+
+    # A command that does not read gets the cap in the watchdog plus what the
+    # pipe holds: at most 65,536 bytes (macOS and Linux), and on macOS as
+    # little as 512 bytes when the pipe memory of the system is short. So the
+    # cap alone is never over it, and the cap plus 65,537 bytes always is.
+    # Each byte counts, a byte of a multibyte character too.
+    for {over, stopped?} <- [{0, false}, {65_537, true}], text <- ["x", "é"] do
+      test "open input: the stdin cap and #{over} bytes, #{inspect(text)} (#196)" do
+        Process.flag(:trap_exit, true)
+        port = open("echo ready; exec sleep 30", "bash", -2)
+        {group, rest} = read_marker(port)
+        true = Port.command(port, "go\n")
+        assert "" = await(port, rest, "nonce 1\nready\n")
+
+        size = Helyx.Watchdog.stdin_max_bytes() + unquote(over)
+        input = :binary.part(:binary.copy(unquote(text), size), 0, size)
+        true = Port.command(port, input)
+
+        if unquote(stopped?) do
+          receive do
+            {^port, {:exit_status, status}} -> assert status == 143
+            {:EXIT, ^port, reason} -> assert reason == :epipe
+          after
+            5_000 -> flunk("the watchdog did not stop the command")
+          end
+
+          assert group_gone_within?(group, 200)
+        else
+          refute_receive {^port, {:exit_status, _}}, 500
+          refute_received {:EXIT, ^port, _}
+          assert os_alive?("-#{group}")
+          Port.close(port)
+          assert group_gone_within?(group, 200)
+        end
+      end
+    end
+
+    test "open input: the cap counts the bytes not read yet, not all bytes (#196)" do
+      port = open("cat", "bash", -2)
+      {_group, rest} = read_marker(port)
+      true = Port.command(port, "go\n")
+      assert "" = await(port, rest, "nonce 1\n")
+      part = :binary.copy("x", div(Helyx.Watchdog.stdin_max_bytes(), 2))
+
+      for _ <- 1..3 do
+        true = Port.command(port, part)
+        assert "" = await(port, "", part)
+      end
+
+      true = Port.command(port, <<0>>)
+      assert {"", 0} = collect(port, "")
+    end
+
     test "start/3 counts the input in bytes, multibyte included" do
       input = "h\u00e9llo \u2713\n"
       argv = ["bash", "-c", "wc -c"]
