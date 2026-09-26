@@ -187,21 +187,21 @@ if Helyx.TUI.Available.available?() do
     def mount(opts) do
       session = Keyword.fetch!(opts, :session)
 
-      # A monitor surfaces a dying session through run/1. A session that is
-      # already gone has nothing to monitor; exit now rather than hang idle.
-      monitor =
-        case Session.pid(session) do
-          nil -> exit({:session_down, :noproc})
-          pid -> {Process.monitor(pid), pid}
-        end
-
       # The screen starts from the snapshot: the history of a resumed
       # session, and the turn a late client joins.
-      {:ok, snapshot} =
-        try do
-          Session.subscribe(session)
-        catch
-          :exit, reason -> exit({:session_down, reason})
+      snapshot =
+        case Session.subscribe(session) do
+          {:ok, snapshot} -> snapshot
+          {:error, :session_not_found} -> exit({:session_down, :session_not_found})
+        end
+
+      # A monitor surfaces a dying session through run/1. A session that
+      # ended after the subscribe has nothing to monitor; exit now rather
+      # than hang idle. Ticket 2 of ADR 0006 replaces the monitor.
+      monitor =
+        case Session.pid(session) do
+          nil -> exit({:session_down, :session_not_found})
+          pid -> {Process.monitor(pid), pid}
         end
 
       case snapshot do
@@ -247,7 +247,7 @@ if Helyx.TUI.Available.available?() do
     end
 
     # A dead session leaves nothing to render; exiting surfaces the reason
-    # through run/1 instead of a noproc crash on the next keypress. Plugin
+    # through run/1 instead of an idle screen that rejects every key. Plugin
     # code also runs in this process: `/model` calls the provider's `turn/0`
     # here (`Session.set_model/2`). A `:DOWN` of a monitor that such code
     # leaves is not the session's, so the next clause ignores it.
@@ -505,6 +505,10 @@ if Helyx.TUI.Available.available?() do
         # never answers `:invalid_utf8`.
         {:error, :queue_full} ->
           %{state | vm: ViewModel.reject(state.vm, "not sent: the queue is full")}
+
+        # The `:DOWN` of the session monitor ends the TUI next.
+        {:error, :session_not_found} ->
+          %{state | vm: ViewModel.reject(state.vm, "not sent: the session ended")}
       end
     end
 
@@ -519,15 +523,16 @@ if Helyx.TUI.Available.available?() do
           clear_composer(state)
 
         {:error, reason} ->
-          %{state | vm: ViewModel.notice(state.vm, model_error(reason))}
+          %{state | vm: ViewModel.notice(state.vm, switch_error(reason))}
       end
     end
 
     # A notice shows at most the provider id, which the ref bounds cap.
-    defp model_error({:unknown_provider, id}), do: "unknown provider: #{id}"
-    defp model_error({:bad_provider_turn, id}), do: "provider #{id} has a bad turn/0"
+    defp switch_error({:unknown_provider, id}), do: "unknown provider: #{id}"
+    defp switch_error({:bad_provider_turn, id}), do: "provider #{id} has a bad turn/0"
 
-    defp model_error({:invalid_model_ref, _ref}), do: "invalid model ref: use provider/model"
+    defp switch_error({:invalid_model_ref, _ref}), do: "invalid model ref: use provider/model"
+    defp switch_error(:session_not_found), do: "the session ended"
 
     @impl true
     def render(%{unsupported: true}, frame) do

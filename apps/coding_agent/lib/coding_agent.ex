@@ -37,12 +37,9 @@ defmodule CodingAgent do
 
       # Quitting mid-turn must not leave shell process groups running after
       # the VM stops; only abort makes the hands kill them and wait. A
-      # session that died has no turn for abort to reach (ticket #45).
-      try do
-        Helyx.Session.abort(session)
-      catch
-        :exit, _ -> :ok
-      end
+      # session that died has no turn for abort to reach (ticket #45), and
+      # the abort returns `{:error, :session_not_found}`.
+      _ = Helyx.Session.abort(session)
 
       result
     end

@@ -340,7 +340,26 @@ defmodule Helyx.TUITest do
     eventually(fn -> Session.pid(session) == nil end)
 
     assert catch_exit(TUI.mount(session: session)) ==
-             {:session_down, :noproc}
+             {:session_down, :session_not_found}
+
+    assert Registry.keys(Helyx.Core.events_registry(core), self()) == []
+  end
+
+  test "a send and a model switch to an ended session keep the composer", %{core: core} do
+    state = mounted(core, "ended", [])
+    :ok = GenServer.stop(Session.pid(state.session))
+
+    state = state |> press("x") |> press("enter")
+    assert ExRatatui.textarea_get_value(state.input) == "x"
+    assert state.vm.reason == "not sent: the session ended"
+
+    state = state |> press("enter", ["alt"])
+    assert state.vm.reason == "not sent: the session ended"
+
+    ExRatatui.textarea_set_value(state.input, "/model fake/other")
+    state = press(state, "enter")
+    assert List.last(state.vm.cells) == {:notice, "the session ended"}
+    assert ExRatatui.textarea_get_value(state.input) == "/model fake/other"
   end
 
   test "a snapshot of an unsupported contract version shows a message, not the session", %{
