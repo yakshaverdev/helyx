@@ -329,6 +329,13 @@ defmodule Helyx.TUI.ViewModelTest do
     assert vm.streaming == nil
   end
 
+  test "an event of an unknown type leaves the view model unchanged (ADR 0006, section 5)" do
+    vm = fold([{:agent_start, %{}}, {:message_start, %{message: assistant([])}}])
+    unknown = %Event{type: :from_a_newer_core, session_id: "s", turn_id: "t", seq: 3, data: %{}}
+
+    assert ViewModel.apply(vm, unknown) == vm
+  end
+
   test "a model change updates the model" do
     vm = fold(model_change: %{model: "other/model"})
     assert vm.model == "other/model"

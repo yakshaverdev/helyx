@@ -63,13 +63,34 @@ defmodule Helyx.TUI.ViewModel do
   @spec new(String.t()) :: t()
   def new(model), do: %__MODULE__{model: model}
 
+  # The event types that this client knows: one entry for each type that
+  # `fold/2` has a clause for. A type that is not here is dropped.
+  @known_types [
+    :agent_start,
+    :agent_end,
+    :turn_start,
+    :turn_end,
+    :message_start,
+    :message_update,
+    :message_end,
+    :tool_execution_start,
+    :tool_execution_end,
+    :queue_update,
+    :model_change,
+    :harness_session
+  ]
+
   @doc """
   Folds one event into the view model. Core makes every event from checked
-  data, so the fold trusts the shapes of `Helyx.Event`. An event of another
-  shape is a bug in Core and crashes the TUI.
+  data, so the fold trusts the shapes of the event types it knows. An event
+  of a known type and another shape is a bug in Core and crashes the TUI.
+
+  An event of an unknown type, from a newer Core, leaves the view model
+  unchanged: a client ignores an unknown event type (ADR 0006, section 5).
   """
   @spec apply(t(), Event.t()) :: t()
   def apply(%__MODULE__{seq: seq} = vm, %Event{seq: event_seq}) when event_seq <= seq, do: vm
+  def apply(vm, %Event{type: type}) when type not in @known_types, do: vm
   def apply(vm, %Event{seq: seq} = event), do: fold(%{vm | seq: seq}, event)
 
   defp fold(vm, %Event{type: :agent_start}), do: %{vm | running?: true}
