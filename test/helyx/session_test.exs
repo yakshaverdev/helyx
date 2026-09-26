@@ -1671,7 +1671,237 @@ defmodule Helyx.SessionTest do
       Process.exit(hands, :kill)
 
       assert_receive {:DOWN, ^ref, :process, _pid, :killed}, 1_000
-      assert {{:exit, :killed}, _ms} = Task.await(abort, 1_000)
+      assert {{:error, :session_not_found}, _ms} = Task.await(abort, 1_000)
+    end
+  end
+
+  describe "a session that is not running (#188)" do
+    defp operations do
+      [
+        subscribe: &Session.subscribe/1,
+        prompt: &Session.prompt(&1, "hi"),
+        steer: &Session.steer(&1, "hi"),
+        follow_up: &Session.follow_up(&1, "hi"),
+        abort: &Session.abort/1,
+        set_model: &Session.set_model(&1, "test/ok")
+      ]
+    end
+
+    defp assert_not_found(session, core) do
+      for {name, op} <- operations() do
+        assert {name, {:error, :session_not_found}} == {name, op.(session)}
+      end
+
+      assert Registry.keys(Helyx.Core.events_registry(core), self()) == []
+    end
+
+    test "every operation on an id that never existed", %{core: core} do
+      assert_not_found(%Session{id: "never", core: core}, core)
+    end
+
+    test "every operation on a session that ended", %{core: core} do
+      {:ok, session} = Session.start(core, model: "test/ok")
+      stop_session(core, session, &GenServer.stop/1)
+      assert_not_found(session, core)
+    end
+
+    @tag :capture_log
+    test "every operation on a dead session that is still registered", %{core: core} do
+      {:ok, session} = Session.start(core, model: "test/ok")
+      pid = Session.pid(session)
+      # Holding the Registry keeps the dead name in its table.
+      registry = Helyx.Core.sessions_registry(core)
+      partitions = for {_, p, _, _} <- Supervisor.which_children(registry), do: p
+      Enum.each(partitions, &:sys.suspend/1)
+      ref = Process.monitor(pid)
+      Process.exit(pid, :kill)
+      assert_receive {:DOWN, ^ref, :process, ^pid, :killed}
+
+      assert_not_found(session, core)
+      Enum.each(partitions, &:sys.resume/1)
+    end
+
+    @tag :capture_log
+    test "a session that ends during the snapshot call", %{core: core} do
+      {:ok, session} = Session.start(core, model: "test/ok")
+      {:ok, _} = Session.subscribe(session)
+      pid = Session.pid(session)
+      :ok = :sys.suspend(pid)
+
+      # The call is in the mailbox of the suspended session: the caller has
+      # registered and waits for the snapshot. The session dies there.
+      spawn(fn ->
+        await(
+          fn -> Process.info(pid, :message_queue_len) == {:message_queue_len, 1} end,
+          "the call"
+        )
+
+        Process.exit(pid, :kill)
+      end)
+
+      assert Session.subscribe(session) == {:error, :session_not_found}
+      # The session ended, so the entry of the first subscribe goes too.
+      assert Registry.keys(Helyx.Core.events_registry(core), self()) == []
+    end
+
+    # A reconnect subscribes again from the same process. The session then
+    # sends the events of a turn and stops while the snapshot call waits.
+    @tag :capture_log
+    test "a second subscribe keeps one entry, and a failed one removes it", %{core: core} do
+      {:ok, session} = Session.start(core, model: "test/ok")
+      {:ok, _} = Session.subscribe(session)
+      {:ok, _} = Session.subscribe(session)
+      registry = Helyx.Core.events_registry(core)
+      assert Registry.values(registry, session.id, self()) == [nil]
+
+      pid = Session.pid(session)
+      queued = fn n -> Process.info(pid, :message_queue_len) == {:message_queue_len, n} end
+      test = self()
+
+      # Only the process that suspends the session can resume it. The
+      # mailbox: the prompt, the stop, then the snapshot call.
+      spawn(fn ->
+        true = :erlang.suspend_process(pid)
+        send(test, :suspended)
+        await(fn -> queued.(3) end, "the snapshot call")
+        true = :erlang.resume_process(pid)
+      end)
+
+      assert_receive :suspended
+      Task.start(fn -> Session.prompt(session, "hi") end)
+      await(fn -> queued.(1) end, "the prompt")
+      Task.start(fn -> GenServer.stop(pid) end)
+      await(fn -> queued.(2) end, "the stop")
+
+      assert Session.subscribe(session) == {:error, :session_not_found}
+      assert Registry.values(registry, session.id, self()) == []
+
+      # The accepted hole: the events sent before the stop stay, each once.
+      seqs =
+        for {:helyx_event, %Event{seq: seq}} <- Process.info(self(), :messages) |> elem(1),
+            do: seq
+
+      assert seqs != []
+      assert seqs == Enum.uniq(seqs)
+    end
+
+    test "every operation after the Core stopped", %{core: core} do
+      {:ok, session} = Session.start(core, model: "test/ok")
+      :ok = Supervisor.stop(core)
+
+      for {name, op} <- operations() do
+        assert {name, {:error, :session_not_found}} == {name, op.(session)}
+      end
+    end
+
+    # When a Core stops, the events Registry stops its partitions before it
+    # stops itself. For a moment it has no partition, and a register raises
+    # `ErlangError`.
+    test "a subscribe while the Core stops", %{core: core} do
+      {:ok, session} = Session.start(core, model: "test/ok")
+      stop_session(core, session, &GenServer.stop/1)
+      registry = Helyx.Core.events_registry(core)
+
+      for {id, _, _, _} <- Supervisor.which_children(registry),
+          do: :ok = Supervisor.terminate_child(registry, id)
+
+      assert Session.subscribe(session) == {:error, :session_not_found}
+    end
+
+    # A session can stop with the reason `:timeout`, and the call then exits
+    # like a call that timed out. The session traps exits, so the exit signal
+    # is a message before the call, and the session stops on it before it
+    # answers.
+    @tag :capture_log
+    test "a session that stops with the reason :timeout during a call", %{core: core} do
+      {:ok, session} = Session.start(core, model: "test/ok")
+      pid = Session.pid(session)
+      true = :erlang.suspend_process(pid)
+      Process.exit(pid, :timeout)
+      task = Task.async(fn -> Session.prompt(session, "hi") end)
+
+      await(
+        fn -> Process.info(pid, :message_queue_len) == {:message_queue_len, 2} end,
+        "the call"
+      )
+
+      ref = Process.monitor(pid)
+      true = :erlang.resume_process(pid)
+      assert_receive {:DOWN, ^ref, :process, ^pid, :timeout}
+      assert Task.await(task) == {:error, :session_not_found}
+    end
+
+    # An earlier entry of the caller goes too: a timeout is not a snapshot.
+    test "a subscribe that times out leaves no entry", %{core: core} do
+      {:ok, session} = Session.start(core, model: "test/ok")
+      {:ok, _} = Session.subscribe(session)
+      pid = Session.pid(session)
+      true = :erlang.suspend_process(pid)
+
+      exit = catch_exit(Session.subscribe(session))
+      true = :erlang.resume_process(pid)
+      assert {:timeout, _} = exit
+      assert Registry.values(Helyx.Core.events_registry(core), session.id, self()) == []
+    end
+
+    test "input errors win over session_not_found", %{core: core} do
+      session = %Session{id: "never", core: core}
+      assert Session.steer(session, <<0xFF>>) == {:error, :invalid_utf8}
+      assert Session.set_model(session, "bad") == {:error, {:invalid_model_ref, "bad"}}
+    end
+  end
+
+  describe "client_start_error/1" do
+    test "the errors of the contract pass unchanged" do
+      for error <- [
+            :invalid_cwd,
+            :not_found,
+            {:invalid_model_ref, "x"},
+            {:unknown_provider, "p"},
+            {:bad_provider_turn, "p"}
+          ] do
+        assert Session.client_start_error(error) == error
+      end
+    end
+
+    test "any other error is a fixed text, and the log has the full term" do
+      log =
+        ExUnit.CaptureLog.capture_log(fn ->
+          assert Session.client_start_error({:tool_unavailable, "bash", "/secret/path"}) ==
+                   {:start_failed, "the session did not start; the server log has the reason"}
+
+          assert {:start_failed, _} = Session.client_start_error({:bad, Helyx.Session})
+          assert {:start_failed, _} = Session.client_start_error({:unknown_provider, :atom})
+        end)
+
+      assert log =~ ~s({:tool_unavailable, "bash", "/secret/path"})
+      assert log =~ "Helyx.Session"
+    end
+
+    @tag :capture_log
+    test "an invalid ref passes only within the bounds of Helyx.ModelRef" do
+      failed = {:start_failed, "the session did not start; the server log has the reason"}
+
+      # Each fails to parse only for its form: no slash, or an empty part.
+      for ref <- [String.duplicate("a", 256), String.duplicate("é", 128), "a/", "/b"] do
+        assert Session.client_start_error({:invalid_model_ref, ref}) == {:invalid_model_ref, ref}
+      end
+
+      for ref <- [
+            String.duplicate("a", 257),
+            String.duplicate("é", 128) <> "a",
+            <<0xFF>>,
+            "a b",
+            "a/\e[2J",
+            "a/b\n"
+          ] do
+        assert Session.client_start_error({:invalid_model_ref, ref}) == failed
+      end
+    end
+
+    test "a real start error of a client", %{core: core} do
+      {:error, reason} = Session.start(core, model: "nope/m")
+      assert Session.client_start_error(reason) == {:unknown_provider, "nope"}
     end
   end
 end

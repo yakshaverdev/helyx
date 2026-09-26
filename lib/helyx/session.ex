@@ -57,6 +57,8 @@ defmodule Helyx.Session do
   alias Helyx.Session.{Id, Server}
   alias Helyx.Session.Server.State
 
+  require Logger
+
   @enforce_keys [:id, :core]
   defstruct [:id, :core]
 
@@ -67,6 +69,13 @@ defmodule Helyx.Session do
           {:invalid_model_ref, String.t()}
           | {:unknown_provider, String.t()}
           | {:bad_provider_turn, String.t()}
+
+  @typedoc """
+  A start error as a client gets it (ADR 0006, section 2). See
+  `client_start_error/1`.
+  """
+  @type client_start_error ::
+          :invalid_cwd | :not_found | model_error() | {:start_failed, String.t()}
 
   # Public API
 
@@ -199,23 +208,105 @@ defmodule Helyx.Session do
   snapshot second, so every event after the snapshot reaches it. An event
   with a `seq` at or below `snapshot.seq` is already in the snapshot; the
   caller drops it.
+
+  A caller holds at most one registration for a session, so a second
+  subscribe, a reconnect for example, gets a new snapshot and each event
+  once.
+
+  A session that is not running returns `{:error, :session_not_found}`, and
+  the caller's registration for the session is removed. This includes a
+  session whose Core has stopped. A Core that stops also ends each process
+  that subscribed to its sessions and does not trap exits, through the link
+  of the events Registry. A snapshot call that exits on its timeout also
+  removes the registration, and the exit then goes on to the caller.
+  An event that the session sent before it ended can stay in the caller's
+  mailbox; a client drops it by `seq` once it has a snapshot. The other
+  operations return `{:error, :session_not_found}` for such a session too.
   """
-  @spec subscribe(t()) :: {:ok, Helyx.Session.Snapshot.t()}
-  def subscribe(%__MODULE__{id: id, core: core}) do
-    {:ok, _} = Registry.register(Helyx.Core.events_registry(core), id, nil)
-    {:ok, GenServer.call(Server.via(core, id), {:snapshot})}
+  @spec subscribe(t()) :: {:ok, Helyx.Session.Snapshot.t()} | {:error, :session_not_found}
+  def subscribe(%__MODULE__{id: id, core: core} = session) do
+    registry = Helyx.Core.events_registry(core)
+
+    # The Registry has duplicate keys and sends an event once per entry.
+    # Only the caller registers itself, so the check and the register do
+    # not race.
+    if Registry.values(registry, id, self()) == [],
+      do: {:ok, _} = Registry.register(registry, id, nil)
+
+    case call(session, {:snapshot}) do
+      {:error, :session_not_found} = error ->
+        :ok = leave(registry, id)
+        error
+
+      snapshot ->
+        {:ok, snapshot}
+    end
+  rescue
+    # The events Registry is gone or stops with its Core, and so does the
+    # session: the Registry raises `ArgumentError`, or the link to a dead
+    # partition raises `ErlangError`.
+    _ in [ArgumentError, ErlangError] -> {:error, :session_not_found}
+  catch
+    # Only the snapshot call can exit here, and `call/3` lets only the
+    # timeout of a running session exit.
+    :exit, reason ->
+      :ok = leave(Helyx.Core.events_registry(core), id)
+      :erlang.raise(:exit, reason, __STACKTRACE__)
+  end
+
+  # A Core that stops takes its Registry and every registration with it, so
+  # a Registry that is gone leaves nothing to remove.
+  defp leave(registry, id) do
+    Registry.unregister(registry, id)
+  rescue
+    ArgumentError -> :ok
+  end
+
+  @doc """
+  Maps an error of `start/2` or `resume/2` to the start error that a client
+  gets. A transport calls it, so all clients get the same errors.
+  `:invalid_cwd`, `:not_found`, and the model errors pass unchanged. The ref
+  of `{:invalid_model_ref, ref}` can come from a session file, so it passes
+  only when `Helyx.ModelRef.bounded?/1` holds. Any other
+  term becomes `{:start_failed, text}` with a fixed text for a person, and
+  the full term goes to the log as a warning. The product calls `start/2` or
+  `resume/2` itself and keeps the full term.
+  """
+  @spec client_start_error(term()) :: client_start_error()
+  def client_start_error(reason) when reason in [:invalid_cwd, :not_found], do: reason
+
+  # The id of a ref that parsed, so `Helyx.ModelRef` bounds it.
+  def client_start_error({tag, id} = reason)
+      when tag in [:unknown_provider, :bad_provider_turn] and is_binary(id),
+      do: reason
+
+  def client_start_error({:invalid_model_ref, ref} = reason) when is_binary(ref) do
+    if ModelRef.bounded?(ref), do: reason, else: start_failed(reason)
+  end
+
+  def client_start_error(reason), do: start_failed(reason)
+
+  defp start_failed(reason) do
+    Logger.warning("session start failed: " <> inspect(reason))
+    {:start_failed, "the session did not start; the server log has the reason"}
   end
 
   @doc "The pid behind a session handle, or nil when the session is not running."
   @spec pid(t()) :: pid() | nil
-  def pid(%__MODULE__{id: id, core: core}), do: GenServer.whereis(Server.via(core, id))
+  def pid(%__MODULE__{id: id, core: core}) do
+    GenServer.whereis(Server.via(core, id))
+  rescue
+    # The Registry is gone with its Core, and so is the session.
+    ArgumentError -> nil
+  end
 
   @doc """
   Sends a prompt. Starts a turn if none is running. The text must be valid
   UTF-8. While an abort waits for the hands, the prompt queues as a
   follow-up, and a full queue returns `{:error, :queue_full}`.
   """
-  @spec prompt(t(), String.t()) :: :ok | {:error, :turn_running | :invalid_utf8 | :queue_full}
+  @spec prompt(t(), String.t()) ::
+          :ok | {:error, :turn_running | :invalid_utf8 | :queue_full | :session_not_found}
   def prompt(%__MODULE__{} = session, text) when is_binary(text),
     do: send_text(session, :prompt, text)
 
@@ -225,7 +316,7 @@ defmodule Helyx.Session do
   starts a turn, like a prompt. The text must be valid UTF-8. A full queue
   returns `{:error, :queue_full}`.
   """
-  @spec steer(t(), String.t()) :: :ok | {:error, :invalid_utf8 | :queue_full}
+  @spec steer(t(), String.t()) :: :ok | {:error, :invalid_utf8 | :queue_full | :session_not_found}
   def steer(%__MODULE__{} = session, text) when is_binary(text),
     do: send_text(session, :steer, text)
 
@@ -234,13 +325,14 @@ defmodule Helyx.Session do
   normally. With no turn running it starts a turn at once. The text must be
   valid UTF-8. A full queue returns `{:error, :queue_full}`.
   """
-  @spec follow_up(t(), String.t()) :: :ok | {:error, :invalid_utf8 | :queue_full}
+  @spec follow_up(t(), String.t()) ::
+          :ok | {:error, :invalid_utf8 | :queue_full | :session_not_found}
   def follow_up(%__MODULE__{} = session, text) when is_binary(text),
     do: send_text(session, :follow_up, text)
 
-  defp send_text(%__MODULE__{id: id, core: core}, op, text) do
+  defp send_text(session, op, text) do
     if String.valid?(text) do
-      GenServer.call(Server.via(core, id), {op, text})
+      call(session, {op, text})
     else
       {:error, :invalid_utf8}
     end
@@ -261,11 +353,14 @@ defmodule Helyx.Session do
   next turn uses the new one.
   """
   @spec set_model(t(), String.t()) ::
-          :ok | {:error, model_error()}
-  def set_model(%__MODULE__{id: id, core: core}, string) when is_binary(string) do
+          :ok | {:error, model_error() | :session_not_found}
+  def set_model(%__MODULE__{core: core} = session, string) when is_binary(string) do
     with {:ok, {ref, provider, turn_mode}} <- resolve_model(core, string) do
-      GenServer.call(Server.via(core, id), {:set_model, ref, provider, turn_mode})
+      call(session, {:set_model, ref, provider, turn_mode})
     end
+  rescue
+    # The plugin table is gone with its Core, and so is the session.
+    ArgumentError -> {:error, :session_not_found}
   end
 
   @doc """
@@ -276,8 +371,30 @@ defmodule Helyx.Session do
   abort go out at once, before the hands are done; only this call waits. With
   no turn running and no abort in progress this is a no-op.
   """
-  @spec abort(t()) :: :ok
-  def abort(%__MODULE__{id: id, core: core}) do
-    GenServer.call(Server.via(core, id), :abort, :infinity)
+  @spec abort(t()) :: :ok | {:error, :session_not_found}
+  def abort(%__MODULE__{} = session), do: call(session, :abort, :infinity)
+
+  # A call of the contract. The session is not running when no process has
+  # the id, or when the process is dead (the Registry drops its name
+  # asynchronously) or dies during the call. A timeout of a running session
+  # still exits. A session that stopped with the reason `:timeout` gives the
+  # same exit, so the timeout clause checks that the process still lives.
+  defp call(session, request, timeout \\ 5_000) do
+    case pid(session) do
+      nil -> {:error, :session_not_found}
+      pid -> call_pid(pid, request, timeout)
+    end
+  end
+
+  defp call_pid(pid, request, timeout) do
+    GenServer.call(pid, request, timeout)
+  catch
+    :exit, {:timeout, _call} = reason ->
+      if Process.alive?(pid),
+        do: :erlang.raise(:exit, reason, __STACKTRACE__),
+        else: {:error, :session_not_found}
+
+    :exit, {_reason, _call} ->
+      {:error, :session_not_found}
   end
 end

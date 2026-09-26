@@ -22,14 +22,22 @@ defmodule Helyx.ModelRef do
   @type t :: %__MODULE__{provider: String.t(), model: String.t()}
 
   @doc """
+  True when the string is within the bounds in the module doc, with or
+  without the `provider/model` form. Such a string is safe to print.
+  """
+  @spec bounded?(String.t()) :: boolean()
+  def bounded?(string) when is_binary(string) do
+    byte_size(string) <= @max_bytes and String.valid?(string) and
+      not String.match?(string, ~r/[\s\p{C}]/u)
+  end
+
+  @doc """
   Splits `provider/model` at the first slash. Both parts must be present, and
   the string must be within the bounds in the module doc.
   """
   @spec parse(String.t()) :: {:ok, t()} | {:error, {:invalid_model_ref, String.t()}}
   def parse(string) when is_binary(string) do
-    with true <- byte_size(string) <= @max_bytes,
-         true <- String.valid?(string),
-         false <- String.match?(string, ~r/[\s\p{C}]/u),
+    with true <- bounded?(string),
          [provider, model] when provider != "" and model != "" <-
            String.split(string, "/", parts: 2) do
       {:ok, %__MODULE__{provider: provider, model: model}}

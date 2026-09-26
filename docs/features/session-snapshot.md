@@ -56,7 +56,7 @@ Callers of `subscribe/1` change from `:ok = ` to `{:ok, _} = ` or use the snapsh
 Changes that follow from the snapshot (accepted by the owner, 2026-09-26):
 
 - `Helyx.TUI.run/1` has no `:model` option, and `CodingAgent.fetch_model/1` is gone: the model comes from the snapshot.
-- The TUI mount checks that the session is alive before it subscribes, because the subscribe now calls the session. A session that dies in between ends the mount with `{:session_down, reason}`, as before.
+- The TUI mount checks that the session is alive before it subscribes, because the subscribe now calls the session. A session that dies in between ends the mount with `{:session_down, reason}`, as before. #188 replaces the check: `subscribe/1` returns `{:error, :session_not_found}` (`docs/features/session-not-found.md`).
 - Tests that folded events with `seq` 0, or with one `seq` twice, use increasing values, because `apply/2` now drops an event at or below the view model's `seq`.
 
 ## Bounds
