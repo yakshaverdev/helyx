@@ -38,3 +38,7 @@ No missing requirement and no scope creep. Two doc findings, fixed:
 ### Failure path
 
 No findings. Probes that hold: at 9,995 and 9,996 waiting messages the stream ends `:done`; at 10,000 one event goes out and the next fails with `10001`; a rejection never goes out without its call; a suspended session (local and external turn) stops the queue near 10,004, then fails the turn, gives the open call its aborted result, and takes the next prompt; a fast session with 200,000 events ends `:end_turn`. `Process.info/2` raises for a pid of another node, but the session pid is always local.
+
+## Codex review
+
+Round 1: 1 finding, rejected. At exactly 10,000 waiting messages, a rejected call sends its rejection and then its event, so the stream leaves 10,002 messages, and the next terminal `:done` goes out with no `session_behind`. This is the overshoot that the bounds row already states: "one send adds at most 2 messages past 10,000 at its check". The mailbox stays bounded. The terminal is the stream's return value to the hands, not a send to the session, so it is outside the check. The invariant sentence of the orchestrator ("never sends while more than 10,000 wait") was stricter than the doc; the doc is the design.
