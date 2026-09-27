@@ -758,6 +758,22 @@ defmodule Helyx.Provider.ClaudeCodeTest do
       assert {{:error, :still_queued}, _actions} = interrupt(running(work, &started?/1))
     end
 
+    # Only an exact `[]` confirms that no queued work remains.
+    for {name, body} <- [
+          {"a missing", %{cancelled: []}},
+          {"a null", %{still_queued: nil, cancelled: []}},
+          {"a non-list", %{still_queued: "none", cancelled: []}},
+          {"a missing response", nil}
+        ] do
+      test "with #{name} still_queued answers an error", %{bin: bin, work: work} do
+        turn(bin, 1, 1, begin())
+        response = %{subtype: "success", request_id: "@R@", response: unquote(Macro.escape(body))}
+        script(bin, "ctl.1", [j(%{type: "control_response", response: response}), aborted()])
+
+        assert {{:error, :still_queued}, _actions} = interrupt(running(work, &started?/1))
+      end
+    end
+
     test "with an error response answers the error, cut", %{bin: bin, work: work} do
       turn(bin, 1, 1, begin())
       long = String.duplicate("é", 1_500)
@@ -799,6 +815,45 @@ defmodule Helyx.Provider.ClaudeCodeTest do
     history = replay_history()
 
     assert {:stop, :no_msg_lifecycle} = List.last(run_direct(history, work))
+  end
+
+  # Only an exact 0 ends the turn; a positive count keeps it open.
+  for {name, count} <- [
+        {"a missing", :missing},
+        {"a null", nil},
+        {"a string", "0"},
+        {"a float", 0.0}
+      ] do
+    test "a result with #{name} queued_turn_count stops the program", %{bin: bin, work: work} do
+      line = JSON.decode!(result("ok"))
+
+      line =
+        if unquote(count) == :missing,
+          do: Map.delete(line, "queued_turn_count"),
+          else: Map.put(line, "queued_turn_count", unquote(count))
+
+      turn(bin, 1, 1, begin() ++ [j(line)])
+
+      assert {:stop, :no_queued_turn_count} = List.last(run_direct([Message.user("hi")], work))
+    end
+  end
+
+  test "a pending interrupt does not answer :ok on a result with queued work",
+       %{bin: bin, work: work} do
+    # No `init`: the interrupt waits, and is not written.
+    queued = result("ok") |> JSON.decode!() |> Map.put("queued_turn_count", 2) |> j()
+    go = Path.join(bin, "go")
+    File.write!(Path.join(bin, "out.rest"), [queued, "\n", delta("more"), "\n"])
+    gate = ~s(while [ ! -e "#{go}" ]; do sleep 0.05; done; out out.rest\n)
+    turn(bin, 1, 1, [lifecycle("started")], gate)
+
+    state = running(work, &(&1.turn.messages == nil))
+    assert {_from, [], state} = request(state, {:interrupt, "t1"})
+
+    # The delta after the result shows that the turn is still open.
+    File.write!(go, "")
+    state = settle(state, &(&1.turn != nil and &1.turn.open?))
+    assert %{request_id: nil, result?: false} = state.turn.interrupt
   end
 
   test "a replay to a program with no init line stops it", %{bin: bin, work: work} do
@@ -1047,7 +1102,17 @@ defmodule Helyx.Provider.ClaudeCodeTest do
           {long, 1_999}
         ] do
       File.rm(Path.join(bin, "count"))
-      error = j(%{type: "result", subtype: text, is_error: true, num_turns: 1, errors: [text]})
+
+      error =
+        j(%{
+          type: "result",
+          subtype: text,
+          is_error: true,
+          num_turns: 1,
+          queued_turn_count: 0,
+          errors: [text]
+        })
+
       turn(bin, 1, 1, [init(), error])
 
       assert [_, {:error, {:claude_code, subtype, text}}] =

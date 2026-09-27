@@ -6,7 +6,7 @@ Base: `origin/master` at `da46d28`. Rounds: the first and complete round, then f
 
 `Helyx.Provider.ClaudeCode` is now a connected harness provider (ADR 0007). `harness_init/3` starts one `claude` for the session, with no `-p`, with `--session-id=<new uuid>` or `--resume=<id>`, under the watchdog with open input and a TERM grace of 5,000 ms. A turn is one user line with a `uuid`, and it ends at a `result` with `queued_turn_count` 0. An interrupt is the control request `interrupt` with `cancel_queued: true`. A close is the end of input, then the exit. `stream/3` answers `{:error, :connected}`. The decisions are in `docs/features/long-lived-harness.md`, section "Built in #200".
 
-Invariant: one `claude` program serves the session and is never started again by a close; an interrupt answers `:ok` only when the turn is over in the program (the success response and the turn's `result`, or a response whose `cancelled` list holds the turn's `uuid`), and any other answer or a missed bound stops the program through the Core loop. The interrupt waits for the program's first `init`, and after a replay for `started` of the turn's line; before that `started`, a `result` is of a replay line and does not end the turn. A `result` with `queued_turn_count` above 0 does not end a turn with no pending interrupt, by the rule of the ticket; that wait has no bound of its own (the row "submitted: unbounded"), and an abort ends it. Entry points: `harness_init/3`, `harness_request/3` (turn, interrupt, close), and `harness_info/2` (program stdout and exit). Documented exceptions: stderr is dropped (row "stderr"); after an abort that left no assistant message, the next prompt holds the aborted user message again, as before #200. Open: none found.
+Invariant: one `claude` program serves the session and is never started again by a close; an interrupt answers `:ok` only when the turn is over in the program (the success response and the turn's `result`, or a response whose `cancelled` list holds the turn's `uuid`), and any other answer or a missed bound stops the program through the Core loop. The interrupt waits for the program's first `init`, and after a replay for `started` of the turn's line; before that `started`, a `result` is of a replay line and does not end the turn. A `result` with `queued_turn_count` above 0 does not end a turn, also with a pending interrupt, by the rule of the ticket; a count that is not a non-negative integer stops the program with `{:error, :no_queued_turn_count}`. The wait for a count of 0 has no bound of its own (the row "submitted: unbounded"), and an abort ends it. Entry points: `harness_init/3`, `harness_request/3` (turn, interrupt, close), and `harness_info/2` (program stdout and exit). Documented exceptions: stderr is dropped (row "stderr"); after an abort that left no assistant message, the next prompt holds the aborted user message again, as before #200. Open: none found.
 
 ## Bounds sensor
 
@@ -126,6 +126,27 @@ After the owner's decisions on #200, the fix is applied. Fix diff: 22 lines in o
 
 No defect was reproduced, so the loop ends.
 
+## Codex round 1
+
+1 finding, confirmed and fixed. A success response to the interrupt with `still_queued` missing, `null`, or of another type was read as an empty queue, so the interrupt could answer `:ok` and keep the program. ADR 0007 says that Helyx stops the program when the program cannot confirm that no queued work remains. Now only `still_queued` exactly `[]` goes on; any other value answers `{:error, :still_queued}`. Tests: a missing value, `null`, a non-list value, a missing `response` object, and a non-empty list. The failure-path axis should have caught this: the program output is a boundary, and the checklist asks for every input shape at it.
+
+## Round 10 (reduced)
+
+Fix diff: 8 lines in one code file, in the `control_response` clause of `translate/2`. Reduced by the owner's order: spec and failure path.
+
+- Spec: 1 defect, fixed. A `result` with `queued_turn_count` missing, `null`, a string, or a float ended the turn, as if the count were 0.
+- Failure path: 2 defects, reproduced and fixed. The first is the same as the spec defect. The second: a pending interrupt that was not written yet answered `:ok` on a `result` with `queued_turn_count` 2, because the interrupt branch came before the count check. Both are on the check of `queued_turn_count`, so the fix is in one place: `turn_result/2` ends the turn only at exactly 0, keeps it open at a positive integer, and stops the program with `{:error, :no_queued_turn_count}` on any other value. The count comes before the interrupt. Tests: a missing, `null`, string, and float count; a pending interrupt and a count of 2. The fake error result of the error-cap test now has `queued_turn_count` 0, as the real program writes (research note, section "Verify before implementation").
+- Other fields checked, fail safe: `cancelled` that is not a list, `init.capabilities` that is not a list, an unmatched `request_id` or `command_uuid`, and a `subtype` or `is_error` other than success.
+
+## Round 11 (reduced)
+
+Fix diff: about 25 lines in one code file; `turn_result/2` added. Reduced by the owner's order: spec and failure path.
+
+- Spec: 1 doc defect, fixed. The invariant of this record did not state the round 10 rule for `queued_turn_count`. No code defect.
+- Failure path: no findings. Checked for another field whose absence reads as a safe state: `cancelled`, `init.capabilities`, `terminal_reason`, `lost?`, `parent_tool_use_id`, `request_id`, `command_uuid`, `subtype`, `is_error`, and chunk order. All fail safe.
+- Not verified, not a defect: a missing `parent_tool_use_id` reads as the main loop. A sub-agent `result` with count 0 and without that field would end the turn. The research note marks this field "not verified" for sub-agents.
+- The loop ends: no code defect was reproduced.
+
 ## Manual run with the real program
 
 2026-09-27, `claude` 2.1.283, model `haiku`, through a Helyx session (`Helyx.Core` with `Helyx.Provider.ClaudeCode`, `Session.prompt/2`, `Session.abort/1`). Script: `.scratch/manual_claude.exs` (not committed). Code: commit `0bcff46`, the code of round 8, which changed only comments after this run. This run replaces an earlier run on older code of this branch, which gave the same kind of results.
@@ -142,7 +163,7 @@ The `Bash` tool refused a standalone `sleep 37`, so the run used the python slee
 
 The owner decided each item below on #200. The feature doc states them (Claude Code section).
 
-- Kept: a `result` with `queued_turn_count` above 0 does not end a turn (the ticket rule). With no pending interrupt, such a turn waits until an abort, and the abort's interrupt then waits until the interrupt bound, because an idle program writes no `result`. With a pending interrupt, such a `result` counts as the turn's `result`, and the success response with an empty `still_queued` answers `:ok`. No run showed a count above 0. The other choice is to end the turn at any `result` after `started`.
+- Kept: a `result` with `queued_turn_count` above 0 does not end a turn (the ticket rule). With no pending interrupt, such a turn waits until an abort, and the abort's interrupt then waits until the interrupt bound, because an idle program writes no `result`. Since round 10, this holds also with a pending interrupt. No run showed a count above 0. The other choice is to end the turn at any `result` after `started`.
 - The interrupt answers `:ok` on the turn's `result` with any `terminal_reason`, not only `aborted_*`. The ticket names `terminal_reason`. A turn that ended just before the interrupt gives `completed`, and an idle program writes no other `result`, so a check for `aborted_*` would wait until the armed kill and stop the program.
 - `stream/3` of the Claude Code provider is gone; it answers `{:error, :connected}`, as the Codex provider of #201 does.
 - A program that lists `msg_lifecycle_v1` and never sends `started` for the turn's line (for example, it rejects the line) leaves the turn open until an abort; the interrupt then waits for `started`, and the interrupt bound stops the program. Not observed.

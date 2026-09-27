@@ -218,14 +218,14 @@ A steer that waits for its answer or its `user_message` counts in the 32 entries
 - The wait for `started` after such a `result` is bounded (see "Bounds"). Over the bound, the loop ends itself (see "Stop"): Helyx does not know whether the program will start the steer.
 - `interrupt` is the control request `interrupt` with `cancel_queued: true`.
   - The program must list `interrupt_cancel_queued_v1` in `init.capabilities`. Without it, every interrupt answers `{:error, :no_cancel_queued}`, and the abort stops the program.
-  - A response with a `still_queued` list that is not empty answers `{:error, :still_queued}`. The abort stops the program.
+  - A success response whose `still_queued` is not exactly `[]` answers `{:error, :still_queued}`: a non-empty list, `null`, another type, or a missing value. Only `[]` confirms that no queued work remains (ADR 0007). The abort stops the program.
   - Otherwise the reply is `:ok` after the success response and the `result` line of the turn, or after a success response whose `cancelled` list holds the turn's `uuid`. Both steps are inside the interrupt bound. The `result` of an interrupted turn has `terminal_reason` `aborted_streaming` or `aborted_tools`. A turn that ended just before the interrupt has `completed` (#200). A turn whose `result` comes before Helyx writes the interrupt gets `:ok`, and Helyx writes no interrupt. After a replay, a `result` before `started` of the turn's line is skipped, so the interrupt waits for `started`.
   - Accepted, because each one fails safe (owner decision on #200):
     - The interrupt answers `:ok` on the turn's `result` with any `terminal_reason`, not only `aborted_*`. A turn that ended just before the interrupt gives `completed`, and an idle program writes no other `result`.
     - After a replay the interrupt waits for `started` of the turn's line. A replay that takes longer than the 2,000 ms interrupt bound stops the program through the armed kill; the fresh harness session is then not resumed.
 - After a replay, the provider needs `msg_lifecycle_v1` in `init.capabilities` (owner decision on #200: accepted, because it fails safe). Without it, the first `result` before `started` stops the program with `{:error, :no_msg_lifecycle}`. So an older `claude` without the capability cannot replay.
 - A program that lists `msg_lifecycle_v1` and never sends `started` for the turn's line keeps the turn in `submitted`, which is unbounded and accepted (see "Bounds"). An abort ends it: the interrupt waits for `started`, and the interrupt bound stops the program.
-- A `result` with `queued_turn_count` above 0 does not end the turn (the ticket rule, kept by the owner on #200). With no pending interrupt the turn stays in `submitted` until an abort.
+- A `result` with `queued_turn_count` above 0 does not end the turn (the ticket rule, kept by the owner on #200), also with a pending interrupt. The turn stays in `submitted` until an abort. A missing `queued_turn_count`, or one that is not a non-negative integer, does not confirm that no queued work remains, so it stops the program with `{:error, :no_queued_turn_count}` (ADR 0007).
 - The Helyx tools are an SDK MCP server named `helyx`. The provider answers `mcp_message` control requests. A `tools/call` gives `{:tool_request, ...}`.
 
 ### Codex

@@ -26,7 +26,8 @@ defmodule Helyx.Provider.ClaudeCode do
   dropped: the `result` line carries the errors.
 
   A turn is one user line with a `uuid`. The turn ends at a `result` line
-  with `queued_turn_count` 0. After a replay, the provider skips each
+  with `queued_turn_count` 0. A positive count keeps it open, and any other
+  value stops the program with an error. After a replay, the provider skips each
   `result` before the start of the turn's line. This needs
   `msg_lifecycle_v1` in `init.capabilities`: without it, the provider
   stops the program with an error at a `result` before the start of the
@@ -361,14 +362,16 @@ defmodule Helyx.Provider.ClaudeCode do
          %State{turn: %Turn{uuid: uuid, interrupt: %Interrupt{request_id: id}}} = state
        )
        when is_binary(id) do
+    # Only `still_queued` exactly `[]` confirms that no queued work
+    # remains; a missing or other value answers an error (ADR 0007).
     case response do
-      %{"subtype" => "success", "response" => %{"still_queued" => [_ | _]}} ->
-        answer_interrupt(state, {:error, :still_queued})
-
-      %{"subtype" => "success"} ->
-        if cancelled?(response["response"], uuid),
+      %{"subtype" => "success", "response" => %{"still_queued" => []} = body} ->
+        if cancelled?(body, uuid),
           do: answer_interrupt(state, :ok),
           else: interrupt_progress(state, :response?)
+
+      %{"subtype" => "success"} ->
+        answer_interrupt(state, {:error, :still_queued})
 
       _error ->
         answer_interrupt(state, {:error, {:interrupt, HarnessIO.cap_error(response["error"])}})
@@ -417,15 +420,8 @@ defmodule Helyx.Provider.ClaudeCode do
       state.turn == nil ->
         {[], state}
 
-      state.turn.interrupt ->
-        interrupt_progress(state, :result?)
-
-      match?(%{"queued_turn_count" => n} when is_integer(n) and n > 0, result) ->
-        {[], state}
-
-      # The session closes the open assistant message at the terminal.
       true ->
-        {emit(state, [terminal(result, state.turn)]), %{state | turn: nil}}
+        turn_result(result, state)
     end
   end
 
@@ -491,6 +487,26 @@ defmodule Helyx.Provider.ClaudeCode do
   defp translate(_object, state), do: {[], state}
 
   defp emit(%State{turn: turn}, events), do: for(event <- events, do: {:event, turn.id, event})
+
+  # Only `queued_turn_count` exactly 0 ends the turn: a positive count keeps
+  # it open, and any other value stops the program, because it does not
+  # confirm that no queued work remains (ADR 0007). The count comes before
+  # the interrupt, so a pending interrupt never answers `:ok` on it.
+  defp turn_result(%{"queued_turn_count" => n}, state) when is_integer(n) and n > 0,
+    do: {[], state}
+
+  defp turn_result(
+         %{"queued_turn_count" => 0},
+         %State{turn: %Turn{interrupt: %Interrupt{}}} = state
+       ),
+       do: interrupt_progress(state, :result?)
+
+  # The session closes the open assistant message at the terminal.
+  defp turn_result(%{"queued_turn_count" => 0} = result, state),
+    do: {emit(state, [terminal(result, state.turn)]), %{state | turn: nil}}
+
+  defp turn_result(_result, state),
+    do: {[], %{state | terminal: {:error, :no_queued_turn_count}}}
 
   # Only the first line of a resumed program can say that the session is
   # lost; it comes before any `init`.
