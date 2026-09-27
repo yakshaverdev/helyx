@@ -9,6 +9,7 @@ defmodule Helyx.Session do
       {:ok, snapshot} = Helyx.Session.subscribe(session)
       :ok = Helyx.Session.prompt(session, "hello")
       # receive {:helyx_event, %Helyx.Event{}}, drop each seq <= snapshot.seq ...
+      # then {:helyx_session_end, id, reason} when the session ends
 
   Each turn runs the provider stream in a Task under Core's task supervisor,
   linked to the session: the session traps exits, so a Task crash stays a
@@ -54,13 +55,16 @@ defmodule Helyx.Session do
   """
 
   alias Helyx.ModelRef
-  alias Helyx.Session.{Id, Server}
+  alias Helyx.Session.{Id, Server, Watch}
   alias Helyx.Session.Server.State
 
   require Logger
 
   @enforce_keys [:id, :core]
   defstruct [:id, :core]
+
+  # The timeout of each call of the contract but `abort/1`.
+  @call_timeout 5_000
 
   @type t :: %__MODULE__{id: String.t(), core: Helyx.Core.name()}
 
@@ -209,57 +213,130 @@ defmodule Helyx.Session do
   with a `seq` at or below `snapshot.seq` is already in the snapshot; the
   caller drops it.
 
+  After its last event, the subscription gives at most one signal
+  (`docs/features/end-signal.md`):
+
+    * `{:helyx_session_end, id, reason}` when the session ends. The reason
+      is `:stopped` for an exit with `:normal`, `:shutdown`, or
+      `{:shutdown, term}`, and `:crashed` for any other; the supervisor logs
+      the full reason.
+    * `{:helyx_subscription_lost, id}` when the events Registry lost the
+      registration while the session can still run. The caller subscribes
+      again and replaces its state with the new snapshot. Only a caller
+      that traps exits gets it: `Registry.register/3` links the caller to
+      the Registry, so a caller that does not trap exits ends with it.
+
   A caller holds at most one registration for a session, so a second
   subscribe, a reconnect for example, gets a new snapshot and each event
-  once.
+  once. It replaces the registration of the first, and a signal of the
+  first that is still in the mailbox is removed.
 
   A session that is not running returns `{:error, :session_not_found}`, and
-  the caller's registration for the session is removed. This includes a
-  session whose Core has stopped. A Core that stops also ends each process
-  that subscribed to its sessions and does not trap exits, through the link
-  of the events Registry. A snapshot call that exits on its timeout also
-  removes the registration, and the exit then goes on to the caller.
-  An event that the session sent before it ended can stay in the caller's
-  mailbox; a client drops it by `seq` once it has a snapshot. The other
-  operations return `{:error, :session_not_found}` for such a session too.
+  the caller's registration for the session is removed, with no signal for
+  it. This includes a session whose Core has stopped. A Core that stops
+  also ends each process that subscribed to its sessions and does not trap
+  exits, through the link of the events Registry. A snapshot call that
+  exits on its timeout also removes the registration, and the exit then
+  goes on to the caller. An event that the session sent before it ended can
+  stay in the caller's mailbox; a client drops it by `seq` once it has a
+  snapshot. The other operations return `{:error, :session_not_found}` for
+  such a session too.
   """
   @spec subscribe(t()) :: {:ok, Helyx.Session.Snapshot.t()} | {:error, :session_not_found}
   def subscribe(%__MODULE__{id: id, core: core} = session) do
     registry = Helyx.Core.events_registry(core)
 
-    # The Registry has duplicate keys and sends an event once per entry.
-    # Only the caller registers itself, so the check and the register do
-    # not race.
-    if Registry.values(registry, id, self()) == [],
-      do: {:ok, _} = Registry.register(registry, id, nil)
-
-    case call(session, {:snapshot}) do
-      {:error, :session_not_found} = error ->
-        :ok = leave(registry, id)
-        error
-
-      snapshot ->
-        {:ok, snapshot}
+    # The watch monitors the pid of the snapshot call, so the snapshot and
+    # the end signal belong to one process.
+    with pid when is_pid(pid) <- pid(session),
+         :ok <- join(core, registry, id, pid),
+         %Helyx.Session.Snapshot{} = snapshot <- call_pid(pid, {:snapshot}, @call_timeout) do
+      {:ok, snapshot}
+    else
+      nil -> not_found(core, id)
+      {:error, :session_not_found} -> not_found(core, id)
     end
   rescue
     # The events Registry is gone or stops with its Core, and so does the
     # session: the Registry raises `ArgumentError`, or the link to a dead
     # partition raises `ErlangError`.
-    _ in [ArgumentError, ErlangError] -> {:error, :session_not_found}
+    _ in [ArgumentError, ErlangError] -> not_found(core, id)
   catch
-    # Only the snapshot call can exit here, and `call/3` lets only the
+    # Only the snapshot call can exit here, and `call_pid/3` lets only the
     # timeout of a running session exit.
     :exit, reason ->
-      :ok = leave(Helyx.Core.events_registry(core), id)
+      :ok = leave(core, id)
       :erlang.raise(:exit, reason, __STACKTRACE__)
   end
 
-  # A Core that stops takes its Registry and every registration with it, so
-  # a Registry that is gone leaves nothing to remove.
-  defp leave(registry, id) do
-    Registry.unregister(registry, id)
+  # Every subscribe replaces the caller's registration and its watch, so
+  # each registration has a live watch of the pid of its snapshot call, and
+  # a caller holds at most one registration for a session: the Registry has
+  # duplicate keys and sends an event once per entry. The events between
+  # the two registrations are in the snapshot that follows. The watch
+  # registers first: when the Registry restarts between the two, the watch
+  # sends a lost signal. The value of the entry is the watch.
+  defp join(core, registry, id, session_pid) do
+    :ok = leave(core, id)
+
+    case Watch.start(core, id, session_pid, self()) do
+      {:ok, watch} ->
+        Process.put({Watch, core, id}, watch)
+        {:ok, _} = Registry.register(registry, id, watch)
+        :ok
+
+      :ignore ->
+        {:error, :session_not_found}
+    end
+  end
+
+  defp not_found(core, id) do
+    :ok = leave(core, id)
+    {:error, :session_not_found}
+  end
+
+  # Removes the caller's registration for the id, kills its watch, and
+  # removes a signal for the id from the mailbox. The caller's process
+  # dictionary holds the watch, not the Registry: after a Registry restart
+  # the old entry is gone, but its watch can still wait to send a lost
+  # signal. Only the caller subscribes itself, so no other process changes
+  # the entry. The entries of dead watches go too, so the dictionary holds
+  # one entry for each live watch of the caller. A Registry that is gone
+  # leaves no registration to remove.
+  defp leave(core, id) do
+    case Process.delete({Watch, core, id}) do
+      nil -> :ok
+      watch -> stop_watch(watch)
+    end
+
+    for {{Watch, _core, _id} = key, watch} <- Process.get(),
+        not Process.alive?(watch),
+        do: Process.delete(key)
+
+    # A dead watch sent its signal before it died. A watch sends at most one.
+    receive do
+      {:helyx_session_end, ^id, _reason} -> :ok
+      {:helyx_subscription_lost, ^id} -> :ok
+    after
+      0 -> :ok
+    end
+
+    Registry.unregister(Helyx.Core.events_registry(core), id)
   rescue
     ArgumentError -> :ok
+  end
+
+  # A kill, not `GenServer.stop/1`: the stop waits while a watch waits
+  # before its lost signal. The watch holds no resource, and the Registry
+  # removes its entry. The signals of a process arrive in order, so a
+  # signal it sent is in the mailbox before the `:DOWN`.
+  defp stop_watch(watch) do
+    ref = Process.monitor(watch)
+    Process.exit(watch, :kill)
+
+    receive do
+      {:DOWN, ^ref, :process, _watch, _reason} -> :ok
+    end
   end
 
   @doc """
@@ -379,7 +456,7 @@ defmodule Helyx.Session do
   # asynchronously) or dies during the call. A timeout of a running session
   # still exits. A session that stopped with the reason `:timeout` gives the
   # same exit, so the timeout clause checks that the process still lives.
-  defp call(session, request, timeout \\ 5_000) do
+  defp call(session, request, timeout \\ @call_timeout) do
     case pid(session) do
       nil -> {:error, :session_not_found}
       pid -> call_pid(pid, request, timeout)

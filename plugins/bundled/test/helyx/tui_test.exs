@@ -265,11 +265,11 @@ defmodule Helyx.TUITest do
     assert {:stop, _state} = TUI.handle_event(%Key{code: "c", modifiers: ["ctrl"]}, state)
   end
 
-  test "the TUI exits when the session dies, and only then", %{core: core} do
+  test "the TUI exits on the end signal of its session, and only then", %{core: core} do
     state = mounted(core, "gone", [])
 
     # `/model` runs the provider's `turn/0` in the TUI process. The monitor
-    # that `turn/0` leaves is not the session's.
+    # that `turn/0` leaves does nothing.
     {:noreply, state} =
       TUI.handle_event(%ExRatatui.Event.Paste{content: "/model monitors/m"}, state)
 
@@ -278,15 +278,51 @@ defmodule Helyx.TUITest do
     assert_receive {:DOWN, _ref, :process, _pid, :normal} = other
     assert {:noreply, ^state} = TUI.handle_info(other, state)
 
-    # Another monitor of the session: the same pid, another reference.
-    pid = Session.pid(state.session)
-    ref = Process.monitor(pid)
-    Process.exit(pid, :kill)
-    assert_receive {:DOWN, ^ref, :process, ^pid, :killed} = same_pid
-    assert {:noreply, ^state} = TUI.handle_info(same_pid, state)
+    # The end signal of another session does nothing.
+    assert {:noreply, ^state} = TUI.handle_info({:helyx_session_end, "other", :crashed}, state)
 
-    assert_receive {:DOWN, _ref, :process, ^pid, :killed} = down
-    assert catch_exit(TUI.handle_info(down, state)) == {:session_down, :killed}
+    Process.exit(Session.pid(state.session), :kill)
+    id = state.session.id
+    assert_receive {:helyx_session_end, ^id, :crashed} = signal
+    assert catch_exit(TUI.handle_info(signal, state)) == {:session_down, :crashed}
+  end
+
+  # The lost signal comes when the Registry partition that holds the
+  # subscription dies. The test process traps exits, as `ExRatatui.Server`
+  # does, so the link to the partition does not end it.
+  @tag :capture_log
+  test "a lost subscription rebuilds the view from a new snapshot", %{core: core} do
+    Process.flag(:trap_exit, true)
+    state = mounted(core, "lost", [["one"], ["two"]])
+    :ok = Session.prompt(state.session, "first")
+    assert_receive {:helyx_event, %Event{type: :agent_end}}, 1_000
+    ExRatatui.textarea_set_value(state.input, "draft")
+
+    registry = Helyx.Core.events_registry(core)
+    [{_, partition, _, _}] = Supervisor.which_children(registry)
+    Process.exit(partition, :kill)
+    id = state.session.id
+    assert_receive {:helyx_subscription_lost, ^id} = lost, 1_000
+    {:noreply, state} = TUI.handle_info(lost, state)
+
+    # The TUI subscribed again: one entry with a live watch.
+    assert [watch] = Registry.values(registry, id, self())
+    assert Process.alive?(watch)
+
+    {:ok, snapshot} = Session.subscribe(state.session)
+    assert state.vm == ViewModel.from_snapshot(snapshot)
+    assert state.scroll == nil
+    assert ExRatatui.textarea_get_value(state.input) == "draft"
+
+    # The events reach the TUI again, and so does the end signal.
+    :ok = Session.prompt(state.session, "second")
+    assert_receive {:helyx_event, %Event{type: :agent_end} = event} = message, 1_000
+    {:noreply, state} = TUI.handle_info(message, state)
+    assert state.vm.seq == event.seq
+
+    :ok = GenServer.stop(Session.pid(state.session))
+    assert_receive {:helyx_session_end, ^id, :stopped} = signal
+    assert catch_exit(TUI.handle_info(signal, state)) == {:session_down, :stopped}
   end
 
   @tag :tmp_dir
@@ -404,8 +440,8 @@ defmodule Helyx.TUITest do
 
     # The end of the session still ends the TUI.
     Process.exit(fake, :kill)
-    assert_receive {:DOWN, _ref, :process, ^fake, :killed} = down
-    assert catch_exit(TUI.handle_info(down, state)) == {:session_down, :killed}
+    assert_receive {:helyx_session_end, ^id, :crashed} = signal
+    assert catch_exit(TUI.handle_info(signal, state)) == {:session_down, :crashed}
   end
 
   defp eventually(condition, tries \\ 100)
