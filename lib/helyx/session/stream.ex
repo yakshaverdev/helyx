@@ -24,6 +24,9 @@ defmodule Helyx.Session.Stream do
   @integer_reason "an integer in the arguments has more than " <>
                     "#{Message.max_integer_digits()} digits"
 
+  # A call the provider rejected, with the reason, or nil.
+  @type rejection :: {Message.ToolCall.t(), String.t()} | nil
+
   @type terminal ::
           {:done, %{stop_reason: atom(), usage: map()}} | {:error, term()} | :stream_ended
 
@@ -61,10 +64,7 @@ defmodule Helyx.Session.Stream do
       }) do
     # Context building runs inside the Task so plugin code never blocks the
     # session and a plugin that raises fails the turn, not the session.
-    # The session resolved both plugins at its start; nil means none, and
-    # the context goes on unchanged.
-    context = if model_context, do: model_context.build(context, opts), else: context
-    context = if compaction, do: compaction.compact(context, opts), else: context
+    context = prepare(model_context, compaction, context, opts)
 
     result =
       case provider.stream(model, context, opts) do
@@ -80,58 +80,92 @@ defmodule Helyx.Session.Stream do
     Message.cap_integers(result)
   end
 
+  @doc """
+  Builds the context of one provider call with the ModelContext and the
+  Compaction plugin. The session resolved both at its start; nil means none,
+  and the context goes on unchanged.
+  """
+  @spec prepare(module() | nil, module() | nil, Helyx.Context.t(), keyword()) :: Helyx.Context.t()
+  def prepare(model_context, compaction, context, opts) do
+    context = if model_context, do: model_context.build(context, opts), else: context
+    if compaction, do: compaction.compact(context, opts), else: context
+  end
+
   # Forwards well-formed stream events to the session and returns the first
-  # terminal event. A malformed event is a terminal error. Arguments or a
-  # usage that are a struct are malformed: `cap_integers/1` can turn a struct
-  # into a string, and the session file needs a plain map. A delta or a
-  # tool call that is not valid UTF-8 is malformed: transcript text is
-  # valid from the moment it exists, so the file and the providers never
-  # see raw bytes.
+  # terminal event. A malformed event is a terminal error.
   defp consume(stream, session, turn_id, external?) do
-    Enum.reduce_while(stream, :stream_ended, fn
-      {kind, payload} = event, acc
-      when kind in [:text_delta, :thinking_delta] and is_binary(payload) ->
-        forward(String.valid?(payload), event, session, turn_id, acc)
-
-      {:tool_call, call}, acc ->
-        tool_call(call, nil, session, turn_id, acc)
-
-      # A call the provider rejected. Only a local turn answers it:
-      # an external provider sends its own error result. The reason is
-      # transcript text: the bound keeps the result text small, and
-      # `tool_call/5` checks that it is valid UTF-8.
-      {:rejected_tool_call, call, reason}, acc
-      when not external? and is_binary(reason) and byte_size(reason) <= @max_reason_bytes ->
-        tool_call(call, reason, session, turn_id, acc)
-
-      # The stop reason set is closed (`Message.stop_reasons/0`), and the
-      # session file holds only JSON. A terminal whose stop reason is outside
-      # the set, or whose usage the file cannot encode, fails the turn here,
-      # before the message exists, instead of raising in persist and silently
-      # turning persistence off for the rest of the session.
-      {:done, %{stop_reason: reason, usage: usage}} = terminal, _acc
-      when reason in @stop_reasons and is_non_struct_map(usage) ->
-        # A new plain map: the pattern also matches a struct and a map with
-        # more keys, and the session needs this shape after the cap at the
-        # Task exit.
-        {:halt, done_terminal(reason, capped_usage(usage), terminal)}
-
-      {:error, _} = terminal, _acc ->
-        {:halt, terminal}
-
-      # Only a provider with an external turn sends these; in a local turn
-      # they are malformed.
-      {tag, _, _} = event, acc
-      when external? and tag in [:message_end, :tool_result, :harness_session] ->
-        case external_event(event) do
-          {:ok, event} -> forward(true, event, session, turn_id, acc)
-          {:error, _} = terminal -> {:halt, terminal}
-        end
-
-      other, _acc ->
-        {:halt, {:error, {:bad_stream_event, other}}}
+    Enum.reduce_while(stream, :stream_ended, fn event, acc ->
+      case check(event, external?) do
+        {:send, event, rejection} -> sent(send_event(session, turn_id, event, rejection), acc)
+        {:terminal, terminal} -> {:halt, terminal}
+        {:bad, error} -> {:halt, error}
+      end
     end)
   end
+
+  defp sent(:ok, acc), do: {:cont, acc}
+  defp sent(error, _acc), do: {:halt, error}
+
+  @doc """
+  Checks one stream event from a provider. Returns `{:send, event,
+  rejection}` for an event that passes, with the checked event and
+  `{call, reason}` for a call that `send_event/4` sends as a
+  `{:rejected_call, ...}` message before it, or nil;
+  `{:terminal, terminal}` for a `done` or an `error` event; and `{:bad,
+  error}` for a malformed event. `external?` allows the events of an
+  external turn. Arguments or a usage that are a struct are malformed:
+  `cap_integers/1` can turn a struct into a string, and the session file
+  needs a plain map. A delta or a tool call that is not valid UTF-8 is
+  malformed: transcript text is valid from the moment it exists, so the file
+  and the providers never see raw bytes.
+  """
+  @spec check(term(), boolean()) ::
+          {:send, term(), rejection()}
+          | {:terminal, terminal()}
+          | {:bad, {:error, term()}}
+  def check({kind, payload} = event, _external?)
+      when kind in [:text_delta, :thinking_delta] and is_binary(payload) do
+    if String.valid?(payload), do: {:send, event, nil}, else: {:bad, malformed(event)}
+  end
+
+  def check({:tool_call, call}, _external?), do: tool_call(call, nil)
+
+  # A call the provider rejected. Only a local turn answers it: an external
+  # provider sends its own error result. The reason is transcript text: the
+  # bound keeps the result text small, and `tool_call/2` checks that it is
+  # valid UTF-8.
+  def check({:rejected_tool_call, call, reason}, false = _external?)
+      when is_binary(reason) and byte_size(reason) <= @max_reason_bytes,
+      do: tool_call(call, reason)
+
+  # The stop reason set is closed (`Message.stop_reasons/0`), and the
+  # session file holds only JSON. A terminal whose stop reason is outside
+  # the set, or whose usage the file cannot encode, fails the turn here,
+  # before the message exists, instead of raising in persist and silently
+  # turning persistence off for the rest of the session. A new plain map:
+  # the pattern also matches a struct and a map with more keys, and the
+  # session needs this shape after the cap at the Task exit.
+  def check({:done, %{stop_reason: reason, usage: usage}} = terminal, _external?)
+      when reason in @stop_reasons and is_non_struct_map(usage) do
+    case capped_usage(usage) do
+      {:ok, usage} -> {:terminal, {:done, %{stop_reason: reason, usage: usage}}}
+      :error -> {:bad, malformed(terminal)}
+    end
+  end
+
+  def check({:error, _} = terminal, _external?), do: {:terminal, terminal}
+
+  # Only a provider with an external turn sends these; in a local turn they
+  # are malformed.
+  def check({tag, _, _} = event, true = _external?)
+      when tag in [:message_end, :tool_result, :harness_session] do
+    case external_event(event) do
+      {:ok, event} -> {:send, event, nil}
+      {:error, _} = error -> {:bad, error}
+    end
+  end
+
+  def check(other, _external?), do: {:bad, malformed(other)}
 
   # The one place where tool call arguments enter the session from a
   # provider (on resume, Session.File applies the same function). An
@@ -141,13 +175,7 @@ defmodule Helyx.Session.Stream do
   # never hold it. A call with such an integer is rejected, as is a call the
   # provider rejected (`reason` not nil). The rejection goes to the session
   # only when the call passed every check, before its stream event.
-  defp tool_call(
-         %Message.ToolCall{id: id, name: name, arguments: args},
-         rejected,
-         session,
-         turn_id,
-         acc
-       )
+  defp tool_call(%Message.ToolCall{id: id, name: name, arguments: args}, rejected)
        when is_binary(id) and is_binary(name) and is_non_struct_map(args) do
     capped = Message.cap_integers(args)
     # A new struct: the pattern also matches a call with one more key.
@@ -155,16 +183,12 @@ defmodule Helyx.Session.Stream do
     reason = rejected || if capped != args, do: @integer_reason
 
     # A reason that is not valid UTF-8 does not encode.
-    if Message.encodable?([id, name, capped, rejected]) do
-      rejection = if reason, do: {:rejected_call, turn_id, call, reason}
-      forward(true, {:tool_call, call}, session, turn_id, acc, rejection)
-    else
-      {:halt, malformed(call_event(call, rejected))}
-    end
+    if Message.encodable?([id, name, capped, rejected]),
+      do: {:send, {:tool_call, call}, reason && {call, reason}},
+      else: {:bad, malformed(call_event(call, rejected))}
   end
 
-  defp tool_call(call, rejected, _session, _turn_id, _acc),
-    do: {:halt, malformed(call_event(call, rejected))}
+  defp tool_call(call, rejected), do: {:bad, malformed(call_event(call, rejected))}
 
   # The event of a call, for the error of a malformed one.
   defp call_event(call, nil), do: {:tool_call, call}
@@ -214,36 +238,48 @@ defmodule Helyx.Session.Stream do
   # The error holds the size, never the text.
   defp too_large(text), do: {:tool_result_too_large, byte_size(text), @max_tool_result_bytes}
 
-  defp done_terminal(reason, {:ok, usage}, _terminal),
-    do: {:done, %{stop_reason: reason, usage: usage}}
-
-  defp done_terminal(_reason, :error, terminal), do: {:error, {:bad_stream_event, terminal}}
-
   # The usage gets the same encodes as the arguments, so the same cap.
   defp capped_usage(usage) do
     usage = Message.cap_integers(usage)
     if Message.encodable?(usage), do: {:ok, usage}, else: :error
   end
 
-  # Every send to the session goes through here. The check before it bounds
-  # the session mailbox: the sends have no ack, so a provider that is
-  # faster than the session would grow it with no limit (#197). A
-  # rejection goes with its call, after the same one check.
-  defp forward(valid, event, session, turn_id, acc, rejection \\ nil)
+  @doc """
+  Sends one checked event to the session as `{:stream_event, turn_id,
+  event}`, after the `{:rejected_call, turn_id, call, reason}` of a rejected
+  call, with the check of `send_checked/2`.
+  """
+  @spec send_event(pid(), String.t(), term(), rejection()) ::
+          :ok | {:error, {:session_behind, non_neg_integer(), pos_integer()}}
+  def send_event(session, turn_id, event, nil),
+    do: send_checked(session, {:stream_event, turn_id, event})
 
-  defp forward(true = _valid, event, session, turn_id, acc, rejection) do
-    case Process.info(session, :message_queue_len) do
-      {:message_queue_len, len} when len > @max_session_queue ->
-        {:halt, {:error, {:session_behind, len, @max_session_queue}}}
-
-      # A dead session (nil) gets the send like a live one: nothing reads it.
-      _ ->
-        if rejection, do: send(session, rejection)
-        send(session, {:stream_event, turn_id, event})
-        {:cont, acc}
+  def send_event(session, turn_id, event, {call, reason}) do
+    with :ok <- send_checked(session, {:rejected_call, turn_id, call, reason}) do
+      send(session, {:stream_event, turn_id, event})
+      :ok
     end
   end
 
-  defp forward(false = _valid, event, _session, _turn_id, _acc, _rejection),
-    do: {:halt, {:error, {:bad_stream_event, event}}}
+  @doc """
+  Sends a message to the session. Every send of a provider event to the
+  session goes through here. The check before it bounds the session
+  mailbox: the sends have no ack, so a provider that is faster than the
+  session would grow it with no limit (#197). Over #{@max_session_queue}
+  waiting messages nothing is sent, and the result is `{:error,
+  {:session_behind, length, #{@max_session_queue}}}`.
+  """
+  @spec send_checked(pid(), term()) ::
+          :ok | {:error, {:session_behind, non_neg_integer(), pos_integer()}}
+  def send_checked(session, message) do
+    case Process.info(session, :message_queue_len) do
+      {:message_queue_len, len} when len > @max_session_queue ->
+        {:error, {:session_behind, len, @max_session_queue}}
+
+      # A dead session (nil) gets the send like a live one: nothing reads it.
+      _ ->
+        send(session, message)
+        :ok
+    end
+  end
 end

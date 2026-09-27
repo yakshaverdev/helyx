@@ -791,3 +791,146 @@ defimpl JSON.Encoder, for: Helyx.Test.FailingJSON do
   def encode(%{kind: :throw}, _encoder), do: throw(:boom)
   def encode(%{kind: :exit}, _encoder), do: exit(:boom)
 end
+
+defmodule Helyx.Test.Connected do
+  @moduledoc false
+  # A connected provider (ADR 0007) whose model name selects its answers.
+  # It reports each callback to the test process that registered itself as
+  # `controller(core)`: `{:conn, :init, pid, {model, tools, opts}}`, and
+  # `{:conn, kind, pid, request}` for each request. It holds the handle
+  # `{:report, controller}` at init; its release sends `{:release, mode,
+  # handles}` to the controller.
+  #
+  #   "echo"             a turn answers :ok, then "echo:<system>|<last user
+  #                      text>" and done; an interrupt and a close answer :ok
+  #   "hang"             a turn answers :ok and sends "so far"; the message
+  #                      `{:finish, turn_id}` sends done
+  #   "block_init"       `harness_init/3` blocks
+  #   "fail_init"        `harness_init/3` returns an error
+  #   "block_turn"       the turn callback blocks
+  #   "error_turn"       a turn answers `{:error, :refused}`
+  #   "crash_turn"       the turn callback raises
+  #   "late_turn"        a turn answers after 300 ms, then as "echo"
+  #   "block_interrupt"  "hang", and the interrupt callback blocks
+  #   "error_interrupt"  "hang", and an interrupt answers an error
+  #   "late_interrupt"   "hang", and an interrupt answers after 100 ms
+  #   "block_close"      "echo", and the close callback blocks
+  #   "bad_action"       a turn gives an action that is not one
+  #   "bad_reply"        a turn answers `:maybe`
+  #   "bad_event"        a turn answers :ok and sends a malformed event
+  #   "flood"            "hang"; the message `{:flood, turn_id}` sends
+  #                      10,002 deltas and done
+  #   "stop"             "hang"; the message `:stop` stops the harness
+  @behaviour Helyx.Provider
+
+  @hang ["hang", "flood", "stop", "block_interrupt", "error_interrupt", "late_interrupt"]
+
+  def controller(core), do: :"#{core}_controller"
+
+  @impl true
+  def id, do: "conn"
+
+  @impl true
+  def turn, do: :external
+
+  @impl true
+  def stream(_model, _context, _opts), do: {:error, :connected_only}
+
+  @impl true
+  def release(handles, mode, _deadline) do
+    for {:report, pid} <- handles, do: send(pid, {:release, mode, handles})
+    []
+  end
+
+  @impl true
+  def harness_init(model, tools, opts) do
+    ctl = Process.whereis(controller(opts[:core]))
+
+    if ctl do
+      send(ctl, {:conn, :init, self(), {model, tools, opts}})
+      Helyx.Tool.hold({:report, ctl})
+    end
+
+    case model do
+      "block_init" -> Process.sleep(:infinity)
+      "fail_init" -> {:error, :no_program}
+      _ -> {:ok, %{model: model, ctl: ctl}}
+    end
+  end
+
+  @impl true
+  def harness_request(request, from, %{model: model, ctl: ctl} = state) do
+    if ctl, do: send(ctl, {:conn, kind(request), self(), request})
+    {:ok, answer(model, request, from), state}
+  end
+
+  @impl true
+  def harness_info({:late, from, request}, state),
+    do: {:ok, answer("echo", request, from), state}
+
+  def harness_info({:finish, turn_id}, state), do: {:ok, [{:event, turn_id, done()}], state}
+
+  def harness_info({:flood, turn_id}, state) do
+    deltas = for _ <- 1..10_002, do: {:event, turn_id, {:text_delta, "x"}}
+    {:ok, deltas ++ [{:event, turn_id, done()}], state}
+  end
+
+  def harness_info(:stop, state), do: {:stop, :gone, state}
+
+  defp kind({kind, _, _}), do: kind
+  defp kind({kind, _}), do: kind
+  defp kind(:close), do: :close
+
+  # The blocks and the raise are the point of this provider.
+  @dialyzer {:nowarn_function, answer: 3}
+  defp answer("block_turn", {:turn, _, _}, _from), do: Process.sleep(:infinity)
+  defp answer("error_turn", {:turn, _, _}, from), do: [{:reply, from, {:error, :refused}}]
+  defp answer("crash_turn", {:turn, _, _}, _from), do: raise("turn crashed")
+  defp answer("bad_action", {:turn, _, _}, _from), do: [:bogus]
+  defp answer("bad_reply", {:turn, _, _}, from), do: [{:reply, from, :maybe}]
+
+  defp answer("bad_event", {:turn, id, _}, from),
+    do: [{:reply, from, :ok}, {:event, id, {:text_delta, 42}}]
+
+  defp answer("late_turn", {:turn, _, _} = request, from), do: later(from, request, 300)
+  defp answer("late_interrupt", {:interrupt, _} = request, from), do: later(from, request, 100)
+  defp answer("block_interrupt", {:interrupt, _}, _from), do: Process.sleep(:infinity)
+
+  defp answer("error_interrupt", {:interrupt, _}, from),
+    do: [{:reply, from, {:error, :still_queued}}]
+
+  defp answer("block_close", :close, _from), do: Process.sleep(:infinity)
+
+  defp answer(model, {:turn, id, _}, from) when model in @hang,
+    do: [{:reply, from, :ok}, {:event, id, {:text_delta, "so far"}}]
+
+  defp answer(_model, {:turn, id, context}, from) do
+    text = "echo:#{context.system}|#{Helyx.Message.text(List.last(context.messages))}"
+    [{:reply, from, :ok}, {:event, id, {:text_delta, text}}, {:event, id, done()}]
+  end
+
+  defp answer(_model, _request, from), do: [{:reply, from, :ok}]
+
+  defp later(from, request, ms) do
+    Process.send_after(self(), {:late, from, request}, ms)
+    []
+  end
+
+  defp done, do: {:done, %{stop_reason: :end_turn, usage: %{}}}
+end
+
+defmodule Helyx.Test.PrepareContext do
+  @moduledoc false
+  # Sets the system prompt to "prepared", unless the last user message is
+  # "block_prepare" (the build blocks) or "raise_prepare" (it raises).
+  @behaviour Helyx.ModelContext
+
+  @impl true
+  def build(context, _opts) do
+    case context.messages |> List.last() |> Helyx.Message.text() do
+      "block_prepare" -> Process.sleep(:infinity)
+      "raise_prepare" -> raise "prepare failed"
+      _ -> %{context | system: "prepared"}
+    end
+  end
+end
