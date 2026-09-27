@@ -54,6 +54,7 @@ Run from the repository root. The Mix projects are the root, `plugins/bundled` w
 - Name processes only when necessary; pass pids or use Registry.
 - Prefer `GenServer.call/3` over `cast/2` so callers get back-pressure.
 - Do not add parentheses to keyword-style macro calls (`field :name, :string`, `plug :foo`).
+- A test asserts order and properties, not an upper bound of elapsed wall-clock time. Other worktrees and precommit runs load the machine, so an upper bound fails at random (#193). A wait that must not happen is checked with a margin for load, and the margin is stated.
 - Tests end with `_test.exs` and mirror the `lib/` structure. Prefer async tests (`use ExUnit.Case, async: true`) unless the test touches shared state.
 - Write `@moduledoc` and `@doc` for public modules and functions. Use `@moduledoc false` for internal modules.
 - Prefer `Req` for HTTP; avoid `:httpoison`, `:tesla`, and `:httpc`.
