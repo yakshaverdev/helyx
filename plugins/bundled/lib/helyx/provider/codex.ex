@@ -39,7 +39,10 @@ defmodule Helyx.Provider.Codex do
   TERMs the group, on which codex ends its commands. Otherwise it sends
   `turn/interrupt`, when the program's turn id is known and no answer to
   an earlier `turn/interrupt` is due, and answers at `turn/completed`. An
-  interrupt of a turn that already ended answers `:ok`. A `turn/started`
+  interrupt of a turn that already ended answers `:ok`. A turn that ends
+  with an open `commandExecution` item, whatever its status, stops the
+  harness process, so that no next turn starts while the command runs;
+  the turn and a pending interrupt then fail with the stop. A `turn/started`
   with a new id while no `turn/start` of the running turn is open, a
   `turn/completed` of a turn whose id is not known, and an item of a turn
   that is not the running one stop the harness process. `:close` ends
@@ -359,25 +362,26 @@ defmodule Helyx.Provider.Codex do
   # At `turn/completed`: the answer to the turn if its `turn/start` answer
   # did not come yet, the held events, the terminal, the answer to an
   # interrupt, and the fields of a turn back to idle. A command still open
-  # outlives the turn, so the interrupt answers an error and the harness
-  # process stops.
+  # outlives its turn (#198), whatever the status, so the harness process
+  # stops instead: the release TERMs the program, which ends its commands,
+  # before a next turn starts.
   defp end_turn(state, terminal) do
-    state = if state.from, do: reply(%{state | from: nil}, state.from, :ok), else: state
+    if MapSet.size(state.commands) > 0 do
+      %{state | done?: true, terminal: {:error, :command_running}}
+    else
+      state = if state.from, do: reply(%{state | from: nil}, state.from, :ok), else: state
 
-    {out, state} = :queue.fold(&emit/2, {[], state}, state.held)
-    state = push(state, Enum.reverse([terminal | out]))
+      {out, state} = :queue.fold(&emit/2, {[], state}, state.held)
+      state = push(state, Enum.reverse([terminal | out]))
 
-    state =
-      case state.interrupt do
-        {_pending_or_sent, from} ->
-          value = if MapSet.size(state.commands) > 0, do: {:error, :command_running}, else: :ok
-          reply(%{state | interrupt: nil}, from, value)
+      state =
+        case state.interrupt do
+          {_pending_or_sent, from} -> reply(%{state | interrupt: nil}, from, :ok)
+          nil -> state
+        end
 
-        nil ->
-          state
-      end
-
-    Map.merge(state, Map.take(%State{model: nil, cwd: nil}, @turn_fields))
+      Map.merge(state, Map.take(%State{model: nil, cwd: nil}, @turn_fields))
+    end
   end
 
   # A request of the server (it has an id and a method).

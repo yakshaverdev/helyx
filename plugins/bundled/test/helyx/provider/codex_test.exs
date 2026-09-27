@@ -588,11 +588,38 @@ defmodule Helyx.Provider.CodexTest do
     refute os_alive?(wait_for_pid(pidfile))
   end
 
+  test "a failed turn with an open command stops the harness process, and the next turn starts a new program",
+       %{bin: bin} = ctx do
+    pidfile = Path.join(bin, "pid")
+    failed = Path.join(bin, "failed")
+    File.write!(failed, turn_end(@tid, "failed", "usage limit") <> "\n")
+    running = [started(@tid, command("exec-1", %{status: "inProgress"}))]
+    fresh(bin, 1, @tid, running, own_group_command(pidfile, ~s(cat "#{failed}")))
+    # The stop drops the turn's events: no message, so no thread to resume.
+    fresh(bin, 2, @fresh, reply(@fresh, "Back."))
+
+    session = start(ctx)
+
+    assert [%{stop_reason: :error, error: {:harness_stop, :command_running}}] =
+             of_type(prompt(session, "go"), :agent_end)
+
+    # The release ended the command before the next turn.
+    refute os_alive?(wait_for_pid(pidfile))
+
+    events = prompt(session, "again")
+    assert [%{stop_reason: :end_turn}] = of_type(events, :agent_end)
+    assert runs(bin) == "2"
+  end
+
+  # A tool item that never completes. It is not a command, because an open
+  # command at the turn's end stops the harness process.
+  @search %{type: "webSearch", id: "b", query: "x", status: "inProgress"}
+
   test "a failed turn fails the turn, and a call with no result gets an aborted one",
        %{bin: bin} = ctx do
     fresh(bin, 1, @tid, [
       started(@tid, command("exec-a", %{status: "inProgress"})),
-      started(@tid, command("exec-b", %{status: "inProgress"})),
+      started(@tid, %{@search | id: "exec-b"}),
       completed(
         @tid,
         command("exec-a", %{status: "failed", aggregatedOutput: "no", exitCode: 2})
@@ -673,6 +700,25 @@ defmodule Helyx.Provider.CodexTest do
 
     assert [{:reply, ^turn, :ok}, {:event, "t1", {:error, _}}, {:reply, ^from, :ok}] = actions
     assert %{"params" => %{"turnId" => "turn1"}} = request(bin, 1, "turn/interrupt")
+  end
+
+  test "a command that starts after the interrupt stops the harness process at the turn's end",
+       %{bin: bin, work: work} do
+    fresh(bin, 1, @tid, [])
+
+    on(bin, 1, "turn/interrupt", [
+      started(@tid, command("exec-1", %{status: "inProgress"})),
+      j(%{id: 6, result: %{}}),
+      turn_end(@tid, "interrupted")
+    ])
+
+    {:ok, state} = connect(work)
+    {_turn, _, state} = ask(state, {:turn, "t1", %Helyx.Context{messages: [Message.user("go")]}})
+    {from, [], state} = ask(state, {:interrupt, "t1"})
+    {actions, _state} = drive(state, [], fn _ -> false end)
+
+    assert {:stop, :command_running} = List.last(actions)
+    refute Enum.any?(actions, &match?({:reply, ^from, _}, &1))
   end
 
   test "an interrupt of a turn that ended answers at once", %{bin: bin, work: work} do
@@ -1024,11 +1070,11 @@ defmodule Helyx.Provider.CodexTest do
              for(%{message: m} <- of_type(events, :tool_execution_end), do: Message.text(m))
   end
 
-  # A call that never completes: the turn's end sends what was held.
+  # The turn's end sends what was held.
   test "the turn's end sends the held events", %{bin: bin, work: work} do
     fresh(bin, 1, @tid, [
       started(@tid, command("a", %{status: "inProgress"})),
-      started(@tid, command("b", %{status: "inProgress"})),
+      started(@tid, @search),
       completed(@tid, command("a", @done)),
       started(@tid, command("d", %{status: "inProgress"})),
       completed(@tid, command("d", @done)),
@@ -1058,12 +1104,7 @@ defmodule Helyx.Provider.CodexTest do
        name: "commandExecution",
        arguments: %{"command" => "/bin/zsh -lc ls", "cwd" => "/work"}
      }},
-    {:tool_call,
-     %Message.ToolCall{
-       id: "b",
-       name: "commandExecution",
-       arguments: %{"command" => "/bin/zsh -lc ls", "cwd" => "/work"}
-     }},
+    {:tool_call, %Message.ToolCall{id: "b", name: "webSearch", arguments: %{"query" => "x"}}},
     {:message_end, :tool_use, %{}},
     {:tool_result, "a", {:ok, "out"}},
     {:tool_call,
@@ -1077,7 +1118,7 @@ defmodule Helyx.Provider.CodexTest do
   defp held(tid) do
     [
       started(tid, command("a", %{status: "inProgress"})),
-      started(tid, command("b", %{status: "inProgress"})),
+      started(tid, @search),
       completed(tid, command("a", @done)),
       started(tid, command("d", %{status: "inProgress"})),
       completed(tid, command("d", @done))

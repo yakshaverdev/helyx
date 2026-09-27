@@ -1,6 +1,6 @@
 # Review: Codex connected provider (#201)
 
-Invariant: one Codex program serves the harness process of a session; each `{:turn, ...}` gets exactly one reply and one terminal, or the harness process stops; a request goes out only when no answer with its id is due, so each answer belongs to one request, whatever the order of the answers and the turn's notifications; an interrupt with an open `commandExecution` item answers `{:error, :command_running}` and the program stops, otherwise `turn/interrupt` stops the turn and the program stays. Entry points: `Helyx.Provider.Codex.harness_init/3`, `harness_request/3`, and `harness_info/2`, which Core calls from `Helyx.Session.Harness`; every program line goes through `HarnessIO.lines/3` under the 16 MiB line cap and then `in_order/2` under the 10,000 held events cap. Documented exceptions: events of a turn can go out before its `:ok` reply ("Turn states"); a line over the cap, the held events over the cap, and the program's exit stop the harness process and drop the held events. Accepted holes: a codex that does not exit within the 5,000 ms TERM grace is KILLed and can leave a command group running (row "Codex program"); stderr is dropped. Open holes: none new.
+Invariant: one Codex program serves the harness process of a session; each `{:turn, ...}` gets exactly one reply and one terminal, or the harness process stops; a request goes out only when no answer with its id is due, so each answer belongs to one request, whatever the order of the answers and the turn's notifications; an interrupt with an open `commandExecution` item answers `{:error, :command_running}` and the program stops, otherwise `turn/interrupt` stops the turn and the program stays; a turn that ends with an open `commandExecution` item, whatever its status and whether or not an interrupt is pending, stops the program, so no new turn starts on a program while a command of an earlier turn can still run. Entry points: `Helyx.Provider.Codex.harness_init/3`, `harness_request/3`, and `harness_info/2`, which Core calls from `Helyx.Session.Harness`; every program line goes through `HarnessIO.lines/3` under the 16 MiB line cap and then `in_order/2` under the 10,000 held events cap. Documented exceptions: events of a turn can go out before its `:ok` reply ("Turn states"); a line over the cap, the held events over the cap, and the program's exit stop the harness process and drop the held events. Accepted holes: a codex that does not exit within the 5,000 ms TERM grace is KILLed and can leave a command group running (row "Codex program"); stderr is dropped. Open holes, not seen with the real program: a command of a sub-agent thread is not tracked, and an open tool item of another type is dropped at the turn's end ("Built in #201"; they wait for a decision).
 
 Feature docs: `docs/features/long-lived-harness.md` (sections "Codex" and "Built in #201"), `docs/features/coding-agent.md` (Codex rows).
 
@@ -124,6 +124,35 @@ The round 3 reproductions pass. Probes through the fake program, 5 of 5 runs eac
 
 No reproduced defect, so the wording and judgement fixes end the loop with no further round.
 
+## Codex round 1
+
+One confirmed finding: `end_turn/2` kept the program after a `turn/completed` with no pending interrupt while a `commandExecution` item had no `item/completed` (a failed turn, or any turn that completed with an open command). The command outlives its turn (#198), so the next `turn/start` could overlap it. **Fixed**: every turn end with an open command stops the harness process with `:command_running`, whatever the status and whether or not an interrupt is pending; the Core stop path releases the program before the next turn. Tests: "a failed turn with an open command stops the harness process, and the next turn starts a new program" (the command's group is gone, and the next turn runs a second program) and "a command that starts after the interrupt stops the harness process at the turn's end". Both fail without the fix. The tests whose open item stood for a call with no result use a `webSearch` item now.
+
+The failure-path axis should have caught it: its state table crossed the external command states with the abort, but not with the turn's end. The owner decision named the abort, and the rounds took it as the only place where a command can outlive a turn.
+
+## Round 5 (full rerun)
+
+Fix counted without tests and Markdown: 35 lines in one code file (19 added, 16 removed), so a full round. Bounds sensor: `bounds sensor skipped: TYPESAFE_API_KEY is not set`. Base: `e02d822`. Every brief named the invariant and asked for another path where state that tracks live program work is cleared while the work can still run.
+
+Simplify (one agent, four angles): 5 findings. **Fixed**: the moduledoc names the pending interrupt; `@search` is reused in the failed-turn test; the rule is stated once in full ("Built in #201"), and the Codex section refers to it; no review history in the feature doc. **Accepted**: a `stop/2` helper for the seven `terminal` sets (the pattern predates this fix).
+
+### Standards: 0 hard, 3 judgement calls
+
+The `@search` comment wording. **Fixed**. The sub-agent thread and the other open tool items: see the failure path.
+
+### Spec: 0 missing, 0 scope creep, 1 overstated bound, 2 paths
+
+The new Bounds row said the release ends the command; a KILL after the grace leaves the command groups. **Fixed** in the row, in "Built in #201", and in the `end_turn` comment. The two paths are the failure-path findings below.
+
+### Failure path: the finding's reproduction passes, 2 findings on unobserved protocol paths
+
+The reproduction passes for the statuses `completed`, `interrupted`, and `failed`, and with a pending interrupt. Two more paths, reproduced only with the fake program:
+
+1. A `commandExecution` on a sub-agent thread never enters `commands`, because the provider reads only its own thread's lines. The turn ended `:end_turn`, and the next turn ran on the same program while the command ran.
+2. An open `collabAgentToolCall` at `turn/completed` is dropped with the turn's fields, and the program stays. Its late `item/completed` stopped the harness process during the next turn with `:item_of_ended_turn`.
+
+**Open**, not fixed: the research note has no run of sub-agent threads or of these item types, and each fix changes a documented design (the thread filter, and "the turn's end sends what is held"). Recorded in "Built in #201"; they wait for an owner decision and a run with the real program.
+
 ## Precommit
 
-`mise exec -- mix precommit` passed: root 267 tests, `plugins/bundled` 383 tests and 1 property, `apps/coding_agent` 17 tests, 0 failures, no warnings, Credo and Dialyzer clean.
+`mise exec -- mix precommit` passed: root 267 tests, `plugins/bundled` 385 tests and 1 property, `apps/coding_agent` 17 tests, 0 failures, no warnings, Credo and Dialyzer clean.
