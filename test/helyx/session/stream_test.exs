@@ -29,6 +29,7 @@ defmodule Helyx.Session.StreamTest do
   # The messages the run sent to the session, in order.
   defp sent(acc \\ []) do
     receive do
+      :filler -> sent(acc)
       {:stream_event, "t1", _} = message -> sent([message | acc])
       {:rejected_call, "t1", _, _} = message -> sent([message | acc])
     after
@@ -46,6 +47,14 @@ defmodule Helyx.Session.StreamTest do
              {:stream_event, "t1", {:text_delta, "."}},
              {:stream_event, "t1", {:tool_call, %Message.ToolCall{id: "call_1"}}}
            ] = sent()
+  end
+
+  test "a send over the session queue cap fails the turn and stops the stream", %{core: core} do
+    # At the cap one more send is allowed; over it the next send fails.
+    for _ <- 1..10_000, do: send(self(), :filler)
+
+    assert run(core, "blocks") == {:error, {:session_behind, 10_001, 10_000}}
+    assert [{:stream_event, "t1", {:thinking_delta, "hm"}}] = sent()
   end
 
   test "a malformed event is the terminal and stops the stream", %{core: core} do

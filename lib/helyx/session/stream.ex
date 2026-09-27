@@ -17,6 +17,10 @@ defmodule Helyx.Session.Stream do
   # The reason of a rejected call (`Helyx.Provider`), and the reason Core
   # gives a call with an integer over the digit limit.
   @max_reason_bytes 1_024
+  # The most messages that may wait in the session mailbox before a send.
+  # A count, not bytes: every event is already capped.
+  @max_session_queue 10_000
+
   @integer_reason "an integer in the arguments has more than " <>
                     "#{Message.max_integer_digits()} digits"
 
@@ -39,7 +43,9 @@ defmodule Helyx.Session.Stream do
   Runs one provider call. Sends the session `{:stream_event, turn_id, event}`
   for each event that passes the checks, and `{:rejected_call, turn_id, call,
   reason}` before the stream event of a call that the provider rejected or
-  that has an integer over the digit limit.
+  that has an integer over the digit limit. Before each send it reads the
+  length of the session's message queue; over #{@max_session_queue} the
+  call ends with `{:error, {:session_behind, length, #{@max_session_queue}}}`.
   """
   @spec run(args()) :: terminal()
   def run(%{
@@ -150,8 +156,8 @@ defmodule Helyx.Session.Stream do
 
     # A reason that is not valid UTF-8 does not encode.
     if Message.encodable?([id, name, capped, rejected]) do
-      if reason, do: send(session, {:rejected_call, turn_id, call, reason})
-      forward(true, {:tool_call, call}, session, turn_id, acc)
+      rejection = if reason, do: {:rejected_call, turn_id, call, reason}
+      forward(true, {:tool_call, call}, session, turn_id, acc, rejection)
     else
       {:halt, malformed(call_event(call, rejected))}
     end
@@ -219,11 +225,25 @@ defmodule Helyx.Session.Stream do
     if Message.encodable?(usage), do: {:ok, usage}, else: :error
   end
 
-  defp forward(true = _valid, event, session, turn_id, acc) do
-    send(session, {:stream_event, turn_id, event})
-    {:cont, acc}
+  # Every send to the session goes through here. The check before it bounds
+  # the session mailbox: the sends have no ack, so a provider that is
+  # faster than the session would grow it with no limit (#197). A
+  # rejection goes with its call, after the same one check.
+  defp forward(valid, event, session, turn_id, acc, rejection \\ nil)
+
+  defp forward(true = _valid, event, session, turn_id, acc, rejection) do
+    case Process.info(session, :message_queue_len) do
+      {:message_queue_len, len} when len > @max_session_queue ->
+        {:halt, {:error, {:session_behind, len, @max_session_queue}}}
+
+      # A dead session (nil) gets the send like a live one: nothing reads it.
+      _ ->
+        if rejection, do: send(session, rejection)
+        send(session, {:stream_event, turn_id, event})
+        {:cont, acc}
+    end
   end
 
-  defp forward(false = _valid, event, _session, _turn_id, _acc),
+  defp forward(false = _valid, event, _session, _turn_id, _acc, _rejection),
     do: {:halt, {:error, {:bad_stream_event, event}}}
 end
