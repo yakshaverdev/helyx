@@ -239,3 +239,17 @@ Runs on 2026-09-27 with version `2.1.283`, `--model haiku`, in empty temporary d
 ### Not run
 
 - The stop path end to end with the watchdog stdin cap: the cap is ticket #196, which is open. The TERM half of the path is the run above.
+
+## The connected provider (2026-09-27, #200)
+
+Runs on 2026-09-27 with version `2.1.283`, `--model haiku`, for ticket #200. A Python script drove the program with the flags of `Helyx.Provider.ClaudeCode` (`--output-format stream-json --verbose --include-partial-messages --input-format stream-json --permission-mode bypassPermissions`) and `--strict-mcp-config`, with no `-p`, and no `--replay-user-messages`.
+
+- **A lost `--resume` without `-p`.** With a valid UUID that names no session, the program wrote one `result` line about 0.9 s after the start, before any input: `error_during_execution`, `num_turns` 0, no `init` before it, and `errors` `["No conversation found with session ID: <id>"]`. Then exit status 1. So the lost case is the same as with `-p`, and it comes without a user line.
+- **A fresh idle program** (`--session-id`, no input for 2 s) wrote only hook lines. No `init` comes before the first user line.
+- **Replay lines.** Each `user` line with `"shouldQuery": false` gave an `init` line and a `result` with `"subtype":"success"`, `num_turns` 0, and no `terminal_reason`.
+- **The replay comes before the turn's line.** With one replay `user` line and one `assistant` line, then the prompt with a `uuid`: `queued` of the prompt, one `init`, the replay `result`, then `started` of the prompt, all within 10 ms. So the result of a replay line comes before `started` of the next line with a `uuid`.
+- **`command_lifecycle`** `queued`, `started`, and `completed` came for a user line with a `uuid` also without `--replay-user-messages`.
+- **An interrupt while idle** (after the `result` of a turn) got a success `control_response` with `still_queued` `[]` and `cancelled` `[]`. No `result` followed.
+- **An abort during a foreground command.** The `control_response` came first, then the `result` with `terminal_reason` `aborted_tools`. The process stayed, and the next user line ran on it.
+- **An interrupt 50 ms after the prompt** cancelled the prompt: `cancelled` held its `uuid`, and no `result` came for it. The next user line ran as usual.
+- **The `Bash` tool refused a standalone `sleep 37`** and suggested a background run. A foreground `python3 -c "import time; time.sleep(37)"` ran, so the manual abort test of #200 uses it.
