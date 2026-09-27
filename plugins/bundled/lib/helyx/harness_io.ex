@@ -1,13 +1,12 @@
 defmodule Helyx.HarnessIO do
   @moduledoc false
   # What the harness providers share (ADR 0005): every call into
-  # `Helyx.Watchdog`, the move of the port's link to a keeper (used by
-  # Claude Code), the read of a program's stdout as JSON lines under a
-  # line cap, the exit wait after a terminal, the cut of program error
-  # text, the split of the prompt from the history, and the byte cap of a
-  # replay. It is not a plugin. `state` is a provider's run state with the
-  # fields `port`, `buffer` (iodata), `size`, `terminal`, `deadline`, and
-  # `done?`.
+  # `Helyx.Watchdog`, the move of the port's link to a keeper, the read
+  # of a program's stdout as JSON lines under a line cap, the exit wait
+  # after a terminal, the cut of program error text, the split of the
+  # prompt from the history, and the byte cap of a replay. It is not a
+  # plugin. `state` is a provider's run state with the fields `port`,
+  # `buffer` (iodata), `size`, `terminal`, `deadline`, and `done?`.
 
   @line_max_bytes 16 * 1024 * 1024
   # The wait for the exit after a terminal while the port is open, so the

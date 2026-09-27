@@ -7,46 +7,56 @@ defmodule Helyx.Provider.Codex do
   alias Helyx.HarnessIO
 
   @moduledoc """
-  A harness provider that drives the unmodified Codex program through its
-  app server, `codex app-server`, with JSON-RPC lines over stdio (ADR
-  0002). The model ref is `codex/<model>`, where `<model>` is a model id of
-  `codex`, such as `gpt-6-luna`.
+  A connected harness provider (ADR 0007) that drives the unmodified Codex
+  program through its app server, `codex app-server`, with JSON-RPC lines
+  over stdio. The model ref is `codex/<model>`, where `<model>` is a model
+  id of `codex`, such as `gpt-6-luna`.
 
-  One harness turn is one run of `codex app-server` from `PATH` in the
-  session's working directory, in its own process group under the
-  watchdog of `Helyx.Watchdog`, with open input. The session runs the
-  stream as a Task of the hands; the run holds its groups with
-  `Helyx.Tool.hold/1`, and the hands release them through `release/3`, so
-  an abort returns only when the program's group is gone (ADR 0004). The
-  Task traps exits: on the hands' `:shutdown` it sends `turn/interrupt`
-  and waits up to 1,000 ms for the turn to end before it exits. The
-  watchdog, when the port closes, and every release but a retry TERM the
-  program's group and wait up to #{@term_grace_ms} ms for it to go before
-  the KILL:
-  codex runs every command in a process group of its own and ends them
-  itself on TERM, but a KILL leaves them running. Threads
-  run with the approval policy `never` and the sandbox
-  `danger-full-access`, the same trust as the bash tool. A command or
-  file change approval request is accepted all the same; every other
+  One program serves the session's harness process
+  (`docs/features/long-lived-harness.md`, section "Codex"). It runs from
+  `PATH` in the session's working directory, in its own process group under
+  the watchdog of `Helyx.Watchdog`, with open input. `harness_init/3`
+  holds its groups with `Helyx.Tool.hold/1`, moves the port's link to a
+  keeper (`Helyx.HarnessIO.keep_port/1`), sends `initialize`, and returns
+  when the thread is ready: `thread/resume` with `:harness_session_id`, or
+  `thread/start` when there is no id or the program has no such thread.
+  Threads run with the approval policy `never` and the sandbox
+  `danger-full-access`, the same trust as the bash tool, sent again on
+  every resume. The harness process does not trap exits.
+
+  Each `{:turn, ...}` sends `turn/start` with the prompt: the user messages
+  at the end of the context. The first turn of a fresh thread first gives
+  it the rest of the transcript with `thread/inject_items` and emits
+  `{:harness_session, id, cut}`. The replay keeps the newest messages
+  within #{HarnessIO.replay_max_bytes()} bytes of items, and it never starts
+  at a tool result. The answer is `:ok` at the `turn/start` result, which
+  carries the program's turn id, or at `turn/completed` when that comes
+  first.
+
+  `{:interrupt, ...}` on a turn with an open `commandExecution` item
+  answers `{:error, :command_running}` at once, because `turn/interrupt`
+  does not end a running command; the loop then ends, and the watchdog
+  TERMs the group, on which codex ends its commands. Otherwise it sends
+  `turn/interrupt`, when the program's turn id is known and no answer to
+  an earlier `turn/interrupt` is due, and answers at `turn/completed`. An
+  interrupt of a turn that already ended answers `:ok`. A `turn/started`
+  with a new id while no `turn/start` of the running turn is open, a
+  `turn/completed` of a turn whose id is not known, and an item of a turn
+  that is not the running one stop the harness process. `:close` ends
+  the input and answers `:ok` at the exit.
+
+  A command or file change approval request is accepted; every other
   request from the server gets a JSON-RPC error. The program uses its own
   tools; Helyx tools are not offered. Its stderr is dropped.
 
-  With the `:harness_session_id` option the run resumes that thread and
-  sends only the prompt: the user messages at the end of the transcript.
-  Without it, or when the program has no such thread, the run starts a
-  fresh thread and first gives it the rest of the transcript with
-  `thread/inject_items`. The replay keeps the newest messages within
-  #{HarnessIO.replay_max_bytes()} bytes of items, and it never starts at a
-  tool result. The `{:harness_session, id, cut}` event of a fresh thread
-  gives its id and the number of messages left out.
-
   Assistant text and reasoning stream as deltas. A tool item (a command,
-  a file change, a tool of an MCP server, and the like) is a tool call
+  a file change, a tool of an MCP server, or another tool item type of
+  `docs/research/codex-app-server.md`) is a tool call
   when it starts and a tool result when it completes, and a `message_end`
   closes the assistant message before the result. A stdout line over
-  #{HarnessIO.line_max_bytes()} bytes ends the stream with an error, and so
-  does an event over #{@held_max} held events. The protocol facts are in
-  `docs/research/codex-app-server.md`.
+  #{HarnessIO.line_max_bytes()} bytes, more than #{@held_max} held events,
+  and the program's exit stop the harness process. The protocol facts are
+  in `docs/research/codex-app-server.md`.
   """
 
   @behaviour Helyx.Provider
@@ -55,31 +65,51 @@ defmodule Helyx.Provider.Codex do
 
   defmodule State do
     @moduledoc false
-    # One run of the program. `resume` is the thread id to resume, or nil.
-    # `history` is the transcript before the prompt. `thread` and `turn`
-    # are the ids the program gave. `started` holds the ids of the tool
-    # items that have a tool call, and `streamed` the ids of the messages
-    # whose text came as deltas. `calls` holds the ids of the tool calls of
-    # the message that no `message_end` closed yet; `waiting` the ids of
-    # the calls of sent messages with no result yet; `held` the events that
-    # wait for those results (see `in_order/2`).
-    @enforce_keys [:model, :cwd, :resume, :history, :prompt]
+    # The program of one harness process. `resume` is the thread id to
+    # resume, or nil; `thread` the thread's id, and `fresh?` whether it
+    # still waits for its replay. `turn_id` is the Helyx turn, `turn` the
+    # program's turn id, `from` the `{:turn, ...}` without an answer,
+    # `interrupt` an interrupt without an answer (`{:pending, from}` before
+    # the turn id is known or while an earlier `turn/interrupt` answer is
+    # due, `{:sent, from}` after `turn/interrupt`),
+    # `due` the ids of the `thread/inject_items`, `turn/start`, and
+    # `turn/interrupt` requests without an answer, `close` the close
+    # without an answer, `prompt` the prompt of a turn whose `turn/start`
+    # waits for an answer in `due`, and `out` the actions to return,
+    # newest first.
+    # `terminal` set means the harness process must stop, with that error.
+    #
+    # Of the running turn: `commands` the open `commandExecution` items,
+    # `started` the ids of the tool items that have a tool call, and
+    # `streamed` the ids of the messages whose text came as deltas.
+    # `calls` holds the ids of the tool calls of the message that no
+    # `message_end` closed yet; `waiting` the ids of the calls of sent
+    # messages with no result yet; `held` the events that wait for those
+    # results (see `in_order/2`).
+    @enforce_keys [:model, :cwd]
     defstruct [
       :model,
       :cwd,
       :resume,
-      :history,
-      :prompt,
       :port,
       :thread,
-      :turn,
       :terminal,
       :deadline,
+      :turn_id,
+      :turn,
+      :from,
+      :interrupt,
+      :close,
+      :prompt,
+      fresh?: false,
+      due: MapSet.new(),
+      out: [],
       buffer: [],
       size: 0,
-      usage: %{},
       done?: false,
+      usage: %{},
       calls: [],
+      commands: MapSet.new(),
       waiting: MapSet.new(),
       held: :queue.new(),
       started: MapSet.new(),
@@ -87,7 +117,13 @@ defmodule Helyx.Provider.Codex do
     ]
   end
 
-  # Request ids: one of each request per run.
+  # The fields of a turn, set back to their defaults between turns.
+  @turn_fields ~w(turn_id turn from usage calls commands waiting held started streamed)a
+
+  # Request ids: one of each request at a time. A request goes out only
+  # when no answer with its id is due (`due`): a turn can complete before
+  # the answer to its `turn/start` or `turn/interrupt`, and that late
+  # answer then belongs to no turn.
   @initialize 1
   @resume 2
   @start 3
@@ -104,9 +140,6 @@ defmodule Helyx.Provider.Codex do
   }
 
   @lost "no rollout found"
-  # The wait for the end of the turn after `turn/interrupt`, within the
-  # hands' shutdown grace.
-  @interrupt_wait_ms 1_000
   # Item types that run something (see the research note).
   @tool_item_types ~w(commandExecution fileChange mcpToolCall dynamicToolCall collabAgentToolCall
             webSearch imageView imageGeneration)
@@ -115,132 +148,146 @@ defmodule Helyx.Provider.Codex do
   @impl true
   def id, do: "codex"
 
+  # `Helyx.Provider.turn/1` makes this `:connected`, because the module
+  # exports `harness_init/3`.
   @impl true
   def turn, do: :external
 
-  # A delivery TERMs first too: the stream can end (a line over the cap,
-  # the exit wait) while codex still runs a command.
+  # A delivery TERMs first too: the harness process can end (a line over
+  # the cap, a stop) while codex still runs a command.
   @impl true
   def release(handles, :deliver, deadline), do: release(handles, :cancel, deadline)
 
   def release(handles, mode, deadline),
     do: HarnessIO.release(handles, mode, deadline, grace_ms: @term_grace_ms)
 
+  # The session calls the harness callbacks of a connected provider, never
+  # this one.
   @impl true
-  def stream(model, %Helyx.Context{messages: messages}, opts) do
-    with {:ok, exe} <- HarnessIO.find("codex") do
-      {prompt, history} = HarnessIO.split_prompt(messages)
+  def stream(_model, _context, _opts), do: {:error, :connected}
 
+  @impl true
+  def harness_init(model, _tools, opts) do
+    with {:ok, exe} <- HarnessIO.find("codex") do
       state = %State{
         model: model,
         cwd: Keyword.fetch!(opts, :cwd),
-        resume: opts[:harness_session_id],
-        history: history,
-        prompt: prompt
+        resume: opts[:harness_session_id]
       }
 
-      {:ok, Stream.resource(fn -> start(exe, state) end, &next/1, &HarnessIO.stop/1)}
+      argv = ["/bin/sh", "-c", ~S(exec "$0" "$@" 2>/dev/null), exe, "app-server"]
+
+      case HarnessIO.start(argv, state.cwd, :open, state, grace_ms: @term_grace_ms) do
+        %State{terminal: {:error, reason}} ->
+          {:error, reason}
+
+        state ->
+          state = HarnessIO.keep_port(state)
+          request(state, @initialize, %{clientInfo: %{name: "helyx", version: "0"}})
+          handshake(state)
+      end
     end
   end
 
-  defp start(exe, state) do
-    Process.flag(:trap_exit, true)
-    argv = ["/bin/sh", "-c", ~S(exec "$0" "$@" 2>/dev/null), exe, "app-server"]
-
-    state = HarnessIO.start(argv, state.cwd, :open, state, grace_ms: @term_grace_ms)
-
-    if state.terminal == nil,
-      do: request(state, @initialize, %{clientInfo: %{name: "helyx", version: "0"}})
-
-    state
-  end
-
-  defp next(%{done?: true} = state), do: HarnessIO.drain(state)
-
-  # The port's own `:normal` exit signal is not a stop: its exit status
-  # says it all. A port that closes on an error, such as `:epipe` from a
-  # write to a watchdog that died after the go-ahead (#167), sends no exit
-  # status, so that exit is the run's end. Any other exit signal is the
-  # hands' shutdown (or their death).
-  defp next(%{port: port} = state) do
-    if HarnessIO.overdue?(state),
-      do: {[], %{state | done?: true}},
-      else: receive_next(port, state)
-  end
-
-  defp receive_next(port, state) do
-    receive do
-      {^port, {:data, data}} -> data |> HarnessIO.lines(state, &in_order/2) |> settle()
-      {^port, {:exit_status, status}} -> settle(exited(status, %{state | port: nil}))
-      {:EXIT, ^port, :normal} -> {[], state}
-      {:EXIT, ^port, reason} -> settle(exited(reason, %{state | port: nil}))
-      {:EXIT, _from, reason} -> interrupt(state, reason)
-    after
-      HarnessIO.wait(state) -> {[], %{state | done?: true}}
-    end
-  end
-
-  defp exited(_status, %{terminal: terminal} = state) when terminal != nil,
-    do: {[], %{state | done?: true}}
-
-  defp exited(status, state),
-    do: {[], %{state | done?: true, terminal: {:error, {:codex_exit, status}}}}
-
-  # Asks the program to stop a running turn, waits for its end within
-  # `@interrupt_wait_ms`, and exits. The closed port then ends the program.
-  defp interrupt(%{turn: turn, terminal: nil} = state, reason) when is_binary(turn) do
-    request(state, @interrupt, %{threadId: state.thread, turnId: turn})
-    await_end(state, System.monotonic_time(:millisecond) + @interrupt_wait_ms)
-    exit(reason)
-  end
-
-  defp interrupt(_state, reason), do: exit(reason)
-
-  defp await_end(%{port: port} = state, deadline) do
-    if HarnessIO.overdue?(deadline), do: :ok, else: receive_end(port, state, deadline)
-  end
-
-  defp receive_end(port, state, deadline) do
+  # Reads the program's lines until the thread is ready. The connect kill
+  # of Core bounds the wait.
+  defp handshake(%State{port: port} = state) do
     receive do
       {^port, {:data, data}} ->
-        {_events, state} = HarnessIO.lines(data, state, &translate/2)
-        if state.terminal, do: :ok, else: await_end(state, deadline)
+        case HarnessIO.lines(data, state, &in_order/2) do
+          {_, %State{terminal: {:error, reason}}} -> {:error, reason}
+          {_, %State{thread: nil} = state} -> handshake(state)
+          {_, state} -> {:ok, state}
+        end
 
-      {^port, {:exit_status, _status}} ->
-        :ok
-    after
-      HarnessIO.remaining(deadline) -> :ok
+      {^port, {:exit_status, status}} ->
+        {:error, {:codex_exit, status}}
+
+      {:DOWN, _ref, :port, ^port, reason} ->
+        {:error, {:codex_exit, reason}}
     end
   end
+
+  @impl true
+  def harness_request(
+        {:turn, turn_id, %Helyx.Context{messages: messages}},
+        from,
+        %State{
+          turn_id: nil
+        } = state
+      ) do
+    {prompt, history} = HarnessIO.split_prompt(messages)
+    state = %{state | turn_id: turn_id, from: from, prompt: prompt}
+    state = if state.fresh?, do: replay(history, %{state | fresh?: false}), else: state
+
+    actions(start_turn(state))
+  end
+
+  # An open command outlives `turn/interrupt` (#198), so the abort stops
+  # the program instead.
+  def harness_request({:interrupt, turn_id}, from, %State{turn_id: turn_id} = state) do
+    state =
+      if MapSet.size(state.commands) > 0,
+        do: reply(state, from, {:error, :command_running}),
+        else: send_interrupt(%{state | interrupt: {:pending, from}})
+
+    actions(state)
+  end
+
+  # The turn already ended.
+  def harness_request({:interrupt, _turn_id}, from, state), do: actions(reply(state, from, :ok))
+
+  def harness_request(:close, from, state) do
+    HarnessIO.write(state, <<0>>)
+    actions(%{state | close: from})
+  end
+
+  @impl true
+  def harness_info({port, {:data, data}}, %State{port: port} = state) do
+    case HarnessIO.lines(data, state, &in_order/2) do
+      {_, %State{terminal: {:error, reason}} = state} -> {:stop, reason, state}
+      {_, state} -> actions(state)
+    end
+  end
+
+  def harness_info({port, {:exit_status, _status}}, %State{port: port, close: from} = state)
+      when from != nil,
+      do: actions(reply(state, from, :ok))
+
+  def harness_info({port, {:exit_status, status}}, %State{port: port} = state),
+    do: {:stop, {:codex_exit, status}, state}
+
+  def harness_info({:DOWN, _ref, :port, port, reason}, %State{port: port} = state),
+    do: {:stop, {:codex_exit, reason}, state}
+
+  def harness_info(_message, state), do: actions(state)
+
+  defp actions(state), do: {:ok, Enum.reverse(state.out), %{state | out: []}}
+
+  defp reply(state, from, value), do: %{state | out: [{:reply, from, value} | state.out]}
+
+  # `events` in order; `out` is newest first.
+  defp push(state, events),
+    do: %{state | out: Enum.reverse(Enum.map(events, &{:event, state.turn_id, &1}), state.out)}
 
   # Output
 
-  # At any terminal (the turn's end, an error, the program's exit, a line
-  # over the cap, the held events over their cap), every held event goes out
-  # after the events of the chunk.
-  defp settle({events, %{terminal: nil} = state}), do: {events, state}
-
-  defp settle({events, state}) do
-    {out, state} = :queue.fold(&emit/2, {[], %{state | held: :queue.new()}}, state.held)
-    {events ++ Enum.reverse(out), state}
-  end
-
-  # The session gives every call that is still open an `aborted` result at
-  # a `message_end` (`Helyx.Provider`). Codex runs tool items side by side,
-  # so a call of a sent message can still run when the next message closes.
-  # Such a `message_end`, and every event after it, is held until the
-  # results of the sent calls are out; a result of a sent call goes out at
-  # once. At a terminal `settle/1` sends every held event, in order. An
-  # event over `@held_max` held events is dropped and ends the stream with
-  # an error, as a line over the cap does; the events after it are not read.
+  # Codex runs tool items side by side, and the session gives every call
+  # that is still open an `aborted` result at a `message_end`
+  # (`Helyx.Provider`), so a call of a sent message can still run when the
+  # next message closes. Such a `message_end`, and every event after it, is
+  # held until the results of the sent calls are out; a result of a sent
+  # call goes out at once. At the turn's end every held event goes out, in
+  # order, before the terminal. An event over `@held_max` held events stops
+  # the harness process, as a line over the cap does; the events after it
+  # are not read.
   defp in_order(object, state) do
     {events, state} = translate(object, state)
     {out, state} = Enum.reduce(events, {[], state}, &order_one/2)
-    {Enum.reverse(out), state}
+    {[], push(state, Enum.reverse(out))}
   end
 
-  defp order_one(_event, {out, %{terminal: {:error, {:held_over_limit, _}}} = state}),
-    do: {out, state}
+  defp order_one(_event, {out, %{terminal: {:error, _}} = state}), do: {out, state}
 
   # `:queue.len/1` costs O(held), as a held result's insert does; the cap
   # bounds both.
@@ -309,6 +356,30 @@ defmodule Helyx.Provider.Codex do
     end
   end
 
+  # At `turn/completed`: the answer to the turn if its `turn/start` answer
+  # did not come yet, the held events, the terminal, the answer to an
+  # interrupt, and the fields of a turn back to idle. A command still open
+  # outlives the turn, so the interrupt answers an error and the harness
+  # process stops.
+  defp end_turn(state, terminal) do
+    state = if state.from, do: reply(%{state | from: nil}, state.from, :ok), else: state
+
+    {out, state} = :queue.fold(&emit/2, {[], state}, state.held)
+    state = push(state, Enum.reverse([terminal | out]))
+
+    state =
+      case state.interrupt do
+        {_pending_or_sent, from} ->
+          value = if MapSet.size(state.commands) > 0, do: {:error, :command_running}, else: :ok
+          reply(%{state | interrupt: nil}, from, value)
+
+        nil ->
+          state
+      end
+
+    Map.merge(state, Map.take(%State{model: nil, cwd: nil}, @turn_fields))
+  end
+
   # A request of the server (it has an id and a method).
   defp translate(%{"id" => id, "method" => method}, state) do
     answer =
@@ -326,64 +397,126 @@ defmodule Helyx.Provider.Codex do
     if state.resume do
       params = Map.merge(thread_params(state), %{threadId: state.resume, excludeTurns: true})
       request(state, @resume, params)
-      {[], state}
     else
-      start_thread(state)
+      request(state, @start, thread_params(state))
     end
+
+    {[], state}
   end
 
   # The program has no such thread: a fresh one starts on the same run.
-  defp translate(%{"id" => @resume, "error" => %{"message" => @lost <> _}}, state),
-    do: start_thread(state)
-
-  defp translate(%{"id" => @resume, "result" => _}, state) do
-    start_turn(%{state | thread: state.resume})
+  defp translate(%{"id" => @resume, "error" => %{"message" => @lost <> _}}, state) do
+    request(state, @start, thread_params(state))
+    {[], state}
   end
+
+  defp translate(%{"id" => @resume, "result" => _}, state),
+    do: {[], %{state | thread: state.resume}}
 
   defp translate(%{"id" => @start, "result" => %{"thread" => %{"id" => thread}}}, state)
-       when is_binary(thread) do
-    state = %{state | thread: thread}
-    {items, cut} = replay(state.history)
-    event = {:harness_session, thread, cut}
+       when is_binary(thread),
+       do: {[], %{state | thread: thread, fresh?: true}}
 
-    if items == [] do
-      {events, state} = start_turn(state)
-      {[event | events], state}
-    else
-      # The items are JSON already: the line is joined from them.
-      send_line(state, [
-        ~s({"id":#{@inject},"method":"thread/inject_items","params":{"threadId":),
-        JSON.encode!(thread),
-        ~s(,"items":[),
-        Enum.intersperse(items, ","),
-        "]}}"
-      ])
+  defp translate(%{"id" => id} = response, state) when id in [@inject, @turn, @interrupt],
+    do: {[], answer(response, %{state | due: MapSet.delete(state.due, id)})}
 
-      {[event], state}
-    end
-  end
+  defp translate(%{"id" => id} = response, state) when is_map_key(@methods, id),
+    do: {[], %{state | done?: true, terminal: {:error, failure(response)}}}
 
-  defp translate(%{"id" => @inject, "result" => _}, state), do: start_turn(state)
-
-  defp translate(%{"id" => @turn, "result" => %{"turn" => %{"id" => turn}}}, state)
-       when is_binary(turn),
-       do: {[], %{state | turn: turn}}
-
-  # The end of the turn, not this answer, ends an interrupt.
-  defp translate(%{"id" => @interrupt}, state), do: {[], state}
-
-  defp translate(%{"id" => id} = response, state) when is_map_key(@methods, id) do
-    message = error_message(response) || "unexpected response"
-    {[], finish(state, {:error, {:codex, @methods[id], HarnessIO.cap_error(message)}})}
-  end
-
-  # Only the notifications of this run's thread count: a sub-agent's
+  # Only the notifications of this program's thread count: a sub-agent's
   # thread stays inside the harness.
   defp translate(%{"method" => method, "params" => %{"threadId" => thread} = params}, state)
        when thread == state.thread and is_binary(thread),
-       do: notification(method, params, state)
+       do: turn_notification(method, params, state)
 
   defp translate(_object, state), do: {[], state}
+
+  # A turn that completed before this answer has its reply already, so
+  # the answer belongs to no turn; a turn that waits for it starts now.
+  defp answer(%{"id" => @turn}, %State{from: from, prompt: prompt} = state)
+       when from == nil or prompt != nil,
+       do: start_turn(state)
+
+  defp answer(%{"id" => @turn, "result" => %{"turn" => %{"id" => turn}}}, state)
+       when is_binary(turn),
+       do: turn_started(turn, reply(%{state | from: nil}, state.from, :ok), true)
+
+  defp answer(%{"id" => @inject, "result" => _}, state), do: start_turn(state)
+
+  defp answer(
+         %{"id" => @interrupt, "error" => _} = response,
+         %{interrupt: {:sent, from}} = state
+       ),
+       do: reply(%{state | interrupt: nil}, from, {:error, failure(response)})
+
+  # The turn's end, not this answer, ends an interrupt; a pending one goes
+  # out now.
+  defp answer(%{"id" => @interrupt}, state), do: send_interrupt(state)
+
+  # An error answer to a turn fails it, and the harness process stops.
+  defp answer(response, state),
+    do: reply(%{state | from: nil}, state.from, {:error, failure(response)})
+
+  defp failure(%{"id" => id} = response),
+    do:
+      {:codex, @methods[id],
+       HarnessIO.cap_error(error_message(response) || "unexpected response")}
+
+  defp turn_notification("turn/started", %{"turn" => %{"id" => turn}}, state)
+       when is_binary(turn),
+       do:
+         {[], turn_started(turn, state, MapSet.member?(state.due, @turn) and state.prompt == nil)}
+
+  defp turn_notification(
+         "turn/completed",
+         %{"turn" => %{"id" => turn} = result},
+         %{turn: turn} = state
+       )
+       when is_binary(turn),
+       do: {[], end_turn(state, terminal(result, state))}
+
+  # The end of a turn that did not start, or that already ended.
+  defp turn_notification("turn/completed", %{"turn" => %{"id" => turn}}, state)
+       when is_binary(turn),
+       do: {[], %{state | done?: true, terminal: {:error, :turn_not_asked}}}
+
+  defp turn_notification(method, %{"turnId" => turn} = params, %{turn: turn} = state)
+       when is_binary(turn),
+       do: notification(method, params, state)
+
+  # An item of a turn that is not the running one, such as the late
+  # `item/completed` of a command that `turn/interrupt` left running.
+  defp turn_notification("item/" <> _, %{"turnId" => turn}, state) when is_binary(turn),
+    do: {[], %{state | done?: true, terminal: {:error, :item_of_ended_turn}}}
+
+  defp turn_notification(_method, _params, state), do: {[], state}
+
+  # The running Helyx turn learns its program turn id from the `turn/start`
+  # answer or from `turn/started`, from the first of the two; a pending
+  # interrupt goes out then. A new id from `turn/started` counts only while
+  # the turn's own `turn/start` is open (`asked?`). Any other turn is one
+  # that Helyx did not ask for.
+  defp turn_started(turn, %State{turn_id: turn_id, turn: known} = state, asked?)
+       when turn_id != nil and (known == turn or (known == nil and asked?)) do
+    send_interrupt(%{state | turn: turn})
+  end
+
+  defp turn_started(_turn, state, _asked?),
+    do: %{state | done?: true, terminal: {:error, :turn_not_asked}}
+
+  # A pending interrupt goes out when the turn id is known and no
+  # `turn/interrupt` answer is due.
+  defp send_interrupt(%State{interrupt: {:pending, from}, turn: turn} = state)
+       when turn != nil do
+    if MapSet.member?(state.due, @interrupt) do
+      state
+    else
+      request(state, @interrupt, %{threadId: state.thread, turnId: turn})
+      %{state | interrupt: {:sent, from}, due: MapSet.put(state.due, @interrupt)}
+    end
+  end
+
+  defp send_interrupt(state), do: state
 
   defp notification("item/agentMessage/delta", %{"delta" => text, "itemId" => id}, state)
        when is_binary(text) and text != "" do
@@ -397,7 +530,13 @@ defmodule Helyx.Provider.Codex do
 
   defp notification("item/started", %{"item" => %{"type" => type, "id" => id} = item}, state)
        when type in @tool_item_types and is_binary(id) do
-    state = %{state | started: MapSet.put(state.started, id), calls: [id | state.calls]}
+    state = %{
+      state
+      | started: MapSet.put(state.started, id),
+        calls: [id | state.calls],
+        commands: command(state.commands, type, &MapSet.put(&1, id))
+    }
+
     {[tool_call(item)], state}
   end
 
@@ -418,6 +557,8 @@ defmodule Helyx.Provider.Codex do
   # call first.
   defp notification("item/completed", %{"item" => %{"type" => type, "id" => id} = item}, state)
        when type in @tool_item_types and is_binary(id) do
+    state = %{state | commands: command(state.commands, type, &MapSet.delete(&1, id))}
+
     {calls, state} =
       if MapSet.member?(state.started, id),
         do: {[], state},
@@ -437,18 +578,10 @@ defmodule Helyx.Provider.Codex do
        when is_map(usage),
        do: {[], %{state | usage: usage}}
 
-  # One run starts one turn, so the thread's turn end is its end.
-  defp notification("turn/completed", %{"turn" => %{} = result}, state),
-    do: {[], finish(state, terminal(result, state))}
-
   defp notification(_method, _params, state), do: {[], state}
 
-  # The input ends, so the program exits by itself once it has written its
-  # thread, within the exit wait.
-  defp finish(state, terminal) do
-    HarnessIO.write(state, <<0>>)
-    HarnessIO.arm_exit_wait(state, terminal)
-  end
+  defp command(commands, "commandExecution", fun), do: fun.(commands)
+  defp command(commands, _type, _fun), do: commands
 
   defp terminal(%{"status" => "completed"}, state),
     do: {:done, %{stop_reason: :end_turn, usage: state.usage}}
@@ -491,23 +624,49 @@ defmodule Helyx.Provider.Codex do
 
   # Input
 
-  defp start_thread(state) do
-    request(state, @start, thread_params(state))
-    {[], state}
-  end
-
   defp thread_params(state), do: Map.merge(@trust, %{model: state.model, cwd: state.cwd})
 
-  defp start_turn(state) do
-    input =
-      for %Message{content: blocks} <- state.prompt,
-          %Message.Text{text: text} <- blocks,
-          text != "",
-          do: %{type: "text", text: text}
+  # The first turn of a fresh thread: its id and cut, then the replay, if
+  # any. The turn's `turn/start` waits for the replay's answer.
+  defp replay(history, state) do
+    {items, cut} = replay_items(history)
+    state = push(state, [{:harness_session, state.thread, cut}])
 
-    request(state, @turn, %{threadId: state.thread, input: input})
-    {[], state}
+    if items == [] do
+      state
+    else
+      # The items are JSON already: the line is joined from them.
+      send_line(state, [
+        ~s({"id":#{@inject},"method":"thread/inject_items","params":{"threadId":),
+        JSON.encode!(state.thread),
+        ~s(,"items":[),
+        Enum.intersperse(items, ","),
+        "]}}"
+      ])
+
+      %{state | due: MapSet.put(state.due, @inject)}
+    end
   end
+
+  # The `turn/start` of a turn that waits, when neither its replay's answer
+  # nor the answer to the last `turn/start` is due.
+  defp start_turn(%State{prompt: prompt, turn_id: turn_id} = state)
+       when prompt != nil and turn_id != nil do
+    if MapSet.member?(state.due, @inject) or MapSet.member?(state.due, @turn) do
+      state
+    else
+      input =
+        for %Message{content: blocks} <- prompt,
+            %Message.Text{text: text} <- blocks,
+            text != "",
+            do: %{type: "text", text: text}
+
+      request(state, @turn, %{threadId: state.thread, input: input})
+      %{state | prompt: nil, due: MapSet.put(state.due, @turn)}
+    end
+  end
+
+  defp start_turn(state), do: state
 
   defp request(state, id, params),
     do: send_line(state, %{id: id, method: @methods[id], params: params})
@@ -520,7 +679,7 @@ defmodule Helyx.Provider.Codex do
   # call (thinking is not replayed), a user message a message item, and a
   # tool result a `function_call_output`. The replay may start at any
   # message but a tool result, so every kept result keeps its call.
-  defp replay(history) do
+  defp replay_items(history) do
     entries =
       for message <- history do
         items = items(message)
