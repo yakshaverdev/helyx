@@ -49,9 +49,9 @@ Then:
 | `{:EXIT, partition, _}` | `{:helyx_subscription_lost, id}`, after the Registry is back | stops |
 | `:DOWN` of the subscriber | nothing | stops |
 
-`GenServer.start/2` starts the watch, with no link and no supervisor: it monitors the session and the subscriber, and it stops when either ends, so it never outlives them. A Core that stops ends its sessions first (the session supervisor starts after the events Registry, so it stops before it), so every watch sends `:stopped` and stops.
+`GenServer.start/2` starts the watch, with no link and no supervisor: it monitors the session and the subscriber, and it stops when either ends. The one exception is the wait before the lost signal (below): the watch handles the `:DOWN` only after that wait, which ends with the answer or the exit of the supervisor, or with a kill by the next subscribe of the caller. A Core that stops ends its sessions first (the session supervisor starts after the events Registry, so it stops before it), so every watch sends `:stopped` and stops.
 
-"After the Registry is back": before it sends the lost signal, the watch calls the events Registry supervisor, and, when that call fails, the Core supervisor. Each call is the request of `Supervisor.count_children/1`, with a timeout of 5 seconds. The watch gets the exit of the partition only after the partition died, so on one node the Registry supervisor has the exit of its child before the call of the watch, and it restarts the child before it answers. When the Registry supervisor is gone too (it stopped, or it passed its restart limit), the first call fails, and the Core has the exit of the Registry supervisor before the second call, in the same way. When the second call fails or a call times out, the watch sends the lost signal at once, and a subscribe that follows returns `{:error, :session_not_found}` until the Registry is back.
+"After the Registry is back": before it sends the lost signal, the watch calls the events Registry supervisor, and, when that call fails, the Core supervisor. Each call is the request of `Supervisor.count_children/1`, with no timeout: a timeout would send the lost signal while the supervisor does not yet have the exit, and a subscribe after it would return `{:error, :session_not_found}` for a running session. The call monitors the supervisor, so the wait ends with its answer or its exit. The watch gets the exit of the partition only after the partition died, so on one node the Registry supervisor has the exit of its child before the call of the watch, and it restarts the child before it answers. When the Registry supervisor is gone too (it stopped, or it passed its restart limit), the first call fails, and the Core has the exit of the Registry supervisor before the second call, in the same way. When the second call fails, the watch sends the lost signal at once, and a subscribe that follows returns `{:error, :session_not_found}` until the Registry is back.
 
 Cases that the watch does not make safe:
 
@@ -59,6 +59,7 @@ Cases that the watch does not make safe:
 - A kill of the Registry supervisor: its partitions stop after it, and the Core can start the new Registry before their named tables are gone. The start then fails, and after its restart limit the Core stops. Every session stops too, and each subscriber gets `:stopped`. This is how `Registry` restarts; this change does not alter it.
 - A subscribe while the Registry restarts: the table of the dead partition raises, so the subscribe returns `{:error, :session_not_found}` although the session runs, and it removes the caller's old subscription with no lost signal. A client that mounts in this window ends. A partition that crashes is a bug, and a retry is more code than the window is worth.
 - One id in two Cores (#204): the flush of a subscribe matches the id only, and it runs whether or not the caller had an entry. So any subscribe to the id in one Core, also a failed one or the first one there, can remove a signal of the caller's subscription in the other Core.
+- A session that ends while the watch waits before the lost signal: the watch sends the lost signal, not the end signal, and the subscribe that follows returns `{:error, :session_not_found}`. The TUI then ends with `:session_not_found`, not with the reason of the session. The session is gone in both cases, so only the reason is wrong.
 - A pid that the node reuses: the dictionary entry of a dead watch stays until the caller's next subscribe, which kills the pid it names. Only a node that uses all its pids in that time reuses one.
 
 ### Order
@@ -106,7 +107,7 @@ A subscriber that registered before the session ended keeps its entry until it e
 | signals of one subscription | one: the watch stops after it sends | `Helyx.Session.Watch` | n/a |
 | end reason | two atoms | `Helyx.Session.Watch` | every other exit reason is `:crashed` |
 | stop of a watch in a subscribe | a kill and one `:DOWN`, no wait for a callback | `Helyx.Session` | n/a |
-| the calls of the watch before the lost signal | 5 seconds each, at most two: the events Registry supervisor, then the Core | `Helyx.Session.Watch` | the watch sends the lost signal at once |
+| the calls of the watch before the lost signal | unbounded, and accepted with no ticket: at most two calls, the events Registry supervisor, then the Core, and each wait ends with the answer or the exit of that supervisor. A wait blocks no other process: the next subscribe of the caller kills the watch, and the subscriber has its old snapshot and events meanwhile. During the wait the watch outlives a subscriber or a session that ends | `Helyx.Session.Watch` | n/a |
 
 ## Ownership
 

@@ -1982,7 +1982,9 @@ defmodule Helyx.SessionTest do
         :ok = :sys.suspend(restarter)
         Process.exit(target, :kill)
         id = session.id
-        refute_receive {:helyx_subscription_lost, ^id}, 200
+        # Longer than the 5 s timeout the barrier once had: no timeout ends it.
+        refute_receive {:helyx_subscription_lost, ^id}, 5_500
+        assert Process.alive?(pid)
         :ok = :sys.resume(restarter)
         assert_receive {:helyx_subscription_lost, ^id}, 1_000
         refute_receive {:helyx_subscription_lost, _}, 50

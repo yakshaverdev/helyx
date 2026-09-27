@@ -5,16 +5,15 @@ defmodule Helyx.Session.Watch do
   # Registry loses the registration (docs/features/end-signal.md).
   #
   # It has no link and no supervisor: it monitors the session and the
-  # subscriber and stops when either ends, so it never outlives them. It
+  # subscriber and stops when either ends. The one exception is the wait
+  # before the lost signal, which ends with the answer or the exit of the
+  # supervisor, or with a kill by the next subscribe of the caller. It
   # registers itself in the events Registry under its own key, so it is
   # linked to the partition that holds the subscriber's entry and gets no
   # event. This holds because the Registry has one partition
   # (`Helyx.Core`); a duplicate-key Registry picks a partition by the pid.
 
   use GenServer
-
-  # The wait for each supervisor before the lost signal.
-  @await_timeout 5_000
 
   @enforce_keys [:core, :id, :session_pid, :subscriber]
   defstruct @enforce_keys
@@ -68,15 +67,16 @@ defmodule Helyx.Session.Watch do
     {:stop, :normal, state}
   end
 
-  # The request of `Supervisor.count_children/1`, which has no timeout. A
-  # normal call, not a `:sys` call: a process handles its messages in order,
-  # so the call waits behind the exit.
+  # The request of `Supervisor.count_children/1`. A normal call, not a
+  # `:sys` call: a process handles its messages in order, so the call waits
+  # behind the exit. No timeout: a timeout would send the lost signal before
+  # the supervisor has the exit. The call monitors the supervisor, so the
+  # wait ends with its answer or its exit, and the next subscribe of the
+  # caller kills the watch.
   defp await_supervisor(supervisor) do
-    GenServer.call(supervisor, :count_children, @await_timeout)
+    GenServer.call(supervisor, :count_children, :infinity)
     :ok
   catch
-    # A supervisor that does not answer in time is alive: no second call.
-    :exit, {:timeout, _call} -> :ok
     :exit, _reason -> :down
   end
 
