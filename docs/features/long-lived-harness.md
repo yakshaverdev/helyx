@@ -53,7 +53,7 @@ session ── hands ──┬── harness process (per session): a Task of th
 - **The harness process** is a long-lived Task of the hands. It runs the Core loop `Helyx.Session.Harness` (`@moduledoc false`). The loop owns the `receive` and the event check. The provider callbacks run only inside this loop. A callback can block the loop, so the loop cannot enforce a deadline on itself. A kill armed at the OTP timer server enforces it (see "Deadlines").
 - **Startup.** The hands start the Task inside a `handle_call`, so the Task is in `tasks` before the hands read the next message. A `Helyx.Tool.hold/1` from the first line of plugin code therefore finds its pid, as for a stream Task today. There is no transfer of ownership: the hands hold every handle from the first `hold/1`. The hands reply to the session with the pid of the harness process. The loop calls `harness_init/3`, then sends `{:harness_ready, pid}` to the session. The hands arm the connect kill when they start the Task, and the loop cancels it before `{:harness_ready, pid}` (see "Deadlines").
 - **Context preparation.** For each connected turn the hands start a short prepare Task and reply to the session with its pid. It runs `ModelContext.build/2` and `Compaction.compact/2`, as `Helyx.Session.Stream.run/1` does today, and sends the context to the session. The session sends `{:turn, turn_id, context}` to the harness process (see "Turn states"). A raise, an exit, or the prepare bound fails the turn with today's rules, and the harness process stays. At the bound, its armed kill ends it (see "Deadlines"). So a plugin bug in preparation never stops the program, and a connected provider never skips the configured plugins.
-- **No stream Task for a connected turn.** The loop checks each event with the checks of `Helyx.Session.Stream` and sends `{:stream_event, turn_id, event}` to the session, as the stream Task does today. At the end of a turn it sends the terminal. The session ends the turn on the terminal, not on a Task reply. The session mailbox between them has no bound, as today for every provider. This is an inherited limit (#197), not a new one.
+- **No stream Task for a connected turn.** The loop checks each event with the checks of `Helyx.Session.Stream` and sends `{:stream_event, turn_id, event}` to the session, as the stream Task does today. At the end of a turn it sends the terminal. The session ends the turn on the terminal, not on a Task reply. Before each send the loop reads the session queue length, as the stream Task does: over 10,000 waiting messages the turn fails with `{:error, {:session_behind, length, 10000}}` (#197).
 - **The session** keeps its rules. It never runs plugin code. It sends each request to the harness process as a message, with an armed kill (see "Deadlines"). The hands start and release processes; they do not carry requests.
 - **A crash** of the harness process is a `:DOWN` in the hands. The turn fails through the turn cleanup below. There is no reconnect inside a turn. The next external turn starts a new harness process, which resumes or replays as today.
 - An abort does not remove the harness process from `tasks`. The hands release it only on a close, a stop, or a crash.
@@ -70,7 +70,7 @@ Every end of a connected turn that leaves Helyx work runs one path in the hands:
 
 ### Deadlines
 
-A deadline must stop the harness process on time, whatever the session and the hands do. Both can be late: the hands wait in `Task.yield_many/2` during a release for up to `release_ms`, 20,000 ms (`lib/helyx/session/hands.ex`), and the session writes the session file synchronously (`append_message/2` in `lib/helyx/session/server.ex`) and has an unbounded mailbox (#197). So no timer message in either process can enforce a deadline.
+A deadline must stop the harness process on time, whatever the session and the hands do. Both can be late: the hands wait in `Task.yield_many/2` during a release for up to `release_ms`, 20,000 ms (`lib/helyx/session/hands.ex`), and the session writes the session file synchronously (`append_message/2` in `lib/helyx/session/server.ex`) and can have about 10,000 waiting messages in its mailbox before the stream fails (#197). So no timer message in either process can enforce a deadline.
 
 The rule: **the kill is armed with the request, and the harness loop disarms it with the reply.**
 
@@ -255,7 +255,7 @@ The numbers are proposals. Observed values are given for comparison.
 | `tool_result` answer (written, see above) | 2,000 ms, armed kill | stop and turn cleanup |
 | bytes written to the program and not yet read by it | the watchdog stdin cap of #196: 16 MiB (`@stdin_max_bytes` in `Helyx.Watchdog`), plus at most one read of 65,536 bytes and the pipe (row "watchdog input on stdin" of `coding-agent.md`) | the watchdog stops the program group; the closed port gives a crash, then the turn cleanup |
 | the harness's own requests (approval, elicitation) | answered at once: approvals `accept`, the rest an error | none |
-| events from the harness process to the session mailbox | unbounded, as today for every provider (#197) | none; an inherited limit |
+| events from the harness process to the session mailbox | 10,000 waiting messages, checked before each send, as for every provider (#197) | the turn fails with `{:error, {:session_behind, length, 10000}}` |
 | close (normal end only): end of input to the exit | 5,000 ms, armed kill | stop: TERM, grace, KILL |
 | TERM grace | Claude 5,000 ms (today 500 ms), Codex 5,000 ms | KILL. The program's own command groups can stay after a KILL (research notes) |
 | stdout line | 16 MiB, as today | the loop ends; stop and turn cleanup |
@@ -296,4 +296,4 @@ The implementation tickets still test both orders at a Claude turn end, with the
 - Compaction inside the harness (`thread/compact/start`).
 - The model switch inside one program (`set_model`, the `turn/start` overrides). A switch closes the program, as today.
 - The known gap of a result after an abort (`docs/features/external-turn.md`).
-- Flow control between a provider stream and the session mailbox (#197).
+- Flow control between a provider stream and the session mailbox. #197 chose a cap on the queue length, over which the turn fails.
