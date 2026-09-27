@@ -922,7 +922,10 @@ end
 defmodule Helyx.Test.PrepareContext do
   @moduledoc false
   # Sets the system prompt to "prepared", unless the last user message is
-  # "block_prepare" (the build blocks) or "raise_prepare" (it raises).
+  # "block_prepare" (the build blocks), "raise_prepare" (it raises),
+  # "nil_build" (it returns nil), "bad_build" (it returns a map),
+  # "forged_build" (a struct without :system), or "bad_system" (a
+  # system prompt that is not a string).
   @behaviour Helyx.ModelContext
 
   @impl true
@@ -930,7 +933,29 @@ defmodule Helyx.Test.PrepareContext do
     case context.messages |> List.last() |> Helyx.Message.text() do
       "block_prepare" -> Process.sleep(:infinity)
       "raise_prepare" -> raise "prepare failed"
+      "nil_build" -> nil
+      "bad_build" -> Map.from_struct(context)
+      "forged_build" -> Map.delete(context, :system)
+      "bad_system" -> %{context | system: :prepared}
       _ -> %{context | system: "prepared"}
+    end
+  end
+end
+
+defmodule Helyx.Test.PrepareCompaction do
+  @moduledoc false
+  # Keeps the context, unless the last user message is "nil_compact" (it
+  # returns nil), "bad_compact" (it returns a map), or "bad_messages" (the
+  # messages are not a list).
+  @behaviour Helyx.Compaction
+
+  @impl true
+  def compact(context, _opts) do
+    case context.messages |> List.last() |> Helyx.Message.text() do
+      "nil_compact" -> nil
+      "bad_compact" -> Map.from_struct(context)
+      "bad_messages" -> %{context | messages: nil}
+      _ -> context
     end
   end
 end

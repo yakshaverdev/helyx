@@ -294,11 +294,20 @@ defmodule Helyx.Session.Server do
     {:noreply, submit(%{state | harness: %{harness | ready: true}})}
   end
 
+  # The prepare Task checked the context (`Stream.prepare_checked/4`): a
+  # plugin that returned anything else fails the turn.
   def handle_info(
-        {:prepared, turn_id, context},
+        {:prepared, turn_id, {:ok, context}},
         %State{turn: %Turn{id: turn_id, phase: :preparing} = turn} = state
       ) do
     {:noreply, submit(%{state | turn: %{turn | context: context}})}
+  end
+
+  def handle_info(
+        {:prepared, turn_id, {:error, reason}},
+        %State{turn: %Turn{id: turn_id, phase: :preparing}} = state
+      ) do
+    {:noreply, fail_turn(reason, state)}
   end
 
   def handle_info(
@@ -357,7 +366,7 @@ defmodule Helyx.Session.Server do
   def handle_info({:harness_ready, _pid}, state), do: {:noreply, state}
   def handle_info({:harness_reply, _from, _reply}, state), do: {:noreply, state}
   def handle_info({:harness_down, _pid, _reason}, state), do: {:noreply, state}
-  def handle_info({:prepared, _turn_id, _context}, state), do: {:noreply, state}
+  def handle_info({:prepared, _turn_id, _result}, state), do: {:noreply, state}
   def handle_info({:prepare_failed, _turn_id, _reason}, state), do: {:noreply, state}
   def handle_info({:tool_result, _turn_id, _call_id, _result}, state), do: {:noreply, state}
   def handle_info({:stream_event, _turn_id, _event}, state), do: {:noreply, state}
@@ -604,9 +613,11 @@ defmodule Helyx.Session.Server do
 
         :ok =
           Hands.prepare(state.hands, turn_id, fn tref ->
-            context = Helyx.Session.Stream.prepare(model_context, compaction, context, opts)
+            result =
+              Helyx.Session.Stream.prepare_checked(model_context, compaction, context, opts)
+
             :timer.cancel(tref)
-            send(session, {:prepared, turn_id, context})
+            send(session, {:prepared, turn_id, result})
           end)
 
         %{state | turn: %{turn | phase: :preparing}}

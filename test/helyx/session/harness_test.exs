@@ -15,6 +15,7 @@ defmodule Helyx.Session.HarnessTest do
       Connected,
       Helyx.Test.Provider,
       Helyx.Test.PrepareContext,
+      Helyx.Test.PrepareCompaction,
       Helyx.Test.Tool.Upcase
     ]
 
@@ -205,6 +206,7 @@ defmodule Helyx.Session.HarnessTest do
         {session, _pid, _hands} = start(core, unquote(model))
         assert error(turn(session, "one")) == unquote(Macro.escape(reason))
         assert_received {:conn, :init, harness, _}
+        assert_received {:conn, :turn, ^harness, _}
         refute Process.alive?(harness)
         assert_received {:release, :deliver, [{:report, _}]}
       end
@@ -339,6 +341,30 @@ defmodule Helyx.Session.HarnessTest do
       assert Enum.any?(events, &(&1.type == :queue_update and &1.data.follow_ups == 1))
       assert final_text(events) == "echo:prepared|one"
       assert final_text(collect_until(:agent_end)) == "echo:prepared|later"
+    end
+
+    for {text, kind} <- [
+          {"nil_build", :model_context},
+          {"bad_build", :model_context},
+          {"forged_build", :model_context},
+          {"bad_system", :model_context},
+          {"bad_messages", :compaction},
+          {"nil_compact", :compaction},
+          {"bad_compact", :compaction}
+        ] do
+      test "#{text} fails the turn and keeps the harness process", %{core: core} do
+        {session, _pid, _hands} = start(core, "echo")
+        assert final_text(turn(session, "one")) == "echo:prepared|one"
+        assert_received {:conn, :init, harness, _}
+        assert_received {:conn, :turn, ^harness, _}
+
+        assert error(turn(session, unquote(text))) ==
+                 {:bad_context, unquote(kind)}
+
+        refute_received {:conn, :turn, ^harness, {:turn, _, _}}
+        assert final_text(turn(session, "two")) == "echo:prepared|two"
+        assert_received {:conn, :turn, ^harness, _}
+      end
     end
 
     @tag :capture_log

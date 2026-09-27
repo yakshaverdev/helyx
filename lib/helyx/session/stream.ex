@@ -91,6 +91,37 @@ defmodule Helyx.Session.Stream do
     if compaction, do: compaction.compact(context, opts), else: context
   end
 
+  @doc """
+  `prepare/4` for a connected turn, where the context goes to the harness
+  process as it is: the return of each plugin is checked at the boundary.
+  Returns `{:error, {:bad_context, :model_context | :compaction}}` when a
+  plugin returns anything but a `Helyx.Context` with its three fields: a
+  system prompt that is nil or a string, and two lists. The reason names the
+  plugin, not the value.
+  """
+  @spec prepare_checked(module() | nil, module() | nil, Helyx.Context.t(), keyword()) ::
+          {:ok, Helyx.Context.t()} | {:error, {:bad_context, :model_context | :compaction}}
+  def prepare_checked(model_context, compaction, context, opts) do
+    context = if model_context, do: model_context.build(context, opts), else: context
+
+    with {:ok, context} <- checked_context(context, :model_context) do
+      context = if compaction, do: compaction.compact(context, opts), else: context
+      checked_context(context, :compaction)
+    end
+  end
+
+  # The size check rejects a struct that a plugin forged by removing or adding
+  # keys. The elements of the lists are not checked here.
+  defp checked_context(
+         %Helyx.Context{system: system, messages: messages, tools: tools} = context,
+         _plugin
+       )
+       when map_size(context) == 4 and (is_nil(system) or is_binary(system)) and
+              is_list(messages) and is_list(tools),
+       do: {:ok, context}
+
+  defp checked_context(_other, plugin), do: {:error, {:bad_context, plugin}}
+
   # Forwards well-formed stream events to the session and returns the first
   # terminal event. A malformed event is a terminal error.
   defp consume(stream, session, turn_id, external?) do

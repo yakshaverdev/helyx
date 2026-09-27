@@ -111,3 +111,55 @@ No turn of a connected provider submits to a new harness process, and no new har
 
 - Ticket numbers: steer delivery is #202 and the Helyx tools are #203 (#200 is the Claude Code provider, #201 the Codex provider). The references to #200 and #201 in the "Built in #199" section, this record, and the code comments now name #202 and #203.
 - The hands crash at a Core stop with an open harness process: the Core stops the session supervisor, then the task supervisor. The session closes an idle harness process in `terminate/2`, and the hands can take its `:closed` end after the task supervisor stopped, so `release/3` fails in `Task.Supervisor.async` and the hands log a crash. It showed 3 times in the root precommit log with `Helyx.Test.Connected`. Nothing leaks: the harness process owns the port through the keeper of `Helyx.HarnessIO.keep_port/1`, which closes it when the harness process ends, and the watchdog then ends the group. Two new tests in `plugins/bundled` stop the Core with a real program under the watchdog, one with an idle harness process and one during a turn; in both the group is gone (3 of 3 runs each). The feature doc states it as a documented exception in Bounds and Ownership; the shutdown order gets its own ticket. Only tests and Markdown changed, so there is no rerun round.
+
+## Codex round 1: a bad context from a plugin
+
+Codex finding, confirmed: the prepare Task sent whatever `ModelContext.build/2` and `Compaction.compact/2` returned. A plugin that returned nil gave `{:prepared, turn_id, nil}`, `submit/1` waited for a non-nil context, and the turn stayed in `preparing` with no deadline; new prompts got `{:error, :turn_running}` until an abort. Other values reached the `{:turn, ...}` request unchecked.
+
+Invariant restored: a connected turn leaves `preparing` within the prepare bound, with a checked `%Helyx.Context{}` or a failure. Fix: `Helyx.Session.Stream.prepare_checked/4` checks each plugin return in the prepare Task, before the cancel of the kill, and the Task sends `{:prepared, turn_id, {:ok, context} | {:error, {:bad_context, plugin}}}`. The error fails the turn with a reason that names the plugin, not the value; the harness process stays. nil is no longer both "not prepared" and a plugin value: only a checked context reaches the turn. Tests: nil and a map from each callback fail the turn, the harness process gets no `{:turn, ...}`, and the next turn succeeds on it. The tests fail without the check.
+
+The axis that should have caught it: failure path (input shape of plugin output at a boundary). Spec also missed that "Context preparation" states the failure rules without a bad return.
+
+## Round 4 (full)
+
+### Simplify
+
+Fixed: `checked_context/2` in place of a helper that called the plugins through `apply/3`; string keys in the test list. Skipped: one checked `prepare/4` for every turn mode. It would change how a local or external turn fails on a bad plugin return, and #199 keeps those turns as they are; the check on those paths is a candidate for its own ticket. Efficiency: clean. Altitude: the same merge, skipped for the same reason.
+
+### Standards
+
+No hard violations. Fixed: the reason tag is `{:bad_context, plugin}`, since `{:bad_return, value}` in the harness loop holds the value. Skipped: the two prepare functions (see simplify); sending `{:prepare_failed, ...}` from the Task (the session wraps that reason as `{:task_exit, reason}`, which is wrong for a bad return).
+
+### Spec
+
+Fixed in the feature doc: the "Built in #199" line of the prepare message and its reason; the "Context preparation" rules name a bad return; a Bounds row states that `submitted` waits for the terminal with no time bound by design, as an external stream, and that an abort ends it. The two scope items are harmless: the tightened `assert_received` in one test and the new test Compaction plugin in the harness test setup.
+
+### Failure path
+
+No findings. Probes that hold: an `exit(:normal)`, a throw, and a self-kill in `build` fail the turn through the monitor; a `build` that traps exits and blocks is killed at the bound; a context with bad field values fails the turn through the prepare Task or the harness process; an abort in `preparing` while `harness_init/3` blocks; a model switch in `submitted`. No other phase of a connected turn waits with no deadline except `submitted`, which the Bounds table now states.
+
+Rerun: the rename of the reason tag changes the `@spec` of `prepare_checked/4`, so round 5 is a full round.
+
+## Round 5 (full)
+
+### Simplify
+
+Clean on reuse, simplification, efficiency, and altitude. No copy of the old tag stays for the prepare reason.
+
+### Standards
+
+No violations. The rename removes a name with two meanings.
+
+### Spec
+
+Fixed: the Bounds row of `submitted` uses the checklist form "unbounded, and accepted".
+
+### Failure path
+
+Fixed: a forged `Helyx.Context` passed the check. A ModelContext that returned `Map.take(context, [:__struct__, :messages])` matched `%Helyx.Context{}`, reached the harness process, and crashed it with a `KeyError`. The turn failed with a reason that held the value, and the harness process was lost. `checked_context/2` now checks the key count and the top-level field types. The table test has "forged_build", "bad_system", and "bad_messages"; all three fail without the guard. Accepted: the check does not look into the list elements. A bad element crashes the harness process, the hands release it through the armed kills, and the next turn connects again. The feature doc states this.
+
+Rerun: the guard is a code fix, so round 6 reruns the failure path.
+
+## Round 6 (failure path rerun)
+
+No findings. Rejected with `{:bad_context, :model_context}`, with the harness process kept: another struct, an extra key, a swapped key, a missing key, `system: 1`, `tools: %{}`, `messages: "x"`, a bare list. The accepted hole holds: `messages: [:junk]`, `messages: []`, and an improper list crash the harness process, the turn fails with `{:task_exit, reason}`, the program group is gone within 1 s, and the next turn connects again and succeeds. Note on the hole: the `{:task_exit, reason}` of such a crash carries the stacktrace, so it can hold the bad value. This is the same as any crash of the harness process, and it stays in the accepted hole. No other phase of a connected turn waits with no deadline, except `submitted`, which the Bounds table accepts.
