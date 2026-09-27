@@ -10,6 +10,8 @@ defmodule Helyx.TUI.ViewModelSnapshotTest do
   alias Helyx.Provider.Fake
   alias Helyx.TUI.ViewModel
 
+  import Helyx.Test.ViewModelRule, only: [transcript: 1]
+
   defmodule Gate do
     @moduledoc false
     # A tool that tells the process registered as "gate" it runs, then
@@ -369,17 +371,6 @@ defmodule Helyx.TUI.ViewModelSnapshotTest do
     end
   end
 
-  # A snapshot never holds such a partial reply; `assert_joins_after_end/3`
-  # checks this with `[_user]`.
-  defp transcript(vm), do: %{vm | cells: Enum.reject(vm.cells, &display_only?/1)}
-
-  defp display_only?({:notice, _}), do: true
-
-  defp display_only?(%Message{role: :assistant, stop_reason: stop}),
-    do: stop in [:error, :aborted]
-
-  defp display_only?(_cell), do: false
-
-  defp fold(%ViewModel{} = vm, events), do: Enum.reduce(events, vm, &ViewModel.apply(&2, &1))
+  defp fold(%ViewModel{} = vm, events), do: Helyx.Test.ViewModelRule.fold(vm, events)
   defp fold(snapshot, events), do: fold(ViewModel.from_snapshot(snapshot), events)
 end
