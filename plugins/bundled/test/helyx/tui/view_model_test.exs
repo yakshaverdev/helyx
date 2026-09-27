@@ -336,6 +336,135 @@ defmodule Helyx.TUI.ViewModelTest do
     assert ViewModel.apply(vm, unknown) == vm
   end
 
+  # A value from a newer Core in a known event type (ADR 0006, section 5).
+  defmodule NewBlock do
+    @moduledoc false
+    defstruct [:data]
+  end
+
+  test "a message_update with a new data key leaves the view model unchanged" do
+    vm = fold([{:agent_start, %{}}, {:message_start, %{message: assistant([])}}])
+
+    update = %Event{
+      type: :message_update,
+      session_id: "s",
+      turn_id: "t",
+      seq: 3,
+      data: %{signature_delta: "x"}
+    }
+
+    assert ViewModel.apply(vm, update) == %{vm | seq: 3}
+  end
+
+  test "a message_start or a message_end with a new role leaves the view model unchanged" do
+    vm = fold([{:agent_start, %{}}])
+    message = %Message{role: :from_a_newer_core, content: [%Message.Text{text: "x"}]}
+
+    for {type, seq} <- [message_start: 2, message_end: 3] do
+      event = %Event{
+        type: type,
+        session_id: "s",
+        turn_id: "t",
+        seq: seq,
+        data: %{message: message}
+      }
+
+      assert ViewModel.apply(vm, event) == %{vm | seq: seq}
+    end
+  end
+
+  test "a new block kind in an assistant message is dropped, so it never reaches the screen" do
+    vm =
+      fold([
+        {:message_start, %{message: assistant([])}},
+        {:message_end, %{message: assistant([%NewBlock{data: 1}, %Message.Text{text: "hi"}])}}
+      ])
+
+    assert [%Message{content: [%Message.Text{text: "hi"}]}] = vm.cells
+    assert Helyx.TUI.transcript_lines(vm, 80) != []
+  end
+
+  test "a snapshot partial of a new role does not show" do
+    snapshot = %Helyx.Session.Snapshot{
+      seq: 1,
+      messages: [],
+      turn: %{id: "t", partial: %Message{role: :from_a_newer_core, content: []}, running: []},
+      model: "test/model",
+      queue: %{steers: 0, follow_ups: 0}
+    }
+
+    assert ViewModel.from_snapshot(snapshot).streaming == nil
+  end
+
+  test "a snapshot drops a message of a new role and a new block kind" do
+    snapshot = %Helyx.Session.Snapshot{
+      seq: 4,
+      messages: [
+        user("hi"),
+        %Message{role: :from_a_newer_core, content: []},
+        assistant([%NewBlock{data: 1}, %Message.Text{text: "done"}])
+      ],
+      turn: %{
+        id: "t",
+        partial: assistant([%NewBlock{data: 2}, %Message.Text{text: "more"}]),
+        running: []
+      },
+      model: "test/model",
+      queue: %{steers: 0, follow_ups: 0}
+    }
+
+    vm = ViewModel.from_snapshot(snapshot)
+
+    assert [%Message{role: :user}, %Message{content: [%Message.Text{text: "done"}]}] = vm.cells
+    assert vm.streaming == [%Message.Text{text: "more"}]
+    assert Helyx.TUI.transcript_lines(vm, 80) != []
+  end
+
+  test "a known type with a missing required field still crashes" do
+    event = %Event{type: :message_start, session_id: "s", turn_id: "t", seq: 1, data: %{}}
+    assert_raise FunctionClauseError, fn -> ViewModel.apply(ViewModel.new("m"), event) end
+  end
+
+  test "an agent_end with the stop reason error and no error field crashes" do
+    event = %Event{
+      type: :agent_end,
+      session_id: "s",
+      turn_id: "t",
+      seq: 1,
+      data: %{stop_reason: :error}
+    }
+
+    assert_raise CaseClauseError, fn -> ViewModel.apply(ViewModel.new("m"), event) end
+  end
+
+  test "a message_update with a known delta key of another type, or two known keys, crashes" do
+    vm = fold([{:message_start, %{message: assistant([])}}])
+
+    for data <- [
+          %{tool_call: "not a call"},
+          %{text_delta: 42},
+          %{thinking_delta: nil},
+          %{text_delta: "a", tool_call: "bad"}
+        ] do
+      event = %Event{type: :message_update, session_id: "s", turn_id: "t", seq: 2, data: data}
+      assert_raise CaseClauseError, fn -> ViewModel.apply(vm, event) end
+    end
+  end
+
+  test "the deltas of a message of a new role do not show" do
+    message = %Message{role: :from_a_newer_core, content: []}
+
+    vm =
+      fold([
+        {:message_start, %{message: message}},
+        {:message_update, %{text_delta: "hidden"}},
+        {:message_end, %{message: message}}
+      ])
+
+    assert vm.streaming == nil
+    assert vm.cells == []
+  end
+
   test "a model change updates the model" do
     vm = fold(model_change: %{model: "other/model"})
     assert vm.model == "other/model"

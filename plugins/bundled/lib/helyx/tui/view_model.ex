@@ -80,13 +80,28 @@ defmodule Helyx.TUI.ViewModel do
     :harness_session
   ]
 
-  @doc """
-  Folds one event into the view model. Core makes every event from checked
-  data, so the fold trusts the shapes of the event types it knows. An event
-  of a known type and another shape is a bug in Core and crashes the TUI.
+  @delta_keys [:text_delta, :thinking_delta, :tool_call]
 
-  An event of an unknown type, from a newer Core, leaves the view model
-  unchanged: a client ignores an unknown event type (ADR 0006, section 5).
+  @doc """
+  Folds one event into the view model. A client ignores what it does not
+  know (ADR 0006, section 5), so a newer Core does not crash the TUI:
+
+    * an event of an unknown type leaves the view model unchanged, `seq`
+      included
+    * a `message_update` with no delta key that the TUI knows (an empty data
+      map included: it has the shape of a new delta kind), and a
+      `message_start` or `message_end` whose message has a role that the TUI
+      does not show, are ignored
+    * a delta with no open assistant message, such as one of a message of a
+      new role, is dropped
+    * a block kind that the TUI does not render is dropped from an assistant
+      message before the message becomes a cell
+
+  For the other ignored events only `seq` moves. A known type with a missing
+  required field, such as a `message_start` with no message, is a bug in
+  Core and crashes the TUI. So do a `message_update` with a delta key that
+  the TUI knows and a value of another type, a `message_update` with two
+  such keys, and a block of an assistant message that is not a struct.
   """
   @spec apply(t(), Event.t()) :: t()
   def apply(%__MODULE__{seq: seq} = vm, %Event{seq: event_seq}) when event_seq <= seq, do: vm
@@ -105,7 +120,7 @@ defmodule Helyx.TUI.ViewModel do
       %{stop_reason: :error, error: error} ->
         add_cell(vm, {:notice, "error: " <> error_text(error)})
 
-      %{stop_reason: _other} ->
+      %{stop_reason: other} when other != :error ->
         vm
     end
   end
@@ -113,22 +128,23 @@ defmodule Helyx.TUI.ViewModel do
   # The TUI shows a turn only through its messages, and a user message
   # when it ends.
   defp fold(vm, %Event{type: type}) when type in [:turn_start, :turn_end], do: vm
-  defp fold(vm, %Event{type: :message_start, data: %{message: %Message{role: :user}}}), do: vm
 
   defp fold(vm, %Event{type: :message_start, data: %{message: %Message{role: :assistant}}}) do
     %{vm | streaming: []}
   end
 
-  defp fold(vm, %Event{type: :message_update, data: %{text_delta: delta}}) do
-    stream(vm, {:text_delta, delta})
-  end
+  defp fold(vm, %Event{type: :message_start, data: %{message: %Message{}}}), do: vm
 
-  defp fold(vm, %Event{type: :message_update, data: %{thinking_delta: delta}}) do
-    stream(vm, {:thinking_delta, delta})
-  end
-
-  defp fold(vm, %Event{type: :message_update, data: %{tool_call: %Message.ToolCall{} = call}}) do
-    stream(vm, {:tool_call, call})
+  # Core sends one delta key for each update. An update with no known key
+  # has a delta kind from a newer Core, so it is ignored; a known key with
+  # another value, or two known keys, is a bug in Core and crashes.
+  defp fold(vm, %Event{type: :message_update, data: data}) do
+    case Map.to_list(Map.take(data, @delta_keys)) do
+      [] -> vm
+      [{:text_delta, delta}] when is_binary(delta) -> stream(vm, {:text_delta, delta})
+      [{:thinking_delta, delta}] when is_binary(delta) -> stream(vm, {:thinking_delta, delta})
+      [{:tool_call, %Message.ToolCall{} = call}] -> stream(vm, {:tool_call, call})
+    end
   end
 
   defp fold(vm, %Event{type: :message_end, data: %{message: %Message{role: :user} = message}}) do
@@ -136,8 +152,10 @@ defmodule Helyx.TUI.ViewModel do
   end
 
   defp fold(vm, %Event{type: :message_end, data: %{message: %Message{role: :assistant} = message}}) do
-    add_cell(%{vm | streaming: nil}, message)
+    add_cell(%{vm | streaming: nil}, rendered_blocks(message))
   end
+
+  defp fold(vm, %Event{type: :message_end, data: %{message: %Message{}}}), do: vm
 
   defp fold(vm, %Event{
          type: :tool_execution_start,
@@ -180,7 +198,9 @@ defmodule Helyx.TUI.ViewModel do
   each message makes the cell its events make live, and after an assistant
   message comes a closed tool cell for each of its calls that has a
   result. Notices and the partial reply of an aborted or failed turn are
-  not in the transcript, so a snapshot has none of them.
+  not in the transcript, so a snapshot has none of them. A message of a
+  role that the TUI does not show makes no cell, and a block kind that it
+  does not render is dropped, as in `apply/2`.
 
   The started calls are the first calls with no result, in call order: a
   local turn runs its calls one at a time, and an external turn starts
@@ -211,7 +231,9 @@ defmodule Helyx.TUI.ViewModel do
   defp started(nil), do: 0
   defp started(%{running: ids}), do: length(ids)
 
-  defp streaming(%{partial: %Message{content: content}}), do: Enum.reverse(content)
+  defp streaming(%{partial: %Message{role: :assistant} = partial}),
+    do: Enum.reverse(rendered_blocks(partial).content)
+
   defp streaming(_no_partial), do: nil
 
   defp history(messages, started) do
@@ -221,12 +243,13 @@ defmodule Helyx.TUI.ViewModel do
         calls = for %Message.ToolCall{} = call <- content, do: call
         {mine, rest} = Enum.split(results, length(calls))
         {cells, open_left} = tool_cells(calls, mine, open_left)
-        {[message | cells], {rest, open_left}}
+        {[rendered_blocks(message) | cells], {rest, open_left}}
 
       %Message{role: :user} = message, acc ->
         {[message], acc}
 
-      %Message{role: :tool_result}, acc ->
+      # A tool result shows in its call's cell; a new role does not show.
+      %Message{}, acc ->
         {[], acc}
     end)
     |> elem(0)
@@ -251,7 +274,7 @@ defmodule Helyx.TUI.ViewModel do
             [call | rest] -> {Map.put(results, call, result), Map.put(open, id, rest), index}
           end
 
-        %Message{role: :user}, acc ->
+        %Message{}, acc ->
           acc
       end)
 
@@ -321,7 +344,21 @@ defmodule Helyx.TUI.ViewModel do
   # text shows as text, not as a list of bytes.
   defp error_text(error), do: error |> inspect(binaries: :as_strings) |> cut_line()
 
-  defp stream(vm, delta), do: %{vm | streaming: Message.add_block(vm.streaming || [], delta)}
+  # The blocks that `Helyx.TUI` renders in an assistant message: keep this
+  # list and its `block_lines/2` clauses the same. A newer Core can add a
+  # block kind, and an image block has no rendering; the TUI drops both
+  # here, so the render path never meets them.
+  defp rendered_blocks(%Message{content: content} = message) do
+    %{message | content: Enum.filter(content, &rendered_block?/1)}
+  end
+
+  # A block that is not a struct is a bug in Core and crashes.
+  defp rendered_block?(%kind{}), do: kind in [Message.Text, Message.Thinking, Message.ToolCall]
+
+  # A delta with no open message is part of a message that the TUI does
+  # not show, such as one of a new role, so it is dropped.
+  defp stream(%{streaming: nil} = vm, _delta), do: vm
+  defp stream(vm, delta), do: %{vm | streaming: Message.add_block(vm.streaming, delta)}
 
   defp add_cell(vm, cell), do: %{vm | cells: vm.cells ++ [cell]}
 
