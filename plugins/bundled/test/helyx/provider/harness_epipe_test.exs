@@ -94,29 +94,6 @@ defmodule Helyx.Provider.HarnessEpipeTest do
       match?({:queue_size, n} when n > 0, Port.info(port, :queue_size))
   end
 
-  # Runs the stream in a process that does not trap exits, as the hands'
-  # Task does not.
-  defp run(provider, model, on_command) do
-    test = self()
-
-    {pid, ref} =
-      spawn_monitor(fn ->
-        hands(on_command)
-        context = %Helyx.Context{messages: [Message.user(@big)]}
-        {:ok, stream} = provider.stream(model, context, cwd: File.cwd!())
-        send(test, {:events, Enum.to_list(stream)})
-      end)
-
-    receive do
-      {:events, events} -> events
-      {:DOWN, ^ref, :process, _pid, reason} -> flunk("the stream ended on #{inspect(reason)}")
-    after
-      5_000 ->
-        Process.exit(pid, :kill)
-        flunk("the stream did not end")
-    end
-  end
-
   # The connected provider runs in a process that does not trap exits, as
   # the harness process does not. Its turn writes the prompt, and the
   # port's `:DOWN` stops it.
