@@ -13,7 +13,7 @@ The user has given standing permission to merge to master when every gate in ste
 
 `gh issue list --label ready-for-agent --state open`. Read each ticket's "Blocked by". The frontier is every ticket whose blockers are closed. Skip a ticket that says it must run alone until no other branch is open, then run it alone.
 
-At most two workers at one time. Parallel precommit runs slow each other down more than they gain.
+At most three workers at one time. The merge gate is not the limit (about 10 to 15 minutes a ticket); the workers are. On 2026-09-27, five workers on 10 cores and 16 GiB made the load average pass 200, and wall-clock tests failed in other worktrees. More workers add load, not merges.
 
 ## 2. Start a worker
 
@@ -25,12 +25,14 @@ Every brief also says:
 - Never print the machine environment (`System.get_env/0`, `env`, `printenv`) in a test, an assertion message, or a review probe. Put this rule in every review brief.
 - Report a wider scope before the next review round when a fix passes 100 code lines.
 - A bound that the docs state must also hold in the render path, not only at the entry points.
+- The limits of `/ship`: at most three rounds, a round with no reproduced defect ends the loop, and at most 45 minutes of work. At the limit, commit only reviewed code and report what is open.
+- No CPU load generator and no mutation run over a whole suite in any probe: other worktrees run tests on this machine. Put this rule in every review brief.
 
 A worker that stopped before its final report (a usage limit, a wait for its own agents) is resumed with SendMessage. Do not start a second worker for the ticket.
 
 ## 3. Codex review
 
-In the worker's worktree, in the foreground:
+`/ship` already ran Codex in its first round. This run is the gate on the final code. In the worker's worktree, in the foreground:
 
 ```bash
 codex_dir=$(/bin/ls -d "$HOME"/.claude/plugins/cache/openai-codex/codex/*/ | sort -V | /usr/bin/tail -n 1)
