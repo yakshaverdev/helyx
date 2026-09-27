@@ -135,7 +135,7 @@ defmodule Helyx.Session.Harness do
     end
   end
 
-  # Helyx tool requests arrive with #201; until then no tool request is
+  # Helyx tool requests arrive with #203; until then no tool request is
   # open, so there is nothing to cancel.
   defp action({:cancel_tool, turn_id, call_id}, harness)
        when is_binary(turn_id) and is_binary(call_id),

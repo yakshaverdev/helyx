@@ -54,7 +54,7 @@ defmodule Helyx.Session do
   that the harness got interrupts it there; the abort returns after the
   answer, or after the harness process stopped. A model or provider switch
   closes the harness process before the next turn, and so does the end of
-  the session. Until #200, a steer on a connected turn waits for the next
+  the session. Until #202, a steer on a connected turn waits for the next
   turn, as a follow-up.
 
   An abort does not block the session. The session ends the turn at once and

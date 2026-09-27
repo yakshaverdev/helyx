@@ -7,6 +7,8 @@ defmodule Helyx.Test.WatchdogHarness do
   #   "block"  the turn callback blocks, so the armed kill stops the harness
   #   "flood"  the turn writes twice the watchdog stdin cap to the program,
   #            which never reads its stdin
+  #   "idle"   the turn answers :ok and ends, so the harness process is idle
+  #   other    the turn answers :ok and never ends
   @behaviour Helyx.Provider
 
   def pid_path(session_id), do: Path.join(System.tmp_dir!(), "helyx-wdh-#{session_id}.pid")
@@ -46,6 +48,11 @@ defmodule Helyx.Test.WatchdogHarness do
   def harness_request({:turn, _turn_id, _context}, from, %{model: "flood", port: port} = state) do
     Helyx.Watchdog.write(port, :binary.copy("x", 2 * Helyx.Watchdog.stdin_max_bytes()))
     {:ok, [{:reply, from, :ok}], state}
+  end
+
+  def harness_request({:turn, turn_id, _context}, from, %{model: "idle"} = state) do
+    done = {:done, %{stop_reason: :end_turn, usage: %{}}}
+    {:ok, [{:reply, from, :ok}, {:event, turn_id, done}], state}
   end
 
   def harness_request(_request, from, state), do: {:ok, [{:reply, from, :ok}], state}

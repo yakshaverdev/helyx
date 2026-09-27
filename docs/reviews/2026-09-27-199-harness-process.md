@@ -32,11 +32,11 @@ Skipped, judgement calls: the repeated base opts (the lists differ per path); th
 
 Fixed:
 
-- The row "steer in the local queue of a `preparing` turn" is not built: the ticket queues every steer on a connected turn as a follow-up. The "Built in #199" section says so and names #200.
+- The row "steer in the local queue of a `preparing` turn" is not built: the ticket queues every steer on a connected turn as a follow-up. The "Built in #199" section says so and names #202.
 - The feature doc said "a reply that the loop made in time is never a timeout", but `:timer.cancel/1` cannot tell if the kill already fired. The section now states the exception: a reply at the bound can be followed by the kill, and the turn then fails at `:harness_down`.
 - The abort in `submitting` did not check the late reply of the aborted turn. The test now runs a next turn and checks that the old reply and events are dropped.
 
-Accepted: the cap of 8 open requests comes with #200 (at most two requests are open until the steer); the test of a callback killed while the hands are busy suspends the hands, which is stronger than a real release wait; a normal end runs no cleanup until #201.
+Accepted: the cap of 8 open requests comes with #202 (at most two requests are open until the steer); the test of a callback killed while the hands are busy suspends the hands, which is stronger than a real release wait; a normal end runs no cleanup until #203.
 
 ### Failure path
 
@@ -105,4 +105,9 @@ Round 3 changed only tests and Markdown, so there is no rerun round.
 
 ## Invariant
 
-No turn of a connected provider submits to a new harness process, and no new harness process starts, while the hands still hold the handles of an ended one; every harness request, the connect, and the prepare Task are bounded by a kill armed at the OTP timer server; the session never waits in a call for hands that release a harness process. Entry points: `Helyx.Session.Harness.request/3`, `Hands.connect/3`, `Hands.prepare/3`, and `await_ended_harness/1` before a turn starts. Documented exceptions: a harness process that ends after the alive check, or a kill that follows a reply at the bound, fails the turn that started on it at its `:harness_down`. Deferred: the cap of 8 open requests and the steer of a `preparing` turn (#200), turn cleanup at a normal end (#201).
+No turn of a connected provider submits to a new harness process, and no new harness process starts, while the hands still hold the handles of an ended one; every harness request, the connect, and the prepare Task are bounded by a kill armed at the OTP timer server; the session never waits in a call for hands that release a harness process. Entry points: `Helyx.Session.Harness.request/3`, `Hands.connect/3`, `Hands.prepare/3`, and `await_ended_harness/1` before a turn starts. Documented exceptions: a harness process that ends after the alive check, or a kill that follows a reply at the bound, fails the turn that started on it at its `:harness_down`. Deferred: the cap of 8 open requests and the steer of a `preparing` turn (#202), turn cleanup at a normal end (#203).
+
+## Follow-up from the orchestrator
+
+- Ticket numbers: steer delivery is #202 and the Helyx tools are #203 (#200 is the Claude Code provider, #201 the Codex provider). The references to #200 and #201 in the "Built in #199" section, this record, and the code comments now name #202 and #203.
+- The hands crash at a Core stop with an open harness process: the Core stops the session supervisor, then the task supervisor. The session closes an idle harness process in `terminate/2`, and the hands can take its `:closed` end after the task supervisor stopped, so `release/3` fails in `Task.Supervisor.async` and the hands log a crash. It showed 3 times in the root precommit log with `Helyx.Test.Connected`. Nothing leaks: the harness process owns the port through the keeper of `Helyx.HarnessIO.keep_port/1`, which closes it when the harness process ends, and the watchdog then ends the group. Two new tests in `plugins/bundled` stop the Core with a real program under the watchdog, one with an idle harness process and one during a turn; in both the group is gone (3 of 3 runs each). The feature doc states it as a documented exception in Bounds and Ownership; the shutdown order gets its own ticket. Only tests and Markdown changed, so there is no rerun round.

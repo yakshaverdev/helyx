@@ -128,7 +128,7 @@ defmodule Helyx.Session.Server do
     {:reply, {:error, :turn_running}, state}
   end
 
-  # A connected turn takes no steer yet (#200): the steer waits for the next
+  # A connected turn takes no steer yet (#202): the steer waits for the next
   # turn, as a follow-up.
   def handle_call({:steer, text}, _from, %State{turn: %Turn{turn_mode: :connected}} = state) do
     queue_reply(state, :follow_ups, text)
