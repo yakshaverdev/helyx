@@ -611,6 +611,56 @@ defmodule Helyx.Provider.CodexTest do
     assert runs(bin) == "2"
   end
 
+  # A completion with a status that does not end the item.
+  @not_ended %{status: "inProgress", exitCode: nil}
+
+  test "an inProgress completion of a command stops the harness process before the turn's end",
+       %{bin: bin, work: work} do
+    fresh(bin, 1, @tid, [
+      started(@tid, command("exec-1", %{status: "inProgress"})),
+      completed(@tid, command("exec-1", @not_ended)),
+      turn_end(@tid, "completed")
+    ])
+
+    # The stop drops the events of its chunk, the tool call included.
+    assert run_direct([Message.user("go")], work) ==
+             [{:harness_session, @tid, 0}, {:stop, :item_not_ended}]
+  end
+
+  test "a command start with no turn id or no string id stops the harness process",
+       %{bin: bin, work: work} do
+    starts = [
+      note(@tid, "item/started", %{item: command("exec-1", %{status: "inProgress"})}),
+      started(@tid, command(7, %{status: "inProgress"}))
+    ]
+
+    # One program run per start.
+    for {start, n} <- Enum.with_index(starts, 1) do
+      fresh(bin, n, @tid, [start, turn_end(@tid, "completed")])
+
+      assert run_direct([Message.user("go")], work) ==
+               [{:harness_session, @tid, 0}, {:stop, :item_malformed}]
+    end
+  end
+
+  test "an inProgress completion of a command ends the turn, so an abort sends no turn/interrupt",
+       %{bin: bin} = ctx do
+    pidfile = Path.join(bin, "pid")
+    line = Path.join(bin, "line")
+    File.write!(line, completed(@tid, command("exec-1", @not_ended)) <> "\n")
+    running = [started(@tid, command("exec-1", %{status: "inProgress"}))]
+    fresh(bin, 1, @tid, running, own_group_command(pidfile, ~s(cat "#{line}")))
+
+    session = start(ctx)
+
+    assert [%{stop_reason: :error, error: {:harness_stop, :item_not_ended}}] =
+             of_type(prompt(session, "go"), :agent_end)
+
+    refute os_alive?(wait_for_pid(pidfile))
+    :ok = Session.abort(session)
+    assert request(bin, 1, "turn/interrupt") == nil
+  end
+
   # A tool item that never completes. It is not a command, because an open
   # command at the turn's end stops the harness process.
   @search %{type: "webSearch", id: "b", query: "x", status: "inProgress"}

@@ -153,6 +153,20 @@ The reproduction passes for the statuses `completed`, `interrupted`, and `failed
 
 **Open**, not fixed: the research note has no run of sub-agent threads or of these item types, and each fix changes a documented design (the thread filter, and "the turn's end sends what is held"). Recorded in "Built in #201"; they wait for an owner decision and a run with the real program.
 
+## Codex round 2
+
+One confirmed finding: the `item/completed` clause removed a command from `commands` whatever its status, so an `item/completed` with `status: "inProgress"` emptied the set; the turn's end then kept the program, and the abort check passed. **Fixed at the mechanism**: every tool item's `item/completed` goes through one status check (`ended?/1`, the schema's final statuses per type, research note) before any state changes; any other status, a missing one included, stops the harness process with `:item_not_ended`. Tests: "an inProgress completion of a command stops the harness process before the turn's end" and "an inProgress completion of a command ends the turn, so an abort sends no turn/interrupt"; both fail without the fix. #224 holds the two open holes of round 5.
+
+## Round 6 (reduced rerun, as the orchestrator set)
+
+The fix is 49 lines in one code file and adds functions, so the ship rules call for a full round; the orchestrator set one reduced round (spec and failure path) as the last Codex round. Bounds sensor: skipped, as before. Base: `ae9585d`. Both briefs asked for another program value that the provider trusts when it clears live-work state.
+
+### Spec: 1 finding (the same path as below)
+
+### Failure path: the reproduction passes, 1 finding
+
+Both agents found the same path: a `commandExecution` `item/started` with no string `turnId`, or with a non-string `id`, fell to a catch-all and was dropped, so the command never entered `commands`; the turn ended `:end_turn` and the next turn ran on the same program while the command ran (reproduced with the fake program). **Fixed**: a tool item's `item/started` or `item/completed` with no string `turnId` or item `id` stops the harness process with `:item_malformed`. Test: "a command start with no turn id or no string id stops the harness process". No further round: this was the last round the orchestrator set. The failure-path agent also named a line with no `threadId` (not reproduced); it is dropped with the other threads' lines, as in #224.
+
 ## Precommit
 
-`mise exec -- mix precommit` passed: root 267 tests, `plugins/bundled` 385 tests and 1 property, `apps/coding_agent` 17 tests, 0 failures, no warnings, Credo and Dialyzer clean.
+`mise exec -- mix precommit` passed: root 267 tests, `plugins/bundled` 388 tests and 1 property, `apps/coding_agent` 17 tests, 0 failures, no warnings, Credo and Dialyzer clean. The first run after round 6 failed one root test, `hands_test.exs:163` ("cancel releases with :cancel ..."), which this branch does not touch; it passed 20 of 20 alone, and the second run passed.

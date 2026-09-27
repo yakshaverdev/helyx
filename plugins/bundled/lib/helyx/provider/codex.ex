@@ -45,7 +45,10 @@ defmodule Helyx.Provider.Codex do
   the turn and a pending interrupt then fail with the stop. A `turn/started`
   with a new id while no `turn/start` of the running turn is open, a
   `turn/completed` of a turn whose id is not known, and an item of a turn
-  that is not the running one stop the harness process. `:close` ends
+  that is not the running one stop the harness process, and so does an
+  `item/completed` of a tool item whose status does not end the item
+  (such as `inProgress`, or none where the schema has one) or a tool
+  item's start or end with no string turn id or item id. `:close` ends
   the input and answers `:ok` at the exit.
 
   A command or file change approval request is accepted; every other
@@ -146,6 +149,16 @@ defmodule Helyx.Provider.Codex do
   # Item types that run something (see the research note).
   @tool_item_types ~w(commandExecution fileChange mcpToolCall dynamicToolCall collabAgentToolCall
             webSearch imageView imageGeneration)
+  # The statuses that end a tool item, from the schema of codex 0.157.1
+  # (research note). `imageGeneration` has a free string: every value but
+  # `inProgress` ends it. A type with no status ends at its `item/completed`.
+  @ended %{
+    "commandExecution" => ~w(completed failed declined),
+    "fileChange" => ~w(completed failed declined),
+    "mcpToolCall" => ~w(completed failed),
+    "dynamicToolCall" => ~w(completed failed),
+    "collabAgentToolCall" => ~w(completed failed interrupted)
+  }
   @trust %{approvalPolicy: "never", sandbox: "danger-full-access"}
 
   @impl true
@@ -466,6 +479,14 @@ defmodule Helyx.Provider.Codex do
       {:codex, @methods[id],
        HarnessIO.cap_error(error_message(response) || "unexpected response")}
 
+  # The start or end of a tool item with no string turn id or item id can
+  # hide work that runs, so the harness process stops.
+  defp turn_notification(method, %{"item" => %{"type" => type} = item} = params, state)
+       when method in ["item/started", "item/completed"] and type in @tool_item_types and
+              not (is_map_key(params, "turnId") and is_binary(:erlang.map_get("turnId", params)) and
+                     is_map_key(item, "id") and is_binary(:erlang.map_get("id", item))),
+       do: {[], %{state | done?: true, terminal: {:error, :item_malformed}}}
+
   defp turn_notification("turn/started", %{"turn" => %{"id" => turn}}, state)
        when is_binary(turn),
        do:
@@ -556,11 +577,36 @@ defmodule Helyx.Provider.Codex do
       else: {[{:text_delta, text}], state}
   end
 
+  # An `item/completed` whose status does not end its item leaves the work
+  # running with no record of it, so the harness process stops.
+  defp notification("item/completed", %{"item" => %{"type" => type, "id" => id} = item}, state)
+       when type in @tool_item_types and is_binary(id) do
+    if ended?(item),
+      do: completed(item, state),
+      else: {[], %{state | done?: true, terminal: {:error, :item_not_ended}}}
+  end
+
+  defp notification("thread/tokenUsage/updated", %{"tokenUsage" => %{"last" => usage}}, state)
+       when is_map(usage),
+       do: {[], %{state | usage: usage}}
+
+  defp notification(_method, _params, state), do: {[], state}
+
+  defp ended?(%{"type" => type, "status" => status}) when is_map_key(@ended, type),
+    do: status in @ended[type]
+
+  defp ended?(%{"type" => type}) when is_map_key(@ended, type), do: false
+
+  defp ended?(%{"type" => "imageGeneration", "status" => status}),
+    do: is_binary(status) and status != "inProgress"
+
+  defp ended?(%{"type" => "imageGeneration"}), do: false
+  defp ended?(_item), do: true
+
   # The first result of a message's calls closes it; the results of its
   # other calls follow. A tool item that completes with no start gets its
   # call first.
-  defp notification("item/completed", %{"item" => %{"type" => type, "id" => id} = item}, state)
-       when type in @tool_item_types and is_binary(id) do
+  defp completed(%{"type" => type, "id" => id} = item, state) do
     state = %{state | commands: command(state.commands, type, &MapSet.delete(&1, id))}
 
     {calls, state} =
@@ -577,12 +623,6 @@ defmodule Helyx.Provider.Codex do
       {[result], state}
     end
   end
-
-  defp notification("thread/tokenUsage/updated", %{"tokenUsage" => %{"last" => usage}}, state)
-       when is_map(usage),
-       do: {[], %{state | usage: usage}}
-
-  defp notification(_method, _params, state), do: {[], state}
 
   defp command(commands, "commandExecution", fun), do: fun.(commands)
   defp command(commands, _type, _fun), do: commands
