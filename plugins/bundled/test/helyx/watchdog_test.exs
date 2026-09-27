@@ -271,11 +271,23 @@ defmodule Helyx.WatchdogTest do
 
       for _ <- 1..3 do
         true = Port.command(port, part)
-        assert "" = await(port, "", part)
+        await_bytes(port, byte_size(part))
       end
 
       true = Port.command(port, <<0>>)
       assert {"", 0} = collect(port, "")
+    end
+
+    # Reads exactly `n` bytes of output, in linear time. `cat` echoes only
+    # what it read, so the whole part has left the watchdog.
+    defp await_bytes(_port, 0), do: :ok
+
+    defp await_bytes(port, n) do
+      receive do
+        {^port, {:data, data}} when byte_size(data) <= n -> await_bytes(port, n - byte_size(data))
+      after
+        5_000 -> flunk("#{n} bytes of output did not arrive")
+      end
     end
 
     test "start/3 counts the input in bytes, multibyte included" do

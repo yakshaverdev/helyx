@@ -179,7 +179,7 @@ defmodule Helyx.Watchdog do
 
   # The most open input that the command has not read, in the watchdog
   # (#196). Public for the tests.
-  @stdin_max_bytes 1024 * 1024
+  @stdin_max_bytes 16 * 1024 * 1024
 
   @doc false
   def stdin_max_bytes, do: @stdin_max_bytes

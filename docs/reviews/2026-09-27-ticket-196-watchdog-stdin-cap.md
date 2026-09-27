@@ -1,12 +1,12 @@
 # Review: the stdin cap of the watchdog (#196)
 
-Base: `origin/master` at `494922f`. Three rounds: the first and complete round, then two reduced rounds.
+Base: `origin/master` at `494922f`. Four rounds: the first and complete round, then three reduced rounds. Round 4 follows the owner decision on the cap.
 
 ## Change
 
-The perl watchdog in `Helyx.Watchdog` gets a fifth argument, the cap of open input that the command has not read: 1,048,576 bytes (`@stdin_max_bytes`). After each read of its stdin for open input, when its buffer is over the cap, the watchdog stops the group as at the end of its stdin (TERM, up to the grace, KILL, reap) and exits as at the command's own end: a failed `exec` report first, else the command's status. The two stop paths share the perl subs `stop` and `finish`. Counted input has no cap: its count bounds it.
+The perl watchdog in `Helyx.Watchdog` gets a fifth argument, the cap of open input that the command has not read: 16,777,216 bytes (`@stdin_max_bytes`, 16 MiB, the same as the harness stdout line cap). After each read of its stdin for open input, when its buffer is over the cap, the watchdog stops the group as at the end of its stdin (TERM, up to the grace, KILL, reap) and exits as at the command's own end: a failed `exec` report first, else the command's status. The two stop paths share the perl subs `stop` and `finish`. Counted input has no cap: its count bounds it.
 
-Invariant: for open input, the watchdog holds at most 1,048,576 bytes plus one read (65,536) that the command has not read before it stops the group. The entry point is the watchdog's read of its stdin, the only place that adds to its buffer. Accepted hole, documented in `coding-agent.md`: the cap counts bytes, not time, so one write larger than the cap stops even a command that reads, when the watchdog takes the write faster than the command reads it. A Claude Code prompt of about 600 KB or more, or a Codex prompt near 1 MiB, can stop the program. The prompt has no byte bound.
+Invariant: for open input, the watchdog holds at most 16,777,216 bytes plus one read (65,536) that the command has not read before it stops the group. The entry point is the watchdog's read of its stdin, the only place that adds to its buffer. Accepted hole, documented in `coding-agent.md`: a single write over 16 MiB of unread input stops the program, even one that reads. Only a stuck program or a prompt near 16 MiB reaches it (the prompt has no byte bound), and the turn then fails with the exit error.
 
 ## Bounds sensor
 
@@ -30,8 +30,8 @@ Four agents: reuse, simplification, efficiency, altitude.
 
 ### Spec
 
-- Fixed (docs): the buffer can hold one read over the cap before the check (at most 1,114,112 bytes); the exit error applies unless a terminal came first (#167); the prompt limit differs for Claude Code (replay and prompt) and Codex (prompt alone).
-- Reported, not fixed: the accepted hole has no ticket. A prompt of about 600 KB or more worked before this change. See "Open decision".
+- Fixed (docs): the buffer can hold one read over the cap before the check (at most 1,114,112 bytes with the first cap of 1 MiB); the exit error applies unless a terminal came first (#167); the prompt limit differs for Claude Code (replay and prompt) and Codex (prompt alone).
+- Reported, not fixed: the accepted hole has no ticket. A prompt of about 600 KB or more worked before this change. See "Owner decision".
 
 ### Failure path
 
@@ -51,6 +51,13 @@ Fix diff: 0 code lines (tests and Markdown only). Spec and failure-path agents.
 - Spec: 1 doc finding, fixed: the long-lived harness Bounds row now names the read and the pipe on top of the cap.
 - Failure path: no findings. The pipe reproduction passed 10 repeats; probes of TERM, KILL, and background members found only the documented hole of a command that exits first.
 
-## Open decision
+## Owner decision
 
-The prompt has no byte bound, and a single write over the cap stops even a command that reads. The owner decides whether to bound the prompt at the client boundary, to give the watchdog back-pressure instead of a stop, or to accept the hole with a ticket.
+After round 3 the first cap, 1 MiB, could stop Claude Code at a prompt of about 600 KB, which worked before. The owner raised the cap to 16 MiB, the same as the harness stdout line cap: a real prompt and the resume replay (up to 400 KB, more after JSON escaping) must fit with room.
+
+## Round 4 (reduced)
+
+Fix diff: 1 code line in one file (the cap constant), no new function, no spec change. Tests: the echo test waits by byte count (`await_bytes/2`), because the split of a growing binary took 8.8 s at 16 MiB; the file runs in 4.6 s again, so the cap needs no option. Spec and failure-path agents, briefed on the invariant.
+
+- Spec: 1 finding, fixed: this record still stated 1 MiB and an open decision. Note, not fixed: the "cap and 0 bytes" tests wait 500 ms; the failure-path agent measured the stop at about 60 ms with a smaller cap, so the window is wide enough.
+- Failure path: no findings. The stop over the cap came in 59 to 64 ms; the perl buffer has no quadratic cost (`cat` with 64 parts of 1 MiB: 35 ms); `await_bytes/2` cannot hang or pass falsely. Not measured: memory; a 16 MiB buffer can reach about 32 MiB in perl during a realloc.
