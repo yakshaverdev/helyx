@@ -42,7 +42,7 @@ Changed specs:
 
 When the call returns `{:error, :session_not_found}`, or the snapshot call exits on its timeout, `subscribe/1` removes the caller's registration for the id (`Registry.unregister/2`). This includes the registration of an earlier subscribe of the same process: the session is not running, or it did not answer, and a new subscribe replaces what the earlier one gave. After a timeout the exit goes on to the caller, and the caller subscribes again to get events.
 
-Accepted hole (open, #204): after a failed subscribe, an event can stay in the caller's mailbox. The session can send it to the new registration before it ends, or, on a timeout, between its read of the Registry and its send. The failed subscribe does not remove it. Within one session instance, a client drops it by `seq` once it has a snapshot. Across a resume or another Core with the same id, `seq` does not identify the event; #204 tracks this. The review record has the history (`docs/reviews/2026-09-27-188-session-not-found.md`).
+Accepted hole: after a failed subscribe, an event can stay in the caller's mailbox. The session can send it to the new registration before it ends, or, on a timeout, between its read of the Registry and its send. The failed subscribe does not remove it. A client drops it by `instance_id` and `seq` once it has a snapshot: an event of an earlier instance, or of another Core with the same id, has another `instance_id` (#204, `docs/features/session-instance.md`). The review record has the history (`docs/reviews/2026-09-27-188-session-not-found.md`).
 
 A text that is not UTF-8 still returns `{:error, :invalid_utf8}` before the call, and a model ref that does not resolve still returns its model error before the call. So these errors win over `:session_not_found`.
 
@@ -88,12 +88,12 @@ The text is fixed. A reason can hold a path, a module, or an exception message f
 
 ## Ownership
 
-No new resource. A subscribe to a session that is not running removes the caller's entry for the session in the events Registry before it returns. An event that the session sent before the removal stays in the caller's mailbox, and the caller owns it (the accepted hole, open in #204).
+No new resource. A subscribe to a session that is not running removes the caller's entry for the session in the events Registry before it returns. An event that the session sent before the removal stays in the caller's mailbox, and the caller owns it (the accepted hole). The client drops it by `instance_id` and `seq` (#204).
 
 ## Out of scope
 
 - The end signal, and a TUI that does not use `Session.pid/1`: ticket 2 of ADR 0006.
 - `contract_version` in the snapshot: ticket 3.
 - A transport that uses `client_start_error/1`: the first remote transport.
-- Session instance identity: #204, which blocks #191. A resume reuses the session id and starts `seq` at 0, and two Cores can hold one id. An event does not name its Core or its instance, so a client cannot tell an event of an earlier instance or of another Core from a live one. A subscriber that keeps its registration past the end of a session gets the events of a resumed instance with the same id and compares their `seq` with the old snapshot; the TUI then monitors the new pid (`Session.pid/1`) against the old screen.
+- Session instance identity: #204, `docs/features/session-instance.md`. A resume reuses the session id and starts `seq` at 0, and two Cores can hold one id, so every event and snapshot carry an `instance_id`, and a client drops each event of another instance.
 - A text of `{:start_failed, text}` that names the reason. Add it when a person needs more than the log.

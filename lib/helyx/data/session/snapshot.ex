@@ -4,6 +4,9 @@ defmodule Helyx.Session.Snapshot do
   returns it.
 
     * `contract_version` – the version of the client contract, 1 now.
+    * `instance_id` – the id of the session instance. A client drops each
+      event with another `instance_id`: a resume keeps the session id and
+      starts `seq` at 0 again, and two Cores can hold one session id.
     * `seq` – the seq of the last event sent before the snapshot, 0 if none.
       A client drops each later event with a `seq` at or below it.
     * `messages` – the transcript, oldest first.
@@ -23,13 +26,14 @@ defmodule Helyx.Session.Snapshot do
   not render the session.
   """
 
-  @enforce_keys [:seq, :messages, :turn, :model, :queue]
-  defstruct [:seq, :messages, :turn, :model, :queue, contract_version: 1]
+  @enforce_keys [:instance_id, :seq, :messages, :turn, :model, :queue]
+  defstruct [:instance_id, :seq, :messages, :turn, :model, :queue, contract_version: 1]
 
   @type turn :: %{id: String.t(), partial: Helyx.Message.t() | nil, running: [String.t()]}
 
   @type t :: %__MODULE__{
           contract_version: pos_integer(),
+          instance_id: String.t(),
           seq: non_neg_integer(),
           messages: [Helyx.Message.t()],
           turn: turn() | nil,

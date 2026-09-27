@@ -23,6 +23,7 @@ The server owns the state, and the client only renders it (`AGENTS.md`, Project)
 ```elixir
 %Helyx.Session.Snapshot{
   contract_version: pos_integer(), # 1 now; the rules are in ADR 0006, section 5 (#190)
+  instance_id: String.t(),         # the session instance; events of another instance are dropped (#204)
   seq: non_neg_integer(),          # the seq of the last event sent before the snapshot; 0 if none
   messages: [Helyx.Message.t()],   # the transcript, oldest first
   turn: nil | %{
@@ -39,7 +40,7 @@ The order that makes it gap-free:
 
 1. `subscribe/1` registers the caller in the events Registry, as today.
 2. It then calls the session (`GenServer.call`, `{:snapshot}`) for the snapshot.
-3. The client applies the snapshot, then drops each event with `seq <= snapshot.seq` and applies the rest.
+3. The client applies the snapshot, then drops each event of another `instance_id` (#204) and each event with `seq <= snapshot.seq`, and applies the rest.
 
 The session sends its events from its own process in `seq` order, and the snapshot reply is built in the same process. So each event after the snapshot has a larger `seq` and reaches the client, which registered before the call. An event sent between the registration and the snapshot is in the snapshot and has a `seq` at or below it.
 

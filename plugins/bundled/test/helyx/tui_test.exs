@@ -363,6 +363,32 @@ defmodule Helyx.TUITest do
     assert live.cells == Enum.drop(vm.cells, -1)
   end
 
+  # The review of #188, round 4, spec item 1: the entry of the TUI stays
+  # across a stop and a resume with the same id, and the new instance starts
+  # `seq` at 0 again.
+  @tag :tmp_dir
+  test "an event of a resumed instance does not change the screen of the old one (#204)", %{
+    core: core,
+    tmp_dir: dir
+  } do
+    # The second reply has more deltas than the first turn has events, so
+    # its last events have a `seq` above the one of the old screen.
+    :ok = Fake.script(core, "again", [["first"], List.duplicate("second ", 20)])
+    {:ok, session} = Session.start(core, model: "fake/again", sessions_dir: dir, cwd: dir)
+    {:ok, state} = TUI.mount(session: session)
+    :ok = Session.prompt(session, "hi")
+    state = drain(state)
+
+    :ok =
+      DynamicSupervisor.terminate_child(Helyx.Core.session_supervisor(core), Session.pid(session))
+
+    assert_receive {:helyx_session_end, _id, :stopped}
+    {:ok, resumed} = Session.resume(core, sessions_dir: dir, cwd: dir)
+    :ok = Session.prompt(resumed, "again")
+
+    assert drain(state) == state
+  end
+
   test "mounting on a dead session exits instead of hanging", %{core: core} do
     :ok = Fake.script(core, "dead", [])
     {:ok, session} = Session.start(core, model: "fake/dead")
@@ -414,6 +440,7 @@ defmodule Helyx.TUITest do
           {:"$gen_call", from, {:snapshot}} ->
             GenServer.reply(from, %Session.Snapshot{
               contract_version: 2,
+              instance_id: "i",
               seq: 7,
               messages: [%Message{role: :user, content: [%Message.Text{text: "secret"}]}],
               turn: nil,
@@ -433,7 +460,15 @@ defmodule Helyx.TUITest do
     refute inspect(message) =~ "secret"
 
     # Session events and keys do nothing; Ctrl+C quits.
-    event = %Event{type: :agent_end, session_id: id, turn_id: "t", seq: 8, data: %{}}
+    event = %Event{
+      type: :agent_end,
+      session_id: id,
+      instance_id: "i",
+      turn_id: "t",
+      seq: 8,
+      data: %{}
+    }
+
     assert {:noreply, ^state} = TUI.handle_info({:helyx_event, event}, state)
     assert {:noreply, ^state} = TUI.handle_event(%Key{code: "enter", kind: "press"}, state)
     assert {:stop, _state} = TUI.handle_event(%Key{code: "c", modifiers: ["ctrl"]}, state)
@@ -679,7 +714,15 @@ defmodule Helyx.TUITest do
     end
 
     defp fold(state, type, data) do
-      event = %Event{type: type, session_id: "s", turn_id: "t", seq: state.vm.seq + 1, data: data}
+      event = %Event{
+        type: type,
+        session_id: "s",
+        instance_id: state.vm.instance_id,
+        turn_id: "t",
+        seq: state.vm.seq + 1,
+        data: data
+      }
+
       {:noreply, state} = TUI.handle_info({:helyx_event, event}, state)
       state
     end

@@ -120,7 +120,7 @@ A call can hold several handles; the hands hold them per Task, and every one is 
 
 - Message shape and session file format: see ADR 0001 and the section below.
 - Session files live under `~/.helyx/sessions/<project>/<session>.jsonl`.
-- Twelve events: `agent_start`, `agent_end`, `turn_start`, `turn_end`, `message_start`, `message_update`, `message_end`, `tool_execution_start`, `tool_execution_end`, `queue_update`, `model_change`, `harness_session`. Each carries the session id, the turn id (nil on the queue drain between turns and on every `model_change`), and a sequence number.
+- Twelve events: `agent_start`, `agent_end`, `turn_start`, `turn_end`, `message_start`, `message_update`, `message_end`, `tool_execution_start`, `tool_execution_end`, `queue_update`, `model_change`, `harness_session`. Each carries the session id, the session instance id (#204), the turn id (nil on the queue drain between turns and on every `model_change`), and a sequence number.
 
 ### Session file
 

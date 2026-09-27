@@ -8,7 +8,8 @@ defmodule Helyx.Session do
       {:ok, session} = Helyx.Session.start(core, model: "fake/echo")
       {:ok, snapshot} = Helyx.Session.subscribe(session)
       :ok = Helyx.Session.prompt(session, "hello")
-      # receive {:helyx_event, %Helyx.Event{}}, drop each seq <= snapshot.seq ...
+      # receive {:helyx_event, %Helyx.Event{}}, drop each event of another
+      # instance_id than the snapshot's, and each seq <= snapshot.seq ...
       # then {:helyx_session_end, id, reason} when the session ends
 
   Each turn runs the provider stream in a Task under Core's task supervisor,
@@ -209,9 +210,11 @@ defmodule Helyx.Session do
   Subscribes the caller to the session's events, delivered as
   `{:helyx_event, event}`, and returns the session's state as a
   `Helyx.Session.Snapshot`. The caller registers first and asks for the
-  snapshot second, so every event after the snapshot reaches it. An event
-  with a `seq` at or below `snapshot.seq` is already in the snapshot; the
-  caller drops it.
+  snapshot second, so every event after the snapshot reaches it. The caller
+  drops an event whose `instance_id` is not `snapshot.instance_id`: it is of
+  an earlier instance with the same id, which a resume makes, or of a
+  session with the same id in another Core. An event with a `seq` at or
+  below `snapshot.seq` is already in the snapshot; the caller drops it too.
 
   After its last event, the subscription gives at most one signal
   (`docs/features/end-signal.md`):
@@ -238,8 +241,8 @@ defmodule Helyx.Session do
   exits, through the link of the events Registry. A snapshot call that
   exits on its timeout also removes the registration, and the exit then
   goes on to the caller. An event that the session sent before it ended can
-  stay in the caller's mailbox; a client drops it by `seq` once it has a
-  snapshot. The other operations return `{:error, :session_not_found}` for
+  stay in the caller's mailbox; a client drops it by `instance_id` and
+  `seq` once it has a snapshot. The other operations return `{:error, :session_not_found}` for
   such a session too.
   """
   @spec subscribe(t()) :: {:ok, Helyx.Session.Snapshot.t()} | {:error, :session_not_found}

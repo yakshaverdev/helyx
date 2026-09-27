@@ -293,7 +293,11 @@ defmodule Helyx.TUI.ViewModelSnapshotTest do
     {:ok, snapshot} = Session.subscribe(session)
 
     assert %{seq: 0, messages: [], turn: nil, model: "fake/echo"} = snapshot
-    assert ViewModel.from_snapshot(snapshot) == ViewModel.new("fake/echo")
+
+    assert ViewModel.from_snapshot(snapshot) == %{
+             ViewModel.new("fake/echo")
+             | instance_id: snapshot.instance_id
+           }
   end
 
   # A client that joins after the turn ended shows the transcript cells of

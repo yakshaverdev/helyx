@@ -25,6 +25,10 @@ defmodule Helyx.TUI.ViewModel do
   first — the session's convention, shared through `Helyx.Message.add_block/2`
   — or nil when none is streaming.
 
+  `instance_id` is the session instance of the view model. `apply/2` drops
+  an event of another instance: a resume keeps the session id and starts
+  `seq` at 0 again, and two Cores can hold one session id (#204).
+
   `seq` is the seq of the last event in the view model: `apply/2` drops an
   event at or below it, so an event that `from_snapshot/1` already holds
   does not show twice.
@@ -37,6 +41,7 @@ defmodule Helyx.TUI.ViewModel do
   @render_max_bytes 8_192
 
   defstruct model: nil,
+            instance_id: nil,
             seq: 0,
             cells: [],
             streaming: nil,
@@ -51,6 +56,7 @@ defmodule Helyx.TUI.ViewModel do
 
   @type t :: %__MODULE__{
           model: String.t(),
+          instance_id: String.t() | nil,
           seq: non_neg_integer(),
           cells: [cell()],
           streaming: [Message.block()] | nil,
@@ -59,7 +65,7 @@ defmodule Helyx.TUI.ViewModel do
           reason: String.t() | nil
         }
 
-  @doc "A view model for a fresh session on `model`."
+  @doc "A view model on `model` with no instance: it drops every event. For render tests."
   @spec new(String.t()) :: t()
   def new(model), do: %__MODULE__{model: model}
 
@@ -102,8 +108,14 @@ defmodule Helyx.TUI.ViewModel do
   Core and crashes the TUI. So do a `message_update` with a delta key that
   the TUI knows and a value of another type, a `message_update` with two
   such keys, and a block of an assistant message that is not a struct.
+
+  An event of another session instance also leaves the view model
+  unchanged, whatever its `seq` (ADR 0006, section 3).
   """
   @spec apply(t(), Event.t()) :: t()
+  def apply(%__MODULE__{instance_id: id} = vm, %Event{instance_id: other}) when other != id,
+    do: vm
+
   def apply(%__MODULE__{seq: seq} = vm, %Event{seq: event_seq}) when event_seq <= seq, do: vm
   def apply(vm, %Event{type: type}) when type not in @known_types, do: vm
   def apply(vm, %Event{seq: seq} = event), do: fold(%{vm | seq: seq}, event)
@@ -219,6 +231,7 @@ defmodule Helyx.TUI.ViewModel do
   def from_snapshot(%Snapshot{messages: messages, turn: turn} = snapshot) do
     %__MODULE__{
       model: snapshot.model,
+      instance_id: snapshot.instance_id,
       seq: snapshot.seq,
       cells: history(messages, started(turn)),
       streaming: streaming(turn),

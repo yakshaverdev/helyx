@@ -26,6 +26,10 @@ _Avoid_: app, application, host
 One conversation with one agent. A supervised process that owns the transcript, the queues, and the current turn.
 _Avoid_: conversation, chat, thread, agent
 
+**Session instance**:
+One start of a session process. A resume keeps the session id and makes a new instance, and two Cores can hold one session id with two instances. An event and a snapshot carry the instance id.
+_Avoid_: incarnation, generation
+
 **Turn**:
 One pass of the loop: build context, call the provider, run tool calls, repeat until the provider stops. A session runs one turn at a time.
 _Avoid_: run, step, iteration
@@ -101,7 +105,7 @@ _Avoid_: summarization, pruning, truncation
 ## Events
 
 **Event**:
-A fact emitted by a session that clients render from. Every event carries the session id and a sequence number.
+A fact emitted by a session that clients render from. Every event carries the session id, the session instance id, and a sequence number within the instance.
 _Avoid_: message, notification, update
 
 **Tool**:

@@ -10,12 +10,15 @@ defmodule Helyx.TUI.ViewModelTest do
     specs
     |> Enum.with_index(1)
     |> Enum.map(fn {{type, data}, seq} ->
-      %Event{type: type, session_id: "s", turn_id: "t", seq: seq, data: data}
+      %Event{type: type, session_id: "s", instance_id: "i", turn_id: "t", seq: seq, data: data}
     end)
   end
 
   defp fold(specs),
-    do: Enum.reduce(events(specs), ViewModel.new("test/model"), &ViewModel.apply(&2, &1))
+    do: Enum.reduce(events(specs), new(), &ViewModel.apply(&2, &1))
+
+  # The view model of the instance of `events/1`.
+  defp new, do: %{ViewModel.new("test/model") | instance_id: "i"}
 
   defp tool_end(result), do: {:tool_execution_end, %{message: result}}
 
@@ -95,6 +98,7 @@ defmodule Helyx.TUI.ViewModelTest do
       ViewModel.apply(started, %Event{
         type: :tool_execution_end,
         session_id: "s",
+        instance_id: "i",
         turn_id: "t",
         seq: 6,
         data: %{message: result}
@@ -309,6 +313,7 @@ defmodule Helyx.TUI.ViewModelTest do
     drain = %Event{
       type: :queue_update,
       session_id: "s",
+      instance_id: "i",
       turn_id: nil,
       seq: 4,
       data: %{steers: 0, follow_ups: 0}
@@ -331,7 +336,15 @@ defmodule Helyx.TUI.ViewModelTest do
 
   test "an event of an unknown type leaves the view model unchanged (ADR 0006, section 5)" do
     vm = fold([{:agent_start, %{}}, {:message_start, %{message: assistant([])}}])
-    unknown = %Event{type: :from_a_newer_core, session_id: "s", turn_id: "t", seq: 3, data: %{}}
+
+    unknown = %Event{
+      type: :from_a_newer_core,
+      session_id: "s",
+      instance_id: "i",
+      turn_id: "t",
+      seq: 3,
+      data: %{}
+    }
 
     assert ViewModel.apply(vm, unknown) == vm
   end
@@ -348,6 +361,7 @@ defmodule Helyx.TUI.ViewModelTest do
     update = %Event{
       type: :message_update,
       session_id: "s",
+      instance_id: "i",
       turn_id: "t",
       seq: 3,
       data: %{signature_delta: "x"}
@@ -364,6 +378,7 @@ defmodule Helyx.TUI.ViewModelTest do
       event = %Event{
         type: type,
         session_id: "s",
+        instance_id: "i",
         turn_id: "t",
         seq: seq,
         data: %{message: message}
@@ -386,6 +401,7 @@ defmodule Helyx.TUI.ViewModelTest do
 
   test "a snapshot partial of a new role does not show" do
     snapshot = %Helyx.Session.Snapshot{
+      instance_id: "i",
       seq: 1,
       messages: [],
       turn: %{id: "t", partial: %Message{role: :from_a_newer_core, content: []}, running: []},
@@ -398,6 +414,7 @@ defmodule Helyx.TUI.ViewModelTest do
 
   test "a snapshot drops a message of a new role and a new block kind" do
     snapshot = %Helyx.Session.Snapshot{
+      instance_id: "i",
       seq: 4,
       messages: [
         user("hi"),
@@ -421,20 +438,29 @@ defmodule Helyx.TUI.ViewModelTest do
   end
 
   test "a known type with a missing required field still crashes" do
-    event = %Event{type: :message_start, session_id: "s", turn_id: "t", seq: 1, data: %{}}
-    assert_raise FunctionClauseError, fn -> ViewModel.apply(ViewModel.new("m"), event) end
+    event = %Event{
+      type: :message_start,
+      session_id: "s",
+      instance_id: "i",
+      turn_id: "t",
+      seq: 1,
+      data: %{}
+    }
+
+    assert_raise FunctionClauseError, fn -> ViewModel.apply(new(), event) end
   end
 
   test "an agent_end with the stop reason error and no error field crashes" do
     event = %Event{
       type: :agent_end,
       session_id: "s",
+      instance_id: "i",
       turn_id: "t",
       seq: 1,
       data: %{stop_reason: :error}
     }
 
-    assert_raise CaseClauseError, fn -> ViewModel.apply(ViewModel.new("m"), event) end
+    assert_raise CaseClauseError, fn -> ViewModel.apply(new(), event) end
   end
 
   test "a message_update with a known delta key of another type, or two known keys, crashes" do
@@ -446,7 +472,15 @@ defmodule Helyx.TUI.ViewModelTest do
           %{thinking_delta: nil},
           %{text_delta: "a", tool_call: "bad"}
         ] do
-      event = %Event{type: :message_update, session_id: "s", turn_id: "t", seq: 2, data: data}
+      event = %Event{
+        type: :message_update,
+        session_id: "s",
+        instance_id: "i",
+        turn_id: "t",
+        seq: 2,
+        data: data
+      }
+
       assert_raise CaseClauseError, fn -> ViewModel.apply(vm, event) end
     end
   end
@@ -465,6 +499,17 @@ defmodule Helyx.TUI.ViewModelTest do
     assert vm.cells == []
   end
 
+  test "an event of another instance leaves the view model unchanged (#204)" do
+    vm = fold([{:agent_start, %{}}, {:message_start, %{message: assistant([])}}])
+
+    [update] = events(message_update: %{text_delta: "old"})
+
+    for seq <- [1, 3] do
+      other = %{update | instance_id: "other", seq: seq}
+      assert ViewModel.apply(vm, other) == vm
+    end
+  end
+
   test "a model change updates the model" do
     vm = fold(model_change: %{model: "other/model"})
     assert vm.model == "other/model"
@@ -481,7 +526,7 @@ defmodule Helyx.TUI.ViewModelTest do
   end
 
   test "a reject sets the reason, events keep it, and clear_reason/1 removes it" do
-    vm = ViewModel.new("test/model")
+    vm = new()
     assert vm.reason == nil
 
     vm = ViewModel.reject(vm, "not sent: the queue is full")
