@@ -41,7 +41,14 @@ defmodule Helyx.Watchdog do
   # input is open (#11): the watchdog forwards everything that follows the
   # go-ahead line up to the first NUL byte, then closes the pipe. A protocol
   # of JSON lines never holds a raw NUL, so a NUL ends the input and the
-  # command reads end of file while the watch of stdin goes on.
+  # command reads end of file while the watch of stdin goes on. Open input
+  # has a cap (#196), the fifth argument: when the input that the command
+  # has not read is over it, after a read of stdin, the command is stuck.
+  # The watchdog stops the group as at the end of its stdin, then exits as
+  # at the command's own end, with its status. Counted input needs no cap:
+  # the count bounds it. The watchdog reads stdin at every tick, so a closed
+  # port is seen at once; a cap on the read would hold a stuck command
+  # past the close.
   #
   # The watchdog enters the working directory itself, before the fork. The
   # port's cd option has no failure signal: the emulator's child exits with
@@ -101,6 +108,7 @@ defmodule Helyx.Watchdog do
   my $feed = shift @ARGV;
   my $dir = shift @ARGV;
   my $grace = shift(@ARGV) / 1000;
+  my $cap = shift @ARGV;
   for (keys %ENV) { $ENV{$1} = substr(delete $ENV{$_}, 1) if /^HELYX_KEEP_(PERL.*)/s }
   chdir($dir) or fail("cannot enter the working directory $dir");
   pipe(my $r, my $w) or fail("pipe failed");
@@ -130,6 +138,19 @@ defmodule Helyx.Watchdog do
   if ($c eq "\n") { syswrite($w, "g"); close($w) }
   else { close($w); kill("KILL", -$child); waitpid($child, 0); exit 0 }
   fcntl($iw, F_SETFL, O_NONBLOCK) if $iw;
+  sub stop {
+    kill("TERM", -$child);
+    my $t = 0; my $done;
+    until (($done = waitpid($child, WNOHANG) > 0) or $t >= $grace) { select(undef, undef, undef, 0.05); $t += 0.05 }
+    my $s = $?;
+    kill("KILL", -$child);
+    if (!$done) { waitpid($child, 0); $s = $? }
+    $s
+  }
+  sub finish {
+    if (sysread($er, my $err, 4096)) { syswrite(STDOUT, "$go 0\n$err"); exit 0 }
+    exit(($_[0] & 127) ? 128 + ($_[0] & 127) : $_[0] >> 8);
+  }
   my $out = "";
   while (1) {
     if ($iw and $feed == 0 and !length($out)) { close($iw); undef $iw }
@@ -138,33 +159,30 @@ defmodule Helyx.Watchdog do
     my $n = select(my $rout = $rin, $win, undef, 0.05);
     if ($n > 0 and vec($rout, fileno(STDIN), 1)) {
       my $got = sysread(STDIN, my $buf, 65536);
-      if (!$got) {
-        kill("TERM", -$child);
-        my $t = 0;
-        while (waitpid($child, WNOHANG) == 0 and $t < $grace) { select(undef, undef, undef, 0.05); $t += 0.05 }
-        kill("KILL", -$child);
-        waitpid($child, 0);
-        exit 0;
-      }
+      if (!$got) { stop(); exit 0 }
       if ($iw and $feed < 0) {
         my $end = index($buf, "\0");
         if ($end < 0) { $out .= $buf } else { $out .= substr($buf, 0, $end); $feed = 0 }
+        if (length($out) > $cap) { finish(stop()) }
       } elsif ($iw) { my $take = substr($buf, 0, $feed); $out .= $take; $feed -= length($take) }
     }
     if ($n > 0 and $win and vec($win, fileno($iw), 1)) {
       my $put = syswrite($iw, $out);
       if (defined($put)) { substr($out, 0, $put) = "" } elsif (!$!{EAGAIN}) { $out = ""; $feed = 0 }
     }
-    if (waitpid($child, WNOHANG) > 0) {
-      my $s = $?;
-      if (sysread($er, my $err, 4096)) { syswrite(STDOUT, "$go 0\n$err"); exit 0 }
-      exit(($s & 127) ? 128 + ($s & 127) : $s >> 8);
-    }
+    finish($?) if waitpid($child, WNOHANG) > 0;
   }
   """
 
   # The TERM grace when the port closes, unless the caller gives one.
   @grace_ms 500
+
+  # The most open input that the command has not read, in the watchdog
+  # (#196). Public for the tests.
+  @stdin_max_bytes 16 * 1024 * 1024
+
+  @doc false
+  def stdin_max_bytes, do: @stdin_max_bytes
 
   @doc false
   # Opens the port for `argv` in `cwd` and runs the handshake. With `input`
@@ -188,7 +206,9 @@ defmodule Helyx.Watchdog do
   # got that far.
   #
   # The option `:grace_ms` (default #{@grace_ms}) is the wait between the
-  # TERM and the KILL of the command group when the port closes.
+  # TERM and the KILL of the command group when the port closes, or when
+  # open input that the command has not read is over
+  # `@stdin_max_bytes`.
   def start(argv, cwd, input, opts \\ []) do
     nonce = random_word()
     grace = Keyword.get(opts, :grace_ms, @grace_ms)
@@ -332,8 +352,16 @@ defmodule Helyx.Watchdog do
        :stderr_to_stdout,
        {:env, unset ++ keep},
        {:args,
-        ["-e", @watchdog, "--", nonce, Integer.to_string(feed), cwd, Integer.to_string(grace_ms)] ++
-          argv}
+        [
+          "-e",
+          @watchdog,
+          "--",
+          nonce,
+          Integer.to_string(feed),
+          cwd,
+          Integer.to_string(grace_ms),
+          Integer.to_string(@stdin_max_bytes)
+        ] ++ argv}
      ]}
   end
 

@@ -1,6 +1,6 @@
 # Long-lived harness
 
-Status: approved by the owner on 2026-09-27, ticket #192. Implementation waits for #196 and "Verify before implementation".
+Status: approved by the owner on 2026-09-27, ticket #192. Implementation waits for "Verify before implementation"; #196 is done.
 
 ## Goal
 
@@ -32,13 +32,13 @@ The protocol facts are in `docs/research/claude-code-stream-json.md` ("Long-live
 | Helyx tools in the harness | not offered | Claude: an SDK MCP server over stdio. Codex: `dynamicTools` |
 | Harness requests | Codex approvals: `accept`; all else: an error | Helyx tool calls run on the hands; approvals still `accept`; all else an error |
 | Stream Task per external turn | yes: builds the context, calls the provider, checks the events | a prepare Task builds the context; the harness process checks and sends the events |
-| Watchdog stdin buffer | no byte cap | a byte cap; over it the command is stopped (#196, a prerequisite) |
+| Watchdog stdin buffer | a 16 MiB byte cap; over it the command is stopped (#196, a prerequisite) | as today |
 
 These do not change:
 
 - The session file format (ADR 0001). A steer that the harness takes becomes a user message in the transcript, which the format already allows.
 - The event check of `Helyx.Session.Stream`. Each event passes it before it reaches the session.
-- ADR 0004's rule that the death of an owner releases the resource. The watchdog changes only by the stdin cap of #196.
+- ADR 0004's rule that the death of an owner releases the resource. The watchdog, with the stdin cap of #196.
 - The line caps, the parsing of the harness output, and the replay rules.
 
 ## Shape
@@ -253,7 +253,7 @@ The numbers are proposals. Observed values are given for comparison.
 | requests from the session open in the harness process | 8 | `{:error, :busy}` to the caller at once |
 | Helyx tool requests of one turn | one runs; at most 16 wait | over 16: an error result to the harness at once |
 | `tool_result` answer (written, see above) | 2,000 ms, armed kill | stop and turn cleanup |
-| bytes written to the program and not yet read by it | the watchdog stdin cap of #196 (proposal: 1 MiB) | the watchdog stops the program group; the closed port gives a crash, then the turn cleanup |
+| bytes written to the program and not yet read by it | the watchdog stdin cap of #196: 16 MiB (`@stdin_max_bytes` in `Helyx.Watchdog`), plus at most one read of 65,536 bytes and the pipe (row "watchdog input on stdin" of `coding-agent.md`) | the watchdog stops the program group; the closed port gives a crash, then the turn cleanup |
 | the harness's own requests (approval, elicitation) | answered at once: approvals `accept`, the rest an error | none |
 | events from the harness process to the session mailbox | unbounded, as today for every provider (#197) | none; an inherited limit |
 | close (normal end only): end of input to the exit | 5,000 ms, armed kill | stop: TERM, grace, KILL |
