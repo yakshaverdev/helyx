@@ -46,6 +46,17 @@ defmodule Helyx.Session do
   queued messages. The id of each fresh harness session is written to the
   session file and goes out as a `:harness_session` event.
 
+  A connected provider (an external provider with `harness_init/3`, ADR
+  0007) keeps one harness process for the session. The hands start it at
+  the first connected turn, and again after it ends. Each turn builds its
+  context in a prepare Task of the hands, then the session sends the turn
+  to the harness process, which sends the events back. An abort of a turn
+  that the harness got interrupts it there; the abort returns after the
+  answer, or after the harness process stopped. A model or provider switch
+  closes the harness process before the next turn, and so does the end of
+  the session. Until #202, a steer on a connected turn waits for the next
+  turn, as a follow-up.
+
   An abort does not block the session. The session ends the turn at once and
   asks the hands to release the turn's resources. This can take many
   seconds when a resource stays. Until the hands answer, the session

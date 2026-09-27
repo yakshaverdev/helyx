@@ -79,6 +79,41 @@ defmodule Helyx.Provider do
   A stream that ends without one fails the turn with `:stream_ended`. The
   turn's outcome is the Task's outcome: a stream that raises, including in
   its cleanup after `done`, fails the turn with `{:task_exit, reason}`.
+
+  ## A connected provider
+
+  A provider with an external turn that also exports `harness_init/3` is
+  connected (ADR 0007, `docs/features/long-lived-harness.md`): its program
+  lives for the session, not for the turn, and the session does not call
+  `stream/3`. The three callbacks run in one harness process per session, a
+  Task of the hands, so `Helyx.Tool.hold/1` works in them and the provider
+  implements `release/3`:
+
+    * `harness_init/3` starts the program. `tools` are the checked tool
+      specs of session start; `opts` carry `:core`, `:session_id`, `:cwd`,
+      and `:harness_session_id` as for `stream/3`.
+    * `harness_request/3` gets a request from Core with its `from`. The
+      provider replies now or later with the action `{:reply, from,
+      value}`: `{:turn, ...}` and `{:interrupt, ...}` take `:ok` or
+      `{:error, reason}`, and `:close` takes `:ok` after the program exited.
+    * `harness_info/2` gets every other message of the harness process: the
+      port data, a monitor, a timer.
+
+  Each callback returns actions: `{:event, turn_id, event}` with a stream
+  event of an external turn, `{:reply, from, value}`, and `{:cancel_tool,
+  turn_id, call_id}`. Each event passes the same check as a stream event. A
+  turn ends at its `done` or `error` event. A malformed event, a reply of
+  the wrong shape or for no open request, an error reply to `{:turn, ...}`
+  or `{:interrupt, ...}`, and a bad return stop the harness process: its
+  port closes, and the watchdog stops the program.
+
+  Every request has a deadline: a kill of the harness process armed with
+  the request at the OTP timer server (`:timer.kill_after/2`), which Core
+  cancels when the provider replies. A connect has 30,000 ms from the
+  start to the end of `harness_init/3`. A callback that blocks is killed at
+  the bound, however busy the session is. The turn fails with
+  `:harness_timeout`. A crash fails it with `{:task_exit, reason}`, and a
+  stop with its reason. The next turn starts a new harness process.
   """
 
   use Helyx.Interface, mode: :multi, required: true
@@ -96,6 +131,19 @@ defmodule Helyx.Provider do
           | {:tool_result, String.t(), {:ok | :error, String.t()}}
           | {:harness_session, String.t(), non_neg_integer()}
 
+  @typedoc "The ref of a request from Core, for its reply."
+  @type from :: reference()
+
+  @type request ::
+          {:turn, turn_id :: String.t(), Helyx.Context.t()}
+          | {:interrupt, turn_id :: String.t()}
+          | :close
+
+  @type action ::
+          {:event, turn_id :: String.t(), stream_event()}
+          | {:reply, from(), term()}
+          | {:cancel_tool, turn_id :: String.t(), call_id :: String.t()}
+
   @doc """
   Finds the provider plugin whose id matches a model ref prefix. It reads the
   ids that Core checked at start and calls no plugin code.
@@ -110,16 +158,29 @@ defmodule Helyx.Provider do
   @doc """
   The turn of a provider plugin: `provider.turn()` when it is exported, else
   `:local`. A `turn/0` that raises, throws, exits, or returns another value
-  than `:local` or `:external` is an error. It is plugin code, so the session
-  calls this in the caller of a start, a resume, or a switch, and keeps the
-  result.
+  than `:local` or `:external` is an error. An `:external` provider that
+  exports `harness_init/3` gives `:connected`. It is plugin code, so the
+  session calls this in the caller of a start, a resume, or a switch, and
+  keeps the result.
   """
-  @spec turn(module()) :: {:ok, :local | :external} | :error
+  @spec turn(module()) :: {:ok, :local | :external | :connected} | :error
   def turn(provider) do
     turn = if function_exported?(provider, :turn, 0), do: provider.turn(), else: :local
-    if turn in [:local, :external], do: {:ok, turn}, else: :error
+
+    case turn do
+      :local -> {:ok, :local}
+      :external -> {:ok, connected(provider)}
+      _other -> :error
+    end
   catch
     _class, _reason -> :error
+  end
+
+  # An external provider with `harness_init/3` is connected (ADR 0007).
+  # Core loaded the module at its start, so the export check calls no
+  # plugin code.
+  defp connected(provider) do
+    if function_exported?(provider, :harness_init, 3), do: :connected, else: :external
   end
 
   @callback id() :: String.t()
@@ -133,5 +194,15 @@ defmodule Helyx.Provider do
   @callback stream(model :: String.t(), context :: Helyx.Context.t(), opts :: keyword()) ::
               {:ok, Enumerable.t()} | {:error, term()}
 
-  @optional_callbacks turn: 0, release: 3
+  @callback harness_init(model :: String.t(), tools :: [Helyx.Tool.spec()], opts :: keyword()) ::
+              {:ok, state :: term()} | {:error, term()}
+  @callback harness_request(request(), from(), state :: term()) :: {:ok, [action()], term()}
+  @callback harness_info(msg :: term(), state :: term()) ::
+              {:ok, [action()], term()} | {:stop, reason :: term(), term()}
+
+  @optional_callbacks turn: 0,
+                      release: 3,
+                      harness_init: 3,
+                      harness_request: 3,
+                      harness_info: 2
 end

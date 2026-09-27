@@ -13,7 +13,10 @@ defmodule Helyx.Session.Turn do
   # `model` and `provider` are fixed when the turn starts, so a model switch
   # during the turn takes effect on the next one, and so does `turn_mode`
   # (`Helyx.Provider.turn/1`). `resumed` is the harness session id the
-  # turn passed to a provider with an external turn, or nil.
+  # turn passed to a provider with an external turn, or nil. A connected
+  # turn has a `phase`, `:preparing`, `:submitting`, or `:submitted`, the
+  # prepared `context` until it is sent, and the `pending` ref of the
+  # answer to `{:turn, ...}`.
 
   alias Helyx.{Message, ModelRef}
 
@@ -26,6 +29,9 @@ defmodule Helyx.Session.Turn do
     :task,
     :partial,
     :resumed,
+    :phase,
+    :context,
+    :pending,
     calls: [],
     rejected: %{}
   ]

@@ -47,6 +47,17 @@ defmodule Helyx.Session.Hands do
   once. A stream Task gets a `:shutdown` exit signal and #{@stream_stop_ms} ms
   before the kill: a provider whose Task traps exits can use them to ask
   its program to stop the turn.
+
+  `connect/3` starts the harness process of a connected provider (ADR
+  0007), and `prepare/3` the prepare Task of a connected turn. Both get a
+  kill armed at the OTP timer server when they start (`:timer.kill_after/2`):
+  30,000 ms for the connect and 10,000 ms for the prepare. Their Core
+  code cancels it, so no timer of the hands enforces the bound. The harness
+  process has no turn: a cancel request leaves it. When it ends, the hands
+  release its handles and send `{:harness_down, pid, reason}`: `:closed`
+  after a close, `:harness_timeout` after an armed kill, `{:task_exit,
+  reason}` after a crash, and the loop's reason after a stop. A prepare Task
+  that dies gives `{:prepare_failed, turn_id, reason}`.
   """
 
   use GenServer
@@ -62,7 +73,9 @@ defmodule Helyx.Session.Hands do
     # its turn, its call id, and its tool module, by monitor ref. `held`
     # holds the handles per Task pid. `unconfirmed` holds the handles that
     # no release confirmed, per tool module. `release_ms` is the release
-    # deadline of a delivery or a cancel, a seam for tests.
+    # deadline of a delivery or a cancel, and `connect_ms` and `prepare_ms`
+    # the armed kills of a harness process and a prepare Task: seams for
+    # tests.
     @enforce_keys [:core, :cwd, :session, :tools]
     defstruct [
       :core,
@@ -72,7 +85,9 @@ defmodule Helyx.Session.Hands do
       tasks: %{},
       held: %{},
       unconfirmed: %{},
-      release_ms: 20_000
+      release_ms: 20_000,
+      connect_ms: 30_000,
+      prepare_ms: 10_000
     ]
   end
 
@@ -100,6 +115,33 @@ defmodule Helyx.Session.Hands do
     do: GenServer.call(hands, {:start, turn_id, {provider, fun}})
 
   @doc """
+  Starts the harness process of a connected provider: `fun` gets the ref of
+  the armed connect kill and runs in a Task of the hands with no turn.
+  Returns its pid, or an error text while a handle is unconfirmed.
+  """
+  @spec connect(pid(), module(), (:timer.tref() -> term())) :: {:ok, pid()} | {:error, String.t()}
+  def connect(hands, provider, fun) when is_function(fun, 1),
+    do: GenServer.call(hands, {:connect, provider, fun})
+
+  @doc """
+  Starts the prepare Task of a connected turn: `fun` gets the ref of the
+  armed kill. It holds no resource.
+
+  A cast, not a call: a harness process can end at any time, and the hands
+  release its handles in their own loop for up to the release deadline.
+  The session must not wait for that. The hands start the Task when they
+  take the message, after any earlier message of the session, so a later
+  `request_cancel/2` finds it. The other calls of the session, `connect/3`,
+  `stream/4`, and `run/3`, come only when it holds no harness process: a
+  local or external turn has none (a switch closes it and waits for its
+  `:harness_down`), and a connect follows the `:harness_down` of the last
+  one.
+  """
+  @spec prepare(pid(), String.t(), (:timer.tref() -> term())) :: :ok
+  def prepare(hands, turn_id, fun) when is_function(fun, 1),
+    do: GenServer.cast(hands, {:prepare, turn_id, fun})
+
+  @doc """
   Asks the hands to cancel the turn's tool and stream Tasks and release
   their handles. Sends the request and returns at once, so the caller stays
   free during the release. Read the answer with
@@ -125,6 +167,17 @@ defmodule Helyx.Session.Hands do
       {:reply, :ok, start(state, turn_id, job)}
     else
       {:reply, :ok, refuse(state, turn_id, job_id(job))}
+    end
+  end
+
+  def handle_call({:connect, provider, fun}, _from, state) do
+    state = retry(state)
+
+    if state.unconfirmed == %{} do
+      {pid, state} = spawn_armed(state, nil, :harness, provider, state.connect_ms, fun)
+      {:reply, {:ok, pid}, state}
+    else
+      {:reply, {:error, refusal(state)}, state}
     end
   end
 
@@ -171,6 +224,12 @@ defmodule Helyx.Session.Hands do
   end
 
   @impl true
+  def handle_cast({:prepare, turn_id, fun}, state) do
+    {_pid, state} = spawn_armed(state, turn_id, :prepare, nil, state.prepare_ms, fun)
+    {:noreply, state}
+  end
+
+  @impl true
   def handle_info({ref, result}, %State{tasks: tasks} = state) when is_map_key(tasks, ref) do
     Process.demonitor(ref, [:flush])
     {:noreply, deliver(ref, result, state)}
@@ -205,7 +264,10 @@ defmodule Helyx.Session.Hands do
     {handles, held} = Map.pop(state.held, task.pid, [])
     left = release(%{tool => handles}, :deliver, state.release_ms, state.core)
 
-    send(state.session, outcome(turn_id, call_id, unconfirmed_error(left) || result))
+    with message when message != nil <-
+           outcome(turn_id, call_id, task.pid, unconfirmed_error(left) || result),
+         do: send(state.session, message)
+
     %{state | tasks: tasks, held: held, unconfirmed: add_handles(state.unconfirmed, left)}
   end
 
@@ -213,6 +275,25 @@ defmodule Helyx.Session.Hands do
   # `Helyx.Session.Stream.run/1` did not cap, so the hands cap it where they
   # make it (see `Helyx.Message.cap_integers/1`). The session caps the crash
   # reason of a local turn in its `:DOWN` clause.
+  defp outcome(_turn_id, :harness, pid, result), do: {:harness_down, pid, harness_reason(result)}
+
+  defp outcome(turn_id, :prepare, _pid, {:exit, reason}),
+    do: {:prepare_failed, turn_id, Helyx.Message.cap_integers(reason)}
+
+  # The prepare Task sent its context itself.
+  defp outcome(_turn_id, :prepare, _pid, _result), do: nil
+  defp outcome(turn_id, id, _pid, result), do: outcome(turn_id, id, result)
+
+  # The reason of a harness process's end, capped like a crash reason. A
+  # kill is the armed kill of a request: the harness did not answer in
+  # time. An unconfirmed handle stays in `unconfirmed` and refuses the next
+  # connect.
+  defp harness_reason({:exit, :killed}), do: :harness_timeout
+  defp harness_reason({:exit, reason}), do: {:task_exit, Helyx.Message.cap_integers(reason)}
+  defp harness_reason({:error, _unconfirmed} = error), do: error
+  defp harness_reason({:stop, reason}), do: Helyx.Message.cap_integers(reason)
+  defp harness_reason(:closed), do: :closed
+
   defp outcome(turn_id, :stream, {:exit, reason}),
     do: {:stream_end, turn_id, {:error, {:task_exit, Helyx.Message.cap_integers(reason)}}}
 
@@ -226,11 +307,14 @@ defmodule Helyx.Session.Hands do
   defp start(state, turn_id, %ToolCall{} = call) do
     tool = if File.dir?(state.cwd), do: Map.get(state.tools, call.name, :unknown), else: :no_cwd
     cwd = state.cwd
-    spawn_task(state, turn_id, call.id, tool, fn -> run_tool(tool, call, cwd) end)
+    {_pid, state} = spawn_task(state, turn_id, call.id, tool, fn -> run_tool(tool, call, cwd) end)
+    state
   end
 
-  defp start(state, turn_id, {provider, fun}),
-    do: spawn_task(state, turn_id, :stream, provider, fun)
+  defp start(state, turn_id, {provider, fun}) do
+    {_pid, state} = spawn_task(state, turn_id, :stream, provider, fun)
+    state
+  end
 
   defp job_id(%ToolCall{id: id}), do: id
   defp job_id({_provider, _fun}), do: :stream
@@ -246,16 +330,32 @@ defmodule Helyx.Session.Hands do
         fun.()
       end)
 
-    %{state | tasks: Map.put(state.tasks, task.ref, {task, turn_id, id, module})}
+    {task.pid, %{state | tasks: Map.put(state.tasks, task.ref, {task, turn_id, id, module})}}
+  end
+
+  # A Task whose kill is armed at the OTP timer server as it starts. `fun`
+  # gets the timer ref first, before any plugin code runs.
+  defp spawn_armed(state, turn_id, id, module, ms, fun) do
+    {pid, state} =
+      spawn_task(state, turn_id, id, module, fn ->
+        receive do
+          {:helyx_kill, tref} -> fun.(tref)
+        end
+      end)
+
+    {:ok, tref} = :timer.kill_after(ms, pid)
+    send(pid, {:helyx_kill, tref})
+    {pid, state}
   end
 
   defp refuse(state, turn_id, id) do
-    error =
-      "a resource from an earlier call could not be released " <>
-        "(#{handles_text(state.unconfirmed)}); the call was not run"
-
-    send(state.session, outcome(turn_id, id, {:error, error}))
+    send(state.session, outcome(turn_id, id, {:error, refusal(state)}))
     state
+  end
+
+  defp refusal(state) do
+    "a resource from an earlier call could not be released " <>
+      "(#{handles_text(state.unconfirmed)}); the call was not run"
   end
 
   defp shutdown_mode(:stream), do: @stream_stop_ms
