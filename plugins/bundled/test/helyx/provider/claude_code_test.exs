@@ -1,8 +1,13 @@
 defmodule Helyx.Provider.ClaudeCodeTest do
-  # A fake `claude` on PATH replays stream-json lines in the shapes that
-  # `docs/research/claude-code-stream-json.md` records. Run N saves its
-  # arguments to `args.N` and its stdin to `stdin.N`, then runs `run.N`.
-  # PATH is global, so this module is not async.
+  # A fake `claude` on PATH reads stream-json lines, as the long-lived
+  # program does, and answers in the shapes that
+  # `docs/research/claude-code-stream-json.md` records. Program N saves its
+  # arguments to `args.N` and each input line to `stdin.N`. It runs
+  # `start.N` first; for the K-th user line that starts a query it runs
+  # `turn.N.K`, for a control request `ctl.N`, and at the end of input
+  # `eof.N`. In their output `@U@` is the `uuid` and `@R@` the
+  # `request_id` of the line read. PATH is global, so this module is not
+  # async.
   use ExUnit.Case, async: false
 
   import Helyx.Test.OSHelpers
@@ -11,7 +16,6 @@ defmodule Helyx.Provider.ClaudeCodeTest do
   alias Helyx.Provider.{ClaudeCode, Fake}
 
   @sid "4b3c2d1e-0000-4000-8000-000000000001"
-  @fresh "4b3c2d1e-0000-4000-8000-000000000002"
 
   @fake """
   #!/bin/sh
@@ -19,8 +23,23 @@ defmodule Helyx.Provider.ClaudeCodeTest do
   n=$(( $(cat "$d/count" 2>/dev/null || echo 0) + 1 ))
   echo $n > "$d/count"
   for a in "$@"; do printf '%s\\n' "$a"; done > "$d/args.$n"
-  cat > "$d/stdin.$n"
-  . "$d/run.$n"
+  : > "$d/stdin.$n"
+  out() { sed "s/@U@/$u/g; s/@R@/$r/g" "$d/$1"; }
+  u=; r=
+  [ -f "$d/start.$n" ] && . "$d/start.$n"
+  k=0
+  while IFS= read -r line; do
+    printf '%s\\n' "$line" >> "$d/stdin.$n"
+    v=$(printf '%s\\n' "$line" | sed -n 's/.*"uuid":"\\([^"]*\\)".*/\\1/p')
+    [ -n "$v" ] && u=$v
+    r=$(printf '%s\\n' "$line" | sed -n 's/.*"request_id":"\\([^"]*\\)".*/\\1/p')
+    case "$line" in
+      *'"shouldQuery":false'*|*'"type":"assistant"'*|*'"type":"control_response"'*) ;;
+      *'"type":"control_request"'*) [ -f "$d/ctl.$n" ] && . "$d/ctl.$n" ;;
+      *'"type":"user"'*) k=$((k+1)); [ -f "$d/turn.$n.$k" ] && . "$d/turn.$n.$k" ;;
+    esac
+  done
+  [ -f "$d/eof.$n" ] && . "$d/eof.$n"
   """
 
   setup %{tmp_dir: tmp} do
@@ -41,40 +60,37 @@ defmodule Helyx.Provider.ClaudeCodeTest do
 
   # Stream-json lines
 
-  # Runs the stream in the test process, without a session.
-  defp run_direct(messages, work, opts \\ []) do
-    {:ok, stream} =
-      ClaudeCode.stream("haiku", %Helyx.Context{messages: messages}, [cwd: work] ++ opts)
-
-    Enum.to_list(stream)
-  end
-
   defp j(map), do: JSON.encode!(map)
 
-  defp init(sid) do
+  @caps ["interrupt_receipt_v1", "interrupt_cancel_queued_v1", "msg_lifecycle_v1"]
+
+  defp init(caps \\ @caps) do
     j(%{
       type: "system",
       subtype: "init",
-      session_id: sid,
+      session_id: @sid,
       cwd: "/work",
       model: "claude-haiku-4-5-20251001",
       tools: ["Bash", "Read"],
-      permissionMode: "bypassPermissions",
+      capabilities: caps,
       uuid: "u1"
     })
   end
 
-  defp delta(sid, text) do
+  defp lifecycle(state),
+    do: j(%{type: "command_lifecycle", state: state, command_uuid: "@U@", session_id: @sid})
+
+  defp delta(text) do
     j(%{
       type: "stream_event",
       event: %{type: "content_block_delta", index: 0, delta: %{type: "text_delta", text: text}},
-      session_id: sid,
+      session_id: @sid,
       parent_tool_use_id: nil,
       uuid: "u2"
     })
   end
 
-  defp assistant(sid, block) do
+  defp assistant(block) do
     j(%{
       type: "assistant",
       message: %{
@@ -87,15 +103,14 @@ defmodule Helyx.Provider.ClaudeCodeTest do
         usage: %{input_tokens: 12, output_tokens: 7}
       },
       parent_tool_use_id: nil,
-      session_id: sid,
+      session_id: @sid,
       uuid: "u3"
     })
   end
 
-  defp tool_use(sid, id, input),
-    do: assistant(sid, %{type: "tool_use", id: id, name: "Bash", input: input})
+  defp tool_use(id, input), do: assistant(%{type: "tool_use", id: id, name: "Bash", input: input})
 
-  defp tool_result(sid, id, content) do
+  defp tool_result(id, content) do
     j(%{
       type: "user",
       message: %{
@@ -103,13 +118,13 @@ defmodule Helyx.Provider.ClaudeCodeTest do
         content: [%{tool_use_id: id, type: "tool_result", content: content}]
       },
       parent_tool_use_id: nil,
-      session_id: sid,
+      session_id: @sid,
       uuid: "u4",
       tool_use_result: %{stdout: content}
     })
   end
 
-  defp result(sid, text, num_turns \\ 1) do
+  defp result(text, num_turns \\ 1) do
     j(%{
       type: "result",
       subtype: "success",
@@ -117,10 +132,47 @@ defmodule Helyx.Provider.ClaudeCodeTest do
       result: text,
       stop_reason: if(num_turns > 0, do: "end_turn"),
       num_turns: num_turns,
+      terminal_reason: "completed",
+      queued_turn_count: 0,
       usage: %{input_tokens: 12, output_tokens: 7},
-      session_id: sid,
-      total_cost_usd: 0.001,
-      permission_denials: []
+      session_id: @sid
+    })
+  end
+
+  # The result of a replayed line: no model call and no `terminal_reason`.
+  defp replayed do
+    j(%{
+      type: "result",
+      subtype: "success",
+      is_error: false,
+      result: "",
+      num_turns: 0,
+      session_id: @sid
+    })
+  end
+
+  defp replay_failed,
+    do: j(%{type: "result", subtype: "error_during_execution", is_error: true, num_turns: 0})
+
+  # A history that the first turn of a fresh program replays before "x".
+  defp replay_history do
+    [
+      Message.user("a"),
+      %Message{role: :assistant, content: [%Message.Text{text: "b"}]},
+      Message.user("x")
+    ]
+  end
+
+  defp aborted do
+    j(%{
+      type: "result",
+      subtype: "error_during_execution",
+      is_error: true,
+      num_turns: 2,
+      terminal_reason: "aborted_tools",
+      queued_turn_count: 0,
+      errors: [],
+      session_id: @sid
     })
   end
 
@@ -135,16 +187,31 @@ defmodule Helyx.Provider.ClaudeCodeTest do
     })
   end
 
-  # A reply of one text, as the program streams it.
-  defp reply(sid, text) do
-    [init(sid), delta(sid, text), assistant(sid, %{type: "text", text: text}), result(sid, text)]
+  defp interrupted(still_queued \\ [], cancelled \\ []) do
+    j(%{
+      type: "control_response",
+      response: %{
+        subtype: "success",
+        request_id: "@R@",
+        response: %{still_queued: still_queued, cancelled: cancelled}
+      }
+    })
   end
 
-  # Writes run `n`: its output lines, then `tail` as shell code.
-  defp scenario(bin, n, lines, tail \\ "") do
-    File.write!(Path.join(bin, "out.#{n}"), Enum.map(lines, &[&1, "\n"]))
-    File.write!(Path.join(bin, "run.#{n}"), ~s(cat "$d/out.#{n}"\n) <> tail)
+  # The start of a turn: the program took the line.
+  defp begin, do: [lifecycle("queued"), lifecycle("started"), init()]
+
+  # A reply of one text, as the program streams it.
+  defp reply(text),
+    do: begin() ++ [delta(text), assistant(%{type: "text", text: text}), result(text)]
+
+  # The fake's scripts: output lines, then `tail` as shell code.
+  defp script(bin, name, lines, tail \\ "") do
+    File.write!(Path.join(bin, "out.#{name}"), Enum.map(lines, &[&1, "\n"]))
+    File.write!(Path.join(bin, name), "out out.#{name}\n" <> tail)
   end
+
+  defp turn(bin, n, k, lines, tail \\ ""), do: script(bin, "turn.#{n}.#{k}", lines, tail)
 
   defp args(bin, n),
     do: bin |> Path.join("args.#{n}") |> File.read!() |> String.split("\n", trim: true)
@@ -156,6 +223,63 @@ defmodule Helyx.Provider.ClaudeCodeTest do
     |> String.split("\n", trim: true)
     |> Enum.map(&JSON.decode!/1)
   end
+
+  defp programs(bin), do: bin |> Path.join("count") |> File.read!() |> String.trim()
+
+  # The provider without a session: the test process runs the callbacks,
+  # as the harness loop does.
+
+  defp harness(work, opts \\ []) do
+    {:ok, state} = ClaudeCode.harness_init("haiku", [], [cwd: work] ++ opts)
+    state
+  end
+
+  defp request(state, request) do
+    from = make_ref()
+    {:ok, actions, state} = ClaudeCode.harness_request(request, from, state)
+    {from, actions, state}
+  end
+
+  # Gives each message of the test process to `harness_info/2` until
+  # `done?` holds for the actions so far, or the provider stops.
+  defp pump(state, actions, done?) do
+    if done?.(actions) do
+      {actions, state}
+    else
+      receive do
+        message ->
+          case ClaudeCode.harness_info(message, state) do
+            {:ok, more, state} -> pump(state, actions ++ more, done?)
+            {:stop, reason, state} -> {actions ++ [{:stop, reason}], state}
+          end
+      after
+        5_000 -> flunk("no end; got #{inspect(actions)}")
+      end
+    end
+  end
+
+  defp ended?(actions) do
+    Enum.any?(actions, fn
+      {:event, _turn, {kind, _}} -> kind in [:done, :error]
+      {:stop, _reason} -> true
+      _ -> false
+    end)
+  end
+
+  defp replied?(from), do: &Enum.any?(&1, fn action -> match?({:reply, ^from, _}, action) end)
+
+  # One turn of a new program: its actions, with its stop, if any, last.
+  defp run_direct(messages, work) do
+    {_from, actions, state} =
+      request(harness(work), {:turn, "t1", %Helyx.Context{messages: messages}})
+
+    {actions, _state} = pump(state, actions, &ended?/1)
+    actions
+  end
+
+  defp events_of(actions), do: for({:event, _turn, event} <- actions, do: event)
+
+  # Sessions
 
   defp collect_until(type, acc \\ []) do
     receive do
@@ -174,6 +298,12 @@ defmodule Helyx.Provider.ClaudeCodeTest do
     session
   end
 
+  defp resume(ctx) do
+    {:ok, session} = Session.resume(ctx.core, sessions_dir: ctx.sessions, cwd: ctx.work)
+    {:ok, _} = Session.subscribe(session)
+    session
+  end
+
   defp prompt(session, text) do
     :ok = Session.prompt(session, text)
     collect_until(:agent_end)
@@ -182,53 +312,95 @@ defmodule Helyx.Provider.ClaudeCodeTest do
   defp messages(events), do: for(%Event{type: :message_end, data: %{message: m}} <- events, do: m)
   defp of_type(events, type), do: for(%Event{type: ^type, data: data} <- events, do: data)
 
+  # Polls until the session let go of its ended harness process.
+  defp wait_for_no_harness(pid, tries \\ 500) do
+    cond do
+      :sys.get_state(pid).harness == nil -> :ok
+      tries == 0 -> flunk("the session still holds its harness process")
+      true -> Process.sleep(10) && wait_for_no_harness(pid, tries - 1)
+    end
+  end
+
+  defp resume_flag?(bin, n), do: Enum.any?(args(bin, n), &String.starts_with?(&1, "--resume"))
+
   @moduletag :tmp_dir
 
   # The setup restores PATH.
-  test "with no perl on PATH, the stream returns an error that names perl",
+  test "with no perl on PATH, the start returns an error that names perl",
        %{bin: bin, work: work} do
     System.put_env("PATH", bin)
 
-    assert {:error, "perl not found" <> _} =
-             ClaudeCode.stream("m", %Helyx.Context{messages: []}, cwd: work)
+    assert {:error, "perl not found" <> _} = ClaudeCode.harness_init("m", [], cwd: work)
   end
 
-  # The setup restores PATH.
-  test "perl gone from PATH after the check ends the stream with an error that names perl",
-       %{bin: bin, work: work} do
-    {:ok, stream} = ClaudeCode.stream("m", %Helyx.Context{messages: []}, cwd: work)
-    System.put_env("PATH", bin)
+  test "a program that does not start fails the start with its text cut at 2,000 bytes",
+       %{work: work} do
+    # A path of 3,200 bytes: the watchdog's text repeats it, so the text is
+    # over the cut.
+    missing = Path.join([work | List.duplicate(String.duplicate("d", 200), 16)])
 
-    assert [{:error, {:not_started, "perl did not start: not found on PATH"}}] =
-             Enum.to_list(stream)
+    assert {:error, {:not_started, text}} = ClaudeCode.harness_init("m", [], cwd: missing)
+    assert byte_size(text) == 2_000
   end
 
   test "a turn: text, tool calls, and tool results join the transcript, and the id is stored",
        %{bin: bin} = ctx do
-    scenario(bin, 1, [
-      init(@sid),
-      delta(@sid, "I will list."),
-      assistant(@sid, %{type: "text", text: "I will list."}),
-      tool_use(@sid, "toolu_01", %{"command" => "ls"}),
-      tool_result(@sid, "toolu_01", "a.txt"),
-      delta(@sid, "One file."),
-      assistant(@sid, %{type: "text", text: "One file."}),
-      result(@sid, "One file.", 2)
+    approval = %{subtype: "can_use_tool", tool_name: "Bash", input: %{command: "ls"}}
+    ask = j(%{type: "control_request", request_id: "p1", request: approval})
+    other = j(%{type: "control_request", request_id: "p2", request: %{subtype: "elicitation"}})
+
+    turn(bin, 1, 1, [
+      ask,
+      other
+      | begin() ++
+          [
+            delta("I will list."),
+            assistant(%{type: "text", text: "I will list."}),
+            tool_use("toolu_01", %{"command" => "ls"}),
+            tool_result("toolu_01", "a.txt"),
+            delta("One file."),
+            assistant(%{type: "text", text: "One file."}),
+            result("One file.", 2)
+          ]
     ])
 
     session = start(ctx)
     events = prompt(session, "list the files")
 
+    assert [%{provider: "claude-code", harness_session_id: id, lost: false, cut: 0}] =
+             of_type(events, :harness_session)
+
+    assert "--session-id=#{id}" in args(bin, 1)
     assert "--permission-mode" in args(bin, 1)
     assert "bypassPermissions" in args(bin, 1)
     assert "--model=haiku" in args(bin, 1)
-    refute Enum.any?(args(bin, 1), &String.starts_with?(&1, "--resume"))
+    refute "-p" in args(bin, 1)
+    refute resume_flag?(bin, 1)
 
-    assert [%{"type" => "user", "message" => %{"content" => [%{"text" => "list the files"}]}}] =
-             stdin(bin, 1)
+    # The close waits for the exit, so the program read every line.
+    GenServer.stop(Session.pid(session))
 
-    assert [%{provider: "claude-code", harness_session_id: @sid, lost: false, cut: 0}] =
-             of_type(events, :harness_session)
+    assert [
+             %{
+               "type" => "user",
+               "uuid" => uuid,
+               "message" => %{"content" => [%{"text" => "list the files"}]}
+             },
+             %{
+               "type" => "control_response",
+               "response" => %{
+                 "subtype" => "success",
+                 "request_id" => "p1",
+                 "response" => %{"behavior" => "allow", "updatedInput" => %{"command" => "ls"}}
+               }
+             },
+             %{
+               "type" => "control_response",
+               "response" => %{"subtype" => "error", "request_id" => "p2"}
+             }
+           ] = stdin(bin, 1)
+
+    assert uuid =~ ~r/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
 
     call = %Message.ToolCall{id: "toolu_01", name: "Bash", arguments: %{"command" => "ls"}}
 
@@ -248,60 +420,50 @@ defmodule Helyx.Provider.ClaudeCodeTest do
 
     assert [%{stop_reason: :end_turn}] = of_type(events, :agent_end)
 
-    assert {:ok, %{harness_sessions: %{"claude-code" => {@sid, 1}}}} =
+    assert {:ok, %{harness_sessions: %{"claude-code" => {^id, 1}}}} =
              Session.File.resume(ctx.sessions, ctx.work)
   end
 
-  test "a tool result over the limits arrives cut, with the notice", %{bin: bin, work: work} do
-    big = String.duplicate("x\n", 3_000)
-
-    scenario(bin, 1, [
-      init(@sid),
-      tool_use(@sid, "toolu_01", %{"command" => "seq"}),
-      tool_result(@sid, "toolu_01", big),
-      result(@sid, "Done.", 2)
-    ])
-
-    assert [text] = for({:tool_result, "toolu_01", {:ok, t}} <- run_direct([], work), do: t)
-    assert text == Helyx.Text.truncate(big, :tail)
-    assert text =~ "[truncated: showing lines 1001-3000 of 3000]"
-  end
-
-  test "a later turn and a resumed session pass the id and send only the prompt",
+  test "two turns run in one program; the session end closes it with end of input; a resumed session passes the id",
        %{bin: bin} = ctx do
-    scenario(bin, 1, reply(@sid, "Hi."))
-    scenario(bin, 2, reply(@sid, "Again."))
-    scenario(bin, 3, reply(@sid, "Back."))
+    turn(bin, 1, 1, reply("Hi."))
+    turn(bin, 1, 2, reply("Again."))
+    File.write!(Path.join(bin, "eof.1"), ~s(echo eof > "$d/eof"\n))
+    turn(bin, 2, 1, reply("Back."))
 
     session = start(ctx)
-    prompt(session, "hello")
+    [%{harness_session_id: id}] = of_type(prompt(session, "hello"), :harness_session)
     events = prompt(session, "again")
 
-    assert "--resume=#{@sid}" in args(bin, 2)
-    assert [%{"message" => %{"content" => [%{"text" => "again"}]}}] = stdin(bin, 2)
+    assert programs(bin) == "1"
+    assert [_first, %{"message" => %{"content" => [%{"text" => "again"}]}}] = stdin(bin, 1)
     assert of_type(events, :harness_session) == []
+    assert Message.text(List.last(messages(events))) == "Again."
 
     GenServer.stop(Session.pid(session))
-    {:ok, session} = Session.resume(ctx.core, sessions_dir: ctx.sessions, cwd: ctx.work)
-    {:ok, _} = Session.subscribe(session)
+    assert File.read!(Path.join(bin, "eof")) == "eof\n"
+
+    session = resume(ctx)
     prompt(session, "back")
 
-    assert "--resume=#{@sid}" in args(bin, 3)
-    assert [%{"message" => %{"content" => [%{"text" => "back"}]}}] = stdin(bin, 3)
+    assert "--resume=#{id}" in args(bin, 2)
+    assert [%{"message" => %{"content" => [%{"text" => "back"}]}}] = stdin(bin, 2)
   end
 
-  test "a lost harness session starts a fresh one with the transcript replayed",
+  test "a lost harness session starts a fresh program with the transcript replayed",
        %{bin: bin} = ctx do
-    scenario(bin, 1, reply(@sid, "Hi."))
-    scenario(bin, 2, [lost(@sid)], "exit 1\n")
-    scenario(bin, 3, [init(@fresh), result(@fresh, "", 0) | reply(@fresh, "Fresh.")])
+    turn(bin, 1, 1, reply("Hi."))
+    script(bin, "start.2", [lost(@sid)], "exit 1\n")
+    turn(bin, 3, 1, [init(), replayed() | reply("Fresh.")])
 
     session = start(ctx)
-    prompt(session, "hello")
-    events = prompt(session, "again")
+    [%{harness_session_id: old}] = of_type(prompt(session, "hello"), :harness_session)
+    GenServer.stop(Session.pid(session))
 
-    assert "--resume=#{@sid}" in args(bin, 2)
-    refute Enum.any?(args(bin, 3), &String.starts_with?(&1, "--resume"))
+    events = prompt(resume(ctx), "again")
+
+    assert "--resume=#{old}" in args(bin, 2)
+    refute resume_flag?(bin, 3)
 
     assert [
              %{
@@ -313,65 +475,54 @@ defmodule Helyx.Provider.ClaudeCodeTest do
                "type" => "assistant",
                "message" => %{"content" => [%{"type" => "text", "text" => "Hi."}]}
              },
-             %{
-               "type" => "user",
-               "message" => %{"content" => [%{"text" => "again"}]} = prompt_line
-             }
+             %{"type" => "user", "message" => %{"content" => [%{"text" => "again"}]}} =
+               prompt_line
            ] = stdin(bin, 3)
 
     refute Map.has_key?(prompt_line, "shouldQuery")
 
-    assert [%{harness_session_id: @fresh, lost: true, cut: 0}] = of_type(events, :harness_session)
+    assert [%{harness_session_id: fresh, lost: true, cut: 0}] = of_type(events, :harness_session)
+    assert fresh != old
+    assert "--session-id=#{fresh}" in args(bin, 3)
 
     assert [%Message{role: :user}, %Message{content: [%Message.Text{text: "Fresh."}]}] =
              messages(events)
 
-    assert {:ok, %{harness_sessions: %{"claude-code" => {@fresh, 3}}}} =
+    assert {:ok, %{harness_sessions: %{"claude-code" => {^fresh, 3}}}} =
              Session.File.resume(ctx.sessions, ctx.work)
   end
 
-  test "a fresh session aborted before its first message is not resumed, in memory or after a restart",
+  test "a fresh session aborted before its first message is not resumed after a restart",
        %{bin: bin} = ctx do
-    scenario(bin, 1, reply(@sid, "Hi."))
-    scenario(bin, 2, [lost(@sid)], "exit 1\n")
-    scenario(bin, 3, [init(@fresh)], "sleep 30\n")
-    scenario(bin, 4, [init(@fresh)], "sleep 30\n")
-    scenario(bin, 5, reply(@fresh, "Fresh."))
+    turn(bin, 1, 1, begin() ++ [delta("so far")])
+    script(bin, "ctl.1", [interrupted(), aborted()])
+    turn(bin, 2, 1, reply("Fresh."))
 
     session = start(ctx)
-    prompt(session, "hello")
-    :ok = Session.prompt(session, "again")
-    collect_until(:harness_session)
+    :ok = Session.prompt(session, "hello")
+    collect_until(:message_update)
     :ok = Session.abort(session)
     collect_until(:agent_end)
-
-    :ok = Session.prompt(session, "more")
-    collect_until(:harness_session)
-    :ok = Session.abort(session)
-    collect_until(:agent_end)
-    refute Enum.any?(args(bin, 4), &String.starts_with?(&1, "--resume"))
-    assert %{"message" => %{"content" => [%{"text" => "hello"}]}} = hd(stdin(bin, 4))
-
     GenServer.stop(Session.pid(session))
-    {:ok, session} = Session.resume(ctx.core, sessions_dir: ctx.sessions, cwd: ctx.work)
-    {:ok, _} = Session.subscribe(session)
-    prompt(session, "last")
 
-    refute Enum.any?(args(bin, 5), &String.starts_with?(&1, "--resume"))
-    assert %{"message" => %{"content" => [%{"text" => "hello"}]}} = hd(stdin(bin, 5))
+    prompt(resume(ctx), "last")
+
+    assert programs(bin) == "2"
+    refute resume_flag?(bin, 2)
+    assert %{"message" => %{"content" => [%{"text" => "hello"} | _]}} = hd(stdin(bin, 2))
   end
 
   test "a switch to a claude-code model replays the history, tool calls too", %{bin: bin} = ctx do
     call = %Message.ToolCall{id: "call:1", name: "read", arguments: %{"path" => "a"}}
     :ok = Fake.script(ctx.core, "m", [[call], ["Read it."]])
-    scenario(bin, 1, reply(@sid, "Done."))
+    turn(bin, 1, 1, reply("Done."))
 
     session = start(ctx, "fake/m")
     prompt(session, "read a")
     :ok = Session.set_model(session, "claude-code/haiku")
     events = prompt(session, "and now?")
 
-    refute Enum.any?(args(bin, 1), &String.starts_with?(&1, "--resume"))
+    refute resume_flag?(bin, 1)
 
     assert [
              %{"shouldQuery" => false, "message" => %{"content" => [%{"text" => "read a"}]}},
@@ -395,42 +546,339 @@ defmodule Helyx.Provider.ClaudeCodeTest do
     assert [%{lost: false, cut: 0}] = of_type(events, :harness_session)
   end
 
-  test "a steer aborts the harness turn and starts a new one with the prompts",
-       %{bin: bin} = ctx do
-    scenario(bin, 1, [init(@sid)], "sleep 60\n")
-    scenario(bin, 2, reply(@fresh, "Both."))
-
-    session = start(ctx)
-    :ok = Session.prompt(session, "first")
-    collect_until(:harness_session)
-    :ok = Session.steer(session, "second")
-
-    assert [%{stop_reason: :aborted}] = of_type(collect_until(:agent_end), :agent_end)
-    events = collect_until(:agent_end)
-
-    assert [%{"message" => %{"content" => [%{"text" => "first"}, %{"text" => "second"}]}}] =
-             stdin(bin, 2)
-
-    assert [%{stop_reason: :end_turn}] = of_type(events, :agent_end)
+  # Gives messages to `harness_info/2` until `done?` holds for the state.
+  defp settle(state, done?) do
+    if done?.(state) do
+      state
+    else
+      receive do
+        message ->
+          {:ok, _actions, state} = ClaudeCode.harness_info(message, state)
+          settle(state, done?)
+      after
+        5_000 -> flunk("no such state; got #{inspect(state)}")
+      end
+    end
   end
 
-  test "an abort returns only when the program's group is gone", %{bin: bin} = ctx do
-    pidfile = Path.join(bin, "pid")
-    scenario(bin, 1, [init(@sid)], ~s(echo $$ > "#{pidfile}"\ntrap '' TERM\nsleep 60\n))
+  describe "an abort" do
+    test "interrupts the turn with cancel_queued, and the next turn runs in the same program",
+         %{bin: bin} = ctx do
+      turn(
+        bin,
+        1,
+        1,
+        begin() ++ [delta("so far"), tool_use("toolu_01", %{"command" => "sleep 20"})]
+      )
 
-    session = start(ctx)
-    :ok = Session.prompt(session, "wait")
-    collect_until(:harness_session)
-    pid = wait_for_pid(pidfile)
+      script(bin, "ctl.1", [interrupted(), tool_result("toolu_01", "interrupted"), aborted()])
+      turn(bin, 1, 2, reply("Next."))
 
-    started = System.monotonic_time(:millisecond)
-    :ok = Session.abort(session)
-    # The program ignores TERM: only the KILL after the grace ends it.
-    assert System.monotonic_time(:millisecond) - started >= 500
-    refute os_alive?(pid)
+      session = start(ctx)
+      :ok = Session.prompt(session, "sleep")
+      collect_until(:message_update)
+      :ok = Session.abort(session)
+      assert [%{stop_reason: :aborted}] = of_type(collect_until(:agent_end), :agent_end)
+
+      events = prompt(session, "next")
+      assert [%{stop_reason: :end_turn}] = of_type(events, :agent_end)
+      assert programs(bin) == "1"
+
+      assert [
+               %{"type" => "user"},
+               %{
+                 "type" => "control_request",
+                 "request_id" => "interrupt_" <> _,
+                 "request" => %{"subtype" => "interrupt", "cancel_queued" => true}
+               },
+               # The aborted turn left no assistant message, so its prompt
+               # is still at the end of the transcript.
+               %{
+                 "type" => "user",
+                 "message" => %{"content" => [%{"text" => "sleep"}, %{"text" => "next"}]}
+               }
+             ] = stdin(bin, 1)
+    end
+
+    # The program marks the TERM and then ignores it, so only the KILL
+    # after the grace ends it. A stop that sent end of input first would
+    # end its read loop and run `eof.1`.
+    test "with work still queued stops the program with TERM after a 5,000 ms grace, and no end of input",
+         %{bin: bin} = ctx do
+      pidfile = Path.join(bin, "pid")
+
+      File.write!(
+        Path.join(bin, "start.1"),
+        ~s(echo $$ > "#{pidfile}"\ntrap 'echo term > "$d/term"; while :; do sleep 1; done' TERM\n)
+      )
+
+      turn(bin, 1, 1, reply("Hi."))
+      turn(bin, 1, 2, begin() ++ [delta("so far")])
+      script(bin, "ctl.1", [interrupted(["q1"])])
+      File.write!(Path.join(bin, "eof.1"), ~s(echo eof > "$d/eof"\n))
+      turn(bin, 2, 1, reply("Next."))
+
+      session = start(ctx)
+      [%{harness_session_id: id}] = of_type(prompt(session, "hello"), :harness_session)
+      :ok = Session.prompt(session, "wait")
+      collect_until(:message_update)
+      pid = wait_for_pid(pidfile)
+
+      started = System.monotonic_time(:millisecond)
+      :ok = Session.abort(session)
+      assert System.monotonic_time(:millisecond) - started >= 5_000
+      refute os_alive?(pid)
+      assert File.read!(Path.join(bin, "term")) == "term\n"
+      refute File.exists?(Path.join(bin, "eof"))
+      collect_until(:agent_end)
+
+      assert [%{stop_reason: :end_turn}] = of_type(prompt(session, "next"), :agent_end)
+      assert "--resume=#{id}" in args(bin, 2)
+    end
   end
 
-  test "an error result fails the turn, and a call with no result gets an aborted one",
+  describe "an interrupt" do
+    # Starts a turn on a new program and gives it the program's output
+    # until `ready?` holds for the state.
+    defp running(work, ready?) do
+      {_from, _actions, state} =
+        request(harness(work), {:turn, "t1", %Helyx.Context{messages: [Message.user("x")]}})
+
+      settle(state, ready?)
+    end
+
+    defp started?(state), do: state.turn.messages == nil and state.caps != nil
+
+    defp interrupt(state) do
+      {from, [], state} = request(state, {:interrupt, "t1"})
+      {actions, _state} = pump(state, [], replied?(from))
+      {:reply, ^from, answer} = List.last(actions)
+      {answer, actions}
+    end
+
+    test "answers :ok after the control response and the result", %{bin: bin, work: work} do
+      turn(bin, 1, 1, begin())
+      script(bin, "ctl.1", [interrupted(), aborted()])
+
+      assert {:ok, actions} = interrupt(running(work, &started?/1))
+      refute Enum.any?(actions, &match?({:event, _, {:error, _}}, &1))
+    end
+
+    test "waits for the init line after the start of the turn", %{bin: bin, work: work} do
+      turn(bin, 1, 1, [lifecycle("started")], "(sleep 0.3; out out.late) &\n")
+      File.write!(Path.join(bin, "out.late"), init() <> "\n")
+      script(bin, "ctl.1", [interrupted(), aborted()])
+
+      state = running(work, &(&1.turn.messages == nil))
+      assert state.caps == nil
+      assert {:ok, _actions} = interrupt(state)
+    end
+
+    test "of a turn whose result comes before the control response answers :ok",
+         %{bin: bin, work: work} do
+      turn(bin, 1, 1, begin())
+      script(bin, "ctl.1", [result("done"), interrupted()])
+
+      assert {:ok, actions} = interrupt(running(work, &started?/1))
+      refute Enum.any?(actions, &match?({:event, _, {:done, _}}, &1))
+    end
+
+    test "of a turn that ended answers :ok and writes nothing", %{bin: bin, work: work} do
+      turn(bin, 1, 1, reply("ok"))
+
+      state = running(work, &(&1.turn == nil))
+      assert {from, [{:reply, from, :ok}], _state} = request(state, {:interrupt, "t1"})
+      assert [%{"type" => "user"}] = stdin(bin, 1)
+    end
+
+    test "that cancels the turn's line answers :ok with no result", %{bin: bin, work: work} do
+      # The capabilities are known before the start, as in a later turn.
+      turn(bin, 1, 1, [lifecycle("queued"), init()])
+      script(bin, "ctl.1", [interrupted([], ["@U@"])])
+
+      assert {:ok, _actions} = interrupt(running(work, &(&1.caps != nil)))
+      assert [%{"type" => "user"}, %{"type" => "control_request"}] = stdin(bin, 1)
+    end
+
+    test "after a replay waits for the start of the turn's line", %{bin: bin, work: work} do
+      go = Path.join(bin, "go")
+      rest = Path.join(bin, "out.rest")
+      # The result of a failed replay line comes before the start.
+      File.write!(rest, [replay_failed(), "\n", lifecycle("started"), "\n", init(), "\n"])
+      gate = ~s(while [ ! -e "#{go}" ]; do sleep 0.05; done; out out.rest\n)
+      turn(bin, 1, 1, [init()], gate)
+      script(bin, "ctl.1", [interrupted(), aborted()])
+
+      history = replay_history()
+
+      {_from, _actions, state} =
+        request(harness(work), {:turn, "t1", %Helyx.Context{messages: history}})
+
+      state = settle(state, &(&1.caps != nil))
+      assert {from, [], state} = request(state, {:interrupt, "t1"})
+      assert state.turn.interrupt.request_id == nil
+
+      File.write!(go, "")
+      assert {actions, _state} = pump(state, [], replied?(from))
+      assert {:reply, ^from, :ok} = List.last(actions)
+      assert %{"type" => "control_request"} = List.last(stdin(bin, 1))
+    end
+
+    test "of a turn that ends before the interrupt is written answers :ok and writes nothing",
+         %{bin: bin, work: work} do
+      go = Path.join(bin, "go")
+      File.write!(Path.join(bin, "out.rest"), [result("done"), "\n"])
+      gate = ~s(while [ ! -e "#{go}" ]; do sleep 0.05; done; out out.rest\n)
+      turn(bin, 1, 1, [lifecycle("started")], gate)
+
+      state = running(work, &(&1.turn.messages == nil))
+      assert {from, [], state} = request(state, {:interrupt, "t1"})
+
+      File.write!(go, "")
+      assert {actions, _state} = pump(state, [], replied?(from))
+      assert {:reply, ^from, :ok} = List.last(actions)
+      assert [%{"type" => "user"}] = stdin(bin, 1)
+    end
+
+    test "without interrupt_cancel_queued_v1 answers an error and writes nothing",
+         %{bin: bin, work: work} do
+      turn(bin, 1, 1, [lifecycle("started"), init(["interrupt_receipt_v1"])])
+      state = running(work, &started?/1)
+
+      assert {from, [{:reply, from, {:error, :no_cancel_queued}}], _state} =
+               request(state, {:interrupt, "t1"})
+
+      assert [%{"type" => "user"}] = stdin(bin, 1)
+    end
+
+    test "with work still queued answers an error", %{bin: bin, work: work} do
+      turn(bin, 1, 1, begin())
+      script(bin, "ctl.1", [interrupted(["q1"])])
+
+      assert {{:error, :still_queued}, _actions} = interrupt(running(work, &started?/1))
+    end
+
+    # Only an exact `[]` confirms that no queued work remains.
+    for {name, body} <- [
+          {"a missing", %{cancelled: []}},
+          {"a null", %{still_queued: nil, cancelled: []}},
+          {"a non-list", %{still_queued: "none", cancelled: []}},
+          {"a missing response", nil}
+        ] do
+      test "with #{name} still_queued answers an error", %{bin: bin, work: work} do
+        turn(bin, 1, 1, begin())
+        response = %{subtype: "success", request_id: "@R@", response: unquote(Macro.escape(body))}
+        script(bin, "ctl.1", [j(%{type: "control_response", response: response}), aborted()])
+
+        assert {{:error, :still_queued}, _actions} = interrupt(running(work, &started?/1))
+      end
+    end
+
+    test "with an error response answers the error, cut", %{bin: bin, work: work} do
+      turn(bin, 1, 1, begin())
+      long = String.duplicate("é", 1_500)
+
+      error =
+        j(%{
+          type: "control_response",
+          response: %{subtype: "error", request_id: "@R@", error: long}
+        })
+
+      script(bin, "ctl.1", [error])
+
+      assert {{:error, {:interrupt, text}}, _actions} = interrupt(running(work, &started?/1))
+      assert byte_size(text) == 2_000 and String.valid?(text)
+    end
+  end
+
+  test "a result of a turn with no model call ends the turn", %{bin: bin, work: work} do
+    turn(bin, 1, 1, begin() ++ [result("", 0)])
+
+    assert [{:harness_session, _id, 0}, {:done, _}] =
+             events_of(run_direct([Message.user("hi")], work))
+  end
+
+  test "a result before the start of the turn's line after a replay does not end the turn",
+       %{bin: bin, work: work} do
+    turn(bin, 1, 1, [init(), replay_failed() | reply("ok")])
+
+    history = replay_history()
+
+    assert [{:harness_session, _id, 0}, {:text_delta, "ok"} | _] =
+             events_of(run_direct(history, work))
+  end
+
+  test "a replay to a program without msg_lifecycle_v1 stops it", %{bin: bin, work: work} do
+    caps = ["interrupt_receipt_v1", "interrupt_cancel_queued_v1"]
+    turn(bin, 1, 1, [init(caps), replayed(), init(caps), delta("ok")])
+
+    history = replay_history()
+
+    assert {:stop, :no_msg_lifecycle} = List.last(run_direct(history, work))
+  end
+
+  # Only an exact 0 ends the turn; a positive count keeps it open.
+  for {name, count} <- [
+        {"a missing", :missing},
+        {"a null", nil},
+        {"a string", "0"},
+        {"a float", 0.0}
+      ] do
+    test "a result with #{name} queued_turn_count stops the program", %{bin: bin, work: work} do
+      line = JSON.decode!(result("ok"))
+
+      line =
+        if unquote(count) == :missing,
+          do: Map.delete(line, "queued_turn_count"),
+          else: Map.put(line, "queued_turn_count", unquote(count))
+
+      turn(bin, 1, 1, begin() ++ [j(line)])
+
+      assert {:stop, :no_queued_turn_count} = List.last(run_direct([Message.user("hi")], work))
+    end
+  end
+
+  test "a pending interrupt does not answer :ok on a result with queued work",
+       %{bin: bin, work: work} do
+    # No `init`: the interrupt waits, and is not written.
+    queued = result("ok") |> JSON.decode!() |> Map.put("queued_turn_count", 2) |> j()
+    go = Path.join(bin, "go")
+    File.write!(Path.join(bin, "out.rest"), [queued, "\n", delta("more"), "\n"])
+    gate = ~s(while [ ! -e "#{go}" ]; do sleep 0.05; done; out out.rest\n)
+    turn(bin, 1, 1, [lifecycle("started")], gate)
+
+    state = running(work, &(&1.turn.messages == nil))
+    assert {_from, [], state} = request(state, {:interrupt, "t1"})
+
+    # The delta after the result shows that the turn is still open.
+    File.write!(go, "")
+    state = settle(state, &(&1.turn != nil and &1.turn.open?))
+    assert %{request_id: nil, result?: false} = state.turn.interrupt
+  end
+
+  test "a replay to a program with no init line stops it", %{bin: bin, work: work} do
+    turn(bin, 1, 1, [replayed(), lifecycle("queued"), delta("ok"), result("ok")])
+
+    assert {:stop, :no_msg_lifecycle} = List.last(run_direct(replay_history(), work))
+  end
+
+  test "a close while a resumed program reports its session lost starts no program",
+       %{bin: bin, work: work} do
+    # The program reports the lost session only after the close.
+    go = Path.join(bin, "go")
+    gate = ~s(while [ ! -e "#{go}" ]; do sleep 0.05; done\n)
+    script(bin, "start.1", [lost(@sid)], "exit 1\n")
+    File.write!(Path.join(bin, "start.1"), gate <> File.read!(Path.join(bin, "start.1")))
+
+    state = harness(work, harness_session_id: @sid)
+    from = make_ref()
+    assert {:ok, [], state} = ClaudeCode.harness_request(:close, from, state)
+    File.write!(go, "")
+    assert {[{:reply, ^from, :ok}], _state} = pump(state, [], replied?(from))
+    assert programs(bin) == "1"
+  end
+
+  test "an error result fails the turn, a call with no result gets an aborted one, and the program stays",
        %{bin: bin} = ctx do
     error =
       j(%{
@@ -438,23 +886,27 @@ defmodule Helyx.Provider.ClaudeCodeTest do
         subtype: "error_max_turns",
         is_error: true,
         num_turns: 3,
+        queued_turn_count: 0,
         errors: ["too many"]
       })
 
-    scenario(
+    turn(
       bin,
       1,
-      [
-        init(@sid),
-        tool_use(@sid, "toolu_a", %{}),
-        tool_use(@sid, "toolu_b", %{}),
-        tool_result(@sid, "toolu_a", "done"),
-        error
-      ],
-      "exit 1\n"
+      1,
+      begin() ++
+        [
+          tool_use("toolu_a", %{}),
+          tool_use("toolu_b", %{}),
+          tool_result("toolu_a", "done"),
+          error
+        ]
     )
 
-    events = prompt(start(ctx), "go")
+    turn(bin, 1, 2, reply("Next."))
+
+    session = start(ctx)
+    events = prompt(session, "go")
 
     assert [%{stop_reason: :error, error: {:claude_code, "error_max_turns", "too many"}}] =
              of_type(events, :agent_end)
@@ -465,12 +917,55 @@ defmodule Helyx.Provider.ClaudeCodeTest do
            ] = of_type(events, :tool_execution_end)
 
     assert Message.text(aborted) == "aborted"
+
+    assert [%{stop_reason: :end_turn}] = of_type(prompt(session, "next"), :agent_end)
+    assert programs(bin) == "1"
+  end
+
+  test "a program that exits between turns ends the harness process; the next turn resumes",
+       %{bin: bin} = ctx do
+    turn(bin, 1, 1, reply("Hi."), "exit 3\n")
+    turn(bin, 2, 1, reply("Back."))
+
+    session = start(ctx)
+    [%{harness_session_id: id}] = of_type(prompt(session, "hello"), :harness_session)
+    # A turn that starts before the session saw the end runs on the old
+    # harness process and fails (`docs/features/long-lived-harness.md`,
+    # "Built in #199").
+    wait_for_no_harness(Session.pid(session))
+    assert [%{stop_reason: :end_turn}] = of_type(prompt(session, "again"), :agent_end)
+    assert "--resume=#{id}" in args(bin, 2)
+  end
+
+  test "a program that exits during a turn fails it", %{bin: bin} = ctx do
+    turn(bin, 1, 1, begin(), "exit 3\n")
+
+    events = prompt(start(ctx), "go")
+
+    assert [%{stop_reason: :error, error: {:harness_stop, {:claude_code_exit, 3}}}] =
+             of_type(events, :agent_end)
+  end
+
+  test "a tool result over the limits arrives cut, with the notice", %{bin: bin, work: work} do
+    big = String.duplicate("x\n", 3_000)
+
+    turn(bin, 1, 1, [
+      tool_use("toolu_01", %{"command" => "seq"}),
+      tool_result("toolu_01", big),
+      result("Done.", 2)
+    ])
+
+    assert [text] =
+             for({:tool_result, "toolu_01", {:ok, t}} <- events_of(run_direct([], work)), do: t)
+
+    assert text == Helyx.Text.truncate(big, :tail)
+    assert text =~ "[truncated: showing lines 1001-3000 of 3000]"
   end
 
   describe "the replay cap" do
     test "keeps the newest messages within 400,000 bytes and never starts at a result",
          %{bin: bin, work: work} do
-      scenario(bin, 1, reply(@sid, "ok"))
+      turn(bin, 1, 1, reply("ok"))
       big = String.duplicate("x", 150_000)
       call = %Message.ToolCall{id: "c1", name: "bash", arguments: %{}}
 
@@ -484,7 +979,7 @@ defmodule Helyx.Provider.ClaudeCodeTest do
         Message.user("next")
       ]
 
-      assert [{:harness_session, @sid, 2} | _] = run_direct(messages, work)
+      assert [{:harness_session, _id, 2} | _] = events_of(run_direct(messages, work))
 
       assert [
                %{"message" => %{"content" => [%{"text" => "run it"}]}},
@@ -517,9 +1012,9 @@ defmodule Helyx.Provider.ClaudeCodeTest do
 
       fill = 400_000 - user_line - (assistant.("x") - 1)
 
-      scenario(bin, 1, reply(@sid, "ok"))
+      turn(bin, 1, 1, reply("ok"))
 
-      # Each case is run 1 of the fake again.
+      # Each case is program 1 of the fake again.
       for {extra, cut} <- [{-1, 0}, {0, 0}, {1, 1}] do
         File.rm(Path.join(bin, "count"))
         text = String.duplicate("x", fill + extra)
@@ -531,13 +1026,13 @@ defmodule Helyx.Provider.ClaudeCodeTest do
           Message.user("next")
         ]
 
-        assert [{:harness_session, @sid, ^cut} | _] = run_direct(messages, work)
+        assert [{:harness_session, _id, ^cut} | _] = events_of(run_direct(messages, work))
         assert length(stdin(bin, 1)) == 3 - cut
       end
     end
 
     test "a cut that lands after a tool call drops its result too", %{bin: bin, work: work} do
-      scenario(bin, 1, reply(@sid, "ok"))
+      turn(bin, 1, 1, reply("ok"))
 
       call = %Message.ToolCall{
         id: "c1",
@@ -556,152 +1051,84 @@ defmodule Helyx.Provider.ClaudeCodeTest do
         Message.user("next")
       ]
 
-      assert [{:harness_session, @sid, 3} | _] = run_direct(messages, work)
+      assert [{:harness_session, _id, 3} | _] = events_of(run_direct(messages, work))
 
       assert [%{"type" => "assistant"}, %{"message" => %{"content" => [%{"text" => "next"}]}}] =
                stdin(bin, 1)
     end
   end
 
-  test "a program that does not start ends the stream with its text cut at 2,000 bytes",
-       %{work: work} do
-    # A path of 3,200 bytes: the watchdog's text repeats it, so the text is
-    # over the cut.
-    missing = Path.join([work | List.duplicate(String.duplicate("d", 200), 16)])
-
-    assert [{:error, {:not_started, text}}] = run_direct([Message.user("go")], missing)
-    assert byte_size(text) == 2_000
-  end
-
   test "lines of 16 MiB and one byte under are read", %{bin: bin, work: work} do
-    scenario(bin, 1, reply(@sid, "ok"))
+    turn(bin, 1, 1, reply("ok"))
 
     for bytes <- [16_777_215, 16_777_216] do
       File.rm(Path.join(bin, "count"))
 
       File.write!(
-        Path.join(bin, "run.1"),
-        ~s(head -c #{bytes} /dev/zero | tr '\\0' 'x'; echo; cat "$d/out.1"\n)
+        Path.join(bin, "turn.1.1"),
+        ~s(head -c #{bytes} /dev/zero | tr '\\0' 'x'; echo; out out.turn.1.1\n)
       )
 
-      assert [{:harness_session, @sid, 0}, {:text_delta, "ok"}, {:done, _}] =
-               run_direct([Message.user("hi")], work)
+      assert [{:harness_session, _id, 0}, {:text_delta, "ok"}, {:done, _}] =
+               events_of(run_direct([Message.user("hi")], work))
     end
   end
 
-  # A program can write faster than the stream reads. Waits in the stream's
-  # own process until the exit wait of the terminal has passed, then queues
-  # `n` chunks of stdout from its port: none of them may be read.
-  defp queue_stdout_past_deadline(n) do
-    port = Enum.find(Port.list(), &(Port.info(&1, :connected) == {:connected, self()}))
-    Process.sleep(5_100)
-    for _ <- 1..n, do: send(self(), {port, {:data, "x\n"}})
-  end
-
-  test "stdout queued past the exit deadline does not hold the terminal",
+  test "a line one byte over 16 MiB with its newline in one write stops the provider",
        %{bin: bin, work: work} do
-    scenario(bin, 1, reply(@sid, "ok"), "sleep 30\n")
+    File.write!(Path.join(bin, "line"), [String.duplicate("x", 16_777_217), "\n"])
+    File.write!(Path.join(bin, "turn.1.1"), ~s(cat "$d/line"\n))
 
-    {:ok, stream} =
-      ClaudeCode.stream("haiku", %Helyx.Context{messages: [Message.user("hi")]}, cwd: work)
-
-    events =
-      Enum.map(stream, fn
-        {:text_delta, _text} = event -> tap(event, fn _ -> queue_stdout_past_deadline(1_000) end)
-        event -> event
-      end)
-
-    assert [_, {:text_delta, "ok"}, {:done, %{stop_reason: :end_turn}}] = events
-    assert {:message_queue_len, queued} = Process.info(self(), :message_queue_len)
-    assert queued >= 1_000
+    assert {:stop, {:line_over_limit, 16_777_216}} =
+             List.last(run_direct([Message.user("hi")], work))
   end
 
-  test "output after the result is not read, and the exit wait runs once from the result",
+  test "a line over 16 MiB stops the provider", %{bin: bin, work: work} do
+    File.write!(Path.join(bin, "turn.1.1"), ~s(head -c 16777217 /dev/zero | tr '\\0' 'x'\n))
+
+    assert {:stop, {:line_over_limit, 16_777_216}} =
+             List.last(run_direct([Message.user("hi")], work))
+  end
+
+  test "the program's error text and subtype are cut at 2,000 bytes, not in a character",
        %{bin: bin, work: work} do
-    # 17 MB after the result, then output each second for 10 s: neither the
-    # line cap nor a new exit wait applies.
-    scenario(
-      bin,
-      1,
-      [init(@sid), delta(@sid, "ok"), result(@sid, "ok")],
-      ~s(head -c 17000000 /dev/zero | tr '\\0' 'x'\nfor i in 1 2 3 4 5 6 7 8 9 10; do echo junk; sleep 1; done\n)
-    )
+    long = "a" <> String.duplicate("é", 1_000)
 
-    started = System.monotonic_time(:millisecond)
+    # {text of the errors and of the subtype, bytes kept of each}
+    for {text, want} <- [
+          {String.duplicate("a", 1_999), 1_999},
+          {String.duplicate("a", 2_000), 2_000},
+          {String.duplicate("a", 2_001), 2_000},
+          {long, 1_999}
+        ] do
+      File.rm(Path.join(bin, "count"))
 
-    assert [{:harness_session, @sid, 0}, {:text_delta, "ok"}, {:done, %{stop_reason: :end_turn}}] =
-             run_direct([Message.user("hi")], work)
+      error =
+        j(%{
+          type: "result",
+          subtype: text,
+          is_error: true,
+          num_turns: 1,
+          queued_turn_count: 0,
+          errors: [text]
+        })
 
-    assert (System.monotonic_time(:millisecond) - started) in 5_000..7_999
-  end
+      turn(bin, 1, 1, [init(), error])
 
-  test "a lost-session result whose program does not exit starts the fresh run at the deadline",
-       %{bin: bin, work: work} do
-    scenario(bin, 1, [lost(@sid)], "sleep 30\n")
-    scenario(bin, 2, reply(@fresh, "Fresh."))
+      assert [_, {:error, {:claude_code, subtype, text}}] =
+               events_of(run_direct([Message.user("hi")], work))
 
-    started = System.monotonic_time(:millisecond)
-
-    assert [{:harness_session, @fresh, 0}, {:text_delta, "Fresh."}, {:done, _}] =
-             run_direct([Message.user("hi")], work, harness_session_id: @sid)
-
-    assert (System.monotonic_time(:millisecond) - started) in 5_000..7_999
-  end
-
-  # A shutdown of the hands behind the lost run's exit status ends the
-  # stream before the fresh run builds its input from the transcript and
-  # before its start waits in a hold call to the hands. The build of this
-  # transcript of 1,000,000 messages takes longer than the 200 ms wait for
-  # the `:DOWN` (measured: the test fails on code that trapped exits and
-  # built the input first, #167). The test process stands in for the
-  # hands; the suspension holds the order of the two signals.
-  test "a shutdown queued behind the exit of a lost run ends the stream before the fresh run",
-       %{bin: bin, work: work, tmp_dir: tmp} do
-    assistant = %Message{role: :assistant, content: [%Message.Text{text: "ok"}]}
-    history = Enum.flat_map(1..500_000, fn _ -> [Message.user("hi"), assistant] end)
-    # The program has all of its input when it writes its pid to `ready`.
-    ready = Path.join(tmp, "ready")
-    go = Path.join(tmp, "go")
-
-    scenario(
-      bin,
-      1,
-      [lost(@sid)],
-      ~s(echo $$ > "#{ready}"\nwhile [ ! -e "#{go}" ]; do sleep 0.05; done\n)
-    )
-
-    test = self()
-
-    {pid, ref} =
-      spawn_monitor(fn ->
-        Process.put(:helyx_hands, test)
-        context = %Helyx.Context{messages: history ++ [Message.user("hi")]}
-        {:ok, stream} = ClaudeCode.stream("haiku", context, cwd: work, harness_session_id: @sid)
-        Enum.to_list(stream)
-      end)
-
-    for _hold <- 1..2 do
-      assert_receive {:"$gen_call", from, {:hold, _handle}}, 5_000
-      GenServer.reply(from, :ok)
+      assert {byte_size(text), byte_size(subtype)} == {want, want}
+      assert String.valid?(text) and String.valid?(subtype)
     end
-
-    wait_for_pid(ready)
-    :erlang.suspend_process(pid)
-    File.write!(go, "")
-    wait_for_exit_status(pid)
-    Process.exit(pid, :shutdown)
-    :erlang.resume_process(pid)
-
-    assert_receive {:DOWN, ^ref, :process, _pid, :shutdown}, 200
-    refute_received {:"$gen_call", _from, {:hold, _handle}}
   end
 
   # The line cap bounds each line, not the number of lines in the mailbox
-  # (#167). The program writes 1,000 JSON lines of 64 KB while the stream
-  # is suspended, so they are all queued before the shutdown. Their decode,
-  # 1.5 ms a line, takes longer than the 200 ms wait for the `:DOWN` (the
-  # test fails on code that traps exits in the read loop).
-  test "a shutdown behind queued stdout ends the stream at once",
+  # (#167). The program writes 1,000 JSON lines of 64 KB while the harness
+  # process is suspended, so they are all queued before the shutdown. Their
+  # decode, 1.5 ms a line, takes longer than the 200 ms wait for the
+  # `:DOWN` (the test fails on code that traps exits).
+  test "a shutdown behind queued stdout ends the harness process at once",
        %{bin: bin, work: work, tmp_dir: tmp} do
     line = j(%{type: "other", pad: List.duplicate(1, 32_768)})
     File.write!(Path.join(bin, "lines"), List.duplicate([line, "\n"], 1_000))
@@ -709,10 +1136,8 @@ defmodule Helyx.Provider.ClaudeCodeTest do
     go = Path.join(tmp, "go")
     written = Path.join(tmp, "written")
 
-    scenario(
-      bin,
-      1,
-      [init(@sid)],
+    File.write!(
+      Path.join(bin, "turn.1.1"),
       ~s(echo $$ > "#{ready}"\nwhile [ ! -e "#{go}" ]; do sleep 0.05; done\n) <>
         ~s(cat "$d/lines"\necho $$ > "#{written}"\nsleep 30\n)
     )
@@ -722,9 +1147,11 @@ defmodule Helyx.Provider.ClaudeCodeTest do
     {pid, ref} =
       spawn_monitor(fn ->
         Process.put(:helyx_hands, test)
-        context = %Helyx.Context{messages: [Message.user("hi")]}
-        {:ok, stream} = ClaudeCode.stream("haiku", context, cwd: work)
-        Enum.to_list(stream)
+
+        {_from, actions, state} =
+          request(harness(work), {:turn, "t1", %Helyx.Context{messages: [Message.user("hi")]}})
+
+        pump(state, actions, fn _ -> false end)
       end)
 
     for _hold <- 1..2 do
@@ -742,59 +1169,5 @@ defmodule Helyx.Provider.ClaudeCodeTest do
     assert_receive {:DOWN, ^ref, :process, _pid, :shutdown}, 200
     # The keeper closes the port, so the watchdog ends the group.
     assert group_gone_within?(program, 300)
-  end
-
-  defp wait_for_exit_status(pid, tries \\ 500) do
-    {:messages, messages} = Process.info(pid, :messages)
-
-    cond do
-      Enum.any?(messages, &match?({_port, {:exit_status, _}}, &1)) ->
-        :ok
-
-      tries == 0 ->
-        flunk("no exit status reached the stream")
-
-      true ->
-        Process.sleep(10)
-        wait_for_exit_status(pid, tries - 1)
-    end
-  end
-
-  test "a line one byte over 16 MiB with its newline in one write is an error",
-       %{bin: bin, work: work} do
-    File.write!(Path.join(bin, "line"), [String.duplicate("x", 16_777_217), "\n"])
-    File.write!(Path.join(bin, "run.1"), ~s(cat "$d/line"\n))
-
-    assert [{:error, {:line_over_limit, 16_777_216}}] = run_direct([Message.user("hi")], work)
-  end
-
-  test "the program's error text and subtype are cut at 2,000 bytes, not in a character",
-       %{bin: bin, work: work} do
-    long = "a" <> String.duplicate("é", 1_000)
-
-    # {text of the errors and of the subtype, bytes kept of each}
-    for {text, want} <- [
-          {String.duplicate("a", 1_999), 1_999},
-          {String.duplicate("a", 2_000), 2_000},
-          {String.duplicate("a", 2_001), 2_000},
-          {long, 1_999}
-        ] do
-      File.rm(Path.join(bin, "count"))
-      error = j(%{type: "result", subtype: text, is_error: true, num_turns: 1, errors: [text]})
-      scenario(bin, 1, [init(@sid), error], "exit 1\n")
-
-      assert [_, {:error, {:claude_code, subtype, text}}] =
-               run_direct([Message.user("hi")], work)
-
-      assert {byte_size(text), byte_size(subtype)} == {want, want}
-      assert String.valid?(text) and String.valid?(subtype)
-    end
-  end
-
-  test "a line over 16 MiB ends the stream with an error", %{bin: bin, work: work} do
-    File.write!(Path.join(bin, "run.1"), ~s(head -c 16777217 /dev/zero | tr '\\0' 'x'\n))
-
-    assert [{:error, {:line_over_limit, 16_777_216}}] =
-             run_direct([Message.user("hi")], work)
   end
 end

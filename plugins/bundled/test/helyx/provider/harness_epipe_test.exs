@@ -117,17 +117,49 @@ defmodule Helyx.Provider.HarnessEpipeTest do
     end
   end
 
-  test "Claude Code: queued input to a dead watchdog fails the turn", %{bin: bin} do
+  # The connected provider runs in a process that does not trap exits, as
+  # the harness process does not. Its turn writes the prompt, and the
+  # port's `:DOWN` stops it.
+  test "Claude Code: queued input to a dead watchdog stops the harness", %{bin: bin} do
     program(bin, "claude", "exec sleep 30\n")
     stop = fn watchdog -> System.cmd("kill", ["-STOP", "#{watchdog}"]) end
-    assert run(ClaudeCode, "haiku", stop) == [{:error, {:claude_code_exit, :epipe}}]
+    test = self()
+
+    {_pid, ref} =
+      spawn_monitor(fn ->
+        hands(stop)
+        {:ok, state} = ClaudeCode.harness_init("haiku", [], cwd: File.cwd!())
+        context = %Helyx.Context{messages: [Message.user(@big)]}
+
+        {:ok, _actions, state} =
+          ClaudeCode.harness_request({:turn, "t1", context}, make_ref(), state)
+
+        send(test, {:stopped, stopped(state)})
+      end)
+
+    receive do
+      {:stopped, reason} -> assert reason == {:claude_code_exit, :epipe}
+      {:DOWN, ^ref, :process, _pid, reason} -> flunk("the harness ended on #{inspect(reason)}")
+    after
+      5_000 -> flunk("the harness did not stop")
+    end
   end
 
-  # The stream does not trap exits: an abort while the start waits for the
-  # hold of the command group ends the stream at once.
+  defp stopped(state) do
+    receive do
+      message ->
+        case ClaudeCode.harness_info(message, state) do
+          {:ok, _actions, state} -> stopped(state)
+          {:stop, reason, _state} -> reason
+        end
+    end
+  end
+
+  # The harness process does not trap exits: an abort while the start
+  # waits for the hold of the command group ends it at once.
   # The name holds no quote: `tmp_dir` puts it in the path that the fake
   # perl of `setup` holds unquoted.
-  test "Claude Code: a shutdown of the hands during the start ends the stream at once",
+  test "Claude Code: a shutdown of the hands during the start ends the harness at once",
        %{bin: bin} do
     program(bin, "claude", "exec sleep 30\n")
     test = self()
@@ -135,9 +167,7 @@ defmodule Helyx.Provider.HarnessEpipeTest do
     {pid, ref} =
       spawn_monitor(fn ->
         Process.put(:helyx_hands, test)
-        context = %Helyx.Context{messages: [Message.user("hi")]}
-        {:ok, stream} = ClaudeCode.stream("haiku", context, cwd: File.cwd!())
-        Enum.to_list(stream)
+        ClaudeCode.harness_init("haiku", [], cwd: File.cwd!())
       end)
 
     assert_receive {:"$gen_call", from, {:hold, {:watchdog, _watchdog}}}, 5_000

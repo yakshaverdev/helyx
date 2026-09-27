@@ -19,6 +19,7 @@ Invariants the review axes check on every diff. Add one when a review or a PR co
 - A boundary check rejects the smallest unit that permits safe continuation. The failure path names what one bad value destroys, and the feature doc states each case where missing identity, damaged structure, or an unresolved resource requires a larger failure.
 - A public plugin entry (a tool's `run/2`, a provider's `stream/3`) is a boundary for all of its arguments, because code outside the hands and the session can call it.
 - A finding needs a reachable input: its reproduction enters through a boundary. Source: the boundary review of 2026-09-26.
+- A value from outside that confirms a safe state (an empty queue, a finished command, a ready context) is matched on the exact safe value. A missing field, `null`, a wrong type, or an unknown status takes the unsafe path: stop or fail. The failure-path review sends each of these to every such check. Source: the Codex findings of #199 (a nil context), #200 (a missing `still_queued`), and #201 (a command completed with `inProgress`), one class three times; no mechanical check can know which state is safe, so the rule is here.
 
 ## Races and resource ownership
 
