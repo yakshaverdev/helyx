@@ -58,7 +58,7 @@ Cases that the watch does not make safe:
 - A product that stops the Registry with `Supervisor.terminate_child/2` and starts it later: the lost signal can come before the start, so a subscribe in between returns `{:error, :session_not_found}` although the session runs. Only the product does this, and it knows.
 - A kill of the Registry supervisor: its partitions stop after it, and the Core can start the new Registry before their named tables are gone. The start then fails, and after its restart limit the Core stops. Every session stops too, and each subscriber gets `:stopped`. This is how `Registry` restarts; this change does not alter it.
 - A subscribe while the Registry restarts: the table of the dead partition raises, so the subscribe returns `{:error, :session_not_found}` although the session runs, and it removes the caller's old subscription with no lost signal. A client that mounts in this window ends. A partition that crashes is a bug, and a retry is more code than the window is worth.
-- One id in two Cores (#204): the flush of a subscribe matches the id only, and it runs whether or not the caller had an entry. So any subscribe to the id in one Core, also a failed one or the first one there, can remove a signal of the caller's subscription in the other Core.
+- One id in two Cores: the flush of a subscribe matches the id only, and it runs whether or not the caller had an entry. So any subscribe to the id in one Core, also a failed one or the first one there, can remove a signal of the caller's subscription in the other Core. #204 put the instance id in events and snapshots, not in the signals: open, ticket #216, owner decision on the signal shape (`docs/features/session-instance.md`).
 - A session that ends while the watch waits before the lost signal: the watch sends the lost signal, not the end signal, and the subscribe that follows returns `{:error, :session_not_found}`. The TUI then ends with `:session_not_found`, not with the reason of the session. The session is gone in both cases, so only the reason is wrong.
 - A pid that the node reuses: the dictionary entry of a dead watch stays until the caller's next subscribe, which kills the pid it names. Only a node that uses all its pids in that time reuses one.
 
@@ -81,7 +81,7 @@ A subscriber that joins as the session ends gets one of two results:
 - `{:ok, snapshot}`, and then the end signal. The watch monitored the session before the snapshot call, and the session answered, so the `:DOWN` comes after the snapshot.
 - `{:error, :session_not_found}`, and no end signal.
 
-A subscriber that registered before the session ended keeps its entry until it exits or subscribes again. The watch of a session that ended is gone. When a resume starts a new session with the same id while the old entry stays, that entry has no watch, so the subscriber gets the events of the new session with no end signal for it. A client that acts on the end signal does not keep the entry; a subscribe to the new session replaces it and gets a watch of the new session. The events of the two sessions have the same `seq` values, so the rest is part of session instance identity: open, #204.
+A subscriber that registered before the session ended keeps its entry until it exits or subscribes again. The watch of a session that ended is gone. When a resume starts a new session with the same id while the old entry stays, that entry has no watch, so the subscriber gets the events of the new session with no end signal for it. A client that acts on the end signal does not keep the entry; a subscribe to the new session replaces it and gets a watch of the new session. The events of the two sessions have the same `seq` values but not the same `instance_id`, so the client drops the events of the new session by the instance rule (#204, `docs/features/session-instance.md`).
 
 ### A subscriber that does not trap exits
 
@@ -126,6 +126,6 @@ No external resource. The watch is a process of the BEAM with no link but its Re
 
 ## Out of scope
 
-- Session instance identity: #204. See "Subscribe" for the effect on a subscriber that keeps its entry across a resume.
+- Session instance identity: #204, `docs/features/session-instance.md`. See "Subscribe" for a subscriber that keeps its entry across a resume.
 - A raise of `contract_version`. It stays 1: the end signal is in the contract of ADR 0006, section 2, which version 1 implements, and the only client of version 1 is the TUI, which this change moves to the signal.
 - A remote transport and its last event.

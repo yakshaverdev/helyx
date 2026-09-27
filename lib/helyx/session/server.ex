@@ -15,6 +15,8 @@ defmodule Helyx.Session.Server do
     @enforce_keys [:id, :core, :model, :provider, :turn_mode, :cwd]
     defstruct [
       :id,
+      # A new id for each start of the process, a resume too (`Helyx.Event`).
+      :instance_id,
       :core,
       :model,
       :provider,
@@ -69,7 +71,7 @@ defmodule Helyx.Session.Server do
         tools: state.tool_modules
       )
 
-    state = %{state | hands: hands}
+    state = %{state | hands: hands, instance_id: Id.new()}
 
     # A resumed transcript can end mid-turn, after a crash. Each open tool
     # call gets an `aborted` error result before anyone can subscribe, so
@@ -126,6 +128,7 @@ defmodule Helyx.Session.Server do
 
   def handle_call({:snapshot}, _from, %State{} = state) do
     snapshot = %Snapshot{
+      instance_id: state.instance_id,
       seq: state.seq,
       messages: state.transcript,
       turn: snapshot_turn(state.turn),
@@ -572,7 +575,15 @@ defmodule Helyx.Session.Server do
 
   defp do_emit(state, turn_id, type, data) do
     seq = state.seq + 1
-    event = %Event{type: type, session_id: state.id, turn_id: turn_id, seq: seq, data: data}
+
+    event = %Event{
+      type: type,
+      session_id: state.id,
+      instance_id: state.instance_id,
+      turn_id: turn_id,
+      seq: seq,
+      data: data
+    }
 
     Registry.dispatch(Helyx.Core.events_registry(state.core), state.id, fn entries ->
       for {pid, _} <- entries, do: send(pid, {:helyx_event, event})

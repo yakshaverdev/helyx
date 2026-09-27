@@ -3,8 +3,13 @@ defmodule Helyx.Event do
   A fact emitted by a session. Clients render from events and hold no other
   session state.
 
-  Every event carries the session id, the turn id, and a sequence number that
-  increases by one per event within a session, so a client can detect gaps.
+  Every event carries the session id, the id of the session instance, the
+  turn id, and a sequence number that increases by one per event within an
+  instance, so a client can detect gaps. Each start of the session process,
+  a resume too, is a new instance: a resume keeps the session id and starts
+  `seq` at 0 again, and two Cores can hold one session id. A client drops
+  every event whose `instance_id` is not the one of its snapshot
+  (`Helyx.Session.Snapshot`).
 
   Types and their `data`:
 
@@ -37,8 +42,8 @@ defmodule Helyx.Event do
       to the fresh session
   """
 
-  @enforce_keys [:type, :session_id, :turn_id, :seq, :data]
-  defstruct [:type, :session_id, :turn_id, :seq, :data]
+  @enforce_keys [:type, :session_id, :instance_id, :turn_id, :seq, :data]
+  defstruct [:type, :session_id, :instance_id, :turn_id, :seq, :data]
 
   @type type ::
           :agent_start
@@ -57,6 +62,7 @@ defmodule Helyx.Event do
   @type t :: %__MODULE__{
           type: type(),
           session_id: String.t(),
+          instance_id: String.t(),
           turn_id: String.t() | nil,
           seq: pos_integer(),
           data: map()
