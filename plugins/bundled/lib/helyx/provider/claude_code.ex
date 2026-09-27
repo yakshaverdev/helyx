@@ -147,7 +147,7 @@ defmodule Helyx.Provider.ClaudeCode do
   # The session calls `stream/3` only for a provider that is not
   # connected.
   @impl true
-  def stream(_model, _context, _opts), do: {:error, :connected_only}
+  def stream(_model, _context, _opts), do: {:error, :connected}
 
   @impl true
   def harness_init(model, _tools, opts) do
@@ -397,6 +397,18 @@ defmodule Helyx.Provider.ClaudeCode do
     {[], state}
   end
 
+  # After a replay, the provider skips each result until `started` of the
+  # turn's line. A result of the turn's own line before its `started` is
+  # skipped too. The skip needs the program to list `msg_lifecycle_v1` in
+  # an earlier `init` line; without it the provider stops the program,
+  # because `started` can fail to come. A resumed program never replays,
+  # so the result of a lost session does not come here.
+  defp translate(%{"type" => "result"}, %State{turn: %Turn{replay?: true}} = state) do
+    if "msg_lifecycle_v1" in (state.caps || []),
+      do: {[], state},
+      else: {[], %{state | terminal: {:error, :no_msg_lifecycle}}}
+  end
+
   defp translate(%{"type" => "result"} = result, state) do
     cond do
       lost?(result, state) ->
@@ -404,16 +416,6 @@ defmodule Helyx.Provider.ClaudeCode do
 
       state.turn == nil ->
         {[], state}
-
-      # After a replay, the provider skips each result until `started` of
-      # the turn's line. A result of the turn's own line before its
-      # `started` is skipped too. The skip needs the program to list
-      # `msg_lifecycle_v1` in an earlier `init` line; without it the
-      # provider stops the program, because `started` can fail to come.
-      state.turn.replay? ->
-        if "msg_lifecycle_v1" in (state.caps || []),
-          do: {[], state},
-          else: {[], %{state | terminal: {:error, :no_msg_lifecycle}}}
 
       state.turn.interrupt ->
         interrupt_progress(state, :result?)

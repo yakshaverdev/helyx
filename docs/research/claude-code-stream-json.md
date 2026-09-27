@@ -94,6 +94,8 @@ No limit is documented for a line. A line holds a whole tool result or a whole h
 
 ## Not verified
 
+- `cancel_queued: true` during a replay: whether it drops queued replay lines (`shouldQuery: false`). #200 waits for `started` of the turn's line because of this inferred risk (2026-09-27).
+- The order of the replay `result` lines and `started` of the next line with a `uuid` for more than one replay user line. #200 observed it for one replay user line only (2026-09-27).
 - The `result` line of a run that hits an API error or a usage limit.
 - Sub-agent lines (`parent_tool_use_id`), image tool results, and `is_error` tool results in the output (an `is_error` result in the replay was accepted).
 - Tool ids with characters outside `[a-zA-Z0-9_-]` in the replay.

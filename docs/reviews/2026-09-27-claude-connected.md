@@ -4,7 +4,7 @@ Base: `origin/master` at `da46d28`. Rounds: the first and complete round, then f
 
 ## Change
 
-`Helyx.Provider.ClaudeCode` is now a connected harness provider (ADR 0007). `harness_init/3` starts one `claude` for the session, with no `-p`, with `--session-id=<new uuid>` or `--resume=<id>`, under the watchdog with open input and a TERM grace of 5,000 ms. A turn is one user line with a `uuid`, and it ends at a `result` with `queued_turn_count` 0. An interrupt is the control request `interrupt` with `cancel_queued: true`. A close is the end of input, then the exit. `stream/3` answers `{:error, :connected_only}`. The decisions are in `docs/features/long-lived-harness.md`, section "Built in #200".
+`Helyx.Provider.ClaudeCode` is now a connected harness provider (ADR 0007). `harness_init/3` starts one `claude` for the session, with no `-p`, with `--session-id=<new uuid>` or `--resume=<id>`, under the watchdog with open input and a TERM grace of 5,000 ms. A turn is one user line with a `uuid`, and it ends at a `result` with `queued_turn_count` 0. An interrupt is the control request `interrupt` with `cancel_queued: true`. A close is the end of input, then the exit. `stream/3` answers `{:error, :connected}`. The decisions are in `docs/features/long-lived-harness.md`, section "Built in #200".
 
 Invariant: one `claude` program serves the session and is never started again by a close; an interrupt answers `:ok` only when the turn is over in the program (the success response and the turn's `result`, or a response whose `cancelled` list holds the turn's `uuid`), and any other answer or a missed bound stops the program through the Core loop. The interrupt waits for the program's first `init`, and after a replay for `started` of the turn's line; before that `started`, a `result` is of a replay line and does not end the turn. A `result` with `queued_turn_count` above 0 does not end a turn with no pending interrupt, by the rule of the ticket; that wait has no bound of its own (the row "submitted: unbounded"), and an abort ends it. Entry points: `harness_init/3`, `harness_request/3` (turn, interrupt, close), and `harness_info/2` (program stdout and exit). Documented exceptions: stderr is dropped (row "stderr"); after an abort that left no assistant message, the next prompt holds the aborted user message again, as before #200. Open: none found.
 
@@ -42,7 +42,7 @@ Four agents: reuse, simplification, efficiency, altitude.
 - Fixed: a `can_use_tool` request gets `allow`, as the row "the harness's own requests" says.
 - Fixed: a replay result is `success`, `num_turns` 0, and no `terminal_reason`; a turn result with `num_turns` 0 still ends the turn.
 - Fixed (docs): the stderr drop and the time of `{:harness_session, ...}` are stated.
-- Reported: the interrupt does not require `terminal_reason` `aborted_*` (see "Decisions to confirm").
+- Reported: the interrupt does not require `terminal_reason` `aborted_*` (see "Decisions").
 
 ### Failure path
 
@@ -82,7 +82,7 @@ Fix diff: about 16 lines in one code file (4 code lines, the rest moduledoc and 
 - Simplify: reuse and efficiency clean. Simplification and altitude: the shape skip of a replay `result` (`success`, `num_turns` 0, no `terminal_reason`) and the new skip before `started` were two rules for one fact. A run of the real program showed the replay `result` before `started` of the turn's line (research note, #200 section), so the shape clause is deleted (6 lines). The `:ok` case for a result before the interrupt write is now stated once in "Built in #200".
 
 - Standards: no hard violation. Fixed: STE of the moduledoc and two comments, "(inferred)" on the comment of the replay wait, and STE of two doc lines.
-- Spec: no new path that breaks the invariant. Fixed: a test for a waiting interrupt and a failed replay `result` before `started` (the test "after a replay waits for the start of the turn's line" now sends it, and checks that the interrupt is written). The manual run was made again on the final code (see "Manual run"). Recorded: a `result` of the turn's own line before its `started` is skipped too (inferred risk, see "Decisions to confirm").
+- Spec: no new path that breaks the invariant. Fixed: a test for a waiting interrupt and a failed replay `result` before `started` (the test "after a replay waits for the start of the turn's line" now sends it, and checks that the interrupt is written). The manual run was made again on the final code (see "Manual run"). Recorded: a `result` of the turn's own line before its `started` is skipped too (inferred risk, see "Decisions").
 - Failure path: 1 finding, fixed. After a replay, a program that writes no `command_lifecycle` lines never ended the turn: the skip of replay results waits for `started`. This is the second finding on the replay wait, so the fix is in the mechanism: the skip and the interrupt wait both need `started`, and after a replay an `init` without `msg_lifecycle_v1` stops the program with `:no_msg_lifecycle`. Test: "a replay to a program without msg_lifecycle_v1 stops it".
 
 ## Round 6 (full)
@@ -92,7 +92,7 @@ Fix diff: about 12 code lines in one file: the `init` clause of `translate/2` an
 - Simplify: reuse and efficiency clean. Fixed: the `if` with a nil check became `after_init/1` with a `%Turn{replay?: true}` clause; the test history and the failed replay result are helpers (`replay_history/0`, `replay_failed/0`). Skipped: the altitude proposal to require `msg_lifecycle_v1` at every `init`, also with no replay. In #200 only the replay needs `started`; the steer (#202) decides its own need.
 
 - Standards: no hard violation. Fixed: STE of the moduledoc and comments (actors named, a long line wrapped), the comment of the skip now names the turn's own `result` too, and the link from `msg_lifecycle_v1` to the lifecycle lines is marked as inferred. Skipped: an inline `replay_history()` call.
-- Spec: no path that breaks the invariant. Fixed: two doc lines. The Claude Code section said a `result` before the interrupt write always gives `:ok` (not after a replay), and "Built in #200" said the interrupt writes "at once". Recorded again: an older `claude` without `msg_lifecycle_v1` can no longer replay (see "Decisions to confirm").
+- Spec: no path that breaks the invariant. Fixed: two doc lines. The Claude Code section said a `result` before the interrupt write always gives `:ok` (not after a replay), and "Built in #200" said the interrupt writes "at once". Recorded again: an older `claude` without `msg_lifecycle_v1` can no longer replay (see "Decisions").
 - Failure path: 1 finding, fixed. After a replay, a program that writes no `init` line never ran the capability check, and the skip dropped every `result`, the turn's own too. This is the third finding on the replay skip, so the check moved into the skip itself: while `replay?` is true, a `result` is skipped only when an earlier `init` listed `msg_lifecycle_v1`; any other `result` stops the program with `:no_msg_lifecycle`. `after_init/1` is gone. Test: "a replay to a program with no init line stops it". The fake of the test "a lost harness session starts a fresh program with the transcript replayed" wrote the replay `result` before any `init`; the real program writes the `init` first (research note, #200 section), so the fake now does too.
 
 ## Round 7 (full)
@@ -102,20 +102,29 @@ Fix diff: one code file; `after_init/1` removed, the check moved into the `resul
 - Simplify: reuse, efficiency, and altitude clean. Fixed: the two `replay?` branches are one branch with `state.caps || []`. Skipped: a `lifecycle?` field in place of the list scan (the list is short), and an inline `replay_history()` call.
 - Standards: no hard violation. Fixed: STE of three comment and moduledoc lines, a blank line before the close paragraph of the moduledoc, a test name that matches its setup, and a long bullet of "Built in #200" split in three. Skipped: the `if` inside the `cond` branch (the simplify merge chose it), and an inline `replay_history()` call.
 - Spec: no path that breaks the invariant. Fixed: the order of replay results before `started` is observed for one replay line only; the docs and a comment now mark it as inferred for more lines.
-- Failure path: no findings. The three named reproductions and two more cells through the fake program held. Open design edge, not reproduced: a program that lists `msg_lifecycle_v1` and never sends `started` for the turn's line leaves the turn open until an abort (see "Decisions to confirm").
+- Failure path: no findings. The three named reproductions and two more cells through the fake program held. Open design edge, not reproduced: a program that lists `msg_lifecycle_v1` and never sends `started` for the turn's line leaves the turn open until an abort (see "Decisions").
 
 ## Round 8 (reduced)
 
 Fix diff: 7 lines in one code file, all in comments and the moduledoc; one test renamed. No function, arity, or return shape changed, and no finding on a mechanism. Reduced: spec and failure path.
 
-- Spec: no path that breaks the invariant through a replay result. Fixed (docs): only replay user lines get a `result`, and the observed order is for one replay user line. Reported: a `result` with `queued_turn_count` above 0 ends the turn when an interrupt is pending, and does not end it otherwise (see "Decisions to confirm").
-- Failure path: 1 finding, not changed in code. A `result` with `queued_turn_count` above 0 after `started` does not end the turn when no interrupt is pending, so the turn waits for an abort. The ticket states this rule: "The turn ends at `result` with `queued_turn_count` 0". Every observed `result` had `queued_turn_count` 0 (research note, section "Verify before implementation"), and no test sends another value. A change of the rule is a design decision for the owner, so it is in "Decisions to confirm". The invariant of this record now states the rule.
+- Spec: no path that breaks the invariant through a replay result. Fixed (docs): only replay user lines get a `result`, and the observed order is for one replay user line. Reported: a `result` with `queued_turn_count` above 0 ends the turn when an interrupt is pending, and does not end it otherwise (see "Decisions").
+- Failure path: 1 finding, not changed in code. A `result` with `queued_turn_count` above 0 after `started` does not end the turn when no interrupt is pending, so the turn waits for an abort. The ticket states this rule: "The turn ends at `result` with `queued_turn_count` 0". Every observed `result` had `queued_turn_count` 0 (research note, section "Verify before implementation"), and no test sends another value. A change of the rule is a design decision for the owner, so it is in "Decisions". The invariant of this record now states the rule.
 
 This round changed only Markdown, so no further round is needed.
 
 ## Precommit
 
-`mix precommit` failed in the root at Credo strict: `translate/2` for `result` has cyclomatic complexity 10 (max 9), `plugins/bundled/lib/helyx/provider/claude_code.ex`. A fix moves the replay skip into its own `translate/2` clause for `%Turn{replay?: true}` (a resumed program never replays, so the lost-session check need not come first). With it, the provider tests pass (39) and Credo finds no issues in the file. The fix is not reviewed: the owner's new limit of three review rounds ended the loop. So it is not in this commit. It is open, and the commit does not pass `mix precommit`.
+`mix precommit` failed in the root at Credo strict: `translate/2` for `result` has cyclomatic complexity 10 (max 9), `plugins/bundled/lib/helyx/provider/claude_code.ex`. A fix moves the replay skip into its own `translate/2` clause for `%Turn{replay?: true}` (a resumed program never replays, so the lost-session check need not come first). With it, the two provider test files pass (39 tests) and Credo finds no issues in the file. The fix is not reviewed: the owner's new limit of three review rounds ended the loop. So it is not in this commit. It was open after the first commit.
+
+## Round 9 (reduced)
+
+After the owner's decisions on #200, the fix is applied. Fix diff: 22 lines in one code file; the replay skip moved from a `cond` branch into its own `translate/2` clause, and `stream/3` answers `{:error, :connected}` as the Codex provider of #201 does. Reduced by the owner's order: spec and failure path.
+
+- Spec: no code defect. Fixed: the record still named `:connected_only`, and the test count now names the two test files.
+- Failure path: no findings. The replay clause runs before `lost?/2`, but `replay?` is true only for a program with no `resume`, and `lost?/2` needs one, so no `result` matches both. Four probes held: a lost session then a program without `msg_lifecycle_v1`, a lost session then a failed replay `result`, a replay `result` with the lost text, and an interrupt pending across the relaunch.
+
+No defect was reproduced, so the loop ends.
 
 ## Manual run with the real program
 
@@ -129,11 +138,13 @@ This round changed only Markdown, so no further round is needed.
 
 The `Bash` tool refused a standalone `sleep 37`, so the run used the python sleep (research note, #200 section).
 
-## Decisions to confirm
+## Decisions
 
-- A `result` with `queued_turn_count` above 0 does not end a turn (the ticket rule). With no pending interrupt, such a turn waits until an abort, and the abort's interrupt then waits until the interrupt bound, because an idle program writes no `result`. With a pending interrupt, such a `result` counts as the turn's `result`, and the success response with an empty `still_queued` answers `:ok`. No run showed a count above 0. The other choice is to end the turn at any `result` after `started`.
+The owner decided each item below on #200. The feature doc states them (Claude Code section).
+
+- Kept: a `result` with `queued_turn_count` above 0 does not end a turn (the ticket rule). With no pending interrupt, such a turn waits until an abort, and the abort's interrupt then waits until the interrupt bound, because an idle program writes no `result`. With a pending interrupt, such a `result` counts as the turn's `result`, and the success response with an empty `still_queued` answers `:ok`. No run showed a count above 0. The other choice is to end the turn at any `result` after `started`.
 - The interrupt answers `:ok` on the turn's `result` with any `terminal_reason`, not only `aborted_*`. The ticket names `terminal_reason`. A turn that ended just before the interrupt gives `completed`, and an idle program writes no other `result`, so a check for `aborted_*` would wait until the armed kill and stop the program.
-- `stream/3` of the Claude Code provider is gone; it answers `{:error, :connected_only}`.
+- `stream/3` of the Claude Code provider is gone; it answers `{:error, :connected}`, as the Codex provider of #201 does.
 - A program that lists `msg_lifecycle_v1` and never sends `started` for the turn's line (for example, it rejects the line) leaves the turn open until an abort; the interrupt then waits for `started`, and the interrupt bound stops the program. Not observed.
 - After a replay the provider needs `msg_lifecycle_v1`, and it skips every `result` before `started` of the turn's line. A `result` of the turn's own line before its `started` was not observed; if it comes, only an abort ends the turn, and the interrupt bound stops the program.
 - After a replay the interrupt waits for `started` of the turn's line; a replay that takes longer than the 2,000 ms interrupt bound stops the program (the fresh harness session is then not resumed).
