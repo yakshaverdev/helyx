@@ -94,29 +94,6 @@ defmodule Helyx.Provider.HarnessEpipeTest do
       match?({:queue_size, n} when n > 0, Port.info(port, :queue_size))
   end
 
-  # Runs the stream in a process that does not trap exits, as the hands'
-  # Task does not.
-  defp run(provider, model, on_command) do
-    test = self()
-
-    {pid, ref} =
-      spawn_monitor(fn ->
-        hands(on_command)
-        context = %Helyx.Context{messages: [Message.user(@big)]}
-        {:ok, stream} = provider.stream(model, context, cwd: File.cwd!())
-        send(test, {:events, Enum.to_list(stream)})
-      end)
-
-    receive do
-      {:events, events} -> events
-      {:DOWN, ^ref, :process, _pid, reason} -> flunk("the stream ended on #{inspect(reason)}")
-    after
-      5_000 ->
-        Process.exit(pid, :kill)
-        flunk("the stream did not end")
-    end
-  end
-
   # The connected provider runs in a process that does not trap exits, as
   # the harness process does not. Its turn writes the prompt, and the
   # port's `:DOWN` stops it.
@@ -180,11 +157,12 @@ defmodule Helyx.Provider.HarnessEpipeTest do
 
   # The fake codex stops its watchdog, then answers `initialize` and
   # `thread/start`, so the `turn/start` line with the prompt waits in the
-  # queue.
-  test "Codex: a queued line to a dead watchdog fails the turn", %{bin: bin} do
+  # queue. The harness process does not trap exits: the port's `:DOWN`
+  # stops it.
+  test "Codex: a queued line to a dead watchdog stops the harness process", %{bin: bin} do
     thread = %{id: "t1", cwd: "/work", model: "m", path: "/r.jsonl"}
     init = JSON.encode!(%{id: 1, result: %{userAgent: "fake", platformOs: "macos"}})
-    start = JSON.encode!(%{id: 3, result: %{thread: thread}})
+    start = JSON.encode!(%{id: 2, result: %{thread: thread}})
 
     program(bin, "codex", """
     kill -STOP $PPID
@@ -192,7 +170,34 @@ defmodule Helyx.Provider.HarnessEpipeTest do
     exec sleep 30
     """)
 
-    events = run(Codex, "m", fn _watchdog -> :ok end)
-    assert List.last(events) == {:error, {:codex_exit, :epipe}}
+    test = self()
+
+    {pid, ref} =
+      spawn_monitor(fn ->
+        hands(fn _watchdog -> :ok end)
+        {:ok, state} = Codex.harness_init("m", [], cwd: File.cwd!())
+        context = %Helyx.Context{messages: [Message.user(@big)]}
+        {:ok, _actions, state} = Codex.harness_request({:turn, "t", context}, make_ref(), state)
+        send(test, {:stop, stop(state)})
+      end)
+
+    receive do
+      {:stop, reason} -> assert reason == {:codex_exit, :epipe}
+      {:DOWN, ^ref, :process, _pid, reason} -> flunk("the harness ended on #{inspect(reason)}")
+    after
+      5_000 ->
+        Process.exit(pid, :kill)
+        flunk("the harness did not stop")
+    end
+  end
+
+  defp stop(state) do
+    receive do
+      message ->
+        case Codex.harness_info(message, state) do
+          {:ok, _actions, state} -> stop(state)
+          {:stop, reason, _state} -> reason
+        end
+    end
   end
 end

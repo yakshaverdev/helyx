@@ -47,8 +47,9 @@ Not verified: the length limit of `name`, a `call_id` with non-ASCII characters,
 ## Turns
 
 - `turn/start` takes `threadId` and `input`, a list of `{"type":"text","text":...}` (images and more exist). The result is `{"turn": {"id": ..., "status": "inProgress", ...}}`.
-- Notifications of one turn, in order: `turn/started`; `item/started` and `item/completed` of a `userMessage` (the prompt); then per model output `item/started`, deltas, `item/completed`; `thread/tokenUsage/updated` after each model call; `turn/completed` last. Every one carries `threadId` and `turnId`.
+- Notifications of one turn, in order: `turn/started`; `item/started` and `item/completed` of a `userMessage` (the prompt); then per model output `item/started`, deltas, `item/completed`; `thread/tokenUsage/updated` after each model call; `turn/completed` last. Every one carries `threadId`, and every one but `turn/started` and `turn/completed` carries `turnId`; those two carry the turn as `turn`, with `turn.id`.
 - `turn/completed` has `turn.status`: `completed`, `interrupted`, or `failed`, and `turn.error` (`{"message": ..., "codexErrorInfo": ...}`) when failed. A failed turn is preceded by an `error` notification with the same error and `"willRetry": false`.
+- Observed on 2026-09-27 with `codex-cli 0.157.1` (#201): the `turn/start` answer came before `turn/started` in every run, and the request ids of `turn/start` and `turn/interrupt` were used again on later turns of one connection with no error.
 - `thread/tokenUsage/updated` has `tokenUsage.last` and `tokenUsage.total`, each `{totalTokens, inputTokens, cachedInputTokens, cacheWriteInputTokens, outputTokens, reasoningOutputTokens}`.
 
 ### Items
@@ -57,7 +58,7 @@ Not verified: the length limit of `name`, a `call_id` with non-ASCII characters,
 
 - `agentMessage`: `item/started` with `text: ""`, then `item/agentMessage/delta` notifications (`{"itemId": ..., "delta": "Code"}`), then `item/completed` with the whole `text`. `phase` was `commentary` for text before a tool call and `final_answer` for the last text.
 - `reasoning`: `item/started` and `item/completed` with empty `summary` and `content` lists for this model. The schema has `item/reasoning/summaryTextDelta` and `item/reasoning/textDelta` (`{"itemId", "delta", ...}`); neither was observed.
-- `commandExecution`: `item/started` with `command` (`/bin/zsh -lc 'echo hi > out.txt && cat out.txt'`), `cwd`, `status: "inProgress"`, and `processId` (an id of the program, not an OS pid); `item/completed` with `status: "completed"`, `aggregatedOutput` (`"hi\n"`), and `exitCode`. No `item/commandExecution/outputDelta` was observed. The status enum is `inProgress`, `completed`, `failed`, `declined`; `fileChange` has the same, `mcpToolCall` and `dynamicToolCall` have no `declined`.
+- `commandExecution`: `item/started` with `command` (`/bin/zsh -lc 'echo hi > out.txt && cat out.txt'`), `cwd`, `status: "inProgress"`, and `processId` (an id of the program, not an OS pid); `item/completed` with `status: "completed"`, `aggregatedOutput` (`"hi\n"`), and `exitCode`. No `item/commandExecution/outputDelta` was observed. The status enum is `inProgress`, `completed`, `failed`, `declined`; `fileChange` has the same, `mcpToolCall` and `dynamicToolCall` have no `declined`. In the 0.157.1 schema (2026-09-27, `generate-json-schema`), `collabAgentToolCall` has `inProgress`, `completed`, `failed`, `interrupted`; `imageGeneration` has a required `status` string with no enum; `webSearch`, `imageView`, and the other item types have no `status`.
 
 ## Interrupt
 
