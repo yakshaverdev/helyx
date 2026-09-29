@@ -55,8 +55,9 @@ defmodule Helyx.Provider.Codex do
   interrupt waits and a child thread of the turn has open work. A child
   thread with open work at a normal end of its turn belongs to the program.
   A child thread has open work from its `subAgentActivity` item until one
-  of kind `completed`, whatever turn id that item has. A `turn/started`
-  with a new id while no `turn/start` of the running turn is open, a
+  of kind `completed`, whatever turn id that item has. The child belongs to
+  the turn of its first item; a later item moves it only to the running
+  turn. A `turn/started` with a new id while no `turn/start` of the running turn is open, a
   `turn/completed` of a turn whose id is not known, and an item of a turn
   that is not the running one stop the harness process. Every line that
   changes turn or thread state (`turn/started`, `turn/completed`,
@@ -113,8 +114,9 @@ defmodule Helyx.Provider.Codex do
     # `terminal` set means the harness process must stop, with that error.
     #
     # `agents` maps each child thread with open work to the program's turn
-    # id of its last `subAgentActivity` item. It belongs to the program and
-    # stays between turns.
+    # id of its first `subAgentActivity` item, or of the last one that came
+    # with the running turn's id. It belongs to the program and stays
+    # between turns.
     #
     # Of the running turn: `open` maps the open tool items to their types,
     # `started` holds the ids of the tool items that have a tool call, and
@@ -718,6 +720,8 @@ defmodule Helyx.Provider.Codex do
 
   # A child thread's work outlives its turn: the item can come with the id
   # of an ended turn (#226). Only `completed` confirms that the work ended.
+  # A known child moves only to the running turn, so a late item with
+  # another turn id never takes it from its turn (#244).
   defp turn_notification(
          method,
          %{"turnId" => turn, "item" => %{"type" => "subAgentActivity"} = item},
@@ -726,8 +730,14 @@ defmodule Helyx.Provider.Codex do
        when method in ["item/started", "item/completed"] do
     agents =
       case item do
-        %{"kind" => "completed", "agentThreadId" => child} -> Map.delete(state.agents, child)
-        %{"agentThreadId" => child} -> Map.put(state.agents, child, turn)
+        %{"kind" => "completed", "agentThreadId" => child} ->
+          Map.delete(state.agents, child)
+
+        %{"agentThreadId" => child} when turn == state.turn ->
+          Map.put(state.agents, child, turn)
+
+        %{"agentThreadId" => child} ->
+          Map.put_new(state.agents, child, turn)
       end
 
     {[], %{state | agents: agents}}
