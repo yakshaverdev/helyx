@@ -64,12 +64,12 @@ defmodule Helyx.Session.Stream do
       }) do
     # Context building runs inside the Task so plugin code never blocks the
     # session and a plugin that raises fails the turn, not the session.
-    context = prepare(model_context, compaction, context, opts)
-
     result =
-      case provider.stream(model, context, opts) do
-        {:ok, stream} -> consume(stream, session, turn_id, external?)
-        {:error, reason} -> {:error, reason}
+      with {:ok, context} <- prepare(model_context, compaction, context, opts) do
+        case provider.stream(model, context, opts) do
+          {:ok, stream} -> consume(stream, session, turn_id, external?)
+          {:error, reason} -> {:error, reason}
+        end
       end
 
     # Every terminal leaves the Task through this cap, so no error reason
@@ -82,26 +82,16 @@ defmodule Helyx.Session.Stream do
 
   @doc """
   Builds the context of one provider call with the ModelContext and the
-  Compaction plugin. The session resolved both at its start; nil means none,
-  and the context goes on unchanged.
+  Compaction plugin, for every turn mode. The session resolved both at its
+  start; nil means none, and the context goes on unchanged. The return of
+  each plugin is checked at the boundary. Returns `{:error, {:bad_context,
+  :model_context | :compaction}}` when a plugin returns anything but a
+  `Helyx.Context` with its three fields: a system prompt that is nil or a
+  string, and two lists. The reason names the plugin, not the value.
   """
-  @spec prepare(module() | nil, module() | nil, Helyx.Context.t(), keyword()) :: Helyx.Context.t()
-  def prepare(model_context, compaction, context, opts) do
-    context = if model_context, do: model_context.build(context, opts), else: context
-    if compaction, do: compaction.compact(context, opts), else: context
-  end
-
-  @doc """
-  `prepare/4` for a connected turn, where the context goes to the harness
-  process as it is: the return of each plugin is checked at the boundary.
-  Returns `{:error, {:bad_context, :model_context | :compaction}}` when a
-  plugin returns anything but a `Helyx.Context` with its three fields: a
-  system prompt that is nil or a string, and two lists. The reason names the
-  plugin, not the value.
-  """
-  @spec prepare_checked(module() | nil, module() | nil, Helyx.Context.t(), keyword()) ::
+  @spec prepare(module() | nil, module() | nil, Helyx.Context.t(), keyword()) ::
           {:ok, Helyx.Context.t()} | {:error, {:bad_context, :model_context | :compaction}}
-  def prepare_checked(model_context, compaction, context, opts) do
+  def prepare(model_context, compaction, context, opts) do
     context = if model_context, do: model_context.build(context, opts), else: context
 
     with {:ok, context} <- checked_context(context, :model_context) do

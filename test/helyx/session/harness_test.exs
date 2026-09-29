@@ -14,6 +14,7 @@ defmodule Helyx.Session.HarnessTest do
     plugins = [
       Connected,
       Helyx.Test.Provider,
+      Helyx.Test.Harness,
       Helyx.Test.PrepareContext,
       Helyx.Test.PrepareCompaction,
       Helyx.Test.Tool.Upcase
@@ -566,6 +567,35 @@ defmodule Helyx.Session.HarnessTest do
       assert final_text(collect_until(:agent_end)) == "echo:prepared|two"
       assert_received {:conn, :init, new, _}
       assert new != harness
+    end
+  end
+
+  # #227: a local and an external turn check the context of each plugin like
+  # a connected turn.
+  describe "the context check of a local and an external turn" do
+    for {mode, model, text} <- [
+          {"local", "test/system", "prepared"},
+          {"external", "harness/id1", "ok"}
+        ],
+        {prompt, kind} <- [
+          {"nil_build", :model_context},
+          {"bad_build", :model_context},
+          {"forged_build", :model_context},
+          {"bad_system", :model_context},
+          {"bad_messages_build", :model_context},
+          {"nil_compact", :compaction},
+          {"bad_compact", :compaction},
+          {"forged_compact", :compaction},
+          {"bad_system_compact", :compaction},
+          {"bad_messages", :compaction}
+        ] do
+      test "#{prompt} fails a #{mode} turn, and the next turn succeeds", %{core: core} do
+        {:ok, session} = Session.start(core, model: unquote(model))
+        {:ok, _} = Session.subscribe(session)
+
+        assert error(turn(session, unquote(prompt))) == {:bad_context, unquote(kind)}
+        assert final_text(turn(session, "two")) == unquote(text)
+      end
     end
   end
 end

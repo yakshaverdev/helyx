@@ -299,8 +299,8 @@ defmodule Helyx.Session.Server do
     {:noreply, arm_idle(submit(%{state | harness: %{harness | ready: true}}))}
   end
 
-  # The prepare Task checked the context (`Stream.prepare_checked/4`): a
-  # plugin that returned anything else fails the turn.
+  # The prepare Task checked the context (`Stream.prepare/4`): a plugin
+  # that returned anything else fails the turn.
   def handle_info(
         {:prepared, turn_id, {:ok, context}},
         %State{turn: %Turn{id: turn_id, phase: :preparing} = turn} = state
@@ -655,7 +655,7 @@ defmodule Helyx.Session.Server do
         :ok =
           Hands.prepare(state.hands, turn_id, fn tref ->
             result =
-              Helyx.Session.Stream.prepare_checked(model_context, compaction, context, opts)
+              Helyx.Session.Stream.prepare(model_context, compaction, context, opts)
 
             :timer.cancel(tref)
             send(session, {:prepared, turn_id, result})
