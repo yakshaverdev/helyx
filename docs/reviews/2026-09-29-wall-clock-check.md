@@ -70,3 +70,8 @@ Spec and failure path reproduced these forms, which give no issue:
 - A margin on the time side of an equality: `assert elapsed + @load_ms == 100`.
 
 Orchestrator decision: no new round. Each round finds one more derived form, and that loop does not end. The check is a lint for the common, direct mistake, so these forms are stated holes in the moduledoc of the check, not fixed.
+
+## Codex gate
+
+- Round 1: 1 confirmed (equality was not reported); fixed in `dcbf510`, and the derived equality forms became stated holes.
+- Round 2: 1 finding, judged an over-report and not fixed: a local function counts as a time function when its body holds a clock call, also when it returns another value (`{_elapsed, result} = :timer.tc(...); result`). No such helper is in the repository; an over-report costs one `# credo:disable-for-next-line` with a reason.
