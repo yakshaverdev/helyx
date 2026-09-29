@@ -3,7 +3,12 @@ defmodule Helyx.Session.Server do
   # The session process: the GenServer callbacks and the turn loop. The
   # client API and the docs of the behaviour are in `Helyx.Session`.
 
-  use GenServer, restart: :temporary
+  # The stop of a session (`terminate/2`): the close of an idle harness
+  # process (5,000 ms, armed kill), then the stop of the hands, which can
+  # finish one release (20,000 ms, `Helyx.Session.Hands`). Each wait has a
+  # margin for load, so the supervisor does not kill the session first.
+  @hands_stop_ms 22_000
+  use GenServer, restart: :temporary, shutdown: 5_000 + @hands_stop_ms + 3_000
 
   require Logger
 
@@ -440,25 +445,67 @@ defmodule Helyx.Session.Server do
 
   # The session stops only for a trapped reason; on an untrappable kill the
   # link kills the provider Task, and the hands take the tool Tasks.
+  #
+  # The hands end before the session (#219). Core stops its session
+  # supervisor before its task supervisor, and the release Tasks of the
+  # hands run under the task supervisor. So a release that the hands start
+  # after the session ended could find the task supervisor stopped.
   @impl true
-  def terminate(_reason, %State{turn: %Turn{task: %Task{} = task}}) do
-    Task.shutdown(task, :brutal_kill)
-    :ok
+  def terminate(_reason, state) do
+    end_work(state)
+    stop_hands(state.hands)
   end
 
-  # A session that ends with no turn closes its harness process: end of
-  # input, then the exit. The armed close kill bounds the wait, and a
-  # harness process that is already gone gives its `:DOWN` at once.
-  def terminate(_reason, %State{turn: nil, aborting: nil, harness: %Connection{pid: pid}} = state) do
-    ref = Process.monitor(pid)
-    Harness.request(pid, :close, state.harness_ms.close)
+  defp end_work(%State{turn: %Turn{task: %Task{} = task}}), do: Task.shutdown(task, :brutal_kill)
 
-    receive do
-      {:DOWN, ^ref, :process, _pid, _reason} -> :ok
+  # A session that ends with no turn closes its harness processes: the
+  # current one and the one its wait is for (an idle close, a switch
+  # close, an abort). Each gets a close, end of input then the exit, after
+  # any request it has open: a `:busy` answer to an idle close does not
+  # keep it. The armed close kills bound the waits, which run in parallel,
+  # and a harness process that is already gone gives its `:DOWN` at once.
+  defp end_work(%State{turn: nil, harness: harness, aborting: aborting} = state) do
+    pids = [harness && harness.pid, aborting && aborting.harness]
+
+    refs =
+      for pid <- Enum.uniq(pids), is_pid(pid) do
+        ref = Process.monitor(pid)
+        Harness.request(pid, :close, state.harness_ms.close)
+        ref
+      end
+
+    for ref <- refs do
+      receive do
+        {:DOWN, ^ref, :process, _pid, _reason} -> :ok
+      end
     end
   end
 
-  def terminate(_reason, _state), do: :ok
+  defp end_work(_state), do: :ok
+
+  # The hands take the messages before the exit signal first: the end of a
+  # closed harness process gets its release. That end reaches the hands
+  # before the harness process's `:DOWN` reaches the session, on one node.
+  # If it came later, the hands would end with no release, and the port
+  # would close with the harness process. Each release has its deadline,
+  # so the wait is bounded; over @hands_stop_ms the hands are killed, and a
+  # killed process runs no release. Hands that are already gone give their
+  # `:DOWN` at once.
+  defp stop_hands(hands) do
+    ref = Process.monitor(hands)
+    Process.exit(hands, :shutdown)
+
+    receive do
+      {:DOWN, ^ref, :process, _pid, _reason} -> :ok
+    after
+      @hands_stop_ms ->
+        Process.exit(hands, :kill)
+
+        receive do
+          {:DOWN, ^ref, :process, _pid, _reason} -> :ok
+        end
+    end
+  end
 
   defp snapshot_turn(nil), do: nil
 

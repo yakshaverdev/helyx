@@ -114,14 +114,32 @@ defmodule Helyx.Session.HarnessTest do
       assert Message.text(List.last(context.messages)) == "more"
     end
 
-    test "the session end closes it", %{core: core} do
-      {session, pid, _hands} = start(core, "echo")
+    # The hands release the closed harness process and end before the
+    # session does, so no release runs after a Core stop took the task
+    # supervisor (#219).
+    test "the session end closes it, releases it, and stops the hands first", %{core: core} do
+      {session, pid, hands} = start(core, "echo")
       turn(session, "one")
       assert_received {:conn, :init, harness, _}
       ref = Process.monitor(harness)
+      hands_ref = Process.monitor(hands)
 
       GenServer.stop(pid)
       assert_received {:conn, :close, ^harness, :close}
+      assert_received {:DOWN, ^ref, :process, _, _}
+      assert_received {:release, :deliver, [{:report, _}]}
+      assert_received {:DOWN, ^hands_ref, :process, _, :shutdown}
+    end
+
+    test "the session end during a turn stops the hands first", %{core: core} do
+      {session, pid, hands} = start(core, "hang")
+      :ok = Session.prompt(session, "one")
+      assert_receive {:conn, :turn, harness, _}
+      ref = Process.monitor(harness)
+      hands_ref = Process.monitor(hands)
+
+      GenServer.stop(pid)
+      assert_received {:DOWN, ^hands_ref, :process, _, :shutdown}
       assert_receive {:DOWN, ^ref, :process, _, _}
     end
 
@@ -135,6 +153,24 @@ defmodule Helyx.Session.HarnessTest do
       assert_receive {:conn, :close, ^harness, :close}
       assert_receive {:release, :deliver, [{:report, _}]}
       assert final_text(turn(session, "two")) == "ok"
+    end
+
+    # #219: the switch close clears the current harness process; the wait
+    # still holds it, and a session end closes and releases it.
+    test "a Core stop during a switch close closes and releases the program", %{core: core} do
+      {session, _pid, hands} = start(core, "late_close")
+      turn(session, "one")
+      assert_received {:conn, :init, harness, _}
+      ref = Process.monitor(harness)
+      hands_ref = Process.monitor(hands)
+
+      :ok = Session.set_model(session, "test/ok")
+      assert_receive {:conn, :close, ^harness, :close}
+      Process.flag(:trap_exit, true)
+      :ok = stop_supervised(core)
+      assert_received {:DOWN, ^ref, :process, _, :normal}
+      assert_received {:release, :deliver, [{:report, _}]}
+      assert_received {:DOWN, ^hands_ref, :process, _, :shutdown}
     end
 
     test "a close that blocks is killed at the bound; a prompt waits for it", %{core: core} do
@@ -372,7 +408,10 @@ defmodule Helyx.Session.HarnessTest do
     test "a prepare that raises fails the turn and keeps the harness process", %{core: core} do
       {session, _pid, _hands} = start(core, "echo")
       assert {:task_exit, _reason} = error(turn(session, "raise_prepare"))
-      assert_received {:conn, :init, harness, _}
+      # The connect races the prepare Task, so the init message can come
+      # after the turn ends. The wait is for a message that must come, not
+      # an upper bound.
+      assert_receive {:conn, :init, harness, _}, 1_000
 
       assert final_text(turn(session, "two")) == "echo:prepared|two"
       assert_received {:conn, :turn, ^harness, _}
@@ -383,7 +422,10 @@ defmodule Helyx.Session.HarnessTest do
          %{core: core} do
       {session, _pid, _hands} = start(core, "echo", prepare: 200)
       assert error(turn(session, "block_prepare")) == {:task_exit, :killed}
-      assert_received {:conn, :init, harness, _}
+      # The connect races the prepare Task, so the init message can come
+      # after the turn ends. The wait is for a message that must come, not
+      # an upper bound.
+      assert_receive {:conn, :init, harness, _}, 1_000
 
       assert final_text(turn(session, "two")) == "echo:prepared|two"
       assert_received {:conn, :turn, ^harness, _}
@@ -553,6 +595,44 @@ defmodule Helyx.Session.HarnessTest do
       refute Process.alive?(harness)
       assert_received {:conn, :init, new, _}
       assert new != harness
+    end
+
+    # #219: a session end during a wait closes the harness process within
+    # the close bound, and the hands release it before they stop.
+    for model <- ["late_idle", "busy"] do
+      test "#{model}: a Core stop during the idle close closes and releases the program",
+           %{core: core} do
+        {session, _pid, hands} = start(core, unquote(model), idle: 100)
+        turn(session, "one")
+        assert_received {:conn, :init, harness, _}
+        ref = Process.monitor(harness)
+        hands_ref = Process.monitor(hands)
+
+        assert_receive {:conn, :idle_close, ^harness, :idle_close}, 1_000
+        Process.flag(:trap_exit, true)
+        :ok = stop_supervised(core)
+        assert_received {:DOWN, ^ref, :process, _, :normal}
+        assert_received {:release, :deliver, [{:report, _}]}
+        assert_received {:DOWN, ^hands_ref, :process, _, :shutdown}
+      end
+    end
+
+    test "a Core stop during the interrupt of an abort closes and releases the program",
+         %{core: core} do
+      {session, _pid, hands} = start(core, "late_interrupt")
+      :ok = Session.prompt(session, "one")
+      assert_receive {:conn, :turn, harness, _}
+      ref = Process.monitor(harness)
+      hands_ref = Process.monitor(hands)
+
+      # The abort returns only after the interrupt answer, 100 ms late.
+      {:ok, _} = Task.start(fn -> Session.abort(session) end)
+      assert_receive {:conn, :interrupt, ^harness, _}
+      Process.flag(:trap_exit, true)
+      :ok = stop_supervised(core)
+      assert_received {:DOWN, ^ref, :process, _, :normal}
+      assert_received {:release, :deliver, [{:report, _}]}
+      assert_received {:DOWN, ^hands_ref, :process, _, :shutdown}
     end
 
     test "an idle close that blocks is killed at the close bound", %{core: core} do
