@@ -16,11 +16,16 @@ defmodule Helyx.Watchdog.HarnessStopTest do
     %{core: core}
   end
 
-  defp start(core, model) do
+  # The default turn deadline, 60 s, is longer than the 5 s wait of
+  # `agent_end/0`. Thus the deadline does not end the turn in a test that does
+  # not set one (#228). The flood test then needs the cap stop in 5 s; the
+  # flood turn took 0.27 to 0.4 s on 2026-09-29, so the margin for load is
+  # more than 10x.
+  defp start(core, model, turn_ms \\ 60_000) do
     {:ok, session} = Session.start(core, model: "wdh/#{model}")
     on_exit(fn -> File.rm(WatchdogHarness.pid_path(session.id)) end)
     pid = Session.pid(session)
-    :sys.replace_state(pid, &%{&1 | harness_ms: %{&1.harness_ms | turn: 300}})
+    :sys.replace_state(pid, &%{&1 | harness_ms: %{&1.harness_ms | turn: turn_ms}})
     {:ok, _} = Session.subscribe(session)
     :ok = Session.prompt(session, "go")
     {session, wait_for_pid(WatchdogHarness.pid_path(session.id))}
@@ -36,7 +41,7 @@ defmodule Helyx.Watchdog.HarnessStopTest do
   end
 
   test "a blocked callback: the armed kill stops the program group", %{core: core} do
-    {_session, group} = start(core, "block")
+    {_session, group} = start(core, "block", 300)
     assert agent_end().data.error == :harness_timeout
     assert group_gone_within?(group, 300)
   end
