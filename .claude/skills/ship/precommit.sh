@@ -12,8 +12,10 @@ cd "$root" || exit 1
 host=${HELYX_PRECOMMIT_HOST:-$(cat ~/.config/helyx/precommit-host 2>/dev/null)}
 
 if [ -z "$host" ]; then
-  mise exec -- mix precommit > precommit.log 2>&1 && echo passed || { echo failed; false; }
-  exit
+  mise exec -- mix precommit > precommit.log 2>&1
+  status=$?
+  [ "$status" -eq 0 ] && echo passed || echo failed
+  exit "$status"
 fi
 
 dir="precommit/$(basename "$root")"
@@ -27,10 +29,22 @@ rsync -a --delete "${excludes[@]}" ./ "$host:$dir/" || exit 1
 ssh -o BatchMode=yes "$host" "cd '$dir' && $sources > .before && ~/.local/bin/mise exec -- mix precommit" > precommit.log 2>&1
 status=$?
 
-changed=$(ssh -o BatchMode=yes "$host" "cd '$dir' && md5sum -c --quiet .before 2>/dev/null | sed 's/: FAILED\$//'")
+# md5sum -c exits 1 on a changed file, so only the ssh status tells a
+# transport failure; every output line must name a changed file.
+check=$(ssh -o BatchMode=yes "$host" "cd '$dir' && { md5sum -c --quiet .before 2>&1; true; }") || {
+  echo "failed: cannot read the format changes on $host"
+  exit 1
+}
+changed=$(printf '%s\n' "$check" | sed -n 's/: FAILED$//p')
+unexpected=$(printf '%s\n' "$check" | grep -v -E -e ': FAILED$' -e '^$' -e 'WARNING: [0-9]+ computed checksums? did NOT match$')
+if [ -n "$unexpected" ]; then
+  printf 'failed: unexpected checksum output on %s:\n%s\n' "$host" "$unexpected"
+  exit 1
+fi
 if [ -n "$changed" ]; then
   printf '%s\n' "$changed" | rsync -a --files-from=- "$host:$dir/" ./ || exit 1
   printf 'format changed on %s and copied back:\n%s\n' "$host" "$changed"
 fi
 
-[ "$status" -eq 0 ] && echo passed || { echo failed; false; }
+[ "$status" -eq 0 ] && echo passed || echo failed
+exit "$status"
