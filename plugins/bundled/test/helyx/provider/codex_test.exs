@@ -1170,6 +1170,17 @@ defmodule Helyx.Provider.CodexTest do
     close(state)
   end
 
+  test "an idle close after a turn ends the input and answers :ok at the exit",
+       %{bin: bin, work: work} do
+    fresh(bin, 1, @tid, reply(@tid, "Hi."))
+    {:ok, state} = connect(work)
+    {turn, _, state} = ask(state, {:turn, "t1", %Helyx.Context{messages: [Message.user("go")]}})
+    {actions, state} = drive(state, [], &turn_ended?/1)
+    assert {:reply, turn, :ok} in actions
+    {from, [], state} = ask(state, :idle_close)
+    assert {[{:reply, ^from, :ok}], _state} = drive(state, [], replied?(from))
+  end
+
   test "an approval request is accepted and any other server request gets an error",
        %{bin: bin, work: work} do
     fresh(

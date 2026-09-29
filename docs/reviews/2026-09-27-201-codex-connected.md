@@ -211,8 +211,22 @@ The duplicate `turn/interrupt` reproduction, an early answer with the next id, a
 
 ### Codex adversarial review: approve, 0 findings
 
+## Round 12 (reduced: spec and failure path), after the rebase on #195
+
+The branch was rebased on `origin/master` with #195 (idle close). The conflicts were all in `docs/features/long-lived-harness.md` (the Bounds rows for stderr, the Codex rows, harness process life and idle close; the Ownership row for command groups; the "Idle close" and "Built in #201" sections), and each kept both sides. New: Codex answers `:idle_close` as `:close`, because no command outlives a turn. Test: "an idle close after a turn ends the input and answers :ok at the exit". Bounds sensor: not run (no key).
+
+### Spec: 0 wrong, 0 missing, 1 doc mismatch
+
+Fixed: "Built in #201" now names the idle close.
+
+### Failure path: 0 findings
+
+Six probes passed: a late `turn/start` answer and a late `turn/interrupt` answer after the idle close, a server request after the end of input, an idle close through Core with a resume on the next prompt, a program that ignores the end of input (killed at the close bound, the next prompt ran), and a prompt during the idle close wait. Not reached: an exit already in the mailbox before `:idle_close`, `:erlang.suspend_process/1` windows, the real program at the end of input.
+
 ## Precommit
 
 `mise exec -- mix precommit` passed: root 267 tests, `plugins/bundled` 388 tests and 1 property, `apps/coding_agent` 17 tests, 0 failures, no warnings, Credo and Dialyzer clean. The first run after round 6 failed one root test, `hands_test.exs:163` ("cancel releases with :cancel ..."), which this branch does not touch; it passed 20 of 20 alone, and the second run passed.
 
 After round 11, `mise exec -- mix precommit` passed in one run: root 267 tests, `plugins/bundled` 419 tests and 1 property, `apps/coding_agent` 17 tests, 0 failures, Credo and Dialyzer clean. The known flaky test `harness_stop_test.exs:64` (#228) did not fail.
+
+After round 12 (rebased on #195), `.claude/skills/ship/precommit.sh` passed in one run: root 274 tests, `plugins/bundled` 425 tests and 1 property, `apps/coding_agent` 17 tests, 0 failures.

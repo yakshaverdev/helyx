@@ -59,7 +59,8 @@ defmodule Helyx.Provider.Codex do
   a string thread id. Any other such line stops the
   harness process with `{:malformed, method}` (in the handshake, the
   connect fails with it). `:close` ends the input and answers `:ok` at the
-  exit.
+  exit. `:idle_close` does the same: no command outlives a turn, so the
+  program has no work of its own between turns.
 
   A command or file change approval request is accepted; every other
   request from the server gets a JSON-RPC error. The program uses its own
@@ -255,6 +256,9 @@ defmodule Helyx.Provider.Codex do
 
   # The turn already ended.
   def harness_request({:interrupt, _turn_id}, from, state), do: actions(reply(state, from, :ok))
+
+  # No command outlives a turn, so the idle program has no work of its own.
+  def harness_request(:idle_close, from, state), do: harness_request(:close, from, state)
 
   def harness_request(:close, from, state) do
     HarnessIO.write(state, <<0>>)
