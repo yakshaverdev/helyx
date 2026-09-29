@@ -96,6 +96,11 @@ defmodule Helyx.Provider do
       provider replies now or later with the action `{:reply, from,
       value}`: `{:turn, ...}` and `{:interrupt, ...}` take `:ok` or
       `{:error, reason}`, and `:close` takes `:ok` after the program exited.
+      `:idle_close` comes after the session was idle for 30 minutes with
+      the program: it takes `:ok` after the program exited, as `:close`,
+      or `:busy` when the program still runs work of its own, such as a
+      background task. With `:busy` the program stays, and the session
+      asks again after the next idle time.
     * `harness_info/2` gets every other message of the harness process: the
       port data, a monitor, a timer.
 
@@ -138,6 +143,7 @@ defmodule Helyx.Provider do
           {:turn, turn_id :: String.t(), Helyx.Context.t()}
           | {:interrupt, turn_id :: String.t()}
           | :close
+          | :idle_close
 
   @type action ::
           {:event, turn_id :: String.t(), stream_event()}

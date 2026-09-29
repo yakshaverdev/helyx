@@ -878,6 +878,55 @@ defmodule Helyx.Provider.ClaudeCodeTest do
     assert programs(bin) == "1"
   end
 
+  describe "an idle close" do
+    # The line of the program at each change of its live background tasks
+    # (`claude` 2.1.284); `tasks` is the whole set.
+    defp tasks_line(fields) do
+      j(Map.merge(%{type: "system", subtype: "background_tasks_changed", uuid: "u9"}, fields))
+    end
+
+    # One turn whose program sends `lines` after its result, between
+    # turns; returns the state once `done?` holds.
+    defp idle(bin, work, lines, tail, done?) do
+      turn(bin, 1, 1, reply("ok") ++ lines, tail)
+      context = %Helyx.Context{messages: [Message.user("hi")]}
+      {_from, actions, state} = request(harness(work), {:turn, "t1", context})
+      {_actions, state} = pump(state, actions, &ended?/1)
+      settle(state, done?)
+    end
+
+    test "with a live background task answers :busy and keeps the program; with none it closes",
+         %{bin: bin, work: work} do
+      task = %{task_id: "bm9v5qfnr", task_type: "local_bash", description: "sleep 12"}
+      go = Path.join(bin, "go")
+      File.write!(Path.join(bin, "out.rest"), tasks_line(%{tasks: []}) <> "\n")
+      gate = ~s(while [ ! -e "#{go}" ]; do sleep 0.05; done; out out.rest\n)
+      state = idle(bin, work, [tasks_line(%{tasks: [task]})], gate, &(&1.tasks != []))
+
+      assert {_from, [{:reply, _, :busy}], state} = request(state, :idle_close)
+      assert programs(bin) == "1"
+
+      File.write!(go, "")
+      state = settle(state, &(&1.tasks == []))
+      {from, [], state} = request(state, :idle_close)
+      assert {[{:reply, ^from, :ok}], _state} = pump(state, [], replied?(from))
+      assert programs(bin) == "1"
+    end
+
+    for {name, fields} <- [
+          {"a null tasks", %{tasks: nil}},
+          {"no tasks field", %{}},
+          {"a tasks string", %{tasks: "[]"}},
+          {"a tasks map", %{tasks: %{}}}
+        ] do
+      test "after #{name} answers :busy", %{bin: bin, work: work} do
+        line = tasks_line(unquote(Macro.escape(fields)))
+        state = idle(bin, work, [line], "", &(&1.tasks == :unknown))
+        assert {_from, [{:reply, _, :busy}], _state} = request(state, :idle_close)
+      end
+    end
+  end
+
   test "an error result fails the turn, a call with no result gets an aborted one, and the program stays",
        %{bin: bin} = ctx do
     error =

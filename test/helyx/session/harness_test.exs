@@ -25,7 +25,7 @@ defmodule Helyx.Session.HarnessTest do
   end
 
   # Starts a session with the bounds in `bounds` (`turn`, `interrupt`,
-  # `close` of the session; `connect`, `prepare` of the hands), subscribes,
+  # `close`, `idle` of the session; `connect`, `prepare` of the hands), subscribes,
   # and returns the session, its pid, and its hands.
   defp start(core, model, bounds \\ []) do
     {:ok, session} = Session.start(core, model: "conn/#{model}")
@@ -37,7 +37,7 @@ defmodule Helyx.Session.HarnessTest do
         | harness_ms:
             Map.merge(
               state.harness_ms,
-              Map.new(Keyword.take(bounds, [:turn, :interrupt, :close]))
+              Map.new(Keyword.take(bounds, [:turn, :interrupt, :close, :idle]))
             )
       }
     end)
@@ -478,6 +478,94 @@ defmodule Helyx.Session.HarnessTest do
         assert_receive {:conn, :init, new, _}
         assert new != harness
       end
+    end
+  end
+
+  describe "idle close" do
+    test "after the idle time with no turn it closes the program; the next turn starts a new one",
+         %{core: core} do
+      {session, _pid, _hands} = start(core, "echo", idle: 100)
+      turn(session, "one")
+      assert_received {:conn, :init, harness, _}
+      ref = Process.monitor(harness)
+
+      assert_receive {:conn, :idle_close, ^harness, :idle_close}, 1_000
+      assert_receive {:DOWN, ^ref, :process, _, _}
+      assert_receive {:release, :deliver, [{:report, _}]}
+
+      assert final_text(turn(session, "two")) == "echo:prepared|two"
+      assert_received {:conn, :init, new, _}
+      assert new != harness
+    end
+
+    test "is never sent while a turn runs, and the idle time starts again at its end",
+         %{core: core} do
+      {session, _pid, _hands} = start(core, "hang", idle: 100)
+      :ok = Session.prompt(session, "one")
+      assert_receive {:conn, :turn, harness, {:turn, turn_id, _}}
+
+      refute_receive {:conn, :idle_close, _, _}, 300
+      send(harness, {:finish, turn_id})
+      collect_until(:agent_end)
+      refute_receive {:conn, :idle_close, _, _}, 50
+      assert_receive {:conn, :idle_close, ^harness, :idle_close}, 1_000
+    end
+
+    test "is 30 minutes by default", %{core: core} do
+      {:ok, session} = Session.start(core, model: "conn/echo")
+      assert :sys.get_state(Session.pid(session)).harness_ms.idle == 1_800_000
+    end
+
+    test "the end of an abort arms the timer again", %{core: core} do
+      {session, _pid, _hands} = start(core, "hang", idle: 100)
+      :ok = Session.prompt(session, "one")
+      assert_receive {:conn, :turn, harness, _}
+      refute_receive {:conn, :idle_close, _, _}, 200
+
+      :ok = Session.abort(session)
+      assert_received {:conn, :interrupt, ^harness, _}
+      assert_receive {:conn, :idle_close, ^harness, :idle_close}, 1_000
+    end
+
+    test "a :busy answer keeps the program and arms the timer again", %{core: core} do
+      {session, _pid, _hands} = start(core, "busy", idle: 100)
+      turn(session, "one")
+      assert_received {:conn, :init, harness, _}
+
+      assert_receive {:conn, :idle_close, ^harness, :idle_close}, 1_000
+      assert_receive {:conn, :idle_close, ^harness, :idle_close}, 1_000
+      assert Process.alive?(harness)
+
+      assert final_text(turn(session, "two")) == "echo:prepared|two"
+      assert_received {:conn, :turn, ^harness, _}
+      refute_received {:conn, :init, _, _}
+    end
+
+    test "a prompt during the idle close waits and runs on a new program", %{core: core} do
+      {session, _pid, _hands} = start(core, "late_idle", idle: 100)
+      turn(session, "one")
+      assert_received {:conn, :init, harness, _}
+
+      assert_receive {:conn, :idle_close, ^harness, :idle_close}, 1_000
+      :ok = Session.prompt(session, "two")
+      assert final_text(collect_until(:agent_end)) == "echo:prepared|two"
+      refute Process.alive?(harness)
+      assert_received {:conn, :init, new, _}
+      assert new != harness
+    end
+
+    test "an idle close that blocks is killed at the close bound", %{core: core} do
+      {session, _pid, _hands} = start(core, "block_idle", idle: 100, close: 200)
+      turn(session, "one")
+      assert_received {:conn, :init, harness, _}
+      ref = Process.monitor(harness)
+
+      assert_receive {:conn, :idle_close, ^harness, :idle_close}, 1_000
+      :ok = Session.prompt(session, "two")
+      assert_receive {:DOWN, ^ref, :process, _, :killed}, 2_000
+      assert final_text(collect_until(:agent_end)) == "echo:prepared|two"
+      assert_received {:conn, :init, new, _}
+      assert new != harness
     end
   end
 end

@@ -815,6 +815,9 @@ defmodule Helyx.Test.Connected do
   #   "error_interrupt"  "hang", and an interrupt answers an error
   #   "late_interrupt"   "hang", and an interrupt answers after 100 ms
   #   "block_close"      "echo", and the close callback blocks
+  #   "busy"             "echo", and an idle close answers :busy
+  #   "late_idle"        "echo", and an idle close answers :ok after 100 ms
+  #   "block_idle"       "echo", and the idle close callback blocks
   #   "bad_action"       a turn gives an action that is not one
   #   "bad_reply"        a turn answers `:maybe`
   #   "bad_event"        a turn answers :ok and sends a malformed event
@@ -880,6 +883,7 @@ defmodule Helyx.Test.Connected do
   defp kind({kind, _, _}), do: kind
   defp kind({kind, _}), do: kind
   defp kind(:close), do: :close
+  defp kind(:idle_close), do: :idle_close
 
   # The blocks and the raise are the point of this provider.
   @dialyzer {:nowarn_function, answer: 3}
@@ -900,6 +904,9 @@ defmodule Helyx.Test.Connected do
     do: [{:reply, from, {:error, :still_queued}}]
 
   defp answer("block_close", :close, _from), do: Process.sleep(:infinity)
+  defp answer("busy", :idle_close, from), do: [{:reply, from, :busy}]
+  defp answer("late_idle", :idle_close = request, from), do: later(from, request, 100)
+  defp answer("block_idle", :idle_close, _from), do: Process.sleep(:infinity)
 
   defp answer(model, {:turn, id, _}, from) when model in @hang,
     do: [{:reply, from, :ok}, {:event, id, {:text_delta, "so far"}}]
