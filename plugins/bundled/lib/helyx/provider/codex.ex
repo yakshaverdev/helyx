@@ -50,7 +50,9 @@ defmodule Helyx.Provider.Codex do
   `item/started`, `item/completed`, and the answers to the requests)
   passes one check of its full shape before any state changes; `turn/completed` must have the status
   `completed`, `failed`, or `interrupted`, and a tool item's
-  `item/completed` a status that ends the item. An answer is an error or a
+  `item/completed` a status that ends the item. An `item/started` of the
+  running turn with the id of an item that has a tool call already fails
+  the check. An answer is an error or a
   result, never both, and a turn or item notification has no request id.
   Each request has a new id, and an answer counts only for the request
   with its id that has no answer yet; any other answer (a late or
@@ -429,9 +431,21 @@ defmodule Helyx.Provider.Codex do
 
   defp malformed(%{"method" => method, "params" => %{"threadId" => thread} = params}, state)
        when method in @turn_lines and thread == state.thread and is_binary(thread),
-       do: if(line?(method, params), do: nil, else: method)
+       do: if(line?(method, params) and not again?(method, params, state), do: nil, else: method)
 
   defp malformed(_object, _state), do: nil
+
+  # An `item/started` of the running turn with the id of an item that has
+  # a tool call would add that tool call again. Only tool items are in
+  # `started`.
+  defp again?(
+         "item/started",
+         %{"turnId" => turn, "item" => %{"id" => id}},
+         %State{turn: turn} = state
+       ),
+       do: MapSet.member?(state.started, id)
+
+  defp again?(_method, _params, _state), do: false
 
   # An answer is an error object or a result, never both. A resume fails
   # only with the lost-thread error of the research note, and succeeds only
@@ -658,7 +672,9 @@ defmodule Helyx.Provider.Codex do
     {calls, state} =
       if MapSet.member?(state.started, id),
         do: {[], state},
-        else: {[tool_call(item)], %{state | calls: [id | state.calls]}}
+        else:
+          {[tool_call(item)],
+           %{state | started: MapSet.put(state.started, id), calls: [id | state.calls]}}
 
     result = {:tool_result, id, tool_result(item)}
 
