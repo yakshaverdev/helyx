@@ -202,3 +202,32 @@ Runs on 2026-09-27 with `codex-cli 0.157.1`, the model `gpt-6-luna` with `model_
 ### Not run
 
 - The stop path end to end with the watchdog stdin cap: the cap is ticket #196, which is open. `SIGTERM` to the group is in "Processes on 0.157.1" above.
+
+## Sub-agents at the end of a turn (2026-09-29, #226)
+
+Runs on 2026-09-29 with `codex-cli 0.157.1`, the default model `gpt-6-astra` with `effort` `low`, for ticket #226. A Python script drove `codex app-server` over stdio, in a new session (its own process group), in an empty temporary directory. `initialize` set `experimentalApi`. `thread/start` had `approvalPolicy` `never` and `sandbox` `danger-full-access`. The feature `multi_agent` is `stable` and on by default (`codex features list`); the thread settings said `"multiAgentMode":"explicitRequestOnly"`. The prompt asked the model to use `spawn_agent` once; the sub-agent ran `python3 -c "import time; time.sleep(40)" <marker>`. `ps` looked for the marker. 4 runs; a fifth run is not counted because it started 0.144.1 by mistake. The user's own hooks were active. The source was not read for this section.
+
+### The lines of a sub-agent (verified, 4 runs)
+
+- **`spawn_agent` gives a `subAgentActivity` item**, not a `collabAgentToolCall`, on the parent thread: `{"type":"subAgentActivity","id":"call_...","kind":"started","agentThreadId":"<child thread id>","agentPath":"/root/<name>"}`. `item/started` and `item/completed` came within 4 ms.
+- **The child thread gets no `thread/started`.** Its first line is `thread/status/changed` `idle`, then `active`, then its own `turn/started`. Its lines carry the child `threadId` and the child `turnId`: `item/started` and `item/completed` of `commandExecution` and `agentMessage`, `item/commandExecution/terminalInteraction` (about every 10 s during the command, `stdin` `""`), `thread/tokenUsage/updated`, and `turn/completed`.
+- **When the child turn completes**, the parent thread gets a second `subAgentActivity` item: `"id":"subagent-completed-<child turn id>"`, `"kind":"completed"`, with the `turnId` of the parent turn that spawned it, also when that turn had already ended (2 runs). No new parent turn started in the 1.7 to 4.4 s that the script waited after it.
+- **`wait` gives a `collabAgentToolCall` item** (1 run): `{"type":"collabAgentToolCall","tool":"wait","status":"inProgress","senderThreadId":<parent>,"receiverThreadIds":[],"agentsStates":{},"prompt":null,"model":null,"reasoningEffort":null}`. After `turn/interrupt` of the parent, this item got **no `item/completed`**.
+
+### The sub-agent outlives the parent turn (verified, 4 runs)
+
+- In 3 runs the model ended the parent turn after `spawn_agent`. `turn/completed` `completed` of the parent came first. The child's command started 1.6 to 9.1 s after it. `ps` found the command 2 s later.
+- **`turn/interrupt` of the parent after its end** (1 run): the error `{"code":-32600,"message":"no active turn to interrupt"}`. The child ran on: the command completed with `exitCode` 0, then the child's `agentMessage` `done`, `turn/completed` `completed`, and the parent's `subAgentActivity` `completed`.
+- **`turn/interrupt` of the parent during `wait`** (1 run): the result `{}` and the parent's `turn/completed` `interrupted` came within 11 ms. The child thread was not interrupted: its command ran to the end (`status` `completed`, `exitCode` 0) 38 s later, then the child's `turn/completed` `completed` and the parent's `subAgentActivity` `completed`, in the interrupted turn.
+- **`turn/interrupt` of the child turn** (1 run, with the parent turn already ended): the result `{}` and the child's `turn/completed` `interrupted` came at once. The command kept running, as in "`turn/interrupt` does not end a running command": its `item/completed` `completed` came 38 s later, in the interrupted child turn. **The parent got no `subAgentActivity` `completed`** in this run.
+
+### `SIGTERM` (verified, 4 runs)
+
+- `SIGTERM` to the program's group: exit status 0 after 0.02 to 0.07 s in each run. In the run where the child's command still ran (the parent turn ended), `ps` found no marker process 1 s after the exit.
+- The child's command ran in a process group of its own (pgid equal to its pid), with the program as parent. This is the same as a command of the main thread.
+
+### Not run
+
+- `send_input`, `close_agent`, and `resume_agent`; a `collabAgentToolCall` for `spawn` (the model did not offer one); a sub-agent of a sub-agent.
+- End of file on stdin and `SIGKILL` with a sub-agent running.
+- Whether the parent thread starts a turn by itself more than 4.4 s after the `subAgentActivity` `completed`.

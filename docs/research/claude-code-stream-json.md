@@ -263,3 +263,38 @@ Runs on 2026-09-27 with version `2.1.283`, `--model haiku`, for ticket #200. A P
 - **An abort during a foreground command.** The `control_response` came first, then the `result` with `terminal_reason` `aborted_tools`. The process stayed, and the next user line ran on it.
 - **An interrupt 50 ms after the prompt** cancelled the prompt: `cancelled` held its `uuid`, and no `result` came for it. The next user line ran as usual.
 - **The `Bash` tool refused a standalone `sleep 37`** and suggested a background run. A foreground `python3 -c "import time; time.sleep(37)"` ran, so the manual abort test of #200 uses it.
+
+## Sub-agents at the end of a turn (2026-09-29, #226)
+
+Runs on 2026-09-29 with version `2.1.284`, `--model haiku`, for ticket #226. A Python script drove the program with the flags of `Helyx.Provider.ClaudeCode` (`--output-format stream-json --verbose --include-partial-messages --input-format stream-json --permission-mode bypassPermissions --model=haiku --session-id=<uuid>`) and `--strict-mcp-config`, each program in a new session (its own process group), in an empty temporary directory. The user's own hooks were active. The prompt asked the model to use the `Agent` tool once; the sub-agent ran a foreground `python3 -c "import time; time.sleep(40)" <marker>`. `ps` looked for the marker. 5 runs; a sixth run is not counted because the model refused the prompt. "Verified" means one of these runs, not a contract.
+
+### The tool and its lines (verified, 5 runs)
+
+- The tool is `Agent` (the older name `Task` did not appear). Its input: `subagent_type`, `description`, `prompt`, and optional `run_in_background`.
+- **A sub-agent's own lines carry `parent_tool_use_id`**, the `id` of the `Agent` `tool_use` block. Observed: `assistant` lines (thinking, text, `tool_use`), `user` lines (tool results, and in a foreground run the sub-agent's prompt as a `text` block), and `tool_progress` with `"heartbeat":true` every 30 s (`tool_use_id` `<Agent id>-heartbeat-0`). The `Agent` `tool_use` and its tool result have `parent_tool_use_id` `null`.
+- **A sub-agent writes no `result` line.** Its end is `system/task_updated` (`patch.status` `completed` or `killed`) and `system/task_notification` with `task_id`, `tool_use_id` (the `Agent` id), `status` (`completed` or `stopped`), `output_file`, `summary`, and on completion `usage` (`total_tokens`, `tool_uses`, `duration_ms`).
+- Other `system` lines: `task_started` (`task_id`, `tool_use_id`, `subagent_type`, `is_backgrounded`, `spawn_depth`, `task_type` `local_agent`, `prompt`), `task_progress` (`usage`, `last_tool_name`), and `background_tasks_changed` (the list of background tasks) for a background sub-agent. A `Bash` command of a sub-agent is a task of its own: `task_started` with `"owned_by_subagent":true` and `task_type` `local_bash`.
+- **Every `result` has `subagent_stats`**: `spawned`, `requested` (`background`, `foreground`, `unset`), `started_in_background`, `max_depth`, `spawned_by_subagents`, `completed`, `failed`, `killed` (`parent`, `user`, `system`), `refused`, `by_type`.
+
+### Foreground and background (verified)
+
+- **Foreground** (`run_in_background` `false`; 2 runs): the `Agent` tool result comes when the sub-agent ends. Its `content` is a text block that starts `[Subagent hand-back]` and holds the report and the `agentId`. `tool_use_result` has `status` `completed`, `agentId`, `agentType`, `content`, `totalDurationMs`, `totalTokens`, `totalToolUseCount`, `toolStats`, `usage`, and `resolvedModel`. The turn's `result` comes after it.
+- **Background** (`run_in_background` `true` in 1 run, unset in 2 runs): the tool result comes at once, `"Async agent launched successfully"`, with `tool_use_result` `{"isAsync":true,"status":"async_launched","agentId",...,"outputFile"}`. With the input unset, `task_started` said `is_backgrounded` `true` and `subagent_stats` counted `unset` 1 and `started_in_background` 1. So an unset input can start a background sub-agent in this version. It is not known if a user setting causes this.
+- **A background sub-agent outlives its turn.** In 2 runs the turn's `result` came while the sub-agent ran. Its lines with `parent_tool_use_id` then came after the `result` and after `command_lifecycle` `completed`, with no turn open. `ps` found its command 4 s after the `result`. In the third run the sub-agent ended before the turn's `result`, and its lines came between the main loop's lines.
+- **The end of a background sub-agent starts a turn without a user line** (1 run, host idle). After `task_notification` `completed`, the program wrote `system/init`, `status`, the model's `assistant` lines, and a `result` with `"origin":{"kind":"task-notification","producer":"session-task"}` and no `user_message_uuid`. No `command_lifecycle` line came for it.
+
+### Interrupt with `cancel_queued: true` (verified, 2 runs)
+
+- **During a foreground sub-agent's command** (1 run): the `control_response` (`still_queued` `[]`, `cancelled` `[]`) came at once. Then the `Agent` tool result with `is_error` and the rejection text, `task_updated` `killed`, `task_notification` `stopped`, `[Request interrupted by user for tool use]`, and `result` `error_during_execution` with `terminal_reason` `aborted_tools` and `subagent_stats.killed.user` 1. `command_lifecycle` of the user line said `cancelled`. The command was gone 1 s later.
+- **While idle, with a background sub-agent running** (1 run, sent 5 s after the turn's `result`): `task_updated` `killed`, `task_notification` `stopped`, then the `control_response` (`still_queued` `[]`, `cancelled` `[]`). The sub-agent's `Bash` got an `is_error` tool result with `parent_tool_use_id` set, then `[Request interrupted by user for tool use]`, also with `parent_tool_use_id`. **No `result` line came.** The command was gone 1 s later. No task-notification turn followed in 46 s.
+- So in these runs an interrupt ended every running sub-agent, foreground or background. The earlier note "A background `Bash` task survives an interrupt" is for a `Bash` task of the main loop; it was not run again here.
+
+### `SIGTERM` (verified, 5 runs)
+
+- `SIGTERM` to the program's group: exit status 143 after 0.71 to 0.83 s in each run. In the run with a background sub-agent's command still running, the program first wrote `task_notification` `stopped` for the command's task and an `is_error` tool result `Exit code 137` to the sub-agent. `ps` found no marker process 1 s after the exit.
+- The sub-agent's command ran as `python3` under a shell, in the shell's process group, not in the program's group (pgid equal to the shell's pid). This is the same as a main-loop command.
+
+### Not run
+
+- A sub-agent that starts a sub-agent (`spawn_depth` 2), `stop_task` on a sub-agent's `task_id`, and `SIGKILL` with a sub-agent running.
+- `SendMessage` to continue a finished sub-agent (the hand-back text names it).
