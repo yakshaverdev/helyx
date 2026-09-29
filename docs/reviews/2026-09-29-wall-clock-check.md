@@ -55,3 +55,7 @@ Spec, failure path, and Codex: reproduced. A qualified spelling of an operator h
 ## Open
 
 Round 3 reproduced a defect, so it is not fixed here. This is a second finding on the operator-spelling mechanism. The fix of the mechanism is one clause in `bounds/2` that rewrites a `Kernel` or `:erlang` remote call to its local form, so that `not`, `!`, `in`, and the comparisons all go through the same clauses. `== false` can be a stated hole. No such form is in the repo today (the check reports no issue on master plus this change).
+
+## Orchestrator decision on the round 3 defect
+
+Accepted hole, not fixed: a bound written as a named operator call (`Kernel.not/1`, `Kernel.in/2`, `:erlang.</2` and the like) passes the check. The check is a lint for honest mistakes in tests, not a boundary against a hostile author; no test in the repository uses these forms. A form that `mix format` and Credo accept as normal style is in scope.
