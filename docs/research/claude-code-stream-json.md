@@ -183,6 +183,7 @@ Program-to-host subtypes: `can_use_tool` and `mcp_message` (verified), `hook_cal
 
 - The `Bash` tool runs each command as `/bin/zsh -c ...` with the program as its parent and **in a process group of its own** (pgid equal to its pid). A signal to the program's group does not reach it.
 - `SIGTERM` to the program: exit status 143 in about 0.7 s. It first killed its background tasks (`task_updated` with `"status":"killed"`), and no child was left.
+- End of input to the program with a running background task (2026-09-27, `claude` 2.1.283, `haiku`, a Helyx session close, 3 runs): the background command was gone after each close. In the 2 timed runs the close took 615 and 628 ms, under the 5,000 ms close bound, so no TERM reached the program before it exited. The test did not check the process group of the background command. If it has a group of its own, as the `Bash` commands above had, a signal to the program's group does not reach it, and the program ended it (inferred).
 - `SIGKILL` to the program: the foreground `zsh` and its `sleep` were left running with parent 1.
 - The SDKs close the program with end of file on stdin, then `SIGTERM`, then `SIGKILL`. Python waits 5 s before each signal. TypeScript waits 2 s before `SIGTERM` and 5 s before `SIGKILL`. Neither starts the program in a new process group (source).
 
