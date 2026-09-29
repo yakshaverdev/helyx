@@ -99,10 +99,13 @@ defmodule Helyx.Session.Hands do
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts), do: GenServer.start_link(__MODULE__, struct!(State, opts))
 
-  @doc "Starts a tool call. The result is sent to the session."
+  @doc """
+  Starts a tool call. The result is sent to the session. A cast, as
+  `prepare/3`: a connected turn runs Helyx tools while the hands can
+  release its harness process.
+  """
   @spec run(pid(), String.t(), ToolCall.t()) :: :ok
-  def run(hands, turn_id, %ToolCall{} = call),
-    do: GenServer.call(hands, {:start, turn_id, call})
+  def run(hands, turn_id, %ToolCall{} = call), do: GenServer.cast(hands, {:run, turn_id, call})
 
   @doc """
   Starts the stream of a harness provider call: `fun` runs in a Task of the
@@ -131,8 +134,8 @@ defmodule Helyx.Session.Hands do
   release its handles in their own loop for up to the release deadline.
   The session must not wait for that. The hands start the Task when they
   take the message, after any earlier message of the session, so a later
-  `request_cancel/2` finds it. The other calls of the session, `connect/3`,
-  `stream/4`, and `run/3`, come only when it holds no harness process: a
+  `request_cancel/2` finds it. The other calls of the session, `connect/3`
+  and `stream/4`, come only when it holds no harness process: a
   local or external turn has none (a switch closes it and waits for its
   `:harness_down`), and a connect follows the `:harness_down` of the last
   one.
@@ -152,6 +155,15 @@ defmodule Helyx.Session.Hands do
   @spec request_cancel(pid(), String.t()) :: :gen_server.request_id()
   def request_cancel(hands, turn_id), do: :gen_server.send_request(hands, {:cancel, turn_id})
 
+  @doc """
+  Kills the running tool Task of one call, when there is one. Its
+  delivery runs as for any Task that dies: the release, then an error
+  result to the session. A cast, as `prepare/3`: the session does not wait
+  for a release.
+  """
+  @spec kill(pid(), String.t(), String.t()) :: :ok
+  def kill(hands, turn_id, call_id), do: GenServer.cast(hands, {:kill, turn_id, call_id})
+
   @impl true
   def init(%State{} = state) do
     Process.flag(:trap_exit, true)
@@ -159,16 +171,9 @@ defmodule Helyx.Session.Hands do
   end
 
   @impl true
-  # A tool call or a harness stream.
-  def handle_call({:start, turn_id, job}, _from, state) do
-    state = retry(state)
-
-    if state.unconfirmed == %{} do
-      {:reply, :ok, start(state, turn_id, job)}
-    else
-      {:reply, :ok, refuse(state, turn_id, job_id(job))}
-    end
-  end
+  # A harness stream.
+  def handle_call({:start, turn_id, job}, _from, state),
+    do: {:reply, :ok, start_job(state, turn_id, job)}
 
   def handle_call({:connect, provider, fun}, _from, state) do
     state = retry(state)
@@ -223,9 +228,26 @@ defmodule Helyx.Session.Hands do
     {:reply, unconfirmed_error(left) || :ok, state}
   end
 
+  defp start_job(state, turn_id, job) do
+    state = retry(state)
+
+    if state.unconfirmed == %{},
+      do: start(state, turn_id, job),
+      else: refuse(state, turn_id, job_id(job))
+  end
+
   @impl true
   def handle_cast({:prepare, turn_id, fun}, state) do
     {_pid, state} = spawn_armed(state, turn_id, :prepare, nil, state.prepare_ms, fun)
+    {:noreply, state}
+  end
+
+  def handle_cast({:run, turn_id, call}, state), do: {:noreply, start_job(state, turn_id, call)}
+
+  def handle_cast({:kill, turn_id, call_id}, state) do
+    for {_ref, {task, ^turn_id, ^call_id, _tool}} <- state.tasks,
+        do: Process.exit(task.pid, :kill)
+
     {:noreply, state}
   end
 

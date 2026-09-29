@@ -186,6 +186,20 @@ defmodule Helyx.Session.Stream do
     end
   end
 
+  # A connected provider asks the session to run a Helyx tool. The
+  # arguments get the checks of a tool call; a call with an integer over
+  # the digit limit gets its rejection, and the session answers it with an
+  # error result and does not run it.
+  def check({:tool_request, id, name, args} = event, true = _external?) do
+    case tool_call(%Message.ToolCall{id: id, name: name, arguments: args}, nil) do
+      {:send, {:tool_call, call}, rejection} ->
+        {:send, {:tool_request, call.id, call.name, call.arguments}, rejection}
+
+      {:bad, _error} ->
+        {:bad, malformed(event)}
+    end
+  end
+
   def check(other, _external?), do: {:bad, malformed(other)}
 
   # The one place where tool call arguments enter the session from a

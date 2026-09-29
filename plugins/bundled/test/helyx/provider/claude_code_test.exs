@@ -4,8 +4,8 @@ defmodule Helyx.Provider.ClaudeCodeTest do
   # `docs/research/claude-code-stream-json.md` records. Program N saves its
   # arguments to `args.N` and each input line to `stdin.N`. It runs
   # `start.N` first; for the K-th user line that starts a query it runs
-  # `turn.N.K`, for a control request `ctl.N`, and at the end of input
-  # `eof.N`. In their output `@U@` is the `uuid` and `@R@` the
+  # `turn.N.K`, for a control request `ctl.N`, for a control response
+  # `resp.N`, and at the end of input `eof.N`. In their output `@U@` is the `uuid` and `@R@` the
   # `request_id` of the line read. PATH is global, so this module is not
   # async.
   use ExUnit.Case, async: false
@@ -34,7 +34,8 @@ defmodule Helyx.Provider.ClaudeCodeTest do
     [ -n "$v" ] && u=$v
     r=$(printf '%s\\n' "$line" | sed -n 's/.*"request_id":"\\([^"]*\\)".*/\\1/p')
     case "$line" in
-      *'"shouldQuery":false'*|*'"type":"assistant"'*|*'"type":"control_response"'*) ;;
+      *'"type":"control_response"'*) [ -f "$d/resp.$n" ] && . "$d/resp.$n" ;;
+      *'"shouldQuery":false'*|*'"type":"assistant"'*) ;;
       *'"type":"control_request"'*) [ -f "$d/ctl.$n" ] && . "$d/ctl.$n" ;;
       *'"type":"user"'*) k=$((k+1)); [ -f "$d/turn.$n.$k" ] && . "$d/turn.$n.$k" ;;
     esac
@@ -1322,5 +1323,276 @@ defmodule Helyx.Provider.ClaudeCodeTest do
     assert_receive {:DOWN, ^ref, :process, _pid, :shutdown}, 200
     # The keeper closes the port, so the watchdog ends the group.
     assert group_gone_within?(program, 300)
+  end
+
+  describe "the Helyx tools" do
+    @spec_read %{name: "read", description: "Reads a file.", parameters: %{"type" => "object"}}
+
+    defp mcp_request(request_id, message) do
+      request = %{subtype: "mcp_message", server_name: "helyx", message: message}
+      j(%{type: "control_request", request_id: request_id, request: request})
+    end
+
+    defp tools_call(request_id, id, meta) do
+      params = %{name: "read", arguments: %{path: "a.txt"}, _meta: meta}
+      mcp_request(request_id, %{jsonrpc: "2.0", id: id, method: "tools/call", params: params})
+    end
+
+    defp call(request_id, id, use_id),
+      do: tools_call(request_id, id, %{"claudecode/toolUseId" => use_id, progressToken: id})
+
+    # The answers the provider wrote, by control request id.
+    defp answers(bin, n) do
+      for %{"type" => "control_response", "response" => r} <- stdin(bin, n),
+          into: %{},
+          do: {r["request_id"], r["response"]["mcp_response"] || r}
+    end
+
+    # A line that changes the state, so a test knows that the lines before
+    # it were read.
+    defp marker, do: j(%{type: "system", subtype: "background_tasks_changed", tasks: ["marker"]})
+    defp marked?(state), do: state.tasks == ["marker"]
+
+    defp closed(state) do
+      {from, [], state} = request(state, :close)
+      {_actions, _state} = pump(state, [], replied?(from))
+      :ok
+    end
+
+    defp tool_turn(work) do
+      {:ok, state} = ClaudeCode.harness_init("haiku", [@spec_read], cwd: work)
+
+      {_from, actions, state} =
+        request(state, {:turn, "t1", %Helyx.Context{messages: [Message.user("x")]}})
+
+      pump(state, actions, fn actions ->
+        Enum.any?(actions, &match?({:event, _, {:tool_request, _, _, _}}, &1))
+      end)
+    end
+
+    test "the program gets the MCP config of the helyx server, and not the strict switch",
+         %{bin: bin, work: work} do
+      closed(harness(work))
+      args = args(bin, 1)
+      assert ~s({"mcpServers":{"helyx":{"type":"sdk","name":"helyx"}}}) in args
+      refute "--strict-mcp-config" in args
+    end
+
+    test "answers each initialize, the notifications, and tools/list", %{bin: bin, work: work} do
+      initialize = %{
+        jsonrpc: "2.0",
+        id: 0,
+        method: "initialize",
+        params: %{protocolVersion: "2025-11-25", capabilities: %{}}
+      }
+
+      script(bin, "start.1", [
+        mcp_request("i1", initialize),
+        mcp_request("i2", %{jsonrpc: "2.0", method: "notifications/initialized"}),
+        mcp_request("i3", %{jsonrpc: "2.0", id: 1, method: "tools/list"}),
+        mcp_request("i4", %{initialize | id: 2}),
+        mcp_request("i5", %{jsonrpc: "2.0", id: 3, method: "resources/list"}),
+        mcp_request("i6", %{jsonrpc: "2.0", id: 4, method: "initialize"}),
+        mcp_request("i7", %{initialize | id: 5, params: "2024-01-01"}),
+        mcp_request("i8", %{initialize | id: 6, params: %{protocolVersion: "2025-06-18"}}),
+        marker()
+      ])
+
+      {:ok, state} = ClaudeCode.harness_init("haiku", [@spec_read], cwd: work)
+      closed(settle(state, &marked?/1))
+
+      result = %{
+        "protocolVersion" => "2025-11-25",
+        "capabilities" => %{"tools" => %{}},
+        "serverInfo" => %{"name" => "helyx", "version" => "0.1.0"}
+      }
+
+      tools = [
+        %{
+          "name" => "read",
+          "description" => "Reads a file.",
+          "inputSchema" => %{"type" => "object"}
+        }
+      ]
+
+      assert %{
+               "i1" => %{"id" => 0, "result" => ^result},
+               "i2" => %{"jsonrpc" => "2.0", "result" => %{}} = ack,
+               "i3" => %{"id" => 1, "result" => %{"tools" => ^tools}},
+               "i4" => %{"id" => 2, "result" => ^result},
+               "i5" => %{"id" => 3, "error" => %{"code" => -32_601}},
+               "i6" => %{"id" => 4, "result" => ^result},
+               "i7" => %{"id" => 5, "result" => ^result},
+               "i8" => %{"id" => 6, "result" => %{"protocolVersion" => "2025-06-18"}}
+             } = answers(bin, 1)
+
+      refute Map.has_key?(ack, "id")
+    end
+
+    test "a tools/call gives a tool request, and its result goes back as an MCP result",
+         %{bin: bin, work: work} do
+      turn(bin, 1, 1, begin() ++ [call("m1", 2, "toolu_h1")])
+      {actions, state} = tool_turn(work)
+
+      assert {:event, "t1", {:tool_request, "toolu_h1", "read", %{"path" => "a.txt"}}} =
+               List.last(actions)
+
+      {from, actions, state} = request(state, {:tool_result, "t1", "toolu_h1", {:error, "boom"}})
+      assert actions == [{:reply, from, :ok}]
+      closed(state)
+
+      assert %{
+               "m1" => %{
+                 "id" => 2,
+                 "result" => %{
+                   "content" => [%{"type" => "text", "text" => "boom"}],
+                   "isError" => true
+                 }
+               }
+             } = answers(bin, 1)
+    end
+
+    test "a tools/call with no tool use id, or with no turn, gets an error and gives no request",
+         %{bin: bin, work: work} do
+      script(bin, "start.1", [call("n1", 1, "toolu_early"), marker()])
+      no_params = %{jsonrpc: "2.0", id: 3, method: "tools/call"}
+
+      turn(
+        bin,
+        1,
+        1,
+        begin() ++
+          [tools_call("n2", 2, %{progressToken: 2}), mcp_request("n3", no_params), result("done")]
+      )
+
+      {:ok, state} = ClaudeCode.harness_init("haiku", [@spec_read], cwd: work)
+      state = settle(state, &marked?/1)
+
+      {_from, actions, state} =
+        request(state, {:turn, "t1", %Helyx.Context{messages: [Message.user("x")]}})
+
+      {actions, state} = pump(state, actions, &ended?/1)
+      closed(state)
+
+      refute Enum.any?(actions, &match?({:event, _, {:tool_request, _, _, _}}, &1))
+
+      assert %{
+               "n1" => %{
+                 "id" => 1,
+                 "result" => %{
+                   "isError" => true,
+                   "content" => [%{"text" => "no Helyx turn" <> _}]
+                 }
+               },
+               "n2" => %{"id" => 2, "result" => %{"isError" => true}},
+               "n3" => %{"id" => 3, "result" => %{"isError" => true}}
+             } = answers(bin, 1)
+    end
+
+    test "notifications/cancelled withdraws the call; its later result is not written",
+         %{bin: bin, work: work} do
+      cancelled = %{jsonrpc: "2.0", method: "notifications/cancelled", params: %{requestId: 2}}
+      turn(bin, 1, 1, begin() ++ [call("m1", 2, "toolu_h1")])
+      {_actions, state} = tool_turn(work)
+
+      File.write!(Path.join(bin, "out.late"), mcp_request("c1", cancelled) <> "\n")
+      File.write!(Path.join(bin, "ctl.1"), "out out.late\n")
+      # A control request from the host makes the fake write the notification.
+      Helyx.HarnessIO.write(state, [
+        j(%{type: "control_request", request_id: "x", request: %{subtype: "ping"}}),
+        "\n"
+      ])
+
+      {actions, state} =
+        pump(state, [], &Enum.any?(&1, fn a -> match?({:cancel_tool, _, _}, a) end))
+
+      assert [{:cancel_tool, "t1", "toolu_h1"}] = actions
+
+      {from, [{:reply, from, :ok}], state} =
+        request(state, {:tool_result, "t1", "toolu_h1", {:ok, "late"}})
+
+      closed(state)
+
+      assert %{"c1" => %{"result" => %{}}} = answers = answers(bin, 1)
+      refute Map.has_key?(answers, "m1")
+    end
+
+    test "a control_cancel_request withdraws the call and gets no answer", %{bin: bin, work: work} do
+      turn(bin, 1, 1, begin() ++ [call("m1", 2, "toolu_h1")])
+      {_actions, state} = tool_turn(work)
+
+      File.write!(
+        Path.join(bin, "out.late"),
+        j(%{type: "control_cancel_request", request_id: "m1"}) <> "\n"
+      )
+
+      File.write!(Path.join(bin, "ctl.1"), "out out.late\n")
+
+      Helyx.HarnessIO.write(state, [
+        j(%{type: "control_request", request_id: "x", request: %{subtype: "ping"}}),
+        "\n"
+      ])
+
+      {actions, state} =
+        pump(state, [], &Enum.any?(&1, fn a -> match?({:cancel_tool, _, _}, a) end))
+
+      assert [{:cancel_tool, "t1", "toolu_h1"}] = actions
+      closed(state)
+      assert answers(bin, 1) == %{}
+    end
+
+    test "in a session: the tool runs on the hands, and the transcript has one call and one result",
+         %{bin: bin, work: work, sessions: sessions} do
+      core = :"core_#{System.unique_integer([:positive])}"
+
+      start_supervised!({Helyx.Core, name: core, plugins: [ClaudeCode, Fake, Helyx.Tool.Read]},
+        id: :tools_core
+      )
+
+      File.write!(Path.join(work, "a.txt"), "hello\n")
+
+      use_block = %{
+        type: "tool_use",
+        id: "toolu_h1",
+        name: "mcp__helyx__read",
+        input: %{path: "a.txt"}
+      }
+
+      turn(bin, 1, 1, begin() ++ [assistant(use_block), call("m1", 2, "toolu_h1")])
+
+      script(bin, "resp.1", [
+        tool_result("toolu_h1", "hello"),
+        delta("Done."),
+        assistant(%{type: "text", text: "Done."}),
+        result("Done.", 2)
+      ])
+
+      session = start(%{core: core, work: work, sessions: sessions})
+      events = prompt(session, "read it")
+      GenServer.stop(Session.pid(session))
+
+      assert [%{stop_reason: :end_turn}] = of_type(events, :agent_end)
+
+      transcript =
+        messages(events) ++ for(%{message: m} <- of_type(events, :tool_execution_end), do: m)
+
+      calls =
+        for %Message{content: blocks} <- transcript, %Message.ToolCall{} = c <- blocks, do: c
+
+      assert [%Message.ToolCall{id: "toolu_h1", name: "mcp__helyx__read"}] = calls
+
+      assert [%Message{tool_call_id: "toolu_h1"}] =
+               for(%Message{role: :tool_result} = m <- transcript, do: m)
+
+      assert %{
+               "m1" => %{
+                 "id" => 2,
+                 "result" => %{"isError" => false, "content" => [%{"text" => text}]}
+               }
+             } =
+               answers(bin, 1)
+
+      assert text =~ "hello"
+    end
   end
 end

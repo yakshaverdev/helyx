@@ -826,6 +826,10 @@ defmodule Helyx.Test.Connected do
   #   "flood"            "hang"; the message `{:flood, turn_id}` sends
   #                      10,002 deltas and done
   #   "stop"             "hang"; the message `:stop` stops the harness
+  #   "tools"            "hang"; the message `{:tool_request, turn_id, id,
+  #                      name, args}` asks for a Helyx tool, and `{:cancel,
+  #                      turn_id, id}` withdraws it; `{:ping, pid}`
+  #                      sends `:pong` to pid
   #
   # A steer answers :ok with no `user_message` unless the model says
   # otherwise; the "steer_" models are "hang" for a turn:
@@ -840,7 +844,16 @@ defmodule Helyx.Test.Connected do
   #                      before its answer
   @behaviour Helyx.Provider
 
-  @hang ["hang", "flood", "stop", "block_interrupt", "error_interrupt", "late_interrupt"] ++
+  @hang [
+          "hang",
+          "flood",
+          "stop",
+          "tools",
+          "tools_late",
+          "block_interrupt",
+          "error_interrupt",
+          "late_interrupt"
+        ] ++
           [
             "steer_take",
             "steer_reject",
@@ -909,6 +922,17 @@ defmodule Helyx.Test.Connected do
 
   def harness_info(:stop, state), do: {:stop, :gone, state}
 
+  def harness_info({:tool_request, turn_id, id, name, args}, state),
+    do: {:ok, [{:event, turn_id, {:tool_request, id, name, args}}], state}
+
+  def harness_info({:cancel, turn_id, id}, state),
+    do: {:ok, [{:cancel_tool, turn_id, id}], state}
+
+  def harness_info({:ping, pid}, state) do
+    send(pid, :pong)
+    {:ok, [], state}
+  end
+
   def harness_info({:answer, from, value}, state), do: {:ok, [{:reply, from, value}], state}
 
   defp kind({kind, _, _, _}), do: kind
@@ -949,6 +973,9 @@ defmodule Helyx.Test.Connected do
   defp answer("steer_block", {:steer, _, _, _}, _from), do: Process.sleep(:infinity)
 
   defp answer("steer_hold", {:steer, _, _, _}, _from), do: []
+
+  defp answer("tools_late", {:tool_result, _, _, _} = request, from),
+    do: later(from, request, 100)
 
   defp answer("steer_early", {:steer, id, steer_id, text}, _from),
     do: [{:event, id, {:user_message, steer_id, text}}]

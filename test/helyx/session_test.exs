@@ -796,6 +796,8 @@ defmodule Helyx.SessionTest do
 
     pid = Session.pid(session)
     hands = :sys.get_state(pid).hands
+    # `Hands.run/3` is a cast: the hands start the Task before they answer.
+    :sys.get_state(hands)
 
     [task] =
       for task <- Task.Supervisor.children(Helyx.Core.task_supervisor(core)),

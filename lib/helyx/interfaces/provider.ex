@@ -124,6 +124,27 @@ defmodule Helyx.Provider do
   open at once: Core answers one more with `{:error, :busy}` and does not
   give it to the provider.
 
+  Helyx tools inside the program: the event `{:tool_request, call_id, name,
+  arguments}` asks the session to run the Helyx tool `name`. `call_id` is
+  the id of the call in the program's own events, which put the call and
+  its result in the transcript; this event only runs the tool. A request
+  that the provider cannot map to such an id gets an error answer from the
+  provider and gives no event. The session runs the requests of a turn one
+  at a time and sends each result as the request `{:tool_result, turn_id,
+  call_id, {:ok | :error, text}}`, which takes `:ok` when it is written.
+  The provider replies to every `tool_result` request inside the same
+  callback, so the result is written before the next request; otherwise
+  the harness process stops with `{:tool_result_not_answered, turn_id,
+  call_id}`. A `tool_result` request does not count in the 8 open
+  requests. Core also sends this request itself with an error result: `aborted` for
+  each open tool request at the end of its turn, at the interrupt before
+  the provider sees it, and for a request of a turn that is not running;
+  an error for a request over the limit of one running and 16 waiting,
+  and for a call id that the turn used before. A second tool request
+  with the id of an open request is a bad action and stops the harness
+  process too. The action `{:cancel_tool, turn_id, call_id}` withdraws a
+  request: the session stops its run, and a later result is dropped.
+
   Every request has a deadline: a kill of the harness process armed with
   the request at the OTP timer server (`:timer.kill_after/2`), which Core
   cancels when the provider replies. A connect has 30,000 ms from the
@@ -148,6 +169,7 @@ defmodule Helyx.Provider do
           | {:tool_result, String.t(), {:ok | :error, String.t()}}
           | {:harness_session, String.t(), non_neg_integer()}
           | {:user_message, String.t(), String.t()}
+          | {:tool_request, call_id :: String.t(), name :: String.t(), arguments :: map()}
 
   @typedoc "The ref of a request from Core, for its reply."
   @type from :: reference()
@@ -156,6 +178,8 @@ defmodule Helyx.Provider do
           {:turn, turn_id :: String.t(), Helyx.Context.t()}
           | {:steer, turn_id :: String.t(), steer_id :: String.t(), text :: String.t()}
           | {:interrupt, turn_id :: String.t()}
+          | {:tool_result, turn_id :: String.t(), call_id :: String.t(),
+             {:ok | :error, String.t()}}
           | :close
           | :idle_close
 
