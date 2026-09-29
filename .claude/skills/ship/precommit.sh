@@ -3,7 +3,8 @@
 # the output to precommit.log. With a host set (an ssh target, in
 # HELYX_PRECOMMIT_HOST or in ~/.config/helyx/precommit-host), it copies the worktree to that host and runs there, so parallel workers do
 # not load this machine. The format step rewrites files, so the files that it
-# changed on the host are copied back, the same as a local run.
+# changed on the host are copied back, the same as a local run. Nothing may
+# edit the worktree during the run: a copied-back file replaces a local edit.
 set -uo pipefail
 
 root=$(git rev-parse --show-toplevel) || exit 1
@@ -42,7 +43,7 @@ if [ -n "$unexpected" ]; then
   exit 1
 fi
 if [ -n "$changed" ]; then
-  printf '%s\n' "$changed" | rsync -a --files-from=- "$host:$dir/" ./ || exit 1
+  printf '%s\n' "$changed" | rsync -a --ignore-times --files-from=- "$host:$dir/" ./ || exit 1
   printf 'format changed on %s and copied back:\n%s\n' "$host" "$changed"
 fi
 
