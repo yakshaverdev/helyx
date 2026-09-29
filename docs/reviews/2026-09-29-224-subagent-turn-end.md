@@ -60,3 +60,12 @@ The brief named both invariants: no sync work of a turn runs past its end, and a
 - Failure path: no defect. Two probes in the scratchpad: a held steer `userMessage` at a `:tool_running` stop (one stop, no reply, one notice, no resend), and a steer answer after a normal turn end with an open child (`:ok`, then the idle close answers `:busy`). Notes, reported and not chased because each needs a new program behaviour: a child's `completed` item before the `item/completed` of its spawn item keeps the child in `agents` (fail safe, `:busy` until the session end); a `subAgentActivity` item with an unknown or older turn id is taken as valid and can move a child to that turn.
 
 Round 4 reproduced no defect.
+
+## Orchestrator decisions on the round-4 notes
+
+1. A child `completed` item before the `item/completed` of the item that started it: accepted hole. It fails safe (the idle close answers `:busy`), and the session end bounds it.
+2. A `subAgentActivity` item with an unknown or older turn id: follow-up ticket #244.
+
+## Codex gate
+
+Round 1: approve, no findings.
