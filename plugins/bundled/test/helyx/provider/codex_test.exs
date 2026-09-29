@@ -650,6 +650,36 @@ defmodule Helyx.Provider.CodexTest do
     end
   end
 
+  test "a second item/started of a tool item stops the harness process, and the call goes out once",
+       %{bin: bin, work: work} do
+    open = started(@tid, command("exec-1", %{status: "inProgress"}))
+    done = completed(@tid, command("exec-1", @done))
+
+    # The first lines, then a second start after the call went out: while
+    # the item is open, after its completion, and after a completion with
+    # no start. One program run for each.
+    cases = [{[open], open}, {[open, done], open}, {[done], open}]
+
+    for {{first, again}, n} <- Enum.with_index(cases, 1) do
+      fresh(bin, n, @tid, first, after_go(bin, "again.#{n}", [again]))
+      File.rm_rf!(Path.join(bin, "go"))
+
+      {:ok, state} = connect(work)
+
+      {_from, actions, state} =
+        ask(state, {:turn, "t1", %Helyx.Context{messages: [Message.user("go")]}})
+
+      {actions, state} =
+        drive(state, actions, &Enum.any?(&1, fn a -> match?({:event, _, {:tool_call, _}}, a) end))
+
+      go(bin)
+      {actions, _state} = drive(state, actions, fn _ -> false end)
+
+      assert {:stop, {:malformed, "item/started"}} = List.last(actions)
+      assert [%{id: "exec-1"}] = for({:event, _, {:tool_call, call}} <- actions, do: call)
+    end
+  end
+
   test "an inProgress completion of a command ends the turn, so an abort sends no turn/interrupt",
        %{bin: bin} = ctx do
     pidfile = Path.join(bin, "pid")
