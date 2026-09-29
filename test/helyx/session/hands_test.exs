@@ -6,6 +6,11 @@ defmodule Helyx.Session.HandsTest do
 
   alias Helyx.Message.ToolCall
 
+  # Room for scheduler load in a check of a wait that must not happen: far
+  # above the delays that load makes, far below the waits that the checks
+  # rule out.
+  @load_ms 1_000
+
   setup do
     core = :"core_#{System.unique_integer([:positive])}"
 
@@ -155,7 +160,8 @@ defmodule Helyx.Session.HandsTest do
 
       await_held(hands, 1)
       {elapsed, :ok} = :timer.tc(fn -> cancel(hands, "t1") end, :millisecond)
-      assert elapsed in 2_000..3_000
+      assert elapsed >= 2_000
+      assert elapsed < 2_000 + @load_ms
       assert_received {:release, :cancel, [{:report, _}]}
     end
   end
@@ -192,10 +198,10 @@ defmodule Helyx.Session.HandsTest do
   @tag :capture_log
   test "a release just past the deadline is killed and confirms nothing", %{core: core} do
     hands = start_hands(core, release_ms: 300)
-    start = System.monotonic_time(:millisecond)
     :ok = Helyx.Session.Hands.run(hands, "t1", call("c1", "hold", %{"handles" => [{:slow, 350}]}))
+    # A kill after the end of the release would confirm the handle, so the
+    # error shows that the kill came first. No bound on the time is needed.
     assert_receive {:tool_result, "t1", "c1", {:error, text}}, 2_000
-    assert System.monotonic_time(:millisecond) - start < 340
     assert text =~ "could not be released"
 
     # The release Task is gone; only the ending tool Task can be left.
@@ -209,7 +215,7 @@ defmodule Helyx.Session.HandsTest do
     hands = start_hands(core, release_ms: 100)
 
     :ok =
-      Helyx.Session.Hands.run(hands, "t1", call("c1", "hold", %{"handles" => [{:slow, 1_500}]}))
+      Helyx.Session.Hands.run(hands, "t1", call("c1", "hold", %{"handles" => [{:slow, 5_000}]}))
 
     assert_receive {:tool_result, "t1", "c1", {:error, _text}}, 3_000
 
@@ -217,7 +223,9 @@ defmodule Helyx.Session.HandsTest do
     start = System.monotonic_time(:millisecond)
     assert {:error, text} = upcase(hands, "c2")
     assert text =~ "earlier call"
-    assert (System.monotonic_time(:millisecond) - start) in 1_000..1_400
+    elapsed = System.monotonic_time(:millisecond) - start
+    assert elapsed >= 1_000
+    assert elapsed < 1_000 + @load_ms
   end
 
   @tag :capture_log

@@ -30,6 +30,7 @@ docs/
   reviews/         Code review outputs and follow-ups
 lib/helyx/         Helyx core, interfaces, session, and message shapes
 test/              Tests, mirrors lib/. test/support/ holds test-only plugins
+credo/             Custom Credo checks, loaded by .credo.exs
 plugins/bundled/   All bundled plugins in one Mix project, app helyx_plugins, path dependency on the root (ADR 0005)
 apps/<name>/       Products, one Mix project each
 ```
@@ -54,7 +55,7 @@ Run from the repository root. The Mix projects are the root, `plugins/bundled` w
 - Name processes only when necessary; pass pids or use Registry.
 - Prefer `GenServer.call/3` over `cast/2` so callers get back-pressure.
 - Do not add parentheses to keyword-style macro calls (`field :name, :string`, `plug :foo`).
-- A test asserts order and properties, not an upper bound of elapsed wall-clock time. Other worktrees and precommit runs load the machine, so an upper bound fails at random (#193). A wait that must not happen is checked with a margin for load, and the margin is stated.
+- A test asserts order and properties, not an upper bound of elapsed wall-clock time. Other worktrees and precommit runs load the machine, so an upper bound fails at random (#193). A wait that must not happen is checked with a margin for load, and the margin is stated. The Credo check `Helyx.Credo.WallClockUpperBound` reports an upper bound without a margin. State the margin in a module attribute whose name starts with `load_`, for example `@load_ms`.
 - Tests end with `_test.exs` and mirror the `lib/` structure. Prefer async tests (`use ExUnit.Case, async: true`) unless the test touches shared state.
 - Write `@moduledoc` and `@doc` for public modules and functions. Use `@moduledoc false` for internal modules.
 - Prefer `Req` for HTTP; avoid `:httpoison`, `:tesla`, and `:httpc`.
@@ -71,7 +72,7 @@ Run from the repository root. The Mix projects are the root, `plugins/bundled` w
   - External plugins use their own root: `Acme.Provider.Bedrock`. Do not define modules under `Helyx.*` outside this repo. Module names are global in a BEAM node, and two packages that define the same module fail to compile together.
 - A new bundled plugin is a module under `plugins/bundled/lib/helyx/<interface>/` with its tests under the same path in `test/`, not a Mix project. A small, pure Elixir dependency is a normal dependency of `helyx_plugins`. A heavy or native one is `optional: true`. The modules that need it are defined only when it is loaded. The product lists the dependency itself. `ex_ratatui` and `Helyx.TUI` are the example (ADR 0005). An application env key of `helyx_plugins` names its plugin, for example `:openai_req_options`.
 - Code that two bundled plugins need is a helper module in `plugins/bundled`, such as `Helyx.Watchdog`. It is `@moduledoc false`, implements no interface, and has no registration entry. Both plugins call the helper; one plugin never calls another (ADR 0005).
-- The path follows the module name, except in `lib/helyx/interfaces/` and `lib/helyx/data/`. These two folders group files only. They are not part of the module name.
+- The path follows the module name, except in `lib/helyx/interfaces/`, `lib/helyx/data/`, and `credo/`. These folders group files only. They are not part of the module name.
 - Core resolves a plugin by its registration entry and a behaviour check, not by its module name. The module path is a reading aid only.
 - An interface module such as `Helyx.Provider` stays a pure behaviour and public API. It never becomes a default implementation. Implementations live one level below it.
 

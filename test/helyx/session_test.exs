@@ -1542,9 +1542,11 @@ defmodule Helyx.SessionTest do
   describe "client calls during a sweep of the hands (issue #93)" do
     # The "stuck" turn holds a handle whose release takes `@slow_ms` and one
     # that stays held, so each sweep takes its full time and ends
-    # unconfirmed. The client calls must answer in far less.
+    # unconfirmed. The client calls must answer in far less: `@load_ms` is
+    # room for scheduler load, far above the delays that load makes, far
+    # below the sweep.
     @slow_ms 800
-    @budget_ms 400
+    @load_ms 400
 
     # Starts a turn whose tool call holds a handle that no release confirms.
     defp start_stuck_turn(core) do
@@ -1586,8 +1588,8 @@ defmodule Helyx.SessionTest do
     end
 
     # Makes every client call but abort, and returns the results. No call
-    # exits, and all of them together take less than `budget_ms`.
-    defp timed_calls(session, budget_ms) do
+    # exits, and all of them together take less than `@load_ms`.
+    defp timed_calls(session) do
       calls = [
         model: fn -> Session.model(session) end,
         set_model: fn -> Session.set_model(session, "test/stuck") end,
@@ -1598,7 +1600,7 @@ defmodule Helyx.SessionTest do
 
       timed = for {name, fun} <- calls, do: {name, timed(fun)}
       total = Enum.sum(for {_name, {_result, ms}} <- timed, do: ms)
-      assert total < budget_ms, "the calls waited for the sweep: #{inspect(timed)}"
+      assert total < @load_ms, "the calls waited for the sweep: #{inspect(timed)}"
       for {name, {result, _ms}} <- timed, do: {name, result}
     end
 
@@ -1610,7 +1612,7 @@ defmodule Helyx.SessionTest do
       # The events of the abort go out at the start of the sweep.
       assert stop_reason(collect_until(:agent_end)) == :aborted
 
-      results = timed_calls(session, @budget_ms)
+      results = timed_calls(session)
       assert results[:steer] == :ok
       assert results[:follow_up] == :ok
       assert results[:prompt] == :ok
@@ -1656,7 +1658,7 @@ defmodule Helyx.SessionTest do
 
       # The Task dies, and the hands release its handles before the result.
       Process.exit(task, :kill)
-      results = timed_calls(session, @budget_ms)
+      results = timed_calls(session)
       assert results[:prompt] == {:error, :turn_running}
 
       events = collect_until(:agent_end)
