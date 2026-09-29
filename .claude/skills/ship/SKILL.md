@@ -75,7 +75,7 @@ Two more rules govern the loop:
 
 ## 3. Precommit
 
-Run it once, after the last round. Between rounds, run only the test files of the change. Run `mise exec -- mix precommit > precommit.log 2>&1 && echo passed || { echo failed; false; }`, and search the log as `AGENTS.md` says. It must pass with no warnings. Never pipe it to `tail`, and never rerun it to read an error.
+Run it once, after the last round. Between rounds, run only the test files of the change. Run `.claude/skills/ship/precommit.sh`, and search `precommit.log` as `AGENTS.md` says. With a host set (an ssh target in `HELYX_PRECOMMIT_HOST` or in `~/.config/helyx/precommit-host`), the script copies the worktree to that host with rsync, runs `mix precommit` there, writes the output to the local `precommit.log`, and copies back the files that the format step changed. Without it, the script runs `mix precommit` here. It must pass with no warnings. Never pipe it to `tail`, and never rerun it to read an error.
 
 ## 4. Commit
 
