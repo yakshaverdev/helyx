@@ -909,6 +909,28 @@ defmodule Helyx.Provider.CodexTest do
              for(%{"method" => "turn/interrupt"} = r <- stdin(bin, 1), do: r)
   end
 
+  test "a turn line with the fields of an item line and not its own shape stops the harness process",
+       %{bin: bin, work: work} do
+    item = %{turnId: "turn1", item: %{type: "agentMessage", id: "msg_1", text: ""}}
+
+    cases = [
+      {note(@tid, "turn/started", item), "turn/started"},
+      {note(@tid, "turn/completed", Map.put(item, :turn, %{id: "turn1", items: []})),
+       "turn/completed"}
+    ]
+
+    for {{line, method}, n} <- Enum.with_index(cases, 1) do
+      fresh(bin, n, @tid, [line])
+      {:ok, state} = connect(work)
+
+      {_turn, _, state} =
+        ask(state, {:turn, "t1", %Helyx.Context{messages: [Message.user("go")]}})
+
+      {actions, _state} = drive(state, [], fn _ -> false end)
+      assert {:stop, {:malformed, ^method}} = List.last(actions)
+    end
+  end
+
   test "a turn/start answer or a turn/started with no string turn id stops the harness process",
        %{bin: bin, work: work} do
     cases = [

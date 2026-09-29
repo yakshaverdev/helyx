@@ -223,6 +223,18 @@ Fixed: "Built in #201" now names the idle close.
 
 Six probes passed: a late `turn/start` answer and a late `turn/interrupt` answer after the idle close, a server request after the end of input, an idle close through Core with a resume on the next prompt, a program that ignores the end of input (killed at the close bound, the next prompt ran), and a prompt during the idle close wait. Not reached: an exit already in the mailbox before `:idle_close`, `:erlang.suspend_process/1` windows, the real program at the end of input.
 
+## Round 13 (reduced: spec and failure path), after the rebase on #227
+
+The Codex gate (round 1 of the orchestrator) found 1 confirmed defect: the item clause of `line?/2` accepted any method, so a `turn/started` with item fields and no `turn` passed and was ignored, and a `turn/completed` with item fields and a `turn.id` but no `status` passed and then raised `FunctionClauseError` in `terminal/2`. **Fixed**: the clause is guarded with `method in ["item/started", "item/completed"]`. Test: "a turn line with the fields of an item line and not its own shape stops the harness process" (both shapes; it failed without the guard). Bounds sensor: not run (no key).
+
+### Spec: 0 wrong, 0 missing, 1 gap
+
+No other clause of `malformed/2`, `line?/2`, or `answer?/3` accepts a line or answer of another method. Gap: this entry, now written.
+
+### Failure path: 1 finding, older than this fix, not fixed
+
+A duplicate `item/started` of the running turn passes the check, and `notification/3` adds the call id again: the transcript holds two `ToolCall` with the same id (reproduced with the fake program). The orchestrator decided no new round: the hole is open, ticket #234 (fix direction: stop with `{:malformed, "item/started"}`), and the feature doc names it next to #224. A duplicate `item/completed` is harmless: the session keeps one result.
+
 ## Precommit
 
 `mise exec -- mix precommit` passed: root 267 tests, `plugins/bundled` 388 tests and 1 property, `apps/coding_agent` 17 tests, 0 failures, no warnings, Credo and Dialyzer clean. The first run after round 6 failed one root test, `hands_test.exs:163` ("cancel releases with :cancel ..."), which this branch does not touch; it passed 20 of 20 alone, and the second run passed.
@@ -230,3 +242,5 @@ Six probes passed: a late `turn/start` answer and a late `turn/interrupt` answer
 After round 11, `mise exec -- mix precommit` passed in one run: root 267 tests, `plugins/bundled` 419 tests and 1 property, `apps/coding_agent` 17 tests, 0 failures, Credo and Dialyzer clean. The known flaky test `harness_stop_test.exs:64` (#228) did not fail.
 
 After round 12 (rebased on #195), `.claude/skills/ship/precommit.sh` passed in one run: root 274 tests, `plugins/bundled` 425 tests and 1 property, `apps/coding_agent` 17 tests, 0 failures.
+
+After round 13, `.claude/skills/ship/precommit.sh` passed in one run: 294 tests, 0 failures; 1 property, 426 tests, 0 failures (1 excluded); 17 tests, 0 failures.

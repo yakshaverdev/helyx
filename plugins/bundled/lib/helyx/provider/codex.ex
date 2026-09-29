@@ -466,7 +466,8 @@ defmodule Helyx.Provider.Codex do
 
   # A tool item leaves the open work only with a status that ends it.
   defp line?(method, %{"turnId" => turn, "item" => %{"type" => type, "id" => id} = item})
-       when is_binary(turn) and is_binary(type) and is_binary(id),
+       when method in ["item/started", "item/completed"] and is_binary(turn) and is_binary(type) and
+              is_binary(id),
        do: method == "item/started" or type not in @tool_item_types or ended?(item)
 
   defp line?(_method, _params), do: false
