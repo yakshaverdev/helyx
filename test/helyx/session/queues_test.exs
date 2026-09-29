@@ -32,6 +32,15 @@ defmodule Helyx.Session.QueuesTest do
     assert Queues.counts(queues) == %{steers: 32, follow_ups: 1}
   end
 
+  test "held steers count in the limit" do
+    queues = Enum.reduce(1..30, %Queues{}, &push!(&2, :steers, "s#{&1}"))
+
+    assert Queues.steer_room?(queues, 1)
+    refute Queues.steer_room?(queues, 2)
+    assert {:ok, _queues} = Queues.push(queues, :steers, "s31", 1)
+    assert Queues.push(queues, :steers, "s31", 2) == {:error, :queue_full}
+  end
+
   test "the limit counts entries, not bytes" do
     text = String.duplicate("折🚀", 1000)
     full = Enum.reduce(1..32, %Queues{}, fn _n, queues -> push!(queues, :follow_ups, text) end)

@@ -179,7 +179,7 @@ defmodule Helyx.Session.Stream do
   # Only a provider with an external turn sends these; in a local turn they
   # are malformed.
   def check({tag, _, _} = event, true = _external?)
-      when tag in [:message_end, :tool_result, :harness_session] do
+      when tag in [:message_end, :tool_result, :harness_session, :user_message] do
     case external_event(event) do
       {:ok, event} -> {:send, event, nil}
       {:error, _} = error -> {:bad, error}
@@ -245,6 +245,12 @@ defmodule Helyx.Session.Stream do
       do: {:ok, event},
       else: malformed(event)
   end
+
+  # The session looks the steer up by its id and appends its own text, the
+  # text that it checked at the client call; the text here is not used.
+  defp external_event({:user_message, steer_id, text} = event)
+       when is_binary(steer_id) and is_binary(text),
+       do: {:ok, event}
 
   defp external_event(event), do: malformed(event)
 

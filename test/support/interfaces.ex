@@ -805,6 +805,7 @@ defmodule Helyx.Test.Connected do
   #                      text>" and done; an interrupt and a close answer :ok
   #   "hang"             a turn answers :ok and sends "so far"; the message
   #                      `{:finish, turn_id}` sends done
+  #                      and `{:fail, turn_id}` sends `{:error, :failed}`
   #   "block_init"       `harness_init/3` blocks
   #   "fail_init"        `harness_init/3` returns an error
   #   "block_turn"       the turn callback blocks
@@ -825,9 +826,29 @@ defmodule Helyx.Test.Connected do
   #   "flood"            "hang"; the message `{:flood, turn_id}` sends
   #                      10,002 deltas and done
   #   "stop"             "hang"; the message `:stop` stops the harness
+  #
+  # A steer answers :ok with no `user_message` unless the model says
+  # otherwise; the "steer_" models are "hang" for a turn:
+  #   "steer_take"       a steer answers :ok and the harness takes it
+  #   "steer_reject"     a steer answers :rejected
+  #   "steer_error"      a steer answers `{:error, :lost}`
+  #   "steer_hold"       a steer gets no answer; the controller gets
+  #                      `{:held, from}`, and the message `{:answer, from,
+  #                      value}` answers it
+  #   "steer_block"      the steer callback blocks
+  #   "steer_early"      "steer_hold", and the harness takes the steer
+  #                      before its answer
   @behaviour Helyx.Provider
 
-  @hang ["hang", "flood", "stop", "block_interrupt", "error_interrupt", "late_interrupt"]
+  @hang ["hang", "flood", "stop", "block_interrupt", "error_interrupt", "late_interrupt"] ++
+          [
+            "steer_take",
+            "steer_reject",
+            "steer_error",
+            "steer_hold",
+            "steer_block",
+            "steer_early"
+          ]
 
   def controller(core), do: :"#{core}_controller"
 
@@ -865,6 +886,10 @@ defmodule Helyx.Test.Connected do
   @impl true
   def harness_request(request, from, %{model: model, ctl: ctl} = state) do
     if ctl, do: send(ctl, {:conn, kind(request), self(), request})
+
+    if ctl && model in ["steer_hold", "steer_early"] && kind(request) == :steer,
+      do: send(ctl, {:held, from})
+
     {:ok, answer(model, request, from), state}
   end
 
@@ -874,6 +899,9 @@ defmodule Helyx.Test.Connected do
 
   def harness_info({:finish, turn_id}, state), do: {:ok, [{:event, turn_id, done()}], state}
 
+  def harness_info({:fail, turn_id}, state),
+    do: {:ok, [{:event, turn_id, {:error, :failed}}], state}
+
   def harness_info({:flood, turn_id}, state) do
     deltas = for _ <- 1..10_002, do: {:event, turn_id, {:text_delta, "x"}}
     {:ok, deltas ++ [{:event, turn_id, done()}], state}
@@ -881,6 +909,9 @@ defmodule Helyx.Test.Connected do
 
   def harness_info(:stop, state), do: {:stop, :gone, state}
 
+  def harness_info({:answer, from, value}, state), do: {:ok, [{:reply, from, value}], state}
+
+  defp kind({kind, _, _, _}), do: kind
   defp kind({kind, _, _}), do: kind
   defp kind({kind, _}), do: kind
   defp kind(:close), do: :close
@@ -909,6 +940,18 @@ defmodule Helyx.Test.Connected do
   defp answer("busy", :idle_close, from), do: [{:reply, from, :busy}]
   defp answer("late_idle", :idle_close = request, from), do: later(from, request, 100)
   defp answer("block_idle", :idle_close, _from), do: Process.sleep(:infinity)
+
+  defp answer("steer_take", {:steer, id, steer_id, text}, from),
+    do: [{:reply, from, :ok}, {:event, id, {:user_message, steer_id, text}}]
+
+  defp answer("steer_reject", {:steer, _, _, _}, from), do: [{:reply, from, :rejected}]
+  defp answer("steer_error", {:steer, _, _, _}, from), do: [{:reply, from, {:error, :lost}}]
+  defp answer("steer_block", {:steer, _, _, _}, _from), do: Process.sleep(:infinity)
+
+  defp answer("steer_hold", {:steer, _, _, _}, _from), do: []
+
+  defp answer("steer_early", {:steer, id, steer_id, text}, _from),
+    do: [{:event, id, {:user_message, steer_id, text}}]
 
   defp answer(model, {:turn, id, _}, from) when model in @hang,
     do: [{:reply, from, :ok}, {:event, id, {:text_delta, "so far"}}]

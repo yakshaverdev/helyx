@@ -2,6 +2,10 @@ defmodule Helyx.Provider.ClaudeCode do
   # The TERM grace of the watchdog and the release: claude ends its own
   # commands on TERM, but a KILL leaves them running (research note).
   @term_grace_ms 5_000
+  # The wait for the start of an unresolved steer after a `result` that
+  # could not end the turn (`docs/features/long-lived-harness.md`,
+  # "Bounds"). Observed: 0 to 10 ms.
+  @steer_wait_ms 5_000
 
   alias Helyx.HarnessIO
 
@@ -32,6 +36,15 @@ defmodule Helyx.Provider.ClaudeCode do
   `msg_lifecycle_v1` in `init.capabilities`: without it, the provider
   stops the program with an error at a `result` before the start of the
   turn's line.
+
+  A steer is one more user line with a `uuid` of its own, written into the
+  running turn; after the turn's terminal it answers `:rejected` and
+  writes nothing. The start of its line (`command_lifecycle` `started`)
+  gives `{:user_message, steer_id, text}`. While a steer is unresolved, a
+  `result` does not end the turn: `claude` runs a line that it reads after
+  a `result` as a turn of its own, and that turn stays in the Helyx turn.
+  When the line does not start within #{@steer_wait_ms} ms of such a
+  `result`, the harness process stops.
 
   An interrupt is the control request `interrupt` with
   `cancel_queued: true`. It waits for the first `init` line of the
@@ -81,13 +94,19 @@ defmodule Helyx.Provider.ClaudeCode do
     # is its transcript until the program started the line: a lost session
     # sends it again to a fresh one. `replay?` is true from the write of a
     # replay before its line until the program started the line.
-    # `interrupt` is nil, or the pending `Interrupt`.
+    # `interrupt` is nil, or the pending `Interrupt`. `steers` holds each
+    # written steer line that the program did not start yet, by its `uuid`:
+    # `{steer_id, text}`. `wait` is set from a `result` that could not end
+    # the turn, because a steer was unresolved, until the start of a steer:
+    # the ref of the timer of that wait.
     @enforce_keys [:id, :uuid, :messages]
     defstruct [
       :id,
       :uuid,
       :messages,
       :interrupt,
+      :wait,
+      steers: %{},
       replay?: false,
       open?: false,
       calls?: false,
@@ -188,8 +207,32 @@ defmodule Helyx.Provider.ClaudeCode do
     {:ok, [{:reply, from, :ok} | events], state}
   end
 
+  # A steer is a user line with a `uuid` of its own. `claude` never
+  # refuses a user line, so the answer is `:ok` at the write, and the steer
+  # is unresolved until the start of its line.
+  def harness_request(
+        {:steer, id, steer_id, text},
+        from,
+        %State{turn: %Turn{id: id} = turn} = state
+      ) do
+    uuid = uuid()
+    content = user_content(Message.user(text))
+
+    HarnessIO.write(state, user_line(uuid, content))
+
+    turn = %{turn | steers: Map.put(turn.steers, uuid, {steer_id, text})}
+    {:ok, [{:reply, from, :ok}], %{state | turn: turn}}
+  end
+
+  # The terminal of the turn went out first: nothing reached the program.
+  def harness_request({:steer, _id, _steer_id, _text}, from, state),
+    do: {:ok, [{:reply, from, :rejected}], state}
+
+  # A `result` that the turn holds for an unresolved steer counts as the
+  # turn's `result` for the interrupt, until a steer starts.
   def harness_request({:interrupt, id}, from, %State{turn: %Turn{id: id} = turn} = state) do
-    {actions, state} = interrupt(%{state | turn: %{turn | interrupt: %Interrupt{from: from}}})
+    interrupt = %Interrupt{from: from, result?: turn.wait != nil}
+    {actions, state} = interrupt(%{state | turn: %{turn | interrupt: interrupt}})
     {:ok, actions, state}
   end
 
@@ -227,6 +270,11 @@ defmodule Helyx.Provider.ClaudeCode do
   def harness_info({:DOWN, _ref, :port, port, reason}, %State{port: port} = state),
     do: exited(reason, state)
 
+  # Helyx does not know whether the program will start the steer, so the
+  # program stops.
+  def harness_info({:timeout, ref, :steer_wait}, %State{turn: %Turn{wait: ref}} = state),
+    do: {:stop, :steer_not_started, state}
+
   # A message of a closed port, such as the port of a lost session.
   def harness_info(_message, state), do: {:ok, [], state}
 
@@ -256,10 +304,12 @@ defmodule Helyx.Provider.ClaudeCode do
   # The program of a lost session exits by itself, with nothing run
   # (research note). A fresh program takes its place, and a turn that was
   # written to the lost one goes to the fresh one, with the replay.
+  # The lost program ran no steer line either: the steers are dropped, not
+  # written again, and the session gives each a notice.
   defp relaunch(actions, state) do
     HarnessIO.stop(state)
-
-    fresh = %State{exe: state.exe, model: state.model, cwd: state.cwd, turn: state.turn}
+    turn = state.turn && %{state.turn | steers: %{}}
+    fresh = %State{exe: state.exe, model: state.model, cwd: state.cwd, turn: turn}
 
     case launch(fresh) do
       %State{terminal: {:error, reason}} = state ->
@@ -281,8 +331,7 @@ defmodule Helyx.Provider.ClaudeCode do
     {prompt, history} = HarnessIO.split_prompt(turn.messages)
     content = Enum.flat_map(prompt, &user_content/1)
 
-    prompt_line =
-      line(%{type: "user", uuid: turn.uuid, message: %{role: "user", content: content}})
+    prompt_line = user_line(turn.uuid, content)
 
     if state.resume || state.sent? do
       HarnessIO.write(state, prompt_line)
@@ -375,6 +424,32 @@ defmodule Helyx.Provider.ClaudeCode do
          %State{turn: %Turn{uuid: uuid} = turn} = state
        ),
        do: resume_interrupt(%{state | turn: %{turn | messages: nil, replay?: false}})
+
+  # The program took a steer: in the running model call after a tool
+  # result, or as a program turn of its own after a `result`. That turn
+  # stays in the Helyx turn, so a pending interrupt now waits for its
+  # `result`.
+  defp translate(
+         %{"type" => "command_lifecycle", "state" => "started", "command_uuid" => uuid},
+         %State{turn: %Turn{steers: steers} = turn} = state
+       )
+       when is_map_key(steers, uuid) do
+    {{steer_id, text}, steers} = Map.pop!(steers, uuid)
+    if turn.wait, do: :erlang.cancel_timer(turn.wait)
+    events = close_message(turn) ++ [{:user_message, steer_id, text}]
+    interrupt = turn.interrupt && %{turn.interrupt | result?: false}
+
+    turn = %{
+      turn
+      | steers: steers,
+        open?: false,
+        calls?: false,
+        wait: nil,
+        interrupt: interrupt
+    }
+
+    {emit(state, events), %{state | turn: turn}}
+  end
 
   defp translate(
          %{"type" => "control_response", "response" => %{"request_id" => id} = response},
@@ -520,6 +595,19 @@ defmodule Helyx.Provider.ClaudeCode do
        ),
        do: interrupt_progress(state, :result?)
 
+  # An unresolved steer keeps the turn: `claude` reads a line that came
+  # before this `result` after it and runs it as a turn of its own
+  # (research note). The turn waits #{@steer_wait_ms} ms for its start,
+  # then for the next `result`.
+  defp turn_result(
+         %{"queued_turn_count" => 0},
+         %State{turn: %Turn{steers: steers} = turn} = state
+       )
+       when map_size(steers) > 0 do
+    wait = turn.wait || :erlang.start_timer(@steer_wait_ms, self(), :steer_wait)
+    {[], %{state | turn: %{turn | wait: wait}}}
+  end
+
   # The session closes the open assistant message at the terminal.
   defp turn_result(%{"queued_turn_count" => 0} = result, state),
     do: {emit(state, [terminal(result, state.turn)]), %{state | turn: nil}}
@@ -629,6 +717,9 @@ defmodule Helyx.Provider.ClaudeCode do
   defp tool_id(id), do: String.replace(id, ~r/[^a-zA-Z0-9_-]/, "_")
 
   defp line(map), do: [JSON.encode!(map), "\n"]
+
+  defp user_line(uuid, content),
+    do: line(%{type: "user", uuid: uuid, message: %{role: "user", content: content}})
 
   # A random version 4 UUID: `--session-id` takes only a UUID.
   defp uuid do

@@ -19,6 +19,10 @@ defmodule Helyx.Session.Harness do
   alias Helyx.Message
   alias Helyx.Session.Stream
 
+  # The most requests without a reply (`docs/features/long-lived-harness.md`,
+  # "Bounds").
+  @max_open 8
+
   # The loop state: the provider and its state, the session, and `open`
   # (see `loop/1`).
   @enforce_keys [:provider, :state, :session]
@@ -67,10 +71,20 @@ defmodule Helyx.Session.Harness do
   end
 
   # `open` holds the kind and the kill of each request without a reply, by
-  # its `from`. The session has at most two open at once: a turn and its
-  # interrupt.
+  # its `from`. The session can have a turn, its steers, and its interrupt
+  # open; over @max_open the loop answers `{:error, :busy}` itself, and the
+  # provider never sees the request.
   defp loop(harness) do
     receive do
+      {:harness_request, from, tref, request} when map_size(harness.open) >= @max_open ->
+        :timer.cancel(tref)
+        send(harness.session, {:harness_reply, from, {:error, :busy}})
+
+        case replied(kind(request), {:error, :busy}, harness) do
+          {:ok, harness} -> loop(harness)
+          done -> done
+        end
+
       {:harness_request, from, tref, request} ->
         harness = %{harness | open: Map.put(harness.open, from, {kind(request), tref})}
 
@@ -88,6 +102,7 @@ defmodule Helyx.Session.Harness do
     end
   end
 
+  defp kind({:steer, _turn_id, _steer_id, _text}), do: :steer
   defp kind({kind, _turn_id, _context}), do: kind
   defp kind({kind, _turn_id}), do: kind
   defp kind(close) when close in [:close, :idle_close], do: close
@@ -145,16 +160,21 @@ defmodule Helyx.Session.Harness do
 
   defp reply?(_kind, :ok), do: true
   defp reply?(:idle_close, :busy), do: true
-  defp reply?(kind, {:error, _reason}) when kind in [:turn, :interrupt], do: true
+  defp reply?(:steer, :rejected), do: true
+  defp reply?(kind, {:error, _reason}) when kind in [:turn, :interrupt, :steer], do: true
   defp reply?(_kind, _value), do: false
 
   # After an error answer to a turn or an interrupt Helyx does not know the
   # state of the program, so the loop ends: the port closes, and the
-  # watchdog stops the program with no end of input. An idle close with
-  # `:ok` exited as a close; with `:busy` the program stays.
+  # watchdog stops the program with no end of input. An error answer to a
+  # steer leaves only that steer unknown, so the loop goes on. An idle
+  # close with `:ok` exited as a close; with `:busy` the program stays.
   defp replied(kind, :ok, _harness) when kind in [:close, :idle_close], do: :closed
-  defp replied(kind, {:error, reason}, _harness), do: {:stop, {:harness_error, kind, reason}}
-  defp replied(_kind, _ok_or_busy, harness), do: {:ok, harness}
+
+  defp replied(kind, {:error, reason}, _harness) when kind != :steer,
+    do: {:stop, {:harness_error, kind, reason}}
+
+  defp replied(_kind, _answer, harness), do: {:ok, harness}
 
   defp sent(:ok, harness), do: {:ok, harness}
   defp sent({:error, reason}, _harness), do: {:stop, reason}

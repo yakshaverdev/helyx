@@ -33,6 +33,13 @@ defmodule Helyx.Provider.Codex do
   carries the program's turn id, or at `turn/completed` when that comes
   first.
 
+  A steer of the running turn is `turn/steer` with `expectedTurnId` and
+  `clientUserMessageId` set to the steer id; after `turn/completed` it
+  answers `:rejected` and sends nothing. A result answers `:ok`, the exact
+  error `no active turn to steer` (code -32600) answers `:rejected`, and
+  any other error answers `{:error, reason}`. The `userMessage` item whose
+  `clientId` is the steer id gives `{:user_message, steer_id, text}`.
+
   `{:interrupt, ...}` on a turn with an open `commandExecution` item
   answers `{:error, :command_running}` at once, because `turn/interrupt`
   does not end a running command; the loop then ends, and the watchdog
@@ -105,6 +112,10 @@ defmodule Helyx.Provider.Codex do
     # `message_end` closed yet; `waiting` the ids of the calls of sent
     # messages with no result yet; `held` the events that wait for those
     # results (see `in_order/2`).
+    # `steers` maps the id of each steer sent in the running turn with no
+    # `userMessage` item yet to its text. `asked` maps the request id of each
+    # `turn/steer` with no answer yet to `{from, steer_id}`; it outlives the
+    # turn, because the answer can come after `turn/completed`.
     @enforce_keys [:model, :cwd]
     defstruct [
       :model,
@@ -133,12 +144,14 @@ defmodule Helyx.Provider.Codex do
       waiting: MapSet.new(),
       held: :queue.new(),
       started: MapSet.new(),
-      streamed: MapSet.new()
+      streamed: MapSet.new(),
+      steers: %{},
+      asked: %{}
     ]
   end
 
   # The fields of a turn, set back to their defaults between turns.
-  @turn_fields ~w(turn_id turn from usage calls commands waiting held started streamed)a
+  @turn_fields ~w(turn_id turn from usage calls commands waiting held started streamed steers)a
 
   # Each request gets a new id, and `due` holds it until its answer. An
   # answer with an id that is not due (a late or duplicate answer) is
@@ -259,6 +272,33 @@ defmodule Helyx.Provider.Codex do
   # The turn already ended.
   def harness_request({:interrupt, _turn_id}, from, state), do: actions(reply(state, from, :ok))
 
+  # A steer of the running turn goes out as `turn/steer`; the server checks
+  # `expectedTurnId`. After `turn/completed` nothing goes out.
+  def harness_request({:steer, turn_id, steer_id, text}, from, %State{turn_id: turn_id} = state)
+      when is_binary(state.turn) do
+    {id, state} = open(state, "turn/steer")
+
+    send_line(state, %{
+      id: id,
+      method: "turn/steer",
+      params: %{
+        threadId: state.thread,
+        expectedTurnId: state.turn,
+        input: [%{type: "text", text: text}],
+        clientUserMessageId: steer_id
+      }
+    })
+
+    actions(%{
+      state
+      | steers: Map.put(state.steers, steer_id, text),
+        asked: Map.put(state.asked, id, {from, steer_id})
+    })
+  end
+
+  def harness_request({:steer, _turn_id, _steer_id, _text}, from, state),
+    do: actions(reply(state, from, :rejected))
+
   # No command outlives a turn, so the idle program has no work of its own.
   def harness_request(:idle_close, from, state), do: harness_request(:close, from, state)
 
@@ -357,7 +397,10 @@ defmodule Helyx.Provider.Codex do
   defp waiting_result?({:tool_result, id, _result}, state), do: MapSet.member?(state.waiting, id)
   defp waiting_result?(_event, _state), do: false
 
+  # A `user_message` also closes the message in the session, and gives its
+  # open calls an `aborted` result, so it waits as a `message_end` does.
   defp blocked?({:close, _ids, _event}, state), do: MapSet.size(state.waiting) > 0
+  defp blocked?({:user_message, _id, _text}, state), do: MapSet.size(state.waiting) > 0
   defp blocked?(_event, _state), do: false
 
   defp emit({:close, ids, event}, {out, state}),
@@ -545,6 +588,25 @@ defmodule Helyx.Provider.Codex do
        when method in ["thread/inject_items", "turn/start", "turn/interrupt"],
        do: {[], answer(method, response, state)}
 
+  # Only the exact error of a steer that crossed the turn's end confirms
+  # that the program did not take it (research note). The error of a turn
+  # id mismatch has no verified exact form, so it is unknown, as any other.
+  defp answered("turn/steer", %{"id" => id} = response, state) do
+    {{from, steer_id}, asked} = Map.pop!(state.asked, id)
+    state = %{state | asked: asked}
+
+    case response do
+      %{"result" => _} ->
+        {[], reply(state, from, :ok)}
+
+      %{"error" => %{"code" => -32_600, "message" => "no active turn to steer"}} ->
+        {[], reply(%{state | steers: Map.delete(state.steers, steer_id)}, from, :rejected)}
+
+      _error ->
+        {[], reply(state, from, {:error, failure("turn/steer", response)})}
+    end
+  end
+
   defp answered(method, response, state),
     do: {[], %{state | done?: true, terminal: {:error, failure(method, response)}}}
 
@@ -637,6 +699,17 @@ defmodule Helyx.Provider.Codex do
        when method in ["item/reasoning/summaryTextDelta", "item/reasoning/textDelta"] and
               is_binary(text) and text != "",
        do: {[{:thinking_delta, text}], state}
+
+  # The `userMessage` item of a sent steer, once: the program took it.
+  defp notification(
+         method,
+         %{"item" => %{"type" => "userMessage", "clientId" => id}},
+         %State{steers: steers} = state
+       )
+       when method in ["item/started", "item/completed"] and is_map_key(steers, id) do
+    {text, steers} = Map.pop!(steers, id)
+    {[{:user_message, id, text}], %{state | steers: steers}}
+  end
 
   defp notification("item/started", %{"item" => %{"type" => type, "id" => id} = item}, state)
        when type in @tool_item_types do

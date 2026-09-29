@@ -325,6 +325,9 @@ defmodule Helyx.Provider.ClaudeCodeTest do
 
   @moduletag :tmp_dir
 
+  # A margin for load on a timer that the test reads.
+  @load_ms 2_000
+
   # The setup restores PATH.
   test "with no perl on PATH, the start returns an error that names perl",
        %{bin: bin, work: work} do
@@ -788,6 +791,86 @@ defmodule Helyx.Provider.ClaudeCodeTest do
 
       assert {{:error, {:interrupt, text}}, _actions} = interrupt(running(work, &started?/1))
       assert byte_size(text) == 2_000 and String.valid?(text)
+    end
+  end
+
+  describe "a steer" do
+    # A turn that streams "a" and has no `result` yet.
+    defp streaming(work), do: running(work, &(&1.turn.open? and &1.caps != nil))
+
+    defp steer(state), do: request(state, {:steer, "t1", "s1", "more"})
+
+    test "after the terminal answers :rejected and writes nothing", %{bin: bin, work: work} do
+      turn(bin, 1, 1, reply("ok"))
+
+      state = running(work, &(&1.turn == nil))
+      assert {from, [{:reply, from, :rejected}], _state} = steer(state)
+      assert [%{"type" => "user"}] = stdin(bin, 1)
+    end
+
+    test "written before the result keeps the turn until its start and the next result",
+         %{bin: bin, work: work} do
+      turn(bin, 1, 1, begin() ++ [delta("a")])
+      # The fake reads the steer line, then gives the first result.
+      turn(bin, 1, 2, [result("a"), lifecycle("started"), delta("b"), result("b")])
+
+      assert {from, [{:reply, from, :ok}], state} = steer(streaming(work))
+      {actions, _state} = pump(state, [], &ended?/1)
+      assert [prompt, %{"type" => "user", "uuid" => uuid, "message" => message}] = stdin(bin, 1)
+      assert uuid != prompt["uuid"]
+      assert %{"role" => "user", "content" => [%{"type" => "text", "text" => "more"}]} = message
+
+      assert [
+               {:message_end, :end_turn, _},
+               {:user_message, "s1", "more"},
+               {:text_delta, "b"},
+               {:done, _}
+             ] =
+               actions |> events_of() |> Enum.reject(&match?({:harness_session, _, _}, &1))
+    end
+
+    test "that starts after a tool result gives user_message after the result",
+         %{bin: bin, work: work} do
+      turn(bin, 1, 1, begin() ++ [tool_use("c1", %{command: "ls"})])
+      turn(bin, 1, 2, [tool_result("c1", "out"), lifecycle("started"), delta("b"), result("b")])
+
+      state = running(work, &(&1.turn.calls? and &1.caps != nil))
+      {_from, _actions, state} = steer(state)
+      {actions, _state} = pump(state, [], &ended?/1)
+
+      assert [
+               {:message_end, :tool_use, _},
+               {:tool_result, "c1", {:ok, "out"}},
+               {:user_message, "s1", "more"},
+               {:text_delta, "b"},
+               {:done, _}
+             ] = events_of(actions)
+    end
+
+    test "with no start after a held result stops the harness process",
+         %{bin: bin, work: work} do
+      turn(bin, 1, 1, begin() ++ [delta("a")])
+      turn(bin, 1, 2, [result("a")])
+
+      {_from, _actions, state} = steer(streaming(work))
+      state = settle(state, &(&1.turn.wait != nil))
+      # The timer is armed for 5,000 ms; the test gives its message at once.
+      remaining = :erlang.read_timer(state.turn.wait)
+      assert remaining <= 5_000 and remaining > 5_000 - @load_ms
+      :erlang.cancel_timer(state.turn.wait)
+      send(self(), {:timeout, state.turn.wait, :steer_wait})
+      assert {[{:stop, :steer_not_started}], _state} = pump(state, [], &ended?/1)
+    end
+
+    test "an interrupt of a held turn answers :ok at the control response",
+         %{bin: bin, work: work} do
+      turn(bin, 1, 1, begin() ++ [delta("a")])
+      turn(bin, 1, 2, [result("a")])
+      script(bin, "ctl.1", [interrupted([], ["@U@"])])
+
+      {_from, _actions, state} = steer(streaming(work))
+      state = settle(state, &(&1.turn.wait != nil))
+      assert {:ok, _actions} = interrupt(state)
     end
   end
 
