@@ -35,7 +35,7 @@ A new internal module, `@moduledoc false`, at `lib/helyx/session/stream.ex`:
 
 It returns the first terminal, with `Message.cap_integers/1` applied, as the closure did before this change.
 
-The session keeps `start_provider_call/1`, `call_provider/1`, and `start_stream/3`. The closure becomes `fn -> Helyx.Session.Stream.run(args) end`. No public function, behaviour, or event shape changes.
+The session keeps `start_provider_call/1`, `call_provider/1`, and `start_stream/3`. The closure becomes `fn -> Helyx.Session.Stream.run(args) end`. No public function, behaviour, or event shape changes. Later, #227 made `run/1` check the context of the plugins before `provider.stream/3` (see "The context check (#227)").
 
 ## Which checks move, and which stay
 
@@ -50,6 +50,15 @@ Some input reaches the session with no stream event. These checks stay at their 
 | client text | `prompt/2`, `steer/2`, `follow_up/2` | `String.valid?/1` |
 
 The terminal cap at the end of `run/1` stays too. The hands cap only the crash reason, the one terminal that `run/1` did not cap. The other terminals of the hands are text. The session does not cap the `:stream_end` terminal again.
+
+## The context check (#227)
+
+The ModelContext and the Compaction plugin are outside Core, so their returns are a boundary. `run/1` builds the context with `Helyx.Session.Stream.prepare/4`, the check that #199 added for a connected turn (`docs/features/long-lived-harness.md`). So a local, an external, and a connected turn check the context in the same way.
+
+- The check runs after each plugin. A return passes when it is a `Helyx.Context` with exactly its three fields, a `system` that is nil or a string, and `messages` and `tools` that are lists. The check does not look into the list elements.
+- A return that fails the check ends the provider call before `provider.stream/3` with the terminal `{:error, {:bad_context, plugin}}`, where `plugin` is `:model_context` or `:compaction`. The turn fails with that reason. The reason names the plugin, never the value.
+- A plugin that raises is not a return: the Task crashes, and the turn fails with `{:task_exit, reason}`, as before.
+- The session stays, and the next turn runs the plugins again.
 
 ## Bounds
 
