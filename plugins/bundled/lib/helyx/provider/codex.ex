@@ -45,11 +45,21 @@ defmodule Helyx.Provider.Codex do
   the turn and a pending interrupt then fail with the stop. A `turn/started`
   with a new id while no `turn/start` of the running turn is open, a
   `turn/completed` of a turn whose id is not known, and an item of a turn
-  that is not the running one stop the harness process, and so does an
-  `item/completed` of a tool item whose status does not end the item
-  (such as `inProgress`, or none where the schema has one) or a tool
-  item's start or end with no string turn id or item id. `:close` ends
-  the input and answers `:ok` at the exit.
+  that is not the running one stop the harness process. Every line that
+  changes turn or thread state (`turn/started`, `turn/completed`,
+  `item/started`, `item/completed`, and the answers to the requests)
+  passes one check of its full shape before any state changes; `turn/completed` must have the status
+  `completed`, `failed`, or `interrupted`, and a tool item's
+  `item/completed` a status that ends the item. An answer is an error or a
+  result, never both, and a turn or item notification has no request id.
+  Each request has a new id, and an answer counts only for the request
+  with its id that has no answer yet; any other answer (a late or
+  duplicate one) is dropped. The `thread/resume` answer needs the asked
+  thread id or the exact lost-thread error, and the `thread/start` answer
+  a string thread id. Any other such line stops the
+  harness process with `{:malformed, method}` (in the handshake, the
+  connect fails with it). `:close` ends the input and answers `:ok` at the
+  exit.
 
   A command or file change approval request is accepted; every other
   request from the server gets a JSON-RPC error. The program uses its own
@@ -78,9 +88,9 @@ defmodule Helyx.Provider.Codex do
     # `interrupt` an interrupt without an answer (`{:pending, from}` before
     # the turn id is known or while an earlier `turn/interrupt` answer is
     # due, `{:sent, from}` after `turn/interrupt`),
-    # `due` the ids of the `thread/inject_items`, `turn/start`, and
-    # `turn/interrupt` requests without an answer, `close` the close
-    # without an answer, `prompt` the prompt of a turn whose `turn/start`
+    # `due` maps the id of each request without an answer to its method,
+    # `next_id` is the id of the next request, `close` the close without an
+    # answer, `prompt` the prompt of a turn whose `turn/start`
     # waits for an answer in `due`, and `out` the actions to return,
     # newest first.
     # `terminal` set means the harness process must stop, with that error.
@@ -108,7 +118,8 @@ defmodule Helyx.Provider.Codex do
       :close,
       :prompt,
       fresh?: false,
-      due: MapSet.new(),
+      due: %{},
+      next_id: 1,
       out: [],
       buffer: [],
       size: 0,
@@ -126,26 +137,15 @@ defmodule Helyx.Provider.Codex do
   # The fields of a turn, set back to their defaults between turns.
   @turn_fields ~w(turn_id turn from usage calls commands waiting held started streamed)a
 
-  # Request ids: one of each request at a time. A request goes out only
-  # when no answer with its id is due (`due`): a turn can complete before
-  # the answer to its `turn/start` or `turn/interrupt`, and that late
-  # answer then belongs to no turn.
-  @initialize 1
-  @resume 2
-  @start 3
-  @inject 4
-  @turn 5
-  @interrupt 6
-  @methods %{
-    @initialize => "initialize",
-    @resume => "thread/resume",
-    @start => "thread/start",
-    @inject => "thread/inject_items",
-    @turn => "turn/start",
-    @interrupt => "turn/interrupt"
-  }
+  # Each request gets a new id, and `due` holds it until its answer. An
+  # answer with an id that is not due (a late or duplicate answer) is
+  # dropped, so it never answers a later request. A `turn/interrupt` goes
+  # out only when no `turn/interrupt` answer is due, and a `turn/start` only
+  # when no `turn/start` or `thread/inject_items` answer is due: a turn can
+  # complete before the answer to its `turn/start` or `turn/interrupt`, and
+  # that late answer then belongs to no turn.
 
-  @lost "no rollout found"
+  @lost "no rollout found for thread id "
   # Item types that run something (see the research note).
   @tool_item_types ~w(commandExecution fileChange mcpToolCall dynamicToolCall collabAgentToolCall
             webSearch imageView imageGeneration)
@@ -159,6 +159,10 @@ defmodule Helyx.Provider.Codex do
     "dynamicToolCall" => ~w(completed failed),
     "collabAgentToolCall" => ~w(completed failed interrupted)
   }
+  # The notifications that clear or confirm turn state, and the statuses
+  # that end a turn.
+  @turn_lines ~w(turn/started turn/completed item/started item/completed)
+  @turn_ends ~w(completed failed interrupted)
   @trust %{approvalPolicy: "never", sandbox: "danger-full-access"}
 
   @impl true
@@ -199,8 +203,7 @@ defmodule Helyx.Provider.Codex do
 
         state ->
           state = HarnessIO.keep_port(state)
-          request(state, @initialize, %{clientInfo: %{name: "helyx", version: "0"}})
-          handshake(state)
+          handshake(request(state, "initialize", %{clientInfo: %{name: "helyx", version: "0"}}))
       end
     end
   end
@@ -397,8 +400,86 @@ defmodule Helyx.Provider.Codex do
     end
   end
 
+  defp translate(object, state) do
+    case malformed(object, state) do
+      nil -> dispatch(object, state)
+      what -> {[], %{state | done?: true, terminal: {:error, {:malformed, what}}}}
+    end
+  end
+
+  # The one check of every line that changes turn or thread state, before
+  # any state changes: the answers to the due requests, and the turn and
+  # item notifications of this program's thread. Gives nil, or the method of a
+  # line without its full shape (the schema of codex 0.157.1, research
+  # note); that line stops the harness process.
+  # A turn or item notification is never a request, on any thread: such a
+  # line is a protocol fault of the program.
+  defp malformed(%{"id" => _, "method" => method}, _state) when method in @turn_lines,
+    do: method
+
+  defp malformed(%{"id" => _, "method" => _}, _state), do: nil
+
+  # An answer to a due request. Any other answer is dropped.
+  defp malformed(%{"id" => id} = answer, %State{due: due} = state) when is_map_key(due, id),
+    do: if(answer?(due[id], answer, state), do: nil, else: due[id])
+
+  defp malformed(%{"method" => method, "params" => %{"threadId" => thread} = params}, state)
+       when method in @turn_lines and thread == state.thread and is_binary(thread),
+       do: if(line?(method, params), do: nil, else: method)
+
+  defp malformed(_object, _state), do: nil
+
+  # An answer is an error object or a result, never both. A resume fails
+  # only with the lost-thread error of the research note, and succeeds only
+  # for the thread it asked for.
+  defp answer?(_method, %{"error" => _, "result" => _}, _state), do: false
+
+  defp answer?("thread/resume", %{"error" => %{"code" => -32_600, "message" => message}}, state),
+    do: message == @lost <> state.resume
+
+  defp answer?("thread/resume", %{"result" => %{"thread" => %{"id" => thread}}}, state),
+    do: thread == state.resume
+
+  defp answer?("thread/resume", _answer, _state), do: false
+
+  defp answer?("thread/start", %{"result" => %{"thread" => %{"id" => thread}}}, _state),
+    do: is_binary(thread)
+
+  defp answer?("turn/start", %{"result" => %{"turn" => %{"id" => turn}}}, _state),
+    do: is_binary(turn)
+
+  defp answer?(method, %{"result" => _}, _state) when method in ["thread/start", "turn/start"],
+    do: false
+
+  defp answer?(_method, %{"error" => error}, _state), do: is_map(error)
+  defp answer?(_method, %{"result" => result}, _state), do: is_map(result)
+  defp answer?(_method, _answer, _state), do: false
+
+  defp line?("turn/started", %{"turn" => %{"id" => turn}}), do: is_binary(turn)
+
+  defp line?("turn/completed", %{"turn" => %{"id" => turn, "status" => status}}),
+    do: is_binary(turn) and status in @turn_ends
+
+  # A tool item leaves the open work only with a status that ends it.
+  defp line?(method, %{"turnId" => turn, "item" => %{"type" => type, "id" => id} = item})
+       when is_binary(turn) and is_binary(type) and is_binary(id),
+       do: method == "item/started" or type not in @tool_item_types or ended?(item)
+
+  defp line?(_method, _params), do: false
+
+  defp ended?(%{"type" => type, "status" => status}) when is_map_key(@ended, type),
+    do: status in @ended[type]
+
+  defp ended?(%{"type" => "imageGeneration", "status" => status}),
+    do: is_binary(status) and status != "inProgress"
+
+  defp ended?(%{"type" => type}) when is_map_key(@ended, type) or type == "imageGeneration",
+    do: false
+
+  defp ended?(_item), do: true
+
   # A request of the server (it has an id and a method).
-  defp translate(%{"id" => id, "method" => method}, state) do
+  defp dispatch(%{"id" => id, "method" => method}, state) do
     answer =
       if method in ["item/commandExecution/requestApproval", "item/fileChange/requestApproval"],
         do: %{result: %{decision: "accept"}},
@@ -408,102 +489,85 @@ defmodule Helyx.Provider.Codex do
     {[], state}
   end
 
-  defp translate(%{"id" => @initialize, "result" => _}, state) do
+  defp dispatch(%{"id" => id} = response, %State{due: due} = state) when is_map_key(due, id) do
+    {method, due} = Map.pop(due, id)
+    answered(method, response, %{state | due: due})
+  end
+
+  # Only the notifications of this program's thread count: a sub-agent's
+  # thread stays inside the harness.
+  defp dispatch(%{"method" => method, "params" => %{"threadId" => thread} = params}, state)
+       when thread == state.thread and is_binary(thread),
+       do: turn_notification(method, params, state)
+
+  defp dispatch(_object, state), do: {[], state}
+
+  defp answered("initialize", %{"result" => _}, state) do
     send_line(state, %{method: "initialized"})
 
     if state.resume do
       params = Map.merge(thread_params(state), %{threadId: state.resume, excludeTurns: true})
-      request(state, @resume, params)
+      {[], request(state, "thread/resume", params)}
     else
-      request(state, @start, thread_params(state))
+      {[], request(state, "thread/start", thread_params(state))}
     end
-
-    {[], state}
   end
 
   # The program has no such thread: a fresh one starts on the same run.
-  defp translate(%{"id" => @resume, "error" => %{"message" => @lost <> _}}, state) do
-    request(state, @start, thread_params(state))
-    {[], state}
-  end
+  defp answered("thread/resume", %{"error" => _}, state),
+    do: {[], request(state, "thread/start", thread_params(state))}
 
-  defp translate(%{"id" => @resume, "result" => _}, state),
-    do: {[], %{state | thread: state.resume}}
+  defp answered("thread/resume", _response, state), do: {[], %{state | thread: state.resume}}
 
-  defp translate(%{"id" => @start, "result" => %{"thread" => %{"id" => thread}}}, state)
-       when is_binary(thread),
-       do: {[], %{state | thread: thread, fresh?: true}}
+  defp answered("thread/start", %{"result" => %{"thread" => %{"id" => thread}}}, state),
+    do: {[], %{state | thread: thread, fresh?: true}}
 
-  defp translate(%{"id" => id} = response, state) when id in [@inject, @turn, @interrupt],
-    do: {[], answer(response, %{state | due: MapSet.delete(state.due, id)})}
+  defp answered(method, response, state)
+       when method in ["thread/inject_items", "turn/start", "turn/interrupt"],
+       do: {[], answer(method, response, state)}
 
-  defp translate(%{"id" => id} = response, state) when is_map_key(@methods, id),
-    do: {[], %{state | done?: true, terminal: {:error, failure(response)}}}
-
-  # Only the notifications of this program's thread count: a sub-agent's
-  # thread stays inside the harness.
-  defp translate(%{"method" => method, "params" => %{"threadId" => thread} = params}, state)
-       when thread == state.thread and is_binary(thread),
-       do: turn_notification(method, params, state)
-
-  defp translate(_object, state), do: {[], state}
+  defp answered(method, response, state),
+    do: {[], %{state | done?: true, terminal: {:error, failure(method, response)}}}
 
   # A turn that completed before this answer has its reply already, so
   # the answer belongs to no turn; a turn that waits for it starts now.
-  defp answer(%{"id" => @turn}, %State{from: from, prompt: prompt} = state)
+  defp answer("turn/start", _response, %State{from: from, prompt: prompt} = state)
        when from == nil or prompt != nil,
        do: start_turn(state)
 
-  defp answer(%{"id" => @turn, "result" => %{"turn" => %{"id" => turn}}}, state)
-       when is_binary(turn),
-       do: turn_started(turn, reply(%{state | from: nil}, state.from, :ok), true)
+  defp answer("turn/start", %{"result" => %{"turn" => %{"id" => turn}}}, state),
+    do: turn_started(turn, reply(%{state | from: nil}, state.from, :ok), true)
 
-  defp answer(%{"id" => @inject, "result" => _}, state), do: start_turn(state)
+  defp answer("thread/inject_items", %{"result" => _}, state), do: start_turn(state)
 
-  defp answer(
-         %{"id" => @interrupt, "error" => _} = response,
-         %{interrupt: {:sent, from}} = state
-       ),
-       do: reply(%{state | interrupt: nil}, from, {:error, failure(response)})
+  defp answer("turn/interrupt", %{"error" => _} = response, %{interrupt: {:sent, from}} = state),
+    do: reply(%{state | interrupt: nil}, from, {:error, failure("turn/interrupt", response)})
 
   # The turn's end, not this answer, ends an interrupt; a pending one goes
   # out now.
-  defp answer(%{"id" => @interrupt}, state), do: send_interrupt(state)
+  defp answer("turn/interrupt", _response, state), do: send_interrupt(state)
 
-  # An error answer to a turn fails it, and the harness process stops.
-  defp answer(response, state),
-    do: reply(%{state | from: nil}, state.from, {:error, failure(response)})
+  # An error answer to `turn/start` or `thread/inject_items` fails the turn,
+  # and the harness process stops.
+  defp answer(method, response, state),
+    do: reply(%{state | from: nil}, state.from, {:error, failure(method, response)})
 
-  defp failure(%{"id" => id} = response),
-    do:
-      {:codex, @methods[id],
-       HarnessIO.cap_error(error_message(response) || "unexpected response")}
+  defp failure(method, response),
+    do: {:codex, method, HarnessIO.cap_error(error_message(response) || "unexpected response")}
 
-  # The start or end of a tool item with no string turn id or item id can
-  # hide work that runs, so the harness process stops.
-  defp turn_notification(method, %{"item" => %{"type" => type} = item} = params, state)
-       when method in ["item/started", "item/completed"] and type in @tool_item_types and
-              not (is_map_key(params, "turnId") and is_binary(:erlang.map_get("turnId", params)) and
-                     is_map_key(item, "id") and is_binary(:erlang.map_get("id", item))),
-       do: {[], %{state | done?: true, terminal: {:error, :item_malformed}}}
-
-  defp turn_notification("turn/started", %{"turn" => %{"id" => turn}}, state)
-       when is_binary(turn),
-       do:
-         {[], turn_started(turn, state, MapSet.member?(state.due, @turn) and state.prompt == nil)}
+  defp turn_notification("turn/started", %{"turn" => %{"id" => turn}}, state),
+    do: {[], turn_started(turn, state, due?(state, "turn/start") and state.prompt == nil)}
 
   defp turn_notification(
          "turn/completed",
          %{"turn" => %{"id" => turn} = result},
          %{turn: turn} = state
-       )
-       when is_binary(turn),
+       ),
        do: {[], end_turn(state, terminal(result, state))}
 
   # The end of a turn that did not start, or that already ended.
-  defp turn_notification("turn/completed", %{"turn" => %{"id" => turn}}, state)
-       when is_binary(turn),
-       do: {[], %{state | done?: true, terminal: {:error, :turn_not_asked}}}
+  defp turn_notification("turn/completed", _params, state),
+    do: {[], %{state | done?: true, terminal: {:error, :turn_not_asked}}}
 
   defp turn_notification(method, %{"turnId" => turn} = params, %{turn: turn} = state)
        when is_binary(turn),
@@ -533,11 +597,13 @@ defmodule Helyx.Provider.Codex do
   # `turn/interrupt` answer is due.
   defp send_interrupt(%State{interrupt: {:pending, from}, turn: turn} = state)
        when turn != nil do
-    if MapSet.member?(state.due, @interrupt) do
+    if due?(state, "turn/interrupt") do
       state
     else
-      request(state, @interrupt, %{threadId: state.thread, turnId: turn})
-      %{state | interrupt: {:sent, from}, due: MapSet.put(state.due, @interrupt)}
+      request(%{state | interrupt: {:sent, from}}, "turn/interrupt", %{
+        threadId: state.thread,
+        turnId: turn
+      })
     end
   end
 
@@ -554,7 +620,7 @@ defmodule Helyx.Provider.Codex do
        do: {[{:thinking_delta, text}], state}
 
   defp notification("item/started", %{"item" => %{"type" => type, "id" => id} = item}, state)
-       when type in @tool_item_types and is_binary(id) do
+       when type in @tool_item_types do
     state = %{
       state
       | started: MapSet.put(state.started, id),
@@ -577,36 +643,11 @@ defmodule Helyx.Provider.Codex do
       else: {[{:text_delta, text}], state}
   end
 
-  # An `item/completed` whose status does not end its item leaves the work
-  # running with no record of it, so the harness process stops.
-  defp notification("item/completed", %{"item" => %{"type" => type, "id" => id} = item}, state)
-       when type in @tool_item_types and is_binary(id) do
-    if ended?(item),
-      do: completed(item, state),
-      else: {[], %{state | done?: true, terminal: {:error, :item_not_ended}}}
-  end
-
-  defp notification("thread/tokenUsage/updated", %{"tokenUsage" => %{"last" => usage}}, state)
-       when is_map(usage),
-       do: {[], %{state | usage: usage}}
-
-  defp notification(_method, _params, state), do: {[], state}
-
-  defp ended?(%{"type" => type, "status" => status}) when is_map_key(@ended, type),
-    do: status in @ended[type]
-
-  defp ended?(%{"type" => type}) when is_map_key(@ended, type), do: false
-
-  defp ended?(%{"type" => "imageGeneration", "status" => status}),
-    do: is_binary(status) and status != "inProgress"
-
-  defp ended?(%{"type" => "imageGeneration"}), do: false
-  defp ended?(_item), do: true
-
   # The first result of a message's calls closes it; the results of its
   # other calls follow. A tool item that completes with no start gets its
   # call first.
-  defp completed(%{"type" => type, "id" => id} = item, state) do
+  defp notification("item/completed", %{"item" => %{"type" => type, "id" => id} = item}, state)
+       when type in @tool_item_types do
     state = %{state | commands: command(state.commands, type, &MapSet.delete(&1, id))}
 
     {calls, state} =
@@ -624,16 +665,20 @@ defmodule Helyx.Provider.Codex do
     end
   end
 
+  defp notification("thread/tokenUsage/updated", %{"tokenUsage" => %{"last" => usage}}, state)
+       when is_map(usage),
+       do: {[], %{state | usage: usage}}
+
+  defp notification(_method, _params, state), do: {[], state}
+
   defp command(commands, "commandExecution", fun), do: fun.(commands)
   defp command(commands, _type, _fun), do: commands
 
   defp terminal(%{"status" => "completed"}, state),
     do: {:done, %{stop_reason: :end_turn, usage: state.usage}}
 
-  defp terminal(result, _state) do
-    status = HarnessIO.cap_error(result["status"])
-    {:error, {:codex, status, HarnessIO.cap_error(error_message(result))}}
-  end
+  defp terminal(%{"status" => status} = result, _state),
+    do: {:error, {:codex, status, HarnessIO.cap_error(error_message(result))}}
 
   defp error_message(%{"error" => %{"message" => message}}) when is_binary(message), do: message
   defp error_message(_map), do: nil
@@ -679,16 +724,18 @@ defmodule Helyx.Provider.Codex do
     if items == [] do
       state
     else
+      {id, state} = open(state, "thread/inject_items")
+
       # The items are JSON already: the line is joined from them.
       send_line(state, [
-        ~s({"id":#{@inject},"method":"thread/inject_items","params":{"threadId":),
+        ~s({"id":#{id},"method":"thread/inject_items","params":{"threadId":),
         JSON.encode!(state.thread),
         ~s(,"items":[),
         Enum.intersperse(items, ","),
         "]}}"
       ])
 
-      %{state | due: MapSet.put(state.due, @inject)}
+      state
     end
   end
 
@@ -696,7 +743,7 @@ defmodule Helyx.Provider.Codex do
   # nor the answer to the last `turn/start` is due.
   defp start_turn(%State{prompt: prompt, turn_id: turn_id} = state)
        when prompt != nil and turn_id != nil do
-    if MapSet.member?(state.due, @inject) or MapSet.member?(state.due, @turn) do
+    if due?(state, "thread/inject_items") or due?(state, "turn/start") do
       state
     else
       input =
@@ -705,15 +752,23 @@ defmodule Helyx.Provider.Codex do
             text != "",
             do: %{type: "text", text: text}
 
-      request(state, @turn, %{threadId: state.thread, input: input})
-      %{state | prompt: nil, due: MapSet.put(state.due, @turn)}
+      request(%{state | prompt: nil}, "turn/start", %{threadId: state.thread, input: input})
     end
   end
 
   defp start_turn(state), do: state
 
-  defp request(state, id, params),
-    do: send_line(state, %{id: id, method: @methods[id], params: params})
+  defp request(state, method, params) do
+    {id, state} = open(state, method)
+    send_line(state, %{id: id, method: method, params: params})
+    state
+  end
+
+  # A new request id, due until its answer.
+  defp open(%State{next_id: id} = state, method),
+    do: {id, %{state | next_id: id + 1, due: Map.put(state.due, id, method)}}
+
+  defp due?(state, method), do: method in Map.values(state.due)
 
   defp send_line(state, %{} = map), do: send_line(state, JSON.encode!(map))
   defp send_line(state, line), do: HarnessIO.write(state, [line, "\n"])

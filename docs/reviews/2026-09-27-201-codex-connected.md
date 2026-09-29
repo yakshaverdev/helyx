@@ -167,6 +167,52 @@ The fix is 49 lines in one code file and adds functions, so the ship rules call 
 
 Both agents found the same path: a `commandExecution` `item/started` with no string `turnId`, or with a non-string `id`, fell to a catch-all and was dropped, so the command never entered `commands`; the turn ended `:end_turn` and the next turn ran on the same program while the command ran (reproduced with the fake program). **Fixed**: a tool item's `item/started` or `item/completed` with no string `turnId` or item `id` stops the harness process with `:item_malformed`. Test: "a command start with no turn id or no string id stops the harness process". No further round: this was the last round the orchestrator set. The failure-path agent also named a line with no `threadId` (not reproduced); it is dropped with the other threads' lines, as in #224.
 
+## Codex round 3
+
+1 finding: `turn/completed` reached `end_turn/2` with any status, so a missing, null, `inProgress`, or unknown status cleared the turn and answered a pending interrupt `:ok`. The owner chose option 1: fix the mechanism. **Fixed**: one function, `malformed/2`, checks the full shape of every line that changes turn or thread state before any state changes, and any other shape stops the harness process with `{:malformed, method}`. The piecemeal checks (`:item_malformed`, `:item_not_ended`, the guards in the turn clauses) are gone.
+
+## Round 7 (full, with the Codex adversarial review)
+
+2 reproduced defects, both fixed: an answer with both `error` and `result` passed; a turn or item method with a request `id` (found by Codex) was taken as a server request. Tests: "a turn/start answer with both an error and a result ...", "an item/started with a request id ...", and the `turn/completed` status tests with a pending interrupt and with a next turn request.
+
+## Round 8 (reduced: spec and failure path)
+
+Spec: doc gaps only, fixed. Failure path: 1 reproduced defect, fixed: an answer to `thread/start` or `thread/resume` after the handshake switched `state.thread`, so a `turn/completed` of another thread ended the Helyx turn. Test: "a handshake answer after the handshake stops the harness process ...".
+
+## Round 9 (reduced: spec and failure path)
+
+Spec: 1 doc gap and 2 wording lines, fixed. Failure path: 1 reproduced defect on the same mechanism: before the thread was set, the handshake answers were not checked (an unasked `thread/start` answer switched a resume to a new thread; an answer with both `error` and `result` set the thread; any `thread/resume` error with the lost prefix, or with both fields, passed). The orchestrator set a new budget and one more reduced round. **Fixed**: a handshake answer passes only for the one request that waits in `due`, with a result or an error but not both; a `thread/resume` error only as code -32600 with the exact message `no rollout found for thread id <id>`, a `thread/resume` result only with the asked thread id, a `thread/start` result only with a string thread id. Test: "a handshake answer that Helyx did not ask for, or with the wrong shape, fails the connect" (9 cases).
+
+## Round 10 (reduced: spec and failure path)
+
+Spec: 0 defects, 3 wording lines and 2 test gaps, fixed (the `due` text, the connect failure in the Bounds row, the moduledoc wrap; lost-error cases with a wrong code and another thread id). Failure path: 1 reproduced defect, not fixed: an answer with id 4, 5, or 6 that no request waits for passes the check and clears the id from `due`, so a later real answer is taken for the next request (a duplicate `turn/interrupt` result, then a late error, stopped the harness during the next turn). Also reproduced: a `turn/completed` with no `threadId` hangs the turn; this is the documented #224 hole. The orchestrator stopped the loop here.
+
+## Round 11 (full, with the Codex adversarial review)
+
+The owner chose to fix the mechanism: each request gets a new integer id, `due` maps each open id to its method, and an answer whose id is not due (late, duplicate, or never asked) is dropped, so it never answers a later request. The handshake check stays, on the id map. A late answer to a still-due `turn/start` or `turn/interrupt` is dropped as before. Base: `28c3e86` plus the uncommitted round-10 state. The fake program now sets the id `"@"` of a canned answer to the id of the request that runs its handler. Regression tests: "a duplicate turn/interrupt answer is dropped and does not answer the next interrupt" (the round-10 reproduction), "an answer with an id that is not due is dropped: the thread stays, and the turn ends", "a handshake answer with an id that is not due is dropped", and "a handshake answer with the wrong shape fails the connect" (10 cases). The first three failed on the round-10 code.
+
+Bounds sensor: `bounds sensor skipped: TYPESAFE_API_KEY is not set`.
+
+### Simplify: 2 applied, 3 skipped
+
+Applied: one `perl` call per line in the fake program; a `lines_file/3` test helper. Skipped: one router for `malformed/2` and `dispatch/2` (a restructure beyond this fix); a `halt/2` helper for the stop state; an `ask_turn/1` test helper.
+
+### Standards: 0 hard, 5 judgement calls
+
+Fixed: the duplicate test now orders the duplicate before the second answer with a marker file, not `sleep 0.3`; a 103-character moduledoc line; a test comment that named a review round. Kept: every item needs a string id and turn id (deliberate); `malformed/2` gives nil or a method.
+
+### Spec: 0 wrong, 2 doc mismatches, 3 missing tests
+
+Fixed: the wait rule now says that a `turn/start` also waits for a due `thread/inject_items` answer (Bounds row, the ids paragraph, the code comment); this record. Tests added: a `turn/start` answer and a `turn/started` with no string turn id; a `turn/interrupt` error that is not an object. Not added: a late answer with a bad shape (the same check as an on-time answer).
+
+### Failure path: the reproduction passes, 1 minor finding
+
+The duplicate `turn/interrupt` reproduction, an early answer with the next id, and a duplicate `initialize` answer during `thread/start` all pass. Finding: a turn or item line with a request `id` on another thread stops the harness process, while other lines of other threads are dropped. This is a protocol fault on any thread, so the stop stays; the comment and the feature doc now say "on any thread". Not reached: the OS state table and multibyte lost-thread messages.
+
+### Codex adversarial review: approve, 0 findings
+
 ## Precommit
 
 `mise exec -- mix precommit` passed: root 267 tests, `plugins/bundled` 388 tests and 1 property, `apps/coding_agent` 17 tests, 0 failures, no warnings, Credo and Dialyzer clean. The first run after round 6 failed one root test, `hands_test.exs:163` ("cancel releases with :cancel ..."), which this branch does not touch; it passed 20 of 20 alone, and the second run passed.
+
+After round 11, `mise exec -- mix precommit` passed in one run: root 267 tests, `plugins/bundled` 419 tests and 1 property, `apps/coding_agent` 17 tests, 0 failures, Credo and Dialyzer clean. The known flaky test `harness_stop_test.exs:64` (#228) did not fail.

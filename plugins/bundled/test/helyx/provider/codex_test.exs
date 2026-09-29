@@ -3,7 +3,8 @@ defmodule Helyx.Provider.CodexTest do
   # in the shapes that `docs/research/codex-app-server.md` records. Run N
   # saves its arguments to `args.N` and each line it reads to `stdin.N`;
   # for the K-th request or notification of method M it runs `on.N.M.K`,
-  # or else `on.N.M` (M with `/` as `_`), which prints the canned answer.
+  # or else `on.N.M` (M with `/` as `_`), which prints the canned answer;
+  # `out` prints a file with the id "@" set to the request's id.
   # It exits at the end of its input. PATH is global, so this module is not
   # async.
   use ExUnit.Case, async: false
@@ -19,12 +20,14 @@ defmodule Helyx.Provider.CodexTest do
   @fake """
   #!/bin/sh
   d=$(dirname "$0")
+  out() { sed 's/"id":"@"/"id":'"$i"'/g' "$@"; }
   n=$(( $(cat "$d/count" 2>/dev/null || echo 0) + 1 ))
   echo $n > "$d/count"
   for a in "$@"; do printf '%s\\n' "$a"; done > "$d/args.$n"
   while IFS= read -r line; do
     printf '%s\\n' "$line" >> "$d/stdin.$n"
-    m=$(printf '%s\\n' "$line" | perl -MJSON::PP -ne 'print decode_json($_)->{method} // ""' | tr / _)
+    mi=$(printf '%s\\n' "$line" | perl -MJSON::PP -ne '$o = decode_json($_); print(($o->{method} // "") =~ tr{/}{_}r, " ", $o->{id} // "")')
+    m=${mi%% *}; i=${mi#* }
     if [ -n "$m" ]; then
       k=$(( $(cat "$d/count.$n.$m" 2>/dev/null || echo 0) + 1 ))
       echo $k > "$d/count.$n.$m"
@@ -98,7 +101,7 @@ defmodule Helyx.Provider.CodexTest do
   # A turn: the turn/start answer, then `lines`.
   defp turn(tid, lines) do
     [
-      j(%{id: 5, result: %{turn: %{id: "turn1", status: "inProgress"}}}),
+      j(%{id: "@", result: %{turn: %{id: "turn1", status: "inProgress"}}}),
       note(tid, "turn/started", %{turn: %{id: "turn1", status: "inProgress"}}) | lines
     ]
   end
@@ -111,11 +114,12 @@ defmodule Helyx.Provider.CodexTest do
   defp on(bin, n, method, lines, tail \\ "", k \\ nil) do
     name = String.replace(method, "/", "_") <> if(k, do: ".#{k}", else: "")
     File.write!(Path.join(bin, "out.#{n}.#{name}"), Enum.map(lines, &[&1, "\n"]))
-    File.write!(Path.join(bin, "on.#{n}.#{name}"), ~s(cat "$d/out.#{n}.#{name}"\n) <> tail)
+    File.write!(Path.join(bin, "on.#{n}.#{name}"), ~s(out "$d/out.#{n}.#{name}"\n) <> tail)
   end
 
   defp initialize(bin, n),
-    do: on(bin, n, "initialize", [j(%{id: 1, result: %{userAgent: "fake", platformOs: "macos"}})])
+    do:
+      on(bin, n, "initialize", [j(%{id: "@", result: %{userAgent: "fake", platformOs: "macos"}})])
 
   # A run that starts thread `tid`, takes the replay, and runs `lines` as
   # its turn.
@@ -123,17 +127,17 @@ defmodule Helyx.Provider.CodexTest do
     initialize(bin, n)
 
     on(bin, n, "thread/start", [
-      j(%{id: 3, result: %{thread: thread(tid)}}),
+      j(%{id: "@", result: %{thread: thread(tid)}}),
       j(%{method: "thread/started", params: %{thread: thread(tid)}})
     ])
 
-    on(bin, n, "thread/inject_items", [j(%{id: 4, result: %{}})])
+    on(bin, n, "thread/inject_items", [j(%{id: "@", result: %{}})])
     on(bin, n, "turn/start", turn(tid, lines), tail)
   end
 
   defp resumed(bin, n, tid, lines) do
     initialize(bin, n)
-    on(bin, n, "thread/resume", [j(%{id: 2, result: %{thread: thread(tid)}})])
+    on(bin, n, "thread/resume", [j(%{id: "@", result: %{thread: thread(tid)}})])
     on(bin, n, "turn/start", turn(tid, lines))
   end
 
@@ -181,9 +185,12 @@ defmodule Helyx.Provider.CodexTest do
 
   # Shell code that writes `lines` to stdout in the background once the
   # test calls `go/1`.
+  defp lines_file(bin, name, lines),
+    do: File.write!(Path.join(bin, name), Enum.join(lines, "\n") <> "\n")
+
   defp after_go(bin, name, lines) do
-    File.write!(Path.join(bin, name), Enum.join(lines, "\n") <> "\n")
-    ~s{(while [ ! -f "$d/go" ]; do sleep 0.02; done; cat "$d/#{name}") &\n}
+    lines_file(bin, name, lines)
+    ~s{(while [ ! -f "$d/go" ]; do sleep 0.02; done; out "$d/#{name}") &\n}
   end
 
   defp go(bin), do: File.write!(Path.join(bin, "go"), "")
@@ -398,7 +405,7 @@ defmodule Helyx.Provider.CodexTest do
     fresh(bin, 2, @fresh, reply(@fresh, "Fresh."))
 
     on(bin, 2, "thread/resume", [
-      j(%{id: 2, error: %{code: -32_600, message: "no rollout found for thread id #{@tid}"}})
+      j(%{id: "@", error: %{code: -32_600, message: "no rollout found for thread id #{@tid}"}})
     ])
 
     session = start(ctx)
@@ -488,7 +495,7 @@ defmodule Helyx.Provider.CodexTest do
   test "an abort during model output interrupts the turn, and the program serves the next one",
        %{bin: bin} = ctx do
     fresh(bin, 1, @tid, [delta(@tid, "msg_1", "thinking")])
-    on(bin, 1, "turn/interrupt", [j(%{id: 6, result: %{}}), turn_end(@tid, "interrupted")])
+    on(bin, 1, "turn/interrupt", [j(%{id: "@", result: %{}}), turn_end(@tid, "interrupted")])
     on(bin, 1, "turn/start", as_turn(turn(@tid, reply(@tid, "Next.")), "turn2"), "", 2)
 
     session = start(ctx)
@@ -511,7 +518,7 @@ defmodule Helyx.Provider.CodexTest do
     pidfile = Path.join(bin, "pid")
     running = [started(@tid, command("exec-1", %{status: "inProgress"}))]
     fresh(bin, 1, @tid, running, ~s{sleep 30 &\necho $! > "#{pidfile}"\n})
-    on(bin, 1, "turn/interrupt", [j(%{id: 6, result: %{}}), turn_end(@tid, "interrupted")])
+    on(bin, 1, "turn/interrupt", [j(%{id: "@", result: %{}}), turn_end(@tid, "interrupted")])
 
     session = start(ctx)
     :ok = Session.prompt(session, "wait")
@@ -624,7 +631,7 @@ defmodule Helyx.Provider.CodexTest do
 
     # The stop drops the events of its chunk, the tool call included.
     assert run_direct([Message.user("go")], work) ==
-             [{:harness_session, @tid, 0}, {:stop, :item_not_ended}]
+             [{:harness_session, @tid, 0}, {:stop, {:malformed, "item/completed"}}]
   end
 
   test "a command start with no turn id or no string id stops the harness process",
@@ -639,7 +646,7 @@ defmodule Helyx.Provider.CodexTest do
       fresh(bin, n, @tid, [start, turn_end(@tid, "completed")])
 
       assert run_direct([Message.user("go")], work) ==
-               [{:harness_session, @tid, 0}, {:stop, :item_malformed}]
+               [{:harness_session, @tid, 0}, {:stop, {:malformed, "item/started"}}]
     end
   end
 
@@ -653,7 +660,7 @@ defmodule Helyx.Provider.CodexTest do
 
     session = start(ctx)
 
-    assert [%{stop_reason: :error, error: {:harness_stop, :item_not_ended}}] =
+    assert [%{stop_reason: :error, error: {:harness_stop, {:malformed, "item/completed"}}}] =
              of_type(prompt(session, "go"), :agent_end)
 
     refute os_alive?(wait_for_pid(pidfile))
@@ -699,7 +706,7 @@ defmodule Helyx.Provider.CodexTest do
       completed(@tid, command("exec-1", @done))
     ])
 
-    on(bin, 1, "turn/interrupt", [j(%{id: 6, result: %{}}), turn_end(@tid, "interrupted")])
+    on(bin, 1, "turn/interrupt", [j(%{id: "@", result: %{}}), turn_end(@tid, "interrupted")])
     {:ok, state} = connect(work)
 
     {turn, actions, state} =
@@ -742,7 +749,7 @@ defmodule Helyx.Provider.CodexTest do
   test "an interrupt before the turn id is known goes out after the turn/start answer",
        %{bin: bin, work: work} do
     fresh(bin, 1, @tid, [])
-    on(bin, 1, "turn/interrupt", [j(%{id: 6, result: %{}}), turn_end(@tid, "interrupted")])
+    on(bin, 1, "turn/interrupt", [j(%{id: "@", result: %{}}), turn_end(@tid, "interrupted")])
     {:ok, state} = connect(work)
     {turn, _, state} = ask(state, {:turn, "t1", %Helyx.Context{messages: [Message.user("go")]}})
     {from, [], state} = ask(state, {:interrupt, "t1"})
@@ -758,7 +765,7 @@ defmodule Helyx.Provider.CodexTest do
 
     on(bin, 1, "turn/interrupt", [
       started(@tid, command("exec-1", %{status: "inProgress"})),
-      j(%{id: 6, result: %{}}),
+      j(%{id: "@", result: %{}}),
       turn_end(@tid, "interrupted")
     ])
 
@@ -769,6 +776,208 @@ defmodule Helyx.Provider.CodexTest do
 
     assert {:stop, :command_running} = List.last(actions)
     refute Enum.any?(actions, &match?({:reply, ^from, _}, &1))
+  end
+
+  # A `turn/completed` whose status does not end the turn.
+  @bad_ends [%{}, %{status: nil}, %{status: "inProgress"}, %{status: "paused"}, %{status: 7}]
+
+  defp bad_end(fields),
+    do: note(@tid, "turn/completed", %{turn: Map.merge(%{id: "turn1", items: []}, fields)})
+
+  test "a turn/completed with a status that does not end the turn stops the harness process, and a pending interrupt gets no answer",
+       %{bin: bin, work: work} do
+    for {fields, n} <- Enum.with_index(@bad_ends, 1) do
+      fresh(bin, n, @tid, [])
+      on(bin, n, "turn/interrupt", [j(%{id: "@", result: %{}}), bad_end(fields)])
+      {:ok, state} = connect(work)
+
+      {_turn, _, state} =
+        ask(state, {:turn, "t1", %Helyx.Context{messages: [Message.user("go")]}})
+
+      {from, [], state} = ask(state, {:interrupt, "t1"})
+      {actions, _state} = drive(state, [], fn _ -> false end)
+
+      assert {:stop, {:malformed, "turn/completed"}} = List.last(actions)
+      refute Enum.any?(actions, &match?({:reply, ^from, _}, &1))
+    end
+  end
+
+  test "a turn/start answer with both an error and a result stops the harness process",
+       %{bin: bin, work: work} do
+    initialize(bin, 1)
+    on(bin, 1, "thread/start", [j(%{id: "@", result: %{thread: thread(@tid)}})])
+    on(bin, 1, "thread/inject_items", [j(%{id: "@", result: %{}})])
+
+    on(bin, 1, "turn/start", [
+      j(%{id: "@", error: %{message: "boom"}, result: %{turn: %{id: "turn1"}}})
+    ])
+
+    {:ok, state} = connect(work)
+    {turn, _, state} = ask(state, {:turn, "t1", %Helyx.Context{messages: [Message.user("go")]}})
+    {actions, _state} = drive(state, [], fn _ -> false end)
+
+    assert {:stop, {:malformed, "turn/start"}} = List.last(actions)
+    refute Enum.any?(actions, &match?({:reply, ^turn, _}, &1))
+  end
+
+  test "an answer with an id that is not due is dropped: the thread stays, and the turn ends",
+       %{bin: bin, work: work} do
+    # `initialize` is id 1 and `thread/start` id 2, both answered; 99 was
+    # never sent.
+    late = [
+      j(%{id: 2, result: %{thread: thread("other")}}),
+      j(%{id: 1, result: %{}}),
+      j(%{id: 99, error: %{code: -1, message: "boom"}}),
+      turn_end("other", "completed")
+    ]
+
+    fresh(bin, 1, @tid, late ++ reply(@tid, "Hi."))
+    {:ok, state} = connect(work)
+    {turn, _, state} = ask(state, {:turn, "t1", %Helyx.Context{messages: [Message.user("go")]}})
+    {actions, state} = drive(state, [], &turn_ended?/1)
+
+    assert {:reply, turn, :ok} in actions
+    assert {:event, "t1", {:done, _}} = List.last(actions)
+    assert state.thread == @tid
+    assert state.due == %{}
+  end
+
+  # A duplicate `turn/interrupt` answer, then a late error with the same
+  # id: neither answers the next interrupt.
+  test "a duplicate turn/interrupt answer is dropped and does not answer the next interrupt",
+       %{bin: bin, work: work} do
+    dup = j(%{id: "@", error: %{code: -1, message: "no active turn"}})
+    fresh(bin, 1, @tid, [delta(@tid, "msg_1", "thinking")])
+
+    on(
+      bin,
+      1,
+      "turn/interrupt",
+      [j(%{id: "@", result: %{}}), turn_end(@tid, "interrupted")],
+      ~s{(while [ ! -f "$d/go" ]; do sleep 0.02; done; out "$d/dup"; touch "$d/sent") &\n},
+      1
+    )
+
+    lines_file(bin, "dup", [dup])
+
+    lines_file(
+      bin,
+      "second",
+      as_turn([j(%{id: "@", result: %{}}), turn_end(@tid, "interrupted")], "turn2")
+    )
+
+    # The duplicate comes while the second `turn/interrupt` waits for its
+    # answer: the answer goes out only after the duplicate is written.
+    on(
+      bin,
+      1,
+      "turn/interrupt",
+      [],
+      ~s{touch "$d/go"; while [ ! -f "$d/sent" ]; do sleep 0.02; done; out "$d/second"\n},
+      2
+    )
+
+    on(
+      bin,
+      1,
+      "turn/start",
+      as_turn(turn(@tid, [delta(@tid, "msg_2", "again")]), "turn2"),
+      "",
+      2
+    )
+
+    {:ok, state} = connect(work)
+    {_turn, _, state} = ask(state, {:turn, "t1", %Helyx.Context{messages: [Message.user("go")]}})
+    {_actions, state} = drive(state, [], &match?([_ | _], events(&1)))
+    {first, [], state} = ask(state, {:interrupt, "t1"})
+    {actions, state} = drive(state, [], replied?(first))
+    assert {:reply, first, :ok} in actions
+
+    {_next, _, state} =
+      ask(state, {:turn, "t2", %Helyx.Context{messages: [Message.user("again")]}})
+
+    {_actions, state} =
+      drive(state, [], &Enum.any?(&1, fn a -> match?({:event, "t2", {:text_delta, _}}, a) end))
+
+    {second, [], state} = ask(state, {:interrupt, "t2"})
+    {actions, state} = drive(state, [], replied?(second))
+    assert {:reply, second, :ok} in actions
+    refute Enum.any?(actions, &match?({:stop, _}, &1))
+    close(state)
+
+    assert [%{"params" => %{"turnId" => "turn1"}}, %{"params" => %{"turnId" => "turn2"}}] =
+             for(%{"method" => "turn/interrupt"} = r <- stdin(bin, 1), do: r)
+  end
+
+  test "a turn/start answer or a turn/started with no string turn id stops the harness process",
+       %{bin: bin, work: work} do
+    cases = [
+      {[j(%{id: "@", result: %{turn: %{id: 7}}})], "turn/start"},
+      {[note(@tid, "turn/started", %{turn: %{id: nil}})], "turn/started"}
+    ]
+
+    for {{lines, method}, n} <- Enum.with_index(cases, 1) do
+      fresh(bin, n, @tid, [])
+      on(bin, n, "turn/start", lines)
+      {:ok, state} = connect(work)
+
+      {_turn, _, state} =
+        ask(state, {:turn, "t1", %Helyx.Context{messages: [Message.user("go")]}})
+
+      {actions, _state} = drive(state, [], fn _ -> false end)
+      assert {:stop, {:malformed, ^method}} = List.last(actions)
+    end
+  end
+
+  test "a turn/interrupt error that is not an object stops the harness process",
+       %{bin: bin, work: work} do
+    fresh(bin, 1, @tid, [])
+    on(bin, 1, "turn/interrupt", [j(%{id: "@", error: "boom"})])
+    {:ok, state} = connect(work)
+    {_turn, _, state} = ask(state, {:turn, "t1", %Helyx.Context{messages: [Message.user("go")]}})
+    {from, [], state} = ask(state, {:interrupt, "t1"})
+    {actions, _state} = drive(state, [], fn _ -> false end)
+    assert {:stop, {:malformed, "turn/interrupt"}} = List.last(actions)
+    refute Enum.any?(actions, &match?({:reply, ^from, _}, &1))
+  end
+
+  test "an item/started with a request id stops the harness process, and a pending interrupt gets no answer",
+       %{bin: bin, work: work} do
+    start =
+      j(%{
+        id: nil,
+        method: "item/started",
+        params: %{threadId: @tid, item: command("exec-1", %{status: "inProgress"})}
+      })
+
+    fresh(bin, 1, @tid, [])
+
+    on(bin, 1, "turn/interrupt", [
+      start,
+      j(%{id: "@", result: %{}}),
+      turn_end(@tid, "interrupted")
+    ])
+
+    {:ok, state} = connect(work)
+    {_turn, _, state} = ask(state, {:turn, "t1", %Helyx.Context{messages: [Message.user("go")]}})
+    {from, [], state} = ask(state, {:interrupt, "t1"})
+    {actions, _state} = drive(state, [], fn _ -> false end)
+
+    assert {:stop, {:malformed, "item/started"}} = List.last(actions)
+    refute Enum.any?(actions, &match?({:reply, ^from, _}, &1))
+  end
+
+  test "after a turn/completed with an unknown status, the next turn starts a new program",
+       %{bin: bin} = ctx do
+    fresh(bin, 1, @tid, [bad_end(%{status: "inProgress"})])
+    fresh(bin, 2, @fresh, reply(@fresh, "Back."))
+    session = start(ctx)
+
+    assert [%{stop_reason: :error, error: {:harness_stop, {:malformed, "turn/completed"}}}] =
+             of_type(prompt(session, "go"), :agent_end)
+
+    assert [%{stop_reason: :end_turn}] = of_type(prompt(session, "again"), :agent_end)
+    assert runs(bin) == "2"
   end
 
   test "an interrupt of a turn that ended answers at once", %{bin: bin, work: work} do
@@ -789,7 +998,7 @@ defmodule Helyx.Provider.CodexTest do
       bin,
       1,
       "turn/interrupt",
-      [j(%{id: 6, result: %{}}), turn_end(@tid, "interrupted")],
+      [j(%{id: "@", result: %{}}), turn_end(@tid, "interrupted")],
       ~s{sleep 0.2; cat "$d/late"\n}
     )
 
@@ -815,7 +1024,7 @@ defmodule Helyx.Provider.CodexTest do
 
   test "an error answer to turn/start answers the turn with it", %{bin: bin, work: work} do
     fresh(bin, 1, @tid, [])
-    on(bin, 1, "turn/start", [j(%{id: 5, error: %{code: -1, message: "busy"}})])
+    on(bin, 1, "turn/start", [j(%{id: "@", error: %{code: -1, message: "busy"}})])
     {:ok, state} = connect(work)
     {turn, _, state} = ask(state, {:turn, "t1", %Helyx.Context{messages: [Message.user("go")]}})
     {actions, _state} = drive(state, [], replied?(turn))
@@ -824,7 +1033,7 @@ defmodule Helyx.Provider.CodexTest do
 
   test "a turn that completes before its turn/start answer ends at once, and the next turn waits for that answer",
        %{bin: bin, work: work} do
-    answer = j(%{id: 5, result: %{turn: %{id: "turn1", status: "inProgress"}}})
+    answer = j(%{id: "@", result: %{turn: %{id: "turn1", status: "inProgress"}}})
     fresh(bin, 1, @tid, [])
 
     on(
@@ -865,7 +1074,7 @@ defmodule Helyx.Provider.CodexTest do
 
   test "a turn/started while the next turn waits for the late answer stops the harness process",
        %{bin: bin, work: work} do
-    answer = j(%{id: 5, result: %{turn: %{id: "turn1", status: "inProgress"}}})
+    answer = j(%{id: "@", result: %{turn: %{id: "turn1", status: "inProgress"}}})
     ghost = note(@tid, "turn/started", %{turn: %{id: "turn9", status: "inProgress"}})
     fresh(bin, 1, @tid, [])
 
@@ -896,7 +1105,7 @@ defmodule Helyx.Provider.CodexTest do
   end
 
   test "a late turn/interrupt answer does not answer the next interrupt", %{bin: bin, work: work} do
-    late = j(%{id: 6, error: %{code: -1, message: "no active turn"}})
+    late = j(%{id: "@", error: %{code: -1, message: "no active turn"}})
     fresh(bin, 1, @tid, [delta(@tid, "msg_1", "thinking")])
 
     on(
@@ -908,7 +1117,7 @@ defmodule Helyx.Provider.CodexTest do
       1
     )
 
-    second = [j(%{id: 6, result: %{}}), turn_end(@tid, "interrupted")]
+    second = [j(%{id: "@", result: %{}}), turn_end(@tid, "interrupted")]
     on(bin, 1, "turn/interrupt", as_turn(second, "turn2"), "", 2)
 
     on(
@@ -1292,8 +1501,51 @@ defmodule Helyx.Provider.CodexTest do
   test "a response error fails the connect with the method and the message",
        %{bin: bin, work: work} do
     initialize(bin, 1)
-    on(bin, 1, "thread/start", [j(%{id: 3, error: %{code: -1, message: "bad model"}})])
+    on(bin, 1, "thread/start", [j(%{id: "@", error: %{code: -1, message: "bad model"}})])
     assert {:error, {:codex, "thread/start", "bad model"}} = connect(work)
+  end
+
+  test "a handshake answer with the wrong shape fails the connect",
+       %{bin: bin, work: work} do
+    thread = %{thread: thread(@tid)}
+    lost = %{code: -32_600, message: "no rollout found for thread id #{@tid}"}
+
+    cases = [
+      {:resume, "thread/resume", %{error: lost, result: thread}},
+      {:resume, "thread/resume", %{error: %{code: -1, message: "boom"}}},
+      {:resume, "thread/resume", %{error: %{lost | message: "no rollout found"}}},
+      {:resume, "thread/resume", %{error: %{lost | code: -1}}},
+      {:resume, "thread/resume",
+       %{error: %{lost | message: "no rollout found for thread id #{@fresh}"}}},
+      {:resume, "thread/resume", %{result: %{thread: thread(@fresh)}}},
+      {:resume, "thread/resume", %{result: %{}}},
+      {:fresh, "thread/start", %{error: %{message: "x"}, result: thread}},
+      {:fresh, "thread/start", %{result: %{thread: %{id: 7}}}},
+      {:fresh, "initialize", %{result: "ok"}}
+    ]
+
+    for {{mode, method, answer}, n} <- Enum.with_index(cases, 1) do
+      if method != "initialize", do: initialize(bin, n)
+      on(bin, n, method, [j(Map.put(answer, :id, "@"))])
+      opts = if mode == :resume, do: [harness_session_id: @tid], else: []
+      assert {:error, {:malformed, ^method}} = connect(work, opts)
+    end
+  end
+
+  test "a handshake answer with an id that is not due is dropped", %{bin: bin, work: work} do
+    initialize(bin, 1)
+
+    # The resume is id 2: a `thread/start` answer that was never asked for
+    # does not switch the thread.
+    on(bin, 1, "thread/resume", [
+      j(%{id: 3, result: %{thread: thread(@fresh)}}),
+      j(%{id: 1, result: %{}}),
+      j(%{id: "@", result: %{thread: thread(@tid)}})
+    ])
+
+    assert {:ok, state} = connect(work, harness_session_id: @tid)
+    assert {state.thread, state.fresh?} == {@tid, false}
+    assert request(bin, 1, "thread/start") == nil
   end
 
   test "a program that exits before its thread is ready fails the connect",

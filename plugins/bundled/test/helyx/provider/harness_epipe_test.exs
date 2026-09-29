@@ -162,7 +162,7 @@ defmodule Helyx.Provider.HarnessEpipeTest do
   test "Codex: a queued line to a dead watchdog stops the harness process", %{bin: bin} do
     thread = %{id: "t1", cwd: "/work", model: "m", path: "/r.jsonl"}
     init = JSON.encode!(%{id: 1, result: %{userAgent: "fake", platformOs: "macos"}})
-    start = JSON.encode!(%{id: 3, result: %{thread: thread}})
+    start = JSON.encode!(%{id: 2, result: %{thread: thread}})
 
     program(bin, "codex", """
     kill -STOP $PPID
