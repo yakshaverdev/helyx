@@ -46,7 +46,12 @@ defmodule Helyx.Provider.ClaudeCode do
   end of input.
 
   A close is the end of input, then the exit. An exit at any other time
-  stops the harness process.
+  stops the harness process. An idle close is a close when the program has
+  no background task, and answers `:busy` otherwise. The program sends the
+  full set of its live background tasks in a `system` line
+  `background_tasks_changed` at each change; only a `tasks` list that is
+  exactly empty counts as none, and a malformed line counts as a task until
+  the next good one.
 
   With the `:harness_session_id` option the program resumes that harness
   session, and each turn sends only the new prompt: the user messages at
@@ -106,7 +111,8 @@ defmodule Helyx.Provider.ClaudeCode do
     # line. `closing` is the `from` of a close. `terminal` stops the read
     # of stdout: `:lost` or a line over the cap (`Helyx.HarnessIO.lines/3`).
     # `deadline` and `done?` are only for `Helyx.HarnessIO`, which writes
-    # them; this module does not read them.
+    # them; this module does not read them. `tasks` is the last set of
+    # live background tasks, or `:unknown` after a malformed line.
     @enforce_keys [:exe, :model, :cwd]
     defstruct [
       :exe,
@@ -121,6 +127,7 @@ defmodule Helyx.Provider.ClaudeCode do
       :terminal,
       :deadline,
       buffer: [],
+      tasks: [],
       size: 0,
       init?: false,
       sent?: false,
@@ -188,6 +195,11 @@ defmodule Helyx.Provider.ClaudeCode do
 
   # The turn already ended.
   def harness_request({:interrupt, _id}, from, state), do: {:ok, [{:reply, from, :ok}], state}
+
+  def harness_request(:idle_close, from, %State{tasks: []} = state),
+    do: harness_request(:close, from, state)
+
+  def harness_request(:idle_close, from, state), do: {:ok, [{:reply, from, :busy}], state}
 
   def harness_request(:close, from, state) do
     HarnessIO.write(state, <<0>>)
@@ -341,6 +353,13 @@ defmodule Helyx.Provider.ClaudeCode do
     do: {[{:reply, turn.interrupt.from, answer}], %{state | turn: nil}}
 
   # Output
+
+  # The set of live background tasks, sent whole at each change, also
+  # between turns (research note). Only a list confirms a set.
+  defp translate(%{"type" => "system", "subtype" => "background_tasks_changed"} = line, state) do
+    tasks = if is_list(line["tasks"]), do: line["tasks"], else: :unknown
+    {[], %{state | tasks: tasks}}
+  end
 
   # A sub-agent's own messages stay inside the harness.
   defp translate(%{"parent_tool_use_id" => parent}, state) when parent != nil, do: {[], state}

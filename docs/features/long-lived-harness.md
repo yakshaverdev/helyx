@@ -126,6 +126,7 @@ A sketch for review. The names are proposals.
         | {:interrupt, turn_id :: String.t()}
         | {:tool_result, turn_id :: String.t(), call_id :: String.t(), {:ok | :error, String.t()}}
         | :close
+        | :idle_close
 @type action ::
         {:event, turn_id :: String.t(), Helyx.Provider.event()}
         | {:reply, from(), term()}
@@ -145,7 +146,7 @@ A sketch for review. The names are proposals.
 ```
 
 - The loop checks every action at the boundary. An event goes through the `Helyx.Session.Stream` check. A reply must have the shape of its request, below. A bad action ends the loop. The closed port stops the program, and the `:DOWN` starts the turn cleanup.
-- The replies: `{:turn, ...}` gives `:ok`. `{:steer, ...}` gives `:ok`, `:rejected`, or `{:error, reason}`. `{:interrupt, ...}` gives `:ok` or `{:error, reason}`. `{:tool_result, ...}` gives `:ok` when written. `:close` gives `:ok` after the exit.
+- The replies: `{:turn, ...}` gives `:ok`. `{:steer, ...}` gives `:ok`, `:rejected`, or `{:error, reason}`. `{:interrupt, ...}` gives `:ok` or `{:error, reason}`. `{:tool_result, ...}` gives `:ok` when written. `:close` gives `:ok` after the exit. `:idle_close` gives `:ok` after the exit, as `:close`, or `:busy` when the program runs work of its own, a background task; the program then stays (see "Idle close").
 - "Written" means that the watchdog accepted the bytes within its stdin cap (#196). It does not mean that the program read them. Delivery is known only from the program's own output: the `result` line or the control response for Claude, the JSON-RPC answer for Codex, and the harness's `tool_result` event for a tool call.
 - `stream/3` stays. A provider without `harness_init/3` keeps one program per turn, so the change can land one provider at a time.
 
@@ -268,7 +269,8 @@ The numbers are proposals. Observed values are given for comparison.
 | TERM grace | Claude 5,000 ms, Codex 5,000 ms | KILL. The program's own command groups can stay after a KILL (research notes) |
 | stdout line | 16 MiB, as today | the loop ends; stop and turn cleanup |
 | stderr | the last 2,000 bytes of lines that start with `ERROR`, ANSI removed. Claude: nothing is kept, and the `result` line carries the errors (#200) | older lines are dropped |
-| harness process life | the session; no idle close | unbounded in time, #195 |
+| harness process life | the session, or 30 minutes idle (`harness_ms.idle`, 1,800,000 ms): no turn and no wait of the session. A program with a background task answers `:busy` and stays, so its life is unbounded while the task lives (#194) | the idle close (see "Idle close") |
+| idle close: `:idle_close` to its answer, and end of input to the exit | 5,000 ms, armed kill (the close bound) | stop: TERM, grace, KILL. The wait before the next turn ends at the `:harness_down` |
 | Core stop with an open harness process | the session end: an idle harness process gets the close (5,000 ms, armed kill); during a turn it ends with the hands | documented exception: the hands can take the end of the harness process after the Core stopped its task supervisor, so `release/3` does not run and the hands log a crash. Nothing leaks: the port closes with the harness process (the keeper of `Helyx.HarnessIO.keep_port/1`), and the watchdog ends the group. The shutdown order is ticket #219 |
 | Helyx tool specs to the harness | the checked specs of session start | none; a changed set needs a new Codex thread |
 
@@ -278,11 +280,11 @@ On `SIGTERM` both programs end their own commands: Claude 2.1.283 in about 0.7 s
 
 | Resource | Created by | Held by | Released on normal end | Released when the holder crashes | Released on abort |
 | -------- | ---------- | ------- | ---------------------- | -------------------------------- | ----------------- |
-| harness process | the hands, as a Task in `tasks` | hands, linked; the hands trap exits | close at session end or provider switch, then `release/3` of its handles | the link kills it with the hands; its crash is a `:DOWN` in the hands, which run the turn cleanup | kept after an interrupt with `:ok`; stopped on any other answer (the loop ends itself) or a missed deadline (the armed kill) |
+| harness process | the hands, as a Task in `tasks` | hands, linked; the hands trap exits | close at session end, at a provider switch, or at an idle close with no background task, then `release/3` of its handles | the link kills it with the hands; its crash is a `:DOWN` in the hands, which run the turn cleanup | kept after an interrupt with `:ok`; stopped on any other answer (the loop ends itself) or a missed deadline (the armed kill) |
 | program port, watchdog, program group | `Helyx.Watchdog.start/4` in `harness_init/3` | hands (the handles) and watchdog (the life) | close: end of input, the exit, then `release/3` | the closed port ends the watchdog's stdin: TERM, grace, KILL | as the harness process; a stop sends no end of input |
 | prepare Task | hands | hands, linked | returns the context | the link; the turn fails | killed in turn cleanup step 1 |
 | harness process and program at a Core stop | as above | as above | the session closes an idle harness process in `terminate/2`; during a turn the harness process ends with the hands | documented exception: `release/3` can crash on the stopped task supervisor, with a log line; the port still closes with the harness process, and the watchdog ends the group (test: "a Core stop ... ends the program group" in `plugins/bundled`) | as on a normal end |
-| the harness's own command groups | the program | the program | the program ends them | on TERM the program ends them; a KILL leaves them (research notes, both programs) | Claude: the interrupt ends a foreground command; a background task survives the abort and the turn end, and ends with the program: the close at the session end or at a model switch, a stop after a failed interrupt or another error, or a crash of Helyx. The program ends its background tasks first, on end of input or on TERM (#194). The idle close of #195, when it is built, must skip a program with a running background task. Codex: the interrupt does not end a command, so an abort with an open command stops the program (#201) |
+| the harness's own command groups | the program | the program | the program ends them | on TERM the program ends them; a KILL leaves them (research notes, both programs) | Claude: the interrupt ends a foreground command; a background task survives the abort and the turn end, and ends with the program: the close at the session end or at a model switch, a stop after a failed interrupt or another error, or a crash of Helyx. The program ends its background tasks first, on end of input or on TERM (#194). The idle close skips a program with a running background task (#195). Codex: the interrupt does not end a command, so an abort with an open command stops the program (#201) |
 | Helyx tool Task of a connected turn | hands | hands, linked | the result is sent back | the link; on a crash of the harness process, turn cleanup step 1 | killed and released in turn cleanup step 1 |
 | open tool request | the harness | the harness process (keyed by `{turn_id, call_id}`) | answered with the result | ends with the harness process | answered `aborted` in abort step 3 |
 | open request from the session | the session (with a timer) | the harness process | answered | the session's monitor gives `:DOWN`: turn cleanup | answered, or the timer stops the harness process; a late reply is dropped |
@@ -334,10 +336,22 @@ The implementation tickets still test both orders at a Claude turn end, with the
 
 A background task of the Claude program belongs to the program, not to the turn that started it. It outlives an abort and the end of its turn, and it ends with the program. The test "a background task survives an abort and is gone after the session ends" (`plugins/bundled`, tag `:real_claude`, excluded from `mix precommit`) runs the real `claude` with `haiku`: one turn starts a background command and a foreground command, `Session.abort/1` ends the turn, the foreground command is gone, the background command and the harness process stay, and after the session end the background command is gone. In 3 runs on 2026-09-27 (`claude` 2.1.283) the test passed. The program ended the background task on the end of input of the close, before the close bound and so before any TERM (research note, "Processes").
 
+## Idle close
+
+Owner decision on #195 (2026-09-29): one timer in the session.
+
+- The session arms the timer when it holds a ready harness process with no turn and no wait (the wait of an abort, a failed turn, a close, or an idle close). Each arm has a new ref; the timer message carries it. A message whose ref is not the current one, or that arrives during a turn or a wait, is dropped. So the timer never sends a request while a turn, a prepare, or a request is open: each of them exists only inside a turn or a wait, and each end of a turn or a wait arms a new timer.
+- When the timer fires, the session sends `:idle_close` with the close bound, 5,000 ms, as an armed kill, and waits as for a model switch: every message waits as a follow-up.
+- `:ok`: the program exited, and the loop ends. The wait ends at the `:harness_down`, and the next turn starts a new program, which resumes.
+- `:busy`: the program stays, the wait ends, and the session arms the timer again.
+- Any other answer, or the bound, stops the harness process (see "Stop"), and the wait ends at its `:harness_down`.
+- Claude Code: the program sends the whole set of its live background tasks in `background_tasks_changed` at each change (`claude-code-stream-json.md`, "Background tasks"). Only a `tasks` list that is exactly empty gives a close; a JSON line of this subtype with no list counts as a task until the next list. A line that is not JSON is dropped before the provider sees it (`Helyx.HarnessIO.lines/3`), so the set keeps its last value; the program writes each line whole. The initial set of a new program is empty. An `ambient` task counts as a task. The provider reads only this line: the program's schema calls it the level signal of the set, and the `task_started`, `task_updated`, and `task_notification` lines are its edges, so they add nothing to the set.
+- Codex answers `:idle_close` as `:close`: after #201 no command outlives a turn. The clause lands after #201; until then Codex is not connected and gets no idle close.
+- Known gap: a Claude background task that ends starts a program turn of its own (`claude-code-stream-json.md`, "Background tasks"). That turn is outside a Helyx turn, and an idle close can end it with end of input. A background task belongs to the program, not to a turn (#194).
+
 ## Out of scope
 
 - Approvals in the UI. The request path is built, and the answer stays `accept` (#192, decision 5).
-- An idle close of the harness process (#195).
 - Showing the Claude background tasks in the TUI (#194).
 - `thread/fork`, `thread/revert`, `rewind_files`, and branching.
 - Compaction inside the harness (`thread/compact/start`).

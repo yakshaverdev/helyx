@@ -90,7 +90,7 @@ defmodule Helyx.Session.Harness do
 
   defp kind({kind, _turn_id, _context}), do: kind
   defp kind({kind, _turn_id}), do: kind
-  defp kind(:close), do: :close
+  defp kind(close) when close in [:close, :idle_close], do: close
 
   # An improper list stops at its tail, as a bad return.
   defp act([], harness), do: loop(harness)
@@ -144,15 +144,17 @@ defmodule Helyx.Session.Harness do
   defp action(action, _harness), do: {:stop, {:bad_action, action}}
 
   defp reply?(_kind, :ok), do: true
+  defp reply?(:idle_close, :busy), do: true
   defp reply?(kind, {:error, _reason}) when kind in [:turn, :interrupt], do: true
   defp reply?(_kind, _value), do: false
 
   # After an error answer to a turn or an interrupt Helyx does not know the
   # state of the program, so the loop ends: the port closes, and the
-  # watchdog stops the program with no end of input.
-  defp replied(:close, :ok, _harness), do: :closed
+  # watchdog stops the program with no end of input. An idle close with
+  # `:ok` exited as a close; with `:busy` the program stays.
+  defp replied(kind, :ok, _harness) when kind in [:close, :idle_close], do: :closed
   defp replied(kind, {:error, reason}, _harness), do: {:stop, {:harness_error, kind, reason}}
-  defp replied(_kind, :ok, harness), do: {:ok, harness}
+  defp replied(_kind, _ok_or_busy, harness), do: {:ok, harness}
 
   defp sent(:ok, harness), do: {:ok, harness}
   defp sent({:error, reason}, _harness), do: {:stop, reason}

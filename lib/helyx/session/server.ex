@@ -46,8 +46,13 @@ defmodule Helyx.Session.Server do
       # `%Connection{}`, or nil.
       harness: nil,
       # The bounds of the requests to the harness process, in ms: the
-      # armed kills (see `Helyx.Session.Harness`). A seam for tests.
-      harness_ms: %{turn: 2_000, interrupt: 2_000, close: 5_000},
+      # armed kills (see `Helyx.Session.Harness`), and `idle`, the time with
+      # no turn after which the session sends `:idle_close`. A seam for
+      # tests.
+      harness_ms: %{turn: 2_000, interrupt: 2_000, close: 5_000, idle: 1_800_000},
+      # The current idle timer (`:erlang.start_timer/3`, see `arm_idle/1`),
+      # or nil.
+      idle: nil,
       # The wait before the next turn can start, a `%Wait{}`, or nil (see
       # `wait/2`).
       aborting: nil
@@ -65,7 +70,7 @@ defmodule Helyx.Session.Server do
   defmodule Wait do
     @moduledoc false
     # The parts of the wait before the next turn can start (see `wait/2`).
-    defstruct [:hands, :interrupt, :reply, :harness, callers: []]
+    defstruct [:hands, :interrupt, :reply, :idle, :harness, callers: []]
   end
 
   def start_link(%State{id: id, core: core} = state) do
@@ -291,7 +296,7 @@ defmodule Helyx.Session.Server do
   # and the prepared context; `submitting` until the answer; then
   # `submitted`.
   def handle_info({:harness_ready, pid}, %State{harness: %Connection{pid: pid} = harness} = state) do
-    {:noreply, submit(%{state | harness: %{harness | ready: true}})}
+    {:noreply, arm_idle(submit(%{state | harness: %{harness | ready: true}}))}
   end
 
   # The prepare Task checked the context (`Stream.prepare_checked/4`): a
@@ -326,6 +331,31 @@ defmodule Helyx.Session.Server do
     phase = if reply == :ok, do: :submitted, else: :submitting
     {:noreply, %{state | turn: %{turn | pending: nil, phase: phase}}}
   end
+
+  # The answer to an idle close. `:ok`: the program exited, and the wait
+  # goes on until its `:harness_down`. `:busy`: the program stays, and the
+  # wait ends, which arms the timer again.
+  def handle_info(
+        {:harness_reply, from, reply},
+        %State{aborting: %Wait{idle: from} = aborting} = state
+      ) do
+    aborting = if reply == :busy, do: %{aborting | harness: nil}, else: aborting
+    {:noreply, progress(%{state | aborting: %{aborting | idle: nil}})}
+  end
+
+  # The idle timer of the harness process. Only the current timer counts,
+  # and only while the session is idle: a turn or a wait since it was armed
+  # makes it old. The wait holds every message until the answer.
+  def handle_info(
+        {:timeout, ref, :idle_close},
+        %State{idle: ref, turn: nil, aborting: nil, harness: %Connection{pid: pid, ready: true}} =
+          state
+      ) do
+    from = Harness.request(pid, :idle_close, state.harness_ms.close)
+    {:noreply, wait(%{state | idle: nil}, %{idle: from, harness: pid})}
+  end
+
+  def handle_info({:timeout, _ref, :idle_close}, state), do: {:noreply, state}
 
   # The answer to the interrupt of an abort. `:ok` keeps the harness
   # process; any other answer ends it, and the wait goes on until its
@@ -475,9 +505,10 @@ defmodule Helyx.Session.Server do
   # The session starts no turn until the wait ends: the answer of the
   # hands to `request_cancel/2` (`hands`), then the interrupt of a
   # connected turn (`interrupt`, `{pid, turn_id}`) with its answer
-  # (`reply`), and the `:harness_down` of a harness process that ends
-  # (`harness`). Every part is bounded: the hands by their release
-  # deadlines, a harness process by the kill armed with its request.
+  # (`reply`), the answer to an idle close (`idle`), and the
+  # `:harness_down` of a harness process that ends (`harness`). Every
+  # part is bounded: the hands by their release deadlines, a harness
+  # process by the kill armed with its request.
   # `callers` are the abort callers, who get their reply at the end.
   defp wait(state, fields) do
     %{state | aborting: struct!(Wait, fields)}
@@ -513,12 +544,22 @@ defmodule Helyx.Session.Server do
   # otherwise the queues start the next turn.
   defp settle(%State{turn: nil, aborting: nil} = state) do
     case await_ended_harness(state) do
-      %State{aborting: nil} = state -> close_or_start(state)
+      %State{aborting: nil} = state -> arm_idle(close_or_start(state))
       state -> state
     end
   end
 
   defp settle(state), do: state
+
+  # Arms the idle timer when the session holds a ready harness process
+  # with no turn and no wait. It cancels the earlier timer; a message of
+  # it that is already in the mailbox has an old ref.
+  defp arm_idle(%State{turn: nil, aborting: nil, harness: %Connection{ready: true}} = state) do
+    if state.idle, do: :erlang.cancel_timer(state.idle)
+    %{state | idle: :erlang.start_timer(state.harness_ms.idle, self(), :idle_close)}
+  end
+
+  defp arm_idle(state), do: state
 
   defp close_or_start(%State{model: model, harness: %Connection{pid: pid, model: other}} = state)
        when other != model do

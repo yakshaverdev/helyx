@@ -170,6 +170,13 @@ Program-to-host subtypes: `can_use_tool` and `mcp_message` (verified), `hook_cal
 - Deny: `{"behavior":"deny","message":"..."}` gives an `is_error` tool result with that text and an entry in `result.permission_denials`. An optional `"interrupt": true` also stops the turn (source).
 - The program can send the next `can_use_tool` before the result of the earlier tool.
 
+### Background tasks (verified 2026-09-29, `claude` 2.1.284)
+
+- A `Bash` call with `run_in_background: true` (`haiku`, `sleep 12`) gave `{"type":"system","subtype":"background_tasks_changed","tasks":[{"task_id":"bm9v5qfnr","task_type":"local_bash","description":"sleep 12"}],"uuid":...,"session_id":...}`, then `{"type":"system","subtype":"task_started","task_id":"bm9v5qfnr","tool_use_id":...,"description":"sleep 12","is_backgrounded":true,"task_type":"local_bash",...}`.
+- When the command ended, after the turn's `result`: `background_tasks_changed` with `"tasks":[]`, then `task_updated` with `"patch":{"status":"completed","end_time":...}`, then `task_notification` with `"status":"completed"`.
+- The program's schema (source, 2.1.284) describes `background_tasks_changed` as "The full set of live background tasks, emitted whenever membership changes (start, completion, kill, a foreground agent being backgrounded) or an entry's `ambient` flag flips", with "REPLACE semantics", "a level signal, unlike the task_started/task_notification edges". An entry has `task_id`, `task_type`, `description`, and an optional `ambient` flag (a housekeeping task). `task_updated.patch.status` is one of `pending`, `running`, `completed`, `failed`, `killed`, `paused`.
+- The `task_notification` of the ended command started a program turn with no user line: an `init`, an assistant message ("The background command has completed."), and a `result`, while the host sent nothing. In the same run the model had also called `ScheduleWakeup`.
+
 ### Host tools through an SDK MCP server (verified)
 
 - `--mcp-config '{"mcpServers":{"helyx":{"type":"sdk","name":"helyx"}}}' --strict-mcp-config`.
