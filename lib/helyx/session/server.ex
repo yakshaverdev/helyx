@@ -458,15 +458,26 @@ defmodule Helyx.Session.Server do
 
   defp end_work(%State{turn: %Turn{task: %Task{} = task}}), do: Task.shutdown(task, :brutal_kill)
 
-  # A session that ends with no turn closes its harness process: end of
-  # input, then the exit. The armed close kill bounds the wait, and a
-  # harness process that is already gone gives its `:DOWN` at once.
-  defp end_work(%State{turn: nil, aborting: nil, harness: %Connection{pid: pid}} = state) do
-    ref = Process.monitor(pid)
-    Harness.request(pid, :close, state.harness_ms.close)
+  # A session that ends with no turn closes its harness processes: the
+  # current one and the one its wait is for (an idle close, a switch
+  # close, an abort). Each gets a close, end of input then the exit, after
+  # any request it has open: a `:busy` answer to an idle close does not
+  # keep it. The armed close kills bound the waits, which run in parallel,
+  # and a harness process that is already gone gives its `:DOWN` at once.
+  defp end_work(%State{turn: nil, harness: harness, aborting: aborting} = state) do
+    pids = [harness && harness.pid, aborting && aborting.harness]
 
-    receive do
-      {:DOWN, ^ref, :process, _pid, _reason} -> :ok
+    refs =
+      for pid <- Enum.uniq(pids), is_pid(pid) do
+        ref = Process.monitor(pid)
+        Harness.request(pid, :close, state.harness_ms.close)
+        ref
+      end
+
+    for ref <- refs do
+      receive do
+        {:DOWN, ^ref, :process, _pid, _reason} -> :ok
+      end
     end
   end
 

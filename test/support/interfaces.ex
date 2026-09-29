@@ -815,6 +815,7 @@ defmodule Helyx.Test.Connected do
   #   "error_interrupt"  "hang", and an interrupt answers an error
   #   "late_interrupt"   "hang", and an interrupt answers after 100 ms
   #   "block_close"      "echo", and the close callback blocks
+  #   "late_close"       "echo", and a close answers :ok after 100 ms
   #   "busy"             "echo", and an idle close answers :busy
   #   "late_idle"        "echo", and an idle close answers :ok after 100 ms
   #   "block_idle"       "echo", and the idle close callback blocks
@@ -904,6 +905,7 @@ defmodule Helyx.Test.Connected do
     do: [{:reply, from, {:error, :still_queued}}]
 
   defp answer("block_close", :close, _from), do: Process.sleep(:infinity)
+  defp answer("late_close", :close = request, from), do: later(from, request, 100)
   defp answer("busy", :idle_close, from), do: [{:reply, from, :busy}]
   defp answer("late_idle", :idle_close = request, from), do: later(from, request, 100)
   defp answer("block_idle", :idle_close, _from), do: Process.sleep(:infinity)
