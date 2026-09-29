@@ -996,6 +996,27 @@ defmodule Helyx.Provider.ClaudeCodeTest do
       assert programs(bin) == "1"
     end
 
+    # #224: a sub-agent's lines carry `parent_tool_use_id`, and a
+    # background sub-agent is in the set of background tasks (research
+    # note, "Sub-agents at the end of a turn").
+    test "a background sub-agent gives no events and keeps the program as a background task",
+         %{bin: bin, work: work} do
+      sub = &String.replace(&1, ~s("parent_tool_use_id":null), ~s("parent_tool_use_id":"toolu_a"))
+      own = [tool_use("toolu_s", %{command: "sleep 40"}), tool_result("toolu_s", "x"), delta("s")]
+      task = %{task_id: "a1", task_type: "local_agent", description: "research"}
+      text = [delta("ok"), assistant(%{type: "text", text: "ok"}), result("ok")]
+      turn(bin, 1, 1, begin() ++ Enum.map(own, sub) ++ text ++ [tasks_line(%{tasks: [task]})])
+      context = %Helyx.Context{messages: [Message.user("hi")]}
+      {_from, actions, state} = request(harness(work), {:turn, "t1", context})
+      {actions, state} = pump(state, actions, &ended?/1)
+
+      assert [{:harness_session, _, 0}, {:text_delta, "ok"}, {:done, _}] =
+               for({:event, "t1", event} <- actions, do: event)
+
+      state = settle(state, &(&1.tasks != []))
+      assert {_from, [{:reply, _, :busy}], _state} = request(state, :idle_close)
+    end
+
     for {name, fields} <- [
           {"a null tasks", %{tasks: nil}},
           {"no tasks field", %{}},

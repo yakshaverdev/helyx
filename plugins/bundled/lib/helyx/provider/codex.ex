@@ -43,13 +43,19 @@ defmodule Helyx.Provider.Codex do
   `{:interrupt, ...}` on a turn with an open `commandExecution` item
   answers `{:error, :command_running}` at once, because `turn/interrupt`
   does not end a running command; the loop then ends, and the watchdog
-  TERMs the group, on which codex ends its commands. Otherwise it sends
+  TERMs the group, on which codex ends its commands. A child thread of the
+  turn with open work (a sub-agent) answers `{:error, :agent_running}` the
+  same way. Otherwise it sends
   `turn/interrupt`, when the program's turn id is known and no answer to
   an earlier `turn/interrupt` is due, and answers at `turn/completed`. An
   interrupt of a turn that already ended answers `:ok`. A turn that ends
-  with an open `commandExecution` item, whatever its status, stops the
-  harness process, so that no next turn starts while the command runs;
-  the turn and a pending interrupt then fail with the stop. A `turn/started`
+  with an open tool item, whatever its status, stops the harness process,
+  so that no next turn starts while the item runs; the turn and a pending
+  interrupt then fail with the stop. So does a turn that ends while an
+  interrupt waits and a child thread of the turn has open work. A child
+  thread with open work at a normal end of its turn belongs to the program.
+  A child thread has open work from its `subAgentActivity` item until one
+  of kind `completed`, whatever turn id that item has. A `turn/started`
   with a new id while no `turn/start` of the running turn is open, a
   `turn/completed` of a turn whose id is not known, and an item of a turn
   that is not the running one stop the harness process. Every line that
@@ -57,7 +63,7 @@ defmodule Helyx.Provider.Codex do
   `item/started`, `item/completed`, and the answers to the requests)
   passes one check of its full shape before any state changes; `turn/completed` must have the status
   `completed`, `failed`, or `interrupted`, and a tool item's
-  `item/completed` a status that ends the item. An `item/started` of the
+  `item/completed` must keep its type and have a status that ends the item. An `item/started` of the
   running turn with the id of an item that has a tool call already fails
   the check. An answer is an error or a
   result, never both, and a turn or item notification has no request id.
@@ -67,9 +73,10 @@ defmodule Helyx.Provider.Codex do
   thread id or the exact lost-thread error, and the `thread/start` answer
   a string thread id. Any other such line stops the
   harness process with `{:malformed, method}` (in the handshake, the
-  connect fails with it). `:close` ends the input and answers `:ok` at the
-  exit. `:idle_close` does the same: no command outlives a turn, so the
-  program has no work of its own between turns.
+  connect fails with it). A turn or item line with no string `threadId`
+  stops it the same way. `:close` ends the input and answers `:ok` at the
+  exit. `:idle_close` does the same when no child thread has open work, and
+  answers `:busy` otherwise: no tool item outlives a turn.
 
   A command or file change approval request is accepted; every other
   request from the server gets a JSON-RPC error. The program uses its own
@@ -105,8 +112,12 @@ defmodule Helyx.Provider.Codex do
     # newest first.
     # `terminal` set means the harness process must stop, with that error.
     #
-    # Of the running turn: `commands` the open `commandExecution` items,
-    # `started` the ids of the tool items that have a tool call, and
+    # `agents` maps each child thread with open work to the program's turn
+    # id of its last `subAgentActivity` item. It belongs to the program and
+    # stays between turns.
+    #
+    # Of the running turn: `open` maps the open tool items to their types,
+    # `started` holds the ids of the tool items that have a tool call, and
     # `streamed` the ids of the messages whose text came as deltas.
     # `calls` holds the ids of the tool calls of the message that no
     # `message_end` closed yet; `waiting` the ids of the calls of sent
@@ -140,7 +151,8 @@ defmodule Helyx.Provider.Codex do
       done?: false,
       usage: %{},
       calls: [],
-      commands: MapSet.new(),
+      open: %{},
+      agents: %{},
       waiting: MapSet.new(),
       held: :queue.new(),
       started: MapSet.new(),
@@ -151,7 +163,7 @@ defmodule Helyx.Provider.Codex do
   end
 
   # The fields of a turn, set back to their defaults between turns.
-  @turn_fields ~w(turn_id turn from usage calls commands waiting held started streamed steers)a
+  @turn_fields ~w(turn_id turn from usage calls open waiting held started streamed steers)a
 
   # Each request gets a new id, and `due` holds it until its answer. An
   # answer with an id that is not due (a late or duplicate answer) is
@@ -179,6 +191,8 @@ defmodule Helyx.Provider.Codex do
   # that end a turn.
   @turn_lines ~w(turn/started turn/completed item/started item/completed)
   @turn_ends ~w(completed failed interrupted)
+  # The kinds of a `subAgentActivity` item in the schema of codex 0.157.1.
+  @agent_kinds ~w(started interacted interrupted completed)
   @trust %{approvalPolicy: "never", sandbox: "danger-full-access"}
 
   @impl true
@@ -258,13 +272,15 @@ defmodule Helyx.Provider.Codex do
     actions(start_turn(state))
   end
 
-  # An open command outlives `turn/interrupt` (#198), so the abort stops
-  # the program instead.
+  # An open command, and a child thread's work, outlive `turn/interrupt`
+  # (#198, #226), so the abort stops the program instead.
   def harness_request({:interrupt, turn_id}, from, %State{turn_id: turn_id} = state) do
     state =
-      if MapSet.size(state.commands) > 0,
-        do: reply(state, from, {:error, :command_running}),
-        else: send_interrupt(%{state | interrupt: {:pending, from}})
+      cond do
+        command?(state) -> reply(state, from, {:error, :command_running})
+        agent?(state) -> reply(state, from, {:error, :agent_running})
+        true -> send_interrupt(%{state | interrupt: {:pending, from}})
+      end
 
     actions(state)
   end
@@ -299,7 +315,12 @@ defmodule Helyx.Provider.Codex do
   def harness_request({:steer, _turn_id, _steer_id, _text}, from, state),
     do: actions(reply(state, from, :rejected))
 
-  # No command outlives a turn, so the idle program has no work of its own.
+  # No tool item outlives a turn; a child thread's work belongs to the
+  # program.
+  def harness_request(:idle_close, from, %State{agents: agents} = state)
+      when map_size(agents) > 0,
+      do: actions(reply(state, from, :busy))
+
   def harness_request(:idle_close, from, state), do: harness_request(:close, from, state)
 
   def harness_request(:close, from, state) do
@@ -342,8 +363,9 @@ defmodule Helyx.Provider.Codex do
   # (`Helyx.Provider`), so a call of a sent message can still run when the
   # next message closes. Such a `message_end`, and every event after it, is
   # held until the results of the sent calls are out; a result of a sent
-  # call goes out at once. At the turn's end every held event goes out, in
-  # order, before the terminal. An event over `@held_max` held events stops
+  # call goes out at once. An event waits only for an open tool item, and a
+  # turn that ends with one stops the harness process, so a turn that ends
+  # holds nothing. An event over `@held_max` held events stops
   # the harness process, as a line over the cap does; the events after it
   # are not read.
   defp in_order(object, state) do
@@ -425,19 +447,21 @@ defmodule Helyx.Provider.Codex do
   end
 
   # At `turn/completed`: the answer to the turn if its `turn/start` answer
-  # did not come yet, the held events, the terminal, the answer to an
-  # interrupt, and the fields of a turn back to idle. A command still open
-  # outlives its turn (#198), whatever the status, so the harness process
-  # stops instead: the release TERMs the program, which ends its commands,
-  # before a next turn starts.
+  # did not come yet, the terminal, the answer to an interrupt, and the
+  # fields of a turn back to idle. A tool item still
+  # open outlives its turn (#198), whatever the status, and so does a child
+  # thread of an aborted turn, so the harness process stops instead: the
+  # release TERMs the program, which ends its commands, before a next turn
+  # starts.
   defp end_turn(state, terminal) do
-    if MapSet.size(state.commands) > 0 do
-      %{state | done?: true, terminal: {:error, :command_running}}
+    if reason = outlives(state) do
+      %{state | done?: true, terminal: {:error, reason}}
     else
       state = if state.from, do: reply(%{state | from: nil}, state.from, :ok), else: state
 
-      {out, state} = :queue.fold(&emit/2, {[], state}, state.held)
-      state = push(state, Enum.reverse([terminal | out]))
+      # A held event waits for an open tool item (see `in_order/2`).
+      true = :queue.is_empty(state.held)
+      state = push(state, [terminal])
 
       state =
         case state.interrupt do
@@ -448,6 +472,22 @@ defmodule Helyx.Provider.Codex do
       Map.merge(state, Map.take(%State{model: nil, cwd: nil}, @turn_fields))
     end
   end
+
+  # Why the turn's work can outlive its end, or nil.
+  defp outlives(state) do
+    cond do
+      command?(state) -> :command_running
+      map_size(state.open) > 0 -> :tool_running
+      state.interrupt != nil and agent?(state) -> :agent_running
+      true -> nil
+    end
+  end
+
+  defp command?(state), do: "commandExecution" in Map.values(state.open)
+
+  # A child thread of the running turn has open work. Every turn id in
+  # `agents` is a string (`line?/2`), so a turn with no id has none.
+  defp agent?(state), do: state.turn in Map.values(state.agents)
 
   defp translate(object, state) do
     case malformed(object, state) do
@@ -476,17 +516,33 @@ defmodule Helyx.Provider.Codex do
        when method in @turn_lines and thread == state.thread and is_binary(thread),
        do: if(line?(method, params) and not again?(method, params, state), do: nil, else: method)
 
+  # A turn or item line of another thread. With no string thread id (the
+  # schema requires one), it can be a line of this thread.
+  defp malformed(%{"method" => method, "params" => %{"threadId" => thread}}, _state)
+       when method in @turn_lines and is_binary(thread),
+       do: nil
+
+  defp malformed(%{"method" => method}, _state) when method in @turn_lines, do: method
+
   defp malformed(_object, _state), do: nil
 
   # An `item/started` of the running turn with the id of an item that has
   # a tool call would add that tool call again. Only tool items are in
-  # `started`.
+  # `started`. An `item/completed` of the running turn with the id of an
+  # open tool item of another type would clear that item while it runs.
   defp again?(
          "item/started",
          %{"turnId" => turn, "item" => %{"id" => id}},
          %State{turn: turn} = state
        ),
        do: MapSet.member?(state.started, id)
+
+  defp again?(
+         "item/completed",
+         %{"turnId" => turn, "item" => %{"id" => id, "type" => type}},
+         %State{turn: turn} = state
+       ),
+       do: is_map_key(state.open, id) and state.open[id] != type
 
   defp again?(_method, _params, _state), do: false
 
@@ -520,6 +576,16 @@ defmodule Helyx.Provider.Codex do
 
   defp line?("turn/completed", %{"turn" => %{"id" => turn, "status" => status}}),
     do: is_binary(turn) and status in @turn_ends
+
+  defp line?(method, %{
+         "turnId" => turn,
+         "item" => %{"type" => "subAgentActivity", "id" => id, "agentThreadId" => child} = item
+       })
+       when method in ["item/started", "item/completed"] and is_binary(turn) and is_binary(id) and
+              is_binary(child),
+       do: item["kind"] in @agent_kinds
+
+  defp line?(_method, %{"item" => %{"type" => "subAgentActivity"}}), do: false
 
   # A tool item leaves the open work only with a status that ends it.
   defp line?(method, %{"turnId" => turn, "item" => %{"type" => type, "id" => id} = item})
@@ -650,6 +716,23 @@ defmodule Helyx.Provider.Codex do
   defp turn_notification("turn/completed", _params, state),
     do: {[], %{state | done?: true, terminal: {:error, :turn_not_asked}}}
 
+  # A child thread's work outlives its turn: the item can come with the id
+  # of an ended turn (#226). Only `completed` confirms that the work ended.
+  defp turn_notification(
+         method,
+         %{"turnId" => turn, "item" => %{"type" => "subAgentActivity"} = item},
+         state
+       )
+       when method in ["item/started", "item/completed"] do
+    agents =
+      case item do
+        %{"kind" => "completed", "agentThreadId" => child} -> Map.delete(state.agents, child)
+        %{"agentThreadId" => child} -> Map.put(state.agents, child, turn)
+      end
+
+    {[], %{state | agents: agents}}
+  end
+
   defp turn_notification(method, %{"turnId" => turn} = params, %{turn: turn} = state)
        when is_binary(turn),
        do: notification(method, params, state)
@@ -717,7 +800,7 @@ defmodule Helyx.Provider.Codex do
       state
       | started: MapSet.put(state.started, id),
         calls: [id | state.calls],
-        commands: command(state.commands, type, &MapSet.put(&1, id))
+        open: Map.put(state.open, id, type)
     }
 
     {[tool_call(item)], state}
@@ -740,7 +823,7 @@ defmodule Helyx.Provider.Codex do
   # call first.
   defp notification("item/completed", %{"item" => %{"type" => type, "id" => id} = item}, state)
        when type in @tool_item_types do
-    state = %{state | commands: command(state.commands, type, &MapSet.delete(&1, id))}
+    state = %{state | open: Map.delete(state.open, id)}
 
     {calls, state} =
       if MapSet.member?(state.started, id),
@@ -764,9 +847,6 @@ defmodule Helyx.Provider.Codex do
        do: {[], %{state | usage: usage}}
 
   defp notification(_method, _params, state), do: {[], state}
-
-  defp command(commands, "commandExecution", fun), do: fun.(commands)
-  defp command(commands, _type, _fun), do: commands
 
   defp terminal(%{"status" => "completed"}, state),
     do: {:done, %{stop_reason: :end_turn, usage: state.usage}}
