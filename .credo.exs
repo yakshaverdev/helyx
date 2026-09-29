@@ -6,10 +6,15 @@
       name: "default",
       strict: true,
       files: %{
-        included: ["lib/", "test/", "plugins/", "apps/"],
+        included: ["lib/", "test/", "plugins/", "apps/", "credo/"],
         excluded: [~r"/_build/", ~r"/deps/"]
       },
+      requires: ["credo/*.ex"],
       checks: %{
+        extra: [
+          # A test asserts order, not an upper bound of wall-clock time (#221).
+          {Helyx.Credo.WallClockUpperBound, []}
+        ],
         disabled: [
           # In Helyx.Core the alias for Helyx.Core.Plugins would expand inside
           # Module.concat(name, Plugins) and silently rename the registry.

@@ -6,6 +6,10 @@ defmodule Helyx.Tool.ReadTest do
 
   @moduletag :tmp_dir
 
+  # Room for scheduler load in the time of a read: far above what load adds
+  # to a read of milliseconds, below the seconds that issue #78 took.
+  @load_us 2_000_000
+
   setup %{tmp_dir: dir} do
     core = :"core_#{System.unique_integer([:positive])}"
     start_supervised!({Helyx.Core, name: core, plugins: [Helyx.Provider.Fake, Helyx.Tool.Read]})
@@ -226,7 +230,7 @@ defmodule Helyx.Tool.ReadTest do
     assert Helyx.Message.text(result) ==
              "offset over 1000000000 is after the last line: a.txt has 1000000 lines"
 
-    assert micros < 2_000_000
+    assert micros < @load_us
   end
 
   test "an offset of more than 100 digits never reaches the tool (issue #79)", %{
@@ -243,7 +247,7 @@ defmodule Helyx.Tool.ReadTest do
     assert Helyx.Message.text(result) ==
              "tool call not run: an integer in the arguments has more than 100 digits"
 
-    assert micros < 2_000_000
+    assert micros < @load_us
   end
 
   test "the tool has no limit argument and ignores a limit key (issue #75)", %{
