@@ -90,6 +90,36 @@ defmodule Helyx.Credo.WallClockUpperBoundTest do
     |> refute_issues()
   end
 
+  test "an equality is a bound, with the time value on either side" do
+    issues("""
+    test "t" do
+      {elapsed, :ok} = :timer.tc(fn -> :ok end, :millisecond)
+      assert elapsed == 100
+      assert 100 === elapsed
+      refute elapsed != 100
+      refute 100 !== elapsed
+      assert not (elapsed != 100)
+      refute not (elapsed == 100)
+    end
+    """)
+    |> assert_issues(fn issues -> assert length(issues) == 6 end)
+  end
+
+  test "an inequality, a refuted equality, and an equality with a margin are no issue" do
+    issues("""
+    test "t" do
+      {elapsed, :ok} = :timer.tc(fn -> :ok end, :millisecond)
+      assert elapsed != 100
+      refute elapsed == 100
+      assert not (elapsed == 100)
+      refute not (elapsed != 100)
+      assert elapsed == @load_ms
+      assert length([elapsed]) == 1
+    end
+    """)
+    |> refute_issues()
+  end
+
   test "a deadline made from a time value is a bound" do
     issues("""
     test "t" do

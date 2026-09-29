@@ -15,9 +15,11 @@ defmodule Helyx.Credo.WallClockUpperBound do
       `:os.system_time`, `:os.timestamp`, `DateTime.utc_now`, or the elapsed
       time of `:timer.tc`, or a variable or a local function that gets its
       value from one, in the same function or test. The forms are `<`, `<=`,
-      `>` and `>=` in either order, `refute` and `not` with the operator
-      turned around, `in lo..hi`, `Kernel.<` and the other operator calls,
-      and `assert_in_delta`. A comparison of two time values is reported
+      `>` and `>=` in either order, `==` and `===` with a side that is a time
+      value itself (a time variable, a time call, or a sum or a difference
+      of one), `refute` and `not` with the operator turned around (so a
+      refuted `!=` or `!==` too), `in lo..hi`, `Kernel.<`, `Kernel.<=`,
+      `Kernel.>`, `Kernel.>=`, and `assert_in_delta`. A comparison of two time values is reported
       too: the check cannot tell an instant from a deadline such as
       `start + 300`. For a true order of two instants, put
       `# credo:disable-for-next-line` above the assertion.
@@ -35,6 +37,12 @@ defmodule Helyx.Credo.WallClockUpperBound do
       The check sees only the syntax of one file. It does not follow a time
       value through a `case` clause, a message, a process, a function of
       another module, a function parameter, or a pipe into the operator.
+      It does not see a bound written as a named operator call, such as
+      `Kernel.not/1`, `Kernel.in/2` or `:erlang.</2`. In an equality, it
+      does not see a time value inside `*`, `/`, unary `-`, `div`, `rem`,
+      `round`, `trunc`, a unit conversion or another function call, or a
+      tuple or list literal, and a margin on the time side
+      (`elapsed + @load_ms == 100`) passes.
       It can report too much: a variable name is a time value in its whole
       scope once one binding gives it one, and a value that any time value
       flows into is a time value. Only a direct `{elapsed, result}` match
@@ -153,7 +161,8 @@ defmodule Helyx.Credo.WallClockUpperBound do
   # around.
   defp bounds(op, {neg, _, [expr]}) when neg in [:not, :!], do: bounds(turn(op), expr)
 
-  defp bounds(op, {cmp, meta, [left, right]}) when cmp in [:<, :<=, :>, :>=, :in] do
+  defp bounds(op, {cmp, meta, [left, right]})
+       when cmp in [:<, :<=, :>, :>=, :in, :==, :===, :!=, :!==] do
     bound(op, cmp, meta, left, right) ++ bounds(op, left) ++ bounds(op, right)
   end
 
@@ -185,24 +194,59 @@ defmodule Helyx.Credo.WallClockUpperBound do
   defp bound(:refute, cmp, meta, left, right) when cmp in [:<, :<=],
     do: [{cmp, meta, right, left}]
 
+  # An equality bounds both sides. Only a side that is a time value itself
+  # counts, not a result that a time value flows into.
+  defp bound(:assert, cmp, meta, left, right) when cmp in [:==, :===],
+    do: [{:equal, cmp, meta, [left, right]}]
+
+  defp bound(:refute, cmp, meta, left, right) when cmp in [:!=, :!==],
+    do: [{:equal, cmp, meta, [left, right]}]
+
   defp bound(_op, _cmp, _meta, _left, _right), do: []
 
-  defp check({cmp, meta, value, limit}, ctx, taint) do
-    if time?(value, taint) and not load_margin?(limit) do
-      put_issue(
-        ctx,
-        format_issue(ctx,
-          message:
-            "An upper bound of elapsed time fails under load. Assert order, " <>
-              "or add a margin from a module attribute named `@load_...`.",
-          trigger: to_string(cmp),
-          line_no: meta[:line]
-        )
-      )
+  defp check({:equal, cmp, meta, sides}, ctx, taint) do
+    if Enum.any?(sides, &time_itself?(&1, taint)) and not load_margin?(sides) do
+      issue(ctx, cmp, meta)
     else
       ctx
     end
   end
+
+  defp check({cmp, meta, value, limit}, ctx, taint) do
+    if time?(value, taint) and not load_margin?(limit) do
+      issue(ctx, cmp, meta)
+    else
+      ctx
+    end
+  end
+
+  defp issue(ctx, cmp, meta) do
+    put_issue(
+      ctx,
+      format_issue(ctx,
+        message:
+          "An upper bound of elapsed time fails under load. Assert order, " <>
+            "or add a margin from a module attribute named `@load_...`.",
+        trigger: to_string(cmp),
+        line_no: meta[:line]
+      )
+    )
+  end
+
+  # A time variable, a time call, a local time function, or a sum or a
+  # difference of one.
+  defp time_itself?({op, _, [left, right]}, taint) when op in [:+, :-],
+    do: time_itself?(left, taint) or time_itself?(right, taint)
+
+  defp time_itself?({name, _, ctx}, {vars, _fns}) when is_atom(ctx),
+    do: MapSet.member?(vars, name)
+
+  defp time_itself?({{:., _, [mod, fun]}, _, _}, _taint), do: time_call?(mod, fun)
+
+  defp time_itself?({name, _, args}, {_vars, fns}) when is_list(args),
+    do: MapSet.member?(fns, name)
+
+  defp time_itself?(_ast, _taint), do: false
 
   defp time?(ast, {vars, fns}) do
     {_ast, found} =

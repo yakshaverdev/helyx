@@ -59,3 +59,14 @@ Round 3 reproduced a defect, so it is not fixed here. This is a second finding o
 ## Orchestrator decision on the round 3 defect
 
 Accepted hole, not fixed: a bound written as a named operator call (`Kernel.not/1`, `Kernel.in/2`, `:erlang.</2` and the like) passes the check. The check is a lint for honest mistakes in tests, not a boundary against a hostile author; no test in the repository uses these forms. A form that `mix format` and Credo accept as normal style is in scope.
+
+## Equality fix (reduced round: spec and failure path)
+
+The Codex gate found that equality bypassed the check: `assert elapsed == 100` gave no issue. The fix reports an asserted `==` or `===` and a refuted `!=` or `!==`, with their `not` forms and the time value on either side. A side counts only when it is a time value itself: a time variable, a time call, a local time function, or `+` or `-` of one. A side that only contains a time value made 16 false reports on master, for example `assert results[:steer] == :ok` in `session_test` and `assert Group.release(..., until, ...) == [...]` in `group_test`.
+
+Spec and failure path reproduced these forms, which give no issue:
+
+- A time value inside `*`, `/`, unary `-`, `div`, `rem`, `round`, or `trunc`, inside `System.convert_time_unit/3` or another function call, or inside a tuple or list literal, in an equality. Example: `assert div(elapsed, 1000) == 5`.
+- A margin on the time side of an equality: `assert elapsed + @load_ms == 100`.
+
+Orchestrator decision: no new round. Each round finds one more derived form, and that loop does not end. The check is a lint for the common, direct mistake, so these forms are stated holes in the moduledoc of the check, not fixed.
