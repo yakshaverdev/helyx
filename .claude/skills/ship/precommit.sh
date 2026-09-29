@@ -30,16 +30,16 @@ rsync -a --delete "${excludes[@]}" ./ "$host:$dir/" || exit 1
 ssh -o BatchMode=yes "$host" "cd '$dir' && $sources > .before && ~/.local/bin/mise exec -- mix precommit" > precommit.log 2>&1
 status=$?
 
-# md5sum -c exits 1 on a changed file, so only the ssh status tells a
-# transport failure; every output line must name a changed file.
-check=$(ssh -o BatchMode=yes "$host" "cd '$dir' && { md5sum -c --quiet .before 2>&1; true; }") || {
+# md5sum -c exits 1 on a changed file. Only status 0, or 1 with a
+# FAILED line for each changed file and nothing else, is a clean check.
+check=$(ssh -o BatchMode=yes "$host" "cd '$dir' && { md5sum -c --quiet .before 2>&1; echo \"md5sum status \$?\"; }") || {
   echo "failed: cannot read the format changes on $host"
   exit 1
 }
 changed=$(printf '%s\n' "$check" | sed -n 's/: FAILED$//p')
-unexpected=$(printf '%s\n' "$check" | grep -v -E -e ': FAILED$' -e '^$' -e 'WARNING: [0-9]+ computed checksums? did NOT match$')
-if [ -n "$unexpected" ]; then
-  printf 'failed: unexpected checksum output on %s:\n%s\n' "$host" "$unexpected"
+unexpected=$(printf '%s\n' "$check" | grep -v -E -e ': FAILED$' -e '^$' -e 'WARNING: [0-9]+ computed checksums? did NOT match$' -e '^md5sum status [01]$')
+if [ -n "$unexpected" ] || ! printf '%s\n' "$check" | grep -qE '^md5sum status [01]$'; then
+  printf 'failed: unexpected checksum output on %s:\n%s\n' "$host" "$check"
   exit 1
 fi
 if [ -n "$changed" ]; then
