@@ -1,4 +1,5 @@
-ExUnit.start()
+# `:real_claude` tests run the real program; include them by hand.
+ExUnit.start(exclude: [:real_claude])
 
 defmodule Helyx.Test.OSHelpers do
   @moduledoc false

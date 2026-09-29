@@ -282,7 +282,7 @@ On `SIGTERM` both programs end their own commands: Claude 2.1.283 in about 0.7 s
 | program port, watchdog, program group | `Helyx.Watchdog.start/4` in `harness_init/3` | hands (the handles) and watchdog (the life) | close: end of input, the exit, then `release/3` | the closed port ends the watchdog's stdin: TERM, grace, KILL | as the harness process; a stop sends no end of input |
 | prepare Task | hands | hands, linked | returns the context | the link; the turn fails | killed in turn cleanup step 1 |
 | harness process and program at a Core stop | as above | as above | the session closes an idle harness process in `terminate/2`; during a turn the harness process ends with the hands | documented exception: `release/3` can crash on the stopped task supervisor, with a log line; the port still closes with the harness process, and the watchdog ends the group (test: "a Core stop ... ends the program group" in `plugins/bundled`) | as on a normal end |
-| the harness's own command groups | the program | the program | the program ends them | on TERM the program ends them; a KILL leaves them (research notes, both programs) | Claude: the interrupt ends a foreground command; a background task survives (#194). Codex: the interrupt does not end a command, so an abort with an open command stops the program (#201) |
+| the harness's own command groups | the program | the program | the program ends them | on TERM the program ends them; a KILL leaves them (research notes, both programs) | Claude: the interrupt ends a foreground command; a background task survives the abort and the turn end, and ends with the program: the close at the session end or at a model switch, a stop after a failed interrupt or another error, or a crash of Helyx. The program ends its background tasks first, on end of input or on TERM (#194). The idle close of #195, when it is built, must skip a program with a running background task. Codex: the interrupt does not end a command, so an abort with an open command stops the program (#201) |
 | Helyx tool Task of a connected turn | hands | hands, linked | the result is sent back | the link; on a crash of the harness process, turn cleanup step 1 | killed and released in turn cleanup step 1 |
 | open tool request | the harness | the harness process (keyed by `{turn_id, call_id}`) | answered with the result | ends with the harness process | answered `aborted` in abort step 3 |
 | open request from the session | the session (with a timer) | the harness process | answered | the session's monitor gives `:DOWN`: turn cleanup | answered, or the timer stops the harness process; a late reply is dropped |
@@ -330,11 +330,15 @@ The implementation tickets still test both orders at a Claude turn end, with the
 - After an abort that left no assistant message, the next prompt holds the aborted user message and the new one, because the prompt is all user messages at the end of the transcript. This was so before #200 too.
 - Manual run with the real program on 2026-09-27: two turns on one program, an abort during a foreground command that left the program alive, and a later turn on it that knew the first turn. The results are in `docs/reviews/2026-09-27-claude-connected.md`.
 
+## Built in #194
+
+A background task of the Claude program belongs to the program, not to the turn that started it. It outlives an abort and the end of its turn, and it ends with the program. The test "a background task survives an abort and is gone after the session ends" (`plugins/bundled`, tag `:real_claude`, excluded from `mix precommit`) runs the real `claude` with `haiku`: one turn starts a background command and a foreground command, `Session.abort/1` ends the turn, the foreground command is gone, the background command and the harness process stay, and after the session end the background command is gone. In 3 runs on 2026-09-27 (`claude` 2.1.283) the test passed. The program ended the background task on the end of input of the close, before the close bound and so before any TERM (research note, "Processes").
+
 ## Out of scope
 
 - Approvals in the UI. The request path is built, and the answer stays `accept` (#192, decision 5).
 - An idle close of the harness process (#195).
-- The ownership of Claude background tasks between turns (#194).
+- Showing the Claude background tasks in the TUI (#194).
 - `thread/fork`, `thread/revert`, `rewind_files`, and branching.
 - Compaction inside the harness (`thread/compact/start`).
 - The model switch inside one program (`set_model`, the `turn/start` overrides). A switch closes the program, as today.
