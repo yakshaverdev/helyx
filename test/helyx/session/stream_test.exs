@@ -163,6 +163,14 @@ defmodule Helyx.Session.StreamTest do
     assert text == String.duplicate("\uFFFD", 65_536)
   end
 
+  test "a user_message passes only from an external turn, with two strings" do
+    event = {:user_message, "s1", "more"}
+    assert {:send, ^event, nil} = SessionStream.check(event, true)
+    assert {:bad, {:error, {:bad_stream_event, ^event}}} = SessionStream.check(event, false)
+    assert {:bad, {:error, _}} = SessionStream.check({:user_message, :s1, "more"}, true)
+    assert {:bad, {:error, _}} = SessionStream.check({:user_message, "s1", nil}, true)
+  end
+
   test "the error reason of the provider call is capped", %{core: core} do
     assert {:error, {:oops, @marker}} = run(core, "refuse_int")
   end

@@ -14,7 +14,8 @@ defmodule Helyx.TUI.ViewModel do
       pay for the size of the call; `result` is nil while it runs, then the
       tool result message
     * `{:notice, text}` – an aborted or failed turn, a harness that lost
-      its session or got a cut transcript, or a command the client rejected
+      its session or got a cut transcript, a steer that was not confirmed, or
+      a command the client rejected
       (`notice/2`)
 
   `reason` is why the client rejected the last input, or nil. It is
@@ -83,7 +84,8 @@ defmodule Helyx.TUI.ViewModel do
     :tool_execution_end,
     :queue_update,
     :model_change,
-    :harness_session
+    :harness_session,
+    :steer_unconfirmed
   ]
 
   @delta_keys [:text_delta, :thinking_delta, :tool_call]
@@ -188,6 +190,9 @@ defmodule Helyx.TUI.ViewModel do
   end
 
   defp fold(vm, %Event{type: :model_change, data: %{model: model}}), do: %{vm | model: model}
+
+  defp fold(vm, %Event{type: :steer_unconfirmed, data: %{text: text}}),
+    do: add_cell(vm, {:notice, "the steer was not confirmed; send it again if needed: " <> text})
 
   defp fold(vm, %Event{
          type: :harness_session,

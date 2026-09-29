@@ -40,6 +40,10 @@ defmodule Helyx.Event do
       to resume another one that the harness no longer has; `cut` is the
       number of transcript messages the provider left out of what it sent
       to the fresh session
+    * `:steer_unconfirmed` – `%{text: String.t()}`: a steer of a connected
+      turn that Helyx cannot confirm the harness took, with its text. It
+      goes out at the end of the turn, or after it when the answer comes
+      late. Helyx does not send it again. The user can send it again.
   """
 
   @enforce_keys [:type, :session_id, :instance_id, :turn_id, :seq, :data]
@@ -58,6 +62,7 @@ defmodule Helyx.Event do
           | :queue_update
           | :model_change
           | :harness_session
+          | :steer_unconfirmed
 
   @type t :: %__MODULE__{
           type: type(),

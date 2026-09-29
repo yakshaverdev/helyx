@@ -54,8 +54,12 @@ defmodule Helyx.Session do
   that the harness got interrupts it there; the abort returns after the
   answer, or after the harness process stopped. A model or provider switch
   closes the harness process before the next turn, and so does the end of
-  the session. Until #202, a steer on a connected turn waits for the next
-  turn, as a follow-up.
+  the session. A steer reaches the running connected turn at most once: the
+  harness takes it at its next model call, and the user message joins the
+  transcript there. A steer that arrives before the harness has the turn
+  goes into the turn's prompt. A steer that the harness confirms it did
+  not get waits for the next turn. A steer that Helyx cannot confirm is
+  never sent again; a `:steer_unconfirmed` event carries its text.
 
   An abort does not block the session. The session ends the turn at once and
   asks the hands to release the turn's resources. This can take many

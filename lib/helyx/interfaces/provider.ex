@@ -96,6 +96,16 @@ defmodule Helyx.Provider do
       provider replies now or later with the action `{:reply, from,
       value}`: `{:turn, ...}` and `{:interrupt, ...}` take `:ok` or
       `{:error, reason}`, and `:close` takes `:ok` after the program exited.
+      `{:steer, turn_id, steer_id, text}` comes only after the `:ok` of
+      its turn. It takes `:ok` when the program has the steer,
+      `:rejected` when it is confirmed that the program did not get it
+      (the terminal of the turn went out first, or the program refused
+      it), and `{:error, reason}` when it is not known. The session queues
+      a rejected steer for the next turn and never sends a steer again.
+      While a written steer is unresolved, the provider does not end the
+      turn; when the program takes it, the provider sends the event
+      `{:user_message, steer_id, text}`, and the session appends the user
+      message there.
       `:idle_close` comes after the session was idle for 30 minutes with
       the program: it takes `:ok` after the program exited, as `:close`,
       or `:busy` when the program still runs work of its own, such as a
@@ -110,7 +120,9 @@ defmodule Helyx.Provider do
   turn ends at its `done` or `error` event. A malformed event, a reply of
   the wrong shape or for no open request, an error reply to `{:turn, ...}`
   or `{:interrupt, ...}`, and a bad return stop the harness process: its
-  port closes, and the watchdog stops the program.
+  port closes, and the watchdog stops the program. At most 8 requests are
+  open at once: Core answers one more with `{:error, :busy}` and does not
+  give it to the provider.
 
   Every request has a deadline: a kill of the harness process armed with
   the request at the OTP timer server (`:timer.kill_after/2`), which Core
@@ -135,12 +147,14 @@ defmodule Helyx.Provider do
           | {:message_end, stop_reason(), map()}
           | {:tool_result, String.t(), {:ok | :error, String.t()}}
           | {:harness_session, String.t(), non_neg_integer()}
+          | {:user_message, String.t(), String.t()}
 
   @typedoc "The ref of a request from Core, for its reply."
   @type from :: reference()
 
   @type request ::
           {:turn, turn_id :: String.t(), Helyx.Context.t()}
+          | {:steer, turn_id :: String.t(), steer_id :: String.t(), text :: String.t()}
           | {:interrupt, turn_id :: String.t()}
           | :close
           | :idle_close

@@ -525,6 +525,12 @@ defmodule Helyx.TUI.ViewModelTest do
            ]
   end
 
+  test "an unconfirmed steer shows a notice with its text" do
+    assert fold(steer_unconfirmed: %{text: "more"}).cells == [
+             {:notice, "the steer was not confirmed; send it again if needed: more"}
+           ]
+  end
+
   test "a reject sets the reason, events keep it, and clear_reason/1 removes it" do
     vm = new()
     assert vm.reason == nil

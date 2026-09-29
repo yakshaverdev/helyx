@@ -38,7 +38,7 @@ defmodule Helyx.Session.HarnessTest do
         | harness_ms:
             Map.merge(
               state.harness_ms,
-              Map.new(Keyword.take(bounds, [:turn, :interrupt, :close, :idle]))
+              Map.new(Keyword.take(bounds, [:turn, :interrupt, :steer, :close, :idle]))
             )
       }
     end)
@@ -98,20 +98,6 @@ defmodule Helyx.Session.HarnessTest do
     test "a turn reply that comes late, within the bound, keeps the turn", %{core: core} do
       {session, _pid, _hands} = start(core, "late_turn")
       assert final_text(turn(session, "one")) == "echo:prepared|one"
-    end
-
-    test "a steer on a connected turn waits for the next turn", %{core: core} do
-      {session, _pid, _hands} = start(core, "hang")
-      :ok = Session.prompt(session, "one")
-      assert_receive {:conn, :turn, harness, {:turn, turn_id, _}}
-
-      :ok = Session.steer(session, "more")
-      assert [%{data: %{follow_ups: 1}}] = [List.last(collect_until(:queue_update))]
-      send(harness, {:finish, turn_id})
-      collect_until(:agent_end)
-
-      assert_receive {:conn, :turn, ^harness, {:turn, _, context}}
-      assert Message.text(List.last(context.messages)) == "more"
     end
 
     # The hands release the closed harness process and end before the
@@ -365,21 +351,6 @@ defmodule Helyx.Session.HarnessTest do
       assert texts == ["B", "A"]
     end
 
-    test "a steer on a preparing turn waits for the next turn", %{core: core} do
-      {session, pid, hands} = start(core, "echo")
-      turn(session, "zero")
-      :erlang.suspend_process(hands)
-      :ok = Session.prompt(session, "one")
-      assert %{turn: %{phase: :preparing}} = :sys.get_state(pid)
-      :ok = Session.steer(session, "later")
-      :erlang.resume_process(hands)
-
-      events = collect_until(:agent_end)
-      assert Enum.any?(events, &(&1.type == :queue_update and &1.data.follow_ups == 1))
-      assert final_text(events) == "echo:prepared|one"
-      assert final_text(collect_until(:agent_end)) == "echo:prepared|later"
-    end
-
     for {text, kind} <- [
           {"nil_build", :model_context},
           {"bad_build", :model_context},
@@ -445,6 +416,251 @@ defmodule Helyx.Session.HarnessTest do
       :erlang.resume_process(pid)
 
       assert {:session_behind, _length, 10_000} = error(collect_until(:agent_end))
+    end
+  end
+
+  describe "steer (#202)" do
+    # A turn in `submitted`: its `:ok` came before its first delta.
+    defp submitted(core, model, bounds \\ []) do
+      {session, pid, _hands} = start(core, model, bounds)
+      :ok = Session.prompt(session, "one")
+      assert_receive {:conn, :turn, harness, {:turn, turn_id, _}}
+      collect_until(:message_update)
+      {session, pid, harness, turn_id}
+    end
+
+    defp unconfirmed(events), do: for(%{type: :steer_unconfirmed, data: data} <- events, do: data)
+
+    defp ends(events) do
+      for %{type: :message_end, data: %{message: m}} <- events, do: {m.role, Message.text(m)}
+    end
+
+    test "on a submitted turn reaches the harness, and the user message joins where it took it",
+         %{core: core} do
+      {session, _pid, harness, turn_id} = submitted(core, "steer_take")
+      :ok = Session.steer(session, "more")
+      assert_receive {:conn, :steer, ^harness, {:steer, ^turn_id, steer_id, "more"}}
+      assert is_binary(steer_id)
+
+      send(harness, {:finish, turn_id})
+      events = collect_until(:agent_end)
+      assert ends(events) == [{:assistant, "so far"}, {:user, "more"}, {:assistant, ""}]
+      assert unconfirmed(events) == []
+      refute Enum.any?(events, &(&1.type == :queue_update))
+    end
+
+    test "while preparing joins the prompt of the turn and is not sent as a steer",
+         %{core: core} do
+      {session, pid, hands} = start(core, "echo")
+      turn(session, "zero")
+      assert_received {:conn, :turn, _harness, _zero}
+      :erlang.suspend_process(hands)
+      :ok = Session.prompt(session, "one")
+      assert %{turn: %{phase: :preparing}} = :sys.get_state(pid)
+      :ok = Session.steer(session, "later")
+      :erlang.resume_process(hands)
+
+      events = collect_until(:agent_end)
+      assert final_text(events) == "echo:prepared|later"
+      assert_received {:conn, :turn, _harness, {:turn, _, context}}
+      assert context.messages |> Enum.take(-2) |> Enum.map(&Message.text/1) == ["one", "later"]
+      refute_received {:conn, :steer, _, _}
+    end
+
+    test "while submitting stays local and goes out as a steer after the :ok", %{core: core} do
+      {session, pid, _hands} = start(core, "late_turn")
+      :ok = Session.prompt(session, "one")
+      assert_receive {:conn, :turn, harness, {:turn, turn_id, _}}
+      :erlang.suspend_process(harness)
+      assert %{turn: %{phase: :submitting}} = :sys.get_state(pid)
+      :ok = Session.steer(session, "more")
+      assert %{data: %{steers: 1}} = List.last(collect_until(:queue_update))
+      refute_received {:conn, :steer, _, _}
+      :erlang.resume_process(harness)
+
+      assert_receive {:conn, :steer, ^harness, {:steer, ^turn_id, _, "more"}}, 2_000
+      # "late_turn" ends the turn with its :ok, so the steer's answer, :ok
+      # with no user message, comes after the terminal: a notice then.
+      collect_until(:agent_end)
+      assert unconfirmed(collect_until(:steer_unconfirmed)) == [%{text: "more"}]
+    end
+
+    test "rejected after the terminal waits for its answer, then starts the next turn",
+         %{core: core} do
+      {session, pid, harness, turn_id} = submitted(core, "steer_hold")
+      :ok = Session.steer(session, "more")
+      assert_receive {:held, from}
+      send(harness, {:finish, turn_id})
+      events = collect_until(:agent_end)
+      assert unconfirmed(events) == []
+      assert %{turn: nil, aborting: %{steers: steers}} = :sys.get_state(pid)
+      assert map_size(steers) == 1
+
+      send(harness, {:answer, from, :rejected})
+      assert_receive {:conn, :turn, ^harness, {:turn, _, context}}
+      assert Message.text(List.last(context.messages)) == "more"
+    end
+
+    test "an abort in the wait for a steer answer gives its notice, and a late :rejected starts no turn",
+         %{core: core} do
+      {session, pid, harness, turn_id} = submitted(core, "steer_hold")
+      :ok = Session.steer(session, "more")
+      assert_receive {:held, from}
+      send(harness, {:finish, turn_id})
+      collect_until(:agent_end)
+
+      # The abort waits for the open request.
+      abort = Task.async(fn -> Session.abort(session) end)
+      assert unconfirmed(collect_until(:steer_unconfirmed)) == [%{text: "more"}]
+      assert %{aborting: %{steers: steers}} = :sys.get_state(pid)
+      assert map_size(steers) == 1
+      send(harness, {:answer, from, :rejected})
+      assert :ok = Task.await(abort)
+      assert %{turn: nil, aborting: nil, queues: %{steers: []}} = :sys.get_state(pid)
+      refute_received {:conn, :turn, _, _}
+    end
+
+    test "an abort in the wait for a taken steer's answer starts no turn before the answer",
+         %{core: core} do
+      {session, pid, harness, turn_id} = submitted(core, "steer_early")
+      :ok = Session.steer(session, "more")
+      assert_receive {:held, from}
+      send(harness, {:finish, turn_id})
+      collect_until(:agent_end)
+
+      :ok = Session.follow_up(session, "next")
+      collect_until(:queue_update)
+      abort = Task.async(fn -> Session.abort(session) end)
+      # The abort drops the follow-up; the wait still holds the request.
+      assert %{data: %{follow_ups: 0}} = List.last(collect_until(:queue_update))
+      assert %{aborting: %{steers: steers, callers: [_]}} = :sys.get_state(pid)
+      assert map_size(steers) == 1
+      send(harness, {:answer, from, :ok})
+      assert :ok = Task.await(abort)
+      refute_received {:helyx_event, %{type: :steer_unconfirmed}}
+      refute_received {:conn, :turn, _, _}
+    end
+
+    test "taken before its answer: the turn end waits for the answer, with no notice",
+         %{core: core} do
+      {session, pid, harness, turn_id} = submitted(core, "steer_early")
+      :ok = Session.steer(session, "more")
+      assert_receive {:held, from}
+      send(harness, {:finish, turn_id})
+      events = collect_until(:agent_end)
+      assert {:user, "more"} in ends(events)
+      assert %{turn: nil, aborting: %{steers: steers}} = :sys.get_state(pid)
+      assert map_size(steers) == 1
+
+      :ok = Session.follow_up(session, "next")
+      send(harness, {:answer, from, :ok})
+      assert_receive {:conn, :turn, ^harness, {:turn, _, context}}
+      assert Message.text(List.last(context.messages)) == "next"
+      refute_received {:helyx_event, %{type: :steer_unconfirmed}}
+    end
+
+    test "rejected during the turn waits in the local queue for the next turn", %{core: core} do
+      {session, _pid, harness, turn_id} = submitted(core, "steer_reject")
+      :ok = Session.steer(session, "more")
+      assert %{data: %{steers: 1}} = List.last(collect_until(:queue_update))
+      send(harness, {:finish, turn_id})
+      assert unconfirmed(collect_until(:agent_end)) == []
+
+      assert_receive {:conn, :turn, ^harness, {:turn, _, context}}
+      assert Message.text(List.last(context.messages)) == "more"
+    end
+
+    for model <- ["hang", "steer_error"] do
+      test "#{model}: a steer with no user message ends in a notice and is not sent again",
+           %{core: core} do
+        {session, pid, harness, turn_id} = submitted(core, unquote(model))
+        :ok = Session.steer(session, "more")
+        assert_receive {:conn, :steer, ^harness, _}
+        send(harness, {:finish, turn_id})
+
+        events = collect_until(:agent_end)
+        assert unconfirmed(events) == [%{text: "more"}]
+        assert Enum.find_index(events, &(&1.type == :steer_unconfirmed)) < length(events) - 1
+        assert %{turn: nil, aborting: nil, queues: %{steers: []}} = :sys.get_state(pid)
+      end
+    end
+
+    test "an abort with a steer that has no answer gives a notice", %{core: core} do
+      {session, pid, harness, _turn_id} = submitted(core, "steer_hold")
+      :ok = Session.steer(session, "more")
+      assert_receive {:held, from}
+      abort = Task.async(fn -> Session.abort(session) end)
+      assert unconfirmed(collect_until(:agent_end)) == [%{text: "more"}]
+      # The wait holds the open request until its answer: no late kill.
+      assert %{aborting: %{steers: steers}} = :sys.get_state(pid)
+      assert map_size(steers) == 1
+      send(harness, {:answer, from, :rejected})
+      assert :ok = Task.await(abort)
+      assert %{aborting: nil, queues: %{steers: []}} = :sys.get_state(pid)
+    end
+
+    test "a failed turn with a steer that has no answer gives a notice; a late :rejected starts no turn",
+         %{core: core} do
+      {session, pid, harness, turn_id} = submitted(core, "steer_hold")
+      :ok = Session.steer(session, "more")
+      assert_receive {:held, from}
+      send(harness, {:fail, turn_id})
+      events = collect_until(:agent_end)
+      assert unconfirmed(events) == [%{text: "more"}]
+      assert error(events) == :failed
+      # The wait holds the open request until its answer: no late kill.
+      assert %{aborting: %{steers: steers}} = :sys.get_state(pid)
+      assert map_size(steers) == 1
+
+      :ok = Session.follow_up(session, "next")
+      refute_received {:conn, :turn, _, _}
+      send(harness, {:answer, from, :rejected})
+      assert_receive {:conn, :turn, ^harness, {:turn, _, context}}
+      assert Message.text(List.last(context.messages)) == "next"
+      refute_received {:helyx_event, %{type: :steer_unconfirmed}}
+    end
+
+    test "the harness_down in the wait after an abort ends its open steer requests",
+         %{core: core} do
+      {session, pid, harness, _turn_id} = submitted(core, "steer_hold")
+      :ok = Session.steer(session, "more")
+      assert_receive {:held, _from}
+      abort = Task.async(fn -> Session.abort(session) end)
+      assert unconfirmed(collect_until(:agent_end)) == [%{text: "more"}]
+      send(harness, :stop)
+      assert :ok = Task.await(abort)
+      assert %{aborting: nil, harness: nil, queues: %{steers: []}} = :sys.get_state(pid)
+      refute_received {:helyx_event, %{type: :steer_unconfirmed}}
+    end
+
+    test "a steer callback that blocks is killed at the steer bound; the turn fails with a notice",
+         %{core: core} do
+      {session, _pid, harness, _turn_id} = submitted(core, "steer_block", steer: 100)
+      ref = Process.monitor(harness)
+      :ok = Session.steer(session, "more")
+      assert_receive {:DOWN, ^ref, :process, _, :killed}, 2_000
+
+      events = collect_until(:agent_end)
+      assert unconfirmed(events) == [%{text: "more"}]
+      assert error(events) == :harness_timeout
+    end
+
+    # The loop answers the ninth open request itself; the 32 steers count
+    # the held ones, and the 24 unknown ones get their notice at the end.
+    test "sent steers count in the 32; over 8 open requests the loop answers :busy",
+         %{core: core} do
+      {session, _pid, harness, turn_id} = submitted(core, "steer_hold")
+      for n <- 1..32, do: :ok = Session.steer(session, "s#{n}")
+      assert Session.steer(session, "s33") == {:error, :queue_full}
+      for _ <- 1..8, do: assert_receive({:held, _from})
+      refute_received {:held, _from}
+
+      send(harness, {:finish, turn_id})
+      assert length(unconfirmed(collect_until(:agent_end))) == 24
+
+      send(harness, :stop)
+      notices = for _ <- 1..8, do: hd(collect_until(:steer_unconfirmed) |> unconfirmed())
+      assert Enum.sort(Enum.map(notices, & &1.text)) == Enum.sort(for n <- 1..8, do: "s#{n}")
     end
   end
 

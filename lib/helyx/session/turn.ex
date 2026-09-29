@@ -16,7 +16,11 @@ defmodule Helyx.Session.Turn do
   # turn passed to a provider with an external turn, or nil. A connected
   # turn has a `phase`, `:preparing`, `:submitting`, or `:submitted`, the
   # prepared `context` until it is sent, and the `pending` ref of the
-  # answer to `{:turn, ...}`.
+  # answer to `{:turn, ...}`. `steers` lists each steer that the turn sent
+  # to the harness and that has no `user_message` or no answer yet, in
+  # send order: `{steer_id, text, answer}`, where `answer` is the `from`
+  # ref until the answer comes, then `:answered`; a steer taken before its
+  # answer keeps a nil `text` until the answer.
 
   alias Helyx.{Message, ModelRef}
 
@@ -33,7 +37,8 @@ defmodule Helyx.Session.Turn do
     :context,
     :pending,
     calls: [],
-    rejected: %{}
+    rejected: %{},
+    steers: []
   ]
 
   @type t :: %__MODULE__{}
