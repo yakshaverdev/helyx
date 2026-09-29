@@ -46,25 +46,30 @@ defmodule Helyx.Watchdog.HarnessStopTest do
     assert group_gone_within?(group, 300)
   end
 
-  # The hands can take the close reply after the Core stopped its task
-  # supervisor, so their release crashes and logs. The port closes with its
-  # owner, the harness process, so the watchdog still ends the group.
-  @tag :capture_log
+  # The session stops its hands before it ends, so the hands never run a
+  # release after the Core stopped its task supervisor (#219): they end with
+  # `:shutdown`, not a crash, before the Core stop returns.
   test "a Core stop with an idle harness process ends the program group", %{core: core} do
-    {_session, group} = start(core, "idle")
+    {session, group} = start(core, "idle")
     assert agent_end().data.stop_reason == :end_turn
+    hands = monitor_hands(session)
     Process.flag(:trap_exit, true)
     :ok = stop_supervised(core)
+    assert_received {:DOWN, ^hands, :process, _, :shutdown}
     assert group_gone_within?(group, 300)
   end
 
-  @tag :capture_log
   test "a Core stop during a connected turn ends the program group", %{core: core} do
-    {_session, group} = start(core, "hang")
+    {session, group} = start(core, "hang")
+    hands = monitor_hands(session)
     Process.flag(:trap_exit, true)
     :ok = stop_supervised(core)
+    assert_received {:DOWN, ^hands, :process, _, :shutdown}
     assert group_gone_within?(group, 300)
   end
+
+  defp monitor_hands(session),
+    do: Process.monitor(:sys.get_state(Session.pid(session)).hands)
 
   test "input over the watchdog stdin cap stops the program group and fails the turn",
        %{core: core} do

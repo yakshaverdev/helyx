@@ -114,14 +114,32 @@ defmodule Helyx.Session.HarnessTest do
       assert Message.text(List.last(context.messages)) == "more"
     end
 
-    test "the session end closes it", %{core: core} do
-      {session, pid, _hands} = start(core, "echo")
+    # The hands release the closed harness process and end before the
+    # session does, so no release runs after a Core stop took the task
+    # supervisor (#219).
+    test "the session end closes it, releases it, and stops the hands first", %{core: core} do
+      {session, pid, hands} = start(core, "echo")
       turn(session, "one")
       assert_received {:conn, :init, harness, _}
       ref = Process.monitor(harness)
+      hands_ref = Process.monitor(hands)
 
       GenServer.stop(pid)
       assert_received {:conn, :close, ^harness, :close}
+      assert_received {:DOWN, ^ref, :process, _, _}
+      assert_received {:release, :deliver, [{:report, _}]}
+      assert_received {:DOWN, ^hands_ref, :process, _, :shutdown}
+    end
+
+    test "the session end during a turn stops the hands first", %{core: core} do
+      {session, pid, hands} = start(core, "hang")
+      :ok = Session.prompt(session, "one")
+      assert_receive {:conn, :turn, harness, _}
+      ref = Process.monitor(harness)
+      hands_ref = Process.monitor(hands)
+
+      GenServer.stop(pid)
+      assert_received {:DOWN, ^hands_ref, :process, _, :shutdown}
       assert_receive {:DOWN, ^ref, :process, _, _}
     end
 
