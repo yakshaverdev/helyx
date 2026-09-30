@@ -17,6 +17,9 @@ defmodule Helyx.Session.Stream do
   # The reason of a rejected call (`Helyx.Provider`), and the reason Core
   # gives a call with an integer over the digit limit.
   @max_reason_bytes 1_024
+  # The text of a notice (`Helyx.Provider`), the bound of the bundled
+  # `HarnessIO.cap_error/1`.
+  @max_notice_bytes 2_000
   # The most messages that may wait in the session mailbox before a send.
   # A count, not bytes: every event is already capped.
   @max_session_queue 10_000
@@ -158,6 +161,13 @@ defmodule Helyx.Session.Stream do
   def check({:rejected_tool_call, call, reason}, false = _external?)
       when is_binary(reason) and byte_size(reason) <= @max_reason_bytes,
       do: tool_call(call, reason)
+
+  # A notice for the user, from any turn. It becomes a `:notice` event
+  # only: it never joins the transcript.
+  def check({:notice, text} = event, _external?)
+      when is_binary(text) and byte_size(text) <= @max_notice_bytes do
+    if String.valid?(text), do: {:send, event, nil}, else: {:bad, malformed(event)}
+  end
 
   # The stop reason set is closed (`Message.stop_reasons/0`), and the
   # session file holds only JSON. A terminal whose stop reason is outside

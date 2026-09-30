@@ -18,6 +18,10 @@ defmodule Helyx.Provider do
       decode, or `%{}`. Its result is `{:error, "tool call not run: " <>
       reason}`. `reason` is valid UTF-8 of at most 1,024 bytes; it must not
       hold the raw arguments. Only a local turn accepts this event
+    * `{:notice, text}`: a notice for the user, such as an error of the
+      program that a later part of the turn made obsolete. `text` is valid
+      UTF-8 of at most 2,000 bytes. The session sends it as a `:notice`
+      event and keeps it out of the transcript and the assistant message
     * `{:done, %{stop_reason: stop_reason, usage: map}}`: the call finished
     * `{:error, term}`: the call failed
 

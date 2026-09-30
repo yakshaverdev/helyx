@@ -531,6 +531,12 @@ defmodule Helyx.TUI.ViewModelTest do
            ]
   end
 
+  test "a provider notice shows its text" do
+    assert fold(notice: %{text: "claude-code: the error before the steer: boom"}).cells == [
+             {:notice, "claude-code: the error before the steer: boom"}
+           ]
+  end
+
   test "a reject sets the reason, events keep it, and clear_reason/1 removes it" do
     vm = new()
     assert vm.reason == nil

@@ -276,6 +276,7 @@ defmodule Helyx.Test.Provider do
   #   "raw_call"   a tool call whose name is not valid UTF-8
   #   "bad_stop"   done with a stop reason outside the file format's set
   #   "harness_event" a message end, which only a harness may send
+  #   "notice"     text, a notice, more text, then done
   #   "bad_args"   a tool call whose arguments the file format cannot hold
   #   "recover"    a first turn the file cannot hold, then a clean "again" turn
   #   "wide"       a delta tuple with an extra element
@@ -466,6 +467,9 @@ defmodule Helyx.Test.Provider do
 
   def stream("bad_stop", _context, _opts),
     do: {:ok, [{:text_delta, "hi"}, {:done, %{stop_reason: :refusal, usage: %{}}}]}
+
+  def stream("notice", _context, _opts),
+    do: {:ok, [{:text_delta, "hi"}, {:notice, "heads up"}, {:text_delta, " there"}, done()]}
 
   def stream("harness_event", _context, _opts),
     do: {:ok, [{:text_delta, "hi"}, {:message_end, :end_turn, %{}}, done()]}
