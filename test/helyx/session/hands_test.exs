@@ -38,7 +38,8 @@ defmodule Helyx.Session.HandsTest do
       ] ++ opts
 
     {:ok, hands} = Helyx.Session.Hands.start_link(opts)
-
+    # `await_held/2` waits for the hold calls that the trace shows.
+    :erlang.trace(hands, true, [:receive])
     hands
   end
 
@@ -204,9 +205,12 @@ defmodule Helyx.Session.HandsTest do
     assert_receive {:tool_result, "t1", "c1", {:error, text}}, 2_000
     assert text =~ "could not be released"
 
-    # The release Task is gone; only the ending tool Task can be left.
-    Process.sleep(100)
-    assert Task.Supervisor.children(Helyx.Core.task_supervisor(core)) == []
+    # The release Task is gone; only the ending tool Task can be left, and
+    # it ends.
+    for pid <- Task.Supervisor.children(Helyx.Core.task_supervisor(core)) do
+      ref = Process.monitor(pid)
+      assert_receive {:DOWN, ^ref, :process, ^pid, _reason}
+    end
   end
 
   @tag :capture_log
@@ -261,18 +265,14 @@ defmodule Helyx.Session.HandsTest do
     assert upcase(hands, "c2") == {:ok, "HI"}
   end
 
-  # Polls until `n` running Tasks hold a handle, so cancel finds them held.
-  defp await_held(hands, n, tries \\ 200) do
-    cond do
-      map_size(:sys.get_state(hands).held) >= n ->
-        :ok
-
-      tries == 0 ->
-        flunk("no handle was held")
-
-      true ->
-        Process.sleep(10)
-        await_held(hands, n, tries - 1)
+  # Waits until the hands got `n` hold calls, then until they handled them,
+  # so cancel finds the handles held.
+  defp await_held(hands, n) do
+    for _ <- 1..n do
+      assert_receive {:trace, ^hands, :receive, {:"$gen_call", {_task, _}, {:hold, _}}}
     end
+
+    :erlang.trace(hands, false, [:receive])
+    :sys.get_state(hands)
   end
 end

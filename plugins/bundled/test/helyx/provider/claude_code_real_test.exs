@@ -5,6 +5,7 @@ defmodule Helyx.Provider.ClaudeCodeRealTest do
   # `mix test --include real_claude test/helyx/provider/claude_code_real_test.exs`.
   use ExUnit.Case, async: false
 
+  import Helyx.Test.Events
   import Helyx.Test.OSHelpers
 
   alias Helyx.{Event, Session}
@@ -14,20 +15,14 @@ defmodule Helyx.Provider.ClaudeCodeRealTest do
   @moduletag :tmp_dir
   @moduletag timeout: 300_000
 
+  # A turn of the real program over the network.
+  @real_turn_ms 120_000
+
   # The `Bash` tool refuses a standalone `sleep`, so the commands are python
   # (research note, #200 section).
   defp sleeper(file, seconds),
     do:
       ~s|python3 -c "import os, time; open('#{file}', 'w').write(str(os.getpid())); time.sleep(#{seconds})"|
-
-  defp collect_until(type, acc \\ []) do
-    receive do
-      {:helyx_event, %Event{type: ^type} = event} -> Enum.reverse([event | acc])
-      {:helyx_event, %Event{} = event} -> collect_until(type, [event | acc])
-    after
-      120_000 -> flunk("timed out waiting for #{type}")
-    end
-  end
 
   test "a background task survives an abort and is gone after the session ends",
        %{tmp_dir: tmp} do
@@ -50,23 +45,26 @@ defmodule Helyx.Provider.ClaudeCodeRealTest do
       Second, in the foreground, after the first one started: #{sleeper("fg.pid", 90)}
       """)
 
-    bg = wait_for_pid(Path.join(tmp, "bg.pid"), 6_000)
-    fg = wait_for_pid(Path.join(tmp, "fg.pid"), 6_000)
+    bg = wait_for_pid(Path.join(tmp, "bg.pid"), 60_000)
+    fg = wait_for_pid(Path.join(tmp, "fg.pid"), 60_000)
     %{pid: harness} = :sys.get_state(Session.pid(session)).harness
 
     :ok = Session.abort(session)
 
     assert [%{stop_reason: :aborted}] =
-             for(%Event{type: :agent_end, data: d} <- collect_until(:agent_end), do: d)
+             for(
+               %Event{type: :agent_end, data: d} <- collect_until(:agent_end, @real_turn_ms),
+               do: d
+             )
 
     # The interrupt ends the foreground command; the background task and
     # the program stay.
-    assert gone_within?(fg, 500)
+    assert gone_within?(fg, 5_000)
     assert os_alive?(bg)
     assert %{pid: ^harness} = :sys.get_state(Session.pid(session)).harness
 
     GenServer.stop(Session.pid(session))
 
-    assert gone_within?(bg, 1_000)
+    assert gone_within?(bg, 10_000)
   end
 end

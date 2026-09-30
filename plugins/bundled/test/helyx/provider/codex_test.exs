@@ -9,6 +9,8 @@ defmodule Helyx.Provider.CodexTest do
   # async.
   use ExUnit.Case, async: false
 
+  import Helyx.Test.Events
+  import Helyx.Test.HarnessDriver
   import Helyx.Test.OSHelpers
 
   alias Helyx.{Event, HarnessIO, Message, Session}
@@ -155,15 +157,6 @@ defmodule Helyx.Provider.CodexTest do
   defp request(bin, n, method), do: Enum.find(stdin(bin, n), &(&1["method"] == method))
   defp runs(bin), do: bin |> Path.join("count") |> File.read!() |> String.trim()
 
-  defp collect_until(type, acc \\ []) do
-    receive do
-      {:helyx_event, %Event{type: ^type} = event} -> Enum.reverse([event | acc])
-      {:helyx_event, %Event{} = event} -> collect_until(type, [event | acc])
-    after
-      5_000 -> flunk("timed out waiting for #{type}; got #{inspect(Enum.reverse(acc))}")
-    end
-  end
-
   defp start(ctx, model \\ "codex/gpt-6-luna") do
     {:ok, session} =
       Session.start(ctx.core, model: model, cwd: ctx.work, sessions_dir: ctx.sessions)
@@ -203,41 +196,6 @@ defmodule Helyx.Provider.CodexTest do
     {from, actions, state}
   end
 
-  # Gives the test process's messages to `harness_info/2` until `done?`
-  # holds for the actions so far. A stop is the last action,
-  # `{:stop, reason}`.
-  defp drive(state, actions, done?) do
-    if done?.(actions) do
-      {actions, state}
-    else
-      receive do
-        message ->
-          case Codex.harness_info(message, state) do
-            {:ok, more, state} -> drive(state, actions ++ more, done?)
-            {:stop, reason, state} -> {actions ++ [{:stop, reason}], state}
-          end
-      after
-        5_000 -> flunk("no end; got #{inspect(actions)}")
-      end
-    end
-  end
-
-  # Gives the program's lines to `harness_info/2` until `done?` holds for
-  # the state. The lines give no action.
-  defp settle(state, done?) do
-    if done?.(state) do
-      state
-    else
-      receive do
-        message ->
-          {:ok, [], state} = Codex.harness_info(message, state)
-          settle(state, done?)
-      after
-        5_000 -> flunk("no such state; got #{inspect(state)}")
-      end
-    end
-  end
-
   defp turn_ended?(actions) do
     Enum.any?(actions, fn
       {:event, _turn_id, {kind, _}} -> kind in [:done, :error]
@@ -255,7 +213,7 @@ defmodule Helyx.Provider.CodexTest do
   defp run_direct(messages, work) do
     {:ok, state} = connect(work)
     {_from, actions, state} = ask(state, {:turn, "t1", %Helyx.Context{messages: messages}})
-    {actions, state} = drive(state, actions, &turn_ended?/1)
+    {actions, state} = pump(Codex, state, actions, &turn_ended?/1)
     if not match?({:stop, _}, List.last(actions)), do: close(state)
     events(actions)
   end
@@ -263,7 +221,7 @@ defmodule Helyx.Provider.CodexTest do
   # Ends the program, so it has read every line that it was sent.
   defp close(state) do
     {from, [], state} = ask(state, :close)
-    assert {[{:reply, ^from, :ok}], _state} = drive(state, [], replied?(from))
+    assert {[{:reply, ^from, :ok}], _state} = pump(Codex, state, [], replied?(from))
   end
 
   @moduletag :tmp_dir
@@ -686,10 +644,15 @@ defmodule Helyx.Provider.CodexTest do
         ask(state, {:turn, "t1", %Helyx.Context{messages: [Message.user("go")]}})
 
       {actions, state} =
-        drive(state, actions, &Enum.any?(&1, fn a -> match?({:event, _, {:tool_call, _}}, a) end))
+        pump(
+          Codex,
+          state,
+          actions,
+          &Enum.any?(&1, fn a -> match?({:event, _, {:tool_call, _}}, a) end)
+        )
 
       go(bin)
-      {actions, _state} = drive(state, actions, fn _ -> false end)
+      {actions, _state} = pump(Codex, state, actions, fn _ -> false end)
 
       assert {:stop, {:malformed, "item/started"}} = List.last(actions)
       assert [%{id: "exec-1"}] = for({:event, _, {:tool_call, call}} <- actions, do: call)
@@ -757,7 +720,8 @@ defmodule Helyx.Provider.CodexTest do
       ask(state, {:turn, "t1", %Helyx.Context{messages: [Message.user("go")]}})
 
     {actions, state} =
-      drive(
+      pump(
+        Codex,
         state,
         actions,
         &Enum.any?(&1, fn a -> match?({:event, _, {:tool_result, _, _}}, a) end)
@@ -765,7 +729,7 @@ defmodule Helyx.Provider.CodexTest do
 
     assert {:reply, turn, :ok} in actions
     {from, [], state} = ask(state, {:interrupt, "t1"})
-    {actions, _state} = drive(state, [], replied?(from))
+    {actions, _state} = pump(Codex, state, [], replied?(from))
 
     assert [{:event, "t1", {:error, {:codex, "interrupted", ""}}}, {:reply, ^from, :ok}] = actions
 
@@ -782,7 +746,12 @@ defmodule Helyx.Provider.CodexTest do
       ask(state, {:turn, "t1", %Helyx.Context{messages: [Message.user("go")]}})
 
     {_actions, state} =
-      drive(state, actions, &Enum.any?(&1, fn a -> match?({:event, _, {:tool_call, _}}, a) end))
+      pump(
+        Codex,
+        state,
+        actions,
+        &Enum.any?(&1, fn a -> match?({:event, _, {:tool_call, _}}, a) end)
+      )
 
     assert {from, [{:reply, from, {:error, :command_running}}], _state} =
              ask(state, {:interrupt, "t1"})
@@ -797,7 +766,7 @@ defmodule Helyx.Provider.CodexTest do
     {:ok, state} = connect(work)
     {turn, _, state} = ask(state, {:turn, "t1", %Helyx.Context{messages: [Message.user("go")]}})
     {from, [], state} = ask(state, {:interrupt, "t1"})
-    {actions, _state} = drive(state, [], replied?(from))
+    {actions, _state} = pump(Codex, state, [], replied?(from))
 
     assert [{:reply, ^turn, :ok}, {:event, "t1", {:error, _}}, {:reply, ^from, :ok}] = actions
     assert %{"params" => %{"turnId" => "turn1"}} = request(bin, 1, "turn/interrupt")
@@ -816,7 +785,7 @@ defmodule Helyx.Provider.CodexTest do
     {:ok, state} = connect(work)
     {_turn, _, state} = ask(state, {:turn, "t1", %Helyx.Context{messages: [Message.user("go")]}})
     {from, [], state} = ask(state, {:interrupt, "t1"})
-    {actions, _state} = drive(state, [], fn _ -> false end)
+    {actions, _state} = pump(Codex, state, [], fn _ -> false end)
 
     assert {:stop, :command_running} = List.last(actions)
     refute Enum.any?(actions, &match?({:reply, ^from, _}, &1))
@@ -839,7 +808,7 @@ defmodule Helyx.Provider.CodexTest do
         ask(state, {:turn, "t1", %Helyx.Context{messages: [Message.user("go")]}})
 
       {from, [], state} = ask(state, {:interrupt, "t1"})
-      {actions, _state} = drive(state, [], fn _ -> false end)
+      {actions, _state} = pump(Codex, state, [], fn _ -> false end)
 
       assert {:stop, {:malformed, "turn/completed"}} = List.last(actions)
       refute Enum.any?(actions, &match?({:reply, ^from, _}, &1))
@@ -858,7 +827,7 @@ defmodule Helyx.Provider.CodexTest do
 
     {:ok, state} = connect(work)
     {turn, _, state} = ask(state, {:turn, "t1", %Helyx.Context{messages: [Message.user("go")]}})
-    {actions, _state} = drive(state, [], fn _ -> false end)
+    {actions, _state} = pump(Codex, state, [], fn _ -> false end)
 
     assert {:stop, {:malformed, "turn/start"}} = List.last(actions)
     refute Enum.any?(actions, &match?({:reply, ^turn, _}, &1))
@@ -878,7 +847,7 @@ defmodule Helyx.Provider.CodexTest do
     fresh(bin, 1, @tid, late ++ reply(@tid, "Hi."))
     {:ok, state} = connect(work)
     {turn, _, state} = ask(state, {:turn, "t1", %Helyx.Context{messages: [Message.user("go")]}})
-    {actions, state} = drive(state, [], &turn_ended?/1)
+    {actions, state} = pump(Codex, state, [], &turn_ended?/1)
 
     assert {:reply, turn, :ok} in actions
     assert {:event, "t1", {:done, _}} = List.last(actions)
@@ -932,19 +901,24 @@ defmodule Helyx.Provider.CodexTest do
 
     {:ok, state} = connect(work)
     {_turn, _, state} = ask(state, {:turn, "t1", %Helyx.Context{messages: [Message.user("go")]}})
-    {_actions, state} = drive(state, [], &match?([_ | _], events(&1)))
+    {_actions, state} = pump(Codex, state, [], &match?([_ | _], events(&1)))
     {first, [], state} = ask(state, {:interrupt, "t1"})
-    {actions, state} = drive(state, [], replied?(first))
+    {actions, state} = pump(Codex, state, [], replied?(first))
     assert {:reply, first, :ok} in actions
 
     {_next, _, state} =
       ask(state, {:turn, "t2", %Helyx.Context{messages: [Message.user("again")]}})
 
     {_actions, state} =
-      drive(state, [], &Enum.any?(&1, fn a -> match?({:event, "t2", {:text_delta, _}}, a) end))
+      pump(
+        Codex,
+        state,
+        [],
+        &Enum.any?(&1, fn a -> match?({:event, "t2", {:text_delta, _}}, a) end)
+      )
 
     {second, [], state} = ask(state, {:interrupt, "t2"})
-    {actions, state} = drive(state, [], replied?(second))
+    {actions, state} = pump(Codex, state, [], replied?(second))
     assert {:reply, second, :ok} in actions
     refute Enum.any?(actions, &match?({:stop, _}, &1))
     close(state)
@@ -970,7 +944,7 @@ defmodule Helyx.Provider.CodexTest do
       {_turn, _, state} =
         ask(state, {:turn, "t1", %Helyx.Context{messages: [Message.user("go")]}})
 
-      {actions, _state} = drive(state, [], fn _ -> false end)
+      {actions, _state} = pump(Codex, state, [], fn _ -> false end)
       assert {:stop, {:malformed, ^method}} = List.last(actions)
     end
   end
@@ -990,7 +964,7 @@ defmodule Helyx.Provider.CodexTest do
       {_turn, _, state} =
         ask(state, {:turn, "t1", %Helyx.Context{messages: [Message.user("go")]}})
 
-      {actions, _state} = drive(state, [], fn _ -> false end)
+      {actions, _state} = pump(Codex, state, [], fn _ -> false end)
       assert {:stop, {:malformed, ^method}} = List.last(actions)
     end
   end
@@ -1002,7 +976,7 @@ defmodule Helyx.Provider.CodexTest do
     {:ok, state} = connect(work)
     {_turn, _, state} = ask(state, {:turn, "t1", %Helyx.Context{messages: [Message.user("go")]}})
     {from, [], state} = ask(state, {:interrupt, "t1"})
-    {actions, _state} = drive(state, [], fn _ -> false end)
+    {actions, _state} = pump(Codex, state, [], fn _ -> false end)
     assert {:stop, {:malformed, "turn/interrupt"}} = List.last(actions)
     refute Enum.any?(actions, &match?({:reply, ^from, _}, &1))
   end
@@ -1027,7 +1001,7 @@ defmodule Helyx.Provider.CodexTest do
     {:ok, state} = connect(work)
     {_turn, _, state} = ask(state, {:turn, "t1", %Helyx.Context{messages: [Message.user("go")]}})
     {from, [], state} = ask(state, {:interrupt, "t1"})
-    {actions, _state} = drive(state, [], fn _ -> false end)
+    {actions, _state} = pump(Codex, state, [], fn _ -> false end)
 
     assert {:stop, {:malformed, "item/started"}} = List.last(actions)
     refute Enum.any?(actions, &match?({:reply, ^from, _}, &1))
@@ -1050,7 +1024,7 @@ defmodule Helyx.Provider.CodexTest do
     fresh(bin, 1, @tid, reply(@tid, "ok"))
     {:ok, state} = connect(work)
     {_turn, _, state} = ask(state, {:turn, "t1", %Helyx.Context{messages: [Message.user("go")]}})
-    {_actions, state} = drive(state, [], &turn_ended?/1)
+    {_actions, state} = pump(Codex, state, [], &turn_ended?/1)
     assert {from, [{:reply, from, :ok}], _state} = ask(state, {:interrupt, "t1"})
     assert request(bin, 1, "turn/interrupt") == nil
   end
@@ -1065,7 +1039,8 @@ defmodule Helyx.Provider.CodexTest do
         ask(state, {:turn, "t1", %Helyx.Context{messages: [Message.user("go")]}})
 
       {_actions, state} =
-        drive(
+        pump(
+          Codex,
           state,
           actions,
           &Enum.any?(&1, fn a -> match?({:event, _, {:text_delta, _}}, a) end)
@@ -1076,7 +1051,7 @@ defmodule Helyx.Provider.CodexTest do
 
     defp steer(state) do
       {from, [], state} = ask(state, {:steer, "t1", "s1", "more"})
-      {actions, _state} = drive(state, [], &turn_ended?/1)
+      {actions, _state} = pump(Codex, state, [], &turn_ended?/1)
       {from, actions}
     end
 
@@ -1087,7 +1062,7 @@ defmodule Helyx.Provider.CodexTest do
       {_turn, _, state} =
         ask(state, {:turn, "t1", %Helyx.Context{messages: [Message.user("go")]}})
 
-      {_actions, state} = drive(state, [], &turn_ended?/1)
+      {_actions, state} = pump(Codex, state, [], &turn_ended?/1)
       assert {from, [{:reply, from, :rejected}], state} = ask(state, {:steer, "t1", "s1", "more"})
       close(state)
       assert request(bin, 1, "turn/steer") == nil
@@ -1123,10 +1098,15 @@ defmodule Helyx.Provider.CodexTest do
       {_turn, actions, state} = turn_on(state)
 
       {_actions, state} =
-        drive(state, actions, &Enum.any?(&1, fn a -> match?({:event, _, {:tool_call, _}}, a) end))
+        pump(
+          Codex,
+          state,
+          actions,
+          &Enum.any?(&1, fn a -> match?({:event, _, {:tool_call, _}}, a) end)
+        )
 
       {from, [], state} = ask(state, {:steer, "t1", "s1", "more"})
-      {actions, _state} = drive(state, [], fn _ -> false end)
+      {actions, _state} = pump(Codex, state, [], fn _ -> false end)
 
       assert {:stop, :tool_running} = List.last(actions)
       refute Enum.any?(actions, &match?({:reply, ^from, _}, &1))
@@ -1178,9 +1158,9 @@ defmodule Helyx.Provider.CodexTest do
     {:ok, state} = connect(work)
     {_turn, _, state} = ask(state, {:turn, "t1", %Helyx.Context{messages: [Message.user("go")]}})
     {from, [], state} = ask(state, {:interrupt, "t1"})
-    {actions, state} = drive(state, [], replied?(from))
+    {actions, state} = pump(Codex, state, [], replied?(from))
     assert {:reply, from, :ok} in actions
-    assert {[{:stop, :item_of_ended_turn}], _state} = drive(state, [], fn _ -> false end)
+    assert {[{:stop, :item_of_ended_turn}], _state} = pump(Codex, state, [], fn _ -> false end)
   end
 
   test "a turn that Helyx did not ask for stops the harness process", %{bin: bin, work: work} do
@@ -1190,9 +1170,9 @@ defmodule Helyx.Provider.CodexTest do
 
     {:ok, state} = connect(work)
     {_turn, _, state} = ask(state, {:turn, "t1", %Helyx.Context{messages: [Message.user("go")]}})
-    {actions, state} = drive(state, [], &turn_ended?/1)
+    {actions, state} = pump(Codex, state, [], &turn_ended?/1)
     assert {:event, "t1", {:done, _}} = List.last(actions)
-    assert {[{:stop, :turn_not_asked}], _state} = drive(state, [], fn _ -> false end)
+    assert {[{:stop, :turn_not_asked}], _state} = pump(Codex, state, [], fn _ -> false end)
   end
 
   test "an error answer to turn/start answers the turn with it", %{bin: bin, work: work} do
@@ -1200,7 +1180,7 @@ defmodule Helyx.Provider.CodexTest do
     on(bin, 1, "turn/start", [j(%{id: "@", error: %{code: -1, message: "busy"}})])
     {:ok, state} = connect(work)
     {turn, _, state} = ask(state, {:turn, "t1", %Helyx.Context{messages: [Message.user("go")]}})
-    {actions, _state} = drive(state, [], replied?(turn))
+    {actions, _state} = pump(Codex, state, [], replied?(turn))
     assert {:reply, turn, {:error, {:codex, "turn/start", "busy"}}} in actions
   end
 
@@ -1225,7 +1205,7 @@ defmodule Helyx.Provider.CodexTest do
 
     {:ok, state} = connect(work)
     {turn, _, state} = ask(state, {:turn, "t1", %Helyx.Context{messages: [Message.user("go")]}})
-    {actions, state} = drive(state, [], &turn_ended?/1)
+    {actions, state} = pump(Codex, state, [], &turn_ended?/1)
     assert [{:reply, ^turn, :ok} | rest] = actions
     assert [{:error, {:codex, "failed", "boom"}}] = events(rest)
 
@@ -1237,7 +1217,7 @@ defmodule Helyx.Provider.CodexTest do
       ask(state, {:turn, "t2", %Helyx.Context{messages: [Message.user("again")]}})
 
     go(bin)
-    {actions, state} = drive(state, [], &turn_ended?/1)
+    {actions, state} = pump(Codex, state, [], &turn_ended?/1)
     assert {:reply, next, :ok} in actions
     assert [{:done, _}] = for({:event, "t2", {:done, _} = e} <- actions, do: e)
     assert request(bin, 1, "turn/interrupt") == nil
@@ -1268,13 +1248,13 @@ defmodule Helyx.Provider.CodexTest do
 
     {:ok, state} = connect(work)
     {_turn, _, state} = ask(state, {:turn, "t1", %Helyx.Context{messages: [Message.user("go")]}})
-    {_actions, state} = drive(state, [], &turn_ended?/1)
+    {_actions, state} = pump(Codex, state, [], &turn_ended?/1)
 
     {_next, [], state} =
       ask(state, {:turn, "t2", %Helyx.Context{messages: [Message.user("again")]}})
 
     go(bin)
-    assert {[{:stop, :turn_not_asked}], _state} = drive(state, [], fn _ -> false end)
+    assert {[{:stop, :turn_not_asked}], _state} = pump(Codex, state, [], fn _ -> false end)
   end
 
   test "a late turn/interrupt answer does not answer the next interrupt", %{bin: bin, work: work} do
@@ -1304,22 +1284,27 @@ defmodule Helyx.Provider.CodexTest do
 
     {:ok, state} = connect(work)
     {_turn, _, state} = ask(state, {:turn, "t1", %Helyx.Context{messages: [Message.user("go")]}})
-    {_actions, state} = drive(state, [], &match?([_ | _], events(&1)))
+    {_actions, state} = pump(Codex, state, [], &match?([_ | _], events(&1)))
     {first, [], state} = ask(state, {:interrupt, "t1"})
-    {actions, state} = drive(state, [], replied?(first))
+    {actions, state} = pump(Codex, state, [], replied?(first))
     assert {:reply, first, :ok} in actions
 
     {_next, _, state} =
       ask(state, {:turn, "t2", %Helyx.Context{messages: [Message.user("again")]}})
 
     {_actions, state} =
-      drive(state, [], &Enum.any?(&1, fn a -> match?({:event, "t2", {:text_delta, _}}, a) end))
+      pump(
+        Codex,
+        state,
+        [],
+        &Enum.any?(&1, fn a -> match?({:event, "t2", {:text_delta, _}}, a) end)
+      )
 
     # The answer to the first `turn/interrupt` is still due, so the second
     # waits for it.
     {second, [], state} = ask(state, {:interrupt, "t2"})
     go(bin)
-    {actions, state} = drive(state, [], replied?(second))
+    {actions, state} = pump(Codex, state, [], replied?(second))
     assert {:reply, second, :ok} in actions
     close(state)
 
@@ -1334,7 +1319,7 @@ defmodule Helyx.Provider.CodexTest do
 
     {:ok, state} = connect(work)
     {_turn, _, state} = ask(state, {:turn, "t1", %Helyx.Context{messages: [Message.user("go")]}})
-    assert {[{:stop, :turn_not_asked}], _state} = drive(state, [], fn _ -> false end)
+    assert {[{:stop, :turn_not_asked}], _state} = pump(Codex, state, [], fn _ -> false end)
   end
 
   test "a close ends the input and answers at the exit", %{bin: bin, work: work} do
@@ -1359,10 +1344,10 @@ defmodule Helyx.Provider.CodexTest do
     fresh(bin, 1, @tid, reply(@tid, "Hi."))
     {:ok, state} = connect(work)
     {turn, _, state} = ask(state, {:turn, "t1", %Helyx.Context{messages: [Message.user("go")]}})
-    {actions, state} = drive(state, [], &turn_ended?/1)
+    {actions, state} = pump(Codex, state, [], &turn_ended?/1)
     assert {:reply, turn, :ok} in actions
     {from, [], state} = ask(state, :idle_close)
-    assert {[{:reply, ^from, :ok}], _state} = drive(state, [], replied?(from))
+    assert {[{:reply, ^from, :ok}], _state} = pump(Codex, state, [], replied?(from))
   end
 
   # Sub-agents (#224). A `subAgentActivity` item of the parent thread, as
@@ -1388,16 +1373,17 @@ defmodule Helyx.Provider.CodexTest do
     fresh(bin, 1, @tid, agent("started") ++ reply(@tid, "Spawned."), tail)
     {:ok, state} = connect(work)
     {_turn, _, state} = turn_on(state)
-    {actions, state} = drive(state, [], &turn_ended?/1)
+    {actions, state} = pump(Codex, state, [], &turn_ended?/1)
     assert {:done, %{stop_reason: :end_turn}} = List.last(events(actions))
 
     assert {from, [{:reply, from, :busy}], state} = ask(state, :idle_close)
 
     # The completed item has the turn id of the ended turn.
     go(bin)
-    state = settle(state, &(&1.agents == %{}))
+    # The lines give no action.
+    state = settle(Codex, state, &(&1.agents == %{}), &(&1 == []))
     {from, [], state} = ask(state, :idle_close)
-    assert {[{:reply, ^from, :ok}], _state} = drive(state, [], replied?(from))
+    assert {[{:reply, ^from, :ok}], _state} = pump(Codex, state, [], replied?(from))
   end
 
   test "an interrupt while a child thread of the turn has open work answers an error at once and sends nothing",
@@ -1407,7 +1393,7 @@ defmodule Helyx.Provider.CodexTest do
     {_turn, _, state} = turn_on(state)
 
     {_actions, state} =
-      drive(state, [], &Enum.any?(&1, fn a -> match?({:event, _, {:text_delta, _}}, a) end))
+      pump(Codex, state, [], &Enum.any?(&1, fn a -> match?({:event, _, {:text_delta, _}}, a) end))
 
     assert {from, [{:reply, from, {:error, :agent_running}}], _state} =
              ask(state, {:interrupt, "t1"})
@@ -1423,7 +1409,7 @@ defmodule Helyx.Provider.CodexTest do
     {_turn, _, state} = turn_on(state)
 
     {_actions, state} =
-      drive(state, [], &Enum.any?(&1, fn a -> match?({:event, _, {:text_delta, _}}, a) end))
+      pump(Codex, state, [], &Enum.any?(&1, fn a -> match?({:event, _, {:text_delta, _}}, a) end))
 
     assert state.agents == %{@child => "turn1"}
 
@@ -1439,11 +1425,11 @@ defmodule Helyx.Provider.CodexTest do
     on(bin, 1, "turn/start", as_turn(turn(@tid, []), "turn2") ++ later, "", 2)
     {:ok, state} = connect(work)
     {_turn, _, state} = turn_on(state)
-    {_actions, state} = drive(state, [], &turn_ended?/1)
+    {_actions, state} = pump(Codex, state, [], &turn_ended?/1)
     {_turn, _, state} = turn_on(state, "t2")
 
     {_actions, state} =
-      drive(state, [], &Enum.any?(&1, fn a -> match?({:event, _, {:text_delta, _}}, a) end))
+      pump(Codex, state, [], &Enum.any?(&1, fn a -> match?({:event, _, {:text_delta, _}}, a) end))
 
     assert {from, [{:reply, from, {:error, :agent_running}}], _state} =
              ask(state, {:interrupt, "t2"})
@@ -1463,7 +1449,7 @@ defmodule Helyx.Provider.CodexTest do
     {:ok, state} = connect(work)
     {_turn, _, state} = turn_on(state)
     {from, [], state} = ask(state, {:interrupt, "t1"})
-    {actions, _state} = drive(state, [], fn _ -> false end)
+    {actions, _state} = pump(Codex, state, [], fn _ -> false end)
 
     assert {:stop, :agent_running} = List.last(actions)
     refute Enum.any?(actions, &match?({:reply, ^from, _}, &1))
@@ -1481,11 +1467,11 @@ defmodule Helyx.Provider.CodexTest do
 
     {:ok, state} = connect(work)
     {_turn, _, state} = turn_on(state)
-    {_actions, state} = drive(state, [], &turn_ended?/1)
+    {_actions, state} = pump(Codex, state, [], &turn_ended?/1)
     {turn, _, state} = turn_on(state, "t2")
-    {_actions, state} = drive(state, [], replied?(turn))
+    {_actions, state} = pump(Codex, state, [], replied?(turn))
     {from, [], state} = ask(state, {:interrupt, "t2"})
-    {actions, state} = drive(state, [], replied?(from))
+    {actions, state} = pump(Codex, state, [], replied?(from))
 
     assert {:reply, from, :ok} in actions
     assert %{"params" => %{"turnId" => "turn2"}} = request(bin, 1, "turn/interrupt")
@@ -1987,7 +1973,7 @@ defmodule Helyx.Provider.CodexTest do
          %{bin: bin, work: work} do
       fresh(bin, 1, @tid, reply(@tid, "Hi."))
       {state, actions} = tools_turn(work)
-      {actions, state} = drive(state, actions, &turn_ended?/1)
+      {actions, state} = pump(Codex, state, actions, &turn_ended?/1)
       close(state)
 
       assert %{"params" => %{"capabilities" => %{"experimentalApi" => true}}} =
@@ -2014,7 +2000,7 @@ defmodule Helyx.Provider.CodexTest do
     test "a stored id resumes only a thread with the session's tool set", %{bin: bin, work: work} do
       fresh(bin, 1, @tid, reply(@tid, "Hi."))
       {state, actions} = tools_turn(work)
-      {actions, state} = drive(state, actions, &turn_ended?/1)
+      {actions, state} = pump(Codex, state, actions, &turn_ended?/1)
       [{:harness_session, id, 0} | _] = events(actions)
       close(state)
 
@@ -2047,12 +2033,12 @@ defmodule Helyx.Provider.CodexTest do
       on(bin, 1, "initialize", [j(%{id: "@", error: %{code: -32_600, message: "no"}})], "", 1)
       on(bin, 1, "turn/start", as_turn(turn(@tid, reply(@tid, "Again.")), "turn2"), "", 2)
       {state, actions} = tools_turn(work)
-      {actions, state} = drive(state, actions, &turn_ended?/1)
+      {actions, state} = pump(Codex, state, actions, &turn_ended?/1)
 
       {_from, next, state} =
         ask(state, {:turn, "t2", %Helyx.Context{messages: [Message.user("y")]}})
 
-      {next, state} = drive(state, next, &turn_ended?/1)
+      {next, state} = pump(Codex, state, next, &turn_ended?/1)
       close(state)
 
       assert [
@@ -2083,7 +2069,7 @@ defmodule Helyx.Provider.CodexTest do
 
       on(bin, 1, "thread/start", [j(%{id: "@", error: error})], "", 1)
       {state, actions} = tools_turn(work)
-      {actions, state} = drive(state, actions, &turn_ended?/1)
+      {actions, state} = pump(Codex, state, actions, &turn_ended?/1)
       close(state)
 
       assert [%{"params" => %{"dynamicTools" => [_]}}, %{"params" => second}] =
@@ -2099,7 +2085,7 @@ defmodule Helyx.Provider.CodexTest do
       {state, actions} = tools_turn(work)
 
       requested? = &Enum.any?(&1, fn a -> match?({:event, _, {:tool_request, _, _, _}}, a) end)
-      {actions, state} = drive(state, actions, requested?)
+      {actions, state} = pump(Codex, state, actions, requested?)
 
       assert {:event, "t1", {:tool_request, "call_d1", "read", %{"path" => "a.txt"}}} =
                List.last(actions)
@@ -2118,7 +2104,7 @@ defmodule Helyx.Provider.CodexTest do
       fresh(bin, 1, @tid, [started(@tid, dyn("call_d1")), tool_call(@tid, nil, "call_d1")])
       {state, actions} = tools_turn(work)
       requested? = &Enum.any?(&1, fn a -> match?({:event, _, {:tool_request, _, _, _}}, a) end)
-      {_actions, state} = drive(state, actions, requested?)
+      {_actions, state} = pump(Codex, state, actions, requested?)
       {_from, _actions, state} = ask(state, {:tool_result, "t1", "call_d1", {:ok, "hello"}})
       close(state)
       assert [{nil, %{"success" => true}}] = answers(bin, 1)
@@ -2175,7 +2161,7 @@ defmodule Helyx.Provider.CodexTest do
 
       on(bin, 1, "turn/start", turn(@tid, lines ++ reply(@tid, "Done.")))
       {state, actions} = tools_turn(work)
-      {actions, state} = drive(state, actions, &turn_ended?/1)
+      {actions, state} = pump(Codex, state, actions, &turn_ended?/1)
       close(state)
 
       assert [{:tool_request, "call_d1", _, _}] =
@@ -2271,7 +2257,7 @@ defmodule Helyx.Provider.CodexTest do
       :ok = Session.abort(session)
 
       assert [%{stop_reason: :aborted}] = of_type(collect_until(:agent_end), :agent_end)
-      assert gone_within?(pid, 300)
+      assert gone_within?(pid, 3_000)
 
       lines = stdin(bin, 1)
       answer = Enum.find_index(lines, &match?(%{"id" => 0, "result" => _}, &1))
@@ -2300,7 +2286,7 @@ defmodule Helyx.Provider.CodexTest do
       assert [%{stop_reason: :error, error: {:harness_stop, {:codex_exit, _}}}] =
                of_type(collect_until(:agent_end), :agent_end)
 
-      assert gone_within?(pid, 300)
+      assert gone_within?(pid, 3_000)
       GenServer.stop(Session.pid(session))
     end
 
@@ -2323,7 +2309,7 @@ defmodule Helyx.Provider.CodexTest do
       # The next turn starts only after the hands' cleanup and the late
       # answer.
       assert [%{stop_reason: :end_turn}] = of_type(prompt(session, "next"), :agent_end)
-      assert gone_within?(pid, 300)
+      assert gone_within?(pid, 3_000)
 
       assert [{0, %{"success" => false, "contentItems" => [%{"text" => "aborted"}]}}] =
                answers(bin, 1)

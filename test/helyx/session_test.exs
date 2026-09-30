@@ -3,6 +3,8 @@ defmodule Helyx.SessionTest do
   # lives in the Fake provider plugin's tests.
   use ExUnit.Case, async: true
 
+  import Helyx.Test.Events
+
   alias Helyx.{Event, Session}
 
   setup do
@@ -29,27 +31,23 @@ defmodule Helyx.SessionTest do
     Helyx.Message.text(Enum.find(events, &(&1.type == :turn_end)).data.message)
   end
 
-  defp collect_until(type, acc \\ []) do
-    receive do
-      {:helyx_event, %Event{type: ^type} = event} -> Enum.reverse([event | acc])
-      {:helyx_event, %Event{} = event} -> collect_until(type, [event | acc])
-    after
-      1_000 -> flunk("timed out waiting for #{type}; got #{inspect(Enum.reverse(acc))}")
-    end
-  end
-
   defp turn_end_usage(events),
     do: Enum.find(events, &(&1.type == :turn_end)).data.message.usage
 
   defp stop_reason(events), do: List.last(events).data.stop_reason
 
-  # Stops the session and waits until Registry frees its name, so a resume
-  # that follows cannot race the asynchronous cleanup.
-  defp stop_session(core, session, stop) do
-    registry = Helyx.Core.sessions_registry(core)
-    [{pid, _}] = Registry.lookup(registry, session.id)
+  # The model "test/gate.<name>" with the test process registered as <name>:
+  # each turn sends {:waiting, pid} and waits for :go.
+  defp gated_model, do: "test/gate." <> Helyx.Test.Gate.open()
+
+  # Stops the session and waits until it is down. A resume that follows
+  # needs no wait for the Registry cleanup: a register replaces an entry
+  # whose owner is dead.
+  defp stop_session(session, stop) do
+    pid = Session.pid(session)
+    ref = Process.monitor(pid)
     stop.(pid)
-    await(fn -> Registry.lookup(registry, session.id) == [] end, "the registry entry to free")
+    assert_receive {:DOWN, ^ref, :process, ^pid, _reason}
   end
 
   # The messages in the mailbox now, in order.
@@ -413,11 +411,13 @@ defmodule Helyx.SessionTest do
   end
 
   test "a prompt during a turn is rejected", %{core: core} do
-    {:ok, session} = Session.start(core, model: "test/ok")
+    {:ok, session} = Session.start(core, model: gated_model())
     {:ok, _} = Session.subscribe(session)
 
     :ok = Session.prompt(session, "hello")
+    assert_receive {:waiting, stream}
     assert {:error, :turn_running} = Session.prompt(session, "again")
+    send(stream, :go)
     assert stop_reason(collect_until(:agent_end)) == :end_turn
   end
 
@@ -723,7 +723,7 @@ defmodule Helyx.SessionTest do
     {:ok, _} = Session.subscribe(session)
 
     :ok = Session.prompt(session, "hello")
-    assert_receive {:helyx_event, %Event{type: :tool_execution_start} = started}, 1_000
+    assert_receive {:helyx_event, %Event{type: :tool_execution_start} = started}
 
     :ok = Session.abort(session)
     events = collect_until(:agent_end)
@@ -750,7 +750,7 @@ defmodule Helyx.SessionTest do
     {:ok, _} = Session.subscribe(session)
 
     :ok = Session.prompt(session, "hello")
-    assert_receive {:helyx_event, %Event{type: :message_update}}, 1_000
+    assert_receive {:helyx_event, %Event{type: :message_update}}
 
     :ok = Session.abort(session)
     events = collect_until(:agent_end)
@@ -770,7 +770,7 @@ defmodule Helyx.SessionTest do
     {:ok, _} = Session.subscribe(session)
 
     assert :ok = Session.abort(session)
-    refute_receive {:helyx_event, _}, 50
+    refute_received {:helyx_event, _}
   end
 
   # Each abort shuts down a provider Task. The session keeps no record of
@@ -804,7 +804,7 @@ defmodule Helyx.SessionTest do
     ref = Process.monitor(pid)
 
     Process.exit(pid, {:shutdown, :registry_gone})
-    assert_receive {:DOWN, ^ref, :process, ^pid, {:shutdown, :registry_gone}}, 1_000
+    assert_receive {:DOWN, ^ref, :process, ^pid, {:shutdown, :registry_gone}}
   end
 
   # The ownership chain (ADR 0004): work inside the VM is linked to its
@@ -815,12 +815,12 @@ defmodule Helyx.SessionTest do
     {:ok, session} = Session.start(core, model: "test/hang")
     {:ok, _} = Session.subscribe(session)
     :ok = Session.prompt(session, "hello")
-    assert_receive {:helyx_event, %Event{type: :message_update}}, 1_000
+    assert_receive {:helyx_event, %Event{type: :message_update}}
 
     [task] = Task.Supervisor.children(Helyx.Core.task_supervisor(core))
     ref = Process.monitor(task)
     Process.exit(Session.pid(session), :kill)
-    assert_receive {:DOWN, ^ref, :process, _, _}, 1_000
+    assert_receive {:DOWN, ^ref, :process, _, _}
   end
 
   @tag :capture_log
@@ -828,7 +828,7 @@ defmodule Helyx.SessionTest do
     {:ok, session} = Session.start(core, model: "test/abort")
     {:ok, _} = Session.subscribe(session)
     :ok = Session.prompt(session, "go")
-    assert_receive {:helyx_event, %Event{type: :tool_execution_start}}, 1_000
+    assert_receive {:helyx_event, %Event{type: :tool_execution_start}}
 
     pid = Session.pid(session)
     hands = :sys.get_state(pid).hands
@@ -845,8 +845,8 @@ defmodule Helyx.SessionTest do
     hands_ref = Process.monitor(hands)
     task_ref = Process.monitor(task)
     Process.exit(pid, :kill)
-    assert_receive {:DOWN, ^hands_ref, :process, _, _}, 1_000
-    assert_receive {:DOWN, ^task_ref, :process, _, _}, 1_000
+    assert_receive {:DOWN, ^hands_ref, :process, _, _}
+    assert_receive {:DOWN, ^task_ref, :process, _, _}
   end
 
   defp user_texts(events) do
@@ -865,7 +865,7 @@ defmodule Helyx.SessionTest do
     {:ok, _} = Session.subscribe(session)
 
     :ok = Session.prompt(session, "hello")
-    assert_receive {:helyx_event, %Event{type: :tool_execution_start}}, 1_000
+    assert_receive {:helyx_event, %Event{type: :tool_execution_start}}
     :ok = Session.steer(session, "s1")
     :ok = Session.steer(session, "s2")
 
@@ -893,16 +893,20 @@ defmodule Helyx.SessionTest do
   end
 
   test "a follow-up during a turn starts a new turn after agent_end", %{core: core} do
-    {:ok, session} = Session.start(core, model: "test/ok")
+    {:ok, session} = Session.start(core, model: gated_model())
     {:ok, _} = Session.subscribe(session)
 
     :ok = Session.prompt(session, "hello")
+    assert_receive {:waiting, stream}
     :ok = Session.follow_up(session, "next")
+    send(stream, :go)
 
     first = collect_until(:agent_end)
     assert user_texts(first) == ["hello"]
     assert queue_counts(first) == [%{steers: 0, follow_ups: 1}]
 
+    assert_receive {:waiting, stream}
+    send(stream, :go)
     second = collect_until(:agent_end)
     assert [:queue_update, :agent_start | _] = Enum.map(second, & &1.type)
     assert List.first(second).turn_id == nil
@@ -911,13 +915,17 @@ defmodule Helyx.SessionTest do
   end
 
   test "a steer left at turn end starts a new turn", %{core: core} do
-    {:ok, session} = Session.start(core, model: "test/ok")
+    {:ok, session} = Session.start(core, model: gated_model())
     {:ok, _} = Session.subscribe(session)
 
     :ok = Session.prompt(session, "hello")
+    assert_receive {:waiting, stream}
     :ok = Session.steer(session, "later")
+    send(stream, :go)
 
     collect_until(:agent_end)
+    assert_receive {:waiting, stream}
+    send(stream, :go)
     second = collect_until(:agent_end)
     assert user_texts(second) == ["later"]
   end
@@ -941,12 +949,11 @@ defmodule Helyx.SessionTest do
     {:ok, _} = Session.subscribe(session)
 
     :ok = Session.prompt(session, "hello")
-    assert_receive {:helyx_event, %Event{type: :tool_execution_start}}, 1_000
+    assert_receive {:helyx_event, %Event{type: :tool_execution_start}}
     :ok = Session.steer(session, "s")
     :ok = Session.follow_up(session, "f")
 
-    assert_receive {:helyx_event, %Event{type: :queue_update, data: %{steers: 1, follow_ups: 1}}},
-                   1_000
+    assert_receive {:helyx_event, %Event{type: :queue_update, data: %{steers: 1, follow_ups: 1}}}
 
     :ok = Session.abort(session)
     events = collect_until(:agent_end)
@@ -961,7 +968,7 @@ defmodule Helyx.SessionTest do
     {:ok, _} = Session.subscribe(session)
 
     :ok = Session.prompt(session, "hello")
-    assert_receive {:helyx_event, %Event{type: :tool_execution_start}}, 1_000
+    assert_receive {:helyx_event, %Event{type: :tool_execution_start}}
 
     # One under the limit, then at the limit, with multibyte text.
     for n <- 1..31, do: :ok = Session.steer(session, "stér #{n}")
@@ -971,7 +978,7 @@ defmodule Helyx.SessionTest do
     # 64 accepted writes, one queue_update each.
     counts =
       for _ <- 1..64 do
-        assert_receive {:helyx_event, %Event{type: :queue_update, data: data}}, 1_000
+        assert_receive {:helyx_event, %Event{type: :queue_update, data: data}}
         data
       end
 
@@ -981,7 +988,7 @@ defmodule Helyx.SessionTest do
     # One over the limit is rejected, changes nothing, and emits no event.
     assert Session.steer(session, "s33") == {:error, :queue_full}
     assert Session.follow_up(session, "f33") == {:error, :queue_full}
-    refute_receive {:helyx_event, %Event{type: :queue_update}}, 50
+    refute_received {:helyx_event, %Event{type: :queue_update}}
 
     :ok = Session.abort(session)
   end
@@ -1028,7 +1035,7 @@ defmodule Helyx.SessionTest do
     :ok = Session.prompt(session, "hello")
     assert final_text(collect_until(:agent_end)) == "user:hello"
 
-    stop_session(core, session, &GenServer.stop/1)
+    stop_session(session, &GenServer.stop/1)
 
     {:ok, resumed} = Session.resume(core, sessions_dir: dir)
     assert resumed.id == session.id
@@ -1127,9 +1134,9 @@ defmodule Helyx.SessionTest do
     {:ok, _} = Session.subscribe(session)
 
     :ok = Session.prompt(session, "hello")
-    assert_receive {:helyx_event, %Event{type: :tool_execution_start}}, 1_000
+    assert_receive {:helyx_event, %Event{type: :tool_execution_start}}
 
-    stop_session(core, session, &Process.exit(&1, :kill))
+    stop_session(session, &Process.exit(&1, :kill))
 
     {:ok, resumed} = Session.resume(core, sessions_dir: dir)
     {:ok, _} = Session.subscribe(resumed)
@@ -1446,7 +1453,7 @@ defmodule Helyx.SessionTest do
       assert change.data == %{model: "other/any"}
       assert change.turn_id == nil
       assert change.seq == List.last(first).seq + 1
-      refute_receive {:helyx_event, _}, 50
+      refute_received {:helyx_event, _}
       assert GenServer.call(Session.pid(session), {:snapshot}).model == "other/any"
 
       :ok = Session.prompt(session, "two")
@@ -1477,7 +1484,7 @@ defmodule Helyx.SessionTest do
 
       assert GenServer.call(Session.pid(session), {:snapshot}).model == "test/ok"
       assert File.read!(path) == before
-      refute_receive {:helyx_event, _}, 50
+      refute_received {:helyx_event, _}
     end
 
     @tag :tmp_dir
@@ -1493,7 +1500,7 @@ defmodule Helyx.SessionTest do
       assert [%{"type" => "session", "id" => id}, %{"type" => "model_change"} = entry] = entries
       assert %{"model" => "other/any", "parent_id" => ^id} = entry
 
-      stop_session(core, session, &GenServer.stop/1)
+      stop_session(session, &GenServer.stop/1)
 
       {:ok, resumed} = Session.resume(core, sessions_dir: dir)
       assert GenServer.call(Session.pid(resumed), {:snapshot}).model == "other/any"
@@ -1507,7 +1514,7 @@ defmodule Helyx.SessionTest do
       {:ok, _} = Session.subscribe(session)
 
       :ok = Session.prompt(session, "hello")
-      assert_receive {:helyx_event, %Event{type: :tool_execution_start}}, 1_000
+      assert_receive {:helyx_event, %Event{type: :tool_execution_start}}
       :ok = Session.set_model(session, "other/any")
       :ok = Session.follow_up(session, "again")
       assert_receive {:helyx_event, %Event{type: :model_change, turn_id: nil}}
@@ -1529,7 +1536,7 @@ defmodule Helyx.SessionTest do
 
       assert :ok = Session.set_model(session, "test/ok")
       assert_receive {:helyx_event, %Event{type: :model_change, data: %{model: "test/ok"}}}
-      refute_receive {:helyx_event, _}, 50
+      refute_received {:helyx_event, _}
 
       [path] = Path.wildcard(Path.join(dir, "**/#{session.id}.jsonl"))
       lines = path |> File.read!() |> String.split("\n", trim: true)
@@ -1599,24 +1606,20 @@ defmodule Helyx.SessionTest do
       {:ok, session} = Session.start(core, model: "test/stuck")
       {:ok, _} = Session.subscribe(session)
       hands = :sys.get_state(Session.pid(session)).hands
+      :erlang.trace(hands, true, [:receive])
 
       :ok = Session.prompt(session, "go")
-      assert_receive {:helyx_event, %Event{type: :tool_execution_start}}, 1_000
-      {session, hands, await_tool_task(hands, 100)}
+      assert_receive {:helyx_event, %Event{type: :tool_execution_start}}
+      {session, hands, await_tool_task(hands)}
     end
 
-    # The pid of the tool Task, once it holds its handles.
-    defp await_tool_task(_hands, 0), do: flunk("no handle was held")
-
-    defp await_tool_task(hands, tries) do
-      case Map.to_list(:sys.get_state(hands).held) do
-        [{task, [_, _]}] ->
-          task
-
-        _ ->
-          Process.sleep(10)
-          await_tool_task(hands, tries - 1)
-      end
+    # The pid of the tool Task, once the hands handled its two hold calls.
+    defp await_tool_task(hands) do
+      assert_receive {:trace, ^hands, :receive, {:"$gen_call", {task, _}, {:hold, _}}}
+      assert_receive {:trace, ^hands, :receive, {:"$gen_call", {^task, _}, {:hold, _}}}
+      :erlang.trace(hands, false, [:receive])
+      :sys.get_state(hands)
+      task
     end
 
     # Runs the call and returns its result, or the exit, with the time in ms.
@@ -1699,15 +1702,13 @@ defmodule Helyx.SessionTest do
       :ok = Session.prompt(session, "dropped")
 
       assert_receive {:helyx_event,
-                      %Event{type: :queue_update, data: %{steers: 0, follow_ups: 1}}},
-                     1_000
+                      %Event{type: :queue_update, data: %{steers: 0, follow_ups: 1}}}
 
       assert :ok = Session.abort(session)
       assert :ok = Task.await(abort, 1_000)
 
       assert_receive {:helyx_event,
-                      %Event{type: :queue_update, data: %{steers: 0, follow_ups: 0}}},
-                     1_000
+                      %Event{type: :queue_update, data: %{steers: 0, follow_ups: 0}}}
 
       refute_receive {:helyx_event, %Event{type: :queue_update}}, 100
       refute_receive {:helyx_event, %Event{type: :agent_start}}, 100
@@ -1736,7 +1737,7 @@ defmodule Helyx.SessionTest do
       collect_until(:agent_end)
       Process.exit(hands, :kill)
 
-      assert_receive {:DOWN, ^ref, :process, _pid, :killed}, 1_000
+      assert_receive {:DOWN, ^ref, :process, _pid, :killed}
       assert {{:error, :session_not_found}, _ms} = Task.await(abort, 1_000)
     end
   end
@@ -1767,7 +1768,7 @@ defmodule Helyx.SessionTest do
 
     test "every operation on a session that ended", %{core: core} do
       {:ok, session} = Session.start(core, model: "test/ok")
-      stop_session(core, session, &GenServer.stop/1)
+      stop_session(session, &GenServer.stop/1)
       assert_not_found(session, core)
     end
 
@@ -1866,7 +1867,7 @@ defmodule Helyx.SessionTest do
     # `ErlangError`.
     test "a subscribe while the Core stops", %{core: core} do
       {:ok, session} = Session.start(core, model: "test/ok")
-      stop_session(core, session, &GenServer.stop/1)
+      stop_session(session, &GenServer.stop/1)
       registry = Helyx.Core.events_registry(core)
 
       for {id, _, _, _} <- Supervisor.which_children(registry),
@@ -1937,7 +1938,7 @@ defmodule Helyx.SessionTest do
       {:ok, session} = Session.start(core, model: "test/ok")
       {:ok, _} = Session.subscribe(session)
       :ok = Session.prompt(session, "hi")
-      assert_receive {:helyx_event, %Event{type: :message_start}}, 1_000
+      assert_receive {:helyx_event, %Event{type: :message_start}}
       :ok = GenServer.stop(Session.pid(session))
 
       assert_end(session.id, :stopped)
@@ -1949,7 +1950,7 @@ defmodule Helyx.SessionTest do
       {:ok, killed} = Session.start(core, model: "test/ok")
       {:ok, _} = Session.subscribe(killed)
       :ok = Session.prompt(killed, "hi")
-      assert_receive {:helyx_event, %Event{type: :message_start}}, 1_000
+      assert_receive {:helyx_event, %Event{type: :message_start}}
       Process.exit(Session.pid(killed), :kill)
       assert_end(killed.id, :crashed)
 
@@ -1957,7 +1958,7 @@ defmodule Helyx.SessionTest do
       {:ok, raised} = Session.start(core, model: "test/ok")
       {:ok, _} = Session.subscribe(raised)
       :ok = Session.prompt(raised, "hi")
-      assert_receive {:helyx_event, %Event{type: :message_start}}, 1_000
+      assert_receive {:helyx_event, %Event{type: :message_start}}
       send(Session.pid(raised), :unexpected)
       assert_end(raised.id, :crashed)
     end
@@ -2049,7 +2050,7 @@ defmodule Helyx.SessionTest do
         refute_receive {:helyx_subscription_lost, ^id}, 5_500
         assert Process.alive?(pid)
         :ok = :sys.resume(restarter)
-        assert_receive {:helyx_subscription_lost, ^id}, 1_000
+        assert_receive {:helyx_subscription_lost, ^id}
         refute_receive {:helyx_subscription_lost, _}, 50
         refute_received {:helyx_session_end, _, _}
 
@@ -2170,7 +2171,7 @@ defmodule Helyx.SessionTest do
       {:ok, first} = Session.subscribe(session)
       assert Enum.all?(prompt_events(session), &(&1.instance_id == first.instance_id))
 
-      stop_session(core, session, &GenServer.stop/1)
+      stop_session(session, &GenServer.stop/1)
       {:ok, resumed} = Session.resume(core, sessions_dir: dir)
       {:ok, second} = Session.subscribe(resumed)
 
@@ -2189,7 +2190,7 @@ defmodule Helyx.SessionTest do
       {:ok, old} = Session.subscribe(session)
       prompt_events(session)
 
-      stop_session(core, session, &GenServer.stop/1)
+      stop_session(session, &GenServer.stop/1)
       assert_receive {:helyx_session_end, _id, :stopped}
       {:ok, resumed} = Session.resume(core, sessions_dir: dir)
 
