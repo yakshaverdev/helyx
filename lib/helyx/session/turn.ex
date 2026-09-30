@@ -20,8 +20,10 @@ defmodule Helyx.Session.Turn do
   # to the harness and that has no `user_message` or no answer yet, in
   # send order: `{steer_id, text, answer}`, where `answer` is the `from`
   # ref until the answer comes, then `:answered`; a steer taken before its
-  # answer keeps a nil `text` until the answer. `tools` are the Helyx tool
-  # requests of a connected turn, the head running on the hands, and
+  # answer keeps a nil `text` until the answer. `tool` is the Helyx tool
+  # request of a connected turn that runs on the hands (the harness loop
+  # keeps the waiting ones), `start` the `from` ref of its
+  # `{:tool_start, ...}` ask with no answer, and
   # `results` the `from` refs of the `tool_result` requests with no answer.
 
   alias Helyx.{Message, ModelRef}
@@ -38,10 +40,11 @@ defmodule Helyx.Session.Turn do
     :phase,
     :context,
     :pending,
+    :start,
     calls: [],
     rejected: %{},
     steers: [],
-    tools: [],
+    tool: nil,
     results: []
   ]
 

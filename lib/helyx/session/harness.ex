@@ -34,9 +34,12 @@ defmodule Helyx.Session.Harness do
     :state,
     :session,
     :live,
+    :running,
+    :started,
     open: %{},
     calls: MapSet.new(),
-    seen: MapSet.new()
+    seen: MapSet.new(),
+    waiting: []
   ]
 
   @type args :: %{
@@ -52,7 +55,12 @@ defmodule Helyx.Session.Harness do
   `ms`, and returns the `from` ref of its reply, `{:harness_reply, from,
   value}` to the caller.
   """
-  @spec request(pid(), Helyx.Provider.request(), pos_integer()) :: reference()
+  @spec request(
+          pid(),
+          Helyx.Provider.request() | {:tool_start, String.t(), String.t()},
+          pos_integer()
+        ) ::
+          reference()
   def request(pid, request, ms) do
     {:ok, tref} = :timer.kill_after(ms, pid)
     from = make_ref()
@@ -92,6 +100,9 @@ defmodule Helyx.Session.Harness do
         {:harness_request, from, tref, {:tool_result, _, _, _} = request} ->
           harness_request(request, from, tref, harness)
 
+        {:harness_request, from, tref, {:tool_start, _, _} = request} ->
+          harness_request(request, from, tref, harness)
+
         {:harness_request, from, tref, request} when map_size(harness.open) >= @max_open ->
           :timer.cancel(tref)
           send(harness.session, {:harness_reply, from, {:error, :busy}})
@@ -125,6 +136,20 @@ defmodule Helyx.Session.Harness do
   # `{turn_id, call_id}` is open when the turn is live and the id is in
   # `calls`.
   #
+  # The loop owns the queue: the session gets only the call that runs,
+  # `running`, and the next of `waiting` (its events, in order) goes to
+  # the session only when the running call's result came. The session asks
+  # `{:tool_start, ...}` before it runs the call, and the loop answers `:ok`
+  # only for the open running call, and keeps its pair in `started`. So a
+  # call that got any answer never starts. After the `:ok`, only the result
+  # of the run answers the call: `end_tools` skips it, and the session sends
+  # the result of its killed run after the hands' cleanup, also after the
+  # turn. The skip acts at the terminal; at the interrupt and the next turn
+  # that result came first, so `started` is nil there, and the one
+  # `end_tools` serves all three ends. A call withdrawn before the ask
+  # gets `:dropped` at the ask; a started one stays `running` until the
+  # result of its killed run comes, which is dropped.
+  #
   # The loop answers a tool request itself, with an error result through the
   # provider, when its turn is not live, when its id was used, and when
   # @max_tools are open. At the terminal, the interrupt, and the next turn, every open
@@ -142,13 +167,29 @@ defmodule Helyx.Session.Harness do
   end
 
   defp harness_request({:tool_result, turn_id, call_id, _result} = request, from, tref, harness) do
-    if open_call?(harness, turn_id, call_id) do
-      harness = %{harness | calls: MapSet.delete(harness.calls, call_id)}
-      write_result(request, from, tref, harness)
+    if harness.started == {turn_id, call_id} or open_call?(harness, turn_id, call_id) do
+      calls = MapSet.delete(harness.calls, call_id)
+      harness = %{harness | calls: calls, started: nil}
+
+      with {:ok, harness} <- write_result(request, from, tref, harness),
+           do: run_next(turn_id, call_id, harness)
     else
       :timer.cancel(tref)
       send(harness.session, {:harness_reply, from, :ok})
-      {:ok, harness}
+      run_next(turn_id, call_id, harness)
+    end
+  end
+
+  # The loop answers the ask itself and never waits for the session.
+  defp harness_request({:tool_start, turn_id, call_id}, from, tref, harness) do
+    :timer.cancel(tref)
+
+    if open_call?(harness, turn_id, call_id) and harness.running == call_id do
+      send(harness.session, {:harness_reply, from, :ok})
+      {:ok, %{harness | started: {turn_id, call_id}}}
+    else
+      send(harness.session, {:harness_reply, from, :dropped})
+      run_next(turn_id, call_id, harness)
     end
   end
 
@@ -172,9 +213,34 @@ defmodule Helyx.Session.Harness do
   defp open_call?(harness, turn_id, call_id),
     do: harness.live == turn_id and MapSet.member?(harness.calls, call_id)
 
-  # The live turn ends: each open tool request gets `aborted`.
+  # The result of the running call came: the next waiting call runs.
+  defp run_next(turn_id, call_id, %{live: turn_id, running: call_id} = harness) do
+    case harness.waiting do
+      [] -> {:ok, %{harness | running: nil}}
+      [{event, rejection} | waiting] -> run(event, rejection, %{harness | waiting: waiting})
+    end
+  end
+
+  defp run_next(_turn_id, _call_id, harness), do: {:ok, harness}
+
+  defp run({:tool_request, call_id, _, _} = event, rejection, harness) do
+    harness = %{harness | running: call_id}
+    sent(Stream.send_event(harness.session, harness.live, event, rejection), harness)
+  end
+
+  # The live turn ends: each open tool request gets `aborted`, except a
+  # started one, which only the result of its run answers.
   defp end_tools(%{live: turn_id, calls: calls} = harness) do
-    harness = %{harness | live: nil, calls: MapSet.new(), seen: MapSet.new()}
+    harness = %{
+      harness
+      | live: nil,
+        running: nil,
+        waiting: [],
+        calls: MapSet.new(),
+        seen: MapSet.new()
+    }
+
+    calls = Enum.reject(calls, &(harness.started == {turn_id, &1}))
 
     Enum.reduce_while(calls, {:ok, harness}, fn call_id, {:ok, harness} ->
       case answer_tool(turn_id, call_id, "aborted", harness) do
@@ -221,12 +287,16 @@ defmodule Helyx.Session.Harness do
       seen? ->
         answer_tool(turn_id, call_id, "the call id was used before in this turn", harness)
 
-      MapSet.size(harness.calls) >= @max_tools ->
+      # A withdrawn running call still runs until its result comes.
+      length(harness.waiting) + if(harness.running, do: 1, else: 0) >= @max_tools ->
         answer_tool(turn_id, call_id, @too_many, harness)
 
       true ->
         harness = %{harness | calls: MapSet.put(harness.calls, call_id)}
-        sent(Stream.send_event(harness.session, turn_id, event, rejection), harness)
+
+        if harness.running,
+          do: {:ok, %{harness | waiting: harness.waiting ++ [{event, rejection}]}},
+          else: run(event, rejection, harness)
     end
   end
 
@@ -290,15 +360,27 @@ defmodule Helyx.Session.Harness do
     end
   end
 
-  # The harness withdrew a tool request: the session stops its run. A pair
-  # that is not open has nothing to stop.
+  # The harness withdrew a tool request: the session stops the running
+  # call, and a waiting one leaves the queue. A pair that is not open has
+  # nothing to stop.
   defp action({:cancel_tool, turn_id, call_id} = action, harness)
        when is_binary(turn_id) and is_binary(call_id) do
-    if open_call?(harness, turn_id, call_id) do
-      harness = %{harness | calls: MapSet.delete(harness.calls, call_id)}
-      sent(Stream.send_checked(harness.session, action), harness)
-    else
-      {:ok, harness}
+    cond do
+      # Also after the turn: the result of its killed run is then dropped.
+      harness.started == {turn_id, call_id} ->
+        harness = %{harness | calls: MapSet.delete(harness.calls, call_id), started: nil}
+        sent(Stream.send_checked(harness.session, action), harness)
+
+      not open_call?(harness, turn_id, call_id) ->
+        {:ok, harness}
+
+      # Not started: the ask gets `:dropped`, and the next call runs then.
+      harness.running == call_id ->
+        {:ok, %{harness | calls: MapSet.delete(harness.calls, call_id)}}
+
+      true ->
+        waiting = Enum.reject(harness.waiting, &match?({{_, ^call_id, _, _}, _}, &1))
+        {:ok, %{harness | calls: MapSet.delete(harness.calls, call_id), waiting: waiting}}
     end
   end
 

@@ -57,15 +57,24 @@ defmodule Helyx.Session.HarnessToolsTest do
   defp running(hands),
     do: Enum.count(:sys.get_state(hands).tasks, fn {_ref, {_, _, id, _}} -> is_binary(id) end)
 
-  # The call ids in the session's queue of the turn.
-  defp queued(session), do: Enum.map(:sys.get_state(Session.pid(session)).turn.tools, & &1.id)
+  # The call ids in the session's queue of the turn: only the running call,
+  # because the harness loop owns the waiting queue.
+  defp queued(session) do
+    tool = :sys.get_state(Session.pid(session)).turn.tool
+    if tool, do: [tool.id], else: []
+  end
 
   # The harness process sent its events before the pong, and the snapshot
-  # call reaches the session after them.
+  # call reaches the session after them. The second pass covers the start
+  # ask of a tool request: the session sent it before the first snapshot,
+  # and handled its answer before the second one.
   defp sync(harness, session) do
-    send(harness, {:ping, self()})
-    assert_receive :pong
-    Session.model(session)
+    for _pass <- 1..2 do
+      send(harness, {:ping, self()})
+      assert_receive :pong
+      Session.model(session)
+    end
+
     :ok
   end
 
@@ -207,6 +216,8 @@ defmodule Helyx.Session.HarnessToolsTest do
 
     events = collect_until(:agent_end)
     assert List.last(events).data.stop_reason == :error
+    # The session asks the hands for the cleanup after it emits agent_end.
+    Session.model(session)
     assert running(hands) == 0
   end
 
@@ -305,8 +316,200 @@ defmodule Helyx.Session.HarnessToolsTest do
                     {:tool_result, _, "x", {:error, "the call id was used before" <> _}}}
 
     sync(harness, session)
-    refute "x" in queued(session)
-    assert "c3" in queued(session)
-    refute "c2" in queued(session)
+    assert queued(session) == ["c1"]
+  end
+
+  # Waits until the session's mailbox holds a message that `match?` finds;
+  # the session is suspended, so the message stays there.
+  defp in_mailbox(pid, match?) do
+    {:messages, messages} = Process.info(pid, :messages)
+
+    unless Enum.any?(messages, match?) do
+      Process.sleep(10)
+      in_mailbox(pid, match?)
+    end
+  end
+
+  test "a waiting call that got aborted at the terminal never starts, when the running call's result came first",
+       %{session: session, harness: harness, turn_id: turn_id} do
+    pid = Session.pid(session)
+    slow(harness, turn_id, "c1", 200)
+    slow(harness, turn_id, "x")
+    sync(harness, session)
+
+    :erlang.suspend_process(pid)
+    in_mailbox(pid, &match?({:tool_result, _, "c1", _}, &1))
+    send(harness, {:finish, turn_id})
+    assert_receive {:conn, :tool_result, _, {:tool_result, _, "x", {:error, "aborted"}}}
+
+    :erlang.trace(pid, true, [:send])
+    :erlang.resume_process(pid)
+    collect_until(:agent_end)
+    sync(harness, session)
+
+    refute_received {:trace, ^pid, :send, {:"$gen_cast", {:run, _, %{id: "x"}}}, _}
+  end
+
+  test "a call that the loop sent and then answered aborted at the terminal never starts",
+       %{session: session, harness: harness, turn_id: turn_id} do
+    pid = Session.pid(session)
+    slow(harness, turn_id, "c1", 200)
+    slow(harness, turn_id, "x")
+    sync(harness, session)
+
+    :erlang.suspend_process(harness)
+    in_mailbox(harness, &match?({:harness_request, _, _, {:tool_result, _, "c1", _}}, &1))
+    :erlang.suspend_process(pid)
+    send(harness, {:finish, turn_id})
+    :erlang.resume_process(harness)
+    assert_receive {:conn, :tool_result, _, {:tool_result, _, "x", {:error, "aborted"}}}
+
+    :erlang.trace(pid, true, [:send])
+    :erlang.resume_process(pid)
+    collect_until(:agent_end)
+    sync(harness, session)
+
+    refute_received {:trace, ^pid, :send, {:"$gen_cast", {:run, _, %{id: "x"}}}, _}
+  end
+
+  test "a call withdrawn after the loop sent it and before the ask never starts, and the next one runs",
+       %{session: session, harness: harness, turn_id: turn_id} do
+    pid = Session.pid(session)
+    slow(harness, turn_id, "c1", 200)
+    slow(harness, turn_id, "x")
+    request(harness, turn_id, "y", "upcase", %{"text" => "y"})
+    sync(harness, session)
+
+    :erlang.suspend_process(harness)
+    in_mailbox(harness, &match?({:harness_request, _, _, {:tool_result, _, "c1", _}}, &1))
+    :erlang.suspend_process(pid)
+    :erlang.resume_process(harness)
+    send(harness, {:cancel, turn_id, "x"})
+    send(harness, {:ping, self()})
+    assert_receive :pong
+
+    :erlang.trace(pid, true, [:send])
+    :erlang.resume_process(pid)
+    assert_receive {:conn, :tool_result, _, {:tool_result, _, "y", {:ok, "Y"}}}
+    refute_received {:conn, :tool_result, _, {:tool_result, _, "x", _}}
+    refute_received {:trace, ^pid, :send, {:"$gen_cast", {:run, _, %{id: "x"}}}, _}
+  end
+
+  test "an ask with no answer before its deadline stops the harness process and runs nothing",
+       %{session: session, harness: harness, turn_id: turn_id} do
+    pid = Session.pid(session)
+    :sys.replace_state(pid, &put_in(&1.harness_ms.tool_start, 100))
+    :erlang.suspend_process(pid)
+    request(harness, turn_id, "c1", "upcase", %{"text" => "c"})
+    send(harness, {:ping, self()})
+    assert_receive :pong
+    ref = Process.monitor(harness)
+    :erlang.suspend_process(harness)
+
+    :erlang.trace(pid, true, [:send])
+    :erlang.resume_process(pid)
+    assert_receive {:DOWN, ^ref, :process, ^harness, :killed}, 3_000
+    events = collect_until(:agent_end)
+    assert List.last(events).data.stop_reason == :error
+    refute_received {:trace, ^pid, :send, {:"$gen_cast", {:run, _, %{id: "c1"}}}, _}
+  end
+
+  # Holds the ask of `x` in the mailbox of the suspended harness process.
+  defp hold_ask(session, harness, turn_id) do
+    pid = Session.pid(session)
+    :erlang.suspend_process(pid)
+    request(harness, turn_id, "x", "upcase", %{"text" => "x"})
+    send(harness, {:ping, self()})
+    assert_receive :pong
+    :erlang.suspend_process(harness)
+    :erlang.resume_process(pid)
+    in_mailbox(harness, &match?({:harness_request, _, _, {:tool_start, _, "x"}}, &1))
+    pid
+  end
+
+  test "a terminal after the ok to the ask does not answer the call; the result of its run does, before the next turn",
+       %{session: session, harness: harness, turn_id: turn_id} do
+    pid = hold_ask(session, harness, turn_id)
+    :erlang.suspend_process(pid)
+    send(harness, {:finish, turn_id})
+    :erlang.resume_process(harness)
+    send(harness, {:ping, self()})
+    assert_receive :pong
+    refute_received {:conn, :tool_result, _, {:tool_result, _, "x", _}}
+
+    :erlang.trace(pid, true, [:send])
+    :erlang.resume_process(pid)
+    collect_until(:agent_end)
+    assert_receive {:trace, ^pid, :send, {:"$gen_cast", {:run, _, %{id: "x"}}}, _}
+    assert_receive {:conn, :tool_result, _, {:tool_result, ^turn_id, "x", {:error, "aborted"}}}
+
+    :ok = Session.prompt(session, "again")
+    assert_receive {:conn, :turn, ^harness, {:turn, _next, _context}}
+    refute_received {:conn, :tool_result, _, {:tool_result, _, "x", _}}
+  end
+
+  test "an abort during the ask answers the call once and runs nothing",
+       %{session: session, harness: harness, turn_id: turn_id} do
+    pid = hold_ask(session, harness, turn_id)
+    :erlang.trace(pid, true, [:send])
+    task = Task.async(fn -> Session.abort(session) end)
+    in_mailbox(harness, &match?({:harness_request, _, _, {:tool_result, _, "x", _}}, &1))
+    :erlang.resume_process(harness)
+    assert :ok = Task.await(task)
+
+    assert [{:tool_result, ^turn_id, "x", {:error, "aborted"}}, {:interrupt, ^turn_id}] =
+             Enum.take(requests_until(:interrupt), -2)
+
+    Session.model(session)
+    refute_received {:trace, ^pid, :send, {:"$gen_cast", {:run, _, %{id: "x"}}}, _}
+  end
+
+  test "a harness process that dies during the ask fails the turn and runs nothing",
+       %{session: session, harness: harness, turn_id: turn_id} do
+    pid = hold_ask(session, harness, turn_id)
+    :erlang.trace(pid, true, [:send])
+    Process.exit(harness, :kill)
+    events = collect_until(:agent_end)
+    assert List.last(events).data.stop_reason == :error
+    Session.model(session)
+    refute_received {:trace, ^pid, :send, {:"$gen_cast", {:run, _, %{id: "x"}}}, _}
+  end
+
+  test "a next turn waits for the answer of the call whose ask was open at the abort",
+       %{session: session, harness: harness, turn_id: turn_id} do
+    hold_ask(session, harness, turn_id)
+    task = Task.async(fn -> Session.abort(session) end)
+    in_mailbox(harness, &match?({:harness_request, _, _, {:tool_result, _, "x", _}}, &1))
+    :ok = Session.prompt(session, "again")
+    Session.model(session)
+    {:messages, held} = Process.info(harness, :messages)
+    refute Enum.any?(held, &match?({:harness_request, _, _, {:turn, _, _}}, &1))
+
+    :erlang.resume_process(harness)
+    assert :ok = Task.await(task)
+
+    assert [
+             {:tool_result, ^turn_id, "x", {:error, "aborted"}},
+             {:interrupt, ^turn_id},
+             {:turn, _, _}
+           ] =
+             Enum.take(requests_until(:turn), -3)
+  end
+
+  test "a started call that the harness withdraws after the terminal gets no answer",
+       %{session: session, harness: harness, turn_id: turn_id} do
+    pid = hold_ask(session, harness, turn_id)
+    :erlang.suspend_process(pid)
+    send(harness, {:finish, turn_id})
+    :erlang.resume_process(harness)
+    send(harness, {:cancel, turn_id, "x"})
+    send(harness, {:ping, self()})
+    assert_receive :pong
+
+    :erlang.resume_process(pid)
+    collect_until(:agent_end)
+    :ok = Session.prompt(session, "again")
+    assert_receive {:conn, :turn, ^harness, {:turn, _next, _context}}
+    refute_received {:conn, :tool_result, _, {:tool_result, _, "x", _}}
   end
 end
