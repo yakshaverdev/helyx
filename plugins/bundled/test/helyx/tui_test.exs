@@ -30,42 +30,6 @@ defmodule Helyx.TUI.Test.Provider.Other do
   end
 end
 
-defmodule Helyx.TUI.Test.Provider.BadTurn do
-  @moduledoc false
-  # A provider whose `turn/0` is neither `:local` nor `:external`.
-  @behaviour Helyx.Provider
-
-  @impl true
-  def id, do: "bad_turn"
-
-  @impl true
-  def stream(_model, _context, _opts), do: {:ok, []}
-
-  @impl true
-  def turn, do: :bogus
-end
-
-defmodule Helyx.TUI.Test.Provider.Monitors do
-  @moduledoc false
-  # A provider whose `turn/0` monitors a short process. `Session.set_model/2`
-  # calls `turn/0` in its caller, so `/model monitors/...` leaves a `:DOWN`
-  # message of another monitor in the TUI process.
-  @behaviour Helyx.Provider
-
-  @impl true
-  def id, do: "monitors"
-
-  @impl true
-  def stream(_model, _context, _opts), do: {:ok, []}
-
-  @impl true
-  def turn do
-    # spawn_monitor/1: a monitor set after spawn/1 can give `:noproc`.
-    spawn_monitor(fn -> :ok end)
-    :local
-  end
-end
-
 defmodule Helyx.TUITest do
   # The app callbacks, driven directly: mount subscribes the caller, key
   # events edit and send the composer, session events fold into the view
@@ -87,8 +51,6 @@ defmodule Helyx.TUITest do
     plugins = [
       Fake,
       Helyx.TUI.Test.Provider.Other,
-      Helyx.TUI.Test.Provider.BadTurn,
-      Helyx.TUI.Test.Provider.Monitors,
       Helyx.TUI.Test.Tool.Slow
     ]
 
@@ -275,13 +237,9 @@ defmodule Helyx.TUITest do
   test "the TUI exits on the end signal of its session, and only then", %{core: core} do
     state = mounted(core, "gone", [])
 
-    # `/model` runs the provider's `turn/0` in the TUI process. The monitor
-    # that `turn/0` leaves does nothing.
-    {:noreply, state} =
-      TUI.handle_event(%ExRatatui.Event.Paste{content: "/model monitors/m"}, state)
-
-    state = press(state, "enter")
-    assert GenServer.call(Session.pid(state.session), {:snapshot}).model == "monitors/m"
+    # A `:DOWN` of another monitor in the TUI process does nothing.
+    # spawn_monitor/1: a monitor set after spawn/1 can give `:noproc`.
+    spawn_monitor(fn -> :ok end)
     assert_receive {:DOWN, _ref, :process, _pid, :normal} = other
     assert {:noreply, ^state} = TUI.handle_info(other, state)
 
@@ -997,7 +955,6 @@ defmodule Helyx.TUITest do
 
       for {text, notice} <- [
             {"/model nope/any", "unknown provider: nope"},
-            {"/model bad_turn/any", "provider bad_turn has a bad turn/0"},
             {"/model fake", "invalid model ref"},
             {"/model fake/" <> String.duplicate("m", 252), "invalid model ref"},
             {"/model", "usage: /model"},

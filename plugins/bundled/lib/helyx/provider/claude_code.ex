@@ -208,15 +208,7 @@ defmodule Helyx.Provider.ClaudeCode do
   def id, do: "claude-code"
 
   @impl true
-  def turn, do: :external
-
-  @impl true
   defdelegate release(handles, mode, deadline), to: HarnessIO
-
-  # The session calls `stream/3` only for a provider that is not
-  # connected.
-  @impl true
-  def stream(_model, _context, _opts), do: {:error, :connected}
 
   @impl true
   def harness_init(model, tools, opts) do

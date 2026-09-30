@@ -56,7 +56,7 @@ The mapping lives in one public function of `Helyx.Session`, so every transport 
         :invalid_cwd | :not_found | model_error() | {:start_failed, String.t()}
 ```
 
-- `:invalid_cwd`, `:not_found`, `{:unknown_provider, id}`, and `{:bad_provider_turn, id}` pass unchanged. `start/2` never returns `:not_found`; only `resume/2` does.
+- `:invalid_cwd`, `:not_found`, and `{:unknown_provider, id}` pass unchanged. `start/2` never returns `:not_found`; only `resume/2` does.
 - `{:invalid_model_ref, ref}` passes only when the ref is within the bounds of `Helyx.ModelRef`: valid UTF-8 of at most 256 bytes, with no whitespace and no character of Unicode category C (`Helyx.ModelRef.bounded?/1`, which `parse/1` also uses). Such a ref failed to parse only for its form, a missing slash or an empty part, and it is safe to print. On a resume the ref comes from the session file, which can hold up to 64 MiB. Any other ref becomes `{:start_failed, text}`, and the log has it.
 - Any other term becomes `{:start_failed, "the session did not start; the server log has the reason"}`. The function logs the full term as a warning.
 - `start/2` and `resume/2` do not change: the product gets the full term. A transport calls `start/2` or `resume/2`, then gives the client the result of `client_start_error/1`.
@@ -79,7 +79,7 @@ The text is fixed. A reason can hold a path, a module, or an exception message f
 | each operation call | `GenServer.call` with the default 5,000 ms timeout; `abort/1` waits with `:infinity`, as before | `Helyx.Session` | a timeout exits, as before; a subscribe first removes its entry |
 | `{:start_failed, text}` | a fixed text of 56 bytes | `Helyx.Session.client_start_error/1` | n/a |
 | `{:invalid_model_ref, ref}` | the bounds of `Helyx.ModelRef`: 256 bytes of valid UTF-8, no whitespace, no category C character | `Helyx.Session.client_start_error/1` through `Helyx.ModelRef.bounded?/1` | `{:start_failed, text}`, and the log has the ref |
-| `{:unknown_provider, id}`, `{:bad_provider_turn, id}` | the provider id of a parsed ref, which `Helyx.ModelRef` bounds | `Helyx.ModelRef.parse/1` | n/a |
+| `{:unknown_provider, id}` | the provider id of a parsed ref, which `Helyx.ModelRef` bounds | `Helyx.ModelRef.parse/1` | n/a |
 | log line of a start error | the full term through `inspect/1` with its default limits. The limits apply to each collection, not to the whole line, so a deeply nested term makes a long line | `Helyx.Session.client_start_error/1` | `inspect/1` cuts each long list or binary with `...` |
 | registrations of one caller for one session | one | `Helyx.Session.subscribe/1` | a second subscribe does not register again |
 | TUI texts | "not sent: the session ended" and "the session ended" are fixed | `Helyx.TUI` | n/a |

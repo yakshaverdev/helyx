@@ -1,7 +1,4 @@
 defmodule Helyx.Session.Hands do
-  # The time a cancelled stream Task gets to end by itself.
-  @stream_stop_ms 2_000
-
   @moduledoc """
   Runs tool calls for one session in one working directory. See ADR 0003
   and ADR 0004.
@@ -31,22 +28,11 @@ defmodule Helyx.Session.Hands do
   unconfirmed, the hands refuse tool calls with an error result. Chat,
   abort, and quit are not blocked.
 
-  `stream/4` runs the stream of a harness provider call the same way, as
-  a Task of the hands with the provider module in the place of the tool,
-  because the harness program is the turn's tool runner (ADR 0004). Its
-  terminal goes to the session as `{:stream_end, turn_id, terminal}` after
-  the release. A crash gives `{:error, {:task_exit, reason}}`, and an
-  unconfirmed handle an error terminal. While a handle is unconfirmed the
-  stream is refused with an error terminal, like a tool call.
-
   A cancel request (`request_cancel/2`) aborts a turn: the hands kill the
-  turn's tool and stream Tasks and call `release/3` with `:cancel` for
-  their handles, one release Task per tool, in parallel, with one deadline.
-  The answer arrives only when every release has returned or timed out. An
-  unconfirmed handle is reported as an error. A tool Task is killed at
-  once. A stream Task gets a `:shutdown` exit signal and #{@stream_stop_ms} ms
-  before the kill: a provider whose Task traps exits can use them to ask
-  its program to stop the turn.
+  turn's Tasks at once and call `release/3` with `:cancel` for their
+  handles, one release Task per tool, in parallel, with one deadline. The
+  answer arrives only when every release has returned or timed out. An
+  unconfirmed handle is reported as an error.
 
   `connect/3` starts the harness process of a connected provider (ADR
   0007), and `prepare/3` the prepare Task of a connected turn. Both get a
@@ -114,16 +100,6 @@ defmodule Helyx.Session.Hands do
   def run(hands, turn_id, %ToolCall{} = call), do: GenServer.cast(hands, {:run, turn_id, call})
 
   @doc """
-  Starts the stream of a harness provider call: `fun` runs in a Task of the
-  hands and returns the terminal stream event, which is sent to the session
-  as `{:stream_end, turn_id, terminal}` after the release of the provider's
-  handles.
-  """
-  @spec stream(pid(), String.t(), module(), (-> term())) :: :ok
-  def stream(hands, turn_id, provider, fun) when is_function(fun, 0),
-    do: GenServer.call(hands, {:start, turn_id, {provider, fun}})
-
-  @doc """
   Starts the harness process of a connected provider: `fun` gets the ref of
   the armed connect kill and runs in a Task of the hands with no turn.
   Returns its pid, or an error text while a handle is unconfirmed.
@@ -140,18 +116,16 @@ defmodule Helyx.Session.Hands do
   release its handles in their own loop for up to the release deadline.
   The session must not wait for that. The hands start the Task when they
   take the message, after any earlier message of the session, so a later
-  `request_cancel/2` finds it. The other calls of the session, `connect/3`
-  and `stream/4`, come only when it holds no harness process: a
-  local or external turn has none (a switch closes it and waits for its
-  `:harness_down`), and a connect follows the `:harness_down` of the last
-  one.
+  `request_cancel/2` finds it. The other call of the session, `connect/3`,
+  comes only when it holds no harness process: a connect follows the
+  `:harness_down` of the last one.
   """
   @spec prepare(pid(), String.t(), (:timer.tref() -> term())) :: :ok
   def prepare(hands, turn_id, fun) when is_function(fun, 1),
     do: GenServer.cast(hands, {:prepare, turn_id, fun})
 
   @doc """
-  Asks the hands to cancel the turn's tool and stream Tasks and release
+  Asks the hands to cancel the turn's Tasks and release
   their handles. Sends the request and returns at once, so the caller stays
   free during the release. Read the answer with
   `:gen_server.check_response/2` or `:gen_server.receive_response/2`: `:ok`
@@ -177,10 +151,6 @@ defmodule Helyx.Session.Hands do
   end
 
   @impl true
-  # A harness stream.
-  def handle_call({:start, turn_id, job}, _from, state),
-    do: {:reply, :ok, start_job(state, turn_id, job)}
-
   def handle_call({:connect, provider, fun}, _from, state) do
     state = retry(state)
 
@@ -217,8 +187,8 @@ defmodule Helyx.Session.Hands do
 
     cancelled = Map.values(cancelled)
 
-    Enum.each(cancelled, fn {task, _turn, call_id, _tool} ->
-      Task.shutdown(task, shutdown_mode(call_id))
+    Enum.each(cancelled, fn {task, _turn, _call_id, _tool} ->
+      Task.shutdown(task, :brutal_kill)
     end)
 
     {taken, held} = Map.split(state.held, Enum.map(cancelled, fn {task, _, _, _} -> task.pid end))
@@ -234,21 +204,22 @@ defmodule Helyx.Session.Hands do
     {:reply, unconfirmed_error(left) || :ok, state}
   end
 
-  defp start_job(state, turn_id, job) do
-    state = retry(state)
-
-    if state.unconfirmed == %{},
-      do: start(state, turn_id, job),
-      else: refuse(state, turn_id, job_id(job))
-  end
-
   @impl true
   def handle_cast({:prepare, turn_id, fun}, state) do
     {_pid, state} = spawn_armed(state, turn_id, :prepare, nil, state.prepare_ms, fun)
     {:noreply, state}
   end
 
-  def handle_cast({:run, turn_id, call}, state), do: {:noreply, start_job(state, turn_id, call)}
+  def handle_cast({:run, turn_id, call}, state) do
+    state = retry(state)
+
+    state =
+      if state.unconfirmed == %{},
+        do: start(state, turn_id, call),
+        else: refuse(state, turn_id, call.id)
+
+    {:noreply, state}
+  end
 
   def handle_cast({:kill, turn_id, call_id}, state) do
     for {_ref, {task, ^turn_id, ^call_id, _tool}} <- state.tasks,
@@ -299,10 +270,6 @@ defmodule Helyx.Session.Hands do
     %{state | tasks: tasks, held: held, unconfirmed: add_handles(state.unconfirmed, left)}
   end
 
-  # Of the terminals of an external turn, the crash reason is the one that
-  # `Helyx.Session.Stream.run/1` did not cap, so the hands cap it where they
-  # make it (see `Helyx.Message.cap_integers/1`). The session caps the crash
-  # reason of a local turn in its `:DOWN` clause.
   defp outcome(_turn_id, :harness, pid, result), do: {:harness_down, pid, harness_reason(result)}
 
   defp outcome(turn_id, :prepare, _pid, {:exit, reason}),
@@ -322,11 +289,6 @@ defmodule Helyx.Session.Hands do
   defp harness_reason({:stop, reason}), do: Helyx.Message.cap_integers(reason)
   defp harness_reason(:closed), do: :closed
 
-  defp outcome(turn_id, :stream, {:exit, reason}),
-    do: {:stream_end, turn_id, {:error, {:task_exit, Helyx.Message.cap_integers(reason)}}}
-
-  defp outcome(turn_id, :stream, terminal), do: {:stream_end, turn_id, terminal}
-
   defp outcome(turn_id, call_id, {:exit, reason}),
     do: outcome(turn_id, call_id, {:error, "tool crashed: #{inspect(reason)}"})
 
@@ -339,16 +301,8 @@ defmodule Helyx.Session.Hands do
     state
   end
 
-  defp start(state, turn_id, {provider, fun}) do
-    {_pid, state} = spawn_task(state, turn_id, :stream, provider, fun)
-    state
-  end
-
-  defp job_id(%ToolCall{id: id}), do: id
-  defp job_id({_provider, _fun}), do: :stream
-
-  # `id` is the call id, or `:stream` for a provider stream; `module` is the
-  # tool or the provider whose `release/3` gets the Task's handles.
+  # `id` is the call id, `:harness`, or `:prepare`; `module` is the tool or
+  # the provider whose `release/3` gets the Task's handles.
   defp spawn_task(state, turn_id, id, module, fun) do
     hands = self()
 
@@ -379,9 +333,6 @@ defmodule Helyx.Session.Hands do
     "a resource from an earlier call could not be released " <>
       "(#{handles_text(state.unconfirmed)}); the call was not run"
   end
-
-  defp shutdown_mode(:stream), do: @stream_stop_ms
-  defp shutdown_mode(_call_id), do: :brutal_kill
 
   # Gives every unconfirmed handle to its tool again, with one short
   # deadline for all tools, and keeps the ones still held.

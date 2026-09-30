@@ -84,11 +84,14 @@ defmodule Helyx.Test.Gated.Local do
   defp done(stop), do: {:done, %{stop_reason: stop, usage: %{}}}
 end
 
-defmodule Helyx.Test.Gated.External do
+defmodule Helyx.Test.Gated.Connected do
   @moduledoc false
-  # A provider with an external turn; its id is the one of `Gated.Local`, so
-  # a Core registers one of the two. The model is "<shape>.<gate>": the
-  # stream stops at the gate until the test sends :go.
+  # A connected provider; its id is the one of `Gated.Local`, so a Core
+  # registers one of the two. The model is "<shape>.<gate>": the events of
+  # a turn stop at the gate until the test sends :go to the harness
+  # process. The harness process tells the gate only in its next message,
+  # after the events before the gate reached the session. Every other
+  # request gets `:ok`.
   #
   #   calls    three tool calls and a message end, the gate, the three
   #            results, then a text
@@ -103,14 +106,48 @@ defmodule Helyx.Test.Gated.External do
 
   @impl true
   def id, do: "gated"
-  @impl true
-  def turn, do: :external
 
   @impl true
-  def stream(model, _context, _opts) do
+  def harness_init(model, _tools, _opts) do
     [shape, gate] = String.split(model, ".")
-    steps = steps(shape) ++ [{:done, %{stop_reason: :end_turn, usage: %{}}}]
-    {:ok, Helyx.Test.Gate.stream(steps, gate)}
+    {:ok, %{shape: shape, gate: gate, turn: nil, rest: []}}
+  end
+
+  @impl true
+  def harness_request({:turn, turn_id, _context}, from, state) do
+    steps = steps(state.shape) ++ [{:done, %{stop_reason: :end_turn, usage: %{}}}]
+    {actions, state} = run(steps, %{state | turn: turn_id})
+    {:ok, [{:reply, from, :ok} | actions], state}
+  end
+
+  def harness_request(_request, from, state), do: {:ok, [{:reply, from, :ok}], state}
+
+  @impl true
+  def harness_info(:gate, state) do
+    send(String.to_existing_atom(state.gate), {:waiting, self()})
+    {:ok, [], state}
+  end
+
+  def harness_info(:go, state) do
+    {actions, state} = run(state.rest, state)
+    {:ok, actions, state}
+  end
+
+  # The events up to the gate, and the rest for :go.
+  defp run(steps, state) do
+    {now, rest} = Enum.split_while(steps, &(&1 != :gate))
+
+    rest =
+      case rest do
+        [:gate | rest] ->
+          send(self(), :gate)
+          rest
+
+        [] ->
+          []
+      end
+
+    {Enum.map(now, &{:event, state.turn, &1}), %{state | rest: rest}}
   end
 
   defp steps("calls") do

@@ -122,9 +122,6 @@ defmodule CodingAgentTest do
     assert CodingAgent.error_text({:create_failed, :eacces}) =~ "session file: permission denied"
     assert CodingAgent.error_text({:terminal_init_failed, "no tty"}) =~ "did not start: no tty"
 
-    assert CodingAgent.error_text({:bad_provider_turn, "x"}) ==
-             ~s(the provider "x" has a bad turn/0)
-
     assert CodingAgent.error_text({:some, "other"}) == ~s({:some, "other"})
 
     # A Core start error names the plugins, and inspect/1 caps a long id (#169).

@@ -223,7 +223,7 @@ defmodule Helyx.TUI.ViewModel do
   does not render is dropped, as in `apply/2`.
 
   The started calls are the first calls with no result, in call order: a
-  local turn runs its calls one at a time, and an external turn starts
+  local turn runs its calls one at a time, and a connected turn starts
   them all. So the first `length(turn.running)` calls with no result get
   open cells, by position. A call that has not started has no cell yet,
   also when it has the id of a running call; it gets one from its
@@ -231,7 +231,7 @@ defmodule Helyx.TUI.ViewModel do
 
   One accepted limit (`docs/features/session-snapshot.md`): a call that
   never started has an `aborted` result in the transcript after an abort,
-  after a failed turn, or at the normal end of an external turn whose last
+  after a failed turn, or at the normal end of a connected turn whose last
   message has calls. So it shows a closed cell here, although a live
   client showed none.
   """
@@ -385,7 +385,7 @@ defmodule Helyx.TUI.ViewModel do
 
   # The result goes to the oldest open tool cell with the same call id,
   # wherever it is: a notice can arrive while the tool runs (#83). This is
-  # the rule of the session and of `from_snapshot/1`: an external turn can
+  # the rule of the session and of `from_snapshot/1`: a connected turn can
   # start two calls with one id, and the first result answers the first
   # call. A cell that has a result never changes. A result that matches no
   # open cell (an `aborted` result for a call that never started) changes

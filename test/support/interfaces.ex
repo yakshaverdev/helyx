@@ -102,21 +102,13 @@ defmodule Helyx.Test.ProviderOther do
   end
 end
 
-defmodule Helyx.Test.BadTurn do
+defmodule Helyx.Test.NoTurn do
   @moduledoc false
-  # A provider whose `turn/0` is not `:local` or `:external`.
+  # A provider with no turn: neither `stream/3` nor `harness_init/3`.
   @behaviour Helyx.Provider
 
   @impl true
-  def id, do: "bad_turn"
-
-  # The bad return is the point of this provider.
-  @dialyzer {:nowarn_function, turn: 0}
-  @impl true
-  def turn, do: :bogus
-
-  @impl true
-  def stream(_model, _context, _opts), do: {:ok, []}
+  def id, do: "no_turn"
 end
 
 defmodule Helyx.Test.BadId do
@@ -142,24 +134,11 @@ defmodule Helyx.Test.BadId do
   def stream(_model, _context, _opts), do: {:ok, []}
 end
 
-defmodule Helyx.Test.RaisingTurn do
-  @moduledoc false
-  @behaviour Helyx.Provider
-
-  @impl true
-  def id, do: "raising_turn"
-
-  @impl true
-  def turn, do: raise("no turn")
-
-  @impl true
-  def stream(_model, _context, _opts), do: {:ok, []}
-end
-
 defmodule Helyx.Test.Harness do
   @moduledoc false
-  # A provider with an external turn whose model name selects its harness
-  # events. Each stream ends with a text delta and done.
+  # A connected provider whose model name selects the harness events of
+  # each turn. Each turn ends with a text delta and done. Every other
+  # request gets `:ok`.
   #
   #   "id1"     a harness session id of 1 byte
   #   "id256"   a harness session id of 256 bytes, multibyte
@@ -186,22 +165,27 @@ defmodule Helyx.Test.Harness do
   def id, do: "harness"
 
   @impl true
-  def turn, do: :external
+  def harness_init(model, _tools, _opts), do: {:ok, model}
 
   @impl true
-  def stream("exit_big", _context, _opts), do: exit({:boom, Integer.pow(10, 100)})
+  def harness_request({:turn, turn_id, _context}, from, model) do
+    events = Enum.map(turn_events(model), &{:event, turn_id, &1})
+    {:ok, [{:reply, from, :ok} | events], model}
+  end
 
-  def stream("open_call", _context, _opts),
-    do:
-      {:ok,
-       events("dup_id")
-       |> Enum.drop(-1)
-       |> Enum.concat([{:done, %{stop_reason: :end_turn, usage: %{}}}])}
+  def harness_request(_request, from, model), do: {:ok, [{:reply, from, :ok}], model}
 
-  def stream(model, _context, _opts),
-    do:
-      {:ok,
-       events(model) ++ [{:text_delta, "ok"}, {:done, %{stop_reason: :end_turn, usage: %{}}}]}
+  @impl true
+  def harness_info(_msg, model), do: {:ok, [], model}
+
+  defp turn_events("exit_big"), do: exit({:boom, Integer.pow(10, 100)})
+
+  defp turn_events("open_call"),
+    do: events("dup_id") |> Enum.drop(-1) |> Enum.concat([done()])
+
+  defp turn_events(model), do: events(model) ++ [{:text_delta, "ok"}, done()]
+
+  defp done, do: {:done, %{stop_reason: :end_turn, usage: %{}}}
 
   defp events("id1"), do: [{:harness_session, "a", 0}]
   defp events("big_cut"), do: [{:harness_session, "a", Integer.pow(10, 100)}]
@@ -876,12 +860,6 @@ defmodule Helyx.Test.Connected do
 
   @impl true
   def id, do: "conn"
-
-  @impl true
-  def turn, do: :external
-
-  @impl true
-  def stream(_model, _context, _opts), do: {:error, :connected_only}
 
   @impl true
   def release(handles, mode, _deadline) do

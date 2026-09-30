@@ -16,7 +16,7 @@ defmodule Helyx.TUI.ViewModelSnapshotTest do
 
   setup context do
     core = :"core_#{System.unique_integer([:positive])}"
-    start_supervised!({Helyx.Core, name: core, plugins: [Fake, Gate, Gated.External]})
+    start_supervised!({Helyx.Core, name: core, plugins: [Fake, Gate, Gated.Connected]})
     Map.merge(context, %{core: core, gate: Gate.open()})
   end
 
@@ -51,7 +51,7 @@ defmodule Helyx.TUI.ViewModelSnapshotTest do
     LateClient.disconnect(late)
   end
 
-  test "a subscribe in an external turn with three open calls", %{core: core, gate: gate} do
+  test "a subscribe in a connected turn with three open calls", %{core: core, gate: gate} do
     {:ok, session} = Session.start(core, model: "gated/calls." <> gate)
     {:ok, first} = Session.subscribe(session)
     :ok = Session.prompt(session, "go")
@@ -71,7 +71,7 @@ defmodule Helyx.TUI.ViewModelSnapshotTest do
     LateClient.disconnect(late)
   end
 
-  test "two calls with one id in an external turn: each result on the same cell", %{
+  test "two calls with one id in a connected turn: each result on the same cell", %{
     core: core,
     gate: gate
   } do
@@ -192,9 +192,9 @@ defmodule Helyx.TUI.ViewModelSnapshotTest do
   end
 
   # The accepted limit: a call that never started gets an `aborted` result in
-  # the transcript at the normal end of an external turn, so the snapshot
+  # the transcript at the normal end of a connected turn, so the snapshot
   # shows a closed cell that the live client never had.
-  test "a join after an external turn that ends with an open call", %{core: core, gate: gate} do
+  test "a join after a connected turn that ends with an open call", %{core: core, gate: gate} do
     {:ok, session} = Session.start(core, model: "gated/dangling." <> gate)
     {:ok, first} = Session.subscribe(session)
     :ok = Session.prompt(session, "go")

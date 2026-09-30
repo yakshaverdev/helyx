@@ -534,7 +534,6 @@ if Helyx.TUI.Available.available?() do
 
     # A notice shows at most the provider id, which the ref bounds cap.
     defp switch_error({:unknown_provider, id}), do: "unknown provider: #{id}"
-    defp switch_error({:bad_provider_turn, id}), do: "provider #{id} has a bad turn/0"
 
     defp switch_error({:invalid_model_ref, _ref}), do: "invalid model ref: use provider/model"
     defp switch_error(:session_not_found), do: "the session ended"

@@ -78,7 +78,7 @@ defmodule Helyx.Message do
   @doc """
   Builds the tool result message for a call from `{:ok, text}` or
   `{:error, text}`. The text is valid UTF-8: the hands repair the output of
-  a tool, and `Helyx.Session.Stream` repairs an external result.
+  a tool, and `Helyx.Session.Stream` repairs a harness result.
   """
   @spec tool_result(ToolCall.t(), {:ok, String.t()} | {:error, String.t()}) :: t()
   def tool_result(%ToolCall{} = call, {:ok, text}), do: tool_result(call, text, false)

@@ -70,6 +70,10 @@ defmodule Helyx.CoreTest do
       end
     end
 
+    test "a provider with neither stream/3 nor harness_init/3 stops the start" do
+      assert boot([Test.Provider, Test.NoTurn]) == {:error, {:invalid_provider, Test.NoTurn}}
+    end
+
     test "two providers with one id stop the start and are both named" do
       assert boot([Test.Provider, Test.ProviderOther, Test.ProviderTwin]) ==
                {:error, {:duplicate_provider_id, "test", [Test.Provider, Test.ProviderTwin]}}

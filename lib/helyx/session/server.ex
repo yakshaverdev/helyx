@@ -27,8 +27,8 @@ defmodule Helyx.Session.Server do
       :core,
       :model,
       :provider,
-      # The turn of `provider`, `:local` or `:external` (`Helyx.Provider.turn/1`),
-      # or `:connected` for an external provider with `harness_init/3`.
+      # The turn of `provider`, `:local` or `:connected`
+      # (`Helyx.Provider.turn/1`).
       :turn_mode,
       :cwd,
       :hands,
@@ -176,17 +176,8 @@ defmodule Helyx.Session.Server do
       else: {:reply, {:error, :queue_full}, state}
   end
 
-  def handle_call({:steer, text}, _from, %State{turn: %Turn{turn_mode: :connected}} = state) do
+  def handle_call({:steer, text}, _from, %State{turn: %Turn{}} = state) do
     queue_reply(state, :steers, text)
-  end
-
-  # An external turn takes no message inside its call: the steer aborts it,
-  # and the queues start the next one when the hands answer.
-  def handle_call({:steer, text}, _from, %State{turn: %Turn{} = turn} = state) do
-    case {queue_reply(state, :steers, text), turn.turn_mode} do
-      {{:reply, :ok, state}, :external} -> {:reply, :ok, abort_turn(state, [], & &1)}
-      {reply, _turn_mode} -> reply
-    end
   end
 
   def handle_call({:follow_up, text}, _from, %State{turn: %Turn{}} = state) do
@@ -230,7 +221,7 @@ defmodule Helyx.Session.Server do
   # (issue #93), so the session does not wait in a call: the answer of the
   # hands arrives as a message, and the abort callers get their reply then.
   def handle_call(:abort, from, %State{turn: %Turn{}} = state) do
-    {:noreply, abort_turn(state, [from], &drop_queues/1)}
+    {:noreply, abort_turn(state, [from])}
   end
 
   @impl true
@@ -418,7 +409,7 @@ defmodule Helyx.Session.Server do
     {:noreply, fail_turn({:task_exit, Message.cap_integers(reason)}, state)}
   end
 
-  # The terminal of an external turn's stream, from the hands after the release.
+  # The terminal of a connected turn, from the harness process.
   def handle_info({:stream_end, turn_id, terminal}, %State{turn: %Turn{id: turn_id}} = state) do
     {:noreply, end_turn(terminal, state)}
   end
@@ -744,7 +735,7 @@ defmodule Helyx.Session.Server do
   end
 
   # The calls that have had their `tool_execution_start`: a local turn runs
-  # its calls one at a time, the head first; an external turn started them
+  # its calls one at a time, the head first; a connected turn started them
   # all at its message end.
   defp started_calls(%Turn{turn_mode: :local, calls: [head | _]}), do: [head]
   defp started_calls(%Turn{turn_mode: :local, calls: []}), do: []
@@ -752,12 +743,11 @@ defmodule Helyx.Session.Server do
 
   # Turn machinery
 
-  # Ends the turn at once and asks the hands to release its resources; the
-  # `callers` get their reply when the wait ends. `queues` drops the
-  # queues for an abort and keeps them for the steer of an external turn.
-  # A connected turn that sent `{:turn, ...}` also gets an interrupt, after
+  # Ends the turn at once, drops the queues, and asks the hands to release
+  # its resources; the `callers` get their reply when the wait ends. A
+  # connected turn that sent `{:turn, ...}` also gets an interrupt, after
   # the hands answer.
-  defp abort_turn(%State{turn: turn} = state, callers, queues) do
+  defp abort_turn(%State{turn: turn} = state, callers) do
     if turn.task, do: shutdown_stream(turn.task)
     request = Hands.request_cancel(state.hands, turn.id)
     {state, open} = end_steers(state, false)
@@ -766,7 +756,7 @@ defmodule Helyx.Session.Server do
       state
       |> abort_open_calls()
       |> close_partial_message(:aborted, :aborted)
-      |> queues.()
+      |> drop_queues()
       |> emit(:agent_end, %{stop_reason: :aborted})
       |> close_turn()
 
@@ -1082,31 +1072,27 @@ defmodule Helyx.Session.Server do
     end
   end
 
+  # A local turn: the stream runs in a Task under Core's task supervisor,
+  # linked, so a crash stays a message (the session traps exits), and a
+  # death of the session kills the stream.
   defp call_provider(%State{turn: %Turn{id: turn_id} = turn} = state) do
-    external? = turn.turn_mode == :external
-
-    resumed =
-      if external?,
-        do: Transcript.resumable(state.transcript, state.harness_sessions, turn.model.provider)
-
-    opts = [core: state.core, session_id: state.id, turn_id: turn_id, cwd: state.cwd]
-    opts = if external?, do: opts ++ [harness_session_id: resumed], else: opts
-
     args = %{
       model_context: state.model_context,
       compaction: state.compaction,
       provider: turn.provider,
       model: turn.model.model,
       context: %Context{messages: state.transcript, tools: state.tools},
-      opts: opts,
+      opts: [core: state.core, session_id: state.id, turn_id: turn_id, cwd: state.cwd],
       session: self(),
-      turn_id: turn_id,
-      external?: external?
+      turn_id: turn_id
     }
 
-    run = fn -> Helyx.Session.Stream.run(args) end
+    task =
+      Task.Supervisor.async(Helyx.Core.task_supervisor(state.core), fn ->
+        Helyx.Session.Stream.run(args)
+      end)
 
-    start_stream(turn.turn_mode, run, %{state | turn: %{turn | rejected: %{}, resumed: resumed}})
+    %{state | turn: %{turn | rejected: %{}, task: task}}
   end
 
   # `settle/1` closed a harness process of another model before the turn.
@@ -1148,20 +1134,6 @@ defmodule Helyx.Session.Server do
 
   defp submit(state), do: state
 
-  # The Task is linked: the session traps exits, so a crash stays a message,
-  # and a death of the session kills the stream.
-  defp start_stream(:local, run, %State{turn: turn} = state) do
-    task = Task.Supervisor.async(Helyx.Core.task_supervisor(state.core), run)
-
-    %{state | turn: %{turn | task: task}}
-  end
-
-  # An external turn's stream is a Task of the hands (see the moduledoc).
-  defp start_stream(:external, run, %State{turn: turn} = state) do
-    :ok = Hands.stream(state.hands, turn.id, turn.provider, run)
-    state
-  end
-
   # `Task.shutdown/2` unlinks the Task before it kills it, so no exit
   # signal from it arrives later; one that came before the unlink is
   # flushed here.
@@ -1182,11 +1154,10 @@ defmodule Helyx.Session.Server do
       {[first | _], :local} ->
         run_tool(first, %{state | turn: %{turn | task: nil, partial: nil, calls: calls}})
 
-      # A provider with an external turn ran its calls itself; one in the
-      # last message gets no result.
-      # A steer with no answer yet can still be rejected: the session
-      # waits for its answer before the next turn.
-      _no_calls_or_external ->
+      # A connected provider ran its calls itself; one in the last message
+      # gets no result. A steer with no answer yet can still be rejected:
+      # the session waits for its answer before the next turn.
+      _no_calls_or_connected ->
         {state, open} = state |> abort_open_calls() |> end_steers(true)
 
         state =
@@ -1210,7 +1181,7 @@ defmodule Helyx.Session.Server do
 
   # Appends the assistant message of the stream so far and emits its
   # message_end. Returns it and its tool calls. No message goes between a
-  # call and its result: the calls still open (only an external turn has any
+  # call and its result: the calls still open (only a connected turn has any
   # here) get their aborted results first, and a later result is dropped.
   defp close_assistant(state, stop_reason, usage) do
     state = state |> abort_turn_calls() |> start_assistant_message()
@@ -1290,7 +1261,7 @@ defmodule Helyx.Session.Server do
 
   # A partial assistant message is closed with a failure stop reason so
   # clients do not keep it open. It is not added to the transcript.
-  # An external turn can fail after a message whose calls have no result yet.
+  # A connected turn can fail after a message whose calls have no result yet.
   # A failed connected turn runs the turn cleanup of the hands before the
   # next turn: its prepare Task can still run.
   defp fail_turn(reason, %State{turn: turn} = state) do
@@ -1309,7 +1280,7 @@ defmodule Helyx.Session.Server do
         hands = Hands.request_cancel(state.hands, turn.id)
         wait(state, %{hands: hands, steers: open, tool: wait_tool(turn)})
 
-      _local_or_external ->
+      :local ->
         settle(state)
     end
   end

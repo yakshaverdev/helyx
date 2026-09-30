@@ -1,5 +1,7 @@
 # External turn
 
+> Superseded on 2026-09-30 (#265, ADR 0002 amendment): the per-turn `:external` mode, `turn/0`, and `{:bad_provider_turn, id}` are removed. A provider has a local turn or is connected.
+
 ## Goal
 
 Replace the provider `kind` (`:model` or `:harness`) with one flag that names the behaviour: `turn: :local` or `turn: :external`. With an external turn, the provider runs the whole turn and its own tools in one call. Core then decides on what a provider does, not on the word "harness". Issue #123, from the Core cleanup plan (`docs/reviews/2026-09-26-core-cleanup-plan.md`).

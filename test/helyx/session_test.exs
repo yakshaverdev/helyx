@@ -14,8 +14,6 @@ defmodule Helyx.SessionTest do
       Helyx.Test.Provider,
       Helyx.Test.ProviderOther,
       Helyx.Test.Harness,
-      Helyx.Test.BadTurn,
-      Helyx.Test.RaisingTurn,
       Helyx.Test.Tool.Upcase,
       Helyx.Test.Tool.Kill,
       Helyx.Test.Tool.Slow,
@@ -217,33 +215,6 @@ defmodule Helyx.SessionTest do
       collect_until(:agent_end)
     end
 
-    test "a provider turn other than :local or :external is refused at start and switch",
-         %{core: core} do
-      assert {:error, {:bad_provider_turn, "bad_turn"}} =
-               Session.start(core, model: "bad_turn/m")
-
-      assert {:error, {:bad_provider_turn, "raising_turn"}} =
-               Session.start(core, model: "raising_turn/m")
-
-      {:ok, session} = Session.start(core, model: "test/ok")
-
-      assert {:error, {:bad_provider_turn, "raising_turn"}} =
-               Session.set_model(session, "raising_turn/m")
-    end
-
-    @tag :tmp_dir
-    test "a provider turn that raises is refused at resume", %{core: core, tmp_dir: dir} do
-      {:ok, session} = Session.start(core, model: "test/ok", sessions_dir: dir)
-      [path] = Path.wildcard(Path.join(dir, "**/#{session.id}.jsonl"))
-      GenServer.stop(Session.pid(session))
-
-      line = %{type: "model_change", id: "m1", parent_id: nil, ts: "t", model: "raising_turn/m"}
-      File.write!(path, [JSON.encode!(line), "\n"], [:append])
-
-      assert {:error, {:bad_provider_turn, "raising_turn"}} =
-               Session.resume(core, sessions_dir: dir)
-    end
-
     test "a harness session id of 1 byte is kept", %{core: core} do
       events = harness_turn(core, "id1")
 
@@ -380,6 +351,24 @@ defmodule Helyx.SessionTest do
 
       assert {:task_exit, {:boom, ^marker}} =
                List.last(harness_turn(core, "exit_big")).data.error
+    end
+
+    test "a rejected tool call fails a connected turn, and nothing reaches the transcript",
+         %{core: core} do
+      {:ok, session} = Session.start(core, model: "harness/rejected")
+      {:ok, _} = Session.subscribe(session)
+      :ok = Session.prompt(session, "hello")
+      events = collect_until(:agent_end)
+
+      assert {:bad_stream_event, {:rejected_tool_call, %{id: "r"}, "bad"}} =
+               List.last(events).data.error
+
+      refute Enum.any?(
+               events,
+               &(&1.type == :message_start and &1.data.message.role == :assistant)
+             )
+
+      assert [:user] = Enum.map(:sys.get_state(Session.pid(session)).transcript, & &1.role)
     end
 
     test "a model provider that sends a harness event fails the turn", %{core: core} do
@@ -2234,8 +2223,7 @@ defmodule Helyx.SessionTest do
             :invalid_cwd,
             :not_found,
             {:invalid_model_ref, "x"},
-            {:unknown_provider, "p"},
-            {:bad_provider_turn, "p"}
+            {:unknown_provider, "p"}
           ] do
         assert Session.client_start_error(error) == error
       end
