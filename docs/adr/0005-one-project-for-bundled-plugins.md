@@ -46,3 +46,5 @@ A small, pure Elixir dependency is a normal dependency. `req` is the first case.
 2026-09-25, ticket #11. `Helyx.HarnessIO` (`plugins/bundled/lib/helyx/harness_io.ex`) is the second helper module. It holds the stdout line cap, the exit wait, the error text cut, the prompt split, and the replay cap that `Helyx.Provider.ClaudeCode` and `Helyx.Provider.Codex` share. Each provider keeps its own protocol.
 
 2026-09-26, ticket #125. `Helyx.HarnessIO` wraps every `Helyx.Watchdog` call of the harness providers: it already wrapped `start`, and it now also wraps `write`, `close` (as `stop/1`), and `release`. `Helyx.Provider.ClaudeCode` and `Helyx.Provider.Codex` call no `Helyx.Watchdog` function, so each provider calls one helper. The bash tool still calls `Helyx.Watchdog` directly. The watchdog protocol and every deadline are unchanged (ADR 0004).
+
+2026-09-30, ticket #258. The exit wait left `Helyx.HarnessIO`: no harness provider used it after #200 and #201.

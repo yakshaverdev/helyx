@@ -2,16 +2,13 @@ defmodule Helyx.HarnessIO do
   @moduledoc false
   # What the harness providers share (ADR 0005): every call into
   # `Helyx.Watchdog`, the move of the port's link to a keeper, the read
-  # of a program's stdout as JSON lines under a line cap, the exit wait
-  # after a terminal, the cut of program error text, the split of the
-  # prompt from the history, and the byte cap of a replay. It is not a
-  # plugin. `state` is a provider's run state with the fields `port`,
-  # `buffer` (iodata), `size`, `terminal`, `deadline`, and `done?`.
+  # of a program's stdout as JSON lines under a line cap, the cut of
+  # program error text, the split of the prompt from the history, and the
+  # byte cap of a replay. It is not a plugin. `state` is a provider's run
+  # state with the fields `port`, `buffer` (iodata), `size`, and
+  # `terminal`.
 
   @line_max_bytes 16 * 1024 * 1024
-  # The wait for the exit after a terminal while the port is open, so the
-  # program ends by itself and finishes writing its own session.
-  @exit_wait_ms 5_000
   # The longest program error text that goes into a terminal error.
   @error_max_bytes 2_000
   @replay_max_bytes 400_000
@@ -40,10 +37,10 @@ defmodule Helyx.HarnessIO do
         %{state | port: port}
 
       {:not_started, port, acc} ->
-        arm_exit_wait(%{state | port: port}, {:error, {:not_started, cap_error(acc)}})
+        %{state | port: port, terminal: {:error, {:not_started, cap_error(acc)}}}
 
       {:failed, text} ->
-        %{state | done?: true, terminal: {:error, {:not_started, cap_error(text)}}}
+        %{state | terminal: {:error, {:not_started, cap_error(text)}}}
     end
   end
 
@@ -93,10 +90,6 @@ defmodule Helyx.HarnessIO do
   # The provider's `release/3`. See `Helyx.Watchdog.Group`.
   defdelegate release(handles, mode, deadline, opts \\ []), to: Helyx.Watchdog
 
-  # The `next` of a run that is done: the terminal once, then the halt.
-  def drain(%{terminal: nil} = state), do: {:halt, state}
-  def drain(%{terminal: terminal} = state), do: {[terminal], %{state | terminal: nil}}
-
   # Reads a chunk of stdout: `decode` gets each complete line that is a
   # JSON object, and the state; other lines (the watchdog's start line,
   # perl's own text) are skipped. Once the state has a terminal, output is
@@ -108,7 +101,7 @@ defmodule Helyx.HarnessIO do
   def lines(data, state, decode) do
     case :binary.split(data, "\n") do
       [part | _] when state.size + byte_size(part) > @line_max_bytes ->
-        {[], %{state | done?: true, terminal: {:error, {:line_over_limit, @line_max_bytes}}}}
+        {[], %{state | terminal: {:error, {:line_over_limit, @line_max_bytes}}}}
 
       [part] ->
         {[], %{state | buffer: [state.buffer, part], size: state.size + byte_size(part)}}
@@ -127,28 +120,6 @@ defmodule Helyx.HarnessIO do
         {events ++ more, state}
     end
   end
-
-  # Every terminal that waits for the exit sets its deadline here.
-  def arm_exit_wait(state, terminal),
-    do: %{
-      state
-      | terminal: terminal,
-        deadline: System.monotonic_time(:millisecond) + @exit_wait_ms
-    }
-
-  # The receive timeout: none before a terminal, the rest of the exit wait
-  # after it.
-  def wait(%{deadline: nil}), do: :infinity
-  def wait(%{deadline: deadline}), do: remaining(deadline)
-
-  def remaining(deadline), do: max(deadline - System.monotonic_time(:millisecond), 0)
-
-  # A `receive` with a message that matches never reaches its `after`, even
-  # at a timeout of 0, so a program that keeps writing would hold a loop
-  # past its deadline. Every loop with a deadline asks this first.
-  def overdue?(%{deadline: deadline}), do: overdue?(deadline)
-  def overdue?(nil), do: false
-  def overdue?(deadline), do: remaining(deadline) == 0
 
   # A value that is not text is empty. The text is cut at the cap, and a
   # character cut in half and every invalid byte are dropped, so the text is
