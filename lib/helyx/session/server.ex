@@ -122,18 +122,7 @@ defmodule Helyx.Session.Server do
         tools: state.tool_modules
       )
 
-    state = %{state | hands: hands, instance_id: Id.new()}
-
-    # A resumed transcript can end mid-turn, after a crash. Each open tool
-    # call gets an `aborted` error result before anyone can subscribe, so
-    # the next provider call sees complete call and result pairs.
-    aborted =
-      Enum.map(
-        Transcript.open_calls(state.transcript),
-        &Message.tool_result(&1, {:error, "aborted"})
-      )
-
-    {:ok, Enum.reduce(aborted, state, &append_message(&2, &1))}
+    {:ok, %{state | hands: hands, instance_id: Id.new()}}
   end
 
   # An abort waits for the hands. A turn that starts now could send a tool

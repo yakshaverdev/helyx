@@ -29,6 +29,99 @@ defmodule Helyx.Session.TranscriptTest do
     end
   end
 
+  describe "abort_unanswered/2" do
+    defp aborted(id), do: Message.tool_result(call(id), {:error, "aborted"})
+
+    defp abort(transcript) do
+      {transcript, sessions} = Transcript.abort_unanswered(transcript, %{})
+      assert sessions == %{}
+      transcript
+    end
+
+    test "a harness session count moves past the results inserted before it, and only those" do
+      # A count right after an open call's message includes its inserted
+      # results: the live session inserted them at the resume, before any
+      # harness session could start.
+      transcript = [
+        Message.user("hi"),
+        assistant([call("a"), call("b")]),
+        Message.user("next"),
+        assistant([call("c")]),
+        Message.user("last")
+      ]
+
+      sessions = %{"early" => {"e", 1}, "at" => {"t", 2}, "late" => {"l", 4}, "end" => {"n", 5}}
+      {answered, shifted} = Transcript.abort_unanswered(transcript, sessions)
+
+      assert shifted == %{
+               "early" => {"e", 1},
+               "at" => {"t", 4},
+               "late" => {"l", 7},
+               "end" => {"n", 8}
+             }
+
+      # Each count drops the same messages from the answered transcript as
+      # it did from the file, plus the results inserted before it.
+      assert Enum.at(answered, 4) == Message.user("next")
+      assert Enum.at(answered, 7) == Message.user("last")
+    end
+
+    test "leaves a transcript with no open calls unchanged" do
+      transcript = [Message.user("hi"), assistant([call("a")]), result("a"), assistant([])]
+      assert abort(transcript) == transcript
+      assert abort([]) == []
+    end
+
+    test "a call never answered gets its result right after it, before the next user message" do
+      transcript = [assistant([call("a")]), Message.user("next"), assistant([])]
+
+      assert abort(transcript) ==
+               [assistant([call("a")]), aborted("a"), Message.user("next"), assistant([])]
+    end
+
+    test "a result after a later message does not answer the call" do
+      transcript = [assistant([call("a")]), Message.user("next"), result("a")]
+
+      assert abort(transcript) ==
+               [assistant([call("a")]), aborted("a"), Message.user("next"), result("a")]
+    end
+
+    test "with two calls and one answered, the other gets its result after the answered one" do
+      transcript = [assistant([call("a"), call("b")]), result("b"), Message.user("next")]
+
+      assert abort(transcript) ==
+               [
+                 assistant([call("a"), call("b")]),
+                 result("b"),
+                 aborted("a"),
+                 Message.user("next")
+               ]
+    end
+
+    test "a reused call id is answered only by a result that follows its own message" do
+      transcript = [
+        assistant([call("a")]),
+        result("a"),
+        assistant([call("a")]),
+        Message.user("next"),
+        assistant([call("a")]),
+        result("a")
+      ]
+
+      assert abort(transcript) ==
+               List.insert_at(transcript, 3, aborted("a"))
+
+      assert Transcript.open_calls(abort(transcript)) == []
+    end
+
+    test "open calls at the end get their results at the end, and a second pass adds nothing" do
+      transcript = [Message.user("hi"), assistant([call("a"), call("b")])]
+      answered = abort(transcript)
+      assert answered == transcript ++ [aborted("a"), aborted("b")]
+      assert abort(answered) == answered
+    end
+  end
+
   describe "last_assistant/1" do
     test "gives the last assistant message, or nil" do
       last = assistant([], "fake/echo")

@@ -67,7 +67,7 @@ defmodule Helyx.Session do
   """
 
   alias Helyx.ModelRef
-  alias Helyx.Session.{Id, Server, Watch}
+  alias Helyx.Session.{Id, Server, Transcript, Watch}
   alias Helyx.Session.Server.State
 
   require Logger
@@ -105,9 +105,8 @@ defmodule Helyx.Session do
   With `:sessions_dir` the session is written to disk as it runs, as JSON
   lines under `<sessions_dir>/<project>/<session>.jsonl`; without it nothing
   is persisted. When a write fails, the session goes on in memory, writes
-  nothing more, and sends one `:notice` event. A write that fails at a
-  resume (see `resume/2`) goes out before any client can subscribe, so no
-  client gets its notice (ADR 0006: a late client does not see notices).
+  nothing more, and sends one `:notice` event. A resume writes no entry
+  (see `resume/2`), so every write comes after a client can subscribe.
   """
   @spec start(Helyx.Core.name(), keyword()) :: {:ok, t()} | {:error, model_error() | term()}
   def start(core \\ Helyx.Core, opts) do
@@ -144,8 +143,11 @@ defmodule Helyx.Session do
   @doc """
   Resumes the most recent session for the working directory from
   `:sessions_dir`, restoring the transcript and the current model. Every
-  tool call without a result gets an `aborted` error result, so the next
-  provider call sees complete call and result pairs. `:cwd` is checked as in
+  tool call without a result gets an `aborted` error result in the
+  transcript read, right after its message and its results, so the next
+  provider call sees complete call and result pairs. The resume writes no
+  entry: every resume of the file inserts the same results. It only appends
+  a newline that the last line lacks. `:cwd` is checked as in
   `start/2`, and the tool specs and the tool checks as in `start/2`, all
   before the sessions directory is read. The model ref of the file resolves
   as in `set_model/2`, with the same errors.
@@ -159,6 +161,11 @@ defmodule Helyx.Session do
          :ok <- Helyx.Tool.check_available(tools),
          {:ok, resumed} <- Helyx.Session.File.resume(dir, cwd),
          {:ok, {ref, provider, turn_mode}} <- resolve_model(core, resumed.model) do
+      # A crash can leave tool calls with no result. The session reads them
+      # with `aborted` results and writes nothing (#269).
+      {transcript, harness_sessions} =
+        Transcript.abort_unanswered(resumed.messages, resumed.harness_sessions)
+
       start_child(
         %State{
           id: resumed.session_id,
@@ -168,8 +175,8 @@ defmodule Helyx.Session do
           turn_mode: turn_mode,
           cwd: cwd,
           file: resumed.file,
-          transcript: resumed.messages,
-          harness_sessions: resumed.harness_sessions
+          transcript: transcript,
+          harness_sessions: harness_sessions
         },
         tools
       )
