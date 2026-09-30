@@ -2118,7 +2118,10 @@ defmodule Helyx.SessionTest do
       registry = Helyx.Core.events_registry(core)
       assert [second] = Registry.values(registry, session.id, self())
       assert second != first
-      assert [{^second, nil}] = watches(core, session.id)
+      # The Registry drops the entry of the dead first watch when its
+      # partition handles the exit, which the :DOWN above does not order.
+      live = Enum.filter(watches(core, session.id), fn {pid, _} -> Process.alive?(pid) end)
+      assert [{^second, nil}] = live
 
       :ok = GenServer.stop(Session.pid(session))
       assert_end(session.id, :stopped)
