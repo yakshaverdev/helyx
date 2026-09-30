@@ -171,6 +171,24 @@ defmodule Helyx.Session.StreamTest do
     assert {:bad, {:error, _}} = SessionStream.check({:user_message, "s1", nil}, true)
   end
 
+  # The bound is `HarnessIO.cap_error/1`: 2,000 bytes of valid UTF-8.
+  test "a notice passes from any turn with valid text of at most 2,000 bytes" do
+    for external? <- [true, false],
+        text <- ["", String.duplicate("x", 1_999), String.duplicate("é", 1_000)] do
+      assert {:send, {:notice, ^text}, nil} = SessionStream.check({:notice, text}, external?)
+    end
+
+    for text <- [
+          String.duplicate("x", 2_001),
+          String.duplicate("é", 1_000) <> "x",
+          <<"hi", 255>>,
+          :hi
+        ] do
+      event = {:notice, text}
+      assert {:bad, {:error, {:bad_stream_event, ^event}}} = SessionStream.check(event, true)
+    end
+  end
+
   test "the error reason of the provider call is capped", %{core: core} do
     assert {:error, {:oops, @marker}} = run(core, "refuse_int")
   end

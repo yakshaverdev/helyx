@@ -336,6 +336,14 @@ defmodule Helyx.Session.Server do
     {:noreply, emit(state, :harness_session, data)}
   end
 
+  # A notice of the provider is an event only: it joins no message, so the
+  # transcript that the model gets again never holds it.
+  def handle_info(
+        {:stream_event, turn_id, {:notice, text}},
+        %State{turn: %Turn{id: turn_id}} = state
+      ),
+      do: {:noreply, emit(state, :notice, %{text: text})}
+
   def handle_info({:stream_event, turn_id, event}, %State{turn: %Turn{id: turn_id}} = state) do
     %State{turn: turn} = state = start_assistant_message(state)
 

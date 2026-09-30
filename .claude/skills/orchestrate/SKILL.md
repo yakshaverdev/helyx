@@ -69,7 +69,7 @@ Serial, one ticket at a time:
 3. Push. `gh pr create` with a body that contains `Closes #<n>`. No attribution lines.
 4. `gh pr merge --merge --delete-branch`. Confirm the issue closed; close it with a pointer to the PR when it did not.
 5. Run each step only when the step before it passed (`&&`, not `;`): a failed `gh pr create` must not reach the cleanup. Before the push, `grep -rn "icket pending"` over the docs and the code must find no open item.
-6. Remove the worktree. Recompute the frontier. Rebase the other live branch before its own gate.
+6. Remove the worktree. Recompute the frontier. Rebase the other live branch before its own gate. When the merge brought a change to a module that the live branch also changes, the worker runs a reduced round on the rebased branch before the gate: its first round saw the old base, not the new interaction.
 
 ## Park
 

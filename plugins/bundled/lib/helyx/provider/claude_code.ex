@@ -52,7 +52,8 @@ defmodule Helyx.Provider.ClaudeCode do
   `result` does not end the turn: `claude` runs a line that it reads after
   a `result` as a turn of its own, and that turn stays in the Helyx turn.
   When the line does not start within #{@steer_wait_ms} ms of such a
-  `result`, the harness process stops.
+  `result`, the harness process stops. A held error `result` goes out as
+  `{:notice, text}` at the start of the steer.
 
   An interrupt is the control request `interrupt` with
   `cancel_queued: true`. It waits for the first `init` line of the
@@ -111,8 +112,10 @@ defmodule Helyx.Provider.ClaudeCode do
     # written steer line that the program did not start yet, by its `uuid`:
     # `{steer_id, text}`. `wait` is set from a `result` that could not end
     # the turn, because a steer was unresolved, until the start of a steer:
-    # the ref of the timer of that wait. `used` holds every Helyx call id of
-    # the turn's `tools/call` requests, answered or not.
+    # the ref of the timer of that wait. `held` is the text of the error
+    # `result` that the wait holds, or nil: the start of a steer sends it
+    # as a notice. `used` holds every Helyx call id of the turn's
+    # `tools/call` requests, answered or not.
     @enforce_keys [:id, :uuid, :messages]
     defstruct [
       :id,
@@ -120,6 +123,7 @@ defmodule Helyx.Provider.ClaudeCode do
       :messages,
       :interrupt,
       :wait,
+      :held,
       steers: %{},
       replay?: false,
       open?: false,
@@ -481,7 +485,7 @@ defmodule Helyx.Provider.ClaudeCode do
        when is_map_key(steers, uuid) do
     {{steer_id, text}, steers} = Map.pop!(steers, uuid)
     if turn.wait, do: :erlang.cancel_timer(turn.wait)
-    events = close_message(turn) ++ [{:user_message, steer_id, text}]
+    events = close_message(turn) ++ held_notice(turn.held) ++ [{:user_message, steer_id, text}]
     interrupt = turn.interrupt && %{turn.interrupt | result?: false}
 
     turn = %{
@@ -490,6 +494,7 @@ defmodule Helyx.Provider.ClaudeCode do
         open?: false,
         calls?: false,
         wait: nil,
+        held: nil,
         interrupt: interrupt
     }
 
@@ -777,12 +782,12 @@ defmodule Helyx.Provider.ClaudeCode do
   # (research note). The turn waits #{@steer_wait_ms} ms for its start,
   # then for the next `result`.
   defp turn_result(
-         %{"queued_turn_count" => 0},
+         %{"queued_turn_count" => 0} = result,
          %State{turn: %Turn{steers: steers} = turn} = state
        )
        when map_size(steers) > 0 do
     wait = turn.wait || :erlang.start_timer(@steer_wait_ms, self(), :steer_wait)
-    {[], %{state | turn: %{turn | wait: wait}}}
+    {[], %{state | turn: %{turn | wait: wait, held: held(result, turn)}}}
   end
 
   # The session closes the open assistant message at the terminal.
@@ -817,6 +822,22 @@ defmodule Helyx.Provider.ClaudeCode do
     text = if text == "" and is_binary(result["result"]), do: result["result"], else: text
     {:error, {:claude_code, HarnessIO.cap_error(result["subtype"]), HarnessIO.cap_error(text)}}
   end
+
+  # Only a `result` of a Helyx line can be the held error: the `result` of
+  # a program turn (research note, "Program turns") keeps `held`.
+  defp held(%{"origin" => %{"kind" => "task-notification"}}, turn), do: turn.held
+
+  defp held(result, turn) do
+    case terminal(result, turn) do
+      {:error, {:claude_code, subtype, text}} -> subtype <> ": " <> text
+      {:done, _} -> nil
+    end
+  end
+
+  defp held_notice(nil), do: []
+
+  defp held_notice(text),
+    do: [{:notice, HarnessIO.cap_error("the turn before the steer failed: " <> text)}]
 
   defp result_text(text) when is_binary(text), do: text
 
