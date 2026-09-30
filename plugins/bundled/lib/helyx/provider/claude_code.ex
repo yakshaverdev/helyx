@@ -46,9 +46,10 @@ defmodule Helyx.Provider.ClaudeCode do
   error at a `result` before the start of the turn's line.
 
   A steer is one more user line with a `uuid` of its own, written into the
-  running turn; after the turn's terminal it answers `:rejected` and
-  writes nothing. The start of its line (`command_lifecycle` `started`)
-  gives `{:user_message, steer_id, text}`. While a steer is unresolved, a
+  running turn; while a replay is held, it goes out after the turn's line.
+  After the turn's terminal it answers `:rejected` and writes nothing. The
+  start of its line (`command_lifecycle` `started`) gives
+  `{:user_message, steer_id, text}`. While a steer is unresolved, a
   `result` does not end the turn: `claude` runs a line that it reads after
   a `result` as a turn of its own, and that turn stays in the Helyx turn.
   When the line does not start within #{@steer_wait_ms} ms of such a
@@ -83,6 +84,10 @@ defmodule Helyx.Provider.ClaudeCode do
   transcript as lines that start no model call. The replay keeps the
   newest messages within #{HarnessIO.replay_max_bytes()} bytes of lines,
   and it never starts at a tool result, so no result loses its call. The
+  program writes an assistant line to its session when it reads it, but a
+  user line when it takes it from its queue. So each line after a replayed
+  user line waits for that line's `result`, and the model gets the
+  transcript in its order (research note, "The order of a replay"). The
   `{:harness_session, id, cut}` event of that turn gives the id and the
   number of messages left out.
 
@@ -115,7 +120,10 @@ defmodule Helyx.Provider.ClaudeCode do
     # the ref of the timer of that wait. `held` is the text of the error
     # `result` that the wait holds, or nil: the start of a steer sends it
     # as a notice. `used` holds every Helyx call id of the turn's
-    # `tools/call` requests, answered or not.
+    # `tools/call` requests, answered or not. `chunks` holds the replay
+    # chunks not written yet: each goes out at the `result` of the
+    # replayed user line that ends the chunk before it, and the last one
+    # ends with the turn's line, then any steers.
     @enforce_keys [:id, :uuid, :messages]
     defstruct [
       :id,
@@ -125,6 +133,7 @@ defmodule Helyx.Provider.ClaudeCode do
       :wait,
       :held,
       steers: %{},
+      chunks: [],
       replay?: false,
       open?: false,
       calls?: false,
@@ -245,11 +254,20 @@ defmodule Helyx.Provider.ClaudeCode do
         %State{turn: %Turn{id: id} = turn} = state
       ) do
     uuid = uuid()
-    content = user_content(Message.user(text))
+    steer = user_line(uuid, user_content(Message.user(text)))
 
-    HarnessIO.write(state, user_line(uuid, content))
+    # A steer during a held replay goes out after the turn's line.
+    chunks =
+      case turn.chunks do
+        [] ->
+          HarnessIO.write(state, steer)
+          []
 
-    turn = %{turn | steers: Map.put(turn.steers, uuid, {steer_id, text})}
+        chunks ->
+          List.update_at(chunks, -1, &[&1, steer])
+      end
+
+    turn = %{turn | chunks: chunks, steers: Map.put(turn.steers, uuid, {steer_id, text})}
     {:ok, [{:reply, from, :ok}], %{state | turn: turn}}
   end
 
@@ -386,10 +404,11 @@ defmodule Helyx.Provider.ClaudeCode do
       HarnessIO.write(state, prompt_line)
       {[], %{state | sent?: true}}
     else
-      {lines, cut} = replay(history)
-      HarnessIO.write(state, [lines, prompt_line])
+      {[first | chunks], cut, replay?} = replay(history, prompt_line)
+      HarnessIO.write(state, first)
       event = {:event, turn.id, {:harness_session, state.session_id, cut}}
-      {[event], %{state | sent?: true, turn: %{turn | replay?: lines != []}}}
+      turn = %{turn | replay?: replay?, chunks: chunks}
+      {[event], %{state | sent?: true, turn: turn}}
     end
   end
 
@@ -572,6 +591,7 @@ defmodule Helyx.Provider.ClaudeCode do
   # to list `msg_lifecycle_v1` in an earlier `init` line; without it the
   # provider stops the program, because `started` can fail to come. The
   # result of a lost session comes before any `init` and before `started`.
+  # A skipped result can also write the next held replay chunk.
   defp translate(%{"type" => "result"} = result, state) do
     cond do
       lost?(result, state) ->
@@ -584,7 +604,7 @@ defmodule Helyx.Provider.ClaudeCode do
         turn_result(result, state)
 
       "msg_lifecycle_v1" in (state.caps || []) ->
-        {[], state}
+        release(result, state)
 
       true ->
         {[], %{state | terminal: {:error, :no_msg_lifecycle}}}
@@ -654,6 +674,21 @@ defmodule Helyx.Provider.ClaudeCode do
   end
 
   defp translate(_object, state), do: {[], state}
+
+  # A result before `started` while replay chunks are held answers the
+  # replayed user line that ends the last written chunk, so the next chunk
+  # goes out. Only a result with `num_turns` exactly 0 and no or a null
+  # `origin` can be one: a replayed line makes no model call, and the result of a
+  # program turn has `origin` and a model call (research note, "Program
+  # turns").
+  defp release(%{"origin" => origin}, state) when origin != nil, do: {[], state}
+
+  defp release(%{"num_turns" => 0}, %State{turn: %Turn{chunks: [next | chunks]} = turn} = state) do
+    HarnessIO.write(state, next)
+    {[], %{state | turn: %{turn | chunks: chunks}}}
+  end
+
+  defp release(_result, state), do: {[], state}
 
   defp emit(%State{turn: turn}, events), do: for(event <- events, do: {:event, turn.id, event})
 
@@ -857,17 +892,39 @@ defmodule Helyx.Provider.ClaudeCode do
   # for each run of user messages and tool results between them. An entry
   # is {line or false, messages, start?}: the replay may start at an entry
   # whose line has no tool result, because the call of every kept result is
-  # then kept too.
-  defp replay(history) do
-    entries =
+  # then kept too. The kept lines and `last` go out in chunks, each
+  # ending at a user line; the last chunk ends with `last`.
+  defp replay(history, last) do
+    tagged =
       history
       |> Enum.chunk_by(&(&1.role == :assistant))
       |> Enum.flat_map(fn
-        [%Message{role: :assistant} | _] = messages -> Enum.map(messages, &assistant_entry/1)
-        messages -> [user_entry(messages)]
+        [%Message{role: :assistant} | _] = messages ->
+          Enum.map(messages, &{:assistant, assistant_entry(&1)})
+
+        messages ->
+          [{:user, user_entry(messages)}]
       end)
 
-    HarnessIO.cap_replay(entries, length(history))
+    {lines, cut} = HarnessIO.cap_replay(Enum.map(tagged, &elem(&1, 1)), length(history))
+
+    # `cap_replay` keeps a suffix of the lines that are not `false`.
+    kinds = for {kind, {line, _n, _start?}} <- tagged, line, do: kind
+
+    chunks =
+      kinds
+      |> Enum.take(-length(lines))
+      |> Enum.zip(lines)
+      |> Enum.chunk_while(
+        [],
+        fn
+          {:user, line}, acc -> {:cont, Enum.reverse(acc, [line]), []}
+          {:assistant, line}, acc -> {:cont, [line | acc]}
+        end,
+        &{:cont, Enum.reverse(&1, [last]), []}
+      )
+
+    {chunks, cut, lines != []}
   end
 
   defp assistant_entry(%Message{content: blocks}) do

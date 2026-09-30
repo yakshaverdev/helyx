@@ -4,8 +4,10 @@ defmodule Helyx.Provider.ClaudeCodeTest do
   # `docs/research/claude-code-stream-json.md` records. Program N saves its
   # arguments to `args.N` and each input line to `stdin.N`. It runs
   # `start.N` first; for the K-th user line that starts a query it runs
-  # `turn.N.K`, for a control request `ctl.N`, for a control response
-  # `resp.N`, and at the end of input `eof.N`. In their output `@U@` is the `uuid` and `@R@` the
+  # `turn.N.K`, for the Q-th `shouldQuery: false` line `quiet.N.Q` (by
+  # default it writes `out.quiet`: an `init` and the replay result), for a
+  # control request `ctl.N`, for a control response `resp.N`, and at the
+  # end of input `eof.N`. In their output `@U@` is the `uuid` and `@R@` the
   # `request_id` of the line read. PATH is global, so this module is not
   # async.
   use ExUnit.Case, async: false
@@ -27,7 +29,7 @@ defmodule Helyx.Provider.ClaudeCodeTest do
   out() { sed "s/@U@/$u/g; s/@R@/$r/g" "$d/$1"; }
   u=; r=
   [ -f "$d/start.$n" ] && . "$d/start.$n"
-  k=0
+  k=0; q=0
   while IFS= read -r line; do
     printf '%s\\n' "$line" >> "$d/stdin.$n"
     v=$(printf '%s\\n' "$line" | sed -n 's/.*"uuid":"\\([^"]*\\)".*/\\1/p')
@@ -35,7 +37,9 @@ defmodule Helyx.Provider.ClaudeCodeTest do
     r=$(printf '%s\\n' "$line" | sed -n 's/.*"request_id":"\\([^"]*\\)".*/\\1/p')
     case "$line" in
       *'"type":"control_response"'*) [ -f "$d/resp.$n" ] && . "$d/resp.$n" ;;
-      *'"shouldQuery":false'*|*'"type":"assistant"'*) ;;
+      *'"shouldQuery":false'*) q=$((q+1))
+        if [ -f "$d/quiet.$n.$q" ]; then . "$d/quiet.$n.$q"; else out out.quiet; fi ;;
+      *'"type":"assistant"'*) ;;
       *'"type":"control_request"'*) [ -f "$d/ctl.$n" ] && . "$d/ctl.$n" ;;
       *'"type":"user"'*) k=$((k+1)); [ -f "$d/turn.$n.$k" ] && . "$d/turn.$n.$k" ;;
     esac
@@ -48,6 +52,7 @@ defmodule Helyx.Provider.ClaudeCodeTest do
     File.mkdir_p!(bin)
     File.write!(Path.join(bin, "claude"), @fake)
     File.chmod!(Path.join(bin, "claude"), 0o755)
+    File.write!(Path.join(bin, "out.quiet"), [init(), "\n", replayed(), "\n"])
     path = System.get_env("PATH")
     System.put_env("PATH", bin <> ":" <> path)
     on_exit(fn -> System.put_env("PATH", path) end)
@@ -1028,6 +1033,100 @@ defmodule Helyx.Provider.ClaudeCodeTest do
     assert [{:harness_session, _id, 0}] = events_of(actions)
   end
 
+  # The program writes an assistant line to its session when it reads it,
+  # and a user line when it takes it (research note, "The order of a
+  # replay"). At each replayed user line, the fake looks for input that
+  # waits already, for 1 s, with perl, and reads none of it.
+  test "a replay writes the lines after a replayed user line only at its result",
+       %{bin: bin, work: work} do
+    early = Path.join(bin, "early")
+
+    for q <- [1, 2] do
+      File.write!(Path.join(bin, "quiet.1.#{q}"), """
+      perl -MIO::Select -e 'exit(IO::Select->new(\\*STDIN)->can_read(1) ? 0 : 1)' && : > "#{early}"
+      out out.quiet
+      """)
+    end
+
+    turn(bin, 1, 1, reply("ok"))
+    answer = &%Message{role: :assistant, content: [%Message.Text{text: &1}]}
+    history = [Message.user("a"), answer.("b"), Message.user("c"), answer.("d"), answer.("e")]
+
+    assert [{:harness_session, _id, 0} | _] =
+             events_of(run_direct(history ++ [Message.user("x")], work))
+
+    refute File.exists?(early)
+
+    assert ["a", "b", "c", "d", "e", "x"] =
+             for(%{"message" => %{"content" => [%{"text" => t}]}} <- stdin(bin, 1), do: t)
+
+    assert [false, nil, false, nil, nil, nil] = Enum.map(stdin(bin, 1), & &1["shouldQuery"])
+  end
+
+  # Only the result of a replayed line writes the next chunk. After the
+  # program turn's result, the fake looks for input that waits already, for
+  # 1 s, with perl, and reads none of it.
+  test "a program turn's result during a held replay writes no chunk",
+       %{bin: bin, work: work} do
+    early = Path.join(bin, "early")
+    # `num_turns` 0, so only the `origin` keeps it from writing a chunk.
+    program = program_result("program") |> JSON.decode!() |> Map.put("num_turns", 0) |> j()
+    File.write!(Path.join(bin, "out.program"), [init(), "\n", program, "\n"])
+
+    File.write!(Path.join(bin, "quiet.1.1"), """
+    out out.program
+    perl -MIO::Select -e 'exit(IO::Select->new(\\*STDIN)->can_read(1) ? 0 : 1)' && : > "#{early}"
+    out out.quiet
+    """)
+
+    turn(bin, 1, 1, reply("ok"))
+
+    assert [{:harness_session, _id, 0}, {:text_delta, "ok"} | _] =
+             events_of(run_direct(replay_history(), work))
+
+    refute File.exists?(early)
+
+    assert ["a", "b", "x"] =
+             for(%{"message" => %{"content" => [%{"text" => t}]}} <- stdin(bin, 1), do: t)
+  end
+
+  test "a failed replay line writes the next chunk too", %{bin: bin, work: work} do
+    script(bin, "quiet.1.1", [init(), replay_failed()])
+    turn(bin, 1, 1, reply("ok"))
+
+    assert [{:harness_session, _id, 0}, {:text_delta, "ok"} | _] =
+             events_of(run_direct(replay_history(), work))
+
+    assert ["a", "b", "x"] =
+             for(%{"message" => %{"content" => [%{"text" => t}]}} <- stdin(bin, 1), do: t)
+  end
+
+  # A program turn's error result and a failed replay result come before
+  # `started` of the turn's line, so neither is the held error of #241:
+  # the steer's start gives no notice.
+  test "a steer during a held replay goes out after the turn's line", %{bin: bin, work: work} do
+    origin = %{kind: "task-notification", producer: "session-task"}
+    program = replay_failed() |> JSON.decode!() |> Map.put("origin", origin) |> j()
+    script(bin, "quiet.1.1", [init(), program, replay_failed()])
+    turn(bin, 1, 1, begin() ++ [delta("ok")])
+    turn(bin, 1, 2, [lifecycle("started"), result("ok")])
+
+    # The test process takes no message between the two requests, so the
+    # rest of the replay is still held at the steer.
+    {_from, actions, state} =
+      request(harness(work), {:turn, "t1", %Helyx.Context{messages: replay_history()}})
+
+    {_from, more, state} = request(state, {:steer, "t1", "s1", "also"})
+    assert [_line] = state.turn.chunks
+    {actions, _state} = pump(state, actions ++ more, &ended?/1)
+
+    assert {:user_message, "s1", "also"} in events_of(actions)
+    refute Enum.any?(events_of(actions), &match?({:notice, _}, &1))
+
+    assert ["a", "b", "x", "also"] =
+             for(%{"message" => %{"content" => [%{"text" => t}]}} <- stdin(bin, 1), do: t)
+  end
+
   test "a replay to a program without msg_lifecycle_v1 stops it", %{bin: bin, work: work} do
     caps = ["interrupt_receipt_v1", "interrupt_cancel_queued_v1"]
     turn(bin, 1, 1, [init(caps), replayed(), init(caps), delta("ok")])
@@ -1077,7 +1176,8 @@ defmodule Helyx.Provider.ClaudeCodeTest do
   end
 
   test "a replay to a program with no init line stops it", %{bin: bin, work: work} do
-    turn(bin, 1, 1, [replayed(), lifecycle("queued"), delta("ok"), result("ok")])
+    script(bin, "quiet.1.1", [replayed()])
+    turn(bin, 1, 1, [lifecycle("queued"), delta("ok"), result("ok")])
 
     assert {:stop, :no_msg_lifecycle} = List.last(run_direct(replay_history(), work))
   end
