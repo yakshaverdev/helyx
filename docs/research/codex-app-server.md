@@ -231,3 +231,20 @@ Runs on 2026-09-29 with `codex-cli 0.157.1`, the default model `gpt-6-astra` wit
 - `send_input`, `close_agent`, and `resume_agent`; a `collabAgentToolCall` for `spawn` (the model did not offer one); a sub-agent of a sub-agent.
 - End of file on stdin and `SIGKILL` with a sub-agent running.
 - Whether the parent thread starts a turn by itself more than 4.4 s after the `subAgentActivity` `completed`.
+
+## Program turns (2026-09-30, #240)
+
+Runs on 2026-09-30 with `codex-cli 0.157.1`, for ticket #240. A Python script drove `codex app-server` over stdio, in a new session (its own process group), in an empty temporary directory. `initialize` set `experimentalApi`. `thread/start` had `approvalPolicy` `never` and `sandbox` `danger-full-access`; `turn/start` had `effort` `low`. The user's own hooks were active. The prompt asked the model to use `spawn_agent` once for a sub-agent that runs `sleep 15` and replies `done`, not to wait for it, and to reply `spawned`. The script waited 120 s after the parent's `subAgentActivity` `completed` item. It was ready to send `turn/steer`, and `turn/start` 1 s later, on a parent `turn/started` that it did not ask for.
+
+- **Run 1**, model `gpt-6-luna`: the parent's `turn/completed` at 9.2 s; the child's `turn/completed` and the parent's `subAgentActivity` `completed` at 29.1 s.
+- **Run 2**, model `gpt-6-astra`: the parent's `turn/completed` at 11.2 s; `subAgentActivity` `completed` at 35.3 s.
+
+### Results (observed, runs 1 and 2)
+
+- **The parent thread did not start a turn by itself.** After `subAgentActivity` `completed`, the program wrote no line at all for 120 s: no `turn/started`, no `thread/status/changed`, and no other notification.
+- End of file on stdin then ended the program with status 0 within 2 s.
+- There was no such turn, so `turn/start` and `turn/steer` during it were not observed.
+
+### Not run
+
+- A wait of more than 120 s; a sub-agent that ends with `failed` or `interrupted`.
