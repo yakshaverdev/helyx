@@ -773,6 +773,27 @@ defmodule Helyx.SessionTest do
     refute_receive {:helyx_event, _}, 50
   end
 
+  # Each abort shuts down a provider Task. The session keeps no record of
+  # it, and its exit signal does not stay in the mailbox (#261).
+  test "many aborts in a row leave no growing state", %{core: core} do
+    {:ok, session} = Session.start(core, model: "test/hang")
+    {:ok, _} = Session.subscribe(session)
+    pid = Session.pid(session)
+
+    abort = fn ->
+      :ok = Session.prompt(session, "hello")
+      assert_receive {:helyx_event, %Event{type: :message_update}}, 1_000
+      :ok = Session.abort(session)
+      assert stop_reason(collect_until(:agent_end)) == :aborted
+      state = :sys.get_state(pid)
+      assert Process.info(pid, :message_queue_len) == {:message_queue_len, 0}
+      :erts_debug.flat_size(%{state | transcript: [], seq: 0})
+    end
+
+    size = abort.()
+    for _ <- 1..20, do: assert(abort.() == size)
+  end
+
   # A crash of a linked process that is not a provider Task, the sessions
   # Registry for example, must take the session with it: a session that
   # outlives its registration keeps working where no client can reach it.
@@ -1426,7 +1447,7 @@ defmodule Helyx.SessionTest do
       assert change.turn_id == nil
       assert change.seq == List.last(first).seq + 1
       refute_receive {:helyx_event, _}, 50
-      assert Session.model(session) == "other/any"
+      assert GenServer.call(Session.pid(session), {:snapshot}).model == "other/any"
 
       :ok = Session.prompt(session, "two")
       second = collect_until(:agent_end)
@@ -1454,7 +1475,7 @@ defmodule Helyx.SessionTest do
       assert {:error, {:invalid_model_ref, "test"}} = Session.set_model(session, "test")
       assert {:error, {:invalid_model_ref, _}} = Session.set_model(session, <<"test/", 255>>)
 
-      assert Session.model(session) == "test/ok"
+      assert GenServer.call(Session.pid(session), {:snapshot}).model == "test/ok"
       assert File.read!(path) == before
       refute_receive {:helyx_event, _}, 50
     end
@@ -1475,7 +1496,7 @@ defmodule Helyx.SessionTest do
       stop_session(core, session, &GenServer.stop/1)
 
       {:ok, resumed} = Session.resume(core, sessions_dir: dir)
-      assert Session.model(resumed) == "other/any"
+      assert GenServer.call(Session.pid(resumed), {:snapshot}).model == "other/any"
       {:ok, _} = Session.subscribe(resumed)
       :ok = Session.prompt(resumed, "hello")
       assert final_text(collect_until(:agent_end)) == "from other"
@@ -1553,7 +1574,7 @@ defmodule Helyx.SessionTest do
       assert log =~ "persistence off"
       assert_receive {:helyx_event, %Event{type: :notice, turn_id: nil}}
       assert_receive {:helyx_event, %Event{type: :model_change, turn_id: nil}}
-      assert Session.model(session) == "other/any"
+      assert GenServer.call(Session.pid(session), {:snapshot}).model == "other/any"
 
       # Persistence stays off: with the file back, a turn writes nothing.
       File.rmdir!(path)
@@ -1616,7 +1637,6 @@ defmodule Helyx.SessionTest do
     # exits, and all of them together take less than `@load_ms`.
     defp timed_calls(session) do
       calls = [
-        model: fn -> Session.model(session) end,
         set_model: fn -> Session.set_model(session, "test/stuck") end,
         steer: fn -> Session.steer(session, "steer") end,
         follow_up: fn -> Session.follow_up(session, "follow") end,

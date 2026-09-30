@@ -274,7 +274,7 @@ defmodule Helyx.TUITest do
       TUI.handle_event(%ExRatatui.Event.Paste{content: "/model monitors/m"}, state)
 
     state = press(state, "enter")
-    assert Session.model(state.session) == "monitors/m"
+    assert GenServer.call(Session.pid(state.session), {:snapshot}).model == "monitors/m"
     assert_receive {:DOWN, _ref, :process, _pid, :normal} = other
     assert {:noreply, ^state} = TUI.handle_info(other, state)
 
@@ -985,7 +985,7 @@ defmodule Helyx.TUITest do
       state = state |> submit("/model other/any") |> fold_model_change()
       assert ExRatatui.textarea_get_value(state.input) == ""
       assert status_text(state) =~ "other/any"
-      assert Session.model(state.session) == "other/any"
+      assert GenServer.call(Session.pid(state.session), {:snapshot}).model == "other/any"
 
       state = state |> submit("hi") |> drain()
       assert last_answer(state) == "from other"
@@ -1018,7 +1018,7 @@ defmodule Helyx.TUITest do
         assert byte_size(shown) < 80
         assert ExRatatui.textarea_get_value(state.input) == text
         assert status_text(state) =~ "fake/stay"
-        assert Session.model(state.session) == "fake/stay"
+        assert GenServer.call(Session.pid(state.session), {:snapshot}).model == "fake/stay"
       end
 
       refute_receive {:helyx_event, _}, 50
@@ -1084,7 +1084,7 @@ defmodule Helyx.TUITest do
         ExRatatui.textarea_set_value(state.input, "")
         state = state |> submit(text) |> drain()
         assert last_answer(state) == "ok"
-        assert Session.model(state.session) == "fake/looks"
+        assert GenServer.call(Session.pid(state.session), {:snapshot}).model == "fake/looks"
       end
     end
 

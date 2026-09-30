@@ -89,7 +89,7 @@ defmodule CodingAgentTest do
     {:ok, resumed} =
       CodingAgent.start_session(core: core, cwd: dir, sessions_dir: dir, resume: true)
 
-    assert Session.model(resumed) == "fake/echo"
+    assert GenServer.call(Session.pid(resumed), {:snapshot}).model == "fake/echo"
   end
 
   @tag :tmp_dir

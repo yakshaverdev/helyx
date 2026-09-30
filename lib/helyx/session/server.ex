@@ -43,7 +43,6 @@ defmodule Helyx.Session.Server do
       seq: 0,
       turn: nil,
       queues: %Queues{},
-      provider_pids: MapSet.new(),
       # The last harness session per harness provider id: its id and the
       # number of transcript messages before it started.
       harness_sessions: %{},
@@ -202,10 +201,6 @@ defmodule Helyx.Session.Server do
     }
 
     {:reply, snapshot, state}
-  end
-
-  def handle_call(:model, _from, %State{model: ref} = state) do
-    {:reply, ModelRef.to_string(ref), state}
   end
 
   def handle_call({:set_model, %ModelRef{} = ref, provider, turn_mode}, _from, %State{} = state) do
@@ -383,15 +378,29 @@ defmodule Helyx.Session.Server do
 
   # The Task's reply is the terminal stream event. Its :DOWN follows and is
   # flushed here, so a :DOWN only reaches the session when the Task crashed.
-  def handle_info({ref, terminal}, %State{turn: %Turn{task: %Task{ref: ref}}} = state) do
+  # The Task is linked, so its exit signal follows the reply too; it is
+  # taken here, so it never reaches the vital :EXIT clause.
+  def handle_info({ref, terminal}, %State{turn: %Turn{task: %Task{ref: ref, pid: pid}}} = state) do
     Process.demonitor(ref, [:flush])
+    receive do: ({:EXIT, ^pid, _} -> :ok)
     {:noreply, end_turn(terminal, state)}
   end
 
+  # A crashed Task gives both its :DOWN and its exit signal, in either
+  # order. The first one fails the turn, and the other one is taken here.
   def handle_info(
-        {:DOWN, ref, :process, _pid, reason},
+        {:DOWN, ref, :process, pid, reason},
         %State{turn: %Turn{task: %Task{ref: ref}}} = state
       ) do
+    receive do: ({:EXIT, ^pid, _} -> :ok)
+    {:noreply, fail_turn({:task_exit, Message.cap_integers(reason)}, state)}
+  end
+
+  def handle_info(
+        {:EXIT, pid, reason},
+        %State{turn: %Turn{task: %Task{ref: ref, pid: pid}}} = state
+      ) do
+    receive do: ({:DOWN, ^ref, :process, ^pid, _} -> :ok)
     {:noreply, fail_turn({:task_exit, Message.cap_integers(reason)}, state)}
   end
 
@@ -614,19 +623,12 @@ defmodule Helyx.Session.Server do
     {:stop, reason, state}
   end
 
-  # A provider Task's exit signal is expected; its reply or :DOWN carries
-  # the outcome. An exit from any other linked process, the sessions
-  # Registry for example, is vital: a session that outlived its registration
-  # would keep working where no client can reach it. A pid whose exit was
-  # consumed by Task.shutdown on abort stays in the set, because a late exit
-  # signal for it can still arrive; the set grows by one pid per abort.
-  def handle_info({:EXIT, pid, reason}, %State{provider_pids: pids} = state) do
-    if MapSet.member?(pids, pid) do
-      {:noreply, %{state | provider_pids: MapSet.delete(pids, pid)}}
-    else
-      {:stop, reason, state}
-    end
-  end
+  # The exit signal of a provider Task never gets here: the clauses of its
+  # reply and its crash take it, and `shutdown_stream/1` flushes it. An exit
+  # from any other linked process, the sessions Registry for example, is
+  # vital: a session that outlived its registration would keep working
+  # where no client can reach it.
+  def handle_info({:EXIT, _pid, reason}, state), do: {:stop, reason, state}
 
   # The answer of the hands to the cancel request of an abort. The hands are
   # vital, so a request that fails because they died stops the session, like
@@ -742,7 +744,7 @@ defmodule Helyx.Session.Server do
   # A connected turn that sent `{:turn, ...}` also gets an interrupt, after
   # the hands answer.
   defp abort_turn(%State{turn: turn} = state, callers, queues) do
-    if turn.task, do: Task.shutdown(turn.task, :brutal_kill)
+    if turn.task, do: shutdown_stream(turn.task)
     request = Hands.request_cancel(state.hands, turn.id)
     {state, open} = end_steers(state, false)
 
@@ -1137,17 +1139,26 @@ defmodule Helyx.Session.Server do
   defp start_stream(:local, run, %State{turn: turn} = state) do
     task = Task.Supervisor.async(Helyx.Core.task_supervisor(state.core), run)
 
-    %{
-      state
-      | turn: %{turn | task: task},
-        provider_pids: MapSet.put(state.provider_pids, task.pid)
-    }
+    %{state | turn: %{turn | task: task}}
   end
 
   # An external turn's stream is a Task of the hands (see the moduledoc).
   defp start_stream(:external, run, %State{turn: turn} = state) do
     :ok = Hands.stream(state.hands, turn.id, turn.provider, run)
     state
+  end
+
+  # `Task.shutdown/2` unlinks the Task before it kills it, so no exit
+  # signal from it arrives later; one that came before the unlink is
+  # flushed here.
+  defp shutdown_stream(%Task{pid: pid} = task) do
+    Task.shutdown(task, :brutal_kill)
+
+    receive do
+      {:EXIT, ^pid, _} -> :ok
+    after
+      0 -> :ok
+    end
   end
 
   defp end_turn({:done, %{stop_reason: stop_reason, usage: usage}}, state) do
