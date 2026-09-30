@@ -483,6 +483,27 @@ A program turn is a turn that `claude` starts by itself, for example when a back
   - Only the exact `origin` `{"kind": "task-notification"}` marks a program turn's `result`. A program `result` with another `origin` (another `kind`, a `kind` that is not a string, or `null`) counts as a Helyx `result`: its error becomes the held error, and its success clears a held error. The research saw only `task-notification` on a program turn's `result`, and `origin` `null` with `user_message_uuid` equal to the line's `uuid` on a Helyx line's `result`. Closing it needs a match on `user_message_uuid` against the turn's and the started steers' `uuid`s. Reproduction: the test "a program turn's error result after a held success gives no notice" with `origin` `%{kind: "scheduled-task"}` or `nil` gives the notice.
   - Two held `result` lines before one steer start keep only the last one. The research did not see a second `result` before a steer's start.
 
+## Built in #248
+
+A replay into a fresh `claude` program wrote all its lines at once. The program writes an `assistant` input line to its session when it reads the line, and a `user` input line when it takes the line from its queue. So the model got every replayed assistant message before the replayed user messages (research note, "The order of a replay", runs 1 and 2). #248 keeps the input order:
+
+- The replay goes out in chunks. Each chunk ends at a `shouldQuery: false` user line. The last chunk is the lines after the last replayed user line, then the turn's line.
+- The provider writes the first chunk with the turn. The gate of #246 skips each `result` before `started` of the turn's line. While chunks are held, such a `result` also writes the next chunk, but only when its `num_turns` is exactly 0 and it has no `origin` or a null one. A replayed line makes no model call (`num_turns` 0, also when it fails). The `result` of a program turn has `origin` (research note, "Program turns"), and answers no replayed line. So it writes no chunk. A replay goes only to a fresh program, which has no background task, so no program turn was seen there; the check is for safety. That a replay `result` has no `origin` is inferred: the research note lists its fields without `origin`. Each replayed user line gets one `result`, also when it fails, and an `assistant` line gets none (research note, #200 section). With this wait, the request kept the input order (research note, run 3).
+- The `msg_lifecycle_v1` check comes first. A program without it stops at the first `result` before `started`, as #246 says, with the chunks still held.
+- A steer while chunks are held goes at the end of the last held chunk, after the turn's line. Written at once, it would go before the turn's line.
+- With #241: a `result` that writes a chunk comes before `started` of the turn's line, so the gate of #246 skips it before `turn_result/2`, the only place that sets the held error. Before `started` the held error is always nil: the steers go out after the turn's line, so no steer waits then. A program turn's `result` before `started` is skipped too and changes neither the chunks nor the held error. The test "a steer during a held replay goes out after the turn's line" checks that a failed replay `result` gives no notice at the steer's start.
+- The interrupt already waits for `started` of the turn's line after a replay, so it waits for every chunk. Each chunk adds one `result` round trip of a query that makes no model call.
+- The wait for each chunk's `result` is a barrier and has no timeout of its own, as the wait for `started` of the turn's line had before. A program that never answers a replayed user line keeps the turn until an abort, and the interrupt bound then stops the program.
+- Bound: the held chunks are part of the replay, and the replay is capped at `Helyx.HarnessIO.replay_max_bytes()` bytes of lines. A steer adds its line, as a written steer does.
+- An exit of the program, a stop of the harness process, or a close while chunks are held drops them with the state. The turn fails, and the next turn starts a fresh program that replays again. A lost session relaunches only a resumed program, and a resumed program never replays, so no chunks are held at a relaunch.
+
+Not observed (#248 made no probe of them):
+
+- A replay with a `tool_use` and its `tool_result`. The chunk of the call ends at the `shouldQuery: false` line of the result.
+- A replay that starts with an `assistant` line. It goes in the first chunk, before the first user line.
+- Two or more `assistant` lines in sequence, with the wait. They go in one chunk.
+- A `--resume` of a session that a replay wrote before #248. Its session file can keep the wrong order.
+
 ## Out of scope
 
 - Approvals in the UI. The request path is built, and the answer stays `accept` (#192, decision 5).
