@@ -5,6 +5,7 @@
 # not load this machine. The format step rewrites files, so the files that it
 # changed on the host are copied back, the same as a local run. Nothing may
 # edit the worktree during the run: a copied-back file replaces a local edit.
+# A local run has no PID namespace.
 set -uo pipefail
 
 root=$(git rev-parse --show-toplevel) || exit 1
@@ -27,7 +28,16 @@ sources="find . \\( -name _build -o -name deps -o -name .scratch \\) -prune -o -
 ssh -o BatchMode=yes "$host" "mkdir -p '$dir'" || exit 1
 rsync -a --delete "${excludes[@]}" ./ "$host:$dir/" || exit 1
 
-ssh -o BatchMode=yes "$host" "cd '$dir' && $sources > .before && ~/.local/bin/mise exec -- mix precommit" > precommit.log 2>&1
+# The run has its own PID namespace, as the host user again, so a signal
+# to -1 or to a wrong group from a test reaches only the run, never the
+# other processes of the host (on 2026-09-30 one froze them all). The
+# first process of the namespace is a root sh that only waits: it never
+# changes its user, so the SIGKILL that unshare sets for it when the outer
+# unshare dies stays set, and its end ends every process of the run. The
+# run needs sudo without a password on the host; without it the run fails
+# and does not run outside the namespace.
+isolate="sudo -n unshare --pid --fork --mount-proc --kill-child=SIGKILL sh -c '\"\$@\"; exit \$?' pid1 setpriv --reuid=\$(id -u) --regid=\$(id -g) --init-groups env HOME=\"\$HOME\" LANG=C.UTF-8"
+ssh -o BatchMode=yes "$host" "cd '$dir' && $sources > .before && $isolate ~/.local/bin/mise exec -- mix precommit" > precommit.log 2>&1
 status=$?
 
 # md5sum -c exits 1 on a changed file. Only status 0, or 1 with a
