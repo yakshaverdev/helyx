@@ -54,7 +54,15 @@ defmodule Helyx.Session.Server do
       # armed kills (see `Helyx.Session.Harness`), and `idle`, the time with
       # no turn after which the session sends `:idle_close`. A seam for
       # tests.
-      harness_ms: %{turn: 2_000, interrupt: 2_000, steer: 2_000, close: 5_000, idle: 1_800_000},
+      harness_ms: %{
+        turn: 2_000,
+        interrupt: 2_000,
+        steer: 2_000,
+        tool_result: 2_000,
+        tool_start: 2_000,
+        close: 5_000,
+        idle: 1_800_000
+      },
       # The current idle timer (`:erlang.start_timer/3`, see `arm_idle/1`),
       # or nil.
       idle: nil,
@@ -75,7 +83,7 @@ defmodule Helyx.Session.Server do
   defmodule Wait do
     @moduledoc false
     # The parts of the wait before the next turn can start (see `wait/2`).
-    defstruct [:hands, :interrupt, :reply, :idle, :harness, callers: [], steers: %{}]
+    defstruct [:hands, :interrupt, :reply, :idle, :harness, :tool, callers: [], steers: %{}]
   end
 
   def start_link(%State{id: id, core: core} = state) do
@@ -268,6 +276,52 @@ defmodule Helyx.Session.Server do
     end
   end
 
+  # The harness asks for a Helyx tool (see "Helyx tool calls" in
+  # `docs/features/long-lived-harness.md`). The loop owns the waiting
+  # queue and sends a request only when the result of the one before came,
+  # so `tool` holds only the running call. The call
+  # and its result join the transcript from the harness's own events, not
+  # from here.
+  def handle_info(
+        {:stream_event, turn_id, {:tool_request, id, name, args}},
+        %State{
+          turn: %Turn{id: turn_id, turn_mode: :connected} = turn,
+          harness: %Connection{pid: pid}
+        } = state
+      ) do
+    call = %Message.ToolCall{id: id, name: name, arguments: args}
+    from = Harness.request(pid, {:tool_start, turn_id, id}, state.harness_ms.tool_start)
+    turn = %{turn | tool: call, start: from, results: [from | turn.results]}
+    {:noreply, %{state | turn: turn}}
+  end
+
+  # The loop's answer to the ask: only `:ok` runs the call. A missed
+  # deadline stops the harness process, and its `:harness_down` fails the
+  # turn; an answer after the turn goes to the wait after the turn.
+  def handle_info(
+        {:harness_reply, from, reply},
+        %State{turn: %Turn{start: from, tool: call} = turn} = state
+      ) do
+    state = %{state | turn: %{turn | start: nil, results: List.delete(turn.results, from)}}
+
+    {:noreply,
+     if(reply == :ok, do: run_harness_tool(call, state), else: put_in(state.turn.tool, nil))}
+  end
+
+  # The harness withdrew a tool request: a running one is killed, and its
+  # result, which the hands still send, is dropped by the loop.
+  def handle_info(
+        {:cancel_tool, turn_id, call_id},
+        %State{turn: %Turn{id: turn_id, tool: %{id: call_id}}} = state
+      ) do
+    Hands.kill(state.hands, turn_id, call_id)
+    {:noreply, state}
+  end
+
+  # Only a connected turn runs Helyx tools for the harness.
+  def handle_info({:stream_event, _turn_id, {:tool_request, _, _, _}}, state),
+    do: {:noreply, state}
+
   def handle_info(
         {:stream_event, turn_id, {:harness_session, id, cut}},
         %State{turn: %Turn{id: turn_id} = turn} = state
@@ -318,10 +372,32 @@ defmodule Helyx.Session.Server do
     {:noreply, end_turn(terminal, state)}
   end
 
+  # The result of a Helyx tool of a connected turn goes to the harness
+  # process, with the tool result bound. Its answer is awaited, as a steer's
+  # is, so no turn starts while its kill is armed.
   def handle_info(
         {:tool_result, turn_id, call_id, result},
         %State{
-          turn: %Turn{id: turn_id, calls: [%Message.ToolCall{id: call_id} = call | rest]} = turn
+          turn: %Turn{id: turn_id, turn_mode: :connected, tool: %{id: call_id}} = turn,
+          harness: %Connection{pid: pid}
+        } = state
+      ) do
+    from =
+      Harness.request(pid, {:tool_result, turn_id, call_id, result}, state.harness_ms.tool_result)
+
+    {:noreply, %{state | turn: %{turn | tool: nil, results: [from | turn.results]}}}
+  end
+
+  def handle_info(
+        {:tool_result, turn_id, call_id, result},
+        %State{
+          turn:
+            %Turn{
+              id: turn_id,
+              turn_mode: :local,
+              calls: [%Message.ToolCall{id: call_id} = call | rest]
+            } =
+              turn
         } =
           state
       ) do
@@ -379,7 +455,8 @@ defmodule Helyx.Session.Server do
   # The answer to a steer of the turn (see "Steer" in
   # `docs/features/long-lived-harness.md`). `:rejected` is confirmed: the
   # steer goes to the local queue for the next turn. Any other answer
-  # waits for the `user_message`, or ends in a notice.
+  # waits for the `user_message`, or ends in a notice. A reply to no steer
+  # answers a tool result of the turn: it was written.
   def handle_info(
         {:harness_reply, from, reply},
         %State{turn: %Turn{turn_mode: :connected} = turn} = state
@@ -396,7 +473,7 @@ defmodule Helyx.Session.Server do
         {:noreply, put_in(state.turn.steers, steers)}
 
       nil ->
-        {:noreply, state}
+        {:noreply, put_in(state.turn.results, List.delete(turn.results, from))}
     end
   end
 
@@ -499,6 +576,7 @@ defmodule Helyx.Session.Server do
   def handle_info({:prepared, _turn_id, _result}, state), do: {:noreply, state}
   def handle_info({:prepare_failed, _turn_id, _reason}, state), do: {:noreply, state}
   def handle_info({:tool_result, _turn_id, _call_id, _result}, state), do: {:noreply, state}
+  def handle_info({:cancel_tool, _turn_id, _call_id}, state), do: {:noreply, state}
   def handle_info({:stream_event, _turn_id, _event}, state), do: {:noreply, state}
   def handle_info({:stream_end, _turn_id, _terminal}, state), do: {:noreply, state}
   def handle_info({:rejected_call, _turn_id, _call, _reason}, state), do: {:noreply, state}
@@ -638,6 +716,7 @@ defmodule Helyx.Session.Server do
 
     wait(state, %{
       hands: request,
+      tool: wait_tool(turn),
       callers: callers,
       interrupt: interrupt(turn, state.harness),
       steers: open
@@ -662,6 +741,26 @@ defmodule Helyx.Session.Server do
   # `callers` are the abort callers, who get their reply at the end.
   defp wait(state, fields) do
     %{state | aborting: struct!(Wait, fields)}
+  end
+
+  # The hands killed the Helyx tool of the turn, so its result is
+  # `aborted`: the answer comes after the kill and before the interrupt.
+  # The loop writes it only for a call that it confirmed at the ask, also
+  # after the turn; it answered any other call itself. Its request waits as
+  # an open steer request does.
+  defp progress(%State{aborting: %Wait{hands: nil, tool: {turn_id, call_id}} = aborting} = state) do
+    steers =
+      case state.harness do
+        %Connection{pid: pid} ->
+          request = {:tool_result, turn_id, call_id, {:error, "aborted"}}
+          from = Harness.request(pid, request, state.harness_ms.tool_result)
+          Map.put(aborting.steers, from, {turn_id, nil})
+
+        nil ->
+          aborting.steers
+      end
+
+    progress(%{state | aborting: %{aborting | tool: nil, steers: steers}})
   end
 
   defp progress(%State{aborting: %Wait{hands: nil, interrupt: {pid, turn_id}} = aborting} = state) do
@@ -887,6 +986,7 @@ defmodule Helyx.Session.Server do
           {notice(state, turn.id, text), open}
       end)
 
+    open = Enum.reduce(turn.results, open, &Map.put(&2, &1, {turn.id, nil}))
     {state, if(state.harness, do: open, else: %{})}
   end
 
@@ -1028,7 +1128,13 @@ defmodule Helyx.Session.Server do
           |> emit(:agent_end, %{stop_reason: stop_reason})
           |> close_turn()
 
-        if open == %{}, do: settle(state), else: wait(state, %{steers: open})
+        # A Helyx tool that still runs: the turn cleanup of the hands
+        # runs before the next turn.
+        hands = if turn.tool, do: Hands.request_cancel(state.hands, turn.id)
+
+        if open == %{} and hands == nil,
+          do: settle(state),
+          else: wait(state, %{steers: open, hands: hands, tool: wait_tool(turn)})
     end
   end
 
@@ -1053,7 +1159,12 @@ defmodule Helyx.Session.Server do
     Enum.reduce(calls, state, &record_result(&1, {:error, "aborted"}, &2))
   end
 
-  defp run_tool(call, %State{turn: turn} = state) do
+  defp run_tool(call, state),
+    do: call |> run_harness_tool(state) |> emit(:tool_execution_start, %{tool_call: call})
+
+  # Runs a tool call on the hands. A Helyx tool request of a connected turn
+  # runs this way with no event: the harness's own events show the call.
+  defp run_harness_tool(call, %State{turn: turn} = state) do
     case Turn.rejection(turn, call) do
       nil ->
         :ok = Hands.run(state.hands, turn.id, call)
@@ -1064,7 +1175,7 @@ defmodule Helyx.Session.Server do
         send(self(), {:tool_result, turn.id, call.id, {:error, "tool call not run: " <> reason}})
     end
 
-    emit(state, :tool_execution_start, %{tool_call: call})
+    state
   end
 
   # Appends the tool result message to the transcript and emits
@@ -1126,12 +1237,17 @@ defmodule Helyx.Session.Server do
 
     case turn.turn_mode do
       :connected ->
-        wait(state, %{hands: Hands.request_cancel(state.hands, turn.id), steers: open})
+        hands = Hands.request_cancel(state.hands, turn.id)
+        wait(state, %{hands: hands, steers: open, tool: wait_tool(turn)})
 
       _local_or_external ->
         settle(state)
     end
   end
+
+  # The Helyx tool of a connected turn that ends, for the wait (`tool`).
+  defp wait_tool(%Turn{tool: %{id: id}, id: turn_id}), do: {turn_id, id}
+  defp wait_tool(_turn), do: nil
 
   defp close_partial_message(%State{turn: %Turn{partial: nil}} = state, _stop, _reason), do: state
 

@@ -351,3 +351,38 @@ Runs on 2026-09-30 with version `2.1.284`, `--model=haiku` (the `init` line repo
 
 - A background sub-agent as the ending task; two background tasks that end at the same time.
 - An `interrupt` during a program turn.
+
+## The SDK MCP server shapes (2026-09-29, #203)
+
+Runs on 2026-09-29 with version `2.1.284`, `--model haiku`, for ticket #203. A Python script drove the program with the flags of `Helyx.Provider.ClaudeCode` (`--output-format stream-json --verbose --include-partial-messages --input-format stream-json --permission-mode bypassPermissions --model=haiku --session-id=<uuid>`) and `--mcp-config '{"mcpServers":{"helyx":{"type":"sdk","name":"helyx"}}}'`, with no `--strict-mcp-config`, in a new session (its own process group), in an empty temporary directory. The host offered one tool, `secret_word`, with no input. 4 runs; two runs had two turns. "Verified" means one of these runs, not a contract. "Source only" means the Python Agent SDK at the commit named in "Long-lived session and the control protocol" (`_internal/query.py`, `_internal/sdk_mcp_bridge.py`) or the MCP specification, not a run.
+
+### The handshake (verified, 4 runs)
+
+- `initialize` came as `{"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"claude-code",...,"version":"2.1.284"}},"jsonrpc":"2.0","id":0}`, about 1 s after the first user line.
+- The program accepted the result `{"protocolVersion":<the asked version>,"capabilities":{"tools":{}},"serverInfo":{"name":"helyx","version":"0.1.0"}}`. The `init` line then listed `{"name":"helyx","status":"connected","source":"sdk"}` in `mcp_servers`.
+- `notifications/initialized` came in its own `mcp_message` with no `id`. The host answered the control request with `"response":{"mcp_response":{"jsonrpc":"2.0","result":{}}}`, the SDK's ack for a notification (source). Then `tools/list` came at once.
+- The program accepted the `tools/list` result `{"tools":[{"name":"secret_word","description":"...","inputSchema":{"type":"object","properties":{},"additionalProperties":false}}]}`. The model saw `mcp__helyx__secret_word` after `ToolSearch`.
+- **No ack for `notifications/initialized`** (1 run): the program waited 30 s, then sent `initialize` again with the next control request id and `notifications/initialized` again. After 30 more seconds with no ack, the server did not connect, and `ToolSearch` said that the configured MCP servers failed to connect. So the ack is needed, and **`initialize` can come more than once per program**. No `control_cancel_request` came for the abandoned control requests.
+- With the ack, `initialize` came once per program, also over two turns (3 runs).
+
+### Tool errors (verified, 2 runs, 2 calls each)
+
+- A result `{"content":[{"type":"text","text":"<text>"}],"isError":true}` gave the tool result `{"type":"tool_result","content":"<text>","is_error":true,"tool_use_id":...}`, and `tool_use_result` `"Error: <text>"`. The model repeated the text.
+- A JSON-RPC error `{"jsonrpc":"2.0","id":<id>,"error":{"code":-32603,"message":"<text>"}}` gave the same tool result: `is_error` `true` and the message as the content.
+- So the model sees the text in both cases, and the transcript cannot tell them apart.
+
+### An open `tools/call` at an interrupt (verified, 1 run)
+
+- Same as the run of 2026-09-27: the program sent `notifications/cancelled` with `params.requestId` equal to the JSON-RPC id of the open `tools/call` and `reason` `"AbortError: remote-cancel"`, in a new `mcp_message` control request. The host acked it with `{"jsonrpc":"2.0","result":{}}`. Then the interrupt response (`still_queued` `[]`, `cancelled` `[]`), an `is_error` tool result with the rejection text, `[Request interrupted by user for tool use]`, and the `result`.
+- The program sent no `control_cancel_request`. Its exit status after the end of input was 1 in this run; the cause was not looked for.
+
+### `control_cancel_request` (source only)
+
+- Not seen in any run. The SDK cancels the work of the pending control request with that `request_id` and writes **no** `control_response` for it: "the CLI has already abandoned this request".
+
+### Not run
+
+- Whether the program sends `initialize` again after a successful handshake, for example after `mcp_reconnect`.
+- A `tools/call` with arguments, and many calls at once.
+- A successful result with `"isError":false` (source only: the probes sent only `isError` `true`). The MCP schema has `isError` as an optional boolean.
+- A JSON-RPC error `-32601` for an unknown method (source only: the program sent no unknown method in the probes).
