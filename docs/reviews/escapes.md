@@ -103,3 +103,4 @@ One row per ticket that `/orchestrate` merged. An escape is a confirmed Codex fi
 | 2026-09-30 | #263 | simplify 2 applied; round 1 (full, with in-/ship Codex 0, bounds sensor 0 flags): standards 5 (1 fixed), spec 1 stale doc fixed, failure path 1 reproduced (a wrong comment on the max_open pool split), fixed as a comment | round 1: 0 | none needed |
 | 2026-09-30 | #274 | round 1 (full, with in-/ship Codex 0): standards and spec judgement calls kept, failure path 0 | round 1: 0 | none needed |
 | 2026-09-30 | #271 | round 1 (full, with in-/ship Codex 0): standards 2 judgement calls (1 fixed), spec 0, failure path 0 | round 1: 0 | none needed |
+| 2026-09-30 | #265 | simplify 5 fixed (one: Core start now refuses a provider with no turn callback); round 1 (full, with in-/ship Codex 0): standards 1 hard fixed, spec 4 fixed, failure path 0; a post-round Credo nesting fix (behaviour unchanged) | round 1: 0 | none needed |
