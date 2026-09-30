@@ -27,3 +27,7 @@ Round 1 reproduced no defect, so the loop ended.
 ## Precommit
 
 The first run failed on one root test, `Helyx.Session.HandsTest` "cancel releases with :cancel and reports an unconfirmed handle" (`assert_received` found an empty mailbox). The diff does not touch the root project, and the test passed 5 of 5 runs alone, so it is a flaky test under load. The second run passed.
+
+## Codex gate
+
+Round 1: approve, no findings. The orchestrator accepted the decision that an item with the running turn id moves a child to the running turn.
