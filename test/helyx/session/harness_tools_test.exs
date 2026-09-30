@@ -5,7 +5,9 @@ defmodule Helyx.Session.HarnessToolsTest do
   # cleanup at an abort, a crash, and a normal end.
   use ExUnit.Case, async: true
 
-  alias Helyx.{Event, Session}
+  import Helyx.Test.Events
+
+  alias Helyx.Session
   alias Helyx.Test.Connected
 
   setup do
@@ -33,15 +35,6 @@ defmodule Helyx.Session.HarnessToolsTest do
 
   defp slow(harness, turn_id, id, ms \\ 60_000),
     do: request(harness, turn_id, id, "slow", %{"ms" => ms, "text" => id})
-
-  defp collect_until(type, acc \\ []) do
-    receive do
-      {:helyx_event, %Event{type: ^type} = event} -> Enum.reverse([event | acc])
-      {:helyx_event, %Event{} = event} -> collect_until(type, [event | acc])
-    after
-      3_000 -> flunk("timed out waiting for #{type}")
-    end
-  end
 
   # The kinds of the provider's requests, in order, until one of `last`.
   defp requests_until(last, acc \\ []) do
@@ -319,14 +312,18 @@ defmodule Helyx.Session.HarnessToolsTest do
     assert queued(session) == ["c1"]
   end
 
-  # Waits until the session's mailbox holds a message that `match?` finds;
-  # the session is suspended, so the message stays there.
-  defp in_mailbox(pid, match?) do
+  # Waits until the mailbox of `pid` holds a message that `match?` finds;
+  # the process is suspended, so the message stays there. Polls every 10 ms,
+  # for at least `ms`.
+  defp in_mailbox(pid, match?, ms \\ 5_000)
+  defp in_mailbox(_pid, _match?, ms) when ms <= 0, do: flunk("no such message in the mailbox")
+
+  defp in_mailbox(pid, match?, ms) do
     {:messages, messages} = Process.info(pid, :messages)
 
     unless Enum.any?(messages, match?) do
       Process.sleep(10)
-      in_mailbox(pid, match?)
+      in_mailbox(pid, match?, ms - 10)
     end
   end
 

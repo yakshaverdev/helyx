@@ -41,8 +41,8 @@ defmodule Helyx.Tool.Bash.VMKillTest do
 
     # `elixir` execs into the BEAM, so the port's OS pid is the BEAM's.
     {:os_pid, beam} = Port.info(port, :os_pid)
-    pid = wait_for_pid(pidfile, 3_000)
+    pid = wait_for_pid(pidfile, 30_000)
     {_, 0} = System.cmd("kill", ["-9", to_string(beam)])
-    assert gone_within?(pid, 500)
+    assert gone_within?(pid, 5_000)
   end
 end

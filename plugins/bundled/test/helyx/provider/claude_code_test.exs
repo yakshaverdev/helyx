@@ -12,6 +12,8 @@ defmodule Helyx.Provider.ClaudeCodeTest do
   # async.
   use ExUnit.Case, async: false
 
+  import Helyx.Test.Events
+  import Helyx.Test.HarnessDriver
   import Helyx.Test.OSHelpers
 
   alias Helyx.{Event, HarnessIO, Message, Session}
@@ -246,24 +248,6 @@ defmodule Helyx.Provider.ClaudeCodeTest do
     {from, actions, state}
   end
 
-  # Gives each message of the test process to `harness_info/2` until
-  # `done?` holds for the actions so far, or the provider stops.
-  defp pump(state, actions, done?) do
-    if done?.(actions) do
-      {actions, state}
-    else
-      receive do
-        message ->
-          case ClaudeCode.harness_info(message, state) do
-            {:ok, more, state} -> pump(state, actions ++ more, done?)
-            {:stop, reason, state} -> {actions ++ [{:stop, reason}], state}
-          end
-      after
-        5_000 -> flunk("no end; got #{inspect(actions)}")
-      end
-    end
-  end
-
   defp ended?(actions) do
     Enum.any?(actions, fn
       {:event, _turn, {kind, _}} -> kind in [:done, :error]
@@ -279,22 +263,13 @@ defmodule Helyx.Provider.ClaudeCodeTest do
     {_from, actions, state} =
       request(harness(work), {:turn, "t1", %Helyx.Context{messages: messages}})
 
-    {actions, _state} = pump(state, actions, &ended?/1)
+    {actions, _state} = pump(ClaudeCode, state, actions, &ended?/1)
     actions
   end
 
   defp events_of(actions), do: for({:event, _turn, event} <- actions, do: event)
 
   # Sessions
-
-  defp collect_until(type, acc \\ []) do
-    receive do
-      {:helyx_event, %Event{type: ^type} = event} -> Enum.reverse([event | acc])
-      {:helyx_event, %Event{} = event} -> collect_until(type, [event | acc])
-    after
-      5_000 -> flunk("timed out waiting for #{type}; got #{inspect(Enum.reverse(acc))}")
-    end
-  end
 
   defp start(ctx, model \\ "claude-code/haiku") do
     {:ok, session} =
@@ -317,15 +292,6 @@ defmodule Helyx.Provider.ClaudeCodeTest do
 
   defp messages(events), do: for(%Event{type: :message_end, data: %{message: m}} <- events, do: m)
   defp of_type(events, type), do: for(%Event{type: ^type, data: data} <- events, do: data)
-
-  # Polls until the session let go of its ended harness process.
-  defp wait_for_no_harness(pid, tries \\ 500) do
-    cond do
-      :sys.get_state(pid).harness == nil -> :ok
-      tries == 0 -> flunk("the session still holds its harness process")
-      true -> Process.sleep(10) && wait_for_no_harness(pid, tries - 1)
-    end
-  end
 
   defp resume_flag?(bin, n), do: Enum.any?(args(bin, n), &String.starts_with?(&1, "--resume"))
 
@@ -581,21 +547,6 @@ defmodule Helyx.Provider.ClaudeCodeTest do
     assert result_ids == use_ids
   end
 
-  # Gives messages to `harness_info/2` until `done?` holds for the state.
-  defp settle(state, done?) do
-    if done?.(state) do
-      state
-    else
-      receive do
-        message ->
-          {:ok, _actions, state} = ClaudeCode.harness_info(message, state)
-          settle(state, done?)
-      after
-        5_000 -> flunk("no such state; got #{inspect(state)}")
-      end
-    end
-  end
-
   describe "an abort" do
     test "interrupts the turn with cancel_queued, and the next turn runs in the same program",
          %{bin: bin} = ctx do
@@ -679,14 +630,14 @@ defmodule Helyx.Provider.ClaudeCodeTest do
       {_from, _actions, state} =
         request(harness(work), {:turn, "t1", %Helyx.Context{messages: [Message.user("x")]}})
 
-      settle(state, ready?)
+      settle(ClaudeCode, state, ready?)
     end
 
     defp started?(state), do: state.turn.messages == nil and state.caps != nil
 
     defp interrupt(state) do
       {from, [], state} = request(state, {:interrupt, "t1"})
-      {actions, _state} = pump(state, [], replied?(from))
+      {actions, _state} = pump(ClaudeCode, state, [], replied?(from))
       {:reply, ^from, answer} = List.last(actions)
       {answer, actions}
     end
@@ -749,12 +700,12 @@ defmodule Helyx.Provider.ClaudeCodeTest do
       {_from, _actions, state} =
         request(harness(work), {:turn, "t1", %Helyx.Context{messages: history}})
 
-      state = settle(state, &(&1.caps != nil))
+      state = settle(ClaudeCode, state, &(&1.caps != nil))
       assert {from, [], state} = request(state, {:interrupt, "t1"})
       assert state.turn.interrupt.request_id == nil
 
       File.write!(go, "")
-      assert {actions, _state} = pump(state, [], replied?(from))
+      assert {actions, _state} = pump(ClaudeCode, state, [], replied?(from))
       assert {:reply, ^from, :ok} = List.last(actions)
       assert %{"type" => "control_request"} = List.last(stdin(bin, 1))
     end
@@ -770,7 +721,7 @@ defmodule Helyx.Provider.ClaudeCodeTest do
       assert {from, [], state} = request(state, {:interrupt, "t1"})
 
       File.write!(go, "")
-      assert {actions, _state} = pump(state, [], replied?(from))
+      assert {actions, _state} = pump(ClaudeCode, state, [], replied?(from))
       assert {:reply, ^from, :ok} = List.last(actions)
       assert [%{"type" => "user"}] = stdin(bin, 1)
     end
@@ -847,7 +798,7 @@ defmodule Helyx.Provider.ClaudeCodeTest do
       turn(bin, 1, 2, [result("a"), lifecycle("started"), delta("b"), result("b")])
 
       assert {from, [{:reply, from, :ok}], state} = steer(streaming(work))
-      {actions, _state} = pump(state, [], &ended?/1)
+      {actions, _state} = pump(ClaudeCode, state, [], &ended?/1)
       assert [prompt, %{"type" => "user", "uuid" => uuid, "message" => message}] = stdin(bin, 1)
       assert uuid != prompt["uuid"]
       assert %{"role" => "user", "content" => [%{"type" => "text", "text" => "more"}]} = message
@@ -878,7 +829,7 @@ defmodule Helyx.Provider.ClaudeCodeTest do
       turn(bin, 1, 2, [held, lifecycle("started"), delta("b"), result("b")])
 
       {_from, _actions, state} = steer(streaming(work))
-      {actions, _state} = pump(state, [], &ended?/1)
+      {actions, _state} = pump(ClaudeCode, state, [], &ended?/1)
       actions |> events_of() |> Enum.reject(&match?({:harness_session, _, _}, &1))
     end
 
@@ -921,7 +872,7 @@ defmodule Helyx.Provider.ClaudeCodeTest do
       ])
 
       {_from, _actions, state} = steer(streaming(work))
-      {actions, _state} = pump(state, [], &ended?/1)
+      {actions, _state} = pump(ClaudeCode, state, [], &ended?/1)
       events_of(actions)
     end
 
@@ -950,7 +901,7 @@ defmodule Helyx.Provider.ClaudeCodeTest do
 
       state = running(work, &(&1.turn.calls? and &1.caps != nil))
       {_from, _actions, state} = steer(state)
-      {actions, _state} = pump(state, [], &ended?/1)
+      {actions, _state} = pump(ClaudeCode, state, [], &ended?/1)
 
       assert [
                {:message_end, :tool_use, _},
@@ -967,13 +918,13 @@ defmodule Helyx.Provider.ClaudeCodeTest do
       turn(bin, 1, 2, [result("a")])
 
       {_from, _actions, state} = steer(streaming(work))
-      state = settle(state, &(&1.turn.wait != nil))
+      state = settle(ClaudeCode, state, &(&1.turn.wait != nil))
       # The timer is armed for 5,000 ms; the test gives its message at once.
       remaining = :erlang.read_timer(state.turn.wait)
       assert remaining <= 5_000 and remaining > 5_000 - @load_ms
       :erlang.cancel_timer(state.turn.wait)
       send(self(), {:timeout, state.turn.wait, :steer_wait})
-      assert {[{:stop, :steer_not_started}], _state} = pump(state, [], &ended?/1)
+      assert {[{:stop, :steer_not_started}], _state} = pump(ClaudeCode, state, [], &ended?/1)
     end
 
     test "an interrupt of a held turn answers :ok at the control response",
@@ -983,7 +934,7 @@ defmodule Helyx.Provider.ClaudeCodeTest do
       script(bin, "ctl.1", [interrupted([], ["@U@"])])
 
       {_from, _actions, state} = steer(streaming(work))
-      state = settle(state, &(&1.turn.wait != nil))
+      state = settle(ClaudeCode, state, &(&1.turn.wait != nil))
       assert {:ok, _actions} = interrupt(state)
     end
   end
@@ -1028,10 +979,10 @@ defmodule Helyx.Provider.ClaudeCodeTest do
     {_from, actions, state} =
       request(harness(work), {:turn, "t1", %Helyx.Context{messages: [Message.user("a")]}})
 
-    {_actions, state} = pump(state, actions, &ended?/1)
+    {_actions, state} = pump(ClaudeCode, state, actions, &ended?/1)
     context = %Helyx.Context{messages: [Message.user("a"), Message.user("b")]}
     {_from, actions, state} = request(state, {:turn, "t2", context})
-    {actions, state} = pump(state, actions, &ended?/1)
+    {actions, state} = pump(ClaudeCode, state, actions, &ended?/1)
 
     assert [{:text_delta, "mine"}, {:done, _}] = events_of(actions)
     # A Helyx tool call of the program turn runs nothing.
@@ -1051,8 +1002,8 @@ defmodule Helyx.Provider.ClaudeCodeTest do
     turn(bin, 1, 1, reply("first") ++ [note(), init() | lines])
     context = %Helyx.Context{messages: [Message.user("a")]}
     {_from, actions, state} = request(harness(work), {:turn, "t1", context})
-    {actions, state} = pump(state, actions, saw?(:program_turn))
-    {actions, state} = pump(state, actions, saw?({:text_delta, "program"}))
+    {actions, state} = pump(ClaudeCode, state, actions, saw?(:program_turn))
+    {actions, state} = pump(ClaudeCode, state, actions, saw?({:text_delta, "program"}))
     [id] = for {:event, id, :program_turn} <- actions, do: id
     {id, state}
   end
@@ -1070,7 +1021,7 @@ defmodule Helyx.Provider.ClaudeCodeTest do
     {_from, actions, state} = request(harness(work), {:turn, "t1", context})
 
     {actions, state} =
-      pump(state, actions, &(length(Enum.filter(&1, fn a -> ended?([a]) end)) == 2))
+      pump(ClaudeCode, state, actions, &(length(Enum.filter(&1, fn a -> ended?([a]) end)) == 2))
 
     assert [
              {:event, id, :program_turn},
@@ -1115,7 +1066,7 @@ defmodule Helyx.Provider.ClaudeCodeTest do
 
     context = %Helyx.Context{messages: [Message.user("a"), Message.user("b")]}
     {_from, actions, state} = request(state, {:turn, "t2", context})
-    {actions, _state} = pump(state, actions, &ended?/1)
+    {actions, _state} = pump(ClaudeCode, state, actions, &ended?/1)
 
     assert [{:text_delta, "mine"}, {:done, _}] = events_of(actions)
     refute Enum.any?(actions, &match?({:event, ^id, _}, &1))
@@ -1127,7 +1078,7 @@ defmodule Helyx.Provider.ClaudeCodeTest do
     script(bin, "ctl.1", [interrupted(), program_result("")])
 
     {from, [], state} = request(state, {:interrupt, id})
-    {actions, _state} = pump(state, [], replied?(from))
+    {actions, _state} = pump(ClaudeCode, state, [], replied?(from))
 
     assert {:reply, ^from, :ok} = List.last(actions)
     assert %{"request_id" => "interrupt_" <> ^id} = List.last(stdin(bin, 1))
@@ -1146,7 +1097,7 @@ defmodule Helyx.Provider.ClaudeCodeTest do
     script(bin, "eof.1", [program_result("program")])
 
     {from, [], state} = request(state, :close)
-    {actions, _state} = pump(state, [], replied?(from))
+    {actions, _state} = pump(ClaudeCode, state, [], replied?(from))
     assert [{:event, ^id, {:done, _}}, {:reply, ^from, :ok}] = actions
   end
 
@@ -1255,7 +1206,7 @@ defmodule Helyx.Provider.ClaudeCodeTest do
 
     {_from, more, state} = request(state, {:steer, "t1", "s1", "also"})
     assert [_line] = state.turn.chunks
-    {actions, _state} = pump(state, actions ++ more, &ended?/1)
+    {actions, _state} = pump(ClaudeCode, state, actions ++ more, &ended?/1)
 
     assert {:user_message, "s1", "also"} in events_of(actions)
     refute Enum.any?(events_of(actions), &match?({:notice, _}, &1))
@@ -1308,7 +1259,7 @@ defmodule Helyx.Provider.ClaudeCodeTest do
 
     # The delta after the result shows that the turn is still open.
     File.write!(go, "")
-    state = settle(state, &(&1.turn != nil and &1.turn.open?))
+    state = settle(ClaudeCode, state, &(&1.turn != nil and &1.turn.open?))
     assert %{request_id: nil, result?: false} = state.turn.interrupt
   end
 
@@ -1331,7 +1282,7 @@ defmodule Helyx.Provider.ClaudeCodeTest do
     from = make_ref()
     assert {:ok, [], state} = ClaudeCode.harness_request(:close, from, state)
     File.write!(go, "")
-    assert {[{:reply, ^from, :ok}], _state} = pump(state, [], replied?(from))
+    assert {[{:reply, ^from, :ok}], _state} = pump(ClaudeCode, state, [], replied?(from))
     assert programs(bin) == "1"
   end
 
@@ -1348,8 +1299,8 @@ defmodule Helyx.Provider.ClaudeCodeTest do
       turn(bin, 1, 1, reply("ok") ++ lines, tail)
       context = %Helyx.Context{messages: [Message.user("hi")]}
       {_from, actions, state} = request(harness(work), {:turn, "t1", context})
-      {_actions, state} = pump(state, actions, &ended?/1)
-      settle(state, done?)
+      {_actions, state} = pump(ClaudeCode, state, actions, &ended?/1)
+      settle(ClaudeCode, state, done?)
     end
 
     test "with a live background task answers :busy and keeps the program; with none it closes",
@@ -1364,9 +1315,9 @@ defmodule Helyx.Provider.ClaudeCodeTest do
       assert programs(bin) == "1"
 
       File.write!(go, "")
-      state = settle(state, &(&1.tasks == []))
+      state = settle(ClaudeCode, state, &(&1.tasks == []))
       {from, [], state} = request(state, :idle_close)
-      assert {[{:reply, ^from, :ok}], _state} = pump(state, [], replied?(from))
+      assert {[{:reply, ^from, :ok}], _state} = pump(ClaudeCode, state, [], replied?(from))
       assert programs(bin) == "1"
     end
 
@@ -1382,12 +1333,12 @@ defmodule Helyx.Provider.ClaudeCodeTest do
       turn(bin, 1, 1, begin() ++ Enum.map(own, sub) ++ text ++ [tasks_line(%{tasks: [task]})])
       context = %Helyx.Context{messages: [Message.user("hi")]}
       {_from, actions, state} = request(harness(work), {:turn, "t1", context})
-      {actions, state} = pump(state, actions, &ended?/1)
+      {actions, state} = pump(ClaudeCode, state, actions, &ended?/1)
 
       assert [{:harness_session, _, 0}, {:text_delta, "ok"}, {:done, _}] =
                for({:event, "t1", event} <- actions, do: event)
 
-      state = settle(state, &(&1.tasks != []))
+      state = settle(ClaudeCode, state, &(&1.tasks != []))
       assert {_from, [{:reply, _, :busy}], _state} = request(state, :idle_close)
     end
 
@@ -1400,7 +1351,7 @@ defmodule Helyx.Provider.ClaudeCodeTest do
       assert {_from, [{:reply, _, :busy}], state} = request(state, :idle_close)
 
       {from, [], state} = request(state, :idle_close)
-      assert {[{:reply, ^from, :ok}], _state} = pump(state, [], replied?(from))
+      assert {[{:reply, ^from, :ok}], _state} = pump(ClaudeCode, state, [], replied?(from))
     end
 
     for {name, fields} <- [
@@ -1467,11 +1418,15 @@ defmodule Helyx.Provider.ClaudeCodeTest do
     turn(bin, 2, 1, reply("Back."))
 
     session = start(ctx)
+    pid = Session.pid(session)
+    :erlang.trace(pid, true, [:receive])
     [%{harness_session_id: id}] = of_type(prompt(session, "hello"), :harness_session)
     # A turn that starts before the session saw the end runs on the old
     # harness process and fails (`docs/features/long-lived-harness.md`,
-    # "Built in #199").
-    wait_for_no_harness(Session.pid(session))
+    # "Built in #199"). A later call returns after the session handled it.
+    assert_receive {:trace, ^pid, :receive, {:harness_down, _, _}}, turn_ms()
+    :erlang.trace(pid, false, [:receive])
+    assert :sys.get_state(pid).harness == nil
     assert [%{stop_reason: :end_turn}] = of_type(prompt(session, "again"), :agent_end)
     assert "--resume=#{id}" in args(bin, 2)
   end
@@ -1696,7 +1651,7 @@ defmodule Helyx.Provider.ClaudeCodeTest do
         {_from, actions, state} =
           request(harness(work), {:turn, "t1", %Helyx.Context{messages: [Message.user("hi")]}})
 
-        pump(state, actions, fn _ -> false end)
+        pump(ClaudeCode, state, actions, fn _ -> false end)
       end)
 
     for _hold <- 1..2 do
@@ -1713,7 +1668,7 @@ defmodule Helyx.Provider.ClaudeCodeTest do
 
     assert_receive {:DOWN, ^ref, :process, _pid, :shutdown}, 200
     # The keeper closes the port, so the watchdog ends the group.
-    assert group_gone_within?(program, 300)
+    assert group_gone_within?(program, 3_000)
   end
 
   describe "the Helyx tools" do
@@ -1746,7 +1701,7 @@ defmodule Helyx.Provider.ClaudeCodeTest do
 
     defp closed(state) do
       {from, [], state} = request(state, :close)
-      {_actions, _state} = pump(state, [], replied?(from))
+      {_actions, _state} = pump(ClaudeCode, state, [], replied?(from))
       :ok
     end
 
@@ -1756,7 +1711,7 @@ defmodule Helyx.Provider.ClaudeCodeTest do
       {_from, actions, state} =
         request(state, {:turn, "t1", %Helyx.Context{messages: [Message.user("x")]}})
 
-      pump(state, actions, fn actions ->
+      pump(ClaudeCode, state, actions, fn actions ->
         Enum.any?(actions, &match?({:event, _, {:tool_request, _, _, _}}, &1))
       end)
     end
@@ -1790,7 +1745,7 @@ defmodule Helyx.Provider.ClaudeCodeTest do
       ])
 
       {:ok, state} = ClaudeCode.harness_init("haiku", [@spec_read], cwd: work)
-      closed(settle(state, &marked?/1))
+      closed(settle(ClaudeCode, state, &marked?/1))
 
       result = %{
         "protocolVersion" => "2025-11-25",
@@ -1857,12 +1812,12 @@ defmodule Helyx.Provider.ClaudeCodeTest do
       )
 
       {:ok, state} = ClaudeCode.harness_init("haiku", [@spec_read], cwd: work)
-      state = settle(state, &marked?/1)
+      state = settle(ClaudeCode, state, &marked?/1)
 
       {_from, actions, state} =
         request(state, {:turn, "t1", %Helyx.Context{messages: [Message.user("x")]}})
 
-      {actions, state} = pump(state, actions, &ended?/1)
+      {actions, state} = pump(ClaudeCode, state, actions, &ended?/1)
       closed(state)
 
       refute Enum.any?(actions, &match?({:event, _, {:tool_request, _, _, _}}, &1))
@@ -1909,7 +1864,7 @@ defmodule Helyx.Provider.ClaudeCodeTest do
       {_from, actions, state} =
         request(state, {:turn, "t1", %Helyx.Context{messages: [Message.user("x")]}})
 
-      {actions, state} = pump(state, actions, &ended?/1)
+      {actions, state} = pump(ClaudeCode, state, actions, &ended?/1)
       closed(state)
 
       # Only the first call of toolu_z maps; the open id is used too.
@@ -1958,7 +1913,7 @@ defmodule Helyx.Provider.ClaudeCodeTest do
       ])
 
       {actions, state} =
-        pump(state, [], &Enum.any?(&1, fn a -> match?({:cancel_tool, _, _}, a) end))
+        pump(ClaudeCode, state, [], &Enum.any?(&1, fn a -> match?({:cancel_tool, _, _}, a) end))
 
       assert [{:cancel_tool, "t1", "toolu_h1"}] = actions
 
@@ -1988,7 +1943,7 @@ defmodule Helyx.Provider.ClaudeCodeTest do
       ])
 
       {actions, state} =
-        pump(state, [], &Enum.any?(&1, fn a -> match?({:cancel_tool, _, _}, a) end))
+        pump(ClaudeCode, state, [], &Enum.any?(&1, fn a -> match?({:cancel_tool, _, _}, a) end))
 
       assert [{:cancel_tool, "t1", "toolu_h1"}] = actions
       closed(state)

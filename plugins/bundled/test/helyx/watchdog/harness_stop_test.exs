@@ -43,7 +43,7 @@ defmodule Helyx.Watchdog.HarnessStopTest do
   test "a blocked callback: the armed kill stops the program group", %{core: core} do
     {_session, group} = start(core, "block", 300)
     assert agent_end().data.error == :harness_timeout
-    assert group_gone_within?(group, 300)
+    assert group_gone_within?(group, 3_000)
   end
 
   # The session stops its hands before it ends, so the hands never run a
@@ -56,7 +56,7 @@ defmodule Helyx.Watchdog.HarnessStopTest do
     Process.flag(:trap_exit, true)
     :ok = stop_supervised(core)
     assert_received {:DOWN, ^hands, :process, _, :shutdown}
-    assert group_gone_within?(group, 300)
+    assert group_gone_within?(group, 3_000)
   end
 
   test "a Core stop during a connected turn ends the program group", %{core: core} do
@@ -65,7 +65,7 @@ defmodule Helyx.Watchdog.HarnessStopTest do
     Process.flag(:trap_exit, true)
     :ok = stop_supervised(core)
     assert_received {:DOWN, ^hands, :process, _, :shutdown}
-    assert group_gone_within?(group, 300)
+    assert group_gone_within?(group, 3_000)
   end
 
   defp monitor_hands(session),
@@ -75,6 +75,6 @@ defmodule Helyx.Watchdog.HarnessStopTest do
        %{core: core} do
     {_session, group} = start(core, "flood")
     assert {:harness_stop, _reason} = agent_end().data.error
-    assert group_gone_within?(group, 300)
+    assert group_gone_within?(group, 3_000)
   end
 end

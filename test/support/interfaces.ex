@@ -265,7 +265,9 @@ defmodule Helyx.Test.Provider do
   # A provider whose model name selects a stream shape, so session tests can
   # exercise streams that end badly.
   #
-  #   "ok"         one delta, then done, after a short pause
+  #   "ok"         one delta, then done
+  #   "gate.<name>" stops at the gate <name> (`Helyx.Test.Gate`), then
+  #                streams as "ok"
   #   "empty"      an empty stream, no terminal event
   #   "crash"      one delta, then the stream raises
   #   "overrun"    a delta, done, then a raise if pulled further
@@ -304,8 +306,11 @@ defmodule Helyx.Test.Provider do
 
   @impl true
   def stream("ok", _context, _opts) do
-    {:ok, Stream.map([{:text_delta, "ok"}, done()], &tap(&1, fn _ -> Process.sleep(50) end))}
+    {:ok, [{:text_delta, "ok"}, done()]}
   end
+
+  def stream("gate." <> gate, _context, _opts),
+    do: {:ok, Helyx.Test.Gate.stream([:gate, {:text_delta, "ok"}, done()], gate)}
 
   def stream("empty", _context, _opts), do: {:ok, []}
 

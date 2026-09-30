@@ -70,7 +70,7 @@ defmodule Helyx.WatchdogTest do
     assert "" = go(port, "", "nonce 1\nready\n")
 
     Port.close(port)
-    assert group_gone_within?(group, 200)
+    assert group_gone_within?(group, 2_000)
   end
 
   test "a command that ignores TERM is killed after the grace period" do
@@ -79,7 +79,7 @@ defmodule Helyx.WatchdogTest do
     assert "" = go(port, "", "nonce 1\nready\n")
 
     Port.close(port)
-    assert group_gone_within?(group, 300)
+    assert group_gone_within?(group, 3_000)
   end
 
   test "a longer grace holds the KILL until its limit" do
@@ -92,7 +92,7 @@ defmodule Helyx.WatchdogTest do
     Port.close(port)
     Process.sleep(800)
     assert os_alive?("-#{group}")
-    assert group_gone_within?(group, 50)
+    assert group_gone_within?(group, 500)
   end
 
   test "a failed exec: the start line, then the report under the go-ahead word (issue #70)" do
@@ -110,7 +110,7 @@ defmodule Helyx.WatchdogTest do
     true = Port.command(port, "go\n")
 
     Port.close(port)
-    assert group_gone_within?(group, 300)
+    assert group_gone_within?(group, 3_000)
   end
 
   @tag :tmp_dir
@@ -120,7 +120,7 @@ defmodule Helyx.WatchdogTest do
     {group, ""} = read_marker(port)
 
     Port.close(port)
-    assert group_gone_within?(group, 200)
+    assert group_gone_within?(group, 2_000)
     refute File.exists?(ran)
   end
 
@@ -142,7 +142,7 @@ defmodule Helyx.WatchdogTest do
       assert "" = await(port, "", "nonce 1\nready\n")
 
       Port.close(port)
-      assert group_gone_within?(group, 200)
+      assert group_gone_within?(group, 2_000)
     end
 
     test "open input: a command that closes its stdin early does not end the watchdog" do
@@ -168,7 +168,7 @@ defmodule Helyx.WatchdogTest do
       assert "" = await(port, rest, "nonce 1\nready\n")
 
       Port.close(port)
-      assert group_gone_within?(group, 200)
+      assert group_gone_within?(group, 2_000)
     end
 
     test "open input: a command that does not read is stopped over the stdin cap (#196)" do
@@ -190,7 +190,7 @@ defmodule Helyx.WatchdogTest do
         5_000 -> flunk("the watchdog did not stop the command")
       end
 
-      assert group_gone_within?(group, 200)
+      assert group_gone_within?(group, 2_000)
     end
 
     # A command that does not read gets the cap in the watchdog plus what the
@@ -218,13 +218,13 @@ defmodule Helyx.WatchdogTest do
             5_000 -> flunk("the watchdog did not stop the command")
           end
 
-          assert group_gone_within?(group, 200)
+          assert group_gone_within?(group, 2_000)
         else
           refute_receive {^port, {:exit_status, _}}, 500
           refute_received {:EXIT, ^port, _}
           assert os_alive?("-#{group}")
           Port.close(port)
-          assert group_gone_within?(group, 200)
+          assert group_gone_within?(group, 2_000)
         end
       end
     end

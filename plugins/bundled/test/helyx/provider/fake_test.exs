@@ -3,8 +3,10 @@ defmodule Helyx.Provider.FakeTest do
   # provider and assert only on the events a client would see.
   use ExUnit.Case, async: true
 
-  alias Helyx.{Event, Session}
+  import Helyx.Test.Events
+
   alias Helyx.Provider.Fake
+  alias Helyx.Session
 
   defmodule Upcase do
     @behaviour Helyx.Tool
@@ -22,15 +24,6 @@ defmodule Helyx.Provider.FakeTest do
 
   defp final_message(events) do
     Enum.find(events, &(&1.type == :turn_end)).data.message
-  end
-
-  defp collect_until(type, acc \\ []) do
-    receive do
-      {:helyx_event, %Event{type: ^type} = event} -> Enum.reverse([event | acc])
-      {:helyx_event, %Event{} = event} -> collect_until(type, [event | acc])
-    after
-      1_000 -> flunk("timed out waiting for #{type}; got #{inspect(Enum.reverse(acc))}")
-    end
   end
 
   test "one prompt runs one turn and emits the loop events in order", %{core: core} do

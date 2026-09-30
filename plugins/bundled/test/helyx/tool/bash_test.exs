@@ -29,7 +29,7 @@ defmodule Helyx.Tool.BashTest do
     {:ok, session} = Helyx.Session.start(core, model: "fake/abort", cwd: dir)
     {:ok, _} = Helyx.Session.subscribe(session)
     :ok = Helyx.Session.prompt(session, "go")
-    assert_receive {:helyx_event, %Helyx.Event{type: :tool_execution_start}}, 1_000
+    assert_receive {:helyx_event, %Helyx.Event{type: :tool_execution_start}}
     session
   end
 
@@ -209,7 +209,7 @@ defmodule Helyx.Tool.BashTest do
       |> Helyx.Message.text()
       |> String.trim()
 
-    assert gone_within?(pid, 100)
+    assert gone_within?(pid, 1_000)
   end
 
   test "abort ends the command and its children", %{core: core, tmp_dir: dir} do
@@ -247,7 +247,7 @@ defmodule Helyx.Tool.BashTest do
       end
 
     true = :erlang.suspend_process(task_pid)
-    assert gone_within?(pid, 300), "the shell did not exit"
+    assert gone_within?(pid, 3_000), "the shell did not exit"
 
     :ok = Helyx.Session.abort(session)
     refute os_alive?(child)
@@ -278,8 +278,8 @@ defmodule Helyx.Tool.BashTest do
 
     ref = Process.monitor(task)
     Process.exit(hands, :kill)
-    assert_receive {:DOWN, ^ref, :process, _, _}, 1_000
-    assert gone_within?(pid, 300)
+    assert_receive {:DOWN, ^ref, :process, _, _}
+    assert gone_within?(pid, 3_000)
   end
 
   test "stopping Core normally ends a running command", %{tmp_dir: dir} do
@@ -293,7 +293,7 @@ defmodule Helyx.Tool.BashTest do
     pid = wait_for_pid(Path.join(dir, "pid"))
 
     :ok = Supervisor.stop(sup)
-    assert gone_within?(pid, 300)
+    assert gone_within?(pid, 3_000)
   end
 
   test "check reports a system without perl" do

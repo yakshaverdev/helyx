@@ -5,7 +5,9 @@ defmodule Helyx.Session.HarnessTest do
   # builds each have a test here.
   use ExUnit.Case, async: true
 
-  alias Helyx.{Event, Message, Session}
+  import Helyx.Test.Events
+
+  alias Helyx.{Message, Session}
   alias Helyx.Test.Connected
 
   setup do
@@ -55,15 +57,6 @@ defmodule Helyx.Session.HarnessTest do
 
     {:ok, _} = Session.subscribe(session)
     {session, pid, hands}
-  end
-
-  defp collect_until(type, acc \\ []) do
-    receive do
-      {:helyx_event, %Event{type: ^type} = event} -> Enum.reverse([event | acc])
-      {:helyx_event, %Event{} = event} -> collect_until(type, [event | acc])
-    after
-      3_000 -> flunk("timed out waiting for #{type}; got #{inspect(Enum.reverse(acc))}")
-    end
   end
 
   defp error(events), do: List.last(events).data[:error]
@@ -382,7 +375,7 @@ defmodule Helyx.Session.HarnessTest do
       # The connect races the prepare Task, so the init message can come
       # after the turn ends. The wait is for a message that must come, not
       # an upper bound.
-      assert_receive {:conn, :init, harness, _}, 1_000
+      assert_receive {:conn, :init, harness, _}
 
       assert final_text(turn(session, "two")) == "echo:prepared|two"
       assert_received {:conn, :turn, ^harness, _}
@@ -396,7 +389,7 @@ defmodule Helyx.Session.HarnessTest do
       # The connect races the prepare Task, so the init message can come
       # after the turn ends. The wait is for a message that must come, not
       # an upper bound.
-      assert_receive {:conn, :init, harness, _}, 1_000
+      assert_receive {:conn, :init, harness, _}
 
       assert final_text(turn(session, "two")) == "echo:prepared|two"
       assert_received {:conn, :turn, ^harness, _}
@@ -814,7 +807,7 @@ defmodule Helyx.Session.HarnessTest do
       assert_received {:conn, :init, harness, _}
       ref = Process.monitor(harness)
 
-      assert_receive {:conn, :idle_close, ^harness, :idle_close}, 1_000
+      assert_receive {:conn, :idle_close, ^harness, :idle_close}
       assert_receive {:DOWN, ^ref, :process, _, _}
       assert_receive {:release, :deliver, [{:report, _}]}
 
@@ -833,7 +826,7 @@ defmodule Helyx.Session.HarnessTest do
       send(harness, {:finish, turn_id})
       collect_until(:agent_end)
       refute_receive {:conn, :idle_close, _, _}, 50
-      assert_receive {:conn, :idle_close, ^harness, :idle_close}, 1_000
+      assert_receive {:conn, :idle_close, ^harness, :idle_close}
     end
 
     test "is 30 minutes by default", %{core: core} do
@@ -849,7 +842,7 @@ defmodule Helyx.Session.HarnessTest do
 
       :ok = Session.abort(session)
       assert_received {:conn, :interrupt, ^harness, _}
-      assert_receive {:conn, :idle_close, ^harness, :idle_close}, 1_000
+      assert_receive {:conn, :idle_close, ^harness, :idle_close}
     end
 
     test "a :busy answer keeps the program and arms the timer again", %{core: core} do
@@ -857,8 +850,8 @@ defmodule Helyx.Session.HarnessTest do
       turn(session, "one")
       assert_received {:conn, :init, harness, _}
 
-      assert_receive {:conn, :idle_close, ^harness, :idle_close}, 1_000
-      assert_receive {:conn, :idle_close, ^harness, :idle_close}, 1_000
+      assert_receive {:conn, :idle_close, ^harness, :idle_close}
+      assert_receive {:conn, :idle_close, ^harness, :idle_close}
       assert Process.alive?(harness)
 
       assert final_text(turn(session, "two")) == "echo:prepared|two"
@@ -871,7 +864,7 @@ defmodule Helyx.Session.HarnessTest do
       turn(session, "one")
       assert_received {:conn, :init, harness, _}
 
-      assert_receive {:conn, :idle_close, ^harness, :idle_close}, 1_000
+      assert_receive {:conn, :idle_close, ^harness, :idle_close}
       :ok = Session.prompt(session, "two")
       assert final_text(collect_until(:agent_end)) == "echo:prepared|two"
       refute Process.alive?(harness)
@@ -890,7 +883,7 @@ defmodule Helyx.Session.HarnessTest do
         ref = Process.monitor(harness)
         hands_ref = Process.monitor(hands)
 
-        assert_receive {:conn, :idle_close, ^harness, :idle_close}, 1_000
+        assert_receive {:conn, :idle_close, ^harness, :idle_close}
         Process.flag(:trap_exit, true)
         :ok = stop_supervised(core)
         assert_received {:DOWN, ^ref, :process, _, :normal}
@@ -923,7 +916,7 @@ defmodule Helyx.Session.HarnessTest do
       assert_received {:conn, :init, harness, _}
       ref = Process.monitor(harness)
 
-      assert_receive {:conn, :idle_close, ^harness, :idle_close}, 1_000
+      assert_receive {:conn, :idle_close, ^harness, :idle_close}
       :ok = Session.prompt(session, "two")
       assert_receive {:DOWN, ^ref, :process, _, :killed}, 2_000
       assert final_text(collect_until(:agent_end)) == "echo:prepared|two"

@@ -69,3 +69,7 @@ Invariants the review axes check on every diff. Add one when a review or a PR co
 - Truncation holds when one line is larger than the byte limit.
 - A `rescue error in ErlangError` also catches the exceptions that the BEAM normalizes, such as `SystemLimitError` and `ArgumentError`, and these have no `:original` field. Format a caught exception with `Exception.message/1`, never with a field of one exception type (#141).
 - A tool never loads unbounded input or buffers unbounded output. A model-chosen path can be a device or a huge file; a command can write forever. A result that dropped output says so.
+
+## Tests
+
+- A change to how a test waits keeps what the test checks. When a poll or a sleep is replaced by an event wait, the exit condition of the old poll (for example `map_size(state.held) >= n`) stays as an assertion after the new wait. For each removed wait, the spec axis names the assertion that replaces its exit condition, and a mutation that breaks that condition still fails the test (#264).

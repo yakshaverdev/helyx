@@ -8,104 +8,16 @@ defmodule Helyx.TUI.ViewModelSnapshotTest do
 
   alias Helyx.{Event, Message, Session}
   alias Helyx.Provider.Fake
+  alias Helyx.Test.{Gate, Gated, LateClient}
   alias Helyx.TUI.ViewModel
 
+  import Helyx.Test.Events
   import Helyx.Test.ViewModelRule, only: [transcript: 1]
-
-  defmodule Gate do
-    @moduledoc false
-    # A tool that tells the process registered as "gate" it runs, then
-    # waits for :go.
-    @behaviour Helyx.Tool
-
-    @impl true
-    def name, do: "gate"
-    @impl true
-    def description, do: "Waits for the test."
-    @impl true
-    def parameters, do: %{"type" => "object"}
-    @impl true
-    def run(%{"gate" => gate}, _cwd), do: Helyx.TUI.ViewModelSnapshotTest.wait(gate)
-  end
-
-  defmodule Harness do
-    @moduledoc false
-    # A provider with an external turn. The model is "<shape>.<gate>": the
-    # stream stops at the gate until the test sends :go.
-    #
-    #   calls    three tool calls and a message end, the gate, the three
-    #            results, then a text
-    #   partial  a text delta, the gate, then more text
-    #   fail     a text delta, the gate, then a stream error
-    #   dangling a tool call, then the end of the turn (no gate)
-    #   dup_id   two tool calls with one id and a message end, the first
-    #            result, the gate, the second result, then a text
-    @behaviour Helyx.Provider
-
-    @impl true
-    def id, do: "gated"
-    @impl true
-    def turn, do: :external
-
-    @impl true
-    def stream(model, _context, _opts) do
-      [shape, gate] = String.split(model, ".")
-
-      steps(shape)
-      |> Stream.flat_map(fn
-        :gate ->
-          Helyx.TUI.ViewModelSnapshotTest.wait(gate)
-          []
-
-        event ->
-          [event]
-      end)
-      |> Stream.concat([{:done, %{stop_reason: :end_turn, usage: %{}}}])
-      |> then(&{:ok, &1})
-    end
-
-    defp steps("calls") do
-      calls = for id <- ~w(c1 c2 c3), do: %Message.ToolCall{id: id, name: "x", arguments: %{}}
-
-      Enum.map(calls, &{:tool_call, &1}) ++
-        [{:message_end, :tool_use, %{}}, :gate] ++
-        Enum.map(calls, &{:tool_result, &1.id, {:ok, "r"}}) ++ [{:text_delta, "end"}]
-    end
-
-    defp steps("partial"), do: [{:text_delta, "hel"}, :gate, {:text_delta, "lo"}]
-    defp steps("fail"), do: [{:text_delta, "hel"}, :gate, {:error, :boom}]
-
-    defp steps("dangling"),
-      do: [{:tool_call, %Message.ToolCall{id: "d", name: "x", arguments: %{}}}]
-
-    defp steps("dup_id") do
-      [
-        {:tool_call, %Message.ToolCall{id: "t", name: "read", arguments: %{}}},
-        {:tool_call, %Message.ToolCall{id: "t", name: "bash", arguments: %{}}},
-        {:message_end, :tool_use, %{}},
-        {:tool_result, "t", {:ok, "one"}},
-        :gate,
-        {:tool_result, "t", {:ok, "two"}},
-        {:text_delta, "end"}
-      ]
-    end
-  end
-
-  @doc false
-  def wait(gate) do
-    send(String.to_existing_atom(gate), {:waiting, self()})
-
-    receive do
-      :go -> {:ok, "done"}
-    end
-  end
 
   setup context do
     core = :"core_#{System.unique_integer([:positive])}"
-    start_supervised!({Helyx.Core, name: core, plugins: [Fake, Gate, Harness]})
-    gate = :"gate_#{System.unique_integer([:positive])}"
-    Process.register(self(), gate)
-    Map.merge(context, %{core: core, gate: Atom.to_string(gate)})
+    start_supervised!({Helyx.Core, name: core, plugins: [Fake, Gate, Gated.External]})
+    Map.merge(context, %{core: core, gate: Gate.open()})
   end
 
   test "a subscribe while the first of three local calls runs", %{core: core, gate: gate} do
@@ -119,7 +31,7 @@ defmodule Helyx.TUI.ViewModelSnapshotTest do
     :ok = Session.prompt(session, "go")
 
     assert_receive {:waiting, tool}
-    {late, snapshot} = late_client(session)
+    {late, snapshot} = LateClient.connect(session)
     assert snapshot.turn.running == ["c1"]
 
     live = fold(first, events_to(snapshot.seq))
@@ -131,11 +43,12 @@ defmodule Helyx.TUI.ViewModelSnapshotTest do
     assert_receive {:waiting, tool}
     send(tool, :go)
 
-    watched = fold(live, events_to_end())
-    joined = fold(snapshot, late_events(late))
+    watched = fold(live, collect_until(:agent_end))
+    joined = fold(snapshot, LateClient.events_to_end(late))
 
     assert transcript(joined) == transcript(watched)
     assert length(for {:tool, _call, _line, %Message{}} <- joined.cells, do: 1) == 3
+    LateClient.disconnect(late)
   end
 
   test "a subscribe in an external turn with three open calls", %{core: core, gate: gate} do
@@ -144,7 +57,7 @@ defmodule Helyx.TUI.ViewModelSnapshotTest do
     :ok = Session.prompt(session, "go")
 
     assert_receive {:waiting, stream}
-    {late, snapshot} = late_client(session)
+    {late, snapshot} = LateClient.connect(session)
     assert snapshot.turn.running == ~w(c1 c2 c3)
 
     live = fold(first, events_to(snapshot.seq))
@@ -152,8 +65,10 @@ defmodule Helyx.TUI.ViewModelSnapshotTest do
 
     send(stream, :go)
 
-    assert transcript(fold(snapshot, late_events(late))) ==
-             transcript(fold(live, events_to_end()))
+    assert transcript(fold(snapshot, LateClient.events_to_end(late))) ==
+             transcript(fold(live, collect_until(:agent_end)))
+
+    LateClient.disconnect(late)
   end
 
   test "two calls with one id in an external turn: each result on the same cell", %{
@@ -165,7 +80,7 @@ defmodule Helyx.TUI.ViewModelSnapshotTest do
     :ok = Session.prompt(session, "go")
 
     assert_receive {:waiting, stream}
-    {late, snapshot} = late_client(session)
+    {late, snapshot} = LateClient.connect(session)
     live = fold(first, events_to(snapshot.seq))
     assert transcript(ViewModel.from_snapshot(snapshot)) == transcript(live)
 
@@ -179,8 +94,10 @@ defmodule Helyx.TUI.ViewModelSnapshotTest do
 
     send(stream, :go)
 
-    assert transcript(fold(snapshot, late_events(late))) ==
-             transcript(fold(live, events_to_end()))
+    assert transcript(fold(snapshot, LateClient.events_to_end(late))) ==
+             transcript(fold(live, collect_until(:agent_end)))
+
+    LateClient.disconnect(late)
   end
 
   test "a later local call with the running call's id gets its cell only when it starts", %{
@@ -197,25 +114,26 @@ defmodule Helyx.TUI.ViewModelSnapshotTest do
     :ok = Session.prompt(session, "one")
 
     assert_receive {:waiting, tool}
-    {late, snapshot} = late_client(session)
+    {late, snapshot} = LateClient.connect(session)
     live = fold(first, events_to(snapshot.seq))
     assert transcript(ViewModel.from_snapshot(snapshot)) == transcript(live)
 
     send(tool, :go)
     assert_receive {:waiting, tool}
     send(tool, :go)
-    live = fold(live, events_to_end())
-    joined = fold(snapshot, late_events(late))
+    live = fold(live, collect_until(:agent_end))
+    joined = fold(snapshot, LateClient.events_to_end(late))
     assert transcript(joined) == transcript(live)
 
     # A call of a later turn with the same id gets its own result.
     :ok = Session.prompt(session, "two")
     assert_receive {:waiting, tool}
     send(tool, :go)
-    live = fold(live, events_to_end())
-    joined = fold(joined, late_events(late))
+    live = fold(live, collect_until(:agent_end))
+    joined = fold(joined, LateClient.events_to_end(late))
     assert transcript(joined) == transcript(live)
     assert [] = for({:tool, _call, _line, nil} <- joined.cells, do: :open)
+    LateClient.disconnect(late)
   end
 
   test "a subscribe during a reply shows the reply so far, then each event once", %{
@@ -227,13 +145,13 @@ defmodule Helyx.TUI.ViewModelSnapshotTest do
     :ok = Session.prompt(session, "go")
 
     assert_receive {:waiting, stream}
-    {late, snapshot} = late_client(session)
+    {late, snapshot} = LateClient.connect(session)
     assert %{partial: %Message{content: [%Message.Text{text: "hel"}]}} = snapshot.turn
     assert ViewModel.from_snapshot(snapshot).streaming == [%Message.Text{text: "hel"}]
 
     send(stream, :go)
-    events = late_events(late)
-    watched = events_to_end()
+    events = LateClient.events_to_end(late)
+    watched = collect_until(:agent_end)
 
     # The late client got every event after the snapshot, and each once.
     # An event sent between its registration and the snapshot can reach it
@@ -242,6 +160,7 @@ defmodule Helyx.TUI.ViewModelSnapshotTest do
              for(%Event{seq: seq} <- watched, seq > snapshot.seq, do: seq)
 
     assert transcript(fold(snapshot, events)) == transcript(fold(first, watched))
+    LateClient.disconnect(late)
   end
 
   test "a join after a failed turn with a partial reply", %{core: core, gate: gate} do
@@ -251,7 +170,7 @@ defmodule Helyx.TUI.ViewModelSnapshotTest do
 
     assert_receive {:waiting, stream}
     send(stream, :go)
-    events = events_to_end()
+    events = collect_until(:agent_end)
     live = fold(first, events)
     assert [_user, %Message{stop_reason: :error}, {:notice, "error: " <> _}] = live.cells
 
@@ -265,7 +184,7 @@ defmodule Helyx.TUI.ViewModelSnapshotTest do
 
     assert_receive {:waiting, _stream}
     :ok = Session.abort(session)
-    events = events_to_end()
+    events = collect_until(:agent_end)
     live = fold(first, events)
     assert [_user, %Message{stop_reason: :aborted}, {:notice, "aborted"}] = live.cells
 
@@ -279,7 +198,7 @@ defmodule Helyx.TUI.ViewModelSnapshotTest do
     {:ok, session} = Session.start(core, model: "gated/dangling." <> gate)
     {:ok, first} = Session.subscribe(session)
     :ok = Session.prompt(session, "go")
-    live = fold(first, events_to_end())
+    live = fold(first, collect_until(:agent_end))
 
     {:ok, snapshot} = Session.subscribe(session)
     joined = ViewModel.from_snapshot(snapshot)
@@ -313,62 +232,10 @@ defmodule Helyx.TUI.ViewModelSnapshotTest do
     assert fold(joined, events) == joined
   end
 
-  # A second client: it subscribes, sends its snapshot, then forwards each
-  # event, and marks each agent_end, until no event comes for a second.
-  defp late_client(session) do
-    test = self()
-
-    {pid, _ref} =
-      spawn_monitor(fn ->
-        {:ok, snapshot} = Session.subscribe(session)
-        send(test, {:snapshot, self(), snapshot})
-        forward(test)
-      end)
-
-    assert_receive {:snapshot, ^pid, snapshot}
-    {pid, snapshot}
-  end
-
-  defp forward(test) do
-    receive do
-      {:helyx_event, %Event{type: :agent_end} = event} ->
-        send(test, {:late, self(), event, :end})
-        forward(test)
-
-      {:helyx_event, event} ->
-        send(test, {:late, self(), event})
-        forward(test)
-    after
-      1_000 -> :ok
-    end
-  end
-
-  defp late_events(pid, acc \\ []) do
-    receive do
-      {:late, ^pid, event, :end} -> Enum.reverse([event | acc])
-      {:late, ^pid, event} -> late_events(pid, [event | acc])
-    after
-      1_000 -> flunk("the late client got no agent_end")
-    end
-  end
-
   # The events of the first client up to `seq`, which are in the mailbox.
   defp events_to(seq, acc \\ []) do
-    receive do
-      {:helyx_event, %Event{seq: ^seq} = event} -> Enum.reverse([event | acc])
-      {:helyx_event, event} -> events_to(seq, [event | acc])
-    after
-      1_000 -> flunk("no event with seq #{seq}")
-    end
-  end
-
-  defp events_to_end(acc \\ []) do
-    receive do
-      {:helyx_event, %Event{type: :agent_end} = event} -> Enum.reverse([event | acc])
-      {:helyx_event, event} -> events_to_end([event | acc])
-    after
-      1_000 -> flunk("no agent_end")
-    end
+    assert_receive {:helyx_event, event}
+    if event.seq == seq, do: Enum.reverse([event | acc]), else: events_to(seq, [event | acc])
   end
 
   defp fold(%ViewModel{} = vm, events), do: Helyx.Test.ViewModelRule.fold(vm, events)

@@ -3,7 +3,9 @@ defmodule CodingAgentTest do
   # Core with the product's plugin list, a session, a turn with a tool call.
   use ExUnit.Case, async: true
 
-  alias Helyx.{Event, Message, Session}
+  import Helyx.Test.Events
+
+  alias Helyx.{Message, Session}
 
   test "the plugin list boots Core and a session runs a tool-call turn" do
     core = :"agent_core_#{System.unique_integer([:positive])}"
@@ -137,15 +139,6 @@ defmodule CodingAgentTest do
       assert text =~ "[A, B]"
       assert byte_size(text) <= 24_700
       refute text =~ ~r/[\x00-\x1F\x7F]/
-    end
-  end
-
-  defp collect_until(type, acc \\ []) do
-    receive do
-      {:helyx_event, %Event{type: ^type} = event} -> Enum.reverse([event | acc])
-      {:helyx_event, %Event{} = event} -> collect_until(type, [event | acc])
-    after
-      5_000 -> flunk("timed out waiting for #{type}")
     end
   end
 end

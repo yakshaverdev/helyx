@@ -9,7 +9,10 @@ defmodule Helyx.MixProject do
       elixirc_paths: elixirc_paths(Mix.env()),
       start_permanent: Mix.env() == :prod,
       deps: deps(),
-      aliases: aliases()
+      aliases: aliases(),
+      # The shared test helpers in test/support call ExUnit.Assertions;
+      # :ex_unit is not in the default PLT.
+      dialyzer: [plt_add_apps: [:ex_unit]]
     ]
   end
 

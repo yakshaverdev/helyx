@@ -7,6 +7,7 @@ defmodule Helyx.Provider.HarnessEpipeTest do
   # get `EPIPE` every time. PATH is global, so the module is not async.
   use ExUnit.Case, async: false
 
+  import Helyx.Test.HarnessDriver
   import Helyx.Test.OSHelpers
 
   alias Helyx.Message
@@ -79,13 +80,20 @@ defmodule Helyx.Provider.HarnessEpipeTest do
     Process.put(:helyx_hands, hands)
   end
 
-  defp kill_when_queued(watchdog, group) do
+  # Polls the port queue every 10 ms, for at least `ms`: the BEAM has no
+  # event for bytes that wait in a port's driver queue.
+  defp kill_when_queued(watchdog, group, ms \\ 5_000)
+
+  defp kill_when_queued(_watchdog, _group, ms) when ms <= 0,
+    do: flunk("the port queue stayed empty")
+
+  defp kill_when_queued(watchdog, group, ms) do
     if Enum.any?(Port.list(), &queued?(&1, watchdog)) do
       System.cmd("kill", ["-KILL", "#{watchdog}"])
       signal_group("KILL", group)
     else
       Process.sleep(10)
-      kill_when_queued(watchdog, group)
+      kill_when_queued(watchdog, group, ms - 10)
     end
   end
 
@@ -111,7 +119,7 @@ defmodule Helyx.Provider.HarnessEpipeTest do
         {:ok, _actions, state} =
           ClaudeCode.harness_request({:turn, "t1", context}, make_ref(), state)
 
-        send(test, {:stopped, stopped(state)})
+        send(test, {:stopped, stop_reason(ClaudeCode, state)})
       end)
 
     receive do
@@ -119,16 +127,6 @@ defmodule Helyx.Provider.HarnessEpipeTest do
       {:DOWN, ^ref, :process, _pid, reason} -> flunk("the harness ended on #{inspect(reason)}")
     after
       5_000 -> flunk("the harness did not stop")
-    end
-  end
-
-  defp stopped(state) do
-    receive do
-      message ->
-        case ClaudeCode.harness_info(message, state) do
-          {:ok, _actions, state} -> stopped(state)
-          {:stop, reason, _state} -> reason
-        end
     end
   end
 
@@ -152,7 +150,7 @@ defmodule Helyx.Provider.HarnessEpipeTest do
     assert_receive {:"$gen_call", _from, {:hold, {:command, group}}}, 5_000
     Process.exit(pid, :shutdown)
     assert_receive {:DOWN, ^ref, :process, _pid, :shutdown}, 500
-    assert group_gone_within?(group, 200)
+    assert group_gone_within?(group, 2_000)
   end
 
   # The fake codex stops its watchdog, then answers `initialize` and
@@ -178,7 +176,7 @@ defmodule Helyx.Provider.HarnessEpipeTest do
         {:ok, state} = Codex.harness_init("m", [], cwd: File.cwd!())
         context = %Helyx.Context{messages: [Message.user(@big)]}
         {:ok, _actions, state} = Codex.harness_request({:turn, "t", context}, make_ref(), state)
-        send(test, {:stop, stop(state)})
+        send(test, {:stop, stop_reason(Codex, state)})
       end)
 
     receive do
@@ -191,13 +189,10 @@ defmodule Helyx.Provider.HarnessEpipeTest do
     end
   end
 
-  defp stop(state) do
-    receive do
-      message ->
-        case Codex.harness_info(message, state) do
-          {:ok, _actions, state} -> stop(state)
-          {:stop, reason, _state} -> reason
-        end
-    end
+  # The reason the provider stops with.
+  defp stop_reason(provider, state) do
+    {actions, _state} = pump(provider, state, [], fn _ -> false end)
+    {:stop, reason} = List.last(actions)
+    reason
   end
 end

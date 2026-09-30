@@ -9,7 +9,10 @@ defmodule Helyx.Plugins.MixProject do
       elixirc_paths: elixirc_paths(Mix.env()),
       start_permanent: Mix.env() == :prod,
       deps: deps(),
-      aliases: aliases()
+      aliases: aliases(),
+      # The test helpers in test/support call ExUnit.Assertions; :ex_unit is
+      # not in the default PLT.
+      dialyzer: [plt_add_apps: [:ex_unit]]
     ]
   end
 
@@ -21,7 +24,11 @@ defmodule Helyx.Plugins.MixProject do
     [extra_applications: [:logger]]
   end
 
-  defp elixirc_paths(:test), do: ["lib", "test/support"]
+  # The root's test helpers that need only Core, shared so that each has
+  # one copy.
+  defp elixirc_paths(:test),
+    do: ["lib", "test/support", Path.expand("../../test/support/shared", __DIR__)]
+
   defp elixirc_paths(_), do: ["lib"]
 
   defp deps do

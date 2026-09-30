@@ -3,7 +3,9 @@ defmodule Helyx.ModelContext.DefaultIntegrationTest do
   # prompt when the Default plugin is registered.
   use ExUnit.Case, async: true
 
-  alias Helyx.{Event, Session}
+  import Helyx.Test.Events
+
+  alias Helyx.Session
 
   @tag :tmp_dir
   test "the Fake provider receives the assembled system prompt", %{tmp_dir: dir} do
@@ -17,17 +19,8 @@ defmodule Helyx.ModelContext.DefaultIntegrationTest do
     {:ok, _} = Session.subscribe(session)
     :ok = Session.prompt(session, "hello")
 
-    text = Helyx.Message.text(collect(:turn_end).data.message)
+    text = Helyx.Message.text(List.last(collect_until(:turn_end)).data.message)
     assert text =~ "You are a coding agent."
     assert text =~ "## #{Path.join(Path.expand(dir), "AGENTS.md")}\n\nrules for #{dir}"
-  end
-
-  defp collect(type) do
-    receive do
-      {:helyx_event, %Event{type: ^type} = event} -> event
-      {:helyx_event, %Event{}} -> collect(type)
-    after
-      1_000 -> flunk("timed out waiting for #{type}")
-    end
   end
 end
