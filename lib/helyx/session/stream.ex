@@ -39,8 +39,7 @@ defmodule Helyx.Session.Stream do
           context: Helyx.Context.t(),
           opts: keyword(),
           session: pid(),
-          turn_id: String.t(),
-          external?: boolean()
+          turn_id: String.t()
         }
 
   @doc """
@@ -60,15 +59,14 @@ defmodule Helyx.Session.Stream do
         context: context,
         opts: opts,
         session: session,
-        turn_id: turn_id,
-        external?: external?
+        turn_id: turn_id
       }) do
     # Context building runs inside the Task so plugin code never blocks the
     # session and a plugin that raises fails the turn, not the session.
     result =
       with {:ok, context} <- prepare(model_context, compaction, context, opts) do
         case provider.stream(model, context, opts) do
-          {:ok, stream} -> consume(stream, session, turn_id, external?)
+          {:ok, stream} -> consume(stream, session, turn_id)
           {:error, reason} -> {:error, reason}
         end
       end
@@ -76,8 +74,8 @@ defmodule Helyx.Session.Stream do
     # Every terminal leaves the Task through this cap, so no error reason
     # and no malformed event in one brings an integer over the digit
     # limit to the session (see `Helyx.Message.cap_integers/1`). A raise
-    # or an exit is not a terminal: the `:DOWN` handler of the session, or
-    # the hands for the stream of an external turn, report it.
+    # or an exit is not a terminal: the `:DOWN` handler of the session
+    # reports it.
     Message.cap_integers(result)
   end
 
@@ -113,11 +111,11 @@ defmodule Helyx.Session.Stream do
 
   defp checked_context(_other, plugin), do: {:error, {:bad_context, plugin}}
 
-  # Forwards well-formed stream events to the session and returns the first
-  # terminal event. A malformed event is a terminal error.
-  defp consume(stream, session, turn_id, external?) do
+  # Forwards well-formed stream events of a local turn to the session and
+  # returns the first terminal event. A malformed event is a terminal error.
+  defp consume(stream, session, turn_id) do
     Enum.reduce_while(stream, :stream_ended, fn event, acc ->
-      case check(event, external?) do
+      case check(event, false) do
         {:send, event, rejection} -> sent(send_event(session, turn_id, event, rejection), acc)
         {:terminal, terminal} -> {:halt, terminal}
         {:bad, error} -> {:halt, error}
@@ -134,10 +132,10 @@ defmodule Helyx.Session.Stream do
   `{call, reason}` for a call that `send_event/4` sends as a
   `{:rejected_call, ...}` message before it, or nil;
   `{:terminal, terminal}` for a `done` or an `error` event; and `{:bad,
-  error}` for a malformed event. `external?` allows the events of an
-  external turn. Arguments or a usage that are a struct are malformed:
-  `cap_integers/1` can turn a struct into a string, and the session file
-  needs a plain map. A delta or a tool call that is not valid UTF-8 is
+  error}` for a malformed event. `connected?` allows the events of a
+  connected turn (`Helyx.Session.Harness`). Arguments or a usage that are
+  a struct are malformed: `cap_integers/1` can turn a struct into a
+  string, and the session file needs a plain map. A delta or a tool call that is not valid UTF-8 is
   malformed: transcript text is valid from the moment it exists, so the file
   and the providers never see raw bytes.
   """
@@ -145,24 +143,24 @@ defmodule Helyx.Session.Stream do
           {:send, term(), rejection()}
           | {:terminal, terminal()}
           | {:bad, {:error, term()}}
-  def check({kind, payload} = event, _external?)
+  def check({kind, payload} = event, _connected?)
       when kind in [:text_delta, :thinking_delta] and is_binary(payload) do
     if String.valid?(payload), do: {:send, event, nil}, else: {:bad, malformed(event)}
   end
 
-  def check({:tool_call, call}, _external?), do: tool_call(call, nil)
+  def check({:tool_call, call}, _connected?), do: tool_call(call, nil)
 
-  # A call the provider rejected. Only a local turn answers it: an external
+  # A call the provider rejected. Only a local turn answers it: a connected
   # provider sends its own error result. The reason is transcript text: the
   # bound keeps the result text small, and `tool_call/2` checks that it is
   # valid UTF-8.
-  def check({:rejected_tool_call, call, reason}, false = _external?)
+  def check({:rejected_tool_call, call, reason}, false = _connected?)
       when is_binary(reason) and byte_size(reason) <= @max_reason_bytes,
       do: tool_call(call, reason)
 
   # A notice for the user, from any turn. It becomes a `:notice` event
   # only: it never joins the transcript.
-  def check({:notice, text} = event, _external?)
+  def check({:notice, text} = event, _connected?)
       when is_binary(text) and byte_size(text) <= @max_notice_bytes do
     if String.valid?(text), do: {:send, event, nil}, else: {:bad, malformed(event)}
   end
@@ -174,7 +172,7 @@ defmodule Helyx.Session.Stream do
   # turning persistence off for the rest of the session. A new plain map:
   # the pattern also matches a struct and a map with more keys, and the
   # session needs this shape after the cap at the Task exit.
-  def check({:done, %{stop_reason: reason, usage: usage}} = terminal, _external?)
+  def check({:done, %{stop_reason: reason, usage: usage}} = terminal, _connected?)
       when reason in @stop_reasons and is_non_struct_map(usage) do
     case capped_usage(usage) do
       {:ok, usage} -> {:terminal, {:done, %{stop_reason: reason, usage: usage}}}
@@ -182,13 +180,13 @@ defmodule Helyx.Session.Stream do
     end
   end
 
-  def check({:error, _} = terminal, _external?), do: {:terminal, terminal}
+  def check({:error, _} = terminal, _connected?), do: {:terminal, terminal}
 
-  # Only a provider with an external turn sends these; in a local turn they
-  # are malformed.
-  def check({tag, _, _} = event, true = _external?)
+  # Only a connected provider sends these; in a local turn they are
+  # malformed.
+  def check({tag, _, _} = event, true = _connected?)
       when tag in [:message_end, :tool_result, :harness_session, :user_message] do
-    case external_event(event) do
+    case connected_event(event) do
       {:ok, event} -> {:send, event, nil}
       {:error, _} = error -> {:bad, error}
     end
@@ -198,7 +196,7 @@ defmodule Helyx.Session.Stream do
   # arguments get the checks of a tool call; a call with an integer over
   # the digit limit gets its rejection, and the session answers it with an
   # error result and does not run it.
-  def check({:tool_request, id, name, args} = event, true = _external?) do
+  def check({:tool_request, id, name, args} = event, true = _connected?) do
     case tool_call(%Message.ToolCall{id: id, name: name, arguments: args}, nil) do
       {:send, {:tool_call, call}, rejection} ->
         {:send, {:tool_request, call.id, call.name, call.arguments}, rejection}
@@ -208,7 +206,7 @@ defmodule Helyx.Session.Stream do
     end
   end
 
-  def check(other, _external?), do: {:bad, malformed(other)}
+  def check(other, _connected?), do: {:bad, malformed(other)}
 
   # The one place where tool call arguments enter the session from a
   # provider (on resume, Session.File applies the same function). An
@@ -237,13 +235,13 @@ defmodule Helyx.Session.Stream do
   defp call_event(call, nil), do: {:tool_call, call}
   defp call_event(call, reason), do: {:rejected_tool_call, call, reason}
 
-  # The events of an external turn. A message end is checked like the
+  # The events of a connected turn. A message end is checked like the
   # `done` terminal. The provider cuts a result to the tool result limits;
   # a result over this limit was not cut, so it fails the turn. The check
   # measures the text as sent. Then the text is made valid UTF-8, which can
-  # make it up to three times larger: this is the boundary of an external
+  # make it up to three times larger: this is the boundary of a harness
   # result, as the hands are for a tool of the session.
-  defp external_event({:message_end, reason, usage} = event)
+  defp connected_event({:message_end, reason, usage} = event)
        when reason in @stop_reasons and is_non_struct_map(usage) do
     case capped_usage(usage) do
       {:ok, usage} -> {:ok, {:message_end, reason, usage}}
@@ -253,14 +251,14 @@ defmodule Helyx.Session.Stream do
 
   # The session uses the id only to find an open call, so an id that is
   # not valid UTF-8 is dropped there like an unknown id.
-  defp external_event({:tool_result, id, {status, text}})
+  defp connected_event({:tool_result, id, {status, text}})
        when is_binary(id) and status in [:ok, :error] and is_binary(text) do
     if byte_size(text) > @max_tool_result_bytes,
       do: {:error, too_large(text)},
       else: {:ok, {:tool_result, id, scrub({status, text})}}
   end
 
-  defp external_event({:harness_session, id, cut} = event) when is_integer(cut) and cut >= 0 do
+  defp connected_event({:harness_session, id, cut} = event) when is_integer(cut) and cut >= 0 do
     # No integer over the digit limit reaches the session (see
     # `Helyx.Message.cap_integers/1`).
     if Message.harness_id?(id) and Message.cap_integers(cut) == cut,
@@ -270,11 +268,11 @@ defmodule Helyx.Session.Stream do
 
   # The session looks the steer up by its id and appends its own text, the
   # text that it checked at the client call; the text here is not used.
-  defp external_event({:user_message, steer_id, text} = event)
+  defp connected_event({:user_message, steer_id, text} = event)
        when is_binary(steer_id) and is_binary(text),
        do: {:ok, event}
 
-  defp external_event(event), do: malformed(event)
+  defp connected_event(event), do: malformed(event)
 
   # The rule of `scrub/1` in `Helyx.Session.Hands`, the other boundary of
   # tool text. Valid text, the common case, is passed through without a copy.

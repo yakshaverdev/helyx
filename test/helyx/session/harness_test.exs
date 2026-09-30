@@ -16,7 +16,6 @@ defmodule Helyx.Session.HarnessTest do
     plugins = [
       Connected,
       Helyx.Test.Provider,
-      Helyx.Test.Harness,
       Helyx.Test.PrepareContext,
       Helyx.Test.PrepareCompaction,
       Helyx.Test.Tool.Upcase
@@ -925,13 +924,10 @@ defmodule Helyx.Session.HarnessTest do
     end
   end
 
-  # #227: a local and an external turn check the context of each plugin like
-  # a connected turn.
-  describe "the context check of a local and an external turn" do
-    for {mode, model, text} <- [
-          {"local", "test/system", "prepared"},
-          {"external", "harness/id1", "ok"}
-        ],
+  # #227: a local turn checks the context of each plugin like a connected
+  # turn.
+  describe "the context check of a local turn" do
+    for {mode, model, text} <- [{"local", "test/system", "prepared"}],
         {prompt, kind} <- [
           {"nil_build", :model_context},
           {"bad_build", :model_context},

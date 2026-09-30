@@ -230,18 +230,8 @@ defmodule Helyx.Provider.Codex do
   @impl true
   def id, do: "codex"
 
-  # `Helyx.Provider.turn/1` makes this `:connected`, because the module
-  # exports `harness_init/3`.
-  @impl true
-  def turn, do: :external
-
   @impl true
   defdelegate release(handles, mode, deadline), to: HarnessIO
-
-  # The session calls the harness callbacks of a connected provider, never
-  # this one.
-  @impl true
-  def stream(_model, _context, _opts), do: {:error, :connected}
 
   @impl true
   def harness_init(model, tools, opts) do

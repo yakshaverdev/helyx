@@ -32,37 +32,6 @@ defmodule Helyx.Provider do
     * `{:done, %{stop_reason: stop_reason, usage: map}}`: the call finished
     * `{:error, term}`: the call failed
 
-  A provider with an external turn (`turn/0` returns `:external`, ADR 0002)
-  runs the whole turn and its own tools inside one call. Four behaviours
-  follow from that flag:
-
-    * A steer aborts the turn and starts a new turn with the steer text.
-    * Tool calls arrive with their results. The session records them and
-      does not run them.
-    * The provider keeps its own conversation state. The session resumes
-      it by id.
-    * The stream runs under the session's hands.
-
-  Its stream can also carry:
-
-    * `{:message_end, stop_reason, usage}`: the assistant message so far is
-      complete; its tool calls ran inside the provider. Send it once per
-      message, only after content (a delta or a tool call) that no earlier
-      `message_end` closed, and only when every call of the messages before
-      it has its result: the session gives every call that is still open an
-      `aborted` result at each `message_end` and drops a later result. At
-      the end of the call, a provider sends every `message_end` that it did
-      not send yet, and the session aborts the calls with no result
-    * `{:tool_result, call_id, {:ok | :error, binary}}`: the result of a
-      tool call of a completed message. The provider cuts the text to the
-      tool result limits before it sends the event, as a tool does; the
-      session does not cut it. A text over `@max_tool_result_bytes`
-      (`Helyx.Session.Stream`) fails the turn with
-      `{:tool_result_too_large, bytes, limit}`
-    * `{:harness_session, id, cut}`: the call started a fresh harness
-      session with this id; `cut` is the number of transcript messages the
-      provider left out of what it sent to it
-
   Consecutive deltas of one kind form one block. A tool call arrives whole;
   a provider that streams tool call arguments assembles them first. There is
   no image event: providers do not produce image blocks. A malformed event
@@ -74,17 +43,6 @@ defmodule Helyx.Provider do
 
   The session calls `stream/3` with `opts` carrying `:core`, `:session_id`,
   `:turn_id`, and `:cwd`, so a provider can scope state and label its calls.
-  A provider with an external turn also gets `:harness_session_id`: the id
-  of the harness session to resume, or nil for a fresh one. The session
-  passes the id of the provider's last `harness_session` only when the last
-  assistant message of the transcript came from this provider, so a lost
-  id or a switch from another provider gives nil.
-
-  The stream of an external turn runs as a Task of the session's hands
-  (`Helyx.Session.Hands`), so it can hold the OS resources of its program with
-  `Helyx.Tool.hold/1` and must then implement `release/3`, with the
-  contract of `c:Helyx.Tool.release/3`. An abort returns only when the
-  release has returned (ADR 0004).
 
   The session consumes the enumerable in a Task and builds the assistant
   message from the events. Consumption stops at the first `done` or `error`.
@@ -94,16 +52,22 @@ defmodule Helyx.Provider do
 
   ## A connected provider
 
-  A provider with an external turn that also exports `harness_init/3` is
-  connected (ADR 0007, `docs/features/long-lived-harness.md`): its program
-  lives for the session, not for the turn, and the session does not call
-  `stream/3`. The three callbacks run in one harness process per session, a
-  Task of the hands, so `Helyx.Tool.hold/1` works in them and the provider
-  implements `release/3`:
+  A provider is one of two kinds (ADR 0002, ADR 0007): it has a local turn
+  (`stream/3`), or it exports `harness_init/3` and is connected. A
+  connected provider drives an agent program that runs the whole turn and
+  its own tools (`docs/features/long-lived-harness.md`). Its program lives
+  for the session, not for the turn, and the session does not call
+  `stream/3`, which it need not export. The three callbacks run in one
+  harness process per session, a Task of the hands, so `Helyx.Tool.hold/1`
+  works in them and the provider implements `release/3`:
 
     * `harness_init/3` starts the program. `tools` are the checked tool
       specs of session start; `opts` carry `:core`, `:session_id`, `:cwd`,
-      and `:harness_session_id` as for `stream/3`.
+      and `:harness_session_id`: the id of the harness session to resume,
+      or nil for a fresh one. The session passes the id of the provider's
+      last `harness_session` only when the last assistant message of the
+      transcript came from this provider, so a lost id or a switch from
+      another provider gives nil.
     * `harness_request/3` gets a request from Core with its `from`. The
       provider replies now or later with the action `{:reply, from,
       value}`: `{:turn, ...}` and `{:interrupt, ...}` take `:ok` or
@@ -127,9 +91,30 @@ defmodule Helyx.Provider do
       port data, a monitor, a timer.
 
   Each callback returns actions: `{:event, turn_id, event}` with a stream
-  event of an external turn, `{:reply, from, value}`, and `{:cancel_tool,
-  turn_id, call_id}`. Each event passes the same check as a stream event. A
-  turn ends at its `done` or `error` event. A malformed event, a reply of
+  event, `{:reply, from, value}`, and `{:cancel_tool, turn_id, call_id}`.
+  Each event passes the same check as a stream event. A turn ends at its
+  `done` or `error` event. A connected turn can send every stream event of
+  a local turn except `rejected_tool_call`, and also:
+
+    * `{:message_end, stop_reason, usage}`: the assistant message so far is
+      complete; its tool calls ran inside the program. Send it once per
+      message, only after content (a delta or a tool call) that no earlier
+      `message_end` closed, and only when every call of the messages before
+      it has its result: the session gives every call that is still open an
+      `aborted` result at each `message_end` and drops a later result. At
+      the end of the turn, a provider sends every `message_end` that it did
+      not send yet, and the session aborts the calls with no result
+    * `{:tool_result, call_id, {:ok | :error, binary}}`: the result of a
+      tool call of a completed message. The provider cuts the text to the
+      tool result limits before it sends the event, as a tool does; the
+      session does not cut it. A text over `@max_tool_result_bytes`
+      (`Helyx.Session.Stream`) fails the turn with
+      `{:tool_result_too_large, bytes, limit}`
+    * `{:harness_session, id, cut}`: the program started a fresh harness
+      session with this id; `cut` is the number of transcript messages the
+      provider left out of what it sent to it
+
+  A malformed event, a reply of
   the wrong shape or for no open request, an error reply to `{:turn, ...}`
   or `{:interrupt, ...}`, and a bad return stop the harness process: its
   port closes, and the watchdog stops the program. At most `@max_open`
@@ -233,35 +218,15 @@ defmodule Helyx.Provider do
   end
 
   @doc """
-  The turn of a provider plugin: `provider.turn()` when it is exported, else
-  `:local`. A `turn/0` that raises, throws, exits, or returns another value
-  than `:local` or `:external` is an error. An `:external` provider that
-  exports `harness_init/3` gives `:connected`. It is plugin code, so the
-  session calls this in the caller of a start, a resume, or a switch, and
-  keeps the result.
+  The turn of a provider plugin: `:connected` when it exports
+  `harness_init/3`, else `:local`. Core loaded the module at its start, so
+  the check calls no plugin code.
   """
-  @spec turn(module()) :: {:ok, :local | :external | :connected} | :error
-  def turn(provider) do
-    turn = if function_exported?(provider, :turn, 0), do: provider.turn(), else: :local
-
-    case turn do
-      :local -> {:ok, :local}
-      :external -> {:ok, connected(provider)}
-      _other -> :error
-    end
-  catch
-    _class, _reason -> :error
-  end
-
-  # An external provider with `harness_init/3` is connected (ADR 0007).
-  # Core loaded the module at its start, so the export check calls no
-  # plugin code.
-  defp connected(provider) do
-    if function_exported?(provider, :harness_init, 3), do: :connected, else: :external
-  end
+  @spec turn(module()) :: :local | :connected
+  def turn(provider),
+    do: if(function_exported?(provider, :harness_init, 3), do: :connected, else: :local)
 
   @callback id() :: String.t()
-  @callback turn() :: :local | :external
   @callback release(
               handles :: [term()],
               mode :: :deliver | :cancel | :retry,
@@ -277,7 +242,7 @@ defmodule Helyx.Provider do
   @callback harness_info(msg :: term(), state :: term()) ::
               {:ok, [action()], term()} | {:stop, reason :: term(), term()}
 
-  @optional_callbacks turn: 0,
+  @optional_callbacks stream: 3,
                       release: 3,
                       harness_init: 3,
                       harness_request: 3,

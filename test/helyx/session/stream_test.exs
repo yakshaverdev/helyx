@@ -21,8 +21,7 @@ defmodule Helyx.Session.StreamTest do
       context: %Context{messages: Keyword.get(opts, :messages, [])},
       opts: [core: core, turn_id: "t1"],
       session: self(),
-      turn_id: "t1",
-      external?: Keyword.get(opts, :external?, false)
+      turn_id: "t1"
     })
   end
 
@@ -121,11 +120,9 @@ defmodule Helyx.Session.StreamTest do
     end
   end
 
-  test "a rejected tool call on an external turn is a malformed event", %{core: core} do
-    assert {:error, {:bad_stream_event, {:rejected_tool_call, %Message.ToolCall{id: "r"}, "bad"}}} =
-             run(core, "rejected", provider: Helyx.Test.Harness, external?: true)
-
-    assert sent() == []
+  test "a rejected tool call on a connected turn is a malformed event" do
+    event = {:rejected_tool_call, %Message.ToolCall{id: "r", name: "read", arguments: %{}}, "bad"}
+    assert {:bad, {:error, {:bad_stream_event, ^event}}} = SessionStream.check(event, true)
   end
 
   test "an integer over the digit limit in usage is capped, and the extra key dropped",
@@ -144,26 +141,21 @@ defmodule Helyx.Session.StreamTest do
     assert [{:stream_event, "t1", {:text_delta, "hi"}}] = sent()
   end
 
-  test "a harness provider can send harness events", %{core: core} do
-    assert {:done, _} = run(core, "id1", provider: Helyx.Test.Harness, external?: true)
-
-    assert [
-             {:stream_event, "t1", {:harness_session, "a", 0}},
-             {:stream_event, "t1", {:text_delta, "ok"}}
-           ] = sent()
+  test "a connected turn can send harness events" do
+    event = {:harness_session, "a", 0}
+    assert {:send, ^event, nil} = SessionStream.check(event, true)
   end
 
-  test "an external tool result that is not valid UTF-8 is repaired after the size check",
-       %{core: core} do
+  test "a harness tool result that is not valid UTF-8 is repaired after the size check" do
     # 65,536 invalid bytes pass the limit as sent; the repair makes each a
     # 3-byte U+FFFD.
-    assert {:done, _} = run(core, "result_raw", provider: Helyx.Test.Harness, external?: true)
+    event = {:tool_result, "c1", {:ok, :binary.copy(<<255>>, 65_536)}}
 
-    assert [{:ok, text}] = for({:stream_event, "t1", {:tool_result, _, r}} <- sent(), do: r)
+    assert {:send, {:tool_result, "c1", {:ok, text}}, nil} = SessionStream.check(event, true)
     assert text == String.duplicate("\uFFFD", 65_536)
   end
 
-  test "a user_message passes only from an external turn, with two strings" do
+  test "a user_message passes only from a connected turn, with two strings" do
     event = {:user_message, "s1", "more"}
     assert {:send, ^event, nil} = SessionStream.check(event, true)
     assert {:bad, {:error, {:bad_stream_event, ^event}}} = SessionStream.check(event, false)
@@ -173,9 +165,9 @@ defmodule Helyx.Session.StreamTest do
 
   # The bound is `HarnessIO.cap_error/1`: 2,000 bytes of valid UTF-8.
   test "a notice passes from any turn with valid text of at most 2,000 bytes" do
-    for external? <- [true, false],
+    for connected? <- [true, false],
         text <- ["", String.duplicate("x", 1_999), String.duplicate("é", 1_000)] do
-      assert {:send, {:notice, ^text}, nil} = SessionStream.check({:notice, text}, external?)
+      assert {:send, {:notice, ^text}, nil} = SessionStream.check({:notice, text}, connected?)
     end
 
     for text <- [

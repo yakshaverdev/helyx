@@ -338,7 +338,7 @@ defmodule Helyx.Session.Harness do
     end
   end
 
-  # An event passes the check of a stream event of an external turn. A
+  # An event passes the check of a stream event of a connected turn. A
   # terminal goes to the session as `{:stream_end, turn_id, terminal}`, with
   # the cap that a stream Task applies to its terminal. A malformed event
   # stops the loop: the program's turn is then in an unknown state.

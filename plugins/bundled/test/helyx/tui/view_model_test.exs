@@ -126,7 +126,7 @@ defmodule Helyx.TUI.ViewModelTest do
     end
   end
 
-  # An external turn starts all calls of a message at once, and a provider
+  # A connected turn starts all calls of a message at once, and a provider
   # can repeat an id: the first result answers the first call, as in the
   # session's transcript.
   test "a result goes to the oldest open tool cell with its id" do

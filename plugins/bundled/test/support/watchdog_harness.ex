@@ -17,12 +17,6 @@ defmodule Helyx.Test.WatchdogHarness do
   def id, do: "wdh"
 
   @impl true
-  def turn, do: :external
-
-  @impl true
-  def stream(_model, _context, _opts), do: {:error, :connected_only}
-
-  @impl true
   def release(handles, mode, deadline), do: Helyx.Watchdog.Group.release(handles, mode, deadline)
 
   @impl true

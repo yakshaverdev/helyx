@@ -36,23 +36,19 @@ defmodule Helyx.Session do
   Queues live in the session process only and are not persisted. Every
   change emits a `:queue_update` event.
 
-  A provider with an external turn (`Helyx.Provider.turn/1`) runs the whole
-  turn and its own tools inside one provider call (ADR 0002). Its stream
-  runs as a Task of the hands, so an abort waits until its program is gone.
-  It reports each completed assistant message and each tool result, which
-  join the transcript as they arrive, and the turn ends when the call ends.
-  A tool call with no result at the end of the call gets an `aborted` error
-  result. A steer aborts the external turn and starts a new turn with the
-  queued messages. The id of each fresh harness session is written to the
-  session file and goes out as a `:harness_session` event.
-
-  A connected provider (an external provider with `harness_init/3`, ADR
-  0007) keeps one harness process for the session. The hands start it at
+  A connected provider (one that exports `harness_init/3`, ADR 0002 and
+  ADR 0007) runs the whole turn and its own tools in its program, and
+  keeps one harness process for the session. The hands start it at
   the first connected turn, and again after it ends. Each turn builds its
   context in a prepare Task of the hands, then the session sends the turn
   to the harness process, which sends the events back. An abort of a turn
   that the harness got interrupts it there; the abort returns after the
-  answer, or after the harness process stopped. A model or provider switch
+  answer, or after the harness process stopped. The harness reports each
+  completed assistant message and each tool result, which join the
+  transcript as they arrive; a tool call with no result at the end of the
+  turn gets an `aborted` error result. The id of each fresh harness
+  session is written to the session file and goes out as a
+  `:harness_session` event. A model or provider switch
   closes the harness process before the next turn, and so does the end of
   the session. A steer reaches the running connected turn at most once: the
   harness takes it at its next model call, and the user message joins the
@@ -88,7 +84,6 @@ defmodule Helyx.Session do
   @type model_error ::
           {:invalid_model_ref, String.t()}
           | {:unknown_provider, String.t()}
-          | {:bad_provider_turn, String.t()}
 
   @typedoc """
   A start error as a client gets it (ADR 0006, section 2). See
@@ -194,16 +189,11 @@ defmodule Helyx.Session do
   defp check_cwd(_cwd), do: {:error, :invalid_cwd}
 
   # A model ref string to its parsed ref, its provider plugin, and the turn
-  # of that plugin, for start, resume, and a switch alike. It runs in the
-  # caller, so a plugin that raises here never stops a session.
+  # of that plugin, for start, resume, and a switch alike.
   defp resolve_model(core, string) do
     with {:ok, ref} <- ModelRef.parse(string),
-         {:ok, provider} <- Helyx.Provider.find(core, ref.provider) do
-      case Helyx.Provider.turn(provider) do
-        {:ok, turn_mode} -> {:ok, {ref, provider, turn_mode}}
-        :error -> {:error, {:bad_provider_turn, ref.provider}}
-      end
-    end
+         {:ok, provider} <- Helyx.Provider.find(core, ref.provider),
+         do: {:ok, {ref, provider, Helyx.Provider.turn(provider)}}
   end
 
   defp start_child(%State{id: id, core: core} = state, tools) do
@@ -374,9 +364,7 @@ defmodule Helyx.Session do
   def client_start_error(reason) when reason in [:invalid_cwd, :not_found], do: reason
 
   # The id of a ref that parsed, so `Helyx.ModelRef` bounds it.
-  def client_start_error({tag, id} = reason)
-      when tag in [:unknown_provider, :bad_provider_turn] and is_binary(id),
-      do: reason
+  def client_start_error({:unknown_provider, id} = reason) when is_binary(id), do: reason
 
   def client_start_error({:invalid_model_ref, ref} = reason) when is_binary(ref) do
     if ModelRef.bounded?(ref), do: reason, else: start_failed(reason)
