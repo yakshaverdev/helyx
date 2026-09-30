@@ -169,10 +169,10 @@ defmodule Helyx.Provider.ClaudeCode do
     # a fresh one with the id `session_id`. `sent?` is true once a turn was
     # written to it. `caps` is its `init.capabilities`, nil until an `init`
     # line. `closing` is the `from` of a close. `terminal` stops the read
-    # of stdout: `:lost` or a line over the cap (`Helyx.HarnessIO.lines/3`).
-    # `deadline` and `done?` are only for `Helyx.HarnessIO`, which writes
-    # them; this module does not read them. `tasks` is the last set of
-    # live background tasks, or `:unknown` after a malformed line.
+    # of stdout: `:lost`, a program that did not start
+    # (`Helyx.HarnessIO.start/5`), or a line over the cap
+    # (`Helyx.HarnessIO.lines/3`). `tasks` is the last set of live
+    # background tasks, or `:unknown` after a malformed line.
     # `notified?` is true from a `task_notification` line until the next
     # `init` or `:busy` answer: a program turn can follow it (#240).
     # `tools` are the Helyx tool specs, and `calls` the open `tools/call`
@@ -189,7 +189,6 @@ defmodule Helyx.Provider.ClaudeCode do
       :caps,
       :closing,
       :terminal,
-      :deadline,
       buffer: [],
       tools: [],
       calls: %{},
@@ -197,8 +196,7 @@ defmodule Helyx.Provider.ClaudeCode do
       size: 0,
       init?: false,
       sent?: false,
-      notified?: false,
-      done?: false
+      notified?: false
     ]
   end
 

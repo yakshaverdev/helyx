@@ -163,7 +163,6 @@ defmodule Helyx.Provider.Codex do
       :port,
       :thread,
       :terminal,
-      :deadline,
       :turn_id,
       :turn,
       :from,
@@ -177,7 +176,6 @@ defmodule Helyx.Provider.Codex do
       out: [],
       buffer: [],
       size: 0,
-      done?: false,
       usage: %{},
       calls: [],
       open: %{},
@@ -477,7 +475,7 @@ defmodule Helyx.Provider.Codex do
         emit(event, {out, state})
 
       :queue.len(state.held) >= @held_max ->
-        {out, %{state | done?: true, terminal: {:error, {:held_over_limit, @held_max}}}}
+        {out, %{state | terminal: {:error, {:held_over_limit, @held_max}}}}
 
       true ->
         {out, %{state | held: hold(event, state.held)}}
@@ -545,7 +543,7 @@ defmodule Helyx.Provider.Codex do
   # starts.
   defp end_turn(state, terminal) do
     if reason = outlives(state) do
-      %{state | done?: true, terminal: {:error, reason}}
+      %{state | terminal: {:error, reason}}
     else
       state = if state.from, do: reply(%{state | from: nil}, state.from, :ok), else: state
 
@@ -583,7 +581,7 @@ defmodule Helyx.Provider.Codex do
   defp translate(object, state) do
     case malformed(object, state) do
       nil -> dispatch(object, state)
-      what -> {[], %{state | done?: true, terminal: {:error, {:malformed, what}}}}
+      what -> {[], %{state | terminal: {:error, {:malformed, what}}}}
     end
   end
 
@@ -815,7 +813,7 @@ defmodule Helyx.Provider.Codex do
   end
 
   defp answered(method, response, state),
-    do: {[], %{state | done?: true, terminal: {:error, failure(method, response)}}}
+    do: {[], %{state | terminal: {:error, failure(method, response)}}}
 
   # A turn that completed before this answer has its reply already, so
   # the answer belongs to no turn; a turn that waits for it starts now.
@@ -855,7 +853,7 @@ defmodule Helyx.Provider.Codex do
 
   # The end of a turn that did not start, or that already ended.
   defp turn_notification("turn/completed", _params, state),
-    do: {[], %{state | done?: true, terminal: {:error, :turn_not_asked}}}
+    do: {[], %{state | terminal: {:error, :turn_not_asked}}}
 
   # A child thread's work outlives its turn: the item can come with the id
   # of an ended turn (#226). Only `completed` confirms that the work ended.
@@ -889,7 +887,7 @@ defmodule Helyx.Provider.Codex do
   # An item of a turn that is not the running one, such as the late
   # `item/completed` of a command that `turn/interrupt` left running.
   defp turn_notification("item/" <> _, %{"turnId" => turn}, state) when is_binary(turn),
-    do: {[], %{state | done?: true, terminal: {:error, :item_of_ended_turn}}}
+    do: {[], %{state | terminal: {:error, :item_of_ended_turn}}}
 
   defp turn_notification(_method, _params, state), do: {[], state}
 
@@ -904,7 +902,7 @@ defmodule Helyx.Provider.Codex do
   end
 
   defp turn_started(_turn, state, _asked?),
-    do: %{state | done?: true, terminal: {:error, :turn_not_asked}}
+    do: %{state | terminal: {:error, :turn_not_asked}}
 
   # A pending interrupt goes out when the turn id is known and no
   # `turn/interrupt` answer is due.
