@@ -54,3 +54,7 @@ Precommit: the first run failed one test outside this diff, `Helyx.Provider.Fake
 | Failure path | None reproduced. Probes: a replay `result` with a null `origin` and `num_turns` 0; a steer, then an interrupt, while chunks are held | None |
 
 No code defect was reproduced. The fixes are test and comment changes, so no further round ran.
+
+## Codex gate
+
+Round 1 on the #246 base: approve, no material findings. Round 2 after the rebase on #241: approve, no material findings.
