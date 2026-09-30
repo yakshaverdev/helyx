@@ -71,7 +71,7 @@ The loop ends by these rules, measured on the tickets of 2026-09-27: after round
 Two more rules govern the loop:
 
 - **Fix reviews target the invariant, not the reproduction.** When the change fixes a review finding, every review brief names the invariant the fix restores and asks the agents to find another path that breaks the same invariant. The finding's reproduction is the first test the agents run, not the last.
-- **Two findings on one mechanism stop the patching.** When a second finding lands on a mechanism a previous round already patched, the next round fixes the mechanism, not the path. See `docs/agents/review-checklist.md`, "Races and resource ownership".
+- **Two findings on one mechanism stop the patching.** When a second finding lands on a mechanism a previous round already patched, the next round fixes the mechanism, not the path. First ask whether the mechanism needs to exist: a value that can be derived on read needs no write, and a deleted write has no races (#269: four rounds of races around a resume write, removed by deriving the results on read). See `docs/agents/review-checklist.md`, "Races and resource ownership".
 
 ## 3. Precommit
 

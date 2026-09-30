@@ -1095,10 +1095,8 @@ defmodule Helyx.SessionTest do
   defp memory(pid), do: pid |> Process.info(:memory) |> elem(1)
 
   @tag :tmp_dir
-  test "resume keeps a reused tool call id open until its own result", %{
-    core: core,
-    tmp_dir: dir
-  } do
+  test "a resume writes nothing, and each open call gets its aborted result right after it, once",
+       %{core: core, tmp_dir: dir} do
     call = %Helyx.Message.ToolCall{id: "c1", name: "slow", arguments: %{}}
     {:ok, file} = Helyx.Session.File.create(dir, "reuse", File.cwd!(), "test/transcript")
 
@@ -1109,12 +1107,54 @@ defmodule Helyx.SessionTest do
     ]
     |> Enum.reduce(file, &Helyx.Session.File.append_message(&2, &1))
 
-    {:ok, _session} = Session.resume(core, sessions_dir: dir)
+    answered = [
+      {:assistant, ""},
+      {:tool_result, "first answer"},
+      {:assistant, ""},
+      {:tool_result, "aborted"}
+    ]
 
-    {:ok, restored} = Helyx.Session.File.resume(dir, File.cwd!())
-    assert [_call1, _result1, _call2, aborted] = restored.messages
-    assert %Helyx.Message{role: :tool_result, tool_call_id: "c1", is_error: true} = aborted
-    assert Helyx.Message.text(aborted) == "aborted"
+    written = File.read!(file.path)
+    {:ok, session} = Session.resume(core, sessions_dir: dir)
+    assert File.read!(file.path) == written
+
+    # The provider request has the result of the reused id, right after it.
+    {:ok, _} = Session.subscribe(session)
+    :ok = Session.prompt(session, "one")
+
+    assert final_text(collect_until(:agent_end)) ==
+             Enum.map_join(answered ++ [{:user, "one"}], "\n", fn {r, t} -> "#{r}:#{t}" end)
+
+    stop_session(session, &GenServer.stop/1)
+
+    # The turn appended after the open call; the next resume puts the
+    # result right after the call again, not at the end, and only once.
+    written = File.read!(file.path)
+    {:ok, session} = Session.resume(core, sessions_dir: dir)
+    assert File.read!(file.path) == written
+    {:ok, snapshot} = Session.subscribe(session)
+    roles_texts = Enum.map(snapshot.messages, &{&1.role, Helyx.Message.text(&1)})
+    assert Enum.take(roles_texts, 4) == answered
+    assert [{:user, "one"}, {:assistant, _reply}] = Enum.drop(roles_texts, 4)
+  end
+
+  @tag :tmp_dir
+  test "a resume counts the inserted results in the messages before a harness session", %{
+    core: core,
+    tmp_dir: dir
+  } do
+    call = %Helyx.Message.ToolCall{id: "c1", name: "slow", arguments: %{}}
+    {:ok, file} = Helyx.Session.File.create(dir, "counts", File.cwd!(), "test/transcript")
+
+    file
+    |> Helyx.Session.File.append_message(%Helyx.Message{role: :assistant, content: [call]})
+    |> Helyx.Session.File.append_message(Helyx.Message.user("next"))
+    |> Helyx.Session.File.append_harness_session("claude-code", "h1")
+
+    {:ok, session} = Session.resume(core, sessions_dir: dir)
+    state = :sys.get_state(Session.pid(session))
+    assert length(state.transcript) == 3
+    assert state.harness_sessions == %{"claude-code" => {"h1", 3}}
   end
 
   @tag :tmp_dir
