@@ -42,4 +42,4 @@ System change: the two-findings rule in the ship skill and in the checklist now 
 ## Next
 
 - Group 3 of the simplification review: the `harness_reply` kind change, then the Steers and Wait extraction from `Session.Server`. No tickets yet.
-- GitHub closed #269 from "Closes #269" by itself; the earlier issues of these runs were closed by hand. Watch whether auto-close now works.
+- GitHub does not close an issue from "Closes #n" in a merged PR body: every issue of these runs, #269 too, was closed by hand. Step 5.4 of orchestrate already covers this.
