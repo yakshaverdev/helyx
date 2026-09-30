@@ -210,8 +210,8 @@ defmodule Helyx.Session.Server do
 
   def handle_call({:set_model, %ModelRef{} = ref, provider, turn_mode}, _from, %State{} = state) do
     model = ModelRef.to_string(ref)
-    file = persist(state.file, &Helyx.Session.File.append_model_change(&1, model))
-    state = %{state | model: ref, provider: provider, turn_mode: turn_mode, file: file}
+    state = persist(state, &Helyx.Session.File.append_model_change(&1, model))
+    state = %{state | model: ref, provider: provider, turn_mode: turn_mode}
     {:reply, :ok, settle(do_emit(state, nil, :model_change, %{model: model}))}
   end
 
@@ -329,9 +329,9 @@ defmodule Helyx.Session.Server do
     # The provider id is the prefix of the turn's model ref: `find/2`
     # matched it, so the session runs no plugin code for it.
     provider = turn.model.provider
-    file = persist(state.file, &Helyx.Session.File.append_harness_session(&1, provider, id))
+    state = persist(state, &Helyx.Session.File.append_harness_session(&1, provider, id))
     sessions = Map.put(state.harness_sessions, provider, {id, length(state.transcript)})
-    state = %{state | file: file, harness_sessions: sessions}
+    state = %{state | harness_sessions: sessions}
     data = %{provider: provider, harness_session_id: id, lost: turn.resumed != nil, cut: cut}
     {:noreply, emit(state, :harness_session, data)}
   end
@@ -636,12 +636,24 @@ defmodule Helyx.Session.Server do
       when request != nil do
     case :gen_server.check_response(message, request) do
       {:reply, result} ->
-        with {:error, reason} <- result, do: Logger.warning("abort cleanup failed: " <> reason)
+        state = cleanup_notice(result, state)
         {:noreply, progress(%{state | aborting: %{aborting | hands: nil}})}
 
       {:error, {reason, _hands}} ->
         {:stop, reason, state}
     end
+  end
+
+  # The abort still replies `:ok` (ADR 0006 §5); a failed cleanup is a
+  # notice. Its text is fixed, so it stays in the bound of a notice; the
+  # log has the reason, whose handle list has no bound. The turn has
+  # ended, so the notice has no turn id.
+  defp cleanup_notice(:ok, state), do: state
+
+  defp cleanup_notice({:error, reason}, state) do
+    Logger.warning("abort cleanup failed: " <> reason)
+    text = "abort cleanup failed: a process or resource of the turn may still be held"
+    do_emit(state, nil, :notice, %{text: text})
   end
 
   # The session stops only for a trapped reason; on an untrappable kill the
@@ -1218,14 +1230,14 @@ defmodule Helyx.Session.Server do
   # Appends a completed message to the transcript and, when the session has
   # a file, to disk. Streamed partial messages never come through here.
   defp append_message(%State{} = state, %Message{} = message) do
-    file = persist(state.file, &Helyx.Session.File.append_message(&1, message))
-    %{state | transcript: state.transcript ++ [message], file: file}
+    state = persist(state, &Helyx.Session.File.append_message(&1, message))
+    %{state | transcript: state.transcript ++ [message]}
   end
 
-  defp persist(nil, _append), do: nil
+  defp persist(%State{file: nil} = state, _append), do: state
 
-  defp persist(file, append) do
-    append.(file)
+  defp persist(%State{file: file} = state, append) do
+    %{state | file: append.(file)}
   rescue
     # A disk failure must not take the session down. The turn, or the model
     # switch, goes on in memory; persistence stays off for this session. Only
@@ -1233,10 +1245,12 @@ defmodule Helyx.Session.Server do
     # at the stream boundary (see `Helyx.Session.Stream`), and a model ref by
     # `ModelRef.parse/1`, so an encode error here is a
     # bug and crashes loudly rather than silently losing the rest of the
-    # session.
+    # session. One notice tells the clients; its fixed text stays in the
+    # bound of a notice, and the log has the error.
     error in File.Error ->
       Logger.warning("session file append failed, persistence off: " <> Exception.message(error))
-      nil
+      text = "the session file could not be written; the rest of this session is not saved"
+      do_emit(%{state | file: nil}, state.turn && state.turn.id, :notice, %{text: text})
   end
 
   # Each tool call without a result gets an `aborted` error result in the
