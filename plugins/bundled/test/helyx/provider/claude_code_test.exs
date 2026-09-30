@@ -1013,6 +1013,117 @@ defmodule Helyx.Provider.ClaudeCodeTest do
     assert %{"result" => %{"isError" => true}} = answers(bin, 1)["n1"]
   end
 
+  # #240: an `init` with no Helyx turn starts a program turn.
+  defp note,
+    do: j(%{type: "system", subtype: "task_notification", task_id: "b1", status: "completed"})
+
+  defp saw?(event), do: &Enum.any?(&1, fn action -> match?({:event, _, ^event}, action) end)
+
+  # One turn, then a program turn that the program starts by itself and
+  # that is still open after `lines`.
+  defp program_turn(bin, work, lines) do
+    turn(bin, 1, 1, reply("first") ++ [note(), init() | lines])
+    context = %Helyx.Context{messages: [Message.user("a")]}
+    {_from, actions, state} = request(harness(work), {:turn, "t1", context})
+    {actions, state} = pump(state, actions, saw?(:program_turn))
+    {actions, state} = pump(state, actions, saw?({:text_delta, "program"}))
+    [id] = for {:event, id, :program_turn} <- actions, do: id
+    {id, state}
+  end
+
+  test "a program turn gives its own turn id, its events, and its terminal",
+       %{bin: bin, work: work} do
+    turn(
+      bin,
+      1,
+      1,
+      reply("first") ++ [note(), init(), delta("program"), program_result("program")]
+    )
+
+    context = %Helyx.Context{messages: [Message.user("a")]}
+    {_from, actions, state} = request(harness(work), {:turn, "t1", context})
+
+    {actions, state} =
+      pump(state, actions, &(length(Enum.filter(&1, fn a -> ended?([a]) end)) == 2))
+
+    assert [
+             {:event, id, :program_turn},
+             {:event, id, {:text_delta, "program"}},
+             {:event, id, {:done, _}}
+           ] =
+             Enum.drop_while(actions, &(not match?({:event, _, :program_turn}, &1)))
+
+    assert id =~ ~r/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
+    assert %{turn: nil, notified?: false} = state
+  end
+
+  test "a session shows a program turn after its turn, with origin :program", %{bin: bin} = ctx do
+    program = [delta("done"), assistant(%{type: "text", text: "done"}), program_result("done")]
+    turn(bin, 1, 1, reply("first") ++ [note(), init() | program])
+
+    session = start(ctx)
+    prompt(session, "a")
+    events = collect_until(:agent_end)
+
+    assert [%{origin: :program}] = of_type(events, :turn_start)
+    assert [%Message{role: :assistant, content: [%Message.Text{text: "done"}]}] = messages(events)
+
+    assert [:user, :assistant, :assistant] =
+             Enum.map(:sys.get_state(Session.pid(session)).transcript, & &1.role)
+  end
+
+  test "a turn while a program turn runs replaces it, and the program turn's text is lost",
+       %{bin: bin, work: work} do
+    {id, state} = program_turn(bin, work, [delta("program")])
+
+    turn(bin, 1, 2, [
+      lifecycle("queued"),
+      delta(" more"),
+      program_result("program"),
+      lifecycle("started"),
+      init(),
+      delta("mine"),
+      assistant(%{type: "text", text: "mine"}),
+      result("mine")
+    ])
+
+    context = %Helyx.Context{messages: [Message.user("a"), Message.user("b")]}
+    {_from, actions, state} = request(state, {:turn, "t2", context})
+    {actions, _state} = pump(state, actions, &ended?/1)
+
+    assert [{:text_delta, "mine"}, {:done, _}] = events_of(actions)
+    refute Enum.any?(actions, &match?({:event, ^id, _}, &1))
+  end
+
+  test "an interrupt of a program turn writes the interrupt with its id",
+       %{bin: bin, work: work} do
+    {id, state} = program_turn(bin, work, [delta("program")])
+    script(bin, "ctl.1", [interrupted(), program_result("")])
+
+    {from, [], state} = request(state, {:interrupt, id})
+    {actions, _state} = pump(state, [], replied?(from))
+
+    assert {:reply, ^from, :ok} = List.last(actions)
+    assert %{"request_id" => "interrupt_" <> ^id} = List.last(stdin(bin, 1))
+  end
+
+  # The session was in its idle close wait when the program turn started,
+  # so it dropped it; the program turn keeps the program.
+  test "an idle close during a program turn answers :busy", %{bin: bin, work: work} do
+    {_id, state} = program_turn(bin, work, [delta("program")])
+    assert {_from, [{:reply, _, :busy}], _state} = request(state, :idle_close)
+  end
+
+  test "end of input during a program turn still gives its terminal, then the close",
+       %{bin: bin, work: work} do
+    {id, state} = program_turn(bin, work, [delta("program")])
+    script(bin, "eof.1", [program_result("program")])
+
+    {from, [], state} = request(state, :close)
+    {actions, _state} = pump(state, [], replied?(from))
+    assert [{:event, ^id, {:done, _}}, {:reply, ^from, :ok}] = actions
+  end
+
   test "a result before the start of the turn's line after a replay does not end the turn",
        %{bin: bin, work: work} do
     turn(bin, 1, 1, [init(), replay_failed() | reply("ok")])
@@ -1252,6 +1363,18 @@ defmodule Helyx.Provider.ClaudeCodeTest do
 
       state = settle(state, &(&1.tasks != []))
       assert {_from, [{:reply, _, :busy}], _state} = request(state, :idle_close)
+    end
+
+    # #240: a program turn starts 100 to 150 ms after the notification.
+    test "after a task_notification answers :busy once, then closes", %{bin: bin, work: work} do
+      note =
+        j(%{type: "system", subtype: "task_notification", task_id: "b1", status: "completed"})
+
+      state = idle(bin, work, [tasks_line(%{tasks: []}), note], "", & &1.notified?)
+      assert {_from, [{:reply, _, :busy}], state} = request(state, :idle_close)
+
+      {from, [], state} = request(state, :idle_close)
+      assert {[{:reply, ^from, :ok}], _state} = pump(state, [], replied?(from))
     end
 
     for {name, fields} <- [

@@ -128,6 +128,15 @@ defmodule Helyx.Provider do
   open at once: Core answers one more with `{:error, :busy}` and does not
   give it to the provider.
 
+  A turn that the program starts by itself: the event `:program_turn`, with
+  a new `turn_id` that the provider makes (1 to 256 bytes of valid UTF-8,
+  like a harness session id), opens it. With no turn and no wait the session
+  opens a connected turn with that id and no user message, and emits
+  `turn_start` with `%{origin: :program}`; the later events of the turn and
+  its terminal work as for any turn, and so do a steer and an interrupt of
+  it. At any other time the session drops it and its events. The provider
+  then must accept the next `{:turn, ...}` while the program turn runs.
+
   Helyx tools inside the program: the event `{:tool_request, call_id, name,
   arguments}` asks the session to run the Helyx tool `name`. `call_id` is
   the id of the call in the program's own events, which put the call and
@@ -178,6 +187,7 @@ defmodule Helyx.Provider do
           | {:harness_session, String.t(), non_neg_integer()}
           | {:user_message, String.t(), String.t()}
           | {:tool_request, call_id :: String.t(), name :: String.t(), arguments :: map()}
+          | :program_turn
 
   @typedoc "The ref of a request from Core, for its reply."
   @type from :: reference()

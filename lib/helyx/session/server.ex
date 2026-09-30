@@ -344,6 +344,26 @@ defmodule Helyx.Session.Server do
       ),
       do: {:noreply, emit(state, :notice, %{text: text})}
 
+  # A turn that the program started by itself (#240) opens only with no
+  # turn and no wait: a submitted connected turn with no user message. Any
+  # other time it is dropped, and so are its events.
+  def handle_info(
+        {:stream_event, turn_id, :program_turn},
+        %State{turn: nil, aborting: nil, harness: %Connection{ready: true, model: model}} = state
+      ) do
+    turn = %Turn{
+      id: turn_id,
+      model: model,
+      provider: state.provider,
+      turn_mode: :connected,
+      phase: :submitted
+    }
+
+    {:noreply, open_turn(state, turn, %{origin: :program})}
+  end
+
+  def handle_info({:stream_event, _turn_id, :program_turn}, state), do: {:noreply, state}
+
   def handle_info({:stream_event, turn_id, event}, %State{turn: %Turn{id: turn_id}} = state) do
     %State{turn: turn} = state = start_assistant_message(state)
 
@@ -849,10 +869,12 @@ defmodule Helyx.Session.Server do
       turn_mode: state.turn_mode
     }
 
-    state = %{state | turn: turn}
-    state = state |> emit(:agent_start, %{}) |> emit(:turn_start, %{})
+    state = open_turn(state, turn, %{})
     start_provider_call(Enum.reduce(texts, state, &append_user(&2, &1)))
   end
+
+  defp open_turn(state, turn, data),
+    do: %{state | turn: turn} |> emit(:agent_start, %{}) |> emit(:turn_start, data)
 
   defp append_user(state, text) do
     user = Message.user(text)

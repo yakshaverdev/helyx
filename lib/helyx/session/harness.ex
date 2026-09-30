@@ -321,6 +321,20 @@ defmodule Helyx.Session.Harness do
 
   defp act(other, _harness), do: {:stop, {:bad_return, other}}
 
+  # A turn that the program started by itself (#240) is live, as after a
+  # `{:turn, ...}` request. Its id is the provider's, with the checks of a
+  # harness session id.
+  defp action({:event, turn_id, :program_turn} = action, harness) do
+    if Message.harness_id?(turn_id) do
+      with {:ok, harness} <- end_tools(harness) do
+        message = {:stream_event, turn_id, :program_turn}
+        sent(Stream.send_checked(harness.session, message), %{harness | live: turn_id})
+      end
+    else
+      {:stop, {:bad_action, action}}
+    end
+  end
+
   # An event passes the check of a stream event of an external turn. A
   # terminal goes to the session as `{:stream_end, turn_id, terminal}`, with
   # the cap that a stream Task applies to its terminal. A malformed event
