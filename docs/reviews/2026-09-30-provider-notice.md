@@ -40,3 +40,7 @@ The fix changes 14 lines of one code file, and `held/1` became `held/2`; by the 
 | Failure path | a program `result` with an `origin` other than exactly `{"kind": "task-notification"}` (another kind, a non-string kind, `null`) still counts as a Helyx `result` | accepted hole in the feature doc, with its reproduction: the research saw no such program `result` (roll-forward rule: a finding that needs a program behaviour the research did not see) |
 
 The loop ends after round 2.
+
+## Codex round 3 (coordinator)
+
+Codex approved with no material findings. The gate sentence named the accepted hole of round 2.
