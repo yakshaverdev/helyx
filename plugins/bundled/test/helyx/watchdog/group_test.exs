@@ -75,9 +75,12 @@ defmodule Helyx.Watchdog.GroupTest do
   # above the delays that load makes, far below the waits of 500 ms and more.
   @load_ms 250
 
+  # The deadline is four load margins, so load does not delay the first KILL
+  # past it (#271). The KILL wait is 5,000 ms, so a wait that the deadline
+  # does not bound ends about 4,000 ms after it, far above `@load_ms`.
   test "a group that survives KILL is still held, and the deadline bounds the wait" do
     kill = fake_kill([4242], [4242])
-    until = deadline(100)
+    until = deadline(4 * @load_ms)
 
     assert Group.release([{:command, 4242}], :deliver, until, kill: kill) == [
              {:command, 4242}
