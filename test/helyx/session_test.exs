@@ -1154,11 +1154,18 @@ defmodule Helyx.SessionTest do
     File.rm_rf!(dir)
 
     :ok = Session.prompt(session, "hello")
-    assert stop_reason(collect_until(:agent_end)) == :end_turn
+    events = collect_until(:agent_end)
+    assert stop_reason(events) == :end_turn
+    assert [%{text: "the session file could not be written" <> _}] = notices(events)
 
+    # The notice goes out once: persistence stays off.
     :ok = Session.prompt(session, "again")
-    assert stop_reason(collect_until(:agent_end)) == :end_turn
+    events = collect_until(:agent_end)
+    assert stop_reason(events) == :end_turn
+    assert notices(events) == []
   end
+
+  defp notices(events), do: for(%Event{type: :notice, data: data} <- events, do: data)
 
   describe "tool specs at the session boundary (#142)" do
     # One bad test tool per rule of `Helyx.Tool.specs/1`, and one per
@@ -1544,6 +1551,7 @@ defmodule Helyx.SessionTest do
         end)
 
       assert log =~ "persistence off"
+      assert_receive {:helyx_event, %Event{type: :notice, turn_id: nil}}
       assert_receive {:helyx_event, %Event{type: :model_change, turn_id: nil}}
       assert Session.model(session) == "other/any"
 
@@ -1644,6 +1652,22 @@ defmodule Helyx.SessionTest do
       events = collect_until(:agent_end)
       assert user_texts(events) == ["steer", "follow", "prompt"]
       assert stop_reason(events) == :end_turn
+    end
+
+    @tag :capture_log
+    test "an abort whose cleanup fails gives a notice and still replies :ok", %{core: core} do
+      {session, _hands, _task} = start_stuck_turn(core)
+
+      assert :ok = Session.abort(session)
+      assert stop_reason(collect_until(:agent_end)) == :aborted
+
+      assert_receive {:helyx_event,
+                      %Event{
+                        type: :notice,
+                        turn_id: nil,
+                        data: %{text: "abort cleanup failed" <> _}
+                      }},
+                     1_000
     end
 
     @tag :capture_log

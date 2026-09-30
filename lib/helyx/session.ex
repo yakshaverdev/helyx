@@ -109,7 +109,10 @@ defmodule Helyx.Session do
   same errors.
   With `:sessions_dir` the session is written to disk as it runs, as JSON
   lines under `<sessions_dir>/<project>/<session>.jsonl`; without it nothing
-  is persisted.
+  is persisted. When a write fails, the session goes on in memory, writes
+  nothing more, and sends one `:notice` event. A write that fails at a
+  resume (see `resume/2`) goes out before any client can subscribe, so no
+  client gets its notice (ADR 0006: a late client does not see notices).
   """
   @spec start(Helyx.Core.name(), keyword()) :: {:ok, t()} | {:error, model_error() | term()}
   def start(core \\ Helyx.Core, opts) do
@@ -464,7 +467,9 @@ defmodule Helyx.Session do
   directory. Each tool call without a result gets an `aborted` error result,
   so the transcript keeps complete call and result pairs. The events of the
   abort go out at once, before the hands are done; only this call waits. With
-  no turn running and no abort in progress this is a no-op.
+  no turn running and no abort in progress this is a no-op. When the hands
+  cannot confirm that a resource of the turn was released, the call still
+  returns `:ok`, and a `:notice` event with no turn id tells the clients.
   """
   @spec abort(t()) :: :ok | {:error, :session_not_found}
   def abort(%__MODULE__{} = session), do: call(session, :abort, :infinity)
