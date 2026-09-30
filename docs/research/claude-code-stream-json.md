@@ -298,3 +298,56 @@ Runs on 2026-09-29 with version `2.1.284`, `--model haiku`, for ticket #226. A P
 
 - A sub-agent that starts a sub-agent (`spawn_depth` 2), `stop_task` on a sub-agent's `task_id`, and `SIGKILL` with a sub-agent running.
 - `SendMessage` to continue a finished sub-agent (the hand-back text names it).
+
+## Program turns (2026-09-30, #240)
+
+Runs on 2026-09-30 with version `2.1.284`, `--model=haiku` (the `init` line reported `claude-haiku-4-5-20251001`), for ticket #240. A Python script drove the program with the flags of `Helyx.Provider.ClaudeCode` (`--output-format stream-json --verbose --include-partial-messages --input-format stream-json --permission-mode bypassPermissions --model=haiku --session-id=<uuid>`) and `--strict-mcp-config`, with no `-p` and no `--replay-user-messages`. Each program ran in a new session (its own process group), in an empty temporary directory. The user's own hooks were active. In each run the prompt (a user line with a `uuid`) asked the model to start `sleep 6` with `Bash` and `run_in_background: true`, reply, and end its turn. A "program turn" is the turn that the program starts by itself when the background task ends. "Observed" means one of these runs, not a contract.
+
+- **Run A**: the prompt only. At the first `message_start` of the program turn, the script sent a second user line with a `uuid`. End of input 8 s after the last `result`.
+- **Run B**: replay first: a `user` line with `"shouldQuery": false`, then two `assistant` lines (code word A, code word B). Then the prompt, which also asked for the code words. End of input at the first `message_start` of the program turn.
+- **Run C**: replay first: `user` (`shouldQuery: false`), `assistant` (code word A), `user` (`shouldQuery: false`), `assistant` (code word B), `assistant` (code word C). Then the prompt, which also asked for the code words. End of input at the `task_notification` line.
+
+### The end of a background command (observed, A, B, C)
+
+- After the turn's `result`, when the command ended, three lines came within 1 ms: `background_tasks_changed` with `"tasks":[]`, `task_updated` with `patch.status` `completed`, then `task_notification` with `status` `completed`.
+- 100 to 150 ms later the program turn started: `system/init`, `status` `requesting`, the stream events and `assistant` lines, then a `result` with `"origin":{"kind":"task-notification","producer":"session-task"}`, `"user_message_uuid":null`, `terminal_reason` `completed`, `num_turns` 1, and the next `result_index`.
+- No `command_lifecycle` line came for the program turn.
+- The ending task was a `Bash` task of the main loop. A background sub-agent as the ending task was not run today; the one run in "Sub-agents at the end of a turn" had the same `task_notification`, then `init`.
+
+### The user line of a program turn (observed, A, B, C)
+
+- **On stdout, the program turn has no `user` line.** The first line after `task_notification` is its `init`.
+- **In the program's own session file, the program turn has a `user` entry** with `"origin":{"kind":"task-notification",...}` and string content `<task-notification><task-id>...</task-id><tool-use-id>...</tool-use-id><output-file>...`. The `assistant` entries of the program turn have that entry as their parent.
+- Not observed: the output with `--replay-user-messages`.
+
+### `started` of a normal turn (observed, A, B, C)
+
+- For the prompt: `command_lifecycle` `queued`, `started` 3 to 33 ms later, then `init`, `status`, and `message_start`. So `started` came before every model line of the turn.
+- In B and C the `result` lines of the replay came between `queued` and `started`, as in "The connected provider".
+
+### A user line during a program turn (observed, A, 1 run)
+
+- The line was sent at the first `message_start` of the program turn. The program turn had no tool call, so the line came during its text answer.
+- `command_lifecycle` `queued` came at once. The line did not join the program turn.
+- The program turn ended with its own `result`: `origin` task-notification, `user_message_uuid` `null`, `result_index` 1.
+- `started` of the line came 1 ms after that `result`, then a new `init`. The line ran as a turn of its own. Its `result` had `user_message_uuid` equal to the line's `uuid`, `origin` `null`, and `result_index` 2. Then `completed`.
+- Not observed: a user line during a tool call of a program turn.
+
+### End of input during a program turn (observed, B and C)
+
+- **B**, end of input at the first `message_start` of the program turn: the program finished the turn, wrote its `result` with `origin`, and exited with status 0 0.65 s after that `result`.
+- **C**, end of input at `task_notification`, before the program turn's `init`: the program still started the program turn 150 ms later, wrote its `result` with `origin`, and exited with status 0 0.65 s after that `result`.
+- Not observed: end of input while a background task still runs, or after `background_tasks_changed` and before `task_notification`.
+
+### Consecutive `assistant` lines in a replay (observed, B and C)
+
+- **The model used the text of every replayed `assistant` line.** B answered `RED` and `BLUE`; C answered `RED, BLUE, GREEN.`. So two or three consecutive `assistant` lines were accepted.
+- Each replayed `user` line gave one `result` (`num_turns` 0, no `terminal_reason`): one in B, two in C. The `assistant` lines gave no output.
+- **The session file does not keep the replay order.** In B and C every replayed `assistant` entry comes before the first replayed `user` entry, and the `parentUuid` chain follows the order of the file. C's input order was `user`, `assistant` A, `user`, `assistant` B, `assistant` C. The file order was `assistant` A, `assistant` B, `assistant` C, `user`, `user`, then the prompt.
+- Inferred, not observed: the program writes an `assistant` input line to the file when it reads the line, and writes a `user` input line when it takes the line from its command queue (the file has `queue-operation` entries for it).
+- **The request to the model was not observed.** So it is not known if the model got the replay in the input order or in the file order. A `--resume` of such a session was not run.
+
+### Not run
+
+- A background sub-agent as the ending task; two background tasks that end at the same time.
+- An `interrupt` during a program turn.
