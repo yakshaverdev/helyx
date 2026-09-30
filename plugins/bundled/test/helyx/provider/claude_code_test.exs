@@ -1426,7 +1426,7 @@ defmodule Helyx.Provider.ClaudeCodeTest do
     # "Built in #199"). A later call returns after the session handled it.
     assert_receive {:trace, ^pid, :receive, {:harness_down, _, _}}, turn_ms()
     :erlang.trace(pid, false, [:receive])
-    :sys.get_state(pid)
+    assert :sys.get_state(pid).harness == nil
     assert [%{stop_reason: :end_turn}] = of_type(prompt(session, "again"), :agent_end)
     assert "--resume=#{id}" in args(bin, 2)
   end

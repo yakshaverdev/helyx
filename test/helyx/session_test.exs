@@ -40,14 +40,15 @@ defmodule Helyx.SessionTest do
   # each turn sends {:waiting, pid} and waits for :go.
   defp gated_model, do: "test/gate." <> Helyx.Test.Gate.open()
 
-  # Stops the session and waits until it is down. A resume that follows
-  # needs no wait for the Registry cleanup: a register replaces an entry
-  # whose owner is dead.
+  # Stops the session, waits until it is down, then until the Registry
+  # drops its entry, which the Registry does after the exit.
   defp stop_session(session, stop) do
     pid = Session.pid(session)
     ref = Process.monitor(pid)
     stop.(pid)
     assert_receive {:DOWN, ^ref, :process, ^pid, _reason}
+    registry = Helyx.Core.sessions_registry(session.core)
+    await(fn -> Registry.lookup(registry, session.id) == [] end, "the registry entry to free")
   end
 
   # The messages in the mailbox now, in order.
@@ -1618,7 +1619,7 @@ defmodule Helyx.SessionTest do
       assert_receive {:trace, ^hands, :receive, {:"$gen_call", {task, _}, {:hold, _}}}
       assert_receive {:trace, ^hands, :receive, {:"$gen_call", {^task, _}, {:hold, _}}}
       :erlang.trace(hands, false, [:receive])
-      :sys.get_state(hands)
+      assert [{^task, [_, _]}] = Map.to_list(:sys.get_state(hands).held)
       task
     end
 

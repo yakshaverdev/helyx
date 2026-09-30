@@ -347,6 +347,8 @@ defmodule Helyx.TUITest do
     :ok =
       DynamicSupervisor.terminate_child(Helyx.Core.session_supervisor(core), Session.pid(session))
 
+    assert Session.pid(session) == nil
+
     {:ok, resumed} = Session.resume(core, sessions_dir: dir, cwd: dir)
     {:ok, %{vm: vm}} = TUI.mount(session: resumed, resumed: true)
 
@@ -402,6 +404,10 @@ defmodule Helyx.TUITest do
     ref = Process.monitor(pid)
     Process.exit(pid, :kill)
     assert_receive {:DOWN, ^ref, :process, ^pid, :killed}
+
+    # The Registry drops the dead entry later, but a lookup by name skips a
+    # dead pid.
+    assert Session.pid(session) == nil
 
     assert catch_exit(TUI.mount(session: session)) ==
              {:session_down, :session_not_found}

@@ -266,13 +266,13 @@ defmodule Helyx.Session.HandsTest do
   end
 
   # Waits until the hands got `n` hold calls, then until they handled them,
-  # so cancel finds the handles held.
+  # and asserts that they hold the handles, so cancel finds them.
   defp await_held(hands, n) do
     for _ <- 1..n do
       assert_receive {:trace, ^hands, :receive, {:"$gen_call", {_task, _}, {:hold, _}}}
     end
 
     :erlang.trace(hands, false, [:receive])
-    :sys.get_state(hands)
+    assert map_size(:sys.get_state(hands).held) >= n
   end
 end
