@@ -104,7 +104,8 @@ defmodule Helyx.Provider.ClaudeCode do
     # written steer line that the program did not start yet, by its `uuid`:
     # `{steer_id, text}`. `wait` is set from a `result` that could not end
     # the turn, because a steer was unresolved, until the start of a steer:
-    # the ref of the timer of that wait.
+    # the ref of the timer of that wait. `used` holds every Helyx call id of
+    # the turn's `tools/call` requests, answered or not.
     @enforce_keys [:id, :uuid, :messages]
     defstruct [
       :id,
@@ -116,7 +117,8 @@ defmodule Helyx.Provider.ClaudeCode do
       replay?: false,
       open?: false,
       calls?: false,
-      usage: %{}
+      usage: %{},
+      used: MapSet.new()
     ]
   end
 
@@ -669,21 +671,34 @@ defmodule Helyx.Provider.ClaudeCode do
     mcp_answer(state, request_id, %{id: id, result: %{tools: tools}})
   end
 
+  # A call id of the turn is recorded in `used` before any check that
+  # answers it, so an id that got any answer never runs later in the turn:
+  # the provider's own errors do not reach the loop, which records the rest.
   defp mcp(%{"method" => "tools/call", "id" => id} = message, request_id, state) do
-    with %{"name" => name, "_meta" => %{"claudecode/toolUseId" => call_id}} = params <-
-           message["params"],
-         true <- is_binary(name) and is_binary(call_id),
-         args when is_map(args) <- Map.get(params, "arguments", %{}),
-         false <- Map.has_key?(state.calls, call_id),
-         {:turn, %Turn{id: turn_id}} <- {:turn, state.turn} do
-      calls = Map.put(state.calls, call_id, {turn_id, request_id, id})
-      {[{:event, turn_id, {:tool_request, call_id, name, args}}], %{state | calls: calls}}
-    else
-      {:turn, nil} ->
+    params = message["params"]
+
+    case {state.turn, tool_use_id(params)} do
+      {nil, _call_id} ->
         tool_answer(state, request_id, id, :error, "no Helyx turn is running")
 
-      _unmapped ->
+      {_turn, nil} ->
         tool_answer(state, request_id, id, :error, "the call does not map to a tool use")
+
+      {%Turn{id: turn_id, used: used}, call_id} ->
+        state = put_in(state.turn.used, MapSet.put(used, call_id))
+
+        with false <- MapSet.member?(used, call_id),
+             %{"name" => name} when is_binary(name) <- params,
+             args when is_map(args) <- Map.get(params, "arguments", %{}) do
+          calls = Map.put(state.calls, call_id, {turn_id, request_id, id})
+          {[{:event, turn_id, {:tool_request, call_id, name, args}}], %{state | calls: calls}}
+        else
+          true ->
+            tool_answer(state, request_id, id, :error, "the call id was used before in this turn")
+
+          _unmapped ->
+            tool_answer(state, request_id, id, :error, "the call does not map to a tool use")
+        end
     end
   end
 
@@ -703,6 +718,11 @@ defmodule Helyx.Provider.ClaudeCode do
 
   defp mcp(_notification, request_id, state),
     do: mcp_answer(state, request_id, %{result: %{}})
+
+  defp tool_use_id(%{"_meta" => %{"claudecode/toolUseId" => call_id}}) when is_binary(call_id),
+    do: call_id
+
+  defp tool_use_id(_params), do: nil
 
   defp tool_answer(state, request_id, rpc_id, status, text) do
     result = %{content: [%{type: "text", text: text}], isError: status == :error}

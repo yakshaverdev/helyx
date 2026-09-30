@@ -57,6 +57,9 @@ defmodule Helyx.Session.HarnessToolsTest do
   defp running(hands),
     do: Enum.count(:sys.get_state(hands).tasks, fn {_ref, {_, _, id, _}} -> is_binary(id) end)
 
+  # The call ids in the session's queue of the turn.
+  defp queued(session), do: Enum.map(:sys.get_state(Session.pid(session)).turn.tools, & &1.id)
+
   # The harness process sent its events before the pong, and the snapshot
   # call reaches the session after them.
   defp sync(harness, session) do
@@ -267,5 +270,43 @@ defmodule Helyx.Session.HarnessToolsTest do
     request(harness, turn_id, "c1", "upcase", %{"text" => "a"})
     assert_receive {:conn, :tool_result, ^harness, {:tool_result, ^turn_id, "c1", {:ok, "A"}}}
     assert Process.alive?(harness)
+  end
+
+  test "a call id that got the limit error never runs later in the turn",
+       %{session: session, harness: harness, turn_id: turn_id} do
+    for i <- 1..17, do: slow(harness, turn_id, "c#{i}")
+    request(harness, turn_id, "x", "upcase", %{"text" => "x"})
+    assert_receive {:conn, :tool_result, _, {:tool_result, _, "x", {:error, "too many" <> _}}}
+
+    send(harness, {:cancel, turn_id, "c2"})
+    request(harness, turn_id, "x", "upcase", %{"text" => "x"})
+
+    assert_receive {:conn, :tool_result, _,
+                    {:tool_result, _, "x", {:error, "the call id was used before" <> _}}}
+
+    sync(harness, session)
+    refute "x" in queued(session)
+  end
+
+  test "one batch: a request over the limit, its withdraw, a free slot, and the same id again",
+       %{session: session, harness: harness, turn_id: turn_id} do
+    for i <- 1..17, do: slow(harness, turn_id, "c#{i}")
+    sync(harness, session)
+    x = {:event, turn_id, {:tool_request, "x", "upcase", %{"text" => "x"}}}
+
+    send(
+      harness,
+      {:batch, [x, {:cancel_tool, turn_id, "x"}, {:cancel_tool, turn_id, "c2"}, x]}
+    )
+
+    assert_receive {:conn, :tool_result, _, {:tool_result, _, "x", {:error, "too many" <> _}}}
+
+    assert_receive {:conn, :tool_result, _,
+                    {:tool_result, _, "x", {:error, "the call id was used before" <> _}}}
+
+    sync(harness, session)
+    refute "x" in queued(session)
+    assert "c3" in queued(session)
+    refute "c2" in queued(session)
   end
 end

@@ -129,7 +129,11 @@ defmodule Helyx.Provider do
   the id of the call in the program's own events, which put the call and
   its result in the transcript; this event only runs the tool. A request
   that the provider cannot map to such an id gets an error answer from the
-  provider and gives no event. The session runs the requests of a turn one
+  provider and gives no event. A provider that answers a request with a
+  call id itself must record that id first: a later request with the
+  same id in the turn gets an error too and gives no event. Core records
+  the ids of the events it gets; it does not see the ids that the
+  provider answered. The session runs the requests of a turn one
   at a time and sends each result as the request `{:tool_result, turn_id,
   call_id, {:ok | :error, text}}`, which takes `:ok` when it is written.
   The provider replies to every `tool_result` request inside the same

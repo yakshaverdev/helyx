@@ -1489,6 +1489,69 @@ defmodule Helyx.Provider.ClaudeCodeTest do
              } = answers(bin, 1)
     end
 
+    test "a call id that the provider rejected never gives a tool request later in the turn",
+         %{bin: bin, work: work} do
+      meta = %{"claudecode/toolUseId" => "toolu_x"}
+      bad = %{name: "read", arguments: [], _meta: meta}
+      bad_call = %{jsonrpc: "2.0", id: 2, method: "tools/call", params: bad}
+      bad_name = %{name: 5, _meta: %{"claudecode/toolUseId" => "toolu_n"}}
+      name_call = %{jsonrpc: "2.0", id: 6, method: "tools/call", params: bad_name}
+
+      turn(
+        bin,
+        1,
+        1,
+        begin() ++
+          [
+            mcp_request("r1", bad_call),
+            call("r2", 3, "toolu_x"),
+            call("r3", 4, "toolu_z"),
+            call("r4", 5, "toolu_z"),
+            mcp_request("r5", name_call),
+            call("r6", 7, "toolu_n"),
+            result("done")
+          ]
+      )
+
+      {:ok, state} = ClaudeCode.harness_init("haiku", [@spec_read], cwd: work)
+
+      {_from, actions, state} =
+        request(state, {:turn, "t1", %Helyx.Context{messages: [Message.user("x")]}})
+
+      {actions, state} = pump(state, actions, &ended?/1)
+      closed(state)
+
+      # Only the first call of toolu_z maps; the open id is used too.
+      assert [{:event, "t1", {:tool_request, "toolu_z", "read", _}}] =
+               Enum.filter(actions, &match?({:event, _, {:tool_request, _, _, _}}, &1))
+
+      assert %{
+               "r4" => %{
+                 "id" => 5,
+                 "result" => %{
+                   "isError" => true,
+                   "content" => [%{"text" => "the call id was used" <> _}]
+                 }
+               },
+               "r5" => %{"id" => 6, "result" => %{"isError" => true}},
+               "r6" => %{
+                 "id" => 7,
+                 "result" => %{
+                   "isError" => true,
+                   "content" => [%{"text" => "the call id was used" <> _}]
+                 }
+               },
+               "r1" => %{"id" => 2, "result" => %{"isError" => true}},
+               "r2" => %{
+                 "id" => 3,
+                 "result" => %{
+                   "isError" => true,
+                   "content" => [%{"text" => "the call id was used before" <> _}]
+                 }
+               }
+             } = answers(bin, 1)
+    end
+
     test "notifications/cancelled withdraws the call; its later result is not written",
          %{bin: bin, work: work} do
       cancelled = %{jsonrpc: "2.0", method: "notifications/cancelled", params: %{requestId: 2}}

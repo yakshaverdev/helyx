@@ -935,6 +935,9 @@ defmodule Helyx.Test.Connected do
 
   def harness_info({:answer, from, value}, state), do: {:ok, [{:reply, from, value}], state}
 
+  # Several actions from one callback, as one input batch of a program.
+  def harness_info({:batch, actions}, state), do: {:ok, actions, state}
+
   defp kind({kind, _, _, _}), do: kind
   defp kind({kind, _, _}), do: kind
   defp kind({kind, _}), do: kind

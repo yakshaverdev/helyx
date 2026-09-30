@@ -120,9 +120,10 @@ defmodule Helyx.Session.Harness do
   # `{:tool_result, ...}` requests. A turn is `live` from its `{:turn, ...}`
   # request until its terminal or its interrupt; `calls` holds the call ids
   # of the live turn's tool requests with no result, and `seen` every call
-  # id the live turn used, so an id that was withdrawn or answered is not
-  # used again. A pair `{turn_id, call_id}` is open when the turn is live
-  # and the id is in `calls`.
+  # id the live turn used, so an id that got any answer (a result, a
+  # withdraw, an error of the loop) never runs later in the turn. A pair
+  # `{turn_id, call_id}` is open when the turn is live and the id is in
+  # `calls`.
   #
   # The loop answers a tool request itself, with an error result through the
   # provider, when its turn is not live, when its id was used, and when
@@ -200,27 +201,38 @@ defmodule Helyx.Session.Harness do
     end
   end
 
-  defp tool_request(turn_id, {:tool_request, call_id, _name, _args} = event, rejection, harness) do
-    cond do
-      harness.live != turn_id ->
-        answer_tool(turn_id, call_id, "aborted", harness)
+  # A request of the live turn puts its call id in `seen` before any check
+  # that answers it, so an id that got any answer never runs later in the
+  # turn.
+  defp tool_request(
+         turn_id,
+         {:tool_request, call_id, _, _} = event,
+         rejection,
+         %{live: turn_id} = harness
+       ) do
+    seen? = MapSet.member?(harness.seen, call_id)
+    harness = %{harness | seen: MapSet.put(harness.seen, call_id)}
 
+    cond do
       MapSet.member?(harness.calls, call_id) ->
         {:stop, {:bad_action, {:event, turn_id, event}}}
 
-      # The result of the withdrawn run could still answer it.
-      MapSet.member?(harness.seen, call_id) ->
+      # An earlier answer, or the result of a withdrawn run, could answer it.
+      seen? ->
         answer_tool(turn_id, call_id, "the call id was used before in this turn", harness)
 
       MapSet.size(harness.calls) >= @max_tools ->
         answer_tool(turn_id, call_id, @too_many, harness)
 
       true ->
-        calls = MapSet.put(harness.calls, call_id)
-        harness = %{harness | calls: calls, seen: MapSet.put(harness.seen, call_id)}
+        harness = %{harness | calls: MapSet.put(harness.calls, call_id)}
         sent(Stream.send_event(harness.session, turn_id, event, rejection), harness)
     end
   end
+
+  # A turn that is not live never becomes live again.
+  defp tool_request(turn_id, {:tool_request, call_id, _, _}, _rejection, harness),
+    do: answer_tool(turn_id, call_id, "aborted", harness)
 
   defp kind({kind, _turn_id, _id, _value}) when kind in [:steer, :tool_result], do: kind
   defp kind({kind, _turn_id, _context}), do: kind
