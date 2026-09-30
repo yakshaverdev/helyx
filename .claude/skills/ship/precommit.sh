@@ -32,9 +32,11 @@ rsync -a --delete "${excludes[@]}" ./ "$host:$dir/" || exit 1
 # to -1 or to a wrong group from a test reaches only the run, never the
 # other processes of the host (on 2026-09-30 one froze them all). The
 # namespace ends with its first process, and every process left of the
-# run ends with it. It needs sudo without a password on the host; without
+# run ends with it. The first process gets SIGKILL when the outer unshare
+# dies (the parent-death signal survives the change of user), so a killed
+# launcher does not leave the run behind. It needs sudo without a password on the host; without
 # it the run fails and does not run outside the namespace.
-isolate="sudo -n unshare --pid --fork --mount-proc setpriv --reuid=\$(id -u) --regid=\$(id -g) --init-groups env HOME=\"\$HOME\" LANG=C.UTF-8"
+isolate="sudo -n unshare --pid --fork --mount-proc --kill-child=SIGKILL setpriv --pdeathsig keep --reuid=\$(id -u) --regid=\$(id -g) --init-groups env HOME=\"\$HOME\" LANG=C.UTF-8"
 ssh -o BatchMode=yes "$host" "cd '$dir' && $sources > .before && $isolate ~/.local/bin/mise exec -- mix precommit" > precommit.log 2>&1
 status=$?
 
