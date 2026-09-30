@@ -15,23 +15,26 @@ defmodule Helyx.Watchdog.Group do
   #
   # `:deliver` KILLs straight away: the call is over, nothing in the group
   # has output anyone will read. `:cancel` TERMs first and KILLs after the
-  # grace period (500 ms, or the `:grace_ms` option). `:retry` KILLs again
-  # and probes once, with no wait.
+  # grace period (`Helyx.Watchdog.grace_ms/0`, or the `:grace_ms` option).
+  # `:retry` KILLs again and probes once, with no wait.
   #
   # No kill(1) run starts at or after the deadline: a skipped probe counts
   # the group as alive, so the handle is returned as still held. A group is
   # gone only when kill(1) reports "No such process". Any other failure,
   # such as a group of another user, keeps it held.
 
-  @grace_ms 500
   @wait_ms 5_000
+
+  # The poll interval of a wait for an empty group: no OS event says that a
+  # process group is empty.
+  @poll_ms 20
 
   @doc false
   # Options: `:grace_ms`, the TERM grace of a cancel; `:kill`, which runs
   # kill(1), for tests.
   def release(handles, mode, deadline, opts \\ []) do
     kill = until_deadline(deadline, Keyword.get(opts, :kill, &kill_cmd/1))
-    grace = Keyword.get(opts, :grace_ms, @grace_ms)
+    grace = Keyword.get(opts, :grace_ms, Helyx.Watchdog.grace_ms())
     # Two sources make the handles, and both give the shape that `valid?/1`
     # checks: `parse_marker/2` in `Helyx.Watchdog` for a command group, and
     # `Port.info(port, :os_pid)` for a watchdog. `group > 1` is a deliberate
@@ -100,7 +103,7 @@ defmodule Helyx.Watchdog.Group do
         if left_ms <= 0 do
           alive
         else
-          Process.sleep(min(20, left_ms))
+          Process.sleep(min(@poll_ms, left_ms))
           poll_gone(alive, until, kill)
         end
     end

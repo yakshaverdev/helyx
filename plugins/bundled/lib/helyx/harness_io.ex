@@ -88,7 +88,7 @@ defmodule Helyx.HarnessIO do
   def write(%{port: port}, data), do: Helyx.Watchdog.write(port, data)
 
   # The provider's `release/3`. See `Helyx.Watchdog.Group`.
-  defdelegate release(handles, mode, deadline, opts \\ []), to: Helyx.Watchdog
+  defdelegate release(handles, mode, deadline, opts \\ []), to: Helyx.Watchdog.Group
 
   # Reads a chunk of stdout: `decode` gets each complete line that is a
   # JSON object, and the state; other lines (the watchdog's start line,
