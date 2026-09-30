@@ -23,8 +23,8 @@ defmodule Helyx.Tool.Bash do
 
   @behaviour Helyx.Tool
 
-  # The launcher, the handshake, and the release live in `Helyx.Watchdog`,
-  # which the Claude Code provider shares (ADR 0005).
+  # The launcher and the handshake live in `Helyx.Watchdog`, and the release
+  # in `Helyx.Watchdog.Group`; the harness providers share both (ADR 0005).
 
   @impl true
   def name, do: "bash"
@@ -79,7 +79,7 @@ defmodule Helyx.Tool.Bash do
   def run(_args, _cwd), do: {:error, "bash needs a command"}
 
   @impl true
-  defdelegate release(handles, mode, deadline), to: Helyx.Watchdog
+  defdelegate release(handles, mode, deadline), to: Helyx.Watchdog.Group
 
   defp run_command(command, cwd) do
     bash = System.find_executable("bash") || "/bin/bash"

@@ -23,7 +23,7 @@ defmodule Helyx.Test.WatchdogHarness do
   def stream(_model, _context, _opts), do: {:error, :connected_only}
 
   @impl true
-  def release(handles, mode, deadline), do: Helyx.Watchdog.release(handles, mode, deadline)
+  def release(handles, mode, deadline), do: Helyx.Watchdog.Group.release(handles, mode, deadline)
 
   @impl true
   def harness_init(model, _tools, opts) do

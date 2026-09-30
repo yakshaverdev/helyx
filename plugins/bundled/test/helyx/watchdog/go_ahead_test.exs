@@ -67,9 +67,9 @@ defmodule Helyx.Watchdog.GoAheadTest do
   # no reader.
   defp dead_before_go_ahead, do: hands(&kill_and_await/2)
 
-  defp harness_start(dir, input) do
+  defp harness_start(dir) do
     state = %{port: nil, buffer: [], size: 0, terminal: nil}
-    Helyx.HarnessIO.start(["true"], dir, input, state)
+    Helyx.HarnessIO.start(["true"], dir, :open, state)
   end
 
   test "the bash tool reports that the command did not start", %{tmp_dir: dir} do
@@ -82,7 +82,7 @@ defmodule Helyx.Watchdog.GoAheadTest do
 
   test "a harness run ends with :not_started", %{tmp_dir: dir} do
     dead_before_go_ahead()
-    assert %{terminal: {:error, {:not_started, text}}} = harness_start(dir, "input")
+    assert %{terminal: {:error, {:not_started, text}}} = harness_start(dir)
     assert text =~ "died before the go-ahead"
   end
 
@@ -90,7 +90,7 @@ defmodule Helyx.Watchdog.GoAheadTest do
        %{tmp_dir: dir} do
     Process.flag(:trap_exit, true)
     dead_before_go_ahead()
-    assert %{terminal: {:error, {:not_started, _}}} = harness_start(dir, "input")
+    assert %{terminal: {:error, {:not_started, _}}} = harness_start(dir)
     {:messages, messages} = Process.info(self(), :messages)
     refute Enum.any?(messages, &match?({:EXIT, port, _reason} when is_port(port), &1))
   end
