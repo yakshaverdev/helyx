@@ -106,7 +106,7 @@ defmodule Helyx.WatchdogTest do
   test "a held child that is stopped does not hold the kill on a closed port (issue #70)" do
     port = open("echo ran")
     {group, ""} = read_marker(port)
-    {_, 0} = System.cmd("kill", ["-STOP", "-#{group}"])
+    {_, 0} = signal_group("STOP", group)
     true = Port.command(port, "go\n")
 
     Port.close(port)

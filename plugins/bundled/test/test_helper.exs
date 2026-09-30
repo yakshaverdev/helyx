@@ -44,4 +44,11 @@ defmodule Helyx.Test.OSHelpers do
   end
 
   def group_gone_within?(group, tries), do: gone_within?("-#{group}", tries)
+
+  # The one way a test signals a process group. procps-ng kill(1) reads a
+  # "-<group>" with no "--" before it as options: `kill -STOP -122` sends
+  # SIGSTOP to -1, every process the user may signal (seen with 4.0.4). A
+  # group below 2 is never signalled, the same lock as `Helyx.Watchdog.Group`.
+  def signal_group(signal, group) when is_integer(group) and group > 1,
+    do: System.cmd("kill", ["-#{signal}", "--", "-#{group}"], stderr_to_stdout: true)
 end

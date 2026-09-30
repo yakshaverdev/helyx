@@ -82,7 +82,7 @@ defmodule Helyx.Provider.HarnessEpipeTest do
   defp kill_when_queued(watchdog, group) do
     if Enum.any?(Port.list(), &queued?(&1, watchdog)) do
       System.cmd("kill", ["-KILL", "#{watchdog}"])
-      System.cmd("kill", ["-KILL", "--", "-#{group}"], stderr_to_stdout: true)
+      signal_group("KILL", group)
     else
       Process.sleep(10)
       kill_when_queued(watchdog, group)
