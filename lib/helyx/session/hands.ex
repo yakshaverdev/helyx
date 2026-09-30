@@ -77,6 +77,12 @@ defmodule Helyx.Session.Hands do
     # the armed kills of a harness process and a prepare Task: seams for
     # tests.
     @enforce_keys [:core, :cwd, :session, :tools]
+
+    # The default release deadline, the one source (`Helyx.Session.Server`
+    # derives its stop bounds from it).
+    @release_ms 20_000
+    def release_ms, do: @release_ms
+
     defstruct [
       :core,
       :cwd,
@@ -85,7 +91,7 @@ defmodule Helyx.Session.Hands do
       tasks: %{},
       held: %{},
       unconfirmed: %{},
-      release_ms: 20_000,
+      release_ms: @release_ms,
       connect_ms: 30_000,
       prepare_ms: 10_000
     ]

@@ -32,7 +32,8 @@ defmodule Helyx.Tool.Bash do
   @impl true
   def description do
     "Run a shell command in the working directory. Returns stdout and stderr, " <>
-      "the last 2000 lines or 50 KB, and the exit code when it is not zero."
+      "the last #{Helyx.Text.max_lines()} lines or #{div(Helyx.Text.max_bytes(), 1024)} KB, " <>
+      "and the exit code when it is not zero."
   end
 
   @impl true

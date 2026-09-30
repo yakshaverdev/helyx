@@ -1,4 +1,9 @@
 defmodule Helyx.Provider do
+  # The text of a notice: an error line of a program with room for context.
+  # The one source: the session checks it, and the bundled providers cut to
+  # it (`Helyx.HarnessIO.cap_error/1`).
+  @max_notice_bytes 2_000
+
   @moduledoc """
   Produces assistant messages for a session.
 
@@ -16,12 +21,14 @@ defmodule Helyx.Provider do
       the provider could not decode. The call goes into the assistant
       message in stream order, with the arguments the provider could
       decode, or `%{}`. Its result is `{:error, "tool call not run: " <>
-      reason}`. `reason` is valid UTF-8 of at most 1,024 bytes; it must not
+      reason}`. `reason` is valid UTF-8 of at most `@max_reason_bytes`
+      (`Helyx.Session.Stream`) bytes; it must not
       hold the raw arguments. Only a local turn accepts this event
     * `{:notice, text}`: a notice for the user, such as an error of the
       program that a later part of the turn made obsolete. `text` is valid
-      UTF-8 of at most 2,000 bytes. The session sends it as a `:notice`
-      event and keeps it out of the transcript and the assistant message
+      UTF-8 of at most #{@max_notice_bytes} bytes (`max_notice_bytes/0`).
+      The session sends it as a `:notice` event and keeps it out of the
+      transcript and the assistant message
     * `{:done, %{stop_reason: stop_reason, usage: map}}`: the call finished
     * `{:error, term}`: the call failed
 
@@ -49,8 +56,9 @@ defmodule Helyx.Provider do
     * `{:tool_result, call_id, {:ok | :error, binary}}`: the result of a
       tool call of a completed message. The provider cuts the text to the
       tool result limits before it sends the event, as a tool does; the
-      session does not cut it. A text over 65,536 bytes fails the turn with
-      `{:tool_result_too_large, bytes, 65_536}`
+      session does not cut it. A text over `@max_tool_result_bytes`
+      (`Helyx.Session.Stream`) fails the turn with
+      `{:tool_result_too_large, bytes, limit}`
     * `{:harness_session, id, cut}`: the call started a fresh harness
       session with this id; `cut` is the number of transcript messages the
       provider left out of what it sent to it
@@ -110,11 +118,11 @@ defmodule Helyx.Provider do
       turn; when the program takes it, the provider sends the event
       `{:user_message, steer_id, text}`, and the session appends the user
       message there.
-      `:idle_close` comes after the session was idle for 30 minutes with
-      the program: it takes `:ok` after the program exited, as `:close`,
-      or `:busy` when the program still runs work of its own, such as a
-      background task. With `:busy` the program stays, and the session
-      asks again after the next idle time.
+      `:idle_close` comes after the session was idle with the program
+      for `harness_ms.idle` (`Helyx.Session.Server`): it takes `:ok` after
+      the program exited, as `:close`, or `:busy` when the program still
+      runs work of its own, such as a background task. With `:busy` the
+      program stays, and the session asks again after the next idle time.
     * `harness_info/2` gets every other message of the harness process: the
       port data, a monitor, a timer.
 
@@ -124,13 +132,14 @@ defmodule Helyx.Provider do
   turn ends at its `done` or `error` event. A malformed event, a reply of
   the wrong shape or for no open request, an error reply to `{:turn, ...}`
   or `{:interrupt, ...}`, and a bad return stop the harness process: its
-  port closes, and the watchdog stops the program. At most 8 requests are
-  open at once: Core answers one more with `{:error, :busy}` and does not
-  give it to the provider.
+  port closes, and the watchdog stops the program. At most `@max_open`
+  (`Helyx.Session.Harness`) requests are open at once: Core answers one
+  more with `{:error, :busy}` and does not give it to the provider.
 
   A turn that the program starts by itself: the event `:program_turn`, with
-  a new `turn_id` that the provider makes (1 to 256 bytes of valid UTF-8,
-  like a harness session id), opens it. With no turn and no wait the session
+  a new `turn_id` that the provider makes (an id that
+  `Helyx.Message.harness_id?/1` accepts, like a harness session id), opens
+  it. With no turn and no wait the session
   opens a connected turn with that id and no user message, and emits
   `turn_start` with `%{origin: :program}`; the later events of the turn and
   its terminal work as for any turn, and so do a steer and an interrupt of
@@ -152,11 +161,12 @@ defmodule Helyx.Provider do
   The provider replies to every `tool_result` request inside the same
   callback, so the result is written before the next request; otherwise
   the harness process stops with `{:tool_result_not_answered, turn_id,
-  call_id}`. A `tool_result` request does not count in the 8 open
+  call_id}`. A `tool_result` request does not count in the `@max_open` open
   requests. Core also sends this request itself with an error result: `aborted` for
   each open tool request at the end of its turn, at the interrupt before
   the provider sees it, and for a request of a turn that is not running;
-  an error for a request over the limit of one running and 16 waiting,
+  an error for a request over `@max_tools` (`Helyx.Session.Harness`), the
+  limit of the requests of a turn, one running and the rest waiting,
   and for a call id that the turn used before. A second tool request
   with the id of an open request is a bad action and stops the harness
   process too. The action `{:cancel_tool, turn_id, call_id}` withdraws a
@@ -164,9 +174,10 @@ defmodule Helyx.Provider do
 
   Every request has a deadline: a kill of the harness process armed with
   the request at the OTP timer server (`:timer.kill_after/2`), which Core
-  cancels when the provider replies. A connect has 30,000 ms from the
-  start to the end of `harness_init/3`. A callback that blocks is killed at
-  the bound, however busy the session is. The turn fails with
+  cancels when the provider replies. A connect has `connect_ms`
+  (`Helyx.Session.Hands`) from the start to the end of `harness_init/3`. A
+  callback that blocks is killed at the bound, however busy the session
+  is. The turn fails with
   `:harness_timeout`. A crash fails it with `{:task_exit, reason}`, and a
   stop with its reason. The next turn starts a new harness process.
   """
@@ -205,6 +216,10 @@ defmodule Helyx.Provider do
           {:event, turn_id :: String.t(), stream_event()}
           | {:reply, from(), term()}
           | {:cancel_tool, turn_id :: String.t(), call_id :: String.t()}
+
+  @doc "The byte limit of the text of a `{:notice, text}` stream event."
+  @spec max_notice_bytes() :: pos_integer()
+  def max_notice_bytes, do: @max_notice_bytes
 
   @doc """
   Finds the provider plugin whose id matches a model ref prefix. It reads the

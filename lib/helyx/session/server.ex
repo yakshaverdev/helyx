@@ -3,13 +3,6 @@ defmodule Helyx.Session.Server do
   # The session process: the GenServer callbacks and the turn loop. The
   # client API and the docs of the behaviour are in `Helyx.Session`.
 
-  # The stop of a session (`terminate/2`): the close of an idle harness
-  # process (5,000 ms, armed kill), then the stop of the hands, which can
-  # finish one release (20,000 ms, `Helyx.Session.Hands`). Each wait has a
-  # margin for load, so the supervisor does not kill the session first.
-  @hands_stop_ms 22_000
-  use GenServer, restart: :temporary, shutdown: 5_000 + @hands_stop_ms + 3_000
-
   require Logger
 
   alias Helyx.{Context, Event, Message, ModelRef}
@@ -18,6 +11,15 @@ defmodule Helyx.Session.Server do
   defmodule State do
     @moduledoc false
     @enforce_keys [:id, :core, :model, :provider, :turn_mode, :cwd]
+
+    # The armed kill of a turn, interrupt, steer, tool result, or tool
+    # start request: the loop writes one stdio line and replies, well under
+    # 10 ms.
+    @harness_reply_ms 2_000
+    # The armed kill of a close: end of input, then the exit.
+    @harness_close_ms 5_000
+    def harness_close_ms, do: @harness_close_ms
+
     defstruct [
       :id,
       # A new id for each start of the process, a resume too (`Helyx.Event`).
@@ -54,12 +56,12 @@ defmodule Helyx.Session.Server do
       # no turn after which the session sends `:idle_close`. A seam for
       # tests.
       harness_ms: %{
-        turn: 2_000,
-        interrupt: 2_000,
-        steer: 2_000,
-        tool_result: 2_000,
-        tool_start: 2_000,
-        close: 5_000,
+        turn: @harness_reply_ms,
+        interrupt: @harness_reply_ms,
+        steer: @harness_reply_ms,
+        tool_result: @harness_reply_ms,
+        tool_start: @harness_reply_ms,
+        close: @harness_close_ms,
         idle: 1_800_000
       },
       # The current idle timer (`:erlang.start_timer/3`, see `arm_idle/1`),
@@ -84,6 +86,18 @@ defmodule Helyx.Session.Server do
     # The parts of the wait before the next turn can start (see `wait/2`).
     defstruct [:hands, :interrupt, :reply, :idle, :harness, :tool, callers: [], steers: %{}]
   end
+
+  # The stop of a session (`terminate/2`): the close of an idle harness
+  # process (`State.harness_close_ms/0`, armed kill), then the stop of the
+  # hands, which can finish one release (`Hands.State.release_ms/0`). Each
+  # wait has a margin for load, so the supervisor does not kill the session
+  # first.
+  @load_hands_stop_ms 2_000
+  @load_shutdown_ms 3_000
+  @hands_stop_ms Hands.State.release_ms() + @load_hands_stop_ms
+  use GenServer,
+    restart: :temporary,
+    shutdown: State.harness_close_ms() + @hands_stop_ms + @load_shutdown_ms
 
   def start_link(%State{id: id, core: core} = state) do
     GenServer.start_link(__MODULE__, state, name: via(core, id))

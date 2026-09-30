@@ -39,7 +39,8 @@ defmodule Helyx.Provider.OpenAI do
   end
 
   @env_var "OPENCODE_API_KEY"
-  @receive_timeout 120_000
+  # The longest wait for the next body chunk (Req's `receive_timeout`).
+  @chunk_idle_ms 120_000
 
   @doc "The shared `stream/3` of the endpoint plugins. `base_url` selects the endpoint."
   @spec stream(String.t(), Helyx.Context.t(), keyword(), String.t()) ::
@@ -62,7 +63,7 @@ defmodule Helyx.Provider.OpenAI do
         headers: session_header(opts),
         json: body(model, context),
         into: :self,
-        receive_timeout: @receive_timeout
+        receive_timeout: @chunk_idle_ms
       ] ++ Application.get_env(:helyx_plugins, :openai_req_options, [])
     )
   end
@@ -204,8 +205,10 @@ defmodule Helyx.Provider.OpenAI do
   # charges everything `calls` retains: argument fragments plus the list
   # cells that hold them, ids, names, and a flat cost per entry, so a peer
   # spraying indexes or one-byte fragments is bounded like one spraying
-  # bytes.
-  @max_tool_call_bytes 10_485_760
+  # bytes. It is the read limit of the file tools (`Helyx.Text`). The
+  # charges and the JSON escapes count too, so the largest file a Write
+  # call can carry is somewhat smaller.
+  @max_tool_call_bytes Helyx.Text.max_file_bytes()
   @call_entry_bytes 100
   # Measured retention of a kept fragment: the cons pair plus the heap
   # binary that holds the copy.

@@ -31,7 +31,8 @@ defmodule Helyx.Tool.Read do
 
   @impl true
   def description do
-    "Read a file. Returns at most 2000 lines or 50 KB, starting at offset " <>
+    "Read a file. Returns at most #{Helyx.Text.max_lines()} lines or " <>
+      "#{div(Helyx.Text.max_bytes(), 1024)} KB, starting at offset " <>
       "(a 1-based line number, default 1); a truncated result names the " <>
       "offset that continues the read, when lines follow."
   end

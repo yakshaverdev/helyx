@@ -4,13 +4,25 @@ defmodule Helyx.Text do
   # cut of a tool result. A helper module (ADR 0005): no interface and no
   # registration entry.
 
+  # The cut of a tool result, in lines and in bytes of line content (50
+  # KiB): pi's read and bash defaults (`docs/research/coding-tools.md`).
   @max_lines 2000
   @max_bytes 51_200
+  # The largest file a tool reads, in bytes (10 MiB): room for any source
+  # file, and small enough to load whole.
   @max_file_bytes 10_485_760
+
+  @doc "The line limit of `truncate/2` and `truncate/3`."
+  @spec max_lines() :: pos_integer()
+  def max_lines, do: @max_lines
 
   @doc "The byte limit of `truncate/2` and `truncate/3`."
   @spec max_bytes() :: pos_integer()
   def max_bytes, do: @max_bytes
+
+  @doc "The byte limit of `read_file/1`."
+  @spec max_file_bytes() :: pos_integer()
+  def max_file_bytes, do: @max_file_bytes
 
   @doc """
   Reads a regular file of at most #{@max_file_bytes} bytes, whole. A device,
