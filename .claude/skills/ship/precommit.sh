@@ -31,12 +31,12 @@ rsync -a --delete "${excludes[@]}" ./ "$host:$dir/" || exit 1
 # The run has its own PID namespace, as the host user again, so a signal
 # to -1 or to a wrong group from a test reaches only the run, never the
 # other processes of the host (on 2026-09-30 one froze them all). The
-# namespace ends with its first process, and every process left of the
-# run ends with it. The first process gets SIGKILL when the outer unshare
-# dies (the parent-death signal survives the change of user), so a killed
-# launcher does not leave the run behind. It needs sudo without a password on the host; without
-# it the run fails and does not run outside the namespace.
-isolate="sudo -n unshare --pid --fork --mount-proc --kill-child=SIGKILL setpriv --pdeathsig keep --reuid=\$(id -u) --regid=\$(id -g) --init-groups env HOME=\"\$HOME\" LANG=C.UTF-8"
+# first process of the namespace is a root sh that only waits: it never
+# changes its user, so the SIGKILL that unshare sets for it when the outer
+# unshare dies stays set, and its end ends every process of the run. The
+# run needs sudo without a password on the host; without it the run fails
+# and does not run outside the namespace.
+isolate="sudo -n unshare --pid --fork --mount-proc --kill-child=SIGKILL sh -c '\"\$@\"; exit \$?' pid1 setpriv --reuid=\$(id -u) --regid=\$(id -g) --init-groups env HOME=\"\$HOME\" LANG=C.UTF-8"
 ssh -o BatchMode=yes "$host" "cd '$dir' && $sources > .before && $isolate ~/.local/bin/mise exec -- mix precommit" > precommit.log 2>&1
 status=$?
 
