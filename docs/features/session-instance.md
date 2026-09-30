@@ -9,7 +9,7 @@ User story: I keep a client subscribed to a session. The session ends and a resu
 Today an event and a snapshot carry the session id, but not the instance. Two cases break a client:
 
 - **Resume.** A resume reuses the session id and starts `seq` at 0. The events Registry has the key `id`, so a subscriber that keeps its entry past the end of the old instance gets the events of the new one, and compares their `seq` with the old snapshot.
-- **Two Cores.** Two Cores that resume one `sessions_dir` hold one id. A caller subscribed to both gets events with the same id and overlapping `seq` values from each.
+- **Two Cores.** Two Cores that resume one `sessions_dir` hold one id. A caller subscribed to both gets events with the same id and overlapping `seq` values from each. Both Cores write to the one session file, and each writes its own branch: the `parent_id` of an entry is the leaf of its own Core, and the reader follows `parent_id`, so the two conversations do not mix (#266, `docs/features/coding-agent.md`, "Session file").
 
 ## Decision
 

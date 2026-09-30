@@ -8,10 +8,17 @@ defmodule Helyx.Session.File do
   `"session"`, and carries the format version, the working directory, and
   the model. Only completed messages are appended, never streamed partials.
 
+  The file is a tree (ADR 0001). Two writers that append to one file, two
+  Cores that resumed one session, make two branches: each entry's
+  `parent_id` is the leaf of its own writer. Each entry and its newline go
+  to the file in one append write, so on a local filesystem the entries of
+  two writers do not interleave.
+
   `resume/3` picks the most recently started session for a working
-  directory, repairs a torn last line by truncating to the end of the last
-  line that parses, and restores the transcript as written. Answering open
-  tool calls is the session's job, not the file's.
+  directory and restores the branch of its newest leaf. Nothing is ever
+  removed from the file: a line that does not decode is skipped, and a
+  last line without its newline gets one before anything else is appended.
+  Answering open tool calls is the session's job, not the file's.
   """
 
   alias Helyx.Message
@@ -41,6 +48,8 @@ defmodule Helyx.Session.File do
   # The scan reads the header of this many files: the ones with the newest
   # modification time. Nothing deletes session files, so their count grows.
   @max_scanned_files 256
+
+  @no_header "the first entry is not a header"
 
   @enforce_keys [:path]
   defstruct [:path, :leaf]
@@ -102,7 +111,12 @@ defmodule Helyx.Session.File do
   Resumes the most recently started session for a working directory.
 
   Returns the file handle, the session id, the current model, and the
-  transcript in file order.
+  transcript of one branch: the entries from the header to the newest
+  leaf, by `parent_id`. The newest leaf is the last entry in file order
+  whose chain of parents reaches the header. The rules for a damaged file
+  are in `docs/features/coding-agent.md`, "Session file": a line that does
+  not decode is skipped, and an entry with no usable parent or id is on no
+  branch. Only the branch is checked and decoded.
 
   A file over the limit of #{@max_bytes} bytes is rejected as
   `{:too_large, text}` and is not mutated. The read itself stops one byte
@@ -116,9 +130,9 @@ defmodule Helyx.Session.File do
   when none of them has the working directory.
 
   The read and the decode run in their own process with a heap cap of
-  #{@max_heap_bytes} bytes. A file whose decode passes the cap is rejected
-  as `{:too_large, text}` and is not mutated. The transcript is copied to
-  the caller once.
+  #{@max_heap_bytes} bytes, and so does the index of the entries by id. A
+  file whose decode passes the cap is rejected as `{:too_large, text}` and
+  is not mutated. The transcript is copied to the caller once.
 
   `:max_bytes` lowers the file limit, `:max_heap_bytes` lowers the heap
   cap to no less than #{@min_heap_bytes} bytes, and `:max_scanned_files`
@@ -149,11 +163,10 @@ defmodule Helyx.Session.File do
               max_files in 1..@max_scanned_files//1 do
     with {:ok, path, header} <- most_recent(project_dir(dir, cwd), cwd, max_files),
          :ok <- check_version(header),
-         {:ok, resumed, {kept_bytes, tail}} <-
-           load_bounded(path, header, max_bytes, max_heap_bytes),
+         {:ok, resumed, tail} <- load_bounded(path, header, max_bytes, max_heap_bytes),
          # The repair write comes last, after every check passed, so a
          # file this function rejects is never mutated.
-         :ok <- repair(path, kept_bytes, tail) do
+         :ok <- repair(path, tail) do
       {:ok, resumed}
     end
   end
@@ -195,18 +208,19 @@ defmodule Helyx.Session.File do
   defp load(path, header, max_bytes) do
     with {:ok, raw} <- read_up_to(path, max_bytes + 1),
          :ok <- check_size(byte_size(raw), max_bytes),
-         {entries, kept_bytes, tail} = parse(raw, [], 0),
-         :ok <- check_size(repaired_size(kept_bytes, tail), max_bytes),
-         :ok <- check_entries(entries) do
+         {entries, tail} = parse(raw, []),
+         :ok <- check_size(repaired_size(byte_size(raw), tail), max_bytes),
+         {:ok, leaf, branch} <- newest_branch(entries),
+         :ok <- check_entries(branch) do
       resumed = %Resumed{
-        file: %__MODULE__{path: path, leaf: List.last(entries)["id"]},
+        file: %__MODULE__{path: path, leaf: leaf},
         session_id: Path.basename(path, ".jsonl"),
-        model: current_model(header, entries),
-        messages: for(%{"type" => "message"} = entry <- entries, do: decode_message(entry)),
-        harness_sessions: harness_sessions(entries)
+        model: current_model(header, branch),
+        messages: for(%{"type" => "message"} = entry <- branch, do: decode_message(entry)),
+        harness_sessions: harness_sessions(branch)
       }
 
-      {:ok, resumed, {kept_bytes, tail}}
+      {:ok, resumed, tail}
     end
   rescue
     # The file is on-disk data anyone can edit. An entry with a shape this
@@ -356,27 +370,82 @@ defmodule Helyx.Session.File do
 
   # The writer only produces a header on line one, then messages, model
   # changes, and harness sessions, every one with an id, every model field a
-  # string. Anything else is on-disk corruption, never silently dropped, and
-  # never laundered by a later entry that overrides it. The harness fields
-  # are an optional label: harness_sessions/1 drops a bad one.
-  defp check_entries([%{"type" => "session", "id" => id, "model" => model} | rest])
-       when is_binary(id) and is_binary(model) do
+  # string. Anything else on the branch is on-disk corruption, never
+  # silently dropped, and never laundered by a later entry that overrides
+  # it. An entry on no branch is never read, so its shape is not checked.
+  # The harness fields are an optional label: harness_sessions/1 drops a
+  # bad one. newest_branch/1 put on the branch only entries with a string
+  # id.
+  defp check_entries([%{"type" => "session", "model" => model} | rest]) when is_binary(model) do
     case Enum.find(rest, &(not valid_entry?(&1))) do
       nil -> :ok
       bad -> {:error, {:invalid_file, "entry the writer never produces: #{inspect(bad["type"])}"}}
     end
   end
 
-  defp check_entries(_entries), do: {:error, {:invalid_file, "the first entry is not a header"}}
+  defp check_entries(_branch), do: {:error, {:invalid_file, @no_header}}
 
-  defp valid_entry?(%{"type" => "message", "id" => id}), do: is_binary(id)
-
-  defp valid_entry?(%{"type" => "model_change", "id" => id, "model" => model}),
-    do: is_binary(id) and is_binary(model)
-
-  defp valid_entry?(%{"type" => "harness_session", "id" => id}), do: is_binary(id)
-
+  defp valid_entry?(%{"type" => "message"}), do: true
+  defp valid_entry?(%{"type" => "model_change", "model" => model}), do: is_binary(model)
+  defp valid_entry?(%{"type" => "harness_session"}), do: true
   defp valid_entry?(_entry), do: false
+
+  # The branch of the newest leaf, header first. The index holds each entry
+  # in file order, so a parent is always an earlier entry, the walk from a
+  # leaf ends at the header, and a cycle cannot form. The header is the root
+  # whatever its own parent_id says: the walk stops at its id. A value in
+  # the index is a rooted entry, :unrooted, or {:shared, entry}: an id that
+  # a later entry repeats. Before the repeat a child can only mean the
+  # first entry, so the branch through it stands; after it, a child cannot
+  # tell the two apart and is on no branch, as is the repeat itself.
+  #
+  # The leaf is the newest rooted entry whose id is not shared: the next
+  # append names the leaf as its parent, so a shared leaf would put all new
+  # work on no branch. When the header id is shared and no other entry can
+  # be the leaf, no entry can take a child, and the file is refused.
+  defp newest_branch([%{"id" => root} = header | rest] = entries) when is_binary(root) do
+    index = Enum.reduce(rest, %{root => header}, &index_entry/2)
+
+    case Enum.find(Enum.reverse(entries), &match?(%{}, Map.get(index, &1["id"]))) do
+      %{"id" => leaf} -> {:ok, leaf, walk(index, root, leaf, [])}
+      nil -> {:error, {:invalid_file, "a repeat of the header id leaves no entry to resume"}}
+    end
+  end
+
+  defp newest_branch(_entries), do: {:error, {:invalid_file, @no_header}}
+
+  # An entry with no string id has no identity: no entry can name it as
+  # its parent, so it is on no branch.
+  defp index_entry(%{"id" => id}, index) when is_map_key(index, id),
+    do: Map.update!(index, id, &shared/1)
+
+  defp index_entry(%{"id" => id} = entry, index) when is_binary(id) do
+    parent = entry["parent_id"]
+
+    case index do
+      %{^parent => %{}} -> Map.put(index, id, entry)
+      _unrooted -> Map.put(index, id, :unrooted)
+    end
+  end
+
+  defp index_entry(_entry, acc), do: acc
+
+  defp shared(%{} = entry), do: {:shared, entry}
+  defp shared(other), do: other
+
+  defp walk(index, root, root, branch), do: [entry_at(index, root) | branch]
+
+  defp walk(index, root, id, branch) do
+    entry = entry_at(index, id)
+    walk(index, root, entry["parent_id"], [entry | branch])
+  end
+
+  defp entry_at(index, id) do
+    case Map.fetch!(index, id) do
+      {:shared, entry} -> entry
+      entry -> entry
+    end
+  end
 
   # The last model change wins, else the header's model. Both are strings:
   # check_entries validated every entry before this runs.
@@ -474,10 +543,10 @@ defmodule Helyx.Session.File do
     end
   end
 
-  # The newline that the repair gives back to a whole last entry counts, or
-  # the repair would make a file that the next resume rejects.
-  defp repaired_size(kept_bytes, :no_newline), do: kept_bytes + 1
-  defp repaired_size(kept_bytes, _tail), do: kept_bytes
+  # The newline that the repair appends counts, or the repair would make a
+  # file that the next resume rejects.
+  defp repaired_size(size, :no_newline), do: size + 1
+  defp repaired_size(size, :clean), do: size
 
   defp check_size(size, max_bytes) when size <= max_bytes, do: :ok
 
@@ -486,65 +555,43 @@ defmodule Helyx.Session.File do
      {:too_large, "the session file is over the #{max_bytes}-byte limit; start a new session"}}
   end
 
-  # Walks the leading run of lines that parse as entries, one line at a
-  # time, and stops at the first that does not, so a file of many short
-  # lines never becomes a list of all its lines. Returns the entries, the
-  # byte size of the kept lines with their newlines, and what follows them,
-  # for `repair/3` to judge.
-  defp parse("", entries, kept_bytes), do: {Enum.reverse(entries), kept_bytes, :clean}
-
-  defp parse(raw, entries, kept_bytes) do
-    {line, rest} =
-      case :binary.split(raw, "\n") do
-        [line, rest] -> {line, rest}
-        [line] -> {line, :eof}
-      end
-
-    case {JSON.decode(line), rest} do
-      {{:ok, %{"type" => _} = entry}, :eof} ->
-        {Enum.reverse([entry | entries]), kept_bytes + byte_size(line), :no_newline}
-
-      {{:ok, %{"type" => _} = entry}, rest} ->
-        parse(rest, [entry | entries], kept_bytes + byte_size(line) + 1)
-
-      {_bad, :eof} ->
-        {Enum.reverse(entries), kept_bytes, :torn}
-
-      {_bad, _rest} ->
-        {Enum.reverse(entries), kept_bytes, {:bad_line, length(entries) + 1}}
+  # Walks the lines one at a time, so a file of many short lines never
+  # becomes a list of all its lines. A line that does not decode to an entry
+  # is skipped: a torn append, also one that the append of another writer
+  # was glued to. Returns the entries in file order, and whether the file
+  # ends in a newline, for `repair/2`.
+  defp parse(raw, entries) do
+    case :binary.split(raw, "\n") do
+      [line, rest] -> parse(rest, add_entry(line, entries))
+      [""] -> {Enum.reverse(entries), :clean}
+      [line] -> {Enum.reverse(add_entry(line, entries)), :no_newline}
     end
   end
 
-  # A torn append is a prefix of `entry\n`, so it can only be the last
-  # line, with no newline: an entry that survived whole gets its newline
-  # back, a partial one is truncated away in place. An append and an
-  # in-place truncate cannot lose the kept entries the way a full rewrite
-  # could if it crashed mid-write. A bad line mid-file never comes from a
-  # torn append, and truncating there would delete good entries after it,
-  # so it is a malformed file. A repair that cannot write is an environment
-  # failure, not a malformed file.
-  defp repair(_path, _kept_bytes, :clean), do: :ok
-
-  defp repair(path, _kept_bytes, :no_newline),
-    do: repaired(File.write(path, "\n", [:append]))
-
-  defp repair(path, kept_bytes, :torn), do: repaired(truncate(path, kept_bytes))
-
-  defp repair(_path, _kept_bytes, {:bad_line, number}),
-    do: {:error, {:invalid_file, "unparsable line #{number}"}}
-
-  defp repaired(:ok), do: :ok
-  defp repaired({:error, reason}), do: {:error, {:repair_failed, reason}}
-
-  defp truncate(path, keep_bytes) do
-    opened =
-      File.open(path, [:read, :write, :binary], fn io ->
-        with {:ok, _position} <- :file.position(io, keep_bytes), do: :file.truncate(io)
-      end)
-
-    with {:ok, result} <- opened, do: result
+  defp add_entry(line, entries) do
+    case JSON.decode(line) do
+      {:ok, %{"type" => _} = entry} -> [entry | entries]
+      _not_an_entry -> entries
+    end
   end
 
+  # Nothing is ever removed from the file: a truncate could cut bytes that
+  # another writer appended. A last line without its newline gets one, so
+  # the next entry starts on a line of its own. A whole last entry is kept;
+  # a torn one stays a line that every read skips. A repair that cannot
+  # write is an environment failure, not a malformed file.
+  defp repair(_path, :clean), do: :ok
+
+  defp repair(path, :no_newline) do
+    case File.write(path, "\n", [:append]) do
+      :ok -> :ok
+      {:error, reason} -> {:error, {:repair_failed, reason}}
+    end
+  end
+
+  # One entry is one append write: File.write/3 makes one binary of the
+  # entry and its newline, opens the file with O_APPEND, and writes it with
+  # one writev. Only a short write (a full disk, a signal) takes a second.
   defp append(%__MODULE__{path: path, leaf: leaf} = file, entry) do
     id = Helyx.Session.Id.new()
 

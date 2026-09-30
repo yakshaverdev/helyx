@@ -11,7 +11,7 @@ defmodule Mix.Tasks.HelyxTest do
       Application.put_env(:coding_agent, :sessions_dir, dir)
       on_exit(fn -> Application.delete_env(:coding_agent, :sessions_dir) end)
       {:ok, file} = Helyx.Session.File.create(dir, "s1", dir, "fake/echo")
-      %{path: file.path}
+      %{path: file.path, header_id: file.leaf}
     end
 
     defp resume_message(dir) do
@@ -34,18 +34,23 @@ defmodule Mix.Tasks.HelyxTest do
                ": the session file is over the 67108864-byte limit; start a new session"
     end
 
-    test "a tagged text: a damaged file", %{tmp_dir: dir, path: path} do
-      File.write!(path, ~s({"type":"bogus","id":"x"}\n), [:append])
+    # The entries below hang from the header, so they are on the branch that
+    # the resume reads.
+    test "a tagged text: a damaged file", %{tmp_dir: dir, path: path, header_id: header_id} do
+      File.write!(path, ~s({"type":"bogus","id":"x","parent_id":"#{header_id}"}\n), [:append])
       assert resume_message(dir) =~ "the session file is damaged: entry the writer never"
     end
 
-    test "a tagged text: an exception message of many lines", %{tmp_dir: dir, path: path} do
-      File.write!(path, ~s({"type":"message","id":"m1","role":"user"}\n), [:append])
+    test "a tagged text: an exception message of many lines",
+         %{tmp_dir: dir, path: path, header_id: header_id} do
+      line = ~s({"type":"message","id":"m1","parent_id":"#{header_id}","role":"user"}\n)
+      File.write!(path, line, [:append])
       assert resume_message(dir) =~ "the session file is damaged: protocol Enumerable"
     end
 
-    test "a saved model ref that is not valid", %{tmp_dir: dir, path: path} do
-      File.write!(path, ~s({"type":"model_change","id":"m1","model":"nope"}\n), [:append])
+    test "a saved model ref that is not valid", %{tmp_dir: dir, path: path, header_id: header_id} do
+      line = ~s({"type":"model_change","id":"m1","parent_id":"#{header_id}","model":"nope"}\n)
+      File.write!(path, line, [:append])
       assert resume_message(dir) =~ "the model ref is not valid; use provider/model"
     end
 
