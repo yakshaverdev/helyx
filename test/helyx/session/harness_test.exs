@@ -740,6 +740,72 @@ defmodule Helyx.Session.HarnessTest do
     end
   end
 
+  describe "program turn (#240)" do
+    @done {:done, %{stop_reason: :end_turn, usage: %{}}}
+
+    # A session after one "echo" turn, idle, and its harness process.
+    defp idle(core) do
+      {session, pid, _hands} = start(core, "echo")
+      turn(session, "one")
+      assert_received {:conn, :init, harness, _}
+      {session, pid, harness}
+    end
+
+    test "with no turn opens a turn with origin :program and no user message",
+         %{core: core} do
+      {_session, pid, harness} = idle(core)
+
+      send(
+        harness,
+        {:batch, [{:event, "p1", :program_turn}, {:event, "p1", {:text_delta, "bg"}}]}
+      )
+
+      send(harness, {:batch, [{:event, "p1", @done}]})
+      events = collect_until(:agent_end)
+
+      assert [:agent_start, :turn_start | _] = Enum.map(events, & &1.type)
+      assert Enum.all?(events, &(&1.turn_id == "p1"))
+      assert %{origin: :program} = Enum.at(events, 1).data
+      assert final_text(events) == "bg"
+
+      assert [:user, :assistant, :assistant] =
+               Enum.map(:sys.get_state(pid).transcript, & &1.role)
+    end
+
+    test "a steer goes to it, and an abort interrupts it", %{core: core} do
+      {session, _pid, harness} = idle(core)
+      send(harness, {:batch, [{:event, "p1", :program_turn}]})
+      collect_until(:turn_start)
+
+      :ok = Session.steer(session, "more")
+      assert_receive {:conn, :steer, ^harness, {:steer, "p1", _steer_id, "more"}}
+      :ok = Session.abort(session)
+      assert_receive {:conn, :interrupt, ^harness, {:interrupt, "p1"}}
+      assert Process.alive?(harness)
+    end
+
+    test "during a turn is dropped with its events", %{core: core} do
+      {session, _pid, _hands} = start(core, "hang")
+      :ok = Session.prompt(session, "one")
+      assert_receive {:conn, :turn, harness, {:turn, turn_id, _}}
+
+      events = [{:event, "p1", :program_turn}, {:event, "p1", {:text_delta, "bg"}}]
+      send(harness, {:batch, events ++ [{:event, "p1", @done}]})
+      send(harness, {:finish, turn_id})
+      events = collect_until(:agent_end)
+
+      assert Enum.all?(events, &(&1.turn_id == turn_id))
+      assert final_text(events) == "so far"
+    end
+
+    test "with a turn id that is not a harness id stops the harness process", %{core: core} do
+      {_session, _pid, harness} = idle(core)
+      ref = Process.monitor(harness)
+      send(harness, {:batch, [{:event, "", :program_turn}]})
+      assert_receive {:DOWN, ^ref, :process, _, _}
+    end
+  end
+
   describe "idle close" do
     test "after the idle time with no turn it closes the program; the next turn starts a new one",
          %{core: core} do

@@ -45,6 +45,14 @@ defmodule Helyx.Provider.ClaudeCode do
   `init.capabilities`: without it, the provider stops the program with an
   error at a `result` before the start of the turn's line.
 
+  A program turn is a turn that the program starts by itself, for example
+  when a background task ends. An `init` line with no Helyx turn starts
+  one: the provider makes a turn id and gives the event `:program_turn`,
+  then the turn's events and its terminal as for any turn. A steer and an
+  interrupt of it work as for any turn. A `{:turn, ...}` request while a
+  program turn runs replaces it: the program runs the new line after the
+  program turn, and the rest of the program turn is dropped.
+
   A steer is one more user line with a `uuid` of its own, written into the
   running turn; while a replay is held, it goes out after the turn's line.
   After the turn's terminal it answers `:rejected` and writes nothing. The
@@ -70,7 +78,10 @@ defmodule Helyx.Provider.ClaudeCode do
 
   A close is the end of input, then the exit. An exit at any other time
   stops the harness process. An idle close is a close when the program has
-  no background task, and answers `:busy` otherwise. The program sends the
+  no background task and no program turn, and answers `:busy` otherwise.
+  After a `task_notification` line, the next idle close also answers
+  `:busy`, once, because a program turn can follow it; an `init` ends that
+  wait. The program sends the
   full set of its live background tasks in a `system` line
   `background_tasks_changed` at each change; only a `tasks` list that is
   exactly empty counts as none, and a malformed line counts as a task until
@@ -123,7 +134,8 @@ defmodule Helyx.Provider.ClaudeCode do
     # `tools/call` requests, answered or not. `chunks` holds the replay
     # chunks not written yet: each goes out at the `result` of the
     # replayed user line that ends the chunk before it, and the last one
-    # ends with the turn's line, then any steers.
+    # ends with the turn's line, then any steers. `program?` marks a
+    # program turn (#240): its `id` and `uuid` are one new UUID.
     @enforce_keys [:id, :uuid, :messages]
     defstruct [
       :id,
@@ -137,6 +149,7 @@ defmodule Helyx.Provider.ClaudeCode do
       replay?: false,
       open?: false,
       calls?: false,
+      program?: false,
       usage: %{},
       used: MapSet.new()
     ]
@@ -160,6 +173,8 @@ defmodule Helyx.Provider.ClaudeCode do
     # `deadline` and `done?` are only for `Helyx.HarnessIO`, which writes
     # them; this module does not read them. `tasks` is the last set of
     # live background tasks, or `:unknown` after a malformed line.
+    # `notified?` is true from a `task_notification` line until the next
+    # `init` or `:busy` answer: a program turn can follow it (#240).
     # `tools` are the Helyx tool specs, and `calls` the open `tools/call`
     # requests by call id: `{turn_id, control request_id, JSON-RPC id}`.
     @enforce_keys [:exe, :model, :cwd]
@@ -182,6 +197,7 @@ defmodule Helyx.Provider.ClaudeCode do
       size: 0,
       init?: false,
       sent?: false,
+      notified?: false,
       done?: false
     ]
   end
@@ -234,12 +250,15 @@ defmodule Helyx.Provider.ClaudeCode do
     end
   end
 
+  # A program turn that the session did not open gives way: the program
+  # queues the turn's line after it, and drops its lines as before a start.
   @impl true
   def harness_request(
         {:turn, id, %Helyx.Context{messages: messages}},
         from,
-        %State{turn: nil} = state
-      ) do
+        %State{turn: turn} = state
+      )
+      when turn == nil or turn.program? do
     turn = %Turn{id: id, uuid: uuid(), messages: messages}
     {events, state} = write_turn(%{state | turn: turn})
     {:ok, [{:reply, from, :ok} | events], state}
@@ -299,10 +318,15 @@ defmodule Helyx.Provider.ClaudeCode do
     end
   end
 
-  def harness_request(:idle_close, from, %State{tasks: []} = state),
+  def harness_request(:idle_close, from, %State{tasks: [], notified?: false, turn: nil} = state),
     do: harness_request(:close, from, state)
 
-  def harness_request(:idle_close, from, state), do: {:ok, [{:reply, from, :busy}], state}
+  # A program turn starts 100 to 150 ms after the `task_notification`, with
+  # `tasks` already empty (research note): one `:busy` waits for it. A
+  # program turn that runs, which the session did not open, also keeps the
+  # program: the session is idle, so no Helyx turn is open here.
+  def harness_request(:idle_close, from, state),
+    do: {:ok, [{:reply, from, :busy}], %{state | notified?: false}}
 
   def harness_request(:close, from, state) do
     HarnessIO.write(state, <<0>>)
@@ -478,13 +502,30 @@ defmodule Helyx.Provider.ClaudeCode do
     {[], %{state | tasks: tasks}}
   end
 
+  defp translate(%{"type" => "system", "subtype" => "task_notification"}, state),
+    do: {[], %{state | notified?: true}}
+
   # A sub-agent's own messages stay inside the harness.
   defp translate(%{"parent_tool_use_id" => parent}, state) when parent != nil, do: {[], state}
 
-  # Each query of the program repeats the init line.
+  # Each query of the program repeats the init line. An `init` with no
+  # Helyx turn starts a program turn (#240): every user line that Helyx
+  # writes belongs to a turn until its start, so the program started this
+  # query by itself. A program turn has no `command_lifecycle`, so it counts
+  # at once, and its `result` ends it as a turn's does.
   defp translate(%{"type" => "system", "subtype" => "init"} = init, state) do
     caps = if is_list(init["capabilities"]), do: init["capabilities"], else: []
-    resume_interrupt(%{state | init?: true, caps: caps})
+    state = %{state | init?: true, caps: caps, notified?: false}
+
+    case state.turn do
+      nil ->
+        id = uuid()
+        turn = %Turn{id: id, uuid: id, messages: nil, program?: true}
+        {[{:event, id, :program_turn}], %{state | turn: turn}}
+
+      _turn ->
+        resume_interrupt(state)
+    end
   end
 
   defp translate(

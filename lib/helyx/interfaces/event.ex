@@ -14,7 +14,8 @@ defmodule Helyx.Event do
   Types and their `data`:
 
     * `:agent_start` – `%{}`
-    * `:turn_start` – `%{}`
+    * `:turn_start` – `%{}`, or `%{origin: :program}` for a turn that a
+      connected provider's program started by itself, with no user message
     * `:message_start` – `%{message: Helyx.Message.t()}` (may be partial)
     * `:message_update` – `%{text_delta: binary}`, `%{thinking_delta: binary}`,
       or `%{tool_call: Helyx.Message.ToolCall.t()}`
