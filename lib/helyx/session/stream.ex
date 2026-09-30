@@ -17,9 +17,7 @@ defmodule Helyx.Session.Stream do
   # The reason of a rejected call (`Helyx.Provider`), and the reason Core
   # gives a call with an integer over the digit limit.
   @max_reason_bytes 1_024
-  # The text of a notice (`Helyx.Provider`), the bound of the bundled
-  # `HarnessIO.cap_error/1`.
-  @max_notice_bytes 2_000
+  @max_notice_bytes Helyx.Provider.max_notice_bytes()
   # The most messages that may wait in the session mailbox before a send.
   # A count, not bytes: every event is already capped.
   @max_session_queue 10_000

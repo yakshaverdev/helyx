@@ -24,8 +24,9 @@ defmodule Helyx.Session.File do
 
   # The decode of a file under @max_bytes can still grow the heap by 12 to 42
   # bytes per file byte (#64). The parse runs in its own process with this
-  # heap cap, so a hostile or corrupt file kills only that process. A real
-  # session near @max_bytes must still fit.
+  # heap cap, so a hostile or corrupt file kills only that process. At 12
+  # bytes per file byte a 64 MiB file fits (768 MiB); at 42 a file over
+  # about 24 MiB (1 GiB / 42) is rejected.
   @max_heap_bytes 1024 * 1024 * 1024
 
   # The floor of the heap cap option: the VM rejects a cap under the minimum

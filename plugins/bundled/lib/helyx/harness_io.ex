@@ -10,8 +10,9 @@ defmodule Helyx.HarnessIO do
   # and `closing`.
 
   @line_max_bytes 16 * 1024 * 1024
-  # The longest program error text that goes into a terminal error.
-  @error_max_bytes 2_000
+  # The longest program error text that goes into a terminal error or a
+  # notice: the notice bound of Core.
+  @error_max_bytes Helyx.Provider.max_notice_bytes()
   @replay_max_bytes 400_000
   # The TERM grace of the watchdog and the release: claude and codex end
   # their own commands on TERM, but a KILL leaves them running (research

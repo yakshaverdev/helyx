@@ -80,7 +80,7 @@ defmodule Helyx.Session do
   defstruct [:id, :core]
 
   # The timeout of each call of the contract but `abort/1`.
-  @call_timeout 5_000
+  @call_timeout_ms 5_000
 
   @type t :: %__MODULE__{id: String.t(), core: Helyx.Core.name()}
 
@@ -271,7 +271,7 @@ defmodule Helyx.Session do
     # the end signal belong to one process.
     with pid when is_pid(pid) <- pid(session),
          :ok <- join(core, registry, id, pid),
-         %Helyx.Session.Snapshot{} = snapshot <- call_pid(pid, {:snapshot}, @call_timeout) do
+         %Helyx.Session.Snapshot{} = snapshot <- call_pid(pid, {:snapshot}, @call_timeout_ms) do
       {:ok, snapshot}
     else
       nil -> not_found(core, id)
@@ -473,7 +473,7 @@ defmodule Helyx.Session do
   # asynchronously) or dies during the call. A timeout of a running session
   # still exits. A session that stopped with the reason `:timeout` gives the
   # same exit, so the timeout clause checks that the process still lives.
-  defp call(session, request, timeout \\ @call_timeout) do
+  defp call(session, request, timeout \\ @call_timeout_ms) do
     case pid(session) do
       nil -> {:error, :session_not_found}
       pid -> call_pid(pid, request, timeout)

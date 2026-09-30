@@ -20,7 +20,10 @@ defmodule Helyx.Session.Harness do
   alias Helyx.Session.Stream
 
   # The most requests without a reply (`docs/features/long-lived-harness.md`,
-  # "Bounds").
+  # "Bounds"). One pool, no reserved slots: a turn waits for its `:ok`, an
+  # interrupt, a close (only with no turn), and the open steers share it.
+  # The steer queue holds 32 (`Helyx.Session.Queues`), so steers can fill
+  # all 8; a request over the pool gets `{:error, :busy}`.
   @max_open 8
   # The Helyx tool requests of one turn: one runs, and at most 16 wait.
   @max_tools 17
