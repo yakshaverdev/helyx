@@ -14,7 +14,7 @@ defmodule Helyx.Provider.ClaudeCodeTest do
 
   import Helyx.Test.OSHelpers
 
-  alias Helyx.{Event, Message, Session}
+  alias Helyx.{Event, HarnessIO, Message, Session}
   alias Helyx.Provider.{ClaudeCode, Fake}
 
   @sid "4b3c2d1e-0000-4000-8000-000000000001"
@@ -544,15 +544,41 @@ defmodule Helyx.Provider.ClaudeCodeTest do
              %{"message" => %{"content" => [%{"text" => "and now?"}]}}
            ] = stdin(bin, 1)
 
+    id = HarnessIO.wire_id("call:1")
+    assert "h_" <> _ = id
+
     assert use == %{
              "type" => "tool_use",
-             "id" => "call_1",
+             "id" => id,
              "name" => "read",
              "input" => %{"path" => "a"}
            }
 
-    assert %{"type" => "tool_result", "tool_use_id" => "call_1", "is_error" => true} = result
+    assert %{"type" => "tool_result", "tool_use_id" => ^id, "is_error" => true} = result
     assert [%{lost: false, cut: 0}] = of_type(events, :harness_session)
+  end
+
+  # 4.2 of the simplification review: a replace of each character outside
+  # `[a-zA-Z0-9_-]` gave `a.b` and `a:b` the one id `a_b`.
+  test "two replayed calls whose ids differ only in other characters keep their own results",
+       %{bin: bin} = ctx do
+    calls = for id <- ["a.b", "a:b"], do: %Message.ToolCall{id: id, name: "read", arguments: %{}}
+    :ok = Fake.script(ctx.core, "m", [calls, ["Read them."]])
+    turn(bin, 1, 1, reply("Done."))
+
+    session = start(ctx, "fake/m")
+    prompt(session, "read")
+    :ok = Session.set_model(session, "claude-code/haiku")
+    prompt(session, "and now?")
+
+    [_prompt, %{"message" => %{"content" => uses}}, %{"message" => %{"content" => results}} | _] =
+      stdin(bin, 1)
+
+    use_ids = for %{"type" => "tool_use", "id" => id} <- uses, do: id
+    result_ids = for %{"type" => "tool_result", "tool_use_id" => id} <- results, do: id
+    assert ["h_" <> _, "h_" <> _] = use_ids
+    assert Enum.uniq(use_ids) == use_ids
+    assert result_ids == use_ids
   end
 
   # Gives messages to `harness_info/2` until `done?` holds for the state.

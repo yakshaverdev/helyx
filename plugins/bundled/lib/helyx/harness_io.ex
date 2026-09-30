@@ -2,18 +2,24 @@ defmodule Helyx.HarnessIO do
   @moduledoc false
   # What the harness providers share (ADR 0005): every call into
   # `Helyx.Watchdog`, the move of the port's link to a keeper, the read
-  # of a program's stdout as JSON lines under a line cap, the cut of
-  # program error text, the split of the prompt from the history, and the
-  # byte cap of a replay. It is not a plugin. `state` is a provider's run
-  # state with the fields `port`, `buffer` (iodata), `size`, and
-  # `terminal`.
+  # of a program's stdout as JSON lines under a line cap, the sort of a
+  # port message, the release, the cut of program error text, the split of
+  # the prompt from the history, the byte cap of a replay, and the wire id
+  # of a replayed tool call. It is not a plugin. `state` is a provider's run
+  # state with the fields `port`, `buffer` (iodata), `size`, `terminal`,
+  # and `closing`.
 
   @line_max_bytes 16 * 1024 * 1024
   # The longest program error text that goes into a terminal error.
   @error_max_bytes 2_000
   @replay_max_bytes 400_000
+  # The TERM grace of the watchdog and the release: claude and codex end
+  # their own commands on TERM, but a KILL leaves them running (research
+  # notes).
+  @term_grace_ms 5_000
 
   def line_max_bytes, do: @line_max_bytes
+  def term_grace_ms, do: @term_grace_ms
   def replay_max_bytes, do: @replay_max_bytes
 
   # The lookup of the harness program, with the check for perl: the
@@ -42,6 +48,14 @@ defmodule Helyx.HarnessIO do
       {:failed, text} ->
         %{state | terminal: {:error, {:not_started, cap_error(text)}}}
     end
+  end
+
+  # Runs `exe` with `args` under the watchdog, with open input and stderr
+  # dropped, and moves the port's link to a keeper (`keep_port/1`).
+  def launch(exe, args, cwd, state) do
+    ["/bin/sh", "-c", ~S(exec "$0" "$@" 2>/dev/null), exe | args]
+    |> start(cwd, :open, state, grace_ms: @term_grace_ms)
+    |> keep_port()
   end
 
   # Moves the caller's link to the port to a keeper process, and monitors
@@ -87,8 +101,38 @@ defmodule Helyx.HarnessIO do
   # Writes to the program's stdin through the watchdog.
   def write(%{port: port}, data), do: Helyx.Watchdog.write(port, data)
 
-  # The provider's `release/3`. See `Helyx.Watchdog.Group`.
-  defdelegate release(handles, mode, deadline, opts \\ []), to: Helyx.Watchdog.Group
+  # The provider's `release/3`. See `Helyx.Watchdog.Group`. A delivery
+  # TERMs first too: the harness process can end (an error answer, a line
+  # over the cap, a stop) while the program still runs a command, and a
+  # KILL would leave the command running.
+  def release(handles, :deliver, deadline), do: release(handles, :cancel, deadline)
+
+  def release(handles, mode, deadline),
+    do: Helyx.Watchdog.Group.release(handles, mode, deadline, grace_ms: @term_grace_ms)
+
+  # Sorts a message for the harness process: a chunk of the port's stdout
+  # gives `{:lines, events, state}` (see `lines/3`). The port's exit gives
+  # `{:closed, from}` during a close, the end the close waits for, and
+  # `{:exit, status_or_reason}` at any other time. A write to a watchdog
+  # that died closes the port with `:epipe` and no exit status (#167), so
+  # the port's `:DOWN` is an exit too. Any other message, such as one of a
+  # closed port, is `:other`. `state.closing` is the `from` of a close, or
+  # nil.
+  def port_message({port, {:data, data}}, %{port: port} = state, decode) do
+    {events, state} = lines(data, state, decode)
+    {:lines, events, state}
+  end
+
+  def port_message({port, {:exit_status, status}}, %{port: port} = state, _decode),
+    do: exited(status, state)
+
+  def port_message({:DOWN, _ref, :port, port, reason}, %{port: port} = state, _decode),
+    do: exited(reason, state)
+
+  def port_message(_message, _state, _decode), do: :other
+
+  defp exited(status, %{closing: nil}), do: {:exit, status}
+  defp exited(_status, %{closing: from}), do: {:closed, from}
 
   # Reads a chunk of stdout: `decode` gets each complete line that is a
   # JSON object, and the state; other lines (the watchdog's start line,
@@ -156,4 +200,18 @@ defmodule Helyx.HarnessIO do
     {for({data, _n, _start?} <- kept, data, do: data),
      total - Enum.sum(for {_, n, _} <- kept, do: n)}
   end
+
+  # The model APIs take a tool call id of `[a-zA-Z0-9_-]`, at most 64
+  # characters; another provider's id can be longer or have other
+  # characters. Such an id becomes a digest, the same for a call and its
+  # result, so two ids stay two.
+  def wire_id(id) do
+    if id =~ ~r/\A[a-zA-Z0-9_-]{1,64}\z/,
+      do: id,
+      else: "h_" <> hex_digest(id, 62)
+  end
+
+  # The first `size` hex digits of the SHA-256 of `data`.
+  def hex_digest(data, size),
+    do: binary_part(Base.encode16(:crypto.hash(:sha256, data), case: :lower), 0, size)
 end

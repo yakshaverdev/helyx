@@ -1,6 +1,4 @@
 defmodule Helyx.Provider.Codex do
-  # The TERM grace of the release: codex ends its commands itself on TERM.
-  @term_grace_ms 5_000
   # The most events held at once (see `in_order/2`).
   @held_max 10_000
 
@@ -131,7 +129,7 @@ defmodule Helyx.Provider.Codex do
     # the turn id is known or while an earlier `turn/interrupt` answer is
     # due, `{:sent, from}` after `turn/interrupt`),
     # `due` maps the id of each request without an answer to its method,
-    # `next_id` is the id of the next request, `close` the close without an
+    # `next_id` is the id of the next request, `closing` the close without an
     # answer, `prompt` the prompt of a turn whose `turn/start`
     # waits for an answer in `due`, and `out` the actions to return,
     # newest first.
@@ -167,7 +165,7 @@ defmodule Helyx.Provider.Codex do
       :turn,
       :from,
       :interrupt,
-      :close,
+      :closing,
       :prompt,
       tools: %Tools{},
       fresh?: false,
@@ -237,13 +235,8 @@ defmodule Helyx.Provider.Codex do
   @impl true
   def turn, do: :external
 
-  # A delivery TERMs first too: the harness process can end (a line over
-  # the cap, a stop) while codex still runs a command.
   @impl true
-  def release(handles, :deliver, deadline), do: release(handles, :cancel, deadline)
-
-  def release(handles, mode, deadline),
-    do: HarnessIO.release(handles, mode, deadline, grace_ms: @term_grace_ms)
+  defdelegate release(handles, mode, deadline), to: HarnessIO
 
   # The session calls the harness callbacks of a connected provider, never
   # this one.
@@ -260,15 +253,9 @@ defmodule Helyx.Provider.Codex do
         resume: resumable(opts[:harness_session_id], tools)
       }
 
-      argv = ["/bin/sh", "-c", ~S(exec "$0" "$@" 2>/dev/null), exe, "app-server"]
-
-      case HarnessIO.start(argv, state.cwd, :open, state, grace_ms: @term_grace_ms) do
-        %State{terminal: {:error, reason}} ->
-          {:error, reason}
-
-        state ->
-          state = HarnessIO.keep_port(state)
-          handshake(request(state, "initialize", initialize_params(tools)))
+      case HarnessIO.launch(exe, ["app-server"], state.cwd, state) do
+        %State{terminal: {:error, reason}} -> {:error, reason}
+        state -> handshake(request(state, "initialize", initialize_params(tools)))
       end
     end
   end
@@ -292,11 +279,7 @@ defmodule Helyx.Provider.Codex do
 
   defp digest([]), do: nil
 
-  defp digest(tools), do: hex_digest(JSON.encode!(specs(tools)), @digest_hex)
-
-  # The first `size` hex digits of the SHA-256 of `data`.
-  defp hex_digest(data, size),
-    do: binary_part(Base.encode16(:crypto.hash(:sha256, data), case: :lower), 0, size)
+  defp digest(tools), do: HarnessIO.hex_digest(JSON.encode!(specs(tools)), @digest_hex)
 
   defp specs(tools) do
     for tool <- tools,
@@ -312,21 +295,21 @@ defmodule Helyx.Provider.Codex do
   defp session_id(%State{thread: thread, tools: tools}), do: thread <> "#" <> digest(tools.specs)
 
   # Reads the program's lines until the thread is ready. The connect kill
-  # of Core bounds the wait.
+  # of Core bounds the wait. Only the port's messages are taken: any
+  # other stays for the harness loop.
   defp handshake(%State{port: port} = state) do
-    receive do
-      {^port, {:data, data}} ->
-        case HarnessIO.lines(data, state, &in_order/2) do
-          {_, %State{terminal: {:error, reason}}} -> {:error, reason}
-          {_, %State{thread: nil} = state} -> handshake(state)
-          {_, state} -> {:ok, state}
-        end
+    message =
+      receive do
+        {^port, _} = message -> message
+        {:DOWN, _ref, :port, ^port, _reason} = message -> message
+      end
 
-      {^port, {:exit_status, status}} ->
-        {:error, {:codex_exit, status}}
-
-      {:DOWN, _ref, :port, ^port, reason} ->
-        {:error, {:codex_exit, reason}}
+    case HarnessIO.port_message(message, state, &in_order/2) do
+      {:lines, _, %State{terminal: {:error, reason}}} -> {:error, reason}
+      {:lines, _, %State{thread: nil} = state} -> handshake(state)
+      {:lines, _, state} -> {:ok, state}
+      {:exit, status} -> {:error, {:codex_exit, status}}
+      :other -> handshake(state)
     end
   end
 
@@ -413,28 +396,19 @@ defmodule Helyx.Provider.Codex do
 
   def harness_request(:close, from, state) do
     HarnessIO.write(state, <<0>>)
-    actions(%{state | close: from})
+    actions(%{state | closing: from})
   end
 
   @impl true
-  def harness_info({port, {:data, data}}, %State{port: port} = state) do
-    case HarnessIO.lines(data, state, &in_order/2) do
-      {_, %State{terminal: {:error, reason}} = state} -> {:stop, reason, state}
-      {_, state} -> actions(state)
+  def harness_info(message, state) do
+    case HarnessIO.port_message(message, state, &in_order/2) do
+      {:lines, _, %State{terminal: {:error, reason}} = state} -> {:stop, reason, state}
+      {:lines, _, state} -> actions(state)
+      {:closed, from} -> actions(reply(state, from, :ok))
+      {:exit, status} -> {:stop, {:codex_exit, status}, state}
+      :other -> actions(state)
     end
   end
-
-  def harness_info({port, {:exit_status, _status}}, %State{port: port, close: from} = state)
-      when from != nil,
-      do: actions(reply(state, from, :ok))
-
-  def harness_info({port, {:exit_status, status}}, %State{port: port} = state),
-    do: {:stop, {:codex_exit, status}, state}
-
-  def harness_info({:DOWN, _ref, :port, port, reason}, %State{port: port} = state),
-    do: {:stop, {:codex_exit, reason}, state}
-
-  def harness_info(_message, state), do: actions(state)
 
   defp actions(state), do: {:ok, Enum.reverse(state.out), %{state | out: []}}
 
@@ -1139,7 +1113,7 @@ defmodule Helyx.Provider.Codex do
     [
       item(%{
         type: "function_call_output",
-        call_id: call_id(message.tool_call_id),
+        call_id: HarnessIO.wire_id(message.tool_call_id),
         output: Message.text(message)
       })
     ]
@@ -1158,7 +1132,7 @@ defmodule Helyx.Provider.Codex do
   defp block_item(:assistant, %Message.ToolCall{} = call) do
     %{
       type: "function_call",
-      call_id: call_id(call.id),
+      call_id: HarnessIO.wire_id(call.id),
       name: tool_name(call.name),
       arguments: JSON.encode!(call.arguments)
     }
@@ -1168,15 +1142,6 @@ defmodule Helyx.Provider.Codex do
 
   # Each item is encoded once, so the cap counts its bytes.
   defp item(map), do: JSON.encode!(map)
-
-  # The model API takes a call id of at most 64 characters; a longer id,
-  # or one with a character outside `[a-zA-Z0-9_-]`, becomes a digest, the
-  # same for a call and its result.
-  defp call_id(id) do
-    if id =~ ~r/\A[a-zA-Z0-9_-]{1,64}\z/,
-      do: id,
-      else: "h_" <> hex_digest(id, 62)
-  end
 
   # The model API takes a tool name of `[a-zA-Z0-9_-]` only; the cut at 64
   # is the function name limit of the Chat Completions API, not verified for

@@ -1,7 +1,4 @@
 defmodule Helyx.Provider.ClaudeCode do
-  # The TERM grace of the watchdog and the release: claude ends its own
-  # commands on TERM, but a KILL leaves them running (research note).
-  @term_grace_ms 5_000
   # The wait for the start of an unresolved steer after a `result` that
   # could not end the turn (`docs/features/long-lived-harness.md`,
   # "Bounds"). Observed: 0 to 10 ms.
@@ -22,9 +19,9 @@ defmodule Helyx.Provider.ClaudeCode do
   The harness process holds its groups with `Helyx.Tool.hold/1`, and the
   hands release them through `release/3` (ADR 0004). The watchdog, when
   the port closes, and every release TERM the program's group and wait up
-  to #{@term_grace_ms} ms for it to go before the KILL. The program runs
-  with `--permission-mode bypassPermissions`, the same trust as the bash
-  tool, and uses its own tools. The Helyx tools are an SDK MCP server
+  to #{HarnessIO.term_grace_ms()} ms for it to go before the KILL. The
+  program runs with `--permission-mode bypassPermissions`, the same
+  trust as the bash tool, and uses its own tools. The Helyx tools are an SDK MCP server
   named `helyx` next to them: the program sends its MCP messages in
   `mcp_message` control requests, and the model sees each tool as
   `mcp__helyx__<name>`. A `tools/call` whose `_meta["claudecode/toolUseId"]`
@@ -213,14 +210,8 @@ defmodule Helyx.Provider.ClaudeCode do
   @impl true
   def turn, do: :external
 
-  # A delivery TERMs first too: the harness process ends normally after a
-  # stop (an error answer, a line over the cap) while claude still runs a
-  # command, and a KILL would leave the command running.
   @impl true
-  def release(handles, :deliver, deadline), do: release(handles, :cancel, deadline)
-
-  def release(handles, mode, deadline),
-    do: HarnessIO.release(handles, mode, deadline, grace_ms: @term_grace_ms)
+  defdelegate release(handles, mode, deadline), to: HarnessIO
 
   # The session calls `stream/3` only for a provider that is not
   # connected.
@@ -331,39 +322,34 @@ defmodule Helyx.Provider.ClaudeCode do
     {:ok, [], %{state | closing: from}}
   end
 
-  @impl true
-  def harness_info({port, {:data, data}}, %State{port: port} = state) do
-    {actions, state} = HarnessIO.lines(data, state, &translate/2)
-
-    case state.terminal do
-      nil -> {:ok, actions, state}
-      # A close waits for the lost program's exit, which answers it.
-      :lost when state.closing != nil -> {:ok, actions, state}
-      :lost -> relaunch(actions, state)
-      {:error, reason} -> {:stop, reason, state}
-    end
-  end
-
-  # A write to a watchdog that died closes the port with `:epipe` and no
-  # exit status (#167), so the port's `:DOWN` is an exit too.
-  def harness_info({port, {:exit_status, status}}, %State{port: port} = state),
-    do: exited(status, state)
-
-  def harness_info({:DOWN, _ref, :port, port, reason}, %State{port: port} = state),
-    do: exited(reason, state)
-
   # Helyx does not know whether the program will start the steer, so the
   # program stops.
+  @impl true
   def harness_info({:timeout, ref, :steer_wait}, %State{turn: %Turn{wait: ref}} = state),
     do: {:stop, :steer_not_started, state}
 
-  # A message of a closed port, such as the port of a lost session.
-  def harness_info(_message, state), do: {:ok, [], state}
+  def harness_info(message, state) do
+    case HarnessIO.port_message(message, state, &translate/2) do
+      {:lines, actions, state} ->
+        read(actions, state)
 
-  defp exited(_status, %State{closing: from} = state) when from != nil,
-    do: {:ok, [{:reply, from, :ok}], %{state | port: nil}}
+      {:closed, from} ->
+        {:ok, [{:reply, from, :ok}], %{state | port: nil}}
 
-  defp exited(status, state), do: {:stop, {:claude_code_exit, status}, state}
+      {:exit, status} ->
+        {:stop, {:claude_code_exit, status}, state}
+
+      # A message of a closed port, such as the port of a lost session.
+      :other ->
+        {:ok, [], state}
+    end
+  end
+
+  defp read(actions, %State{terminal: nil} = state), do: {:ok, actions, state}
+  # A close waits for the lost program's exit, which answers it.
+  defp read(actions, %State{terminal: :lost, closing: nil} = state), do: relaunch(actions, state)
+  defp read(actions, %State{terminal: :lost} = state), do: {:ok, actions, state}
+  defp read(_actions, %State{terminal: {:error, reason}} = state), do: {:stop, reason, state}
 
   # `--model=`, `--resume=`, and `--session-id=` keep a value that starts
   # with a dash a value.
@@ -376,11 +362,7 @@ defmodule Helyx.Provider.ClaudeCode do
          --input-format stream-json --permission-mode bypassPermissions) ++
         ["--model=" <> state.model, session, "--mcp-config", @mcp_config]
 
-    argv = ["/bin/sh", "-c", ~S(exec "$0" "$@" 2>/dev/null), state.exe | flags]
-
-    argv
-    |> HarnessIO.start(state.cwd, :open, %{state | session_id: id}, grace_ms: @term_grace_ms)
-    |> HarnessIO.keep_port()
+    HarnessIO.launch(state.exe, flags, state.cwd, %{state | session_id: id})
   end
 
   # The program of a lost session exits by itself, with nothing run
@@ -978,7 +960,12 @@ defmodule Helyx.Provider.ClaudeCode do
   defp assistant_block(%Message.Text{text: text}) when text != "", do: %{type: "text", text: text}
 
   defp assistant_block(%Message.ToolCall{} = call),
-    do: %{type: "tool_use", id: tool_id(call.id), name: call.name, input: call.arguments}
+    do: %{
+      type: "tool_use",
+      id: HarnessIO.wire_id(call.id),
+      name: call.name,
+      input: call.arguments
+    }
 
   defp assistant_block(_block), do: nil
 
@@ -995,7 +982,7 @@ defmodule Helyx.Provider.ClaudeCode do
     [
       %{
         type: "tool_result",
-        tool_use_id: tool_id(message.tool_call_id),
+        tool_use_id: HarnessIO.wire_id(message.tool_call_id),
         content: Message.text(message),
         is_error: message.is_error
       }
@@ -1005,10 +992,6 @@ defmodule Helyx.Provider.ClaudeCode do
   defp user_content(%Message{content: blocks}) do
     for %Message.Text{text: text} <- blocks, text != "", do: %{type: "text", text: text}
   end
-
-  # The Messages API takes tool ids of `[a-zA-Z0-9_-]` only; another
-  # provider's id can have other characters.
-  defp tool_id(id), do: String.replace(id, ~r/[^a-zA-Z0-9_-]/, "_")
 
   defp line(map), do: [JSON.encode!(map), "\n"]
 
