@@ -23,3 +23,20 @@ Bounds sensor: `bounds sensor skipped: TYPESAFE_API_KEY is not set`.
 | Codex | approve, no material findings | none |
 
 No reproduced defect: the loop ends after round 1. The fixes changed only tests and Markdown.
+
+## Codex round 2 (coordinator, after the rebase on #246)
+
+| Axis | Finding | Resolution |
+| --- | --- | --- |
+| Codex | a program turn's error `result` (`origin.kind` `task-notification`) after a held success overwrote `held`, so the steer start sent "the turn before the steer failed" for a turn that succeeded | fixed: `held/2` keeps `turn.held` for a program turn's `result`. Tests: "a program turn's error result after a held success gives no notice" and "a program turn's success result keeps a held error"; both fail without the fix |
+
+## Round 2 (reduced, by the coordinator's order)
+
+The fix changes 14 lines of one code file, and `held/1` became `held/2`; by the arity rule this is a full round. The coordinator ordered a reduced round (spec and failure path). Invariant: only a `result` of a Helyx line can become the held error; a program turn's `result` never changes `held`.
+
+| Axis | Finding | Resolution |
+| --- | --- | --- |
+| Spec | none: the fix, the doc, and the tests match the research note "Program turns" | none |
+| Failure path | a program `result` with an `origin` other than exactly `{"kind": "task-notification"}` (another kind, a non-string kind, `null`) still counts as a Helyx `result` | accepted hole in the feature doc, with its reproduction: the research saw no such program `result` (roll-forward rule: a finding that needs a program behaviour the research did not see) |
+
+The loop ends after round 2.

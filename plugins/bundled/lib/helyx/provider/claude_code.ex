@@ -787,7 +787,7 @@ defmodule Helyx.Provider.ClaudeCode do
        )
        when map_size(steers) > 0 do
     wait = turn.wait || :erlang.start_timer(@steer_wait_ms, self(), :steer_wait)
-    {[], %{state | turn: %{turn | wait: wait, held: held(terminal(result, turn))}}}
+    {[], %{state | turn: %{turn | wait: wait, held: held(result, turn)}}}
   end
 
   # The session closes the open assistant message at the terminal.
@@ -823,8 +823,16 @@ defmodule Helyx.Provider.ClaudeCode do
     {:error, {:claude_code, HarnessIO.cap_error(result["subtype"]), HarnessIO.cap_error(text)}}
   end
 
-  defp held({:error, {:claude_code, subtype, text}}), do: subtype <> ": " <> text
-  defp held({:done, _}), do: nil
+  # Only a `result` of a Helyx line can be the held error: the `result` of
+  # a program turn (research note, "Program turns") keeps `held`.
+  defp held(%{"origin" => %{"kind" => "task-notification"}}, turn), do: turn.held
+
+  defp held(result, turn) do
+    case terminal(result, turn) do
+      {:error, {:claude_code, subtype, text}} -> subtype <> ": " <> text
+      {:done, _} -> nil
+    end
+  end
 
   defp held_notice(nil), do: []
 

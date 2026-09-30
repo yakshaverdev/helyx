@@ -872,6 +872,42 @@ defmodule Helyx.Provider.ClaudeCodeTest do
       assert byte_size(text) <= 2_000 and byte_size(text) > 1_990 and String.valid?(text)
     end
 
+    # A program turn's `result` never changes `held` (#241, Codex round 2).
+    defp program(line) do
+      origin = %{kind: "task-notification", producer: "session-task"}
+      j(Map.merge(JSON.decode!(line), %{"origin" => origin, "user_message_uuid" => nil}))
+    end
+
+    defp program_held_turn(bin, work, held, program_line) do
+      turn(bin, 1, 1, begin() ++ [delta("a")])
+
+      turn(bin, 1, 2, [
+        held,
+        program_line,
+        lifecycle("started"),
+        delta("b"),
+        result("b")
+      ])
+
+      {_from, _actions, state} = steer(streaming(work))
+      {actions, _state} = pump(state, [], &ended?/1)
+      events_of(actions)
+    end
+
+    test "a program turn's error result after a held success gives no notice",
+         %{bin: bin, work: work} do
+      events = program_held_turn(bin, work, result("a"), program(failed(["late"])))
+      refute Enum.any?(events, &match?({:notice, _}, &1))
+      assert {:user_message, "s1", "more"} in events
+    end
+
+    test "a program turn's success result keeps a held error", %{bin: bin, work: work} do
+      events = program_held_turn(bin, work, failed(["boom"]), program(result("p")))
+
+      assert [{:notice, "the turn before the steer failed: error_during_execution: boom"}] =
+               for({:notice, _} = notice <- events, do: notice)
+    end
+
     test "a success result held for the steer gives no notice", %{bin: bin, work: work} do
       refute Enum.any?(held_turn(bin, work, result("a")), &match?({:notice, _}, &1))
     end
