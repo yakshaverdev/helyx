@@ -436,12 +436,6 @@ defmodule Helyx.Session do
     end
   end
 
-  @doc "The session's current model ref, as a `provider/model` string."
-  @spec model(t()) :: String.t()
-  def model(%__MODULE__{id: id, core: core}) do
-    GenServer.call(Server.via(core, id), :model)
-  end
-
   @doc """
   Switches the session's model. The ref is parsed and its provider resolved
   like the `:model` of `start/2`. Each error is a `t:model_error/0`, and the

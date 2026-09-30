@@ -50,7 +50,7 @@ defmodule Helyx.Session.Hands do
 
   `connect/3` starts the harness process of a connected provider (ADR
   0007), and `prepare/3` the prepare Task of a connected turn. Both get a
-  kill armed at the OTP timer server when they start (`:timer.kill_after/2`):
+  kill armed at the OTP timer server as their first act (`:timer.kill_after/1`):
   30,000 ms for the connect and 10,000 ms for the prepare. Their Core
   code cancels it, so no timer of the hands enforces the bound. The harness
   process has no turn: a cancel request leaves it. When it ends, the hands
@@ -355,19 +355,13 @@ defmodule Helyx.Session.Hands do
     {task.pid, %{state | tasks: Map.put(state.tasks, task.ref, {task, turn_id, id, module})}}
   end
 
-  # A Task whose kill is armed at the OTP timer server as it starts. `fun`
-  # gets the timer ref first, before any plugin code runs.
+  # A Task whose kill is armed at the OTP timer server as its first act.
+  # `fun` gets the timer ref, before any plugin code runs.
   defp spawn_armed(state, turn_id, id, module, ms, fun) do
-    {pid, state} =
-      spawn_task(state, turn_id, id, module, fn ->
-        receive do
-          {:helyx_kill, tref} -> fun.(tref)
-        end
-      end)
-
-    {:ok, tref} = :timer.kill_after(ms, pid)
-    send(pid, {:helyx_kill, tref})
-    {pid, state}
+    spawn_task(state, turn_id, id, module, fn ->
+      {:ok, tref} = :timer.kill_after(ms)
+      fun.(tref)
+    end)
   end
 
   defp refuse(state, turn_id, id) do

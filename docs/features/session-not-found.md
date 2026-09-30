@@ -46,8 +46,6 @@ Accepted hole: after a failed subscribe, an event can stay in the caller's mailb
 
 A text that is not UTF-8 still returns `{:error, :invalid_utf8}` before the call, and a model ref that does not resolve still returns its model error before the call. So these errors win over `:session_not_found`.
 
-`model/1` is not in the contract (ADR 0006, section 2) and keeps its exit.
-
 ### Start errors for a client
 
 The mapping lives in one public function of `Helyx.Session`, so every transport uses the same one:
