@@ -882,6 +882,50 @@ defmodule Helyx.Provider.ClaudeCodeTest do
              events_of(run_direct([Message.user("hi")], work))
   end
 
+  # A program turn: the program starts a turn by itself when a background
+  # task ends. It has no `command_lifecycle`, and its `result` has `origin`
+  # and a null `user_message_uuid` (research note, "Program turns").
+  defp program_result(text) do
+    line = JSON.decode!(result(text))
+    origin = %{kind: "task-notification", producer: "session-task"}
+    j(Map.merge(line, %{"origin" => origin, "user_message_uuid" => nil}))
+  end
+
+  test "a prompt during a program turn gets its own answer, not the program's",
+       %{bin: bin, work: work} do
+    turn(bin, 1, 1, reply("first"))
+    # Observed order: the line is queued at once, the program turn ends,
+    # then the line starts as a turn of its own. The program turn's `init`
+    # came before the line; the tool call in it was not observed.
+    turn(bin, 1, 2, [
+      lifecycle("queued"),
+      init(),
+      delta("program"),
+      tool_use("p1", %{command: "ls"}),
+      call("n1", 1, "p1"),
+      tool_result("p1", "out"),
+      program_result("program"),
+      lifecycle("started"),
+      init(),
+      delta("mine"),
+      assistant(%{type: "text", text: "mine"}),
+      result("mine")
+    ])
+
+    {_from, actions, state} =
+      request(harness(work), {:turn, "t1", %Helyx.Context{messages: [Message.user("a")]}})
+
+    {_actions, state} = pump(state, actions, &ended?/1)
+    context = %Helyx.Context{messages: [Message.user("a"), Message.user("b")]}
+    {_from, actions, state} = request(state, {:turn, "t2", context})
+    {actions, state} = pump(state, actions, &ended?/1)
+
+    assert [{:text_delta, "mine"}, {:done, _}] = events_of(actions)
+    # A Helyx tool call of the program turn runs nothing.
+    :ok = closed(state)
+    assert %{"result" => %{"isError" => true}} = answers(bin, 1)["n1"]
+  end
+
   test "a result before the start of the turn's line after a replay does not end the turn",
        %{bin: bin, work: work} do
     turn(bin, 1, 1, [init(), replay_failed() | reply("ok")])
@@ -890,6 +934,16 @@ defmodule Helyx.Provider.ClaudeCodeTest do
 
     assert [{:harness_session, _id, 0}, {:text_delta, "ok"} | _] =
              events_of(run_direct(history, work))
+  end
+
+  test "a result before the start to a program without msg_lifecycle_v1 stops it",
+       %{bin: bin, work: work} do
+    caps = ["interrupt_receipt_v1", "interrupt_cancel_queued_v1"]
+    turn(bin, 1, 1, [init(caps), delta("program"), result("program")])
+
+    actions = run_direct([Message.user("hi")], work)
+    assert {:stop, :no_msg_lifecycle} = List.last(actions)
+    assert [{:harness_session, _id, 0}] = events_of(actions)
   end
 
   test "a replay to a program without msg_lifecycle_v1 stops it", %{bin: bin, work: work} do
@@ -1103,11 +1157,17 @@ defmodule Helyx.Provider.ClaudeCodeTest do
   test "a tool result over the limits arrives cut, with the notice", %{bin: bin, work: work} do
     big = String.duplicate("x\n", 3_000)
 
-    turn(bin, 1, 1, [
-      tool_use("toolu_01", %{"command" => "seq"}),
-      tool_result("toolu_01", big),
-      result("Done.", 2)
-    ])
+    turn(
+      bin,
+      1,
+      1,
+      begin() ++
+        [
+          tool_use("toolu_01", %{"command" => "seq"}),
+          tool_result("toolu_01", big),
+          result("Done.", 2)
+        ]
+    )
 
     assert [text] =
              for({:tool_result, "toolu_01", {:ok, t}} <- events_of(run_direct([], work)), do: t)
@@ -1267,7 +1327,7 @@ defmodule Helyx.Provider.ClaudeCodeTest do
           errors: [text]
         })
 
-      turn(bin, 1, 1, [init(), error])
+      turn(bin, 1, 1, begin() ++ [error])
 
       assert [_, {:error, {:claude_code, subtype, text}}] =
                events_of(run_direct([Message.user("hi")], work))

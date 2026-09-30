@@ -37,11 +37,13 @@ defmodule Helyx.Provider.ClaudeCode do
 
   A turn is one user line with a `uuid`. The turn ends at a `result` line
   with `queued_turn_count` 0. A positive count keeps it open, and any other
-  value stops the program with an error. After a replay, the provider skips each
-  `result` before the start of the turn's line. This needs
-  `msg_lifecycle_v1` in `init.capabilities`: without it, the provider
-  stops the program with an error at a `result` before the start of the
-  turn's line.
+  value stops the program with an error. The lines and the `result` of a
+  turn count only after the start of its line (`command_lifecycle`
+  `started`): the provider drops the lines before it, such as those of a
+  replay or of a turn that the program starts by itself, and a Helyx tool
+  call there gets an error. This needs `msg_lifecycle_v1` in
+  `init.capabilities`: without it, the provider stops the program with an
+  error at a `result` before the start of the turn's line.
 
   A steer is one more user line with a `uuid` of its own, written into the
   running turn; after the turn's terminal it answers `:rejected` and
@@ -94,12 +96,17 @@ defmodule Helyx.Provider.ClaudeCode do
 
   alias Helyx.Message
 
+  # The program started the turn's line (`command_lifecycle` `started`).
+  defguardp started?(turn) when turn.messages == nil
+
   defmodule Turn do
     @moduledoc false
     # The running turn. `uuid` is the `uuid` of its user line. `messages`
-    # is its transcript until the program started the line: a lost session
-    # sends it again to a fresh one. `replay?` is true from the write of a
-    # replay before its line until the program started the line.
+    # is its transcript until the program started the line, and nil after:
+    # a lost session sends it again to a fresh one. Only after the start do
+    # the turn's lines and its `result` count (`started?/1`). `replay?` is
+    # true from the write of a replay before its line until the program
+    # started the line.
     # `interrupt` is nil, or the pending `Interrupt`. `steers` holds each
     # written steer line that the program did not start yet, by its `uuid`:
     # `{steer_id, text}`. `wait` is set from a `result` that could not end
@@ -554,18 +561,12 @@ defmodule Helyx.Provider.ClaudeCode do
     {[], state}
   end
 
-  # After a replay, the provider skips each result until `started` of the
-  # turn's line. A result of the turn's own line before its `started` is
-  # skipped too. The skip needs the program to list `msg_lifecycle_v1` in
-  # an earlier `init` line; without it the provider stops the program,
-  # because `started` can fail to come. A resumed program never replays,
-  # so the result of a lost session does not come here.
-  defp translate(%{"type" => "result"}, %State{turn: %Turn{replay?: true}} = state) do
-    if "msg_lifecycle_v1" in (state.caps || []),
-      do: {[], state},
-      else: {[], %{state | terminal: {:error, :no_msg_lifecycle}}}
-  end
-
+  # A result before `started` of the turn's line is not the turn's: the
+  # result of a replayed line, of a program turn that the program started
+  # by itself, or of the turn's own line (#246). The skip needs the program
+  # to list `msg_lifecycle_v1` in an earlier `init` line; without it the
+  # provider stops the program, because `started` can fail to come. The
+  # result of a lost session comes before any `init` and before `started`.
   defp translate(%{"type" => "result"} = result, state) do
     cond do
       lost?(result, state) ->
@@ -574,12 +575,21 @@ defmodule Helyx.Provider.ClaudeCode do
       state.turn == nil ->
         {[], state}
 
-      true ->
+      started?(state.turn) ->
         turn_result(result, state)
+
+      "msg_lifecycle_v1" in (state.caps || []) ->
+        {[], state}
+
+      true ->
+        {[], %{state | terminal: {:error, :no_msg_lifecycle}}}
     end
   end
 
+  # The model lines before `started` of the turn's line belong to no Helyx
+  # turn, as between turns: a program turn has no `command_lifecycle`.
   defp translate(_object, %State{turn: nil} = state), do: {[], state}
+  defp translate(_object, %State{turn: turn} = state) when not started?(turn), do: {[], state}
 
   defp translate(
          %{
@@ -678,7 +688,8 @@ defmodule Helyx.Provider.ClaudeCode do
     params = message["params"]
 
     case {state.turn, tool_use_id(params)} do
-      {nil, _call_id} ->
+      # A program turn can run before `started` of the turn's line.
+      {turn, _call_id} when turn == nil or not started?(turn) ->
         tool_answer(state, request_id, id, :error, "no Helyx turn is running")
 
       {_turn, nil} ->
