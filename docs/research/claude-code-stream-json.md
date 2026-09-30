@@ -386,3 +386,29 @@ Runs on 2026-09-29 with version `2.1.284`, `--model haiku`, for ticket #203. A P
 - A `tools/call` with arguments, and many calls at once.
 - A successful result with `"isError":false` (source only: the probes sent only `isError` `true`). The MCP schema has `isError` as an optional boolean.
 - A JSON-RPC error `-32601` for an unknown method (source only: the program sent no unknown method in the probes).
+
+## The order of a replay (2026-09-30, #248)
+
+Runs on 2026-09-30 with version `2.1.284` and `--model=haiku`, for ticket #248. A Python script started the program with the flags of `Helyx.Provider.ClaudeCode` and `--strict-mcp-config`, in a new session and an empty temporary directory. The user's own hooks were active. The input was the replay form of the provider: `user` (`shouldQuery: false`, question one), `assistant` (answer one), `user` (`shouldQuery: false`, question two), `assistant` (answer two), then the prompt. The prompt asked the model to list the earlier messages in order, and to say which question came just before each answer. In runs 1 and 3, `ANTHROPIC_BASE_URL` named a local proxy. The proxy wrote the roles and texts of each request body to a log, and sent the request on to the API.
+
+- **Run 1** (proxy): the script wrote all five lines at once, as the provider does.
+- **Run 2** (no proxy): the same as run 1.
+- **Run 3** (proxy): the script wrote each `assistant` line only after the `result` of the replayed `user` line before it. It wrote question one; after its `result`, answer one and question two; after that `result`, answer two and the prompt.
+
+### The request of runs 1 and 3 (observed, 1 run each)
+
+- **Run 1: the request did not keep the input order.** Its `messages` were: `user` (the text of a `SessionStart` hook only), `assistant` (answer one), `assistant` (answer two), then one `user` message with the system reminders, question one, question two, and the prompt. The two answers were two `assistant` messages in sequence. The two questions and the prompt were blocks of one `user` message.
+- **Run 3: the request kept the input order.** Its `messages` were: `user` (system reminders, then question one), `assistant` (answer one), `user` (question two), `assistant` (answer two), `user` (system reminders, then the prompt).
+- Each run made one request to the model.
+
+### What the model said (observed, runs 1, 2, 3)
+
+- **Runs 1 and 2: the model saw the wrong order.** It listed both answers before the questions, and said that no question came before either answer.
+- **Run 3: the model saw the input order.** It listed question one, answer one, question two, answer two, and paired each answer with the question before it.
+- So the proxy did not cause the order of run 1. Run 2 had no proxy and gave the same answer.
+
+### Not run
+
+- A replay with a `tool_use` and its `tool_result`.
+- A replay that starts with an `assistant` line, or that has two `assistant` lines in sequence, with the wait of run 3.
+- A `--resume` of a session that has the wrong order.
