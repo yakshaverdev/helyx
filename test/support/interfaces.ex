@@ -823,6 +823,9 @@ defmodule Helyx.Test.Connected do
   #                      name, args}` asks for a Helyx tool, and `{:cancel,
   #                      turn_id, id}` withdraws it; `{:ping, pid}`
   #                      sends `:pong` to pid
+  #   "label"            "echo"; a harness process started with no
+  #                      `:harness_session_id` reports a new label on its
+  #                      first turn
   #
   # A steer answers :ok with no `user_message` unless the model says
   # otherwise; the "steer_" models are "hang" for a turn:
@@ -879,11 +882,17 @@ defmodule Helyx.Test.Connected do
     case model do
       "block_init" -> Process.sleep(:infinity)
       "fail_init" -> {:error, :no_program}
-      _ -> {:ok, %{model: model, ctl: ctl}}
+      _ -> {:ok, %{model: model, ctl: ctl, label: opts[:harness_session_id]}}
     end
   end
 
   @impl true
+  def harness_request({:turn, id, _} = request, from, %{model: "label", label: nil} = state) do
+    label = "h#{System.unique_integer([:positive])}"
+    {:ok, [reply | events], state} = harness_request(request, from, %{state | label: label})
+    {:ok, [reply, {:event, id, {:harness_session, label, 0}} | events], state}
+  end
+
   def harness_request(request, from, %{model: model, ctl: ctl} = state) do
     if ctl, do: send(ctl, {:conn, kind(request), self(), request})
 

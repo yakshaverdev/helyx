@@ -359,6 +359,46 @@ defmodule Helyx.Session.FileTest do
       assert resumed.model == "test/a"
     end
 
+    # #282: the other branch may have continued the harness session too.
+    test "a fork at or below a harness session label drops every label; a fork above keeps it",
+         %{tmp_dir: dir} do
+      start = fn n ->
+        {:ok, file} = Session.File.create(dir, "s#{n}", "/r#{n}", "claude-code/opus")
+
+        file
+        |> Session.File.append_harness_session("codex", "codex-1")
+        |> Session.File.append_message(Message.user("one"))
+      end
+
+      label = &Session.File.append_harness_session(&1, "claude-code", "h1")
+      user = &Session.File.append_message(&1, Message.user(&2))
+
+      labels = fn cwd ->
+        {:ok, resumed} = Session.File.resume(dir, cwd)
+        resumed.harness_sessions
+      end
+
+      # A fork below the label.
+      labelled = label.(start.(0))
+      user.(labelled, "a")
+      user.(labelled, "b")
+      assert labels.("/r0") == %{}
+
+      # A fork at the label: both children of the label entry hold it.
+      labelled = label.(start.(1))
+      user.(labelled, "a")
+      assert labels.("/r1") == %{"claude-code" => {"h1", 1}, "codex" => {"codex-1", 0}}
+      user.(labelled, "b")
+      assert labels.("/r1") == %{}
+
+      # A fork above the label: the other branch never had it. The codex
+      # label above the fork is dropped.
+      file = start.(2)
+      user.(file, "other")
+      file |> user.("mine") |> label.() |> user.("after")
+      assert labels.("/r2") == %{"claude-code" => {"h1", 2}}
+    end
+
     test "a session file of one writer resumes as one chain in file order", %{tmp_dir: dir} do
       # The lines a writer before #266 made: each parent_id is the line above.
       lines = [
