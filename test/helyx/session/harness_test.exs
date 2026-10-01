@@ -949,4 +949,68 @@ defmodule Helyx.Session.HarnessTest do
       end
     end
   end
+
+  # #282: two Cores that resumed one session continue one harness session.
+  # A fork below its label drops it, so a later resume of either branch
+  # starts a fresh harness session and gets the branch replayed.
+  describe "two Cores on one session file" do
+    @describetag :tmp_dir
+
+    # The registry entry frees after the process is gone; polls every
+    # 10 ms, for at most 5 s.
+    defp stop(session) do
+      GenServer.stop(Session.pid(session))
+      wait_free(Helyx.Core.sessions_registry(session.core), session.id, 500)
+    end
+
+    defp wait_free(registry, id, tries) when tries > 0 do
+      if Registry.lookup(registry, id) != [] do
+        Process.sleep(10)
+        wait_free(registry, id, tries - 1)
+      end
+    end
+
+    defp wait_free(_registry, _id, 0), do: flunk("the registry entry did not free")
+
+    defp label(events), do: Enum.find(events, &(&1.type == :harness_session)).data
+
+    defp init_label do
+      assert_receive {:conn, :init, _, {"label", _, opts}}
+      opts[:harness_session_id]
+    end
+
+    test "a resume of a branch with a fork below its label starts a fresh harness session",
+         %{core: core, tmp_dir: dir} do
+      other = :"core_#{System.unique_integer([:positive])}"
+      start_supervised!({Helyx.Core, name: other, plugins: [Connected]}, id: other)
+
+      {:ok, a} = Session.start(core, model: "conn/label", sessions_dir: dir)
+      {:ok, _} = Session.subscribe(a)
+      %{harness_session_id: first} = label(turn(a, "shared"))
+      assert init_label() == nil
+
+      # B continues the label too: the hole of two live Cores.
+      {:ok, b} = Session.resume(other, sessions_dir: dir)
+      {:ok, _} = Session.subscribe(b)
+      refute Enum.any?(turn(b, "b1"), &(&1.type == :harness_session))
+      turn(a, "a1")
+      stop(a)
+      stop(b)
+
+      # A wrote last, so its branch resumes, with a fork below the label.
+      {:ok, resumed} = Session.resume(core, sessions_dir: dir)
+      {:ok, _} = Session.subscribe(resumed)
+      events = turn(resumed, "a2")
+      assert init_label() == nil
+      assert %{harness_session_id: second, lost: false} = label(events)
+      assert second != first
+
+      # The new label has no fork below it, so the next resume continues it.
+      stop(resumed)
+      {:ok, resumed} = Session.resume(core, sessions_dir: dir)
+      {:ok, _} = Session.subscribe(resumed)
+      turn(resumed, "a3")
+      assert init_label() == second
+    end
+  end
 end

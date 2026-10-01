@@ -60,7 +60,9 @@ defmodule Helyx.Session.File do
     @moduledoc """
     What `resume/3` restores: the file, the session id, the model, the
     transcript, and the last harness session of each harness provider: its
-    id and the number of messages before its entry.
+    id and the number of messages before its entry. A fork of the file at
+    or below a harness session entry drops every label at or above the
+    fork, so each of those harnesses starts fresh (#282).
     """
     @enforce_keys [:file, :session_id, :model, :messages]
     defstruct [:file, :session_id, :model, :messages, harness_sessions: %{}]
@@ -130,7 +132,8 @@ defmodule Helyx.Session.File do
   when none of them has the working directory.
 
   The read and the decode run in their own process with a heap cap of
-  #{@max_heap_bytes} bytes, and so does the index of the entries by id. A
+  #{@max_heap_bytes} bytes, and so do the index of the entries by id and
+  the check for a fork below a harness session entry. A
   file whose decode passes the cap is rejected as `{:too_large, text}` and
   is not mutated. The transcript is copied to the caller once.
 
@@ -212,12 +215,15 @@ defmodule Helyx.Session.File do
          :ok <- check_size(repaired_size(byte_size(raw), tail), max_bytes),
          {:ok, leaf, branch} <- newest_branch(entries),
          :ok <- check_entries(branch) do
+      # `entries` is not used after this, so the decode does not keep it alive.
+      fork = last_fork(entries, branch)
+
       resumed = %Resumed{
         file: %__MODULE__{path: path, leaf: leaf},
         session_id: Path.basename(path, ".jsonl"),
         model: current_model(header, branch),
         messages: for(%{"type" => "message"} = entry <- branch, do: decode_message(entry)),
-        harness_sessions: harness_sessions(branch)
+        harness_sessions: harness_sessions(branch, fork)
       }
 
       {:ok, resumed, tail}
@@ -373,7 +379,7 @@ defmodule Helyx.Session.File do
   # string. Anything else on the branch is on-disk corruption, never
   # silently dropped, and never laundered by a later entry that overrides
   # it. An entry on no branch is never read, so its shape is not checked.
-  # The harness fields are an optional label: harness_sessions/1 drops a
+  # The harness fields are an optional label: harness_sessions/2 drops a
   # bad one. newest_branch/1 put on the branch only entries with a string
   # id.
   defp check_entries([%{"type" => "session", "model" => model} | rest]) when is_binary(model) do
@@ -463,27 +469,60 @@ defmodule Helyx.Session.File do
   # none, the provider starts a fresh harness session. A bad id removes the
   # label of its provider, so an earlier, stale label does not come back. An
   # entry with no usable provider removes every label, because the reader
-  # cannot know which one it replaced.
-  defp harness_sessions(entries) do
+  # cannot know which one it replaced. A fork at the branch entry with the
+  # id `fork` removes every label at or above it (#282): the other branch
+  # holds those labels too and may have continued their harness sessions.
+  defp harness_sessions(entries, fork) do
     {sessions, _count} =
-      Enum.reduce(entries, {%{}, 0}, fn
-        %{"type" => "message"}, {sessions, count} ->
-          {sessions, count + 1}
-
-        %{"type" => "harness_session", "provider" => provider} = entry, {sessions, count}
-        when is_binary(provider) ->
-          if Message.harness_id?(entry["harness_session_id"]),
-            do: {Map.put(sessions, provider, {entry["harness_session_id"], count}), count},
-            else: {Map.delete(sessions, provider), count}
-
-        %{"type" => "harness_session"}, {_sessions, count} ->
-          {%{}, count}
-
-        _entry, acc ->
-          acc
+      Enum.reduce(entries, {%{}, 0}, fn entry, acc ->
+        {sessions, count} = harness_entry(entry, acc)
+        if entry["id"] == fork, do: {%{}, count}, else: {sessions, count}
       end)
 
     sessions
+  end
+
+  defp harness_entry(%{"type" => "message"}, {sessions, count}), do: {sessions, count + 1}
+
+  defp harness_entry(
+         %{"type" => "harness_session", "provider" => provider} = entry,
+         {sessions, count}
+       )
+       when is_binary(provider) do
+    if Message.harness_id?(entry["harness_session_id"]),
+      do: {Map.put(sessions, provider, {entry["harness_session_id"], count}), count},
+      else: {Map.delete(sessions, provider), count}
+  end
+
+  defp harness_entry(%{"type" => "harness_session"}, {_sessions, count}), do: {%{}, count}
+  defp harness_entry(_entry, acc), do: acc
+
+  # The id of the last branch entry, from the first harness session entry
+  # down, that an entry of the file off the branch names as its parent, or
+  # nil. Every such entry counts, also one on no branch: a fork the reader
+  # cannot follow may still be another writer's work, and a wrong fork
+  # costs one replay. A branch with no harness session entry has no label
+  # to drop, so it builds nothing.
+  defp last_fork(entries, branch),
+    do: fork_in(entries, Enum.drop_while(branch, &(&1["type"] != "harness_session")))
+
+  defp fork_in(_entries, []), do: nil
+
+  # The branch child of a labelled entry is itself labelled, so an entry off
+  # the branch is one whose id is not among these.
+  defp fork_in(entries, labelled) do
+    ids = MapSet.new(labelled, & &1["id"])
+
+    forks =
+      for %{"parent_id" => parent} = entry <- entries,
+          MapSet.member?(ids, parent),
+          not MapSet.member?(ids, entry["id"]),
+          into: MapSet.new(),
+          do: parent
+
+    Enum.find_value(Enum.reverse(labelled), fn %{"id" => id} ->
+      if MapSet.member?(forks, id), do: id
+    end)
   end
 
   # The most recently started session whose header matches the working
