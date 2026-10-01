@@ -42,4 +42,4 @@ System change: the two-findings rule in the ship skill and in the checklist now 
 ## Next
 
 - Group 3 of the simplification review: the `harness_reply` kind change, then the Steers and Wait extraction from `Session.Server`. No tickets yet.
-- GitHub does not close an issue from "Closes #n" in a merged PR body: every issue of these runs, #269 too, was closed by hand. Step 5.4 of orchestrate already covers this.
+- GitHub closes an issue from "Closes #n" in a merged PR body: #282, #287 and #288 closed with no manual step, and #282 lists PR #290 as its closing PR. A closed event shows the account that merged as its actor, so the actor does not show a manual close.
