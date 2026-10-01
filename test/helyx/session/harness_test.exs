@@ -289,7 +289,9 @@ defmodule Helyx.Session.HarnessTest do
       :erlang.resume_process(pid)
 
       assert List.last(collect_until(:agent_end)).data.stop_reason == :end_turn
-      assert %{harness: nil, aborting: %{harness: ^old}} = :sys.get_state(pid)
+      # The session waits for the release: no turn, the follow-up still
+      # queued, and the session not blocked on the suspended hands.
+      assert %{turn: nil, queue: %{follow_ups: 1}} = GenServer.call(pid, :snapshot)
       refute_received {:conn, :init, _, _}
       :erlang.resume_process(hands)
 
@@ -310,7 +312,7 @@ defmodule Helyx.Session.HarnessTest do
       ref = Process.monitor(old)
       :erlang.suspend_process(hands)
       :ok = Session.prompt(session, "two")
-      assert %{turn: %{phase: :preparing}} = :sys.get_state(pid)
+      assert %{activity: %{phase: :preparing}} = :sys.get_state(pid)
       send(old, :stop)
       assert_receive {:DOWN, ^ref, :process, _, _}
       :erlang.resume_process(hands)
@@ -448,7 +450,7 @@ defmodule Helyx.Session.HarnessTest do
       assert_received {:conn, :turn, _harness, _zero}
       :erlang.suspend_process(hands)
       :ok = Session.prompt(session, "one")
-      assert %{turn: %{phase: :preparing}} = :sys.get_state(pid)
+      assert %{activity: %{phase: :preparing}} = :sys.get_state(pid)
       :ok = Session.steer(session, "later")
       :erlang.resume_process(hands)
 
@@ -464,7 +466,7 @@ defmodule Helyx.Session.HarnessTest do
       :ok = Session.prompt(session, "one")
       assert_receive {:conn, :turn, harness, {:turn, turn_id, _}}
       :erlang.suspend_process(harness)
-      assert %{turn: %{phase: :submitting}} = :sys.get_state(pid)
+      assert %{activity: %{phase: :submitting}} = :sys.get_state(pid)
       :ok = Session.steer(session, "more")
       assert %{data: %{steers: 1}} = List.last(collect_until(:queue_update))
       refute_received {:conn, :steer, _, _}
@@ -479,14 +481,12 @@ defmodule Helyx.Session.HarnessTest do
 
     test "rejected after the terminal waits for its answer, then starts the next turn",
          %{core: core} do
-      {session, pid, harness, turn_id} = submitted(core, "steer_hold")
+      {session, _pid, harness, turn_id} = submitted(core, "steer_hold")
       :ok = Session.steer(session, "more")
       assert_receive {:held, from}
       send(harness, {:finish, turn_id})
       events = collect_until(:agent_end)
       assert unconfirmed(events) == []
-      assert %{turn: nil, aborting: %{steers: steers}} = :sys.get_state(pid)
-      assert map_size(steers) == 1
 
       send(harness, {:answer, from, :rejected})
       assert_receive {:conn, :turn, ^harness, {:turn, _, context}}
@@ -504,17 +504,15 @@ defmodule Helyx.Session.HarnessTest do
       # The abort waits for the open request.
       abort = Task.async(fn -> Session.abort(session) end)
       assert unconfirmed(collect_until(:steer_unconfirmed)) == [%{text: "more"}]
-      assert %{aborting: %{steers: steers}} = :sys.get_state(pid)
-      assert map_size(steers) == 1
       send(harness, {:answer, from, :rejected})
       assert :ok = Task.await(abort)
-      assert %{turn: nil, aborting: nil, queues: %{steers: []}} = :sys.get_state(pid)
+      assert %{turn: nil, queue: %{steers: 0}} = GenServer.call(pid, :snapshot)
       refute_received {:conn, :turn, _, _}
     end
 
     test "an abort in the wait for a taken steer's answer starts no turn before the answer",
          %{core: core} do
-      {session, pid, harness, turn_id} = submitted(core, "steer_early")
+      {session, _pid, harness, turn_id} = submitted(core, "steer_early")
       :ok = Session.steer(session, "more")
       assert_receive {:held, from}
       send(harness, {:finish, turn_id})
@@ -525,8 +523,6 @@ defmodule Helyx.Session.HarnessTest do
       abort = Task.async(fn -> Session.abort(session) end)
       # The abort drops the follow-up; the wait still holds the request.
       assert %{data: %{follow_ups: 0}} = List.last(collect_until(:queue_update))
-      assert %{aborting: %{steers: steers, callers: [_]}} = :sys.get_state(pid)
-      assert map_size(steers) == 1
       send(harness, {:answer, from, :ok})
       assert :ok = Task.await(abort)
       refute_received {:helyx_event, %{type: :steer_unconfirmed}}
@@ -541,10 +537,10 @@ defmodule Helyx.Session.HarnessTest do
       send(harness, {:finish, turn_id})
       events = collect_until(:agent_end)
       assert {:user, "more"} in ends(events)
-      assert %{turn: nil, aborting: %{steers: steers}} = :sys.get_state(pid)
-      assert map_size(steers) == 1
 
       :ok = Session.follow_up(session, "next")
+      # The wait holds the open request: the follow-up stays queued.
+      assert %{turn: nil, queue: %{follow_ups: 1}} = GenServer.call(pid, :snapshot)
       send(harness, {:answer, from, :ok})
       assert_receive {:conn, :turn, ^harness, {:turn, _, context}}
       assert Message.text(List.last(context.messages)) == "next"
@@ -573,7 +569,11 @@ defmodule Helyx.Session.HarnessTest do
         events = collect_until(:agent_end)
         assert unconfirmed(events) == [%{text: "more"}]
         assert Enum.find_index(events, &(&1.type == :steer_unconfirmed)) < length(events) - 1
-        assert %{turn: nil, aborting: nil, queues: %{steers: []}} = :sys.get_state(pid)
+        assert %{turn: nil, queue: %{steers: 0}} = GenServer.call(pid, :snapshot)
+        # No wait is left: a follow-up starts a turn at once, with no queue
+        # update (the events go out before the reply).
+        :ok = Session.follow_up(session, "next")
+        refute_received {:helyx_event, %{type: :queue_update}}
       end
     end
 
@@ -583,27 +583,20 @@ defmodule Helyx.Session.HarnessTest do
       assert_receive {:held, from}
       abort = Task.async(fn -> Session.abort(session) end)
       assert unconfirmed(collect_until(:agent_end)) == [%{text: "more"}]
-      # The wait holds the open request until its answer: no late kill.
-      assert %{aborting: %{steers: steers}} = :sys.get_state(pid)
-      assert map_size(steers) == 1
       send(harness, {:answer, from, :rejected})
       assert :ok = Task.await(abort)
-      assert %{aborting: nil, queues: %{steers: []}} = :sys.get_state(pid)
+      assert %{queue: %{steers: 0}} = GenServer.call(pid, :snapshot)
     end
 
     test "a failed turn with a steer that has no answer gives a notice; a late :rejected starts no turn",
          %{core: core} do
-      {session, pid, harness, turn_id} = submitted(core, "steer_hold")
+      {session, _pid, harness, turn_id} = submitted(core, "steer_hold")
       :ok = Session.steer(session, "more")
       assert_receive {:held, from}
       send(harness, {:fail, turn_id})
       events = collect_until(:agent_end)
       assert unconfirmed(events) == [%{text: "more"}]
       assert error(events) == :failed
-      # The wait holds the open request until its answer: no late kill.
-      assert %{aborting: %{steers: steers}} = :sys.get_state(pid)
-      assert map_size(steers) == 1
-
       :ok = Session.follow_up(session, "next")
       refute_received {:conn, :turn, _, _}
       send(harness, {:answer, from, :rejected})
@@ -621,7 +614,8 @@ defmodule Helyx.Session.HarnessTest do
       assert unconfirmed(collect_until(:agent_end)) == [%{text: "more"}]
       send(harness, :stop)
       assert :ok = Task.await(abort)
-      assert %{aborting: nil, harness: nil, queues: %{steers: []}} = :sys.get_state(pid)
+      assert %{harness: nil} = :sys.get_state(pid)
+      assert %{queue: %{steers: 0}} = GenServer.call(pid, :snapshot)
       refute_received {:helyx_event, %{type: :steer_unconfirmed}}
     end
 

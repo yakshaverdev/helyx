@@ -53,7 +53,7 @@ defmodule Helyx.Session.HarnessToolsTest do
   # The call ids in the session's queue of the turn: only the running call,
   # because the harness loop owns the waiting queue.
   defp queued(session) do
-    tool = :sys.get_state(Session.pid(session)).turn.tool
+    tool = :sys.get_state(Session.pid(session)).activity.tool
     if tool, do: [tool.id], else: []
   end
 

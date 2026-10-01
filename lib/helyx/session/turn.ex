@@ -16,11 +16,8 @@ defmodule Helyx.Session.Turn do
   # the connect of the turn passed to a connected provider, or nil. A
   # connected turn has a `phase`, `:preparing`, `:submitting`, or
   # `:submitted`, the prepared `context` until it is sent, and the
-  # `pending` ref of the answer to `{:turn, ...}`. `steers` lists each steer that the turn sent
-  # to the harness and that has no `user_message` or no answer yet, in
-  # send order: `{steer_id, text, answer}`, where `answer` is the `from`
-  # ref until the answer comes, then `:answered`; a steer taken before its
-  # answer keeps a nil `text` until the answer. `tool` is the Helyx tool
+  # `pending` ref of the answer to `{:turn, ...}`. `steers` is the steer ledger of the turn
+  # (`Helyx.Session.Steers`). `tool` is the Helyx tool
   # request of a connected turn that runs on the hands (the harness loop
   # keeps the waiting ones), `start` the `from` ref of its
   # `{:tool_start, ...}` ask with no answer, and `results` the `from` refs
@@ -28,6 +25,7 @@ defmodule Helyx.Session.Turn do
   # to the wait's `results`.
 
   alias Helyx.{Message, ModelRef}
+  alias Helyx.Session.Steers
 
   @enforce_keys [:id, :model, :provider, :turn_mode]
   defstruct [
@@ -44,7 +42,7 @@ defmodule Helyx.Session.Turn do
     :start,
     calls: [],
     rejected: %{},
-    steers: [],
+    steers: %Steers{},
     tool: nil,
     results: []
   ]
