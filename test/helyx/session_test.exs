@@ -1484,7 +1484,7 @@ defmodule Helyx.SessionTest do
       assert change.turn_id == nil
       assert change.seq == List.last(first).seq + 1
       refute_received {:helyx_event, _}
-      assert GenServer.call(Session.pid(session), {:snapshot}).model == "other/any"
+      assert GenServer.call(Session.pid(session), :snapshot).model == "other/any"
 
       :ok = Session.prompt(session, "two")
       second = collect_until(:agent_end)
@@ -1512,7 +1512,7 @@ defmodule Helyx.SessionTest do
       assert {:error, {:invalid_model_ref, "test"}} = Session.set_model(session, "test")
       assert {:error, {:invalid_model_ref, _}} = Session.set_model(session, <<"test/", 255>>)
 
-      assert GenServer.call(Session.pid(session), {:snapshot}).model == "test/ok"
+      assert GenServer.call(Session.pid(session), :snapshot).model == "test/ok"
       assert File.read!(path) == before
       refute_received {:helyx_event, _}
     end
@@ -1533,7 +1533,7 @@ defmodule Helyx.SessionTest do
       stop_session(session, &GenServer.stop/1)
 
       {:ok, resumed} = Session.resume(core, sessions_dir: dir)
-      assert GenServer.call(Session.pid(resumed), {:snapshot}).model == "other/any"
+      assert GenServer.call(Session.pid(resumed), :snapshot).model == "other/any"
       {:ok, _} = Session.subscribe(resumed)
       :ok = Session.prompt(resumed, "hello")
       assert final_text(collect_until(:agent_end)) == "from other"
@@ -1611,7 +1611,7 @@ defmodule Helyx.SessionTest do
       assert log =~ "persistence off"
       assert_receive {:helyx_event, %Event{type: :notice, turn_id: nil}}
       assert_receive {:helyx_event, %Event{type: :model_change, turn_id: nil}}
-      assert GenServer.call(Session.pid(session), {:snapshot}).model == "other/any"
+      assert GenServer.call(Session.pid(session), :snapshot).model == "other/any"
 
       # Persistence stays off: with the file back, a turn writes nothing.
       File.rmdir!(path)

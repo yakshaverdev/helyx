@@ -15,7 +15,7 @@ defmodule Helyx.Session.Queues do
   @type t :: %__MODULE__{steers: [String.t()], follow_ups: [String.t()]}
 
   @spec push(t(), key(), String.t(), non_neg_integer()) :: {:ok, t()} | {:error, :queue_full}
-  def push(%__MODULE__{} = queues, key, text, held \\ 0) when key in [:steers, :follow_ups] do
+  def push(%__MODULE__{} = queues, key, text, held) when key in [:steers, :follow_ups] do
     entries = Map.fetch!(queues, key)
 
     if length(entries) + held < @limit,

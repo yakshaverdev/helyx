@@ -6,7 +6,7 @@ defmodule Mix.Tasks.Helyx.GraphTest do
 
   test "calls prints the function calls of a module, one line each" do
     out = capture_io(fn -> Mix.Tasks.Helyx.Graph.run(["calls", "Helyx.Session.Hands"]) end)
-    assert out =~ "Helyx.Session.Server.run_harness_tool/2 -> Helyx.Session.Hands.run/3\n"
+    assert out =~ "Helyx.Session.Server.run_on_hands/2 -> Helyx.Session.Hands.run/3\n"
     refute out =~ "Enum."
   end
 

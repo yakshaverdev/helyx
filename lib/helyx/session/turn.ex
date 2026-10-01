@@ -23,8 +23,9 @@ defmodule Helyx.Session.Turn do
   # answer keeps a nil `text` until the answer. `tool` is the Helyx tool
   # request of a connected turn that runs on the hands (the harness loop
   # keeps the waiting ones), `start` the `from` ref of its
-  # `{:tool_start, ...}` ask with no answer, and
-  # `results` the `from` refs of the `tool_result` requests with no answer.
+  # `{:tool_start, ...}` ask with no answer, and `results` the `from` refs
+  # of the `tool_result` requests with no answer. At the turn end both go
+  # to the wait's `results`.
 
   alias Helyx.{Message, ModelRef}
 
