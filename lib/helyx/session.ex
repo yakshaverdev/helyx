@@ -268,7 +268,7 @@ defmodule Helyx.Session do
     # the end signal belong to one process.
     with pid when is_pid(pid) <- pid(session),
          :ok <- join(core, registry, id, pid),
-         %Helyx.Session.Snapshot{} = snapshot <- call_pid(pid, {:snapshot}, @call_timeout_ms) do
+         %Helyx.Session.Snapshot{} = snapshot <- call_pid(pid, :snapshot, @call_timeout_ms) do
       {:ok, snapshot}
     else
       nil -> not_found(core, id)

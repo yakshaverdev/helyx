@@ -4,7 +4,7 @@ defmodule Helyx.Session.QueuesTest do
   alias Helyx.Session.Queues
 
   defp push!(queues, key, text) do
-    {:ok, queues} = Queues.push(queues, key, text)
+    {:ok, queues} = Queues.push(queues, key, text, 0)
     queues
   end
 
@@ -25,10 +25,10 @@ defmodule Helyx.Session.QueuesTest do
     assert Queues.counts(full).steers == 31
 
     full = push!(full, :steers, "s32")
-    assert Queues.push(full, :steers, "s33") == {:error, :queue_full}
+    assert Queues.push(full, :steers, "s33", 0) == {:error, :queue_full}
     assert Queues.counts(full) == %{steers: 32, follow_ups: 0}
 
-    assert {:ok, queues} = Queues.push(full, :follow_ups, "f1")
+    assert {:ok, queues} = Queues.push(full, :follow_ups, "f1", 0)
     assert Queues.counts(queues) == %{steers: 32, follow_ups: 1}
   end
 
@@ -45,7 +45,7 @@ defmodule Helyx.Session.QueuesTest do
     text = String.duplicate("折🚀", 1000)
     full = Enum.reduce(1..32, %Queues{}, fn _n, queues -> push!(queues, :follow_ups, text) end)
 
-    assert Queues.push(full, :follow_ups, "折") == {:error, :queue_full}
+    assert Queues.push(full, :follow_ups, "折", 0) == {:error, :queue_full}
     assert {[^text | _], %Queues{}} = Queues.drain(full)
   end
 

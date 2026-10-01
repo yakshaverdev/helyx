@@ -56,7 +56,9 @@ defmodule Helyx.Session.Harness do
   @doc """
   Sends a request to the harness process `pid` with a kill armed at
   `ms`, and returns the `from` ref of its reply, `{:harness_reply, from,
-  value}` to the caller.
+  kind, value}` to the caller. `kind` is the first element of the request
+  (`:turn`, `:steer`, `:tool_start`, ...), or the request itself for
+  `:close` and `:idle_close`.
   """
   @spec request(
           pid(),
@@ -108,8 +110,9 @@ defmodule Helyx.Session.Harness do
 
         {:harness_request, from, tref, request} when map_size(harness.open) >= @max_open ->
           :timer.cancel(tref)
-          send(harness.session, {:harness_reply, from, {:error, :busy}})
-          replied(kind(request), {:error, :busy}, harness)
+          kind = kind(request)
+          send(harness.session, {:harness_reply, from, kind, {:error, :busy}})
+          replied(kind, {:error, :busy}, harness)
 
         {:harness_request, from, tref, request} ->
           harness_request(request, from, tref, harness)
@@ -178,7 +181,7 @@ defmodule Helyx.Session.Harness do
            do: run_next(turn_id, call_id, harness)
     else
       :timer.cancel(tref)
-      send(harness.session, {:harness_reply, from, :ok})
+      send(harness.session, {:harness_reply, from, :tool_result, :ok})
       run_next(turn_id, call_id, harness)
     end
   end
@@ -188,10 +191,10 @@ defmodule Helyx.Session.Harness do
     :timer.cancel(tref)
 
     if open_call?(harness, turn_id, call_id) and harness.running == call_id do
-      send(harness.session, {:harness_reply, from, :ok})
+      send(harness.session, {:harness_reply, from, :tool_start, :ok})
       {:ok, %{harness | started: {turn_id, call_id}}}
     else
-      send(harness.session, {:harness_reply, from, :dropped})
+      send(harness.session, {:harness_reply, from, :tool_start, :dropped})
       run_next(turn_id, call_id, harness)
     end
   end
@@ -368,7 +371,7 @@ defmodule Helyx.Session.Harness do
     if reply?(kind, value) do
       if tref do
         :timer.cancel(tref)
-        send(harness.session, {:harness_reply, from, value})
+        send(harness.session, {:harness_reply, from, kind, value})
       end
 
       replied(kind, value, %{harness | open: open})

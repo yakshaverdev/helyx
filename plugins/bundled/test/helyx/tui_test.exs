@@ -403,7 +403,7 @@ defmodule Helyx.TUITest do
         send(test, :registered)
 
         receive do
-          {:"$gen_call", from, {:snapshot}} ->
+          {:"$gen_call", from, :snapshot} ->
             GenServer.reply(from, %Session.Snapshot{
               contract_version: 2,
               instance_id: "i",
@@ -939,7 +939,7 @@ defmodule Helyx.TUITest do
       state = state |> submit("/model other/any") |> fold_model_change()
       assert ExRatatui.textarea_get_value(state.input) == ""
       assert status_text(state) =~ "other/any"
-      assert GenServer.call(Session.pid(state.session), {:snapshot}).model == "other/any"
+      assert GenServer.call(Session.pid(state.session), :snapshot).model == "other/any"
 
       state = state |> submit("hi") |> drain()
       assert last_answer(state) == "from other"
@@ -971,7 +971,7 @@ defmodule Helyx.TUITest do
         assert byte_size(shown) < 80
         assert ExRatatui.textarea_get_value(state.input) == text
         assert status_text(state) =~ "fake/stay"
-        assert GenServer.call(Session.pid(state.session), {:snapshot}).model == "fake/stay"
+        assert GenServer.call(Session.pid(state.session), :snapshot).model == "fake/stay"
       end
 
       refute_received {:helyx_event, _}
@@ -1037,7 +1037,7 @@ defmodule Helyx.TUITest do
         ExRatatui.textarea_set_value(state.input, "")
         state = state |> submit(text) |> drain()
         assert last_answer(state) == "ok"
-        assert GenServer.call(Session.pid(state.session), {:snapshot}).model == "fake/looks"
+        assert GenServer.call(Session.pid(state.session), :snapshot).model == "fake/looks"
       end
     end
 

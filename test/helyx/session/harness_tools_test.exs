@@ -65,7 +65,7 @@ defmodule Helyx.Session.HarnessToolsTest do
     for _pass <- 1..2 do
       send(harness, {:ping, self()})
       assert_receive :pong
-      GenServer.call(Session.pid(session), {:snapshot}).model
+      GenServer.call(Session.pid(session), :snapshot).model
     end
 
     :ok
@@ -210,7 +210,7 @@ defmodule Helyx.Session.HarnessToolsTest do
     events = collect_until(:agent_end)
     assert List.last(events).data.stop_reason == :error
     # The session asks the hands for the cleanup after it emits agent_end.
-    GenServer.call(Session.pid(session), {:snapshot}).model
+    GenServer.call(Session.pid(session), :snapshot).model
     assert running(hands) == 0
   end
 
@@ -457,7 +457,7 @@ defmodule Helyx.Session.HarnessToolsTest do
     assert [{:tool_result, ^turn_id, "x", {:error, "aborted"}}, {:interrupt, ^turn_id}] =
              Enum.take(requests_until(:interrupt), -2)
 
-    GenServer.call(Session.pid(session), {:snapshot}).model
+    GenServer.call(Session.pid(session), :snapshot).model
     refute_received {:trace, ^pid, :send, {:"$gen_cast", {:run, _, %{id: "x"}}}, _}
   end
 
@@ -468,7 +468,7 @@ defmodule Helyx.Session.HarnessToolsTest do
     Process.exit(harness, :kill)
     events = collect_until(:agent_end)
     assert List.last(events).data.stop_reason == :error
-    GenServer.call(Session.pid(session), {:snapshot}).model
+    GenServer.call(Session.pid(session), :snapshot).model
     refute_received {:trace, ^pid, :send, {:"$gen_cast", {:run, _, %{id: "x"}}}, _}
   end
 
@@ -478,7 +478,7 @@ defmodule Helyx.Session.HarnessToolsTest do
     task = Task.async(fn -> Session.abort(session) end)
     in_mailbox(harness, &match?({:harness_request, _, _, {:tool_result, _, "x", _}}, &1))
     :ok = Session.prompt(session, "again")
-    GenServer.call(Session.pid(session), {:snapshot}).model
+    GenServer.call(Session.pid(session), :snapshot).model
     {:messages, held} = Process.info(harness, :messages)
     refute Enum.any?(held, &match?({:harness_request, _, _, {:turn, _, _}}, &1))
 

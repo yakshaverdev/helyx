@@ -39,7 +39,7 @@ The server owns the state, and the client only renders it (`AGENTS.md`, Project)
 The order that makes it gap-free:
 
 1. `subscribe/1` registers the caller in the events Registry, as today.
-2. It then calls the session (`GenServer.call`, `{:snapshot}`) for the snapshot.
+2. It then calls the session (`GenServer.call`, `:snapshot`) for the snapshot.
 3. The client applies the snapshot, then drops each event of another `instance_id` (#204) and each event with `seq <= snapshot.seq`, and applies the rest.
 
 The session sends its events from its own process in `seq` order, and the snapshot reply is built in the same process. So each event after the snapshot has a larger `seq` and reaches the client, which registered before the call. An event sent between the registration and the snapshot is in the snapshot and has a `seq` at or below it.
