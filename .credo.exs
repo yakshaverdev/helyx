@@ -28,7 +28,6 @@
                  {1000, "the Claude Code stream-json protocol in one harness provider"},
                "plugins/bundled/lib/helyx/tui.ex" =>
                  {841, "the terminal loop, input, and rendering of the TUI"},
-               "lib/helyx/session.ex" => {453, "the public session API with its contract docs"},
                "lib/helyx/session/provider_process.ex" => {415, "the provider process loop"}
              }
            ]}

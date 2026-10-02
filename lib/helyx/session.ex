@@ -36,7 +36,7 @@ defmodule Helyx.Session do
   """
 
   alias Helyx.ModelRef
-  alias Helyx.Session.{Id, Server, Transcript}
+  alias Helyx.Session.{Id, Server, Subscription, Transcript}
   alias Helyx.Session.Server.State
 
   require Logger
@@ -222,76 +222,8 @@ defmodule Helyx.Session do
   too.
   """
   @spec subscribe(t()) :: {:ok, Helyx.Session.Snapshot.t()} | {:error, :session_not_found}
-  def subscribe(%__MODULE__{id: id, core: core} = session) do
-    key = {__MODULE__, core, id}
-
-    # The old monitor goes first, with its signal (S5 in
-    # docs/features/session-subscribers.md).
-    case Process.delete(key) do
-      nil -> :ok
-      {old, _pid} -> Process.demonitor(old, [:flush])
-    end
-
-    forget_ended()
-    flush_end_signals(id)
-
-    case pid(session) do
-      nil -> {:error, :session_not_found}
-      # The monitor comes before the call, so the real exit reason of the
-      # pid of the snapshot is never lost.
-      pid -> subscribe_pid(key, Process.monitor(pid, tag: {:helyx_session_end, id}), pid)
-    end
-  end
-
-  # On a failure the unsubscribe follows the call from this process to the
-  # same pid, so a live session handles it after the subscribe.
-  defp subscribe_pid(key, ref, pid) do
-    Process.put(key, {ref, pid})
-
-    case call_pid(pid, {:subscribe, self()}, @call_timeout_ms) do
-      %Helyx.Session.Snapshot{} = snapshot ->
-        {:ok, snapshot}
-
-      {:error, :session_not_found} ->
-        unsubscribe(key, ref, pid)
-        {:error, :session_not_found}
-    end
-  catch
-    # `call_pid/3` lets only the timeout of a running session exit.
-    :exit, reason ->
-      unsubscribe(key, ref, pid)
-      :erlang.raise(:exit, reason, __STACKTRACE__)
-  end
-
-  defp unsubscribe(key, ref, pid) do
-    Process.delete(key)
-    Process.demonitor(ref, [:flush])
-    send(pid, {:unsubscribe, self()})
-  end
-
-  # The entries of ended sessions go, so the dictionary holds one entry for
-  # each session that this process still monitors. A monitor leaves the list
-  # of this process only when its end signal is in the mailbox, where it
-  # stays for the client. A dead pid is not enough: a process is dead before
-  # its `:DOWN` arrives.
-  defp forget_ended do
-    {:monitors, monitors} = Process.info(self(), :monitors)
-    monitored = MapSet.new(monitors)
-
-    for {{__MODULE__, _core, _id} = key, {_ref, pid}} <- Process.get(),
-        not MapSet.member?(monitored, {:process, pid}),
-        do: Process.delete(key)
-  end
-
-  # An end signal for the id whose entry `forget_ended/0` removed: it is of
-  # an earlier process, a resume makes a new one.
-  defp flush_end_signals(id) do
-    receive do
-      {{:helyx_session_end, ^id}, _ref, :process, _pid, _reason} -> flush_end_signals(id)
-    after
-      0 -> :ok
-    end
-  end
+  def subscribe(%__MODULE__{} = session),
+    do: Subscription.subscribe(session, pid(session), &call_pid(&1, &2, @call_timeout_ms))
 
   @doc """
   The reason of an end signal as a client gets it: `:stopped` for an exit

@@ -41,7 +41,7 @@ On both failure paths, before the return or the exit, `subscribe/1` removes its 
 
 **S7 The instance filter stays.** A resume starts a new session process, and events of the old process can still be in the client's mailbox. The `instance_id` rule of ADR 0006 §3 stays for events. So does `seq`, which a remote transport needs for its reconnect. The end signal needs no `instance_id`, because S5 removes the monitor of the old pid before the subscribe to the new one.
 
-**S8 What `subscribe/1` keeps.** About 50 lines of lifecycle code: the monitor reference per session, the demonitor with flush, the ordered unsubscribe on failure, and the removal of the entries and signals of ended sessions (S5).
+**S8 What `subscribe/1` keeps.** About 50 lines of lifecycle code: the monitor reference per session, the demonitor with flush, the ordered unsubscribe on failure, and the removal of the entries and signals of ended sessions (S5). Since #322 this code is in the internal module `Helyx.Session.Subscription`, which `subscribe/1` calls with the pid and the call function of `session.ex`.
 
 ### The end signal message
 
