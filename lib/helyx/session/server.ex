@@ -6,9 +6,9 @@ defmodule Helyx.Session.Server do
   require Logger
 
   alias Helyx.{Context, Message, ModelRef}
-  alias Helyx.Session.{Hands, Id, ProviderProcess, Queues, Snapshot, Steers}
+  alias Helyx.Session.{Hands, Id, Queues, Snapshot, Steers}
   alias Helyx.Session.Server.{Messages, ProviderConn, Record, State, Steering, Stop}
-  alias Helyx.Session.{Transcript, Turn, Wait}
+  alias Helyx.Session.{Turn, Wait}
 
   import State, only: [ask: 4, drop_turn: 2, provider_pid: 1]
   import Record, only: [emit: 3, emit: 4]
@@ -92,7 +92,7 @@ defmodule Helyx.Session.Server do
   # `:provider_down` as a follow-up.
   def handle_call({op, text}, _from, %State{} = state)
       when op in [:prompt, :steer, :follow_up] do
-    case await_ended_provider(state) do
+    case State.await_ended_provider(state) do
       %State{activity: :idle} = state -> {:reply, :ok, begin_turn(state, [text])}
       state -> queue_reply(state, :follow_ups, text)
     end
@@ -282,7 +282,7 @@ defmodule Helyx.Session.Server do
   # and the prepared context; `submitting` until the answer; then
   # `submitted`.
   def handle_info({:provider_ready, pid}, %State{conn: %ProviderConn{pid: pid} = conn} = state) do
-    {:noreply, arm_idle(submit(%{state | conn: %{conn | ready: true}}))}
+    {:noreply, State.arm_idle(submit(%{state | conn: %{conn | ready: true}}))}
   end
 
   # The prepare Task checked the context (`Stream.prepare/4`): a plugin
@@ -507,44 +507,13 @@ defmodule Helyx.Session.Server do
   # closes before the next turn starts (a provider or a model switch);
   # otherwise the queues start the next turn.
   defp settle(%State{activity: :idle} = state) do
-    case await_ended_provider(state) do
-      %State{activity: :idle} = state -> arm_idle(close_or_start(state))
-      state -> state
+    with %State{activity: :idle} = state <- State.await_ended_provider(state),
+         %State{activity: :idle} = state <- State.close_switched(state) do
+      State.arm_idle(start_queued(state))
     end
   end
 
   defp settle(state), do: state
-
-  # Arms the idle timer when the session holds a ready provider process
-  # with no turn and no wait. It cancels the earlier timer; a message of
-  # it that is already in the mailbox has an old ref.
-  defp arm_idle(%State{activity: :idle, conn: %ProviderConn{ready: true}} = state) do
-    if state.idle, do: :erlang.cancel_timer(state.idle)
-    %{state | idle: :erlang.start_timer(state.provider_ms.idle, self(), :idle_close)}
-  end
-
-  defp arm_idle(state), do: state
-
-  defp close_or_start(%State{model: model, conn: %ProviderConn{pid: pid, model: other}} = state)
-       when other != model do
-    ask(state, pid, :close, :close)
-    %{state | conn: nil, activity: %Wait{provider: pid}}
-  end
-
-  defp close_or_start(state), do: start_queued(state)
-
-  # The hands send `:provider_down` only after the release of the provider
-  # process's handles, so a turn does not start on a provider process that
-  # ended until then: the session waits for it. A provider process that
-  # ends after this check ends during the turn, and its `:provider_down`
-  # fails the turn (see `Hands.prepare/3`).
-  defp await_ended_provider(%State{conn: %ProviderConn{pid: pid}} = state) do
-    if Process.alive?(pid),
-      do: state,
-      else: %{state | conn: nil, activity: %Wait{provider: pid}}
-  end
-
-  defp await_ended_provider(state), do: state
 
   # Starts a turn with one user message per text, in order.
   defp begin_turn(%State{} = state, texts) do
@@ -575,20 +544,18 @@ defmodule Helyx.Session.Server do
   # The provider process (started at the first turn) and a prepare Task of
   # the hands, which builds the context.
   defp call_provider(%State{} = state) do
-    case connect(state) do
+    case State.connect(state) do
       {:ok, state} -> prepare(put_in(state.activity.phase, :preparing))
       {:error, text} -> fail_turn(text, state)
     end
   end
-
-  defp base_opts(state), do: [core: state.core, session_id: state.id, cwd: state.cwd]
 
   # The prepare Task of the hands builds the context, under `prepare_ms`.
   defp prepare(%State{activity: %Turn{id: turn_id}} = state) do
     session = self()
     %State{model_context: model_context, compaction: compaction} = state
     context = %Context{messages: state.transcript, tools: state.tools}
-    opts = [turn_id: turn_id] ++ base_opts(state)
+    opts = [turn_id: turn_id] ++ State.base_opts(state)
 
     :ok =
       Hands.prepare(state.hands, turn_id, fn tref ->
@@ -598,28 +565,6 @@ defmodule Helyx.Session.Server do
       end)
 
     state
-  end
-
-  # `settle/1` closed a provider process of another model before the turn.
-  defp connect(%State{conn: %ProviderConn{model: model}, activity: %Turn{model: model}} = state),
-    do: {:ok, state}
-
-  defp connect(%State{conn: nil, activity: turn} = state) do
-    resumed = Transcript.resumable(state.transcript, state.resume_ids, turn.model.provider)
-
-    args = %{
-      provider: turn.provider,
-      model: turn.model.model,
-      tools: state.tools,
-      opts: [resume_id: resumed] ++ base_opts(state),
-      session: self()
-    }
-
-    with {:ok, pid} <-
-           Hands.start_provider(state.hands, turn.provider, ProviderProcess.run(args)) do
-      conn = %ProviderConn{pid: pid, model: turn.model}
-      {:ok, %{state | conn: conn, activity: %{turn | resumed: resumed}}}
-    end
   end
 
   # Sends `{:turn, ...}` when the provider process is ready and the context
