@@ -4,7 +4,7 @@ defmodule Helyx.Compaction.NoneTest do
   defmodule Provider do
     @moduledoc false
     # Core requires a provider to boot.
-    @behaviour Helyx.Provider
+    use Helyx.Provider.Loop
 
     @impl true
     def id, do: "stub"

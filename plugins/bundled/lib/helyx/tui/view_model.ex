@@ -216,9 +216,9 @@ defmodule Helyx.TUI.ViewModel do
   role that the TUI does not show makes no cell, and a block kind that it
   does not render is dropped, as in `apply/2`.
 
-  The started calls are the first calls with no result, in call order: a
-  local turn runs its calls one at a time, and a connected turn starts
-  them all. So the first `length(turn.running)` calls with no result get
+  The started calls are the first calls with no result, in call order:
+  every call of a message starts at its `message_end` (contract version
+  2). So the first `length(turn.running)` calls with no result get
   open cells, by position. A call that has not started has no cell yet,
   also when it has the id of a running call; it gets one from its
   `tool_execution_start`, or a closed one from its result, as in `apply/2`.

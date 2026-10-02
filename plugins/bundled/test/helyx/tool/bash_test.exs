@@ -239,9 +239,12 @@ defmodule Helyx.Tool.BashTest do
 
     pid = wait_for_pid(Path.join(dir, "pid"))
     child = wait_for_pid(Path.join(dir, "child"))
+    provider = :sys.get_state(Helyx.Session.pid(session)).conn.pid
 
+    # The provider process is a Task of the hands too.
     [task_pid] =
       for task <- Task.Supervisor.children(Helyx.Core.task_supervisor(core)),
+          task != provider,
           {:dictionary, dict} = Process.info(task, :dictionary),
           Keyword.has_key?(dict, :helyx_hands) do
         task
@@ -268,10 +271,12 @@ defmodule Helyx.Tool.BashTest do
   test "killing the hands kills the Task and the command", %{core: core, tmp_dir: dir} do
     session = start_command(core, dir, "echo $$ > pid; exec sleep 30")
     pid = wait_for_pid(Path.join(dir, "pid"))
-    hands = :sys.get_state(Helyx.Session.pid(session)).hands
+    %{hands: hands, conn: %{pid: provider}} = :sys.get_state(Helyx.Session.pid(session))
 
+    # The provider process is a Task of the hands too.
     [task] =
       for task <- Task.Supervisor.children(Helyx.Core.task_supervisor(core)),
+          task != provider,
           {:dictionary, dict} = Process.info(task, :dictionary),
           Keyword.has_key?(dict, :helyx_hands) do
         task

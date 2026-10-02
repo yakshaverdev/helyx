@@ -1,8 +1,7 @@
 defmodule Helyx.Session.ProviderProcess do
   @moduledoc false
-  # The Core loop of a provider process (ADR 0007,
-  # `docs/features/long-lived-harness.md`): a long-lived Task of the hands
-  # that runs the callbacks of a connected provider. The callbacks run only
+  # The Core loop of a provider process (ADR 0007): a long-lived Task of
+  # the hands that runs the callbacks of a provider. The callbacks run only
   # here. The loop checks every action at the boundary, sends each event and
   # reply to the session, and ends itself on a bad action, a stop, or an
   # error answer to `{:turn, ...}` or `{:interrupt, ...}`. It never ends
@@ -123,7 +122,7 @@ defmodule Helyx.Session.ProviderProcess do
   end
 
   # Helyx tool calls (`docs/features/long-lived-harness.md`, "Helyx tool
-  # calls"). The loop owns the rules, so each connected provider only maps
+  # calls"). The loop owns the rules, so each provider only maps
   # its program's requests to `{:tool_request, ...}` events and writes the
   # `{:tool_result, ...}` requests. A turn is `live` from its `{:turn, ...}`
   # request until its terminal or its interrupt; `calls` holds the call ids
@@ -215,7 +214,6 @@ defmodule Helyx.Session.ProviderProcess do
     end
   end
 
-  # The terminal of the live turn ends its tools.
   defp end_live_tools(turn_id, %{live: turn_id} = proc), do: end_tools(proc)
   defp end_live_tools(_turn_id, proc), do: {:ok, proc}
 
@@ -226,15 +224,15 @@ defmodule Helyx.Session.ProviderProcess do
   defp run_next(turn_id, call_id, %{live: turn_id, running: call_id} = proc) do
     case proc.waiting do
       [] -> {:ok, %{proc | running: nil}}
-      [{event, rejection} | waiting] -> run(event, rejection, %{proc | waiting: waiting})
+      [event | waiting] -> run(event, %{proc | waiting: waiting})
     end
   end
 
   defp run_next(_turn_id, _call_id, proc), do: {:ok, proc}
 
-  defp run({:tool_request, call_id, _, _} = event, rejection, proc) do
+  defp run({:tool_request, call_id, _, _} = event, proc) do
     proc = %{proc | running: call_id}
-    sent(Stream.send_event(proc.session, proc.live, event, rejection), proc)
+    sent(Stream.send_checked(proc.session, {:stream_event, proc.live, event}), proc)
   end
 
   # The live turn ends: each open tool request gets `aborted`, except a
@@ -300,6 +298,10 @@ defmodule Helyx.Session.ProviderProcess do
       seen? ->
         answer_tool(turn_id, call_id, "the call id was used before in this turn", proc)
 
+      # An integer over the digit limit.
+      rejection ->
+        answer_tool(turn_id, call_id, Stream.not_run(rejection), proc)
+
       # A withdrawn running call still runs until its result comes.
       length(proc.waiting) + if(proc.running, do: 1, else: 0) >= @max_tools ->
         answer_tool(turn_id, call_id, @too_many, proc)
@@ -308,8 +310,8 @@ defmodule Helyx.Session.ProviderProcess do
         proc = %{proc | calls: MapSet.put(proc.calls, call_id)}
 
         if proc.running,
-          do: {:ok, %{proc | waiting: proc.waiting ++ [{event, rejection}]}},
-          else: run(event, rejection, proc)
+          do: {:ok, %{proc | waiting: proc.waiting ++ [event]}},
+          else: run(event, proc)
     end
   end
 
@@ -343,17 +345,16 @@ defmodule Helyx.Session.ProviderProcess do
     end
   end
 
-  # An event passes the check of a stream event of a connected turn. A
-  # terminal goes to the session as `{:stream_end, turn_id, terminal}`, with
-  # the cap that a stream Task applies to its terminal. A malformed event
+  # An event passes the check of a provider event. A terminal goes to the
+  # session as `{:stream_end, turn_id, terminal}`, with the integer cap. A malformed event
   # stops the loop: the program's turn is then in an unknown state.
   defp action({:event, turn_id, event}, proc) when is_binary(turn_id) do
-    case Stream.check(event, true) do
+    case Stream.check(event) do
       {:send, {:tool_request, _, _, _} = event, rejection} ->
         tool_request(turn_id, event, rejection, proc)
 
-      {:send, event, rejection} ->
-        sent(Stream.send_event(proc.session, turn_id, event, rejection), proc)
+      {:send, event, _rejection} ->
+        sent(Stream.send_checked(proc.session, {:stream_event, turn_id, event}), proc)
 
       {:terminal, terminal} ->
         message = {:stream_end, turn_id, Message.cap_integers(terminal)}
@@ -366,8 +367,7 @@ defmodule Helyx.Session.ProviderProcess do
     end
   end
 
-  # The provider asks for a fresh context of its live turn (C2, C3): the
-  # session gets the request after the events before it in the list.
+  # A fresh context for the live turn (C2, C3), after the events before it.
   defp action({:need_context, turn_id} = action, %{live: turn_id, context?: false} = proc)
        when is_binary(turn_id),
        do: sent(Stream.send_checked(proc.session, action), %{proc | context?: true})
@@ -404,7 +404,7 @@ defmodule Helyx.Session.ProviderProcess do
         {:ok, %{proc | calls: MapSet.delete(proc.calls, call_id)}}
 
       true ->
-        waiting = Enum.reject(proc.waiting, &match?({{_, ^call_id, _, _}, _}, &1))
+        waiting = Enum.reject(proc.waiting, &match?({_, ^call_id, _, _}, &1))
         {:ok, %{proc | calls: MapSet.delete(proc.calls, call_id), waiting: waiting}}
     end
   end

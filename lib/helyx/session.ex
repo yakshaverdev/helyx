@@ -14,12 +14,12 @@ defmodule Helyx.Session do
       # the session ends; Helyx.Session.end_reason(reason) is :stopped or
       # :crashed
 
-  A local turn calls the provider until an assistant message has no tool
-  calls. Its tool calls run on the session's hands (`Helyx.Session.Hands`)
-  one at a time, in call order. A connected provider exports `init/3`
-  (ADR 0002, ADR 0007). It runs the whole turn and its own tools in its
-  provider process. A connected turn ends on the terminal event of the
-  provider. It fails when its first prepare Task fails or the provider
+  Every provider runs the turn in its provider process (ADR 0002, ADR
+  0007). An API provider runs it with `Helyx.Provider.Loop`: it calls the
+  model until an assistant message has no tool calls, and its tool calls
+  run on the session's hands (`Helyx.Session.Hands`) one at a time, in
+  call order. A harness provider runs the whole turn and its own tools in
+  its program. A turn ends on the terminal event of the provider. It fails when its first prepare Task fails or the provider
   process ends first; a failed context build goes to the provider. Each
   tool call with no result gets an `aborted` error result. A follow-up
   during a turn waits in a queue. A steer waits in a queue until the
@@ -31,7 +31,7 @@ defmodule Helyx.Session do
 
   `docs/features/coding-agent.md`, section "Runtime", has the turn, the
   queues, and the abort. `docs/features/long-lived-harness.md` has the
-  connected turn. `docs/features/session-subscribers.md` has the
+  provider process and its turn. `docs/features/session-subscribers.md` has the
   subscription.
   """
 
@@ -87,7 +87,7 @@ defmodule Helyx.Session do
     with {:ok, cwd} <- fetch_cwd(opts),
          {:ok, tools} <- Helyx.Tool.specs(core),
          :ok <- Helyx.Tool.check_available(tools),
-         {:ok, {ref, provider, turn_mode}} <- resolve_model(core, Keyword.fetch!(opts, :model)),
+         {:ok, {ref, provider}} <- resolve_model(core, Keyword.fetch!(opts, :model)),
          {:ok, file} <- create_file(opts[:sessions_dir], id, cwd, ref) do
       start_child(
         %State{
@@ -95,7 +95,6 @@ defmodule Helyx.Session do
           core: core,
           model: ref,
           provider: provider,
-          turn_mode: turn_mode,
           cwd: cwd,
           file: file
         },
@@ -129,7 +128,7 @@ defmodule Helyx.Session do
          {:ok, tools} <- Helyx.Tool.specs(core),
          :ok <- Helyx.Tool.check_available(tools),
          {:ok, resumed} <- Helyx.Session.File.resume(dir, cwd),
-         {:ok, {ref, provider, turn_mode}} <- resolve_model(core, resumed.model) do
+         {:ok, {ref, provider}} <- resolve_model(core, resumed.model) do
       # A crash can leave tool calls with no result. The session reads them
       # with `aborted` results and writes nothing (#269).
       {transcript, resume_ids} =
@@ -141,7 +140,6 @@ defmodule Helyx.Session do
           core: core,
           model: ref,
           provider: provider,
-          turn_mode: turn_mode,
           cwd: cwd,
           file: resumed.file,
           transcript: transcript,
@@ -164,12 +162,12 @@ defmodule Helyx.Session do
 
   defp check_cwd(_cwd), do: {:error, :invalid_cwd}
 
-  # A model ref string to its parsed ref, its provider plugin, and the turn
-  # of that plugin, for start, resume, and a switch alike.
+  # A model ref string to its parsed ref and its provider plugin, for start,
+  # resume, and a switch alike.
   defp resolve_model(core, string) do
     with {:ok, ref} <- ModelRef.parse(string),
          {:ok, provider} <- Helyx.Provider.find(core, ref.provider),
-         do: {:ok, {ref, provider, Helyx.Provider.turn(provider)}}
+         do: {:ok, {ref, provider}}
   end
 
   defp start_child(%State{id: id, core: core} = state, tools) do
@@ -359,15 +357,13 @@ defmodule Helyx.Session do
   `{:error, :queue_full}`. An abort or a failure of the turn drops every
   queued steer.
 
-  On a local turn, the steer joins the transcript before the next provider
-  call of the turn. If the turn ends first, the steer starts the next turn.
-
-  On a connected turn, a steer that arrives while the turn prepares goes
-  into the turn's prompt. A steer that arrives after that, before the
-  provider accepts the turn, goes to the provider when it accepts the
-  turn. The provider takes a steer at most once, and its user message
-  joins the transcript where the provider takes it. A steer that the
-  provider rejects waits for the next turn, unless the turn aborts or
+  A steer that arrives while the turn prepares goes into the turn's
+  prompt. A steer that arrives after that, before the provider accepts
+  the turn, goes to the provider when it accepts the turn. The provider
+  takes a steer at most once, and its user message joins the transcript
+  where the provider takes it: `Helyx.Provider.Loop` takes it before the
+  next model call of the turn. A steer that the provider rejects, such as
+  one after the last model call, waits for the next turn, unless the turn aborts or
   fails first. A steer that Helyx cannot confirm is never sent again, and
   a `:steer_unconfirmed` event carries its text. The rules are in
   `docs/features/long-lived-harness.md`, sections "Turn states", "Steer",
@@ -406,8 +402,8 @@ defmodule Helyx.Session do
   @spec set_model(t(), String.t()) ::
           :ok | {:error, model_error() | :session_not_found}
   def set_model(%__MODULE__{core: core} = session, string) when is_binary(string) do
-    with {:ok, {ref, provider, turn_mode}} <- resolve_model(core, string) do
-      call(session, {:set_model, ref, provider, turn_mode})
+    with {:ok, {ref, provider}} <- resolve_model(core, string) do
+      call(session, {:set_model, ref, provider})
     end
   rescue
     # The plugin table is gone with its Core, and so is the session.

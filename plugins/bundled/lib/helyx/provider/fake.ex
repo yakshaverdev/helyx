@@ -16,7 +16,7 @@ defmodule Helyx.Provider.Fake do
   instance has its own scripts.
   """
 
-  @behaviour Helyx.Provider
+  use Helyx.Provider.Loop
 
   @impl true
   def id, do: "fake"

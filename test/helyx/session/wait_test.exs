@@ -5,7 +5,7 @@ defmodule Helyx.Session.WaitTest do
 
   defp turn(fields) do
     struct!(
-      %Turn{id: "t1", model: nil, provider: nil, turn_mode: :connected, phase: :submitted},
+      %Turn{id: "t1", model: nil, provider: nil, phase: :submitted},
       fields
     )
   end

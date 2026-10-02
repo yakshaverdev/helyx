@@ -78,7 +78,7 @@ end
 defmodule Helyx.Test.ProviderTwin do
   @moduledoc false
   # A second provider with the same id as Helyx.Test.Provider.
-  @behaviour Helyx.Provider
+  use Helyx.Provider.Loop
 
   @impl true
   def id, do: "test"
@@ -91,7 +91,7 @@ defmodule Helyx.Test.ProviderOther do
   @moduledoc false
   # A second provider with its own id, so a test can switch between two
   # provider modules. Every model answers "from other".
-  @behaviour Helyx.Provider
+  use Helyx.Provider.Loop
 
   @impl true
   def id, do: "other"
@@ -102,20 +102,11 @@ defmodule Helyx.Test.ProviderOther do
   end
 end
 
-defmodule Helyx.Test.NoTurn do
-  @moduledoc false
-  # A provider with no turn: neither `stream/3` nor `init/3`.
-  @behaviour Helyx.Provider
-
-  @impl true
-  def id, do: "no_turn"
-end
-
 defmodule Helyx.Test.BadId do
   @moduledoc false
   # A provider whose `id/0` is "bad_id" until the calling process puts a
   # mode under `:bad_id`. Then it raises, throws, exits, or returns the value.
-  @behaviour Helyx.Provider
+  use Helyx.Provider.Loop
 
   # The bad results are the point of this provider.
   @dialyzer {:nowarn_function, id: 0}
@@ -158,7 +149,7 @@ defmodule Helyx.Test.Harness do
   #   "dup_id"  two tool calls with one id, then two results
   #   "open_call"  "dup_id" with no second result and no text after it
   #   "late_result"  a call, a text message, then the call's result
-  #   "rejected"  a rejected tool call, valid only on a local turn
+  #   "rejected"  a rejected tool call, valid only in a Loop stream
   @behaviour Helyx.Provider
 
   @impl true
@@ -254,6 +245,11 @@ defmodule Helyx.Test.Provider do
   #                streams as "ok"
   #   "empty"      an empty stream, no terminal event
   #   "crash"      one delta, then the stream raises
+  #   "throw", "exit"  the stream throws or exits with :boom
+  #   "exit_normal"  the stream ends its process with a :normal signal
+  #   "self_halt"  an enumerable that halts by itself on a text delta
+  #   "bad_event.<name>" the gate <name>, a message end, which only a
+  #                harness may send, then the gate again
   #   "overrun"    a delta, done, then a raise if pulled further
   #   "blocks"     thinking, text, and a tool call, then done; text after the result
   #   "error_tail" an error event, then a raise if pulled further
@@ -284,7 +280,7 @@ defmodule Helyx.Test.Provider do
   #                echoes the results
   #   "steer"      one slow call; after the result, echoes the user message
   #                texts so far, so tests see which steers reached the call
-  @behaviour Helyx.Provider
+  use Helyx.Provider.Loop
 
   @impl true
   def id, do: "test"
@@ -322,6 +318,18 @@ defmodule Helyx.Test.Provider do
   def stream("system", %Helyx.Context{system: system}, _opts) do
     {:ok, [{:text_delta, system || "no system"}, done()]}
   end
+
+  def stream("throw", _context, _opts), do: {:ok, Stream.map([1], fn _ -> throw(:boom) end)}
+  def stream("exit", _context, _opts), do: {:ok, Stream.map([1], fn _ -> exit(:boom) end)}
+
+  def stream("self_halt", _context, _opts),
+    do: {:ok, fn _acc, _reduce -> {:done, {:text_delta, "orphaned"}} end}
+
+  def stream("exit_normal", _context, _opts),
+    do: {:ok, Stream.map([1], fn _ -> Process.exit(self(), :normal) end)}
+
+  def stream("bad_event." <> gate, _context, _opts),
+    do: {:ok, Helyx.Test.Gate.stream([:gate, {:message_end, :end_turn, %{}}, :gate], gate)}
 
   def stream("crash", _context, _opts) do
     {:ok, raise_after([{:text_delta, "so far"}], "boom")}

@@ -1,6 +1,6 @@
 defmodule Helyx.Session.Steers do
   @moduledoc false
-  # The steer ledger: each steer that a connected turn sent to its provider
+  # The steer ledger: each steer that a turn sent to its provider
   # process and that has no answer or no `user_message` yet, in send order,
   # as `{from, steer_id, text, state}`. `from` is the ref of the request
   # (see `Helyx.Session.ProviderProcess`). After the turn, the ledger goes to the

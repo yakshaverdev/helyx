@@ -47,7 +47,7 @@ A turn that a harness provider's program starts by itself, for example when a ba
 _Avoid_: background turn, notification turn
 
 **Steer**:
-A message delivered inside the current turn, before the next provider call. On a connected turn, the harness takes it at its next model call, at most once.
+A message delivered inside the current turn, before the next model call. The provider takes it at its next model call, at most once.
 _Avoid_: interrupt, inject, interject
 
 **Follow-up**:
@@ -61,15 +61,15 @@ _Avoid_: cancel, stop, kill
 ## Providers
 
 **Provider**:
-A plugin that produces assistant messages for a session. A provider has a local turn (`stream/3`) or a connected harness (it exports `init/3`, which runs in its provider process). On a local turn, Helyx runs the turn and the tools. On a connected turn, the harness program runs the whole turn and its own tools, and the program lives for the session.
+A plugin that produces assistant messages for a session. Every provider implements `init/3`, `request/3`, and `info/2`, which run in its provider process for the session. A model provider uses `Helyx.Provider.Loop` over `stream/3`. A harness provider drives a program that runs the whole turn and its own tools.
 _Avoid_: backend, model, LLM, driver
 
 **Model provider**:
-A provider that calls a model API. Helyx runs the turn and the hands run the tools.
+A provider that calls a model API, with `Helyx.Provider.Loop`. The helper runs the model calls of the turn, and the hands run the tools.
 _Avoid_: API provider, native provider
 
 **Harness provider**:
-A connected provider. It drives an external agent program, such as Claude Code or Codex. The external program runs its own loop and its own tools. Helyx records the result.
+A provider that drives an external agent program, such as Claude Code or Codex. The external program runs its own loop and its own tools. Helyx records the result.
 _Avoid_: subprocess provider, CLI provider, wrapper
 
 **Harness session**:

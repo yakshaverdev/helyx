@@ -3,7 +3,7 @@ defmodule Helyx.Session.Queues do
   # The steer and follow-up queues of a session, each in arrival order. Each
   # queue holds at most 32 entries. `push/4` is the only way in, so no queue
   # ever holds more. The session emits `:queue_update` for every change.
-  # `held` counts the steers that a connected turn sent and that wait for
+  # `held` counts the steers that a turn sent and that wait for
   # their answer or their `user_message`: they count in the 32 steers
   # (`docs/features/long-lived-harness.md`, "Steer").
 

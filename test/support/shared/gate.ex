@@ -20,17 +20,54 @@ defmodule Helyx.Test.Gate do
     Atom.to_string(gate)
   end
 
-  # The stream of `steps`: each `:gate` sends {:waiting, pid} to the gate
-  # and waits for :go.
+  # The stream of `steps` in a model Task of `Helyx.Provider.Loop`: each
+  # `:gate` sends {:waiting, pid} to the gate and waits for :go.
   def stream(steps, gate) do
+    [provider | _] = Process.get(:"$callers")
+
     Stream.flat_map(steps, fn
       :gate ->
+        settle(provider, gate)
         wait(gate)
         []
 
       event ->
         [event]
     end)
+  end
+
+  # The events before the gate reach the session before the test hears of
+  # the gate: the provider process forwards each event as it handles it,
+  # so the gate waits until that process idles with an empty mailbox.
+  # This runs in the model Task, so a raise here reaches only the turn's
+  # `agent_end`. At the cap it also sends the reason to the gate, where the
+  # failed `assert_receive` of the test prints it. The cap is half of
+  # `Helyx.Test.Events.wait_ms/0`, so the message arrives before the test's
+  # own wait for the gate, which started earlier, ends.
+  defp settle(pid, gate) do
+    settle(pid, gate, System.monotonic_time(:millisecond) + div(Helyx.Test.Events.wait_ms(), 2))
+  end
+
+  defp settle(pid, gate, deadline) do
+    idle? =
+      Process.info(pid, [:message_queue_len, :status]) == [message_queue_len: 0, status: :waiting]
+
+    cond do
+      idle? ->
+        :ok
+
+      System.monotonic_time(:millisecond) >= deadline ->
+        reason =
+          "the provider process #{inspect(pid)} did not idle with an empty mailbox " <>
+            "within #{div(Helyx.Test.Events.wait_ms(), 2)} ms"
+
+        send(String.to_existing_atom(gate), {:gate_settle_timeout, reason})
+        raise reason
+
+      true ->
+        Process.sleep(1)
+        settle(pid, gate, deadline)
+    end
   end
 
   # Tells the gate that this process waits, and waits for :go.
@@ -43,16 +80,16 @@ defmodule Helyx.Test.Gate do
   end
 end
 
-defmodule Helyx.Test.Gated.Local do
+defmodule Helyx.Test.Gated.Loop do
   @moduledoc false
-  # A provider with a local turn. The model is the name of the gate. The
+  # A `Helyx.Provider.Loop` provider. The model is the name of the gate. The
   # last message of the context picks the reply:
   #
   #   "ok"     a text delta, the gate, more text, one gate call
   #   "fail"   a text delta, the gate, then a stream error
   #   "abort"  a text delta, the gate, more text, two gate calls
   #   other    the text "done"
-  @behaviour Helyx.Provider
+  use Helyx.Provider.Loop
 
   alias Helyx.Message
 
@@ -87,7 +124,7 @@ end
 
 defmodule Helyx.Test.Gated.Connected do
   @moduledoc false
-  # A connected provider; its id is the one of `Gated.Local`, so a Core
+  # A connected provider; its id is the one of `Gated.Loop`, so a Core
   # registers one of the two. The model is "<shape>.<gate>": the events of
   # a turn stop at the gate until the test sends :go to the provider
   # process. The provider process tells the gate only in its next message,

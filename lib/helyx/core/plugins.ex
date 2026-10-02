@@ -68,12 +68,13 @@ defmodule Helyx.Core.Plugins do
     end)
   end
 
-  # A local turn needs `stream/3`, a connected one `init/3`
-  # (`Helyx.Provider.turn/1`). The plugin check loaded the module.
+  # A provider runs in a provider process: it needs `init/3`, `request/3`,
+  # and `info/2`. The plugin check loaded the module.
   defp checked(plugin) do
-    if function_exported?(plugin, :stream, 3) or function_exported?(plugin, :init, 3),
-      do: checked_id(plugin),
-      else: :no_turn
+    if function_exported?(plugin, :init, 3) and function_exported?(plugin, :request, 3) and
+         function_exported?(plugin, :info, 2),
+       do: checked_id(plugin),
+       else: :no_turn
   end
 
   defp checked_id(plugin) do

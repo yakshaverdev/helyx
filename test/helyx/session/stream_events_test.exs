@@ -24,13 +24,15 @@ defmodule Helyx.Session.StreamEventsTest do
             }} = Session.subscribe(session)
   end
 
-  test "a snapshot of a local turn lists only the running call", %{core: core} do
+  test "a snapshot during tool calls lists every call with no result", %{core: core} do
     {:ok, session} = Session.start(core, model: "test/abort")
     {:ok, _} = Session.subscribe(session)
     :ok = Session.prompt(session, "go")
 
-    %Event{seq: seq} =
-      List.last(collect_until(:tool_execution_start))
+    # Every call starts at the `message_end`.
+    collect_until(:tool_execution_start)
+    assert_receive {:helyx_event, %Event{type: :tool_execution_start}}
+    assert_receive {:helyx_event, %Event{type: :tool_execution_start, seq: seq}}
 
     # A second client subscribes during the turn; the test process already
     # has its entry.
@@ -38,7 +40,7 @@ defmodule Helyx.Session.StreamEventsTest do
     pid = spawn(fn -> send(test, {:snapshot, self(), Session.subscribe(session)}) end)
 
     assert_receive {:snapshot, ^pid, {:ok, snapshot}}
-    assert %{seq: ^seq, turn: %{partial: nil, running: ["1"]}} = snapshot
+    assert %{seq: ^seq, turn: %{partial: nil, running: ["1", "2", "3"]}} = snapshot
 
     assert [%Helyx.Message{role: :user}, %Helyx.Message{role: :assistant, content: calls}] =
              snapshot.messages
@@ -300,7 +302,9 @@ defmodule Helyx.Session.StreamEventsTest do
                List.last(harness_turn(core, "exit_big")).data.error
     end
 
-    test "a rejected tool call fails a connected turn, and nothing reaches the transcript",
+    # `rejected_tool_call` is an event of `Helyx.Provider.Loop`'s stream, not
+    # of a provider.
+    test "a rejected_tool_call event is malformed, and nothing reaches the transcript",
          %{core: core} do
       {:ok, session} = Session.start(core, model: "harness/rejected")
       {:ok, _} = Session.subscribe(session)

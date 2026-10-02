@@ -16,7 +16,7 @@ defmodule Helyx.Provider.OpenAI do
 
   defmodule Go do
     @moduledoc "The OpenCode Go endpoint. See `Helyx.Provider.OpenAI`."
-    @behaviour Helyx.Provider
+    use Helyx.Provider.Loop
 
     @impl true
     def id, do: "opencode-go"
@@ -28,7 +28,7 @@ defmodule Helyx.Provider.OpenAI do
 
   defmodule Zen do
     @moduledoc "The OpenCode Zen endpoint. See `Helyx.Provider.OpenAI`."
-    @behaviour Helyx.Provider
+    use Helyx.Provider.Loop
 
     @impl true
     def id, do: "opencode"

@@ -1078,9 +1078,9 @@ defmodule Helyx.Session.ProviderProcessTest do
     end
   end
 
-  # #227: a local turn checks the context of each plugin like a connected
-  # turn.
-  describe "the context check of a local turn" do
+  # #227: a turn of a `Helyx.Provider.Loop` provider checks the context of
+  # each plugin like a harness turn.
+  describe "the context check of a Loop turn" do
     for {mode, model, text} <- [{"local", "test/system", "prepared"}],
         {prompt, kind} <- [
           {"nil_build", :model_context},

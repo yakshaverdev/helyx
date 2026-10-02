@@ -6,7 +6,7 @@ defmodule Helyx.Session.TurnTest do
 
   defp turn do
     {:ok, model} = ModelRef.parse("fake/echo")
-    %Turn{id: "t1", model: model, provider: Helyx.Test.Provider, turn_mode: :local, partial: []}
+    %Turn{id: "t1", model: model, provider: Helyx.Test.Provider, partial: []}
   end
 
   test "assistant_message builds the content in stream order, with the fields" do
@@ -28,19 +28,5 @@ defmodule Helyx.Session.TurnTest do
 
   test "assistant_message with no blocks has empty content" do
     assert %Message{content: [], model: "fake/echo"} = Turn.assistant_message(turn(), [])
-  end
-
-  test "a rejected call is found by value, also under another struct instance" do
-    call = %Message.ToolCall{id: "c1", name: "read", arguments: %{"n" => "capped"}}
-    turn = Turn.reject(turn(), call, "why")
-
-    assert Turn.rejection(turn, %Message.ToolCall{
-             id: "c1",
-             name: "read",
-             arguments: %{"n" => "capped"}
-           }) == "why"
-
-    assert Turn.rejection(turn, %{call | arguments: %{}}) == nil
-    assert Turn.rejection(turn(), call) == nil
   end
 end

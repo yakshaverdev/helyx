@@ -19,7 +19,7 @@ end
 defmodule Helyx.TUI.Test.Provider.Other do
   @moduledoc false
   # A second provider module, so a test can switch away from Fake and back.
-  @behaviour Helyx.Provider
+  use Helyx.Provider.Loop
 
   @impl true
   def id, do: "other"

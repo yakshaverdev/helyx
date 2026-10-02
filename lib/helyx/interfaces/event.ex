@@ -15,7 +15,7 @@ defmodule Helyx.Event do
 
     * `:agent_start` – `%{}`
     * `:turn_start` – `%{}`, or `%{origin: :program}` for a turn that a
-      connected provider's program started by itself, with no user message
+      harness provider's program started by itself, with no user message
     * `:message_start` – `%{message: Helyx.Message.t()}` (may be partial)
     * `:message_update` – `%{text_delta: binary}`, `%{thinking_delta: binary}`,
       or `%{tool_call: Helyx.Message.ToolCall.t()}`
@@ -36,13 +36,13 @@ defmodule Helyx.Event do
     * `:model_change` – `%{model: String.t()}`, the new `provider/model` ref;
       the switch belongs to no turn, so the turn id is always nil
     * `:provider_session` – `%{provider: String.t(), resume_id:
-      String.t(), lost: boolean, cut: non_neg_integer}`: a connected turn
+      String.t(), lost: boolean, cut: non_neg_integer}`: a turn
       started a fresh program session. `lost` is true when the turn asked
       to resume another one that the provider no longer has; `cut` is the
       number of transcript messages the provider left out of what it sent
       to the fresh session
-    * `:steer_unconfirmed` – `%{text: String.t()}`: a steer of a connected
-      turn that Helyx cannot confirm the provider took, with its text. It
+    * `:steer_unconfirmed` – `%{text: String.t()}`: a steer of a turn
+      that Helyx cannot confirm the provider took, with its text. It
       goes out at the end of the turn, or after it when the answer comes
       late. Helyx does not send it again. The user can send it again.
     * `:notice` – `%{text: String.t()}`: a notice of the provider, or of
