@@ -245,50 +245,13 @@ defmodule Helyx.TUITest do
     assert {:noreply, ^state} = TUI.handle_info(other, state)
 
     # The end signal of another session does nothing.
-    assert {:noreply, ^state} = TUI.handle_info({:helyx_session_end, "other", :crashed}, state)
+    other = {{:helyx_session_end, "other"}, make_ref(), :process, self(), :killed}
+    assert {:noreply, ^state} = TUI.handle_info(other, state)
 
     Process.exit(Session.pid(state.session), :kill)
     id = state.session.id
-    assert_receive {:helyx_session_end, ^id, :crashed} = signal
+    assert_receive {{:helyx_session_end, ^id}, _ref, :process, _pid, :killed} = signal
     assert catch_exit(TUI.handle_info(signal, state)) == {:session_down, :crashed}
-  end
-
-  # The lost signal comes when the Registry partition that holds the
-  # subscription dies. The test process traps exits, as `ExRatatui.Server`
-  # does, so the link to the partition does not end it.
-  @tag :capture_log
-  test "a lost subscription rebuilds the view from a new snapshot", %{core: core} do
-    Process.flag(:trap_exit, true)
-    state = mounted(core, "lost", [["one"], ["two"]])
-    :ok = Session.prompt(state.session, "first")
-    assert_receive {:helyx_event, %Event{type: :agent_end}}
-    ExRatatui.textarea_set_value(state.input, "draft")
-
-    registry = Helyx.Core.events_registry(core)
-    [{_, partition, _, _}] = Supervisor.which_children(registry)
-    Process.exit(partition, :kill)
-    id = state.session.id
-    assert_receive {:helyx_subscription_lost, ^id} = lost
-    {:noreply, state} = TUI.handle_info(lost, state)
-
-    # The TUI subscribed again: one entry with a live watch.
-    assert [watch] = Registry.values(registry, id, self())
-    assert Process.alive?(watch)
-
-    {:ok, snapshot} = Session.subscribe(state.session)
-    assert state.vm == ViewModel.from_snapshot(snapshot)
-    assert state.scroll == nil
-    assert ExRatatui.textarea_get_value(state.input) == "draft"
-
-    # The events reach the TUI again, and so does the end signal.
-    :ok = Session.prompt(state.session, "second")
-    assert_receive {:helyx_event, %Event{type: :agent_end} = event} = message
-    {:noreply, state} = TUI.handle_info(message, state)
-    assert state.vm.seq == event.seq
-
-    :ok = GenServer.stop(Session.pid(state.session))
-    assert_receive {:helyx_session_end, ^id, :stopped} = signal
-    assert catch_exit(TUI.handle_info(signal, state)) == {:session_down, :stopped}
   end
 
   @tag :tmp_dir
@@ -329,9 +292,10 @@ defmodule Helyx.TUITest do
     assert live.cells == Enum.drop(vm.cells, -1)
   end
 
-  # The review of #188, round 4, spec item 1: the entry of the TUI stays
-  # across a stop and a resume with the same id, and the new instance starts
-  # `seq` at 0 again.
+  # The review of #188, round 4, spec item 1: a resume keeps the session
+  # id, and the new instance starts `seq` at 0 again. The old screen gets
+  # events of the new instance only as stale messages of a later
+  # subscription of its process.
   @tag :tmp_dir
   test "an event of a resumed instance does not change the screen of the old one (#204)", %{
     core: core,
@@ -348,8 +312,9 @@ defmodule Helyx.TUITest do
     :ok =
       DynamicSupervisor.terminate_child(Helyx.Core.session_supervisor(core), Session.pid(session))
 
-    assert_receive {:helyx_session_end, _id, :stopped}
+    assert_receive {{:helyx_session_end, _id}, _ref, :process, _pid, :shutdown}
     {:ok, resumed} = Session.resume(core, sessions_dir: dir, cwd: dir)
+    {:ok, _} = Session.subscribe(resumed)
     :ok = Session.prompt(resumed, "again")
 
     assert drain(state) == state
@@ -371,7 +336,7 @@ defmodule Helyx.TUITest do
     assert catch_exit(TUI.mount(session: session)) ==
              {:session_down, :session_not_found}
 
-    assert Registry.keys(Helyx.Core.events_registry(core), self()) == []
+    assert Process.get({Session, core, session.id}) == nil
   end
 
   test "a send and a model switch to an ended session keep the composer", %{core: core} do
@@ -394,7 +359,7 @@ defmodule Helyx.TUITest do
   test "a snapshot of an unsupported contract version shows a message, not the session", %{
     core: core
   } do
-    # A fake session that answers the snapshot call with version 2.
+    # A fake session that answers the subscribe call with version 3.
     id = "future"
     test = self()
 
@@ -404,9 +369,9 @@ defmodule Helyx.TUITest do
         send(test, :registered)
 
         receive do
-          {:"$gen_call", from, :snapshot} ->
+          {:"$gen_call", from, {:subscribe, _pid}} ->
             GenServer.reply(from, %Session.Snapshot{
-              contract_version: 2,
+              contract_version: 3,
               instance_id: "i",
               seq: 7,
               messages: [%Message{role: :user, content: [%Message.Text{text: "secret"}]}],
@@ -442,7 +407,7 @@ defmodule Helyx.TUITest do
 
     # The end of the session still ends the TUI.
     Process.exit(fake, :kill)
-    assert_receive {:helyx_session_end, ^id, :crashed} = signal
+    assert_receive {{:helyx_session_end, ^id}, _ref, :process, ^fake, :killed} = signal
     assert catch_exit(TUI.handle_info(signal, state)) == {:session_down, :crashed}
   end
 

@@ -43,6 +43,8 @@ defmodule Helyx.Session.Server do
       tool_modules: %{},
       transcript: [],
       seq: 0,
+      # Each subscriber pid and the session's monitor of it (session-subscribers.md).
+      subscribers: %{},
       # `:idle`, the turn in progress (a `%Turn{}`), or the wait before
       # the next turn can start (a `%Wait{}`, see `Helyx.Session.Wait`).
       activity: :idle,
@@ -122,9 +124,8 @@ defmodule Helyx.Session.Server do
   # call to the hands during their release, and that call would block the
   # session, so every message queues until the hands answer.
   @impl true
-  def handle_call({:steer, text}, _from, %State{activity: %Wait{}} = state) do
-    queue_reply(state, :steers, text)
-  end
+  def handle_call({:steer, text}, _from, %State{activity: %Wait{}} = state),
+    do: queue_reply(state, :steers, text)
 
   def handle_call({op, text}, _from, %State{activity: %Wait{}} = state)
       when op in [:prompt, :follow_up] do
@@ -159,13 +160,11 @@ defmodule Helyx.Session.Server do
       else: {:reply, {:error, :queue_full}, state}
   end
 
-  def handle_call({:steer, text}, _from, %State{activity: %Turn{}} = state) do
-    queue_reply(state, :steers, text)
-  end
+  def handle_call({:steer, text}, _from, %State{activity: %Turn{}} = state),
+    do: queue_reply(state, :steers, text)
 
-  def handle_call({:follow_up, text}, _from, %State{activity: %Turn{}} = state) do
-    queue_reply(state, :follow_ups, text)
-  end
+  def handle_call({:follow_up, text}, _from, %State{activity: %Turn{}} = state),
+    do: queue_reply(state, :follow_ups, text)
 
   # A harness process that ended while the session was idle can still have
   # its handles in a release of the hands: the message waits for its
@@ -183,12 +182,19 @@ defmodule Helyx.Session.Server do
       instance_id: state.instance_id,
       seq: state.seq,
       messages: state.transcript,
-      turn: snapshot_turn(state.activity),
+      turn: if(match?(%Turn{}, state.activity), do: Turn.snapshot(state.activity)),
       model: ModelRef.to_string(state.model),
       queue: Queues.counts(state.queues)
     }
 
     {:reply, snapshot, state}
+  end
+
+  # The entry and the snapshot in one message, so every later event reaches
+  # the caller. A repeated subscribe keeps the entry and its monitor.
+  def handle_call({:subscribe, pid}, from, %State{} = state) do
+    subscribers = Map.put_new_lazy(state.subscribers, pid, fn -> Process.monitor(pid) end)
+    handle_call(:snapshot, from, %{state | subscribers: subscribers})
   end
 
   def handle_call({:set_model, %ModelRef{} = ref, provider, turn_mode}, _from, %State{} = state) do
@@ -203,9 +209,8 @@ defmodule Helyx.Session.Server do
   # The release of the hands can take longer than the timeout of a client call
   # (issue #93), so the session does not wait in a call: the answer of the
   # hands arrives as a message, and the abort callers get their reply then.
-  def handle_call(:abort, from, %State{activity: %Turn{}} = state) do
-    {:noreply, abort_turn(state, [from])}
-  end
+  def handle_call(:abort, from, %State{activity: %Turn{}} = state),
+    do: {:noreply, abort_turn(state, [from])}
 
   @impl true
   def handle_info(
@@ -541,10 +546,20 @@ defmodule Helyx.Session.Server do
   def handle_info({:stream_end, _turn_id, _terminal}, state), do: {:noreply, state}
   def handle_info({:rejected_call, _turn_id, _call, _reason}, state), do: {:noreply, state}
 
-  # The hands are linked and vital: their death takes the session with it.
-  def handle_info({:EXIT, pid, reason}, %State{hands: pid} = state) do
-    {:stop, reason, state}
+  # The failed subscribe of `Helyx.Session.subscribe/1`, and the end of a
+  # subscriber: only the monitor of its entry removes the entry.
+  def handle_info({:unsubscribe, pid}, %State{} = state) do
+    {ref, subscribers} = Map.pop(state.subscribers, pid)
+    _ = ref && Process.demonitor(ref, [:flush])
+    {:noreply, %{state | subscribers: subscribers}}
   end
+
+  def handle_info({:DOWN, ref, :process, pid, _reason}, %State{subscribers: subscribers} = state)
+      when :erlang.map_get(pid, subscribers) == ref,
+      do: {:noreply, %{state | subscribers: Map.delete(subscribers, pid)}}
+
+  # The hands are linked and vital: their death takes the session with it.
+  def handle_info({:EXIT, pid, reason}, %State{hands: pid} = state), do: {:stop, reason, state}
 
   # The exit signal of a provider Task never gets here: the clauses of its
   # reply and its crash take it, and `shutdown_stream/1` flushes it. An exit
@@ -648,20 +663,6 @@ defmodule Helyx.Session.Server do
         end
     end
   end
-
-  defp snapshot_turn(%Turn{} = turn) do
-    partial = if turn.partial, do: Turn.assistant_message(turn, [])
-    %{id: turn.id, partial: partial, running: Enum.map(started_calls(turn), & &1.id)}
-  end
-
-  defp snapshot_turn(_idle_or_wait), do: nil
-
-  # The calls that have had their `tool_execution_start`: a local turn runs
-  # its calls one at a time, the head first; a connected turn started them
-  # all at its message end.
-  defp started_calls(%Turn{turn_mode: :local, calls: [head | _]}), do: [head]
-  defp started_calls(%Turn{turn_mode: :local, calls: []}), do: []
-  defp started_calls(%Turn{calls: calls}), do: calls
 
   # Turn machinery
 
@@ -1172,9 +1173,7 @@ defmodule Helyx.Session.Server do
       data: data
     }
 
-    Registry.dispatch(Helyx.Core.events_registry(state.core), state.id, fn entries ->
-      for {pid, _} <- entries, do: send(pid, {:helyx_event, event})
-    end)
+    for {pid, _ref} <- state.subscribers, do: send(pid, {:helyx_event, event})
 
     %{state | seq: seq}
   end

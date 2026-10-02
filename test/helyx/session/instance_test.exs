@@ -30,10 +30,10 @@ defmodule Helyx.Session.InstanceTest do
       assert Enum.all?(prompt_events(resumed), &(&1.instance_id == second.instance_id))
     end
 
-    # The review of #188, round 4, spec item 1: the entry of the old
-    # subscription stays across the resume, and the new instance starts
-    # `seq` at 0 again.
-    test "a subscriber that keeps its entry across a resume can tell the new instance", %{
+    # The review of #188, round 4, spec item 1. The session process holds
+    # its subscribers (#297), so the entry of the old subscription ends with
+    # the old process. The new instance starts `seq` at 0 again.
+    test "a subscription ends with its process, and a resume starts a new instance", %{
       core: core,
       tmp_dir: dir
     } do
@@ -42,8 +42,10 @@ defmodule Helyx.Session.InstanceTest do
       prompt_events(session)
 
       stop_session(session, &GenServer.stop/1)
-      assert_receive {:helyx_session_end, _id, :stopped}
+      assert_receive {{:helyx_session_end, _id}, _ref, :process, _pid, :normal}
       {:ok, resumed} = Session.resume(core, sessions_dir: dir)
+      assert :sys.get_state(Session.pid(resumed)).subscribers == %{}
+      {:ok, _} = Session.subscribe(resumed)
 
       events = prompt_events(resumed)
       assert hd(events).seq == 1

@@ -3,7 +3,7 @@ defmodule Helyx.Session.Snapshot do
   The state of a session at one event, as `Helyx.Session.subscribe/1`
   returns it.
 
-    * `contract_version` – the version of the client contract, 1 now.
+    * `contract_version` – the version of the client contract, 2 now.
     * `instance_id` – the id of the session instance. A client drops each
       event with another `instance_id`: a resume keeps the session id and
       starts `seq` at 0 again, and two Cores can hold one session id.
@@ -27,7 +27,7 @@ defmodule Helyx.Session.Snapshot do
   """
 
   @enforce_keys [:instance_id, :seq, :messages, :turn, :model, :queue]
-  defstruct [:instance_id, :seq, :messages, :turn, :model, :queue, contract_version: 1]
+  defstruct [:instance_id, :seq, :messages, :turn, :model, :queue, contract_version: 2]
 
   @type turn :: %{id: String.t(), partial: Helyx.Message.t() | nil, running: [String.t()]}
 

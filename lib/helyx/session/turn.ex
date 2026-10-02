@@ -74,4 +74,18 @@ defmodule Helyx.Session.Turn do
   # The reason of a rejected call, or nil for a call that runs.
   @spec rejection(t(), Message.ToolCall.t()) :: String.t() | nil
   def rejection(%__MODULE__{rejected: rejected}, call), do: Map.get(rejected, call)
+
+  # The turn of a snapshot (`Helyx.Session.Snapshot`).
+  @spec snapshot(t()) :: Helyx.Session.Snapshot.turn()
+  def snapshot(%__MODULE__{} = turn) do
+    partial = if turn.partial, do: assistant_message(turn, [])
+    %{id: turn.id, partial: partial, running: Enum.map(started_calls(turn), & &1.id)}
+  end
+
+  # The calls that have had their `tool_execution_start`: a local turn runs
+  # its calls one at a time, the head first; a connected turn started them
+  # all at its message end.
+  defp started_calls(%__MODULE__{turn_mode: :local, calls: [head | _]}), do: [head]
+  defp started_calls(%__MODULE__{turn_mode: :local, calls: []}), do: []
+  defp started_calls(%__MODULE__{calls: calls}), do: calls
 end

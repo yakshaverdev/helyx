@@ -1,6 +1,6 @@
 # The session holds its subscribers
 
-Status: design decided on 2026-10-02, not built. Built from the code at `58471ac`. The design went through five review rounds in one proposal with the one-provider design (`one-provider-path.md`). The last round found no blocking issue.
+Status: built in #297 on 2026-10-02. Design decided on 2026-10-02. Built from the code at `58471ac`. The design went through five review rounds in one proposal with the one-provider design (`one-provider-path.md`). The last round found no blocking issue.
 
 ## Goal
 
@@ -27,9 +27,9 @@ Users see no change. A client sees two changes: the lost signal is gone, and the
 
 **S3 Events.** The session sends each event to each pid in the map, in place of `Registry.dispatch`.
 
-**S4 A subscriber ends.** At a `:DOWN`, the session removes the entry of that pid only when the entry holds the same monitor reference. A `:DOWN` with another reference changes nothing.
+**S4 A subscriber ends.** At a `:DOWN`, the session removes the entry of that pid only when the entry holds the same monitor reference. A `:DOWN` with another reference does not touch the map and goes to the other clauses of the session. No subscriber can make one: the `:DOWN` of an entry removes the entry, and an unsubscribe removes its monitor with `[:flush]`. So it is a bug, and the session crashes on it as on any unknown message (Codex round 1 of #297).
 
-**S5 The end signal.** `subscribe/1` reads the session pid once (`pid/1`), monitors that exact pid with the tag `{:helyx_session_end, id}`, and then sends the subscribe call to the same pid. The monitor comes before the call, so the real exit reason of the session is never lost. The tag holds no `instance_id`, because the caller learns it only from the snapshot. The caller keeps one monitor reference for each `{core, id}` in its process dictionary, as it keeps the Watch today. A new subscribe for the same id first removes the old monitor with `Process.demonitor(ref, [:flush])`. This also removes its signal from the mailbox, and no signal of a removed monitor can come later. So the caller holds at most one monitor for a session, and every end signal that it gets is of its current subscription. `Session.end_reason/1` maps the reason to `:stopped` or `:crashed` by today's rule (`watch.ex`, `end_reason/1`).
+**S5 The end signal.** `subscribe/1` reads the session pid once (`pid/1`), monitors that exact pid with the tag `{:helyx_session_end, id}`, and then sends the subscribe call to the same pid. The monitor comes before the call, so the real exit reason of the session is never lost. The tag holds no `instance_id`, because the caller learns it only from the snapshot. The caller keeps one monitor reference for each `{core, id}` in its process dictionary, as it keeps the Watch today. A new subscribe for the same id first removes the old monitor with `Process.demonitor(ref, [:flush])`. This also removes its signal from the mailbox, and no signal of a removed monitor can come later. So the caller holds at most one monitor for a session, and every end signal that it gets is of its current subscription. Each subscribe also removes the entries whose session the caller no longer monitors, as `leave/2` removed the entries of dead watches. A monitor leaves the caller's monitor list (`Process.info(self(), :monitors)`) only when its end signal is in the mailbox, where it stays for the client. A dead pid is not enough: a process is dead before its `:DOWN` arrives (failure-path round 2 of #297). While the caller holds another monitor of the same pid, the entry stays until that monitor ends too. Then it removes every end signal for the id from the mailbox, as `leave/2` removed the signals for the id, because such a signal is of an earlier process of the id whose entry is gone (found in the build of #297: without the pruning, the dictionary grew by one entry for each session that ended). Accepted hole, as before: the flush matches the id only, so a subscribe to an id in one Core removes an unread end signal of an ended session with the same id in another Core. `Session.end_reason/1` maps the reason to `:stopped` or `:crashed` by today's rule (`watch.ex`, `end_reason/1`).
 
 **S6 Errors.** The subscribe call keeps the distinction of `call_pid/3` in `session.ex`:
 
@@ -41,7 +41,7 @@ On both failure paths, before the return or the exit, `subscribe/1` removes its 
 
 **S7 The instance filter stays.** A resume starts a new session process, and events of the old process can still be in the client's mailbox. The `instance_id` rule of ADR 0006 §3 stays for events. So does `seq`, which a remote transport needs for its reconnect. The end signal needs no `instance_id`, because S5 removes the monitor of the old pid before the subscribe to the new one.
 
-**S8 What `subscribe/1` keeps.** About 30 lines of lifecycle code: the monitor reference per session, the demonitor with flush, and the ordered unsubscribe on failure.
+**S8 What `subscribe/1` keeps.** About 50 lines of lifecycle code: the monitor reference per session, the demonitor with flush, the ordered unsubscribe on failure, and the removal of the entries and signals of ended sessions (S5).
 
 ### The end signal message
 
@@ -74,7 +74,7 @@ A client matches on the tag and calls `Session.end_reason/1` to get `:stopped` o
 | `{:error, :session_not_found}` with no registration left, also when the session ends during the call | kept | S6 |
 | A snapshot call timeout removes the registration, then exits | kept | The ordered `{:unsubscribe, pid}` and the demonitor with flush (S6) |
 | The `instance_id` and `seq` rules for the client | kept | S2, S7. The end signal is covered by the monitor lifecycle (S5). |
-| A Core stop ends each subscriber that does not trap exits, through the Registry link | changed | No link. A Core stop ends its sessions, and each subscriber gets the end signal `:stopped`. This is the documented signal, so a client is no longer killed. The TUI traps exits today, so it sees no change. |
+| A Core stop ends each subscriber that does not trap exits, through the Registry link | changed | No link. A Core stop ends its sessions, and each subscriber gets the end signal `:stopped`. This is the documented signal, so a client is no longer killed. The TUI traps exits today, so it sees no change. The trap for this link goes from `stop/1` in `apps/coding_agent/lib/mix/tasks/helyx.graph.ex` and from the bash test "stopping Core normally ends a running command". |
 | The rescue clauses for a Registry that is gone (`ArgumentError`, `ErlangError`) | deleted | No events Registry. The sessions Registry for `pid/1` stays, with its own rescue. |
 | The TUI resubscribe on `{:helyx_subscription_lost, id}` | deleted | No lost signal. The TUI matches the tagged end signal. |
 
@@ -90,7 +90,6 @@ A client matches on the tag and calls `Session.end_reason/1` to get `:stopped` o
 | "every operation on an id that never existed", "every operation on a session that ended", "every operation on a dead session that is still registered", "every operation after the Core stopped", "input errors win over session_not_found", "a session that stops with the reason :timeout during a call" | kept |
 | "a session that ends during the snapshot call" | kept, checks no monitor in place of no registration |
 | "a second subscribe keeps one entry, and a failed one removes it" | kept, checks the subscriber map |
-| "a subscribe while the Core stops" | kept |
 | "a subscribe that times out leaves no entry" | kept, checks the subscriber map and the monitors of the session (S6) |
 | "a normal stop gives :stopped, after the last event", "a kill and a raise give :crashed", "a Core that stops gives :stopped", "a subscribe that gets a snapshot gets the end signal after it" | kept, with the new message shape |
 | "a subscribe that fails as the session ends leaves no signal and no watch" | kept, checks no signal and no monitor |
@@ -98,7 +97,10 @@ A client matches on the tag and calls `Session.end_reason/1` to get `:stopped` o
 | "a restart of the events Registry (…) gives a lost signal, and the session runs", "a subscribe after a restart stops the old watch that has not signalled", "the lost signal waits for a new partition, not for an answer of the supervisor", "a stopped events Registry gives the lost signal at once" | deleted: no events Registry |
 | "a second subscribe replaces the watch", "a subscribe removes the entries of dead watches and keeps their signals", "a subscriber that exits stops its watch" | replaced by the new tests below that prove the same properties for the monitors |
 | `plugins/bundled/test/helyx/tui_test.exs`, the test that asserts `{:helyx_subscription_lost, id}` | deleted |
-| `test/support/shared/late_client.ex` (`Helyx.Test.LateClient`) | kept, with the new end signal shape |
+| `test/support/shared/late_client.ex` (`Helyx.Test.LateClient`) | kept: it matches no end signal |
+| "a subscribe while the Core stops" | kept: the window is now a stopped sessions Registry, where `pid/1` gives nil |
+| `test/helyx/session/instance_test.exs`, "a subscriber that keeps its entry across a resume can tell the new instance" | changed (found in the build): the entry of a subscriber ends with the session process, so the test checks that the resumed process has no subscriber, subscribes again, and checks the new instance and `seq` |
+| `plugins/bundled/test/helyx/tui_test.exs`, "an event of a resumed instance does not change the screen of the old one (#204)" | changed (found in the build): the old screen gets the events of the new instance only through a later subscribe of its process, so the test subscribes again before it applies them to the old screen |
 
 New tests:
 
@@ -108,6 +110,9 @@ New tests:
 - A subscribe that times out leaves no entry and no monitor, and a later subscribe drops the events in between by `seq`.
 - A subscribe after a resume of the same id gets no end signal of the old process.
 - A subscriber that dies is removed from the map.
+- A subscribe to another session keeps the end signal of the first.
+- The entries of ended sessions go at the next subscribe.
+- A subscribe after a resume drops the signal of a forgotten entry (one that an earlier subscribe removed).
 
 4. What clients see: the lost signal is gone; the end signal has the shape above; `contract_version` is 2. Users see no change.
 
@@ -120,6 +125,9 @@ New tests:
 | Subscribers of one session | unbounded, as today, ticket #116 (flow control) | — |
 | Monitors held by the session | one per subscriber pid (S2) | a repeated subscribe reuses the monitor |
 | Monitors held by a caller | one per `{core, id}` (S5) | a new subscribe removes the old one with flush |
+| Dictionary entries of a caller | one per `{core, id}` whose session the caller monitored at its last subscribe (S5) | the next subscribe removes the entries whose monitor has fired |
+| The flush of end signals at a subscribe | one scan of the caller's mailbox, with no wait (`after 0`) | — |
+| The prune at a subscribe | one read of the caller's monitor list and one pass over its dictionary | — |
 | The subscribe call | the timeout of `call_pid/3`, as today | the exit goes on after cleanup (S6) |
 
 ## Ownership
