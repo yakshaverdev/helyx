@@ -136,3 +136,4 @@ One row per ticket that `/orchestrate` merged. An escape is a confirmed Codex fi
 | 2026-10-03 | #340 | r1: 0 reproduced; simplify 1 (read moved into Watchdog), spec 1 doc row | gate r1 (Claude, Codex at limit): 0 | none needed |
 | 2026-10-03 | #345 | r1: 1 defect (repeated id split a call); r2: 1 defect (same rule, rule removed); r3: 0 | gate r1 (Claude, Codex at limit): 0 defects, 1 review-doc label fixed | the r2 repeat removed the rule (question the premise), no checklist change |
 | 2026-10-03 | #339 | r1: 1 reproduced (switch-close wait missed) + 5 spec; r2: 1 reproduced (reused id, accepted as documented hole) + 5 doc sentences | gate r1 (Claude, Codex at limit): 0 | none needed: the r2 finding is a contract hole, now stated in the feature doc |
+| 2026-10-03 | #321 | r1: 0 reproduced; simplify 1 + 4 comment fixes, standards 1 stale doc reference fixed | gate r1 (Claude, Codex at limit): 0 | none needed |
