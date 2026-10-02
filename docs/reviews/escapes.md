@@ -123,3 +123,4 @@ One row per ticket that `/orchestrate` merged. An escape is a confirmed Codex fi
 | 2026-10-03 | #328 | r1 (full, Codex approve): 0 in this change; 2 older parser defects, now #332 | round 1: 0 | none needed |
 | 2026-10-03 | #319 | r1 (full, Codex approve): 0 | round 1: 0 | none needed |
 | 2026-10-03 | #323 | r1 (full, Codex approve): 0 reproduced; simplify 2 and spec 1 comment fixes | round 1: 0 | none needed |
+| 2026-10-03 | #307 | pass 1 r1-r3 (full): spec 4/5/2, failure path 0/1/1, Codex 1/1/1, all fixed or ticketed (#319); pass 2 r1 (full) 1 reproduced, r2 (reduced) 2, fixed; after the #319 rebase, reduced round: spec 1, failure path 1 new gap, now #339 | round 1: 1 confirmed (the context rule missed that a taken steer closes the open message), fixed; round 2: 0; round 3 after the rebase: 0 | review-checklist.md, Specs and bounds: a doc claim about a state change is checked against every writer of that state |
