@@ -121,38 +121,11 @@ defmodule Helyx.Session.ProviderProcess do
     end
   end
 
-  # Helyx tool calls (`docs/features/long-lived-harness.md`, "Helyx tool
-  # calls"). The loop owns the rules, so each provider only maps
-  # its program's requests to `{:tool_request, ...}` events and writes the
-  # `{:tool_result, ...}` requests. A turn is `live` from its `{:turn, ...}`
-  # request until its terminal or its interrupt; `calls` holds the call ids
-  # of the live turn's tool requests with no result, and `seen` every call
-  # id the live turn used, so an id that got any answer (a result, a
-  # withdraw, an error of the loop) never runs later in the turn. A pair
-  # `{turn_id, call_id}` is open when the turn is live and the id is in
-  # `calls`.
-  #
-  # The loop owns the queue: the session gets only the call that runs,
-  # `running`, and the next of `waiting` (its events, in order) goes to
-  # the session only when the running call's result came. The session asks
-  # `{:tool_start, ...}` before it runs the call, and the loop answers `:ok`
-  # only for the open running call, and keeps its pair in `started`. So a
-  # call that got any answer never starts. After the `:ok`, only the result
-  # of the run answers the call: `end_tools` skips it, and the session sends
-  # the result of its killed run after the hands' cleanup, also after the
-  # turn. The skip acts at the terminal; at the interrupt and the next turn
-  # that result came first, so `started` is nil there, and the one
-  # `end_tools` serves all three ends. A call withdrawn before the ask
-  # gets `:dropped` at the ask; a started one stays `running` until the
-  # result of its killed run comes, which is dropped.
-  #
-  # The loop answers a tool request itself, with an error result through the
-  # provider, when its turn is not live, when its id was used, and when
-  # @max_tools are open. At the terminal, the interrupt, and the next turn, every open
-  # request of the turn gets the error result `aborted` before the provider
-  # sees the interrupt. A result whose pair is not open (a late result of
-  # an ended turn, or of a call that the provider withdrew) is answered `:ok`
-  # here and dropped, so it never answers a call of a later turn.
+  # Helyx tool calls: the loop owns the rules, so a provider only maps its
+  # program's requests to `{:tool_request, ...}` events and writes the
+  # `{:tool_result, ...}` requests. The session gets one call at a time, and
+  # an id that got any answer never runs later in the turn.
+  # See `docs/features/long-lived-harness.md`, "Built in #203".
   defp serve({:turn, turn_id, _context} = request, from, tref, proc) do
     with {:ok, proc} <- end_tools(proc),
          do: provide(request, from, tref, %{proc | live: turn_id})
