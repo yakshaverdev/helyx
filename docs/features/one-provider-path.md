@@ -252,7 +252,7 @@ New tests:
 | Tool result and context result requests in flight | each is answered inside its callback, so at most one is in the provider's hands at a time; at the end of a turn, at most 17 aborted results go out in one batch | `{:tool_result_not_answered}` |
 | Steers | 32, queued and open together (`queues.ex`, `@limit`) | `{:error, :queue_full}` |
 | Events into the session | the session mailbox cap, 10,000 (`stream.ex`, `send_checked/3`) | nothing is sent, `{:error, {:session_behind, length, 10_000}}` |
-| Deadlines | `connect_ms` 30 s and `prepare_ms` 10 s (`hands.ex`; `prepare_ms` also for each context request), the reply bound 2 s per request (`server.ex`, `@provider_reply_ms`), the close bound 5 s (`@provider_close_ms`), idle 30 min | the kill of the provider process. The helper replies to `{:turn}` at once, so the 2 s bound never covers a model call. |
+| Deadlines | `connect_ms` 30 s and `prepare_ms` 10 s (`hands.ex`; `prepare_ms` also for each context request), the reply bound 2 s per request (`server/state.ex`, `@provider_reply_ms`), the close bound 5 s (`@provider_close_ms`), idle 30 min | the kill of the provider process. The helper replies to `{:turn}` at once, so the 2 s bound never covers a model call. |
 | A model call | unbounded: the user aborts it. The same as the local path today. | — |
 | A provider callback on a `tool_result` request that Core makes itself | accepted: the next session request, for example the interrupt of an abort, ends the wait ("The provider protocol", Deadlines) | — |
 | The `seen` call ids of a turn | unbounded: a turn keeps every id until its end, as today | — |
