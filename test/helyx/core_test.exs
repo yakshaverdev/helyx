@@ -61,8 +61,18 @@ defmodule Helyx.CoreTest do
       end
     end
 
-    test "a provider with neither stream/3 nor init/3 stops the start" do
-      assert boot([Test.Provider, Test.NoTurn]) == {:error, {:invalid_provider, Test.NoTurn}}
+    test "a provider without init/3, request/3, and info/2 stops the start" do
+      # The missing callbacks are the point; their compile warnings are kept
+      # out of the test output.
+      source = """
+      defmodule Helyx.Test.NoTurn do
+        @behaviour Helyx.Provider
+        def id, do: "no_turn"
+      end
+      """
+
+      {[{no_turn, _}], _warnings} = Code.with_diagnostics(fn -> Code.compile_string(source) end)
+      assert boot([Test.Provider, no_turn]) == {:error, {:invalid_provider, no_turn}}
     end
 
     test "two providers with one id stop the start and are both named" do

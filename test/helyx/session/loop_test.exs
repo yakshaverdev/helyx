@@ -153,12 +153,13 @@ defmodule Helyx.Session.LoopTest do
         end
       end
 
+    # Every call starts at the `message_end`; the results come in call order.
     assert order == [
              {:tool_execution_start, "1"},
-             {:tool_execution_end, "1"},
              {:tool_execution_start, "2"},
-             {:tool_execution_end, "2"},
              {:tool_execution_start, "3"},
+             {:tool_execution_end, "1"},
+             {:tool_execution_end, "2"},
              {:tool_execution_end, "3"}
            ]
   end
@@ -288,8 +289,8 @@ defmodule Helyx.Session.LoopTest do
     refute_received {:helyx_event, _}
   end
 
-  # Each abort shuts down a provider Task. The session keeps no record of
-  # it, and its exit signal does not stay in the mailbox (#261).
+  # Each abort kills a model Task in the provider process. The session
+  # keeps no record of it, and no signal stays in its mailbox (#261).
   test "many aborts in a row leave no growing state", %{core: core} do
     {:ok, session} = Session.start(core, model: "test/hang")
     {:ok, _} = Session.subscribe(session)
@@ -309,11 +310,11 @@ defmodule Helyx.Session.LoopTest do
     for _ <- 1..20, do: assert(abort.() == size)
   end
 
-  # A crash of a linked process that is not a provider Task, the sessions
+  # A crash of a linked process that is not the provider process, the sessions
   # Registry for example, must take the session with it: a session that
   # outlives its registration keeps working where no client can reach it.
   @tag :capture_log
-  test "an exit that is not from a provider Task stops the session", %{core: core} do
+  test "an exit that is not from the provider process stops the session", %{core: core} do
     {:ok, session} = Session.start(core, model: "test/ok")
     pid = Session.pid(session)
     ref = Process.monitor(pid)
@@ -323,10 +324,11 @@ defmodule Helyx.Session.LoopTest do
   end
 
   # The ownership chain (ADR 0004): work inside the VM is linked to its
-  # owner, so a killed session takes the provider Task, the hands, and the
-  # tool Tasks with it, even through an untrappable kill.
+  # owner, so a killed session takes the provider process, the hands, and
+  # the tool Tasks with it, even through an untrappable kill. The model
+  # Task is linked to the provider process (`Helyx.Provider.Loop`).
   @tag :capture_log
-  test "killing the session kills the provider Task", %{core: core} do
+  test "killing the session kills the provider process", %{core: core} do
     {:ok, session} = Session.start(core, model: "test/hang")
     {:ok, _} = Session.subscribe(session)
     :ok = Session.prompt(session, "hello")
@@ -342,16 +344,23 @@ defmodule Helyx.Session.LoopTest do
   test "killing the session kills the hands and the tool Task", %{core: core} do
     {:ok, session} = Session.start(core, model: "test/abort")
     {:ok, _} = Session.subscribe(session)
-    :ok = Session.prompt(session, "go")
-    assert_receive {:helyx_event, %Event{type: :tool_execution_start}}
-
     pid = Session.pid(session)
     hands = :sys.get_state(pid).hands
-    # `Hands.run/3` is a cast: the hands start the Task before they answer.
-    :sys.get_state(hands)
+    :erlang.trace(hands, true, [:receive])
+    :ok = Session.prompt(session, "go")
 
+    # `tool_execution_start` comes at the `message_end`, before the run;
+    # `Hands.run/3` is a cast, and the hands start the Task before they
+    # answer the next call.
+    assert_receive {:trace, ^hands, :receive, {:"$gen_cast", {:run, _, _}}}
+    :erlang.trace(hands, false, [:receive])
+    :sys.get_state(hands)
+    provider = :sys.get_state(pid).conn.pid
+
+    # The provider process is a Task of the hands too.
     [task] =
       for task <- Task.Supervisor.children(Helyx.Core.task_supervisor(core)),
+          task != provider,
           {:dictionary, dict} = Process.info(task, :dictionary),
           Keyword.has_key?(dict, :helyx_hands) do
         task
@@ -390,12 +399,8 @@ defmodule Helyx.Session.LoopTest do
       end)
 
     assert result_at < steer_at
-
-    assert queue_counts(events) == [
-             %{steers: 1, follow_ups: 0},
-             %{steers: 2, follow_ups: 0},
-             %{steers: 0, follow_ups: 0}
-           ]
+    # A steer of a running turn goes to the provider, not to the queue.
+    assert queue_counts(events) == []
   end
 
   test "a follow-up during a turn starts a new turn after agent_end", %{core: core} do
@@ -420,7 +425,7 @@ defmodule Helyx.Session.LoopTest do
     assert queue_counts(second) == [%{steers: 0, follow_ups: 0}]
   end
 
-  test "a steer left at turn end starts a new turn", %{core: core} do
+  test "a steer in the last model call continues the same turn", %{core: core} do
     {:ok, session} = Session.start(core, model: gated_model())
     {:ok, _} = Session.subscribe(session)
 
@@ -429,11 +434,12 @@ defmodule Helyx.Session.LoopTest do
     :ok = Session.steer(session, "later")
     send(stream, :go)
 
-    collect_until(:agent_end)
     assert_receive {:waiting, stream}
     send(stream, :go)
-    second = collect_until(:agent_end)
-    assert user_texts(second) == ["later"]
+    events = collect_until(:agent_end)
+    assert user_texts(events) == ["hello", "later"]
+    assert Enum.count(events, &(&1.type == :agent_start)) == 1
+    refute_receive {:helyx_event, %Event{type: :agent_start}}, 100
   end
 
   test "a steer or follow-up with no turn running starts a turn at once", %{core: core} do
@@ -459,7 +465,8 @@ defmodule Helyx.Session.LoopTest do
     :ok = Session.steer(session, "s")
     :ok = Session.follow_up(session, "f")
 
-    assert_receive {:helyx_event, %Event{type: :queue_update, data: %{steers: 1, follow_ups: 1}}}
+    # The steer went to the provider; only the follow-up is queued.
+    assert_receive {:helyx_event, %Event{type: :queue_update, data: %{steers: 0, follow_ups: 1}}}
 
     :ok = Session.abort(session)
     events = collect_until(:agent_end)
@@ -481,15 +488,15 @@ defmodule Helyx.Session.LoopTest do
     :ok = Session.steer(session, "stér 32 🚀")
     for n <- 1..32, do: :ok = Session.follow_up(session, "折り返し #{n}")
 
-    # 64 accepted writes, one queue_update each.
+    # The steers went to the provider and count in the limit until their
+    # `user_message`; each queued follow-up emits a queue_update.
     counts =
-      for _ <- 1..64 do
+      for _ <- 1..32 do
         assert_receive {:helyx_event, %Event{type: :queue_update, data: data}}
         data
       end
 
-    assert Enum.at(counts, 30) == %{steers: 31, follow_ups: 0}
-    assert List.last(counts) == %{steers: 32, follow_ups: 32}
+    assert List.last(counts) == %{steers: 0, follow_ups: 32}
 
     # One over the limit is rejected, changes nothing, and emits no event.
     assert Session.steer(session, "s33") == {:error, :queue_full}

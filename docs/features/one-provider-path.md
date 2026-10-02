@@ -1,6 +1,6 @@
 # One provider path
 
-Status: design decided on 2026-10-02, not built. Built from the code at `58471ac`. The design went through five review rounds in one proposal with `session-subscribers.md`. The last round found no blocking issue.
+Status: design decided on 2026-10-02, built in #298, #299, and #300 (build order steps 1 to 3). Built from the code at `58471ac`. The design went through five review rounds in one proposal with `session-subscribers.md`. The last round found no blocking issue.
 
 ## Goal
 
@@ -82,10 +82,10 @@ A public adapter in Core, `lib/helyx/provider/loop.ex` (Decision Q1). An API pro
 | The stream's done with calls | Sends `message_end`. Then it handles the calls of the message in call order, one at a time. A rejected call gets the event `{:tool_result, id, {:error, "tool call not run: " <> reason}}` at once. A valid call gets the event `{:tool_request, id, name, args}`, and the helper waits for its `{:tool_result}` request. |
 | `{:tool_result, id, call_id, result}` | Replies `:ok` and sends the event `{:tool_result, call_id, result}` in the same callback, so the result joins the transcript. Then it goes to the next call. |
 | All calls have results | Sends `{:user_message, steer_id, text}` for each held steer, then `{:need_context, id}`, in that order (C2). |
-| `{:context, id, {:ok, context}}` | Replies `:ok` and starts the next model call. |
+| `{:context, id, {:ok, context}}` | Replies `:ok` and starts the next model call. If a steer came while the context was built, it sends its `user_message` and a new `{:need_context, id}` instead, so the model call gets the steer (C2). |
 | `{:context, id, {:error, reason}}` | Replies `:ok` and ends the turn with `{:error, reason}`. The process stays. |
 | The stream's done with no calls | If it holds a steer: sends its `user_message`, then `:need_context`, and calls the model again. Otherwise it sends `{:done, ...}`. |
-| The stream's error, an end with no terminal, `{ref, {:failed, reason}}` of the model Task (L2) | Sends `{:error, reason}`, `{:error, :stream_ended}`, or `{:error, {:task_exit, reason}}`. These are today's reasons. The provider process stays. |
+| The stream's error, an end with no terminal, `{ref, {:failed, reason}}` or the `:DOWN` of the model Task (L2) | Sends `{:error, reason}`, `{:error, :stream_ended}`, or `{:error, {:task_exit, reason}}`. These are today's reasons. The provider process stays. |
 | `{:steer, id, steer_id, text}` | In a live turn: replies `:ok` and holds the steer for the next model call. After its terminal: replies `:rejected`. |
 | `{:interrupt, id}` | Stops the model Task with `Task.shutdown(task, :brutal_kill)` and waits for its death (L3), drops its held steers and its wait for a context or a result, and then replies `:ok`. |
 | `:idle_close`, `:close` | Replies `:ok`, and the process ends with `{:shutdown, :closed}` (L1). It has no program to keep. |
@@ -106,7 +106,7 @@ None of these reasons is `:normal`, so every process linked to the provider proc
 
 Stated limit: `Process.exit(self(), :normal)` in a callback ends the calling process with `:normal`, and no catch can stop that. Plugin code is compiled into the node, so this is accepted, for the same reason as the other plugin effects that `coding-agent.md` accepts. The lifetime tests cover `exit(:normal)`, not this call.
 
-**L2 The model Task.** The helper starts each model call with `Task.async/1`, which links and monitors it, and keeps its `%Task{}`. The body of the Task catches a raise, a throw, and an exit around the stream and returns `{:failed, reason}` as its result. So a failing model call becomes the terminal `{:error, {:task_exit, reason}}`, and the provider process stays for the next turn. The provider process does not trap exits.
+**L2 The model Task.** The helper starts each model call with `Task.async/1`, which links and monitors it, and keeps its `%Task{}`. The body of the Task catches a raise, a throw, and an exit around the stream and returns `{:failed, reason}` as its result. So a failing model call becomes the terminal `{:error, {:task_exit, reason}}`, and the provider process stays for the next turn. A Task that ends with a `:normal` signal, which no catch sees and the link does not carry, ends the turn the same way from its `:DOWN`. The provider process does not trap exits.
 
 **L3 Interrupt.** At `{:interrupt, id}`, the helper calls `Task.shutdown(task, :brutal_kill)`, the pattern of today's `shutdown_stream`: it unlinks the Task, kills it, waits for its `:DOWN`, and flushes its reply. It returns only after the Task is dead. The helper replies `:ok` to the interrupt only after that, so the abort never completes while a model call still runs. The helper keeps the reference of its current Task only, and ignores any message whose Task reference is not that one, such as a reply of an old Task.
 
@@ -218,12 +218,12 @@ New tests:
 | Open context requests | 1 per turn, and only for the live turn (C3) | a bad action, the process stops |
 | Tool result and context result requests in flight | each is answered inside its callback, so at most one is in the provider's hands at a time; at the end of a turn, at most 17 aborted results go out in one batch | `{:tool_result_not_answered}` |
 | Steers | 32, queued and open together (`queues.ex`, `@limit`) | `{:error, :queue_full}` |
-| Events into the session | the session mailbox cap, 10,000 (`stream.ex`, `send_checked/2`) | nothing is sent, `{:error, {:session_behind, length, 10_000}}` |
+| Events into the session | the session mailbox cap, 10,000 (`stream.ex`, `send_checked/3`) | nothing is sent, `{:error, {:session_behind, length, 10_000}}` |
 | Deadlines | `connect_ms` 30 s and `prepare_ms` 10 s (`hands.ex`; `prepare_ms` also for each context request), the reply bound 2 s per request (`server.ex`, `@harness_reply_ms`), the close bound 5 s (`@harness_close_ms`), idle 30 min | the kill of the provider process. The helper replies to `{:turn}` at once, so the 2 s bound never covers a model call. |
 | A model call | unbounded: the user aborts it. The same as the local path today. | — |
 | The `seen` call ids of a turn | unbounded: a turn keeps every id until its end, as today | — |
 | Model calls of a turn in the helper | unbounded: the model decides when to stop, as in the local path today | — |
-| The provider process mailbox | from Core: bounded by the rows above. From the provider's own port or Task: the plugin's concern, as today. | — |
+| The provider process mailbox | from Core: bounded by the rows above. From the provider's own port or Task: the plugin's concern, as today. From the model Task: the same cap of 10,000 (`send_checked/3`). | the model call ends with `{:error, {:provider_behind, length, 10_000}}` |
 
 ## Ownership
 

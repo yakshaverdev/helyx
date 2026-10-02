@@ -126,7 +126,7 @@ defmodule Helyx.TUI.ViewModelTest do
     end
   end
 
-  # A connected turn starts all calls of a message at once, and a provider
+  # A turn starts all calls of a message at once, and a provider
   # can repeat an id: the first result answers the first call, as in the
   # session's transcript.
   test "a result goes to the oldest open tool cell with its id" do
@@ -147,8 +147,9 @@ defmodule Helyx.TUI.ViewModelTest do
            ]
   end
 
-  # The session runs tool calls one at a time (start, end, start, end). The
-  # fold does not depend on that order: each open cell gets its own result.
+  # The session order (contract version 2): every call starts at the
+  # `message_end`, then the results come. The fold does not depend on the
+  # order of the results: each open cell gets its own result.
   test "two open tool cells get their own results, in any order" do
     c1 = %Message.ToolCall{id: "c1", name: "bash", arguments: %{}}
     c2 = %Message.ToolCall{id: "c2", name: "read", arguments: %{}}
@@ -171,7 +172,7 @@ defmodule Helyx.TUI.ViewModelTest do
            ]
   end
 
-  test "the session order, one call at a time, attaches each result" do
+  test "a start, end, start, end order attaches each result" do
     c1 = %Message.ToolCall{id: "c1", name: "bash", arguments: %{}}
     c2 = %Message.ToolCall{id: "c2", name: "read", arguments: %{}}
     r1 = Message.tool_result(c1, {:ok, "one"})

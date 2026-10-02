@@ -21,7 +21,7 @@
            [
              allowed: %{
                "lib/helyx/session/server.ex" =>
-                 {1182, "the turn, tool, steer, and wait logic of one session process"},
+                 {1027, "the turn, tool, steer, and wait logic of one session process"},
                "plugins/bundled/lib/helyx/provider/codex.ex" =>
                  {1145, "the Codex app-server protocol in one harness provider"},
                "plugins/bundled/lib/helyx/provider/claude_code.ex" =>

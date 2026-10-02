@@ -3,7 +3,7 @@ defmodule Helyx.Session.Wait do
   # The wait before the next turn can start. The session starts no turn
   # until it ends: the answer of the hands to `Hands.request_cancel/2`
   # (`hands`), then the Helyx tool of the turn that ended (`tool`,
-  # `{turn_id, call_id}`, see `next/2`) and the interrupt of a connected
+  # `{turn_id, call_id}`, see `next/2`) and the interrupt of the
   # turn (`interrupt`, `{pid, turn_id}`) with its answer (`reply`), the
   # answer to an idle close (`idle`), the answers to the open steer requests
   # of the turn that ended (`steers`, a `Helyx.Session.Steers` ledger) and
@@ -66,10 +66,10 @@ defmodule Helyx.Session.Wait do
   defp tool(%Turn{tool: %{id: id}, id: turn_id}), do: {turn_id, id}
   defp tool(_turn), do: nil
 
-  # The interrupt of an aborted turn: only a connected turn that sent
-  # `{:turn, ...}` gets one, from the provider process `conn` of the session.
+  # The interrupt of an aborted turn: only a turn that sent `{:turn, ...}`
+  # gets one, from the provider process `conn` of the session.
   @spec interrupt(Turn.t(), %{pid: pid()} | nil) :: {pid(), String.t()} | nil
-  def interrupt(%Turn{turn_mode: :connected, phase: phase, id: id}, %{pid: pid})
+  def interrupt(%Turn{phase: phase, id: id}, %{pid: pid})
       when phase in [:submitting, :submitted],
       do: {pid, id}
 

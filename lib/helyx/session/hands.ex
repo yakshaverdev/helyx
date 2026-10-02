@@ -21,7 +21,7 @@ defmodule Helyx.Session.Hands do
   deadlines are in `docs/features/tool-resource-release.md`.
 
   `start_provider/3` starts the provider process (ADR 0007).
-  `prepare/3` starts the prepare Task of a connected turn, at its start
+  `prepare/3` starts the prepare Task of a turn, at its start
   and at each context request. Each starts with an armed kill. When the provider process ends, the hands release
   its handles and send `{:provider_down, pid, reason}`. A prepare Task
   that dies gives `{:prepare_failed, turn_id, reason}`, unless a cancel
@@ -78,7 +78,7 @@ defmodule Helyx.Session.Hands do
 
   @doc """
   Starts a tool call. The result is sent to the session. A cast, as
-  `prepare/3`: a connected turn runs Helyx tools while the hands can
+  `prepare/3`: a turn runs Helyx tools while the hands can
   release its provider process.
   """
   @spec run(pid(), String.t(), ToolCall.t()) :: :ok
@@ -95,7 +95,7 @@ defmodule Helyx.Session.Hands do
     do: GenServer.call(hands, {:start_provider, provider, fun})
 
   @doc """
-  Starts the prepare Task of a connected turn: `fun` gets the ref of the
+  Starts the prepare Task of a turn: `fun` gets the ref of the
   armed kill. It holds no resource.
 
   A cast, not a call: a provider process can end at any time, and the hands

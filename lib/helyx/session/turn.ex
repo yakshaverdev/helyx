@@ -2,23 +2,15 @@ defmodule Helyx.Session.Turn do
   @moduledoc false
   # The turn in progress. `partial` is the assistant content so far as a
   # reversed block list, or nil before the first stream event. `calls` are
-  # the tool calls still to answer, the head running. `rejected` are the
-  # tool calls of the current assistant message that get an error result
-  # and never run, each with its reason: the provider rejected the call, or
-  # its arguments held an integer over the digit limit (see
-  # `Helyx.Message.cap_integers/1`). They are compared by value,
-  # because a provider can repeat a call id: a call that is equal to a
-  # rejected call after the cap is also rejected. One turn has many provider
-  # calls, so each provider call starts with an empty map.
+  # the tool calls of the last `message_end` with no result yet.
   # `model` and `provider` are fixed when the turn starts, so a model switch
-  # during the turn takes effect on the next one, and so does `turn_mode`
-  # (`Helyx.Provider.turn/1`). `resumed` is the resume id that
-  # the connect of the turn passed to a connected provider, or nil. A
-  # connected turn has a `phase`, `:preparing`, `:submitting`, or
+  # during the turn takes effect on the next one. `resumed` is the resume id
+  # that the connect of the turn passed to the provider, or nil. A turn has
+  # a `phase`, `:preparing`, `:submitting`, or
   # `:submitted`, the prepared `context` until it is sent, and the
   # `pending` ref of the answer to `{:turn, ...}`. `steers` is the steer ledger of the turn
   # (`Helyx.Session.Steers`). `tool` is the Helyx tool
-  # request of a connected turn that runs on the hands (the provider loop
+  # request that runs on the hands (the provider loop
   # keeps the waiting ones), `start` the `from` ref of its
   # `{:tool_start, ...}` ask with no answer, and `results` the `from` refs
   # of the `tool_result` requests with no answer. At the turn end both go
@@ -27,13 +19,11 @@ defmodule Helyx.Session.Turn do
   alias Helyx.{Message, ModelRef}
   alias Helyx.Session.Steers
 
-  @enforce_keys [:id, :model, :provider, :turn_mode]
+  @enforce_keys [:id, :model, :provider]
   defstruct [
     :id,
     :model,
     :provider,
-    :turn_mode,
-    :task,
     :partial,
     :resumed,
     :phase,
@@ -41,7 +31,6 @@ defmodule Helyx.Session.Turn do
     :pending,
     :start,
     calls: [],
-    rejected: %{},
     steers: %Steers{},
     tool: nil,
     results: []
@@ -67,25 +56,11 @@ defmodule Helyx.Session.Turn do
     )
   end
 
-  @spec reject(t(), Message.ToolCall.t(), String.t()) :: t()
-  def reject(%__MODULE__{rejected: rejected} = turn, call, reason),
-    do: %{turn | rejected: Map.put(rejected, call, reason)}
-
-  # The reason of a rejected call, or nil for a call that runs.
-  @spec rejection(t(), Message.ToolCall.t()) :: String.t() | nil
-  def rejection(%__MODULE__{rejected: rejected}, call), do: Map.get(rejected, call)
-
-  # The turn of a snapshot (`Helyx.Session.Snapshot`).
+  # The turn of a snapshot (`Helyx.Session.Snapshot`): every call with no
+  # result had its `tool_execution_start` at its message end.
   @spec snapshot(t()) :: Helyx.Session.Snapshot.turn()
   def snapshot(%__MODULE__{} = turn) do
     partial = if turn.partial, do: assistant_message(turn, [])
-    %{id: turn.id, partial: partial, running: Enum.map(started_calls(turn), & &1.id)}
+    %{id: turn.id, partial: partial, running: Enum.map(turn.calls, & &1.id)}
   end
-
-  # The calls that have had their `tool_execution_start`: a local turn runs
-  # its calls one at a time, the head first; a connected turn started them
-  # all at its message end.
-  defp started_calls(%__MODULE__{turn_mode: :local, calls: [head | _]}), do: [head]
-  defp started_calls(%__MODULE__{turn_mode: :local, calls: []}), do: []
-  defp started_calls(%__MODULE__{calls: calls}), do: calls
 end

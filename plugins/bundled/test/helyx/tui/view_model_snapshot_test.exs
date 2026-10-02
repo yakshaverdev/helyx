@@ -20,7 +20,9 @@ defmodule Helyx.TUI.ViewModelSnapshotTest do
     Map.merge(context, %{core: core, gate: Gate.open()})
   end
 
-  test "a subscribe while the first of three local calls runs", %{core: core, gate: gate} do
+  # Every call of the message starts at its `message_end`, so the snapshot
+  # lists all three as running while the first runs (contract version 2).
+  test "a subscribe while the first of three calls runs", %{core: core, gate: gate} do
     calls =
       for id <- ~w(c1 c2 c3),
           do: %Message.ToolCall{id: id, name: "gate", arguments: %{"gate" => gate}}
@@ -32,7 +34,7 @@ defmodule Helyx.TUI.ViewModelSnapshotTest do
 
     assert_receive {:waiting, tool}
     {late, snapshot} = LateClient.connect(session)
-    assert snapshot.turn.running == ["c1"]
+    assert snapshot.turn.running == ["c1", "c2", "c3"]
 
     live = fold(first, events_to(snapshot.seq))
     assert transcript(ViewModel.from_snapshot(snapshot)) == transcript(live)
@@ -100,7 +102,7 @@ defmodule Helyx.TUI.ViewModelSnapshotTest do
     LateClient.disconnect(late)
   end
 
-  test "a later local call with the running call's id gets its cell only when it starts", %{
+  test "a later call with the running call's id gets its cell only when it starts", %{
     core: core,
     gate: gate
   } do
@@ -208,10 +210,10 @@ defmodule Helyx.TUI.ViewModelSnapshotTest do
     assert joined == live
   end
 
-  # An abort while the first of three local calls runs: the two calls that
-  # never started get `aborted` results. Every event of the session, folded,
+  # An abort while the first of three calls runs: the two calls that never
+  # ran get `aborted` results. Every event of the session, folded,
   # gives the cells of a snapshot at the same seq.
-  test "a join after an abort of three local calls", %{core: core, gate: gate} do
+  test "a join after an abort of three calls", %{core: core, gate: gate} do
     calls =
       for id <- ~w(c1 c2 c3),
           do: %Message.ToolCall{id: id, name: "gate", arguments: %{"gate" => gate}}

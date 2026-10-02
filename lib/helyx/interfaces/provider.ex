@@ -10,20 +10,23 @@ defmodule Helyx.Provider do
   A provider plugin implements this behaviour. `id/0` is the prefix in a model
   ref such as `fake/echo`. Core calls `id/0` once, at start: an `id/0` that
   raises, throws, exits, or returns a value that is not a binary, or an id
-  that two providers share, stops Core from starting. `stream/3` returns an
-  enumerable of stream events for one provider call:
+  that two providers share, stops Core from starting. A provider that does
+  not export `init/3`, `request/3`, and `info/2` stops it too.
+
+  Every provider runs in one provider process per session (ADR 0002, ADR
+  0007). An API provider, which calls a model and lets the session run the
+  tools, implements `stream/3` of `Helyx.Provider.Loop` and adds `use
+  Helyx.Provider.Loop`, which defines the three callbacks. A harness
+  provider drives an agent program that runs the whole turn and its own
+  tools (`docs/features/long-lived-harness.md`).
+
+  ## Events
+
+  A provider sends the events of a turn as actions (see below):
 
     * `{:text_delta, binary}`: a delta of assistant text
     * `{:thinking_delta, binary}`: a delta of thinking text
     * `{:tool_call, Helyx.Message.ToolCall.t()}`: one complete tool call
-    * `{:rejected_tool_call, Helyx.Message.ToolCall.t(), reason}`: one tool
-      call that the session must not run, such as a call whose arguments
-      the provider could not decode. The call goes into the assistant
-      message in stream order, with the arguments the provider could
-      decode, or `%{}`. Its result is `{:error, "tool call not run: " <>
-      reason}`. `reason` is valid UTF-8 of at most `@max_reason_bytes`
-      (`Helyx.Session.Stream`) bytes; it must not
-      hold the raw arguments. Only a local turn accepts this event
     * `{:notice, text}`: a notice for the user, such as an error of the
       program that a later part of the turn made obsolete. `text` is valid
       UTF-8 of at most #{@max_notice_bytes} bytes (`max_notice_bytes/0`).
@@ -35,33 +38,19 @@ defmodule Helyx.Provider do
   Consecutive deltas of one kind form one block. A tool call arrives whole;
   a provider that streams tool call arguments assembles them first. There is
   no image event: providers do not produce image blocks. A malformed event
-  fails the turn with `{:bad_stream_event, event}`.
+  stops the provider process with `{:bad_stream_event, event}`.
 
   `stop_reason` is the closed set that `Helyx.Message` owns
   (`Helyx.Message.stop_reasons/0`): a provider normalizes whatever its wire
   protocol reports into it.
 
-  The session calls `stream/3` with `opts` carrying `:core`, `:session_id`,
-  `:turn_id`, and `:cwd`, so a provider can scope state and label its calls.
+  ## The provider process
 
-  The session consumes the enumerable in a Task and builds the assistant
-  message from the events. Consumption stops at the first `done` or `error`.
-  A stream that ends without one fails the turn with `:stream_ended`. The
-  turn's outcome is the Task's outcome: a stream that raises, including in
-  its cleanup after `done`, fails the turn with `{:task_exit, reason}`.
+  The three callbacks run in one provider process per session, a Task of
+  the hands, so `Helyx.Tool.hold/1` works in them and a provider that holds
+  a handle implements `release/3`:
 
-  ## A connected provider
-
-  A provider is one of two kinds (ADR 0002, ADR 0007): it has a local turn
-  (`stream/3`), or it exports `init/3` and is connected. A
-  connected provider drives an agent program that runs the whole turn and
-  its own tools (`docs/features/long-lived-harness.md`). Its program lives
-  for the session, not for the turn, and the session does not call
-  `stream/3`, which it need not export. The three callbacks run in one
-  provider process per session, a Task of the hands, so `Helyx.Tool.hold/1`
-  works in them and the provider implements `release/3`:
-
-    * `init/3` starts the program. `tools` are the checked tool
+    * `init/3` starts the provider. `tools` are the checked tool
       specs of session start; `opts` carry `:core`, `:session_id`, `:cwd`,
       and `:resume_id`: the id of the program session to resume,
       or nil for a fresh one. The session passes the id of the provider's
@@ -93,9 +82,8 @@ defmodule Helyx.Provider do
   Each callback returns actions: `{:event, turn_id, event}` with a stream
   event, `{:reply, from, value}`, `{:cancel_tool, turn_id, call_id}`, and
   `{:need_context, turn_id}`.
-  Each event passes the same check as a stream event. A turn ends at its
-  `done` or `error` event. A connected turn can send every stream event of
-  a local turn except `rejected_tool_call`, and also:
+  Each event passes the check of the events above. A turn ends at its
+  `done` or `error` event. A provider can also send:
 
     * `{:message_end, stop_reason, usage}`: the assistant message so far is
       complete; its tool calls ran inside the program. Send it once per
@@ -126,7 +114,7 @@ defmodule Helyx.Provider do
   a new `turn_id` that the provider makes (an id that
   `Helyx.Message.resume_id?/1` accepts), opens
   it. With no turn and no wait the session
-  opens a connected turn with that id and no user message, and emits
+  opens a turn with that id and no user message, and emits
   `turn_start` with `%{origin: :program}`; the later events of the turn and
   its terminal work as for any turn, and so do a steer and an interrupt of
   it. At any other time the session drops it and its events. The provider
@@ -192,7 +180,7 @@ defmodule Helyx.Provider do
           {:text_delta, String.t()}
           | {:thinking_delta, String.t()}
           | {:tool_call, Helyx.Message.ToolCall.t()}
-          | {:rejected_tool_call, Helyx.Message.ToolCall.t(), String.t()}
+          | {:notice, String.t()}
           | {:done, %{stop_reason: stop_reason(), usage: map()}}
           | {:error, term()}
           | {:message_end, stop_reason(), map()}
@@ -236,15 +224,6 @@ defmodule Helyx.Provider do
          do: {:error, {:unknown_provider, id}}
   end
 
-  @doc """
-  The turn of a provider plugin: `:connected` when it exports
-  `init/3`, else `:local`. Core loaded the module at its start, so
-  the check calls no plugin code.
-  """
-  @spec turn(module()) :: :local | :connected
-  def turn(provider),
-    do: if(function_exported?(provider, :init, 3), do: :connected, else: :local)
-
   @callback id() :: String.t()
   @callback release(
               handles :: [term()],
@@ -252,8 +231,6 @@ defmodule Helyx.Provider do
               deadline :: integer()
             ) ::
               [term()]
-  @callback stream(model :: String.t(), context :: Helyx.Context.t(), opts :: keyword()) ::
-              {:ok, Enumerable.t()} | {:error, term()}
 
   @callback init(model :: String.t(), tools :: [Helyx.Tool.spec()], opts :: keyword()) ::
               {:ok, state :: term()} | {:error, term()}
@@ -261,9 +238,5 @@ defmodule Helyx.Provider do
   @callback info(msg :: term(), state :: term()) ::
               {:ok, [action()], term()} | {:stop, reason :: term(), term()}
 
-  @optional_callbacks stream: 3,
-                      release: 3,
-                      init: 3,
-                      request: 3,
-                      info: 2
+  @optional_callbacks release: 3
 end
