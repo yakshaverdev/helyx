@@ -77,10 +77,13 @@ Simplify (1 agent, four angles): the test `known in [nil, ""]` is bound once as 
 
 Round 3 reproduced no defect, so the loop ends.
 
+## Caused by this diff, accepted
+
+- A harness provider (Claude Code, Codex) that sends a `tool_request` with an empty id now ends its provider process with `bad_stream_event`, as for any malformed event; before, the tool ran. The new guard in `Helyx.Session.Stream` covers `tool_request` too. Codex cannot reach it: a Codex `item/started` with id `""` already stops the provider at its `tool_call` event. Claude Code reaches it only with a broken harness: the real CLI sends `toolu_` ids. An error answer to that one MCP request would be a smaller unit, but AGENTS.md permits a larger failure for missing identity, so the stop stays (orchestrator decision, merge gate).
+
 ## Open, not caused by this diff
 
 - `Helyx.Session.File` does not reject a tool call with an empty id on resume. A file written after this change holds none.
-- A harness provider (Claude Code, Codex) that sends a `tool_request` with an empty id now ends its provider process with `bad_stream_event`, as for any malformed event; before, the tool ran. No harness sends an empty id in the tests.
 - Not reached by the probes: ids that differ only in Unicode normal form (compared by bytes), and an end-to-end turn through `Helyx.Provider.OpenAI` with an empty-id call (the Core path is covered by the `empty_id` session test).
 
 ## Precommit
