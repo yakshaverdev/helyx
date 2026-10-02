@@ -333,15 +333,14 @@ defmodule Helyx.Session.ProviderProcess do
 
   # A turn that the program started by itself (#240) is live, as after a
   # `{:turn, ...}` request. Its id is the provider's, with the checks of a
-  # resume id.
+  # resume id. During a live turn the loop drops it, as the session does (#319).
   defp action({:event, turn_id, :turn_start} = action, proc) do
-    if Message.resume_id?(turn_id) do
-      with {:ok, proc} <- end_tools(proc) do
-        message = {:stream_event, turn_id, :turn_start}
-        sent(Stream.send_checked(proc.session, message), %{proc | live: turn_id})
-      end
-    else
-      {:stop, {:bad_action, action}}
+    message = {:stream_event, turn_id, :turn_start}
+
+    cond do
+      not Message.resume_id?(turn_id) -> {:stop, {:bad_action, action}}
+      proc.live -> {:ok, proc}
+      true -> sent(Stream.send_checked(proc.session, message), %{proc | live: turn_id})
     end
   end
 

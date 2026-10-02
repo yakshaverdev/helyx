@@ -937,6 +937,26 @@ defmodule Helyx.Session.ProviderProcessTest do
       assert final_text(events) == "so far"
     end
 
+    # #319: the loop drops a program turn during a turn too, so the live turn keeps its tool request
+    # and its context request.
+    test "during a turn keeps the turn's tool request and context request", %{core: core} do
+      {session, _pid, _hands} = start(core, "context")
+      :ok = Session.prompt(session, "one")
+      assert_receive {:conn, :turn, proc, {:turn, turn_id, _}}
+
+      call = {:tool_request, "c1", "upcase", %{"text" => "hi"}}
+      send(proc, {:batch, [{:event, turn_id, call}, {:event, "p1", :turn_start}]})
+      assert_receive {:conn, :tool_result, ^proc, {:tool_result, ^turn_id, "c1", result}}
+      assert result == {:ok, "HI"}
+
+      send(proc, {:need_context, turn_id, "fresh"})
+      assert_receive {:conn, :context, ^proc, {:context, ^turn_id, {:ok, _}}}
+      events = collect_until(:agent_end)
+      assert List.last(events).data.stop_reason == :end_turn
+      assert Enum.all?(events, &(&1.turn_id == turn_id))
+      assert Process.alive?(proc)
+    end
+
     test "with a turn id that is not a valid id stops the provider process", %{core: core} do
       {_session, _pid, proc} = idle(core)
       ref = Process.monitor(proc)
