@@ -23,7 +23,8 @@
                "lib/helyx/session/server.ex" =>
                  {1027, "the turn, tool, steer, and wait logic of one session process"},
                "plugins/bundled/lib/helyx/provider/codex.ex" =>
-                 {1145, "the Codex app-server protocol in one harness provider"},
+                 {608,
+                  "the Codex turn, thread, interrupt, and steer state over one JSON-RPC id table"},
                "plugins/bundled/lib/helyx/provider/claude_code.ex" =>
                  {1000, "the Claude Code stream-json protocol in one harness provider"},
                "plugins/bundled/lib/helyx/tui.ex" =>
