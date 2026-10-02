@@ -41,4 +41,4 @@ No round reproduced a defect, so the loop ends after round 1.
 
 ## Open
 
-The Codex provider drops all events of the chunk that holds a stop, so whether a tool call goes out before a malformed stop depends on the cut. A line-by-line drop would make it exact. This is a behaviour decision, outside #340.
+The Codex provider drops all events of the chunk that holds a stop, so whether a tool call goes out before a malformed stop depends on the cut. A line-by-line drop would make it exact. This is a behaviour decision, outside #340: ticket #351.
