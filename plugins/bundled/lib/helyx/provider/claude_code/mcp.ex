@@ -8,6 +8,8 @@ defmodule Helyx.Provider.ClaudeCode.Mcp do
   alias Helyx.HarnessIO
   alias Helyx.Provider.ClaudeCode.Turn
 
+  require Turn
+
   # The user's own MCP servers stay: the Helyx tools add to the harness
   # tools.
   @config ~s({"mcpServers":{"helyx":{"type":"sdk","name":"helyx"}}})
@@ -48,9 +50,8 @@ defmodule Helyx.Provider.ClaudeCode.Mcp do
     params = message["params"]
 
     case {state.turn, tool_use_id(params)} do
-      # A program turn can run before `started` of the turn's line: the
-      # turn's `messages` are nil from the start.
-      {turn, _call_id} when turn == nil or turn.messages != nil ->
+      # A program turn can run before `started` of the turn's line.
+      {turn, _call_id} when turn == nil or not Turn.started?(turn) ->
         tool_answer(state, request_id, id, :error, "no Helyx turn is running")
 
       {_turn, nil} ->

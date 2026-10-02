@@ -27,49 +27,9 @@ defmodule Helyx.Provider.ClaudeCode do
 
   alias Helyx.HarnessIO
   alias Helyx.Message
-  alias Helyx.Provider.ClaudeCode.{Mcp, Replay}
+  alias Helyx.Provider.ClaudeCode.{Mcp, Replay, Turn}
 
-  # The program started the turn's line (`command_lifecycle` `started`).
-  defguardp started?(turn) when turn.messages == nil
-
-  defmodule Turn do
-    @moduledoc false
-    # The running turn. `uuid` is the `uuid` of its user line. `messages`
-    # is its transcript until the program started the line, and nil after:
-    # a lost session sends it again to a fresh one. Only after the start do
-    # the turn's lines and its `result` count (`started?/1`). `replay?` is
-    # true from the write of a replay before its line until the program
-    # started the line.
-    # `interrupt` is nil, or the pending `Interrupt`. `steers` holds each
-    # written steer line that the program did not start yet, by its `uuid`:
-    # `{steer_id, text}`. `wait` is set from a `result` that could not end
-    # the turn, because a steer was unresolved, until the start of a steer:
-    # the ref of the timer of that wait. `held` is the text of the error
-    # `result` that the wait holds, or nil: the start of a steer sends it
-    # as a notice. `used` holds every Helyx call id of the turn's
-    # `tools/call` requests, answered or not. `chunks` holds the replay
-    # chunks not written yet: each goes out at the `result` of the
-    # replayed user line that ends the chunk before it, and the last one
-    # ends with the turn's line, then any steers. `program?` marks a
-    # program turn (#240): its `id` and `uuid` are one new UUID.
-    @enforce_keys [:id, :uuid, :messages]
-    defstruct [
-      :id,
-      :uuid,
-      :messages,
-      :interrupt,
-      :wait,
-      :held,
-      steers: %{},
-      chunks: [],
-      replay?: false,
-      open?: false,
-      calls?: false,
-      program?: false,
-      usage: %{},
-      used: MapSet.new()
-    ]
-  end
+  import Turn, only: [started?: 1]
 
   defmodule Interrupt do
     @moduledoc false
@@ -418,24 +378,8 @@ defmodule Helyx.Provider.ClaudeCode do
          %{"type" => "command_lifecycle", "state" => "started", "command_uuid" => uuid},
          %State{turn: %Turn{steers: steers} = turn} = state
        )
-       when is_map_key(steers, uuid) do
-    {{steer_id, text}, steers} = Map.pop!(steers, uuid)
-    if turn.wait, do: :erlang.cancel_timer(turn.wait)
-    events = close_message(turn) ++ held_notice(turn.held) ++ [{:user_message, steer_id, text}]
-    interrupt = turn.interrupt && %{turn.interrupt | result?: false}
-
-    turn = %{
-      turn
-      | steers: steers,
-        open?: false,
-        calls?: false,
-        wait: nil,
-        held: nil,
-        interrupt: interrupt
-    }
-
-    {emit(state, events), %{state | turn: turn}}
-  end
+       when is_map_key(steers, uuid),
+       do: emit(state, Turn.steer_start(turn, uuid))
 
   defp translate(
          %{"type" => "control_response", "response" => %{"request_id" => id} = response},
@@ -536,56 +480,22 @@ defmodule Helyx.Provider.ClaudeCode do
            "event" => %{"type" => "content_block_delta", "delta" => delta}
          },
          %State{turn: turn} = state
-       ) do
-    case delta do
-      %{"type" => "text_delta", "text" => text} when is_binary(text) and text != "" ->
-        {emit(state, [{:text_delta, text}]), %{state | turn: %{turn | open?: true}}}
+       ),
+       do: emit(state, Turn.delta(turn, delta))
 
-      %{"type" => "thinking_delta", "thinking" => text} when is_binary(text) and text != "" ->
-        {emit(state, [{:thinking_delta, text}]), %{state | turn: %{turn | open?: true}}}
-
-      _ ->
-        {[], state}
-    end
-  end
-
-  # The text of an assistant line already came as deltas; only its tool
-  # calls and its usage are new.
   defp translate(
          %{"type" => "assistant", "message" => %{"content" => blocks} = message},
          %State{turn: turn} = state
        )
-       when is_list(blocks) do
-    calls =
-      for %{"type" => "tool_use", "id" => id, "name" => name, "input" => %{} = input} <- blocks,
-          do: {:tool_call, %Message.ToolCall{id: id, name: name, arguments: input}}
-
-    usage = if is_map(message["usage"]), do: message["usage"], else: turn.usage
-    some? = calls != []
-    turn = %{turn | open?: turn.open? or some?, calls?: turn.calls? or some?, usage: usage}
-    {emit(state, calls), %{state | turn: turn}}
-  end
+       when is_list(blocks),
+       do: emit(state, Turn.assistant(turn, message))
 
   defp translate(
          %{"type" => "user", "message" => %{"content" => blocks}},
          %State{turn: turn} = state
        )
-       when is_list(blocks) do
-    results =
-      for %{"type" => "tool_result", "tool_use_id" => id} = block <- blocks do
-        status = if block["is_error"] == true, do: :error, else: :ok
-        {:tool_result, id, {status, Helyx.Text.truncate(result_text(block["content"]), :tail)}}
-      end
-
-    case results do
-      [] ->
-        {[], state}
-
-      _ ->
-        {emit(state, close_message(turn) ++ results),
-         %{state | turn: %{turn | open?: false, calls?: false}}}
-    end
-  end
+       when is_list(blocks),
+       do: emit(state, Turn.user(turn, blocks))
 
   defp translate(_object, state), do: {[], state}
 
@@ -604,7 +514,9 @@ defmodule Helyx.Provider.ClaudeCode do
 
   defp release(_result, state), do: {[], state}
 
-  defp emit(%State{turn: turn}, events), do: for(event <- events, do: {:event, turn.id, event})
+  # The turn's events with its id, and the state with the new turn.
+  defp emit(state, {events, turn}),
+    do: {for(event <- events, do: {:event, turn.id, event}), %{state | turn: turn}}
 
   # Only `queued_turn_count` exactly 0 ends the turn: a positive count keeps
   # it open, and any other value stops the program, because it does not
@@ -629,12 +541,12 @@ defmodule Helyx.Provider.ClaudeCode do
        )
        when map_size(steers) > 0 do
     wait = turn.wait || :erlang.start_timer(@steer_wait_ms, self(), :steer_wait)
-    {[], %{state | turn: %{turn | wait: wait, held: held(result, turn)}}}
+    {[], %{state | turn: %{turn | wait: wait, held: Turn.held(result, turn)}}}
   end
 
   # The session closes the open assistant message at the terminal.
   defp turn_result(%{"queued_turn_count" => 0} = result, state),
-    do: {emit(state, [terminal(result, state.turn)]), %{state | turn: nil}}
+    do: {[{:event, state.turn.id, Turn.terminal(result, state.turn)}], %{state | turn: nil}}
 
   defp turn_result(_result, state),
     do: {[], %{state | terminal: {:error, :no_queued_turn_count}}}
@@ -643,55 +555,8 @@ defmodule Helyx.Provider.ClaudeCode do
   # lost; it comes before any `init`.
   defp lost?(result, state) do
     state.resume != nil and not state.init? and
-      Enum.any?(errors(result), &String.starts_with?(&1, @lost))
+      Enum.any?(Turn.errors(result), &String.starts_with?(&1, @lost))
   end
-
-  defp errors(%{"errors" => errors}) when is_list(errors), do: Enum.filter(errors, &is_binary/1)
-  defp errors(_result), do: []
-
-  defp close_message(%Turn{open?: false}), do: []
-
-  defp close_message(turn),
-    do: [{:message_end, if(turn.calls?, do: :tool_use, else: :end_turn), turn.usage}]
-
-  defp terminal(%{"is_error" => false, "subtype" => "success"} = result, turn) do
-    stop = if result["stop_reason"] == "max_tokens", do: :max_tokens, else: :end_turn
-    {:done, %{stop_reason: stop, usage: turn.usage}}
-  end
-
-  defp terminal(result, _turn) do
-    text = Enum.join(errors(result), "; ")
-    text = if text == "" and is_binary(result["result"]), do: result["result"], else: text
-    {:error, {:claude_code, HarnessIO.cap_error(result["subtype"]), HarnessIO.cap_error(text)}}
-  end
-
-  # Only a `result` of a Helyx line can be the held error: the `result` of
-  # a program turn (research note, "Program turns") keeps `held`.
-  defp held(%{"origin" => %{"kind" => "task-notification"}}, turn), do: turn.held
-
-  defp held(result, turn) do
-    case terminal(result, turn) do
-      {:error, {:claude_code, subtype, text}} -> subtype <> ": " <> text
-      {:done, _} -> nil
-    end
-  end
-
-  defp held_notice(nil), do: []
-
-  defp held_notice(text),
-    do: [{:notice, HarnessIO.cap_error("the turn before the steer failed: " <> text)}]
-
-  defp result_text(text) when is_binary(text), do: text
-
-  defp result_text(blocks) when is_list(blocks) do
-    Enum.map_join(blocks, "\n", fn
-      %{"type" => "text", "text" => text} when is_binary(text) -> text
-      %{"type" => type} when is_binary(type) -> "[#{type}]"
-      _ -> ""
-    end)
-  end
-
-  defp result_text(_content), do: ""
 
   defp line(map), do: [JSON.encode!(map), "\n"]
 
