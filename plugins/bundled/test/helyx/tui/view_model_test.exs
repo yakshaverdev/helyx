@@ -543,7 +543,7 @@ defmodule Helyx.TUI.ViewModelTest do
   end
 
   test "a provider session shows a notice when the provider lost its session or got a cut transcript" do
-    fresh = %{provider: "claude-code", harness_session_id: "s", lost: false, cut: 0}
+    fresh = %{provider: "claude-code", resume_id: "s", lost: false, cut: 0}
     assert fold(provider_session: fresh).cells == []
 
     assert fold(provider_session: %{fresh | lost: true, cut: 4}).cells == [

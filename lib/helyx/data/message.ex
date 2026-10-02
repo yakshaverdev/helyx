@@ -101,7 +101,7 @@ defmodule Helyx.Message do
   @stop_reasons [:end_turn, :tool_use, :max_tokens]
 
   # Claude Code's ids are UUIDs; 256 bytes leaves room for another program.
-  @provider_id_max_bytes 256
+  @resume_id_max_bytes 256
 
   @typedoc "A stop reason of a message end, one of `stop_reasons/0`."
   @type stop_reason ::
@@ -113,13 +113,13 @@ defmodule Helyx.Message do
 
   @doc """
   Whether `id` is a valid resume id: valid UTF-8 of 1 to
-  #{@provider_id_max_bytes} bytes. The session checks an id from a provider
+  #{@resume_id_max_bytes} bytes. The session checks an id from a provider
   with it before the id is written, and a resume rejects a session file
   whose entry fails it.
   """
-  @spec provider_id?(term()) :: boolean()
-  def provider_id?(id),
-    do: is_binary(id) and byte_size(id) in 1..@provider_id_max_bytes and String.valid?(id)
+  @spec resume_id?(term()) :: boolean()
+  def resume_id?(id),
+    do: is_binary(id) and byte_size(id) in 1..@resume_id_max_bytes and String.valid?(id)
 
   @doc """
   Whether the value round-trips to the session file, which holds only JSON.

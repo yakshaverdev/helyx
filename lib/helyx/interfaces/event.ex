@@ -35,7 +35,7 @@ defmodule Helyx.Event do
       normal turn end goes out between turns, with a nil turn id
     * `:model_change` – `%{model: String.t()}`, the new `provider/model` ref;
       the switch belongs to no turn, so the turn id is always nil
-    * `:provider_session` – `%{provider: String.t(), harness_session_id:
+    * `:provider_session` – `%{provider: String.t(), resume_id:
       String.t(), lost: boolean, cut: non_neg_integer}`: a connected turn
       started a fresh program session. `lost` is true when the turn asked
       to resume another one that the provider no longer has; `cut` is the

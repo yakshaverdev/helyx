@@ -123,7 +123,7 @@ defmodule Helyx.Provider do
 
   A turn that the program starts by itself: the event `:turn_start`, with
   a new `turn_id` that the provider makes (an id that
-  `Helyx.Message.provider_id?/1` accepts, like a resume id), opens
+  `Helyx.Message.resume_id?/1` accepts), opens
   it. With no turn and no wait the session
   opens a connected turn with that id and no user message, and emits
   `turn_start` with `%{origin: :program}`; the later events of the turn and

@@ -613,10 +613,10 @@ defmodule Helyx.Provider.Codex do
   defp answer?("thread/resume", _answer, _state), do: false
 
   # The stored id can add `#` and the digest to the thread id, so the
-  # thread id must pass `Message.provider_id?/1` with that room kept free.
+  # thread id must pass `Message.resume_id?/1` with that room kept free.
   defp answer?("thread/start", %{"result" => %{"thread" => %{"id" => thread}}}, _state)
        when is_binary(thread) and thread != "",
-       do: Message.provider_id?(thread <> "#" <> String.duplicate("0", @digest_hex))
+       do: Message.resume_id?(thread <> "#" <> String.duplicate("0", @digest_hex))
 
   defp answer?("turn/start", %{"result" => %{"turn" => %{"id" => turn}}}, _state),
     do: is_binary(turn)

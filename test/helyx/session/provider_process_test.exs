@@ -978,7 +978,7 @@ defmodule Helyx.Session.ProviderProcessTest do
 
       {:ok, a} = Session.start(core, model: "conn/label", sessions_dir: dir)
       {:ok, _} = Session.subscribe(a)
-      %{harness_session_id: first} = label(turn(a, "shared"))
+      %{resume_id: first} = label(turn(a, "shared"))
       assert init_label() == nil
 
       # B continues the label too: the hole of two live Cores.
@@ -994,7 +994,7 @@ defmodule Helyx.Session.ProviderProcessTest do
       {:ok, _} = Session.subscribe(resumed)
       events = turn(resumed, "a2")
       assert init_label() == nil
-      assert %{harness_session_id: second, lost: false} = label(events)
+      assert %{resume_id: second, lost: false} = label(events)
       assert second != first
 
       # The new label has no fork below it, so the next resume continues it.

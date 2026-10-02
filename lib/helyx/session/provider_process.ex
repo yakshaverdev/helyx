@@ -331,7 +331,7 @@ defmodule Helyx.Session.ProviderProcess do
   # `{:turn, ...}` request. Its id is the provider's, with the checks of a
   # resume id.
   defp action({:event, turn_id, :turn_start} = action, proc) do
-    if Message.provider_id?(turn_id) do
+    if Message.resume_id?(turn_id) do
       with {:ok, proc} <- end_tools(proc) do
         message = {:stream_event, turn_id, :turn_start}
         sent(Stream.send_checked(proc.session, message), %{proc | live: turn_id})

@@ -304,7 +304,7 @@ defmodule Helyx.Session.Server do
     state = persist(state, &Helyx.Session.File.append_harness_session(&1, provider, id))
     sessions = Map.put(state.resume_ids, provider, {id, length(state.transcript)})
     state = %{state | resume_ids: sessions}
-    data = %{provider: provider, harness_session_id: id, lost: turn.resumed != nil, cut: cut}
+    data = %{provider: provider, resume_id: id, lost: turn.resumed != nil, cut: cut}
     {:noreply, emit(state, :provider_session, data)}
   end
 

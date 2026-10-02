@@ -60,7 +60,7 @@ defmodule Helyx.Provider.Codex.TurnsTest do
 
     assert ["app-server"] = bin |> Path.join("args.1") |> File.read!() |> String.split()
 
-    assert [%{provider: "codex", harness_session_id: tid(), lost: false, cut: 0}] =
+    assert [%{provider: "codex", resume_id: tid(), lost: false, cut: 0}] =
              of_type(events, :provider_session)
 
     call = %Message.ToolCall{
@@ -174,7 +174,7 @@ defmodule Helyx.Provider.Codex.TurnsTest do
     assert %{"params" => %{"threadId" => fresh_tid(), "input" => [%{"text" => "again"}]}} =
              request(bin, 2, "turn/start")
 
-    assert [%{harness_session_id: fresh_tid(), lost: true, cut: 0}] =
+    assert [%{resume_id: fresh_tid(), lost: true, cut: 0}] =
              of_type(events, :provider_session)
 
     assert [%Message{role: :user}, %Message{content: [%Message.Text{text: "Fresh."}]}] =

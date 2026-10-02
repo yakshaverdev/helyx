@@ -165,14 +165,14 @@ defmodule Helyx.Session.StreamEventsTest do
     test "a harness session id of 1 byte is kept", %{core: core} do
       events = harness_turn(core, "id1")
 
-      assert [%{harness_session_id: "a"}] =
+      assert [%{resume_id: "a"}] =
                for(%Event{type: :provider_session, data: d} <- events, do: d)
     end
 
     test "a harness session id of 256 bytes is kept", %{core: core} do
       events = harness_turn(core, "id256")
 
-      assert [%{harness_session_id: id}] =
+      assert [%{resume_id: id}] =
                for(%Event{type: :provider_session, data: d} <- events, do: d)
 
       assert byte_size(id) == 256

@@ -56,7 +56,7 @@ defmodule Helyx.Provider.ClaudeCode.TurnTest do
     session = start(ctx)
     events = prompt(session, "list the files")
 
-    assert [%{provider: "claude-code", harness_session_id: id, lost: false, cut: 0}] =
+    assert [%{provider: "claude-code", resume_id: id, lost: false, cut: 0}] =
              of_type(events, :provider_session)
 
     assert "--session-id=#{id}" in args(bin, 1)
@@ -121,7 +121,7 @@ defmodule Helyx.Provider.ClaudeCode.TurnTest do
     turn(bin, 2, 1, reply("Back."))
 
     session = start(ctx)
-    [%{harness_session_id: id}] = of_type(prompt(session, "hello"), :provider_session)
+    [%{resume_id: id}] = of_type(prompt(session, "hello"), :provider_session)
     events = prompt(session, "again")
 
     assert programs(bin) == "1"
@@ -146,7 +146,7 @@ defmodule Helyx.Provider.ClaudeCode.TurnTest do
     turn(bin, 3, 1, [init(), replayed() | reply("Fresh.")])
 
     session = start(ctx)
-    [%{harness_session_id: old}] = of_type(prompt(session, "hello"), :provider_session)
+    [%{resume_id: old}] = of_type(prompt(session, "hello"), :provider_session)
     GenServer.stop(Session.pid(session))
 
     events = prompt(resume(ctx), "again")
@@ -170,7 +170,7 @@ defmodule Helyx.Provider.ClaudeCode.TurnTest do
 
     refute Map.has_key?(prompt_line, "shouldQuery")
 
-    assert [%{harness_session_id: fresh, lost: true, cut: 0}] = of_type(events, :provider_session)
+    assert [%{resume_id: fresh, lost: true, cut: 0}] = of_type(events, :provider_session)
     assert fresh != old
     assert "--session-id=#{fresh}" in args(bin, 3)
 
@@ -320,7 +320,7 @@ defmodule Helyx.Provider.ClaudeCode.TurnTest do
       turn(bin, 2, 1, reply("Next."))
 
       session = start(ctx)
-      [%{harness_session_id: id}] = of_type(prompt(session, "hello"), :provider_session)
+      [%{resume_id: id}] = of_type(prompt(session, "hello"), :provider_session)
       :ok = Session.prompt(session, "wait")
       collect_until(:message_update)
       pid = wait_for_pid(pidfile)

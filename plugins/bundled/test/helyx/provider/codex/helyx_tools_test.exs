@@ -329,7 +329,7 @@ defmodule Helyx.Provider.Codex.HelyxToolsTest do
       assert transcript_calls(events) == {["call_d1"], ["call_d1"]}
       assert [{0, %{"success" => true, "contentItems" => [%{"text" => text}]}}] = answers(bin, 1)
       assert text =~ "hello"
-      assert [%{harness_session_id: id}] = of_type(events, :provider_session)
+      assert [%{resume_id: id}] = of_type(events, :provider_session)
       assert digest?(id)
     end
 

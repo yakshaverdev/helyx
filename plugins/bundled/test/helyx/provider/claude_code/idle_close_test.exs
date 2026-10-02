@@ -103,7 +103,7 @@ defmodule Helyx.Provider.ClaudeCode.IdleCloseTest do
     session = start(ctx)
     pid = Session.pid(session)
     :erlang.trace(pid, true, [:receive])
-    [%{harness_session_id: id}] = of_type(prompt(session, "hello"), :provider_session)
+    [%{resume_id: id}] = of_type(prompt(session, "hello"), :provider_session)
     # A turn that starts before the session saw the end runs on the old
     # provider process and fails (`docs/features/long-lived-harness.md`,
     # "Built in #199"). A later call returns after the session handled it.

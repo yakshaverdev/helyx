@@ -261,7 +261,7 @@ defmodule Helyx.Session.Stream do
   defp connected_event({:resume, id, cut} = event) when is_integer(cut) and cut >= 0 do
     # No integer over the digit limit reaches the session (see
     # `Helyx.Message.cap_integers/1`).
-    if Message.provider_id?(id) and Message.cap_integers(cut) == cut,
+    if Message.resume_id?(id) and Message.cap_integers(cut) == cut,
       do: {:ok, event},
       else: malformed(event)
   end

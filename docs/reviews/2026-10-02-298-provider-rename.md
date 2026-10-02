@@ -34,7 +34,25 @@ The flagged functions changed only in names.
 |---|---|---|
 | Simplify | `ask/4` uses `provider_ms[key]`, not `Map.fetch!`. | Skipped. Every key exists (`server.ex`, the `provider_ms` default), so a missing key is a bug, and it still crashes in `:timer.kill_after/2`. |
 | Standards and spec | 1. A wrong replacement in `provider_process_tools_test.exs`: a link to `long-lived-proc.md`, and "the proc loop" and "the proc withdraws". The same wording was in one comment in `provider_process.ex`. 2. The renamed stop reasons are visible to clients. 3. The `:provider_session` data keeps the key `harness_session_id`. | 1. Fixed. 2. Recorded above. 3. The spec says "the same data", so the key stays. |
-| Failure path | No defect reproduced. Notes: the `:provider_session` key (as above). `Message.provider_id?/1` checks a resume id. That name is the spec's, so it stays. A local provider with an unrelated `init/3` now counts as connected. That is intended, and step 3 makes `init/3` required. | No change. |
+| Failure path | No defect reproduced. Notes: the `:provider_session` key (as above). `Message.provider_id?/1` checks a resume id (renamed in round 2). A local provider with an unrelated `init/3` now counts as connected. That is intended, and step 3 makes `init/3` required. | No change. |
 | Codex adversarial | Approve, no findings. | None. |
 
 No round reproduced a defect, so the loop ends after round 1.
+
+## Round 2 (reduced, by the orchestrator's decision)
+
+The orchestrator decided two changes on the open points:
+
+- The payload key of the client event `:provider_session` is now `resume_id`, not `harness_session_id`. The session file keeps its stored names. The contract_version increase of round 1 covers this rename.
+- `Message.provider_id?/1` is now `Message.resume_id?/1`. The Renames table and the client-event rows of `one-provider-path.md` match it.
+
+The fix diff, without test files and Markdown, is 20 lines in 9 code files (10 added, 10 removed), and it renames a public function. By the rules of `/ship`, that makes a full round. The orchestrator asked for a reduced round, so this round ran the spec and failure-path agents only.
+
+Bounds sensor, against the round 1 commit: `bounds sensor: 1 candidate functions, 0 flagged, 0 without an answer`.
+
+| Axis | Findings | Resolution |
+|---|---|---|
+| Spec | 0 defects. Notes: `append_harness_session/3`, the `harness_sessions` field of the resumed file, and the comments in `file.ex` keep the stored-format name. | No change: the file keeps its stored names, by decision. |
+| Failure path | 0 defects. Note: this record still said that `provider_id?` stays. | The record is fixed. |
+
+No defect was reproduced, so the loop ends.
