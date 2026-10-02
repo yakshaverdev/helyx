@@ -129,3 +129,4 @@ One row per ticket that `/orchestrate` merged. An escape is a confirmed Codex fi
 | 2026-10-03 | #324 | r1 (full, Codex approve): 0 reproduced; simplify 3 and spec 2 doc fixes | round 1: 0 | none needed |
 | 2026-10-03 | #332 | r1 (full, in-/ship Codex approve): 1 reproduced (a null index took the implied index and lost a call), fixed by rejecting null; r2 (reduced): 0, 1 comment fixed | round 1: 0 | none needed |
 | 2026-10-03 | #320 | r1 (full, Codex approve): 0 reproduced; simplify 2 comment fixes | round 1: 0 | none needed |
+| 2026-10-03 | #327 | r1: simplify 2, spec 4 doc sentences, 0 defects | gate r1 (Claude, Codex at limit): 0 defects, 1 doc nit fixed | none needed |

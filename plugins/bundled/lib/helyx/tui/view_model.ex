@@ -350,9 +350,9 @@ defmodule Helyx.TUI.ViewModel do
   # text shows as text, not as a list of bytes.
   defp error_text(error), do: error |> inspect(binaries: :as_strings) |> cut_line()
 
-  # The blocks that `Helyx.TUI` renders in an assistant message: keep this
-  # list and its `block_lines/2` clauses the same. A newer Core can add a
-  # block kind, and an image block has no rendering; the TUI drops both
+  # The blocks that `Helyx.TUI.Transcript` renders in an assistant message:
+  # keep this list and its `block_lines/2` clauses the same. A newer Core can
+  # add a block kind, and an image block has no rendering; the TUI drops both
   # here, so the render path never meets them.
   defp rendered_blocks(%Message{content: content} = message) do
     %{message | content: Enum.filter(content, &rendered_block?/1)}
