@@ -38,9 +38,9 @@ defmodule Helyx.CoreTest do
   for {name, plugins, error} <- [
         {"two plugins for a single interface", [Test.Provider, Test.SingleA, Test.SingleB],
          quote(do: {:mode_violation, Test.Single, [Test.SingleA, Test.SingleB]})},
-        {"two model context plugins", [Test.Provider, Test.ModelContext, Test.ModelContextTwin],
+        {"two model context plugins", [Test.Provider, Test.ModelContext, Test.PrepareContext],
          quote(do: {:mode_violation, Helyx.ModelContext, _})},
-        {"two compaction plugins", [Test.Provider, Test.Compaction, Test.CompactionTwin],
+        {"two compaction plugins", [Test.Provider, Test.Compaction, Test.PrepareCompaction],
          quote(do: {:mode_violation, Helyx.Compaction, _})},
         {"a missing provider", [Test.SingleA], quote(do: {:missing_plugin, Helyx.Provider})},
         {"a module that does not exist", [Test.Provider, Test.Missing],
@@ -76,8 +76,11 @@ defmodule Helyx.CoreTest do
     end
 
     test "two providers with one id stop the start and are both named" do
-      assert boot([Test.Provider, Test.ProviderOther, Test.ProviderTwin]) ==
-               {:error, {:duplicate_provider_id, "test", [Test.Provider, Test.ProviderTwin]}}
+      # BadId takes the id "test" of Test.Provider.
+      Process.put(:bad_id, "test")
+
+      assert boot([Test.Provider, Test.ProviderOther, Test.BadId]) ==
+               {:error, {:duplicate_provider_id, "test", [Test.Provider, Test.BadId]}}
     end
 
     test "a lookup reads the ids of the start and calls no plugin code" do

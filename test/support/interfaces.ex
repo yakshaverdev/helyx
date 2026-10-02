@@ -45,14 +45,6 @@ defmodule Helyx.Test.ModelContext do
   def build(context, opts), do: %{context | system: "built for #{opts[:cwd]}"}
 end
 
-defmodule Helyx.Test.ModelContextTwin do
-  @moduledoc false
-  @behaviour Helyx.ModelContext
-
-  @impl true
-  def build(context, _opts), do: context
-end
-
 defmodule Helyx.Test.Compaction do
   @moduledoc false
   # Appends to the system prompt so tests see it ran after model context.
@@ -62,29 +54,9 @@ defmodule Helyx.Test.Compaction do
   def compact(context, _opts), do: %{context | system: "#{context.system}, compacted"}
 end
 
-defmodule Helyx.Test.CompactionTwin do
-  @moduledoc false
-  @behaviour Helyx.Compaction
-
-  @impl true
-  def compact(context, _opts), do: context
-end
-
 defmodule Helyx.Test.NoInterface do
   @moduledoc false
   def name, do: "none"
-end
-
-defmodule Helyx.Test.ProviderTwin do
-  @moduledoc false
-  # A second provider with the same id as Helyx.Test.Provider.
-  use Helyx.Provider.Loop
-
-  @impl true
-  def id, do: "test"
-
-  @impl true
-  def stream(_model, _context, _opts), do: {:ok, []}
 end
 
 defmodule Helyx.Test.ProviderOther do
@@ -105,7 +77,8 @@ end
 defmodule Helyx.Test.BadId do
   @moduledoc false
   # A provider whose `id/0` is "bad_id" until the calling process puts a
-  # mode under `:bad_id`. Then it raises, throws, exits, or returns the value.
+  # mode under `:bad_id`. Then it raises, throws, exits, or returns the
+  # value, so the value "test" makes it a twin of Helyx.Test.Provider.
   use Helyx.Provider.Loop
 
   # The bad results are the point of this provider.
@@ -125,116 +98,6 @@ defmodule Helyx.Test.BadId do
   def stream(_model, _context, _opts), do: {:ok, []}
 end
 
-defmodule Helyx.Test.Harness do
-  @moduledoc false
-  # A connected provider whose model name selects the provider events of
-  # each turn. Each turn ends with a text delta and done. Every other
-  # request gets `:ok`.
-  #
-  #   "id1"     a resume id of 1 byte
-  #   "id256"   a resume id of 256 bytes, multibyte
-  #   "id257"   an id of 257 bytes
-  #   "id0"     an empty id
-  #   "raw_id"  an id that is not valid UTF-8
-  #   "orphan"  a tool result for a call of no completed message
-  #   "raw_result_id"  a tool result whose id is not valid UTF-8
-  #   "exit_big"  the stream exits with a reason of 101 digits
-  #   "big_cut" a cut of 101 digits, over the digit limit
-  #   "max_cut" a cut of 100 digits, at the digit limit
-  #   "neg_cut" a cut of -1
-  #   "result_N" a tool call and its result of N bytes
-  #   "result_multibyte" a result of 65,537 bytes: a 2-byte character
-  #              across the limit of 65,536
-  #   "result_raw" a result of 65,536 bytes that are not valid UTF-8
-  #   "dup_id"  two tool calls with one id, then two results
-  #   "open_call"  "dup_id" with no second result and no text after it
-  #   "late_result"  a call, a text message, then the call's result
-  #   "rejected"  a rejected tool call, valid only in a Loop stream
-  @behaviour Helyx.Provider
-
-  @impl true
-  def id, do: "harness"
-
-  @impl true
-  def init(model, _tools, _opts), do: {:ok, model}
-
-  @impl true
-  def request({:turn, turn_id, _context}, from, model) do
-    events = Enum.map(turn_events(model), &{:event, turn_id, &1})
-    {:ok, [{:reply, from, :ok} | events], model}
-  end
-
-  def request(_request, from, model), do: {:ok, [{:reply, from, :ok}], model}
-
-  @impl true
-  def info(_msg, model), do: {:ok, [], model}
-
-  defp turn_events("exit_big"), do: exit({:boom, Integer.pow(10, 100)})
-
-  defp turn_events("open_call"),
-    do: events("dup_id") |> Enum.drop(-1) |> Enum.concat([done()])
-
-  defp turn_events(model), do: events(model) ++ [{:text_delta, "ok"}, done()]
-
-  defp done, do: {:done, %{stop_reason: :end_turn, usage: %{}}}
-
-  defp events("id1"), do: [{:resume, "a", 0}]
-  defp events("big_cut"), do: [{:resume, "a", Integer.pow(10, 100)}]
-  defp events("max_cut"), do: [{:resume, "a", Integer.pow(10, 100) - 1}]
-  defp events("neg_cut"), do: [{:resume, "a", -1}]
-
-  defp events("late_result") do
-    call = %Helyx.Message.ToolCall{id: "t", name: "read", arguments: %{}}
-
-    [
-      {:tool_call, call},
-      {:message_end, :tool_use, %{}},
-      {:text_delta, "x"},
-      {:message_end, :end_turn, %{}},
-      {:tool_result, "t", {:ok, "late"}}
-    ]
-  end
-
-  defp events("dup_id") do
-    read = %Helyx.Message.ToolCall{id: "t", name: "read", arguments: %{}}
-    bash = %Helyx.Message.ToolCall{id: "t", name: "bash", arguments: %{}}
-
-    [
-      {:tool_call, read},
-      {:tool_call, bash},
-      {:message_end, :tool_use, %{}},
-      {:tool_result, "t", {:ok, "one"}},
-      {:tool_result, "t", {:ok, "two"}}
-    ]
-  end
-
-  defp events("result_" <> kind) do
-    call = %Helyx.Message.ToolCall{id: "c1", name: "bash", arguments: %{}}
-
-    [
-      {:tool_call, call},
-      {:message_end, :tool_use, %{}},
-      {:tool_result, "c1", {:ok, result_text(kind)}}
-    ]
-  end
-
-  defp events("rejected") do
-    call = %Helyx.Message.ToolCall{id: "r", name: "read", arguments: %{}}
-    [{:rejected_tool_call, call, "bad"}]
-  end
-
-  defp events("id256"), do: [{:resume, String.duplicate("é", 128), 0}]
-  defp events("id257"), do: [{:resume, "a" <> String.duplicate("é", 128), 0}]
-  defp events("id0"), do: [{:resume, "", 0}]
-  defp events("raw_id"), do: [{:resume, <<255>>, 0}]
-  defp events("orphan"), do: [{:tool_result, "nope", {:ok, "lost"}}]
-  defp events("raw_result_id"), do: [{:tool_result, <<255>>, {:ok, "lost"}}]
-
-  defp result_text("multibyte"), do: String.duplicate("x", 65_535) <> "é"
-  defp result_text("raw"), do: :binary.copy(<<255>>, 65_536)
-  defp result_text(bytes), do: String.duplicate("x", String.to_integer(bytes))
-end
-
 defmodule Helyx.Test.Provider do
   @moduledoc false
   # A provider whose model name selects a stream shape, so session tests can
@@ -251,7 +114,6 @@ defmodule Helyx.Test.Provider do
   #   "bad_event.<name>" the gate <name>, a message end, which only a
   #                harness may send, then the gate again
   #   "overrun"    a delta, done, then a raise if pulled further
-  #   "blocks"     thinking, text, and a tool call, then done; text after the result
   #   "error_tail" an error event, then a raise if pulled further
   #   "garbage"    one event that is not a stream event
   #   "raw_bytes"  a text delta that is not valid UTF-8
@@ -264,59 +126,178 @@ defmodule Helyx.Test.Provider do
   #   "wide"       a delta tuple with an extra element
   #   "tools"      the names of the tools in the context, as text
   #   "system"     the system prompt in the context, as text
-  #   "loop"       calls upcase and then a missing tool; after the results,
-  #                echoes them as text
-  #   "serial"     three calls to the slow tool, then echoes the results
   #   "bad_call"   a tool call whose name is not a string
-  #   "kill"       calls the kill tool, then echoes the result as text
-  #   "binary"     calls the binary tool, then echoes the result as text
   #   "hang"       one delta, then the stream blocks forever
   #   "transcript" every message in the context as "role:text" lines
+  #   "reject_<reason>" a rejected call with a reason of N bytes
+  #                ("bytes_N"), of 1,024 or 1,025 bytes with 2-byte characters
+  #                ("multibyte_1024", "multibyte_1025"), not valid UTF-8
+  #                ("raw"), or not text ("atom")
+  #
+  # The models that call tools. Unless a line says otherwise, a model calls
+  # its tools until the last message is a tool result, then echoes the
+  # result texts so far; so a second prompt calls the tools again.
+  #
+  #   "blocks"     thinking, text, and a tool call; "done" after the result
+  #   "loop"       calls upcase and then a missing tool
+  #   "serial"     three calls to the slow tool
+  #   "kill"       calls the kill tool; echoes the last message text only
+  #   "binary"     calls the binary tool
+  #   "rejected"   text, one good call, and one call the provider rejects
   #   "abort"      three calls to the slow tool that sleep for a minute;
-  #                after the results, echoes them as text
+  #                echoes after any tool result
   #   "stuck"      one call to the hold tool: a handle whose release waits
   #                for the gate that the first user message names, and one
-  #                that stays held, a sleep of a minute; after the result,
-  #                echoes the results
-  #   "steer"      one slow call; after the result, echoes the user message
-  #                texts so far, so tests see which steers reached the call
+  #                that stays held, a sleep of a minute; echoes after any
+  #                tool result
+  #   "steer"      one slow call; after any tool result, echoes the user
+  #                message texts so far, so tests see which steers reached
+  #                the call
+  #   "big_int"    six calls with large integers; after the results, a done
+  #                map with the large integer
   use Helyx.Provider.Loop
+
+  alias Helyx.Message.ToolCall
+
+  @done {:done, %{stop_reason: :end_turn, usage: %{}}}
+  @tool_use {:done, %{stop_reason: :tool_use, usage: %{}}}
+  @reject %ToolCall{id: "r", name: "upcase", arguments: %{}}
+
+  # The models whose stream is a fixed list of events.
+  @fixed %{
+    "ok" => [{:text_delta, "ok"}, @done],
+    "empty" => [],
+    "garbage" => [{:text_delta, 42}],
+    "raw_bytes" => [{:text_delta, <<"hi", 255>>}],
+    "wide" => [{:text_delta, "hello", :extra}],
+    "raw_call" => [{:tool_call, %ToolCall{id: "c", name: <<"bash", 255>>, arguments: %{}}}, @done],
+    "bad_call" => [{:tool_call, %ToolCall{id: "c", name: %{}, arguments: %{}}}],
+    "bad_args" => [
+      {:tool_call, %ToolCall{id: "c", name: "bash", arguments: %{"text" => {1, 2}}}},
+      @done
+    ],
+    "bad_stop" => [{:text_delta, "hi"}, {:done, %{stop_reason: :refusal, usage: %{}}}],
+    "notice" => [{:text_delta, "hi"}, {:notice, "heads up"}, {:text_delta, " there"}, @done],
+    "harness_event" => [{:text_delta, "hi"}, {:message_end, :end_turn, %{}}, @done],
+    # 512 2-byte characters, 1,024 bytes; then one more byte.
+    "reject_multibyte_1024" => [{:rejected_tool_call, @reject, String.duplicate("é", 512)}, @done],
+    "reject_multibyte_1025" => [
+      {:rejected_tool_call, @reject, String.duplicate("é", 512) <> "x"},
+      @done
+    ],
+    "reject_raw" => [{:rejected_tool_call, @reject, <<"bad", 255>>}, @done],
+    "reject_atom" => [{:rejected_tool_call, @reject, :bad}, @done]
+  }
 
   @impl true
   def id, do: "test"
 
   @impl true
-  def stream("ok", _context, _opts) do
-    {:ok, [{:text_delta, "ok"}, done()]}
+  def stream(model, _context, _opts) when is_map_key(@fixed, model),
+    do: {:ok, Map.fetch!(@fixed, model)}
+
+  def stream("blocks", %Helyx.Context{messages: messages}, _opts) do
+    if last_result?(messages),
+      do: {:ok, [{:text_delta, "done"}, @done]},
+      else: {:ok, blocks()}
   end
 
-  def stream("gate." <> gate, _context, _opts),
-    do: {:ok, Helyx.Test.Gate.stream([:gate, {:text_delta, "ok"}, done()], gate)}
+  def stream("loop", %Helyx.Context{messages: messages}, _opts),
+    do:
+      echo_after(messages, [
+        call("c1", "upcase", %{"text" => "hi"}),
+        call("c2", "nope", %{}),
+        @tool_use
+      ])
 
-  def stream("empty", _context, _opts), do: {:ok, []}
+  def stream("serial", %Helyx.Context{messages: messages}, _opts),
+    do: echo_after(messages, slow_calls([{"1", 60}, {"2", 30}, {"3", 0}]))
 
-  def stream("loop", %Helyx.Context{messages: messages}, _opts) do
+  def stream("binary", %Helyx.Context{messages: messages}, _opts),
+    do: echo_after(messages, [call("b", "binary", %{}), @done])
+
+  # Echoes the text of the last message only.
+  def stream("kill", %Helyx.Context{messages: messages}, _opts) do
     case List.last(messages) do
-      %Helyx.Message{role: :tool_result} ->
-        {:ok, echo_results(messages)}
+      %Helyx.Message{role: :tool_result} = m ->
+        {:ok, [{:text_delta, Helyx.Message.text(m)}, @done]}
 
       _ ->
-        {:ok,
-         [
-           {:tool_call,
-            %Helyx.Message.ToolCall{id: "c1", name: "upcase", arguments: %{"text" => "hi"}}},
-           {:tool_call, %Helyx.Message.ToolCall{id: "c2", name: "nope", arguments: %{}}},
-           {:done, %{stop_reason: :tool_use, usage: %{}}}
-         ]}
+        {:ok, [call("k", "kill", %{}), @done]}
     end
   end
 
+  def stream("rejected", %Helyx.Context{messages: messages}, _opts) do
+    bad = %ToolCall{id: "c2", name: "upcase", arguments: %{}}
+
+    echo_after(messages, [
+      {:text_delta, "Trying"},
+      call("c1", "upcase", %{"text" => "one"}),
+      {:rejected_tool_call, bad, "the arguments are not a valid JSON object"},
+      @tool_use
+    ])
+  end
+
+  def stream("abort", %Helyx.Context{messages: messages}, _opts) do
+    if any_result?(messages),
+      do: {:ok, echo_results(messages)},
+      else: {:ok, slow_calls(for id <- ["1", "2", "3"], do: {id, 60_000})}
+  end
+
+  def stream("stuck", %Helyx.Context{messages: messages}, _opts) do
+    if any_result?(messages) do
+      {:ok, echo_results(messages)}
+    else
+      gate = Helyx.Message.text(Enum.find(messages, &(&1.role == :user)))
+      arguments = %{"handles" => [%{"gate" => gate}, "keep"], "ms" => 60_000}
+      {:ok, [call("1", "hold", arguments), @tool_use]}
+    end
+  end
+
+  def stream("steer", %Helyx.Context{messages: messages}, _opts) do
+    if any_result?(messages) do
+      users = for %{role: :user} = m <- messages, do: Helyx.Message.text(m)
+      {:ok, [{:text_delta, Enum.join(users, "|")}, @done]}
+    else
+      {:ok, slow_calls([{"1", 200}])}
+    end
+  end
+
+  # Six calls: an integer of 400,000 digits nested in the arguments, a good
+  # call whose struct has one more key with the large integer, the largest
+  # permitted integer (100 digits), a good call with the id of the first
+  # call, the large integer as a map key, and the large integer in a struct
+  # that JSON encodes. After the results, the usage and one more key of the
+  # `:done` map hold the large integer.
+  def stream("big_int", %Helyx.Context{messages: messages}, _opts) do
+    huge = huge()
+
+    if last_result?(messages) do
+      [text, {:done, done}] = echo_results(messages)
+      {:ok, [text, {:done, Map.put(%{done | usage: %{input: huge, output: 3}}, :extra, huge)}]}
+    else
+      {:ok,
+       [
+         call("c1", "upcase", %{"text" => "one", "n" => [%{"deep" => -huge}]}),
+         {:tool_call, Map.put(elem(call("c2", "upcase", %{"text" => "two"}), 1), :extra, huge)},
+         call("c3", "upcase", %{"text" => "three", "n" => 10 ** 100 - 1}),
+         call("c1", "upcase", %{"text" => "four"}),
+         call("c5", "upcase", %{"text" => "five", huge => 1}),
+         call("c6", "upcase", %{"text" => "six", "d" => %Date{year: huge, month: 1, day: 1}}),
+         @tool_use
+       ]}
+    end
+  end
+
+  def stream("gate." <> gate, _context, _opts),
+    do: {:ok, Helyx.Test.Gate.stream([:gate | Map.fetch!(@fixed, "ok")], gate)}
+
   def stream("tools", %Helyx.Context{tools: tools}, _opts) do
-    {:ok, [{:text_delta, Enum.map_join(tools, ",", & &1.name)}, done()]}
+    {:ok, [{:text_delta, Enum.map_join(tools, ",", & &1.name)}, @done]}
   end
 
   def stream("system", %Helyx.Context{system: system}, _opts) do
-    {:ok, [{:text_delta, system || "no system"}, done()]}
+    {:ok, [{:text_delta, system || "no system"}, @done]}
   end
 
   def stream("throw", _context, _opts), do: {:ok, Stream.map([1], fn _ -> throw(:boom) end)}
@@ -331,85 +312,7 @@ defmodule Helyx.Test.Provider do
   def stream("bad_event." <> gate, _context, _opts),
     do: {:ok, Helyx.Test.Gate.stream([:gate, {:message_end, :end_turn, %{}}, :gate], gate)}
 
-  def stream("crash", _context, _opts) do
-    {:ok, raise_after([{:text_delta, "so far"}], "boom")}
-  end
-
-  def stream("blocks", %Helyx.Context{messages: messages}, _opts) do
-    case List.last(messages) do
-      %Helyx.Message{role: :tool_result} -> {:ok, [{:text_delta, "done"}, done()]}
-      _ -> {:ok, blocks()}
-    end
-  end
-
-  def stream("serial", %Helyx.Context{messages: messages}, _opts) do
-    case List.last(messages) do
-      %Helyx.Message{role: :tool_result} ->
-        {:ok, echo_results(messages)}
-
-      _ ->
-        {:ok, slow_calls([{"1", 60}, {"2", 30}, {"3", 0}]) ++ [done()]}
-    end
-  end
-
-  # Six calls: an integer of 400,000 digits nested in the arguments, a good
-  # call whose struct has one more key with the large integer, the largest
-  # permitted integer (100 digits), a good call with the id of the first
-  # call, the large integer as a map key, and the large integer in a struct
-  # that JSON encodes. The `:done` map of the last provider call holds the
-  # large integer in its usage and in one more key.
-  def stream("big_int", %Helyx.Context{messages: messages}, _opts) do
-    huge = huge()
-
-    case List.last(messages) do
-      %Helyx.Message{role: :tool_result} ->
-        [text, {:done, done}] = echo_results(messages)
-        done = Map.put(%{done | usage: %{input: huge, output: 3}}, :extra, huge)
-        {:ok, [text, {:done, done}]}
-
-      _ ->
-        call = fn id, args ->
-          {:tool_call, %Helyx.Message.ToolCall{id: id, name: "upcase", arguments: args}}
-        end
-
-        {:ok,
-         [
-           call.("c1", %{"text" => "one", "n" => [%{"deep" => -huge}]}),
-           {:tool_call, Map.put(elem(call.("c2", %{"text" => "two"}), 1), :extra, huge)},
-           call.("c3", %{"text" => "three", "n" => 10 ** 100 - 1}),
-           call.("c1", %{"text" => "four"}),
-           call.("c5", %{"text" => "five", huge => 1}),
-           call.("c6", %{"text" => "six", "d" => %Date{year: huge, month: 1, day: 1}}),
-           {:done, %{stop_reason: :tool_use, usage: %{}}}
-         ]}
-    end
-  end
-
-  def stream("bad_call", _context, _opts) do
-    {:ok, [{:tool_call, %Helyx.Message.ToolCall{id: "c", name: %{}, arguments: %{}}}]}
-  end
-
-  def stream("kill", %Helyx.Context{messages: messages}, _opts) do
-    case List.last(messages) do
-      %Helyx.Message{role: :tool_result} = m ->
-        {:ok, [{:text_delta, Helyx.Message.text(m)}, done()]}
-
-      _ ->
-        {:ok,
-         [{:tool_call, %Helyx.Message.ToolCall{id: "k", name: "kill", arguments: %{}}}, done()]}
-    end
-  end
-
-  def stream("binary", %Helyx.Context{messages: messages}, _opts) do
-    case List.last(messages) do
-      %Helyx.Message{role: :tool_result} ->
-        {:ok, echo_results(messages)}
-
-      _ ->
-        {:ok,
-         [{:tool_call, %Helyx.Message.ToolCall{id: "b", name: "binary", arguments: %{}}}, done()]}
-    end
-  end
+  def stream("crash", _context, _opts), do: {:ok, raise_after([{:text_delta, "so far"}], "boom")}
 
   def stream("hang", _context, _opts) do
     {:ok,
@@ -419,106 +322,26 @@ defmodule Helyx.Test.Provider do
      )}
   end
 
-  def stream("abort", %Helyx.Context{messages: messages}, _opts) do
-    if Enum.any?(messages, &(&1.role == :tool_result)) do
-      {:ok, echo_results(messages)}
-    else
-      {:ok, slow_calls(for id <- ["1", "2", "3"], do: {id, 60_000}) ++ [done()]}
-    end
-  end
-
-  def stream("stuck", %Helyx.Context{messages: messages}, _opts) do
-    if Enum.any?(messages, &(&1.role == :tool_result)) do
-      {:ok, echo_results(messages)}
-    else
-      gate = Helyx.Message.text(Enum.find(messages, &(&1.role == :user)))
-      arguments = %{"handles" => [%{"gate" => gate}, "keep"], "ms" => 60_000}
-      call = %Helyx.Message.ToolCall{id: "1", name: "hold", arguments: arguments}
-      {:ok, [{:tool_call, call}, {:done, %{stop_reason: :tool_use, usage: %{}}}]}
-    end
-  end
-
   def stream("error_tail", _context, _opts) do
     {:ok, raise_after([{:error, :overloaded}], "pulled past the error")}
   end
 
   def stream("transcript", %Helyx.Context{messages: messages}, _opts) do
     text = Enum.map_join(messages, "\n", &"#{&1.role}:#{Helyx.Message.text(&1)}")
-    {:ok, [{:text_delta, text}, done()]}
+    {:ok, [{:text_delta, text}, @done]}
   end
 
-  def stream("steer", %Helyx.Context{messages: messages}, _opts) do
-    if Enum.any?(messages, &(&1.role == :tool_result)) do
-      users = for %{role: :user} = m <- messages, do: Helyx.Message.text(m)
-      {:ok, [{:text_delta, Enum.join(users, "|")}, done()]}
-    else
-      {:ok, slow_calls([{"1", 200}]) ++ [done()]}
-    end
-  end
-
-  def stream("garbage", _context, _opts), do: {:ok, [{:text_delta, 42}]}
-  def stream("raw_bytes", _context, _opts), do: {:ok, [{:text_delta, <<"hi", 255>>}]}
-
-  def stream("raw_call", _context, _opts) do
-    call = %Helyx.Message.ToolCall{id: "c", name: <<"bash", 255>>, arguments: %{}}
-    {:ok, [{:tool_call, call}, done()]}
-  end
-
-  def stream("bad_stop", _context, _opts),
-    do: {:ok, [{:text_delta, "hi"}, {:done, %{stop_reason: :refusal, usage: %{}}}]}
-
-  def stream("notice", _context, _opts),
-    do: {:ok, [{:text_delta, "hi"}, {:notice, "heads up"}, {:text_delta, " there"}, done()]}
-
-  def stream("harness_event", _context, _opts),
-    do: {:ok, [{:text_delta, "hi"}, {:message_end, :end_turn, %{}}, done()]}
-
-  # Text, one good call, and one call the provider rejects; the next
-  # provider call echoes both results.
-  def stream("rejected", %Helyx.Context{messages: messages}, _opts) do
-    case List.last(messages) do
-      %Helyx.Message{role: :tool_result} ->
-        {:ok, echo_results(messages)}
-
-      _ ->
-        good = %Helyx.Message.ToolCall{id: "c1", name: "upcase", arguments: %{"text" => "one"}}
-        bad = %Helyx.Message.ToolCall{id: "c2", name: "upcase", arguments: %{}}
-
-        {:ok,
-         [
-           {:text_delta, "Trying"},
-           {:tool_call, good},
-           {:rejected_tool_call, bad, "the arguments are not a valid JSON object"},
-           {:done, %{stop_reason: :tool_use, usage: %{}}}
-         ]}
-    end
-  end
-
-  # A rejected call with a reason of N bytes, not valid UTF-8, or not text.
   def stream("reject_bytes_" <> bytes, _context, _opts),
-    do: reject_with(String.duplicate("x", String.to_integer(bytes)))
-
-  # 512 2-byte characters, 1,024 bytes; then one more byte.
-  def stream("reject_multibyte_1024", _context, _opts),
-    do: reject_with(String.duplicate("é", 512))
-
-  def stream("reject_multibyte_1025", _context, _opts),
-    do: reject_with(String.duplicate("é", 512) <> "x")
-
-  def stream("reject_raw", _context, _opts), do: reject_with(<<"bad", 255>>)
-  def stream("reject_atom", _context, _opts), do: reject_with(:bad)
-
-  def stream("bad_args", _context, _opts) do
-    call = %Helyx.Message.ToolCall{id: "c", name: "bash", arguments: %{"text" => {1, 2}}}
-    {:ok, [{:tool_call, call}, done()]}
-  end
+    do:
+      {:ok,
+       [{:rejected_tool_call, @reject, String.duplicate("x", String.to_integer(bytes))}, @done]}
 
   # First turn ends with a usage the file format cannot hold; a later "again"
   # prompt ends cleanly, so a test can prove persistence survived the first.
   def stream("recover", %Helyx.Context{messages: messages}, _opts) do
     case List.last(messages) do
       %Helyx.Message{role: :user, content: [%Helyx.Message.Text{text: "again"}]} ->
-        {:ok, [{:text_delta, "recovered"}, done()]}
+        {:ok, [{:text_delta, "recovered"}, @done]}
 
       _ ->
         {:ok, [{:text_delta, "hi"}, {:done, %{stop_reason: :end_turn, usage: %{"in" => {1, 2}}}}]}
@@ -538,25 +361,51 @@ defmodule Helyx.Test.Provider do
 
   # A struct in place of the `:done` map, with the large integer in a field.
   def stream("struct_done", _context, _opts) do
-    done = %Helyx.Message.ToolCall{id: huge(), name: "x", arguments: %{}}
+    done = %ToolCall{id: huge(), name: "x", arguments: %{}}
     {:ok, [{:text_delta, "hi"}, {:done, Map.merge(done, %{stop_reason: :end_turn, usage: %{}})}]}
   end
 
   # A struct in place of the arguments map.
   def stream("struct_args", _context, _opts) do
     arguments = %Date{year: huge(), month: 1, day: 1}
-    {:ok, [{:tool_call, %Helyx.Message.ToolCall{id: "c1", name: "upcase", arguments: arguments}}]}
+    {:ok, [{:tool_call, %ToolCall{id: "c1", name: "upcase", arguments: arguments}}]}
   end
-
-  def stream("wide", _context, _opts), do: {:ok, [{:text_delta, "hello", :extra}]}
 
   def stream("overrun", _context, _opts) do
-    {:ok, raise_after([{:text_delta, "kept"}, done()], "pulled past done")}
+    {:ok, raise_after([{:text_delta, "kept"}, @done], "pulled past done")}
   end
 
-  defp reject_with(reason) do
-    call = %Helyx.Message.ToolCall{id: "r", name: "upcase", arguments: %{}}
-    {:ok, [{:rejected_tool_call, call, reason}, done()]}
+  defp blocks do
+    [
+      {:thinking_delta, "hm"},
+      {:thinking_delta, "m"},
+      {:text_delta, "Listing"},
+      {:text_delta, "."},
+      call("call_1", "bash", %{"command" => "ls"}),
+      @done
+    ]
+  end
+
+  # `calls` until the last message is a tool result, then the echo of the
+  # results; so a second prompt calls the tools again.
+  defp echo_after(messages, calls) do
+    if last_result?(messages), do: {:ok, echo_results(messages)}, else: {:ok, calls}
+  end
+
+  defp last_result?(messages), do: match?(%Helyx.Message{role: :tool_result}, List.last(messages))
+  defp any_result?(messages), do: Enum.any?(messages, &(&1.role == :tool_result))
+
+  # The tool result texts so far, joined with "|", then done.
+  defp echo_results(messages) do
+    results = for %{role: :tool_result} = m <- messages, do: Helyx.Message.text(m)
+    [{:text_delta, Enum.join(results, "|")}, @done]
+  end
+
+  defp call(id, name, arguments),
+    do: {:tool_call, %ToolCall{id: id, name: name, arguments: arguments}}
+
+  defp slow_calls(pairs) do
+    for({id, ms} <- pairs, do: call(id, "slow", %{"ms" => ms, "text" => id})) ++ [@done]
   end
 
   # A lazy tail that raises when pulled, so a consumer that reads past
@@ -565,47 +414,36 @@ defmodule Helyx.Test.Provider do
     Stream.concat(events, Stream.map([1], fn _ -> raise message end))
   end
 
-  defp blocks do
-    call = %Helyx.Message.ToolCall{id: "call_1", name: "bash", arguments: %{"command" => "ls"}}
+  defp huge, do: String.to_integer(String.duplicate("7", 400_000))
+end
 
-    [
-      {:thinking_delta, "hm"},
-      {:thinking_delta, "m"},
-      {:text_delta, "Listing"},
-      {:text_delta, "."},
-      {:tool_call, call},
-      done()
-    ]
-  end
+defmodule Helyx.Test.Tool do
+  @moduledoc false
+  # The callbacks every test tool shares: `name/0`, `description/0`, and
+  # `parameters/0`, an object schema unless the tool gives one.
+  defmacro __using__(opts) do
+    parameters = Keyword.get(opts, :parameters, quote(do: %{"type" => "object"}))
 
-  defp slow_calls(pairs) do
-    for {id, ms} <- pairs do
-      {:tool_call,
-       %Helyx.Message.ToolCall{id: id, name: "slow", arguments: %{"ms" => ms, "text" => id}}}
+    quote do
+      @behaviour Helyx.Tool
+
+      @impl true
+      def name, do: unquote(opts[:name])
+      @impl true
+      def description, do: unquote(opts[:description])
+      @impl true
+      def parameters, do: unquote(parameters)
     end
   end
-
-  # The tool result texts so far, joined with "|", then done.
-  defp echo_results(messages) do
-    results = for %{role: :tool_result} = m <- messages, do: Helyx.Message.text(m)
-    [{:text_delta, Enum.join(results, "|")}, done()]
-  end
-
-  defp huge, do: String.to_integer(String.duplicate("7", 400_000))
-
-  defp done, do: {:done, %{stop_reason: :end_turn, usage: %{}}}
 end
 
 defmodule Helyx.Test.Tool.Upcase do
   @moduledoc false
-  @behaviour Helyx.Tool
+  use Helyx.Test.Tool,
+    name: "upcase",
+    description: "Upcases text.",
+    parameters: %{"type" => "object", "properties" => %{"text" => %{"type" => "string"}}}
 
-  @impl true
-  def name, do: "upcase"
-  @impl true
-  def description, do: "Upcases text."
-  @impl true
-  def parameters, do: %{"type" => "object", "properties" => %{"text" => %{"type" => "string"}}}
   @impl true
   def run(%{"text" => text}, _cwd), do: {:ok, String.upcase(text)}
 end
@@ -613,14 +451,8 @@ end
 defmodule Helyx.Test.Tool.UpcaseTwin do
   @moduledoc false
   # A second tool with the same name as Helyx.Test.Tool.Upcase.
-  @behaviour Helyx.Tool
+  use Helyx.Test.Tool, name: "upcase", description: "Upcases text."
 
-  @impl true
-  def name, do: "upcase"
-  @impl true
-  def description, do: "Upcases text."
-  @impl true
-  def parameters, do: %{"type" => "object"}
   @impl true
   def run(_args, _cwd), do: {:ok, "twin"}
 end
@@ -628,14 +460,8 @@ end
 defmodule Helyx.Test.Tool.Kill do
   @moduledoc false
   # A tool whose Task dies without returning.
-  @behaviour Helyx.Tool
+  use Helyx.Test.Tool, name: "kill", description: "Kills its own Task."
 
-  @impl true
-  def name, do: "kill"
-  @impl true
-  def description, do: "Kills its own Task."
-  @impl true
-  def parameters, do: %{"type" => "object"}
   # run/2 never returns; the brutal kill is the point.
   @dialyzer {:nowarn_function, run: 2}
   @impl true
@@ -646,14 +472,8 @@ defmodule Helyx.Test.Tool.Binary do
   @moduledoc false
   # Returns bytes that are not valid UTF-8, so tests can see the hands make
   # the result valid.
-  @behaviour Helyx.Tool
+  use Helyx.Test.Tool, name: "binary", description: "Returns invalid bytes."
 
-  @impl true
-  def name, do: "binary"
-  @impl true
-  def description, do: "Returns invalid bytes."
-  @impl true
-  def parameters, do: %{"type" => "object"}
   @impl true
   def run(_args, _cwd), do: {:ok, <<"a", 255, "b">>}
 end
@@ -661,14 +481,8 @@ end
 defmodule Helyx.Test.Tool.Slow do
   @moduledoc false
   # Sleeps `ms` and returns `text`, so call order and finish order can differ.
-  @behaviour Helyx.Tool
+  use Helyx.Test.Tool, name: "slow", description: "Sleeps, then echoes."
 
-  @impl true
-  def name, do: "slow"
-  @impl true
-  def description, do: "Sleeps, then echoes."
-  @impl true
-  def parameters, do: %{"type" => "object"}
   @impl true
   def run(%{"ms" => ms, "text" => text}, _cwd) do
     Process.sleep(ms)
@@ -693,14 +507,8 @@ defmodule Helyx.Test.Tool.Hold do
   #
   # "keep" and %{"gate" => g} are the forms a transcript can hold. Every
   # other handle is released.
-  @behaviour Helyx.Tool
+  use Helyx.Test.Tool, name: "hold", description: "Holds handles."
 
-  @impl true
-  def name, do: "hold"
-  @impl true
-  def description, do: "Holds handles."
-  @impl true
-  def parameters, do: %{"type" => "object"}
   @impl true
   def run(%{"handles" => handles} = args, _cwd) do
     Enum.each(handles, &Helyx.Tool.hold/1)
@@ -735,14 +543,8 @@ defmodule Helyx.Test.Tool.HoldTwo do
   @moduledoc false
   # A second tool module with the release of the hold tool, so tests can see
   # one release Task per module.
-  @behaviour Helyx.Tool
+  use Helyx.Test.Tool, name: "hold_two", description: "Holds handles."
 
-  @impl true
-  def name, do: "hold_two"
-  @impl true
-  defdelegate description, to: Helyx.Test.Tool.Hold
-  @impl true
-  defdelegate parameters, to: Helyx.Test.Tool.Hold
   @impl true
   defdelegate run(args, cwd), to: Helyx.Test.Tool.Hold
   @impl true
@@ -752,14 +554,8 @@ end
 defmodule Helyx.Test.Tool.HoldBare do
   @moduledoc false
   # Holds a handle but has no release/3.
-  @behaviour Helyx.Tool
+  use Helyx.Test.Tool, name: "hold_bare", description: "Holds a handle it cannot release."
 
-  @impl true
-  def name, do: "hold_bare"
-  @impl true
-  def description, do: "Holds a handle it cannot release."
-  @impl true
-  def parameters, do: %{"type" => "object"}
   @impl true
   def run(_args, _cwd) do
     Helyx.Tool.hold(:handle)
@@ -771,14 +567,8 @@ defmodule Helyx.Test.Tool.Unavailable do
   @moduledoc false
   # A tool whose check always fails, so tests can see a session start or
   # resume refuse it.
-  @behaviour Helyx.Tool
+  use Helyx.Test.Tool, name: "unavailable", description: "Never available."
 
-  @impl true
-  def name, do: "unavailable"
-  @impl true
-  def description, do: "Never available."
-  @impl true
-  def parameters, do: %{"type" => "object"}
   @impl true
   def run(_args, _cwd), do: {:ok, ""}
   @impl true
@@ -847,6 +637,27 @@ defmodule Helyx.Test.Connected do
   #   "label"            "echo"; a provider process started with no
   #                      `:resume_id` reports a new label on its
   #                      first turn
+  #   "events.<name>"    a turn answers :ok, sends the events of <name>, then
+  #                      a text delta "ok" and done:
+  #     "id1"     a resume id of 1 byte
+  #     "id256"   a resume id of 256 bytes, multibyte
+  #     "id257"   an id of 257 bytes
+  #     "id0"     an empty id
+  #     "raw_id"  an id that is not valid UTF-8
+  #     "orphan"  a tool result for a call of no completed message
+  #     "raw_result_id"  a tool result whose id is not valid UTF-8
+  #     "exit_big"  the turn callback exits with a reason of 101 digits
+  #     "big_cut" a cut of 101 digits, over the digit limit
+  #     "max_cut" a cut of 100 digits, at the digit limit
+  #     "neg_cut" a cut of -1
+  #     "result_N" a tool call and its result of N bytes
+  #     "result_multibyte" a result of 65,537 bytes: a 2-byte character
+  #                across the limit of 65,536
+  #     "result_raw" a result of 65,536 bytes that are not valid UTF-8
+  #     "dup_id"  two tool calls with one id, then two results
+  #     "open_call"  "dup_id" with no second result and no text after it
+  #     "late_result"  a call, a text message, then the call's result
+  #     "rejected"  a rejected tool call, valid only in a Loop stream
   #
   # A steer answers :ok with no `user_message` unless the model says
   # otherwise; the "steer_" models are "hang" for a turn:
@@ -861,24 +672,43 @@ defmodule Helyx.Test.Connected do
   #                      before its answer
   @behaviour Helyx.Provider
 
-  @hang [
-          "hang",
-          "flood",
-          "stop",
-          "tools",
-          "tools_late",
-          "block_interrupt",
-          "error_interrupt",
-          "late_interrupt"
-        ] ++
-          [
-            "steer_take",
-            "steer_reject",
-            "steer_error",
-            "steer_hold",
-            "steer_block",
-            "steer_early"
-          ]
+  alias Helyx.Message.ToolCall
+
+  @hang ~w(hang flood stop tools tools_late block_interrupt error_interrupt late_interrupt) ++
+          ~w(steer_take steer_reject steer_error steer_hold steer_block steer_early)
+
+  @done {:done, %{stop_reason: :end_turn, usage: %{}}}
+
+  # The events of each "events.<name>" model with a fixed list.
+  @events %{
+    "id1" => [{:resume, "a", 0}],
+    "id256" => [{:resume, String.duplicate("é", 128), 0}],
+    "id257" => [{:resume, "a" <> String.duplicate("é", 128), 0}],
+    "id0" => [{:resume, "", 0}],
+    "raw_id" => [{:resume, <<255>>, 0}],
+    "big_cut" => [{:resume, "a", Integer.pow(10, 100)}],
+    "max_cut" => [{:resume, "a", Integer.pow(10, 100) - 1}],
+    "neg_cut" => [{:resume, "a", -1}],
+    "orphan" => [{:tool_result, "nope", {:ok, "lost"}}],
+    "raw_result_id" => [{:tool_result, <<255>>, {:ok, "lost"}}],
+    "rejected" => [
+      {:rejected_tool_call, %ToolCall{id: "r", name: "read", arguments: %{}}, "bad"}
+    ],
+    "late_result" => [
+      {:tool_call, %ToolCall{id: "t", name: "read", arguments: %{}}},
+      {:message_end, :tool_use, %{}},
+      {:text_delta, "x"},
+      {:message_end, :end_turn, %{}},
+      {:tool_result, "t", {:ok, "late"}}
+    ],
+    "dup_id" => [
+      {:tool_call, %ToolCall{id: "t", name: "read", arguments: %{}}},
+      {:tool_call, %ToolCall{id: "t", name: "bash", arguments: %{}}},
+      {:message_end, :tool_use, %{}},
+      {:tool_result, "t", {:ok, "one"}},
+      {:tool_result, "t", {:ok, "two"}}
+    ]
+  }
 
   def controller(core), do: :"#{core}_controller"
 
@@ -929,14 +759,14 @@ defmodule Helyx.Test.Connected do
   def info({:late, from, request}, state),
     do: {:ok, answer("echo", request, from), state}
 
-  def info({:finish, turn_id}, state), do: {:ok, [{:event, turn_id, done()}], state}
+  def info({:finish, turn_id}, state), do: {:ok, [{:event, turn_id, @done}], state}
 
   def info({:fail, turn_id}, state),
     do: {:ok, [{:event, turn_id, {:error, :failed}}], state}
 
   def info({:flood, turn_id}, state) do
     deltas = for _ <- 1..10_002, do: {:event, turn_id, {:text_delta, "x"}}
-    {:ok, deltas ++ [{:event, turn_id, done()}], state}
+    {:ok, deltas ++ [{:event, turn_id, @done}], state}
   end
 
   def info(:stop, state), do: {:stop, :gone, state}
@@ -985,13 +815,16 @@ defmodule Helyx.Test.Connected do
   defp answer("context", {:turn, _, _}, from), do: [{:reply, from, :ok}]
 
   defp answer("context", {:context, id, {:ok, _context}}, from),
-    do: [{:reply, from, :ok}, {:event, id, done()}]
+    do: [{:reply, from, :ok}, {:event, id, @done}]
 
   defp answer("context", {:context, id, {:error, reason}}, from),
     do: [{:reply, from, :ok}, {:event, id, {:error, reason}}]
 
   defp answer("context_hold", {:context, _, _}, _from), do: []
   defp answer("context_hold", request, from), do: answer("context", request, from)
+
+  defp answer("events." <> name, {:turn, id, _}, from),
+    do: [{:reply, from, :ok} | Enum.map(turn_events(name), &{:event, id, &1})]
 
   defp answer("bad_action", {:turn, _, _}, _from), do: [:bogus]
   defp answer("bad_reply", {:turn, _, _}, from), do: [{:reply, from, :maybe}]
@@ -1032,7 +865,7 @@ defmodule Helyx.Test.Connected do
 
   defp answer(_model, {:turn, id, context}, from) do
     text = "echo:#{context.system}|#{Helyx.Message.text(List.last(context.messages))}"
-    [{:reply, from, :ok}, {:event, id, {:text_delta, text}}, {:event, id, done()}]
+    [{:reply, from, :ok}, {:event, id, {:text_delta, text}}, {:event, id, @done}]
   end
 
   defp answer(_model, _request, from), do: [{:reply, from, :ok}]
@@ -1042,7 +875,28 @@ defmodule Helyx.Test.Connected do
     []
   end
 
-  defp done, do: {:done, %{stop_reason: :end_turn, usage: %{}}}
+  defp turn_events("exit_big"), do: exit({:boom, Integer.pow(10, 100)})
+
+  defp turn_events("open_call"),
+    do: @events |> Map.fetch!("dup_id") |> Enum.drop(-1) |> Enum.concat([@done])
+
+  defp turn_events("result_" <> kind) do
+    call = %ToolCall{id: "c1", name: "bash", arguments: %{}}
+
+    [
+      {:tool_call, call},
+      {:message_end, :tool_use, %{}},
+      {:tool_result, "c1", {:ok, result_text(kind)}},
+      {:text_delta, "ok"},
+      @done
+    ]
+  end
+
+  defp turn_events(name), do: Map.fetch!(@events, name) ++ [{:text_delta, "ok"}, @done]
+
+  defp result_text("multibyte"), do: String.duplicate("x", 65_535) <> "é"
+  defp result_text("raw"), do: :binary.copy(<<255>>, 65_536)
+  defp result_text(bytes), do: String.duplicate("x", String.to_integer(bytes))
 end
 
 defmodule Helyx.Test.PrepareContext do
