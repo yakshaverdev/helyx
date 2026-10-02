@@ -14,58 +14,25 @@ defmodule Helyx.Session do
       # the session ends; Helyx.Session.end_reason(reason) is :stopped or
       # :crashed
 
-  Each turn runs the provider stream in a Task under Core's task supervisor,
-  linked to the session: the session traps exits, so a Task crash stays a
-  message, and a death of the session takes the Task, the hands, and every
-  tool Task with it (ADR 0004). The Task sends each stream event to the
-  session and returns the terminal stream event, `done` or `error`. The
-  session builds the assistant message from the stream events and closes the
-  provider call on the Task's reply. A stream that ends without a terminal
-  event, or a Task that crashes, fails the turn.
+  A local turn calls the provider until an assistant message has no tool
+  calls. Its tool calls run on the session's hands (`Helyx.Session.Hands`)
+  one at a time, in call order. A connected provider exports `init/3`
+  (ADR 0002, ADR 0007). It runs the whole turn and its own tools in its
+  provider process. A connected turn ends on the terminal event of the
+  provider. It fails when the prepare Task fails or the provider process
+  ends first. Each tool call with no result gets an `aborted` error
+  result. A follow-up that arrives during a turn waits in a queue. A steer
+  waits in a queue until the provider can take it (see `steer/2`). An
+  abort or a failure of the turn drops both queues. Each queue holds at
+  most 32 entries. An abort ends the turn at once. It returns when the
+  hands have released the resources of the turn, or recorded them as
+  unconfirmed (see `abort/1`). Until then, the session answers every
+  client call and starts no turn.
 
-  An assistant message with tool calls runs them on the session's hands
-  (`Helyx.Session.Hands`) one at a time, in call order, so two calls never touch the
-  working directory at once. Each result joins the transcript as it arrives,
-  and the provider is called again after the last one. The turn ends on an
-  assistant message with no tool calls.
-
-  Messages sent during a turn queue instead of failing. A steer is delivered,
-  with the other queued steers in order, as user messages before the next
-  provider call inside the same turn. A follow-up starts a new turn after the
-  current turn ends. Anything still queued when a turn ends normally starts a
-  new turn; an aborted or failed turn drops its queues. Each queue holds at
-  most 32 entries; past the cap the call returns `{:error, :queue_full}`.
-  Queues live in the session process only and are not persisted. Every
-  change emits a `:queue_update` event.
-
-  A connected provider (one that exports `init/3`, ADR 0002 and
-  ADR 0007) runs the whole turn and its own tools in its program, and
-  keeps one provider process for the session. The hands start it at
-  the first connected turn, and again after it ends. Each turn builds its
-  context in a prepare Task of the hands, then the session sends the turn
-  to the provider process, which sends the events back. An abort of a turn
-  that the provider got interrupts it there; the abort returns after the
-  answer, or after the provider process stopped. The provider reports each
-  completed assistant message and each tool result, which join the
-  transcript as they arrive; a tool call with no result at the end of the
-  turn gets an `aborted` error result. The id of each fresh program
-  session is written to the session file and goes out as a
-  `:provider_session` event. A model or provider switch
-  closes the provider process before the next turn, and so does the end of
-  the session. A steer reaches the running connected turn at most once: the
-  provider takes it at its next model call, and the user message joins the
-  transcript there. A steer that arrives before the provider has the turn
-  goes into the turn's prompt. A steer that the provider confirms it did
-  not get waits for the next turn. A steer that Helyx cannot confirm is
-  never sent again; a `:steer_unconfirmed` event carries its text.
-
-  An abort does not block the session. The session ends the turn at once and
-  asks the hands to release the turn's resources. This can take many
-  seconds when a resource stays. Until the hands answer, the session
-  answers every client call, but it starts no turn, because the hands
-  cannot take a tool call during the release: a prompt, a steer, or a
-  follow-up queues, and one turn starts with the queue when the hands have
-  answered.
+  `docs/features/coding-agent.md`, section "Runtime", has the turn, the
+  queues, and the abort. `docs/features/long-lived-harness.md` has the
+  connected turn. `docs/features/session-subscribers.md` has the
+  subscription.
   """
 
   alias Helyx.ModelRef
@@ -385,10 +352,26 @@ defmodule Helyx.Session do
     do: send_text(session, :prompt, text)
 
   @doc """
-  Steers the running turn. The text joins the queued steers and is delivered
-  before the next provider call inside the turn. With no turn running it
-  starts a turn, like a prompt. The text must be valid UTF-8. A full queue
-  returns `{:error, :queue_full}`.
+  Steers the running turn. `:ok` means that the session accepted the
+  steer. With no turn running it starts a turn, like a prompt. The text
+  must be valid UTF-8. The queued steers and the sent steers that are
+  still open count to 32. At that count the call returns
+  `{:error, :queue_full}`. An abort or a failure of the turn drops every
+  queued steer.
+
+  On a local turn, the steer joins the transcript before the next provider
+  call of the turn. If the turn ends first, the steer starts the next turn.
+
+  On a connected turn, a steer that arrives while the turn prepares goes
+  into the turn's prompt. A steer that arrives after that, before the
+  provider accepts the turn, goes to the provider when it accepts the
+  turn. The provider takes a steer at most once, and its user message
+  joins the transcript where the provider takes it. A steer that the
+  provider rejects waits for the next turn, unless the turn aborts or
+  fails first. A steer that Helyx cannot confirm is never sent again, and
+  a `:steer_unconfirmed` event carries its text. The rules are in
+  `docs/features/long-lived-harness.md`, sections "Turn states", "Steer",
+  and "Built in #202".
   """
   @spec steer(t(), String.t()) :: :ok | {:error, :invalid_utf8 | :queue_full | :session_not_found}
   def steer(%__MODULE__{} = session, text) when is_binary(text),

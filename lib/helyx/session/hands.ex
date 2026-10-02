@@ -1,49 +1,34 @@
 defmodule Helyx.Session.Hands do
   @moduledoc """
-  Runs tool calls for one session in one working directory. See ADR 0003
-  and ADR 0004.
+  Runs tool calls for one session in one working directory, as Tasks
+  linked to the hands (ADR 0003, ADR 0004). The session starts the hands
+  and addresses it by pid.
 
-  The session starts the hands and addresses it by pid. Each tool call runs
-  in a Task under Core's task supervisor, linked to the hands: the hands
-  trap exits, so a Task crash is a message, and a death of the hands, even
-  an untrappable kill, takes every running Task with it. The result goes
-  back to the session as `{:tool_result, turn_id, call_id, {:ok, text} |
-  {:error, text}}`. A Task that dies without a result gives an error result,
-  and so does a working directory that is gone when the call starts. Tool
-  calls and results are plain terms. Result text is valid UTF-8 when it
-  leaves the hands: each invalid sequence is replaced with U+FFFD, so a
-  later encoder never sees invalid stored text.
+  The result of a call goes to the session as `{:tool_result, turn_id,
+  call_id, {:ok, text} | {:error, text}}`. A Task that dies without a
+  result gives an error result, unless a cancel request killed it. A
+  working directory that is gone when the call starts also gives an error
+  result. Result text is valid UTF-8 when it leaves the hands: each
+  invalid sequence is replaced with U+FFFD.
 
-  A tool that creates an OS resource holds it with `Helyx.Tool.hold/1`. The
-  hands then keep an opaque handle outside the Task. When the call
-  delivers, however the Task ended, the hands call the tool's `release/3`
-  with the Task's handles. The result goes to the session only after the
-  release returns. The OS work lives in the tool, never here.
+  A tool holds each OS resource that it creates with `Helyx.Tool.hold/1`.
+  When a call ends, however its Task ended, the hands call the tool's
+  `release/3` with the handles of the Task, if it holds any. The result
+  goes to the session after the release. While a handle is unconfirmed,
+  the hands refuse tool calls with an error result.
+  `request_cancel/2` kills the Tasks of a turn and releases their handles.
+  Its answer names the handles that stay unconfirmed. The rules and the
+  deadlines are in `docs/features/tool-resource-release.md`.
 
-  The release runs in its own Task with a deadline. A handle is
-  unconfirmed when the release returns it. All the handles of a release are
-  unconfirmed when the release times out, raises, exits, or returns a bad
-  value. An unconfirmed handle makes the result an error. The tool gets
-  `:retry` for it at the start of each later tool call. While a handle is
-  unconfirmed, the hands refuse tool calls with an error result. Chat,
-  abort, and quit are not blocked.
-
-  A cancel request (`request_cancel/2`) aborts a turn: the hands kill the
-  turn's Tasks at once and call `release/3` with `:cancel` for their
-  handles, one release Task per tool, in parallel, with one deadline. The
-  answer arrives only when every release has returned or timed out. An
-  unconfirmed handle is reported as an error.
-
-  `start_provider/3` starts the provider process (ADR 0007), and `prepare/3`
-  the prepare Task of a connected turn. Both get a kill armed at the OTP
-  timer server as their first act (`:timer.kill_after/1`): 30,000 ms for
-  the connect and 10,000 ms for the prepare. Their Core code cancels it, so
-  no timer of the hands enforces the bound. The provider process has no
-  turn: a cancel request leaves it. When it ends, the hands release its
-  handles and send `{:provider_down, pid, reason}`: `:closed` after a close,
-  `:provider_timeout` after an armed kill, `{:task_exit, reason}` after a
-  crash, and the loop's reason after a stop. A prepare Task that dies gives
-  `{:prepare_failed, turn_id, reason}`.
+  `start_provider/3` starts the provider process (ADR 0007).
+  `prepare/3` starts the prepare Task of a connected turn. Each starts
+  with an armed kill. When the provider process ends, the hands release
+  its handles and send `{:provider_down, pid, reason}`. A prepare Task
+  that dies gives `{:prepare_failed, turn_id, reason}`, unless a cancel
+  request killed it. The deadlines and the reasons are in
+  `docs/features/long-lived-harness.md`, sections "Deadlines", "Bounds",
+  and "Built in #199", with the old names of
+  `docs/features/one-provider-path.md`, section "Renames".
   """
 
   use GenServer

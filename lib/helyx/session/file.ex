@@ -1,24 +1,14 @@
 defmodule Helyx.Session.File do
   @moduledoc """
-  The session file: append-only JSON lines, one entry per line, per ADR 0001.
+  The session file: append-only JSON lines, one entry per line, a tree by
+  `parent_id` (ADR 0001). A session lives at
+  `<dir>/<project slug>/<session id>.jsonl`. Only completed messages are
+  appended. `resume/3` restores the branch of the newest leaf of the most
+  recently started session for a working directory, and nothing is ever
+  removed from the file.
 
-  A session lives at `<dir>/<project slug>/<session id>.jsonl`, where the
-  slug is derived from the working directory. Every entry has an `id`, a
-  `parent_id`, a `ts`, and a `type`. The first entry is the header, `type`
-  `"session"`, and carries the format version, the working directory, and
-  the model. Only completed messages are appended, never streamed partials.
-
-  The file is a tree (ADR 0001). Two writers that append to one file, two
-  Cores that resumed one session, make two branches: each entry's
-  `parent_id` is the leaf of its own writer. Each entry and its newline go
-  to the file in one append write, so on a local filesystem the entries of
-  two writers do not interleave.
-
-  `resume/3` picks the most recently started session for a working
-  directory and restores the branch of its newest leaf. Nothing is ever
-  removed from the file: a line that does not decode is skipped, and a
-  last line without its newline gets one before anything else is appended.
-  Answering open tool calls is the session's job, not the file's.
+  The format, the rules for a damaged file, and the bounds are in
+  `docs/features/coding-agent.md`, section "Session file".
   """
 
   alias Helyx.Message
@@ -58,11 +48,9 @@ defmodule Helyx.Session.File do
 
   defmodule Resumed do
     @moduledoc """
-    What `resume/3` restores: the file, the session id, the model, the
-    transcript, and the last harness session of each harness provider: its
-    id and the number of messages before its entry. A fork of the file at
-    or below a harness session entry drops every label at or above the
-    fork, so each of those harnesses starts fresh (#282).
+    What `resume/3` restores. `harness_sessions` holds the last harness
+    session of each harness provider: its id and the number of messages
+    before its entry, without the labels that a fork drops.
     """
     @enforce_keys [:file, :session_id, :model, :messages]
     defstruct [:file, :session_id, :model, :messages, harness_sessions: %{}]
