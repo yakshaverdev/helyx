@@ -31,8 +31,6 @@
                "lib/helyx/session/file.ex" =>
                  {643, "the session file format, reader, and writer"},
                "lib/helyx/session.ex" => {453, "the public session API with its contract docs"},
-               "plugins/bundled/lib/helyx/provider/openai.ex" =>
-                 {485, "the OpenAI request and stream parser"},
                "lib/helyx/session/provider_process.ex" => {416, "the provider process loop"}
              }
            ]}
