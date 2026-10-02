@@ -77,3 +77,14 @@ Reduced round (spec and failure path, docs only):
 |---|---|---|
 | Spec | 1. C2 "the helper sends `message_end` before its tool requests and its `user_message` events" is not true when the model call gave no content; the context loses nothing then. | C2 says "when the message has content". |
 | Failure path | None reproduced. Probes: text, a call, thinking, a notice, and a mixed message each followed by a taken steer and `need_context`. Wording note: a `user_message` that takes no steer closes nothing. | The note is added to "A fresh context". |
+
+## After the rebase on #319
+
+"A program turn" no longer states the #319 gap. It points to the last sentence of C4, which #319 added, so the two do not repeat each other. The `:turn_start` bullet of the moduledoc still holds and stays short.
+
+Reduced round (spec and failure path, docs only):
+
+| Axis | Findings | Resolution |
+|---|---|---|
+| Spec | 1. The pointer said that C4 states what the dropped turn gets, but C4 names only its tool requests; a context request of the dropped turn stops the provider process. | The pointer is narrower, and the context request rule links "A fresh context". |
+| Failure path | 1. Probe of the live-turn case passes. 2. A `:turn_start` in a session wait (an idle close that ends with `:busy`) while the provider process has no live turn: the session drops it, the provider process takes it as live, its tool requests get no answer until the next turn, and a later program turn while the session is idle is dropped. Reproduced 4 of 5 runs with `Helyx.Test.Connected`. Code, outside this ticket. | Stated as a known gap, no ticket yet; reported to the orchestrator. |
