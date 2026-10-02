@@ -378,16 +378,24 @@ defmodule Helyx.Session.LoopTest do
     assert_receive {:DOWN, ^task_ref, :process, _, _}
   end
 
-  test "steers during a tool run reach the next provider call after the result, in order", %{
-    core: core
-  } do
-    {:ok, session} = Session.start(core, model: "test/steer")
+  test "steers during a tool run reach the next provider call after the result, in order" do
+    core = start_core([Helyx.Test.Provider, Helyx.Test.Gate])
+    {:ok, session} = Session.start(core, model: "test/steer." <> Helyx.Test.Gate.open())
     {:ok, _} = Session.subscribe(session)
 
     :ok = Session.prompt(session, "hello")
-    assert_receive {:helyx_event, %Event{type: :tool_execution_start}}
+    assert_receive {:waiting, tool}
+    # The gate holds the tool, so the steers have no timer to beat. The
+    # wait for both answers checks that the provider took each steer
+    # before the tool result goes out.
+    pid = Session.pid(session)
+    :erlang.trace(pid, true, [:receive])
     :ok = Session.steer(session, "s1")
     :ok = Session.steer(session, "s2")
+    assert_receive {:trace, ^pid, :receive, {:provider_reply, _, :steer, :ok}}
+    assert_receive {:trace, ^pid, :receive, {:provider_reply, _, :steer, :ok}}
+    :erlang.trace(pid, false, [:receive])
+    send(tool, :go)
 
     events = collect_until(:agent_end)
     assert final_text(events) == "hello|s1|s2"
