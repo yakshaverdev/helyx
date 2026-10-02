@@ -35,31 +35,22 @@ defmodule Helyx.CoreTest do
     assert Helyx.Core.plugins(name, Test.Multi) == [Test.MultiA]
   end
 
-  test "rejects two plugins for a single interface" do
-    assert {:error, {:mode_violation, Test.Single, [Test.SingleA, Test.SingleB]}} =
-             boot([Test.Provider, Test.SingleA, Test.SingleB])
-  end
-
-  test "rejects two model context plugins" do
-    assert {:error, {:mode_violation, Helyx.ModelContext, _}} =
-             boot([Test.Provider, Test.ModelContext, Test.ModelContextTwin])
-  end
-
-  test "rejects two compaction plugins" do
-    assert {:error, {:mode_violation, Helyx.Compaction, _}} =
-             boot([Test.Provider, Test.Compaction, Test.CompactionTwin])
-  end
-
-  test "rejects a missing provider" do
-    assert {:error, {:missing_plugin, Helyx.Provider}} = boot([Test.SingleA])
-  end
-
-  test "rejects a module that does not exist" do
-    assert {:error, {:not_a_plugin, Test.Missing}} = boot([Test.Provider, Test.Missing])
-  end
-
-  test "rejects a module that implements no interface" do
-    assert {:error, {:not_a_plugin, Test.NoInterface}} = boot([Test.Provider, Test.NoInterface])
+  for {name, plugins, error} <- [
+        {"two plugins for a single interface", [Test.Provider, Test.SingleA, Test.SingleB],
+         quote(do: {:mode_violation, Test.Single, [Test.SingleA, Test.SingleB]})},
+        {"two model context plugins", [Test.Provider, Test.ModelContext, Test.ModelContextTwin],
+         quote(do: {:mode_violation, Helyx.ModelContext, _})},
+        {"two compaction plugins", [Test.Provider, Test.Compaction, Test.CompactionTwin],
+         quote(do: {:mode_violation, Helyx.Compaction, _})},
+        {"a missing provider", [Test.SingleA], quote(do: {:missing_plugin, Helyx.Provider})},
+        {"a module that does not exist", [Test.Provider, Test.Missing],
+         quote(do: {:not_a_plugin, Test.Missing})},
+        {"a module that implements no interface", [Test.Provider, Test.NoInterface],
+         quote(do: {:not_a_plugin, Test.NoInterface})}
+      ] do
+    test "rejects #{name}" do
+      assert {:error, unquote(error)} = boot(unquote(plugins))
+    end
   end
 
   describe "provider ids (#169)" do

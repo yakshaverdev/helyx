@@ -300,12 +300,25 @@ defmodule Helyx.Session.FileTest do
     assert resumed.session_id == "sess1"
   end
 
-  test "an entry with a shape this module never writes is rejected, not raised", %{tmp_dir: dir} do
-    bad = ~s({"id":"x","ts":"t","type":"message","role":"system","content":[]})
-    {:ok, file} = Session.File.create(dir, "sess1", "/repo", "test/ok")
-    append_raw(file, bad)
+  for {name, line} <- [
+        {"a message role", ~s({"id":"x","ts":"t","type":"message","role":"system","content":[]})},
+        {"a model that is not a string", ~s({"id":"x","type":"model_change","model":42})},
+        {"a model change with no model", ~s({"id":"x","type":"model_change"})},
+        {"a tool call id with a wrong type",
+         ~s({"id":"x","type":"message","role":"tool_result","tool_call_id":42,"content":[]})},
+        {"a content block with a wrong field type",
+         ~s({"id":"x","type":"message","role":"user","content":[{"type":"text","text":42}]})},
+        {"an entry type", ~s({"id":"x","type":"note"})},
+        {"a second header mid-file",
+         ~s({"id":"h2","type":"session","version":1,"cwd":"/repo","model":"test/ok"})}
+      ] do
+    test "an entry with a shape this module never writes is rejected, not raised: #{name}",
+         %{tmp_dir: dir} do
+      {:ok, file} = Session.File.create(dir, "sess1", "/repo", "test/ok")
+      append_raw(file, unquote(line))
 
-    assert {:error, {:invalid_file, _}} = Session.File.resume(dir, "/repo")
+      assert {:error, {:invalid_file, _}} = Session.File.resume(dir, "/repo")
+    end
   end
 
   test "an unwritable directory is an error, not a raise", %{tmp_dir: dir} do
@@ -521,33 +534,23 @@ defmodule Helyx.Session.FileTest do
     File.chmod!(file.path, 0o644)
   end
 
-  test "a model that is missing or not a string is rejected", %{tmp_dir: dir} do
+  test "a later valid model change does not launder a bad one, nor a bad header model",
+       %{tmp_dir: dir} do
     {:ok, file} = Session.File.create(dir, "sess1", "/repo", "test/ok")
-    append_raw(file, ~s({"id":"x","type":"model_change","model":42}))
 
-    assert {:error, {:invalid_file, _}} = Session.File.resume(dir, "/repo")
-
-    {:ok, file2} = Session.File.create(dir, "sess2", "/repo2", "test/ok")
-    append_raw(file2, ~s({"id":"x","type":"model_change"}))
-
-    assert {:error, {:invalid_file, _}} = Session.File.resume(dir, "/repo2")
-
-    # A later valid change does not launder a bad one mid-file.
-    {:ok, file3} = Session.File.create(dir, "sess3", "/repo3", "test/ok")
-
-    file3
+    file
     |> append_raw(~s({"id":"x","type":"model_change","model":42}))
     |> Session.File.append_model_change("test/other")
 
-    assert {:error, {:invalid_file, _}} = Session.File.resume(dir, "/repo3")
+    assert {:error, {:invalid_file, _}} = Session.File.resume(dir, "/repo")
 
     # Nor a bad header model.
-    {:ok, file4} = Session.File.create(dir, "sess4", "/repo4", "test/ok")
-    header = File.read!(file4.path)
-    File.write!(file4.path, String.replace(header, ~s("model":"test/ok"), ~s("model":42)))
-    Session.File.append_model_change(file4, "test/other")
+    {:ok, file2} = Session.File.create(dir, "sess2", "/repo2", "test/ok")
+    header = File.read!(file2.path)
+    File.write!(file2.path, String.replace(header, ~s("model":"test/ok"), ~s("model":42)))
+    Session.File.append_model_change(file2, "test/other")
 
-    assert {:error, {:invalid_file, _}} = Session.File.resume(dir, "/repo4")
+    assert {:error, {:invalid_file, _}} = Session.File.resume(dir, "/repo2")
   end
 
   test "resume decodes stop reasons in a VM that never interned their atoms", %{tmp_dir: dir} do
@@ -607,14 +610,6 @@ defmodule Helyx.Session.FileTest do
              for(%Message{usage: usage} <- resumed.messages, do: usage["in"])
   end
 
-  test "a tool call id with a wrong type is rejected", %{tmp_dir: dir} do
-    entry = ~s({"id":"x","type":"message","role":"tool_result","tool_call_id":42,"content":[]})
-    {:ok, file} = Session.File.create(dir, "sess1", "/repo", "test/ok")
-    append_raw(file, entry)
-
-    assert {:error, {:invalid_file, _}} = Session.File.resume(dir, "/repo")
-  end
-
   test "a bad usage, model, or stop reason decodes as a missing one", %{tmp_dir: dir} do
     {:ok, file} = Session.File.create(dir, "sess1", "/repo", "test/ok")
 
@@ -636,21 +631,6 @@ defmodule Helyx.Session.FileTest do
     end
   end
 
-  test "a content block with a wrong field type is rejected", %{tmp_dir: dir} do
-    entry = ~s({"id":"x","type":"message","role":"user","content":[{"type":"text","text":42}]})
-    {:ok, file} = Session.File.create(dir, "sess1", "/repo", "test/ok")
-    append_raw(file, entry)
-
-    assert {:error, {:invalid_file, _}} = Session.File.resume(dir, "/repo")
-  end
-
-  test "an entry type the writer never produces is rejected", %{tmp_dir: dir} do
-    {:ok, file} = Session.File.create(dir, "sess1", "/repo", "test/ok")
-    append_raw(file, ~s({"id":"x","type":"note"}))
-
-    assert {:error, {:invalid_file, _}} = Session.File.resume(dir, "/repo")
-  end
-
   test "an entry on no branch is not checked", %{tmp_dir: dir} do
     {:ok, file} = Session.File.create(dir, "sess1", "/repo", "test/ok")
     file = Session.File.append_message(file, Message.user("kept"))
@@ -666,13 +646,6 @@ defmodule Helyx.Session.FileTest do
     assert {:ok, resumed} = Session.File.resume(dir, "/repo")
     assert texts(resumed) == ["kept"]
     assert resumed.model == "test/ok"
-  end
-
-  test "a second header mid-file is rejected", %{tmp_dir: dir} do
-    {:ok, file} = Session.File.create(dir, "sess1", "/repo", "test/ok")
-    append_raw(file, ~s({"id":"h2","type":"session","version":1,"cwd":"/repo","model":"test/ok"}))
-
-    assert {:error, {:invalid_file, _}} = Session.File.resume(dir, "/repo")
   end
 
   describe "the file size limit" do

@@ -317,30 +317,35 @@ defmodule Helyx.Session.StreamEventsTest do
 
       assert [:user] = Enum.map(:sys.get_state(Session.pid(session)).transcript, & &1.role)
     end
-
-    test "a model provider that sends a harness event fails the turn", %{core: core} do
-      {:ok, session} = Session.start(core, model: "test/harness_event")
-      {:ok, _} = Session.subscribe(session)
-      :ok = Session.prompt(session, "hello")
-
-      assert {:bad_stream_event, {:message_end, :end_turn, %{}}} =
-               List.last(collect_until(:agent_end)).data.error
-    end
   end
 
-  test "a malformed stream event fails the turn and the session lives", %{core: core} do
-    # The reason of `wide_int` holds the marker, not the 400,000 digits (#79).
-    for {model, event} <- [
-          garbage: {:text_delta, 42},
-          wide: {:text_delta, "hello", :extra},
-          wide_int: {:text_delta, "hello", "integer of more than 100 digits removed"}
-        ] do
-      {:ok, session} = Session.start(core, model: "test/#{model}")
+  # Each model sends one stream event that Core rejects. The reason of
+  # `wide_int` holds the marker, not the 400,000 digits (#79).
+  for {name, model, event} <- [
+        {"a delta that is not a string", "garbage", quote(do: {:text_delta, 42})},
+        {"an event with an extra field", "wide", quote(do: {:text_delta, "hello", :extra})},
+        {"an extra field with a wide integer", "wide_int",
+         quote(do: {:text_delta, "hello", "integer of more than 100 digits removed"})},
+        {"a delta that is not valid UTF-8", "raw_bytes", quote(do: {:text_delta, <<"hi", 255>>})},
+        {"a tool call that is not valid UTF-8", "raw_call", quote(do: {:tool_call, _})},
+        {"a tool call with a bad field shape", "bad_call",
+         quote(do: {:tool_call, %Helyx.Message.ToolCall{name: %{}}})},
+        {"a tool call whose arguments the file cannot hold", "bad_args",
+         quote(do: {:tool_call, _})},
+        {"a stop reason outside the format's set", "bad_stop",
+         quote(do: {:done, %{stop_reason: :refusal}})},
+        {"a harness event from a model provider", "harness_event",
+         quote(do: {:message_end, :end_turn, %{}})}
+      ] do
+    test "a malformed stream event fails the turn and the session lives: #{name}",
+         %{core: core} do
+      {:ok, session} = Session.start(core, model: "test/" <> unquote(model))
       {:ok, _} = Session.subscribe(session)
 
       :ok = Session.prompt(session, "hello")
-      events = collect_until(:agent_end)
-      assert List.last(events).data.error == {:bad_stream_event, event}
+
+      assert {:bad_stream_event, unquote(event)} =
+               List.last(collect_until(:agent_end)).data.error
 
       :ok = Session.prompt(session, "again")
       assert stop_reason(collect_until(:agent_end)) == :error

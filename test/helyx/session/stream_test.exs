@@ -56,14 +56,24 @@ defmodule Helyx.Session.StreamTest do
     assert [{:stream_event, "t1", {:thinking_delta, "hm"}}] = sent()
   end
 
-  test "a malformed event is the terminal and stops the stream", %{core: core} do
-    assert {:error, {:bad_stream_event, {:text_delta, 42}}} = run(core, "garbage")
-    assert sent() == []
-  end
-
-  test "a delta that is not valid UTF-8 is a malformed event", %{core: core} do
-    assert {:error, {:bad_stream_event, {:text_delta, <<"hi", 255>>}}} = run(core, "raw_bytes")
-    assert sent() == []
+  # A malformed event is the terminal: the run returns it and sends
+  # nothing.
+  for {name, model, event} <- [
+        {"a delta that is not a string", "garbage", quote(do: {:text_delta, 42})},
+        {"a delta that is not valid UTF-8", "raw_bytes", quote(do: {:text_delta, <<"hi", 255>>})},
+        {"a rejected call with a reason of 1,025 bytes", "reject_bytes_1025",
+         quote(do: {:rejected_tool_call, _, _})},
+        {"a rejected call with a multibyte reason of 1,025 bytes", "reject_multibyte_1025",
+         quote(do: {:rejected_tool_call, _, _})},
+        {"a rejected call with a reason that is not valid UTF-8", "reject_raw",
+         quote(do: {:rejected_tool_call, _, _})},
+        {"a rejected call with a reason that is not a string", "reject_atom",
+         quote(do: {:rejected_tool_call, _, _})}
+      ] do
+    test "a malformed event is the terminal and stops the stream: #{name}", %{core: core} do
+      assert {:error, {:bad_stream_event, unquote(event)}} = run(core, unquote(model))
+      assert sent() == []
+    end
   end
 
   test "an integer over the digit limit in arguments is capped and the call rejected first",
@@ -108,15 +118,6 @@ defmodule Helyx.Session.StreamTest do
       assert {:done, _} = run(core, unquote(model))
       assert [{:rejected_call, "t1", _, reason}, {:stream_event, "t1", _}] = sent()
       assert byte_size(reason) == unquote(bytes)
-    end
-  end
-
-  for model <- ["reject_bytes_1025", "reject_multibyte_1025", "reject_raw", "reject_atom"] do
-    test "a rejected tool call from #{model} is a malformed event", %{core: core} do
-      assert {:error, {:bad_stream_event, {:rejected_tool_call, _, _}}} =
-               run(core, unquote(model))
-
-      assert sent() == []
     end
   end
 
