@@ -436,7 +436,13 @@ defmodule Helyx.Session.LoopTest do
 
     :ok = Session.prompt(session, "hello")
     assert_receive {:waiting, stream}
+    # The session replies before the provider process takes the steer; the
+    # steer must be held before the model call ends.
+    pid = Session.pid(session)
+    :erlang.trace(pid, true, [:receive])
     :ok = Session.steer(session, "later")
+    assert_receive {:trace, ^pid, :receive, {:provider_reply, _, :steer, :ok}}
+    :erlang.trace(pid, false, [:receive])
     send(stream, :go)
 
     assert_receive {:waiting, stream}
