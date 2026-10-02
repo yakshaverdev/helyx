@@ -67,7 +67,7 @@ end
 
 **C3 Core.** The loop accepts the action only for the live turn and only when no context request of that turn is open. Any other case is a bad action, and the process stops. The session builds the base context from its transcript and tools and runs the prepare Task in the hands, as it does before `{:turn}` today, under `prepare_ms`. The session sends the result as the request `{:context, turn_id, result}`. A failed or killed Task gives `{:error, reason}`. The provider replies `:ok` inside the same callback, as for `{:tool_result}`. The request is not in the pool of 8.
 
-**C4 Abort and end.** At an interrupt or a terminal of the turn, the loop clears the open context request. The cancel request of the hands kills the prepare Task with the other Tasks of the turn (the hands cancel every Task of the turn id). The session drops a late `{:prepared}` of a turn that is not current, as it does today. The provider gets no answer and must not wait for one after its interrupt or its terminal.
+**C4 Abort and end.** At an interrupt or a terminal of the turn, the loop clears the open context request. At an interrupt or a failed turn, the cancel request of the hands kills the prepare Task with the other Tasks of the turn (the hands cancel every Task of the turn id). At a normal terminal, the session sends the cancel request only when a Helyx tool still runs. Otherwise the prepare Task of an open context request runs on until its result, at most `prepare_ms` (accepted in #299). The session drops a late `{:prepared}` of a turn that is not current, as it does today. The provider gets no answer and must not wait for one after its interrupt or its terminal.
 
 **C5 Harness providers.** Claude Code and Codex never send `:need_context`. Their code does not change for it.
 
@@ -231,7 +231,7 @@ New tests:
 |---|---|---|---|---|---|
 | The model Task | the helper, `Task.async/1` | the provider process (link and monitor) | its result | the link ends it, because the provider process never exits `:normal` (L1) | `Task.shutdown(task, :brutal_kill)` before the `:ok` (L3) |
 | The provider process | the hands, `Hands.start_provider` | the hands | `:close` or `:idle_close` | the hands kill it | the interrupt, else the kill per request |
-| The prepare Task of a context request | the hands | the hands | its result | the hands end with the session | the cancel of the turn's Tasks (C4) |
+| The prepare Task of a context request | the hands | the hands | its result, also after the terminal of the turn, at most `prepare_ms`; the session drops the late result (C4) | the hands end with the session | the cancel of the turn's Tasks (C4) |
 
 ## Out of scope
 

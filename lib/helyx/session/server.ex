@@ -6,16 +6,16 @@ defmodule Helyx.Session.Server do
   require Logger
 
   alias Helyx.{Context, Event, Message, ModelRef}
-  alias Helyx.Session.{Hands, Id, ProviderProcess, Queues, Snapshot, Steers, Transcript}
-  alias Helyx.Session.{Turn, Wait}
+  alias Helyx.Session.{Hands, Id, ProviderProcess, ProviderRequest, Queues, Snapshot, Steers}
+  alias Helyx.Session.{Transcript, Turn, Wait}
 
   defmodule State do
     @moduledoc false
     @enforce_keys [:id, :core, :model, :provider, :turn_mode, :cwd]
 
-    # The armed kill of a turn, interrupt, steer, tool result, or tool
-    # start request: the loop writes one stdio line and replies, well under
-    # 10 ms.
+    # The armed kill of a turn, interrupt, steer, tool result, tool start,
+    # or context request: the loop writes one stdio line and replies, well
+    # under 10 ms.
     @provider_reply_ms 2_000
     # The armed kill of a close: end of input, then the exit.
     @provider_close_ms 5_000
@@ -62,6 +62,7 @@ defmodule Helyx.Session.Server do
         interrupt: @provider_reply_ms,
         steer: @provider_reply_ms,
         tool_result: @provider_reply_ms,
+        context: @provider_reply_ms,
         tool_start: @provider_reply_ms,
         close: @provider_close_ms,
         idle: 1_800_000
@@ -437,24 +438,29 @@ defmodule Helyx.Session.Server do
   # The prepare Task checked the context (`Stream.prepare/4`): a plugin
   # that returned anything else fails the turn.
   def handle_info(
-        {:prepared, turn_id, {:ok, context}},
+        {:prepared, turn_id, result},
         %State{activity: %Turn{id: turn_id, phase: :preparing} = turn} = state
       ) do
-    {:noreply, submit(%{state | activity: %{turn | context: context}})}
+    case result do
+      {:ok, context} -> {:noreply, submit(%{state | activity: %{turn | context: context}})}
+      {:error, reason} -> {:noreply, fail_turn(reason, state)}
+    end
   end
 
-  def handle_info(
-        {:prepared, turn_id, {:error, reason}},
-        %State{activity: %Turn{id: turn_id, phase: :preparing}} = state
-      ) do
-    {:noreply, fail_turn(reason, state)}
-  end
+  def handle_info({:prepare_failed, turn_id, reason}, state),
+    do: handle_info({:prepared, turn_id, {:error, {:task_exit, reason}}}, state)
+
+  # A context request (C1-C4, `one-provider-path.md`), only for the live
+  # turn, after its events; the context is answered as a tool result is.
+  def handle_info({:need_context, turn_id}, %State{activity: %Turn{id: turn_id}} = state),
+    do: {:noreply, prepare(state)}
 
   def handle_info(
-        {:prepare_failed, turn_id, reason},
-        %State{activity: %Turn{id: turn_id, phase: :preparing}} = state
+        {:prepared, turn_id, result},
+        %State{activity: %Turn{id: turn_id} = turn, conn: %ProviderConn{pid: pid}} = state
       ) do
-    {:noreply, fail_turn({:task_exit, reason}, state)}
+    from = ask(state, pid, {:context, turn_id, result}, :context)
+    {:noreply, put_in(state.activity.results, [from | turn.results])}
   end
 
   # An answer other than `:ok` ends the provider process, and its
@@ -478,11 +484,12 @@ defmodule Helyx.Session.Server do
     {:noreply, steer_effects(put_in(state.activity.steers, steers), effects)}
   end
 
-  # The answer to a tool result of the turn: it was written.
+  # The answer to a tool result or a context of the turn: it was written.
   def handle_info(
-        {:provider_reply, from, :tool_result, _reply},
+        {:provider_reply, from, kind, _reply},
         %State{activity: %Turn{turn_mode: :connected} = turn} = state
-      ) do
+      )
+      when kind in [:tool_result, :context] do
     {:noreply, put_in(state.activity.results, List.delete(turn.results, from))}
   end
 
@@ -535,7 +542,7 @@ defmodule Helyx.Session.Server do
   def handle_info({:provider_reply, _from, _kind, _reply}, state), do: {:noreply, state}
   def handle_info({:provider_down, _pid, _reason}, state), do: {:noreply, state}
   def handle_info({:prepared, _turn_id, _result}, state), do: {:noreply, state}
-  def handle_info({:prepare_failed, _turn_id, _reason}, state), do: {:noreply, state}
+  def handle_info({:need_context, _turn_id}, state), do: {:noreply, state}
   def handle_info({:tool_result, _turn_id, _call_id, _result}, state), do: {:noreply, state}
   def handle_info({:cancel_tool, _turn_id, _call_id}, state), do: {:noreply, state}
   def handle_info({:stream_event, _turn_id, _event}, state), do: {:noreply, state}
@@ -679,15 +686,9 @@ defmodule Helyx.Session.Server do
       |> drop_queues()
       |> emit(:agent_end, %{stop_reason: :aborted})
 
-    wait = %{wait | hands: request, callers: callers, interrupt: interrupt(turn, state.conn)}
+    wait = %{wait | hands: request, callers: callers, interrupt: Wait.interrupt(turn, state.conn)}
     %{state | activity: wait}
   end
-
-  defp interrupt(%Turn{turn_mode: :connected, phase: phase, id: id}, %{pid: pid})
-       when phase in [:submitting, :submitted],
-       do: {pid, id}
-
-  defp interrupt(_turn, _conn), do: nil
 
   # Runs the wait (see `Wait.next/2`): sends the requests it names, and at
   # its end replies to the abort callers and settles.
@@ -710,7 +711,7 @@ defmodule Helyx.Session.Server do
   defp provider_pid(_state), do: nil
 
   # Sends `request` to the provider process with the bound `key` of `provider_ms`.
-  defp ask(state, pid, req, key), do: ProviderProcess.request(pid, req, state.provider_ms[key])
+  defp ask(state, pid, req, key), do: ProviderRequest.ask(pid, req, state.provider_ms[key])
 
   # A provider process ended in the wait: see `Wait.provider_down/2`.
   defp wait_provider_down(%State{activity: wait} = state, pid) do
@@ -893,26 +894,8 @@ defmodule Helyx.Session.Server do
   # turn) and a prepare Task of the hands, which builds the context.
   defp call_provider(%State{activity: %Turn{turn_mode: :connected}} = state) do
     case connect(state) do
-      {:ok, %State{activity: turn} = state} ->
-        session = self()
-        turn_id = turn.id
-        %State{model_context: model_context, compaction: compaction} = state
-        context = %Context{messages: state.transcript, tools: state.tools}
-        opts = [turn_id: turn_id] ++ base_opts(state)
-
-        :ok =
-          Hands.prepare(state.hands, turn_id, fn tref ->
-            result =
-              Helyx.Session.Stream.prepare(model_context, compaction, context, opts)
-
-            :timer.cancel(tref)
-            send(session, {:prepared, turn_id, result})
-          end)
-
-        %{state | activity: %{turn | phase: :preparing}}
-
-      {:error, text} ->
-        fail_turn(text, state)
+      {:ok, state} -> prepare(put_in(state.activity.phase, :preparing))
+      {:error, text} -> fail_turn(text, state)
     end
   end
 
@@ -941,6 +924,23 @@ defmodule Helyx.Session.Server do
 
   defp base_opts(state), do: [core: state.core, session_id: state.id, cwd: state.cwd]
 
+  # The prepare Task of the hands builds the context, under `prepare_ms`.
+  defp prepare(%State{activity: %Turn{id: turn_id}} = state) do
+    session = self()
+    %State{model_context: model_context, compaction: compaction} = state
+    context = %Context{messages: state.transcript, tools: state.tools}
+    opts = [turn_id: turn_id] ++ base_opts(state)
+
+    :ok =
+      Hands.prepare(state.hands, turn_id, fn tref ->
+        result = Helyx.Session.Stream.prepare(model_context, compaction, context, opts)
+        :timer.cancel(tref)
+        send(session, {:prepared, turn_id, result})
+      end)
+
+    state
+  end
+
   # `settle/1` closed a provider process of another model before the turn.
   defp connect(%State{conn: %ProviderConn{model: model}, activity: %Turn{model: model}} = state),
     do: {:ok, state}
@@ -957,7 +957,7 @@ defmodule Helyx.Session.Server do
     }
 
     with {:ok, pid} <-
-           Hands.start_provider(state.hands, turn.provider, &ProviderProcess.run(args, &1)) do
+           Hands.start_provider(state.hands, turn.provider, ProviderProcess.run(args)) do
       conn = %ProviderConn{pid: pid, model: turn.model}
       {:ok, %{state | conn: conn, activity: %{turn | resumed: resumed}}}
     end

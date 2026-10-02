@@ -91,7 +91,8 @@ defmodule Helyx.Provider do
       port data, a monitor, a timer.
 
   Each callback returns actions: `{:event, turn_id, event}` with a stream
-  event, `{:reply, from, value}`, and `{:cancel_tool, turn_id, call_id}`.
+  event, `{:reply, from, value}`, `{:cancel_tool, turn_id, call_id}`, and
+  `{:need_context, turn_id}`.
   Each event passes the same check as a stream event. A turn ends at its
   `done` or `error` event. A connected turn can send every stream event of
   a local turn except `rejected_tool_call`, and also:
@@ -157,6 +158,22 @@ defmodule Helyx.Provider do
   process too. The action `{:cancel_tool, turn_id, call_id}` withdraws a
   request: the session stops its run, and a later result is dropped.
 
+  A fresh context: the action `{:need_context, turn_id}` asks for the
+  context of the running turn, built again from the transcript, with
+  ModelContext and Compaction run on it with `:turn_id` in their options
+  (`docs/features/one-provider-path.md`, "The context request"). The
+  session applies every event before it in the action list first, so the
+  context holds them. Core accepts it only for the running turn and only
+  when no context request of that turn is open; any other one is a bad
+  action and stops the provider process. The context comes as the request
+  `{:context, turn_id, {:ok, context} | {:error, reason}}`, under
+  `prepare_ms` (`Helyx.Session.Hands`); a failed or killed build gives
+  `{:error, reason}`. The provider replies `:ok` inside the same callback,
+  as to a `tool_result` request, or the provider process stops with
+  `{:context_not_answered, turn_id}`; the request does not count in the
+  `@max_open` open requests. After its interrupt or its terminal, the
+  provider must not wait for the context: the request may never come.
+
   Every request has a deadline: a kill of the provider process armed with
   the request at the OTP timer server (`:timer.kill_after/2`), which Core
   cancels when the provider replies. A connect has `connect_ms`
@@ -194,6 +211,7 @@ defmodule Helyx.Provider do
           | {:interrupt, turn_id :: String.t()}
           | {:tool_result, turn_id :: String.t(), call_id :: String.t(),
              {:ok | :error, String.t()}}
+          | {:context, turn_id :: String.t(), {:ok, Helyx.Context.t()} | {:error, term()}}
           | :close
           | :idle_close
 
@@ -201,6 +219,7 @@ defmodule Helyx.Provider do
           {:event, turn_id :: String.t(), stream_event()}
           | {:reply, from(), term()}
           | {:cancel_tool, turn_id :: String.t(), call_id :: String.t()}
+          | {:need_context, turn_id :: String.t()}
 
   @doc "The byte limit of the text of a `{:notice, text}` stream event."
   @spec max_notice_bytes() :: pos_integer()

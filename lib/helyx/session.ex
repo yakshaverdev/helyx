@@ -19,15 +19,15 @@ defmodule Helyx.Session do
   one at a time, in call order. A connected provider exports `init/3`
   (ADR 0002, ADR 0007). It runs the whole turn and its own tools in its
   provider process. A connected turn ends on the terminal event of the
-  provider. It fails when the prepare Task fails or the provider process
-  ends first. Each tool call with no result gets an `aborted` error
-  result. A follow-up that arrives during a turn waits in a queue. A steer
-  waits in a queue until the provider can take it (see `steer/2`). An
-  abort or a failure of the turn drops both queues. Each queue holds at
-  most 32 entries. An abort ends the turn at once. It returns when the
-  hands have released the resources of the turn, or recorded them as
-  unconfirmed (see `abort/1`). Until then, the session answers every
-  client call and starts no turn.
+  provider. It fails when its first prepare Task fails or the provider
+  process ends first; a failed context build goes to the provider. Each
+  tool call with no result gets an `aborted` error result. A follow-up
+  during a turn waits in a queue. A steer waits in a queue until the
+  provider can take it (see `steer/2`). An abort or a failure of the turn
+  drops both queues. Each queue holds at most 32 entries. An abort ends
+  the turn at once. It returns when the hands have released the
+  resources of the turn or recorded them as unconfirmed (`abort/1`).
+  Until then, the session answers every client call and starts no turn.
 
   `docs/features/coding-agent.md`, section "Runtime", has the turn, the
   queues, and the abort. `docs/features/long-lived-harness.md` has the

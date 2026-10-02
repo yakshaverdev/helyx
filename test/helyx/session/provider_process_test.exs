@@ -146,7 +146,7 @@ defmodule Helyx.Session.ProviderProcessTest do
       assert_receive {:conn, :close, ^proc, :close}
       Process.flag(:trap_exit, true)
       :ok = stop_supervised(core)
-      assert_received {:DOWN, ^ref, :process, _, :normal}
+      assert_received {:DOWN, ^ref, :process, _, {:shutdown, :closed}}
       assert_received {:release, :deliver, [{:report, _}]}
       assert_received {:DOWN, ^hands_ref, :process, _, :shutdown}
     end
@@ -731,6 +731,154 @@ defmodule Helyx.Session.ProviderProcessTest do
     end
   end
 
+  describe "the context request (#299)" do
+    # Starts a turn of the "context" provider and returns the session, its
+    # hands, the provider process, and the turn id.
+    defp context_turn(core, model \\ "context", bounds \\ []) do
+      {session, _pid, hands} = start(core, model, bounds)
+      :ok = Session.prompt(session, "one")
+      assert_receive {:conn, :turn, proc, {:turn, turn_id, _}}
+      {session, hands, proc, turn_id}
+    end
+
+    defp preparing?(hands, turn_id) do
+      Enum.any?(:sys.get_state(hands).tasks, &match?({_, {_, ^turn_id, :prepare, _}}, &1))
+    end
+
+    test "gives a fresh context with :turn_id that holds the events before the request",
+         %{core: core} do
+      {_session, _hands, proc, turn_id} = context_turn(core)
+      send(proc, {:need_context, turn_id, "fresh"})
+
+      assert_receive {:conn, :context, ^proc, {:context, ^turn_id, {:ok, context}}}
+      assert context.system == "prepared for #{turn_id}"
+      assert [%Message{role: :user}, %Message{role: :assistant} = last] = context.messages
+      assert Message.text(last) == "fresh"
+      assert List.last(collect_until(:agent_end)).data.stop_reason == :end_turn
+      assert Process.alive?(proc)
+    end
+
+    test "an interrupt during a context request kills its build; no context comes, and the next turn asks again",
+         %{core: core} do
+      {session, hands, proc, turn_id} = context_turn(core)
+      send(proc, {:need_context, turn_id, "block_prepare"})
+      # The session starts the prepare Task when it takes the request,
+      # which the test cannot see otherwise.
+      Helyx.Test.SessionCase.await(fn -> preparing?(hands, turn_id) end, "the prepare Task")
+
+      :ok = Session.abort(session)
+      assert_received {:conn, :interrupt, ^proc, {:interrupt, ^turn_id}}
+      refute preparing?(hands, turn_id)
+      collect_until(:agent_end)
+
+      :ok = Session.prompt(session, "two")
+      assert_receive {:conn, :turn, ^proc, {:turn, next_id, _}}
+      send(proc, {:need_context, next_id, "fresh"})
+      assert List.last(collect_until(:agent_end)).data.stop_reason == :end_turn
+      refute_received {:conn, :context, _, {:context, ^turn_id, _}}
+      assert_received {:conn, :context, ^proc, {:context, ^next_id, {:ok, _}}}
+    end
+
+    for ids <- [[:live, :live], [:other]] do
+      test "need_context for #{inspect(ids)} is a bad action and stops the provider process",
+           %{core: core} do
+        {_session, _hands, proc, turn_id} = context_turn(core)
+
+        actions =
+          for id <- unquote(ids), do: {:need_context, if(id == :live, do: turn_id, else: "other")}
+
+        send(proc, {:batch, actions})
+
+        assert error(collect_until(:agent_end)) == {:bad_action, List.last(actions)}
+        refute Process.alive?(proc)
+      end
+    end
+
+    for {text, reason} <- [{"nil_build", :bad_context}, {"raise_prepare", :task_exit}] do
+      @tag :capture_log
+      test "a context that fails (#{text}) ends the turn and keeps the provider process",
+           %{core: core} do
+        {session, _hands, proc, turn_id} = context_turn(core)
+        send(proc, {:need_context, turn_id, unquote(text)})
+
+        assert_receive {:conn, :context, ^proc, {:context, ^turn_id, {:error, reason}}}
+        assert error(collect_until(:agent_end)) == reason
+        assert elem(reason, 0) == unquote(reason)
+
+        :ok = Session.prompt(session, "two")
+        assert_receive {:conn, :turn, ^proc, _}
+        assert Process.alive?(proc)
+      end
+    end
+
+    test "a context with no answer in its callback stops the provider process", %{core: core} do
+      {_session, _hands, proc, turn_id} = context_turn(core, "context_hold")
+      send(proc, {:need_context, turn_id, "fresh"})
+
+      assert error(collect_until(:agent_end)) == {:context_not_answered, turn_id}
+      refute Process.alive?(proc)
+    end
+
+    # `@load_prepare_ms` (above) is the bound and the margin for load: the
+    # first prepare of the turn also runs under it.
+    @tag :slow
+    test "a context build that blocks is killed at the bound and keeps the provider process",
+         %{core: core} do
+      {_session, _hands, proc, turn_id} = context_turn(core, "context", prepare: @load_prepare_ms)
+      send(proc, {:need_context, turn_id, "block_prepare"})
+
+      assert_receive {:conn, :context, ^proc, {:context, ^turn_id, {:error, reason}}}
+      assert reason == {:task_exit, :killed}
+      assert error(collect_until(:agent_end)) == reason
+      assert Process.alive?(proc)
+    end
+  end
+
+  # L1 in `docs/features/one-provider-path.md`: the provider process never
+  # ends with `:normal`, so a process linked to it ends with it.
+  describe "lifetime (#299)" do
+    test "a close ends the provider process and the process linked to it", %{core: core} do
+      {session, pid, _hands} = start(core, "echo")
+      turn(session, "one")
+      assert_received {:linked, proc, linked}
+      ref = Process.monitor(proc)
+      linked_ref = Process.monitor(linked)
+
+      GenServer.stop(pid)
+      assert_received {:DOWN, ^ref, :process, _, {:shutdown, :closed}}
+      assert_receive {:DOWN, ^linked_ref, :process, _, {:shutdown, :closed}}
+    end
+
+    for {model, message, bounds, reason} <- [
+          {"bad_event", nil, [], {:bad_stream_event, {:text_delta, 42}}},
+          {"error_turn", nil, [], {:provider_error, :turn, :refused}},
+          {"block_turn", nil, [turn: 300], :provider_timeout},
+          {"exit_init", nil, [], {:exit, :normal}},
+          {"exit_turn", nil, [], {:exit, :normal}},
+          {"stop", :stop, [], {:provider_stop, :gone}},
+          {"stop", :bad_return, [], {:bad_return, :nope}},
+          {"stop", :exit_normal, [], {:exit, :normal}}
+        ] do
+      test "#{model} #{message} fails the turn with #{inspect(reason)} and ends the linked process",
+           %{core: core} do
+        {session, _pid, _hands} = start(core, unquote(model), unquote(bounds))
+        :ok = Session.prompt(session, "one")
+        assert_receive {:linked, proc, linked}
+        linked_ref = Process.monitor(linked)
+
+        if message = unquote(message) do
+          assert_receive {:conn, :turn, ^proc, _}
+          send(proc, message)
+        end
+
+        assert error(collect_until(:agent_end)) == unquote(Macro.escape(reason))
+        refute Process.alive?(proc)
+        assert_receive {:DOWN, ^linked_ref, :process, _, down}
+        assert down != :normal
+      end
+    end
+  end
+
   describe "program turn (#240)" do
     @done {:done, %{stop_reason: :end_turn, usage: %{}}}
 
@@ -891,7 +1039,7 @@ defmodule Helyx.Session.ProviderProcessTest do
         assert_receive {:conn, :idle_close, ^proc, :idle_close}
         Process.flag(:trap_exit, true)
         :ok = stop_supervised(core)
-        assert_received {:DOWN, ^ref, :process, _, :normal}
+        assert_received {:DOWN, ^ref, :process, _, {:shutdown, :closed}}
         assert_received {:release, :deliver, [{:report, _}]}
         assert_received {:DOWN, ^hands_ref, :process, _, :shutdown}
       end
@@ -910,7 +1058,7 @@ defmodule Helyx.Session.ProviderProcessTest do
       assert_receive {:conn, :interrupt, ^proc, _}
       Process.flag(:trap_exit, true)
       :ok = stop_supervised(core)
-      assert_received {:DOWN, ^ref, :process, _, :normal}
+      assert_received {:DOWN, ^ref, :process, _, {:shutdown, :closed}}
       assert_received {:release, :deliver, [{:report, _}]}
       assert_received {:DOWN, ^hands_ref, :process, _, :shutdown}
     end

@@ -21,8 +21,8 @@ defmodule Helyx.Session.Hands do
   deadlines are in `docs/features/tool-resource-release.md`.
 
   `start_provider/3` starts the provider process (ADR 0007).
-  `prepare/3` starts the prepare Task of a connected turn. Each starts
-  with an armed kill. When the provider process ends, the hands release
+  `prepare/3` starts the prepare Task of a connected turn, at its start
+  and at each context request. Each starts with an armed kill. When the provider process ends, the hands release
   its handles and send `{:provider_down, pid, reason}`. A prepare Task
   that dies gives `{:prepare_failed, turn_id, reason}`, unless a cancel
   request killed it. The deadlines and the reasons are in
@@ -266,13 +266,13 @@ defmodule Helyx.Session.Hands do
   defp outcome(turn_id, id, _pid, result), do: outcome(turn_id, id, result)
 
   # The reason of a provider process's end, capped like a crash reason. A
-  # kill is the armed kill of a request that got no answer in time. An
-  # unconfirmed handle stays in `unconfirmed` and refuses the next start.
+  # kill is the armed kill of a request that got no answer in time. The
+  # loop ends with `{:shutdown, reason}` (L1). An unconfirmed handle stays
+  # in `unconfirmed` and refuses the next start.
   defp down_reason({:exit, :killed}), do: :provider_timeout
+  defp down_reason({:exit, {:shutdown, reason}}), do: Helyx.Message.cap_integers(reason)
   defp down_reason({:exit, reason}), do: {:task_exit, Helyx.Message.cap_integers(reason)}
   defp down_reason({:error, _unconfirmed} = error), do: error
-  defp down_reason({:stop, reason}), do: Helyx.Message.cap_integers(reason)
-  defp down_reason(:closed), do: :closed
 
   defp outcome(turn_id, call_id, {:exit, reason}),
     do: outcome(turn_id, call_id, {:error, "tool crashed: #{inspect(reason)}"})
