@@ -10,11 +10,11 @@ end
 defmodule Helyx.Session.Server.State do
   @moduledoc false
   # The state of one session process and the requests to its provider
-  # process: `ask/4` sends a request under its bound of `provider_ms`, and
-  # `provider_pid/1` names the current provider process
-  # (docs/features/long-lived-harness.md).
+  # process: `ask/4` sends a request under its bound of `provider_ms`,
+  # `provider_pid/1` names the current provider process, and `drop_turn/2`
+  # tells it of a dropped program turn (docs/features/long-lived-harness.md).
 
-  alias Helyx.Session.{ProviderRequest, Queues}
+  alias Helyx.Session.{ProviderRequest, Queues, Wait}
   alias Helyx.Session.Server.ProviderConn
 
   @enforce_keys [:id, :core, :model, :provider, :cwd]
@@ -80,4 +80,14 @@ defmodule Helyx.Session.Server.State do
 
   # Sends `request` to the provider process with the bound `key` of `provider_ms`.
   def ask(state, pid, req, key), do: ProviderRequest.ask(pid, req, state.provider_ms[key])
+
+  # The session dropped the program turn `turn_id` (#339). A loop that had
+  # no live turn took it as live, so the current provider process and the
+  # one that the wait closes end it too; any other loop ignores the id.
+  def drop_turn(%__MODULE__{activity: activity} = state, turn_id) do
+    closing = if is_struct(activity, Wait), do: activity.provider
+    pids = Enum.uniq([provider_pid(state), closing])
+    for pid <- pids, pid, do: ProviderRequest.tell(pid, {:turn_dropped, turn_id})
+    state
+  end
 end

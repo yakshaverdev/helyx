@@ -8,7 +8,7 @@ defmodule Helyx.Session.ProviderProcess do
   # with `:normal` (L1 in `docs/features/one-provider-path.md`), so every
   # process linked to it ends with it: it exits with `{:shutdown, reason}`,
   # and the hands report `reason` in `{:provider_down, pid, reason}`. Each
-  # request comes with an armed kill (`Helyx.Session.ProviderRequest`).
+  # session request but `{:turn_dropped, ...}` has an armed kill (`ProviderRequest`).
 
   alias Helyx.Message
   alias Helyx.Session.{ProviderRequest, Stream}
@@ -96,7 +96,7 @@ defmodule Helyx.Session.ProviderProcess do
       receive do
         # A guard with `elem/2` fails for `:close` and `:idle_close`.
         {:provider_request, from, tref, request}
-        when elem(request, 0) in [:tool_result, :tool_start, :context] ->
+        when elem(request, 0) in [:tool_result, :tool_start, :context, :turn_dropped] ->
           serve(request, from, tref, proc)
 
         {:provider_request, from, tref, request} when map_size(proc.open) >= @max_open ->
@@ -173,6 +173,15 @@ defmodule Helyx.Session.ProviderProcess do
     ProviderRequest.answer(proc.session, from, tref, :context, :ok)
     {:ok, proc}
   end
+
+  # The session dropped this program turn (#339), with no reply: it ends as
+  # at every end of a live turn, and an open context request gets an error.
+  defp serve({:turn_dropped, turn_id}, _, _, %{live: turn_id, context?: true} = proc) do
+    with {:ok, proc} <- end_tools(proc),
+         do: write_result({:context, turn_id, {:error, :turn_dropped}}, make_ref(), nil, proc)
+  end
+
+  defp serve({:turn_dropped, turn_id}, _, _, proc), do: end_live_tools(turn_id, proc)
 
   defp serve(request, from, tref, proc), do: provide(request, from, tref, proc)
 
@@ -306,7 +315,8 @@ defmodule Helyx.Session.ProviderProcess do
 
   # A turn that the program started by itself (#240) is live, as after a
   # `{:turn, ...}` request. Its id is the provider's, with the checks of a
-  # resume id. During a live turn the loop drops it, as the session does (#319).
+  # resume id. During a live turn the loop drops it, as the session does (#319);
+  # a session that drops it at another time ends it with `{:turn_dropped, id}` (#339).
   defp action({:event, turn_id, :turn_start} = action, proc) do
     message = {:stream_event, turn_id, :turn_start}
 
