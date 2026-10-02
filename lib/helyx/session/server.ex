@@ -7,7 +7,7 @@ defmodule Helyx.Session.Server do
 
   alias Helyx.{Context, Message, ModelRef}
   alias Helyx.Session.{Hands, Id, ProviderProcess, Queues, Snapshot, Steers}
-  alias Helyx.Session.Server.{ProviderConn, Record, State}
+  alias Helyx.Session.Server.{Messages, ProviderConn, Record, State}
   alias Helyx.Session.{Transcript, Turn, Wait}
 
   import State, only: [ask: 4, provider_pid: 1]
@@ -145,7 +145,7 @@ defmodule Helyx.Session.Server do
         {:stream_event, turn_id, {:message_end, stop_reason, usage}},
         %State{activity: %Turn{id: turn_id}} = state
       ) do
-    {state, _assistant, calls} = close_assistant(state, stop_reason, usage)
+    {state, _assistant, calls} = Messages.close_assistant(state, stop_reason, usage)
     state = Enum.reduce(calls, state, &emit(&2, :tool_execution_start, %{tool_call: &1}))
     %State{activity: turn} = state
     {:noreply, %{state | activity: %{turn | partial: nil, calls: calls}}}
@@ -165,7 +165,7 @@ defmodule Helyx.Session.Server do
 
       call ->
         state = %{state | activity: %{turn | calls: List.delete(turn.calls, call)}}
-        {:noreply, record_result(call, result, state)}
+        {:noreply, Messages.record_result(call, result, state)}
     end
   end
 
@@ -257,7 +257,7 @@ defmodule Helyx.Session.Server do
   def handle_info({:stream_event, _turn_id, :turn_start}, state), do: {:noreply, state}
 
   def handle_info({:stream_event, turn_id, event}, %State{activity: %Turn{id: turn_id}} = state) do
-    %State{activity: turn} = state = start_assistant_message(state)
+    %State{activity: turn} = state = Messages.start_assistant_message(state)
 
     {:noreply,
      %{state | activity: Turn.add_block(turn, event)}
@@ -530,8 +530,8 @@ defmodule Helyx.Session.Server do
     state =
       state
       |> steer_effects(effects)
-      |> abort_open_calls()
-      |> close_partial_message(:aborted, :aborted)
+      |> Messages.abort_open_calls()
+      |> Messages.close_partial_message(:aborted, :aborted)
       |> drop_queues()
       |> emit(:agent_end, %{stop_reason: :aborted})
 
@@ -611,19 +611,11 @@ defmodule Helyx.Session.Server do
   defp begin_turn(%State{} = state, texts) do
     turn = %Turn{id: Id.new(), model: state.model, provider: state.provider}
     state = open_turn(state, turn, %{})
-    call_provider(Enum.reduce(texts, state, &append_user(&2, &1)))
+    call_provider(Enum.reduce(texts, state, &Messages.append_user(&2, &1)))
   end
 
   defp open_turn(state, turn, data),
     do: %{state | activity: turn} |> emit(:agent_start, %{}) |> emit(:turn_start, data)
-
-  defp append_user(state, text) do
-    user = Message.user(text)
-
-    Record.append_message(state, user)
-    |> emit(:message_start, %{message: user})
-    |> emit(:message_end, %{message: user})
-  end
 
   defp queue_reply(%State{} = state, key, text) do
     held = if key == :steers, do: held(state), else: 0
@@ -661,7 +653,7 @@ defmodule Helyx.Session.Server do
         {[], state}
 
       {steers, queues} ->
-        state = Enum.reduce(steers, %{state | queues: queues}, &append_user(&2, &1))
+        state = Enum.reduce(steers, %{state | queues: queues}, &Messages.append_user(&2, &1))
         {steers, emit_queue(state)}
     end
   end
@@ -699,23 +691,11 @@ defmodule Helyx.Session.Server do
     emit_queue(%{state | queues: queues})
   end
 
-  # The provider took a steer. The open assistant message closes first, and
-  # every call still open gets its `aborted` result, as at a `message_end`:
-  # no message goes between a call and its result.
-  defp take_steer(%State{activity: %Turn{partial: nil}} = state, text),
-    do: state |> abort_turn_calls() |> append_user(text)
-
-  defp take_steer(%State{activity: %Turn{partial: partial}} = state, text) do
-    stop = if Enum.any?(partial, &match?(%Message.ToolCall{}, &1)), do: :tool_use, else: :end_turn
-    {state, _assistant, calls} = close_assistant(state, stop, %{})
-    take_steer(%{state | activity: %{state.activity | partial: nil, calls: calls}}, text)
-  end
-
   # Applies the effects of the steer ledger (see `Helyx.Session.Steers`),
   # in order.
   defp steer_effects(state, effects), do: Enum.reduce(effects, state, &steer_effect/2)
 
-  defp steer_effect({:take, text}, state), do: take_steer(state, text)
+  defp steer_effect({:take, text}, state), do: Messages.take_steer(state, text)
   defp steer_effect({:requeue, text}, state), do: requeue_steer(state, text)
 
   defp steer_effect({:notice, turn_id, text}, state),
@@ -791,7 +771,7 @@ defmodule Helyx.Session.Server do
 
   defp end_turn({:done, %{stop_reason: stop_reason, usage: usage}}, state) do
     {%State{activity: turn} = state, assistant, _calls} =
-      close_assistant(state, stop_reason, usage)
+      Messages.close_assistant(state, stop_reason, usage)
 
     # A call in the last message gets no result. A steer with no answer yet
     # can still be rejected: the session waits for its answer before the
@@ -800,7 +780,7 @@ defmodule Helyx.Session.Server do
 
     state =
       state
-      |> abort_open_calls()
+      |> Messages.abort_open_calls()
       |> steer_effects(effects)
       |> emit(:turn_end, %{message: assistant})
       |> emit(:agent_end, %{stop_reason: stop_reason})
@@ -815,46 +795,11 @@ defmodule Helyx.Session.Server do
   defp end_turn({:error, reason}, state), do: fail_turn(reason, state)
   defp end_turn(:stream_ended, state), do: fail_turn(:stream_ended, state)
 
-  # Appends the assistant message of the stream so far and emits its
-  # message_end. Returns it and its tool calls. No message goes between a
-  # call and its result: the calls still open get their aborted results
-  # first, and a later result is dropped.
-  defp close_assistant(state, stop_reason, usage) do
-    state = state |> abort_turn_calls() |> start_assistant_message()
-    assistant = Turn.assistant_message(state.activity, stop_reason: stop_reason, usage: usage)
-    state = emit(Record.append_message(state, assistant), :message_end, %{message: assistant})
-    {state, assistant, for(%Message.ToolCall{} = call <- assistant.content, do: call)}
-  end
-
-  # Each call of the turn still open gets its `aborted` result: no message
-  # goes between a call and its result.
-  defp abort_turn_calls(%State{activity: %Turn{calls: calls}} = state) do
-    state = put_in(state.activity.calls, [])
-    Enum.reduce(calls, state, &record_result(&1, {:error, "aborted"}, &2))
-  end
-
   # Runs a Helyx tool request on the hands, with no event: the provider's
   # own events show the call.
   defp run_on_hands(call, %State{activity: turn} = state) do
     :ok = Hands.run(state.hands, turn.id, call)
     state
-  end
-
-  # Appends the tool result message to the transcript and emits
-  # tool_execution_end.
-  defp record_result(call, result, state) do
-    message = Message.tool_result(call, result)
-    emit(Record.append_message(state, message), :tool_execution_end, %{message: message})
-  end
-
-  # Each tool call without a result gets an `aborted` error result in the
-  # transcript, so the next provider call sees a complete pair.
-  defp abort_open_calls(%State{} = state) do
-    Enum.reduce(
-      Transcript.open_calls(state.transcript),
-      state,
-      &record_result(&1, {:error, "aborted"}, &2)
-    )
   end
 
   # A partial assistant message is closed with a failure stop reason so
@@ -868,32 +813,14 @@ defmodule Helyx.Session.Server do
     state =
       state
       |> steer_effects(effects)
-      |> abort_open_calls()
-      |> close_partial_message(:error, reason)
+      |> Messages.abort_open_calls()
+      |> Messages.close_partial_message(:error, reason)
       |> drop_queues()
       |> emit(:agent_end, %{stop_reason: :error, error: reason})
 
     hands = Hands.request_cancel(state.hands, turn.id)
     %{state | activity: %{wait | hands: hands}}
   end
-
-  defp close_partial_message(%State{activity: %Turn{partial: nil}} = state, _stop, _reason),
-    do: state
-
-  defp close_partial_message(state, stop_reason, reason) do
-    emit(state, :message_end, %{
-      message: Turn.assistant_message(state.activity, stop_reason: stop_reason),
-      error: reason
-    })
-  end
-
-  # Emits message_start for the assistant message on the first stream event.
-  defp start_assistant_message(%State{activity: %Turn{partial: nil} = turn} = state) do
-    state = %{state | activity: %{turn | partial: []}}
-    emit(state, :message_start, %{message: Turn.assistant_message(state.activity, [])})
-  end
-
-  defp start_assistant_message(state), do: state
 
   def via(core, id), do: {:via, Registry, {Helyx.Core.sessions_registry(core), id}}
 end
