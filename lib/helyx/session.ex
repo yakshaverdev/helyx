@@ -22,7 +22,8 @@ defmodule Helyx.Session do
   provider. It fails when the prepare Task fails or the provider process
   ends first. Each tool call with no result gets an `aborted` error
   result. A follow-up that arrives during a turn waits in a queue. A steer
-  waits in a queue until the provider can take it. Each queue holds at
+  waits in a queue until the provider can take it (see `steer/2`). An
+  abort or a failure of the turn drops both queues. Each queue holds at
   most 32 entries. An abort ends the turn at once. It returns when the
   hands have released the resources of the turn, or recorded them as
   unconfirmed (see `abort/1`). Until then, the session answers every
@@ -351,10 +352,26 @@ defmodule Helyx.Session do
     do: send_text(session, :prompt, text)
 
   @doc """
-  Steers the running turn. The text joins the queued steers and is delivered
-  before the next provider call inside the turn. With no turn running it
-  starts a turn, like a prompt. The text must be valid UTF-8. A full queue
-  returns `{:error, :queue_full}`.
+  Steers the running turn. `:ok` means that the session accepted the
+  steer. With no turn running it starts a turn, like a prompt. The text
+  must be valid UTF-8. The queued steers and the sent steers that are
+  still open count to 32. At that count the call returns
+  `{:error, :queue_full}`. An abort or a failure of the turn drops every
+  queued steer.
+
+  On a local turn, the steer joins the transcript before the next provider
+  call of the turn. If the turn ends first, the steer starts the next turn.
+
+  On a connected turn, a steer that arrives while the turn prepares goes
+  into the turn's prompt. A steer that arrives after that, before the
+  provider accepts the turn, goes to the provider when it accepts the
+  turn. The provider takes a steer at most once, and its user message
+  joins the transcript where the provider takes it. A steer that the
+  provider rejects waits for the next turn, unless the turn aborts or
+  fails first. A steer that Helyx cannot confirm is never sent again, and
+  a `:steer_unconfirmed` event carries its text. The rules are in
+  `docs/features/long-lived-harness.md`, sections "Turn states", "Steer",
+  and "Built in #202".
   """
   @spec steer(t(), String.t()) :: :ok | {:error, :invalid_utf8 | :queue_full | :session_not_found}
   def steer(%__MODULE__{} = session, text) when is_binary(text),

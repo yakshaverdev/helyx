@@ -30,7 +30,7 @@
                  {841, "the terminal loop, input, and rendering of the TUI"},
                "lib/helyx/session/file.ex" =>
                  {643, "the session file format, reader, and writer"},
-               "lib/helyx/session.ex" => {436, "the public session API with its contract docs"},
+               "lib/helyx/session.ex" => {453, "the public session API with its contract docs"},
                "plugins/bundled/lib/helyx/provider/openai.ex" =>
                  {485, "the OpenAI request and stream parser"},
                "plugins/bundled/lib/helyx/watchdog.ex" =>
