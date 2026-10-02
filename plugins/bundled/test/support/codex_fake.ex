@@ -28,16 +28,17 @@ defmodule Helyx.Test.CodexFake do
   # command at the turn's end stops the provider process.
   def search, do: %{type: "webSearch", id: "b", query: "x", status: "inProgress"}
 
+  # One parser reads all input lines. Process substitution keeps the loop
+  # in the main shell, so the test scripts keep their PID and TERM traps.
   @fake """
-  #!/bin/sh
+  #!/bin/bash
   d=$(dirname "$0")
   out() { sed 's/"id":"@"/"id":'"$i"'/g' "$@"; }
   n=$(( $(cat "$d/count" 2>/dev/null || echo 0) + 1 ))
   echo $n > "$d/count"
   for a in "$@"; do printf '%s\\n' "$a"; done > "$d/args.$n"
-  while IFS= read -r line; do
+  while IFS= read -r mi && IFS= read -r line; do
     printf '%s\\n' "$line" >> "$d/stdin.$n"
-    mi=$(printf '%s\\n' "$line" | perl -MJSON::PP -ne '$o = decode_json($_); print(($o->{method} // "") =~ tr{/}{_}r, " ", $o->{id} // "")')
     m=${mi%% *}; i=${mi#* }
     if [ -n "$m" ]; then
       k=$(( $(cat "$d/count.$n.$m" 2>/dev/null || echo 0) + 1 ))
@@ -45,7 +46,7 @@ defmodule Helyx.Test.CodexFake do
       if [ -f "$d/on.$n.$m.$k" ]; then . "$d/on.$n.$m.$k"
       elif [ -f "$d/on.$n.$m" ]; then . "$d/on.$n.$m"; fi
     fi
-  done
+  done < <(perl -MJSON::PP -ne 'BEGIN { $| = 1 } $o = decode_json($_); print(($o->{method} // "") =~ tr{/}{_}r, " ", $o->{id} // "", "\\n", $_)')
   """
 
   def setup_fake(%{tmp_dir: tmp}) do
