@@ -15,6 +15,8 @@ The user has given standing permission to merge to master when every gate in ste
 
 At most five workers at one time. On 2026-09-27, five workers on 10 cores and 16 GiB made the load average pass 200, and wall-clock tests failed in other worktrees. Most of that load came from precommit runs and load generators; a worker that waits for a review uses almost no CPU. So precommit runs on the remote host in `~/.config/helyx/precommit-host` (see `/ship` step 3), and the local machine holds only the workers. Without that file, the limit is three.
 
+The five-worker limit assumed that the host absorbs parallel precommit runs. On 2026-10-03, five parallel runs on the 8-core host made the load average reach 125. The merge gate then failed on test timeouts (#330). Now the host runs one precommit at a time, and the other runs wait in a queue. A run that waits writes its wait to `precommit.log`. A worker that waits for precommit is not broken.
+
 ## 2. Start a worker
 
 One worker per ticket, as an Agent with `isolation: "worktree"` on branch `ticket/<n>-<slug>` from `origin/master`. Its brief: run `/implement <n>`, which ends in `/ship`; commit on the branch; do not push, open a PR, or merge; report the invariant of the change, the review counts per round, and anything it could not decide. A worker that cannot decide something stops and reports. It does not guess.
