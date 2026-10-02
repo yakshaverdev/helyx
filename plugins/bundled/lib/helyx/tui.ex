@@ -25,31 +25,20 @@ if Helyx.TUI.Available.available?() do
 
     The TUI subscribes to one session and renders from `Helyx.TUI.ViewModel`,
     a pure fold over the session's events. It holds no session state of its
-    own. It supports version 1 of the client contract (ADR 0006). For a
+    own. It supports version 2 of the client contract (ADR 0006). For a
     snapshot of another version it shows a message and not the session. Then
-    only Ctrl+C and the end of the session stop it. Keys:
+    only Ctrl+C and the end of the session stop it. Keys, with the full rules
+    in `docs/features/coding-agent.md`, "TUI":
 
-      * typing fills the composer (`ExRatatui.Widgets.Textarea`: cursor
-        movement, Home/End, Delete, Backspace). It grows to at most 8 lines
-        and scrolls to the cursor past that
-      * Ctrl+J adds a new line; so does Shift+Enter where the terminal
-        reports Shift on Enter
-      * a paste keeps its new lines and tabs. A paste of more than 5 lines
-        shows as one marker, `[Pasted text #1, 20 lines]`, and is sent in
-        full. A marker is one unit: Backspace and Delete remove it whole,
-        Left and Right pass over it, and text typed in it goes after it.
-        Text that only looks like a marker is sent as typed
+      * typing fills the composer (`Helyx.TUI.Composer`), at most 8 lines high
+      * Ctrl+J adds a new line; so does Shift+Enter where the terminal reports it
+      * a paste of more than 5 lines shows as one marker and is sent in full
       * Enter sends the composer as a steer (a prompt when no turn runs)
-      * Alt+Enter sends it as a follow-up. A rejected send (full queue) stays
-        in the composer, and the status bar
-        shows the reason until the next key press or paste
-      * `/model provider/model` in the composer switches the model; the next
-        turn uses it. A rejected ref shows a notice and stays in the composer
+      * Alt+Enter sends it as a follow-up; a rejected send stays in the composer
+      * `/model provider/model` in the composer switches the model
       * Escape aborts the running turn
-      * PgUp and PgDn scroll the transcript by one screen. While the view is
-        scrolled, new output does not move it, and the status bar says so.
-        Ctrl+End, a PgDn at the end, or a sent prompt returns to the newest
-        output
+      * PgUp and PgDn scroll the transcript (`Helyx.TUI.Transcript`) by one screen
+      * Ctrl+End returns to the newest output
       * Ctrl+C quits and restores the terminal
 
     Start it with `run/1`, which blocks until the user quits:

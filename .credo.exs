@@ -27,8 +27,6 @@
                   "the Codex turn, thread, interrupt, and steer state over one JSON-RPC id table"},
                "plugins/bundled/lib/helyx/provider/claude_code.ex" =>
                  {1000, "the Claude Code stream-json protocol in one harness provider"},
-               "plugins/bundled/lib/helyx/tui.ex" =>
-                 {841, "the terminal loop, input, and rendering of the TUI"},
                "lib/helyx/session/provider_process.ex" => {415, "the provider process loop"}
              }
            ]}
