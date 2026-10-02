@@ -17,14 +17,11 @@ defmodule Helyx.Provider.Codex do
   "Codex". The protocol facts are in `docs/research/codex-app-server.md`.
   """
 
-  # The most events held at once (see `in_order/2`).
-  @held_max 10_000
-
   @behaviour Helyx.Provider
 
   alias Helyx.HarnessIO
   alias Helyx.Message
-  alias Helyx.Provider.Codex.Check
+  alias Helyx.Provider.Codex.{Check, Order}
 
   defmodule Tools do
     @moduledoc false
@@ -61,9 +58,8 @@ defmodule Helyx.Provider.Codex do
     # `started` holds the ids of the tool items that have a tool call, and
     # `streamed` the ids of the messages whose text came as deltas.
     # `calls` holds the ids of the tool calls of the message that no
-    # `message_end` closed yet; `waiting` the ids of the calls of sent
-    # messages with no result yet; `held` the events that wait for those
-    # results (see `in_order/2`).
+    # `message_end` closed yet; `order` the events that wait for the results
+    # of the calls of sent messages (`Order`).
     # `steers` maps the id of each steer sent in the running turn with no
     # `userMessage` item yet to its text. `asked` maps the request id of each
     # `turn/steer` with no answer yet to `{from, steer_id}`; it outlives the
@@ -95,8 +91,7 @@ defmodule Helyx.Provider.Codex do
       calls: [],
       open: %{},
       agents: %{},
-      waiting: MapSet.new(),
-      held: :queue.new(),
+      order: %Order{},
       started: MapSet.new(),
       streamed: MapSet.new(),
       steers: %{},
@@ -105,7 +100,7 @@ defmodule Helyx.Provider.Codex do
   end
 
   # The fields of a turn, set back to their defaults between turns.
-  @turn_fields ~w(turn_id turn from usage calls open waiting held started streamed steers)a
+  @turn_fields ~w(turn_id turn from usage calls open order started streamed steers)a
 
   # Each request gets a new id, and `due` holds it until its answer. An
   # answer with an id that is not due (a late or duplicate answer) is
@@ -307,91 +302,18 @@ defmodule Helyx.Provider.Codex do
 
   # Output
 
-  # Codex runs tool items side by side, and the session gives every call
-  # that is still open an `aborted` result at a `message_end`
-  # (`Helyx.Provider`), so a call of a sent message can still run when the
-  # next message closes. Such a `message_end`, and every event after it, is
-  # held until the results of the sent calls are out; a result of a sent
-  # call goes out at once. An event waits only for an open tool item, and a
-  # turn that ends with one stops the provider process, so a turn that ends
-  # holds nothing. An event over `@held_max` held events stops
-  # the provider process, as a line over the cap does; the events after it
-  # are not read.
+  # Translates a line and puts its events in order (`Order`). An event
+  # over the held cap stops the provider process, as a line over the cap
+  # does; the events after it are not read.
   defp in_order(object, state) do
-    {events, state} = translate(object, state)
-    {out, state} = Enum.reduce(events, {[], state}, &order_one/2)
-    {[], push(state, Enum.reverse(out))}
-  end
+    case translate(object, state) do
+      {_events, %{terminal: {:error, _}} = state} ->
+        {[], state}
 
-  defp order_one(_event, {out, %{terminal: {:error, _}} = state}), do: {out, state}
-
-  # `:queue.len/1` costs O(held), as a held result's insert does; the cap
-  # bounds both.
-  defp order_one(event, {out, state}) do
-    cond do
-      waiting_result?(event, state) ->
-        flush(emit(event, {out, state}))
-
-      :queue.is_empty(state.held) and not blocked?(event, state) ->
-        emit(event, {out, state})
-
-      :queue.len(state.held) >= @held_max ->
-        {out, %{state | terminal: {:error, {:held_over_limit, @held_max}}}}
-
-      true ->
-        {out, %{state | held: hold(event, state.held)}}
-    end
-  end
-
-  # A held result goes right after its own `message_end` and the results
-  # there, so a later `message_end` cannot hold it back. A result with no
-  # held `message_end`, such as a repeat, goes to the end. Each insert
-  # costs O(held), and `@held_max` bounds the held events.
-  defp hold({:tool_result, id, _result} = event, held) do
-    {before, rest} = Enum.split_while(:queue.to_list(held), &(not closes?(&1, id)))
-
-    case rest do
-      [close | tail] ->
-        {results, later} = Enum.split_while(tail, &match?({:tool_result, _, _}, &1))
-        :queue.from_list(before ++ [close | results] ++ [event | later])
-
-      [] ->
-        :queue.in(event, held)
-    end
-  end
-
-  defp hold(event, held), do: :queue.in(event, held)
-
-  defp closes?({:close, ids, _event}, id), do: id in ids
-  defp closes?(_event, _id), do: false
-
-  defp waiting_result?({:tool_result, id, _result}, state), do: MapSet.member?(state.waiting, id)
-  defp waiting_result?(_event, _state), do: false
-
-  # A `user_message` also closes the message in the session, and gives its
-  # open calls an `aborted` result, so it waits as a `message_end` does.
-  defp blocked?({:close, _ids, _event}, state), do: MapSet.size(state.waiting) > 0
-  defp blocked?({:user_message, _id, _text}, state), do: MapSet.size(state.waiting) > 0
-  defp blocked?(_event, _state), do: false
-
-  defp emit({:close, ids, event}, {out, state}),
-    do: {[event | out], %{state | waiting: MapSet.new(ids)}}
-
-  defp emit({:tool_result, id, _result} = event, {out, state}),
-    do: {[event | out], %{state | waiting: MapSet.delete(state.waiting, id)}}
-
-  defp emit(event, {out, state}), do: {[event | out], state}
-
-  # Sends the held events from the front up to a `message_end` that waits.
-  defp flush({out, state}) do
-    case :queue.out(state.held) do
-      {{:value, event}, rest} ->
-        if blocked?(event, state),
-          do: {out, state},
-          else: flush(emit(event, {out, %{state | held: rest}}))
-
-      {:empty, _rest} ->
-        {out, state}
+      {events, state} ->
+        {out, order, stop} = Order.put(events, state.order)
+        state = push(%{state | order: order}, out)
+        {[], if(stop, do: %{state | terminal: {:error, stop}}, else: state)}
     end
   end
 
@@ -408,8 +330,8 @@ defmodule Helyx.Provider.Codex do
     else
       state = if state.from, do: reply(%{state | from: nil}, state.from, :ok), else: state
 
-      # A held event waits for an open tool item (see `in_order/2`).
-      true = :queue.is_empty(state.held)
+      # A held event waits for an open tool item (see `Order`).
+      true = Order.empty?(state.order)
       state = push(state, [terminal])
 
       state =
