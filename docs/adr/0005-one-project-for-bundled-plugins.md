@@ -12,9 +12,9 @@ Module names and registration entries do not change. `Helyx.Provider.Fake` stays
 
 ### The optional-dependency rule
 
-A heavy or native dependency of one bundled plugin is declared `optional: true` in the bundled project, and the modules that need it are defined only when it is loaded: a `Code.ensure_loaded?/1` guard around the `defmodule`. A product that wants such a plugin adds the dependency to its own deps. `ex_ratatui` (a Rust NIF) is the first case: `Helyx.TUI` exists only when `ExRatatui.App` is loaded, and the coding agent app lists `ex_ratatui`. `Helyx.TUI.ViewModel` needs nothing from `ex_ratatui`, so it has no guard.
+A heavy or native dependency of one bundled plugin is declared `optional: true` in the bundled project, and the modules that need it are defined only when it is loaded: a `Code.ensure_loaded?/1` guard around the `defmodule`. A product that wants such a plugin adds the dependency to its own deps. `ex_ratatui` (a Rust NIF) is the first case: `Helyx.TUI`, `Helyx.TUI.Composer`, and `Helyx.TUI.Transcript` exist only when `ExRatatui.App` is loaded, and the coding agent app lists `ex_ratatui`. `Helyx.TUI.ViewModel` and `Helyx.TUI.Wrap` need nothing from `ex_ratatui`, so they have no guard.
 
-The guard alone is not enough. Mix does not treat a module that appears later as a reason to recompile, and it reaches a stale source only through a module that the source defines; a guarded file that defined no module is never compiled again. So the guarded file also defines a small module that always exists (`Helyx.TUI.Available`) with `__mix_recompile__?/0`, which Mix asks on every compile. Both parts are necessary. Measured on 2026-09-18 with Elixir 1.19.5, on a product that adds the optional dependency after its first build and then removes it:
+The guard alone is not enough. Mix does not treat a module that appears later as a reason to recompile, and it reaches a stale source only through a module that the source defines; a guarded file that defined no module is never compiled again. So each guarded file also defines a small module that always exists (`Helyx.TUI.Available`, `Helyx.TUI.Composer.Available`, `Helyx.TUI.Transcript.Available`) with `__mix_recompile__?/0`, which Mix asks on every compile. Both parts are necessary. Measured on 2026-09-18 with Elixir 1.19.5, on a product that adds the optional dependency after its first build and then removes it:
 
 - The guarded file defines no module: the add leaves a build without `Helyx.TUI`. A hook in a module in a different file does not help.
 - The always-present module with no hook, in a toy project: the remove leaves the stale guarded module in the build.
@@ -35,7 +35,7 @@ A small, pure Elixir dependency is a normal dependency. `req` is the first case.
 - Given up: per-plugin dependency isolation. A product that wants only the read tool still fetches and compiles `req` and every other normal dependency of the bundled project. The optional-dependency rule bounds this for heavy deps only.
 - Given up: a compile-time check that one plugin does not call another. All bundled modules now share one project, so only review can find such a call.
 - A guarded module that is absent is a run-time error, not a compile-time error. A call to it is an `UndefinedFunctionError`, and Core rejects it in a plugin list with `{:error, {:not_a_plugin, module}}`. The fix is the product's dep list.
-- When `__mix_recompile__?/0` answers true, Mix touches `lib/helyx/tui.ex` to force the compile, and the next Mix command prints a note that it reset the file's mtime. Content does not change.
+- When `__mix_recompile__?/0` answers true, Mix touches the guarded files (`lib/helyx/tui.ex`, `lib/helyx/tui/composer.ex`, `lib/helyx/tui/transcript.ex`) to force the compile, and the next Mix command prints a note that it reset their mtime. Content does not change.
 - Application env keys follow the app: the OpenAI provider's test seam moved from `:req_options` of `:helyx_provider_openai` to `:openai_req_options` of `:helyx_plugins`. All bundled plugins share that app, so a key names its plugin.
 - The per-plugin test helpers merged into one `test_helper.exs`.
 
@@ -48,3 +48,5 @@ A small, pure Elixir dependency is a normal dependency. `req` is the first case.
 2026-09-26, ticket #125. `Helyx.HarnessIO` wraps every `Helyx.Watchdog` call of the harness providers: it already wrapped `start`, and it now also wraps `write`, `close` (as `stop/1`), and `release`. `Helyx.Provider.ClaudeCode` and `Helyx.Provider.Codex` call no `Helyx.Watchdog` function, so each provider calls one helper. The bash tool still calls `Helyx.Watchdog` directly. The watchdog protocol and every deadline are unchanged (ADR 0004).
 
 2026-09-30, ticket #258. The exit wait left `Helyx.HarnessIO`: no harness provider used it after #200 and #201.
+
+2026-10-03, ticket #327. `Helyx.TUI` split into `Helyx.TUI.Wrap`, `Helyx.TUI.Composer`, and `Helyx.TUI.Transcript`. Wrap needs nothing from `ex_ratatui` and has no guard. Composer and Transcript each have their own guard and their own always-present module in their own file, as the rule above requires. Checked on a scratch product: add `ex_ratatui`, remove it, and add it again each give the correct build.
