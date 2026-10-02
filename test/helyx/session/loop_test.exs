@@ -214,8 +214,13 @@ defmodule Helyx.Session.LoopTest do
     assert Helyx.Message.text(result) == "a�b"
     refute result.is_error
 
+    # The second turn runs the tool again with the repaired result in the
+    # transcript.
     :ok = Session.prompt(session, "again")
-    assert stop_reason(collect_until(:agent_end)) == :end_turn
+    events = collect_until(:agent_end)
+    assert stop_reason(events) == :end_turn
+    result = Enum.find(events, &(&1.type == :tool_execution_end)).data.message
+    assert Helyx.Message.text(result) == "a�b"
   end
 
   test "a tool Task that dies gives an error result and the loop continues", %{core: core} do

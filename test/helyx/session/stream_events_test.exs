@@ -158,7 +158,7 @@ defmodule Helyx.Session.StreamEventsTest do
 
   describe "harness events (#10)" do
     defp harness_turn(core, model) do
-      {:ok, session} = Session.start(core, model: "harness/#{model}")
+      {:ok, session} = Session.start(core, model: "conn/events.#{model}")
       {:ok, _} = Session.subscribe(session)
       :ok = Session.prompt(session, "hello")
       collect_until(:agent_end)
@@ -225,7 +225,7 @@ defmodule Helyx.Session.StreamEventsTest do
     test "a harness tool result over 65,536 bytes fails the turn with no text, and the session goes on",
          %{core: core} do
       for {model, bytes} <- [{"result_65537", 65_537}, {"result_multibyte", 65_537}] do
-        {:ok, session} = Session.start(core, model: "harness/#{model}")
+        {:ok, session} = Session.start(core, model: "conn/events.#{model}")
         {:ok, _} = Session.subscribe(session)
         :ok = Session.prompt(session, "hello")
         events = collect_until(:agent_end)
@@ -238,7 +238,7 @@ defmodule Helyx.Session.StreamEventsTest do
         assert [:user, :assistant, :tool_result] = Enum.map(transcript, & &1.role)
         assert Helyx.Message.text(List.last(transcript)) == "aborted"
 
-        :ok = Session.set_model(session, "harness/id1")
+        :ok = Session.set_model(session, "conn/events.id1")
         :ok = Session.prompt(session, "again")
         assert stop_reason(collect_until(:agent_end)) == :end_turn
       end
@@ -254,7 +254,7 @@ defmodule Helyx.Session.StreamEventsTest do
 
     test "a call with no result at done gets its aborted result before the last message",
          %{core: core} do
-      {:ok, session} = Session.start(core, model: "harness/open_call")
+      {:ok, session} = Session.start(core, model: "conn/events.open_call")
       {:ok, _} = Session.subscribe(session)
       :ok = Session.prompt(session, "hello")
       collect_until(:agent_end)
@@ -270,7 +270,7 @@ defmodule Helyx.Session.StreamEventsTest do
 
     test "a new message gives the open calls their aborted results, and a late result is dropped",
          %{core: core} do
-      {:ok, session} = Session.start(core, model: "harness/late_result")
+      {:ok, session} = Session.start(core, model: "conn/events.late_result")
       {:ok, _} = Session.subscribe(session)
       :ok = Session.prompt(session, "hello")
       collect_until(:agent_end)
@@ -306,7 +306,7 @@ defmodule Helyx.Session.StreamEventsTest do
     # of a provider.
     test "a rejected_tool_call event is malformed, and nothing reaches the transcript",
          %{core: core} do
-      {:ok, session} = Session.start(core, model: "harness/rejected")
+      {:ok, session} = Session.start(core, model: "conn/events.rejected")
       {:ok, _} = Session.subscribe(session)
       :ok = Session.prompt(session, "hello")
       events = collect_until(:agent_end)

@@ -10,7 +10,7 @@ defmodule Helyx.Test.SessionCase do
   @plugins [
     Helyx.Test.Provider,
     Helyx.Test.ProviderOther,
-    Helyx.Test.Harness,
+    Helyx.Test.Connected,
     Helyx.Test.Tool.Upcase,
     Helyx.Test.Tool.Kill,
     Helyx.Test.Tool.Slow,
