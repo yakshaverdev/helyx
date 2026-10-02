@@ -191,9 +191,8 @@ defmodule Helyx.TUI.ViewModelSnapshotTest do
     assert_joins_after_end(session, live, events)
   end
 
-  # The accepted limit: a call that never started gets an `aborted` result in
-  # the transcript at the normal end of a connected turn, so the snapshot
-  # shows a closed cell that the live client never had.
+  # A call that never started gets an `aborted` result at the normal end of
+  # a connected turn: the live fold and the snapshot both show a closed cell.
   test "a join after a connected turn that ends with an open call", %{core: core, gate: gate} do
     {:ok, session} = Session.start(core, model: "gated/dangling." <> gate)
     {:ok, first} = Session.subscribe(session)
@@ -206,7 +205,34 @@ defmodule Helyx.TUI.ViewModelSnapshotTest do
 
     assert [_user, %Message{role: :assistant}, {:tool, %{id: "d"}, _, aborted}] = joined.cells
     assert %Message{is_error: true, content: [%Message.Text{text: "aborted"}]} = aborted
-    assert %{joined | cells: Enum.drop(joined.cells, -1)} == live
+    assert joined == live
+  end
+
+  # An abort while the first of three local calls runs: the two calls that
+  # never started get `aborted` results. Every event of the session, folded,
+  # gives the cells of a snapshot at the same seq.
+  test "a join after an abort of three local calls", %{core: core, gate: gate} do
+    calls =
+      for id <- ~w(c1 c2 c3),
+          do: %Message.ToolCall{id: id, name: "gate", arguments: %{"gate" => gate}}
+
+    :ok = Fake.script(core, "abort3", [["Running." | calls], ["Done."]])
+    {:ok, session} = Session.start(core, model: "fake/abort3")
+    {:ok, first} = Session.subscribe(session)
+    :ok = Session.prompt(session, "go")
+
+    assert_receive {:waiting, _tool}
+    :ok = Session.abort(session)
+    live = fold(first, collect_until(:agent_end))
+
+    assert [_user, _assistant, c1, c2, c3, {:notice, "aborted"}] = live.cells
+
+    for {cell, id} <- [{c1, "c1"}, {c2, "c2"}, {c3, "c3"}],
+        do: assert({:tool, %{id: ^id}, _, %Message{is_error: true}} = cell)
+
+    {:ok, snapshot} = Session.subscribe(session)
+    assert snapshot.seq == live.seq
+    assert ViewModel.from_snapshot(snapshot) == transcript(live)
   end
 
   test "a session with no events has seq 0 and no notice", %{core: core} do

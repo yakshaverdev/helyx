@@ -36,9 +36,7 @@
                "plugins/bundled/lib/helyx/watchdog.ex" =>
                  {440, "the program watchdog and its process-group protocol"},
                "lib/helyx/session/harness.ex" => {429, "the connected harness loop"},
-               "lib/helyx/session/hands.ex" => {411, "the tool runner of a session"},
-               "plugins/bundled/lib/helyx/tui/view_model.ex" =>
-                 {406, "the TUI view model of cells and events"}
+               "lib/helyx/session/hands.ex" => {411, "the tool runner of a session"}
              }
            ]}
         ],

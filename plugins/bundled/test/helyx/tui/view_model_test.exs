@@ -231,6 +231,33 @@ defmodule Helyx.TUI.ViewModelTest do
     assert fold(specs ++ [tool_end(result)]).cells == fold(specs).cells
   end
 
+  test "a result for a call that never started gets a closed cell, as in a snapshot" do
+    a = %Message.ToolCall{id: "t", name: "bash", arguments: %{"n" => "a"}}
+    b = %Message.ToolCall{id: "t", name: "bash", arguments: %{"n" => "b"}}
+    ra = Message.tool_result(a, {:ok, "a"})
+    rb = Message.tool_result(b, {:error, "aborted"})
+
+    vm =
+      fold([
+        {:message_end, %{message: assistant([a, b], :tool_use)}},
+        {:tool_execution_start, %{tool_call: a}},
+        {:notice, %{text: "during the run"}},
+        tool_end(ra),
+        tool_end(rb),
+        # No call with that id is left: no cell.
+        tool_end(rb)
+      ])
+
+    assert [
+             %Message{},
+             {:tool, ^a, _, ^ra},
+             {:notice, _},
+             {:tool, ^b, line, ^rb}
+           ] = vm.cells
+
+    assert line == ViewModel.call_line(b)
+  end
+
   test "an aborted turn closes the stream and shows a notice" do
     vm =
       fold([
