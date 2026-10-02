@@ -1,113 +1,31 @@
 defmodule Helyx.Provider.ClaudeCode do
+  @moduledoc """
+  A connected harness provider (ADR 0007) that drives the unmodified
+  Claude Code program, `claude`, with stream-json input and output. The
+  model ref is `claude-code/<model>`, where `<model>` is what `claude
+  --model` takes.
+
+  One `claude` at a time serves the session. A turn is one user
+  line with a `uuid`, and it ends at a `result` with `queued_turn_count` 0
+  and no unresolved steer. A steer is one more user line, and an interrupt
+  is the control request `interrupt` with `cancel_queued: true`. An `init`
+  line with no Helyx turn starts a program turn. The Helyx tools are an SDK
+  MCP server named `helyx`. A fresh harness session gets the rest of the
+  transcript as a replay before the first turn's line.
+
+  The full contract is in `docs/features/long-lived-harness.md`, section
+  "Claude Code". The protocol facts are in
+  `docs/research/claude-code-stream-json.md`.
+  """
+
+  @behaviour Helyx.Provider
+
   # The wait for the start of an unresolved steer after a `result` that
   # could not end the turn (`docs/features/long-lived-harness.md`,
   # "Bounds"). Observed: 0 to 10 ms.
   @steer_wait_ms 5_000
 
   alias Helyx.HarnessIO
-
-  @moduledoc """
-  A connected harness provider (ADR 0007) that drives the unmodified
-  Claude Code program, `claude`, with stream-json input and output. The
-  model ref is `claude-code/<model>`, where `<model>` is what `claude
-  --model` takes: an alias such as `haiku`, `sonnet`, or `opus`, or a full
-  model name.
-
-  One `claude` serves the whole session: `init/3` starts it from
-  `PATH` in the session's working directory, with no `-p` and with open
-  input, in its own process group under the watchdog of `Helyx.Watchdog`.
-  The provider process holds its groups with `Helyx.Tool.hold/1`, and the
-  hands release them through `release/3` (ADR 0004). The watchdog, when
-  the port closes, and every release TERM the program's group and wait up
-  to #{HarnessIO.term_grace_ms()} ms for it to go before the KILL. The
-  program runs with `--permission-mode bypassPermissions`, the same
-  trust as the bash tool, and uses its own tools. The Helyx tools are an SDK MCP server
-  named `helyx` next to them: the program sends its MCP messages in
-  `mcp_message` control requests, and the model sees each tool as
-  `mcp__helyx__<name>`. A `tools/call` whose `_meta["claudecode/toolUseId"]`
-  names the `tool_use` block gives `{:tool_request, id, name, arguments}`;
-  a call with no such id, or with no Helyx turn, gets an error result at
-  once and runs nothing. The call and its result reach the transcript
-  from the program's own lines. An approval request of the program is
-  allowed at once, and any other control request gets an error answer at
-  once. Its stderr is dropped: the `result` line carries the errors.
-
-  A turn is one user line with a `uuid`. The turn ends at a `result` line
-  with `queued_turn_count` 0. A positive count keeps it open, and any other
-  value stops the program with an error. The lines and the `result` of a
-  turn count only after the start of its line (`command_lifecycle`
-  `started`): the provider drops the lines before it, such as those of a
-  replay or of a turn that the program starts by itself, and a Helyx tool
-  call there gets an error. This needs `msg_lifecycle_v1` in
-  `init.capabilities`: without it, the provider stops the program with an
-  error at a `result` before the start of the turn's line.
-
-  A program turn is a turn that the program starts by itself, for example
-  when a background task ends. An `init` line with no Helyx turn starts
-  one: the provider makes a turn id and gives the event `:turn_start`,
-  then the turn's events and its terminal as for any turn. A steer and an
-  interrupt of it work as for any turn. A `{:turn, ...}` request while a
-  program turn runs replaces it: the program runs the new line after the
-  program turn, and the rest of the program turn is dropped.
-
-  A steer is one more user line with a `uuid` of its own, written into the
-  running turn; while a replay is held, it goes out after the turn's line.
-  After the turn's terminal it answers `:rejected` and writes nothing. The
-  start of its line (`command_lifecycle` `started`) gives
-  `{:user_message, steer_id, text}`. While a steer is unresolved, a
-  `result` does not end the turn: `claude` runs a line that it reads after
-  a `result` as a turn of its own, and that turn stays in the Helyx turn.
-  When the line does not start within #{@steer_wait_ms} ms of such a
-  `result`, the provider process stops. A held error `result` goes out as
-  `{:notice, text}` at the start of the steer.
-
-  An interrupt is the control request `interrupt` with
-  `cancel_queued: true`. It waits for the first `init` line of the
-  program, and after a replay for the start of the turn's line. Without
-  `interrupt_cancel_queued_v1` in `init.capabilities` it answers an
-  error. It answers `:ok` after the control response, with an empty
-  `still_queued`, and the `result` of the turn. It also answers `:ok`
-  after a response that cancelled the turn's line. When the turn's
-  `result` comes before Helyx writes the interrupt, the interrupt answers
-  `:ok`, and Helyx writes no interrupt. Anything else answers an error,
-  and the provider process ends, so the watchdog stops the program with no
-  end of input.
-
-  A close is the end of input, then the exit. An exit at any other time
-  stops the provider process. An idle close is a close when the program has
-  no background task and no program turn, and answers `:busy` otherwise.
-  After a `task_notification` line, the next idle close also answers
-  `:busy`, once, because a program turn can follow it; an `init` ends that
-  wait. The program sends the
-  full set of its live background tasks in a `system` line
-  `background_tasks_changed` at each change; only a `tasks` list that is
-  exactly empty counts as none, and a malformed line counts as a task until
-  the next good one.
-
-  With the `:resume_id` option the program resumes that harness
-  session, and each turn sends only the new prompt: the user messages at
-  the end of the transcript. Without it, or when the program no longer has
-  that session, the program starts a fresh harness session with an id of
-  its own (`--session-id`), and its first turn first sends the rest of the
-  transcript as lines that start no model call. The replay keeps the
-  newest messages within #{HarnessIO.replay_max_bytes()} bytes of lines,
-  and it never starts at a tool result, so no result loses its call. The
-  program writes an assistant line to its session when it reads it, but a
-  user line when it takes it from its queue. So each line after a replayed
-  user line waits for that line's `result`, and the model gets the
-  transcript in its order (research note, "The order of a replay"). The
-  `{:resume, id, cut}` event of that turn gives the id and the
-  number of messages left out.
-
-  Assistant text and thinking stream as deltas. Tool calls and their
-  results arrive whole, and a `message_end` closes each assistant message
-  whose tool calls the program ran. A stdout line over
-  #{HarnessIO.line_max_bytes()} bytes stops the provider process. The
-  protocol facts are in `docs/research/claude-code-stream-json.md`.
-  """
-
-  @behaviour Helyx.Provider
-
   alias Helyx.Message
 
   # The program started the turn's line (`command_lifecycle` `started`).
