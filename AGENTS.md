@@ -13,6 +13,7 @@ Key design constraints:
 - The extension surface is small: Provider, Tool, ModelContext, Compaction, Event, and one Transport.
 - The server owns agent and session state. Clients are thin and render from the event stream.
 - Local mode runs server and TUI in one BEAM node with OTP messages. Phoenix is not in core; it arrives later as a Transport plugin.
+- Core knows only interface constructs. A concept that only one kind of plugin has (a harness, a program, a wire protocol) stays in that plugin, and Core code does not name it. A rule that every provider needs, such as the order of tool results or the completion before the next turn, is a provider construct and stays in Core.
 
 First checkpoint: a terminal coding agent (pi.dev style) built on these primitives.
 
@@ -63,6 +64,7 @@ Run from the repository root. The Mix projects are the root, `plugins/bundled` w
 - Remove a repeated check only when the earlier check still proves the same property. Keep a documented safety check. Check the new limits that a transformation, an accumulation, or elapsed time introduces (text that expands, a buffer that grows, a deadline that approaches).
 - Use the checked value. If an operation reads a new value, validate that value before use. A prior check of external state does not remove the need to handle a failure when the state is used.
 - Reject the smallest unit that permits safe continuation. Keep unrelated data when its validity is known. State when missing identity, damaged structure, or an unresolved resource requires a larger failure.
+- A `.ex` file has at most 400 lines (`Helyx.Credo.FileLength`, #294). A file over the limit has an entry in `.credo.exs` with its line count and a reason, and it must not grow. Split a file only where a module can own its state or its decisions. A line count alone is not a reason.
 
 ## Module naming
 
@@ -83,6 +85,7 @@ Run from the repository root. The Mix projects are the root, `plugins/bundled` w
 - **Research** (`docs/research/`): facts gathered from outside sources, named `<topic>.md`, with the date and the source revisions. It records observations; tickets and feature docs hold the decisions.
 - **Reviews** (`docs/reviews/`): outputs of code reviews, named `YYYY-MM-DD-<scope>.md`, with findings and their resolution.
 - **Decisions** (`docs/adr/`): architecture decision records, named `NNNN-<slug>.md`, with context, decision, and consequences.
+- **Moduledocs**: a `@moduledoc` gives the public contract in short form and links the feature doc or the ADR. The reasons, the history, and the measurements go in the feature doc or the ADR, not in the module. A comment in code explains a bound or an order at the line that needs it.
 
 ## Git conventions
 

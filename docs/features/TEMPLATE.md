@@ -10,6 +10,16 @@ What the feature does and why. A design decision that the tools research (`docs/
 
 The behaviours, public functions, and event shapes this feature adds or changes.
 
+## Replaced mechanism
+
+Fill this in when the feature replaces or merges a protocol, a state machine, or a code path. Otherwise write "none". Build it from the code and the tests, not from docs or summaries.
+
+1. Every message, reply, state, rule, deadline, and bound of the old mechanism, each with its replacement, or its deletion and the reason.
+2. For every reply that the change removes: the guarantee that it gave (order, completion, exactly once), and the code that gives it after the change. "Message order" is not enough by itself: name the one process that sees every message that the guarantee depends on.
+3. Every test of the old mechanism, with the property it keeps, or why the property changes or is deleted.
+4. Every property that users or clients see and that changes.
+5. Every state with no bound, stated as such.
+
 ## Bounds
 
 Every input, buffer, and wait, with its bound. A bound that does not exist yet is written as "unbounded, ticket #N", never left out. Each row names where the bound is enforced. Explain any additional checks required by transformations, accumulation, elapsed time, or rendering.

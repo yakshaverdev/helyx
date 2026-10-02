@@ -9,6 +9,7 @@ Invariants the review axes check on every diff. Add one when a review or a PR co
 - Every `ponytail:` marker names a ticket. Judge whether the debt is safe to ship, not only whether it is recorded.
 - A design decision that the tools research (`docs/research/coding-tools.md`, issue #17) covered cites it in the feature doc, so the spec axis can check the design against how codex, opencode, and pi behave.
 - Every external resource in the diff (OS process, process group, port, file handle, socket, temp file) has a row in the feature doc's ownership table. A row whose release path dies with its owner is a design flag the spec axis raises (ADR 0004).
+- A change that replaces a mechanism has the "Replaced mechanism" section of `docs/features/TEMPLATE.md`. The spec axis checks it against the code. A part or a test of the old mechanism with no row is a finding. Source: reviews 1 and 2 of the provider design (2026-10-02), where a contract derived from a summary missed the guarantees of the start ask, the interrupt order, and the completion wait.
 
 ## Boundaries
 
