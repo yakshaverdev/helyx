@@ -27,7 +27,7 @@ defmodule Helyx.Test.Gate do
 
     Stream.flat_map(steps, fn
       :gate ->
-        settle(provider)
+        settle(provider, gate)
         wait(gate)
         []
 
@@ -39,14 +39,34 @@ defmodule Helyx.Test.Gate do
   # The events before the gate reach the session before the test hears of
   # the gate: the provider process forwards each event as it handles it,
   # so the gate waits until that process idles with an empty mailbox.
-  defp settle(pid) do
-    case Process.info(pid, [:message_queue_len, :status]) do
-      [message_queue_len: 0, status: :waiting] ->
+  # This runs in the model Task, so a raise here reaches only the turn's
+  # `agent_end`. At the cap it also sends the reason to the gate, where the
+  # failed `assert_receive` of the test prints it. The cap is half of
+  # `Helyx.Test.Events.wait_ms/0`, so the message arrives before the test's
+  # own wait for the gate, which started earlier, ends.
+  defp settle(pid, gate) do
+    settle(pid, gate, System.monotonic_time(:millisecond) + div(Helyx.Test.Events.wait_ms(), 2))
+  end
+
+  defp settle(pid, gate, deadline) do
+    idle? =
+      Process.info(pid, [:message_queue_len, :status]) == [message_queue_len: 0, status: :waiting]
+
+    cond do
+      idle? ->
         :ok
 
-      _ ->
+      System.monotonic_time(:millisecond) >= deadline ->
+        reason =
+          "the provider process #{inspect(pid)} did not idle with an empty mailbox " <>
+            "within #{div(Helyx.Test.Events.wait_ms(), 2)} ms"
+
+        send(String.to_existing_atom(gate), {:gate_settle_timeout, reason})
+        raise reason
+
+      true ->
         Process.sleep(1)
-        settle(pid)
+        settle(pid, gate, deadline)
     end
   end
 

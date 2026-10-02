@@ -207,7 +207,7 @@ New tests:
 
 4. What clients see: the table "What users and clients see" above.
 
-5. States with no bound: a model call; the `seen` call ids of a turn; the model calls of a turn in the helper (see Bounds).
+5. States with no bound: a model call; the `seen` call ids of a turn; the model calls of a turn in the helper; the `calls` list of one message in the helper (see Bounds).
 
 ## Bounds
 
@@ -223,6 +223,7 @@ New tests:
 | A model call | unbounded: the user aborts it. The same as the local path today. | — |
 | The `seen` call ids of a turn | unbounded: a turn keeps every id until its end, as today | — |
 | Model calls of a turn in the helper | unbounded: the model decides when to stop, as in the local path today | — |
+| The `calls` list of one message in the helper | unbounded, as the local path was | — |
 | The provider process mailbox | from Core: bounded by the rows above. From the provider's own port or Task: the plugin's concern, as today. From the model Task: the same cap of 10,000 (`send_checked/3`). | the model call ends with `{:error, {:provider_behind, length, 10_000}}` |
 
 ## Ownership
@@ -244,6 +245,8 @@ New tests:
 - **Q1, where the helper lives (2026-10-02):** A, in Core, as a supported public adapter. Every API provider needs it, and it adapts the one interface to a simpler one, as `Helyx.Tool.hold/1` helps the tool interface. It knows no plugin kind. Option B put it in `plugins/bundled`; the Core tests that use `Helyx.Test.Provider` would then need their own copy of the loop, or move to `plugins/bundled`, because the root project cannot depend on `helyx_plugins`.
 - **No deadline for a model call** (review 1). Abort and close have deadlines.
 - **The session does not own the request deadlines with its own timer.** ADR 0007 rejects this: a busy session would kill late, and a late `:rejected` steer, which is queued again today, would become a notice.
+- **The helper gives tool request ids from a counter per turn** ("0", "1", ...) and maps each one to the model's call id. Core's used-id rule gives an error to an id that a turn already used, and a model can repeat a call id in one turn. The transcript, `tool_execution_start` and `tool_execution_end`, and the snapshot still carry the model's real call ids.
+- **`:provider_behind` is a stream error that a client sees.** When the model Task finds the provider process mailbox at the cap, the model call ends with `{:error, {:provider_behind, length, 10_000}}`. The client sees it as the error reason of that model call.
 
 ## Build order
 

@@ -71,3 +71,14 @@ The bounds sensor flagged the same five functions (`loop.ex:120`, `loop.ex:295`,
 Round 3 reproduced no defect, so the loop ends. Not reached: the growth of `calls` in one message with millions of tool calls (memory, as on the local path before), and events of a large byte size (the cap counts messages).
 
 Precommit with `HELYX_SLOW=1`: the first run failed one slow test, "abort kills the child of a shell that already exited" (`bash_test.exs`), which found the tool Task by the `:helyx_hands` key and now also found the provider process. The test now leaves out the provider process, as the other two such tests do. The second run passed.
+
+## Coordinator fixes (reduced round)
+
+The coordinator asked for three fixes: a cap on the wait of `Gate.settle` in test support, the `calls` list of one message in Bounds, and two decisions in the feature doc (the per-turn counter tool request ids, and `:provider_behind` as a stream error that a client sees).
+
+| Axis | Findings | Resolution |
+|---|---|---|
+| Spec | One defect, code-cited. `settle` runs in the model Task, so its raise at the cap reaches only the `agent_end` of the turn. The test's own `assert_receive` for the gate started earlier with the same 30 s cap, so it times out first, and the clear message never shows. The doc claims hold against `loop.ex`, `provider_process.ex`, and `server.ex`. | `settle` now waits half of `wait_ms/0` and, at the cap, sends `{:gate_settle_timeout, reason}` to the gate before it raises. The failed `assert_receive` of the test prints that message with the mailbox. |
+| Failure path | The same defect. The deadline has no off-by-one (a probe with a 200 ms cap raised at 200 to 212 ms). A dead provider pid cannot occur, because the link to the model Task ends the Task first. | The same fix. |
+
+The round found one defect, which both axes cite in the code and which has one fix, so the loop ends here.
