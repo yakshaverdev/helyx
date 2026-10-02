@@ -7,6 +7,13 @@
 # edit the worktree during the run: a copied-back file replaces a local edit.
 # A local run has no PID namespace. HELYX_SLOW=1 runs the slow tests too,
 # as /ship and the merge gate of /orchestrate do (#295).
+# On the host, the runs wait in a queue (#330). Each run holds a flock on
+# ~/.helyx-precommit.lock, so only one run at a time loads the host. A run
+# that must wait writes a line to precommit.log when the wait starts. Each
+# run writes the wait in seconds when it gets the lock. The wait is
+# unbounded, and accepted. The tests of the run that holds the lock have
+# timeouts, but a hung compile or Dialyzer step of that run blocks the
+# queue. A local run has no queue.
 set -uo pipefail
 
 root=$(git rev-parse --show-toplevel) || exit 1
@@ -42,7 +49,15 @@ slow=0
 # run needs sudo without a password on the host; without it the run fails
 # and does not run outside the namespace.
 isolate="sudo -n unshare --pid --fork --mount-proc --kill-child=SIGKILL sh -c '\"\$@\"; exit \$?' pid1 setpriv --reuid=\$(id -u) --regid=\$(id -g) --init-groups env HOME=\"\$HOME\" LANG=C.UTF-8 HELYX_SLOW=$slow"
-ssh -o BatchMode=yes "$host" "cd '$dir' && $sources > .before && $isolate ~/.local/bin/mise exec -- mix precommit" > precommit.log 2>&1
+# The lock is taken inside the namespace, and the run inherits it. So flock,
+# mise and the Mix VM hold it. The end of the namespace ends them all. A
+# `kill -1` from a test cannot free the lock while the run goes on. A signal
+# to the remote shell cannot free it either. The check before the namespace
+# only writes the line for a wait, and under a race that line can be wrong.
+# --verbose writes the real wait in seconds.
+lock="~/.helyx-precommit.lock"
+announce="{ flock -n $lock true || echo 'precommit: waiting for the host lock'; }"
+ssh -o BatchMode=yes "$host" "cd '$dir' && $sources > .before && $announce && $isolate flock --verbose $lock ~/.local/bin/mise exec -- mix precommit" > precommit.log 2>&1
 status=$?
 
 # md5sum -c exits 1 on a changed file. Only status 0, or 1 with a
