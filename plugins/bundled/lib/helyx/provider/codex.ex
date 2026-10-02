@@ -21,7 +21,7 @@ defmodule Helyx.Provider.Codex do
 
   alias Helyx.HarnessIO
   alias Helyx.Message
-  alias Helyx.Provider.Codex.{Check, Order, Replay, Tools}
+  alias Helyx.Provider.Codex.{Check, Items, Order, Replay, Tools}
 
   defmodule State do
     @moduledoc false
@@ -44,12 +44,9 @@ defmodule Helyx.Provider.Codex do
     # with the running turn's id. It belongs to the program and stays
     # between turns.
     #
-    # Of the running turn: `open` maps the open tool items to their types,
-    # `started` holds the ids of the tool items that have a tool call, and
-    # `streamed` the ids of the messages whose text came as deltas.
-    # `calls` holds the ids of the tool calls of the message that no
-    # `message_end` closed yet; `order` the events that wait for the results
-    # of the calls of sent messages (`Order`).
+    # Of the running turn: `items` the state of its items (`Items`);
+    # `order` the events that wait for the results of the calls of sent
+    # messages (`Order`).
     # `steers` maps the id of each steer sent in the running turn with no
     # `userMessage` item yet to its text. `asked` maps the request id of each
     # `turn/steer` with no answer yet to `{from, steer_id}`; it outlives the
@@ -77,20 +74,16 @@ defmodule Helyx.Provider.Codex do
       out: [],
       buffer: [],
       size: 0,
-      usage: %{},
-      calls: [],
-      open: %{},
+      items: %Items{},
       agents: %{},
       order: %Order{},
-      started: MapSet.new(),
-      streamed: MapSet.new(),
       steers: %{},
       asked: %{}
     ]
   end
 
   # The fields of a turn, set back to their defaults between turns.
-  @turn_fields ~w(turn_id turn from usage calls open order started streamed steers)a
+  @turn_fields ~w(turn_id turn from items order steers)a
 
   # Each request gets a new id, and `due` holds it until its answer. An
   # answer with an id that is not due (a late or duplicate answer) is
@@ -100,8 +93,6 @@ defmodule Helyx.Provider.Codex do
   # complete before the answer to its `turn/start` or `turn/interrupt`, and
   # that late answer then belongs to no turn.
 
-  # Item types that run something (see the research note).
-  @tool_item_types Check.tool_item_types()
   @trust %{approvalPolicy: "never", sandbox: "danger-full-access"}
   # The error of a `dynamicTools` field with no `experimentalApi` (research
   # note).
@@ -303,13 +294,13 @@ defmodule Helyx.Provider.Codex do
   defp outlives(state) do
     cond do
       command?(state) -> :command_running
-      map_size(state.open) > 0 -> :tool_running
+      map_size(state.items.open) > 0 -> :tool_running
       state.interrupt != nil and agent?(state) -> :agent_running
       true -> nil
     end
   end
 
-  defp command?(state), do: "commandExecution" in Map.values(state.open)
+  defp command?(state), do: "commandExecution" in Map.values(state.items.open)
 
   # A child thread of the running turn has open work. Every turn id in
   # `agents` is a string (`Check`), so a turn with no id has none.
@@ -440,7 +431,9 @@ defmodule Helyx.Provider.Codex do
     do: reply(%{state | from: nil}, state.from, {:error, failure(method, response)})
 
   defp failure(method, response),
-    do: {:codex, method, HarnessIO.cap_error(error_message(response) || "unexpected response")}
+    do:
+      {:codex, method,
+       HarnessIO.cap_error(Items.error_message(response) || "unexpected response")}
 
   defp turn_notification("turn/started", %{"turn" => %{"id" => turn}}, state),
     do: {[], turn_started(turn, state, due?(state, "turn/start") and state.prompt == nil)}
@@ -450,7 +443,7 @@ defmodule Helyx.Provider.Codex do
          %{"turn" => %{"id" => turn} = result},
          %{turn: turn} = state
        ),
-       do: {[], end_turn(state, terminal(result, state))}
+       do: {[], end_turn(state, Items.terminal(result, state.items))}
 
   # The end of a turn that did not start, or that already ended.
   defp turn_notification("turn/completed", _params, state),
@@ -521,16 +514,6 @@ defmodule Helyx.Provider.Codex do
 
   defp send_interrupt(state), do: state
 
-  defp notification("item/agentMessage/delta", %{"delta" => text, "itemId" => id}, state)
-       when is_binary(text) and text != "" do
-    {[{:text_delta, text}], %{state | streamed: MapSet.put(state.streamed, id)}}
-  end
-
-  defp notification(method, %{"delta" => text}, state)
-       when method in ["item/reasoning/summaryTextDelta", "item/reasoning/textDelta"] and
-              is_binary(text) and text != "",
-       do: {[{:thinking_delta, text}], state}
-
   # The `userMessage` item of a sent steer, once: the program took it.
   defp notification(
          method,
@@ -542,95 +525,9 @@ defmodule Helyx.Provider.Codex do
     {[{:user_message, id, text}], %{state | steers: steers}}
   end
 
-  defp notification("item/started", %{"item" => %{"type" => type, "id" => id} = item}, state)
-       when type in @tool_item_types do
-    state = %{
-      state
-      | started: MapSet.put(state.started, id),
-        calls: [id | state.calls],
-        open: Map.put(state.open, id, type)
-    }
-
-    {[tool_call(item)], state}
-  end
-
-  # A message whose text came with no delta gives it whole.
-  defp notification(
-         "item/completed",
-         %{"item" => %{"type" => "agentMessage", "id" => id, "text" => text}},
-         state
-       )
-       when is_binary(text) and text != "" do
-    if MapSet.member?(state.streamed, id),
-      do: {[], state},
-      else: {[{:text_delta, text}], state}
-  end
-
-  # The first result of a message's calls closes it; the results of its
-  # other calls follow. A tool item that completes with no start gets its
-  # call first.
-  defp notification("item/completed", %{"item" => %{"type" => type, "id" => id} = item}, state)
-       when type in @tool_item_types do
-    state = %{state | open: Map.delete(state.open, id)}
-
-    {calls, state} =
-      if MapSet.member?(state.started, id),
-        do: {[], state},
-        else:
-          {[tool_call(item)],
-           %{state | started: MapSet.put(state.started, id), calls: [id | state.calls]}}
-
-    result = {:tool_result, id, tool_result(item)}
-
-    if id in state.calls do
-      close = {:close, state.calls, {:message_end, :tool_use, state.usage}}
-      {calls ++ [close, result], %{state | calls: []}}
-    else
-      {[result], state}
-    end
-  end
-
-  defp notification("thread/tokenUsage/updated", %{"tokenUsage" => %{"last" => usage}}, state)
-       when is_map(usage),
-       do: {[], %{state | usage: usage}}
-
-  defp notification(_method, _params, state), do: {[], state}
-
-  defp terminal(%{"status" => "completed"}, state),
-    do: {:done, %{stop_reason: :end_turn, usage: state.usage}}
-
-  defp terminal(%{"status" => status} = result, _state),
-    do: {:error, {:codex, status, HarnessIO.cap_error(error_message(result))}}
-
-  defp error_message(%{"error" => %{"message" => message}}) when is_binary(message), do: message
-  defp error_message(_map), do: nil
-
-  defp tool_call(%{"type" => type, "id" => id} = item),
-    do: {:tool_call, %Message.ToolCall{id: id, name: type, arguments: arguments(item)}}
-
-  defp arguments(%{"type" => "commandExecution"} = item), do: Map.take(item, ["command", "cwd"])
-
-  defp arguments(item),
-    do:
-      item
-      |> Map.drop(["id", "type", "status"])
-      |> Map.reject(fn {_key, value} -> value == nil end)
-
-  # A command gives its output; any other tool item gives its fields as
-  # JSON.
-  defp tool_result(item) do
-    text =
-      case item do
-        %{"type" => "commandExecution", "aggregatedOutput" => out} when is_binary(out) -> out
-        %{"type" => "commandExecution"} -> ""
-        _ -> JSON.encode!(Map.drop(item, ["id", "type"]))
-      end
-
-    failed? =
-      item["status"] in ["failed", "declined"] or item["error"] != nil or
-        (is_integer(item["exitCode"]) and item["exitCode"] != 0)
-
-    {if(failed?, do: :error, else: :ok), Helyx.Text.truncate(text, :tail)}
+  defp notification(method, params, state) do
+    {events, items} = Items.notification(method, params, state.items)
+    {events, %{state | items: items}}
   end
 
   # Input

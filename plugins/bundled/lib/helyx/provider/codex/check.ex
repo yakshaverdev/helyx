@@ -1,16 +1,12 @@
 defmodule Helyx.Provider.Codex.Check do
   @moduledoc false
   # The shape check of the lines of `Helyx.Provider.Codex`. It reads the
-  # provider state as a map: `due`, `thread`, `turn`, `resume`, `started`,
-  # and `open`.
+  # provider state as a map: `due`, `thread`, `turn`, `resume`, and
+  # `items`.
 
-  alias Helyx.Provider.Codex.Tools
+  alias Helyx.Provider.Codex.{Items, Tools}
 
   @lost "no rollout found for thread id "
-  # Item types that run something (see the research note).
-  @tool_item_types ~w(commandExecution fileChange mcpToolCall dynamicToolCall collabAgentToolCall
-            webSearch imageView imageGeneration)
-  def tool_item_types, do: @tool_item_types
 
   # The statuses that end a tool item, from the schema of codex 0.157.1
   # (research note). `imageGeneration` has a free string: every value but
@@ -67,14 +63,14 @@ defmodule Helyx.Provider.Codex.Check do
          %{"turnId" => turn, "item" => %{"id" => id}},
          %{turn: turn} = state
        ),
-       do: MapSet.member?(state.started, id)
+       do: MapSet.member?(state.items.started, id)
 
   defp again?(
          "item/completed",
          %{"turnId" => turn, "item" => %{"id" => id, "type" => type}},
          %{turn: turn} = state
        ),
-       do: is_map_key(state.open, id) and state.open[id] != type
+       do: is_map_key(state.items.open, id) and state.items.open[id] != type
 
   defp again?(_method, _params, _state), do: false
 
@@ -124,7 +120,7 @@ defmodule Helyx.Provider.Codex.Check do
   defp line?(method, %{"turnId" => turn, "item" => %{"type" => type, "id" => id} = item})
        when method in ["item/started", "item/completed"] and is_binary(turn) and is_binary(type) and
               is_binary(id),
-       do: method == "item/started" or type not in @tool_item_types or ended?(item)
+       do: method == "item/started" or not Items.tool_item?(type) or ended?(item)
 
   defp line?(_method, _params), do: false
 

@@ -92,7 +92,7 @@ defmodule Helyx.Provider.Codex.Tools do
   # which puts it in the transcript, and has the shape of the schema.
   defp tool_call?(%{"threadId" => thread, "turnId" => turn, "callId" => id} = params, state),
     do:
-      thread == state.thread and turn == state.turn and state.open[id] == "dynamicToolCall" and
+      thread == state.thread and turn == state.turn and state.items.open[id] == "dynamicToolCall" and
         is_binary(params["tool"]) and is_map(params["arguments"])
 
   defp tool_call?(_params, _state), do: false
