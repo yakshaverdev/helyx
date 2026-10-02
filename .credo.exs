@@ -21,16 +21,16 @@
            [
              allowed: %{
                "lib/helyx/session/server.ex" =>
-                 {1183, "the turn, tool, steer, and wait logic of one session process"},
+                 {1182, "the turn, tool, steer, and wait logic of one session process"},
                "plugins/bundled/lib/helyx/provider/codex.ex" =>
                  {1145, "the Codex app-server protocol in one harness provider"},
                "plugins/bundled/lib/helyx/provider/claude_code.ex" =>
                  {1000, "the Claude Code stream-json protocol in one harness provider"},
                "plugins/bundled/lib/helyx/tui.ex" =>
-                 {853, "the terminal loop, input, and rendering of the TUI"},
+                 {841, "the terminal loop, input, and rendering of the TUI"},
                "lib/helyx/session/file.ex" =>
                  {655, "the session file format, reader, and writer"},
-               "lib/helyx/session.ex" => {489, "the public session API with its contract docs"},
+               "lib/helyx/session.ex" => {470, "the public session API with its contract docs"},
                "plugins/bundled/lib/helyx/provider/openai.ex" =>
                  {485, "the OpenAI request and stream parser"},
                "plugins/bundled/lib/helyx/watchdog.ex" =>

@@ -1,5 +1,7 @@
 # Session snapshot
 
+> Since #297 (`session-subscribers.md`), the session holds its subscribers: `subscribe/1` adds the caller and builds the snapshot in one call, and the events Registry named below is gone.
+
 ## Goal
 
 A client that subscribes to a session gets the state of the session at that moment, then every later event, with no gap and no duplicate. Issue #163, split from #105. Parent: #115.
@@ -22,7 +24,7 @@ The server owns the state, and the client only renders it (`AGENTS.md`, Project)
 
 ```elixir
 %Helyx.Session.Snapshot{
-  contract_version: pos_integer(), # 1 now; the rules are in ADR 0006, section 5 (#190)
+  contract_version: pos_integer(), # 2 now (#297); the rules are in ADR 0006, section 5 (#190)
   instance_id: String.t(),         # the session instance; events of another instance are dropped (#204)
   seq: non_neg_integer(),          # the seq of the last event sent before the snapshot; 0 if none
   messages: [Helyx.Message.t()],   # the transcript, oldest first

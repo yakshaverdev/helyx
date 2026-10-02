@@ -67,9 +67,6 @@ defmodule Helyx.Core do
         # restart keeps them.
         {Registry,
          keys: :unique, name: sessions_registry(name), meta: [plugins: table, provider_ids: ids]},
-        # One partition, the default: the watch of a subscription is linked
-        # to the partition of the subscriber's entry (`Helyx.Session.Watch`).
-        {Registry, keys: :duplicate, name: events_registry(name), partitions: 1},
         {Task.Supervisor, name: task_supervisor(name)},
         # The start message of a session holds its whole state, a resumed
         # transcript too. An idle supervisor never collects it, so the
@@ -98,8 +95,6 @@ defmodule Helyx.Core do
 
   @doc false
   def sessions_registry(name), do: Module.concat(name, Sessions)
-  @doc false
-  def events_registry(name), do: Module.concat(name, Events)
   @doc false
   def task_supervisor(name), do: Module.concat(name, Tasks)
   @doc false

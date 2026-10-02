@@ -15,7 +15,7 @@ defmodule Helyx.Session.StreamEventsTest do
 
     assert {:ok,
             %Helyx.Session.Snapshot{
-              contract_version: 1,
+              contract_version: 2,
               seq: 0,
               messages: [],
               turn: nil,
@@ -33,7 +33,7 @@ defmodule Helyx.Session.StreamEventsTest do
       List.last(collect_until(:tool_execution_start))
 
     # A second client subscribes during the turn; the test process already
-    # has its registration.
+    # has its entry.
     test = self()
     pid = spawn(fn -> send(test, {:snapshot, self(), Session.subscribe(session)}) end)
 

@@ -122,7 +122,7 @@ defmodule Mix.Tasks.Helyx.Graph do
       :erlang.trace(:all, false, [:all])
       :erlang.trace_pattern({:_, :_, :_}, false, [:local])
       Process.put(:helyx_graph_registered, registered())
-      stop(core)
+      Supervisor.stop(core)
       File.rm_rf!(dir)
     end
 
@@ -153,15 +153,6 @@ defmodule Mix.Tasks.Helyx.Graph do
     after
       @turn_timeout_ms -> Mix.raise("the traced turn did not end in #{@turn_timeout_ms} ms")
     end
-  end
-
-  # The subscription links this process to the events Registry, which exits
-  # with :shutdown when Core stops.
-  defp stop(core) do
-    trap? = Process.flag(:trap_exit, true)
-    Supervisor.stop(core)
-    receive do: ({:EXIT, _, :shutdown} -> :ok), after: (0 -> :ok)
-    Process.flag(:trap_exit, trap?)
   end
 
   defp collect(events) do

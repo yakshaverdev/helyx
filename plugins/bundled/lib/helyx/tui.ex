@@ -70,7 +70,7 @@ if Helyx.TUI.Available.available?() do
 
     # The one version of the client contract (ADR 0006) that this client
     # supports. A snapshot of another version shows only a message.
-    @contract_version 1
+    @contract_version 2
 
     @dim %Style{modifiers: [:dim]}
     @bold %Style{modifiers: [:bold]}
@@ -226,8 +226,11 @@ if Helyx.TUI.Available.available?() do
     # through run/1 instead of an idle screen that rejects every key. The
     # events before the signal are already applied.
     @impl true
-    def handle_info({:helyx_session_end, id, reason}, %{session: %Session{id: id}}),
-      do: exit({:session_down, reason})
+    def handle_info(
+          {{:helyx_session_end, id}, _ref, :process, _pid, reason},
+          %{session: %Session{id: id}}
+        ),
+        do: exit({:session_down, Session.end_reason(reason)})
 
     # An unsupported session shows only its message; its events do nothing.
     def handle_info({:helyx_event, _event}, %{unsupported: true} = state),
@@ -236,14 +239,6 @@ if Helyx.TUI.Available.available?() do
     def handle_info({:helyx_event, event}, state) do
       {:noreply, settle(%{state | vm: ViewModel.apply(state.vm, event)})}
     end
-
-    # The reconnect rule of ADR 0006, section 3: subscribe again, so the end
-    # signal still comes, and the new snapshot replaces the view model.
-    def handle_info(
-          {:helyx_subscription_lost, id},
-          %{session: %Session{id: id} = session} = state
-        ),
-        do: {:noreply, resubscribed(state, subscribe!(session))}
 
     def handle_info(_msg, state), do: {:noreply, state}
 
@@ -254,13 +249,6 @@ if Helyx.TUI.Available.available?() do
         {:error, :session_not_found} -> exit({:session_down, :session_not_found})
       end
     end
-
-    defp resubscribed(%{unsupported: true} = state, _snapshot), do: state
-
-    # Notices go too, and the composer keeps its text. The snapshot comes
-    # from the build that the mount checked, so another version is a bug.
-    defp resubscribed(state, %Session.Snapshot{contract_version: @contract_version} = snapshot),
-      do: %{state | vm: ViewModel.from_snapshot(snapshot), scroll: nil}
 
     # The next key press or paste clears the reason of the last reject, then
     # runs as usual, so it can set a new reason. The release and the repeat of

@@ -284,9 +284,6 @@ defmodule Helyx.Tool.BashTest do
   end
 
   test "stopping Core normally ends a running command", %{tmp_dir: dir} do
-    # The events Registry links its subscribers; stopping Core mid-test
-    # sends this process the Registry's shutdown exit, so trap it.
-    Process.flag(:trap_exit, true)
     core = :"core_stop_#{System.unique_integer([:positive])}"
     {:ok, sup} = Helyx.Core.start_link(name: core, plugins: [Fake, Helyx.Tool.Bash])
 
