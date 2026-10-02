@@ -10,9 +10,10 @@ defmodule Helyx.TUI.ViewModel do
 
     * `%Helyx.Message{}` – a completed user or assistant message
     * `{:tool, call, line, result}` – a tool call and its line
-      (`call_line/1`), made once when the call starts, so a frame does not
-      pay for the size of the call; `result` is nil while it runs, then the
-      tool result message
+      (`call_line/1`), made once when the call starts or, for a call that
+      never started, when its result comes, so a frame does not pay for the
+      size of the call; `result` is nil while it runs, then the tool result
+      message
     * `{:notice, text}` – an aborted or failed turn, a harness that lost
       its session or got a cut transcript, a steer that was not confirmed, a
       notice of the provider, or a command the client rejected
@@ -176,7 +177,7 @@ defmodule Helyx.TUI.ViewModel do
          type: :tool_execution_start,
          data: %{tool_call: %Message.ToolCall{} = call}
        }) do
-    add_cell(vm, {:tool, call, call_line(call), nil})
+    add_cell(vm, tool_cell(call, nil))
   end
 
   defp fold(vm, %Event{
@@ -197,19 +198,12 @@ defmodule Helyx.TUI.ViewModel do
   defp fold(vm, %Event{type: :steer_unconfirmed, data: %{text: text}}),
     do: add_cell(vm, {:notice, "the steer was not confirmed; send it again if needed: " <> text})
 
-  defp fold(vm, %Event{
-         type: :harness_session,
-         data: %{provider: provider, lost: lost, cut: cut}
-       }) do
-    vm = if lost, do: add_cell(vm, {:notice, lost_text(provider)}), else: vm
-
-    if cut > 0,
-      do:
-        add_cell(
-          vm,
-          {:notice, "#{provider} got the transcript without its #{cut} oldest messages"}
-        ),
-      else: vm
+  defp fold(vm, %Event{type: :harness_session, data: data}) do
+    %{provider: provider, lost: lost, cut: cut} = data
+    lost_text = "#{provider} lost its own session; a fresh one got the transcript"
+    vm = if lost, do: add_cell(vm, {:notice, lost_text}), else: vm
+    cut_text = "#{provider} got the transcript without its #{cut} oldest messages"
+    if cut > 0, do: add_cell(vm, {:notice, cut_text}), else: vm
   end
 
   @doc """
@@ -227,13 +221,7 @@ defmodule Helyx.TUI.ViewModel do
   them all. So the first `length(turn.running)` calls with no result get
   open cells, by position. A call that has not started has no cell yet,
   also when it has the id of a running call; it gets one from its
-  `tool_execution_start`.
-
-  One accepted limit (`docs/features/session-snapshot.md`): a call that
-  never started has an `aborted` result in the transcript after an abort,
-  after a failed turn, or at the normal end of a connected turn whose last
-  message has calls. So it shows a closed cell here, although a live
-  client showed none.
+  `tool_execution_start`, or a closed one from its result, as in `apply/2`.
   """
   @spec from_snapshot(Snapshot.t()) :: t()
   def from_snapshot(%Snapshot{messages: messages, turn: turn} = snapshot) do
@@ -308,8 +296,8 @@ defmodule Helyx.TUI.ViewModel do
     Enum.zip(calls, results)
     |> Enum.flat_map_reduce(open_left, fn
       {_call, nil}, 0 -> {[], 0}
-      {call, nil}, open_left -> {[{:tool, call, call_line(call), nil}], open_left - 1}
-      {call, result}, open_left -> {[{:tool, call, call_line(call), result}], open_left}
+      {call, nil}, open_left -> {[tool_cell(call, nil)], open_left - 1}
+      {call, result}, open_left -> {[tool_cell(call, result)], open_left}
     end)
   end
 
@@ -324,9 +312,6 @@ defmodule Helyx.TUI.ViewModel do
   @doc "Clears the reason. The TUI calls it on a key press or a paste when a reason is set."
   @spec clear_reason(t()) :: t()
   def clear_reason(vm), do: %{vm | reason: nil}
-
-  defp lost_text(provider),
-    do: "#{provider} lost its own session; a fresh one got the transcript"
 
   @doc """
   The line of a tool call: its name, then each argument as `key=value`,
@@ -383,24 +368,33 @@ defmodule Helyx.TUI.ViewModel do
 
   defp add_cell(vm, cell), do: %{vm | cells: vm.cells ++ [cell]}
 
-  # The result goes to the oldest open tool cell with the same call id,
-  # wherever it is: a notice can arrive while the tool runs (#83). This is
-  # the rule of the session and of `from_snapshot/1`: a connected turn can
-  # start two calls with one id, and the first result answers the first
-  # call. A cell that has a result never changes. A result that matches no
-  # open cell (an `aborted` result for a call that never started) changes
-  # nothing. The search is one pass over the cells for each result.
+  # The result goes to the oldest open tool cell with its call id, wherever
+  # it is: a notice can arrive while the tool runs (#83). It is the rule of
+  # the session and of `from_snapshot/1`: the first result answers the first
+  # of two calls with one id. A cell with a result never changes. A result
+  # with no open cell is for a call that never started (`unstarted_cell/2`).
   defp attach_result(cells, %Message{tool_call_id: id} = result) do
-    open? = &match?({:tool, %Message.ToolCall{id: ^id}, _line, nil}, &1)
-
-    case Enum.find_index(cells, open?) do
-      nil ->
-        cells
-
-      index ->
-        List.update_at(cells, index, fn {:tool, call, line, nil} ->
-          {:tool, call, line, result}
-        end)
+    case Enum.find_index(cells, &match?({:tool, %Message.ToolCall{id: ^id}, _, nil}, &1)) do
+      nil -> cells ++ unstarted_cell(cells, result)
+      index -> List.update_at(cells, index, &put_elem(&1, 3, result))
     end
   end
+
+  # Such a call is the next call with its id after the `n` cells of that id
+  # in the last assistant message: no message goes between a call and its
+  # result. A result event with no such call makes no cell, as a snapshot.
+  defp unstarted_cell(cells, %Message{tool_call_id: id} = result) do
+    {after_message, rest} =
+      cells |> Enum.reverse() |> Enum.split_while(&(not match?(%Message{role: :assistant}, &1)))
+
+    with [%Message{content: content} | _] <- rest,
+         n = Enum.count(after_message, &match?({:tool, %Message.ToolCall{id: ^id}, _, _}, &1)),
+         [call | _] <- Enum.drop(for(%Message.ToolCall{id: ^id} = call <- content, do: call), n) do
+      [tool_cell(call, result)]
+    else
+      _no_call -> []
+    end
+  end
+
+  defp tool_cell(call, result), do: {:tool, call, call_line(call), result}
 end

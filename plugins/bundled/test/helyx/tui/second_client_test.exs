@@ -50,9 +50,9 @@ defmodule Helyx.TUI.SecondClientTest do
     assert view == transcript(live.vm)
   end
 
-  # The accepted difference of ADR 0006 section 3: the second gate call
-  # never starts, and the abort gives it an `aborted` result. A client that
-  # joins after it shows a closed cell for it; the live client has none.
+  # The second gate call never starts, and the abort gives it an `aborted`
+  # result. The live client and a client that joins after it both show a
+  # closed cell for it.
   test "an abort", %{session: session, live: live} do
     :ok = Session.prompt(session, "abort")
     {old, live} = join_during_streaming(session, live)
@@ -60,13 +60,19 @@ defmodule Helyx.TUI.SecondClientTest do
     :ok = Session.abort(session)
     live = catch_up(live)
 
-    assert [_abort, %Message{}, {:tool, %{id: "t1"}, _, %Message{}}, {:notice, "aborted"}] =
-             live.vm.cells
+    assert [
+             _abort,
+             %Message{},
+             {:tool, %{id: "t1"}, _, %Message{}},
+             {:tool, %{id: "t2"}, _,
+              %Message{is_error: true, content: [%Message.Text{text: "aborted"}]}},
+             {:notice, "aborted"}
+           ] = live.vm.cells
 
-    {client, view, live} = reconnect(session, live, old, &without_unstarted_call/1)
+    {client, view, live} = reconnect(session, live, old)
     LateClient.steer(client, "steer")
     {view, live} = to_end(client, view, live)
-    assert without_unstarted_call(view) == transcript(live.vm)
+    assert view == transcript(live.vm)
   end
 
   # The second client joins while the reply streams, checks the rule, and
@@ -89,15 +95,14 @@ defmodule Helyx.TUI.SecondClientTest do
 
   # The client subscribes again. The new snapshot replaces its old view
   # model: its seq is the snapshot's, and no event at or below it changes
-  # the view. `accepted` removes the accepted difference before the
-  # comparison.
-  defp reconnect(session, live, old, accepted \\ & &1) do
+  # the view.
+  defp reconnect(session, live, old) do
     {client, snapshot} = LateClient.connect(session)
     live = catch_up(live, snapshot.seq)
     view = ViewModel.from_snapshot(snapshot)
     assert view.seq == snapshot.seq and view.seq > old.seq
     assert fold(view, live.events) == view
-    assert accepted.(view) == transcript(live.vm)
+    assert view == transcript(live.vm)
     {client, view, live}
   end
 
@@ -122,13 +127,5 @@ defmodule Helyx.TUI.SecondClientTest do
     assert_receive {:helyx_event, %Event{} = event}
     live = %{vm: ViewModel.apply(live.vm, event), events: live.events ++ [event]}
     if seq == nil and event.type == :agent_end, do: live, else: catch_up(live, seq)
-  end
-
-  defp without_unstarted_call(view) do
-    {[{:tool, %{id: "t2"}, _line, aborted}], cells} =
-      Enum.split_with(view.cells, &match?({:tool, %{id: "t2"}, _, _}, &1))
-
-    assert %Message{is_error: true, content: [%Message.Text{text: "aborted"}]} = aborted
-    %{view | cells: cells}
   end
 end
