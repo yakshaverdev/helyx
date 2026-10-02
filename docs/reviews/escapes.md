@@ -131,3 +131,4 @@ One row per ticket that `/orchestrate` merged. An escape is a confirmed Codex fi
 | 2026-10-03 | #320 | r1 (full, Codex approve): 0 reproduced; simplify 2 comment fixes | round 1: 0 | none needed |
 | 2026-10-03 | #327 | r1: simplify 2, spec 4 doc sentences, 0 defects | gate r1 (Claude, Codex at limit): 0 defects, 1 doc nit fixed | none needed |
 | 2026-10-03 | #329 | r1: 4 doc defects fixed; r2 (reduced): 0 | gate r1 (Claude, Codex at limit): 1 (live turn ends); r2: 0 | same class as #307 (state sentence vs every writer): checklist rule exists, no mechanical check fits prose, repeat noted in devlog |
+| 2026-10-03 | #331 | r1: 0 reproduced; simplify 1 fixed | gate r1 (Claude, Codex at limit): 0 | none needed |
