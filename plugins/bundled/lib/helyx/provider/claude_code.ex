@@ -52,7 +52,7 @@ defmodule Helyx.Provider.ClaudeCode do
     # `notified?` is true from a `task_notification` line until the next
     # `init` or `:busy` answer: a program turn can follow it (#240).
     # `tools` are the Helyx tool specs, and `calls` the open `tools/call`
-    # requests by call id: `{turn_id, control request_id, JSON-RPC id}`.
+    # requests of `Mcp`.
     @enforce_keys [:exe, :model, :cwd]
     defstruct [
       :exe,
@@ -292,7 +292,12 @@ defmodule Helyx.Provider.ClaudeCode do
     if "interrupt_cancel_queued_v1" in state.caps do
       id = "interrupt_" <> turn.uuid
       request = %{subtype: "interrupt", cancel_queued: true}
-      HarnessIO.write(state, line(%{type: "control_request", request_id: id, request: request}))
+
+      HarnessIO.write(
+        state,
+        Replay.line(%{type: "control_request", request_id: id, request: request})
+      )
+
       {[], %{state | turn: %{turn | interrupt: %{interrupt | request_id: id}}}}
     else
       answer_interrupt(state, {:error, :no_cancel_queued})
@@ -439,7 +444,7 @@ defmodule Helyx.Provider.ClaudeCode do
           %{subtype: "error", request_id: id, error: "not supported by Helyx"}
       end
 
-    HarnessIO.write(state, line(%{type: "control_response", response: response}))
+    HarnessIO.write(state, Replay.line(%{type: "control_response", response: response}))
     {[], state}
   end
 
@@ -557,8 +562,6 @@ defmodule Helyx.Provider.ClaudeCode do
     state.resume != nil and not state.init? and
       Enum.any?(Turn.errors(result), &String.starts_with?(&1, @lost))
   end
-
-  defp line(map), do: [JSON.encode!(map), "\n"]
 
   # A random version 4 UUID: `--session-id` takes only a UUID.
   defp uuid do

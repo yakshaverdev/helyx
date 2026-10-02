@@ -104,6 +104,15 @@ defmodule Helyx.Provider.ClaudeCode.Turn do
     {events, turn}
   end
 
+  # The admission of a Helyx tool call (`Helyx.HarnessIO.admit/4`) in
+  # `turn`, which can be nil. A program turn can run before `started` of
+  # the turn's line, so only a started turn is a running Helyx turn.
+  def admit(turn, call_id, mapped?) do
+    running? = turn != nil and started?(turn)
+    {answer, used} = HarnessIO.admit(running?, turn && turn.used, call_id, mapped?)
+    {answer, turn && %{turn | used: used}}
+  end
+
   def errors(%{"errors" => errors}) when is_list(errors), do: Enum.filter(errors, &is_binary/1)
   def errors(_result), do: []
 

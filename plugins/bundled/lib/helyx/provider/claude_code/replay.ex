@@ -1,7 +1,7 @@
 defmodule Helyx.Provider.ClaudeCode.Replay do
   @moduledoc false
-  # The user lines of `Helyx.Provider.ClaudeCode` and the replay of the
-  # transcript to a fresh harness session.
+  # The stdin lines of `Helyx.Provider.ClaudeCode`: the JSON line, the
+  # user lines, and the replay of the transcript to a fresh harness session.
 
   alias Helyx.HarnessIO
   alias Helyx.Message
@@ -91,7 +91,7 @@ defmodule Helyx.Provider.ClaudeCode.Replay do
     for %Message.Text{text: text} <- blocks, text != "", do: %{type: "text", text: text}
   end
 
-  defp line(map), do: [JSON.encode!(map), "\n"]
+  def line(map), do: [JSON.encode!(map), "\n"]
 
   def user_line(uuid, content),
     do: line(%{type: "user", uuid: uuid, message: %{role: "user", content: content}})

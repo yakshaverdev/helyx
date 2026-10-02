@@ -4,10 +4,10 @@ defmodule Helyx.HarnessIO do
   # `Helyx.Watchdog`, the move of the port's link to a keeper, the read
   # of a program's stdout as JSON lines under a line cap, the sort of a
   # port message, the release, the cut of program error text, the split of
-  # the prompt from the history, the byte cap of a replay, and the wire id
-  # of a replayed tool call. It is not a plugin. `state` is a provider's run
-  # state with the fields `port`, `buffer` (iodata), `size`, `terminal`,
-  # and `closing`.
+  # the prompt from the history, the byte cap of a replay, the wire id of a
+  # replayed tool call, and the admission of a Helyx tool call. It is not a
+  # plugin. `state` is a provider's run state with the fields `port`,
+  # `buffer` (iodata), `size`, `terminal`, and `closing`.
 
   @line_max_bytes 16 * 1024 * 1024
   # The longest program error text that goes into a terminal error or a
@@ -18,6 +18,7 @@ defmodule Helyx.HarnessIO do
   # their own commands on TERM, but a KILL leaves them running (research
   # notes).
   @term_grace_ms 5_000
+  @unmapped "the call does not map to a tool use"
 
   def line_max_bytes, do: @line_max_bytes
   def term_grace_ms, do: @term_grace_ms
@@ -210,6 +211,27 @@ defmodule Helyx.HarnessIO do
     if id =~ ~r/\A[a-zA-Z0-9_-]{1,64}\z/,
       do: id,
       else: "h_" <> hex_digest(id, 62)
+  end
+
+  # The admission of a Helyx tool call. `running?` tells whether a Helyx
+  # turn runs, and `used` holds the call ids of that turn; `call_id` is nil
+  # when the call names none. `mapped?` tells whether the call maps to a
+  # tool use, and runs only for a call id of a running turn. The call id is
+  # recorded in `used` before any check that answers it, so an id that got
+  # any answer never runs later in the turn. Gives `:ok` or `{:error, text}`
+  # for the error answer, and `used`.
+  def admit(false, used, _call_id, _mapped?), do: {{:error, "no Helyx turn is running"}, used}
+  def admit(true, used, nil, _mapped?), do: {{:error, @unmapped}, used}
+
+  def admit(true, used, call_id, mapped?) do
+    answer =
+      cond do
+        MapSet.member?(used, call_id) -> {:error, "the call id was used before in this turn"}
+        mapped?.() -> :ok
+        true -> {:error, @unmapped}
+      end
+
+    {answer, MapSet.put(used, call_id)}
   end
 
   # The first `size` hex digits of the SHA-256 of `data`.

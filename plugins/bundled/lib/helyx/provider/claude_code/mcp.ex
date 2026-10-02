@@ -6,9 +6,7 @@ defmodule Helyx.Provider.ClaudeCode.Mcp do
   # requests by call id, `{turn_id, control request_id, JSON-RPC id}`.
 
   alias Helyx.HarnessIO
-  alias Helyx.Provider.ClaudeCode.Turn
-
-  require Turn
+  alias Helyx.Provider.ClaudeCode.{Replay, Turn}
 
   # The user's own MCP servers stay: the Helyx tools add to the harness
   # tools.
@@ -43,35 +41,24 @@ defmodule Helyx.Provider.ClaudeCode.Mcp do
     answer(state, request_id, %{id: id, result: %{tools: tools}})
   end
 
-  # A call id of the turn is recorded in `used` before any check that
-  # answers it, so an id that got any answer never runs later in the turn:
-  # the provider's own errors do not reach the loop, which records the rest.
+  # The admission (`Turn.admit/3`) records the call id first: the
+  # provider's own errors do not reach the loop, which records the rest.
   def message(%{"method" => "tools/call", "id" => id} = message, request_id, state) do
     params = message["params"]
+    call_id = tool_use_id(params)
+    {answer, turn} = Turn.admit(state.turn, call_id, fn -> mapped?(params) end)
+    state = %{state | turn: turn}
 
-    case {state.turn, tool_use_id(params)} do
-      # A program turn can run before `started` of the turn's line.
-      {turn, _call_id} when turn == nil or not Turn.started?(turn) ->
-        tool_answer(state, request_id, id, :error, "no Helyx turn is running")
+    case answer do
+      :ok ->
+        args = Map.get(params, "arguments", %{})
+        calls = Map.put(state.calls, call_id, {turn.id, request_id, id})
 
-      {_turn, nil} ->
-        tool_answer(state, request_id, id, :error, "the call does not map to a tool use")
+        {[{:event, turn.id, {:tool_request, call_id, params["name"], args}}],
+         %{state | calls: calls}}
 
-      {%Turn{id: turn_id, used: used}, call_id} ->
-        state = put_in(state.turn.used, MapSet.put(used, call_id))
-
-        with false <- MapSet.member?(used, call_id),
-             %{"name" => name} when is_binary(name) <- params,
-             args when is_map(args) <- Map.get(params, "arguments", %{}) do
-          calls = Map.put(state.calls, call_id, {turn_id, request_id, id})
-          {[{:event, turn_id, {:tool_request, call_id, name, args}}], %{state | calls: calls}}
-        else
-          true ->
-            tool_answer(state, request_id, id, :error, "the call id was used before in this turn")
-
-          _unmapped ->
-            tool_answer(state, request_id, id, :error, "the call does not map to a tool use")
-        end
+      {:error, text} ->
+        tool_answer(state, request_id, id, :error, text)
     end
   end
 
@@ -115,6 +102,12 @@ defmodule Helyx.Provider.ClaudeCode.Mcp do
 
   defp tool_use_id(_params), do: nil
 
+  # The admission calls it only with a call id, so `params` is a map.
+  defp mapped?(%{"name" => name} = params) when is_binary(name),
+    do: is_map(Map.get(params, "arguments", %{}))
+
+  defp mapped?(_params), do: false
+
   defp tool_answer(state, request_id, rpc_id, status, text) do
     result = %{content: [%{type: "text", text: text}], isError: status == :error}
     answer(state, request_id, %{id: rpc_id, result: result})
@@ -135,7 +128,7 @@ defmodule Helyx.Provider.ClaudeCode.Mcp do
   defp answer(state, request_id, message) do
     message = Map.put(message, :jsonrpc, "2.0")
     response = %{subtype: "success", request_id: request_id, response: %{mcp_response: message}}
-    HarnessIO.write(state, [JSON.encode!(%{type: "control_response", response: response}), "\n"])
+    HarnessIO.write(state, Replay.line(%{type: "control_response", response: response}))
     {[], state}
   end
 end
