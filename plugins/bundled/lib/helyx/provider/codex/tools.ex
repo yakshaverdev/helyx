@@ -14,7 +14,6 @@ defmodule Helyx.Provider.Codex.Tools do
   alias Helyx.Message
 
   @tools_off "the Helyx tools are off for Codex: the program did not accept the experimental API"
-  @unmapped "the call does not map to a tool use"
   # The hex digits of the tool set digest in a stored id.
   @digest_hex 16
 
@@ -62,31 +61,29 @@ defmodule Helyx.Provider.Codex.Tools do
 
   # The admission of an `item/tool/call`, with the provider state as a map.
   # Gives `{:ok, tool_request}` or `{:error, text}` for the error answer,
-  # and the tools. The call id of the running turn is recorded in `used`
-  # before any check that answers it, so an id that got any answer never
-  # runs later in the turn.
-  def call(%{turn_id: nil, tools: tools}, _rpc_id, _params),
-    do: {{:error, "no Helyx turn is running"}, tools}
+  # and the tools. The admission (`Helyx.HarnessIO.admit/4`) records the
+  # call id of the running turn in `used` first.
+  def call(%{tools: tools} = state, rpc_id, params) do
+    call_id = call_id(params)
+    running? = state.turn_id != nil
 
-  def call(%{tools: tools} = state, rpc_id, %{"callId" => call_id} = params)
-      when is_binary(call_id) do
-    used? = MapSet.member?(tools.used, call_id)
-    tools = %{tools | used: MapSet.put(tools.used, call_id)}
+    {answer, used} =
+      HarnessIO.admit(running?, tools.used, call_id, fn -> tool_call?(params, state) end)
 
-    cond do
-      used? ->
-        {{:error, "the call id was used before in this turn"}, tools}
+    tools = %{tools | used: used}
 
-      tool_call?(params, state) ->
+    case answer do
+      :ok ->
         request = {:tool_request, call_id, params["tool"], params["arguments"]}
         {{:ok, request}, %{tools | requests: Map.put(tools.requests, call_id, rpc_id)}}
 
-      true ->
-        {{:error, @unmapped}, tools}
+      {:error, text} ->
+        {{:error, text}, tools}
     end
   end
 
-  def call(%{tools: tools}, _rpc_id, _params), do: {{:error, @unmapped}, tools}
+  defp call_id(%{"callId" => call_id}) when is_binary(call_id), do: call_id
+  defp call_id(_params), do: nil
 
   # The call maps to an open `dynamicToolCall` item of the running turn,
   # which puts it in the transcript, and has the shape of the schema.

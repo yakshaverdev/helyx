@@ -17,7 +17,7 @@ One Core caller holds the helpers in Core: the session cuts the text of each har
 
 `Helyx.Tool` loses `truncate/2`, `truncate/3`, `read_file/1`, and `max_bytes/0`. They move, unchanged, to `Helyx.Text` in `plugins/bundled/lib/helyx/text.ex`. The callers change to `Helyx.Text`: `Helyx.Tool.Read`, `Helyx.Tool.Edit`, `Helyx.Tool.Bash`, and `Helyx.ModelContext.Default`.
 
-`Helyx.Provider.ClaudeCode` and `Helyx.Provider.Codex` call `Helyx.Text.truncate(text, :tail)` on each tool result before they emit it (`claude_code.ex:199`, `codex.ex:408`).
+`Helyx.Provider.ClaudeCode` and `Helyx.Provider.Codex` call `Helyx.Text.truncate(text, :tail)` on each tool result before they emit it (`claude_code/turn.ex`, `codex/items.ex`).
 
 The old names are removed, with no delegate. Every caller is in this repository.
 
