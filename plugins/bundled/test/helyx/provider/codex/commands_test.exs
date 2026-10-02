@@ -153,9 +153,13 @@ defmodule Helyx.Provider.Codex.CommandsTest do
       turn_end(tid(), "completed")
     ])
 
-    # The stop drops the events of its chunk, the tool call included.
-    assert run_direct([Message.user("go")], work) ==
-             [{:resume, tid(), 0}, {:stop, {:malformed, "item/completed"}}]
+    # The stop drops the events of its chunk. The port cuts stdout where a
+    # pipe read ends (on macOS at 512 bytes, #340), so the tool call goes
+    # out only when the start and the completion are in two chunks.
+    assert [{:resume, tid(), 0} | rest] = run_direct([Message.user("go")], work)
+
+    stop = {:stop, {:malformed, "item/completed"}}
+    assert [stop] == rest or match?([{:tool_call, %{id: "exec-1"}}, ^stop], rest)
   end
 
   test "a command start with no turn id or no string id stops the provider process",

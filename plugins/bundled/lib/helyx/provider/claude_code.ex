@@ -95,9 +95,8 @@ defmodule Helyx.Provider.ClaudeCode do
         resume: opts[:resume_id]
       }
 
-      # A program that did not start can still have its port open: the
-      # keeper of `Helyx.HarnessIO.keep_port/1` closes it when the harness
-      # process ends.
+      # A program that did not start has no open port to close:
+      # `Helyx.Watchdog.start/4` read its reason up to the exit status.
       case launch(state) do
         %State{terminal: nil} = state -> {:ok, state}
         %State{terminal: {:error, reason}} -> {:error, reason}
