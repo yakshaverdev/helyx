@@ -66,3 +66,14 @@ Applied before the round: "A fresh context" and C2 say that the context holds on
 | Failure path | 1. A taken steer closes the open assistant message and aborts every open call, the calls of that message too (`take_steer/2`), so "the calls of the closed message stay open" and "an `error` drops the content that no `message_end` closed" were incomplete. Reproduced. 2. As spec 1, reproduced. | Fixed: the steer rule, the `message_end` bullet, the `error` sentence, and the moduledoc deadline sentence. |
 
 Round 2 is the last round of the pass. Its fixes are doc sentences checked against the code (`server.ex` `take_steer/2` and `end_turn/2`; `hands.ex` `deliver/3` and `down_reason/1`; `provider_process.ex` `start/2`). They had no further review round.
+
+## Orchestrator Codex gate, round 1
+
+Finding (confirmed by the orchestrator, `take_steer/2` in `server.ex`): "A fresh context" and C2 said that an assistant message that no `message_end` closed is not in the context. A taken steer also closes and appends it. Fixed in both places: only the current assistant message that neither a `message_end` nor a taken steer closed is missing.
+
+Reduced round (spec and failure path, docs only):
+
+| Axis | Findings | Resolution |
+|---|---|---|
+| Spec | 1. C2 "the helper sends `message_end` before its tool requests and its `user_message` events" is not true when the model call gave no content; the context loses nothing then. | C2 says "when the message has content". |
+| Failure path | None reproduced. Probes: text, a call, thinking, a notice, and a mixed message each followed by a taken steer and `need_context`. Wording note: a `user_message` that takes no steer closes nothing. | The note is added to "A fresh context". |
