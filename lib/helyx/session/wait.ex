@@ -7,7 +7,7 @@ defmodule Helyx.Session.Wait do
   # turn (`interrupt`, `{pid, turn_id}`) with its answer (`reply`), the
   # answer to an idle close (`idle`), the answers to the open steer requests
   # of the turn that ended (`steers`, a `Helyx.Session.Steers` ledger) and
-  # to its open tool start and tool result requests (`results`), and the
+  # to its open tool start, tool result, and context requests (`results`), and the
   # `:provider_down` of a provider process that ends (`provider`).
   #
   # The wait ends only when `hands`, `reply`, and `provider` are nil too, not
@@ -66,6 +66,15 @@ defmodule Helyx.Session.Wait do
   defp tool(%Turn{tool: %{id: id}, id: turn_id}), do: {turn_id, id}
   defp tool(_turn), do: nil
 
+  # The interrupt of an aborted turn: only a connected turn that sent
+  # `{:turn, ...}` gets one, from the provider process `conn` of the session.
+  @spec interrupt(Turn.t(), %{pid: pid()} | nil) :: {pid(), String.t()} | nil
+  def interrupt(%Turn{turn_mode: :connected, phase: phase, id: id}, %{pid: pid})
+      when phase in [:submitting, :submitted],
+      do: {pid, id}
+
+  def interrupt(_turn, _conn), do: nil
+
   # The next step with the current provider process `pid` (or nil):
   # `{:send, wait, pid, request}` for a request to send now (its tag is
   # also its key in the session's `provider_ms`), `{:done,
@@ -118,7 +127,8 @@ defmodule Helyx.Session.Wait do
   # its `:provider_down`; `:busy`, the program stays, and the wait ends. An
   # interrupt: `:ok` keeps the provider process; any other answer ends it,
   # and the wait goes on until its `:provider_down`. A steer: see
-  # `Steers.answer/3`. A tool start or tool result only ends its request.
+  # `Steers.answer/3`. A tool start, tool result, or context only ends its
+  # request.
   @spec answer(t(), atom(), reference(), term()) :: {t(), [Steers.effect()]}
   def answer(%__MODULE__{idle: from} = wait, :idle_close, from, reply) do
     provider = if reply == :busy, do: nil, else: wait.provider
@@ -136,7 +146,7 @@ defmodule Helyx.Session.Wait do
   end
 
   def answer(%__MODULE__{results: results} = wait, kind, from, _reply)
-      when kind in [:tool_start, :tool_result],
+      when kind in [:tool_start, :tool_result, :context],
       do: {%{wait | results: List.delete(results, from)}, []}
 
   def answer(%__MODULE__{} = wait, _kind, _from, _reply), do: {wait, []}

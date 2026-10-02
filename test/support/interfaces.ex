@@ -795,7 +795,8 @@ defmodule Helyx.Test.Connected do
   # `controller(core)`: `{:conn, :init, pid, {model, tools, opts}}`, and
   # `{:conn, kind, pid, request}` for each request. It holds the handle
   # `{:report, controller}` at init; its release sends `{:release, mode,
-  # handles}` to the controller.
+  # handles}` to the controller. At init it also links a process that
+  # never ends by itself and sends `{:linked, pid, linked}`.
   #
   #   "echo"             a turn answers :ok, then "echo:<system>|<last user
   #                      text>" and done; an interrupt and a close answer :ok
@@ -821,7 +822,16 @@ defmodule Helyx.Test.Connected do
   #   "bad_event"        a turn answers :ok and sends a malformed event
   #   "flood"            "hang"; the message `{:flood, turn_id}` sends
   #                      10,002 deltas and done
-  #   "stop"             "hang"; the message `:stop` stops the provider
+  #   "stop"             "hang"; the message `:stop` stops the provider,
+  #                      `:bad_return` returns a bad value from `info/2`,
+  #                      and `:exit_normal` calls `exit(:normal)` in it
+  #   "exit_init"        `init/3` calls `exit(:normal)`
+  #   "exit_turn"        the turn callback calls `exit(:normal)`
+  #   "context"          a turn answers :ok; the message `{:need_context,
+  #                      turn_id, text}` sends `text`, a `message_end`, and
+  #                      `{:need_context, turn_id}`; a context answers :ok,
+  #                      then done, or the error of the context
+  #   "context_hold"     "context", and a context gets no answer
   #   "tools"            "hang"; the message `{:tool_request, turn_id, id,
   #                      name, args}` asks for a Helyx tool, and `{:cancel,
   #                      turn_id, id}` withdraws it; `{:ping, pid}`
@@ -880,10 +890,12 @@ defmodule Helyx.Test.Connected do
     if ctl do
       send(ctl, {:conn, :init, self(), {model, tools, opts}})
       Helyx.Tool.hold({:report, ctl})
+      send(ctl, {:linked, self(), spawn_link(fn -> Process.sleep(:infinity) end)})
     end
 
     case model do
       "block_init" -> Process.sleep(:infinity)
+      "exit_init" -> exit(:normal)
       "fail_init" -> {:error, :no_program}
       _ -> {:ok, %{model: model, ctl: ctl, label: opts[:resume_id]}}
     end
@@ -920,6 +932,19 @@ defmodule Helyx.Test.Connected do
   end
 
   def info(:stop, state), do: {:stop, :gone, state}
+  def info(:bad_return, _state), do: :nope
+  def info(:exit_normal, _state), do: exit(:normal)
+
+  def info({:need_context, turn_id, text}, state) do
+    message_end = {:message_end, :end_turn, %{}}
+
+    {:ok,
+     [
+       {:event, turn_id, {:text_delta, text}},
+       {:event, turn_id, message_end},
+       {:need_context, turn_id}
+     ], state}
+  end
 
   def info({:tool_request, turn_id, id, name, args}, state),
     do: {:ok, [{:event, turn_id, {:tool_request, id, name, args}}], state}
@@ -948,6 +973,18 @@ defmodule Helyx.Test.Connected do
   defp answer("block_turn", {:turn, _, _}, _from), do: Process.sleep(:infinity)
   defp answer("error_turn", {:turn, _, _}, from), do: [{:reply, from, {:error, :refused}}]
   defp answer("crash_turn", {:turn, _, _}, _from), do: raise("turn crashed")
+  defp answer("exit_turn", {:turn, _, _}, _from), do: exit(:normal)
+  defp answer("context", {:turn, _, _}, from), do: [{:reply, from, :ok}]
+
+  defp answer("context", {:context, id, {:ok, _context}}, from),
+    do: [{:reply, from, :ok}, {:event, id, done()}]
+
+  defp answer("context", {:context, id, {:error, reason}}, from),
+    do: [{:reply, from, :ok}, {:event, id, {:error, reason}}]
+
+  defp answer("context_hold", {:context, _, _}, _from), do: []
+  defp answer("context_hold", request, from), do: answer("context", request, from)
+
   defp answer("bad_action", {:turn, _, _}, _from), do: [:bogus]
   defp answer("bad_reply", {:turn, _, _}, from), do: [{:reply, from, :maybe}]
 
@@ -1007,12 +1044,20 @@ defmodule Helyx.Test.PrepareContext do
   # "nil_build" (it returns nil), "bad_build" (it returns a map),
   # "forged_build" (a struct without :system), "bad_system" (a system
   # prompt that is not a string), or "bad_messages_build" (the messages
-  # are not a list).
+  # are not a list). A last message "fresh" sets it to "prepared for
+  # <turn_id>".
   @behaviour Helyx.ModelContext
 
   @impl true
-  def build(context, _opts) do
+  def build(context, opts) do
     case context.messages |> List.last() |> Helyx.Message.text() do
+      "fresh" -> %{context | system: "prepared for #{opts[:turn_id]}"}
+      text -> build_text(text, context)
+    end
+  end
+
+  defp build_text(text, context) do
+    case text do
       "block_prepare" -> Process.sleep(:infinity)
       "raise_prepare" -> raise "prepare failed"
       "nil_build" -> nil

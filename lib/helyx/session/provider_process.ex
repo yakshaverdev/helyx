@@ -5,19 +5,14 @@ defmodule Helyx.Session.ProviderProcess do
   # that runs the callbacks of a connected provider. The callbacks run only
   # here. The loop checks every action at the boundary, sends each event and
   # reply to the session, and ends itself on a bad action, a stop, or an
-  # error answer to `{:turn, ...}` or `{:interrupt, ...}`. Its return value
-  # is the reason the hands report in `{:provider_down, pid, reason}`.
-  #
-  # Every request comes with a kill of this process armed at the OTP timer
-  # server (`request/3`). The loop cancels the kill when the provider
-  # replies, and sends the reply after the cancel. A callback that blocks
-  # also blocks the cancel, so a blocked loop is always killed at the bound,
-  # whatever the session and the hands do. The timer can fire during the
-  # cancel, so a reply can still be followed by the kill; the session takes
-  # the `:provider_down` as the last word.
+  # error answer to `{:turn, ...}` or `{:interrupt, ...}`. It never ends
+  # with `:normal` (L1 in `docs/features/one-provider-path.md`), so every
+  # process linked to it ends with it: it exits with `{:shutdown, reason}`,
+  # and the hands report `reason` in `{:provider_down, pid, reason}`. Each
+  # request comes with an armed kill (`Helyx.Session.ProviderRequest`).
 
   alias Helyx.Message
-  alias Helyx.Session.Stream
+  alias Helyx.Session.{ProviderRequest, Stream}
 
   # The most requests without a reply (`docs/features/long-lived-harness.md`,
   # "Bounds"). One pool, no reserved slots: a turn waits for its `:ok`, an
@@ -39,6 +34,8 @@ defmodule Helyx.Session.ProviderProcess do
     :live,
     :running,
     :started,
+    # The live turn has a context request with no result (C3).
+    context?: false,
     open: %{},
     calls: MapSet.new(),
     seen: MapSet.new(),
@@ -54,32 +51,27 @@ defmodule Helyx.Session.ProviderProcess do
         }
 
   @doc """
-  Sends a request to the provider process `pid` with a kill armed at
-  `ms`, and returns the `from` ref of its reply, `{:provider_reply, from,
-  kind, value}` to the caller. `kind` is the first element of the request
-  (`:turn`, `:steer`, `:tool_start`, ...), or the request itself for
-  `:close` and `:idle_close`.
+  The body of the provider process, as a fun of `tref`, the connect kill
+  that the hands armed; it is cancelled after `init/3` returns, before
+  `{:provider_ready, pid}` goes to the session. The fun never returns.
   """
-  @spec request(
-          pid(),
-          Helyx.Provider.request() | {:tool_start, String.t(), String.t()},
-          pos_integer()
-        ) ::
-          reference()
-  def request(pid, request, ms) do
-    {:ok, tref} = :timer.kill_after(ms, pid)
-    from = make_ref()
-    send(pid, {:provider_request, from, tref, request})
-    from
+  @spec run(args()) :: (:timer.tref() -> no_return())
+  @dialyzer {:nowarn_function, run: 1}
+  def run(args) do
+    fn tref ->
+      {:stop, reason} =
+        try do
+          start(args, tref)
+        catch
+          # A callback's `exit(:normal)` must not end the process normally (L1).
+          :exit, :normal -> {:stop, {:exit, :normal}}
+        end
+
+      exit({:shutdown, reason})
+    end
   end
 
-  @doc """
-  The body of the provider process. `tref` is the connect kill that the
-  hands armed; it is cancelled after `init/3` returns, before
-  `{:provider_ready, pid}` goes to the session.
-  """
-  @spec run(args(), :timer.tref()) :: :closed | {:stop, term()}
-  def run(%{provider: provider, session: session} = args, tref) do
+  defp start(%{provider: provider, session: session} = args, tref) do
     case provider.init(args.model, args.tools, args.opts) do
       {:ok, state} ->
         :timer.cancel(tref)
@@ -97,22 +89,21 @@ defmodule Helyx.Session.ProviderProcess do
   # `open` holds the kind and the kill of each request without a reply, by
   # its `from`. The session can have a turn, its steers, its interrupt, and
   # a tool result open; over @max_open the loop answers `{:error, :busy}`
-  # itself, and the provider never sees the request. A tool result is not
-  # limited: it is never open after its callback (see `write_result/4`).
+  # itself, and the provider never sees the request. A tool result or a
+  # context is not limited: it is never open after its callback (see
+  # `write_result/4`).
   defp loop(proc) do
     step =
       receive do
-        {:provider_request, from, tref, {:tool_result, _, _, _} = request} ->
-          serve(request, from, tref, proc)
-
-        {:provider_request, from, tref, {:tool_start, _, _} = request} ->
+        # A guard with `elem/2` fails for `:close` and `:idle_close`.
+        {:provider_request, from, tref, request}
+        when elem(request, 0) in [:tool_result, :tool_start, :context] ->
           serve(request, from, tref, proc)
 
         {:provider_request, from, tref, request} when map_size(proc.open) >= @max_open ->
-          :timer.cancel(tref)
-          kind = kind(request)
-          send(proc.session, {:provider_reply, from, kind, {:error, :busy}})
-          replied(kind, {:error, :busy}, proc)
+          kind = ProviderRequest.kind(request)
+          ProviderRequest.answer(proc.session, from, tref, kind, {:error, :busy})
+          ProviderRequest.stop_after(kind, {:error, :busy}) || {:ok, proc}
 
         {:provider_request, from, tref, request} ->
           serve(request, from, tref, proc)
@@ -180,23 +171,35 @@ defmodule Helyx.Session.ProviderProcess do
       with {:ok, proc} <- write_result(request, from, tref, proc),
            do: run_next(turn_id, call_id, proc)
     else
-      :timer.cancel(tref)
-      send(proc.session, {:provider_reply, from, :tool_result, :ok})
+      ProviderRequest.answer(proc.session, from, tref, :tool_result, :ok)
       run_next(turn_id, call_id, proc)
     end
   end
 
   # The loop answers the ask itself and never waits for the session.
   defp serve({:tool_start, turn_id, call_id}, from, tref, proc) do
-    :timer.cancel(tref)
-
     if open_call?(proc, turn_id, call_id) and proc.running == call_id do
-      send(proc.session, {:provider_reply, from, :tool_start, :ok})
+      ProviderRequest.answer(proc.session, from, tref, :tool_start, :ok)
       {:ok, %{proc | started: {turn_id, call_id}}}
     else
-      send(proc.session, {:provider_reply, from, :tool_start, :dropped})
+      ProviderRequest.answer(proc.session, from, tref, :tool_start, :dropped)
       run_next(turn_id, call_id, proc)
     end
+  end
+
+  # The context of the open request (C3); after its turn's interrupt or
+  # terminal cleared the request, it is answered `:ok` here and dropped (C4).
+  defp serve(
+         {:context, turn_id, _} = request,
+         from,
+         tref,
+         %{live: turn_id, context?: true} = proc
+       ),
+       do: write_result(request, from, tref, %{proc | context?: false})
+
+  defp serve({:context, _, _}, from, tref, proc) do
+    ProviderRequest.answer(proc.session, from, tref, :context, :ok)
+    {:ok, proc}
   end
 
   defp serve(request, from, tref, proc), do: provide(request, from, tref, proc)
@@ -204,7 +207,7 @@ defmodule Helyx.Session.ProviderProcess do
   # Gives a request to the provider. An internal request of the loop has no
   # kill (`tref` nil), and its reply does not go to the session.
   defp provide(request, from, tref, proc) do
-    proc = %{proc | open: Map.put(proc.open, from, {kind(request), tref})}
+    proc = %{proc | open: Map.put(proc.open, from, {ProviderRequest.kind(request), tref})}
 
     case proc.provider.request(request, from, proc.state) do
       {:ok, actions, state} -> act(actions, %{proc | state: state})
@@ -240,6 +243,7 @@ defmodule Helyx.Session.ProviderProcess do
     proc = %{
       proc
       | live: nil,
+        context?: false,
         running: nil,
         waiting: [],
         calls: MapSet.new(),
@@ -261,17 +265,20 @@ defmodule Helyx.Session.ProviderProcess do
     write_result({:tool_result, turn_id, call_id, {:error, text}}, make_ref(), nil, proc)
   end
 
-  # The provider replies to every tool result inside its callback, so the
-  # result is written before the next request (the interrupt, the next
-  # turn) reaches the provider. A reply that did not come stops the provider
-  # process.
-  defp write_result({:tool_result, turn_id, call_id, _result} = request, from, tref, proc) do
+  # The provider replies to every tool result and context inside its
+  # callback, so it is written before the next request (the interrupt, the
+  # next turn) reaches the provider. A reply that did not come stops the
+  # provider process.
+  defp write_result(request, from, tref, proc) do
     with {:ok, proc} <- provide(request, from, tref, proc) do
-      if Map.has_key?(proc.open, from),
-        do: {:stop, {:tool_result_not_answered, turn_id, call_id}},
-        else: {:ok, proc}
+      if Map.has_key?(proc.open, from), do: {:stop, not_answered(request)}, else: {:ok, proc}
     end
   end
+
+  defp not_answered({:tool_result, turn_id, call_id, _}),
+    do: {:tool_result_not_answered, turn_id, call_id}
+
+  defp not_answered({:context, turn_id, _}), do: {:context_not_answered, turn_id}
 
   # A request of the live turn puts its call id in `seen` before any check
   # that answers it, so an id that got any answer never runs later in the
@@ -309,11 +316,6 @@ defmodule Helyx.Session.ProviderProcess do
   # A turn that is not live never becomes live again.
   defp tool_request(turn_id, {:tool_request, call_id, _, _}, _rejection, proc),
     do: answer_tool(turn_id, call_id, "aborted", proc)
-
-  defp kind({kind, _turn_id, _id, _value}) when kind in [:steer, :tool_result], do: kind
-  defp kind({kind, _turn_id, _context}), do: kind
-  defp kind({kind, _turn_id}), do: kind
-  defp kind(close) when close in [:close, :idle_close], do: close
 
   # An improper list stops at its tail, as a bad return.
   defp act([], proc), do: {:ok, proc}
@@ -364,17 +366,20 @@ defmodule Helyx.Session.ProviderProcess do
     end
   end
 
+  # The provider asks for a fresh context of its live turn (C2, C3): the
+  # session gets the request after the events before it in the list.
+  defp action({:need_context, turn_id} = action, %{live: turn_id, context?: false} = proc)
+       when is_binary(turn_id),
+       do: sent(Stream.send_checked(proc.session, action), %{proc | context?: true})
+
   defp action({:reply, from, value} = action, %{open: open} = proc)
        when is_map_key(open, from) do
     {{kind, tref}, open} = Map.pop!(open, from)
 
-    if reply?(kind, value) do
-      if tref do
-        :timer.cancel(tref)
-        send(proc.session, {:provider_reply, from, kind, value})
-      end
+    if ProviderRequest.reply?(kind, value) do
+      if tref, do: ProviderRequest.answer(proc.session, from, tref, kind, value)
 
-      replied(kind, value, %{proc | open: open})
+      ProviderRequest.stop_after(kind, value) || {:ok, %{proc | open: open}}
     else
       {:stop, {:bad_action, action}}
     end
@@ -405,24 +410,6 @@ defmodule Helyx.Session.ProviderProcess do
   end
 
   defp action(action, _proc), do: {:stop, {:bad_action, action}}
-
-  defp reply?(_kind, :ok), do: true
-  defp reply?(:idle_close, :busy), do: true
-  defp reply?(:steer, :rejected), do: true
-  defp reply?(kind, {:error, _reason}) when kind in [:turn, :interrupt, :steer], do: true
-  defp reply?(_kind, _value), do: false
-
-  # After an error answer to a turn or an interrupt Helyx does not know the
-  # state of the program, so the loop ends: the port closes, and the
-  # watchdog stops the program with no end of input. An error answer to a
-  # steer leaves only that steer unknown, so the loop goes on. An idle
-  # close with `:ok` exited as a close; with `:busy` the program stays.
-  defp replied(kind, :ok, _proc) when kind in [:close, :idle_close], do: :closed
-
-  defp replied(kind, {:error, reason}, _proc) when kind != :steer,
-    do: {:stop, {:provider_error, kind, reason}}
-
-  defp replied(_kind, _answer, proc), do: {:ok, proc}
 
   defp sent(:ok, proc), do: {:ok, proc}
   defp sent({:error, reason}, _proc), do: {:stop, reason}
