@@ -56,3 +56,16 @@ Bounds sensor, against the round 1 commit: `bounds sensor: 1 candidate functions
 | Failure path | 0 defects. Note: this record still said that `provider_id?` stays. | The record is fixed. |
 
 No defect was reproduced, so the loop ends.
+
+## Round 3 (reduced, after the rebase)
+
+The branch was rebased onto `origin/master`, after #297, #305, #302, and #308 were merged. Three files had conflicts: `.credo.exs`, `tui/view_model.ex`, and `tui_test.exs`. In each of them, master's side was kept and the renames were applied again. contract_version stays 2, one increase shared with #297. `view_model.ex` has 400 lines. `server.ex` (1,182), `hands.ex` (411), `tui.ex` (841), `session.ex` (470), and `provider_process.ex` (429) are each at their `.credo.exs` count.
+
+The bounds sensor ran against `origin/master`. It flagged the same 5 functions as in round 1, at new line numbers: `session.ex:158 resume`, `server.ex:395` and `server.ex:407` `handle_info`, `claude_code.ex:251 request`, and `claude_code.ex:323 info`. Each of them changed only in names.
+
+| Axis | Findings | Resolution |
+|---|---|---|
+| Spec | 0 defects. Master's intent is kept in each conflicted file. No old name is left in the new master code, except the documented exceptions. | None. |
+| Failure path | 0 defects. | None. |
+
+No defect was reproduced, so the loop ends.
