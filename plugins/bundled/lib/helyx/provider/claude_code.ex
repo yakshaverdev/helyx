@@ -27,6 +27,7 @@ defmodule Helyx.Provider.ClaudeCode do
 
   alias Helyx.HarnessIO
   alias Helyx.Message
+  alias Helyx.Provider.ClaudeCode.Mcp
 
   # The program started the turn's line (`command_lifecycle` `started`).
   defguardp started?(turn) when turn.messages == nil
@@ -117,11 +118,6 @@ defmodule Helyx.Provider.ClaudeCode do
 
   @lost "No conversation found with session ID"
 
-  # The SDK MCP server of the Helyx tools (research note, "The SDK MCP
-  # server shapes"). The user's own MCP servers stay: the Helyx tools add
-  # to the harness tools.
-  @mcp_config ~s({"mcpServers":{"helyx":{"type":"sdk","name":"helyx"}}})
-
   @impl true
   def id, do: "claude-code"
 
@@ -204,18 +200,8 @@ defmodule Helyx.Provider.ClaudeCode do
   # The turn already ended.
   def request({:interrupt, _id}, from, state), do: {:ok, [{:reply, from, :ok}], state}
 
-  # The result of a Helyx tool call. A call that the program withdrew has
-  # no open request, and its result is not written.
-  def request({:tool_result, _id, call_id, {status, text}}, from, state) do
-    case Map.pop(state.calls, call_id) do
-      {{_turn_id, request_id, rpc_id}, calls} ->
-        tool_answer(state, request_id, rpc_id, status, text)
-        {:ok, [{:reply, from, :ok}], %{state | calls: calls}}
-
-      {nil, _calls} ->
-        {:ok, [{:reply, from, :ok}], state}
-    end
-  end
+  def request({:tool_result, _id, call_id, {status, text}}, from, state),
+    do: {:ok, [{:reply, from, :ok}], Mcp.result(state, call_id, status, text)}
 
   def request(:idle_close, from, %State{tasks: [], notified?: false, turn: nil} = state),
     do: request(:close, from, state)
@@ -270,7 +256,7 @@ defmodule Helyx.Provider.ClaudeCode do
     flags =
       ~w(--output-format stream-json --verbose --include-partial-messages
          --input-format stream-json --permission-mode bypassPermissions) ++
-        ["--model=" <> state.model, session, "--mcp-config", @mcp_config]
+        ["--model=" <> state.model, session, "--mcp-config", Mcp.config()]
 
     HarnessIO.launch(state.exe, flags, state.cwd, %{state | session_id: id})
   end
@@ -486,13 +472,10 @@ defmodule Helyx.Provider.ClaudeCode do
          state
        )
        when is_binary(request_id),
-       do: mcp(message, request_id, state)
+       do: Mcp.message(message, request_id, state)
 
-  # The program withdrew a control request; it waits for no answer
-  # (source only).
-  defp translate(%{"type" => "control_cancel_request", "request_id" => request_id}, state) do
-    cancel_call(state, fn {_turn_id, id, _rpc_id} -> id == request_id end)
-  end
+  defp translate(%{"type" => "control_cancel_request", "request_id" => request_id}, state),
+    do: Mcp.cancel_request(state, request_id)
 
   # An approval is allowed with its input unchanged, because the program
   # runs with `bypassPermissions`. With no `--permission-prompt-tool`, no
@@ -622,113 +605,6 @@ defmodule Helyx.Provider.ClaudeCode do
   defp release(_result, state), do: {[], state}
 
   defp emit(%State{turn: turn}, events), do: for(event <- events, do: {:event, turn.id, event})
-
-  # MCP
-
-  # A request has an `id`; a notification has none and gets the ack of the
-  # SDK, which the program waits for (research note). `initialize` can come
-  # again on one program, so it keeps no state.
-  defp mcp(%{"method" => "initialize", "id" => id} = message, request_id, state) do
-    version =
-      case message["params"] do
-        %{"protocolVersion" => version} when is_binary(version) -> version
-        _other -> "2025-11-25"
-      end
-
-    result = %{
-      protocolVersion: version,
-      capabilities: %{tools: %{}},
-      serverInfo: %{name: "helyx", version: "0.1.0"}
-    }
-
-    mcp_answer(state, request_id, %{id: id, result: result})
-  end
-
-  defp mcp(%{"method" => "tools/list", "id" => id}, request_id, state) do
-    tools =
-      for tool <- state.tools,
-          do: %{name: tool.name, description: tool.description, inputSchema: tool.parameters}
-
-    mcp_answer(state, request_id, %{id: id, result: %{tools: tools}})
-  end
-
-  # A call id of the turn is recorded in `used` before any check that
-  # answers it, so an id that got any answer never runs later in the turn:
-  # the provider's own errors do not reach the loop, which records the rest.
-  defp mcp(%{"method" => "tools/call", "id" => id} = message, request_id, state) do
-    params = message["params"]
-
-    case {state.turn, tool_use_id(params)} do
-      # A program turn can run before `started` of the turn's line.
-      {turn, _call_id} when turn == nil or not started?(turn) ->
-        tool_answer(state, request_id, id, :error, "no Helyx turn is running")
-
-      {_turn, nil} ->
-        tool_answer(state, request_id, id, :error, "the call does not map to a tool use")
-
-      {%Turn{id: turn_id, used: used}, call_id} ->
-        state = put_in(state.turn.used, MapSet.put(used, call_id))
-
-        with false <- MapSet.member?(used, call_id),
-             %{"name" => name} when is_binary(name) <- params,
-             args when is_map(args) <- Map.get(params, "arguments", %{}) do
-          calls = Map.put(state.calls, call_id, {turn_id, request_id, id})
-          {[{:event, turn_id, {:tool_request, call_id, name, args}}], %{state | calls: calls}}
-        else
-          true ->
-            tool_answer(state, request_id, id, :error, "the call id was used before in this turn")
-
-          _unmapped ->
-            tool_answer(state, request_id, id, :error, "the call does not map to a tool use")
-        end
-    end
-  end
-
-  defp mcp(
-         %{"method" => "notifications/cancelled", "params" => %{"requestId" => rpc_id}},
-         request_id,
-         state
-       ) do
-    mcp_answer(state, request_id, %{result: %{}})
-    cancel_call(state, fn {_turn_id, _request_id, id} -> id == rpc_id end)
-  end
-
-  defp mcp(%{"id" => id}, request_id, state) do
-    error = %{code: -32_601, message: "method not found"}
-    mcp_answer(state, request_id, %{id: id, error: error})
-  end
-
-  defp mcp(_notification, request_id, state),
-    do: mcp_answer(state, request_id, %{result: %{}})
-
-  defp tool_use_id(%{"_meta" => %{"claudecode/toolUseId" => call_id}}) when is_binary(call_id),
-    do: call_id
-
-  defp tool_use_id(_params), do: nil
-
-  defp tool_answer(state, request_id, rpc_id, status, text) do
-    result = %{content: [%{type: "text", text: text}], isError: status == :error}
-    mcp_answer(state, request_id, %{id: rpc_id, result: result})
-  end
-
-  # Withdraws the open call that `match?` finds by its `{turn_id,
-  # request_id, rpc_id}`, if any.
-  defp cancel_call(state, match?) do
-    case Enum.find(state.calls, fn {_call_id, call} -> match?.(call) end) do
-      nil ->
-        {[], state}
-
-      {call_id, {turn_id, _request_id, _rpc_id}} ->
-        {[{:cancel_tool, turn_id, call_id}], %{state | calls: Map.delete(state.calls, call_id)}}
-    end
-  end
-
-  defp mcp_answer(state, request_id, message) do
-    message = Map.put(message, :jsonrpc, "2.0")
-    response = %{subtype: "success", request_id: request_id, response: %{mcp_response: message}}
-    HarnessIO.write(state, line(%{type: "control_response", response: response}))
-    {[], state}
-  end
 
   # Only `queued_turn_count` exactly 0 ends the turn: a positive count keeps
   # it open, and any other value stops the program, because it does not
