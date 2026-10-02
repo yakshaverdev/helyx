@@ -49,7 +49,7 @@ defmodule Helyx.Session.Hands do
     # tests.
     @enforce_keys [:core, :cwd, :session, :tools]
 
-    # The default release deadline, the one source (`Helyx.Session.Server`
+    # The default release deadline, the one source (`Helyx.Session.Server.Stop`
     # derives its stop bounds from it).
     @release_ms 20_000
     def release_ms, do: @release_ms
