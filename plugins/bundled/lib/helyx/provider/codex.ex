@@ -1,112 +1,28 @@
 defmodule Helyx.Provider.Codex do
+  @moduledoc """
+  A connected harness provider (ADR 0007) that drives the unmodified Codex
+  program through `codex app-server`, with JSON-RPC lines over stdio. The
+  model ref is `codex/<model>`, where `<model>` is a model id of `codex`.
+
+  One program serves the session's provider process. `init/3` returns when
+  its thread is ready: `thread/resume` with `:resume_id`, or `thread/start`.
+  A `{:turn, ...}` is `turn/start`, a steer is `turn/steer`, and an
+  interrupt is `turn/interrupt`, or `{:error, :command_running}` or
+  `{:error, :agent_running}` when open work would outlive it. The Helyx
+  tools go to the thread as `dynamicTools`. A line that fails the shape
+  check, a turn that Helyx did not ask for, and the program's exit stop the
+  provider process.
+
+  The full contract is in `docs/features/long-lived-harness.md`, section
+  "Codex". The protocol facts are in `docs/research/codex-app-server.md`.
+  """
+
   # The most events held at once (see `in_order/2`).
   @held_max 10_000
 
-  alias Helyx.HarnessIO
-
-  @moduledoc """
-  A connected harness provider (ADR 0007) that drives the unmodified Codex
-  program through its app server, `codex app-server`, with JSON-RPC lines
-  over stdio. The model ref is `codex/<model>`, where `<model>` is a model
-  id of `codex`, such as `gpt-6-luna`.
-
-  One program serves the session's provider process
-  (`docs/features/long-lived-harness.md`, section "Codex"). It runs from
-  `PATH` in the session's working directory, in its own process group under
-  the watchdog of `Helyx.Watchdog`, with open input. `init/3`
-  holds its groups with `Helyx.Tool.hold/1`, moves the port's link to a
-  keeper (`Helyx.HarnessIO.keep_port/1`), sends `initialize`, and returns
-  when the thread is ready: `thread/resume` with `:resume_id`, or
-  `thread/start` when there is no id or the program has no such thread.
-  Threads run with the approval policy `never` and the sandbox
-  `danger-full-access`, the same trust as the bash tool, sent again on
-  every resume. The provider process does not trap exits.
-
-  Each `{:turn, ...}` sends `turn/start` with the prompt: the user messages
-  at the end of the context. The first turn of a fresh thread first gives
-  it the rest of the transcript with `thread/inject_items` and emits
-  `{:resume, id, cut}`. The replay keeps the newest messages
-  within #{HarnessIO.replay_max_bytes()} bytes of items, and it never starts
-  at a tool result. The answer is `:ok` at the `turn/start` result, which
-  carries the program's turn id, or at `turn/completed` when that comes
-  first.
-
-  A steer of the running turn is `turn/steer` with `expectedTurnId` and
-  `clientUserMessageId` set to the steer id; after `turn/completed` it
-  answers `:rejected` and sends nothing. A result answers `:ok`, the exact
-  error `no active turn to steer` (code -32600) answers `:rejected`, and
-  any other error answers `{:error, reason}`. The `userMessage` item whose
-  `clientId` is the steer id gives `{:user_message, steer_id, text}`.
-
-  `{:interrupt, ...}` on a turn with an open `commandExecution` item
-  answers `{:error, :command_running}` at once, because `turn/interrupt`
-  does not end a running command; the loop then ends, and the watchdog
-  TERMs the group, on which codex ends its commands. A child thread of the
-  turn with open work (a sub-agent) answers `{:error, :agent_running}` the
-  same way. Otherwise it sends
-  `turn/interrupt`, when the program's turn id is known and no answer to
-  an earlier `turn/interrupt` is due, and answers at `turn/completed`. An
-  interrupt of a turn that already ended answers `:ok`. A turn that ends
-  with an open tool item, whatever its status, stops the provider process,
-  so that no next turn starts while the item runs; the turn and a pending
-  interrupt then fail with the stop. So does a turn that ends while an
-  interrupt waits and a child thread of the turn has open work. A child
-  thread with open work at a normal end of its turn belongs to the program.
-  A child thread has open work from its `subAgentActivity` item until one
-  of kind `completed`, whatever turn id that item has. The child belongs to
-  the turn of its first item; a later item moves it only to the running
-  turn. A `turn/started` with a new id while no `turn/start` of the running turn is open, a
-  `turn/completed` of a turn whose id is not known, and an item of a turn
-  that is not the running one stop the provider process. Every line that
-  changes turn or thread state (`turn/started`, `turn/completed`,
-  `item/started`, `item/completed`, and the answers to the requests)
-  passes one check of its full shape before any state changes; `turn/completed` must have the status
-  `completed`, `failed`, or `interrupted`, and a tool item's
-  `item/completed` must keep its type and have a status that ends the item. An `item/started` of the
-  running turn with the id of an item that has a tool call already fails
-  the check. An answer is an error or a
-  result, never both, and a turn or item notification has no request id.
-  Each request has a new id, and an answer counts only for the request
-  with its id that has no answer yet; any other answer (a late or
-  duplicate one) is dropped. The `thread/resume` answer needs the asked
-  thread id or the exact lost-thread error, and the `thread/start` answer
-  a string thread id. Any other such line stops the
-  provider process with `{:malformed, method}` (in the handshake, the
-  connect fails with it). A turn or item line with no string `threadId`
-  stops it the same way. `:close` ends the input and answers `:ok` at the
-  exit. `:idle_close` does the same when no child thread has open work, and
-  answers `:busy` otherwise: no tool item outlives a turn.
-
-  A command or file change approval request is accepted; every other
-  request from the server gets a JSON-RPC error. Its stderr is dropped.
-
-  The Helyx tools add to the program's own tools. With any, `initialize`
-  asks for `experimentalApi`, and `thread/start` gives them as
-  `dynamicTools`. The thread keeps its tool set: the stored harness
-  session id is the thread id and, when the thread has Helyx tools, `#`
-  and a digest of their specs. A stored id whose digest is not the one of
-  the session's tools starts a new thread with the replay. An error answer
-  to `initialize`, or the exact error of `thread/start` that asks for
-  `experimentalApi`, starts the thread without the tools, and the first
-  turn of the program sends a notice. An `item/tool/call` of the running
-  turn whose `callId` is an open `dynamicToolCall` item gives
-  `{:tool_request, call_id, tool, arguments}`; the result goes back as one
-  `inputText` content item. A call with no running Helyx turn, one that
-  does not map, and a call id that the turn used before get an error
-  answer at once. The call id is recorded before that answer.
-
-  Assistant text and reasoning stream as deltas. A tool item (a command,
-  a file change, a tool of an MCP server, or another tool item type of
-  `docs/research/codex-app-server.md`) is a tool call
-  when it starts and a tool result when it completes, and a `message_end`
-  closes the assistant message before the result. A stdout line over
-  #{HarnessIO.line_max_bytes()} bytes, more than #{@held_max} held events,
-  and the program's exit stop the provider process. The protocol facts are
-  in `docs/research/codex-app-server.md`.
-  """
-
   @behaviour Helyx.Provider
 
+  alias Helyx.HarnessIO
   alias Helyx.Message
 
   defmodule Tools do
