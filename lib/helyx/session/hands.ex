@@ -21,8 +21,8 @@ defmodule Helyx.Session.Hands do
   deadlines are in `docs/features/tool-resource-release.md`.
 
   `start_provider/3` starts the provider process (ADR 0007).
-  `prepare/3` starts the prepare Task of a connected turn. Each starts
-  with an armed kill. When the provider process ends, the hands release
+  `prepare/3` starts the prepare Task of a connected turn, at its start
+  and at each context request. Each starts with an armed kill. When the provider process ends, the hands release
   its handles and send `{:provider_down, pid, reason}`. A prepare Task
   that dies gives `{:prepare_failed, turn_id, reason}`, unless a cancel
   request killed it. The deadlines and the reasons are in

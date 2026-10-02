@@ -38,3 +38,12 @@ The loop has no deadline of its own: each request has its armed kill. The flagge
 | Codex adversarial | Approve, no findings. | None. |
 
 No finding of round 1 reproduced a defect, so the loop ends after round 1. The fixes of round 1 are judgement and test findings: the move of `answer/5`, the rename to `stop_after/2`, a comment, and two tests. The simplify fixes came before the review agents ran. By the rules of `/ship`, they get no further round.
+
+## After the rebase onto master (#306, #298)
+
+A reduced round checked the moduledocs of `hands.ex`, `session.ex`, and `provider.ex` against the context request. Two texts were no longer true, and they are fixed:
+
+- `hands.ex`: the prepare Task runs at the start of a connected turn and also at each context request.
+- `session.ex`: a connected turn fails only when its first prepare Task fails. A failed context build goes to the provider as `{:context, turn_id, {:error, reason}}`.
+
+`provider.ex` was still true. The coordinator accepted hole 1. C4 and the Ownership row of `docs/features/one-provider-path.md` now state it. `hands.ex` is 396 lines and `session.ex` stays at 453.
