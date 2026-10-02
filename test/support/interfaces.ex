@@ -153,6 +153,8 @@ defmodule Helyx.Test.Provider do
   #   "steer"      one slow call; after any tool result, echoes the user
   #                message texts so far, so tests see which steers reached
   #                the call
+  #   "steer.<name>" "steer" with one call to the gate tool of the gate
+  #                <name> (`Helyx.Test.Gate`) in place of the slow call
   #   "big_int"    six calls with large integers; after the results, a done
   #                map with the large integer
   use Helyx.Provider.Loop
@@ -254,14 +256,11 @@ defmodule Helyx.Test.Provider do
     end
   end
 
-  def stream("steer", %Helyx.Context{messages: messages}, _opts) do
-    if any_result?(messages) do
-      users = for %{role: :user} = m <- messages, do: Helyx.Message.text(m)
-      {:ok, [{:text_delta, Enum.join(users, "|")}, @done]}
-    else
-      {:ok, slow_calls([{"1", 200}])}
-    end
-  end
+  def stream("steer", %Helyx.Context{messages: messages}, _opts),
+    do: steer_after(messages, slow_calls([{"1", 200}]))
+
+  def stream("steer." <> gate, %Helyx.Context{messages: messages}, _opts),
+    do: steer_after(messages, [call("1", "gate", %{"gate" => gate}), @tool_use])
 
   # Six calls: an integer of 400,000 digits nested in the arguments, a good
   # call whose struct has one more key with the large integer, the largest
@@ -393,7 +392,19 @@ defmodule Helyx.Test.Provider do
   end
 
   defp last_result?(messages), do: match?(%Helyx.Message{role: :tool_result}, List.last(messages))
+
   defp any_result?(messages), do: Enum.any?(messages, &(&1.role == :tool_result))
+
+  # `calls` before any tool result; after one, the user message texts so
+  # far, joined with "|", then done.
+  defp steer_after(messages, calls) do
+    if any_result?(messages) do
+      users = for %{role: :user} = m <- messages, do: Helyx.Message.text(m)
+      {:ok, [{:text_delta, Enum.join(users, "|")}, @done]}
+    else
+      {:ok, calls}
+    end
+  end
 
   # The tool result texts so far, joined with "|", then done.
   defp echo_results(messages) do
