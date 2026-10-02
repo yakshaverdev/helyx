@@ -31,7 +31,7 @@
                "lib/helyx/session/file.ex" =>
                  {643, "the session file format, reader, and writer"},
                "lib/helyx/session.ex" => {453, "the public session API with its contract docs"},
-               "lib/helyx/session/provider_process.ex" => {416, "the provider process loop"}
+               "lib/helyx/session/provider_process.ex" => {415, "the provider process loop"}
              }
            ]}
         ],
