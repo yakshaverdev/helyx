@@ -7,7 +7,7 @@ defmodule Helyx.Session.Server do
 
   alias Helyx.{Context, Message, ModelRef}
   alias Helyx.Session.{Hands, Id, ProviderProcess, Queues, Snapshot, Steers}
-  alias Helyx.Session.Server.{Messages, ProviderConn, Record, State}
+  alias Helyx.Session.Server.{Messages, ProviderConn, Record, State, Steering}
   alias Helyx.Session.{Transcript, Turn, Wait}
 
   import State, only: [ask: 4, drop_turn: 2, provider_pid: 1]
@@ -67,8 +67,8 @@ defmodule Helyx.Session.Server do
   # `:rejected` must not queue it again after the abort.
   def handle_call(:abort, from, %State{activity: %Wait{} = wait} = state) do
     {wait, effects} = Wait.abort(wait, from)
-    state = drop_queues(state)
-    {:noreply, progress(steer_effects(%{state | activity: wait}, effects))}
+    state = Steering.drop_queues(state)
+    {:noreply, progress(Steering.steer_effects(%{state | activity: wait}, effects))}
   end
 
   def handle_call({:prompt, _text}, _from, %State{activity: %Turn{}} = state) do
@@ -78,14 +78,15 @@ defmodule Helyx.Session.Server do
   # A steer on a `submitted` turn goes to the provider process; in
   # `preparing` and `submitting` it stays in the local queue (see "Turn
   # states" in `docs/features/long-lived-harness.md`). A sent steer counts
-  # in the 32 steers until its `user_message` and its answer (see `held/1`).
+  # in the 32 steers until its `user_message` and its answer (see
+  # `Steering.held/1`).
   def handle_call(
         {:steer, text},
         _from,
         %State{activity: %Turn{phase: :submitted}} = state
       ) do
-    if Queues.steer_room?(state.queues, held(state)),
-      do: {:reply, :ok, send_steer(text, state)},
+    if Queues.steer_room?(state.queues, Steering.held(state)),
+      do: {:reply, :ok, Steering.send_steer(text, state)},
       else: {:reply, {:error, :queue_full}, state}
   end
 
@@ -177,7 +178,7 @@ defmodule Helyx.Session.Server do
         %State{activity: %Turn{id: turn_id} = turn} = state
       ) do
     {steers, effects} = Steers.take(turn.steers, steer_id)
-    {:noreply, steer_effects(put_in(state.activity.steers, steers), effects)}
+    {:noreply, Steering.steer_effects(put_in(state.activity.steers, steers), effects)}
   end
 
   # The provider asks for a Helyx tool (see "Helyx tool calls" in
@@ -329,7 +330,7 @@ defmodule Helyx.Session.Server do
       ) do
     phase = if reply == :ok, do: :submitted, else: :submitting
     state = %{state | activity: %{turn | pending: nil, phase: phase}}
-    {:noreply, if(reply == :ok, do: send_local_steers(state), else: state)}
+    {:noreply, if(reply == :ok, do: Steering.send_local_steers(state), else: state)}
   end
 
   # The answer to a steer of the turn (see "Steer" in
@@ -339,7 +340,7 @@ defmodule Helyx.Session.Server do
         %State{activity: %Turn{} = turn} = state
       ) do
     {steers, effects} = Steers.answer(turn.steers, from, reply)
-    {:noreply, steer_effects(put_in(state.activity.steers, steers), effects)}
+    {:noreply, Steering.steer_effects(put_in(state.activity.steers, steers), effects)}
   end
 
   # The answer to a tool result or a context of the turn: it was written.
@@ -355,7 +356,7 @@ defmodule Helyx.Session.Server do
   # (see `Wait.answer/4`).
   def handle_info({:provider_reply, from, kind, reply}, %State{activity: %Wait{} = wait} = state) do
     {wait, effects} = Wait.answer(wait, kind, from, reply)
-    {:noreply, progress(steer_effects(%{state | activity: wait}, effects))}
+    {:noreply, progress(Steering.steer_effects(%{state | activity: wait}, effects))}
   end
 
   # The idle timer of the provider process. Only the current timer counts,
@@ -529,10 +530,10 @@ defmodule Helyx.Session.Server do
 
     state =
       state
-      |> steer_effects(effects)
+      |> Steering.steer_effects(effects)
       |> Messages.abort_open_calls()
       |> Messages.close_partial_message(:aborted, :aborted)
-      |> drop_queues()
+      |> Steering.drop_queues()
       |> emit(:agent_end, %{stop_reason: :aborted})
 
     wait = %{wait | hands: request, callers: callers, interrupt: Wait.interrupt(turn, state.conn)}
@@ -560,7 +561,7 @@ defmodule Helyx.Session.Server do
   defp wait_provider_down(%State{activity: wait} = state, pid) do
     conn = if provider_pid(state) == pid, do: nil, else: state.conn
     {wait, effects} = Wait.provider_down(wait, pid)
-    progress(steer_effects(%{state | conn: conn, activity: wait}, effects))
+    progress(Steering.steer_effects(%{state | conn: conn, activity: wait}, effects))
   end
 
   # With no turn and no wait, a provider process that ended is waited for
@@ -617,89 +618,21 @@ defmodule Helyx.Session.Server do
   defp open_turn(state, turn, data),
     do: %{state | activity: turn} |> emit(:agent_start, %{}) |> emit(:turn_start, data)
 
-  defp queue_reply(%State{} = state, key, text) do
-    held = if key == :steers, do: held(state), else: 0
-
-    case Queues.push(state.queues, key, text, held) do
-      {:ok, queues} -> {:reply, :ok, emit_queue(%{state | queues: queues})}
+  defp queue_reply(state, key, text) do
+    case Steering.queue(state, key, text) do
+      {:ok, state} -> {:reply, :ok, state}
       {:error, :queue_full} = error -> {:reply, error, state}
     end
   end
 
-  defp emit_queue(%State{} = state), do: emit(state, :queue_update, Queues.counts(state.queues))
-
-  defp drop_queues(%State{queues: queues} = state) when queues == %Queues{}, do: state
-  defp drop_queues(%State{} = state), do: emit_queue(%{state | queues: %Queues{}})
-
   # A normal turn end starts a new turn with everything still queued, steers
   # first. The drain event goes out between the turns, with a nil turn id.
   defp start_queued(%State{} = state) do
-    case Queues.drain(state.queues) do
-      {[], _queues} ->
-        state
-
-      {texts, queues} ->
-        %{state | queues: queues}
-        |> emit_queue()
-        |> begin_turn(texts)
+    case Steering.drain(state) do
+      {[], state} -> state
+      {texts, state} -> begin_turn(state, texts)
     end
   end
-
-  # The queued steers join the transcript as user messages, in order.
-  # Returns their texts.
-  defp append_steers(%State{} = state) do
-    case Queues.drain_steers(state.queues) do
-      {[], _queues} ->
-        {[], state}
-
-      {steers, queues} ->
-        state = Enum.reduce(steers, %{state | queues: queues}, &Messages.append_user(&2, &1))
-        {steers, emit_queue(state)}
-    end
-  end
-
-  # The steers of the turn that have no `user_message` or no answer yet,
-  # and the open steer requests of the wait after it: they count in the 32
-  # steers.
-  defp held(%State{activity: %{steers: steers}}), do: Steers.held(steers)
-  defp held(_state), do: 0
-
-  # Sends a steer to the provider process with its own id and the steer
-  # bound (see `Helyx.Session.ProviderProcess`).
-  defp send_steer(text, %State{activity: turn, conn: %ProviderConn{pid: pid}} = state) do
-    steer_id = Id.new()
-    from = ask(state, pid, {:steer, turn.id, steer_id, text}, :steer)
-    %{state | activity: %{turn | steers: Steers.sent(turn.steers, from, steer_id, text)}}
-  end
-
-  # At the `:ok` of the turn, the steers that waited in `submitting` go to
-  # the provider process, in order.
-  defp send_local_steers(%State{} = state) do
-    case Queues.drain_steers(state.queues) do
-      {[], _queues} ->
-        state
-
-      {steers, queues} ->
-        emit_queue(Enum.reduce(steers, %{state | queues: queues}, &send_steer/2))
-    end
-  end
-
-  # A confirmed rejection: the steer waits in the local queue for the next
-  # turn. Its place in the limit was held, so it fits.
-  defp requeue_steer(%State{} = state, text) do
-    {:ok, queues} = Queues.push(state.queues, :steers, text, held(state))
-    emit_queue(%{state | queues: queues})
-  end
-
-  # Applies the effects of the steer ledger (see `Helyx.Session.Steers`),
-  # in order.
-  defp steer_effects(state, effects), do: Enum.reduce(effects, state, &steer_effect/2)
-
-  defp steer_effect({:take, text}, state), do: Messages.take_steer(state, text)
-  defp steer_effect({:requeue, text}, state), do: requeue_steer(state, text)
-
-  defp steer_effect({:notice, turn_id, text}, state),
-    do: emit(state, turn_id, :steer_unconfirmed, %{text: text})
 
   # The provider process (started at the first turn) and a prepare Task of
   # the hands, which builds the context.
@@ -761,7 +694,7 @@ defmodule Helyx.Session.Server do
          } = state
        )
        when context != nil do
-    {steers, %State{activity: turn} = state} = append_steers(state)
+    {steers, %State{activity: turn} = state} = Steering.append_steers(state)
     context = %{context | messages: context.messages ++ Enum.map(steers, &Message.user/1)}
     from = ask(state, pid, {:turn, turn.id, context}, :turn)
     %{state | activity: %{turn | phase: :submitting, pending: from, context: nil}}
@@ -781,7 +714,7 @@ defmodule Helyx.Session.Server do
     state =
       state
       |> Messages.abort_open_calls()
-      |> steer_effects(effects)
+      |> Steering.steer_effects(effects)
       |> emit(:turn_end, %{message: assistant})
       |> emit(:agent_end, %{stop_reason: stop_reason})
 
@@ -812,10 +745,10 @@ defmodule Helyx.Session.Server do
 
     state =
       state
-      |> steer_effects(effects)
+      |> Steering.steer_effects(effects)
       |> Messages.abort_open_calls()
       |> Messages.close_partial_message(:error, reason)
-      |> drop_queues()
+      |> Steering.drop_queues()
       |> emit(:agent_end, %{stop_reason: :error, error: reason})
 
     hands = Hands.request_cancel(state.hands, turn.id)
