@@ -65,216 +65,166 @@ defmodule Helyx.Credo.WallClockUpperBound do
 
   @scopes [:test, :def, :defp, :setup, :setup_all]
 
+  # A comparison and its negation, for an assertion under `refute` or `not`.
+  @negate %{<: :>=, <=: :>, >: :<=, >=: :<, ==: :!=, ===: :!==, !=: :==, !==: :===}
+  @comparisons [:in | Map.keys(@negate)]
+
   @doc false
   @impl true
   def run(%SourceFile{} = source_file, params) do
     ctx = Context.build(source_file, params, __MODULE__)
     ast = SourceFile.ast(source_file)
-    time_fns = time_fns(ast)
-    {_ast, ctx} = Macro.prewalk(ast, ctx, &walk(&1, &2, time_fns))
-    ctx.issues
+    fns = time_fns(ast)
+
+    # Each test or function is one scope for the variables; a scope is not
+    # walked again below its node.
+    found =
+      for scope <- nodes(ast, &scope?/1),
+          scope?(scope),
+          taint = {tainted(scope, fns), fns},
+          node <- nodes(scope),
+          {trigger, meta, how, values, limit} <- bounds(node),
+          Enum.any?(values, &time?(&1, how, taint)) and not load_margin?(limit),
+          do: {trigger, meta}
+
+    Enum.reduce(found, ctx, &issue/2).issues
   end
 
-  # Each test or function is one scope for the variables; a scope is not
-  # walked again below its node.
-  defp walk({scope, _, [_ | _]} = ast, ctx, time_fns) when scope in @scopes do
-    taint = {tainted(ast, time_fns), time_fns}
+  defp scope?(node), do: match?({scope, _, [_ | _]} when scope in @scopes, node)
 
-    {_ast, ctx} =
-      Macro.prewalk(ast, ctx, fn
-        {op, _, [expr | _]} = node, ctx when op in [:assert, :refute] ->
-          {node, Enum.reduce(bounds(op, expr), ctx, &check(&1, &2, taint))}
-
-        {:assert_in_delta, meta, [value, expected, delta | _]} = node, ctx ->
-          {node, check({:assert_in_delta, meta, [value, expected], delta}, ctx, taint)}
-
-        node, ctx ->
-          {node, ctx}
+  # The nodes of `ast` in prewalk order. The walk does not go below a node
+  # that `stop?` accepts.
+  defp nodes(ast, stop? \\ fn _node -> false end) do
+    {_ast, acc} =
+      Macro.prewalk(ast, [], fn node, acc ->
+        {if(stop?.(node), do: :ok, else: node), [node | acc]}
       end)
 
-    {:ok, ctx}
+    Enum.reverse(acc)
   end
 
-  defp walk(ast, ctx, _time_fns), do: {ast, ctx}
+  # The nodes that can hold a value: a module attribute and all below it are
+  # left out, since the `{name, _, nil}` in `@name` looks like a variable.
+  defp value_nodes(ast) do
+    attribute? = &match?({:@, _, _}, &1)
+    ast |> nodes(attribute?) |> Enum.reject(attribute?)
+  end
 
   # The names of the local functions whose body holds a time value.
   defp time_fns(ast) do
-    {_ast, defs} =
-      Macro.prewalk(ast, [], fn
-        {kind, _, [_head, body]} = node, acc when kind in [:def, :defp] ->
-          {node, [{Credo.Code.Module.def_name(node), body} | acc]}
+    defs =
+      for {kind, _, [_head, body]} = node <- nodes(ast),
+          kind in [:def, :defp],
+          do: {Credo.Code.Module.def_name(node), body}
 
-        node, acc ->
-          {node, acc}
-      end)
-
-    fixpoint(MapSet.new(), fn fns ->
-      for {name, body} <- defs, time?(body, {MapSet.new(), fns}), into: fns, do: name
+    fixpoint(fn fns ->
+      for {name, body} <- defs, time?(body, :contains, {MapSet.new(), fns}), into: fns, do: name
     end)
   end
 
   # The names of the variables in the scope that hold a time value.
-  defp tainted(ast, time_fns) do
-    {_ast, binds} =
-      Macro.prewalk(ast, [], fn
-        # Only the elapsed time of `:timer.tc` is a time value.
-        {op, _, [{elapsed, _result}, {{:., _, [:timer, :tc]}, _, _} = expr]} = node, acc
-        when op in [:=, :<-] ->
-          {node, [{elapsed, expr} | acc]}
+  defp tainted(scope, fns) do
+    binds = for {op, _, [pattern, expr]} <- nodes(scope), op in [:=, :<-], do: bind(pattern, expr)
 
-        {op, _, [pattern, expr]} = node, acc when op in [:=, :<-] ->
-          {node, [{pattern, expr} | acc]}
-
-        node, acc ->
-          {node, acc}
-      end)
-
-    fixpoint(MapSet.new(), fn vars ->
+    fixpoint(fn vars ->
       for {pattern, expr} <- binds,
-          time?(expr, {vars, time_fns}),
-          var <- vars_in(pattern),
+          time?(expr, :contains, {vars, fns}),
+          {name, _, ctx} when is_atom(name) and is_atom(ctx) <- value_nodes(pattern),
           into: vars,
-          do: var
+          do: name
     end)
   end
 
-  defp fixpoint(set, step) do
+  # Only the elapsed time of `:timer.tc` is a time value.
+  defp bind({elapsed, _result}, {{:., _, [:timer, :tc]}, _, _} = expr), do: {elapsed, expr}
+  defp bind(pattern, expr), do: {pattern, expr}
+
+  defp fixpoint(set \\ MapSet.new(), step) do
     case step.(set) do
       ^set -> set
       bigger -> fixpoint(bigger, step)
     end
   end
 
-  defp vars_in(pattern) do
-    {_ast, vars} =
-      Macro.prewalk(pattern, [], fn
-        {:@, _, _}, acc -> {:ok, acc}
-        {name, _, ctx} = node, acc when is_atom(name) and is_atom(ctx) -> {node, [name | acc]}
-        node, acc -> {node, acc}
-      end)
+  # The upper bounds that an assertion puts on a value, as {trigger, meta,
+  # how a time value is found, the values, the bound}.
+  defp bounds({op, _, [expr | _]}) when op in [:assert, :refute], do: bounds(expr, op == :refute)
 
-    vars
+  defp bounds({:assert_in_delta, meta, [value, expected, delta | _]}),
+    do: [{:assert_in_delta, meta, :contains, [value, expected], delta}]
+
+  defp bounds(_node), do: []
+
+  defp bounds({neg, _, [expr]}, negated) when neg in [:not, :!], do: bounds(expr, not negated)
+
+  defp bounds({{:., _, [{:__aliases__, _, [:Kernel]}, cmp]}, meta, [left, right]}, negated)
+       when cmp in [:<, :<=, :>, :>=],
+       do: bounds({cmp, meta, [left, right]}, negated)
+
+  defp bounds({cmp, meta, [left, right]}, negated) when cmp in @comparisons do
+    # A negated `in` has no negation in the map, so it is no bound.
+    asserted = if negated, do: @negate[cmp], else: cmp
+    bound(asserted, cmp, meta, left, right) ++ bounds([left, right], negated)
   end
 
-  # The comparisons in an assertion that bound a value from above, as
-  # {operator, meta, the value, the bound}. A `not` turns the assertion
-  # around.
-  defp bounds(op, {neg, _, [expr]}) when neg in [:not, :!], do: bounds(turn(op), expr)
+  defp bounds({call, _, args}, negated) when is_list(args), do: bounds([call | args], negated)
+  defp bounds({left, right}, negated), do: bounds([left, right], negated)
+  defp bounds(list, negated) when is_list(list), do: Enum.flat_map(list, &bounds(&1, negated))
+  defp bounds(_leaf, _negated), do: []
 
-  defp bounds(op, {cmp, meta, [left, right]})
-       when cmp in [:<, :<=, :>, :>=, :in, :==, :===, :!=, :!==] do
-    bound(op, cmp, meta, left, right) ++ bounds(op, left) ++ bounds(op, right)
-  end
+  defp bound(op, cmp, meta, left, right) when op in [:<, :<=],
+    do: [{cmp, meta, :contains, [left], right}]
 
-  defp bounds(op, {{:., _, [{:__aliases__, _, [:Kernel]}, cmp]}, meta, [left, right]})
-       when cmp in [:<, :<=, :>, :>=] do
-    bounds(op, {cmp, meta, [left, right]})
-  end
+  defp bound(op, cmp, meta, left, right) when op in [:>, :>=],
+    do: [{cmp, meta, :contains, [right], left}]
 
-  defp bounds(op, {call, _, args}) when is_list(args), do: bounds(op, [call | args])
-  defp bounds(op, {left, right}), do: bounds(op, [left, right])
-  defp bounds(op, list) when is_list(list), do: Enum.flat_map(list, &bounds(op, &1))
-  defp bounds(_op, _leaf), do: []
-
-  defp turn(:assert), do: :refute
-  defp turn(:refute), do: :assert
-
-  defp bound(:assert, cmp, meta, left, right) when cmp in [:<, :<=],
-    do: [{cmp, meta, left, right}]
-
-  defp bound(:assert, cmp, meta, left, right) when cmp in [:>, :>=],
-    do: [{cmp, meta, right, left}]
-
-  defp bound(:assert, :in, meta, left, {:.., _, [_, hi]}), do: [{:in, meta, left, hi}]
-  defp bound(:assert, :in, meta, left, {:..//, _, [_, hi, _]}), do: [{:in, meta, left, hi}]
-
-  defp bound(:refute, cmp, meta, left, right) when cmp in [:>, :>=],
-    do: [{cmp, meta, left, right}]
-
-  defp bound(:refute, cmp, meta, left, right) when cmp in [:<, :<=],
-    do: [{cmp, meta, right, left}]
+  defp bound(:in, cmp, meta, left, {range, _, [_, hi | _]}) when range in [:.., :..//],
+    do: [{cmp, meta, :contains, [left], hi}]
 
   # An equality bounds both sides. Only a side that is a time value itself
   # counts, not a result that a time value flows into.
-  defp bound(:assert, cmp, meta, left, right) when cmp in [:==, :===],
-    do: [{:equal, cmp, meta, [left, right]}]
-
-  defp bound(:refute, cmp, meta, left, right) when cmp in [:!=, :!==],
-    do: [{:equal, cmp, meta, [left, right]}]
+  defp bound(op, cmp, meta, left, right) when op in [:==, :===],
+    do: [{cmp, meta, :itself, [left, right], [left, right]}]
 
   defp bound(_op, _cmp, _meta, _left, _right), do: []
 
-  defp check({:equal, cmp, meta, sides}, ctx, taint) do
-    if Enum.any?(sides, &time_itself?(&1, taint)) and not load_margin?(sides) do
-      issue(ctx, cmp, meta)
-    else
-      ctx
-    end
-  end
-
-  defp check({cmp, meta, value, limit}, ctx, taint) do
-    if time?(value, taint) and not load_margin?(limit) do
-      issue(ctx, cmp, meta)
-    else
-      ctx
-    end
-  end
-
-  defp issue(ctx, cmp, meta) do
+  defp issue({trigger, meta}, ctx) do
     put_issue(
       ctx,
       format_issue(ctx,
         message:
           "An upper bound of elapsed time fails under load. Assert order, " <>
             "or add a margin from a module attribute named `@load_...`.",
-        trigger: to_string(cmp),
+        trigger: to_string(trigger),
         line_no: meta[:line]
       )
     )
   end
 
-  # A time variable, a time call, a local time function, or a sum or a
-  # difference of one.
-  defp time_itself?({op, _, [left, right]}, taint) when op in [:+, :-],
-    do: time_itself?(left, taint) or time_itself?(right, taint)
+  # `:contains`: the value holds a time value anywhere. `:itself`: the value
+  # is a time value, or a sum or a difference of one.
+  defp time?(ast, :contains, taint), do: Enum.any?(value_nodes(ast), &time_node?(&1, taint))
 
-  defp time_itself?({name, _, ctx}, {vars, _fns}) when is_atom(ctx),
-    do: MapSet.member?(vars, name)
+  defp time?({op, _, [left, right]}, :itself, taint) when op in [:+, :-],
+    do: time?(left, :itself, taint) or time?(right, :itself, taint)
 
-  defp time_itself?({{:., _, [mod, fun]}, _, _}, _taint), do: time_call?(mod, fun)
+  defp time?(ast, :itself, taint), do: time_node?(ast, taint)
 
-  defp time_itself?({name, _, args}, {_vars, fns}) when is_list(args),
-    do: MapSet.member?(fns, name)
-
-  defp time_itself?(_ast, _taint), do: false
-
-  defp time?(ast, {vars, fns}) do
-    {_ast, found} =
-      Macro.prewalk(ast, false, fn
-        _node, true -> {:ok, true}
-        {:@, _, _}, false -> {:ok, false}
-        {{:., _, [mod, fun]}, _, _} = node, false -> {node, time_call?(mod, fun)}
-        {name, _, ctx} = node, false when is_atom(ctx) -> {node, MapSet.member?(vars, name)}
-        {name, _, args} = node, false when is_list(args) -> {node, MapSet.member?(fns, name)}
-        node, false -> {node, false}
-      end)
-
-    found
-  end
+  defp time_node?({{:., _, [mod, fun]}, _, _}, _taint), do: time_call?(mod, fun)
+  defp time_node?({name, _, ctx}, {vars, _fns}) when is_atom(ctx), do: name in vars
+  defp time_node?({name, _, args}, {_vars, fns}) when is_list(args), do: name in fns
+  defp time_node?(_ast, _taint), do: false
 
   defp time_call?({:__aliases__, _, mod}, fun), do: {mod, fun} in @time_calls
   defp time_call?(mod, fun), do: {mod, fun} in @time_calls
 
   defp load_margin?(ast) do
-    {_ast, found} =
-      Macro.prewalk(ast, false, fn
-        {:@, _, [{name, _, _}]} = node, acc when is_atom(name) ->
-          {node, acc or String.starts_with?(Atom.to_string(name), "load_")}
+    Enum.any?(nodes(ast), fn
+      {:@, _, [{name, _, _}]} when is_atom(name) ->
+        String.starts_with?(Atom.to_string(name), "load_")
 
-        node, acc ->
-          {node, acc}
-      end)
-
-    found
+      _node ->
+        false
+    end)
   end
 end
