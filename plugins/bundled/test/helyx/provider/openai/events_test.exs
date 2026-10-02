@@ -42,6 +42,29 @@ defmodule Helyx.Provider.OpenAI.EventsTest do
            ]
   end
 
+  # The chunk is the unit, not the call: the parser cannot tell which call
+  # a string or null index means, so a fragment could go to the wrong call
+  # or start a call with no id. The stream ends with no tool call.
+  for index <- [~s("0"), "null"] do
+    test "an index of #{index} ends the stream before any tool call" do
+      bad =
+        ~s({"choices":[{"delta":{"tool_calls":[{"index":#{unquote(index)},"id":"c2","function":{"arguments":"}"}}]}}]})
+
+      chunks = [
+        sse([
+          delta(%{
+            tool_calls: [%{index: 0, id: "c1", function: %{name: "bash", arguments: "{"}}]
+          }),
+          bad,
+          delta(%{}, "tool_calls"),
+          "[DONE]"
+        ])
+      ]
+
+      assert Enum.to_list(Events.events(chunks)) == [{:error, {:bad_chunk, bad}}]
+    end
+  end
+
   @not_object "the arguments are not a valid JSON object"
 
   test "bad JSON in one of two calls rejects that call alone" do
@@ -129,7 +152,8 @@ defmodule Helyx.Provider.OpenAI.EventsTest do
         ~s({"choices":[{"delta":{"tool_calls":[{"function":{"name":42}}]}}]}),
         ~s({"choices":[{"delta":{"tool_calls":[{"index":[1]}]}}]}),
         ~s({"choices":[{"delta":{"tool_calls":[{"index":-1}]}}]}),
-        ~s({"choices":[{"delta":{"tool_calls":[{"index":10001}]}}]})
+        ~s({"choices":[{"delta":{"tool_calls":[{"index":10001}]}}]}),
+        ~s({"choices":[{"delta":{"tool_calls":[{"index":1.0}]}}]})
       ] do
     test "a chunk with the wrong shape is an error event: #{chunk}" do
       assert Enum.to_list(Events.events([sse([unquote(chunk)])])) ==
@@ -267,18 +291,6 @@ defmodule Helyx.Provider.OpenAI.EventsTest do
             delta(%{
               tool_calls: [%{index: i, id: "c#{i}", function: %{name: name, arguments: ""}}]
             })
-
-    events = Enum.to_list(Events.events([sse(deltas ++ ["[DONE]"])]))
-
-    assert events == [{:error, {:tool_call_bytes_over_limit, @max_tool_call_bytes}}]
-  end
-
-  # A delta that only names an index still creates an entry; the entry and
-  # its key are charged, so index spraying is bounded too.
-  test "tool call entry keys count toward the limit" do
-    deltas =
-      for i <- 0..12,
-          do: delta(%{tool_calls: [%{index: "#{i}#{String.duplicate("k", 900_000)}"}]})
 
     events = Enum.to_list(Events.events([sse(deltas ++ ["[DONE]"])]))
 

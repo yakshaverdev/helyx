@@ -127,3 +127,4 @@ One row per ticket that `/orchestrate` merged. An escape is a confirmed Codex fi
 | 2026-10-03 | #330 | r1 (full): failure path 1 reproduced (lock freed early under dash), fixed; r2 (full, in-/ship Codex 1 high): 3 findings on one mechanism (a lock on the outer shell descriptor freed by a kill), mechanism replaced by a lock inside the namespace; r3 (full): 0 reproduced, Codex ceiling recorded | round 1: 0 | none needed |
 | 2026-10-03 | #322 | r1 (full, Codex approve): 0 reproduced; spec 1 doc drift fixed | round 1: 0 | none needed |
 | 2026-10-03 | #324 | r1 (full, Codex approve): 0 reproduced; simplify 3 and spec 2 doc fixes | round 1: 0 | none needed |
+| 2026-10-03 | #332 | r1 (full, in-/ship Codex approve): 1 reproduced (a null index took the implied index and lost a call), fixed by rejecting null; r2 (reduced): 0, 1 comment fixed | round 1: 0 | none needed |

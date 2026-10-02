@@ -94,8 +94,8 @@ defmodule Helyx.Provider.OpenAI.Events do
   # The one shape gate where a decoded chunk enters the parser. It rejects
   # every shape that could raise in the field walks below it or in the
   # iodata at flush, and a few degenerate ones that would not. A missing or
-  # null field is fine, and so is a wrong-typed leaf the parser only copies
-  # or drops, such as `content: 42`.
+  # null field is fine, except a null call index (`valid_call?`), and so is
+  # a wrong-typed leaf the parser only copies or drops, such as `content: 42`.
   defp valid_chunk?(%{} = chunk) do
     case chunk["choices"] do
       nil -> true
@@ -124,19 +124,20 @@ defmodule Helyx.Provider.OpenAI.Events do
 
   # Everything the call accumulator retains must be typed and bounded here,
   # or a peer could retain terms the byte budget cannot charge. An index is
-  # a map key, so it may also be an integer; the cap keeps a bignum from
+  # a map key: a string "0" and an integer 0 would make two entries for one
+  # call, so only an integer passes, and a null index is malformed too.
+  # Only a missing index gets the implied one. The cap keeps a bignum from
   # smuggling megabytes past the budget, and no wire sends indexes near it.
   @max_call_index 10_000
 
   defp valid_call?(%{} = call) do
-    valid_index?(call["index"]) and valid_leaf?(call["id"]) and valid_function?(call["function"])
+    valid_index?(Map.get(call, "index", 0)) and valid_leaf?(call["id"]) and
+      valid_function?(call["function"])
   end
 
   defp valid_call?(_call), do: false
 
-  defp valid_index?(nil), do: true
-  defp valid_index?(index) when is_integer(index), do: index in 0..@max_call_index
-  defp valid_index?(index), do: is_binary(index)
+  defp valid_index?(index), do: is_integer(index) and index in 0..@max_call_index
 
   defp valid_function?(nil), do: true
 
@@ -197,10 +198,10 @@ defmodule Helyx.Provider.OpenAI.Events do
     # it was split from alive, and chunk size has no bound of its own; the
     # copies release the chunk, so the charge tells the truth about what
     # the accumulator retains.
-    arguments = copy(function["arguments"] || "")
-    id = copy(delta["id"] || "")
-    name = copy(function["name"] || "")
-    index = copy(Map.get_lazy(delta, "index", fn -> implied_index(delta, acc.calls) end))
+    arguments = :binary.copy(function["arguments"] || "")
+    id = :binary.copy(delta["id"] || "")
+    name = :binary.copy(function["name"] || "")
+    index = Map.get_lazy(delta, "index", fn -> implied_index(delta, acc.calls) end)
 
     fragment = if arguments == "", do: 0, else: @call_fragment_bytes + byte_size(arguments)
 
@@ -228,18 +229,10 @@ defmodule Helyx.Provider.OpenAI.Events do
     %{acc | calls: calls, tool_bytes: tool_bytes}
   end
 
-  defp copy(bin) when is_binary(bin), do: :binary.copy(bin)
-  defp copy(term), do: term
-
-  # A new entry costs its key plus a flat charge for the entry itself.
+  # A new entry costs a flat charge.
   defp entry_bytes(calls, index) do
-    if Map.has_key?(calls, index), do: 0, else: @call_entry_bytes + bin_size(index)
+    if Map.has_key?(calls, index), do: 0, else: @call_entry_bytes
   end
-
-  # After the shape gate, ids and names are nil or binary; an index may
-  # also be an integer, which costs only its flat entry charge.
-  defp bin_size(bin) when is_binary(bin), do: byte_size(bin)
-  defp bin_size(_bin), do: 0
 
   defp implied_index(%{"id" => id}, calls) when is_binary(id), do: map_size(calls)
   defp implied_index(_delta, calls), do: max(map_size(calls) - 1, 0)
