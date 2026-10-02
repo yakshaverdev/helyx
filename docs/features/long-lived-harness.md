@@ -64,7 +64,7 @@ Every end of a connected turn that leaves Helyx work runs one path in the hands:
 
 1. Kill the turn's prepare Task and Helyx tool Tasks, and release their handles, as for a local turn today. The harness loop holds the waiting tool requests, not the hands (see "Built in #203").
 2. When the harness process lives: answer its open tool requests of the turn with `aborted` (abort steps 3 to 5), or stop it (below).
-3. The hands answer the session only after steps 1 and 2. Until then the session starts no turn, as during an abort today (`Helyx.Session` moduledoc). So a new turn never runs tools beside a command of the old turn.
+3. The hands answer the session only after steps 1 and 2. Until then the session starts no turn, as during an abort today (`docs/features/coding-agent.md`, section "Abort"). So a new turn never runs tools beside a command of the old turn.
 
 **Stop** is the path for a harness process that failed or did not answer. The armed kill of a deadline ends the Task, or the loop ends itself after it sends an answer that needs a stop: an error answer to `{:turn, ...}` or to `{:interrupt, ...}`. Neither waits for the session. Its port closes at once, and the watchdog sends TERM to the program group, waits the grace, and sends KILL. So the program stops on time, even while the session and the hands are busy. The hands release its handles when they handle its `:DOWN`. A stop never sends end of input first: Claude runs its queued turns after end of input (`claude-code-stream-json.md`, "End of file on stdin"), and a stop must not run them. **Close** (end of input, the exit, then the release) is only for a normal end: the session ends or the provider changes, with no turn running.
 

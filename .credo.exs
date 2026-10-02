@@ -29,14 +29,13 @@
                "plugins/bundled/lib/helyx/tui.ex" =>
                  {841, "the terminal loop, input, and rendering of the TUI"},
                "lib/helyx/session/file.ex" =>
-                 {655, "the session file format, reader, and writer"},
-               "lib/helyx/session.ex" => {470, "the public session API with its contract docs"},
+                 {643, "the session file format, reader, and writer"},
+               "lib/helyx/session.ex" => {436, "the public session API with its contract docs"},
                "plugins/bundled/lib/helyx/provider/openai.ex" =>
                  {485, "the OpenAI request and stream parser"},
                "plugins/bundled/lib/helyx/watchdog.ex" =>
                  {440, "the program watchdog and its process-group protocol"},
-               "lib/helyx/session/provider_process.ex" => {429, "the provider process loop"},
-               "lib/helyx/session/hands.ex" => {411, "the tool runner of a session"}
+               "lib/helyx/session/provider_process.ex" => {429, "the provider process loop"}
              }
            ]}
         ],
