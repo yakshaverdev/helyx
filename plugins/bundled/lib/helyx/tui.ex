@@ -65,8 +65,8 @@ if Helyx.TUI.Available.available?() do
     alias ExRatatui.Style
     alias ExRatatui.Text.{Line, Span}
     alias ExRatatui.Widgets.Paragraph
-    alias Helyx.{Message, Session}
-    alias Helyx.TUI.{Composer, ViewModel, Wrap}
+    alias Helyx.Session
+    alias Helyx.TUI.{Composer, Transcript, ViewModel}
 
     # The one version of the client contract (ADR 0006) that this client
     # supports. A snapshot of another version shows only a message.
@@ -74,7 +74,6 @@ if Helyx.TUI.Available.available?() do
 
     @dim %Style{modifiers: [:dim]}
     @bold %Style{modifiers: [:bold]}
-    @tool %Style{fg: :cyan}
     @bad %Style{fg: :red}
 
     # The status row under the composer. One screen of scroll is the rows
@@ -159,8 +158,7 @@ if Helyx.TUI.Available.available?() do
          session: session,
          vm: vm,
          composer: Composer.new(),
-         # nil follows the newest output. `{cell, row}` is the first row on
-         # the screen: a cell index and a row in that cell.
+         # A `Transcript.position()`; nil follows the newest output.
          scroll: nil,
          # The size seam of `ExRatatui.Server`, so a test sets the size.
          terminal_size_fn: Keyword.get(opts, :terminal_size_fn, &ExRatatui.terminal_size/0)
@@ -221,7 +219,7 @@ if Helyx.TUI.Available.available?() do
 
     def handle_event(%Key{code: code, kind: kind, modifiers: []}, state)
         when code in ["page_up", "page_down"] and kind in ["press", "repeat"] do
-      {:noreply, on_screen(state, &scroll(state, code, &1, &2))}
+      {:noreply, on_screen(state, &Transcript.page(state.vm, state.scroll, code, &1, &2))}
     end
 
     def handle_event(%Resize{}, state), do: {:noreply, settle(state)}
@@ -349,29 +347,13 @@ if Helyx.TUI.Available.available?() do
         ])
 
       [
-        {transcript_widget(state.vm, state.scroll, transcript), transcript},
+        {Transcript.widget(state.vm, state.scroll, transcript), transcript},
         {Composer.widget(state.composer), composer},
         {status_widget(state.vm, state.scroll), status}
       ]
     end
 
-    # Transcript
-
-    # A scrolled view starts at a cell and a row in it. The cells before the
-    # open message only grow in number, so new output does not move the view.
-    # No line cache: no operation wraps all cells. A frame wraps the cells it
-    # shows, and a key or `settle/1` wraps the cells it passes, a small count
-    # of screens. The feature doc has the measured costs and the exceptions.
-    # With no position the view follows the newest output: the first row is
-    # one screen above the end.
-    defp transcript_widget(vm, scroll, %Rect{width: width, height: height}) do
-      items = items(vm)
-      top = scroll || bottom(items, width, height)
-      %Paragraph{text: items |> rows_from(top, width) |> Enum.take(height)}
-    end
-
-    defp bottom(items, width, height),
-      do: back(Enum.reverse(items), {length(items), 0}, height, width)
+    # Scroll position
 
     # Sets the position from the width and the rows of the transcript. The
     # only reader of the terminal size. With no size there is no screen to
@@ -389,128 +371,12 @@ if Helyx.TUI.Available.available?() do
       end
     end
 
-    # Applies `hold/4` after a change that no scroll key makes: a session
-    # event, a client notice, or a new size.
+    # Applies `Transcript.hold/4` after a change that no scroll key makes: a
+    # session event, a client notice, or a new size.
     defp settle(%{scroll: nil} = state), do: state
 
     defp settle(state),
-      do: on_screen(state, &hold(items(state.vm), state.scroll, &1, &2))
-
-    # The one rule for a position: its row is in its cell, and the rows from
-    # it to the end are more than one screen. If not, the row moves into the
-    # cells that follow, or the result is nil. A new cell can take the index
-    # of the open message, and a wider screen makes a cell shorter. Every
-    # position in the state comes from here or is nil.
-    defp hold(items, {index, row}, width, height) do
-      top = items |> Enum.drop(index) |> forward({index, row}, width)
-      if length(items |> rows_from(top, width) |> Enum.take(height + 1)) > height, do: top
-    end
-
-    # One screen up or down from the first row on the screen.
-    defp scroll(%{scroll: nil}, "page_down", _width, _height), do: nil
-
-    defp scroll(%{vm: vm, scroll: {index, row}}, "page_down", width, height),
-      do: hold(items(vm), {index, row + height}, width, height)
-
-    defp scroll(%{vm: vm, scroll: scroll}, "page_up", width, height) do
-      items = items(vm)
-      {index, row} = scroll || bottom(items, width, height)
-      top = items |> Enum.take(index) |> Enum.reverse() |> back({index, row}, height, width)
-      hold(items, top, width, height)
-    end
-
-    # `before` is the cells above the position, nearest first.
-    defp back(_before, {index, row}, count, _width) when row >= count, do: {index, row - count}
-    defp back([], _position, _count, _width), do: {0, 0}
-
-    defp back([item | before], {index, row}, count, width),
-      do: back(before, {index - 1, length(item_lines(item, width))}, count - row, width)
-
-    # Moves a row number that is past its cell into the cells that follow.
-    defp forward([], {index, _row}, _width), do: {index, 0}
-
-    defp forward([item | rest], {index, row}, width) do
-      case length(item_lines(item, width)) do
-        rows when row >= rows -> forward(rest, {index + 1, row - rows}, width)
-        _rows -> {index, row}
-      end
-    end
-
-    # The row skip stays in the first cell: a row past that cell shows its last
-    # row. A frame can come before the check of a new width, and a skip over
-    # all rows would wrap every cell that the old row number passes.
-    defp rows_from(items, {index, row}, width) do
-      case Enum.drop(items, index) do
-        [] ->
-          []
-
-        [first | rest] ->
-          lines = item_lines(first, width)
-
-          lines
-          |> Enum.drop(min(row, length(lines) - 1))
-          |> Stream.concat(Stream.flat_map(rest, &item_lines(&1, width)))
-      end
-    end
-
-    @doc false
-    # Public for tests: the transcript as width-bounded `Line` structs.
-    def transcript_lines(%ViewModel{} = vm, width),
-      do: Enum.flat_map(items(vm), &item_lines(&1, width))
-
-    # The cells, and the open assistant message as the last one.
-    defp items(%ViewModel{streaming: nil, cells: cells}), do: cells
-
-    defp items(%ViewModel{streaming: streaming, cells: cells}),
-      do: cells ++ [%Message{role: :assistant, content: Enum.reverse(streaming)}]
-
-    defp item_lines(item, width), do: cell_lines(item, width) ++ [%Line{}]
-
-    defp cell_lines(%Message{role: :user} = message, width) do
-      styled_lines("› " <> Message.text(message), width, @bold)
-    end
-
-    defp cell_lines(%Message{role: :assistant} = message, width) do
-      block_lines(message.content, width)
-    end
-
-    defp cell_lines({:tool, _call, line, result}, width) do
-      styled_lines(line, width, @tool) ++ result_lines(result, width)
-    end
-
-    defp cell_lines({:notice, text}, width), do: styled_lines("✕ #{text}", width, @bad)
-
-    defp block_lines(blocks, width) do
-      Enum.flat_map(blocks, fn
-        %Message.Text{text: text} -> styled_lines(text, width, %Style{})
-        %Message.Thinking{thinking: text} -> styled_lines(text, width, @dim)
-        %Message.ToolCall{} -> []
-      end)
-    end
-
-    defp result_lines(nil, width), do: styled_lines("… running", width, @dim)
-
-    # Long tool output would drown the transcript; four lines tell the story.
-    defp result_lines(%Message{} = result, width) do
-      style = if result.is_error, do: @bad, else: @dim
-      lines = result |> Message.text() |> String.trim_trailing("\n") |> String.split("\n")
-
-      shown = Enum.flat_map(Enum.take(lines, 4), &styled_lines("  " <> &1, width, style))
-
-      case length(lines) - 4 do
-        hidden when hidden > 0 ->
-          plural = if hidden == 1, do: "line", else: "lines"
-          shown ++ styled_lines("  … #{hidden} more #{plural}", width, @dim)
-
-        _ ->
-          shown
-      end
-    end
-
-    # One styled Line per screen row.
-    defp styled_lines(text, width, style) do
-      for row <- Wrap.rows(text, width), do: %Line{spans: [%Span{content: row, style: style}]}
-    end
+      do: on_screen(state, &Transcript.hold(state.vm, state.scroll, &1, &2))
 
     # Status
 

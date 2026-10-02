@@ -44,7 +44,7 @@ defmodule Helyx.TUITest do
   alias Helyx.{Event, Message, Session}
   alias Helyx.Provider.Fake
   alias Helyx.TUI
-  alias Helyx.TUI.ViewModel
+  alias Helyx.TUI.{Transcript, ViewModel}
 
   setup do
     core = :"tui_core_#{System.unique_integer([:positive])}"
@@ -94,7 +94,11 @@ defmodule Helyx.TUITest do
   test "the optional-dependency guard matches what is loaded" do
     # ex_ratatui is always present in this project. The build without it is
     # checked with a scratch product, see ADR 0005.
-    for guard <- [Helyx.TUI.Available, Helyx.TUI.Composer.Available] do
+    for guard <- [
+          Helyx.TUI.Available,
+          Helyx.TUI.Composer.Available,
+          Helyx.TUI.Transcript.Available
+        ] do
       assert guard.available?()
       refute guard.__mix_recompile__?()
     end
@@ -424,7 +428,7 @@ defmodule Helyx.TUITest do
         | cells: [{:tool, call, ViewModel.call_line(call), result}]
       }
 
-      for line <- TUI.transcript_lines(vm, 80), span <- line.spans, do: span.content
+      for line <- Transcript.lines(vm, 80), span <- line.spans, do: span.content
     end
 
     for at_or_under <- ["1\n2\n3", "1\n2\n3\n4", "1\n2\n3\n4\n"] do
@@ -512,7 +516,7 @@ defmodule Helyx.TUITest do
         ]
     }
 
-    texts = for line <- TUI.transcript_lines(vm, 80), span <- line.spans, do: span.content
+    texts = for line <- Transcript.lines(vm, 80), span <- line.spans, do: span.content
 
     assert "› hi[31m there" in texts
     assert "  ]0;evil[2Jcol1  col2" in texts
@@ -527,7 +531,7 @@ defmodule Helyx.TUITest do
       | cells: [{:tool, call, ViewModel.call_line(call), csi}]
     }
 
-    texts = for line <- TUI.transcript_lines(vm, 80), span <- line.spans, do: span.content
+    texts = for line <- Transcript.lines(vm, 80), span <- line.spans, do: span.content
     assert "  a[2Jb" in texts
   end
 
@@ -544,7 +548,7 @@ defmodule Helyx.TUITest do
         streaming: [%Helyx.Message.Text{text: String.duplicate("s", 35)}]
     }
 
-    lines = TUI.transcript_lines(vm, 30)
+    lines = Transcript.lines(vm, 30)
     texts = for line <- lines, span <- line.spans, do: span.content
 
     assert "› hello world" in texts
@@ -565,7 +569,7 @@ defmodule Helyx.TUITest do
       | cells: [{:tool, call, ViewModel.call_line(call), nil}]
     }
 
-    texts = for line <- TUI.transcript_lines(vm, 80), span <- line.spans, do: span.content
+    texts = for line <- Transcript.lines(vm, 80), span <- line.spans, do: span.content
     {call_rows, ["… running"]} = Enum.split(texts, -1)
     call_line = Enum.join(call_rows)
 
@@ -707,7 +711,7 @@ defmodule Helyx.TUITest do
           end
         end)
 
-      wrap = {TUI, :item_lines, 2}
+      wrap = {Transcript, :item_lines, 2}
       :erlang.trace_pattern(wrap, true, [:local])
       :erlang.trace(render, true, [:call])
       send(render, {:go, self()})
@@ -717,7 +721,9 @@ defmodule Helyx.TUITest do
       assert_receive {:trace_delivered, ^render, ^ref}
       send(render, :stop)
       {:messages, messages} = Process.info(self(), :messages)
-      wraps = Enum.count(messages, &match?({:trace, ^render, :call, {TUI, :item_lines, _}}, &1))
+
+      wraps =
+        Enum.count(messages, &match?({:trace, ^render, :call, {Transcript, :item_lines, _}}, &1))
 
       # The last row of the first cell is its empty row, then the next cells.
       assert wraps in 1..5

@@ -6,14 +6,13 @@ defmodule Helyx.Test.TUIRender do
   alias ExRatatui.Layout.Rect
   alias ExRatatui.Text.{Line, Span}
   alias ExRatatui.Widgets.Paragraph
-  alias Helyx.TUI
-  alias Helyx.TUI.ViewModel
+  alias Helyx.TUI.{Transcript, ViewModel}
 
   @doc "The rows of `text` as one assistant message, wrapped at `width`."
   def wrapped(text, width) do
     message = %Helyx.Message{role: :assistant, content: [%Helyx.Message.Text{text: text}]}
     vm = %ViewModel{ViewModel.new("fake/m") | cells: [message]}
-    for line <- TUI.transcript_lines(vm, width), span <- line.spans, do: span.content
+    for line <- Transcript.lines(vm, width), span <- line.spans, do: span.content
   end
 
   @doc "The text ExRatatui draws for `rows` in an area of `width` columns."

@@ -424,7 +424,7 @@ defmodule Helyx.TUI.ViewModelTest do
       ])
 
     assert [%Message{content: [%Message.Text{text: "hi"}]}] = vm.cells
-    assert Helyx.TUI.transcript_lines(vm, 80) != []
+    assert Helyx.TUI.Transcript.lines(vm, 80) != []
   end
 
   test "a snapshot partial of a new role does not show" do
@@ -462,7 +462,7 @@ defmodule Helyx.TUI.ViewModelTest do
 
     assert [%Message{role: :user}, %Message{content: [%Message.Text{text: "done"}]}] = vm.cells
     assert vm.streaming == [%Message.Text{text: "more"}]
-    assert Helyx.TUI.transcript_lines(vm, 80) != []
+    assert Helyx.TUI.Transcript.lines(vm, 80) != []
   end
 
   test "a known type with a missing required field still crashes" do
