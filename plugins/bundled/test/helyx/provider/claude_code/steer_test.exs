@@ -46,7 +46,7 @@ defmodule Helyx.Provider.ClaudeCode.SteerTest do
                {:text_delta, "b"},
                {:done, _}
              ] =
-               actions |> events_of() |> Enum.reject(&match?({:harness_session, _, _}, &1))
+               actions |> events_of() |> Enum.reject(&match?({:resume, _, _}, &1))
     end
 
     defp failed(errors) do
@@ -67,7 +67,7 @@ defmodule Helyx.Provider.ClaudeCode.SteerTest do
 
       {_from, _actions, state} = steer(streaming(work))
       {actions, _state} = pump(ClaudeCode, state, [], &ended?/1)
-      actions |> events_of() |> Enum.reject(&match?({:harness_session, _, _}, &1))
+      actions |> events_of() |> Enum.reject(&match?({:resume, _, _}, &1))
     end
 
     # The error `result` before the steer's start is not the terminal; the
@@ -149,7 +149,7 @@ defmodule Helyx.Provider.ClaudeCode.SteerTest do
              ] = events_of(actions)
     end
 
-    test "with no start after a held result stops the harness process",
+    test "with no start after a held result stops the provider process",
          %{bin: bin, work: work} do
       turn(bin, 1, 1, begin() ++ [delta("a")])
       turn(bin, 1, 2, [result("a")])

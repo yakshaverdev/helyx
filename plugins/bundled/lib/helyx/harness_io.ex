@@ -103,7 +103,7 @@ defmodule Helyx.HarnessIO do
   def write(%{port: port}, data), do: Helyx.Watchdog.write(port, data)
 
   # The provider's `release/3`. See `Helyx.Watchdog.Group`. A delivery
-  # TERMs first too: the harness process can end (an error answer, a line
+  # TERMs first too: the provider process can end (an error answer, a line
   # over the cap, a stop) while the program still runs a command, and a
   # KILL would leave the command running.
   def release(handles, :deliver, deadline), do: release(handles, :cancel, deadline)
@@ -111,7 +111,7 @@ defmodule Helyx.HarnessIO do
   def release(handles, mode, deadline),
     do: Helyx.Watchdog.Group.release(handles, mode, deadline, grace_ms: @term_grace_ms)
 
-  # Sorts a message for the harness process: a chunk of the port's stdout
+  # Sorts a message for the provider process: a chunk of the port's stdout
   # gives `{:lines, events, state}` (see `lines/3`). The port's exit gives
   # `{:closed, from}` during a close, the end the close waits for, and
   # `{:exit, status_or_reason}` at any other time. A write to a watchdog

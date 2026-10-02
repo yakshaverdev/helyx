@@ -61,7 +61,7 @@ defmodule Helyx.CoreTest do
       end
     end
 
-    test "a provider with neither stream/3 nor harness_init/3 stops the start" do
+    test "a provider with neither stream/3 nor init/3 stops the start" do
       assert boot([Test.Provider, Test.NoTurn]) == {:error, {:invalid_provider, Test.NoTurn}}
     end
 

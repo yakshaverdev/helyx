@@ -38,24 +38,24 @@ defmodule Helyx.Session do
   Queues live in the session process only and are not persisted. Every
   change emits a `:queue_update` event.
 
-  A connected provider (one that exports `harness_init/3`, ADR 0002 and
+  A connected provider (one that exports `init/3`, ADR 0002 and
   ADR 0007) runs the whole turn and its own tools in its program, and
-  keeps one harness process for the session. The hands start it at
+  keeps one provider process for the session. The hands start it at
   the first connected turn, and again after it ends. Each turn builds its
   context in a prepare Task of the hands, then the session sends the turn
-  to the harness process, which sends the events back. An abort of a turn
-  that the harness got interrupts it there; the abort returns after the
-  answer, or after the harness process stopped. The harness reports each
+  to the provider process, which sends the events back. An abort of a turn
+  that the provider got interrupts it there; the abort returns after the
+  answer, or after the provider process stopped. The provider reports each
   completed assistant message and each tool result, which join the
   transcript as they arrive; a tool call with no result at the end of the
-  turn gets an `aborted` error result. The id of each fresh harness
+  turn gets an `aborted` error result. The id of each fresh program
   session is written to the session file and goes out as a
-  `:harness_session` event. A model or provider switch
-  closes the harness process before the next turn, and so does the end of
+  `:provider_session` event. A model or provider switch
+  closes the provider process before the next turn, and so does the end of
   the session. A steer reaches the running connected turn at most once: the
-  harness takes it at its next model call, and the user message joins the
-  transcript there. A steer that arrives before the harness has the turn
-  goes into the turn's prompt. A steer that the harness confirms it did
+  provider takes it at its next model call, and the user message joins the
+  transcript there. A steer that arrives before the provider has the turn
+  goes into the turn's prompt. A steer that the provider confirms it did
   not get waits for the next turn. A steer that Helyx cannot confirm is
   never sent again; a `:steer_unconfirmed` event carries its text.
 
@@ -165,7 +165,7 @@ defmodule Helyx.Session do
          {:ok, {ref, provider, turn_mode}} <- resolve_model(core, resumed.model) do
       # A crash can leave tool calls with no result. The session reads them
       # with `aborted` results and writes nothing (#269).
-      {transcript, harness_sessions} =
+      {transcript, resume_ids} =
         Transcript.abort_unanswered(resumed.messages, resumed.harness_sessions)
 
       start_child(
@@ -178,7 +178,7 @@ defmodule Helyx.Session do
           cwd: cwd,
           file: resumed.file,
           transcript: transcript,
-          harness_sessions: harness_sessions
+          resume_ids: resume_ids
         },
         tools
       )

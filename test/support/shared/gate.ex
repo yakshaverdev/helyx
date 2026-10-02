@@ -89,8 +89,8 @@ defmodule Helyx.Test.Gated.Connected do
   @moduledoc false
   # A connected provider; its id is the one of `Gated.Local`, so a Core
   # registers one of the two. The model is "<shape>.<gate>": the events of
-  # a turn stop at the gate until the test sends :go to the harness
-  # process. The harness process tells the gate only in its next message,
+  # a turn stop at the gate until the test sends :go to the provider
+  # process. The provider process tells the gate only in its next message,
   # after the events before the gate reached the session. Every other
   # request gets `:ok`.
   #
@@ -109,27 +109,27 @@ defmodule Helyx.Test.Gated.Connected do
   def id, do: "gated"
 
   @impl true
-  def harness_init(model, _tools, _opts) do
+  def init(model, _tools, _opts) do
     [shape, gate] = String.split(model, ".")
     {:ok, %{shape: shape, gate: gate, turn: nil, rest: []}}
   end
 
   @impl true
-  def harness_request({:turn, turn_id, _context}, from, state) do
+  def request({:turn, turn_id, _context}, from, state) do
     steps = steps(state.shape) ++ [{:done, %{stop_reason: :end_turn, usage: %{}}}]
     {actions, state} = run(steps, %{state | turn: turn_id})
     {:ok, [{:reply, from, :ok} | actions], state}
   end
 
-  def harness_request(_request, from, state), do: {:ok, [{:reply, from, :ok}], state}
+  def request(_request, from, state), do: {:ok, [{:reply, from, :ok}], state}
 
   @impl true
-  def harness_info(:gate, state) do
+  def info(:gate, state) do
     send(String.to_existing_atom(state.gate), {:waiting, self()})
     {:ok, [], state}
   end
 
-  def harness_info(:go, state) do
+  def info(:go, state) do
     {actions, state} = run(state.rest, state)
     {:ok, actions, state}
   end

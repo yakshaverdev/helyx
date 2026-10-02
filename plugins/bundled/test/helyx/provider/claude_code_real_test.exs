@@ -47,7 +47,7 @@ defmodule Helyx.Provider.ClaudeCodeRealTest do
 
     bg = wait_for_pid(Path.join(tmp, "bg.pid"))
     fg = wait_for_pid(Path.join(tmp, "fg.pid"))
-    %{pid: harness} = :sys.get_state(Session.pid(session)).harness
+    %{pid: harness} = :sys.get_state(Session.pid(session)).conn
 
     :ok = Session.abort(session)
 
@@ -61,7 +61,7 @@ defmodule Helyx.Provider.ClaudeCodeRealTest do
     # the program stay.
     assert gone_within?(fg)
     assert os_alive?(bg)
-    assert %{pid: ^harness} = :sys.get_state(Session.pid(session)).harness
+    assert %{pid: ^harness} = :sys.get_state(Session.pid(session)).conn
 
     GenServer.stop(Session.pid(session))
 

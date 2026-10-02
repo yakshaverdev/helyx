@@ -25,7 +25,7 @@ defmodule Helyx.Test.CodexFake do
   def done, do: %{status: "completed", aggregatedOutput: "out", exitCode: 0}
 
   # A tool item that never completes. It is not a command, because an open
-  # command at the turn's end stops the harness process.
+  # command at the turn's end stops the provider process.
   def search, do: %{type: "webSearch", id: "b", query: "x", status: "inProgress"}
 
   @fake """
@@ -170,7 +170,7 @@ defmodule Helyx.Test.CodexFake do
     collect_until(:agent_end)
   end
 
-  # The callbacks, driven in the test process as the harness loop drives
+  # The callbacks, driven in the test process as the provider loop drives
   # them, without Core. `Helyx.Tool.hold/1` does nothing here.
 
   # Shell code that writes `lines` to stdout in the background once the
@@ -185,11 +185,11 @@ defmodule Helyx.Test.CodexFake do
 
   def go(bin), do: File.write!(Path.join(bin, "go"), "")
 
-  def connect(work, opts \\ []), do: Codex.harness_init("m", [], [cwd: work] ++ opts)
+  def connect(work, opts \\ []), do: Codex.init("m", [], [cwd: work] ++ opts)
 
   def ask(state, request) do
     from = make_ref()
-    {:ok, actions, state} = Codex.harness_request(request, from, state)
+    {:ok, actions, state} = Codex.request(request, from, state)
     {from, actions, state}
   end
 

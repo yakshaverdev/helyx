@@ -13,7 +13,7 @@ defmodule Helyx.Core do
   start with `{:invalid_provider_id, plugin}` when one raises, throws, exits,
   or returns a value that is not a binary, with `{:invalid_provider,
   plugin}` when a provider exports neither `stream/3` nor
-  `harness_init/3`, and with
+  `init/3`, and with
   `{:duplicate_provider_id, id, [first, second]}` when two providers share
   an id.
 

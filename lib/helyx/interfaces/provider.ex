@@ -53,22 +53,22 @@ defmodule Helyx.Provider do
   ## A connected provider
 
   A provider is one of two kinds (ADR 0002, ADR 0007): it has a local turn
-  (`stream/3`), or it exports `harness_init/3` and is connected. A
+  (`stream/3`), or it exports `init/3` and is connected. A
   connected provider drives an agent program that runs the whole turn and
   its own tools (`docs/features/long-lived-harness.md`). Its program lives
   for the session, not for the turn, and the session does not call
   `stream/3`, which it need not export. The three callbacks run in one
-  harness process per session, a Task of the hands, so `Helyx.Tool.hold/1`
+  provider process per session, a Task of the hands, so `Helyx.Tool.hold/1`
   works in them and the provider implements `release/3`:
 
-    * `harness_init/3` starts the program. `tools` are the checked tool
+    * `init/3` starts the program. `tools` are the checked tool
       specs of session start; `opts` carry `:core`, `:session_id`, `:cwd`,
-      and `:harness_session_id`: the id of the harness session to resume,
+      and `:resume_id`: the id of the program session to resume,
       or nil for a fresh one. The session passes the id of the provider's
-      last `harness_session` only when the last assistant message of the
+      last `resume` event only when the last assistant message of the
       transcript came from this provider, so a lost id or a switch from
       another provider gives nil.
-    * `harness_request/3` gets a request from Core with its `from`. The
+    * `request/3` gets a request from Core with its `from`. The
       provider replies now or later with the action `{:reply, from,
       value}`: `{:turn, ...}` and `{:interrupt, ...}` take `:ok` or
       `{:error, reason}`, and `:close` takes `:ok` after the program exited.
@@ -83,11 +83,11 @@ defmodule Helyx.Provider do
       `{:user_message, steer_id, text}`, and the session appends the user
       message there.
       `:idle_close` comes after the session was idle with the program
-      for `harness_ms.idle` (`Helyx.Session.Server`): it takes `:ok` after
+      for `provider_ms.idle` (`Helyx.Session.Server`): it takes `:ok` after
       the program exited, as `:close`, or `:busy` when the program still
       runs work of its own, such as a background task. With `:busy` the
       program stays, and the session asks again after the next idle time.
-    * `harness_info/2` gets every other message of the harness process: the
+    * `info/2` gets every other message of the provider process: the
       port data, a monitor, a timer.
 
   Each callback returns actions: `{:event, turn_id, event}` with a stream
@@ -110,20 +110,20 @@ defmodule Helyx.Provider do
       session does not cut it. A text over `@max_tool_result_bytes`
       (`Helyx.Session.Stream`) fails the turn with
       `{:tool_result_too_large, bytes, limit}`
-    * `{:harness_session, id, cut}`: the program started a fresh harness
+    * `{:resume, id, cut}`: the program started a fresh program
       session with this id; `cut` is the number of transcript messages the
       provider left out of what it sent to it
 
   A malformed event, a reply of
   the wrong shape or for no open request, an error reply to `{:turn, ...}`
-  or `{:interrupt, ...}`, and a bad return stop the harness process: its
+  or `{:interrupt, ...}`, and a bad return stop the provider process: its
   port closes, and the watchdog stops the program. At most `@max_open`
-  (`Helyx.Session.Harness`) requests are open at once: Core answers one
+  (`Helyx.Session.ProviderProcess`) requests are open at once: Core answers one
   more with `{:error, :busy}` and does not give it to the provider.
 
-  A turn that the program starts by itself: the event `:program_turn`, with
+  A turn that the program starts by itself: the event `:turn_start`, with
   a new `turn_id` that the provider makes (an id that
-  `Helyx.Message.harness_id?/1` accepts, like a harness session id), opens
+  `Helyx.Message.provider_id?/1` accepts, like a resume id), opens
   it. With no turn and no wait the session
   opens a connected turn with that id and no user message, and emits
   `turn_start` with `%{origin: :program}`; the later events of the turn and
@@ -145,26 +145,26 @@ defmodule Helyx.Provider do
   call_id, {:ok | :error, text}}`, which takes `:ok` when it is written.
   The provider replies to every `tool_result` request inside the same
   callback, so the result is written before the next request; otherwise
-  the harness process stops with `{:tool_result_not_answered, turn_id,
+  the provider process stops with `{:tool_result_not_answered, turn_id,
   call_id}`. A `tool_result` request does not count in the `@max_open` open
   requests. Core also sends this request itself with an error result: `aborted` for
   each open tool request at the end of its turn, at the interrupt before
   the provider sees it, and for a request of a turn that is not running;
-  an error for a request over `@max_tools` (`Helyx.Session.Harness`), the
+  an error for a request over `@max_tools` (`Helyx.Session.ProviderProcess`), the
   limit of the requests of a turn, one running and the rest waiting,
   and for a call id that the turn used before. A second tool request
-  with the id of an open request is a bad action and stops the harness
+  with the id of an open request is a bad action and stops the provider
   process too. The action `{:cancel_tool, turn_id, call_id}` withdraws a
   request: the session stops its run, and a later result is dropped.
 
-  Every request has a deadline: a kill of the harness process armed with
+  Every request has a deadline: a kill of the provider process armed with
   the request at the OTP timer server (`:timer.kill_after/2`), which Core
   cancels when the provider replies. A connect has `connect_ms`
-  (`Helyx.Session.Hands`) from the start to the end of `harness_init/3`. A
+  (`Helyx.Session.Hands`) from the start to the end of `init/3`. A
   callback that blocks is killed at the bound, however busy the session
   is. The turn fails with
-  `:harness_timeout`. A crash fails it with `{:task_exit, reason}`, and a
-  stop with its reason. The next turn starts a new harness process.
+  `:provider_timeout`. A crash fails it with `{:task_exit, reason}`, and a
+  stop with its reason. The next turn starts a new provider process.
   """
 
   use Helyx.Interface, mode: :multi, required: true
@@ -180,10 +180,10 @@ defmodule Helyx.Provider do
           | {:error, term()}
           | {:message_end, stop_reason(), map()}
           | {:tool_result, String.t(), {:ok | :error, String.t()}}
-          | {:harness_session, String.t(), non_neg_integer()}
+          | {:resume, String.t(), non_neg_integer()}
           | {:user_message, String.t(), String.t()}
           | {:tool_request, call_id :: String.t(), name :: String.t(), arguments :: map()}
-          | :program_turn
+          | :turn_start
 
   @typedoc "The ref of a request from Core, for its reply."
   @type from :: reference()
@@ -219,12 +219,12 @@ defmodule Helyx.Provider do
 
   @doc """
   The turn of a provider plugin: `:connected` when it exports
-  `harness_init/3`, else `:local`. Core loaded the module at its start, so
+  `init/3`, else `:local`. Core loaded the module at its start, so
   the check calls no plugin code.
   """
   @spec turn(module()) :: :local | :connected
   def turn(provider),
-    do: if(function_exported?(provider, :harness_init, 3), do: :connected, else: :local)
+    do: if(function_exported?(provider, :init, 3), do: :connected, else: :local)
 
   @callback id() :: String.t()
   @callback release(
@@ -236,15 +236,15 @@ defmodule Helyx.Provider do
   @callback stream(model :: String.t(), context :: Helyx.Context.t(), opts :: keyword()) ::
               {:ok, Enumerable.t()} | {:error, term()}
 
-  @callback harness_init(model :: String.t(), tools :: [Helyx.Tool.spec()], opts :: keyword()) ::
+  @callback init(model :: String.t(), tools :: [Helyx.Tool.spec()], opts :: keyword()) ::
               {:ok, state :: term()} | {:error, term()}
-  @callback harness_request(request(), from(), state :: term()) :: {:ok, [action()], term()}
-  @callback harness_info(msg :: term(), state :: term()) ::
+  @callback request(request(), from(), state :: term()) :: {:ok, [action()], term()}
+  @callback info(msg :: term(), state :: term()) ::
               {:ok, [action()], term()} | {:stop, reason :: term(), term()}
 
   @optional_callbacks stream: 3,
                       release: 3,
-                      harness_init: 3,
-                      harness_request: 3,
-                      harness_info: 2
+                      init: 3,
+                      request: 3,
+                      info: 2
 end

@@ -35,7 +35,7 @@
                  {485, "the OpenAI request and stream parser"},
                "plugins/bundled/lib/helyx/watchdog.ex" =>
                  {440, "the program watchdog and its process-group protocol"},
-               "lib/helyx/session/harness.ex" => {429, "the connected harness loop"},
+               "lib/helyx/session/provider_process.ex" => {429, "the provider process loop"},
                "lib/helyx/session/hands.ex" => {411, "the tool runner of a session"}
              }
            ]}

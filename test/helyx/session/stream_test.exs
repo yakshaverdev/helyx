@@ -143,7 +143,7 @@ defmodule Helyx.Session.StreamTest do
   end
 
   test "a connected turn can send harness events" do
-    event = {:harness_session, "a", 0}
+    event = {:resume, "a", 0}
     assert {:send, ^event, nil} = SessionStream.check(event, true)
   end
 

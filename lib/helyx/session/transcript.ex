@@ -38,7 +38,7 @@ defmodule Helyx.Session.Transcript do
   # keeps the open call, so every resume adds the same results at the same
   # place. A transcript with no open calls is unchanged.
   #
-  # The file counts the messages before each harness session. That count
+  # The file counts the messages before each program session. That count
   # does not include the inserted results. The live session after a resume
   # counted them. So each count grows by the results inserted at or before
   # it. A count exactly at an insert point can also come from an entry
@@ -47,11 +47,11 @@ defmodule Helyx.Session.Transcript do
   # assistant message.
   @spec abort_unanswered([Message.t()], %{String.t() => {String.t(), non_neg_integer()}}) ::
           {[Message.t()], %{String.t() => {String.t(), non_neg_integer()}}}
-  def abort_unanswered(transcript, harness_sessions) do
+  def abort_unanswered(transcript, resume_ids) do
     {transcript, inserts} = insert_aborted(transcript, 0, [], [])
 
     shifted =
-      Map.new(harness_sessions, fn {provider, {id, before}} ->
+      Map.new(resume_ids, fn {provider, {id, before}} ->
         {provider, {id, before + Enum.count(inserts, &(&1 <= before))}}
       end)
 
@@ -91,23 +91,23 @@ defmodule Helyx.Session.Transcript do
     end)
   end
 
-  # The harness session to resume, or nil: the last harness session of
+  # The program session to resume, or nil: the last program session of
   # `provider` in `harness_sessions` (its id and the number of transcript
   # messages before it started), when the last assistant message of the
   # transcript came from this provider after that session started. A
-  # message of the harness session shows that it read the replay and the
-  # prompt. Otherwise the harness does not have the transcript's end
+  # message of the program session shows that it read the replay and the
+  # prompt. Otherwise the provider does not have the transcript's end
   # (another provider answered last, or a fresh session ended before its
   # first message), and a fresh session gets it from the provider.
   @spec resumable([Message.t()], %{String.t() => {String.t(), non_neg_integer()}}, String.t()) ::
           String.t() | nil
-  def resumable(transcript, harness_sessions, provider) do
-    with {:ok, {harness_id, before}} <- Map.fetch(harness_sessions, provider),
+  def resumable(transcript, resume_ids, provider) do
+    with {:ok, {resume_id, before}} <- Map.fetch(resume_ids, provider),
          # Enum.drop/2 shares the tail of the list; it does not copy it.
          %Message{model: model} when is_binary(model) <-
            last_assistant(Enum.drop(transcript, before)),
          {:ok, %ModelRef{provider: ^provider}} <- ModelRef.parse(model) do
-      harness_id
+      resume_id
     else
       _other -> nil
     end

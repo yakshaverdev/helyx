@@ -235,16 +235,16 @@ defmodule Helyx.Test.ClaudeCodeFake do
   def programs(bin), do: bin |> Path.join("count") |> File.read!() |> String.trim()
 
   # The provider without a session: the test process runs the callbacks,
-  # as the harness loop does.
+  # as the provider loop does.
 
   def harness(work, opts \\ []) do
-    {:ok, state} = ClaudeCode.harness_init("haiku", [], [cwd: work] ++ opts)
+    {:ok, state} = ClaudeCode.init("haiku", [], [cwd: work] ++ opts)
     state
   end
 
   def request(state, request) do
     from = make_ref()
-    {:ok, actions, state} = ClaudeCode.harness_request(request, from, state)
+    {:ok, actions, state} = ClaudeCode.request(request, from, state)
     {from, actions, state}
   end
 

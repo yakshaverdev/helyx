@@ -9,7 +9,7 @@ defmodule Helyx.Message do
   and flags a failed call with `is_error`.
 
   The module also defines the rules of the values in a message and in a
-  turn: the stop reason set, the harness session id, the JSON round trip,
+  turn: the stop reason set, the resume id, the JSON round trip,
   and the integer limit. It does not check input. Its callers are the
   boundaries: the session and its stream check input against these rules,
   and the session file reader checks the disk against them.
@@ -78,7 +78,7 @@ defmodule Helyx.Message do
   @doc """
   Builds the tool result message for a call from `{:ok, text}` or
   `{:error, text}`. The text is valid UTF-8: the hands repair the output of
-  a tool, and `Helyx.Session.Stream` repairs a harness result.
+  a tool, and `Helyx.Session.Stream` repairs a program result.
   """
   @spec tool_result(ToolCall.t(), {:ok, String.t()} | {:error, String.t()}) :: t()
   def tool_result(%ToolCall{} = call, {:ok, text}), do: tool_result(call, text, false)
@@ -100,8 +100,8 @@ defmodule Helyx.Message do
   # an older reader reads a new stop reason as no stop reason.
   @stop_reasons [:end_turn, :tool_use, :max_tokens]
 
-  # Claude Code's ids are UUIDs; 256 bytes leaves room for another harness.
-  @harness_id_max_bytes 256
+  # Claude Code's ids are UUIDs; 256 bytes leaves room for another program.
+  @provider_id_max_bytes 256
 
   @typedoc "A stop reason of a message end, one of `stop_reasons/0`."
   @type stop_reason ::
@@ -112,14 +112,14 @@ defmodule Helyx.Message do
   def stop_reasons, do: @stop_reasons
 
   @doc """
-  Whether `id` is a valid harness session id: valid UTF-8 of 1 to
-  #{@harness_id_max_bytes} bytes. The session checks an id from a provider
+  Whether `id` is a valid resume id: valid UTF-8 of 1 to
+  #{@provider_id_max_bytes} bytes. The session checks an id from a provider
   with it before the id is written, and a resume rejects a session file
   whose entry fails it.
   """
-  @spec harness_id?(term()) :: boolean()
-  def harness_id?(id),
-    do: is_binary(id) and byte_size(id) in 1..@harness_id_max_bytes and String.valid?(id)
+  @spec provider_id?(term()) :: boolean()
+  def provider_id?(id),
+    do: is_binary(id) and byte_size(id) in 1..@provider_id_max_bytes and String.valid?(id)
 
   @doc """
   Whether the value round-trips to the session file, which holds only JSON.

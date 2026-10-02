@@ -61,7 +61,7 @@ defmodule Helyx.Provider.Codex.TurnsTest do
     assert ["app-server"] = bin |> Path.join("args.1") |> File.read!() |> String.split()
 
     assert [%{provider: "codex", harness_session_id: tid(), lost: false, cut: 0}] =
-             of_type(events, :harness_session)
+             of_type(events, :provider_session)
 
     call = %Message.ToolCall{
       id: "exec-1",
@@ -108,7 +108,7 @@ defmodule Helyx.Provider.Codex.TurnsTest do
     assert [_, %{"params" => %{"threadId" => tid(), "input" => [%{"text" => "again"}]}}] =
              for(%{"method" => "turn/start"} = line <- stdin(bin, 1), do: line)
 
-    assert of_type(events, :harness_session) == []
+    assert of_type(events, :provider_session) == []
 
     assert [%Message{role: :user}, %Message{content: [%Message.Text{text: "Again."}]}] =
              messages(events)
@@ -175,7 +175,7 @@ defmodule Helyx.Provider.Codex.TurnsTest do
              request(bin, 2, "turn/start")
 
     assert [%{harness_session_id: fresh_tid(), lost: true, cut: 0}] =
-             of_type(events, :harness_session)
+             of_type(events, :provider_session)
 
     assert [%Message{role: :user}, %Message{content: [%Message.Text{text: "Fresh."}]}] =
              messages(events)
@@ -224,7 +224,7 @@ defmodule Helyx.Provider.Codex.TurnsTest do
     assert byte_size(long_id) == 64 and long_id != id
     assert mcp_result["call_id"] == long_id
     assert is_binary(read_result["output"])
-    assert [%{lost: false, cut: 0}] = of_type(events, :harness_session)
+    assert [%{lost: false, cut: 0}] = of_type(events, :provider_session)
   end
 
   test "a failed turn fails the turn with its error", %{bin: bin} = ctx do
@@ -263,7 +263,7 @@ defmodule Helyx.Provider.Codex.TurnsTest do
       ] ++ reply(tid(), "ok")
     )
 
-    assert [{:harness_session, tid(), 0}, {:text_delta, "ok"}, {:done, _}] =
+    assert [{:resume, tid(), 0}, {:text_delta, "ok"}, {:done, _}] =
              run_direct([Message.user("go")], work)
 
     answers =
@@ -324,7 +324,7 @@ defmodule Helyx.Provider.Codex.TurnsTest do
     item = %{type: "agentMessage", id: "msg_1", text: "Whole."}
     fresh(bin, 1, tid(), [completed(tid(), item), turn_end(tid(), "completed")])
 
-    assert [{:harness_session, tid(), 0}, {:text_delta, "Whole."}, {:done, _}] =
+    assert [{:resume, tid(), 0}, {:text_delta, "Whole."}, {:done, _}] =
              run_direct([Message.user("go")], work)
   end
 
@@ -344,7 +344,7 @@ defmodule Helyx.Provider.Codex.TurnsTest do
 
     # The result and the tail fit; the assistant message with the call does
     # not, so the replay starts after the result, at the tail.
-    assert [{:harness_session, tid(), 3} | _] = run_direct(history, work)
+    assert [{:resume, tid(), 3} | _] = run_direct(history, work)
 
     assert %{"params" => %{"items" => [%{"content" => [%{"text" => "tail"}]}]}} =
              request(bin, 1, "thread/inject_items")

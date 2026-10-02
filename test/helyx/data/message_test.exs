@@ -42,12 +42,12 @@ defmodule Helyx.MessageTest do
     assert Message.stop_reasons() == [:end_turn, :tool_use, :max_tokens]
   end
 
-  test "harness_id? accepts valid UTF-8 of 1 to 256 bytes" do
-    assert Message.harness_id?("a")
-    assert Message.harness_id?(String.duplicate("a", 256))
-    refute Message.harness_id?("")
-    refute Message.harness_id?(String.duplicate("a", 257))
-    refute Message.harness_id?(<<255>>)
+  test "provider_id? accepts valid UTF-8 of 1 to 256 bytes" do
+    assert Message.provider_id?("a")
+    assert Message.provider_id?(String.duplicate("a", 256))
+    refute Message.provider_id?("")
+    refute Message.provider_id?(String.duplicate("a", 257))
+    refute Message.provider_id?(<<255>>)
   end
 
   test "valid tool output passes through unchanged" do

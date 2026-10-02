@@ -103,7 +103,7 @@ defmodule Helyx.Provider.HarnessEpipeTest do
   end
 
   # The connected provider runs in a process that does not trap exits, as
-  # the harness process does not. Its turn writes the prompt, and the
+  # the provider process does not. Its turn writes the prompt, and the
   # port's `:DOWN` stops it.
   test "Claude Code: queued input to a dead watchdog stops the harness", %{bin: bin} do
     program(bin, "claude", "exec sleep 30\n")
@@ -113,11 +113,11 @@ defmodule Helyx.Provider.HarnessEpipeTest do
     {_pid, ref} =
       spawn_monitor(fn ->
         hands(stop)
-        {:ok, state} = ClaudeCode.harness_init("haiku", [], cwd: File.cwd!())
+        {:ok, state} = ClaudeCode.init("haiku", [], cwd: File.cwd!())
         context = %Helyx.Context{messages: [Message.user(@big)]}
 
         {:ok, _actions, state} =
-          ClaudeCode.harness_request({:turn, "t1", context}, make_ref(), state)
+          ClaudeCode.request({:turn, "t1", context}, make_ref(), state)
 
         send(test, {:stopped, stop_reason(ClaudeCode, state)})
       end)
@@ -130,7 +130,7 @@ defmodule Helyx.Provider.HarnessEpipeTest do
     end
   end
 
-  # The harness process does not trap exits: an abort while the start
+  # The provider process does not trap exits: an abort while the start
   # waits for the hold of the command group ends it at once.
   # The name holds no quote: `tmp_dir` puts it in the path that the fake
   # perl of `setup` holds unquoted.
@@ -142,7 +142,7 @@ defmodule Helyx.Provider.HarnessEpipeTest do
     {pid, ref} =
       spawn_monitor(fn ->
         Process.put(:helyx_hands, test)
-        ClaudeCode.harness_init("haiku", [], cwd: File.cwd!())
+        ClaudeCode.init("haiku", [], cwd: File.cwd!())
       end)
 
     assert_receive {:"$gen_call", from, {:hold, {:watchdog, _watchdog}}}
@@ -155,9 +155,9 @@ defmodule Helyx.Provider.HarnessEpipeTest do
 
   # The fake codex stops its watchdog, then answers `initialize` and
   # `thread/start`, so the `turn/start` line with the prompt waits in the
-  # queue. The harness process does not trap exits: the port's `:DOWN`
+  # queue. The provider process does not trap exits: the port's `:DOWN`
   # stops it.
-  test "Codex: a queued line to a dead watchdog stops the harness process", %{bin: bin} do
+  test "Codex: a queued line to a dead watchdog stops the provider process", %{bin: bin} do
     thread = %{id: "t1", cwd: "/work", model: "m", path: "/r.jsonl"}
     init = JSON.encode!(%{id: 1, result: %{userAgent: "fake", platformOs: "macos"}})
     start = JSON.encode!(%{id: 2, result: %{thread: thread}})
@@ -173,9 +173,9 @@ defmodule Helyx.Provider.HarnessEpipeTest do
     {pid, ref} =
       spawn_monitor(fn ->
         hands(fn _watchdog -> :ok end)
-        {:ok, state} = Codex.harness_init("m", [], cwd: File.cwd!())
+        {:ok, state} = Codex.init("m", [], cwd: File.cwd!())
         context = %Helyx.Context{messages: [Message.user(@big)]}
-        {:ok, _actions, state} = Codex.harness_request({:turn, "t", context}, make_ref(), state)
+        {:ok, _actions, state} = Codex.request({:turn, "t", context}, make_ref(), state)
         send(test, {:stop, stop_reason(Codex, state)})
       end)
 

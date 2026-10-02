@@ -62,7 +62,7 @@ defmodule Helyx.Provider.ClaudeCode.IdleCloseTest do
       {_from, actions, state} = request(harness(work), {:turn, "t1", context})
       {actions, state} = pump(ClaudeCode, state, actions, &ended?/1)
 
-      assert [{:harness_session, _, 0}, {:text_delta, "ok"}, {:done, _}] =
+      assert [{:resume, _, 0}, {:text_delta, "ok"}, {:done, _}] =
                for({:event, "t1", event} <- actions, do: event)
 
       state = settle(ClaudeCode, state, &(&1.tasks != []))
@@ -95,7 +95,7 @@ defmodule Helyx.Provider.ClaudeCode.IdleCloseTest do
     end
   end
 
-  test "a program that exits between turns ends the harness process; the next turn resumes",
+  test "a program that exits between turns ends the provider process; the next turn resumes",
        %{bin: bin} = ctx do
     turn(bin, 1, 1, reply("Hi."), "exit 3\n")
     turn(bin, 2, 1, reply("Back."))
@@ -103,13 +103,13 @@ defmodule Helyx.Provider.ClaudeCode.IdleCloseTest do
     session = start(ctx)
     pid = Session.pid(session)
     :erlang.trace(pid, true, [:receive])
-    [%{harness_session_id: id}] = of_type(prompt(session, "hello"), :harness_session)
+    [%{harness_session_id: id}] = of_type(prompt(session, "hello"), :provider_session)
     # A turn that starts before the session saw the end runs on the old
-    # harness process and fails (`docs/features/long-lived-harness.md`,
+    # provider process and fails (`docs/features/long-lived-harness.md`,
     # "Built in #199"). A later call returns after the session handled it.
-    assert_receive {:trace, ^pid, :receive, {:harness_down, _, _}}
+    assert_receive {:trace, ^pid, :receive, {:provider_down, _, _}}
     :erlang.trace(pid, false, [:receive])
-    assert :sys.get_state(pid).harness == nil
+    assert :sys.get_state(pid).conn == nil
     assert [%{stop_reason: :end_turn}] = of_type(prompt(session, "again"), :agent_end)
     assert "--resume=#{id}" in args(bin, 2)
   end
@@ -119,7 +119,7 @@ defmodule Helyx.Provider.ClaudeCode.IdleCloseTest do
 
     events = prompt(start(ctx), "go")
 
-    assert [%{stop_reason: :error, error: {:harness_stop, {:claude_code_exit, 3}}}] =
+    assert [%{stop_reason: :error, error: {:provider_stop, {:claude_code_exit, 3}}}] =
              of_type(events, :agent_end)
   end
 end

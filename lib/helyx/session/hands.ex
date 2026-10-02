@@ -34,16 +34,16 @@ defmodule Helyx.Session.Hands do
   answer arrives only when every release has returned or timed out. An
   unconfirmed handle is reported as an error.
 
-  `connect/3` starts the harness process of a connected provider (ADR
-  0007), and `prepare/3` the prepare Task of a connected turn. Both get a
-  kill armed at the OTP timer server as their first act (`:timer.kill_after/1`):
-  30,000 ms for the connect and 10,000 ms for the prepare. Their Core
-  code cancels it, so no timer of the hands enforces the bound. The harness
-  process has no turn: a cancel request leaves it. When it ends, the hands
-  release its handles and send `{:harness_down, pid, reason}`: `:closed`
-  after a close, `:harness_timeout` after an armed kill, `{:task_exit,
-  reason}` after a crash, and the loop's reason after a stop. A prepare Task
-  that dies gives `{:prepare_failed, turn_id, reason}`.
+  `start_provider/3` starts the provider process (ADR 0007), and `prepare/3`
+  the prepare Task of a connected turn. Both get a kill armed at the OTP
+  timer server as their first act (`:timer.kill_after/1`): 30,000 ms for
+  the connect and 10,000 ms for the prepare. Their Core code cancels it, so
+  no timer of the hands enforces the bound. The provider process has no
+  turn: a cancel request leaves it. When it ends, the hands release its
+  handles and send `{:provider_down, pid, reason}`: `:closed` after a close,
+  `:provider_timeout` after an armed kill, `{:task_exit, reason}` after a
+  crash, and the loop's reason after a stop. A prepare Task that dies gives
+  `{:prepare_failed, turn_id, reason}`.
   """
 
   use GenServer
@@ -60,7 +60,7 @@ defmodule Helyx.Session.Hands do
     # holds the handles per Task pid. `unconfirmed` holds the handles that
     # no release confirmed, per tool module. `release_ms` is the release
     # deadline of a delivery or a cancel, and `connect_ms` and `prepare_ms`
-    # the armed kills of a harness process and a prepare Task: seams for
+    # the armed kills of a provider process and a prepare Task: seams for
     # tests.
     @enforce_keys [:core, :cwd, :session, :tools]
 
@@ -94,31 +94,32 @@ defmodule Helyx.Session.Hands do
   @doc """
   Starts a tool call. The result is sent to the session. A cast, as
   `prepare/3`: a connected turn runs Helyx tools while the hands can
-  release its harness process.
+  release its provider process.
   """
   @spec run(pid(), String.t(), ToolCall.t()) :: :ok
   def run(hands, turn_id, %ToolCall{} = call), do: GenServer.cast(hands, {:run, turn_id, call})
 
   @doc """
-  Starts the harness process of a connected provider: `fun` gets the ref of
-  the armed connect kill and runs in a Task of the hands with no turn.
-  Returns its pid, or an error text while a handle is unconfirmed.
+  Starts the provider process: `fun` gets the ref of the armed connect kill
+  and runs in a Task of the hands with no turn. Returns its pid, or an error
+  text while a handle is unconfirmed.
   """
-  @spec connect(pid(), module(), (:timer.tref() -> term())) :: {:ok, pid()} | {:error, String.t()}
-  def connect(hands, provider, fun) when is_function(fun, 1),
-    do: GenServer.call(hands, {:connect, provider, fun})
+  @spec start_provider(pid(), module(), (:timer.tref() -> term())) ::
+          {:ok, pid()} | {:error, String.t()}
+  def start_provider(hands, provider, fun) when is_function(fun, 1),
+    do: GenServer.call(hands, {:start_provider, provider, fun})
 
   @doc """
   Starts the prepare Task of a connected turn: `fun` gets the ref of the
   armed kill. It holds no resource.
 
-  A cast, not a call: a harness process can end at any time, and the hands
+  A cast, not a call: a provider process can end at any time, and the hands
   release its handles in their own loop for up to the release deadline.
   The session must not wait for that. The hands start the Task when they
   take the message, after any earlier message of the session, so a later
-  `request_cancel/2` finds it. The other call of the session, `connect/3`,
-  comes only when it holds no harness process: a connect follows the
-  `:harness_down` of the last one.
+  `request_cancel/2` finds it. The other call of the session,
+  `start_provider/3`, comes only when it holds no provider process: it
+  follows the `:provider_down` of the last one.
   """
   @spec prepare(pid(), String.t(), (:timer.tref() -> term())) :: :ok
   def prepare(hands, turn_id, fun) when is_function(fun, 1),
@@ -151,11 +152,11 @@ defmodule Helyx.Session.Hands do
   end
 
   @impl true
-  def handle_call({:connect, provider, fun}, _from, state) do
+  def handle_call({:start_provider, provider, fun}, _from, state) do
     state = retry(state)
 
     if state.unconfirmed == %{} do
-      {pid, state} = spawn_armed(state, nil, :harness, provider, state.connect_ms, fun)
+      {pid, state} = spawn_armed(state, nil, :provider, provider, state.connect_ms, fun)
       {:reply, {:ok, pid}, state}
     else
       {:reply, {:error, refusal(state)}, state}
@@ -270,7 +271,7 @@ defmodule Helyx.Session.Hands do
     %{state | tasks: tasks, held: held, unconfirmed: add_handles(state.unconfirmed, left)}
   end
 
-  defp outcome(_turn_id, :harness, pid, result), do: {:harness_down, pid, harness_reason(result)}
+  defp outcome(_turn_id, :provider, pid, result), do: {:provider_down, pid, down_reason(result)}
 
   defp outcome(turn_id, :prepare, _pid, {:exit, reason}),
     do: {:prepare_failed, turn_id, Helyx.Message.cap_integers(reason)}
@@ -279,15 +280,14 @@ defmodule Helyx.Session.Hands do
   defp outcome(_turn_id, :prepare, _pid, _result), do: nil
   defp outcome(turn_id, id, _pid, result), do: outcome(turn_id, id, result)
 
-  # The reason of a harness process's end, capped like a crash reason. A
-  # kill is the armed kill of a request: the harness did not answer in
-  # time. An unconfirmed handle stays in `unconfirmed` and refuses the next
-  # connect.
-  defp harness_reason({:exit, :killed}), do: :harness_timeout
-  defp harness_reason({:exit, reason}), do: {:task_exit, Helyx.Message.cap_integers(reason)}
-  defp harness_reason({:error, _unconfirmed} = error), do: error
-  defp harness_reason({:stop, reason}), do: Helyx.Message.cap_integers(reason)
-  defp harness_reason(:closed), do: :closed
+  # The reason of a provider process's end, capped like a crash reason. A
+  # kill is the armed kill of a request that got no answer in time. An
+  # unconfirmed handle stays in `unconfirmed` and refuses the next start.
+  defp down_reason({:exit, :killed}), do: :provider_timeout
+  defp down_reason({:exit, reason}), do: {:task_exit, Helyx.Message.cap_integers(reason)}
+  defp down_reason({:error, _unconfirmed} = error), do: error
+  defp down_reason({:stop, reason}), do: Helyx.Message.cap_integers(reason)
+  defp down_reason(:closed), do: :closed
 
   defp outcome(turn_id, call_id, {:exit, reason}),
     do: outcome(turn_id, call_id, {:error, "tool crashed: #{inspect(reason)}"})
@@ -301,7 +301,7 @@ defmodule Helyx.Session.Hands do
     state
   end
 
-  # `id` is the call id, `:harness`, or `:prepare`; `module` is the tool or
+  # `id` is the call id, `:provider`, or `:prepare`; `module` is the tool or
   # the provider whose `release/3` gets the Task's handles.
   defp spawn_task(state, turn_id, id, module, fun) do
     hands = self()

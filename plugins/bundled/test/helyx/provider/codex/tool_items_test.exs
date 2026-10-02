@@ -10,7 +10,7 @@ defmodule Helyx.Provider.Codex.ToolItemsTest do
   @moduletag :tmp_dir
   setup {Helyx.Test.CodexFake, :setup_fake}
 
-  test "an open tool item of another type at the turn's end stops the harness process",
+  test "an open tool item of another type at the turn's end stops the provider process",
        %{bin: bin, work: work} do
     wait = %{
       type: "collabAgentToolCall",
@@ -28,7 +28,7 @@ defmodule Helyx.Provider.Codex.ToolItemsTest do
     assert {:stop, :tool_running} = List.last(run_direct([Message.user("go")], work))
   end
 
-  test "a completion of an open tool item with another type stops the harness process",
+  test "a completion of an open tool item with another type stops the provider process",
        %{bin: bin, work: work} do
     fresh(bin, 1, tid(), [
       started(tid(), command("exec-1", %{status: "inProgress"})),
@@ -52,7 +52,7 @@ defmodule Helyx.Provider.Codex.ToolItemsTest do
     ])
 
     assert [
-             {:harness_session, tid(), 0},
+             {:resume, tid(), 0},
              {:tool_call, %{id: "a"}},
              {:tool_call, %{id: "b"}},
              {:message_end, :tool_use, _},
@@ -95,7 +95,7 @@ defmodule Helyx.Provider.Codex.ToolItemsTest do
     fresh(bin, 2, tid(), lines)
 
     assert [
-             {:harness_session, tid(), 0},
+             {:resume, tid(), 0},
              {:tool_call, %{id: "a"}},
              {:tool_call, %{id: "b"}},
              {:message_end, :tool_use, _},
@@ -149,7 +149,7 @@ defmodule Helyx.Provider.Codex.ToolItemsTest do
     fresh(bin, 2, tid(), lines)
 
     assert [
-             {:harness_session, tid(), 0},
+             {:resume, tid(), 0},
              {:tool_call, %{id: "a"}},
              {:tool_call, %{id: "b"}},
              {:message_end, :tool_use, _},

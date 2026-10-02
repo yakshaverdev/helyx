@@ -112,14 +112,14 @@ defmodule Helyx.Provider.Codex.CommandsTest do
     :ok = Session.prompt(session, "wait")
 
     # The release returns before the session gets the end of the harness.
-    assert [%{stop_reason: :error, error: {:harness_stop, {:line_over_limit, 16_777_216}}}] =
+    assert [%{stop_reason: :error, error: {:provider_stop, {:line_over_limit, 16_777_216}}}] =
              of_type(collect_until(:agent_end), :agent_end)
 
     refute os_alive?(wait_for_pid(pidfile))
   end
 
   @tag :slow
-  test "a failed turn with an open command stops the harness process, and the next turn starts a new program",
+  test "a failed turn with an open command stops the provider process, and the next turn starts a new program",
        %{bin: bin} = ctx do
     pidfile = Path.join(bin, "pid")
     failed = Path.join(bin, "failed")
@@ -131,7 +131,7 @@ defmodule Helyx.Provider.Codex.CommandsTest do
 
     session = start(ctx)
 
-    assert [%{stop_reason: :error, error: {:harness_stop, :command_running}}] =
+    assert [%{stop_reason: :error, error: {:provider_stop, :command_running}}] =
              of_type(prompt(session, "go"), :agent_end)
 
     # The release ended the command before the next turn.
@@ -145,7 +145,7 @@ defmodule Helyx.Provider.Codex.CommandsTest do
   # A completion with a status that does not end the item.
   @not_ended %{status: "inProgress", exitCode: nil}
 
-  test "an inProgress completion of a command stops the harness process before the turn's end",
+  test "an inProgress completion of a command stops the provider process before the turn's end",
        %{bin: bin, work: work} do
     fresh(bin, 1, tid(), [
       started(tid(), command("exec-1", %{status: "inProgress"})),
@@ -155,10 +155,10 @@ defmodule Helyx.Provider.Codex.CommandsTest do
 
     # The stop drops the events of its chunk, the tool call included.
     assert run_direct([Message.user("go")], work) ==
-             [{:harness_session, tid(), 0}, {:stop, {:malformed, "item/completed"}}]
+             [{:resume, tid(), 0}, {:stop, {:malformed, "item/completed"}}]
   end
 
-  test "a command start with no turn id or no string id stops the harness process",
+  test "a command start with no turn id or no string id stops the provider process",
        %{bin: bin, work: work} do
     starts = [
       note(tid(), "item/started", %{item: command("exec-1", %{status: "inProgress"})}),
@@ -170,11 +170,11 @@ defmodule Helyx.Provider.Codex.CommandsTest do
       fresh(bin, n, tid(), [start, turn_end(tid(), "completed")])
 
       assert run_direct([Message.user("go")], work) ==
-               [{:harness_session, tid(), 0}, {:stop, {:malformed, "item/started"}}]
+               [{:resume, tid(), 0}, {:stop, {:malformed, "item/started"}}]
     end
   end
 
-  test "a second item/started of a tool item stops the harness process, and the call goes out once",
+  test "a second item/started of a tool item stops the provider process, and the call goes out once",
        %{bin: bin, work: work} do
     open = started(tid(), command("exec-1", %{status: "inProgress"}))
     done = completed(tid(), command("exec-1", done()))
@@ -220,7 +220,7 @@ defmodule Helyx.Provider.Codex.CommandsTest do
 
     session = start(ctx)
 
-    assert [%{stop_reason: :error, error: {:harness_stop, {:malformed, "item/completed"}}}] =
+    assert [%{stop_reason: :error, error: {:provider_stop, {:malformed, "item/completed"}}}] =
              of_type(prompt(session, "go"), :agent_end)
 
     refute os_alive?(wait_for_pid(pidfile))

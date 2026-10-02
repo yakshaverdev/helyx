@@ -1,5 +1,5 @@
 defmodule Helyx.Watchdog.HarnessStopTest do
-  # The stop path of a harness process end to end (#199,
+  # The stop path of a provider process end to end (#199,
   # `docs/features/long-lived-harness.md`, "Stop"): a program under the
   # watchdog, a session, and the hands. The stop sends no end of input: the
   # closed port makes the watchdog stop the program group.
@@ -23,7 +23,7 @@ defmodule Helyx.Watchdog.HarnessStopTest do
     {:ok, session} = Session.start(core, model: "wdh/#{model}")
     on_exit(fn -> File.rm(WatchdogHarness.pid_path(session.id)) end)
     pid = Session.pid(session)
-    :sys.replace_state(pid, &%{&1 | harness_ms: %{&1.harness_ms | turn: turn_ms}})
+    :sys.replace_state(pid, &%{&1 | provider_ms: %{&1.provider_ms | turn: turn_ms}})
     {:ok, _} = Session.subscribe(session)
     :ok = Session.prompt(session, "go")
     {session, wait_for_pid(WatchdogHarness.pid_path(session.id))}
@@ -33,14 +33,14 @@ defmodule Helyx.Watchdog.HarnessStopTest do
 
   test "a blocked callback: the armed kill stops the program group", %{core: core} do
     {_session, group} = start(core, "block", 300)
-    assert agent_end().data.error == :harness_timeout
+    assert agent_end().data.error == :provider_timeout
     assert group_gone_within?(group)
   end
 
   # The session stops its hands before it ends, so the hands never run a
   # release after the Core stopped its task supervisor (#219): they end with
   # `:shutdown`, not a crash, before the Core stop returns.
-  test "a Core stop with an idle harness process ends the program group", %{core: core} do
+  test "a Core stop with an idle provider process ends the program group", %{core: core} do
     {session, group} = start(core, "idle")
     assert agent_end().data.stop_reason == :end_turn
     hands = monitor_hands(session)
@@ -65,7 +65,7 @@ defmodule Helyx.Watchdog.HarnessStopTest do
   test "input over the watchdog stdin cap stops the program group and fails the turn",
        %{core: core} do
     {_session, group} = start(core, "flood")
-    assert {:harness_stop, _reason} = agent_end().data.error
+    assert {:provider_stop, _reason} = agent_end().data.error
     assert group_gone_within?(group)
   end
 end

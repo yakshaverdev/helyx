@@ -35,14 +35,14 @@ defmodule Helyx.Event do
       normal turn end goes out between turns, with a nil turn id
     * `:model_change` – `%{model: String.t()}`, the new `provider/model` ref;
       the switch belongs to no turn, so the turn id is always nil
-    * `:harness_session` – `%{provider: String.t(), harness_session_id:
-      String.t(), lost: boolean, cut: non_neg_integer}`: a harness turn
-      started a fresh harness session. `lost` is true when the turn asked
-      to resume another one that the harness no longer has; `cut` is the
+    * `:provider_session` – `%{provider: String.t(), harness_session_id:
+      String.t(), lost: boolean, cut: non_neg_integer}`: a connected turn
+      started a fresh program session. `lost` is true when the turn asked
+      to resume another one that the provider no longer has; `cut` is the
       number of transcript messages the provider left out of what it sent
       to the fresh session
     * `:steer_unconfirmed` – `%{text: String.t()}`: a steer of a connected
-      turn that Helyx cannot confirm the harness took, with its text. It
+      turn that Helyx cannot confirm the provider took, with its text. It
       goes out at the end of the turn, or after it when the answer comes
       late. Helyx does not send it again. The user can send it again.
     * `:notice` – `%{text: String.t()}`: a notice of the provider, or of
@@ -66,7 +66,7 @@ defmodule Helyx.Event do
           | :tool_execution_end
           | :queue_update
           | :model_change
-          | :harness_session
+          | :provider_session
           | :steer_unconfirmed
           | :notice
 

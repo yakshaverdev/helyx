@@ -25,7 +25,7 @@ defmodule Helyx.Provider.Codex.ConnectTest do
     {:ok, state} = connect(work)
     {from, [], state} = ask(state, :close)
     down = {:DOWN, make_ref(), :port, state.port, :epipe}
-    assert {:ok, [{:reply, ^from, :ok}], _state} = Codex.harness_info(down, state)
+    assert {:ok, [{:reply, ^from, :ok}], _state} = Codex.info(down, state)
   end
 
   test "an idle close after a turn ends the input and answers :ok at the exit",
@@ -69,7 +69,7 @@ defmodule Helyx.Provider.Codex.ConnectTest do
     for {{mode, method, answer}, n} <- Enum.with_index(cases, 1) do
       if method != "initialize", do: initialize(bin, n)
       on(bin, n, method, [j(Map.put(answer, :id, "@"))])
-      opts = if mode == :resume, do: [harness_session_id: tid()], else: []
+      opts = if mode == :resume, do: [resume_id: tid()], else: []
       assert {:error, {:malformed, ^method}} = connect(work, opts)
     end
   end
@@ -85,7 +85,7 @@ defmodule Helyx.Provider.Codex.ConnectTest do
       j(%{id: "@", result: %{thread: thread(tid())}})
     ])
 
-    assert {:ok, state} = connect(work, harness_session_id: tid())
+    assert {:ok, state} = connect(work, resume_id: tid())
     assert {state.thread, state.fresh?} == {tid(), false}
     assert request(bin, 1, "thread/start") == nil
   end
