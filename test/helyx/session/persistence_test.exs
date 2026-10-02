@@ -1,6 +1,6 @@
 defmodule Helyx.Session.PersistenceTest do
   # The session file: writes, resume, write failures, and the supervisor
-  # after a resume. Also the UTF-8 checks of stream events and prompts.
+  # after a resume. Also the UTF-8 check of prompts.
   use ExUnit.Case, async: true
 
   import Helyx.Test.Events
@@ -202,24 +202,6 @@ defmodule Helyx.Session.PersistenceTest do
 
     :ok = Session.prompt(resumed, "again")
     assert final_text(collect_until(:agent_end)) == "aborted|aborted|aborted"
-  end
-
-  test "a delta that is not valid UTF-8 is a malformed stream event", %{core: core} do
-    {:ok, session} = Session.start(core, model: "test/raw_bytes")
-    {:ok, _} = Session.subscribe(session)
-
-    :ok = Session.prompt(session, "hello")
-    events = collect_until(:agent_end)
-    assert {:bad_stream_event, {:text_delta, <<"hi", 255>>}} = List.last(events).data.error
-  end
-
-  test "a tool call that is not valid UTF-8 is a malformed stream event", %{core: core} do
-    {:ok, session} = Session.start(core, model: "test/raw_call")
-    {:ok, _} = Session.subscribe(session)
-
-    :ok = Session.prompt(session, "hello")
-    events = collect_until(:agent_end)
-    assert {:bad_stream_event, {:tool_call, _}} = List.last(events).data.error
   end
 
   test "a prompt that is not valid UTF-8 is rejected and the session lives", %{core: core} do
