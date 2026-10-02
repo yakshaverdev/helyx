@@ -21,7 +21,7 @@
            [
              allowed: %{
                "lib/helyx/session/server.ex" =>
-                 {1027, "the turn, tool, steer, and wait logic of one session process"},
+                 {826, "the turn, tool, steer, and wait logic of one session process"},
                "plugins/bundled/lib/helyx/provider/codex.ex" =>
                  {608,
                   "the Codex turn, thread, interrupt, and steer state over one JSON-RPC id table"},

@@ -70,7 +70,7 @@ Every end of a connected turn that leaves Helyx work runs one path in the hands:
 
 ### Deadlines
 
-A deadline must stop the harness process on time, whatever the session and the hands do. Both can be late: the hands wait in `Task.yield_many/2` during a release for up to `release_ms`, 20,000 ms (`lib/helyx/session/hands.ex`), and the session writes the session file synchronously (`append_message/2` in `lib/helyx/session/server.ex`) and can have about 10,000 waiting messages in its mailbox before the stream fails (#197). So no timer message in either process can enforce a deadline.
+A deadline must stop the harness process on time, whatever the session and the hands do. Both can be late: the hands wait in `Task.yield_many/2` during a release for up to `release_ms`, 20,000 ms (`lib/helyx/session/hands.ex`), and the session writes the session file synchronously (`append_message/2` in `lib/helyx/session/server/record.ex`) and can have about 10,000 waiting messages in its mailbox before the stream fails (#197). So no timer message in either process can enforce a deadline.
 
 The rule: **the kill is armed with the request, and the harness loop disarms it with the reply.**
 

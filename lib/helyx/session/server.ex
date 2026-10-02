@@ -5,78 +5,13 @@ defmodule Helyx.Session.Server do
 
   require Logger
 
-  alias Helyx.{Context, Event, Message, ModelRef}
-  alias Helyx.Session.{Hands, Id, ProviderProcess, ProviderRequest, Queues, Snapshot, Steers}
+  alias Helyx.{Context, Message, ModelRef}
+  alias Helyx.Session.{Hands, Id, ProviderProcess, Queues, Snapshot, Steers}
+  alias Helyx.Session.Server.{Messages, ProviderConn, Record, State}
   alias Helyx.Session.{Transcript, Turn, Wait}
 
-  defmodule State do
-    @moduledoc false
-    @enforce_keys [:id, :core, :model, :provider, :cwd]
-
-    # The armed kill of a turn, interrupt, steer, tool result, tool start,
-    # or context request: the loop writes one stdio line and replies, well
-    # under 10 ms.
-    @provider_reply_ms 2_000
-    # The armed kill of a close: end of input, then the exit.
-    @provider_close_ms 5_000
-    def provider_close_ms, do: @provider_close_ms
-
-    defstruct [
-      :id,
-      # A new id for each start of the process, a resume too (`Helyx.Event`).
-      :instance_id,
-      :core,
-      :model,
-      :provider,
-      :cwd,
-      :hands,
-      :file,
-      # The registered ModelContext and Compaction plugins, or nil for none.
-      :model_context,
-      :compaction,
-      # The checked tool specs of `Helyx.Tool.specs/1` at session start,
-      # which every provider call uses, and the tool module by name for the
-      # hands.
-      tools: [],
-      tool_modules: %{},
-      transcript: [],
-      seq: 0,
-      # Each subscriber pid and the session's monitor of it (session-subscribers.md).
-      subscribers: %{},
-      # `:idle`, the turn in progress (a `%Turn{}`), or the wait before
-      # the next turn can start (a `%Wait{}`, see `Helyx.Session.Wait`).
-      activity: :idle,
-      queues: %Queues{},
-      # The last resume id per provider id, with the transcript length then.
-      resume_ids: %{},
-      # The provider process (ADR 0007), a `%ProviderConn{}`, or nil.
-      conn: nil,
-      # The bounds of the requests to the provider process, in ms: the armed
-      # kills (see `Helyx.Session.ProviderProcess`), and `idle`, the time with
-      # no turn after which the session sends `:idle_close`. A test seam.
-      provider_ms: %{
-        turn: @provider_reply_ms,
-        interrupt: @provider_reply_ms,
-        steer: @provider_reply_ms,
-        tool_result: @provider_reply_ms,
-        context: @provider_reply_ms,
-        tool_start: @provider_reply_ms,
-        close: @provider_close_ms,
-        idle: 1_800_000
-      },
-      # The current idle timer (`:erlang.start_timer/3`, see `arm_idle/1`),
-      # or nil.
-      idle: nil
-    ]
-  end
-
-  defmodule ProviderConn do
-    @moduledoc false
-    # The provider process of the session: its pid, the model it
-    # runs, and whether `init/3` returned (`{:provider_ready, pid}`).
-    @enforce_keys [:pid, :model]
-    defstruct [:pid, :model, ready: false]
-  end
+  import State, only: [ask: 4, provider_pid: 1]
+  import Record, only: [emit: 3, emit: 4]
 
   # The stop of a session (`terminate/2`): the close of an idle provider
   # process (`State.provider_close_ms/0`, armed kill), then the stop of the
@@ -187,15 +122,14 @@ defmodule Helyx.Session.Server do
   # The entry and the snapshot in one message, so every later event reaches
   # the caller. A repeated subscribe keeps the entry and its monitor.
   def handle_call({:subscribe, pid}, from, %State{} = state) do
-    subscribers = Map.put_new_lazy(state.subscribers, pid, fn -> Process.monitor(pid) end)
-    handle_call(:snapshot, from, %{state | subscribers: subscribers})
+    handle_call(:snapshot, from, Record.subscribe(state, pid))
   end
 
   def handle_call({:set_model, %ModelRef{} = ref, provider}, _from, %State{} = state) do
     model = ModelRef.to_string(ref)
-    state = persist(state, &Helyx.Session.File.append_model_change(&1, model))
+    state = Record.persist(state, &Helyx.Session.File.append_model_change(&1, model))
     state = %{state | model: ref, provider: provider}
-    {:reply, :ok, settle(do_emit(state, nil, :model_change, %{model: model}))}
+    {:reply, :ok, settle(emit(state, nil, :model_change, %{model: model}))}
   end
 
   def handle_call(:abort, _from, %State{activity: :idle} = state), do: {:reply, :ok, state}
@@ -211,7 +145,7 @@ defmodule Helyx.Session.Server do
         {:stream_event, turn_id, {:message_end, stop_reason, usage}},
         %State{activity: %Turn{id: turn_id}} = state
       ) do
-    {state, _assistant, calls} = close_assistant(state, stop_reason, usage)
+    {state, _assistant, calls} = Messages.close_assistant(state, stop_reason, usage)
     state = Enum.reduce(calls, state, &emit(&2, :tool_execution_start, %{tool_call: &1}))
     %State{activity: turn} = state
     {:noreply, %{state | activity: %{turn | partial: nil, calls: calls}}}
@@ -231,7 +165,7 @@ defmodule Helyx.Session.Server do
 
       call ->
         state = %{state | activity: %{turn | calls: List.delete(turn.calls, call)}}
-        {:noreply, record_result(call, result, state)}
+        {:noreply, Messages.record_result(call, result, state)}
     end
   end
 
@@ -294,7 +228,7 @@ defmodule Helyx.Session.Server do
     # The provider id is the prefix of the turn's model ref: `find/2`
     # matched it, so the session runs no plugin code for it.
     provider = turn.model.provider
-    state = persist(state, &Helyx.Session.File.append_harness_session(&1, provider, id))
+    state = Record.persist(state, &Helyx.Session.File.append_harness_session(&1, provider, id))
     sessions = Map.put(state.resume_ids, provider, {id, length(state.transcript)})
     state = %{state | resume_ids: sessions}
     data = %{provider: provider, resume_id: id, lost: turn.resumed != nil, cut: cut}
@@ -323,7 +257,7 @@ defmodule Helyx.Session.Server do
   def handle_info({:stream_event, _turn_id, :turn_start}, state), do: {:noreply, state}
 
   def handle_info({:stream_event, turn_id, event}, %State{activity: %Turn{id: turn_id}} = state) do
-    %State{activity: turn} = state = start_assistant_message(state)
+    %State{activity: turn} = state = Messages.start_assistant_message(state)
 
     {:noreply,
      %{state | activity: Turn.add_block(turn, event)}
@@ -475,14 +409,12 @@ defmodule Helyx.Session.Server do
   # The failed subscribe of `Helyx.Session.subscribe/1`, and the end of a
   # subscriber: only the monitor of its entry removes the entry.
   def handle_info({:unsubscribe, pid}, %State{} = state) do
-    {ref, subscribers} = Map.pop(state.subscribers, pid)
-    _ = ref && Process.demonitor(ref, [:flush])
-    {:noreply, %{state | subscribers: subscribers}}
+    {:noreply, Record.unsubscribe(state, pid)}
   end
 
   def handle_info({:DOWN, ref, :process, pid, _reason}, %State{subscribers: subscribers} = state)
       when :erlang.map_get(pid, subscribers) == ref,
-      do: {:noreply, %{state | subscribers: Map.delete(subscribers, pid)}}
+      do: {:noreply, Record.subscriber_down(state, pid)}
 
   # The hands are linked and vital: their death takes the session with it.
   def handle_info({:EXIT, pid, reason}, %State{hands: pid} = state), do: {:stop, reason, state}
@@ -517,7 +449,7 @@ defmodule Helyx.Session.Server do
   defp cleanup_notice({:error, reason}, state) do
     Logger.warning("abort cleanup failed: " <> reason)
     text = "abort cleanup failed: a process or resource of the turn may still be held"
-    do_emit(state, nil, :notice, %{text: text})
+    emit(state, nil, :notice, %{text: text})
   end
 
   # The session stops only for a trapped reason; on an untrappable kill the
@@ -598,8 +530,8 @@ defmodule Helyx.Session.Server do
     state =
       state
       |> steer_effects(effects)
-      |> abort_open_calls()
-      |> close_partial_message(:aborted, :aborted)
+      |> Messages.abort_open_calls()
+      |> Messages.close_partial_message(:aborted, :aborted)
       |> drop_queues()
       |> emit(:agent_end, %{stop_reason: :aborted})
 
@@ -623,12 +555,6 @@ defmodule Helyx.Session.Server do
         state
     end
   end
-
-  defp provider_pid(%State{conn: %ProviderConn{pid: pid}}), do: pid
-  defp provider_pid(_state), do: nil
-
-  # Sends `request` to the provider process with the bound `key` of `provider_ms`.
-  defp ask(state, pid, req, key), do: ProviderRequest.ask(pid, req, state.provider_ms[key])
 
   # A provider process ended in the wait: see `Wait.provider_down/2`.
   defp wait_provider_down(%State{activity: wait} = state, pid) do
@@ -685,19 +611,11 @@ defmodule Helyx.Session.Server do
   defp begin_turn(%State{} = state, texts) do
     turn = %Turn{id: Id.new(), model: state.model, provider: state.provider}
     state = open_turn(state, turn, %{})
-    call_provider(Enum.reduce(texts, state, &append_user(&2, &1)))
+    call_provider(Enum.reduce(texts, state, &Messages.append_user(&2, &1)))
   end
 
   defp open_turn(state, turn, data),
     do: %{state | activity: turn} |> emit(:agent_start, %{}) |> emit(:turn_start, data)
-
-  defp append_user(state, text) do
-    user = Message.user(text)
-
-    append_message(state, user)
-    |> emit(:message_start, %{message: user})
-    |> emit(:message_end, %{message: user})
-  end
 
   defp queue_reply(%State{} = state, key, text) do
     held = if key == :steers, do: held(state), else: 0
@@ -735,7 +653,7 @@ defmodule Helyx.Session.Server do
         {[], state}
 
       {steers, queues} ->
-        state = Enum.reduce(steers, %{state | queues: queues}, &append_user(&2, &1))
+        state = Enum.reduce(steers, %{state | queues: queues}, &Messages.append_user(&2, &1))
         {steers, emit_queue(state)}
     end
   end
@@ -773,27 +691,15 @@ defmodule Helyx.Session.Server do
     emit_queue(%{state | queues: queues})
   end
 
-  # The provider took a steer. The open assistant message closes first, and
-  # every call still open gets its `aborted` result, as at a `message_end`:
-  # no message goes between a call and its result.
-  defp take_steer(%State{activity: %Turn{partial: nil}} = state, text),
-    do: state |> abort_turn_calls() |> append_user(text)
-
-  defp take_steer(%State{activity: %Turn{partial: partial}} = state, text) do
-    stop = if Enum.any?(partial, &match?(%Message.ToolCall{}, &1)), do: :tool_use, else: :end_turn
-    {state, _assistant, calls} = close_assistant(state, stop, %{})
-    take_steer(%{state | activity: %{state.activity | partial: nil, calls: calls}}, text)
-  end
-
   # Applies the effects of the steer ledger (see `Helyx.Session.Steers`),
   # in order.
   defp steer_effects(state, effects), do: Enum.reduce(effects, state, &steer_effect/2)
 
-  defp steer_effect({:take, text}, state), do: take_steer(state, text)
+  defp steer_effect({:take, text}, state), do: Messages.take_steer(state, text)
   defp steer_effect({:requeue, text}, state), do: requeue_steer(state, text)
 
   defp steer_effect({:notice, turn_id, text}, state),
-    do: do_emit(state, turn_id, :steer_unconfirmed, %{text: text})
+    do: emit(state, turn_id, :steer_unconfirmed, %{text: text})
 
   # The provider process (started at the first turn) and a prepare Task of
   # the hands, which builds the context.
@@ -865,7 +771,7 @@ defmodule Helyx.Session.Server do
 
   defp end_turn({:done, %{stop_reason: stop_reason, usage: usage}}, state) do
     {%State{activity: turn} = state, assistant, _calls} =
-      close_assistant(state, stop_reason, usage)
+      Messages.close_assistant(state, stop_reason, usage)
 
     # A call in the last message gets no result. A steer with no answer yet
     # can still be rejected: the session waits for its answer before the
@@ -874,7 +780,7 @@ defmodule Helyx.Session.Server do
 
     state =
       state
-      |> abort_open_calls()
+      |> Messages.abort_open_calls()
       |> steer_effects(effects)
       |> emit(:turn_end, %{message: assistant})
       |> emit(:agent_end, %{stop_reason: stop_reason})
@@ -889,72 +795,11 @@ defmodule Helyx.Session.Server do
   defp end_turn({:error, reason}, state), do: fail_turn(reason, state)
   defp end_turn(:stream_ended, state), do: fail_turn(:stream_ended, state)
 
-  # Appends the assistant message of the stream so far and emits its
-  # message_end. Returns it and its tool calls. No message goes between a
-  # call and its result: the calls still open get their aborted results
-  # first, and a later result is dropped.
-  defp close_assistant(state, stop_reason, usage) do
-    state = state |> abort_turn_calls() |> start_assistant_message()
-    assistant = Turn.assistant_message(state.activity, stop_reason: stop_reason, usage: usage)
-    state = emit(append_message(state, assistant), :message_end, %{message: assistant})
-    {state, assistant, for(%Message.ToolCall{} = call <- assistant.content, do: call)}
-  end
-
-  # Each call of the turn still open gets its `aborted` result: no message
-  # goes between a call and its result.
-  defp abort_turn_calls(%State{activity: %Turn{calls: calls}} = state) do
-    state = put_in(state.activity.calls, [])
-    Enum.reduce(calls, state, &record_result(&1, {:error, "aborted"}, &2))
-  end
-
   # Runs a Helyx tool request on the hands, with no event: the provider's
   # own events show the call.
   defp run_on_hands(call, %State{activity: turn} = state) do
     :ok = Hands.run(state.hands, turn.id, call)
     state
-  end
-
-  # Appends the tool result message to the transcript and emits
-  # tool_execution_end.
-  defp record_result(call, result, state) do
-    message = Message.tool_result(call, result)
-    emit(append_message(state, message), :tool_execution_end, %{message: message})
-  end
-
-  # Appends a completed message to the transcript and, when the session has
-  # a file, to disk. Streamed partial messages never come through here.
-  defp append_message(%State{} = state, %Message{} = message) do
-    state = persist(state, &Helyx.Session.File.append_message(&1, message))
-    %{state | transcript: state.transcript ++ [message]}
-  end
-
-  defp persist(%State{file: nil} = state, _append), do: state
-
-  defp persist(%State{file: file} = state, append) do
-    %{state | file: append.(file)}
-  rescue
-    # A disk failure must not take the session down. The turn, or the model
-    # switch, goes on in memory; persistence stays off for this session. Only
-    # the disk write is caught: a value the file cannot encode is rejected
-    # at the stream boundary (see `Helyx.Session.Stream`), and a model ref by
-    # `ModelRef.parse/1`, so an encode error here is a
-    # bug and crashes loudly rather than silently losing the rest of the
-    # session. One notice tells the clients; its fixed text stays in the
-    # bound of a notice, and the log has the error.
-    error in File.Error ->
-      Logger.warning("session file append failed, persistence off: " <> Exception.message(error))
-      text = "the session file could not be written; the rest of this session is not saved"
-      do_emit(%{state | file: nil}, turn_id(state.activity), :notice, %{text: text})
-  end
-
-  # Each tool call without a result gets an `aborted` error result in the
-  # transcript, so the next provider call sees a complete pair.
-  defp abort_open_calls(%State{} = state) do
-    Enum.reduce(
-      Transcript.open_calls(state.transcript),
-      state,
-      &record_result(&1, {:error, "aborted"}, &2)
-    )
   end
 
   # A partial assistant message is closed with a failure stop reason so
@@ -968,59 +813,13 @@ defmodule Helyx.Session.Server do
     state =
       state
       |> steer_effects(effects)
-      |> abort_open_calls()
-      |> close_partial_message(:error, reason)
+      |> Messages.abort_open_calls()
+      |> Messages.close_partial_message(:error, reason)
       |> drop_queues()
       |> emit(:agent_end, %{stop_reason: :error, error: reason})
 
     hands = Hands.request_cancel(state.hands, turn.id)
     %{state | activity: %{wait | hands: hands}}
-  end
-
-  defp close_partial_message(%State{activity: %Turn{partial: nil}} = state, _stop, _reason),
-    do: state
-
-  defp close_partial_message(state, stop_reason, reason) do
-    emit(state, :message_end, %{
-      message: Turn.assistant_message(state.activity, stop_reason: stop_reason),
-      error: reason
-    })
-  end
-
-  # Emits message_start for the assistant message on the first stream event.
-  defp start_assistant_message(%State{activity: %Turn{partial: nil} = turn} = state) do
-    state = %{state | activity: %{turn | partial: []}}
-    emit(state, :message_start, %{message: Turn.assistant_message(state.activity, [])})
-  end
-
-  defp start_assistant_message(state), do: state
-
-  # Only the queue drain at a normal turn end fires between turns; every
-  # other emit with no turn is a bug and crashes here.
-  defp emit(%State{activity: %Turn{id: turn_id}} = state, type, data),
-    do: do_emit(state, turn_id, type, data)
-
-  defp emit(%State{} = state, :queue_update, data),
-    do: do_emit(state, nil, :queue_update, data)
-
-  defp turn_id(%Turn{id: id}), do: id
-  defp turn_id(_idle_or_wait), do: nil
-
-  defp do_emit(state, turn_id, type, data) do
-    seq = state.seq + 1
-
-    event = %Event{
-      type: type,
-      session_id: state.id,
-      instance_id: state.instance_id,
-      turn_id: turn_id,
-      seq: seq,
-      data: data
-    }
-
-    for {pid, _ref} <- state.subscribers, do: send(pid, {:helyx_event, event})
-
-    %{state | seq: seq}
   end
 
   def via(core, id), do: {:via, Registry, {Helyx.Core.sessions_registry(core), id}}
