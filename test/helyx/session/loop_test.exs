@@ -339,23 +339,18 @@ defmodule Helyx.Session.LoopTest do
   end
 
   @tag :capture_log
-  test "killing the session kills the hands and the tool Task", %{core: core} do
-    {:ok, session} = Session.start(core, model: "test/abort")
-    {:ok, _} = Session.subscribe(session)
-    :ok = Session.prompt(session, "go")
-    assert_receive {:helyx_event, %Event{type: :tool_execution_start}}
+  test "killing the session kills the hands and the tool Task" do
+    core = start_core([Helyx.Test.Gated.Local, Helyx.Test.Gate])
+    gate = Helyx.Test.Gate.open()
+    {:ok, session} = Session.start(core, model: "gated/#{gate}")
+    :ok = Session.prompt(session, "ok")
+    assert_receive {:waiting, provider}
+    send(provider, :go)
+    # The tool reports its own PID only after the Task has initialized.
+    assert_receive {:waiting, task}
 
     pid = Session.pid(session)
     hands = :sys.get_state(pid).hands
-    # `Hands.run/3` is a cast: the hands start the Task before they answer.
-    :sys.get_state(hands)
-
-    [task] =
-      for task <- Task.Supervisor.children(Helyx.Core.task_supervisor(core)),
-          {:dictionary, dict} = Process.info(task, :dictionary),
-          Keyword.has_key?(dict, :helyx_hands) do
-        task
-      end
 
     hands_ref = Process.monitor(hands)
     task_ref = Process.monitor(task)

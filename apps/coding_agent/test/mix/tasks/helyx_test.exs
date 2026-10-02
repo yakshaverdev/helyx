@@ -16,6 +16,9 @@ defmodule Mix.Tasks.HelyxTest do
 
     defp resume_message(dir) do
       error = assert_raise Mix.Error, fn -> Mix.Tasks.Helyx.run([dir, "--resume"]) end
+      # Linked-process shutdown after the test exits is asynchronous. Wait
+      # here so the next test can register Core under the same name.
+      Supervisor.stop(Helyx.Core, :normal, Helyx.Test.Events.wait_ms())
       refute error.message =~ "{"
       refute error.message =~ "\n"
       error.message

@@ -40,34 +40,51 @@ defmodule Helyx.MixProject do
   end
 
   # Every project fetches, formats, and compiles, then runs its checks in
-  # parallel; the projects run in parallel too (#295). Each step is its own
-  # `mix` process with its own Mix state, and each project has its own
-  # `_build`, so no two steps write the same files. deps.get runs first in
-  # every project, so a fresh worktree or a rebase that brings a new
-  # project needs no manual fetch. --check-locked makes a lock file that
+  # parallel. Preparation is serial because Hex writes one shared registry
+  # cache without a lock (#296). Prepared projects check in parallel (#295).
+  # Each step is its own `mix` process with its own Mix state. Each project
+  # has its own `_build`, so no two steps write the same files. deps.get
+  # runs first in every project, so a fresh worktree or a rebase that brings
+  # a new project needs no manual fetch. --check-locked makes a lock file that
   # lacks an entry, or holds a version the requirement rejects, fail the
   # run instead of being rewritten by it. Credo covers plugin and app
   # sources from the root via .credo.exs. Dialyzer cannot: they depend on
   # the root, not the reverse, so each project runs its own. The prepare
-  # step compiled, and a compile in Dialyzer would wait for the build lock
-  # that the test step holds. The tests wait on timers, so the static checks
-  # run at a lower priority and leave the CPU to them.
+  # step also checks the PLT: Dialyxir's PLT check calls compile even with
+  # --no-compile, which can rewrite protocols while tests read them (#296).
+  # --no-check skips only that completed check, not the analysis. The tests
+  # wait on timers, so the static checks run at a lower priority.
   defp precommit(_args) do
-    prepare = "mix do deps.get --check-locked + format + compile --warnings-as-errors"
-    checks = ["nice mix dialyzer --no-compile", "mix test"]
+    # No preparation in this checkout may rewrite _build while earlier checks read it.
+    # The key is the directory identity, not the path: a MIX_EXS alias gives another __DIR__.
+    stat = File.stat!(__DIR__)
+    key = "helyx:precommit:#{stat.major_device}:#{stat.inode}"
+    Mix.Sync.Lock.with_lock(key, &run_precommit/0)
+  end
+
+  defp run_precommit do
+    prepare =
+      "mix do deps.get --check-locked + format + compile --warnings-as-errors + dialyzer --plt"
+
+    checks = [
+      "nice mix do loadpaths --no-deps-check + dialyzer --no-compile --no-check",
+      "mix test --no-compile --no-deps-check"
+    ]
 
     projects =
-      [{".", ["nice mix credo --strict" | checks]}] ++ Enum.map(projects(), &{&1, checks})
+      [{".", ["nice mix do loadpaths --no-deps-check + credo --strict" | checks]}] ++
+        Enum.map(projects(), &{&1, checks})
 
     results =
       projects
-      |> parallel(fn {dir, checks} ->
-        case run(dir, prepare) do
-          {_, 0} = prepared -> [prepared | parallel(checks, &run(dir, &1))]
-          failed -> [failed]
+      |> Enum.map(fn {dir, checks} ->
+        # Mix's OS-process lock also protects other worktrees using this runner.
+        case Mix.Sync.Lock.with_lock("helyx:hex-registry", fn -> run(dir, prepare) end) do
+          {_, 0} = prepared -> Task.async(fn -> [prepared | parallel(checks, &run(dir, &1))] end)
+          failed -> Task.completed([failed])
         end
       end)
-      |> Enum.concat()
+      |> Enum.flat_map(&Task.await(&1, :infinity))
 
     failed = for {name, status} <- results, status != 0, do: name
     if failed != [], do: Mix.raise("precommit failed: " <> Enum.join(failed, ", "))
@@ -100,7 +117,12 @@ defmodule Helyx.MixProject do
           cd: Path.join(__DIR__, dir),
           # A child that inherits MIX_EXS loads this project again and
           # recurses.
-          env: [{"MIX_ENV", "test"}, {"MIX_EXS", nil}],
+          env: [
+            {"MIX_ENV", "test"},
+            {"MIX_EXS", nil},
+            # Several VMs run together. Idle schedulers sleep instead of spinning.
+            {"ERL_FLAGS", System.get_env("ERL_FLAGS", "+sbwt none +sbwtdcpu none +sbwtdio none")}
+          ],
           stderr_to_stdout: true
         )
       end)

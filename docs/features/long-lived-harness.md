@@ -559,3 +559,12 @@ The owner decided on a live turn (comment on #240): a program turn is a normal H
 - The model switch inside one program (`set_model`, the `turn/start` overrides). A switch closes the program, as today.
 - The known gap of a result after an abort (`docs/features/external-turn.md`).
 - Flow control between a provider stream and the session mailbox. #197 chose a cap on the queue length, over which the turn fails.
+
+## Startup error text (#296)
+
+A failed-start marker can arrive in a different port message from its error
+text. Read that text until the existing 2,000-byte notice cap or the port exit,
+then close the port. Keep only the bytes that fit the cap. Drop invalid UTF-8
+as before. The existing harness initialization deadline still bounds the
+read; no timeout, grace, or cap changes. This applies only when the watchdog
+reports that it did not fork a command.

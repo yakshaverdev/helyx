@@ -44,12 +44,30 @@ defmodule Helyx.HarnessIO do
         %{state | port: port}
 
       {:not_started, port, acc} ->
-        %{state | port: port, terminal: {:error, {:not_started, cap_error(acc)}}}
+        text = read_start_error(port, acc)
+        Helyx.Watchdog.close(port)
+        %{state | port: nil, terminal: {:error, {:not_started, text}}}
 
       {:failed, text} ->
         %{state | terminal: {:error, {:not_started, cap_error(text)}}}
     end
   end
+
+  # The failed-start marker can arrive before the error text. No command
+  # was forked. Read only to the notice cap or exit; the caller's existing
+  # initialization deadline bounds the wait. Public to test message splits.
+  @doc false
+  def read_start_error(port, acc) when byte_size(acc) < @error_max_bytes do
+    receive do
+      {^port, {:data, data}} ->
+        read_start_error(port, acc <> binary_slice(data, 0, @error_max_bytes - byte_size(acc)))
+
+      {^port, {:exit_status, _status}} ->
+        cap_error(acc)
+    end
+  end
+
+  def read_start_error(_port, acc), do: cap_error(acc)
 
   # Runs `exe` with `args` under the watchdog, with open input and stderr
   # dropped, and moves the port's link to a keeper (`keep_port/1`).
