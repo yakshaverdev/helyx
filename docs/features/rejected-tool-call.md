@@ -26,14 +26,14 @@ Core, all internal:
 `Helyx.Provider.OpenAI`:
 
 - A call whose arguments are not a JSON object becomes `{:rejected_tool_call, %ToolCall{id, name, arguments: %{}}, "the arguments are not a valid JSON object"}`. The reason does not hold the raw JSON.
-- A call with no id (`""`) cannot get a paired result, because the next request must name the call by id. It still fails the turn, now with `{:bad_tool_arguments, name}`, with no raw JSON.
+- A call with no id (`""`) cannot get a paired result, because the next request must name the call by id. It still fails the turn: the Core stream boundary rejects every tool call with an empty id, with `{:bad_stream_event, {:tool_call, call}}`, and the call holds `%{}` as arguments, not the raw JSON (#345).
 
 ## Bounds
 
 | What | Bound | Where enforced | Over the bound |
 | --- | --- | --- | --- |
 | reason text | UTF-8, at most 1,024 bytes | `Helyx.Session.Stream`, at the event check | the turn fails with `{:bad_stream_event, event}` |
-| error of a call with no id | no raw arguments in the term | `Helyx.Provider.OpenAI` | n/a: the term holds only the name |
+| error of a call with no id | no raw arguments in the term | `Helyx.Provider.OpenAI` gives the call `%{}` as arguments; `Helyx.Session.Stream` rejects the empty id (#345) | n/a: the term holds the call, with `%{}` for bad JSON and the decoded arguments otherwise |
 | result text | "tool call not run: " plus the reason: at most 1,043 bytes | follows from the reason bound | n/a |
 
 No new buffer or wait. The argument byte bound of the OpenAI provider does not change.
@@ -46,7 +46,7 @@ No new resource.
 
 - Stream: a `{:rejected_tool_call, ...}` event gives `{:rejected_call, ...}` before the stream event; a reason that is not UTF-8 or is over 1,024 bytes fails the turn; the event on an external turn fails the turn.
 - Session: a turn with text, one good call, and one rejected call keeps the text, runs the good call, and gives the rejected call the error result with its reason. The next provider call gets both results.
-- OpenAI: bad JSON in one of two calls gives one `tool_call` and one `rejected_tool_call`; bad JSON in a call with no id fails the turn with no raw JSON in the error.
+- OpenAI: bad JSON in one of two calls gives one `tool_call` and one `rejected_tool_call`; bad JSON in a call with no id gives a `rejected_tool_call` with an empty id and `%{}`, which Core rejects (#345).
 - The session tests of the integer cap pass with no change to their assertions. The stream and `Turn` tests of the integer cap change only for the reason that the rejection message now carries.
 
 ## Docs

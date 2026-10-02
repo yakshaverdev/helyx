@@ -134,3 +134,4 @@ One row per ticket that `/orchestrate` merged. An escape is a confirmed Codex fi
 | 2026-10-03 | #331 | r1: 0 reproduced; simplify 1 fixed | gate r1 (Claude, Codex at limit): 0 | none needed |
 | 2026-10-03 | #325 | r1: 0 reproduced; simplify 7, spec 2 doc sentences fixed | gate r1 (Claude, Codex at limit): 0 defects, 1 doc nit fixed | none needed |
 | 2026-10-03 | #340 | r1: 0 reproduced; simplify 1 (read moved into Watchdog), spec 1 doc row | gate r1 (Claude, Codex at limit): 0 | none needed |
+| 2026-10-03 | #345 | r1: 1 defect (repeated id split a call); r2: 1 defect (same rule, rule removed); r3: 0 | gate r1 (Claude, Codex at limit): 0 defects, 1 review-doc label fixed | the r2 repeat removed the rule (question the premise), no checklist change |

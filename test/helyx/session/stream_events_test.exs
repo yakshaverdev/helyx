@@ -332,6 +332,8 @@ defmodule Helyx.Session.StreamEventsTest do
          quote(do: {:text_delta, "hello", "integer of more than 100 digits removed"})},
         {"a delta that is not valid UTF-8", "raw_bytes", quote(do: {:text_delta, <<"hi", 255>>})},
         {"a tool call that is not valid UTF-8", "raw_call", quote(do: {:tool_call, _})},
+        {"a tool call with an empty id", "empty_id",
+         quote(do: {:tool_call, %Helyx.Message.ToolCall{id: ""}})},
         {"a tool call with a bad field shape", "bad_call",
          quote(do: {:tool_call, %Helyx.Message.ToolCall{name: %{}}})},
         {"a tool call whose arguments the file cannot hold", "bad_args",
