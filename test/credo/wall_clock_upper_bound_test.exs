@@ -153,6 +153,38 @@ defmodule Helyx.Credo.WallClockUpperBoundTest do
     |> assert_issue()
   end
 
+  test "the walk goes into a module attribute" do
+    issues("""
+    @generated (test "a" do
+      assert System.monotonic_time() < 5
+    end)
+
+    @clock (defp now, do: System.monotonic_time())
+
+    test "b" do
+      @x (assert System.monotonic_time() < 5)
+      @y (t = System.monotonic_time())
+      assert t < 5
+      assert now() < 5
+    end
+    """)
+    |> assert_issues(fn issues ->
+      assert issues |> Enum.map(& &1.line_no) |> Enum.sort() == [3, 9, 11, 12]
+    end)
+  end
+
+  test "a module attribute is no time value, even with a local function named @" do
+    issues("""
+    import Kernel, except: [@: 1]
+    def @_value, do: System.monotonic_time()
+
+    test "t" do
+      assert @count < 5
+    end
+    """)
+    |> refute_issues()
+  end
+
   test "a variable of the same name in another test is no time" do
     issues("""
     test "a" do
