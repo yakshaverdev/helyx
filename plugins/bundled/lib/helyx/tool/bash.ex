@@ -102,10 +102,7 @@ defmodule Helyx.Tool.Bash do
 
   defp not_started(reason), do: {:error, "the command did not start: " <> reason}
 
-  defp consume({:not_started, port, acc}) do
-    {reason, _dropped?, _status} = collect(port, acc, false)
-    {:not_started, reason}
-  end
+  defp consume({:not_started, _port, reason}), do: {:not_started, reason}
 
   defp consume({:started, port, pre, nonce, go}),
     do: start_report(collect(port, pre, false), pre, nonce <> " 1\n", go <> " 0\n")

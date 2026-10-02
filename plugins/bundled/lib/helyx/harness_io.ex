@@ -44,8 +44,8 @@ defmodule Helyx.HarnessIO do
       {:started, port, _pre, _nonce, _go} ->
         %{state | port: port}
 
-      {:not_started, port, acc} ->
-        %{state | port: port, terminal: {:error, {:not_started, cap_error(acc)}}}
+      {:not_started, port, reason} ->
+        %{state | port: port, terminal: {:error, {:not_started, cap_error(reason)}}}
 
       {:failed, text} ->
         %{state | terminal: {:error, {:not_started, cap_error(text)}}}

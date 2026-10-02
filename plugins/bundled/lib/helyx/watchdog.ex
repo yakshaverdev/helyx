@@ -125,8 +125,8 @@ defmodule Helyx.Watchdog do
   #     what came before the marker, perl's own startup output. The output
   #     that follows starts with the start line, "<nonce> 1", unless the
   #     child died before the `exec`; a failure report is "<go> 0".
-  #   * `{:not_started, port, acc}`: the watchdog did not fork; the rest of
-  #     the stream up to the exit status is the reason.
+  #   * `{:not_started, port, reason}`: the watchdog did not fork; `reason`
+  #     is the rest of the stream up to the exit status, read here.
   #   * `{:failed, text}`: no command ran, and the port is closed: perl did
   #     not start (no port), the watchdog gave no marker, or it died before
   #     the go-ahead. The text always names perl.
@@ -177,7 +177,7 @@ defmodule Helyx.Watchdog do
 
     case read_marker(port, nonce, "", "") do
       {:not_started, acc} ->
-        {:not_started, port, acc}
+        {:not_started, port, read_to_exit(port, acc)}
 
       # Names the watchdog, not a cause: perl may be gone, fail to compile
       # the watchdog, or never run (an argv over the OS limit).
@@ -196,6 +196,17 @@ defmodule Helyx.Watchdog do
           :died ->
             {:failed, "the perl watchdog died before the go-ahead: " <> pre}
         end
+    end
+  end
+
+  # The marker's chunk can hold only the head of the reason: the port cuts
+  # the stream where a pipe read ends, on macOS at 512 bytes (#340). The
+  # watchdog writes the reason in one write, at most an error text with
+  # `cwd` in it, and exits right after it, so the exit status ends the read.
+  defp read_to_exit(port, acc) do
+    receive do
+      {^port, {:data, data}} -> read_to_exit(port, acc <> data)
+      {^port, {:exit_status, _status}} -> acc
     end
   end
 
