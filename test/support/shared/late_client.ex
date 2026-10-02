@@ -34,7 +34,7 @@ defmodule Helyx.Test.LateClient do
       {:event, ^client, %Event{type: :agent_end} = event} -> Enum.reverse([event | acc])
       {:event, ^client, event} -> events_to_end(client, [event | acc])
     after
-      Helyx.Test.Events.turn_ms() -> flunk("the second client got no agent_end")
+      Helyx.Test.Events.wait_ms() -> flunk("the second client got no agent_end")
     end
   end
 

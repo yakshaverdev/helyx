@@ -7,7 +7,7 @@ defmodule Helyx.Watchdog.HarnessStopTest do
 
   import Helyx.Test.OSHelpers
 
-  alias Helyx.{Event, Session}
+  alias Helyx.Session
   alias Helyx.Test.WatchdogHarness
 
   setup do
@@ -16,11 +16,9 @@ defmodule Helyx.Watchdog.HarnessStopTest do
     %{core: core}
   end
 
-  # The default turn deadline, 60 s, is longer than the 5 s wait of
-  # `agent_end/0`. Thus the deadline does not end the turn in a test that does
-  # not set one (#228). The flood test then needs the cap stop in 5 s; the
-  # flood turn took 0.27 to 0.4 s on 2026-09-29, so the margin for load is
-  # more than 10x.
+  # The default turn deadline, 60 s, is longer than the wait of
+  # `agent_end/0`, the cap of a wait. Thus the deadline does not end the turn
+  # in a test that does not set one (#228).
   defp start(core, model, turn_ms \\ 60_000) do
     {:ok, session} = Session.start(core, model: "wdh/#{model}")
     on_exit(fn -> File.rm(WatchdogHarness.pid_path(session.id)) end)
@@ -31,19 +29,12 @@ defmodule Helyx.Watchdog.HarnessStopTest do
     {session, wait_for_pid(WatchdogHarness.pid_path(session.id))}
   end
 
-  defp agent_end do
-    receive do
-      {:helyx_event, %Event{type: :agent_end} = event} -> event
-      {:helyx_event, _event} -> agent_end()
-    after
-      5_000 -> flunk("no agent_end")
-    end
-  end
+  defp agent_end, do: List.last(Helyx.Test.Events.collect_until(:agent_end))
 
   test "a blocked callback: the armed kill stops the program group", %{core: core} do
     {_session, group} = start(core, "block", 300)
     assert agent_end().data.error == :harness_timeout
-    assert group_gone_within?(group, 3_000)
+    assert group_gone_within?(group)
   end
 
   # The session stops its hands before it ends, so the hands never run a
@@ -56,7 +47,7 @@ defmodule Helyx.Watchdog.HarnessStopTest do
     Process.flag(:trap_exit, true)
     :ok = stop_supervised(core)
     assert_received {:DOWN, ^hands, :process, _, :shutdown}
-    assert group_gone_within?(group, 3_000)
+    assert group_gone_within?(group)
   end
 
   test "a Core stop during a connected turn ends the program group", %{core: core} do
@@ -65,7 +56,7 @@ defmodule Helyx.Watchdog.HarnessStopTest do
     Process.flag(:trap_exit, true)
     :ok = stop_supervised(core)
     assert_received {:DOWN, ^hands, :process, _, :shutdown}
-    assert group_gone_within?(group, 3_000)
+    assert group_gone_within?(group)
   end
 
   defp monitor_hands(session),
@@ -75,6 +66,6 @@ defmodule Helyx.Watchdog.HarnessStopTest do
        %{core: core} do
     {_session, group} = start(core, "flood")
     assert {:harness_stop, _reason} = agent_end().data.error
-    assert group_gone_within?(group, 3_000)
+    assert group_gone_within?(group)
   end
 end

@@ -4,12 +4,15 @@ defmodule Helyx.Session.HandsTest do
   # they get, so no OS resource is needed.
   use ExUnit.Case, async: true
 
+  import Helyx.Test.Events, only: [wait_ms: 0]
+
   alias Helyx.Message.ToolCall
+  alias Helyx.Test.Gate
 
   # Room for scheduler load in a check of a wait that must not happen: far
-  # above the delays that load makes, far below the waits that the checks
-  # rule out.
-  @load_ms 1_000
+  # above the delays that load makes, far below the release of 60,000 ms
+  # that the check rules out.
+  @load_ms 5_000
 
   setup do
     core = :"core_#{System.unique_integer([:positive])}"
@@ -53,7 +56,7 @@ defmodule Helyx.Session.HandsTest do
 
   defp upcase(hands, id) do
     :ok = Helyx.Session.Hands.run(hands, "t1", call(id, "upcase", %{"text" => "hi"}))
-    assert_receive {:tool_result, "t1", ^id, result}, 2_000
+    assert_receive {:tool_result, "t1", ^id, result}
     result
   end
 
@@ -64,7 +67,7 @@ defmodule Helyx.Session.HandsTest do
     handles = [{:keep, agent}, {:report, self()}]
 
     :ok = Helyx.Session.Hands.run(hands, "t1", call("c1", "hold", %{"handles" => handles}))
-    assert_receive {:tool_result, "t1", "c1", {:error, text}}, 2_000
+    assert_receive {:tool_result, "t1", "c1", {:error, text}}
     assert text =~ "could not be released"
     assert text =~ inspect({:keep, agent})
     assert_received {:release, :deliver, _handles}
@@ -89,7 +92,9 @@ defmodule Helyx.Session.HandsTest do
         call("c1", "hold", %{"handles" => handles, "ms" => 60_000})
       )
 
-    await_held(hands, 1)
+    # The tool holds its two handles in two calls; a cancel between them
+    # releases only the first.
+    await_held(hands, 2)
 
     assert {:error, text} = cancel(hands, "t1")
     assert text =~ "could not be released"
@@ -100,20 +105,24 @@ defmodule Helyx.Session.HandsTest do
     assert text =~ "earlier call"
   end
 
-  test "a release just under the deadline confirms its handles", %{core: core} do
-    hands = start_hands(core, release_ms: 300)
+  # The release ends 1,750 ms before its deadline: room for load.
+  test "a release before the deadline confirms its handles", %{core: core} do
+    hands = start_hands(core, release_ms: 2_000)
     :ok = Helyx.Session.Hands.run(hands, "t1", call("c1", "hold", %{"handles" => [{:slow, 250}]}))
-    assert_receive {:tool_result, "t1", "c1", {:ok, "held"}}, 2_000
+    assert_receive {:tool_result, "t1", "c1", {:ok, "held"}}
     assert upcase(hands, "c2") == {:ok, "HI"}
   end
 
   @tag :capture_log
-  test "a release just past the deadline is killed and confirms nothing", %{core: core} do
+  test "a release past the deadline is killed and confirms nothing", %{core: core} do
     hands = start_hands(core, release_ms: 300)
-    :ok = Helyx.Session.Hands.run(hands, "t1", call("c1", "hold", %{"handles" => [{:slow, 350}]}))
+
+    :ok =
+      Helyx.Session.Hands.run(hands, "t1", call("c1", "hold", %{"handles" => [{:slow, 60_000}]}))
+
     # A kill after the end of the release would confirm the handle, so the
     # error shows that the kill came first. No bound on the time is needed.
-    assert_receive {:tool_result, "t1", "c1", {:error, text}}, 2_000
+    assert_receive {:tool_result, "t1", "c1", {:error, text}}
     assert text =~ "could not be released"
 
     # The release Task is gone; only the ending tool Task can be left, and
@@ -125,14 +134,17 @@ defmodule Helyx.Session.HandsTest do
   end
 
   @tag :capture_log
+  @tag :slow
   test "a retry has a deadline of one second", %{core: core} do
     # The first release times out, so both handles go to the retry.
     hands = start_hands(core, release_ms: 100)
 
     :ok =
-      Helyx.Session.Hands.run(hands, "t1", call("c1", "hold", %{"handles" => [{:slow, 5_000}]}))
+      Helyx.Session.Hands.run(hands, "t1", call("c1", "hold", %{"handles" => [{:slow, 60_000}]}))
 
-    assert_receive {:tool_result, "t1", "c1", {:error, _text}}, 3_000
+    # The release takes longer than any wait of the test, so the error comes
+    # from the timeout of the release.
+    assert_receive {:tool_result, "t1", "c1", {:error, _text}}
 
     # The retry is killed at its deadline, and the call is refused.
     start = System.monotonic_time(:millisecond)
@@ -148,30 +160,35 @@ defmodule Helyx.Session.HandsTest do
     for handle <- [:raise, :exit, :bad, :improper] do
       hands = start_hands(core)
       :ok = Helyx.Session.Hands.run(hands, "t1", call("c1", "hold", %{"handles" => [handle]}))
-      assert_receive {:tool_result, "t1", "c1", {:error, text}}, 2_000
+      assert_receive {:tool_result, "t1", "c1", {:error, text}}
       assert text =~ inspect(handle)
       assert {:error, text} = upcase(hands, "c2")
       assert text =~ "earlier call"
     end
   end
 
-  test "an abort releases the handles of each tool in parallel, with one deadline",
-       %{core: core} do
-    hands = start_hands(core, release_ms: 1_500)
-    arguments = %{"handles" => [{:slow, 1_000}], "ms" => 60_000}
+  test "an abort releases the handles of each tool in parallel", %{core: core} do
+    hands = start_hands(core)
+    arguments = %{"handles" => [%{"gate" => Gate.open()}], "ms" => 60_000}
     :ok = Helyx.Session.Hands.run(hands, "t1", call("c1", "hold", arguments))
     :ok = Helyx.Session.Hands.run(hands, "t1", call("c2", "hold_two", arguments))
     await_held(hands, 2)
 
-    # One after the other, the two releases would pass the deadline.
-    assert cancel(hands, "t1") == :ok
+    # One after the other, the second release would start only after the
+    # first got :go.
+    cancel = Task.async(fn -> cancel(hands, "t1") end)
+    assert_receive {:waiting, first}
+    assert_receive {:waiting, second}
+    send(first, :go)
+    send(second, :go)
+    assert Task.await(cancel, wait_ms()) == :ok
     assert upcase(hands, "c3") == {:ok, "HI"}
   end
 
   test "a tool without release/3 cannot hold a handle", %{core: core} do
     hands = start_hands(core)
     :ok = Helyx.Session.Hands.run(hands, "t1", call("c1", "hold_bare", %{}))
-    assert_receive {:tool_result, "t1", "c1", {:error, text}}, 2_000
+    assert_receive {:tool_result, "t1", "c1", {:error, text}}
     assert text =~ "release/3"
     assert upcase(hands, "c2") == {:ok, "HI"}
   end
@@ -184,6 +201,6 @@ defmodule Helyx.Session.HandsTest do
     end
 
     :erlang.trace(hands, false, [:receive])
-    assert map_size(:sys.get_state(hands).held) >= n
+    assert :sys.get_state(hands).held |> Map.values() |> List.flatten() |> length() >= n
   end
 end

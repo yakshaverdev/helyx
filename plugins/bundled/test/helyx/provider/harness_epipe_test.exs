@@ -82,7 +82,7 @@ defmodule Helyx.Provider.HarnessEpipeTest do
 
   # Polls the port queue every 10 ms, for at least `ms`: the BEAM has no
   # event for bytes that wait in a port's driver queue.
-  defp kill_when_queued(watchdog, group, ms \\ 5_000)
+  defp kill_when_queued(watchdog, group, ms \\ Helyx.Test.Events.wait_ms())
 
   defp kill_when_queued(_watchdog, _group, ms) when ms <= 0,
     do: flunk("the port queue stayed empty")
@@ -126,7 +126,7 @@ defmodule Helyx.Provider.HarnessEpipeTest do
       {:stopped, reason} -> assert reason == {:claude_code_exit, :epipe}
       {:DOWN, ^ref, :process, _pid, reason} -> flunk("the harness ended on #{inspect(reason)}")
     after
-      5_000 -> flunk("the harness did not stop")
+      Helyx.Test.Events.wait_ms() -> flunk("the harness did not stop")
     end
   end
 
@@ -145,12 +145,12 @@ defmodule Helyx.Provider.HarnessEpipeTest do
         ClaudeCode.harness_init("haiku", [], cwd: File.cwd!())
       end)
 
-    assert_receive {:"$gen_call", from, {:hold, {:watchdog, _watchdog}}}, 5_000
+    assert_receive {:"$gen_call", from, {:hold, {:watchdog, _watchdog}}}
     GenServer.reply(from, :ok)
-    assert_receive {:"$gen_call", _from, {:hold, {:command, group}}}, 5_000
+    assert_receive {:"$gen_call", _from, {:hold, {:command, group}}}
     Process.exit(pid, :shutdown)
-    assert_receive {:DOWN, ^ref, :process, _pid, :shutdown}, 500
-    assert group_gone_within?(group, 2_000)
+    assert_receive {:DOWN, ^ref, :process, _pid, :shutdown}
+    assert group_gone_within?(group)
   end
 
   # The fake codex stops its watchdog, then answers `initialize` and
@@ -183,7 +183,7 @@ defmodule Helyx.Provider.HarnessEpipeTest do
       {:stop, reason} -> assert reason == {:codex_exit, :epipe}
       {:DOWN, ^ref, :process, _pid, reason} -> flunk("the harness ended on #{inspect(reason)}")
     after
-      5_000 ->
+      Helyx.Test.Events.wait_ms() ->
         Process.exit(pid, :kill)
         flunk("the harness did not stop")
     end

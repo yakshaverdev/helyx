@@ -85,7 +85,7 @@ Tests at the limits: a release that returns 50 ms before the deadline, one that 
 
 - `test/helyx/session/hands_test.exs`: a test tool whose `release/3` delays past the deadline, raises, exits, returns a handle that was not given, returns an improper list, or keeps a handle. No fake `kill(1)` in Core tests.
 - `plugins/bundled/test/helyx/tool/bash/group_test.exs` (now `test/helyx/watchdog/group_test.exs`, #10): the kill order, the stuck group, and the watchdog sweep, with the `kill` argument of `Group.release/4` in place of the `kill_cmd` hook of the hands.
-- `test/helyx/session_test.exs`: the behaviour tests of #93 stay (responsive client calls during an abort, repeated aborts, owner death). They use the delaying test tool instead of `:sys.replace_state` on the hands.
+- `test/helyx/session/sweep_test.exs` and `test/helyx/session/loop_test.exs`: the behaviour tests of #93 stay (responsive client calls during an abort, repeated aborts, owner death). They use the delaying test tool instead of `:sys.replace_state` on the hands.
 - `test/support/interfaces.ex`: the `Register` test tool becomes the `Hold` test tool, with `HoldTwo` for the parallel release and `HoldBare` for a tool without `release/3`.
 - `release_ms`, a start option of the hands, is the test seam for the deadline of `:deliver` and `:cancel`.
 

@@ -5,14 +5,15 @@ defmodule Helyx.Test.Events do
 
   alias Helyx.Event
 
-  # A whole turn, which can start OS processes on a loaded machine. Only a
-  # failing test waits this long.
-  @turn_ms 5_000
-
-  def turn_ms, do: @turn_ms
+  # The cap of a wait that must happen: the `assert_receive` timeout that
+  # the test helper sets.
+  def wait_ms, do: Application.fetch_env!(:ex_unit, :assert_receive_timeout)
 
   # The events in the mailbox up to and including the first of `type`.
-  def collect_until(type, timeout \\ @turn_ms), do: collect(type, timeout, [])
+  def collect_until(type, timeout \\ wait_ms()), do: collect(type, timeout, [])
+
+  def messages(events), do: for(%Event{type: :message_end, data: %{message: m}} <- events, do: m)
+  def of_type(events, type), do: for(%Event{type: ^type, data: data} <- events, do: data)
 
   defp collect(type, timeout, acc) do
     receive do

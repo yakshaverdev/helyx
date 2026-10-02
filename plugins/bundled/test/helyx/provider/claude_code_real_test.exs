@@ -45,8 +45,8 @@ defmodule Helyx.Provider.ClaudeCodeRealTest do
       Second, in the foreground, after the first one started: #{sleeper("fg.pid", 90)}
       """)
 
-    bg = wait_for_pid(Path.join(tmp, "bg.pid"), 60_000)
-    fg = wait_for_pid(Path.join(tmp, "fg.pid"), 60_000)
+    bg = wait_for_pid(Path.join(tmp, "bg.pid"))
+    fg = wait_for_pid(Path.join(tmp, "fg.pid"))
     %{pid: harness} = :sys.get_state(Session.pid(session)).harness
 
     :ok = Session.abort(session)
@@ -59,12 +59,12 @@ defmodule Helyx.Provider.ClaudeCodeRealTest do
 
     # The interrupt ends the foreground command; the background task and
     # the program stay.
-    assert gone_within?(fg, 5_000)
+    assert gone_within?(fg)
     assert os_alive?(bg)
     assert %{pid: ^harness} = :sys.get_state(Session.pid(session)).harness
 
     GenServer.stop(Session.pid(session))
 
-    assert gone_within?(bg, 10_000)
+    assert gone_within?(bg)
   end
 end

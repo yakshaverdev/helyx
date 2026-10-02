@@ -4,10 +4,6 @@ defmodule Helyx.Test.HarnessDriver do
   # mailbox, without a session.
   import ExUnit.Assertions
 
-  # A program answers a line in milliseconds; only a failing test waits this
-  # long.
-  @line_ms 5_000
-
   # Gives messages to `provider.harness_info/2` until `done?` holds for the
   # actions so far. A stop is the last action, `{:stop, reason}`.
   def pump(provider, state, actions, done?) do
@@ -21,7 +17,7 @@ defmodule Helyx.Test.HarnessDriver do
             {:stop, reason, state} -> {actions ++ [{:stop, reason}], state}
           end
       after
-        @line_ms -> flunk("no end; got #{inspect(actions)}")
+        Helyx.Test.Events.wait_ms() -> flunk("no end; got #{inspect(actions)}")
       end
     end
   end
@@ -38,8 +34,11 @@ defmodule Helyx.Test.HarnessDriver do
           assert actions?.(actions), "unexpected actions: #{inspect(actions)}"
           settle(provider, state, done?, actions?)
       after
-        @line_ms -> flunk("no such state; got #{inspect(state)}")
+        Helyx.Test.Events.wait_ms() -> flunk("no such state; got #{inspect(state)}")
       end
     end
   end
+
+  # Holds for actions that answer the request `from`.
+  def replied?(from), do: &Enum.any?(&1, fn action -> match?({:reply, ^from, _}, action) end)
 end

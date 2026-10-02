@@ -65,7 +65,7 @@ Add one row per ticket to `docs/reviews/escapes.md`: date, ticket, ship findings
 Serial, one ticket at a time:
 
 1. `git fetch`, rebase the branch on `origin/master`. A conflict that is not mechanical: park.
-2. Precommit into the log, as `AGENTS.md` says. It must pass after the rebase, not before it. The same failure twice: park.
+2. Precommit into the log, as `AGENTS.md` says, with the slow tests: `HELYX_SLOW=1 .claude/skills/ship/precommit.sh`. It must pass after the rebase, not before it. The same failure twice: park.
 3. Push. `gh pr create` with a body that contains `Closes #<n>`. No attribution lines.
 4. `gh pr merge --merge --delete-branch`. Confirm the issue closed; close it with a pointer to the PR when it did not.
 5. Run each step only when the step before it passed (`&&`, not `;`): a failed `gh pr create` must not reach the cleanup. Before the push, `git diff origin/master | grep "^+.*icket pending"` must find nothing. Search the added lines, not the tree: old devlogs on master keep the phrase as history.

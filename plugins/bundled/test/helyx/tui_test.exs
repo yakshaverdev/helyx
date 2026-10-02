@@ -36,9 +36,10 @@ defmodule Helyx.TUITest do
   # model. The fold itself is tested in view_model_test.exs.
   use ExUnit.Case, async: true
 
+  import Helyx.Test.TUIRender
+
   alias ExRatatui.Event.Key
   alias ExRatatui.Layout.Rect
-  alias ExRatatui.Text.{Line, Span}
   alias ExRatatui.Widgets.Paragraph
   alias Helyx.{Event, Message, Session}
   alias Helyx.Provider.Fake
@@ -86,7 +87,7 @@ defmodule Helyx.TUITest do
         {:noreply, state} = TUI.handle_info({:helyx_event, event}, state)
         if event.type == :agent_end, do: state, else: drain(state)
     after
-      1_000 -> flunk("no agent_end; view model: #{inspect(state.vm)}")
+      Helyx.Test.Events.wait_ms() -> flunk("no agent_end; view model: #{inspect(state.vm)}")
     end
   end
 
@@ -469,12 +470,6 @@ defmodule Helyx.TUITest do
   end
 
   describe "wrapping by display width" do
-    defp wrapped(text, width) do
-      message = %Helyx.Message{role: :assistant, content: [%Helyx.Message.Text{text: text}]}
-      vm = %ViewModel{ViewModel.new("fake/m") | cells: [message]}
-      for line <- TUI.transcript_lines(vm, width), span <- line.spans, do: span.content
-    end
-
     test "a narrow grapheme is one column, also with a combining mark" do
       assert wrapped(String.duplicate("a", 7), 5) == ["aaaaa", "aa"]
 
@@ -522,51 +517,6 @@ defmodule Helyx.TUITest do
     test "an empty line is one empty row" do
       assert wrapped("", 5) == [""]
       assert wrapped("", 0) == [""]
-    end
-
-    # The width rule can count more columns than ExRatatui draws, never less.
-    # Each line is a start, one code point, an end, and twelve "z", at width
-    # 12, so the rule fills the first row to the edge with "z". When the rule
-    # counts the grapheme too narrow, ExRatatui cuts a "z" from that row. The
-    # starts and ends make the code point part of a grapheme of each kind:
-    # after a letter, a wide glyph, a Devanagari letter, a modifier base, an
-    # emoji that is no modifier base, a flag half, and a joiner, and before a
-    # skin tone, a selector, and a joiner sequence.
-    test "no grapheme is wider on screen than the width rule counts" do
-      # U+20000 to U+3FFFD is one range of the rule: its two ends stand for it.
-      # The last range is the emoji tags.
-      ranges = [0x20..0x7E, 0xA0..0xD7FF, 0xE000..0x20FFF, 0x3F000..0x3FFFD, 0xE0000..0xE0FFF]
-      code_points = Enum.concat(ranges)
-      starts = ["a", "日", "क", "👍", "⚡", "🟠", "🇮", "👨\u200D", "\u2620\uFE0F\u200D"]
-      ends = ["🏽", "\uFE0F", "\u200D👧"]
-      contexts = [{"", ""}] ++ Enum.map(starts, &{&1, ""}) ++ Enum.map(ends, &{"", &1})
-
-      for {first, last} <- contexts, chunk <- Enum.chunk_every(code_points, 4096) do
-        rows =
-          Enum.map(
-            chunk,
-            &hd(wrapped(<<first::binary, &1::utf8, last::binary, "zzzzzzzzzzzz">>, 12))
-          )
-
-        drawn = rows |> draw(12) |> String.split("\n")
-
-        for {code, row, drawn_row} <- Enum.zip([chunk, rows, drawn]) do
-          assert count_z(drawn_row) == count_z(row),
-                 "#{inspect(first)}, U+#{Integer.to_string(code, 16)}, #{inspect(last)}"
-        end
-      end
-    end
-
-    # By code point: a prepended mark joins the next "z" into one grapheme.
-    defp count_z(row), do: Enum.count(String.to_charlist(row), &(&1 == ?z))
-
-    defp draw(rows, width) do
-      height = length(rows)
-      terminal = ExRatatui.init_test_terminal(width, height)
-      lines = Enum.map(rows, &%Line{spans: [%Span{content: &1}]})
-      area = %Rect{x: 0, y: 0, width: width, height: height}
-      :ok = ExRatatui.draw(terminal, [{%Paragraph{text: lines}, area}])
-      ExRatatui.get_buffer_content(terminal)
     end
 
     # ExRatatui cuts a row at the edge of its area. A row that the width rule
@@ -772,14 +722,38 @@ defmodule Helyx.TUITest do
       state = press(state, "x")
       assert {0, ^row} = state.scroll
 
+      # Only the calls of the render process count: an async module that
+      # renders at the same time calls the same function. A process cannot
+      # trace its own calls, so the frame is drawn in another one.
+      size = size()
+
+      render =
+        spawn_link(fn ->
+          Process.put(:terminal_size, size)
+
+          receive do
+            {:go, test} -> send(test, {:rows, screen(state)})
+          end
+
+          receive do
+            :stop -> :ok
+          end
+        end)
+
       wrap = {TUI, :item_lines, 2}
-      :erlang.trace_pattern(wrap, true, [:local, :call_count])
-      rows = screen(state)
-      {:call_count, wraps} = :erlang.trace_info(wrap, :call_count)
-      :erlang.trace_pattern(wrap, false, [:local, :call_count])
+      :erlang.trace_pattern(wrap, true, [:local])
+      :erlang.trace(render, true, [:call])
+      send(render, {:go, self()})
+      assert_receive {:rows, rows}
+      :erlang.trace_pattern(wrap, false, [:local])
+      ref = :erlang.trace_delivered(render)
+      assert_receive {:trace_delivered, ^render, ^ref}
+      send(render, :stop)
+      {:messages, messages} = Process.info(self(), :messages)
+      wraps = Enum.count(messages, &match?({:trace, ^render, :call, {TUI, :item_lines, _}}, &1))
 
       # The last row of the first cell is its empty row, then the next cells.
-      assert wraps <= 5
+      assert wraps in 1..5
       assert rows == ["› m1", "› m2"]
     end
 

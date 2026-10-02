@@ -6,15 +6,6 @@ defmodule Helyx.Credo.FileLengthTest do
 
   alias Helyx.Credo.FileLength
 
-  # In `mix precommit`, `mix credo` has started the services of Credo in
-  # this VM before the tests.
-  setup_all do
-    case Credo.Application.start(:normal, []) do
-      {:ok, _pid} -> :ok
-      {:error, {:already_started, _pid}} -> :ok
-    end
-  end
-
   # A module of exactly `lines` lines, with a final newline.
   defp issues(lines, path \\ "lib/sample.ex", allowed \\ %{}) do
     body = String.duplicate("  @a 1\n", lines - 2)

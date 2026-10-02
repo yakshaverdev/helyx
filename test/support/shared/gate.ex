@@ -33,7 +33,8 @@ defmodule Helyx.Test.Gate do
     end)
   end
 
-  defp wait(gate) do
+  # Tells the gate that this process waits, and waits for :go.
+  def wait(gate) do
     send(String.to_existing_atom(gate), {:waiting, self()})
 
     receive do

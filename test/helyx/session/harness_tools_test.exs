@@ -42,7 +42,7 @@ defmodule Helyx.Session.HarnessToolsTest do
       {:conn, ^last, _pid, request} -> Enum.reverse([request | acc])
       {:conn, _kind, _pid, request} -> requests_until(last, [request | acc])
     after
-      3_000 -> flunk("timed out waiting for #{last}")
+      Helyx.Test.Events.wait_ms() -> flunk("timed out waiting for #{last}")
     end
   end
 
@@ -88,9 +88,14 @@ defmodule Helyx.Session.HarnessToolsTest do
     slow(harness, turn_id, "c1", 200)
     request(harness, turn_id, "c2", "upcase", %{"text" => "b"})
 
-    assert_receive {:conn, :tool_result, _, {:tool_result, _, "c1", {:ok, "c1"}}}, 3_000
-    refute_received {:conn, :tool_result, _, {:tool_result, _, "c2", _}}
-    assert_receive {:conn, :tool_result, _, {:tool_result, _, "c2", {:ok, "B"}}}
+    # The results arrive in the order of their runs.
+    assert_receive {:conn, :tool_result, _, {:tool_result, _, first, first_result}}
+    assert_receive {:conn, :tool_result, _, {:tool_result, _, second, second_result}}
+
+    assert [{first, first_result}, {second, second_result}] == [
+             {"c1", {:ok, "c1"}},
+             {"c2", {:ok, "B"}}
+           ]
   end
 
   test "over one running and 16 waiting, a request gets an error at once and runs nothing",
@@ -315,7 +320,7 @@ defmodule Helyx.Session.HarnessToolsTest do
   # Waits until the mailbox of `pid` holds a message that `match?` finds;
   # the process is suspended, so the message stays there. Polls every 10 ms,
   # for at least `ms`.
-  defp in_mailbox(pid, match?, ms \\ 5_000)
+  defp in_mailbox(pid, match?, ms \\ wait_ms())
   defp in_mailbox(_pid, _match?, ms) when ms <= 0, do: flunk("no such message in the mailbox")
 
   defp in_mailbox(pid, match?, ms) do
@@ -405,7 +410,7 @@ defmodule Helyx.Session.HarnessToolsTest do
 
     :erlang.trace(pid, true, [:send])
     :erlang.resume_process(pid)
-    assert_receive {:DOWN, ^ref, :process, ^harness, :killed}, 3_000
+    assert_receive {:DOWN, ^ref, :process, ^harness, :killed}
     events = collect_until(:agent_end)
     assert List.last(events).data.stop_reason == :error
     refute_received {:trace, ^pid, :send, {:"$gen_cast", {:run, _, %{id: "c1"}}}, _}
@@ -452,7 +457,7 @@ defmodule Helyx.Session.HarnessToolsTest do
     task = Task.async(fn -> Session.abort(session) end)
     in_mailbox(harness, &match?({:harness_request, _, _, {:tool_result, _, "x", _}}, &1))
     :erlang.resume_process(harness)
-    assert :ok = Task.await(task)
+    assert :ok = Task.await(task, wait_ms())
 
     assert [{:tool_result, ^turn_id, "x", {:error, "aborted"}}, {:interrupt, ^turn_id}] =
              Enum.take(requests_until(:interrupt), -2)
@@ -483,7 +488,7 @@ defmodule Helyx.Session.HarnessToolsTest do
     refute Enum.any?(held, &match?({:harness_request, _, _, {:turn, _, _}}, &1))
 
     :erlang.resume_process(harness)
-    assert :ok = Task.await(task)
+    assert :ok = Task.await(task, wait_ms())
 
     assert [
              {:tool_result, ^turn_id, "x", {:error, "aborted"}},

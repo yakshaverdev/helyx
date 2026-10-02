@@ -6,15 +6,6 @@ defmodule Helyx.Credo.WallClockUpperBoundTest do
 
   alias Helyx.Credo.WallClockUpperBound
 
-  # In `mix precommit`, `mix credo` has started the services of Credo in
-  # this VM before the tests.
-  setup_all do
-    case Credo.Application.start(:normal, []) do
-      {:ok, _pid} -> :ok
-      {:error, {:already_started, _pid}} -> :ok
-    end
-  end
-
   defp issues(body) do
     """
     defmodule SampleTest do

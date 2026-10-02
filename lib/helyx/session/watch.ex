@@ -6,9 +6,9 @@ defmodule Helyx.Session.Watch do
   #
   # It has no link and no supervisor: it monitors the session and the
   # subscriber and stops when either ends. The one exception is the wait
-  # before the lost signal, which ends with the answer or the exit of the
-  # supervisor, or with a kill by the next subscribe of the caller. It
-  # registers itself in the events Registry under its own key, so it is
+  # before the lost signal, which ends when the Registry is back or will
+  # not come back, when the subscriber ends, or with a kill by the next
+  # subscribe of the caller. It registers itself in the events Registry under its own key, so it is
   # linked to the partition that holds the subscriber's entry and gets no
   # event. This holds because the Registry has one partition
   # (`Helyx.Core`); a duplicate-key Registry picks a partition by the pid.
@@ -56,28 +56,67 @@ defmodule Helyx.Session.Watch do
     do: {:stop, :normal, state}
 
   # The only link is the Registry partition. The lost signal waits until
-  # the supervisor that restarts the Registry has handled the exit ("The
-  # watch" in docs/features/end-signal.md): the Registry supervisor, or the
-  # Core when the Registry supervisor is gone.
-  def handle_info({:EXIT, _partition, _reason}, %__MODULE__{} = state) do
-    if await_supervisor(Helyx.Core.events_registry(state.core)) == :down,
-      do: await_supervisor(state.core)
+  # the Registry is back ("The watch" in docs/features/end-signal.md). A
+  # subscriber that ends during a pause of the wait gets no signal.
+  def handle_info({:EXIT, partition, _reason}, %__MODULE__{} = state) do
+    if await_restart(state, partition) == :signal,
+      do: send(state.subscriber, {:helyx_subscription_lost, state.id})
 
-    send(state.subscriber, {:helyx_subscription_lost, state.id})
     {:stop, :normal, state}
   end
 
-  # The request of `Supervisor.count_children/1`. A normal call, not a
-  # `:sys` call: a process handles its messages in order, so the call waits
-  # behind the exit. No timeout: a timeout would send the lost signal before
-  # the supervisor has the exit. The call monitors the supervisor, so the
-  # wait ends with its answer or its exit, and the next subscribe of the
-  # caller kills the watch.
-  defp await_supervisor(supervisor) do
-    GenServer.call(supervisor, :count_children, :infinity)
-    :ok
+  # The pause between two checks of the Registry. The wait is the time a
+  # supervisor takes to handle an exit, or a restart that ends at the
+  # restart limit, so the pause adds little to the lost signal.
+  @check_ms 10
+
+  # Waits until the events Registry has a live partition that is not the
+  # dead one: `:signal`. The exit of the partition can reach the watch
+  # before the Registry supervisor: signals from two processes have no
+  # order. So the watch checks the pid, not the order. `:signal` also when
+  # the Registry does not come back (stopped, or the Core is gone), so the
+  # subscriber learns of the loss at once; `:subscriber_down` when the
+  # subscriber ends.
+  defp await_restart(state, dead) do
+    if registry_state(state.core, dead) == :wait do
+      subscriber = state.subscriber
+
+      receive do
+        {:DOWN, _ref, :process, ^subscriber, _reason} -> :subscriber_down
+      after
+        @check_ms -> await_restart(state, dead)
+      end
+    else
+      :signal
+    end
+  end
+
+  # Each check is a call with no timeout: it ends with the answer or the
+  # exit of the supervisor, which then answers after the exits it has.
+  defp registry_state(core, dead) do
+    case Supervisor.which_children(Helyx.Core.events_registry(core)) do
+      # A new partition that died before this check is not back.
+      [{_id, pid, _type, _modules}] when is_pid(pid) and pid != dead ->
+        if Process.alive?(pid), do: :signal, else: :wait
+
+      [{_id, child, _type, _modules}] when child in [dead, :restarting] ->
+        :wait
+
+      _stopped_or_deleted ->
+        :signal
+    end
   catch
-    :exit, _reason -> :down
+    # The Registry supervisor is gone: the Core restarts it, or not.
+    :exit, _reason -> registry_child(core)
+  end
+
+  defp registry_child(core) do
+    case List.keyfind(Supervisor.which_children(core), Helyx.Core.events_registry(core), 0) do
+      {_id, child, _type, _modules} when is_pid(child) or child == :restarting -> :wait
+      _stopped_or_deleted -> :signal
+    end
+  catch
+    :exit, _reason -> :signal
   end
 
   defp end_reason(reason) when reason in [:normal, :shutdown], do: :stopped

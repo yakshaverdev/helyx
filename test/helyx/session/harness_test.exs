@@ -159,7 +159,7 @@ defmodule Helyx.Session.HarnessTest do
 
       :ok = Session.set_model(session, "conn/echo")
       :ok = Session.prompt(session, "two")
-      assert_receive {:DOWN, ^ref, :process, _, :killed}, 2_000
+      assert_receive {:DOWN, ^ref, :process, _, :killed}
       assert final_text(collect_until(:agent_end)) == "echo:prepared|two"
       assert_received {:conn, :init, new, {"echo", _, _}}
       assert new != old
@@ -176,7 +176,7 @@ defmodule Helyx.Session.HarnessTest do
 
       :erlang.suspend_process(pid)
       :erlang.suspend_process(hands)
-      assert_receive {:DOWN, ^ref, :process, _, :killed}, 2_000
+      assert_receive {:DOWN, ^ref, :process, _, :killed}
       :erlang.resume_process(hands)
       :erlang.resume_process(pid)
 
@@ -193,7 +193,7 @@ defmodule Helyx.Session.HarnessTest do
 
       :erlang.suspend_process(pid)
       :erlang.suspend_process(hands)
-      assert_receive {:DOWN, ^ref, :process, _, :killed}, 2_000
+      assert_receive {:DOWN, ^ref, :process, _, :killed}
       :erlang.resume_process(hands)
       :erlang.resume_process(pid)
 
@@ -383,9 +383,14 @@ defmodule Helyx.Session.HarnessTest do
       refute_received {:conn, :init, _, _}
     end
 
+    # The bound also holds the prepare of the second turn, which ends in
+    # milliseconds, so the bound is the margin for load.
+    @load_prepare_ms 2_000
+
+    @tag :slow
     test "a prepare that blocks is killed at the bound and keeps the harness process",
          %{core: core} do
-      {session, _pid, _hands} = start(core, "echo", prepare: 200)
+      {session, _pid, _hands} = start(core, "echo", prepare: @load_prepare_ms)
       assert error(turn(session, "block_prepare")) == {:task_exit, :killed}
       # The connect races the prepare Task, so the init message can come
       # after the turn ends. The wait is for a message that must come, not
@@ -406,7 +411,7 @@ defmodule Helyx.Session.HarnessTest do
 
       :erlang.suspend_process(pid)
       send(harness, {:flood, turn_id})
-      assert_receive {:DOWN, ^ref, :process, _, _}, 5_000
+      assert_receive {:DOWN, ^ref, :process, _, _}
       :erlang.resume_process(pid)
 
       assert {:session_behind, _length, 10_000} = error(collect_until(:agent_end))
@@ -472,7 +477,7 @@ defmodule Helyx.Session.HarnessTest do
       refute_received {:conn, :steer, _, _}
       :erlang.resume_process(harness)
 
-      assert_receive {:conn, :steer, ^harness, {:steer, ^turn_id, _, "more"}}, 2_000
+      assert_receive {:conn, :steer, ^harness, {:steer, ^turn_id, _, "more"}}
       # "late_turn" ends the turn with its :ok, so the steer's answer, :ok
       # with no user message, comes after the terminal: a notice then.
       collect_until(:agent_end)
@@ -505,7 +510,7 @@ defmodule Helyx.Session.HarnessTest do
       abort = Task.async(fn -> Session.abort(session) end)
       assert unconfirmed(collect_until(:steer_unconfirmed)) == [%{text: "more"}]
       send(harness, {:answer, from, :rejected})
-      assert :ok = Task.await(abort)
+      assert :ok = Task.await(abort, wait_ms())
       assert %{turn: nil, queue: %{steers: 0}} = GenServer.call(pid, :snapshot)
       refute_received {:conn, :turn, _, _}
     end
@@ -524,7 +529,7 @@ defmodule Helyx.Session.HarnessTest do
       # The abort drops the follow-up; the wait still holds the request.
       assert %{data: %{follow_ups: 0}} = List.last(collect_until(:queue_update))
       send(harness, {:answer, from, :ok})
-      assert :ok = Task.await(abort)
+      assert :ok = Task.await(abort, wait_ms())
       refute_received {:helyx_event, %{type: :steer_unconfirmed}}
       refute_received {:conn, :turn, _, _}
     end
@@ -584,7 +589,7 @@ defmodule Helyx.Session.HarnessTest do
       abort = Task.async(fn -> Session.abort(session) end)
       assert unconfirmed(collect_until(:agent_end)) == [%{text: "more"}]
       send(harness, {:answer, from, :rejected})
-      assert :ok = Task.await(abort)
+      assert :ok = Task.await(abort, wait_ms())
       assert %{queue: %{steers: 0}} = GenServer.call(pid, :snapshot)
     end
 
@@ -613,7 +618,7 @@ defmodule Helyx.Session.HarnessTest do
       abort = Task.async(fn -> Session.abort(session) end)
       assert unconfirmed(collect_until(:agent_end)) == [%{text: "more"}]
       send(harness, :stop)
-      assert :ok = Task.await(abort)
+      assert :ok = Task.await(abort, wait_ms())
       assert %{harness: nil} = :sys.get_state(pid)
       assert %{queue: %{steers: 0}} = GenServer.call(pid, :snapshot)
       refute_received {:helyx_event, %{type: :steer_unconfirmed}}
@@ -624,7 +629,7 @@ defmodule Helyx.Session.HarnessTest do
       {session, _pid, harness, _turn_id} = submitted(core, "steer_block", steer: 100)
       ref = Process.monitor(harness)
       :ok = Session.steer(session, "more")
-      assert_receive {:DOWN, ^ref, :process, _, :killed}, 2_000
+      assert_receive {:DOWN, ^ref, :process, _, :killed}
 
       events = collect_until(:agent_end)
       assert unconfirmed(events) == [%{text: "more"}]
@@ -809,16 +814,23 @@ defmodule Helyx.Session.HarnessTest do
       assert new != harness
     end
 
+    @idle_ms 2_000
+
+    # The test sees the end of the turn after it happens, so the check that
+    # the idle time starts again leaves 1,000 ms of it as the margin for load.
+    @load_idle_ms 1_000
+
+    @tag :slow
     test "is never sent while a turn runs, and the idle time starts again at its end",
          %{core: core} do
-      {session, _pid, _hands} = start(core, "hang", idle: 100)
+      {session, _pid, _hands} = start(core, "hang", idle: @idle_ms)
       :ok = Session.prompt(session, "one")
       assert_receive {:conn, :turn, harness, {:turn, turn_id, _}}
 
-      refute_receive {:conn, :idle_close, _, _}, 300
+      refute_receive {:conn, :idle_close, _, _}, @idle_ms + 1_000
       send(harness, {:finish, turn_id})
       collect_until(:agent_end)
-      refute_receive {:conn, :idle_close, _, _}, 50
+      refute_receive {:conn, :idle_close, _, _}, @idle_ms - @load_idle_ms
       assert_receive {:conn, :idle_close, ^harness, :idle_close}
     end
 
@@ -911,7 +923,7 @@ defmodule Helyx.Session.HarnessTest do
 
       assert_receive {:conn, :idle_close, ^harness, :idle_close}
       :ok = Session.prompt(session, "two")
-      assert_receive {:DOWN, ^ref, :process, _, :killed}, 2_000
+      assert_receive {:DOWN, ^ref, :process, _, :killed}
       assert final_text(collect_until(:agent_end)) == "echo:prepared|two"
       assert_received {:conn, :init, new, _}
       assert new != harness
@@ -950,21 +962,7 @@ defmodule Helyx.Session.HarnessTest do
   describe "two Cores on one session file" do
     @describetag :tmp_dir
 
-    # The registry entry frees after the process is gone; polls every
-    # 10 ms, for at most 5 s.
-    defp stop(session) do
-      GenServer.stop(Session.pid(session))
-      wait_free(Helyx.Core.sessions_registry(session.core), session.id, 500)
-    end
-
-    defp wait_free(registry, id, tries) when tries > 0 do
-      if Registry.lookup(registry, id) != [] do
-        Process.sleep(10)
-        wait_free(registry, id, tries - 1)
-      end
-    end
-
-    defp wait_free(_registry, _id, 0), do: flunk("the registry entry did not free")
+    defp stop(session), do: Helyx.Test.SessionCase.stop_session(session, &GenServer.stop/1)
 
     defp label(events), do: Enum.find(events, &(&1.type == :harness_session)).data
 

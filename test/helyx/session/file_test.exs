@@ -725,6 +725,7 @@ defmodule Helyx.Session.FileTest do
     end
   end
 
+  @tag :slow
   test "a file of many short lines is not split into a list of all of them", %{tmp_dir: dir} do
     {:ok, file} = Session.File.create(dir, "sess1", "/repo", "test/ok")
     File.write!(file.path, String.duplicate("\n", 4 * 1024 * 1024), [:append])
@@ -737,7 +738,7 @@ defmodule Helyx.Session.FileTest do
         exit({:result, Session.File.resume(dir, "/repo")})
       end)
 
-    assert_receive {:DOWN, ^ref, :process, ^pid, {:result, {:ok, resumed}}}, 5_000
+    assert_receive {:DOWN, ^ref, :process, ^pid, {:result, {:ok, resumed}}}
     assert resumed.messages == []
   end
 
@@ -761,6 +762,7 @@ defmodule Helyx.Session.FileTest do
       assert File.read!(file.path) == before
     end
 
+    @tag :slow
     test "a text-heavy session near the file limit fits the default cap", %{tmp_dir: dir} do
       {:ok, file} = Session.File.create(dir, "sess1", "/repo", "test/ok")
 
@@ -798,7 +800,7 @@ defmodule Helyx.Session.FileTest do
           exit({:result, Session.File.resume(dir, "/repo")})
         end)
 
-      assert_receive {:DOWN, ^ref, :process, ^pid, {:result, result}}, 10_000
+      assert_receive {:DOWN, ^ref, :process, ^pid, {:result, result}}
       assert {:ok, %{messages: []}} = result
     end
   end

@@ -59,8 +59,8 @@ defmodule Helyx.Watchdog.GoAheadTest do
   defp kill_and_await(watchdog, group) do
     System.cmd("kill", ["-KILL", "#{watchdog}"])
     signal_group("KILL", group)
-    assert gone_within?(watchdog, 2_000)
-    assert group_gone_within?(group, 2_000)
+    assert gone_within?(watchdog)
+    assert group_gone_within?(group)
   end
 
   # The watchdog and the group are dead before the go-ahead: its stdin has

@@ -278,9 +278,10 @@ defmodule Helyx.Test.Provider do
   #   "transcript" every message in the context as "role:text" lines
   #   "abort"      three calls to the slow tool that sleep for a minute;
   #                after the results, echoes them as text
-  #   "stuck"      one call to the hold tool: a handle whose release takes
-  #                800 ms and one that stays held, a sleep of a minute;
-  #                after the result, echoes the results
+  #   "stuck"      one call to the hold tool: a handle whose release waits
+  #                for the gate that the first user message names, and one
+  #                that stays held, a sleep of a minute; after the result,
+  #                echoes the results
   #   "steer"      one slow call; after the result, echoes the user message
   #                texts so far, so tests see which steers reached the call
   @behaviour Helyx.Provider
@@ -422,7 +423,8 @@ defmodule Helyx.Test.Provider do
     if Enum.any?(messages, &(&1.role == :tool_result)) do
       {:ok, echo_results(messages)}
     else
-      arguments = %{"handles" => [%{"slow" => 800}, "keep"], "ms" => 60_000}
+      gate = Helyx.Message.text(Enum.find(messages, &(&1.role == :user)))
+      arguments = %{"handles" => [%{"gate" => gate}, "keep"], "ms" => 60_000}
       call = %Helyx.Message.ToolCall{id: "1", name: "hold", arguments: arguments}
       {:ok, [{:tool_call, call}, {:done, %{stop_reason: :tool_use, usage: %{}}}]}
     end
@@ -674,13 +676,14 @@ defmodule Helyx.Test.Tool.Hold do
   #
   #   {:report, pid}  sends {:release, mode, handles} to pid
   #   {:slow, ms}     sleeps ms before the release returns
+  #   %{"gate" => g}  waits for :go from the gate `g` (`Helyx.Test.Gate`)
   #   :keep           stays held
   #   {:keep, agent}  stays held while the Agent holds true
   #   :raise, :exit   the release raises or exits
   #   :bad            the release returns a handle it was not given
   #   :improper       the release returns an improper list
   #
-  # "keep" and %{"slow" => ms} are the forms a transcript can hold. Every
+  # "keep" and %{"gate" => g} are the forms a transcript can hold. Every
   # other handle is released.
   @behaviour Helyx.Tool
 
@@ -703,7 +706,7 @@ defmodule Helyx.Test.Tool.Hold do
   def release(handles, mode, _deadline) do
     for {:report, pid} <- handles, do: send(pid, {:release, mode, handles})
     Process.sleep(Enum.sum(for {:slow, ms} <- handles, do: ms))
-    Process.sleep(Enum.sum(for %{"slow" => ms} <- handles, do: ms))
+    for %{"gate" => gate} <- handles, do: Helyx.Test.Gate.wait(gate)
 
     cond do
       :raise in handles -> raise "release failed"

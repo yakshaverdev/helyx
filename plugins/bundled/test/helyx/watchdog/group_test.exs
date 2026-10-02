@@ -71,16 +71,18 @@ defmodule Helyx.Watchdog.GroupTest do
     assert Enum.all?(Enum.drop(probes, -1), fn {_, at} -> at < first + ms end)
   end
 
-  # Room for scheduler load in a check of a wait that must not happen: far
-  # above the delays that load makes, far below the waits of 500 ms and more.
-  @load_ms 250
+  # Room for scheduler load in a check of a wait that must not happen: above
+  # the 524 ms that a parallel precommit run added (#295), below the KILL
+  # wait of 5,000 ms that the checks rule out.
+  @load_ms 2_000
 
-  # The deadline is four load margins, so load does not delay the first KILL
-  # past it (#271). The KILL wait is 5,000 ms, so a wait that the deadline
-  # does not bound ends about 4,000 ms after it, far above `@load_ms`.
+  # The deadline of 1,000 ms leaves room for load before the first KILL
+  # (#271). The KILL wait is 5,000 ms, so a wait that the deadline does not
+  # bound ends about 4,000 ms after it, above `@load_ms`.
+  @tag :slow
   test "a group that survives KILL is still held, and the deadline bounds the wait" do
     kill = fake_kill([4242], [4242])
-    until = deadline(4 * @load_ms)
+    until = deadline(1_000)
 
     assert Group.release([{:command, 4242}], :deliver, until, kill: kill) == [
              {:command, 4242}
@@ -92,6 +94,7 @@ defmodule Helyx.Watchdog.GroupTest do
 
   # A watchdog that does not exit by itself gets its KILL after one wait of
   # 5,000 ms, only after the command group is gone.
+  @tag :slow
   test "the watchdog is KILLed only after the command group is gone" do
     kill = fake_kill([100, 200])
 
@@ -116,12 +119,10 @@ defmodule Helyx.Watchdog.GroupTest do
 
   test "a retry KILLs every group and probes once, with no wait" do
     kill = fake_kill([100, 200], [100, 200])
-    start = System.monotonic_time(:millisecond)
     handles = [{:command, 100}, {:watchdog, 200}]
 
     assert Group.release(handles, :retry, deadline(1_000), kill: kill) == handles
-    assert System.monotonic_time(:millisecond) - start < @load_ms
-    # A poll would probe a held group again.
+    # Each wait polls, and a poll would probe a held group again.
     assert Enum.map(runs(), &elem(&1, 0)) == [
              ["-KILL", "--", "-100", "-200"],
              ["-0", "--", "-100"],
@@ -173,6 +174,7 @@ defmodule Helyx.Watchdog.GroupTest do
     assert_polls_within(runs(), "-TERM", 500)
   end
 
+  @tag :slow
   test "a longer grace waits up to its limit before the KILL" do
     kill = fake_kill([100])
     start = System.monotonic_time(:millisecond)
@@ -189,6 +191,7 @@ defmodule Helyx.Watchdog.GroupTest do
     assert signals(runs) == [{"-TERM", ["-100"]}, {"-KILL", ["-100"]}]
   end
 
+  @tag :slow
   test "a KILL wait ends after 5,000 ms" do
     kill = fake_kill([4242], [4242])
     start = System.monotonic_time(:millisecond)
@@ -201,10 +204,12 @@ defmodule Helyx.Watchdog.GroupTest do
     assert_polls_within(runs(), "-KILL", 5_000)
   end
 
+  # A TERM grace that does not stop at the deadline ends 10 s after it, far
+  # above `@load_ms`.
   test "no wait passes the deadline" do
     kill = fake_kill([4242], [4242])
     until = deadline(50)
-    Group.release([{:command, 4242}], :cancel, until, kill: kill)
+    Group.release([{:command, 4242}], :cancel, until, kill: kill, grace_ms: 10_000)
     assert System.monotonic_time(:millisecond) - until < @load_ms
   end
 
@@ -230,7 +235,7 @@ defmodule Helyx.Watchdog.GroupTest do
     receive do
       {^port, {:data, line}} -> String.to_integer(String.trim(line))
     after
-      2_000 -> flunk("no group pid")
+      Helyx.Test.Events.wait_ms() -> flunk("no group pid")
     end
   end
 end

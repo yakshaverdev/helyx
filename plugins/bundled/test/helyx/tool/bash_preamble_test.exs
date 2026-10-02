@@ -71,7 +71,7 @@ defmodule Helyx.Tool.Bash.PreambleTest do
     assert {:error, _} = Helyx.Tool.Bash.run(%{"command" => "sleep 30"}, dir)
     assert_received {:held, watchdog, :watchdog}
     # The watchdog reaps the child it holds before it exits.
-    assert gone_within?("-#{watchdog}", 2_000)
+    assert gone_within?("-#{watchdog}")
   end
 
   test "a line from the environment cannot pass for a marker", %{tmp_dir: dir} do
@@ -161,10 +161,10 @@ defmodule Helyx.Tool.Bash.PreambleTest do
         assert {group, _pre} = Helyx.Watchdog.read_marker(port, "nonce", "", "")
         assert is_integer(group)
         true = Port.command(port, "go\n")
-        assert_receive {^port, {:data, "nonce 1\n" <> _}}, 2_000
+        assert_receive {^port, {:data, "nonce 1\n" <> _}}
 
         Port.close(port)
-        assert group_gone_within?(group, 2_000)
+        assert group_gone_within?(group)
       end
     end
 
@@ -179,12 +179,12 @@ defmodule Helyx.Tool.Bash.PreambleTest do
           Helyx.Tool.Bash.run(%{"command" => "echo v=$PERL5OPT."}, dir)
         end)
 
-      assert {:ok, {:ok, text}} = Task.yield(task, 5_000)
+      assert {:ok, {:ok, text}} = Task.yield(task, Helyx.Test.Events.wait_ms())
       assert text =~ "v=-d.\n"
       assert_received {:held, watchdog, :watchdog}
       assert_received {:held, group, :command}
-      assert group_gone_within?(watchdog, 2_000)
-      assert group_gone_within?(group, 2_000)
+      assert group_gone_within?(watchdog)
+      assert group_gone_within?(group)
     end
 
     test "PERL_BADLANG=0 still stops the locale warning of the watchdog", %{tmp_dir: dir} do

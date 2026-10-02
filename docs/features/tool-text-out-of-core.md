@@ -49,7 +49,7 @@ No new resource. An oversized result fails the turn while the harness program ru
 ## Tests
 
 - The truncate and `read_file/1` tests, including the property test, move from `test/helyx/interfaces/tool_test.exs` to `plugins/bundled/test/helyx/text_test.exs`, with no change to their assertions. `plugins/bundled` adds `stream_data` as a test dependency, and its lock file is updated.
-- `test/helyx/interfaces/tool_test.exs` holds only these tests, so the whole file moves. `by_name/1`, `spec/1`, and `hold/1` have their tests in `test/helyx/session/hands_test.exs` and `test/helyx/session_test.exs`. (Corrected in #121: the design said that the file keeps the tests of these three functions.)
+- `test/helyx/interfaces/tool_test.exs` holds only these tests, so the whole file moves. `by_name/1`, `spec/1`, and `hold/1` have their tests in `test/helyx/session/hands_test.exs` and the session test modules in `test/helyx/session/`. (Corrected in #121: the design said that the file keeps the tests of these three functions.)
 - The ClaudeCode and Codex tests each get a test: a tool result over the limits arrives cut, with the notice.
 - The session test "a harness tool result is cut like a tool result" (`test/helyx/session_test.exs:247`) is replaced by tests of the Core check: a result at the limit is recorded as sent; a result over the limit fails the turn with `{:tool_result_too_large, bytes, 65_536}`, the error holds no text, the open calls get their aborted results, and the session then accepts another prompt that completes a turn.
 
