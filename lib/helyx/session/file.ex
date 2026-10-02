@@ -12,6 +12,8 @@ defmodule Helyx.Session.File do
   """
 
   alias Helyx.Message
+  alias Helyx.Session.File.Branch
+  alias Helyx.Session.File.Codec
 
   @version 1
 
@@ -38,8 +40,6 @@ defmodule Helyx.Session.File do
   # The scan reads the header of this many files: the ones with the newest
   # modification time. Nothing deletes session files, so their count grows.
   @max_scanned_files 256
-
-  @no_header "the first entry is not a header"
 
   @enforce_keys [:path]
   defstruct [:path, :leaf]
@@ -201,17 +201,16 @@ defmodule Helyx.Session.File do
          :ok <- check_size(byte_size(raw), max_bytes),
          {entries, tail} = parse(raw, []),
          :ok <- check_size(repaired_size(byte_size(raw), tail), max_bytes),
-         {:ok, leaf, branch} <- newest_branch(entries),
-         :ok <- check_entries(branch) do
-      # `entries` is not used after this, so the decode does not keep it alive.
-      fork = last_fork(entries, branch)
+         {:ok, leaf, branch} <- Branch.newest(entries) do
+      # The fork scan is the last use of `entries`, so the decode does not keep it alive.
+      fork = Branch.last_fork(entries, branch)
 
       resumed = %Resumed{
         file: %__MODULE__{path: path, leaf: leaf},
         session_id: Path.basename(path, ".jsonl"),
-        model: current_model(header, branch),
-        messages: for(%{"type" => "message"} = entry <- branch, do: decode_message(entry)),
-        harness_sessions: harness_sessions(branch, fork)
+        model: Branch.current_model(header, branch),
+        messages: for(%{"type" => "message"} = entry <- branch, do: Codec.decode(entry)),
+        harness_sessions: Branch.harness_sessions(branch, fork)
       }
 
       {:ok, resumed, tail}
@@ -248,270 +247,13 @@ defmodule Helyx.Session.File do
   @doc "Appends one completed message to the file."
   @spec append_message(t(), Message.t()) :: t()
   def append_message(%__MODULE__{} = file, %Message{} = message) do
-    append(file, encode_message(message))
+    append(file, Codec.encode(message))
   end
 
   # Internals
 
-  defp encode_message(%Message{role: role} = message) do
-    encoded =
-      %{
-        "type" => "message",
-        "role" => Atom.to_string(role),
-        "content" => Enum.map(message.content, &encode_block/1),
-        "model" => message.model,
-        "stop_reason" => encode_stop_reason(message.stop_reason),
-        "tool_call_id" => message.tool_call_id,
-        "tool_name" => message.tool_name,
-        "usage" => map_size(message.usage) > 0 && message.usage
-      }
-      |> Map.reject(fn {_key, value} -> value in [nil, false] end)
-
-    if role == :tool_result, do: Map.put(encoded, "is_error", message.is_error), else: encoded
-  end
-
-  defp encode_block(%Message.Text{text: text}), do: %{"type" => "text", "text" => text}
-
-  defp encode_block(%Message.Thinking{thinking: thinking, signature: nil}),
-    do: %{"type" => "thinking", "thinking" => thinking}
-
-  defp encode_block(%Message.Thinking{thinking: thinking, signature: signature}),
-    do: %{"type" => "thinking", "thinking" => thinking, "signature" => signature}
-
-  defp encode_block(%Message.ToolCall{id: id, name: name, arguments: arguments}) do
-    %{"type" => "tool_call", "id" => id, "name" => name, "arguments" => arguments}
-  end
-
-  defp encode_block(%Message.Image{mime_type: mime_type, data: data}) do
-    %{"type" => "image", "mime_type" => mime_type, "data" => data}
-  end
-
-  # A bad value of a field that core needs (role, content, tool_call_id,
-  # tool_name, is_error) misses its decode clause; the rescue in resume/3
-  # turns that into a rejected file. The model, the stop reason, and the
-  # usage are optional: a bad one decodes as a missing one, so it does not
-  # lose the chat.
-  defp decode_message(entry) do
-    %Message{
-      role: decode_role(entry["role"]),
-      content: Enum.map(entry["content"], &decode_block/1),
-      model: decode_model(entry["model"]),
-      stop_reason: decode_stop_reason(entry["stop_reason"]),
-      tool_call_id: optional_string(entry["tool_call_id"]),
-      tool_name: optional_string(entry["tool_name"]),
-      is_error: decode_is_error(entry["is_error"]),
-      usage: decode_usage(entry["usage"])
-    }
-  end
-
-  defp decode_role("user"), do: :user
-  defp decode_role("assistant"), do: :assistant
-  defp decode_role("tool_result"), do: :tool_result
-
-  # The clauses are built at compile time from `Message.stop_reasons/0`, so
-  # the atoms are interned in this module: a fresh VM that has loaded no
-  # provider still decodes a saved file. A stop reason outside the set has
-  # no encode clause, so the writer raises an error instead of appending an
-  # entry that a later resume would read as no stop reason. On decode, any
-  # value outside the set, false too, is no stop reason.
-  defp encode_stop_reason(nil), do: nil
-
-  for reason <- Message.stop_reasons() do
-    defp decode_stop_reason(unquote(Atom.to_string(reason))), do: unquote(reason)
-    defp encode_stop_reason(unquote(reason)), do: unquote(Atom.to_string(reason))
-  end
-
-  defp decode_stop_reason(_value), do: nil
-
-  defp optional_string(nil), do: nil
-  defp optional_string(value) when is_binary(value), do: value
-
-  defp decode_is_error(nil), do: false
-  defp decode_is_error(value) when is_boolean(value), do: value
-
-  defp decode_model(value) when is_binary(value), do: value
-  defp decode_model(_value), do: nil
-
-  defp decode_usage(value) when is_map(value), do: Message.cap_integers(value)
-  defp decode_usage(_value), do: %{}
-
-  defp decode_block(%{"type" => "text", "text" => text}) when is_binary(text),
-    do: %Message.Text{text: text}
-
-  defp decode_block(%{"type" => "thinking", "thinking" => thinking, "signature" => signature})
-       when is_binary(thinking) and is_binary(signature),
-       do: %Message.Thinking{thinking: thinking, signature: signature}
-
-  defp decode_block(%{"type" => "thinking", "thinking" => thinking} = block)
-       when is_binary(thinking) and not is_map_key(block, "signature"),
-       do: %Message.Thinking{thinking: thinking}
-
-  defp decode_block(%{"type" => "tool_call", "id" => id, "name" => name, "arguments" => args})
-       when is_binary(id) and is_binary(name) and is_map(args) do
-    # A file from before #79, or a file that a person changed, can hold an
-    # integer over the digit limit. Each later provider request would pay the
-    # quadratic JSON encode for it.
-    %Message.ToolCall{id: id, name: name, arguments: Message.cap_integers(args)}
-  end
-
-  defp decode_block(%{"type" => "image", "mime_type" => mime_type, "data" => data})
-       when is_binary(mime_type) and is_binary(data) do
-    %Message.Image{mime_type: mime_type, data: data}
-  end
-
   defp check_version(%{"version" => @version}), do: :ok
   defp check_version(header), do: {:error, {:unknown_version, header["version"]}}
-
-  # The writer only produces a header on line one, then messages, model
-  # changes, and harness sessions, every one with an id, every model field a
-  # string. Anything else on the branch is on-disk corruption, never
-  # silently dropped, and never laundered by a later entry that overrides
-  # it. An entry on no branch is never read, so its shape is not checked.
-  # The harness fields are an optional label: harness_sessions/2 drops a
-  # bad one. newest_branch/1 put on the branch only entries with a string
-  # id.
-  defp check_entries([%{"type" => "session", "model" => model} | rest]) when is_binary(model) do
-    case Enum.find(rest, &(not valid_entry?(&1))) do
-      nil -> :ok
-      bad -> {:error, {:invalid_file, "entry the writer never produces: #{inspect(bad["type"])}"}}
-    end
-  end
-
-  defp check_entries(_branch), do: {:error, {:invalid_file, @no_header}}
-
-  defp valid_entry?(%{"type" => "message"}), do: true
-  defp valid_entry?(%{"type" => "model_change", "model" => model}), do: is_binary(model)
-  defp valid_entry?(%{"type" => "harness_session"}), do: true
-  defp valid_entry?(_entry), do: false
-
-  # The branch of the newest leaf, header first. The index holds each entry
-  # in file order, so a parent is always an earlier entry, the walk from a
-  # leaf ends at the header, and a cycle cannot form. The header is the root
-  # whatever its own parent_id says: the walk stops at its id. A value in
-  # the index is a rooted entry, :unrooted, or {:shared, entry}: an id that
-  # a later entry repeats. Before the repeat a child can only mean the
-  # first entry, so the branch through it stands; after it, a child cannot
-  # tell the two apart and is on no branch, as is the repeat itself.
-  #
-  # The leaf is the newest rooted entry whose id is not shared: the next
-  # append names the leaf as its parent, so a shared leaf would put all new
-  # work on no branch. When the header id is shared and no other entry can
-  # be the leaf, no entry can take a child, and the file is refused.
-  defp newest_branch([%{"id" => root} = header | rest] = entries) when is_binary(root) do
-    index = Enum.reduce(rest, %{root => header}, &index_entry/2)
-
-    case Enum.find(Enum.reverse(entries), &match?(%{}, Map.get(index, &1["id"]))) do
-      %{"id" => leaf} -> {:ok, leaf, walk(index, root, leaf, [])}
-      nil -> {:error, {:invalid_file, "a repeat of the header id leaves no entry to resume"}}
-    end
-  end
-
-  defp newest_branch(_entries), do: {:error, {:invalid_file, @no_header}}
-
-  # An entry with no string id has no identity: no entry can name it as
-  # its parent, so it is on no branch.
-  defp index_entry(%{"id" => id}, index) when is_map_key(index, id),
-    do: Map.update!(index, id, &shared/1)
-
-  defp index_entry(%{"id" => id} = entry, index) when is_binary(id) do
-    parent = entry["parent_id"]
-
-    case index do
-      %{^parent => %{}} -> Map.put(index, id, entry)
-      _unrooted -> Map.put(index, id, :unrooted)
-    end
-  end
-
-  defp index_entry(_entry, acc), do: acc
-
-  defp shared(%{} = entry), do: {:shared, entry}
-  defp shared(other), do: other
-
-  defp walk(index, root, root, branch), do: [entry_at(index, root) | branch]
-
-  defp walk(index, root, id, branch) do
-    entry = entry_at(index, id)
-    walk(index, root, entry["parent_id"], [entry | branch])
-  end
-
-  defp entry_at(index, id) do
-    case Map.fetch!(index, id) do
-      {:shared, entry} -> entry
-      entry -> entry
-    end
-  end
-
-  # The last model change wins, else the header's model. Both are strings:
-  # check_entries validated every entry before this runs.
-  defp current_model(header, entries) do
-    Enum.reduce(entries, header["model"], fn
-      %{"type" => "model_change"} = entry, _acc -> entry["model"]
-      _entry, acc -> acc
-    end)
-  end
-
-  # The last harness session entry of each provider wins: a lost harness
-  # session is followed by a new entry for the same provider. Each keeps the
-  # number of messages before it, so the session can tell whether the
-  # harness session has made a message since. The label is optional: with
-  # none, the provider starts a fresh harness session. A bad id removes the
-  # label of its provider, so an earlier, stale label does not come back. An
-  # entry with no usable provider removes every label, because the reader
-  # cannot know which one it replaced. A fork at the branch entry with the
-  # id `fork` removes every label at or above it (#282): the other branch
-  # holds those labels too and may have continued their harness sessions.
-  defp harness_sessions(entries, fork) do
-    {sessions, _count} =
-      Enum.reduce(entries, {%{}, 0}, fn entry, acc ->
-        {sessions, count} = harness_entry(entry, acc)
-        if entry["id"] == fork, do: {%{}, count}, else: {sessions, count}
-      end)
-
-    sessions
-  end
-
-  defp harness_entry(%{"type" => "message"}, {sessions, count}), do: {sessions, count + 1}
-
-  defp harness_entry(
-         %{"type" => "harness_session", "provider" => provider} = entry,
-         {sessions, count}
-       )
-       when is_binary(provider) do
-    if Message.resume_id?(entry["harness_session_id"]),
-      do: {Map.put(sessions, provider, {entry["harness_session_id"], count}), count},
-      else: {Map.delete(sessions, provider), count}
-  end
-
-  defp harness_entry(%{"type" => "harness_session"}, {_sessions, count}), do: {%{}, count}
-  defp harness_entry(_entry, acc), do: acc
-
-  # The id of the last branch entry, from the first harness session entry
-  # down, that an entry of the file off the branch names as its parent, or
-  # nil. Every such entry counts, also one on no branch: a fork the reader
-  # cannot follow may still be another writer's work, and a wrong fork
-  # costs one replay. A branch with no harness session entry has no label
-  # to drop, so it builds nothing.
-  defp last_fork(entries, branch),
-    do: fork_in(entries, Enum.drop_while(branch, &(&1["type"] != "harness_session")))
-
-  defp fork_in(_entries, []), do: nil
-
-  # The branch child of a labelled entry is itself labelled, so an entry off
-  # the branch is one whose id is not among these.
-  defp fork_in(entries, labelled) do
-    ids = MapSet.new(labelled, & &1["id"])
-
-    forks =
-      for %{"parent_id" => parent} = entry <- entries,
-          MapSet.member?(ids, parent),
-          not MapSet.member?(ids, entry["id"]),
-          into: MapSet.new(),
-          do: parent
-
-    Enum.find_value(Enum.reverse(labelled), fn %{"id" => id} ->
-      if MapSet.member?(forks, id), do: id
-    end)
-  end
 
   # The most recently started session whose header matches the working
   # directory. Two directories can share a slug, so the header decides.
