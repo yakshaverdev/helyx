@@ -168,7 +168,7 @@ defmodule Helyx.Session.PersistenceTest do
   end
 
   @tag :tmp_dir
-  test "a resume counts the inserted results in the messages before a harness session", %{
+  test "a resume counts the inserted results in the messages before a program session", %{
     core: core,
     tmp_dir: dir
   } do
@@ -183,7 +183,7 @@ defmodule Helyx.Session.PersistenceTest do
     {:ok, session} = Session.resume(core, sessions_dir: dir)
     state = :sys.get_state(Session.pid(session))
     assert length(state.transcript) == 3
-    assert state.harness_sessions == %{"claude-code" => {"h1", 3}}
+    assert state.resume_ids == %{"claude-code" => {"h1", 3}}
   end
 
   @tag :tmp_dir

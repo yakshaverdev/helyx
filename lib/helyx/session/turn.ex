@@ -12,13 +12,13 @@ defmodule Helyx.Session.Turn do
   # calls, so each provider call starts with an empty map.
   # `model` and `provider` are fixed when the turn starts, so a model switch
   # during the turn takes effect on the next one, and so does `turn_mode`
-  # (`Helyx.Provider.turn/1`). `resumed` is the harness session id that
+  # (`Helyx.Provider.turn/1`). `resumed` is the resume id that
   # the connect of the turn passed to a connected provider, or nil. A
   # connected turn has a `phase`, `:preparing`, `:submitting`, or
   # `:submitted`, the prepared `context` until it is sent, and the
   # `pending` ref of the answer to `{:turn, ...}`. `steers` is the steer ledger of the turn
   # (`Helyx.Session.Steers`). `tool` is the Helyx tool
-  # request of a connected turn that runs on the hands (the harness loop
+  # request of a connected turn that runs on the hands (the provider loop
   # keeps the waiting ones), `start` the `from` ref of its
   # `{:tool_start, ...}` ask with no answer, and `results` the `from` refs
   # of the `tool_result` requests with no answer. At the turn end both go

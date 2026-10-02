@@ -38,10 +38,10 @@ defmodule Helyx.Session.TranscriptTest do
       transcript
     end
 
-    test "a harness session count moves past the results inserted before it, and only those" do
+    test "a program session count moves past the results inserted before it, and only those" do
       # A count right after an open call's message includes its inserted
       # results: the live session inserted them at the resume, before any
-      # harness session could start.
+      # program session could start.
       transcript = [
         Message.user("hi"),
         assistant([call("a"), call("b")]),

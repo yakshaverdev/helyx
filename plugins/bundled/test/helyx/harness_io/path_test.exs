@@ -30,12 +30,12 @@ defmodule Helyx.HarnessIO.PathTest do
 
   test "with no perl on PATH, the start of claude returns an error that names perl",
        %{work: work} do
-    assert {:error, "perl not found" <> _} = ClaudeCode.harness_init("m", [], cwd: work)
+    assert {:error, "perl not found" <> _} = ClaudeCode.init("m", [], cwd: work)
   end
 
   test "with no perl on PATH, the connect of codex returns an error that names perl",
        %{work: work} do
-    assert {:error, "perl not found" <> _} = Codex.harness_init("m", [], cwd: work)
+    assert {:error, "perl not found" <> _} = Codex.init("m", [], cwd: work)
   end
 
   test "a perl that ends with no output fails the connect with an error that names perl",
@@ -43,7 +43,7 @@ defmodule Helyx.HarnessIO.PathTest do
     perl(bin, "exit 1\n")
 
     assert {:error, {:not_started, "the perl watchdog gave no marker: "}} =
-             Codex.harness_init("m", [], cwd: work)
+             Codex.init("m", [], cwd: work)
   end
 
   # `Helyx.HarnessIO.cap_error/1` drops the invalid byte, so the error is
@@ -53,6 +53,6 @@ defmodule Helyx.HarnessIO.PathTest do
     perl(bin, "printf 'bad \\351 byte'\nexit 1\n")
 
     assert {:error, {:not_started, "the perl watchdog gave no marker: bad  byte"}} =
-             Codex.harness_init("m", [], cwd: work)
+             Codex.init("m", [], cwd: work)
   end
 end

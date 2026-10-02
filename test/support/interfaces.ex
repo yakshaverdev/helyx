@@ -104,7 +104,7 @@ end
 
 defmodule Helyx.Test.NoTurn do
   @moduledoc false
-  # A provider with no turn: neither `stream/3` nor `harness_init/3`.
+  # A provider with no turn: neither `stream/3` nor `init/3`.
   @behaviour Helyx.Provider
 
   @impl true
@@ -136,12 +136,12 @@ end
 
 defmodule Helyx.Test.Harness do
   @moduledoc false
-  # A connected provider whose model name selects the harness events of
+  # A connected provider whose model name selects the provider events of
   # each turn. Each turn ends with a text delta and done. Every other
   # request gets `:ok`.
   #
-  #   "id1"     a harness session id of 1 byte
-  #   "id256"   a harness session id of 256 bytes, multibyte
+  #   "id1"     a resume id of 1 byte
+  #   "id256"   a resume id of 256 bytes, multibyte
   #   "id257"   an id of 257 bytes
   #   "id0"     an empty id
   #   "raw_id"  an id that is not valid UTF-8
@@ -165,18 +165,18 @@ defmodule Helyx.Test.Harness do
   def id, do: "harness"
 
   @impl true
-  def harness_init(model, _tools, _opts), do: {:ok, model}
+  def init(model, _tools, _opts), do: {:ok, model}
 
   @impl true
-  def harness_request({:turn, turn_id, _context}, from, model) do
+  def request({:turn, turn_id, _context}, from, model) do
     events = Enum.map(turn_events(model), &{:event, turn_id, &1})
     {:ok, [{:reply, from, :ok} | events], model}
   end
 
-  def harness_request(_request, from, model), do: {:ok, [{:reply, from, :ok}], model}
+  def request(_request, from, model), do: {:ok, [{:reply, from, :ok}], model}
 
   @impl true
-  def harness_info(_msg, model), do: {:ok, [], model}
+  def info(_msg, model), do: {:ok, [], model}
 
   defp turn_events("exit_big"), do: exit({:boom, Integer.pow(10, 100)})
 
@@ -187,10 +187,10 @@ defmodule Helyx.Test.Harness do
 
   defp done, do: {:done, %{stop_reason: :end_turn, usage: %{}}}
 
-  defp events("id1"), do: [{:harness_session, "a", 0}]
-  defp events("big_cut"), do: [{:harness_session, "a", Integer.pow(10, 100)}]
-  defp events("max_cut"), do: [{:harness_session, "a", Integer.pow(10, 100) - 1}]
-  defp events("neg_cut"), do: [{:harness_session, "a", -1}]
+  defp events("id1"), do: [{:resume, "a", 0}]
+  defp events("big_cut"), do: [{:resume, "a", Integer.pow(10, 100)}]
+  defp events("max_cut"), do: [{:resume, "a", Integer.pow(10, 100) - 1}]
+  defp events("neg_cut"), do: [{:resume, "a", -1}]
 
   defp events("late_result") do
     call = %Helyx.Message.ToolCall{id: "t", name: "read", arguments: %{}}
@@ -232,10 +232,10 @@ defmodule Helyx.Test.Harness do
     [{:rejected_tool_call, call, "bad"}]
   end
 
-  defp events("id256"), do: [{:harness_session, String.duplicate("é", 128), 0}]
-  defp events("id257"), do: [{:harness_session, "a" <> String.duplicate("é", 128), 0}]
-  defp events("id0"), do: [{:harness_session, "", 0}]
-  defp events("raw_id"), do: [{:harness_session, <<255>>, 0}]
+  defp events("id256"), do: [{:resume, String.duplicate("é", 128), 0}]
+  defp events("id257"), do: [{:resume, "a" <> String.duplicate("é", 128), 0}]
+  defp events("id0"), do: [{:resume, "", 0}]
+  defp events("raw_id"), do: [{:resume, <<255>>, 0}]
   defp events("orphan"), do: [{:tool_result, "nope", {:ok, "lost"}}]
   defp events("raw_result_id"), do: [{:tool_result, <<255>>, {:ok, "lost"}}]
 
@@ -802,8 +802,8 @@ defmodule Helyx.Test.Connected do
   #   "hang"             a turn answers :ok and sends "so far"; the message
   #                      `{:finish, turn_id}` sends done
   #                      and `{:fail, turn_id}` sends `{:error, :failed}`
-  #   "block_init"       `harness_init/3` blocks
-  #   "fail_init"        `harness_init/3` returns an error
+  #   "block_init"       `init/3` blocks
+  #   "fail_init"        `init/3` returns an error
   #   "block_turn"       the turn callback blocks
   #   "error_turn"       a turn answers `{:error, :refused}`
   #   "crash_turn"       the turn callback raises
@@ -821,25 +821,25 @@ defmodule Helyx.Test.Connected do
   #   "bad_event"        a turn answers :ok and sends a malformed event
   #   "flood"            "hang"; the message `{:flood, turn_id}` sends
   #                      10,002 deltas and done
-  #   "stop"             "hang"; the message `:stop` stops the harness
+  #   "stop"             "hang"; the message `:stop` stops the provider
   #   "tools"            "hang"; the message `{:tool_request, turn_id, id,
   #                      name, args}` asks for a Helyx tool, and `{:cancel,
   #                      turn_id, id}` withdraws it; `{:ping, pid}`
   #                      sends `:pong` to pid
-  #   "label"            "echo"; a harness process started with no
-  #                      `:harness_session_id` reports a new label on its
+  #   "label"            "echo"; a provider process started with no
+  #                      `:resume_id` reports a new label on its
   #                      first turn
   #
   # A steer answers :ok with no `user_message` unless the model says
   # otherwise; the "steer_" models are "hang" for a turn:
-  #   "steer_take"       a steer answers :ok and the harness takes it
+  #   "steer_take"       a steer answers :ok and the provider takes it
   #   "steer_reject"     a steer answers :rejected
   #   "steer_error"      a steer answers `{:error, :lost}`
   #   "steer_hold"       a steer gets no answer; the controller gets
   #                      `{:held, from}`, and the message `{:answer, from,
   #                      value}` answers it
   #   "steer_block"      the steer callback blocks
-  #   "steer_early"      "steer_hold", and the harness takes the steer
+  #   "steer_early"      "steer_hold", and the provider takes the steer
   #                      before its answer
   @behaviour Helyx.Provider
 
@@ -874,7 +874,7 @@ defmodule Helyx.Test.Connected do
   end
 
   @impl true
-  def harness_init(model, tools, opts) do
+  def init(model, tools, opts) do
     ctl = Process.whereis(controller(opts[:core]))
 
     if ctl do
@@ -885,18 +885,18 @@ defmodule Helyx.Test.Connected do
     case model do
       "block_init" -> Process.sleep(:infinity)
       "fail_init" -> {:error, :no_program}
-      _ -> {:ok, %{model: model, ctl: ctl, label: opts[:harness_session_id]}}
+      _ -> {:ok, %{model: model, ctl: ctl, label: opts[:resume_id]}}
     end
   end
 
   @impl true
-  def harness_request({:turn, id, _} = request, from, %{model: "label", label: nil} = state) do
+  def request({:turn, id, _} = request, from, %{model: "label", label: nil} = state) do
     label = "h#{System.unique_integer([:positive])}"
-    {:ok, [reply | events], state} = harness_request(request, from, %{state | label: label})
-    {:ok, [reply, {:event, id, {:harness_session, label, 0}} | events], state}
+    {:ok, [reply | events], state} = request(request, from, %{state | label: label})
+    {:ok, [reply, {:event, id, {:resume, label, 0}} | events], state}
   end
 
-  def harness_request(request, from, %{model: model, ctl: ctl} = state) do
+  def request(request, from, %{model: model, ctl: ctl} = state) do
     if ctl, do: send(ctl, {:conn, kind(request), self(), request})
 
     if ctl && model in ["steer_hold", "steer_early"] && kind(request) == :steer,
@@ -906,36 +906,36 @@ defmodule Helyx.Test.Connected do
   end
 
   @impl true
-  def harness_info({:late, from, request}, state),
+  def info({:late, from, request}, state),
     do: {:ok, answer("echo", request, from), state}
 
-  def harness_info({:finish, turn_id}, state), do: {:ok, [{:event, turn_id, done()}], state}
+  def info({:finish, turn_id}, state), do: {:ok, [{:event, turn_id, done()}], state}
 
-  def harness_info({:fail, turn_id}, state),
+  def info({:fail, turn_id}, state),
     do: {:ok, [{:event, turn_id, {:error, :failed}}], state}
 
-  def harness_info({:flood, turn_id}, state) do
+  def info({:flood, turn_id}, state) do
     deltas = for _ <- 1..10_002, do: {:event, turn_id, {:text_delta, "x"}}
     {:ok, deltas ++ [{:event, turn_id, done()}], state}
   end
 
-  def harness_info(:stop, state), do: {:stop, :gone, state}
+  def info(:stop, state), do: {:stop, :gone, state}
 
-  def harness_info({:tool_request, turn_id, id, name, args}, state),
+  def info({:tool_request, turn_id, id, name, args}, state),
     do: {:ok, [{:event, turn_id, {:tool_request, id, name, args}}], state}
 
-  def harness_info({:cancel, turn_id, id}, state),
+  def info({:cancel, turn_id, id}, state),
     do: {:ok, [{:cancel_tool, turn_id, id}], state}
 
-  def harness_info({:ping, pid}, state) do
+  def info({:ping, pid}, state) do
     send(pid, :pong)
     {:ok, [], state}
   end
 
-  def harness_info({:answer, from, value}, state), do: {:ok, [{:reply, from, value}], state}
+  def info({:answer, from, value}, state), do: {:ok, [{:reply, from, value}], state}
 
   # Several actions from one callback, as one input batch of a program.
-  def harness_info({:batch, actions}, state), do: {:ok, actions, state}
+  def info({:batch, actions}, state), do: {:ok, actions, state}
 
   defp kind({kind, _, _, _}), do: kind
   defp kind({kind, _, _}), do: kind

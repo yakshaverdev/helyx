@@ -69,10 +69,10 @@ defmodule Helyx.Provider.Codex.SteerTest do
                actions
     end
 
-    # #224: the turn's end stops the harness process for its open tool item
+    # #224: the turn's end stops the provider process for its open tool item
     # while the steer's answer is open. The steer gets no answer and fails
     # with the stop, so the session never sends it again.
-    test "with an open answer at a turn end that stops the harness process gets no answer",
+    test "with an open answer at a turn end that stops the provider process gets no answer",
          %{bin: bin, work: work} do
       fresh(bin, 1, tid(), [delta(tid(), "msg_1", "a"), started(tid(), search())])
       on(bin, 1, "turn/steer", [turn_end(tid(), "completed")])

@@ -13,10 +13,10 @@ defmodule Helyx.Provider.ClaudeCode do
   --model` takes: an alias such as `haiku`, `sonnet`, or `opus`, or a full
   model name.
 
-  One `claude` serves the whole session: `harness_init/3` starts it from
+  One `claude` serves the whole session: `init/3` starts it from
   `PATH` in the session's working directory, with no `-p` and with open
   input, in its own process group under the watchdog of `Helyx.Watchdog`.
-  The harness process holds its groups with `Helyx.Tool.hold/1`, and the
+  The provider process holds its groups with `Helyx.Tool.hold/1`, and the
   hands release them through `release/3` (ADR 0004). The watchdog, when
   the port closes, and every release TERM the program's group and wait up
   to #{HarnessIO.term_grace_ms()} ms for it to go before the KILL. The
@@ -44,7 +44,7 @@ defmodule Helyx.Provider.ClaudeCode do
 
   A program turn is a turn that the program starts by itself, for example
   when a background task ends. An `init` line with no Helyx turn starts
-  one: the provider makes a turn id and gives the event `:program_turn`,
+  one: the provider makes a turn id and gives the event `:turn_start`,
   then the turn's events and its terminal as for any turn. A steer and an
   interrupt of it work as for any turn. A `{:turn, ...}` request while a
   program turn runs replaces it: the program runs the new line after the
@@ -58,7 +58,7 @@ defmodule Helyx.Provider.ClaudeCode do
   `result` does not end the turn: `claude` runs a line that it reads after
   a `result` as a turn of its own, and that turn stays in the Helyx turn.
   When the line does not start within #{@steer_wait_ms} ms of such a
-  `result`, the harness process stops. A held error `result` goes out as
+  `result`, the provider process stops. A held error `result` goes out as
   `{:notice, text}` at the start of the steer.
 
   An interrupt is the control request `interrupt` with
@@ -70,11 +70,11 @@ defmodule Helyx.Provider.ClaudeCode do
   after a response that cancelled the turn's line. When the turn's
   `result` comes before Helyx writes the interrupt, the interrupt answers
   `:ok`, and Helyx writes no interrupt. Anything else answers an error,
-  and the harness process ends, so the watchdog stops the program with no
+  and the provider process ends, so the watchdog stops the program with no
   end of input.
 
   A close is the end of input, then the exit. An exit at any other time
-  stops the harness process. An idle close is a close when the program has
+  stops the provider process. An idle close is a close when the program has
   no background task and no program turn, and answers `:busy` otherwise.
   After a `task_notification` line, the next idle close also answers
   `:busy`, once, because a program turn can follow it; an `init` ends that
@@ -84,7 +84,7 @@ defmodule Helyx.Provider.ClaudeCode do
   exactly empty counts as none, and a malformed line counts as a task until
   the next good one.
 
-  With the `:harness_session_id` option the program resumes that harness
+  With the `:resume_id` option the program resumes that harness
   session, and each turn sends only the new prompt: the user messages at
   the end of the transcript. Without it, or when the program no longer has
   that session, the program starts a fresh harness session with an id of
@@ -96,13 +96,13 @@ defmodule Helyx.Provider.ClaudeCode do
   user line when it takes it from its queue. So each line after a replayed
   user line waits for that line's `result`, and the model gets the
   transcript in its order (research note, "The order of a replay"). The
-  `{:harness_session, id, cut}` event of that turn gives the id and the
+  `{:resume, id, cut}` event of that turn gives the id and the
   number of messages left out.
 
   Assistant text and thinking stream as deltas. Tool calls and their
   results arrive whole, and a `message_end` closes each assistant message
   whose tool calls the program ran. A stdout line over
-  #{HarnessIO.line_max_bytes()} bytes stops the harness process. The
+  #{HarnessIO.line_max_bytes()} bytes stops the provider process. The
   protocol facts are in `docs/research/claude-code-stream-json.md`.
   """
 
@@ -211,14 +211,14 @@ defmodule Helyx.Provider.ClaudeCode do
   defdelegate release(handles, mode, deadline), to: HarnessIO
 
   @impl true
-  def harness_init(model, tools, opts) do
+  def init(model, tools, opts) do
     with {:ok, exe} <- HarnessIO.find("claude") do
       state = %State{
         exe: exe,
         model: model,
         tools: tools,
         cwd: Keyword.fetch!(opts, :cwd),
-        resume: opts[:harness_session_id]
+        resume: opts[:resume_id]
       }
 
       # A program that did not start can still have its port open: the
@@ -234,7 +234,7 @@ defmodule Helyx.Provider.ClaudeCode do
   # A program turn that the session did not open gives way: the program
   # queues the turn's line after it, and drops its lines as before a start.
   @impl true
-  def harness_request(
+  def request(
         {:turn, id, %Helyx.Context{messages: messages}},
         from,
         %State{turn: turn} = state
@@ -248,7 +248,7 @@ defmodule Helyx.Provider.ClaudeCode do
   # A steer is a user line with a `uuid` of its own. `claude` never
   # refuses a user line, so the answer is `:ok` at the write, and the steer
   # is unresolved until the start of its line.
-  def harness_request(
+  def request(
         {:steer, id, steer_id, text},
         from,
         %State{turn: %Turn{id: id} = turn} = state
@@ -272,23 +272,23 @@ defmodule Helyx.Provider.ClaudeCode do
   end
 
   # The terminal of the turn went out first: nothing reached the program.
-  def harness_request({:steer, _id, _steer_id, _text}, from, state),
+  def request({:steer, _id, _steer_id, _text}, from, state),
     do: {:ok, [{:reply, from, :rejected}], state}
 
   # A `result` that the turn holds for an unresolved steer counts as the
   # turn's `result` for the interrupt, until a steer starts.
-  def harness_request({:interrupt, id}, from, %State{turn: %Turn{id: id} = turn} = state) do
+  def request({:interrupt, id}, from, %State{turn: %Turn{id: id} = turn} = state) do
     interrupt = %Interrupt{from: from, result?: turn.wait != nil}
     {actions, state} = interrupt(%{state | turn: %{turn | interrupt: interrupt}})
     {:ok, actions, state}
   end
 
   # The turn already ended.
-  def harness_request({:interrupt, _id}, from, state), do: {:ok, [{:reply, from, :ok}], state}
+  def request({:interrupt, _id}, from, state), do: {:ok, [{:reply, from, :ok}], state}
 
   # The result of a Helyx tool call. A call that the program withdrew has
   # no open request, and its result is not written.
-  def harness_request({:tool_result, _id, call_id, {status, text}}, from, state) do
+  def request({:tool_result, _id, call_id, {status, text}}, from, state) do
     case Map.pop(state.calls, call_id) do
       {{_turn_id, request_id, rpc_id}, calls} ->
         tool_answer(state, request_id, rpc_id, status, text)
@@ -299,17 +299,17 @@ defmodule Helyx.Provider.ClaudeCode do
     end
   end
 
-  def harness_request(:idle_close, from, %State{tasks: [], notified?: false, turn: nil} = state),
-    do: harness_request(:close, from, state)
+  def request(:idle_close, from, %State{tasks: [], notified?: false, turn: nil} = state),
+    do: request(:close, from, state)
 
   # A program turn starts 100 to 150 ms after the `task_notification`, with
   # `tasks` already empty (research note): one `:busy` waits for it. A
   # program turn that runs, which the session did not open, also keeps the
   # program: the session is idle, so no Helyx turn is open here.
-  def harness_request(:idle_close, from, state),
+  def request(:idle_close, from, state),
     do: {:ok, [{:reply, from, :busy}], %{state | notified?: false}}
 
-  def harness_request(:close, from, state) do
+  def request(:close, from, state) do
     HarnessIO.write(state, <<0>>)
     {:ok, [], %{state | closing: from}}
   end
@@ -317,10 +317,10 @@ defmodule Helyx.Provider.ClaudeCode do
   # Helyx does not know whether the program will start the steer, so the
   # program stops.
   @impl true
-  def harness_info({:timeout, ref, :steer_wait}, %State{turn: %Turn{wait: ref}} = state),
+  def info({:timeout, ref, :steer_wait}, %State{turn: %Turn{wait: ref}} = state),
     do: {:stop, :steer_not_started, state}
 
-  def harness_info(message, state) do
+  def info(message, state) do
     case HarnessIO.port_message(message, state, &translate/2) do
       {:lines, actions, state} ->
         read(actions, state)
@@ -402,7 +402,7 @@ defmodule Helyx.Provider.ClaudeCode do
     else
       {[first | chunks], cut, replay?} = replay(history, prompt_line)
       HarnessIO.write(state, first)
-      event = {:event, turn.id, {:harness_session, state.session_id, cut}}
+      event = {:event, turn.id, {:resume, state.session_id, cut}}
       turn = %{turn | replay?: replay?, chunks: chunks}
       {[event], %{state | sent?: true, turn: turn}}
     end
@@ -493,7 +493,7 @@ defmodule Helyx.Provider.ClaudeCode do
       nil ->
         id = uuid()
         turn = %Turn{id: id, uuid: id, messages: nil, program?: true}
-        {[{:event, id, :program_turn}], %{state | turn: turn}}
+        {[{:event, id, :turn_start}], %{state | turn: turn}}
 
       _turn ->
         resume_interrupt(state)

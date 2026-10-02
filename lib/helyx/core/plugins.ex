@@ -45,7 +45,7 @@ defmodule Helyx.Core.Plugins do
   Maps each provider id to its plugin. It calls `id/0` of each provider once,
   at Core start. An `id/0` that raises, throws, exits, or returns a value
   that is not a binary is `{:invalid_provider_id, plugin}`. A provider that
-  exports neither `stream/3` nor `harness_init/3` has no turn and is
+  exports neither `stream/3` nor `init/3` has no turn and is
   `{:invalid_provider, plugin}`. Two providers
   with one id are `{:duplicate_provider_id, id, [first, second]}`.
   """
@@ -68,10 +68,10 @@ defmodule Helyx.Core.Plugins do
     end)
   end
 
-  # A local turn needs `stream/3`, a connected one `harness_init/3`
+  # A local turn needs `stream/3`, a connected one `init/3`
   # (`Helyx.Provider.turn/1`). The plugin check loaded the module.
   defp checked(plugin) do
-    if function_exported?(plugin, :stream, 3) or function_exported?(plugin, :harness_init, 3),
+    if function_exported?(plugin, :stream, 3) or function_exported?(plugin, :init, 3),
       do: checked_id(plugin),
       else: :no_turn
   end

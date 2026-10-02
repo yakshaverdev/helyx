@@ -244,7 +244,7 @@ defmodule Helyx.Session.File do
   Appends a harness session entry: the id that the external program of the
   harness provider `provider_id` issued for its harness session. Like message text, both
   strings must be valid UTF-8 when they reach the file, and the id must pass
-  `Helyx.Message.harness_id?/1`, else a resume rejects the file. The caller
+  `Helyx.Message.resume_id?/1`, else a resume rejects the file. The caller
   checks them where they enter the session.
   """
   @spec append_harness_session(t(), String.t(), String.t()) :: t()
@@ -489,7 +489,7 @@ defmodule Helyx.Session.File do
          {sessions, count}
        )
        when is_binary(provider) do
-    if Message.harness_id?(entry["harness_session_id"]),
+    if Message.resume_id?(entry["harness_session_id"]),
       do: {Map.put(sessions, provider, {entry["harness_session_id"], count}), count},
       else: {Map.delete(sessions, provider), count}
   end

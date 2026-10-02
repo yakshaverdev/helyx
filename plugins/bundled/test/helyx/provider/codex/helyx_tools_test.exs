@@ -54,7 +54,7 @@ defmodule Helyx.Provider.Codex.HelyxToolsTest do
     end
 
     defp tools_turn(work, tools \\ [@spec_read], opts \\ []) do
-      {:ok, state} = Codex.harness_init("m", tools, [cwd: work] ++ opts)
+      {:ok, state} = Codex.init("m", tools, [cwd: work] ++ opts)
       turn = {:turn, "t1", %Helyx.Context{messages: [Message.user("x")]}}
       {_from, actions, state} = ask(state, turn)
       {state, actions}
@@ -86,7 +86,7 @@ defmodule Helyx.Provider.Codex.HelyxToolsTest do
                }
              } = request(bin, 1, "thread/start")
 
-      assert [{:harness_session, id, 0} | _] = events(actions)
+      assert [{:resume, id, 0} | _] = events(actions)
       assert digest?(id)
       refute Enum.any?(events(actions), &match?({:notice, _}, &1))
     end
@@ -96,7 +96,7 @@ defmodule Helyx.Provider.Codex.HelyxToolsTest do
       fresh(bin, 1, tid(), reply(tid(), "Hi."))
       {state, actions} = tools_turn(work)
       {actions, state} = pump(Codex, state, actions, &turn_ended?/1)
-      [{:harness_session, id, 0} | _] = events(actions)
+      [{:resume, id, 0} | _] = events(actions)
       close(state)
 
       runs = [
@@ -112,7 +112,7 @@ defmodule Helyx.Provider.Codex.HelyxToolsTest do
         on(bin, n, "thread/resume", [j(%{id: "@", result: %{thread: thread(tid())}})])
         on(bin, n, "thread/start", [j(%{id: "@", result: %{thread: thread(fresh_tid())}})])
 
-        {:ok, state} = Codex.harness_init("m", tools, cwd: work, harness_session_id: stored)
+        {:ok, state} = Codex.init("m", tools, cwd: work, resume_id: stored)
         close(state)
         assert request(bin, n, method), "run #{n}"
         caps = request(bin, n, "initialize")["params"]["capabilities"]
@@ -146,7 +146,7 @@ defmodule Helyx.Provider.Codex.HelyxToolsTest do
 
       assert [
                {:notice, "the Helyx tools are off for Codex" <> _},
-               {:harness_session, tid(), 0} | _
+               {:resume, tid(), 0} | _
              ] =
                events(actions)
 
@@ -171,7 +171,7 @@ defmodule Helyx.Provider.Codex.HelyxToolsTest do
                for(%{"method" => "thread/start"} = line <- stdin(bin, 1), do: line)
 
       refute Map.has_key?(second, "dynamicTools")
-      assert [{:notice, _}, {:harness_session, tid(), 0} | _] = events(actions)
+      assert [{:notice, _}, {:resume, tid(), 0} | _] = events(actions)
     end
 
     test "a call of an open dynamicToolCall item gives a tool request, and its result goes back",
@@ -214,19 +214,19 @@ defmodule Helyx.Provider.Codex.HelyxToolsTest do
       on(bin, 1, "thread/start", [j(%{id: "@", result: %{thread: long}})])
 
       assert {:error, {:malformed, "thread/start"}} =
-               Codex.harness_init("m", [@spec_read], cwd: work)
+               Codex.init("m", [@spec_read], cwd: work)
 
       initialize(bin, 2)
       at = %{thread(tid()) | id: String.duplicate("a", 239)}
       on(bin, 2, "thread/start", [j(%{id: "@", result: %{thread: at}})])
-      assert {:ok, state} = Codex.harness_init("m", [@spec_read], cwd: work)
+      assert {:ok, state} = Codex.init("m", [@spec_read], cwd: work)
       close(state)
 
       initialize(bin, 3)
       empty = %{thread(tid()) | id: ""}
       on(bin, 3, "thread/start", [j(%{id: "@", result: %{thread: empty}})])
 
-      assert {:error, {:malformed, "thread/start"}} = Codex.harness_init("m", [], cwd: work)
+      assert {:error, {:malformed, "thread/start"}} = Codex.init("m", [], cwd: work)
     end
 
     test "a call with no turn, one that does not map, and a used call id get an error and give no request",
@@ -329,7 +329,7 @@ defmodule Helyx.Provider.Codex.HelyxToolsTest do
       assert transcript_calls(events) == {["call_d1"], ["call_d1"]}
       assert [{0, %{"success" => true, "contentItems" => [%{"text" => text}]}}] = answers(bin, 1)
       assert text =~ "hello"
-      assert [%{harness_session_id: id}] = of_type(events, :harness_session)
+      assert [%{resume_id: id}] = of_type(events, :provider_session)
       assert digest?(id)
     end
 
@@ -378,7 +378,7 @@ defmodule Helyx.Provider.Codex.HelyxToolsTest do
       :ok = Session.prompt(session, "sleep")
       pid = wait_for_pid(pidfile)
 
-      assert [%{stop_reason: :error, error: {:harness_stop, {:codex_exit, _}}}] =
+      assert [%{stop_reason: :error, error: {:provider_stop, {:codex_exit, _}}}] =
                of_type(collect_until(:agent_end), :agent_end)
 
       assert gone_within?(pid)

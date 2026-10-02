@@ -61,7 +61,7 @@ _Avoid_: cancel, stop, kill
 ## Providers
 
 **Provider**:
-A plugin that produces assistant messages for a session. A provider has a local turn (`stream/3`) or a connected harness (it exports `harness_init/3`). On a local turn, Helyx runs the turn and the tools. On a connected turn, the harness program runs the whole turn and its own tools, and the program lives for the session.
+A plugin that produces assistant messages for a session. A provider has a local turn (`stream/3`) or a connected harness (it exports `init/3`, which runs in its provider process). On a local turn, Helyx runs the turn and the tools. On a connected turn, the harness program runs the whole turn and its own tools, and the program lives for the session.
 _Avoid_: backend, model, LLM, driver
 
 **Model provider**:

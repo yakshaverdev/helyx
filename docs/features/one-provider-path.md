@@ -29,8 +29,8 @@ The behaviour of each renamed part stays the same.
 | `Connection`, `Wait.harness`, `Hands.connect` | `ProviderConn`, `Wait.provider`, `Hands.start_provider` |
 | Option `:harness_session_id` | `:resume_id` |
 | Event `{:harness_session, id, cut}` | `{:resume, id, cut}`. The session file keeps the stored entry name `harness_session`, so no reader change and no migration test. |
-| Client event `:harness_session` | `:provider_session`, the same data. `tui/view_model.ex` changes in the same PR. |
-| Event `:program_turn`, `Message.harness_id?/1` | `:turn_start`, `Message.provider_id?/1` |
+| Client event `:harness_session` | `:provider_session`. Its data key `harness_session_id` is `resume_id`; the other data stays. The session file keeps its stored key `harness_session_id`. `tui/view_model.ex` changes in the same PR. |
+| Event `:program_turn`, `Message.harness_id?/1` | `:turn_start`, `Message.resume_id?/1` |
 | `Helyx.HarnessIO` (plugins) | Unchanged. It is plugin code for programs, so the harness name is correct there. |
 
 ### The contract
@@ -119,7 +119,7 @@ Stated limit: `Process.exit(self(), :normal)` in a callback ends the calling pro
 | A steer that arrives in the last model call of a turn starts a new turn | It continues the same turn: one `agent_end`, not two | The transcript order is the same, and Claude Code and Codex behave like this today |
 | `tool_execution_start` comes when each call starts to run | It comes for every call of the message at its `message_end`. The calls still run one at a time. | One rule for every provider. A client sees a call as started before it runs. |
 | A snapshot lists only the running call | It lists every call with no result | The same reason |
-| Client event `:harness_session` | `:provider_session` | Core names no plugin kind. The TUI changes in the same PR. |
+| Client event `:harness_session` with the data key `harness_session_id` | `:provider_session` with the data key `resume_id` | Core names no plugin kind. The TUI changes in the same PR. |
 
 ADR 0006 §5 requires a version increase for a rename and for a change of meaning. The rename of `:harness_session` and the new meanings of `tool_execution_start` and of the snapshot `running` are such changes. So this feature raises `contract_version` by itself. If `session-subscribers.md` lands in the same release, the two share one increase. The client compatibility tests go in the same PR as the increase.
 

@@ -1,10 +1,10 @@
 defmodule Helyx.Test.HarnessDriver do
   @moduledoc false
-  # Drives a harness provider's `harness_info/2` from the test process's
+  # Drives a harness provider's `info/2` from the test process's
   # mailbox, without a session.
   import ExUnit.Assertions
 
-  # Gives messages to `provider.harness_info/2` until `done?` holds for the
+  # Gives messages to `provider.info/2` until `done?` holds for the
   # actions so far. A stop is the last action, `{:stop, reason}`.
   def pump(provider, state, actions, done?) do
     if done?.(actions) do
@@ -12,7 +12,7 @@ defmodule Helyx.Test.HarnessDriver do
     else
       receive do
         message ->
-          case provider.harness_info(message, state) do
+          case provider.info(message, state) do
             {:ok, more, state} -> pump(provider, state, actions ++ more, done?)
             {:stop, reason, state} -> {actions ++ [{:stop, reason}], state}
           end
@@ -22,7 +22,7 @@ defmodule Helyx.Test.HarnessDriver do
     end
   end
 
-  # Gives messages to `provider.harness_info/2` until `done?` holds for the
+  # Gives messages to `provider.info/2` until `done?` holds for the
   # state. `actions?` checks the actions of each message.
   def settle(provider, state, done?, actions? \\ fn _ -> true end) do
     if done?.(state) do
@@ -30,7 +30,7 @@ defmodule Helyx.Test.HarnessDriver do
     else
       receive do
         message ->
-          {:ok, actions, state} = provider.harness_info(message, state)
+          {:ok, actions, state} = provider.info(message, state)
           assert actions?.(actions), "unexpected actions: #{inspect(actions)}"
           settle(provider, state, done?, actions?)
       after

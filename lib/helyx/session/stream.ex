@@ -9,7 +9,7 @@ defmodule Helyx.Session.Stream do
 
   @stop_reasons Message.stop_reasons()
 
-  # The harness providers cut each tool result (`Helyx.Provider`). Every
+  # The connected providers cut each tool result (`Helyx.Provider`). Every
   # output of that cut is at most 51,201 bytes of lines and a notice of less
   # than 200 bytes, so only a result that was not cut is over this limit.
   @max_tool_result_bytes 65_536
@@ -133,7 +133,7 @@ defmodule Helyx.Session.Stream do
   `{:rejected_call, ...}` message before it, or nil;
   `{:terminal, terminal}` for a `done` or an `error` event; and `{:bad,
   error}` for a malformed event. `connected?` allows the events of a
-  connected turn (`Helyx.Session.Harness`). Arguments or a usage that are
+  connected turn (`Helyx.Session.ProviderProcess`). Arguments or a usage that are
   a struct are malformed: `cap_integers/1` can turn a struct into a
   string, and the session file needs a plain map. A delta or a tool call that is not valid UTF-8 is
   malformed: transcript text is valid from the moment it exists, so the file
@@ -185,7 +185,7 @@ defmodule Helyx.Session.Stream do
   # Only a connected provider sends these; in a local turn they are
   # malformed.
   def check({tag, _, _} = event, true = _connected?)
-      when tag in [:message_end, :tool_result, :harness_session, :user_message] do
+      when tag in [:message_end, :tool_result, :resume, :user_message] do
     case connected_event(event) do
       {:ok, event} -> {:send, event, nil}
       {:error, _} = error -> {:bad, error}
@@ -239,7 +239,7 @@ defmodule Helyx.Session.Stream do
   # `done` terminal. The provider cuts a result to the tool result limits;
   # a result over this limit was not cut, so it fails the turn. The check
   # measures the text as sent. Then the text is made valid UTF-8, which can
-  # make it up to three times larger: this is the boundary of a harness
+  # make it up to three times larger: this is the boundary of a provider
   # result, as the hands are for a tool of the session.
   defp connected_event({:message_end, reason, usage} = event)
        when reason in @stop_reasons and is_non_struct_map(usage) do
@@ -258,10 +258,10 @@ defmodule Helyx.Session.Stream do
       else: {:ok, {:tool_result, id, scrub({status, text})}}
   end
 
-  defp connected_event({:harness_session, id, cut} = event) when is_integer(cut) and cut >= 0 do
+  defp connected_event({:resume, id, cut} = event) when is_integer(cut) and cut >= 0 do
     # No integer over the digit limit reaches the session (see
     # `Helyx.Message.cap_integers/1`).
-    if Message.harness_id?(id) and Message.cap_integers(cut) == cut,
+    if Message.resume_id?(id) and Message.cap_integers(cut) == cut,
       do: {:ok, event},
       else: malformed(event)
   end

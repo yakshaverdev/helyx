@@ -7,7 +7,7 @@ defmodule Helyx.Test.WatchdogHarness do
   #   "block"  the turn callback blocks, so the armed kill stops the harness
   #   "flood"  the turn writes twice the watchdog stdin cap to the program,
   #            which never reads its stdin
-  #   "idle"   the turn answers :ok and ends, so the harness process is idle
+  #   "idle"   the turn answers :ok and ends, so the provider process is idle
   #   other    the turn answers :ok and never ends
   @behaviour Helyx.Provider
 
@@ -20,7 +20,7 @@ defmodule Helyx.Test.WatchdogHarness do
   def release(handles, mode, deadline), do: Helyx.Watchdog.Group.release(handles, mode, deadline)
 
   @impl true
-  def harness_init(model, _tools, opts) do
+  def init(model, _tools, opts) do
     argv = ["sh", "-c", "echo $$ > '#{pid_path(opts[:session_id])}'; exec sleep 30"]
 
     case Helyx.Watchdog.start(argv, opts[:cwd], :open, grace_ms: 200) do
@@ -34,29 +34,29 @@ defmodule Helyx.Test.WatchdogHarness do
   end
 
   # The block is the point of this model.
-  @dialyzer {:nowarn_function, harness_request: 3}
+  @dialyzer {:nowarn_function, request: 3}
   @impl true
-  def harness_request({:turn, _turn_id, _context}, _from, %{model: "block"}),
+  def request({:turn, _turn_id, _context}, _from, %{model: "block"}),
     do: Process.sleep(:infinity)
 
-  def harness_request({:turn, _turn_id, _context}, from, %{model: "flood", port: port} = state) do
+  def request({:turn, _turn_id, _context}, from, %{model: "flood", port: port} = state) do
     Helyx.Watchdog.write(port, :binary.copy("x", 2 * Helyx.Watchdog.stdin_max_bytes()))
     {:ok, [{:reply, from, :ok}], state}
   end
 
-  def harness_request({:turn, turn_id, _context}, from, %{model: "idle"} = state) do
+  def request({:turn, turn_id, _context}, from, %{model: "idle"} = state) do
     done = {:done, %{stop_reason: :end_turn, usage: %{}}}
     {:ok, [{:reply, from, :ok}, {:event, turn_id, done}], state}
   end
 
-  def harness_request(_request, from, state), do: {:ok, [{:reply, from, :ok}], state}
+  def request(_request, from, state), do: {:ok, [{:reply, from, :ok}], state}
 
   @impl true
-  def harness_info({port, {:exit_status, status}}, %{port: port} = state),
+  def info({port, {:exit_status, status}}, %{port: port} = state),
     do: {:stop, {:exit_status, status}, state}
 
-  def harness_info({:DOWN, _ref, :port, port, reason}, %{port: port} = state),
+  def info({:DOWN, _ref, :port, port, reason}, %{port: port} = state),
     do: {:stop, {:port_down, reason}, state}
 
-  def harness_info(_message, state), do: {:ok, [], state}
+  def info(_message, state), do: {:ok, [], state}
 end

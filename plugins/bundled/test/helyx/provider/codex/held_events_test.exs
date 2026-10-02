@@ -10,7 +10,7 @@ defmodule Helyx.Provider.Codex.HeldEventsTest do
   setup {Helyx.Test.CodexFake, :setup_fake}
 
   # The late result of "b" sends what was held. A tool item open at the
-  # turn's end stops the harness process (#224), so a turn that ends holds
+  # turn's end stops the provider process (#224), so a turn that ends holds
   # nothing.
   test "a late result sends the held events", %{bin: bin, work: work} do
     fresh(
@@ -21,7 +21,7 @@ defmodule Helyx.Provider.Codex.HeldEventsTest do
     )
 
     assert [
-             {:harness_session, tid(), 0},
+             {:resume, tid(), 0},
              {:tool_call, %{id: "a"}},
              {:tool_call, %{id: "b"}},
              {:message_end, :tool_use, _},
@@ -37,7 +37,7 @@ defmodule Helyx.Provider.Codex.HeldEventsTest do
   # The events that go out before the `message_end` of "d", which waits for
   # "b". The held events are dropped with the turn, as at an abort.
   @sent [
-    {:harness_session, tid(), 0},
+    {:resume, tid(), 0},
     {:tool_call,
      %Message.ToolCall{
        id: "a",
@@ -65,12 +65,12 @@ defmodule Helyx.Provider.Codex.HeldEventsTest do
     ]
   end
 
-  test "an exit during a turn stops the harness process", %{bin: bin, work: work} do
+  test "an exit during a turn stops the provider process", %{bin: bin, work: work} do
     fresh(bin, 1, tid(), held(tid()), "exit 3\n")
     assert run_direct([Message.user("go")], work) == @sent ++ [{:stop, {:codex_exit, 3}}]
   end
 
-  test "a line over the cap stops the harness process", %{bin: bin, work: work} do
+  test "a line over the cap stops the provider process", %{bin: bin, work: work} do
     fresh(bin, 1, tid(), held(tid()) ++ [String.duplicate("x", 16 * 1024 * 1024 + 1)])
 
     assert run_direct([Message.user("go")], work) ==
@@ -104,7 +104,7 @@ defmodule Helyx.Provider.Codex.HeldEventsTest do
   end
 
   # The next delta is over the cap: nothing held goes out.
-  test "the held events over the cap stop the harness process", %{bin: bin, work: work} do
+  test "the held events over the cap stop the provider process", %{bin: bin, work: work} do
     assert held_run(bin, work, 9_999) == [{:stop, {:held_over_limit, 10_000}}]
   end
 end

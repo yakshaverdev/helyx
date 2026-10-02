@@ -20,11 +20,11 @@ defmodule Helyx.Session.WaitTest do
     assert {:done, []} = Wait.next(%Wait{}, nil)
   end
 
-  test "a wait for an ended harness process lasts until its harness_down" do
+  test "a wait for an ended provider process lasts until its provider_down" do
     pid = self()
-    wait = %Wait{harness: pid}
+    wait = %Wait{provider: pid}
     assert Wait.next(wait, nil) == :open
-    assert {wait, []} = Wait.harness_down(wait, pid)
+    assert {wait, []} = Wait.provider_down(wait, pid)
     assert {:done, []} = Wait.next(wait, nil)
   end
 
@@ -81,7 +81,7 @@ defmodule Helyx.Session.WaitTest do
     assert {:done, []} = Wait.next(wait, self())
   end
 
-  test "the harness_down after an abort ends the open steer requests with no second notice" do
+  test "the provider_down after an abort ends the open steer requests with no second notice" do
     {turn, _from} = steered()
     {wait, [_notice]} = Wait.after_turn(turn, self(), false)
     pid = self()
@@ -89,18 +89,18 @@ defmodule Helyx.Session.WaitTest do
 
     assert {:send, wait, ^pid, {:interrupt, "t1"} = request} = Wait.next(wait, pid)
     wait = Wait.sent(wait, request, make_ref())
-    assert {wait, []} = Wait.harness_down(wait, pid)
+    assert {wait, []} = Wait.provider_down(wait, pid)
     assert {:done, []} = Wait.next(wait, nil)
   end
 
-  test "with no harness process, no request of the turn is open" do
+  test "with no provider process, no request of the turn is open" do
     {turn, _from} = steered()
     turn = %{turn | start: make_ref(), results: [make_ref()]}
     assert {wait, [{:notice, "t1", "more"}]} = Wait.after_turn(turn, nil, false)
     assert {:done, []} = Wait.next(wait, nil)
   end
 
-  test "an interrupt answer other than :ok holds the wait until the harness_down" do
+  test "an interrupt answer other than :ok holds the wait until the provider_down" do
     pid = self()
     wait = %Wait{interrupt: {pid, "t1"}}
     {:send, wait, ^pid, request} = Wait.next(wait, pid)
@@ -109,11 +109,11 @@ defmodule Helyx.Session.WaitTest do
 
     assert {wait, []} = Wait.answer(wait, :interrupt, from, {:error, :gone})
     assert Wait.next(wait, pid) == :open
-    assert {wait, []} = Wait.harness_down(wait, pid)
+    assert {wait, []} = Wait.provider_down(wait, pid)
     assert {:done, []} = Wait.next(wait, nil)
   end
 
-  test "an interrupt goes only to the harness process of its turn" do
+  test "an interrupt goes only to the provider process of its turn" do
     wait = %Wait{interrupt: {spawn(fn -> :ok end), "t1"}}
     assert {:done, []} = Wait.next(wait, self())
   end
@@ -140,10 +140,10 @@ defmodule Helyx.Session.WaitTest do
     assert {:done, []} = Wait.next(wait, pid)
   end
 
-  test "an idle close: :busy ends the wait, :ok waits for the harness_down" do
+  test "an idle close: :busy ends the wait, :ok waits for the provider_down" do
     pid = self()
     from = make_ref()
-    wait = %Wait{idle: from, harness: pid}
+    wait = %Wait{idle: from, provider: pid}
 
     assert {busy, []} = Wait.answer(wait, :idle_close, from, :busy)
     assert {:done, []} = Wait.next(busy, pid)
@@ -160,7 +160,7 @@ defmodule Helyx.Session.WaitTest do
   end
 
   test "a reply whose ref is not stored changes nothing" do
-    wait = %Wait{idle: make_ref(), reply: make_ref(), harness: self()}
+    wait = %Wait{idle: make_ref(), reply: make_ref(), provider: self()}
 
     for kind <- [:idle_close, :interrupt, :steer, :tool_start, :tool_result, :turn] do
       assert {^wait, []} = Wait.answer(wait, kind, make_ref(), :ok)

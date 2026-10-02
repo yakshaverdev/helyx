@@ -60,9 +60,9 @@ defmodule Helyx.Provider.ClaudeCode.ProgramTurnTest do
     turn(bin, 1, 1, reply("first") ++ [note(), init() | lines])
     context = %Helyx.Context{messages: [Message.user("a")]}
     {_from, actions, state} = request(harness(work), {:turn, "t1", context})
-    {actions, state} = pump(ClaudeCode, state, actions, saw?(:program_turn))
+    {actions, state} = pump(ClaudeCode, state, actions, saw?(:turn_start))
     {actions, state} = pump(ClaudeCode, state, actions, saw?({:text_delta, "program"}))
-    [id] = for {:event, id, :program_turn} <- actions, do: id
+    [id] = for {:event, id, :turn_start} <- actions, do: id
     {id, state}
   end
 
@@ -82,11 +82,11 @@ defmodule Helyx.Provider.ClaudeCode.ProgramTurnTest do
       pump(ClaudeCode, state, actions, &(length(Enum.filter(&1, fn a -> ended?([a]) end)) == 2))
 
     assert [
-             {:event, id, :program_turn},
+             {:event, id, :turn_start},
              {:event, id, {:text_delta, "program"}},
              {:event, id, {:done, _}}
            ] =
-             Enum.drop_while(actions, &(not match?({:event, _, :program_turn}, &1)))
+             Enum.drop_while(actions, &(not match?({:event, _, :turn_start}, &1)))
 
     assert id =~ ~r/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
     assert %{turn: nil, notified?: false} = state

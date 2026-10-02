@@ -19,7 +19,7 @@ defmodule Helyx.Provider.ClaudeCode.ReplayTest do
 
     history = replay_history()
 
-    assert [{:harness_session, _id, 0}, {:text_delta, "ok"} | _] =
+    assert [{:resume, _id, 0}, {:text_delta, "ok"} | _] =
              events_of(run_direct(history, work))
   end
 
@@ -30,7 +30,7 @@ defmodule Helyx.Provider.ClaudeCode.ReplayTest do
 
     actions = run_direct([Message.user("hi")], work)
     assert {:stop, :no_msg_lifecycle} = List.last(actions)
-    assert [{:harness_session, _id, 0}] = events_of(actions)
+    assert [{:resume, _id, 0}] = events_of(actions)
   end
 
   # The program writes an assistant line to its session when it reads it,
@@ -53,7 +53,7 @@ defmodule Helyx.Provider.ClaudeCode.ReplayTest do
     answer = &%Message{role: :assistant, content: [%Message.Text{text: &1}]}
     history = [Message.user("a"), answer.("b"), Message.user("c"), answer.("d"), answer.("e")]
 
-    assert [{:harness_session, _id, 0} | _] =
+    assert [{:resume, _id, 0} | _] =
              events_of(run_direct(history ++ [Message.user("x")], work))
 
     refute File.exists?(early)
@@ -83,7 +83,7 @@ defmodule Helyx.Provider.ClaudeCode.ReplayTest do
 
     turn(bin, 1, 1, reply("ok"))
 
-    assert [{:harness_session, _id, 0}, {:text_delta, "ok"} | _] =
+    assert [{:resume, _id, 0}, {:text_delta, "ok"} | _] =
              events_of(run_direct(replay_history(), work))
 
     refute File.exists?(early)
@@ -96,7 +96,7 @@ defmodule Helyx.Provider.ClaudeCode.ReplayTest do
     script(bin, "quiet.1.1", [init(), replay_failed()])
     turn(bin, 1, 1, reply("ok"))
 
-    assert [{:harness_session, _id, 0}, {:text_delta, "ok"} | _] =
+    assert [{:resume, _id, 0}, {:text_delta, "ok"} | _] =
              events_of(run_direct(replay_history(), work))
 
     assert ["a", "b", "x"] =
@@ -192,9 +192,9 @@ defmodule Helyx.Provider.ClaudeCode.ReplayTest do
     script(bin, "start.1", [lost(sid())], "exit 1\n")
     File.write!(Path.join(bin, "start.1"), gate <> File.read!(Path.join(bin, "start.1")))
 
-    state = harness(work, harness_session_id: sid())
+    state = harness(work, resume_id: sid())
     from = make_ref()
-    assert {:ok, [], state} = ClaudeCode.harness_request(:close, from, state)
+    assert {:ok, [], state} = ClaudeCode.request(:close, from, state)
     File.write!(go, "")
     assert {[{:reply, ^from, :ok}], _state} = pump(ClaudeCode, state, [], replied?(from))
     assert programs(bin) == "1"

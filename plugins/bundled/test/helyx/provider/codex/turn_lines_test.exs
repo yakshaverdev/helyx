@@ -11,7 +11,7 @@ defmodule Helyx.Provider.Codex.TurnLinesTest do
   @moduletag :tmp_dir
   setup {Helyx.Test.CodexFake, :setup_fake}
 
-  test "a turn/start answer with both an error and a result stops the harness process",
+  test "a turn/start answer with both an error and a result stops the provider process",
        %{bin: bin, work: work} do
     initialize(bin, 1)
     on(bin, 1, "thread/start", [j(%{id: "@", result: %{thread: thread(tid())}})])
@@ -51,7 +51,7 @@ defmodule Helyx.Provider.Codex.TurnLinesTest do
     assert state.due == %{}
   end
 
-  test "a turn line with the fields of an item line and not its own shape stops the harness process",
+  test "a turn line with the fields of an item line and not its own shape stops the provider process",
        %{bin: bin, work: work} do
     item = %{turnId: "turn1", item: %{type: "agentMessage", id: "msg_1", text: ""}}
 
@@ -73,7 +73,7 @@ defmodule Helyx.Provider.Codex.TurnLinesTest do
     end
   end
 
-  test "a turn/start answer or a turn/started with no string turn id stops the harness process",
+  test "a turn/start answer or a turn/started with no string turn id stops the provider process",
        %{bin: bin, work: work} do
     cases = [
       {[j(%{id: "@", result: %{turn: %{id: 7}}})], "turn/start"},
@@ -93,7 +93,7 @@ defmodule Helyx.Provider.Codex.TurnLinesTest do
     end
   end
 
-  test "a turn/interrupt error that is not an object stops the harness process",
+  test "a turn/interrupt error that is not an object stops the provider process",
        %{bin: bin, work: work} do
     fresh(bin, 1, tid(), [])
     on(bin, 1, "turn/interrupt", [j(%{id: "@", error: "boom"})])
@@ -105,7 +105,7 @@ defmodule Helyx.Provider.Codex.TurnLinesTest do
     refute Enum.any?(actions, &match?({:reply, ^from, _}, &1))
   end
 
-  test "an item/started with a request id stops the harness process, and a pending interrupt gets no answer",
+  test "an item/started with a request id stops the provider process, and a pending interrupt gets no answer",
        %{bin: bin, work: work} do
     start =
       j(%{
@@ -131,7 +131,7 @@ defmodule Helyx.Provider.Codex.TurnLinesTest do
     refute Enum.any?(actions, &match?({:reply, ^from, _}, &1))
   end
 
-  test "a turn that Helyx did not ask for stops the harness process", %{bin: bin, work: work} do
+  test "a turn that Helyx did not ask for stops the provider process", %{bin: bin, work: work} do
     other = note(tid(), "turn/started", %{turn: %{id: "turn9", status: "inProgress"}})
     File.write!(Path.join(bin, "other"), other <> "\n")
     fresh(bin, 1, tid(), reply(tid(), "ok"), ~s{sleep 0.2; cat "$d/other"\n})
@@ -193,7 +193,7 @@ defmodule Helyx.Provider.Codex.TurnLinesTest do
     assert length(for %{"method" => "turn/start"} <- stdin(bin, 1), do: 1) == 2
   end
 
-  test "a turn/started while the next turn waits for the late answer stops the harness process",
+  test "a turn/started while the next turn waits for the late answer stops the provider process",
        %{bin: bin, work: work} do
     answer = j(%{id: "@", result: %{turn: %{id: "turn1", status: "inProgress"}}})
     ghost = note(tid(), "turn/started", %{turn: %{id: "turn9", status: "inProgress"}})
@@ -225,7 +225,7 @@ defmodule Helyx.Provider.Codex.TurnLinesTest do
     assert {[{:stop, :turn_not_asked}], _state} = pump(Codex, state, [], fn _ -> false end)
   end
 
-  test "a turn/completed before the turn is known stops the harness process",
+  test "a turn/completed before the turn is known stops the provider process",
        %{bin: bin, work: work} do
     fresh(bin, 1, tid(), [])
     on(bin, 1, "turn/start", [turn_end(tid(), "completed")])
@@ -236,7 +236,7 @@ defmodule Helyx.Provider.Codex.TurnLinesTest do
   end
 
   @tag :slow
-  test "a turn or item line with no string threadId stops the harness process",
+  test "a turn or item line with no string threadId stops the provider process",
        %{bin: bin, work: work} do
     params = %{turn: %{id: "turn1", status: "completed"}, turnId: "turn1", item: search()}
 

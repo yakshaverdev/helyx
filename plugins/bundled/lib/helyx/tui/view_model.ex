@@ -14,7 +14,7 @@ defmodule Helyx.TUI.ViewModel do
       never started, when its result comes, so a frame does not pay for the
       size of the call; `result` is nil while it runs, then the tool result
       message
-    * `{:notice, text}` – an aborted or failed turn, a harness that lost
+    * `{:notice, text}` – an aborted or failed turn, a provider that lost
       its session or got a cut transcript, a steer that was not confirmed, a
       notice of the provider, or a command the client rejected
       (`notice/2`)
@@ -85,7 +85,7 @@ defmodule Helyx.TUI.ViewModel do
     :tool_execution_end,
     :queue_update,
     :model_change,
-    :harness_session,
+    :provider_session,
     :steer_unconfirmed,
     :notice
   ]
@@ -198,7 +198,7 @@ defmodule Helyx.TUI.ViewModel do
   defp fold(vm, %Event{type: :steer_unconfirmed, data: %{text: text}}),
     do: add_cell(vm, {:notice, "the steer was not confirmed; send it again if needed: " <> text})
 
-  defp fold(vm, %Event{type: :harness_session, data: data}) do
+  defp fold(vm, %Event{type: :provider_session, data: data}) do
     %{provider: provider, lost: lost, cut: cut} = data
     lost_text = "#{provider} lost its own session; a fresh one got the transcript"
     vm = if lost, do: add_cell(vm, {:notice, lost_text}), else: vm

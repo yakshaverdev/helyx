@@ -78,7 +78,7 @@ defmodule Helyx.Provider.Codex.InterruptTest do
     assert %{"params" => %{"turnId" => "turn1"}} = request(bin, 1, "turn/interrupt")
   end
 
-  test "a command that starts after the interrupt stops the harness process at the turn's end",
+  test "a command that starts after the interrupt stops the provider process at the turn's end",
        %{bin: bin, work: work} do
     fresh(bin, 1, tid(), [])
 
@@ -104,7 +104,7 @@ defmodule Helyx.Provider.Codex.InterruptTest do
     do: note(tid(), "turn/completed", %{turn: Map.merge(%{id: "turn1", items: []}, fields)})
 
   @tag :slow
-  test "a turn/completed with a status that does not end the turn stops the harness process, and a pending interrupt gets no answer",
+  test "a turn/completed with a status that does not end the turn stops the provider process, and a pending interrupt gets no answer",
        %{bin: bin, work: work} do
     for {fields, n} <- Enum.with_index(@bad_ends, 1) do
       fresh(bin, n, tid(), [])
@@ -200,7 +200,7 @@ defmodule Helyx.Provider.Codex.InterruptTest do
     fresh(bin, 2, fresh_tid(), reply(fresh_tid(), "Back."))
     session = start(ctx)
 
-    assert [%{stop_reason: :error, error: {:harness_stop, {:malformed, "turn/completed"}}}] =
+    assert [%{stop_reason: :error, error: {:provider_stop, {:malformed, "turn/completed"}}}] =
              of_type(prompt(session, "go"), :agent_end)
 
     assert [%{stop_reason: :end_turn}] = of_type(prompt(session, "again"), :agent_end)
@@ -216,7 +216,7 @@ defmodule Helyx.Provider.Codex.InterruptTest do
     assert request(bin, 1, "turn/interrupt") == nil
   end
 
-  test "after an interrupt, an item of the stopped turn stops the harness process",
+  test "after an interrupt, an item of the stopped turn stops the provider process",
        %{bin: bin, work: work} do
     File.write!(Path.join(bin, "late"), completed(tid(), command("exec-1", done())) <> "\n")
     fresh(bin, 1, tid(), [])

@@ -6,7 +6,8 @@ defmodule Helyx.Session.Server do
   require Logger
 
   alias Helyx.{Context, Event, Message, ModelRef}
-  alias Helyx.Session.{Hands, Harness, Id, Queues, Snapshot, Steers, Transcript, Turn, Wait}
+  alias Helyx.Session.{Hands, Id, ProviderProcess, Queues, Snapshot, Steers, Transcript}
+  alias Helyx.Session.{Turn, Wait}
 
   defmodule State do
     @moduledoc false
@@ -15,10 +16,10 @@ defmodule Helyx.Session.Server do
     # The armed kill of a turn, interrupt, steer, tool result, or tool
     # start request: the loop writes one stdio line and replies, well under
     # 10 ms.
-    @harness_reply_ms 2_000
+    @provider_reply_ms 2_000
     # The armed kill of a close: end of input, then the exit.
-    @harness_close_ms 5_000
-    def harness_close_ms, do: @harness_close_ms
+    @provider_close_ms 5_000
+    def provider_close_ms, do: @provider_close_ms
 
     defstruct [
       :id,
@@ -49,23 +50,20 @@ defmodule Helyx.Session.Server do
       # the next turn can start (a `%Wait{}`, see `Helyx.Session.Wait`).
       activity: :idle,
       queues: %Queues{},
-      # The last harness session per harness provider id: its id and the
-      # number of transcript messages before it started.
-      harness_sessions: %{},
-      # The harness process of a connected provider (ADR 0007), a
-      # `%Connection{}`, or nil.
-      harness: nil,
-      # The bounds of the requests to the harness process, in ms: the
-      # armed kills (see `Helyx.Session.Harness`), and `idle`, the time with
-      # no turn after which the session sends `:idle_close`. A seam for
-      # tests.
-      harness_ms: %{
-        turn: @harness_reply_ms,
-        interrupt: @harness_reply_ms,
-        steer: @harness_reply_ms,
-        tool_result: @harness_reply_ms,
-        tool_start: @harness_reply_ms,
-        close: @harness_close_ms,
+      # The last resume id per provider id, with the transcript length then.
+      resume_ids: %{},
+      # The provider process (ADR 0007), a `%ProviderConn{}`, or nil.
+      conn: nil,
+      # The bounds of the requests to the provider process, in ms: the armed
+      # kills (see `Helyx.Session.ProviderProcess`), and `idle`, the time with
+      # no turn after which the session sends `:idle_close`. A test seam.
+      provider_ms: %{
+        turn: @provider_reply_ms,
+        interrupt: @provider_reply_ms,
+        steer: @provider_reply_ms,
+        tool_result: @provider_reply_ms,
+        tool_start: @provider_reply_ms,
+        close: @provider_close_ms,
         idle: 1_800_000
       },
       # The current idle timer (`:erlang.start_timer/3`, see `arm_idle/1`),
@@ -74,25 +72,24 @@ defmodule Helyx.Session.Server do
     ]
   end
 
-  defmodule Connection do
+  defmodule ProviderConn do
     @moduledoc false
-    # The harness process of a connected provider: its pid, the model it
-    # runs, and whether `harness_init/3` returned (`{:harness_ready, pid}`).
+    # The provider process of a connected provider: its pid, the model it
+    # runs, and whether `init/3` returned (`{:provider_ready, pid}`).
     @enforce_keys [:pid, :model]
     defstruct [:pid, :model, ready: false]
   end
 
-  # The stop of a session (`terminate/2`): the close of an idle harness
-  # process (`State.harness_close_ms/0`, armed kill), then the stop of the
+  # The stop of a session (`terminate/2`): the close of an idle provider
+  # process (`State.provider_close_ms/0`, armed kill), then the stop of the
   # hands, which can finish one release (`Hands.State.release_ms/0`). Each
-  # wait has a margin for load, so the supervisor does not kill the session
-  # first.
+  # wait has a margin for load, so the supervisor does not kill it first.
   @load_hands_stop_ms 2_000
   @load_shutdown_ms 3_000
   @hands_stop_ms Hands.State.release_ms() + @load_hands_stop_ms
   use GenServer,
     restart: :temporary,
-    shutdown: State.harness_close_ms() + @hands_stop_ms + @load_shutdown_ms
+    shutdown: State.provider_close_ms() + @hands_stop_ms + @load_shutdown_ms
 
   def start_link(%State{id: id, core: core} = state) do
     GenServer.start_link(__MODULE__, state, name: via(core, id))
@@ -146,7 +143,7 @@ defmodule Helyx.Session.Server do
     {:reply, {:error, :turn_running}, state}
   end
 
-  # A steer on a `submitted` connected turn goes to the harness process; in
+  # A steer on a `submitted` connected turn goes to the provider process; in
   # `preparing` and `submitting` it stays in the local queue (see "Turn
   # states" in `docs/features/long-lived-harness.md`). A sent steer counts
   # in the 32 steers until its `user_message` and its answer (see `held/1`).
@@ -166,12 +163,12 @@ defmodule Helyx.Session.Server do
   def handle_call({:follow_up, text}, _from, %State{activity: %Turn{}} = state),
     do: queue_reply(state, :follow_ups, text)
 
-  # A harness process that ended while the session was idle can still have
+  # A provider process that ended while the session was idle can still have
   # its handles in a release of the hands: the message waits for its
-  # `:harness_down` as a follow-up.
+  # `:provider_down` as a follow-up.
   def handle_call({op, text}, _from, %State{} = state)
       when op in [:prompt, :steer, :follow_up] do
-    case await_ended_harness(state) do
+    case await_ended_provider(state) do
       %State{activity: :idle} = state -> {:reply, :ok, begin_turn(state, [text])}
       state -> queue_reply(state, :follow_ups, text)
     end
@@ -241,7 +238,7 @@ defmodule Helyx.Session.Server do
     end
   end
 
-  # The harness took a steer of this turn: its text, the one the session
+  # The provider took a steer of this turn: its text, the one the session
   # checked at the client call, joins the transcript here (see
   # `Steers.take/2`).
   def handle_info(
@@ -252,29 +249,29 @@ defmodule Helyx.Session.Server do
     {:noreply, steer_effects(put_in(state.activity.steers, steers), effects)}
   end
 
-  # The harness asks for a Helyx tool (see "Helyx tool calls" in
+  # The provider asks for a Helyx tool (see "Helyx tool calls" in
   # `docs/features/long-lived-harness.md`). The loop owns the waiting
   # queue and sends a request only when the result of the one before came,
   # so `tool` holds only the running call. The call
-  # and its result join the transcript from the harness's own events, not
+  # and its result join the transcript from the program's own events, not
   # from here.
   def handle_info(
         {:stream_event, turn_id, {:tool_request, id, name, args}},
         %State{
           activity: %Turn{id: turn_id, turn_mode: :connected} = turn,
-          harness: %Connection{pid: pid}
+          conn: %ProviderConn{pid: pid}
         } = state
       ) do
     call = %Message.ToolCall{id: id, name: name, arguments: args}
-    from = Harness.request(pid, {:tool_start, turn_id, id}, state.harness_ms.tool_start)
+    from = ask(state, pid, {:tool_start, turn_id, id}, :tool_start)
     {:noreply, %{state | activity: %{turn | tool: call, start: from}}}
   end
 
   # The loop's answer to the ask: only `:ok` runs the call. A missed
-  # deadline stops the harness process, and its `:harness_down` fails the
+  # deadline stops the provider process, and its `:provider_down` fails the
   # turn; an answer after the turn goes to the wait after the turn.
   def handle_info(
-        {:harness_reply, from, :tool_start, reply},
+        {:provider_reply, from, :tool_start, reply},
         %State{activity: %Turn{start: from, tool: call} = turn} = state
       ) do
     state = %{state | activity: %{turn | start: nil}}
@@ -283,7 +280,7 @@ defmodule Helyx.Session.Server do
      if(reply == :ok, do: run_on_hands(call, state), else: put_in(state.activity.tool, nil))}
   end
 
-  # The harness withdrew a tool request: a running one is killed, and its
+  # The provider withdrew a tool request: a running one is killed, and its
   # result, which the hands still send, is dropped by the loop.
   def handle_info(
         {:cancel_tool, turn_id, call_id},
@@ -293,22 +290,22 @@ defmodule Helyx.Session.Server do
     {:noreply, state}
   end
 
-  # Only a connected turn runs Helyx tools for the harness.
+  # Only a connected turn runs Helyx tools for the provider.
   def handle_info({:stream_event, _turn_id, {:tool_request, _, _, _}}, state),
     do: {:noreply, state}
 
   def handle_info(
-        {:stream_event, turn_id, {:harness_session, id, cut}},
+        {:stream_event, turn_id, {:resume, id, cut}},
         %State{activity: %Turn{id: turn_id} = turn} = state
       ) do
     # The provider id is the prefix of the turn's model ref: `find/2`
     # matched it, so the session runs no plugin code for it.
     provider = turn.model.provider
     state = persist(state, &Helyx.Session.File.append_harness_session(&1, provider, id))
-    sessions = Map.put(state.harness_sessions, provider, {id, length(state.transcript)})
-    state = %{state | harness_sessions: sessions}
-    data = %{provider: provider, harness_session_id: id, lost: turn.resumed != nil, cut: cut}
-    {:noreply, emit(state, :harness_session, data)}
+    sessions = Map.put(state.resume_ids, provider, {id, length(state.transcript)})
+    state = %{state | resume_ids: sessions}
+    data = %{provider: provider, resume_id: id, lost: turn.resumed != nil, cut: cut}
+    {:noreply, emit(state, :provider_session, data)}
   end
 
   # A notice of the provider is an event only: it joins no message, so the
@@ -323,8 +320,8 @@ defmodule Helyx.Session.Server do
   # turn and no wait: a submitted connected turn with no user message. Any
   # other time it is dropped, and so are its events.
   def handle_info(
-        {:stream_event, turn_id, :program_turn},
-        %State{activity: :idle, harness: %Connection{ready: true, model: model}} = state
+        {:stream_event, turn_id, :turn_start},
+        %State{activity: :idle, conn: %ProviderConn{ready: true, model: model}} = state
       ) do
     turn = %Turn{
       id: turn_id,
@@ -337,7 +334,7 @@ defmodule Helyx.Session.Server do
     {:noreply, open_turn(state, turn, %{origin: :program})}
   end
 
-  def handle_info({:stream_event, _turn_id, :program_turn}, state), do: {:noreply, state}
+  def handle_info({:stream_event, _turn_id, :turn_start}, state), do: {:noreply, state}
 
   def handle_info({:stream_event, turn_id, event}, %State{activity: %Turn{id: turn_id}} = state) do
     %State{activity: turn} = state = start_assistant_message(state)
@@ -387,23 +384,22 @@ defmodule Helyx.Session.Server do
     {:noreply, fail_turn({:task_exit, Message.cap_integers(reason)}, state)}
   end
 
-  # The terminal of a connected turn, from the harness process.
+  # The terminal of a connected turn, from the provider process.
   def handle_info({:stream_end, turn_id, terminal}, %State{activity: %Turn{id: turn_id}} = state) do
     {:noreply, end_turn(terminal, state)}
   end
 
-  # The result of a Helyx tool of a connected turn goes to the harness
+  # The result of a Helyx tool of a connected turn goes to the provider
   # process, with the tool result bound. Its answer is awaited, as a steer's
   # is, so no turn starts while its kill is armed.
   def handle_info(
         {:tool_result, turn_id, call_id, result},
         %State{
           activity: %Turn{id: turn_id, turn_mode: :connected, tool: %{id: call_id}} = turn,
-          harness: %Connection{pid: pid}
+          conn: %ProviderConn{pid: pid}
         } = state
       ) do
-    from =
-      Harness.request(pid, {:tool_result, turn_id, call_id, result}, state.harness_ms.tool_result)
+    from = ask(state, pid, {:tool_result, turn_id, call_id, result}, :tool_result)
 
     {:noreply, %{state | activity: %{turn | tool: nil, results: [from | turn.results]}}}
   end
@@ -431,11 +427,11 @@ defmodule Helyx.Session.Server do
 
   # The messages of a connected turn (see "Turn states" in
   # `docs/features/long-lived-harness.md`). The turn is `preparing` until
-  # the session sends `{:turn, ...}`, which needs a ready harness process
+  # the session sends `{:turn, ...}`, which needs a ready provider process
   # and the prepared context; `submitting` until the answer; then
   # `submitted`.
-  def handle_info({:harness_ready, pid}, %State{harness: %Connection{pid: pid} = harness} = state) do
-    {:noreply, arm_idle(submit(%{state | harness: %{harness | ready: true}}))}
+  def handle_info({:provider_ready, pid}, %State{conn: %ProviderConn{pid: pid} = conn} = state) do
+    {:noreply, arm_idle(submit(%{state | conn: %{conn | ready: true}}))}
   end
 
   # The prepare Task checked the context (`Stream.prepare/4`): a plugin
@@ -461,10 +457,10 @@ defmodule Helyx.Session.Server do
     {:noreply, fail_turn({:task_exit, reason}, state)}
   end
 
-  # An answer other than `:ok` ends the harness process, and its
-  # `:harness_down` fails the turn.
+  # An answer other than `:ok` ends the provider process, and its
+  # `:provider_down` fails the turn.
   def handle_info(
-        {:harness_reply, from, :turn, reply},
+        {:provider_reply, from, :turn, reply},
         %State{activity: %Turn{pending: from} = turn} = state
       ) do
     phase = if reply == :ok, do: :submitted, else: :submitting
@@ -475,7 +471,7 @@ defmodule Helyx.Session.Server do
   # The answer to a steer of the turn (see "Steer" in
   # `docs/features/long-lived-harness.md` and `Steers.answer/3`).
   def handle_info(
-        {:harness_reply, from, :steer, reply},
+        {:provider_reply, from, :steer, reply},
         %State{activity: %Turn{turn_mode: :connected} = turn} = state
       ) do
     {steers, effects} = Steers.answer(turn.steers, from, reply)
@@ -484,7 +480,7 @@ defmodule Helyx.Session.Server do
 
   # The answer to a tool result of the turn: it was written.
   def handle_info(
-        {:harness_reply, from, :tool_result, _reply},
+        {:provider_reply, from, :tool_result, _reply},
         %State{activity: %Turn{turn_mode: :connected} = turn} = state
       ) do
     {:noreply, put_in(state.activity.results, List.delete(turn.results, from))}
@@ -492,52 +488,52 @@ defmodule Helyx.Session.Server do
 
   # A reply in the wait acts only on the part whose stored ref it matches
   # (see `Wait.answer/4`).
-  def handle_info({:harness_reply, from, kind, reply}, %State{activity: %Wait{} = wait} = state) do
+  def handle_info({:provider_reply, from, kind, reply}, %State{activity: %Wait{} = wait} = state) do
     {wait, effects} = Wait.answer(wait, kind, from, reply)
     {:noreply, progress(steer_effects(%{state | activity: wait}, effects))}
   end
 
-  # The idle timer of the harness process. Only the current timer counts,
+  # The idle timer of the provider process. Only the current timer counts,
   # and only while the session is idle: a turn or a wait since it was armed
   # makes it old. The wait holds every message until the answer.
   def handle_info(
         {:timeout, ref, :idle_close},
-        %State{idle: ref, activity: :idle, harness: %Connection{pid: pid, ready: true}} = state
+        %State{idle: ref, activity: :idle, conn: %ProviderConn{pid: pid, ready: true}} = state
       ) do
-    from = Harness.request(pid, :idle_close, state.harness_ms.close)
-    {:noreply, %{state | idle: nil, activity: %Wait{idle: from, harness: pid}}}
+    from = ask(state, pid, :idle_close, :close)
+    {:noreply, %{state | idle: nil, activity: %Wait{idle: from, provider: pid}}}
   end
 
   def handle_info({:timeout, _ref, :idle_close}, state), do: {:noreply, state}
 
-  # From the hands, after the release of the harness process's handles: the
-  # end of the harness process that the wait is for, or of the one that
-  # holds the requests of the turn that ended (see `Wait.harness_down/2`).
-  def handle_info({:harness_down, pid, _reason}, %State{activity: %Wait{harness: pid}} = state),
-    do: {:noreply, wait_harness_down(state, pid)}
+  # From the hands, after the release of the provider process's handles: the
+  # end of the provider process that the wait is for, or of the one that
+  # holds the requests of the turn that ended (see `Wait.provider_down/2`).
+  def handle_info({:provider_down, pid, _reason}, %State{activity: %Wait{provider: pid}} = state),
+    do: {:noreply, wait_provider_down(state, pid)}
 
   def handle_info(
-        {:harness_down, pid, _reason},
-        %State{harness: %Connection{pid: pid}, activity: %Wait{}} = state
+        {:provider_down, pid, _reason},
+        %State{conn: %ProviderConn{pid: pid}, activity: %Wait{}} = state
       ),
-      do: {:noreply, wait_harness_down(state, pid)}
+      do: {:noreply, wait_provider_down(state, pid)}
 
   def handle_info(
-        {:harness_down, pid, reason},
-        %State{harness: %Connection{pid: pid}, activity: %Turn{turn_mode: :connected}} = state
+        {:provider_down, pid, reason},
+        %State{conn: %ProviderConn{pid: pid}, activity: %Turn{turn_mode: :connected}} = state
       ) do
-    {:noreply, fail_turn(reason, %{state | harness: nil})}
+    {:noreply, fail_turn(reason, %{state | conn: nil})}
   end
 
-  def handle_info({:harness_down, pid, _reason}, %State{harness: %Connection{pid: pid}} = state) do
-    {:noreply, %{state | harness: nil}}
+  def handle_info({:provider_down, pid, _reason}, %State{conn: %ProviderConn{pid: pid}} = state) do
+    {:noreply, %{state | conn: nil}}
   end
 
-  # A message for a turn, a call, or a harness process that is no longer
+  # A message for a turn, a call, or a provider process that is no longer
   # current, or a reply that nobody waits for.
-  def handle_info({:harness_ready, _pid}, state), do: {:noreply, state}
-  def handle_info({:harness_reply, _from, _kind, _reply}, state), do: {:noreply, state}
-  def handle_info({:harness_down, _pid, _reason}, state), do: {:noreply, state}
+  def handle_info({:provider_ready, _pid}, state), do: {:noreply, state}
+  def handle_info({:provider_reply, _from, _kind, _reply}, state), do: {:noreply, state}
+  def handle_info({:provider_down, _pid, _reason}, state), do: {:noreply, state}
   def handle_info({:prepared, _turn_id, _result}, state), do: {:noreply, state}
   def handle_info({:prepare_failed, _turn_id, _reason}, state), do: {:noreply, state}
   def handle_info({:tool_result, _turn_id, _call_id, _result}, state), do: {:noreply, state}
@@ -614,19 +610,19 @@ defmodule Helyx.Session.Server do
 
   defp end_work(%State{activity: %Turn{}}), do: :ok
 
-  # A session that ends with no turn closes its harness processes: the
+  # A session that ends with no turn closes its provider processes: the
   # current one and the one its wait is for (an idle close, a switch
   # close, an abort). Each gets a close, end of input then the exit, after
   # any request it has open: a `:busy` answer to an idle close does not
   # keep it. The armed close kills bound the waits, which run in parallel,
-  # and a harness process that is already gone gives its `:DOWN` at once.
+  # and a provider process that is already gone gives its `:DOWN` at once.
   defp end_work(%State{activity: activity} = state) do
-    pids = [harness_pid(state), wait_pid(activity)]
+    pids = [provider_pid(state), wait_pid(activity)]
 
     refs =
       for pid <- Enum.uniq(pids), is_pid(pid) do
         ref = Process.monitor(pid)
-        Harness.request(pid, :close, state.harness_ms.close)
+        ask(state, pid, :close, :close)
         ref
       end
 
@@ -637,14 +633,14 @@ defmodule Helyx.Session.Server do
     end
   end
 
-  defp wait_pid(%Wait{harness: pid}), do: pid
+  defp wait_pid(%Wait{provider: pid}), do: pid
   defp wait_pid(:idle), do: nil
 
   # The hands take the messages before the exit signal first: the end of a
-  # closed harness process gets its release. That end reaches the hands
-  # before the harness process's `:DOWN` reaches the session, on one node.
+  # closed provider process gets its release. That end reaches the hands
+  # before the provider process's `:DOWN` reaches the session, on one node.
   # If it came later, the hands would end with no release, and the port
-  # would close with the harness process. Each release has its deadline,
+  # would close with the provider process. Each release has its deadline,
   # so the wait is bounded; over @hands_stop_ms the hands are killed, and a
   # killed process runs no release. Hands that are already gone give their
   # `:DOWN` at once.
@@ -673,7 +669,7 @@ defmodule Helyx.Session.Server do
   defp abort_turn(%State{activity: turn} = state, callers) do
     if turn.task, do: shutdown_stream(turn.task)
     request = Hands.request_cancel(state.hands, turn.id)
-    {wait, effects} = Wait.after_turn(turn, harness_pid(state), false)
+    {wait, effects} = Wait.after_turn(turn, provider_pid(state), false)
 
     state =
       state
@@ -683,7 +679,7 @@ defmodule Helyx.Session.Server do
       |> drop_queues()
       |> emit(:agent_end, %{stop_reason: :aborted})
 
-    wait = %{wait | hands: request, callers: callers, interrupt: interrupt(turn, state.harness)}
+    wait = %{wait | hands: request, callers: callers, interrupt: interrupt(turn, state.conn)}
     %{state | activity: wait}
   end
 
@@ -691,14 +687,14 @@ defmodule Helyx.Session.Server do
        when phase in [:submitting, :submitted],
        do: {pid, id}
 
-  defp interrupt(_turn, _harness), do: nil
+  defp interrupt(_turn, _conn), do: nil
 
   # Runs the wait (see `Wait.next/2`): sends the requests it names, and at
   # its end replies to the abort callers and settles.
   defp progress(%State{activity: %Wait{} = wait} = state) do
-    case Wait.next(wait, harness_pid(state)) do
+    case Wait.next(wait, provider_pid(state)) do
       {:send, wait, pid, request} ->
-        from = Harness.request(pid, request, Map.fetch!(state.harness_ms, elem(request, 0)))
+        from = ask(state, pid, request, elem(request, 0))
         progress(%{state | activity: Wait.sent(wait, request, from)})
 
       {:done, callers} ->
@@ -710,22 +706,25 @@ defmodule Helyx.Session.Server do
     end
   end
 
-  defp harness_pid(%State{harness: %Connection{pid: pid}}), do: pid
-  defp harness_pid(_state), do: nil
+  defp provider_pid(%State{conn: %ProviderConn{pid: pid}}), do: pid
+  defp provider_pid(_state), do: nil
 
-  # A harness process ended in the wait: see `Wait.harness_down/2`.
-  defp wait_harness_down(%State{activity: wait} = state, pid) do
-    harness = if harness_pid(state) == pid, do: nil, else: state.harness
-    {wait, effects} = Wait.harness_down(wait, pid)
-    progress(steer_effects(%{state | harness: harness, activity: wait}, effects))
+  # Sends `request` to the provider process with the bound `key` of `provider_ms`.
+  defp ask(state, pid, req, key), do: ProviderProcess.request(pid, req, state.provider_ms[key])
+
+  # A provider process ended in the wait: see `Wait.provider_down/2`.
+  defp wait_provider_down(%State{activity: wait} = state, pid) do
+    conn = if provider_pid(state) == pid, do: nil, else: state.conn
+    {wait, effects} = Wait.provider_down(wait, pid)
+    progress(steer_effects(%{state | conn: conn, activity: wait}, effects))
   end
 
-  # With no turn and no wait, a harness process that ended is waited for
-  # (its `:harness_down`), and one of another model than the session's
+  # With no turn and no wait, a provider process that ended is waited for
+  # (its `:provider_down`), and one of another model than the session's
   # closes before the next turn starts (a provider or a model switch);
   # otherwise the queues start the next turn.
   defp settle(%State{activity: :idle} = state) do
-    case await_ended_harness(state) do
+    case await_ended_provider(state) do
       %State{activity: :idle} = state -> arm_idle(close_or_start(state))
       state -> state
     end
@@ -733,36 +732,36 @@ defmodule Helyx.Session.Server do
 
   defp settle(state), do: state
 
-  # Arms the idle timer when the session holds a ready harness process
+  # Arms the idle timer when the session holds a ready provider process
   # with no turn and no wait. It cancels the earlier timer; a message of
   # it that is already in the mailbox has an old ref.
-  defp arm_idle(%State{activity: :idle, harness: %Connection{ready: true}} = state) do
+  defp arm_idle(%State{activity: :idle, conn: %ProviderConn{ready: true}} = state) do
     if state.idle, do: :erlang.cancel_timer(state.idle)
-    %{state | idle: :erlang.start_timer(state.harness_ms.idle, self(), :idle_close)}
+    %{state | idle: :erlang.start_timer(state.provider_ms.idle, self(), :idle_close)}
   end
 
   defp arm_idle(state), do: state
 
-  defp close_or_start(%State{model: model, harness: %Connection{pid: pid, model: other}} = state)
+  defp close_or_start(%State{model: model, conn: %ProviderConn{pid: pid, model: other}} = state)
        when other != model do
-    Harness.request(pid, :close, state.harness_ms.close)
-    %{state | harness: nil, activity: %Wait{harness: pid}}
+    ask(state, pid, :close, :close)
+    %{state | conn: nil, activity: %Wait{provider: pid}}
   end
 
   defp close_or_start(state), do: start_queued(state)
 
-  # The hands send `:harness_down` only after the release of the harness
-  # process's handles, so a turn does not start on a harness process that
-  # ended until then: the session waits for it. A harness process that
-  # ends after this check ends during the turn, and its `:harness_down`
+  # The hands send `:provider_down` only after the release of the provider
+  # process's handles, so a turn does not start on a provider process that
+  # ended until then: the session waits for it. A provider process that
+  # ends after this check ends during the turn, and its `:provider_down`
   # fails the turn (see `Hands.prepare/3`).
-  defp await_ended_harness(%State{harness: %Connection{pid: pid}} = state) do
+  defp await_ended_provider(%State{conn: %ProviderConn{pid: pid}} = state) do
     if Process.alive?(pid),
       do: state,
-      else: %{state | harness: nil, activity: %Wait{harness: pid}}
+      else: %{state | conn: nil, activity: %Wait{provider: pid}}
   end
 
-  defp await_ended_harness(state), do: state
+  defp await_ended_provider(state), do: state
 
   # Starts a turn with one user message per text, in order.
   defp begin_turn(%State{} = state, texts) do
@@ -841,16 +840,16 @@ defmodule Helyx.Session.Server do
   defp held(%State{activity: %{steers: steers}}), do: Steers.held(steers)
   defp held(_state), do: 0
 
-  # Sends a steer to the harness process with its own id and the steer
-  # bound (see `Helyx.Session.Harness`).
-  defp send_steer(text, %State{activity: turn, harness: %Connection{pid: pid}} = state) do
+  # Sends a steer to the provider process with its own id and the steer
+  # bound (see `Helyx.Session.ProviderProcess`).
+  defp send_steer(text, %State{activity: turn, conn: %ProviderConn{pid: pid}} = state) do
     steer_id = Id.new()
-    from = Harness.request(pid, {:steer, turn.id, steer_id, text}, state.harness_ms.steer)
+    from = ask(state, pid, {:steer, turn.id, steer_id, text}, :steer)
     %{state | activity: %{turn | steers: Steers.sent(turn.steers, from, steer_id, text)}}
   end
 
   # At the `:ok` of the turn, the steers that waited in `submitting` go to
-  # the harness process, in order.
+  # the provider process, in order.
   defp send_local_steers(%State{} = state) do
     case Queues.drain_steers(state.queues) do
       {[], _queues} ->
@@ -868,7 +867,7 @@ defmodule Helyx.Session.Server do
     emit_queue(%{state | queues: queues})
   end
 
-  # The harness took a steer. The open assistant message closes first, and
+  # The provider took a steer. The open assistant message closes first, and
   # every call still open gets its `aborted` result, as at a `message_end`:
   # no message goes between a call and its result.
   defp take_steer(%State{activity: %Turn{partial: nil}} = state, text),
@@ -890,7 +889,7 @@ defmodule Helyx.Session.Server do
   defp steer_effect({:notice, turn_id, text}, state),
     do: do_emit(state, turn_id, :steer_unconfirmed, %{text: text})
 
-  # A connected turn: the harness process (started at the first connected
+  # A connected turn: the provider process (started at the first connected
   # turn) and a prepare Task of the hands, which builds the context.
   defp call_provider(%State{activity: %Turn{turn_mode: :connected}} = state) do
     case connect(state) do
@@ -942,40 +941,41 @@ defmodule Helyx.Session.Server do
 
   defp base_opts(state), do: [core: state.core, session_id: state.id, cwd: state.cwd]
 
-  # `settle/1` closed a harness process of another model before the turn.
-  defp connect(%State{harness: %Connection{model: model}, activity: %Turn{model: model}} = state),
+  # `settle/1` closed a provider process of another model before the turn.
+  defp connect(%State{conn: %ProviderConn{model: model}, activity: %Turn{model: model}} = state),
     do: {:ok, state}
 
-  defp connect(%State{harness: nil, activity: turn} = state) do
-    resumed = Transcript.resumable(state.transcript, state.harness_sessions, turn.model.provider)
+  defp connect(%State{conn: nil, activity: turn} = state) do
+    resumed = Transcript.resumable(state.transcript, state.resume_ids, turn.model.provider)
 
     args = %{
       provider: turn.provider,
       model: turn.model.model,
       tools: state.tools,
-      opts: [harness_session_id: resumed] ++ base_opts(state),
+      opts: [resume_id: resumed] ++ base_opts(state),
       session: self()
     }
 
-    with {:ok, pid} <- Hands.connect(state.hands, turn.provider, &Harness.run(args, &1)) do
-      harness = %Connection{pid: pid, model: turn.model}
-      {:ok, %{state | harness: harness, activity: %{turn | resumed: resumed}}}
+    with {:ok, pid} <-
+           Hands.start_provider(state.hands, turn.provider, &ProviderProcess.run(args, &1)) do
+      conn = %ProviderConn{pid: pid, model: turn.model}
+      {:ok, %{state | conn: conn, activity: %{turn | resumed: resumed}}}
     end
   end
 
-  # Sends `{:turn, ...}` when the harness process is ready and the context
+  # Sends `{:turn, ...}` when the provider process is ready and the context
   # is prepared. The steers queued in `preparing` join the transcript and
   # the end of the context: they are part of the prompt, not steers.
   defp submit(
          %State{
            activity: %Turn{phase: :preparing, context: context},
-           harness: %Connection{pid: pid, ready: true}
+           conn: %ProviderConn{pid: pid, ready: true}
          } = state
        )
        when context != nil do
     {steers, %State{activity: turn} = state} = append_steers(state)
     context = %{context | messages: context.messages ++ Enum.map(steers, &Message.user/1)}
-    from = Harness.request(pid, {:turn, turn.id, context}, state.harness_ms.turn)
+    from = ask(state, pid, {:turn, turn.id, context}, :turn)
     %{state | activity: %{turn | phase: :submitting, pending: from, context: nil}}
   end
 
@@ -1006,7 +1006,7 @@ defmodule Helyx.Session.Server do
       # gets no result. A steer with no answer yet can still be rejected:
       # the session waits for its answer before the next turn.
       _no_calls_or_connected ->
-        {wait, effects} = Wait.after_turn(turn, harness_pid(state), true)
+        {wait, effects} = Wait.after_turn(turn, provider_pid(state), true)
 
         state =
           state
@@ -1048,7 +1048,7 @@ defmodule Helyx.Session.Server do
     do: call |> run_on_hands(state) |> emit(:tool_execution_start, %{tool_call: call})
 
   # Runs a tool call on the hands. A Helyx tool request of a connected turn
-  # runs this way with no event: the harness's own events show the call.
+  # runs this way with no event: the program's own events show the call.
   defp run_on_hands(call, %State{activity: turn} = state) do
     case Turn.rejection(turn, call) do
       nil ->
@@ -1112,7 +1112,7 @@ defmodule Helyx.Session.Server do
   # A failed connected turn runs the turn cleanup of the hands before the
   # next turn: its prepare Task can still run.
   defp fail_turn(reason, %State{activity: turn} = state) do
-    {wait, effects} = Wait.after_turn(turn, harness_pid(state), false)
+    {wait, effects} = Wait.after_turn(turn, provider_pid(state), false)
 
     state =
       state

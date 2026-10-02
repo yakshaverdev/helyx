@@ -9,11 +9,11 @@ defmodule Helyx.ProviderTest do
     :ok
   end
 
-  test "a provider with no harness_init/3 gets a local turn" do
+  test "a provider with no init/3 gets a local turn" do
     assert Helyx.Provider.turn(Helyx.Test.Provider) == :local
   end
 
-  test "a provider that exports harness_init/3 is connected, with no stream/3" do
+  test "a provider that exports init/3 is connected, with no stream/3" do
     refute function_exported?(Helyx.Test.Harness, :stream, 3)
     assert Helyx.Provider.turn(Helyx.Test.Harness) == :connected
   end

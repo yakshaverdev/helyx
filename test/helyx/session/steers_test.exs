@@ -101,14 +101,14 @@ defmodule Helyx.Session.SteersTest do
     assert {_ledger, []} = Steers.answer(ledger, from, :ok)
   end
 
-  test "the end of the harness process ends every request; only an unnoticed steer gets a notice" do
+  test "the end of the provider process ends every request; only an unnoticed steer gets a notice" do
     {ledger, _from} = one()
     {ledger, _} = Steers.end_turn(ledger, "t1", false)
-    assert {%Steers{open: []}, []} = Steers.harness_down(ledger)
+    assert {%Steers{open: []}, []} = Steers.provider_down(ledger)
 
     {ledger, _from} = one()
     {ledger, []} = Steers.end_turn(ledger, "t1", true)
-    assert {%Steers{open: []}, [{:notice, "t1", "more"}]} = Steers.harness_down(ledger)
+    assert {%Steers{open: []}, [{:notice, "t1", "more"}]} = Steers.provider_down(ledger)
   end
 
   test "effects keep the send order" do

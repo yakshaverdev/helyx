@@ -93,7 +93,7 @@ defmodule Helyx.Provider.Codex.ChildThreadsTest do
              ask(state, {:interrupt, "t2"})
   end
 
-  test "a child thread that starts after the interrupt stops the harness process at the turn's end",
+  test "a child thread that starts after the interrupt stops the provider process at the turn's end",
        %{bin: bin, work: work} do
     fresh(bin, 1, tid(), [])
 
@@ -136,7 +136,7 @@ defmodule Helyx.Provider.Codex.ChildThreadsTest do
     assert {from, [{:reply, from, :busy}], _state} = ask(state, :idle_close)
   end
 
-  test "a subAgentActivity item without its full shape stops the harness process",
+  test "a subAgentActivity item without its full shape stops the provider process",
        %{bin: bin, work: work} do
     bad = [%{kind: "paused"}, %{kind: nil}, %{agentThreadId: nil}, %{agentThreadId: 7}]
 

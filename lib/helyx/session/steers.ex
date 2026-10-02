@@ -1,9 +1,9 @@
 defmodule Helyx.Session.Steers do
   @moduledoc false
-  # The steer ledger: each steer that a connected turn sent to its harness
+  # The steer ledger: each steer that a connected turn sent to its provider
   # process and that has no answer or no `user_message` yet, in send order,
   # as `{from, steer_id, text, state}`. `from` is the ref of the request
-  # (see `Helyx.Session.Harness`). After the turn, the ledger goes to the
+  # (see `Helyx.Session.ProviderProcess`). After the turn, the ledger goes to the
   # wait with the requests that are still open: no turn starts while the
   # armed kill of a steer can fire. Every entry counts in the 32 steers
   # (`docs/features/long-lived-harness.md`, "Steer").
@@ -44,7 +44,7 @@ defmodule Helyx.Session.Steers do
   def sent(%__MODULE__{open: open} = ledger, from, steer_id, text),
     do: %{ledger | open: open ++ [{from, steer_id, text, :sent}]}
 
-  # The harness took the steer `steer_id`. An id that is not open (unknown,
+  # The provider took the steer `steer_id`. An id that is not open (unknown,
   # or taken already) changes nothing.
   @spec take(t(), String.t()) :: {t(), [effect()]}
   def take(%__MODULE__{open: open} = ledger, steer_id) do
@@ -100,10 +100,10 @@ defmodule Helyx.Session.Steers do
     end)
   end
 
-  # The harness process ended: no request is open any more, and the steers
+  # The provider process ended: no request is open any more, and the steers
   # with no notice yet get it.
-  @spec harness_down(t()) :: {t(), [effect()]}
-  def harness_down(%__MODULE__{} = ledger) do
+  @spec provider_down(t()) :: {t(), [effect()]}
+  def provider_down(%__MODULE__{} = ledger) do
     {ledger, effects} = abort(ledger)
     {%{ledger | open: []}, effects}
   end

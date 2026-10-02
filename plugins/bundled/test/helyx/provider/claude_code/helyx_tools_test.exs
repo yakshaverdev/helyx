@@ -22,7 +22,7 @@ defmodule Helyx.Provider.ClaudeCode.HelyxToolsTest do
     defp marked?(state), do: state.tasks == ["marker"]
 
     defp tool_turn(work) do
-      {:ok, state} = ClaudeCode.harness_init("haiku", [@spec_read], cwd: work)
+      {:ok, state} = ClaudeCode.init("haiku", [@spec_read], cwd: work)
 
       {_from, actions, state} =
         request(state, {:turn, "t1", %Helyx.Context{messages: [Message.user("x")]}})
@@ -60,7 +60,7 @@ defmodule Helyx.Provider.ClaudeCode.HelyxToolsTest do
         marker()
       ])
 
-      {:ok, state} = ClaudeCode.harness_init("haiku", [@spec_read], cwd: work)
+      {:ok, state} = ClaudeCode.init("haiku", [@spec_read], cwd: work)
       closed(settle(ClaudeCode, state, &marked?/1))
 
       result = %{
@@ -127,7 +127,7 @@ defmodule Helyx.Provider.ClaudeCode.HelyxToolsTest do
           [tools_call("n2", 2, %{progressToken: 2}), mcp_request("n3", no_params), result("done")]
       )
 
-      {:ok, state} = ClaudeCode.harness_init("haiku", [@spec_read], cwd: work)
+      {:ok, state} = ClaudeCode.init("haiku", [@spec_read], cwd: work)
       state = settle(ClaudeCode, state, &marked?/1)
 
       {_from, actions, state} =
@@ -175,7 +175,7 @@ defmodule Helyx.Provider.ClaudeCode.HelyxToolsTest do
           ]
       )
 
-      {:ok, state} = ClaudeCode.harness_init("haiku", [@spec_read], cwd: work)
+      {:ok, state} = ClaudeCode.init("haiku", [@spec_read], cwd: work)
 
       {_from, actions, state} =
         request(state, {:turn, "t1", %Helyx.Context{messages: [Message.user("x")]}})
