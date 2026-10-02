@@ -23,10 +23,12 @@ defmodule Helyx.Provider.OpenAI.Events do
 
   # The accumulator: `buffer` holds a partial SSE line across chunks, `calls`
   # assembles tool calls by index with `tool_bytes` their charged size,
-  # `finish` and `usage` wait for `[DONE]`. `finish` and `usage` are
-  # normalized to an atom and an integer map at ingest, so they retain no
-  # wire bytes.
-  @acc %{buffer: "", calls: %{}, tool_bytes: 0, finish: nil, usage: %{}}
+  # `ids` maps each call id to its index, `indexed?` tells if the deltas of
+  # this stream carry an index (nil before the first one), `finish` and
+  # `usage` wait for `[DONE]`. `finish` and
+  # `usage` are normalized to an atom and an integer map at ingest, so they
+  # retain no wire bytes.
+  @acc %{buffer: "", calls: %{}, ids: %{}, tool_bytes: 0, indexed?: nil, finish: nil, usage: %{}}
 
   @doc """
   Transforms a stream of SSE body chunks into provider stream events.
@@ -80,12 +82,14 @@ defmodule Helyx.Provider.OpenAI.Events do
   defp data("[DONE]", acc), do: flush(acc)
   defp data("", acc), do: {[], acc}
 
-  # A chunk that does not parse or has the wrong shape ends the stream with
-  # one error event; nothing after it is processed, so no `done` follows.
+  # A chunk that does not parse, has the wrong shape, or has a call delta
+  # that conflicts (`add_call_delta/2`) ends the stream with one error
+  # event; nothing after it is processed, so no `done` follows.
   defp data(payload, acc) do
     with {:ok, chunk} <- JSON.decode(payload),
-         true <- valid_chunk?(chunk) do
-      chunk_events(chunk, acc)
+         true <- valid_chunk?(chunk),
+         result when result != :conflict <- chunk_events(chunk, acc) do
+      result
     else
       _ -> {[{:error, {:bad_chunk, payload}}], :halted}
     end
@@ -156,8 +160,13 @@ defmodule Helyx.Provider.OpenAI.Events do
     choice = List.first(chunk["choices"] || []) || %{}
     delta = choice["delta"] || %{}
 
-    acc = Enum.reduce(delta["tool_calls"] || [], acc, &add_call_delta/2)
+    case Enum.reduce_while(delta["tool_calls"] || [], acc, &add_call_delta/2) do
+      :conflict -> :conflict
+      acc -> finish_chunk(chunk, choice, delta, acc)
+    end
+  end
 
+  defp finish_chunk(chunk, choice, delta, acc) do
     # Normalizing here, not at flush, releases the decoded chunk: a raw
     # `finish_reason` or `usage` is a sub-binary that pins its whole parent.
     finish = choice["finish_reason"]
@@ -189,19 +198,40 @@ defmodule Helyx.Provider.OpenAI.Events do
 
   # The first delta of a call usually carries the id and name; later ones
   # append argument fragments. Fragments of one call share an index. A delta
-  # without an index starts the next call when it carries an id and extends
-  # the last call otherwise. The id and name are taken from the first delta
-  # that has them.
+  # without an index extends the last call when it has no id or the id of
+  # that call, and starts the next call when its id is new; an empty id
+  # counts as none. The id and name are taken from the first delta that has
+  # them. Each id names one call and each call has one id, so a delta
+  # conflicts when it names a second id for an index, or an id that another
+  # index holds. Without an index, the id of an earlier call is such an id:
+  # a later delta with no id could not tell which call it extends. A delta
+  # also conflicts when its stream mixes deltas with and without an index:
+  # the implied index can then fall on the call of another delta, and one
+  # call would take the fragments of two.
   defp add_call_delta(delta, acc) do
+    id = if delta["id"] != "", do: delta["id"]
+    index = Map.get_lazy(delta, "index", fn -> implied_index(id, acc) end)
+    indexed? = Map.has_key?(delta, "index")
+    known = get_in(acc.calls, [index, :id])
+    open? = known in [nil, ""]
+    new_id = if open?, do: id
+
+    if acc.indexed? in [nil, indexed?] and Map.get(acc.ids, id, index) == index and
+         (open? or id in [nil, known]),
+       # A repeated id is not copied, charged, or stored again.
+       do: {:cont, put_call_delta(delta, new_id, index, %{acc | indexed?: indexed?})},
+       else: {:halt, :conflict}
+  end
+
+  defp put_call_delta(delta, id, index, acc) do
     function = delta["function"] || %{}
     # A decoded field is a sub-binary that keeps the whole coalesced chunk
     # it was split from alive, and chunk size has no bound of its own; the
     # copies release the chunk, so the charge tells the truth about what
     # the accumulator retains.
     arguments = :binary.copy(function["arguments"] || "")
-    id = :binary.copy(delta["id"] || "")
+    id = :binary.copy(id || "")
     name = :binary.copy(function["name"] || "")
-    index = Map.get_lazy(delta, "index", fn -> implied_index(delta, acc.calls) end)
 
     fragment = if arguments == "", do: 0, else: @call_fragment_bytes + byte_size(arguments)
 
@@ -226,16 +256,24 @@ defmodule Helyx.Provider.OpenAI.Events do
         end
       )
 
-    %{acc | calls: calls, tool_bytes: tool_bytes}
+    %{acc | calls: calls, ids: put_id(acc.ids, id, index), tool_bytes: tool_bytes}
   end
+
+  # The flat entry charge covers the one `ids` entry of a call.
+  defp put_id(ids, "", _index), do: ids
+  defp put_id(ids, id, index), do: Map.put(ids, id, index)
 
   # A new entry costs a flat charge.
   defp entry_bytes(calls, index) do
     if Map.has_key?(calls, index), do: 0, else: @call_entry_bytes
   end
 
-  defp implied_index(%{"id" => id}, calls) when is_binary(id), do: map_size(calls)
-  defp implied_index(_delta, calls), do: max(map_size(calls) - 1, 0)
+  # An id of an earlier call gets a new index, which the `ids` check in
+  # `add_call_delta/2` rejects.
+  defp implied_index(id, acc) do
+    last = max(map_size(acc.calls) - 1, 0)
+    if id == nil or Map.get(acc.ids, id) == last, do: last, else: map_size(acc.calls)
+  end
 
   # Emits the assembled tool calls and the terminal `done` at `[DONE]`. A
   # stream that dropped before `[DONE]` emits nothing here, so the session
@@ -244,11 +282,7 @@ defmodule Helyx.Provider.OpenAI.Events do
 
   defp flush(acc) do
     events = acc.calls |> Enum.sort() |> Enum.map(fn {_index, call} -> tool_call(call) end)
-
-    case Enum.find(events, &match?({:error, _}, &1)) do
-      nil -> {events ++ [{:done, %{stop_reason: acc.finish, usage: acc.usage}}], acc}
-      error -> {[error], acc}
-    end
+    {events ++ [{:done, %{stop_reason: acc.finish, usage: acc.usage}}], acc}
   end
 
   defp tool_call(%{id: id, name: name, arguments: arguments}) do
@@ -261,12 +295,11 @@ defmodule Helyx.Provider.OpenAI.Events do
   end
 
   # A call with bad arguments gets an error result, so the model can
-  # correct it. A call with no id cannot: the next request names a result
-  # by the id of its call, so it fails the turn. Neither holds the raw JSON.
+  # correct it; it does not hold the raw JSON. A call with no id fails the
+  # turn at the Core stream boundary, with good arguments or bad.
   defp decode_arguments(call, json) do
     case JSON.decode(json) do
       {:ok, arguments} when is_map(arguments) -> {:tool_call, %{call | arguments: arguments}}
-      _ when call.id == "" -> {:error, {:bad_tool_arguments, call.name}}
       _ -> {:rejected_tool_call, call, "the arguments are not a valid JSON object"}
     end
   end

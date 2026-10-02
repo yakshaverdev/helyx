@@ -13,6 +13,18 @@ defmodule Helyx.Session.StreamTest do
     assert {:bad, {:error, {:bad_stream_event, ^event}}} = SessionStream.check(event)
   end
 
+  # The next request names a result by the id of its call, so a call with
+  # an empty id could never get its result.
+  test "a tool call or a tool request with an empty id is malformed" do
+    call = %Message.ToolCall{id: "", name: "read", arguments: %{}}
+
+    assert {:bad, {:error, {:bad_stream_event, {:tool_call, ^call}}}} =
+             SessionStream.check({:tool_call, call})
+
+    request = {:tool_request, "", "read", %{}}
+    assert {:bad, {:error, {:bad_stream_event, ^request}}} = SessionStream.check(request)
+  end
+
   test "an integer over the digit limit in arguments is capped, with the reason not to run it" do
     call = %Message.ToolCall{id: "c1", name: "upcase", arguments: %{"n" => [%{"deep" => huge()}]}}
 

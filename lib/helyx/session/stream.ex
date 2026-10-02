@@ -62,7 +62,8 @@ defmodule Helyx.Session.Stream do
   a struct are malformed: `cap_integers/1` can turn a struct into a
   string, and the session file needs a plain map. A delta or a tool call that is not valid UTF-8 is
   malformed: transcript text is valid from the moment it exists, so the file
-  and the providers never see raw bytes.
+  and the providers never see raw bytes. A tool call or a tool request with an
+  empty id is malformed: a result names its call by the id.
   """
   @spec check(term()) ::
           {:send, term(), String.t() | nil}
@@ -129,8 +130,10 @@ defmodule Helyx.Session.Stream do
   # encode, which is quadratic in the digits (#79). The transcript, the
   # events, the session file, the tool, and the next provider request thus
   # never hold it. A call with such an integer gets its rejection reason.
+  # An empty id is malformed: the next request names a result by the id of
+  # its call.
   defp tool_call(%Message.ToolCall{id: id, name: name, arguments: args})
-       when is_binary(id) and is_binary(name) and is_non_struct_map(args) do
+       when is_binary(id) and id != "" and is_binary(name) and is_non_struct_map(args) do
     capped = Message.cap_integers(args)
     # A new struct: the pattern also matches a call with one more key.
     call = %Message.ToolCall{id: id, name: name, arguments: capped}

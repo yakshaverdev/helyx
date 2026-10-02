@@ -65,6 +65,75 @@ defmodule Helyx.Provider.OpenAI.EventsTest do
     end
   end
 
+  # A conflicting delta could put a call into another call or drop it, so
+  # the chunk is malformed, as a bad index is: a new id on an index that
+  # has one, and a stream that mixes deltas with and without an index.
+  for {name, first, second} <- [
+        {"a second id on one index", ~s("index":0,"id":"c1"), ~s("index":0,"id":"c2")},
+        {"an id that another index holds", ~s("index":0,"id":"c1"), ~s("index":1,"id":"c1")},
+        {"a missing index with the id of an earlier call", ~s("id":"c1"},{"id":"c2"),
+         ~s("id":"c1")},
+        {"a missing index after an integer one", ~s("index":1,"id":"c1"), ~s("id":"c2")},
+        {"an integer index after a missing one", ~s("id":"c1"), ~s("index":2,"id":"c2")},
+        {"a missing index with no id after an integer one", ~s("index":0,"id":"c1"),
+         ~s("type":"function")}
+      ] do
+    test "#{name} ends the stream before any tool call" do
+      call = &~s({#{&1},"function":{"name":"bash","arguments":"{}"}})
+      first = ~s({"choices":[{"delta":{"tool_calls":[#{call.(unquote(first))}]}}]})
+      bad = ~s({"choices":[{"delta":{"tool_calls":[#{call.(unquote(second))}]}}]})
+      done = [delta(%{}, "tool_calls"), "[DONE]"]
+
+      assert Enum.to_list(Events.events([sse([first, bad | done])])) ==
+               [{:error, {:bad_chunk, bad}}]
+
+      # The same two deltas in one chunk conflict too.
+      both =
+        ~s({"choices":[{"delta":{"tool_calls":[#{call.(unquote(first))},#{call.(unquote(second))}]}}]})
+
+      assert Enum.to_list(Events.events([sse([both | done])])) == [{:error, {:bad_chunk, both}}]
+    end
+  end
+
+  test "an index that repeats its id, or gets its first id late, stays one call" do
+    chunks = [
+      sse([
+        delta(%{tool_calls: [%{index: 0, function: %{name: "bash", arguments: "{"}}]}),
+        delta(%{tool_calls: [%{index: 0, id: "c1", function: %{arguments: ~s("a":)}}]}),
+        delta(%{tool_calls: [%{index: 0, id: "c1", function: %{arguments: "1}"}}]}),
+        delta(%{}, "tool_calls"),
+        "[DONE]"
+      ])
+    ]
+
+    assert Enum.to_list(Events.events(chunks)) == [
+             {:tool_call,
+              %Helyx.Message.ToolCall{id: "c1", name: "bash", arguments: %{"a" => 1}}},
+             {:done, %{stop_reason: :tool_use, usage: %{}}}
+           ]
+  end
+
+  test "without indexes, a repeated id or an empty id extends its call" do
+    chunks = [
+      sse([
+        delta(%{tool_calls: [%{id: "c1", function: %{name: "bash", arguments: "{"}}]}),
+        delta(%{tool_calls: [%{id: "c1", function: %{arguments: ~s("a":)}}]}),
+        delta(%{tool_calls: [%{id: "", function: %{arguments: "1}"}}]}),
+        delta(%{tool_calls: [%{id: "c2", function: %{name: "read", arguments: "{"}}]}),
+        delta(%{tool_calls: [%{id: "c2", function: %{arguments: "}"}}]}),
+        delta(%{}, "tool_calls"),
+        "[DONE]"
+      ])
+    ]
+
+    assert Enum.to_list(Events.events(chunks)) == [
+             {:tool_call,
+              %Helyx.Message.ToolCall{id: "c1", name: "bash", arguments: %{"a" => 1}}},
+             {:tool_call, %Helyx.Message.ToolCall{id: "c2", name: "read", arguments: %{}}},
+             {:done, %{stop_reason: :tool_use, usage: %{}}}
+           ]
+  end
+
   @not_object "the arguments are not a valid JSON object"
 
   test "bad JSON in one of two calls rejects that call alone" do
@@ -104,7 +173,8 @@ defmodule Helyx.Provider.OpenAI.EventsTest do
            ] = Enum.to_list(Events.events(chunks))
   end
 
-  test "bad JSON in a call with no id fails the turn with no raw JSON" do
+  # Core rejects the empty id (`Helyx.Session.Stream`), so the turn fails.
+  test "bad JSON in a call with no id is rejected with no raw JSON" do
     json = ~s({"secret": ) <> String.duplicate("x", 1_000)
 
     chunks = [
@@ -117,7 +187,12 @@ defmodule Helyx.Provider.OpenAI.EventsTest do
     ]
 
     assert Enum.to_list(Events.events(chunks)) ==
-             [{:text_delta, "Hi"}, {:error, {:bad_tool_arguments, "bash"}}]
+             [
+               {:text_delta, "Hi"},
+               {:rejected_tool_call,
+                %Helyx.Message.ToolCall{id: "", name: "bash", arguments: %{}}, @not_object},
+               {:done, %{stop_reason: :tool_use, usage: %{}}}
+             ]
   end
 
   # The transport hands the parser arbitrary chunks. Req's test adapter sends

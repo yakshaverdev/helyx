@@ -127,6 +127,7 @@ defmodule Helyx.Test.Provider do
   #   "tools"      the names of the tools in the context, as text
   #   "system"     the system prompt in the context, as text
   #   "bad_call"   a tool call whose name is not a string
+  #   "empty_id"   a tool call with an empty id, then done
   #   "hang"       one delta, then the stream blocks forever
   #   "transcript" every message in the context as "role:text" lines
   #   "reject_<reason>" a rejected call with a reason of N bytes
@@ -174,6 +175,7 @@ defmodule Helyx.Test.Provider do
     "wide" => [{:text_delta, "hello", :extra}],
     "raw_call" => [{:tool_call, %ToolCall{id: "c", name: <<"bash", 255>>, arguments: %{}}}, @done],
     "bad_call" => [{:tool_call, %ToolCall{id: "c", name: %{}, arguments: %{}}}],
+    "empty_id" => [{:tool_call, %ToolCall{id: "", name: "bash", arguments: %{}}}, @done],
     "bad_args" => [
       {:tool_call, %ToolCall{id: "c", name: "bash", arguments: %{"text" => {1, 2}}}},
       @done
