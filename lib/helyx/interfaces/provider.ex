@@ -95,8 +95,8 @@ defmodule Helyx.Provider do
   `init/3` and every request from the session have a deadline. When the
   reply has not come by it, Core kills the provider process, and a running
   turn fails with `:provider_timeout`, or with the release error of a
-  handle that the provider held. A `tool_result` request that Core makes
-  itself has no deadline of its own.
+  handle that the provider held. A `tool_result` or `context` request that
+  Core makes itself has no deadline of its own.
   """
 
   use Helyx.Interface, mode: :multi, required: true

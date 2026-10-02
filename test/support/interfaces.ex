@@ -626,6 +626,9 @@ defmodule Helyx.Test.Connected do
   #   "block_close"      "echo", and the close callback blocks
   #   "late_close"       "echo", and a close answers :ok after 100 ms
   #   "busy"             "echo", and an idle close answers :busy
+  #   "busy_turn"        "busy", and the idle close starts the program turn
+  #                      "p1" with the tool request "c1" and a context
+  #                      request before its answer
   #   "late_idle"        "echo", and an idle close answers :ok after 100 ms
   #   "block_idle"       "echo", and the idle close callback blocks
   #   "bad_action"       a turn gives an action that is not one
@@ -855,6 +858,18 @@ defmodule Helyx.Test.Connected do
   defp answer("block_close", :close, _from), do: Process.sleep(:infinity)
   defp answer("late_close", :close = request, from), do: later(from, request, 100)
   defp answer("busy", :idle_close, from), do: [{:reply, from, :busy}]
+
+  defp answer("busy_turn", :idle_close, from) do
+    call = {:tool_request, "c1", "upcase", %{"text" => "hi"}}
+
+    [
+      {:event, "p1", :turn_start},
+      {:event, "p1", call},
+      {:need_context, "p1"},
+      {:reply, from, :busy}
+    ]
+  end
+
   defp answer("late_idle", :idle_close = request, from), do: later(from, request, 100)
   defp answer("block_idle", :idle_close, _from), do: Process.sleep(:infinity)
 

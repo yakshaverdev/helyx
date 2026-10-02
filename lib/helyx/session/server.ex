@@ -10,7 +10,7 @@ defmodule Helyx.Session.Server do
   alias Helyx.Session.Server.{Messages, ProviderConn, Record, State}
   alias Helyx.Session.{Transcript, Turn, Wait}
 
-  import State, only: [ask: 4, provider_pid: 1]
+  import State, only: [ask: 4, drop_turn: 2, provider_pid: 1]
   import Record, only: [emit: 3, emit: 4]
 
   # The stop of a session (`terminate/2`): the close of an idle provider
@@ -244,8 +244,8 @@ defmodule Helyx.Session.Server do
       do: {:noreply, emit(state, :notice, %{text: text})}
 
   # A turn that the program started by itself (#240) opens only with no
-  # turn and no wait: a submitted turn with no user message. Any
-  # other time it is dropped, and so are its events.
+  # turn and no wait: a submitted turn with no user message. Any other
+  # time it is dropped with its events, also in the loop (#339).
   def handle_info(
         {:stream_event, turn_id, :turn_start},
         %State{activity: :idle, conn: %ProviderConn{ready: true, model: model}} = state
@@ -254,7 +254,7 @@ defmodule Helyx.Session.Server do
     {:noreply, open_turn(state, turn, %{origin: :program})}
   end
 
-  def handle_info({:stream_event, _turn_id, :turn_start}, state), do: {:noreply, state}
+  def handle_info({:stream_event, id, :turn_start}, state), do: {:noreply, drop_turn(state, id)}
 
   def handle_info({:stream_event, turn_id, event}, %State{activity: %Turn{id: turn_id}} = state) do
     %State{activity: turn} = state = Messages.start_assistant_message(state)
