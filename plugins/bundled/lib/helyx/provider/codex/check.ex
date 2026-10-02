@@ -4,7 +4,7 @@ defmodule Helyx.Provider.Codex.Check do
   # provider state as a map: `due`, `thread`, `turn`, `resume`, `started`,
   # and `open`.
 
-  alias Helyx.Message
+  alias Helyx.Provider.Codex.Tools
 
   @lost "no rollout found for thread id "
   # Item types that run something (see the research note).
@@ -28,11 +28,6 @@ defmodule Helyx.Provider.Codex.Check do
   @turn_ends ~w(completed failed interrupted)
   # The kinds of a `subAgentActivity` item in the schema of codex 0.157.1.
   @agent_kinds ~w(started interacted interrupted completed)
-  # The hex digits of the tool set digest in a stored id.
-  @digest_hex 16
-
-  def digest_hex, do: @digest_hex
-
   # The one check of every line that changes turn or thread state, before
   # any state changes: the answers to the due requests, and the turn and
   # item notifications of this program's thread. Gives nil, or the method of a
@@ -96,11 +91,9 @@ defmodule Helyx.Provider.Codex.Check do
 
   defp answer?("thread/resume", _answer, _state), do: false
 
-  # The stored id can add `#` and the digest to the thread id, so the
-  # thread id must pass `Message.resume_id?/1` with that room kept free.
   defp answer?("thread/start", %{"result" => %{"thread" => %{"id" => thread}}}, _state)
        when is_binary(thread) and thread != "",
-       do: Message.resume_id?(thread <> "#" <> String.duplicate("0", @digest_hex))
+       do: Tools.storable?(thread)
 
   defp answer?("turn/start", %{"result" => %{"turn" => %{"id" => turn}}}, _state),
     do: is_binary(turn)

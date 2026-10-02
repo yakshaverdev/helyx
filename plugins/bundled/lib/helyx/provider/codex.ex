@@ -21,17 +21,7 @@ defmodule Helyx.Provider.Codex do
 
   alias Helyx.HarnessIO
   alias Helyx.Message
-  alias Helyx.Provider.Codex.{Check, Order, Replay}
-
-  defmodule Tools do
-    @moduledoc false
-    # `specs` are the Helyx tool specs to offer, `[]` when the program did
-    # not take `experimentalApi`; `notice` is the text for the next turn,
-    # or nil. `requests` maps the call id of each open `item/tool/call` to
-    # its request id; `used` holds every call id of the running turn's
-    # `item/tool/call` requests, answered or not.
-    defstruct specs: [], notice: nil, requests: %{}, used: MapSet.new()
-  end
+  alias Helyx.Provider.Codex.{Check, Order, Replay, Tools}
 
   defmodule State do
     @moduledoc false
@@ -116,8 +106,6 @@ defmodule Helyx.Provider.Codex do
   # The error of a `dynamicTools` field with no `experimentalApi` (research
   # note).
   @no_experimental "thread/start.dynamicTools requires experimentalApi capability"
-  @tools_off "the Helyx tools are off for Codex: the program did not accept the experimental API"
-  @unmapped "the call does not map to a tool use"
 
   @impl true
   def id, do: "codex"
@@ -132,49 +120,15 @@ defmodule Helyx.Provider.Codex do
         model: model,
         tools: %Tools{specs: tools},
         cwd: Keyword.fetch!(opts, :cwd),
-        resume: resumable(opts[:resume_id], tools)
+        resume: Tools.resumable(opts[:resume_id], tools)
       }
 
       case HarnessIO.launch(exe, ["app-server"], state.cwd, state) do
         %State{terminal: {:error, reason}} -> {:error, reason}
-        state -> handshake(rpc(state, "initialize", initialize_params(tools)))
+        state -> handshake(rpc(state, "initialize", Tools.initialize_params(tools)))
       end
     end
   end
-
-  defp initialize_params([]), do: %{clientInfo: %{name: "helyx", version: "0"}}
-
-  defp initialize_params(_tools),
-    do: Map.put(initialize_params([]), :capabilities, %{experimentalApi: true})
-
-  # The stored id names the thread and the digest of its Helyx tools. A
-  # thread whose tool set is not the session's is not resumed: its tool
-  # set is fixed (research note), so a new thread starts with the replay.
-  defp resumable(nil, _tools), do: nil
-
-  defp resumable(id, tools) do
-    case String.split(id, "#", parts: 2) do
-      [thread, digest] -> if digest == digest(tools), do: thread
-      [thread] -> if tools == [], do: thread
-    end
-  end
-
-  defp digest([]), do: nil
-
-  defp digest(tools), do: HarnessIO.hex_digest(JSON.encode!(specs(tools)), Check.digest_hex())
-
-  defp specs(tools) do
-    for tool <- tools,
-        do: %{
-          type: "function",
-          name: tool.name,
-          description: tool.description,
-          inputSchema: tool.parameters
-        }
-  end
-
-  defp session_id(%State{thread: thread, tools: %Tools{specs: []}}), do: thread
-  defp session_id(%State{thread: thread, tools: tools}), do: thread <> "#" <> digest(tools.specs)
 
   # Reads the program's lines until the thread is ready. The connect kill
   # of Core bounds the wait. Only the port's messages are taken: any
@@ -368,36 +322,13 @@ defmodule Helyx.Provider.Codex do
     end
   end
 
-  # A Helyx tool call. The call id of the running turn is recorded in
-  # `used` before any check that answers it, so an id that got any answer
-  # never runs later in the turn. The request only runs the tool, so it
-  # goes out at once, never held.
+  # A Helyx tool call. The request only runs the tool, so it goes out at
+  # once, never held.
   defp dispatch(%{"id" => rpc_id, "method" => "item/tool/call", "params" => params}, state)
        when is_map(params) do
-    case {state.turn_id, params["callId"]} do
-      {nil, _call_id} ->
-        {[], tool_answer(state, rpc_id, :error, "no Helyx turn is running")}
-
-      {_turn_id, call_id} when is_binary(call_id) ->
-        tools = state.tools
-        used? = MapSet.member?(tools.used, call_id)
-        state = %{state | tools: %{tools | used: MapSet.put(tools.used, call_id)}}
-
-        cond do
-          used? ->
-            {[], tool_answer(state, rpc_id, :error, "the call id was used before in this turn")}
-
-          tool_call?(params, state) ->
-            request = {:tool_request, call_id, params["tool"], params["arguments"]}
-            tools = %{state.tools | requests: Map.put(tools.requests, call_id, rpc_id)}
-            {[], %{push(state, [request]) | tools: tools}}
-
-          true ->
-            {[], tool_answer(state, rpc_id, :error, @unmapped)}
-        end
-
-      _unmapped ->
-        {[], tool_answer(state, rpc_id, :error, @unmapped)}
+    case Tools.call(state, rpc_id, params) do
+      {{:ok, request}, tools} -> {[], push(%{state | tools: tools}, [request])}
+      {{:error, text}, tools} -> {[], tool_answer(%{state | tools: tools}, rpc_id, :error, text)}
     end
   end
 
@@ -428,7 +359,7 @@ defmodule Helyx.Provider.Codex do
   # The program did not take `experimentalApi`: it runs without the Helyx
   # tools. The exact error is not known, so any error answer counts.
   defp answered("initialize", %{"error" => _}, %State{tools: %Tools{specs: [_ | _]}} = state),
-    do: {[], rpc(tools_off(state), "initialize", initialize_params([]))}
+    do: {[], rpc(%{state | tools: Tools.off()}, "initialize", Tools.initialize_params([]))}
 
   defp answered("initialize", %{"result" => _}, state) do
     send_line(state, %{method: "initialized"})
@@ -444,7 +375,7 @@ defmodule Helyx.Provider.Codex do
   # The program has no such thread: a fresh one starts on the same run.
   defp answered("thread/resume", %{"error" => _}, state), do: {[], start_thread(state)}
 
-  # The thread's digest is the session's (`resumable/2`), and its tools
+  # The thread's digest is the session's (`Tools.resumable/2`), and its tools
   # work with no `experimentalApi` (research note), so no notice.
   defp answered("thread/resume", _response, state),
     do: {[], %{state | thread: state.resume, tools: %{state.tools | notice: nil}}}
@@ -457,7 +388,7 @@ defmodule Helyx.Provider.Codex do
          %{"error" => %{"code" => -32_600, "message" => @no_experimental}},
          %State{tools: %Tools{specs: [_ | _]}} = state
        ),
-       do: {[], start_thread(tools_off(state))}
+       do: {[], start_thread(%{state | tools: Tools.off()})}
 
   defp answered(method, response, state)
        when method in ["thread/inject_items", "turn/start", "turn/interrupt"],
@@ -710,20 +641,9 @@ defmodule Helyx.Provider.Codex do
     do: rpc(state, "thread/start", thread_params(state))
 
   defp start_thread(state) do
-    params = Map.put(thread_params(state), :dynamicTools, specs(state.tools.specs))
+    params = Map.put(thread_params(state), :dynamicTools, Tools.specs(state.tools.specs))
     rpc(state, "thread/start", params)
   end
-
-  defp tools_off(state), do: %{state | tools: %Tools{notice: @tools_off}}
-
-  # The call maps to an open `dynamicToolCall` item of the running turn,
-  # which puts it in the transcript, and has the shape of the schema.
-  defp tool_call?(%{"threadId" => thread, "turnId" => turn, "callId" => id} = params, state),
-    do:
-      thread == state.thread and turn == state.turn and state.open[id] == "dynamicToolCall" and
-        is_binary(params["tool"]) and is_map(params["arguments"])
-
-  defp tool_call?(_params, _state), do: false
 
   defp tool_answer(state, rpc_id, status, text) do
     result = %{contentItems: [%{type: "inputText", text: text}], success: status == :ok}
@@ -735,7 +655,7 @@ defmodule Helyx.Provider.Codex do
   # any. The turn's `turn/start` waits for the replay's answer.
   defp replay(history, state) do
     {items, cut} = Replay.items(history)
-    state = push(state, [{:resume, session_id(state), cut}])
+    state = push(state, [{:resume, Tools.session_id(state.thread, state.tools.specs), cut}])
 
     if items == [] do
       state
