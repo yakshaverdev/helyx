@@ -48,19 +48,19 @@ defmodule Helyx.Session.File do
 
   defmodule Resumed do
     @moduledoc """
-    What `resume/3` restores. `harness_sessions` holds the last harness
-    session of each harness provider: its id and the number of messages
-    before its entry, without the labels that a fork drops.
+    What `resume/3` restores. `resume_ids` holds the last resume id of
+    each provider: the id and the number of messages before its entry,
+    without the labels that a fork drops.
     """
     @enforce_keys [:file, :session_id, :model, :messages]
-    defstruct [:file, :session_id, :model, :messages, harness_sessions: %{}]
+    defstruct [:file, :session_id, :model, :messages, resume_ids: %{}]
 
     @type t :: %__MODULE__{
             file: Helyx.Session.File.t(),
             session_id: String.t(),
             model: String.t(),
             messages: [Message.t()],
-            harness_sessions: %{String.t() => {String.t(), non_neg_integer()}}
+            resume_ids: %{String.t() => {String.t(), non_neg_integer()}}
           }
   end
 
@@ -121,7 +121,7 @@ defmodule Helyx.Session.File do
 
   The read and the decode run in their own process with a heap cap of
   #{@max_heap_bytes} bytes, and so do the index of the entries by id and
-  the check for a fork below a harness session entry. A
+  the check for a fork below a resume id entry. A
   file whose decode passes the cap is rejected as `{:too_large, text}` and
   is not mutated. The transcript is copied to the caller once.
 
@@ -210,7 +210,7 @@ defmodule Helyx.Session.File do
         session_id: Path.basename(path, ".jsonl"),
         model: Branch.current_model(header, branch),
         messages: for(%{"type" => "message"} = entry <- branch, do: Codec.decode(entry)),
-        harness_sessions: Branch.harness_sessions(branch, fork)
+        resume_ids: Branch.resume_ids(branch, fork)
       }
 
       {:ok, resumed, tail}
@@ -228,15 +228,17 @@ defmodule Helyx.Session.File do
   end
 
   @doc """
-  Appends a harness session entry: the id that the external program of the
-  harness provider `provider_id` issued for its harness session. Like message text, both
+  Appends a resume id entry: the id that the provider `provider_id` sent in
+  a `{:resume, id, cut}` stream event. Like message text, both
   strings must be valid UTF-8 when they reach the file, and the id must pass
   `Helyx.Message.resume_id?/1`, else a resume rejects the file. The caller
   checks them where they enter the session.
   """
-  @spec append_harness_session(t(), String.t(), String.t()) :: t()
-  def append_harness_session(%__MODULE__{} = file, provider_id, id)
+  @spec append_resume_id(t(), String.t(), String.t()) :: t()
+  def append_resume_id(%__MODULE__{} = file, provider_id, id)
       when is_binary(provider_id) and is_binary(id) do
+    # "harness_session" and "harness_session_id" are stored names: session
+    # files on disk hold them, so they stay.
     append(file, %{
       "type" => "harness_session",
       "provider" => provider_id,

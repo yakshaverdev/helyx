@@ -188,9 +188,9 @@ defmodule Helyx.Session.Server do
     # The provider id is the prefix of the turn's model ref: `find/2`
     # matched it, so the session runs no plugin code for it.
     provider = turn.model.provider
-    state = Record.persist(state, &Helyx.Session.File.append_harness_session(&1, provider, id))
-    sessions = Map.put(state.resume_ids, provider, {id, length(state.transcript)})
-    state = %{state | resume_ids: sessions}
+    state = Record.persist(state, &Helyx.Session.File.append_resume_id(&1, provider, id))
+    ids = Map.put(state.resume_ids, provider, {id, length(state.transcript)})
+    state = %{state | resume_ids: ids}
     data = %{provider: provider, resume_id: id, lost: turn.resumed != nil, cut: cut}
     {:noreply, emit(state, :provider_session, data)}
   end
@@ -203,7 +203,7 @@ defmodule Helyx.Session.Server do
       ),
       do: {:noreply, emit(state, :notice, %{text: text})}
 
-  # A turn that the program started by itself (#240) opens only with no
+  # A turn that the provider started by itself (#240) opens only with no
   # turn and no wait: a submitted turn with no user message. Any other
   # time it is dropped with its events; its tool requests get `aborted`.
   def handle_info(
@@ -211,7 +211,7 @@ defmodule Helyx.Session.Server do
         %State{activity: :idle, conn: %ProviderConn{ready: true, model: model}} = state
       ) do
     turn = %Turn{id: turn_id, model: model, provider: state.provider, phase: :submitted}
-    {:noreply, open_turn(state, turn, %{origin: :program})}
+    {:noreply, open_turn(state, turn, %{origin: :provider})}
   end
 
   def handle_info({:stream_event, _id, :turn_start}, state), do: {:noreply, state}

@@ -17,11 +17,11 @@ defmodule Helyx.Session.File.Branch do
   end
 
   # The writer only produces a header on line one, then messages, model
-  # changes, and harness sessions, every one with an id, every model field a
+  # changes, and resume ids, every one with an id, every model field a
   # string. Anything else on the branch is on-disk corruption, never
   # silently dropped, and never laundered by a later entry that overrides
   # it. An entry on no branch is never read, so its shape is not checked.
-  # The harness fields are an optional label: harness_sessions/2 drops a
+  # The resume id fields are an optional label: resume_ids/2 drops a
   # bad one. newest_branch/1 put on the branch only entries with a string
   # id.
   defp check_entries([%{"type" => "session", "model" => model} | rest]) when is_binary(model) do
@@ -104,46 +104,48 @@ defmodule Helyx.Session.File.Branch do
     end)
   end
 
-  # The last harness session entry of each provider wins: a lost harness
+  # The last resume id entry of each provider wins: a lost program
   # session is followed by a new entry for the same provider. Each keeps the
   # number of messages before it, so the session can tell whether the
-  # harness session has made a message since. The label is optional: with
-  # none, the provider starts a fresh harness session. A bad id removes the
+  # program session has made a message since. The label is optional: with
+  # none, the provider starts a fresh program session. A bad id removes the
   # label of its provider, so an earlier, stale label does not come back. An
   # entry with no usable provider removes every label, because the reader
   # cannot know which one it replaced. A fork at the branch entry with the
   # id `fork` removes every label at or above it (#282): the other branch
-  # holds those labels too and may have continued their harness sessions.
-  def harness_sessions(entries, fork) do
-    {sessions, _count} =
+  # holds those labels too and may have continued their program sessions.
+  # The entry type "harness_session" and its key "harness_session_id" are
+  # stored names (`Helyx.Session.File.append_resume_id/3`).
+  def resume_ids(entries, fork) do
+    {ids, _count} =
       Enum.reduce(entries, {%{}, 0}, fn entry, acc ->
-        {sessions, count} = harness_entry(entry, acc)
-        if entry["id"] == fork, do: {%{}, count}, else: {sessions, count}
+        {ids, count} = resume_entry(entry, acc)
+        if entry["id"] == fork, do: {%{}, count}, else: {ids, count}
       end)
 
-    sessions
+    ids
   end
 
-  defp harness_entry(%{"type" => "message"}, {sessions, count}), do: {sessions, count + 1}
+  defp resume_entry(%{"type" => "message"}, {ids, count}), do: {ids, count + 1}
 
-  defp harness_entry(
+  defp resume_entry(
          %{"type" => "harness_session", "provider" => provider} = entry,
-         {sessions, count}
+         {ids, count}
        )
        when is_binary(provider) do
     if Message.resume_id?(entry["harness_session_id"]),
-      do: {Map.put(sessions, provider, {entry["harness_session_id"], count}), count},
-      else: {Map.delete(sessions, provider), count}
+      do: {Map.put(ids, provider, {entry["harness_session_id"], count}), count},
+      else: {Map.delete(ids, provider), count}
   end
 
-  defp harness_entry(%{"type" => "harness_session"}, {_sessions, count}), do: {%{}, count}
-  defp harness_entry(_entry, acc), do: acc
+  defp resume_entry(%{"type" => "harness_session"}, {_ids, count}), do: {%{}, count}
+  defp resume_entry(_entry, acc), do: acc
 
-  # The id of the last branch entry, from the first harness session entry
+  # The id of the last branch entry, from the first resume id entry
   # down, that an entry of the file off the branch names as its parent, or
   # nil. Every such entry counts, also one on no branch: a fork the reader
   # cannot follow may still be another writer's work, and a wrong fork
-  # costs one replay. A branch with no harness session entry has no label
+  # costs one replay. A branch with no resume id entry has no label
   # to drop, so it builds nothing.
   def last_fork(entries, branch),
     do: fork_in(entries, Enum.drop_while(branch, &(&1["type"] != "harness_session")))

@@ -72,21 +72,21 @@ defmodule Helyx.Session.FileTest do
     assert resumed.model == "test/other"
   end
 
-  test "harness session entries are written, and the last one per provider is restored with the messages before it",
+  test "resume id entries are written, and the last one per provider is restored with the messages before it",
        %{tmp_dir: dir} do
     {:ok, file} = Session.File.create(dir, "sess1", "/repo", "claude-code/opus")
-    assert {:ok, %{harness_sessions: sessions}} = Session.File.resume(dir, "/repo")
+    assert {:ok, %{resume_ids: sessions}} = Session.File.resume(dir, "/repo")
     assert sessions == %{}
 
     file
-    |> Session.File.append_harness_session("claude-code", "first")
-    |> Session.File.append_harness_session("codex", "codex-1")
+    |> Session.File.append_resume_id("claude-code", "first")
+    |> Session.File.append_resume_id("codex", "codex-1")
     |> Session.File.append_message(Helyx.Message.user("hello"))
-    |> Session.File.append_harness_session("claude-code", "sécond")
+    |> Session.File.append_resume_id("claude-code", "sécond")
 
     assert {:ok, resumed} = Session.File.resume(dir, "/repo")
 
-    assert resumed.harness_sessions == %{
+    assert resumed.resume_ids == %{
              "claude-code" => {"sécond", 1},
              "codex" => {"codex-1", 0}
            }
@@ -109,7 +109,19 @@ defmodule Helyx.Session.FileTest do
     assert resumed.file.leaf == last["id"]
   end
 
-  test "a harness session entry with a bad id removes the label of its provider",
+  test "an entry stored as harness_session by an older writer still resumes", %{tmp_dir: dir} do
+    # The literal line pins the stored names that session files on disk hold.
+    {:ok, file} = Session.File.create(dir, "old", "/old", "claude-code/opus")
+
+    append_raw(
+      file,
+      ~s({"id":"h","type":"harness_session","provider":"claude-code","harness_session_id":"h1"})
+    )
+
+    assert {:ok, %{resume_ids: %{"claude-code" => {"h1", 0}}}} = Session.File.resume(dir, "/old")
+  end
+
+  test "a resume id entry with a bad id removes the label of its provider",
        %{tmp_dir: dir} do
     bad = [
       ~s({"id":"x","type":"harness_session","provider":"claude-code"}),
@@ -123,17 +135,17 @@ defmodule Helyx.Session.FileTest do
       {:ok, file} = Session.File.create(dir, "sess#{n}", "/repo#{n}", "test/ok")
 
       file
-      |> Session.File.append_harness_session("claude-code", "stale")
-      |> Session.File.append_harness_session("codex", "codex-1")
+      |> Session.File.append_resume_id("claude-code", "stale")
+      |> Session.File.append_resume_id("codex", "codex-1")
       |> append_raw(line)
 
       # The stale label does not come back; the other provider keeps its own.
-      assert {:ok, %{harness_sessions: sessions}} = Session.File.resume(dir, "/repo#{n}")
+      assert {:ok, %{resume_ids: sessions}} = Session.File.resume(dir, "/repo#{n}")
       assert sessions == %{"codex" => {"codex-1", 0}}
     end
   end
 
-  test "a harness session entry with no usable provider removes every label",
+  test "a resume id entry with no usable provider removes every label",
        %{tmp_dir: dir} do
     bad = [
       ~s({"id":"x","type":"harness_session","harness_session_id":"a"}),
@@ -144,8 +156,8 @@ defmodule Helyx.Session.FileTest do
       {:ok, file} = Session.File.create(dir, "sess#{n}", "/repo#{n}", "claude-code/opus")
 
       file
-      |> Session.File.append_harness_session("claude-code", "old")
-      |> Session.File.append_harness_session("codex", "codex-1")
+      |> Session.File.append_resume_id("claude-code", "old")
+      |> Session.File.append_resume_id("codex", "codex-1")
       |> append_raw(line)
       |> Session.File.append_message(%Message{
         role: :assistant,
@@ -156,27 +168,27 @@ defmodule Helyx.Session.FileTest do
       # The reader cannot know which label the damaged entry replaced, so
       # the later message of the old provider does not resume the old label.
       assert {:ok, resumed} = Session.File.resume(dir, "/repo#{n}")
-      assert resumed.harness_sessions == %{}
+      assert resumed.resume_ids == %{}
       assert [%Message{role: :assistant}] = resumed.messages
 
       assert Helyx.Session.Transcript.resumable(
                resumed.messages,
-               resumed.harness_sessions,
+               resumed.resume_ids,
                "claude-code"
              ) == nil
     end
   end
 
-  test "a valid harness session entry after one with no provider sets a label",
+  test "a valid resume id entry after one with no provider sets a label",
        %{tmp_dir: dir} do
     {:ok, file} = Session.File.create(dir, "later", "/later", "test/ok")
     line = ~s({"id":"x","type":"harness_session","harness_session_id":"a"})
 
     file
     |> append_raw(line)
-    |> Session.File.append_harness_session("claude-code", "good")
+    |> Session.File.append_resume_id("claude-code", "good")
 
-    assert {:ok, %{harness_sessions: %{"claude-code" => {"good", 0}}}} =
+    assert {:ok, %{resume_ids: %{"claude-code" => {"good", 0}}}} =
              Session.File.resume(dir, "/later")
   end
 
@@ -198,18 +210,18 @@ defmodule Helyx.Session.FileTest do
 
       assert {:ok, resumed} = Session.File.resume(dir, "/repo#{n}")
       assert resumed.messages == []
-      assert resumed.harness_sessions == %{}
+      assert resumed.resume_ids == %{}
     end
   end
 
-  test "a harness session id of 256 bytes is kept", %{tmp_dir: dir} do
+  test "a resume id of 256 bytes is kept", %{tmp_dir: dir} do
     # 256 bytes, multibyte, is the longest id kept; 255 bytes is kept too.
     for id <- [String.duplicate("é", 128), "a" <> String.duplicate("é", 127)] do
       cwd = "/long#{byte_size(id)}"
       {:ok, file} = Session.File.create(dir, "long#{byte_size(id)}", cwd, "test/ok")
-      Session.File.append_harness_session(file, "claude-code", id)
+      Session.File.append_resume_id(file, "claude-code", id)
 
-      assert {:ok, %{harness_sessions: %{"claude-code" => {^id, 0}}}} =
+      assert {:ok, %{resume_ids: %{"claude-code" => {^id, 0}}}} =
                Session.File.resume(dir, cwd)
     end
   end
@@ -373,22 +385,22 @@ defmodule Helyx.Session.FileTest do
     end
 
     # #282: the other branch may have continued the harness session too.
-    test "a fork at or below a harness session label drops every label; a fork above keeps it",
+    test "a fork at or below a resume id label drops every label; a fork above keeps it",
          %{tmp_dir: dir} do
       start = fn n ->
         {:ok, file} = Session.File.create(dir, "s#{n}", "/r#{n}", "claude-code/opus")
 
         file
-        |> Session.File.append_harness_session("codex", "codex-1")
+        |> Session.File.append_resume_id("codex", "codex-1")
         |> Session.File.append_message(Message.user("one"))
       end
 
-      label = &Session.File.append_harness_session(&1, "claude-code", "h1")
+      label = &Session.File.append_resume_id(&1, "claude-code", "h1")
       user = &Session.File.append_message(&1, Message.user(&2))
 
       labels = fn cwd ->
         {:ok, resumed} = Session.File.resume(dir, cwd)
-        resumed.harness_sessions
+        resumed.resume_ids
       end
 
       # A fork below the label.

@@ -87,7 +87,7 @@ defmodule Helyx.Provider.Codex.TurnsTest do
     refute result.is_error
     assert [%{stop_reason: :end_turn}] = of_type(events, :agent_end)
 
-    assert {:ok, %{harness_sessions: %{"codex" => {tid(), 1}}}} =
+    assert {:ok, %{resume_ids: %{"codex" => {tid(), 1}}}} =
              Session.File.resume(ctx.sessions, ctx.work)
   end
 
@@ -180,7 +180,7 @@ defmodule Helyx.Provider.Codex.TurnsTest do
     assert [%Message{role: :user}, %Message{content: [%Message.Text{text: "Fresh."}]}] =
              messages(events)
 
-    assert {:ok, %{harness_sessions: %{"codex" => {fresh_tid(), 3}}}} =
+    assert {:ok, %{resume_ids: %{"codex" => {fresh_tid(), 3}}}} =
              Session.File.resume(ctx.sessions, ctx.work)
   end
 

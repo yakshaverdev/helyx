@@ -43,7 +43,7 @@ Anything that renders a session from its events and sends prompts to it. A clien
 _Avoid_: frontend, UI, view
 
 **Program turn**:
-A turn that a harness provider's program starts by itself, for example when a background task ends. The session shows it as a turn with no user message, marked with `origin: :program` in its `turn_start`.
+A turn that a harness provider's program starts by itself, for example when a background task ends. The session shows it as a turn with no user message, marked with `origin: :provider` in its `turn_start`.
 _Avoid_: background turn, notification turn
 
 **Steer**:

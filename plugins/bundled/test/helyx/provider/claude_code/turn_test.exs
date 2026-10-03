@@ -109,7 +109,7 @@ defmodule Helyx.Provider.ClaudeCode.TurnTest do
 
     assert [%{stop_reason: :end_turn}] = of_type(events, :agent_end)
 
-    assert {:ok, %{harness_sessions: %{"claude-code" => {^id, 1}}}} =
+    assert {:ok, %{resume_ids: %{"claude-code" => {^id, 1}}}} =
              Session.File.resume(ctx.sessions, ctx.work)
   end
 
@@ -177,7 +177,7 @@ defmodule Helyx.Provider.ClaudeCode.TurnTest do
     assert [%Message{role: :user}, %Message{content: [%Message.Text{text: "Fresh."}]}] =
              messages(events)
 
-    assert {:ok, %{harness_sessions: %{"claude-code" => {^fresh, 3}}}} =
+    assert {:ok, %{resume_ids: %{"claude-code" => {^fresh, 3}}}} =
              Session.File.resume(ctx.sessions, ctx.work)
   end
 
