@@ -22,16 +22,6 @@ defmodule Helyx.ModelRef do
   @type t :: %__MODULE__{provider: String.t(), model: String.t()}
 
   @doc """
-  True when the string is within the bounds in the module doc, with or
-  without the `provider/model` form. Such a string is safe to print.
-  """
-  @spec bounded?(String.t()) :: boolean()
-  def bounded?(string) when is_binary(string) do
-    byte_size(string) <= @max_bytes and String.valid?(string) and
-      not String.match?(string, ~r/[\s\p{C}]/u)
-  end
-
-  @doc """
   Splits `provider/model` at the first slash. Both parts must be present, and
   the string must be within the bounds in the module doc.
   """
@@ -49,4 +39,10 @@ defmodule Helyx.ModelRef do
   @doc "Joins the struct back into the `provider/model` form."
   @spec to_string(t()) :: String.t()
   def to_string(%__MODULE__{provider: provider, model: model}), do: provider <> "/" <> model
+
+  # True when the string is within the bounds in the module doc.
+  defp bounded?(string) do
+    byte_size(string) <= @max_bytes and String.valid?(string) and
+      not String.match?(string, ~r/[\s\p{C}]/u)
+  end
 end

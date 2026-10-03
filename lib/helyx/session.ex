@@ -40,8 +40,6 @@ defmodule Helyx.Session do
   alias Helyx.Session.{Id, Server, Subscription, Transcript}
   alias Helyx.Session.Server.State
 
-  require Logger
-
   @enforce_keys [:id, :core]
   defstruct [:id, :core]
 
@@ -54,13 +52,6 @@ defmodule Helyx.Session do
   @type model_error ::
           {:invalid_model_ref, String.t()}
           | {:unknown_provider, String.t()}
-
-  @typedoc """
-  A start error as a client gets it (ADR 0006, section 2). See
-  `client_start_error/1`.
-  """
-  @type client_start_error ::
-          :invalid_cwd | :not_found | model_error() | {:start_failed, String.t()}
 
   # Public API
 
@@ -239,33 +230,6 @@ defmodule Helyx.Session do
   def end_reason(reason) when reason in [:normal, :shutdown], do: :stopped
   def end_reason({:shutdown, _}), do: :stopped
   def end_reason(_reason), do: :crashed
-
-  @doc """
-  Maps an error of `start/2` or `resume/2` to the start error that a client
-  gets. A transport calls it, so all clients get the same errors.
-  `:invalid_cwd`, `:not_found`, and the model errors pass unchanged. The ref
-  of `{:invalid_model_ref, ref}` can come from a session file, so it passes
-  only when `Helyx.ModelRef.bounded?/1` holds. Any other
-  term becomes `{:start_failed, text}` with a fixed text for a person, and
-  the full term goes to the log as a warning. The product calls `start/2` or
-  `resume/2` itself and keeps the full term.
-  """
-  @spec client_start_error(term()) :: client_start_error()
-  def client_start_error(reason) when reason in [:invalid_cwd, :not_found], do: reason
-
-  # The id of a ref that parsed, so `Helyx.ModelRef` bounds it.
-  def client_start_error({:unknown_provider, id} = reason) when is_binary(id), do: reason
-
-  def client_start_error({:invalid_model_ref, ref} = reason) when is_binary(ref) do
-    if ModelRef.bounded?(ref), do: reason, else: start_failed(reason)
-  end
-
-  def client_start_error(reason), do: start_failed(reason)
-
-  defp start_failed(reason) do
-    Logger.warning("session start failed: " <> inspect(reason))
-    {:start_failed, "the session did not start; the server log has the reason"}
-  end
 
   @doc "The pid behind a session handle, or nil when the session is not running."
   @spec pid(t()) :: pid() | nil

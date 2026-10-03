@@ -62,7 +62,7 @@ defmodule Helyx.Session.Server.Tools do
     do: send_result(state, pid, turn_id, id, result)
 
   defp send_result(state, pid, turn_id, id, result) do
-    ask(state, pid, {:tool_result, turn_id, id, result}, :tool_result)
+    ask(state, pid, {:tool_result, turn_id, id, result}, :reply)
     state
   end
 end
