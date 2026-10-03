@@ -5,6 +5,8 @@ defmodule Helyx.TUI.ViewModelTest do
   alias Helyx.{Event, Message}
   alias Helyx.TUI.ViewModel
 
+  import Helyx.Test.TUIRender, only: [texts: 1, view_model: 2]
+
   # Builds a session's event list with sequence numbers assigned in order.
   defp events(specs) do
     specs
@@ -17,13 +19,9 @@ defmodule Helyx.TUI.ViewModelTest do
   defp fold(specs),
     do: Enum.reduce(events(specs), new(), &ViewModel.apply(&2, &1))
 
-  defp new, do: ViewModel.new("test/model")
+  defp new, do: view_model([], "test/model")
 
   defp cells(vm), do: ViewModel.cells(vm)
-
-  # The non-empty rows of the transcript.
-  defp texts(vm),
-    do: for(line <- Helyx.TUI.Transcript.lines(vm, 80), s <- line.spans, do: s.content)
 
   defp tool_end(result), do: {:tool_execution_end, %{message: result}}
 
@@ -31,15 +29,6 @@ defmodule Helyx.TUI.ViewModelTest do
 
   defp assistant(blocks, stop_reason \\ :end_turn) do
     %Message{role: :assistant, content: blocks, model: "test/model", stop_reason: stop_reason}
-  end
-
-  test "a new view model shows the model and an idle session" do
-    vm = ViewModel.new("test/model")
-    assert vm.model == "test/model"
-    assert cells(vm) == []
-    assert vm.streaming == nil
-    refute vm.running?
-    assert vm.queue == %{steers: 0, follow_ups: 0}
   end
 
   test "a prompt and a streamed answer become cells in order" do
@@ -610,7 +599,7 @@ defmodule Helyx.TUI.ViewModelTest do
   end
 
   test "a client notice joins the cells" do
-    vm = ViewModel.notice(ViewModel.new("test/model"), "unknown provider: x")
+    vm = ViewModel.notice(new(), "unknown provider: x")
     assert cells(vm) == [{:notice, "unknown provider: x"}]
   end
 end

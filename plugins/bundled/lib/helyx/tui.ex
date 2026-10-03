@@ -2,20 +2,7 @@
 # not exist, and a product that wants the TUI adds ex_ratatui itself.
 defmodule Helyx.TUI.Available do
   @moduledoc false
-  # A product can add or remove ex_ratatui after its first build, and Mix does
-  # not see that as a reason to compile this file again. Two parts make it do
-  # so, and both are necessary (measurements in ADR 0005). This module always
-  # exists and lives in this file, because Mix reaches a stale source only
-  # through a module the source defines. `__mix_recompile__?/0` tells Mix on
-  # every compile whether the answer changed.
-
-  @available Code.ensure_loaded?(ExRatatui.App)
-
-  @spec available?() :: boolean()
-  def available?, do: @available
-
-  @spec __mix_recompile__?() :: boolean()
-  def __mix_recompile__?, do: Code.ensure_loaded?(ExRatatui.App) != @available
+  use Helyx.TUI.Guard
 end
 
 if Helyx.TUI.Available.available?() do

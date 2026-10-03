@@ -2,16 +2,7 @@
 # Helyx.TUI.Composer does not exist.
 defmodule Helyx.TUI.Composer.Available do
   @moduledoc false
-  # The recompile hook of ADR 0005. Mix reaches a stale source only through a
-  # module the source defines, so each guarded file has its own.
-
-  @available Code.ensure_loaded?(ExRatatui.App)
-
-  @spec available?() :: boolean()
-  def available?, do: @available
-
-  @spec __mix_recompile__?() :: boolean()
-  def __mix_recompile__?, do: Code.ensure_loaded?(ExRatatui.App) != @available
+  use Helyx.TUI.Guard
 end
 
 if Helyx.TUI.Composer.Available.available?() do
@@ -132,7 +123,9 @@ if Helyx.TUI.Composer.Available.available?() do
       end
     end
 
-    # A key code with a control character could forge the end of a marker.
+    # A key code with a control character could forge the end of a marker:
+    # the kitty keyboard sequence `ESC [ 1 u` reaches here as the key code
+    # U+0001 with no modifier.
     defp widget_key(composer, code) do
       if Wrap.drop_controls(code) == code,
         do: composer |> out_of_marker() |> key(code),
@@ -232,7 +225,7 @@ if Helyx.TUI.Composer.Available.available?() do
     # `Helyx.ModelRef` unsplit, which owns its bounds. The widget holds only
     # valid UTF-8; the `u` flag raises on anything else.
     defp command(text) do
-      case Regex.run(~r/\A[\s\p{C}]*\/model([\s\p{C}]*)/u, text, return: :index) do
+      case Regex.run(~r/\A\s*\/model([\s\p{C}]*)/u, text, return: :index) do
         nil -> {:message, text}
         [{0, head}, {_, 0}] when head < byte_size(text) -> {:model, ""}
         [{0, head}, _] -> {:model, String.trim(binary_part(text, head, byte_size(text) - head))}

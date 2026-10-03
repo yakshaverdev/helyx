@@ -12,13 +12,14 @@ Module names and registration entries do not change. `Helyx.Provider.Fake` stays
 
 ### The optional-dependency rule
 
-A heavy or native dependency of one bundled plugin is declared `optional: true` in the bundled project, and the modules that need it are defined only when it is loaded: a `Code.ensure_loaded?/1` guard around the `defmodule`. A product that wants such a plugin adds the dependency to its own deps. `ex_ratatui` (a Rust NIF) is the first case: `Helyx.TUI`, `Helyx.TUI.Composer`, and `Helyx.TUI.Transcript` exist only when `ExRatatui.App` is loaded, and the coding agent app lists `ex_ratatui`. `Helyx.TUI.ViewModel` and `Helyx.TUI.Wrap` need nothing from `ex_ratatui`, so they have no guard.
+A heavy or native dependency of one bundled plugin is declared `optional: true` in the bundled project, and the modules that need it are defined only when it is loaded: a `Code.ensure_loaded?/1` guard around the `defmodule`. A product that wants such a plugin adds the dependency to its own deps. `ex_ratatui` (a Rust NIF) is the first case: `Helyx.TUI`, `Helyx.TUI.Composer`, and `Helyx.TUI.Transcript` exist only when `ExRatatui.App` is loaded, and the coding agent app lists `ex_ratatui`. `Helyx.TUI.ViewModel`, `Helyx.TUI.Wrap`, and `Helyx.TUI.Guard` need nothing from `ex_ratatui`, so they have no guard.
 
-The guard alone is not enough. Mix does not treat a module that appears later as a reason to recompile, and it reaches a stale source only through a module that the source defines; a guarded file that defined no module is never compiled again. So each guarded file also defines a small module that always exists (`Helyx.TUI.Available`, `Helyx.TUI.Composer.Available`, `Helyx.TUI.Transcript.Available`) with `__mix_recompile__?/0`, which Mix asks on every compile. Both parts are necessary. Measured on 2026-09-18 with Elixir 1.19.5, on a product that adds the optional dependency after its first build and then removes it:
+The guard alone is not enough. Mix does not treat a module that appears later as a reason to recompile, and it reaches a stale source only through a module that the source defines; a guarded file that defined no module is never compiled again. So each guarded file also defines a small module that always exists (`Helyx.TUI.Available`, `Helyx.TUI.Composer.Available`, `Helyx.TUI.Transcript.Available`) with `__mix_recompile__?/0`, which Mix asks on every compile. `use Helyx.TUI.Guard` gives each of them its body, and each stays in its guarded file. Both parts are necessary. Measured on 2026-09-18 with Elixir 1.19.5, on a product that adds the optional dependency after its first build and then removes it:
 
 - The guarded file defines no module: the add leaves a build without `Helyx.TUI`. A hook in a module in a different file does not help.
 - The always-present module with no hook, in a toy project: the remove leaves the stale guarded module in the build.
 - Both parts: add, remove, and add again each give the correct build.
+- Both parts, with the module body from `use Helyx.TUI.Guard` (measured again on 2026-10-03, ticket #408): add, remove, and add again each give the correct build.
 
 A small, pure Elixir dependency is a normal dependency. `req` is the first case. `plug` stays `only: :test`.
 

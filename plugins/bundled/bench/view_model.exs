@@ -21,9 +21,6 @@ defmodule Helyx.Bench.ViewModel do
     messages = Enum.flat_map(1..rounds, &messages/1)
     events = messages |> Enum.with_index(1) |> Enum.map(&event/1)
 
-    {live_ms, vm} =
-      ms(fn -> Enum.reduce(events, ViewModel.new("bench/m"), &ViewModel.apply(&2, &1)) end)
-
     snapshot = %Snapshot{
       instance_id: "i",
       seq: length(events),
@@ -32,6 +29,9 @@ defmodule Helyx.Bench.ViewModel do
       model: "bench/m",
       queue: %{steers: 0, follow_ups: 0}
     }
+
+    empty = ViewModel.from_snapshot(%{snapshot | seq: 0, messages: []})
+    {live_ms, vm} = ms(fn -> Enum.reduce(events, empty, &ViewModel.apply(&2, &1)) end)
 
     {snapshot_ms, _vm} = ms(fn -> ViewModel.from_snapshot(snapshot) end)
     {frame_ms, _widget} = ms(fn -> Transcript.widget(vm, nil, %Rect{width: 100, height: 40}) end)

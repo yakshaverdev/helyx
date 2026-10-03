@@ -14,7 +14,7 @@ The invariant: the text sent equals what the user sees, with every live marker r
 
 The marker rules:
 
-- A marker ends with U+0001, a control character. A paste drops it. A key code with a control character goes nowhere. ExRatatui does not draw it. So only a marker that the composer made ends with it, and text that only looks like a marker is sent as typed.
+- A marker ends with U+0001, a control character. A paste drops it. A key code with a control character goes nowhere: crossterm gives Ctrl+key as the key with a `ctrl` modifier, but the kitty keyboard sequence `ESC [ 1 u` gives the key code U+0001 with no modifier. ExRatatui does not draw it. So only a marker that the composer made ends with it, and text that only looks like a marker is sent as typed.
 - Backspace with the cursor inside a marker or right after it, and Delete with the cursor at its start or inside it, remove the whole marker.
 - Left and Right pass over a marker in one step.
 - Up and Down keep the column, so they can put the cursor inside a marker. Every other key, a paste, Ctrl+J, or Shift+Enter with the cursor inside a marker first moves the cursor to the end of the marker. So Up and Down from inside a marker start at its end.
