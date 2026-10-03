@@ -26,7 +26,7 @@ defmodule Helyx.Session.ProviderProcessTest do
     %{core: core}
   end
 
-  # Starts a session with the bounds in `bounds` (`turn`, `interrupt`,
+  # Starts a session with the bounds in `bounds` (`reply`,
   # `close`, `idle`, `prepare` of the session; `connect` of the hands), subscribes,
   # and returns the session, its pid, and its hands.
   defp start(core, model, bounds \\ []) do
@@ -39,7 +39,7 @@ defmodule Helyx.Session.ProviderProcessTest do
         | provider_ms:
             Map.merge(
               state.provider_ms,
-              Map.new(Keyword.take(bounds, [:turn, :interrupt, :steer, :context, :close, :idle]))
+              Map.new(Keyword.take(bounds, [:reply, :close, :idle]))
             ),
           prepare_ms: Keyword.get(bounds, :prepare, state.prepare_ms)
       }
@@ -203,7 +203,7 @@ defmodule Helyx.Session.ProviderProcessTest do
 
     test "a turn callback that blocks is killed at the bound while the session and the hands are suspended",
          %{core: core} do
-      {session, pid, hands} = start(core, "block_turn", turn: 300)
+      {session, pid, hands} = start(core, "block_turn", reply: 300)
       :ok = Session.prompt(session, "one")
       assert_receive {:conn, :turn, proc, _}
       ref = Process.monitor(proc)
@@ -662,7 +662,7 @@ defmodule Helyx.Session.ProviderProcessTest do
 
     test "a steer callback that blocks is killed at the steer bound; the turn fails with a notice",
          %{core: core} do
-      {session, _pid, proc, _turn_id} = submitted(core, "steer_block", steer: 100)
+      {session, _pid, proc, _turn_id} = submitted(core, "steer_block", reply: 100)
       ref = Process.monitor(proc)
       :ok = Session.steer(session, "more")
       assert_receive {:DOWN, ^ref, :process, _, :killed}
@@ -767,7 +767,7 @@ defmodule Helyx.Session.ProviderProcessTest do
       assert Process.alive?(proc)
     end
 
-    for {model, bounds} <- [{"block_interrupt", [interrupt: 200]}, {"error_interrupt", []}] do
+    for {model, bounds} <- [{"block_interrupt", [reply: 200]}, {"error_interrupt", []}] do
       test "#{model}: the abort returns after the provider process is stopped and released",
            %{core: core} do
         {session, _pid, _hands} = start(core, unquote(model), unquote(bounds))
@@ -868,7 +868,7 @@ defmodule Helyx.Session.ProviderProcessTest do
     end
 
     test "a context with no answer at its bound stops the provider process", %{core: core} do
-      {_session, _pid, proc, turn_id} = context_turn(core, "context_hold", context: 100)
+      {_session, _pid, proc, turn_id} = context_turn(core, "context_hold", reply: 100)
       send(proc, {:need_context, turn_id, "fresh"})
 
       assert error(collect_until(:agent_end)) == :provider_timeout
@@ -908,7 +908,7 @@ defmodule Helyx.Session.ProviderProcessTest do
     for {model, message, bounds, reason} <- [
           {"bad_event", nil, [], {:bad_stream_event, {:text_delta, 42}}},
           {"error_turn", nil, [], {:provider_error, :turn, :refused}},
-          {"block_turn", nil, [turn: 300], :provider_timeout},
+          {"block_turn", nil, [reply: 300], :provider_timeout},
           {"exit_init", nil, [], {:exit, :normal}},
           {"exit_turn", nil, [], {:exit, :normal}},
           {"stop", :stop, [], {:provider_stop, :gone}},

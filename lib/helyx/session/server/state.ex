@@ -60,14 +60,11 @@ defmodule Helyx.Session.Server.State do
     # The provider process (ADR 0007), a `%ProviderConn{}`, or nil.
     conn: nil,
     # The bounds of the requests to the provider process, in ms: the armed
-    # kills (see `Helyx.Session.ProviderProcess`), and `idle`, the time with
-    # no turn after which the session sends `:idle_close`. A test seam.
+    # kills `reply` and `close` (see `Helyx.Session.ProviderProcess`), and
+    # `idle`, the time with no turn after which the session sends
+    # `:idle_close`. A test seam.
     provider_ms: %{
-      turn: @provider_reply_ms,
-      interrupt: @provider_reply_ms,
-      steer: @provider_reply_ms,
-      tool_result: @provider_reply_ms,
-      context: @provider_reply_ms,
+      reply: @provider_reply_ms,
       close: @provider_close_ms,
       idle: 1_800_000
     },

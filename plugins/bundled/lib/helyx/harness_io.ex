@@ -16,8 +16,6 @@ defmodule Helyx.HarnessIO do
   @term_grace_ms 5_000
 
   def line_max_bytes, do: @line_max_bytes
-  def term_grace_ms, do: @term_grace_ms
-  def replay_max_bytes, do: @replay_max_bytes
 
   # The lookup of the harness program, with the check for perl: the
   # watchdog needs perl, so without it the error names perl, not the exit

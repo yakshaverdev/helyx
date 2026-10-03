@@ -77,7 +77,7 @@ defmodule Helyx.Session.Server.Wait do
   # until that answer keeps it.
   defp interrupt(%State{conn: %ProviderConn{pid: pid}} = state, %Turn{phase: phase, id: id})
        when phase in [:submitting, :submitted, :context],
-       do: %__MODULE__{reply: ask(state, pid, {:interrupt, id}, :interrupt), provider: pid}
+       do: %__MODULE__{reply: ask(state, pid, {:interrupt, id}, :reply), provider: pid}
 
   defp interrupt(_state, _turn), do: %__MODULE__{}
 

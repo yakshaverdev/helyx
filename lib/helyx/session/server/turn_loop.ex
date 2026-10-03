@@ -231,7 +231,7 @@ defmodule Helyx.Session.Server.TurnLoop do
   end
 
   defp prepared(%State{activity: %Turn{phase: :context} = turn, conn: conn} = state, result) do
-    ask(state, conn.pid, {:context, turn.id, result}, :context)
+    ask(state, conn.pid, {:context, turn.id, result}, :reply)
     %{state | activity: %{turn | phase: :submitted, prepare: nil}}
   end
 
@@ -247,7 +247,7 @@ defmodule Helyx.Session.Server.TurnLoop do
        when context != nil do
     {steers, %State{activity: turn} = state} = Steering.append_steers(state)
     context = %{context | messages: context.messages ++ Enum.map(steers, &Message.user/1)}
-    from = ask(state, pid, {:turn, turn.id, context}, :turn)
+    from = ask(state, pid, {:turn, turn.id, context}, :reply)
     %{state | activity: %{turn | phase: :submitting, pending: from, context: nil}}
   end
 

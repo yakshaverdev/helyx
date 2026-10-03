@@ -66,7 +66,7 @@ defmodule Helyx.Session.Server.Steering do
   # in the 32 steers.
   defp send_steer(text, %State{activity: turn, conn: %ProviderConn{pid: pid}} = state) do
     steer_id = Id.new()
-    from = ask(state, pid, {:steer, turn.id, steer_id, text}, :steer)
+    from = ask(state, pid, {:steer, turn.id, steer_id, text}, :reply)
     %{state | queue: Queue.sent(state.queue, from, steer_id, text)}
   end
 

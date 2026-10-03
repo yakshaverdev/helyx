@@ -16,14 +16,14 @@ defmodule Helyx.Watchdog.HarnessStopTest do
     %{core: core}
   end
 
-  # The default turn deadline, 60 s, is longer than the wait of
+  # The default reply bound here, 60 s, is longer than the wait of
   # `agent_end/0`, the cap of a wait. Thus the deadline does not end the turn
   # in a test that does not set one (#228).
-  defp start(core, model, turn_ms \\ 60_000) do
+  defp start(core, model, reply_ms \\ 60_000) do
     {:ok, session} = Session.start(core, model: "wdh/#{model}")
     on_exit(fn -> File.rm(WatchdogHarness.pid_path(session.id)) end)
     pid = Session.pid(session)
-    :sys.replace_state(pid, &%{&1 | provider_ms: %{&1.provider_ms | turn: turn_ms}})
+    :sys.replace_state(pid, &%{&1 | provider_ms: %{&1.provider_ms | reply: reply_ms}})
     {:ok, _} = Session.subscribe(session)
     :ok = Session.prompt(session, "go")
     {session, wait_for_pid(WatchdogHarness.pid_path(session.id))}
