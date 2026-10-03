@@ -153,3 +153,4 @@ One row per ticket that `/orchestrate` merged. An escape is a confirmed Codex fi
 | 2026-10-03 | #384 | r1: 0 reproduced; 2 simplify fixes, 3 stale doc lines | gate r1 (Codex): 0 | none needed |
 | 2026-10-03 | #380 | commit 1: r1 1 reproduced (an answered call let a repeated id run), r2 0; commit 2: r1 1 reproduced (raw text in two turn errors), r2 the same mechanism again, so the premise was checked and the invariant narrowed to the transcript, file and result | gate r1 (Codex): 0 | review-checklist: raw provider values in generic errors are bounded by the provider limits |
 | 2026-10-03 | #383 | r1: 0 reproduced; 3 simplify cleanups | gate r1 (Codex): 0 | none needed |
+| 2026-10-03 | #393 | r1: 1 reproduced (an interface without callbacks made Core start raise), fixed; r2 (reduced): 0 | gate r1 (Codex): 0 | none needed |
