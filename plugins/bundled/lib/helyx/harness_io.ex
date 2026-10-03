@@ -136,26 +136,28 @@ defmodule Helyx.HarnessIO do
     {Enum.reverse(prompt), Enum.reverse(history)}
   end
 
-  # Keeps the newest entries within the byte cap, then drops kept entries
-  # up to the first one the replay may start at. An entry is {iodata or
-  # false, messages, start?}. Returns the kept iodata and the number of
-  # messages left out of `total`.
-  def cap_replay(entries, total) do
+  # Encodes entries from the newest and keeps them within the byte cap,
+  # then drops kept entries up to the first one the replay may start at.
+  # An entry is {group, messages, start?}; `encode` gives a group's iodata
+  # or false. Returns {group, iodata} for each kept iodata, oldest first,
+  # and the number of messages left out of `total`.
+  def cap_replay(entries, total, encode) do
     {kept, _bytes} =
       entries
       |> Enum.reverse()
-      |> Enum.reduce_while({[], 0}, fn {data, _n, _start?} = entry, {kept, bytes} ->
+      |> Enum.reduce_while({[], 0}, fn {group, n, start?}, {kept, bytes} ->
+        data = encode.(group)
         bytes = bytes + if(data, do: IO.iodata_length(data), else: 0)
 
         if bytes > @replay_max_bytes,
           do: {:halt, {kept, bytes}},
-          else: {:cont, {[entry | kept], bytes}}
+          else: {:cont, {[{group, data, n, start?} | kept], bytes}}
       end)
 
-    kept = Enum.drop_while(kept, fn {_data, _n, start?} -> not start? end)
+    kept = Enum.drop_while(kept, fn {_group, _data, _n, start?} -> not start? end)
 
-    {for({data, _n, _start?} <- kept, data, do: data),
-     total - Enum.sum(for {_, n, _} <- kept, do: n)}
+    {for({group, data, _n, _start?} <- kept, data, do: {group, data}),
+     total - Enum.sum(for {_, _, n, _} <- kept, do: n)}
   end
 
   # The model APIs take a tool call id of `[a-zA-Z0-9_-]`, at most 64

@@ -7,51 +7,53 @@ defmodule Helyx.Provider.ClaudeCode.Replay do
   alias Helyx.Message
 
   # One line per assistant message, and one `shouldQuery: false` user line
-  # for each run of user messages and tool results between them. An entry
-  # is {line or false, messages, start?}: the replay may start at an entry
-  # whose line has no tool result, because the call of every kept result is
-  # then kept too. The kept lines and `last` go out in chunks, each
-  # ending at a user line; the last chunk ends with `last`. Gives the
-  # chunks, the number of messages left out, and whether any line is kept.
+  # for each run of user messages and tool results between them. The
+  # replay may start at an assistant line or at a user line with no tool
+  # result, because the call of every kept result is then kept too. The
+  # kept lines and `last` go out in chunks, each ending at a user line; the
+  # last chunk ends with `last`. Gives the chunks, the number of messages
+  # left out, and whether any line is kept.
   def chunks(history, last) do
-    tagged =
+    entries =
       history
       |> Enum.chunk_by(&(&1.role == :assistant))
       |> Enum.flat_map(fn
         [%Message{role: :assistant} | _] = messages ->
-          Enum.map(messages, &{:assistant, assistant_entry(&1)})
+          for message <- messages, do: {{:assistant, message}, 1, true}
 
         messages ->
-          [{:user, user_entry(messages)}]
+          start? = not Enum.any?(messages, &(&1.role == :tool_result))
+          [{{:user, messages}, length(messages), start?}]
       end)
 
-    {lines, cut} = HarnessIO.cap_replay(Enum.map(tagged, &elem(&1, 1)), length(history))
-
-    # `cap_replay` keeps a suffix of the lines that are not `false`.
-    kinds = for {kind, {line, _n, _start?}} <- tagged, line, do: kind
+    {kept, cut} = HarnessIO.cap_replay(entries, length(history), &entry_line/1)
 
     chunks =
-      kinds
-      |> Enum.take(-length(lines))
-      |> Enum.zip(lines)
-      |> Enum.chunk_while(
+      Enum.chunk_while(
+        kept,
         [],
         fn
-          {:user, line}, acc -> {:cont, Enum.reverse(acc, [line]), []}
-          {:assistant, line}, acc -> {:cont, [line | acc]}
+          {{:user, _}, line}, acc -> {:cont, Enum.reverse(acc, [line]), []}
+          {{:assistant, _}, line}, acc -> {:cont, [line | acc]}
         end,
         &{:cont, Enum.reverse(&1, [last]), []}
       )
 
-    {chunks, cut, lines != []}
+    {chunks, cut, kept != []}
   end
 
-  defp assistant_entry(%Message{content: blocks}) do
+  defp entry_line({:assistant, %Message{content: blocks}}) do
     content =
       for block <- blocks, json = assistant_block(block), do: json
 
-    {content != [] && line(%{type: "assistant", message: %{role: "assistant", content: content}}),
-     1, true}
+    content != [] && line(%{type: "assistant", message: %{role: "assistant", content: content}})
+  end
+
+  defp entry_line({:user, messages}) do
+    content = Enum.flat_map(messages, &user_content/1)
+
+    content != [] &&
+      line(%{type: "user", shouldQuery: false, message: %{role: "user", content: content}})
   end
 
   # Thinking is not replayed: its signature belongs to the model that made it.
@@ -66,15 +68,6 @@ defmodule Helyx.Provider.ClaudeCode.Replay do
     }
 
   defp assistant_block(_block), do: nil
-
-  defp user_entry(messages) do
-    content = Enum.flat_map(messages, &user_content/1)
-    start? = not Enum.any?(messages, &(&1.role == :tool_result))
-    message = %{role: "user", content: content}
-
-    {content != [] && line(%{type: "user", shouldQuery: false, message: message}),
-     length(messages), start?}
-  end
 
   def user_content(%Message{role: :tool_result} = message) do
     [
