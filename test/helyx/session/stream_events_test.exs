@@ -296,6 +296,23 @@ defmodule Helyx.Session.StreamEventsTest do
       assert stop_reason(collect_until(:agent_end)) == :end_turn
     end
 
+    test "a tool call counts in the bound of the open message", %{core: core} do
+      events = harness_turn(core, "call_at_bound")
+
+      assert stop_reason(events) == :end_turn
+      assert [_user, first, _second] = messages(events)
+      assert %Helyx.Message.ToolCall{id: "c1"} = List.last(first.content)
+
+      {:ok, session} = Session.start(core, model: "conn/events.call_over_bound")
+      {:ok, _} = Session.subscribe(session)
+      :ok = Session.prompt(session, "hello")
+      events = collect_until(:agent_end)
+
+      assert List.last(events).data.error == {:message_too_large, 8_388_624, 8_388_608}
+      assert stop_reason(events) == :error
+      assert %{conn: nil, transcript: [%{role: :user}]} = :sys.get_state(Session.pid(session))
+    end
+
     test "a result goes to the first open call with its id", %{core: core} do
       events = harness_turn(core, "dup_id")
       ends = for %Event{type: :tool_execution_end, data: d} <- events, do: d.message

@@ -24,13 +24,18 @@ defmodule Helyx.Session.Server.Messages do
   end
 
   # Adds one stream event to the open assistant message and emits its
-  # message_update; the first event opens the message. A delta over the
-  # bound of `Turn.add_block/2` adds nothing: `{:error, reason, state}`,
-  # with the message open.
-  def delta(state, event) do
+  # message_update; the first event opens the message. A text or thinking
+  # delta counts its bytes, a tool call the bytes that the stream check
+  # measured (`Helyx.Session.Stream`). An event over the bound of
+  # `Turn.add_block/3` adds nothing: `{:error, reason, state}`, with the
+  # message open.
+  def delta(state, {:tool_call, call, bytes}), do: add(state, {:tool_call, call}, bytes)
+  def delta(state, {_kind, text} = event), do: add(state, event, byte_size(text))
+
+  defp add(state, event, bytes) do
     %State{activity: turn} = state = start_assistant_message(state)
 
-    case Turn.add_block(turn, event) do
+    case Turn.add_block(turn, event, bytes) do
       {:ok, turn} -> {:ok, emit(%{state | activity: turn}, :message_update, Map.new([event]))}
       {:error, reason} -> {:error, reason, state}
     end

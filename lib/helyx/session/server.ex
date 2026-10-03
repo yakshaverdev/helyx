@@ -115,7 +115,7 @@ defmodule Helyx.Session.Server do
       ),
       do: {:noreply, Messages.resume(state, id, cut)}
 
-  # A delta that breaks the bound of the open message stops the provider
+  # An event that breaks the bound of the open message stops the provider
   # process (`Messages.delta/2`).
   def handle_info({:stream_event, turn_id, event}, %State{activity: %Turn{id: turn_id}} = state) do
     case Messages.delta(state, event) do
