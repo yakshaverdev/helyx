@@ -80,20 +80,15 @@ defmodule Helyx.Session.LoopTest do
     rejected = "tool call not run: an integer in the arguments has more than 100 digits"
     assert final_text(events) == "#{rejected}|TWO|THREE|FOUR|#{rejected}|#{rejected}"
 
-    marker = "integer of more than 100 digits removed"
-    assert %{input: ^marker, output: 3} = turn_end_usage(events)
+    assert %{input: 2, output: 3} = turn_end_usage(events)
 
     [first, _, third, _, fifth, sixth] =
       for %{type: :tool_execution_start, data: %{tool_call: call}} <- events, do: call
 
-    assert first.arguments == %{
-             "text" => "one",
-             "n" => [%{"deep" => marker}]
-           }
-
+    assert first.arguments == %{}
     assert third.arguments["n"] == 10 ** 100 - 1
-    assert fifth.arguments == %{"text" => "five", marker => 1}
-    assert sixth.arguments == %{"text" => "six", "d" => marker}
+    assert fifth.arguments == %{}
+    assert sixth.arguments == %{}
 
     [result | _] = for %{type: :tool_execution_end, data: %{message: m}} <- events, do: m
     assert %Helyx.Message{tool_call_id: "c1", is_error: true} = result

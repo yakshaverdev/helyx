@@ -394,6 +394,8 @@ defmodule Helyx.Session.StreamEventsTest do
         {"an event with an extra field", "wide", quote(do: {:text_delta, "hello", :extra})},
         {"an extra field with a wide integer", "wide_int",
          quote(do: {:text_delta, "hello", "integer of more than 100 digits removed"})},
+        {"a usage with a wide integer", "wide_usage",
+         quote(do: {:done, %{usage: %{input: "integer of more than 100 digits removed"}}})},
         {"a delta that is not valid UTF-8", "raw_bytes", quote(do: {:text_delta, <<"hi", 255>>})},
         {"a tool call that is not valid UTF-8", "raw_call", quote(do: {:tool_call, _})},
         {"a tool call with an empty id", "empty_id",

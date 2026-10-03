@@ -45,17 +45,16 @@ defmodule Helyx.Session.StreamTest do
     assert {:bad, {:error, {:bad_stream_event, ^request}}} = SessionStream.check(request)
   end
 
-  test "an integer over the digit limit in arguments is capped, with the reason not to run it" do
+  test "arguments with an integer over the digit limit become %{}, with the reason not to run the call" do
     call = %Message.ToolCall{id: "c1", name: "upcase", arguments: %{"n" => [%{"deep" => huge()}]}}
 
-    assert {:send, {:tool_call, %{arguments: %{"n" => [%{"deep" => @marker}]}}, _bytes},
+    assert {:send, {:tool_call, %{arguments: %{}}, _bytes},
             "an integer in the arguments has more than 100 digits"} =
              SessionStream.check({:tool_call, call})
 
-    request = {:tool_request, "c1", "upcase", %{"n" => huge()}}
+    request = {:tool_request, "c1", "upcase", %{"n" => 10 ** 100}}
 
-    assert {:send,
-            {:tool_request, %{id: "c1", name: "upcase", arguments: %{"n" => @marker}}, _bytes},
+    assert {:send, {:tool_request, %{id: "c1", name: "upcase", arguments: %{}}, _bytes},
             "an integer" <> _} =
              SessionStream.check(request)
 
@@ -73,11 +72,19 @@ defmodule Helyx.Session.StreamTest do
     assert {:send, {:tool_call, ^call, 14}, nil} = SessionStream.check({:tool_call, call})
   end
 
-  test "an integer over the digit limit in usage is capped, and the extra key dropped" do
-    done = Map.put(%{stop_reason: :end_turn, usage: %{input: huge(), output: 3}}, :extra, huge())
+  test "a usage with an integer over the digit limit is malformed; an extra key is dropped" do
+    done = %{stop_reason: :end_turn, usage: %{input: 10 ** 100, output: 3}}
 
-    assert {:terminal, {:done, %{stop_reason: :end_turn, usage: %{input: @marker, output: 3}}}} =
+    assert {:bad, {:error, {:bad_stream_event, {:done, ^done}}}} =
              SessionStream.check({:done, done})
+
+    event = {:message_end, :end_turn, %{input: 10 ** 100}}
+    assert {:bad, {:error, {:bad_stream_event, ^event}}} = SessionStream.check(event)
+
+    done = Map.put(%{stop_reason: :end_turn, usage: %{input: 10 ** 100 - 1}}, :extra, huge())
+
+    assert {:terminal, {:done, checked}} = SessionStream.check({:done, done})
+    assert checked == Map.delete(done, :extra)
   end
 
   test "a resume event passes" do

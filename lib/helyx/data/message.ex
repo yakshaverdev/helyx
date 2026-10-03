@@ -162,8 +162,8 @@ defmodule Helyx.Message do
 
   @doc """
   Replaces every integer of more than #{@max_integer_digits} digits in the
-  value with a short marker string, so `value == cap_integers(value)` tells
-  whether the value held such an integer.
+  value with a short marker string. `big_integer?/1` tells whether the
+  value holds such an integer.
 
   The walk covers every compound term: maps with their keys (JSON writes an
   integer key as its digits), lists, tuples, and structs. A struct that holds
@@ -181,10 +181,8 @@ defmodule Helyx.Message do
   def cap_integers(value) when is_integer(value) and abs(value) >= @integer_limit,
     do: @integer_marker
 
-  def cap_integers(%_{} = struct) do
-    fields = Map.from_struct(struct)
-    if cap_integers(fields) == fields, do: struct, else: @integer_marker
-  end
+  def cap_integers(%_{} = struct),
+    do: if(big_integer?(struct), do: @integer_marker, else: struct)
 
   def cap_integers(value) when is_map(value),
     do: Map.new(value, fn {key, val} -> {cap_integers(key), cap_integers(val)} end)
@@ -195,6 +193,22 @@ defmodule Helyx.Message do
   # The head-tail walk never raises on an improper list.
   def cap_integers([head | tail]), do: [cap_integers(head) | cap_integers(tail)]
   def cap_integers(value), do: value
+
+  @doc """
+  Tells whether the value holds an integer of more than
+  #{@max_integer_digits} digits, with the walk of `cap_integers/1`. It
+  builds no term, so it suits a value that is rejected as a whole.
+  """
+  @spec big_integer?(term()) :: boolean()
+  def big_integer?(value) when is_integer(value), do: abs(value) >= @integer_limit
+  def big_integer?(%_{} = struct), do: big_integer?(Map.from_struct(struct))
+
+  def big_integer?(value) when is_map(value),
+    do: Enum.any?(value, fn {key, val} -> big_integer?(key) or big_integer?(val) end)
+
+  def big_integer?(value) when is_tuple(value), do: big_integer?(Tuple.to_list(value))
+  def big_integer?([head | tail]), do: big_integer?(head) or big_integer?(tail)
+  def big_integer?(_value), do: false
 
   @doc """
   Makes the text of a tool result valid UTF-8: every invalid byte becomes

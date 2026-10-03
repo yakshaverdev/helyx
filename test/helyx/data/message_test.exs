@@ -36,6 +36,13 @@ defmodule Helyx.MessageTest do
              [marker, marker]
 
     assert Message.cap_integers([~D[2026-09-19], self()]) == [~D[2026-09-19], self()]
+
+    # The predicate takes the same walk and agrees with the cap.
+    refute Message.big_integer?([small, ~D[2026-09-19], self()])
+
+    for value <- [-over, %{over => 1}, {1, over}, [1 | over], %Duration{second: over}] do
+      assert Message.big_integer?(value)
+    end
   end
 
   test "stop_reasons is the closed set of a message end" do
