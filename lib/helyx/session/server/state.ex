@@ -44,7 +44,7 @@ defmodule Helyx.Session.Server.State do
     # The checked tool specs of `Helyx.Tool.specs/1` at session start,
     # which every provider call uses, and the tool module by name for the
     # hands.
-    tools: [],
+    tool_specs: [],
     tool_modules: %{},
     transcript: [],
     seq: 0,

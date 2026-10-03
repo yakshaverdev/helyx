@@ -12,7 +12,8 @@ defmodule Helyx.Session.Turn do
   # it is sent, and the `pending` ref of the answer to `{:turn, ...}`.
   # `prepare` is the pid of the running prepare Task, which the session
   # monitors and kills at the turn end, or nil.
-  # `tools` holds the Helyx tool requests of the turn (`Helyx.Session.Tools`).
+  # `tool_queue` holds the Helyx tool requests of the turn
+  # (`Helyx.Session.ToolQueue`).
 
   alias Helyx.{Message, ModelRef}
 
@@ -28,7 +29,7 @@ defmodule Helyx.Session.Turn do
     :pending,
     :prepare,
     bytes: 0,
-    tools: %Helyx.Session.Tools{}
+    tool_queue: %Helyx.Session.ToolQueue{}
   ]
 
   @type t :: %__MODULE__{}
@@ -40,6 +41,10 @@ defmodule Helyx.Session.Turn do
   # 512 KiB: the margin is 16 times, and a response of 64 bytes for each
   # token still fits.
   @max_message_bytes 8 * 1_048_576
+
+  # The bound also holds the open Helyx tool requests (`Helyx.Session.ToolQueue`).
+  @spec max_message_bytes() :: pos_integer()
+  def max_message_bytes, do: @max_message_bytes
 
   # Adds one stream event of `size` bytes to the partial assistant content.
   # An event that takes the open message over `@max_message_bytes` is a

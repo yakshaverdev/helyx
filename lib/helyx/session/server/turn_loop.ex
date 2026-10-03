@@ -180,7 +180,7 @@ defmodule Helyx.Session.Server.TurnLoop do
     args = %{
       provider: turn.provider,
       model: turn.model.model,
-      tools: state.tools,
+      tools: state.tool_specs,
       opts: [resume_id: resumed] ++ base_opts(state),
       session: self()
     }
@@ -202,7 +202,7 @@ defmodule Helyx.Session.Server.TurnLoop do
   defp prepare(%State{activity: %Turn{id: turn_id}} = state) do
     session = self()
     %State{model_context: model_context, compaction: compaction, prepare_ms: ms} = state
-    context = %Context{messages: state.transcript, tools: state.tools}
+    context = %Context{messages: state.transcript, tools: state.tool_specs}
     opts = [turn_id: turn_id] ++ base_opts(state)
 
     {:ok, pid} =

@@ -8,7 +8,7 @@ defmodule Helyx.Session.Server do
 
   alias Helyx.ModelRef
   alias Helyx.Session.{Hands, Id, Turn}
-  alias Helyx.Session.Server.{Messages, Record, State, Steering, Stop, Tools, TurnLoop}
+  alias Helyx.Session.Server.{Messages, Record, State, Steering, Stop, ToolRuns, TurnLoop}
 
   use GenServer, restart: :temporary, shutdown: Stop.shutdown_ms()
 
@@ -90,24 +90,24 @@ defmodule Helyx.Session.Server do
       do: {:noreply, Steering.take(state, steer_id)}
 
   # A Helyx tool request of the provider process `pid`, and its withdrawal
-  # (`Tools`). The call and its result join the transcript from the
+  # (`ToolRuns`). The call and its result join the transcript from the
   # provider's own events, not from here. A request of a turn that is not
   # current gets `aborted`.
   def handle_info(
-        {:tool_request, _pid, turn_id, call, rejection},
+        {:tool_request, _pid, turn_id, call, bytes, rejection},
         %State{activity: %Turn{id: turn_id}} = state
       ) do
-    case Tools.request(state, call, rejection) do
+    case ToolRuns.request(state, call, bytes, rejection) do
       {:ok, state} -> {:noreply, state}
       {:stop, reason} -> {:noreply, TurnLoop.stop_provider(state, reason)}
     end
   end
 
-  def handle_info({:tool_request, pid, turn_id, call, _rejection}, state),
-    do: {:noreply, Tools.late(state, pid, turn_id, call.id)}
+  def handle_info({:tool_request, pid, turn_id, call, _bytes, _rejection}, state),
+    do: {:noreply, ToolRuns.late(state, pid, turn_id, call.id)}
 
   def handle_info({:cancel_tool, call_id}, %State{activity: %Turn{}} = state),
-    do: {:noreply, Tools.cancel(state, call_id)}
+    do: {:noreply, ToolRuns.cancel(state, call_id)}
 
   def handle_info(
         {:stream_event, turn_id, {:resume, id, cut}},
@@ -127,9 +127,9 @@ defmodule Helyx.Session.Server do
   # The hands' result of the running Helyx tool.
   def handle_info(
         {:tool_result, turn_id, call_id, result},
-        %State{activity: %Turn{id: turn_id, tools: %{running: call_id}}} = state
+        %State{activity: %Turn{id: turn_id, tool_queue: %{running: call_id}}} = state
       ),
-      do: {:noreply, Tools.result(state, result)}
+      do: {:noreply, ToolRuns.result(state, result)}
 
   # A message for a turn or a call that is no longer current.
   def handle_info({:tool_result, _turn_id, _call_id, _result}, state), do: {:noreply, state}

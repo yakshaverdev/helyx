@@ -16,7 +16,7 @@ defmodule Helyx.Session.StreamTest do
     assert {:send, {:tool_call, %Message.ToolCall{id: "c1", name: "read", arguments: %{}}, 16},
             ^reason} = SessionStream.check({:tool_call, call})
 
-    assert {:send, {:tool_request, %Message.ToolCall{id: "c1", arguments: %{}}}, ^reason} =
+    assert {:send, {:tool_request, %Message.ToolCall{id: "c1", arguments: %{}}, 16}, ^reason} =
              SessionStream.check({:tool_request, "c1", "read", "[1]"})
 
     # Other arguments that are not a map stay malformed.
@@ -54,7 +54,8 @@ defmodule Helyx.Session.StreamTest do
 
     request = {:tool_request, "c1", "upcase", %{"n" => huge()}}
 
-    assert {:send, {:tool_request, %{id: "c1", name: "upcase", arguments: %{"n" => @marker}}},
+    assert {:send,
+            {:tool_request, %{id: "c1", name: "upcase", arguments: %{"n" => @marker}}, _bytes},
             "an integer" <> _} =
              SessionStream.check(request)
 

@@ -18,7 +18,7 @@ defmodule Helyx.Session.Server.Wait do
   import Helyx.Session.Server.Record, only: [emit: 3, emit: 4]
 
   alias Helyx.Session.{Hands, ProviderRequest, Turn}
-  alias Helyx.Session.Server.{Messages, ProviderConn, State, Steering, Tools}
+  alias Helyx.Session.Server.{Messages, ProviderConn, State, Steering, ToolRuns}
 
   defstruct [:hands, :reply, :provider, callers: []]
 
@@ -33,13 +33,13 @@ defmodule Helyx.Session.Server.Wait do
     state =
       state
       |> Steering.end_turn(turn.id, true)
-      |> Tools.end_turn(turn)
+      |> ToolRuns.end_turn(turn)
       |> emit(:turn_end, %{message: assistant})
       |> emit(:agent_end, %{stop_reason: stop_reason})
 
     # A Helyx tool that still runs: the turn cleanup of the hands runs
     # before the next turn.
-    hands = if turn.tools.running, do: Hands.request_cancel(state.hands, turn.id)
+    hands = if turn.tool_queue.running, do: Hands.request_cancel(state.hands, turn.id)
     %{state | activity: %__MODULE__{hands: hands}}
   end
 
@@ -66,7 +66,7 @@ defmodule Helyx.Session.Server.Wait do
       |> Steering.end_turn(turn.id, false)
       |> Messages.close_turn(stop, reason)
       |> Steering.drop_queues()
-      |> Tools.end_turn(turn)
+      |> ToolRuns.end_turn(turn)
       |> emit(:agent_end, data)
 
     wait = if stop == :aborted, do: interrupt(state, turn), else: %__MODULE__{}
