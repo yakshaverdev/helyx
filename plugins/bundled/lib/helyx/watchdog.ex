@@ -80,10 +80,15 @@ defmodule Helyx.Watchdog do
   @doc false
   def stdin_max_bytes, do: @stdin_max_bytes
 
-  # The longest reason of a start that failed: it goes into a notice of the
-  # harness providers and into the bash tool's error. perl's warnings quote
-  # the environment as raw bytes, so the cut also drops invalid bytes.
-  @reason_max_bytes Helyx.Provider.max_notice_bytes()
+  # The longest reason of a start that failed: an error line of a program
+  # with room for context. It goes into a terminal error of the harness
+  # providers and into the bash tool's error, and `Helyx.HarnessIO` cuts
+  # program error text to it too. perl's warnings quote the environment as
+  # raw bytes, so the cut also drops invalid bytes.
+  @reason_max_bytes 2_000
+
+  @doc false
+  def reason_max_bytes, do: @reason_max_bytes
 
   @doc false
   # Opens the port for `argv` in `cwd` and runs the handshake. With `input`

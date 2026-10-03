@@ -12,8 +12,6 @@ defmodule Helyx.Session.Stream do
   # output of that cut is at most 51,201 bytes of lines and a notice of less
   # than 200 bytes, so only a result that was not cut is over this limit.
   @max_tool_result_bytes 65_536
-
-  @max_notice_bytes Helyx.Provider.max_notice_bytes()
   # The most messages that may wait in the session mailbox before a send.
   # A count, not bytes: every event is already capped.
   @max_session_queue 10_000
@@ -58,12 +56,14 @@ defmodule Helyx.Session.Stream do
   Checks one event from a provider. Returns `{:send, event, rejection}`
   for an event that passes, with the checked event and, for a call with
   an integer over the digit limit or with raw argument text (arguments
-  that are not a JSON object), the reason that it must not run, or nil; `{:terminal, terminal}` for a `done` or an `error` event; and
-  `{:bad, error}` for a malformed event. Arguments or a usage that are
-  a struct are malformed: `cap_integers/1` can turn a struct into a
-  string, and the session file needs a plain map. A delta or a tool call that is not valid UTF-8 is
-  malformed: transcript text is valid from the moment it exists, so the file
-  and the providers never see raw bytes. A tool call or a tool request with an
+  that are not a JSON object), the reason that it must not run, or nil;
+  `{:terminal, terminal}` for a `done` or an `error` event, with the
+  integer cap and ready to send; and `{:bad, error}` for a malformed
+  event. Arguments or a usage that are a struct are malformed:
+  `cap_integers/1` can turn a struct into a string, and the session file
+  needs a plain map. A delta or a tool call that is not valid UTF-8 is
+  malformed: transcript text is valid from the moment it exists, so the
+  file and the providers never see raw bytes. A tool call or a tool request with an
   empty id is malformed: a result names its call by the id.
   """
   @spec check(term()) ::
@@ -77,20 +77,13 @@ defmodule Helyx.Session.Stream do
 
   def check({:tool_call, call}), do: tool_call(call)
 
-  # A notice for the user. It becomes a `:notice` event
-  # only: it never joins the transcript.
-  def check({:notice, text} = event)
-      when is_binary(text) and byte_size(text) <= @max_notice_bytes do
-    if String.valid?(text), do: {:send, event, nil}, else: {:bad, malformed(event)}
-  end
-
   # The stop reason set is closed (`Message.stop_reasons/0`), and the
   # session file holds only JSON. A terminal whose stop reason is outside
   # the set, or whose usage the file cannot encode, fails the turn here,
   # before the message exists, instead of raising in persist and silently
   # turning persistence off for the rest of the session. A new plain map:
   # the pattern also matches a struct and a map with more keys, and the
-  # session needs this shape after the cap at the Task exit.
+  # session needs this shape.
   def check({:done, %{stop_reason: reason, usage: usage}} = terminal)
       when reason in @stop_reasons and is_non_struct_map(usage) do
     case capped_usage(usage) do
@@ -99,7 +92,9 @@ defmodule Helyx.Session.Stream do
     end
   end
 
-  def check({:error, _} = terminal), do: {:terminal, terminal}
+  # The reason goes to the session, its events, and its log as it is, so it
+  # gets the integer cap here, as every other value from a provider does.
+  def check({:error, reason}), do: {:terminal, {:error, Message.cap_integers(reason)}}
 
   def check({tag, _, _} = event) when tag in [:message_end, :tool_result, :resume] do
     case provider_event(event) do
@@ -181,7 +176,7 @@ defmodule Helyx.Session.Stream do
        when is_binary(id) and status in [:ok, :error] and is_binary(text) do
     if byte_size(text) > @max_tool_result_bytes,
       do: {:error, too_large(text)},
-      else: {:ok, {:tool_result, id, scrub({status, text})}}
+      else: {:ok, {:tool_result, id, Message.scrub({status, text})}}
   end
 
   defp provider_event({:resume, id, cut} = event) when is_integer(cut) and cut >= 0 do
@@ -193,12 +188,6 @@ defmodule Helyx.Session.Stream do
   end
 
   defp provider_event(event), do: malformed(event)
-
-  # The rule of `scrub/1` in `Helyx.Session.Hands`, the other boundary of
-  # tool text. Valid text, the common case, is passed through without a copy.
-  defp scrub({status, text}) do
-    if String.valid?(text), do: {status, text}, else: {status, String.replace_invalid(text)}
-  end
 
   defp malformed(event), do: {:error, {:bad_stream_event, event}}
 

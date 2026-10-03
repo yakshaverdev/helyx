@@ -10,9 +10,6 @@ defmodule Helyx.HarnessIO do
   # `size`, `terminal`, and `closing`.
 
   @line_max_bytes 16 * 1024 * 1024
-  # The longest program error text that goes into a terminal error or a
-  # notice: the notice bound of Core.
-  @error_max_bytes Helyx.Provider.max_notice_bytes()
   @replay_max_bytes 400_000
   # The TERM grace of the watchdog and the release: claude and codex end
   # their own commands on TERM, but a KILL leaves them running (research
@@ -169,10 +166,11 @@ defmodule Helyx.HarnessIO do
     end
   end
 
-  # A value that is not text is empty. The text is cut at the cap to valid
-  # UTF-8 (`Helyx.Text.cap/3`).
+  # A value that is not text is empty. The text is cut to valid UTF-8
+  # (`Helyx.Text.cap/3`) at the bound of a failed start, so every error
+  # text of a harness has one bound.
   def cap_error(text) when not is_binary(text), do: ""
-  def cap_error(text), do: Helyx.Text.cap(text, @error_max_bytes, :head)
+  def cap_error(text), do: Helyx.Text.cap(text, Helyx.Watchdog.reason_max_bytes(), :head)
 
   # The prompt is the user messages at the end of the transcript; the
   # history is the rest. Both keep their order.

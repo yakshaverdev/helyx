@@ -1,9 +1,4 @@
 defmodule Helyx.Provider do
-  # The text of a notice: an error line of a program with room for context.
-  # The one source: the session checks it, and the bundled providers cut to
-  # it (`Helyx.HarnessIO.cap_error/1`).
-  @max_notice_bytes 2_000
-
   @moduledoc """
   Produces assistant messages for a session. This is the contract in short
   form; every rule of it is in `docs/features/one-provider-path.md`, "The
@@ -70,11 +65,6 @@ defmodule Helyx.Provider do
       with `%{}` and never runs: its result is `tool call not run: the
       arguments are not a valid JSON object`. Any other `arguments` fails
       the turn
-    * `{:notice, text}`: a notice for the user, such as an error of the
-      program that a later part of the turn made obsolete. The session keeps
-      it out of the transcript.
-      `text` is valid UTF-8 of at most #{@max_notice_bytes} bytes
-      (`max_notice_bytes/0`)
     * `{:done, %{stop_reason: stop_reason, usage: map}}`: the call finished.
       `stop_reason` is one of `Helyx.Message.stop_reasons/0`
     * `{:error, term}`: the call failed
@@ -109,7 +99,6 @@ defmodule Helyx.Provider do
           {:text_delta, String.t()}
           | {:thinking_delta, String.t()}
           | {:tool_call, Helyx.Message.ToolCall.t()}
-          | {:notice, String.t()}
           | {:done, %{stop_reason: stop_reason(), usage: map()}}
           | {:error, term()}
           | {:message_end, stop_reason(), map()}
@@ -138,10 +127,6 @@ defmodule Helyx.Provider do
           | {:reply, from(), term()}
           | {:cancel_tool, call_id :: String.t()}
           | {:need_context, turn_id :: String.t()}
-
-  @doc "The byte limit of the text of a `{:notice, text}` stream event."
-  @spec max_notice_bytes() :: pos_integer()
-  def max_notice_bytes, do: @max_notice_bytes
 
   @doc """
   Finds the provider plugin whose id matches a model ref prefix. It reads the

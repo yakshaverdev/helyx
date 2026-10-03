@@ -16,7 +16,7 @@ defmodule Helyx.TUI.ViewModel do
       message
     * `{:notice, text}` – an aborted or failed turn, a provider that lost
       its session or got a cut transcript, a steer that was not confirmed, a
-      notice of the provider, or a command the client rejected
+      notice of the session, or a command the client rejected
       (`notice/2`)
 
   `reason` is why the client rejected the last input, or nil. It is

@@ -45,10 +45,9 @@ defmodule Helyx.Event do
       that Helyx cannot confirm the provider took, with its text. It
       goes out at the end of the turn, or after it when the answer comes
       late. Helyx does not send it again. The user can send it again.
-    * `:notice` – `%{text: String.t()}`: a notice of the provider, or of
-      the session (a failed abort cleanup or session-file write), for the
-      user, valid UTF-8 of at most `Helyx.Provider.max_notice_bytes/0`
-      bytes. It is not in the transcript, so the model never gets it
+    * `:notice` – `%{text: String.t()}`: a notice of the session (a failed
+      abort cleanup or session-file write) for the user, with a fixed text.
+      It is not in the transcript, so the model never gets it
   """
 
   @enforce_keys [:type, :session_id, :instance_id, :turn_id, :seq, :data]

@@ -120,7 +120,6 @@ defmodule Helyx.Test.Provider do
   #   "raw_call"   a tool call whose name is not valid UTF-8
   #   "bad_stop"   done with a stop reason outside the file format's set
   #   "harness_event" a message end, which only a harness may send
-  #   "notice"     text, a notice, more text, then done
   #   "bad_args"   a tool call whose arguments the file format cannot hold
   #   "recover"    a first turn the file cannot hold, then a clean "again" turn
   #   "wide"       a delta tuple with an extra element
@@ -177,7 +176,6 @@ defmodule Helyx.Test.Provider do
       @done
     ],
     "bad_stop" => [{:text_delta, "hi"}, {:done, %{stop_reason: :refusal, usage: %{}}}],
-    "notice" => [{:text_delta, "hi"}, {:notice, "heads up"}, {:text_delta, " there"}, @done],
     "harness_event" => [{:text_delta, "hi"}, {:message_end, :end_turn, %{}}, @done],
     "repeat_id" => [
       {:tool_call, %ToolCall{id: "c", name: "upcase", arguments: %{"text" => "a"}}},

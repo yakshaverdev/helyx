@@ -108,7 +108,6 @@ defmodule Helyx.Provider.Codex.HelyxToolsTest do
 
       assert [{:resume, id, 0} | _] = events(actions)
       assert digest?(id)
-      refute Enum.any?(events(actions), &match?({:notice, _}, &1))
     end
 
     @tag :slow
