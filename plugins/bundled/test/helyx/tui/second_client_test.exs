@@ -20,16 +20,20 @@ defmodule Helyx.TUI.SecondClientTest do
     gate = Gate.open()
     {:ok, session} = Session.start(core, model: "gated/#{gate}")
     {:ok, snapshot} = Session.subscribe(session)
-    %{session: session, live: %{vm: ViewModel.from_snapshot(snapshot), events: []}}
+
+    %{
+      session: session,
+      live: %{vm: ViewModel.from_snapshot(snapshot), events: [], seq: snapshot.seq}
+    }
   end
 
   test "a turn that succeeds", %{session: session, live: live} do
     :ok = Session.prompt(session, "ok")
-    {old, live} = join_during_streaming(session, live)
+    live = join_during_streaming(session, live)
 
     # The gate call runs; the client comes back, steers, and sees the steer.
     assert_receive {:waiting, tool}
-    {client, view, live} = reconnect(session, live, old)
+    {client, view, live} = reconnect(session, live)
     LateClient.steer(client, "steer")
     send(tool, :go)
 
@@ -40,11 +44,11 @@ defmodule Helyx.TUI.SecondClientTest do
 
   test "a turn that fails", %{session: session, live: live} do
     :ok = Session.prompt(session, "fail")
-    {old, live} = join_during_streaming(session, live)
+    live = join_during_streaming(session, live)
     live = catch_up(live)
     assert [_fail, %Message{stop_reason: :error}, {:notice, "error: " <> _}] = live.vm.cells
 
-    {client, view, live} = reconnect(session, live, old)
+    {client, view, live} = reconnect(session, live)
     LateClient.steer(client, "steer")
     {view, live} = to_end(client, view, live)
     assert view == transcript(live.vm)
@@ -55,7 +59,7 @@ defmodule Helyx.TUI.SecondClientTest do
   # closed cell for it.
   test "an abort", %{session: session, live: live} do
     :ok = Session.prompt(session, "abort")
-    {old, live} = join_during_streaming(session, live)
+    live = join_during_streaming(session, live)
     assert_receive {:waiting, _tool}
     :ok = Session.abort(session)
     live = catch_up(live)
@@ -69,7 +73,7 @@ defmodule Helyx.TUI.SecondClientTest do
              {:notice, "aborted"}
            ] = live.vm.cells
 
-    {client, view, live} = reconnect(session, live, old)
+    {client, view, live} = reconnect(session, live)
     LateClient.steer(client, "steer")
     {view, live} = to_end(client, view, live)
     assert view == transcript(live.vm)
@@ -90,18 +94,15 @@ defmodule Helyx.TUI.SecondClientTest do
 
     LateClient.disconnect(client)
     send(stream, :go)
-    {joined, live}
+    live
   end
 
   # The client subscribes again. The new snapshot replaces its old view
-  # model: its seq is the snapshot's, and no event at or below it changes
-  # the view.
-  defp reconnect(session, live, old) do
+  # model.
+  defp reconnect(session, live) do
     {client, snapshot} = LateClient.connect(session)
     live = catch_up(live, snapshot.seq)
     view = ViewModel.from_snapshot(snapshot)
-    assert view.seq == snapshot.seq and view.seq > old.seq
-    assert fold(view, live.events) == view
     assert view == transcript(live.vm)
     {client, view, live}
   end
@@ -111,7 +112,7 @@ defmodule Helyx.TUI.SecondClientTest do
   defp to_end(client, view, live) do
     events = LateClient.events_to_end(client)
     live = catch_up(live)
-    assert List.last(events).seq == live.vm.seq
+    assert List.last(events).seq == live.seq
     view = fold(view, events)
     assert Enum.any?(view.cells, &match?(%Message{role: :user, content: [%{text: "steer"}]}, &1))
     LateClient.disconnect(client)
@@ -119,13 +120,14 @@ defmodule Helyx.TUI.SecondClientTest do
   end
 
   # The live client folds its events up to `seq`, or up to an agent_end
-  # when `seq` is nil. `events` holds every event it received.
+  # when `seq` is nil. `events` holds every event it received, and `seq`
+  # is the seq of the last one.
   defp catch_up(live, seq \\ nil)
-  defp catch_up(%{vm: %{seq: at}} = live, seq) when seq != nil and at >= seq, do: live
+  defp catch_up(%{seq: at} = live, seq) when seq != nil and at >= seq, do: live
 
   defp catch_up(live, seq) do
     assert_receive {:helyx_event, %Event{} = event}
-    live = %{vm: ViewModel.apply(live.vm, event), events: live.events ++ [event]}
+    live = %{vm: ViewModel.apply(live.vm, event), events: live.events ++ [event], seq: event.seq}
     if seq == nil and event.type == :agent_end, do: live, else: catch_up(live, seq)
   end
 end

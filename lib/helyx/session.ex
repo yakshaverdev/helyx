@@ -8,8 +8,9 @@ defmodule Helyx.Session do
       {:ok, session} = Helyx.Session.start(core, model: "fake/echo")
       {:ok, snapshot} = Helyx.Session.subscribe(session)
       :ok = Helyx.Session.prompt(session, "hello")
-      # receive {:helyx_event, %Helyx.Event{}}, drop each event of another
-      # instance_id than the snapshot's, and each seq <= snapshot.seq ...
+      # receive {:helyx_event, %Helyx.Event{}} ... (a client that
+      # reconnects drops each event of another instance_id than the
+      # snapshot's, and each seq <= snapshot.seq)
       # then {{:helyx_session_end, id}, _ref, :process, _pid, reason} when
       # the session ends; Helyx.Session.end_reason(reason) is :stopped or
       # :crashed
@@ -193,11 +194,13 @@ defmodule Helyx.Session do
   `{:helyx_event, event}`, and returns the session's state as a
   `Helyx.Session.Snapshot`. The session adds the caller and builds the
   snapshot in one step, so every event after the snapshot reaches it
-  (`docs/features/session-subscribers.md`). The caller drops an event whose
-  `instance_id` is not `snapshot.instance_id`: it is of an earlier instance
-  with the same id, which a resume makes, or of a session with the same id
-  in another Core. An event with a `seq` at or below `snapshot.seq` is
-  already in the snapshot; the caller drops it too.
+  (`docs/features/session-subscribers.md`). A caller that reconnects drops
+  an event whose `instance_id` is not `snapshot.instance_id`: it is of an
+  earlier instance with the same id, which a resume makes, or of a session
+  with the same id in another Core. An event with a `seq` at or below
+  `snapshot.seq` is already in the snapshot; that caller drops it too. A
+  caller that subscribes once gets no such event (ADR 0006, revision of
+  2026-10-03).
 
   After its last event, the subscription gives one end signal when the
   session ends, from a monitor of the session process that the caller holds:

@@ -285,34 +285,6 @@ defmodule Helyx.TUITest do
     assert live.cells == Enum.drop(vm.cells, -1)
   end
 
-  # The review of #188, round 4, spec item 1: a resume keeps the session
-  # id, and the new instance starts `seq` at 0 again. The old screen gets
-  # events of the new instance only as stale messages of a later
-  # subscription of its process.
-  @tag :tmp_dir
-  test "an event of a resumed instance does not change the screen of the old one (#204)", %{
-    core: core,
-    tmp_dir: dir
-  } do
-    # The second reply has more deltas than the first turn has events, so
-    # its last events have a `seq` above the one of the old screen.
-    :ok = Fake.script(core, "again", [["first"], List.duplicate("second ", 20)])
-    {:ok, session} = Session.start(core, model: "fake/again", sessions_dir: dir, cwd: dir)
-    {:ok, state} = TUI.mount(session: session)
-    :ok = Session.prompt(session, "hi")
-    state = drain(state)
-
-    :ok =
-      DynamicSupervisor.terminate_child(Helyx.Core.session_supervisor(core), Session.pid(session))
-
-    assert_receive {{:helyx_session_end, _id}, _ref, :process, _pid, :shutdown}
-    {:ok, resumed} = Session.resume(core, sessions_dir: dir, cwd: dir)
-    {:ok, _} = Session.subscribe(resumed)
-    :ok = Session.prompt(resumed, "again")
-
-    assert drain(state) == state
-  end
-
   test "mounting on a dead session exits instead of hanging", %{core: core} do
     :ok = Fake.script(core, "dead", [])
     {:ok, session} = Session.start(core, model: "fake/dead")
@@ -347,61 +319,6 @@ defmodule Helyx.TUITest do
     state = press(state, "enter")
     assert List.last(state.vm.cells) == {:notice, "the session ended"}
     assert ExRatatui.textarea_get_value(state.composer.input) == "/model fake/other"
-  end
-
-  test "a snapshot of an unsupported contract version shows a message, not the session", %{
-    core: core
-  } do
-    # A fake session that answers the subscribe call with version 3.
-    id = "future"
-    test = self()
-
-    fake =
-      spawn(fn ->
-        {:ok, _} = Registry.register(Helyx.Core.sessions_registry(core), id, nil)
-        send(test, :registered)
-
-        receive do
-          {:"$gen_call", from, {:subscribe, _pid}} ->
-            GenServer.reply(from, %Session.Snapshot{
-              contract_version: 3,
-              instance_id: "i",
-              seq: 7,
-              messages: [%Message{role: :user, content: [%Message.Text{text: "secret"}]}],
-              turn: nil,
-              model: "fake/future",
-              queue: %{steers: 0, follow_ups: 0}
-            })
-
-            Process.sleep(:infinity)
-        end
-      end)
-
-    assert_receive :registered
-    {:ok, state} = TUI.mount(session: %Session{id: id, core: core})
-
-    assert [{%Paragraph{} = message, _rect}] = TUI.render(state, %{width: 80, height: 10})
-    assert inspect(message) =~ "contract version"
-    refute inspect(message) =~ "secret"
-
-    # Session events and keys do nothing; Ctrl+C quits.
-    event = %Event{
-      type: :agent_end,
-      session_id: id,
-      instance_id: "i",
-      turn_id: "t",
-      seq: 8,
-      data: %{}
-    }
-
-    assert {:noreply, ^state} = TUI.handle_info({:helyx_event, event}, state)
-    assert {:noreply, ^state} = TUI.handle_event(%Key{code: "enter", kind: "press"}, state)
-    assert {:stop, _state} = TUI.handle_event(%Key{code: "c", modifiers: ["ctrl"]}, state)
-
-    # The end of the session still ends the TUI.
-    Process.exit(fake, :kill)
-    assert_receive {{:helyx_session_end, ^id}, _ref, :process, ^fake, :killed} = signal
-    assert catch_exit(TUI.handle_info(signal, state)) == {:session_down, :crashed}
   end
 
   test "tool results truncate after four lines, ignoring a trailing newline" do
@@ -579,9 +496,9 @@ defmodule Helyx.TUITest do
       event = %Event{
         type: type,
         session_id: "s",
-        instance_id: state.vm.instance_id,
+        instance_id: "i",
         turn_id: "t",
-        seq: state.vm.seq + 1,
+        seq: 1,
         data: data
       }
 

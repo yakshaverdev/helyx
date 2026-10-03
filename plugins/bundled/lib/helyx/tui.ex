@@ -25,10 +25,9 @@ if Helyx.TUI.Available.available?() do
 
     The TUI subscribes to one session and renders from `Helyx.TUI.ViewModel`,
     a pure fold over the session's events. It holds no session state of its
-    own. It supports version 2 of the client contract (ADR 0006). For a
-    snapshot of another version it shows a message and not the session. Then
-    only Ctrl+C and the end of the session stop it. Keys, with the full rules
-    in `docs/features/coding-agent.md`, "TUI":
+    own. It runs in the node of its Core, so it has the Helyx version of that
+    Core and needs no version check (ADR 0006). Keys, with the full rules in
+    `docs/features/coding-agent.md`, "TUI":
 
       * typing fills the composer (`Helyx.TUI.Composer`), at most 8 lines high
       * Ctrl+J adds a new line; so does Shift+Enter where the terminal reports it
@@ -56,10 +55,6 @@ if Helyx.TUI.Available.available?() do
     alias ExRatatui.Widgets.Paragraph
     alias Helyx.Session
     alias Helyx.TUI.{Composer, Transcript, ViewModel}
-
-    # The one version of the client contract (ADR 0006) that this client
-    # supports. A snapshot of another version shows only a message.
-    @contract_version 2
 
     @dim %Style{modifiers: [:dim]}
     @bold %Style{modifiers: [:bold]}
@@ -124,22 +119,9 @@ if Helyx.TUI.Available.available?() do
       session = Keyword.fetch!(opts, :session)
 
       # The screen starts from the snapshot: the history of a resumed
-      # session, and the turn a late client joins.
-      snapshot = subscribe!(session)
-
-      # The end signal of the subscription ends the TUI (see handle_info/2).
-      case snapshot do
-        %Session.Snapshot{contract_version: @contract_version} ->
-          session_state(session, snapshot, opts)
-
-        # ADR 0006, section 5: say so, and do not read or render the session.
-        %Session.Snapshot{} ->
-          {:ok, %{unsupported: true, session: session}}
-      end
-    end
-
-    defp session_state(session, snapshot, opts) do
-      vm = ViewModel.from_snapshot(snapshot)
+      # session, and the turn a late client joins. The end signal of the
+      # subscription ends the TUI (see handle_info/2).
+      vm = ViewModel.from_snapshot(subscribe!(session))
       vm = if opts[:resumed], do: ViewModel.notice(vm, "resumed session"), else: vm
 
       {:ok,
@@ -163,10 +145,6 @@ if Helyx.TUI.Available.available?() do
           %{session: %Session{id: id}}
         ),
         do: exit({:session_down, Session.end_reason(reason)})
-
-    # An unsupported session shows only its message; its events do nothing.
-    def handle_info({:helyx_event, _event}, %{unsupported: true} = state),
-      do: {:noreply, state}
 
     def handle_info({:helyx_event, event}, state) do
       {:noreply, settle(%{state | vm: ViewModel.apply(state.vm, event)})}
@@ -195,8 +173,6 @@ if Helyx.TUI.Available.available?() do
         do: handle_event(paste, %{state | vm: ViewModel.clear_reason(state.vm)})
 
     def handle_event(%Key{code: "c", modifiers: ["ctrl"]}, state), do: {:stop, state}
-
-    def handle_event(_event, %{unsupported: true} = state), do: {:noreply, state}
 
     def handle_event(%Key{code: "esc", kind: "press"}, state) do
       # Abort waits for the hands to kill every OS process; a Task keeps that
@@ -307,15 +283,6 @@ if Helyx.TUI.Available.available?() do
     defp switch_error(:session_not_found), do: "the session ended"
 
     @impl true
-    def render(%{unsupported: true}, frame) do
-      text =
-        "This client supports only client contract version #{@contract_version}, " <>
-          "and the session uses another version. Update the client. Ctrl+C quits."
-
-      area = %Rect{x: 0, y: 0, width: frame.width, height: frame.height}
-      [{%Paragraph{text: text, wrap: true}, area}]
-    end
-
     def render(state, frame) do
       area = %Rect{x: 0, y: 0, width: frame.width, height: frame.height}
 
