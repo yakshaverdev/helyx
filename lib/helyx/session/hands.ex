@@ -119,7 +119,16 @@ defmodule Helyx.Session.Hands do
     state = retry(state)
 
     if state.unconfirmed == %{} do
-      {pid, state} = spawn_armed(state, nil, :provider, provider, state.connect_ms, fun)
+      # The kill is armed at the OTP timer server as the Task's first act;
+      # `fun` gets the timer ref, before any plugin code runs.
+      ms = state.connect_ms
+
+      {pid, state} =
+        spawn_task(state, nil, :provider, provider, fn ->
+          {:ok, tref} = :timer.kill_after(ms)
+          fun.(tref)
+        end)
+
       {:reply, {:ok, pid}, state}
     else
       {:reply, {:error, refusal(state)}, state}
@@ -266,15 +275,6 @@ defmodule Helyx.Session.Hands do
       end)
 
     {task.pid, %{state | tasks: Map.put(state.tasks, task.ref, {task, turn_id, id, module})}}
-  end
-
-  # A Task whose kill is armed at the OTP timer server as its first act.
-  # `fun` gets the timer ref, before any plugin code runs.
-  defp spawn_armed(state, turn_id, id, module, ms, fun) do
-    spawn_task(state, turn_id, id, module, fn ->
-      {:ok, tref} = :timer.kill_after(ms)
-      fun.(tref)
-    end)
   end
 
   defp refuse(state, turn_id, id) do

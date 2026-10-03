@@ -12,8 +12,12 @@ defmodule Helyx.Session.Server.Steering do
   alias Helyx.Session.{Id, Queue}
   alias Helyx.Session.Server.{Messages, ProviderConn, State}
 
+  # Returns the reply to the client and the state.
   def queue(%State{} = state, key, text) do
-    with {:ok, queue} <- Queue.push(state.queue, key, text), do: {:ok, put(state, {queue, []})}
+    case Queue.push(state.queue, key, text) do
+      {:ok, queue} -> {:ok, put(state, {queue, []})}
+      {:error, :queue_full} = error -> {error, state}
+    end
   end
 
   def drop_queues(%State{} = state), do: put(state, {Queue.drop(state.queue), []})
