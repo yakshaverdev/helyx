@@ -10,9 +10,10 @@ defmodule Helyx.Session.Stream do
   # cut; a provider does not send them.
   @stop_reasons Message.stop_reasons() -- [:aborted, :error]
 
-  # A provider cuts each tool result (`Helyx.Provider`), as a tool does. Every
-  # output of that cut is at most 51,201 bytes of lines and a notice of less
-  # than 200 bytes, so only a result that was not cut is over this limit.
+  # A provider cuts each tool result (`one-provider-path.md`), as a tool
+  # does. Every output of that cut is at most 51,201 bytes of lines and a
+  # notice of less than 200 bytes, so only a result that was not cut is
+  # over this limit.
   @max_tool_result_bytes 65_536
   # The most messages that may wait in the session mailbox before a send.
   # A count, not bytes. Core caps a tool result before the send (above)

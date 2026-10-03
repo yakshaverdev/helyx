@@ -22,8 +22,8 @@ The contract is the operations below, the snapshot, the events, and the end sign
 | `abort` | `:ok` |
 | `set_model` (a `provider/model` string) | `:ok`, or a model error |
 
-- **Every value is data:** strings, numbers, booleans, atoms, lists, maps, and structs of these. No pid, reference, function, or module. The one exception is the `ref` of `subscribe` in the local transport (below). A remote transport does not send it. An error is an atom, or a tuple of an atom and data.
-- **Start errors for a client:** `:invalid_cwd`, the model errors (`{:invalid_model_ref, ref}`, `{:unknown_provider, id}`), and, for `resume`, `:not_found` when the directory has no saved session. Any other start error reaches a client as `{:start_failed, text}`, where the text is for a person. The product still gets the full term, and so does the log.
+- **Every value is data:** strings, numbers, booleans, atoms, lists, maps, and structs of these. No pid, reference, function, or module. The one exception is the `ref` of `subscribe` in the local transport (below). A remote transport does not send it.
+- **Start errors for a client:** `:invalid_cwd`, the model errors (`{:invalid_model_ref, ref}`, `{:unknown_provider, id}`), and, for `resume`, `:not_found` when the directory has no saved session. Any other start error reaches a client as `{:start_failed, text}`, where the text is for a person. The product still gets the full term, and so does the log. This map is not built yet: it belongs to a transport, and none exists.
 - **A missing or ended session:** `subscribe` to a session that is not running returns `{:error, :session_not_found}`. It does not exit, and it leaves no subscriber entry and no monitor. An operation on such a session returns the same error.
 - **The end signal:** a subscriber learns that a session ended from one signal with a reason as data. The local transport gives it as the `:DOWN` of the caller's monitor of the session process, whose `ref` `subscribe` returns: `{:DOWN, ref, :process, pid, reason}`. `Session.end_reason/1` maps `reason` to `:stopped` or `:crashed` (`docs/features/end-signal.md`). The caller owns the ref and demonitors it when it no longer wants it. The `pid` is not a contract value. A remote transport sends the end signal as a last event and then closes the stream. A stream that closes with no end signal is a lost connection, and the client subscribes again.
 - **Not in the contract:** `Session.pid/1`, `Core.plugins/2`, and the registry and supervisor names. They are for the product and for a Transport plugin inside the node. The TUI stops using `Session.pid/1`.
@@ -43,12 +43,7 @@ The contract is the operations below, the snapshot, the events, and the end sign
 
 ### 5. Compatibility
 
-Replaced by the revision of 2026-10-03: a client works with one Helyx version and is a tolerant reader within it. The former text below is history and does not apply.
-
-- The snapshot has a `contract_version` (an integer).
-- Within one version, the server adds a field, an event type, or a value only when a client that does not know it still behaves correctly when it ignores it. A client ignores an unknown event type and an unknown field.
-- Any other change raises the version: a removal, a rename, a change of meaning, and a new value that a client must understand to stay correct (for example, a new final status for a tool call, which an old client would show as open forever).
-- A client that does not support the version of a snapshot says so and does not render the session.
+Replaced by the revision of 2026-10-03 (Revision, below).
 
 ### 6. Transports
 
@@ -72,8 +67,7 @@ Replaced by the revision of 2026-10-03: a client works with one Helyx version an
 - New tickets, in this order:
   1. `subscribe` and the operations return `{:error, :session_not_found}` for a missing or ended session. The start errors for a client follow section 2. The TUI drops its alive check before the subscribe.
   2. The end signal. The TUI stops using `Session.pid/1`.
-  3. `contract_version` in the snapshot. Replaced by the revision of 2026-10-03, which removes it.
-  4. A second-client test with the local transport. A second subscriber joins during streaming, disconnects, subscribes again, and sends a steer. The test covers a turn that succeeds, a turn that fails, and an abort, and it checks the rule of section 3 at each join. An unstarted call that gets an `aborted` result shows one closed cell in the joined client and in the live client (revision of 2026-10-02). At the reconnect, it checks that the client's `seq` is the `seq` of the new snapshot and that no event at or below it changes the view. Since the revision of 2026-10-03 the TUI view model has no `seq`, so the test no longer checks this; the check comes with the first client that reconnects.
+  3. A second-client test with the local transport. A second subscriber joins during streaming, disconnects, subscribes again, and sends a steer. The test covers a turn that succeeds, a turn that fails, and an abort, and it checks the rule of section 3 at each join. An unstarted call that gets an `aborted` result shows one closed cell in the joined client and in the live client (revision of 2026-10-02). At the reconnect, it checks that the client's `seq` is the `seq` of the new snapshot and that no event at or below it changes the view. Since the revision of 2026-10-03 the TUI view model has no `seq`, so the test no longer checks this; the check comes with the first client that reconnects.
 - The HTTP and SSE Transport plugin, a SwiftUI spike, typed blocks, and ACP support wait until the second-client test passes. Each gets its own feature doc or ticket.
 
 ## Revision
@@ -82,7 +76,7 @@ Replaced by the revision of 2026-10-03: a client works with one Helyx version an
 
 2026-10-03, ticket #404 (owner decision). The tickets after #404 build it.
 
-- **Section 5 is replaced.** A client works with one Helyx version: at connect it compares the version for equality and refuses a mismatch. A client in the same node as its Core needs no check. The remote check is built with the first remote client, not now. It compares a build id, because two dev builds can share a version. The hand-bumped `contract_version` and the rules about when to bump it go away.
+- **Section 5 is replaced.** A client works with one Helyx version: at connect it compares the version for equality and refuses a mismatch. A client in the same node as its Core needs no check. The remote check is built with the first remote client, not now. It compares a build id, because two dev builds can share a version. It has no hand-bumped version number.
 - **Tolerant reader.** Within its version, a client dispatches on the event type first. Each known type has a clause that matches the type only and checks its payload inside, so a known event with a broken shape is a contract break, and the client does not repair it. Only a type that no clause names is ignored. An unknown field is ignored. An unknown block kind shows a placeholder, such as `[unsupported block: image]`. Block kinds and roles dispatch the same way.
 - **The TUI drops the instance and `seq` guards of section 3.** The TUI subscribes once. The registration and the snapshot happen in one server handler (the subscribe clause of `lib/helyx/session/server.ex`), so no event of another instance or of an older `seq` can reach it. The TUI exits when the session ends. Section 3 stays for a client that reconnects.
 - **TUI cells from the messages.** Each call of the streaming message and each call with no result shows an open cell labelled "awaiting result". The message proves that the call exists, not that it runs: an API provider runs it after `message_end`, and a harness program already runs it. A call that later gets an `aborted` result shows the label until that result. A result closes its cell. The TUI does not read `tool_execution_start`, and since #433 Core does not emit it. `ViewModel.from_snapshot/1` folds the snapshot messages through the live fold, so the live and snapshot paths of the TUI share one pairing rule. Core and the TUI can still disagree, so the tests that compare a client against real session events stay. `Snapshot.turn.running` is removed from Core.

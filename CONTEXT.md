@@ -39,11 +39,11 @@ The process that owns a working directory and runs tools for a session. In local
 _Avoid_: sandbox, executor, worker
 
 **Client**:
-Anything that renders a session from its events and sends prompts to it. A client holds no session state.
+Anything that renders a session from its snapshot and events and sends prompts to it. A client holds only a rendered copy of the session state.
 _Avoid_: frontend, UI, view
 
-**Program turn**:
-A turn that a harness provider's program starts by itself, for example when a background task ends. The session shows it as a turn with no user message, marked with `origin: :provider` in its `turn_start`.
+**Provider turn**:
+A turn that a provider starts by itself, for example when a background task ends. The session shows it as a turn with no user message, marked with `origin: :provider` in its `turn_start`.
 _Avoid_: background turn, notification turn
 
 **Steer**:
@@ -72,9 +72,9 @@ _Avoid_: API provider, native provider
 A provider that drives an external agent program, such as Claude Code or Codex. The external program runs its own loop and its own tools. Helyx records the result.
 _Avoid_: subprocess provider, CLI provider, wrapper
 
-**Harness session**:
-The external program's own conversation, named by an id the program issues. Helyx stores the id so it can resume the harness.
-_Avoid_: thread, external session, subprocess session
+**Resume id**:
+The id that a provider gives for its own conversation state. Helyx stores it in the session file and passes it to the provider as `:resume_id`, so a later provider process continues that state.
+_Avoid_: harness session, thread, external session
 
 **Model ref**:
 The string that names a model for a session, in the form `provider/model`. The prefix selects the provider plugin.
@@ -113,5 +113,5 @@ A fact emitted by a session that clients render from. Every event carries the se
 _Avoid_: message, notification, update
 
 **Tool**:
-A plugin that the hands can run on behalf of a session. A tool has a name, a description, a parameter schema, and an execute function.
+A plugin that the hands can run on behalf of a session. A tool has a name, a description, a parameter schema, and `run/2`, and it can add `check/0` and `release/3`.
 _Avoid_: function, action, command, capability

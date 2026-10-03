@@ -1,10 +1,10 @@
 defmodule Helyx.Session.ProviderProcess do
   @moduledoc false
   # The Core loop of a provider process (ADR 0007): a long-lived Task of
-  # the hands that runs the callbacks of a provider. The callbacks run only
-  # here. The loop checks every action at the boundary, sends each event and
-  # reply to the session, and ends itself on a bad action, a stop, or an
-  # error answer to `{:turn, ...}` or `{:interrupt, ...}`. It never ends
+  # the hands that runs the callbacks of a provider. The loop checks every
+  # action at the boundary, sends each event and reply to the session, and
+  # ends itself on a bad action, a stop, or an error answer to
+  # `{:turn, ...}` or `{:interrupt, ...}`. It never ends
   # with `:normal` (L1 in `docs/features/one-provider-path.md`), so every
   # process linked to it ends with it: it exits with `{:shutdown, reason}`,
   # and the hands report `reason` in `{:provider_down, pid, reason}` after

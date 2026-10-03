@@ -56,13 +56,13 @@ The design was reviewed in three rounds on 2026-09-25. The findings are in `docs
 - `Helyx.Tool.Bash.Group` (now `Helyx.Watchdog.Group`, #10) receives the code that leaves `lib/helyx/session/hands.ex`: `signal`, `await_gone`, `poll_gone`, `kill_and_wait`, `sweep_watchdogs`, `split_kinds`, and the `kill_cmd` test hook, which becomes the `kill` argument of `Group.release/4`.
 - The order does not change: command groups first, the watchdog last, so the watchdog can reap its child before a KILL. A zombie child stays in its group until it is reaped, so this order also prevents an endless poll.
 - The mode selects today's sequences. `:deliver` is KILL, wait, then the watchdog sweep. `:cancel` is TERM, 500 ms grace, KILL, wait, then the watchdog sweep. `:retry` is KILL and one probe, with no wait.
-- The plugin computes its waits from the deadline. It never waits past it, and it starts no `kill` run at or after it: a probe that it skips counts the group as alive. A group is gone only when `kill` reports "No such process"; any other failure keeps the handle held. The watchdog KILL comes after one wait of 5,000 ms, so it needs that much time before the deadline. The 20,000 ms deadline leaves it.
+- The plugin computes its waits from the deadline. It never waits past it, and it starts no `kill` run at or after it: a probe that it skips counts the group as alive. A group is gone only when `kill` reports "No such process"; any other failure keeps the handle held. The watchdog KILL comes after one wait of 5,000 ms, so it needs that much time before the deadline.
 
 ## Bounds
 
 | What | Bound | Over the bound |
 | ---- | ----- | -------------- |
-| release deadline, `:deliver` and `:cancel` | 20,000 ms, absolute monotonic time on the hands node. The worst bash release is 15,500 ms (500 ms grace and three waits of 5,000 ms, `docs/features/coding-agent.md`, row "wait for an abort") | the hands stop the release Task; every given handle is unconfirmed; the result is an error; later calls are refused while a handle is held |
+| release deadline, `:deliver` and `:cancel` | `Helyx.Session.Hands.State.release_ms/0` (value in `docs/features/session-lifecycle.md`, "Bounds"), absolute monotonic time on the hands node. The worst bash release is 15,500 ms (500 ms grace and three waits of 5,000 ms, `docs/features/coding-agent.md`, row "wait for a killed process group") | the hands stop the release Task; every given handle is unconfirmed; the result is an error; later calls are refused while a handle is held |
 | release deadline, `:retry` | 1,000 ms, one deadline for all modules | every given handle stays unconfirmed; the call is refused |
 | TERM grace, KILL wait (bash internal) | 500 ms and 5,000 ms, unchanged | a group still alive after the KILL wait is returned as still held |
 | poll interval (bash internal) | 20 ms, unchanged | – |

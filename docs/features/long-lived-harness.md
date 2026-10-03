@@ -92,7 +92,7 @@ The session end bounds each one.
 - Claude: a program turn that starts while a Helyx turn waits for an unresolved steer counts for the Helyx turn.
 - Claude: the `started` clause of a steer does not check the start of the turn's line.
 - Claude: a prompt that is preparing when a program turn starts makes the session drop the program turn, and its text is lost.
-- Claude: an idle close between `background_tasks_changed []` and `task_notification`, when the two lines come in separate reads, closes the program during its program turn.
+- Claude: an idle close between `background_tasks_changed []` and `task_notification`, when the two lines come in separate reads, ends the program's input. What the program then does was not observed (`docs/research/claude-code-stream-json.md`, "End of input during a program turn").
 - Claude: a `task_notification` that starts no program turn gives one more `:busy`.
 - Claude: a `tools/call` of a sub-agent runs, but the transcript does not show it: the provider drops sub-agent lines.
 - Claude: an interrupt sent while the program is idle can end a background sub-agent of an earlier turn.

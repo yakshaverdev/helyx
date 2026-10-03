@@ -2,11 +2,10 @@ defmodule Helyx.Session.Queue do
   @moduledoc false
   # The steer state of a session, for its whole life: the queued steers and
   # follow-ups, each in arrival order, and the ledger `sent` of the steers
-  # that a turn sent to its provider process and whose request is open, in
-  # send order, as `{from, steer_id, text, state}` (`from` is the ref of the
-  # request). Each queue holds at most 32, and the queued steers and the
-  # ledger share the 32 of the steers (docs/features/session-lifecycle.md,
-  # "Bounds").
+  # that a turn sent to its provider process, in send order, as
+  # `{from, steer_id, text, state}` (`from` is the ref of the request).
+  # Each queue holds at most 32, and the queued steers and the ledger share
+  # the 32 of the steers (docs/features/session-lifecycle.md, "Bounds").
   #
   # The states of a ledger entry:
   #

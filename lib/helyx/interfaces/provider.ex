@@ -1,114 +1,22 @@
 defmodule Helyx.Provider do
   @moduledoc """
-  Produces assistant messages for a session. This is the contract in short
-  form; every rule of it is in `docs/features/one-provider-path.md`, "The
-  provider protocol", and the reasons are in ADR 0002 and ADR 0007.
+  Produces assistant messages for a session. `id/0` is the prefix in a
+  model ref such as `fake/echo`.
 
-  A provider plugin implements this behaviour. `id/0` is the prefix in a model
-  ref such as `fake/echo`. Core calls `id/0` once, at start: an `id/0` that
-  raises, throws, exits, or returns a value that is not a binary, or an id
-  that two providers share, stops Core from starting. A provider that does
-  not export `init/3`, `request/3`, and `info/2` stops it too.
+  Every provider runs in one provider process per session, a Task of the
+  hands. `init/3` starts it. `request/3` gets a `t:request/0` from Core and
+  replies now or later with the action `{:reply, from, value}`. `info/2`
+  gets every other message of the process. A provider that holds a handle
+  (`Helyx.Tool.hold/1`) implements `release/3`. An API provider implements
+  `stream/3` and adds `use Helyx.Provider.Loop`, which defines the three
+  callbacks.
 
-  Every provider runs in one provider process per session. An API provider,
-  which calls a model and lets the session run the tools, implements
-  `stream/3` of `Helyx.Provider.Loop` and adds `use Helyx.Provider.Loop`,
-  which defines the three callbacks. A provider can also implement the
-  three callbacks itself and run the whole turn and its own tools
-  (`docs/features/one-provider-path.md`).
-
-  ## Callbacks
-
-  The callbacks run in the provider process, a Task of the hands, so
-  `Helyx.Tool.hold/1` works in them, and a provider that holds a handle
-  implements `release/3`.
-
-    * `init/3` starts the provider. `opts` carry `:core`, `:session_id`,
-      `:cwd`, and `:resume_id`, the resume id that the provider gave in an
-      earlier `{:resume, id, cut}` event, or nil.
-    * `request/3` gets a `t:request/0` from Core with its `from`. The
-      provider replies now or later with the action `{:reply, from, value}`.
-    * `info/2` gets every other message of the provider process.
-
-  `init/3` returns `{:ok, state}` or `{:error, reason}`. `request/3` and
-  `info/2` return `{:ok, actions, state}`, and `info/2` can also return
-  `{:stop, reason, state}`. An action is `{:event, turn_id, event}`,
-  `{:reply, from, value}`, `{:cancel_tool, call_id}` (withdraws a
-  tool request), or `{:need_context, turn_id}` (asks for a fresh context of
-  the running turn). A malformed event or action, a reply of the wrong shape
-  or for no open request, and a bad return stop the provider process.
-
-  ## Replies
-
-    * `{:turn, ...}`, `{:interrupt, ...}`: `:ok` or `{:error, reason}`. An
-      error reply stops the provider process.
-    * `{:steer, ...}`: `:ok` when the provider has the steer, `:rejected`
-      when it is confirmed that the provider did not get it, and
-      `{:error, reason}` when it is not known.
-    * `{:tool_result, ...}`, `{:context, ...}`: `:ok` when written. A
-      tool result can arrive after the interrupt or the next turn of its
-      turn. Each call still gets exactly one result.
-    * `:close`: `:ok` after the provider closed.
-    * `:idle_close`: `:ok` after the provider closed, or `:busy` when the
-      provider still runs work of its own.
-
-  ## Events
-
-  A provider sends these events. A turn ends at its `done` or `error`
-  event, or when the provider process ends. `done` closes the last
-  assistant message.
-
-    * `{:text_delta, binary}`: a delta of assistant text
-    * `{:thinking_delta, binary}`: a delta of thinking text
-    * `{:tool_call, Helyx.Message.ToolCall.t()}`: one complete tool call.
-      `arguments` is a map, or the raw argument text (a binary) when it
-      does not decode to a JSON object. Such a call joins the transcript
-      with `%{}` and never runs: its result is `tool call not run: the
-      arguments are not a valid JSON object`. Any other `arguments` fails
-      the turn
-    * `{:done, %{stop_reason: stop_reason, usage: map}}`: the call finished.
-      `stop_reason` is one of `Helyx.Message.stop_reasons/0` except `:aborted`
-      and `:error`, which the session gives an aborted or a failed turn
-    * `{:error, term}`: the call failed
-    * `{:message_end, stop_reason, usage}`: optional. The assistant
-      message so far is complete, with this usage. The session also closes
-      the open message by itself, with no usage, at the first
-      `tool_result` of one of its calls (stop reason `:tool_use`), at a
-      taken steer, and at the terminal. At each close the session gives an
-      `aborted` result to every call of the earlier messages that has no
-      result yet, and drops a later result of such a call; the calls of
-      the closed message stay open for their `tool_result` events until
-      the next close
-    * `{:tool_result, call_id, {:ok | :error, binary}}`: the result of a
-      tool call. The first result of a call of the open message closes
-      that message first. The provider cuts the text to the tool result
-      limits; a text over `@max_tool_result_bytes` (`Helyx.Session.Stream`)
-      fails the turn
-    * `{:resume, id, cut}`: the provider started fresh, with the new
-      resume id `id`, and left `cut` transcript messages out of what it
-      sent
-    * `{:user_message, steer_id}`: the provider took a steer. The
-      session closes the open assistant message and gives `aborted` to
-      every call that is still open
-    * `{:tool_request, call_id, name, arguments}`: run the Helyx tool
-      `name`. `arguments` follows the rule of a `tool_call`. The running
-      and waiting requests of a turn hold at most 8 MiB of calls, counted
-      as a tool call is below; a request past it gets an error result
-    * `:turn_start`: the provider started a turn by itself
-
-  The text and thinking deltas and the tool calls of the open assistant
-  message hold at most 8 MiB together (`@max_message_bytes` in
-  `Helyx.Session.Turn`). A tool call counts as the JSON of its id, name,
-  and checked arguments. The open message also holds at most 1,024 blocks
-  (`@max_message_blocks`); a delta that merges into the last block, when
-  that block is of its kind, makes no new block. An event past either bound
-  stops the provider process and fails the turn. Core drops an empty text or
-  thinking delta.
-
-  `init/3` and every request from the session have a deadline. When the
-  reply has not come by it, Core kills the provider process, and a running
-  turn fails with `:provider_timeout`, or with the release error of a
-  handle that the provider held.
+  The types below give the requests, the actions, and the events. The
+  rules of the protocol (replies, events, deadlines) are in
+  `docs/features/one-provider-path.md`, "The provider protocol", and its
+  bounds in the "Bounds" sections of `docs/features/session-lifecycle.md`
+  and `docs/features/coding-agent.md`. The reasons
+  are in ADR 0002 and ADR 0007.
   """
 
   use Helyx.Interface, mode: :multi, required: true
