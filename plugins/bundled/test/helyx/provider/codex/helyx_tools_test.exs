@@ -234,7 +234,7 @@ defmodule Helyx.Provider.Codex.HelyxToolsTest do
             do: {id, t}
 
       assert texts == [
-               {0, "no Helyx turn is running"},
+               {0, "the call does not map to a tool use"},
                {3, "the call does not map to a tool use"},
                {4, "the call does not map to a tool use"},
                {5, "the call does not map to a tool use"},

@@ -647,8 +647,8 @@ defmodule Helyx.Test.Connected do
   #                      then done, or the error of the context
   #   "context_hold"     "context", and a context gets no answer
   #   "tools"            "hang"; the message `{:tool_request, turn_id, id,
-  #                      name, args}` asks for a Helyx tool, and `{:cancel,
-  #                      turn_id, id}` withdraws it; `{:ping, pid}`
+  #                      name, args}` asks for a Helyx tool, and `{:cancel, id}`
+  #                      withdraws it; `{:ping, pid}`
   #                      sends `:pong` to pid
   #   "tools_late"       "tools", and a tool result answers after 100 ms
   #   "label"            "echo"; a provider process started with no
@@ -804,8 +804,8 @@ defmodule Helyx.Test.Connected do
   def info({:tool_request, turn_id, id, name, args}, state),
     do: {:ok, [{:event, turn_id, {:tool_request, id, name, args}}], state}
 
-  def info({:cancel, turn_id, id}, state),
-    do: {:ok, [{:cancel_tool, turn_id, id}], state}
+  def info({:cancel, id}, state),
+    do: {:ok, [{:cancel_tool, id}], state}
 
   def info({:ping, pid}, state) do
     send(pid, :pong)

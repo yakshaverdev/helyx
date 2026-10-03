@@ -143,7 +143,7 @@ defmodule Helyx.Provider.ClaudeCode.HelyxToolsTest do
                  "id" => 1,
                  "result" => %{
                    "isError" => true,
-                   "content" => [%{"text" => "no Helyx turn" <> _}]
+                   "content" => [%{"text" => "the call does not map to a tool use"}]
                  }
                },
                "n2" => %{"id" => 2, "result" => %{"isError" => true}},
@@ -197,9 +197,9 @@ defmodule Helyx.Provider.ClaudeCode.HelyxToolsTest do
       ])
 
       {actions, state} =
-        pump(ClaudeCode, state, [], &Enum.any?(&1, fn a -> match?({:cancel_tool, _, _}, a) end))
+        pump(ClaudeCode, state, [], &Enum.any?(&1, fn a -> match?({:cancel_tool, _}, a) end))
 
-      assert [{:cancel_tool, "t1", "toolu_h1"}] = actions
+      assert [{:cancel_tool, "toolu_h1"}] = actions
 
       {from, [{:reply, from, :ok}], state} =
         request(state, {:tool_result, "t1", "toolu_h1", {:ok, "late"}})

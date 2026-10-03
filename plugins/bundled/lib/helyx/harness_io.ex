@@ -4,10 +4,10 @@ defmodule Helyx.HarnessIO do
   # `Helyx.Watchdog`, the move of the port's link to a keeper, the read
   # of a program's stdout as JSON lines under a line cap, the sort of a
   # port message, the release, the cut of program error text, the split of
-  # the prompt from the history, the byte cap of a replay, the wire id of a
-  # replayed tool call, and the admission of a Helyx tool call. It is not a
-  # plugin. `state` is a provider's run state with the fields `port`,
-  # `buffer` (iodata), `size`, `terminal`, and `closing`.
+  # the prompt from the history, the byte cap of a replay, the wire id of
+  # a replayed tool call, and the close. It is not a plugin. `state` is
+  # a provider's run state with the fields `port`, `buffer` (iodata),
+  # `size`, `terminal`, and `closing`.
 
   @line_max_bytes 16 * 1024 * 1024
   # The longest program error text that goes into a terminal error or a
@@ -18,7 +18,6 @@ defmodule Helyx.HarnessIO do
   # their own commands on TERM, but a KILL leaves them running (research
   # notes).
   @term_grace_ms 5_000
-  @unmapped "the call does not map to a tool use"
 
   def line_max_bytes, do: @line_max_bytes
   def term_grace_ms, do: @term_grace_ms
@@ -99,6 +98,13 @@ defmodule Helyx.HarnessIO do
 
   # Writes to the program's stdin through the watchdog.
   def write(%{port: port}, data), do: Helyx.Watchdog.write(port, data)
+
+  # The provider's `:close`: the NUL asks the watchdog to end the program,
+  # and the port's exit answers `from` (`port_message/3`).
+  def close(state, from) do
+    write(state, <<0>>)
+    %{state | closing: from}
+  end
 
   # The provider's `release/3`. See `Helyx.Watchdog.Group`. A delivery
   # TERMs first too: the provider process can end (an error answer, a line
@@ -206,15 +212,6 @@ defmodule Helyx.HarnessIO do
       do: id,
       else: "h_" <> hex_digest(id, 62)
   end
-
-  # The admission of a Helyx tool call. `running?` tells whether a Helyx
-  # turn runs; `call_id` is nil when the call names none. `mapped?` tells
-  # whether the call maps to a tool use, and runs only for a call id
-  # of a running turn. The session owns the call ids of the turn (#369).
-  # Gives `:ok` or `{:error, text}` for the error answer.
-  def admit(false, _call_id, _mapped?), do: {:error, "no Helyx turn is running"}
-  def admit(true, nil, _mapped?), do: {:error, @unmapped}
-  def admit(true, _call_id, mapped?), do: if(mapped?.(), do: :ok, else: {:error, @unmapped})
 
   # The first `size` hex digits of the SHA-256 of `data`.
   def hex_digest(data, size),

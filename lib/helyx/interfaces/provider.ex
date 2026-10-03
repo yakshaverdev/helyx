@@ -37,7 +37,7 @@ defmodule Helyx.Provider do
   `init/3` returns `{:ok, state}` or `{:error, reason}`. `request/3` and
   `info/2` return `{:ok, actions, state}`, and `info/2` can also return
   `{:stop, reason, state}`. An action is `{:event, turn_id, event}`,
-  `{:reply, from, value}`, `{:cancel_tool, turn_id, call_id}` (withdraws a
+  `{:reply, from, value}`, `{:cancel_tool, call_id}` (withdraws a
   tool request), or `{:need_context, turn_id}` (asks for a fresh context of
   the running turn). A malformed event or action, a reply of the wrong shape
   or for no open request, and a bad return stop the provider process.
@@ -129,7 +129,7 @@ defmodule Helyx.Provider do
   @type action ::
           {:event, turn_id :: String.t(), stream_event()}
           | {:reply, from(), term()}
-          | {:cancel_tool, turn_id :: String.t(), call_id :: String.t()}
+          | {:cancel_tool, call_id :: String.t()}
           | {:need_context, turn_id :: String.t()}
 
   @doc "The byte limit of the text of a `{:notice, text}` stream event."

@@ -44,10 +44,9 @@ defmodule Helyx.Provider.Codex do
     # stays between turns.
     #
     # Of the running turn: `items` the state of its items (`Items`).
-    # `steers` has a key for the id of each steer sent in the running turn
-    # with no `userMessage` item yet. `asked` maps the request id of each
-    # `turn/steer` with no answer yet to `{from, steer_id}`; it outlives the
-    # turn, because the answer can come after `turn/completed`.
+    # `asked` maps the request id of each `turn/steer` with no answer yet to
+    # its `from`; it outlives the turn, because the answer can come after
+    # `turn/completed`.
     #
     # `tools` holds the state of the Helyx tools (`Tools`).
     @enforce_keys [:model, :cwd]
@@ -73,13 +72,12 @@ defmodule Helyx.Provider.Codex do
       size: 0,
       items: %Items{},
       agents: %{},
-      steers: %{},
       asked: %{}
     ]
   end
 
   # The fields of a turn, set back to their defaults between turns.
-  @turn_fields ~w(turn_id turn items steers)a
+  @turn_fields ~w(turn_id turn items)a
 
   @trust %{approvalPolicy: "never", sandbox: "danger-full-access"}
 
@@ -174,11 +172,7 @@ defmodule Helyx.Provider.Codex do
       }
     })
 
-    actions(%{
-      state
-      | steers: Map.put(state.steers, steer_id, true),
-        asked: Map.put(state.asked, id, {from, steer_id})
-    })
+    actions(%{state | asked: Map.put(state.asked, id, from)})
   end
 
   def request({:steer, _turn_id, _steer_id, _text}, from, state),
@@ -200,10 +194,7 @@ defmodule Helyx.Provider.Codex do
     actions(reply(%{state | tools: %{state.tools | requests: requests}}, from, :ok))
   end
 
-  def request(:close, from, state) do
-    HarnessIO.write(state, <<0>>)
-    actions(%{state | closing: from})
-  end
+  def request(:close, from, state), do: actions(HarnessIO.close(state, from))
 
   @impl true
   def info(message, state) do
@@ -340,7 +331,7 @@ defmodule Helyx.Provider.Codex do
   # that the program did not take it (research note). The error of a turn
   # id mismatch has no verified exact form, so it is unknown, as any other.
   defp answered("turn/steer", %{"id" => id} = response, state) do
-    {{from, steer_id}, asked} = Map.pop!(state.asked, id)
+    {from, asked} = Map.pop!(state.asked, id)
     state = %{state | asked: asked}
 
     case response do
@@ -348,7 +339,7 @@ defmodule Helyx.Provider.Codex do
         {[], reply(state, from, :ok)}
 
       %{"error" => %{"code" => -32_600, "message" => "no active turn to steer"}} ->
-        {[], reply(%{state | steers: Map.delete(state.steers, steer_id)}, from, :rejected)}
+        {[], reply(state, from, :rejected)}
 
       _error ->
         {[], reply(state, from, {:error, failure("turn/steer", response)})}
@@ -448,15 +439,17 @@ defmodule Helyx.Provider.Codex do
 
   defp send_interrupt(state), do: state
 
-  # The `userMessage` item of a sent steer, once: the program took it.
+  # The program took a steer: its `userMessage` item carries the steer id.
+  # The session drops an id that is not a sent steer of its turn, and a
+  # repeated one (`Helyx.Session.Queue.take/2`). The prompt's item has
+  # `clientId` null (research note).
   defp notification(
-         method,
+         "item/started",
          %{"item" => %{"type" => "userMessage", "clientId" => id}},
-         %State{steers: steers} = state
+         state
        )
-       when method in ["item/started", "item/completed"] and is_map_key(steers, id) do
-    {[{:user_message, id}], %{state | steers: Map.delete(steers, id)}}
-  end
+       when is_binary(id),
+       do: {[{:user_message, id}], state}
 
   defp notification(method, params, state) do
     {events, items} = Items.notification(method, params, state.items)
