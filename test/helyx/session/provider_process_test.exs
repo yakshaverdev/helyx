@@ -272,35 +272,6 @@ defmodule Helyx.Session.ProviderProcessTest do
       assert Message.text(List.last(context.messages)) == "two"
     end
 
-    test "a turn that ends as its provider process ends waits for the release before the next turn",
-         %{core: core} do
-      {session, pid, hands} = start(core, "stop")
-      :ok = Session.prompt(session, "one")
-      assert_receive {:conn, :turn, old, {:turn, turn_id, _}}
-      assert_received {:conn, :init, ^old, _}
-      :ok = Session.follow_up(session, "two")
-
-      ref = Process.monitor(old)
-      :erlang.suspend_process(pid)
-      :erlang.suspend_process(hands)
-      send(old, {:finish, turn_id})
-      send(old, :stop)
-      assert_receive {:DOWN, ^ref, :process, _, _}
-      :erlang.resume_process(pid)
-
-      assert List.last(collect_until(:agent_end)).data.stop_reason == :end_turn
-      # The session waits for the release: no turn, the follow-up still
-      # queued, and the session not blocked on the suspended hands.
-      assert %{turn: nil, queue: %{follow_ups: 1}} = GenServer.call(pid, :snapshot)
-      refute_received {:conn, :init, _, _}
-      :erlang.resume_process(hands)
-
-      assert_receive {:release, :deliver, [{:report, _}]}
-      assert_receive {:conn, :init, new, _}
-      assert_receive {:conn, :turn, ^new, {:turn, _, context}}
-      assert Message.text(List.last(context.messages)) == "two"
-    end
-
     test "a provider process that ends after the check fails the new turn at its release",
          %{core: core} do
       {session, pid, hands} = start(core, "stop")
@@ -484,7 +455,7 @@ defmodule Helyx.Session.ProviderProcessTest do
       assert unconfirmed(collect_until(:steer_unconfirmed)) == [%{text: "more"}]
     end
 
-    test "rejected after the terminal waits for its answer, then starts the next turn",
+    test "rejected after the terminal queues the steer, and the idle session starts it",
          %{core: core} do
       {session, _pid, proc, turn_id} = submitted(core, "steer_hold")
       :ok = Session.steer(session, "more")
@@ -498,45 +469,27 @@ defmodule Helyx.Session.ProviderProcessTest do
       assert Message.text(List.last(context.messages)) == "more"
     end
 
-    test "an abort in the wait for a steer answer gives its notice, and a late :rejected starts no turn",
+    # The answer goes out before the program turn "p9", which opens only
+    # in an idle session: no turn started from the answer.
+    test "an abort after the turn gives a steer with no answer its notice; a late :rejected starts no turn",
          %{core: core} do
-      {session, pid, proc, turn_id} = submitted(core, "steer_hold")
+      {session, _pid, proc, turn_id} = submitted(core, "steer_hold")
       :ok = Session.steer(session, "more")
       assert_receive {:held, from}
       send(proc, {:finish, turn_id})
       collect_until(:agent_end)
 
-      # The abort waits for the open request.
-      abort = Task.async(fn -> Session.abort(session) end)
+      assert :ok = Session.abort(session)
       assert unconfirmed(collect_until(:steer_unconfirmed)) == [%{text: "more"}]
-      send(proc, {:answer, from, :rejected})
-      assert :ok = Task.await(abort, wait_ms())
-      assert %{turn: nil, queue: %{steers: 0}} = GenServer.call(pid, :snapshot)
-      refute_received {:conn, :turn, _, _}
+      done = {:done, %{stop_reason: :end_turn, usage: %{}}}
+      program = [{:event, "p9", :turn_start}, {:event, "p9", done}]
+      send(proc, {:batch, [{:reply, from, :rejected} | program]})
+      assert %{type: :agent_start, turn_id: "p9"} = hd(collect_until(:agent_end))
     end
 
-    test "an abort in the wait for a taken steer's answer starts no turn before the answer",
+    test "taken before its answer: no notice, and the next turn does not wait for the answer",
          %{core: core} do
       {session, _pid, proc, turn_id} = submitted(core, "steer_early")
-      :ok = Session.steer(session, "more")
-      assert_receive {:held, from}
-      send(proc, {:finish, turn_id})
-      collect_until(:agent_end)
-
-      :ok = Session.follow_up(session, "next")
-      collect_until(:queue_update)
-      abort = Task.async(fn -> Session.abort(session) end)
-      # The abort drops the follow-up; the wait still holds the request.
-      assert %{data: %{follow_ups: 0}} = List.last(collect_until(:queue_update))
-      send(proc, {:answer, from, :ok})
-      assert :ok = Task.await(abort, wait_ms())
-      refute_received {:helyx_event, %{type: :steer_unconfirmed}}
-      refute_received {:conn, :turn, _, _}
-    end
-
-    test "taken before its answer: the turn end waits for the answer, with no notice",
-         %{core: core} do
-      {session, pid, proc, turn_id} = submitted(core, "steer_early")
       :ok = Session.steer(session, "more")
       assert_receive {:held, from}
       send(proc, {:finish, turn_id})
@@ -544,12 +497,16 @@ defmodule Helyx.Session.ProviderProcessTest do
       assert {:user, "more"} in ends(events)
 
       :ok = Session.follow_up(session, "next")
-      # The wait holds the open request: the follow-up stays queued.
-      assert %{turn: nil, queue: %{follow_ups: 1}} = GenServer.call(pid, :snapshot)
-      send(proc, {:answer, from, :ok})
-      assert_receive {:conn, :turn, ^proc, {:turn, _, context}}
+      assert_receive {:conn, :turn, ^proc, {:turn, next, context}}
       assert Message.text(List.last(context.messages)) == "next"
-      refute_received {:helyx_event, %{type: :steer_unconfirmed}}
+
+      send(
+        proc,
+        {:batch,
+         [{:reply, from, :ok}, {:event, next, {:done, %{stop_reason: :end_turn, usage: %{}}}}]}
+      )
+
+      assert unconfirmed(collect_until(:agent_end)) == []
     end
 
     test "rejected during the turn waits in the local queue for the next turn", %{core: core} do
@@ -593,7 +550,7 @@ defmodule Helyx.Session.ProviderProcessTest do
       assert %{queue: %{steers: 0}} = GenServer.call(pid, :snapshot)
     end
 
-    test "a failed turn with a steer that has no answer gives a notice; a late :rejected starts no turn",
+    test "a failed turn with a steer that has no answer gives a notice; a late :rejected queues nothing",
          %{core: core} do
       {session, _pid, proc, turn_id} = submitted(core, "steer_hold")
       :ok = Session.steer(session, "more")
@@ -602,10 +559,10 @@ defmodule Helyx.Session.ProviderProcessTest do
       events = collect_until(:agent_end)
       assert unconfirmed(events) == [%{text: "more"}]
       assert error(events) == :failed
-      :ok = Session.follow_up(session, "next")
-      refute_received {:conn, :turn, _, _}
       send(proc, {:answer, from, :rejected})
+      :ok = Session.follow_up(session, "next")
       assert_receive {:conn, :turn, ^proc, {:turn, _, context}}
+      refute "more" in Enum.map(context.messages, &Message.text/1)
       assert Message.text(List.last(context.messages)) == "next"
       refute_received {:helyx_event, %{type: :steer_unconfirmed}}
     end
@@ -636,22 +593,21 @@ defmodule Helyx.Session.ProviderProcessTest do
       assert error(events) == :provider_timeout
     end
 
-    # The loop answers the ninth open request itself; the 32 steers count
-    # the held ones, and the 24 unknown ones get their notice at the end.
-    test "sent steers count in the 32; over 8 open requests the loop answers :busy",
+    # The 32 steers count the held ones; the end of the provider process
+    # ends their requests, each with its notice.
+    test "sent steers count in the 32 until the end of the provider process",
          %{core: core} do
       {session, _pid, proc, turn_id} = submitted(core, "steer_hold")
       for n <- 1..32, do: :ok = Session.steer(session, "s#{n}")
       assert Session.steer(session, "s33") == {:error, :queue_full}
-      for _ <- 1..8, do: assert_receive({:held, _from})
-      refute_received {:held, _from}
+      for _ <- 1..32, do: assert_receive({:held, _from})
 
       send(proc, {:finish, turn_id})
-      assert length(unconfirmed(collect_until(:agent_end))) == 24
+      assert unconfirmed(collect_until(:agent_end)) == []
 
       send(proc, :stop)
-      notices = for _ <- 1..8, do: hd(collect_until(:steer_unconfirmed) |> unconfirmed())
-      assert Enum.sort(Enum.map(notices, & &1.text)) == Enum.sort(for n <- 1..8, do: "s#{n}")
+      notices = for _ <- 1..32, do: hd(collect_until(:steer_unconfirmed) |> unconfirmed())
+      assert Enum.sort(Enum.map(notices, & &1.text)) == Enum.sort(for n <- 1..32, do: "s#{n}")
     end
   end
 

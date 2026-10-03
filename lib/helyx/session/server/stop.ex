@@ -9,8 +9,8 @@ defmodule Helyx.Session.Server.Stop do
 
   import Helyx.Session.Server.State, only: [ask: 4, provider_pid: 1]
 
-  alias Helyx.Session.{Hands, Turn, Wait}
-  alias Helyx.Session.Server.State
+  alias Helyx.Session.{Hands, Turn}
+  alias Helyx.Session.Server.{State, Wait}
 
   @load_hands_stop_ms 2_000
   @load_shutdown_ms 3_000

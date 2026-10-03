@@ -6,9 +6,8 @@ defmodule Helyx.Session.Server do
   require Logger
 
   alias Helyx.{Context, Message, ModelRef}
-  alias Helyx.Session.{Hands, Id, Queue, Snapshot}
-  alias Helyx.Session.Server.{Messages, ProviderConn, Record, State, Steering, Stop, Tools}
-  alias Helyx.Session.{Turn, Wait}
+  alias Helyx.Session.{Hands, Id, ProviderRequest, Queue, Snapshot, Turn}
+  alias Helyx.Session.Server.{Messages, ProviderConn, Record, State, Steering, Stop, Tools, Wait}
 
   import State, only: [ask: 4, provider_pid: 1]
   import Record, only: [emit: 3, emit: 4]
@@ -57,7 +56,7 @@ defmodule Helyx.Session.Server do
   # A steer that still waits for its answer gets its notice now: a late
   # `:rejected` must not queue it again after the abort.
   def handle_call(:abort, from, %State{activity: %Wait{} = wait} = state) do
-    state = Steering.drop_queues(%{state | activity: Wait.abort(wait, from)})
+    state = Steering.drop_queues(%{state | activity: %{wait | callers: [from | wait.callers]}})
     {:noreply, progress(Steering.abort(state))}
   end
 
@@ -88,16 +87,9 @@ defmodule Helyx.Session.Server do
   def handle_call({:follow_up, text}, _from, %State{activity: %Turn{}} = state),
     do: queue_reply(state, :follow_ups, text)
 
-  # A provider process that ended while the session was idle can still have
-  # its handles in a release of the hands: the message waits for its
-  # `:provider_down` as a follow-up.
-  def handle_call({op, text}, _from, %State{} = state)
-      when op in [:prompt, :steer, :follow_up] do
-    case State.await_ended_provider(state) do
-      %State{activity: :idle} = state -> {:reply, :ok, begin_turn(state, [text])}
-      state -> queue_reply(state, :follow_ups, text)
-    end
-  end
+  def handle_call({op, text}, _from, %State{activity: :idle} = state)
+      when op in [:prompt, :steer, :follow_up],
+      do: {:reply, :ok, begin_turn(state, [text])}
 
   def handle_call(:snapshot, _from, %State{} = state) do
     snapshot = %Snapshot{
@@ -125,7 +117,10 @@ defmodule Helyx.Session.Server do
     {:reply, :ok, settle(emit(state, nil, :model_change, %{model: model}))}
   end
 
-  def handle_call(:abort, _from, %State{activity: :idle} = state), do: {:reply, :ok, state}
+  # A steer of an ended turn can still wait for its answer: the abort gives
+  # its notice now, so a late `:rejected` queues nothing.
+  def handle_call(:abort, _from, %State{activity: :idle} = state),
+    do: {:reply, :ok, Steering.abort(state)}
 
   # The release of the hands can take longer than the timeout of a client call
   # (issue #93), so the session does not wait in a call: the answer of the
@@ -291,8 +286,8 @@ defmodule Helyx.Session.Server do
         {:prepared, turn_id, result},
         %State{activity: %Turn{id: turn_id, phase: :context} = turn, conn: conn} = state
       ) do
-    from = ask(state, conn.pid, {:context, turn_id, result}, :context)
-    {:noreply, %{state | activity: %{turn | phase: :submitted, results: [from | turn.results]}}}
+    ask(state, conn.pid, {:context, turn_id, result}, :context)
+    {:noreply, %{state | activity: %{turn | phase: :submitted}}}
   end
 
   # An answer other than `:ok` ends the provider process, and its
@@ -306,24 +301,22 @@ defmodule Helyx.Session.Server do
     {:noreply, if(reply == :ok, do: Steering.send_local_steers(state), else: state)}
   end
 
-  # The answer to a steer, in the turn or in the wait after it (see "Steer"
-  # in `docs/features/long-lived-harness.md` and `Queue.answer/3`).
+  # The answer to a steer, also after its turn (see "Steer" in
+  # `docs/features/long-lived-harness.md` and `Queue.answer/3`). A late
+  # `:rejected` queues the steer, and an idle session starts it.
   def handle_info({:provider_reply, from, :steer, reply}, %State{} = state),
     do: {:noreply, progress(Steering.answer(state, from, reply))}
 
-  # The answer to a tool result or a context of the turn: it was written.
+  # The answer to the interrupt or the idle close of the wait. The loop
+  # ends itself after an answer that stops it (`ProviderRequest.stop_after/2`),
+  # and the wait then lasts until its `:provider_down`.
   def handle_info(
-        {:provider_reply, from, kind, _reply},
-        %State{activity: %Turn{} = turn} = state
-      )
-      when kind in [:tool_result, :context] do
-    {:noreply, put_in(state.activity.results, List.delete(turn.results, from))}
+        {:provider_reply, from, kind, reply},
+        %State{activity: %Wait{reply: from} = wait} = state
+      ) do
+    provider = if ProviderRequest.stop_after(kind, reply), do: wait.provider
+    {:noreply, progress(%{state | activity: %{wait | reply: nil, provider: provider}})}
   end
-
-  # A reply in the wait acts only on the part whose stored ref it matches
-  # (see `Wait.answer/4`).
-  def handle_info({:provider_reply, from, kind, reply}, %State{activity: %Wait{} = wait} = state),
-    do: {:noreply, progress(%{state | activity: Wait.answer(wait, kind, from, reply)})}
 
   # The idle timer of the provider process. Only the current timer counts,
   # and only while the session is idle: a turn or a wait since it was armed
@@ -333,14 +326,15 @@ defmodule Helyx.Session.Server do
         %State{idle: ref, activity: :idle, conn: %ProviderConn{pid: pid, ready: true}} = state
       ) do
     from = ask(state, pid, :idle_close, :close)
-    {:noreply, %{state | idle: nil, activity: %Wait{idle: from, provider: pid}}}
+    {:noreply, %{state | idle: nil, activity: %Wait{reply: from, provider: pid}}}
   end
 
   def handle_info({:timeout, _ref, :idle_close}, state), do: {:noreply, state}
 
   # From the hands, after the release of the provider process's handles: the
-  # end of the provider process that the wait is for, or of the one that
-  # holds the requests of the turn that ended (see `Wait.provider_down/2`).
+  # end of the provider process that the wait is for, or of the current one.
+  # In a turn it fails the turn, whose cleanup the hands then run after the
+  # release.
   def handle_info({:provider_down, pid, _reason}, %State{activity: %Wait{provider: pid}} = state),
     do: {:noreply, wait_provider_down(state, pid)}
 
@@ -357,15 +351,25 @@ defmodule Helyx.Session.Server do
     {:noreply, fail_turn(reason, %{state | conn: nil})}
   end
 
-  def handle_info({:provider_down, pid, _reason}, %State{conn: %ProviderConn{pid: pid}} = state) do
-    {:noreply, %{state | conn: nil}}
+  # Idle, when it comes before the session's `:DOWN` (no order between them).
+  def handle_info({:provider_down, pid, _reason}, %State{conn: %ProviderConn{pid: pid}} = state),
+    do: {:noreply, Steering.provider_down(%{state | conn: nil})}
+
+  # The session's monitor: a provider process that ends outside a turn is
+  # dropped at once, and the next turn waits for its `:provider_down`.
+  def handle_info(
+        {:DOWN, _ref, :process, pid, _reason},
+        %State{conn: %ProviderConn{pid: pid}, activity: activity} = state
+      )
+      when not is_struct(activity, Turn) do
+    wait = if activity == :idle, do: %Wait{}, else: activity
+    {:noreply, %{state | conn: nil, activity: %{wait | provider: pid}}}
   end
 
   # A message for a turn, a call, or a provider process that is no longer
   # current, or a reply that nobody waits for.
   def handle_info({:provider_ready, _pid}, state), do: {:noreply, state}
   def handle_info({:provider_reply, _from, _kind, _reply}, state), do: {:noreply, state}
-  def handle_info({:provider_down, _pid, _reason}, state), do: {:noreply, state}
   def handle_info({:prepared, _turn_id, _result}, state), do: {:noreply, state}
   def handle_info({:need_context, _turn_id}, state), do: {:noreply, state}
   def handle_info({:tool_result, _turn_id, _call_id, _result}, state), do: {:noreply, state}
@@ -383,6 +387,11 @@ defmodule Helyx.Session.Server do
       when :erlang.map_get(pid, subscribers) == ref,
       do: {:noreply, Record.subscriber_down(state, pid)}
 
+  # The `:DOWN` of a provider process that the session dropped already, of
+  # the current one in a turn (its `:provider_down` fails the turn), or of
+  # the hands' cleanup request (their `:EXIT` stops the session).
+  def handle_info({:DOWN, _ref, :process, _pid, _reason}, state), do: {:noreply, state}
+
   # The hands are linked and vital: their death takes the session with it.
   def handle_info({:EXIT, pid, reason}, %State{hands: pid} = state), do: {:stop, reason, state}
 
@@ -391,20 +400,13 @@ defmodule Helyx.Session.Server do
   # where no client can reach it.
   def handle_info({:EXIT, _pid, reason}, state), do: {:stop, reason, state}
 
-  # The answer of the hands to the cancel request of an abort. The hands are
-  # vital, so a request that fails because they died stops the session, like
-  # their exit signal. Every other message has a clause above, so any other
-  # message is a bug and crashes the session.
+  # The answer of the hands to the cleanup request. If the hands die, the
+  # `:DOWN` clause above takes the request's `:DOWN` and their `:EXIT` stops
+  # the session. Any other message is a bug and crashes the session.
   def handle_info(message, %State{activity: %Wait{hands: request} = wait} = state)
       when request != nil do
-    case :gen_server.check_response(message, request) do
-      {:reply, result} ->
-        state = cleanup_notice(result, state)
-        {:noreply, progress(%{state | activity: %{wait | hands: nil}})}
-
-      {:error, {reason, _hands}} ->
-        {:stop, reason, state}
-    end
+    {:reply, result} = :gen_server.check_response(message, request)
+    {:noreply, progress(%{cleanup_notice(result, state) | activity: %{wait | hands: nil}})}
   end
 
   # The abort still replies `:ok` (ADR 0006 §5); a failed cleanup is a
@@ -435,11 +437,10 @@ defmodule Helyx.Session.Server do
 
   # Ends the turn at once, drops the queues, and asks the hands to release
   # its resources; the `callers` get their reply when the wait ends. A
-  # turn that sent `{:turn, ...}` also gets an interrupt, after the hands
-  # answer.
+  # turn that sent `{:turn, ...}` also gets an interrupt, after the
+  # `aborted` answers of its open tool requests.
   defp abort_turn(%State{activity: turn} = state, callers) do
     request = Hands.request_cancel(state.hands, turn.id)
-    wait = Wait.after_turn(turn, provider_pid(state))
 
     state =
       state
@@ -447,46 +448,43 @@ defmodule Helyx.Session.Server do
       |> Messages.abort_open_calls()
       |> Messages.close_partial_message(:aborted, :aborted)
       |> Steering.drop_queues()
+      |> Tools.end_turn(turn)
       |> emit(:agent_end, %{stop_reason: :aborted})
 
-    wait = %{wait | hands: request, callers: callers, interrupt: Wait.interrupt(turn, state.conn)}
-    %{state | activity: wait}
+    %{state | activity: %{interrupt(state, turn) | hands: request, callers: callers}}
   end
 
-  # Runs the wait (see `Wait.next/2`): sends the requests it names, and at
-  # its end, with no steer request open, replies to the abort callers and
-  # settles.
-  defp progress(%State{activity: %Wait{} = wait} = state) do
-    case {Wait.next(wait, provider_pid(state)), Queue.open?(state.queue)} do
-      {{:send, wait, pid, request}, _steer_open} ->
-        from = ask(state, pid, request, elem(request, 0))
-        progress(%{state | activity: Wait.sent(wait, request, from)})
+  # Only a turn that sent `{:turn, ...}` gets an interrupt. The wait holds
+  # its answer, and the provider process until that answer keeps it.
+  defp interrupt(%State{conn: %ProviderConn{pid: pid}} = state, %Turn{phase: phase, id: id})
+       when phase in [:submitting, :submitted, :context],
+       do: %Wait{reply: ask(state, pid, {:interrupt, id}, :interrupt), provider: pid}
 
-      {{:done, callers}, false} ->
-        Enum.each(callers, &GenServer.reply(&1, :ok))
-        settle(%{state | activity: :idle})
+  defp interrupt(_state, _turn), do: %Wait{}
 
-      _open ->
-        state
-    end
+  # At the end of the wait the abort callers get their reply. An idle
+  # session settles too: a late `:rejected` can queue a steer.
+  defp progress(%State{activity: %Wait{hands: nil, reply: nil, provider: nil} = wait} = state) do
+    Enum.each(wait.callers, &GenServer.reply(&1, :ok))
+    settle(%{state | activity: :idle})
   end
 
+  defp progress(%State{activity: :idle} = state), do: settle(state)
   defp progress(state), do: state
 
-  # A provider process ended in the wait: see `Wait.provider_down/2`.
+  # A provider process ended in the wait, after its release: no request to
+  # it is open any more. When the wait was for it, its reply ends too.
   defp wait_provider_down(%State{activity: wait} = state, pid) do
     conn = if provider_pid(state) == pid, do: nil, else: state.conn
-    state = %{state | conn: conn, activity: Wait.provider_down(wait, pid)}
-    progress(Steering.provider_down(state))
+    wait = if wait.provider == pid, do: %{wait | provider: nil, reply: nil}, else: wait
+    progress(Steering.provider_down(%{state | conn: conn, activity: wait}))
   end
 
-  # With no turn and no wait, a provider process that ended is waited for
-  # (its `:provider_down`), and one of another model than the session's
-  # closes before the next turn starts (a provider or a model switch);
-  # otherwise the queues start the next turn.
+  # With no turn and no wait, a provider process of another model than the
+  # session's closes before the next turn starts (a provider or a model
+  # switch); otherwise the queues start the next turn.
   defp settle(%State{activity: :idle} = state) do
-    with %State{activity: :idle} = state <- State.await_ended_provider(state),
-         %State{activity: :idle} = state <- State.close_switched(state) do
+    with %State{activity: :idle} = state <- State.close_switched(state) do
       State.arm_idle(start_queued(state))
     end
   end
@@ -568,14 +566,12 @@ defmodule Helyx.Session.Server do
       Messages.close_assistant(state, stop_reason, usage)
 
     # A call in the last message gets no result. A steer with no answer yet
-    # can still be rejected: the session waits for its answer before the
-    # next turn.
-    wait = Wait.after_turn(turn, provider_pid(state))
-
+    # can still be rejected after the turn (`Queue.answer/3`).
     state =
       state
       |> Messages.abort_open_calls()
       |> Steering.end_turn(turn.id, true)
+      |> Tools.end_turn(turn)
       |> emit(:turn_end, %{message: assistant})
       |> emit(:agent_end, %{stop_reason: stop_reason})
 
@@ -583,7 +579,7 @@ defmodule Helyx.Session.Server do
     # before the next turn.
     hands = if turn.tool, do: Hands.request_cancel(state.hands, turn.id)
     # A wait with nothing open ends at once and settles.
-    progress(%{state | activity: %{wait | hands: hands}})
+    progress(%{state | activity: %Wait{hands: hands}})
   end
 
   defp end_turn({:error, reason}, state), do: fail_turn(reason, state)
@@ -604,18 +600,16 @@ defmodule Helyx.Session.Server do
   # turn runs the turn cleanup of the hands before the next turn: its
   # prepare Task can still run.
   defp fail_turn(reason, %State{activity: turn} = state) do
-    wait = Wait.after_turn(turn, provider_pid(state))
-
     state =
       state
       |> Steering.end_turn(turn.id, false)
       |> Messages.abort_open_calls()
       |> Messages.close_partial_message(:error, reason)
       |> Steering.drop_queues()
+      |> Tools.end_turn(turn)
       |> emit(:agent_end, %{stop_reason: :error, error: reason})
 
-    hands = Hands.request_cancel(state.hands, turn.id)
-    %{state | activity: %{wait | hands: hands}}
+    %{state | activity: %Wait{hands: Hands.request_cancel(state.hands, turn.id)}}
   end
 
   def via(core, id), do: {:via, Registry, {Helyx.Core.sessions_registry(core), id}}

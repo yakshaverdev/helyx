@@ -56,10 +56,6 @@ defmodule Helyx.Provider do
     * `:idle_close`: `:ok` after the program exited, or `:busy` when the
       program still runs work of its own.
 
-  Over the limit of open requests, Core answers a request with
-  `{:error, :busy}` and does not give it to the provider. That answer to a
-  turn, an interrupt, a close, or an idle close stops the provider process.
-
   ## Events
 
   A provider sends these events. A turn ends at its `done` or `error`

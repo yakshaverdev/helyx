@@ -10,9 +10,11 @@ defmodule Helyx.Session.Queue do
   #
   # The states of a ledger entry:
   #
-  # - `:sent`: no answer and no `user_message` yet. An answer after the end
-  #   of its turn (`turn_id` set) decides alone: `:rejected` queues the
-  #   steer again, any other answer gives its notice.
+  # - `:sent`: no answer and no `user_message` yet, in the running turn.
+  # - `{:ended, turn_id}`: as `:sent`, after the end of its turn `turn_id`.
+  #   The next turn does not wait for its answer, and the answer
+  #   decides alone: `:rejected` queues the steer again, any other answer
+  #   gives its notice.
   # - `:answered`: an answer other than `:rejected` came in the turn, and
   #   the `user_message` is open.
   # - `:settled`: the `user_message` came, or the steer got its notice. Its
@@ -24,14 +26,15 @@ defmodule Helyx.Session.Queue do
 
   @limit 32
 
-  defstruct steers: [], follow_ups: [], sent: [], turn_id: nil
+  defstruct steers: [], follow_ups: [], sent: []
 
-  @type entry :: {reference(), String.t(), String.t(), :sent | :answered | :settled}
+  @type entry ::
+          {reference(), String.t(), String.t(),
+           :sent | {:ended, String.t()} | :answered | :settled}
   @type t :: %__MODULE__{
           steers: [String.t()],
           follow_ups: [String.t()],
-          sent: [entry()],
-          turn_id: String.t() | nil
+          sent: [entry()]
         }
   @type effect :: {:take, String.t()} | {:notice, String.t(), String.t()}
 
@@ -56,10 +59,6 @@ defmodule Helyx.Session.Queue do
   def counts(%__MODULE__{steers: steers, follow_ups: follow_ups}),
     do: %{steers: length(steers), follow_ups: length(follow_ups)}
 
-  # Whether a steer request is open.
-  @spec open?(t()) :: boolean()
-  def open?(%__MODULE__{sent: sent}), do: sent != []
-
   # Empty queues; the ledger stays.
   @spec drop(t()) :: t()
   def drop(%__MODULE__{} = queue), do: %{queue | steers: [], follow_ups: []}
@@ -71,11 +70,10 @@ defmodule Helyx.Session.Queue do
   @spec drain_steers(t()) :: {[String.t()], t()}
   def drain_steers(%__MODULE__{steers: steers} = queue), do: {steers, %{queue | steers: []}}
 
-  # A turn sent the steer. A turn starts only when no request is open, so
-  # the ledger holds only steers of this turn, and `turn_id` is cleared.
+  # The running turn sent the steer.
   @spec sent(t(), reference(), String.t(), String.t()) :: t()
   def sent(%__MODULE__{sent: sent} = queue, from, steer_id, text),
-    do: %{queue | sent: sent ++ [{from, steer_id, text, :sent}], turn_id: nil}
+    do: %{queue | sent: sent ++ [{from, steer_id, text, :sent}]}
 
   # The provider took the steer `steer_id`. An id that is not open, or that
   # is taken already, changes nothing.
@@ -92,15 +90,15 @@ defmodule Helyx.Session.Queue do
   # answer) changes nothing. A confirmed rejection queues the steer again:
   # its place in the limit was held, so it fits.
   @spec answer(t(), reference(), term()) :: {t(), [effect()]}
-  def answer(%__MODULE__{sent: sent, turn_id: turn_id} = queue, from, reply) do
+  def answer(%__MODULE__{sent: sent} = queue, from, reply) do
     case List.keyfind(sent, from, 0) do
-      {^from, _id, text, :sent} when reply == :rejected ->
+      {^from, _id, text, open} when reply == :rejected and (open == :sent or is_tuple(open)) ->
         {%{delete(queue, from) | steers: queue.steers ++ [text]}, []}
 
-      {^from, _id, _text, :sent} when turn_id == nil ->
+      {^from, _id, _text, :sent} ->
         {put(queue, from, :answered), []}
 
-      {^from, _id, text, :sent} ->
+      {^from, _id, text, {:ended, turn_id}} ->
         {delete(queue, from), [{:notice, turn_id, text}]}
 
       {^from, _id, _text, :settled} ->
@@ -112,12 +110,14 @@ defmodule Helyx.Session.Queue do
   end
 
   # The turn `turn_id` ended. An answered steer with no `user_message` gets
-  # its notice. At an abort or a failure (`normal?` false) a steer with no
-  # answer gets it too, as at an abort after the turn.
+  # its notice, and a steer with no answer is `{:ended, turn_id}`. At an
+  # abort or a failure (`normal?` false) a steer with no answer gets its
+  # notice too, as at an abort after the turn.
   @spec end_turn(t(), String.t(), boolean()) :: {t(), [effect()]}
   def end_turn(%__MODULE__{} = queue, turn_id, true) do
-    map(%{queue | turn_id: turn_id}, fn
+    map(queue, fn
       {_from, _id, text, :answered} -> {[], [{:notice, turn_id, text}]}
+      {from, id, text, :sent} -> {[{from, id, text, {:ended, turn_id}}], []}
       entry -> {[entry], []}
     end)
   end
@@ -131,10 +131,13 @@ defmodule Helyx.Session.Queue do
   # An abort after the turn: each steer that a late `:rejected` could still
   # queue gets its notice now. Its request stays open until its answer.
   @spec abort(t()) :: {t(), [effect()]}
-  def abort(%__MODULE__{turn_id: turn_id} = queue) do
+  def abort(%__MODULE__{} = queue) do
     map(queue, fn
-      {from, id, text, :sent} -> {[{from, id, text, :settled}], [{:notice, turn_id, text}]}
-      entry -> {[entry], []}
+      {from, id, text, {:ended, turn_id}} ->
+        {[{from, id, text, :settled}], [{:notice, turn_id, text}]}
+
+      entry ->
+        {[entry], []}
     end)
   end
 

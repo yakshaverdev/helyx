@@ -196,38 +196,6 @@ defmodule Helyx.Session.ProviderProcessToolsTest do
     assert running(hands) == 0
   end
 
-  test "a tool result is written with 8 other requests open", %{core: core} do
-    {:ok, session} = Session.start(core, model: "conn/steer_hold")
-    :ok = Session.prompt(session, "go")
-    assert_receive {:conn, :turn, proc, {:turn, turn_id, _context}}
-
-    for i <- 1..8 do
-      Session.steer(session, "s#{i}")
-      assert_receive {:conn, :steer, ^proc, _}
-    end
-
-    request(proc, turn_id, "c1", "upcase", %{"text" => "a"})
-    assert_receive {:conn, :tool_result, ^proc, {:tool_result, ^turn_id, "c1", {:ok, "A"}}}
-    assert Process.alive?(proc)
-  end
-
-  # Tool results are outside the pool of 8, also when their answers are late.
-  test "an abort with 8 tool results open still reaches the interrupt callback",
-       %{core: core} do
-    {:ok, session} = Session.start(core, model: "conn/tools_late")
-    {:ok, _} = Session.subscribe(session)
-    :ok = Session.prompt(session, "go")
-    assert_receive {:conn, :turn, proc, {:turn, turn_id, _context}}
-    for i <- 1..8, do: slow(proc, turn_id, "c#{i}")
-    sync(proc, session)
-
-    :ok = Session.abort(session)
-
-    assert_receive {:conn, :interrupt, ^proc, {:interrupt, ^turn_id}}, 2_000
-    assert List.last(collect_until(:agent_end)).data.stop_reason == :aborted
-    assert Process.alive?(proc)
-  end
-
   test "a request with a call id that the turn answered stops the provider process; a new turn can use it",
        %{session: session, proc: proc, turn_id: turn_id} do
     request(proc, turn_id, "c1", "upcase", %{"text" => "a"})
