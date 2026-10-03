@@ -27,21 +27,31 @@ defmodule CodingAgent do
   session is written under `:sessions_dir` (default `~/.helyx/sessions`);
   with `resume: true` the most recent session for `:cwd` is resumed and
   keeps its saved model. Returns `{:error, reason}` when the model ref, the
-  plugin list, or the resume is rejected.
+  plugin list, or the resume is rejected. Core stops before `run/1` returns
+  or raises.
   """
   @spec run(keyword()) :: :ok | {:error, term()}
   def run(opts) do
-    with {:ok, _core} <- Helyx.Core.start_link(plugins: @plugins),
-         {:ok, session} <- start_session(opts) do
-      result = Helyx.TUI.run(session: session, resumed: opts[:resume] == true)
+    with {:ok, core} <- Helyx.Core.start_link(plugins: @plugins) do
+      try do
+        run_session(opts)
+      after
+        :ok = Supervisor.stop(core)
+      end
+    end
+  end
 
-      # Quitting mid-turn must not leave shell process groups running after
-      # the VM stops; only abort makes the hands kill them and wait. A
-      # session that died has no turn for abort to reach (ticket #45), and
-      # the abort returns `{:error, :session_not_found}`.
-      _ = Helyx.Session.abort(session)
-
-      result
+  defp run_session(opts) do
+    with {:ok, session} <- start_session(opts) do
+      try do
+        Helyx.TUI.run(session: session, resumed: opts[:resume] == true)
+      after
+        # Quitting mid-turn, or a TUI that fails, must not leave shell process
+        # groups running after the VM stops; only abort makes the hands kill
+        # them and wait. A session that died has no turn for abort to reach
+        # (ticket #45), and the abort returns `{:error, :session_not_found}`.
+        _ = Helyx.Session.abort(session)
+      end
     end
   end
 
