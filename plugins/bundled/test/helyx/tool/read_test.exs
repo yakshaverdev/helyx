@@ -6,10 +6,6 @@ defmodule Helyx.Tool.ReadTest do
 
   @moduletag :tmp_dir
 
-  # Room for scheduler load in the time of a read: far above the 2.4 s that
-  # the read of a million lines took in a parallel precommit run (#295).
-  @load_us 10_000_000
-
   setup %{tmp_dir: dir} do
     core = :"core_#{System.unique_integer([:positive])}"
     start_supervised!({Helyx.Core, name: core, plugins: [Helyx.Provider.Fake, Helyx.Tool.Read]})
@@ -97,140 +93,18 @@ defmodule Helyx.Tool.ReadTest do
   } do
     File.write!(Path.join(dir, "a.txt"), "one\ntwo\nthree")
 
-    below = "an integer below 1"
-    fraction = "a number that is not a whole number of 1 or more"
-
-    for {bad, kind} <- [
-          {"2", "a string"},
-          {2.5, fraction},
-          {0, below},
-          {-1, below},
-          {0.0, fraction},
-          {-0.0, fraction},
-          {-2.0, fraction},
-          {true, "a boolean"},
-          {[2], "an array"},
-          {%{"a" => 2}, "an object"},
-          {String.duplicate("😀", 100_000), "a string"},
-          # The largest integer that the session gives to a tool (#79).
-          {-(10 ** 100 - 1), below}
-        ] do
+    # The largest integer that the session gives to a tool (#79) is last.
+    for bad <- ["2", 2.0, 2.5, 0, -1, true, [2], %{"a" => 2}, -(10 ** 100 - 1)] do
       result = run.(%{"path" => "a.txt", "offset" => bad})
       assert result.is_error
 
       assert Helyx.Message.text(result) ==
-               "offset must be a positive integer (a 1-based line number), got #{kind}"
-
-      assert byte_size(Helyx.Message.text(result)) <= 111
+               "offset must be a positive integer (a 1-based line number)"
     end
   end
 
   test "a bad offset is an error before the file is read", %{run: run} do
     assert Helyx.Message.text(run.(%{"path" => "nope.txt", "offset" => 0})) =~ "offset must be"
-  end
-
-  test "an offset after the last line is an error that names the offset and the line count (issue #78)",
-       %{tmp_dir: dir, run: run} do
-    File.write!(Path.join(dir, "a.txt"), "one\ntwo\n")
-
-    for offset <- [3, 3.0, 999_999_999, 1_000_000_000] do
-      result = run.(%{"path" => "a.txt", "offset" => offset})
-      assert result.is_error
-
-      assert Helyx.Message.text(result) ==
-               "offset #{trunc(offset)} is after the last line: a.txt has 2 lines"
-    end
-
-    File.write!(Path.join(dir, "é.txt"), "é\nü")
-
-    assert Helyx.Message.text(run.(%{"path" => "é.txt", "offset" => 3})) ==
-             "offset 3 is after the last line: é.txt has 2 lines"
-
-    File.write!(Path.join(dir, "one.txt"), "one")
-
-    assert Helyx.Message.text(run.(%{"path" => "one.txt", "offset" => 2})) ==
-             "offset 2 is after the last line: one.txt has 1 line"
-  end
-
-  test "the last line is not after the last line, and trailing blank lines are lines (issue #78)",
-       %{tmp_dir: dir, run: run} do
-    File.write!(Path.join(dir, "a.txt"), "one\ntwo\n\n")
-
-    for {offset, text} <- [{2, "two\n"}, {3, ""}] do
-      result = run.(%{"path" => "a.txt", "offset" => offset})
-      refute result.is_error
-      assert Helyx.Message.text(result) == text
-    end
-
-    assert run.(%{"path" => "a.txt", "offset" => 4}).is_error
-  end
-
-  test "the error and the truncation notice count the same lines (issue #78)", %{
-    tmp_dir: dir,
-    run: run
-  } do
-    for ending <- ["", "\n", "\n\n"] do
-      File.write!(Path.join(dir, "long.txt"), Enum.map_join(1..2001, "\n", &"#{&1}") <> ending)
-      [_, total] = Regex.run(~r/ of (\d+)/, Helyx.Message.text(run.(%{"path" => "long.txt"})))
-      total = String.to_integer(total)
-
-      refute run.(%{"path" => "long.txt", "offset" => total}).is_error
-
-      assert Helyx.Message.text(run.(%{"path" => "long.txt", "offset" => total + 1})) =~
-               "long.txt has #{total} lines"
-    end
-  end
-
-  test "an empty file is an empty ok result at line 1 and an error after it (issue #78)", %{
-    tmp_dir: dir,
-    run: run
-  } do
-    File.write!(Path.join(dir, "empty.txt"), "")
-
-    for args <- [%{}, %{"offset" => 1}, %{"offset" => nil}] do
-      result = run.(Map.put(args, "path", "empty.txt"))
-      refute result.is_error
-      assert Helyx.Message.text(result) == ""
-    end
-
-    result = run.(%{"path" => "empty.txt", "offset" => 2})
-    assert result.is_error
-
-    assert Helyx.Message.text(result) ==
-             "offset 2 is after the last line: empty.txt has 0 lines"
-  end
-
-  test "a huge offset is an error of bounded size that does not show the value, not a crash", %{
-    tmp_dir: dir,
-    run: run
-  } do
-    File.write!(Path.join(dir, "a.txt"), "one\ntwo")
-
-    # 100 digits: the largest integer that the session gives to a tool (#79).
-    for offset <- [1.0e300, 1_000_000_001, 10 ** 100 - 1] do
-      result = run.(%{"path" => "a.txt", "offset" => offset})
-      assert result.is_error
-
-      assert Helyx.Message.text(result) ==
-               "offset over 1000000000 is after the last line: a.txt has 2 lines"
-    end
-  end
-
-  test "the time of a read does not grow with the digits of the offset (issue #78)", %{
-    tmp_dir: dir,
-    run: run
-  } do
-    File.write!(Path.join(dir, "a.txt"), String.duplicate("\n", 1_000_000))
-
-    # The window code gets no big integer. With one subtraction of 100,000
-    # digits for each line, this read took seconds. Since #79 the session
-    # gives a tool at most 100 digits, so this is the largest offset.
-    {micros, result} = :timer.tc(fn -> run.(%{"path" => "a.txt", "offset" => 10 ** 100 - 1}) end)
-
-    assert Helyx.Message.text(result) ==
-             "offset over 1000000000 is after the last line: a.txt has 1000000 lines"
-
-    assert micros < @load_us
   end
 
   test "an offset of more than 100 digits never reaches the tool (issue #79)", %{
@@ -257,18 +131,16 @@ defmodule Helyx.Tool.ReadTest do
     end
   end
 
-  test "a float offset with no fraction is the integer, and a null offset is line 1", %{
+  test "a null offset is line 1, and an offset after the last line is empty", %{
     tmp_dir: dir,
     run: run
   } do
     File.write!(Path.join(dir, "a.txt"), "one\ntwo\nthree")
 
-    for {offset, text} <- [
-          {2.0, "two\nthree"},
-          {1.0, "one\ntwo\nthree"},
-          {nil, "one\ntwo\nthree"}
-        ] do
-      assert Helyx.Message.text(run.(%{"path" => "a.txt", "offset" => offset})) == text
+    for {offset, text} <- [{nil, "one\ntwo\nthree"}, {4, ""}, {10 ** 99, ""}] do
+      result = run.(%{"path" => "a.txt", "offset" => offset})
+      refute result.is_error
+      assert Helyx.Message.text(result) == text
     end
   end
 

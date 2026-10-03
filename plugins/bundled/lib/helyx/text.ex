@@ -65,8 +65,8 @@ defmodule Helyx.Text do
   which lines it shows; a truncated `:head` result also names the offset that
   continues the read, unless the cut line is the last line. When the line at
   the kept edge is over the byte cap by itself, it is cut to the cap and is
-  the only line shown; the notice names that line and the bytes kept of it,
-  and no offset reaches the rest.
+  the only line shown (see `cap/3`); the notice names that line and the
+  bytes kept of it, and no offset reaches the rest.
   """
   @spec truncate(String.t(), :head | :tail) :: String.t()
   def truncate(text, :head), do: truncate(text, :head, 1)
@@ -128,10 +128,10 @@ defmodule Helyx.Text do
 
   # Returns `:all` when every line fits, else the lines within the limits in
   # the given order, their count, and `nil`. A first line over the byte limit
-  # is cut to the limit on a character boundary, from the end kept; the third
-  # element is then the bytes shown of it.
+  # is cut to the limit from the end kept; the third element is then the
+  # bytes shown of it.
   defp take_within_limits([first | _], keep) when byte_size(first) > @max_bytes do
-    shown = cut(first, keep)
+    shown = cap(first, @max_bytes, keep)
     {[shown], 1, byte_size(shown)}
   end
 
@@ -146,38 +146,15 @@ defmodule Helyx.Text do
     if count == length(lines), do: :all, else: {Enum.reverse(acc), count, nil}
   end
 
-  # A UTF-8 character is at most 4 bytes, so a cut leaves at most 3 bytes of
-  # one at the cut edge.
-  @max_partial_bytes 3
+  @doc """
+  Keeps at most `max` bytes of `text`: the start with `:head`, the end with
+  `:tail`. A cut result is valid UTF-8: the cut drops a character it splits
+  and every invalid byte.
+  """
+  @spec cap(binary(), non_neg_integer(), :head | :tail) :: binary()
+  def cap(text, max, _keep) when byte_size(text) <= max, do: text
+  def cap(text, max, :head), do: text |> binary_part(0, max) |> String.replace_invalid("")
 
-  defp cut(line, :head), do: line |> binary_part(0, @max_bytes) |> clean_edge(:head)
-
-  defp cut(line, :tail),
-    do: line |> binary_part(byte_size(line) - @max_bytes, @max_bytes) |> clean_edge(:tail)
-
-  # Only the bytes at the cut edge decide what the cut loses, so bytes that
-  # are invalid anywhere else (a partial character at the far end of `head -c`
-  # output) stay for the hands to replace and change nothing here. The cut
-  # loses the fewest bytes that leave a whole character at the edge. When no
-  # loss of at most three bytes does that, the edge was never valid and
-  # loses three.
-  defp clean_edge(bin, keep) do
-    lost =
-      Enum.find(0..@max_partial_bytes, @max_partial_bytes, fn n ->
-        bin |> without_edge(keep, n) |> whole_edge?(keep)
-      end)
-
-    without_edge(bin, keep, lost)
-  end
-
-  defp whole_edge?(bin, :tail), do: match?(<<_::utf8, _::binary>>, bin)
-
-  defp whole_edge?(bin, :head) do
-    Enum.any?(1..(@max_partial_bytes + 1), fn size ->
-      match?(<<_::utf8>>, binary_part(bin, byte_size(bin) - size, size))
-    end)
-  end
-
-  defp without_edge(bin, :head, n), do: binary_part(bin, 0, byte_size(bin) - n)
-  defp without_edge(bin, :tail, n), do: binary_part(bin, n, byte_size(bin) - n)
+  def cap(text, max, :tail),
+    do: text |> binary_part(byte_size(text) - max, max) |> String.replace_invalid("")
 end

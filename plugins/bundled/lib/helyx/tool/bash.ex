@@ -59,22 +59,15 @@ defmodule Helyx.Tool.Bash do
     end
   end
 
-  # Port arguments are NUL-terminated C strings: a string with a NUL would
+  # Port arguments are NUL-terminated C strings: a command with a NUL would
   # be cut there silently and the result would report success for something
   # that did not run as given. JSON strings can carry an escaped NUL, so the
-  # model can send one. Every string that reaches the port is checked here.
+  # model can send one. The session checks the working directory at start.
   @impl true
   def run(%{"command" => command}, cwd) when is_binary(command) do
-    cond do
-      String.contains?(command, <<0>>) ->
-        {:error, "the command contains a NUL byte"}
-
-      String.contains?(cwd, <<0>>) ->
-        {:error, "the working directory contains a NUL byte"}
-
-      true ->
-        run_command(command, cwd)
-    end
+    if String.contains?(command, <<0>>),
+      do: {:error, "the command contains a NUL byte"},
+      else: run_command(command, cwd)
   end
 
   def run(_args, _cwd), do: {:error, "bash needs a command"}
@@ -157,24 +150,11 @@ defmodule Helyx.Tool.Bash do
     end
   end
 
-  # A character has at most three continuation bytes (`10xxxxxx`).
-  @max_continuation_bytes 3
-
   # Cuts at twice the cap so the copy is amortised, not once per chunk.
-  # The cut can land inside a character; the rest of that character is
-  # dropped, so the kept tail starts on a character boundary. Only the start
-  # is cleaned: the end of `acc` can hold a character the next chunk completes.
+  # The cut can land inside a character; the hands repair the partial
+  # character at the start of the result.
   @doc false
   # Public for the direct test of the cut.
   def keep_tail(acc) when byte_size(acc) <= 2 * @keep_bytes, do: {acc, false}
-
-  def keep_tail(acc) do
-    tail = binary_part(acc, byte_size(acc) - @keep_bytes, @keep_bytes)
-    {drop_continuation(tail, @max_continuation_bytes), true}
-  end
-
-  defp drop_continuation(<<2::2, _::6, rest::binary>>, n) when n > 0,
-    do: drop_continuation(rest, n - 1)
-
-  defp drop_continuation(bin, _n), do: bin
+  def keep_tail(acc), do: {binary_part(acc, byte_size(acc) - @keep_bytes, @keep_bytes), true}
 end

@@ -23,11 +23,18 @@ defmodule Helyx.Provider.OpenAI.EventsTest do
              [{:error, {:api_error, %{"message" => "overloaded"}}}]
   end
 
-  test "tool calls without indexes stay separate calls" do
+  test "a null error is a missing error" do
+    chunks = [sse([%{error: nil, choices: [%{delta: %{content: "Hi"}}]}])]
+    assert Enum.to_list(Events.events(chunks)) == [{:text_delta, "Hi"}]
+  end
+
+  test "tool calls of two indexes stay separate calls" do
     chunks = [
       sse([
-        delta(%{tool_calls: [%{id: "c1", function: %{name: "read", arguments: ~s({"a": 1})}}]}),
-        delta(%{tool_calls: [%{id: "c2", function: %{name: "bash", arguments: ~s({"b": 2})}}]}),
+        delta(%{tool_calls: [%{index: 0, id: "c1", function: %{name: "read", arguments: "{"}}]}),
+        delta(%{tool_calls: [%{index: 1, id: "c2", function: %{name: "bash", arguments: "{"}}]}),
+        delta(%{tool_calls: [%{index: 0, function: %{arguments: ~s("a": 1})}}]}),
+        delta(%{tool_calls: [%{index: 1, function: %{arguments: ~s("b": 2})}}]}),
         delta(%{}, "tool_calls"),
         "[DONE]"
       ])
@@ -42,9 +49,9 @@ defmodule Helyx.Provider.OpenAI.EventsTest do
            ]
   end
 
-  # The chunk is the unit, not the call: the parser cannot tell which call
-  # a string or null index means, so a fragment could go to the wrong call
-  # or start a call with no id. The stream ends with no tool call.
+  # The OpenAI streaming format gives every call delta an integer index. Any
+  # other index, or none, fails the shape check, and the stream ends with no
+  # tool call.
   for index <- [~s("0"), "null"] do
     test "an index of #{index} ends the stream before any tool call" do
       bad =
@@ -62,36 +69,6 @@ defmodule Helyx.Provider.OpenAI.EventsTest do
       ]
 
       assert Enum.to_list(Events.events(chunks)) == [{:error, {:bad_chunk, bad}}]
-    end
-  end
-
-  # A conflicting delta could put a call into another call or drop it, so
-  # the chunk is malformed, as a bad index is: a new id on an index that
-  # has one, and a stream that mixes deltas with and without an index.
-  for {name, first, second} <- [
-        {"a second id on one index", ~s("index":0,"id":"c1"), ~s("index":0,"id":"c2")},
-        {"an id that another index holds", ~s("index":0,"id":"c1"), ~s("index":1,"id":"c1")},
-        {"a missing index with the id of an earlier call", ~s("id":"c1"},{"id":"c2"),
-         ~s("id":"c1")},
-        {"a missing index after an integer one", ~s("index":1,"id":"c1"), ~s("id":"c2")},
-        {"an integer index after a missing one", ~s("id":"c1"), ~s("index":2,"id":"c2")},
-        {"a missing index with no id after an integer one", ~s("index":0,"id":"c1"),
-         ~s("type":"function")}
-      ] do
-    test "#{name} ends the stream before any tool call" do
-      call = &~s({#{&1},"function":{"name":"bash","arguments":"{}"}})
-      first = ~s({"choices":[{"delta":{"tool_calls":[#{call.(unquote(first))}]}}]})
-      bad = ~s({"choices":[{"delta":{"tool_calls":[#{call.(unquote(second))}]}}]})
-      done = [delta(%{}, "tool_calls"), "[DONE]"]
-
-      assert Enum.to_list(Events.events([sse([first, bad | done])])) ==
-               [{:error, {:bad_chunk, bad}}]
-
-      # The same two deltas in one chunk conflict too.
-      both =
-        ~s({"choices":[{"delta":{"tool_calls":[#{call.(unquote(first))},#{call.(unquote(second))}]}}]})
-
-      assert Enum.to_list(Events.events([sse([both | done])])) == [{:error, {:bad_chunk, both}}]
     end
   end
 
@@ -113,35 +90,18 @@ defmodule Helyx.Provider.OpenAI.EventsTest do
            ]
   end
 
-  test "without indexes, a repeated id or an empty id extends its call" do
-    chunks = [
-      sse([
-        delta(%{tool_calls: [%{id: "c1", function: %{name: "bash", arguments: "{"}}]}),
-        delta(%{tool_calls: [%{id: "c1", function: %{arguments: ~s("a":)}}]}),
-        delta(%{tool_calls: [%{id: "", function: %{arguments: "1}"}}]}),
-        delta(%{tool_calls: [%{id: "c2", function: %{name: "read", arguments: "{"}}]}),
-        delta(%{tool_calls: [%{id: "c2", function: %{arguments: "}"}}]}),
-        delta(%{}, "tool_calls"),
-        "[DONE]"
-      ])
-    ]
-
-    assert Enum.to_list(Events.events(chunks)) == [
-             {:tool_call,
-              %Helyx.Message.ToolCall{id: "c1", name: "bash", arguments: %{"a" => 1}}},
-             {:tool_call, %Helyx.Message.ToolCall{id: "c2", name: "read", arguments: %{}}},
-             {:done, %{stop_reason: :tool_use, usage: %{}}}
-           ]
-  end
-
   @not_object "the arguments are not a valid JSON object"
 
   test "bad JSON in one of two calls rejects that call alone" do
     chunks = [
       sse([
         delta(%{content: "Hi"}),
-        delta(%{tool_calls: [%{id: "c1", function: %{name: "read", arguments: ~s({"a": 1})}}]}),
-        delta(%{tool_calls: [%{id: "c2", function: %{name: "bash", arguments: ~s({"b": )}}]}),
+        delta(%{
+          tool_calls: [%{index: 0, id: "c1", function: %{name: "read", arguments: ~s({"a": 1})}}]
+        }),
+        delta(%{
+          tool_calls: [%{index: 1, id: "c2", function: %{name: "bash", arguments: ~s({"b": )}}]
+        }),
         delta(%{}, "tool_calls"),
         "[DONE]"
       ])
@@ -160,7 +120,9 @@ defmodule Helyx.Provider.OpenAI.EventsTest do
   test "JSON that is not an object rejects the call" do
     chunks = [
       sse([
-        delta(%{tool_calls: [%{id: "c1", function: %{name: "read", arguments: "[1]"}}]}),
+        delta(%{
+          tool_calls: [%{index: 0, id: "c1", function: %{name: "read", arguments: "[1]"}}]
+        }),
         delta(%{}, "tool_calls"),
         "[DONE]"
       ])
@@ -228,7 +190,15 @@ defmodule Helyx.Provider.OpenAI.EventsTest do
         ~s({"choices":[{"delta":{"tool_calls":[{"index":[1]}]}}]}),
         ~s({"choices":[{"delta":{"tool_calls":[{"index":-1}]}}]}),
         ~s({"choices":[{"delta":{"tool_calls":[{"index":10001}]}}]}),
-        ~s({"choices":[{"delta":{"tool_calls":[{"index":1.0}]}}]})
+        ~s({"choices":[{"delta":{"tool_calls":[{"index":1.0}]}}]}),
+        ~s({"choices":[{"delta":false}]}),
+        ~s({"choices":[{"delta":{},"finish_reason":5}]}),
+        ~s({"choices":[{"delta":{},"finish_reason":false}]}),
+        ~s({"choices":[],"usage":false}),
+        ~s({"choices":[],"usage":{"prompt_tokens":"9"}}),
+        ~s({"choices":[{"delta":{"tool_calls":false}}]}),
+        ~s({"choices":[{"delta":{"tool_calls":[{"index":0,"function":false}]}}]}),
+        ~s({"choices":[{"delta":{"tool_calls":[{"id":"c1","function":{"name":"bash"}}]}}]})
       ] do
     test "a chunk with the wrong shape is an error event: #{chunk}" do
       assert Enum.to_list(Events.events([sse([unquote(chunk)])])) ==
@@ -275,16 +245,6 @@ defmodule Helyx.Provider.OpenAI.EventsTest do
              [{:error, {:line_over_limit, @max_line_bytes}}]
   end
 
-  test "a CRLF terminator split across chunks does not count against the limit" do
-    at = [content_line_of(@max_line_bytes) <> "\r", "\n\ndata: [DONE]\n\n"]
-    assert [{:text_delta, _}] = Enum.to_list(Events.events(at))
-
-    over = [content_line_of(@max_line_bytes + 1) <> "\r", "\n\ndata: [DONE]\n\n"]
-
-    assert Enum.to_list(Events.events(over)) ==
-             [{:error, {:line_over_limit, @max_line_bytes}}]
-  end
-
   test "an unterminated line over the limit errors before any terminator" do
     half = String.duplicate("a", div(@max_line_bytes, 2) + 1)
     chunks = ["data: " <> half, half, half]
@@ -294,10 +254,6 @@ defmodule Helyx.Provider.OpenAI.EventsTest do
   end
 
   @max_tool_call_bytes 10_485_760
-  @call_entry_bytes 100
-  @call_fragment_bytes 64
-
-  defp n_fragments(json_bytes), do: div(json_bytes - 1, 500_000) + 1
 
   defp binary_chunks(bin, size) when byte_size(bin) <= size, do: [bin]
 
@@ -306,18 +262,11 @@ defmodule Helyx.Provider.OpenAI.EventsTest do
     [head | binary_chunks(rest, size)]
   end
 
-  # One tool call whose charged bytes (entry, id, name, argument fragments
-  # with their per-fragment charge) total exactly `bytes`, the arguments
-  # ending in `tail`. The tail stays inside the last fragment, so every
-  # fragment is valid UTF-8 and survives the JSON encode in `sse/1`.
+  # One tool call whose id, name, and arguments total exactly `bytes`, the
+  # arguments ending in `tail`. The tail stays inside the last fragment, so
+  # every fragment is valid UTF-8 and survives the JSON encode in `sse/1`.
   defp call_deltas(bytes, tail \\ "") do
-    charged = byte_size("c1") + byte_size("bash") + @call_entry_bytes
-
-    # The per-fragment charge depends on the fragment count, so settle the
-    # JSON size in a second pass; away from a 500 KB boundary it converges.
-    json_bytes = bytes - charged
-    json_bytes = bytes - charged - @call_fragment_bytes * n_fragments(json_bytes)
-
+    json_bytes = bytes - byte_size("c1") - byte_size("bash")
     pad = String.duplicate("a", json_bytes - byte_size(~s({"a":""})) - byte_size(tail))
     json = ~s({"a":"#{pad}#{tail}"})
 

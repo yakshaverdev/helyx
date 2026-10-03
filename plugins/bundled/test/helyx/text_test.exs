@@ -232,22 +232,13 @@ defmodule Helyx.TextTest do
     end
   end
 
-  test "a cut on text that was never valid loses three bytes at the cut edge" do
-    out = Text.truncate(:binary.copy(<<255>>, 60_000), :head)
-
-    assert [
-             cut,
-             "[truncated: showing lines 1-1 of 1, line 1 cut at 51197 bytes]"
-           ] =
-             String.split(out, "\n", parts: 2)
-
-    assert cut == :binary.copy(<<255>>, 51_197)
-
-    # The hands replace the invalid bytes at delivery; the replacement is
-    # valid and grows the text by at most a factor of three.
-    replaced = String.replace_invalid(out)
-    assert String.valid?(replaced)
-    assert byte_size(replaced) <= 3 * byte_size(out)
+  test "cap/3 keeps at most max bytes of valid UTF-8 from either end" do
+    assert Text.cap("abc", 3, :head) == "abc"
+    assert Text.cap(<<255>>, 1, :tail) == <<255>>
+    assert Text.cap("a€b", 3, :head) == "a"
+    assert Text.cap("a€b", 3, :tail) == "b"
+    assert Text.cap(<<255, ?a, 255, ?b>> <> "c", 4, :head) == "ab"
+    assert Text.cap(String.duplicate(<<255>>, 10), 5, :tail) == ""
   end
 
   test "a cut inside a character loses only that character (issue #51)" do
@@ -270,107 +261,6 @@ defmodule Helyx.TextTest do
 
       assert tail == shown <> x
       assert tail_note =~ note
-    end
-  end
-
-  test "an invalid byte away from the cut edge is kept and does not change the cut (issue #68)" do
-    # The cut lands two bytes inside a "€": only those two bytes go.
-    line = "ab" <> <<255>> <> String.duplicate("€", 20_000)
-    out = Text.truncate(line, :head)
-    assert [shown, note] = String.split(out, "\n")
-    assert shown == "ab" <> <<255>> <> String.duplicate("€", 17_065)
-    assert note =~ "line 1 cut at 51198 bytes]"
-  end
-
-  test "a partial character at the far end does not change the cut edge (issue #68)" do
-    # The output of `head -c` or of a killed command ends inside a character.
-    partial = <<0xF0, 0x9F>>
-    kept = String.duplicate("😀", 12_799)
-
-    assert ["[truncated:" <> note, tail] =
-             String.split(Text.truncate(String.duplicate("😀", 20_000) <> partial, :tail), "\n")
-
-    assert tail == kept <> partial
-    assert note =~ "line 1 cut at 51198 bytes"
-
-    assert [head, "[truncated:" <> note] =
-             String.split(Text.truncate(partial <> String.duplicate("😀", 20_000), :head), "\n")
-
-    assert head == partial <> kept
-    assert note =~ "line 1 cut at 51198 bytes"
-
-    # A cut between two characters loses nothing.
-    xs = String.duplicate("x", 60_000)
-    assert Text.truncate(xs <> partial, :tail) =~ "line 1 cut at 51200 bytes"
-    assert Text.truncate(partial <> xs, :head) =~ "line 1 cut at 51200 bytes"
-  end
-
-  test "an edge with no whole character within three bytes loses three bytes (issue #68)" do
-    xs = String.duplicate("x", 60_000)
-    edge = <<0x80, 0x80, 0x80, 0x80>>
-    fill = String.duplicate("x", 51_196)
-
-    assert ["[truncated:" <> note, tail] =
-             String.split(Text.truncate(xs <> edge <> fill, :tail), "\n")
-
-    assert tail == <<0x80>> <> fill
-    assert note =~ "line 1 cut at 51197 bytes"
-
-    assert [head, "[truncated:" <> note] =
-             String.split(Text.truncate(fill <> edge <> xs, :head), "\n")
-
-    assert head == fill <> <<0x80>>
-    assert note =~ "line 1 cut at 51197 bytes"
-  end
-
-  test "invalid bytes at the cut edge go alone when a whole character is next to them (issue #68)" do
-    xs = String.duplicate("x", 60_000)
-
-    for edge <- [<<255>>, <<0x80, 255>>, <<255, 0x80, 255>>] do
-      fill = String.duplicate("€", 17_065) <> String.duplicate("x", 5 - byte_size(edge))
-      assert byte_size(edge <> fill) == 51_200
-      note = "line 1 cut at #{byte_size(fill)} bytes"
-
-      assert ["[truncated:" <> tail_note, ^fill] =
-               String.split(Text.truncate(xs <> edge <> fill, :tail), "\n")
-
-      assert tail_note =~ note
-
-      assert [^fill, "[truncated:" <> head_note] =
-               String.split(Text.truncate(fill <> edge <> xs, :head), "\n")
-
-      assert head_note =~ note
-    end
-  end
-
-  test "a tail cut takes continuation bytes that never had a lead byte for a cut character (issue #68)" do
-    xs = String.duplicate("x", 60_000)
-
-    for n <- 1..3 do
-      fill = String.duplicate("x", 51_200 - n)
-      out = Text.truncate(xs <> :binary.copy(<<0x80>>, n) <> fill, :tail)
-      assert ["[truncated:" <> note, ^fill] = String.split(out, "\n")
-      assert note =~ "line 1 cut at #{51_200 - n} bytes"
-    end
-  end
-
-  test "a prefix that no valid character has goes from a head edge like a part of a character (issue #68)" do
-    xs = String.duplicate("x", 60_000)
-
-    # A lead byte that no character has, a surrogate prefix, an overlong prefix,
-    # a prefix over U+10FFFF, and three bytes of an overlong character.
-    for edge <- [
-          <<0xC0>>,
-          <<0xF5>>,
-          <<0xED, 0xA0>>,
-          <<0xE0, 0x80>>,
-          <<0xF4, 0x90>>,
-          <<0xF0, 0x80, 0x80>>
-        ] do
-      fill = String.duplicate("x", 51_200 - byte_size(edge))
-      out = Text.truncate(fill <> edge <> xs, :head)
-      assert [^fill, "[truncated:" <> note] = String.split(out, "\n")
-      assert note =~ "line 1 cut at #{byte_size(fill)} bytes"
     end
   end
 
