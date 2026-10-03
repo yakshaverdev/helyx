@@ -148,13 +148,15 @@ defmodule Helyx.Text do
 
   @doc """
   Keeps at most `max` bytes of `text`: the start with `:head`, the end with
-  `:tail`. A cut result is valid UTF-8: the cut drops a character it splits
+  `:tail`. The result is valid UTF-8: the cap drops a character it splits
   and every invalid byte.
   """
   @spec cap(binary(), non_neg_integer(), :head | :tail) :: binary()
-  def cap(text, max, _keep) when byte_size(text) <= max, do: text
-  def cap(text, max, :head), do: text |> binary_part(0, max) |> String.replace_invalid("")
+  def cap(text, max, :head),
+    do: text |> binary_part(0, min(max, byte_size(text))) |> String.replace_invalid("")
 
-  def cap(text, max, :tail),
-    do: text |> binary_part(byte_size(text) - max, max) |> String.replace_invalid("")
+  def cap(text, max, :tail) do
+    kept = min(max, byte_size(text))
+    text |> binary_part(byte_size(text) - kept, kept) |> String.replace_invalid("")
+  end
 end

@@ -252,22 +252,13 @@ if Helyx.TUI.Available.available?() do
 
     def handle_event(_event, state), do: {:noreply, state}
 
-    # Event text reaches the widget only through `Composer.edit/3`, which
-    # rejects text that is not valid UTF-8: the widget raises on it, and a
-    # raise in a callback kills the TUI process. An edit that changes the
-    # composer height changes the screen of the transcript, so the position
-    # gets its check.
+    # An edit that changes the composer height changes the screen of the
+    # transcript, so the position gets its check.
     defp edit(state, op, text) do
       rows = Composer.rows(state.composer)
-
-      case Composer.edit(state.composer, op, text) do
-        {:ok, composer} ->
-          state = %{state | composer: composer}
-          if Composer.rows(composer) == rows, do: state, else: settle(state)
-
-        {:error, :invalid_utf8} ->
-          %{state | vm: ViewModel.reject(state.vm, "input rejected: not valid UTF-8")}
-      end
+      composer = Composer.edit(state.composer, op, text)
+      state = %{state | composer: composer}
+      if Composer.rows(composer) == rows, do: state, else: settle(state)
     end
 
     defp send_message(text, key, state) do
@@ -283,8 +274,8 @@ if Helyx.TUI.Available.available?() do
         :ok ->
           %{state | composer: Composer.clear(state.composer), scroll: nil}
 
-        # `Composer.edit/3` lets only valid UTF-8 into the composer, so the session
-        # never answers `:invalid_utf8`.
+        # ExRatatui gives event text as a Rust `String`, so the composer
+        # holds only valid UTF-8 and the session never answers `:invalid_utf8`.
         {:error, :queue_full} ->
           %{state | vm: ViewModel.reject(state.vm, "not sent: the queue is full")}
 

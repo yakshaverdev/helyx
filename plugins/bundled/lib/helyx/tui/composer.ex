@@ -54,23 +54,13 @@ if Helyx.TUI.Composer.Available.available?() do
 
     @doc """
     Applies event text: `:insert` inserts it, `:key` sends a key code to
-    the widget, and `:paste` inserts a paste.
-
-    The only path by which event text reaches the widget. The widget raises
-    `ArgumentError` on text that is not valid UTF-8, so such text returns
-    `{:error, :invalid_utf8}` and the composer does not change. Reject, do
-    not repair: a silent replacement would send text the user did not type.
+    the widget, and `:paste` inserts a paste. ExRatatui gives event text as
+    a Rust `String`, so it is valid UTF-8.
     """
-    @spec edit(t(), :insert | :key | :paste, term()) :: {:ok, t()} | {:error, :invalid_utf8}
-    def edit(%__MODULE__{} = composer, op, text) do
-      if is_binary(text) and String.valid?(text),
-        do: {:ok, apply_edit(op, composer, text)},
-        else: {:error, :invalid_utf8}
-    end
-
-    defp apply_edit(:insert, composer, text), do: insert(composer, text)
-    defp apply_edit(:key, composer, code), do: widget_key(composer, code)
-    defp apply_edit(:paste, composer, content), do: paste(composer, content)
+    @spec edit(t(), :insert | :key | :paste, String.t()) :: t()
+    def edit(%__MODULE__{} = composer, :insert, text), do: insert(composer, text)
+    def edit(%__MODULE__{} = composer, :key, code), do: widget_key(composer, code)
+    def edit(%__MODULE__{} = composer, :paste, content), do: paste(composer, content)
 
     @doc """
     What Enter sends: `:empty`, a `/model` switch with its ref, or the

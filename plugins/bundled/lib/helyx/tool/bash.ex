@@ -81,22 +81,14 @@ defmodule Helyx.Tool.Bash do
     result(Helyx.Watchdog.start([bash, "-c", command], cwd, nil))
   end
 
-  # The text of a failed start names perl at its head (see
-  # `Helyx.Watchdog.start/4`), so the head is kept, with the cut of the
-  # harness providers. The reason of a watchdog that did not fork is at the
-  # tail.
-  defp result({:failed, text}), do: not_started(Helyx.HarnessIO.cap_error(text))
-
-  defp result({:not_started, _port, reason}),
-    do: not_started(Helyx.Text.truncate(reason, :tail))
+  # `Helyx.Watchdog.start/4` cuts the reason of a failed start.
+  defp result({:error, reason}), do: {:error, "the command did not start: " <> reason}
 
   # `pre`, perl's own startup output, stays in front of the output.
   defp result({:started, port, pre}) do
     {output, dropped?, status} = collect(port, pre, false)
     {:ok, render(output, dropped?, status)}
   end
-
-  defp not_started(reason), do: {:error, "the command did not start: " <> reason}
 
   defp render(output, dropped?, status) do
     text =

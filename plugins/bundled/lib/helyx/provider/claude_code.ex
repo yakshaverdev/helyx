@@ -99,8 +99,8 @@ defmodule Helyx.Provider.ClaudeCode do
         resume: opts[:resume_id]
       }
 
-      # A program that did not start has no open port to close:
-      # `Helyx.Watchdog.start/4` read its reason up to the exit status.
+      # A program that did not start has no port: `Helyx.Watchdog.start/4`
+      # closed it.
       case launch(state) do
         %State{terminal: nil} = state -> {:ok, state}
         %State{terminal: {:error, reason}} -> {:error, reason}

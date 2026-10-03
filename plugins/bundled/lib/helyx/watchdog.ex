@@ -80,6 +80,11 @@ defmodule Helyx.Watchdog do
   @doc false
   def stdin_max_bytes, do: @stdin_max_bytes
 
+  # The longest reason of a start that failed: it goes into a notice of the
+  # harness providers and into the bash tool's error. perl's warnings quote
+  # the environment as raw bytes, so the cut also drops invalid bytes.
+  @reason_max_bytes Helyx.Provider.max_notice_bytes()
+
   @doc false
   # Opens the port for `argv` in `cwd` and runs the handshake. With `input`
   # nil the command's stdin is /dev/null. With `:open` the command reads
@@ -89,10 +94,11 @@ defmodule Helyx.Watchdog do
   #
   #   * `{:started, port, pre}`: the go-ahead is sent. `pre` is what came
   #     before the marker, perl's own startup output.
-  #   * `{:not_started, port, reason}`: the watchdog did not fork; `reason`
-  #     is the rest of the stream up to the exit status, read here.
-  #   * `{:failed, text}`: no command ran, and the port is closed: the
-  #     watchdog gave no marker. The text names perl.
+  #   * `{:error, reason}`: no command ran, and the port is closed. Either
+  #     the watchdog did not fork, and `reason` is the tail of the rest of
+  #     the stream up to the exit status, read here; or it gave no marker,
+  #     and `reason` is a head that names perl. `reason` is valid UTF-8 of
+  #     at most `@reason_max_bytes`.
   #
   # Only a group marker leads to the go-ahead, after the group is held: a
   # command never runs without its group in the hands. With no marker, the
@@ -123,13 +129,14 @@ defmodule Helyx.Watchdog do
 
     case read_marker(port, nonce, "", "") do
       {:not_started, acc} ->
-        {:not_started, port, read_to_exit(port, acc)}
+        {:error, port |> read_to_exit(acc) |> Helyx.Text.cap(@reason_max_bytes, :tail)}
 
       # Names the watchdog, not a cause: perl may be gone, fail to compile
       # the watchdog, or never run (an argv over the OS limit).
       {:no_marker, text} ->
         close(port)
-        {:failed, "the perl watchdog gave no marker: " <> text}
+        reason = "the perl watchdog gave no marker: " <> text
+        {:error, Helyx.Text.cap(reason, @reason_max_bytes, :head)}
 
       {group, pre} ->
         Helyx.Tool.hold({:command, group})
