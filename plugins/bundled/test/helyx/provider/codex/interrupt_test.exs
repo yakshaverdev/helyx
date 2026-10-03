@@ -165,6 +165,19 @@ defmodule Helyx.Provider.Codex.InterruptTest do
     assert {[{:stop, :item_of_ended_turn}], _state} = pump(Codex, state, [], fn _ -> false end)
   end
 
+  test "a turn's end settles an unanswered turn/interrupt: its id is no longer due",
+       %{bin: bin, work: work} do
+    fresh(bin, 1, tid(), [])
+    on(bin, 1, "turn/interrupt", [turn_end(tid(), "interrupted")])
+    {:ok, state} = connect(work)
+    {_turn, _, state} = turn_on(state)
+    {from, [], state} = ask(state, {:interrupt, "t1"})
+    {actions, state} = pump(Codex, state, [], replied?(from))
+    assert {:reply, from, :ok} in actions
+    assert state.due == %{}
+    close(state)
+  end
+
   # The error answer to turn 1's `turn/interrupt` comes after turn 2's
   # interrupt went out: it answers no interrupt (review round 1 of #365).
   test "a late turn/interrupt error does not answer the next turn's interrupt",

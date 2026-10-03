@@ -1017,6 +1017,20 @@ defmodule Helyx.TUITest do
       assert String.ends_with?(value(state), marker(9, 6))
     end
 
+    test "a deleted marker drops its paste, and a new marker gets a new id", %{core: core} do
+      state = mounted(core, "drop", [["ok"]])
+      state = state |> paste(lines(6)) |> paste(lines(7)) |> press("left") |> press("backspace")
+      assert value(state) == marker(2, 7)
+      assert Map.keys(state.composer.pastes) == [marker(2, 7)]
+
+      state = state |> press("end") |> paste(lines(8))
+      assert value(state) == marker(2, 7) <> marker(3, 8)
+
+      state = state |> press("enter") |> drain()
+      assert [prompt, _answer] = ViewModel.cells(state.vm)
+      assert Helyx.Message.text(prompt) == lines(7) <> lines(8)
+    end
+
     test "a marker is one unit for every key", %{core: core} do
       state = mounted(core, "unit", [])
 

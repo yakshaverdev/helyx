@@ -26,7 +26,7 @@ The kitty keyboard protocol is not on; it is #108. ExRatatui 0.14.1 has no optio
 No public function changes. The state of `Helyx.TUI` changes:
 
 - `input` is an `ExRatatui.textarea_new/0` reference, drawn as `ExRatatui.Widgets.Textarea`, in place of the one-line `TextInput`.
-- `pastes` maps each marker text to the full paste it stands for.
+- `pastes` maps the text of each live marker to the full paste it stands for. `count` is the id of the last marker.
 
 The status bar key help adds ` · Ctrl+J newline`.
 
@@ -38,9 +38,9 @@ The status bar key help adds ` · Ctrl+J newline`.
 | Composer text | Unbounded human input, as before (#29) | Nothing is cut |
 | Paste line count | More than 5 lines is a marker. A line ends at a new line, and a final new line does not start a line: `"a\nb\n"` is 2 lines. CRLF and a lone CR count as one new line each | The paste shows as the marker, and the full text goes in `pastes` |
 | Paste text | Valid UTF-8: ExRatatui gives it as a Rust `String` (#381). CRLF and a lone CR become LF. Control characters other than tab and LF drop, the same set the transcript drops, so no escape sequence reaches the terminal through the composer. Size is unbounded human input (#29) | None: no source gives other text |
-| `pastes` map | One entry for each paste of more than 5 lines since the last send or `/model` switch. An entry stays after its marker is deleted. The map empties when a send or a `/model` switch empties the composer, so the marker ids start at `#1` again | A rejected send keeps the map with the text |
+| `pastes` map | One entry for each live marker: Backspace or Delete removes a marker and its entry (#427). The map and `count` empty when a send or a `/model` switch empties the composer, so the marker ids start at `#1` again | A rejected send keeps the map with the text |
 | An edit with pastes pending | Each key, paste, or new line reads the composer text once (`textarea_get_value/1`), walks the cursor line once to turn the code point column into a byte offset, and searches the text once for all pending markers (`:binary.matches/2`). ExRatatui has no call to delete a range or to set the cursor, and its Right key stops short of zero-width characters at the end of a line. So to remove a marker or to move past it, the TUI sets the composer to the text after the new cursor (`textarea_set_value/2`) and inserts the text before it (`textarea_insert_str/2`), which leaves the cursor exactly there. The cost is linear in the composer text for each edit. A marker is 24 characters plus the digits of the id and the line count | With no pending paste, keys go to the widget as before, and text is inserted without a search |
-| Send | The composer text with each live marker replaced by its paste, in one pass (`String.replace/3` with the list of markers), so a marker inside a paste is not replaced again. A marker id is not used twice before the map empties, so each marker stands for exactly one paste. The `/model` rule reads this text | |
+| Send | The composer text with each live marker replaced by its paste, in one pass (`String.replace/3` with the list of markers), so a marker inside a paste is not replaced again. `count` only grows until the map empties. Thus a marker id is not used twice before then, and each marker stands for exactly one paste. The `/model` rule reads this text | |
 
 Accepted holes:
 
