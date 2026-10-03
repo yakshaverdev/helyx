@@ -1,6 +1,6 @@
 defmodule Helyx.Session.ProviderProcessToolsTest do
-  # Helyx tool calls of a connected turn (`docs/features/long-lived-harness.md`,
-  # "Helyx tool calls"), driven through the session with the fake connected
+  # Helyx tool calls of a connected turn (`docs/features/one-provider-path.md`,
+  # "Helyx tools inside the program"), driven through the session with the fake connected
   # provider: the session's queue and its rules, and the turn cleanup at an
   # abort, a crash, and a normal end.
   use ExUnit.Case, async: true

@@ -5,8 +5,8 @@ defmodule Helyx.Session.Queue do
   # that a turn sent to its provider process and whose request is open, in
   # send order, as `{from, steer_id, text, state}` (`from` is the ref of the
   # request). Each queue holds at most 32, and the queued steers and the
-  # ledger share the 32 of the steers (docs/features/long-lived-harness.md,
-  # "Steer").
+  # ledger share the 32 of the steers (docs/features/session-lifecycle.md,
+  # "Bounds").
   #
   # The states of a ledger entry:
   #

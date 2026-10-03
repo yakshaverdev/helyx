@@ -23,9 +23,8 @@ defmodule Helyx.Session.Hands do
   `start_provider/3` starts the provider process (ADR 0007) with an armed
   kill. When the provider process ends, the hands release its handles and
   send `{:provider_down, pid, reason}`. The deadlines and the reasons are in
-  `docs/features/long-lived-harness.md`, sections "Deadlines", "Bounds",
-  and "Built in #199", with the old names of
-  `docs/features/one-provider-path.md`, section "Renames".
+  `docs/features/session-lifecycle.md`, sections "Deadlines", "Bounds",
+  and "Provider death".
   """
 
   use GenServer

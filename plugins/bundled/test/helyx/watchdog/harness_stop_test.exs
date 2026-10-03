@@ -1,6 +1,6 @@
 defmodule Helyx.Watchdog.HarnessStopTest do
   # The stop path of a provider process end to end (#199,
-  # `docs/features/long-lived-harness.md`, "Stop"): a program under the
+  # `docs/features/long-lived-harness.md`, "Program lifecycle"): a program under the
   # watchdog, a session, and the hands. The stop sends no end of input: the
   # closed port makes the watchdog stop the program group.
   use ExUnit.Case, async: true

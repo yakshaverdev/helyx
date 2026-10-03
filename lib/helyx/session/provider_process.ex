@@ -67,7 +67,7 @@ defmodule Helyx.Session.ProviderProcess do
 
   # `open` holds the kind and the kill of each request without a reply, by
   # its `from`. The session bounds each kind of request (`Bounds` in
-  # `docs/features/long-lived-harness.md`), so the loop does not.
+  # `docs/features/session-lifecycle.md`), so the loop does not.
   defp loop(proc) do
     step =
       receive do

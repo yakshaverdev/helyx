@@ -5,7 +5,7 @@ defmodule Helyx.Session.Server.Records do
   # operation changes the open assistant message, the transcript, the
   # session file, and emits its events together. The rule: no message goes
   # between a call and its result. A call still open gets its `aborted`
-  # result before the next message joins (docs/features/long-lived-harness.md).
+  # result before the next message joins (docs/features/session-lifecycle.md).
 
   require Logger
 
@@ -49,7 +49,7 @@ defmodule Helyx.Session.Server.Records do
   end
 
   # The first result of a call in the open message closes the message
-  # (`docs/features/long-lived-harness.md`, "Built in #385"). The message has
+  # (`docs/features/session-lifecycle.md`, "Message close"). The message has
   # no usage: the terminal keeps the turn usage. A result goes to the first
   # open call with its id (`Transcript.open_calls/1`), so the transcript,
   # the file, and the replay agree. A result for no open call is dropped.

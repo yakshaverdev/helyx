@@ -15,7 +15,7 @@ defmodule Helyx.Provider do
   `stream/3` of `Helyx.Provider.Loop` and adds `use Helyx.Provider.Loop`,
   which defines the three callbacks. A provider can also implement the
   three callbacks itself and run the whole turn and its own tools
-  (`docs/features/long-lived-harness.md`).
+  (`docs/features/one-provider-path.md`).
 
   ## Callbacks
 
