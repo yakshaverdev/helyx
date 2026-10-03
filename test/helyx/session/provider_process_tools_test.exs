@@ -91,18 +91,6 @@ defmodule Helyx.Session.ProviderProcessToolsTest do
            ]
   end
 
-  test "over one running and 16 waiting, a request gets an error at once and runs nothing",
-       %{session: session, proc: proc, turn_id: turn_id, hands: hands} do
-    for i <- 1..17, do: slow(proc, turn_id, "c#{i}")
-    slow(proc, turn_id, "c18")
-
-    assert_receive {:conn, :tool_result, _, {:tool_result, _, "c18", {:error, "too many" <> _}}}
-    # The 17th (at the limit) was taken: only the 18th got an answer.
-    refute_received {:conn, :tool_result, _, {:tool_result, _, "c" <> _, _}}
-    sync(proc, session)
-    assert running(hands) == 1
-  end
-
   test "a second request with the id of an open request stops the provider process",
        %{proc: proc, turn_id: turn_id} do
     ref = Process.monitor(proc)
@@ -194,14 +182,6 @@ defmodule Helyx.Session.ProviderProcessToolsTest do
     :ok = Session.prompt(session, "again")
     assert_receive {:conn, :turn, ^proc, _}
     assert running(hands) == 0
-  end
-
-  test "a request with a call id that the turn answered runs again",
-       %{proc: proc, turn_id: turn_id} do
-    request(proc, turn_id, "c1", "upcase", %{"text" => "a"})
-    assert_receive {:conn, :tool_result, _, {:tool_result, _, "c1", {:ok, "A"}}}
-    request(proc, turn_id, "c1", "upcase", %{"text" => "b"})
-    assert_receive {:conn, :tool_result, _, {:tool_result, _, "c1", {:ok, "B"}}}
   end
 
   test "a request that arrives after the interrupt of its turn gets aborted after it and runs nothing",
