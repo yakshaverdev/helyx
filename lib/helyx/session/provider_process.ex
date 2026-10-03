@@ -118,6 +118,11 @@ defmodule Helyx.Session.ProviderProcess do
       else: {:stop, {:bad_action, action}}
   end
 
+  # An empty text or thinking delta adds nothing: no block and no event.
+  defp action({:event, turn_id, {kind, ""}}, proc)
+       when is_binary(turn_id) and kind in [:text_delta, :thinking_delta],
+       do: {:ok, proc}
+
   # An event passes the check of a provider event. A tool request goes to
   # the session with this pid and its rejection reason, and the session
   # answers it, also after its turn. A terminal goes as `{:stream_end,
@@ -125,8 +130,8 @@ defmodule Helyx.Session.ProviderProcess do
   # the loop: the provider's turn is then in an unknown state.
   defp action({:event, turn_id, event}, proc) when is_binary(turn_id) do
     case Stream.check(event) do
-      {:send, {:tool_request, call}, rejection} ->
-        message = {:tool_request, self(), turn_id, call, rejection}
+      {:send, {:tool_request, call, bytes}, rejection} ->
+        message = {:tool_request, self(), turn_id, call, bytes, rejection}
         sent(Stream.send_checked(proc.session, message), proc)
 
       {:send, event, _rejection} ->

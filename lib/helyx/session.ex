@@ -172,7 +172,7 @@ defmodule Helyx.Session do
       state
       | model_context: List.first(Helyx.Core.plugins(core, Helyx.ModelContext)),
         compaction: List.first(Helyx.Core.plugins(core, Helyx.Compaction)),
-        tools: Enum.map(tools, fn {_tool, spec} -> spec end),
+        tool_specs: Enum.map(tools, fn {_tool, spec} -> spec end),
         tool_modules: Map.new(tools, fn {tool, spec} -> {spec.name, tool} end)
     }
 

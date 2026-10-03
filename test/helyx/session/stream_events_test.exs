@@ -313,6 +313,21 @@ defmodule Helyx.Session.StreamEventsTest do
       assert %{conn: nil, transcript: [%{role: :user}]} = :sys.get_state(Session.pid(session))
     end
 
+    test "an empty delta makes no block and no event", %{core: core} do
+      events = harness_turn(core, "empty_between")
+
+      assert [_user, %{content: [%Helyx.Message.Text{text: "abok"}]}] = messages(events)
+      updates = for %Event{type: :message_update, data: d} <- events, do: d
+      assert updates == [%{text_delta: "a"}, %{text_delta: "b"}, %{text_delta: "ok"}]
+    end
+
+    test "a turn of only empty deltas then done ends normally", %{core: core} do
+      events = harness_turn(core, "empty_only")
+
+      assert stop_reason(events) == :end_turn
+      refute Enum.any?(events, &(&1.type == :message_update))
+    end
+
     test "a result goes to the first open call with its id", %{core: core} do
       events = harness_turn(core, "dup_id")
       ends = for %Event{type: :tool_execution_end, data: d} <- events, do: d.message

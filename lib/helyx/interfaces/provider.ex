@@ -90,14 +90,16 @@ defmodule Helyx.Provider do
       session closes the open assistant message and gives `aborted` to
       every call that is still open
     * `{:tool_request, call_id, name, arguments}`: run the Helyx tool
-      `name`. `arguments` follows the rule of a `tool_call`
+      `name`. `arguments` follows the rule of a `tool_call`. The running
+      and waiting requests of a turn hold at most 8 MiB of calls, counted
+      as a tool call is below; a request past it gets an error result
     * `:turn_start`: the provider started a turn by itself
 
   The text and thinking deltas and the tool calls of the open assistant
   message hold at most 8 MiB together (`@max_message_bytes` in
   `Helyx.Session.Turn`). A tool call counts as the JSON of its id, name,
   and checked arguments. An event past the bound stops the provider process and
-  fails the turn.
+  fails the turn. Core drops an empty text or thinking delta.
 
   `init/3` and every request from the session have a deadline. When the
   reply has not come by it, Core kills the provider process, and a running

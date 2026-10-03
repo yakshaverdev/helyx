@@ -118,6 +118,22 @@ defmodule Helyx.Session.ProviderProcessToolsTest do
                     {:tool_result, _, "c1", {:error, "tool call not run" <> _}}}
   end
 
+  test "a request over the byte bound of the open calls is not run; the next one under it runs",
+       %{proc: proc, turn_id: turn_id} do
+    half = String.duplicate("x", 4 * 1_048_576)
+    request(proc, turn_id, "c1", "slow", %{"ms" => 200, "text" => half})
+    request(proc, turn_id, "c2", "upcase", %{"text" => half})
+    request(proc, turn_id, "c3", "upcase", %{"text" => "c"})
+    request(proc, turn_id, "c4", "upcase", %{"text" => String.duplicate("x", 8 * 1_048_576)})
+
+    assert [
+             {:tool_result, _, "c2", {:error, "Helyx tool calls too large" <> _}},
+             {:tool_result, _, "c4", {:error, "Helyx tool calls too large" <> _}},
+             {:tool_result, _, "c1", {:ok, ^half}},
+             {:tool_result, _, "c3", {:ok, "C"}}
+           ] = [receive_result(), receive_result(), receive_result(), receive_result()]
+  end
+
   test "a withdrawn request gets aborted: a waiting one at once, the running one after its kill; the next one runs",
        %{session: session, proc: proc, turn_id: turn_id, hands: hands} do
     slow(proc, turn_id, "c1")

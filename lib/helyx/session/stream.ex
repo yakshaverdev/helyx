@@ -113,13 +113,13 @@ defmodule Helyx.Session.Stream do
 
   # A provider asks the session to run a Helyx tool. The arguments get the
   # checks of a tool call, and the checked call goes on as
-  # `{:tool_request, call}`; a call with a rejection reason gets it, and
-  # the session answers it with an error result
-  # (`Helyx.Session.Server.Tools`).
+  # `{:tool_request, call, bytes}`, with the bytes of a tool call; a call
+  # with a rejection reason gets it, and the session answers it with an
+  # error result (`Helyx.Session.Server.ToolRuns`).
   def check({:tool_request, id, name, args}) do
     case tool_call(%Message.ToolCall{id: id, name: name, arguments: args}) do
-      {:send, {:tool_call, call, _bytes}, rejection} ->
-        {:send, {:tool_request, call}, rejection}
+      {:send, {:tool_call, call, bytes}, rejection} ->
+        {:send, {:tool_request, call, bytes}, rejection}
 
       # The call of the error, so no raw argument text is in it.
       {:bad, {:error, {:bad_stream_event, {:tool_call, call}}}} ->

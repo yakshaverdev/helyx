@@ -10,7 +10,7 @@ One tool call whose arguments do not decode does not fail the turn. The call joi
 
 - A provider whose model gave arguments that do not decode to a JSON object sends a normal `{:tool_call, call}` whose `arguments` is the raw argument text, a binary (`Helyx.Provider`). The same holds for `{:tool_request, id, name, arguments}`.
 - `Helyx.Session.Stream.check/1` gives such a call `%{}` as arguments and the rejection reason `the arguments are not a valid JSON object`, next to the reason of an integer over the digit limit. Arguments that are neither a map nor a binary stay a malformed event.
-- The session answers the request with `tool call not run: the arguments are not a valid JSON object` (`Helyx.Session.Server.Tools`), and the call never runs.
+- The session answers the request with `tool call not run: the arguments are not a valid JSON object` (`Helyx.Session.Server.ToolRuns`), and the call never runs.
 - `Helyx.Provider.OpenAI` sends the raw text of each call whose arguments are not a JSON object. A call with no id still fails the turn at the Core boundary (#345).
 
 ## Bounds

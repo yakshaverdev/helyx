@@ -666,6 +666,8 @@ defmodule Helyx.Test.Connected do
   #               then the call's result
   #     "call_over_bound"  8 MiB of deltas, then a call
   #     "late_result"  a call, a text message, then the call's result
+  #     "empty_between"  text, an empty text and thinking delta, text
+  #     "empty_only"  only empty deltas, then done: no text "ok"
   #
   # A steer answers :ok with no `user_message` unless the model says
   # otherwise; the "steer_" models are "hang" for a turn:
@@ -699,6 +701,12 @@ defmodule Helyx.Test.Connected do
     "neg_cut" => [{:resume, "a", -1}],
     "orphan" => [{:tool_result, "nope", {:ok, "lost"}}],
     "raw_result_id" => [{:tool_result, <<255>>, {:ok, "lost"}}],
+    "empty_between" => [
+      {:text_delta, "a"},
+      {:text_delta, ""},
+      {:thinking_delta, ""},
+      {:text_delta, "b"}
+    ],
     "late_result" => [
       {:tool_call, %ToolCall{id: "t", name: "read", arguments: %{}}},
       {:message_end, :tool_use, %{}},
@@ -929,6 +937,8 @@ defmodule Helyx.Test.Connected do
         @done
       ]
   end
+
+  defp turn_events("empty_only"), do: [{:text_delta, ""}, {:thinking_delta, ""}, @done]
 
   defp turn_events("call_over_bound"), do: bound_message() ++ [{:tool_call, bound_call()}, @done]
 
