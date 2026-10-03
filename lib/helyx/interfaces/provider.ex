@@ -13,8 +13,8 @@ defmodule Helyx.Provider do
   Every provider runs in one provider process per session. An API provider,
   which calls a model and lets the session run the tools, implements
   `stream/3` of `Helyx.Provider.Loop` and adds `use Helyx.Provider.Loop`,
-  which defines the three callbacks. A harness provider drives an agent
-  program that runs the whole turn and its own tools
+  which defines the three callbacks. A provider can also implement the
+  three callbacks itself and run the whole turn and its own tools
   (`docs/features/long-lived-harness.md`).
 
   ## Callbacks
@@ -24,7 +24,8 @@ defmodule Helyx.Provider do
   implements `release/3`.
 
     * `init/3` starts the provider. `opts` carry `:core`, `:session_id`,
-      `:cwd`, and `:resume_id`, the id of a program session to resume or nil.
+      `:cwd`, and `:resume_id`, the resume id that the provider gave in an
+      earlier `{:resume, id, cut}` event, or nil.
     * `request/3` gets a `t:request/0` from Core with its `from`. The
       provider replies now or later with the action `{:reply, from, value}`.
     * `info/2` gets every other message of the provider process.
@@ -41,15 +42,15 @@ defmodule Helyx.Provider do
 
     * `{:turn, ...}`, `{:interrupt, ...}`: `:ok` or `{:error, reason}`. An
       error reply stops the provider process.
-    * `{:steer, ...}`: `:ok` when the program has the steer, `:rejected`
-      when it is confirmed that the program did not get it, and
+    * `{:steer, ...}`: `:ok` when the provider has the steer, `:rejected`
+      when it is confirmed that the provider did not get it, and
       `{:error, reason}` when it is not known.
     * `{:tool_result, ...}`, `{:context, ...}`: `:ok` when written. A
       tool result can arrive after the interrupt or the next turn of its
       turn. Each call still gets exactly one result.
-    * `:close`: `:ok` after the program exited.
-    * `:idle_close`: `:ok` after the program exited, or `:busy` when the
-      program still runs work of its own.
+    * `:close`: `:ok` after the provider closed.
+    * `:idle_close`: `:ok` after the provider closed, or `:busy` when the
+      provider still runs work of its own.
 
   ## Events
 
@@ -82,13 +83,15 @@ defmodule Helyx.Provider do
       that message first. The provider cuts the text to the tool result
       limits; a text over `@max_tool_result_bytes` (`Helyx.Session.Stream`)
       fails the turn
-    * `{:resume, id, cut}`: the program started a fresh program session
-    * `{:user_message, steer_id}`: the program took a steer. The
+    * `{:resume, id, cut}`: the provider started fresh, with the new
+      resume id `id`, and left `cut` transcript messages out of what it
+      sent
+    * `{:user_message, steer_id}`: the provider took a steer. The
       session closes the open assistant message and gives `aborted` to
       every call that is still open
     * `{:tool_request, call_id, name, arguments}`: run the Helyx tool
       `name`. `arguments` follows the rule of a `tool_call`
-    * `:turn_start`: the program started a turn by itself
+    * `:turn_start`: the provider started a turn by itself
 
   `init/3` and every request from the session have a deadline. When the
   reply has not come by it, Core kills the provider process, and a running

@@ -40,7 +40,7 @@ defmodule Helyx.Session.Transcript do
   # keeps the open call, so every resume adds the same results at the same
   # place. A transcript with no open calls is unchanged.
   #
-  # The file counts the messages before each program session. That count
+  # The file counts the messages before each resume id. That count
   # does not include the inserted results. The live session after a resume
   # counted them. So each count grows by the results inserted at or before
   # it. A count exactly at an insert point can also come from an entry
@@ -92,14 +92,14 @@ defmodule Helyx.Session.Transcript do
     end)
   end
 
-  # The program session to resume, or nil: the last program session of
-  # `provider` in `resume_ids` (its id and the number of transcript
-  # messages before it started), when the last assistant message of the
-  # transcript came from this provider after that session started. A
-  # message of the program session shows that it read the replay and the
-  # prompt. Otherwise the provider does not have the transcript's end
-  # (another provider answered last, or a fresh session ended before its
-  # first message), and a fresh session gets it from the provider.
+  # The resume id to resume, or nil: the last resume id of `provider` in
+  # `resume_ids` (the id and the number of transcript messages before the
+  # provider gave it), when the last assistant message of the transcript
+  # came from this provider after that point. A message under the resume
+  # id shows that the provider read the replay and the prompt. Otherwise
+  # the provider does not have the transcript's end (another provider
+  # answered last, or the provider started fresh and the turn ended before
+  # its first message), and the provider gets it when it starts fresh.
   @spec resumable([Message.t()], %{String.t() => {String.t(), non_neg_integer()}}, String.t()) ::
           String.t() | nil
   def resumable(transcript, resume_ids, provider) do

@@ -18,8 +18,8 @@ defmodule Helyx.Session do
   0007). An API provider runs it with `Helyx.Provider.Loop`: it calls the
   model until an assistant message has no tool calls, and its tool calls
   run on the session's hands (`Helyx.Session.Hands`) one at a time, in
-  call order. A harness provider runs the whole turn and its own tools in
-  its program. A turn ends on the terminal event of the provider. It fails when its first prepare Task fails or the provider
+  call order. A provider without `Helyx.Provider.Loop` can run the whole
+  turn and its own tools itself. A turn ends on the terminal event of the provider. It fails when its first prepare Task fails or the provider
   process ends first; a failed context build goes to the provider. Each
   tool call with no result gets an `aborted` error result. A follow-up
   during a turn waits in a queue. A steer waits in a queue until the

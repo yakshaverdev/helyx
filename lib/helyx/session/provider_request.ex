@@ -62,10 +62,10 @@ defmodule Helyx.Session.ProviderRequest do
   process goes on.
   """
   # After an error answer to a turn or an interrupt Helyx does not know the
-  # state of the program, so the loop ends: the port closes, and the
-  # watchdog stops the program with no end of input. An error answer to a
-  # steer leaves only that steer unknown, so the loop goes on. An idle
-  # close with `:ok` exited as a close; with `:busy` the program stays.
+  # state of the provider, so the loop ends and the provider process stops.
+  # An error answer to a steer leaves only that steer unknown, so the loop
+  # goes on. An idle close with `:ok` closed the provider as a close does;
+  # with `:busy` the provider stays.
   @spec stop_after(atom(), term()) :: {:stop, term()} | nil
   def stop_after(kind, :ok) when kind in [:close, :idle_close], do: {:stop, :closed}
 
