@@ -1,8 +1,7 @@
 defmodule Helyx.Provider.Codex.Check do
   @moduledoc false
   # The shape check of the lines of `Helyx.Provider.Codex`. It reads the
-  # provider state as a map: `due`, `thread`, `turn`, `resume`, and
-  # `items`.
+  # provider state as a map: `due`, `thread`, and `resume`.
 
   alias Helyx.Provider.Codex.{Items, Tools}
 
@@ -42,7 +41,7 @@ defmodule Helyx.Provider.Codex.Check do
 
   def malformed(%{"method" => method, "params" => %{"threadId" => thread} = params}, state)
       when method in @turn_lines and thread == state.thread and is_binary(thread),
-      do: if(line?(method, params) and in_order?(method, params, state), do: nil, else: method)
+      do: if(line?(method, params), do: nil, else: method)
 
   # A turn or item line of another thread. With no string thread id (the
   # schema requires one), it can be a line of this thread.
@@ -53,32 +52,6 @@ defmodule Helyx.Provider.Codex.Check do
   def malformed(%{"method" => method}, _state) when method in @turn_lines, do: method
 
   def malformed(_object, _state), do: nil
-
-  # The order of the program's items in the running turn: a tool item
-  # completes only after its start. A line that closes the assistant
-  # message (the first result of its calls, or the `item/started` of a
-  # `userMessage` with a string `clientId`, a steer) comes only when no
-  # call of a closed message runs, because the session gives such a call
-  # `aborted` (`Helyx.Provider`).
-  defp in_order?(
-         method,
-         %{"turnId" => turn, "item" => %{"id" => id} = item},
-         %{turn: turn} = state
-       )
-       when method in ["item/started", "item/completed"] do
-    %{open: open, calls: calls} = state.items
-    tool? = method == "item/completed" and Items.tool_item?(item["type"])
-
-    closes? =
-      (tool? and id in calls) or
-        (method == "item/started" and item["type"] == "userMessage" and
-           is_binary(item["clientId"]))
-
-    (not tool? or is_map_key(open, id)) and
-      not (closes? and Enum.any?(Map.keys(open), &(&1 not in calls)))
-  end
-
-  defp in_order?(_method, _params, _state), do: true
 
   # An answer is an error object or a result, never both. A resume fails
   # only with the lost-thread error of the research note, and succeeds only

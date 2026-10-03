@@ -28,8 +28,6 @@ defmodule Helyx.Provider.ClaudeCode.Turn do
     steers: %{},
     chunks: [],
     replay?: false,
-    open?: false,
-    calls?: false,
     program?: false,
     usage: %{}
   ]
@@ -40,18 +38,14 @@ defmodule Helyx.Provider.ClaudeCode.Turn do
   # The program started the turn's line (`command_lifecycle` `started`).
   defguard started?(turn) when turn.messages == nil
 
-  def delta(turn, delta) do
-    case delta do
-      %{"type" => "text_delta", "text" => text} when is_binary(text) and text != "" ->
-        {[{:text_delta, text}], %{turn | open?: true}}
+  def delta(%{"type" => "text_delta", "text" => text}) when is_binary(text) and text != "",
+    do: [{:text_delta, text}]
 
-      %{"type" => "thinking_delta", "thinking" => text} when is_binary(text) and text != "" ->
-        {[{:thinking_delta, text}], %{turn | open?: true}}
+  def delta(%{"type" => "thinking_delta", "thinking" => text})
+      when is_binary(text) and text != "",
+      do: [{:thinking_delta, text}]
 
-      _ ->
-        {[], turn}
-    end
-  end
+  def delta(_delta), do: []
 
   # The text of an assistant line already came as deltas; only its tool
   # calls and its usage are new.
@@ -61,20 +55,15 @@ defmodule Helyx.Provider.ClaudeCode.Turn do
           do: {:tool_call, %Message.ToolCall{id: id, name: name, arguments: input}}
 
     usage = if is_map(message["usage"]), do: message["usage"], else: turn.usage
-    some? = calls != []
-    {calls, %{turn | open?: turn.open? or some?, calls?: turn.calls? or some?, usage: usage}}
+    {calls, %{turn | usage: usage}}
   end
 
-  def user(turn, blocks) do
-    results =
-      for %{"type" => "tool_result", "tool_use_id" => id} = block <- blocks do
-        status = if block["is_error"] == true, do: :error, else: :ok
-        {:tool_result, id, {status, Helyx.Text.truncate(result_text(block["content"]), :tail)}}
-      end
-
-    case results do
-      [] -> {[], turn}
-      _ -> {close_message(turn) ++ results, %{turn | open?: false, calls?: false}}
+  # The tool results of a user line. The session closes the assistant
+  # message at the first result of one of its calls.
+  def results(blocks) do
+    for %{"type" => "tool_result", "tool_use_id" => id} = block <- blocks do
+      status = if block["is_error"] == true, do: :error, else: :ok
+      {:tool_result, id, {status, Helyx.Text.truncate(result_text(block["content"]), :tail)}}
     end
   end
 
@@ -83,19 +72,8 @@ defmodule Helyx.Provider.ClaudeCode.Turn do
   def steer_start(turn, uuid) do
     {steer_id, steers} = Map.pop!(turn.steers, uuid)
     if turn.wait, do: :erlang.cancel_timer(turn.wait)
-    events = close_message(turn) ++ [{:user_message, steer_id}]
     interrupt = turn.interrupt && %{turn.interrupt | result?: false}
-
-    turn = %{
-      turn
-      | steers: steers,
-        open?: false,
-        calls?: false,
-        wait: nil,
-        interrupt: interrupt
-    }
-
-    {events, turn}
+    {[{:user_message, steer_id}], %{turn | steers: steers, wait: nil, interrupt: interrupt}}
   end
 
   def errors(%{"errors" => errors}) when is_list(errors), do: Enum.filter(errors, &is_binary/1)
@@ -111,11 +89,6 @@ defmodule Helyx.Provider.ClaudeCode.Turn do
     text = if text == "" and is_binary(result["result"]), do: result["result"], else: text
     {:error, {:claude_code, HarnessIO.cap_error(result["subtype"]), HarnessIO.cap_error(text)}}
   end
-
-  defp close_message(%__MODULE__{open?: false}), do: []
-
-  defp close_message(turn),
-    do: [{:message_end, if(turn.calls?, do: :tool_use, else: :end_turn), turn.usage}]
 
   defp result_text(text) when is_binary(text), do: text
 

@@ -470,7 +470,7 @@ defmodule Helyx.Provider.ClaudeCode do
          },
          %State{turn: turn} = state
        ),
-       do: emit(state, Turn.delta(turn, delta))
+       do: emit(state, {Turn.delta(delta), turn})
 
   defp translate(
          %{"type" => "assistant", "message" => %{"content" => blocks} = message},
@@ -484,7 +484,7 @@ defmodule Helyx.Provider.ClaudeCode do
          %State{turn: turn} = state
        )
        when is_list(blocks),
-       do: emit(state, Turn.user(turn, blocks))
+       do: emit(state, {Turn.results(blocks), turn})
 
   defp translate(_object, state), do: {[], state}
 

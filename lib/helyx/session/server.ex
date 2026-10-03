@@ -130,19 +130,19 @@ defmodule Helyx.Session.Server do
   def handle_info(
         {:stream_event, turn_id, {:message_end, stop_reason, usage}},
         %State{activity: %Turn{id: turn_id}} = state
-      ) do
-    {state, _assistant, calls} = Messages.close_assistant(state, stop_reason, usage)
-    state = Enum.reduce(calls, state, &emit(&2, :tool_execution_start, %{tool_call: &1}))
-    {:noreply, put_in(state.activity.partial, nil)}
-  end
+      ),
+      do: {:noreply, Messages.end_assistant(state, stop_reason, usage)}
 
-  # A result goes to the first open call with its id
+  # The first result of a call in the open message closes that message
+  # first. A result goes to the first open call with its id
   # (`Transcript.open_calls/1`), so the transcript, the file, and the
   # replay agree. A result for no open call is dropped.
   def handle_info(
         {:stream_event, turn_id, {:tool_result, call_id, result}},
         %State{activity: %Turn{id: turn_id}} = state
       ) do
+    state = Messages.close_for_result(state, call_id)
+
     case Enum.find(Transcript.open_calls(state.transcript), &(&1.id == call_id)) do
       nil -> {:noreply, state}
       call -> {:noreply, Messages.record_result(call, result, state)}
@@ -438,6 +438,7 @@ defmodule Helyx.Session.Server do
     state =
       state
       |> Steering.end_turn(turn.id, false)
+      |> Messages.close_with_calls()
       |> Messages.abort_open_calls()
       |> Messages.close_partial_message(:aborted, :aborted)
       |> Steering.drop_queues()
@@ -587,8 +588,10 @@ defmodule Helyx.Session.Server do
     put_in(state.activity.provider, pid)
   end
 
-  # A partial assistant message is closed with a failure stop reason so
-  # clients do not keep it open. It is not added to the transcript.
+  # A partial assistant message with a tool call joins the transcript
+  # (`Messages.close_with_calls/1`), and its calls get `aborted`. One with
+  # text only is closed with a failure stop reason so clients do not keep
+  # it open, and is not added to the transcript.
   # A turn can fail after a message whose calls have no result yet. A failed
   # turn runs the turn cleanup of the hands before the next turn: its
   # prepare Task can still run.
@@ -596,6 +599,7 @@ defmodule Helyx.Session.Server do
     state =
       state
       |> Steering.end_turn(turn.id, false)
+      |> Messages.close_with_calls()
       |> Messages.abort_open_calls()
       |> Messages.close_partial_message(:error, reason)
       |> Steering.drop_queues()

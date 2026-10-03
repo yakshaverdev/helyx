@@ -51,20 +51,17 @@ defmodule Helyx.Provider.Codex.CommandsTest do
 
     assert [%{stop_reason: :aborted}] = of_type(collect_until(:agent_end), :agent_end)
 
-    # The turn made no message, so its thread is not resumed: the next
-    # program starts a thread of its own, with both prompts.
-    fresh(bin, 2, fresh_tid(), reply(fresh_tid(), "Back."))
+    # The abort kept the message with the command and its `aborted`
+    # result (#385), so the next program resumes the thread, with only
+    # the new prompt.
+    initialize(bin, 2)
+    on(bin, 2, "thread/resume", [j(%{id: "@", result: %{thread: thread(tid())}})])
+    on(bin, 2, "turn/start", turn(tid(), reply(tid(), "Back.")))
     events = prompt(session, "back")
     assert [%{stop_reason: :end_turn}] = of_type(events, :agent_end)
     assert runs(bin) == "2"
-    assert request(bin, 2, "thread/resume") == nil
 
-    assert %{
-             "params" => %{
-               "threadId" => fresh_tid(),
-               "input" => [%{"text" => "wait"}, %{"text" => "back"}]
-             }
-           } =
+    assert %{"params" => %{"threadId" => tid(), "input" => [%{"text" => "back"}]}} =
              request(bin, 2, "turn/start")
   end
 
@@ -124,8 +121,11 @@ defmodule Helyx.Provider.Codex.CommandsTest do
     File.write!(failed, turn_end(tid(), "failed", "usage limit") <> "\n")
     running = [started(tid(), command("exec-1", %{status: "inProgress"}))]
     fresh(bin, 1, tid(), running, own_group_command(pidfile, ~s(cat "#{failed}")))
-    # The stop drops the turn's events: no message, so no thread to resume.
-    fresh(bin, 2, fresh_tid(), reply(fresh_tid(), "Back."))
+    # The failure kept the message with the command and its `aborted`
+    # result (#385), so the next program resumes the thread.
+    initialize(bin, 2)
+    on(bin, 2, "thread/resume", [j(%{id: "@", result: %{thread: thread(tid())}})])
+    on(bin, 2, "turn/start", turn(tid(), reply(tid(), "Back.")))
 
     session = start(ctx)
 
@@ -138,6 +138,7 @@ defmodule Helyx.Provider.Codex.CommandsTest do
     events = prompt(session, "again")
     assert [%{stop_reason: :end_turn}] = of_type(events, :agent_end)
     assert runs(bin) == "2"
+    assert %{"params" => %{"threadId" => tid()}} = request(bin, 2, "turn/start")
   end
 
   # A completion with a status that does not end the item.

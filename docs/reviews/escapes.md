@@ -155,3 +155,4 @@ One row per ticket that `/orchestrate` merged. An escape is a confirmed Codex fi
 | 2026-10-03 | #383 | r1: 0 reproduced; 3 simplify cleanups | gate r1 (Codex): 0 | none needed |
 | 2026-10-03 | #393 | r1: 1 reproduced (an interface without callbacks made Core start raise), fixed; r2 (reduced): 0 | gate r1 (Codex): 0 | none needed |
 | 2026-10-03 | #390 | r1: 0 reproduced; 3 simplify cleanups | gate r1 (Codex): 0 | none needed |
+| 2026-10-03 | #385 | r1: 1 reproduced (a taken steer gave no tool_execution_start), fixed; r2 (reduced): 0; r3: 0 (orchestrator-found abort/failure transcript loss, fixed) | gate r1 (Codex): 0 | none needed; the orchestrator caught the loss before the gate |

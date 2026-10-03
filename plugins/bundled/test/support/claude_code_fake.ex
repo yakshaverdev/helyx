@@ -284,11 +284,23 @@ defmodule Helyx.Test.ClaudeCodeFake do
 
   # Starts a turn on a new program and gives it the program's output
   # until `ready?` holds for the state.
-  def running(work, ready?) do
+  def running(work, ready?), do: settle(ClaudeCode, start_turn(work), ready?)
+
+  # Starts a turn on a new program and gives it the program's output
+  # until the provider sent `event`.
+  def running_to(work, event), do: sent_to(start_turn(work), event)
+
+  defp start_turn(work) do
     {_from, _actions, state} =
       request(harness(work), {:turn, "t1", %Helyx.Context{messages: [Message.user("x")]}})
 
-    settle(ClaudeCode, state, ready?)
+    state
+  end
+
+  # Gives the program's output until the provider sent `event`.
+  def sent_to(state, event) do
+    {_actions, state} = pump(ClaudeCode, state, [], &(event in events_of(&1)))
+    state
   end
 
   def interrupt(state) do

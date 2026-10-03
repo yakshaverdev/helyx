@@ -38,6 +38,32 @@ defmodule Helyx.Session.Server.Messages do
     {state, assistant, for(%Message.ToolCall{} = call <- assistant.content, do: call)}
   end
 
+  # Closes the open assistant message (`close_assistant/3`); each of its
+  # calls starts.
+  def end_assistant(state, stop_reason, usage) do
+    {state, _assistant, calls} = close_assistant(state, stop_reason, usage)
+    state = Enum.reduce(calls, state, &emit(&2, :tool_execution_start, %{tool_call: &1}))
+    put_in(state.activity.partial, nil)
+  end
+
+  # The first result of a call in the open message closes the message
+  # (`docs/features/long-lived-harness.md`, "Built in #385"). The message has
+  # no usage: the terminal keeps the turn usage.
+  def close_for_result(state, call_id),
+    do: close_if(state, &match?(%Message.ToolCall{id: ^call_id}, &1))
+
+  # At an abort or a failure, an open message with a tool call joins the
+  # transcript as at the other closes (stop `:tool_use`, its calls start),
+  # so its calls can get their `aborted` results. An open message with text
+  # only does not join (`close_partial_message/3`).
+  def close_with_calls(state), do: close_if(state, &match?(%Message.ToolCall{}, &1))
+
+  defp close_if(%State{activity: %Turn{partial: [_ | _] = partial}} = state, block?) do
+    if Enum.any?(partial, block?), do: end_assistant(state, :tool_use, %{}), else: state
+  end
+
+  defp close_if(state, _block?), do: state
+
   # Appends the tool result message to the transcript and emits
   # tool_execution_end.
   def record_result(call, result, state) do
@@ -66,15 +92,14 @@ defmodule Helyx.Session.Server.Messages do
     })
   end
 
-  # The provider took a steer. The open assistant message closes first, and
-  # every call still open gets its `aborted` result, as at a `message_end`:
-  # no message goes between a call and its result.
+  # The provider took a steer. The open assistant message closes first and
+  # its calls start, as at a `message_end`. Then every call still open gets
+  # its `aborted` result: no message goes between a call and its result.
   def take_steer(%State{activity: %Turn{partial: nil}} = state, text),
     do: state |> abort_open_calls() |> append_user(text)
 
   def take_steer(%State{activity: %Turn{partial: partial}} = state, text) do
     stop = if Enum.any?(partial, &match?(%Message.ToolCall{}, &1)), do: :tool_use, else: :end_turn
-    {state, _assistant, _calls} = close_assistant(state, stop, %{})
-    take_steer(put_in(state.activity.partial, nil), text)
+    take_steer(end_assistant(state, stop, %{}), text)
   end
 end

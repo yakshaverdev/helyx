@@ -129,7 +129,7 @@ defmodule Helyx.Provider.ClaudeCode.ReplayTest do
 
     # The delta after the result shows that the turn is still open.
     File.write!(go, "")
-    state = settle(ClaudeCode, state, &(&1.turn != nil and &1.turn.open?))
+    state = sent_to(state, {:text_delta, "more"})
     assert %{request_id: nil, result?: false} = state.turn.interrupt
   end
 
