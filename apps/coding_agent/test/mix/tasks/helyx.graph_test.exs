@@ -27,7 +27,7 @@ defmodule Mix.Tasks.Helyx.GraphTest do
     assert out =~ ~r/participant p\d+ as Helyx.Session.Hands\n/
     assert out =~ "Note over"
     assert out =~ ": Helyx.Tool.Read.run/2"
-    assert out =~ ": event agent_end"
+    assert out =~ ": event turn_end"
   end
 
   test "a wrong argument raises the usage" do

@@ -29,11 +29,18 @@ defmodule Helyx.Test.SessionCase do
     core
   end
 
-  def final_text(events) do
-    Helyx.Message.text(Enum.find(events, &(&1.type == :turn_end)).data.message)
+  def final_text(events), do: Helyx.Message.text(final_message(events))
+
+  # The outcome of the turn that ends `events`; at `done`, the stop reason
+  # of its last message.
+  def stop_reason(events) do
+    case List.last(events).data do
+      %{outcome: :done} -> final_message(events).stop_reason
+      %{outcome: outcome} -> outcome
+    end
   end
 
-  def stop_reason(events), do: List.last(events).data.stop_reason
+  def final_message(events), do: List.last(Helyx.Test.Events.messages(events))
 
   # The model "test/gate.<name>" with the test process registered as <name>:
   # each turn sends {:waiting, pid} and waits for :go.

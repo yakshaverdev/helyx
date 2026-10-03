@@ -37,7 +37,6 @@ defmodule Helyx.TUI.ViewModelTest do
 
     vm =
       fold([
-        {:agent_start, %{}},
         {:turn_start, %{}},
         {:message_start, %{message: user("hello")}},
         {:message_end, %{message: user("hello")}},
@@ -59,7 +58,6 @@ defmodule Helyx.TUI.ViewModelTest do
   test "deltas stream into the open assistant message" do
     vm =
       fold([
-        {:agent_start, %{}},
         {:turn_start, %{}},
         {:message_end, %{message: user("hi")}},
         {:message_start, %{message: assistant([])}},
@@ -85,14 +83,10 @@ defmodule Helyx.TUI.ViewModelTest do
   test "a call gets an open cell from its message, and its result closes it" do
     call = %Message.ToolCall{id: "c1", name: "bash", arguments: %{"command" => "ls"}}
     result = Message.tool_result(call, {:ok, "lib\ntest"})
-    head = [{:agent_start, %{}}, {:turn_start, %{}}, {:message_end, %{message: user("hi")}}]
+    head = [{:turn_start, %{}}, {:message_end, %{message: user("hi")}}]
 
-    # The start event changes no cell.
     open_vm = fold(head ++ [calls_end([call])])
     assert List.last(cells(open_vm)) == open(call)
-
-    assert cells(fold(head ++ [calls_end([call]), {:tool_execution_start, %{tool_call: call}}])) ==
-             cells(open_vm)
 
     closed_vm = fold(head ++ [calls_end([call]), tool_end(result)])
     assert List.last(cells(closed_vm)) == closed(call, result)
@@ -192,7 +186,7 @@ defmodule Helyx.TUI.ViewModelTest do
     second = Message.tool_result(call, {:ok, "second"})
     unknown = %{first | tool_call_id: "c9"}
 
-    assert_raise KeyError, fn -> fold([{:agent_start, %{}}, tool_end(unknown)]) end
+    assert_raise KeyError, fn -> fold([{:turn_start, %{}}, tool_end(unknown)]) end
     assert_raise KeyError, fn -> fold([calls_end([call]), tool_end(unknown)]) end
     assert_raise KeyError, fn -> fold([calls_end([call]), tool_end(first), tool_end(second)]) end
   end
@@ -243,14 +237,13 @@ defmodule Helyx.TUI.ViewModelTest do
   test "an aborted turn closes the stream and shows a notice" do
     vm =
       fold([
-        {:agent_start, %{}},
         {:turn_start, %{}},
         {:message_end, %{message: user("hi")}},
         {:message_start, %{message: assistant([])}},
         {:message_update, %{text_delta: "so far"}},
         {:message_end,
          %{message: assistant([%Message.Text{text: "so far"}], :aborted), error: :aborted}},
-        {:agent_end, %{stop_reason: :aborted}}
+        {:turn_end, %{outcome: :aborted}}
       ])
 
     refute vm.running?
@@ -261,10 +254,9 @@ defmodule Helyx.TUI.ViewModelTest do
   test "a failed turn shows the error" do
     vm =
       fold([
-        {:agent_start, %{}},
         {:turn_start, %{}},
         {:message_end, %{message: user("hi")}},
-        {:agent_end, %{stop_reason: :error, error: :stream_ended}}
+        {:turn_end, %{outcome: :error, error: :stream_ended}}
       ])
 
     refute vm.running?
@@ -294,7 +286,7 @@ defmodule Helyx.TUI.ViewModelTest do
           {:bad_stream_event, nested},
           {:xy, String.duplicate("é", 5_000)}
         ] do
-      vm = fold([{:agent_end, %{stop_reason: :error, error: error}}])
+      vm = fold([{:turn_end, %{outcome: :error, error: error}}])
       assert {:notice, "error: " <> text} = List.last(cells(vm))
       assert byte_size(text) in 8_190..8_192
       assert String.valid?(text)
@@ -304,7 +296,7 @@ defmodule Helyx.TUI.ViewModelTest do
   test "an error text with a control or invalid byte renders as text, not as bytes" do
     # perl's warnings quote the environment as raw bytes (#141).
     for text <- ["perl \x01 byte", "perl \u0085 byte", "perl \xE9 byte"] do
-      vm = fold([{:agent_end, %{stop_reason: :error, error: {:not_started, text}}}])
+      vm = fold([{:turn_end, %{outcome: :error, error: {:not_started, text}}}])
       assert {:notice, "error: {:not_started, \"perl " <> _} = List.last(cells(vm))
     end
   end
@@ -312,7 +304,7 @@ defmodule Helyx.TUI.ViewModelTest do
   test "queue updates change the counts, including the nil-turn drain" do
     vm =
       fold([
-        {:agent_start, %{}},
+        {:turn_start, %{}},
         {:queue_update, %{steers: 1, follow_ups: 0}},
         {:queue_update, %{steers: 1, follow_ups: 2}}
       ])
@@ -331,20 +323,19 @@ defmodule Helyx.TUI.ViewModelTest do
     assert ViewModel.apply(vm, drain).queue == %{steers: 0, follow_ups: 0}
   end
 
-  test "agent_end with an open stream and no message_end still closes it" do
+  test "turn_end with an open stream and no message_end still closes it" do
     vm =
       fold([
-        {:agent_start, %{}},
         {:turn_start, %{}},
         {:message_end, %{message: user("hi")}},
-        {:agent_end, %{stop_reason: :error, error: :boom}}
+        {:turn_end, %{outcome: :error, error: :boom}}
       ])
 
     assert vm.streaming == nil
   end
 
   test "an event of an unknown type leaves the view model unchanged" do
-    vm = fold([{:agent_start, %{}}, {:message_start, %{message: assistant([])}}])
+    vm = fold([{:turn_start, %{}}, {:message_start, %{message: assistant([])}}])
 
     unknown = %Event{
       type: :from_a_newer_core,
@@ -365,7 +356,7 @@ defmodule Helyx.TUI.ViewModelTest do
   end
 
   test "a message_update with a new data key leaves the view model unchanged" do
-    vm = fold([{:agent_start, %{}}, {:message_start, %{message: assistant([])}}])
+    vm = fold([{:turn_start, %{}}, {:message_start, %{message: assistant([])}}])
 
     update = %Event{
       type: :message_update,
@@ -380,7 +371,7 @@ defmodule Helyx.TUI.ViewModelTest do
   end
 
   test "a message_start or a message_end with a new role leaves the view model unchanged" do
-    vm = fold([{:agent_start, %{}}])
+    vm = fold([{:turn_start, %{}}])
     message = %Message{role: :from_a_newer_core, content: [%Message.Text{text: "x"}]}
 
     for type <- [:message_start, :message_end] do
@@ -491,7 +482,7 @@ defmodule Helyx.TUI.ViewModelTest do
   # ignores an unknown type.
   test "every known type with a broken payload crashes" do
     for {type, data} <- [
-          agent_end: %{},
+          turn_end: %{},
           message_start: %{message: "not a message"},
           message_end: %{},
           tool_execution_end: %{message: Message.user("not a result")},
@@ -506,14 +497,14 @@ defmodule Helyx.TUI.ViewModelTest do
     end
   end
 
-  test "an agent_end with the stop reason error and no error field crashes" do
+  test "a turn_end with the outcome error and no error field crashes" do
     event = %Event{
-      type: :agent_end,
+      type: :turn_end,
       session_id: "s",
       instance_id: "i",
       turn_id: "t",
       seq: 1,
-      data: %{stop_reason: :error}
+      data: %{outcome: :error}
     }
 
     assert_raise CaseClauseError, fn -> ViewModel.apply(new(), event) end

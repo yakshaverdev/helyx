@@ -110,7 +110,7 @@ defmodule Helyx.Provider.ClaudeCode.IdleCloseTest do
     assert_receive {:trace, ^pid, :receive, {:provider_down, _, _}}
     :erlang.trace(pid, false, [:receive])
     assert :sys.get_state(pid).conn == nil
-    assert [%{stop_reason: :end_turn}] = of_type(prompt(session, "again"), :agent_end)
+    assert [%{outcome: :done}] = of_type(prompt(session, "again"), :turn_end)
     assert "--resume=#{id}" in args(bin, 2)
   end
 
@@ -119,7 +119,7 @@ defmodule Helyx.Provider.ClaudeCode.IdleCloseTest do
 
     events = prompt(start(ctx), "go")
 
-    assert [%{stop_reason: :error, error: {:provider_stop, {:claude_code_exit, 3}}}] =
-             of_type(events, :agent_end)
+    assert [%{outcome: :error, error: {:provider_stop, {:claude_code_exit, 3}}}] =
+             of_type(events, :turn_end)
   end
 end

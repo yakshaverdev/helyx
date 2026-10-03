@@ -21,8 +21,7 @@ defmodule Helyx.Session.Server.State do
   @enforce_keys [:id, :core, :model, :provider, :cwd]
 
   # The armed kill of a turn, interrupt, steer, tool result, or context
-  # request: the loop writes one stdio line and replies, well
-  # under 10 ms.
+  # request: a reply takes well under 10 ms, so 2 s is the margin.
   @provider_reply_ms 2_000
   # The armed kill of a close: end of input, then the exit.
   @provider_close_ms 5_000

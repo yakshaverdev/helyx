@@ -17,7 +17,7 @@ defmodule Helyx.Watchdog.HarnessStopTest do
   end
 
   # The default reply bound here, 60 s, is longer than the wait of
-  # `agent_end/0`, the cap of a wait. Thus the deadline does not end the turn
+  # `turn_end/0`, the cap of a wait. Thus the deadline does not end the turn
   # in a test that does not set one (#228).
   defp start(core, model, reply_ms \\ 60_000) do
     {:ok, session} = Session.start(core, model: "wdh/#{model}")
@@ -29,11 +29,11 @@ defmodule Helyx.Watchdog.HarnessStopTest do
     {session, wait_for_pid(WatchdogHarness.pid_path(session.id))}
   end
 
-  defp agent_end, do: List.last(Helyx.Test.Events.collect_until(:agent_end))
+  defp turn_end, do: List.last(Helyx.Test.Events.collect_until(:turn_end))
 
   test "a blocked callback: the armed kill stops the program group", %{core: core} do
     {_session, group} = start(core, "block", 300)
-    assert agent_end().data.error == :provider_timeout
+    assert turn_end().data.error == :provider_timeout
     assert group_gone_within?(group)
   end
 
@@ -42,7 +42,7 @@ defmodule Helyx.Watchdog.HarnessStopTest do
   # `:shutdown`, not a crash, before the Core stop returns.
   test "a Core stop with an idle provider process ends the program group", %{core: core} do
     {session, group} = start(core, "idle")
-    assert agent_end().data.stop_reason == :end_turn
+    assert turn_end().data.outcome == :done
     hands = monitor_hands(session)
     Process.flag(:trap_exit, true)
     :ok = stop_supervised(core)
@@ -68,7 +68,7 @@ defmodule Helyx.Watchdog.HarnessStopTest do
   test "input over the watchdog stdin cap stops the program group and fails the turn",
        %{core: core} do
     {_session, group} = start(core, "flood")
-    error = agent_end().data.error
+    error = turn_end().data.error
     assert match?({:provider_stop, {:exit_status, _}}, error) or error == {:task_exit, :epipe}
     assert group_gone_within?(group)
   end

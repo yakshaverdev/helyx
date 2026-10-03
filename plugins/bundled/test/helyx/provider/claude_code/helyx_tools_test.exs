@@ -240,7 +240,7 @@ defmodule Helyx.Provider.ClaudeCode.HelyxToolsTest do
       events = prompt(session, "read it")
       GenServer.stop(Session.pid(session))
 
-      assert [%{stop_reason: :end_turn}] = of_type(events, :agent_end)
+      assert [%{outcome: :done}] = of_type(events, :turn_end)
 
       transcript =
         messages(events) ++ for(%{message: m} <- of_type(events, :tool_execution_end), do: m)

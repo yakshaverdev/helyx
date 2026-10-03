@@ -22,13 +22,13 @@ defmodule Helyx.Provider.Codex.CommandsTest do
     collect_until(:message_update)
     :ok = Session.abort(session)
 
-    assert [%{stop_reason: :aborted}] = of_type(collect_until(:agent_end), :agent_end)
+    assert [%{outcome: :aborted}] = of_type(collect_until(:turn_end), :turn_end)
 
     assert %{"params" => %{"threadId" => tid(), "turnId" => "turn1"}} =
              request(bin, 1, "turn/interrupt")
 
     events = prompt(session, "next")
-    assert [%{stop_reason: :end_turn}] = of_type(events, :agent_end)
+    assert [%{outcome: :done}] = of_type(events, :turn_end)
     assert runs(bin) == "1"
   end
 
@@ -49,7 +49,7 @@ defmodule Helyx.Provider.Codex.CommandsTest do
     refute os_alive?(pid)
     assert request(bin, 1, "turn/interrupt") == nil
 
-    assert [%{stop_reason: :aborted}] = of_type(collect_until(:agent_end), :agent_end)
+    assert [%{outcome: :aborted}] = of_type(collect_until(:turn_end), :turn_end)
 
     # The abort kept the message with the command and its `aborted`
     # result (#385), so the next program resumes the thread, with only
@@ -58,7 +58,7 @@ defmodule Helyx.Provider.Codex.CommandsTest do
     on(bin, 2, "thread/resume", [j(%{id: "@", result: %{thread: thread(tid())}})])
     on(bin, 2, "turn/start", turn(tid(), reply(tid(), "Back.")))
     events = prompt(session, "back")
-    assert [%{stop_reason: :end_turn}] = of_type(events, :agent_end)
+    assert [%{outcome: :done}] = of_type(events, :turn_end)
     assert runs(bin) == "2"
 
     assert %{"params" => %{"threadId" => tid(), "input" => [%{"text" => "back"}]}} =
@@ -92,7 +92,7 @@ defmodule Helyx.Provider.Codex.CommandsTest do
 
     :ok = Session.abort(session)
     refute os_alive?(pid)
-    assert [%{stop_reason: :aborted}] = of_type(collect_until(:agent_end), :agent_end)
+    assert [%{outcome: :aborted}] = of_type(collect_until(:turn_end), :turn_end)
   end
 
   @tag :slow
@@ -107,8 +107,8 @@ defmodule Helyx.Provider.Codex.CommandsTest do
     :ok = Session.prompt(session, "wait")
 
     # The release returns before the session gets the end of the harness.
-    assert [%{stop_reason: :error, error: {:provider_stop, {:line_over_limit, 16_777_216}}}] =
-             of_type(collect_until(:agent_end), :agent_end)
+    assert [%{outcome: :error, error: {:provider_stop, {:line_over_limit, 16_777_216}}}] =
+             of_type(collect_until(:turn_end), :turn_end)
 
     refute os_alive?(wait_for_pid(pidfile))
   end
@@ -129,14 +129,14 @@ defmodule Helyx.Provider.Codex.CommandsTest do
 
     session = start(ctx)
 
-    assert [%{stop_reason: :error, error: {:provider_stop, :command_running}}] =
-             of_type(prompt(session, "go"), :agent_end)
+    assert [%{outcome: :error, error: {:provider_stop, :command_running}}] =
+             of_type(prompt(session, "go"), :turn_end)
 
     # The release ended the command before the next turn.
     refute os_alive?(wait_for_pid(pidfile))
 
     events = prompt(session, "again")
-    assert [%{stop_reason: :end_turn}] = of_type(events, :agent_end)
+    assert [%{outcome: :done}] = of_type(events, :turn_end)
     assert runs(bin) == "2"
     assert %{"params" => %{"threadId" => tid()}} = request(bin, 2, "turn/start")
   end
@@ -188,8 +188,8 @@ defmodule Helyx.Provider.Codex.CommandsTest do
 
     session = start(ctx)
 
-    assert [%{stop_reason: :error, error: {:provider_stop, {:malformed, "item/completed"}}}] =
-             of_type(prompt(session, "go"), :agent_end)
+    assert [%{outcome: :error, error: {:provider_stop, {:malformed, "item/completed"}}}] =
+             of_type(prompt(session, "go"), :turn_end)
 
     refute os_alive?(wait_for_pid(pidfile))
     :ok = Session.abort(session)

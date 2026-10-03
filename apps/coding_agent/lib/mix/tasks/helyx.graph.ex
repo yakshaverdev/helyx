@@ -149,7 +149,7 @@ defmodule Mix.Tasks.Helyx.Graph do
     :ok = Helyx.Session.prompt(session, "read hello.txt")
 
     receive do
-      {:helyx_event, %Helyx.Event{type: :agent_end}} -> :ok
+      {:helyx_event, %Helyx.Event{type: :turn_end}} -> :ok
     after
       @turn_timeout_ms -> Mix.raise("the traced turn did not end in #{@turn_timeout_ms} ms")
     end

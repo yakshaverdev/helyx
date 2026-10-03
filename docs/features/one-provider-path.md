@@ -151,7 +151,7 @@ Stated limit: `Process.exit(self(), :normal)` in a callback ends the calling pro
 
 | Today, with an API provider | After | Why acceptable |
 |---|---|---|
-| A steer that arrives in the last model call of a turn starts a new turn | It continues the same turn: one `agent_end`, not two | The transcript order is the same, and Claude Code and Codex behave like this today |
+| A steer that arrives in the last model call of a turn starts a new turn | It continues the same turn: one `turn_end`, not two | The transcript order is the same, and Claude Code and Codex behave like this today |
 | `tool_execution_start` comes when each call starts to run | It comes for every call of the message at its `message_end`. The calls still run one at a time. | One rule for every provider. A client sees a call as started before it runs. |
 | A snapshot lists only the running call | It lists every call with no result | The same reason |
 | Client event `:harness_session` with the data key `harness_session_id` | `:provider_session` with the data key `resume_id` | Core names no plugin kind. The TUI changes in the same PR. |

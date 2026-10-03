@@ -1,8 +1,7 @@
 defmodule Helyx.Session.ToolQueue do
   @moduledoc false
-  # The Helyx tool requests of one turn (`docs/features/one-provider-path.md`,
-  # "Helyx tools inside the program"): `running`, the call id that runs on
-  # the hands, with `running_bytes`, the encoded size of its call,
+  # The Helyx tool requests of one turn (`docs/features/one-provider-path.md`):
+  # `running`, the call id that runs on the hands, with `running_bytes`, the encoded size of its call,
   # `killed?`, whether the provider withdrew it, and `waiting`, at most
   # @max_waiting calls after it with their sizes, in arrival order. Each
   # call gets exactly one result.

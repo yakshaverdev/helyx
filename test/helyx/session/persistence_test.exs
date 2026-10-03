@@ -19,7 +19,7 @@ defmodule Helyx.Session.PersistenceTest do
     {:ok, _, _} = Session.subscribe(session)
 
     :ok = Session.prompt(session, "hello")
-    collect_until(:agent_end)
+    collect_until(:turn_end)
 
     [path] = Path.wildcard(Path.join(dir, "**/#{session.id}.jsonl"))
     entries = path |> File.read!() |> String.split("\n", trim: true) |> Enum.map(&JSON.decode!/1)
@@ -50,7 +50,7 @@ defmodule Helyx.Session.PersistenceTest do
     {:ok, _, _} = Session.subscribe(session)
 
     :ok = Session.prompt(session, "hello")
-    assert final_text(collect_until(:agent_end)) == "user:hello"
+    assert final_text(collect_until(:turn_end)) == "user:hello"
 
     stop_session(session, &GenServer.stop/1)
 
@@ -60,7 +60,7 @@ defmodule Helyx.Session.PersistenceTest do
 
     :ok = Session.prompt(resumed, "again")
 
-    assert final_text(collect_until(:agent_end)) ==
+    assert final_text(collect_until(:turn_end)) ==
              "user:hello\nassistant:user:hello\nuser:again"
   end
 
@@ -80,7 +80,7 @@ defmodule Helyx.Session.PersistenceTest do
         :ok = Session.abort(session)
       end
 
-      assert stop_reason(collect_until(:agent_end)) == unquote(stop)
+      assert stop_reason(collect_until(:turn_end)) == unquote(stop)
       {:ok, snapshot, _ref} = Session.subscribe(session)
       assert [_user, %{stop_reason: unquote(stop)}] = snapshot.messages
 
@@ -90,7 +90,7 @@ defmodule Helyx.Session.PersistenceTest do
 
       :ok = Session.set_model(session, "test/transcript")
       :ok = Session.prompt(session, "next")
-      assert final_text(collect_until(:agent_end)) == "user:hello\nassistant:so far\nuser:next"
+      assert final_text(collect_until(:turn_end)) == "user:hello\nassistant:so far\nuser:next"
 
       stop_session(session, &GenServer.stop/1)
       {:ok, resumed} = Session.resume(core, sessions_dir: dir)
@@ -100,7 +100,7 @@ defmodule Helyx.Session.PersistenceTest do
       # The answer of the "next" turn holds the context it saw.
       seen = "user:hello\nassistant:so far\nuser:next"
 
-      assert final_text(collect_until(:agent_end)) ==
+      assert final_text(collect_until(:turn_end)) ==
                "#{seen}\nassistant:#{seen}\nuser:again"
     end
   end
@@ -192,7 +192,7 @@ defmodule Helyx.Session.PersistenceTest do
     {:ok, _, _} = Session.subscribe(session)
     :ok = Session.prompt(session, "one")
 
-    assert final_text(collect_until(:agent_end)) ==
+    assert final_text(collect_until(:turn_end)) ==
              Enum.map_join(answered ++ [{:user, "one"}], "\n", fn {r, t} -> "#{r}:#{t}" end)
 
     stop_session(session, &GenServer.stop/1)
@@ -258,7 +258,7 @@ defmodule Helyx.Session.PersistenceTest do
     # The provider gets the repaired history.
     :ok = Session.prompt(session, "one")
 
-    assert final_text(collect_until(:agent_end)) ==
+    assert final_text(collect_until(:turn_end)) ==
              Enum.map_join(repaired ++ [{:user, "one"}], "\n", fn {r, t} -> "#{r}:#{t}" end)
   end
 
@@ -269,7 +269,9 @@ defmodule Helyx.Session.PersistenceTest do
     {:ok, _, _} = Session.subscribe(session)
 
     :ok = Session.prompt(session, "hello")
-    assert_receive {:helyx_event, %Event{type: :tool_execution_start}}
+
+    assert_receive {:helyx_event,
+                    %Event{type: :message_end, data: %{message: %{role: :assistant}}}}
 
     stop_session(session, &Process.exit(&1, :kill))
 
@@ -277,7 +279,7 @@ defmodule Helyx.Session.PersistenceTest do
     {:ok, _, _} = Session.subscribe(resumed)
 
     :ok = Session.prompt(resumed, "again")
-    assert final_text(collect_until(:agent_end)) == "aborted|aborted|aborted"
+    assert final_text(collect_until(:turn_end)) == "aborted|aborted|aborted"
   end
 
   test "a prompt that is not valid UTF-8 is rejected and the session lives", %{core: core} do
@@ -287,7 +289,7 @@ defmodule Helyx.Session.PersistenceTest do
     assert {:error, :invalid_utf8} = Session.prompt(session, <<255, 254>>)
 
     :ok = Session.prompt(session, "hello")
-    assert stop_reason(collect_until(:agent_end)) == :end_turn
+    assert stop_reason(collect_until(:turn_end)) == :end_turn
   end
 
   @tag :tmp_dir
@@ -299,13 +301,13 @@ defmodule Helyx.Session.PersistenceTest do
     File.rm_rf!(dir)
 
     :ok = Session.prompt(session, "hello")
-    events = collect_until(:agent_end)
+    events = collect_until(:turn_end)
     assert stop_reason(events) == :end_turn
     assert [%{text: "the session file could not be written" <> _}] = notices(events)
 
     # The notice goes out once: persistence stays off.
     :ok = Session.prompt(session, "again")
-    events = collect_until(:agent_end)
+    events = collect_until(:turn_end)
     assert stop_reason(events) == :end_turn
     assert notices(events) == []
   end

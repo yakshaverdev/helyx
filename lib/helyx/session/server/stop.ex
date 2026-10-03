@@ -48,8 +48,8 @@ defmodule Helyx.Session.Server.Stop do
   # The hands take the messages before the exit signal first: the end of a
   # closed provider process gets its release. That end reaches the hands
   # before the provider process's `:DOWN` reaches the session, on one node.
-  # If it came later, the hands would end with no release, and the port
-  # would close with the provider process. Each release has its deadline,
+  # If it came later, the hands would end with no release of the
+  # handles of the provider process. Each release has its deadline,
   # so the wait is bounded; over @hands_stop_ms the hands are killed, and a
   # killed process runs no release. Hands that are already gone give their
   # `:DOWN` at once.

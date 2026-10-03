@@ -24,7 +24,10 @@ defmodule Helyx.Session.SweepTest do
       :erlang.trace(hands, true, [:receive])
 
       :ok = Session.prompt(session, Gate.open())
-      assert_receive {:helyx_event, %Event{type: :tool_execution_start}}
+
+      assert_receive {:helyx_event,
+                      %Event{type: :message_end, data: %{message: %{role: :assistant}}}}
+
       {session, hands, await_tool_task(hands)}
     end
 
@@ -69,7 +72,7 @@ defmodule Helyx.Session.SweepTest do
 
       abort = Task.async(fn -> Session.abort(session) end)
       # The events of the abort go out at the start of the sweep.
-      assert stop_reason(collect_until(:agent_end)) == :aborted
+      assert stop_reason(collect_until(:turn_end)) == :aborted
 
       {results, release} = calls(session)
       assert results[:steer] == :ok
@@ -84,7 +87,7 @@ defmodule Helyx.Session.SweepTest do
 
       # The messages sent during the sweep start one turn after it, steers
       # first.
-      events = collect_until(:agent_end)
+      events = collect_until(:turn_end)
       assert user_texts(events) == ["steer", "follow", "prompt"]
       assert stop_reason(events) == :end_turn
     end
@@ -94,7 +97,7 @@ defmodule Helyx.Session.SweepTest do
       {session, _hands, _task} = start_stuck_turn(core)
 
       abort = Task.async(fn -> Session.abort(session) end)
-      assert stop_reason(collect_until(:agent_end)) == :aborted
+      assert stop_reason(collect_until(:turn_end)) == :aborted
       assert_receive {:waiting, release}
       send(release, :go)
       assert :ok = Task.await(abort, wait_ms())
@@ -112,7 +115,7 @@ defmodule Helyx.Session.SweepTest do
       {session, _hands, _task} = start_stuck_turn(core)
 
       abort = Task.async(fn -> Session.abort(session) end)
-      assert queue_counts(collect_until(:agent_end)) == []
+      assert queue_counts(collect_until(:turn_end)) == []
       assert_receive {:waiting, release}
       :ok = Session.prompt(session, "dropped")
 
@@ -129,7 +132,7 @@ defmodule Helyx.Session.SweepTest do
       assert :ok = Task.await(abort, wait_ms())
 
       refute_receive {:helyx_event, %Event{type: :queue_update}}, 100
-      refute_receive {:helyx_event, %Event{type: :agent_start}}, 100
+      refute_receive {:helyx_event, %Event{type: :turn_start}}, 100
     end
 
     @tag :capture_log
@@ -142,7 +145,7 @@ defmodule Helyx.Session.SweepTest do
       assert results[:prompt] == {:error, :turn_running}
       send(release, :go)
 
-      events = collect_until(:agent_end)
+      events = collect_until(:turn_end)
       assert [%{message: result}] = of_type(events, :tool_execution_end)
       assert Helyx.Message.text(result) =~ "could not be released"
     end
@@ -153,7 +156,7 @@ defmodule Helyx.Session.SweepTest do
       ref = Process.monitor(Session.pid(session))
 
       abort = Task.async(fn -> Session.abort(session) end)
-      collect_until(:agent_end)
+      collect_until(:turn_end)
       assert_receive {:waiting, _release}
       Process.exit(hands, :kill)
 

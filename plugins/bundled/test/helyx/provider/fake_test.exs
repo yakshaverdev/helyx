@@ -22,19 +22,16 @@ defmodule Helyx.Provider.FakeTest do
     %{core: core}
   end
 
-  defp final_message(events) do
-    Enum.find(events, &(&1.type == :turn_end)).data.message
-  end
+  defp final_message(events), do: List.last(messages(events))
 
   test "one prompt runs one turn and emits the loop events in order", %{core: core} do
     {:ok, session} = Session.start(core, model: "fake/echo")
     {:ok, _, _} = Session.subscribe(session)
     :ok = Session.prompt(session, "hello there")
 
-    events = collect_until(:agent_end)
+    events = collect_until(:turn_end)
 
     assert Enum.map(events, & &1.type) == [
-             :agent_start,
              :turn_start,
              :message_start,
              :message_end,
@@ -42,16 +39,15 @@ defmodule Helyx.Provider.FakeTest do
              :message_update,
              :message_update,
              :message_end,
-             :turn_end,
-             :agent_end
+             :turn_end
            ]
 
-    assert Enum.map(events, & &1.seq) == Enum.to_list(1..10)
+    assert Enum.map(events, & &1.seq) == Enum.to_list(1..8)
     assert Enum.all?(events, &(&1.session_id == session.id))
     assert [turn_id] = events |> Enum.map(& &1.turn_id) |> Enum.uniq()
     assert is_binary(turn_id)
 
-    [_, _, user_start, _, _, delta1, delta2, assistant_end | _] = events
+    [_, user_start, _, _, delta1, delta2, assistant_end | _] = events
     assert %Helyx.Message{role: :user} = user_start.data.message
     assert delta1.data.text_delta == "hello"
     assert delta2.data.text_delta == " there"
@@ -65,11 +61,11 @@ defmodule Helyx.Provider.FakeTest do
     {:ok, _, _} = Session.subscribe(session)
 
     :ok = Session.prompt(session, "first")
-    first = collect_until(:agent_end)
+    first = collect_until(:turn_end)
     assert Helyx.Message.text(final_message(first)) == "one"
 
     :ok = Session.prompt(session, "second")
-    second = collect_until(:agent_end)
+    second = collect_until(:turn_end)
     assert Helyx.Message.text(final_message(second)) == "two and three"
     assert hd(second).seq == length(first) + 1
   end
@@ -82,12 +78,12 @@ defmodule Helyx.Provider.FakeTest do
     :ok = Session.prompt(a, "alpha")
     :ok = Session.prompt(b, "beta")
 
-    events = collect_until(:agent_end) ++ collect_until(:agent_end)
+    events = collect_until(:turn_end) ++ collect_until(:turn_end)
     by_session = Enum.group_by(events, & &1.session_id)
 
     assert map_size(by_session) == 2
-    assert Enum.map(by_session[a.id], & &1.seq) == Enum.to_list(1..9)
-    assert Enum.map(by_session[b.id], & &1.seq) == Enum.to_list(1..9)
+    assert Enum.map(by_session[a.id], & &1.seq) == Enum.to_list(1..7)
+    assert Enum.map(by_session[b.id], & &1.seq) == Enum.to_list(1..7)
     assert Helyx.Message.text(final_message(by_session[a.id])) == "alpha"
     assert Helyx.Message.text(final_message(by_session[b.id])) == "beta"
   end
@@ -103,7 +99,7 @@ defmodule Helyx.Provider.FakeTest do
     {:ok, _, _} = Session.subscribe(session)
 
     :ok = Session.prompt(session, "go")
-    events = collect_until(:agent_end)
+    events = collect_until(:turn_end)
     assert Helyx.Message.text(final_message(events)) == "Done."
 
     [tool_end] = for %{type: :tool_execution_end, data: data} <- events, do: data.message
@@ -122,11 +118,11 @@ defmodule Helyx.Provider.FakeTest do
     {:ok, bad} = Session.start(core, model: "fake/bad")
     {:ok, _, _} = Session.subscribe(bad)
     :ok = Session.prompt(bad, "go")
-    assert List.last(collect_until(:agent_end)).data.stop_reason == :error
+    assert List.last(collect_until(:turn_end)).data.outcome == :error
 
     {:ok, good} = Session.start(core, model: "fake/good")
     {:ok, _, _} = Session.subscribe(good)
     :ok = Session.prompt(good, "go")
-    assert Helyx.Message.text(final_message(collect_until(:agent_end))) == "fine"
+    assert Helyx.Message.text(final_message(collect_until(:turn_end))) == "fine"
   end
 end

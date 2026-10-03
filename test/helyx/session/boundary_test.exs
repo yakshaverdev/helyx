@@ -119,7 +119,7 @@ defmodule Helyx.Session.BoundaryTest do
 
       for text <- ["one", "two"] do
         :ok = Session.prompt(session, text)
-        assert stop_reason(collect_until(:agent_end)) == :end_turn
+        assert stop_reason(collect_until(:turn_end)) == :end_turn
       end
 
       for callback <- [:name, :description, :parameters],
@@ -244,7 +244,7 @@ defmodule Helyx.Session.BoundaryTest do
     {:ok, _, _} = Session.subscribe(session)
 
     :ok = Session.prompt(session, "hello")
-    events = collect_until(:agent_end)
+    events = collect_until(:turn_end)
     assert final_text(events) =~ "working directory does not exist"
   end
 
@@ -254,7 +254,7 @@ defmodule Helyx.Session.BoundaryTest do
       {:ok, _, _} = Session.subscribe(session)
 
       :ok = Session.prompt(session, "one")
-      first = collect_until(:agent_end)
+      first = collect_until(:turn_end)
       assert final_text(first) == "ok"
 
       assert :ok = Session.set_model(session, "other/any")
@@ -266,15 +266,15 @@ defmodule Helyx.Session.BoundaryTest do
       assert GenServer.call(Session.pid(session), :snapshot).model == "other/any"
 
       :ok = Session.prompt(session, "two")
-      second = collect_until(:agent_end)
+      second = collect_until(:turn_end)
       assert final_text(second) == "from other"
-      assert Enum.find(second, &(&1.type == :turn_end)).data.message.model == "other/any"
+      assert final_message(second).model == "other/any"
       assert hd(second).seq == change.seq + 1
 
       assert :ok = Session.set_model(session, "test/ok")
       assert_receive {:helyx_event, %Event{type: :model_change}}
       :ok = Session.prompt(session, "three")
-      assert final_text(collect_until(:agent_end)) == "ok"
+      assert final_text(collect_until(:turn_end)) == "ok"
     end
 
     @tag :tmp_dir
@@ -315,7 +315,7 @@ defmodule Helyx.Session.BoundaryTest do
       assert GenServer.call(Session.pid(resumed), :snapshot).model == "other/any"
       {:ok, _, _} = Session.subscribe(resumed)
       :ok = Session.prompt(resumed, "hello")
-      assert final_text(collect_until(:agent_end)) == "from other"
+      assert final_text(collect_until(:turn_end)) == "from other"
     end
 
     test "a switch during a turn takes effect on the next turn", %{core: core} do
@@ -323,16 +323,19 @@ defmodule Helyx.Session.BoundaryTest do
       {:ok, _, _} = Session.subscribe(session)
 
       :ok = Session.prompt(session, "hello")
-      assert_receive {:helyx_event, %Event{type: :tool_execution_start}}
+
+      assert_receive {:helyx_event,
+                      %Event{type: :message_end, data: %{message: %{role: :assistant}}}}
+
       :ok = Session.set_model(session, "other/any")
       :ok = Session.follow_up(session, "again")
       assert_receive {:helyx_event, %Event{type: :model_change, turn_id: nil}}
 
       # The running turn makes its second provider call on the old model.
-      running = collect_until(:agent_end)
+      running = collect_until(:turn_end)
       assert final_text(running) == "hello"
-      assert Enum.find(running, &(&1.type == :turn_end)).data.message.model == "test/steer"
-      assert final_text(collect_until(:agent_end)) == "from other"
+      assert final_message(running).model == "test/steer"
+      assert final_text(collect_until(:turn_end)) == "from other"
     end
 
     @tag :tmp_dir
@@ -396,7 +399,7 @@ defmodule Helyx.Session.BoundaryTest do
       File.rmdir!(path)
       File.write!(path, header)
       :ok = Session.prompt(session, "hello")
-      assert final_text(collect_until(:agent_end)) == "from other"
+      assert final_text(collect_until(:turn_end)) == "from other"
       assert File.read!(path) == header
     end
   end

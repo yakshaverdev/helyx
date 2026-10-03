@@ -14,7 +14,7 @@ defmodule Helyx.Session.InstanceTest do
 
     defp prompt_events(session, text \\ "hi") do
       :ok = Session.prompt(session, text)
-      collect_until(:agent_end)
+      collect_until(:turn_end)
     end
 
     test "each start has its own instance, and its events carry it", %{core: core, tmp_dir: dir} do
@@ -66,12 +66,12 @@ defmodule Helyx.Session.InstanceTest do
       {:ok, snapshot_a, _} = Session.subscribe(a)
       :ok = Session.prompt(a, "hi")
       queued = fn -> for {:helyx_event, event} <- mailbox(), do: event end
-      await(fn -> Enum.any?(queued.(), &(&1.type == :agent_end)) end, "the events of Core A")
+      await(fn -> Enum.any?(queued.(), &(&1.type == :turn_end)) end, "the events of Core A")
       before = queued.()
 
       {:ok, snapshot_b, _} = Session.subscribe(b)
       assert snapshot_a.instance_id != snapshot_b.instance_id
-      assert collect_until(:agent_end) == before
+      assert collect_until(:turn_end) == before
       assert Enum.all?(before, &(&1.instance_id == snapshot_a.instance_id))
       assert Enum.all?(prompt_events(b), &(&1.instance_id == snapshot_b.instance_id))
     end

@@ -28,10 +28,8 @@ defmodule Helyx.Session.StreamEventsTest do
     {:ok, _, _} = Session.subscribe(session)
     :ok = Session.prompt(session, "go")
 
-    # Every call starts at the `message_end`.
-    collect_until(:tool_execution_start)
-    assert_receive {:helyx_event, %Event{type: :tool_execution_start}}
-    assert_receive {:helyx_event, %Event{type: :tool_execution_start, seq: seq}}
+    assert_receive {:helyx_event,
+                    %Event{type: :message_end, seq: seq, data: %{message: %{role: :assistant}}}}
 
     # A second client subscribes during the turn; the test process already
     # has its entry.
@@ -53,12 +51,12 @@ defmodule Helyx.Session.StreamEventsTest do
     {:ok, _, _} = Session.subscribe(session)
 
     :ok = Session.prompt(session, "hello")
-    events = collect_until(:agent_end)
+    events = collect_until(:turn_end)
     assert stop_reason(events) == :error
     assert List.last(events).data.error == :stream_ended
 
     :ok = Session.prompt(session, "again")
-    assert stop_reason(collect_until(:agent_end)) == :error
+    assert stop_reason(collect_until(:turn_end)) == :error
   end
 
   @tag :capture_log
@@ -67,12 +65,12 @@ defmodule Helyx.Session.StreamEventsTest do
     {:ok, _, _} = Session.subscribe(session)
 
     :ok = Session.prompt(session, "hello")
-    events = collect_until(:agent_end)
+    events = collect_until(:turn_end)
     assert stop_reason(events) == :error
     assert {:task_exit, {%RuntimeError{message: "boom"}, _}} = List.last(events).data.error
 
     :ok = Session.prompt(session, "again")
-    assert stop_reason(collect_until(:agent_end)) == :error
+    assert stop_reason(collect_until(:turn_end)) == :error
   end
 
   # Halt-on-error only cancels the provider's request if the session never
@@ -82,12 +80,12 @@ defmodule Helyx.Session.StreamEventsTest do
     {:ok, _, _} = Session.subscribe(session)
 
     :ok = Session.prompt(session, "hello")
-    events = collect_until(:agent_end)
+    events = collect_until(:turn_end)
     assert stop_reason(events) == :error
     assert List.last(events).data.error == :overloaded
 
     :ok = Session.prompt(session, "again")
-    assert stop_reason(collect_until(:agent_end)) == :error
+    assert stop_reason(collect_until(:turn_end)) == :error
   end
 
   test "consumption stops at the first terminal event", %{core: core} do
@@ -95,7 +93,7 @@ defmodule Helyx.Session.StreamEventsTest do
     {:ok, _, _} = Session.subscribe(session)
 
     :ok = Session.prompt(session, "hello")
-    events = collect_until(:agent_end)
+    events = collect_until(:turn_end)
     assert stop_reason(events) == :end_turn
     assert final_text(events) == "kept"
     refute_receive {:helyx_event, _}, 100
@@ -107,21 +105,20 @@ defmodule Helyx.Session.StreamEventsTest do
     {:ok, _, _} = Session.subscribe(session)
 
     :ok = Session.prompt(session, "hello")
-    events = collect_until(:agent_end)
+    events = collect_until(:turn_end)
     types = Enum.map(events, & &1.type)
 
     assert Enum.slice(types, -4..-1) == [
              :message_start,
              :message_update,
              :message_end,
-             :agent_end
+             :turn_end
            ]
 
     message_end = Enum.at(events, -2)
     assert %Helyx.Message{role: :assistant, stop_reason: :error} = message_end.data.message
     assert Helyx.Message.text(message_end.data.message) == "so far"
     assert {:task_exit, _} = message_end.data.error
-    refute Enum.any?(events, &(&1.type == :turn_end))
   end
 
   test "thinking, text, and tool call events build one assistant message in order", %{core: core} do
@@ -129,7 +126,7 @@ defmodule Helyx.Session.StreamEventsTest do
     {:ok, _, _} = Session.subscribe(session)
 
     :ok = Session.prompt(session, "hello")
-    events = collect_until(:agent_end)
+    events = collect_until(:turn_end)
 
     message =
       Enum.find_value(events, fn
@@ -160,7 +157,7 @@ defmodule Helyx.Session.StreamEventsTest do
       {:ok, session} = Session.start(core, model: "conn/events.#{model}")
       {:ok, _, _} = Session.subscribe(session)
       :ok = Session.prompt(session, "hello")
-      collect_until(:agent_end)
+      collect_until(:turn_end)
     end
 
     test "a harness session id of 1 byte is kept", %{core: core} do
@@ -215,13 +212,12 @@ defmodule Helyx.Session.StreamEventsTest do
 
       types =
         for %Event{type: t} <- events,
-            t in [:message_end, :tool_execution_start, :tool_execution_end],
+            t in [:message_end, :tool_execution_end],
             do: t
 
       assert [
                :message_end,
                :message_end,
-               :tool_execution_start,
                :tool_execution_end,
                :message_end
              ] = types
@@ -251,7 +247,7 @@ defmodule Helyx.Session.StreamEventsTest do
         {:ok, session} = Session.start(core, model: "conn/events.#{model}")
         {:ok, _, _} = Session.subscribe(session)
         :ok = Session.prompt(session, "hello")
-        events = collect_until(:agent_end)
+        events = collect_until(:turn_end)
 
         assert List.last(events).data.error == {:tool_result_too_large, bytes, 65_536}
         assert stop_reason(events) == :error
@@ -264,7 +260,7 @@ defmodule Helyx.Session.StreamEventsTest do
 
         :ok = Session.set_model(session, "conn/events.id1")
         :ok = Session.prompt(session, "again")
-        assert stop_reason(collect_until(:agent_end)) == :end_turn
+        assert stop_reason(collect_until(:turn_end)) == :end_turn
       end
     end
 
@@ -283,7 +279,7 @@ defmodule Helyx.Session.StreamEventsTest do
       {:ok, session} = Session.start(core, model: "conn/events.message_over_bound")
       {:ok, _, _} = Session.subscribe(session)
       :ok = Session.prompt(session, "hello")
-      events = collect_until(:agent_end)
+      events = collect_until(:turn_end)
 
       assert List.last(events).data.error == {:message_too_large, 8_388_609, 8_388_608}
       assert stop_reason(events) == :error
@@ -294,7 +290,7 @@ defmodule Helyx.Session.StreamEventsTest do
 
       :ok = Session.set_model(session, "conn/events.id1")
       :ok = Session.prompt(session, "again")
-      assert stop_reason(collect_until(:agent_end)) == :end_turn
+      assert stop_reason(collect_until(:turn_end)) == :end_turn
     end
 
     test "a tool call counts in the bound of the open message", %{core: core} do
@@ -307,7 +303,7 @@ defmodule Helyx.Session.StreamEventsTest do
       {:ok, session} = Session.start(core, model: "conn/events.call_over_bound")
       {:ok, _, _} = Session.subscribe(session)
       :ok = Session.prompt(session, "hello")
-      events = collect_until(:agent_end)
+      events = collect_until(:turn_end)
 
       assert List.last(events).data.error == {:message_too_large, 8_388_624, 8_388_608}
       assert stop_reason(events) == :error
@@ -321,7 +317,7 @@ defmodule Helyx.Session.StreamEventsTest do
       {:ok, session} = Session.start(core, model: "conn/events.first_over_bound")
       {:ok, _, _} = Session.subscribe(session)
       :ok = Session.prompt(session, "hello")
-      events = collect_until(:agent_end)
+      events = collect_until(:turn_end)
 
       assert stop_reason(events) == :error
 
@@ -339,7 +335,7 @@ defmodule Helyx.Session.StreamEventsTest do
       {:ok, session} = Session.start(core, model: "conn/events.blocks_over_bound")
       {:ok, _, _} = Session.subscribe(session)
       :ok = Session.prompt(session, "hello")
-      events = collect_until(:agent_end)
+      events = collect_until(:turn_end)
 
       assert List.last(events).data.error == {:too_many_blocks, 1_025, 1_024}
       assert stop_reason(events) == :error
@@ -376,7 +372,7 @@ defmodule Helyx.Session.StreamEventsTest do
       {:ok, session} = Session.start(core, model: "conn/events.open_call")
       {:ok, _, _} = Session.subscribe(session)
       :ok = Session.prompt(session, "hello")
-      collect_until(:agent_end)
+      collect_until(:turn_end)
 
       transcript = :sys.get_state(Session.pid(session)).transcript
 
@@ -392,7 +388,7 @@ defmodule Helyx.Session.StreamEventsTest do
       {:ok, session} = Session.start(core, model: "conn/events.late_result")
       {:ok, _, _} = Session.subscribe(session)
       :ok = Session.prompt(session, "hello")
-      collect_until(:agent_end)
+      collect_until(:turn_end)
       transcript = :sys.get_state(Session.pid(session)).transcript
 
       assert [:user, :assistant, :tool_result, :assistant, :assistant] =
@@ -452,10 +448,10 @@ defmodule Helyx.Session.StreamEventsTest do
       :ok = Session.prompt(session, "hello")
 
       assert {:bad_stream_event, unquote(event)} =
-               List.last(collect_until(:agent_end)).data.error
+               List.last(collect_until(:turn_end)).data.error
 
       :ok = Session.prompt(session, "again")
-      assert stop_reason(collect_until(:agent_end)) == :error
+      assert stop_reason(collect_until(:turn_end)) == :error
     end
   end
 
@@ -467,7 +463,7 @@ defmodule Helyx.Session.StreamEventsTest do
     assert_receive {:waiting, stream}
     assert {:error, :turn_running} = Session.prompt(session, "again")
     send(stream, :go)
-    assert stop_reason(collect_until(:agent_end)) == :end_turn
+    assert stop_reason(collect_until(:turn_end)) == :end_turn
   end
 
   test "an error reason from a provider holds no integer over the digit limit", %{core: core} do
@@ -476,7 +472,7 @@ defmodule Helyx.Session.StreamEventsTest do
       {:ok, _, _} = Session.subscribe(session)
 
       :ok = Session.prompt(session, "hello")
-      error = List.last(collect_until(:agent_end)).data.error
+      error = List.last(collect_until(:turn_end)).data.error
       assert error == {:oops, "integer of more than 100 digits removed"}
     end
   end
@@ -488,12 +484,12 @@ defmodule Helyx.Session.StreamEventsTest do
       {:ok, _, _} = Session.subscribe(session)
 
       :ok = Session.prompt(session, "hello")
-      events = collect_until(:agent_end)
+      events = collect_until(:turn_end)
       assert {:bad_stream_event, _} = List.last(events).data.error
       refute Enum.any?(events, &(:erlang.external_size(&1) > 10_000))
 
       :ok = Session.prompt(session, "again")
-      assert stop_reason(collect_until(:agent_end)) == :error
+      assert stop_reason(collect_until(:turn_end)) == :error
     end
   end
 
@@ -502,12 +498,12 @@ defmodule Helyx.Session.StreamEventsTest do
     {:ok, _, _} = Session.subscribe(session)
 
     :ok = Session.prompt(session, "hello")
-    events = collect_until(:agent_end)
+    events = collect_until(:turn_end)
     assert final_text(events) == "hi"
     assert stop_reason(events) == :end_turn
     refute Enum.any?(events, &(:erlang.external_size(&1) > 10_000))
 
     :ok = Session.prompt(session, "again")
-    assert stop_reason(collect_until(:agent_end)) == :end_turn
+    assert stop_reason(collect_until(:turn_end)) == :end_turn
   end
 end

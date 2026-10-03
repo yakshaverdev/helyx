@@ -128,7 +128,7 @@ defmodule Helyx.TUI.SecondClientTest do
     {view, live}
   end
 
-  # The live client folds its events up to `seq`, or up to an agent_end
+  # The live client folds its events up to `seq`, or up to a turn_end
   # when `seq` is nil. `events` holds every event it received, and `seq`
   # is the seq of the last one.
   defp catch_up(live, seq \\ nil)
@@ -137,6 +137,6 @@ defmodule Helyx.TUI.SecondClientTest do
   defp catch_up(live, seq) do
     assert_receive {:helyx_event, %Event{} = event}
     live = %{vm: ViewModel.apply(live.vm, event), events: live.events ++ [event], seq: event.seq}
-    if seq == nil and event.type == :agent_end, do: live, else: catch_up(live, seq)
+    if seq == nil and event.type == :turn_end, do: live, else: catch_up(live, seq)
   end
 end

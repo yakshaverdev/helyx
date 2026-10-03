@@ -167,7 +167,7 @@ defmodule Helyx.Test.CodexFake do
 
   def prompt(session, text) do
     :ok = Session.prompt(session, text)
-    collect_until(:agent_end)
+    collect_until(:turn_end)
   end
 
   # The callbacks, driven in the test process as the provider loop drives
