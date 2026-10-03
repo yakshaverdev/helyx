@@ -8,12 +8,12 @@ defmodule Helyx.Core do
 
   Core checks every plugin against the interfaces it implements. It refuses to
   start when a `:single` interface receives more than one plugin, when a
-  `required: true` interface receives none, or when a module implements no
-  interface at all. It calls `id/0` of each provider once, and refuses to
-  start with `{:invalid_provider_id, plugin}` when one raises, throws, exits,
-  or returns a value that is not a binary, with `{:invalid_provider,
-  plugin}` when a provider exports neither `stream/3` nor
-  `init/3`, and with
+  `required: true` interface receives none, when a module implements no
+  interface at all, or when a plugin does not export a required callback of
+  an interface it implements (`{:missing_callbacks, plugin, interface,
+  missing}`). It calls `id/0` of each provider once, and
+  refuses to start with `{:invalid_provider_id, plugin}` when one raises,
+  throws, exits, or returns a value that is not a binary, and with
   `{:duplicate_provider_id, id, [first, second]}` when two providers share
   an id.
 
