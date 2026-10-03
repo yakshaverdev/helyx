@@ -52,7 +52,7 @@ defmodule Helyx.Provider.LoopTest do
 
   defp done(stop), do: {:done, %{stop_reason: stop, usage: %{}}}
 
-  test "deltas and calls go out in order; a done with calls ends the message and asks for the first call" do
+  test "deltas and calls go out in order; a done with calls ends the message and requests the call" do
     {actions, state} = pump(turn("blocks"))
 
     assert [
@@ -62,22 +62,57 @@ defmodule Helyx.Provider.LoopTest do
              {:text_delta, "."},
              {:tool_call, %Message.ToolCall{id: "call_1"}},
              {:message_end, :end_turn, %{}},
-             {:tool_request, "0", "bash", %{"command" => "ls"}}
+             {:tool_request, id, "bash", %{"command" => "ls"}}
            ] = events(actions)
 
-    assert %{tool: {"0", "call_1"}, task: nil} = state
+    assert %{calls: [{^id, %{id: "call_1"}, nil}], task: nil} = state
   end
 
-  test "calls run in call order, one at a time, and a rejected call gets its result at once" do
+  test "every call goes out at once; the results join in call order, whatever order they come in" do
+    {actions, state} = pump(turn("serial"))
+
+    assert [{"slow", "1", id1}, {"slow", "2", id2}, {"slow", "3", id3}] =
+             for(
+               {:tool_request, id, name, %{"text" => text}} <- events(actions),
+               do: {name, text, id}
+             )
+
+    {:ok, [], state} = request({:tool_result, "t1", id3, {:ok, "3"}}, state)
+    {:ok, [], state} = request({:tool_result, "t1", id2, {:ok, "2"}}, state)
+    {:ok, actions, state} = request({:tool_result, "t1", id1, {:ok, "1"}}, state)
+
+    assert actions ==
+             [
+               {:event, "t1", {:tool_result, "1", {:ok, "1"}}},
+               {:event, "t1", {:tool_result, "2", {:ok, "2"}}},
+               {:event, "t1", {:tool_result, "3", {:ok, "3"}}},
+               {:need_context, "t1"}
+             ]
+
+    assert %{calls: [], turn: "t1"} = state
+  end
+
+  test "a rejected call has its result at once, after the results of the calls before it" do
     {actions, state} = pump(turn("rejected"))
-    assert {:tool_request, "0", "upcase", %{"text" => "one"}} = List.last(events(actions))
 
-    {:ok, actions, state} = request({:tool_result, "t1", "0", {:ok, "ONE"}}, state)
+    assert [
+             {:tool_call, %{id: "c1"}},
+             {:tool_call, %{id: "c2"}},
+             {:message_end, _, _},
+             tool_request
+           ] =
+             Enum.drop(events(actions), 1)
 
-    assert events(actions) == [{:tool_result, "c1", {:ok, "ONE"}}]
+    assert {:tool_request, id, "upcase", %{"text" => "one"}} = tool_request
+
+    {:ok, actions, state} = request({:tool_result, "t1", id, {:ok, "ONE"}}, state)
     rejected = {:error, "tool call not run: the arguments are not a valid JSON object"}
-    {actions, state} = pump(state)
-    assert actions == [{:event, "t1", {:tool_result, "c2", rejected}}, {:need_context, "t1"}]
+
+    assert actions == [
+             {:event, "t1", {:tool_result, "c1", {:ok, "ONE"}}},
+             {:event, "t1", {:tool_result, "c2", rejected}},
+             {:need_context, "t1"}
+           ]
 
     # The next model call gets the fresh context.
     messages = [
@@ -92,23 +127,6 @@ defmodule Helyx.Provider.LoopTest do
     assert [{:text_delta, "ONE"}, {:done, _}] = events(actions)
   end
 
-  test "the next call goes out only after the result of the one before" do
-    {actions, state} = pump(turn("serial"))
-
-    assert [{:tool_request, "0", "slow", %{"text" => "1"}}] =
-             for(r <- events(actions), elem(r, 0) == :tool_request, do: r)
-
-    refute_received _
-
-    {:ok, _, state} = request({:tool_result, "t1", "0", {:ok, "1"}}, state)
-    {actions, state} = pump(state)
-    assert [{:event, "t1", {:tool_request, "1", "slow", %{"text" => "2"}}}] = actions
-
-    {:ok, _, state} = request({:tool_result, "t1", "1", {:ok, "2"}}, state)
-    {actions, _state} = pump(state)
-    assert [{:event, "t1", {:tool_request, "2", "slow", %{"text" => "3"}}}] = actions
-  end
-
   test "a held steer continues the turn: the message ends, the steer goes out, then the context request" do
     state = turn("ok")
     assert {:ok, [], state} = request({:steer, "t1", "s1", "more"}, state)
@@ -121,7 +139,7 @@ defmodule Helyx.Provider.LoopTest do
            ]
 
     assert List.last(actions) == {:need_context, "t1"}
-    assert %{turn: "t1", steers: [], context?: true} = state
+    assert %{turn: "t1", steers: []} = state
   end
 
   test "a steer after the terminal is rejected" do
@@ -139,7 +157,7 @@ defmodule Helyx.Provider.LoopTest do
     assert {:ok, [{:event, "t1", {:user_message, "s2", "again"}}, {:need_context, "t1"}], state} =
              request({:context, "t1", {:ok, %Context{}}}, state)
 
-    assert %{task: nil, steers: [], context?: true} = state
+    assert %{task: nil, steers: []} = state
   end
 
   test "a context error ends the turn" do
@@ -150,7 +168,7 @@ defmodule Helyx.Provider.LoopTest do
     assert {:ok, [{:event, "t1", {:error, :bad}}], state} =
              request({:context, "t1", {:error, :bad}}, state)
 
-    assert %{turn: nil, context?: false} = state
+    assert %{turn: nil} = state
   end
 
   test "a raising, throwing, or exiting stream gives task_exit; an empty one stream_ended" do
@@ -184,13 +202,21 @@ defmodule Helyx.Provider.LoopTest do
     assert {:ok, [], ^state} = Loop.info({ref, done(:end_turn)}, state)
   end
 
-  test "a result that comes before the interrupt starts no next call after it" do
-    {_actions, state} = pump(turn("serial"))
-    {:ok, _actions, state} = request({:tool_result, "t1", "0", {:error, "aborted"}}, state)
-    {:ok, [], state} = request({:interrupt, "t1"}, state)
+  # The session answers every open request `aborted` before the interrupt
+  # (`Helyx.Session.Wait`), and it drops the events of the turn that ended.
+  test "an interrupt during tool runs ends the turn after the aborted results" do
+    {actions, state} = pump(turn("serial"))
+    ids = for {:tool_request, id, _, _} <- events(actions), do: id
 
-    assert_received {Loop, :next, "t1"} = next
-    assert {:ok, [], _state} = Loop.info(next, state)
+    state =
+      Enum.reduce(ids, state, fn id, state ->
+        {:ok, _actions, state} = request({:tool_result, "t1", id, {:error, "aborted"}}, state)
+        state
+      end)
+
+    {:ok, [], state} = request({:interrupt, "t1"}, state)
+    assert %{turn: nil, calls: [], task: nil} = state
+    refute_received _
   end
 
   test "a send over the mailbox cap of the provider process ends the model call" do
