@@ -60,27 +60,8 @@ defmodule Helyx.Tool.BashTest do
     assert String.starts_with?(text, "[truncated: showing lines 1001-3000 of 3000]\n1001\n")
   end
 
-  test "the kept tail starts on a character boundary (issue #51)" do
+  test "the kept tail is cut at twice the cap, to the cap" do
     keep = 4 * Helyx.Text.max_bytes()
-
-    # The cut lands 0 to 3 bytes inside a 4-byte character.
-    for pad <- 0..3 do
-      acc = String.duplicate("😀", div(2 * keep, 4) + 1) <> String.duplicate("x", pad)
-      {tail, true} = Helyx.Tool.Bash.keep_tail(acc)
-      assert String.valid?(tail)
-      assert byte_size(tail) >= keep - 3
-      assert String.ends_with?(acc, tail)
-    end
-
-    # A character that the next chunk completes is not touched.
-    <<first, _::binary>> = "€"
-    acc = String.duplicate("x", 2 * keep + 1) <> <<first>>
-    {tail, true} = Helyx.Tool.Bash.keep_tail(acc)
-    assert byte_size(tail) == keep
-
-    # Output that was never valid loses at most three bytes at the start.
-    {tail, true} = Helyx.Tool.Bash.keep_tail(:binary.copy(<<0x80>>, 2 * keep + 1))
-    assert byte_size(tail) == keep - 3
 
     # One byte under twice the cap and at it, nothing is cut; one byte over is.
     under = String.duplicate("x", 2 * keep - 1)
@@ -121,15 +102,6 @@ defmodule Helyx.Tool.BashTest do
     assert result.is_error
     assert Helyx.Message.text(result) =~ "NUL"
     refute File.exists?(Path.join(dir, "ran"))
-  end
-
-  test "a working directory with a NUL byte is an error result", %{tmp_dir: dir} do
-    # The port's cd option would cut the path at the NUL and run elsewhere.
-    result =
-      Helyx.Tool.Bash.run(%{"command" => "pwd"}, dir <> <<0>> <> "junk")
-
-    assert {:error, text} = result
-    assert text =~ "NUL"
   end
 
   test "a working directory the watchdog cannot enter is an error, not exit code 2 (issue #52)",

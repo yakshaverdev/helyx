@@ -167,32 +167,20 @@ defmodule Helyx.Provider.OpenAI do
 
   # The error body names the reason for a 401 or 429; without it the turn
   # error is just a number. A diagnostic, so the limit is small; halting the
-  # reduce cancels the rest of the response. The cut can land inside a UTF-8
-  # character; `String.replace_invalid` keeps the diagnostic valid text.
+  # reduce cancels the rest of the response.
   @max_error_body_bytes 16_384
 
   defp drain(resp) do
-    resp.body
-    |> Enum.reduce_while({[], 0}, fn chunk, {body, size} ->
-      case size + byte_size(chunk) do
-        size when size <= @max_error_body_bytes -> {:cont, {[body, chunk], size}}
-        _over -> {:halt, {:over, [body, chunk]}}
-      end
-    end)
-    |> case do
-      {:over, body} ->
-        cut =
-          body
-          |> IO.iodata_to_binary()
-          |> binary_part(0, @max_error_body_bytes)
-          |> String.replace_invalid("")
+    body =
+      Enum.reduce_while(resp.body, "", fn chunk, body ->
+        body = body <> chunk
+        if byte_size(body) > @max_error_body_bytes, do: {:halt, body}, else: {:cont, body}
+      end)
 
-        cut <> "\n[truncated at the #{@max_error_body_bytes}-byte limit]"
-
-      {body, _size} ->
-        IO.iodata_to_binary(body)
-    end
-  rescue
-    _ -> ""
+    if byte_size(body) > @max_error_body_bytes,
+      do:
+        Helyx.Text.cap(body, @max_error_body_bytes, :head) <>
+          "\n[truncated at the #{@max_error_body_bytes}-byte limit]",
+      else: body
   end
 end

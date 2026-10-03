@@ -88,11 +88,11 @@ defmodule Helyx.Provider.OpenAITest do
            ]
   end
 
-  test "reasoning is thinking too, and a non-string field emits nothing" do
+  # Core checks the type of a delta (`Helyx.Session.Stream`).
+  test "reasoning is thinking too, and a non-string field goes to Core as it is" do
     stub([
       delta(%{reasoning: "why"}),
       delta(%{content: 42}),
-      delta(%{reasoning_content: %{"a" => 1}}),
       delta(%{content: "ok"}, "stop"),
       "[DONE]"
     ])
@@ -101,6 +101,7 @@ defmodule Helyx.Provider.OpenAITest do
 
     assert Enum.to_list(stream) == [
              {:thinking_delta, "why"},
+             {:text_delta, 42},
              {:text_delta, "ok"},
              {:done, %{stop_reason: :end_turn, usage: %{}}}
            ]
@@ -257,8 +258,10 @@ defmodule Helyx.Provider.OpenAITest do
   # process stands in for the provider process.
   test "through the helper, a rejected call gets its result and a good one goes to Core" do
     stub([
-      delta(%{tool_calls: [%{id: "c1", function: %{name: "read", arguments: "[1]"}}]}),
-      delta(%{tool_calls: [%{id: "c2", function: %{name: "bash", arguments: ~s({"b": 1})}}]}),
+      delta(%{tool_calls: [%{index: 0, id: "c1", function: %{name: "read", arguments: "[1]"}}]}),
+      delta(%{
+        tool_calls: [%{index: 1, id: "c2", function: %{name: "bash", arguments: ~s({"b": 1})}}]
+      }),
       delta(%{}, "tool_calls"),
       "[DONE]"
     ])
