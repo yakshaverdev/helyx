@@ -33,11 +33,13 @@ defmodule CodingAgentTest do
     assert Message.text(Enum.find(events, &(&1.type == :turn_end)).data.message) == "Done."
   end
 
-  test "a bad model ref is rejected before anything starts" do
-    core = :"agent_core_#{System.unique_integer([:positive])}"
-    start_supervised!({Helyx.Core, name: core, plugins: CodingAgent.plugins()})
+  # run/1 starts Core under its default name; no other async test uses it.
+  @tag :tmp_dir
+  test "run/1 rejects a bad model ref and stops the Core it started", %{tmp_dir: dir} do
+    assert {:error, {:invalid_model_ref, "not-a-ref"}} =
+             CodingAgent.run(model: "not-a-ref", cwd: dir, sessions_dir: dir)
 
-    assert {:error, _reason} = Session.start(core, model: "not-a-ref")
+    assert Process.whereis(Helyx.Core) == nil
   end
 
   test "mix helyx rejects bad arguments before starting anything" do
