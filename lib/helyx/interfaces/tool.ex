@@ -26,8 +26,7 @@ defmodule Helyx.Tool do
   callback must be safe to call again with the same handles, and it must
   not wait past the deadline. The tool must also free the resource by
   itself when its Task dies with no release, because the hands can die
-  first and drop a late `hold/1` (ADR 0004); the bash tool's watchdog does
-  this when its port closes.
+  first and drop a late `hold/1` (ADR 0004).
   """
 
   use Helyx.Interface, mode: :multi

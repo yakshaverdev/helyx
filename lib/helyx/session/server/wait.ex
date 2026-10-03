@@ -33,27 +33,19 @@ defmodule Helyx.Session.Server.Wait do
   # open tool requests.
   def finish(%State{activity: turn} = state, outcome) do
     kill_prepare(turn)
-    {state, assistant} = Records.finish(state, outcome)
+    state = Records.finish(state, outcome)
     done? = match?({:done, _stop, _usage}, outcome)
     state = Steering.end_turn(state, turn.id, done?)
     state = if done?, do: state, else: Steering.drop_queues(state)
-    state = state |> ToolRuns.end_turn(turn) |> emit_end(outcome, assistant)
+    state = state |> ToolRuns.end_turn(turn) |> emit(:turn_end, end_data(outcome))
     hands = if !done? or turn.tool_queue.running, do: Hands.request_cancel(state.hands, turn.id)
     wait = if outcome == :aborted, do: interrupt(state, turn), else: %__MODULE__{}
     %{state | activity: %{wait | hands: hands}}
   end
 
-  defp emit_end(state, {:done, stop_reason, _usage}, assistant) do
-    state
-    |> emit(:turn_end, %{message: assistant})
-    |> emit(:agent_end, %{stop_reason: stop_reason})
-  end
-
-  defp emit_end(state, :aborted, _assistant),
-    do: emit(state, :agent_end, %{stop_reason: :aborted})
-
-  defp emit_end(state, {:error, reason}, _assistant),
-    do: emit(state, :agent_end, %{stop_reason: :error, error: reason})
+  defp end_data({:done, _stop_reason, _usage}), do: %{outcome: :done}
+  defp end_data(:aborted), do: %{outcome: :aborted}
+  defp end_data({:error, reason}), do: %{outcome: :error, error: reason}
 
   # The wait holds the answer to the interrupt, and the provider process
   # until that answer keeps it.

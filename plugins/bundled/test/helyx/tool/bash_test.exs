@@ -29,7 +29,10 @@ defmodule Helyx.Tool.BashTest do
     {:ok, session} = Helyx.Session.start(core, model: "fake/abort", cwd: dir)
     {:ok, _, _} = Helyx.Session.subscribe(session)
     :ok = Helyx.Session.prompt(session, "go")
-    assert_receive {:helyx_event, %Helyx.Event{type: :tool_execution_start}}
+
+    assert_receive {:helyx_event,
+                    %Helyx.Event{type: :message_end, data: %{message: %{role: :assistant}}}}
+
     session
   end
 
@@ -165,7 +168,7 @@ defmodule Helyx.Tool.BashTest do
     :ok = Helyx.Session.abort(session)
     refute os_alive?(pid)
     refute os_alive?(child)
-    assert_receive {:helyx_event, %Helyx.Event{type: :agent_end, data: %{stop_reason: :aborted}}}
+    assert_receive {:helyx_event, %Helyx.Event{type: :turn_end, data: %{outcome: :aborted}}}
   end
 
   # The window: the shell exits (the port closes) before the tool Task runs

@@ -18,9 +18,8 @@ defmodule CodingAgentTest do
     {:ok, _, _} = Session.subscribe(session)
     :ok = Session.prompt(session, "run it")
 
-    events = collect_until(:agent_end)
+    events = collect_until(:turn_end)
     types = Enum.map(events, & &1.type)
-    assert :tool_execution_start in types
     assert :tool_execution_end in types
 
     result =
@@ -30,7 +29,7 @@ defmodule CodingAgentTest do
       end)
 
     assert Message.text(result) =~ "hi"
-    assert Message.text(Enum.find(events, &(&1.type == :turn_end)).data.message) == "Done."
+    assert Message.text(List.last(messages(events))) == "Done."
   end
 
   # run/1 starts Core under its default name; no other async test uses it.

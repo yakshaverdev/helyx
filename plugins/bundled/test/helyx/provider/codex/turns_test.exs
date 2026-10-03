@@ -85,7 +85,7 @@ defmodule Helyx.Provider.Codex.TurnsTest do
 
     assert Message.text(result) == "a.txt\n"
     refute result.is_error
-    assert [%{stop_reason: :end_turn}] = of_type(events, :agent_end)
+    assert [%{outcome: :done}] = of_type(events, :turn_end)
 
     assert {:ok, %{resume_ids: %{"codex" => {tid(), 1}}}} =
              Session.File.resume(ctx.sessions, ctx.work)
@@ -241,8 +241,8 @@ defmodule Helyx.Provider.Codex.TurnsTest do
 
     events = prompt(start(ctx), "go")
 
-    assert [%{stop_reason: :error, error: {:codex, "failed", "usage limit"}}] =
-             of_type(events, :agent_end)
+    assert [%{outcome: :error, error: {:codex, "failed", "usage limit"}}] =
+             of_type(events, :turn_end)
 
     assert [
              %{message: %Message{tool_call_id: "exec-a", is_error: true}},

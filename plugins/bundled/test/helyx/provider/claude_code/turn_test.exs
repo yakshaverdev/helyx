@@ -110,12 +110,11 @@ defmodule Helyx.Provider.ClaudeCode.TurnTest do
 
     assert first.content == [%Message.Text{text: "I will list."}, call]
     assert last.content == [%Message.Text{text: "One file."}]
-    assert [%{tool_call: ^call}] = of_type(events, :tool_execution_start)
 
     assert [%{message: %Message{role: :tool_result, tool_call_id: "toolu_01", is_error: false}}] =
              of_type(events, :tool_execution_end)
 
-    assert [%{stop_reason: :end_turn}] = of_type(events, :agent_end)
+    assert [%{outcome: :done}] = of_type(events, :turn_end)
 
     assert {:ok, %{resume_ids: %{"claude-code" => {^id, 1}}}} =
              Session.File.resume(ctx.sessions, ctx.work)
@@ -199,7 +198,7 @@ defmodule Helyx.Provider.ClaudeCode.TurnTest do
     :ok = Session.prompt(session, "hello")
     collect_until(:message_update)
     :ok = Session.abort(session)
-    collect_until(:agent_end)
+    collect_until(:turn_end)
     GenServer.stop(Session.pid(session))
 
     prompt(resume(ctx), "last")
@@ -286,7 +285,7 @@ defmodule Helyx.Provider.ClaudeCode.TurnTest do
       :ok = Session.prompt(session, "sleep")
       until_tool_call()
       :ok = Session.abort(session)
-      assert [%{stop_reason: :aborted}] = of_type(collect_until(:agent_end), :agent_end)
+      assert [%{outcome: :aborted}] = of_type(collect_until(:turn_end), :turn_end)
 
       # The message with the call and its `aborted` result joined (#385).
       transcript = :sys.get_state(Session.pid(session)).transcript
@@ -294,7 +293,7 @@ defmodule Helyx.Provider.ClaudeCode.TurnTest do
       assert Helyx.Message.text(List.last(transcript)) == "aborted"
 
       events = prompt(session, "next")
-      assert [%{stop_reason: :end_turn}] = of_type(events, :agent_end)
+      assert [%{outcome: :done}] = of_type(events, :turn_end)
       assert programs(bin) == "1"
 
       assert [
@@ -341,9 +340,9 @@ defmodule Helyx.Provider.ClaudeCode.TurnTest do
       refute os_alive?(pid)
       assert File.read!(Path.join(bin, "term")) == "term\n"
       refute File.exists?(Path.join(bin, "eof"))
-      collect_until(:agent_end)
+      collect_until(:turn_end)
 
-      assert [%{stop_reason: :end_turn}] = of_type(prompt(session, "next"), :agent_end)
+      assert [%{outcome: :done}] = of_type(prompt(session, "next"), :turn_end)
       # The abort cut the text-only partial, so the next turn replays (#432).
       refute Enum.any?(args(bin, 2), &String.starts_with?(&1, "--resume"))
     end
@@ -386,8 +385,8 @@ defmodule Helyx.Provider.ClaudeCode.TurnTest do
     session = start(ctx)
     events = prompt(session, "go")
 
-    assert [%{stop_reason: :error, error: {:claude_code, "error_max_turns", "too many"}}] =
-             of_type(events, :agent_end)
+    assert [%{outcome: :error, error: {:claude_code, "error_max_turns", "too many"}}] =
+             of_type(events, :turn_end)
 
     assert [
              %{message: %Message{tool_call_id: "toolu_a", is_error: false}},
@@ -396,7 +395,7 @@ defmodule Helyx.Provider.ClaudeCode.TurnTest do
 
     assert Message.text(aborted) == "aborted"
 
-    assert [%{stop_reason: :end_turn}] = of_type(prompt(session, "next"), :agent_end)
+    assert [%{outcome: :done}] = of_type(prompt(session, "next"), :turn_end)
     assert programs(bin) == "1"
   end
 end

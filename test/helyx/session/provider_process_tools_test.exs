@@ -71,8 +71,8 @@ defmodule Helyx.Session.ProviderProcessToolsTest do
     assert_receive {:conn, :tool_result, ^proc, {:tool_result, ^turn_id, "c1", {:ok, "HI"}}}
 
     send(proc, {:finish, turn_id})
-    events = collect_until(:agent_end)
-    refute Enum.any?(events, &(&1.type in [:tool_execution_start, :tool_execution_end]))
+    events = collect_until(:turn_end)
+    refute Enum.any?(events, &(&1.type == :tool_execution_end))
     assert [%{role: :user}, %{role: :assistant}] = :sys.get_state(Session.pid(session)).transcript
   end
 
@@ -102,7 +102,7 @@ defmodule Helyx.Session.ProviderProcessToolsTest do
   test "a request of a turn that is not live gets aborted and runs nothing",
        %{proc: proc, turn_id: turn_id, hands: hands} do
     send(proc, {:finish, turn_id})
-    collect_until(:agent_end)
+    collect_until(:turn_end)
 
     request(proc, turn_id, "late", "upcase", %{"text" => "x"})
     assert_receive {:conn, :tool_result, _, {:tool_result, ^turn_id, "late", {:error, "aborted"}}}
@@ -176,9 +176,9 @@ defmodule Helyx.Session.ProviderProcessToolsTest do
     sync(proc, session)
     send(proc, :stop)
 
-    events = collect_until(:agent_end)
-    assert List.last(events).data.stop_reason == :error
-    # The session asks the hands for the cleanup after it emits agent_end.
+    events = collect_until(:turn_end)
+    assert List.last(events).data.outcome == :error
+    # The session asks the hands for the cleanup after it emits turn_end.
     GenServer.call(Session.pid(session), :snapshot).model
     assert running(hands) == 0
   end
@@ -190,7 +190,7 @@ defmodule Helyx.Session.ProviderProcessToolsTest do
     sync(proc, session)
     send(proc, {:finish, turn_id})
 
-    assert List.last(collect_until(:agent_end)).data.stop_reason == :end_turn
+    assert List.last(collect_until(:turn_end)).data.outcome == :done
     assert_receive {:conn, :tool_result, _, {:tool_result, ^turn_id, "c1", {:error, "aborted"}}}
     assert_receive {:conn, :tool_result, _, {:tool_result, ^turn_id, "c2", {:error, "aborted"}}}
 

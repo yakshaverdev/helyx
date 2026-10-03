@@ -80,14 +80,14 @@ defmodule Helyx.TUITest do
     Enum.map_join(line.spans, & &1.content)
   end
 
-  # Feeds arriving session events through handle_info until agent_end.
+  # Feeds arriving session events through handle_info until turn_end.
   defp drain(state) do
     receive do
       {:helyx_event, %Event{} = event} ->
         {:noreply, state} = TUI.handle_info({:helyx_event, event}, state)
-        if event.type == :agent_end, do: state, else: drain(state)
+        if event.type == :turn_end, do: state, else: drain(state)
     after
-      Helyx.Test.Events.wait_ms() -> flunk("no agent_end; view model: #{inspect(state.vm)}")
+      Helyx.Test.Events.wait_ms() -> flunk("no turn_end; view model: #{inspect(state.vm)}")
     end
   end
 
@@ -114,7 +114,9 @@ defmodule Helyx.TUITest do
     state = mounted(core, "hold", [[call]])
 
     state = state |> press("g") |> press("o") |> press("enter")
-    assert_receive {:helyx_event, %Event{type: :tool_execution_start}}
+
+    assert_receive {:helyx_event,
+                    %Event{type: :message_end, data: %{message: %{role: :assistant}}}}
 
     for n <- 1..32, do: :ok = Session.steer(state.session, "s#{n}")
 
@@ -222,7 +224,7 @@ defmodule Helyx.TUITest do
     # handled it, and the session sends its events before its reply.
     assert_receive {:trace, ^pid, :receive, {:"$gen_call", _from, :abort}}
     :sys.get_state(pid)
-    refute_received {:helyx_event, %Event{type: :agent_end}}
+    refute_received {:helyx_event, %Event{type: :turn_end}}
   end
 
   test "ctrl+c stops the app", %{core: core} do
@@ -259,7 +261,7 @@ defmodule Helyx.TUITest do
     {:ok, session} = Session.start(core, model: "fake/history", sessions_dir: dir, cwd: dir)
     {:ok, _, _} = Session.subscribe(session)
     :ok = Session.prompt(session, "hi")
-    assert_receive {:helyx_event, %Event{type: :agent_end}}
+    assert_receive {:helyx_event, %Event{type: :turn_end}}
 
     :ok =
       DynamicSupervisor.terminate_child(Helyx.Core.session_supervisor(core), Session.pid(session))
@@ -735,8 +737,8 @@ defmodule Helyx.TUITest do
       assert {1, _row} = state.scroll
       assert screen(state) == Enum.map(27..31, &"line#{&1}")
 
-      for data <- [%{stop_reason: :aborted}, %{stop_reason: :error, error: :boom}] do
-        ended = fold(state, :agent_end, data)
+      for data <- [%{outcome: :aborted}, %{outcome: :error, error: :boom}] do
+        ended = fold(state, :turn_end, data)
         assert ended.scroll == nil
         assert "› m1" in screen(ended)
         refute status_text(ended) =~ "scrolled"
@@ -840,7 +842,9 @@ defmodule Helyx.TUITest do
 
       state = mounted(core, "busy", [[call]])
       state = submit(state, "go")
-      assert_receive {:helyx_event, %Event{type: :tool_execution_start}}
+
+      assert_receive {:helyx_event,
+                      %Event{type: :message_end, data: %{message: %{role: :assistant}}}}
 
       for {text, model} <- [{"/model other/any", "other/any"}, {"/model fake/busy", "fake/busy"}] do
         {:noreply, _} = TUI.handle_event(%ExRatatui.Event.Paste{content: text}, state)

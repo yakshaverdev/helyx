@@ -144,7 +144,7 @@ defmodule Helyx.Session do
   end
 
   # The boundary for `cwd`. It goes into the session file as JSON, into the
-  # system prompt, and to `Port.open`, which cuts a string at a NUL byte.
+  # system prompt, and to programs, which cut a string at a NUL byte.
   defp fetch_cwd(opts), do: opts |> Keyword.get_lazy(:cwd, &File.cwd!/0) |> check_cwd()
 
   defp check_cwd(cwd) when is_binary(cwd) do

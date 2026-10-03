@@ -42,11 +42,9 @@ defmodule Helyx.Session.Server.Records do
   end
 
   # Closes the open assistant message at its `message_end`
-  # (`close_assistant/3`); each of its calls starts.
+  # (`close_assistant/3`).
   def end_assistant(state, stop_reason, usage) do
-    {state, assistant} = close_assistant(state, stop_reason, usage)
-    calls = for %Message.ToolCall{} = call <- assistant.content, do: call
-    state = Enum.reduce(calls, state, &emit(&2, :tool_execution_start, %{tool_call: &1}))
+    state = close_assistant(state, stop_reason, usage)
     %{state | activity: Turn.close_partial(state.activity)}
   end
 
@@ -64,8 +62,8 @@ defmodule Helyx.Session.Server.Records do
     end
   end
 
-  # The provider took a steer. The open assistant message closes first and
-  # its calls start, as at a `message_end`. Then every call still open gets
+  # The provider took a steer. The open assistant message closes first,
+  # as at a `message_end`. Then every call still open gets
   # its `aborted` result: no message goes between a call and its result.
   def take_steer(%State{activity: %Turn{partial: nil}} = state, text),
     do: state |> abort_open_calls() |> append_user(text)
@@ -78,17 +76,12 @@ defmodule Helyx.Session.Server.Records do
   # The close at the end of a turn, at `outcome`: `{:done, stop_reason,
   # usage}`, `:aborted`, or `{:error, reason}`. At `done` the open message
   # joins, an empty one too. At an abort or a failure an open message with
-  # a tool call closes as at the other closes (stop `:tool_use`, its calls
-  # start); one with text only joins with the stop reason `:aborted` or
-  # `:error`, and its message_end has the reason in `error`. No open
-  # message, no message; an open message with no block gets its
-  # message_end and is not stored. Then each open call gets its `aborted`
-  # result, with no `tool_execution_start`. Returns the state and the
-  # message of the `done` close.
-  def finish(state, outcome) do
-    {state, assistant} = close_last(state, outcome)
-    {abort_open_calls(state), assistant}
-  end
+  # a tool call closes as at the other closes (stop `:tool_use`); one with
+  # text only joins with the stop reason `:aborted` or `:error`, and its
+  # message_end has the reason in `error`. No open message, no message; an
+  # open message with no block gets its message_end and is not stored. Then
+  # each open call gets its `aborted` result.
+  def finish(state, outcome), do: state |> close_last(outcome) |> abort_open_calls()
 
   defp close_last(state, {:done, stop_reason, usage}),
     do: close_assistant(state, stop_reason, usage)
@@ -99,13 +92,13 @@ defmodule Helyx.Session.Server.Records do
   defp close_cut(state, stop, reason) do
     case close_if(state, &match?(%Message.ToolCall{}, &1)) do
       %State{activity: %Turn{partial: nil}} = state ->
-        {state, nil}
+        state
 
       # Opened by an event over the bound, with no block: it ends for the
       # clients and is not stored.
       %State{activity: %Turn{partial: []} = turn} = state ->
         message = Turn.assistant_message(turn, stop_reason: stop)
-        {emit(state, :message_end, %{message: message, error: reason}), nil}
+        emit(state, :message_end, %{message: message, error: reason})
 
       state ->
         close_assistant(state, stop, %{}, %{error: reason})
@@ -139,14 +132,14 @@ defmodule Helyx.Session.Server.Records do
   defp start_assistant_message(state), do: state
 
   # Appends the assistant message of the stream so far and emits its
-  # message_end. Returns it. No message goes between a
+  # message_end. No message goes between a
   # call and its result: the calls still open get their aborted results
   # first, and a later result is dropped.
   defp close_assistant(state, stop_reason, usage, data \\ %{}) do
     state = state |> abort_open_calls() |> start_assistant_message()
     assistant = Turn.assistant_message(state.activity, stop_reason: stop_reason, usage: usage)
     data = Map.put(data, :message, assistant)
-    {emit(append_message(state, assistant), :message_end, data), assistant}
+    emit(append_message(state, assistant), :message_end, data)
   end
 
   defp close_if(%State{activity: %Turn{partial: [_ | _] = partial}} = state, block?) do

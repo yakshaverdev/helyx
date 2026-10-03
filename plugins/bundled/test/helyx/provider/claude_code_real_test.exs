@@ -51,9 +51,9 @@ defmodule Helyx.Provider.ClaudeCodeRealTest do
 
     :ok = Session.abort(session)
 
-    assert [%{stop_reason: :aborted}] =
+    assert [%{outcome: :aborted}] =
              for(
-               %Event{type: :agent_end, data: d} <- collect_until(:agent_end, @real_turn_ms),
+               %Event{type: :turn_end, data: d} <- collect_until(:turn_end, @real_turn_ms),
                do: d
              )
 

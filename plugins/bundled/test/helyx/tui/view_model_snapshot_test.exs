@@ -47,7 +47,7 @@ defmodule Helyx.TUI.ViewModelSnapshotTest do
     assert_receive {:waiting, tool}
     send(tool, :go)
 
-    watched = fold(live, collect_until(:agent_end))
+    watched = fold(live, collect_until(:turn_end))
     joined = fold(snapshot, LateClient.events_to_end(late))
 
     assert transcript(joined) == transcript(watched)
@@ -68,7 +68,7 @@ defmodule Helyx.TUI.ViewModelSnapshotTest do
     send(stream, :go)
 
     assert transcript(fold(snapshot, LateClient.events_to_end(late))) ==
-             transcript(fold(live, collect_until(:agent_end)))
+             transcript(fold(live, collect_until(:turn_end)))
 
     LateClient.disconnect(late)
   end
@@ -97,7 +97,7 @@ defmodule Helyx.TUI.ViewModelSnapshotTest do
     send(stream, :go)
 
     assert transcript(fold(snapshot, LateClient.events_to_end(late))) ==
-             transcript(fold(live, collect_until(:agent_end)))
+             transcript(fold(live, collect_until(:turn_end)))
 
     LateClient.disconnect(late)
   end
@@ -123,7 +123,7 @@ defmodule Helyx.TUI.ViewModelSnapshotTest do
     assert transcript(ViewModel.from_snapshot(snapshot)) == transcript(live)
 
     send(tool, :go)
-    live = fold(live, collect_until(:agent_end))
+    live = fold(live, collect_until(:turn_end))
     joined = fold(snapshot, LateClient.events_to_end(late))
     assert transcript(joined) == transcript(live)
 
@@ -131,7 +131,7 @@ defmodule Helyx.TUI.ViewModelSnapshotTest do
     :ok = Session.prompt(session, "two")
     assert_receive {:waiting, tool}
     send(tool, :go)
-    live = fold(live, collect_until(:agent_end))
+    live = fold(live, collect_until(:turn_end))
     joined = fold(joined, LateClient.events_to_end(late))
     assert transcript(joined) == transcript(live)
     assert [] = for({:tool, _call, _line, nil} <- ViewModel.cells(joined), do: :open)
@@ -154,7 +154,7 @@ defmodule Helyx.TUI.ViewModelSnapshotTest do
     assert ["⚙ x", "… awaiting result"] == Enum.take(texts(live), -2)
 
     send(stream, :go)
-    watched = fold(live, collect_until(:agent_end))
+    watched = fold(live, collect_until(:turn_end))
     assert transcript(fold(snapshot, LateClient.events_to_end(late))) == transcript(watched)
 
     assert [_user, _assistant, {:tool, %{id: "h"}, _, %Message{}}, _end] =
@@ -179,7 +179,7 @@ defmodule Helyx.TUI.ViewModelSnapshotTest do
 
     send(stream, :go)
     events = LateClient.events_to_end(late)
-    watched = collect_until(:agent_end)
+    watched = collect_until(:turn_end)
 
     # The late client got every event after the snapshot, and each once.
     # The registration and the snapshot happen in one server handler, so no
@@ -198,7 +198,7 @@ defmodule Helyx.TUI.ViewModelSnapshotTest do
 
     assert_receive {:waiting, stream}
     send(stream, :go)
-    events = collect_until(:agent_end)
+    events = collect_until(:turn_end)
     live = fold(first, events)
 
     assert [_user, %Message{stop_reason: :error}, {:notice, "error: " <> _}] =
@@ -214,7 +214,7 @@ defmodule Helyx.TUI.ViewModelSnapshotTest do
 
     assert_receive {:waiting, _stream}
     :ok = Session.abort(session)
-    events = collect_until(:agent_end)
+    events = collect_until(:turn_end)
     live = fold(first, events)
     assert [_user, %Message{stop_reason: :aborted}, {:notice, "aborted"}] = ViewModel.cells(live)
 
@@ -227,7 +227,7 @@ defmodule Helyx.TUI.ViewModelSnapshotTest do
     {:ok, session} = Session.start(core, model: "gated/dangling." <> gate)
     {:ok, first, _} = Session.subscribe(session)
     :ok = Session.prompt(session, "go")
-    events = collect_until(:agent_end)
+    events = collect_until(:turn_end)
     live = fold(first, events)
 
     {:ok, snapshot, _} = Session.subscribe(session)
@@ -256,7 +256,7 @@ defmodule Helyx.TUI.ViewModelSnapshotTest do
 
     assert_receive {:waiting, _tool}
     :ok = Session.abort(session)
-    events = collect_until(:agent_end)
+    events = collect_until(:turn_end)
     live = fold(first, events)
 
     assert [_user, _assistant, c1, c2, c3, {:notice, "aborted"}] = ViewModel.cells(live)

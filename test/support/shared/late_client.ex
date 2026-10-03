@@ -28,13 +28,13 @@ defmodule Helyx.Test.LateClient do
     assert_receive {:steered, ^client, :ok}
   end
 
-  # The events of the client up to and including an agent_end.
+  # The events of the client up to and including a turn_end.
   def events_to_end(client, acc \\ []) do
     receive do
-      {:event, ^client, %Event{type: :agent_end} = event} -> Enum.reverse([event | acc])
+      {:event, ^client, %Event{type: :turn_end} = event} -> Enum.reverse([event | acc])
       {:event, ^client, event} -> events_to_end(client, [event | acc])
     after
-      Helyx.Test.Events.wait_ms() -> flunk("the second client got no agent_end")
+      Helyx.Test.Events.wait_ms() -> flunk("the second client got no turn_end")
     end
   end
 

@@ -42,7 +42,7 @@ defmodule Helyx.Session.Server.TurnLoop do
         {:stream_event, turn_id, :turn_start},
         %State{activity: :idle, conn: %ProviderConn{ready: true}} = state
       ),
-      do: program_turn(state, turn_id)
+      do: start_provider_turn(state, turn_id)
 
   def handle({:stream_end, turn_id, terminal}, %State{activity: %Turn{id: turn_id}} = state),
     do: end_turn(terminal, state)
@@ -150,13 +150,13 @@ defmodule Helyx.Session.Server.TurnLoop do
 
   # A turn that the provider started by itself (#240): a submitted turn
   # with no user message.
-  defp program_turn(%State{conn: %ProviderConn{model: model}} = state, turn_id) do
+  defp start_provider_turn(%State{conn: %ProviderConn{model: model}} = state, turn_id) do
     turn = %Turn{id: turn_id, model: model, provider: state.provider, phase: :submitted}
     open_turn(state, turn, %{origin: :provider})
   end
 
   defp open_turn(state, turn, data),
-    do: %{state | activity: turn} |> emit(:agent_start, %{}) |> emit(:turn_start, data)
+    do: emit(%{state | activity: turn}, :turn_start, data)
 
   # The provider process (started at the first turn) and the prepare Task,
   # which builds the context; a turn that connects again keeps its prepare.

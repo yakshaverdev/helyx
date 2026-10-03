@@ -40,7 +40,7 @@ defmodule Helyx.Test.Gate do
   # the gate: the provider process forwards each event as it handles it,
   # so the gate waits until that process idles with an empty mailbox.
   # This runs in the model Task, so a raise here reaches only the turn's
-  # `agent_end`. At the cap it also sends the reason to the gate, where the
+  # `turn_end`. At the cap it also sends the reason to the gate, where the
   # failed `assert_receive` of the test prints it. The cap is half of
   # `Helyx.Test.Events.wait_ms/0`, so the message arrives before the test's
   # own wait for the gate, which started earlier, ends.

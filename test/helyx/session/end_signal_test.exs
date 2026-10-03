@@ -288,7 +288,7 @@ defmodule Helyx.Session.EndSignalTest do
       assert Enum.count(monitors(), &(&1 == {:process, pid})) == 1
 
       :ok = Session.prompt(session, "hi")
-      seqs = Enum.map(collect_until(:agent_end), & &1.seq)
+      seqs = Enum.map(collect_until(:turn_end), & &1.seq)
       assert seqs == Enum.uniq(seqs)
       refute_received {:helyx_event, _}
 
@@ -381,7 +381,7 @@ defmodule Helyx.Session.EndSignalTest do
   end
 
   defp await_idle(pid) do
-    collect_until(:agent_end)
+    collect_until(:turn_end)
 
     case GenServer.call(pid, :snapshot) do
       %{turn: nil, queue: %{steers: 0, follow_ups: 0}} -> :ok

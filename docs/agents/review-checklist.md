@@ -37,7 +37,7 @@ Invariants the review axes check on every diff. Add one when a review or a PR co
 ## Events
 
 - Every `message_start` gets a `message_end` on the same turn, on success and on failure.
-- Every turn ends with `agent_end`, on success and on failure.
+- Every turn ends with one `turn_end` and its `outcome`, on success, abort, and failure.
 - Sequence numbers increase by one per event within a session instance, with no gaps. Every event and every snapshot carry the instance id (#204).
 - A rule that a snapshot equals the fold of the events is checked against every path that writes to the transcript: for each write, the live fold and the snapshot create cells by the same rule, or the difference is a stated limit. `grep` the callers of the transcript writers (`record_result`, `abort_open_calls`), not only the paths the ticket names. Source: #163, Codex round 2 (an external turn, now a connected turn, that ends normally records `aborted` results for calls that never started; the live fold ignores the result event, and the snapshot makes a closed cell).
 

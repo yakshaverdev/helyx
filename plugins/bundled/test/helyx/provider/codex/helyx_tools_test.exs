@@ -290,7 +290,7 @@ defmodule Helyx.Provider.Codex.HelyxToolsTest do
       events = prompt(session, "say hello")
       GenServer.stop(Session.pid(session))
 
-      assert [%{stop_reason: :end_turn}] = of_type(events, :agent_end)
+      assert [%{outcome: :done}] = of_type(events, :turn_end)
       assert transcript_calls(events) == {["call_d1"], ["call_d1"]}
       assert [{0, %{"success" => true, "contentItems" => [%{"text" => text}]}}] = answers(bin, 1)
       assert text =~ "hello"
@@ -316,7 +316,7 @@ defmodule Helyx.Provider.Codex.HelyxToolsTest do
       pid = wait_for_pid(pidfile)
       :ok = Session.abort(session)
 
-      assert [%{stop_reason: :aborted}] = of_type(collect_until(:agent_end), :agent_end)
+      assert [%{outcome: :aborted}] = of_type(collect_until(:turn_end), :turn_end)
       assert gone_within?(pid)
 
       lines = stdin(bin, 1)
@@ -343,8 +343,8 @@ defmodule Helyx.Provider.Codex.HelyxToolsTest do
       :ok = Session.prompt(session, "sleep")
       pid = wait_for_pid(pidfile)
 
-      assert [%{stop_reason: :error, error: {:provider_stop, {:codex_exit, _}}}] =
-               of_type(collect_until(:agent_end), :agent_end)
+      assert [%{outcome: :error, error: {:provider_stop, {:codex_exit, _}}}] =
+               of_type(collect_until(:turn_end), :turn_end)
 
       assert gone_within?(pid)
       GenServer.stop(Session.pid(session))
@@ -363,12 +363,12 @@ defmodule Helyx.Provider.Codex.HelyxToolsTest do
       events = prompt(session, "sleep")
       pid = wait_for_pid(pidfile)
 
-      assert [%{stop_reason: :end_turn}] = of_type(events, :agent_end)
+      assert [%{outcome: :done}] = of_type(events, :turn_end)
       assert transcript_calls(events) == {["call_d1"], ["call_d1"]}
 
       # The next turn starts only after the hands' cleanup and the late
       # answer.
-      assert [%{stop_reason: :end_turn}] = of_type(prompt(session, "next"), :agent_end)
+      assert [%{outcome: :done}] = of_type(prompt(session, "next"), :turn_end)
       assert gone_within?(pid)
 
       assert [{0, %{"success" => false, "contentItems" => [%{"text" => "aborted"}]}}] =

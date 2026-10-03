@@ -99,7 +99,7 @@ defmodule Helyx.Provider.ClaudeCode.ProgramTurnTest do
 
     session = start(ctx)
     prompt(session, "a")
-    events = collect_until(:agent_end)
+    events = collect_until(:turn_end)
 
     assert [%{origin: :provider}] = of_type(events, :turn_start)
     assert [%Message{role: :assistant, content: [%Message.Text{text: "done"}]}] = messages(events)

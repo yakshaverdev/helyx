@@ -279,7 +279,7 @@ defmodule Helyx.Test.ClaudeCodeFake do
 
   def prompt(session, text) do
     :ok = Session.prompt(session, text)
-    collect_until(:agent_end)
+    collect_until(:turn_end)
   end
 
   # Starts a turn on a new program and gives it the program's output

@@ -17,9 +17,8 @@ defmodule Helyx.TUI.ViewModel do
     * `{:tool, call, line, result}` – a tool call of the assistant message
       before it, and its line (`call_line/1`), made with the cell, so a
       frame does not pay for the size of the call; `result` is nil until
-      the tool result message comes. The cell comes from the message, not
-      from `tool_execution_start`: the message proves that the call exists,
-      not that it runs, so an open cell shows "awaiting result"
+      the tool result message comes. The message proves that the call
+      exists, not that it runs, so an open cell shows "awaiting result"
     * `{:notice, text}` – an aborted or failed turn, a provider that lost
       its session or got a cut transcript, a steer that was not confirmed, a
       notice of the session, or a command the client rejected
@@ -91,27 +90,17 @@ defmodule Helyx.TUI.ViewModel do
       `Helyx.TUI.Transcript` shows a placeholder for it
   """
   @spec apply(t(), Event.t()) :: t()
-  def apply(vm, %Event{type: :agent_start}), do: %{vm | running?: true}
+  def apply(vm, %Event{type: :turn_start}), do: %{vm | running?: true}
 
-  def apply(vm, %Event{type: :agent_end, data: data}) do
+  def apply(vm, %Event{type: :turn_end, data: data}) do
     vm = %{vm | running?: false, streaming: nil}
 
     case data do
-      %{stop_reason: :aborted} ->
-        add_cell(vm, {:notice, "aborted"})
-
-      %{stop_reason: :error, error: error} ->
-        add_cell(vm, {:notice, "error: " <> error_text(error)})
-
-      %{stop_reason: other} when other != :error ->
-        vm
+      %{outcome: :done} -> vm
+      %{outcome: :aborted} -> add_cell(vm, {:notice, "aborted"})
+      %{outcome: :error, error: error} -> add_cell(vm, {:notice, "error: " <> error_text(error)})
     end
   end
-
-  # The TUI shows a turn and its tool calls only through its messages, and
-  # a user message when it ends.
-  def apply(vm, %Event{type: type}) when type in [:turn_start, :turn_end, :tool_execution_start],
-    do: vm
 
   def apply(vm, %Event{type: :message_start, data: data}) do
     %{message: %Message{role: role}} = data

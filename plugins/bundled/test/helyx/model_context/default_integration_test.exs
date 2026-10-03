@@ -19,7 +19,7 @@ defmodule Helyx.ModelContext.DefaultIntegrationTest do
     {:ok, _, _} = Session.subscribe(session)
     :ok = Session.prompt(session, "hello")
 
-    text = Helyx.Message.text(List.last(collect_until(:turn_end)).data.message)
+    text = Helyx.Message.text(List.last(messages(collect_until(:turn_end))))
     assert text =~ "You are a coding agent."
     assert text =~ "## #{Path.join(Path.expand(dir), "AGENTS.md")}\n\nrules for #{dir}"
   end

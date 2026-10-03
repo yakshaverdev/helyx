@@ -90,7 +90,7 @@ defmodule Helyx.Provider.HarnessEpipeTest do
     group = wait_for_pid(Path.join(dir, "group"))
     kill_when_queued(wait_for_pid(Path.join(dir, "watchdog")))
 
-    assert List.last(Helyx.Test.Events.collect_until(:agent_end)).data.error ==
+    assert List.last(Helyx.Test.Events.collect_until(:turn_end)).data.error ==
              {:task_exit, :epipe}
 
     assert Process.alive?(Session.pid(session))

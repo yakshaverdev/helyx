@@ -11,7 +11,7 @@ defmodule Helyx.Session.LoopTest do
   setup :start_core
 
   defp turn_end_usage(events),
-    do: Enum.find(events, &(&1.type == :turn_end)).data.message.usage
+    do: final_message(events).usage
 
   test "the provider context goes through model context, then compaction" do
     core = start_core([Helyx.Test.Provider, Helyx.Test.ModelContext, Helyx.Test.Compaction])
@@ -20,7 +20,7 @@ defmodule Helyx.Session.LoopTest do
     {:ok, _, _} = Session.subscribe(session)
 
     :ok = Session.prompt(session, "hello")
-    assert final_text(collect_until(:agent_end)) == "built for #{File.cwd!()}, compacted"
+    assert final_text(collect_until(:turn_end)) == "built for #{File.cwd!()}, compacted"
   end
 
   test "without model context and compaction plugins the context is unchanged", %{core: core} do
@@ -28,7 +28,7 @@ defmodule Helyx.Session.LoopTest do
     {:ok, _, _} = Session.subscribe(session)
 
     :ok = Session.prompt(session, "hello")
-    assert final_text(collect_until(:agent_end)) == "no system"
+    assert final_text(collect_until(:turn_end)) == "no system"
   end
 
   test "the hands report the registered tools and the provider sees them", %{core: core} do
@@ -36,7 +36,7 @@ defmodule Helyx.Session.LoopTest do
     {:ok, _, _} = Session.subscribe(session)
 
     :ok = Session.prompt(session, "hello")
-    assert final_text(collect_until(:agent_end)) == "binary,hold,kill,slow,upcase"
+    assert final_text(collect_until(:turn_end)) == "binary,hold,kill,slow,upcase"
   end
 
   test "tool calls run on the hands and the loop continues until the provider stops", %{
@@ -46,13 +46,12 @@ defmodule Helyx.Session.LoopTest do
     {:ok, _, _} = Session.subscribe(session)
 
     :ok = Session.prompt(session, "hello")
-    events = collect_until(:agent_end)
+    events = collect_until(:turn_end)
     assert final_text(events) == "HI|unknown tool: nope"
 
     types = Enum.map(events, & &1.type)
     assert Enum.count(types, &(&1 == :turn_start)) == 1
     assert Enum.count(types, &(&1 == :turn_end)) == 1
-    assert Enum.count(types, &(&1 == :tool_execution_start)) == 2
     assert Enum.count(types, &(&1 == :tool_execution_end)) == 2
     assert Enum.map(events, & &1.seq) == Enum.to_list(1..length(events))
 
@@ -75,7 +74,7 @@ defmodule Helyx.Session.LoopTest do
     {:ok, _, _} = Session.subscribe(session)
 
     :ok = Session.prompt(session, "hello")
-    events = collect_until(:agent_end, @load_event_ms)
+    events = collect_until(:turn_end, @load_event_ms)
 
     rejected = "tool call not run: an integer in the arguments has more than 100 digits"
     assert final_text(events) == "#{rejected}|TWO|THREE|FOUR|#{rejected}|#{rejected}"
@@ -83,7 +82,9 @@ defmodule Helyx.Session.LoopTest do
     assert %{input: 2, output: 3} = turn_end_usage(events)
 
     [first, _, third, _, fifth, sixth] =
-      for %{type: :tool_execution_start, data: %{tool_call: call}} <- events, do: call
+      for %{type: :message_end, data: %{message: %{role: :assistant} = m}} <- events,
+          %Helyx.Message.ToolCall{} = call <- m.content,
+          do: call
 
     assert first.arguments == %{}
     assert third.arguments["n"] == 10 ** 100 - 1
@@ -106,7 +107,7 @@ defmodule Helyx.Session.LoopTest do
     {:ok, _, _} = Session.subscribe(session)
 
     :ok = Session.prompt(session, "hello")
-    events = collect_until(:agent_end)
+    events = collect_until(:turn_end)
 
     # The next provider call gets both results, in call order.
     rejected = "tool call not run: the arguments are not a valid JSON object"
@@ -136,26 +137,14 @@ defmodule Helyx.Session.LoopTest do
     {:ok, _, _} = Session.subscribe(session)
 
     :ok = Session.prompt(session, "hello")
-    events = collect_until(:agent_end)
+    events = collect_until(:turn_end)
     assert final_text(events) == "1|2|3"
 
     order =
-      for %{type: t, data: d} <- events, t in [:tool_execution_start, :tool_execution_end] do
-        case d do
-          %{tool_call: call} -> {t, call.id}
-          %{message: message} -> {t, message.tool_call_id}
-        end
-      end
+      for %{type: :tool_execution_end, data: d} <- events, do: d.message.tool_call_id
 
-    # Every call starts at the `message_end`; the results come in call order.
-    assert order == [
-             {:tool_execution_start, "1"},
-             {:tool_execution_start, "2"},
-             {:tool_execution_start, "3"},
-             {:tool_execution_end, "1"},
-             {:tool_execution_end, "2"},
-             {:tool_execution_end, "3"}
-           ]
+    # The results come in call order.
+    assert order == ["1", "2", "3"]
   end
 
   @tag :tmp_dir
@@ -167,13 +156,13 @@ defmodule Helyx.Session.LoopTest do
     {:ok, _, _} = Session.subscribe(session)
 
     :ok = Session.prompt(session, "hello")
-    events = collect_until(:agent_end)
+    events = collect_until(:turn_end)
 
     assert {:bad_stream_event, {:done, %{usage: %{"in" => {1, 2}}}}} =
              List.last(events).data.error
 
     :ok = Session.prompt(session, "again")
-    collect_until(:agent_end)
+    collect_until(:turn_end)
 
     {:ok, restored} = Helyx.Session.File.resume(dir, File.cwd!())
     assert "recovered" in Enum.map(restored.messages, &Helyx.Message.text/1)
@@ -186,7 +175,7 @@ defmodule Helyx.Session.LoopTest do
     {:ok, _, _} = Session.subscribe(session)
 
     :ok = Session.prompt(session, "hello")
-    events = collect_until(:agent_end)
+    events = collect_until(:turn_end)
     assert final_text(events) == "a�b"
 
     result = Enum.find(events, &(&1.type == :tool_execution_end)).data.message
@@ -196,7 +185,7 @@ defmodule Helyx.Session.LoopTest do
     # The second turn runs the tool again with the repaired result in the
     # transcript.
     :ok = Session.prompt(session, "again")
-    events = collect_until(:agent_end)
+    events = collect_until(:turn_end)
     assert stop_reason(events) == :end_turn
     result = Enum.find(events, &(&1.type == :tool_execution_end)).data.message
     assert Helyx.Message.text(result) == "a�b"
@@ -207,7 +196,7 @@ defmodule Helyx.Session.LoopTest do
     {:ok, _, _} = Session.subscribe(session)
 
     :ok = Session.prompt(session, "hello")
-    events = collect_until(:agent_end)
+    events = collect_until(:turn_end)
     assert stop_reason(events) == :end_turn
     assert final_text(events) == "tool crashed: :killed"
   end
@@ -223,12 +212,13 @@ defmodule Helyx.Session.LoopTest do
     {:ok, _, _} = Session.subscribe(session)
 
     :ok = Session.prompt(session, "hello")
-    assert_receive {:helyx_event, %Event{type: :tool_execution_start} = started}
+
+    assert_receive {:helyx_event,
+                    %Event{type: :message_end, data: %{message: %{role: :assistant}}} = started}
 
     :ok = Session.abort(session)
-    events = collect_until(:agent_end)
+    events = collect_until(:turn_end)
     assert stop_reason(events) == :aborted
-    refute Enum.any?(events, &(&1.type == :turn_end))
 
     results = for %{type: :tool_execution_end, data: %{message: m}} <- events, do: m
     assert length(results) == 3
@@ -240,7 +230,7 @@ defmodule Helyx.Session.LoopTest do
     send(pid, {:tool_result, started.turn_id, "1", {:ok, "late"}})
 
     :ok = Session.prompt(session, "again")
-    events = collect_until(:agent_end)
+    events = collect_until(:turn_end)
     assert final_text(events) == "aborted|aborted|aborted"
     refute Enum.any?(events, &(inspect(&1.data) =~ "late"))
   end
@@ -253,7 +243,7 @@ defmodule Helyx.Session.LoopTest do
     assert_receive {:helyx_event, %Event{type: :message_update}}
 
     :ok = Session.abort(session)
-    events = collect_until(:agent_end)
+    events = collect_until(:turn_end)
     assert stop_reason(events) == :aborted
 
     message_end =
@@ -284,7 +274,7 @@ defmodule Helyx.Session.LoopTest do
       :ok = Session.prompt(session, "hello")
       assert_receive {:helyx_event, %Event{type: :message_update}}
       :ok = Session.abort(session)
-      assert stop_reason(collect_until(:agent_end)) == :aborted
+      assert stop_reason(collect_until(:turn_end)) == :aborted
       state = :sys.get_state(pid)
       assert Process.info(pid, :message_queue_len) == {:message_queue_len, 0}
       :erts_debug.flat_size(%{state | transcript: [], seq: 0})
@@ -333,7 +323,6 @@ defmodule Helyx.Session.LoopTest do
     :erlang.trace(hands, true, [:receive])
     :ok = Session.prompt(session, "go")
 
-    # `tool_execution_start` comes at the `message_end`, before the run;
     # `Hands.run/3` is a cast, and the hands start the Task before they
     # answer the next call.
     assert_receive {:trace, ^hands, :receive, {:"$gen_cast", {:run, _, _}}}
@@ -376,7 +365,7 @@ defmodule Helyx.Session.LoopTest do
     :erlang.trace(pid, false, [:receive])
     send(tool, :go)
 
-    events = collect_until(:agent_end)
+    events = collect_until(:turn_end)
     assert final_text(events) == "hello|s1|s2"
 
     result_at = Enum.find_index(events, &(&1.type == :tool_execution_end))
@@ -395,7 +384,7 @@ defmodule Helyx.Session.LoopTest do
     assert queue_counts(events) == []
   end
 
-  test "a follow-up during a turn starts a new turn after agent_end", %{core: core} do
+  test "a follow-up during a turn starts a new turn after turn_end", %{core: core} do
     {:ok, session} = Session.start(core, model: gated_model())
     {:ok, _, _} = Session.subscribe(session)
 
@@ -404,14 +393,14 @@ defmodule Helyx.Session.LoopTest do
     :ok = Session.follow_up(session, "next")
     send(stream, :go)
 
-    first = collect_until(:agent_end)
+    first = collect_until(:turn_end)
     assert user_texts(first) == ["hello"]
     assert queue_counts(first) == [%{steers: 0, follow_ups: 1}]
 
     assert_receive {:waiting, stream}
     send(stream, :go)
-    second = collect_until(:agent_end)
-    assert [:queue_update, :agent_start | _] = Enum.map(second, & &1.type)
+    second = collect_until(:turn_end)
+    assert [:queue_update, :turn_start | _] = Enum.map(second, & &1.type)
     assert List.first(second).turn_id == nil
     assert user_texts(second) == ["next"]
     assert queue_counts(second) == [%{steers: 0, follow_ups: 0}]
@@ -434,10 +423,10 @@ defmodule Helyx.Session.LoopTest do
 
     assert_receive {:waiting, stream}
     send(stream, :go)
-    events = collect_until(:agent_end)
+    events = collect_until(:turn_end)
     assert user_texts(events) == ["hello", "later"]
-    assert Enum.count(events, &(&1.type == :agent_start)) == 1
-    refute_receive {:helyx_event, %Event{type: :agent_start}}, 100
+    assert Enum.count(events, &(&1.type == :turn_start)) == 1
+    refute_receive {:helyx_event, %Event{type: :turn_start}}, 100
   end
 
   test "a steer or follow-up with no turn running starts a turn at once", %{core: core} do
@@ -445,12 +434,12 @@ defmodule Helyx.Session.LoopTest do
     {:ok, _, _} = Session.subscribe(session)
 
     :ok = Session.follow_up(session, "go")
-    events = collect_until(:agent_end)
+    events = collect_until(:turn_end)
     assert user_texts(events) == ["go"]
     assert stop_reason(events) == :end_turn
 
     :ok = Session.steer(session, "again")
-    events = collect_until(:agent_end)
+    events = collect_until(:turn_end)
     assert user_texts(events) == ["again"]
   end
 
@@ -459,7 +448,10 @@ defmodule Helyx.Session.LoopTest do
     {:ok, _, _} = Session.subscribe(session)
 
     :ok = Session.prompt(session, "hello")
-    assert_receive {:helyx_event, %Event{type: :tool_execution_start}}
+
+    assert_receive {:helyx_event,
+                    %Event{type: :message_end, data: %{message: %{role: :assistant}}}}
+
     :ok = Session.steer(session, "s")
     :ok = Session.follow_up(session, "f")
 
@@ -467,11 +459,11 @@ defmodule Helyx.Session.LoopTest do
     assert_receive {:helyx_event, %Event{type: :queue_update, data: %{steers: 0, follow_ups: 1}}}
 
     :ok = Session.abort(session)
-    events = collect_until(:agent_end)
+    events = collect_until(:turn_end)
     assert stop_reason(events) == :aborted
     assert List.last(queue_counts(events)) == %{steers: 0, follow_ups: 0}
 
-    refute_receive {:helyx_event, %Event{type: :agent_start}}, 100
+    refute_receive {:helyx_event, %Event{type: :turn_start}}, 100
   end
 
   test "a full queue rejects the next steer or follow-up", %{core: core} do
@@ -479,7 +471,9 @@ defmodule Helyx.Session.LoopTest do
     {:ok, _, _} = Session.subscribe(session)
 
     :ok = Session.prompt(session, "hello")
-    assert_receive {:helyx_event, %Event{type: :tool_execution_start}}
+
+    assert_receive {:helyx_event,
+                    %Event{type: :message_end, data: %{message: %{role: :assistant}}}}
 
     # One under the limit, then at the limit, with multibyte text.
     for n <- 1..31, do: :ok = Session.steer(session, "stér #{n}")

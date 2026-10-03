@@ -13,9 +13,8 @@ defmodule Helyx.Event do
 
   Types and their `data`:
 
-    * `:agent_start` – `%{}`
     * `:turn_start` – `%{}`, or `%{origin: :provider}` for a turn that the
-      provider started by itself, with no user message
+      provider started by itself, with no user message; once per turn
     * `:message_start` – `%{message: Helyx.Message.t()}` (may be partial)
     * `:message_update` – `%{text_delta: binary}`, `%{thinking_delta: binary}`,
       or `%{tool_call: Helyx.Message.ToolCall.t()}`
@@ -24,14 +23,12 @@ defmodule Helyx.Event do
       or `:aborted` as its stop reason and `data.error` holds the reason; one
       with a tool call closes with `:tool_use`, as at the other closes. Both
       join the transcript
-    * `:tool_execution_start` – `%{tool_call: Helyx.Message.ToolCall.t()}`
     * `:tool_execution_end` – `%{message: Helyx.Message.t()}`, the tool
       result message; calls run one at a time, in call order
-    * `:turn_end` – `%{message: Helyx.Message.t()}`
-    * `:agent_end` – `%{stop_reason: atom}`, plus `error: term` on failure;
-      an aborted turn ends with `stop_reason: :aborted` after a
-      `:tool_execution_end` with an `aborted` error result for each open
-      tool call
+    * `:turn_end` – `%{outcome: :done | :aborted}`, or `%{outcome: :error,
+      error: term}`; once per turn, on every end path. An aborted or failed
+      turn ends after a `:tool_execution_end` with an `aborted` error
+      result for each open tool call
     * `:queue_update` – `%{steers: non_neg_integer, follow_ups: non_neg_integer}`,
       emitted whenever the session's message queues change; the drain at a
       normal turn end goes out between turns, with a nil turn id
@@ -56,14 +53,11 @@ defmodule Helyx.Event do
   defstruct [:type, :session_id, :instance_id, :turn_id, :seq, :data]
 
   @type type ::
-          :agent_start
-          | :agent_end
-          | :turn_start
+          :turn_start
           | :turn_end
           | :message_start
           | :message_update
           | :message_end
-          | :tool_execution_start
           | :tool_execution_end
           | :queue_update
           | :model_change
