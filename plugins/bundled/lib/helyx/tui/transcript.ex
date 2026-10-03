@@ -132,15 +132,20 @@ if Helyx.TUI.Transcript.Available.available?() do
     @spec lines(ViewModel.t(), integer()) :: [Line.t()]
     def lines(%ViewModel{} = vm, width), do: Enum.flat_map(items(vm), &item_lines(&1, width))
 
-    # The cells, and the open assistant message as the last one.
-    defp items(%ViewModel{streaming: nil, cells: cells}), do: cells
+    # The cells in position order, one O(n) fold of the array, and the open
+    # assistant message as the last one.
+    defp items(%ViewModel{streaming: streaming, cells: cells}) do
+      :array.foldr(fn _position, cell, acc -> [cell | acc] end, streaming_items(streaming), cells)
+    end
+
+    defp streaming_items(nil), do: []
 
     # Its calls show as open tool cells after it, as when it ends.
-    defp items(%ViewModel{streaming: streaming, cells: cells}) do
+    defp streaming_items(streaming) do
       {calls, blocks} =
         streaming |> Enum.reverse() |> Enum.split_with(&match?({:tool, _, _, _}, &1))
 
-      cells ++ [%Message{role: :assistant, content: blocks} | calls]
+      [%Message{role: :assistant, content: blocks} | calls]
     end
 
     defp item_lines(item, width), do: cell_lines(item, width) ++ [%Line{}]

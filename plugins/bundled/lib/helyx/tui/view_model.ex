@@ -6,7 +6,12 @@ defmodule Helyx.TUI.ViewModel do
   `apply/2` and the screen renders from the result, so the fold is testable
   with scripted event lists.
 
-  `cells` is the transcript, oldest first. A cell is one of:
+  `cells` is the transcript: an Erlang `:array` of every cell, open or
+  closed, by position, oldest first; `cells/1` gives it as a list. `open`
+  maps a call id to a queue of the positions of its open tool cells, oldest
+  first, so a result finds its cell with no scan. Each new cell and each
+  result costs O(log n) in the cell count
+  (`docs/features/session-snapshot.md`). A cell is one of:
 
     * `%Helyx.Message{}` – a completed user or assistant message
     * `{:tool, call, line, result}` – a tool call of the assistant message
@@ -42,8 +47,11 @@ defmodule Helyx.TUI.ViewModel do
   # The cut of an error notice or a tool call line (`cut_line/1`).
   @render_max_bytes 8_192
 
+  # `cells` is set at run time in `new/1`: an `:array` literal in the struct
+  # default breaks the opaque type for Dialyzer.
   defstruct model: nil,
-            cells: [],
+            cells: nil,
+            open: %{},
             streaming: nil,
             running?: false,
             queue: %{steers: 0, follow_ups: 0},
@@ -54,16 +62,17 @@ defmodule Helyx.TUI.ViewModel do
 
   @type t :: %__MODULE__{
           model: String.t(),
-          cells: [cell()],
+          cells: :array.array(cell()),
+          open: %{String.t() => :queue.queue(non_neg_integer())},
           streaming: [Message.block() | tool_cell()] | nil,
           running?: boolean(),
           queue: %{steers: non_neg_integer(), follow_ups: non_neg_integer()},
           reason: String.t() | nil
         }
 
-  @doc "An empty view model on `model`. For tests."
+  @doc "An empty view model on `model`. `from_snapshot/1` starts from it."
   @spec new(String.t()) :: t()
-  def new(model), do: %__MODULE__{model: model}
+  def new(model), do: %__MODULE__{model: model, cells: :array.new()}
 
   @delta_keys [:text_delta, :thinking_delta, :tool_call]
 
@@ -126,28 +135,24 @@ defmodule Helyx.TUI.ViewModel do
     end
   end
 
+  # A tool result shows in its call's cell at `tool_execution_end`.
   def apply(vm, %Event{type: :message_end, data: data}) do
-    %{message: %Message{} = message} = data
-
-    case message.role do
-      :user ->
-        add_cell(vm, message)
-
-      # Each call of the message gets an open cell; its result comes later.
-      :assistant ->
-        cells = [message | for(call <- tool_calls(message), do: tool_cell(call, nil))]
-        %{vm | streaming: nil, cells: vm.cells ++ cells}
-
-      # A tool result shows in its call's cell; a new role does not show.
-      _other ->
+    case data do
+      %{message: %Message{role: :tool_result}} ->
         vm
+
+      %{message: %Message{role: :assistant} = message} ->
+        add_message(%{vm | streaming: nil}, message)
+
+      %{message: %Message{} = message} ->
+        add_message(vm, message)
     end
   end
 
   # A result of another role would leave its cell open, so it crashes.
   def apply(vm, %Event{type: :tool_execution_end, data: data}) do
     %{message: %Message{role: :tool_result} = result} = data
-    %{vm | cells: attach_result(vm.cells, result)}
+    add_message(vm, result)
   end
 
   def apply(vm, %Event{type: :queue_update, data: data}) do
@@ -184,22 +189,15 @@ defmodule Helyx.TUI.ViewModel do
   @doc """
   The view model of a session from its snapshot. Its cells are the
   transcript cells that the fold of every event up to `snapshot.seq` makes:
-  each message makes the cell its events make live, and after an assistant
-  message comes a tool cell for each of its calls, closed when the call has
-  a result and open when not. Notices and a partial reply with text only of
-  an aborted or failed turn are not in the transcript, so a snapshot has none
-  of them. A message of a role that the TUI does not show makes no cell, as
-  in `apply/2`.
+  the snapshot messages go through the fold of `apply/2` in order, so the
+  live and the snapshot paths share one pairing rule (ADR 0006, revision of
+  2026-10-03). Notices and a partial reply with text only of an aborted or
+  failed turn are not in the transcript, so a snapshot has none of them.
   """
   @spec from_snapshot(Snapshot.t()) :: t()
   def from_snapshot(%Snapshot{messages: messages, turn: turn} = snapshot) do
-    %__MODULE__{
-      model: snapshot.model,
-      cells: history(messages),
-      streaming: streaming(turn),
-      running?: turn != nil,
-      queue: snapshot.queue
-    }
+    vm = %{new(snapshot.model) | running?: turn != nil, queue: snapshot.queue}
+    %{Enum.reduce(messages, vm, &add_message(&2, &1)) | streaming: streaming(turn)}
   end
 
   defp streaming(%{partial: %Message{role: :assistant} = partial}),
@@ -207,49 +205,9 @@ defmodule Helyx.TUI.ViewModel do
 
   defp streaming(_no_partial), do: nil
 
-  defp history(messages) do
-    messages
-    |> Enum.flat_map_reduce(results_in_call_order(messages), fn
-      %Message{role: :assistant} = message, results ->
-        calls = tool_calls(message)
-        {mine, rest} = Enum.split(results, length(calls))
-        {[message | Enum.zip_with(calls, mine, &tool_cell/2)], rest}
-
-      %Message{role: :user} = message, acc ->
-        {[message], acc}
-
-      # A tool result shows in its call's cell; a new role does not show.
-      %Message{}, acc ->
-        {[], acc}
-    end)
-    |> elem(0)
-  end
-
-  # The result of each tool call of the history, or nil, in call order: a
-  # result answers the first still-open earlier call with its id, which on a
-  # session transcript pairs as `Helyx.Session.Transcript.open_calls/1` does.
-  # One pass over the history, with one map entry per call.
-  defp results_in_call_order(messages) do
-    {results, _open, count} =
-      Enum.reduce(messages, {%{}, %{}, 0}, fn
-        %Message{role: :assistant, content: content}, acc ->
-          for %Message.ToolCall{id: id} <- content, reduce: acc do
-            {results, open, index} ->
-              {results, Map.update(open, id, [index], &(&1 ++ [index])), index + 1}
-          end
-
-        %Message{role: :tool_result, tool_call_id: id} = result, {results, open, index} ->
-          case Map.get(open, id, []) do
-            [] -> {results, open, index}
-            [call | rest] -> {Map.put(results, call, result), Map.put(open, id, rest), index}
-          end
-
-        %Message{}, acc ->
-          acc
-      end)
-
-    for index <- 0..(count - 1)//1, do: Map.get(results, index)
-  end
+  @doc "The cells, oldest first, as a list. For tests and the benchmark."
+  @spec cells(t()) :: [cell()]
+  def cells(%__MODULE__{cells: cells}), do: :array.to_list(cells)
 
   @doc "Adds a notice from the client itself, such as a rejected command."
   @spec notice(t(), String.t()) :: t()
@@ -310,23 +268,39 @@ defmodule Helyx.TUI.ViewModel do
   defp add_streamed(streaming, %Message.ToolCall{} = call), do: [tool_cell(call, nil) | streaming]
   defp add_streamed(streaming, block), do: [block | streaming]
 
-  defp tool_calls(%Message{content: content}),
-    do: for(%Message.ToolCall{} = call <- content, do: call)
+  # A message as a transcript cell. Each call of an assistant message gets
+  # an open cell; its result comes later. A message of a role that the TUI
+  # does not show makes no cell.
+  defp add_message(vm, %Message{role: :user} = message), do: add_cell(vm, message)
 
-  defp add_cell(vm, cell), do: %{vm | cells: vm.cells ++ [cell]}
-
-  # The result goes to the oldest open tool cell with its call id, wherever
-  # it is: a notice can arrive while the tool runs (#83). It is the rule of
-  # the session and of `from_snapshot/1`: the first result answers the first
-  # of two calls with one id. A cell with a result never changes. Every
-  # call has an open cell from its message, so a result with no open cell
-  # has no call and makes no cell, as in a snapshot.
-  defp attach_result(cells, %Message{tool_call_id: id} = result) do
-    case Enum.find_index(cells, &match?({:tool, %Message.ToolCall{id: ^id}, _, nil}, &1)) do
-      nil -> cells
-      index -> List.update_at(cells, index, &put_elem(&1, 3, result))
+  defp add_message(vm, %Message{role: :assistant, content: content} = message) do
+    for %Message.ToolCall{id: id} = call <- content, reduce: add_cell(vm, message) do
+      vm ->
+        position = :array.size(vm.cells)
+        open = Map.update(vm.open, id, :queue.from_list([position]), &:queue.in(position, &1))
+        %{vm | open: open, cells: :array.set(position, tool_cell(call, nil), vm.cells)}
     end
   end
+
+  # The result closes the oldest open cell with its call id, wherever it
+  # is: a notice can arrive while the tool runs. The first result answers
+  # the first of two calls with one id, as in the session. A result with no
+  # open cell crashes in `Map.fetch!/2`; the feature doc states when one can
+  # come (section "Replaced mechanism (#407)").
+  defp add_message(vm, %Message{role: :tool_result, tool_call_id: id} = result) do
+    {{:value, position}, queue} = :queue.out(Map.fetch!(vm.open, id))
+
+    open =
+      if :queue.is_empty(queue), do: Map.delete(vm.open, id), else: Map.put(vm.open, id, queue)
+
+    cell = put_elem(:array.get(position, vm.cells), 3, result)
+    %{vm | open: open, cells: :array.set(position, cell, vm.cells)}
+  end
+
+  defp add_message(vm, %Message{}), do: vm
+
+  # The next free position is the array size: no cell is ever removed.
+  defp add_cell(vm, cell), do: %{vm | cells: :array.set(:array.size(vm.cells), cell, vm.cells)}
 
   defp tool_cell(call, result), do: {:tool, call, call_line(call), result}
 end

@@ -38,20 +38,24 @@ defmodule Helyx.TUI.SecondClientTest do
     send(tool, :go)
 
     {view, live} = to_end(client, view, live)
-    assert view == transcript(live.vm)
-    assert [_ok, %Message{}, {:tool, _, _, %Message{}}, _steer, %Message{}] = view.cells
+    assert transcript(view) == transcript(live.vm)
+
+    assert [_ok, %Message{}, {:tool, _, _, %Message{}}, _steer, %Message{}] =
+             ViewModel.cells(view)
   end
 
   test "a turn that fails", %{session: session, live: live} do
     :ok = Session.prompt(session, "fail")
     live = join_during_streaming(session, live)
     live = catch_up(live)
-    assert [_fail, %Message{stop_reason: :error}, {:notice, "error: " <> _}] = live.vm.cells
+
+    assert [_fail, %Message{stop_reason: :error}, {:notice, "error: " <> _}] =
+             ViewModel.cells(live.vm)
 
     {client, view, live} = reconnect(session, live)
     LateClient.steer(client, "steer")
     {view, live} = to_end(client, view, live)
-    assert view == transcript(live.vm)
+    assert transcript(view) == transcript(live.vm)
   end
 
   # The second gate call never starts, and the abort gives it an `aborted`
@@ -71,12 +75,12 @@ defmodule Helyx.TUI.SecondClientTest do
              {:tool, %{id: "t2"}, _,
               %Message{is_error: true, content: [%Message.Text{text: "aborted"}]}},
              {:notice, "aborted"}
-           ] = live.vm.cells
+           ] = ViewModel.cells(live.vm)
 
     {client, view, live} = reconnect(session, live)
     LateClient.steer(client, "steer")
     {view, live} = to_end(client, view, live)
-    assert view == transcript(live.vm)
+    assert transcript(view) == transcript(live.vm)
   end
 
   # The second client joins while the reply streams, checks the rule, and
@@ -90,7 +94,7 @@ defmodule Helyx.TUI.SecondClientTest do
     live = catch_up(live, snapshot.seq)
     joined = ViewModel.from_snapshot(snapshot)
     assert joined.streaming == [%Message.Text{text: "hel"}]
-    assert joined == transcript(live.vm)
+    assert transcript(joined) == transcript(live.vm)
 
     LateClient.disconnect(client)
     send(stream, :go)
@@ -103,7 +107,7 @@ defmodule Helyx.TUI.SecondClientTest do
     {client, snapshot} = LateClient.connect(session)
     live = catch_up(live, snapshot.seq)
     view = ViewModel.from_snapshot(snapshot)
-    assert view == transcript(live.vm)
+    assert transcript(view) == transcript(live.vm)
     {client, view, live}
   end
 
@@ -114,7 +118,12 @@ defmodule Helyx.TUI.SecondClientTest do
     live = catch_up(live)
     assert List.last(events).seq == live.seq
     view = fold(view, events)
-    assert Enum.any?(view.cells, &match?(%Message{role: :user, content: [%{text: "steer"}]}, &1))
+
+    assert Enum.any?(
+             ViewModel.cells(view),
+             &match?(%Message{role: :user, content: [%{text: "steer"}]}, &1)
+           )
+
     LateClient.disconnect(client)
     {view, live}
   end

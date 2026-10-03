@@ -192,7 +192,7 @@ defmodule Helyx.TUITest do
     state = drain(state)
 
     assert [%Helyx.Message{role: :user} = prompt, %Helyx.Message{role: :assistant} = answer] =
-             state.vm.cells
+             ViewModel.cells(state.vm)
 
     assert Helyx.Message.text(prompt) == "hi"
     assert Helyx.Message.text(answer) == "Hello there."
@@ -207,7 +207,9 @@ defmodule Helyx.TUITest do
 
     state = state |> press("g") |> press("o") |> press("enter", ["alt"])
     state = drain(state)
-    assert [%Helyx.Message{role: :user}, %Helyx.Message{role: :assistant}] = state.vm.cells
+
+    assert [%Helyx.Message{role: :user}, %Helyx.Message{role: :assistant}] =
+             ViewModel.cells(state.vm)
   end
 
   test "escape aborts without blocking the caller", %{core: core} do
@@ -275,14 +277,14 @@ defmodule Helyx.TUITest do
              {:tool, ^call, line, %Message{role: :tool_result} = result},
              %Message{role: :assistant} = reply,
              {:notice, "resumed session"}
-           ] = vm.cells
+           ] = ViewModel.cells(vm)
 
     assert line == ViewModel.call_line(call)
     assert Message.text(result) == "slept"
     assert Message.text(reply) == "hello there"
 
     {:ok, %{vm: live}} = TUI.mount(session: resumed)
-    assert live.cells == Enum.drop(vm.cells, -1)
+    assert ViewModel.cells(live) == Enum.drop(ViewModel.cells(vm), -1)
   end
 
   test "mounting on a dead session exits instead of hanging", %{core: core} do
@@ -317,7 +319,7 @@ defmodule Helyx.TUITest do
 
     ExRatatui.textarea_set_value(state.composer.input, "/model fake/other")
     state = press(state, "enter")
-    assert List.last(state.vm.cells) == {:notice, "the session ended"}
+    assert List.last(ViewModel.cells(state.vm)) == {:notice, "the session ended"}
     assert ExRatatui.textarea_get_value(state.composer.input) == "/model fake/other"
   end
 
@@ -329,7 +331,7 @@ defmodule Helyx.TUITest do
 
       vm = %ViewModel{
         ViewModel.new("fake/m")
-        | cells: [{:tool, call, ViewModel.call_line(call), result}]
+        | cells: :array.from_list([{:tool, call, ViewModel.call_line(call), result}])
       }
 
       for line <- Transcript.lines(vm, 80), span <- line.spans, do: span.content
@@ -414,10 +416,11 @@ defmodule Helyx.TUITest do
 
     vm = %ViewModel{
       ViewModel.new("fake/m")
-      | cells: [
-          Helyx.Message.user("hi\e[31m there"),
-          {:tool, call, ViewModel.call_line(call), result}
-        ]
+      | cells:
+          :array.from_list([
+            Helyx.Message.user("hi\e[31m there"),
+            {:tool, call, ViewModel.call_line(call), result}
+          ])
     }
 
     texts = for line <- Transcript.lines(vm, 80), span <- line.spans, do: span.content
@@ -432,7 +435,7 @@ defmodule Helyx.TUITest do
 
     vm = %ViewModel{
       ViewModel.new("fake/m")
-      | cells: [{:tool, call, ViewModel.call_line(call), csi}]
+      | cells: :array.from_list([{:tool, call, ViewModel.call_line(call), csi}])
     }
 
     texts = for line <- Transcript.lines(vm, 80), span <- line.spans, do: span.content
@@ -445,10 +448,11 @@ defmodule Helyx.TUITest do
 
     vm = %ViewModel{
       ViewModel.new("fake/m")
-      | cells: [
-          Helyx.Message.user("hello world"),
-          {:tool, call, ViewModel.call_line(call), result}
-        ],
+      | cells:
+          :array.from_list([
+            Helyx.Message.user("hello world"),
+            {:tool, call, ViewModel.call_line(call), result}
+          ]),
         streaming: [%Helyx.Message.Text{text: String.duplicate("s", 35)}]
     }
 
@@ -470,7 +474,7 @@ defmodule Helyx.TUITest do
 
     vm = %ViewModel{
       ViewModel.new("fake/m")
-      | cells: [{:tool, call, ViewModel.call_line(call), nil}]
+      | cells: :array.from_list([{:tool, call, ViewModel.call_line(call), nil}])
     }
 
     texts = for line <- Transcript.lines(vm, 80), span <- line.spans, do: span.content
@@ -781,7 +785,7 @@ defmodule Helyx.TUITest do
       state
     end
 
-    defp last_answer(state), do: Helyx.Message.text(List.last(state.vm.cells))
+    defp last_answer(state), do: Helyx.Message.text(List.last(ViewModel.cells(state.vm)))
 
     test "a valid ref switches provider for the next turn, and back", %{core: core} do
       state = mounted(core, "switch", [["from fake"]])
@@ -816,7 +820,7 @@ defmodule Helyx.TUITest do
         ExRatatui.textarea_set_value(state.composer.input, "")
         state = submit(state, text)
 
-        assert {:notice, shown} = List.last(state.vm.cells)
+        assert {:notice, shown} = List.last(ViewModel.cells(state.vm))
         assert shown =~ notice
         # At most the provider id: never the whole ref, whatever its size.
         assert byte_size(shown) < 80
@@ -835,7 +839,7 @@ defmodule Helyx.TUITest do
       for text <- ["/models are fun", "/model-x"] do
         ExRatatui.textarea_set_value(state.composer.input, "")
         state = submit(state, text)
-        assert {:notice, "usage: /model" <> _} = List.last(state.vm.cells)
+        assert {:notice, "usage: /model" <> _} = List.last(ViewModel.cells(state.vm))
         assert ExRatatui.textarea_get_value(state.composer.input) != ""
       end
 
@@ -868,7 +872,7 @@ defmodule Helyx.TUITest do
       # A rejected command stays in the composer, and nothing joins a queue.
       {:noreply, _} = TUI.handle_event(%ExRatatui.Event.Paste{content: "/model nope/x"}, state)
       state = press(state, "enter", ["alt"])
-      assert {:notice, "unknown provider: nope"} = List.last(state.vm.cells)
+      assert {:notice, "unknown provider: nope"} = List.last(ViewModel.cells(state.vm))
       assert ExRatatui.textarea_get_value(state.composer.input) == "/model nope/x"
       refute_received {:helyx_event, %Event{type: :queue_update}}
 
@@ -913,7 +917,7 @@ defmodule Helyx.TUITest do
       for text <- ["/model fake/a\u200Bb", "/model fake/ab\u200B"] do
         ExRatatui.textarea_set_value(state.composer.input, "")
         state = submit(state, text)
-        assert {:notice, "invalid model ref" <> _} = List.last(state.vm.cells)
+        assert {:notice, "invalid model ref" <> _} = List.last(ViewModel.cells(state.vm))
         assert ExRatatui.textarea_get_value(state.composer.input) == text
       end
 
@@ -956,7 +960,7 @@ defmodule Helyx.TUITest do
 
       state = state |> press("enter") |> drain()
       assert value(state) == ""
-      assert [prompt, _answer] = state.vm.cells
+      assert [prompt, _answer] = ViewModel.cells(state.vm)
       assert Helyx.Message.text(prompt) == "a\nb\nc"
     end
 
@@ -1014,7 +1018,7 @@ defmodule Helyx.TUITest do
       assert value(state) == "é" <> marker(1, 6) <> "!" <> marker(2, 20)
 
       state = state |> press("enter") |> drain()
-      assert [prompt, _answer] = state.vm.cells
+      assert [prompt, _answer] = ViewModel.cells(state.vm)
       assert Helyx.Message.text(prompt) == "é" <> big <> "!ü\n" <> lines(19)
       assert state.composer.pastes == %{}
 
@@ -1090,7 +1094,7 @@ defmodule Helyx.TUITest do
       state = Enum.reduce(String.graphemes(look), state, &press(&2, &1))
       state = state |> paste(" " <> look) |> press("x") |> press("backspace")
       state = state |> press("enter") |> drain()
-      assert [prompt, _answer] = state.vm.cells
+      assert [prompt, _answer] = ViewModel.cells(state.vm)
       assert Helyx.Message.text(prompt) == lines(6) <> look <> " " <> look
 
       # A key code or a paste with the end character of a marker cannot
@@ -1099,7 +1103,7 @@ defmodule Helyx.TUITest do
       state = state |> press("\u0001") |> paste(look <> "\u0001")
       assert value(state) == marker(1, 6) <> look
       state = state |> press("enter") |> drain()
-      assert Helyx.Message.text(Enum.at(state.vm.cells, 2)) == lines(6) <> look
+      assert Helyx.Message.text(Enum.at(ViewModel.cells(state.vm), 2)) == lines(6) <> look
     end
 
     test "a pasted tab after /model is a separator", %{core: core} do
@@ -1123,7 +1127,7 @@ defmodule Helyx.TUITest do
       end
 
       state = state |> paste("/model fake/a\nhello") |> press("enter")
-      assert {:notice, "invalid model ref" <> _} = List.last(state.vm.cells)
+      assert {:notice, "invalid model ref" <> _} = List.last(ViewModel.cells(state.vm))
       assert value(state) == "/model fake/a\nhello"
     end
   end
