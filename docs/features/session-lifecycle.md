@@ -84,7 +84,7 @@ The session monitors its provider process, and the hands send `{:provider_down, 
 - In a sent turn (`submitting` or later), the `provider_down` fails the turn with `reason`.
 - In `preparing`, the `:DOWN` holds back `{:turn, ...}`. When the process was started by an earlier turn, its `provider_down` makes the turn connect a new one, once. A process that this turn started fails the turn.
 - At `provider_down` each sent steer with no notice gets `steer_unconfirmed`, and the ledger drops every entry of that process.
-- Provider output outside the contract (a bad event, an open call id again, a context request outside `submitted`, a message over a bound) stops the provider process with `{:shutdown, reason}` and fails the turn.
+- Provider output outside the contract (a bad event, a context request outside `submitted`, a message over a bound) stops the provider process with `{:shutdown, reason}` and fails the turn.
 
 ## Idle close
 
