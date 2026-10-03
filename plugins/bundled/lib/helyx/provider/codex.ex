@@ -32,11 +32,12 @@ defmodule Helyx.Provider.Codex do
     # `interrupt` an interrupt without an answer (`{:pending, from}` before
     # the turn id is known, `{:sent, from, id}` after the `turn/interrupt`
     # with the request id `id`), `due` maps the id of each request without
-    # an answer to its method (an answer with an id that is not due is
-    # dropped), `next_id` is the id of the next request, `closing` the close
-    # without an answer, `prompt` the prompt of a turn whose `turn/start`
-    # waits for the `thread/inject_items` answer, and `out` the actions to
-    # return, newest first.
+    # an answer to its method (the turn's end settles a `turn/interrupt`;
+    # an answer with an id that is not due is dropped), `next_id` is the
+    # id of the next request, `closing` the close without an answer,
+    # `prompt` the prompt of a turn whose `turn/start` waits for the
+    # `thread/inject_items` answer, and `out` the actions to return, newest
+    # first.
     # `terminal` set means the provider process must stop, with that error.
     #
     # `agents` maps each child thread with open work to the program's turn
@@ -229,9 +230,15 @@ defmodule Helyx.Provider.Codex do
 
       state =
         case state.interrupt do
-          {:pending, from} -> reply(%{state | interrupt: nil}, from, :ok)
-          {:sent, from, _id} -> reply(%{state | interrupt: nil}, from, :ok)
-          nil -> state
+          {:pending, from} ->
+            reply(%{state | interrupt: nil}, from, :ok)
+
+          # A later answer to the request is not due, and is dropped.
+          {:sent, from, id} ->
+            reply(%{state | interrupt: nil, due: Map.delete(state.due, id)}, from, :ok)
+
+          nil ->
+            state
         end
 
       Map.merge(state, Map.take(%State{model: nil, cwd: nil}, @turn_fields))

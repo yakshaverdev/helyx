@@ -32,12 +32,17 @@ if Helyx.TUI.Composer.Available.available?() do
     # marker is sent as typed.
     @marker_end "\u0001"
 
-    # `pastes` maps marker text to the full paste it stands for. It is
-    # emptied with the composer, so a marker id is the map size plus one.
+    # `pastes` maps the text of each live marker to the full paste it
+    # stands for. `count` is the id of the last marker. Both are emptied
+    # with the composer, so a marker id is not used twice before then.
     @enforce_keys [:input]
-    defstruct [:input, pastes: %{}]
+    defstruct [:input, pastes: %{}, count: 0]
 
-    @type t :: %__MODULE__{input: reference(), pastes: %{String.t() => String.t()}}
+    @type t :: %__MODULE__{
+            input: reference(),
+            pastes: %{String.t() => String.t()},
+            count: non_neg_integer()
+          }
 
     @doc "An empty composer."
     @spec new() :: t()
@@ -69,7 +74,7 @@ if Helyx.TUI.Composer.Available.available?() do
     @spec clear(t()) :: t()
     def clear(%__MODULE__{} = composer) do
       ExRatatui.textarea_set_value(composer.input, "")
-      %{composer | pastes: %{}}
+      %{composer | pastes: %{}, count: 0}
     end
 
     @doc "The rows of the composer with its two borders: 3 to 10."
@@ -113,7 +118,8 @@ if Helyx.TUI.Composer.Available.available?() do
           key(composer, code)
 
         {value, {start, stop}} when code in ["backspace", "delete"] ->
-          cut(composer, value, start, stop)
+          pastes = Map.delete(composer.pastes, binary_part(value, start, stop - start))
+          cut(%{composer | pastes: pastes}, value, start, stop)
 
         {value, {_start, stop}} when code == "right" ->
           cut(composer, value, stop, stop)
@@ -196,10 +202,10 @@ if Helyx.TUI.Composer.Available.available?() do
 
       case line_count(text) do
         lines when lines > @paste_lines ->
-          marker =
-            "[Pasted text ##{map_size(composer.pastes) + 1}, #{lines} lines]" <> @marker_end
-
-          insert(%{composer | pastes: Map.put(composer.pastes, marker, text)}, marker)
+          count = composer.count + 1
+          marker = "[Pasted text ##{count}, #{lines} lines]" <> @marker_end
+          pastes = Map.put(composer.pastes, marker, text)
+          insert(%{composer | pastes: pastes, count: count}, marker)
 
         _lines ->
           insert(composer, text)
