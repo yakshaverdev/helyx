@@ -25,7 +25,6 @@ defmodule Helyx.Test.WatchdogHarness do
 
     case Helyx.Watchdog.start(argv, opts[:cwd], :open, grace_ms: 200) do
       {:started, port, _pre} ->
-        %{port: port} = Helyx.HarnessIO.keep_port(%{port: port})
         {:ok, %{model: model, port: port}}
 
       other ->
@@ -54,9 +53,6 @@ defmodule Helyx.Test.WatchdogHarness do
   @impl true
   def info({port, {:exit_status, status}}, %{port: port} = state),
     do: {:stop, {:exit_status, status}, state}
-
-  def info({:DOWN, _ref, :port, port, reason}, %{port: port} = state),
-    do: {:stop, {:port_down, reason}, state}
 
   def info(_message, state), do: {:ok, [], state}
 end

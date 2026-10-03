@@ -17,17 +17,6 @@ defmodule Helyx.Provider.Codex.ConnectTest do
     close(state)
   end
 
-  # 4.1 of the simplification review: a write to a watchdog that died
-  # closes the port with `:epipe` and no exit status (#167). During a
-  # close, that `:DOWN` is the exit that answers it.
-  test "a close answers :ok at a port :DOWN with no exit status", %{bin: bin, work: work} do
-    fresh(bin, 1, tid(), [])
-    {:ok, state} = connect(work)
-    {from, [], state} = ask(state, :close)
-    down = {:DOWN, make_ref(), :port, state.port, :epipe}
-    assert {:ok, [{:reply, ^from, :ok}], _state} = Codex.info(down, state)
-  end
-
   test "an idle close after a turn ends the input and answers :ok at the exit",
        %{bin: bin, work: work} do
     fresh(bin, 1, tid(), reply(tid(), "Hi."))

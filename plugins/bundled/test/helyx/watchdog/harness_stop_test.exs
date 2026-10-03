@@ -62,10 +62,14 @@ defmodule Helyx.Watchdog.HarnessStopTest do
   defp monitor_hands(session),
     do: Process.monitor(:sys.get_state(Session.pid(session)).hands)
 
+  # The watchdog exits with the command's status, or the port closes with
+  # `:epipe` when a part of the write still waits in it, and that exit
+  # signal ends the provider process (#390).
   test "input over the watchdog stdin cap stops the program group and fails the turn",
        %{core: core} do
     {_session, group} = start(core, "flood")
-    assert {:provider_stop, _reason} = agent_end().data.error
+    error = agent_end().data.error
+    assert match?({:provider_stop, {:exit_status, _}}, error) or error == {:task_exit, :epipe}
     assert group_gone_within?(group)
   end
 end

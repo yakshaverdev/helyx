@@ -248,7 +248,7 @@ defmodule Helyx.Provider.ClaudeCode.LimitsTest do
     :erlang.resume_process(pid)
 
     assert_receive {:DOWN, ^ref, :process, _pid, :shutdown}, @load_down_ms
-    # The keeper closes the port, so the watchdog ends the group.
+    # The port closes with its owner, so the watchdog ends the group.
     assert group_gone_within?(program)
   end
 end

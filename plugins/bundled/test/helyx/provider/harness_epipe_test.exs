@@ -1,21 +1,18 @@
 defmodule Helyx.Provider.HarnessEpipeTest do
-  # A write to a dead watchdog after the go-ahead (issue #167). A `perl` on
+  # A write to a dead watchdog after the go-ahead (#167, #390). A `perl` on
   # PATH leaves a `sleep` with the port's stdout, but not its stdin, so the
-  # port stays open after the watchdog dies. The watchdog is stopped, a
-  # write of 400,000 bytes fills its stdin pipe and waits in the port's
-  # queue, and the stand-in hands then kill the watchdog: the queued bytes
-  # get `EPIPE` every time. PATH is global, so the module is not async.
+  # port stays open after the watchdog dies. The `sleep` runs in a group of
+  # its own, so the release does not wait for it in the watchdog's group.
+  # PATH is global, so the module is not async.
   use ExUnit.Case, async: false
 
-  import Helyx.Test.HarnessDriver
+  import Helyx.Test.CodexFake, only: [j: 1, thread: 1, start: 1]
   import Helyx.Test.OSHelpers
 
-  alias Helyx.Message
   alias Helyx.Provider.{ClaudeCode, Codex}
+  alias Helyx.Session
 
   @moduletag :tmp_dir
-
-  @big String.duplicate("x", 400_000)
 
   setup %{tmp_dir: dir} do
     bin = Path.join(dir, "bin")
@@ -24,7 +21,7 @@ defmodule Helyx.Provider.HarnessEpipeTest do
 
     File.write!(perl, """
     #!/bin/sh
-    sleep 30 </dev/null &
+    #{System.find_executable("perl")} -e 'setpgrp(0, 0); exec "sleep", 30' </dev/null &
     echo $! > #{Path.join(dir, "sleep")}
     exec #{System.find_executable("perl")} "$@"
     """)
@@ -38,7 +35,7 @@ defmodule Helyx.Provider.HarnessEpipeTest do
       System.cmd("kill", ["-KILL", wait_for_pid(Path.join(dir, "sleep"))])
     end)
 
-    %{bin: bin}
+    %{bin: bin, dir: dir}
   end
 
   defp program(bin, name, script) do
@@ -46,88 +43,58 @@ defmodule Helyx.Provider.HarnessEpipeTest do
     File.chmod!(Path.join(bin, name), 0o755)
   end
 
-  # Stands in for the hands. At the hold of the command group it calls
-  # `on_command` with the watchdog, then replies. When the port has bytes
-  # in its queue, it kills the watchdog and the command group. It ends
-  # after the stream process, so no exit signal of its own reaches it. Its
-  # link ends it with the stream process when `run/3` kills that one.
-  defp hands(on_command) do
-    stream = self()
-
-    hands =
-      spawn_link(fn ->
-        ref = Process.monitor(stream)
-
-        watchdog =
-          receive do
-            {:"$gen_call", from, {:hold, {:watchdog, watchdog}}} ->
-              GenServer.reply(from, :ok)
-              watchdog
-          end
-
-        receive do
-          {:"$gen_call", from, {:hold, {:command, group}}} ->
-            on_command.(watchdog)
-            GenServer.reply(from, :ok)
-            kill_when_queued(watchdog, group)
-        end
-
-        receive do
-          {:DOWN, ^ref, :process, _pid, _reason} -> :ok
-        end
-      end)
-
-    Process.put(:helyx_hands, hands)
-  end
-
   # Polls the port queue every 10 ms, for at least `ms`: the BEAM has no
   # event for bytes that wait in a port's driver queue.
-  defp kill_when_queued(watchdog, group, ms \\ Helyx.Test.Events.wait_ms())
+  defp kill_when_queued(watchdog, ms \\ Helyx.Test.Events.wait_ms())
 
-  defp kill_when_queued(_watchdog, _group, ms) when ms <= 0,
-    do: flunk("the port queue stayed empty")
+  defp kill_when_queued(_watchdog, ms) when ms <= 0, do: flunk("the port queue stayed empty")
 
-  defp kill_when_queued(watchdog, group, ms) do
+  defp kill_when_queued(watchdog, ms) do
     if Enum.any?(Port.list(), &queued?(&1, watchdog)) do
-      System.cmd("kill", ["-KILL", "#{watchdog}"])
-      signal_group("KILL", group)
+      System.cmd("kill", ["-KILL", watchdog])
     else
       Process.sleep(10)
-      kill_when_queued(watchdog, group, ms - 10)
+      kill_when_queued(watchdog, ms - 10)
     end
   end
 
   defp queued?(port, watchdog) do
-    Port.info(port, :os_pid) == {:os_pid, watchdog} and
+    Port.info(port, :os_pid) == {:os_pid, String.to_integer(watchdog)} and
       match?({:queue_size, n} when n > 0, Port.info(port, :queue_size))
   end
 
-  # The connected provider runs in a process that does not trap exits, as
-  # the provider process does not. Its turn writes the prompt, and the
-  # port's `:DOWN` stops it.
-  test "Claude Code: queued input to a dead watchdog stops the harness", %{bin: bin} do
-    program(bin, "claude", "exec sleep 30\n")
-    stop = fn watchdog -> System.cmd("kill", ["-STOP", "#{watchdog}"]) end
-    test = self()
+  # The generic failure path (#390): the fake codex stops its watchdog,
+  # then answers `initialize` and `thread/start`, so the `turn/start` line
+  # with the prompt waits in the port's queue. The test kills the watchdog
+  # only: the queued bytes get `EPIPE`, the port closes with `:epipe`, and
+  # its exit signal ends the provider process. The session fails the turn
+  # and lives on, and the hands' release ends the program group (ADR 0004).
+  test "a write to a dead watchdog ends the provider process and fails the turn",
+       %{bin: bin, dir: dir} do
+    init = j(%{id: 1, result: %{userAgent: "fake", platformOs: "macos"}})
+    start = j(%{id: 2, result: %{thread: thread("t1")}})
 
-    {_pid, ref} =
-      spawn_monitor(fn ->
-        hands(stop)
-        {:ok, state} = ClaudeCode.init("haiku", [], cwd: File.cwd!())
-        context = %Helyx.Context{messages: [Message.user(@big)]}
+    program(bin, "codex", """
+    echo $PPID > #{Path.join(dir, "watchdog")}
+    echo $$ > #{Path.join(dir, "group")}
+    kill -STOP $PPID
+    printf '%s\\n' '#{init}' '#{start}'
+    exec sleep 30
+    """)
 
-        {:ok, _actions, state} =
-          ClaudeCode.request({:turn, "t1", context}, make_ref(), state)
+    core = :"core_#{System.unique_integer([:positive])}"
+    start_supervised!({Helyx.Core, name: core, plugins: [Codex]})
+    session = start(%{core: core, work: dir, sessions: Path.join(dir, "sessions")})
+    :ok = Session.prompt(session, String.duplicate("x", 400_000))
 
-        send(test, {:stopped, stop_reason(ClaudeCode, state)})
-      end)
+    group = wait_for_pid(Path.join(dir, "group"))
+    kill_when_queued(wait_for_pid(Path.join(dir, "watchdog")))
 
-    receive do
-      {:stopped, reason} -> assert reason == {:claude_code_exit, :epipe}
-      {:DOWN, ^ref, :process, _pid, reason} -> flunk("the harness ended on #{inspect(reason)}")
-    after
-      Helyx.Test.Events.wait_ms() -> flunk("the harness did not stop")
-    end
+    assert List.last(Helyx.Test.Events.collect_until(:agent_end)).data.error ==
+             {:task_exit, :epipe}
+
+    assert Process.alive?(Session.pid(session))
+    assert group_gone_within?(group)
   end
 
   # The provider process does not trap exits: an abort while the start
@@ -151,48 +118,5 @@ defmodule Helyx.Provider.HarnessEpipeTest do
     Process.exit(pid, :shutdown)
     assert_receive {:DOWN, ^ref, :process, _pid, :shutdown}
     assert group_gone_within?(group)
-  end
-
-  # The fake codex stops its watchdog, then answers `initialize` and
-  # `thread/start`, so the `turn/start` line with the prompt waits in the
-  # queue. The provider process does not trap exits: the port's `:DOWN`
-  # stops it.
-  test "Codex: a queued line to a dead watchdog stops the provider process", %{bin: bin} do
-    thread = %{id: "t1", cwd: "/work", model: "m", path: "/r.jsonl"}
-    init = JSON.encode!(%{id: 1, result: %{userAgent: "fake", platformOs: "macos"}})
-    start = JSON.encode!(%{id: 2, result: %{thread: thread}})
-
-    program(bin, "codex", """
-    kill -STOP $PPID
-    printf '%s\\n' '#{init}' '#{start}'
-    exec sleep 30
-    """)
-
-    test = self()
-
-    {pid, ref} =
-      spawn_monitor(fn ->
-        hands(fn _watchdog -> :ok end)
-        {:ok, state} = Codex.init("m", [], cwd: File.cwd!())
-        context = %Helyx.Context{messages: [Message.user(@big)]}
-        {:ok, _actions, state} = Codex.request({:turn, "t", context}, make_ref(), state)
-        send(test, {:stop, stop_reason(Codex, state)})
-      end)
-
-    receive do
-      {:stop, reason} -> assert reason == {:codex_exit, :epipe}
-      {:DOWN, ^ref, :process, _pid, reason} -> flunk("the harness ended on #{inspect(reason)}")
-    after
-      Helyx.Test.Events.wait_ms() ->
-        Process.exit(pid, :kill)
-        flunk("the harness did not stop")
-    end
-  end
-
-  # The reason the provider stops with.
-  defp stop_reason(provider, state) do
-    {actions, _state} = pump(provider, state, [], fn _ -> false end)
-    {:stop, reason} = List.last(actions)
-    reason
   end
 end
