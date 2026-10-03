@@ -175,7 +175,7 @@ defmodule Helyx.Session.Server do
   def handle_info({:tool_request, pid, turn_id, call, _rejection}, state),
     do: {:noreply, Tools.late(state, pid, turn_id, call.id)}
 
-  def handle_info({:cancel_tool, turn_id, call_id}, %State{activity: %Turn{id: turn_id}} = state),
+  def handle_info({:cancel_tool, call_id}, %State{activity: %Turn{}} = state),
     do: {:noreply, Tools.cancel(state, call_id)}
 
   def handle_info(
@@ -368,7 +368,7 @@ defmodule Helyx.Session.Server do
   def handle_info({:prepared, _turn_id, _result}, state), do: {:noreply, state}
   def handle_info({:need_context, _turn_id}, state), do: {:noreply, state}
   def handle_info({:tool_result, _turn_id, _call_id, _result}, state), do: {:noreply, state}
-  def handle_info({:cancel_tool, _turn_id, _call_id}, state), do: {:noreply, state}
+  def handle_info({:cancel_tool, _call_id}, state), do: {:noreply, state}
   def handle_info({:stream_event, _turn_id, _event}, state), do: {:noreply, state}
   def handle_info({:stream_end, _turn_id, _terminal}, state), do: {:noreply, state}
 

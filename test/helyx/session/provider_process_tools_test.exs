@@ -138,8 +138,8 @@ defmodule Helyx.Session.ProviderProcessToolsTest do
     sync(proc, session)
     assert running(hands) == 1
 
-    send(proc, {:cancel, turn_id, "c2"})
-    send(proc, {:cancel, turn_id, "c1"})
+    send(proc, {:cancel, "c2"})
+    send(proc, {:cancel, "c1"})
 
     assert [
              {:tool_result, _, "c2", {:error, "aborted"}},

@@ -3,10 +3,12 @@ defmodule Helyx.Provider.ClaudeCode.Mcp do
   # The SDK MCP server of the Helyx tools of `Helyx.Provider.ClaudeCode`
   # (research note, "The SDK MCP server shapes"). It takes the provider
   # state, writes its answers, and keeps `calls`: the open `tools/call`
-  # requests by call id, `{turn_id, control request_id, JSON-RPC id}`.
+  # requests by call id, `{control request_id, JSON-RPC id}`.
 
   alias Helyx.HarnessIO
-  alias Helyx.Provider.ClaudeCode.{Replay, Turn}
+  alias Helyx.Provider.ClaudeCode.Replay
+
+  import Helyx.Provider.ClaudeCode.Turn, only: [started?: 1]
 
   # The user's own MCP servers stay: the Helyx tools add to the harness
   # tools.
@@ -40,21 +42,19 @@ defmodule Helyx.Provider.ClaudeCode.Mcp do
     answer(state, request_id, %{id: id, result: %{tools: tools}})
   end
 
-  # The admission is `Turn.admit/3`; the session owns the call ids.
+  # A call with a tool use id in a started Helyx turn: a program turn can
+  # run before `started` of the turn's line. The session owns the call ids
+  # of the turn (#369).
   def message(%{"method" => "tools/call", "id" => id} = message, request_id, state) do
     params = message["params"]
-    call_id = tool_use_id(params)
 
-    case Turn.admit(state.turn, call_id, fn -> mapped?(params) end) do
-      :ok ->
-        args = Map.get(params, "arguments", %{})
-        calls = Map.put(state.calls, call_id, {state.turn.id, request_id, id})
-
-        {[{:event, state.turn.id, {:tool_request, call_id, params["name"], args}}],
-         %{state | calls: calls}}
-
-      {:error, text} ->
-        tool_answer(state, request_id, id, :error, text)
+    if helyx_call?(params, state.turn) do
+      %{"_meta" => %{"claudecode/toolUseId" => call_id}, "name" => name} = params
+      calls = Map.put(state.calls, call_id, {request_id, id})
+      event = {:tool_request, call_id, name, Map.get(params, "arguments", %{})}
+      {[{:event, state.turn.id, event}], %{state | calls: calls}}
+    else
+      tool_answer(state, request_id, id, :error, "the call does not map to a tool use")
     end
   end
 
@@ -65,12 +65,12 @@ defmodule Helyx.Provider.ClaudeCode.Mcp do
       ) do
     answer(state, request_id, %{result: %{}})
 
-    case Enum.find(state.calls, fn {_call_id, {_turn_id, _request_id, id}} -> id == rpc_id end) do
+    case Enum.find(state.calls, fn {_call_id, {_request_id, id}} -> id == rpc_id end) do
       nil ->
         {[], state}
 
-      {call_id, {turn_id, _request_id, _rpc_id}} ->
-        {[{:cancel_tool, turn_id, call_id}], %{state | calls: Map.delete(state.calls, call_id)}}
+      {call_id, _ids} ->
+        {[{:cancel_tool, call_id}], %{state | calls: Map.delete(state.calls, call_id)}}
     end
   end
 
@@ -86,7 +86,7 @@ defmodule Helyx.Provider.ClaudeCode.Mcp do
   # no open request, and its result is not written.
   def result(state, call_id, status, text) do
     case Map.pop(state.calls, call_id) do
-      {{_turn_id, request_id, rpc_id}, calls} ->
+      {{request_id, rpc_id}, calls} ->
         tool_answer(state, request_id, rpc_id, status, text)
         %{state | calls: calls}
 
@@ -95,16 +95,14 @@ defmodule Helyx.Provider.ClaudeCode.Mcp do
     end
   end
 
-  defp tool_use_id(%{"_meta" => %{"claudecode/toolUseId" => call_id}}) when is_binary(call_id),
-    do: call_id
+  defp helyx_call?(
+         %{"_meta" => %{"claudecode/toolUseId" => call_id}, "name" => name} = params,
+         turn
+       )
+       when is_binary(call_id) and is_binary(name) and turn != nil and started?(turn),
+       do: is_map(Map.get(params, "arguments", %{}))
 
-  defp tool_use_id(_params), do: nil
-
-  # The admission calls it only with a call id, so `params` is a map.
-  defp mapped?(%{"name" => name} = params) when is_binary(name),
-    do: is_map(Map.get(params, "arguments", %{}))
-
-  defp mapped?(_params), do: false
+  defp helyx_call?(_params, _turn), do: false
 
   defp tool_answer(state, request_id, rpc_id, status, text) do
     result = %{content: [%{type: "text", text: text}], isError: status == :error}

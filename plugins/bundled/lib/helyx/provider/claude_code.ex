@@ -176,10 +176,7 @@ defmodule Helyx.Provider.ClaudeCode do
   def request(:idle_close, from, state),
     do: {:ok, [{:reply, from, :busy}], %{state | notified?: false}}
 
-  def request(:close, from, state) do
-    HarnessIO.write(state, <<0>>)
-    {:ok, [], %{state | closing: from}}
-  end
+  def request(:close, from, state), do: {:ok, [], HarnessIO.close(state, from)}
 
   # Helyx does not know whether the program will start the steer, so the
   # program stops.

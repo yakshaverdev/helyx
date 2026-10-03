@@ -1,8 +1,8 @@
 defmodule Helyx.Provider.Codex.Check do
   @moduledoc false
   # The shape check of the lines of `Helyx.Provider.Codex`. It reads the
-  # provider state as a map: `due`, `thread`, `turn`, `resume`, `steers`,
-  # and `items`.
+  # provider state as a map: `due`, `thread`, `turn`, `resume`, and
+  # `items`.
 
   alias Helyx.Provider.Codex.{Items, Tools}
 
@@ -55,11 +55,11 @@ defmodule Helyx.Provider.Codex.Check do
   def malformed(_object, _state), do: nil
 
   # The order of the program's items in the running turn: a tool item
-  # completes only after its start. A line that closes
-  # the assistant message (the first result of its calls, or the
-  # `userMessage` of a sent steer) comes only when no call of a closed
-  # message runs, because the session gives such a call `aborted`
-  # (`Helyx.Provider`).
+  # completes only after its start. A line that closes the assistant
+  # message (the first result of its calls, or the `item/started` of a
+  # `userMessage` with a string `clientId`, a steer) comes only when no
+  # call of a closed message runs, because the session gives such a call
+  # `aborted` (`Helyx.Provider`).
   defp in_order?(
          method,
          %{"turnId" => turn, "item" => %{"id" => id} = item},
@@ -71,7 +71,8 @@ defmodule Helyx.Provider.Codex.Check do
 
     closes? =
       (tool? and id in calls) or
-        (item["type"] == "userMessage" and is_map_key(state.steers, item["clientId"]))
+        (method == "item/started" and item["type"] == "userMessage" and
+           is_binary(item["clientId"]))
 
     (not tool? or is_map_key(open, id)) and
       not (closes? and Enum.any?(Map.keys(open), &(&1 not in calls)))

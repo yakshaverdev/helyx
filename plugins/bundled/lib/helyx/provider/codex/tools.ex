@@ -52,28 +52,22 @@ defmodule Helyx.Provider.Codex.Tools do
   defp digest([]), do: nil
   defp digest(specs), do: HarnessIO.hex_digest(JSON.encode!(specs(specs)), @digest_hex)
 
-  # The admission of an `item/tool/call`, with the provider state as a map.
-  # The admission is `Helyx.HarnessIO.admit/3`. Gives `{:ok, tool_request}`
-  # or `{:error, text}` for the error answer, and the tools.
+  # The admission of an `item/tool/call`, with the provider state as a map:
+  # the call maps to an open `dynamicToolCall` item of the running turn,
+  # which puts it in the transcript, and has the shape of the schema. The
+  # session owns the call ids of the turn (#369). Gives `{:ok,
+  # tool_request}` or `{:error, text}` for the error answer, and the tools.
   def call(%{tools: tools} = state, rpc_id, params) do
-    call_id = call_id(params)
-    running? = state.turn_id != nil
-
-    case HarnessIO.admit(running?, call_id, fn -> tool_call?(params, state) end) do
-      :ok ->
-        request = {:tool_request, call_id, params["tool"], params["arguments"]}
-        {{:ok, request}, %{tools | requests: Map.put(tools.requests, call_id, rpc_id)}}
-
-      {:error, text} ->
-        {{:error, text}, tools}
+    if tool_call?(params, state) do
+      %{"callId" => call_id, "tool" => tool, "arguments" => args} = params
+      requests = Map.put(tools.requests, call_id, rpc_id)
+      {{:ok, {:tool_request, call_id, tool, args}}, %{tools | requests: requests}}
+    else
+      {{:error, "the call does not map to a tool use"}, tools}
     end
   end
 
-  defp call_id(%{"callId" => call_id}) when is_binary(call_id), do: call_id
-  defp call_id(_params), do: nil
-
-  # The call maps to an open `dynamicToolCall` item of the running turn,
-  # which puts it in the transcript, and has the shape of the schema.
+  # Items of the running turn only: `items` and `turn` reset at its end.
   defp tool_call?(%{"threadId" => thread, "turnId" => turn, "callId" => id} = params, state),
     do:
       thread == state.thread and turn == state.turn and state.items.open[id] == "dynamicToolCall" and
