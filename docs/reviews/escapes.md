@@ -170,3 +170,4 @@ One row per ticket that `/orchestrate` merged. An escape is a confirmed Codex fi
 | 2026-10-03 | #408 | r1: 1 reproduced (S3 premise false: kitty ESC [ 1 u reaches the composer as U+0001 with no modifier); r2: 0; r3: 0 | gate r1 (Codex): 0 | `/implement`: probe every input path of a state before a crash or a removal (with #407) |
 | 2026-10-03 | #415 | r1: 0 | gate r1 (Codex): 0 | none |
 | 2026-10-03 | #416 | r1: 0 | gate r1 (Codex): 0 | none |
+| 2026-10-04 | #428 | r1: 0 | gate r1 (Codex): 0 | none |
