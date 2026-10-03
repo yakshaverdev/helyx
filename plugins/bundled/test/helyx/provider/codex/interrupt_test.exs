@@ -122,78 +122,6 @@ defmodule Helyx.Provider.Codex.InterruptTest do
     end
   end
 
-  # A duplicate `turn/interrupt` answer, then a late error with the same
-  # id: neither answers the next interrupt.
-  test "a duplicate turn/interrupt answer is dropped and does not answer the next interrupt",
-       %{bin: bin, work: work} do
-    dup = j(%{id: "@", error: %{code: -1, message: "no active turn"}})
-    fresh(bin, 1, tid(), [delta(tid(), "msg_1", "thinking")])
-
-    on(
-      bin,
-      1,
-      "turn/interrupt",
-      [j(%{id: "@", result: %{}}), turn_end(tid(), "interrupted")],
-      ~s{(while [ ! -f "$d/go" ]; do sleep 0.02; done; out "$d/dup"; touch "$d/sent") &\n},
-      1
-    )
-
-    lines_file(bin, "dup", [dup])
-
-    lines_file(
-      bin,
-      "second",
-      as_turn([j(%{id: "@", result: %{}}), turn_end(tid(), "interrupted")], "turn2")
-    )
-
-    # The duplicate comes while the second `turn/interrupt` waits for its
-    # answer: the answer goes out only after the duplicate is written.
-    on(
-      bin,
-      1,
-      "turn/interrupt",
-      [],
-      ~s{touch "$d/go"; while [ ! -f "$d/sent" ]; do sleep 0.02; done; out "$d/second"\n},
-      2
-    )
-
-    on(
-      bin,
-      1,
-      "turn/start",
-      as_turn(turn(tid(), [delta(tid(), "msg_2", "again")]), "turn2"),
-      "",
-      2
-    )
-
-    {:ok, state} = connect(work)
-    {_turn, _, state} = ask(state, {:turn, "t1", %Helyx.Context{messages: [Message.user("go")]}})
-    {_actions, state} = pump(Codex, state, [], &match?([_ | _], events(&1)))
-    {first, [], state} = ask(state, {:interrupt, "t1"})
-    {actions, state} = pump(Codex, state, [], replied?(first))
-    assert {:reply, first, :ok} in actions
-
-    {_next, _, state} =
-      ask(state, {:turn, "t2", %Helyx.Context{messages: [Message.user("again")]}})
-
-    {_actions, state} =
-      pump(
-        Codex,
-        state,
-        [],
-        &Enum.any?(&1, fn a -> match?({:event, "t2", {:text_delta, _}}, a) end)
-      )
-
-    {second, [], state} = ask(state, {:interrupt, "t2"})
-    {actions, state} = pump(Codex, state, [], replied?(second))
-    assert {:reply, second, :ok} in actions
-    refute Enum.any?(actions, &match?({:stop, _}, &1))
-    close(state)
-
-    assert [%{"params" => %{"turnId" => "turn1"}}, %{"params" => %{"turnId" => "turn2"}}] =
-             for(%{"method" => "turn/interrupt"} = r <- stdin(bin, 1), do: r)
-  end
-
   test "after a turn/completed with an unknown status, the next turn starts a new program",
        %{bin: bin} = ctx do
     fresh(bin, 1, tid(), [bad_end(%{status: "inProgress"})])
@@ -237,21 +165,19 @@ defmodule Helyx.Provider.Codex.InterruptTest do
     assert {[{:stop, :item_of_ended_turn}], _state} = pump(Codex, state, [], fn _ -> false end)
   end
 
-  test "a late turn/interrupt answer does not answer the next interrupt", %{bin: bin, work: work} do
-    late = j(%{id: "@", error: %{code: -1, message: "no active turn"}})
+  # The error answer to turn 1's `turn/interrupt` comes after turn 2's
+  # interrupt went out: it answers no interrupt (review round 1 of #365).
+  test "a late turn/interrupt error does not answer the next turn's interrupt",
+       %{bin: bin, work: work} do
     fresh(bin, 1, tid(), [delta(tid(), "msg_1", "thinking")])
+    on(bin, 1, "turn/interrupt", [turn_end(tid(), "interrupted")], ~s{echo $i > "$d/first"\n}, 1)
 
-    on(
-      bin,
-      1,
-      "turn/interrupt",
-      [turn_end(tid(), "interrupted")],
-      after_go(bin, "late", [late]),
-      1
-    )
+    late =
+      ~s|printf '{"id":%s,"error":{"code":-32600,"message":"no active turn to interrupt"}}\\n' | <>
+        ~s|"$(cat "$d/first")"\n|
 
-    second = [j(%{id: "@", result: %{}}), turn_end(tid(), "interrupted")]
-    on(bin, 1, "turn/interrupt", as_turn(second, "turn2"), "", 2)
+    second = as_turn([j(%{id: "@", result: %{}}), turn_end(tid(), "interrupted")], "turn2")
+    on(bin, 1, "turn/interrupt", [], late <> after_go(bin, "second", second), 2)
 
     on(
       bin,
@@ -263,14 +189,13 @@ defmodule Helyx.Provider.Codex.InterruptTest do
     )
 
     {:ok, state} = connect(work)
-    {_turn, _, state} = ask(state, {:turn, "t1", %Helyx.Context{messages: [Message.user("go")]}})
+    {_turn, _, state} = turn_on(state)
     {_actions, state} = pump(Codex, state, [], &match?([_ | _], events(&1)))
     {first, [], state} = ask(state, {:interrupt, "t1"})
     {actions, state} = pump(Codex, state, [], replied?(first))
     assert {:reply, first, :ok} in actions
 
-    {_next, _, state} =
-      ask(state, {:turn, "t2", %Helyx.Context{messages: [Message.user("again")]}})
+    {_next, _, state} = turn_on(state, "t2")
 
     {_actions, state} =
       pump(
@@ -280,15 +205,11 @@ defmodule Helyx.Provider.Codex.InterruptTest do
         &Enum.any?(&1, fn a -> match?({:event, "t2", {:text_delta, _}}, a) end)
       )
 
-    # The answer to the first `turn/interrupt` is still due, so the second
-    # waits for it.
     {second, [], state} = ask(state, {:interrupt, "t2"})
     go(bin)
     {actions, state} = pump(Codex, state, [], replied?(second))
     assert {:reply, second, :ok} in actions
+    refute Enum.any?(actions, &match?({:stop, _}, &1))
     close(state)
-
-    assert [%{"params" => %{"turnId" => "turn1"}}, %{"params" => %{"turnId" => "turn2"}}] =
-             for(%{"method" => "turn/interrupt"} = r <- stdin(bin, 1), do: r)
   end
 end

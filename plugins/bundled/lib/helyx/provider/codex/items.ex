@@ -2,12 +2,11 @@ defmodule Helyx.Provider.Codex.Items do
   @moduledoc false
   # The item translation of `Helyx.Provider.Codex` for the running turn.
   #
-  # `open` maps the open tool items to their types, `started` holds the ids
-  # of the tool items that have a tool call, and `streamed` the ids of the
-  # messages whose text came as deltas. `calls` holds the ids of the tool
-  # calls of the message that no `message_end` closed yet, and `usage` the
-  # last token usage.
-  defstruct open: %{}, started: MapSet.new(), streamed: MapSet.new(), calls: [], usage: %{}
+  # `open` maps the open tool items to their types, and `streamed` holds
+  # the ids of the messages whose text came as deltas. `calls` holds the
+  # ids of the tool calls of the message that no `message_end` closed yet,
+  # and `usage` the last token usage.
+  defstruct open: %{}, streamed: MapSet.new(), calls: [], usage: %{}
 
   alias Helyx.HarnessIO
   alias Helyx.Message
@@ -31,12 +30,7 @@ defmodule Helyx.Provider.Codex.Items do
 
   def notification("item/started", %{"item" => %{"type" => type, "id" => id} = item}, items)
       when type in @tool_item_types do
-    items = %{
-      items
-      | started: MapSet.put(items.started, id),
-        calls: [id | items.calls],
-        open: Map.put(items.open, id, type)
-    }
+    items = %{items | calls: [id | items.calls], open: Map.put(items.open, id, type)}
 
     {[tool_call(item)], items}
   end
@@ -54,27 +48,15 @@ defmodule Helyx.Provider.Codex.Items do
   end
 
   # The first result of a message's calls closes it; the results of its
-  # other calls follow. A tool item that completes with no start gets its
-  # call first.
+  # other calls follow. Every tool item is open here (`Check`).
   def notification("item/completed", %{"item" => %{"type" => type, "id" => id} = item}, items)
       when type in @tool_item_types do
     items = %{items | open: Map.delete(items.open, id)}
-
-    {calls, items} =
-      if MapSet.member?(items.started, id),
-        do: {[], items},
-        else:
-          {[tool_call(item)],
-           %{items | started: MapSet.put(items.started, id), calls: [id | items.calls]}}
-
     result = {:tool_result, id, tool_result(item)}
 
-    if id in items.calls do
-      close = {:close, items.calls, {:message_end, :tool_use, items.usage}}
-      {calls ++ [close, result], %{items | calls: []}}
-    else
-      {[result], items}
-    end
+    if id in items.calls,
+      do: {[{:message_end, :tool_use, items.usage}, result], %{items | calls: []}},
+      else: {[result], items}
   end
 
   def notification("thread/tokenUsage/updated", %{"tokenUsage" => %{"last" => usage}}, items)

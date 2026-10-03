@@ -60,6 +60,26 @@ defmodule Helyx.Provider.Codex.HelyxToolsTest do
       {state, actions}
     end
 
+    # No retry without the tools (#365).
+    test "an error answer to initialize or thread/start fails the connect with it",
+         %{bin: bin, work: work} do
+      on(bin, 1, "initialize", [j(%{id: "@", error: %{code: -32_600, message: "no"}})])
+
+      assert {:error, {:codex, "initialize", "no"}} =
+               Codex.init("m", [@spec_read], cwd: work)
+
+      error = %{
+        code: -32_600,
+        message: "thread/start.dynamicTools requires experimentalApi capability"
+      }
+
+      fresh(bin, 2, tid(), [])
+      on(bin, 2, "thread/start", [j(%{id: "@", error: error})])
+
+      assert {:error, {:codex, "thread/start", "thread/start.dynamicTools" <> _}} =
+               Codex.init("m", [@spec_read], cwd: work)
+    end
+
     defp digest?(id),
       do: match?([tid(), digest] when byte_size(digest) == 16, String.split(id, "#"))
 
@@ -120,58 +140,6 @@ defmodule Helyx.Provider.Codex.HelyxToolsTest do
       end
 
       assert %{"params" => %{"threadId" => tid()}} = request(bin, 2, "thread/resume")
-    end
-
-    test "an initialize error starts the thread without the tools, and the first turn gives a notice",
-         %{bin: bin, work: work} do
-      fresh(bin, 1, tid(), reply(tid(), "Hi."))
-      on(bin, 1, "initialize", [j(%{id: "@", error: %{code: -32_600, message: "no"}})], "", 1)
-      on(bin, 1, "turn/start", as_turn(turn(tid(), reply(tid(), "Again.")), "turn2"), "", 2)
-      {state, actions} = tools_turn(work)
-      {actions, state} = pump(Codex, state, actions, &turn_ended?/1)
-
-      {_from, next, state} =
-        ask(state, {:turn, "t2", %Helyx.Context{messages: [Message.user("y")]}})
-
-      {next, state} = pump(Codex, state, next, &turn_ended?/1)
-      close(state)
-
-      assert [
-               %{"params" => %{"capabilities" => %{"experimentalApi" => true}}},
-               %{"params" => second}
-             ] = for(%{"method" => "initialize"} = line <- stdin(bin, 1), do: line)
-
-      refute Map.has_key?(second, "capabilities")
-      refute Map.has_key?(request(bin, 1, "thread/start")["params"], "dynamicTools")
-
-      assert [
-               {:notice, "the Helyx tools are off for Codex" <> _},
-               {:resume, tid(), 0} | _
-             ] =
-               events(actions)
-
-      refute Enum.any?(next, &match?({:event, _, {:notice, _}}, &1))
-    end
-
-    test "the exact experimentalApi error of thread/start starts the thread without the tools",
-         %{bin: bin, work: work} do
-      fresh(bin, 1, tid(), reply(tid(), "Hi."))
-
-      error = %{
-        code: -32_600,
-        message: "thread/start.dynamicTools requires experimentalApi capability"
-      }
-
-      on(bin, 1, "thread/start", [j(%{id: "@", error: error})], "", 1)
-      {state, actions} = tools_turn(work)
-      {actions, state} = pump(Codex, state, actions, &turn_ended?/1)
-      close(state)
-
-      assert [%{"params" => %{"dynamicTools" => [_]}}, %{"params" => second}] =
-               for(%{"method" => "thread/start"} = line <- stdin(bin, 1), do: line)
-
-      refute Map.has_key?(second, "dynamicTools")
-      assert [{:notice, _}, {:resume, tid(), 0} | _] = events(actions)
     end
 
     test "a call of an open dynamicToolCall item gives a tool request, and its result goes back",

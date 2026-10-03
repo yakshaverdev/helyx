@@ -83,7 +83,7 @@ No new resource. The row "provider stream Task" does not change: a local turn's 
 
 ## Known gap
 
-An abort of an external turn closes the turn at once. A tool result that finished before the abort but arrives after it shows as `aborted` in the transcript and the session file. An example is the result of a Codex command of a sent message, when its line is still in the pipe at the abort. A Codex held result is lost in a different way: its call is in a held message, and the held messages never reach the transcript (`docs/features/coding-agent.md`, the Codex paragraph). In both cases the program's own thread keeps the real result, and the next turn resumes that thread. Accepted (#112).
+An abort of an external turn closes the turn at once. A tool result that finished before the abort but arrives after it shows as `aborted` in the transcript and the session file. An example is the result of a Codex command of a sent message, when its line is still in the pipe at the abort. The program's own thread keeps the real result, and the next turn resumes that thread. Accepted (#112).
 
 ## Out of scope
 
