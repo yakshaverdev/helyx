@@ -33,6 +33,15 @@ The round 2 fixes are two cuts with no new claim; no round 3 ran (45-minute limi
 
 Precommit: the first run had one failure in `Helyx.Provider.Codex.CommandsTest` ("a failed turn with an open command stops the provider process"), a test this change does not touch; three local runs of the file with `HELYX_SLOW=1` passed, and the second precommit run passed.
 
+## Codex gate round 1 (reduced: Markdown only)
+
+| Axis | Finding | Resolution |
+| --- | --- | --- |
+| Codex | the cut Replay section held two bounds that `long-lived-harness.md` lacked: `Helyx.HarnessIO.wire_id/1` and `tool_name/1` in `Helyx.Provider.Codex.Replay` | one row each added to the bounds of `long-lived-harness.md` |
+| Codex | the TUI bullet said an event of another shape crashes the TUI; `Helyx.TUI.ViewModel.apply/2` ignores an unknown type | cut |
+
+Spec and failure path on the changed lines: no findings. Precommit failed once on the same `Helyx.Provider.Codex.CommandsTest` test as above, then passed.
+
 ## Rows over 40 words (mechanisms to simplify)
 
 - tool result text (45 words): one cut helper serves three readers, read and the model context with the head, bash and the harness providers with the tail, and a separate cut for one long line.

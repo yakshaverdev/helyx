@@ -58,6 +58,8 @@ A fresh harness session (no resume id, a lost session, or a changed Codex tool s
 | bytes written to the program and not yet read | 16 MiB (`@stdin_max_bytes` in `Helyx.Watchdog`) | the watchdog stops the program group and exits with a status; the provider process stops on that exit | watchdog |
 | TERM grace | 5,000 ms (`@term_grace_ms` in `Helyx.HarnessIO`) | KILL. The program's own command groups can stay after a KILL | watchdog |
 | replay | 400,000 bytes (`@replay_max_bytes` in `Helyx.HarnessIO`) | the oldest messages are left out; `cut` counts them | provider |
+| replay: tool call id | 1 to 64 characters of `[a-zA-Z0-9_-]` (`Helyx.HarnessIO.wire_id/1`) | the id becomes `h_` and 62 hex digits of its SHA-256 | provider |
+| Codex replay: tool name | `[a-zA-Z0-9_-]`, at most 64 bytes (`tool_name/1` in `Helyx.Provider.Codex.Replay`) | each other character becomes `_`, then the name is cut to 64 bytes; an empty name becomes `_` | provider |
 | Claude: wait for `started` of an unresolved steer after a `result` with `queued_turn_count` 0 | 5,000 ms (`@steer_wait_ms` in `Helyx.Provider.ClaudeCode`) | the provider process stops with `:steer_not_started` | provider |
 | Claude: wait for `started` of the turn's line, and for each replay chunk's `result` | unbounded, accepted | an abort; the interrupt has its armed kill | Core |
 | Codex: open `item/tool/call` requests | one per call that gave a `{:tool_request, ...}`, removed at its `{:tool_result, ...}`; Core answers every request once | not needed: Core answers each request once | provider |
