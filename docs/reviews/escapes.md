@@ -164,9 +164,9 @@ One row per ticket that `/orchestrate` merged. An escape is a confirmed Codex fi
 | 2026-10-03 | #406 | r1: 1 reproduced (an image in a user message or tool result had no placeholder), fixed; r2: 0 (1 Codex finding rejected: the four-line preview cuts all content) | gate r1 (Codex): 0 | none needed |
 | 2026-10-03 | #412 | r1: 0 reproduced; 11 doc and test fixes | gate r1 (Codex): 0 | none needed |
 | 2026-10-03 | #417 | r1: 0 reproduced | gate r1 (Codex): 0 | the #407 ticket text called a disk-boundary state a bug-only state; the #407 worker caught it |
-| 2026-10-03 | #407 | r1: 1 reproduced (an orphan result from disk crashes the TUI at mount; fixed in Core by #417); r2: 0; r3 (reduced): 0 | gate r1 (Codex): 0 | the ticket text called a disk-boundary state bug-only; tickets that make a fold crash name the disk path that feeds it |
+| 2026-10-03 | #407 | r1: 1 reproduced (an orphan result from disk crashes the TUI at mount; fixed in Core by #417); r2: 0; r3 (reduced): 0 | gate r1 (Codex): 0 | `/implement`: probe every input path of a state before a crash or a removal (with #408) |
 | 2026-10-03 | #413 | r1: 0 | gate r1 (Codex): 0 | none |
 | 2026-10-03 | #414 | r1: 0 | gate r1 (Codex): 0 | none |
-| 2026-10-03 | #408 | r1: 1 reproduced (S3 premise false: kitty ESC [ 1 u reaches the composer as U+0001 with no modifier); r2: 0; r3: 0 | gate r1 (Codex): 0 | a removal ticket based on a review-only origin names the input path that it claims is unreachable, and the worker probes that path before removal |
+| 2026-10-03 | #408 | r1: 1 reproduced (S3 premise false: kitty ESC [ 1 u reaches the composer as U+0001 with no modifier); r2: 0; r3: 0 | gate r1 (Codex): 0 | `/implement`: probe every input path of a state before a crash or a removal (with #407) |
 | 2026-10-03 | #415 | r1: 0 | gate r1 (Codex): 0 | none |
 | 2026-10-03 | #416 | r1: 0 | gate r1 (Codex): 0 | none |
