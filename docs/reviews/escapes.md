@@ -175,3 +175,4 @@ One row per ticket that `/orchestrate` merged. An escape is a confirmed Codex fi
 | 2026-10-04 | #429 | r1: 0 | gate r1 (Codex): 0 | none |
 | 2026-10-04 | #431 | r1: 0 | gate r1 (Codex): 0 | none |
 | 2026-10-04 | #430 | r1: 0 | gate r1 (Codex): 0 | none |
+| 2026-10-04 | #434 | r1: 1 reproduced, an accepted hole now documented (a failed second subscribe ends the first) | gate r1 (Codex): 0 | none |
