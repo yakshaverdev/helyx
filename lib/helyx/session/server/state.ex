@@ -1,10 +1,11 @@
 # ProviderConn comes first: the State functions match its struct.
 defmodule Helyx.Session.Server.ProviderConn do
   @moduledoc false
-  # The provider process of the session: its pid, the model it
-  # runs, and whether `init/3` returned (`{:provider_ready, pid}`).
-  @enforce_keys [:pid, :model]
-  defstruct [:pid, :model, ready: false]
+  # The provider process of the session: its pid, the model it runs, the
+  # id of the turn that started it, and whether `init/3` returned
+  # (`{:provider_ready, pid}`).
+  @enforce_keys [:pid, :model, :turn]
+  defstruct [:pid, :model, :turn, ready: false]
 end
 
 defmodule Helyx.Session.Server.State do
@@ -106,7 +107,7 @@ defmodule Helyx.Session.Server.State do
     with {:ok, pid} <-
            Hands.start_provider(state.hands, turn.provider, ProviderProcess.run(args)) do
       Process.monitor(pid)
-      conn = %ProviderConn{pid: pid, model: turn.model}
+      conn = %ProviderConn{pid: pid, model: turn.model, turn: turn.id}
       {:ok, %{state | conn: conn, activity: %{turn | resumed: resumed}}}
     end
   end

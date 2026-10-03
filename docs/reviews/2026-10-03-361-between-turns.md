@@ -39,4 +39,19 @@ Full round (code changed). Bounds sensor not rerun: the round 1 fixes removed li
 | Spec | Close the hole with a `down?` flag on `ProviderConn` | Rejected: the provider sends its terminal before it exits, so the session reads the terminal before the `:DOWN`; the flag is never set in time |
 | Standards | The comment "Idle" on the last `:provider_down` clause names the wrong state | Rejected: the clauses above it take a Wait and a Turn, so only `:idle` reaches it |
 
-Round 2 reproduced only the accepted hole, now stated in full; its fixes are doc only, so no round 3.
+Round 2 reproduced only the accepted hole; its fixes were doc only. The orchestrator then rejected the hole (#198: Codex stops its program at a turn end with an open command, so a queued follow-up hits it on a real path) and asked for a structural fix: a provider process of an earlier turn that ends while the turn is `preparing` does not fail the turn; the turn connects a new one after the release. Round 3 reviews that fix.
+
+## Round 3
+
+Full round (code changed). Base: the #361 commit. Bounds sensor: `bounds sensor: 1 candidate functions, 0 flagged, 0 without an answer`.
+
+| Axis | Finding | Resolution |
+|---|---|---|
+| Failure path | The reconnect skipped `Steering.provider_down/1`: a steer sent to the dead process stayed `{:ended, _}` in the ledger, counted in the 32, and got no notice until the new process ended (reproduced) | Fixed: the reconnect runs `Steering.provider_down/1` first. Test "a turn that connects again while preparing gives the dead process's open steer its notice"; it fails without the fix |
+| Standards | `server.ex` allowance raised from 616 to 621 | Kept: 616 was this branch's own value, never on master; master allows 622, and the file stays under it |
+| Standards | The catch-all `:DOWN` comment and the doc list said the current process's `:DOWN` in any turn | Fixed: "in a turn that sent `{:turn, ...}`" |
+| Standards | `if phase` in `call_provider/1` tells a first connect from a reconnect | Judgement call, not taken: the line budget |
+| Spec | All points met; the once-per-turn bound (`ProviderConn.turn`) holds, shown by the failed-connect test | none |
+| Codex | The same steer finding (32 sent steers kept their slots; a later steer got `:queue_full`); it checked the working-tree fix: all 32 get their notices | Fixed, as above |
+
+Round 3 is the last round (limit 3). The steer fix is one line with its regression test, reproduced by the failure-path reviewer; Codex checked it against its own reproduction; it had no further review round.

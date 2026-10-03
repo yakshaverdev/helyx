@@ -272,7 +272,7 @@ defmodule Helyx.Session.ProviderProcessTest do
       assert Message.text(List.last(context.messages)) == "two"
     end
 
-    test "a provider process that ends after the check fails the new turn at its release",
+    test "an earlier turn's provider process that ends while the turn prepares: the turn runs on a new one after the release",
          %{core: core} do
       {session, pid, hands} = start(core, "stop")
       :ok = Session.prompt(session, "one")
@@ -288,11 +288,36 @@ defmodule Helyx.Session.ProviderProcessTest do
       assert_receive {:DOWN, ^ref, :process, _, _}
       :erlang.resume_process(hands)
 
-      assert error(collect_until(:agent_end)) == {:provider_stop, :gone}
       assert_receive {:release, :deliver, [{:report, _}]}
-      :ok = Session.prompt(session, "three")
-      assert_receive {:conn, :turn, new, {:turn, _, _}}
+      assert_receive {:conn, :turn, new, {:turn, two, context}}
       assert new != old
+      assert Message.text(List.last(context.messages)) == "two"
+      send(new, {:finish, two})
+      assert List.last(collect_until(:agent_end)).data == %{stop_reason: :end_turn}
+    end
+
+    test "a provider process that exits right after its terminal: the queued follow-up completes on a new one",
+         %{core: core} do
+      {session, pid, _hands} = start(core, "stop")
+      :ok = Session.prompt(session, "one")
+      assert_receive {:conn, :turn, old, {:turn, one, _}}
+      :ok = Session.follow_up(session, "two")
+
+      ref = Process.monitor(old)
+      :erlang.suspend_process(pid)
+      send(old, {:finish, one})
+      send(old, :stop)
+      assert_receive {:DOWN, ^ref, :process, _, _}
+      :erlang.resume_process(pid)
+
+      assert_receive {:conn, :turn, new, {:turn, two, context}}
+      assert new != old
+      assert Message.text(List.last(context.messages)) == "two"
+      send(new, {:finish, two})
+      events = collect_until(:agent_end) ++ collect_until(:agent_end)
+
+      assert [%{stop_reason: :end_turn}, %{stop_reason: :end_turn}] =
+               for(%{type: :agent_end, data: d} <- events, do: d)
     end
 
     test "a steer during the wait for an ended provider process goes first", %{core: core} do
@@ -595,6 +620,26 @@ defmodule Helyx.Session.ProviderProcessTest do
 
     # The 32 steers count the held ones; the end of the provider process
     # ends their requests, each with its notice.
+    test "a turn that connects again while preparing gives the dead process's open steer its notice",
+         %{core: core} do
+      {session, pid, old, one} = submitted(core, "steer_hold")
+      :ok = Session.steer(session, "s")
+      assert_receive {:held, _from}
+      :ok = Session.follow_up(session, "two")
+
+      ref = Process.monitor(old)
+      :erlang.suspend_process(pid)
+      send(old, {:finish, one})
+      send(old, :stop)
+      assert_receive {:DOWN, ^ref, :process, _, _}
+      :erlang.resume_process(pid)
+
+      assert unconfirmed(collect_until(:steer_unconfirmed)) == [%{text: "s"}]
+      assert_receive {:conn, :turn, new, {:turn, _, _}}
+      assert new != old
+      assert %{queue: %{steers: 0}} = GenServer.call(pid, :snapshot)
+    end
+
     test "sent steers count in the 32 until the end of the provider process",
          %{core: core} do
       {session, _pid, proc, turn_id} = submitted(core, "steer_hold")

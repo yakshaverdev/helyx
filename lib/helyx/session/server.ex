@@ -65,16 +65,11 @@ defmodule Helyx.Session.Server do
   end
 
   # A steer on a `submitted` turn, also with a context request open, goes
-  # to the provider process; in
-  # `preparing` and `submitting` it stays in the local queue (see "Turn
-  # states" in `docs/features/long-lived-harness.md`). A sent steer counts
-  # in the 32 steers until its `user_message` and its answer (see
-  # `Helyx.Session.Queue`).
-  def handle_call(
-        {:steer, text},
-        _from,
-        %State{activity: %Turn{phase: phase}} = state
-      )
+  # to the provider process; in `preparing` and `submitting` it stays in the
+  # local queue (see "Turn states" in `docs/features/long-lived-harness.md`).
+  # A sent steer counts in the 32 steers until its `user_message` and its
+  # answer (see `Helyx.Session.Queue`).
+  def handle_call({:steer, text}, _from, %State{activity: %Turn{phase: phase}} = state)
       when phase in [:submitted, :context] do
     if Queue.room?(state.queue),
       do: {:reply, :ok, Steering.send_steer(text, state)},
@@ -334,7 +329,8 @@ defmodule Helyx.Session.Server do
   # From the hands, after the release of the provider process's handles: the
   # end of the provider process that the wait is for, or of the current one.
   # In a turn it fails the turn, whose cleanup the hands then run after the
-  # release.
+  # release. Only a process of an earlier turn that ends while this turn
+  # prepares got nothing of it: the turn connects a new one, once.
   def handle_info({:provider_down, pid, _reason}, %State{activity: %Wait{provider: pid}} = state),
     do: {:noreply, wait_provider_down(state, pid)}
 
@@ -346,9 +342,11 @@ defmodule Helyx.Session.Server do
 
   def handle_info(
         {:provider_down, pid, reason},
-        %State{conn: %ProviderConn{pid: pid}, activity: %Turn{}} = state
+        %State{conn: %ProviderConn{pid: pid} = conn, activity: %Turn{} = turn} = state
       ) do
-    {:noreply, fail_turn(reason, %{state | conn: nil})}
+    if turn.phase == :preparing and conn.turn != turn.id,
+      do: {:noreply, call_provider(Steering.provider_down(%{state | conn: nil}))},
+      else: {:noreply, fail_turn(reason, %{state | conn: nil})}
   end
 
   # Idle, when it comes before the session's `:DOWN` (no order between them).
@@ -387,8 +385,15 @@ defmodule Helyx.Session.Server do
       when :erlang.map_get(pid, subscribers) == ref,
       do: {:noreply, Record.subscriber_down(state, pid)}
 
+  # In a preparing turn the `:DOWN` holds back `{:turn, ...}` until then.
+  def handle_info(
+        {:DOWN, _ref, :process, pid, _reason},
+        %State{conn: %ProviderConn{pid: pid}, activity: %Turn{phase: :preparing}} = state
+      ),
+      do: {:noreply, put_in(state.conn.ready, false)}
+
   # The `:DOWN` of a provider process that the session dropped already, of
-  # the current one in a turn (its `:provider_down` fails the turn), or of
+  # the current one in a sent turn (its `:provider_down` fails it), or of
   # the hands' cleanup request (their `:EXIT` stops the session).
   def handle_info({:DOWN, _ref, :process, _pid, _reason}, state), do: {:noreply, state}
 
@@ -518,10 +523,11 @@ defmodule Helyx.Session.Server do
   end
 
   # The provider process (started at the first turn) and a prepare Task of
-  # the hands, which builds the context.
-  defp call_provider(%State{} = state) do
+  # the hands, which builds the context; a turn that connects again keeps
+  # its prepare.
+  defp call_provider(%State{activity: %Turn{phase: phase}} = state) do
     case State.connect(state) do
-      {:ok, state} -> prepare(put_in(state.activity.phase, :preparing))
+      {:ok, state} -> if phase, do: state, else: prepare(put_in(state.activity.phase, :preparing))
       {:error, text} -> fail_turn(text, state)
     end
   end
@@ -578,7 +584,6 @@ defmodule Helyx.Session.Server do
     # A Helyx tool that still runs: the turn cleanup of the hands runs
     # before the next turn.
     hands = if turn.tool, do: Hands.request_cancel(state.hands, turn.id)
-    # A wait with nothing open ends at once and settles.
     progress(%{state | activity: %Wait{hands: hands}})
   end
 
