@@ -180,3 +180,4 @@ One row per ticket that `/orchestrate` merged. An escape is a confirmed Codex fi
 | 2026-10-04 | #439 | r1: 1 reproduced (after simplify, the merge ran before the byte check), fixed; r2: 0 | gate r1 (Codex): 0 | none; ship caught it |
 | 2026-10-04 | #432 | r1: 1 reproduced (a provider could send :error as its stop reason), fixed; r2: 0; r3 reduced after rebase: 0 | gate r1 (Codex): 0 | none; ship caught it |
 | 2026-10-04 | #436 | r1: 0 | gate r1 (Codex): 0 | none |
+| 2026-10-04 | #433 | r1: 0 | gate r1 (Codex): 0 | none |
