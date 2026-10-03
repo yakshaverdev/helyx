@@ -94,6 +94,36 @@ defmodule Helyx.Provider.Codex.SteerTest do
       refute Enum.any?(actions, &match?({:reply, ^from, _}, &1))
     end
 
+    # The session would give "b" `aborted` at the `user_message` (#365).
+    test "that the program takes while a call of a closed message runs stops the provider process",
+         %{bin: bin, work: work} do
+      item = %{type: "userMessage", id: "u1", clientId: "s1", content: []}
+
+      fresh(bin, 1, tid(), [
+        started(tid(), command("a", %{status: "inProgress"})),
+        started(tid(), command("b", %{status: "inProgress"})),
+        completed(tid(), command("a", done()))
+      ])
+
+      on(bin, 1, "turn/steer", [j(%{id: "@", result: %{turnId: "turn1"}}), started(tid(), item)])
+      {:ok, state} = connect(work)
+      {_turn, actions, state} = turn_on(state)
+
+      {_actions, state} =
+        pump(
+          Codex,
+          state,
+          actions,
+          &Enum.any?(&1, fn a -> match?({:event, _, {:tool_result, _, _}}, a) end)
+        )
+
+      {_from, [], state} = ask(state, {:steer, "t1", "s1", "more"})
+      {actions, _state} = pump(Codex, state, [], fn _ -> false end)
+
+      assert {:stop, {:malformed, "item/started"}} = List.last(actions)
+      refute Enum.any?(actions, &match?({:event, _, {:user_message, _, _}}, &1))
+    end
+
     test "that the program takes gives :ok, then its user_message once", %{bin: bin, work: work} do
       item = %{type: "userMessage", id: "u1", clientId: "s1", content: []}
 

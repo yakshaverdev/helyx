@@ -3,22 +3,17 @@ defmodule Helyx.Provider.Codex.Tools do
   # The Helyx tools of `Helyx.Provider.Codex`. It gives what to send, and
   # Codex writes it.
   #
-  # `specs` are the Helyx tool specs to offer, `[]` when the program did
-  # not take `experimentalApi`; `notice` is the text for the next turn,
-  # or nil. `requests` maps the call id of each open `item/tool/call` to
-  # its request id; `used` holds every call id of the running turn's
-  # `item/tool/call` requests, answered or not.
-  defstruct specs: [], notice: nil, requests: %{}, used: MapSet.new()
+  # `specs` are the Helyx tool specs to offer. `requests` maps the call id
+  # of each open `item/tool/call` to its request id; `used` holds every
+  # call id of the running turn's `item/tool/call` requests, answered or
+  # not.
+  defstruct specs: [], requests: %{}, used: MapSet.new()
 
   alias Helyx.HarnessIO
   alias Helyx.Message
 
-  @tools_off "the Helyx tools are off for Codex: the program did not accept the experimental API"
   # The hex digits of the tool set digest in a stored id.
   @digest_hex 16
-
-  # The tools after the program did not take `experimentalApi`.
-  def off, do: %__MODULE__{notice: @tools_off}
 
   def initialize_params([]), do: %{clientInfo: %{name: "helyx", version: "0"}}
 

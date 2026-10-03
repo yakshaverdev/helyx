@@ -59,38 +59,14 @@ defmodule Helyx.Provider.Codex.ChildThreadsTest do
     assert request(bin, 1, "turn/interrupt") == nil
   end
 
-  test "a late subAgentActivity item with another turn id keeps the child with its running turn (#244)",
+  # Only a `completed` item can come with the id of an ended turn (#226).
+  test "a subAgentActivity item of another kind with another turn id stops the provider process",
        %{bin: bin, work: work} do
     late = as_turn(agent("interacted"), "turn0")
-    fresh(bin, 1, tid(), agent("started") ++ late ++ message(tid(), "msg_1", "Waiting."))
-    {:ok, state} = connect(work)
-    {_turn, _, state} = turn_on(state)
+    fresh(bin, 1, tid(), agent("started") ++ late)
 
-    {_actions, state} =
-      pump(Codex, state, [], &Enum.any?(&1, fn a -> match?({:event, _, {:text_delta, _}}, a) end))
-
-    assert state.agents == %{@child => "turn1"}
-
-    assert {from, [{:reply, from, {:error, :agent_running}}], _state} =
-             ask(state, {:interrupt, "t1"})
-  end
-
-  test "an item with the running turn id moves a child of an earlier turn to the running turn, and a late item of the earlier turn does not move it back (#244)",
-       %{bin: bin, work: work} do
-    fresh(bin, 1, tid(), agent("started") ++ reply(tid(), "Spawned."))
-    asked = as_turn(message(tid(), "msg_2", "Asked."), "turn2")
-    later = as_turn(agent("interacted"), "turn2") ++ agent("interrupted") ++ asked
-    on(bin, 1, "turn/start", as_turn(turn(tid(), []), "turn2") ++ later, "", 2)
-    {:ok, state} = connect(work)
-    {_turn, _, state} = turn_on(state)
-    {_actions, state} = pump(Codex, state, [], &turn_ended?/1)
-    {_turn, _, state} = turn_on(state, "t2")
-
-    {_actions, state} =
-      pump(Codex, state, [], &Enum.any?(&1, fn a -> match?({:event, _, {:text_delta, _}}, a) end))
-
-    assert {from, [{:reply, from, {:error, :agent_running}}], _state} =
-             ask(state, {:interrupt, "t2"})
+    assert List.last(run_direct([Message.user("go")], work)) ==
+             {:stop, :item_of_ended_turn}
   end
 
   test "a child thread that starts after the interrupt stops the provider process at the turn's end",

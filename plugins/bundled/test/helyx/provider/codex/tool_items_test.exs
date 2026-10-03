@@ -1,9 +1,9 @@
 defmodule Helyx.Provider.Codex.ToolItemsTest do
-  # Tool items: open items of other types, items that run together, and cut results.
+  # Tool items: open items of other types, items that run together, their order, and cut
+  # results.
   use ExUnit.Case, async: true
 
   import Helyx.Test.CodexFake
-  import Helyx.Test.Events
 
   alias Helyx.Message
 
@@ -26,18 +26,6 @@ defmodule Helyx.Provider.Codex.ToolItemsTest do
 
     # The stop drops the events of its chunk.
     assert {:stop, :tool_running} = List.last(run_direct([Message.user("go")], work))
-  end
-
-  test "a completion of an open tool item with another type stops the provider process",
-       %{bin: bin, work: work} do
-    fresh(bin, 1, tid(), [
-      started(tid(), command("exec-1", %{status: "inProgress"})),
-      completed(tid(), %{search() | id: "exec-1"}),
-      turn_end(tid(), "completed")
-    ])
-
-    assert {:stop, {:malformed, "item/completed"}} =
-             List.last(run_direct([Message.user("go")], work))
   end
 
   # Codex can run tool items side by side: the message of both calls
@@ -66,6 +54,7 @@ defmodule Helyx.Provider.Codex.ToolItemsTest do
     big = String.duplicate("x\n", 3_000)
 
     fresh(bin, 1, tid(), [
+      started(tid(), command("a", %{status: "inProgress"})),
       completed(tid(), command("a", %{done() | aggregatedOutput: big})),
       turn_end(tid(), "completed")
     ])
@@ -76,100 +65,34 @@ defmodule Helyx.Provider.Codex.ToolItemsTest do
     assert text =~ "[truncated: showing lines 1001-3000 of 3000]"
   end
 
-  # A message that closes while a call of the message before it still
-  # runs waits for that call's result, so the session does not abort it.
-  test "a message that closes before an earlier call's result waits for it",
-       %{bin: bin, work: work} = ctx do
-    lines = [
+  # The session would give "b" `aborted` at the second `message_end`
+  # (#365).
+  test "a message that closes while a call of a closed message runs stops the provider process",
+       %{bin: bin, work: work} do
+    fresh(bin, 1, tid(), [
       started(tid(), command("a", %{status: "inProgress"})),
       started(tid(), command("b", %{status: "inProgress"})),
       completed(tid(), command("a", done())),
-      delta(tid(), "msg_x", "x"),
       started(tid(), command("d", %{status: "inProgress"})),
-      completed(tid(), command("d", done())),
-      completed(tid(), command("b", done())),
-      turn_end(tid(), "completed")
-    ]
+      completed(tid(), command("d", done()))
+    ])
 
-    fresh(bin, 1, tid(), lines)
-    fresh(bin, 2, tid(), lines)
-
-    assert [
-             {:resume, tid(), 0},
-             {:tool_call, %{id: "a"}},
-             {:tool_call, %{id: "b"}},
-             {:message_end, :tool_use, _},
-             {:tool_result, "a", {:ok, "out"}},
-             {:text_delta, "x"},
-             {:tool_call, %{id: "d"}},
-             {:tool_result, "b", {:ok, "out"}},
-             {:message_end, :tool_use, _},
-             {:tool_result, "d", {:ok, "out"}},
-             {:done, _}
-           ] = run_direct([Message.user("go")], work)
-
-    # The same run in a session: every real result joins the transcript,
-    # each before the next message.
-    events = ctx |> start() |> prompt("go")
-
-    assert [{"a", "out"}, {"b", "out"}, {"d", "out"}] =
-             for(
-               %{message: m} <- of_type(events, :tool_execution_end),
-               do: {m.tool_call_id, Message.text(m)}
-             )
-
-    assert [
-             %Message{role: :user},
-             %Message{role: :assistant, content: [%{id: "a"}, %{id: "b"}]},
-             %Message{role: :assistant, content: [%Message.Text{text: "x"}, %{id: "d"}]},
-             # The session closes the turn with an empty message when the
-             # turn ends right after a result (as before this change).
-             %Message{role: :assistant, content: [], stop_reason: :end_turn}
-           ] = messages(events)
+    # The stop drops the events of its chunk.
+    events = run_direct([Message.user("go")], work)
+    assert {:stop, {:malformed, "item/completed"}} = List.last(events)
+    refute Enum.any?(events, &match?({:tool_result, "d", _}, &1))
   end
 
-  # A result of a held message must not wait behind a later held message.
-  test "a held result goes before a later message's end", %{bin: bin, work: work} = ctx do
-    lines = [
-      started(tid(), command("a", %{status: "inProgress"})),
-      started(tid(), command("b", %{status: "inProgress"})),
-      completed(tid(), command("b", done())),
-      started(tid(), command("c", %{status: "inProgress"})),
-      started(tid(), command("e", %{status: "inProgress"})),
-      completed(tid(), command("c", done())),
-      started(tid(), command("d", %{status: "inProgress"})),
-      completed(tid(), command("d", done())),
-      completed(tid(), command("e", done())),
-      completed(tid(), command("a", done())),
-      delta(tid(), "msg_y", "ok"),
-      turn_end(tid(), "completed")
-    ]
+  test "a completion of a tool item with no start stops the provider process",
+       %{bin: bin, work: work} do
+    fresh(bin, 1, tid(), [completed(tid(), command("a", done()))])
 
-    fresh(bin, 1, tid(), lines)
-    fresh(bin, 2, tid(), lines)
+    assert [{:resume, tid(), 0}, {:stop, {:malformed, "item/completed"}}] =
+             run_direct([Message.user("go")], work)
+  end
 
-    assert [
-             {:resume, tid(), 0},
-             {:tool_call, %{id: "a"}},
-             {:tool_call, %{id: "b"}},
-             {:message_end, :tool_use, _},
-             {:tool_result, "b", _},
-             {:tool_call, %{id: "c"}},
-             {:tool_call, %{id: "e"}},
-             {:tool_result, "a", _},
-             {:message_end, :tool_use, _},
-             {:tool_result, "c", _},
-             {:tool_result, "e", _},
-             {:tool_call, %{id: "d"}},
-             {:message_end, :tool_use, _},
-             {:tool_result, "d", _},
-             {:text_delta, "ok"},
-             {:done, _}
-           ] = run_direct([Message.user("go")], work)
-
-    events = ctx |> start() |> prompt("go")
-
-    assert ["out", "out", "out", "out", "out"] =
-             for(%{message: m} <- of_type(events, :tool_execution_end), do: Message.text(m))
+  test "an exit during a turn stops the provider process", %{bin: bin, work: work} do
+    fresh(bin, 1, tid(), [started(tid(), command("a", %{status: "inProgress"}))], "exit 3\n")
+    assert {:stop, {:codex_exit, 3}} = List.last(run_direct([Message.user("go")], work))
   end
 end

@@ -4,11 +4,9 @@ defmodule Helyx.Provider.Codex.CommandsTest do
 
   import Helyx.Test.CodexFake
   import Helyx.Test.Events
-  import Helyx.Test.HarnessDriver
   import Helyx.Test.OSHelpers
 
   alias Helyx.{HarnessIO, Message, Session}
-  alias Helyx.Provider.Codex
 
   @moduletag :tmp_dir
   setup {Helyx.Test.CodexFake, :setup_fake}
@@ -175,41 +173,6 @@ defmodule Helyx.Provider.Codex.CommandsTest do
 
       assert run_direct([Message.user("go")], work) ==
                [{:resume, tid(), 0}, {:stop, {:malformed, "item/started"}}]
-    end
-  end
-
-  test "a second item/started of a tool item stops the provider process, and the call goes out once",
-       %{bin: bin, work: work} do
-    open = started(tid(), command("exec-1", %{status: "inProgress"}))
-    done = completed(tid(), command("exec-1", done()))
-
-    # The first lines, then a second start after the call went out: while
-    # the item is open, after its completion, and after a completion with
-    # no start. One program run for each.
-    cases = [{[open], open}, {[open, done], open}, {[done], open}]
-
-    for {{first, again}, n} <- Enum.with_index(cases, 1) do
-      fresh(bin, n, tid(), first, after_go(bin, "again.#{n}", [again]))
-      File.rm_rf!(Path.join(bin, "go"))
-
-      {:ok, state} = connect(work)
-
-      {_from, actions, state} =
-        ask(state, {:turn, "t1", %Helyx.Context{messages: [Message.user("go")]}})
-
-      {actions, state} =
-        pump(
-          Codex,
-          state,
-          actions,
-          &Enum.any?(&1, fn a -> match?({:event, _, {:tool_call, _}}, a) end)
-        )
-
-      go(bin)
-      {actions, _state} = pump(Codex, state, actions, fn _ -> false end)
-
-      assert {:stop, {:malformed, "item/started"}} = List.last(actions)
-      assert [%{id: "exec-1"}] = for({:event, _, {:tool_call, call}} <- actions, do: call)
     end
   end
 

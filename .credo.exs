@@ -24,7 +24,7 @@
                  {622,
                   "the GenServer callbacks and the turn and wait transitions of one session process"},
                "plugins/bundled/lib/helyx/provider/codex.ex" =>
-                 {608,
+                 {532,
                   "the Codex turn, thread, interrupt, and steer state over one JSON-RPC id table"},
                "plugins/bundled/lib/helyx/provider/claude_code.ex" =>
                  {573, "the Claude Code program, turn, steer, and interrupt flow"}
