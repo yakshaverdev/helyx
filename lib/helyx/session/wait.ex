@@ -2,14 +2,14 @@ defmodule Helyx.Session.Wait do
   @moduledoc false
   # The wait before the next turn can start. The session starts no turn
   # until it ends: the answer of the hands to `Hands.request_cancel/2`
-  # (`hands`), then the Helyx tool of the turn that ended (`tool`,
-  # `{turn_id, call_id}`, see `next/2`) and the interrupt of the
-  # turn (`interrupt`, `{pid, turn_id}`) with its answer (`reply`), the
-  # answer to an idle close (`idle`), the answers to the open tool start,
-  # tool result, and context requests of the turn that ended (`results`),
-  # and the `:provider_down` of a provider process that ends (`provider`).
-  # The session also holds the wait while a steer request is open (see
-  # `Helyx.Session.Queue`).
+  # (`hands`), then the `aborted` results of the open Helyx tool requests of
+  # the turn that ended (`tools`, `{turn_id, call_id}` each, see `next/2`)
+  # and the interrupt of the turn (`interrupt`, `{pid, turn_id}`) with its
+  # answer (`reply`), the answer to an idle close (`idle`), the answers to
+  # the open tool result and context requests of the turn that ended
+  # (`results`), and the `:provider_down` of a provider process that ends
+  # (`provider`). The session also holds the wait while a steer request is
+  # open (see `Helyx.Session.Queue`).
   #
   # The wait ends only when `hands`, `reply`, and `provider` are nil too, not
   # when `results` is empty: an interrupt answer other than
@@ -29,7 +29,7 @@ defmodule Helyx.Session.Wait do
     :reply,
     :idle,
     :provider,
-    :tool,
+    tools: [],
     callers: [],
     results: []
   ]
@@ -43,7 +43,7 @@ defmodule Helyx.Session.Wait do
           reply: reference() | nil,
           idle: reference() | nil,
           provider: pid() | nil,
-          tool: {String.t(), String.t()} | nil,
+          tools: [{String.t(), String.t()}],
           callers: [GenServer.from()],
           results: [reference()]
         }
@@ -53,18 +53,17 @@ defmodule Helyx.Session.Wait do
   # turn is open any more.
   @spec after_turn(Turn.t(), pid() | nil) :: t()
   def after_turn(%Turn{} = turn, pid) do
-    wait = %__MODULE__{tool: tool(turn)}
-    if pid, do: %{wait | results: List.wrap(turn.start) ++ turn.results}, else: wait
-  end
+    ids = List.wrap(turn.tool) ++ Enum.map(turn.waiting, & &1.id)
+    wait = %__MODULE__{tools: Enum.map(ids, &{turn.id, &1})}
 
-  defp tool(%Turn{tool: %{id: id}, id: turn_id}), do: {turn_id, id}
-  defp tool(_turn), do: nil
+    if pid, do: %{wait | results: turn.results}, else: wait
+  end
 
   # The interrupt of an aborted turn: only a turn that sent `{:turn, ...}`
   # gets one, from the provider process `conn` of the session.
   @spec interrupt(Turn.t(), %{pid: pid()} | nil) :: {pid(), String.t()} | nil
   def interrupt(%Turn{phase: phase, id: id}, %{pid: pid})
-      when phase in [:submitting, :submitted],
+      when phase in [:submitting, :submitted, :context],
       do: {pid, id}
 
   def interrupt(_turn, _conn), do: nil
@@ -74,17 +73,20 @@ defmodule Helyx.Session.Wait do
   # also its key in the session's `provider_ms`), `{:done,
   # callers}` when the wait ends, or `:open`.
   #
-  # The hands killed the Helyx tool of the turn, so its result is `aborted`:
-  # the answer comes after the kill and before the interrupt. The loop
-  # writes it only for a call that it confirmed at the ask, also after the
-  # turn; it answered any other call itself. Its request waits in
-  # `results`. An interrupt goes only to the provider process of its turn;
-  # one that ended before the hands answered gets none.
+  # The hands killed the Helyx tool of the turn, so each open tool request
+  # gets `aborted`: the answers come after the kill and before the
+  # interrupt, and wait in `results`. A provider process that ended gets
+  # none. An interrupt goes only to the provider process of its turn; one
+  # that ended before the hands answered gets none.
   @spec next(t(), pid() | nil) :: {:send, t(), pid(), request()} | {:done, list()} | :open
-  def next(%__MODULE__{hands: nil, tool: {turn_id, call_id}} = wait, pid) when is_pid(pid),
-    do: {:send, %{wait | tool: nil}, pid, {:tool_result, turn_id, call_id, {:error, "aborted"}}}
+  def next(%__MODULE__{hands: nil, tools: [{turn_id, call_id} | tools]} = wait, pid)
+      when is_pid(pid),
+      do:
+        {:send, %{wait | tools: tools}, pid,
+         {:tool_result, turn_id, call_id, {:error, "aborted"}}}
 
-  def next(%__MODULE__{hands: nil, tool: {_, _}} = wait, nil), do: next(%{wait | tool: nil}, nil)
+  def next(%__MODULE__{hands: nil, tools: [_ | _]} = wait, nil),
+    do: next(%{wait | tools: []}, nil)
 
   def next(%__MODULE__{hands: nil, interrupt: {pid, turn_id}} = wait, pid),
     do: {:send, %{wait | interrupt: nil, provider: pid}, pid, {:interrupt, turn_id}}
@@ -119,8 +121,8 @@ defmodule Helyx.Session.Wait do
   # An idle close: `:ok`, the program exited, and the wait goes on until
   # its `:provider_down`; `:busy`, the program stays, and the wait ends. An
   # interrupt: `:ok` keeps the provider process; any other answer ends it,
-  # and the wait goes on until its `:provider_down`. A tool start, tool
-  # result, or context only ends its request.
+  # and the wait goes on until its `:provider_down`. A tool result or a
+  # context only ends its request.
   @spec answer(t(), atom(), reference(), term()) :: t()
   def answer(%__MODULE__{idle: from} = wait, :idle_close, from, reply) do
     provider = if reply == :busy, do: nil, else: wait.provider
@@ -133,7 +135,7 @@ defmodule Helyx.Session.Wait do
   end
 
   def answer(%__MODULE__{results: results} = wait, kind, from, _reply)
-      when kind in [:tool_start, :tool_result, :context],
+      when kind in [:tool_result, :context],
       do: %{wait | results: List.delete(results, from)}
 
   def answer(%__MODULE__{} = wait, _kind, _from, _reply), do: wait

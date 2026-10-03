@@ -42,7 +42,7 @@ defmodule Helyx.Provider.ClaudeCode.Mcp do
   end
 
   # The admission (`Turn.admit/3`) records the call id first: the
-  # provider's own errors do not reach the loop, which records the rest.
+  # provider's own errors do not reach the session, which records the rest.
   def message(%{"method" => "tools/call", "id" => id} = message, request_id, state) do
     params = message["params"]
     call_id = tool_use_id(params)

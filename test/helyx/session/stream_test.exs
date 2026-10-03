@@ -34,7 +34,8 @@ defmodule Helyx.Session.StreamTest do
 
     request = {:tool_request, "c1", "upcase", %{"n" => huge()}}
 
-    assert {:send, {:tool_request, "c1", "upcase", %{"n" => @marker}}, "an integer" <> _} =
+    assert {:send, {:tool_request, %{id: "c1", name: "upcase", arguments: %{"n" => @marker}}},
+            "an integer" <> _} =
              SessionStream.check(request)
 
     # The integer at the limit passes and is not rejected.
