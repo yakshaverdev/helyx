@@ -120,6 +120,7 @@ Runs on 2026-09-26 with version `2.1.283`, `--model haiku`, in empty temporary d
 - A user line with a `uuid` gives `{"type":"command_lifecycle","command_uuid":"...","state":"queued"|"started"|"completed"}` lines. `--replay-user-messages` echoes each user line with that `uuid` and `"isReplay":true`.
 - A string `content` is accepted: `{"type":"user","message":{"role":"user","content":"text"},"parent_tool_use_id":null,"session_id":""}`.
 - `init.capabilities` lists features, for example `["interrupt_receipt_v1","interrupt_cancel_queued_v1","msg_lifecycle_v1","mcp_read_resource_v1","mcp_tool_ui_meta_v1"]`. A host can check a feature here instead of a version.
+- 2026-10-03, `claude` 2.1.287 (#366): on one process with two turns, each `init` line listed `interrupt_receipt_v1`, `interrupt_cancel_queued_v1`, `interrupt_send_now_v1`, `msg_lifecycle_v1`, `sdk_mcp_tools_list_changed`, `sdk_mcp_manifests`, `mcp_read_resource_v1`, `mcp_tool_ui_meta_v1`, and `ui_surface_v1`. Each `result` had `num_turns` 1.
 - **End of file on stdin.** When idle, the program exits with status 0 in about 0.5 s. When a turn runs with a message queued, it finishes the queued turns, writes their `result` lines, and then exits with status 0.
 
 ### A user line during a turn (verified)

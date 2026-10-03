@@ -43,12 +43,13 @@ defmodule Helyx.Provider.ClaudeCode do
     @moduledoc false
     # The program. `resume` is the harness session it resumed, or nil for
     # a fresh one with the id `session_id`. `sent?` is true once a turn was
-    # written to it. `caps` is its `init.capabilities`, nil until an `init`
-    # line. `closing` is the `from` of a close. `terminal` stops the read
-    # of stdout: `:lost`, a program that did not start
-    # (`Helyx.HarnessIO.start/5`), or a line over the cap
-    # (`Helyx.HarnessIO.lines/3`). `tasks` is the last set of live
-    # background tasks, or `:unknown` after a malformed line.
+    # written to it. `init?` is true from its first `init` line. `closing`
+    # is the `from` of a close. `terminal` stops the read of stdout:
+    # `:lost`, a program that did not start (`Helyx.HarnessIO.start/5`), an
+    # `init` without the needed capabilities, or a line over the cap
+    # (`Helyx.HarnessIO.lines/3`). `tasks` is the `tasks` value of the last
+    # `background_tasks_changed` line: only `[]` lets an idle close stop
+    # the program.
     # `notified?` is true from a `task_notification` line until the next
     # `init` or `:busy` answer: a program turn can follow it (#240).
     # `tools` are the Helyx tool specs, and `calls` the open `tools/call`
@@ -62,7 +63,6 @@ defmodule Helyx.Provider.ClaudeCode do
       :session_id,
       :port,
       :turn,
-      :caps,
       :closing,
       :terminal,
       buffer: [],
@@ -77,6 +77,10 @@ defmodule Helyx.Provider.ClaudeCode do
   end
 
   @lost "No conversation found with session ID"
+
+  # Every observed `init` lists both (research note): the interrupt needs
+  # `cancel_queued`, and the turn needs `command_lifecycle` `started`.
+  @required_caps ["interrupt_cancel_queued_v1", "msg_lifecycle_v1"]
 
   @impl true
   def id, do: "claude-code"
@@ -284,23 +288,19 @@ defmodule Helyx.Provider.ClaudeCode do
   # session with part of the history. So after a replay the interrupt also
   # waits for the start of the turn's line, which comes after the replay
   # results (research note for one replay line; inferred for more).
-  defp interrupt(%State{caps: nil} = state), do: {[], state}
+  defp interrupt(%State{init?: false} = state), do: {[], state}
   defp interrupt(%State{turn: %Turn{replay?: true}} = state), do: {[], state}
 
   defp interrupt(%State{turn: %Turn{interrupt: interrupt} = turn} = state) do
-    if "interrupt_cancel_queued_v1" in state.caps do
-      id = "interrupt_" <> turn.uuid
-      request = %{subtype: "interrupt", cancel_queued: true}
+    id = "interrupt_" <> turn.uuid
+    request = %{subtype: "interrupt", cancel_queued: true}
 
-      HarnessIO.write(
-        state,
-        Replay.line(%{type: "control_request", request_id: id, request: request})
-      )
+    HarnessIO.write(
+      state,
+      Replay.line(%{type: "control_request", request_id: id, request: request})
+    )
 
-      {[], %{state | turn: %{turn | interrupt: %{interrupt | request_id: id}}}}
-    else
-      answer_interrupt(state, {:error, :no_cancel_queued})
-    end
+    {[], %{state | turn: %{turn | interrupt: %{interrupt | request_id: id}}}}
   end
 
   # The interrupt is done when both its control response and the turn's
@@ -336,11 +336,9 @@ defmodule Helyx.Provider.ClaudeCode do
   # Output
 
   # The set of live background tasks, sent whole at each change, also
-  # between turns (research note). Only a list confirms a set.
-  defp translate(%{"type" => "system", "subtype" => "background_tasks_changed"} = line, state) do
-    tasks = if is_list(line["tasks"]), do: line["tasks"], else: :unknown
-    {[], %{state | tasks: tasks}}
-  end
+  # between turns (research note).
+  defp translate(%{"type" => "system", "subtype" => "background_tasks_changed"} = line, state),
+    do: {[], %{state | tasks: line["tasks"]}}
 
   defp translate(%{"type" => "system", "subtype" => "task_notification"}, state),
     do: {[], %{state | notified?: true}}
@@ -352,18 +350,23 @@ defmodule Helyx.Provider.ClaudeCode do
   # Helyx turn starts a program turn (#240): every user line that Helyx
   # writes belongs to a turn until its start, so the program started this
   # query by itself. A program turn has no `command_lifecycle`, so it counts
-  # at once, and its `result` ends it as a turn's does.
+  # at once, and its `result` ends it as a turn's does. An `init` without
+  # `@required_caps` stops the provider process.
   defp translate(%{"type" => "system", "subtype" => "init"} = init, state) do
     caps = if is_list(init["capabilities"]), do: init["capabilities"], else: []
-    state = %{state | init?: true, caps: caps, notified?: false}
+    missing = @required_caps -- caps
+    state = %{state | init?: true, notified?: false}
 
-    case state.turn do
-      nil ->
+    cond do
+      missing != [] ->
+        {[], %{state | terminal: {:error, {:missing_capabilities, missing}}}}
+
+      state.turn == nil ->
         id = uuid()
         turn = %Turn{id: id, uuid: id, messages: nil, program?: true}
         {[{:event, id, :turn_start}], %{state | turn: turn}}
 
-      _turn ->
+      true ->
         resume_interrupt(state)
     end
   end
@@ -422,9 +425,6 @@ defmodule Helyx.Provider.ClaudeCode do
        when is_binary(request_id),
        do: Mcp.message(message, request_id, state)
 
-  defp translate(%{"type" => "control_cancel_request", "request_id" => request_id}, state),
-    do: Mcp.cancel_request(state, request_id)
-
   # An approval is allowed with its input unchanged, because the program
   # runs with `bypassPermissions`. With no `--permission-prompt-tool`, no
   # approval comes (research note). Every other request gets an error.
@@ -449,27 +449,15 @@ defmodule Helyx.Provider.ClaudeCode do
 
   # A result before `started` of the turn's line is not the turn's: the
   # result of a replayed line, of a program turn that the program started
-  # by itself, or of the turn's own line (#246). The skip needs the program
-  # to list `msg_lifecycle_v1` in an earlier `init` line; without it the
-  # provider stops the program, because `started` can fail to come. The
-  # result of a lost session comes before any `init` and before `started`.
-  # A skipped result can also write the next held replay chunk.
+  # by itself, or of the turn's own line (#246). The result of a lost
+  # session comes before any `init` and before `started`. A skipped result
+  # can also write the next held replay chunk.
   defp translate(%{"type" => "result"} = result, state) do
     cond do
-      lost?(result, state) ->
-        {[], %{state | terminal: :lost}}
-
-      state.turn == nil ->
-        {[], state}
-
-      started?(state.turn) ->
-        turn_result(result, state)
-
-      "msg_lifecycle_v1" in (state.caps || []) ->
-        release(result, state)
-
-      true ->
-        {[], %{state | terminal: {:error, :no_msg_lifecycle}}}
+      lost?(result, state) -> {[], %{state | terminal: :lost}}
+      state.turn == nil -> {[], state}
+      started?(state.turn) -> turn_result(result, state)
+      true -> release(result, state)
     end
   end
 
@@ -505,12 +493,9 @@ defmodule Helyx.Provider.ClaudeCode do
 
   # A result before `started` while replay chunks are held answers the
   # replayed user line that ends the last written chunk, so the next chunk
-  # goes out. Only a result with `num_turns` exactly 0 and no or a null
-  # `origin` can be one: a replayed line makes no model call, and the result of a
-  # program turn has `origin` and a model call (research note, "Program
-  # turns").
-  defp release(%{"origin" => origin}, state) when origin != nil, do: {[], state}
-
+  # goes out. Only a result with `num_turns` exactly 0 can be one: a
+  # replayed line makes no model call, and a program turn makes one
+  # (research note, "Program turns").
   defp release(%{"num_turns" => 0}, %State{turn: %Turn{chunks: [next | chunks]} = turn} = state) do
     HarnessIO.write(state, next)
     {[], %{state | turn: %{turn | chunks: chunks}}}
@@ -540,12 +525,12 @@ defmodule Helyx.Provider.ClaudeCode do
   # (research note). The turn waits #{@steer_wait_ms} ms for its start,
   # then for the next `result`.
   defp turn_result(
-         %{"queued_turn_count" => 0} = result,
+         %{"queued_turn_count" => 0},
          %State{turn: %Turn{steers: steers} = turn} = state
        )
        when map_size(steers) > 0 do
     wait = turn.wait || :erlang.start_timer(@steer_wait_ms, self(), :steer_wait)
-    {[], %{state | turn: %{turn | wait: wait, held: Turn.held(result, turn)}}}
+    {[], %{state | turn: %{turn | wait: wait}}}
   end
 
   # The session closes the open assistant message at the terminal.

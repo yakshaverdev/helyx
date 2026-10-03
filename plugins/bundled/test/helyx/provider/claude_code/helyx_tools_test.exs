@@ -83,8 +83,8 @@ defmodule Helyx.Provider.ClaudeCode.HelyxToolsTest do
                "i3" => %{"id" => 1, "result" => %{"tools" => ^tools}},
                "i4" => %{"id" => 2, "result" => ^result},
                "i5" => %{"id" => 3, "error" => %{"code" => -32_601}},
-               "i6" => %{"id" => 4, "result" => ^result},
-               "i7" => %{"id" => 5, "result" => ^result},
+               "i6" => %{"id" => 4, "error" => %{"code" => -32_601}},
+               "i7" => %{"id" => 5, "error" => %{"code" => -32_601}},
                "i8" => %{"id" => 6, "result" => %{"protocolVersion" => "2025-06-18"}}
              } = answers(bin, 1)
 
@@ -240,30 +240,6 @@ defmodule Helyx.Provider.ClaudeCode.HelyxToolsTest do
 
       assert %{"c1" => %{"result" => %{}}} = answers = answers(bin, 1)
       refute Map.has_key?(answers, "m1")
-    end
-
-    test "a control_cancel_request withdraws the call and gets no answer", %{bin: bin, work: work} do
-      turn(bin, 1, 1, begin() ++ [call("m1", 2, "toolu_h1")])
-      {_actions, state} = tool_turn(work)
-
-      File.write!(
-        Path.join(bin, "out.late"),
-        j(%{type: "control_cancel_request", request_id: "m1"}) <> "\n"
-      )
-
-      File.write!(Path.join(bin, "ctl.1"), "out out.late\n")
-
-      Helyx.HarnessIO.write(state, [
-        j(%{type: "control_request", request_id: "x", request: %{subtype: "ping"}}),
-        "\n"
-      ])
-
-      {actions, state} =
-        pump(ClaudeCode, state, [], &Enum.any?(&1, fn a -> match?({:cancel_tool, _, _}, a) end))
-
-      assert [{:cancel_tool, "t1", "toolu_h1"}] = actions
-      closed(state)
-      assert answers(bin, 1) == %{}
     end
 
     test "in a session: the tool runs on the hands, and the transcript has one call and one result",

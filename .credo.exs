@@ -27,7 +27,7 @@
                  {532,
                   "the Codex turn, thread, interrupt, and steer state over one JSON-RPC id table"},
                "plugins/bundled/lib/helyx/provider/claude_code.ex" =>
-                 {573, "the Claude Code program, turn, steer, and interrupt flow"}
+                 {557, "the Claude Code program, turn, steer, and interrupt flow"}
              }
            ]}
         ],
