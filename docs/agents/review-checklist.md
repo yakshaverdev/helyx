@@ -56,7 +56,7 @@ Invariants the review axes check on every diff. Add one when a review or a PR co
 
 ## Inputs from plugins
 
-- Plugin output that breaks the contract (a provider event, action, or reply that the contract does not allow) gets one generic answer: the boundary check fails, the provider process stops, and the turn fails. No special handler, special error result, or special test per case. Bounds against resource growth and data loss are safety, not behaviour, and stay.
+- Plugin output that breaks the contract (a provider event, action, or reply that the contract does not allow) gets one generic answer: the boundary check fails, the provider process stops, and the turn fails. No special handler or special error result per case; a test checks the generic failure path. Bounds against resource growth and data loss are safety, not behaviour, and stay.
 - A case gets its own handler only with evidence that a real provider or program does it: a research note, an observed run, or a bug report. The finding names the evidence. A finding that asks for a case-specific handler of output that no real provider shows is rejected with this rule, and the review record says so. A finding that the generic failure path does not fire (the output reaches session state, or the provider process does not stop), a race between Core processes, and a broken safety bound stay findings. When a test exists only for such a case, deleting the test and its handler is a valid fix. Source: owner direction of 2026-10-03 (#360).
 - A value from a plugin is checked by shape before it reaches a process that holds state. Match the whole tuple or struct, never elements by index.
 - Providers are compiled into the node. Shape is checked; individual field values are not.
