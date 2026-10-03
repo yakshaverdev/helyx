@@ -53,7 +53,7 @@ The terminal cap at the end of `run/1` stays too. The hands cap only the crash r
 
 ## The context check (#227)
 
-The ModelContext and the Compaction plugin are outside Core, so their returns are a boundary. `run/1` builds the context with `Helyx.Session.Stream.prepare/4`, the check that #199 added for a connected turn (`docs/features/long-lived-harness.md`). So a local, an external, and a connected turn check the context in the same way.
+The ModelContext and the Compaction plugin are outside Core, so their returns are a boundary. `run/1` builds the context with `Helyx.Session.Stream.prepare/4`, the check of a connected turn (`docs/features/session-lifecycle.md`). So a local, an external, and a connected turn check the context in the same way.
 
 - The check runs after each plugin. A return passes when it is a `Helyx.Context` with exactly its three fields, a `system` that is nil or a string, and `messages` and `tools` that are lists. The check does not look into the list elements.
 - A return that fails the check ends the provider call before `provider.stream/3` with the terminal `{:error, {:bad_context, plugin}}`, where `plugin` is `:model_context` or `:compaction`. The turn fails with that reason. The reason names the plugin, never the value.

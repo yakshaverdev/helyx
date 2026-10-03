@@ -3,7 +3,7 @@ defmodule Helyx.Session.Server.Events do
   # The event stream of a session: the only writer of `seq` and
   # `subscribers` in `Helyx.Session.Server.State`. Each event gets the next
   # `seq` and goes to every subscriber; the snapshot gives the `seq` of the
-  # last event (docs/features/long-lived-harness.md). The records that the
+  # last event (docs/features/session-snapshot.md). The records that the
   # events tell of are written in `Helyx.Session.Server.Records`.
 
   alias Helyx.{Event, ModelRef}

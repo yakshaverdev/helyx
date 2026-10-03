@@ -1,7 +1,7 @@
 defmodule Helyx.Session.ProviderRequest do
   @moduledoc false
   # A request of Core to the provider process (ADR 0007,
-  # `docs/features/long-lived-harness.md`): its send with an armed kill, the
+  # `docs/features/session-lifecycle.md`, "Deadlines"): its send with an armed kill, the
   # cancel of the kill at the answer, its kind, the replies that its kind
   # takes, and the replies that end the provider process.
   #

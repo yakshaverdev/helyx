@@ -30,7 +30,7 @@ defmodule Helyx.Session do
   Until then, the session answers every client call and starts no turn.
 
   `docs/features/coding-agent.md`, section "Runtime", has the turn, the
-  queues, and the abort. `docs/features/long-lived-harness.md` has the
+  queues, and the abort. `docs/features/session-lifecycle.md` has the
   provider process and its turn. `docs/features/session-subscribers.md` has the
   subscription.
   """
@@ -296,8 +296,8 @@ defmodule Helyx.Session do
   one after the last model call, waits for the next turn, unless the turn aborts or
   fails first. A steer that Helyx cannot confirm is never sent again, and
   a `:steer_unconfirmed` event carries its text. The rules are in
-  `docs/features/long-lived-harness.md`, sections "Turn states", "Steer",
-  and "Built in #202".
+  `docs/features/session-lifecycle.md`, sections "Turn states" and
+  "Steer".
   """
   @spec steer(t(), String.t()) :: :ok | {:error, :invalid_utf8 | :queue_full | :session_not_found}
   def steer(%__MODULE__{} = session, text) when is_binary(text),

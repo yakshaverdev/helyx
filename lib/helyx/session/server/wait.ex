@@ -1,6 +1,6 @@
 defmodule Helyx.Session.Server.Wait do
   @moduledoc false
-  # The turn cleanup (docs/features/long-lived-harness.md, "Turn cleanup"):
+  # The turn cleanup (docs/features/session-lifecycle.md, "Turn end"):
   # the end of a turn, and the wait before the next turn. The wait holds
   # the answer of the hands to `Hands.request_cancel/2` (`hands`), the
   # answer to an interrupt or an idle close (`reply`), and the release of a

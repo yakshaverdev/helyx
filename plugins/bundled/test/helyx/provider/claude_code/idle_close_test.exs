@@ -105,8 +105,8 @@ defmodule Helyx.Provider.ClaudeCode.IdleCloseTest do
     :erlang.trace(pid, true, [:receive])
     [%{resume_id: id}] = of_type(prompt(session, "hello"), :provider_session)
     # A turn that starts before the session saw the end runs on the old
-    # provider process and fails (`docs/features/long-lived-harness.md`,
-    # "Built in #199"). A later call returns after the session handled it.
+    # provider process and fails (`docs/features/session-lifecycle.md`,
+    # "Current limits"). A later call returns after the session handled it.
     assert_receive {:trace, ^pid, :receive, {:provider_down, _, _}}
     :erlang.trace(pid, false, [:receive])
     assert :sys.get_state(pid).conn == nil

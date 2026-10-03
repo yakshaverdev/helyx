@@ -4,7 +4,7 @@ defmodule Helyx.Session.Server.Steering do
   # `Helyx.Session.Server.State`), its only writer: each change of the
   # queue counts emits `queue_update`, a taken steer joins the transcript,
   # and a notice is a `:steer_unconfirmed` event
-  # (docs/features/long-lived-harness.md, "Steer").
+  # (docs/features/session-lifecycle.md, "Steer").
 
   import Helyx.Session.Server.State, only: [ask: 4, provider_pid: 1]
   import Helyx.Session.Server.Events, only: [emit: 3, emit: 4]

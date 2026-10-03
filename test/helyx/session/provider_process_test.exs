@@ -1,8 +1,7 @@
 defmodule Helyx.Session.ProviderProcessTest do
   # The provider process of a connected provider (ADR 0007), driven through
-  # the session with the fake connected provider. The rows of the Bounds and
-  # Ownership tables of `docs/features/long-lived-harness.md` that #199
-  # builds each have a test here.
+  # the session with the fake connected provider, against the rules of
+  # `docs/features/session-lifecycle.md`.
   use ExUnit.Case, async: true
 
   import Helyx.Test.Events

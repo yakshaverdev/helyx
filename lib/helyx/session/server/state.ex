@@ -13,7 +13,7 @@ defmodule Helyx.Session.Server.State do
   # The state of one session process, and the requests to its provider
   # process. `Helyx.Session.Server.TurnLoop` makes the transitions of
   # `activity` and `conn`, with the turn cleanup in
-  # `Helyx.Session.Server.Wait` (docs/features/long-lived-harness.md).
+  # `Helyx.Session.Server.Wait` (docs/features/session-lifecycle.md).
 
   alias Helyx.Session.{ProviderRequest, Queue}
   alias Helyx.Session.Server.ProviderConn

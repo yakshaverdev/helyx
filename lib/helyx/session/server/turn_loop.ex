@@ -3,8 +3,8 @@ defmodule Helyx.Session.Server.TurnLoop do
   # The turn lifecycle of a session, its one owner: it matches each
   # lifecycle input to the current activity and makes the transitions of
   # `activity` and `conn` in `Helyx.Session.Server.State`
-  # (docs/features/long-lived-harness.md, "Turn states", "Turn cleanup",
-  # and "Built in #413"). The turn starts, connects its provider process,
+  # (docs/features/session-lifecycle.md, "Turn states", "Turn end",
+  # and "The wait"). The turn starts, connects its provider process,
   # prepares its context, is submitted, and ends; the wait after it lasts
   # until the hands, the open reply, and the provider process that ends are
   # done. The inputs are the client calls (`admit/3`, `abort/2`) and the
