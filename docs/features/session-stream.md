@@ -39,7 +39,7 @@ The session keeps `start_provider_call/1`, `call_provider/1`, and `start_stream/
 
 ## Which checks move, and which stay
 
-The stream module owns the checks of stream events: the event shapes, `String.valid?/1` on deltas, `Message.harness_id?/1` on harness ids, `Message.cap_integers/1` and `Message.encodable?/1` on tool call arguments and usage, the stop-reason set (`Helyx.Message.stop_reasons/0`), and the harness event rules.
+The stream module owns the checks of stream events: the event shapes, `String.valid?/1` on deltas, `Message.harness_id?/1` on harness ids, `Message.big_integer?/1` and `Message.encodable?/1` on tool call arguments and usage, the stop-reason set (`Helyx.Message.stop_reasons/0`), and the harness event rules.
 
 Some input reaches the session with no stream event. These checks stay at their boundary:
 
@@ -66,7 +66,7 @@ No new input, buffer, or wait. These rows of `docs/features/coding-agent.md` kee
 
 | What | Bound | Over the bound |
 | ---- | ----- | -------------- |
-| integer in tool call arguments and in usage | 100 digits (`Helyx.Message.cap_integers/1`) | the integer is replaced; a call with a replaced integer is rejected with an error result |
+| integer in tool call arguments and in usage | 100 digits (`Helyx.Message.big_integer?/1`) | a call goes on with arguments `%{}` and is rejected with an error result; a usage fails the turn as a malformed event (#435) |
 | stream event shape | the shapes of `Helyx.Provider` | the turn fails with `{:bad_stream_event, event}` |
 | harness tool result text | #121 changed this row: the provider cuts the text (`Helyx.Text.truncate/2`, `:tail`), and `Helyx.Session.Stream` checks 65,536 bytes | See the two rows "Harness tool result text" of `docs/features/coding-agent.md` |
 

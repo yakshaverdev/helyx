@@ -61,11 +61,11 @@ defmodule Helyx.Session.Stream do
   that are not a JSON object), the reason that it must not run, or nil.
   A checked tool call is `{:tool_call, call, bytes}`, with the bytes of
   the JSON encode of its id, name, and arguments;
-  `{:terminal, terminal}` for a `done` or an `error` event, with the
-  integer cap and ready to send; and `{:bad, error}` for a malformed
-  event. Arguments or a usage that are a struct are malformed:
-  `cap_integers/1` can turn a struct into a string, and the session file
-  needs a plain map. A delta or a tool call that is not valid UTF-8 is
+  `{:terminal, terminal}` for a `done` or an `error` event, ready to
+  send, with the integer cap on an error reason; and `{:bad, error}` for
+  a malformed event. Arguments or a usage that are a struct are malformed:
+  the session file needs a plain map. A usage with an integer over the
+  digit limit is malformed. A delta or a tool call that is not valid UTF-8 is
   malformed: transcript text is valid from the moment it exists, so the
   file and the providers never see raw bytes. A tool call or a tool request with an
   empty id is malformed: a result names its call by the id.
@@ -90,10 +90,9 @@ defmodule Helyx.Session.Stream do
   # session needs this shape.
   def check({:done, %{stop_reason: reason, usage: usage}} = terminal)
       when reason in @stop_reasons and is_non_struct_map(usage) do
-    case capped_usage(usage) do
-      {:ok, usage} -> {:terminal, {:done, %{stop_reason: reason, usage: usage}}}
-      :error -> {:bad, malformed(terminal)}
-    end
+    if valid_usage?(usage),
+      do: {:terminal, {:done, %{stop_reason: reason, usage: usage}}},
+      else: {:bad, malformed(terminal)}
   end
 
   # The reason goes to the session, its events, and its log as it is, so it
@@ -130,37 +129,41 @@ defmodule Helyx.Session.Stream do
   def check(other), do: {:bad, malformed(other)}
 
   # The one place where tool call arguments enter the session from a
-  # provider (on resume, Session.File applies the same function). An
-  # integer over the digit limit is replaced here, before the first JSON
-  # encode, which is quadratic in the digits (#79). The transcript, the
-  # events, the session file, the tool, and the next provider request thus
-  # never hold it. A call with such an integer gets its rejection reason.
-  # An empty id is malformed: the next request names a result by the id of
-  # its call.
-  defp tool_call(%Message.ToolCall{id: id, name: name, arguments: args})
+  # provider (on resume, Session.File caps them). Arguments with an integer
+  # over the digit limit are found here, before the first JSON encode,
+  # which is quadratic in the digits (#79): the call goes on with `%{}` and
+  # its rejection. An empty id is malformed: the next request names a
+  # result by the id of its call.
+  defp tool_call(%Message.ToolCall{id: id, name: name, arguments: args} = call)
        when is_binary(id) and id != "" and is_binary(name) and is_non_struct_map(args) do
-    capped = Message.cap_integers(args)
-    # A new struct: the pattern also matches a call with one more key.
-    call = %Message.ToolCall{id: id, name: name, arguments: capped}
-    reason = if capped != args, do: @integer_reason
+    if Message.big_integer?(args) do
+      rejected(call, @integer_reason)
+    else
+      # A new struct: the pattern also matches a call with one more key.
+      checked = %Message.ToolCall{id: id, name: name, arguments: args}
 
-    # The size of the encode goes with the call: the session counts it in
-    # the bound of the open message (`Helyx.Session.Turn`), with no encode.
-    case Message.encoded_size([id, name, capped]) do
-      {:ok, bytes} -> {:send, {:tool_call, call, bytes}, reason}
-      :error -> {:bad, malformed({:tool_call, call})}
+      # The size of the encode goes with the call: the session counts it in
+      # the bound of the open message (`Helyx.Session.Turn`), with no encode.
+      case Message.encoded_size([id, name, args]) do
+        {:ok, bytes} -> {:send, {:tool_call, checked, bytes}, nil}
+        :error -> {:bad, malformed({:tool_call, checked})}
+      end
     end
   end
 
   # Arguments that did not decode to a JSON object come as their raw text.
   # The text is dropped here, so the transcript, the file, and the error
-  # result never hold it: the call goes on with `%{}` and its rejection.
-  defp tool_call(%Message.ToolCall{arguments: args} = call) when is_binary(args) do
-    with {:send, event, nil} <- tool_call(%{call | arguments: %{}}),
-         do: {:send, event, @not_object_reason}
-  end
+  # result never hold it.
+  defp tool_call(%Message.ToolCall{arguments: args} = call) when is_binary(args),
+    do: rejected(call, @not_object_reason)
 
   defp tool_call(call), do: {:bad, malformed({:tool_call, call})}
+
+  # A call that must not run goes on with `%{}` and its rejection reason.
+  defp rejected(call, reason) do
+    with {:send, event, nil} <- tool_call(%{call | arguments: %{}}),
+         do: {:send, event, reason}
+  end
 
   # The events that close a message, carry a result, a resume id, or a
   # taken steer. A message end is checked like the
@@ -171,10 +174,7 @@ defmodule Helyx.Session.Stream do
   # result, as the hands are for a tool of the session.
   defp provider_event({:message_end, reason, usage} = event)
        when reason in @stop_reasons and is_non_struct_map(usage) do
-    case capped_usage(usage) do
-      {:ok, usage} -> {:ok, {:message_end, reason, usage}}
-      :error -> malformed(event)
-    end
+    if valid_usage?(usage), do: {:ok, {:message_end, reason, usage}}, else: malformed(event)
   end
 
   # The session uses the id only to find an open call, so an id that is
@@ -187,9 +187,8 @@ defmodule Helyx.Session.Stream do
   end
 
   defp provider_event({:resume, id, cut} = event) when is_integer(cut) and cut >= 0 do
-    # No integer over the digit limit reaches the session (see
-    # `Helyx.Message.cap_integers/1`).
-    if Message.resume_id?(id) and Message.cap_integers(cut) == cut,
+    # No integer over the digit limit reaches the session.
+    if Message.resume_id?(id) and not Message.big_integer?(cut),
       do: {:ok, event},
       else: malformed(event)
   end
@@ -201,11 +200,9 @@ defmodule Helyx.Session.Stream do
   # The error holds the size, never the text.
   defp too_large(text), do: {:tool_result_too_large, byte_size(text), @max_tool_result_bytes}
 
-  # The usage gets the same encodes as the arguments, so the same cap.
-  defp capped_usage(usage) do
-    usage = Message.cap_integers(usage)
-    if Message.encodable?(usage), do: {:ok, usage}, else: :error
-  end
+  # The usage gets the same encodes as the arguments, so the same digit
+  # limit, checked before the encode.
+  defp valid_usage?(usage), do: not Message.big_integer?(usage) and Message.encodable?(usage)
 
   @doc "The error text of a tool call that does not run, from its rejection reason."
   @spec not_run(String.t()) :: String.t()

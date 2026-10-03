@@ -123,6 +123,7 @@ defmodule Helyx.Test.Provider do
   #   "bad_args"   a tool call whose arguments the file format cannot hold
   #   "recover"    a first turn the file cannot hold, then a clean "again" turn
   #   "wide"       a delta tuple with an extra element
+  #   "wide_usage" done with an integer over the digit limit in the usage
   #   "tools"      the names of the tools in the context, as text
   #   "system"     the system prompt in the context, as text
   #   "bad_call"   a tool call whose name is not a string
@@ -256,14 +257,14 @@ defmodule Helyx.Test.Provider do
   # Six calls: an integer of 400,000 digits nested in the arguments, a good
   # call whose struct has one more key with the large integer, the largest
   # permitted integer (100 digits), a good call, the large integer as a map key, and the large integer in a struct
-  # that JSON encodes. After the results, the usage and one more key of the
-  # `:done` map hold the large integer.
+  # that JSON encodes. After the results, one more key of the `:done` map
+  # holds the large integer.
   def stream("big_int", %Helyx.Context{messages: messages}, _opts) do
     huge = huge()
 
     if last_result?(messages) do
       [text, {:done, done}] = echo_results(messages)
-      {:ok, [text, {:done, Map.put(%{done | usage: %{input: huge, output: 3}}, :extra, huge)}]}
+      {:ok, [text, {:done, Map.put(%{done | usage: %{input: 2, output: 3}}, :extra, huge)}]}
     else
       {:ok,
        [
@@ -337,6 +338,9 @@ defmodule Helyx.Test.Provider do
   def stream("wide_int", _context, _opts), do: {:ok, [{:text_delta, "hello", huge()}]}
   def stream("error_int", _context, _opts), do: {:ok, [{:error, {:oops, huge()}}]}
   def stream("refuse_int", _context, _opts), do: {:error, {:oops, huge()}}
+
+  def stream("wide_usage", _context, _opts),
+    do: {:ok, [{:done, %{stop_reason: :end_turn, usage: %{input: huge()}}}]}
 
   # A struct in place of the usage map.
   def stream("struct_usage", _context, _opts) do
