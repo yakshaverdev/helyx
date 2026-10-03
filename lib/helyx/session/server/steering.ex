@@ -7,10 +7,10 @@ defmodule Helyx.Session.Server.Steering do
   # (docs/features/long-lived-harness.md, "Steer").
 
   import Helyx.Session.Server.State, only: [ask: 4, provider_pid: 1]
-  import Helyx.Session.Server.Record, only: [emit: 3, emit: 4]
+  import Helyx.Session.Server.Events, only: [emit: 3, emit: 4]
 
   alias Helyx.Session.{Id, Queue, Turn}
-  alias Helyx.Session.Server.{Messages, ProviderConn, State}
+  alias Helyx.Session.Server.{ProviderConn, Records, State}
 
   # Returns the reply to the client and the state.
   def queue(%State{} = state, key, text) do
@@ -32,7 +32,7 @@ defmodule Helyx.Session.Server.Steering do
   # Returns their texts.
   def append_steers(%State{} = state) do
     {steers, queue} = Queue.drain_steers(state.queue)
-    state = Enum.reduce(steers, state, &Messages.append_user(&2, &1))
+    state = Enum.reduce(steers, state, &Records.append_user(&2, &1))
     {steers, put(state, {queue, []})}
   end
 
@@ -87,7 +87,7 @@ defmodule Helyx.Session.Server.Steering do
     if counts == Queue.counts(old), do: state, else: emit(state, :queue_update, counts)
   end
 
-  defp effect({:take, text}, state), do: Messages.take_steer(state, text)
+  defp effect({:take, text}, state), do: Records.take_steer(state, text)
 
   defp effect({:notice, turn_id, text}, state),
     do: emit(state, turn_id, :steer_unconfirmed, %{text: text})

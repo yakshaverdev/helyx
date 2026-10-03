@@ -46,7 +46,7 @@ Invariants the review axes check on every diff. Add one when a review or a PR co
 - A failure in a turn never crashes the session. The turn fails, the session accepts the next prompt.
 - A message from a Task that is no longer current never touches the session.
 - A stream that ends without a terminal event fails the turn.
-- A partial assistant message with text only from a failed or aborted turn is not added to the transcript. One with a tool call is added with stop `:tool_use`, and its calls get `aborted` results (#385).
+- A partial assistant message from a failed or aborted turn is added to the transcript. One with text only has stop `:aborted` or `:error` (#432); one with a tool call has stop `:tool_use`, and its calls get `aborted` results (#385). A provider cannot send `:aborted` or `:error` (`Helyx.Session.Stream`).
 - An id of outside state (a harness session, a remote job) is reused only when that state has received everything it needs, for example the whole replay. The failure path builds the table of the id's life (stored, first use, completed) crossed with abort, steer, failure, a Task crash, and a restart, and tests each cell. Source: the Codex round 1 finding of #10.
 
 ## Plugins and Core

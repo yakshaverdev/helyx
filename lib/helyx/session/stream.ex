@@ -6,7 +6,9 @@ defmodule Helyx.Session.Stream do
 
   alias Helyx.Message
 
-  @stop_reasons Message.stop_reasons()
+  # `:aborted` and `:error` are the stop reasons of a turn that the session
+  # cut; a provider does not send them.
+  @stop_reasons Message.stop_reasons() -- [:aborted, :error]
 
   # A provider cuts each tool result (`Helyx.Provider`), as a tool does. Every
   # output of that cut is at most 51,201 bytes of lines and a notice of less
@@ -81,8 +83,8 @@ defmodule Helyx.Session.Stream do
 
   def check({:tool_call, call}), do: tool_call(call)
 
-  # The stop reason set is closed (`Message.stop_reasons/0`), and the
-  # session file holds only JSON. A terminal whose stop reason is outside
+  # The stop reason set is closed (`@stop_reasons`), and the session file
+  # holds only JSON. A terminal whose stop reason is outside
   # the set, or whose usage the file cannot encode, fails the turn here,
   # before the message exists, instead of raising in persist and silently
   # turning persistence off for the rest of the session. A new plain map:

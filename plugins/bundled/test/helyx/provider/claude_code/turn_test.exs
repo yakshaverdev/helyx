@@ -330,7 +330,7 @@ defmodule Helyx.Provider.ClaudeCode.TurnTest do
       turn(bin, 2, 1, reply("Next."))
 
       session = start(ctx)
-      [%{resume_id: id}] = of_type(prompt(session, "hello"), :provider_session)
+      prompt(session, "hello")
       :ok = Session.prompt(session, "wait")
       collect_until(:message_update)
       pid = wait_for_pid(pidfile)
@@ -344,7 +344,8 @@ defmodule Helyx.Provider.ClaudeCode.TurnTest do
       collect_until(:agent_end)
 
       assert [%{stop_reason: :end_turn}] = of_type(prompt(session, "next"), :agent_end)
-      assert "--resume=#{id}" in args(bin, 2)
+      # The abort cut the text-only partial, so the next turn replays (#432).
+      refute Enum.any?(args(bin, 2), &String.starts_with?(&1, "--resume"))
     end
   end
 

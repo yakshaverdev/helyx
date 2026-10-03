@@ -36,11 +36,11 @@ defmodule Helyx.Session.TranscriptTest do
     end
   end
 
-  describe "abort_unanswered/2" do
+  describe "repair/2" do
     defp aborted(id), do: Message.tool_result(call(id), {:error, "aborted"})
 
     defp abort(transcript) do
-      {transcript, sessions} = Transcript.abort_unanswered(transcript, %{})
+      {transcript, sessions} = Transcript.repair(transcript, %{})
       assert sessions == %{}
       transcript
     end
@@ -58,7 +58,7 @@ defmodule Helyx.Session.TranscriptTest do
       ]
 
       sessions = %{"early" => {"e", 1}, "at" => {"t", 2}, "late" => {"l", 4}, "end" => {"n", 5}}
-      {answered, shifted} = Transcript.abort_unanswered(transcript, sessions)
+      {answered, shifted} = Transcript.repair(transcript, sessions)
 
       assert shifted == %{
                "early" => {"e", 1},
@@ -134,7 +134,7 @@ defmodule Helyx.Session.TranscriptTest do
       # 3 is after the stray result, 5 is after the insert point, 6 is after
       # the result that follows a later message.
       sessions = %{"a" => {"a", 2}, "b" => {"b", 3}, "c" => {"c", 5}, "d" => {"d", 6}}
-      {repaired, shifted} = Transcript.abort_unanswered(transcript, sessions)
+      {repaired, shifted} = Transcript.repair(transcript, sessions)
 
       assert repaired == [
                Message.user("hi"),
@@ -215,6 +215,15 @@ defmodule Helyx.Session.TranscriptTest do
 
       other = transcript ++ [assistant([], "fake/echo")]
       assert Transcript.resumable(other, %{"claude-code" => {"h1", 0}}, "claude-code") == nil
+    end
+
+    test "does not resume when an abort or a failure cut the last assistant message" do
+      sessions = %{"claude-code" => {"h1", 1}}
+
+      for stop <- [:aborted, :error] do
+        cut = [Message.user("a"), assistant([]), %{assistant([]) | stop_reason: stop}]
+        assert Transcript.resumable(cut, sessions, "claude-code") == nil
+      end
     end
 
     test "does not resume after an assistant message with no model" do

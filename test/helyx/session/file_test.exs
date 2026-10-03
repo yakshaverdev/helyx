@@ -592,7 +592,7 @@ defmodule Helyx.Session.FileTest do
     assert_raise FunctionClauseError, fn ->
       Session.File.append_message(file, %Message{
         role: :assistant,
-        stop_reason: :aborted,
+        stop_reason: :stop_sequence,
         content: []
       })
     end

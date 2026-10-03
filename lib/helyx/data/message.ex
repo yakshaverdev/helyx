@@ -94,11 +94,13 @@ defmodule Helyx.Message do
     }
   end
 
-  # A closed set: a provider normalizes its wire protocol into it, the
-  # session guards stream events with it, and the session file encodes it.
-  # A session file reader decodes a stop reason outside the set as nil, so
-  # an older reader reads a new stop reason as no stop reason.
-  @stop_reasons [:end_turn, :tool_use, :max_tokens]
+  # A closed set: the session file encodes it. The session closes the
+  # partial message of an aborted or a failed turn with `:aborted` or
+  # `:error`; a provider normalizes its wire protocol into the rest, and
+  # the session guards stream events with the rest. A session file reader decodes a stop
+  # reason outside the set as nil, so an older reader reads a new stop
+  # reason as no stop reason.
+  @stop_reasons [:end_turn, :tool_use, :max_tokens, :aborted, :error]
 
   # The bundled providers give a UUID as the resume id, alone or with a
   # short suffix; 256 bytes leaves room for the ids of another provider.

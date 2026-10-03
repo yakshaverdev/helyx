@@ -87,6 +87,13 @@ defmodule Helyx.Session.StreamTest do
     assert checked == Map.delete(done, :extra)
   end
 
+  test "a provider cannot send the stop reasons of a cut turn" do
+    for stop <- [:aborted, :error] do
+      assert {:bad, {:error, _}} = SessionStream.check({:done, %{stop_reason: stop, usage: %{}}})
+      assert {:bad, {:error, _}} = SessionStream.check({:message_end, stop, %{}})
+    end
+  end
+
   test "a resume event passes" do
     event = {:resume, "a", 0}
     assert {:send, ^event, nil} = SessionStream.check(event)
