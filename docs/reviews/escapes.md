@@ -168,3 +168,4 @@ One row per ticket that `/orchestrate` merged. An escape is a confirmed Codex fi
 | 2026-10-03 | #413 | r1: 0 | gate r1 (Codex): 0 | none |
 | 2026-10-03 | #414 | r1: 0 | gate r1 (Codex): 0 | none |
 | 2026-10-03 | #408 | r1: 1 reproduced (S3 premise false: kitty ESC [ 1 u reaches the composer as U+0001 with no modifier); r2: 0; r3: 0 | gate r1 (Codex): 0 | a removal ticket based on a review-only origin names the input path that it claims is unreachable, and the worker probes that path before removal |
+| 2026-10-03 | #415 | r1: 0 | gate r1 (Codex): 0 | none |
