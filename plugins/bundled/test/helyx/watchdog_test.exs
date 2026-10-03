@@ -21,11 +21,10 @@ defmodule Helyx.WatchdogTest do
     end
   end
 
-  # Gives the go-ahead and reads up to `text`, which starts with the start
-  # line. Returns what came after it.
-  defp go(port, acc, text \\ "nonce 1\n") do
-    true = Port.command(port, "go\n")
-    await(port, acc, text)
+  # Gives the go-ahead. Returns `acc`, the output so far.
+  defp go(port, acc) do
+    true = Port.command(port, "\n")
+    acc
   end
 
   defp await(port, acc, text) do
@@ -67,7 +66,7 @@ defmodule Helyx.WatchdogTest do
   test "stdin ends first: the group is killed" do
     port = open("echo ready; sleep 30")
     {group, ""} = read_marker(port)
-    assert "" = go(port, "", "nonce 1\nready\n")
+    assert "" = await(port, go(port, ""), "ready\n")
 
     Port.close(port)
     assert group_gone_within?(group)
@@ -76,7 +75,7 @@ defmodule Helyx.WatchdogTest do
   test "a command that ignores TERM is killed after the grace period" do
     port = open("trap '' TERM; echo ready; sleep 30")
     {group, ""} = read_marker(port)
-    assert "" = go(port, "", "nonce 1\nready\n")
+    assert "" = await(port, go(port, ""), "ready\n")
 
     Port.close(port)
     assert group_gone_within?(group)
@@ -95,7 +94,7 @@ defmodule Helyx.WatchdogTest do
     {exe, options} = Helyx.Watchdog.launcher(argv, File.cwd!(), "nonce", -1, @load_grace_ms)
     port = Port.open({:spawn_executable, exe}, options)
     {group, ""} = read_marker(port)
-    assert "" = go(port, "", "nonce 1\nready\n")
+    assert "" = await(port, go(port, ""), "ready\n")
 
     Port.close(port)
     Process.sleep(1_000)
@@ -103,19 +102,19 @@ defmodule Helyx.WatchdogTest do
     assert group_gone_within?(group, 20_000)
   end
 
-  test "a failed exec: the start line, then the report under the go-ahead word (issue #70)" do
+  test "a failed exec: the reason and exit status 127" do
     port = open("echo ran", "/nonexistent/bash")
     {_group, rest} = read_marker(port)
 
-    assert {"cannot run /nonexistent/bash: No such file or directory\n", 0} =
-             collect(port, go(port, rest, "nonce 1\ngo 0\n"))
+    assert {"cannot run /nonexistent/bash: No such file or directory\n", 127} =
+             collect(port, go(port, rest))
   end
 
-  test "a held child that is stopped does not hold the kill on a closed port (issue #70)" do
+  test "a held child that is stopped does not hold the kill on a closed port" do
     port = open("echo ran")
     {group, ""} = read_marker(port)
     {_, 0} = signal_group("STOP", group)
-    true = Port.command(port, "go\n")
+    true = Port.command(port, "\n")
 
     Port.close(port)
     assert group_gone_within?(group)
@@ -132,22 +131,12 @@ defmodule Helyx.WatchdogTest do
     refute File.exists?(ran)
   end
 
-  # A cwd that is not text makes `Port.open` raise `ArgumentError`. Like
-  # `SystemLimitError` at the port limit, it has no `:original` field.
-  test "a spawn that raises a normalized error returns a result that names perl" do
-    assert {:failed, "perl did not start: " <> reason} =
-             Helyx.Watchdog.start(["true"], 123, nil)
-
-    # The spawn ran: a failed perl lookup would pass the match above.
-    refute reason == "not found on PATH"
-  end
-
   describe "input (#10)" do
     test "open input: a command that does not read cannot stop the kill on a closed port" do
       port = open("echo ready; sleep 30", "bash", -2)
       {group, ""} = read_marker(port)
-      true = Port.command(port, ["go\n", :binary.copy("x", 1_000_000)])
-      assert "" = await(port, "", "nonce 1\nready\n")
+      true = Port.command(port, ["\n", :binary.copy("x", 1_000_000)])
+      assert "" = await(port, "", "ready\n")
 
       Port.close(port)
       assert group_gone_within?(group)
@@ -156,15 +145,15 @@ defmodule Helyx.WatchdogTest do
     test "open input: a command that closes its stdin early does not end the watchdog" do
       port = open("exec 0<&-; sleep 0.2; echo still", "bash", -2)
       {_group, rest} = read_marker(port)
-      true = Port.command(port, ["go\n", :binary.copy("x", 1_000_000)])
-      assert {"nonce 1\nstill\n", 0} = collect(port, rest)
+      true = Port.command(port, ["\n", :binary.copy("x", 1_000_000)])
+      assert {"still\n", 0} = collect(port, rest)
     end
 
     test "open input: parts arrive until a NUL byte, then the command reads end of file" do
       argv = ["bash", "-c", "cat; echo done"]
-      assert {:started, port, "", nonce, _go} = Helyx.Watchdog.start(argv, File.cwd!(), :open)
+      assert {:started, port, ""} = Helyx.Watchdog.start(argv, File.cwd!(), :open)
       Helyx.Watchdog.write(port, "one\n")
-      assert "" = await(port, "", "#{nonce} 1\none\n")
+      assert "" = await(port, "", "one\n")
       Helyx.Watchdog.write(port, ["two\n", <<0>>, "dropped\n"])
       assert {"two\ndone\n", 0} = collect(port, "")
     end
@@ -172,8 +161,8 @@ defmodule Helyx.WatchdogTest do
     test "open input: a closed port kills the group, with the input still open" do
       port = open("cat; sleep 30", "bash", -2)
       {group, rest} = read_marker(port)
-      true = Port.command(port, "go\nready\n")
-      assert "" = await(port, rest, "nonce 1\nready\n")
+      true = Port.command(port, "\nready\n")
+      assert "" = await(port, rest, "ready\n")
 
       Port.close(port)
       assert group_gone_within?(group)
@@ -185,8 +174,8 @@ defmodule Helyx.WatchdogTest do
       Process.flag(:trap_exit, true)
       port = open("echo ready; sleep 30", "bash", -2)
       {group, rest} = read_marker(port)
-      true = Port.command(port, "go\nready\n")
-      assert "" = await(port, rest, "nonce 1\nready\n")
+      true = Port.command(port, "\nready\n")
+      assert "" = await(port, rest, "ready\n")
 
       # The pipe takes some bytes; the watchdog's buffer takes the rest.
       true = Port.command(port, :binary.copy("x", 2 * Helyx.Watchdog.stdin_max_bytes()))
@@ -211,8 +200,8 @@ defmodule Helyx.WatchdogTest do
         Process.flag(:trap_exit, true)
         port = open("echo ready; exec sleep 30", "bash", -2)
         {group, rest} = read_marker(port)
-        true = Port.command(port, "go\n")
-        assert "" = await(port, rest, "nonce 1\nready\n")
+        true = Port.command(port, "\n")
+        assert "" = await(port, rest, "ready\n")
 
         size = Helyx.Watchdog.stdin_max_bytes() + unquote(over)
         input = :binary.part(:binary.copy(unquote(text), size), 0, size)
@@ -240,8 +229,8 @@ defmodule Helyx.WatchdogTest do
     test "open input: the cap counts the bytes not read yet, not all bytes (#196)" do
       port = open("cat", "bash", -2)
       {_group, rest} = read_marker(port)
-      true = Port.command(port, "go\n")
-      assert "" = await(port, rest, "nonce 1\n")
+      true = Port.command(port, "\n")
+      assert "" = rest
       part = :binary.copy("x", div(Helyx.Watchdog.stdin_max_bytes(), 2))
 
       for _ <- 1..3 do

@@ -141,33 +141,6 @@ defmodule Helyx.Tool.BashTest do
     end
   end
 
-  test "a watchdog killed before the go-ahead is an error, not exit code 137 (issue #70)",
-       %{tmp_dir: dir} do
-    # Stands in for the hands. The tool gives the go-ahead only after the
-    # reply to the command group, so the kill lands before it.
-    hands =
-      spawn_link(fn ->
-        watchdog =
-          receive do
-            {:"$gen_call", from, {:hold, {:watchdog, watchdog}}} ->
-              GenServer.reply(from, :ok)
-              watchdog
-          end
-
-        receive do
-          {:"$gen_call", from, {:hold, {:command, _group}}} ->
-            {_, 0} = System.cmd("kill", ["-KILL", "#{watchdog}"])
-            GenServer.reply(from, :ok)
-        end
-      end)
-
-    Process.put(:helyx_hands, hands)
-    ran = Path.join(dir, "ran")
-    assert {:error, text} = Helyx.Tool.Bash.run(%{"command" => "touch #{ran}"}, dir)
-    assert text =~ "did not start"
-    refute File.exists?(ran)
-  end
-
   test "a reason over the result limit is cut (issue #52)" do
     cwd = "/" <> String.duplicate("x", 60_000)
     assert {:error, text} = Helyx.Tool.Bash.run(%{"command" => "pwd"}, cwd)

@@ -41,7 +41,7 @@ defmodule Helyx.HarnessIO do
   # terminal error.
   def start(argv, cwd, input, state, opts \\ []) do
     case Helyx.Watchdog.start(argv, cwd, input, opts) do
-      {:started, port, _pre, _nonce, _go} ->
+      {:started, port, _pre} ->
         %{state | port: port}
 
       {:not_started, port, reason} ->
@@ -137,9 +137,8 @@ defmodule Helyx.HarnessIO do
   defp exited(_status, %{closing: from}), do: {:closed, from}
 
   # Reads a chunk of stdout: `decode` gets each complete line that is a
-  # JSON object, and the state; other lines (the watchdog's start line,
-  # perl's own text) are skipped. Once the state has a terminal, output is
-  # not read. Only the new chunk is searched for a newline, so a long line
+  # JSON object, and the state; other lines (perl's own text) are skipped.
+  # Once the state has a terminal, output is not read. Only the new chunk is searched for a newline, so a long line
   # costs one pass over its bytes. A line over the cap, with its newline in
   # this chunk or not, ends the stream with an error.
   def lines(_data, %{terminal: terminal} = state, _decode) when terminal != nil, do: {[], state}

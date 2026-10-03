@@ -130,10 +130,10 @@ defmodule Helyx.Watchdog.GroupTest do
            ]
   end
 
-  test "a group below 2 is never signalled, and an unknown handle stays held" do
+  test "a group below 2 is never signalled" do
     kill = fake_kill([])
-    handles = [{:command, 1}, {:watchdog, 0}, :other]
-    assert Group.release(handles, :cancel, deadline(100), kill: kill) == handles
+    handles = [{:command, 1}, {:watchdog, 0}, {:command, -1}]
+    assert Group.release(handles, :cancel, deadline(100), kill: kill) == []
     assert signals() == []
   end
 

@@ -83,44 +83,20 @@ defmodule Helyx.Tool.Bash do
 
   # The text of a failed start names perl at its head (see
   # `Helyx.Watchdog.start/4`), so the head is kept, with the cut of the
-  # harness providers. A start report has its reason at the tail.
+  # harness providers. The reason of a watchdog that did not fork is at the
+  # tail.
   defp result({:failed, text}), do: not_started(Helyx.HarnessIO.cap_error(text))
 
-  defp result(started) do
-    case consume(started) do
-      {:not_started, reason} -> not_started(Helyx.Text.truncate(reason, :tail))
-      {output, dropped?, status} -> {:ok, render(output, dropped?, status)}
-    end
+  defp result({:not_started, _port, reason}),
+    do: not_started(Helyx.Text.truncate(reason, :tail))
+
+  # `pre`, perl's own startup output, stays in front of the output.
+  defp result({:started, port, pre}) do
+    {output, dropped?, status} = collect(port, pre, false)
+    {:ok, render(output, dropped?, status)}
   end
 
   defp not_started(reason), do: {:error, "the command did not start: " <> reason}
-
-  defp consume({:not_started, _port, reason}), do: {:not_started, reason}
-
-  defp consume({:started, port, pre, nonce, go}),
-    do: start_report(collect(port, pre, false), pre, nonce <> " 1\n", go <> " 0\n")
-
-  # Reads the start report off the collected output (see the watchdog).
-  # `pre` is what came before the group marker, perl's own startup output.
-  # Output that was cut has lost its head, and only a command that ran
-  # writes that much: the watchdog's own text is at most `pre`, the start
-  # line, perl's warnings, and a 4,096-byte report.
-  defp start_report({_output, true, _status} = ran, _pre, _start, _failed), do: ran
-
-  defp start_report({output, false, status}, pre, start, failed) do
-    ^pre <> rest = output
-
-    case String.split(rest, failed, parts: 2) do
-      [before, reason] ->
-        {:not_started, pre <> String.replace_prefix(before, start, "") <> reason}
-
-      [^start <> body] ->
-        {pre <> body, false, status}
-
-      [_no_start_line] ->
-        {:not_started, "the command gave no start line: " <> output}
-    end
-  end
 
   defp render(output, dropped?, status) do
     text =

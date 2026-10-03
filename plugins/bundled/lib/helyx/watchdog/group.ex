@@ -2,9 +2,7 @@ defmodule Helyx.Watchdog.Group do
   @moduledoc false
   # The release of the handles of `Helyx.Watchdog`: `{:command, group}` for the
   # command's process group and `{:watchdog, os_pid}` for the watchdog, which
-  # is its own group. Returns the handles whose group still has a process,
-  # and every handle that is not one of these two forms, because nothing
-  # confirms that it is released.
+  # is its own group. Returns the handles whose group still has a process.
   #
   # Command groups go first, then the watchdogs. A watchdog is a reaper: it
   # is swept only after every command group is gone or still held, because a
@@ -35,25 +33,14 @@ defmodule Helyx.Watchdog.Group do
   def release(handles, mode, deadline, opts \\ []) do
     kill = until_deadline(deadline, Keyword.get(opts, :kill, &kill_cmd/1))
     grace = Keyword.get(opts, :grace_ms, Helyx.Watchdog.grace_ms())
-    # Two sources make the handles, and both give the shape that `valid?/1`
-    # checks: `parse_marker/2` in `Helyx.Watchdog` for a command group, and
-    # `Port.info(port, :os_pid)` for a watchdog. `group > 1` is a deliberate
-    # safety lock, not a boundary check: `kill -- -1` would signal every
-    # process the user may signal, so a group below 2 is never signalled.
-    # An unknown handle stays "still held" in the result, so it never
-    # disappears.
-    {valid, unknown} = Enum.split_with(handles, &valid?/1)
-    commands = for {:command, group} <- valid, do: group
-    watchdogs = for {:watchdog, group} <- valid, do: group
+    # `group > 1` is a deliberate safety lock: `kill -- -1` would signal
+    # every process the user may signal. No caller makes such a handle
+    # (`parse_marker/2` in `Helyx.Watchdog`, `Port.info(port, :os_pid)`).
+    commands = for {:command, group} when is_integer(group) and group > 1 <- handles, do: group
+    watchdogs = for {:watchdog, group} when is_integer(group) and group > 1 <- handles, do: group
     {commands, watchdogs} = sweep(commands, watchdogs, mode, deadline, grace, kill)
-    Enum.map(commands, &{:command, &1}) ++ Enum.map(watchdogs, &{:watchdog, &1}) ++ unknown
+    Enum.map(commands, &{:command, &1}) ++ Enum.map(watchdogs, &{:watchdog, &1})
   end
-
-  defp valid?({kind, group})
-       when kind in [:command, :watchdog] and is_integer(group) and group > 1,
-       do: true
-
-  defp valid?(_handle), do: false
 
   defp sweep(commands, watchdogs, :retry, _deadline, _grace, kill) do
     signal(commands ++ watchdogs, "KILL", kill)
