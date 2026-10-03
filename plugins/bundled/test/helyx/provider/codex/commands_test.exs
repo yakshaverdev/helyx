@@ -120,7 +120,10 @@ defmodule Helyx.Provider.Codex.CommandsTest do
     failed = Path.join(bin, "failed")
     File.write!(failed, turn_end(tid(), "failed", "usage limit") <> "\n")
     running = [started(tid(), command("exec-1", %{status: "inProgress"}))]
-    fresh(bin, 1, tid(), running, own_group_command(pidfile, ~s(cat "#{failed}")))
+    # The failure comes after `go`: the stop drops the events of its chunk,
+    # so the tool call must reach the session first (#455).
+    wait_go = ~s{while [ ! -f "$d/go" ]; do sleep 0.02; done; cat "#{failed}"}
+    fresh(bin, 1, tid(), running, own_group_command(pidfile, wait_go))
     # The failure kept the message with the command and its `aborted`
     # result (#385), so the next program resumes the thread.
     initialize(bin, 2)
@@ -128,9 +131,12 @@ defmodule Helyx.Provider.Codex.CommandsTest do
     on(bin, 2, "turn/start", turn(tid(), reply(tid(), "Back.")))
 
     session = start(ctx)
+    :ok = Session.prompt(session, "go")
+    collect_until(:message_update)
+    go(bin)
 
     assert [%{outcome: :error, error: {:provider_stop, :command_running}}] =
-             of_type(prompt(session, "go"), :turn_end)
+             of_type(collect_until(:turn_end), :turn_end)
 
     # The release ended the command before the next turn.
     refute os_alive?(wait_for_pid(pidfile))
