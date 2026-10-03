@@ -31,7 +31,7 @@ defmodule Helyx.Session.Server.Tools do
 
   defp admit(%State{activity: turn} = state, %ToolCall{id: id} = call, rejection) do
     cond do
-      # An integer over the digit limit.
+      # An integer over the digit limit, or arguments that are not a JSON object.
       rejection -> answer(state, id, {:error, Stream.not_run(rejection)})
       turn.tool == nil -> run(state, call)
       length(turn.waiting) >= @max_waiting -> answer(state, id, {:error, @too_many})

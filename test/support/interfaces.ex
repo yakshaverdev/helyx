@@ -130,10 +130,6 @@ defmodule Helyx.Test.Provider do
   #   "empty_id"   a tool call with an empty id, then done
   #   "hang"       one delta, then the stream blocks forever
   #   "transcript" every message in the context as "role:text" lines
-  #   "reject_<reason>" a rejected call with a reason of N bytes
-  #                ("bytes_N"), of 1,024 or 1,025 bytes with 2-byte characters
-  #                ("multibyte_1024", "multibyte_1025"), not valid UTF-8
-  #                ("raw"), or not text ("atom")
   #
   # The models that call tools. Unless a line says otherwise, a model calls
   # its tools until the last message is a tool result, then echoes the
@@ -144,7 +140,8 @@ defmodule Helyx.Test.Provider do
   #   "serial"     three calls to the slow tool
   #   "kill"       calls the kill tool; echoes the last message text only
   #   "binary"     calls the binary tool
-  #   "rejected"   text, one good call, and one call the provider rejects
+  #   "rejected"   text, one good call, and one call whose arguments are
+  #                raw text that is not a JSON object
   #   "abort"      three calls to the slow tool that sleep for a minute;
   #                echoes after any tool result
   #   "stuck"      one call to the hold tool: a handle whose release waits
@@ -164,7 +161,6 @@ defmodule Helyx.Test.Provider do
 
   @done {:done, %{stop_reason: :end_turn, usage: %{}}}
   @tool_use {:done, %{stop_reason: :tool_use, usage: %{}}}
-  @reject %ToolCall{id: "r", name: "upcase", arguments: %{}}
 
   # The models whose stream is a fixed list of events.
   @fixed %{
@@ -185,17 +181,9 @@ defmodule Helyx.Test.Provider do
     "harness_event" => [{:text_delta, "hi"}, {:message_end, :end_turn, %{}}, @done],
     "repeat_id" => [
       {:tool_call, %ToolCall{id: "c", name: "upcase", arguments: %{"text" => "a"}}},
-      {:tool_call, %ToolCall{id: "c", name: "upcase", arguments: %{"text" => "b"}}},
+      {:tool_call, %ToolCall{id: "c", name: "upcase", arguments: "secret"}},
       @tool_use
-    ],
-    # 512 2-byte characters, 1,024 bytes; then one more byte.
-    "reject_multibyte_1024" => [{:rejected_tool_call, @reject, String.duplicate("é", 512)}, @done],
-    "reject_multibyte_1025" => [
-      {:rejected_tool_call, @reject, String.duplicate("é", 512) <> "x"},
-      @done
-    ],
-    "reject_raw" => [{:rejected_tool_call, @reject, <<"bad", 255>>}, @done],
-    "reject_atom" => [{:rejected_tool_call, @reject, :bad}, @done]
+    ]
   }
 
   @impl true
@@ -237,12 +225,10 @@ defmodule Helyx.Test.Provider do
   end
 
   def stream("rejected", %Helyx.Context{messages: messages}, _opts) do
-    bad = %ToolCall{id: "c2", name: "upcase", arguments: %{}}
-
     echo_after(messages, [
       {:text_delta, "Trying"},
       call("c1", "upcase", %{"text" => "one"}),
-      {:rejected_tool_call, bad, "the arguments are not a valid JSON object"},
+      {:tool_call, %ToolCall{id: "c2", name: "upcase", arguments: ~s({"text": )}},
       @tool_use
     ])
   end
@@ -335,11 +321,6 @@ defmodule Helyx.Test.Provider do
     text = Enum.map_join(messages, "\n", &"#{&1.role}:#{Helyx.Message.text(&1)}")
     {:ok, [{:text_delta, text}, @done]}
   end
-
-  def stream("reject_bytes_" <> bytes, _context, _opts),
-    do:
-      {:ok,
-       [{:rejected_tool_call, @reject, String.duplicate("x", String.to_integer(bytes))}, @done]}
 
   # First turn ends with a usage the file format cannot hold; a later "again"
   # prompt ends cleanly, so a test can prove persistence survived the first.
@@ -678,7 +659,6 @@ defmodule Helyx.Test.Connected do
   #     "dup_id"  two tool calls with one id, then two results
   #     "open_call"  "dup_id" with no second result and no text after it
   #     "late_result"  a call, a text message, then the call's result
-  #     "rejected"  a rejected tool call, valid only in a Loop stream
   #
   # A steer answers :ok with no `user_message` unless the model says
   # otherwise; the "steer_" models are "hang" for a turn:
@@ -712,9 +692,6 @@ defmodule Helyx.Test.Connected do
     "neg_cut" => [{:resume, "a", -1}],
     "orphan" => [{:tool_result, "nope", {:ok, "lost"}}],
     "raw_result_id" => [{:tool_result, <<255>>, {:ok, "lost"}}],
-    "rejected" => [
-      {:rejected_tool_call, %ToolCall{id: "r", name: "read", arguments: %{}}, "bad"}
-    ],
     "late_result" => [
       {:tool_call, %ToolCall{id: "t", name: "read", arguments: %{}}},
       {:message_end, :tool_use, %{}},

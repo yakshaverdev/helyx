@@ -207,13 +207,14 @@ defmodule Helyx.Provider.OpenAI.Events do
     end
   end
 
-  # A call with bad arguments gets an error result, so the model can
-  # correct it; it does not hold the raw JSON. A call with no id fails the
-  # turn at the Core stream boundary, with good arguments or bad.
+  # Arguments that are not a JSON object go on as their raw text: Core
+  # gives the call an error result, so the model can correct it
+  # (`Helyx.Provider`). A call with no id fails the turn at the Core stream
+  # boundary, with good arguments or bad.
   defp decode_arguments(call, json) do
     case JSON.decode(json) do
       {:ok, arguments} when is_map(arguments) -> {:tool_call, %{call | arguments: arguments}}
-      _ -> {:rejected_tool_call, call, "the arguments are not a valid JSON object"}
+      _ -> {:tool_call, %{call | arguments: json}}
     end
   end
 

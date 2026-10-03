@@ -1,8 +1,4 @@
 defmodule Helyx.Provider.Loop do
-  # The reason of a rejected call: transcript text in the result
-  # "tool call not run: <reason>".
-  @max_reason_bytes 1_024
-
   @moduledoc """
   The provider callbacks of an API provider, over one model call at a time
   (`docs/features/one-provider-path.md`, "`Helyx.Provider.Loop`").
@@ -18,21 +14,16 @@ defmodule Helyx.Provider.Loop do
 
     * `{:text_delta, binary}`, `{:thinking_delta, binary}`: a delta of text
       or of thinking text
-    * `{:tool_call, Helyx.Message.ToolCall.t()}`: one complete tool call
-    * `{:rejected_tool_call, Helyx.Message.ToolCall.t(), reason}`: a call
-      that must not run, such as one whose arguments did not decode. It
-      goes into the assistant message with the arguments that decoded, or
-      `%{}`, and its result is `{:error, "tool call not run: " <> reason}`.
-      `reason` is valid UTF-8 of at most #{@max_reason_bytes} bytes and
-      never holds the raw arguments
+    * `{:tool_call, Helyx.Message.ToolCall.t()}`: one complete tool call,
+      with the arguments of `Helyx.Provider`: a map, or the raw text of
+      arguments that are not a JSON object
     * `{:notice, text}`: a notice for the user (`Helyx.Provider`)
     * `{:done, %{stop_reason: stop_reason, usage: map}}`: the call finished
     * `{:error, term}`: the call failed
 
   `opts` carry `:core`, `:session_id`, `:turn_id`, and `:cwd`. The model
   Task consumes the enumerable up to the first `done` or `error`. Any other
-  event, a `rejected_tool_call` whose reason breaks its rule, a call
-  whose id repeats in the message, or an
+  event, a call whose id repeats in the message, or an
   enumerable that halts by itself on another value, ends the provider
   process with `{:bad_stream_event, event}`; Core checks the rest as it
   checks every provider event. A stream faster than the provider process
@@ -41,10 +32,9 @@ defmodule Helyx.Provider.Loop do
 
   A turn: the helper replies `:ok` to `{:turn, ...}` and calls the model
   with the context. A done with calls sends `message_end`, then a
-  `tool_request` for every valid call of the message at once, in call
-  order; the session runs them. A rejected call has its error result from
-  the start. The results join the transcript as `tool_result` events in call
-  order, each when every call before it has its result. When every call
+  `tool_request` for every call of the message at once, in call order;
+  the session runs or rejects them. The results join the transcript as
+  `tool_result` events in call order, each when every call before it has its result. When every call
   has its result, the held steers go out as `user_message` events, then
   `{:need_context, turn_id}`, and the next model call gets the fresh
   context. A done with no calls ends the turn, unless a steer is
@@ -167,13 +157,7 @@ defmodule Helyx.Provider.Loop do
   # A message of an old model Task, or any other message.
   def info(_message, state), do: {:ok, [], state}
 
-  defp event({:tool_call, %Message.ToolCall{} = call}, state), do: call(call, nil, state)
-
-  defp event({:rejected_tool_call, %Message.ToolCall{} = call, reason} = event, state) do
-    if is_binary(reason) and byte_size(reason) <= @max_reason_bytes and String.valid?(reason),
-      do: call(call, {:error, Stream.not_run(reason)}, state),
-      else: bad(event)
-  end
+  defp event({:tool_call, %Message.ToolCall{} = call}, state), do: call(call, state)
 
   # Core checks the payload.
   defp event({tag, _} = event, state)
@@ -186,11 +170,12 @@ defmodule Helyx.Provider.Loop do
 
   # A call id names its result, so a call id that repeats in one message
   # breaks the contract, whether the session answered the first call or not.
-  defp call(call, result, state) do
+  # The reason names the call with `%{}`, as the errors of Core do.
+  defp call(call, state) do
     if Enum.any?(state.calls, fn {%{id: id}, _} -> id == call.id end),
-      do: bad({:tool_call, call})
+      do: bad({:tool_call, %{call | arguments: %{}}})
 
-    state = %{state | calls: state.calls ++ [{call, result}], content?: true}
+    state = %{state | calls: state.calls ++ [{call, nil}], content?: true}
     {:ok, [{:event, state.turn, {:tool_call, call}}], state}
   end
 
@@ -219,11 +204,10 @@ defmodule Helyx.Provider.Loop do
 
   defp finish(terminal, state), do: {:ok, [{:event, state.turn, terminal}], end_turn(state)}
 
-  # Every valid call of the message goes to the session at once, in call
-  # order.
+  # Every call of the message goes to the session at once, in call order.
   defp dispatch(actions, state) do
     requests =
-      for {call, nil} <- state.calls,
+      for {call, _} <- state.calls,
           do: {:event, state.turn, {:tool_request, call.id, call.name, call.arguments}}
 
     send_ready(actions ++ requests, state)

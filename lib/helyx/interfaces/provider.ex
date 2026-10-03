@@ -64,7 +64,12 @@ defmodule Helyx.Provider do
 
     * `{:text_delta, binary}`: a delta of assistant text
     * `{:thinking_delta, binary}`: a delta of thinking text
-    * `{:tool_call, Helyx.Message.ToolCall.t()}`: one complete tool call
+    * `{:tool_call, Helyx.Message.ToolCall.t()}`: one complete tool call.
+      `arguments` is a map, or the raw argument text (a binary) when it
+      does not decode to a JSON object. Such a call joins the transcript
+      with `%{}` and never runs: its result is `tool call not run: the
+      arguments are not a valid JSON object`. Any other `arguments` fails
+      the turn
     * `{:notice, text}`: a notice for the user, such as an error of the
       program that a later part of the turn made obsolete. The session keeps
       it out of the transcript.
@@ -86,7 +91,8 @@ defmodule Helyx.Provider do
     * `{:user_message, steer_id}`: the program took a steer. The
       session closes the open assistant message and gives `aborted` to
       every call that is still open
-    * `{:tool_request, call_id, name, arguments}`: run the Helyx tool `name`
+    * `{:tool_request, call_id, name, arguments}`: run the Helyx tool
+      `name`. `arguments` follows the rule of a `tool_call`
     * `:turn_start`: the program started a turn by itself
 
   `init/3` and every request from the session have a deadline. When the
@@ -110,7 +116,8 @@ defmodule Helyx.Provider do
           | {:tool_result, String.t(), {:ok | :error, String.t()}}
           | {:resume, String.t(), non_neg_integer()}
           | {:user_message, String.t()}
-          | {:tool_request, call_id :: String.t(), name :: String.t(), arguments :: map()}
+          | {:tool_request, call_id :: String.t(), name :: String.t(),
+             arguments :: map() | String.t()}
           | :turn_start
 
   @typedoc "The ref of a request from Core, for its reply."

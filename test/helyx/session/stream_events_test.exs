@@ -301,26 +301,6 @@ defmodule Helyx.Session.StreamEventsTest do
       assert {:task_exit, {:boom, ^marker}} =
                List.last(harness_turn(core, "exit_big")).data.error
     end
-
-    # `rejected_tool_call` is an event of `Helyx.Provider.Loop`'s stream, not
-    # of a provider.
-    test "a rejected_tool_call event is malformed, and nothing reaches the transcript",
-         %{core: core} do
-      {:ok, session} = Session.start(core, model: "conn/events.rejected")
-      {:ok, _} = Session.subscribe(session)
-      :ok = Session.prompt(session, "hello")
-      events = collect_until(:agent_end)
-
-      assert {:bad_stream_event, {:rejected_tool_call, %{id: "r"}, "bad"}} =
-               List.last(events).data.error
-
-      refute Enum.any?(
-               events,
-               &(&1.type == :message_start and &1.data.message.role == :assistant)
-             )
-
-      assert [:user] = Enum.map(:sys.get_state(Session.pid(session)).transcript, & &1.role)
-    end
   end
 
   # Each model sends one stream event that Core rejects. The reason of

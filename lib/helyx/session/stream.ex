@@ -20,6 +20,7 @@ defmodule Helyx.Session.Stream do
 
   @integer_reason "an integer in the arguments has more than " <>
                     "#{Message.max_integer_digits()} digits"
+  @not_object_reason "the arguments are not a valid JSON object"
 
   @doc """
   Builds the context of one provider call with the ModelContext and the
@@ -56,8 +57,8 @@ defmodule Helyx.Session.Stream do
   @doc """
   Checks one event from a provider. Returns `{:send, event, rejection}`
   for an event that passes, with the checked event and, for a call with
-  an integer over the digit limit, the reason that it must not run, or
-  nil; `{:terminal, terminal}` for a `done` or an `error` event; and
+  an integer over the digit limit or with raw argument text (arguments
+  that are not a JSON object), the reason that it must not run, or nil; `{:terminal, terminal}` for a `done` or an `error` event; and
   `{:bad, error}` for a malformed event. Arguments or a usage that are
   a struct are malformed: `cap_integers/1` can turn a struct into a
   string, and the session file needs a plain map. A delta or a tool call that is not valid UTF-8 is
@@ -113,16 +114,17 @@ defmodule Helyx.Session.Stream do
 
   # A provider asks the session to run a Helyx tool. The arguments get the
   # checks of a tool call, and the checked call goes on as
-  # `{:tool_request, call}`; a call with an integer over the digit limit gets
-  # its rejection, and the session answers it with an error result
+  # `{:tool_request, call}`; a call with a rejection reason gets it, and
+  # the session answers it with an error result
   # (`Helyx.Session.Server.Tools`).
-  def check({:tool_request, id, name, args} = event) do
+  def check({:tool_request, id, name, args}) do
     case tool_call(%Message.ToolCall{id: id, name: name, arguments: args}) do
       {:send, {:tool_call, call}, rejection} ->
         {:send, {:tool_request, call}, rejection}
 
-      {:bad, _error} ->
-        {:bad, malformed(event)}
+      # The call of the error, so no raw argument text is in it.
+      {:bad, {:error, {:bad_stream_event, {:tool_call, call}}}} ->
+        {:bad, malformed({:tool_request, call.id, call.name, call.arguments})}
     end
   end
 
@@ -146,6 +148,14 @@ defmodule Helyx.Session.Stream do
     if Message.encodable?([id, name, capped]),
       do: {:send, {:tool_call, call}, reason},
       else: {:bad, malformed({:tool_call, call})}
+  end
+
+  # Arguments that did not decode to a JSON object come as their raw text.
+  # The text is dropped here, so the transcript, the file, and the error
+  # result never hold it: the call goes on with `%{}` and its rejection.
+  defp tool_call(%Message.ToolCall{arguments: args} = call) when is_binary(args) do
+    with {:send, event, nil} <- tool_call(%{call | arguments: %{}}),
+         do: {:send, event, @not_object_reason}
   end
 
   defp tool_call(call), do: {:bad, malformed({:tool_call, call})}

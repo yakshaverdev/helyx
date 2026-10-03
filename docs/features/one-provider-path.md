@@ -111,8 +111,8 @@ A public adapter in Core, `lib/helyx/provider/loop.ex` (Decision Q1). An API pro
 | Request or message | What the helper does |
 |---|---|
 | `{:turn, id, context}` | Replies `:ok` at once, then starts the first model call with the context. |
-| A stream event | Sends the deltas and the calls as events. A call with arguments that do not decode is a rejected call: the helper sends it as a `tool_call` with the arguments that it could decode, or `%{}`, and remembers its reason. The reason is valid UTF-8 of at most 1,024 bytes and never holds the raw arguments. |
-| The stream's done with calls | Sends `message_end`. Then it sends the event `{:tool_request, request_id, name, args}` for every valid call of the message at once, in call order. The session owns the queue and runs them one at a time (#358). The request id is the model's call id (#380). A call id that repeats in one message ends the provider process with `{:bad_stream_event, {:tool_call, call}}`, the generic contract break: the session could have answered the first call already, so its open-id check does not cover it. A rejected call has the result `{:error, "tool call not run: " <> reason}` from the start; it joins in call order as every result does. Past the 16 waiting requests of the session, a call gets its "too many Helyx tool calls" error: a message with more than 17 valid calls can lose some, and how many depends on how fast the first calls end (a known ceiling of the session bound, #362). |
+| A stream event | Sends the deltas and the calls as events. A call whose arguments do not decode to a JSON object carries the raw argument text; Core gives it `%{}` and its rejection (`Helyx.Provider`, #380). |
+| The stream's done with calls | Sends `message_end`. Then it sends the event `{:tool_request, request_id, name, args}` for every call of the message at once, in call order. The session owns the queue and runs them one at a time (#358). The request id is the model's call id (#380). A call id that repeats in one message ends the provider process with `{:bad_stream_event, {:tool_call, call}}`, the generic contract break: the session could have answered the first call already, so its open-id check does not cover it. A call with a rejection reason (`Stream.check/1`) gets `{:error, "tool call not run: " <> reason}` from the session; it joins in call order as every result does. Past the 16 waiting requests of the session, a call gets its "too many Helyx tool calls" error: a message with more than 17 valid calls can lose some, and how many depends on how fast the first calls end (a known ceiling of the session bound, #362). |
 | `{:tool_result, id, request_id, result}` | Replies `:ok` and keeps the result by its request id. In the same callback it sends the event `{:tool_result, call_id, result}` for each call that has its result when every earlier call also has its result, in call order, so the results join the transcript in call order whatever order they come in. |
 | All calls have results | Sends `{:user_message, steer_id}` for each held steer, then `{:need_context, id}`, in that order (C2). |
 | `{:context, id, {:ok, context}}` | Replies `:ok` and starts the next model call. If a steer came while the context was built, it sends its `user_message` and a new `{:need_context, id}` instead, so the model call gets the steer (C2). |
@@ -172,15 +172,15 @@ The local path (`server.ex`, `stream.ex`, `turn.ex`, `provider.ex`). "loop" mean
 | The stream Task under the Core task supervisor, `Stream.run/1` | loop | The model Task of the helper |
 | The context build in the stream Task before each call | kept | The prepare Task of the hands, through `{:need_context}` (C1–C4) |
 | `Turn.calls`: the calls of a message run one at a time, in call order | loop | The helper sends every call of the message at once and puts the results in call order (#362). Core's tool queue runs them one at a time. |
-| `{:rejected_tool_call, call, reason}`, `Turn.reject`, `Turn.rejection`, the `rejected` field | loop | The helper records the call and sends its error result. `Stream.check` rejects the event as malformed. |
-| The 1,024-byte reason bound and the no-raw-arguments rule | loop | Checked in the helper. Core checks the result text with the tool result limit. |
+| `{:rejected_tool_call, call, reason}`, `Turn.reject`, `Turn.rejection`, the `rejected` field | deleted (the `Turn` parts by #379, the event by #380) | A call whose arguments are not a JSON object is a `tool_call` with the raw argument text. `Stream.check/1` gives it `%{}` and a rejection reason, and the session answers it as it answers an integer over the digit limit. |
+| The 1,024-byte reason bound and the no-raw-arguments rule | deleted (#380) | The reason is a fixed text of `Stream.check/1`. The raw text is dropped there, so no transcript entry, file entry, or tool result holds it. Core's error for a malformed call or request and the helper's error for a repeated call id name the call with `%{}`; an error that holds a provider value as sent can hold it, within the provider's limits (`coding-agent.md`). |
 | Queued steers join the transcript before the next provider call (`start_provider_call`, `append_steers`) | changed | A steer of a running turn goes to the provider (today's connected rule). The helper sends its `user_message` before the next model call. The transcript order is the same. |
 | A steer left at the end of a local turn starts a new turn | changed | The helper calls the model again in the same turn. |
 | `tool_execution_start` at each local run | changed | The connected rule: at the `message_end` of the message |
 | `started_calls`: a local snapshot lists only the running call | changed | The snapshot lists every call with no result (the connected rule) |
 | `shutdown_stream` (unlink, kill, flush), the `task` field, the `:EXIT` of the stream Task | loop | L2–L4. The session dies, the hands kill the provider process, and L1 ends the Task. |
 | A local stream failure ends the turn, and nothing stays | changed | The provider process stays after an error terminal. A crash of the process ends the turn, and the next turn starts a new process (the connected rule). |
-| `connected?` in `Stream.check` | deleted | One event set: today's connected set. `rejected_tool_call` is malformed for every provider. |
+| `connected?` in `Stream.check` | deleted | One event set: today's connected set. `rejected_tool_call` no longer exists (#380). |
 | `Helyx.Provider.turn/1`, the `turn_mode` field and switch | deleted | One path |
 
 The connected path (`harness.ex`, `wait.ex`, `steers.ex`, `server.ex`). Every mechanism stays with its behaviour; only the names change.
@@ -227,7 +227,7 @@ The connected path (`harness.ex`, `wait.ex`, `steers.ex`, `server.ex`). Every me
 These tests change their property:
 
 - `stream_events_test.exs`, "a snapshot of a local turn lists only the running call": it lists every call with no result.
-- `stream_events_test.exs`, "a rejected tool call fails a connected turn, and nothing reaches the transcript": it becomes "a rejected_tool_call event is malformed".
+- `stream_events_test.exs`, "a rejected tool call fails a connected turn, and nothing reaches the transcript": it became "a rejected_tool_call event is malformed", which #380 deleted with the event.
 - `loop_test.exs`, "a steer left at turn end starts a new turn": the steer continues the same turn.
 - The tests that check when `tool_execution_start` comes. It now comes for every call at the `message_end`:
   - `loop_test.exs`: "tool calls run on the hands and the loop continues until the provider stops", "tool calls run one at a time, in call order" (the run order stays; the event order changes), "abort during tool calls ends the turn and answers every open call", "killing the session kills the hands and the tool Task", "steers during a tool run reach the next provider call after the result, in order", "abort drops queued steers and follow-ups", "a full queue rejects the next steer or follow-up", and the test at the digit limit.
@@ -237,7 +237,7 @@ These tests change their property:
 
 Each such test keeps its property where only the event timing changes. The PR lists each test that changes and why.
 
-`loop_test.exs`, "a rejected call gets an error result with its reason; the text and the good call stay", and "tool calls run one at a time, in call order" keep their run properties through the helper and the session queue.
+`loop_test.exs`, "a call whose arguments are not a JSON object gets an error result; the text and the good call stay" (#380 renamed it), and "tool calls run one at a time, in call order" keep their run properties through the helper and the session queue.
 
 New tests:
 

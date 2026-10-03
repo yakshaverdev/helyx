@@ -256,7 +256,7 @@ defmodule Helyx.Provider.OpenAITest do
 
   # The provider callbacks come from `Helyx.Provider.Loop`; the test
   # process stands in for the provider process.
-  test "through the helper, every good call goes to Core at once and the results join in call order" do
+  test "through the helper, every call goes to Core at once and the results join in call order" do
     stub([
       delta(%{
         tool_calls: [%{index: 0, id: "c1", function: %{name: "read", arguments: ~s({"a": 1})}}]
@@ -279,15 +279,24 @@ defmodule Helyx.Provider.OpenAITest do
              {:tool_call, %{id: "c2"}},
              {:tool_call, %{id: "c3"}},
              {:message_end, :tool_use, %{}},
-             {:tool_request, id1, "read", %{"a" => 1}},
-             {:tool_request, id3, "bash", %{"b" => 1}}
+             {:tool_request, "c1", "read", %{"a" => 1}},
+             {:tool_request, "c2", "read", "[1]"},
+             {:tool_request, "c3", "bash", %{"b" => 1}}
            ] = events
 
+    # The session answers the raw text with its rejection.
     {:ok, [{:reply, :r3, :ok}], state} =
-      OpenAI.Go.request({:tool_result, "t1", id3, {:ok, "three"}}, :r3, state)
+      OpenAI.Go.request({:tool_result, "t1", "c3", {:ok, "three"}}, :r3, state)
+
+    {:ok, [{:reply, :r2, :ok}], state} =
+      OpenAI.Go.request(
+        {:tool_result, "t1", "c2", {:error, "tool call not run: " <> @not_object}},
+        :r2,
+        state
+      )
 
     {:ok, [{:reply, :r1, :ok} | actions], _state} =
-      OpenAI.Go.request({:tool_result, "t1", id1, {:ok, "one"}}, :r1, state)
+      OpenAI.Go.request({:tool_result, "t1", "c1", {:ok, "one"}}, :r1, state)
 
     assert actions == [
              {:event, "t1", {:tool_result, "c1", {:ok, "one"}}},

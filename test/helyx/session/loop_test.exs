@@ -105,7 +105,7 @@ defmodule Helyx.Session.LoopTest do
     assert Enum.map(events, & &1.seq) == Enum.to_list(1..length(events))
   end
 
-  test "a rejected call gets an error result with its reason; the text and the good call stay",
+  test "a call whose arguments are not a JSON object gets an error result; the text and the good call stay",
        %{core: core} do
     {:ok, session} = Session.start(core, model: "test/rejected")
     {:ok, _} = Session.subscribe(session)
