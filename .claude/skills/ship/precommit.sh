@@ -19,13 +19,25 @@ set -uo pipefail
 root=$(git rev-parse --show-toplevel) || exit 1
 cd "$root" || exit 1
 
+# Prints the result and exits with status `$1`. A failed run's log is kept
+# in the git common dir, which outlives the worktree and the next run (#455).
+finish() {
+  if [ "$1" -eq 0 ]; then
+    echo passed
+  else
+    kept="$(git rev-parse --path-format=absolute --git-common-dir)/precommit-fails"
+    kept="$kept/$(date -u +%Y%m%dT%H%M%SZ)-$(git rev-parse --abbrev-ref HEAD | tr / -).log"
+    mkdir -p "$(dirname "$kept")" && cp precommit.log "$kept"
+    echo "failed (log kept in $kept)"
+  fi
+  exit "$1"
+}
+
 host=${HELYX_PRECOMMIT_HOST:-$(cat ~/.config/helyx/precommit-host 2>/dev/null)}
 
 if [ -z "$host" ]; then
   mise exec -- mix precommit > precommit.log 2>&1
-  status=$?
-  [ "$status" -eq 0 ] && echo passed || echo failed
-  exit "$status"
+  finish $?
 fi
 
 dir="precommit/$(basename "$root")"
@@ -64,18 +76,17 @@ status=$?
 # FAILED line for each changed file and nothing else, is a clean check.
 check=$(ssh -o BatchMode=yes "$host" "cd '$dir' && { md5sum -c --quiet .before 2>&1; echo \"md5sum status \$?\"; }") || {
   echo "failed: cannot read the format changes on $host"
-  exit 1
+  finish 1
 }
 changed=$(printf '%s\n' "$check" | sed -n 's/: FAILED$//p')
 unexpected=$(printf '%s\n' "$check" | grep -v -E -e ': FAILED$' -e '^$' -e 'WARNING: [0-9]+ computed checksums? did NOT match$' -e '^md5sum status [01]$')
 if [ -n "$unexpected" ] || ! printf '%s\n' "$check" | grep -qE '^md5sum status [01]$'; then
   printf 'failed: unexpected checksum output on %s:\n%s\n' "$host" "$check"
-  exit 1
+  finish 1
 fi
 if [ -n "$changed" ]; then
-  printf '%s\n' "$changed" | rsync -a --ignore-times --files-from=- "$host:$dir/" ./ || exit 1
+  printf '%s\n' "$changed" | rsync -a --ignore-times --files-from=- "$host:$dir/" ./ || finish 1
   printf 'format changed on %s and copied back:\n%s\n' "$host" "$changed"
 fi
 
-[ "$status" -eq 0 ] && echo passed || echo failed
-exit "$status"
+finish "$status"
