@@ -672,6 +672,8 @@ defmodule Helyx.Test.Connected do
   #     "late_result"  a call, a text message, then the call's result
   #     "empty_between"  text, an empty text and thinking delta, text
   #     "empty_only"  only empty deltas, then done: no text "ok"
+  #     "blocks_over_bound"  1,025 deltas of text and thinking in turn: one
+  #               block over the bound of 1,024
   #
   # A steer answers :ok with no `user_message` unless the model says
   # otherwise; the "steer_" models are "hang" for a turn:
@@ -943,6 +945,12 @@ defmodule Helyx.Test.Connected do
   end
 
   defp turn_events("empty_only"), do: [{:text_delta, ""}, {:thinking_delta, ""}, @done]
+
+  # The block bound is 1,024 (`Helyx.Session.Turn`).
+  defp turn_events("blocks_over_bound") do
+    Enum.map(1..1_025, &if(rem(&1, 2) == 0, do: {:thinking_delta, "b"}, else: {:text_delta, "a"})) ++
+      [@done]
+  end
 
   defp turn_events("call_over_bound"), do: bound_message() ++ [{:tool_call, bound_call()}, @done]
 

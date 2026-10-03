@@ -313,6 +313,18 @@ defmodule Helyx.Session.StreamEventsTest do
       assert %{conn: nil, transcript: [%{role: :user}]} = :sys.get_state(Session.pid(session))
     end
 
+    test "the 1,025th block of the open message stops the provider process and fails the turn",
+         %{core: core} do
+      {:ok, session} = Session.start(core, model: "conn/events.blocks_over_bound")
+      {:ok, _} = Session.subscribe(session)
+      :ok = Session.prompt(session, "hello")
+      events = collect_until(:agent_end)
+
+      assert List.last(events).data.error == {:too_many_blocks, 1_025, 1_024}
+      assert stop_reason(events) == :error
+      assert %{conn: nil, transcript: [%{role: :user}]} = :sys.get_state(Session.pid(session))
+    end
+
     test "an empty delta makes no block and no event", %{core: core} do
       events = harness_turn(core, "empty_between")
 

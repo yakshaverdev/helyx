@@ -98,8 +98,11 @@ defmodule Helyx.Provider do
   The text and thinking deltas and the tool calls of the open assistant
   message hold at most 8 MiB together (`@max_message_bytes` in
   `Helyx.Session.Turn`). A tool call counts as the JSON of its id, name,
-  and checked arguments. An event past the bound stops the provider process and
-  fails the turn. Core drops an empty text or thinking delta.
+  and checked arguments. The open message also holds at most 1,024 blocks
+  (`@max_message_blocks`); a delta that merges into the last block, when
+  that block is of its kind, makes no new block. An event past either bound
+  stops the provider process and fails the turn. Core drops an empty text or
+  thinking delta.
 
   `init/3` and every request from the session have a deadline. When the
   reply has not come by it, Core kills the provider process, and a running
