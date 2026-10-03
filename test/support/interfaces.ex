@@ -662,6 +662,9 @@ defmodule Helyx.Test.Connected do
   #               and thinking deltas, with a `message_end` between them
   #     "message_over_bound"  one byte under 8 MiB of deltas, then a
   #               2-byte character across the bound
+  #     "call_at_bound"  8 MiB with a call of 16 bytes as its last part,
+  #               then the call's result
+  #     "call_over_bound"  8 MiB of deltas, then a call
   #     "late_result"  a call, a text message, then the call's result
   #
   # A steer answers :ok with no `user_message` unless the model says
@@ -914,6 +917,21 @@ defmodule Helyx.Test.Connected do
       [{:thinking_delta, "é"}, {:text_delta, "ok"}, @done]
   end
 
+  # The call counts as its JSON `["c1","bash",{}]`, 16 bytes.
+  defp turn_events("call_at_bound") do
+    cut = fn {:text_delta, t} -> {:text_delta, binary_part(t, 16, byte_size(t) - 16)} end
+
+    List.update_at(bound_message(), -1, cut) ++
+      [
+        {:tool_call, bound_call()},
+        {:tool_result, "c1", {:ok, "done"}},
+        {:text_delta, "ok"},
+        @done
+      ]
+  end
+
+  defp turn_events("call_over_bound"), do: bound_message() ++ [{:tool_call, bound_call()}, @done]
+
   defp turn_events(name), do: Map.fetch!(@events, name) ++ [{:text_delta, "ok"}, @done]
 
   # 8 MiB in deltas of 1 MiB, thinking then text.
@@ -921,6 +939,8 @@ defmodule Helyx.Test.Connected do
     mib = String.duplicate("x", 1_048_576)
     List.duplicate({:thinking_delta, mib}, 4) ++ List.duplicate({:text_delta, mib}, 4)
   end
+
+  defp bound_call, do: %ToolCall{id: "c1", name: "bash", arguments: %{}}
 
   defp result_text("multibyte"), do: String.duplicate("x", 65_535) <> "é"
   defp result_text("raw"), do: :binary.copy(<<255>>, 65_536)

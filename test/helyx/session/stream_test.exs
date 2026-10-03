@@ -13,7 +13,7 @@ defmodule Helyx.Session.StreamTest do
     call = %Message.ToolCall{id: "c1", name: "read", arguments: ~s({"path": )}
     reason = "the arguments are not a valid JSON object"
 
-    assert {:send, {:tool_call, %Message.ToolCall{id: "c1", name: "read", arguments: %{}}},
+    assert {:send, {:tool_call, %Message.ToolCall{id: "c1", name: "read", arguments: %{}}, 16},
             ^reason} = SessionStream.check({:tool_call, call})
 
     assert {:send, {:tool_request, %Message.ToolCall{id: "c1", arguments: %{}}}, ^reason} =
@@ -48,7 +48,7 @@ defmodule Helyx.Session.StreamTest do
   test "an integer over the digit limit in arguments is capped, with the reason not to run it" do
     call = %Message.ToolCall{id: "c1", name: "upcase", arguments: %{"n" => [%{"deep" => huge()}]}}
 
-    assert {:send, {:tool_call, %{arguments: %{"n" => [%{"deep" => @marker}]}}},
+    assert {:send, {:tool_call, %{arguments: %{"n" => [%{"deep" => @marker}]}}, _bytes},
             "an integer in the arguments has more than 100 digits"} =
              SessionStream.check({:tool_call, call})
 
@@ -60,7 +60,16 @@ defmodule Helyx.Session.StreamTest do
 
     # The integer at the limit passes and is not rejected.
     at_limit = %{call | arguments: %{"n" => 10 ** 100 - 1}}
-    assert {:send, {:tool_call, ^at_limit}, nil} = SessionStream.check({:tool_call, at_limit})
+
+    assert {:send, {:tool_call, ^at_limit, _bytes}, nil} =
+             SessionStream.check({:tool_call, at_limit})
+  end
+
+  # The bound of the open message counts the JSON bytes, not characters:
+  # `["c1","é",{}]` is 14 bytes.
+  test "a checked tool call carries the bytes of its JSON encode" do
+    call = %Message.ToolCall{id: "c1", name: "é", arguments: %{}}
+    assert {:send, {:tool_call, ^call, 14}, nil} = SessionStream.check({:tool_call, call})
   end
 
   test "an integer over the digit limit in usage is capped, and the extra key dropped" do

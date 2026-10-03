@@ -58,7 +58,9 @@ defmodule Helyx.Session.Stream do
   Checks one event from a provider. Returns `{:send, event, rejection}`
   for an event that passes, with the checked event and, for a call with
   an integer over the digit limit or with raw argument text (arguments
-  that are not a JSON object), the reason that it must not run, or nil;
+  that are not a JSON object), the reason that it must not run, or nil.
+  A checked tool call is `{:tool_call, call, bytes}`, with the bytes of
+  the JSON encode of its id, name, and arguments;
   `{:terminal, terminal}` for a `done` or an `error` event, with the
   integer cap and ready to send; and `{:bad, error}` for a malformed
   event. Arguments or a usage that are a struct are malformed:
@@ -116,7 +118,7 @@ defmodule Helyx.Session.Stream do
   # (`Helyx.Session.Server.Tools`).
   def check({:tool_request, id, name, args}) do
     case tool_call(%Message.ToolCall{id: id, name: name, arguments: args}) do
-      {:send, {:tool_call, call}, rejection} ->
+      {:send, {:tool_call, call, _bytes}, rejection} ->
         {:send, {:tool_request, call}, rejection}
 
       # The call of the error, so no raw argument text is in it.
@@ -142,9 +144,12 @@ defmodule Helyx.Session.Stream do
     call = %Message.ToolCall{id: id, name: name, arguments: capped}
     reason = if capped != args, do: @integer_reason
 
-    if Message.encodable?([id, name, capped]),
-      do: {:send, {:tool_call, call}, reason},
-      else: {:bad, malformed({:tool_call, call})}
+    # The size of the encode goes with the call: the session counts it in
+    # the bound of the open message (`Helyx.Session.Turn`), with no encode.
+    case Message.encoded_size([id, name, capped]) do
+      {:ok, bytes} -> {:send, {:tool_call, call, bytes}, reason}
+      :error -> {:bad, malformed({:tool_call, call})}
+    end
   end
 
   # Arguments that did not decode to a JSON object come as their raw text.
