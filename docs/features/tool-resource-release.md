@@ -52,7 +52,7 @@ The design was reviewed in three rounds on 2026-09-25. The findings are in `docs
 `Helyx.Tool.Bash`:
 
 - Implements `release/3`, because the hands find the callback through the tool module of the call. It delegates to `Helyx.Tool.Bash.Group` (`@moduledoc false`), which #10 moved to `Helyx.Watchdog.Group`.
-- Handles are `{:watchdog, os_pid}` and `{:command, group}`.
+- Handles are `{:watchdog, os_pid}` and `{:command, group}`. A group below 2 is never signalled: `kill -- -1` would reach every process of the user. No caller makes another handle; `Group.release/4` drops one unsignalled (#367; before it, an unknown handle was returned as still held).
 - `Helyx.Tool.Bash.Group` (now `Helyx.Watchdog.Group`, #10) receives the code that leaves `lib/helyx/session/hands.ex`: `signal`, `await_gone`, `poll_gone`, `kill_and_wait`, `sweep_watchdogs`, `split_kinds`, and the `kill_cmd` test hook, which becomes the `kill` argument of `Group.release/4`.
 - The order does not change: command groups first, the watchdog last, so the watchdog can reap its child before a KILL. A zombie child stays in its group until it is reaped, so this order also prevents an endless poll.
 - The mode selects today's sequences. `:deliver` is KILL, wait, then the watchdog sweep. `:cancel` is TERM, 500 ms grace, KILL, wait, then the watchdog sweep. `:retry` is KILL and one probe, with no wait.

@@ -24,7 +24,7 @@ defmodule Helyx.Test.WatchdogHarness do
     argv = ["sh", "-c", "echo $$ > '#{pid_path(opts[:session_id])}'; exec sleep 30"]
 
     case Helyx.Watchdog.start(argv, opts[:cwd], :open, grace_ms: 200) do
-      {:started, port, _pre, _nonce, _go} ->
+      {:started, port, _pre} ->
         %{port: port} = Helyx.HarnessIO.keep_port(%{port: port})
         {:ok, %{model: model, port: port}}
 

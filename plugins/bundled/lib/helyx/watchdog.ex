@@ -14,7 +14,7 @@ defmodule Helyx.Watchdog do
   # The watchdog forks the command into its own process group and stays in
   # the launcher's own group, so the port's OS process is the watchdog. It
   # writes the command's group id as the stdout marker and holds the command
-  # until the go-ahead line arrives on stdin, so either the hands hold the
+  # until the go-ahead byte arrives on stdin, so either the hands hold the
   # group id before the command runs, or the command never ran. Then it
   # watches: when its stdin ends, because the port closed, it TERMs the
   # group, waits the grace period (its fourth argument, in ms), KILLs it,
@@ -31,11 +31,11 @@ defmodule Helyx.Watchdog do
   # The input (#10). The second argument is the input mode: -1 for none or
   # -2 for open. With none, the command's stdin is /dev/null. With open
   # (#11), it is a pipe: the watchdog forwards everything that follows the
-  # go-ahead line on its own stdin up to the first NUL byte, then closes the
+  # go-ahead byte on its own stdin up to the first NUL byte, then closes the
   # pipe and sets the mode to 0, the mark of a closed input. A protocol of
   # JSON lines never holds a raw NUL, so a NUL ends the input and the
-  # command reads end of file while the watch of stdin goes on. The go-ahead
-  # line is read one byte at a time, so no buffer takes input bytes from the
+  # command reads end of file while the watch of stdin goes on. The
+  # go-ahead is read as one byte, so no buffer takes input bytes from the
   # loop. The pipe is non-blocking and the loop writes it only when select
   # reports it writable, so a command that does not read cannot stop the
   # watch of stdin. A write that fails for any other reason than a full
@@ -52,7 +52,8 @@ defmodule Helyx.Watchdog do
   # port's cd option has no failure signal: the emulator's child exits with
   # status 2, which a real command can also do. A chdir, pipe, or fork that
   # fails writes the marker with `0`, which is never a group id, then the
-  # reason, and no command exists.
+  # reason, and no command exists. A held child whose `exec` fails writes
+  # "cannot run <program>: <reason>" and exits with 127, as a shell does.
   #
   # A marker line is "<nonce> <number>". The nonce is random for each call
   # and reaches the watchdog in its arguments only. The command is held
@@ -61,43 +62,6 @@ defmodule Helyx.Watchdog do
   # warning prints environment values, which can hold any line. It cannot
   # hold the nonce, so no text can pass for a marker; `read_marker/4` reads
   # past the rest.
-  #
-  # The start report (#70). The held child writes the start line,
-  # "<nonce> 1", as its last act before the `exec`, so the line is in front
-  # of all command output, and a result is ok only with it: a watchdog that
-  # dies before it passes the go-ahead on, or a child that dies while held,
-  # leaves no start line. The child reports a failed `exec`, or its own
-  # death by `die`, through a second pipe that closes on `exec` (perl sets
-  # close-on-exec on every descriptor above 2): the watchdog reads end of
-  # file when the `exec` worked, and the error when it did not. It reads
-  # the pipe only after the child ended, so the read never waits: the write
-  # end is closed by then, by the `exec` or by the exit, and the watchdog's
-  # poll of stdin is never held. It then writes "<go> 0" and the error.
-  # `<go>` is a second random word, which arrives on stdin as the go-ahead
-  # line, after the fork: it is in no argument list and not in the child, so
-  # a command that ran cannot write a failure report, and the report counts
-  # wherever it is in the output, so text of perl in front of it cannot
-  # hide it. The command can read the nonce from the process table, but a
-  # start line is only true of a command that ran.
-  #
-  # The perl environment (#71). Variables of the environment change the
-  # interpreter: `PERL_UNICODE` puts a `:utf8` layer on handles, and a
-  # `sysread` or `syswrite` on such a handle is fatal; `PERL5OPT=-d` starts
-  # the debugger on the watchdog's stdin; `PERL5LIB` can replace the POSIX
-  # module. So the port starts perl without every variable whose name
-  # starts with `PERL` (`launcher/5`), except `PERL_BADLANG`. That one only
-  # stops the locale warning. A user with a locale that the system does not
-  # have sets it to 0, and without it that user gets the warning in front of
-  # every result.
-  #
-  # The values are the user's, and the command can be perl. So each value
-  # stays in the environment under the name `HELYX_KEEP_<name>`, which perl
-  # does not read, and the watchdog gives it its name back in `%ENV` before
-  # the fork. `%ENV` does not change an interpreter that runs already. The
-  # prefix `HELYX_KEEP_PERL` is reserved: the watchdog takes every such name
-  # for one of its own. A kept value has a `=` in front, which the watchdog
-  # takes off: the port takes an empty value for "remove", and an empty
-  # `PERL_UNICODE` is not the same as none.
   @watchdog_path Path.join(__DIR__, "watchdog/watchdog.pl")
   @external_resource @watchdog_path
   @watchdog File.read!(@watchdog_path)
@@ -119,17 +83,16 @@ defmodule Helyx.Watchdog do
   @doc false
   # Opens the port for `argv` in `cwd` and runs the handshake. With `input`
   # nil the command's stdin is /dev/null. With `:open` the command reads
-  # what `write/2` sends until `write(port, <<0>>)` or the close. Returns:
+  # what `write/2` sends until `write(port, <<0>>)` or the close. The
+  # callers check for perl first (the bash tool's `check/0`,
+  # `Helyx.HarnessIO.find/1`). Returns:
   #
-  #   * `{:started, port, pre, nonce, go}`: the go-ahead is sent. `pre` is
-  #     what came before the marker, perl's own startup output. The output
-  #     that follows starts with the start line, "<nonce> 1", unless the
-  #     child died before the `exec`; a failure report is "<go> 0".
+  #   * `{:started, port, pre}`: the go-ahead is sent. `pre` is what came
+  #     before the marker, perl's own startup output.
   #   * `{:not_started, port, reason}`: the watchdog did not fork; `reason`
   #     is the rest of the stream up to the exit status, read here.
-  #   * `{:failed, text}`: no command ran, and the port is closed: perl did
-  #     not start (no port), the watchdog gave no marker, or it died before
-  #     the go-ahead. The text always names perl.
+  #   * `{:failed, text}`: no command ran, and the port is closed: the
+  #     watchdog gave no marker. The text names perl.
   #
   # Only a group marker leads to the go-ahead, after the group is held: a
   # command never runs without its group in the hands. With no marker, the
@@ -144,24 +107,7 @@ defmodule Helyx.Watchdog do
     nonce = random_word()
     grace = Keyword.get(opts, :grace_ms, @grace_ms)
     {exe, options} = launcher(argv, cwd, nonce, feed(input), grace)
-
-    case open_port(exe, options) do
-      {:ok, port} -> handshake(port, nonce)
-      {:error, reason} -> {:failed, "perl did not start: " <> reason}
-    end
-  end
-
-  # perl is used here, so its failure is handled here. The callers check
-  # for perl earlier (the bash tool's `check/0`, `Helyx.HarnessIO.find/1`),
-  # but PATH and the file can change after that check. The rescue also
-  # catches a normalized error such as `SystemLimitError` at the port limit,
-  # which has no `:original` field, so the text is the exception message.
-  defp open_port(nil, _options), do: {:error, "not found on PATH"}
-
-  defp open_port(exe, options) do
-    {:ok, Port.open({:spawn_executable, exe}, options)}
-  rescue
-    error in ErlangError -> {:error, Exception.message(error)}
+    handshake(Port.open({:spawn_executable, exe}, options), nonce)
   end
 
   defp handshake(port, nonce) do
@@ -187,15 +133,10 @@ defmodule Helyx.Watchdog do
 
       {group, pre} ->
         Helyx.Tool.hold({:command, group})
-        go = random_word()
-
-        case go_ahead(port, go) do
-          :sent ->
-            {:started, port, pre, nonce, go}
-
-          :died ->
-            {:failed, "the perl watchdog died before the go-ahead: " <> pre}
-        end
+        # A port that closed already drops the write; its exit status is in
+        # the mailbox for the caller's read.
+        write(port, "\n")
+        {:started, port, pre}
     end
   end
 
@@ -210,84 +151,17 @@ defmodule Helyx.Watchdog do
     end
   end
 
-  # A watchdog that dies after the marker can close its stdin while the
-  # port is still open. The go-ahead write then gets EPIPE: the port closes
-  # with the exit reason `:epipe`, sends no exit status, and its exit
-  # signal would end the caller (#131). So the go-ahead traps exits. It is
-  # its own write, and the first on the pipe, so the pipe takes all of it
-  # or the write fails at once: no part of it waits in the port's queue.
-  # `Port.info/2` is a port signal, which the port takes after the write.
-  # A write that raised found the port closed. In both cases the watchdog
-  # died before the go-ahead. The input is a later write. A port that
-  # closes after `Port.info/2`, before the trap ends, leaves its exit
-  # message in the mailbox, which no receive of `go_ahead/2` takes. No
-  # write is pending then, so the close is not EPIPE.
-  defp go_ahead(port, go) do
-    trap = Process.flag(:trap_exit, true)
-
-    result =
-      cond do
-        not write(port, [go, "\n"]) -> :died
-        Port.info(port, :id) -> :sent
-        true -> port_exit(port)
-      end
-
-    Process.flag(:trap_exit, trap)
-    if not trap, do: pass_exits(port)
-    result
-  end
-
-  # The port closed. A `:normal` close comes after the watchdog's exit
-  # status, which is in the mailbox for the caller's read; any other reason
-  # ends the caller, as the signal would have.
-  defp port_exit(port) do
-    receive do
-      {:EXIT, ^port, :epipe} -> :died
-      {:EXIT, ^port, :normal} -> :sent
-      {:EXIT, ^port, reason} -> exit(reason)
-    end
-  end
-
-  # Acts on the exit signals that the trap made messages, as a process that
-  # does not trap exits does: a `:normal` one does nothing, any other ends
-  # the process. The port's own exit is left for `port_exit/1`.
-  defp pass_exits(port) do
-    receive do
-      {:EXIT, from, :normal} when from != port -> pass_exits(port)
-      {:EXIT, from, reason} when from != port -> exit(reason)
-    after
-      0 -> :ok
-    end
-  end
-
   @doc false
   # Public for the watchdog's direct tests. `feed` is the input mode, -1
   # for none or -2 for open input (see the watchdog). `grace_ms` is the
   # TERM grace when the port closes.
   def launcher(argv, cwd, nonce, feed, grace_ms \\ @grace_ms) do
-    perl = System.find_executable("perl")
-    # ponytail: the VM decodes a name or a value that is not UTF-8 as
-    # Latin-1. Such a `PERL*` value reaches the command with other bytes,
-    # and such a name is not removed. Raw bytes need another transport, if
-    # a user has such a variable.
-    perl_env =
-      for {"PERL" <> _ = name, _value} = variable <- System.get_env(),
-          name != "PERL_BADLANG",
-          do: variable
-
-    unset = for {name, _value} <- perl_env, do: {String.to_charlist(name), false}
-
-    keep =
-      for {name, value} <- perl_env,
-          do: {String.to_charlist("HELYX_KEEP_" <> name), String.to_charlist("=" <> value)}
-
     # No cd option: the watchdog enters `cwd`, so a failure has a signal.
-    {perl,
+    {System.find_executable("perl"),
      [
        :binary,
        :exit_status,
        :stderr_to_stdout,
-       {:env, unset ++ keep},
        {:args,
         [
           "-e",
@@ -311,8 +185,8 @@ defmodule Helyx.Watchdog do
   # Writes to the watchdog's stdin. A port whose watchdog already died is
   # closed and the write raises; the exit status is still in the mailbox for
   # the caller's read. A watchdog that died while the port is open makes
-  # the write close the port with `:epipe`: the go-ahead handles that, and
-  # the harness providers' read loops handle a later write (#167).
+  # the write close the port with `:epipe`; the harness providers' read
+  # loops take that as the end of the run (#167).
   def write(port, data) do
     Port.command(port, data)
   rescue

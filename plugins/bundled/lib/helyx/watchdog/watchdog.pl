@@ -6,33 +6,24 @@ my $feed = shift @ARGV;
 my $dir = shift @ARGV;
 my $grace = shift(@ARGV) / 1000;
 my $cap = shift @ARGV;
-for (keys %ENV) { $ENV{$1} = substr(delete $ENV{$_}, 1) if /^HELYX_KEEP_(PERL.*)/s }
 chdir($dir) or fail("cannot enter the working directory $dir");
 pipe(my $r, my $w) or fail("pipe failed");
-pipe(my $er, my $ew) or fail("report pipe failed");
 my ($ir, $iw);
 if ($feed != -1) { pipe($ir, $iw) or fail("input pipe failed") }
 my $child = fork() // fail("fork failed");
 if ($child == 0) {
-  close($w); close($er); close($iw) if $iw;
+  close($w); close($iw) if $iw;
   setpgrp(0, 0);
-  eval {
-    sysread($r, my $go, 1) or exit 0;
-    if ($ir) { open(STDIN, "<&", $ir) } else { open(STDIN, "<", "/dev/null") }
-    syswrite(STDOUT, "$nonce 1\n");
-    exec @ARGV;
-    die "cannot run $ARGV[0]: $!\n";
-  };
-  syswrite($ew, $@);
-  exit 0;
+  sysread($r, my $go, 1) or exit 0;
+  if ($ir) { open(STDIN, "<&", $ir) } else { open(STDIN, "<", "/dev/null") }
+  exec(@ARGV) or syswrite(STDOUT, "cannot run $ARGV[0]: $!\n");
+  exit 127;
 }
 $SIG{TERM} = "IGNORE";
 $SIG{PIPE} = "IGNORE";
-close($r); close($ew); close($ir) if $ir;
+close($r); close($ir) if $ir;
 syswrite(STDOUT, "$nonce $child\n");
-my $go = ""; my $c = "";
-while (sysread(STDIN, $c, 1)) { last if $c eq "\n"; $go .= $c }
-if ($c eq "\n") { syswrite($w, "g"); close($w) }
+if (sysread(STDIN, my $c, 1)) { syswrite($w, "g"); close($w) }
 else { close($w); kill("KILL", -$child); waitpid($child, 0); exit 0 }
 fcntl($iw, F_SETFL, O_NONBLOCK) if $iw;
 sub stop {
@@ -44,10 +35,7 @@ sub stop {
   if (!$done) { waitpid($child, 0); $s = $? }
   $s
 }
-sub finish {
-  if (sysread($er, my $err, 4096)) { syswrite(STDOUT, "$go 0\n$err"); exit 0 }
-  exit(($_[0] & 127) ? 128 + ($_[0] & 127) : $_[0] >> 8);
-}
+sub finish { exit(($_[0] & 127) ? 128 + ($_[0] & 127) : $_[0] >> 8) }
 my $out = "";
 while (1) {
   if ($iw and $feed == 0 and !length($out)) { close($iw); undef $iw }
