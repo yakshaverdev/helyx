@@ -1,7 +1,8 @@
 defmodule Helyx.Session.Server.Stop do
   @moduledoc false
   # The stop of a session (`terminate/2` of `Helyx.Session.Server`): the
-  # close of the provider processes of a session with no turn
+  # kill of the prepare Task of a turn, or the close of the provider
+  # processes of a session with no turn
   # (`State.provider_close_ms/0`, armed kill), then the stop of the hands,
   # which can finish one release (`Hands.State.release_ms/0`). Each wait
   # has a margin for load, so the supervisor does not kill it first:
@@ -10,7 +11,7 @@ defmodule Helyx.Session.Server.Stop do
   import Helyx.Session.Server.State, only: [ask: 4, provider_pid: 1]
 
   alias Helyx.Session.{Hands, Turn}
-  alias Helyx.Session.Server.{State, Wait}
+  alias Helyx.Session.Server.{State, TurnLoop, Wait}
 
   @load_hands_stop_ms 2_000
   @load_shutdown_ms 3_000
@@ -24,7 +25,10 @@ defmodule Helyx.Session.Server.Stop do
     stop_hands(state.hands)
   end
 
-  defp end_work(%State{activity: %Turn{}}), do: :ok
+  # The prepare Task of a turn runs under the task supervisor, not linked:
+  # it is killed here. On an untrappable kill of the session its armed
+  # kill ends it.
+  defp end_work(%State{activity: %Turn{} = turn}), do: TurnLoop.kill_prepare(turn)
 
   # A session that ends with no turn closes its provider processes: the
   # current one and the one its wait is for (an idle close, a switch

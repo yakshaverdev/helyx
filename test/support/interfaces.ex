@@ -910,7 +910,8 @@ end
 defmodule Helyx.Test.PrepareContext do
   @moduledoc false
   # Sets the system prompt to "prepared", unless the last user message is
-  # "block_prepare" (the build blocks), "raise_prepare" (it raises),
+  # "block_prepare" (the build blocks), "hold_prepare" (it waits for
+  # `:continue`, then sets "prepared"), "raise_prepare" (it raises),
   # "nil_build" (it returns nil), "bad_build" (it returns a map),
   # "forged_build" (a struct without :system), "bad_system" (a system
   # prompt that is not a string), or "bad_messages_build" (the messages
@@ -922,6 +923,7 @@ defmodule Helyx.Test.PrepareContext do
   def build(context, opts) do
     case context.messages |> List.last() |> Helyx.Message.text() do
       "fresh" -> %{context | system: "prepared for #{opts[:turn_id]}"}
+      "hold_prepare" -> receive(do: (:continue -> %{context | system: "prepared"}))
       text -> build_text(text, context)
     end
   end
