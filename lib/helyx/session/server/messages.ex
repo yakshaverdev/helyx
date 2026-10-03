@@ -43,7 +43,7 @@ defmodule Helyx.Session.Server.Messages do
   def end_assistant(state, stop_reason, usage) do
     {state, _assistant, calls} = close_assistant(state, stop_reason, usage)
     state = Enum.reduce(calls, state, &emit(&2, :tool_execution_start, %{tool_call: &1}))
-    put_in(state.activity.partial, nil)
+    %{state | activity: Turn.close_partial(state.activity)}
   end
 
   # The first result of a call in the open message closes the message
