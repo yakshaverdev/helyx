@@ -39,8 +39,10 @@ A worker that stopped before its final report (a usage limit, a wait for its own
 
 ```bash
 codex_dir=$(/bin/ls -d "$HOME"/.claude/plugins/cache/openai-codex/codex/*/ | sort -V | /usr/bin/tail -n 1)
-node "${codex_dir}scripts/codex-companion.mjs" adversarial-review "--wait --base origin/master <the invariant of the change, one sentence>"
+env -u CODEX_COMPANION_APP_SERVER_ENDPOINT node "${codex_dir}scripts/codex-companion.mjs" adversarial-review "--wait --base origin/master <the invariant of the change, one sentence>"
 ```
+
+`env -u` drops the shared broker endpoint: through it, a review can read another worktree (found 2026-10-03).
 
 The invariant sentence names the entry points it covers, every accepted hole, every exception that the feature doc already states (for example, the write-failure policy of the session file) and every open hole that has a ticket. A reviewer that does not know a documented exception reports it as a defect. Write no text that starts with `--` in the sentence (for example a switch name such as `--model`): the companion script reads it as its own option and fails (#148). Name the switch in words.
 
