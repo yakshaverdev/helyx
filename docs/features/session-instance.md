@@ -1,5 +1,7 @@
 # Session instance
 
+> The ADR 0006 revision of 2026-10-03 (#404) removes `contract_version`, and the TUI drops its `instance_id` and `seq` guards, because it subscribes once. The `instance_id` in events and the snapshot, and the rule of ADR 0006 section 3 for a client that reconnects, stay. The text below on the TUI guard and the contract version is history.
+
 ## Goal
 
 A client can tell the events of one session instance from those of another instance with the same session id. Issue #204, split out of #188 (review record `docs/reviews/2026-09-27-188-session-not-found.md`, round 4).

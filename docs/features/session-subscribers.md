@@ -1,5 +1,7 @@
 # The session holds its subscribers
 
+> The ADR 0006 revision of 2026-10-03 (#404) removes `contract_version` and the version rules of ADR 0006 section 5, and the TUI drops the `instance_id` and `seq` guards (S7 below): it subscribes once. The rule stays in ADR 0006 section 3 for a client that reconnects. The text below on these items is history.
+
 Status: built in #297 on 2026-10-02. Design decided on 2026-10-02. Built from the code at `58471ac`. The design went through five review rounds in one proposal with the one-provider design (`one-provider-path.md`). The last round found no blocking issue.
 
 ## Goal

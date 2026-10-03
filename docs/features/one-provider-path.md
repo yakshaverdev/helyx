@@ -1,5 +1,7 @@
 # One provider path
 
+> The ADR 0006 revision of 2026-10-03 (#404) removes `contract_version`, the version rules of ADR 0006 section 5, and the snapshot `running`, and the TUI no longer reads `tool_execution_start`. The text below on the contract version increase and on the TUI use of these values is history.
+
 Status: design decided on 2026-10-02, built in #298, #299, and #300 (build order steps 1 to 3). Built from the code at `58471ac`. The design went through five review rounds in one proposal with `session-subscribers.md`. The last round found no blocking issue.
 
 ## Goal

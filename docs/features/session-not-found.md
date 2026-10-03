@@ -1,5 +1,7 @@
 # Session not found, and client start errors
 
+> The ADR 0006 revision of 2026-10-03 (#404) removes `contract_version` (ticket 3 below). That item is history.
+
 ## Goal
 
 A client that calls a session that is not running gets an error value, not an exit. A client that starts or resumes a session gets a start error from a closed list. Issue #188, from ADR 0006, section 2 and Consequences, ticket 1.

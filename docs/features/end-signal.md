@@ -1,6 +1,8 @@
 # End signal
 
 > Replaced in part by `session-subscribers.md` (#297): the session holds its subscribers, the end signal is a tagged monitor of the caller, `{{:helyx_session_end, id}, ref, :process, pid, reason}`, and the events Registry, `Helyx.Session.Watch`, and the lost signal are gone. The Watch and lost-signal design below is history.
+>
+> The ADR 0006 revision of 2026-10-03 (#404) replaces ADR 0006 section 5: `contract_version` and the TUI unsupported state go, and a client works with one Helyx version. The text below on these items is history.
 
 ## Goal
 
