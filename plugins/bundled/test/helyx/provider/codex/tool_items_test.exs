@@ -28,9 +28,9 @@ defmodule Helyx.Provider.Codex.ToolItemsTest do
     assert {:stop, :tool_running} = List.last(run_direct([Message.user("go")], work))
   end
 
-  # Codex can run tool items side by side: the message of both calls
-  # closes once, before the first result.
-  test "two tool items that run together close one message", %{bin: bin, work: work} do
+  # Codex can run tool items side by side; the session closes the message
+  # of both calls at the first result.
+  test "two tool items that run together give their results", %{bin: bin, work: work} do
     fresh(bin, 1, tid(), [
       started(tid(), command("a", %{status: "inProgress"})),
       started(tid(), command("b", %{status: "inProgress"})),
@@ -43,7 +43,6 @@ defmodule Helyx.Provider.Codex.ToolItemsTest do
              {:resume, tid(), 0},
              {:tool_call, %{id: "a"}},
              {:tool_call, %{id: "b"}},
-             {:message_end, :tool_use, _},
              {:tool_result, "a", {:ok, "out"}},
              {:tool_result, "b", {:ok, "out"}},
              {:done, _}
@@ -63,32 +62,6 @@ defmodule Helyx.Provider.Codex.ToolItemsTest do
     assert [text] = for({:tool_result, "a", {:ok, t}} <- events, do: t)
     assert text == Helyx.Text.truncate(big, :tail)
     assert text =~ "[truncated: showing lines 1001-3000 of 3000]"
-  end
-
-  # The session would give "b" `aborted` at the second `message_end`
-  # (#365).
-  test "a message that closes while a call of a closed message runs stops the provider process",
-       %{bin: bin, work: work} do
-    fresh(bin, 1, tid(), [
-      started(tid(), command("a", %{status: "inProgress"})),
-      started(tid(), command("b", %{status: "inProgress"})),
-      completed(tid(), command("a", done())),
-      started(tid(), command("d", %{status: "inProgress"})),
-      completed(tid(), command("d", done()))
-    ])
-
-    # The stop drops the events of its chunk.
-    events = run_direct([Message.user("go")], work)
-    assert {:stop, {:malformed, "item/completed"}} = List.last(events)
-    refute Enum.any?(events, &match?({:tool_result, "d", _}, &1))
-  end
-
-  test "a completion of a tool item with no start stops the provider process",
-       %{bin: bin, work: work} do
-    fresh(bin, 1, tid(), [completed(tid(), command("a", done()))])
-
-    assert [{:resume, tid(), 0}, {:stop, {:malformed, "item/completed"}}] =
-             run_direct([Message.user("go")], work)
   end
 
   test "an exit during a turn stops the provider process", %{bin: bin, work: work} do

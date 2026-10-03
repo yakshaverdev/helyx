@@ -20,8 +20,9 @@ defmodule Helyx.Event do
     * `:message_update` – `%{text_delta: binary}`, `%{thinking_delta: binary}`,
       or `%{tool_call: Helyx.Message.ToolCall.t()}`
     * `:message_end` – `%{message: Helyx.Message.t()}`; on a failed or
-      aborted turn the partial assistant message has `:error` or `:aborted`
-      as its stop reason and `data.error` holds the reason
+      aborted turn a partial assistant message with text only has `:error`
+      or `:aborted` as its stop reason and `data.error` holds the reason; one
+      with a tool call closes with `:tool_use`, as at the other closes
     * `:tool_execution_start` – `%{tool_call: Helyx.Message.ToolCall.t()}`
     * `:tool_execution_end` – `%{message: Helyx.Message.t()}`, the tool
       result message; calls run one at a time, in call order

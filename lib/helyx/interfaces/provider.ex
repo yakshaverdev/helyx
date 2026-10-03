@@ -68,15 +68,20 @@ defmodule Helyx.Provider do
     * `{:done, %{stop_reason: stop_reason, usage: map}}`: the call finished.
       `stop_reason` is one of `Helyx.Message.stop_reasons/0`
     * `{:error, term}`: the call failed
-    * `{:message_end, stop_reason, usage}`: the assistant message so far is
-      complete. The session gives an `aborted` result to every call of the
-      earlier messages that has no result yet; the calls of this message
-      stay open for their `tool_result` events until the next
-      `message_end` or a taken steer
+    * `{:message_end, stop_reason, usage}`: optional. The assistant
+      message so far is complete, with this usage. The session also closes
+      the open message by itself, with no usage, at the first
+      `tool_result` of one of its calls (stop reason `:tool_use`), at a
+      taken steer, and at the terminal. At each close the session gives an
+      `aborted` result to every call of the earlier messages that has no
+      result yet, and drops a later result of such a call; the calls of
+      the closed message stay open for their `tool_result` events until
+      the next close
     * `{:tool_result, call_id, {:ok | :error, binary}}`: the result of a
-      tool call of a completed message. The provider cuts the text to the
-      tool result limits; a text over `@max_tool_result_bytes`
-      (`Helyx.Session.Stream`) fails the turn
+      tool call. The first result of a call of the open message closes
+      that message first. The provider cuts the text to the tool result
+      limits; a text over `@max_tool_result_bytes` (`Helyx.Session.Stream`)
+      fails the turn
     * `{:resume, id, cut}`: the program started a fresh program session
     * `{:user_message, steer_id}`: the program took a steer. The
       session closes the open assistant message and gives `aborted` to

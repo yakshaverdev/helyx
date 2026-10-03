@@ -16,7 +16,7 @@ defmodule Helyx.Provider.ClaudeCode.SteerTest do
 
   describe "a steer" do
     # A turn that streams "a" and has no `result` yet.
-    defp streaming(work), do: running(work, &(&1.turn.open? and &1.init?))
+    defp streaming(work), do: running_to(work, {:text_delta, "a"})
 
     defp steer(state), do: request(state, {:steer, "t1", "s1", "more"})
 
@@ -41,7 +41,6 @@ defmodule Helyx.Provider.ClaudeCode.SteerTest do
       assert %{"role" => "user", "content" => [%{"type" => "text", "text" => "more"}]} = message
 
       assert [
-               {:message_end, :end_turn, _},
                {:user_message, "s1"},
                {:text_delta, "b"},
                {:done, _}
@@ -54,12 +53,17 @@ defmodule Helyx.Provider.ClaudeCode.SteerTest do
       turn(bin, 1, 1, begin() ++ [tool_use("c1", %{command: "ls"})])
       turn(bin, 1, 2, [tool_result("c1", "out"), lifecycle("started"), delta("b"), result("b")])
 
-      state = running(work, &(&1.turn.calls? and &1.init?))
+      state =
+        running_to(
+          work,
+          {:tool_call,
+           %Helyx.Message.ToolCall{id: "c1", name: "Bash", arguments: %{"command" => "ls"}}}
+        )
+
       {_from, _actions, state} = steer(state)
       {actions, _state} = pump(ClaudeCode, state, [], &ended?/1)
 
       assert [
-               {:message_end, :tool_use, _},
                {:tool_result, "c1", {:ok, "out"}},
                {:user_message, "s1"},
                {:text_delta, "b"},

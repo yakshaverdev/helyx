@@ -650,11 +650,13 @@ defmodule Helyx.Test.Connected do
   #     "big_cut" a cut of 101 digits, over the digit limit
   #     "max_cut" a cut of 100 digits, at the digit limit
   #     "neg_cut" a cut of -1
-  #     "result_N" a tool call and its result of N bytes
+  #     "result_N" a tool call and its result of N bytes, with no
+  #                `message_end`: the result closes the message
   #     "result_multibyte" a result of 65,537 bytes: a 2-byte character
   #                across the limit of 65,536
   #     "result_raw" a result of 65,536 bytes that are not valid UTF-8
-  #     "dup_id"  two tool calls with one id, then two results
+  #     "dup_id"  two tool calls with one id, then two results, with no
+  #               `message_end`
   #     "open_call"  "dup_id" with no second result and no text after it
   #     "late_result"  a call, a text message, then the call's result
   #
@@ -700,7 +702,6 @@ defmodule Helyx.Test.Connected do
     "dup_id" => [
       {:tool_call, %ToolCall{id: "t", name: "read", arguments: %{}}},
       {:tool_call, %ToolCall{id: "t", name: "bash", arguments: %{}}},
-      {:message_end, :tool_use, %{}},
       {:tool_result, "t", {:ok, "one"}},
       {:tool_result, "t", {:ok, "two"}}
     ]
@@ -893,7 +894,6 @@ defmodule Helyx.Test.Connected do
 
     [
       {:tool_call, call},
-      {:message_end, :tool_use, %{}},
       {:tool_result, "c1", {:ok, result_text(kind)}},
       {:text_delta, "ok"},
       @done

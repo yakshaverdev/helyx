@@ -22,6 +22,14 @@ defmodule Helyx.Provider.ClaudeCode.TurnTest do
 
   defp resume_flag?(bin, n), do: Enum.any?(args(bin, n), &String.starts_with?(&1, "--resume"))
 
+  # Waits for the `message_update` of a tool call.
+  defp until_tool_call do
+    case List.last(collect_until(:message_update)) do
+      %{data: %{tool_call: _}} -> :ok
+      _ -> until_tool_call()
+    end
+  end
+
   test "a program that does not start fails the start with its text cut at 2,000 bytes",
        %{work: work} do
     # A path of 3,200 bytes: the watchdog's text repeats it, so the text is
@@ -276,9 +284,14 @@ defmodule Helyx.Provider.ClaudeCode.TurnTest do
 
       session = start(ctx)
       :ok = Session.prompt(session, "sleep")
-      collect_until(:message_update)
+      until_tool_call()
       :ok = Session.abort(session)
       assert [%{stop_reason: :aborted}] = of_type(collect_until(:agent_end), :agent_end)
+
+      # The message with the call and its `aborted` result joined (#385).
+      transcript = :sys.get_state(Session.pid(session)).transcript
+      assert [:user, :assistant, :tool_result] = Enum.map(transcript, & &1.role)
+      assert Helyx.Message.text(List.last(transcript)) == "aborted"
 
       events = prompt(session, "next")
       assert [%{stop_reason: :end_turn}] = of_type(events, :agent_end)
@@ -291,12 +304,9 @@ defmodule Helyx.Provider.ClaudeCode.TurnTest do
                  "request_id" => "interrupt_" <> _,
                  "request" => %{"subtype" => "interrupt", "cancel_queued" => true}
                },
-               # The aborted turn left no assistant message, so its prompt
-               # is still at the end of the transcript.
-               %{
-                 "type" => "user",
-                 "message" => %{"content" => [%{"text" => "sleep"}, %{"text" => "next"}]}
-               }
+               # The abort kept the message with the call and its `aborted`
+               # result (#385), so the program gets only the new prompt.
+               %{"type" => "user", "message" => %{"content" => [%{"text" => "next"}]}}
              ] = stdin(bin, 1)
     end
 

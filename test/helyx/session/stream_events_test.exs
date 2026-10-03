@@ -211,6 +211,30 @@ defmodule Helyx.Session.StreamEventsTest do
       end
     end
 
+    test "the first result of a call in the open message closes it", %{core: core} do
+      events = harness_turn(core, "result_1")
+
+      types =
+        for %Event{type: t} <- events,
+            t in [:message_end, :tool_execution_start, :tool_execution_end],
+            do: t
+
+      assert [
+               :message_end,
+               :message_end,
+               :tool_execution_start,
+               :tool_execution_end,
+               :message_end
+             ] = types
+
+      assert [
+               _user,
+               %{content: [%Helyx.Message.ToolCall{id: "c1"}], stop_reason: :tool_use},
+               _last
+             ] =
+               messages(events)
+    end
+
     test "the size check runs before the UTF-8 repair, which can make the text larger",
          %{core: core} do
       events = harness_turn(core, "result_raw")
@@ -233,8 +257,9 @@ defmodule Helyx.Session.StreamEventsTest do
         assert List.last(events).data.error == {:tool_result_too_large, bytes, 65_536}
         assert stop_reason(events) == :error
 
+        # The failure closes the open message with its call, then the call
+        # gets `aborted`.
         transcript = :sys.get_state(Session.pid(session)).transcript
-
         assert [:user, :assistant, :tool_result] = Enum.map(transcript, & &1.role)
         assert Helyx.Message.text(List.last(transcript)) == "aborted"
 

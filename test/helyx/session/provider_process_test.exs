@@ -444,6 +444,44 @@ defmodule Helyx.Session.ProviderProcessTest do
       refute Enum.any?(events, &(&1.type == :queue_update))
     end
 
+    test "taken with a call in the open message starts the call, then aborts it",
+         %{core: core} do
+      {session, _pid, proc, turn_id} = submitted(core, "steer_take")
+      call = %Message.ToolCall{id: "c", name: "bash", arguments: %{}}
+      send(proc, {:batch, [{:event, turn_id, {:tool_call, call}}]})
+      :ok = Session.steer(session, "more")
+      send(proc, {:finish, turn_id})
+      events = collect_until(:agent_end)
+
+      assert [:tool_execution_start, :tool_execution_end, :message_end] =
+               for(
+                 %{type: t} <- Enum.drop_while(events, &(&1.type != :tool_execution_start)),
+                 t in [:tool_execution_start, :tool_execution_end, :message_end],
+                 do: t
+               )
+               |> Enum.take(3)
+    end
+
+    test "an abort with a call in the open message keeps the message and aborts the call",
+         %{core: core} do
+      {session, pid, proc, turn_id} = submitted(core, "steer_take")
+      call = %Message.ToolCall{id: "c", name: "bash", arguments: %{}}
+      send(proc, {:batch, [{:event, turn_id, {:tool_call, call}}]})
+      collect_until(:message_update)
+      :ok = Session.abort(session)
+      events = collect_until(:agent_end)
+
+      assert [:tool_execution_start, :tool_execution_end] =
+               for(%{type: t} <- events, t in [:tool_execution_start, :tool_execution_end], do: t)
+
+      assert [_user, %{role: :assistant, stop_reason: :tool_use} = assistant, result] =
+               :sys.get_state(pid).transcript
+
+      assert [%Message.Text{text: "so far"}, %Message.ToolCall{id: "c"}] = assistant.content
+      assert %{tool_call_id: "c", is_error: true} = result
+      assert Message.text(result) == "aborted"
+    end
+
     test "while preparing joins the prompt of the turn and is not sent as a steer",
          %{core: core} do
       {session, pid, hands} = start(core, "echo")

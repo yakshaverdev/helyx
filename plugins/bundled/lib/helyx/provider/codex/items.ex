@@ -2,11 +2,10 @@ defmodule Helyx.Provider.Codex.Items do
   @moduledoc false
   # The item translation of `Helyx.Provider.Codex` for the running turn.
   #
-  # `open` maps the open tool items to their types, and `streamed` holds
-  # the ids of the messages whose text came as deltas. `calls` holds the
-  # ids of the tool calls of the message that no `message_end` closed yet,
-  # and `usage` the last token usage.
-  defstruct open: %{}, streamed: MapSet.new(), calls: [], usage: %{}
+  # `open` maps the open tool items to their types, `streamed` holds the
+  # ids of the messages whose text came as deltas, and `usage` is the last
+  # token usage.
+  defstruct open: %{}, streamed: MapSet.new(), usage: %{}
 
   alias Helyx.HarnessIO
   alias Helyx.Message
@@ -30,9 +29,7 @@ defmodule Helyx.Provider.Codex.Items do
 
   def notification("item/started", %{"item" => %{"type" => type, "id" => id} = item}, items)
       when type in @tool_item_types do
-    items = %{items | calls: [id | items.calls], open: Map.put(items.open, id, type)}
-
-    {[tool_call(item)], items}
+    {[tool_call(item)], %{items | open: Map.put(items.open, id, type)}}
   end
 
   # A message whose text came with no delta gives it whole.
@@ -47,17 +44,11 @@ defmodule Helyx.Provider.Codex.Items do
       else: {[{:text_delta, text}], items}
   end
 
-  # The first result of a message's calls closes it; the results of its
-  # other calls follow. Every tool item is open here (`Check`).
+  # The session closes the assistant message at the first result of one of
+  # its calls.
   def notification("item/completed", %{"item" => %{"type" => type, "id" => id} = item}, items)
-      when type in @tool_item_types do
-    items = %{items | open: Map.delete(items.open, id)}
-    result = {:tool_result, id, tool_result(item)}
-
-    if id in items.calls,
-      do: {[{:message_end, :tool_use, items.usage}, result], %{items | calls: []}},
-      else: {[result], items}
-  end
+      when type in @tool_item_types,
+      do: {[{:tool_result, id, tool_result(item)}], %{items | open: Map.delete(items.open, id)}}
 
   def notification("thread/tokenUsage/updated", %{"tokenUsage" => %{"last" => usage}}, items)
       when is_map(usage),

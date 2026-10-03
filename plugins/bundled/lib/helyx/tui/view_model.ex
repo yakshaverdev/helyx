@@ -211,8 +211,8 @@ defmodule Helyx.TUI.ViewModel do
   transcript cells that the fold of every event up to `snapshot.seq` makes:
   each message makes the cell its events make live, and after an assistant
   message comes a closed tool cell for each of its calls that has a
-  result. Notices and the partial reply of an aborted or failed turn are
-  not in the transcript, so a snapshot has none of them. A message of a
+  result. Notices and a partial reply with text only of an aborted or failed
+  turn are not in the transcript, so a snapshot has none of them. A message of a
   role that the TUI does not show makes no cell, and a block kind that it
   does not render is dropped, as in `apply/2`.
 
