@@ -112,8 +112,8 @@ A public adapter in Core, `lib/helyx/provider/loop.ex` (Decision Q1). An API pro
 |---|---|
 | `{:turn, id, context}` | Replies `:ok` at once, then starts the first model call with the context. |
 | A stream event | Sends the deltas and the calls as events. A call with arguments that do not decode is a rejected call: the helper sends it as a `tool_call` with the arguments that it could decode, or `%{}`, and remembers its reason. The reason is valid UTF-8 of at most 1,024 bytes and never holds the raw arguments. |
-| The stream's done with calls | Sends `message_end`. Then it handles the calls of the message in call order, one at a time. A rejected call gets the event `{:tool_result, id, {:error, "tool call not run: " <> reason}}` at once. A valid call gets the event `{:tool_request, id, name, args}`, and the helper waits for its `{:tool_result}` request. |
-| `{:tool_result, id, call_id, result}` | Replies `:ok` and sends the event `{:tool_result, call_id, result}` in the same callback, so the result joins the transcript. Then it goes to the next call. |
+| The stream's done with calls | Sends `message_end`. Then it sends the event `{:tool_request, request_id, name, args}` for every valid call of the message at once, in call order. The session owns the queue and runs them one at a time (#358). A request id is unique in the node (`System.unique_integer/1`), because the session rejects a request id that its turn used before and a model can repeat a call id. A rejected call has the result `{:error, "tool call not run: " <> reason}` from the start; it joins in call order as every result does. Past the 16 waiting requests of the session, a call gets its "too many Helyx tool calls" error: a message with more than 17 valid calls can lose some, and how many depends on how fast the first calls end (a known ceiling of the session bound, #362). |
+| `{:tool_result, id, request_id, result}` | Replies `:ok` and keeps the result by its request id. In the same callback it sends the event `{:tool_result, call_id, result}` for each call that has its result when every earlier call also has its result, in call order, so the results join the transcript in call order whatever order they come in. |
 | All calls have results | Sends `{:user_message, steer_id, text}` for each held steer, then `{:need_context, id}`, in that order (C2). |
 | `{:context, id, {:ok, context}}` | Replies `:ok` and starts the next model call. If a steer came while the context was built, it sends its `user_message` and a new `{:need_context, id}` instead, so the model call gets the steer (C2). |
 | `{:context, id, {:error, reason}}` | Replies `:ok` and ends the turn with `{:error, reason}`. The process stays. |
@@ -171,7 +171,7 @@ The local path (`server.ex`, `stream.ex`, `turn.ex`, `provider.ex`). "loop" mean
 |---|---|---|
 | The stream Task under the Core task supervisor, `Stream.run/1` | loop | The model Task of the helper |
 | The context build in the stream Task before each call | kept | The prepare Task of the hands, through `{:need_context}` (C1–C4) |
-| `Turn.calls`: the calls of a message run one at a time, in call order | loop | The helper handles the calls in call order. Core's tool queue also runs one at a time. |
+| `Turn.calls`: the calls of a message run one at a time, in call order | loop | The helper sends every call of the message at once and puts the results in call order (#362). Core's tool queue runs them one at a time. |
 | `{:rejected_tool_call, call, reason}`, `Turn.reject`, `Turn.rejection`, the `rejected` field | loop | The helper records the call and sends its error result. `Stream.check` rejects the event as malformed. |
 | The 1,024-byte reason bound and the no-raw-arguments rule | loop | Checked in the helper. Core checks the result text with the tool result limit. |
 | Queued steers join the transcript before the next provider call (`start_provider_call`, `append_steers`) | changed | A steer of a running turn goes to the provider (today's connected rule). The helper sends its `user_message` before the next model call. The transcript order is the same. |
@@ -206,7 +206,9 @@ The connected path (`harness.ex`, `wait.ex`, `steers.ex`, `server.ex`). Every me
 
 #358 moved the turn and its Helyx tool calls to the session, the only owner. Removed: `live`, `calls`, `seen`, `running`, `started`, `waiting`, and `context?` in the provider process; the `{:tool_start}` ask and its bound; `end_tools`; `{:turn_dropped, id}` (#339) with its accepted hole of a reused program turn id; `write_result` and `{:tool_result_not_answered}` / `{:context_not_answered}`, because every `tool_result` and `context` request now has its armed kill. A used call id is no longer answered "used before": it stops the provider process, as an open one did. The waiting bound of 16 moved to the session.
 
-2. Removed replies: none. Every reply of the connected protocol stays. The local path had no replies; its order guarantees move as follows. Calls in call order: the helper runs them one at a time, and the one provider process sees every tool result request before it sends the next tool request. Steers before the next model call: the helper sends the `user_message` events before `{:need_context}` in one action list, and the session applies them before it builds the context (C2).
+#362 removed the copy of that queue in `Helyx.Provider.Loop`: the `tool` field (the one request that waited for its result), the request counter `n`, the `{Helyx.Provider.Loop, :next, turn_id}` message to itself with its `info/2` clause, and the `context?` field with its guard on `{:context, ...}`. The session queue runs the calls one at a time. Each call gets a request id from `System.unique_integer/1` when it joins the list. The helper keeps the results by request id and sends them in call order. The session sends a context only after a `need_context` (C3), so the helper needs no record of an open request. `steers` stays: a `user_message` while calls are open would give them `aborted` in the session (`Messages.take_steer/2`), so a steer waits for the last result. Removed tests: "the next call goes out only after the result of the one before" and "a result that comes before the interrupt starts no next call after it". "Calls run in call order, one at a time" became "every call goes out at once; the results join in call order, whatever order they come in".
+
+2. Removed replies: none. Every reply of the connected protocol stays. The local path had no replies; its order guarantees move as follows. Calls in call order: the helper sends the results as `tool_result` events in call order, and the session queue runs the calls one at a time (#362). Steers before the next model call: the helper sends the `user_message` events before `{:need_context}` in one action list, and the session applies them before it builds the context (C2).
 
 3. Tests of the old mechanism:
 
@@ -231,7 +233,7 @@ These tests change their property:
 
 Each such test keeps its property where only the event timing changes. The PR lists each test that changes and why.
 
-`loop_test.exs`, "a rejected call gets an error result with its reason; the text and the good call stay", and "tool calls run one at a time, in call order" keep their run properties through the helper.
+`loop_test.exs`, "a rejected call gets an error result with its reason; the text and the good call stay", and "tool calls run one at a time, in call order" keep their run properties through the helper and the session queue.
 
 New tests:
 
@@ -281,7 +283,7 @@ New tests:
 - **Q1, where the helper lives (2026-10-02):** A, in Core, as a supported public adapter. Every API provider needs it, and it adapts the one interface to a simpler one, as `Helyx.Tool.hold/1` helps the tool interface. It knows no plugin kind. Option B put it in `plugins/bundled`; the Core tests that use `Helyx.Test.Provider` would then need their own copy of the loop, or move to `plugins/bundled`, because the root project cannot depend on `helyx_plugins`.
 - **No deadline for a model call** (review 1). Abort and close have deadlines.
 - **The session does not own the request deadlines with its own timer.** ADR 0007 rejects this: a busy session would kill late, and a late `:rejected` steer, which is queued again today, would become a notice.
-- **The helper gives tool request ids from a counter per turn** ("0", "1", ...) and maps each one to the model's call id. Core's used-id rule gives an error to an id that a turn already used, and a model can repeat a call id in one turn. The transcript, `tool_execution_start` and `tool_execution_end`, and the snapshot still carry the model's real call ids.
+- **The helper gives each call a tool request id of its own** (`System.unique_integer/1`, #362) and maps each one to the model's call id. A request id that the turn used before stops the provider process (#358), and a model can repeat a call id in one turn. The transcript, `tool_execution_start` and `tool_execution_end`, and the snapshot still carry the model's real call ids.
 - **`:provider_behind` is a stream error that a client sees.** When the model Task finds the provider process mailbox at the cap, the model call ends with `{:error, {:provider_behind, length, 10_000}}`. The client sees it as the error reason of that model call.
 
 ## Build order

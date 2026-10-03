@@ -256,11 +256,14 @@ defmodule Helyx.Provider.OpenAITest do
 
   # The provider callbacks come from `Helyx.Provider.Loop`; the test
   # process stands in for the provider process.
-  test "through the helper, a rejected call gets its result and a good one goes to Core" do
+  test "through the helper, every good call goes to Core at once and the results join in call order" do
     stub([
-      delta(%{tool_calls: [%{index: 0, id: "c1", function: %{name: "read", arguments: "[1]"}}]}),
       delta(%{
-        tool_calls: [%{index: 1, id: "c2", function: %{name: "bash", arguments: ~s({"b": 1})}}]
+        tool_calls: [%{index: 0, id: "c1", function: %{name: "read", arguments: ~s({"a": 1})}}]
+      }),
+      delta(%{tool_calls: [%{index: 1, id: "c2", function: %{name: "read", arguments: "[1]"}}]}),
+      delta(%{
+        tool_calls: [%{index: 2, id: "c3", function: %{name: "bash", arguments: ~s({"b": 1})}}]
       }),
       delta(%{}, "tool_calls"),
       "[DONE]"
@@ -269,17 +272,32 @@ defmodule Helyx.Provider.OpenAITest do
     {:ok, state} = OpenAI.Go.init("kimi-k2", [], session_id: "s1")
     context = %Helyx.Context{messages: [Helyx.Message.user("hi")]}
     {:ok, [{:reply, :from, :ok}], state} = OpenAI.Go.request({:turn, "t1", context}, :from, state)
+    {events, state} = loop_events(state, [])
 
     assert [
              {:tool_call, %{id: "c1"}},
              {:tool_call, %{id: "c2"}},
+             {:tool_call, %{id: "c3"}},
              {:message_end, :tool_use, %{}},
-             {:tool_result, "c1", {:error, "tool call not run: " <> @not_object}},
-             {:tool_request, "0", "bash", %{"b" => 1}}
-           ] = loop_events(state, [])
+             {:tool_request, id1, "read", %{"a" => 1}},
+             {:tool_request, id3, "bash", %{"b" => 1}}
+           ] = events
+
+    {:ok, [{:reply, :r3, :ok}], state} =
+      OpenAI.Go.request({:tool_result, "t1", id3, {:ok, "three"}}, :r3, state)
+
+    {:ok, [{:reply, :r1, :ok} | actions], _state} =
+      OpenAI.Go.request({:tool_result, "t1", id1, {:ok, "one"}}, :r1, state)
+
+    assert actions == [
+             {:event, "t1", {:tool_result, "c1", {:ok, "one"}}},
+             {:event, "t1", {:tool_result, "c2", {:error, "tool call not run: " <> @not_object}}},
+             {:event, "t1", {:tool_result, "c3", {:ok, "three"}}},
+             {:need_context, "t1"}
+           ]
   end
 
-  # The events of the model call up to the first tool request.
+  # The events of the model call up to its message end.
   defp loop_events(state, acc) do
     receive do
       {:request, _conn, _body} ->
@@ -289,11 +307,11 @@ defmodule Helyx.Provider.OpenAITest do
         {:ok, actions, state} = OpenAI.Go.info(message, state)
         acc = acc ++ for {:event, "t1", event} <- actions, do: event
 
-        if match?({:tool_request, _, _, _}, List.last(acc)),
-          do: acc,
+        if Enum.any?(acc, &match?({:message_end, _, _}, &1)),
+          do: {acc, state},
           else: loop_events(state, acc)
     after
-      Helyx.Test.Events.wait_ms() -> flunk("no tool request")
+      Helyx.Test.Events.wait_ms() -> flunk("no message end")
     end
   end
 
