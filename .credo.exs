@@ -21,7 +21,7 @@
            [
              allowed: %{
                "lib/helyx/session/server.ex" =>
-                 {642,
+                 {635,
                   "the GenServer callbacks and the turn and wait transitions of one session process"},
                "plugins/bundled/lib/helyx/provider/codex.ex" =>
                  {608,

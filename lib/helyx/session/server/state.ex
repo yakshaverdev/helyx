@@ -14,7 +14,7 @@ defmodule Helyx.Session.Server.State do
   # start, its idle timer, and the start of the wait for its end
   # (docs/features/long-lived-harness.md).
 
-  alias Helyx.Session.{Hands, ProviderProcess, ProviderRequest, Queues, Transcript, Turn, Wait}
+  alias Helyx.Session.{Hands, ProviderProcess, ProviderRequest, Queue, Transcript, Turn, Wait}
   alias Helyx.Session.Server.ProviderConn
 
   @enforce_keys [:id, :core, :model, :provider, :cwd]
@@ -52,7 +52,8 @@ defmodule Helyx.Session.Server.State do
     # `:idle`, the turn in progress (a `%Turn{}`), or the wait before
     # the next turn can start (a `%Wait{}`, see `Helyx.Session.Wait`).
     activity: :idle,
-    queues: %Queues{},
+    # The steer state: the queues and the sent steers (`Helyx.Session.Queue`).
+    queue: %Queue{},
     # The last resume id per provider id, with the transcript length then.
     resume_ids: %{},
     # The provider process (ADR 0007), a `%ProviderConn{}`, or nil.

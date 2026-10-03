@@ -6,7 +6,7 @@ defmodule Helyx.Session.Server do
   require Logger
 
   alias Helyx.{Context, Message, ModelRef}
-  alias Helyx.Session.{Hands, Id, Queues, Snapshot, Steers}
+  alias Helyx.Session.{Hands, Id, Queue, Snapshot}
   alias Helyx.Session.Server.{Messages, ProviderConn, Record, State, Steering, Stop}
   alias Helyx.Session.{Turn, Wait}
 
@@ -57,9 +57,8 @@ defmodule Helyx.Session.Server do
   # A steer that still waits for its answer gets its notice now: a late
   # `:rejected` must not queue it again after the abort.
   def handle_call(:abort, from, %State{activity: %Wait{} = wait} = state) do
-    {wait, effects} = Wait.abort(wait, from)
-    state = Steering.drop_queues(state)
-    {:noreply, progress(Steering.steer_effects(%{state | activity: wait}, effects))}
+    state = Steering.drop_queues(%{state | activity: Wait.abort(wait, from)})
+    {:noreply, progress(Steering.abort(state))}
   end
 
   def handle_call({:prompt, _text}, _from, %State{activity: %Turn{}} = state) do
@@ -70,13 +69,13 @@ defmodule Helyx.Session.Server do
   # `preparing` and `submitting` it stays in the local queue (see "Turn
   # states" in `docs/features/long-lived-harness.md`). A sent steer counts
   # in the 32 steers until its `user_message` and its answer (see
-  # `Steering.held/1`).
+  # `Helyx.Session.Queue`).
   def handle_call(
         {:steer, text},
         _from,
         %State{activity: %Turn{phase: :submitted}} = state
       ) do
-    if Queues.steer_room?(state.queues, Steering.held(state)),
+    if Queue.room?(state.queue),
       do: {:reply, :ok, Steering.send_steer(text, state)},
       else: {:reply, {:error, :queue_full}, state}
   end
@@ -105,7 +104,7 @@ defmodule Helyx.Session.Server do
       messages: state.transcript,
       turn: if(match?(%Turn{}, state.activity), do: Turn.snapshot(state.activity)),
       model: ModelRef.to_string(state.model),
-      queue: Queues.counts(state.queues)
+      queue: Queue.counts(state.queue)
     }
 
     {:reply, snapshot, state}
@@ -163,14 +162,12 @@ defmodule Helyx.Session.Server do
 
   # The provider took a steer of this turn: its text, the one the session
   # checked at the client call, joins the transcript here (see
-  # `Steers.take/2`).
+  # `Queue.take/2`).
   def handle_info(
         {:stream_event, turn_id, {:user_message, steer_id, _text}},
-        %State{activity: %Turn{id: turn_id} = turn} = state
-      ) do
-    {steers, effects} = Steers.take(turn.steers, steer_id)
-    {:noreply, Steering.steer_effects(put_in(state.activity.steers, steers), effects)}
-  end
+        %State{activity: %Turn{id: turn_id}} = state
+      ),
+      do: {:noreply, Steering.take(state, steer_id)}
 
   # The provider asks for a Helyx tool (see "Helyx tool calls" in
   # `docs/features/long-lived-harness.md`). The loop owns the waiting
@@ -324,15 +321,10 @@ defmodule Helyx.Session.Server do
     {:noreply, if(reply == :ok, do: Steering.send_local_steers(state), else: state)}
   end
 
-  # The answer to a steer of the turn (see "Steer" in
-  # `docs/features/long-lived-harness.md` and `Steers.answer/3`).
-  def handle_info(
-        {:provider_reply, from, :steer, reply},
-        %State{activity: %Turn{} = turn} = state
-      ) do
-    {steers, effects} = Steers.answer(turn.steers, from, reply)
-    {:noreply, Steering.steer_effects(put_in(state.activity.steers, steers), effects)}
-  end
+  # The answer to a steer, in the turn or in the wait after it (see "Steer"
+  # in `docs/features/long-lived-harness.md` and `Queue.answer/3`).
+  def handle_info({:provider_reply, from, :steer, reply}, %State{} = state),
+    do: {:noreply, progress(Steering.answer(state, from, reply))}
 
   # The answer to a tool result or a context of the turn: it was written.
   def handle_info(
@@ -345,10 +337,8 @@ defmodule Helyx.Session.Server do
 
   # A reply in the wait acts only on the part whose stored ref it matches
   # (see `Wait.answer/4`).
-  def handle_info({:provider_reply, from, kind, reply}, %State{activity: %Wait{} = wait} = state) do
-    {wait, effects} = Wait.answer(wait, kind, from, reply)
-    {:noreply, progress(Steering.steer_effects(%{state | activity: wait}, effects))}
-  end
+  def handle_info({:provider_reply, from, kind, reply}, %State{activity: %Wait{} = wait} = state),
+    do: {:noreply, progress(%{state | activity: Wait.answer(wait, kind, from, reply)})}
 
   # The idle timer of the provider process. Only the current timer counts,
   # and only while the session is idle: a turn or a wait since it was armed
@@ -464,11 +454,11 @@ defmodule Helyx.Session.Server do
   # answer.
   defp abort_turn(%State{activity: turn} = state, callers) do
     request = Hands.request_cancel(state.hands, turn.id)
-    {wait, effects} = Wait.after_turn(turn, provider_pid(state), false)
+    wait = Wait.after_turn(turn, provider_pid(state))
 
     state =
       state
-      |> Steering.steer_effects(effects)
+      |> Steering.end_turn(turn.id, false)
       |> Messages.abort_open_calls()
       |> Messages.close_partial_message(:aborted, :aborted)
       |> Steering.drop_queues()
@@ -479,27 +469,30 @@ defmodule Helyx.Session.Server do
   end
 
   # Runs the wait (see `Wait.next/2`): sends the requests it names, and at
-  # its end replies to the abort callers and settles.
+  # its end, with no steer request open, replies to the abort callers and
+  # settles.
   defp progress(%State{activity: %Wait{} = wait} = state) do
-    case Wait.next(wait, provider_pid(state)) do
-      {:send, wait, pid, request} ->
+    case {Wait.next(wait, provider_pid(state)), Queue.open?(state.queue)} do
+      {{:send, wait, pid, request}, _steer_open} ->
         from = ask(state, pid, request, elem(request, 0))
         progress(%{state | activity: Wait.sent(wait, request, from)})
 
-      {:done, callers} ->
+      {{:done, callers}, false} ->
         Enum.each(callers, &GenServer.reply(&1, :ok))
         settle(%{state | activity: :idle})
 
-      :open ->
+      _open ->
         state
     end
   end
 
+  defp progress(state), do: state
+
   # A provider process ended in the wait: see `Wait.provider_down/2`.
   defp wait_provider_down(%State{activity: wait} = state, pid) do
     conn = if provider_pid(state) == pid, do: nil, else: state.conn
-    {wait, effects} = Wait.provider_down(wait, pid)
-    progress(Steering.steer_effects(%{state | conn: conn, activity: wait}, effects))
+    state = %{state | conn: conn, activity: Wait.provider_down(wait, pid)}
+    progress(Steering.provider_down(state))
   end
 
   # With no turn and no wait, a provider process that ended is waited for
@@ -592,12 +585,12 @@ defmodule Helyx.Session.Server do
     # A call in the last message gets no result. A steer with no answer yet
     # can still be rejected: the session waits for its answer before the
     # next turn.
-    {wait, effects} = Wait.after_turn(turn, provider_pid(state), true)
+    wait = Wait.after_turn(turn, provider_pid(state))
 
     state =
       state
       |> Messages.abort_open_calls()
-      |> Steering.steer_effects(effects)
+      |> Steering.end_turn(turn.id, true)
       |> emit(:turn_end, %{message: assistant})
       |> emit(:agent_end, %{stop_reason: stop_reason})
 
@@ -624,11 +617,11 @@ defmodule Helyx.Session.Server do
   # turn runs the turn cleanup of the hands before the next turn: its
   # prepare Task can still run.
   defp fail_turn(reason, %State{activity: turn} = state) do
-    {wait, effects} = Wait.after_turn(turn, provider_pid(state), false)
+    wait = Wait.after_turn(turn, provider_pid(state))
 
     state =
       state
-      |> Steering.steer_effects(effects)
+      |> Steering.end_turn(turn.id, false)
       |> Messages.abort_open_calls()
       |> Messages.close_partial_message(:error, reason)
       |> Steering.drop_queues()

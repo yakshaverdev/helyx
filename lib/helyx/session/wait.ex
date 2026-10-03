@@ -5,13 +5,14 @@ defmodule Helyx.Session.Wait do
   # (`hands`), then the Helyx tool of the turn that ended (`tool`,
   # `{turn_id, call_id}`, see `next/2`) and the interrupt of the
   # turn (`interrupt`, `{pid, turn_id}`) with its answer (`reply`), the
-  # answer to an idle close (`idle`), the answers to the open steer requests
-  # of the turn that ended (`steers`, a `Helyx.Session.Steers` ledger) and
-  # to its open tool start, tool result, and context requests (`results`), and the
-  # `:provider_down` of a provider process that ends (`provider`).
+  # answer to an idle close (`idle`), the answers to the open tool start,
+  # tool result, and context requests of the turn that ended (`results`),
+  # and the `:provider_down` of a provider process that ends (`provider`).
+  # The session also holds the wait while a steer request is open (see
+  # `Helyx.Session.Queue`).
   #
   # The wait ends only when `hands`, `reply`, and `provider` are nil too, not
-  # when `steers` and `results` are empty: an interrupt answer other than
+  # when `results` is empty: an interrupt answer other than
   # `:ok` clears `reply`, and the wait still needs the `:provider_down`.
   # Every part is bounded: the hands by their release deadlines, a provider
   # process by the kill armed with its request (a steer by the steer bound).
@@ -20,7 +21,7 @@ defmodule Helyx.Session.Wait do
   # The module is pure: `next/2` names the request that the session sends
   # next, and `sent/3` records its ref.
 
-  alias Helyx.Session.{Steers, Turn}
+  alias Helyx.Session.Turn
 
   defstruct [
     :hands,
@@ -30,7 +31,6 @@ defmodule Helyx.Session.Wait do
     :provider,
     :tool,
     callers: [],
-    steers: %Steers{},
     results: []
   ]
 
@@ -45,22 +45,16 @@ defmodule Helyx.Session.Wait do
           provider: pid() | nil,
           tool: {String.t(), String.t()} | nil,
           callers: [GenServer.from()],
-          steers: Steers.t(),
           results: [reference()]
         }
 
   # The wait after `turn`, with the current provider process `pid` (or
   # nil). With none (a failure at its `:provider_down`), no request of the
-  # turn is open any more. Returns the steer effects of the turn end (see
-  # `Steers.end_turn/3`).
-  @spec after_turn(Turn.t(), pid() | nil, boolean()) :: {t(), [Steers.effect()]}
-  def after_turn(%Turn{} = turn, pid, normal?) do
-    {steers, effects} = Steers.end_turn(turn.steers, turn.id, normal?)
+  # turn is open any more.
+  @spec after_turn(Turn.t(), pid() | nil) :: t()
+  def after_turn(%Turn{} = turn, pid) do
     wait = %__MODULE__{tool: tool(turn)}
-
-    if pid,
-      do: {%{wait | steers: steers, results: List.wrap(turn.start) ++ turn.results}, effects},
-      else: {wait, effects}
+    if pid, do: %{wait | results: List.wrap(turn.start) ++ turn.results}, else: wait
   end
 
   defp tool(%Turn{tool: %{id: id}, id: turn_id}), do: {turn_id, id}
@@ -103,7 +97,6 @@ defmodule Helyx.Session.Wait do
           hands: nil,
           reply: nil,
           provider: nil,
-          steers: %Steers{open: []},
           results: [],
           callers: callers
         },
@@ -126,49 +119,35 @@ defmodule Helyx.Session.Wait do
   # An idle close: `:ok`, the program exited, and the wait goes on until
   # its `:provider_down`; `:busy`, the program stays, and the wait ends. An
   # interrupt: `:ok` keeps the provider process; any other answer ends it,
-  # and the wait goes on until its `:provider_down`. A steer: see
-  # `Steers.answer/3`. A tool start, tool result, or context only ends its
-  # request.
-  @spec answer(t(), atom(), reference(), term()) :: {t(), [Steers.effect()]}
+  # and the wait goes on until its `:provider_down`. A tool start, tool
+  # result, or context only ends its request.
+  @spec answer(t(), atom(), reference(), term()) :: t()
   def answer(%__MODULE__{idle: from} = wait, :idle_close, from, reply) do
     provider = if reply == :busy, do: nil, else: wait.provider
-    {%{wait | idle: nil, provider: provider}, []}
+    %{wait | idle: nil, provider: provider}
   end
 
   def answer(%__MODULE__{reply: from} = wait, :interrupt, from, reply) do
     provider = if reply == :ok, do: nil, else: wait.provider
-    {%{wait | reply: nil, provider: provider}, []}
-  end
-
-  def answer(%__MODULE__{steers: steers} = wait, :steer, from, reply) do
-    {steers, effects} = Steers.answer(steers, from, reply)
-    {%{wait | steers: steers}, effects}
+    %{wait | reply: nil, provider: provider}
   end
 
   def answer(%__MODULE__{results: results} = wait, kind, from, _reply)
       when kind in [:tool_start, :tool_result, :context],
-      do: {%{wait | results: List.delete(results, from)}, []}
+      do: %{wait | results: List.delete(results, from)}
 
-  def answer(%__MODULE__{} = wait, _kind, _from, _reply), do: {wait, []}
+  def answer(%__MODULE__{} = wait, _kind, _from, _reply), do: wait
 
-  # An abort in the wait: its caller gets the reply at the end, and the
-  # steers that a late `:rejected` could queue get their notice now.
-  @spec abort(t(), GenServer.from()) :: {t(), [Steers.effect()]}
-  def abort(%__MODULE__{} = wait, caller) do
-    {steers, effects} = Steers.abort(wait.steers)
-    {%{wait | steers: steers, callers: [caller | wait.callers]}, effects}
-  end
+  # An abort in the wait: its caller gets the reply at the end.
+  @spec abort(t(), GenServer.from()) :: t()
+  def abort(%__MODULE__{} = wait, caller), do: %{wait | callers: [caller | wait.callers]}
 
   # The provider process `pid` ended, after the release of its handles: no
-  # steer or tool request is open any more. When the wait was for it, that
-  # part and its interrupt answer end too.
-  @spec provider_down(t(), pid()) :: {t(), [Steers.effect()]}
+  # tool request is open any more. When the wait was for it, that part and
+  # its interrupt answer end too.
+  @spec provider_down(t(), pid()) :: t()
   def provider_down(%__MODULE__{} = wait, pid) do
-    {steers, effects} = Steers.provider_down(wait.steers)
-    wait = %{wait | steers: steers, results: []}
-
-    if wait.provider == pid,
-      do: {%{wait | provider: nil, reply: nil}, effects},
-      else: {wait, effects}
+    wait = %{wait | results: []}
+    if wait.provider == pid, do: %{wait | provider: nil, reply: nil}, else: wait
   end
 end

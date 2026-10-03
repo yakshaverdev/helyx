@@ -207,7 +207,7 @@ The answers:
 
 When a turn ends and a steer with `:ok` or an unknown answer has no `user_message`, the session emits a notice: "the steer was not confirmed; send it again if needed". Its text stays in the notice. It is never sent twice by Helyx.
 
-A steer that waits for its answer or its `user_message` counts in the 32 entries of the steer queue until the turn ends.
+A steer that waits for its answer or its `user_message` counts in the 32 entries of the steer queue until its request ends, also in the wait after the turn.
 
 ### Claude Code
 
@@ -412,8 +412,8 @@ Owner decision on #195 (2026-09-29): one timer in the session.
 
 #202 built the steer on a connected turn. The names in the code:
 
-- The session sends `{:steer, turn_id, steer_id, text}` only in `submitted`, with a new `steer_id` and the 2,000 ms steer bound. In `preparing` and `submitting` the steer stays in the local queue; at the `{:turn, ...}` answer `:ok` the session sends the local steers, in order. The turn keeps each sent steer (`steers` in `Helyx.Session.Turn`) until its `user_message`.
-- The sent steers count in the 32 steers (`Helyx.Session.Queues`, `held`). Over that, the client gets `{:error, :queue_full}`.
+- The session sends `{:steer, turn_id, steer_id, text}` only in `submitted`, with a new `steer_id` and the 2,000 ms steer bound. In `preparing` and `submitting` the steer stays in the local queue; at the `{:turn, ...}` answer `:ok` the session sends the local steers, in order. The session keeps each sent steer in its ledger (`Helyx.Session.Queue` since #359) until its `user_message` and its answer.
+- The sent steers count in the 32 steers (`Helyx.Session.Queue`, see "Built in #359"). Over that, the client gets `{:error, :queue_full}`.
 - The loop answers a request over 8 open requests with `{:error, :busy}` and does not give it to the provider. For a steer this is an unknown answer. For a turn or an interrupt the loop then ends itself.
 - An error answer to a steer does not end the loop: the steer is unknown, and the turn goes on.
 - At a normal end, the session waits for the answers of the steers that have none, so a late `:rejected` still queues the steer for the next turn. Each steer with `:ok` or an unknown answer and no `user_message` gets the event `:steer_unconfirmed` with its text. An abort or a failure gives this event for every sent steer with no `user_message`, one with no answer included. The TUI shows it as a notice.
@@ -423,6 +423,18 @@ Owner decision on #195 (2026-09-29): one timer in the session.
 - The session appends its own text of the steer, the text it checked at the client call, not the text of the event. A `user_message` with an unknown `steer_id` is dropped.
 - Claude Code: after a lost-session relaunch the steers of the turn are dropped, not written again; the session gives each a notice. While the turn is held for an unresolved steer, the `result` that the provider held is not the terminal. An error `result` goes out as a notice at the start of the steer (#241).
 - Codex: the answer to `turn/steer` can come after `turn/completed`, so the provider keeps the open steer requests past the turn's end. A `user_message` waits, as a `message_end` does, until the results of the sent calls are out.
+
+## Built in #359
+
+#359 gave the steer state one owner. The names in the code:
+
+- `Helyx.Session.Queue` (`queue` in the session state, for the whole session) holds the queued steers, the queued follow-ups, and the ledger of sent steers whose request is open. It is pure: its functions return effects (`{:take, text}`, `{:notice, turn_id, text}`). `Helyx.Session.Server.Steering` is its only writer: it applies the effects, and it emits `queue_update` when the queue counts change. The ledger no longer moves from the turn to the wait at the turn end; the session holds the wait while a steer request is open.
+- The limit of 32 steers counts the queued steers and the ledger entries inside `Queue`. No caller passes a held count.
+- The ledger keeps three states: `sent` (no answer, no `user_message`), `answered` (an answer other than `:rejected` came in the turn; the `user_message` is open), and `settled` (the `user_message` came, or the steer got its notice; its answer only ends the request). `sent` and `answered` follow the documented provider behaviour (`docs/research/claude-code-stream-json.md`, `command_lifecycle` `started` after the write's `:ok`). `settled` keeps the request open, because its armed kill could end the next turn (out of scope here).
+- Removed states, with the rule of 2026-10-03 (keep a state only when a provider behaviour or a stated user-visible rule needs it):
+  - `taken` and `noticed` became `settled`. Both only waited for the answer to end the request; no user-visible rule told them apart.
+  - `ended` (a normal end with no answer) is gone. The ledger keeps the id of the turn that ended, and an answer after that end decides alone: `:rejected` queues the steer for the next turn, any other answer gives its notice. An abort after the end gives the notice at once, so a late `:rejected` queues nothing.
+- The user-visible rules are unchanged: at most once, a requeue only after a confirmed rejection, the `:steer_unconfirmed` notice, and the 32 steers with the sent steers counted.
 
 ## Built in #224
 
