@@ -3,9 +3,12 @@ defmodule Helyx.HarnessIO.CapReplayTest do
 
   alias Helyx.HarnessIO
 
+  # `@replay_max_bytes` in `Helyx.HarnessIO`.
+  @replay_max_bytes 400_000
+
   test "a history much larger than the cap encodes only the groups it keeps" do
     group_bytes = 1_000
-    fits = div(HarnessIO.replay_max_bytes(), group_bytes)
+    fits = div(@replay_max_bytes, group_bytes)
     count = fits * 10
     entries = for i <- 1..count, do: {i, 1, true}
     me = self()
