@@ -7,27 +7,19 @@ defmodule Helyx.Session.ProviderProcess do
   # error answer to `{:turn, ...}` or `{:interrupt, ...}`. It never ends
   # with `:normal` (L1 in `docs/features/one-provider-path.md`), so every
   # process linked to it ends with it: it exits with `{:shutdown, reason}`,
-  # and the hands report `reason` in `{:provider_down, pid, reason}`. Every
-  # session request has an armed kill (`ProviderRequest`). The session owns
-  # the turn and its Helyx tool calls (`docs/features/one-provider-path.md`,
-  # "Ownership"); the loop keeps no turn state.
+  # and the hands report `reason` in `{:provider_down, pid, reason}` after
+  # its release. Every session request has an armed kill
+  # (`ProviderRequest`). The session owns the turn and its Helyx tool calls
+  # (`docs/features/one-provider-path.md`, "Ownership"); the loop keeps no
+  # turn state.
 
   alias Helyx.Message
   alias Helyx.Session.{ProviderRequest, Stream}
 
-  # The most requests without a reply (`docs/features/long-lived-harness.md`,
-  # "Bounds"). One pool, no reserved slots: a turn waits for its `:ok`, an
-  # interrupt, a close (only with no turn), and the open steers share it.
-  # The steer queue holds 32 (`Helyx.Session.Queue`), so steers can fill
-  # all 8; a request over the pool gets `{:error, :busy}`.
-  @max_open 8
-
-  # The loop state: the provider and its state, the session, `open`, and
-  # `pooled`, the count of open requests in the pool (see `loop/1`).
+  # The loop state: the provider and its state, the session, and `open`
+  # (see `loop/1`).
   @enforce_keys [:provider, :state, :session]
-  defstruct [:provider, :state, :session, open: %{}, pooled: 0]
-
-  @unpooled [:tool_result, :context]
+  defstruct [:provider, :state, :session, open: %{}]
 
   @type args :: %{
           provider: module(),
@@ -74,24 +66,13 @@ defmodule Helyx.Session.ProviderProcess do
   end
 
   # `open` holds the kind and the kill of each request without a reply, by
-  # its `from`. The session can have a turn, its steers, its interrupt, and
-  # a close open; over @max_open the loop answers `{:error, :busy}` itself,
-  # and the provider never sees the request. A tool result or a context is
-  # not limited and not counted in `pooled`: the session sends at most one
-  # per tool request and context request of the provider, and
-  # `{:error, :busy}` is no reply to it.
+  # its `from`. The session bounds each kind of request (`Bounds` in
+  # `docs/features/long-lived-harness.md`), so the loop does not.
   defp loop(proc) do
     step =
       receive do
-        # `elem/2` fails for `:close` and `:idle_close`, which then get `:busy`.
-        {:provider_request, from, tref, request}
-        when proc.pooled < @max_open or elem(request, 0) in @unpooled ->
-          provide(request, from, tref, proc)
-
         {:provider_request, from, tref, request} ->
-          kind = ProviderRequest.kind(request)
-          ProviderRequest.answer(proc.session, from, tref, kind, {:error, :busy})
-          ProviderRequest.stop_after(kind, {:error, :busy}) || {:ok, proc}
+          provide(request, from, tref, proc)
 
         message ->
           case proc.provider.info(message, proc.state) do
@@ -109,7 +90,7 @@ defmodule Helyx.Session.ProviderProcess do
 
   defp provide(request, from, tref, proc) do
     kind = ProviderRequest.kind(request)
-    proc = %{proc | open: Map.put(proc.open, from, {kind, tref}), pooled: pool(proc, kind, 1)}
+    proc = %{proc | open: Map.put(proc.open, from, {kind, tref})}
 
     case proc.provider.request(request, from, proc.state) do
       {:ok, actions, state} -> act(actions, %{proc | state: state})
@@ -176,17 +157,13 @@ defmodule Helyx.Session.ProviderProcess do
     if ProviderRequest.reply?(kind, value) do
       ProviderRequest.answer(proc.session, from, tref, kind, value)
 
-      ProviderRequest.stop_after(kind, value) ||
-        {:ok, %{proc | open: open, pooled: pool(proc, kind, -1)}}
+      ProviderRequest.stop_after(kind, value) || {:ok, %{proc | open: open}}
     else
       {:stop, {:bad_action, action}}
     end
   end
 
   defp action(action, _proc), do: {:stop, {:bad_action, action}}
-
-  defp pool(proc, kind, _step) when kind in @unpooled, do: proc.pooled
-  defp pool(proc, _kind, step), do: proc.pooled + step
 
   defp sent(:ok, proc), do: {:ok, proc}
   defp sent({:error, reason}, _proc), do: {:stop, reason}

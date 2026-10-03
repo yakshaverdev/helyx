@@ -1,10 +1,11 @@
 # ProviderConn comes first: the State functions match its struct.
 defmodule Helyx.Session.Server.ProviderConn do
   @moduledoc false
-  # The provider process of the session: its pid, the model it
-  # runs, and whether `init/3` returned (`{:provider_ready, pid}`).
-  @enforce_keys [:pid, :model]
-  defstruct [:pid, :model, ready: false]
+  # The provider process of the session: its pid, the model it runs, the
+  # id of the turn that started it, and whether `init/3` returned
+  # (`{:provider_ready, pid}`).
+  @enforce_keys [:pid, :model, :turn]
+  defstruct [:pid, :model, :turn, ready: false]
 end
 
 defmodule Helyx.Session.Server.State do
@@ -14,8 +15,8 @@ defmodule Helyx.Session.Server.State do
   # start, its idle timer, and the start of the wait for its end
   # (docs/features/long-lived-harness.md).
 
-  alias Helyx.Session.{Hands, ProviderProcess, ProviderRequest, Queue, Transcript, Turn, Wait}
-  alias Helyx.Session.Server.ProviderConn
+  alias Helyx.Session.{Hands, ProviderProcess, ProviderRequest, Queue, Transcript, Turn}
+  alias Helyx.Session.Server.{ProviderConn, Wait}
 
   @enforce_keys [:id, :core, :model, :provider, :cwd]
 
@@ -50,7 +51,7 @@ defmodule Helyx.Session.Server.State do
     # Each subscriber pid and the session's monitor of it (session-subscribers.md).
     subscribers: %{},
     # `:idle`, the turn in progress (a `%Turn{}`), or the wait before
-    # the next turn can start (a `%Wait{}`, see `Helyx.Session.Wait`).
+    # the next turn can start (a `%Wait{}`).
     activity: :idle,
     # The steer state: the queues and the sent steers (`Helyx.Session.Queue`).
     queue: %Queue{},
@@ -84,8 +85,9 @@ defmodule Helyx.Session.Server.State do
   def base_opts(state), do: [core: state.core, session_id: state.id, cwd: state.cwd]
 
   # Starts the provider process of the turn under the hands, with the
-  # resume id of the transcript. A provider process of another model was
-  # closed before the turn (`close_switched/1`).
+  # resume id of the transcript, and monitors it: its `:DOWN` outside a
+  # turn drops it at once. A provider process of another model was closed
+  # before the turn (`close_switched/1`).
   def connect(
         %__MODULE__{conn: %ProviderConn{model: model}, activity: %Turn{model: model}} = state
       ),
@@ -104,7 +106,8 @@ defmodule Helyx.Session.Server.State do
 
     with {:ok, pid} <-
            Hands.start_provider(state.hands, turn.provider, ProviderProcess.run(args)) do
-      conn = %ProviderConn{pid: pid, model: turn.model}
+      Process.monitor(pid)
+      conn = %ProviderConn{pid: pid, model: turn.model, turn: turn.id}
       {:ok, %{state | conn: conn, activity: %{turn | resumed: resumed}}}
     end
   end
@@ -130,17 +133,4 @@ defmodule Helyx.Session.Server.State do
   end
 
   def close_switched(state), do: state
-
-  # The hands send `:provider_down` only after the release of the provider
-  # process's handles, so a turn does not start on a provider process that
-  # ended until then: the session waits for it. A provider process that
-  # ends after this check ends during the turn, and its `:provider_down`
-  # fails the turn (see `Hands.prepare/3`).
-  def await_ended_provider(%__MODULE__{conn: %ProviderConn{pid: pid}} = state) do
-    if Process.alive?(pid),
-      do: state,
-      else: %{state | conn: nil, activity: %Wait{provider: pid}}
-  end
-
-  def await_ended_provider(state), do: state
 end

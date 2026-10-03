@@ -144,3 +144,4 @@ One row per ticket that `/orchestrate` merged. An escape is a confirmed Codex fi
 | 2026-10-03 | #365 | r1: 1 reproduced (a late interrupt error of turn 1 answered the interrupt of turn 2), fixed with a regression test; r2: 0, 3 doc fixes | gate r1 (Codex): 0 | none needed |
 | 2026-10-03 | #362 | r1: 0 reproduced in the diff; 5 doc findings | gate r1 (Codex): 0 | none needed |
 | 2026-10-03 | #366 | r1: 1 reproduced (.credo.exs line count), 1 Codex finding rejected (asked for a handler of output no run shows); r2: 0 | gate r1 (Codex): 0 | none needed |
+| 2026-10-03 | #361 | r1: 2 reproduced (dead error branch fixed; provider end after terminal accepted as hole); r2: 1 reproduced (same hole, wider, doc only); orchestrator rejected the hole (#198) and asked for a reconnect; r3: 1 reproduced (reconnect skipped Steering.provider_down), fixed with a test | gate r1 (Codex): 0 | none needed: the hole was a real path, caught by the orchestrator before the gate |

@@ -5,13 +5,15 @@ defmodule Helyx.Session.Server.Tools do
   # program"). One runs on the hands (`Turn.tool`), at most @max_waiting
   # wait (`Turn.waiting`), and each gets exactly one `{:tool_result, ...}`
   # request: the result of its run, or an error from here. The turn end
-  # answers the open ones (`Helyx.Session.Wait`).
+  # answers the open ones (`end_turn/2`). No answer is awaited: a late
+  # reply is dropped by its ref, and a kill that fires in the next turn
+  # fails that turn.
 
   import Helyx.Session.Server.State, only: [ask: 4]
 
   alias Helyx.Message.ToolCall
   alias Helyx.Session.{Hands, Stream, Turn}
-  alias Helyx.Session.Server.State
+  alias Helyx.Session.Server.{ProviderConn, State}
 
   # Bounds the fan-out of a model: one runs and these wait.
   @max_waiting 16
@@ -39,10 +41,17 @@ defmodule Helyx.Session.Server.Tools do
   # turn that the session did not open. The provider process `pid` that
   # sent it gets `aborted`, after the interrupt or the next turn when it
   # came late.
-  def late(state, pid, turn_id, id) do
-    ask(state, pid, {:tool_result, turn_id, id, {:error, "aborted"}}, :tool_result)
-    state
+  def late(state, pid, turn_id, id), do: send_result(state, pid, turn_id, id, {:error, "aborted"})
+
+  # The turn ended: each open request gets `aborted` now, before an
+  # interrupt, while the provider process lives. The hands kill the
+  # running call.
+  def end_turn(%State{conn: %ProviderConn{pid: pid}} = state, %Turn{} = turn) do
+    ids = List.wrap(turn.tool) ++ Enum.map(turn.waiting, & &1.id)
+    Enum.reduce(ids, state, &send_result(&2, pid, turn.id, &1, {:error, "aborted"}))
   end
+
+  def end_turn(state, _turn), do: state
 
   # The hands' result of the running call: a killed call gets `aborted`.
   # Then the next waiting call runs.
@@ -76,11 +85,11 @@ defmodule Helyx.Session.Server.Tools do
     put_in(state.activity.tool, call.id)
   end
 
-  # The answer is awaited, as a steer's is, so no turn starts while its kill
-  # is armed. The late answer of `late/4` is the one exception: it is not
-  # awaited, and its kill can fire during the next turn.
-  defp answer(%State{activity: turn, conn: %{pid: pid}} = state, id, result) do
-    from = ask(state, pid, {:tool_result, turn.id, id, result}, :tool_result)
-    put_in(state.activity.results, [from | turn.results])
+  defp answer(%State{activity: turn, conn: %{pid: pid}} = state, id, result),
+    do: send_result(state, pid, turn.id, id, result)
+
+  defp send_result(state, pid, turn_id, id, result) do
+    ask(state, pid, {:tool_result, turn_id, id, result}, :tool_result)
+    state
   end
 end
