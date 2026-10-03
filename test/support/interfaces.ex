@@ -606,17 +606,18 @@ defmodule Helyx.Test.Connected do
   #   "block_turn"       the turn callback blocks
   #   "error_turn"       a turn answers `{:error, :refused}`
   #   "crash_turn"       the turn callback raises
-  #   "late_turn"        a turn answers after 300 ms, then as "echo"
+  #   "late_turn"        a turn is held (see the end of this list)
   #   "block_interrupt"  "hang", and the interrupt callback blocks
   #   "error_interrupt"  "hang", and an interrupt answers an error
-  #   "late_interrupt"   "hang", and an interrupt answers after 100 ms
+  #   "late_interrupt"   "hang", and an interrupt is held
   #   "block_close"      "echo", and the close callback blocks
-  #   "late_close"       "echo", and a close answers :ok after 100 ms
+  #   "late_close"       "echo", and the first close is held; a later
+  #                      close, as the one of a session stop, answers :ok
   #   "busy"             "echo", and an idle close answers :busy
   #   "busy_turn"        "busy", and the idle close starts the program turn
   #                      "p1" with the tool request "c1" and a context
   #                      request before its answer
-  #   "late_idle"        "echo", and an idle close answers :ok after 100 ms
+  #   "late_idle"        "echo", and an idle close is held
   #   "block_idle"       "echo", and the idle close callback blocks
   #   "bad_action"       a turn gives an action that is not one
   #   "bad_reply"        a turn answers `:maybe`
@@ -637,7 +638,6 @@ defmodule Helyx.Test.Connected do
   #                      name, args}` asks for a Helyx tool, and `{:cancel, id}`
   #                      withdraws it; `{:ping, pid}`
   #                      sends `:pong` to pid
-  #   "tools_late"       "tools", and a tool result answers after 100 ms
   #   "label"            "echo"; a provider process started with no
   #                      `:resume_id` reports a new label on its
   #                      first turn
@@ -681,20 +681,31 @@ defmodule Helyx.Test.Connected do
   #   "steer_take"       a steer answers :ok and the provider takes it
   #   "steer_reject"     a steer answers :rejected
   #   "steer_error"      a steer answers `{:error, :lost}`
-  #   "steer_hold"       a steer gets no answer; the controller gets
-  #                      `{:held, from}`, and the message `{:answer, from,
-  #                      value}` answers it
+  #   "steer_hold"       a steer is held
   #   "steer_block"      the steer callback blocks
   #   "steer_early"      "steer_hold", and the provider takes the steer
   #                      before its answer
+  #
+  # A held request gets no answer until the test gives one: the controller
+  # gets `{:held, from}`, and the message `{:answer, from, value}` or
+  # `{:batch, actions}` answers it.
   @behaviour Helyx.Provider
 
   alias Helyx.Message.ToolCall
 
-  @hang ~w(hang flood stop tools tools_late block_interrupt error_interrupt late_interrupt) ++
+  @hang ~w(hang flood stop tools block_interrupt error_interrupt late_interrupt) ++
           ~w(steer_take steer_reject steer_error steer_hold steer_block steer_early)
 
   @done {:done, %{stop_reason: :end_turn, usage: %{}}}
+
+  # The kind of request that each model holds.
+  @held %{
+    "late_turn" => :turn,
+    "late_interrupt" => :interrupt,
+    "late_close" => :close,
+    "late_idle" => :idle_close,
+    "steer_hold" => :steer
+  }
 
   # The events of each "events.<name>" model with a fixed list.
   @events %{
@@ -754,7 +765,7 @@ defmodule Helyx.Test.Connected do
       "block_init" -> Process.sleep(:infinity)
       "exit_init" -> exit(:normal)
       "fail_init" -> {:error, :no_program}
-      _ -> {:ok, %{model: model, ctl: ctl, label: opts[:resume_id]}}
+      _ -> {:ok, %{model: model, ctl: ctl, label: opts[:resume_id], closed: false}}
     end
   end
 
@@ -768,15 +779,14 @@ defmodule Helyx.Test.Connected do
   def request(request, from, %{model: model, ctl: ctl} = state) do
     if ctl, do: send(ctl, {:conn, kind(request), self(), request})
 
-    if ctl && model in ["steer_hold", "steer_early"] && kind(request) == :steer,
-      do: send(ctl, {:held, from})
-
-    {:ok, answer(model, request, from), state}
+    kind = kind(request)
+    held? = @held[model] == kind and not (model == "late_close" and state.closed)
+    if ctl && (held? or {model, kind} == {"steer_early", :steer}), do: send(ctl, {:held, from})
+    state = %{state | closed: state.closed or request == :close}
+    {:ok, if(held?, do: [], else: answer(model, request, from)), state}
   end
 
   @impl true
-  def info({:late, from, request}, state),
-    do: {:ok, answer("echo", request, from), state}
 
   def info({:finish, turn_id}, state), do: {:ok, [{:event, turn_id, @done}], state}
 
@@ -851,15 +861,12 @@ defmodule Helyx.Test.Connected do
   defp answer("bad_event", {:turn, id, _}, from),
     do: [{:reply, from, :ok}, {:event, id, {:text_delta, 42}}]
 
-  defp answer("late_turn", {:turn, _, _} = request, from), do: later(from, request, 300)
-  defp answer("late_interrupt", {:interrupt, _} = request, from), do: later(from, request, 100)
   defp answer("block_interrupt", {:interrupt, _}, _from), do: Process.sleep(:infinity)
 
   defp answer("error_interrupt", {:interrupt, _}, from),
     do: [{:reply, from, {:error, :still_queued}}]
 
   defp answer("block_close", :close, _from), do: Process.sleep(:infinity)
-  defp answer("late_close", :close = request, from), do: later(from, request, 100)
   defp answer("busy", :idle_close, from), do: [{:reply, from, :busy}]
 
   defp answer("busy_turn", :idle_close, from) do
@@ -873,7 +880,6 @@ defmodule Helyx.Test.Connected do
     ]
   end
 
-  defp answer("late_idle", :idle_close = request, from), do: later(from, request, 100)
   defp answer("block_idle", :idle_close, _from), do: Process.sleep(:infinity)
 
   defp answer("steer_take", {:steer, id, steer_id, _text}, from),
@@ -882,11 +888,6 @@ defmodule Helyx.Test.Connected do
   defp answer("steer_reject", {:steer, _, _, _}, from), do: [{:reply, from, :rejected}]
   defp answer("steer_error", {:steer, _, _, _}, from), do: [{:reply, from, {:error, :lost}}]
   defp answer("steer_block", {:steer, _, _, _}, _from), do: Process.sleep(:infinity)
-
-  defp answer("steer_hold", {:steer, _, _, _}, _from), do: []
-
-  defp answer("tools_late", {:tool_result, _, _, _} = request, from),
-    do: later(from, request, 100)
 
   defp answer("steer_early", {:steer, id, steer_id, _text}, _from),
     do: [{:event, id, {:user_message, steer_id}}]
@@ -900,11 +901,6 @@ defmodule Helyx.Test.Connected do
   end
 
   defp answer(_model, _request, from), do: [{:reply, from, :ok}]
-
-  defp later(from, request, ms) do
-    Process.send_after(self(), {:late, from, request}, ms)
-    []
-  end
 
   defp turn_events("exit_big"), do: exit({:boom, Integer.pow(10, 100)})
 
@@ -976,13 +972,14 @@ end
 defmodule Helyx.Test.PrepareContext do
   @moduledoc false
   # Sets the system prompt to "prepared", unless the last user message is
-  # "block_prepare" (the build blocks), "hold_prepare" (it waits for
-  # `:continue`, then sets "prepared"), "raise_prepare" (it raises),
-  # "nil_build" (it returns nil), "bad_build" (it returns a map),
-  # "forged_build" (a struct without :system), "bad_system" (a system
-  # prompt that is not a string), or "bad_messages_build" (the messages
-  # are not a list). A last message "fresh" sets it to "prepared for
-  # <turn_id>".
+  # "block_prepare" (the build sends `{:preparing, pid}` to the controller
+  # of `Helyx.Test.Connected`, if one is registered, and blocks),
+  # "hold_prepare" (it waits for `:continue`, then sets "prepared"),
+  # "raise_prepare" (it raises), "nil_build" (it returns nil), "bad_build"
+  # (it returns a map), "forged_build" (a struct without :system),
+  # "bad_system" (a system prompt that is not a string), or
+  # "bad_messages_build" (the messages are not a list). A last message
+  # "fresh" sets it to "prepared for <turn_id>".
   @behaviour Helyx.ModelContext
 
   @impl true
@@ -990,13 +987,13 @@ defmodule Helyx.Test.PrepareContext do
     case context.messages |> List.last() |> Helyx.Message.text() do
       "fresh" -> %{context | system: "prepared for #{opts[:turn_id]}"}
       "hold_prepare" -> receive(do: (:continue -> %{context | system: "prepared"}))
+      "block_prepare" -> block(opts)
       text -> build_text(text, context)
     end
   end
 
   defp build_text(text, context) do
     case text do
-      "block_prepare" -> Process.sleep(:infinity)
       "raise_prepare" -> raise "prepare failed"
       "nil_build" -> nil
       "bad_build" -> Map.from_struct(context)
@@ -1005,6 +1002,12 @@ defmodule Helyx.Test.PrepareContext do
       "bad_messages_build" -> %{context | messages: nil}
       _ -> %{context | system: "prepared"}
     end
+  end
+
+  defp block(opts) do
+    ctl = Process.whereis(Helyx.Test.Connected.controller(opts[:core]))
+    if ctl, do: send(ctl, {:preparing, self()})
+    Process.sleep(:infinity)
   end
 end
 
