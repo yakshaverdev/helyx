@@ -24,16 +24,14 @@ defmodule Helyx.Session.Server.Wait do
 
   # The normal end of the turn, at its `:done` terminal.
   def end_turn(state, stop_reason, usage) do
-    {%State{activity: turn} = state, assistant, _calls} =
-      Messages.close_assistant(state, stop_reason, usage)
+    {%State{activity: turn} = state, assistant} = Messages.end_turn(state, stop_reason, usage)
 
     kill_prepare(turn)
 
-    # A call in the last message gets no result. A steer with no answer yet
-    # can still be rejected after the turn (`Queue.answer/3`).
+    # A steer with no answer yet can still be rejected after the turn
+    # (`Queue.answer/3`).
     state =
       state
-      |> Messages.abort_open_calls()
       |> Steering.end_turn(turn.id, true)
       |> Tools.end_turn(turn)
       |> emit(:turn_end, %{message: assistant})
@@ -49,7 +47,7 @@ defmodule Helyx.Session.Server.Wait do
   # killed, and the hands release its Tasks before the next turn; the
   # `callers` get their reply when the wait ends. A partial assistant
   # message with a tool call joins the transcript
-  # (`Messages.close_with_calls/1`), and its calls get `aborted`; one with
+  # (`Messages.close_turn/3`), and its calls get `aborted`; one with
   # text only is closed with the stop reason so clients do not keep it
   # open, and is not added to the transcript. Only an abort of a turn that
   # sent `{:turn, ...}` gets an interrupt, after the `aborted` answers of
@@ -66,9 +64,7 @@ defmodule Helyx.Session.Server.Wait do
     state =
       state
       |> Steering.end_turn(turn.id, false)
-      |> Messages.close_with_calls()
-      |> Messages.abort_open_calls()
-      |> Messages.close_partial_message(stop, reason)
+      |> Messages.close_turn(stop, reason)
       |> Steering.drop_queues()
       |> Tools.end_turn(turn)
       |> emit(:agent_end, data)
