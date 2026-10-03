@@ -54,7 +54,9 @@ defmodule Helyx.TUI.ViewModelTest do
         {:message_end, %{message: answer}}
       ])
 
-    assert [%Message{role: :user}, %Message{role: :assistant} = done] = vm.cells
+    assert [%Message{role: :user}, %Message{role: :assistant} = done, {:tool, ^call, _, nil}] =
+             vm.cells
+
     assert Message.text(done) == "Listing."
     assert vm.streaming == nil
     assert vm.running?
@@ -79,32 +81,56 @@ defmodule Helyx.TUI.ViewModelTest do
            ]
   end
 
-  test "tool calls and results attach as they happen" do
+  # The cells of an assistant message: the message, then an open cell for
+  # each call.
+  defp calls_end(calls), do: {:message_end, %{message: assistant(calls, :tool_use)}}
+
+  defp open(call), do: {:tool, call, ViewModel.call_line(call), nil}
+  defp closed(call, result), do: {:tool, call, ViewModel.call_line(call), result}
+
+  test "a call gets an open cell from its message, and its result closes it" do
     call = %Message.ToolCall{id: "c1", name: "bash", arguments: %{"command" => "ls"}}
     result = Message.tool_result(call, {:ok, "lib\ntest"})
+    head = [{:agent_start, %{}}, {:turn_start, %{}}, {:message_end, %{message: user("hi")}}]
 
-    started =
+    # The start event changes no cell.
+    open_vm = fold(head ++ [calls_end([call])])
+    assert List.last(open_vm.cells) == open(call)
+
+    assert fold(head ++ [calls_end([call]), {:tool_execution_start, %{tool_call: call}}]).cells ==
+             open_vm.cells
+
+    closed_vm = fold(head ++ [calls_end([call]), tool_end(result)])
+    assert List.last(closed_vm.cells) == closed(call, result)
+  end
+
+  # A harness program runs a call of the open message (#385): its cell shows
+  # "awaiting result" before the message ends, and keeps its place.
+  test "a call of the streaming message shows awaiting result until its result" do
+    call = %Message.ToolCall{id: "h", name: "bash", arguments: %{"command" => "ls"}}
+    result = Message.tool_result(call, {:ok, "lib"})
+
+    streaming =
       fold([
-        {:agent_start, %{}},
-        {:turn_start, %{}},
         {:message_end, %{message: user("hi")}},
-        {:message_end, %{message: assistant([call], :tool_use)}},
-        {:tool_execution_start, %{tool_call: call}}
+        {:message_start, %{message: assistant([])}},
+        {:message_update, %{text_delta: "Listing."}},
+        {:message_update, %{tool_call: call}}
       ])
 
-    assert List.last(started.cells) == {:tool, call, ViewModel.call_line(call), nil}
+    assert streaming.streaming == [open(call), %Message.Text{text: "Listing."}]
+    texts = for line <- Helyx.TUI.Transcript.lines(streaming, 80), s <- line.spans, do: s.content
+    assert ["› hi", "Listing.", "⚙ bash command=\"ls\"", "… awaiting result"] == texts
 
-    finished =
-      ViewModel.apply(started, %Event{
-        type: :tool_execution_end,
-        session_id: "s",
-        instance_id: "i",
-        turn_id: "t",
-        seq: 6,
-        data: %{message: result}
-      })
+    ended =
+      Enum.reduce(
+        events([calls_end([%Message.Text{text: "Listing."}, call]), tool_end(result)]),
+        streaming,
+        &ViewModel.apply(&2, %{&1 | seq: &1.seq + 4})
+      )
 
-    assert List.last(finished.cells) == {:tool, call, ViewModel.call_line(call), result}
+    assert [_user, %Message{}, closed] = ended.cells
+    assert closed == closed(call, result)
   end
 
   # A rejected `/model` command adds a notice while the tool runs (#83).
@@ -114,109 +140,56 @@ defmodule Helyx.TUI.ViewModelTest do
       result = Message.tool_result(call, unquote(outcome))
 
       vm =
-        [{:tool_execution_start, %{tool_call: call}}]
+        [calls_end([call])]
         |> fold()
         |> ViewModel.notice("usage: /model provider/model")
         |> ViewModel.apply(%{hd(events([tool_end(result)])) | seq: 2})
 
       assert vm.cells == [
-               {:tool, call, ViewModel.call_line(call), result},
+               assistant([call], :tool_use),
+               closed(call, result),
                {:notice, "usage: /model provider/model"}
              ]
     end
   end
 
-  # A turn starts all calls of a message at once, and a provider
-  # can repeat an id: the first result answers the first call, as in the
-  # session's transcript.
+  # A provider can repeat an id: the first result answers the first call,
+  # as in the session's transcript.
   test "a result goes to the oldest open tool cell with its id" do
     read = %Message.ToolCall{id: "t", name: "read", arguments: %{}}
     bash = %Message.ToolCall{id: "t", name: "bash", arguments: %{}}
     one = Message.tool_result(read, {:ok, "one"})
 
-    vm =
-      fold([
-        {:tool_execution_start, %{tool_call: read}},
-        {:tool_execution_start, %{tool_call: bash}},
-        tool_end(one)
-      ])
-
-    assert vm.cells == [
-             {:tool, read, ViewModel.call_line(read), one},
-             {:tool, bash, ViewModel.call_line(bash), nil}
-           ]
+    vm = fold([calls_end([read, bash]), tool_end(one)])
+    assert vm.cells == [assistant([read, bash], :tool_use), closed(read, one), open(bash)]
   end
 
-  # The session order (contract version 2): every call starts at the
-  # `message_end`, then the results come. The fold does not depend on the
-  # order of the results: each open cell gets its own result.
+  # The fold does not depend on the order of the results: each open cell
+  # gets its own result.
   test "two open tool cells get their own results, in any order" do
     c1 = %Message.ToolCall{id: "c1", name: "bash", arguments: %{}}
     c2 = %Message.ToolCall{id: "c2", name: "read", arguments: %{}}
     r1 = Message.tool_result(c1, {:ok, "one"})
     r2 = Message.tool_result(c2, {:error, "two"})
+    cells = [assistant([c1, c2], :tool_use), closed(c1, r1), closed(c2, r2)]
 
-    starts = [
-      {:tool_execution_start, %{tool_call: c1}},
-      {:tool_execution_start, %{tool_call: c2}}
-    ]
-
-    assert fold(starts ++ [tool_end(r1), tool_end(r2)]).cells == [
-             {:tool, c1, ViewModel.call_line(c1), r1},
-             {:tool, c2, ViewModel.call_line(c2), r2}
-           ]
-
-    assert fold(starts ++ [tool_end(r2), tool_end(r1)]).cells == [
-             {:tool, c1, ViewModel.call_line(c1), r1},
-             {:tool, c2, ViewModel.call_line(c2), r2}
-           ]
-  end
-
-  test "a start, end, start, end order attaches each result" do
-    c1 = %Message.ToolCall{id: "c1", name: "bash", arguments: %{}}
-    c2 = %Message.ToolCall{id: "c2", name: "read", arguments: %{}}
-    r1 = Message.tool_result(c1, {:ok, "one"})
-    r2 = Message.tool_result(c2, {:ok, "two"})
-
-    vm =
-      fold([
-        {:tool_execution_start, %{tool_call: c1}},
-        tool_end(r1),
-        {:tool_execution_start, %{tool_call: c2}},
-        tool_end(r2)
-      ])
-
-    assert vm.cells == [
-             {:tool, c1, ViewModel.call_line(c1), r1},
-             {:tool, c2, ViewModel.call_line(c2), r2}
-           ]
+    assert fold([calls_end([c1, c2]), tool_end(r1), tool_end(r2)]).cells == cells
+    assert fold([calls_end([c1, c2]), tool_end(r2), tool_end(r1)]).cells == cells
   end
 
   test "a result goes to the oldest open cell and never replaces a result" do
     call = %Message.ToolCall{id: "c1", name: "bash", arguments: %{}}
     first = Message.tool_result(call, {:ok, "first"})
     second = Message.tool_result(call, {:ok, "second"})
-    start = {:tool_execution_start, %{tool_call: call}}
+    message = assistant([call], :tool_use)
 
-    # A provider can use the same id again in a later turn.
-    assert fold([start, tool_end(first), start, tool_end(second)]).cells ==
-             [
-               {:tool, call, ViewModel.call_line(call), first},
-               {:tool, call, ViewModel.call_line(call), second}
-             ]
+    # A provider can use the same id again in a later message.
+    assert fold([calls_end([call]), tool_end(first), calls_end([call]), tool_end(second)]).cells ==
+             [message, closed(call, first), message, closed(call, second)]
 
     # A second result for a closed cell changes nothing.
-    assert fold([start, tool_end(first), tool_end(second)]).cells == [
-             {:tool, call, ViewModel.call_line(call), first}
-           ]
-
-    # Two open cells with one id: the first result answers the first call,
-    # the rule of the session's transcript.
-    assert fold([start, start, tool_end(second)]).cells ==
-             [
-               {:tool, call, ViewModel.call_line(call), second},
-               {:tool, call, ViewModel.call_line(call), nil}
-             ]
+    assert fold([calls_end([call]), tool_end(first), tool_end(second)]).cells ==
+             [message, closed(call, first)]
   end
 
   test "a result for an unknown call changes nothing" do
@@ -228,35 +201,8 @@ defmodule Helyx.TUI.ViewModelTest do
 
     # Also with cells, none of them an open tool cell for that id.
     other = %Message.ToolCall{id: "c1", name: "bash", arguments: %{}}
-    specs = [{:message_end, %{message: user("hi")}}, {:tool_execution_start, %{tool_call: other}}]
+    specs = [{:message_end, %{message: user("hi")}}, calls_end([other])]
     assert fold(specs ++ [tool_end(result)]).cells == fold(specs).cells
-  end
-
-  test "a result for a call that never started gets a closed cell, as in a snapshot" do
-    a = %Message.ToolCall{id: "t", name: "bash", arguments: %{"n" => "a"}}
-    b = %Message.ToolCall{id: "t", name: "bash", arguments: %{"n" => "b"}}
-    ra = Message.tool_result(a, {:ok, "a"})
-    rb = Message.tool_result(b, {:error, "aborted"})
-
-    vm =
-      fold([
-        {:message_end, %{message: assistant([a, b], :tool_use)}},
-        {:tool_execution_start, %{tool_call: a}},
-        {:notice, %{text: "during the run"}},
-        tool_end(ra),
-        tool_end(rb),
-        # No call with that id is left: no cell.
-        tool_end(rb)
-      ])
-
-    assert [
-             %Message{},
-             {:tool, ^a, _, ^ra},
-             {:notice, _},
-             {:tool, ^b, line, ^rb}
-           ] = vm.cells
-
-    assert line == ViewModel.call_line(b)
   end
 
   test "an aborted turn closes the stream and shows a notice" do

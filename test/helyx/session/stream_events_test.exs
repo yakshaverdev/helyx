@@ -24,7 +24,7 @@ defmodule Helyx.Session.StreamEventsTest do
             }} = Session.subscribe(session)
   end
 
-  test "a snapshot during tool calls lists every call with no result", %{core: core} do
+  test "a snapshot during tool calls holds every call in its messages", %{core: core} do
     {:ok, session} = Session.start(core, model: "test/abort")
     {:ok, _} = Session.subscribe(session)
     :ok = Session.prompt(session, "go")
@@ -40,7 +40,7 @@ defmodule Helyx.Session.StreamEventsTest do
     pid = spawn(fn -> send(test, {:snapshot, self(), Session.subscribe(session)}) end)
 
     assert_receive {:snapshot, ^pid, {:ok, snapshot}}
-    assert %{seq: ^seq, turn: %{partial: nil, running: ["1", "2", "3"]}} = snapshot
+    assert %{seq: ^seq, turn: %{partial: nil}} = snapshot
 
     assert [%Helyx.Message{role: :user}, %Helyx.Message{role: :assistant, content: calls}] =
              snapshot.messages

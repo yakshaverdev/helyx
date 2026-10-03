@@ -557,7 +557,7 @@ defmodule Helyx.TUITest do
     }
 
     texts = for line <- Transcript.lines(vm, 80), span <- line.spans, do: span.content
-    {call_rows, ["… running"]} = Enum.split(texts, -1)
+    {call_rows, ["… awaiting result"]} = Enum.split(texts, -1)
     call_line = Enum.join(call_rows)
 
     assert byte_size(call_line) in 8_190..8_192

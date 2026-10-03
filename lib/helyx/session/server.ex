@@ -92,10 +92,7 @@ defmodule Helyx.Session.Server do
       instance_id: state.instance_id,
       seq: state.seq,
       messages: state.transcript,
-      turn:
-        if(match?(%Turn{}, state.activity),
-          do: Turn.snapshot(state.activity, Transcript.open_calls(state.transcript))
-        ),
+      turn: if(match?(%Turn{}, state.activity), do: Turn.snapshot(state.activity)),
       model: ModelRef.to_string(state.model),
       queue: Queue.counts(state.queue)
     }
