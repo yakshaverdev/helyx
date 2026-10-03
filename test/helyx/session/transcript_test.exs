@@ -23,9 +23,16 @@ defmodule Helyx.Session.TranscriptTest do
     end
 
     test "a result answers the first open call with its id, and a stray result changes nothing" do
-      transcript = [assistant([call("a")]), assistant([call("a")]), result("a"), result("x")]
+      transcript = [assistant([call("a"), call("a")]), result("a"), result("x")]
       assert Transcript.open_calls(transcript) == [call("a")]
       assert Transcript.open_calls([]) == []
+    end
+
+    test "only the last assistant message has open calls, and none after another message" do
+      assert Transcript.open_calls([assistant([call("a")]), assistant([call("b")])]) ==
+               [call("b")]
+
+      assert Transcript.open_calls([assistant([call("a")]), Message.user("next")]) == []
     end
   end
 

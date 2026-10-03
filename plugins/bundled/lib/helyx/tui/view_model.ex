@@ -265,9 +265,9 @@ defmodule Helyx.TUI.ViewModel do
   end
 
   # The result of each tool call of the history, or nil, in call order: a
-  # result answers the first still-open earlier call with its id, the rule
-  # of `Helyx.Session.Transcript.open_calls/1`. One pass over the history,
-  # with one map entry per call.
+  # result answers the first still-open earlier call with its id, which on a
+  # session transcript pairs as `Helyx.Session.Transcript.open_calls/1` does.
+  # One pass over the history, with one map entry per call.
   defp results_in_call_order(messages) do
     {results, _open, count} =
       Enum.reduce(messages, {%{}, %{}, 0}, fn

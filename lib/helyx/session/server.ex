@@ -6,7 +6,7 @@ defmodule Helyx.Session.Server do
   require Logger
 
   alias Helyx.{Context, Message, ModelRef}
-  alias Helyx.Session.{Hands, Id, ProviderRequest, Queue, Snapshot, Turn}
+  alias Helyx.Session.{Hands, Id, ProviderRequest, Queue, Snapshot, Transcript, Turn}
   alias Helyx.Session.Server.{Messages, ProviderConn, Record, State, Steering, Stop, Tools, Wait}
 
   import State, only: [ask: 4, provider_pid: 1]
@@ -91,7 +91,10 @@ defmodule Helyx.Session.Server do
       instance_id: state.instance_id,
       seq: state.seq,
       messages: state.transcript,
-      turn: if(match?(%Turn{}, state.activity), do: Turn.snapshot(state.activity)),
+      turn:
+        if(match?(%Turn{}, state.activity),
+          do: Turn.snapshot(state.activity, Transcript.open_calls(state.transcript))
+        ),
       model: ModelRef.to_string(state.model),
       queue: Queue.counts(state.queue)
     }
@@ -130,25 +133,19 @@ defmodule Helyx.Session.Server do
       ) do
     {state, _assistant, calls} = Messages.close_assistant(state, stop_reason, usage)
     state = Enum.reduce(calls, state, &emit(&2, :tool_execution_start, %{tool_call: &1}))
-    %State{activity: turn} = state
-    {:noreply, %{state | activity: %{turn | partial: nil, calls: calls}}}
+    {:noreply, put_in(state.activity.partial, nil)}
   end
 
-  # A result for a call of no completed message, or for a call that a
-  # later message already closed, is dropped. A result goes
-  # to the first open call with its id, the rule of `open_calls/1`, so the
-  # transcript, the file, and the replay agree.
+  # A result goes to the first open call with its id
+  # (`Transcript.open_calls/1`), so the transcript, the file, and the
+  # replay agree. A result for no open call is dropped.
   def handle_info(
         {:stream_event, turn_id, {:tool_result, call_id, result}},
-        %State{activity: %Turn{id: turn_id} = turn} = state
+        %State{activity: %Turn{id: turn_id}} = state
       ) do
-    case Enum.find(turn.calls, &(&1.id == call_id)) do
-      nil ->
-        {:noreply, state}
-
-      call ->
-        state = %{state | activity: %{turn | calls: List.delete(turn.calls, call)}}
-        {:noreply, Messages.record_result(call, result, state)}
+    case Enum.find(Transcript.open_calls(state.transcript), &(&1.id == call_id)) do
+      nil -> {:noreply, state}
+      call -> {:noreply, Messages.record_result(call, result, state)}
     end
   end
 

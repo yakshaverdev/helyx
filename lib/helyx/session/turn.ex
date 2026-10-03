@@ -1,8 +1,8 @@
 defmodule Helyx.Session.Turn do
   @moduledoc false
   # The turn in progress. `partial` is the assistant content so far as a
-  # reversed block list, or nil before the first stream event. `calls` are
-  # the tool calls of the last `message_end` with no result yet.
+  # reversed block list, or nil before the first stream event. The open
+  # tool calls come from the transcript (`Transcript.open_calls/1`).
   # `model` and `provider` are fixed when the turn starts, so a model switch
   # during the turn takes effect on the next one. `resumed` is the resume id
   # that the connect of the turn passed to the provider, or nil. A turn has
@@ -26,7 +26,6 @@ defmodule Helyx.Session.Turn do
     :context,
     :pending,
     :tool,
-    calls: [],
     killed?: false,
     waiting: []
   ]
@@ -51,11 +50,12 @@ defmodule Helyx.Session.Turn do
     )
   end
 
-  # The turn of a snapshot (`Helyx.Session.Snapshot`): every call with no
-  # result had its `tool_execution_start` at its message end.
-  @spec snapshot(t()) :: Helyx.Session.Snapshot.turn()
-  def snapshot(%__MODULE__{} = turn) do
+  # The turn of a snapshot (`Helyx.Session.Snapshot`) with `open_calls`,
+  # the open calls of the transcript: each had its `tool_execution_start`
+  # at its message end.
+  @spec snapshot(t(), [Message.ToolCall.t()]) :: Helyx.Session.Snapshot.turn()
+  def snapshot(%__MODULE__{} = turn, open_calls) do
     partial = if turn.partial, do: assistant_message(turn, [])
-    %{id: turn.id, partial: partial, running: Enum.map(turn.calls, & &1.id)}
+    %{id: turn.id, partial: partial, running: Enum.map(open_calls, & &1.id)}
   end
 end

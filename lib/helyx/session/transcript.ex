@@ -4,36 +4,38 @@ defmodule Helyx.Session.Transcript do
 
   alias Helyx.{Message, ModelRef}
 
-  # The tool calls in the transcript that have no tool result yet, in call
-  # order. During a turn this is exactly the calls still to answer. A
-  # resumed transcript has none (see `abort_unanswered/2`).
-  # A result answers the first still-open earlier call with its id, so a
-  # call id a provider reuses in a later turn stays open until its own
-  # result arrives.
+  # The tool calls with no result yet, in call order: the calls of the last
+  # assistant message that the tool results after it do not answer. No
+  # message goes between a call and its result, so a call of an earlier
+  # message is never open, and after any other message no call is. A
+  # resumed transcript has none (see `abort_unanswered/2`). O(n).
   @spec open_calls([Message.t()]) :: [Message.ToolCall.t()]
   def open_calls(transcript) do
-    Enum.reduce(transcript, [], fn
-      %Message{role: :assistant, content: content}, open ->
-        open ++ for %Message.ToolCall{} = call <- content, do: call
+    {results, rest} =
+      transcript |> Enum.reverse() |> Enum.split_while(&match?(%Message{role: :tool_result}, &1))
 
-      %Message{role: :tool_result} = result, open ->
-        answer(open, result)
-
-      _message, open ->
-        open
-    end)
+    case rest do
+      [%Message{role: :assistant} = message | _] -> unanswered(message, Enum.reverse(results))
+      _other -> []
+    end
   end
 
-  # Deleting nil is a no-op, so a result with no open call changes nothing.
-  defp answer(open, %Message{tool_call_id: id}),
-    do: List.delete(open, Enum.find(open, &(&1.id == id)))
+  # The calls of `message` that `results` do not answer. A result answers
+  # the first still-open call with its id; deleting nil is a no-op, so a
+  # result with no open call changes nothing.
+  defp unanswered(%Message{content: content}, results) do
+    calls = for %Message.ToolCall{} = call <- content, do: call
+
+    Enum.reduce(results, calls, fn %Message{tool_call_id: id}, open ->
+      List.delete(open, Enum.find(open, &(&1.id == id)))
+    end)
+  end
 
   # The transcript with an `aborted` error result for each tool call that
   # has no result among the tool results right after its message. The
   # results go after those tool results, in call order. A live abort puts
-  # them there too. A result after a later message answers nothing here.
-  # `open_calls/1` matches such a result, but the session never writes one.
-  # After this pass no call is open, so the two rules agree. A resume
+  # them there too. A result after a later message answers nothing, the
+  # rule of `open_calls/1` at the end of the transcript. A resume
   # applies this to the transcript it reads, and it writes nothing. The file
   # keeps the open call, so every resume adds the same results at the same
   # place. A transcript with no open calls is unchanged.
@@ -61,14 +63,13 @@ defmodule Helyx.Session.Transcript do
   # Builds the transcript reversed, and one `at` for each inserted result:
   # the number of input messages before it.
   defp insert_aborted(
-         [%Message{role: :assistant, content: content} = message | rest],
+         [%Message{role: :assistant} = message | rest],
          at,
          out,
          inserts
        ) do
     {results, rest} = Enum.split_while(rest, &match?(%Message{role: :tool_result}, &1))
-    calls = for %Message.ToolCall{} = call <- content, do: call
-    aborted = Enum.map(Enum.reduce(results, calls, &answer(&2, &1)), &aborted/1)
+    aborted = Enum.map(unanswered(message, results), &aborted/1)
     at = at + 1 + length(results)
     out = Enum.reverse(aborted, Enum.reverse(results, [message | out]))
     inserts = List.duplicate(at, length(aborted)) ++ inserts
