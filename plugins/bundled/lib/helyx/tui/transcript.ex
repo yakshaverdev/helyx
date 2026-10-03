@@ -11,9 +11,8 @@ if Helyx.TUI.Transcript.Available.available?() do
     The transcript of the TUI: the cells of a `Helyx.TUI.ViewModel` as
     screen rows, and the rule for the scroll position. A position is nil,
     which follows the newest output, or `{cell, row}`, the first row on the
-    screen: a cell index and a row in that cell. The rule, its costs, and
-    its exceptions are in `docs/features/coding-agent.md`, "Transcript
-    scrollback".
+    screen: a cell index and a row in that cell. The cost bound is in
+    `docs/features/coding-agent.md`, "Transcript scrollback".
     """
 
     alias ExRatatui.Layout.Rect
@@ -34,7 +33,7 @@ if Helyx.TUI.Transcript.Available.available?() do
     # open message only grow in number, so new output does not move the view.
     # No line cache: no operation wraps all cells. A frame wraps the cells it
     # shows, and a page or a hold wraps the cells it passes, a small count of
-    # screens. The feature doc has the measured costs and the exceptions.
+    # screens.
 
     @doc """
     The transcript in `area` from `position`. With no position the view

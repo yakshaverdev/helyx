@@ -1,9 +1,8 @@
 defmodule Helyx.TUI.Wrap do
   @moduledoc """
   The width rule of the TUI: text to screen rows of at most a given number
-  of columns. Pure; it needs nothing from `ex_ratatui` (ADR 0005). The rule
-  and its limits are in `docs/features/coding-agent.md`, "Transcript row
-  width".
+  of columns. Pure; it needs nothing from `ex_ratatui` (ADR 0005). The
+  bound is in `docs/features/coding-agent.md`, "Transcript row width".
   """
 
   # East Asian Wide and Fullwidth blocks, the emoji blocks, and other ranges
