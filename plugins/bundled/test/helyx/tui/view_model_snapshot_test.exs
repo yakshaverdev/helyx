@@ -38,7 +38,7 @@ defmodule Helyx.TUI.ViewModelSnapshotTest do
     assert transcript(ViewModel.from_snapshot(snapshot)) == transcript(live)
 
     assert [_user, _assistant, {:tool, _, _, nil}, {:tool, _, _, nil}, {:tool, _, _, nil}] =
-             live.cells
+             ViewModel.cells(live)
 
     send(tool, :go)
     assert_receive {:waiting, tool}
@@ -50,7 +50,7 @@ defmodule Helyx.TUI.ViewModelSnapshotTest do
     joined = fold(snapshot, LateClient.events_to_end(late))
 
     assert transcript(joined) == transcript(watched)
-    assert length(for {:tool, _call, _line, %Message{}} <- joined.cells, do: 1) == 3
+    assert length(for {:tool, _call, _line, %Message{}} <- ViewModel.cells(joined), do: 1) == 3
     LateClient.disconnect(late)
   end
 
@@ -91,7 +91,7 @@ defmodule Helyx.TUI.ViewModelSnapshotTest do
              {:tool, %{name: "read"}, _, %Message{}},
              {:tool, %{name: "bash"}, _, nil}
            ] =
-             live.cells
+             ViewModel.cells(live)
 
     send(stream, :go)
 
@@ -133,7 +133,7 @@ defmodule Helyx.TUI.ViewModelSnapshotTest do
     live = fold(live, collect_until(:agent_end))
     joined = fold(joined, LateClient.events_to_end(late))
     assert transcript(joined) == transcript(live)
-    assert [] = for({:tool, _call, _line, nil} <- joined.cells, do: :open)
+    assert [] = for({:tool, _call, _line, nil} <- ViewModel.cells(joined), do: :open)
     LateClient.disconnect(late)
   end
 
@@ -155,7 +155,10 @@ defmodule Helyx.TUI.ViewModelSnapshotTest do
     send(stream, :go)
     watched = fold(live, collect_until(:agent_end))
     assert transcript(fold(snapshot, LateClient.events_to_end(late))) == transcript(watched)
-    assert [_user, _assistant, {:tool, %{id: "h"}, _, %Message{}}, _end] = watched.cells
+
+    assert [_user, _assistant, {:tool, %{id: "h"}, _, %Message{}}, _end] =
+             ViewModel.cells(watched)
+
     refute "… awaiting result" in texts(watched)
     LateClient.disconnect(late)
   end
@@ -196,7 +199,9 @@ defmodule Helyx.TUI.ViewModelSnapshotTest do
     send(stream, :go)
     events = collect_until(:agent_end)
     live = fold(first, events)
-    assert [_user, %Message{stop_reason: :error}, {:notice, "error: " <> _}] = live.cells
+
+    assert [_user, %Message{stop_reason: :error}, {:notice, "error: " <> _}] =
+             ViewModel.cells(live)
 
     assert_joins_after_end(session, live, events)
   end
@@ -210,7 +215,7 @@ defmodule Helyx.TUI.ViewModelSnapshotTest do
     :ok = Session.abort(session)
     events = collect_until(:agent_end)
     live = fold(first, events)
-    assert [_user, %Message{stop_reason: :aborted}, {:notice, "aborted"}] = live.cells
+    assert [_user, %Message{stop_reason: :aborted}, {:notice, "aborted"}] = ViewModel.cells(live)
 
     assert_joins_after_end(session, live, events)
   end
@@ -228,9 +233,11 @@ defmodule Helyx.TUI.ViewModelSnapshotTest do
     joined = ViewModel.from_snapshot(snapshot)
     assert snapshot.seq == List.last(events).seq
 
-    assert [_user, %Message{role: :assistant}, {:tool, %{id: "d"}, _, aborted}] = joined.cells
+    assert [_user, %Message{role: :assistant}, {:tool, %{id: "d"}, _, aborted}] =
+             ViewModel.cells(joined)
+
     assert %Message{is_error: true, content: [%Message.Text{text: "aborted"}]} = aborted
-    assert joined == live
+    assert transcript(joined) == transcript(live)
   end
 
   # An abort while the first of three calls runs: the two calls that never
@@ -251,14 +258,14 @@ defmodule Helyx.TUI.ViewModelSnapshotTest do
     events = collect_until(:agent_end)
     live = fold(first, events)
 
-    assert [_user, _assistant, c1, c2, c3, {:notice, "aborted"}] = live.cells
+    assert [_user, _assistant, c1, c2, c3, {:notice, "aborted"}] = ViewModel.cells(live)
 
     for {cell, id} <- [{c1, "c1"}, {c2, "c2"}, {c3, "c3"}],
         do: assert({:tool, %{id: ^id}, _, %Message{is_error: true}} = cell)
 
     {:ok, snapshot} = Session.subscribe(session)
     assert snapshot.seq == List.last(events).seq
-    assert ViewModel.from_snapshot(snapshot) == transcript(live)
+    assert transcript(ViewModel.from_snapshot(snapshot)) == transcript(live)
   end
 
   test "a session with no events has seq 0 and no notice", %{core: core} do
@@ -277,7 +284,7 @@ defmodule Helyx.TUI.ViewModelSnapshotTest do
     assert snapshot.seq == List.last(events).seq
     joined = ViewModel.from_snapshot(snapshot)
     assert transcript(joined) == transcript(live)
-    assert [_user] = joined.cells
+    assert [_user] = ViewModel.cells(joined)
   end
 
   # The events of the first client up to `seq`, which are in the mailbox.

@@ -10,8 +10,15 @@ defmodule Helyx.Test.ViewModelRule do
   alias Helyx.Message
   alias Helyx.TUI.ViewModel
 
-  @doc "The view model without the cells that a snapshot cannot show."
-  def transcript(vm), do: %{vm | cells: Enum.reject(vm.cells, &display_only?/1)}
+  @doc """
+  The view model as a map, with its cells as a list without the cells that a
+  snapshot cannot show. The open positions are left out: a dropped notice
+  moves the positions, and each open cell shows in `cells`.
+  """
+  def transcript(vm) do
+    cells = Enum.reject(ViewModel.cells(vm), &display_only?/1)
+    vm |> Map.from_struct() |> Map.delete(:open) |> Map.put(:cells, cells)
+  end
 
   defp display_only?({:notice, _}), do: true
 

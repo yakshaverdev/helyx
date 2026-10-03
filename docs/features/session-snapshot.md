@@ -2,7 +2,7 @@
 
 > Since #297 (`session-subscribers.md`), the session holds its subscribers: `subscribe/1` adds the caller and builds the snapshot in one call, and the events Registry named below is gone.
 >
-> The ADR 0006 revision of 2026-10-03 (#404) replaces these parts below: `contract_version` and `turn.running` leave the snapshot; the TUI makes its tool cells from the messages and folds the snapshot messages through the live fold, so the bulk construction of `from_snapshot/1` and its pairing by `running` go; the TUI drops the `instance_id` and `seq` guards, because it subscribes once and the registration and the snapshot happen in one server handler. The tickets after #404 build this. #405 built the tool cells from the messages and removed `turn.running`, the pairing by `running`, and the closed cell for a result with no open cell (every call now has an open cell from its message, so such a result makes no cell). #406 removed `contract_version` and the TUI `instance_id` and `seq` guards; until #407 the code still has the bulk construction of `from_snapshot/1`. The rule of the snapshot stays.
+> The ADR 0006 revision of 2026-10-03 (#404) replaces these parts below: `contract_version` and `turn.running` leave the snapshot; the TUI makes its tool cells from the messages and folds the snapshot messages through the live fold, so the bulk construction of `from_snapshot/1` and its pairing by `running` go; the TUI drops the `instance_id` and `seq` guards, because it subscribes once and the registration and the snapshot happen in one server handler. The tickets after #404 build this. #405 built the tool cells from the messages and removed `turn.running`, the pairing by `running`, and the closed cell for a result with no open cell (every call now has an open cell from its message, so such a result has no call). #406 removed `contract_version` and the TUI `instance_id` and `seq` guards. #407 removed the bulk construction of `from_snapshot/1`: the snapshot messages go through the live fold (section "Replaced mechanism (#407)"). The rule of the snapshot stays.
 
 ## Goal
 
@@ -70,7 +70,7 @@ The ADR 0006 revision of 2026-10-03 replaces the TUI rule that a tool cell comes
 | --- | --- |
 | `fold` clause for `tool_execution_start` adds an open cell | Deleted. The event is ignored (only `seq` moves). The `message_end` of an assistant message adds an open cell for each of its calls, and a `message_update` with a call adds an open cell to `streaming` |
 | `unstarted_cell/2`: a result with no open cell gives a closed cell to the next call with its id in the last assistant message | Deleted. Every call has an open cell from its message, and Core sends a result only for an open call of its transcript (`Transcript.open_calls/1`), so such a result makes no cell |
-| `from_snapshot/1` opens the first `length(turn.running)` calls with no result, by position; a later call has no cell | Every call with no result gets an open cell. The pairing of results to calls (`results_in_call_order/1`) stays until #407 |
+| `from_snapshot/1` opens the first `length(turn.running)` calls with no result, by position; a later call has no cell | Every call with no result gets an open cell. #407 replaced the pairing of results to calls (`results_in_call_order/1`) with the live fold |
 | `Snapshot.turn.running` and `Turn.snapshot/2` | Deleted: no client reads it. `Turn.snapshot/1` gives `id` and `partial` |
 | Label "… running" | "… awaiting result": the message proves that the call exists, not that it runs |
 | A call of the streaming message renders nothing | An open cell after the streaming message, as after an ended one |
@@ -84,6 +84,34 @@ Tests of the old mechanism:
 - The assertions on `snapshot.turn.running` (`stream_events_test.exs`, `view_model_snapshot_test.exs`) are deleted; the snapshot tests compare the joined client with the live client and check the three open cells.
 - New: a scripted fold and a real session (`gated/harness`) show "awaiting result" for a call of the open message before its result.
 
+## Replaced mechanism (#407)
+
+The ADR 0006 revision of 2026-10-03 folds the snapshot messages through the live fold. Built from the code and the tests of master `277f346`.
+
+| Old part | Replacement or deletion |
+| --- | --- |
+| `from_snapshot/1` bulk construction: `history/2`, `results_in_call_order/1`, and the zip of calls with results | Deleted. `from_snapshot/1` folds each message with `add_message/2`, the function of `apply/2` for `message_end` and `tool_execution_end` |
+| `cells` as a list; a new cell appended with `++`; a result found with `Enum.find_index/2` and set with `List.update_at/3` | `cells` is an Erlang `:array` by position; the array size is the next free position. `open` maps a call id to a queue of the positions of its open cells, oldest first. Each new cell and each result costs O(log n) in the cell count, with no list scan |
+| A result with no open cell makes no cell | It crashes (`Map.fetch!/2`): since #385 a call's message closes before its result, since #405 every call has a cell from the message, and the live session records a result only for an open call (`Transcript.open_calls/1`). Open hole, found in the review of #407: a resumed transcript can hold a result with no open call when the session file was edited by hand (a result whose id names no call, or a result after a later message). A crash cuts only the last line, and the read takes the entries under an assistant line that does not decode off the branch, so no case without an edit was found. The resume keeps such a result (`Transcript.abort_unanswered/2`), and the TUI then crashes at each mount of that session. The fix belongs at the resume boundary in Core and waits for an owner decision |
+| `Helyx.TUI.Transcript` reads the cell list | It folds the array in position order, O(n) per frame as the list walk was, and adds the streaming message after it |
+
+Tests of the old mechanism:
+
+- "a result for an unknown call changes nothing" and the case "a second result for a closed cell changes nothing": replaced by "a result with no open cell crashes".
+- "a result goes to the oldest open cell and never replaces a result": its case of one id in two messages stays, with the results after both messages as a second case.
+- New: "a snapshot equals the live fold of the same messages", with a repeated id and results out of call order.
+- The tests read the cells with `ViewModel.cells/1`. The comparisons of a joined client with a live client stay; `transcript/1` of `Helyx.Test.ViewModelRule` compares the cells as lists and leaves out the open positions, which a dropped notice moves.
+
+`plugins/bundled/bench/view_model.exs` measures a long transcript. It is not a test and asserts nothing. Measured on 2026-10-03 on a shared development machine, one round is three cells:
+
+| Cells | Live fold | Snapshot fold | One frame | Live fold before #407 |
+| --- | --- | --- | --- | --- |
+| 3,000 | 10 to 18 ms | 4 ms | 1 to 4 ms | 47 ms |
+| 30,000 | 76 to 92 ms | 69 to 74 ms | 0.5 to 1 ms | 6,556 ms |
+| 300,000 | 7.2 to 12.2 s | 3.0 to 6.5 s | 4 to 8 ms | not measured |
+
+From 30,000 to 300,000 cells the live fold grows by about 80 to 160 times and the snapshot fold by about 40 to 95 times, where O(n log n) predicts about 12 times. A probe of `:array.set/3` alone grows by about ten times, and a profile shows no function whose cost per call grows with the cell count; the cause of the rest is not measured. Each frame time is of one frame, and it varies between runs more than between the sizes.
+
 ## Bounds
 
 | What | Bound | Where enforced | Over the bound |
@@ -91,6 +119,8 @@ Tests of the old mechanism:
 | transcript in the snapshot | no bound of its own. A resumed transcript comes from a session file of at most 64 MiB (row "Session file on resume" of `docs/features/coding-agent.md`). A live transcript grows by the turns of the human, as the TUI cell list does (row "TUI cell list") | the session file read; the human | n/a: the reply is one copy into the client's heap |
 | snapshot call | `GenServer.call` with the default 5,000 ms timeout. The session never blocks on a call (#93), so the wait is the time to build and copy the reply | `Helyx.Session.subscribe/1` | the caller exits with a timeout, as for every other session call |
 | TUI render of the history | the same as live cells: one cell for each message, tool call, and notice. The render bounds of the TUI (wrap, scrollback) apply unchanged | `Helyx.TUI.ViewModel` | n/a |
+| TUI open positions (`open` of `Helyx.TUI.ViewModel`) | one queue entry for each open tool cell; a result removes its entry, and an empty queue removes its key. So the map holds the calls with no result, at most the calls of the transcript | `Helyx.TUI.ViewModel` | n/a |
+| TUI mount: the snapshot fold | no bound of its own: one fold step for each snapshot message; each new cell and each result costs O(log n). Measured at 300,000 cells: 3.0 to 6.5 s (section "Replaced mechanism (#407)"). A 64 MiB session file bounds a resumed transcript | `Helyx.TUI.ViewModel.from_snapshot/1` | n/a: the mount waits |
 
 Tests: for a local turn with three tool calls, a subscribe while the first call runs gives the same view model, without notices, as the fold of every event up to the snapshot, and each later call gets one cell when it starts (since the ADR 0006 revision of 2026-10-03, each call has its cell from the message); the same for an external turn; a subscribe during a running turn with events before and after the snapshot shows each event once; a subscribe after a resume shows the history cells, then the notice only with `resumed: true`; a subscribe after a failed turn with a partial reply, and after an abort during a partial reply with text only, gives the transcript cells of the live fold without notices and without the partial reply, and no event with `seq <= snapshot.seq` changes that view model; a subscribe after an external turn that ends with a tool call and `:done`, and after an abort of three local calls, gives the view model of the live fold, with a closed `aborted` cell for each call that never started; a subscribe to a session with no events has `seq` 0 and no notice.
 

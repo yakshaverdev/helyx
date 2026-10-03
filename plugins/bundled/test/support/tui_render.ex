@@ -11,7 +11,7 @@ defmodule Helyx.Test.TUIRender do
   @doc "The rows of `text` as one assistant message, wrapped at `width`."
   def wrapped(text, width) do
     message = %Helyx.Message{role: :assistant, content: [%Helyx.Message.Text{text: text}]}
-    vm = %ViewModel{ViewModel.new("fake/m") | cells: [message]}
+    vm = %ViewModel{ViewModel.new("fake/m") | cells: :array.from_list([message])}
     for line <- Transcript.lines(vm, width), span <- line.spans, do: span.content
   end
 
