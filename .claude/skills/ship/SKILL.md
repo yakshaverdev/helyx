@@ -5,7 +5,7 @@ description: The only way to commit in this repo. Simplify, review on three axes
 
 # Ship
 
-Every commit goes through this skill. Run the steps in order. The only exemption: a change that touches nothing but Markdown skips steps 1 and 2. There is no diff-size exemption and no reviewed-by-hand path; a one-line code fix gets the same first round as a feature. Only a rerun round after a review fix is smaller, see step 2.
+Every commit goes through this skill. Run the steps in order. The only exemption: a change that touches nothing but Markdown skips steps 1 and 2, except a change to a rule for agents (`AGENTS.md`, `docs/agents/`, `.claude/skills/`), which gets the Codex review of step 2 (#360: a rule text that skipped review was too broad). There is no diff-size exemption and no reviewed-by-hand path; a one-line code fix gets the same first round as a feature. Only a rerun round after a review fix is smaller, see step 2.
 
 ## 1. Simplify
 
