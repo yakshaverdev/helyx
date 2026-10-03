@@ -145,7 +145,7 @@ defmodule Helyx.Tool.BashTest do
     cwd = "/" <> String.duplicate("x", 60_000)
     assert {:error, text} = Helyx.Tool.Bash.run(%{"command" => "pwd"}, cwd)
     assert "the command did not start: " <> reason = text
-    assert byte_size(reason) == Helyx.Provider.max_notice_bytes()
+    assert byte_size(reason) == Helyx.Watchdog.reason_max_bytes()
   end
 
   test "a detached background child does not survive the call", %{run: run} do

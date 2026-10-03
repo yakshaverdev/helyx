@@ -163,21 +163,6 @@ defmodule Helyx.Session.LoopTest do
            ]
   end
 
-  test "a notice goes out as an event and stays out of the assistant message", %{core: core} do
-    {:ok, session} = Session.start(core, model: "test/notice")
-    {:ok, _} = Session.subscribe(session)
-
-    :ok = Session.prompt(session, "hello")
-    events = collect_until(:agent_end)
-
-    assert [%Event{turn_id: turn_id, data: %{text: "heads up"}}] =
-             Enum.filter(events, &(&1.type == :notice))
-
-    assert turn_id == hd(events).turn_id
-    turn_end = Enum.find(events, &(&1.type == :turn_end))
-    assert [%Helyx.Message.Text{text: "hi there"}] = turn_end.data.message.content
-  end
-
   @tag :tmp_dir
   test "a terminal the file cannot hold fails the turn and leaves persistence on", %{
     core: core,

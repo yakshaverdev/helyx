@@ -17,7 +17,6 @@ defmodule Helyx.Provider.Loop do
     * `{:tool_call, Helyx.Message.ToolCall.t()}`: one complete tool call,
       with the arguments of `Helyx.Provider`: a map, or the raw text of
       arguments that are not a JSON object
-    * `{:notice, text}`: a notice for the user (`Helyx.Provider`)
     * `{:done, %{stop_reason: stop_reason, usage: map}}`: the call finished
     * `{:error, term}`: the call failed
 
@@ -160,11 +159,8 @@ defmodule Helyx.Provider.Loop do
   defp event({:tool_call, %Message.ToolCall{} = call}, state), do: call(call, state)
 
   # Core checks the payload.
-  defp event({tag, _} = event, state)
-       when tag in [:text_delta, :thinking_delta, :tool_call, :notice],
-       do:
-         {:ok, [{:event, state.turn, event}],
-          %{state | content?: state.content? or tag != :notice}}
+  defp event({tag, _} = event, state) when tag in [:text_delta, :thinking_delta, :tool_call],
+    do: {:ok, [{:event, state.turn, event}], %{state | content?: true}}
 
   defp event(event, _state), do: bad(event)
 

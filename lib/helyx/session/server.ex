@@ -192,14 +192,6 @@ defmodule Helyx.Session.Server do
     {:noreply, emit(state, :provider_session, data)}
   end
 
-  # A notice of the provider is an event only: it joins no message, so the
-  # transcript that the model gets again never holds it.
-  def handle_info(
-        {:stream_event, turn_id, {:notice, text}},
-        %State{activity: %Turn{id: turn_id}} = state
-      ),
-      do: {:noreply, emit(state, :notice, %{text: text})}
-
   # A turn that the provider started by itself (#240) opens only with no
   # turn and no wait: a submitted turn with no user message. Any other
   # time it is dropped with its events; its tool requests get `aborted`.
@@ -412,9 +404,8 @@ defmodule Helyx.Session.Server do
   end
 
   # The abort still replies `:ok` (ADR 0006 §5); a failed cleanup is a
-  # notice. Its text is fixed, so it stays in the bound of a notice; the
-  # log has the reason, whose handle list has no bound. The turn has
-  # ended, so the notice has no turn id.
+  # notice with a fixed text; the log has the reason, whose handle list
+  # has no bound. The turn has ended, so the notice has no turn id.
   defp cleanup_notice(:ok, state), do: state
 
   defp cleanup_notice({:error, reason}, state) do

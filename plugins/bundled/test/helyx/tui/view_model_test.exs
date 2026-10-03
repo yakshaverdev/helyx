@@ -559,9 +559,9 @@ defmodule Helyx.TUI.ViewModelTest do
            ]
   end
 
-  test "a provider notice shows its text" do
-    assert fold(notice: %{text: "claude-code: the error before the steer: boom"}).cells == [
-             {:notice, "claude-code: the error before the steer: boom"}
+  test "a session notice shows its text" do
+    assert fold(notice: %{text: "the session file could not be written"}).cells == [
+             {:notice, "the session file could not be written"}
            ]
   end
 

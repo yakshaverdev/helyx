@@ -189,6 +189,17 @@ defmodule Helyx.Message do
   def cap_integers(value), do: value
 
   @doc """
+  Makes the text of a tool result valid UTF-8: every invalid byte becomes
+  U+FFFD, so the text can grow up to three times. The session applies it at
+  each boundary of tool text, the hands and a provider's `tool_result`.
+  Valid text, the common case, is returned without a copy.
+  """
+  @spec scrub({status, String.t()}) :: {status, String.t()} when status: :ok | :error
+  def scrub({status, text}) do
+    if String.valid?(text), do: {status, text}, else: {status, String.replace_invalid(text)}
+  end
+
+  @doc """
   Adds a stream delta to a reversed block list, newest first. Consecutive
   deltas of one kind extend the head block. The session and every client
   build assistant content with this, so the delta vocabulary lives in one

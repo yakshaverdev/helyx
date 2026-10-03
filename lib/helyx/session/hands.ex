@@ -277,7 +277,10 @@ defmodule Helyx.Session.Hands do
   defp outcome(turn_id, call_id, {:exit, reason}),
     do: outcome(turn_id, call_id, {:error, "tool crashed: #{inspect(reason)}"})
 
-  defp outcome(turn_id, call_id, result), do: {:tool_result, turn_id, call_id, scrub(result)}
+  # Every result leaves the hands through here, so text is made valid once,
+  # for the ok, error, crash, and catch paths alike.
+  defp outcome(turn_id, call_id, result),
+    do: {:tool_result, turn_id, call_id, Helyx.Message.scrub(result)}
 
   defp start(state, turn_id, %ToolCall{} = call) do
     tool = if File.dir?(state.cwd), do: Map.get(state.tools, call.name, :unknown), else: :no_cwd
@@ -372,13 +375,6 @@ defmodule Helyx.Session.Hands do
     |> Enum.map(&inspect/1)
     |> Enum.sort()
     |> Enum.join(", ")
-  end
-
-  # Every result leaves the hands through here, so text is made valid once,
-  # for the ok, error, crash, and catch paths alike. Valid text, the common
-  # case, is passed through without a copy.
-  defp scrub({status, text}) do
-    if String.valid?(text), do: {status, text}, else: {status, String.replace_invalid(text)}
   end
 
   defp run_tool(:unknown, call, _cwd), do: {:error, "unknown tool: #{call.name}"}

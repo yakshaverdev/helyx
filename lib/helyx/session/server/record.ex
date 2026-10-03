@@ -44,8 +44,8 @@ defmodule Helyx.Session.Server.Record do
     # at the stream boundary (see `Helyx.Session.Stream`), and a model ref by
     # `ModelRef.parse/1`, so an encode error here is a
     # bug and crashes loudly rather than silently losing the rest of the
-    # session. One notice tells the clients; its fixed text stays in the
-    # bound of a notice, and the log has the error.
+    # session. One notice with a fixed text tells the clients, and the
+    # log has the error.
     error in File.Error ->
       Logger.warning("session file append failed, persistence off: " <> Exception.message(error))
       text = "the session file could not be written; the rest of this session is not saved"
