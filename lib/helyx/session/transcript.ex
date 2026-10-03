@@ -15,71 +15,96 @@ defmodule Helyx.Session.Transcript do
       transcript |> Enum.reverse() |> Enum.split_while(&match?(%Message{role: :tool_result}, &1))
 
     case rest do
-      [%Message{role: :assistant} = message | _] -> unanswered(message, Enum.reverse(results))
-      _other -> []
+      [%Message{role: :assistant} = message | _] ->
+        {open, _kept, _stray} = pair(message, Enum.reverse(results))
+        open
+
+      _other ->
+        []
     end
   end
 
-  # The calls of `message` that `results` do not answer. A result answers
-  # the first still-open call with its id; deleting nil is a no-op, so a
-  # result with no open call changes nothing.
-  defp unanswered(%Message{content: content}, results) do
+  # Pairs the calls of `message` with `results`, the tool results right after
+  # it. A result answers the first still-open call with its id. Gives the
+  # calls left open, the results that answer a call, in order, and the
+  # offset in `results` of each result that answers none.
+  defp pair(%Message{content: content}, results) do
     calls = for %Message.ToolCall{} = call <- content, do: call
 
-    Enum.reduce(results, calls, fn %Message{tool_call_id: id}, open ->
-      List.delete(open, Enum.find(open, &(&1.id == id)))
-    end)
+    {open, kept, stray} =
+      results
+      |> Enum.with_index()
+      |> Enum.reduce({calls, [], []}, fn {%Message{tool_call_id: id} = result, offset},
+                                         {open, kept, stray} ->
+        case Enum.find(open, &(&1.id == id)) do
+          nil -> {open, kept, [offset | stray]}
+          call -> {List.delete(open, call), [result | kept], stray}
+        end
+      end)
+
+    {open, Enum.reverse(kept), stray}
   end
 
-  # The transcript with an `aborted` error result for each tool call that
-  # has no result among the tool results right after its message. The
-  # results go after those tool results, in call order. A live abort puts
-  # them there too. A result after a later message answers nothing, the
-  # rule of `open_calls/1` at the end of the transcript. A resume
-  # applies this to the transcript it reads, and it writes nothing. The file
-  # keeps the open call, so every resume adds the same results at the same
-  # place. A transcript with no open calls is unchanged.
+  # The read-time repair of a resume. It gives the transcript with an
+  # `aborted` error result for each tool call that has no result among the
+  # tool results right after its message. The results go after those tool
+  # results, in call order. A live abort puts them there too. It also drops
+  # each tool result that answers no open call at its place: a result with
+  # no call of that id, a second result for one call, or a result after a
+  # later message (the pairing of `open_calls/1`). Only that result goes.
   #
-  # The file counts the messages before each resume id. That count
-  # does not include the inserted results. The live session after a resume
-  # counted them. So each count grows by the results inserted at or before
-  # it. A count exactly at an insert point can also come from an entry
-  # written before the crash, and then the live count was lower. Both give
-  # the same `resumable/3` answer, because an inserted result is never an
-  # assistant message.
+  # The invariant after the repair: each tool result answers one call of the
+  # assistant message right before its run of tool results, and each call
+  # has exactly one result in that run. `open_calls/1` and the clients that
+  # fold the transcript assume it. A second pass changes nothing.
+  #
+  # A resume applies this to the transcript it reads, and it writes nothing
+  # (ADR 0001: a repair never truncates). The file keeps the open call and
+  # the stray result, so every resume makes the same repair.
+  #
+  # The file counts the messages before each resume id. That count does not
+  # include the inserted results, and it includes the dropped ones. The live
+  # session after a resume counted the repaired transcript. So each count
+  # grows by the results inserted at or before it and shrinks by the results
+  # dropped before it. A count exactly at an insert point can also come from
+  # an entry written before the crash, and then the live count was lower.
+  # Both give the same `resumable/3` answer, because an inserted or a
+  # dropped result is never an assistant message.
   @spec abort_unanswered([Message.t()], %{String.t() => {String.t(), non_neg_integer()}}) ::
           {[Message.t()], %{String.t() => {String.t(), non_neg_integer()}}}
   def abort_unanswered(transcript, resume_ids) do
-    {transcript, inserts} = insert_aborted(transcript, 0, [], [])
+    {transcript, inserts, drops} = repair(transcript, 0, [], [], [])
 
     shifted =
       Map.new(resume_ids, fn {provider, {id, before}} ->
-        {provider, {id, before + Enum.count(inserts, &(&1 <= before))}}
+        {provider,
+         {id, before + Enum.count(inserts, &(&1 <= before)) - Enum.count(drops, &(&1 < before))}}
       end)
 
     {transcript, shifted}
   end
 
-  # Builds the transcript reversed, and one `at` for each inserted result:
-  # the number of input messages before it.
-  defp insert_aborted(
-         [%Message{role: :assistant} = message | rest],
-         at,
-         out,
-         inserts
-       ) do
+  # Builds the transcript reversed. `at` is the number of input messages
+  # read. Gives one `at` for each inserted result (the input messages before
+  # it), and the input index of each dropped result.
+  defp repair([%Message{role: :assistant} = message | rest], at, out, inserts, drops) do
     {results, rest} = Enum.split_while(rest, &match?(%Message{role: :tool_result}, &1))
-    aborted = Enum.map(unanswered(message, results), &aborted/1)
+    {open, kept, stray} = pair(message, results)
+    drops = Enum.map(stray, &(&1 + at + 1)) ++ drops
     at = at + 1 + length(results)
-    out = Enum.reverse(aborted, Enum.reverse(results, [message | out]))
-    inserts = List.duplicate(at, length(aborted)) ++ inserts
-    insert_aborted(rest, at, out, inserts)
+    out = Enum.reverse(Enum.map(open, &aborted/1), Enum.reverse(kept, [message | out]))
+    inserts = List.duplicate(at, length(open)) ++ inserts
+    repair(rest, at, out, inserts, drops)
   end
 
-  defp insert_aborted([message | rest], at, out, inserts),
-    do: insert_aborted(rest, at + 1, [message | out], inserts)
+  # A tool result here follows no assistant message, so it answers nothing.
+  defp repair([%Message{role: :tool_result} | rest], at, out, inserts, drops),
+    do: repair(rest, at + 1, out, inserts, [at | drops])
 
-  defp insert_aborted([], _at, out, inserts), do: {Enum.reverse(out), inserts}
+  defp repair([message | rest], at, out, inserts, drops),
+    do: repair(rest, at + 1, [message | out], inserts, drops)
+
+  defp repair([], _at, out, inserts, drops), do: {Enum.reverse(out), inserts, drops}
 
   defp aborted(call), do: Message.tool_result(call, {:error, "aborted"})
 

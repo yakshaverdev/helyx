@@ -86,11 +86,69 @@ defmodule Helyx.Session.TranscriptTest do
                [assistant([call("a")]), aborted("a"), Message.user("next"), assistant([])]
     end
 
-    test "a result after a later message does not answer the call" do
+    test "a result after a later message does not answer the call, and it is dropped" do
       transcript = [assistant([call("a")]), Message.user("next"), result("a")]
 
       assert abort(transcript) ==
-               [assistant([call("a")]), aborted("a"), Message.user("next"), result("a")]
+               [assistant([call("a")]), aborted("a"), Message.user("next")]
+    end
+
+    test "a result with an unknown id, a second result, and a result with no call before it are dropped" do
+      transcript = [
+        result("x"),
+        Message.user("hi"),
+        assistant([call("a"), call("b")]),
+        result("x"),
+        result("a"),
+        result("a"),
+        result("b"),
+        Message.user("next"),
+        result("b")
+      ]
+
+      repaired = abort(transcript)
+
+      assert repaired ==
+               [
+                 Message.user("hi"),
+                 assistant([call("a"), call("b")]),
+                 result("a"),
+                 result("b"),
+                 Message.user("next")
+               ]
+
+      assert abort(repaired) == repaired
+    end
+
+    test "a count moves back by the results dropped before it, and forward by the results inserted" do
+      transcript = [
+        Message.user("hi"),
+        assistant([call("a"), call("b")]),
+        result("x"),
+        result("a"),
+        Message.user("next"),
+        result("a"),
+        assistant([])
+      ]
+
+      # 3 is after the stray result, 5 is after the insert point, 6 is after
+      # the result that follows a later message.
+      sessions = %{"a" => {"a", 2}, "b" => {"b", 3}, "c" => {"c", 5}, "d" => {"d", 6}}
+      {repaired, shifted} = Transcript.abort_unanswered(transcript, sessions)
+
+      assert repaired == [
+               Message.user("hi"),
+               assistant([call("a"), call("b")]),
+               result("a"),
+               aborted("b"),
+               Message.user("next"),
+               assistant([])
+             ]
+
+      assert shifted == %{"a" => {"a", 2}, "b" => {"b", 2}, "c" => {"c", 5}, "d" => {"d", 5}}
+
+      # A count drops the same kept messages as in the file.
+      assert Enum.drop(repaired, 5) == [assistant([])]
     end
 
     test "with two calls and one answered, the other gets its result after the answered one" do
