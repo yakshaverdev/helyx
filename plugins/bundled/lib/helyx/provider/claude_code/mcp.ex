@@ -40,20 +40,17 @@ defmodule Helyx.Provider.ClaudeCode.Mcp do
     answer(state, request_id, %{id: id, result: %{tools: tools}})
   end
 
-  # The admission (`Turn.admit/3`) records the call id first: the
-  # provider's own errors do not reach the session, which records the rest.
+  # The admission is `Turn.admit/3`; the session owns the call ids.
   def message(%{"method" => "tools/call", "id" => id} = message, request_id, state) do
     params = message["params"]
     call_id = tool_use_id(params)
-    {answer, turn} = Turn.admit(state.turn, call_id, fn -> mapped?(params) end)
-    state = %{state | turn: turn}
 
-    case answer do
+    case Turn.admit(state.turn, call_id, fn -> mapped?(params) end) do
       :ok ->
         args = Map.get(params, "arguments", %{})
-        calls = Map.put(state.calls, call_id, {turn.id, request_id, id})
+        calls = Map.put(state.calls, call_id, {state.turn.id, request_id, id})
 
-        {[{:event, turn.id, {:tool_request, call_id, params["name"], args}}],
+        {[{:event, state.turn.id, {:tool_request, call_id, params["name"], args}}],
          %{state | calls: calls}}
 
       {:error, text} ->

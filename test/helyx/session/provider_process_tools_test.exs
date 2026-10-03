@@ -196,23 +196,12 @@ defmodule Helyx.Session.ProviderProcessToolsTest do
     assert running(hands) == 0
   end
 
-  test "a request with a call id that the turn answered stops the provider process; a new turn can use it",
-       %{session: session, proc: proc, turn_id: turn_id} do
+  test "a request with a call id that the turn answered runs again",
+       %{proc: proc, turn_id: turn_id} do
     request(proc, turn_id, "c1", "upcase", %{"text" => "a"})
     assert_receive {:conn, :tool_result, _, {:tool_result, _, "c1", {:ok, "A"}}}
-    ref = Process.monitor(proc)
     request(proc, turn_id, "c1", "upcase", %{"text" => "b"})
-
-    assert {:bad_action, {:event, ^turn_id, {:tool_request, %{id: "c1"}}}} =
-             List.last(collect_until(:agent_end)).data.error
-
-    assert_receive {:DOWN, ^ref, :process, ^proc, _reason}
-    refute_received {:conn, :tool_result, _, {:tool_result, _, "c1", _}}
-
-    :ok = Session.prompt(session, "again")
-    assert_receive {:conn, :turn, next_proc, {:turn, next, _}}
-    request(next_proc, next, "c1", "upcase", %{"text" => "c"})
-    assert_receive {:conn, :tool_result, _, {:tool_result, ^next, "c1", {:ok, "C"}}}
+    assert_receive {:conn, :tool_result, _, {:tool_result, _, "c1", {:ok, "B"}}}
   end
 
   test "a request that arrives after the interrupt of its turn gets aborted after it and runs nothing",

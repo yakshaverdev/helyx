@@ -874,8 +874,8 @@ defmodule Helyx.Test.Connected do
   defp answer("late_idle", :idle_close = request, from), do: later(from, request, 100)
   defp answer("block_idle", :idle_close, _from), do: Process.sleep(:infinity)
 
-  defp answer("steer_take", {:steer, id, steer_id, text}, from),
-    do: [{:reply, from, :ok}, {:event, id, {:user_message, steer_id, text}}]
+  defp answer("steer_take", {:steer, id, steer_id, _text}, from),
+    do: [{:reply, from, :ok}, {:event, id, {:user_message, steer_id}}]
 
   defp answer("steer_reject", {:steer, _, _, _}, from), do: [{:reply, from, :rejected}]
   defp answer("steer_error", {:steer, _, _, _}, from), do: [{:reply, from, {:error, :lost}}]
@@ -886,8 +886,8 @@ defmodule Helyx.Test.Connected do
   defp answer("tools_late", {:tool_result, _, _, _} = request, from),
     do: later(from, request, 100)
 
-  defp answer("steer_early", {:steer, id, steer_id, text}, _from),
-    do: [{:event, id, {:user_message, steer_id, text}}]
+  defp answer("steer_early", {:steer, id, steer_id, _text}, _from),
+    do: [{:event, id, {:user_message, steer_id}}]
 
   defp answer(model, {:turn, id, _}, from) when model in @hang,
     do: [{:reply, from, :ok}, {:event, id, {:text_delta, "so far"}}]

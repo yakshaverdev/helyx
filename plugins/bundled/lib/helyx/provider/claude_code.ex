@@ -144,7 +144,7 @@ defmodule Helyx.Provider.ClaudeCode do
           List.update_at(chunks, -1, &[&1, steer])
       end
 
-    turn = %{turn | chunks: chunks, steers: Map.put(turn.steers, uuid, {steer_id, text})}
+    turn = %{turn | chunks: chunks, steers: Map.put(turn.steers, uuid, steer_id)}
     {:ok, [{:reply, from, :ok}], %{state | turn: turn}}
   end
 

@@ -121,7 +121,7 @@ defmodule Helyx.Provider.Codex.SteerTest do
       {actions, _state} = pump(Codex, state, [], fn _ -> false end)
 
       assert {:stop, {:malformed, "item/started"}} = List.last(actions)
-      refute Enum.any?(actions, &match?({:event, _, {:user_message, _, _}}, &1))
+      refute Enum.any?(actions, &match?({:event, _, {:user_message, _}}, &1))
     end
 
     test "that the program takes gives :ok, then its user_message once", %{bin: bin, work: work} do
@@ -138,7 +138,7 @@ defmodule Helyx.Provider.Codex.SteerTest do
 
       assert [
                {:reply, ^from, :ok},
-               {:event, "t1", {:user_message, "s1", "more"}},
+               {:event, "t1", {:user_message, "s1"}},
                {:event, "t1", {:done, _}}
              ] =
                actions

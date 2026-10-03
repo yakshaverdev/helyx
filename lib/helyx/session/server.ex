@@ -156,7 +156,7 @@ defmodule Helyx.Session.Server do
   # checked at the client call, joins the transcript here (see
   # `Queue.take/2`).
   def handle_info(
-        {:stream_event, turn_id, {:user_message, steer_id, _text}},
+        {:stream_event, turn_id, {:user_message, steer_id}},
         %State{activity: %Turn{id: turn_id}} = state
       ),
       do: {:noreply, Steering.take(state, steer_id)}

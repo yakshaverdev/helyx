@@ -11,7 +11,7 @@ defmodule Helyx.Session.Turn do
   # it is sent, and the `pending` ref of the answer to `{:turn, ...}`.
   # The Helyx tool requests (`Helyx.Session.Server.Tools`): `tool` is the
   # call id that runs on the hands, `killed?` whether the provider withdrew
-  # it, `waiting` the calls after it, and `ids` every call id of the turn.
+  # it, and `waiting` the calls after it.
 
   alias Helyx.{Message, ModelRef}
 
@@ -28,8 +28,7 @@ defmodule Helyx.Session.Turn do
     :tool,
     calls: [],
     killed?: false,
-    waiting: [],
-    ids: MapSet.new()
+    waiting: []
   ]
 
   @type t :: %__MODULE__{}

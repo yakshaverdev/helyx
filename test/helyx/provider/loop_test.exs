@@ -135,7 +135,7 @@ defmodule Helyx.Provider.LoopTest do
     assert events(actions) == [
              {:text_delta, "ok"},
              {:message_end, :end_turn, %{}},
-             {:user_message, "s1", "more"}
+             {:user_message, "s1"}
            ]
 
     assert List.last(actions) == {:need_context, "t1"}
@@ -154,7 +154,7 @@ defmodule Helyx.Provider.LoopTest do
     {_actions, state} = pump(state)
     {:ok, [], state} = request({:steer, "t1", "s2", "again"}, state)
 
-    assert {:ok, [{:event, "t1", {:user_message, "s2", "again"}}, {:need_context, "t1"}], state} =
+    assert {:ok, [{:event, "t1", {:user_message, "s2"}}, {:need_context, "t1"}], state} =
              request({:context, "t1", {:ok, %Context{}}}, state)
 
     assert %{task: nil, steers: []} = state

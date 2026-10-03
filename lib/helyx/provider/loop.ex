@@ -71,7 +71,7 @@ defmodule Helyx.Provider.Loop do
   # `turn` is the live turn id or nil; `task` the model Task; `calls` the
   # calls of the message with no result in the transcript yet, in call
   # order, each `{request_id, call, result}` with the result nil until it
-  # comes; `steers` the held steers.
+  # comes; `steers` the ids of the held steers.
   @enforce_keys [:provider, :model, :opts]
   defstruct [:provider, :model, :opts, :turn, :task, content?: false, calls: [], steers: []]
 
@@ -109,8 +109,8 @@ defmodule Helyx.Provider.Loop do
     {:ok, [{:reply, from, :ok}], model_call(state, context)}
   end
 
-  def request({:steer, turn_id, steer_id, text}, from, %{turn: turn_id} = state),
-    do: {:ok, [{:reply, from, :ok}], %{state | steers: state.steers ++ [{steer_id, text}]}}
+  def request({:steer, turn_id, steer_id, _text}, from, %{turn: turn_id} = state),
+    do: {:ok, [{:reply, from, :ok}], %{state | steers: state.steers ++ [steer_id]}}
 
   def request({:steer, _, _, _}, from, state), do: {:ok, [{:reply, from, :rejected}], state}
 
@@ -183,7 +183,7 @@ defmodule Helyx.Provider.Loop do
 
   defp event(event, _state), do: bad(event)
 
-  # The session rejects a request id that its turn used before, and a
+  # The session rejects a request id that is open in its turn, and a
   # model can repeat a call id, so each call gets a request id of its own.
   defp call(call, result, state) do
     id = Integer.to_string(System.unique_integer([:positive]))
@@ -242,7 +242,7 @@ defmodule Helyx.Provider.Loop do
   end
 
   defp request_context(actions, state) do
-    steers = for {id, text} <- state.steers, do: {:event, state.turn, {:user_message, id, text}}
+    steers = for id <- state.steers, do: {:event, state.turn, {:user_message, id}}
     {:ok, actions ++ steers ++ [{:need_context, state.turn}], %{state | steers: []}}
   end
 

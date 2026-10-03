@@ -197,7 +197,7 @@ defmodule Helyx.Provider.Codex.HelyxToolsTest do
       assert {:error, {:malformed, "thread/start"}} = Codex.init("m", [], cwd: work)
     end
 
-    test "a call with no turn, one that does not map, and a used call id get an error and give no request",
+    test "a call with no turn and one that does not map get an error and give no request",
          %{bin: bin, work: work} do
       initialize(bin, 1)
 
@@ -212,7 +212,6 @@ defmodule Helyx.Provider.Codex.HelyxToolsTest do
         started(tid(), dyn("call_d1")),
         started(tid(), command("exec-1", %{status: "inProgress"})),
         tool_call(tid(), 1, "call_d1"),
-        tool_call(tid(), 2, "call_d1"),
         tool_call(tid(), 3, "exec-1"),
         tool_call(tid(), 4, "call_none"),
         tool_call(tid(), 5, "call_x", %{callId: 7}),
@@ -236,11 +235,10 @@ defmodule Helyx.Provider.Codex.HelyxToolsTest do
 
       assert texts == [
                {0, "no Helyx turn is running"},
-               {2, "the call id was used before in this turn"},
                {3, "the call does not map to a tool use"},
                {4, "the call does not map to a tool use"},
                {5, "the call does not map to a tool use"},
-               {6, "the call id was used before in this turn"},
+               {6, "the call does not map to a tool use"},
                {7, "the call does not map to a tool use"}
              ]
     end

@@ -19,12 +19,14 @@ defmodule Helyx.Session.Server.Tools do
   @max_waiting 16
   @too_many "too many Helyx tool calls: one runs and #{@max_waiting} wait"
 
-  # A request of the current turn. A call id that the turn used before is
-  # outside the contract: `{:stop, reason}`, and the provider process stops.
+  # A request of the current turn. A call id that is open in the turn (it
+  # runs or waits) is outside the contract: `{:stop, reason}`, and the
+  # provider process stops. An answered id is not checked: no real program
+  # reuses an id (#369).
   def request(%State{activity: %Turn{} = turn} = state, %ToolCall{id: id} = call, rejection) do
-    if MapSet.member?(turn.ids, id),
+    if turn.tool == id or Enum.any?(turn.waiting, &(&1.id == id)),
       do: {:stop, {:bad_action, {:event, turn.id, {:tool_request, call}}}},
-      else: {:ok, admit(put_in(state.activity.ids, MapSet.put(turn.ids, id)), call, rejection)}
+      else: {:ok, admit(state, call, rejection)}
   end
 
   defp admit(%State{activity: turn} = state, %ToolCall{id: id} = call, rejection) do

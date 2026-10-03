@@ -100,13 +100,16 @@ defmodule Helyx.Session.Stream do
 
   def check({:error, _} = terminal), do: {:terminal, terminal}
 
-  def check({tag, _, _} = event)
-      when tag in [:message_end, :tool_result, :resume, :user_message] do
+  def check({tag, _, _} = event) when tag in [:message_end, :tool_result, :resume] do
     case provider_event(event) do
       {:ok, event} -> {:send, event, nil}
       {:error, _} = error -> {:bad, error}
     end
   end
+
+  # The session looks the steer up by its id and appends its own text, the
+  # text that it checked at the client call.
+  def check({:user_message, steer_id} = event) when is_binary(steer_id), do: {:send, event, nil}
 
   # A provider asks the session to run a Helyx tool. The arguments get the
   # checks of a tool call, and the checked call goes on as
@@ -178,12 +181,6 @@ defmodule Helyx.Session.Stream do
       do: {:ok, event},
       else: malformed(event)
   end
-
-  # The session looks the steer up by its id and appends its own text, the
-  # text that it checked at the client call; the text here is not used.
-  defp provider_event({:user_message, steer_id, text} = event)
-       when is_binary(steer_id) and is_binary(text),
-       do: {:ok, event}
 
   defp provider_event(event), do: malformed(event)
 

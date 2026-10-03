@@ -42,7 +42,7 @@ defmodule Helyx.Provider.ClaudeCode.SteerTest do
 
       assert [
                {:message_end, :end_turn, _},
-               {:user_message, "s1", "more"},
+               {:user_message, "s1"},
                {:text_delta, "b"},
                {:done, _}
              ] =
@@ -61,7 +61,7 @@ defmodule Helyx.Provider.ClaudeCode.SteerTest do
       assert [
                {:message_end, :tool_use, _},
                {:tool_result, "c1", {:ok, "out"}},
-               {:user_message, "s1", "more"},
+               {:user_message, "s1"},
                {:text_delta, "b"},
                {:done, _}
              ] = events_of(actions)

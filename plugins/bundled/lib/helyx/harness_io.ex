@@ -213,25 +213,13 @@ defmodule Helyx.HarnessIO do
   end
 
   # The admission of a Helyx tool call. `running?` tells whether a Helyx
-  # turn runs, and `used` holds the call ids of that turn; `call_id` is nil
-  # when the call names none. `mapped?` tells whether the call maps to a
-  # tool use, and runs only for a call id of a running turn. The call id is
-  # recorded in `used` before any check that answers it, so an id that got
-  # any answer never runs later in the turn. Gives `:ok` or `{:error, text}`
-  # for the error answer, and `used`.
-  def admit(false, used, _call_id, _mapped?), do: {{:error, "no Helyx turn is running"}, used}
-  def admit(true, used, nil, _mapped?), do: {{:error, @unmapped}, used}
-
-  def admit(true, used, call_id, mapped?) do
-    answer =
-      cond do
-        MapSet.member?(used, call_id) -> {:error, "the call id was used before in this turn"}
-        mapped?.() -> :ok
-        true -> {:error, @unmapped}
-      end
-
-    {answer, MapSet.put(used, call_id)}
-  end
+  # turn runs; `call_id` is nil when the call names none. `mapped?` tells
+  # whether the call maps to a tool use, and runs only for a call id
+  # of a running turn. The session owns the call ids of the turn (#369).
+  # Gives `:ok` or `{:error, text}` for the error answer.
+  def admit(false, _call_id, _mapped?), do: {:error, "no Helyx turn is running"}
+  def admit(true, nil, _mapped?), do: {:error, @unmapped}
+  def admit(true, _call_id, mapped?), do: if(mapped?.(), do: :ok, else: {:error, @unmapped})
 
   # The first `size` hex digits of the SHA-256 of `data`.
   def hex_digest(data, size),

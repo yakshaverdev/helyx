@@ -11,11 +11,10 @@ defmodule Helyx.Provider.ClaudeCode.Turn do
   # of a replay before its line until the program started the line.
   # `interrupt` is nil, or the pending `Interrupt`. `steers` holds each
   # written steer line that the program did not start yet, by its `uuid`:
-  # `{steer_id, text}`. `wait` is set from a `result` that could not end
+  # its `steer_id`. `wait` is set from a `result` that could not end
   # the turn, because a steer was unresolved, until the start of a steer:
-  # the ref of the timer of that wait. `used` holds every Helyx call id of
-  # the turn's `tools/call` requests, answered or not. `chunks` holds the
-  # replay chunks not written yet: each goes out at the `result` of the
+  # the ref of the timer of that wait. `chunks` holds the replay chunks
+  # not written yet: each goes out at the `result` of the
   # replayed user line that ends the chunk before it, and the last one ends
   # with the turn's line, then any steers. `program?` marks a program turn
   # (#240): its `id` and `uuid` are one new UUID.
@@ -32,8 +31,7 @@ defmodule Helyx.Provider.ClaudeCode.Turn do
     open?: false,
     calls?: false,
     program?: false,
-    usage: %{},
-    used: MapSet.new()
+    usage: %{}
   ]
 
   alias Helyx.HarnessIO
@@ -83,9 +81,9 @@ defmodule Helyx.Provider.ClaudeCode.Turn do
   # The start of the steer line `uuid`, one of `steers`. A pending
   # interrupt now waits for the next `result`.
   def steer_start(turn, uuid) do
-    {{steer_id, text}, steers} = Map.pop!(turn.steers, uuid)
+    {steer_id, steers} = Map.pop!(turn.steers, uuid)
     if turn.wait, do: :erlang.cancel_timer(turn.wait)
-    events = close_message(turn) ++ [{:user_message, steer_id, text}]
+    events = close_message(turn) ++ [{:user_message, steer_id}]
     interrupt = turn.interrupt && %{turn.interrupt | result?: false}
 
     turn = %{
@@ -100,14 +98,11 @@ defmodule Helyx.Provider.ClaudeCode.Turn do
     {events, turn}
   end
 
-  # The admission of a Helyx tool call (`Helyx.HarnessIO.admit/4`) in
+  # The admission of a Helyx tool call (`Helyx.HarnessIO.admit/3`) in
   # `turn`, which can be nil. A program turn can run before `started` of
   # the turn's line, so only a started turn is a running Helyx turn.
-  def admit(turn, call_id, mapped?) do
-    running? = turn != nil and started?(turn)
-    {answer, used} = HarnessIO.admit(running?, turn && turn.used, call_id, mapped?)
-    {answer, turn && %{turn | used: used}}
-  end
+  def admit(turn, call_id, mapped?),
+    do: HarnessIO.admit(turn != nil and started?(turn), call_id, mapped?)
 
   def errors(%{"errors" => errors}) when is_list(errors), do: Enum.filter(errors, &is_binary/1)
   def errors(_result), do: []

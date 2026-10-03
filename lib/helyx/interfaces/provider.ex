@@ -83,7 +83,7 @@ defmodule Helyx.Provider do
       tool result limits; a text over `@max_tool_result_bytes`
       (`Helyx.Session.Stream`) fails the turn
     * `{:resume, id, cut}`: the program started a fresh program session
-    * `{:user_message, steer_id, text}`: the program took a steer. The
+    * `{:user_message, steer_id}`: the program took a steer. The
       session closes the open assistant message and gives `aborted` to
       every call that is still open
     * `{:tool_request, call_id, name, arguments}`: run the Helyx tool `name`
@@ -109,7 +109,7 @@ defmodule Helyx.Provider do
           | {:message_end, stop_reason(), map()}
           | {:tool_result, String.t(), {:ok | :error, String.t()}}
           | {:resume, String.t(), non_neg_integer()}
-          | {:user_message, String.t(), String.t()}
+          | {:user_message, String.t()}
           | {:tool_request, call_id :: String.t(), name :: String.t(), arguments :: map()}
           | :turn_start
 

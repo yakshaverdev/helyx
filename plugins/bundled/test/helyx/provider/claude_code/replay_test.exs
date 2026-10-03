@@ -88,7 +88,7 @@ defmodule Helyx.Provider.ClaudeCode.ReplayTest do
     assert [_line] = state.turn.chunks
     {actions, _state} = pump(ClaudeCode, state, actions ++ more, &ended?/1)
 
-    assert {:user_message, "s1", "also"} in events_of(actions)
+    assert {:user_message, "s1"} in events_of(actions)
 
     assert ["a", "b", "x", "also"] =
              for(%{"message" => %{"content" => [%{"text" => t}]}} <- stdin(bin, 1), do: t)

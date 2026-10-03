@@ -4,10 +4,8 @@ defmodule Helyx.Provider.Codex.Tools do
   # Codex writes it.
   #
   # `specs` are the Helyx tool specs to offer. `requests` maps the call id
-  # of each open `item/tool/call` to its request id; `used` holds every
-  # call id of the running turn's `item/tool/call` requests, answered or
-  # not.
-  defstruct specs: [], requests: %{}, used: MapSet.new()
+  # of each open `item/tool/call` to its request id.
+  defstruct specs: [], requests: %{}
 
   alias Helyx.HarnessIO
   alias Helyx.Message
@@ -55,19 +53,13 @@ defmodule Helyx.Provider.Codex.Tools do
   defp digest(specs), do: HarnessIO.hex_digest(JSON.encode!(specs(specs)), @digest_hex)
 
   # The admission of an `item/tool/call`, with the provider state as a map.
-  # Gives `{:ok, tool_request}` or `{:error, text}` for the error answer,
-  # and the tools. The admission (`Helyx.HarnessIO.admit/4`) records the
-  # call id of the running turn in `used` first.
+  # The admission is `Helyx.HarnessIO.admit/3`. Gives `{:ok, tool_request}`
+  # or `{:error, text}` for the error answer, and the tools.
   def call(%{tools: tools} = state, rpc_id, params) do
     call_id = call_id(params)
     running? = state.turn_id != nil
 
-    {answer, used} =
-      HarnessIO.admit(running?, tools.used, call_id, fn -> tool_call?(params, state) end)
-
-    tools = %{tools | used: used}
-
-    case answer do
+    case HarnessIO.admit(running?, call_id, fn -> tool_call?(params, state) end) do
       :ok ->
         request = {:tool_request, call_id, params["tool"], params["arguments"]}
         {{:ok, request}, %{tools | requests: Map.put(tools.requests, call_id, rpc_id)}}
