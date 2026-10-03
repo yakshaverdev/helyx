@@ -186,4 +186,4 @@ One row per ticket that `/orchestrate` merged. An escape is a confirmed Codex fi
 | 2026-10-04 | #445 | r1 (full): Codex 2, standards 2 fixed, spec 2, failure path 1, all fixed; r2 (reduced): 2 cuts | gate r1 (Codex): 2 confirmed (the cut Replay section lost two bounds; a kept false TUI crash rule), fixed; gate r2: 0 | review-checklist.md, Specs and bounds: a doc trim keeps each bound it removes in the linked doc |
 | 2026-10-04 | #455 | r1 reduced: 1 reproduced (the exits after the host run lost the log), fixed | gate r1 (Codex): 1 rejected (a same-second path clash on one branch; one worktree runs one precommit at a time) | precommit.sh keeps a failed log in precommit-fails/ |
 | 2026-10-04 | #447 | r1 (full): 12, r2 (full): 9 (2 rejected), r3: 3, all fixed by cuts | gate r1: 2 confirmed, r2: 1, r3 (sweep): 3, all abort and cleanup guarantees the code does not keep, cut; merged after r3 because every fix was a cut | review-checklist.md: abort, delivery and release end released or unconfirmed |
-x
+| 2026-10-04 | #457 | r1: 0 reproduced; simplify found the relaunch path with the same drop, fixed | gate r1 (Codex): 0 | none |

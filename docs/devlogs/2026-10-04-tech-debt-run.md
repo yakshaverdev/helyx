@@ -22,52 +22,53 @@ I rejected one Codex proposal: delete `Helyx.Compaction.None`. It is a deliberat
 | #429 | #441 | Dead code removed: `HarnessIO.term_grace_ms/0`, `replay_max_bytes/0`, `Session.client_start_error/1`. `provider_ms` has `reply`, `close` and `idle`. `session.ex` 386 to 350 lines. |
 | #431 | #442 | `HarnessIO.cap_replay/3` takes an encode function. |
 | #430 | #443 | Tool requests carry their bytes; running and waiting requests hold at most 8 MiB. Empty deltas are dropped. Renames: `Session.ToolQueue`, `Server.ToolRuns`, `State.tool_specs`, `Turn.tool_queue`. |
-| #434 | #444 | `subscribe/1` returns `{:ok, snapshot, ref}`; `subscription.ex` is deleted; the end signal is a plain `:DOWN`. +279 / −505. |
+| #434 | #444 | `subscribe/1` returns `{:ok, snapshot, ref}`; `subscription.ex` is deleted; the end signal is a plain `:DOWN`. |
 | #435 | #448 | `Message.big_integer?/1`: a long integer in tool arguments gives `%{}` and a rejection. |
 | #439 | #449 | At most 1,024 blocks in the open message (`@max_message_blocks` in `Turn`). |
-| #432 | #450 | `Wait.finish/2` is the one path that ends a turn; `Records.finish/2` closes a partial message, which joins with stop `:aborted`, `:error` or `:tool_use`. `Transcript.resumable/3` gives no resume id after a cut. Renames: `Server.Records`, `Server.Events`, `Transcript.repair/2`. |
-| #436 | #451 | Measured: at 9,998 messages the largest step is 0.049 ms (tool result). No step reaches 1 ms, so no lib change. `bench/transcript.exs`. |
+| #432 | #450 | `Wait.finish/2` is the one path that ends a turn; `Records.finish/2` closes a partial message, which joins with stop `:aborted`, `:error` or `:tool_use`. `Transcript.resumable/3` gives no resume id when the last stored assistant message stopped with `:aborted` or `:error`. Renames: `Server.Records`, `Server.Events`, `Transcript.repair/2`. |
+| #436 | #451 | Measured with `bench/transcript.exs` (median of 101 runs, no session file, no subscribers): at 9,998 messages the largest median is 0.049 ms (tool result), far below the 1 ms rule, so no lib change. |
 | #433 | #452 | Only `turn_start` and `turn_end` (with `outcome`). `agent_start`, `agent_end` and `tool_execution_start` are gone. `start_provider_turn`. Lib +43 / −78. |
 | #446 | #453 | New `session-lifecycle.md` with the Core turn contract; `long-lived-harness.md` 724 to 100 lines. |
 | #437 | #454 | Test fakes hold their reply until the test releases it; the 100 to 300 ms timed replies are gone. |
-| #445 | #456 | `coding-agent.md` 228 lines / 19,033 words to 147 lines / 5,330 words; one bounds table, each row names its owner. |
+| #445 | #456 | `coding-agent.md` 228 to 147 lines; one bounds table, each row names its owner. |
 | #455 | #458 | The Codex failed-turn test no longer depends on how a read splits lines. `precommit.sh` keeps a failed log in `precommit-fails/` under the git common dir. |
-| #447 | #459 | The rest of the docs debt: three feature docs deleted, history cut, one owner per rule. +190 / −830. |
+| #447 | #459 | The rest of the docs debt: three feature docs deleted, history cut, one owner per rule. |
 | #457 | #460 | Provider contract: `info/2` may return `{:stop, reason, actions, state}`; `ProviderProcess.loop/1` runs the actions through `act/2`, then stops. Codex and Claude Code keep the events of a read that ends in an error. |
 
 Totals from `10b0775` to `5edc951`: Core `lib/` +452 / −595, plugins and app +133 / −126, tests +1,068 / −867, feature docs, ADRs and root docs +427 / −1,678.
 
 ## Decisions taken alone or by Codex
 
-- **#432, by Codex:** after a cut, the session does not resume (no skip to an older provider session). All end paths use one event order, a stated exception to the ticket. An empty partial at an abort or a failure stores nothing. The empty message at `done` stays.
+- **#432, by Codex:** when the last stored assistant message stopped with `:aborted` or `:error`, the session does not resume (no skip to an older provider session). All end paths use one event order, a stated exception to the ticket. An empty partial at an abort or a failure stores nothing. The empty message at `done` stays.
 - **#432, mine:** two resume holes stay, the same as master. A cut with no block stores nothing, so a later turn can resume an older provider session. An abort with a tool call joins as `:tool_use` and resumes (#385 rule, no harness evidence either way).
 - **Block bound, by Codex:** 1,024 blocks, not a byte cost for each block.
 - **#436, mine:** the first round in a cold process (3 to 4.5 ms) does not count against the 1 ms rule.
 - **#446, mine:** after three `/ship` rounds with 12, 9 and 8 doc findings, I took repeat findings as a sign that the doc stated too much. I committed the worktree and gated it with the rule "cut a wrong detail, do not correct it".
-- **#447, mine:** gate round 3 was not clean, which means park. All six gate findings were one class (abort and cleanup guarantees) and every fix was a cut, which cannot make a doc false. I merged without a fourth round.
+- **#447, mine:** gate round 3 was not clean, which means park. All six gate findings were one class (abort and cleanup guarantees) and every fix was a cut. I merged without a fourth round, so no gate reviewed the last three cuts.
 - **#455, mine:** after 16 clean runs I stopped the search and made `precommit.sh` keep failed logs. The 17th run failed and the kept log gave the cause.
-- **#455 gate, mine:** I rejected a same-second log name clash on one branch. One worktree runs one precommit at a time, and a run takes more than 20 s.
+- **#455 gate, mine:** I rejected a same-second log name clash on one branch, under the operating assumption that one worktree runs one precommit at a time. The script does not enforce it.
 - **#457, by Codex:** the contract change (option 2), with the same boundary checks as `{:ok, ...}` and replies allowed.
 
 ## Escapes
 
 | Ticket | Ship | Codex gate | System change |
 |---|---|---|---|
-| #427, #428, #429, #430, #431, #434, #435, #436, #433 | r1: 0 | r1: 0 | none |
+| #427, #428, #429, #430, #431, #435, #436, #433 | r1: 0 | r1: 0 | none |
+| #434 | r1: 1, an accepted hole now documented (a failed second subscribe ends the first) | r1: 0 | none |
 | #439 | r1: 1, r2: 0 | r1: 0 | none; ship caught it |
 | #432 | r1: 1, r2: 0, r3 after rebase: 0 | r1: 0 | none; ship caught it |
 | #437 | r1: 1, r2: 1, r3: 0 | r1: 0 | none; ship caught both |
 | #446 | r1: 12, r2: 9, r3: 8 | r1: 1, r2: 0 | `review-checklist.md`: a doc rule names the function that enforces it, else it is cut |
-| #445 | r1: 9, r2: 2 cuts | r1: 2, r2: 0 | `review-checklist.md`: a doc trim keeps each bound it removes in the linked doc |
+| #445 | r1: 7, r2: 2 cuts | r1: 2, r2: 0 | `review-checklist.md`: a doc trim keeps each bound it removes in the linked doc |
 | #447 | r1: 12, r2: 9, r3: 3 | r1: 2, r2: 1, r3: 3 | `review-checklist.md`: abort, delivery and release end released or unconfirmed |
 | #455 | r1: 1 | r1: 1 rejected | `precommit.sh` keeps a failed log |
 | #457 | r1: 0 | r1: 0 | none |
 
-Every code ticket passed the Codex gate in round 1. All 9 confirmed gate findings were in the three docs tickets, and all were false claims: a doc said more than the code does. The prose rules from #306 and #307 did not stop them, and no mechanical check can read prose. So the new rules make a doc state less: a rule names its function or is cut, a cut keeps its bounds, and abort promises only "released or unconfirmed".
+Every code ticket passed the Codex gate in round 1 (`docs/reviews/escapes.md`; this PR also replaces the `x` line that a merge script run wrote in place of the #457 row). All 9 confirmed gate findings were in the three docs tickets: 8 claims that said more than the code does, and one trim that lost two bounds. The prose rules from #306 and #307 did not stop them, and no mechanical check can read prose. So the new rules make a doc state less: a rule names its function or is cut, a cut keeps its bounds, and abort promises only "released or unconfirmed".
 
 Two merges failed on a semantic conflict that git did not see: #431 called a function that #429 deleted, and #439 matched the old `subscribe/1` reply of #434. Precommit after the rebase caught both, as designed. Each cost one merge round.
 
-## Open, no ticket
+## Open
 
 - `Records.close_cut/3` ends an empty reply that the snapshot does not contain, so the ADR 0006 snapshot rule does not hold for that case.
 - No function enforces the ADR 0006 rule "every value is data"; an error event can hold a pid.
