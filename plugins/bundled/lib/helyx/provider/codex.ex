@@ -44,8 +44,8 @@ defmodule Helyx.Provider.Codex do
     # stays between turns.
     #
     # Of the running turn: `items` the state of its items (`Items`).
-    # `steers` maps the id of each steer sent in the running turn with no
-    # `userMessage` item yet to its text. `asked` maps the request id of each
+    # `steers` has a key for the id of each steer sent in the running turn
+    # with no `userMessage` item yet. `asked` maps the request id of each
     # `turn/steer` with no answer yet to `{from, steer_id}`; it outlives the
     # turn, because the answer can come after `turn/completed`.
     #
@@ -176,7 +176,7 @@ defmodule Helyx.Provider.Codex do
 
     actions(%{
       state
-      | steers: Map.put(state.steers, steer_id, text),
+      | steers: Map.put(state.steers, steer_id, true),
         asked: Map.put(state.asked, id, {from, steer_id})
     })
   end
@@ -245,7 +245,6 @@ defmodule Helyx.Provider.Codex do
           nil -> state
         end
 
-      state = %{state | tools: %{state.tools | used: MapSet.new()}}
       Map.merge(state, Map.take(%State{model: nil, cwd: nil}, @turn_fields))
     end
   end
@@ -456,8 +455,7 @@ defmodule Helyx.Provider.Codex do
          %State{steers: steers} = state
        )
        when method in ["item/started", "item/completed"] and is_map_key(steers, id) do
-    {text, steers} = Map.pop!(steers, id)
-    {[{:user_message, id, text}], %{state | steers: steers}}
+    {[{:user_message, id}], %{state | steers: Map.delete(steers, id)}}
   end
 
   defp notification(method, params, state) do

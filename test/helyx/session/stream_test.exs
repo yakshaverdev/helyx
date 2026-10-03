@@ -64,11 +64,10 @@ defmodule Helyx.Session.StreamTest do
     assert text == String.duplicate("�", 65_536)
   end
 
-  test "a user_message passes with two strings" do
-    event = {:user_message, "s1", "more"}
-    assert {:send, ^event, nil} = SessionStream.check(event)
-    assert {:bad, {:error, _}} = SessionStream.check({:user_message, :s1, "more"})
-    assert {:bad, {:error, _}} = SessionStream.check({:user_message, "s1", nil})
+  test "a user_message passes with a string steer id" do
+    assert {:send, {:user_message, "s1"}, nil} = SessionStream.check({:user_message, "s1"})
+    assert {:bad, {:error, _}} = SessionStream.check({:user_message, :s1})
+    assert {:bad, {:error, _}} = SessionStream.check({:user_message, "s1", "more"})
   end
 
   # The bound is `HarnessIO.cap_error/1`: 2,000 bytes of valid UTF-8.
