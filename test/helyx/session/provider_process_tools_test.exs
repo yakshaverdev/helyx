@@ -23,7 +23,7 @@ defmodule Helyx.Session.ProviderProcessToolsTest do
     start_supervised!({Helyx.Core, name: core, plugins: plugins})
     Process.register(self(), Connected.controller(core))
     {:ok, session} = Session.start(core, model: "conn/tools")
-    {:ok, _} = Session.subscribe(session)
+    {:ok, _, _} = Session.subscribe(session)
     :ok = Session.prompt(session, "go")
     assert_receive {:conn, :turn, proc, {:turn, turn_id, _context}}
     hands = :sys.get_state(Session.pid(session)).hands

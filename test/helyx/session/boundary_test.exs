@@ -115,7 +115,7 @@ defmodule Helyx.Session.BoundaryTest do
       on_exit(fn -> :persistent_term.erase({Counted, :observer}) end)
       core = start_core([Helyx.Test.Provider, Counted])
       {:ok, session} = Session.start(core, model: "test/ok")
-      {:ok, _} = Session.subscribe(session)
+      {:ok, _, _} = Session.subscribe(session)
 
       for text <- ["one", "two"] do
         :ok = Session.prompt(session, text)
@@ -241,7 +241,7 @@ defmodule Helyx.Session.BoundaryTest do
   @tag :tmp_dir
   test "a working directory that is gone gives an error result", %{core: core, tmp_dir: dir} do
     {:ok, session} = Session.start(core, model: "test/loop", cwd: Path.join(dir, "gone"))
-    {:ok, _} = Session.subscribe(session)
+    {:ok, _, _} = Session.subscribe(session)
 
     :ok = Session.prompt(session, "hello")
     events = collect_until(:agent_end)
@@ -251,7 +251,7 @@ defmodule Helyx.Session.BoundaryTest do
   describe "set_model/2" do
     test "the next turn uses the new provider, and a switch back works", %{core: core} do
       {:ok, session} = Session.start(core, model: "test/ok")
-      {:ok, _} = Session.subscribe(session)
+      {:ok, _, _} = Session.subscribe(session)
 
       :ok = Session.prompt(session, "one")
       first = collect_until(:agent_end)
@@ -283,7 +283,7 @@ defmodule Helyx.Session.BoundaryTest do
       tmp_dir: dir
     } do
       {:ok, session} = Session.start(core, model: "test/ok", sessions_dir: dir)
-      {:ok, _} = Session.subscribe(session)
+      {:ok, _, _} = Session.subscribe(session)
       [path] = Path.wildcard(Path.join(dir, "**/#{session.id}.jsonl"))
       before = File.read!(path)
 
@@ -313,14 +313,14 @@ defmodule Helyx.Session.BoundaryTest do
 
       {:ok, resumed} = Session.resume(core, sessions_dir: dir)
       assert GenServer.call(Session.pid(resumed), :snapshot).model == "other/any"
-      {:ok, _} = Session.subscribe(resumed)
+      {:ok, _, _} = Session.subscribe(resumed)
       :ok = Session.prompt(resumed, "hello")
       assert final_text(collect_until(:agent_end)) == "from other"
     end
 
     test "a switch during a turn takes effect on the next turn", %{core: core} do
       {:ok, session} = Session.start(core, model: "test/steer")
-      {:ok, _} = Session.subscribe(session)
+      {:ok, _, _} = Session.subscribe(session)
 
       :ok = Session.prompt(session, "hello")
       assert_receive {:helyx_event, %Event{type: :tool_execution_start}}
@@ -341,7 +341,7 @@ defmodule Helyx.Session.BoundaryTest do
       tmp_dir: dir
     } do
       {:ok, session} = Session.start(core, model: "test/ok", sessions_dir: dir)
-      {:ok, _} = Session.subscribe(session)
+      {:ok, _, _} = Session.subscribe(session)
 
       assert :ok = Session.set_model(session, "test/ok")
       assert_receive {:helyx_event, %Event{type: :model_change, data: %{model: "test/ok"}}}
@@ -376,7 +376,7 @@ defmodule Helyx.Session.BoundaryTest do
     @tag :tmp_dir
     test "a switch still works when the file cannot be written", %{core: core, tmp_dir: dir} do
       {:ok, session} = Session.start(core, model: "test/ok", sessions_dir: dir)
-      {:ok, _} = Session.subscribe(session)
+      {:ok, _, _} = Session.subscribe(session)
       [path] = Path.wildcard(Path.join(dir, "**/#{session.id}.jsonl"))
       header = File.read!(path)
       File.rm!(path)

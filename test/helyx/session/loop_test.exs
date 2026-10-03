@@ -17,7 +17,7 @@ defmodule Helyx.Session.LoopTest do
     core = start_core([Helyx.Test.Provider, Helyx.Test.ModelContext, Helyx.Test.Compaction])
 
     {:ok, session} = Session.start(core, model: "test/system")
-    {:ok, _} = Session.subscribe(session)
+    {:ok, _, _} = Session.subscribe(session)
 
     :ok = Session.prompt(session, "hello")
     assert final_text(collect_until(:agent_end)) == "built for #{File.cwd!()}, compacted"
@@ -25,7 +25,7 @@ defmodule Helyx.Session.LoopTest do
 
   test "without model context and compaction plugins the context is unchanged", %{core: core} do
     {:ok, session} = Session.start(core, model: "test/system")
-    {:ok, _} = Session.subscribe(session)
+    {:ok, _, _} = Session.subscribe(session)
 
     :ok = Session.prompt(session, "hello")
     assert final_text(collect_until(:agent_end)) == "no system"
@@ -33,7 +33,7 @@ defmodule Helyx.Session.LoopTest do
 
   test "the hands report the registered tools and the provider sees them", %{core: core} do
     {:ok, session} = Session.start(core, model: "test/tools")
-    {:ok, _} = Session.subscribe(session)
+    {:ok, _, _} = Session.subscribe(session)
 
     :ok = Session.prompt(session, "hello")
     assert final_text(collect_until(:agent_end)) == "binary,hold,kill,slow,upcase"
@@ -43,7 +43,7 @@ defmodule Helyx.Session.LoopTest do
     core: core
   } do
     {:ok, session} = Session.start(core, model: "test/loop")
-    {:ok, _} = Session.subscribe(session)
+    {:ok, _, _} = Session.subscribe(session)
 
     :ok = Session.prompt(session, "hello")
     events = collect_until(:agent_end)
@@ -72,7 +72,7 @@ defmodule Helyx.Session.LoopTest do
   test "a tool call with an integer over the digit limit gets an error result and never runs",
        %{core: core, tmp_dir: dir} do
     {:ok, session} = Session.start(core, model: "test/big_int", sessions_dir: dir)
-    {:ok, _} = Session.subscribe(session)
+    {:ok, _, _} = Session.subscribe(session)
 
     :ok = Session.prompt(session, "hello")
     events = collect_until(:agent_end, @load_event_ms)
@@ -108,7 +108,7 @@ defmodule Helyx.Session.LoopTest do
   test "a call whose arguments are not a JSON object gets an error result; the text and the good call stay",
        %{core: core} do
     {:ok, session} = Session.start(core, model: "test/rejected")
-    {:ok, _} = Session.subscribe(session)
+    {:ok, _, _} = Session.subscribe(session)
 
     :ok = Session.prompt(session, "hello")
     events = collect_until(:agent_end)
@@ -138,7 +138,7 @@ defmodule Helyx.Session.LoopTest do
 
   test "tool calls run one at a time, in call order", %{core: core} do
     {:ok, session} = Session.start(core, model: "test/serial")
-    {:ok, _} = Session.subscribe(session)
+    {:ok, _, _} = Session.subscribe(session)
 
     :ok = Session.prompt(session, "hello")
     events = collect_until(:agent_end)
@@ -169,7 +169,7 @@ defmodule Helyx.Session.LoopTest do
     tmp_dir: dir
   } do
     {:ok, session} = Session.start(core, model: "test/recover", sessions_dir: dir)
-    {:ok, _} = Session.subscribe(session)
+    {:ok, _, _} = Session.subscribe(session)
 
     :ok = Session.prompt(session, "hello")
     events = collect_until(:agent_end)
@@ -188,7 +188,7 @@ defmodule Helyx.Session.LoopTest do
     core: core
   } do
     {:ok, session} = Session.start(core, model: "test/binary")
-    {:ok, _} = Session.subscribe(session)
+    {:ok, _, _} = Session.subscribe(session)
 
     :ok = Session.prompt(session, "hello")
     events = collect_until(:agent_end)
@@ -209,7 +209,7 @@ defmodule Helyx.Session.LoopTest do
 
   test "a tool Task that dies gives an error result and the loop continues", %{core: core} do
     {:ok, session} = Session.start(core, model: "test/kill")
-    {:ok, _} = Session.subscribe(session)
+    {:ok, _, _} = Session.subscribe(session)
 
     :ok = Session.prompt(session, "hello")
     events = collect_until(:agent_end)
@@ -225,7 +225,7 @@ defmodule Helyx.Session.LoopTest do
 
   test "abort during tool calls ends the turn and answers every open call", %{core: core} do
     {:ok, session} = Session.start(core, model: "test/abort")
-    {:ok, _} = Session.subscribe(session)
+    {:ok, _, _} = Session.subscribe(session)
 
     :ok = Session.prompt(session, "hello")
     assert_receive {:helyx_event, %Event{type: :tool_execution_start} = started}
@@ -252,7 +252,7 @@ defmodule Helyx.Session.LoopTest do
 
   test "abort during the provider stream closes the partial message", %{core: core} do
     {:ok, session} = Session.start(core, model: "test/hang")
-    {:ok, _} = Session.subscribe(session)
+    {:ok, _, _} = Session.subscribe(session)
 
     :ok = Session.prompt(session, "hello")
     assert_receive {:helyx_event, %Event{type: :message_update}}
@@ -272,7 +272,7 @@ defmodule Helyx.Session.LoopTest do
 
   test "abort with no running turn is ok", %{core: core} do
     {:ok, session} = Session.start(core, model: "test/ok")
-    {:ok, _} = Session.subscribe(session)
+    {:ok, _, _} = Session.subscribe(session)
 
     assert :ok = Session.abort(session)
     refute_received {:helyx_event, _}
@@ -282,7 +282,7 @@ defmodule Helyx.Session.LoopTest do
   # keeps no record of it, and no signal stays in its mailbox (#261).
   test "many aborts in a row leave no growing state", %{core: core} do
     {:ok, session} = Session.start(core, model: "test/hang")
-    {:ok, _} = Session.subscribe(session)
+    {:ok, _, _} = Session.subscribe(session)
     pid = Session.pid(session)
 
     abort = fn ->
@@ -319,7 +319,7 @@ defmodule Helyx.Session.LoopTest do
   @tag :capture_log
   test "killing the session kills the provider process", %{core: core} do
     {:ok, session} = Session.start(core, model: "test/hang")
-    {:ok, _} = Session.subscribe(session)
+    {:ok, _, _} = Session.subscribe(session)
     :ok = Session.prompt(session, "hello")
     assert_receive {:helyx_event, %Event{type: :message_update}}
 
@@ -332,7 +332,7 @@ defmodule Helyx.Session.LoopTest do
   @tag :capture_log
   test "killing the session kills the hands and the tool Task", %{core: core} do
     {:ok, session} = Session.start(core, model: "test/abort")
-    {:ok, _} = Session.subscribe(session)
+    {:ok, _, _} = Session.subscribe(session)
     pid = Session.pid(session)
     hands = :sys.get_state(pid).hands
     :erlang.trace(hands, true, [:receive])
@@ -365,7 +365,7 @@ defmodule Helyx.Session.LoopTest do
   test "steers during a tool run reach the next provider call after the result, in order" do
     core = start_core([Helyx.Test.Provider, Helyx.Test.Gate])
     {:ok, session} = Session.start(core, model: "test/steer." <> Helyx.Test.Gate.open())
-    {:ok, _} = Session.subscribe(session)
+    {:ok, _, _} = Session.subscribe(session)
 
     :ok = Session.prompt(session, "hello")
     assert_receive {:waiting, tool}
@@ -402,7 +402,7 @@ defmodule Helyx.Session.LoopTest do
 
   test "a follow-up during a turn starts a new turn after agent_end", %{core: core} do
     {:ok, session} = Session.start(core, model: gated_model())
-    {:ok, _} = Session.subscribe(session)
+    {:ok, _, _} = Session.subscribe(session)
 
     :ok = Session.prompt(session, "hello")
     assert_receive {:waiting, stream}
@@ -424,7 +424,7 @@ defmodule Helyx.Session.LoopTest do
 
   test "a steer in the last model call continues the same turn", %{core: core} do
     {:ok, session} = Session.start(core, model: gated_model())
-    {:ok, _} = Session.subscribe(session)
+    {:ok, _, _} = Session.subscribe(session)
 
     :ok = Session.prompt(session, "hello")
     assert_receive {:waiting, stream}
@@ -447,7 +447,7 @@ defmodule Helyx.Session.LoopTest do
 
   test "a steer or follow-up with no turn running starts a turn at once", %{core: core} do
     {:ok, session} = Session.start(core, model: "test/ok")
-    {:ok, _} = Session.subscribe(session)
+    {:ok, _, _} = Session.subscribe(session)
 
     :ok = Session.follow_up(session, "go")
     events = collect_until(:agent_end)
@@ -461,7 +461,7 @@ defmodule Helyx.Session.LoopTest do
 
   test "abort drops queued steers and follow-ups", %{core: core} do
     {:ok, session} = Session.start(core, model: "test/abort")
-    {:ok, _} = Session.subscribe(session)
+    {:ok, _, _} = Session.subscribe(session)
 
     :ok = Session.prompt(session, "hello")
     assert_receive {:helyx_event, %Event{type: :tool_execution_start}}
@@ -481,7 +481,7 @@ defmodule Helyx.Session.LoopTest do
 
   test "a full queue rejects the next steer or follow-up", %{core: core} do
     {:ok, session} = Session.start(core, model: "test/abort")
-    {:ok, _} = Session.subscribe(session)
+    {:ok, _, _} = Session.subscribe(session)
 
     :ok = Session.prompt(session, "hello")
     assert_receive {:helyx_event, %Event{type: :tool_execution_start}}

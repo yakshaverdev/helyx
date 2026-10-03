@@ -24,7 +24,7 @@ defmodule Helyx.Watchdog.HarnessStopTest do
     on_exit(fn -> File.rm(WatchdogHarness.pid_path(session.id)) end)
     pid = Session.pid(session)
     :sys.replace_state(pid, &%{&1 | provider_ms: %{&1.provider_ms | reply: reply_ms}})
-    {:ok, _} = Session.subscribe(session)
+    {:ok, _, _} = Session.subscribe(session)
     :ok = Session.prompt(session, "go")
     {session, wait_for_pid(WatchdogHarness.pid_path(session.id))}
   end

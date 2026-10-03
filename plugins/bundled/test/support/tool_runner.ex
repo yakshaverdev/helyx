@@ -12,7 +12,7 @@ defmodule Helyx.Test.ToolRunner do
     model = "run_tool_#{System.unique_integer([:positive])}"
     :ok = Fake.script(core, model, [[call], ["Done."]])
     {:ok, session} = Helyx.Session.start(core, model: "fake/#{model}", cwd: cwd)
-    {:ok, _} = Helyx.Session.subscribe(session)
+    {:ok, _, _} = Helyx.Session.subscribe(session)
     :ok = Helyx.Session.prompt(session, "go")
 
     receive do

@@ -36,7 +36,7 @@ defmodule Helyx.Provider.ClaudeCodeRealTest do
         sessions_dir: Path.join(tmp, "sessions")
       )
 
-    {:ok, _} = Session.subscribe(session)
+    {:ok, _, _} = Session.subscribe(session)
 
     :ok =
       Session.prompt(session, """

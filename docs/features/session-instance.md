@@ -50,5 +50,5 @@ No external resource.
 
 ## Out of scope
 
-- The end signal and the lost signal carry the session id only. The flush of an end or a lost signal in `subscribe/1` matches the id, not the Core, so a subscribe to the id in one Core can remove a signal of the caller's subscription in the other Core (`docs/features/end-signal.md`). A fix changes the shape of the end signal, a contract change that the ticket does not state: open, ticket #216.
+- The end signal: since #434 it is the `:DOWN` of the caller's own monitor ref (`docs/features/end-signal.md`), so a subscribe in one Core touches no signal of a session in another Core.
 - A `seq` that continues across a resume, and a session id that is unique in the node. Both were considered in #204 and not chosen.

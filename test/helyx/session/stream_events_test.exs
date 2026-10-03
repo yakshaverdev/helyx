@@ -20,12 +20,12 @@ defmodule Helyx.Session.StreamEventsTest do
               turn: nil,
               model: "test/ok",
               queue: %{steers: 0, follow_ups: 0}
-            }} = Session.subscribe(session)
+            }, _} = Session.subscribe(session)
   end
 
   test "a snapshot during tool calls holds every call in its messages", %{core: core} do
     {:ok, session} = Session.start(core, model: "test/abort")
-    {:ok, _} = Session.subscribe(session)
+    {:ok, _, _} = Session.subscribe(session)
     :ok = Session.prompt(session, "go")
 
     # Every call starts at the `message_end`.
@@ -38,7 +38,7 @@ defmodule Helyx.Session.StreamEventsTest do
     test = self()
     pid = spawn(fn -> send(test, {:snapshot, self(), Session.subscribe(session)}) end)
 
-    assert_receive {:snapshot, ^pid, {:ok, snapshot}}
+    assert_receive {:snapshot, ^pid, {:ok, snapshot, _}}
     assert %{seq: ^seq, turn: %{partial: nil}} = snapshot
 
     assert [%Helyx.Message{role: :user}, %Helyx.Message{role: :assistant, content: calls}] =
@@ -50,7 +50,7 @@ defmodule Helyx.Session.StreamEventsTest do
 
   test "a stream that ends without a terminal event ends the turn with an error", %{core: core} do
     {:ok, session} = Session.start(core, model: "test/empty")
-    {:ok, _} = Session.subscribe(session)
+    {:ok, _, _} = Session.subscribe(session)
 
     :ok = Session.prompt(session, "hello")
     events = collect_until(:agent_end)
@@ -64,7 +64,7 @@ defmodule Helyx.Session.StreamEventsTest do
   @tag :capture_log
   test "a task crash fails the turn and the session accepts the next prompt", %{core: core} do
     {:ok, session} = Session.start(core, model: "test/crash")
-    {:ok, _} = Session.subscribe(session)
+    {:ok, _, _} = Session.subscribe(session)
 
     :ok = Session.prompt(session, "hello")
     events = collect_until(:agent_end)
@@ -79,7 +79,7 @@ defmodule Helyx.Session.StreamEventsTest do
   # pulls past the error; the fixture's tail raises on a drain.
   test "an error event fails the turn without pulling the stream further", %{core: core} do
     {:ok, session} = Session.start(core, model: "test/error_tail")
-    {:ok, _} = Session.subscribe(session)
+    {:ok, _, _} = Session.subscribe(session)
 
     :ok = Session.prompt(session, "hello")
     events = collect_until(:agent_end)
@@ -92,7 +92,7 @@ defmodule Helyx.Session.StreamEventsTest do
 
   test "consumption stops at the first terminal event", %{core: core} do
     {:ok, session} = Session.start(core, model: "test/overrun")
-    {:ok, _} = Session.subscribe(session)
+    {:ok, _, _} = Session.subscribe(session)
 
     :ok = Session.prompt(session, "hello")
     events = collect_until(:agent_end)
@@ -104,7 +104,7 @@ defmodule Helyx.Session.StreamEventsTest do
   @tag :capture_log
   test "a failure after deltas closes the partial message with an error", %{core: core} do
     {:ok, session} = Session.start(core, model: "test/crash")
-    {:ok, _} = Session.subscribe(session)
+    {:ok, _, _} = Session.subscribe(session)
 
     :ok = Session.prompt(session, "hello")
     events = collect_until(:agent_end)
@@ -126,7 +126,7 @@ defmodule Helyx.Session.StreamEventsTest do
 
   test "thinking, text, and tool call events build one assistant message in order", %{core: core} do
     {:ok, session} = Session.start(core, model: "test/blocks")
-    {:ok, _} = Session.subscribe(session)
+    {:ok, _, _} = Session.subscribe(session)
 
     :ok = Session.prompt(session, "hello")
     events = collect_until(:agent_end)
@@ -158,7 +158,7 @@ defmodule Helyx.Session.StreamEventsTest do
   describe "harness events (#10)" do
     defp harness_turn(core, model) do
       {:ok, session} = Session.start(core, model: "conn/events.#{model}")
-      {:ok, _} = Session.subscribe(session)
+      {:ok, _, _} = Session.subscribe(session)
       :ok = Session.prompt(session, "hello")
       collect_until(:agent_end)
     end
@@ -249,7 +249,7 @@ defmodule Helyx.Session.StreamEventsTest do
          %{core: core} do
       for {model, bytes} <- [{"result_65537", 65_537}, {"result_multibyte", 65_537}] do
         {:ok, session} = Session.start(core, model: "conn/events.#{model}")
-        {:ok, _} = Session.subscribe(session)
+        {:ok, _, _} = Session.subscribe(session)
         :ok = Session.prompt(session, "hello")
         events = collect_until(:agent_end)
 
@@ -281,7 +281,7 @@ defmodule Helyx.Session.StreamEventsTest do
     test "an open assistant message over 8 MiB stops the provider process and fails the turn",
          %{core: core} do
       {:ok, session} = Session.start(core, model: "conn/events.message_over_bound")
-      {:ok, _} = Session.subscribe(session)
+      {:ok, _, _} = Session.subscribe(session)
       :ok = Session.prompt(session, "hello")
       events = collect_until(:agent_end)
 
@@ -304,7 +304,7 @@ defmodule Helyx.Session.StreamEventsTest do
       assert %Helyx.Message.ToolCall{id: "c1"} = List.last(first.content)
 
       {:ok, session} = Session.start(core, model: "conn/events.call_over_bound")
-      {:ok, _} = Session.subscribe(session)
+      {:ok, _, _} = Session.subscribe(session)
       :ok = Session.prompt(session, "hello")
       events = collect_until(:agent_end)
 
@@ -339,7 +339,7 @@ defmodule Helyx.Session.StreamEventsTest do
     test "a call with no result at done gets its aborted result before the last message",
          %{core: core} do
       {:ok, session} = Session.start(core, model: "conn/events.open_call")
-      {:ok, _} = Session.subscribe(session)
+      {:ok, _, _} = Session.subscribe(session)
       :ok = Session.prompt(session, "hello")
       collect_until(:agent_end)
 
@@ -355,7 +355,7 @@ defmodule Helyx.Session.StreamEventsTest do
     test "a new message gives the open calls their aborted results, and a late result is dropped",
          %{core: core} do
       {:ok, session} = Session.start(core, model: "conn/events.late_result")
-      {:ok, _} = Session.subscribe(session)
+      {:ok, _, _} = Session.subscribe(session)
       :ok = Session.prompt(session, "hello")
       collect_until(:agent_end)
       transcript = :sys.get_state(Session.pid(session)).transcript
@@ -410,7 +410,7 @@ defmodule Helyx.Session.StreamEventsTest do
     test "a malformed stream event fails the turn and the session lives: #{name}",
          %{core: core} do
       {:ok, session} = Session.start(core, model: "test/" <> unquote(model))
-      {:ok, _} = Session.subscribe(session)
+      {:ok, _, _} = Session.subscribe(session)
 
       :ok = Session.prompt(session, "hello")
 
@@ -424,7 +424,7 @@ defmodule Helyx.Session.StreamEventsTest do
 
   test "a prompt during a turn is rejected", %{core: core} do
     {:ok, session} = Session.start(core, model: gated_model())
-    {:ok, _} = Session.subscribe(session)
+    {:ok, _, _} = Session.subscribe(session)
 
     :ok = Session.prompt(session, "hello")
     assert_receive {:waiting, stream}
@@ -436,7 +436,7 @@ defmodule Helyx.Session.StreamEventsTest do
   test "an error reason from a provider holds no integer over the digit limit", %{core: core} do
     for model <- ["error_int", "refuse_int"] do
       {:ok, session} = Session.start(core, model: "test/#{model}")
-      {:ok, _} = Session.subscribe(session)
+      {:ok, _, _} = Session.subscribe(session)
 
       :ok = Session.prompt(session, "hello")
       error = List.last(collect_until(:agent_end)).data.error
@@ -448,7 +448,7 @@ defmodule Helyx.Session.StreamEventsTest do
        %{core: core} do
     for model <- ["struct_usage", "struct_args"] do
       {:ok, session} = Session.start(core, model: "test/#{model}")
-      {:ok, _} = Session.subscribe(session)
+      {:ok, _, _} = Session.subscribe(session)
 
       :ok = Session.prompt(session, "hello")
       events = collect_until(:agent_end)
@@ -462,7 +462,7 @@ defmodule Helyx.Session.StreamEventsTest do
 
   test "a done payload that is a struct with the large integer ends the turn", %{core: core} do
     {:ok, session} = Session.start(core, model: "test/struct_done")
-    {:ok, _} = Session.subscribe(session)
+    {:ok, _, _} = Session.subscribe(session)
 
     :ok = Session.prompt(session, "hello")
     events = collect_until(:agent_end)

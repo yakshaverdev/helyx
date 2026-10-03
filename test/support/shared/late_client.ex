@@ -13,7 +13,7 @@ defmodule Helyx.Test.LateClient do
 
     client =
       spawn_link(fn ->
-        {:ok, snapshot} = Session.subscribe(session)
+        {:ok, snapshot, _} = Session.subscribe(session)
         send(test, {:snapshot, self(), snapshot})
         serve(session, test)
       end)

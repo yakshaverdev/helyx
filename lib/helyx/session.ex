@@ -6,14 +6,13 @@ defmodule Helyx.Session do
   the current turn. Clients subscribe to its events and send prompts.
 
       {:ok, session} = Helyx.Session.start(core, model: "fake/echo")
-      {:ok, snapshot} = Helyx.Session.subscribe(session)
+      {:ok, snapshot, ref} = Helyx.Session.subscribe(session)
       :ok = Helyx.Session.prompt(session, "hello")
       # receive {:helyx_event, %Helyx.Event{}} ... (a client that
       # reconnects drops each event of another instance_id than the
       # snapshot's, and each seq <= snapshot.seq)
-      # then {{:helyx_session_end, id}, _ref, :process, _pid, reason} when
-      # the session ends; Helyx.Session.end_reason(reason) is :stopped or
-      # :crashed
+      # then {:DOWN, ^ref, :process, _pid, reason} when the session
+      # ends; Helyx.Session.end_reason(reason) is :stopped or :crashed
 
   Every provider runs the turn in its provider process (ADR 0002, ADR
   0007). An API provider runs it with `Helyx.Provider.Loop`: it calls the
@@ -37,7 +36,7 @@ defmodule Helyx.Session do
   """
 
   alias Helyx.ModelRef
-  alias Helyx.Session.{Id, Server, Subscription, Transcript}
+  alias Helyx.Session.{Id, Server, Snapshot, Transcript}
   alias Helyx.Session.Server.State
 
   @enforce_keys [:id, :core]
@@ -195,31 +194,61 @@ defmodule Helyx.Session do
   caller that subscribes once gets no such event (ADR 0006, revision of
   2026-10-03).
 
-  After its last event, the subscription gives one end signal when the
-  session ends, from a monitor of the session process that the caller holds:
+  The caller gets `{:ok, snapshot, ref}`, where `ref` is its monitor of the
+  session process, made before the subscribe call. After its last event, the
+  session gives the caller one end signal when it ends:
 
-      {{:helyx_session_end, id}, ref, :process, pid, reason}
+      {:DOWN, ref, :process, pid, reason}
 
-  `end_reason/1` maps `reason` to `:stopped` or `:crashed`. The `ref` and
-  the `pid` are not contract values: `subscribe/1` owns the monitor.
-
-  A caller holds at most one subscription and one monitor for a session, so
-  a second subscribe, a reconnect for example, gets a new snapshot and each
-  event once. It removes the monitor of the first, and an end signal of the
-  first that is still in the mailbox goes with it.
+  `end_reason/1` maps `reason` to `:stopped` or `:crashed`. The caller owns
+  the ref. The session holds one subscription for each caller pid, so a
+  second subscribe, a reconnect for example, gets a new snapshot and each
+  event once, and a second ref. The caller removes the ref it no longer
+  wants with `Process.demonitor(ref, [:flush])`.
 
   A session that is not running returns `{:error, :session_not_found}`,
-  with no subscription and no signal left for it. This includes a session
-  whose Core has stopped. A snapshot call that exits on its timeout also
-  leaves no subscription, and the exit then goes on to the caller. An event
-  that the session sent before it ended can stay in the caller's mailbox; a
-  client drops it by `instance_id` and `seq` once it has a snapshot. The
-  other operations return `{:error, :session_not_found}` for such a session
-  too.
+  with no subscription of the caller and no monitor left for it. This
+  includes a session whose Core has stopped. A snapshot call that exits on
+  its timeout also leaves no subscription and no monitor, and the exit then
+  goes on to the caller. A failed subscribe also ends an earlier
+  subscription of the caller: the ref of the earlier one stays with the
+  caller and gives no more events, only the end signal. An event that the session sent before it ended can
+  stay in the caller's mailbox; a client drops it by `instance_id` and
+  `seq` once it has a snapshot. The other operations return
+  `{:error, :session_not_found}` for such a session too.
   """
-  @spec subscribe(t()) :: {:ok, Helyx.Session.Snapshot.t()} | {:error, :session_not_found}
-  def subscribe(%__MODULE__{} = session),
-    do: Subscription.subscribe(session, pid(session), &call_pid(&1, &2, @call_timeout_ms))
+  @spec subscribe(t()) :: {:ok, Snapshot.t(), reference()} | {:error, :session_not_found}
+  def subscribe(%__MODULE__{} = session) do
+    case pid(session) do
+      nil -> {:error, :session_not_found}
+      # The monitor comes before the call, so the real exit reason of the
+      # pid of the snapshot is never lost.
+      pid -> subscribe_pid(pid, Process.monitor(pid))
+    end
+  end
+
+  # On a failure the unsubscribe follows the call from this process to the
+  # same pid, so a live session handles it after the subscribe.
+  defp subscribe_pid(pid, ref) do
+    case call_pid(pid, {:subscribe, self()}, @call_timeout_ms) do
+      %Snapshot{} = snapshot ->
+        {:ok, snapshot, ref}
+
+      {:error, :session_not_found} ->
+        unsubscribe(pid, ref)
+        {:error, :session_not_found}
+    end
+  catch
+    # `call_pid/3` lets only the timeout of a running session exit.
+    :exit, reason ->
+      unsubscribe(pid, ref)
+      :erlang.raise(:exit, reason, __STACKTRACE__)
+  end
+
+  defp unsubscribe(pid, ref) do
+    Process.demonitor(ref, [:flush])
+    send(pid, {:unsubscribe, self()})
+  end
 
   @doc """
   The reason of an end signal as a client gets it: `:stopped` for an exit

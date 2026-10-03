@@ -17,15 +17,15 @@ The contract is the operations below, the snapshot, the events, and the end sign
 | Operation | Reply |
 |---|---|
 | `start(opts)`, `resume(opts)` | a session, or a start error (below) |
-| `subscribe(session)` | `{:ok, snapshot}`, or `{:error, :session_not_found}` |
+| `subscribe(session)` | `{:ok, snapshot, ref}`, or `{:error, :session_not_found}` |
 | `prompt`, `steer`, `follow_up` (text) | `:ok`, or an error atom |
 | `abort` | `:ok` |
 | `set_model` (a `provider/model` string) | `:ok`, or a model error |
 
-- **Every value is data:** strings, numbers, booleans, atoms, lists, maps, and structs of these. No pid, reference, function, or module. An error is an atom, or a tuple of an atom and data.
+- **Every value is data:** strings, numbers, booleans, atoms, lists, maps, and structs of these. No pid, reference, function, or module. The one exception is the `ref` of `subscribe` in the local transport (below). A remote transport does not send it. An error is an atom, or a tuple of an atom and data.
 - **Start errors for a client:** `:invalid_cwd`, the model errors (`{:invalid_model_ref, ref}`, `{:unknown_provider, id}`), and, for `resume`, `:not_found` when the directory has no saved session. Any other start error reaches a client as `{:start_failed, text}`, where the text is for a person. The product still gets the full term, and so does the log.
 - **A missing or ended session:** `subscribe` to a session that is not running returns `{:error, :session_not_found}`. It does not exit, and it leaves no subscriber entry and no monitor. An operation on such a session returns the same error.
-- **The end signal:** a subscriber learns that a session ended from one signal with a reason as data. The local transport gives it as one message, from a monitor that `subscribe` sets on the session process: `{{:helyx_session_end, id}, ref, :process, pid, reason}`, and `Session.end_reason/1` maps `reason` to `:stopped` or `:crashed` (`docs/features/session-subscribers.md`). The `ref` and the `pid` of this message are not contract values: `subscribe` owns the monitor. A remote transport sends the end signal as a last event and then closes the stream. A stream that closes with no end signal is a lost connection, and the client subscribes again.
+- **The end signal:** a subscriber learns that a session ended from one signal with a reason as data. The local transport gives it as the `:DOWN` of the caller's monitor of the session process, whose `ref` `subscribe` returns: `{:DOWN, ref, :process, pid, reason}`. `Session.end_reason/1` maps `reason` to `:stopped` or `:crashed` (`docs/features/end-signal.md`). The caller owns the ref and demonitors it when it no longer wants it. The `pid` is not a contract value. A remote transport sends the end signal as a last event and then closes the stream. A stream that closes with no end signal is a lost connection, and the client subscribes again.
 - **Not in the contract:** `Session.pid/1`, `Core.plugins/2`, and the registry and supervisor names. They are for the product and for a Transport plugin inside the node. The TUI stops using `Session.pid/1`.
 
 ### 3. A client joins with a snapshot

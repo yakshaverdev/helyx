@@ -16,7 +16,7 @@ defmodule Helyx.Session.PersistenceTest do
     tmp_dir: dir
   } do
     {:ok, session} = Session.start(core, model: "test/blocks", sessions_dir: dir)
-    {:ok, _} = Session.subscribe(session)
+    {:ok, _, _} = Session.subscribe(session)
 
     :ok = Session.prompt(session, "hello")
     collect_until(:agent_end)
@@ -47,7 +47,7 @@ defmodule Helyx.Session.PersistenceTest do
     tmp_dir: dir
   } do
     {:ok, session} = Session.start(core, model: "test/transcript", sessions_dir: dir)
-    {:ok, _} = Session.subscribe(session)
+    {:ok, _, _} = Session.subscribe(session)
 
     :ok = Session.prompt(session, "hello")
     assert final_text(collect_until(:agent_end)) == "user:hello"
@@ -56,7 +56,7 @@ defmodule Helyx.Session.PersistenceTest do
 
     {:ok, resumed} = Session.resume(core, sessions_dir: dir)
     assert resumed.id == session.id
-    {:ok, _} = Session.subscribe(resumed)
+    {:ok, _, _} = Session.subscribe(resumed)
 
     :ok = Session.prompt(resumed, "again")
 
@@ -148,7 +148,7 @@ defmodule Helyx.Session.PersistenceTest do
     assert File.read!(file.path) == written
 
     # The provider request has the result of the reused id, right after it.
-    {:ok, _} = Session.subscribe(session)
+    {:ok, _, _} = Session.subscribe(session)
     :ok = Session.prompt(session, "one")
 
     assert final_text(collect_until(:agent_end)) ==
@@ -161,7 +161,7 @@ defmodule Helyx.Session.PersistenceTest do
     written = File.read!(file.path)
     {:ok, session} = Session.resume(core, sessions_dir: dir)
     assert File.read!(file.path) == written
-    {:ok, snapshot} = Session.subscribe(session)
+    {:ok, snapshot, _} = Session.subscribe(session)
     roles_texts = Enum.map(snapshot.messages, &{&1.role, Helyx.Message.text(&1)})
     assert Enum.take(roles_texts, 4) == answered
     assert [{:user, "one"}, {:assistant, _reply}] = Enum.drop(roles_texts, 4)
@@ -211,7 +211,7 @@ defmodule Helyx.Session.PersistenceTest do
     assert :sys.get_state(Session.pid(session)).resume_ids == %{"claude-code" => {"h1", 4}}
 
     # A client mounts from the snapshot: no result there lacks its call.
-    {:ok, snapshot} = Session.subscribe(session)
+    {:ok, snapshot, _} = Session.subscribe(session)
     assert Enum.map(snapshot.messages, &{&1.role, Helyx.Message.text(&1)}) == repaired
 
     # The provider gets the repaired history.
@@ -225,7 +225,7 @@ defmodule Helyx.Session.PersistenceTest do
   @tag :capture_log
   test "resume after a crash mid-turn answers every open tool call", %{core: core, tmp_dir: dir} do
     {:ok, session} = Session.start(core, model: "test/abort", sessions_dir: dir)
-    {:ok, _} = Session.subscribe(session)
+    {:ok, _, _} = Session.subscribe(session)
 
     :ok = Session.prompt(session, "hello")
     assert_receive {:helyx_event, %Event{type: :tool_execution_start}}
@@ -233,7 +233,7 @@ defmodule Helyx.Session.PersistenceTest do
     stop_session(session, &Process.exit(&1, :kill))
 
     {:ok, resumed} = Session.resume(core, sessions_dir: dir)
-    {:ok, _} = Session.subscribe(resumed)
+    {:ok, _, _} = Session.subscribe(resumed)
 
     :ok = Session.prompt(resumed, "again")
     assert final_text(collect_until(:agent_end)) == "aborted|aborted|aborted"
@@ -241,7 +241,7 @@ defmodule Helyx.Session.PersistenceTest do
 
   test "a prompt that is not valid UTF-8 is rejected and the session lives", %{core: core} do
     {:ok, session} = Session.start(core, model: "test/ok")
-    {:ok, _} = Session.subscribe(session)
+    {:ok, _, _} = Session.subscribe(session)
 
     assert {:error, :invalid_utf8} = Session.prompt(session, <<255, 254>>)
 
@@ -253,7 +253,7 @@ defmodule Helyx.Session.PersistenceTest do
   @tag :capture_log
   test "a write failure turns persistence off and the session lives", %{core: core, tmp_dir: dir} do
     {:ok, session} = Session.start(core, model: "test/ok", sessions_dir: dir)
-    {:ok, _} = Session.subscribe(session)
+    {:ok, _, _} = Session.subscribe(session)
 
     File.rm_rf!(dir)
 

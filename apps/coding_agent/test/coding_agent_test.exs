@@ -15,7 +15,7 @@ defmodule CodingAgentTest do
     :ok = Helyx.Provider.Fake.script(core, "task", [["Running.", call], ["Done."]])
 
     {:ok, session} = Session.start(core, model: "fake/task")
-    {:ok, _} = Session.subscribe(session)
+    {:ok, _, _} = Session.subscribe(session)
     :ok = Session.prompt(session, "run it")
 
     events = collect_until(:agent_end)

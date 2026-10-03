@@ -19,12 +19,12 @@ defmodule Helyx.Session.InstanceTest do
 
     test "each start has its own instance, and its events carry it", %{core: core, tmp_dir: dir} do
       {:ok, session} = Session.start(core, model: "test/ok", sessions_dir: dir)
-      {:ok, first} = Session.subscribe(session)
+      {:ok, first, _} = Session.subscribe(session)
       assert Enum.all?(prompt_events(session), &(&1.instance_id == first.instance_id))
 
       stop_session(session, &GenServer.stop/1)
       {:ok, resumed} = Session.resume(core, sessions_dir: dir)
-      {:ok, second} = Session.subscribe(resumed)
+      {:ok, second, _} = Session.subscribe(resumed)
 
       assert is_binary(second.instance_id) and second.instance_id != first.instance_id
       assert Enum.all?(prompt_events(resumed), &(&1.instance_id == second.instance_id))
@@ -38,14 +38,14 @@ defmodule Helyx.Session.InstanceTest do
       tmp_dir: dir
     } do
       {:ok, session} = Session.start(core, model: "test/ok", sessions_dir: dir)
-      {:ok, old} = Session.subscribe(session)
+      {:ok, old, ref} = Session.subscribe(session)
       prompt_events(session)
 
       stop_session(session, &GenServer.stop/1)
-      assert_receive {{:helyx_session_end, _id}, _ref, :process, _pid, :normal}
+      assert_receive {:DOWN, ^ref, :process, _pid, :normal}
       {:ok, resumed} = Session.resume(core, sessions_dir: dir)
       assert :sys.get_state(Session.pid(resumed)).subscribers == %{}
-      {:ok, _} = Session.subscribe(resumed)
+      {:ok, _, _} = Session.subscribe(resumed)
 
       events = prompt_events(resumed)
       assert hd(events).seq == 1
@@ -63,13 +63,13 @@ defmodule Helyx.Session.InstanceTest do
       {:ok, b} = Session.resume(other, sessions_dir: dir)
       assert a.id == b.id
 
-      {:ok, snapshot_a} = Session.subscribe(a)
+      {:ok, snapshot_a, _} = Session.subscribe(a)
       :ok = Session.prompt(a, "hi")
       queued = fn -> for {:helyx_event, event} <- mailbox(), do: event end
       await(fn -> Enum.any?(queued.(), &(&1.type == :agent_end)) end, "the events of Core A")
       before = queued.()
 
-      {:ok, snapshot_b} = Session.subscribe(b)
+      {:ok, snapshot_b, _} = Session.subscribe(b)
       assert snapshot_a.instance_id != snapshot_b.instance_id
       assert collect_until(:agent_end) == before
       assert Enum.all?(before, &(&1.instance_id == snapshot_a.instance_id))
@@ -89,11 +89,11 @@ defmodule Helyx.Session.InstanceTest do
       other = start_core([Helyx.Test.Provider])
 
       {:ok, a} = Session.start(core, model: "test/transcript", sessions_dir: dir)
-      {:ok, _} = Session.subscribe(a)
+      {:ok, _, _} = Session.subscribe(a)
       prompt_events(a, "shared")
 
       {:ok, b} = Session.resume(other, sessions_dir: dir)
-      {:ok, _} = Session.subscribe(b)
+      {:ok, _, _} = Session.subscribe(b)
       prompt_events(b, "b1")
       prompt_events(a, "a1")
       prompt_events(b, "b2")
@@ -120,7 +120,7 @@ defmodule Helyx.Session.InstanceTest do
 
       # The next provider call of a resumed session sees that branch only.
       {:ok, resumed} = Session.resume(core, sessions_dir: dir)
-      {:ok, _} = Session.subscribe(resumed)
+      {:ok, _, _} = Session.subscribe(resumed)
       rendered = Enum.map_join(file.messages, "\n", &"#{&1.role}:#{Helyx.Message.text(&1)}")
       assert final_text(prompt_events(resumed, "a4")) == rendered <> "\nuser:a4"
     end

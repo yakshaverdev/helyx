@@ -19,7 +19,7 @@ defmodule Helyx.Session.SweepTest do
     # Starts a turn whose tool call holds a handle that no release confirms.
     defp start_stuck_turn(core) do
       {:ok, session} = Session.start(core, model: "test/stuck")
-      {:ok, _} = Session.subscribe(session)
+      {:ok, _, _} = Session.subscribe(session)
       hands = :sys.get_state(Session.pid(session)).hands
       :erlang.trace(hands, true, [:receive])
 
