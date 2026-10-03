@@ -78,7 +78,6 @@ defmodule Helyx.Session.LoopTest do
     events = collect_until(:agent_end, @load_event_ms)
 
     rejected = "tool call not run: an integer in the arguments has more than 100 digits"
-    # The fourth call has the id of the first call and good arguments: it runs.
     assert final_text(events) == "#{rejected}|TWO|THREE|FOUR|#{rejected}|#{rejected}"
 
     marker = "integer of more than 100 digits removed"
@@ -106,7 +105,7 @@ defmodule Helyx.Session.LoopTest do
     assert Enum.map(events, & &1.seq) == Enum.to_list(1..length(events))
   end
 
-  test "a rejected call gets an error result with its reason; the text and the good call stay",
+  test "a call whose arguments are not a JSON object gets an error result; the text and the good call stay",
        %{core: core} do
     {:ok, session} = Session.start(core, model: "test/rejected")
     {:ok, _} = Session.subscribe(session)

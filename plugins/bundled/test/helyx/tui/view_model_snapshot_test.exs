@@ -102,15 +102,17 @@ defmodule Helyx.TUI.ViewModelSnapshotTest do
     LateClient.disconnect(late)
   end
 
-  test "a later call with the running call's id gets its cell only when it starts", %{
+  # A call id that repeats in one message ends the provider process (#380);
+  # a later turn may use the id again.
+  test "a call of a later turn with an earlier call's id gets its own cell", %{
     core: core,
     gate: gate
   } do
-    [a, b, z] =
-      for name <- ~w(a b z),
+    [a, z] =
+      for name <- ~w(a z),
           do: %Message.ToolCall{id: "t", name: "gate", arguments: %{"gate" => gate, "n" => name}}
 
-    :ok = Fake.script(core, "same_id", [[a, b], ["mid"], [z], ["end"]])
+    :ok = Fake.script(core, "same_id", [[a], ["mid"], [z], ["end"]])
     {:ok, session} = Session.start(core, model: "fake/same_id")
     {:ok, first} = Session.subscribe(session)
     :ok = Session.prompt(session, "one")
@@ -120,8 +122,6 @@ defmodule Helyx.TUI.ViewModelSnapshotTest do
     live = fold(first, events_to(snapshot.seq))
     assert transcript(ViewModel.from_snapshot(snapshot)) == transcript(live)
 
-    send(tool, :go)
-    assert_receive {:waiting, tool}
     send(tool, :go)
     live = fold(live, collect_until(:agent_end))
     joined = fold(snapshot, LateClient.events_to_end(late))

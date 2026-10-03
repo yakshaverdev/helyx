@@ -90,9 +90,7 @@ defmodule Helyx.Provider.OpenAI.EventsTest do
            ]
   end
 
-  @not_object "the arguments are not a valid JSON object"
-
-  test "bad JSON in one of two calls rejects that call alone" do
+  test "bad JSON in one of two calls goes on as its raw text, in that call alone" do
     chunks = [
       sse([
         delta(%{content: "Hi"}),
@@ -111,13 +109,12 @@ defmodule Helyx.Provider.OpenAI.EventsTest do
              {:text_delta, "Hi"},
              {:tool_call,
               %Helyx.Message.ToolCall{id: "c1", name: "read", arguments: %{"a" => 1}}},
-             {:rejected_tool_call,
-              %Helyx.Message.ToolCall{id: "c2", name: "bash", arguments: %{}}, @not_object},
+             {:tool_call, %Helyx.Message.ToolCall{id: "c2", name: "bash", arguments: ~s({"b": )}},
              {:done, %{stop_reason: :tool_use, usage: %{}}}
            ]
   end
 
-  test "JSON that is not an object rejects the call" do
+  test "JSON that is not an object goes on as its raw text" do
     chunks = [
       sse([
         delta(%{
@@ -129,14 +126,13 @@ defmodule Helyx.Provider.OpenAI.EventsTest do
     ]
 
     assert [
-             {:rejected_tool_call, %Helyx.Message.ToolCall{id: "c1", arguments: %{}},
-              @not_object},
+             {:tool_call, %Helyx.Message.ToolCall{id: "c1", arguments: "[1]"}},
              {:done, _}
            ] = Enum.to_list(Events.events(chunks))
   end
 
   # Core rejects the empty id (`Helyx.Session.Stream`), so the turn fails.
-  test "bad JSON in a call with no id is rejected with no raw JSON" do
+  test "bad JSON in a call with no id goes on as its raw text" do
     json = ~s({"secret": ) <> String.duplicate("x", 1_000)
 
     chunks = [
@@ -151,8 +147,7 @@ defmodule Helyx.Provider.OpenAI.EventsTest do
     assert Enum.to_list(Events.events(chunks)) ==
              [
                {:text_delta, "Hi"},
-               {:rejected_tool_call,
-                %Helyx.Message.ToolCall{id: "", name: "bash", arguments: %{}}, @not_object},
+               {:tool_call, %Helyx.Message.ToolCall{id: "", name: "bash", arguments: json}},
                {:done, %{stop_reason: :tool_use, usage: %{}}}
              ]
   end

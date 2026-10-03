@@ -62,10 +62,10 @@ defmodule Helyx.Provider.LoopTest do
              {:text_delta, "."},
              {:tool_call, %Message.ToolCall{id: "call_1"}},
              {:message_end, :end_turn, %{}},
-             {:tool_request, id, "bash", %{"command" => "ls"}}
+             {:tool_request, "call_1", "bash", %{"command" => "ls"}}
            ] = events(actions)
 
-    assert %{calls: [{^id, %{id: "call_1"}, nil}], task: nil} = state
+    assert %{calls: [{%{id: "call_1"}, nil}], task: nil} = state
   end
 
   test "every call goes out at once; the results join in call order, whatever order they come in" do
@@ -90,41 +90,6 @@ defmodule Helyx.Provider.LoopTest do
              ]
 
     assert %{calls: [], turn: "t1"} = state
-  end
-
-  test "a rejected call has its result at once, after the results of the calls before it" do
-    {actions, state} = pump(turn("rejected"))
-
-    assert [
-             {:tool_call, %{id: "c1"}},
-             {:tool_call, %{id: "c2"}},
-             {:message_end, _, _},
-             tool_request
-           ] =
-             Enum.drop(events(actions), 1)
-
-    assert {:tool_request, id, "upcase", %{"text" => "one"}} = tool_request
-
-    {:ok, actions, state} = request({:tool_result, "t1", id, {:ok, "ONE"}}, state)
-    rejected = {:error, "tool call not run: the arguments are not a valid JSON object"}
-
-    assert actions == [
-             {:event, "t1", {:tool_result, "c1", {:ok, "ONE"}}},
-             {:event, "t1", {:tool_result, "c2", rejected}},
-             {:need_context, "t1"}
-           ]
-
-    # The next model call gets the fresh context.
-    messages = [
-      Message.tool_result(
-        %Message.ToolCall{id: "c1", name: "upcase", arguments: %{}},
-        {:ok, "ONE"}
-      )
-    ]
-
-    {:ok, [], state} = request({:context, "t1", {:ok, %Context{messages: messages}}}, state)
-    {actions, _state} = pump(state)
-    assert [{:text_delta, "ONE"}, {:done, _}] = events(actions)
   end
 
   test "a held steer continues the turn: the message ends, the steer goes out, then the context request" do
@@ -232,31 +197,18 @@ defmodule Helyx.Provider.LoopTest do
              events(actions)
   end
 
-  # The bound is on bytes: 512 "é" are 1,024 bytes, and one more "x" is over.
-  test "a rejected call with a reason of at most 1,024 bytes of valid UTF-8 passes" do
-    for model <- ["reject_bytes_1023", "reject_bytes_1024", "reject_multibyte_1024"] do
-      {actions, _state} = pump(turn(model))
-
-      assert [{:tool_call, %{id: "r"}}, {:message_end, _, _}, {:tool_result, "r", {:error, text}}] =
-               events(actions)
-
-      assert byte_size(text) <= 1_024 + byte_size("tool call not run: "), model
-    end
-  end
-
   # "self_halt" is an enumerable whose result is not a terminal.
-  test "a rejected call with a bad reason, or an event that is not a stream event, ends the process" do
+  test "a repeated call id, or an event that is not a stream event, ends the process" do
     for model <- [
-          "reject_bytes_1025",
-          "reject_multibyte_1025",
-          "reject_raw",
-          "reject_atom",
           "harness_event",
+          "repeat_id",
           "self_halt"
         ] do
       state = turn(model)
       assert {:shutdown, {:bad_stream_event, event}} = catch_exit(pump(state))
-      assert elem(event, 0) in [:rejected_tool_call, :message_end, :text_delta], model
+      assert elem(event, 0) in [:message_end, :text_delta, :tool_call], model
+      # A repeated call id names the call with no raw argument text.
+      if model == "repeat_id", do: assert({:tool_call, %{arguments: %{}}} = event)
       Task.shutdown(state.task, :brutal_kill)
     end
   end

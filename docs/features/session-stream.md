@@ -31,7 +31,7 @@ A new internal module, `@moduledoc false`, at `lib/helyx/session/stream.ex`:
 `run/1` runs in the provider Task. It builds the context with the ModelContext plugin, runs the Compaction plugin, calls `provider.stream/3`, and consumes the stream. The session resolves both plugins once, at its start (#122); `nil` means no plugin, and the context goes on unchanged. It sends the session the same messages as today:
 
 - `{:stream_event, turn_id, event}` for each event that passes the checks
-- `{:rejected_call, turn_id, call, reason}` before the stream event of a call with an integer over the digit limit, or of a rejected tool call from the provider (#146 added the reason)
+- `{:rejected_call, turn_id, call, reason}` before the stream event of a call with an integer over the digit limit, or of a rejected tool call from the provider (#146 added the reason; #380 removed the provider event, see `rejected-tool-call.md`)
 
 It returns the first terminal, with `Message.cap_integers/1` applied, as the closure did before this change.
 
