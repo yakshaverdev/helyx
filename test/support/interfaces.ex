@@ -625,6 +625,7 @@ defmodule Helyx.Test.Connected do
   #   "flood"            "hang"; the message `{:flood, turn_id}` sends
   #                      10,002 deltas and done
   #   "stop"             "hang"; the message `:stop` stops the provider,
+  #                      `{:stop, actions}` stops it after `actions`,
   #                      `:bad_return` returns a bad value from `info/2`,
   #                      and `:exit_normal` calls `exit(:normal)` in it
   #   "exit_init"        `init/3` calls `exit(:normal)`
@@ -799,6 +800,7 @@ defmodule Helyx.Test.Connected do
   end
 
   def info(:stop, state), do: {:stop, :gone, state}
+  def info({:stop, actions}, state), do: {:stop, :gone, actions, state}
   def info(:bad_return, _state), do: :nope
   def info(:exit_normal, _state), do: exit(:normal)
 

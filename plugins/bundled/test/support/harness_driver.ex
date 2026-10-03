@@ -15,6 +15,7 @@ defmodule Helyx.Test.HarnessDriver do
           case provider.info(message, state) do
             {:ok, more, state} -> pump(provider, state, actions ++ more, done?)
             {:stop, reason, state} -> {actions ++ [{:stop, reason}], state}
+            {:stop, reason, more, state} -> {actions ++ more ++ [{:stop, reason}], state}
           end
       after
         Helyx.Test.Events.wait_ms() -> flunk("no end; got #{inspect(actions)}")

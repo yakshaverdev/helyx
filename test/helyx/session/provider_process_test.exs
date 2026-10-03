@@ -277,6 +277,29 @@ defmodule Helyx.Session.ProviderProcessTest do
       assert error(collect_until(:turn_end)) == {:provider_stop, :gone}
     end
 
+    test "a stop from info sends its actions first, in order (#457)", %{core: core} do
+      {session, _pid, _hands} = start(core, "stop")
+      :ok = Session.prompt(session, "one")
+      assert_receive {:conn, :turn, proc, {:turn, turn_id, _}}
+
+      send(
+        proc,
+        {:stop, [{:event, turn_id, {:text_delta, "a"}}, {:event, turn_id, {:text_delta, "b"}}]}
+      )
+
+      events = collect_until(:turn_end)
+      assert final_text(events) == "so farab"
+      assert error(events) == {:provider_stop, :gone}
+    end
+
+    test "a bad action in a stop from info wins over the stop (#457)", %{core: core} do
+      {session, _pid, _hands} = start(core, "stop")
+      :ok = Session.prompt(session, "one")
+      assert_receive {:conn, :turn, proc, _}
+      send(proc, {:stop, [:nope]})
+      assert error(collect_until(:turn_end)) == {:bad_action, :nope}
+    end
+
     test "a prompt after an idle provider process ends waits for the release of its handles",
          %{core: core} do
       {session, _pid, hands} = start(core, "stop")
