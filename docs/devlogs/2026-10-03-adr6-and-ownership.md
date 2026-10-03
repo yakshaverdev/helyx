@@ -31,7 +31,7 @@ Totals from `c6cac48` to `d9c4c0a`: Core +730 / −632, plugins and apps +204 / 
 - #408 S3: the control character check in the composer stays. Codex reproduced that the kitty sequence `ESC [ 1 u` reaches the composer as U+0001 with no modifier and forges a paste marker. The ticket premise (review-only, #44) was false.
 - #408 S7: `mix deps.update ex_ratatui` moved the lock to 0.16.0. The product lock keeps 0.14.1, the version the bundled tests use.
 - #415: `Queue.room?/1` and `Queue.sent/4` stay public in the pure `Queue`, and only `Steering` calls them. The provider request cannot run inside `Queue`.
-- #416: the waiting tool calls in `Session.Tools` need no new bound. `@max_waiting` caps them at 16, and each call is in the message bound.
+- #416: the waiting tool requests in `Session.Tools` stay outside the ticket. `@max_waiting` caps their count at 16. A tool request does not join the open message, so the message bound does not count its bytes (see Open).
 
 ## Escapes
 
@@ -55,6 +55,7 @@ The #407 and #408 escapes have one cause: the ticket, which I wrote, called a st
 
 ## Open, no ticket
 
+- The waiting tool requests in `Session.Tools` have a count limit (16) but no byte bound. `Stream.check` computes the encoded size of a request and drops it. The #416 review probed a 9 MB request that is not added to the open message.
 - The reconnect `seq` rule has no test until a client reconnects.
 - At 300,000 cells the TUI folds grow faster than n log n. The cause is not measured.
 - The 128K output-token figure for GPT-5 in the bounds table was not checked against a source.
