@@ -16,7 +16,7 @@ defmodule Helyx.ModelContext.DefaultIntegrationTest do
     start_supervised!({Helyx.Core, name: core, plugins: plugins})
 
     {:ok, session} = Session.start(core, model: "fake/system", cwd: dir)
-    {:ok, _} = Session.subscribe(session)
+    {:ok, _, _} = Session.subscribe(session)
     :ok = Session.prompt(session, "hello")
 
     text = Helyx.Message.text(List.last(collect_until(:turn_end)).data.message)

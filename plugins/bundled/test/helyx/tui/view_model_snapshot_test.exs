@@ -30,7 +30,7 @@ defmodule Helyx.TUI.ViewModelSnapshotTest do
 
     :ok = Fake.script(core, "three", [["Running." | calls], ["Done."]])
     {:ok, session} = Session.start(core, model: "fake/three")
-    {:ok, first} = Session.subscribe(session)
+    {:ok, first, _} = Session.subscribe(session)
     :ok = Session.prompt(session, "go")
 
     assert_receive {:waiting, tool}
@@ -57,7 +57,7 @@ defmodule Helyx.TUI.ViewModelSnapshotTest do
 
   test "a subscribe in a connected turn with three open calls", %{core: core, gate: gate} do
     {:ok, session} = Session.start(core, model: "gated/calls." <> gate)
-    {:ok, first} = Session.subscribe(session)
+    {:ok, first, _} = Session.subscribe(session)
     :ok = Session.prompt(session, "go")
 
     assert_receive {:waiting, stream}
@@ -78,7 +78,7 @@ defmodule Helyx.TUI.ViewModelSnapshotTest do
     gate: gate
   } do
     {:ok, session} = Session.start(core, model: "gated/dup_id." <> gate)
-    {:ok, first} = Session.subscribe(session)
+    {:ok, first, _} = Session.subscribe(session)
     :ok = Session.prompt(session, "go")
 
     assert_receive {:waiting, stream}
@@ -114,7 +114,7 @@ defmodule Helyx.TUI.ViewModelSnapshotTest do
 
     :ok = Fake.script(core, "same_id", [[a], ["mid"], [z], ["end"]])
     {:ok, session} = Session.start(core, model: "fake/same_id")
-    {:ok, first} = Session.subscribe(session)
+    {:ok, first, _} = Session.subscribe(session)
     :ok = Session.prompt(session, "one")
 
     assert_receive {:waiting, tool}
@@ -143,7 +143,7 @@ defmodule Helyx.TUI.ViewModelSnapshotTest do
   # from the message, before the result, in a live and a late client.
   test "a call in the open message awaits its result", %{core: core, gate: gate} do
     {:ok, session} = Session.start(core, model: "gated/harness." <> gate)
-    {:ok, first} = Session.subscribe(session)
+    {:ok, first, _} = Session.subscribe(session)
     :ok = Session.prompt(session, "go")
 
     assert_receive {:waiting, stream}
@@ -169,7 +169,7 @@ defmodule Helyx.TUI.ViewModelSnapshotTest do
     gate: gate
   } do
     {:ok, session} = Session.start(core, model: "gated/partial." <> gate)
-    {:ok, first} = Session.subscribe(session)
+    {:ok, first, _} = Session.subscribe(session)
     :ok = Session.prompt(session, "go")
 
     assert_receive {:waiting, stream}
@@ -193,7 +193,7 @@ defmodule Helyx.TUI.ViewModelSnapshotTest do
 
   test "a join after a failed turn with a partial reply", %{core: core, gate: gate} do
     {:ok, session} = Session.start(core, model: "gated/fail." <> gate)
-    {:ok, first} = Session.subscribe(session)
+    {:ok, first, _} = Session.subscribe(session)
     :ok = Session.prompt(session, "go")
 
     assert_receive {:waiting, stream}
@@ -209,7 +209,7 @@ defmodule Helyx.TUI.ViewModelSnapshotTest do
 
   test "a join after an abort during a partial reply", %{core: core, gate: gate} do
     {:ok, session} = Session.start(core, model: "gated/partial." <> gate)
-    {:ok, first} = Session.subscribe(session)
+    {:ok, first, _} = Session.subscribe(session)
     :ok = Session.prompt(session, "go")
 
     assert_receive {:waiting, _stream}
@@ -225,12 +225,12 @@ defmodule Helyx.TUI.ViewModelSnapshotTest do
   # connected turn: the live fold and the snapshot both show a closed cell.
   test "a join after a connected turn that ends with an open call", %{core: core, gate: gate} do
     {:ok, session} = Session.start(core, model: "gated/dangling." <> gate)
-    {:ok, first} = Session.subscribe(session)
+    {:ok, first, _} = Session.subscribe(session)
     :ok = Session.prompt(session, "go")
     events = collect_until(:agent_end)
     live = fold(first, events)
 
-    {:ok, snapshot} = Session.subscribe(session)
+    {:ok, snapshot, _} = Session.subscribe(session)
     joined = ViewModel.from_snapshot(snapshot)
     assert snapshot.seq == List.last(events).seq
 
@@ -251,7 +251,7 @@ defmodule Helyx.TUI.ViewModelSnapshotTest do
 
     :ok = Fake.script(core, "abort3", [["Running." | calls], ["Done."]])
     {:ok, session} = Session.start(core, model: "fake/abort3")
-    {:ok, first} = Session.subscribe(session)
+    {:ok, first, _} = Session.subscribe(session)
     :ok = Session.prompt(session, "go")
 
     assert_receive {:waiting, _tool}
@@ -264,14 +264,14 @@ defmodule Helyx.TUI.ViewModelSnapshotTest do
     for {cell, id} <- [{c1, "c1"}, {c2, "c2"}, {c3, "c3"}],
         do: assert({:tool, %{id: ^id}, _, %Message{is_error: true}} = cell)
 
-    {:ok, snapshot} = Session.subscribe(session)
+    {:ok, snapshot, _} = Session.subscribe(session)
     assert snapshot.seq == List.last(events).seq
     assert transcript(ViewModel.from_snapshot(snapshot)) == transcript(live)
   end
 
   test "a session with no events has seq 0 and no notice", %{core: core} do
     {:ok, session} = Session.start(core, model: "fake/echo")
-    {:ok, snapshot} = Session.subscribe(session)
+    {:ok, snapshot, _} = Session.subscribe(session)
 
     assert %{seq: 0, messages: [], turn: nil, model: "fake/echo"} = snapshot
 
@@ -284,7 +284,7 @@ defmodule Helyx.TUI.ViewModelSnapshotTest do
   # A client that joins after the turn ended shows the transcript cells of
   # the client that watched.
   defp assert_joins_after_end(session, live, events) do
-    {:ok, snapshot} = Session.subscribe(session)
+    {:ok, snapshot, _} = Session.subscribe(session)
     assert snapshot.seq == List.last(events).seq
     joined = ViewModel.from_snapshot(snapshot)
     assert transcript(joined) == transcript(live)

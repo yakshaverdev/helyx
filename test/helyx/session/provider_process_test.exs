@@ -51,7 +51,7 @@ defmodule Helyx.Session.ProviderProcessTest do
       %{state | connect_ms: Keyword.get(bounds, :connect, state.connect_ms)}
     end)
 
-    {:ok, _} = Session.subscribe(session)
+    {:ok, _, _} = Session.subscribe(session)
     {session, pid, hands}
   end
 
@@ -1206,7 +1206,7 @@ defmodule Helyx.Session.ProviderProcessTest do
         ] do
       test "#{prompt} fails a #{mode} turn, and the next turn succeeds", %{core: core} do
         {:ok, session} = Session.start(core, model: unquote(model))
-        {:ok, _} = Session.subscribe(session)
+        {:ok, _, _} = Session.subscribe(session)
 
         assert error(turn(session, unquote(prompt))) == {:bad_context, unquote(kind)}
         assert final_text(turn(session, "two")) == unquote(text)
@@ -1235,13 +1235,13 @@ defmodule Helyx.Session.ProviderProcessTest do
       start_supervised!({Helyx.Core, name: other, plugins: [Connected]}, id: other)
 
       {:ok, a} = Session.start(core, model: "conn/label", sessions_dir: dir)
-      {:ok, _} = Session.subscribe(a)
+      {:ok, _, _} = Session.subscribe(a)
       %{resume_id: first} = label(turn(a, "shared"))
       assert init_label() == nil
 
       # B continues the label too: the hole of two live Cores.
       {:ok, b} = Session.resume(other, sessions_dir: dir)
-      {:ok, _} = Session.subscribe(b)
+      {:ok, _, _} = Session.subscribe(b)
       refute Enum.any?(turn(b, "b1"), &(&1.type == :provider_session))
       turn(a, "a1")
       stop(a)
@@ -1249,7 +1249,7 @@ defmodule Helyx.Session.ProviderProcessTest do
 
       # A wrote last, so its branch resumes, with a fork below the label.
       {:ok, resumed} = Session.resume(core, sessions_dir: dir)
-      {:ok, _} = Session.subscribe(resumed)
+      {:ok, _, _} = Session.subscribe(resumed)
       events = turn(resumed, "a2")
       assert init_label() == nil
       assert %{resume_id: second, lost: false} = label(events)
@@ -1258,7 +1258,7 @@ defmodule Helyx.Session.ProviderProcessTest do
       # The new label has no fork below it, so the next resume continues it.
       stop(resumed)
       {:ok, resumed} = Session.resume(core, sessions_dir: dir)
-      {:ok, _} = Session.subscribe(resumed)
+      {:ok, _, _} = Session.subscribe(resumed)
       turn(resumed, "a3")
       assert init_label() == second
     end

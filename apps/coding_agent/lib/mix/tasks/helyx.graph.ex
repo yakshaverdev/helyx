@@ -145,7 +145,7 @@ defmodule Mix.Tasks.Helyx.Graph do
 
   defp run_turn(dir) do
     {:ok, session} = Helyx.Session.start(@core, model: "fake/graph", cwd: dir)
-    {:ok, _} = Helyx.Session.subscribe(session)
+    {:ok, _, _} = Helyx.Session.subscribe(session)
     :ok = Helyx.Session.prompt(session, "read hello.txt")
 
     receive do

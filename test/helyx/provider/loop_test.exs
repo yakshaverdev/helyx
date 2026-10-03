@@ -219,7 +219,7 @@ defmodule Helyx.Provider.LoopTest do
     test "a bad event ends the provider process and its model Task", %{core: core} do
       gate = Helyx.Test.Gate.open()
       {:ok, session} = Session.start(core, model: "test/bad_event." <> gate)
-      {:ok, _} = Session.subscribe(session)
+      {:ok, _, _} = Session.subscribe(session)
       :ok = Session.prompt(session, "hello")
 
       assert_receive {:waiting, task}
@@ -236,7 +236,7 @@ defmodule Helyx.Provider.LoopTest do
     @tag :capture_log
     test "after a failed model call the provider process takes the next turn", %{core: core} do
       {:ok, session} = Session.start(core, model: "test/crash")
-      {:ok, _} = Session.subscribe(session)
+      {:ok, _, _} = Session.subscribe(session)
       :ok = Session.prompt(session, "hello")
       assert {:task_exit, _} = List.last(collect_until(:agent_end)).data.error
       provider = :sys.get_state(Session.pid(session)).conn.pid

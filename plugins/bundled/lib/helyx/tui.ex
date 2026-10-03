@@ -108,12 +108,16 @@ if Helyx.TUI.Available.available?() do
       # The screen starts from the snapshot: the history of a resumed
       # session, and the turn a late client joins. The end signal of the
       # subscription ends the TUI (see handle_info/2).
-      vm = ViewModel.from_snapshot(subscribe!(session))
+      {snapshot, ref} = subscribe!(session)
+      vm = ViewModel.from_snapshot(snapshot)
       vm = if opts[:resumed], do: ViewModel.notice(vm, "resumed session"), else: vm
 
       {:ok,
        %{
          session: session,
+         # The monitor of the session from the subscribe: its `:DOWN` is
+         # the end signal.
+         session_ref: ref,
          vm: vm,
          composer: Composer.new(),
          # A `Transcript.position()`; nil follows the newest output.
@@ -127,11 +131,8 @@ if Helyx.TUI.Available.available?() do
     # through run/1 instead of an idle screen that rejects every key. The
     # events before the signal are already applied.
     @impl true
-    def handle_info(
-          {{:helyx_session_end, id}, _ref, :process, _pid, reason},
-          %{session: %Session{id: id}}
-        ),
-        do: exit({:session_down, Session.end_reason(reason)})
+    def handle_info({:DOWN, ref, :process, _pid, reason}, %{session_ref: ref}),
+      do: exit({:session_down, Session.end_reason(reason)})
 
     def handle_info({:helyx_event, event}, state) do
       {:noreply, settle(%{state | vm: ViewModel.apply(state.vm, event)})}
@@ -142,7 +143,7 @@ if Helyx.TUI.Available.available?() do
     # A session that is not running leaves nothing to render.
     defp subscribe!(session) do
       case Session.subscribe(session) do
-        {:ok, snapshot} -> snapshot
+        {:ok, snapshot, ref} -> {snapshot, ref}
         {:error, :session_not_found} -> exit({:session_down, :session_not_found})
       end
     end

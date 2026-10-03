@@ -240,12 +240,12 @@ defmodule Helyx.TUITest do
     assert {:noreply, ^state} = TUI.handle_info(other, state)
 
     # The end signal of another session does nothing.
-    other = {{:helyx_session_end, "other"}, make_ref(), :process, self(), :killed}
+    other = {:DOWN, make_ref(), :process, self(), :killed}
     assert {:noreply, ^state} = TUI.handle_info(other, state)
 
     Process.exit(Session.pid(state.session), :kill)
-    id = state.session.id
-    assert_receive {{:helyx_session_end, ^id}, _ref, :process, _pid, :killed} = signal
+    ref = state.session_ref
+    assert_receive {:DOWN, ^ref, :process, _pid, :killed} = signal
     assert catch_exit(TUI.handle_info(signal, state)) == {:session_down, :crashed}
   end
 
@@ -257,7 +257,7 @@ defmodule Helyx.TUITest do
     call = %Message.ToolCall{id: "c1", name: "slow", arguments: %{"ms" => 0, "text" => "slept"}}
     :ok = Fake.script(core, "history", [[call], ["hello there"]])
     {:ok, session} = Session.start(core, model: "fake/history", sessions_dir: dir, cwd: dir)
-    {:ok, _} = Session.subscribe(session)
+    {:ok, _, _} = Session.subscribe(session)
     :ok = Session.prompt(session, "hi")
     assert_receive {:helyx_event, %Event{type: :agent_end}}
 
@@ -299,11 +299,12 @@ defmodule Helyx.TUITest do
     # The Registry drops the dead entry later, but a lookup by name skips a
     # dead pid.
     assert Session.pid(session) == nil
+    monitors = Process.info(self(), :monitors)
 
     assert catch_exit(TUI.mount(session: session)) ==
              {:session_down, :session_not_found}
 
-    assert Process.get({Session, core, session.id}) == nil
+    assert Process.info(self(), :monitors) == monitors
   end
 
   test "a send and a model switch to an ended session keep the composer", %{core: core} do

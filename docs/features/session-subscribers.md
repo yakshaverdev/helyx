@@ -1,5 +1,7 @@
 # The session holds its subscribers
 
+> #434 replaces S5, S6, S8, Q2, the end signal shape, and the caller rows of the tables below: `subscribe/1` returns the caller's monitor ref, and the caller owns it. The caller's process dictionary, the prune, the flush, the `{:helyx_session_end, id}` tag, and `Helyx.Session.Subscription` are gone; every mention of them below is history. The current caller contract is in `end-signal.md`. S1 to S4 (the session side) stay current.
+>
 > The ADR 0006 revision of 2026-10-03 (#404) removes `contract_version` and the version rules of ADR 0006 section 5, and the TUI drops the `instance_id` and `seq` guards (S7 below): it subscribes once. The rule stays in ADR 0006 section 3 for a client that reconnects. The text below on these items is history.
 
 Status: built in #297 on 2026-10-02. Design decided on 2026-10-02. Built from the code at `58471ac`. The design went through five review rounds in one proposal with the one-provider design (`one-provider-path.md`). The last round found no blocking issue.

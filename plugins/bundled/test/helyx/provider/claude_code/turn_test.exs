@@ -16,7 +16,7 @@ defmodule Helyx.Provider.ClaudeCode.TurnTest do
 
   defp resume(ctx) do
     {:ok, session} = Session.resume(ctx.core, sessions_dir: ctx.sessions, cwd: ctx.work)
-    {:ok, _} = Session.subscribe(session)
+    {:ok, _, _} = Session.subscribe(session)
     session
   end
 

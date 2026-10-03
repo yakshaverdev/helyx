@@ -19,7 +19,7 @@ defmodule Helyx.TUI.SecondClientTest do
     start_supervised!({Helyx.Core, name: core, plugins: [Gated.Loop, Gate]})
     gate = Gate.open()
     {:ok, session} = Session.start(core, model: "gated/#{gate}")
-    {:ok, snapshot} = Session.subscribe(session)
+    {:ok, snapshot, _} = Session.subscribe(session)
 
     %{
       session: session,

@@ -161,7 +161,7 @@ defmodule Helyx.Test.CodexFake do
     {:ok, session} =
       Session.start(ctx.core, model: model, cwd: ctx.work, sessions_dir: ctx.sessions)
 
-    {:ok, _} = Session.subscribe(session)
+    {:ok, _, _} = Session.subscribe(session)
     session
   end
 

@@ -27,7 +27,7 @@ defmodule Helyx.Tool.BashTest do
     call = %ToolCall{id: "c", name: "bash", arguments: %{"command" => command}}
     :ok = Helyx.Provider.Fake.script(core, "abort", [[call]])
     {:ok, session} = Helyx.Session.start(core, model: "fake/abort", cwd: dir)
-    {:ok, _} = Helyx.Session.subscribe(session)
+    {:ok, _, _} = Helyx.Session.subscribe(session)
     :ok = Helyx.Session.prompt(session, "go")
     assert_receive {:helyx_event, %Helyx.Event{type: :tool_execution_start}}
     session
