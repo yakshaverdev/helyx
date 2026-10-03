@@ -79,7 +79,9 @@ defmodule Helyx.Provider do
               {:ok, state :: term()} | {:error, term()}
   @callback request(request(), from(), state :: term()) :: {:ok, [action()], term()}
   @callback info(msg :: term(), state :: term()) ::
-              {:ok, [action()], term()} | {:stop, reason :: term(), term()}
+              {:ok, [action()], term()}
+              | {:stop, reason :: term(), term()}
+              | {:stop, reason :: term(), [action()], term()}
 
   @optional_callbacks release: 3
 end

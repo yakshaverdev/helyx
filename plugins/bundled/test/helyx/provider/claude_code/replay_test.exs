@@ -109,9 +109,13 @@ defmodule Helyx.Provider.ClaudeCode.ReplayTest do
           do: Map.delete(line, "queued_turn_count"),
           else: Map.put(line, "queued_turn_count", unquote(count))
 
-      turn(bin, 1, 1, begin() ++ [j(line)])
+      # The delta and the result in one write, so in one read; the delta
+      # goes out before the stop (#457).
+      File.write!(Path.join(bin, "out.end"), [delta("ok"), "\n", j(line), "\n"])
+      turn(bin, 1, 1, begin(), "out out.end\n")
 
-      assert {:stop, :no_queued_turn_count} = List.last(run_direct([Message.user("hi")], work))
+      assert [{:event, _, {:text_delta, "ok"}}, {:stop, :no_queued_turn_count}] =
+               Enum.take(run_direct([Message.user("hi")], work), -2)
     end
   end
 

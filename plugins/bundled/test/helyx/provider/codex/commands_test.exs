@@ -120,8 +120,7 @@ defmodule Helyx.Provider.Codex.CommandsTest do
     failed = Path.join(bin, "failed")
     File.write!(failed, turn_end(tid(), "failed", "usage limit") <> "\n")
     running = [started(tid(), command("exec-1", %{status: "inProgress"}))]
-    # The failure comes after `go`: the stop drops the events of its chunk,
-    # so the tool call must reach the session first (#455).
+    # The failure comes after `go`, once the test has seen the tool call.
     wait_go = ~s{while [ ! -f "$d/go" ]; do sleep 0.02; done; cat "#{failed}"}
     fresh(bin, 1, tid(), running, own_group_command(pidfile, wait_go))
     # The failure kept the message with the command and its `aborted`
@@ -158,13 +157,21 @@ defmodule Helyx.Provider.Codex.CommandsTest do
       turn_end(tid(), "completed")
     ])
 
-    # The stop drops the events of its chunk. The port cuts stdout where a
-    # pipe read ends (on macOS at 512 bytes, #340), so the tool call goes
-    # out only when the start and the completion are in two chunks.
-    assert [{:resume, tid(), 0} | rest] = run_direct([Message.user("go")], work)
+    assert [
+             {:resume, tid(), 0},
+             {:tool_call, %{id: "exec-1"}},
+             {:stop, {:malformed, "item/completed"}}
+           ] = run_direct([Message.user("go")], work)
+  end
 
-    stop = {:stop, {:malformed, "item/completed"}}
-    assert [stop] == rest or match?([{:tool_call, %{id: "exec-1"}}, ^stop], rest)
+  # One write, so one read holds both lines (#457).
+  test "a failed turn keeps the tool call of the same read", %{bin: bin, work: work} do
+    running = started(tid(), command("exec-1", %{status: "inProgress"}))
+    lines_file(bin, "failed", [running, turn_end(tid(), "failed", "usage limit")])
+    fresh(bin, 1, tid(), [], ~s(out "$d/failed"\n))
+
+    assert [{:resume, tid(), 0}, {:tool_call, %{id: "exec-1"}}, {:stop, :command_running}] =
+             run_direct([Message.user("go")], work)
   end
 
   test "a command start with no turn id or no string id stops the provider process",

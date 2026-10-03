@@ -198,7 +198,7 @@ defmodule Helyx.Provider.Codex do
   @impl true
   def info(message, state) do
     case HarnessIO.port_message(message, state, &translate/2) do
-      {:lines, _, %State{terminal: {:error, reason}} = state} -> {:stop, reason, state}
+      {:lines, _, %State{terminal: {:error, reason}} = state} -> stop(reason, state)
       {:lines, _, state} -> actions(state)
       {:closed, from} -> actions(reply(state, from, :ok))
       {:exit, status} -> {:stop, {:codex_exit, status}, state}
@@ -207,6 +207,9 @@ defmodule Helyx.Provider.Codex do
   end
 
   defp actions(state), do: {:ok, Enum.reverse(state.out), %{state | out: []}}
+
+  # The output of the lines before the terminal line goes out first.
+  defp stop(reason, state), do: {:stop, reason, Enum.reverse(state.out), %{state | out: []}}
 
   defp reply(state, from, value), do: %{state | out: [{:reply, from, value} | state.out]}
 

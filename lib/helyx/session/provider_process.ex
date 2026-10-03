@@ -78,6 +78,7 @@ defmodule Helyx.Session.ProviderProcess do
           case proc.provider.info(message, proc.state) do
             {:ok, actions, state} -> act(actions, %{proc | state: state})
             {:stop, reason, _state} -> {:stop, {:provider_stop, reason}}
+            {:stop, reason, actions, state} -> stop(reason, act(actions, %{proc | state: state}))
             other -> {:stop, {:bad_return, other}}
           end
       end
@@ -87,6 +88,10 @@ defmodule Helyx.Session.ProviderProcess do
       done -> done
     end
   end
+
+  # A contract break in an action wins over the stop.
+  defp stop(reason, {:ok, _proc}), do: {:stop, {:provider_stop, reason}}
+  defp stop(_reason, result), do: result
 
   defp provide(request, from, tref, proc) do
     kind = ProviderRequest.kind(request)

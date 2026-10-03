@@ -24,8 +24,8 @@ defmodule Helyx.Provider.Codex.ToolItemsTest do
 
     fresh(bin, 1, tid(), [started(tid(), wait), turn_end(tid(), "completed")])
 
-    # The stop drops the events of its chunk.
-    assert {:stop, :tool_running} = List.last(run_direct([Message.user("go")], work))
+    assert [{:resume, tid(), 0}, {:tool_call, %{id: "call_wait"}}, {:stop, :tool_running}] =
+             run_direct([Message.user("go")], work)
   end
 
   # Codex can run tool items side by side; the session closes the message

@@ -205,7 +205,9 @@ defmodule Helyx.Provider.ClaudeCode do
   # A close waits for the lost program's exit, which answers it.
   defp read(actions, %State{terminal: :lost, closing: nil} = state), do: relaunch(actions, state)
   defp read(actions, %State{terminal: :lost} = state), do: {:ok, actions, state}
-  defp read(_actions, %State{terminal: {:error, reason}} = state), do: {:stop, reason, state}
+
+  defp read(actions, %State{terminal: {:error, reason}} = state),
+    do: {:stop, reason, actions, state}
 
   # `--model=`, `--resume=`, and `--session-id=` keep a value that starts
   # with a dash a value.
@@ -240,7 +242,7 @@ defmodule Helyx.Provider.ClaudeCode do
 
     case launch(fresh) do
       %State{terminal: {:error, reason}} = state ->
-        {:stop, reason, state}
+        {:stop, reason, actions, state}
 
       %State{turn: nil} = state ->
         {:ok, actions, state}
