@@ -140,3 +140,4 @@ One row per ticket that `/orchestrate` merged. An escape is a confirmed Codex fi
 | 2026-10-03 | #360 | docs only, no ship rounds (Markdown exemption) | Codex r1: 1 (the evidence rule also covered generic-path and race findings), fixed; r2: 0 | ship: a Markdown change to an agent rule gets the Codex review |
 | 2026-10-03 | #359 | r1: 0 reproduced; standards 2 doc/Credo fixes, spec 2 stale doc sentences + 1 dead test case | Codex r1: 0 | none needed |
 | 2026-10-03 | #358 | r1: Codex 1 reproduced (tool results counted in the pool of 8, so an abort interrupt got busy), fixed with a regression test; standards/spec 4 doc fixes; r2 (rebase): 1 stale test name | gate r1 (Codex): 0 | none needed: the pool itself goes in #361 |
+| 2026-10-03 | #368 | r1: 1 reproduced (Codex: false took the default); r2: 3 reproduced (shape check missed finish_reason, usage, error null); r3: 0 | gate r1 (Codex): 0 | none needed: all in the new shape check, fixed in ship |
