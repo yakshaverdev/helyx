@@ -12,14 +12,15 @@ defmodule Helyx.Provider.Codex.Replay do
   # tool result a `function_call_output`. The replay may start at any
   # message but a tool result, so every kept result keeps its call.
   def items(history) do
-    entries =
-      for message <- history do
-        items = message_items(message)
-        {items != [] && items, 1, message.role != :tool_result}
-      end
+    entries = for message <- history, do: {message, 1, message.role != :tool_result}
 
-    {kept, cut} = HarnessIO.cap_replay(entries, length(history))
-    {List.flatten(kept), cut}
+    {kept, cut} =
+      HarnessIO.cap_replay(entries, length(history), fn message ->
+        items = message_items(message)
+        items != [] && items
+      end)
+
+    {for({_message, items} <- kept, item <- items, do: item), cut}
   end
 
   defp message_items(%Message{role: :tool_result} = message) do
