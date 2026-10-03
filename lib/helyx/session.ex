@@ -29,10 +29,9 @@ defmodule Helyx.Session do
   resources of the turn or recorded them as unconfirmed (`abort/1`).
   Until then, the session answers every client call and starts no turn.
 
-  `docs/features/coding-agent.md`, section "Runtime", has the turn, the
-  queues, and the abort. `docs/features/session-lifecycle.md` has the
-  provider process and its turn. `docs/features/session-subscribers.md` has the
-  subscription.
+  `docs/features/session-lifecycle.md` has the turn, the queues, the
+  abort, and the provider process. `docs/features/session-subscribers.md`
+  has the subscription.
   """
 
   alias Helyx.ModelRef
