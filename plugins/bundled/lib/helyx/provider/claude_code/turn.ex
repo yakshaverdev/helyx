@@ -13,14 +13,12 @@ defmodule Helyx.Provider.ClaudeCode.Turn do
   # written steer line that the program did not start yet, by its `uuid`:
   # `{steer_id, text}`. `wait` is set from a `result` that could not end
   # the turn, because a steer was unresolved, until the start of a steer:
-  # the ref of the timer of that wait. `held` is the text of the error
-  # `result` that the wait holds, or nil: the start of a steer sends it as
-  # a notice. `used` holds every Helyx call id of the turn's `tools/call`
-  # requests, answered or not. `chunks` holds the replay chunks not written
-  # yet: each goes out at the `result` of the replayed user line that ends
-  # the chunk before it, and the last one ends with the turn's line, then
-  # any steers. `program?` marks a program turn (#240): its `id` and `uuid`
-  # are one new UUID.
+  # the ref of the timer of that wait. `used` holds every Helyx call id of
+  # the turn's `tools/call` requests, answered or not. `chunks` holds the
+  # replay chunks not written yet: each goes out at the `result` of the
+  # replayed user line that ends the chunk before it, and the last one ends
+  # with the turn's line, then any steers. `program?` marks a program turn
+  # (#240): its `id` and `uuid` are one new UUID.
   @enforce_keys [:id, :uuid, :messages]
   defstruct [
     :id,
@@ -28,7 +26,6 @@ defmodule Helyx.Provider.ClaudeCode.Turn do
     :messages,
     :interrupt,
     :wait,
-    :held,
     steers: %{},
     chunks: [],
     replay?: false,
@@ -88,7 +85,7 @@ defmodule Helyx.Provider.ClaudeCode.Turn do
   def steer_start(turn, uuid) do
     {{steer_id, text}, steers} = Map.pop!(turn.steers, uuid)
     if turn.wait, do: :erlang.cancel_timer(turn.wait)
-    events = close_message(turn) ++ held_notice(turn.held) ++ [{:user_message, steer_id, text}]
+    events = close_message(turn) ++ [{:user_message, steer_id, text}]
     interrupt = turn.interrupt && %{turn.interrupt | result?: false}
 
     turn = %{
@@ -97,7 +94,6 @@ defmodule Helyx.Provider.ClaudeCode.Turn do
         open?: false,
         calls?: false,
         wait: nil,
-        held: nil,
         interrupt: interrupt
     }
 
@@ -127,26 +123,10 @@ defmodule Helyx.Provider.ClaudeCode.Turn do
     {:error, {:claude_code, HarnessIO.cap_error(result["subtype"]), HarnessIO.cap_error(text)}}
   end
 
-  # Only a `result` of a Helyx line can be the held error: the `result` of
-  # a program turn (research note, "Program turns") keeps `held`.
-  def held(%{"origin" => %{"kind" => "task-notification"}}, turn), do: turn.held
-
-  def held(result, turn) do
-    case terminal(result, turn) do
-      {:error, {:claude_code, subtype, text}} -> subtype <> ": " <> text
-      {:done, _} -> nil
-    end
-  end
-
   defp close_message(%__MODULE__{open?: false}), do: []
 
   defp close_message(turn),
     do: [{:message_end, if(turn.calls?, do: :tool_use, else: :end_turn), turn.usage}]
-
-  defp held_notice(nil), do: []
-
-  defp held_notice(text),
-    do: [{:notice, HarnessIO.cap_error("the turn before the steer failed: " <> text)}]
 
   defp result_text(text) when is_binary(text), do: text
 

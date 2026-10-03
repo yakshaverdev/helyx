@@ -23,13 +23,12 @@ defmodule Helyx.Provider.ClaudeCode.ReplayTest do
              events_of(run_direct(history, work))
   end
 
-  test "a result before the start to a program without msg_lifecycle_v1 stops it",
-       %{bin: bin, work: work} do
+  test "an init without msg_lifecycle_v1 stops the program", %{bin: bin, work: work} do
     caps = ["interrupt_receipt_v1", "interrupt_cancel_queued_v1"]
     turn(bin, 1, 1, [init(caps), delta("program"), result("program")])
 
     actions = run_direct([Message.user("hi")], work)
-    assert {:stop, :no_msg_lifecycle} = List.last(actions)
+    assert {:stop, {:missing_capabilities, ["msg_lifecycle_v1"]}} = List.last(actions)
     assert [{:resume, _id, 0}] = events_of(actions)
   end
 
@@ -64,34 +63,6 @@ defmodule Helyx.Provider.ClaudeCode.ReplayTest do
     assert [false, nil, false, nil, nil, nil] = Enum.map(stdin(bin, 1), & &1["shouldQuery"])
   end
 
-  # Only the result of a replayed line writes the next chunk. After the
-  # program turn's result, the fake looks for input that waits already, for
-  # 1 s, with perl, and reads none of it.
-  @tag :slow
-  test "a program turn's result during a held replay writes no chunk",
-       %{bin: bin, work: work} do
-    early = Path.join(bin, "early")
-    # `num_turns` 0, so only the `origin` keeps it from writing a chunk.
-    program = program_result("program") |> JSON.decode!() |> Map.put("num_turns", 0) |> j()
-    File.write!(Path.join(bin, "out.program"), [init(), "\n", program, "\n"])
-
-    File.write!(Path.join(bin, "quiet.1.1"), """
-    out out.program
-    perl -MIO::Select -e 'exit(IO::Select->new(\\*STDIN)->can_read(1) ? 0 : 1)' && : > "#{early}"
-    out out.quiet
-    """)
-
-    turn(bin, 1, 1, reply("ok"))
-
-    assert [{:resume, _id, 0}, {:text_delta, "ok"} | _] =
-             events_of(run_direct(replay_history(), work))
-
-    refute File.exists?(early)
-
-    assert ["a", "b", "x"] =
-             for(%{"message" => %{"content" => [%{"text" => t}]}} <- stdin(bin, 1), do: t)
-  end
-
   test "a failed replay line writes the next chunk too", %{bin: bin, work: work} do
     script(bin, "quiet.1.1", [init(), replay_failed()])
     turn(bin, 1, 1, reply("ok"))
@@ -103,13 +74,8 @@ defmodule Helyx.Provider.ClaudeCode.ReplayTest do
              for(%{"message" => %{"content" => [%{"text" => t}]}} <- stdin(bin, 1), do: t)
   end
 
-  # A program turn's error result and a failed replay result come before
-  # `started` of the turn's line, so neither is the held error of #241:
-  # the steer's start gives no notice.
   test "a steer during a held replay goes out after the turn's line", %{bin: bin, work: work} do
-    origin = %{kind: "task-notification", producer: "session-task"}
-    program = replay_failed() |> JSON.decode!() |> Map.put("origin", origin) |> j()
-    script(bin, "quiet.1.1", [init(), program, replay_failed()])
+    script(bin, "quiet.1.1", [init(), replay_failed()])
     turn(bin, 1, 1, begin() ++ [delta("ok")])
     turn(bin, 1, 2, [lifecycle("started"), result("ok")])
 
@@ -123,19 +89,9 @@ defmodule Helyx.Provider.ClaudeCode.ReplayTest do
     {actions, _state} = pump(ClaudeCode, state, actions ++ more, &ended?/1)
 
     assert {:user_message, "s1", "also"} in events_of(actions)
-    refute Enum.any?(events_of(actions), &match?({:notice, _}, &1))
 
     assert ["a", "b", "x", "also"] =
              for(%{"message" => %{"content" => [%{"text" => t}]}} <- stdin(bin, 1), do: t)
-  end
-
-  test "a replay to a program without msg_lifecycle_v1 stops it", %{bin: bin, work: work} do
-    caps = ["interrupt_receipt_v1", "interrupt_cancel_queued_v1"]
-    turn(bin, 1, 1, [init(caps), replayed(), init(caps), delta("ok")])
-
-    history = replay_history()
-
-    assert {:stop, :no_msg_lifecycle} = List.last(run_direct(history, work))
   end
 
   # Only an exact 0 ends the turn; a positive count keeps it open.
@@ -175,13 +131,6 @@ defmodule Helyx.Provider.ClaudeCode.ReplayTest do
     File.write!(go, "")
     state = settle(ClaudeCode, state, &(&1.turn != nil and &1.turn.open?))
     assert %{request_id: nil, result?: false} = state.turn.interrupt
-  end
-
-  test "a replay to a program with no init line stops it", %{bin: bin, work: work} do
-    script(bin, "quiet.1.1", [replayed()])
-    turn(bin, 1, 1, [lifecycle("queued"), delta("ok"), result("ok")])
-
-    assert {:stop, :no_msg_lifecycle} = List.last(run_direct(replay_history(), work))
   end
 
   test "a close while a resumed program reports its session lost starts no program",

@@ -12,7 +12,7 @@ defmodule Helyx.Provider.ClaudeCode.InterruptTest do
   setup {Helyx.Test.ClaudeCodeFake, :setup_fake}
 
   describe "an interrupt" do
-    defp started?(state), do: state.turn.messages == nil and state.caps != nil
+    defp started?(state), do: state.turn.messages == nil and state.init?
 
     test "answers :ok after the control response and the result", %{bin: bin, work: work} do
       turn(bin, 1, 1, begin())
@@ -28,7 +28,7 @@ defmodule Helyx.Provider.ClaudeCode.InterruptTest do
       script(bin, "ctl.1", [interrupted(), aborted()])
 
       state = running(work, &(&1.turn.messages == nil))
-      assert state.caps == nil
+      refute state.init?
       assert {:ok, _actions} = interrupt(state)
     end
 
@@ -54,7 +54,7 @@ defmodule Helyx.Provider.ClaudeCode.InterruptTest do
       turn(bin, 1, 1, [lifecycle("queued"), init()])
       script(bin, "ctl.1", [interrupted([], ["@U@"])])
 
-      assert {:ok, _actions} = interrupt(running(work, &(&1.caps != nil)))
+      assert {:ok, _actions} = interrupt(running(work, & &1.init?))
       assert [%{"type" => "user"}, %{"type" => "control_request"}] = stdin(bin, 1)
     end
 
@@ -72,7 +72,7 @@ defmodule Helyx.Provider.ClaudeCode.InterruptTest do
       {_from, _actions, state} =
         request(harness(work), {:turn, "t1", %Helyx.Context{messages: history}})
 
-      state = settle(ClaudeCode, state, &(&1.caps != nil))
+      state = settle(ClaudeCode, state, & &1.init?)
       assert {from, [], state} = request(state, {:interrupt, "t1"})
       assert state.turn.interrupt.request_id == nil
 
@@ -95,17 +95,6 @@ defmodule Helyx.Provider.ClaudeCode.InterruptTest do
       File.write!(go, "")
       assert {actions, _state} = pump(ClaudeCode, state, [], replied?(from))
       assert {:reply, ^from, :ok} = List.last(actions)
-      assert [%{"type" => "user"}] = stdin(bin, 1)
-    end
-
-    test "without interrupt_cancel_queued_v1 answers an error and writes nothing",
-         %{bin: bin, work: work} do
-      turn(bin, 1, 1, [lifecycle("started"), init(["interrupt_receipt_v1"])])
-      state = running(work, &started?/1)
-
-      assert {from, [{:reply, from, {:error, :no_cancel_queued}}], _state} =
-               request(state, {:interrupt, "t1"})
-
       assert [%{"type" => "user"}] = stdin(bin, 1)
     end
 

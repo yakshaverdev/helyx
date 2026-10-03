@@ -89,7 +89,7 @@ defmodule Helyx.Provider.ClaudeCode.IdleCloseTest do
         ] do
       test "after #{name} answers :busy", %{bin: bin, work: work} do
         line = tasks_line(unquote(Macro.escape(fields)))
-        state = idle(bin, work, [line], "", &(&1.tasks == :unknown))
+        state = idle(bin, work, [line], "", &(&1.tasks != []))
         assert {_from, [{:reply, _, :busy}], _state} = request(state, :idle_close)
       end
     end

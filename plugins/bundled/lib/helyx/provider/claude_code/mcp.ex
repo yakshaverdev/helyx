@@ -16,14 +16,13 @@ defmodule Helyx.Provider.ClaudeCode.Mcp do
 
   # A request has an `id`; a notification has none and gets the ack of the
   # SDK, which the program waits for (research note). `initialize` can come
-  # again on one program, so it keeps no state.
-  def message(%{"method" => "initialize", "id" => id} = message, request_id, state) do
-    version =
-      case message["params"] do
-        %{"protocolVersion" => version} when is_binary(version) -> version
-        _other -> "2025-11-25"
-      end
-
+  # again on one program, so it keeps no state. The answer echoes the asked
+  # version (research note).
+  def message(
+        %{"method" => "initialize", "id" => id, "params" => %{"protocolVersion" => version}},
+        request_id,
+        state
+      ) do
     result = %{
       protocolVersion: version,
       capabilities: %{tools: %{}},
@@ -68,7 +67,14 @@ defmodule Helyx.Provider.ClaudeCode.Mcp do
         state
       ) do
     answer(state, request_id, %{result: %{}})
-    cancel_call(state, fn {_turn_id, _request_id, id} -> id == rpc_id end)
+
+    case Enum.find(state.calls, fn {_call_id, {_turn_id, _request_id, id}} -> id == rpc_id end) do
+      nil ->
+        {[], state}
+
+      {call_id, {turn_id, _request_id, _rpc_id}} ->
+        {[{:cancel_tool, turn_id, call_id}], %{state | calls: Map.delete(state.calls, call_id)}}
+    end
   end
 
   def message(%{"id" => id}, request_id, state) do
@@ -92,11 +98,6 @@ defmodule Helyx.Provider.ClaudeCode.Mcp do
     end
   end
 
-  # The program withdrew a control request; it waits for no answer
-  # (source only).
-  def cancel_request(state, request_id),
-    do: cancel_call(state, fn {_turn_id, id, _rpc_id} -> id == request_id end)
-
   defp tool_use_id(%{"_meta" => %{"claudecode/toolUseId" => call_id}}) when is_binary(call_id),
     do: call_id
 
@@ -111,18 +112,6 @@ defmodule Helyx.Provider.ClaudeCode.Mcp do
   defp tool_answer(state, request_id, rpc_id, status, text) do
     result = %{content: [%{type: "text", text: text}], isError: status == :error}
     answer(state, request_id, %{id: rpc_id, result: result})
-  end
-
-  # Withdraws the open call that `match?` finds by its `{turn_id,
-  # request_id, rpc_id}`, if any.
-  defp cancel_call(state, match?) do
-    case Enum.find(state.calls, fn {_call_id, call} -> match?.(call) end) do
-      nil ->
-        {[], state}
-
-      {call_id, {turn_id, _request_id, _rpc_id}} ->
-        {[{:cancel_tool, turn_id, call_id}], %{state | calls: Map.delete(state.calls, call_id)}}
-    end
   end
 
   defp answer(state, request_id, message) do
