@@ -60,7 +60,9 @@ defmodule Helyx.Test.SessionCase do
   # The messages in the mailbox now, in order.
   def mailbox, do: elem(Process.info(self(), :messages), 1)
 
-  # Polls a condition every 10 ms, by default for the cap of a wait.
+  # Polls a condition every 10 ms, by default for the cap of a wait. Only
+  # for a state that no process tells by a message: a Registry entry, a
+  # mailbox length, memory.
   def await(condition, what, tries \\ div(Helyx.Test.Events.wait_ms(), 10))
   def await(_condition, what, 0), do: flunk("timed out waiting for #{what}")
 

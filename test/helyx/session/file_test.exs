@@ -854,8 +854,12 @@ defmodule Helyx.Session.FileTest do
 
   describe "the file count of the header scan" do
     # "_repo" has the slug of "/repo", so its sessions share the directory.
-    defp session_at(dir, id, cwd, mtime) do
+    # `ts` replaces the start time in the header.
+    defp session_at(dir, id, cwd, mtime, ts \\ "2026-01-01T00:00:00Z") do
       {:ok, file} = Session.File.create(dir, id, cwd, "test/ok")
+      [header, rest] = String.split(File.read!(file.path), "\n", parts: 2)
+      header = header |> JSON.decode!() |> Map.put("ts", ts) |> JSON.encode!()
+      File.write!(file.path, [header, "\n", rest])
       File.touch!(file.path, mtime)
       file
     end
@@ -872,17 +876,14 @@ defmodule Helyx.Session.FileTest do
 
     test "the modification time selects the files, then the start time decides",
          %{tmp_dir: dir} do
-      # The sleeps put the start times of the headers in order.
-      session_at(dir, "first", "/repo", 3_000)
-      Process.sleep(2)
-      session_at(dir, "second", "/repo", 1_000)
-      Process.sleep(2)
-      session_at(dir, "third", "/repo", 2_000)
+      session_at(dir, "first", "/repo", 3_000, "2026-01-01T00:00:01Z")
+      session_at(dir, "second", "/repo", 1_000, "2026-01-01T00:00:03Z")
+      session_at(dir, "third", "/repo", 2_000, "2026-01-01T00:00:02Z")
 
       assert {:ok, %{session_id: "first"}} =
                Session.File.resume(dir, "/repo", max_scanned_files: 1)
 
-      assert {:ok, %{session_id: "third"}} = Session.File.resume(dir, "/repo")
+      assert {:ok, %{session_id: "second"}} = Session.File.resume(dir, "/repo")
     end
 
     test "a file that is not regular does not count", %{tmp_dir: dir} do

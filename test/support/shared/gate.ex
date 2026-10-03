@@ -38,7 +38,9 @@ defmodule Helyx.Test.Gate do
 
   # The events before the gate reach the session before the test hears of
   # the gate: the provider process forwards each event as it handles it,
-  # so the gate waits until that process idles with an empty mailbox.
+  # so the gate waits until that process idles with an empty mailbox. It
+  # polls: the provider process of `Helyx.Provider.Loop` drops every other
+  # message and answers nothing, so no message can tell the gate.
   # This runs in the model Task, so a raise here reaches only the turn's
   # `turn_end`. At the cap it also sends the reason to the gate, where the
   # failed `assert_receive` of the test prints it. The cap is half of
