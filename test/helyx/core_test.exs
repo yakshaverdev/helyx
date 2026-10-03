@@ -53,26 +53,49 @@ defmodule Helyx.CoreTest do
     end
   end
 
+  test "rejects a plugin that does not export a required callback of an interface" do
+    # The missing callbacks are the point; their compile warnings are kept
+    # out of the test output. `release/3` of the provider is optional, and
+    # the plugin implements `Test.Multi` in full, so only the provider's
+    # missing callbacks are named.
+    source = """
+    defmodule Helyx.Test.NoCallbacks do
+      @behaviour Helyx.Provider
+      @behaviour Helyx.Test.Multi
+      def id, do: "no_callbacks"
+      def name, do: "no_callbacks"
+      def init(_model, _tools, _opts), do: {:ok, nil}
+    end
+    """
+
+    {[{plugin, _}], _warnings} = Code.with_diagnostics(fn -> Code.compile_string(source) end)
+
+    assert boot([plugin]) ==
+             {:error, {:missing_callbacks, plugin, Helyx.Provider, [info: 2, request: 3]}}
+  end
+
+  test "accepts a plugin of an interface without callbacks" do
+    source = """
+    defmodule Helyx.Test.Marker do
+      use Helyx.Interface, mode: :multi
+    end
+
+    defmodule Helyx.Test.MarkerPlugin do
+      @behaviour Helyx.Test.Marker
+    end
+    """
+
+    {modules, _warnings} = Code.with_diagnostics(fn -> Code.compile_string(source) end)
+    {plugin, _} = List.keyfind(modules, Helyx.Test.MarkerPlugin, 0)
+    assert {:ok, _} = boot([Test.Provider, plugin])
+  end
+
   describe "provider ids (#169)" do
     test "an id/0 that raises, throws, exits, or is not a binary stops the start" do
       for mode <- [:raise, :throw, :exit, 42] do
         Process.put(:bad_id, mode)
         assert boot([Test.Provider, Test.BadId]) == {:error, {:invalid_provider_id, Test.BadId}}
       end
-    end
-
-    test "a provider without init/3, request/3, and info/2 stops the start" do
-      # The missing callbacks are the point; their compile warnings are kept
-      # out of the test output.
-      source = """
-      defmodule Helyx.Test.NoTurn do
-        @behaviour Helyx.Provider
-        def id, do: "no_turn"
-      end
-      """
-
-      {[{no_turn, _}], _warnings} = Code.with_diagnostics(fn -> Code.compile_string(source) end)
-      assert boot([Test.Provider, no_turn]) == {:error, {:invalid_provider, no_turn}}
     end
 
     test "two providers with one id stop the start and are both named" do
