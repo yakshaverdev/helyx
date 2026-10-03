@@ -32,8 +32,10 @@ In the same message, start the **Codex adversarial review** in the background, o
 
 ```bash
 codex_dir=$(/bin/ls -d "$HOME"/.claude/plugins/cache/openai-codex/codex/*/ | sort -V | /usr/bin/tail -n 1)
-node "${codex_dir}scripts/codex-companion.mjs" adversarial-review "--wait --base origin/master <the invariant of the change, one sentence>"
+env -u CODEX_COMPANION_APP_SERVER_ENDPOINT node "${codex_dir}scripts/codex-companion.mjs" adversarial-review "--wait --base origin/master <the invariant of the change, one sentence>"
 ```
+
+`env -u` drops the shared broker endpoint: through it, a review can read another worktree (found 2026-10-03).
 
 The sentence names the entry points, every accepted hole, every exception that the feature doc states, and every open hole that has a ticket. It contains no text that starts with `--` (#148). Judge each Codex finding as you judge the agents' findings: reproduce it or read the code. A finding that asks for a case-specific handler of contract-breaking provider output needs evidence that a real provider does it; without it, reject the finding and say so in the review record (`docs/agents/review-checklist.md`, "Inputs from plugins"). A finding that the generic failure path does not fire, a race between Core processes, and a broken safety bound stay findings.
 
