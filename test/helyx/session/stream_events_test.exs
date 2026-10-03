@@ -316,7 +316,7 @@ defmodule Helyx.Session.StreamEventsTest do
     test "the 1,025th block of the open message stops the provider process and fails the turn",
          %{core: core} do
       {:ok, session} = Session.start(core, model: "conn/events.blocks_over_bound")
-      {:ok, _} = Session.subscribe(session)
+      {:ok, _, _} = Session.subscribe(session)
       :ok = Session.prompt(session, "hello")
       events = collect_until(:agent_end)
 
