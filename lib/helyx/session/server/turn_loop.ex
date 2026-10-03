@@ -303,7 +303,7 @@ defmodule Helyx.Session.Server.TurnLoop do
 
     # A Helyx tool that still runs: the turn cleanup of the hands runs
     # before the next turn.
-    hands = if turn.tool, do: Hands.request_cancel(state.hands, turn.id)
+    hands = if turn.tools.running, do: Hands.request_cancel(state.hands, turn.id)
     progress(%{state | activity: %Wait{hands: hands}})
   end
 

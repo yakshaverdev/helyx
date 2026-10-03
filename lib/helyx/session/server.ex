@@ -220,7 +220,7 @@ defmodule Helyx.Session.Server do
   # The hands' result of the running Helyx tool.
   def handle_info(
         {:tool_result, turn_id, call_id, result},
-        %State{activity: %Turn{id: turn_id, tool: call_id}} = state
+        %State{activity: %Turn{id: turn_id, tools: %{running: call_id}}} = state
       ),
       do: {:noreply, Tools.result(state, result)}
 

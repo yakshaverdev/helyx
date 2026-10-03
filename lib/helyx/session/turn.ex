@@ -11,9 +11,7 @@ defmodule Helyx.Session.Turn do
   # it is sent, and the `pending` ref of the answer to `{:turn, ...}`.
   # `prepare` is the pid of the running prepare Task, which the session
   # monitors and kills at the turn end, or nil.
-  # The Helyx tool requests (`Helyx.Session.Server.Tools`): `tool` is the
-  # call id that runs on the hands, `killed?` whether the provider withdrew
-  # it, and `waiting` the calls after it.
+  # `tools` holds the Helyx tool requests of the turn (`Helyx.Session.Tools`).
 
   alias Helyx.{Message, ModelRef}
 
@@ -28,9 +26,7 @@ defmodule Helyx.Session.Turn do
     :context,
     :pending,
     :prepare,
-    :tool,
-    killed?: false,
-    waiting: []
+    tools: %Helyx.Session.Tools{}
   ]
 
   @type t :: %__MODULE__{}
