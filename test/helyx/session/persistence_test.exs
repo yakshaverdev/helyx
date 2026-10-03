@@ -187,6 +187,41 @@ defmodule Helyx.Session.PersistenceTest do
   end
 
   @tag :tmp_dir
+  test "a resume drops each result with no open call and shifts the counts, and writes nothing",
+       %{core: core, tmp_dir: dir} do
+    call = %Helyx.Message.ToolCall{id: "c1", name: "slow", arguments: %{}}
+    stray = %Helyx.Message.ToolCall{id: "x", name: "slow", arguments: %{}}
+    {:ok, file} = Helyx.Session.File.create(dir, "orphan", File.cwd!(), "test/transcript")
+
+    file
+    |> Helyx.Session.File.append_message(Helyx.Message.user("hi"))
+    |> Helyx.Session.File.append_message(%Helyx.Message{role: :assistant, content: [call]})
+    |> Helyx.Session.File.append_message(Helyx.Message.tool_result(stray, {:ok, "unknown"}))
+    |> Helyx.Session.File.append_message(Helyx.Message.tool_result(call, {:ok, "answer"}))
+    |> Helyx.Session.File.append_message(Helyx.Message.tool_result(call, {:ok, "second"}))
+    |> Helyx.Session.File.append_message(Helyx.Message.user("next"))
+    |> Helyx.Session.File.append_message(Helyx.Message.tool_result(call, {:ok, "late"}))
+    |> Helyx.Session.File.append_resume_id("claude-code", "h1")
+
+    repaired = [{:user, "hi"}, {:assistant, ""}, {:tool_result, "answer"}, {:user, "next"}]
+
+    written = File.read!(file.path)
+    {:ok, session} = Session.resume(core, sessions_dir: dir)
+    assert File.read!(file.path) == written
+    assert :sys.get_state(Session.pid(session)).resume_ids == %{"claude-code" => {"h1", 4}}
+
+    # A client mounts from the snapshot: no result there lacks its call.
+    {:ok, snapshot} = Session.subscribe(session)
+    assert Enum.map(snapshot.messages, &{&1.role, Helyx.Message.text(&1)}) == repaired
+
+    # The provider gets the repaired history.
+    :ok = Session.prompt(session, "one")
+
+    assert final_text(collect_until(:agent_end)) ==
+             Enum.map_join(repaired ++ [{:user, "one"}], "\n", fn {r, t} -> "#{r}:#{t}" end)
+  end
+
+  @tag :tmp_dir
   @tag :capture_log
   test "resume after a crash mid-turn answers every open tool call", %{core: core, tmp_dir: dir} do
     {:ok, session} = Session.start(core, model: "test/abort", sessions_dir: dir)

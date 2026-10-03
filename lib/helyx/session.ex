@@ -114,9 +114,10 @@ defmodule Helyx.Session do
   `:sessions_dir`, restoring the transcript and the current model. Every
   tool call without a result gets an `aborted` error result in the
   transcript read, right after its message and its results, so the next
-  provider call sees complete call and result pairs. The resume writes no
-  entry: every resume of the file inserts the same results. It only appends
-  a newline that the last line lacks. `:cwd` is checked as in
+  provider call sees complete call and result pairs. A tool result that
+  answers no open call at its place is left out of the transcript read. The
+  resume writes no entry: every resume of the file makes the same repair.
+  It only appends a newline that the last line lacks. `:cwd` is checked as in
   `start/2`, and the tool specs and the tool checks as in `start/2`, all
   before the sessions directory is read. The model ref of the file resolves
   as in `set_model/2`, with the same errors.
@@ -130,8 +131,9 @@ defmodule Helyx.Session do
          :ok <- Helyx.Tool.check_available(tools),
          {:ok, resumed} <- Helyx.Session.File.resume(dir, cwd),
          {:ok, {ref, provider}} <- resolve_model(core, resumed.model) do
-      # A crash can leave tool calls with no result. The session reads them
-      # with `aborted` results and writes nothing (#269).
+      # A crash can leave tool calls with no result, and the disk can hold a
+      # result with no open call. The session reads them with `aborted`
+      # results and without the stray results, and writes nothing (#269, #417).
       {transcript, resume_ids} =
         Transcript.abort_unanswered(resumed.messages, resumed.resume_ids)
 

@@ -163,3 +163,4 @@ One row per ticket that `/orchestrate` merged. An escape is a confirmed Codex fi
 | 2026-10-03 | #405 | r1: 0 reproduced; doc and naming fixes | gate r1 (Codex): 0 | none needed |
 | 2026-10-03 | #406 | r1: 1 reproduced (an image in a user message or tool result had no placeholder), fixed; r2: 0 (1 Codex finding rejected: the four-line preview cuts all content) | gate r1 (Codex): 0 | none needed |
 | 2026-10-03 | #412 | r1: 0 reproduced; 11 doc and test fixes | gate r1 (Codex): 0 | none needed |
+| 2026-10-03 | #417 | r1: 0 reproduced | gate r1 (Codex): 0 | the #407 ticket text called a disk-boundary state a bug-only state; the #407 worker caught it |
