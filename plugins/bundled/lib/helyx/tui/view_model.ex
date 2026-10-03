@@ -342,9 +342,8 @@ defmodule Helyx.TUI.ViewModel do
   # model text: `inspect/1` escapes a character to up to four times its
   # bytes (a control or invalid byte renders as `\x01`) and has no total
   # limit over nested terms, so the text is cut at `@render_max_bytes`; a
-  # character cut in half is dropped.
-  defp cut_line(text),
-    do: text |> binary_slice(0, @render_max_bytes) |> String.replace_invalid("")
+  # character cut in half is dropped (`Helyx.Text.cap/3`).
+  defp cut_line(text), do: Helyx.Text.cap(text, @render_max_bytes, :head)
 
   # `binaries: :as_strings` escapes a control or invalid byte, so an error
   # text shows as text, not as a list of bytes.

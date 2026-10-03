@@ -44,11 +44,8 @@ defmodule Helyx.HarnessIO do
       {:started, port, _pre} ->
         %{state | port: port}
 
-      {:not_started, port, reason} ->
-        %{state | port: port, terminal: {:error, {:not_started, cap_error(reason)}}}
-
-      {:failed, text} ->
-        %{state | terminal: {:error, {:not_started, cap_error(text)}}}
+      {:error, reason} ->
+        %{state | terminal: {:error, {:not_started, reason}}}
     end
   end
 
@@ -166,12 +163,10 @@ defmodule Helyx.HarnessIO do
     end
   end
 
-  # A value that is not text is empty. The text is cut at the cap, and a
-  # character cut in half and every invalid byte are dropped, so the text is
-  # valid UTF-8 (perl's warnings quote the environment as raw bytes).
+  # A value that is not text is empty. The text is cut at the cap to valid
+  # UTF-8 (`Helyx.Text.cap/3`).
   def cap_error(text) when not is_binary(text), do: ""
-
-  def cap_error(text), do: text |> binary_slice(0, @error_max_bytes) |> String.replace_invalid("")
+  def cap_error(text), do: Helyx.Text.cap(text, @error_max_bytes, :head)
 
   # The prompt is the user messages at the end of the transcript; the
   # history is the rest. Both keep their order.

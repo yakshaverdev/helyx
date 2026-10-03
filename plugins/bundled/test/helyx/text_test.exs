@@ -234,7 +234,7 @@ defmodule Helyx.TextTest do
 
   test "cap/3 keeps at most max bytes of valid UTF-8 from either end" do
     assert Text.cap("abc", 3, :head) == "abc"
-    assert Text.cap(<<255>>, 1, :tail) == <<255>>
+    assert Text.cap(<<255>>, 1, :tail) == ""
     assert Text.cap("a€b", 3, :head) == "a"
     assert Text.cap("a€b", 3, :tail) == "b"
     assert Text.cap(<<255, ?a, 255, ?b>> <> "c", 4, :head) == "ab"

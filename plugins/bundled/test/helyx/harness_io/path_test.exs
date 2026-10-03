@@ -46,7 +46,7 @@ defmodule Helyx.HarnessIO.PathTest do
              Codex.init("m", [], cwd: work)
   end
 
-  # `Helyx.HarnessIO.cap_error/1` drops the invalid byte, so the error is
+  # `Helyx.Watchdog.start/4` drops the invalid byte, so the error is
   # valid UTF-8 for every reader, the model too.
   test "a perl that writes an invalid byte and ends gives valid text that names perl",
        %{bin: bin, work: work} do
