@@ -138,6 +138,9 @@ defmodule Helyx.Test.Gated.Connected do
   #   dangling a tool call, then the end of the turn (no gate)
   #   dup_id   two tool calls with one id and a message end, the first
   #            result, the gate, the second result, then a text
+  #   harness  a tool call in the open message, the gate, then its result
+  #            (which closes the message, as a harness program does) and a
+  #            text
   @behaviour Helyx.Provider
 
   alias Helyx.Message
@@ -201,6 +204,11 @@ defmodule Helyx.Test.Gated.Connected do
 
   defp steps("dangling"),
     do: [{:tool_call, %Message.ToolCall{id: "d", name: "x", arguments: %{}}}]
+
+  defp steps("harness") do
+    call = %Message.ToolCall{id: "h", name: "x", arguments: %{}}
+    [{:tool_call, call}, :gate, {:tool_result, "h", {:ok, "r"}}, {:text_delta, "end"}]
+  end
 
   defp steps("dup_id") do
     [

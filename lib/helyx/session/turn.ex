@@ -49,12 +49,10 @@ defmodule Helyx.Session.Turn do
     )
   end
 
-  # The turn of a snapshot (`Helyx.Session.Snapshot`) with `open_calls`,
-  # the open calls of the transcript: each had its `tool_execution_start`
-  # at its message end.
-  @spec snapshot(t(), [Message.ToolCall.t()]) :: Helyx.Session.Snapshot.turn()
-  def snapshot(%__MODULE__{} = turn, open_calls) do
+  # The turn of a snapshot (`Helyx.Session.Snapshot`).
+  @spec snapshot(t()) :: Helyx.Session.Snapshot.turn()
+  def snapshot(%__MODULE__{} = turn) do
     partial = if turn.partial, do: assistant_message(turn, [])
-    %{id: turn.id, partial: partial, running: Enum.map(open_calls, & &1.id)}
+    %{id: turn.id, partial: partial}
   end
 end

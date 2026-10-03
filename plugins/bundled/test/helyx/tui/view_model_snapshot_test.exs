@@ -20,8 +20,8 @@ defmodule Helyx.TUI.ViewModelSnapshotTest do
     Map.merge(context, %{core: core, gate: Gate.open()})
   end
 
-  # Every call of the message starts at its `message_end`, so the snapshot
-  # lists all three as running while the first runs (contract version 2).
+  # Each call of the message has an open cell from its `message_end`, in
+  # both clients, while the first runs.
   test "a subscribe while the first of three calls runs", %{core: core, gate: gate} do
     calls =
       for id <- ~w(c1 c2 c3),
@@ -34,10 +34,11 @@ defmodule Helyx.TUI.ViewModelSnapshotTest do
 
     assert_receive {:waiting, tool}
     {late, snapshot} = LateClient.connect(session)
-    assert snapshot.turn.running == ["c1", "c2", "c3"]
-
     live = fold(first, events_to(snapshot.seq))
     assert transcript(ViewModel.from_snapshot(snapshot)) == transcript(live)
+
+    assert [_user, _assistant, {:tool, _, _, nil}, {:tool, _, _, nil}, {:tool, _, _, nil}] =
+             live.cells
 
     send(tool, :go)
     assert_receive {:waiting, tool}
@@ -60,8 +61,6 @@ defmodule Helyx.TUI.ViewModelSnapshotTest do
 
     assert_receive {:waiting, stream}
     {late, snapshot} = LateClient.connect(session)
-    assert snapshot.turn.running == ~w(c1 c2 c3)
-
     live = fold(first, events_to(snapshot.seq))
     assert transcript(ViewModel.from_snapshot(snapshot)) == transcript(live)
 
@@ -138,6 +137,29 @@ defmodule Helyx.TUI.ViewModelSnapshotTest do
     LateClient.disconnect(late)
   end
 
+  # A harness program runs a call of the open message, and the message
+  # closes at its first result (#385). Its cell shows "awaiting result"
+  # from the message, before the result, in a live and a late client.
+  test "a call in the open message awaits its result", %{core: core, gate: gate} do
+    {:ok, session} = Session.start(core, model: "gated/harness." <> gate)
+    {:ok, first} = Session.subscribe(session)
+    :ok = Session.prompt(session, "go")
+
+    assert_receive {:waiting, stream}
+    {late, snapshot} = LateClient.connect(session)
+    live = fold(first, events_to(snapshot.seq))
+    assert transcript(ViewModel.from_snapshot(snapshot)) == transcript(live)
+    assert [{:tool, %{id: "h"}, _, nil}] = live.streaming
+    assert ["⚙ x", "… awaiting result"] == Enum.take(texts(live), -2)
+
+    send(stream, :go)
+    watched = fold(live, collect_until(:agent_end))
+    assert transcript(fold(snapshot, LateClient.events_to_end(late))) == transcript(watched)
+    assert [_user, _assistant, {:tool, %{id: "h"}, _, %Message{}}, _end] = watched.cells
+    refute "… awaiting result" in texts(watched)
+    LateClient.disconnect(late)
+  end
+
   test "a subscribe during a reply shows the reply so far, then each event once", %{
     core: core,
     gate: gate
@@ -193,8 +215,8 @@ defmodule Helyx.TUI.ViewModelSnapshotTest do
     assert_joins_after_end(session, live, events)
   end
 
-  # A call that never started gets an `aborted` result at the normal end of
-  # a connected turn: the live fold and the snapshot both show a closed cell.
+  # A call with no result gets an `aborted` result at the normal end of a
+  # connected turn: the live fold and the snapshot both show a closed cell.
   test "a join after a connected turn that ends with an open call", %{core: core, gate: gate} do
     {:ok, session} = Session.start(core, model: "gated/dangling." <> gate)
     {:ok, first} = Session.subscribe(session)
@@ -264,6 +286,11 @@ defmodule Helyx.TUI.ViewModelSnapshotTest do
   defp events_to(seq, acc \\ []) do
     assert_receive {:helyx_event, event}
     if event.seq == seq, do: Enum.reverse([event | acc]), else: events_to(seq, [event | acc])
+  end
+
+  # The non-empty rows of the transcript.
+  defp texts(vm) do
+    for line <- Helyx.TUI.Transcript.lines(vm, 80), span <- line.spans, do: span.content
   end
 
   defp fold(%ViewModel{} = vm, events), do: Helyx.Test.ViewModelRule.fold(vm, events)

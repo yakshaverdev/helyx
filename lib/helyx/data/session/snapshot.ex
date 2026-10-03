@@ -10,10 +10,8 @@ defmodule Helyx.Session.Snapshot do
     * `seq` – the seq of the last event sent before the snapshot, 0 if none.
       A client drops each later event with a `seq` at or below it.
     * `messages` – the transcript, oldest first.
-    * `turn` – nil, or the running turn: its `id`, the assistant message
-      so far as `partial` (nil before the first stream event), and in
-      `running` the ids of the tool calls that have started and have no
-      result yet.
+    * `turn` – nil, or the running turn: its `id`, and the assistant
+      message so far as `partial` (nil before the first stream event).
     * `model` – the session's `provider/model` ref.
     * `queue` – the counts of the queued steers and follow-ups.
 
@@ -29,7 +27,7 @@ defmodule Helyx.Session.Snapshot do
   @enforce_keys [:instance_id, :seq, :messages, :turn, :model, :queue]
   defstruct [:instance_id, :seq, :messages, :turn, :model, :queue, contract_version: 2]
 
-  @type turn :: %{id: String.t(), partial: Helyx.Message.t() | nil, running: [String.t()]}
+  @type turn :: %{id: String.t(), partial: Helyx.Message.t() | nil}
 
   @type t :: %__MODULE__{
           contract_version: pos_integer(),

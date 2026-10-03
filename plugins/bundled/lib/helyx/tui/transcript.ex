@@ -135,8 +135,13 @@ if Helyx.TUI.Transcript.Available.available?() do
     # The cells, and the open assistant message as the last one.
     defp items(%ViewModel{streaming: nil, cells: cells}), do: cells
 
-    defp items(%ViewModel{streaming: streaming, cells: cells}),
-      do: cells ++ [%Message{role: :assistant, content: Enum.reverse(streaming)}]
+    # Its calls show as open tool cells after it, as when it ends.
+    defp items(%ViewModel{streaming: streaming, cells: cells}) do
+      {calls, blocks} =
+        streaming |> Enum.reverse() |> Enum.split_with(&match?({:tool, _, _, _}, &1))
+
+      cells ++ [%Message{role: :assistant, content: blocks} | calls]
+    end
 
     defp item_lines(item, width), do: cell_lines(item, width) ++ [%Line{}]
 
@@ -162,7 +167,7 @@ if Helyx.TUI.Transcript.Available.available?() do
       end)
     end
 
-    defp result_lines(nil, width), do: styled_lines("… running", width, @dim)
+    defp result_lines(nil, width), do: styled_lines("… awaiting result", width, @dim)
 
     # Long tool output would drown the transcript; four lines tell the story.
     defp result_lines(%Message{} = result, width) do

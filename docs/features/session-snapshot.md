@@ -2,7 +2,7 @@
 
 > Since #297 (`session-subscribers.md`), the session holds its subscribers: `subscribe/1` adds the caller and builds the snapshot in one call, and the events Registry named below is gone.
 >
-> The ADR 0006 revision of 2026-10-03 (#404) replaces these parts below: `contract_version` and `turn.running` leave the snapshot; the TUI makes its tool cells from the messages and folds the snapshot messages through the live fold, so the bulk construction of `from_snapshot/1` and its pairing by `running` go; the TUI drops the `instance_id` and `seq` guards, because it subscribes once and the registration and the snapshot happen in one server handler. The tickets after #404 build this; until then the code still has the replaced parts. The rule of the snapshot stays.
+> The ADR 0006 revision of 2026-10-03 (#404) replaces these parts below: `contract_version` and `turn.running` leave the snapshot; the TUI makes its tool cells from the messages and folds the snapshot messages through the live fold, so the bulk construction of `from_snapshot/1` and its pairing by `running` go; the TUI drops the `instance_id` and `seq` guards, because it subscribes once and the registration and the snapshot happen in one server handler. The tickets after #404 build this. #405 built the tool cells from the messages and removed `turn.running`, the pairing by `running`, and the closed cell for a result with no open cell (every call now has an open cell from its message, so such a result makes no cell); until #406 and #407 the code still has the other replaced parts. The rule of the snapshot stays.
 
 ## Goal
 
@@ -32,8 +32,7 @@ The server owns the state, and the client only renders it (`AGENTS.md`, Project)
   messages: [Helyx.Message.t()],   # the transcript, oldest first
   turn: nil | %{
     id: String.t(),
-    partial: Helyx.Message.t() | nil,   # the assistant message so far, as Turn.assistant_message/2 builds it
-    running: [String.t()]               # ids of the tool calls that have started and have no result yet; removed by the ADR 0006 revision of 2026-10-03
+    partial: Helyx.Message.t() | nil    # the assistant message so far, as Turn.assistant_message/2 builds it
   },
   model: String.t(),
   queue: %{steers: non_neg_integer(), follow_ups: non_neg_integer()}
@@ -62,6 +61,28 @@ Changes that follow from the snapshot (accepted by the owner, 2026-09-26):
 - `Helyx.TUI.run/1` has no `:model` option, and `CodingAgent.fetch_model/1` is gone: the model comes from the snapshot.
 - The TUI mount checks that the session is alive before it subscribes, because the subscribe now calls the session. A session that dies in between ends the mount with `{:session_down, reason}`, as before. #188 replaces the check: `subscribe/1` returns `{:error, :session_not_found}` (`docs/features/session-not-found.md`).
 - Tests that folded events with `seq` 0, or with one `seq` twice, use increasing values, because `apply/2` now drops an event at or below the view model's `seq`.
+
+## Replaced mechanism (#405)
+
+The ADR 0006 revision of 2026-10-03 replaces the TUI rule that a tool cell comes from `tool_execution_start`. Built from the code and the tests of master `4685a02`.
+
+| Old part | Replacement or deletion |
+| --- | --- |
+| `fold` clause for `tool_execution_start` adds an open cell | Deleted. The event is ignored (only `seq` moves). The `message_end` of an assistant message adds an open cell for each of its calls, and a `message_update` with a call adds an open cell to `streaming` |
+| `unstarted_cell/2`: a result with no open cell gives a closed cell to the next call with its id in the last assistant message | Deleted. Every call has an open cell from its message, and Core sends a result only for an open call of its transcript (`Transcript.open_calls/1`), so such a result makes no cell |
+| `from_snapshot/1` opens the first `length(turn.running)` calls with no result, by position; a later call has no cell | Every call with no result gets an open cell. The pairing of results to calls (`results_in_call_order/1`) stays until #407 |
+| `Snapshot.turn.running` and `Turn.snapshot/2` | Deleted: no client reads it. `Turn.snapshot/1` gives `id` and `partial` |
+| Label "… running" | "… awaiting result": the message proves that the call exists, not that it runs |
+| A call of the streaming message renders nothing | An open cell after the streaming message, as after an ended one |
+
+Tests of the old mechanism:
+
+- "a result for a call that never started gets a closed cell": deleted, its case is gone.
+- "a start, end, start, end order attaches each result": deleted; "a result goes to the oldest open cell and never replaces a result" covers one id in two messages.
+- The case "two open cells with one id" of that test moved into "a result goes to the oldest open tool cell with its id".
+- The tests that made open cells with `tool_execution_start` make them with an assistant `message_end`; their properties (oldest open cell first, any result order, no second result, a notice between) stay.
+- The assertions on `snapshot.turn.running` (`stream_events_test.exs`, `view_model_snapshot_test.exs`) are deleted; the snapshot tests compare the joined client with the live client and check the three open cells.
+- New: a scripted fold and a real session (`gated/harness`) show "awaiting result" for a call of the open message before its result.
 
 ## Bounds
 
