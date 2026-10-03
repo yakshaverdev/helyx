@@ -7,10 +7,8 @@ defmodule Helyx.Session.Server do
   # the docs of the behaviour are in `Helyx.Session`.
 
   alias Helyx.ModelRef
-  alias Helyx.Session.{Hands, Id, Queue, Snapshot, Transcript, Turn}
+  alias Helyx.Session.{Hands, Id, Turn}
   alias Helyx.Session.Server.{Messages, Record, State, Steering, Stop, Tools, TurnLoop}
-
-  import Record, only: [emit: 3, emit: 4]
 
   use GenServer, restart: :temporary, shutdown: Stop.shutdown_ms()
 
@@ -46,31 +44,18 @@ defmodule Helyx.Session.Server do
     {:reply, reply, state}
   end
 
-  def handle_call(:snapshot, _from, %State{} = state) do
-    snapshot = %Snapshot{
-      instance_id: state.instance_id,
-      seq: state.seq,
-      messages: state.transcript,
-      turn: if(match?(%Turn{}, state.activity), do: Turn.snapshot(state.activity)),
-      model: ModelRef.to_string(state.model),
-      queue: Queue.counts(state.queue)
-    }
-
-    {:reply, snapshot, state}
-  end
+  def handle_call(:snapshot, _from, %State{} = state),
+    do: {:reply, Record.snapshot(state), state}
 
   # The entry and the snapshot in one message, so every later event reaches
   # the caller. A repeated subscribe keeps the entry and its monitor.
-  def handle_call({:subscribe, pid}, from, %State{} = state) do
-    handle_call(:snapshot, from, Record.subscribe(state, pid))
+  def handle_call({:subscribe, pid}, _from, %State{} = state) do
+    state = Record.subscribe(state, pid)
+    {:reply, Record.snapshot(state), state}
   end
 
-  def handle_call({:set_model, %ModelRef{} = ref, provider}, _from, %State{} = state) do
-    model = ModelRef.to_string(ref)
-    state = Record.persist(state, &Helyx.Session.File.append_model_change(&1, model))
-    state = %{state | model: ref, provider: provider}
-    {:reply, :ok, TurnLoop.settle(emit(state, nil, :model_change, %{model: model}))}
-  end
+  def handle_call({:set_model, %ModelRef{} = ref, provider}, _from, %State{} = state),
+    do: {:reply, :ok, TurnLoop.settle(Messages.set_model(state, ref, provider))}
 
   # The abort replies through `GenServer.reply/2` (`TurnLoop.abort/2`).
   def handle_call(:abort, from, %State{} = state), do: {:noreply, TurnLoop.abort(state, from)}
@@ -87,21 +72,13 @@ defmodule Helyx.Session.Server do
       ),
       do: {:noreply, Messages.end_assistant(state, stop_reason, usage)}
 
-  # The first result of a call in the open message closes that message
-  # first. A result goes to the first open call with its id
-  # (`Transcript.open_calls/1`), so the transcript, the file, and the
-  # replay agree. A result for no open call is dropped.
+  # A tool result event of the provider: it closes the open message and
+  # joins its open call (`Messages.tool_result/3`).
   def handle_info(
         {:stream_event, turn_id, {:tool_result, call_id, result}},
         %State{activity: %Turn{id: turn_id}} = state
-      ) do
-    state = Messages.close_for_result(state, call_id)
-
-    case Enum.find(Transcript.open_calls(state.transcript), &(&1.id == call_id)) do
-      nil -> {:noreply, state}
-      call -> {:noreply, Messages.record_result(call, result, state)}
-    end
-  end
+      ),
+      do: {:noreply, Messages.tool_result(state, call_id, result)}
 
   # The provider took a steer of this turn: its text, the one the session
   # checked at the client call, joins the transcript here (see
@@ -134,27 +111,16 @@ defmodule Helyx.Session.Server do
 
   def handle_info(
         {:stream_event, turn_id, {:resume, id, cut}},
-        %State{activity: %Turn{id: turn_id} = turn} = state
-      ) do
-    # The provider id is the prefix of the turn's model ref: `find/2`
-    # matched it, so the session runs no plugin code for it.
-    provider = turn.model.provider
-    state = Record.persist(state, &Helyx.Session.File.append_resume_id(&1, provider, id))
-    ids = Map.put(state.resume_ids, provider, {id, length(state.transcript)})
-    state = %{state | resume_ids: ids}
-    data = %{provider: provider, resume_id: id, lost: turn.resumed != nil, cut: cut}
-    {:noreply, emit(state, :provider_session, data)}
-  end
+        %State{activity: %Turn{id: turn_id}} = state
+      ),
+      do: {:noreply, Messages.resume(state, id, cut)}
 
+  # A delta that breaks the bound of the open message stops the provider
+  # process (`Messages.delta/2`).
   def handle_info({:stream_event, turn_id, event}, %State{activity: %Turn{id: turn_id}} = state) do
-    %State{activity: turn} = state = Messages.start_assistant_message(state)
-
-    case Turn.add_block(turn, event) do
-      {:ok, turn} ->
-        {:noreply, emit(%{state | activity: turn}, :message_update, Map.new([event]))}
-
-      {:error, reason} ->
-        {:noreply, TurnLoop.stop_provider(state, reason)}
+    case Messages.delta(state, event) do
+      {:ok, state} -> {:noreply, state}
+      {:error, reason, state} -> {:noreply, TurnLoop.stop_provider(state, reason)}
     end
   end
 

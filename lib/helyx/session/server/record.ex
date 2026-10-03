@@ -1,16 +1,14 @@
 defmodule Helyx.Session.Server.Record do
   @moduledoc false
-  # The record of a session: the only writer of `seq`, `subscribers`,
-  # `transcript`, and `file` in `Helyx.Session.Server.State`. Each event
-  # gets the next `seq` and goes to every subscriber; each completed message
-  # joins the transcript and, when the session has one, the session file
-  # (docs/features/long-lived-harness.md).
+  # The event stream of a session: the only writer of `seq` and
+  # `subscribers` in `Helyx.Session.Server.State`. Each event gets the next
+  # `seq` and goes to every subscriber; the snapshot gives the `seq` of the
+  # last event (docs/features/long-lived-harness.md). The records that the
+  # events tell of are written in `Helyx.Session.Server.Messages`.
 
-  require Logger
-
-  alias Helyx.{Event, Message}
+  alias Helyx.{Event, ModelRef}
+  alias Helyx.Session.{Queue, Snapshot, Turn}
   alias Helyx.Session.Server.State
-  alias Helyx.Session.Turn
 
   def subscribe(%State{} = state, pid) do
     subscribers = Map.put_new_lazy(state.subscribers, pid, fn -> Process.monitor(pid) end)
@@ -26,30 +24,17 @@ defmodule Helyx.Session.Server.Record do
   def subscriber_down(%State{subscribers: subscribers} = state, pid),
     do: %{state | subscribers: Map.delete(subscribers, pid)}
 
-  # Appends a completed message to the transcript and, when the session has
-  # a file, to disk. Streamed partial messages never come through here.
-  def append_message(%State{} = state, %Message{} = message) do
-    state = persist(state, &Helyx.Session.File.append_message(&1, message))
-    %{state | transcript: state.transcript ++ [message]}
-  end
-
-  def persist(%State{file: nil} = state, _append), do: state
-
-  def persist(%State{file: file} = state, append) do
-    %{state | file: append.(file)}
-  rescue
-    # A disk failure must not take the session down. The turn, or the model
-    # switch, goes on in memory; persistence stays off for this session. Only
-    # the disk write is caught: a value the file cannot encode is rejected
-    # at the stream boundary (see `Helyx.Session.Stream`), and a model ref by
-    # `ModelRef.parse/1`, so an encode error here is a
-    # bug and crashes loudly rather than silently losing the rest of the
-    # session. One notice with a fixed text tells the clients, and the
-    # log has the error.
-    error in File.Error ->
-      Logger.warning("session file append failed, persistence off: " <> Exception.message(error))
-      text = "the session file could not be written; the rest of this session is not saved"
-      emit(%{state | file: nil}, turn_id(state.activity), :notice, %{text: text})
+  # The state of the session in one value (`Helyx.Session.Snapshot`), with
+  # the `seq` of its last event: a subscribe takes it in the same call.
+  def snapshot(%State{} = state) do
+    %Snapshot{
+      instance_id: state.instance_id,
+      seq: state.seq,
+      messages: state.transcript,
+      turn: if(match?(%Turn{}, state.activity), do: Turn.snapshot(state.activity)),
+      model: ModelRef.to_string(state.model),
+      queue: Queue.counts(state.queue)
+    }
   end
 
   # Only the queue drain at a normal turn end fires between turns; every
@@ -77,7 +62,4 @@ defmodule Helyx.Session.Server.Record do
 
     %{state | seq: seq}
   end
-
-  defp turn_id(%Turn{id: id}), do: id
-  defp turn_id(_idle_or_wait), do: nil
 end
