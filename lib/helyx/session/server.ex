@@ -205,9 +205,13 @@ defmodule Helyx.Session.Server do
   def handle_info({:stream_event, turn_id, event}, %State{activity: %Turn{id: turn_id}} = state) do
     %State{activity: turn} = state = Messages.start_assistant_message(state)
 
-    {:noreply,
-     %{state | activity: Turn.add_block(turn, event)}
-     |> emit(:message_update, Map.new([event]))}
+    case Turn.add_block(turn, event) do
+      {:ok, turn} ->
+        {:noreply, emit(%{state | activity: turn}, :message_update, Map.new([event]))}
+
+      {:error, reason} ->
+        {:noreply, TurnLoop.stop_provider(state, reason)}
+    end
   end
 
   # The terminal of the turn, from the provider process.

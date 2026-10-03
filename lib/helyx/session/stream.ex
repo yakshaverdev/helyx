@@ -13,7 +13,9 @@ defmodule Helyx.Session.Stream do
   # than 200 bytes, so only a result that was not cut is over this limit.
   @max_tool_result_bytes 65_536
   # The most messages that may wait in the session mailbox before a send.
-  # A count, not bytes: every event is already capped.
+  # A count, not bytes. Core caps a tool result before the send (above)
+  # and the open message that the session keeps (`Helyx.Session.Turn`),
+  # not the size of one waiting delta or tool call.
   @max_session_queue 10_000
 
   @integer_reason "an integer in the arguments has more than " <>

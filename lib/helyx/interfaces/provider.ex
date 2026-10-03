@@ -93,6 +93,10 @@ defmodule Helyx.Provider do
       `name`. `arguments` follows the rule of a `tool_call`
     * `:turn_start`: the provider started a turn by itself
 
+  The text and thinking deltas of the open assistant message hold at most
+  8 MiB together (`@max_message_bytes` in `Helyx.Session.Turn`). A delta
+  past it stops the provider process and fails the turn.
+
   `init/3` and every request from the session have a deadline. When the
   reply has not come by it, Core kills the provider process, and a running
   turn fails with `:provider_timeout`, or with the release error of a

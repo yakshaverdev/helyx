@@ -12,11 +12,9 @@ defmodule Helyx.Session.TurnTest do
   test "assistant_message builds the content in stream order, with the fields" do
     call = %Message.ToolCall{id: "c1", name: "read", arguments: %{}}
 
-    turn =
-      turn()
-      |> Turn.add_block({:text_delta, "he"})
-      |> Turn.add_block({:text_delta, "llo"})
-      |> Turn.add_block({:tool_call, call})
+    {:ok, turn} = Turn.add_block(turn(), {:text_delta, "he"})
+    {:ok, turn} = Turn.add_block(turn, {:text_delta, "llo"})
+    {:ok, turn} = Turn.add_block(turn, {:tool_call, call})
 
     assert %Message{
              role: :assistant,

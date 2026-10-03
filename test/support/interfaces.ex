@@ -658,6 +658,10 @@ defmodule Helyx.Test.Connected do
   #     "dup_id"  two tool calls with one id, then two results, with no
   #               `message_end`
   #     "open_call"  "dup_id" with no second result and no text after it
+  #     "message_at_bound"  two messages, each of exactly 8 MiB of text
+  #               and thinking deltas, with a `message_end` between them
+  #     "message_over_bound"  one byte under 8 MiB of deltas, then a
+  #               2-byte character across the bound
   #     "late_result"  a call, a text message, then the call's result
   #
   # A steer answers :ok with no `user_message` unless the model says
@@ -900,7 +904,23 @@ defmodule Helyx.Test.Connected do
     ]
   end
 
+  # The bound of the open message is 8 MiB (`Helyx.Session.Turn`).
+  defp turn_events("message_at_bound"),
+    do: bound_message() ++ [{:message_end, :end_turn, %{}}] ++ bound_message() ++ [@done]
+
+  # One byte under the bound, then a 2-byte character across it.
+  defp turn_events("message_over_bound") do
+    List.update_at(bound_message(), -1, fn {:text_delta, "x" <> t} -> {:text_delta, t} end) ++
+      [{:thinking_delta, "é"}, {:text_delta, "ok"}, @done]
+  end
+
   defp turn_events(name), do: Map.fetch!(@events, name) ++ [{:text_delta, "ok"}, @done]
+
+  # 8 MiB in deltas of 1 MiB, thinking then text.
+  defp bound_message do
+    mib = String.duplicate("x", 1_048_576)
+    List.duplicate({:thinking_delta, mib}, 4) ++ List.duplicate({:text_delta, mib}, 4)
+  end
 
   defp result_text("multibyte"), do: String.duplicate("x", 65_535) <> "é"
   defp result_text("raw"), do: :binary.copy(<<255>>, 65_536)

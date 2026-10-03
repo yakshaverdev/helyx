@@ -268,6 +268,34 @@ defmodule Helyx.Session.StreamEventsTest do
       end
     end
 
+    test "an open assistant message of 8 MiB passes, and a message end starts the count again",
+         %{core: core} do
+      events = harness_turn(core, "message_at_bound")
+
+      assert stop_reason(events) == :end_turn
+      assert [_user, first, second] = messages(events)
+      assert byte_size(Helyx.Message.text(first)) == 4 * 1_048_576
+      assert byte_size(Helyx.Message.text(second)) == 4 * 1_048_576
+    end
+
+    test "an open assistant message over 8 MiB stops the provider process and fails the turn",
+         %{core: core} do
+      {:ok, session} = Session.start(core, model: "conn/events.message_over_bound")
+      {:ok, _} = Session.subscribe(session)
+      :ok = Session.prompt(session, "hello")
+      events = collect_until(:agent_end)
+
+      assert List.last(events).data.error == {:message_too_large, 8_388_609, 8_388_608}
+      assert stop_reason(events) == :error
+      # The provider process is stopped, and the text-only message does not
+      # join the transcript.
+      assert %{conn: nil, transcript: [%{role: :user}]} = :sys.get_state(Session.pid(session))
+
+      :ok = Session.set_model(session, "conn/events.id1")
+      :ok = Session.prompt(session, "again")
+      assert stop_reason(collect_until(:agent_end)) == :end_turn
+    end
+
     test "a result goes to the first open call with its id", %{core: core} do
       events = harness_turn(core, "dup_id")
       ends = for %Event{type: :tool_execution_end, data: d} <- events, do: d.message
