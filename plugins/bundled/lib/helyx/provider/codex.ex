@@ -111,7 +111,6 @@ defmodule Helyx.Provider.Codex do
     message =
       receive do
         {^port, _} = message -> message
-        {:DOWN, _ref, :port, ^port, _reason} = message -> message
       end
 
     case HarnessIO.port_message(message, state, &translate/2) do
@@ -119,7 +118,6 @@ defmodule Helyx.Provider.Codex do
       {:lines, _, %State{thread: nil} = state} -> handshake(state)
       {:lines, _, state} -> {:ok, state}
       {:exit, status} -> {:error, {:codex_exit, status}}
-      :other -> handshake(state)
     end
   end
 

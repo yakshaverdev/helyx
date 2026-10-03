@@ -1,13 +1,12 @@
 defmodule Helyx.HarnessIO do
   @moduledoc false
   # What the harness providers share (ADR 0005): every call into
-  # `Helyx.Watchdog`, the move of the port's link to a keeper, the read
-  # of a program's stdout as JSON lines under a line cap, the sort of a
-  # port message, the release, the cut of program error text, the split of
-  # the prompt from the history, the byte cap of a replay, the wire id of
-  # a replayed tool call, and the close. It is not a plugin. `state` is
-  # a provider's run state with the fields `port`, `buffer` (iodata),
-  # `size`, `terminal`, and `closing`.
+  # `Helyx.Watchdog`, the read of a program's stdout as JSON lines under a
+  # line cap, the sort of a port message, the release, the cut of program
+  # error text, the split of the prompt from the history, the byte cap of
+  # a replay, the wire id of a replayed tool call, and the close. It is not
+  # a plugin. `state` is a provider's run state with the fields `port`,
+  # `buffer` (iodata), `size`, `terminal`, and `closing`.
 
   @line_max_bytes 16 * 1024 * 1024
   @replay_max_bytes 400_000
@@ -46,47 +45,12 @@ defmodule Helyx.HarnessIO do
   end
 
   # Runs `exe` with `args` under the watchdog, with open input and stderr
-  # dropped, and moves the port's link to a keeper (`keep_port/1`).
+  # dropped. The port stays linked to the caller: a write to a watchdog
+  # that died closes the port with `:epipe`, and that exit ends the caller
+  # (#390). The closed port makes the watchdog end the group (ADR 0004).
   def launch(exe, args, cwd, state) do
     ["/bin/sh", "-c", ~S(exec "$0" "$@" 2>/dev/null), exe | args]
     |> start(cwd, :open, state, grace_ms: @term_grace_ms)
-    |> keep_port()
-  end
-
-  # Moves the caller's link to the port to a keeper process, and monitors
-  # the port instead (#167). A write to a watchdog that died closes the port
-  # with `:epipe` and sends no exit status; through a link, that exit would
-  # end the caller. The monitor gives it as `{:DOWN, _, :port, port,
-  # reason}`, after the port's data. The keeper traps exits and is linked to
-  # the caller and to the port: when the caller ends, it closes the port, so
-  # the watchdog still ends the group (ADR 0004); when the port closes, it
-  # ends. The caller unlinks only after the keeper holds its link, so the
-  # port always has a link to a process that closes it. The caller does not
-  # trap exits, so a shutdown ends it at once in every phase. Call it after
-  # `start/5` and before any other write: no write is pending until then.
-  def keep_port(%{port: nil} = state), do: state
-
-  def keep_port(%{port: port} = state) do
-    caller = self()
-
-    keeper =
-      spawn_link(fn ->
-        Process.flag(:trap_exit, true)
-        Process.link(port)
-        send(caller, {:kept, self()})
-
-        receive do
-          {:EXIT, _from, _reason} -> Helyx.Watchdog.close(port)
-        end
-      end)
-
-    receive do
-      {:kept, ^keeper} -> :ok
-    end
-
-    Process.unlink(port)
-    Port.monitor(port)
-    state
   end
 
   # The `Stream.resource/3` end: the closed port ends the program.
@@ -115,11 +79,9 @@ defmodule Helyx.HarnessIO do
   # Sorts a message for the provider process: a chunk of the port's stdout
   # gives `{:lines, events, state}` (see `lines/3`). The port's exit gives
   # `{:closed, from}` during a close, the end the close waits for, and
-  # `{:exit, status_or_reason}` at any other time. A write to a watchdog
-  # that died closes the port with `:epipe` and no exit status (#167), so
-  # the port's `:DOWN` is an exit too. Any other message, such as one of a
-  # closed port, is `:other`. `state.closing` is the `from` of a close, or
-  # nil.
+  # `{:exit, status}` at any other time. Any other message, such as one of
+  # a closed port, is `:other`. `state.closing` is the `from` of a close,
+  # or nil.
   def port_message({port, {:data, data}}, %{port: port} = state, decode) do
     {events, state} = lines(data, state, decode)
     {:lines, events, state}
@@ -127,9 +89,6 @@ defmodule Helyx.HarnessIO do
 
   def port_message({port, {:exit_status, status}}, %{port: port} = state, _decode),
     do: exited(status, state)
-
-  def port_message({:DOWN, _ref, :port, port, reason}, %{port: port} = state, _decode),
-    do: exited(reason, state)
 
   def port_message(_message, _state, _decode), do: :other
 
