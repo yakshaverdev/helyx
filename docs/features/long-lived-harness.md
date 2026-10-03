@@ -10,7 +10,7 @@ The protocol facts are in `docs/research/claude-code-stream-json.md` and `docs/r
 - **Close.** `:close` ends the program's input (`HarnessIO.close/2`) and answers `:ok` at the exit. A program exit at any other time stops the provider process.
 - **Stop.** Any stop of the provider process closes its port. The watchdog sends TERM to the program group, waits the TERM grace, and sends KILL. A stop never sends end of input first: Claude runs its queued turns after end of input, and a stop must not run them.
 - **Idle close.** `:idle_close` closes as `:close` when the program has no work of its own, and answers `:busy` otherwise; the program then stays. Claude has work of its own while the `tasks` list of the last `background_tasks_changed` line is not exactly `[]`, while a program turn runs, and once after a `task_notification` line. Codex has work of its own while a child thread has open work.
-- **Background work.** A Claude background `Bash` task, and a Codex child thread with open work after a normal turn end, belong to the program, not to a turn. They outlive the turn end and end with the program. A Claude background task also outlives an abort; an interrupt ends every Claude sub-agent.
+- **Background work.** A Claude background `Bash` task, and a Codex child thread with open work after a normal turn end, belong to the program, not to a turn. They outlive the turn end. A Claude background task also outlives an abort; an interrupt ends every Claude sub-agent.
 - **Errors.** stderr is dropped: the Claude `result` line and the Codex error answers carry the errors.
 
 ## Claude Code
@@ -92,7 +92,7 @@ The session end bounds each one.
 - Claude: a program turn that starts while a Helyx turn waits for an unresolved steer counts for the Helyx turn.
 - Claude: the `started` clause of a steer does not check the start of the turn's line.
 - Claude: a prompt that is preparing when a program turn starts makes the session drop the program turn, and its text is lost.
-- Claude: an idle close between `background_tasks_changed []` and `task_notification`, when the two lines come in separate reads, closes the program during its program turn.
+- Claude: an idle close between `background_tasks_changed []` and `task_notification`, when the two lines come in separate reads, ends the program's input. What the program then does was not observed (`docs/research/claude-code-stream-json.md`, "End of input during a program turn").
 - Claude: a `task_notification` that starts no program turn gives one more `:busy`.
 - Claude: a `tools/call` of a sub-agent runs, but the transcript does not show it: the provider drops sub-agent lines.
 - Claude: an interrupt sent while the program is idle can end a background sub-agent of an earlier turn.

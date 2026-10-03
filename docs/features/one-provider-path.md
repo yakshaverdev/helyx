@@ -1,43 +1,14 @@
 # One provider path
 
-> The ADR 0006 revision of 2026-10-03 (#404) removes `contract_version`, the version rules of ADR 0006 section 5, and the snapshot `running`, and the TUI no longer reads `tool_execution_start`. The text below on the contract version increase and on the TUI use of these values is history.
-
-Status: design decided on 2026-10-02, built in #298, #299, and #300 (build order steps 1 to 3). Built from the code at `58471ac`. The design went through five review rounds in one proposal with `session-subscribers.md`. The last round found no blocking issue.
-
 ## Goal
 
-Core has two turn paths today. The local path runs an API provider's `stream/3` in a stream Task and runs the tool loop in the session. The connected path was built for Claude Code and Codex: a provider process, requests with replies, a tool queue with a start ask, and a completion wait (ADR 0007).
+Every provider speaks one protocol and runs in a provider process of its session (ADR 0002, ADR 0007). An API provider runs on it through the helper `Helyx.Provider.Loop`. Core names no plugin kind (`AGENTS.md`, "Key design constraints").
 
-This feature makes the connected protocol the one provider protocol and renames it from "harness" to "provider". The OpenAI provider runs on it through a helper, `Helyx.Provider.Loop`. Then the local path is deleted. The protocol gets one addition: an async context request, so that an API provider gets a fresh context before each model call.
-
-The protocol is not replaced. Its replies are how a provider process and the session agree on order: the start ask sees a terminal first, the interrupt reply confirms the stop, and the tool result reply confirms the write. Two earlier designs replaced the replies with message order, and two reviews found race gaps in each. So every reply stays.
-
-Core then names no plugin kind (the rule in `AGENTS.md`, "Key design constraints"). A rule that every provider needs, such as the order of tool results, the completion before the next turn, and the outcome of a steer, stays in Core.
-
-## Interface changes
-
-### Renames
-
-The behaviour of each renamed part stays the same.
-
-| Today | After |
-|---|---|
-| `Helyx.Session.Harness` | `Helyx.Session.ProviderProcess` |
-| Callbacks `harness_init/3`, `harness_request/3`, `harness_info/2` | `init/3`, `request/3`, `info/2`, required for every provider |
-| `stream/3` | Not a callback of `Helyx.Provider`. It is the callback of `Helyx.Provider.Loop`. |
-| `Helyx.Provider.turn/1`, `turn_mode` | Deleted |
-| `:harness_down`, `:harness_ready`, `:harness_reply`, `:harness_request` | `:provider_down`, `:provider_ready`, `:provider_reply`, `:provider_request` |
-| `harness_ms`, `@harness_close_ms`, `@harness_reply_ms`, `:harness_timeout` | `provider_ms`, `@provider_close_ms`, `@provider_reply_ms`, `:provider_timeout` |
-| `Connection`, `Wait.harness`, `Hands.connect` | `ProviderConn`, `Wait.provider`, `Hands.start_provider` |
-| Option `:harness_session_id` | `:resume_id` |
-| Event `{:harness_session, id, cut}` | `{:resume, id, cut}`. The session file keeps the stored entry name `harness_session`, so no reader change and no migration test. |
-| Client event `:harness_session` | `:provider_session`. Its data key `harness_session_id` is `resume_id`; the other data stays. The session file keeps its stored key `harness_session_id`. `tui/view_model.ex` changes in the same PR. |
-| Event `:program_turn`, `Message.harness_id?/1` | `:turn_start`, `Message.resume_id?/1` |
-| `Helyx.HarnessIO` (plugins) | Unchanged. It is plugin code for programs, so the harness name is correct there. |
+## Interface
 
 ### The contract
 
-This is today's connected contract with the new names and one addition. The moduledoc of `provider.ex` gives it in short form. "The provider protocol" below holds every rule of it.
+The moduledoc of `provider.ex` gives it in short form. "The provider protocol" below holds every rule of it.
 
 ```elixir
 defmodule Helyx.Provider do
@@ -51,25 +22,25 @@ defmodule Helyx.Provider do
   @optional_callbacks release: 3
 end
 
-# Requests, Core -> provider (unchanged, plus one):
+# Requests, Core -> provider:
 #   {:turn, turn_id, context}  {:steer, turn_id, steer_id, text}  {:interrupt, turn_id}
 #   {:tool_result, turn_id, call_id, result}  :close  :idle_close
-#   {:context, turn_id, {:ok, Helyx.Context.t()} | {:error, reason}}   # new
+#   {:context, turn_id, {:ok, Helyx.Context.t()} | {:error, reason}}
 #
-# Actions, provider -> Core (unchanged, plus one):
+# Actions, provider -> Core:
 #   {:event, turn_id, event}  {:reply, from, value}  {:cancel_tool, call_id}
-#   {:need_context, turn_id}                                            # new
+#   {:need_context, turn_id}
 ```
 
 ### The provider protocol
 
-The rules of the contract above, as built (#298, #299, #300). The moduledoc of `Helyx.Provider` states the contract in short form and links here.
+The rules of the contract above (#298, #299, #300).
 
 **Start.** Core calls `id/0` once, at start. An `id/0` that raises, throws, exits, or returns a value that is not a binary, or an id that two providers share, stops Core from starting. A provider that does not export `init/3`, `request/3`, and `info/2` stops it too.
 
 **The process.** The three callbacks run in one provider process per session, a Task of the hands, so `Helyx.Tool.hold/1` works in them, and a provider that holds a handle implements `release/3`. `info/2` gets every other message of the provider process: the port data, a monitor, a timer.
 
-**Init.** `init/3` gets the checked tool specs of session start. Its `opts` carry `:core`, `:session_id`, `:cwd`, and `:resume_id`: the id of the program session to resume, or nil for a fresh one. The session passes the id of the provider's last `resume` event only when the last assistant message of the transcript came from this provider, so a lost id or a switch from another provider gives nil.
+**Init.** `init/3` gets the checked tool specs of session start. Its `opts` carry `:core`, `:session_id`, `:cwd`, and `:resume_id`: the id of the program session to resume, or nil for a fresh one. The session passes the id of the provider's last `resume` event only when the last assistant message of the transcript came from this provider and its stop reason is not `:aborted` or `:error` (`Transcript.resumable/3`).
 
 **Replies.** `request/3` gets a request from Core with its `from`. The provider replies now or later with the action `{:reply, from, value}`.
 
@@ -78,7 +49,7 @@ The rules of the contract above, as built (#298, #299, #300). The moduledoc of `
 - `{:steer, turn_id, steer_id, text}` comes only after the `:ok` of its turn. It takes `:ok` when the program has the steer, `:rejected` when it is confirmed that the program did not get it (the terminal of the turn went out first, or the program refused it), and `{:error, reason}` when it is not known. The session queues a rejected steer for the next turn and never sends a steer again. While a written steer is unresolved, the provider does not end the turn. When the program takes it, the provider sends the event `{:user_message, steer_id}`, and the session appends the user message there, with its own text of the steer. A taken steer first closes the open assistant message, as a `message_end` does, and then gives `aborted` to every call that is still open, the calls of the message it closed too (`take_steer/2` in `Helyx.Session.Server.Records`).
 - `:idle_close` comes after the session was idle with the program for `provider_ms.idle` (`Helyx.Session.Server`). It takes `:ok` after the program exited, as `:close`, or `:busy` when the program still runs work of its own, such as a background task. With `:busy` the program stays, and the session asks again after the next idle time.
 
-**Actions and events.** `init/3` returns `{:ok, state}` or `{:error, reason}`. `request/3` and `info/2` return `{:ok, actions, state}`, and `info/2` can also return `{:stop, reason, state}`. The actions are `{:event, turn_id, event}` with a stream event, `{:reply, from, value}`, `{:cancel_tool, call_id}` (#384), and `{:need_context, turn_id}`. Each event passes the check of `Helyx.Session.Stream`. A turn ends at its `done` or `error` event. Consecutive deltas of one kind form one block. A tool call arrives whole; a provider that streams tool call arguments assembles them first. There is no image event: providers do not produce image blocks. `stop_reason` is the closed set that `Helyx.Message` owns (`Helyx.Message.stop_reasons/0`, without `aborted` and `error`, which only the session gives, #432): a provider normalizes whatever its wire protocol reports into it. A `done` or `error` terminal leaves the check with the integer cap (`Helyx.Message.cap_integers/1`), ready to send; the provider process sends it as it is (#383). The provider stream event `{:notice, text}` is gone (#383): it had no producer since #365 and #366, so it is a malformed event like any other unknown event. The `:notice` client event of the session stays.
+**Actions and events.** `init/3` returns `{:ok, state}` or `{:error, reason}`. `request/3` and `info/2` return `{:ok, actions, state}`, and `info/2` can also return `{:stop, reason, state}`. The actions are `{:event, turn_id, event}` with a stream event, `{:reply, from, value}`, `{:cancel_tool, call_id}` (#384), and `{:need_context, turn_id}`. Each event passes the check of `Helyx.Session.Stream`. `Helyx.Session.ProviderProcess` drops an empty text or thinking delta. A turn ends at its `done` or `error` event. Consecutive deltas of one kind form one block. A tool call arrives whole; a provider that streams tool call arguments assembles them first. There is no image event: providers do not produce image blocks. `stop_reason` is the closed set that `Helyx.Message` owns (`Helyx.Message.stop_reasons/0`, without `aborted` and `error`, which only the session gives, #432): a provider normalizes whatever its wire protocol reports into it. A `done` or `error` terminal leaves the check with the integer cap (`Helyx.Message.cap_integers/1`), ready to send; the provider process sends it as it is (#383).
 
 - `{:message_end, stop_reason, usage}`: optional (#385). The assistant message so far is complete, with this usage. `Helyx.Provider.Loop` sends it before its `tool_request` events; the harness providers send none. The session closes the open assistant message by itself, with no usage, at the first `tool_result` of one of its calls (stop reason `:tool_use`), at a taken steer (stop reason from the message, as before), and at the terminal. Send it once per message, only after content (a delta or a tool call) that no earlier close closed, and only when every call of the messages before it has its result: at each close the session gives every call of the earlier messages that is still open an `aborted` result and drops a later result; the calls of the closed message stay open for their `tool_result` events until the next close. The `done` event closes the last assistant message, so a provider sends no `message_end` for that message: a `message_end` right before `done` adds an empty assistant message (`Helyx.Session.Server.Records.finish/2`). At an `error` event or an abort, open content with text only joins with stop `:error` or `:aborted` (#432); open content with a tool call joins with stop `:tool_use`, and its calls get `aborted` (#385). At the end of the turn, the session gives `aborted` to every call with no result.
 - `{:tool_result, call_id, {:ok | :error, binary}}`: the result of a tool call. The first result of a call of the open message closes that message first (#385). The provider cuts the text to the tool result limits before it sends the event, as a tool does; the session does not cut it. A text over `@max_tool_result_bytes` (`Helyx.Session.Stream`) fails the turn with `{:tool_result_too_large, bytes, limit}`.
@@ -96,15 +67,15 @@ The rules of the contract above, as built (#298, #299, #300). The moduledoc of `
 
 ### The context request
 
-**C1 Why.** Today the session builds the context once, before `{:turn}`. A harness needs no more, because its program keeps its own history. An API provider calls the model again after each tool round, and each call needs the transcript with the new results and the taken steers. ModelContext and Compaction run on each such context with `:turn_id` in their options.
+**C1 Why.** A harness program keeps its own history. An API provider calls the model again after each tool round, and each call needs the transcript with the new results and the taken steers. ModelContext and Compaction run on each such context with `:turn_id` in their options.
 
 **C2 Order.** The provider returns `{:need_context, turn_id}` as an action, after the events that the context must hold. The loop in the provider process handles the actions in list order and sends each to the session from one process. So the session applies those events before it gets the request. Only the current assistant message that no close closed is not in the context ("A fresh context" above). When the message has content, the helper sends `message_end` before its tool requests and its `user_message` events, so its context holds the message.
 
-**C3 Core.** The session accepts the action only for its submitted turn with no context request open (the phase `:context` of `Helyx.Session.Turn`). For the current turn at any other time it is a bad action: the turn fails, and the provider process stops. The session builds the base context from its transcript and tools and runs the prepare Task, as it does before `{:turn}`, under `prepare_ms` (the session owns the Task since #386). The session sends the result as the request `{:context, turn_id, result}`. A failed or killed Task gives `{:error, reason}`. The provider replies `:ok`, as for `{:tool_result}`. The request is not in the pool of 8.
+**C3 Core.** The session accepts the action only for its submitted turn with no context request open (the phase `:context` of `Helyx.Session.Turn`). For the current turn at any other time it is a bad action: the turn fails, and the provider process stops. The session builds the base context from its transcript and tools and runs the prepare Task, as it does before `{:turn}`, under `prepare_ms`. The session sends the result as the request `{:context, turn_id, result}`. A failed or killed Task gives `{:error, reason}`. The provider replies `:ok`, as for `{:tool_result}`.
 
-**C4 Abort and end.** A turn that ends takes its open context request with it: the session sends no context for it. At every turn end the session kills the prepare Task (#386; before, the cancel request of the hands killed it at an interrupt or a failed turn, and at a normal terminal it ran on until its result, at most `prepare_ms`). The session drops a late `{:prepared}` of a turn that is not current, as it does today. The provider gets no answer and must not wait for one after its interrupt or its terminal. A `:turn_start` during a turn does not end that turn: the session drops it, so the turn keeps its tool requests and its open context request, and the dropped turn's tool requests get `aborted` (#319).
+**C4 Abort and end.** A turn that ends takes its open context request with it: the session sends no context for it. At every turn end the session kills the prepare Task (#386). The session drops a late `{:prepared}` of a turn that is not current. The provider gets no answer and must not wait for one after its interrupt or its terminal. A `:turn_start` during a turn does not end that turn: the session drops it, so the turn keeps its tool requests and its open context request, and the dropped turn's tool requests get `aborted` (#319).
 
-**C5 Harness providers.** Claude Code and Codex never send `:need_context`. Their code does not change for it.
+**C5 Harness providers.** Claude Code and Codex never send `:need_context`.
 
 ### `Helyx.Provider.Loop`
 
@@ -113,14 +84,14 @@ A public adapter in Core, `lib/helyx/provider/loop.ex` (Decision Q1). An API pro
 | Request or message | What the helper does |
 |---|---|
 | `{:turn, id, context}` | Replies `:ok` at once, then starts the first model call with the context. |
-| A stream event | Sends the deltas and the calls as events. A call whose arguments do not decode to a JSON object carries the raw argument text; Core gives it `%{}` and its rejection (`Helyx.Provider`, #380). |
+| A stream event | Sends the deltas and the calls as events. A call whose arguments do not decode to a JSON object carries the raw argument text; Core gives it `%{}` and its rejection (`Helyx.Session.Stream.check/1`, #380). |
 | The stream's done with calls | Sends `message_end`. Then it sends the event `{:tool_request, request_id, name, args}` for every call of the message at once, in call order. The session owns the queue and runs them one at a time (#358). The request id is the model's call id (#380). A call id that repeats in one message ends the provider process with `{:bad_stream_event, {:tool_call, call}}`, the generic contract break: the session could have answered the first call already, so its open-id check does not cover it. A call with a rejection reason (`Stream.check/1`) gets `{:error, "tool call not run: " <> reason}` from the session; it joins in call order as every result does. Past the 16 waiting requests of the session, a call gets its "too many Helyx tool calls" error: a message with more than 17 valid calls can lose some, and how many depends on how fast the first calls end (a known ceiling of the session bound, #362). |
 | `{:tool_result, id, request_id, result}` | Replies `:ok` and keeps the result by its request id. In the same callback it sends the event `{:tool_result, call_id, result}` for each call that has its result when every earlier call also has its result, in call order, so the results join the transcript in call order whatever order they come in. |
 | All calls have results | Sends `{:user_message, steer_id}` for each held steer, then `{:need_context, id}`, in that order (C2). |
 | `{:context, id, {:ok, context}}` | Replies `:ok` and starts the next model call. If a steer came while the context was built, it sends its `user_message` and a new `{:need_context, id}` instead, so the model call gets the steer (C2). |
 | `{:context, id, {:error, reason}}` | Replies `:ok` and ends the turn with `{:error, reason}`. The process stays. |
 | The stream's done with no calls | If it holds a steer: sends its `user_message`, then `:need_context`, and calls the model again. Otherwise it sends `{:done, ...}`. |
-| The stream's error, an end with no terminal, `{ref, {:failed, reason}}` or the `:DOWN` of the model Task (L2) | Sends `{:error, reason}`, `{:error, :stream_ended}`, or `{:error, {:task_exit, reason}}`. These are today's reasons. The provider process stays. |
+| The stream's error, an end with no terminal, `{ref, {:failed, reason}}` or the `:DOWN` of the model Task (L2) | Sends `{:error, reason}`, `{:error, :stream_ended}`, or `{:error, {:task_exit, reason}}`. The provider process stays. |
 | `{:steer, id, steer_id, text}` | In a live turn: replies `:ok` and holds the steer for the next model call. After its terminal: replies `:rejected`. |
 | `{:interrupt, id}` | Stops the model Task with `Task.shutdown(task, :brutal_kill)` and waits for its death (L3), drops its held steers and its wait for a context or a result, and then replies `:ok`. |
 | `:idle_close`, `:close` | Replies `:ok`, and the process ends with `{:shutdown, :closed}` (L1). It has no program to keep. |
@@ -129,145 +100,36 @@ The helper never sends `{:resume, ...}` or `:turn_start`, and it holds no handle
 
 ### Process lifetime
 
-A link stops a linked process only when the other process exits with a reason other than `:normal`. Today the loop of `harness.ex` returns normally on several stop paths (`:closed`, `{:stop, reason}` for a bad event or a bad return). A model Task could then outlive its provider process. These rules close that gap for every exit path.
+A link stops a linked process only when the other process exits with a reason other than `:normal`.
 
 **L1 No normal end.** `Session.ProviderProcess` never ends with the reason `:normal`.
 
-- Returned stops: every stop path that the loop returns today ends with `exit({:shutdown, reason})`: a close, an idle close, a bad event, a bad action, a bad return, a stop, and an error reply to a turn or an interrupt.
+- Returned stops: every stop path of the loop ends with `exit({:shutdown, reason})`: a close, an idle close, a bad event, a bad action, a bad return, a stop, and an error reply to a turn or an interrupt.
 - Explicit normal exits: the body of the process (the call of `init/3` and the whole loop) runs inside one `try` with `catch :exit, :normal`, which ends the process with `exit({:shutdown, {:exit, :normal}})`. So a callback that calls `exit(:normal)` cannot end the process normally. Any other exit, a raise, and a throw already end it with a reason that is not `:normal`.
 - A deadline kills the process with `:killed`.
 
-None of these reasons is `:normal`, so every process linked to the provider process that does not trap exits ends with it. This also covers a linked process of an external provider plugin. The hands take the outcome of a Task from its exit (`hands.ex`, `outcome/4`): `harness_reason/1` (renamed) maps `{:exit, {:shutdown, reason}}` to the reason that it reports today.
+None of these reasons is `:normal`, so every process linked to the provider process that does not trap exits ends with it. This also covers a linked process of an external provider plugin. The hands take the outcome of a Task from its exit (`hands.ex`, `outcome/4` and `down_reason/1`).
 
 Stated limit: `Process.exit(self(), :normal)` in a callback ends the calling process with `:normal`, and no catch can stop that. Plugin code is compiled into the node, so this is accepted, for the same reason as the other plugin effects that `coding-agent.md` accepts. The lifetime tests cover `exit(:normal)`, not this call.
 
 **L2 The model Task.** The helper starts each model call with `Task.async/1`, which links and monitors it, and keeps its `%Task{}`. The body of the Task catches a raise, a throw, and an exit around the stream and returns `{:failed, reason}` as its result. So a failing model call becomes the terminal `{:error, {:task_exit, reason}}`, and the provider process stays for the next turn. A Task that ends with a `:normal` signal, which no catch sees and the link does not carry, ends the turn the same way from its `:DOWN`. The provider process does not trap exits.
 
-**L3 Interrupt.** At `{:interrupt, id}`, the helper calls `Task.shutdown(task, :brutal_kill)`, the pattern of today's `shutdown_stream`: it unlinks the Task, kills it, waits for its `:DOWN`, and flushes its reply. It returns only after the Task is dead. The helper replies `:ok` to the interrupt only after that, so the abort never completes while a model call still runs. The helper keeps the reference of its current Task only, and ignores any message whose Task reference is not that one, such as a reply of an old Task.
+**L3 Interrupt.** At `{:interrupt, id}`, the helper calls `Task.shutdown(task, :brutal_kill)`: it unlinks the Task, kills it, waits for its `:DOWN`, and flushes its reply. It returns only after the Task is dead. The helper replies `:ok` to the interrupt only after that, so the abort never completes while a model call still runs. The helper keeps the reference of its current Task only, and ignores any message whose Task reference is not that one, such as a reply of an old Task.
 
-**L4 A kill from outside.** A process other than the helper that kills the model Task ends the provider process too, through the link. The turn fails, and the next turn starts a new provider process. This is today's rule for a crash of a harness process.
-
-### What users and clients see
-
-| Today, with an API provider | After | Why acceptable |
-|---|---|---|
-| A steer that arrives in the last model call of a turn starts a new turn | It continues the same turn: one `turn_end`, not two | The transcript order is the same, and Claude Code and Codex behave like this today |
-| `tool_execution_start` comes when each call starts to run | It comes for every call of the message at its `message_end`. The calls still run one at a time. | One rule for every provider. A client sees a call as started before it runs. |
-| A snapshot lists only the running call | It lists every call with no result | The same reason |
-| Client event `:harness_session` with the data key `harness_session_id` | `:provider_session` with the data key `resume_id` | Core names no plugin kind. The TUI changes in the same PR. |
-
-ADR 0006 §5 requires a version increase for a rename and for a change of meaning. The rename of `:harness_session` and the new meanings of `tool_execution_start` and of the snapshot `running` are such changes. So this feature raises `contract_version` by itself. If `session-subscribers.md` lands in the same release, the two share one increase. The client compatibility tests go in the same PR as the increase.
-
-### ADR changes
-
-- ADR 0002 gets a revision: one provider kind. Every provider runs in a provider process. An API provider uses `Helyx.Provider.Loop`. This lands with the deletion of the local path.
-- ADR 0007 gets a note: the provider process is for every provider, not only a harness.
-
-## Replaced mechanism
-
-1. Every part of the old mechanism.
-
-The local path (`server.ex`, `stream.ex`, `turn.ex`, `provider.ex`). "loop" means the part moves to `Helyx.Provider.Loop`.
-
-| Local mechanism today | Fate | Replacement or reason |
-|---|---|---|
-| The stream Task under the Core task supervisor, `Stream.run/1` | loop | The model Task of the helper |
-| The context build in the stream Task before each call | kept | The prepare Task (of the session since #386), through `{:need_context}` (C1–C4) |
-| `Turn.calls`: the calls of a message run one at a time, in call order | loop | The helper sends every call of the message at once and puts the results in call order (#362). Core's tool queue runs them one at a time. |
-| `{:rejected_tool_call, call, reason}`, `Turn.reject`, `Turn.rejection`, the `rejected` field | deleted (the `Turn` parts by #379, the event by #380) | A call whose arguments are not a JSON object is a `tool_call` with the raw argument text. `Stream.check/1` gives it `%{}` and a rejection reason, and the session answers it as it answers an integer over the digit limit. |
-| The 1,024-byte reason bound and the no-raw-arguments rule | deleted (#380) | The reason is a fixed text of `Stream.check/1`. The raw text is dropped there, so no transcript entry, file entry, or tool result holds it. Core's error for a malformed call or request and the helper's error for a repeated call id name the call with `%{}`; an error that holds a provider value as sent can hold it, within the provider's limits (`coding-agent.md`). |
-| Queued steers join the transcript before the next provider call (`start_provider_call`, `append_steers`) | changed | A steer of a running turn goes to the provider (today's connected rule). The helper sends its `user_message` before the next model call. The transcript order is the same. |
-| A steer left at the end of a local turn starts a new turn | changed | The helper calls the model again in the same turn. |
-| `tool_execution_start` at each local run | changed | The connected rule: at the `message_end` of the message |
-| `started_calls`: a local snapshot lists only the running call | changed | The snapshot lists every call with no result (the connected rule) |
-| `shutdown_stream` (unlink, kill, flush), the `task` field, the `:EXIT` of the stream Task | loop | L2–L4. The session dies, the hands kill the provider process, and L1 ends the Task. |
-| A local stream failure ends the turn, and nothing stays | changed | The provider process stays after an error terminal. A crash of the process ends the turn, and the next turn starts a new process (the connected rule). |
-| `connected?` in `Stream.check` | deleted | One event set: today's connected set. `rejected_tool_call` no longer exists (#380). |
-| `Helyx.Provider.turn/1`, the `turn_mode` field and switch | deleted | One path |
-
-The connected path (`harness.ex`, `wait.ex`, `steers.ex`, `server.ex`). Every mechanism stays with its behaviour; only the names change.
-
-| Mechanism | Fate |
-|---|---|
-| A kill per request at the OTP timer server, cancelled at the reply; the connect kill and `:provider_ready` | kept |
-| The pool `@max_open` 8, with `{:error, :busy}` over it. Tool results and context results are outside the pool. | kept, then removed by #361: the session bounds each request kind |
-| `live`, `calls`, `seen`, `running`, `started`, `waiting`; `@max_tools` 17; used ids; the duplicate open id as a bad action | kept, then moved to the session by #358 |
-| The `{:tool_start}` ask with `:ok` or `:dropped` | kept, then removed by #358 |
-| `end_tools` at the terminal, the interrupt, and the next turn, except a started call | kept, then removed by #358 |
-| `write_result`: a reply inside the callback, else `{:tool_result_not_answered}` | kept, then removed by #358 |
-| `cancel_tool`: started → kill, running and not started → `:dropped` at the ask, waiting → leaves the queue | kept, then moved to the session by #358 |
-| An error reply to `{:turn}` or `{:interrupt}` ends the process; an error reply to a steer does not | kept |
-| The loop returns `:closed` or `{:stop, reason}`, and the hands report the return value | changed: the loop exits with `{:shutdown, reason}` (L1). The reported reasons stay the same. |
-| `program_turn` with the id check | kept as `:turn_start` |
-| Every event checked; a terminal capped with `cap_integers`; the session mailbox cap of 10,000 | kept |
-| The server phases `preparing`, `submitting`, `submitted` (#358 adds `context`), with a steer of `preparing` in the prompt and a steer of `submitting` sent at the `:ok` | kept |
-| `Wait`: `hands`, `interrupt`, `reply`, `idle`, `harness`, `tool`, `callers`, `steers`, `results`, and its end condition | kept, with `harness` as `provider`; #358 makes `tool` a list `tools`; #361 keeps only `hands`, `reply`, `provider`, and `callers` (`session-lifecycle.md`, "The wait") |
-| Steer states `:sent`, `:taken`, `:answered`, `:ended`, `:noticed`, and the effects take, requeue, notice | kept |
-| The idle close with `:busy`; the close at a model switch and at the end; the four `:harness_down` clauses | kept |
-| The resume id: `Transcript.resumable/3`, the #269 counts, the #282 fork rule | kept, with the stored entry name unchanged |
-
-#358 moved the turn and its Helyx tool calls to the session, the only owner. Removed: `live`, `calls`, `seen`, `running`, `started`, `waiting`, and `context?` in the provider process; the `{:tool_start}` ask and its bound; `end_tools`; `{:turn_dropped, id}` (#339) with its accepted hole of a reused program turn id; `write_result` and `{:tool_result_not_answered}` / `{:context_not_answered}`, because every `tool_result` and `context` request now has its armed kill. A used call id is no longer answered "used before": it stops the provider process, as an open one did. The waiting bound of 16 moved to the session.
-
-#362 removed the copy of that queue in `Helyx.Provider.Loop`: the `tool` field (the one request that waited for its result), the request counter `n`, the `{Helyx.Provider.Loop, :next, turn_id}` message to itself with its `info/2` clause, and the `context?` field with its guard on `{:context, ...}`. The session queue runs the calls one at a time. The request id of a call is its call id (#380). The helper keeps the results by request id and sends them in call order. The session sends a context only after a `need_context` (C3), so the helper needs no record of an open request. `steers` stays: a `user_message` while calls are open would give them `aborted` in the session (`Records.take_steer/2`), so a steer waits for the last result. Removed tests: "the next call goes out only after the result of the one before" and "a result that comes before the interrupt starts no next call after it". "Calls run in call order, one at a time" became "every call goes out at once; the results join in call order, whatever order they come in".
-
-#369 made the session the one owner of the Helyx tool-call ids. The session checks only an open id (`tool` and `waiting` in `Helyx.Session.Turn`); `Turn.ids`, the set of every id of the turn, is gone. An answered id runs again. This is accepted, because no real program reuses an id. The reuse check of #203 came from a design rule, and no run showed a reuse. The `used` sets of both harness providers and the reuse check of `Helyx.HarnessIO.admit/3` are gone; each provider keeps its check that a call maps to a tool use and its answer for a call with no Helyx turn. The event `{:user_message, steer_id, text}` became `{:user_message, steer_id}`: the session always appended its own text. Removed tests: the provider tests of a reused call id (Codex: the two `used before` answers in "a call with no turn, one that does not map, ..."; Claude Code: "a call id that the provider rejected never gives a tool request later in the turn", now a test of the bad name and bad arguments only). The session test of an answered id now checks that it runs again.
-
-#379 derives the open tool calls from the transcript: they are the calls of the last assistant message that the tool results after it do not answer (`Transcript.open_calls/1`, the rule of `insert_aborted`). No message goes between a call and its result, so no earlier call can be open. `Turn.calls`, the stored copy, is gone, and `Records.abort_open_calls/1` is the one writer of the `aborted` results (`abort_turn_calls` is gone). The `:tool_result` clause and `Turn.snapshot/2` read the derived value; `running` and the `tool_execution_start`/`end` events do not change. Each lookup is O(n) over the transcript, as `append_message` is. Removed: the rule that a call id reused in a later message stays open until its own result; no real provider reuses an id (#369). Removed test: the `open_calls/1` case of one id in two assistant messages, now a case of one id twice in one message.
-
-#395 moved the tool-call state of the turn into `Helyx.Session.Tools` (`Turn.tools`): `tool` became `running`, and `waiting` and `killed?` moved with it. Its functions return the struct and the effects `{:run, call}`, `{:kill, call_id}`, and `{:result, call_id, result}`, which `Helyx.Session.Server.Tools` runs on the hands and the provider process. The rules do not change. Removed session tests, now unit tests of `Helyx.Session.Tools`: "over one running and 16 waiting, a request gets an error at once and runs nothing" and "a request with a call id that the turn answered runs again".
-
-2. Removed replies: none. Every reply of the connected protocol stays. The local path had no replies; its order guarantees move as follows. Calls in call order: the helper sends the results as `tool_result` events in call order, and the session queue runs the calls one at a time (#362). Steers before the next model call: the helper sends the `user_message` events before `{:need_context}` in one action list, and the session applies them before it builds the context (C2).
-
-3. Tests of the old mechanism:
-
-| File | Tests | After |
-|---|---|---|
-| `test/helyx/session/harness_test.exs` | 56 | All kept, renamed to `provider_process_test.exs`. |
-| `test/helyx/session/harness_tools_test.exs` | 26 | All kept, renamed. The tested code does not change. |
-| `test/helyx/session/stream_test.exs` | 16 | The tests of `Stream.run` move to the tests of the helper. The tests of `Stream.check` and `Stream.prepare` stay. The `connected?` cases merge. |
-| `test/helyx/interfaces/provider_test.exs` | 2 | The tests of `turn/1` are deleted. |
-| `loop_test.exs`, `stream_events_test.exs`, `boundary_test.exs`, `persistence_test.exs`, `sweep_test.exs`, and the other session tests on `Helyx.Test.Provider` | — | They run through the helper. `Helyx.Test.Provider` in `test/support/interfaces.ex` keeps its scripted `stream/3` models and adds `use Helyx.Provider.Loop`. |
-
-These tests change their property:
-
-- `stream_events_test.exs`, "a snapshot of a local turn lists only the running call": it lists every call with no result.
-- `stream_events_test.exs`, "a rejected tool call fails a connected turn, and nothing reaches the transcript": it became "a rejected_tool_call event is malformed", which #380 deleted with the event.
-- `loop_test.exs`, "a steer left at turn end starts a new turn": the steer continues the same turn.
-- The tests that check when `tool_execution_start` comes. It now comes for every call at the `message_end`:
-  - `loop_test.exs`: "tool calls run on the hands and the loop continues until the provider stops", "tool calls run one at a time, in call order" (the run order stays; the event order changes), "abort during tool calls ends the turn and answers every open call", "killing the session kills the hands and the tool Task", "steers during a tool run reach the next provider call after the result, in order", "abort drops queued steers and follow-ups", "a full queue rejects the next steer or follow-up", and the test at the digit limit.
-  - `boundary_test.exs`: "a switch during a turn takes effect on the next turn".
-  - `persistence_test.exs`: "resume after a crash mid-turn answers every open tool call".
-  - `sweep_test.exs`: the test that waits for `tool_execution_start`.
-
-Each such test keeps its property where only the event timing changes. The PR lists each test that changes and why.
-
-`loop_test.exs`, "a call whose arguments are not a JSON object gets an error result; the text and the good call stay" (#380 renamed it), and "tool calls run one at a time, in call order" keep their run properties through the helper and the session queue.
-
-New tests:
-
-- `provider_process_test.exs`: a context request gives a fresh context with `:turn_id`; an interrupt during a context request; a second open context request stops the process; a context error ends the turn and keeps the process; every stop path (close, bad event, bad return, stop, error reply, deadline kill) and a callback that calls `exit(:normal)` in `init/3`, `request/3`, or `info/2` each end a linked process (L1).
-- Helper tests: a bad event ends the provider process and its model Task. A raising, throwing, or exiting stream gives `{:task_exit, reason}`, and the process takes the next turn. The `:ok` of an interrupt comes only after the model Task is dead, and a late message of the old Task changes nothing (L3). Calls run in call order, a rejected call gets its result, and a steer continues the turn.
-- Client compatibility tests: a snapshot carries the new `contract_version`. The TUI renders `:provider_session`, the new `tool_execution_start` timing, and the new snapshot `running`. A client that does not support the version says so and does not render (ADR 0006 §5).
-- Plugin tests: callback renames only for Claude Code and Codex. OpenAI and the fake provider run through the helper.
-
-4. What clients see: the table "What users and clients see" above.
-
-5. States with no bound: a model call; the model calls of a turn in the helper; the `calls` list of one message in the helper (see Bounds).
+**L4 A kill from outside.** A process other than the helper that kills the model Task ends the provider process too, through the link. The turn fails, and the next turn starts a new provider process.
 
 ## Bounds
 
 | What | Bound | Over the bound |
 |---|---|---|
-| Open tool requests of a turn | one runs, 16 wait (`session/tool_queue.ex`, `@max_waiting`); the running and waiting calls hold at most 8 MiB of encoded call bytes together (`Turn.max_message_bytes/0`, #430) | the session answers the call with the error result "too many Helyx tool calls" or "Helyx tool calls too large" |
 | Open context requests | 1 per turn, and only for the submitted turn (C3) | a bad action, the turn fails, the process stops |
 | Tool result and context result requests in flight | at most one per tool request and context request of the provider; at the end of a turn, at most 17 aborted results go out in one batch. No answer is awaited: a late reply is dropped by its ref (#361) | the armed kill of each request; a kill that fires in the next turn fails that turn |
-| Steers | 32, queued and open together (`queue.ex`, `@limit`) | `{:error, :queue_full}` |
-| Events into the session | the session mailbox cap, 10,000 (`stream.ex`, `send_checked/3`) | nothing is sent, `{:error, {:session_behind, length, 10_000}}` |
-| Deadlines | `connect_ms` 30 s (`hands.ex`) and `prepare_ms` 10 s (`server/state.ex`; also for each context request), the reply bound 2 s per request (`server/state.ex`, `@provider_reply_ms`), the close bound 5 s (`@provider_close_ms`), idle 30 min | the kill of the provider process. The helper replies to `{:turn}` at once, so the 2 s bound never covers a model call. |
-| A model call | unbounded: the user aborts it. The same as the local path today. | — |
-| Model calls of a turn in the helper | unbounded: the model decides when to stop, as in the local path today | — |
-| The `calls` list of one message in the helper | unbounded, as the local path was | — |
-| The provider process mailbox | from Core: bounded by the rows above. From the provider's own port or Task: the plugin's concern, as today. From the model Task: the same cap of 10,000 (`send_checked/3`). | the model call ends with `{:error, {:provider_behind, length, 10_000}}` |
+| Helyx tool requests, steers, events into the session | `docs/features/session-lifecycle.md`, "Bounds" | — |
+| Deadlines | `docs/features/session-lifecycle.md`, "Bounds" | the kill of the provider process |
+| A model call | unbounded: the user aborts it. | — |
+| Model calls of a turn in the helper | unbounded: the model decides when to stop | — |
+| The `calls` list of one message in the helper | unbounded | — |
+| The provider process mailbox | From the provider's own port or Task: the plugin's concern. From the model Task: a cap of 10,000 (`send_checked/3`). | the model call ends with `{:error, {:provider_behind, length, 10_000}}` |
 
 ## Ownership
 
@@ -281,19 +143,12 @@ New tests:
 ## Out of scope
 
 - Removing any reply of the provider protocol, the tool result ack, or the steer ledger. Each is its own ticket with its own inventory (the "Replaced mechanism" section of `TEMPLATE.md`).
-- Splitting `server.ex`. Measure after this feature and `session-subscribers.md`. (Done in #386: `Helyx.Session.Server.TurnLoop`.)
 - An Anthropic Messages provider (ADR 0002).
 
 ## Decisions
 
 - **Q1, where the helper lives (2026-10-02):** A, in Core, as a supported public adapter. Every API provider needs it, and it adapts the one interface to a simpler one, as `Helyx.Tool.hold/1` helps the tool interface. It knows no plugin kind. Option B put it in `plugins/bundled`; the Core tests that use `Helyx.Test.Provider` would then need their own copy of the loop, or move to `plugins/bundled`, because the root project cannot depend on `helyx_plugins`.
 - **No deadline for a model call** (review 1). Abort and close have deadlines.
-- **The session does not own the request deadlines with its own timer.** ADR 0007 rejects this: a busy session would kill late, and a late `:rejected` steer, which is queued again today, would become a notice.
+- **The session does not own the request deadlines with its own timer.** ADR 0007 rejects this: a busy session would kill late, and a late `:rejected` steer, which is queued again, would become a notice.
 - **The request id of a call is the model's call id** (#380). #362 gave each call a second id from `System.unique_integer/1` because a model can repeat a call id in one message; no observed run showed it. The helper ends the provider process at a call id that repeats in one message, the generic failure of a malformed stream event.
 - **`:provider_behind` is a stream error that a client sees.** When the model Task finds the provider process mailbox at the cap, the model call ends with `{:error, {:provider_behind, length, 10_000}}`. The client sees it as the error reason of that model call.
-
-## Build order
-
-1. Renames, with no change of behaviour except the client event. The `contract_version` increase and the client compatibility tests.
-2. The context request (C1–C5) and the lifetime rules (L1), with their tests.
-3. `Helyx.Provider.Loop` (L2–L4), OpenAI and the test fakes on it, and the deletion of the local path. The ADR 0002 revision and the ADR 0007 note.

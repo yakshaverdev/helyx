@@ -10,7 +10,7 @@ Key design constraints:
 
 - Core stays small. It contains only plugin registration, OTP supervision, and interface dispatch.
 - Everything else is a plugin: memory, tools, model context, compaction, transports, user interfaces.
-- The extension surface is small: Provider, Tool, ModelContext, Compaction, Event, and one Transport.
+- The extension surface is small: Provider, Tool, ModelContext, Compaction, and one Transport (planned). Event is data, not an interface.
 - The server owns agent and session state. Clients are thin and render from the event stream.
 - Local mode runs server and TUI in one BEAM node with OTP messages. Phoenix is not in core; it arrives later as a Transport plugin.
 - Core knows only interface constructs. A concept that only one kind of plugin has (a harness, a program, a wire protocol) stays in that plugin, and Core code does not name it. A rule that every provider needs, such as the order of tool results or the completion before the next turn, is a provider construct and stays in Core.
@@ -32,6 +32,7 @@ docs/
 lib/helyx/         Helyx core, interfaces, session, and message shapes
 test/              Tests, mirrors lib/. test/support/ holds test-only plugins
 credo/             Custom Credo checks, loaded by .credo.exs
+bench/             Benchmark scripts, not tests
 plugins/bundled/   All bundled plugins in one Mix project, app helyx_plugins, path dependency on the root (ADR 0005)
 apps/<name>/       Products, one Mix project each
 ```
@@ -40,7 +41,7 @@ apps/<name>/       Products, one Mix project each
 
 Run from the repository root. The Mix projects are the root, `plugins/bundled` with all bundled plugins, and one project for each app. The root `precommit` alias finds every `plugins/*/mix.exs` and `apps/*/mix.exs` and runs the precommit steps in each project.
 
-- `mix test`: run all tests
+- `mix test`: run the tests of the root project only. `mix precommit` tests every project
 - `mix test path/to/file_test.exs:123`: run one test by line number
 - `mix format`: format code
 - `mix precommit`: in every project, `deps.get --check-locked`, format, and compile with warnings as errors. Then, in parallel, Dialyzer and test, and in the root also Credo strict over all sources. The projects run in parallel, and each step is its own `mix` process. A new project needs no alias: the root finds it. It sets its own Dialyzer `plt_core_path`, as the others do, because the parallel Dialyzer runs must not write one core PLT. The first step is `deps.get --check-locked`, so a fresh worktree or a rebase that brings a new project needs no manual fetch. Tests tagged `:slow` run only with `HELYX_SLOW=1`. `/ship` and the merge gate of `/orchestrate` set it. `mix precommit` never changes a lock file: after you change a dependency in a `mix.exs`, update the locks yourself and commit them. Projects depend on each other by path, so one change can make other locks stale. Fetch in all of them: `for d in . plugins/* apps/*; do (cd "$d" && mix deps.get); done`. Run `mix precommit` before you finish any change.
@@ -72,7 +73,7 @@ Run from the repository root. The Mix projects are the root, `plugins/bundled` w
 
 - Core is `Helyx.Core`. An interface is `Helyx.<Interface>`, for example `Helyx.Provider`. A product uses its own root, for example `Acme`.
 - A plugin is `<Root>.<Interface>.<Name>`. The root tells you who owns the code:
-  - Bundled plugins use the `Helyx` root: `Helyx.Provider.Anthropic`, `Helyx.Tool.Shell`, `Helyx.Transport.Local`.
+  - Bundled plugins use the `Helyx` root: `Helyx.Provider.OpenAI`, `Helyx.Tool.Bash`.
   - External plugins use their own root: `Acme.Provider.Bedrock`. Do not define modules under `Helyx.*` outside this repo. Module names are global in a BEAM node, and two packages that define the same module fail to compile together.
 - A new bundled plugin is a module under `plugins/bundled/lib/helyx/<interface>/` with its tests under the same path in `test/`, not a Mix project. A small, pure Elixir dependency is a normal dependency of `helyx_plugins`. A heavy or native one is `optional: true`. The modules that need it are defined only when it is loaded. The product lists the dependency itself. `ex_ratatui` and `Helyx.TUI` are the example (ADR 0005). An application env key of `helyx_plugins` names its plugin, for example `:openai_req_options`.
 - Code that two bundled plugins need is a helper module in `plugins/bundled`, such as `Helyx.Watchdog`. It is `@moduledoc false`, implements no interface, and has no registration entry. Both plugins call the helper; one plugin never calls another (ADR 0005).

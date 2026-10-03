@@ -117,8 +117,8 @@ defmodule Helyx.Message do
   @doc """
   Whether `id` is a valid resume id: valid UTF-8 of 1 to
   #{@resume_id_max_bytes} bytes. The session checks an id from a provider
-  with it before the id is written, and a resume rejects a session file
-  whose entry fails it.
+  with it before the id is written, and a resume does not use the id of an
+  entry that fails it.
   """
   @spec resume_id?(term()) :: boolean()
   def resume_id?(id),

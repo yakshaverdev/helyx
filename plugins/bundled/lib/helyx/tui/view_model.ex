@@ -172,12 +172,10 @@ defmodule Helyx.TUI.ViewModel do
   def apply(vm, %Event{}), do: vm
 
   @doc """
-  The view model of a session from its snapshot. Its cells are the
-  transcript cells that the fold of every event up to `snapshot.seq` makes:
-  the snapshot messages go through the fold of `apply/2` in order, so the
-  live and the snapshot paths share one pairing rule (ADR 0006, revision of
-  2026-10-03). Notices and a partial reply with text only of an aborted or
-  failed turn are not in the transcript, so a snapshot has none of them.
+  The view model of a session from its snapshot. The snapshot messages go
+  through the fold in order, so the live and the snapshot paths share one
+  pairing rule (ADR 0006, revision of 2026-10-03). Notices
+  are not in the transcript, so a snapshot has none of them.
   """
   @spec from_snapshot(Snapshot.t()) :: t()
   def from_snapshot(%Snapshot{messages: messages, turn: turn} = snapshot) do
@@ -276,8 +274,7 @@ defmodule Helyx.TUI.ViewModel do
   # The result closes the oldest open cell with its call id, wherever it
   # is: a notice can arrive while the tool runs. The first result answers
   # the first of two calls with one id, as in the session. A result with no
-  # open cell crashes in `Map.fetch!/2`; the feature doc states when one can
-  # come (section "Replaced mechanism (#407)").
+  # open cell crashes in `Map.fetch!/2`.
   defp add_message(vm, %Message{role: :tool_result, tool_call_id: id} = result) do
     {{:value, position}, queue} = :queue.out(Map.fetch!(vm.open, id))
 

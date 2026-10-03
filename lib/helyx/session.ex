@@ -24,8 +24,7 @@ defmodule Helyx.Session do
   tool call with no result gets an `aborted` error result. A follow-up
   during a turn waits in a queue. A steer waits in a queue until the
   provider can take it (see `steer/2`). An abort or a failure of the turn
-  drops both queues. Each queue holds at most 32 entries. An abort ends
-  the turn at once. It returns when the hands have released the
+  drops both queues. An abort ends the turn at once. It returns when the hands have released the
   resources of the turn or recorded them as unconfirmed (`abort/1`).
   Until then, the session answers every client call and starts no turn.
 
@@ -340,10 +339,9 @@ defmodule Helyx.Session do
   end
 
   @doc """
-  Aborts the running turn. Returns after the hands have killed every process
-  the turn started, so a prompt sent next starts on a clean working
-  directory. Each tool call without a result gets an `aborted` error result,
-  so the transcript keeps complete call and result pairs. The events of the
+  Aborts the running turn (`docs/features/session-lifecycle.md`). Each tool
+  call without a result gets an `aborted` error result, so the transcript
+  keeps complete call and result pairs. The events of the
   abort go out at once, before the hands are done; only this call waits. With
   no turn running and no abort in progress this is a no-op. When the hands
   cannot confirm that a resource of the turn was released, the call still
