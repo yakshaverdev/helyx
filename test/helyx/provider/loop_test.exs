@@ -62,10 +62,10 @@ defmodule Helyx.Provider.LoopTest do
              {:text_delta, "."},
              {:tool_call, %Message.ToolCall{id: "call_1"}},
              {:message_end, :end_turn, %{}},
-             {:tool_request, id, "bash", %{"command" => "ls"}}
+             {:tool_request, "call_1", "bash", %{"command" => "ls"}}
            ] = events(actions)
 
-    assert %{calls: [{^id, %{id: "call_1"}, nil}], task: nil} = state
+    assert %{calls: [{%{id: "call_1"}, nil}], task: nil} = state
   end
 
   test "every call goes out at once; the results join in call order, whatever order they come in" do
@@ -245,18 +245,19 @@ defmodule Helyx.Provider.LoopTest do
   end
 
   # "self_halt" is an enumerable whose result is not a terminal.
-  test "a rejected call with a bad reason, or an event that is not a stream event, ends the process" do
+  test "a rejected call with a bad reason, a repeated call id, or an event that is not a stream event, ends the process" do
     for model <- [
           "reject_bytes_1025",
           "reject_multibyte_1025",
           "reject_raw",
           "reject_atom",
           "harness_event",
+          "repeat_id",
           "self_halt"
         ] do
       state = turn(model)
       assert {:shutdown, {:bad_stream_event, event}} = catch_exit(pump(state))
-      assert elem(event, 0) in [:rejected_tool_call, :message_end, :text_delta], model
+      assert elem(event, 0) in [:rejected_tool_call, :message_end, :text_delta, :tool_call], model
       Task.shutdown(state.task, :brutal_kill)
     end
   end

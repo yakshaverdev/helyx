@@ -183,6 +183,11 @@ defmodule Helyx.Test.Provider do
     "bad_stop" => [{:text_delta, "hi"}, {:done, %{stop_reason: :refusal, usage: %{}}}],
     "notice" => [{:text_delta, "hi"}, {:notice, "heads up"}, {:text_delta, " there"}, @done],
     "harness_event" => [{:text_delta, "hi"}, {:message_end, :end_turn, %{}}, @done],
+    "repeat_id" => [
+      {:tool_call, %ToolCall{id: "c", name: "upcase", arguments: %{"text" => "a"}}},
+      {:tool_call, %ToolCall{id: "c", name: "upcase", arguments: %{"text" => "b"}}},
+      @tool_use
+    ],
     # 512 2-byte characters, 1,024 bytes; then one more byte.
     "reject_multibyte_1024" => [{:rejected_tool_call, @reject, String.duplicate("é", 512)}, @done],
     "reject_multibyte_1025" => [
@@ -266,8 +271,7 @@ defmodule Helyx.Test.Provider do
 
   # Six calls: an integer of 400,000 digits nested in the arguments, a good
   # call whose struct has one more key with the large integer, the largest
-  # permitted integer (100 digits), a good call with the id of the first
-  # call, the large integer as a map key, and the large integer in a struct
+  # permitted integer (100 digits), a good call, the large integer as a map key, and the large integer in a struct
   # that JSON encodes. After the results, the usage and one more key of the
   # `:done` map hold the large integer.
   def stream("big_int", %Helyx.Context{messages: messages}, _opts) do
@@ -282,7 +286,7 @@ defmodule Helyx.Test.Provider do
          call("c1", "upcase", %{"text" => "one", "n" => [%{"deep" => -huge}]}),
          {:tool_call, Map.put(elem(call("c2", "upcase", %{"text" => "two"}), 1), :extra, huge)},
          call("c3", "upcase", %{"text" => "three", "n" => 10 ** 100 - 1}),
-         call("c1", "upcase", %{"text" => "four"}),
+         call("c4", "upcase", %{"text" => "four"}),
          call("c5", "upcase", %{"text" => "five", huge => 1}),
          call("c6", "upcase", %{"text" => "six", "d" => %Date{year: huge, month: 1, day: 1}}),
          @tool_use

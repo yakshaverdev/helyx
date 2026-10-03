@@ -31,7 +31,8 @@ defmodule Helyx.Provider.Loop do
 
   `opts` carry `:core`, `:session_id`, `:turn_id`, and `:cwd`. The model
   Task consumes the enumerable up to the first `done` or `error`. Any other
-  event, a `rejected_tool_call` whose reason breaks its rule, or an
+  event, a `rejected_tool_call` whose reason breaks its rule, a call
+  whose id repeats in the message, or an
   enumerable that halts by itself on another value, ends the provider
   process with `{:bad_stream_event, event}`; Core checks the rest as it
   checks every provider event. A stream faster than the provider process
@@ -70,8 +71,8 @@ defmodule Helyx.Provider.Loop do
 
   # `turn` is the live turn id or nil; `task` the model Task; `calls` the
   # calls of the message with no result in the transcript yet, in call
-  # order, each `{request_id, call, result}` with the result nil until it
-  # comes; `steers` the ids of the held steers.
+  # order, each `{call, result}` with the result nil until it comes; the
+  # call id is the request id. `steers` the ids of the held steers.
   @enforce_keys [:provider, :model, :opts]
   defstruct [:provider, :model, :opts, :turn, :task, content?: false, calls: [], steers: []]
 
@@ -124,7 +125,7 @@ defmodule Helyx.Provider.Loop do
   def request({:tool_result, turn_id, id, result}, from, %{turn: turn_id} = state) do
     calls =
       Enum.map(state.calls, fn
-        {^id, call, nil} -> {id, call, result}
+        {%Message.ToolCall{id: ^id} = call, nil} -> {call, result}
         entry -> entry
       end)
 
@@ -183,11 +184,13 @@ defmodule Helyx.Provider.Loop do
 
   defp event(event, _state), do: bad(event)
 
-  # The session rejects a request id that is open in its turn, and a
-  # model can repeat a call id, so each call gets a request id of its own.
+  # A call id names its result, so a call id that repeats in one message
+  # breaks the contract, whether the session answered the first call or not.
   defp call(call, result, state) do
-    id = Integer.to_string(System.unique_integer([:positive]))
-    state = %{state | calls: state.calls ++ [{id, call, result}], content?: true}
+    if Enum.any?(state.calls, fn {%{id: id}, _} -> id == call.id end),
+      do: bad({:tool_call, call})
+
+    state = %{state | calls: state.calls ++ [{call, result}], content?: true}
     {:ok, [{:event, state.turn, {:tool_call, call}}], state}
   end
 
@@ -220,8 +223,8 @@ defmodule Helyx.Provider.Loop do
   # order.
   defp dispatch(actions, state) do
     requests =
-      for {id, call, nil} <- state.calls,
-          do: {:event, state.turn, {:tool_request, id, call.name, call.arguments}}
+      for {call, nil} <- state.calls,
+          do: {:event, state.turn, {:tool_request, call.id, call.name, call.arguments}}
 
     send_ready(actions ++ requests, state)
   end
@@ -229,10 +232,10 @@ defmodule Helyx.Provider.Loop do
   # The results that every call before them has, in call order. With no
   # call left, the held steers and the context request (C2).
   defp send_ready(actions, state) do
-    {done, open} = Enum.split_while(state.calls, fn {_, _, result} -> result != nil end)
+    {done, open} = Enum.split_while(state.calls, fn {_, result} -> result != nil end)
 
     results =
-      for {_, call, result} <- done, do: {:event, state.turn, {:tool_result, call.id, result}}
+      for {call, result} <- done, do: {:event, state.turn, {:tool_result, call.id, result}}
 
     state = %{state | calls: open}
 

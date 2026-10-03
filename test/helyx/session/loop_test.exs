@@ -78,7 +78,6 @@ defmodule Helyx.Session.LoopTest do
     events = collect_until(:agent_end, @load_event_ms)
 
     rejected = "tool call not run: an integer in the arguments has more than 100 digits"
-    # The fourth call has the id of the first call and good arguments: it runs.
     assert final_text(events) == "#{rejected}|TWO|THREE|FOUR|#{rejected}|#{rejected}"
 
     marker = "integer of more than 100 digits removed"
