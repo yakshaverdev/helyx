@@ -148,3 +148,4 @@ One row per ticket that `/orchestrate` merged. An escape is a confirmed Codex fi
 | 2026-10-03 | #367 | r1: 0 reproduced; 1 simplify fix, 3 spec fixes; Codex approve | gate r1 (Codex): 0 | none needed |
 | 2026-10-03 | #369 | r1: 0 reproduced; 4 wording fixes, 1 stale doc line; Codex approve | gate r1 (Codex, after a rebase onto #361 and #367 with 3 mechanical conflicts): 0 | none needed |
 | 2026-10-03 | #382 | r1: 0 reproduced; 1 missed doc rename fixed | gate r1 (Codex): 0 | none needed |
+| 2026-10-03 | #381 | r1: 0 reproduced; doc and comment fixes | gate r1 (Codex): 0; 1 wrong statement in the commit and review record (OpenAI bodies under 16 KiB do not pass Text.cap), corrected | none needed |
