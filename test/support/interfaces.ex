@@ -674,6 +674,7 @@ defmodule Helyx.Test.Connected do
   #     "empty_only"  only empty deltas, then done: no text "ok"
   #     "blocks_over_bound"  1,025 deltas of text and thinking in turn: one
   #               block over the bound of 1,024
+  #     "first_over_bound"  a first delta one byte over 8 MiB
   #
   # A steer answers :ok with no `user_message` unless the model says
   # otherwise; the "steer_" models are "hang" for a turn:
@@ -951,6 +952,9 @@ defmodule Helyx.Test.Connected do
     Enum.map(1..1_025, &if(rem(&1, 2) == 0, do: {:thinking_delta, "b"}, else: {:text_delta, "a"})) ++
       [@done]
   end
+
+  defp turn_events("first_over_bound"),
+    do: [{:text_delta, String.duplicate("x", 8 * 1_048_576 + 1)}, @done]
 
   defp turn_events("call_over_bound"), do: bound_message() ++ [{:tool_call, bound_call()}, @done]
 

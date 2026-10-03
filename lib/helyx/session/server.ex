@@ -8,7 +8,7 @@ defmodule Helyx.Session.Server do
 
   alias Helyx.ModelRef
   alias Helyx.Session.{Hands, Id, Turn}
-  alias Helyx.Session.Server.{Messages, Record, State, Steering, Stop, ToolRuns, TurnLoop}
+  alias Helyx.Session.Server.{Events, Records, State, Steering, Stop, ToolRuns, TurnLoop}
 
   use GenServer, restart: :temporary, shutdown: Stop.shutdown_ms()
 
@@ -45,17 +45,17 @@ defmodule Helyx.Session.Server do
   end
 
   def handle_call(:snapshot, _from, %State{} = state),
-    do: {:reply, Record.snapshot(state), state}
+    do: {:reply, Events.snapshot(state), state}
 
   # The entry and the snapshot in one message, so every later event reaches
   # the caller. A repeated subscribe keeps the entry and its monitor.
   def handle_call({:subscribe, pid}, _from, %State{} = state) do
-    state = Record.subscribe(state, pid)
-    {:reply, Record.snapshot(state), state}
+    state = Events.subscribe(state, pid)
+    {:reply, Events.snapshot(state), state}
   end
 
   def handle_call({:set_model, %ModelRef{} = ref, provider}, _from, %State{} = state),
-    do: {:reply, :ok, TurnLoop.settle(Messages.set_model(state, ref, provider))}
+    do: {:reply, :ok, TurnLoop.settle(Records.set_model(state, ref, provider))}
 
   # The abort replies through `GenServer.reply/2` (`TurnLoop.abort/2`).
   def handle_call(:abort, from, %State{} = state), do: {:noreply, TurnLoop.abort(state, from)}
@@ -70,15 +70,15 @@ defmodule Helyx.Session.Server do
         {:stream_event, turn_id, {:message_end, stop_reason, usage}},
         %State{activity: %Turn{id: turn_id}} = state
       ),
-      do: {:noreply, Messages.end_assistant(state, stop_reason, usage)}
+      do: {:noreply, Records.end_assistant(state, stop_reason, usage)}
 
   # A tool result event of the provider: it closes the open message and
-  # joins its open call (`Messages.tool_result/3`).
+  # joins its open call (`Records.tool_result/3`).
   def handle_info(
         {:stream_event, turn_id, {:tool_result, call_id, result}},
         %State{activity: %Turn{id: turn_id}} = state
       ),
-      do: {:noreply, Messages.tool_result(state, call_id, result)}
+      do: {:noreply, Records.tool_result(state, call_id, result)}
 
   # The provider took a steer of this turn: its text, the one the session
   # checked at the client call, joins the transcript here (see
@@ -113,12 +113,12 @@ defmodule Helyx.Session.Server do
         {:stream_event, turn_id, {:resume, id, cut}},
         %State{activity: %Turn{id: turn_id}} = state
       ),
-      do: {:noreply, Messages.resume(state, id, cut)}
+      do: {:noreply, Records.resume(state, id, cut)}
 
   # An event that breaks the bound of the open message stops the provider
-  # process (`Messages.delta/2`).
+  # process (`Records.delta/2`).
   def handle_info({:stream_event, turn_id, event}, %State{activity: %Turn{id: turn_id}} = state) do
-    case Messages.delta(state, event) do
+    case Records.delta(state, event) do
       {:ok, state} -> {:noreply, state}
       {:error, reason, state} -> {:noreply, TurnLoop.stop_provider(state, reason)}
     end
@@ -139,12 +139,12 @@ defmodule Helyx.Session.Server do
   # The failed subscribe of `Helyx.Session.subscribe/1`, and the end of a
   # subscriber: only the monitor of its entry removes the entry.
   def handle_info({:unsubscribe, pid}, %State{} = state) do
-    {:noreply, Record.unsubscribe(state, pid)}
+    {:noreply, Events.unsubscribe(state, pid)}
   end
 
   def handle_info({:DOWN, ref, :process, pid, _reason}, %State{subscribers: subscribers} = state)
       when :erlang.map_get(pid, subscribers) == ref,
-      do: {:noreply, Record.subscriber_down(state, pid)}
+      do: {:noreply, Events.subscriber_down(state, pid)}
 
   # The hands are linked and vital: their death takes the session with it.
   def handle_info({:EXIT, pid, reason}, %State{hands: pid} = state), do: {:stop, reason, state}

@@ -282,13 +282,13 @@ defmodule Helyx.TUI.ViewModelSnapshotTest do
   end
 
   # A client that joins after the turn ended shows the transcript cells of
-  # the client that watched.
+  # the client that watched, the partial reply too, and not its notice.
   defp assert_joins_after_end(session, live, events) do
     {:ok, snapshot, _} = Session.subscribe(session)
     assert snapshot.seq == List.last(events).seq
     joined = ViewModel.from_snapshot(snapshot)
     assert transcript(joined) == transcript(live)
-    assert [_user] = ViewModel.cells(joined)
+    assert ViewModel.cells(joined) == Enum.drop(ViewModel.cells(live), -1)
   end
 
   # The events of the first client up to `seq`, which are in the mailbox.

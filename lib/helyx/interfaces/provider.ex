@@ -67,7 +67,8 @@ defmodule Helyx.Provider do
       arguments are not a valid JSON object`. Any other `arguments` fails
       the turn
     * `{:done, %{stop_reason: stop_reason, usage: map}}`: the call finished.
-      `stop_reason` is one of `Helyx.Message.stop_reasons/0`
+      `stop_reason` is one of `Helyx.Message.stop_reasons/0` except `:aborted`
+      and `:error`, which the session gives an aborted or a failed turn
     * `{:error, term}`: the call failed
     * `{:message_end, stop_reason, usage}`: optional. The assistant
       message so far is complete, with this usage. The session also closes

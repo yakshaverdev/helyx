@@ -12,11 +12,11 @@ defmodule Helyx.Session.Server.TurnLoop do
   # ends (`Helyx.Session.Server.Stop`).
 
   import Helyx.Session.Server.State, only: [ask: 4, provider_pid: 1]
-  import Helyx.Session.Server.Record, only: [emit: 3]
+  import Helyx.Session.Server.Events, only: [emit: 3]
 
   alias Helyx.{Context, Message}
   alias Helyx.Session.{Hands, Id, ProviderProcess, Transcript, Turn}
-  alias Helyx.Session.Server.{Messages, ProviderConn, State, Steering, Wait}
+  alias Helyx.Session.Server.{ProviderConn, Records, State, Steering, Wait}
 
   # A client prompt, steer, or follow-up by phase; returns the reply and the
   # state. An abort waits for the hands: a turn that starts now could send
@@ -145,7 +145,7 @@ defmodule Helyx.Session.Server.TurnLoop do
   defp begin_turn(%State{} = state, texts) do
     turn = %Turn{id: Id.new(), model: state.model, provider: state.provider}
     state = open_turn(state, turn, %{})
-    call_provider(Enum.reduce(texts, state, &Messages.append_user(&2, &1)))
+    call_provider(Enum.reduce(texts, state, &Records.append_user(&2, &1)))
   end
 
   # A turn that the provider started by itself (#240): a submitted turn
@@ -299,7 +299,7 @@ defmodule Helyx.Session.Server.TurnLoop do
   def abort(%State{activity: %Wait{}} = state, from), do: progress(Wait.abort(state, from))
 
   def abort(%State{activity: %Turn{}} = state, from),
-    do: Wait.close_turn(state, :aborted, :aborted, [from])
+    do: put_in(Wait.finish(state, :aborted).activity.callers, [from])
 
   # At the end of the wait the abort callers get their reply. An idle
   # session settles too: a late `:rejected` can queue a steer.
@@ -353,7 +353,7 @@ defmodule Helyx.Session.Server.TurnLoop do
 
   # The terminal of the turn, from the provider process.
   defp end_turn({:done, %{stop_reason: stop_reason, usage: usage}}, state),
-    do: progress(Wait.end_turn(state, stop_reason, usage))
+    do: progress(Wait.finish(state, {:done, stop_reason, usage}))
 
   defp end_turn({:error, reason}, state), do: fail_turn(reason, state)
   defp end_turn(:stream_ended, state), do: fail_turn(:stream_ended, state)
@@ -367,7 +367,7 @@ defmodule Helyx.Session.Server.TurnLoop do
     put_in(state.activity.provider, pid)
   end
 
-  defp fail_turn(reason, state), do: Wait.close_turn(state, :error, reason, [])
+  defp fail_turn(reason, state), do: Wait.finish(state, {:error, reason})
 
   # The work that a session stop ends (`Helyx.Session.Server.Stop`): in a
   # turn, its prepare Task, to kill; the hands take its provider process.

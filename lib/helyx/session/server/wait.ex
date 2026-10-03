@@ -9,69 +9,51 @@ defmodule Helyx.Session.Server.Wait do
   # deadlines, a reply by its armed kill. `callers` are the abort callers,
   # who get their reply at the end. Every message of a client queues until
   # the end. `Helyx.Session.Server.TurnLoop` matches the inputs and ends
-  # the wait when no part is left. `end_turn/3` and `close_turn/4` end a
-  # turn and make its wait; the other functions change one part of it.
+  # the wait when no part is left. `finish/2` ends a turn and makes its
+  # wait; the other functions change one part of it.
 
   require Logger
 
   import Helyx.Session.Server.State, only: [ask: 4, provider_pid: 1]
-  import Helyx.Session.Server.Record, only: [emit: 3, emit: 4]
+  import Helyx.Session.Server.Events, only: [emit: 3, emit: 4]
 
   alias Helyx.Session.{Hands, ProviderRequest, Turn}
-  alias Helyx.Session.Server.{Messages, ProviderConn, State, Steering, ToolRuns}
+  alias Helyx.Session.Server.{ProviderConn, Records, State, Steering, ToolRuns}
 
   defstruct [:hands, :reply, :provider, callers: []]
 
-  # The normal end of the turn, at its `:done` terminal.
-  def end_turn(state, stop_reason, usage) do
-    {%State{activity: turn} = state, assistant} = Messages.end_turn(state, stop_reason, usage)
-
+  # The end of the turn, at `outcome`: `{:done, stop_reason, usage}`,
+  # `:aborted`, or `{:error, reason}`. Its prepare Task is killed, and its
+  # records close (`Records.finish/2`). At `done` a steer with no answer
+  # yet can still be rejected after the turn (`Queue.answer/3`); an abort
+  # or a failure drops the queues. The hands release the Tasks of the turn
+  # before the next turn: always at an abort or a failure, at `done` when
+  # a Helyx tool still runs. Only an abort of a turn that sent
+  # `{:turn, ...}` gets an interrupt, after the `aborted` answers of its
+  # open tool requests.
+  def finish(%State{activity: turn} = state, outcome) do
     kill_prepare(turn)
-
-    # A steer with no answer yet can still be rejected after the turn
-    # (`Queue.answer/3`).
-    state =
-      state
-      |> Steering.end_turn(turn.id, true)
-      |> ToolRuns.end_turn(turn)
-      |> emit(:turn_end, %{message: assistant})
-      |> emit(:agent_end, %{stop_reason: stop_reason})
-
-    # A Helyx tool that still runs: the turn cleanup of the hands runs
-    # before the next turn.
-    hands = if turn.tool_queue.running, do: Hands.request_cancel(state.hands, turn.id)
-    %{state | activity: %__MODULE__{hands: hands}}
+    {state, assistant} = Records.finish(state, outcome)
+    done? = match?({:done, _stop, _usage}, outcome)
+    state = Steering.end_turn(state, turn.id, done?)
+    state = if done?, do: state, else: Steering.drop_queues(state)
+    state = state |> ToolRuns.end_turn(turn) |> emit_end(outcome, assistant)
+    hands = if !done? or turn.tool_queue.running, do: Hands.request_cancel(state.hands, turn.id)
+    wait = if outcome == :aborted, do: interrupt(state, turn), else: %__MODULE__{}
+    %{state | activity: %{wait | hands: hands}}
   end
 
-  # An abort or a failure ends the turn at once: its prepare Task is
-  # killed, and the hands release its Tasks before the next turn; the
-  # `callers` get their reply when the wait ends. A partial assistant
-  # message with a tool call joins the transcript
-  # (`Messages.close_turn/3`), and its calls get `aborted`; one with
-  # text only is closed with the stop reason so clients do not keep it
-  # open, and is not added to the transcript. Only an abort of a turn that
-  # sent `{:turn, ...}` gets an interrupt, after the `aborted` answers of
-  # its open tool requests.
-  def close_turn(%State{activity: turn} = state, stop, reason, callers) do
-    kill_prepare(turn)
-    request = Hands.request_cancel(state.hands, turn.id)
-
-    data =
-      if stop == :aborted,
-        do: %{stop_reason: :aborted},
-        else: %{stop_reason: :error, error: reason}
-
-    state =
-      state
-      |> Steering.end_turn(turn.id, false)
-      |> Messages.close_turn(stop, reason)
-      |> Steering.drop_queues()
-      |> ToolRuns.end_turn(turn)
-      |> emit(:agent_end, data)
-
-    wait = if stop == :aborted, do: interrupt(state, turn), else: %__MODULE__{}
-    %{state | activity: %{wait | hands: request, callers: callers}}
+  defp emit_end(state, {:done, stop_reason, _usage}, assistant) do
+    state
+    |> emit(:turn_end, %{message: assistant})
+    |> emit(:agent_end, %{stop_reason: stop_reason})
   end
+
+  defp emit_end(state, :aborted, _assistant),
+    do: emit(state, :agent_end, %{stop_reason: :aborted})
+
+  defp emit_end(state, {:error, reason}, _assistant),
+    do: emit(state, :agent_end, %{stop_reason: :error, error: reason})
 
   # The wait holds the answer to the interrupt, and the provider process
   # until that answer keeps it.

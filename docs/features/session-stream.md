@@ -39,7 +39,7 @@ The session keeps `start_provider_call/1`, `call_provider/1`, and `start_stream/
 
 ## Which checks move, and which stay
 
-The stream module owns the checks of stream events: the event shapes, `String.valid?/1` on deltas, `Message.harness_id?/1` on harness ids, `Message.big_integer?/1` and `Message.encodable?/1` on tool call arguments and usage, the stop-reason set (`Helyx.Message.stop_reasons/0`), and the harness event rules.
+The stream module owns the checks of stream events: the event shapes, `String.valid?/1` on deltas, `Message.harness_id?/1` on harness ids, `Message.big_integer?/1` and `Message.encodable?/1` on tool call arguments and usage, the stop-reason set (`Helyx.Message.stop_reasons/0` without `aborted` and `error`, #432), and the harness event rules.
 
 Some input reaches the session with no stream event. These checks stay at their boundary:
 

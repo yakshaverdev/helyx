@@ -1,4 +1,4 @@
-defmodule Helyx.Session.Server.Messages do
+defmodule Helyx.Session.Server.Records do
   @moduledoc false
   # The records of a session: the only writer of `transcript`, `file`,
   # `model`, `provider`, and `resume_ids` in `Helyx.Session.Server.State`. Each
@@ -9,7 +9,7 @@ defmodule Helyx.Session.Server.Messages do
 
   require Logger
 
-  import Helyx.Session.Server.Record, only: [emit: 3, emit: 4]
+  import Helyx.Session.Server.Events, only: [emit: 3, emit: 4]
 
   alias Helyx.{Message, ModelRef}
   alias Helyx.Session.Server.State
@@ -75,24 +75,41 @@ defmodule Helyx.Session.Server.Messages do
     take_steer(end_assistant(state, stop, %{}), text)
   end
 
-  # The close at the `done` of the turn: the open message joins, and each
-  # open call gets its `aborted` result with no `tool_execution_start`.
-  # Returns the state and the closed message.
-  def end_turn(state, stop_reason, usage) do
-    {state, assistant} = close_assistant(state, stop_reason, usage)
+  # The close at the end of a turn, at `outcome`: `{:done, stop_reason,
+  # usage}`, `:aborted`, or `{:error, reason}`. At `done` the open message
+  # joins, an empty one too. At an abort or a failure an open message with
+  # a tool call closes as at the other closes (stop `:tool_use`, its calls
+  # start); one with text only joins with the stop reason `:aborted` or
+  # `:error`, and its message_end has the reason in `error`. No open
+  # message, no message; an open message with no block gets its
+  # message_end and is not stored. Then each open call gets its `aborted`
+  # result, with no `tool_execution_start`. Returns the state and the
+  # message of the `done` close.
+  def finish(state, outcome) do
+    {state, assistant} = close_last(state, outcome)
     {abort_open_calls(state), assistant}
   end
 
-  # At an abort or a failure, an open message with a tool call joins the
-  # transcript as at the other closes (stop `:tool_use`, its calls start),
-  # and each open call gets its `aborted` result. An open message with text
-  # only does not join: it gets a message_end with the stop reason, so
-  # clients do not keep it open.
-  def close_turn(state, stop_reason, reason) do
-    state
-    |> close_if(&match?(%Message.ToolCall{}, &1))
-    |> abort_open_calls()
-    |> close_partial_message(stop_reason, reason)
+  defp close_last(state, {:done, stop_reason, usage}),
+    do: close_assistant(state, stop_reason, usage)
+
+  defp close_last(state, :aborted), do: close_cut(state, :aborted, :aborted)
+  defp close_last(state, {:error, reason}), do: close_cut(state, :error, reason)
+
+  defp close_cut(state, stop, reason) do
+    case close_if(state, &match?(%Message.ToolCall{}, &1)) do
+      %State{activity: %Turn{partial: nil}} = state ->
+        {state, nil}
+
+      # Opened by an event over the bound, with no block: it ends for the
+      # clients and is not stored.
+      %State{activity: %Turn{partial: []} = turn} = state ->
+        message = Turn.assistant_message(turn, stop_reason: stop)
+        {emit(state, :message_end, %{message: message, error: reason}), nil}
+
+      state ->
+        close_assistant(state, stop, %{}, %{error: reason})
+    end
   end
 
   # A model switch: the record on disk and `model_change`. It has no turn.
@@ -125,10 +142,11 @@ defmodule Helyx.Session.Server.Messages do
   # message_end. Returns it. No message goes between a
   # call and its result: the calls still open get their aborted results
   # first, and a later result is dropped.
-  defp close_assistant(state, stop_reason, usage) do
+  defp close_assistant(state, stop_reason, usage, data \\ %{}) do
     state = state |> abort_open_calls() |> start_assistant_message()
     assistant = Turn.assistant_message(state.activity, stop_reason: stop_reason, usage: usage)
-    {emit(append_message(state, assistant), :message_end, %{message: assistant}), assistant}
+    data = Map.put(data, :message, assistant)
+    {emit(append_message(state, assistant), :message_end, data), assistant}
   end
 
   defp close_if(%State{activity: %Turn{partial: [_ | _] = partial}} = state, block?) do
@@ -155,18 +173,8 @@ defmodule Helyx.Session.Server.Messages do
     )
   end
 
-  defp close_partial_message(%State{activity: %Turn{partial: nil}} = state, _stop, _reason),
-    do: state
-
-  defp close_partial_message(state, stop_reason, reason) do
-    emit(state, :message_end, %{
-      message: Turn.assistant_message(state.activity, stop_reason: stop_reason),
-      error: reason
-    })
-  end
-
   # Appends a completed message to the transcript and, when the session has
-  # a file, to disk. Streamed partial messages never come through here.
+  # a file, to disk. A streamed partial message comes here only when it closes.
   defp append_message(%State{} = state, %Message{} = message) do
     state = persist(state, &Helyx.Session.File.append_message(&1, message))
     %{state | transcript: state.transcript ++ [message]}

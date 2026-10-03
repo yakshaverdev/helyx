@@ -8,7 +8,7 @@ defmodule Helyx.Session.Transcript do
   # assistant message that the tool results after it do not answer. No
   # message goes between a call and its result, so a call of an earlier
   # message is never open, and after any other message no call is. A
-  # resumed transcript has none (see `abort_unanswered/2`). O(n).
+  # resumed transcript has none (see `repair/2`). O(n).
   @spec open_calls([Message.t()]) :: [Message.ToolCall.t()]
   def open_calls(transcript) do
     {results, rest} =
@@ -70,10 +70,10 @@ defmodule Helyx.Session.Transcript do
   # an entry written before the crash, and then the live count was lower.
   # Both give the same `resumable/3` answer, because an inserted or a
   # dropped result is never an assistant message.
-  @spec abort_unanswered([Message.t()], %{String.t() => {String.t(), non_neg_integer()}}) ::
+  @spec repair([Message.t()], %{String.t() => {String.t(), non_neg_integer()}}) ::
           {[Message.t()], %{String.t() => {String.t(), non_neg_integer()}}}
-  def abort_unanswered(transcript, resume_ids) do
-    {transcript, inserts, drops} = repair(transcript, 0, [], [], [])
+  def repair(transcript, resume_ids) do
+    {transcript, inserts, drops} = walk(transcript, 0, [], [], [])
 
     shifted =
       Map.new(resume_ids, fn {provider, {id, before}} ->
@@ -87,24 +87,24 @@ defmodule Helyx.Session.Transcript do
   # Builds the transcript reversed. `at` is the number of input messages
   # read. Gives one `at` for each inserted result (the input messages before
   # it), and the input index of each dropped result.
-  defp repair([%Message{role: :assistant} = message | rest], at, out, inserts, drops) do
+  defp walk([%Message{role: :assistant} = message | rest], at, out, inserts, drops) do
     {results, rest} = Enum.split_while(rest, &match?(%Message{role: :tool_result}, &1))
     {open, kept, stray} = pair(message, results)
     drops = Enum.map(stray, &(&1 + at + 1)) ++ drops
     at = at + 1 + length(results)
     out = Enum.reverse(Enum.map(open, &aborted/1), Enum.reverse(kept, [message | out]))
     inserts = List.duplicate(at, length(open)) ++ inserts
-    repair(rest, at, out, inserts, drops)
+    walk(rest, at, out, inserts, drops)
   end
 
   # A tool result here follows no assistant message, so it answers nothing.
-  defp repair([%Message{role: :tool_result} | rest], at, out, inserts, drops),
-    do: repair(rest, at + 1, out, inserts, [at | drops])
+  defp walk([%Message{role: :tool_result} | rest], at, out, inserts, drops),
+    do: walk(rest, at + 1, out, inserts, [at | drops])
 
-  defp repair([message | rest], at, out, inserts, drops),
-    do: repair(rest, at + 1, [message | out], inserts, drops)
+  defp walk([message | rest], at, out, inserts, drops),
+    do: walk(rest, at + 1, [message | out], inserts, drops)
 
-  defp repair([], _at, out, inserts, drops), do: {Enum.reverse(out), inserts, drops}
+  defp walk([], _at, out, inserts, drops), do: {Enum.reverse(out), inserts, drops}
 
   defp aborted(call), do: Message.tool_result(call, {:error, "aborted"})
 
@@ -120,17 +120,20 @@ defmodule Helyx.Session.Transcript do
   # The resume id to resume, or nil: the last resume id of `provider` in
   # `resume_ids` (the id and the number of transcript messages before the
   # provider gave it), when the last assistant message of the transcript
-  # came from this provider after that point. A message under the resume
-  # id shows that the provider read the replay and the prompt. Otherwise
-  # the provider does not have the transcript's end (another provider
-  # answered last, or the provider started fresh and the turn ended before
-  # its first message), and the provider gets it when it starts fresh.
+  # came from this provider after that point and no abort or failure cut
+  # it. A message under the resume id shows that the provider read the
+  # replay and the prompt. Otherwise the provider does not have the
+  # transcript's end (another provider answered last, the provider started
+  # fresh and the turn ended before its first message, or the last message
+  # is a partial reply that the session stored and the provider may not
+  # keep), and the provider gets it when it starts fresh.
   @spec resumable([Message.t()], %{String.t() => {String.t(), non_neg_integer()}}, String.t()) ::
           String.t() | nil
   def resumable(transcript, resume_ids, provider) do
     with {:ok, {resume_id, before}} <- Map.fetch(resume_ids, provider),
          # Enum.drop/2 shares the tail of the list; it does not copy it.
-         %Message{model: model} when is_binary(model) <-
+         %Message{model: model, stop_reason: stop}
+         when is_binary(model) and stop not in [:aborted, :error] <-
            last_assistant(Enum.drop(transcript, before)),
          {:ok, %ModelRef{provider: ^provider}} <- ModelRef.parse(model) do
       resume_id

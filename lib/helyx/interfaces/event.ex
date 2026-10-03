@@ -22,7 +22,8 @@ defmodule Helyx.Event do
     * `:message_end` – `%{message: Helyx.Message.t()}`; on a failed or
       aborted turn a partial assistant message with text only has `:error`
       or `:aborted` as its stop reason and `data.error` holds the reason; one
-      with a tool call closes with `:tool_use`, as at the other closes
+      with a tool call closes with `:tool_use`, as at the other closes. Both
+      join the transcript
     * `:tool_execution_start` – `%{tool_call: Helyx.Message.ToolCall.t()}`
     * `:tool_execution_end` – `%{message: Helyx.Message.t()}`, the tool
       result message; calls run one at a time, in call order

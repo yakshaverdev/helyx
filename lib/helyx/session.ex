@@ -125,7 +125,7 @@ defmodule Helyx.Session do
       # result with no open call. The session reads them with `aborted`
       # results and without the stray results, and writes nothing (#269, #417).
       {transcript, resume_ids} =
-        Transcript.abort_unanswered(resumed.messages, resumed.resume_ids)
+        Transcript.repair(resumed.messages, resumed.resume_ids)
 
       start_child(
         %State{

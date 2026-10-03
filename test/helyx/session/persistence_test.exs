@@ -64,6 +64,47 @@ defmodule Helyx.Session.PersistenceTest do
              "user:hello\nassistant:user:hello\nuser:again"
   end
 
+  for {model, stop} <- [{"hang", :aborted}, {"crash", :error}] do
+    @tag :tmp_dir
+    @tag :capture_log
+    test "a text-only partial message of an #{stop} turn joins with stop #{stop}", %{
+      core: core,
+      tmp_dir: dir
+    } do
+      {:ok, session} = Session.start(core, model: "test/#{unquote(model)}", sessions_dir: dir)
+      {:ok, _, _} = Session.subscribe(session)
+      :ok = Session.prompt(session, "hello")
+
+      if unquote(stop) == :aborted do
+        assert_receive {:helyx_event, %Event{type: :message_update}}
+        :ok = Session.abort(session)
+      end
+
+      assert stop_reason(collect_until(:agent_end)) == unquote(stop)
+      {:ok, snapshot, _ref} = Session.subscribe(session)
+      assert [_user, %{stop_reason: unquote(stop)}] = snapshot.messages
+
+      [path] = Path.wildcard(Path.join(dir, "**/#{session.id}.jsonl"))
+      last = path |> File.read!() |> String.split("\n", trim: true) |> List.last()
+      assert %{"role" => "assistant", "stop_reason" => unquote("#{stop}")} = JSON.decode!(last)
+
+      :ok = Session.set_model(session, "test/transcript")
+      :ok = Session.prompt(session, "next")
+      assert final_text(collect_until(:agent_end)) == "user:hello\nassistant:so far\nuser:next"
+
+      stop_session(session, &GenServer.stop/1)
+      {:ok, resumed} = Session.resume(core, sessions_dir: dir)
+      {:ok, _, _} = Session.subscribe(resumed)
+      :ok = Session.prompt(resumed, "again")
+
+      # The answer of the "next" turn holds the context it saw.
+      seen = "user:hello\nassistant:so far\nuser:next"
+
+      assert final_text(collect_until(:agent_end)) ==
+               "#{seen}\nassistant:#{seen}\nuser:again"
+    end
+  end
+
   describe "the session supervisor after a resume (#103)" do
     # The start message of a resume holds the whole transcript. The supervisor
     # hibernates after each message, which collects that copy. Short texts stay
