@@ -178,7 +178,7 @@ defmodule Helyx.Session.PersistenceTest do
     file
     |> Helyx.Session.File.append_message(%Helyx.Message{role: :assistant, content: [call]})
     |> Helyx.Session.File.append_message(Helyx.Message.user("next"))
-    |> Helyx.Session.File.append_harness_session("claude-code", "h1")
+    |> Helyx.Session.File.append_resume_id("claude-code", "h1")
 
     {:ok, session} = Session.resume(core, sessions_dir: dir)
     state = :sys.get_state(Session.pid(session))

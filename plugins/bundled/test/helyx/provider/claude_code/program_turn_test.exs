@@ -92,7 +92,8 @@ defmodule Helyx.Provider.ClaudeCode.ProgramTurnTest do
     assert %{turn: nil, notified?: false} = state
   end
 
-  test "a session shows a program turn after its turn, with origin :program", %{bin: bin} = ctx do
+  test "a session shows a program turn after its turn, with origin :provider",
+       %{bin: bin} = ctx do
     program = [delta("done"), assistant(%{type: "text", text: "done"}), program_result("done")]
     turn(bin, 1, 1, reply("first") ++ [note(), init() | program])
 
@@ -100,7 +101,7 @@ defmodule Helyx.Provider.ClaudeCode.ProgramTurnTest do
     prompt(session, "a")
     events = collect_until(:agent_end)
 
-    assert [%{origin: :program}] = of_type(events, :turn_start)
+    assert [%{origin: :provider}] = of_type(events, :turn_start)
     assert [%Message{role: :assistant, content: [%Message.Text{text: "done"}]}] = messages(events)
 
     assert [:user, :assistant, :assistant] =

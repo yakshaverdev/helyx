@@ -132,7 +132,7 @@ defmodule Helyx.Session do
       # A crash can leave tool calls with no result. The session reads them
       # with `aborted` results and writes nothing (#269).
       {transcript, resume_ids} =
-        Transcript.abort_unanswered(resumed.messages, resumed.harness_sessions)
+        Transcript.abort_unanswered(resumed.messages, resumed.resume_ids)
 
       start_child(
         %State{

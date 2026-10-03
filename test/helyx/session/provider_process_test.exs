@@ -895,7 +895,7 @@ defmodule Helyx.Session.ProviderProcessTest do
       {session, pid, proc}
     end
 
-    test "with no turn opens a turn with origin :program and no user message",
+    test "with no turn opens a turn with origin :provider and no user message",
          %{core: core} do
       {_session, pid, proc} = idle(core)
 
@@ -909,7 +909,7 @@ defmodule Helyx.Session.ProviderProcessTest do
 
       assert [:agent_start, :turn_start | _] = Enum.map(events, & &1.type)
       assert Enum.all?(events, &(&1.turn_id == "p1"))
-      assert %{origin: :program} = Enum.at(events, 1).data
+      assert %{origin: :provider} = Enum.at(events, 1).data
       assert final_text(events) == "bg"
 
       assert [:user, :assistant, :assistant] =
@@ -981,7 +981,7 @@ defmodule Helyx.Session.ProviderProcessTest do
 
       send(proc, {:batch, [{:event, "p2", :turn_start}, {:event, "p2", @done}]})
       events = collect_until(:agent_end)
-      assert %{type: :turn_start, turn_id: "p2", data: %{origin: :program}} = Enum.at(events, 1)
+      assert %{type: :turn_start, turn_id: "p2", data: %{origin: :provider}} = Enum.at(events, 1)
     end
 
     test "dropped in a switch close wait: the closing provider process gets aborted for its tool requests",

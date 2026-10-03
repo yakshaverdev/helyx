@@ -92,7 +92,7 @@ defmodule Helyx.Session.Transcript do
   end
 
   # The program session to resume, or nil: the last program session of
-  # `provider` in `harness_sessions` (its id and the number of transcript
+  # `provider` in `resume_ids` (its id and the number of transcript
   # messages before it started), when the last assistant message of the
   # transcript came from this provider after that session started. A
   # message of the program session shows that it read the replay and the
