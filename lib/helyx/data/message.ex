@@ -78,7 +78,7 @@ defmodule Helyx.Message do
   @doc """
   Builds the tool result message for a call from `{:ok, text}` or
   `{:error, text}`. The text is valid UTF-8: the hands repair the output of
-  a tool, and `Helyx.Session.Stream` repairs a program result.
+  a tool, and `Helyx.Session.Stream` repairs a tool result of a provider.
   """
   @spec tool_result(ToolCall.t(), {:ok, String.t()} | {:error, String.t()}) :: t()
   def tool_result(%ToolCall{} = call, {:ok, text}), do: tool_result(call, text, false)
@@ -100,7 +100,8 @@ defmodule Helyx.Message do
   # an older reader reads a new stop reason as no stop reason.
   @stop_reasons [:end_turn, :tool_use, :max_tokens]
 
-  # Claude Code's ids are UUIDs; 256 bytes leaves room for another program.
+  # The bundled providers give a UUID as the resume id, alone or with a
+  # short suffix; 256 bytes leaves room for the ids of another provider.
   @resume_id_max_bytes 256
 
   @typedoc "A stop reason of a message end, one of `stop_reasons/0`."

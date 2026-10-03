@@ -110,7 +110,7 @@ defmodule Helyx.Session.ProviderProcess do
 
   defp act(other, _proc), do: {:stop, {:bad_return, other}}
 
-  # A turn that the program started by itself (#240). Its id is the
+  # A turn that the provider started by itself (#240). Its id is the
   # provider's, with the checks of a resume id; the session opens or drops it.
   defp action({:event, turn_id, :turn_start} = action, proc) do
     if Message.resume_id?(turn_id),
@@ -122,7 +122,7 @@ defmodule Helyx.Session.ProviderProcess do
   # the session with this pid and its rejection reason, and the session
   # answers it, also after its turn. A terminal goes as `{:stream_end,
   # turn_id, terminal}`, as the check returns it. A malformed event stops
-  # the loop: the program's turn is then in an unknown state.
+  # the loop: the provider's turn is then in an unknown state.
   defp action({:event, turn_id, event}, proc) when is_binary(turn_id) do
     case Stream.check(event) do
       {:send, {:tool_request, call}, rejection} ->

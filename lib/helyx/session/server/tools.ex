@@ -21,7 +21,7 @@ defmodule Helyx.Session.Server.Tools do
 
   # A request of the current turn. A call id that is open in the turn (it
   # runs or waits) is outside the contract: `{:stop, reason}`, and the
-  # provider process stops. An answered id is not checked: no real program
+  # provider process stops. An answered id is not checked: no real provider
   # reuses an id (#369).
   def request(%State{activity: %Turn{} = turn} = state, %ToolCall{id: id} = call, rejection) do
     if turn.tool == id or Enum.any?(turn.waiting, &(&1.id == id)),
@@ -39,8 +39,8 @@ defmodule Helyx.Session.Server.Tools do
     end
   end
 
-  # A request of a turn that is not current: ended, dropped, or a program
-  # turn that the session did not open. The provider process `pid` that
+  # A request of a turn that is not current: ended, dropped, or a turn
+  # that the provider started and the session did not open. The provider process `pid` that
   # sent it gets `aborted`, after the interrupt or the next turn when it
   # came late.
   def late(state, pid, turn_id, id), do: send_result(state, pid, turn_id, id, {:error, "aborted"})

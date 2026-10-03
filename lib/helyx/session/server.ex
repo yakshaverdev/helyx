@@ -162,7 +162,7 @@ defmodule Helyx.Session.Server do
 
   # A Helyx tool request of the provider process `pid`, and its withdrawal
   # (`Tools`). The call and its result join the transcript from the
-  # program's own events, not from here. A request of a turn that is not
+  # provider's own events, not from here. A request of a turn that is not
   # current gets `aborted`.
   def handle_info(
         {:tool_request, _pid, turn_id, call, rejection},

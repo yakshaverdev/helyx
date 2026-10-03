@@ -37,11 +37,11 @@ defmodule Helyx.Event do
     * `:model_change` – `%{model: String.t()}`, the new `provider/model` ref;
       the switch belongs to no turn, so the turn id is always nil
     * `:provider_session` – `%{provider: String.t(), resume_id:
-      String.t(), lost: boolean, cut: non_neg_integer}`: a turn
-      started a fresh program session. `lost` is true when the turn asked
-      to resume another one that the provider no longer has; `cut` is the
-      number of transcript messages the provider left out of what it sent
-      to the fresh session
+      String.t(), lost: boolean, cut: non_neg_integer}`: in a turn, the
+      provider started fresh with a new resume id. `lost` is true when the
+      turn asked to resume another resume id that the provider no longer
+      has; `cut` is the number of transcript messages the provider left out
+      of what it sent when it started fresh
     * `:steer_unconfirmed` – `%{text: String.t()}`: a steer of a turn
       that Helyx cannot confirm the provider took, with its text. It
       goes out at the end of the turn, or after it when the answer comes
