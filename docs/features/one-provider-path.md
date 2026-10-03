@@ -40,7 +40,7 @@ The rules of the contract above (#298, #299, #300).
 
 **The process.** The three callbacks run in one provider process per session, a Task of the hands, so `Helyx.Tool.hold/1` works in them, and a provider that holds a handle implements `release/3`. `info/2` gets every other message of the provider process: the port data, a monitor, a timer.
 
-**Init.** `init/3` gets the checked tool specs of session start. Its `opts` carry `:core`, `:session_id`, `:cwd`, and `:resume_id`: the id of the program session to resume, or nil for a fresh one. The session passes the id of the provider's last `resume` event only when the last assistant message of the transcript came from this provider and its stop reason is not `:aborted` or `:error` (`Transcript.resumable/3`), so a lost id, a switch from another provider, or a cut last message gives nil.
+**Init.** `init/3` gets the checked tool specs of session start. Its `opts` carry `:core`, `:session_id`, `:cwd`, and `:resume_id`: the id of the program session to resume, or nil for a fresh one. The session passes the id of the provider's last `resume` event only when the last assistant message of the transcript came from this provider and its stop reason is not `:aborted` or `:error` (`Transcript.resumable/3`).
 
 **Replies.** `request/3` gets a request from Core with its `from`. The provider replies now or later with the action `{:reply, from, value}`.
 
