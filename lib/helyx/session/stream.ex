@@ -109,13 +109,14 @@ defmodule Helyx.Session.Stream do
   end
 
   # A provider asks the session to run a Helyx tool. The arguments get the
-  # checks of a tool call; a call with an integer over the digit limit gets
-  # its rejection, and the provider process answers it with an error result
-  # (`Helyx.Session.ProviderProcess`).
+  # checks of a tool call, and the checked call goes on as
+  # `{:tool_request, call}`; a call with an integer over the digit limit gets
+  # its rejection, and the session answers it with an error result
+  # (`Helyx.Session.Server.Tools`).
   def check({:tool_request, id, name, args} = event) do
     case tool_call(%Message.ToolCall{id: id, name: name, arguments: args}) do
       {:send, {:tool_call, call}, rejection} ->
-        {:send, {:tool_request, call.id, call.name, call.arguments}, rejection}
+        {:send, {:tool_request, call}, rejection}
 
       {:bad, _error} ->
         {:bad, malformed(event)}

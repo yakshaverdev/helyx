@@ -39,7 +39,7 @@ defmodule Helyx.Session.ProviderProcessTest do
         | provider_ms:
             Map.merge(
               state.provider_ms,
-              Map.new(Keyword.take(bounds, [:turn, :interrupt, :steer, :close, :idle]))
+              Map.new(Keyword.take(bounds, [:turn, :interrupt, :steer, :context, :close, :idle]))
             )
       }
     end)
@@ -779,19 +779,23 @@ defmodule Helyx.Session.ProviderProcessTest do
       assert_received {:conn, :context, ^proc, {:context, ^next_id, {:ok, _}}}
     end
 
-    for ids <- [[:live, :live], [:other]] do
-      test "need_context for #{inspect(ids)} is a bad action and stops the provider process",
-           %{core: core} do
-        {_session, _hands, proc, turn_id} = context_turn(core)
+    test "a second need_context with one open is a bad action and stops the provider process",
+         %{core: core} do
+      {_session, _hands, proc, turn_id} = context_turn(core)
+      send(proc, {:batch, [{:need_context, turn_id}, {:need_context, turn_id}]})
 
-        actions =
-          for id <- unquote(ids), do: {:need_context, if(id == :live, do: turn_id, else: "other")}
+      assert error(collect_until(:agent_end)) == {:bad_action, {:need_context, turn_id}}
+      refute Process.alive?(proc)
+    end
 
-        send(proc, {:batch, actions})
+    test "need_context of a turn that is not current is dropped", %{core: core} do
+      {_session, _hands, proc, turn_id} = context_turn(core)
+      send(proc, {:batch, [{:need_context, "other"}]})
+      send(proc, {:need_context, turn_id, "fresh"})
 
-        assert error(collect_until(:agent_end)) == {:bad_action, List.last(actions)}
-        refute Process.alive?(proc)
-      end
+      assert List.last(collect_until(:agent_end)).data.stop_reason == :end_turn
+      refute_received {:conn, :context, _, {:context, "other", _}}
+      assert Process.alive?(proc)
     end
 
     for {text, reason} <- [{"nil_build", :bad_context}, {"raise_prepare", :task_exit}] do
@@ -811,11 +815,11 @@ defmodule Helyx.Session.ProviderProcessTest do
       end
     end
 
-    test "a context with no answer in its callback stops the provider process", %{core: core} do
-      {_session, _hands, proc, turn_id} = context_turn(core, "context_hold")
+    test "a context with no answer at its bound stops the provider process", %{core: core} do
+      {_session, _hands, proc, turn_id} = context_turn(core, "context_hold", context: 100)
       send(proc, {:need_context, turn_id, "fresh"})
 
-      assert error(collect_until(:agent_end)) == {:context_not_answered, turn_id}
+      assert error(collect_until(:agent_end)) == :provider_timeout
       refute Process.alive?(proc)
     end
 
@@ -937,8 +941,8 @@ defmodule Helyx.Session.ProviderProcessTest do
       assert final_text(events) == "so far"
     end
 
-    # #319: the loop drops a program turn during a turn too, so the live turn keeps its tool request
-    # and its context request.
+    # #319: a program turn dropped during a turn leaves the turn its tool
+    # request and its context request.
     test "during a turn keeps the turn's tool request and context request", %{core: core} do
       {session, _pid, _hands} = start(core, "context")
       :ok = Session.prompt(session, "one")
@@ -957,10 +961,10 @@ defmodule Helyx.Session.ProviderProcessTest do
       assert Process.alive?(proc)
     end
 
-    # #339: the session drops a program turn that starts in its wait, and
-    # the loop ends it too: each tool request of it gets `aborted`, its open
-    # context request an error, and a later program turn opens.
-    test "dropped in a wait: its requests get an error, and a later program turn opens",
+    # #339: the session drops a program turn that starts in its wait: each
+    # tool request of it gets `aborted`, its context request gets nothing,
+    # and a later program turn opens.
+    test "dropped in a wait: its tool requests get aborted, and a later program turn opens",
          %{core: core} do
       {session, pid, _hands} = start(core, "busy_turn")
       turn(session, "one")
@@ -969,17 +973,17 @@ defmodule Helyx.Session.ProviderProcessTest do
       send(pid, {:timeout, :sys.get_state(pid).idle, :idle_close})
       assert_receive {:conn, :tool_result, ^proc, {:tool_result, "p1", "c1", aborted}}
       assert aborted == {:error, "aborted"}
-      assert_receive {:conn, :context, ^proc, {:context, "p1", {:error, :turn_dropped}}}
 
       send(proc, {:tool_request, "p1", "c2", "upcase", %{"text" => "hi"}})
       assert_receive {:conn, :tool_result, ^proc, {:tool_result, "p1", "c2", ^aborted}}
+      refute_received {:conn, :context, _, _}
 
       send(proc, {:batch, [{:event, "p2", :turn_start}, {:event, "p2", @done}]})
       events = collect_until(:agent_end)
       assert %{type: :turn_start, turn_id: "p2", data: %{origin: :program}} = Enum.at(events, 1)
     end
 
-    test "dropped in a switch close wait: the closing provider process ends it too",
+    test "dropped in a switch close wait: the closing provider process gets aborted for its tool requests",
          %{core: core} do
       {session, _pid, _hands} = start(core, "late_close")
       turn(session, "one")

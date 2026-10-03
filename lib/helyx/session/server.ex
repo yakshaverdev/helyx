@@ -7,10 +7,10 @@ defmodule Helyx.Session.Server do
 
   alias Helyx.{Context, Message, ModelRef}
   alias Helyx.Session.{Hands, Id, Queue, Snapshot}
-  alias Helyx.Session.Server.{Messages, ProviderConn, Record, State, Steering, Stop}
+  alias Helyx.Session.Server.{Messages, ProviderConn, Record, State, Steering, Stop, Tools}
   alias Helyx.Session.{Turn, Wait}
 
-  import State, only: [ask: 4, drop_turn: 2, provider_pid: 1]
+  import State, only: [ask: 4, provider_pid: 1]
   import Record, only: [emit: 3, emit: 4]
 
   use GenServer, restart: :temporary, shutdown: Stop.shutdown_ms()
@@ -65,7 +65,8 @@ defmodule Helyx.Session.Server do
     {:reply, {:error, :turn_running}, state}
   end
 
-  # A steer on a `submitted` turn goes to the provider process; in
+  # A steer on a `submitted` turn, also with a context request open, goes
+  # to the provider process; in
   # `preparing` and `submitting` it stays in the local queue (see "Turn
   # states" in `docs/features/long-lived-harness.md`). A sent steer counts
   # in the 32 steers until its `user_message` and its answer (see
@@ -73,8 +74,9 @@ defmodule Helyx.Session.Server do
   def handle_call(
         {:steer, text},
         _from,
-        %State{activity: %Turn{phase: :submitted}} = state
-      ) do
+        %State{activity: %Turn{phase: phase}} = state
+      )
+      when phase in [:submitted, :context] do
     if Queue.room?(state.queue),
       do: {:reply, :ok, Steering.send_steer(text, state)},
       else: {:reply, {:error, :queue_full}, state}
@@ -169,46 +171,25 @@ defmodule Helyx.Session.Server do
       ),
       do: {:noreply, Steering.take(state, steer_id)}
 
-  # The provider asks for a Helyx tool (see "Helyx tool calls" in
-  # `docs/features/long-lived-harness.md`). The loop owns the waiting
-  # queue and sends a request only when the result of the one before came,
-  # so `tool` holds only the running call. The call
-  # and its result join the transcript from the program's own events, not
-  # from here.
+  # A Helyx tool request of the provider process `pid`, and its withdrawal
+  # (`Tools`). The call and its result join the transcript from the
+  # program's own events, not from here. A request of a turn that is not
+  # current gets `aborted`.
   def handle_info(
-        {:stream_event, turn_id, {:tool_request, id, name, args}},
-        %State{
-          activity: %Turn{id: turn_id} = turn,
-          conn: %ProviderConn{pid: pid}
-        } = state
+        {:tool_request, _pid, turn_id, call, rejection},
+        %State{activity: %Turn{id: turn_id}} = state
       ) do
-    call = %Message.ToolCall{id: id, name: name, arguments: args}
-    from = ask(state, pid, {:tool_start, turn_id, id}, :tool_start)
-    {:noreply, %{state | activity: %{turn | tool: call, start: from}}}
+    case Tools.request(state, call, rejection) do
+      {:ok, state} -> {:noreply, state}
+      {:stop, reason} -> {:noreply, stop_provider(state, reason)}
+    end
   end
 
-  # The loop's answer to the ask: only `:ok` runs the call. A missed
-  # deadline stops the provider process, and its `:provider_down` fails the
-  # turn; an answer after the turn goes to the wait after the turn.
-  def handle_info(
-        {:provider_reply, from, :tool_start, reply},
-        %State{activity: %Turn{start: from, tool: call} = turn} = state
-      ) do
-    state = %{state | activity: %{turn | start: nil}}
+  def handle_info({:tool_request, pid, turn_id, call, _rejection}, state),
+    do: {:noreply, Tools.late(state, pid, turn_id, call.id)}
 
-    {:noreply,
-     if(reply == :ok, do: run_on_hands(call, state), else: put_in(state.activity.tool, nil))}
-  end
-
-  # The provider withdrew a tool request: a running one is killed, and its
-  # result, which the hands still send, is dropped by the loop.
-  def handle_info(
-        {:cancel_tool, turn_id, call_id},
-        %State{activity: %Turn{id: turn_id, tool: %{id: call_id}}} = state
-      ) do
-    Hands.kill(state.hands, turn_id, call_id)
-    {:noreply, state}
-  end
+  def handle_info({:cancel_tool, turn_id, call_id}, %State{activity: %Turn{id: turn_id}} = state),
+    do: {:noreply, Tools.cancel(state, call_id)}
 
   def handle_info(
         {:stream_event, turn_id, {:resume, id, cut}},
@@ -234,7 +215,7 @@ defmodule Helyx.Session.Server do
 
   # A turn that the program started by itself (#240) opens only with no
   # turn and no wait: a submitted turn with no user message. Any other
-  # time it is dropped with its events, also in the loop (#339).
+  # time it is dropped with its events; its tool requests get `aborted`.
   def handle_info(
         {:stream_event, turn_id, :turn_start},
         %State{activity: :idle, conn: %ProviderConn{ready: true, model: model}} = state
@@ -243,7 +224,7 @@ defmodule Helyx.Session.Server do
     {:noreply, open_turn(state, turn, %{origin: :program})}
   end
 
-  def handle_info({:stream_event, id, :turn_start}, state), do: {:noreply, drop_turn(state, id)}
+  def handle_info({:stream_event, _id, :turn_start}, state), do: {:noreply, state}
 
   def handle_info({:stream_event, turn_id, event}, %State{activity: %Turn{id: turn_id}} = state) do
     %State{activity: turn} = state = Messages.start_assistant_message(state)
@@ -258,20 +239,12 @@ defmodule Helyx.Session.Server do
     {:noreply, end_turn(terminal, state)}
   end
 
-  # The result of a Helyx tool goes to the provider
-  # process, with the tool result bound. Its answer is awaited, as a steer's
-  # is, so no turn starts while its kill is armed.
+  # The hands' result of the running Helyx tool.
   def handle_info(
         {:tool_result, turn_id, call_id, result},
-        %State{
-          activity: %Turn{id: turn_id, tool: %{id: call_id}} = turn,
-          conn: %ProviderConn{pid: pid}
-        } = state
-      ) do
-    from = ask(state, pid, {:tool_result, turn_id, call_id, result}, :tool_result)
-
-    {:noreply, %{state | activity: %{turn | tool: nil, results: [from | turn.results]}}}
-  end
+        %State{activity: %Turn{id: turn_id, tool: call_id}} = state
+      ),
+      do: {:noreply, Tools.result(state, result)}
 
   # The messages of a turn (see "Turn states" in
   # `docs/features/long-lived-harness.md`). The turn is `preparing` until
@@ -297,17 +270,29 @@ defmodule Helyx.Session.Server do
   def handle_info({:prepare_failed, turn_id, reason}, state),
     do: handle_info({:prepared, turn_id, {:error, {:task_exit, reason}}}, state)
 
-  # A context request (C1-C4, `one-provider-path.md`), only for the live
-  # turn, after its events; the context is answered as a tool result is.
-  def handle_info({:need_context, turn_id}, %State{activity: %Turn{id: turn_id}} = state),
-    do: {:noreply, prepare(state)}
+  # A context request (C1-C4, `one-provider-path.md`), after the events
+  # before it: only for the submitted turn with no context request open;
+  # for the current turn at any other time it is a bad action. The context
+  # is answered as a tool result is. A request or a context of a turn that
+  # ended is dropped.
+  def handle_info(
+        {:need_context, turn_id},
+        %State{activity: %Turn{id: turn_id, phase: :submitted}} = state
+      ),
+      do: {:noreply, prepare(put_in(state.activity.phase, :context))}
+
+  def handle_info(
+        {:need_context, turn_id} = action,
+        %State{activity: %Turn{id: turn_id}} = state
+      ),
+      do: {:noreply, stop_provider(state, {:bad_action, action})}
 
   def handle_info(
         {:prepared, turn_id, result},
-        %State{activity: %Turn{id: turn_id} = turn, conn: %ProviderConn{pid: pid}} = state
+        %State{activity: %Turn{id: turn_id, phase: :context} = turn, conn: conn} = state
       ) do
-    from = ask(state, pid, {:context, turn_id, result}, :context)
-    {:noreply, put_in(state.activity.results, [from | turn.results])}
+    from = ask(state, conn.pid, {:context, turn_id, result}, :context)
+    {:noreply, %{state | activity: %{turn | phase: :submitted, results: [from | turn.results]}}}
   end
 
   # An answer other than `:ok` ends the provider process, and its
@@ -604,11 +589,13 @@ defmodule Helyx.Session.Server do
   defp end_turn({:error, reason}, state), do: fail_turn(reason, state)
   defp end_turn(:stream_ended, state), do: fail_turn(:stream_ended, state)
 
-  # Runs a Helyx tool request on the hands, with no event: the provider's
-  # own events show the call.
-  defp run_on_hands(call, %State{activity: turn} = state) do
-    :ok = Hands.run(state.hands, turn.id, call)
-    state
+  # A provider output outside the contract: the turn fails, and the
+  # provider process stops with `{:shutdown, reason}`; the hands release it
+  # and the wait lasts until its `:provider_down`.
+  defp stop_provider(%State{conn: %ProviderConn{pid: pid}} = state, reason) do
+    Process.exit(pid, {:shutdown, reason})
+    state = fail_turn(reason, %{state | conn: nil})
+    put_in(state.activity.provider, pid)
   end
 
   # A partial assistant message is closed with a failure stop reason so

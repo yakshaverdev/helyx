@@ -49,8 +49,9 @@ defmodule Helyx.Provider do
     * `{:steer, ...}`: `:ok` when the program has the steer, `:rejected`
       when it is confirmed that the program did not get it, and
       `{:error, reason}` when it is not known.
-    * `{:tool_result, ...}`, `{:context, ...}`: `:ok`, inside the callback
-      that got the request, or the provider process stops.
+    * `{:tool_result, ...}`, `{:context, ...}`: `:ok` when written. A
+      tool result can arrive after the interrupt or the next turn of its
+      turn. Each call still gets exactly one result.
     * `:close`: `:ok` after the program exited.
     * `:idle_close`: `:ok` after the program exited, or `:busy` when the
       program still runs work of its own.
@@ -95,8 +96,7 @@ defmodule Helyx.Provider do
   `init/3` and every request from the session have a deadline. When the
   reply has not come by it, Core kills the provider process, and a running
   turn fails with `:provider_timeout`, or with the release error of a
-  handle that the provider held. A `tool_result` or `context` request that
-  Core makes itself has no deadline of its own.
+  handle that the provider held.
   """
 
   use Helyx.Interface, mode: :multi, required: true

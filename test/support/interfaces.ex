@@ -650,6 +650,7 @@ defmodule Helyx.Test.Connected do
   #                      name, args}` asks for a Helyx tool, and `{:cancel,
   #                      turn_id, id}` withdraws it; `{:ping, pid}`
   #                      sends `:pong` to pid
+  #   "tools_late"       "tools", and a tool result answers after 100 ms
   #   "label"            "echo"; a provider process started with no
   #                      `:resume_id` reports a new label on its
   #                      first turn

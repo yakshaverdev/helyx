@@ -6,14 +6,14 @@ defmodule Helyx.Session.Turn do
   # `model` and `provider` are fixed when the turn starts, so a model switch
   # during the turn takes effect on the next one. `resumed` is the resume id
   # that the connect of the turn passed to the provider, or nil. A turn has
-  # a `phase`, `:preparing`, `:submitting`, or
-  # `:submitted`, the prepared `context` until it is sent, and the
-  # `pending` ref of the answer to `{:turn, ...}`. `tool` is the Helyx tool
-  # request that runs on the hands (the provider loop
-  # keeps the waiting ones), `start` the `from` ref of its
-  # `{:tool_start, ...}` ask with no answer, and `results` the `from` refs
-  # of the `tool_result` requests with no answer. At the turn end both go
-  # to the wait's `results`.
+  # a `phase`, `:preparing`, `:submitting`, `:submitted`, or `:context`
+  # (submitted, with a context request open), the prepared `context` until
+  # it is sent, and the `pending` ref of the answer to `{:turn, ...}`.
+  # The Helyx tool requests (`Helyx.Session.Server.Tools`): `tool` is the
+  # call id that runs on the hands, `killed?` whether the provider withdrew
+  # it, `waiting` the calls after it, and `ids` every call id of the turn.
+  # `results` holds the `from` refs of the `tool_result` and `context`
+  # requests with no answer; at the turn end they go to the wait's `results`.
 
   alias Helyx.{Message, ModelRef}
 
@@ -27,9 +27,11 @@ defmodule Helyx.Session.Turn do
     :phase,
     :context,
     :pending,
-    :start,
+    :tool,
     calls: [],
-    tool: nil,
+    killed?: false,
+    waiting: [],
+    ids: MapSet.new(),
     results: []
   ]
 

@@ -23,7 +23,7 @@ defmodule Helyx.Session.WaitTest do
   end
 
   test "with no provider process, no request of the turn is open" do
-    turn = turn(start: make_ref(), results: [make_ref()])
+    turn = turn(results: [make_ref()])
     assert Wait.next(Wait.after_turn(turn, self()), self()) == :open
     assert {:done, []} = Wait.next(Wait.after_turn(turn, nil), nil)
   end
@@ -46,9 +46,14 @@ defmodule Helyx.Session.WaitTest do
     assert {:done, []} = Wait.next(wait, self())
   end
 
-  test "nothing goes out before the hands answer; then the tool result, then the interrupt" do
+  test "nothing goes out before the hands answer; then each open tool request, then the interrupt" do
     pid = self()
-    wait = %Wait{hands: make_ref(), tool: {"t1", "c1"}, interrupt: {pid, "t1"}}
+
+    turn =
+      turn(tool: "c1", waiting: [%Helyx.Message.ToolCall{id: "c2", name: "x", arguments: %{}}])
+
+    wait = Wait.after_turn(turn, pid)
+    wait = %{wait | hands: make_ref(), interrupt: {pid, "t1"}}
     assert Wait.next(wait, pid) == :open
 
     wait = %{wait | hands: nil}
@@ -58,6 +63,13 @@ defmodule Helyx.Session.WaitTest do
 
     tool_from = make_ref()
     wait = Wait.sent(wait, r, tool_from)
+
+    assert {:send, wait, ^pid, {:tool_result, "t1", "c2", {:error, "aborted"}} = r} =
+             Wait.next(wait, pid)
+
+    wait_from = make_ref()
+    wait = Wait.sent(wait, r, wait_from)
+    wait = Wait.answer(wait, :tool_result, wait_from, :ok)
     assert {:send, wait, ^pid, {:interrupt, "t1"} = i} = Wait.next(wait, pid)
     reply = make_ref()
     wait = Wait.sent(wait, i, reply)
@@ -83,7 +95,7 @@ defmodule Helyx.Session.WaitTest do
   test "a reply whose ref is not stored changes nothing" do
     wait = %Wait{idle: make_ref(), reply: make_ref(), provider: self()}
 
-    for kind <- [:idle_close, :interrupt, :tool_start, :tool_result, :turn] do
+    for kind <- [:idle_close, :interrupt, :tool_result, :turn] do
       assert Wait.answer(wait, kind, make_ref(), :ok) == wait
     end
   end

@@ -19,8 +19,8 @@ defmodule Helyx.Session.Server.State do
 
   @enforce_keys [:id, :core, :model, :provider, :cwd]
 
-  # The armed kill of a turn, interrupt, steer, tool result, tool start,
-  # or context request: the loop writes one stdio line and replies, well
+  # The armed kill of a turn, interrupt, steer, tool result, or context
+  # request: the loop writes one stdio line and replies, well
   # under 10 ms.
   @provider_reply_ms 2_000
   # The armed kill of a close: end of input, then the exit.
@@ -67,7 +67,6 @@ defmodule Helyx.Session.Server.State do
       steer: @provider_reply_ms,
       tool_result: @provider_reply_ms,
       context: @provider_reply_ms,
-      tool_start: @provider_reply_ms,
       close: @provider_close_ms,
       idle: 1_800_000
     },
@@ -81,16 +80,6 @@ defmodule Helyx.Session.Server.State do
 
   # Sends `request` to the provider process with the bound `key` of `provider_ms`.
   def ask(state, pid, req, key), do: ProviderRequest.ask(pid, req, state.provider_ms[key])
-
-  # The session dropped the program turn `turn_id` (#339). A loop that had
-  # no live turn took it as live, so the current provider process and the
-  # one that the wait closes end it too; any other loop ignores the id.
-  def drop_turn(%__MODULE__{activity: activity} = state, turn_id) do
-    closing = if is_struct(activity, Wait), do: activity.provider
-    pids = Enum.uniq([provider_pid(state), closing])
-    for pid <- pids, pid, do: ProviderRequest.tell(pid, {:turn_dropped, turn_id})
-    state
-  end
 
   def base_opts(state), do: [core: state.core, session_id: state.id, cwd: state.cwd]
 

@@ -5,8 +5,8 @@ defmodule Helyx.Session.ProviderRequest do
   # cancel of the kill at the answer, its kind, the replies that its kind
   # takes, and the replies that end the provider process.
   #
-  # Every session request but `{:turn_dropped, ...}` (`tell/2`) has a kill of
-  # the provider process armed at the OTP timer server (`ask/3`). The loop of
+  # Every session request has a kill of the provider process armed at the
+  # OTP timer server (`ask/3`). The loop of
   # `Helyx.Session.ProviderProcess` cancels the kill when the provider
   # replies, and sends the reply after the cancel (`answer/5`). A callback that blocks
   # also blocks the cancel, so a blocked loop is always killed at the bound,
@@ -14,7 +14,7 @@ defmodule Helyx.Session.ProviderRequest do
   # cancel, so a reply can still be followed by the kill; the session takes
   # the `:provider_down` as the last word.
 
-  @type t :: Helyx.Provider.request() | {:tool_start, String.t(), String.t()}
+  @type t :: Helyx.Provider.request()
 
   @doc """
   Sends `request` to the provider process `pid` with a kill armed at `ms`,
@@ -29,10 +29,6 @@ defmodule Helyx.Session.ProviderRequest do
     from
   end
 
-  @doc "Sends `request` to the provider process `pid` with no kill and no reply."
-  @spec tell(pid(), {:turn_dropped, String.t()}) :: term()
-  def tell(pid, request), do: send(pid, {:provider_request, make_ref(), nil, request})
-
   @doc """
   Answers the request `from` of `kind` to `session` with `value`: the
   armed kill `tref` is cancelled first.
@@ -44,7 +40,7 @@ defmodule Helyx.Session.ProviderRequest do
   end
 
   @doc """
-  The first element of the request (`:turn`, `:steer`, `:tool_start`, ...),
+  The first element of the request (`:turn`, `:steer`, `:tool_result`, ...),
   or the request itself for `:close` and `:idle_close`.
   """
   @spec kind(t()) :: atom()
