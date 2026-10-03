@@ -15,30 +15,20 @@ defmodule Helyx.Session.Server.TurnLoop do
   import Helyx.Session.Server.Record, only: [emit: 3]
 
   alias Helyx.{Context, Message}
-  alias Helyx.Session.{Hands, Id, ProviderProcess, Queue, Transcript, Turn}
+  alias Helyx.Session.{Hands, Id, ProviderProcess, Transcript, Turn}
   alias Helyx.Session.Server.{Messages, ProviderConn, State, Steering, Wait}
 
   # A client prompt, steer, or follow-up by phase; returns the reply and the
   # state. An abort waits for the hands: a turn that starts now could send
   # a tool call to the hands during their release, and that call would
-  # block the session, so every message queues until the hands answer. A
-  # steer on a `submitted` turn, also with a context request open, goes to
-  # the provider process; in `preparing` and `submitting` it stays in the
-  # local queue ("Turn states"). A sent steer counts in the 32 steers until
-  # its `user_message` and its answer (`Helyx.Session.Queue`).
+  # block the session, so every message queues until the hands answer.
+  # `Steering.steer/2` accepts a steer on a turn or a wait.
   def admit(_op, text, %State{activity: :idle} = state), do: {:ok, begin_turn(state, [text])}
 
   def admit(:prompt, _text, %State{activity: %Turn{}} = state),
     do: {{:error, :turn_running}, state}
 
-  def admit(:steer, text, %State{activity: %Turn{phase: phase}} = state)
-      when phase in [:submitted, :context] do
-    if Queue.room?(state.queue),
-      do: {:ok, Steering.send_steer(text, state)},
-      else: {{:error, :queue_full}, state}
-  end
-
-  def admit(:steer, text, state), do: Steering.queue(state, :steers, text)
+  def admit(:steer, text, state), do: Steering.steer(state, text)
   def admit(_op, text, state), do: Steering.queue(state, :follow_ups, text)
 
   # A lifecycle message, matched to the current turn, wait, or provider

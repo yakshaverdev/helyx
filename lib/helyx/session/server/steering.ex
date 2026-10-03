@@ -9,7 +9,7 @@ defmodule Helyx.Session.Server.Steering do
   import Helyx.Session.Server.State, only: [ask: 4, provider_pid: 1]
   import Helyx.Session.Server.Record, only: [emit: 3, emit: 4]
 
-  alias Helyx.Session.{Id, Queue}
+  alias Helyx.Session.{Id, Queue, Turn}
   alias Helyx.Session.Server.{Messages, ProviderConn, State}
 
   # Returns the reply to the client and the state.
@@ -36,19 +36,38 @@ defmodule Helyx.Session.Server.Steering do
     {steers, put(state, {queue, []})}
   end
 
-  # Sends a steer to the provider process with its own id and the steer
-  # bound (see `Helyx.Session.ProviderProcess`).
-  def send_steer(text, %State{activity: turn, conn: %ProviderConn{pid: pid}} = state) do
-    steer_id = Id.new()
-    from = ask(state, pid, {:steer, turn.id, steer_id, text}, :steer)
-    %{state | queue: Queue.sent(state.queue, from, steer_id, text)}
+  # Accepts a client steer on a turn or a wait, in one step: it takes a
+  # place in the 32 steers or is rejected with `:queue_full`. A steer on a
+  # `submitted` turn, also with a context request open, goes to the
+  # provider process; in `preparing` and `submitting` it stays in the local
+  # queue ("Turn states"), and so it does in a wait. A sent steer counts in
+  # the 32 steers until its `user_message` and its answer
+  # (`Helyx.Session.Queue`).
+  # Returns the reply to the client and the state.
+  def steer(%State{activity: %Turn{phase: phase}} = state, text)
+      when phase in [:submitted, :context] do
+    if Queue.room?(state.queue),
+      do: {:ok, send_steer(text, state)},
+      else: {{:error, :queue_full}, state}
   end
 
+  def steer(state, text), do: queue(state, :steers, text)
+
   # At the `:ok` of the turn, the steers that waited in `submitting` go to
-  # the provider process, in order.
+  # the provider process, in order. Each keeps the place it took in the
+  # queue.
   def send_local_steers(%State{} = state) do
     {steers, queue} = Queue.drain_steers(state.queue)
     Enum.reduce(steers, put(state, {queue, []}), &send_steer/2)
+  end
+
+  # Sends a steer to the provider process with its own id and the steer
+  # bound (see `Helyx.Session.ProviderProcess`). The caller holds its place
+  # in the 32 steers.
+  defp send_steer(text, %State{activity: turn, conn: %ProviderConn{pid: pid}} = state) do
+    steer_id = Id.new()
+    from = ask(state, pid, {:steer, turn.id, steer_id, text}, :steer)
+    %{state | queue: Queue.sent(state.queue, from, steer_id, text)}
   end
 
   def take(state, steer_id), do: put(state, Queue.take(state.queue, steer_id))

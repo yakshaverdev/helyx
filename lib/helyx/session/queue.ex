@@ -70,7 +70,8 @@ defmodule Helyx.Session.Queue do
   @spec drain_steers(t()) :: {[String.t()], t()}
   def drain_steers(%__MODULE__{steers: steers} = queue), do: {steers, %{queue | steers: []}}
 
-  # The running turn sent the steer.
+  # The running turn sent the steer. It does not check the limit: the
+  # caller holds the place of the steer.
   @spec sent(t(), reference(), String.t(), String.t()) :: t()
   def sent(%__MODULE__{sent: sent} = queue, from, steer_id, text),
     do: %{queue | sent: sent ++ [{from, steer_id, text, :sent}]}
