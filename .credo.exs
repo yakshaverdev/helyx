@@ -20,9 +20,6 @@
           {Helyx.Credo.FileLength,
            [
              allowed: %{
-               "lib/helyx/session/server.ex" =>
-                 {621,
-                  "the GenServer callbacks and the turn and wait transitions of one session process"},
                "plugins/bundled/lib/helyx/provider/codex.ex" =>
                  {532,
                   "the Codex turn, thread, interrupt, and steer state over one JSON-RPC id table"},

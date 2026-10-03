@@ -10,13 +10,12 @@ end
 
 defmodule Helyx.Session.Server.State do
   @moduledoc false
-  # The state of one session process, the requests to its provider
-  # process, and the connection of that process (`conn`, `idle`): its
-  # start, its idle timer, and the start of the wait for its end
-  # (docs/features/long-lived-harness.md).
+  # The state of one session process, and the requests to its provider
+  # process. `Helyx.Session.Server.TurnLoop` makes the transitions of
+  # `activity` and `conn` (docs/features/long-lived-harness.md).
 
-  alias Helyx.Session.{Hands, ProviderProcess, ProviderRequest, Queue, Transcript, Turn}
-  alias Helyx.Session.Server.{ProviderConn, Wait}
+  alias Helyx.Session.{ProviderRequest, Queue}
+  alias Helyx.Session.Server.ProviderConn
 
   @enforce_keys [:id, :core, :model, :provider, :cwd]
 
@@ -71,8 +70,10 @@ defmodule Helyx.Session.Server.State do
       close: @provider_close_ms,
       idle: 1_800_000
     },
-    # The current idle timer (`:erlang.start_timer/3`, see `arm_idle/1`),
-    # or nil.
+    # The armed kill of the prepare Task (`TurnLoop`), in ms. A test seam.
+    prepare_ms: 10_000,
+    # The current idle timer (`:erlang.start_timer/3`, see
+    # `TurnLoop.arm_idle/1`), or nil.
     idle: nil
   ]
 
@@ -81,56 +82,4 @@ defmodule Helyx.Session.Server.State do
 
   # Sends `request` to the provider process with the bound `key` of `provider_ms`.
   def ask(state, pid, req, key), do: ProviderRequest.ask(pid, req, state.provider_ms[key])
-
-  def base_opts(state), do: [core: state.core, session_id: state.id, cwd: state.cwd]
-
-  # Starts the provider process of the turn under the hands, with the
-  # resume id of the transcript, and monitors it: its `:DOWN` outside a
-  # turn drops it at once. A provider process of another model was closed
-  # before the turn (`close_switched/1`).
-  def connect(
-        %__MODULE__{conn: %ProviderConn{model: model}, activity: %Turn{model: model}} = state
-      ),
-      do: {:ok, state}
-
-  def connect(%__MODULE__{conn: nil, activity: turn} = state) do
-    resumed = Transcript.resumable(state.transcript, state.resume_ids, turn.model.provider)
-
-    args = %{
-      provider: turn.provider,
-      model: turn.model.model,
-      tools: state.tools,
-      opts: [resume_id: resumed] ++ base_opts(state),
-      session: self()
-    }
-
-    with {:ok, pid} <-
-           Hands.start_provider(state.hands, turn.provider, ProviderProcess.run(args)) do
-      Process.monitor(pid)
-      conn = %ProviderConn{pid: pid, model: turn.model, turn: turn.id}
-      {:ok, %{state | conn: conn, activity: %{turn | resumed: resumed}}}
-    end
-  end
-
-  # Arms the idle timer when the session holds a ready provider process
-  # with no turn and no wait. It cancels the earlier timer; a message of
-  # it that is already in the mailbox has an old ref.
-  def arm_idle(%__MODULE__{activity: :idle, conn: %ProviderConn{ready: true}} = state) do
-    if state.idle, do: :erlang.cancel_timer(state.idle)
-    %{state | idle: :erlang.start_timer(state.provider_ms.idle, self(), :idle_close)}
-  end
-
-  def arm_idle(state), do: state
-
-  # A provider process of another model than the session's closes, and the
-  # session waits for its end.
-  def close_switched(
-        %__MODULE__{model: model, conn: %ProviderConn{pid: pid, model: other}} = state
-      )
-      when other != model do
-    ask(state, pid, :close, :close)
-    %{state | conn: nil, activity: %Wait{provider: pid}}
-  end
-
-  def close_switched(state), do: state
 end

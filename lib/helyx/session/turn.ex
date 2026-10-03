@@ -9,6 +9,8 @@ defmodule Helyx.Session.Turn do
   # a `phase`, `:preparing`, `:submitting`, `:submitted`, or `:context`
   # (submitted, with a context request open), the prepared `context` until
   # it is sent, and the `pending` ref of the answer to `{:turn, ...}`.
+  # `prepare` is the pid of the running prepare Task, which the session
+  # monitors and kills at the turn end, or nil.
   # The Helyx tool requests (`Helyx.Session.Server.Tools`): `tool` is the
   # call id that runs on the hands, `killed?` whether the provider withdrew
   # it, and `waiting` the calls after it.
@@ -25,6 +27,7 @@ defmodule Helyx.Session.Turn do
     :phase,
     :context,
     :pending,
+    :prepare,
     :tool,
     killed?: false,
     waiting: []

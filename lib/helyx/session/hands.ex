@@ -20,12 +20,9 @@ defmodule Helyx.Session.Hands do
   Its answer names the handles that stay unconfirmed. The rules and the
   deadlines are in `docs/features/tool-resource-release.md`.
 
-  `start_provider/3` starts the provider process (ADR 0007).
-  `prepare/3` starts the prepare Task of a turn, at its start
-  and at each context request. Each starts with an armed kill. When the provider process ends, the hands release
-  its handles and send `{:provider_down, pid, reason}`. A prepare Task
-  that dies gives `{:prepare_failed, turn_id, reason}`, unless a cancel
-  request killed it. The deadlines and the reasons are in
+  `start_provider/3` starts the provider process (ADR 0007) with an armed
+  kill. When the provider process ends, the hands release its handles and
+  send `{:provider_down, pid, reason}`. The deadlines and the reasons are in
   `docs/features/long-lived-harness.md`, sections "Deadlines", "Bounds",
   and "Built in #199", with the old names of
   `docs/features/one-provider-path.md`, section "Renames".
@@ -44,9 +41,8 @@ defmodule Helyx.Session.Hands do
     # its turn, its call id, and its tool module, by monitor ref. `held`
     # holds the handles per Task pid. `unconfirmed` holds the handles that
     # no release confirmed, per tool module. `release_ms` is the release
-    # deadline of a delivery or a cancel, and `connect_ms` and `prepare_ms`
-    # the armed kills of a provider process and a prepare Task: seams for
-    # tests.
+    # deadline of a delivery or a cancel, and `connect_ms` the armed kill of
+    # a provider process: seams for tests.
     @enforce_keys [:core, :cwd, :session, :tools]
 
     # The default release deadline, the one source (`Helyx.Session.Server.Stop`
@@ -63,8 +59,7 @@ defmodule Helyx.Session.Hands do
       held: %{},
       unconfirmed: %{},
       release_ms: @release_ms,
-      connect_ms: 30_000,
-      prepare_ms: 10_000
+      connect_ms: 30_000
     ]
   end
 
@@ -77,9 +72,8 @@ defmodule Helyx.Session.Hands do
   def start_link(opts), do: GenServer.start_link(__MODULE__, struct!(State, opts))
 
   @doc """
-  Starts a tool call. The result is sent to the session. A cast, as
-  `prepare/3`: a turn runs Helyx tools while the hands can
-  release its provider process.
+  Starts a tool call. The result is sent to the session. A cast: a turn
+  runs Helyx tools while the hands can release its provider process.
   """
   @spec run(pid(), String.t(), ToolCall.t()) :: :ok
   def run(hands, turn_id, %ToolCall{} = call), do: GenServer.cast(hands, {:run, turn_id, call})
@@ -95,22 +89,6 @@ defmodule Helyx.Session.Hands do
     do: GenServer.call(hands, {:start_provider, provider, fun})
 
   @doc """
-  Starts the prepare Task of a turn: `fun` gets the ref of the
-  armed kill. It holds no resource.
-
-  A cast, not a call: a provider process can end at any time, and the hands
-  release its handles in their own loop for up to the release deadline.
-  The session must not wait for that. The hands start the Task when they
-  take the message, after any earlier message of the session, so a later
-  `request_cancel/2` finds it. The other call of the session,
-  `start_provider/3`, comes only when it holds no provider process: it
-  follows the `:provider_down` of the last one.
-  """
-  @spec prepare(pid(), String.t(), (:timer.tref() -> term())) :: :ok
-  def prepare(hands, turn_id, fun) when is_function(fun, 1),
-    do: GenServer.cast(hands, {:prepare, turn_id, fun})
-
-  @doc """
   Asks the hands to cancel the turn's Tasks and release
   their handles. Sends the request and returns at once, so the caller stays
   free during the release. Read the answer with
@@ -124,7 +102,7 @@ defmodule Helyx.Session.Hands do
   @doc """
   Kills the running tool Task of one call, when there is one. Its
   delivery runs as for any Task that dies: the release, then an error
-  result to the session. A cast, as `prepare/3`: the session does not wait
+  result to the session. A cast, as `run/3`: the session does not wait
   for a release.
   """
   @spec kill(pid(), String.t(), String.t()) :: :ok
@@ -191,11 +169,6 @@ defmodule Helyx.Session.Hands do
   end
 
   @impl true
-  def handle_cast({:prepare, turn_id, fun}, state) do
-    {_pid, state} = spawn_armed(state, turn_id, :prepare, nil, state.prepare_ms, fun)
-    {:noreply, state}
-  end
-
   def handle_cast({:run, turn_id, call}, state) do
     state = retry(state)
 
@@ -249,20 +222,12 @@ defmodule Helyx.Session.Hands do
     {handles, held} = Map.pop(state.held, task.pid, [])
     left = release(%{tool => handles}, :deliver, state.release_ms, state.core)
 
-    with message when message != nil <-
-           outcome(turn_id, call_id, task.pid, unconfirmed_error(left) || result),
-         do: send(state.session, message)
+    send(state.session, outcome(turn_id, call_id, task.pid, unconfirmed_error(left) || result))
 
     %{state | tasks: tasks, held: held, unconfirmed: add_handles(state.unconfirmed, left)}
   end
 
   defp outcome(_turn_id, :provider, pid, result), do: {:provider_down, pid, down_reason(result)}
-
-  defp outcome(turn_id, :prepare, _pid, {:exit, reason}),
-    do: {:prepare_failed, turn_id, Helyx.Message.cap_integers(reason)}
-
-  # The prepare Task sent its context itself.
-  defp outcome(_turn_id, :prepare, _pid, _result), do: nil
   defp outcome(turn_id, id, _pid, result), do: outcome(turn_id, id, result)
 
   # The reason of a provider process's end, capped like a crash reason. A
@@ -289,7 +254,7 @@ defmodule Helyx.Session.Hands do
     state
   end
 
-  # `id` is the call id, `:provider`, or `:prepare`; `module` is the tool or
+  # `id` is the call id or `:provider`; `module` is the tool or
   # the provider whose `release/3` gets the Task's handles.
   defp spawn_task(state, turn_id, id, module, fun) do
     hands = self()
