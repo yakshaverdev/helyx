@@ -12,6 +12,7 @@ defmodule Helyx.TUI.ViewModelSnapshotTest do
   alias Helyx.TUI.ViewModel
 
   import Helyx.Test.Events
+  import Helyx.Test.TUIRender, only: [texts: 1]
   import Helyx.Test.ViewModelRule, only: [transcript: 1]
 
   setup context do
@@ -274,7 +275,10 @@ defmodule Helyx.TUI.ViewModelSnapshotTest do
 
     assert %{seq: 0, messages: [], turn: nil, model: "fake/echo"} = snapshot
 
-    assert ViewModel.from_snapshot(snapshot) == ViewModel.new("fake/echo")
+    vm = ViewModel.from_snapshot(snapshot)
+    assert %{model: "fake/echo", streaming: nil, running?: false} = vm
+    assert vm.queue == %{steers: 0, follow_ups: 0}
+    assert ViewModel.cells(vm) == []
   end
 
   # A client that joins after the turn ended shows the transcript cells of
@@ -291,11 +295,6 @@ defmodule Helyx.TUI.ViewModelSnapshotTest do
   defp events_to(seq, acc \\ []) do
     assert_receive {:helyx_event, event}
     if event.seq == seq, do: Enum.reverse([event | acc]), else: events_to(seq, [event | acc])
-  end
-
-  # The non-empty rows of the transcript.
-  defp texts(vm) do
-    for line <- Helyx.TUI.Transcript.lines(vm, 80), span <- line.spans, do: span.content
   end
 
   defp fold(%ViewModel{} = vm, events), do: Helyx.Test.ViewModelRule.fold(vm, events)

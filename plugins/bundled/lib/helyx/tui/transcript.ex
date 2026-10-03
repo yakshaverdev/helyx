@@ -2,16 +2,7 @@
 # Helyx.TUI.Transcript does not exist.
 defmodule Helyx.TUI.Transcript.Available do
   @moduledoc false
-  # The recompile hook of ADR 0005. Mix reaches a stale source only through a
-  # module the source defines, so each guarded file has its own.
-
-  @available Code.ensure_loaded?(ExRatatui.App)
-
-  @spec available?() :: boolean()
-  def available?, do: @available
-
-  @spec __mix_recompile__?() :: boolean()
-  def __mix_recompile__?, do: Code.ensure_loaded?(ExRatatui.App) != @available
+  use Helyx.TUI.Guard
 end
 
 if Helyx.TUI.Transcript.Available.available?() do
@@ -127,10 +118,6 @@ if Helyx.TUI.Transcript.Available.available?() do
           |> Stream.concat(Stream.flat_map(rest, &item_lines(&1, width)))
       end
     end
-
-    @doc "The whole transcript as `Line` structs of at most `width` columns."
-    @spec lines(ViewModel.t(), integer()) :: [Line.t()]
-    def lines(%ViewModel{} = vm, width), do: Enum.flat_map(items(vm), &item_lines(&1, width))
 
     # The cells in position order, one O(n) fold of the array, and the open
     # assistant message as the last one.

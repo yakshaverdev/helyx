@@ -47,8 +47,8 @@ defmodule Helyx.TUI.ViewModel do
   # The cut of an error notice or a tool call line (`cut_line/1`).
   @render_max_bytes 8_192
 
-  # `cells` is set at run time in `new/1`: an `:array` literal in the struct
-  # default breaks the opaque type for Dialyzer.
+  # `cells` is set at run time in `from_snapshot/1`: an `:array` literal in
+  # the struct default breaks the opaque type for Dialyzer.
   defstruct model: nil,
             cells: nil,
             open: %{},
@@ -69,10 +69,6 @@ defmodule Helyx.TUI.ViewModel do
           queue: %{steers: non_neg_integer(), follow_ups: non_neg_integer()},
           reason: String.t() | nil
         }
-
-  @doc "An empty view model on `model`. `from_snapshot/1` starts from it."
-  @spec new(String.t()) :: t()
-  def new(model), do: %__MODULE__{model: model, cells: :array.new()}
 
   @delta_keys [:text_delta, :thinking_delta, :tool_call]
 
@@ -196,7 +192,13 @@ defmodule Helyx.TUI.ViewModel do
   """
   @spec from_snapshot(Snapshot.t()) :: t()
   def from_snapshot(%Snapshot{messages: messages, turn: turn} = snapshot) do
-    vm = %{new(snapshot.model) | running?: turn != nil, queue: snapshot.queue}
+    vm = %__MODULE__{
+      model: snapshot.model,
+      cells: :array.new(),
+      running?: turn != nil,
+      queue: snapshot.queue
+    }
+
     %{Enum.reduce(messages, vm, &add_message(&2, &1)) | streaming: streaming(turn)}
   end
 

@@ -167,3 +167,4 @@ One row per ticket that `/orchestrate` merged. An escape is a confirmed Codex fi
 | 2026-10-03 | #407 | r1: 1 reproduced (an orphan result from disk crashes the TUI at mount; fixed in Core by #417); r2: 0; r3 (reduced): 0 | gate r1 (Codex): 0 | the ticket text called a disk-boundary state bug-only; tickets that make a fold crash name the disk path that feeds it |
 | 2026-10-03 | #413 | r1: 0 | gate r1 (Codex): 0 | none |
 | 2026-10-03 | #414 | r1: 0 | gate r1 (Codex): 0 | none |
+| 2026-10-03 | #408 | r1: 1 reproduced (S3 premise false: kitty ESC [ 1 u reaches the composer as U+0001 with no modifier); r2: 0; r3: 0 | gate r1 (Codex): 0 | a removal ticket based on a review-only origin names the input path that it claims is unreachable, and the worker probes that path before removal |

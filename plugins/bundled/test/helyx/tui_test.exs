@@ -329,12 +329,7 @@ defmodule Helyx.TUITest do
     texts = fn output ->
       result = Helyx.Message.tool_result(call, {:ok, output})
 
-      vm = %ViewModel{
-        ViewModel.new("fake/m")
-        | cells: :array.from_list([{:tool, call, ViewModel.call_line(call), result}])
-      }
-
-      for line <- Transcript.lines(vm, 80), span <- line.spans, do: span.content
+      texts(view_model([{:tool, call, ViewModel.call_line(call), result}]))
     end
 
     for at_or_under <- ["1\n2\n3", "1\n2\n3\n4", "1\n2\n3\n4\n"] do
@@ -414,16 +409,13 @@ defmodule Helyx.TUITest do
     call = %Helyx.Message.ToolCall{id: "c", name: "bash", arguments: %{}}
     result = Helyx.Message.tool_result(call, {:ok, "\e]0;evil\a\e[2Jcol1\tcol2\r"})
 
-    vm = %ViewModel{
-      ViewModel.new("fake/m")
-      | cells:
-          :array.from_list([
-            Helyx.Message.user("hi\e[31m there"),
-            {:tool, call, ViewModel.call_line(call), result}
-          ])
-    }
-
-    texts = for line <- Transcript.lines(vm, 80), span <- line.spans, do: span.content
+    texts =
+      texts(
+        view_model([
+          Helyx.Message.user("hi\e[31m there"),
+          {:tool, call, ViewModel.call_line(call), result}
+        ])
+      )
 
     assert "› hi[31m there" in texts
     assert "  ]0;evil[2Jcol1  col2" in texts
@@ -433,12 +425,7 @@ defmodule Helyx.TUITest do
     # stream tests cover the repair), so a CSI is the character U+009B.
     csi = Helyx.Message.tool_result(call, {:ok, <<"a", 0x9B::utf8, "[2Jb">>})
 
-    vm = %ViewModel{
-      ViewModel.new("fake/m")
-      | cells: :array.from_list([{:tool, call, ViewModel.call_line(call), csi}])
-    }
-
-    texts = for line <- Transcript.lines(vm, 80), span <- line.spans, do: span.content
+    texts = texts(view_model([{:tool, call, ViewModel.call_line(call), csi}]))
     assert "  a[2Jb" in texts
   end
 
@@ -446,18 +433,15 @@ defmodule Helyx.TUITest do
     call = %Helyx.Message.ToolCall{id: "c", name: "bash", arguments: %{"command" => "ls -la"}}
     result = Helyx.Message.tool_result(call, {:ok, "a\nb\nc\nd\ne\nf"})
 
-    vm = %ViewModel{
-      ViewModel.new("fake/m")
-      | cells:
-          :array.from_list([
-            Helyx.Message.user("hello world"),
-            {:tool, call, ViewModel.call_line(call), result}
-          ]),
-        streaming: [%Helyx.Message.Text{text: String.duplicate("s", 35)}]
+    vm = %{
+      view_model([
+        Helyx.Message.user("hello world"),
+        {:tool, call, ViewModel.call_line(call), result}
+      ])
+      | streaming: [%Helyx.Message.Text{text: String.duplicate("s", 35)}]
     }
 
-    lines = Transcript.lines(vm, 30)
-    texts = for line <- lines, span <- line.spans, do: span.content
+    texts = texts(vm, 30)
 
     assert "› hello world" in texts
     assert Enum.any?(texts, &String.starts_with?(&1, "⚙ bash"))
@@ -472,12 +456,7 @@ defmodule Helyx.TUITest do
     arguments = Map.new(1..2_000, &{"k#{&1}", String.duplicate("\u00A0", 100)})
     call = %Helyx.Message.ToolCall{id: "c", name: "bash", arguments: arguments}
 
-    vm = %ViewModel{
-      ViewModel.new("fake/m")
-      | cells: :array.from_list([{:tool, call, ViewModel.call_line(call), nil}])
-    }
-
-    texts = for line <- Transcript.lines(vm, 80), span <- line.spans, do: span.content
+    texts = texts(view_model([{:tool, call, ViewModel.call_line(call), nil}]))
     {call_rows, ["… awaiting result"]} = Enum.split(texts, -1)
     call_line = Enum.join(call_rows)
 
@@ -883,9 +862,16 @@ defmodule Helyx.TUITest do
       core: core
     } do
       # The stated limit of the rule (feature doc, bounds table): an invisible
-      # character inside the word, one outside category C before it, and a
-      # homoglyph each make a message.
-      lines = ["/mo\u200Bdel other/any", "\u3164/model other/any", "/mo\u0434el other/any"]
+      # character inside the word, any character but whitespace before it (a
+      # BOM too), and a homoglyph each make a message.
+      lines = [
+        "/mo\u200Bdel other/any",
+        "\u3164/model other/any",
+        "\uFEFF/model other/any",
+        "\u2060 /model other/any",
+        "/mo\u0434el other/any"
+      ]
+
       state = mounted(core, "looks", Enum.map(lines, fn _ -> ["ok"] end))
 
       for text <- lines do
@@ -896,14 +882,11 @@ defmodule Helyx.TUITest do
       end
     end
 
-    test "invisible characters around the command word do not hide it", %{core: core} do
+    test "whitespace before the command word and invisible characters after it do not hide it",
+         %{core: core} do
       state = mounted(core, "bom", [])
 
-      for text <- [
-            "\uFEFF/model other/any",
-            "/model\u200Bother/any",
-            "\u2060 /model\u180E other/any"
-          ] do
+      for text <- ["/model\u200Bother/any", "\u2003 /model\u180E other/any"] do
         :ok = Session.set_model(state.session, "fake/bom")
         assert_receive {:helyx_event, %Event{type: :model_change}}
         ExRatatui.textarea_set_value(state.composer.input, "")
@@ -1097,10 +1080,12 @@ defmodule Helyx.TUITest do
       assert [prompt, _answer] = ViewModel.cells(state.vm)
       assert Helyx.Message.text(prompt) == lines(6) <> look <> " " <> look
 
-      # A key code or a paste with the end character of a marker cannot
-      # forge one: the key goes nowhere, and the paste drops the character.
+      # Ctrl+A, a key code with the end character of a marker (the kitty
+      # sequence `ESC [ 1 u` gives one with no modifier), or a paste with it
+      # cannot forge a marker: the keys go nowhere, and the paste drops the
+      # character.
       state = paste(state, lines(6))
-      state = state |> press("\u0001") |> paste(look <> "\u0001")
+      state = state |> press("a", ["ctrl"]) |> press("\u0001") |> paste(look <> "\u0001")
       assert value(state) == marker(1, 6) <> look
       state = state |> press("enter") |> drain()
       assert Helyx.Message.text(Enum.at(ViewModel.cells(state.vm), 2)) == lines(6) <> look
