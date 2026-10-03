@@ -1,6 +1,6 @@
 # Unknown values in the TUI
 
-> Replaced in part by the ADR 0006 revision of 2026-10-03 (#404): section 5 and its contract version are gone, a client works with one Helyx version, and an unknown block kind shows a placeholder such as `[unsupported block: image]` instead of being dropped. The text below that cites section 5 and the out-of-scope item on placeholders are history. The crash on a known event with a broken shape stays.
+> Replaced in part by the ADR 0006 revision of 2026-10-03 (#404): section 5 and its contract version are gone, a client works with one Helyx version, and an unknown block kind shows a placeholder such as `[unsupported block: image]` instead of being dropped. #406 built this: the fold dispatches on the event type first, each known type checks its payload inside its own clause, and the block filter is gone. The text below that cites section 5 and the out-of-scope item on placeholders are history. The crash on a known event with a broken shape stays.
 
 Ticket #211. Follows #206, which made the TUI ignore an unknown event type.
 

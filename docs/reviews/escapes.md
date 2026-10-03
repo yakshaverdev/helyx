@@ -161,3 +161,4 @@ One row per ticket that `/orchestrate` merged. An escape is a confirmed Codex fi
 | 2026-10-03 | #395 | r1: 0 reproduced; 3 simplify cleanups | gate r1 (Codex): 0 | none needed |
 | 2026-10-03 | #404 | r1 (Codex, docs): 1 reproduced (section 3 said a failed reply is never in the transcript; false since #385), fixed; 1 rejected; r2: 0 | gate r1 (Codex): 0 | none needed |
 | 2026-10-03 | #405 | r1: 0 reproduced; doc and naming fixes | gate r1 (Codex): 0 | none needed |
+| 2026-10-03 | #406 | r1: 1 reproduced (an image in a user message or tool result had no placeholder), fixed; r2: 0 (1 Codex finding rejected: the four-line preview cuts all content) | gate r1 (Codex): 0 | none needed |

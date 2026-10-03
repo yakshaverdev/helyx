@@ -178,9 +178,9 @@ defmodule Helyx.TUI.ViewModelSnapshotTest do
     watched = collect_until(:agent_end)
 
     # The late client got every event after the snapshot, and each once.
-    # An event sent between its registration and the snapshot can reach it
-    # too; `apply/2` drops it, because the snapshot holds it.
-    assert for(%Event{seq: seq} <- events, seq > snapshot.seq, do: seq) ==
+    # The registration and the snapshot happen in one server handler, so no
+    # event at or below the snapshot reaches it.
+    assert Enum.map(events, & &1.seq) ==
              for(%Event{seq: seq} <- watched, seq > snapshot.seq, do: seq)
 
     assert transcript(fold(snapshot, events)) == transcript(fold(first, watched))
@@ -221,11 +221,12 @@ defmodule Helyx.TUI.ViewModelSnapshotTest do
     {:ok, session} = Session.start(core, model: "gated/dangling." <> gate)
     {:ok, first} = Session.subscribe(session)
     :ok = Session.prompt(session, "go")
-    live = fold(first, collect_until(:agent_end))
+    events = collect_until(:agent_end)
+    live = fold(first, events)
 
     {:ok, snapshot} = Session.subscribe(session)
     joined = ViewModel.from_snapshot(snapshot)
-    assert snapshot.seq == live.seq
+    assert snapshot.seq == List.last(events).seq
 
     assert [_user, %Message{role: :assistant}, {:tool, %{id: "d"}, _, aborted}] = joined.cells
     assert %Message{is_error: true, content: [%Message.Text{text: "aborted"}]} = aborted
@@ -247,7 +248,8 @@ defmodule Helyx.TUI.ViewModelSnapshotTest do
 
     assert_receive {:waiting, _tool}
     :ok = Session.abort(session)
-    live = fold(first, collect_until(:agent_end))
+    events = collect_until(:agent_end)
+    live = fold(first, events)
 
     assert [_user, _assistant, c1, c2, c3, {:notice, "aborted"}] = live.cells
 
@@ -255,7 +257,7 @@ defmodule Helyx.TUI.ViewModelSnapshotTest do
         do: assert({:tool, %{id: ^id}, _, %Message{is_error: true}} = cell)
 
     {:ok, snapshot} = Session.subscribe(session)
-    assert snapshot.seq == live.seq
+    assert snapshot.seq == List.last(events).seq
     assert ViewModel.from_snapshot(snapshot) == transcript(live)
   end
 
@@ -265,21 +267,17 @@ defmodule Helyx.TUI.ViewModelSnapshotTest do
 
     assert %{seq: 0, messages: [], turn: nil, model: "fake/echo"} = snapshot
 
-    assert ViewModel.from_snapshot(snapshot) == %{
-             ViewModel.new("fake/echo")
-             | instance_id: snapshot.instance_id
-           }
+    assert ViewModel.from_snapshot(snapshot) == ViewModel.new("fake/echo")
   end
 
   # A client that joins after the turn ended shows the transcript cells of
-  # the client that watched, and no event up to the snapshot changes it.
+  # the client that watched.
   defp assert_joins_after_end(session, live, events) do
     {:ok, snapshot} = Session.subscribe(session)
-    assert snapshot.seq == live.seq
+    assert snapshot.seq == List.last(events).seq
     joined = ViewModel.from_snapshot(snapshot)
     assert transcript(joined) == transcript(live)
     assert [_user] = joined.cells
-    assert fold(joined, events) == joined
   end
 
   # The events of the first client up to `seq`, which are in the mailbox.

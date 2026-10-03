@@ -15,7 +15,6 @@ defmodule Helyx.Session.StreamEventsTest do
 
     assert {:ok,
             %Helyx.Session.Snapshot{
-              contract_version: 2,
               seq: 0,
               messages: [],
               turn: nil,

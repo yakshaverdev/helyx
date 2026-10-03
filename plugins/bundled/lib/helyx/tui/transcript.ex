@@ -146,7 +146,7 @@ if Helyx.TUI.Transcript.Available.available?() do
     defp item_lines(item, width), do: cell_lines(item, width) ++ [%Line{}]
 
     defp cell_lines(%Message{role: :user} = message, width) do
-      styled_lines("› " <> Message.text(message), width, @bold)
+      styled_lines("› " <> shown_text(message), width, @bold)
     end
 
     defp cell_lines(%Message{role: :assistant} = message, width) do
@@ -164,15 +164,31 @@ if Helyx.TUI.Transcript.Available.available?() do
         %Message.Text{text: text} -> styled_lines(text, width, %Style{})
         %Message.Thinking{thinking: text} -> styled_lines(text, width, @dim)
         %Message.ToolCall{} -> []
+        # An image, or a kind that this client does not know.
+        block -> styled_lines(placeholder(block), width, @dim)
       end)
     end
+
+    # The text of a user message or a tool result, with a placeholder in
+    # place of each block that is not text, such as an image.
+    defp shown_text(%Message{content: content}) do
+      Enum.map_join(content, fn
+        %Message.Text{text: text} -> text
+        block -> placeholder(block)
+      end)
+    end
+
+    # A block that is not a struct is a bug in Core and crashes.
+    # `Helyx.Message.Image` is "image".
+    defp placeholder(%kind{}),
+      do: "[unsupported block: #{kind |> Module.split() |> List.last() |> Macro.underscore()}]"
 
     defp result_lines(nil, width), do: styled_lines("… awaiting result", width, @dim)
 
     # Long tool output would drown the transcript; four lines tell the story.
     defp result_lines(%Message{} = result, width) do
       style = if result.is_error, do: @bad, else: @dim
-      lines = result |> Message.text() |> String.trim_trailing("\n") |> String.split("\n")
+      lines = result |> shown_text() |> String.trim_trailing("\n") |> String.split("\n")
 
       shown = Enum.flat_map(Enum.take(lines, 4), &styled_lines("  " <> &1, width, style))
 

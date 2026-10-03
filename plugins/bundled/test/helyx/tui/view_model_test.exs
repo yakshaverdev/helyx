@@ -17,8 +17,11 @@ defmodule Helyx.TUI.ViewModelTest do
   defp fold(specs),
     do: Enum.reduce(events(specs), new(), &ViewModel.apply(&2, &1))
 
-  # The view model of the instance of `events/1`.
-  defp new, do: %{ViewModel.new("test/model") | instance_id: "i"}
+  defp new, do: ViewModel.new("test/model")
+
+  # The non-empty rows of the transcript.
+  defp texts(vm),
+    do: for(line <- Helyx.TUI.Transcript.lines(vm, 80), s <- line.spans, do: s.content)
 
   defp tool_end(result), do: {:tool_execution_end, %{message: result}}
 
@@ -119,14 +122,13 @@ defmodule Helyx.TUI.ViewModelTest do
       ])
 
     assert streaming.streaming == [open(call), %Message.Text{text: "Listing."}]
-    texts = for line <- Helyx.TUI.Transcript.lines(streaming, 80), s <- line.spans, do: s.content
-    assert ["› hi", "Listing.", "⚙ bash command=\"ls\"", "… awaiting result"] == texts
+    assert ["› hi", "Listing.", "⚙ bash command=\"ls\"", "… awaiting result"] == texts(streaming)
 
     ended =
       Enum.reduce(
         events([calls_end([%Message.Text{text: "Listing."}, call]), tool_end(result)]),
         streaming,
-        &ViewModel.apply(&2, %{&1 | seq: &1.seq + 4})
+        &ViewModel.apply(&2, &1)
       )
 
     assert [_user, %Message{}, closed] = ended.cells
@@ -143,7 +145,7 @@ defmodule Helyx.TUI.ViewModelTest do
         [calls_end([call])]
         |> fold()
         |> ViewModel.notice("usage: /model provider/model")
-        |> ViewModel.apply(%{hd(events([tool_end(result)])) | seq: 2})
+        |> ViewModel.apply(hd(events([tool_end(result)])))
 
       assert vm.cells == [
                assistant([call], :tool_use),
@@ -308,7 +310,7 @@ defmodule Helyx.TUI.ViewModelTest do
     assert vm.streaming == nil
   end
 
-  test "an event of an unknown type leaves the view model unchanged (ADR 0006, section 5)" do
+  test "an event of an unknown type leaves the view model unchanged" do
     vm = fold([{:agent_start, %{}}, {:message_start, %{message: assistant([])}}])
 
     unknown = %Event{
@@ -323,7 +325,7 @@ defmodule Helyx.TUI.ViewModelTest do
     assert ViewModel.apply(vm, unknown) == vm
   end
 
-  # A value from a newer Core in a known event type (ADR 0006, section 5).
+  # A value from a newer Core in a known event type.
   defmodule NewBlock do
     @moduledoc false
     defstruct [:data]
@@ -341,36 +343,61 @@ defmodule Helyx.TUI.ViewModelTest do
       data: %{signature_delta: "x"}
     }
 
-    assert ViewModel.apply(vm, update) == %{vm | seq: 3}
+    assert ViewModel.apply(vm, update) == vm
   end
 
   test "a message_start or a message_end with a new role leaves the view model unchanged" do
     vm = fold([{:agent_start, %{}}])
     message = %Message{role: :from_a_newer_core, content: [%Message.Text{text: "x"}]}
 
-    for {type, seq} <- [message_start: 2, message_end: 3] do
+    for type <- [:message_start, :message_end] do
       event = %Event{
         type: type,
         session_id: "s",
         instance_id: "i",
         turn_id: "t",
-        seq: seq,
+        seq: 2,
         data: %{message: message}
       }
 
-      assert ViewModel.apply(vm, event) == %{vm | seq: seq}
+      assert ViewModel.apply(vm, event) == vm
     end
   end
 
-  test "a new block kind in an assistant message is dropped, so it never reaches the screen" do
+  test "an image and a new block kind show a placeholder" do
+    image = %Message.Image{mime_type: "image/png", data: "AAAA"}
+
     vm =
       fold([
         {:message_start, %{message: assistant([])}},
-        {:message_end, %{message: assistant([%NewBlock{data: 1}, %Message.Text{text: "hi"}])}}
+        {:message_end,
+         %{message: assistant([image, %NewBlock{data: 1}, %Message.Text{text: "hi"}])}}
       ])
 
-    assert [%Message{content: [%Message.Text{text: "hi"}]}] = vm.cells
-    assert Helyx.TUI.Transcript.lines(vm, 80) != []
+    assert ["[unsupported block: image]", "[unsupported block: new_block]", "hi"] == texts(vm)
+  end
+
+  # The session file decodes an image block for every role.
+  test "an image in a user message or a tool result shows a placeholder" do
+    image = %Message.Image{mime_type: "image/png", data: "AAAA"}
+    call = %Message.ToolCall{id: "c1", name: "read", arguments: %{}}
+    result = %{Message.tool_result(call, {:ok, "x"}) | content: [image]}
+
+    snapshot = %Helyx.Session.Snapshot{
+      instance_id: "i",
+      seq: 3,
+      messages: [
+        %Message{role: :user, content: [%Message.Text{text: "see "}, image]},
+        assistant([call], :tool_use),
+        result
+      ],
+      turn: nil,
+      model: "test/model",
+      queue: %{steers: 0, follow_ups: 0}
+    }
+
+    assert ["› see [unsupported block: image]", "⚙ read", "  [unsupported block: image]"] ==
+             texts(ViewModel.from_snapshot(snapshot))
   end
 
   test "a snapshot partial of a new role does not show" do
@@ -386,7 +413,7 @@ defmodule Helyx.TUI.ViewModelTest do
     assert ViewModel.from_snapshot(snapshot).streaming == nil
   end
 
-  test "a snapshot drops a message of a new role and a new block kind" do
+  test "a snapshot drops a message of a new role and keeps a new block kind" do
     snapshot = %Helyx.Session.Snapshot{
       instance_id: "i",
       seq: 4,
@@ -406,9 +433,11 @@ defmodule Helyx.TUI.ViewModelTest do
 
     vm = ViewModel.from_snapshot(snapshot)
 
-    assert [%Message{role: :user}, %Message{content: [%Message.Text{text: "done"}]}] = vm.cells
-    assert vm.streaming == [%Message.Text{text: "more"}]
-    assert Helyx.TUI.Transcript.lines(vm, 80) != []
+    assert [%Message{role: :user}, %Message{role: :assistant}] = vm.cells
+    assert vm.streaming == [%Message.Text{text: "more"}, %NewBlock{data: 2}]
+
+    assert ["› hi", "[unsupported block: new_block]", "done"] ++
+             ["[unsupported block: new_block]", "more"] == texts(vm)
   end
 
   test "a known type with a missing required field still crashes" do
@@ -421,7 +450,27 @@ defmodule Helyx.TUI.ViewModelTest do
       data: %{}
     }
 
-    assert_raise FunctionClauseError, fn -> ViewModel.apply(new(), event) end
+    assert_raise MatchError, fn -> ViewModel.apply(new(), event) end
+  end
+
+  # Each known type that the TUI reads matches the type only, so a broken
+  # payload reaches its clause and crashes; it never reaches the clause that
+  # ignores an unknown type.
+  test "every known type with a broken payload crashes" do
+    for {type, data} <- [
+          agent_end: %{},
+          message_start: %{message: "not a message"},
+          message_end: %{},
+          tool_execution_end: %{message: Message.user("not a result")},
+          queue_update: %{steers: 1},
+          model_change: %{},
+          notice: %{},
+          steer_unconfirmed: %{},
+          provider_session: %{provider: "p"}
+        ] do
+      [event] = events([{type, data}])
+      assert catch_error(ViewModel.apply(new(), event)), inspect(type)
+    end
   end
 
   test "an agent_end with the stop reason error and no error field crashes" do
@@ -471,17 +520,6 @@ defmodule Helyx.TUI.ViewModelTest do
 
     assert vm.streaming == nil
     assert vm.cells == []
-  end
-
-  test "an event of another instance leaves the view model unchanged (#204)" do
-    vm = fold([{:agent_start, %{}}, {:message_start, %{message: assistant([])}}])
-
-    [update] = events(message_update: %{text_delta: "old"})
-
-    for seq <- [1, 3] do
-      other = %{update | instance_id: "other", seq: seq}
-      assert ViewModel.apply(vm, other) == vm
-    end
   end
 
   test "a model change updates the model" do
