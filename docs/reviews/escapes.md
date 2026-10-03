@@ -182,3 +182,4 @@ One row per ticket that `/orchestrate` merged. An escape is a confirmed Codex fi
 | 2026-10-04 | #436 | r1: 0 | gate r1 (Codex): 0 | none |
 | 2026-10-04 | #433 | r1: 0 | gate r1 (Codex): 0 | none |
 | 2026-10-04 | #446 | r1 (full): 12, r2 (reduced): 9, r3 (full): 8, all doc facts, fixed; r3 fixes reviewed only by the gate | gate r1 (Codex): 1 confirmed (a repeated open call id was said to stop the provider), cut; gate r2: 0 | review-checklist.md, Specs and bounds: a doc rule names the function that enforces it, else it is cut (third false doc claim after #306, #307) |
+| 2026-10-04 | #437 | r1: 1 reproduced (a stale reply arrived while idle), fixed; r2 reduced: 1 reproduced (a stale-context mutation passed), fixed; r3 reduced: 0 | gate r1 (Codex): 0 | none; ship caught both |
