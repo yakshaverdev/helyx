@@ -18,6 +18,7 @@ if Helyx.TUI.Available.available?() do
 
       * typing fills the composer (`Helyx.TUI.Composer`), at most 8 lines high
       * Ctrl+J adds a new line; so does Shift+Enter where the terminal reports it
+      * Up on the first row and Down on the last row recall earlier prompts
       * a paste of more than 5 lines shows as one marker and is sent in full
       * Enter sends the composer as a steer (a prompt when no turn runs)
       * Alt+Enter sends it as a follow-up; a rejected send stays in the composer
@@ -212,6 +213,11 @@ if Helyx.TUI.Available.available?() do
       end
     end
 
+    # Up and Down recall earlier prompts at the first and the last row.
+    def handle_event(%Key{code: code, kind: kind, modifiers: []}, state)
+        when code in ["up", "down"] and kind in ["press", "repeat"],
+        do: {:noreply, edit(state, &Composer.recall(&1, state.vm, code))}
+
     # Only Ctrl+J and Shift+Enter add a line: the repeat and the release of
     # Enter do nothing.
     def handle_event(%Key{code: "enter"}, state), do: {:noreply, state}
@@ -233,9 +239,11 @@ if Helyx.TUI.Available.available?() do
 
     # An edit that changes the composer height changes the screen of the
     # transcript, so the position gets its check.
-    defp edit(state, op, text) do
+    defp edit(state, op, text), do: edit(state, &Composer.edit(&1, op, text))
+
+    defp edit(state, change) do
       rows = Composer.rows(state.composer)
-      composer = Composer.edit(state.composer, op, text)
+      composer = change.(state.composer)
       state = %{state | composer: composer}
       if Composer.rows(composer) == rows, do: state, else: settle(state)
     end

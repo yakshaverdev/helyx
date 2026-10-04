@@ -19,14 +19,23 @@ The marker rules:
 - Left and Right pass over a marker in one step.
 - Up and Down keep the column, so they can put the cursor inside a marker. Every other key, a paste, Ctrl+J, or Shift+Enter with the cursor inside a marker first moves the cursor to the end of the marker. So Up and Down from inside a marker start at its end.
 
+Prompt history (#469):
+
+- Up with the cursor on the first row recalls the earlier user prompts of the session, newest first. Down with the cursor on the last row goes back toward the newest, and past it to the draft, the text the user was typing, with its paste markers. On any other row, and with no prompt to go to, Up and Down move the cursor as before. Shift+Up and Shift+Down only move the cursor.
+- A recalled prompt starts with the cursor at its start, and the draft or a prompt that Down brings with the cursor at its end, so the next Up or Down goes on through the history.
+- The history is the user messages in the view model (`Helyx.TUI.ViewModel.prompt/3`), so it holds the history of a resumed session and the steers and follow-ups that became user messages. It is not stored a second time. The composer keeps only the position of the cell that shows and the draft (`recall`).
+- A recalled prompt is its text blocks as stored, so a paste shows in full, not as a marker. The paste rule cleans it: CRLF and a lone CR become LF, and control characters other than tab and LF drop, so recalled text cannot forge a marker. Editing a recalled prompt does not change the history: the next recall replaces the edit with a stored prompt or the draft, and the edit is lost. Enter sends the composer as usual, and a send empties `recall`. A rejected send keeps `recall`, so Down still brings the draft back.
+
 The kitty keyboard protocol is not on; it is #108. ExRatatui 0.14.1 has no option to push keyboard enhancement flags: `native/ex_ratatui/src/terminal.rs` turns on the alternate screen, bracketed paste, and optional focus and mouse reports, and nothing else. Until #108, Shift+Enter adds a new line only in a terminal that reports Shift on Enter without the protocol.
 
 ## Interface changes
 
-No public function changes. The state of `Helyx.TUI` changes:
+The state of `Helyx.TUI` changes:
 
 - `input` is an `ExRatatui.textarea_new/0` reference, drawn as `ExRatatui.Widgets.Textarea`, in place of the one-line `TextInput`.
 - `pastes` maps the text of each live marker to the full paste it stands for. `count` is the id of the last marker.
+- `recall` is nil, or the position of the recalled prompt's cell and the draft with its `pastes` (#469). A recalled prompt shows with no pastes; the draft gets its own back. `count` does not change, so a marker id is not used twice.
+- `Helyx.TUI.Composer.recall/3` and `Helyx.TUI.ViewModel.prompt/3` are new (#469).
 
 The status bar key help adds ` · Ctrl+J newline`.
 
@@ -38,8 +47,9 @@ The status bar key help adds ` · Ctrl+J newline`.
 | Composer text | Unbounded human input, as before (#29) | Nothing is cut |
 | Paste line count | More than 5 lines is a marker. A line ends at a new line, and a final new line does not start a line: `"a\nb\n"` is 2 lines. CRLF and a lone CR count as one new line each | The paste shows as the marker, and the full text goes in `pastes` |
 | Paste text | Valid UTF-8: ExRatatui gives it as a Rust `String` (#381). CRLF and a lone CR become LF. Control characters other than tab and LF drop, the same set the transcript drops, so no escape sequence reaches the terminal through the composer. Size is unbounded human input (#29) | None: no source gives other text |
-| `pastes` map | One entry for each live marker: Backspace or Delete removes a marker and its entry (#427). The map and `count` empty when a send or a `/model` switch empties the composer, so the marker ids start at `#1` again | A rejected send keeps the map with the text |
+| `pastes` map | One entry for each live marker: Backspace or Delete removes a marker and its entry (#427). The map and `count` empty when a send or a `/model` switch empties the composer, so the marker ids start at `#1` again. While a prompt is recalled, the draft's map waits in `recall`, and the composer map starts empty: it holds only the markers of pastes made in the recalled prompt | A rejected send keeps the map with the text |
 | An edit with pastes pending | Each key, paste, or new line reads the composer text once (`textarea_get_value/1`), walks the cursor line once to turn the code point column into a byte offset, and searches the text once for all pending markers (`:binary.matches/2`). ExRatatui has no call to delete a range or to set the cursor, and its Right key stops short of zero-width characters at the end of a line. So to remove a marker or to move past it, the TUI sets the composer to the text after the new cursor (`textarea_set_value/2`) and inserts the text before it (`textarea_insert_str/2`), which leaves the cursor exactly there. The cost is linear in the composer text for each edit. A marker is 24 characters plus the digits of the id and the line count | With no pending paste, keys go to the widget as before, and text is inserted without a search |
+| Prompt history | One Up or Down walks the cells from the shown prompt to the next user message: one `:array.get/2` for each cell it passes, so at most the cell count. Setting the text is linear in it. The draft is one copy of the composer text and its `pastes` | |
 | Send | The composer text with each live marker replaced by its paste, in one pass (`String.replace/3` with the list of markers), so a marker inside a paste is not replaced again. `count` only grows until the map empties. Thus a marker id is not used twice before then, and each marker stands for exactly one paste. The `/model` rule reads this text | |
 
 Accepted holes:

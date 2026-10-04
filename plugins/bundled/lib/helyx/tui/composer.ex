@@ -18,7 +18,7 @@ if Helyx.TUI.Composer.Available.available?() do
 
     alias ExRatatui.Style
     alias ExRatatui.Widgets.{Block, Textarea}
-    alias Helyx.TUI.Wrap
+    alias Helyx.TUI.{ViewModel, Wrap}
 
     # The composer shows at most this many lines inside its two borders.
     @composer_lines 8
@@ -35,13 +35,17 @@ if Helyx.TUI.Composer.Available.available?() do
     # `pastes` maps the text of each live marker to the full paste it
     # stands for. `count` is the id of the last marker. Both are emptied
     # with the composer, so a marker id is not used twice before then.
+    # `recall` is nil while the user edits the draft. While an earlier
+    # prompt shows, it holds the position of that prompt's cell and the draft
+    # with its pastes, so Down can bring the draft back.
     @enforce_keys [:input]
-    defstruct [:input, pastes: %{}, count: 0]
+    defstruct [:input, pastes: %{}, count: 0, recall: nil]
 
     @type t :: %__MODULE__{
             input: reference(),
             pastes: %{String.t() => String.t()},
-            count: non_neg_integer()
+            count: non_neg_integer(),
+            recall: {non_neg_integer(), String.t(), %{String.t() => String.t()}} | nil
           }
 
     @doc "An empty composer."
@@ -74,7 +78,25 @@ if Helyx.TUI.Composer.Available.available?() do
     @spec clear(t()) :: t()
     def clear(%__MODULE__{} = composer) do
       ExRatatui.textarea_set_value(composer.input, "")
-      %{composer | pastes: %{}, count: 0}
+      %{composer | pastes: %{}, count: 0, recall: nil}
+    end
+
+    @doc """
+    Up or Down: recalls an earlier prompt of the session, the user messages
+    in `vm`, when the cursor is on the first row (Up) or the last row (Down).
+    Down past the newest prompt brings back the draft. Otherwise the key
+    moves the cursor. Up leaves the cursor at the start, Down at the end, so
+    the next Up or Down goes on through the prompts.
+    """
+    @spec recall(t(), ViewModel.t(), String.t()) :: t()
+    def recall(%__MODULE__{} = composer, vm, code) when code in ["up", "down"] do
+      position = with {at, _value, _pastes} <- composer.recall, do: at
+
+      case edge?(composer, code) && ViewModel.prompt(vm, position, direction(code)) do
+        {at, text} -> show(composer, code, clean(text), %{}, recalled(composer, at))
+        nil when code == "down" and position != nil -> restore(composer)
+        _no_prompt -> widget_key(composer, code)
+      end
     end
 
     @doc "The rows of the composer with its two borders: 3 to 10."
@@ -99,6 +121,35 @@ if Helyx.TUI.Composer.Available.available?() do
         cursor_style: %Style{modifiers: [:reversed]},
         block: %Block{borders: [:all], title: "prompt"}
       }
+    end
+
+    defp edge?(composer, "up"), do: elem(ExRatatui.textarea_cursor(composer.input), 0) == 0
+
+    defp edge?(composer, "down"),
+      do:
+        elem(ExRatatui.textarea_cursor(composer.input), 0) ==
+          ExRatatui.textarea_line_count(composer.input) - 1
+
+    defp direction("up"), do: :older
+    defp direction("down"), do: :newer
+
+    # The draft stays the same while the prompts change.
+    defp recalled(%{recall: {_at, value, pastes}}, at), do: {at, value, pastes}
+
+    defp recalled(composer, at),
+      do: {at, ExRatatui.textarea_get_value(composer.input), composer.pastes}
+
+    defp restore(%{recall: {_at, value, pastes}} = composer),
+      do: show(composer, "down", value, pastes, nil)
+
+    # `textarea_set_value/2` leaves the cursor at the start; `cut/4` of
+    # nothing at the end leaves it at the end.
+    defp show(composer, code, text, pastes, recall) do
+      if code == "up",
+        do: ExRatatui.textarea_set_value(composer.input, text),
+        else: cut(composer, text, byte_size(text), byte_size(text))
+
+      %{composer | pastes: pastes, recall: recall}
     end
 
     # Text never goes inside a marker: it goes after it.
@@ -195,10 +246,8 @@ if Helyx.TUI.Composer.Available.available?() do
       end
     end
 
-    # A terminal can send a pasted new line as CR. Control characters other
-    # than tab and new line drop, as in the transcript.
     defp paste(composer, content) do
-      text = content |> String.replace(["\r\n", "\r"], "\n") |> Wrap.drop_controls()
+      text = clean(content)
 
       case line_count(text) do
         lines when lines > @paste_lines ->
@@ -211,6 +260,11 @@ if Helyx.TUI.Composer.Available.available?() do
           insert(composer, text)
       end
     end
+
+    # A terminal can send a pasted new line as CR. Control characters other
+    # than tab and new line drop, as in the transcript, so no text but a
+    # marker ends with `@marker_end`.
+    defp clean(text), do: text |> String.replace(["\r\n", "\r"], "\n") |> Wrap.drop_controls()
 
     # A final new line does not start a line.
     defp line_count(text) do
