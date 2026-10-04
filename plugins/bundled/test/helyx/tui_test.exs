@@ -40,6 +40,7 @@ defmodule Helyx.TUITest do
 
   alias ExRatatui.Event.Key
   alias ExRatatui.Layout.Rect
+  alias ExRatatui.Subscription
   alias ExRatatui.Widgets.Paragraph
   alias Helyx.{Event, Message, Session}
   alias Helyx.Provider.Fake
@@ -230,6 +231,81 @@ defmodule Helyx.TUITest do
   test "ctrl+c stops the app", %{core: core} do
     state = mounted(core, "bye", [])
     assert {:stop, _state} = TUI.handle_event(%Key{code: "c", modifiers: ["ctrl"]}, state)
+  end
+
+  describe "busy indicator" do
+    @spinner "[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]"
+
+    defp busy_status(seconds), do: ~r/· #{@spinner} #{seconds}s ·/u
+
+    test "turn_start declares the one tick timer, turn_end removes it", %{core: core} do
+      state = mounted(core, "busy", [])
+      assert TUI.subscriptions(state) == []
+      assert status_text(state) =~ "· idle ·"
+
+      state = fold(state, :turn_start, %{})
+
+      assert [%Subscription{id: :busy, kind: :interval, interval_ms: 100}] =
+               TUI.subscriptions(state)
+
+      assert status_text(state) =~ busy_status(0)
+
+      # A second turn_start keeps the start time.
+      assert fold(state, :turn_start, %{}).busy.started == state.busy.started
+
+      state = fold(state, :turn_end, %{outcome: :done})
+      assert TUI.subscriptions(state) == []
+      assert status_text(state) =~ "· idle ·"
+    end
+
+    test "the seconds and the frame follow the time since the turn start", %{core: core} do
+      state = core |> mounted("clock", []) |> fold(:turn_start, %{})
+      # Move the start back 12.3 s instead of waiting.
+      state = put_in(state.busy.started, state.busy.started - 12_300)
+      {:noreply, state} = TUI.handle_info(:busy_tick, state)
+      assert status_text(state) =~ busy_status(12)
+
+      # The frame is the count of whole ticks since the start, modulo 10.
+      for {ms, frame} <- [{0, "⠋"}, {900, "⠏"}, {1_000, "⠋"}, {12_300, "⠸"}] do
+        assert status_text(put_in(state.busy.elapsed, ms)) =~ " #{frame} #{div(ms, 1000)}s "
+      end
+    end
+
+    test "in the runtime, one timer ticks while a turn runs and none after", %{core: core} do
+      call = %Message.ToolCall{id: "c", name: "slow", arguments: %{"ms" => 60_000, "text" => "x"}}
+      :ok = Fake.script(core, "runtime", [[call], ["done"]])
+      {:ok, session} = Session.start(core, model: "fake/runtime")
+      tui = start_supervised!({TUI, session: session, test_mode: {120, 10}})
+      assert ExRatatui.Runtime.snapshot(tui).subscription_count == 0
+
+      :erlang.trace(tui, true, [:receive, :call])
+      :erlang.trace_pattern({TUI, :handle_info, 2}, true, [])
+      :ok = Session.steer(session, "go")
+      assert_receive {:trace, ^tui, :receive, {:helyx_event, %Event{type: :turn_start}}}
+      assert [%{id: :busy, active?: true}] = ExRatatui.Runtime.snapshot(tui).subscriptions
+
+      # The runtime delivers the tick to handle_info/2 as :busy_tick.
+      assert_receive {:trace, ^tui, :call, {TUI, :handle_info, [:busy_tick, _state]}},
+                     Helyx.Test.Events.wait_ms()
+
+      assert [%{id: :busy, active?: true}] = ExRatatui.Runtime.snapshot(tui).subscriptions
+
+      :ok = Session.abort(session)
+      assert_receive {:trace, ^tui, :receive, {:helyx_event, %Event{type: :turn_end}}}
+      assert ExRatatui.Runtime.snapshot(tui).subscription_count == 0
+    end
+
+    test "a client that mounts during a turn starts the clock at mount", %{core: core} do
+      call = %Message.ToolCall{id: "c", name: "slow", arguments: %{"ms" => 60_000, "text" => "x"}}
+      state = mounted(core, "late", [[call]])
+      state = state |> press("g") |> press("o") |> press("enter")
+      assert_receive {:helyx_event, %Event{type: :turn_start}}
+
+      {:ok, late} = TUI.mount(session: state.session)
+      assert late.vm.running?
+      assert [%Subscription{id: :busy}] = TUI.subscriptions(late)
+      assert status_text(late) =~ busy_status(0)
+    end
   end
 
   test "the TUI exits on the end signal of its session, and only then", %{core: core} do
