@@ -188,3 +188,4 @@ One row per ticket that `/orchestrate` merged. An escape is a confirmed Codex fi
 | 2026-10-04 | #447 | r1 (full): 12, r2 (full): 9 (2 rejected), r3: 3, all fixed by cuts | gate r1: 2 confirmed, r2: 1, r3 (sweep): 3, all abort and cleanup guarantees the code does not keep, cut; merged after r3 because every fix was a cut | review-checklist.md: abort, delivery and release end released or unconfirmed |
 | 2026-10-04 | #457 | r1: 0 reproduced; simplify found the relaunch path with the same drop, fixed | gate r1 (Codex): 0 | none |
 | 2026-10-04 | #462 | r1 (full): 1 reproduced (a non-UTF-8 switch raised UnicodeConversionError) and 1 stale doc row, fixed; r2 (reduced): 0 in the change, 1 bug on master (long calls module name) to a new ticket | gate r1 (Codex): 0 | none; ship caught it |
+| 2026-10-04 | #465 | r1 (full): 0 code defects, 3 comment claims corrected | gate r1 (Codex): 0 | none |
