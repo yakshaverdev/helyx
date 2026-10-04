@@ -35,21 +35,85 @@ if Helyx.TUI.Transcript.Available.available?() do
 
     @type position :: {non_neg_integer(), non_neg_integer()} | nil
 
+    # The rows of one wheel or trackpad step.
+    @wheel_rows 3
+
     # A scrolled view starts at an item and a row in it. The items before the
     # open message only grow in number, so new output does not move the view.
     # No line cache: no operation wraps all items. A frame wraps the items it
     # shows, and a page or a hold wraps the items it passes, a small count of
     # screens.
 
+    @typedoc "A row of the transcript: an item index and a row in that item."
+    @type address :: {non_neg_integer(), non_neg_integer()}
+
     @doc """
     The transcript in `area` from `position`. With no position the view
     follows the newest output: the first row is one screen above the end.
     """
     @spec widget(ViewModel.t(), position(), Rect.t()) :: Paragraph.t()
-    def widget(vm, scroll, %Rect{width: width, height: height}) do
+    def widget(vm, scroll, area), do: vm |> screen(scroll, area) |> widget()
+
+    @doc "The paragraph of the rows of `screen/3`."
+    @spec widget([{address(), Line.t()}]) :: Paragraph.t()
+    def widget(rows), do: %Paragraph{text: Enum.map(rows, &elem(&1, 1))}
+
+    @doc "The rows that `widget/3` draws, each with its address, from the top of `area`."
+    @spec screen(ViewModel.t(), position(), Rect.t()) :: [{address(), Line.t()}]
+    def screen(vm, scroll, %Rect{width: width, height: height}) do
       items = items(vm)
       top = scroll || bottom(items, width, height)
-      %Paragraph{text: items |> rows_from(top, width) |> Enum.take(height)}
+      items |> rows_from(top, width) |> Enum.take(height)
+    end
+
+    @typedoc "A row address and a column in it."
+    @type point :: {address(), non_neg_integer()}
+
+    @doc """
+    The text of the rows from the point `first` to the later point `last` at
+    `width` columns, lazily: one string for each row, with no blue bar and
+    no space at the end. A glyph is in the text when one of its columns is
+    in `columns/4`.
+    """
+    @spec text(ViewModel.t(), point(), point(), integer()) :: Enumerable.t(String.t())
+    def text(vm, {first_row, _} = first, {last_row, _} = last, width) do
+      vm
+      |> items()
+      |> rows_from(first_row, width)
+      |> Stream.take_while(fn {address, _line} -> address <= last_row end)
+      |> Stream.map(fn {address, line} ->
+        {from, to} = columns(address, first, last, width)
+        line |> cut(from, to) |> String.trim_trailing()
+      end)
+    end
+
+    @doc """
+    The columns, both included, of the row at `address` between the points
+    `first` and `last`: from the column of `first` on its row, to the column
+    of `last` on its row, and the whole width between them.
+    """
+    @spec columns(address(), point(), point(), integer()) :: {integer(), integer()}
+    def columns(address, {first_row, from}, {last_row, to}, width) do
+      from = if address == first_row, do: from, else: 0
+      {from, min(if(address == last_row, do: to, else: width), width - 1)}
+    end
+
+    # The graphemes of a row with a column in `from..to`, by the width rule.
+    defp cut(%Line{spans: spans}, from, to) do
+      {kept, _column} =
+        Enum.reduce(spans, {[], 0}, fn %Span{content: content, style: style}, acc ->
+          content
+          |> String.graphemes()
+          |> Enum.reduce(acc, fn grapheme, {kept, column} ->
+            # A zero-width grapheme takes no column, as ExRatatui draws it,
+            # and is in the text when its column is.
+            next = column + Wrap.columns(grapheme)
+            keep? = style != @bar and column <= to and max(next, column + 1) > from
+            {if(keep?, do: [grapheme | kept], else: kept), next}
+          end)
+        end)
+
+      kept |> Enum.reverse() |> Enum.join()
     end
 
     defp bottom(items, width, height),
@@ -74,19 +138,29 @@ if Helyx.TUI.Transcript.Available.available?() do
     end
 
     @doc """
-    One screen up (`"page_up"`) or down (`"page_down"`) from `position`,
+    One screen up (`"page_up"`) or down (`"page_down"`) from `position`, or
+    #{@wheel_rows} rows for a wheel step (`"scroll_up"`, `"scroll_down"`),
     held by `hold/4`.
     """
     @spec page(ViewModel.t(), position(), String.t(), integer(), pos_integer()) :: position()
-    def page(_vm, nil, "page_down", _width, _height), do: nil
+    def page(vm, scroll, code, width, height),
+      do: move(vm, scroll, step(code, height), width, height)
 
-    def page(vm, {index, row}, "page_down", width, height),
-      do: hold(vm, {index, row + height}, width, height)
+    defp step("page_up", height), do: -height
+    defp step("page_down", height), do: height
+    defp step("scroll_up", _height), do: -@wheel_rows
+    defp step("scroll_down", _height), do: @wheel_rows
 
-    def page(vm, scroll, "page_up", width, height) do
+    # Down by `rows` when it is positive, else up.
+    defp move(_vm, nil, rows, _width, _height) when rows > 0, do: nil
+
+    defp move(vm, {index, row}, rows, width, height) when rows > 0,
+      do: hold(vm, {index, row + rows}, width, height)
+
+    defp move(vm, scroll, rows, width, height) do
       items = items(vm)
       {index, row} = scroll || bottom(items, width, height)
-      top = items |> Enum.take(index) |> Enum.reverse() |> back({index, row}, height, width)
+      top = items |> Enum.take(index) |> Enum.reverse() |> back({index, row}, -rows, width)
       hold_items(items, top, width, height)
     end
 
@@ -107,9 +181,10 @@ if Helyx.TUI.Transcript.Available.available?() do
       end
     end
 
-    # The row skip stays in the first item: a row past that item shows its last
-    # row. A frame can come before the check of a new width, and a skip over
-    # all rows would wrap every item that the old row number passes.
+    # The rows from a position on, each with its address. The row skip stays
+    # in the first item: a row past that item shows its last row. A frame can
+    # come before the check of a new width, and a skip over all rows would
+    # wrap every item that the old row number passes.
     defp rows_from(items, {index, row}, width) do
       case Enum.drop(items, index) do
         [] ->
@@ -117,10 +192,18 @@ if Helyx.TUI.Transcript.Available.available?() do
 
         [first | rest] ->
           lines = item_lines(first, width)
+          skip = min(row, length(lines) - 1)
 
           lines
-          |> Enum.drop(min(row, length(lines) - 1))
-          |> Stream.concat(Stream.flat_map(rest, &item_lines(&1, width)))
+          |> Enum.drop(skip)
+          |> Enum.with_index(&{{index, skip + &2}, &1})
+          |> Stream.concat(
+            rest
+            |> Stream.with_index(index + 1)
+            |> Stream.flat_map(fn {item, at} ->
+              item |> item_lines(width) |> Enum.with_index(&{{at, &2}, &1})
+            end)
+          )
       end
     end
 

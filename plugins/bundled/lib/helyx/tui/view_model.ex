@@ -28,7 +28,8 @@ defmodule Helyx.TUI.ViewModel do
 
   `reason` is why the client rejected the last input, or nil. It is
   client-local, like a notice: `reject/2` sets it and `clear_reason/1`
-  clears it on the next key press or paste. A new reject replaces it. No event changes it.
+  clears it on the next key press, paste, or mouse press. A new reject
+  replaces it. No event changes it.
 
   `streaming` is the open assistant message as a reversed block list, newest
   first, or nil when none is streaming. Text and thinking deltas join it
@@ -236,7 +237,7 @@ defmodule Helyx.TUI.ViewModel do
   @spec reject(t(), String.t()) :: t()
   def reject(vm, reason) when is_binary(reason), do: %{vm | reason: reason}
 
-  @doc "Clears the reason. The TUI calls it on a key press or a paste when a reason is set."
+  @doc "Clears the reason. The TUI calls it on a key press, a paste, or a mouse press."
   @spec clear_reason(t()) :: t()
   def clear_reason(vm), do: %{vm | reason: nil}
 
