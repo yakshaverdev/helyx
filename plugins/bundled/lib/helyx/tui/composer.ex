@@ -16,12 +16,18 @@ if Helyx.TUI.Composer.Available.available?() do
     `edit/3` or `clear/1` returns shares it with the one they got.
     """
 
+    alias ExRatatui.Layout.Rect
     alias ExRatatui.Style
-    alias ExRatatui.Widgets.{Block, Textarea}
+    alias ExRatatui.Text.{Line, Span}
+    alias ExRatatui.Widgets.{Block, Paragraph, Textarea}
     alias Helyx.TUI.{ViewModel, Wrap}
 
     # The composer shows at most this many lines inside its two borders.
     @composer_lines 8
+
+    # The column of the first character of the composer text: after the
+    # border, a space, the `›` mark, and a space.
+    @text_column 4
 
     # A paste of more lines than this shows as one marker.
     @paste_lines 5
@@ -113,14 +119,30 @@ if Helyx.TUI.Composer.Available.available?() do
     @spec rows(t(), integer()) :: pos_integer()
     def rows(composer, room), do: min(rows(composer), max(room - 1, 3))
 
-    @doc "The widget that draws the composer."
-    @spec widget(t()) :: Textarea.t()
-    def widget(%__MODULE__{input: input}) do
-      %Textarea{
-        state: input,
-        cursor_style: %Style{modifiers: [:reversed]},
-        block: %Block{borders: [:all], title: "prompt"}
+    @doc """
+    The widgets that draw the composer in `area`: a box with rounded corners
+    and no title, and a `›` mark before the first line.
+    """
+    @spec widgets(t(), Rect.t()) :: [{Textarea.t() | Paragraph.t(), Rect.t()}]
+    def widgets(%__MODULE__{input: input}, %Rect{} = area) do
+      box = %Block{
+        borders: [:all],
+        border_type: :rounded,
+        border_style: %Style{fg: :dark_gray},
+        padding: {@text_column - 1, 0, 0, 0}
       }
+
+      mark = %Paragraph{text: %Line{spans: [%Span{content: "›", style: %Style{fg: :blue}}]}}
+
+      textarea = %Textarea{state: input, cursor_style: %Style{modifiers: [:reversed]}, block: box}
+
+      # The mark is drawn only inside a whole box, never on its border.
+      marks =
+        if area.width >= @text_column and area.height >= 3,
+          do: [{mark, %Rect{x: area.x + @text_column - 2, y: area.y + 1, width: 1, height: 1}}],
+          else: []
+
+      [{textarea, area} | marks]
     end
 
     defp edge?(composer, "up"), do: elem(ExRatatui.textarea_cursor(composer.input), 0) == 0

@@ -402,6 +402,47 @@ defmodule Helyx.TUITest do
     assert ExRatatui.textarea_get_value(state.composer.input) == "/model fake/other"
   end
 
+  test "every part has two columns of margin, and the composer a rounded box with a mark",
+       %{core: core} do
+    state = mounted(core, "frame", [])
+    state = %{state | vm: ViewModel.info(state.vm, "resumed session")}
+    state = state |> press("h") |> press("i")
+    terminal = ExRatatui.init_test_terminal(30, 7)
+    :ok = ExRatatui.draw(terminal, TUI.render(state, %{width: 30, height: 7}))
+
+    assert [
+             "  · resumed session",
+             "",
+             "",
+             "  ╭────────────────────────╮",
+             "  │ › hi                   │",
+             "  ╰────────────────────────╯",
+             "   fake/frame · idle · queue"
+           ] ==
+             terminal
+             |> ExRatatui.get_buffer_content()
+             |> String.split("\n")
+             |> Enum.map(&String.trim_trailing/1)
+  end
+
+  test "the mark is drawn only inside a whole box, never on a border or in a margin" do
+    composer = Helyx.TUI.Composer.new()
+
+    mark? =
+      &match?(
+        [_box, _mark],
+        Helyx.TUI.Composer.widgets(composer, %Rect{x: 2, width: &1, height: &2})
+      )
+
+    assert {mark?.(4, 3), mark?.(3, 3), mark?.(4, 2), mark?.(0, 0)} == {true, false, false, false}
+
+    # A terminal of 3 columns has no room inside the margins: nothing shows.
+    terminal = ExRatatui.init_test_terminal(3, 5)
+    state = %{vm: view_model([]), scroll: nil, composer: composer, busy: nil}
+    :ok = ExRatatui.draw(terminal, TUI.render(state, %{width: 3, height: 5}))
+    refute ExRatatui.get_buffer_content(terminal) =~ "›"
+  end
+
   test "tool results truncate after four lines, ignoring a trailing newline" do
     call = %Helyx.Message.ToolCall{id: "c", name: "bash", arguments: %{}}
 
@@ -496,7 +537,7 @@ defmodule Helyx.TUITest do
         ])
       )
 
-    assert "› hi[31m there" in texts
+    assert "▌ hi[31m there" in texts
     assert "  ]0;evil[2Jcol1  col2" in texts
     refute Enum.any?(texts, &String.contains?(&1, "\e"))
 
@@ -522,7 +563,7 @@ defmodule Helyx.TUITest do
 
     texts = texts(vm, 30)
 
-    assert "› hello world" in texts
+    assert "▌ hello world" in texts
     assert Enum.any?(texts, &String.starts_with?(&1, "⚙ bash"))
     assert "  … 2 more lines" in texts
     assert String.duplicate("s", 30) in texts
@@ -535,7 +576,8 @@ defmodule Helyx.TUITest do
     arguments = Map.new(1..2_000, &{"k#{&1}", String.duplicate("\u00A0", 100)})
     call = %Helyx.Message.ToolCall{id: "c", name: "bash", arguments: arguments}
 
-    texts = texts(view_model([{:tool, call, ViewModel.call_line(call), nil}]))
+    # Wide enough for one row: a break would drop the space at it.
+    texts = texts(view_model([{:tool, call, ViewModel.call_line(call), nil}]), 10_000)
     {call_rows, ["… awaiting result"]} = Enum.split(texts, -1)
     call_line = Enum.join(call_rows)
 
@@ -544,9 +586,10 @@ defmodule Helyx.TUITest do
   end
 
   describe "scrollback" do
-    # A 20 by 9 terminal: the transcript has 5 rows. Each message is one row
-    # and one empty row. `resize/2` gives the terminal a new size.
-    defp size, do: Process.get(:terminal_size, {20, 9})
+    # A 24 by 9 terminal: the transcript has 5 rows of 20 columns, inside
+    # the margins. Each message is one row and one empty row. `resize/2`
+    # gives the terminal a new size.
+    defp size, do: Process.get(:terminal_size, {24, 9})
 
     defp resize(state, size) do
       Process.put(:terminal_size, size)
@@ -583,38 +626,38 @@ defmodule Helyx.TUITest do
     defp screen(state) do
       {width, height} = size()
       [{%Paragraph{text: lines}, _rect} | _] = TUI.render(state, %{width: width, height: height})
-      for line <- lines, span <- line.spans, do: span.content
+      line_texts(lines)
     end
 
     test "PgUp and PgDn move one screen, new output does not move the view", %{core: core} do
       state = scroll_state(core, 10)
-      assert screen(state) == ["› m9", "› m10"]
+      assert screen(state) == ["▌ m9", "▌ m10"]
       refute status_text(state) =~ "scrolled"
 
       state = press(state, "page_up")
-      assert screen(state) == ["› m6", "› m7", "› m8"]
+      assert screen(state) == ["▌ m6", "▌ m7", "▌ m8"]
       assert status_text(state) =~ "scrolled"
 
       state = say(state, "new")
-      assert screen(state) == ["› m6", "› m7", "› m8"]
+      assert screen(state) == ["▌ m6", "▌ m7", "▌ m8"]
 
       state = press(state, "page_down")
-      assert screen(state) == ["› m9", "› m10"]
+      assert screen(state) == ["▌ m9", "▌ m10"]
       assert status_text(state) =~ "scrolled"
 
       state = press(state, "page_down")
-      assert screen(state) == ["› m10", "› new"]
+      assert screen(state) == ["▌ m10", "▌ new"]
       refute status_text(state) =~ "scrolled"
     end
 
     test "the offset stops at the first row, and the same count of PgDn returns", %{core: core} do
       state = scroll_state(core, 6)
       up = Enum.reduce(1..50, state, fn _, acc -> press(acc, "page_up") end)
-      assert screen(up) == ["› m1", "› m2", "› m3"]
+      assert screen(up) == ["▌ m1", "▌ m2", "▌ m3"]
 
       down = up |> press("page_down") |> press("page_down")
       assert down.scroll == nil
-      assert screen(down) == ["› m5", "› m6"]
+      assert screen(down) == ["▌ m5", "▌ m6"]
     end
 
     test "a transcript that fits the screen does not scroll", %{core: core} do
@@ -640,7 +683,7 @@ defmodule Helyx.TUITest do
       assert row > 20
 
       # At width 200 the first cell has 6 rows and the empty row.
-      wide = resize(state, {200, 9})
+      wide = resize(state, {204, 9})
       assert {index, row} = wide.scroll
       assert index > 0 and row < 2
       assert length(screen(wide)) in 2..3
@@ -655,7 +698,7 @@ defmodule Helyx.TUITest do
 
       # The width changes, a typing key comes, and a frame is drawn. No check
       # of the position ran: the old row is far past the 41 rows of the cell.
-      Process.put(:terminal_size, {200, 9})
+      Process.put(:terminal_size, {204, 9})
       state = press(state, "x")
       assert {0, ^row} = state.scroll
 
@@ -693,7 +736,7 @@ defmodule Helyx.TUITest do
 
       # The last row of the first cell is its empty row, then the next cells.
       assert wraps in 1..5
-      assert rows == ["› m1", "› m2"]
+      assert rows == ["▌ m1", "▌ m2"]
     end
 
     test "a change of the composer height checks the position", %{core: core} do
@@ -714,19 +757,23 @@ defmodule Helyx.TUITest do
          %{core: core} do
       # 11 rows: a full composer would leave the transcript no row. It gets
       # 9 rows, the transcript 1, and PgUp moves by that 1 row.
-      Process.put(:terminal_size, {20, 11})
+      Process.put(:terminal_size, {24, 11})
       state = scroll_state(core, 10)
       state = Enum.reduce(1..8, state, fn _, acc -> press(acc, "j", ["ctrl"]) end)
 
-      [{_, transcript}, {_, composer}, _status] = TUI.render(state, %{width: 20, height: 11})
+      [{_, transcript}, {_, composer}, _mark, _status] =
+        TUI.render(state, %{width: 24, height: 11})
+
       assert {transcript.height, composer.height} == {1, 9}
 
       state = press(state, "page_up")
-      assert screen(state) == ["› m10"]
+      assert screen(state) == ["▌ m10"]
 
       # At 6 rows the composer has 2 lines, at 5 one; below that the transcript has none.
       for {height, rows} <- [{6, {1, 4}}, {5, {1, 3}}, {4, {0, 3}}] do
-        [{_, transcript}, {_, composer}, _] = TUI.render(state, %{width: 20, height: height})
+        [{_, transcript}, {_, composer}, _mark, _] =
+          TUI.render(state, %{width: 24, height: height})
+
         assert {transcript.height, composer.height} == rows
       end
     end
@@ -774,9 +821,9 @@ defmodule Helyx.TUITest do
 
     test "one screen is the height minus 4 rows, and 1 row at that height or less", %{core: core} do
       for {height, rows} <- [{6, 2}, {5, 1}, {4, 1}, {3, 1}, {0, 1}] do
-        Process.put(:terminal_size, {20, 9})
+        Process.put(:terminal_size, {24, 9})
         state = scroll_state(core, 10)
-        Process.put(:terminal_size, {20, height})
+        Process.put(:terminal_size, {24, height})
         # Row 19 is the empty row after m10, and row 18 is m10.
         assert press(state, "page_up").scroll == {div(20 - 2 * rows, 2), rem(20 - 2 * rows, 2)}
       end
@@ -784,18 +831,17 @@ defmodule Helyx.TUITest do
 
     test "the view moves by rows in a cell of wide glyphs, and no row is past the width",
          %{core: core} do
-      # 60 glyphs of two columns at width 20: 6 rows, then the empty row.
+      # 59 glyphs of two columns in the 18 columns after the bar: 7 rows,
+      # then the empty row.
       state = core |> scroll_state(0) |> say(String.duplicate("語", 59)) |> say("end")
       up = press(state, "page_up")
       assert up.scroll == {0, 0}
-
-      assert screen(up) ==
-               ["› " <> String.duplicate("語", 9)] ++ List.duplicate(String.duplicate("語", 10), 4)
+      row = "▌ " <> String.duplicate("語", 9)
+      assert screen(up) == List.duplicate(row, 5)
 
       down = press(up, "page_down")
       assert down.scroll == nil
-      glyphs = String.duplicate("語", 10)
-      assert screen(down) == [glyphs, glyphs, "› end"]
+      assert screen(down) == [row, "▌ " <> String.duplicate("語", 5), "▌ end"]
     end
 
     test "a failed turn while the view is in the open message returns to the newest output",
@@ -816,7 +862,7 @@ defmodule Helyx.TUITest do
       for data <- [%{outcome: :aborted}, %{outcome: :error, error: :boom}] do
         ended = fold(state, :turn_end, data)
         assert ended.scroll == nil
-        assert "› m1" in screen(ended)
+        assert "▌ m1" in screen(ended)
         refute status_text(ended) =~ "scrolled"
       end
     end
@@ -825,7 +871,7 @@ defmodule Helyx.TUITest do
       state = core |> scroll_state(0) |> say(String.duplicate("word ", 60)) |> press("page_up")
       assert {0, _row} = state.scroll
 
-      wide = resize(state, {200, 9})
+      wide = resize(state, {204, 9})
       assert wide.scroll == nil
       assert screen(wide) != []
     end
@@ -999,7 +1045,7 @@ defmodule Helyx.TUITest do
     defp value(state), do: ExRatatui.textarea_get_value(state.composer.input)
 
     defp composer_height(state) do
-      [_transcript, {_widget, %Rect{height: height}}, _status] =
+      [_transcript, {_widget, %Rect{height: height}}, _mark, _status] =
         TUI.render(state, %{width: 40, height: 30})
 
       height

@@ -23,13 +23,22 @@ defmodule Helyx.Test.TUIRender do
     %{ViewModel.from_snapshot(snapshot) | cells: :array.from_list(cells)}
   end
 
-  @doc "The text of every transcript row of `vm` at `width`, from its first row."
+  @doc "The text of every transcript row of `vm` at `width`, from its first row, with no trailing spaces."
   def texts(vm, width \\ 80) do
     # More rows than any test transcript has, so the widget shows them all.
     %Paragraph{text: lines} =
       Transcript.widget(vm, {0, 0}, %Rect{x: 0, y: 0, width: width, height: 10_000_000})
 
-    for line <- lines, span <- line.spans, do: span.content
+    line_texts(lines)
+  end
+
+  @doc """
+  The text of each line with spans, its spans joined, with no trailing
+  spaces. The empty row after each cell has no span and is left out.
+  """
+  def line_texts(lines) do
+    for %{spans: [_ | _] = spans} <- lines,
+        do: spans |> Enum.map_join(& &1.content) |> String.trim_trailing()
   end
 
   @doc "The rows of `text` as one assistant message, wrapped at `width`."

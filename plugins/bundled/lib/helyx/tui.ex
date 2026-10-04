@@ -53,6 +53,9 @@ if Helyx.TUI.Available.available?() do
     # above both.
     @status_rows 1
 
+    # The empty columns on the left and on the right of every part.
+    @margin 2
+
     # The busy indicator: one frame per tick while a turn runs.
     @tick_ms 100
     @frames List.to_tuple(~w(⠋ ⠙ ⠹ ⠸ ⠼ ⠴ ⠦ ⠧ ⠇ ⠏))
@@ -298,18 +301,27 @@ if Helyx.TUI.Available.available?() do
       area = %Rect{x: 0, y: 0, width: frame.width, height: frame.height}
 
       [transcript, composer, status] =
-        Layout.split(area, :vertical, [
-          {:min, 0},
-          {:length, Composer.rows(state.composer, frame.height - @status_rows)},
-          {:length, @status_rows}
-        ])
+        Layout.split(
+          area,
+          :vertical,
+          [
+            {:min, 0},
+            {:length, Composer.rows(state.composer, frame.height - @status_rows)},
+            {:length, @status_rows}
+          ],
+          horizontal_margin: @margin
+        )
 
-      [
-        {Transcript.widget(state.vm, state.scroll, transcript), transcript},
-        {Composer.widget(state.composer), composer},
-        {status_widget(state.vm, state.busy, state.scroll), status}
-      ]
+      [{Transcript.widget(state.vm, state.scroll, transcript), transcript}] ++
+        Composer.widgets(state.composer, composer) ++
+        [{status_widget(state.vm, state.busy, state.scroll), status}]
     end
+
+    # The width inside the margins that `Layout.split/4` draws, so a
+    # position is checked at the width that is drawn. Under two margins
+    # ratatui draws nothing.
+    defp inner_width(width) when width >= 2 * @margin, do: width - 2 * @margin
+    defp inner_width(_width), do: 0
 
     # Scroll position
 
@@ -322,7 +334,7 @@ if Helyx.TUI.Available.available?() do
           rows =
             max(height - Composer.rows(state.composer, height - @status_rows) - @status_rows, 1)
 
-          %{state | scroll: position.(width, rows)}
+          %{state | scroll: position.(inner_width(width), rows)}
 
         {:error, _reason} ->
           %{state | scroll: nil}

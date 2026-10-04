@@ -5,7 +5,7 @@ defmodule Helyx.TUI.ViewModelTest do
   alias Helyx.{Event, Message}
   alias Helyx.TUI.ViewModel
 
-  import Helyx.Test.TUIRender, only: [texts: 1, view_model: 2]
+  import Helyx.Test.TUIRender, only: [texts: 1, view_model: 1, view_model: 2]
 
   # Builds a session's event list with sequence numbers assigned in order.
   defp events(specs) do
@@ -107,7 +107,7 @@ defmodule Helyx.TUI.ViewModelTest do
       ])
 
     assert streaming.streaming == [open(call), %Message.Text{text: "Listing."}]
-    assert ["› hi", "Listing.", "⚙ bash command=\"ls\"", "… awaiting result"] == texts(streaming)
+    assert ["▌ hi", "Listing.", "⚙ bash command=\"ls\"", "… awaiting result"] == texts(streaming)
 
     ended =
       Enum.reduce(
@@ -420,7 +420,7 @@ defmodule Helyx.TUI.ViewModelTest do
       queue: %{steers: 0, follow_ups: 0}
     }
 
-    assert ["› see [unsupported block: image]", "⚙ read", "  [unsupported block: image]"] ==
+    assert ["▌ see [unsupported block: image]", "⚙ read", "  [unsupported block: image]"] ==
              texts(ViewModel.from_snapshot(snapshot))
   end
 
@@ -460,7 +460,7 @@ defmodule Helyx.TUI.ViewModelTest do
     assert [%Message{role: :user}, %Message{role: :assistant}] = cells(vm)
     assert vm.streaming == [%Message.Text{text: "more"}, %NewBlock{data: 2}]
 
-    assert ["› hi", "[unsupported block: new_block]", "done"] ++
+    assert ["▌ hi", "[unsupported block: new_block]", "done"] ++
              ["[unsupported block: new_block]", "more"] == texts(vm)
   end
 
@@ -560,11 +560,101 @@ defmodule Helyx.TUI.ViewModelTest do
       Helyx.TUI.Transcript.widget(vm, {0, 0}, %ExRatatui.Layout.Rect{width: 80, height: 10})
 
     assert [
-             [%{content: "model: other/model", style: %{fg: nil, modifiers: [:dim]}}],
+             [%{content: "· model: other/model", style: %{fg: nil, modifiers: [:dim]}}],
              [],
              [%{content: "✕ aborted", style: %{fg: :red}}],
              []
            ] = Enum.map(lines, & &1.spans)
+  end
+
+  test "consecutive information cells join into one dim row with no empty row between" do
+    vm =
+      view_model([
+        {:info, "resumed session"},
+        {:info, "model: a/b"},
+        {:notice, "aborted"},
+        {:info, "model: c/d"}
+      ])
+
+    %ExRatatui.Widgets.Paragraph{text: lines} =
+      Helyx.TUI.Transcript.widget(vm, {0, 0}, %ExRatatui.Layout.Rect{width: 80, height: 10})
+
+    assert [
+             [%{content: "· resumed session · model: a/b", style: %{modifiers: [:dim]}}],
+             [],
+             [%{content: "✕ aborted"}],
+             [],
+             [%{content: "· model: c/d"}],
+             []
+           ] = Enum.map(lines, & &1.spans)
+
+    # The run is one item of the scroll position: item 2 is the last run,
+    # and its 2 rows to the end are not more than a screen of 3 rows.
+    assert Helyx.TUI.Transcript.hold(vm, {2, 0}, 80, 3) == nil
+  end
+
+  test "a user message has a bar and a tint on every row, filled to the width" do
+    vm = view_model([Helyx.Message.user("one two three four")])
+
+    %ExRatatui.Widgets.Paragraph{text: lines} =
+      Helyx.TUI.Transcript.widget(vm, {0, 0}, %ExRatatui.Layout.Rect{width: 12, height: 10})
+
+    tint = %ExRatatui.Style{fg: :white, bg: :black}
+    fill = String.duplicate(" ", 10)
+
+    assert [
+             [%{content: "▌ ", style: %{fg: :blue, bg: :black}}, %{content: first, style: ^tint}],
+             [%{content: "▌ "}, %{content: second, style: ^tint}],
+             []
+           ] = Enum.map(lines, & &1.spans)
+
+    assert {first, second} == {"one two" <> fill, "three four" <> fill}
+  end
+
+  test "the text of a user row is never wider than the width, but for a glyph wider than it" do
+    vm = view_model([Helyx.Message.user("a 語 क्षि b")])
+
+    for width <- 0..8 do
+      %ExRatatui.Widgets.Paragraph{text: lines} =
+        Helyx.TUI.Transcript.widget(vm, {0, 0}, %ExRatatui.Layout.Rect{width: width, height: 30})
+
+      for %{spans: [_ | _] = spans} <- lines do
+        text = spans |> Enum.map_join(& &1.content) |> String.trim_trailing()
+        # A glyph wider than the width has a row of its own, with no bar.
+        assert Helyx.TUI.Wrap.columns(text) <= max(width, 1) or String.length(text) == 1,
+               "width #{width}: #{inspect(text)}"
+      end
+    end
+  end
+
+  test "the tint of a user row reaches the edge, also after an emoji sequence" do
+    # A glyph that the rule counts wider than the text width gets no bar,
+    # and its row keeps the tint: 語 at 3, and a conjunct that the rule
+    # counts as 79 columns at 80, which the terminal draws narrower.
+    conjunct = String.duplicate("क्", 39) <> "क"
+
+    for {text, width} <- [
+          {"hi", 12},
+          {"👩‍💻", 12},
+          {"🇺🇸 x", 12},
+          {"👍🏽", 12},
+          {"語", 3},
+          {"👍🏽", 5},
+          {conjunct, 80}
+        ] do
+      vm = view_model([Helyx.Message.user(text)])
+      area = %ExRatatui.Layout.Rect{x: 0, y: 0, width: width, height: 1}
+      terminal = ExRatatui.init_test_terminal(width, 1)
+      hashes = %ExRatatui.Widgets.Paragraph{text: String.duplicate("#", width)}
+
+      :ok =
+        ExRatatui.draw(terminal, [
+          {hashes, area},
+          {Helyx.TUI.Transcript.widget(vm, {0, 0}, area), area}
+        ])
+
+      refute ExRatatui.get_buffer_content(terminal) =~ "#", inspect(text)
+    end
   end
 
   test "a provider session shows a notice when the provider lost its session or got a cut transcript" do
