@@ -45,7 +45,7 @@ defmodule Helyx.Provider.ClaudeCode do
     # a fresh one with the id `session_id`. `sent?` is true once a turn was
     # written to it. `init?` is true from its first `init` line. `closing`
     # is the `from` of a close. `terminal` stops the read of stdout:
-    # `:lost`, a program that did not start (`Helyx.HarnessIO.start/5`), an
+    # `:lost`, a program that did not start (`Helyx.HarnessIO.launch/4`), an
     # `init` without the needed capabilities, or a line over the cap
     # (`Helyx.HarnessIO.lines/3`). `tasks` is the `tasks` value of the last
     # `background_tasks_changed` line: only `[]` lets an idle close stop

@@ -11,7 +11,7 @@ defmodule Helyx.Session.Server.Records do
 
   import Helyx.Session.Server.Events, only: [emit: 3, emit: 4]
 
-  alias Helyx.{Message, ModelRef}
+  alias Helyx.{Message, ModelRef, Session}
   alias Helyx.Session.Server.State
   alias Helyx.Session.{Transcript, Turn}
 
@@ -162,7 +162,7 @@ defmodule Helyx.Session.Server.Records do
     Enum.reduce(
       Transcript.open_calls(state.transcript),
       state,
-      &record_result(&1, {:error, "aborted"}, &2)
+      &record_result(&1, Session.aborted_result(), &2)
     )
   end
 

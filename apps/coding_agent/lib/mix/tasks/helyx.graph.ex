@@ -31,14 +31,22 @@ defmodule Mix.Tasks.Helyx.Graph do
   @core :helyx_graph
   @turn_timeout_ms 10_000
   @callbacks [:init, :handle_call, :handle_cast, :handle_info, :handle_continue]
+  @usage "usage: mix helyx.graph calls [Module ...] [--mermaid] | mix helyx.graph turn"
 
   @impl true
   def run(argv) do
+    # OptionParser raises UnicodeConversionError or ArgumentError on a
+    # switch that is not UTF-8, and ArgumentError on some others, such as "-=".
+    if bad = Enum.find(argv, &(not String.valid?(&1))) do
+      Mix.raise("an argument is not UTF-8: #{inspect(bad, binaries: :as_strings)}; #{@usage}")
+    end
+
     {opts, args} =
       try do
         OptionParser.parse!(argv, strict: [mermaid: :boolean])
       rescue
         error in OptionParser.ParseError -> Mix.raise(Exception.message(error))
+        ArgumentError -> Mix.raise("bad option in #{inspect(argv)}; #{@usage}")
       end
 
     case args do
@@ -49,7 +57,7 @@ defmodule Mix.Tasks.Helyx.Graph do
         turn()
 
       _ ->
-        Mix.raise("usage: mix helyx.graph calls [Module ...] [--mermaid] | mix helyx.graph turn")
+        Mix.raise(@usage)
     end
   end
 
@@ -112,26 +120,31 @@ defmodule Mix.Tasks.Helyx.Graph do
     flags = [:call, :arity, :send, :strict_monotonic_timestamp, {:tracer, tracer}]
 
     # Core starts before the trace, so its startup stays out of the diagram,
-    # and :all reaches its processes too.
-    try do
-      :erlang.trace(:all, true, flags)
-      :erlang.trace(tracer, false, [:all])
-      Enum.each(modules, &:erlang.trace_pattern({&1, :_, :_}, true, [:local]))
-      run_turn(dir)
-    after
-      :erlang.trace(:all, false, [:all])
-      :erlang.trace_pattern({:_, :_, :_}, false, [:local])
-      Process.put(:helyx_graph_registered, registered())
-      Supervisor.stop(core)
-      File.rm_rf!(dir)
-    end
+    # and :all reaches its processes too. The names are taken after the
+    # trace stops and before Core stops.
+    registered =
+      try do
+        try do
+          :erlang.trace(:all, true, flags)
+          :erlang.trace(tracer, false, [:all])
+          Enum.each(modules, &:erlang.trace_pattern({&1, :_, :_}, true, [:local]))
+          run_turn(dir)
+        after
+          :erlang.trace(:all, false, [:all])
+          :erlang.trace_pattern({:_, :_, :_}, false, [:local])
+        end
+
+        registered()
+      after
+        Supervisor.stop(core)
+        File.rm_rf!(dir)
+      end
 
     # Trace messages already sent must reach the tracer before it stops.
     ref = :erlang.trace_delivered(:all)
     receive do: ({:trace_delivered, :all, ^ref} -> :ok)
     send(tracer, {:done, self()})
     events = receive do: ({:events, events} -> events)
-    registered = Process.delete(:helyx_graph_registered)
     events |> Enum.sort_by(&elem(&1, 0)) |> print_turn(self(), registered)
   end
 
@@ -241,7 +254,7 @@ defmodule Mix.Tasks.Helyx.Graph do
   defp project_modules do
     Enum.flat_map(@apps, fn app ->
       Application.load(app)
-      Application.spec(app, :modules) || []
+      Application.spec(app, :modules)
     end)
   end
 

@@ -38,8 +38,8 @@ defmodule Helyx.Provider.OpenAI.Events do
 
   defp handle({:error, reason}, acc), do: {[{:error, reason}], acc}
 
-  # ponytail: buffer <> chunk re-copies the carried partial line per chunk;
-  # make the buffer iodata if one huge data line ever shows up in profiles.
+  # buffer <> chunk re-copies the carried partial line per chunk; the line
+  # cap bounds each copy.
   defp handle(chunk, acc) when is_binary(chunk) do
     {lines, buffer} = split_lines(acc.buffer <> chunk)
 
@@ -151,11 +151,11 @@ defmodule Helyx.Provider.OpenAI.Events do
 
   defp chunk_events(_bad, payload, _acc), do: {[{:error, {:bad_chunk, payload}}], :halted}
 
-  # Thinking arrives as `reasoning_content` (DeepSeek style) or `reasoning`
-  # (OpenRouter style); text as `content`. Empty and missing ones emit nothing.
+  # Thinking arrives as `reasoning_content`, text as `content`. Empty and
+  # missing ones emit nothing.
   defp delta_events(delta) do
     for {kind, text} <- [
-          thinking_delta: field(delta, "reasoning_content", delta["reasoning"]),
+          thinking_delta: delta["reasoning_content"],
           text_delta: delta["content"]
         ],
         text not in [nil, ""],

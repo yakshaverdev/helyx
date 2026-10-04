@@ -46,10 +46,9 @@ defmodule CodingAgent do
       try do
         Helyx.TUI.run(session: session, resumed: opts[:resume] == true)
       after
-        # Quitting mid-turn, or a TUI that fails, must not leave shell process
-        # groups running after the VM stops; only abort makes the hands kill
-        # them and wait. A session that died has no turn for abort to reach
-        # (ticket #45), and the abort returns `{:error, :session_not_found}`.
+        # The abort comes before Core stops, so a turn that the quit or a
+        # failed TUI left open ends and the hands release its resources. A
+        # session that died returns `{:error, :session_not_found}`.
         _ = Helyx.Session.abort(session)
       end
     end

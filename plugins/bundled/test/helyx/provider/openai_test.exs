@@ -89,7 +89,7 @@ defmodule Helyx.Provider.OpenAITest do
   end
 
   # Core checks the type of a delta (`Helyx.Session.Stream`).
-  test "reasoning is thinking too, and a non-string field goes to Core as it is" do
+  test "a reasoning field emits nothing, and a non-string field goes to Core as it is" do
     stub([
       delta(%{reasoning: "why"}),
       delta(%{content: 42}),
@@ -100,7 +100,6 @@ defmodule Helyx.Provider.OpenAITest do
     assert {:ok, stream} = OpenAI.Go.stream("m", %Helyx.Context{}, session_id: "s", turn_id: "t")
 
     assert Enum.to_list(stream) == [
-             {:thinking_delta, "why"},
              {:text_delta, 42},
              {:text_delta, "ok"},
              {:done, %{stop_reason: :end_turn, usage: %{}}}

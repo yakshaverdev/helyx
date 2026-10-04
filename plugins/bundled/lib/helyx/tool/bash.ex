@@ -23,9 +23,6 @@ defmodule Helyx.Tool.Bash do
 
   @behaviour Helyx.Tool
 
-  # The launcher and the handshake live in `Helyx.Watchdog`, and the release
-  # in `Helyx.Watchdog.Group`; the harness providers share both (ADR 0005).
-
   @impl true
   def name, do: "bash"
 
@@ -45,8 +42,6 @@ defmodule Helyx.Tool.Bash do
     }
   end
 
-  # Recorded risk: a future macOS may ship without perl. The watchdog is
-  # small enough to rewrite in sh with job control if that happens.
   @impl true
   def check, do: check(&System.find_executable/1)
 
@@ -105,8 +100,8 @@ defmodule Helyx.Tool.Bash do
     if status == 0, do: text, else: text <> "\nExit code: #{status}"
   end
 
-  # ponytail: no per-call timeout; a command that never exits holds the call
-  # until the turn is aborted.
+  # No per-call timeout: a command that never exits holds the call until
+  # the turn is aborted.
   defp collect(port, acc, dropped?) do
     receive do
       {^port, {:data, data}} ->

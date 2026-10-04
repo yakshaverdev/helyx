@@ -16,16 +16,12 @@ defmodule Helyx.Session.Server do
     GenServer.start_link(__MODULE__, state, name: via(core, id))
   end
 
-  # Callbacks
-
   @impl true
   def init(%State{} = state) do
     # The session traps exits: the hands are linked, so their crash arrives
     # as a message, and a death of the session takes them with it (ADR 0004).
     Process.flag(:trap_exit, true)
 
-    # The tool checks ran before the session started, so the hands' init
-    # cannot fail (#150).
     {:ok, hands} =
       Hands.start_link(
         core: state.core,
@@ -146,12 +142,9 @@ defmodule Helyx.Session.Server do
       when :erlang.map_get(pid, subscribers) == ref,
       do: {:noreply, Events.subscriber_down(state, pid)}
 
-  # The hands are linked and vital: their death takes the session with it.
-  def handle_info({:EXIT, pid, reason}, %State{hands: pid} = state), do: {:stop, reason, state}
-
-  # An exit from any other linked process, the sessions Registry for
-  # example, is vital: a session that outlived its registration would keep working
-  # where no client can reach it.
+  # An exit from a linked process is vital. The hands' death takes the
+  # session with it, and a session that outlived its entry in the sessions
+  # Registry would keep working where no client can reach it.
   def handle_info({:EXIT, _pid, reason}, state), do: {:stop, reason, state}
 
   # The lifecycle inputs (`TurnLoop.handle/2`): the provider process's

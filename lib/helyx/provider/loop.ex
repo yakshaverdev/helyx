@@ -31,18 +31,19 @@ defmodule Helyx.Provider.Loop do
 
   A turn: the helper replies `:ok` to `{:turn, ...}` and calls the model
   with the context. A done with calls sends `message_end`, then a
-  `tool_request` for every call of the message at once, in call order;
-  the session runs or rejects them. The results join the transcript as
-  `tool_result` events in call order, each when every call before it has its result. When every call
-  has its result, the held steers go out as `user_message` events, then
-  `{:need_context, turn_id}`, and the next model call gets the fresh
-  context. A done with no calls ends the turn, unless a steer is
-  held: then the steers go out and the model is called again in the same
-  turn. A stream error, a stream that ends with no terminal (`:stream_ended`),
-  a model Task that raises, throws, or exits (`{:task_exit, reason}`), and
-  a context error end the turn; the provider process stays. An exit
-  signal that kills the model Task, such as one from a process linked to
-  it, ends the provider process too, through the link (L4).
+  `tool_request` for every call of the message at once, in call order; the
+  session runs or rejects them. The results join the transcript as
+  `tool_result` events in call order, each when every call before it has its
+  result. When every call has its result, the held steers go out as
+  `user_message` events, then `{:need_context, turn_id}`, and the next model
+  call gets the fresh context. A done with no calls ends the turn, unless a
+  steer is held: then the steers go out and the model is called again in the
+  same turn. A stream error, a stream that ends with no terminal
+  (`:stream_ended`), a model Task that raises, throws, or exits
+  (`{:task_exit, reason}`), and a context error end the turn; the provider
+  process stays. An exit signal that kills the model Task, such as one from
+  a process linked to it, ends the provider process too, through the link
+  (L4).
 
   A steer of the live turn is held for the next model call; after the
   terminal it gets `:rejected`. A steer held while a context is built goes

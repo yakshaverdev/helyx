@@ -2,7 +2,7 @@ defmodule Helyx.Session.Transcript do
   @moduledoc false
   # Queries over a session transcript, a list of `Helyx.Message` in order.
 
-  alias Helyx.{Message, ModelRef}
+  alias Helyx.{Message, ModelRef, Session}
 
   # The tool calls with no result yet, in call order: the calls of the last
   # assistant message that the tool results after it do not answer. No
@@ -106,7 +106,7 @@ defmodule Helyx.Session.Transcript do
 
   defp walk([], _at, out, inserts, drops), do: {Enum.reverse(out), inserts, drops}
 
-  defp aborted(call), do: Message.tool_result(call, {:error, "aborted"})
+  defp aborted(call), do: Message.tool_result(call, Session.aborted_result())
 
   # The last assistant message, with no reversed copy of the transcript.
   @spec last_assistant([Message.t()]) :: Message.t() | nil

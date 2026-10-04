@@ -8,6 +8,7 @@ defmodule Helyx.Session.Server.ToolRuns do
   import Helyx.Session.Server.State, only: [ask: 4]
 
   alias Helyx.Message.ToolCall
+  alias Helyx.Session
   alias Helyx.Session.{Hands, Turn}
   alias Helyx.Session.Server.{ProviderConn, State}
   alias Helyx.Session.ToolQueue
@@ -25,7 +26,8 @@ defmodule Helyx.Session.Server.ToolRuns do
   # that the provider started and the session did not open. The provider
   # process `pid` that sent it gets `aborted`, after the interrupt or the
   # next turn when it came late.
-  def late(state, pid, turn_id, id), do: send_result(state, pid, turn_id, id, {:error, "aborted"})
+  def late(state, pid, turn_id, id),
+    do: send_result(state, pid, turn_id, id, Session.aborted_result())
 
   # The turn ended: each open request gets `aborted` now, before an
   # interrupt, while the provider process lives. The hands kill the

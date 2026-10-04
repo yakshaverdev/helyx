@@ -33,4 +33,11 @@ defmodule Mix.Tasks.Helyx.GraphTest do
   test "a wrong argument raises the usage" do
     assert_raise Mix.Error, ~r/usage/, fn -> Mix.Tasks.Helyx.Graph.run(["nope"]) end
   end
+
+  # OptionParser raises ArgumentError or UnicodeConversionError on these.
+  test "a switch OptionParser cannot read raises the usage" do
+    for argv <- [["-="], [<<"--", 255>>], [<<"-a", 255>>], [<<"-", 200, 200>>]] do
+      assert_raise Mix.Error, ~r/usage/, fn -> Mix.Tasks.Helyx.Graph.run(argv) end
+    end
+  end
 end

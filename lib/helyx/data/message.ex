@@ -128,10 +128,7 @@ defmodule Helyx.Message do
   Whether the value round-trips to the session file, which holds only JSON.
 
   It rejects text that is not valid UTF-8, and a term JSON cannot encode,
-  such as a tuple, a pid, or a non-string, non-atom map key. Used at the
-  provider-stream boundary for a turn's usage, where the value is arbitrary
-  and must survive the write to disk; a tool call's fields get the same
-  check from `encoded_size/1`, which also gives their size.
+  such as a tuple, a pid, or a non-string, non-atom map key.
   """
   @spec encodable?(term()) :: boolean()
   def encodable?(value), do: encoded_size(value) != :error
