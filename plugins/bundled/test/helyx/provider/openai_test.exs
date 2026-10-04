@@ -2,7 +2,7 @@ defmodule Helyx.Provider.OpenAITest do
   # Provider seam: call stream/3 on the plugin modules with Req's test adapter
   # and recorded response bodies. Nothing here touches the network. The
   # session loop above this seam is covered by the Fake provider tests.
-  # Not async: the tests mutate OPENCODE_API_KEY and the :openai_req_options app env.
+  # Not async: the tests mutate OPENCODE_API_KEY, the :openai_req_options app env, and Req's :default_options.
   use ExUnit.Case, async: false
 
   alias Helyx.Provider.OpenAI
@@ -34,11 +34,14 @@ defmodule Helyx.Provider.OpenAITest do
     plug(fn conn ->
       {:ok, body, conn} = Plug.Conn.read_body(conn)
       send(test, {:request, conn, JSON.decode!(body)})
-
-      conn
-      |> Plug.Conn.put_resp_content_type("text/event-stream")
-      |> Plug.Conn.send_resp(200, sse(events))
+      reply(conn, events)
     end)
+  end
+
+  defp reply(conn, events) do
+    conn
+    |> Plug.Conn.put_resp_content_type("text/event-stream")
+    |> Plug.Conn.send_resp(200, sse(events))
   end
 
   test "opencode-go and opencode refs route to the two plugins" do
@@ -235,21 +238,214 @@ defmodule Helyx.Provider.OpenAITest do
     assert Enum.to_list(stream) == [{:error, {:http_status, 401, ~s({"error": "bad key"})}}]
   end
 
-  test "a transport error at connect is an error event" do
-    plug(&Req.Test.transport_error(&1, :econnrefused))
-    context = %Helyx.Context{messages: [Helyx.Message.user("hi")]}
+  # Three backoff waits: 0.5, 1, and 2 s, less jitter.
+  @tag :slow
+  test "a transport error on every attempt is an error event after 3 retries" do
+    sequence([&Req.Test.transport_error(&1, :econnrefused)])
 
-    assert {:ok, stream} = OpenAI.Go.stream("kimi-k2", context, [])
+    assert {:ok, stream} = OpenAI.Go.stream("kimi-k2", %Helyx.Context{}, [])
     assert [{:error, %Req.TransportError{reason: :econnrefused}}] = Enum.to_list(stream)
+    assert attempts() == 4
   end
 
-  test "a stream that drops before [DONE] yields no done event" do
+  # No retry after the first body chunk: the stream is a 200.
+  test "a stream that drops before [DONE] yields no done event and is not retried" do
     stub([delta(%{content: "Hel"}), delta(%{}, "stop")])
     context = %Helyx.Context{messages: [Helyx.Message.user("hi")]}
 
     assert {:ok, stream} = OpenAI.Go.stream("kimi-k2", context, [])
     assert Enum.to_list(stream) == [{:text_delta, "Hel"}]
+    assert_received {:request, _, _}
+    refute_received {:request, _, _}
   end
+
+  describe "retry before the stream starts" do
+    @no_wait [{"retry-after-ms", "0"}]
+    @streamed [{:text_delta, "ok"}, {:done, %{stop_reason: :end_turn, usage: %{}}}]
+    # The shortest first backoff wait: 0.5 s less 25%.
+    @min_backoff_ms 375
+
+    for status <- [408, 409, 429, 500, 501, 503, 599] do
+      test "a #{status} is retried and the stream after it reaches the session" do
+        sequence([error_reply(unquote(status), @no_wait), ok()])
+
+        assert {:ok, stream} = OpenAI.Go.stream("m", %Helyx.Context{}, [])
+        assert Enum.to_list(stream) == @streamed
+        assert attempts() == 2
+      end
+    end
+
+    for status <- [400, 401, 404, 422] do
+      test "a #{status} is not retried" do
+        sequence([error_reply(unquote(status), @no_wait)])
+
+        assert {:ok, stream} = OpenAI.Go.stream("m", %Helyx.Context{}, [])
+        assert Enum.to_list(stream) == [{:error, {:http_status, unquote(status), "busy"}}]
+        assert attempts() == 1
+      end
+    end
+
+    test "at most 3 retries, then the last status is the error" do
+      sequence([error_reply(429, @no_wait)])
+
+      assert {:ok, stream} = OpenAI.Go.stream("m", %Helyx.Context{}, [])
+      assert Enum.to_list(stream) == [{:error, {:http_status, 429, "busy"}}]
+      assert attempts() == 4
+    end
+
+    test "retry-after-ms wins over retry-after, and retry-after takes seconds" do
+      sequence([
+        error_reply(503, [{"retry-after-ms", "0"}, {"retry-after", "120"}]),
+        error_reply(503, [{"retry-after", "0"}]),
+        ok()
+      ])
+
+      assert {:ok, stream} = OpenAI.Go.stream("m", %Helyx.Context{}, [])
+      assert Enum.to_list(stream) == @streamed
+      assert attempts() == 3
+    end
+
+    test "3 failures and then a stream: the stream reaches the session" do
+      sequence([
+        error_reply(429, @no_wait),
+        error_reply(500, @no_wait),
+        error_reply(503, @no_wait),
+        ok()
+      ])
+
+      assert {:ok, stream} = OpenAI.Go.stream("m", %Helyx.Context{}, [])
+      assert Enum.to_list(stream) == @streamed
+      assert attempts() == 4
+    end
+
+    test "a server delay over 60 s ends the turn with the status and the delay" do
+      sequence([error_reply(429, [{"retry-after-ms", "60001"}])])
+
+      assert {:ok, stream} = OpenAI.Go.stream("m", %Helyx.Context{}, [])
+      assert Enum.to_list(stream) == [{:error, {:retry_after_over_limit, 429, 60_001}}]
+      assert attempts() == 1
+    end
+
+    test "an invalid retry-after-ms leaves retry-after in force" do
+      for ms <- ["-1", "1e306", "1.5", "soon", String.duplicate("9", 13)] do
+        sequence([error_reply(429, [{"retry-after-ms", ms}, {"retry-after", "120"}])])
+
+        assert {:ok, stream} = OpenAI.Go.stream("m", %Helyx.Context{}, [])
+        assert Enum.to_list(stream) == [{:error, {:retry_after_over_limit, 429, 120_000}}]
+      end
+    end
+
+    test "a 12-digit delay parses and goes over the limit" do
+      sequence([error_reply(429, [{"retry-after", String.duplicate("9", 12)}])])
+
+      assert {:ok, stream} = OpenAI.Go.stream("m", %Helyx.Context{}, [])
+
+      assert Enum.to_list(stream) == [
+               {:error, {:retry_after_over_limit, 429, 999_999_999_999_000}}
+             ]
+    end
+
+    test "after the last retry, a delay over the limit still names the delay" do
+      sequence([
+        error_reply(429, @no_wait),
+        error_reply(429, @no_wait),
+        error_reply(429, @no_wait),
+        error_reply(429, [{"retry-after", "120"}])
+      ])
+
+      assert {:ok, stream} = OpenAI.Go.stream("m", %Helyx.Context{}, [])
+      assert Enum.to_list(stream) == [{:error, {:retry_after_over_limit, 429, 120_000}}]
+      assert attempts() == 4
+    end
+
+    test "Req's default options cannot turn on its own retry or raise on a status" do
+      Application.put_env(:req, :default_options,
+        retry: :transient,
+        retry_log_level: false,
+        http_errors: :raise
+      )
+
+      on_exit(fn -> Application.delete_env(:req, :default_options) end)
+      sequence([error_reply(429, @no_wait)])
+
+      assert {:ok, stream} = OpenAI.Go.stream("m", %Helyx.Context{}, [])
+      assert Enum.to_list(stream) == [{:error, {:http_status, 429, "busy"}}]
+      assert attempts() == 4
+    end
+
+    # The date has whole seconds; the margin covers a loaded machine.
+    @load_ms 20_000
+
+    test "retry-after as an HTTP date is a delay from now" do
+      date =
+        DateTime.utc_now()
+        |> DateTime.add(120)
+        |> Calendar.strftime("%a, %d %b %Y %H:%M:%S GMT")
+
+      sequence([error_reply(503, [{"retry-after", date}])])
+
+      assert {:ok, stream} = OpenAI.Go.stream("m", %Helyx.Context{}, [])
+      assert [{:error, {:retry_after_over_limit, 503, ms}}] = Enum.to_list(stream)
+      assert ms in (120_000 - @load_ms)..120_000
+    end
+
+    test "with no usable server delay, the wait is the backoff" do
+      sequence([error_reply(503, [{"retry-after", "soon"}]), ok()])
+      started = System.monotonic_time(:millisecond)
+
+      assert {:ok, stream} = OpenAI.Go.stream("m", %Helyx.Context{}, [])
+      assert Enum.to_list(stream) == @streamed
+      assert System.monotonic_time(:millisecond) - started >= @min_backoff_ms
+      assert attempts() == 2
+    end
+
+    test "a transport error before the response is retried" do
+      sequence([&Req.Test.transport_error(&1, :closed), ok()])
+
+      assert {:ok, stream} = OpenAI.Go.stream("m", %Helyx.Context{}, [])
+      assert Enum.to_list(stream) == @streamed
+      assert attempts() == 2
+    end
+
+    # A wait of exactly 60 s is taken; the interrupt ends it.
+    test "an interrupt during a wait ends the turn at once" do
+      sequence([error_reply(429, [{"retry-after", "60"}]), ok()])
+
+      {:ok, state} = OpenAI.Go.init("m", [], [])
+      {:ok, _, state} = OpenAI.Go.request({:turn, "t1", %Helyx.Context{}}, :from, state)
+      assert_receive {:attempt, 1}, Helyx.Test.Events.wait_ms()
+      task = state.task
+      ref = task.ref
+      # The Task is still in its wait: it sent no result.
+      refute_receive {^ref, _}, 100
+
+      assert {:ok, [{:reply, :r, :ok}], _} = OpenAI.Go.request({:interrupt, "t1"}, :r, state)
+      refute Process.alive?(task.pid)
+      refute_received {:attempt, 2}
+    end
+  end
+
+  # Answers attempt n with the nth handler, and later attempts with the last.
+  defp sequence(handlers) do
+    test = self()
+    count = :counters.new(1, [])
+
+    plug(fn conn ->
+      :counters.add(count, 1, 1)
+      n = :counters.get(count, 1)
+      send(test, {:attempt, n})
+      Enum.at(handlers, n - 1, List.last(handlers)).(conn)
+    end)
+  end
+
+  defp attempts,
+    do: Enum.count(Process.info(self(), :messages) |> elem(1), &match?({:attempt, _}, &1))
+
+  defp error_reply(status, headers) do
+    &(&1 |> Plug.Conn.merge_resp_headers(headers) |> Plug.Conn.send_resp(status, "busy"))
+  end
+
+  defp ok, do: &reply(&1, [delta(%{content: "ok"}, "stop"), "[DONE]"])
 
   @not_object "the arguments are not a valid JSON object"
 
@@ -336,19 +532,19 @@ defmodule Helyx.Provider.OpenAITest do
   for bytes <- [@max_error_body_bytes, @max_error_body_bytes - 1] do
     test "an error body of #{bytes} bytes arrives whole" do
       body = String.duplicate("a", unquote(bytes))
-      plug(&Plug.Conn.send_resp(&1, 500, body))
+      plug(&Plug.Conn.send_resp(&1, 400, body))
 
       assert {:ok, stream} = OpenAI.Go.stream("m", %Helyx.Context{}, [])
-      assert Enum.to_list(stream) == [{:error, {:http_status, 500, body}}]
+      assert Enum.to_list(stream) == [{:error, {:http_status, 400, body}}]
     end
   end
 
   test "an error body over the limit is cut and marked" do
     body = String.duplicate("a", @max_error_body_bytes + 1)
-    plug(&Plug.Conn.send_resp(&1, 500, body))
+    plug(&Plug.Conn.send_resp(&1, 400, body))
 
     assert {:ok, stream} = OpenAI.Go.stream("m", %Helyx.Context{}, [])
-    assert [{:error, {:http_status, 500, cut}}] = Enum.to_list(stream)
+    assert [{:error, {:http_status, 400, cut}}] = Enum.to_list(stream)
 
     assert cut ==
              binary_part(body, 0, @max_error_body_bytes) <>
@@ -357,10 +553,10 @@ defmodule Helyx.Provider.OpenAITest do
 
   test "an error body cut inside a multibyte character retreats to a boundary" do
     body = String.duplicate("a", @max_error_body_bytes - 2) <> "😀😀"
-    plug(&Plug.Conn.send_resp(&1, 500, body))
+    plug(&Plug.Conn.send_resp(&1, 400, body))
 
     assert {:ok, stream} = OpenAI.Go.stream("m", %Helyx.Context{}, [])
-    assert [{:error, {:http_status, 500, cut}}] = Enum.to_list(stream)
+    assert [{:error, {:http_status, 400, cut}}] = Enum.to_list(stream)
 
     assert cut ==
              String.duplicate("a", @max_error_body_bytes - 2) <>
