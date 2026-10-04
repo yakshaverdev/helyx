@@ -1,7 +1,7 @@
 defmodule CodingAgent do
   @moduledoc """
   The terminal coding agent: Core with the bundled plugins, one session, and
-  the TUI. Started with `mix helyx`.
+  the TUI. Started by `CodingAgent.CLI`, from the `helyx` release or `mix helyx`.
   """
 
   @plugins [

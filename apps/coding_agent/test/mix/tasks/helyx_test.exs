@@ -3,6 +3,8 @@ defmodule Mix.Tasks.HelyxTest do
   # starts Core under its default name.
   use ExUnit.Case, async: false
 
+  import ExUnit.CaptureIO
+
   describe "mix helyx --resume prints a resume error as a sentence" do
     @describetag :tmp_dir
 
@@ -14,11 +16,17 @@ defmodule Mix.Tasks.HelyxTest do
       %{path: file.path, header_id: file.leaf}
     end
 
+    # The task stops Mix with status 1 after one line on stderr.
     defp resume_message(dir) do
-      error = assert_raise Mix.Error, fn -> Mix.Tasks.Helyx.run([dir, "--resume"]) end
-      refute error.message =~ "{"
-      refute error.message =~ "\n"
-      error.message
+      stderr =
+        capture_io(:stderr, fn ->
+          assert catch_exit(Mix.Tasks.Helyx.run([dir, "--resume"])) == {:shutdown, 1}
+        end)
+
+      assert "helyx: could not start the agent" <> message = stderr
+      refute message =~ "{"
+      assert [_line] = String.split(message, "\n", trim: true)
+      message
     end
 
     test "an atom: no saved session", %{tmp_dir: dir, path: path} do

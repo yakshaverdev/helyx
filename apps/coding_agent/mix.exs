@@ -1,14 +1,17 @@
 defmodule CodingAgent.MixProject do
   use Mix.Project
 
+  @version "0.1.0"
+
   def project do
     [
       app: :coding_agent,
-      version: "0.1.0",
+      version: @version,
       elixir: "~> 1.19",
       elixirc_paths: elixirc_paths(Mix.env()),
       start_permanent: Mix.env() == :prod,
       deps: deps(),
+      releases: [helyx: &release/0],
       # The Mix task calls Mix.Task.run/1 and Mix.raise/1, and the shared
       # test helpers call ExUnit.Assertions; neither app is in the default
       # PLT.
@@ -34,6 +37,19 @@ defmodule CodingAgent.MixProject do
   # one copy.
   defp elixirc_paths(:test), do: ["lib", Path.expand("../../test/support/shared", __DIR__)]
   defp elixirc_paths(_), do: ["lib"]
+
+  def cli, do: [preferred_envs: ["helyx.install": :prod]]
+
+  # A function, so git runs only when a release builds. The version names
+  # the commit of the build, and `helyx --version` prints it.
+  defp release do
+    git = ~w(describe --always --abbrev=7 --dirty=-dirty --exclude=*)
+
+    case System.cmd("git", git, stderr_to_stdout: true) do
+      {commit, 0} -> [version: "#{@version}+#{String.trim(commit)}"]
+      {text, _} -> Mix.raise("the helyx release needs a git checkout: #{String.trim(text)}")
+    end
+  end
 
   def application do
     [extra_applications: [:logger]]

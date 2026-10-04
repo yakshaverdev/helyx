@@ -2,9 +2,26 @@
 
 A terminal coding agent on Helyx: Core with the bundled plugins, one session, and the TUI. The design is in `docs/features/coding-agent.md`.
 
+## Install
+
+Install the current checkout once, from the repository root:
+
 ```sh
-mix helyx [directory] [--model provider/model] [--resume]
+(cd apps/coding_agent && mix deps.get && mix helyx.install)
 ```
+
+The install builds a release into `~/.helyx/releases/<commit>`, points `~/.helyx/current` at it, and writes the launcher `~/.local/bin/helyx`. It keeps the build before it and deletes older builds. A running session keeps its build until the second install after its start. Edits to the source do not change the installed build until you install again. `--prefix DIR` and `--bin-dir DIR` change the two folders.
+
+If `~/.local/bin` is not on your `PATH`, add it, for example with `export PATH="$HOME/.local/bin:$PATH"` in `~/.zshrc`. Without it, the shell does not find `helyx`.
+
+## Run
+
+```sh
+helyx [directory] [--model provider/model] [--resume]
+helyx --version          # the version and the commit of the build
+```
+
+`directory` defaults to the current folder. `mix helyx` in `apps/coding_agent` takes the same arguments and runs the source tree. The design is in `docs/features/local-release.md`.
 
 ## Keys
 
