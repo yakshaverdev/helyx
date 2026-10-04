@@ -1,16 +1,11 @@
 defmodule Helyx.TUI.FooterTest do
-  # The footer rows (#484): the location of row 1 from the disk, and the
-  # text of both rows.
+  # The footer rows (#484): row 1 from `location/2` and the branch from
+  # git, and the text of both rows.
   use ExUnit.Case, async: true
 
   import Helyx.Test.TUIRender
 
   alias Helyx.TUI.Footer
-
-  defp head(dir, text) do
-    File.mkdir_p!(Path.join(dir, ".git"))
-    File.write!(Path.join([dir, ".git", "HEAD"]), text)
-  end
 
   # A directory outside every repository: the ExUnit tmp_dir is inside this one.
   defp outside do
@@ -20,121 +15,119 @@ defmodule Helyx.TUI.FooterTest do
     dir
   end
 
-  # The branch that row 1 shows, or nil. The ExUnit tmp_dir is under the
-  # home directory, so the path part shows with `~`.
-  defp branch(dir) do
-    case Regex.run(~r/ \(([^()]*)\)$/, Footer.location(dir)) do
-      [_, name] -> name
-      nil -> nil
+  # A fake git: a shell script with `body`, in `dir`.
+  defp fake_git(dir, body) do
+    path = Path.join(dir, "git")
+    File.write!(path, "#!/bin/sh\n" <> body)
+    File.chmod!(path, 0o755)
+    path
+  end
+
+  # Margins for a loaded machine: the OS reaps a killed process soon, not
+  # at once (a zombie still answers `kill -0`), and a script starts late.
+  @load_polls 40
+  @load_git_ms 900
+
+  defp gone?(_os_pid, 0), do: false
+
+  defp gone?(os_pid, tries) do
+    case System.cmd("kill", ["-0", os_pid], stderr_to_stdout: true) do
+      {_, 0} ->
+        Process.sleep(50)
+        gone?(os_pid, tries - 1)
+
+      {_, _gone} ->
+        true
     end
   end
+
+  defp wait_for_file(_path, 0), do: false
+
+  defp wait_for_file(path, tries) do
+    with false <- File.exists?(path) do
+      Process.sleep(50)
+      wait_for_file(path, tries - 1)
+    end
+  end
+
+  defp git!(args), do: {_, 0} = System.cmd("git", args, stderr_to_stdout: true)
 
   defp rows(location, vm, busy \\ nil, scroll \\ nil) do
     %{text: lines} = Footer.widget(location, vm, busy, scroll)
     line_texts(lines)
   end
 
-  describe "location/1" do
+  describe "branch/1" do
     @describetag :tmp_dir
 
-    test "the branch of the nearest .git, also from a subdirectory", %{tmp_dir: dir} do
-      head(dir, "ref: refs/heads/feat/x\n")
-      sub = Path.join(dir, "a/b")
-      File.mkdir_p!(sub)
+    test "the current branch of a repository, also from a subdirectory" do
+      repo = outside()
+      git!(["init", "-q", "-b", "one", repo])
+      File.mkdir_p!(Path.join(repo, "sub"))
+      assert Footer.branch(repo) == "one"
+      assert Footer.branch(Path.join(repo, "sub")) == "one"
 
-      assert {branch(dir), branch(sub)} == {"feat/x", "feat/x"}
+      git!(["-C", repo, "symbolic-ref", "HEAD", "refs/heads/feat/two"])
+      assert Footer.branch(repo) == "feat/two"
     end
 
-    test "a .git file points at the git directory, also by a relative path", %{tmp_dir: dir} do
-      real = Path.join(dir, "real")
-      head(real, "ref: refs/heads/wt\n")
-      work = Path.join(dir, "work")
-      File.mkdir_p!(work)
-
-      File.write!(Path.join(work, ".git"), "gitdir: ../real/.git\n")
-      assert branch(work) == "wt"
-
-      File.write!(Path.join(work, ".git"), "gitdir: #{real}/.git\n")
-      assert branch(work) == "wt"
-    end
-
-    test "no repository, a detached HEAD, or a .git file of another form shows no branch",
-         %{tmp_dir: dir} do
-      plain = outside()
-      assert Footer.location(plain) == plain
-
-      head(dir, "0123456789abcdef0123456789abcdef01234567\n")
-      assert branch(dir) == nil
-
-      File.write!(Path.join(plain, ".git"), "not a gitdir line")
-      assert Footer.location(plain) == plain
-    end
-
-    test "a HEAD that is not a regular file is not read, so it cannot block" do
+    test "no repository, a missing directory, or no git gives nil" do
       dir = outside()
-      File.mkdir_p!(Path.join(dir, ".git"))
-      {_, 0} = System.cmd("mkfifo", [Path.join([dir, ".git", "HEAD"])])
-      assert Footer.location(dir) == dir
+      assert Footer.branch(dir) == nil
+      assert Footer.branch(Path.join(dir, "missing")) == nil
+      assert Footer.branch(dir, nil, 2000) == nil
     end
 
-    # git allows a byte that is not UTF-8 in a branch; a path can hold a
-    # control character.
-    test "control characters and invalid bytes show as ?", %{tmp_dir: dir} do
-      dir = Path.join(dir, "d\e[31m")
-      head(dir, "ref: refs/heads/a\xFFb\n")
-      assert String.ends_with?(Footer.location(dir), "/d?[31m (a?b)")
+    test "a non-zero exit or no output gives nil", %{tmp_dir: dir} do
+      assert Footer.branch(dir, fake_git(dir, "echo main; exit 1\n"), 2000) == nil
+      assert Footer.branch(dir, fake_git(dir, "exit 0\n"), 2000) == nil
     end
 
-    test "a HEAD read takes at most 4,096 bytes; a character cut there shows as ?",
-         %{tmp_dir: dir} do
-      room = 4096 - byte_size("ref: refs/heads/")
-
-      for {name, shown} <- [
-            {String.duplicate("b", room - 1), String.duplicate("b", room - 1)},
-            {String.duplicate("b", room), String.duplicate("b", room)},
-            {String.duplicate("b", room + 1), String.duplicate("b", room)},
-            {String.duplicate("b", 100_000), String.duplicate("b", room)},
-            # "é" is 2 bytes: its first byte is the last one read.
-            {String.duplicate("b", room - 1) <> "é", String.duplicate("b", room - 1) <> "?"}
-          ] do
-        head(dir, "ref: refs/heads/" <> name)
-        assert branch(dir) == shown
-      end
+    test "a git that does not end in time is killed and gives nil", %{tmp_dir: dir} do
+      pid_file = Path.join(dir, "pid")
+      git = fake_git(dir, "echo $$ > #{pid_file}\nexec sleep 30\n")
+      assert Footer.branch(dir, git, @load_git_ms) == nil
+      assert gone?(File.read!(pid_file) |> String.trim(), @load_polls)
     end
 
-    # A reftable repository has a HEAD file that names `.invalid`.
-    test "a name that git cannot make shows no branch", %{tmp_dir: dir} do
-      for name <-
-            ["", ".invalid", "x/.invalid", "a b", "x.lock", "a..b", "a\nb", "main) ~/x (y"] ++
-              ["-x", "x/", "x.", "x.lock/y", "a@{b", "a//b", "a~b", "a\\b"] do
-        head(dir, "ref: refs/heads/#{name}\n")
-        assert branch(dir) == nil, inspect(name)
+    test "a git whose caller dies is killed", %{tmp_dir: dir} do
+      pid_file = Path.join(dir, "pid")
+      git = fake_git(dir, "echo $$ > #{pid_file}\nexec sleep 30\n")
+      caller = spawn(fn -> Footer.branch(dir, git, 30_000) end)
+      assert wait_for_file(pid_file, @load_polls)
+      Process.exit(caller, :kill)
+      assert gone?(File.read!(pid_file) |> String.trim(), @load_polls)
+    end
+
+    test "the output is cut at 256 bytes", %{tmp_dir: dir} do
+      git = fake_git(dir, "printf '%0300d\\n' 0\n")
+      assert Footer.branch(dir, git, 2000) == String.duplicate("0", 256)
+
+      for n <- [255, 256] do
+        git = fake_git(dir, "printf '%0#{n}d\\n' 0\n")
+        assert Footer.branch(dir, git, 2000) == String.duplicate("0", n)
       end
 
-      for name <- ["main", "feat/x", "release" <> <<0xA0::utf8>>, "v1.2", "a@b", "@", "a/-b"] do
-        head(dir, "ref: refs/heads/#{name} \r\n")
-        assert branch(dir) == name, inspect(name)
-      end
+      # "é" is 2 bytes: its first byte is the last one kept.
+      git = fake_git(dir, "printf '%0255d\\303\\251\\n' 0\n")
+      cut = Footer.branch(dir, git, 2000)
+      assert byte_size(cut) == 256
+      assert Footer.location("/x", cut) == "/x (#{String.duplicate("0", 255)}?)"
     end
+  end
 
-    test "a gitdir line keeps the spaces of its path, as git does", %{tmp_dir: dir} do
-      head(Path.join(dir, "real"), "ref: refs/heads/wt\n")
-      work = Path.join(dir, "work")
-      File.mkdir_p!(work)
-      File.write!(Path.join(work, ".git"), "gitdir:  #{dir}/real/.git\r\n")
-      assert branch(work) == nil
-    end
-
-    test "a format character such as a bidi override shows as ?", %{tmp_dir: dir} do
-      head(dir, "ref: refs/heads/a" <> <<0x202E::utf8>> <> "b\n")
-      assert branch(dir) == "a?b"
+  describe "location/2" do
+    test "the branch follows the directory; control characters and invalid bytes show as ?" do
+      assert Footer.location("/x", "main") == "/x (main)"
+      assert Footer.location("/x", nil) == "/x"
+      assert Footer.location("/d\e[31m", "a\xFFb" <> <<0x202E::utf8>>) == "/d?[31m (a?b?)"
     end
 
     test "the home directory shows as ~, and only as a whole path component" do
       home = System.user_home!()
-      assert Footer.location(home) =~ ~r/^~( \(.*\))?$/
-      assert Footer.location(Path.join(home, "no_such_dir_484")) =~ ~r"^~/no_such_dir_484"
-      assert Footer.location(home <> "x484") =~ ~r/^#{Regex.escape(home)}x484/
+      assert Footer.location(home, nil) == "~"
+      assert Footer.location(Path.join(home, "no_such_dir_484"), "b") == "~/no_such_dir_484 (b)"
+      assert Footer.location(home <> "x484", nil) == home <> "x484"
     end
   end
 

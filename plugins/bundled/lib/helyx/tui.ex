@@ -112,7 +112,7 @@ if Helyx.TUI.Available.available?() do
       cwd = Keyword.get_lazy(opts, :cwd, &File.cwd!/0)
 
       {:ok,
-       sync_busy(%{
+       %{
          session: session,
          # The monitor of the session from the subscribe: its `:DOWN` is
          # the end signal.
@@ -120,8 +120,10 @@ if Helyx.TUI.Available.available?() do
          vm: vm,
          composer: Composer.new(),
          cwd: cwd,
-         # Row 1 of the footer, read at mount and after each turn.
-         location: Footer.location(cwd),
+         # Row 1 of the footer. The branch comes from a task that starts
+         # at mount and after each turn; the result of the latest wins.
+         location: Footer.location(cwd, nil),
+         branch_ref: nil,
          # A `Transcript.position()`; nil follows the newest output.
          scroll: nil,
          # The size seam of `ExRatatui.Server`, so a test sets the size.
@@ -129,7 +131,9 @@ if Helyx.TUI.Available.available?() do
          # nil while idle, or the monotonic ms of the turn start and the ms
          # since then at the last tick.
          busy: nil
-       })}
+       }
+       |> sync_busy()
+       |> read_branch()}
     end
 
     # A dead session leaves nothing to render; exiting surfaces the reason
@@ -140,7 +144,7 @@ if Helyx.TUI.Available.available?() do
       do: exit({:session_down, Session.end_reason(reason)})
 
     def handle_info({:helyx_event, event}, state) do
-      state = refresh_location(%{state | vm: ViewModel.apply(state.vm, event)}, event)
+      state = read_branch_after_turn(%{state | vm: ViewModel.apply(state.vm, event)}, event)
       {:noreply, settle(sync_busy(state))}
     end
 
@@ -151,13 +155,22 @@ if Helyx.TUI.Available.available?() do
       {:noreply, %{state | busy: %{busy | elapsed: elapsed}}}
     end
 
+    def handle_info({ref, branch}, %{branch_ref: ref} = state) do
+      Process.demonitor(ref, [:flush])
+      {:noreply, %{state | location: Footer.location(state.cwd, branch), branch_ref: nil}}
+    end
+
+    # An older branch task, or its `:DOWN`, is ignored here.
     def handle_info(_msg, state), do: {:noreply, state}
 
     # A turn can change the branch.
-    defp refresh_location(state, %{type: :turn_end}),
-      do: %{state | location: Footer.location(state.cwd)}
+    defp read_branch_after_turn(state, %{type: :turn_end}), do: read_branch(state)
+    defp read_branch_after_turn(state, _event), do: state
 
-    defp refresh_location(state, _event), do: state
+    # git runs in a task, so a slow git never holds a frame;
+    # `Footer.branch/1` bounds it and never raises.
+    defp read_branch(%{cwd: cwd} = state),
+      do: %{state | branch_ref: Task.async(fn -> Footer.branch(cwd) end).ref}
 
     # A session that is not running leaves nothing to render.
     defp subscribe!(session) do

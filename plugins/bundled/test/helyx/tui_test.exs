@@ -428,19 +428,31 @@ defmodule Helyx.TUITest do
   end
 
   @tag :tmp_dir
-  test "the footer reads the branch of :cwd at mount and after each turn only",
+  test "the footer asks git for the branch of :cwd at mount and after each turn only",
        %{core: core, tmp_dir: dir} do
-    head = Path.join([dir, ".git", "HEAD"])
-    File.mkdir_p!(Path.dirname(head))
-    File.write!(head, "ref: refs/heads/one\n")
+    {_, 0} = System.cmd("git", ["init", "-q", "-b", "one", dir])
     {:ok, session} = Session.start(core, model: "fake/branch")
     {:ok, state} = TUI.mount(session: session, cwd: dir)
+    refute state.location =~ "("
+    state = branch_reply(state)
     assert state.location =~ ~r/ \(one\)$/
 
-    File.write!(head, "ref: refs/heads/two\n")
+    {_, 0} = System.cmd("git", ["-C", dir, "symbolic-ref", "HEAD", "refs/heads/two"])
     state = fold(state, :turn_start, %{})
-    assert state.location =~ ~r/ \(one\)$/
-    assert fold(state, :turn_end, %{outcome: :done}).location =~ ~r/ \(two\)$/
+    assert state.branch_ref == nil
+    # The reply of an older run is ignored, as is its `:DOWN`.
+    %{branch_ref: old} = state = fold(state, :turn_end, %{outcome: :done})
+    state = fold(state, :turn_end, %{outcome: :done})
+    assert_receive {^old, _branch} = stale, 5_000
+    assert {:noreply, ^state} = TUI.handle_info(stale, state)
+    assert branch_reply(state).location =~ ~r/ \(two\)$/
+  end
+
+  # The reply of the branch task, applied as the TUI process gets it.
+  defp branch_reply(%{branch_ref: ref} = state) do
+    assert_receive {^ref, _branch} = reply, 5_000
+    {:noreply, state} = TUI.handle_info(reply, state)
+    state
   end
 
   test "the mark is drawn only inside a whole box, never on a border or in a margin" do

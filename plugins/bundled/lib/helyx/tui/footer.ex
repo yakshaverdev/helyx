@@ -30,24 +30,102 @@ if Helyx.TUI.Footer.Available.available?() do
     @tick_ms 100
     @frames List.to_tuple(~w(⠋ ⠙ ⠹ ⠸ ⠼ ⠴ ⠦ ⠧ ⠇ ⠏))
 
-    # A read of `.git` or `HEAD` takes at most this many bytes: each holds
-    # one path or one ref.
-    @read_bytes 4096
+    # `git branch --show-current` gets this long, then it is killed, and
+    # this many bytes of its output are kept: a name of a branch is short.
+    @git_ms 2000
+    @branch_bytes 256
+
+    # sh sends its own stderr and that of git to /dev/null: on the terminal
+    # it would draw over the TUI, and sh reports a killed job there. sh
+    # kills git when its own stdin, the port, reaches its end: when the
+    # port closes at the deadline, or when the task or the VM ends. Only
+    # builtins of sh, so no `PATH` lookup. `-C` and not the `:cd` option of
+    # the port, which writes its own error to the terminal for a missing
+    # directory.
+    @run_git ~S"""
+    exec 3<&0 2>/dev/null
+    "$0" -C "$1" branch --show-current </dev/null &
+    git=$!
+    (read -r _ <&3; kill -KILL "$git") &
+    watch=$!
+    wait "$git"
+    status=$?
+    kill "$watch"
+    exit "$status"
+    """
 
     @doc """
-    The text of row 1 for `cwd`. It reads the disk, so the TUI calls it at
-    mount and after each turn, not on each frame. The branch is that of the
-    nearest `.git` at or above `cwd`: a directory, or a file
-    `gitdir: <path>` as a worktree or a submodule has. A name that git
-    cannot make, a detached HEAD, a reftable repository, or a `cwd` outside
-    a repository shows no branch. A character of Unicode category C, or a
-    run of bytes that is not UTF-8, shows as `?`.
+    The text of row 1: `cwd`, with the home directory as `~`, and `branch`
+    when it is not nil. A character of Unicode category C, or a run of
+    bytes that is not UTF-8, shows as `?`.
     """
-    @spec location(String.t()) :: String.t()
-    def location(cwd) do
-      cwd = Path.expand(cwd)
-      suffix = if name = branch(cwd), do: " (#{name})", else: ""
-      clean(tilde(cwd) <> suffix)
+    @spec location(String.t(), String.t() | nil) :: String.t()
+    def location(cwd, branch) do
+      suffix = if branch, do: " (#{branch})", else: ""
+      clean(tilde(Path.expand(cwd)) <> suffix)
+    end
+
+    @doc """
+    The branch that `git branch --show-current` prints in `cwd`, cut at
+    #{@branch_bytes} bytes, or nil. It blocks for up to #{@git_ms} ms, so
+    the TUI calls it in a task. No git, a port that cannot open, a timeout,
+    a non-zero exit, or no output (a detached HEAD) gives nil.
+    """
+    @spec branch(String.t()) :: String.t() | nil
+    def branch(cwd), do: branch(cwd, System.find_executable("git"), @git_ms)
+
+    @doc false
+    # Public for the tests, which give a fake git and a short timeout.
+    def branch(_cwd, nil, _timeout_ms), do: nil
+
+    def branch(cwd, git, timeout_ms) do
+      port =
+        Port.open({:spawn_executable, "/bin/sh"}, [
+          :binary,
+          :exit_status,
+          args: ["-c", @run_git, git, cwd]
+        ])
+
+      collect(port, "", System.monotonic_time(:millisecond) + timeout_ms)
+    rescue
+      # No port left, or no file descriptor: no branch.
+      _no_port in [ErlangError, SystemLimitError] -> nil
+    end
+
+    # The deadline is checked before each receive: a message in the mailbox
+    # wins over `after`.
+    defp collect(port, acc, deadline) do
+      case deadline - System.monotonic_time(:millisecond) do
+        left when left <= 0 ->
+          kill(port)
+
+        left ->
+          receive do
+            {^port, {:data, data}} ->
+              acc = acc <> data
+              collect(port, binary_part(acc, 0, min(byte_size(acc), @branch_bytes)), deadline)
+
+            {^port, {:exit_status, 0}} ->
+              case String.trim_trailing(acc, "\n") do
+                "" -> nil
+                name -> name
+              end
+
+            {^port, {:exit_status, _failed}} ->
+              nil
+          after
+            left -> kill(port)
+          end
+      end
+    end
+
+    # The close ends the stdin of sh, and sh kills git (see `@run_git`).
+    # A port that closed at the deadline, as git exited, raises.
+    defp kill(port) do
+      Port.close(port)
+      nil
+    rescue
+      ArgumentError -> nil
     end
 
     @doc "The rows of the footer."
@@ -59,7 +137,7 @@ if Helyx.TUI.Footer.Available.available?() do
     def tick_ms, do: @tick_ms
 
     @doc """
-    The two rows: `location` from `location/1`, then the state of `vm`. The
+    The two rows: `location` from `location/2`, then the state of `vm`. The
     turn state is "idle" for a nil `busy`, else a spinner frame and the whole
     seconds of `busy.elapsed`. A non-nil `scroll` adds "scrolled". A row
     does not wrap.
@@ -99,70 +177,6 @@ if Helyx.TUI.Footer.Available.available?() do
         "." -> "~"
         "/" <> _outside -> path
         relative -> "~/" <> relative
-      end
-    end
-
-    # git trims ASCII whitespace at the end of HEAD, and no other.
-    defp branch(dir) do
-      with {:ok, git_dir} <- git_dir(dir),
-           {:ok, "ref: refs/heads/" <> name} <- read(Path.join(git_dir, "HEAD")),
-           name = String.replace(name, ~r/[\t\n\v\f\r ]+\z/, ""),
-           true <- branch_name?(name) do
-        name
-      else
-        _no_branch -> nil
-      end
-    end
-
-    # The rules of `git check-ref-format --branch`, so a name that git cannot
-    # make shows no branch. A reftable repository has a HEAD file that names
-    # `.invalid` and keeps the real HEAD in its tables.
-    defp branch_name?(name) do
-      name != "" and
-        not Regex.match?(
-          ~r"^[-/]|/$|\.$|^\.|/\.|\.\.|//|@\{|\.lock(/|$)|[\x00-\x20\x7f~^:?*\[\\]",
-          name
-        )
-    end
-
-    # The walk up ends at the root, so it takes at most one step for each
-    # component of `dir`.
-    defp git_dir(dir) do
-      dot_git = Path.join(dir, ".git")
-
-      case File.stat(dot_git) do
-        {:ok, %{type: :directory}} ->
-          {:ok, dot_git}
-
-        {:ok, %{type: :regular}} ->
-          gitdir_file(dot_git, dir)
-
-        _none ->
-          parent = Path.dirname(dir)
-          if parent == dir, do: :error, else: git_dir(parent)
-      end
-    end
-
-    # A worktree or a submodule has a `.git` file that names its git directory.
-    defp gitdir_file(dot_git, dir) do
-      case read(dot_git) do
-        # git trims only the line end of the path.
-        {:ok, "gitdir: " <> path} ->
-          {:ok, Path.expand(String.replace(path, ~r/[\r\n]+\z/, ""), dir)}
-
-        _other ->
-          :error
-      end
-    end
-
-    # Only a regular file is read: a FIFO would block the TUI.
-    defp read(path) do
-      with {:ok, %{type: :regular}} <- File.stat(path),
-           {:ok, data} when is_binary(data) <-
-             File.open(path, [:read, :binary], &IO.binread(&1, @read_bytes)) do
-        {:ok, data}
-      else
-        _unreadable -> :error
       end
     end
 
