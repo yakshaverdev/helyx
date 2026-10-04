@@ -4,8 +4,8 @@ defmodule Helyx.Tool.Edit do
   exactly once; zero or several matches is an error and the file is
   untouched. With no exact match, the text is matched again after Unicode
   NFKC, quote, dash, line end, and trailing space normalization; only the
-  matched range changes. A leading BOM and CRLF line ends stay. See
-  `docs/features/fuzzy-edit.md`.
+  matched range changes, and the new text takes the file's line ends. A
+  leading BOM of the file stays. See `docs/features/fuzzy-edit.md`.
   """
 
   @behaviour Helyx.Tool
@@ -41,11 +41,10 @@ defmodule Helyx.Tool.Edit do
     full = Path.expand(path, cwd)
 
     with :ok <- valid_utf8(old, new),
-         {:ok, content} <- read(full, path),
-         {bom, text} = split_bom(content),
-         {:ok, from, to} <- locate(text, strip_bom(old), path),
-         edited = splice(text, from, to, line_ends(strip_bom(new), text, from)),
-         :ok <- write(full, bom <> edited, path) do
+         {:ok, text} <- read(full, path),
+         {:ok, from, to, new} <- locate(text, old, new, path),
+         {from, new} = keep_bom(text, from, new),
+         :ok <- write(full, splice(text, from, to, new), path) do
       {:ok, "Edited #{path}"}
     end
   end
@@ -58,45 +57,40 @@ defmodule Helyx.Tool.Edit do
       else: {:error, "old_text and new_text must be valid UTF-8"}
   end
 
-  defp split_bom(<<0xEF, 0xBB, 0xBF, text::binary>>), do: {<<0xEF, 0xBB, 0xBF>>, text}
-  defp split_bom(text), do: {<<>>, text}
+  # A range at the start of a file that starts with a BOM starts after the
+  # BOM, so the file keeps it; one leading BOM of the new text drops.
+  defp keep_bom(<<0xEF, 0xBB, 0xBF, _::binary>>, 0, new),
+    do: {3, String.replace_prefix(new, "\uFEFF", "")}
 
-  defp strip_bom(text), do: String.replace_prefix(text, "\uFEFF", "")
+  defp keep_bom(_text, from, new), do: {from, new}
 
-  # A file whose first line end is CRLF gets CRLF in the new text too. A CR
-  # just before the range already pairs with a leading LF of the new text.
-  defp line_ends(new, text, from) do
-    case next_line(text) do
-      {_line, 2, _rest} ->
-        crlf = String.replace(new, ["\r\n", "\n"], "\r\n")
-        cr_before = from > 0 and :binary.at(text, from - 1) == ?\r
+  defp locate(_text, "", _new, _path), do: {:error, "old_text is empty"}
 
-        if cr_before and String.starts_with?(new, "\n"),
-          do: binary_slice(crlf, 1..-1//1),
-          else: crlf
-
-      _lf ->
-        new
-    end
-  end
-
-  defp locate(_text, "", _path), do: {:error, "old_text is empty"}
-
-  defp locate(text, old, path) do
+  # The exact match writes the new text as it is. The normalized match
+  # gives the new text the file's line ends: it matched LF against CRLF.
+  defp locate(text, old, new, path) do
     case find(text, old) do
-      {:one, pos, len} -> {:ok, pos, pos + len}
-      :none -> locate_normalized(text, old, path)
+      {:one, pos, len} -> {:ok, pos, pos + len, new}
+      :none -> locate_normalized(text, old, line_ends(new, text), path)
       :many -> ambiguous(path)
     end
   end
 
-  defp locate_normalized(text, old, path) do
+  # A file whose first line end is CRLF gets CRLF in the new text too.
+  defp line_ends(new, text) do
+    case next_line(text) do
+      {_line, 2, _rest} -> String.replace(new, ["\r\n", "\n"], "\r\n")
+      _lf -> new
+    end
+  end
+
+  defp locate_normalized(text, old, new, path) do
     with norm_old when norm_old != "" <- normalize(old),
          norm = normalize(text),
          {:one, pos, len} <- find(norm, norm_old),
          {:ok, from} <- offset(text, norm, 0, 0, pos, :start),
          {:ok, to} <- offset(text, norm, 0, 0, pos + len, :end) do
-      {:ok, from, to}
+      {:ok, from, to, new}
     else
       :many -> ambiguous(path)
       # An empty normalized old_text, no match, or a match inside a cluster.

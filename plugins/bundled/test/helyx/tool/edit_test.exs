@@ -193,14 +193,18 @@ defmodule Helyx.Tool.EditTest do
       assert after_edit == "one\r\n2\r\n3\r\nmixed\nend\r\n"
     end
 
-    test "the exact path also writes CRLF into a CRLF file", %{edit: edit} do
+    test "the exact path writes new_text as it is, also in a CRLF file", %{edit: edit} do
       {result, after_edit} = edit.("one\r\ntwo\r\n", "two", "2\n2b\r\n2c")
       refute result.is_error
-      assert after_edit == "one\r\n2\r\n2b\r\n2c\r\n"
+      assert after_edit == "one\r\n2\n2b\r\n2c\r\n"
+
+      {result, after_edit} = edit.("a\r\nfoo\r\nz\r\n", "\nfoo", "")
+      refute result.is_error
+      assert after_edit == "a\r\r\nz\r\n"
     end
 
-    test "an LF file takes new_text as it is", %{edit: edit} do
-      {result, after_edit} = edit.("one\ntwo\r\n", "one", "1\n1b")
+    test "an LF file takes new_text as it is in the normalized path", %{edit: edit} do
+      {result, after_edit} = edit.("\u2018one\u2019\ntwo\r\n", "'one'", "1\n1b")
       refute result.is_error
       assert after_edit == "1\n1b\ntwo\r\n"
     end
@@ -243,17 +247,23 @@ defmodule Helyx.Tool.EditTest do
       assert after_edit == "\uFEFFx\ncd\n"
     end
 
-    test "an exact match that starts after a CR keeps one CR before the new LF", %{edit: edit} do
-      {result, after_edit} = edit.("a\r\nfoo\r\n", "\nfoo", "\nbar")
-      refute result.is_error
-      assert after_edit == "a\r\nbar\r\n"
-    end
-
     test "a cluster that the trailing space trim cuts still matches", %{edit: edit} do
       # U+0600 is a Prepend character: it and the space after it are one cluster.
       {result, after_edit} = edit.("\u2018x\u0600 \nnext\n", "'x\u0600", "y")
       refute result.is_error
       assert after_edit == "y\nnext\n"
+    end
+
+    test "a U+FEFF in the middle of the file matches as text", %{edit: edit} do
+      {result, after_edit} = edit.("b\uFEFFb\n", "\uFEFFb", "c")
+      refute result.is_error
+      assert after_edit == "bc\n"
+    end
+
+    test "a normalized match at the start keeps the file's BOM", %{edit: edit} do
+      {result, after_edit} = edit.("\uFEFFa \u2014 b\n", "\uFEFFa - b", "\uFEFFx")
+      refute result.is_error
+      assert after_edit == "\uFEFFx\n"
     end
 
     test "no exact and no normalized match is not found", %{edit: edit} do
