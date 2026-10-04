@@ -9,10 +9,12 @@ if Helyx.TUI.Transcript.Available.available?() do
   defmodule Helyx.TUI.Transcript do
     @moduledoc """
     The transcript of the TUI: the cells of a `Helyx.TUI.ViewModel` as
-    screen rows, and the rule for the scroll position. A position is nil,
-    which follows the newest output, or `{cell, row}`, the first row on the
-    screen: a cell index and a row in that cell. The cost bound is in
-    `docs/features/coding-agent.md`, "Transcript scrollback".
+    screen rows, and the rule for the scroll position. An item is a cell, or
+    a run of information cells, which shows as one dim row. A position is
+    nil, which follows the newest output, or `{item, row}`, the first row on
+    the screen: an item index and a row in that item. The cost bound is in
+    `docs/features/coding-agent.md`, "Transcript scrollback", and the look in
+    its "TUI" section.
     """
 
     alias ExRatatui.Layout.Rect
@@ -23,16 +25,19 @@ if Helyx.TUI.Transcript.Available.available?() do
     alias Helyx.TUI.{ViewModel, Wrap}
 
     @dim %Style{modifiers: [:dim]}
-    @bold %Style{modifiers: [:bold]}
     @tool %Style{fg: :cyan}
     @bad %Style{fg: :red}
+    # Palette colors, so the look follows the terminal theme. White on black
+    # reads in light and dark themes alike.
+    @user %Style{fg: :white, bg: :black}
+    @bar %Style{fg: :blue, bg: :black}
 
     @type position :: {non_neg_integer(), non_neg_integer()} | nil
 
-    # A scrolled view starts at a cell and a row in it. The cells before the
+    # A scrolled view starts at an item and a row in it. The items before the
     # open message only grow in number, so new output does not move the view.
-    # No line cache: no operation wraps all cells. A frame wraps the cells it
-    # shows, and a page or a hold wraps the cells it passes, a small count of
+    # No line cache: no operation wraps all items. A frame wraps the items it
+    # shows, and a page or a hold wraps the items it passes, a small count of
     # screens.
 
     @doc """
@@ -50,11 +55,11 @@ if Helyx.TUI.Transcript.Available.available?() do
       do: back(Enum.reverse(items), {length(items), 0}, height, width)
 
     @doc """
-    The one rule for a position: its row is in its cell, and the rows from
+    The one rule for a position: its row is in its item, and the rows from
     it to the end are more than one screen of `height` rows at `width`
-    columns. If not, the row moves into the cells that follow, or the result
-    is nil. A new cell can take the index of the open message, and a wider
-    screen makes a cell shorter. Every position in the TUI state comes from
+    columns. If not, the row moves into the items that follow, or the result
+    is nil. A new item can take the index of the open message, and a wider
+    screen makes an item shorter. Every position in the TUI state comes from
     here or is nil.
     """
     @spec hold(ViewModel.t(), {non_neg_integer(), non_neg_integer()}, integer(), pos_integer()) ::
@@ -84,14 +89,14 @@ if Helyx.TUI.Transcript.Available.available?() do
       hold_items(items, top, width, height)
     end
 
-    # `before` is the cells above the position, nearest first.
+    # `before` is the items above the position, nearest first.
     defp back(_before, {index, row}, count, _width) when row >= count, do: {index, row - count}
     defp back([], _position, _count, _width), do: {0, 0}
 
     defp back([item | before], {index, row}, count, width),
       do: back(before, {index - 1, length(item_lines(item, width))}, count - row, width)
 
-    # Moves a row number that is past its cell into the cells that follow.
+    # Moves a row number that is past its item into the items that follow.
     defp forward([], {index, _row}, _width), do: {index, 0}
 
     defp forward([item | rest], {index, row}, width) do
@@ -101,9 +106,9 @@ if Helyx.TUI.Transcript.Available.available?() do
       end
     end
 
-    # The row skip stays in the first cell: a row past that cell shows its last
+    # The row skip stays in the first item: a row past that item shows its last
     # row. A frame can come before the check of a new width, and a skip over
-    # all rows would wrap every cell that the old row number passes.
+    # all rows would wrap every item that the old row number passes.
     defp rows_from(items, {index, row}, width) do
       case Enum.drop(items, index) do
         [] ->
@@ -118,11 +123,21 @@ if Helyx.TUI.Transcript.Available.available?() do
       end
     end
 
-    # The cells in position order, one O(n) fold of the array, and the open
-    # assistant message as the last one.
+    # The items in position order, one O(n) fold of the array, and the open
+    # assistant message as the last one. A run of information cells is one
+    # item, `{:infos, texts}`. The items before the open message only grow in
+    # number, and only the last of them can grow a row.
     defp items(%ViewModel{streaming: streaming, cells: cells}) do
-      :array.foldr(fn _position, cell, acc -> [cell | acc] end, streaming_items(streaming), cells)
+      :array.foldr(
+        fn _position, cell, acc -> join_info(cell, acc) end,
+        streaming_items(streaming),
+        cells
+      )
     end
+
+    defp join_info({:info, text}, [{:infos, texts} | acc]), do: [{:infos, [text | texts]} | acc]
+    defp join_info({:info, text}, acc), do: [{:infos, [text]} | acc]
+    defp join_info(cell, acc), do: [cell | acc]
 
     defp streaming_items(nil), do: []
 
@@ -136,8 +151,28 @@ if Helyx.TUI.Transcript.Available.available?() do
 
     defp item_lines(item, width), do: cell_lines(item, width) ++ [%Line{}]
 
+    # A bar and a tint on every row. A row that the text width cannot hold,
+    # a glyph wider than it, has no bar, so the row stays within the width
+    # when the glyph does. Every row gets a fill of the whole width, which
+    # ExRatatui cuts at the edge: the rule can count a glyph wider than
+    # ExRatatui draws it, so a fill counted by the rule can stop short. The
+    # fill is a span of its own, so that a last character such as U+0600
+    # cannot join a space into one grapheme that ExRatatui cuts whole.
     defp cell_lines(%Message{role: :user} = message, width) do
-      styled_lines("› " <> shown_text(message), width, @bold)
+      text_width = width - 2
+      fill = String.duplicate(" ", max(width, 0))
+
+      # No code point has more columns than bytes, so a short row needs no count.
+      for row <- Wrap.rows(shown_text(message), text_width) do
+        bar =
+          if byte_size(row) <= text_width or Wrap.columns(row) <= text_width,
+            do: [%Span{content: "▌ ", style: @bar}],
+            else: []
+
+        %Line{
+          spans: bar ++ [%Span{content: row, style: @user}, %Span{content: fill, style: @user}]
+        }
+      end
     end
 
     defp cell_lines(%Message{role: :assistant} = message, width) do
@@ -149,7 +184,9 @@ if Helyx.TUI.Transcript.Available.available?() do
     end
 
     defp cell_lines({:notice, text}, width), do: styled_lines("✕ #{text}", width, @bad)
-    defp cell_lines({:info, text}, width), do: styled_lines(text, width, @dim)
+
+    defp cell_lines({:infos, texts}, width),
+      do: styled_lines(Enum.map_join(texts, " ", &("· " <> &1)), width, @dim)
 
     defp block_lines(blocks, width) do
       Enum.flat_map(blocks, fn

@@ -68,9 +68,12 @@ defmodule Helyx.TUI.Wrap do
   def drop_controls(text),
     do: String.replace(text, ~r/[\x00-\x08\x0B-\x1F\x7F\x{80}-\x{9F}]/u, "")
 
-  # The wrap is one pure function from a line and a width to its rows. No
-  # row is wider than `width` columns, with one exception: a glyph wider than
-  # the whole width gets a row of its own, so that the wrap always ends.
+  # The wrap is one pure function from a line and a width to its rows. It
+  # breaks at a space, and inside a word only when the word is wider than
+  # the row. The space at a break drops, and so do the spaces that start a
+  # row after the first. No row is wider than `width` columns, with one
+  # exception: a glyph wider than the whole width gets a row of its own, so
+  # that the wrap always ends.
   # Fast path: no code point has more columns than bytes, so a line of
   # `width` bytes or less is one row. This also covers the empty line.
   defp wrap(line, width) when byte_size(line) <= width, do: [line]
@@ -79,18 +82,54 @@ defmodule Helyx.TUI.Wrap do
     width = max(width, 1)
 
     {rows, row, _used} =
-      line
-      |> String.graphemes()
-      |> Enum.reduce({[], [], 0}, fn grapheme, {rows, row, used} ->
-        needs = columns(grapheme)
+      line |> String.graphemes() |> Enum.reduce({[], [], 0}, &place(&1, &2, width))
 
-        if used + needs > width and row != [],
-          do: {[row | rows], [grapheme], needs},
-          else: {rows, [grapheme | row], used + needs}
-      end)
+    # A line of spaces alone keeps one row.
+    rows = with [] <- emit(row, rows), do: [row]
 
-    Enum.map(Enum.reverse([row | rows]), &(&1 |> Enum.reverse() |> Enum.join()))
+    for row <- Enum.reverse(rows),
+        do: row |> Enum.reverse() |> Enum.map_join(&elem(&1, 0))
   end
+
+  # A row is a reversed list of graphemes with their columns.
+  defp place(" ", {[_ | _] = rows, [], 0}, _width), do: {rows, [], 0}
+
+  defp place(grapheme, {rows, row, used}, width) do
+    needs = grapheme_columns(grapheme)
+
+    cond do
+      used + needs <= width or row == [] -> {rows, [{grapheme, needs} | row], used + needs}
+      grapheme == " " -> {emit(row, rows), [], 0}
+      true -> break(grapheme, rows, row, width)
+    end
+  end
+
+  # The word after the last space of the row moves to the next row and
+  # takes the grapheme again, which breaks inside the word when it is still
+  # too wide. A row with no space breaks at the grapheme.
+  # `List.keymember?/3` is a BIF: a row with no space costs no closure
+  # call for each grapheme.
+  defp break(grapheme, rows, row, width) do
+    if List.keymember?(row, " ", 0) do
+      {word, [_space | before]} = Enum.split_while(row, fn {g, _columns} -> g != " " end)
+      place(grapheme, {emit(before, rows), word, row_columns(word)}, width)
+    else
+      place(grapheme, {[row | rows], [], 0}, width)
+    end
+  end
+
+  # A row of spaces alone is never a row of its own: an indent too wide
+  # for the row is cut, and a space at the end makes no row.
+  defp emit(row, rows) do
+    if Enum.all?(row, &match?({" ", _}, &1)), do: rows, else: [row | rows]
+  end
+
+  defp row_columns(row), do: Enum.reduce(row, 0, fn {_g, columns}, sum -> columns + sum end)
+
+  @doc "The terminal columns of `text`, by the width rule of `rows/2`."
+  @spec columns(String.t()) :: non_neg_integer()
+  def columns(text),
+    do: text |> String.graphemes() |> Enum.reduce(0, &(grapheme_columns(&1) + &2))
 
   # ponytail: a short width rule, not the Unicode tables (ticket #90).
   # ExRatatui has no width function in Elixir, and OTP has no
@@ -102,8 +141,8 @@ defmodule Helyx.TUI.Wrap do
   # ExRatatui when it has one.
   #
   # Fast path: the clause below gives the same result for ASCII.
-  defp columns(<<byte>>) when byte < 0x80, do: 1
-  defp columns(grapheme), do: sum_columns(grapheme, 0)
+  defp grapheme_columns(<<byte>>) when byte < 0x80, do: 1
+  defp grapheme_columns(grapheme), do: sum_columns(grapheme, 0)
 
   # ExRatatui adds the code points of a grapheme: a Devanagari cluster can be
   # four columns. The emoji selector U+FE0F makes the code point before it
