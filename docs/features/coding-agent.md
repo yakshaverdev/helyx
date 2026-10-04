@@ -24,7 +24,7 @@ From the TUI, prompt the agent about a repository. It reads, edits, and runs she
 |---|---|
 | Provider | `OpenAI` (model provider, OpenAI wire format, first target OpenCode Go or Zen), `ClaudeCode` (one `claude` per session, stream-json over stdio, ADR 0007), `Codex` (one `codex app-server` per session, JSON-RPC over stdio), `Fake` (scripted, for tests) |
 | Tool | `Read`, `Bash`, `Edit`, `Write` |
-| ModelContext | `Default`: base prompt plus `AGENTS.md` files from home down to the working directory |
+| ModelContext | `Default`: base prompt plus the global `~/.helyx/AGENTS.md`, then for each folder from the filesystem root down to the working directory the first of `AGENTS.override.md`, `AGENTS.md`, `CLAUDE.md` (`context-files.md`) |
 | Compaction | `None`: no-op |
 
 A model is named by one string, `provider/model` (`Helyx.ModelRef`). `Helyx.Session.set_model/2` switches the model of a running session; its `@doc` states the errors and the turn that keeps the old model.
@@ -36,6 +36,7 @@ The bounds of the turn, the provider process, and the hands release are in `docs
 | What | Bound | Over the bound | Owner |
 | --- | --- | --- | --- |
 | file read (read, edit, model context) | one regular file of at most 10,485,760 bytes, valid UTF-8 | an error; the model context leaves the file out | `Helyx.Text.read_file/1` (`@max_file_bytes`) |
+| model context files together | 102,400 bytes (twice the tool result byte limit) after the base prompt, headings and separators included; the files nearest the working directory first | from the first file that does not fit, that file and every file farther away are left out | `Helyx.ModelContext.Default` (`@max_total_bytes`) |
 | tool result text | 2,000 lines or 51,200 bytes of line content, on whole lines | read and the model context keep the head; bash and the harness providers keep the tail; one line over the byte limit is cut to it | `Helyx.Text.truncate/2` and `truncate/3` (`@max_lines`, `@max_bytes`) |
 | read tool `offset` | a positive integer; missing or `null` is line 1 | an error result before the file is read | `offset/1` in `Helyx.Tool.Read` |
 | bash output while the command runs | at most 409,600 bytes; past that, the last 204,800 bytes | older output is dropped, and the result says so | `Helyx.Tool.Bash.keep_tail/1` (`@keep_bytes`) |
