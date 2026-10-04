@@ -22,7 +22,9 @@ defmodule Helyx.TUI.ViewModel do
     * `{:notice, text}` – an aborted or failed turn, a provider that lost
       its session or got a cut transcript, a steer that was not confirmed, a
       notice of the session, or a command the client rejected
-      (`notice/2`)
+      (`notice/2`), drawn as an error
+    * `{:info, text}` – information: a model change of any client, or a
+      line of the client itself (`info/2`), such as a resumed session
 
   `reason` is why the client rejected the last input, or nil. It is
   client-local, like a notice: `reject/2` sets it and `clear_reason/1`
@@ -57,7 +59,7 @@ defmodule Helyx.TUI.ViewModel do
             reason: nil
 
   @type tool_cell :: {:tool, Message.ToolCall.t(), String.t(), Message.t() | nil}
-  @type cell :: Message.t() | tool_cell() | {:notice, String.t()}
+  @type cell :: Message.t() | tool_cell() | {:notice, String.t()} | {:info, String.t()}
 
   @type t :: %__MODULE__{
           model: String.t(),
@@ -147,7 +149,7 @@ defmodule Helyx.TUI.ViewModel do
 
   def apply(vm, %Event{type: :model_change, data: data}) do
     %{model: model} = data
-    %{vm | model: model}
+    add_cell(%{vm | model: model}, {:info, "model: " <> model})
   end
 
   def apply(vm, %Event{type: :notice, data: data}) do
@@ -174,8 +176,8 @@ defmodule Helyx.TUI.ViewModel do
   @doc """
   The view model of a session from its snapshot. The snapshot messages go
   through the fold in order, so the live and the snapshot paths share one
-  pairing rule (ADR 0006, revision of 2026-10-03). Notices
-  are not in the transcript, so a snapshot has none of them.
+  pairing rule (ADR 0006, revision of 2026-10-03). Notices and information
+  cells are not in the transcript, so a snapshot has none of them.
   """
   @spec from_snapshot(Snapshot.t()) :: t()
   def from_snapshot(%Snapshot{messages: messages, turn: turn} = snapshot) do
@@ -201,6 +203,10 @@ defmodule Helyx.TUI.ViewModel do
   @doc "Adds a notice from the client itself, such as a rejected command."
   @spec notice(t(), String.t()) :: t()
   def notice(vm, text) when is_binary(text), do: add_cell(vm, {:notice, text})
+
+  @doc "Adds information from the client itself, such as a resumed session."
+  @spec info(t(), String.t()) :: t()
+  def info(vm, text) when is_binary(text), do: add_cell(vm, {:info, text})
 
   @doc "Sets the reason the status bar shows for a rejected input."
   @spec reject(t(), String.t()) :: t()

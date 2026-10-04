@@ -2,7 +2,8 @@ defmodule Helyx.Test.ViewModelRule do
   @moduledoc false
   # The rule of ADR 0006 section 3 for tests: a client that joins with a
   # snapshot shows the view model of a client that watched from the start,
-  # except for notices and the partial reply of an aborted or failed turn.
+  # except for notices, information cells, and the partial reply of an
+  # aborted or failed turn.
   # These are not in the transcript, so `transcript/1` leaves them out of
   # the view model of the client that watched. A snapshot never holds them;
   # a test compares its view model with no `transcript/1`.
@@ -21,6 +22,7 @@ defmodule Helyx.Test.ViewModelRule do
   end
 
   defp display_only?({:notice, _}), do: true
+  defp display_only?({:info, _}), do: true
 
   defp display_only?(%Message{role: :assistant, stop_reason: stop}),
     do: stop in [:error, :aborted]

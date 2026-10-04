@@ -19,7 +19,7 @@ The order that makes it gap-free:
 `Helyx.TUI.ViewModel.from_snapshot/1` folds the snapshot messages through the live fold, so the live and snapshot paths share one pairing rule.
 
 - The rule of a snapshot and its exclusions are in ADR 0006, section 3.
-- The notice "resumed session" follows the history only when the TUI started from a resume: `mix helyx --resume` passes `resumed: true` to `Helyx.TUI.run/1`, and the mount adds the notice. A live join shows no notice.
+- The information cell "resumed session" follows the history only when the TUI started from a resume: `mix helyx --resume` passes `resumed: true` to `Helyx.TUI.run/1`, and the mount adds the cell. A live join shows no such cell.
 
 ## Bounds
 

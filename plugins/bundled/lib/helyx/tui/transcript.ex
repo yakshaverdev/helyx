@@ -149,6 +149,7 @@ if Helyx.TUI.Transcript.Available.available?() do
     end
 
     defp cell_lines({:notice, text}, width), do: styled_lines("✕ #{text}", width, @bad)
+    defp cell_lines({:info, text}, width), do: styled_lines(text, width, @dim)
 
     defp block_lines(blocks, width) do
       Enum.flat_map(blocks, fn
