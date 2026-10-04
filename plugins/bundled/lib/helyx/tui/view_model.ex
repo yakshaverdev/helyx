@@ -200,6 +200,30 @@ defmodule Helyx.TUI.ViewModel do
   @spec cells(t()) :: [cell()]
   def cells(%__MODULE__{cells: cells}), do: :array.to_list(cells)
 
+  @doc """
+  The nearest user message older (`:older`) or newer (`:newer`) than the
+  cell at `position`, as `{position, text}`, or nil. The text is
+  `Helyx.Message.text/1`. A nil position is past the newest cell.
+  """
+  @spec prompt(t(), non_neg_integer() | nil, :older | :newer) ::
+          {non_neg_integer(), String.t()} | nil
+  def prompt(%__MODULE__{cells: cells}, position, direction) do
+    start = position || :array.size(cells)
+
+    range =
+      case direction do
+        :older -> (start - 1)..0//-1
+        :newer -> (start + 1)..(:array.size(cells) - 1)//1
+      end
+
+    Enum.find_value(range, fn at ->
+      case :array.get(at, cells) do
+        %Message{role: :user} = message -> {at, Message.text(message)}
+        _cell -> nil
+      end
+    end)
+  end
+
   @doc "Adds a notice from the client itself, such as a rejected command."
   @spec notice(t(), String.t()) :: t()
   def notice(vm, text) when is_binary(text), do: add_cell(vm, {:notice, text})
