@@ -201,3 +201,4 @@ One row per ticket that `/orchestrate` merged. An escape is a confirmed Codex fi
 | 2026-10-04 | #487 | r1 (full): 6; r2 (full): 2; r3 (full): 0 | gate r1 (Codex): 0 | none; ship caught all. The repeat grapheme pass finding was closed by moving the pass to each finished row |
 | 2026-10-04 | #484 | r1 (full): 1; r2 (full): 3; r3 (full): 2; r4 (full): 3; r5 (reduced): 1; r6 (reduced): 0 | gate r1 (Codex): 0 | none; ship caught all. Repeat findings on the hand-written HEAD reader moved the mechanism to git itself, and then repeat findings on git ownership moved the kill into sh |
 | 2026-10-04 | #486 | r1 (full): 1; r2 (reduced): 0; rebase r1 (reduced): 1; rebase r2 (reduced): 0 | gate r1 (Codex): 0 | none; ship caught all |
+| 2026-10-04 | #485 | r1 (full): 3; r2 (full): 1; r3 (full): 0; rebase r1 (reduced): 0 | gate r1 (Codex): 0 | none; ship caught all |

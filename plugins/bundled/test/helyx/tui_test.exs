@@ -38,10 +38,10 @@ defmodule Helyx.TUITest do
 
   import Helyx.Test.TUIRender
 
-  alias ExRatatui.Event.Key
+  alias ExRatatui.Event.{Key, Mouse}
   alias ExRatatui.Layout.Rect
   alias ExRatatui.Subscription
-  alias ExRatatui.Widgets.Paragraph
+  alias ExRatatui.Widgets.{Block, Paragraph}
   alias Helyx.{Event, Message, Session}
   alias Helyx.Provider.Fake
   alias Helyx.TUI
@@ -99,6 +99,7 @@ defmodule Helyx.TUITest do
     for guard <- [
           Helyx.TUI.Available,
           Helyx.TUI.Composer.Available,
+          Helyx.TUI.Selection.Available,
           Helyx.TUI.Transcript.Available
         ] do
       assert guard.available?()
@@ -529,6 +530,7 @@ defmodule Helyx.TUITest do
     state = %{
       vm: view_model([]),
       scroll: nil,
+      selection: nil,
       composer: composer,
       busy: nil,
       location: "~",
@@ -744,6 +746,92 @@ defmodule Helyx.TUITest do
       state = press(state, "page_down")
       assert screen(state) == ["▌ m10", "▌ new"]
       refute status_text(state) =~ "scrolled"
+    end
+
+    # The answer to a mouse event, with what it wrote to standard output.
+    defp mouse(state, kind, x, y, button \\ "left") do
+      ExUnit.CaptureIO.with_io(fn ->
+        TUI.handle_event(%Mouse{kind: kind, button: button, x: x, y: y}, state)
+      end)
+    end
+
+    defp wheel(state, kind) do
+      {{:noreply, state}, ""} = mouse(state, kind, 5, 2, "")
+      state
+    end
+
+    test "a wheel step moves three rows, and one that moves nothing draws no frame",
+         %{core: core} do
+      state = scroll_state(core, 10) |> wheel("scroll_up")
+      assert screen(state) == ["▌ m7", "▌ m8", "▌ m9"]
+      assert status_text(state) =~ "scrolled"
+
+      state = wheel(state, "scroll_down")
+      assert screen(state) == ["▌ m9", "▌ m10"]
+      assert state.scroll == nil
+      assert {{:noreply, ^state, render?: false}, ""} = mouse(state, "scroll_down", 5, 2, "")
+
+      top = Enum.reduce(1..10, state, fn _, acc -> press(acc, "page_up") end)
+      assert {{:noreply, ^top, render?: false}, ""} = mouse(top, "scroll_up", 5, 2, "")
+
+      short = scroll_state(core, 2)
+      assert {{:noreply, ^short, render?: false}, ""} = mouse(short, "scroll_up", 5, 2, "")
+    end
+
+    test "a drag in the transcript copies with OSC 52, and a new size clears it", %{core: core} do
+      state = scroll_state(core, 10)
+      {{:noreply, state}, ""} = mouse(state, "down", 4, 1)
+      {{:noreply, state}, ""} = mouse(state, "drag", 6, 3)
+      # The release changes no state, so it draws no frame.
+      {{:noreply, ^state, render?: false}, sequence} = mouse(state, "up", 6, 3)
+      assert sequence == "\e]52;c;" <> Base.encode64("m9\n\nm10") <> "\a"
+
+      marks =
+        for {%Block{style: %{modifiers: [:reversed]}}, rect} <-
+              TUI.render(state, %{width: 24, height: 10}),
+            do: rect
+
+      assert length(marks) == 3
+      assert {{:noreply, ^state, render?: false}, ""} = mouse(state, "moved", 3, 3, "")
+      assert resize(state, {30, 10}).selection == nil
+    end
+
+    test "a mouse press of any button clears the reason and draws", %{core: core} do
+      state = scroll_state(core, 10)
+      {{:noreply, selected}, _copy} = mouse(state, "down", 4, 1)
+      rejected = %{selected | vm: ViewModel.reject(selected.vm, "not copied: over 75 KB")}
+
+      for {button, x, y} <- [{"left", 0, 0}, {"left", 5, 7}, {"right", 5, 2}],
+          selection <- [rejected.selection, nil] do
+        assert {{:noreply, %{vm: %{reason: nil}}}, ""} =
+                 mouse(%{rejected | selection: selection}, "down", x, y, button)
+      end
+    end
+
+    test "a mouse event neither arms nor disarms the quit", %{core: core} do
+      armed = core |> scroll_state(2) |> press("c", ["ctrl"])
+      assert armed.quit != nil
+
+      for {kind, button} <- [{"down", "left"}, {"up", "left"}, {"scroll_up", ""}, {"moved", ""}] do
+        {answer, _copy} = mouse(armed, kind, 4, 1, button)
+        assert elem(answer, 1).quit == armed.quit
+      end
+
+      {{:noreply, state}, ""} = mouse(scroll_state(core, 2), "down", 4, 1)
+      assert state.quit == nil
+    end
+
+    test "on a terminal with no transcript row a drag copies nothing", %{core: core} do
+      # 4 rows: the composer and the footer take all of them.
+      Process.put(:terminal_size, {24, 4})
+      state = core |> scroll_state(10) |> press("page_up")
+      assert state.scroll != nil
+
+      for {kind, x, y} <- [{"down", 4, 0}, {"drag", 6, 0}, {"up", 6, 0}], reduce: state do
+        state ->
+          {answer, ""} = mouse(state, kind, x, y)
+          elem(answer, 1)
+      end
     end
 
     test "the offset stops at the first row, and the same count of PgDn returns", %{core: core} do

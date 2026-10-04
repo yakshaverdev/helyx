@@ -25,6 +25,7 @@ if Helyx.TUI.Available.available?() do
       * `/model provider/model` in the composer switches the model
       * Escape aborts the running turn
       * PgUp and PgDn scroll the transcript (`Helyx.TUI.Transcript`) by one screen
+      * the wheel scrolls three rows; a drag copies text (`Helyx.TUI.Selection`)
       * Home and End, with an empty composer, go to the oldest and the newest output
       * Ctrl+C clears the composer; a second Ctrl+C within 500 ms quits
 
@@ -35,12 +36,12 @@ if Helyx.TUI.Available.available?() do
 
     use ExRatatui.App
 
-    alias ExRatatui.Event.{Key, Paste, Resize}
+    alias ExRatatui.Event.{Key, Mouse, Paste, Resize}
     alias ExRatatui.Layout
     alias ExRatatui.Layout.Rect
     alias ExRatatui.Subscription
     alias Helyx.Session
-    alias Helyx.TUI.{Composer, Footer, Quit, Transcript, ViewModel}
+    alias Helyx.TUI.{Composer, Footer, Quit, Selection, Transcript, ViewModel}
     require Quit
 
     # One screen of scroll is the rows above the composer and the footer.
@@ -68,7 +69,7 @@ if Helyx.TUI.Available.available?() do
       # semantics while the TUI runs.
       trap = Process.flag(:trap_exit, true)
 
-      case start_link(opts) do
+      case start_link(Keyword.put_new(opts, :mouse_capture, true)) do
         {:ok, pid} ->
           ref = Process.monitor(pid)
           # Unlinked, an abnormal exit reaches the receive as a DOWN instead
@@ -127,6 +128,7 @@ if Helyx.TUI.Available.available?() do
          branch_ref: nil,
          # A `Transcript.position()`; nil follows the newest output.
          scroll: nil,
+         selection: nil,
          # The size seam of `ExRatatui.Server`, so a test sets the size.
          terminal_size_fn: Keyword.get(opts, :terminal_size_fn, &ExRatatui.terminal_size/0),
          # nil while idle, or the monotonic ms of the turn start and the ms
@@ -218,7 +220,10 @@ if Helyx.TUI.Available.available?() do
       {:noreply, on_screen(state, &Transcript.page(state.vm, state.scroll, code, &1, &2))}
     end
 
-    def handle_event(%Resize{}, state), do: {:noreply, settle(state)}
+    def handle_event(%Resize{}, state), do: {:noreply, settle(%{state | selection: nil})}
+
+    def handle_event(%Mouse{} = mouse, state),
+      do: Selection.handle(mouse, state, layout(state.composer, state.terminal_size_fn.()))
 
     # Home and End scroll only when the composer is empty; otherwise they
     # move its cursor.
@@ -330,45 +335,40 @@ if Helyx.TUI.Available.available?() do
 
     @impl true
     def render(state, frame) do
-      area = %Rect{x: 0, y: 0, width: frame.width, height: frame.height}
+      [transcript, composer, footer] = layout(state.composer, {frame.width, frame.height})
 
-      [transcript, composer, footer] =
-        Layout.split(
-          area,
-          :vertical,
-          [
-            {:min, 0},
-            {:length, Composer.rows(state.composer, frame.height - @footer_rows)},
-            {:length, @footer_rows}
-          ],
-          horizontal_margin: @margin
-        )
-
-      [{Transcript.widget(state.vm, state.scroll, transcript), transcript}] ++
+      Selection.widgets(state.selection, state.vm, state.scroll, transcript) ++
         Composer.widgets(state.composer, composer) ++
         [{Footer.widget(state.location, state.vm, state.busy, state.scroll, state.quit), footer}]
     end
 
-    # The width inside the margins that `Layout.split/4` draws, so a
-    # position is checked at the width that is drawn. Under two margins
-    # ratatui draws nothing.
-    defp inner_width(width) when width >= 2 * @margin, do: width - 2 * @margin
-    defp inner_width(_width), do: 0
+    # The transcript, composer, and footer rects, nil with no terminal size.
+    # The frame, the scroll, and the mouse share them: one width rule.
+    defp layout(composer, {width, height}) when is_integer(width) and is_integer(height) do
+      Layout.split(
+        %Rect{x: 0, y: 0, width: width, height: height},
+        :vertical,
+        [
+          {:min, 0},
+          {:length, Composer.rows(composer, height - @footer_rows)},
+          {:length, @footer_rows}
+        ],
+        horizontal_margin: @margin
+      )
+    end
+
+    defp layout(_composer, {:error, _reason}), do: nil
 
     # Scroll position
 
-    # Sets the position from the width and the rows of the transcript. The
-    # only reader of the terminal size. With no size there is no screen to
-    # check a position against, so the view follows the newest output.
+    # Sets the position from the transcript rect, of at least one row. With no
+    # size there is no screen to check, so the view follows the newest output.
     defp on_screen(state, position) do
-      case state.terminal_size_fn.() do
-        {width, height} when is_integer(width) and is_integer(height) ->
-          rows =
-            max(height - Composer.rows(state.composer, height - @footer_rows) - @footer_rows, 1)
+      case layout(state.composer, state.terminal_size_fn.()) do
+        [%Rect{width: width, height: rows} | _] ->
+          %{state | scroll: position.(width, max(rows, 1))}
 
-          %{state | scroll: position.(inner_width(width), rows)}
-
-        {:error, _reason} ->
+        nil ->
           %{state | scroll: nil}
       end
     end
