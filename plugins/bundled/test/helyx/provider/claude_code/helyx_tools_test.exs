@@ -32,11 +32,11 @@ defmodule Helyx.Provider.ClaudeCode.HelyxToolsTest do
       end)
     end
 
-    test "the program gets the MCP config of the helyx server, and not the strict switch",
+    test "the program gets the MCP config of the always loaded helyx server, and not the strict switch",
          %{bin: bin, work: work} do
       closed(harness(work))
       args = args(bin, 1)
-      assert ~s({"mcpServers":{"helyx":{"type":"sdk","name":"helyx"}}}) in args
+      assert ~s({"mcpServers":{"helyx":{"type":"sdk","name":"helyx","alwaysLoad":true}}}) in args
       refute "--strict-mcp-config" in args
     end
 
