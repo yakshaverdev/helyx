@@ -1,12 +1,8 @@
 defmodule Helyx.HarnessIO do
   @moduledoc false
-  # What the harness providers share (ADR 0005): every call into
-  # `Helyx.Watchdog`, the read of a program's stdout as JSON lines under a
-  # line cap, the sort of a port message, the release, the cut of program
-  # error text, the split of the prompt from the history, the byte cap of
-  # a replay, the wire id of a replayed tool call, and the close. It is not
-  # a plugin. `state` is a provider's run state with the fields `port`,
-  # `buffer` (iodata), `size`, `terminal`, and `closing`.
+  # What the harness providers share (ADR 0005). It is not a plugin.
+  # `state` is a provider's run state with the fields `port`, `buffer`
+  # (iodata), `size`, `terminal`, and `closing`.
 
   @line_max_bytes 16 * 1024 * 1024
   @replay_max_bytes 400_000
@@ -32,7 +28,7 @@ defmodule Helyx.HarnessIO do
   # state. What came before the marker is perl's own output: the program
   # runs only after the go-ahead. A program that did not start gives the
   # terminal error.
-  def start(argv, cwd, input, state, opts \\ []) do
+  defp start(argv, cwd, input, state, opts) do
     case Helyx.Watchdog.start(argv, cwd, input, opts) do
       {:started, port, _pre} ->
         %{state | port: port}
@@ -51,8 +47,6 @@ defmodule Helyx.HarnessIO do
     |> start(cwd, :open, state, grace_ms: @term_grace_ms)
   end
 
-  # The `Stream.resource/3` end: the closed port ends the program.
-  def stop(%{port: nil}), do: :ok
   def stop(%{port: port}), do: Helyx.Watchdog.close(port)
 
   # Writes to the program's stdin through the watchdog.
@@ -95,9 +89,10 @@ defmodule Helyx.HarnessIO do
 
   # Reads a chunk of stdout: `decode` gets each complete line that is a
   # JSON object, and the state; other lines (perl's own text) are skipped.
-  # Once the state has a terminal, output is not read. Only the new chunk is searched for a newline, so a long line
-  # costs one pass over its bytes. A line over the cap, with its newline in
-  # this chunk or not, ends the stream with an error.
+  # Once the state has a terminal, output is not read. Only the new chunk
+  # is searched for a newline, so a long line costs one pass over its
+  # bytes. A line over the cap, with its newline in this chunk or not, ends
+  # the stream with an error.
   def lines(_data, %{terminal: terminal} = state, _decode) when terminal != nil, do: {[], state}
 
   def lines(data, state, decode) do

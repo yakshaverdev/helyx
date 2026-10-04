@@ -19,14 +19,16 @@ defmodule Helyx.Session do
   model until an assistant message has no tool calls, and its tool calls
   run on the session's hands (`Helyx.Session.Hands`) one at a time, in
   call order. A provider without `Helyx.Provider.Loop` can run the whole
-  turn and its own tools itself. A turn ends on the terminal event of the provider. It fails when its first prepare Task fails or the provider
+  turn and its own tools itself. A turn ends on the terminal event of the
+  provider. It fails when its first prepare Task fails or the provider
   process ends first; a failed context build goes to the provider. Each
-  tool call with no result gets an `aborted` error result. A follow-up
-  during a turn waits in a queue. A steer waits in a queue until the
-  provider can take it (see `steer/2`). An abort or a failure of the turn
-  drops both queues. An abort ends the turn at once. It returns when the hands have released the
-  resources of the turn or recorded them as unconfirmed (`abort/1`).
-  Until then, the session answers every client call and starts no turn.
+  tool call with no result gets an `aborted` error result
+  (`aborted_result/0`). A follow-up during a turn waits in a queue. A
+  steer waits in a queue until the provider can take it (see `steer/2`).
+  An abort or a failure of the turn drops both queues. An abort ends the
+  turn at once. It returns when the hands have released the resources of
+  the turn or recorded them as unconfirmed (`abort/1`). Until then, the
+  session answers every client call and starts no turn.
 
   `docs/features/session-lifecycle.md` has the turn, the queues, the
   abort, and the provider process. `docs/features/session-subscribers.md`
@@ -49,8 +51,6 @@ defmodule Helyx.Session do
   @type model_error ::
           {:invalid_model_ref, String.t()}
           | {:unknown_provider, String.t()}
-
-  # Public API
 
   @doc """
   Starts a session under Core. `:model` is required. `:cwd` defaults to the
@@ -204,15 +204,15 @@ defmodule Helyx.Session do
   event once, and a second ref. The caller removes the ref it no longer
   wants with `Process.demonitor(ref, [:flush])`.
 
-  A session that is not running returns `{:error, :session_not_found}`,
-  with no subscription of the caller and no monitor left for it. This
-  includes a session whose Core has stopped. A snapshot call that exits on
-  its timeout also leaves no subscription and no monitor, and the exit then
-  goes on to the caller. A failed subscribe also ends an earlier
-  subscription of the caller: the ref of the earlier one stays with the
-  caller and gives no more events, only the end signal. An event that the session sent before it ended can
-  stay in the caller's mailbox; a client drops it by `instance_id` and
-  `seq` once it has a snapshot. The other operations return
+  A session that is not running returns `{:error, :session_not_found}`, with
+  no subscription of the caller and no monitor left for it. This includes a
+  session whose Core has stopped. A snapshot call that exits on its timeout
+  also leaves no subscription and no monitor, and the exit then goes on to
+  the caller. A failed subscribe also ends an earlier subscription of the
+  caller: the ref of the earlier one stays with the caller and gives no more
+  events, only the end signal. An event that the session sent before it
+  ended can stay in the caller's mailbox; a client drops it by `instance_id`
+  and `seq` once it has a snapshot. The other operations return
   `{:error, :session_not_found}` for such a session too.
   """
   @spec subscribe(t()) :: {:ok, Snapshot.t(), reference()} | {:error, :session_not_found}
@@ -257,6 +257,13 @@ defmodule Helyx.Session do
   def end_reason(reason) when reason in [:normal, :shutdown], do: :stopped
   def end_reason({:shutdown, _}), do: :stopped
   def end_reason(_reason), do: :crashed
+
+  @doc """
+  The result of a tool call that the session ended without a result, such
+  as at an abort. Clients match this value.
+  """
+  @spec aborted_result() :: {:error, String.t()}
+  def aborted_result, do: {:error, "aborted"}
 
   @doc "The pid behind a session handle, or nil when the session is not running."
   @spec pid(t()) :: pid() | nil

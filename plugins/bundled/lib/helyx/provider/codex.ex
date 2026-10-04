@@ -77,9 +77,6 @@ defmodule Helyx.Provider.Codex do
     ]
   end
 
-  # The fields of a turn, set back to their defaults between turns.
-  @turn_fields ~w(turn_id turn items)a
-
   @trust %{approvalPolicy: "never", sandbox: "danger-full-access"}
 
   @impl true
@@ -126,9 +123,7 @@ defmodule Helyx.Provider.Codex do
   def request(
         {:turn, turn_id, %Helyx.Context{messages: messages}},
         from,
-        %State{
-          turn_id: nil
-        } = state
+        %State{turn_id: nil} = state
       ) do
     {prompt, history} = HarnessIO.split_prompt(messages)
     state = %{state | turn_id: turn_id, from: from, prompt: prompt}
@@ -244,7 +239,8 @@ defmodule Helyx.Provider.Codex do
             state
         end
 
-      Map.merge(state, Map.take(%State{model: nil, cwd: nil}, @turn_fields))
+      # The fields of a turn go back to their defaults.
+      %{state | turn_id: nil, turn: nil, items: %Items{}}
     end
   end
 

@@ -1,10 +1,10 @@
 defmodule Helyx.Session.ToolQueue do
   @moduledoc false
   # The Helyx tool requests of one turn (`docs/features/one-provider-path.md`):
-  # `running`, the call id that runs on the hands, with `running_bytes`, the encoded size of its call,
-  # `killed?`, whether the provider withdrew it, and `waiting`, at most
-  # @max_waiting calls after it with their sizes, in arrival order. Each
-  # call gets exactly one result.
+  # `running`, the call id that runs on the hands, with `running_bytes`, the
+  # encoded size of its call, `killed?`, whether the provider withdrew it, and
+  # `waiting`, at most @max_waiting calls after it with their sizes, in arrival
+  # order. Each call gets exactly one result.
   #
   # The functions return the struct with the effects for the session, in
   # order: `{:run, call}` (the hands run it), `{:kill, call_id}` (the hands
@@ -12,13 +12,13 @@ defmodule Helyx.Session.ToolQueue do
   # `{:tool_result, ...}` request to the provider process).
 
   alias Helyx.Message.ToolCall
+  alias Helyx.Session
   alias Helyx.Session.{Stream, Turn}
 
   # Bounds the fan-out of a model: one runs and these wait.
   @max_waiting 16
   @too_many "too many Helyx tool calls: one runs and #{@max_waiting} wait"
   @too_large "Helyx tool calls too large: the running and waiting calls are over the byte bound"
-  @aborted {:error, "aborted"}
 
   defstruct running: nil, running_bytes: 0, killed?: false, waiting: []
 
@@ -68,7 +68,7 @@ defmodule Helyx.Session.ToolQueue do
   # Then the next waiting call runs.
   @spec result(t(), {:ok | :error, String.t()}) :: step()
   def result(%__MODULE__{running: id} = tools, result) when is_binary(id) do
-    answer = {:result, id, if(tools.killed?, do: @aborted, else: result)}
+    answer = {:result, id, if(tools.killed?, do: Session.aborted_result(), else: result)}
     tools = %{tools | running: nil, running_bytes: 0, killed?: false}
 
     case tools.waiting do
@@ -90,7 +90,7 @@ defmodule Helyx.Session.ToolQueue do
   def cancel(%__MODULE__{waiting: waiting} = tools, id) do
     case Enum.split_with(waiting, &(id(&1) == id)) do
       {[], _} -> {tools, []}
-      {_, waiting} -> {%{tools | waiting: waiting}, [{:result, id, @aborted}]}
+      {_, waiting} -> {%{tools | waiting: waiting}, [{:result, id, Session.aborted_result()}]}
     end
   end
 
@@ -99,7 +99,7 @@ defmodule Helyx.Session.ToolQueue do
   @spec end_turn(t()) :: [effect()]
   def end_turn(%__MODULE__{} = tools) do
     ids = List.wrap(tools.running) ++ Enum.map(tools.waiting, &id/1)
-    Enum.map(ids, &{:result, &1, @aborted})
+    Enum.map(ids, &{:result, &1, Session.aborted_result()})
   end
 
   defp run(tools, {%ToolCall{id: id} = call, bytes}),

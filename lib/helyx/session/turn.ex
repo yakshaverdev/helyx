@@ -72,9 +72,8 @@ defmodule Helyx.Session.Turn do
     else
       old = turn.partial
       partial = Message.add_block(old, event)
-      # A new block has the old list as its tail, a merge only a new head.
       # The compare is O(1): a new block's tail is the old list itself, and a
-      # merged text or thinking head never has the kind of the block under it.
+      # merge's new head sits on the old tail, whose head has another kind.
       blocks = if match?([_ | ^old], partial), do: turn.blocks + 1, else: turn.blocks
 
       if blocks > @max_message_blocks,

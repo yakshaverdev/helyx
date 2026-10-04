@@ -252,8 +252,6 @@ defmodule Helyx.Session.File do
     append(file, Codec.encode(message))
   end
 
-  # Internals
-
   defp check_version(%{"version" => @version}), do: :ok
   defp check_version(header), do: {:error, {:unknown_version, header["version"]}}
 

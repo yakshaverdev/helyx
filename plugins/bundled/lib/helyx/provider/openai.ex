@@ -3,8 +3,9 @@ defmodule Helyx.Provider.OpenAI do
   A model provider that speaks the OpenAI chat completions wire format with
   server-sent event streaming, against the OpenCode gateways.
 
-  The engine lives here, with the SSE parser in an internal module. The plugins are the nested modules, one per model
-  ref prefix, each bound to one base URL:
+  The engine lives here, with the SSE parser in an internal module. The
+  plugins are the nested modules, one per model ref prefix, each bound to
+  one base URL:
 
     * `Helyx.Provider.OpenAI.Go`: `opencode-go/<model>`, OpenCode Go
     * `Helyx.Provider.OpenAI.Zen`: `opencode/<model>`, OpenCode Zen

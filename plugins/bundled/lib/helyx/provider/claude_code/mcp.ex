@@ -99,7 +99,7 @@ defmodule Helyx.Provider.ClaudeCode.Mcp do
          %{"_meta" => %{"claudecode/toolUseId" => call_id}, "name" => name} = params,
          turn
        )
-       when is_binary(call_id) and is_binary(name) and turn != nil and started?(turn),
+       when is_binary(call_id) and is_binary(name) and started?(turn),
        do: is_map(Map.get(params, "arguments", %{}))
 
   defp helyx_call?(_params, _turn), do: false

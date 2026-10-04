@@ -43,7 +43,7 @@ The bounds of the turn, the provider process, and the hands release are in `docs
 | bash command | no NUL byte | an error result; nothing runs | `Helyx.Tool.Bash.run/2` |
 | reason of a watchdog start that failed | 2,000 bytes of valid UTF-8: the tail of a failed `chdir`, `pipe`, or `fork`, the head of a text with no marker | the rest is dropped | `Helyx.Watchdog.start/4` (`@reason_max_bytes`) |
 | watchdog marker | the marker line ends within the first 4,096 bytes of output | no command runs; the error says that the perl watchdog gave no marker | `Helyx.Watchdog.read_marker/4` (`@max_preamble_bytes`) |
-| wait for the marker and for a bash command | unbounded, accepted | the turn abort kills the process group | `Helyx.Tool.Bash` (`ponytail:` marker) |
+| wait for the marker and for a bash command | unbounded, accepted | the turn abort kills the process group | `Helyx.Tool.Bash` |
 | wait for a killed process group | `:cancel`: TERM, a grace of 500 ms by default, KILL; `:deliver`: KILL; then at most 5,000 ms per wait, never past the release deadline | the handle stays unconfirmed | `Helyx.Watchdog.Group.release/4` (`@wait_ms`), `Helyx.Watchdog.grace_ms/0` |
 | provider start call to the hands | 5,000 ms; the retry of unconfirmed handles in it has one deadline of 1,000 ms | the call exits the session process | `Helyx.Session.Hands.start_provider/3` (`@retry_ms`) |
 | wait to hold a handle | none, `:infinity` | an abort kills the tool Task, which ends the wait | `Helyx.Tool.hold/1` |
@@ -75,7 +75,7 @@ The bounds of the turn, the provider process, and the hands release are in `docs
 
 ## Ownership
 
-When anything above a command dies, the command stops (ADR 0004). Inside the VM, work is linked to its owner, and the owner traps exits. At the OS boundary, the perl watchdog ties the life of a command to its port. perl is required: without it the bash tool's `check/0` fails the session start or resume, and `Helyx.HarnessIO.find/1` fails the `init/3` of a harness provider. The provider process and the prepare Task are in the Ownership table of `docs/features/session-lifecycle.md`, and the harness programs in that of `docs/features/long-lived-harness.md`.
+When anything above a command dies, the command stops (ADR 0004). Inside the VM, work is linked to its owner, and the owner traps exits. At the OS boundary, the perl watchdog ties the life of a command to its port. perl is required: without it the bash tool's `check/0` fails the session start or resume, and `Helyx.HarnessIO.find/1` fails the `init/3` of a harness provider. Recorded risk: a future macOS may ship without perl; the watchdog is small enough to rewrite in sh with job control if that happens. The provider process and the prepare Task are in the Ownership table of `docs/features/session-lifecycle.md`, and the harness programs in that of `docs/features/long-lived-harness.md`.
 
 | Resource | Created by | Held by | Released on normal end | Released when the holder crashes | Released on abort |
 | -------- | ---------- | ------- | ---------------------- | -------------------------------- | ----------------- |
