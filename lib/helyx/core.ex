@@ -81,16 +81,24 @@ defmodule Helyx.Core do
   @doc "Returns the plugins registered for an interface, in registration order."
   @spec plugins(name(), module()) :: [module()]
   def plugins(name \\ __MODULE__, interface) do
-    {:ok, table} = Registry.meta(sessions_registry(name), :plugins)
-    Map.get(table, interface, [])
+    Map.get(meta!(name, :plugins), interface, [])
   end
 
   @doc false
   # The provider id to module map that Core built at start.
   @spec provider_ids(name()) :: %{String.t() => module()}
-  def provider_ids(name) do
-    {:ok, ids} = Registry.meta(sessions_registry(name), :provider_ids)
-    ids
+  def provider_ids(name), do: meta!(name, :provider_ids)
+
+  # Every Core sets these meta keys at start, so `:error` gets the answer of a
+  # missing table, `ArgumentError`, which `Session.set_model/2` rescues. A
+  # Registry start creates its table before it inserts the keys, so a read in
+  # that window gets `:error`. The #462 precommit saw `:error` once after
+  # `Supervisor.stop/1` (#465).
+  defp meta!(name, key) do
+    case Registry.meta(sessions_registry(name), key) do
+      {:ok, value} -> value
+      :error -> raise ArgumentError, "the Core #{inspect(name)} holds no #{key}"
+    end
   end
 
   @doc false

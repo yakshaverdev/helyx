@@ -35,6 +35,17 @@ defmodule Helyx.CoreTest do
     assert Helyx.Core.plugins(name, Test.Multi) == [Test.MultiA]
   end
 
+  # A sessions table without the meta keys stands for the window that #465
+  # saw. It gives the answer of a missing table.
+  test "a sessions table without the meta keys raises ArgumentError, as a missing table does" do
+    name = :"core_#{System.unique_integer([:positive])}"
+    start_supervised!({Registry, keys: :unique, name: Helyx.Core.sessions_registry(name)})
+
+    assert_raise ArgumentError, fn -> Helyx.Core.provider_ids(name) end
+    assert_raise ArgumentError, fn -> Helyx.Core.plugins(name, Helyx.Tool) end
+    assert_raise ArgumentError, fn -> Helyx.Core.provider_ids(:"#{name}_gone") end
+  end
+
   for {name, plugins, error} <- [
         {"two plugins for a single interface", [Test.Provider, Test.SingleA, Test.SingleB],
          quote(do: {:mode_violation, Test.Single, [Test.SingleA, Test.SingleB]})},
