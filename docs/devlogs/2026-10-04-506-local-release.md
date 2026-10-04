@@ -38,8 +38,8 @@ helyx: could not start the agent: the terminal did not start: Device not configu
 
 ## Open
 
-- Two installs at once can delete each other's build folder. The feature doc marks the race open, with no ticket number yet.
-- The builds of failed installs and the builds that a deletion could not delete are unbounded (accepted, no ticket number yet).
+- Two installs at once can delete each other's build folder. Accepted, no ticket needed: one person runs the install by hand.
+- The builds of failed installs and the builds that a deletion could not delete are unbounded. Accepted, no ticket needed: the next successful install deletes them.
 
 - A session that started two installs ago loses its build at the next install (the bound of two builds, accepted in the feature doc).
 - A build needs a git checkout. The remote precommit host copies the tree without `.git`, so no test builds a real release; the release build is checked by the probe above.
