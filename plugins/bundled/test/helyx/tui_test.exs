@@ -229,9 +229,66 @@ defmodule Helyx.TUITest do
     refute_received {:helyx_event, %Event{type: :turn_end}}
   end
 
-  test "ctrl+c stops the app", %{core: core} do
-    state = mounted(core, "bye", [])
-    assert {:stop, _state} = TUI.handle_event(%Key{code: "c", modifiers: ["ctrl"]}, state)
+  describe "ctrl+c" do
+    defp ctrl_c(state),
+      do: TUI.handle_event(%Key{code: "c", kind: "press", modifiers: ["ctrl"]}, state)
+
+    test "the first clears the draft with no hint, a second quits", %{core: core} do
+      state = core |> mounted("bye", []) |> press("h") |> press("i")
+
+      assert {:noreply, state} = ctrl_c(state)
+      assert value(state) == ""
+      refute status_text(state) =~ "Ctrl+C again"
+      assert {:stop, _state} = ctrl_c(state)
+    end
+
+    test "on an empty draft the first shows a hint, a second quits", %{core: core} do
+      state = mounted(core, "bye", [])
+      refute status_text(state) =~ "Ctrl+C again to quit"
+
+      assert {:noreply, state} = ctrl_c(state)
+      assert status_text(state) =~ "Ctrl+C again to quit"
+      assert {:stop, _state} = ctrl_c(state)
+    end
+
+    test "the release of ctrl+c keeps the quit armed", %{core: core} do
+      {:noreply, state} = core |> mounted("bye", []) |> ctrl_c()
+      release = %Key{code: "c", kind: "release", modifiers: ["ctrl"]}
+
+      assert {:noreply, state} = TUI.handle_event(release, state)
+      assert {:stop, _state} = ctrl_c(state)
+    end
+
+    test "another key press or a paste between the two disarms the quit", %{core: core} do
+      {:noreply, state} = core |> mounted("bye", []) |> ctrl_c()
+      state = press(state, "a")
+      assert value(state) == "a"
+      refute status_text(state) =~ "Ctrl+C again"
+      assert {:noreply, state} = ctrl_c(state)
+      assert value(state) == ""
+
+      {:noreply, state} = TUI.handle_event(%ExRatatui.Event.Paste{content: "p"}, state)
+      assert value(state) == "p"
+      assert {:noreply, _state} = ctrl_c(state)
+    end
+
+    # Order only: both arms start before either window ends, so the test
+    # waits about one window. Each end reaches the TUI as handle_info would.
+    test "the end of the window disarms the quit, and only its own arm", %{core: core} do
+      {:noreply, state} = core |> mounted("bye", []) |> ctrl_c()
+      {first, _hint?} = state.quit
+      {:noreply, state} = state |> press("a") |> ctrl_c()
+      {second, _hint?} = state.quit
+
+      assert_receive {Helyx.TUI.Quit, ^first} = message, Helyx.Test.Events.wait_ms()
+      assert {:noreply, state} = TUI.handle_info(message, state)
+      assert {:stop, _state} = ctrl_c(state)
+
+      assert_receive {Helyx.TUI.Quit, ^second} = message, Helyx.Test.Events.wait_ms()
+      assert {:noreply, state} = TUI.handle_info(message, state)
+      refute status_text(state) =~ "Ctrl+C again"
+      assert {:noreply, _state} = ctrl_c(state)
+    end
   end
 
   describe "busy indicator" do
@@ -468,7 +525,16 @@ defmodule Helyx.TUITest do
 
     # A terminal of 3 columns has no room inside the margins: nothing shows.
     terminal = ExRatatui.init_test_terminal(3, 5)
-    state = %{vm: view_model([]), scroll: nil, composer: composer, busy: nil, location: "~"}
+
+    state = %{
+      vm: view_model([]),
+      scroll: nil,
+      composer: composer,
+      busy: nil,
+      location: "~",
+      quit: nil
+    }
+
     :ok = ExRatatui.draw(terminal, TUI.render(state, %{width: 3, height: 5}))
     refute ExRatatui.get_buffer_content(terminal) =~ "›"
   end

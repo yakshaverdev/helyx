@@ -9,20 +9,22 @@ if Helyx.TUI.Footer.Available.available?() do
   defmodule Helyx.TUI.Footer do
     @moduledoc """
     The footer of the TUI: two dim rows under the composer, with no key
-    hints. Row 1 is the location: the working directory, with the home
-    directory as `~`, and the git branch. Row 2 is the model, the turn state,
-    the queue counts when they are not zero, and "scrolled" while the view is
-    scrolled; the reason of a rejected input comes first, in red. The rules
+    hints but the one of a first Ctrl+C. Row 1 is the location: the working
+    directory, with the home directory as `~`, and the git branch. Row 2 is
+    the model, the turn state, the queue counts when they are not zero, and
+    "scrolled" while the view is scrolled; the reason of a rejected input
+    comes first, in red, then the Ctrl+C hint, in bold. The rules
     and the bounds are in `docs/features/coding-agent.md`, "TUI".
     """
 
     alias ExRatatui.Style
     alias ExRatatui.Text.{Line, Span}
     alias ExRatatui.Widgets.Paragraph
-    alias Helyx.TUI.ViewModel
+    alias Helyx.TUI.{Quit, ViewModel}
 
     @dim %Style{modifiers: [:dim]}
     @bad %Style{fg: :red}
+    @bold %Style{modifiers: [:bold]}
 
     @rows 2
 
@@ -139,12 +141,18 @@ if Helyx.TUI.Footer.Available.available?() do
     @doc """
     The two rows: `location` from `location/2`, then the state of `vm`. The
     turn state is "idle" for a nil `busy`, else a spinner frame and the whole
-    seconds of `busy.elapsed`. A non-nil `scroll` adds "scrolled". A row
-    does not wrap.
+    seconds of `busy.elapsed`. A non-nil `scroll` adds "scrolled". The hint
+    of `quit` (`Helyx.TUI.Quit.hint/1`) comes after the reason. A row does
+    not wrap.
     """
-    @spec widget(String.t(), ViewModel.t(), %{elapsed: non_neg_integer()} | nil, term()) ::
-            Paragraph.t()
-    def widget(location, %ViewModel{} = vm, busy, scroll) do
+    @spec widget(
+            String.t(),
+            ViewModel.t(),
+            %{elapsed: non_neg_integer()} | nil,
+            term(),
+            Quit.t()
+          ) :: Paragraph.t()
+    def widget(location, %ViewModel{} = vm, busy, scroll, quit) do
       %{steers: steers, follow_ups: follow_ups} = vm.queue
       queued = if steers + follow_ups > 0, do: ["queued #{steers}+#{follow_ups}"], else: []
       scrolled = if scroll, do: ["scrolled"], else: []
@@ -153,11 +161,12 @@ if Helyx.TUI.Footer.Available.available?() do
       # The reason is a fixed text of `Helyx.TUI`, never input. It comes
       # first: the row does not wrap, and a model ref can be 256 bytes.
       reason = if vm.reason, do: [%Span{content: "✕ #{vm.reason} ", style: @bad}], else: []
+      hint = if text = Quit.hint(quit), do: [%Span{content: "#{text} ", style: @bold}], else: []
 
       %Paragraph{
         text: [
           %Line{spans: [%Span{content: location, style: @dim}]},
-          %Line{spans: reason ++ [%Span{content: status, style: @dim}]}
+          %Line{spans: reason ++ hint ++ [%Span{content: status, style: @dim}]}
         ]
       }
     end

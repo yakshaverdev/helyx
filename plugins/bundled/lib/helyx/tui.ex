@@ -26,7 +26,7 @@ if Helyx.TUI.Available.available?() do
       * Escape aborts the running turn
       * PgUp and PgDn scroll the transcript (`Helyx.TUI.Transcript`) by one screen
       * Home and End, with an empty composer, go to the oldest and the newest output
-      * Ctrl+C quits and restores the terminal
+      * Ctrl+C clears the composer; a second Ctrl+C within 500 ms quits
 
     Start it with `run/1`, which blocks until the user quits:
 
@@ -40,7 +40,8 @@ if Helyx.TUI.Available.available?() do
     alias ExRatatui.Layout.Rect
     alias ExRatatui.Subscription
     alias Helyx.Session
-    alias Helyx.TUI.{Composer, Footer, Transcript, ViewModel}
+    alias Helyx.TUI.{Composer, Footer, Quit, Transcript, ViewModel}
+    require Quit
 
     # One screen of scroll is the rows above the composer and the footer.
     @footer_rows Footer.rows()
@@ -130,7 +131,8 @@ if Helyx.TUI.Available.available?() do
          terminal_size_fn: Keyword.get(opts, :terminal_size_fn, &ExRatatui.terminal_size/0),
          # nil while idle, or the monotonic ms of the turn start and the ms
          # since then at the last tick.
-         busy: nil
+         busy: nil,
+         quit: nil
        }
        |> sync_busy()
        |> read_branch()}
@@ -159,6 +161,9 @@ if Helyx.TUI.Available.available?() do
       Process.demonitor(ref, [:flush])
       {:noreply, %{state | location: Footer.location(state.cwd, branch), branch_ref: nil}}
     end
+
+    def handle_info({Quit, ref}, state),
+      do: {:noreply, %{state | quit: Quit.expire(state.quit, ref)}}
 
     # An older branch task, or its `:DOWN`, is ignored here.
     def handle_info(_msg, state), do: {:noreply, state}
@@ -192,7 +197,13 @@ if Helyx.TUI.Available.available?() do
         when is_binary(reason),
         do: handle_event(paste, %{state | vm: ViewModel.clear_reason(state.vm)})
 
-    def handle_event(%Key{code: "c", modifiers: ["ctrl"]}, state), do: {:stop, state}
+    def handle_event(event, state) when Quit.handles?(state.quit, event) do
+      case Quit.handle(state.quit, event, Composer.nothing_to_clear?(state.composer)) do
+        :quit -> {:stop, state}
+        {:clear, quit} -> {:noreply, %{edit(state, &Composer.clear/1) | quit: quit}}
+        {:pass, quit} -> handle_event(event, %{state | quit: quit})
+      end
+    end
 
     def handle_event(%Key{code: "esc", kind: "press"}, state) do
       # Abort waits for the hands to kill every OS process; a Task keeps that
@@ -335,9 +346,7 @@ if Helyx.TUI.Available.available?() do
 
       [{Transcript.widget(state.vm, state.scroll, transcript), transcript}] ++
         Composer.widgets(state.composer, composer) ++
-        [
-          {Footer.widget(state.location, state.vm, state.busy, state.scroll), footer}
-        ]
+        [{Footer.widget(state.location, state.vm, state.busy, state.scroll, state.quit), footer}]
     end
 
     # The width inside the margins that `Layout.split/4` draws, so a

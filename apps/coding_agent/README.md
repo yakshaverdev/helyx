@@ -8,7 +8,7 @@ mix helyx [directory] [--model provider/model] [--resume]
 
 ## Keys
 
-The footer shows no key hints. These are the keys:
+The footer shows no key hints, except "Ctrl+C again to quit" after a first Ctrl+C on an empty composer. These are the keys:
 
 | Key | What it does |
 | --- | ------------ |
@@ -19,6 +19,6 @@ The footer shows no key hints. These are the keys:
 | Escape | Aborts the running turn |
 | PgUp, PgDn | Scrolls the transcript by one screen |
 | Home, End with an empty composer (fn+Left, fn+Right on a MacBook) | Goes to the oldest or the newest output. With text in the composer, they move the cursor |
-| Ctrl+C | Quits and restores the terminal |
+| Ctrl+C | Clears the composer. A second Ctrl+C within 500 ms quits and restores the terminal |
 
 `/model provider/model` in the composer switches the model. A paste of more than 5 lines shows as one marker and is sent in full.

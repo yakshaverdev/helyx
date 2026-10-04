@@ -53,7 +53,7 @@ defmodule Helyx.TUI.FooterTest do
   defp git!(args), do: {_, 0} = System.cmd("git", args, stderr_to_stdout: true)
 
   defp rows(location, vm, busy \\ nil, scroll \\ nil) do
-    %{text: lines} = Footer.widget(location, vm, busy, scroll)
+    %{text: lines} = Footer.widget(location, vm, busy, scroll, nil)
     line_texts(lines)
   end
 
@@ -144,7 +144,7 @@ defmodule Helyx.TUI.FooterTest do
 
     test "a reason comes first on row 2, in red" do
       vm = Helyx.TUI.ViewModel.reject(view_model([], "fake/m"), "not sent: the queue is full")
-      %{text: [_row1, %{spans: [reason | _]}]} = Footer.widget("~", vm, nil, nil)
+      %{text: [_row1, %{spans: [reason | _]}]} = Footer.widget("~", vm, nil, nil, nil)
       assert {reason.content, reason.style.fg} == {"✕ not sent: the queue is full ", :red}
       assert rows("~", vm) == ["~", "✕ not sent: the queue is full fake/m · idle"]
     end
