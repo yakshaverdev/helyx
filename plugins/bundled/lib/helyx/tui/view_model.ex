@@ -232,7 +232,7 @@ defmodule Helyx.TUI.ViewModel do
   @spec info(t(), String.t()) :: t()
   def info(vm, text) when is_binary(text), do: add_cell(vm, {:info, text})
 
-  @doc "Sets the reason the status bar shows for a rejected input."
+  @doc "Sets the reason the footer shows for a rejected input."
   @spec reject(t(), String.t()) :: t()
   def reject(vm, reason) when is_binary(reason), do: %{vm | reason: reason}
 

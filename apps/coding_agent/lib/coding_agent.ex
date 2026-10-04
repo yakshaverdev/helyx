@@ -44,7 +44,11 @@ defmodule CodingAgent do
   defp run_session(opts) do
     with {:ok, session} <- start_session(opts) do
       try do
-        Helyx.TUI.run(session: session, resumed: opts[:resume] == true)
+        Helyx.TUI.run(
+          session: session,
+          resumed: opts[:resume] == true,
+          cwd: Keyword.fetch!(opts, :cwd)
+        )
       after
         # The abort comes before Core stops, so a turn that the quit or a
         # failed TUI left open ends and the hands release its resources. A

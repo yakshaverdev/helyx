@@ -74,8 +74,9 @@ defmodule Helyx.TUITest do
     state
   end
 
+  # Row 2 of the footer.
   defp status_text(state) do
-    {%ExRatatui.Widgets.Paragraph{text: line}, _rect} =
+    {%Paragraph{text: [_location, line]}, _rect} =
       state |> TUI.render(%{width: 120, height: 10}) |> List.last()
 
     Enum.map_join(line.spans, & &1.content)
@@ -128,7 +129,7 @@ defmodule Helyx.TUITest do
 
     # The line does not wrap, so the reason comes before a long model ref.
     long = %{state | vm: %{state.vm | model: String.duplicate("m", 256)}}
-    assert String.starts_with?(status_text(long), " ✕ not sent: the queue is full ")
+    assert String.starts_with?(status_text(long), "✕ not sent: the queue is full ")
 
     # The release and the repeat of the rejected Enter keep the reason, and
     # do not edit the composer.
@@ -236,12 +237,12 @@ defmodule Helyx.TUITest do
   describe "busy indicator" do
     @spinner "[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]"
 
-    defp busy_status(seconds), do: ~r/· #{@spinner} #{seconds}s ·/u
+    defp busy_status(seconds), do: ~r/· #{@spinner} #{seconds}s$/u
 
     test "turn_start declares the one tick timer, turn_end removes it", %{core: core} do
       state = mounted(core, "busy", [])
       assert TUI.subscriptions(state) == []
-      assert status_text(state) =~ "· idle ·"
+      assert status_text(state) =~ "· idle"
 
       state = fold(state, :turn_start, %{})
 
@@ -255,7 +256,7 @@ defmodule Helyx.TUITest do
 
       state = fold(state, :turn_end, %{outcome: :done})
       assert TUI.subscriptions(state) == []
-      assert status_text(state) =~ "· idle ·"
+      assert status_text(state) =~ "· idle"
     end
 
     test "the seconds and the frame follow the time since the turn start", %{core: core} do
@@ -267,7 +268,7 @@ defmodule Helyx.TUITest do
 
       # The frame is the count of whole ticks since the start, modulo 10.
       for {ms, frame} <- [{0, "⠋"}, {900, "⠏"}, {1_000, "⠋"}, {12_300, "⠸"}] do
-        assert status_text(put_in(state.busy.elapsed, ms)) =~ " #{frame} #{div(ms, 1000)}s "
+        assert status_text(put_in(state.busy.elapsed, ms)) =~ " #{frame} #{div(ms, 1000)}s"
       end
     end
 
@@ -405,10 +406,10 @@ defmodule Helyx.TUITest do
   test "every part has two columns of margin, and the composer a rounded box with a mark",
        %{core: core} do
     state = mounted(core, "frame", [])
-    state = %{state | vm: ViewModel.info(state.vm, "resumed session")}
+    state = %{state | vm: ViewModel.info(state.vm, "resumed session"), location: "~/p (main)"}
     state = state |> press("h") |> press("i")
-    terminal = ExRatatui.init_test_terminal(30, 7)
-    :ok = ExRatatui.draw(terminal, TUI.render(state, %{width: 30, height: 7}))
+    terminal = ExRatatui.init_test_terminal(30, 8)
+    :ok = ExRatatui.draw(terminal, TUI.render(state, %{width: 30, height: 8}))
 
     assert [
              "  · resumed session",
@@ -417,12 +418,41 @@ defmodule Helyx.TUITest do
              "  ╭────────────────────────╮",
              "  │ › hi                   │",
              "  ╰────────────────────────╯",
-             "   fake/frame · idle · queue"
+             "  ~/p (main)",
+             "  fake/frame · idle"
            ] ==
              terminal
              |> ExRatatui.get_buffer_content()
              |> String.split("\n")
              |> Enum.map(&String.trim_trailing/1)
+  end
+
+  @tag :tmp_dir
+  test "the footer asks git for the branch of :cwd at mount and after each turn only",
+       %{core: core, tmp_dir: dir} do
+    {_, 0} = System.cmd("git", ["init", "-q", "-b", "one", dir])
+    {:ok, session} = Session.start(core, model: "fake/branch")
+    {:ok, state} = TUI.mount(session: session, cwd: dir)
+    refute state.location =~ "("
+    state = branch_reply(state)
+    assert state.location =~ ~r/ \(one\)$/
+
+    {_, 0} = System.cmd("git", ["-C", dir, "symbolic-ref", "HEAD", "refs/heads/two"])
+    state = fold(state, :turn_start, %{})
+    assert state.branch_ref == nil
+    # The reply of an older run is ignored, as is its `:DOWN`.
+    %{branch_ref: old} = state = fold(state, :turn_end, %{outcome: :done})
+    state = fold(state, :turn_end, %{outcome: :done})
+    assert_receive {^old, _branch} = stale, 5_000
+    assert {:noreply, ^state} = TUI.handle_info(stale, state)
+    assert branch_reply(state).location =~ ~r/ \(two\)$/
+  end
+
+  # The reply of the branch task, applied as the TUI process gets it.
+  defp branch_reply(%{branch_ref: ref} = state) do
+    assert_receive {^ref, _branch} = reply, 5_000
+    {:noreply, state} = TUI.handle_info(reply, state)
+    state
   end
 
   test "the mark is drawn only inside a whole box, never on a border or in a margin" do
@@ -438,7 +468,7 @@ defmodule Helyx.TUITest do
 
     # A terminal of 3 columns has no room inside the margins: nothing shows.
     terminal = ExRatatui.init_test_terminal(3, 5)
-    state = %{vm: view_model([]), scroll: nil, composer: composer, busy: nil}
+    state = %{vm: view_model([]), scroll: nil, composer: composer, busy: nil, location: "~"}
     :ok = ExRatatui.draw(terminal, TUI.render(state, %{width: 3, height: 5}))
     refute ExRatatui.get_buffer_content(terminal) =~ "›"
   end
@@ -586,10 +616,10 @@ defmodule Helyx.TUITest do
   end
 
   describe "scrollback" do
-    # A 24 by 9 terminal: the transcript has 5 rows of 20 columns, inside
+    # A 24 by 10 terminal: the transcript has 5 rows of 20 columns, inside
     # the margins. Each message is one row and one empty row. `resize/2`
     # gives the terminal a new size.
-    defp size, do: Process.get(:terminal_size, {24, 9})
+    defp size, do: Process.get(:terminal_size, {24, 10})
 
     defp resize(state, size) do
       Process.put(:terminal_size, size)
@@ -755,22 +785,22 @@ defmodule Helyx.TUITest do
 
     test "on a small terminal the composer shrinks, so the drawn screen is the scroll screen",
          %{core: core} do
-      # 11 rows: a full composer would leave the transcript no row. It gets
+      # 12 rows: a full composer would leave the transcript no row. It gets
       # 9 rows, the transcript 1, and PgUp moves by that 1 row.
-      Process.put(:terminal_size, {24, 11})
+      Process.put(:terminal_size, {24, 12})
       state = scroll_state(core, 10)
       state = Enum.reduce(1..8, state, fn _, acc -> press(acc, "j", ["ctrl"]) end)
 
       [{_, transcript}, {_, composer}, _mark, _status] =
-        TUI.render(state, %{width: 24, height: 11})
+        TUI.render(state, %{width: 24, height: 12})
 
       assert {transcript.height, composer.height} == {1, 9}
 
       state = press(state, "page_up")
       assert screen(state) == ["▌ m10"]
 
-      # At 6 rows the composer has 2 lines, at 5 one; below that the transcript has none.
-      for {height, rows} <- [{6, {1, 4}}, {5, {1, 3}}, {4, {0, 3}}] do
+      # At 7 rows the composer has 2 lines, at 6 one; below that the transcript has none.
+      for {height, rows} <- [{7, {1, 4}}, {6, {1, 3}}, {5, {0, 3}}] do
         [{_, transcript}, {_, composer}, _mark, _] =
           TUI.render(state, %{width: 24, height: height})
 
@@ -784,10 +814,26 @@ defmodule Helyx.TUITest do
       assert say(state, "new").scroll == nil
     end
 
-    test "Ctrl+End and a sent prompt return to the newest output", %{core: core} do
-      state = core |> scroll_state(10) |> press("page_up")
-      assert press(state, "end", ["ctrl"]).scroll == nil
+    test "with an empty composer Home and End go to the oldest and the newest output",
+         %{core: core} do
+      top = core |> scroll_state(10) |> press("home")
+      assert top.scroll == {0, 0}
+      assert screen(top) == ["▌ m1", "▌ m2", "▌ m3"]
+      assert press(top, "end").scroll == nil
+      assert press(top, "end", ["ctrl"]).scroll == {0, 0}
 
+      # With text in the composer, they move its cursor and not the view.
+      typed = top |> press("a") |> press("b") |> press("home")
+      assert {typed.scroll, ExRatatui.textarea_cursor(typed.composer.input)} == {{0, 0}, {0, 0}}
+      typed = press(typed, "end")
+      assert {typed.scroll, ExRatatui.textarea_cursor(typed.composer.input)} == {{0, 0}, {0, 2}}
+
+      # A transcript that fits the screen has no position to go to.
+      assert press(scroll_state(core, 2), "home").scroll == nil
+    end
+
+    test "a sent prompt returns to the newest output", %{core: core} do
+      state = core |> scroll_state(10) |> press("page_up")
       sent = state |> press("h") |> press("enter")
       assert sent.scroll == nil
       assert drain(sent).scroll == nil
@@ -819,9 +865,9 @@ defmodule Helyx.TUITest do
       assert press(state, "enter").scroll == {2, row - 3}
     end
 
-    test "one screen is the height minus 4 rows, and 1 row at that height or less", %{core: core} do
-      for {height, rows} <- [{6, 2}, {5, 1}, {4, 1}, {3, 1}, {0, 1}] do
-        Process.put(:terminal_size, {24, 9})
+    test "one screen is the height minus 5 rows, and 1 row at that height or less", %{core: core} do
+      for {height, rows} <- [{7, 2}, {6, 1}, {5, 1}, {4, 1}, {0, 1}] do
+        Process.put(:terminal_size, {24, 10})
         state = scroll_state(core, 10)
         Process.put(:terminal_size, {24, height})
         # Row 19 is the empty row after m10, and row 18 is m10.
@@ -1067,7 +1113,6 @@ defmodule Helyx.TUITest do
         |> press("c")
 
       assert value(state) == "a\nb\nc"
-      assert status_text(state) =~ "Ctrl+J newline"
 
       state = state |> press("enter") |> drain()
       assert value(state) == ""
