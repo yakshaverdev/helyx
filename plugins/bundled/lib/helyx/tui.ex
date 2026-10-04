@@ -38,6 +38,7 @@ if Helyx.TUI.Available.available?() do
     alias ExRatatui.Layout
     alias ExRatatui.Layout.Rect
     alias ExRatatui.Style
+    alias ExRatatui.Subscription
     alias ExRatatui.Text.{Line, Span}
     alias ExRatatui.Widgets.Paragraph
     alias Helyx.Session
@@ -50,6 +51,10 @@ if Helyx.TUI.Available.available?() do
     # The status row under the composer. One screen of scroll is the rows
     # above both.
     @status_rows 1
+
+    # The busy indicator: one frame per tick while a turn runs.
+    @tick_ms 100
+    @frames List.to_tuple(~w(⠋ ⠙ ⠹ ⠸ ⠼ ⠴ ⠦ ⠧ ⠇ ⠏))
 
     @doc """
     Starts the TUI for a session and blocks until the user quits.
@@ -113,7 +118,7 @@ if Helyx.TUI.Available.available?() do
       vm = if opts[:resumed], do: ViewModel.info(vm, "resumed session"), else: vm
 
       {:ok,
-       %{
+       sync_busy(%{
          session: session,
          # The monitor of the session from the subscribe: its `:DOWN` is
          # the end signal.
@@ -123,8 +128,11 @@ if Helyx.TUI.Available.available?() do
          # A `Transcript.position()`; nil follows the newest output.
          scroll: nil,
          # The size seam of `ExRatatui.Server`, so a test sets the size.
-         terminal_size_fn: Keyword.get(opts, :terminal_size_fn, &ExRatatui.terminal_size/0)
-       }}
+         terminal_size_fn: Keyword.get(opts, :terminal_size_fn, &ExRatatui.terminal_size/0),
+         # nil while idle, or the monotonic ms of the turn start and the ms
+         # since then at the last tick.
+         busy: nil
+       })}
     end
 
     # A dead session leaves nothing to render; exiting surfaces the reason
@@ -135,7 +143,14 @@ if Helyx.TUI.Available.available?() do
       do: exit({:session_down, Session.end_reason(reason)})
 
     def handle_info({:helyx_event, event}, state) do
-      {:noreply, settle(%{state | vm: ViewModel.apply(state.vm, event)})}
+      {:noreply, settle(sync_busy(%{state | vm: ViewModel.apply(state.vm, event)}))}
+    end
+
+    # A tick of the `subscriptions/1` timer. ExRatatui drops a tick of a
+    # cancelled timer, so one never arrives while idle.
+    def handle_info(:busy_tick, %{busy: busy} = state) do
+      elapsed = System.monotonic_time(:millisecond) - busy.started
+      {:noreply, %{state | busy: %{busy | elapsed: elapsed}}}
     end
 
     def handle_info(_msg, state), do: {:noreply, state}
@@ -284,7 +299,7 @@ if Helyx.TUI.Available.available?() do
       [
         {Transcript.widget(state.vm, state.scroll, transcript), transcript},
         {Composer.widget(state.composer), composer},
-        {status_widget(state.vm, state.scroll), status}
+        {status_widget(state.vm, state.busy, state.scroll), status}
       ]
     end
 
@@ -313,10 +328,32 @@ if Helyx.TUI.Available.available?() do
     defp settle(state),
       do: on_screen(state, &Transcript.hold(state.vm, state.scroll, &1, &2))
 
+    # Busy indicator
+
+    # ExRatatui keeps one timer per id, armed while this list holds it: one
+    # tick timer while a turn runs, and none while idle.
+    @impl true
+    def subscriptions(%{busy: nil}), do: []
+    def subscriptions(_state), do: [Subscription.interval(:busy, @tick_ms, :busy_tick)]
+
+    # The start is when this client saw the turn start: the `turn_start`
+    # event, or the mount for a client that joins a running turn, as the
+    # snapshot has no start time.
+    defp sync_busy(%{vm: %{running?: true}, busy: nil} = state),
+      do: %{state | busy: %{started: System.monotonic_time(:millisecond), elapsed: 0}}
+
+    defp sync_busy(%{vm: %{running?: false}} = state), do: %{state | busy: nil}
+    defp sync_busy(state), do: state
+
     # Status
 
-    defp status_widget(vm, scroll) do
-      state = if vm.running?, do: "working", else: "idle"
+    defp run_state(nil), do: "idle"
+
+    defp run_state(%{elapsed: ms}),
+      do: "#{elem(@frames, rem(div(ms, @tick_ms), tuple_size(@frames)))} #{div(ms, 1000)}s"
+
+    defp status_widget(vm, busy, scroll) do
+      state = run_state(busy)
       %{steers: steers, follow_ups: follow_ups} = vm.queue
       # The reason is a fixed text of this module, never input. It comes
       # first: the line does not wrap, and a model ref can be 256 bytes.
