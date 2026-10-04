@@ -11,8 +11,10 @@ defmodule Helyx.Provider.ClaudeCode.Mcp do
   import Helyx.Provider.ClaudeCode.Turn, only: [started?: 1]
 
   # The user's own MCP servers stay: the Helyx tools add to the harness
-  # tools.
-  @config ~s({"mcpServers":{"helyx":{"type":"sdk","name":"helyx"}}})
+  # tools. With `alwaysLoad`, the model called a Helyx tool without a
+  # harness tool search (research note, "`alwaysLoad` on the SDK MCP
+  # server").
+  @config ~s({"mcpServers":{"helyx":{"type":"sdk","name":"helyx","alwaysLoad":true}}})
 
   def config, do: @config
 

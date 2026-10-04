@@ -184,7 +184,7 @@ Program-to-host subtypes: `can_use_tool` and `mcp_message` (verified), `hook_cal
 - The program sends MCP JSON-RPC inside `mcp_message` control requests: `{"subtype":"mcp_message","server_name":"helyx","message":{"jsonrpc":"2.0","id":0,"method":"initialize",...}}`. The host answers `{"subtype":"success","request_id":...,"response":{"mcp_response":{"jsonrpc":"2.0","id":0,"result":{...}}}}`.
 - Order: `initialize`, `notifications/initialized`, `tools/list`, then `tools/call` with `{"name":"secret_word","arguments":{...},"_meta":{"claudecode/toolUseId":"toolu_...","progressToken":2}}`.
 - The model sees the tool as `mcp__helyx__secret_word`. A reply `{"content":[{"type":"text","text":"..."}]}` became an ordinary tool result.
-- MCP tools are deferred: the model called `ToolSearch` before it called the tool. A way to turn the deferral off was not looked for.
+- MCP tools are deferred: the model called `ToolSearch` before it called the tool. On `2.1.288`, with `alwaysLoad: true` on the server, the model called the tool without `ToolSearch` (observed, 1 run; see "`alwaysLoad` on the SDK MCP server").
 - This needs no HTTP server and no extra process.
 
 ### Processes (verified)
@@ -413,3 +413,17 @@ Runs on 2026-09-30 with version `2.1.284` and `--model=haiku`, for ticket #248. 
 - A replay with a `tool_use` and its `tool_result`.
 - A replay that starts with an `assistant` line, or that has two `assistant` lines in sequence, with the wait of run 3.
 - A `--resume` of a session that has the wrong order.
+
+## `alwaysLoad` on the SDK MCP server (2026-10-04, #472)
+
+One run on 2026-10-04 with version `2.1.288`, `--model haiku`, in an empty temporary directory. A Python script drove the program with `--output-format stream-json --verbose --input-format stream-json --permission-mode bypassPermissions --model=haiku --session-id=<uuid>` and `--mcp-config '{"mcpServers":{"helyx":{"type":"sdk","name":"helyx","alwaysLoad":true}}}'`. These are the flags of `Helyx.Provider.ClaudeCode` without `--include-partial-messages`. There was no `--strict-mcp-config`. The host offered one tool, `bash`, with a `command` string. The prompt asked the model to run `echo hi` with the bash tool of the helyx server. Source of the key: Claude Code docs, "Scale with MCP tool search", code.claude.com/docs/en/mcp, read 2026-10-04.
+
+### What the run showed (observed, 1 run)
+
+- The program did not reject the key on a server of type `sdk`. The handshake was the same as in "The SDK MCP server shapes": `initialize`, `notifications/initialized`, `tools/list`.
+- The `init` line listed `{"name":"helyx","status":"connected","source":"sdk"}` in `mcp_servers`, and `mcp__helyx__bash` in `tools`.
+- The first tool call of the model was `mcp__helyx__bash` with `{"command":"echo hi"}`. No `ToolSearch` call came before it. The `result` had `subtype` `success` and `num_turns` 2, and the reply was `hi`. The program exited with status 0 after the end of input.
+
+### Not run
+
+- The same run without the key on `2.1.288`. The deferral without the key was observed on `2.1.284` ("Host tools through an SDK MCP server").
