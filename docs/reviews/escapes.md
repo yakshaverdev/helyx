@@ -195,3 +195,4 @@ One row per ticket that `/orchestrate` merged. An escape is a confirmed Codex fi
 | 2026-10-04 | #472 | r1 (full): 0 | gate r1 (Codex): 0 | none |
 | 2026-10-04 | #481 | r1 (full): 0 code defects (2 doc fixes, 1 test added) | gate r1 (Codex): 0 | none |
 | 2026-10-04 | #479 | r1 (full): 3; r2 (full): 2; r3 (full): 0 | gate r1 (Codex): 0 | none; ship caught all |
+| 2026-10-04 | #482 | r1 (full): 2; r2 (full): 1; r3 (full): 0 (1 Codex finding rejected) | gate r1 (Codex): 0 | none; ship caught all |
