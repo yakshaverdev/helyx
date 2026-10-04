@@ -53,7 +53,7 @@ defmodule Helyx.TUI.Wrap do
   """
   @spec rows(String.t(), integer()) :: [String.t()]
   def rows(text, width) do
-    for line <- text |> sanitize() |> String.split("\n"), row <- wrap(line, width), do: row
+    for line <- text |> sanitize() |> String.split("\n"), row <- line_rows(line, width), do: row
   end
 
   # Model text and tool output reach the terminal raw through span content,
@@ -61,7 +61,9 @@ defmodule Helyx.TUI.Wrap do
   # move the cursor. Tabs become spaces; other control characters drop.
   # Core makes the text valid UTF-8 at its boundaries, so the /u regex
   # does not raise, and a CSI can only be U+009B, which drops.
-  defp sanitize(text), do: text |> String.replace("\t", "  ") |> drop_controls()
+  @doc "The text as `rows/2` shows it: tabs as two spaces, other controls dropped."
+  @spec sanitize(String.t()) :: String.t()
+  def sanitize(text), do: text |> String.replace("\t", "  ") |> drop_controls()
 
   @doc "Removes all C0 and C1 control characters but tab and new line."
   @spec drop_controls(String.t()) :: String.t()
@@ -76,9 +78,11 @@ defmodule Helyx.TUI.Wrap do
   # that the wrap always ends.
   # Fast path: no code point has more columns than bytes, so a line of
   # `width` bytes or less is one row. This also covers the empty line.
-  defp wrap(line, width) when byte_size(line) <= width, do: [line]
+  @doc "The rows of one line of `sanitize/1` output with no new line, as `rows/2` wraps it."
+  @spec line_rows(String.t(), integer()) :: [String.t()]
+  def line_rows(line, width) when byte_size(line) <= width, do: [line]
 
-  defp wrap(line, width) do
+  def line_rows(line, width) do
     width = max(width, 1)
 
     {rows, row, _used} =

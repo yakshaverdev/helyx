@@ -22,7 +22,7 @@ if Helyx.TUI.Transcript.Available.available?() do
     alias ExRatatui.Text.{Line, Span}
     alias ExRatatui.Widgets.Paragraph
     alias Helyx.Message
-    alias Helyx.TUI.{ViewModel, Wrap}
+    alias Helyx.TUI.{Markdown, ViewModel, Wrap}
 
     @dim %Style{modifiers: [:dim]}
     @tool %Style{fg: :cyan}
@@ -31,6 +31,7 @@ if Helyx.TUI.Transcript.Available.available?() do
     # reads in light and dark themes alike.
     @user %Style{fg: :white, bg: :black}
     @bar %Style{fg: :blue, bg: :black}
+    @code :yellow
 
     @type position :: {non_neg_integer(), non_neg_integer()} | nil
 
@@ -190,7 +191,7 @@ if Helyx.TUI.Transcript.Available.available?() do
 
     defp block_lines(blocks, width) do
       Enum.flat_map(blocks, fn
-        %Message.Text{text: text} -> styled_lines(text, width, %Style{})
+        %Message.Text{text: text} -> markdown_lines(text, width)
         %Message.Thinking{thinking: text} -> styled_lines(text, width, @dim)
         %Message.ToolCall{} -> []
         # An image, or a kind that this client does not know.
@@ -229,6 +230,15 @@ if Helyx.TUI.Transcript.Available.available?() do
         _ ->
           shown
       end
+    end
+
+    defp markdown_lines(text, width) do
+      for row <- Markdown.rows(text, width), do: %Line{spans: Enum.map(row, &markdown_span/1)}
+    end
+
+    defp markdown_span({content, tags}) do
+      fg = if :code in tags, do: @code
+      %Span{content: content, style: %Style{fg: fg, modifiers: List.delete(tags, :code)}}
     end
 
     # One styled Line per screen row.
