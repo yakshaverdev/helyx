@@ -488,6 +488,7 @@ defmodule Helyx.TUI.ViewModelTest do
           tool_execution_end: %{message: Message.user("not a result")},
           queue_update: %{steers: 1},
           model_change: %{},
+          model_change: %{model: nil},
           notice: %{},
           steer_unconfirmed: %{},
           provider_session: %{provider: "p"}
@@ -546,9 +547,24 @@ defmodule Helyx.TUI.ViewModelTest do
     assert cells(vm) == []
   end
 
-  test "a model change updates the model" do
+  test "a model change updates the model and adds an information cell" do
     vm = fold(model_change: %{model: "other/model"})
     assert vm.model == "other/model"
+    assert cells(vm) == [{:info, "model: other/model"}]
+  end
+
+  test "the transcript draws an information cell dim and without the error mark" do
+    vm = view_model([{:info, "model: other/model"}, {:notice, "aborted"}], "other/model")
+
+    %ExRatatui.Widgets.Paragraph{text: lines} =
+      Helyx.TUI.Transcript.widget(vm, {0, 0}, %ExRatatui.Layout.Rect{width: 80, height: 10})
+
+    assert [
+             [%{content: "model: other/model", style: %{fg: nil, modifiers: [:dim]}}],
+             [],
+             [%{content: "✕ aborted", style: %{fg: :red}}],
+             []
+           ] = Enum.map(lines, & &1.spans)
   end
 
   test "a provider session shows a notice when the provider lost its session or got a cut transcript" do

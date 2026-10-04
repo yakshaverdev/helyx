@@ -272,13 +272,13 @@ defmodule Helyx.TUITest do
     {:ok, %{vm: vm}} = TUI.mount(session: resumed, resumed: true)
 
     # The live cell shapes: the user message, the assistant message and its
-    # tool cell with the result, the reply, then the notice.
+    # tool cell with the result, the reply, then the information cell.
     assert [
              %Message{role: :user},
              %Message{role: :assistant, content: [^call]},
              {:tool, ^call, line, %Message{role: :tool_result} = result},
              %Message{role: :assistant} = reply,
-             {:notice, "resumed session"}
+             {:info, "resumed session"}
            ] = ViewModel.cells(vm)
 
     assert line == ViewModel.call_line(call)
@@ -776,6 +776,7 @@ defmodule Helyx.TUITest do
       state = state |> submit("/model other/any") |> fold_model_change()
       assert ExRatatui.textarea_get_value(state.composer.input) == ""
       assert status_text(state) =~ "other/any"
+      assert List.last(ViewModel.cells(state.vm)) == {:info, "model: other/any"}
       assert GenServer.call(Session.pid(state.session), :snapshot).model == "other/any"
 
       state = state |> submit("hi") |> drain()

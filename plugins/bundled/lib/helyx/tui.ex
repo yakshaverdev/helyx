@@ -55,8 +55,8 @@ if Helyx.TUI.Available.available?() do
     Starts the TUI for a session and blocks until the user quits.
 
     The options are `:session`, `:resumed` (true when the session was
-    resumed: a notice "resumed session" follows the history), and those of
-    `ExRatatui.App`. The scroll keys read the terminal size through
+    resumed: an information cell "resumed session" follows the history),
+    and those of `ExRatatui.App`. The scroll keys read the terminal size through
     `:terminal_size_fn`, the option of `ExRatatui.Server`; the default is
     `ExRatatui.terminal_size/0`.
     """
@@ -110,7 +110,7 @@ if Helyx.TUI.Available.available?() do
       # subscription ends the TUI (see handle_info/2).
       {snapshot, ref} = subscribe!(session)
       vm = ViewModel.from_snapshot(snapshot)
-      vm = if opts[:resumed], do: ViewModel.notice(vm, "resumed session"), else: vm
+      vm = if opts[:resumed], do: ViewModel.info(vm, "resumed session"), else: vm
 
       {:ok,
        %{
