@@ -600,15 +600,17 @@ defmodule Helyx.TUI.ViewModelTest do
       Helyx.TUI.Transcript.widget(vm, {0, 0}, %ExRatatui.Layout.Rect{width: 12, height: 10})
 
     tint = %ExRatatui.Style{fg: :white, bg: :black}
-    fill = String.duplicate(" ", 10)
+    fill = String.duplicate(" ", 12)
 
     assert [
-             [%{content: "▌ ", style: %{fg: :blue, bg: :black}}, %{content: first, style: ^tint}],
-             [%{content: "▌ "}, %{content: second, style: ^tint}],
+             [
+               %{content: "▌ ", style: %{fg: :blue, bg: :black}},
+               %{content: "one two", style: ^tint},
+               %{content: ^fill, style: ^tint}
+             ],
+             [%{content: "▌ "}, %{content: "three four"}, %{content: ^fill, style: ^tint}],
              []
            ] = Enum.map(lines, & &1.spans)
-
-    assert {first, second} == {"one two" <> fill, "three four" <> fill}
   end
 
   test "the text of a user row is never wider than the width, but for a glyph wider than it" do
@@ -640,6 +642,11 @@ defmodule Helyx.TUI.ViewModelTest do
           {"👍🏽", 12},
           {"語", 3},
           {"👍🏽", 5},
+          {"hi", 2},
+          {"क्", 3},
+          {"123456789\u0600", 12},
+          {"\u0600", 1},
+          {"\u0600", 3},
           {conjunct, 80}
         ] do
       vm = view_model([Helyx.Message.user(text)])

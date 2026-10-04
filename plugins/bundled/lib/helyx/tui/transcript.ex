@@ -151,24 +151,27 @@ if Helyx.TUI.Transcript.Available.available?() do
 
     defp item_lines(item, width), do: cell_lines(item, width) ++ [%Line{}]
 
-    # A bar and a tint on every row. The rule can count an emoji sequence
-    # wider than ExRatatui draws it, so the fill of spaces runs past the
-    # edge, where ExRatatui cuts it. A row that the text width cannot hold,
+    # A bar and a tint on every row. A row that the text width cannot hold,
     # a glyph wider than it, has no bar, so the row stays within the width
-    # when the glyph does.
+    # when the glyph does. Every row gets a fill of the whole width, which
+    # ExRatatui cuts at the edge: the rule can count a glyph wider than
+    # ExRatatui draws it, so a fill counted by the rule can stop short. The
+    # fill is a span of its own, so that a last character such as U+0600
+    # cannot join a space into one grapheme that ExRatatui cuts whole.
     defp cell_lines(%Message{role: :user} = message, width) do
       text_width = width - 2
-      fill = String.duplicate(" ", max(text_width, 0))
+      fill = String.duplicate(" ", max(width, 0))
 
       # No code point has more columns than bytes, so a short row needs no count.
       for row <- Wrap.rows(shown_text(message), text_width) do
-        if byte_size(row) <= text_width or Wrap.columns(row) <= text_width do
-          %Line{
-            spans: [%Span{content: "▌ ", style: @bar}, %Span{content: row <> fill, style: @user}]
-          }
-        else
-          %Line{spans: [%Span{content: row <> fill, style: @user}]}
-        end
+        bar =
+          if byte_size(row) <= text_width or Wrap.columns(row) <= text_width,
+            do: [%Span{content: "▌ ", style: @bar}],
+            else: []
+
+        %Line{
+          spans: bar ++ [%Span{content: row, style: @user}, %Span{content: fill, style: @user}]
+        }
       end
     end
 
