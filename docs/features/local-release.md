@@ -42,7 +42,7 @@ helyx --version                         # helyx 0.1.0+<commit>
 | error line | one line, with no length cap | control characters and invalid bytes become `?` (`CodingAgent.error_text/1`); an argument shows through `inspect/1` | `CodingAgent.CLI` |
 | `mix helyx.install` arguments | `--prefix DIR` and `--bin-dir DIR` only; `OptionParser` strict mode | the usage line, and nothing changes | `parse/1` in `Mix.Tasks.Helyx.Install` |
 | installed builds | the new build and the build before it, after a successful install | the install deletes the other entries of `<prefix>/releases`; a deletion error is a warning | `Mix.Tasks.Helyx.Install.install/3` |
-| builds of failed installs, and builds that step 4 could not delete | one per failed install or failed deletion, unbounded, accepted (no ticket yet): each failure needs a person, and each failure prints an error | the next successful install deletes them | `Mix.Tasks.Helyx.Install.install/3` |
+| builds of failed installs, and builds that step 4 could not delete | one per failed install or failed deletion, unbounded, accepted: each failure needs a person, and each failure prints an error | the next successful install deletes them | `Mix.Tasks.Helyx.Install.install/3` |
 | build folder name | `<commit>`, then `-2`, `-3`, ... | the first free name; the kept builds limit the tries | `Mix.Tasks.Helyx.Install.install/3` |
 | launcher | no wait and no retry | not applicable | the launcher script |
 
@@ -53,7 +53,7 @@ helyx --version                         # helyx 0.1.0+<commit>
 | build folder `<prefix>/releases/.build-<os pid>` | `mix release` in the install | the install task | renamed to the build name | `after` deletes it on a raise before step 1; after step 1 it is `releases/<commit>`. A killed VM leaves it. The next successful install deletes both | as a crash |
 | link `<prefix>/releases/.current-<os pid>` | the install | the install task | renamed to `current` | the next successful install deletes it | as a crash |
 | launcher `<bin-dir>/.helyx-install` | the install | the install task | renamed to `helyx` | stays after a raise or a killed VM; the next install writes over it | as a crash |
-| two installs at once | a person | the two install tasks | not applicable | not applicable | open, no ticket yet: one install can delete the build folder of the other, or point `current` at a build that the other deletes |
+| two installs at once | a person | the two install tasks | not applicable | not applicable | accepted: one person runs the install by hand. One install can delete the build folder of the other, or point `current` at a build that the other deletes |
 
 ## Accepted holes
 
