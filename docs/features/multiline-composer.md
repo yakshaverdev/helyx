@@ -37,13 +37,13 @@ The state of `Helyx.TUI` changes:
 - `recall` is nil, or the position of the recalled prompt's cell and the draft with its `pastes` (#469). A recalled prompt shows with no pastes; the draft gets its own back. `count` does not change, so a marker id is not used twice.
 - `Helyx.TUI.Composer.recall/3` and `Helyx.TUI.ViewModel.prompt/3` are new (#469).
 
-The status bar key help adds ` · Ctrl+J newline`.
+The footer shows no key help (#484); `apps/coding_agent/README.md` lists Ctrl+J with the other keys.
 
 ## Bounds
 
 | What | Bound | Over the bound |
 | ---- | ----- | -------------- |
-| Composer height | At most 8 lines inside the two borders, so 3 to 10 rows. On a small terminal the composer shrinks, down to 3 rows, so the transcript keeps 1 row: the terminal height minus 2, and not less than 3. `Helyx.TUI.Composer.rows/2` is the one rule. The render (`Layout.split/3`) and the scroll screen (`on_screen/2`) both read it with the room they have, the terminal height minus the status row, so the transcript screen that the scroll position is checked against is the screen that is drawn. An edit that changes the line count runs `settle/1` of `Helyx.TUI`. At 4 rows or less the transcript has no row, and the scroll screen is 1 row | The textarea scrolls to its cursor. A line longer than the composer width scrolls sideways, as the one-line input did |
+| Composer height | At most 8 lines inside the two borders, so 3 to 10 rows. On a small terminal the composer shrinks, down to 3 rows, so the transcript keeps 1 row: the terminal height minus 3, and not less than 3. `Helyx.TUI.Composer.rows/2` is the one rule. The render (`Layout.split/3`) and the scroll screen (`on_screen/2`) both read it with the room they have, the terminal height minus the two footer rows, so the transcript screen that the scroll position is checked against is the screen that is drawn. An edit that changes the line count runs `settle/1` of `Helyx.TUI`. At 5 rows or less the transcript has no row, and the scroll screen is 1 row | The textarea scrolls to its cursor. A line longer than the composer width scrolls sideways, as the one-line input did |
 | Composer text | Unbounded human input, as before (#29) | Nothing is cut |
 | Paste line count | More than 5 lines is a marker. A line ends at a new line, and a final new line does not start a line: `"a\nb\n"` is 2 lines. CRLF and a lone CR count as one new line each | The paste shows as the marker, and the full text goes in `pastes` |
 | Paste text | Valid UTF-8: ExRatatui gives it as a Rust `String` (#381). CRLF and a lone CR become LF. Control characters other than tab and LF drop, the same set the transcript drops, so no escape sequence reaches the terminal through the composer. Size is unbounded human input (#29) | None: no source gives other text |

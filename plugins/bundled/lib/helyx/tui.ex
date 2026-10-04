@@ -25,7 +25,7 @@ if Helyx.TUI.Available.available?() do
       * `/model provider/model` in the composer switches the model
       * Escape aborts the running turn
       * PgUp and PgDn scroll the transcript (`Helyx.TUI.Transcript`) by one screen
-      * Ctrl+End returns to the newest output
+      * Home and End, with an empty composer, go to the oldest and the newest output
       * Ctrl+C quits and restores the terminal
 
     Start it with `run/1`, which blocks until the user quits:
@@ -38,33 +38,22 @@ if Helyx.TUI.Available.available?() do
     alias ExRatatui.Event.{Key, Paste, Resize}
     alias ExRatatui.Layout
     alias ExRatatui.Layout.Rect
-    alias ExRatatui.Style
     alias ExRatatui.Subscription
-    alias ExRatatui.Text.{Line, Span}
-    alias ExRatatui.Widgets.Paragraph
     alias Helyx.Session
-    alias Helyx.TUI.{Composer, Transcript, ViewModel}
+    alias Helyx.TUI.{Composer, Footer, Transcript, ViewModel}
 
-    @dim %Style{modifiers: [:dim]}
-    @bold %Style{modifiers: [:bold]}
-    @bad %Style{fg: :red}
-
-    # The status row under the composer. One screen of scroll is the rows
-    # above both.
-    @status_rows 1
+    # One screen of scroll is the rows above the composer and the footer.
+    @footer_rows Footer.rows()
 
     # The empty columns on the left and on the right of every part.
     @margin 2
-
-    # The busy indicator: one frame per tick while a turn runs.
-    @tick_ms 100
-    @frames List.to_tuple(~w(⠋ ⠙ ⠹ ⠸ ⠼ ⠴ ⠦ ⠧ ⠇ ⠏))
 
     @doc """
     Starts the TUI for a session and blocks until the user quits.
 
     The options are `:session`, `:resumed` (true when the session was
     resumed: an information cell "resumed session" follows the history),
+    `:cwd` (the directory that the footer shows, default `File.cwd!/0`),
     and those of `ExRatatui.App`. The scroll keys read the terminal size through
     `:terminal_size_fn`, the option of `ExRatatui.Server`; the default is
     `ExRatatui.terminal_size/0`.
@@ -120,6 +109,7 @@ if Helyx.TUI.Available.available?() do
       {snapshot, ref} = subscribe!(session)
       vm = ViewModel.from_snapshot(snapshot)
       vm = if opts[:resumed], do: ViewModel.info(vm, "resumed session"), else: vm
+      cwd = Keyword.get_lazy(opts, :cwd, &File.cwd!/0)
 
       {:ok,
        sync_busy(%{
@@ -129,6 +119,9 @@ if Helyx.TUI.Available.available?() do
          session_ref: ref,
          vm: vm,
          composer: Composer.new(),
+         cwd: cwd,
+         # Row 1 of the footer, read at mount and after each turn.
+         location: Footer.location(cwd),
          # A `Transcript.position()`; nil follows the newest output.
          scroll: nil,
          # The size seam of `ExRatatui.Server`, so a test sets the size.
@@ -147,7 +140,8 @@ if Helyx.TUI.Available.available?() do
       do: exit({:session_down, Session.end_reason(reason)})
 
     def handle_info({:helyx_event, event}, state) do
-      {:noreply, settle(sync_busy(%{state | vm: ViewModel.apply(state.vm, event)}))}
+      state = refresh_location(%{state | vm: ViewModel.apply(state.vm, event)}, event)
+      {:noreply, settle(sync_busy(state))}
     end
 
     # A tick of the `subscriptions/1` timer. ExRatatui drops a tick of a
@@ -158,6 +152,12 @@ if Helyx.TUI.Available.available?() do
     end
 
     def handle_info(_msg, state), do: {:noreply, state}
+
+    # A turn can change the branch.
+    defp refresh_location(state, %{type: :turn_end}),
+      do: %{state | location: Footer.location(state.cwd)}
+
+    defp refresh_location(state, _event), do: state
 
     # A session that is not running leaves nothing to render.
     defp subscribe!(session) do
@@ -196,8 +196,16 @@ if Helyx.TUI.Available.available?() do
 
     def handle_event(%Resize{}, state), do: {:noreply, settle(state)}
 
-    def handle_event(%Key{code: "end", kind: "press", modifiers: ["ctrl"]}, state),
-      do: {:noreply, %{state | scroll: nil}}
+    # Home and End scroll only when the composer is empty; otherwise they
+    # move its cursor.
+    def handle_event(%Key{code: code, kind: kind, modifiers: []}, state)
+        when code in ["home", "end"] and kind in ["press", "repeat"] do
+      cond do
+        not Composer.empty?(state.composer) -> {:noreply, edit(state, :key, code)}
+        code == "end" -> {:noreply, %{state | scroll: nil}}
+        true -> {:noreply, on_screen(state, &Transcript.hold(state.vm, {0, 0}, &1, &2))}
+      end
+    end
 
     # Ctrl+J is a new line in every terminal. Shift+Enter reaches here only
     # where the terminal reports Shift on Enter; elsewhere it is Enter.
@@ -259,7 +267,7 @@ if Helyx.TUI.Available.available?() do
           Session.steer(state.session, text)
         end
 
-      # A rejected message stays in the composer, and the status bar says why.
+      # A rejected message stays in the composer, and the footer says why.
       case sent do
         :ok ->
           %{state | composer: Composer.clear(state.composer), scroll: nil}
@@ -278,7 +286,7 @@ if Helyx.TUI.Available.available?() do
     defp switch_model("", state),
       do: %{state | vm: ViewModel.notice(state.vm, "usage: /model provider/model")}
 
-    # The status bar follows the session's `:model_change` event, not this
+    # The footer follows the session's `:model_change` event, not this
     # call. A rejected ref stays in the composer, under a notice.
     defp switch_model(ref, state) do
       case Session.set_model(state.session, ref) do
@@ -300,21 +308,23 @@ if Helyx.TUI.Available.available?() do
     def render(state, frame) do
       area = %Rect{x: 0, y: 0, width: frame.width, height: frame.height}
 
-      [transcript, composer, status] =
+      [transcript, composer, footer] =
         Layout.split(
           area,
           :vertical,
           [
             {:min, 0},
-            {:length, Composer.rows(state.composer, frame.height - @status_rows)},
-            {:length, @status_rows}
+            {:length, Composer.rows(state.composer, frame.height - @footer_rows)},
+            {:length, @footer_rows}
           ],
           horizontal_margin: @margin
         )
 
       [{Transcript.widget(state.vm, state.scroll, transcript), transcript}] ++
         Composer.widgets(state.composer, composer) ++
-        [{status_widget(state.vm, state.busy, state.scroll), status}]
+        [
+          {Footer.widget(state.location, state.vm, state.busy, state.scroll), footer}
+        ]
     end
 
     # The width inside the margins that `Layout.split/4` draws, so a
@@ -332,7 +342,7 @@ if Helyx.TUI.Available.available?() do
       case state.terminal_size_fn.() do
         {width, height} when is_integer(width) and is_integer(height) ->
           rows =
-            max(height - Composer.rows(state.composer, height - @status_rows) - @status_rows, 1)
+            max(height - Composer.rows(state.composer, height - @footer_rows) - @footer_rows, 1)
 
           %{state | scroll: position.(inner_width(width), rows)}
 
@@ -354,7 +364,7 @@ if Helyx.TUI.Available.available?() do
     # tick timer while a turn runs, and none while idle.
     @impl true
     def subscriptions(%{busy: nil}), do: []
-    def subscriptions(_state), do: [Subscription.interval(:busy, @tick_ms, :busy_tick)]
+    def subscriptions(_state), do: [Subscription.interval(:busy, Footer.tick_ms(), :busy_tick)]
 
     # The start is when this client saw the turn start: the `turn_start`
     # event, or the mount for a client that joins a running turn, as the
@@ -364,36 +374,5 @@ if Helyx.TUI.Available.available?() do
 
     defp sync_busy(%{vm: %{running?: false}} = state), do: %{state | busy: nil}
     defp sync_busy(state), do: state
-
-    # Status
-
-    defp run_state(nil), do: "idle"
-
-    defp run_state(%{elapsed: ms}),
-      do: "#{elem(@frames, rem(div(ms, @tick_ms), tuple_size(@frames)))} #{div(ms, 1000)}s"
-
-    defp status_widget(vm, busy, scroll) do
-      state = run_state(busy)
-      %{steers: steers, follow_ups: follow_ups} = vm.queue
-      # The reason is a fixed text of this module, never input. It comes
-      # first: the line does not wrap, and a model ref can be 256 bytes.
-      reason = if vm.reason, do: [%Span{content: " ✕ #{vm.reason} ", style: @bad}], else: []
-
-      model = %Span{
-        content: " #{vm.model} · #{state} · queued #{steers}+#{follow_ups} ",
-        style: @bold
-      }
-
-      keys =
-        if scroll,
-          do: %Span{content: " scrolled · PgUp/PgDn · Ctrl+End newest", style: @bold},
-          else: %Span{
-            content:
-              " Enter steer · Alt+Enter follow-up · Ctrl+J newline · Esc abort · Ctrl+C quit · PgUp scroll",
-            style: @dim
-          }
-
-      %Paragraph{text: %Line{spans: reason ++ [model, keys]}}
-    end
   end
 end

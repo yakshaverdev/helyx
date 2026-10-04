@@ -80,6 +80,10 @@ if Helyx.TUI.Composer.Available.available?() do
       end
     end
 
+    @doc "True when the composer holds no text."
+    @spec empty?(t()) :: boolean()
+    def empty?(%__MODULE__{input: input}), do: ExRatatui.textarea_get_value(input) == ""
+
     @doc "Empties the composer and forgets its pastes."
     @spec clear(t()) :: t()
     def clear(%__MODULE__{} = composer) do
