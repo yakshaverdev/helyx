@@ -58,6 +58,22 @@ defmodule Helyx.TUI.ComposerTest do
     assert value(press(state, "down")) == "draft"
   end
 
+  # Ctrl+C shows its quit hint only when it clears nothing (#486): a draft
+  # that Down can bring back counts, so Ctrl+C clears it with no hint.
+  test "a composer that keeps a draft for Down has something to clear" do
+    state = state(["one"])
+    assert Composer.nothing_to_clear?(state.composer)
+
+    state = state |> type("draft") |> press("up")
+    ExRatatui.textarea_set_value(state.composer.input, "")
+    refute Composer.nothing_to_clear?(state.composer)
+
+    # An empty draft behind a recalled prompt leaves nothing to lose.
+    state = state(["one"]) |> press("up")
+    ExRatatui.textarea_set_value(state.composer.input, "")
+    assert Composer.nothing_to_clear?(state.composer)
+  end
+
   test "with no prompt, Up and Down only move the cursor" do
     state = state([]) |> type("a") |> press("j", ["ctrl"]) |> type("b")
 

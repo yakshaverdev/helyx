@@ -84,6 +84,11 @@ if Helyx.TUI.Composer.Available.available?() do
     @spec empty?(t()) :: boolean()
     def empty?(%__MODULE__{input: input}), do: ExRatatui.textarea_get_value(input) == ""
 
+    @doc "True when `clear/1` drops nothing: no text, and no draft that Down brings back."
+    @spec nothing_to_clear?(t()) :: boolean()
+    def nothing_to_clear?(%__MODULE__{recall: {_at, draft, _pastes}}) when draft != "", do: false
+    def nothing_to_clear?(composer), do: empty?(composer)
+
     @doc "Empties the composer and forgets its pastes."
     @spec clear(t()) :: t()
     def clear(%__MODULE__{} = composer) do
