@@ -23,6 +23,11 @@ defmodule Helyx.Watchdog.Group do
 
   @wait_ms 5_000
 
+  @doc false
+  # The longest `release/4` of a cancel with the default grace: the grace,
+  # the KILL wait of the commands, and the two waits of the watchdogs.
+  def max_cancel_ms, do: Helyx.Watchdog.grace_ms() + 3 * @wait_ms
+
   # The poll interval of a wait for an empty group: no OS event says that a
   # process group is empty.
   @poll_ms 20

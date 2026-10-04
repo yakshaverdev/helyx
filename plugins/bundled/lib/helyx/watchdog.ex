@@ -97,8 +97,10 @@ defmodule Helyx.Watchdog do
   # callers check for perl first (the bash tool's `check/0`,
   # `Helyx.HarnessIO.find/1`). Returns:
   #
-  #   * `{:started, port, pre}`: the go-ahead is sent. `pre` is what came
-  #     before the marker, perl's own startup output.
+  #   * `{:started, port, pre, handles}`: the go-ahead is sent. `pre` is
+  #     what came before the marker, perl's own startup output. `handles`
+  #     are the handles held with `Helyx.Tool.hold/1`, for a caller that
+  #     releases the groups itself (the bash tool at its time limit).
   #   * `{:error, reason}`: no command ran, and the port is closed. Either
   #     the watchdog did not fork, and `reason` is the tail of the rest of
   #     the stream up to the exit status, read here; or it gave no marker,
@@ -127,10 +129,15 @@ defmodule Helyx.Watchdog do
     # release waits for it, so an abort cannot return while the command is
     # a zombie, and KILLs it only after the command group is gone, so a
     # KILL can never cut the reap short.
-    case Port.info(port, :os_pid) do
-      {:os_pid, os_pid} -> Helyx.Tool.hold({:watchdog, os_pid})
-      nil -> :ok
-    end
+    watchdog =
+      case Port.info(port, :os_pid) do
+        {:os_pid, os_pid} ->
+          Helyx.Tool.hold({:watchdog, os_pid})
+          [{:watchdog, os_pid}]
+
+        nil ->
+          []
+      end
 
     case read_marker(port, nonce, "", "") do
       {:not_started, acc} ->
@@ -148,7 +155,7 @@ defmodule Helyx.Watchdog do
         # A port that closed already drops the write; its exit status is in
         # the mailbox for the caller's read.
         write(port, "\n")
-        {:started, port, pre}
+        {:started, port, pre, [{:command, group} | watchdog]}
     end
   end
 

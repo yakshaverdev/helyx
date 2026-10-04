@@ -44,7 +44,9 @@ The bounds of the turn, the provider process, and the hands release are in `docs
 | bash command | no NUL byte | an error result; nothing runs | `Helyx.Tool.Bash.run/2` |
 | reason of a watchdog start that failed | 2,000 bytes of valid UTF-8: the tail of a failed `chdir`, `pipe`, or `fork`, the head of a text with no marker | the rest is dropped | `Helyx.Watchdog.start/4` (`@reason_max_bytes`) |
 | watchdog marker | the marker line ends within the first 4,096 bytes of output | no command runs; the error says that the perl watchdog gave no marker | `Helyx.Watchdog.read_marker/4` (`@max_preamble_bytes`) |
-| wait for the marker and for a bash command | unbounded, accepted | the turn abort kills the process group | `Helyx.Tool.Bash` |
+| bash `timeout` argument | an integer from 1 to 600 seconds; missing or `null` is 120 | an error result; nothing runs | `timeout/1` in `Helyx.Tool.Bash` (`@default_timeout_s`, `@max_timeout_s`) |
+| wait for a bash command | the `timeout` argument; then the release of an abort and a drain, within 15,500 ms (`docs/features/bash-timeout.md`) | an error result with the output so far | `collect/4` in `Helyx.Tool.Bash`, `Helyx.Watchdog.Group.max_cancel_ms/0` |
+| wait for the watchdog marker | unbounded, accepted | the turn abort kills the process group | `Helyx.Watchdog.read_marker/4` |
 | wait for a killed process group | `:cancel`: TERM, a grace of 500 ms by default, KILL; `:deliver`: KILL; then at most 5,000 ms per wait, never past the release deadline | the handle stays unconfirmed | `Helyx.Watchdog.Group.release/4` (`@wait_ms`), `Helyx.Watchdog.grace_ms/0` |
 | provider start call to the hands | 5,000 ms; the retry of unconfirmed handles in it has one deadline of 1,000 ms | the call exits the session process | `Helyx.Session.Hands.start_provider/3` (`@retry_ms`) |
 | wait to hold a handle | none, `:infinity` | an abort kills the tool Task, which ends the wait | `Helyx.Tool.hold/1` |

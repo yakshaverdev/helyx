@@ -30,7 +30,7 @@ defmodule Helyx.HarnessIO do
   # terminal error.
   defp start(argv, cwd, input, state, opts) do
     case Helyx.Watchdog.start(argv, cwd, input, opts) do
-      {:started, port, _pre} ->
+      {:started, port, _pre, _handles} ->
         %{state | port: port}
 
       {:error, reason} ->

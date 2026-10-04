@@ -36,6 +36,24 @@ defmodule Helyx.Tool.BashTest do
     session
   end
 
+  # The release Task that the caller starts at the limit: its one linked
+  # pid, polled for at most `ms`.
+  defp release_task(caller, ms \\ Helyx.Test.Events.wait_ms()) do
+    {:links, links} = Process.info(caller, :links)
+
+    case {for(pid <- links, is_pid(pid), do: pid), ms} do
+      {[task], _ms} ->
+        task
+
+      {[], ms} when ms > 0 ->
+        Process.sleep(1)
+        release_task(caller, ms - 1)
+
+      _ ->
+        flunk("the caller started no release Task")
+    end
+  end
+
   test "runs in the working directory and merges stderr", %{tmp_dir: dir, run: run} do
     result = run.(%{"command" => "pwd; echo err >&2"})
     refute result.is_error
@@ -245,6 +263,98 @@ defmodule Helyx.Tool.BashTest do
 
     :ok = Supervisor.stop(sup)
     assert gone_within?(pid)
+  end
+
+  describe "time limit (#482)" do
+    test "a timeout outside 1..600 or not an integer is an error result; nothing runs",
+         %{tmp_dir: dir} do
+      ran = Path.join(dir, "ran")
+
+      for timeout <- [0, -1, 601, 5.0, "5", true] do
+        assert {:error, text} =
+                 Helyx.Tool.Bash.run(%{"command" => "touch #{ran}", "timeout" => timeout}, dir)
+
+        assert text =~ "timeout", inspect(timeout)
+      end
+
+      refute File.exists?(ran)
+    end
+
+    test "a timeout of 1, of 600, or null runs the command", %{tmp_dir: dir} do
+      for timeout <- [1, 600, nil] do
+        assert {:ok, "hi\n"} =
+                 Helyx.Tool.Bash.run(%{"command" => "echo hi", "timeout" => timeout}, dir)
+      end
+    end
+
+    test "the spec and the description state the default and the maximum" do
+      assert %{"type" => "integer", "minimum" => 1, "maximum" => 600} =
+               Helyx.Tool.Bash.parameters()["properties"]["timeout"]
+
+      assert Helyx.Tool.Bash.description() =~ "120"
+      assert Helyx.Tool.Bash.description() =~ "600"
+    end
+
+    # TERM first, as an abort: the trap's output is kept after the limit.
+    test "at the limit the command group is released and the output so far is an error result",
+         %{tmp_dir: dir} do
+      command = "trap 'echo stopped' TERM; echo $$ > pid; echo partial; sleep 60 & wait"
+
+      assert {:error, text} = Helyx.Tool.Bash.run_command(command, dir, 200)
+      assert text == "partial\nstopped\n\nTimed out after 200 ms: the command group was released."
+      refute os_alive?(wait_for_pid(Path.join(dir, "pid")))
+    end
+
+    test "at the limit a command that ignores TERM is killed after the grace", %{tmp_dir: dir} do
+      command = "trap '' TERM; echo $$ > pid; echo partial; sleep 60"
+
+      assert {:error, "partial\n\nTimed out after 100 ms: the command group was released."} =
+               Helyx.Tool.Bash.run_command(command, dir, 100)
+
+      refute os_alive?(wait_for_pid(Path.join(dir, "pid")))
+    end
+
+    # The caller is suspended past the limit while the output and the exit
+    # status queue up: a queued message must not win over the deadline.
+    test "the limit wins over output queued after it", %{tmp_dir: dir} do
+      test = self()
+      command = "echo $$ > pid; sleep 0.3; echo done"
+      caller = spawn(fn -> send(test, Helyx.Tool.Bash.run_command(command, dir, 200)) end)
+
+      pid = wait_for_pid(Path.join(dir, "pid"))
+      true = :erlang.suspend_process(caller)
+      assert gone_within?(pid)
+      true = :erlang.resume_process(caller)
+
+      assert_receive {:error, "done\n\nTimed out after 200 ms: the command group was released."}
+    end
+
+    # A release that stalls (here suspended, as a kill(1) run that never
+    # returns) must not hold the call past the one deadline after the
+    # limit: the port closes, and the watchdog ends the group on its own.
+    @tag :slow
+    test "a stalled release does not hold the call past the deadline", %{tmp_dir: dir} do
+      test = self()
+      command = "trap '' TERM; echo $$ > pid; echo partial; sleep 60"
+      caller = spawn(fn -> send(test, Helyx.Tool.Bash.run_command(command, dir, 100)) end)
+      pid = wait_for_pid(Path.join(dir, "pid"))
+
+      true = :erlang.suspend_process(release_task(caller))
+
+      assert_receive {:error,
+                      "partial\n\nTimed out after 100 ms: the command group was released."}
+
+      assert gone_within?(pid)
+    end
+
+    @tag :slow
+    test "the timeout argument stops the command through the hands", %{run: run} do
+      result = run.(%{"command" => "echo partial; sleep 60", "timeout" => 1})
+      assert result.is_error
+
+      assert Helyx.Message.text(result) ==
+               "partial\n\nTimed out after 1 s: the command group was released."
+    end
   end
 
   test "check reports a system without perl" do
