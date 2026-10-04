@@ -151,7 +151,7 @@ defmodule Helyx.WatchdogTest do
 
     test "open input: parts arrive until a NUL byte, then the command reads end of file" do
       argv = ["bash", "-c", "cat; echo done"]
-      assert {:started, port, ""} = Helyx.Watchdog.start(argv, File.cwd!(), :open)
+      assert {:started, port, "", _handles} = Helyx.Watchdog.start(argv, File.cwd!(), :open)
       Helyx.Watchdog.write(port, "one\n")
       assert "" = await(port, "", "one\n")
       Helyx.Watchdog.write(port, ["two\n", <<0>>, "dropped\n"])
