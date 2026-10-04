@@ -593,6 +593,50 @@ defmodule Helyx.TUI.ViewModelTest do
     assert Helyx.TUI.Transcript.hold(vm, {2, 0}, 80, 3) == nil
   end
 
+  test "the transcript draws assistant text as Markdown and user text as it is" do
+    reply = %Helyx.Message{
+      role: :assistant,
+      content: [%Helyx.Message.Text{text: "**a** `b`"}]
+    }
+
+    vm = view_model([Helyx.Message.user("**a**"), reply])
+
+    %ExRatatui.Widgets.Paragraph{text: lines} =
+      Helyx.TUI.Transcript.widget(vm, {0, 0}, %ExRatatui.Layout.Rect{width: 20, height: 10})
+
+    assert [
+             [_bar, %{content: "**a**"}, _fill],
+             [],
+             [
+               %{content: "a", style: %{fg: nil, modifiers: [:bold]}},
+               %{content: " ", style: %{modifiers: []}},
+               %{content: "b", style: %{fg: :yellow, modifiers: []}}
+             ],
+             []
+           ] = Enum.map(lines, & &1.spans)
+  end
+
+  test "a mark after a closing sign or a prefix is drawn" do
+    # The mark joins the letter before it, or the last space of a bullet or
+    # a code indent.
+    for {text, drawn} <- [
+          {"**e**́x", "éx"},
+          {"- **́x**", "• ́x"},
+          {"```\ńx\n```", " ́x"}
+        ] do
+      reply = %Helyx.Message{role: :assistant, content: [%Helyx.Message.Text{text: text}]}
+      area = %ExRatatui.Layout.Rect{x: 0, y: 0, width: 6, height: 1}
+      terminal = ExRatatui.init_test_terminal(6, 1)
+
+      :ok =
+        ExRatatui.draw(terminal, [
+          {Helyx.TUI.Transcript.widget(view_model([reply]), {0, 0}, area), area}
+        ])
+
+      assert ExRatatui.get_buffer_content(terminal) =~ drawn, inspect(text)
+    end
+  end
+
   test "a user message has a bar and a tint on every row, filled to the width" do
     vm = view_model([Helyx.Message.user("one two three four")])
 
