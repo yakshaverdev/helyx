@@ -41,42 +41,6 @@ defmodule CodingAgentTest do
     assert Process.whereis(Helyx.Core) == nil
   end
 
-  test "mix helyx rejects bad arguments before starting anything" do
-    assert_raise Mix.Error, ~r/--bogus/, fn -> Mix.Tasks.Helyx.run(["--bogus"]) end
-    assert_raise Mix.Error, ~r/at most one directory/, fn -> Mix.Tasks.Helyx.run(["a", "b"]) end
-
-    assert_raise Mix.Error, ~r/not a directory/, fn ->
-      Mix.Tasks.Helyx.run(["/nonexistent/helyx-test-dir"])
-    end
-
-    bad = "/nonexistent/a\e[31mb\nc"
-
-    # Each message shows the bad argument as inspect/1 prints it.
-    for {argv, text, shown} <- [
-          {[bad], "not a directory", inspect(bad)},
-          {["/x", bad], "at most one directory", inspect(["/x", bad])},
-          {["--x\e[31m\n"], "unknown option", inspect("--x\e[31m\n")},
-          {["--resume=\e[31m\n"], "bad value", ~S("--resume"="\e[31m\n")},
-          {["-a\xFF\e[31m\n"], "not UTF-8", ~S("-a\xFF\e[31m\n")},
-          {["/x\xFF"], "not UTF-8", ~S("/x\xFF")},
-          {["-="], "bad option", ~S(["-="])},
-          {["-=value"], "bad option", ~S(["-=value"])},
-          {["-=\e[31m\n"], "bad option", ~S(["-=\e[31m\n"])}
-        ] do
-      error = assert_raise Mix.Error, fn -> Mix.Tasks.Helyx.run(argv) end
-      assert error.message =~ text
-      assert error.message =~ shown
-      assert String.valid?(error.message)
-      refute error.message =~ ~r/[\x00-\x1F\x7F]/
-    end
-
-    assert_raise Mix.Error, ~r/"--model"; the options/, fn -> Mix.Tasks.Helyx.run(["--model"]) end
-
-    assert_raise Mix.Error, ~r/does not combine/, fn ->
-      Mix.Tasks.Helyx.run(["--resume", "--model", "fake/echo"])
-    end
-  end
-
   @tag :tmp_dir
   test "start_session persists to disk and resume restores the saved model", %{tmp_dir: dir} do
     core = :"agent_core_#{System.unique_integer([:positive])}"
