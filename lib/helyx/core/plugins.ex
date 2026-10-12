@@ -11,10 +11,11 @@ defmodule Helyx.Core.Plugins do
 
   A value that is not a proper list is `{:invalid_plugins, value}`. An entry
   that is not an atom naming a loadable Elixir module is `{:invalid_plugin,
-  entry}`. A module that implements no interface is `{:not_a_plugin,
-  module}`. A plugin that does not export a required callback of an
-  interface it implements is `{:missing_callbacks, plugin, interface,
-  [{name, arity}]}`.
+  entry}`. When every entry is a module, a module listed twice is
+  `{:duplicate_plugin, module}`, which names the module of the first repeated
+  entry. A module that implements no interface is `{:not_a_plugin, module}`.
+  A plugin that does not export a required callback of an interface it
+  implements is `{:missing_callbacks, plugin, interface, [{name, arity}]}`.
   """
   @spec resolve(term()) :: {:ok, table()} | {:error, term()}
   def resolve(plugins) do
@@ -28,11 +29,19 @@ defmodule Helyx.Core.Plugins do
   end
 
   # The plugins value is config: this is its boundary check (AGENTS.md). The
-  # checks after it trust the shape.
+  # checks after it trust the shape: each entry is an Elixir module, listed
+  # once.
   defp check_shape(plugins) do
     if is_list(plugins) and not List.improper?(plugins),
-      do: Enum.find_value(plugins, :ok, &invalid_plugin/1),
+      do: Enum.find_value(plugins, &invalid_plugin/1) || check_unique(plugins),
       else: {:error, {:invalid_plugins, plugins}}
+  end
+
+  defp check_unique(plugins) do
+    case plugins -- Enum.uniq(plugins) do
+      [] -> :ok
+      [module | _] -> {:error, {:duplicate_plugin, module}}
+    end
   end
 
   # An Erlang module such as `:lists` has no `__info__/1`.
@@ -78,8 +87,8 @@ defmodule Helyx.Core.Plugins do
   @doc """
   Maps each provider id to its plugin. It calls `id/0` of each provider once,
   at Core start. An `id/0` that raises, throws, exits, or returns a value
-  that is not a binary is `{:invalid_provider_id, plugin}`. Two providers
-  with one id are `{:duplicate_provider_id, id, [first, second]}`.
+  that is not a binary is `{:invalid_provider_id, plugin}`. Two different
+  providers with one id are `{:duplicate_provider_id, id, [first, second]}`.
   """
   @spec provider_ids([module()]) :: {:ok, %{String.t() => module()}} | {:error, term()}
   def provider_ids(providers) do

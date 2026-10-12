@@ -21,6 +21,16 @@ defmodule Helyx.CoreTest do
     assert {:ok, _} = boot([Test.Provider, Test.SingleA, Test.MultiA, Test.MultiB])
   end
 
+  test "starts the process of a plugin with child_spec/1 under Core" do
+    name = :"core_#{System.unique_integer([:positive])}"
+    start_supervised!({Helyx.Core, name: name, plugins: [Test.Provider, Test.MultiChild]})
+
+    assert {Test.MultiChild, pid, :worker, _} =
+             List.keyfind(Supervisor.which_children(name), Test.MultiChild, 0)
+
+    assert Agent.get(pid, & &1) == [core: name]
+  end
+
   test "exposes the registered plugins per interface" do
     name = :"core_#{System.unique_integer([:positive])}"
     plugins = [Test.Provider, Test.SingleA, Test.MultiB, Test.MultiA]
@@ -78,7 +88,25 @@ defmodule Helyx.CoreTest do
         {"a module that does not exist", [Test.Provider, Test.Missing],
          quote(do: {:invalid_plugin, Test.Missing})},
         {"a bad entry after a module that implements no interface", [Test.NoInterface, 123],
-         quote(do: {:invalid_plugin, 123})}
+         quote(do: {:invalid_plugin, 123})},
+        # A module listed twice is a mistake in product code (#522). The
+        # check runs after the entry check and before every check that
+        # calls the module.
+        {"a plugin with a process listed twice",
+         [Test.Provider, Test.MultiChild, Test.MultiChild],
+         quote(do: {:duplicate_plugin, Test.MultiChild})},
+        {"a provider listed twice", [Test.Provider, Test.Provider],
+         quote(do: {:duplicate_plugin, Test.Provider})},
+        {"a module that implements no interface listed twice",
+         [Test.Provider, Test.NoInterface, Test.NoInterface],
+         quote(do: {:duplicate_plugin, Test.NoInterface})},
+        {"a bad entry listed twice", [Test.Provider, nil, nil],
+         quote(do: {:invalid_plugin, nil})},
+        {"a bad entry after a repeat", [Test.MultiA, Test.MultiA, 123],
+         quote(do: {:invalid_plugin, 123})},
+        {"the module of the first repeated entry",
+         [Test.Provider, Test.MultiA, Test.MultiB, Test.MultiB, Test.MultiA],
+         quote(do: {:duplicate_plugin, Test.MultiB})}
       ] do
     test "rejects #{name}" do
       assert {:error, unquote(error)} = reject(plugins: unquote(Macro.escape(plugins)))

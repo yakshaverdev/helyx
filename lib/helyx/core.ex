@@ -9,7 +9,8 @@ defmodule Helyx.Core do
   Core first checks the shape of the plugins value. It refuses to start with
   `{:invalid_plugins, value}` when the value is not a proper list, and with
   `{:invalid_plugin, entry}` when an entry is not an atom that names a
-  loadable Elixir module (an Erlang module such as `:lists` is not one).
+  loadable Elixir module (an Erlang module such as `:lists` is not one), and
+  with `{:duplicate_plugin, module}` when a module is listed twice.
 
   Core checks every plugin against the interfaces it implements. It refuses to
   start when a `:single` interface receives more than one plugin, when a
@@ -20,7 +21,7 @@ defmodule Helyx.Core do
   `id/0` of each provider once, and refuses to start with
   `{:invalid_provider_id, plugin}` when one raises, throws, exits, or
   returns a value that is not a binary, and with `{:duplicate_provider_id,
-  id, [first, second]}` when two providers share an id.
+  id, [first, second]}` when two different providers share an id.
 
   A plugin that exports `child_spec/1` gets its process tree started under
   Core, with `[core: name]` as the argument.
