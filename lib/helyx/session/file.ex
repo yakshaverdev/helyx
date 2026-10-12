@@ -49,7 +49,7 @@ defmodule Helyx.Session.File do
   defmodule Resumed do
     @moduledoc """
     What `resume/3` restores. `resume_ids` holds the last resume id of
-    each provider: the id and the number of messages before its entry,
+    each provider: the id and the number of assistant messages before its entry,
     without the labels that a fork drops.
     """
     @enforce_keys [:file, :session_id, :model, :messages]

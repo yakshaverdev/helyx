@@ -72,16 +72,20 @@ defmodule Helyx.Session.FileTest do
     assert resumed.model == "test/other"
   end
 
-  test "resume id entries are written, and the last one per provider is restored with the messages before it",
+  test "resume id entries are written, and the last one per provider is restored with the assistant messages before it",
        %{tmp_dir: dir} do
     {:ok, file} = Session.File.create(dir, "sess1", "/repo", "claude-code/opus")
     assert {:ok, %{resume_ids: sessions}} = Session.File.resume(dir, "/repo")
     assert sessions == %{}
 
+    call = %Message.ToolCall{id: "c1", name: "read", arguments: %{}}
+
     file
     |> Session.File.append_resume_id("claude-code", "first")
     |> Session.File.append_resume_id("codex", "codex-1")
-    |> Session.File.append_message(Helyx.Message.user("hello"))
+    |> Session.File.append_message(Message.user("hello"))
+    |> Session.File.append_message(%Message{role: :assistant, content: [call]})
+    |> Session.File.append_message(Message.tool_result(call, {:ok, "done"}))
     |> Session.File.append_resume_id("claude-code", "sécond")
 
     assert {:ok, resumed} = Session.File.resume(dir, "/repo")
@@ -95,7 +99,7 @@ defmodule Helyx.Session.FileTest do
     entries =
       file.path |> File.read!() |> String.split("\n", trim: true) |> Enum.map(&JSON.decode!/1)
 
-    assert [_header, first, _codex, _message, last] = entries
+    assert [_header, first, _codex, _user, _assistant, _result, last] = entries
 
     assert %{
              "type" => "harness_session",
@@ -387,16 +391,22 @@ defmodule Helyx.Session.FileTest do
     # #282: the other branch may have continued the harness session too.
     test "a fork at or below a resume id label drops every label; a fork above keeps it",
          %{tmp_dir: dir} do
+      # A label counts the assistant messages on its own branch.
+      reply =
+        &Session.File.append_message(&1, %Message{
+          role: :assistant,
+          content: [%Message.Text{text: &2}]
+        })
+
       start = fn n ->
         {:ok, file} = Session.File.create(dir, "s#{n}", "/r#{n}", "claude-code/opus")
 
         file
         |> Session.File.append_resume_id("codex", "codex-1")
-        |> Session.File.append_message(Message.user("one"))
+        |> reply.("one")
       end
 
       label = &Session.File.append_resume_id(&1, "claude-code", "h1")
-      user = &Session.File.append_message(&1, Message.user(&2))
 
       labels = fn cwd ->
         {:ok, resumed} = Session.File.resume(dir, cwd)
@@ -405,22 +415,22 @@ defmodule Helyx.Session.FileTest do
 
       # A fork below the label.
       labelled = label.(start.(0))
-      user.(labelled, "a")
-      user.(labelled, "b")
+      reply.(labelled, "a")
+      reply.(labelled, "b")
       assert labels.("/r0") == %{}
 
       # A fork at the label: both children of the label entry hold it.
       labelled = label.(start.(1))
-      user.(labelled, "a")
+      reply.(labelled, "a")
       assert labels.("/r1") == %{"claude-code" => {"h1", 1}, "codex" => {"codex-1", 0}}
-      user.(labelled, "b")
+      reply.(labelled, "b")
       assert labels.("/r1") == %{}
 
       # A fork above the label: the other branch never had it. The codex
       # label above the fork is dropped.
       file = start.(2)
-      user.(file, "other")
-      file |> user.("mine") |> label.() |> user.("after")
+      reply.(file, "other")
+      file |> reply.("mine") |> label.() |> reply.("after")
       assert labels.("/r2") == %{"claude-code" => {"h1", 2}}
     end
 

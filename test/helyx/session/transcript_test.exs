@@ -36,60 +36,26 @@ defmodule Helyx.Session.TranscriptTest do
     end
   end
 
-  describe "repair/2" do
+  describe "repair/1" do
     defp aborted(id), do: Message.tool_result(call(id), {:error, "aborted"})
-
-    defp abort(transcript) do
-      {transcript, sessions} = Transcript.repair(transcript, %{})
-      assert sessions == %{}
-      transcript
-    end
-
-    test "a program session count moves past the results inserted before it, and only those" do
-      # A count right after an open call's message includes its inserted
-      # results: the live session inserted them at the resume, before any
-      # program session could start.
-      transcript = [
-        Message.user("hi"),
-        assistant([call("a"), call("b")]),
-        Message.user("next"),
-        assistant([call("c")]),
-        Message.user("last")
-      ]
-
-      sessions = %{"early" => {"e", 1}, "at" => {"t", 2}, "late" => {"l", 4}, "end" => {"n", 5}}
-      {answered, shifted} = Transcript.repair(transcript, sessions)
-
-      assert shifted == %{
-               "early" => {"e", 1},
-               "at" => {"t", 4},
-               "late" => {"l", 7},
-               "end" => {"n", 8}
-             }
-
-      # Each count drops the same messages from the answered transcript as
-      # it did from the file, plus the results inserted before it.
-      assert Enum.at(answered, 4) == Message.user("next")
-      assert Enum.at(answered, 7) == Message.user("last")
-    end
 
     test "leaves a transcript with no open calls unchanged" do
       transcript = [Message.user("hi"), assistant([call("a")]), result("a"), assistant([])]
-      assert abort(transcript) == transcript
-      assert abort([]) == []
+      assert Transcript.repair(transcript) == transcript
+      assert Transcript.repair([]) == []
     end
 
     test "a call never answered gets its result right after it, before the next user message" do
       transcript = [assistant([call("a")]), Message.user("next"), assistant([])]
 
-      assert abort(transcript) ==
+      assert Transcript.repair(transcript) ==
                [assistant([call("a")]), aborted("a"), Message.user("next"), assistant([])]
     end
 
     test "a result after a later message does not answer the call, and it is dropped" do
       transcript = [assistant([call("a")]), Message.user("next"), result("a")]
 
-      assert abort(transcript) ==
+      assert Transcript.repair(transcript) ==
                [assistant([call("a")]), aborted("a"), Message.user("next")]
     end
 
@@ -106,7 +72,7 @@ defmodule Helyx.Session.TranscriptTest do
         result("b")
       ]
 
-      repaired = abort(transcript)
+      repaired = Transcript.repair(transcript)
 
       assert repaired ==
                [
@@ -117,44 +83,13 @@ defmodule Helyx.Session.TranscriptTest do
                  Message.user("next")
                ]
 
-      assert abort(repaired) == repaired
-    end
-
-    test "a count moves back by the results dropped before it, and forward by the results inserted" do
-      transcript = [
-        Message.user("hi"),
-        assistant([call("a"), call("b")]),
-        result("x"),
-        result("a"),
-        Message.user("next"),
-        result("a"),
-        assistant([])
-      ]
-
-      # 3 is after the stray result, 5 is after the insert point, 6 is after
-      # the result that follows a later message.
-      sessions = %{"a" => {"a", 2}, "b" => {"b", 3}, "c" => {"c", 5}, "d" => {"d", 6}}
-      {repaired, shifted} = Transcript.repair(transcript, sessions)
-
-      assert repaired == [
-               Message.user("hi"),
-               assistant([call("a"), call("b")]),
-               result("a"),
-               aborted("b"),
-               Message.user("next"),
-               assistant([])
-             ]
-
-      assert shifted == %{"a" => {"a", 2}, "b" => {"b", 2}, "c" => {"c", 5}, "d" => {"d", 5}}
-
-      # A count drops the same kept messages as in the file.
-      assert Enum.drop(repaired, 5) == [assistant([])]
+      assert Transcript.repair(repaired) == repaired
     end
 
     test "with two calls and one answered, the other gets its result after the answered one" do
       transcript = [assistant([call("a"), call("b")]), result("b"), Message.user("next")]
 
-      assert abort(transcript) ==
+      assert Transcript.repair(transcript) ==
                [
                  assistant([call("a"), call("b")]),
                  result("b"),
@@ -173,28 +108,17 @@ defmodule Helyx.Session.TranscriptTest do
         result("a")
       ]
 
-      assert abort(transcript) ==
+      assert Transcript.repair(transcript) ==
                List.insert_at(transcript, 3, aborted("a"))
 
-      assert Transcript.open_calls(abort(transcript)) == []
+      assert Transcript.open_calls(Transcript.repair(transcript)) == []
     end
 
     test "open calls at the end get their results at the end, and a second pass adds nothing" do
       transcript = [Message.user("hi"), assistant([call("a"), call("b")])]
-      answered = abort(transcript)
+      answered = Transcript.repair(transcript)
       assert answered == transcript ++ [aborted("a"), aborted("b")]
-      assert abort(answered) == answered
-    end
-  end
-
-  describe "last_assistant/1" do
-    test "gives the last assistant message, or nil" do
-      last = assistant([], "fake/echo")
-
-      assert Transcript.last_assistant([assistant([]), Message.user("x"), last, result("a")]) ==
-               last
-
-      assert Transcript.last_assistant([Message.user("x")]) == nil
+      assert Transcript.repair(answered) == answered
     end
   end
 
@@ -202,13 +126,13 @@ defmodule Helyx.Session.TranscriptTest do
     test "resumes when the provider answered last after its session started" do
       transcript = [Message.user("a"), assistant([])]
 
-      assert Transcript.resumable(transcript, %{"claude-code" => {"h1", 1}}, "claude-code") ==
+      assert Transcript.resumable(transcript, %{"claude-code" => {"h1", 0}}, "claude-code") ==
                "h1"
     end
 
     test "does not resume without a session, before the session answered, or after another provider" do
       transcript = [Message.user("a"), assistant([])]
-      sessions = %{"claude-code" => {"h1", 2}}
+      sessions = %{"claude-code" => {"h1", 1}}
 
       assert Transcript.resumable(transcript, %{}, "claude-code") == nil
       assert Transcript.resumable(transcript, sessions, "claude-code") == nil
@@ -218,7 +142,7 @@ defmodule Helyx.Session.TranscriptTest do
     end
 
     test "does not resume when an abort or a failure cut the last assistant message" do
-      sessions = %{"claude-code" => {"h1", 1}}
+      sessions = %{"claude-code" => {"h1", 0}}
 
       for stop <- [:aborted, :error] do
         cut = [Message.user("a"), assistant([]), %{assistant([]) | stop_reason: stop}]
@@ -229,6 +153,61 @@ defmodule Helyx.Session.TranscriptTest do
     test "does not resume after an assistant message with no model" do
       transcript = [assistant([], nil)]
       assert Transcript.resumable(transcript, %{"claude-code" => {"h1", 0}}, "claude-code") == nil
+    end
+
+    # The label stands at a place in the session file. The repair inserts
+    # and drops tool results, so a count of all messages would need a shift,
+    # but the count of the assistant messages before the label holds. The
+    # reference is the old rule on the file, where its count needed no
+    # shift: drop the messages before the label's place, then take the last
+    # assistant message, from the provider and not cut. Empty files and
+    # replies with no tool call are generated too. ExUnit seeds `:rand` per
+    # test, so `mix test --seed` repeats a failure.
+    test "on random transcripts, the assistant count gives the answer of the label's place in the file" do
+      for _round <- 1..2000 do
+        file = for _ <- 1..Enum.random(0..12)//1, do: random_message()
+        place = Enum.random(0..length(file))
+        before = Transcript.assistant_count(Enum.take(file, place))
+        ids = %{"claude-code" => {"h1", before}}
+
+        assert Transcript.resumable(Transcript.repair(file), ids, "claude-code") ==
+                 expected_resume(file, place),
+               "file: #{inspect(file)}, place: #{place}"
+      end
+    end
+
+    defp random_message do
+      case Enum.random([:user, :assistant, :assistant, :result, :result]) do
+        :user ->
+          Message.user("u")
+
+        :assistant ->
+          calls = for _ <- 1..Enum.random(0..2)//1, do: call(Enum.random(["a", "b"]))
+
+          model = Enum.random(["claude-code/sonnet", "fake/echo", nil])
+          stop = Enum.random([nil, :end_turn, :tool_use, :aborted, :error])
+          %{assistant(calls, model) | stop_reason: stop}
+
+        :result ->
+          result(Enum.random(["a", "b", "x"]))
+      end
+    end
+
+    defp expected_resume(file, place) do
+      last =
+        file
+        |> Enum.drop(place)
+        |> Enum.filter(&match?(%Message{role: :assistant}, &1))
+        |> List.last()
+
+      case last do
+        %Message{model: "claude-code/" <> _, stop_reason: stop}
+        when stop not in [:aborted, :error] ->
+          "h1"
+
+        _other ->
+          nil
+      end
     end
   end
 end

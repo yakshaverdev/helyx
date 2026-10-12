@@ -106,14 +106,18 @@ defmodule Helyx.Session.File.Branch do
 
   # The last resume id entry of each provider wins: a lost resume id is
   # followed by a new entry for the same provider. Each keeps the number of
-  # messages before it, so the session can tell whether the provider has
-  # made a message under that resume id since. The label is optional: with
-  # none, the provider starts fresh with a new resume id. A bad id removes the
-  # label of its provider, so an earlier, stale label does not come back. An
-  # entry with no usable provider removes every label, because the reader
-  # cannot know which one it replaced. A fork at the branch entry with the
-  # id `fork` removes every label at or above it (#282): the other branch
-  # holds those labels too and may have continued under their resume ids.
+  # assistant messages before it, so the session can tell whether the
+  # provider has made a message under that resume id since
+  # (`Helyx.Session.Transcript.resumable/3`). The decode of the same branch
+  # (`Codec.decode/1`) accepts only the roles it writes, so a "role" of
+  # "assistant" here is an assistant message there. The label is optional:
+  # with none, the provider starts fresh with a new resume id. A bad id
+  # removes the label of its provider, so an earlier, stale label does not
+  # come back. An entry with no usable provider removes every label,
+  # because the reader cannot know which one it replaced. A fork at the
+  # branch entry with the id `fork` removes every label at or above it
+  # (#282): the other branch holds those labels too and may have continued
+  # under their resume ids.
   # The entry type "harness_session" and its key "harness_session_id" are
   # stored names (`Helyx.Session.File.append_resume_id/3`).
   def resume_ids(entries, fork) do
@@ -126,7 +130,8 @@ defmodule Helyx.Session.File.Branch do
     ids
   end
 
-  defp resume_entry(%{"type" => "message"}, {ids, count}), do: {ids, count + 1}
+  defp resume_entry(%{"type" => "message", "role" => "assistant"}, {ids, count}),
+    do: {ids, count + 1}
 
   defp resume_entry(
          %{"type" => "harness_session", "provider" => provider} = entry,
