@@ -1,6 +1,6 @@
 # Review: #511 The resume label counts assistant messages
 
-Invariant: a resume label of a provider holds the number of assistant messages before it on its branch. `Records.resume/3` writes it live through `Transcript.assistant_count/1`, and `Branch.resume_ids/2` derives it on read from the message entries with the role `assistant`. `Transcript.resumable/3` gives the resume id only when the transcript has more assistant messages than that count and its last assistant message came from that provider with no `:aborted` or `:error` stop. `Transcript.repair/1` inserts and drops only tool results, so it returns only the transcript and no count shifts. The file format does not change, and the fork rule of #282 still drops the labels at a fork. Accepted and out of scope by the ticket: entry ids on messages replace the count when branching needs them (`docs/reviews/2026-10-12-domain-review.md`, A4 and section 12).
+Invariant: a resume label of a provider holds the number of assistant messages before it on its branch. `Records.resume_id/3` (named `Records.resume/3` before #510) writes it live through `Transcript.assistant_count/1`, and `Branch.resume_ids/2` derives it on read from the message entries with the role `assistant`. `Transcript.resumable/3` gives the resume id only when the transcript has more assistant messages than that count and its last assistant message came from that provider with no `:aborted` or `:error` stop. `Transcript.repair/1` inserts and drops only tool results, so it returns only the transcript and no count shifts. The file format does not change, and the fork rule of #282 still drops the labels at a fork. Accepted and out of scope by the ticket: entry ids on messages replace the count when branching needs them (`docs/reviews/2026-10-12-domain-review.md`, A4 and section 12).
 
 ## Replaced mechanism
 
@@ -8,7 +8,7 @@ The old mechanism: a label stored the number of all messages before it, and `Tra
 
 | Old part | Now |
 | -------- | --- |
-| Live count `length(state.transcript)` (`Records.resume/3`) | `Transcript.assistant_count/1` |
+| Live count `length(state.transcript)` (`Records.resume/3`, `Records.resume_id/3` after #510) | `Transcript.assistant_count/1` |
 | Read count of every message entry (`Branch.resume_entry/2`) | Only message entries with the role `assistant`. `Codec.decode/1` rejects any other role on the same branch, so the two counts agree |
 | `repair/2` returned `{transcript, shifted}`; `walk/5` kept `inserts` and `drops`; `pair/2` gave the offsets of stray results | Deleted. `repair/1` returns the transcript; `pair/2` gives the open calls and the kept results |
 | `resumable/3` dropped `count` messages, then took the last assistant message | It counts the assistant messages and takes the last one in one pass, and needs more than `count` |
@@ -60,8 +60,26 @@ bounds sensor: 2 candidate functions, 0 flagged, 0 without an answer
 | 2.2 | spec | The "Replaced mechanism" table had no row for the changed `file_test.exs` and plugin turn tests | Fixed: rows added |
 | 2.3 | spec | The random test compares with the meaning of the old rule, not the old shift code | Kept, as in 1.2; the domain review (A4) compared with the old code over 20,000 transcripts |
 | 2.4 | Codex | Approve, no material findings | None |
-| 2.5 | failure path | No defect. Probes: a resumed file with a stray result and an open call, then turns across a model switch, compared the live labels and `resumable/3` with `Session.File.resume/2` after each step; two writers on one file with forks, 900 rounds. Not reached: a real short write (ENOSPC), a `resume` event in a program turn, two live Cores with labels of several providers. Noted outside this change: after a failed write the provider session keeps turns the file lacks, and a resume still continues it; the old rule answered the same | None |
+| 2.5 | failure path | No defect. Probes: a resumed file with a stray result and an open call, then turns across a model switch, compared the live labels and `resumable/3` with `Session.File.resume/2` after each step; two writers on one file with forks, 900 rounds. Not reached: a real short write (ENOSPC), a `{:resume_id, ...}` event in a program turn, two live Cores with labels of several providers. Noted outside this change: after a failed write the provider session keeps turns the file lacks, and a resume still continues it; the old rule answered the same | None |
 
 No round reproduced a defect in the code after round 1, so the loop ends.
 
 Gate r1 (Codex): 0 findings, approve
+
+## Rebase r1 (reduced)
+
+The branch was rebased on `origin/master` after #510 (merge `0f3442f`). The one code conflict was in `Records.resume_id/3`: the resolution keeps the #510 name, the `lost` flag from `conn.resumed` and its clear, and the `:resume_id` event, with the #511 count `Transcript.assistant_count/1`. `docs/reviews/escapes.md` keeps every row, #511 last. Tests run: `transcript_test`, `file_test`, `persistence_test`, `provider_process_test`, `stream_events_test` (224 tests, 0 failures), and the Claude Code and Codex turn tests (19 tests, 0 failures).
+
+Bounds sensor, base `origin/master`:
+
+```
+bounds sensor: 7 candidate functions, 0 flagged, 0 without an answer
+```
+
+| # | Axis | Finding | Resolution |
+| - | ---- | ------- | ---------- |
+| R1.1 | spec, failure path | This record still named `Records.resume/3` (invariant, "Replaced mechanism" table) and a `resume` event (2.5) | Fixed: names `Records.resume_id/3` and `{:resume_id, ...}` |
+| R1.2 | spec | Stale names of #510 on master, outside this diff: `docs/features/one-provider-path.md:45` says "the provider's last `resume` event"; the test name "a resume event passes" in `test/helyx/session/stream_test.exs:97` sends `{:resume_id, "a", 0}` | Not changed here: not part of #511; reported to the orchestrator |
+| R1.3 | failure path | No defect. Probe: 15 seeds of 12 steps with random model switches across the conn and test models, and a stop and resume in about one step of four; after each turn the live labels, the assistant count, and `resumable/3` equalled those of `Session.File.resume/2` and `repair/1`: 0 mismatches. Not reached: a resume id event between a partial and an abort, a real short write (ENOSPC), forks with labels in a live run | None |
+
+No defect was reproduced, so the round ends the loop.
