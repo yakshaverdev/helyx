@@ -105,7 +105,9 @@ defmodule Helyx.Session.StreamTest do
 
     assert {:send, {:tool_result, "c1", {:ok, text}}, nil} = SessionStream.check(event)
     assert byte_size(text) <= 65_536
-    assert text =~ ~r/^\[cut at \d+ of 196608 bytes\]\n\x{FFFD}+$/u
+
+    assert text =~
+             ~r/^\[cut to \d+ of 196608 bytes, start and end kept\]\n\x{FFFD}+\n\[… cut …\]\n\x{FFFD}+$/u
   end
 
   test "a user_message passes with a string steer id" do

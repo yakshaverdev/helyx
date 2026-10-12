@@ -1,6 +1,6 @@
 # Review: #508 One cut for tool results
 
-Invariant: every tool result is at most 65,536 bytes of valid UTF-8, and the user sees the cut notice. Every tool result text that enters the session passes `Helyx.Message.cut_result/1` at its entry point: a Helyx tool through `Hands.outcome/3` (run output, crash text, bad return, unknown tool, missing cwd, refusal, unconfirmed release), a provider `tool_result` event through `Stream.check/1`, and a tool result read from the session file through `Session.File.Codec.decode/1`. The text is then valid UTF-8 of at most 65,536 bytes with its notice, cut on a character boundary after the repair, with the notice line first, and a large result never fails the turn. An unknown tool and a missing cwd are answered without a Task. `Helyx.Text.truncate/2` repairs before it counts, and asserts at compile time that its output fits the Core limit. Accepted: the repair of a large input copies up to three times its size before the cut, the hands cut inside their GenServer, and a session file edited by hand with several text blocks in one result resumes each block cut on its own, within the 64 MiB file limit.
+Invariant: every tool result is at most 65,536 bytes of valid UTF-8, the user sees the cut notice first, the tail is kept, and a second cut changes nothing. Every tool result text that enters the session passes `Helyx.Message.cut_result/1` at its entry point: a Helyx tool through `Hands.outcome/3` (run output, crash text, bad return, unknown tool, missing cwd, refusal, unconfirmed release), a provider `tool_result` event through `Stream.check/1`, and a tool result read from the session file through `Session.File.Codec.decode/1`. The text is then valid UTF-8 of at most 65,536 bytes with its notice, with the notice line first, then the head and the tail, each cut on a character boundary after the repair, with a marker line between them, and a large result never fails the turn. An unknown tool and a missing cwd are answered without a Task. `Helyx.Text.truncate/2` repairs before it counts, and asserts at compile time that its output fits the Core limit. Accepted: the repair of a large input copies up to three times its size before the cut, the hands cut inside their GenServer, and a session file edited by hand with several text blocks in one result resumes each block cut on its own, within the 64 MiB file limit.
 
 ## Round 1 (full)
 
@@ -95,6 +95,33 @@ bounds sensor: 4 candidate functions, 0 flagged, 0 without an answer
 
 Round 4 reproduced no defect, so the loop ends.
 
+## Round 5 (full): head and tail
+
+Owner decision of 2026-10-12 (ticket comment): the cut keeps the head and the tail, with a marker line in the middle, and the notice stays first, because errors and exit codes are at the tail. This replaces the bound "the cut keeps the head" of the rounds above. `Helyx.Text.truncate` does not change.
+
+Fix, counted from its diff against `509afae` without test files and Markdown: 33 lines added plus removed in 2 code files (`message.ex`, and the `Helyx.Tool` moduledoc); the first version added a function (`marker/1`), so the round is full. Result: `[cut to <kept> of <total> bytes, start and end kept]`, the head, `[… cut …]`, the tail; the head and the tail each get half of the room after the notice and the marker, each cut on a character boundary.
+
+Simplify: one `room` split into `head_room` and `tail_room` (simplification, standards); a fixed marker `[… cut …]` in place of `[… <cut> bytes cut …]`, because the notice already gives the counts, which also takes the variable marker out of `room` (simplification, altitude); the result is built with `IO.iodata_to_binary/1`, one copy of the exact size, where appends left a 128 KB binary for a 64 KB result (efficiency); a tuple field in place of an `if` in `stream_events_test.exs` (simplification). Skipped: a shared trim with `Helyx.Text.cap/3` (reuse: Core does not call the plugin); a session test that compares with `cut_result/1` in place of the format regex (simplification: each entry point states the format the user sees); dropping the half-split and second-cut assertions (simplification: both are in the design); dropping "start and end kept" from the notice (altitude, standards: the TUI preview shows the notice and not the marker, so the notice alone says that the middle is gone).
+
+Bounds sensor (base `509afae`):
+
+```
+bounds sensor: 0 candidate functions, 0 flagged, 0 without an answer
+```
+
+| # | Axis | Finding | Resolution |
+| - | ---- | ------- | ---------- |
+| 5.1 | Codex | Verdict needs-attention on the committed range: at `509afae`, the head-only cut drops a final failure line of a 100,000-byte result. Codex saw that the working tree fixes it | Fixed by this round: the reviewed change keeps the tail; `message_test.exs` checks that `exit 3` at the end of a 200,000-byte text is kept |
+| 5.2 | failure path | A session file with four text blocks in one tool result resumes at 245,536 bytes, and the notice is not first, because the reader cuts each block on its own. Reproduced | Accepted hole (owner decision after round 2, row 2.3): only a session file edited by hand reaches it, within the 64 MiB file limit. The code does not change |
+| 5.3 | failure path | Held: `cut_result/1` at 65,535 to 65,539 and 200,000 bytes with 1- to 4-byte characters at offsets 0 to 3, invalid input of 30 KB and 5 MB, split sequences; each result is at most 65,536 bytes of valid UTF-8, the notice is first, the tail is kept, and a second cut changes nothing. Every live path passes the cut | — |
+| 5.4 | spec | Held: the same properties over every size from 8 under to 8 over the limit, 300 random binaries, 4,000,000 invalid bytes, and a text that holds `[… cut …]`; every doc that said "keeps the head" gives the new shape | — |
+| 5.5 | spec | `tool-text-out-of-core.md` item 6 said the tail keeps the exit code in "What the user sees", but the TUI preview shows four lines, so the TUI user sees the notice and not the tail | Fixed: the item says the tail is kept for the model and the stored transcript, and that the preview does not show it. A preview change is outside #508 |
+| 5.6 | standards | The `cut_result/1` doc gave reasons ("so a reader of the head sees it", the tail and exit codes); the reasons belong in the feature doc | Fixed: the doc states the contract only |
+| 5.7 | standards | Magic numbers 11 and 7 with a comment in `message_test.exs` | Fixed: `byte_size/1` of the literal texts |
+| 5.8 | standards | The notice wording is copied into seven test files and four docs | Kept: the tests state the format at each entry point, as the rounds above decided for the literal 65,536 |
+
+Round 5 reproduced no new defect: 5.1 is the defect that this round fixes, and 5.2 is an accepted hole that the record states. The loop ends. The fixes after the reviews are wording, names, and a test literal.
+
 ## Gate
 
-The coordinator runs the Codex gate after the commit of round 4. Its result and the escapes row are not in this record yet.
+The coordinator runs the Codex gate after the commit of round 5. Its result and the escapes row are not in this record yet.

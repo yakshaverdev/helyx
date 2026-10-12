@@ -240,22 +240,33 @@ defmodule Helyx.Session.StreamEventsTest do
       text = Helyx.Message.text(result)
       assert String.valid?(text)
       assert byte_size(text) <= 65_536
-      assert text =~ ~r/^\[cut at \d+ of 180000 bytes\]\n\x{FFFD}+$/u
+
+      assert text =~
+               ~r/^\[cut to \d+ of 180000 bytes, start and end kept\]\n\x{FFFD}+\n\[… cut …\]\n\x{FFFD}+$/u
+
       assert stop_reason(events) == :end_turn
     end
 
-    test "a harness tool result over 65,536 bytes keeps its head and a notice, and the turn ends done",
+    test "a harness tool result over 65,536 bytes keeps its head and tail with a notice, and the turn ends done",
          %{core: core} do
-      for {model, bytes} <- [{"result_200000", 200_000}, {"result_multibyte", 65_537}] do
+      for {model, bytes, ending} <- [
+            {"result_200000", 200_000, "xx"},
+            {"result_multibyte", 65_537, "xé"}
+          ] do
         events = harness_turn(core, model)
 
         assert [%{message: result}] =
                  for(%Event{type: :tool_execution_end, data: d} <- events, do: d)
 
-        assert [notice, head] = String.split(Helyx.Message.text(result), "\n")
+        text = Helyx.Message.text(result)
+        assert [notice, head, marker, tail] = String.split(text, "\n")
+        kept = byte_size(head) + byte_size(tail)
+        assert notice == "[cut to #{kept} of #{bytes} bytes, start and end kept]"
+        assert marker == "[… cut …]"
         assert head == String.duplicate("x", byte_size(head))
-        assert notice == "[cut at #{byte_size(head)} of #{bytes} bytes]"
-        assert byte_size(head) + 1 + byte_size(notice) <= 65_536
+        # The tail keeps the end of the text, the 2-byte character included.
+        assert String.ends_with?(tail, ending)
+        assert byte_size(text) <= 65_536
         assert stop_reason(events) == :end_turn
         assert List.last(events).data.outcome == :done
       end

@@ -9,7 +9,7 @@ defmodule Helyx.Tool do
   model sees. `{:error, text}` marks the result as an error; a tool that
   raises is reported the same way. The hands make every result text valid
   UTF-8 and cut a text over `Helyx.Message.max_result_bytes/0` to a notice
-  line and its head (`Helyx.Message.cut_result/1`).
+  line, its head, a marker line, and its tail (`Helyx.Message.cut_result/1`).
 
   The optional `check/0` runs once per session start or resume, in the
   caller, before any file or process is created (`check_available/1`). A

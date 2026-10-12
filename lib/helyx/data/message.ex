@@ -158,6 +158,7 @@ defmodule Helyx.Message do
   # The one limit of a tool result text (64 KiB), for every tool and every
   # provider.
   @max_result_bytes 65_536
+  @cut_marker "\n[… cut …]\n"
 
   @doc """
   The digit limit of `cap_integers/1`.
@@ -223,13 +224,14 @@ defmodule Helyx.Message do
   Bounds the text of a tool result. Each invalid UTF-8 sequence becomes
   U+FFFD, which can make the text up to three times larger. Then a text over
   #{@max_result_bytes} bytes becomes a notice line
-  `[cut at <kept> of <total> bytes]` and then its head, cut on a character
-  boundary, where `total` is the size after the repair. The notice comes
-  first, so a reader of the head sees it. The whole result is at most
-  #{@max_result_bytes} bytes and valid UTF-8. The session applies it at
-  each boundary of tool text, the hands and a provider's `tool_result`.
-  A valid text within the limit, the common case, is returned without a
-  copy.
+  `[cut to <kept> of <total> bytes, start and end kept]`, its head, a marker
+  line `[… cut …]`, and its tail, where `total` is the size after the
+  repair. The head and the tail each get half of the room, cut on a
+  character boundary. The whole result is at most #{@max_result_bytes}
+  bytes and valid UTF-8, so a second cut does not change it. The session applies it at each boundary of
+  tool text: the hands, a provider's `tool_result`, and the session file
+  reader. A valid text within the limit, the common case, is returned
+  without a copy.
   """
   @spec cut_result(binary()) :: String.t()
   def cut_result(text) do
@@ -243,13 +245,22 @@ defmodule Helyx.Message do
     total = byte_size(text)
     # The kept count is at most the limit, so the notice with the limit in
     # its place is the longest that the cut can make.
-    room = @max_result_bytes - byte_size(notice(@max_result_bytes, total))
+    room =
+      @max_result_bytes - byte_size(notice(@max_result_bytes, total)) -
+        byte_size(@cut_marker)
+
     # The text is valid, so only a character that the cut splits is invalid.
-    head = text |> binary_part(0, room) |> String.replace_invalid("")
-    notice(byte_size(head), total) <> head
+    head_room = div(room, 2)
+    tail_room = room - head_room
+    head = text |> binary_part(0, head_room) |> String.replace_invalid("")
+    tail = text |> binary_part(total - tail_room, tail_room) |> String.replace_invalid("")
+    kept = byte_size(head) + byte_size(tail)
+    # One copy of the exact size: appends leave spare capacity in the binary,
+    # which a stored result would keep.
+    IO.iodata_to_binary([notice(kept, total), head, @cut_marker, tail])
   end
 
-  defp notice(kept, total), do: "[cut at #{kept} of #{total} bytes]\n"
+  defp notice(kept, total), do: "[cut to #{kept} of #{total} bytes, start and end kept]\n"
 
   @doc """
   Adds a stream delta to a reversed block list, newest first. Consecutive

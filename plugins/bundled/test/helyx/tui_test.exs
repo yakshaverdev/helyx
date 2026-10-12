@@ -566,7 +566,7 @@ defmodule Helyx.TUITest do
 
     texts = texts(view_model([{:tool, call, ViewModel.call_line(call), result}]))
 
-    assert Enum.any?(texts, &String.contains?(&1, "[cut at"))
+    assert Enum.any?(texts, &String.contains?(&1, "[cut to"))
     assert Enum.any?(texts, &String.contains?(&1, "more lines"))
   end
 
