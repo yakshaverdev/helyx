@@ -36,6 +36,14 @@ defmodule Helyx.Test.MultiB do
   def name, do: "multi-b"
 end
 
+defmodule Helyx.Test.MultiChild do
+  @moduledoc false
+  # A plugin with a process, which Core starts under its own supervisor.
+  @behaviour Helyx.Test.Multi
+  def name, do: "multi-child"
+  def child_spec(opts), do: %{id: __MODULE__, start: {Agent, :start_link, [fn -> opts end]}}
+end
+
 defmodule Helyx.Test.ModelContext do
   @moduledoc false
   # Marks the context so a provider can show it was built.
