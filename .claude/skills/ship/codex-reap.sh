@@ -4,7 +4,8 @@
 # The Codex plugin starts one detached `app-server-broker.mjs serve` per
 # working directory, and nothing stops it when a worktree is removed. A broker
 # whose `--cwd` directory no longer exists serves nobody. By the plugin source
-# (not probed live), its SIGTERM handler asks its Codex app server to close.
+# and a live run on 2026-10-12, its SIGTERM handler closes its Codex app server,
+# and the whole process tree ends.
 # A broker whose `--cwd` path still names a directory never gets the signal.
 # A directory moved away from that path (`git worktree move`, a renamed
 # parent) counts as gone, and its broker gets the signal. The script reads the
