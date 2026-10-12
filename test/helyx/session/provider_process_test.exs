@@ -231,6 +231,14 @@ defmodule Helyx.Session.ProviderProcessTest do
       assert_receive {:release, :deliver, [{:report, _}]}
     end
 
+    test "a provider handle that is not released fails the turn with a fixed text and no pid",
+         %{core: core} do
+      {session, _pid, _hands} = start(core, "keep_init")
+      text = error(turn(session, "one"))
+      assert text == inspect({:error, "a resource of the call could not be released"})
+      refute text =~ "#PID<"
+    end
+
     test "a failed connect fails the turn; the next turn starts a new provider process",
          %{core: core} do
       {session, _pid, _hands} = start(core, "fail_init")
@@ -418,7 +426,7 @@ defmodule Helyx.Session.ProviderProcessTest do
       assert_receive {:preparing, task}
       :erlang.suspend_process(hands)
       Process.exit(task, :kill)
-      assert error(collect_until(:turn_end)) == inspect({:task_exit, :killed})
+      assert error(collect_until(:turn_end)) == ":context_timeout"
       :ok = Session.follow_up(session, "two")
 
       abort = Task.async(fn -> Session.abort(session) end)
@@ -551,7 +559,7 @@ defmodule Helyx.Session.ProviderProcessTest do
     test "a prepare that blocks is killed at the bound and keeps the provider process",
          %{core: core} do
       {session, _pid, _hands} = start(core, "echo", prepare: @load_prepare_ms)
-      assert error(turn(session, "block_prepare")) == inspect({:task_exit, :killed})
+      assert error(turn(session, "block_prepare")) == ":context_timeout"
       # The connect races the prepare Task, so the init message can come
       # after the turn ends. The wait is for a message that must come, not
       # an upper bound.
@@ -1081,7 +1089,7 @@ defmodule Helyx.Session.ProviderProcessTest do
       send(proc, {:need_context, turn_id, "block_prepare"})
 
       assert_receive {:conn, :context, ^proc, {:context, ^turn_id, {:error, reason}}}
-      assert reason == {:task_exit, :killed}
+      assert reason == :context_timeout
       assert error(collect_until(:turn_end)) == inspect(reason)
       assert Process.alive?(proc)
     end

@@ -17,7 +17,7 @@ defmodule Helyx.Session.Server.Wait do
   require Logger
 
   import Helyx.Session.Server.State, only: [ask: 4]
-  import Helyx.Session.Server.Events, only: [emit: 3, emit: 4, error_text: 1]
+  import Helyx.Session.Server.Events, only: [emit: 3, emit: 4]
 
   alias Helyx.Session.{Hands, ProviderRequest, Turn}
   alias Helyx.Session.Server.{ProviderConn, Records, State, Steering, ToolRuns}
@@ -33,7 +33,7 @@ defmodule Helyx.Session.Server.Wait do
 
   # The end of the turn, at `outcome`: `{:done, stop_reason, usage}`,
   # `:aborted`, or `{:error, reason}`; the reason goes to the log and
-  # becomes its text (`Events.error_text/1`). Its prepare Task is killed,
+  # becomes its text (`Helyx.Reason`). Its prepare Task is killed,
   # and its records close (`Records.finish/2`). At `done` a steer with no
   # answer yet can still be rejected after the turn (`Queue.answer/3`); an
   # abort or a failure gives the queued texts back (`Queue.abort/1`). The
@@ -95,14 +95,19 @@ defmodule Helyx.Session.Server.Wait do
   end
 
   # The abort still replies `:ok` (ADR 0006 §2); a failed cleanup is a
-  # notice with a fixed text; the log has the reason, whose handle list
-  # has no bound. The turn has ended, so the notice has no turn id.
+  # notice with a fixed text; the log has the reason, and the hands log
+  # the handles. The turn has ended, so the notice has no turn id.
   defp cleanup_notice(:ok, state), do: state
 
   defp cleanup_notice({:error, reason}, state) do
     Logger.warning("abort cleanup failed: " <> reason)
     text = "abort cleanup failed: a process or resource of the turn may still be held"
     emit(state, nil, :notice, %{text: text})
+  end
+
+  defp error_text(reason) do
+    Helyx.Reason.log("turn failed", reason)
+    Helyx.Reason.text(reason)
   end
 
   # An abort in a wait gives the queued texts back, like the abort that

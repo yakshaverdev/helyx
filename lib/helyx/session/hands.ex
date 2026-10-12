@@ -10,7 +10,10 @@ defmodule Helyx.Session.Hands do
   working directory that is gone when the call starts also gives an error
   result, and so does an unknown tool; neither starts a Task. Result text
   leaves the hands through `Helyx.Message.cut_result/1`: valid UTF-8 and
-  at most `Helyx.Message.max_result_bytes/0` bytes, notice included.
+  at most `Helyx.Message.max_result_bytes/0` bytes, notice included. The
+  text of a tool that crashes, raises, throws, or exits is
+  `Helyx.Reason.text/1` of its reason; a return outside the contract and
+  a handle that is not released give a fixed text. The log gets the term.
 
   A tool holds each OS resource that it creates with `Helyx.Tool.hold/1`.
   When a call ends, however its Task ended, the hands call the tool's
@@ -18,7 +21,8 @@ defmodule Helyx.Session.Hands do
   goes to the session after the release. While a handle is unconfirmed,
   the hands refuse tool calls with an error result.
   `request_cancel/2` kills the Tasks of a turn and releases their handles.
-  Its answer names the handles that stay unconfirmed. The rules and the
+  Its answer is a fixed error text when a handle stays unconfirmed, and
+  the log names the handles. The rules and the
   deadlines are in `docs/features/tool-resource-release.md`.
 
   `start_provider/3` starts the provider process (ADR 0007) with an armed
@@ -93,8 +97,8 @@ defmodule Helyx.Session.Hands do
   their handles. Sends the request and returns at once, so the caller stays
   free during the release. Read the answer with
   `:gen_server.check_response/2` or `:gen_server.receive_response/2`: `:ok`
-  when every release has returned, or an error naming the unconfirmed
-  handles.
+  when every release has returned, or an error with a fixed text when a
+  handle stays unconfirmed; the log names the handles.
   """
   @spec request_cancel(pid(), String.t()) :: :gen_server.request_id()
   def request_cancel(hands, turn_id), do: :gen_server.send_request(hands, {:cancel, turn_id})
@@ -131,7 +135,7 @@ defmodule Helyx.Session.Hands do
 
       {:reply, {:ok, pid}, state}
     else
-      {:reply, {:error, refusal(state)}, state}
+      {:reply, {:error, refusal()}, state}
     end
   end
 
@@ -184,7 +188,7 @@ defmodule Helyx.Session.Hands do
     state =
       if state.unconfirmed == %{},
         do: start(state, turn_id, call),
-        else: answer(state, turn_id, call.id, refusal(state))
+        else: answer(state, turn_id, call.id, refusal())
 
     {:noreply, state}
   end
@@ -248,8 +252,11 @@ defmodule Helyx.Session.Hands do
   defp down_reason({:exit, reason}), do: {:task_exit, Helyx.Message.cap_integers(reason)}
   defp down_reason({:error, _unconfirmed} = error), do: error
 
-  defp outcome(turn_id, call_id, {:exit, reason}),
-    do: outcome(turn_id, call_id, {:error, "tool crashed: #{inspect(reason)}"})
+  # A crash of the Task: the log gets its reason, the result its text.
+  defp outcome(turn_id, call_id, {:exit, reason}) do
+    Helyx.Reason.log("tool crashed", reason)
+    outcome(turn_id, call_id, {:error, "tool crashed: " <> Helyx.Reason.text(reason)})
+  end
 
   # Every result leaves the hands through here, so text is made valid and
   # cut to the limit once, for the ok, error, crash, refusal, and catch paths
@@ -295,10 +302,8 @@ defmodule Helyx.Session.Hands do
     state
   end
 
-  defp refusal(state) do
-    "a resource from an earlier call could not be released " <>
-      "(#{handles_text(state.unconfirmed)}); the call was not run"
-  end
+  # The handles went to the log when they became unconfirmed.
+  defp refusal, do: "a resource from an earlier call could not be released; the call was not run"
 
   # Gives every unconfirmed handle to its tool again, with one short
   # deadline for all tools, and keeps the ones still held.
@@ -344,24 +349,33 @@ defmodule Helyx.Session.Hands do
 
   defp unconfirmed_error(left) when left == %{}, do: nil
 
-  defp unconfirmed_error(left),
-    do: {:error, "a resource of the call could not be released (#{handles_text(left)})"}
-
-  defp handles_text(by_tool) do
-    by_tool
-    |> Enum.flat_map(&elem(&1, 1))
-    |> Enum.map(&inspect/1)
-    |> Enum.sort()
-    |> Enum.join(", ")
+  # The handles are plugin terms, so they go to the log, not to the text.
+  defp unconfirmed_error(left) do
+    Helyx.Reason.log("a resource could not be released", left)
+    {:error, "a resource of the call could not be released"}
   end
 
   defp run_tool(tool, call, cwd) do
     case tool.run(call.arguments, cwd) do
-      {:ok, text} when is_binary(text) -> {:ok, text}
-      {:error, text} when is_binary(text) -> {:error, text}
-      other -> {:error, "tool #{call.name} returned #{inspect(other)}"}
+      {:ok, text} when is_binary(text) ->
+        {:ok, text}
+
+      {:error, text} when is_binary(text) ->
+        {:error, text}
+
+      other ->
+        Helyx.Reason.log("tool #{call.name} returned a value outside its contract", other)
+        {:error, "the tool returned a value outside its contract"}
     end
   catch
-    kind, reason -> {:error, Exception.format(kind, reason, __STACKTRACE__)}
+    kind, reason ->
+      # The log keeps the stack of a throw or an exit too.
+      Helyx.Reason.log("tool #{call.name} failed", {kind, reason, __STACKTRACE__})
+      {:error, Helyx.Reason.text(caught(kind, reason, __STACKTRACE__))}
   end
+
+  # A raise is a crash, which gives the message of its exception; a throw
+  # or an exit gives its kind and its value.
+  defp caught(:error, reason, stacktrace), do: {reason, stacktrace}
+  defp caught(kind, reason, _stacktrace), do: {kind, reason}
 end

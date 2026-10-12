@@ -59,24 +59,31 @@ defmodule CodingAgent do
   end
 
   @doc """
-  Returns one sentence on one line that tells the user about an error from
-  `run/1`. It has a clause for every shape of `t:Helyx.Session.File.error/0`,
+  Returns the one line that tells the user about an error from `run/1`.
+  A session that ended while the TUI ran (`{:session_down, reason}`) gives
+  its sentence; any other error is a failed start, and its sentence comes
+  after `could not start the agent: `. There is a clause for every shape of `t:Helyx.Session.File.error/0`,
   for the model ref and provider errors, for a bad working directory
-  (`:invalid_cwd`), and for a tool that is not available. The `:too_large`
+  (`:invalid_cwd`), for a tool that is not available, and for the end of
+  the session. The `:too_large`
   text is a sentence already and passes unchanged. An error with no clause
-  prints through `inspect/1`. Every result gets one clean pass: a whitespace
+  prints through `Helyx.Reason.text/1`, so it holds no stacktrace and has at
+  most 4000 bytes. Every result gets one clean pass: a whitespace
   run becomes one space, and a control character or a byte that is not UTF-8
   becomes `?`.
   """
   @spec error_text(term()) :: String.t()
   def error_text(reason) do
     reason
-    |> sentence()
+    |> line()
     |> String.replace_invalid("?")
     |> String.split()
     |> Enum.join(" ")
     |> String.replace(~r/\p{C}/u, "?")
   end
+
+  defp line({:session_down, _reason} = reason), do: sentence(reason)
+  defp line(reason), do: "could not start the agent: " <> sentence(reason)
 
   defp sentence(:not_found),
     do: "no saved session for this directory; start one without --resume"
@@ -109,6 +116,11 @@ defmodule CodingAgent do
 
   defp sentence(:invalid_cwd), do: "the directory is not UTF-8 or holds a NUL byte"
 
+  # The exit of the TUI when its session ends (`Helyx.Session.end_reason/1`),
+  # or when the session is gone before the TUI subscribes.
+  defp sentence({:session_down, :crashed}), do: "the session crashed and stopped"
+  defp sentence({:session_down, _reason}), do: "the session stopped"
+
   # A POSIX code gets its system text. Any other atom is not one.
   defp sentence(reason) when is_atom(reason) do
     case :file.format_error(reason) do
@@ -117,7 +129,7 @@ defmodule CodingAgent do
     end
   end
 
-  defp sentence(reason), do: inspect(reason)
+  defp sentence(reason), do: Helyx.Reason.text(reason)
 
   @doc """
   Starts or resumes the session `run/1` uses. Public so tests can drive the

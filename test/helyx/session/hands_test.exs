@@ -4,6 +4,7 @@ defmodule Helyx.Session.HandsTest do
   # they get, so no OS resource is needed.
   use ExUnit.Case, async: true
 
+  import ExUnit.CaptureLog, only: [with_log: 1]
   import Helyx.Test.Events, only: [wait_ms: 0]
 
   alias Helyx.Message.ToolCall
@@ -23,6 +24,7 @@ defmodule Helyx.Session.HandsTest do
       Helyx.Test.Tool.HoldTwo,
       Helyx.Test.Tool.HoldBare,
       Helyx.Test.Tool.Raise,
+      Helyx.Test.Tool.Odd,
       Helyx.Test.Tool.Upcase
     ]
 
@@ -67,15 +69,24 @@ defmodule Helyx.Session.HandsTest do
     hands = start_hands(core)
     handles = [{:keep, agent}, {:report, self()}]
 
-    :ok = Helyx.Session.Hands.run(hands, "t1", call("c1", "hold", %{"handles" => handles}))
-    assert_receive {:tool_result, "t1", "c1", {:error, text}}
-    assert text =~ "could not be released"
-    assert text =~ inspect({:keep, agent})
+    # The handle is a plugin term with a pid: the log has it, the text
+    # does not.
+    {text, log} =
+      with_log(fn ->
+        :ok = Helyx.Session.Hands.run(hands, "t1", call("c1", "hold", %{"handles" => handles}))
+        assert_receive {:tool_result, "t1", "c1", {:error, text}}
+        text
+      end)
+
+    assert text == "a resource of the call could not be released"
+    assert log =~ inspect(agent)
     assert_received {:release, :deliver, _handles}
 
-    # The next call is refused, and the kept handle gets a retry first.
+    # The next call is refused, and the kept handle gets a retry first. A
+    # provider start is refused with a text with no pid too.
     assert {:error, text} = upcase(hands, "c2")
-    assert text =~ "earlier call"
+    assert text == "a resource from an earlier call could not be released; the call was not run"
+    assert {:error, ^text} = Helyx.Session.Hands.start_provider(hands, Helyx.Test.Provider, & &1)
 
     # Once the retry releases it, calls run again.
     Agent.update(agent, fn _ -> false end)
@@ -97,9 +108,9 @@ defmodule Helyx.Session.HandsTest do
     # releases only the first.
     await_held(hands, 2)
 
-    assert {:error, text} = cancel(hands, "t1")
-    assert text =~ "could not be released"
-    assert text =~ ":keep"
+    {result, log} = with_log(fn -> cancel(hands, "t1") end)
+    assert {:error, "a resource of the call could not be released"} = result
+    assert log =~ ":keep"
     assert_received {:release, :cancel, _handles}
 
     assert {:error, text} = upcase(hands, "c2")
@@ -159,7 +170,7 @@ defmodule Helyx.Session.HandsTest do
       hands = start_hands(core)
       :ok = Helyx.Session.Hands.run(hands, "t1", call("c1", "hold", %{"handles" => [handle]}))
       assert_receive {:tool_result, "t1", "c1", {:error, text}}
-      assert text =~ inspect(handle)
+      assert text =~ "could not be released"
       assert {:error, text} = upcase(hands, "c2")
       assert text =~ "earlier call"
     end
@@ -216,17 +227,56 @@ defmodule Helyx.Session.HandsTest do
     refute_received {:trace, ^supervisor, :spawn, _, _}
   end
 
-  @tag :capture_log
-  test "a tool that raises with a 200 KB message gives a bounded result", %{core: core} do
+  test "a tool that raises gives its message, cut to the 4000 bytes of an error text",
+       %{core: core} do
     hands = start_hands(core)
-    :ok = Helyx.Session.Hands.run(hands, "t1", call("c1", "raise", %{"bytes" => 200_000}))
-    assert_receive {:tool_result, "t1", "c1", {:error, result}}
-    assert result =~ "RuntimeError"
 
-    assert result =~
-             ~r/^\[cut to \d+ of \d+ bytes, start and end kept\]\n.+\n\[… cut …\]\n/
+    for {bytes, expected} <- [
+          {10, String.duplicate("x", 10)},
+          {200_000, String.duplicate("x", 4000)}
+        ] do
+      :ok = Helyx.Session.Hands.run(hands, "t1", call("c1", "raise", %{"bytes" => bytes}))
+      assert_receive {:tool_result, "t1", "c1", {:error, ^expected}}
+    end
+  end
 
-    assert byte_size(result) <= @max_result_bytes
+  defp odd(hands, what) do
+    with_log(fn ->
+      :ok = Helyx.Session.Hands.run(hands, "t1", call("c1", "odd", %{"do" => what}))
+      assert_receive {:tool_result, "t1", "c1", {:error, result}}, wait_ms()
+      result
+    end)
+  end
+
+  # A stack frame of a test tool shows as its file, a pid as `#PID<`. The
+  # log has the term; the result has a short or a fixed text.
+  test "a crash or a bad return of a tool gives no stack frame and no pid", %{core: core} do
+    hands = start_hands(core)
+    assert {"tool crashed: linked crash", log} = odd(hands, "link_crash")
+    assert log =~ "interfaces.ex"
+
+    assert {"the tool returned a value outside its contract", log} = odd(hands, "weird")
+    assert log =~ "#PID<"
+  end
+
+  # A thrown or exited value gives its cleaned term, as a turn error does:
+  # a pid in it shows as characters, a stack frame does not.
+  test "a throw or an exit of a tool gives its value with no stack frame", %{core: core} do
+    hands = start_hands(core)
+
+    for kind <- ["throw", "exit"] do
+      {result, log} = odd(hands, kind)
+      assert result =~ ~r/^\{:#{kind}, \{:#{kind}\w*, #PID<[\d.]+>\}\}$/
+      assert log =~ "interfaces.ex"
+    end
+  end
+
+  # No boundary caps a thrown value, so the text and the log cap it:
+  # `inspect` of this integer takes seconds.
+  test "a tool that throws a huge integer gives the digit marker", %{core: core} do
+    {result, log} = odd(start_hands(core), "huge")
+    assert result == "{:throw, \"integer of more than 100 digits removed\"}"
+    assert log =~ "integer of more than 100 digits removed"
   end
 
   # Waits until the hands got `n` hold calls, then until they handled them,
