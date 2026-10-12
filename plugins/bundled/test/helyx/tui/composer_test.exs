@@ -108,12 +108,115 @@ defmodule Helyx.TUI.ComposerTest do
     assert value(state) == "draft"
   end
 
-  test "editing a recalled prompt does not change the history" do
+  # An edit of a recalled prompt becomes the draft (#532).
+  test "Up after an edit keeps the edit as the draft, and the history does not change" do
     state = state(["one", "two"]) |> press("up") |> type("!")
     assert value(state) == "!two"
 
-    state = state |> press("up") |> press("down")
+    # The edit ends the recall: Up starts again from the newest prompt.
+    state = press(state, "up")
     assert value(state) == "two"
+    state = press(state, "down")
+    assert value(state) == "!two"
+  end
+
+  test "an edit of a recalled prompt goes after the draft, one per line" do
+    state = state(["one", "two"]) |> type("draft") |> press("up") |> press("up") |> type("!")
+    assert value(state) == "!one"
+
+    # The cursor stays on the same character, so Down on the last row ends
+    # the recall and shows the joined draft.
+    state = press(state, "down")
+    assert value(state) == "draft\n!one"
+    assert ExRatatui.textarea_cursor(state.composer.input) == {1, 1}
+    assert value(press(state, "down")) == "draft\n!one"
+
+    # Up from the first row of the edit, with an older prompt to go to, ends
+    # the recall, then moves the cursor into the draft.
+    state = state(["one", "two"]) |> type("d") |> press("up") |> type("!") |> press("up")
+    assert {value(state), row(state)} == {"d\n!two", 0}
+    state = state |> press("up") |> press("down")
+    assert value(state) == "d\n!two"
+  end
+
+  test "away from the edge, a key in an edited recalled prompt only moves the cursor" do
+    state = state(["a\nb\nc"]) |> type("d") |> press("up") |> press("down") |> type("X")
+    assert {value(state), row(state)} == {"a\nXb\nc", 1}
+
+    state = press(state, "down")
+    assert {value(state), row(state)} == {"a\nXb\nc", 2}
+    assert {_at, "a\nb\nc", "d", _pastes} = state.composer.recall
+
+    # Up off the first row also only moves the cursor.
+    state = press(state, "up")
+    assert {value(state), row(state)} == {"a\nXb\nc", 1}
+    assert {_at, "a\nb\nc", "d", _pastes} = state.composer.recall
+
+    # Down on the last row ends the recall with the join.
+    state = state |> press("down") |> press("down")
+    assert value(state) == "d\na\nXb\nc"
+    assert state.composer.recall == nil
+  end
+
+  test "Up on the edited oldest prompt only moves the cursor" do
+    state = state(["one", "two"]) |> type("d") |> press("up") |> press("up") |> type("X")
+    state = press(state, "up")
+    assert {value(state), row(state)} == {"Xone", 0}
+    assert {0, "one", "d", _pastes} = state.composer.recall
+
+    state = press(state, "down")
+    assert value(state) == "d\nXone"
+  end
+
+  test "the cursor stays on the same character of a multibyte edit" do
+    state = state(["hé🙂llo"]) |> type("dé🙂") |> press("up")
+    state = state |> press("right") |> press("right") |> press("right") |> type("X")
+    state = press(state, "down")
+
+    assert {value(state), ExRatatui.textarea_cursor(state.composer.input)} ==
+             {"dé🙂\nhé🙂Xllo", {1, 4}}
+
+    assert value(type(state, "Y")) == "dé🙂\nhé🙂XYllo"
+  end
+
+  test "a recalled prompt that the user empties drops from the join" do
+    state = state(["one", "two"]) |> type("d") |> press("up")
+    state = Enum.reduce(1..3, state, fn _, state -> press(state, "delete") end)
+    assert value(state) == ""
+    state = press(state, "down")
+    assert value(state) == "d"
+
+    # The recall ended: Up starts again from the newest prompt.
+    assert value(press(state, "up")) == "two"
+  end
+
+  test "a recalled prompt with no edit changes nothing" do
+    # An edit that is undone is no edit: Up goes on to the older prompt.
+    state =
+      state(["one", "two"])
+      |> type("draft")
+      |> press("up")
+      |> type("!")
+      |> press("backspace")
+      |> press("up")
+
+    assert value(state) == "one"
+    state = state |> press("down") |> press("down")
+    assert value(state) == "draft"
+  end
+
+  test "the pastes of the draft and of the edit both expand" do
+    draft = Enum.map_join(1..6, "\n", &"d#{&1}")
+    edit = Enum.map_join(1..6, "\n", &"e#{&1}")
+    {:noreply, state} = TUI.handle_event(%Paste{content: draft}, state(["one"]))
+    state = press(state, "up")
+    {:noreply, state} = TUI.handle_event(%Paste{content: edit}, state)
+    state = press(state, "down")
+
+    assert value(state) ==
+             "[Pasted text #1, 6 lines]\u0001\n[Pasted text #2, 6 lines]\u0001one"
+
+    assert Composer.submit(state.composer) == {:message, draft <> "\n" <> edit <> "one"}
   end
 
   test "the draft comes back with its paste" do

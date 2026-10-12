@@ -214,3 +214,4 @@ One row per ticket that `/orchestrate` merged. An escape is a confirmed Codex fi
 | 2026-10-12 | #518 | r1 (full): 1; r2 (full): 0 | gate r1 (Codex): 0 | none; ship caught all |
 | 2026-10-12 | #513 | r1 (full): 0; r2 (full): 2; r3 (full, after the rebase on #518): 0 | gate r1 (Codex): 0 | none; ship caught all |
 | 2026-10-12 | #533 | r1 (Codex, Markdown rule text): 1; r2: 0 | gate r1 (Codex): 0 | none; ship caught it |
+| 2026-10-12 | #532 | r1 (full): 0; r2 (reduced, owner ruling on the edge): 0; r3 (reduced with Codex, orchestrator ruling on the oldest prompt; the count rule asked for full): 0 | gate r1 (Codex): 0 | none; ship caught all. The orchestrator asked for a reduced round 3 where the count rule asks for a full one; the gate covered the final code |
