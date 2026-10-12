@@ -131,11 +131,12 @@ defmodule Helyx.TUI.ComposerTest do
     assert ExRatatui.textarea_cursor(state.composer.input) == {1, 1}
     assert value(press(state, "down")) == "draft\n!one"
 
-    # Up from the first row of the edit moves the cursor into the draft.
-    state = state(["one"]) |> type("d") |> press("up") |> type("!") |> press("up")
-    assert {value(state), row(state)} == {"d\n!one", 0}
+    # Up from the first row of the edit, with an older prompt to go to, ends
+    # the recall, then moves the cursor into the draft.
+    state = state(["one", "two"]) |> type("d") |> press("up") |> type("!") |> press("up")
+    assert {value(state), row(state)} == {"d\n!two", 0}
     state = state |> press("up") |> press("down")
-    assert value(state) == "d\n!one"
+    assert value(state) == "d\n!two"
   end
 
   test "away from the edge, a key in an edited recalled prompt only moves the cursor" do
@@ -155,6 +156,16 @@ defmodule Helyx.TUI.ComposerTest do
     state = state |> press("down") |> press("down")
     assert value(state) == "d\na\nXb\nc"
     assert state.composer.recall == nil
+  end
+
+  test "Up on the edited oldest prompt only moves the cursor" do
+    state = state(["one", "two"]) |> type("d") |> press("up") |> press("up") |> type("X")
+    state = press(state, "up")
+    assert {value(state), row(state)} == {"Xone", 0}
+    assert {0, "one", "d", _pastes} = state.composer.recall
+
+    state = press(state, "down")
+    assert value(state) == "d\nXone"
   end
 
   test "the cursor stays on the same character of a multibyte edit" do

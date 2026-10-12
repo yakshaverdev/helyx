@@ -107,16 +107,15 @@ if Helyx.TUI.Composer.Available.available?() do
     moves the cursor. Up leaves the cursor at the start, Down at the end, so
     the next Up or Down goes on through the prompts.
 
-    Up on the first row or Down on the last row of an edited recalled prompt
-    first makes it the draft: the draft that waits, then the edit, one per
-    new line, with the pastes of both and the cursor on the same character.
-    Then the key acts on that draft. On any other row the key only moves
-    the cursor, and the recall stays.
+    A key that leaves an edited recalled prompt, to another prompt or Down
+    past the newest, first makes it the draft: the draft that waits, then
+    the edit, one per new line, with the pastes of both and the cursor on
+    the same character. Then the key acts on that draft. Any other key only
+    moves the cursor, and the recall stays.
     """
     @spec recall(t(), ViewModel.t(), String.t()) :: t()
     def recall(%__MODULE__{} = composer, vm, code) when code in ["up", "down"] do
-      # Away from the edge the key only moves the cursor, so the recall stays.
-      composer = if edge?(composer, code), do: keep_edit(composer), else: composer
+      composer = if leaves?(composer, vm, code), do: keep_edit(composer), else: composer
       position = with {at, _shown, _draft, _pastes} <- composer.recall, do: at
 
       case edge?(composer, code) && ViewModel.prompt(vm, position, direction(code)) do
@@ -224,7 +223,13 @@ if Helyx.TUI.Composer.Available.available?() do
       end
     end
 
-    defp keep_edit(composer), do: composer
+    # The key leaves the recalled prompt: Down at the edge goes to a newer
+    # prompt or past the newest, and Up at the edge leaves only when an
+    # older prompt exists.
+    defp leaves?(%{recall: {at, _shown, _draft, _pastes}} = composer, vm, code),
+      do: edge?(composer, code) and (code == "down" or ViewModel.prompt(vm, at, :older) != nil)
+
+    defp leaves?(_composer, _vm, _code), do: false
 
     # What the user typed, in order: the draft that waits behind a recalled
     # prompt, then `value`, the composer text, which is the draft or the
