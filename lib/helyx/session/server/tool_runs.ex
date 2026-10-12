@@ -30,9 +30,9 @@ defmodule Helyx.Session.Server.ToolRuns do
     do: send_result(state, pid, turn_id, id, Session.aborted_result())
 
   # The turn ended: each open request gets `aborted` now, before an
-  # interrupt, while the provider process lives. The hands kill the
-  # running call.
-  def end_turn(%State{conn: %ProviderConn{}} = state, %Turn{} = turn),
+  # interrupt. No request goes to a process that is `:ending`, and a
+  # `:starting` one has none. The hands kill the running call.
+  def end_turn(%State{conn: %ProviderConn{status: :ready}} = state, %Turn{} = turn),
     do: Enum.reduce(ToolQueue.end_turn(turn.tool_queue), state, &effect(&2, turn.id, &1))
 
   def end_turn(state, _turn), do: state

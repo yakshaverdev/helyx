@@ -6,7 +6,7 @@ defmodule Helyx.Session.Server.Steering do
   # and a notice is a `:steer_unconfirmed` event
   # (docs/features/session-lifecycle.md, "Steer").
 
-  import Helyx.Session.Server.State, only: [ask: 4, provider_pid: 1]
+  import Helyx.Session.Server.State, only: [ask: 4]
   import Helyx.Session.Server.Events, only: [emit: 3, emit: 4]
 
   alias Helyx.Session.{Id, Queue, Turn}
@@ -44,8 +44,7 @@ defmodule Helyx.Session.Server.Steering do
   # the 32 steers until its `user_message` and its answer
   # (`Helyx.Session.Queue`).
   # Returns the reply to the client and the state.
-  def steer(%State{activity: %Turn{phase: phase}} = state, text)
-      when phase in [:submitted, :context] do
+  def steer(%State{activity: %Turn{phase: :submitted}} = state, text) do
     if Queue.room?(state.queue),
       do: {:ok, send_steer(text, state)},
       else: {{:error, :queue_full}, state}
@@ -73,13 +72,13 @@ defmodule Helyx.Session.Server.Steering do
   def take(state, steer_id), do: put(state, Queue.take(state.queue, steer_id))
   def answer(state, from, reply), do: put(state, Queue.answer(state.queue, from, reply))
   def abort(state), do: put(state, Queue.abort(state.queue))
-  def provider_down(state), do: put(state, Queue.provider_down(state.queue))
 
-  # With no provider process, no steer request of the turn is open any more.
-  def end_turn(state, turn_id, normal?) do
-    state = put(state, Queue.end_turn(state.queue, turn_id, normal?))
-    if provider_pid(state), do: state, else: provider_down(state)
-  end
+  def end_turn(state, turn_id, normal?),
+    do: put(state, Queue.end_turn(state.queue, turn_id, normal?))
+
+  # The provider process ended: no steer request is open any more. Its
+  # `provider_down` is the only caller (`TurnLoop`).
+  def provider_down(state), do: put(state, Queue.provider_down(state.queue))
 
   defp put(%State{queue: old} = state, {queue, effects}) do
     state = Enum.reduce(effects, %{state | queue: queue}, &effect/2)

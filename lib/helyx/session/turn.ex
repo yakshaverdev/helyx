@@ -7,11 +7,11 @@ defmodule Helyx.Session.Turn do
   # (`Transcript.open_calls/1`).
   # `model` and `provider` are fixed when the turn starts, so a model switch
   # during the turn takes effect on the next one. A turn has a `phase`,
-  # `:preparing`, `:submitting`, `:submitted`, or `:context` (submitted,
-  # with a context request open), the prepared `context` until it is
-  # sent, and the `pending` ref of the answer to `{:turn, ...}`.
-  # `prepare` is the pid of the running prepare Task, which the session
-  # monitors and kills at the turn end, or nil.
+  # `:preparing`, `:submitting`, or `:submitted` (nil before its connect),
+  # the prepared `context` until it is sent, and the `pending` ref of the
+  # answer to `{:turn, ...}`. `prepare` is the pid of the running prepare
+  # Task, which the session monitors and kills at the turn end, or nil: in
+  # `submitted` a prepare Task is an open context request.
   # `tool_queue` holds the Helyx tool requests of the turn
   # (`Helyx.Session.ToolQueue`).
 
@@ -32,7 +32,19 @@ defmodule Helyx.Session.Turn do
     tool_queue: %Helyx.Session.ToolQueue{}
   ]
 
-  @type t :: %__MODULE__{}
+  @type t :: %__MODULE__{
+          id: String.t(),
+          model: ModelRef.t(),
+          provider: module(),
+          partial: [Message.block()] | nil,
+          phase: nil | :preparing | :submitting | :submitted,
+          context: Helyx.Context.t() | nil,
+          pending: reference() | nil,
+          prepare: pid() | nil,
+          bytes: non_neg_integer(),
+          blocks: non_neg_integer(),
+          tool_queue: Helyx.Session.ToolQueue.t()
+        }
 
   # The most bytes of text, thinking, and tool calls in the open assistant
   # message. The largest streamed model output that a provider allows is

@@ -160,6 +160,10 @@ defmodule Helyx.Session.StreamEventsTest do
       collect_until(:turn_end)
     end
 
+    # The session stopped the provider process: `:ending` until its
+    # `provider_down`, then gone.
+    defp stopped?(conn), do: conn == nil or conn.status == :ending
+
     test "a harness session id of 1 byte is kept", %{core: core} do
       events = harness_turn(core, "id1")
 
@@ -293,8 +297,10 @@ defmodule Helyx.Session.StreamEventsTest do
       assert stop_reason(events) == :error
       # The provider process is stopped, and the text-only message joins the
       # transcript with the stop reason `:error`, without the event over the bound.
-      assert %{conn: nil, transcript: [%{role: :user}, %{stop_reason: :error}]} =
+      assert %{conn: conn, transcript: [%{role: :user}, %{stop_reason: :error}]} =
                :sys.get_state(Session.pid(session))
+
+      assert stopped?(conn)
 
       :ok = Session.set_model(session, "conn/events.id1")
       :ok = Session.prompt(session, "again")
@@ -316,8 +322,10 @@ defmodule Helyx.Session.StreamEventsTest do
       assert List.last(events).data.error == {:message_too_large, 8_388_624, 8_388_608}
       assert stop_reason(events) == :error
 
-      assert %{conn: nil, transcript: [%{role: :user}, %{stop_reason: :error}]} =
+      assert %{conn: conn, transcript: [%{role: :user}, %{stop_reason: :error}]} =
                :sys.get_state(Session.pid(session))
+
+      assert stopped?(conn)
     end
 
     test "a first event over the bound ends the open message and stores no reply",
@@ -335,7 +343,8 @@ defmodule Helyx.Session.StreamEventsTest do
                  do: e
                )
 
-      assert %{conn: nil, transcript: [%{role: :user}]} = :sys.get_state(Session.pid(session))
+      assert %{conn: conn, transcript: [%{role: :user}]} = :sys.get_state(Session.pid(session))
+      assert stopped?(conn)
     end
 
     test "the 1,025th block of the open message stops the provider process and fails the turn",
@@ -348,8 +357,10 @@ defmodule Helyx.Session.StreamEventsTest do
       assert List.last(events).data.error == {:too_many_blocks, 1_025, 1_024}
       assert stop_reason(events) == :error
 
-      assert %{conn: nil, transcript: [%{role: :user}, %{stop_reason: :error}]} =
+      assert %{conn: conn, transcript: [%{role: :user}, %{stop_reason: :error}]} =
                :sys.get_state(Session.pid(session))
+
+      assert stopped?(conn)
     end
 
     test "an empty delta makes no block and no event", %{core: core} do
