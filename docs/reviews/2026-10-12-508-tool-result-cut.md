@@ -78,6 +78,23 @@ bounds sensor: 1 candidate functions, 0 flagged, 0 without an answer
 
 Round 3 reproduced no defect, so the loop ends. Its fixes are wording.
 
+## Round 4 (reduced, after the rebase)
+
+The branch was rebased on master after #510 (the stream event `{:resume_id, ...}`, the field `:resume_id`, `ProviderConn.resumed`) and #511 (the resume label count), at merge `c208bfe`. One conflict, in `docs/features/one-provider-path.md`, was mechanical: the #508 `tool_result` line and the #510 `{:resume_id, id, cut}` line are both kept. `stream.ex`, `stream_events_test.exs`, `stream_test.exs`, and `test/support/interfaces.ex` merged without a conflict. The rebase changes no #508 code line, so the round is reduced; the coordinator asked for it, with the base `origin/master`, so the agents saw the full diff on the new master.
+
+Bounds sensor:
+
+```
+bounds sensor: 4 candidate functions, 0 flagged, 0 without an answer
+```
+
+| # | Axis | Finding | Resolution |
+| - | ---- | ------- | ---------- |
+| 4.1 | spec | The merge keeps the #510 renames (`stream.ex` dispatches and matches `{:resume_id, id, cut}`, no `{:resume,` stream event is left) and the #511 change. `Stream.check/1` passes each provider `tool_result` through `cut_result/1`; the hands, the codec, the notice place, and the TUI preview hold the invariant. Read from the code; the stream, message, file, hands, TUI, and text tests pass | — |
+| 4.2 | failure path | Held through `Stream.check/1`: 65,536 bytes unchanged, 65,537 cut with the notice first, 21,846 invalid bytes (65,538 after the repair) cut, surrogates, overlong forms, 2- to 4-byte characters across the cut at offsets 0 to 4, an empty text; each output is valid UTF-8 of at most 65,536 bytes and a second check leaves it unchanged. `truncate/2,3` output with invalid bytes stays at most 51,289 bytes and `cut_result/1` leaves it unchanged. Not reached: the hands cancel race against a direct answer under `:erlang.suspend_process/1` (read from the code only), and an end-to-end run of the harness providers | — |
+
+Round 4 reproduced no defect, so the loop ends.
+
 ## Gate
 
-The coordinator runs the Codex gate after the commit of round 3. Its result and the escapes row are not in this record yet.
+The coordinator runs the Codex gate after the commit of round 4. Its result and the escapes row are not in this record yet.
