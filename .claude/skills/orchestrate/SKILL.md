@@ -73,7 +73,7 @@ Serial, one ticket at a time:
 3. Push. `gh pr create` with a body that contains `Closes #<n>`. No attribution lines.
 4. `gh pr merge --merge --delete-branch`. Confirm the issue closed; close it with a pointer to the PR when it did not.
 5. Run each step only when the step before it passed (`&&`, not `;`): a failed `gh pr create` must not reach the cleanup. Before the push, `git diff origin/master | grep "^+.*icket pending"` must find nothing. Search the added lines, not the tree: old devlogs on master keep the phrase as history.
-6. Remove the worktree. Recompute the frontier. Rebase the other live branch before its own gate. When the merge brought a change to a module that the live branch also changes, the worker runs a reduced round on the rebased branch before the gate: its first round saw the old base, not the new interaction.
+6. Remove the worktree with `git worktree remove`, then run `.claude/skills/ship/codex-reap.sh`. Each Codex review leaves a detached broker for its worktree, and the script sends SIGTERM to each broker whose directory is gone. It skips a broker whose path it cannot read exactly or prove gone; the script header lists the cases (#538). Recompute the frontier. Rebase the other live branch before its own gate. When the merge brought a change to a module that the live branch also changes, the worker runs a reduced round on the rebased branch before the gate: its first round saw the old base, not the new interaction.
 
 ## Park
 
@@ -97,4 +97,4 @@ Then take the next ticket. One parked ticket never stops the queue, except a tic
 
 ## End of run
 
-When the frontier is empty, write a devlog in `docs/devlogs/`: merged tickets, parked tickets with their question, the escapes table rows of the run, and what the system change was for each escape. That devlog goes in through its own small PR by the same merge rule.
+When the frontier is empty, run `.claude/skills/ship/codex-reap.sh` once more for the worktrees that step 6 did not remove (a dropped park, a worktree that the harness cleaned up), then write a devlog in `docs/devlogs/`: merged tickets, parked tickets with their question, the escapes table rows of the run, and what the system change was for each escape. That devlog goes in through its own small PR by the same merge rule.
