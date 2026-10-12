@@ -27,8 +27,9 @@ defmodule Helyx.Session do
   replaced once. Each tool call with no result gets an `aborted` error
   result (`aborted_result/0`). A follow-up during a turn waits in a queue. A
   steer waits in a queue until the provider can take it (see `steer/2`). An
-  abort or a failure of the turn drops both queues. An abort ends the turn
-  at once. It returns at the end of the wait after the turn (`abort/1`): the
+  abort or a failure of the turn empties both queues, and a `:queue_dropped`
+  event gives their texts back to the client. An abort ends the turn at
+  once. It returns at the end of the wait after the turn (`abort/1`): the
   hands have released the resources of the turn or recorded them as
   unconfirmed, an interrupt that the provider got has an answer or its
   provider process has ended, and a provider process that stops has ended.
@@ -291,8 +292,8 @@ defmodule Helyx.Session do
   steer. With no turn running it starts a turn, like a prompt. The text
   must be valid UTF-8. The queued steers and the sent steers that are
   still open count to 32. At that count the call returns
-  `{:error, :queue_full}`. An abort or a failure of the turn drops every
-  queued steer.
+  `{:error, :queue_full}`. An abort or a failure of the turn gives every
+  queued steer back to the client in a `:queue_dropped` event.
 
   A steer that arrives while the turn prepares goes into the turn's
   prompt. A steer that arrives after that, before the provider accepts
@@ -311,9 +312,12 @@ defmodule Helyx.Session do
     do: send_text(session, :steer, text)
 
   @doc """
-  Queues a follow-up prompt. It starts a new turn after the current turn ends
-  normally. With no turn running it starts a turn at once. The text must be
-  valid UTF-8. A full queue returns `{:error, :queue_full}`.
+  Queues a follow-up prompt. Each follow-up opens its own turn, in the
+  order it was sent, after the current turn ends normally; steers that the
+  turn did not take open one turn together before any follow-up. With no
+  turn running it starts a turn at once. The text must be valid UTF-8. A
+  full queue returns `{:error, :queue_full}`. An abort or a failure of the
+  turn gives it back to the client in a `:queue_dropped` event.
   """
   @spec follow_up(t(), String.t()) ::
           :ok | {:error, :invalid_utf8 | :queue_full | :session_not_found}
@@ -348,13 +352,24 @@ defmodule Helyx.Session do
   end
 
   @doc """
-  Aborts the running turn (`docs/features/session-lifecycle.md`). Each tool
-  call without a result gets an `aborted` error result, so the transcript
-  keeps complete call and result pairs. The events of the
-  abort go out at once, before the hands are done; only this call waits. With
-  no turn running and no abort in progress this is a no-op. When the hands
-  cannot confirm that a resource of the turn was released, the call still
-  returns `:ok`, and a `:notice` event with no turn id tells the clients.
+  Aborts (`docs/features/session-lifecycle.md`, "Turn end", "The wait"):
+
+    * A turn runs: the turn ends at once as `:aborted`. Each tool call
+      without a result gets an `aborted` error result, so the transcript
+      keeps complete call and result pairs. If texts are queued, one
+      `:queue_dropped` event with the turn id gives them back before
+      `:turn_end`. The events go out at once; only this call waits, until
+      the end of the wait after the turn.
+    * The session waits after a turn, a failed one too, or for a provider
+      process that ends: if texts are queued, one `:queue_dropped` event
+      with a nil turn id gives them back; the call returns at the end.
+    * Neither: the call returns at once, and the queues are empty. A
+      steer of an ended turn that still waits for its answer gets its
+      `:steer_unconfirmed` event now.
+
+  When the hands cannot confirm that a resource of the turn was released,
+  the call still returns `:ok`, and a `:notice` event with no turn id
+  tells the clients.
   """
   @spec abort(t()) :: :ok | {:error, :session_not_found}
   def abort(%__MODULE__{} = session), do: call(session, :abort, :infinity)

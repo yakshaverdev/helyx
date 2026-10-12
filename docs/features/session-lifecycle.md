@@ -39,7 +39,7 @@ Every end of a turn runs one path, `Wait.finish/2`, with an outcome: `{:done, st
    - At `done` an assistant message always joins with the provider's stop reason and usage: the open one, or an empty one when none is open.
    - At an abort or a failure, an open message with a tool call joins with the stop reason `:tool_use` and usage `%{}`. An open message with text only joins with the stop reason `:aborted` or `:error`, and its `message_end` has the reason in `error`. An open message with no block gets its `message_end` and is not stored.
    - Then each open tool call (`Transcript.open_calls/1`) gets an `aborted` error result. No message goes between a call and its result.
-3. The steers end (`Steering.end_turn/3`). At `done` a steer with no answer stays in the ledger as `{:ended, turn_id}`, and its late answer alone decides what happens to it. An abort or a failure drops both queues.
+3. The steers end (`Steering.end_turn/3`). At `done` a steer with no answer stays in the ledger as `{:ended, turn_id}`, and its late answer alone decides what happens to it. An abort or a failure empties both queues (`Queue.abort/1`, the one owner of this rule): a steer with no answer gets its notice, and one `queue_dropped` event gives the queued texts back to the client, steers first, before `turn_end`.
 4. Each open Helyx tool request of the turn gets `aborted` (`ToolRuns.end_turn/2`), while the provider process lives. No answer is awaited.
 5. `turn_end` goes out with `%{outcome: :done}`, `%{outcome: :aborted}`, or `%{outcome: :error, error: reason}`.
 6. The hands get the cleanup request (`Hands.request_cancel/2`): always at an abort or a failure, and at `done` when a Helyx tool still runs. They kill the Tasks of the turn and release their handles.
@@ -47,12 +47,12 @@ Every end of a turn runs one path, `Wait.finish/2`, with an outcome: `{:done, st
 
 ## The wait
 
-`Wait` holds the parts that must end before the next turn: `hands` (the cleanup answer) and `reply` (the answer to an interrupt or an idle close). A provider process that ends also holds the wait: it stays in `State.conn` with `ProviderConn.status` `:ending` until the hands' `provider_down`. `TurnLoop` ends the wait when no part is left and no provider process is `:ending`. Then the abort callers get `:ok`, a provider process of another model gets `:close`, and the queues start the next turn, steers first.
+`Wait` holds the parts that must end before the next turn: `hands` (the cleanup answer) and `reply` (the answer to an interrupt or an idle close). A provider process that ends also holds the wait: it stays in `State.conn` with `ProviderConn.status` `:ending` until the hands' `provider_down`. `TurnLoop` ends the wait when no part is left and no provider process is `:ending`. Then the abort callers get `:ok`, a provider process of another model gets `:close`, and the queue starts the next turn (`Queue.drain/1`): every queued steer together, or with none the first follow-up. Each follow-up is a turn of its own, and each normal turn end starts one more while the queue holds a text.
 
 - While the wait lasts, the session starts no turn. A prompt and a follow-up queue as follow-ups, and a steer queues as a steer. So a new turn never runs tools beside a Task of the old turn.
 - An interrupt answer `:ok` keeps the provider process. Any other answer, or its armed kill, stops it, and the wait lasts until its `provider_down`.
 - A failed cleanup gives one `notice` with a fixed text. The abort still replies `:ok`.
-- An abort in a wait drops the queues, and its caller gets `:ok` at the end of the wait. An abort with no turn and no wait replies `:ok` at once.
+- An abort in a wait gives the queued texts back in a `queue_dropped` event with a nil turn id, as the abort of a turn does, and its caller gets `:ok` at the end of the wait. An abort with no turn and no wait replies `:ok` at once.
 - A resume id of the session's provider process for the turn that the wait ended is recorded as in a turn, with the turn id of that turn (#518). Both bundled providers send it while they handle `{:turn, ...}`, so after an abort it comes before the answer to the interrupt, in the wait. Only the process in `State.conn` with status `:ready` records it: the provider process sends its pid with the event. A resume id at any other time, or of another turn, is dropped. `Transcript.resumable/3` still decides at the next start whether the id is reused.
 
 ## Deadlines
@@ -85,7 +85,7 @@ The session monitors its provider process, and the hands send `{:provider_down, 
 - Only `provider_down` takes the process out of `conn`. An `:ending` process holds the wait (`TurnLoop.progress/1`), and `TurnLoop.connect/1` never reuses it.
 - Outside a turn, the `:DOWN` makes the process `:ending` and starts a wait, so the next turn waits for its `provider_down`.
 - In a sent turn (`submitting` or later), the `provider_down` fails the turn with `reason`.
-- In `preparing`, the `:DOWN` holds back `{:turn, ...}`. When the process was started by an earlier turn, its `provider_down` makes the turn connect a new one, once. A process that this turn started fails the turn.
+- In `preparing`, the `:DOWN` holds back `{:turn, ...}`. When the process was started by an earlier turn, its `provider_down` makes the turn connect a new one, once, and the queued steers stay for that turn: `Queue.provider_down/1` settles only the steer ledger. A process that this turn started fails the turn.
 - At `provider_down` each sent steer with no notice gets `steer_unconfirmed`, and the ledger drops every entry of that process.
 - Provider output outside the contract (a bad event, a context request outside `submitted` or while one is open (`TurnLoop.handle/2`), a message over a bound) stops the provider process with `{:shutdown, reason}` and fails the turn.
 
@@ -113,6 +113,7 @@ With a ready provider process and no turn and no wait, the session arms one idle
 | idle time with a ready provider process | 1,800,000 ms (`provider_ms.idle` in `Helyx.Session.Server.State`) | the idle close | session |
 | queued steers, and sent steers until their `user_message` and their answer, also after their turn | 32 together (`@limit` in `Helyx.Session.Queue`) | `{:error, :queue_full}` to the client | session |
 | queued follow-ups | 32 (`@limit` in `Helyx.Session.Queue`) | `{:error, :queue_full}` to the client | session |
+| texts of one `queue_dropped` event | the queued steers and follow-ups: at most 32 and 32, each as the client sent it. The event holds no text that the queue did not hold | none: the queue limits hold it | session |
 | bytes of text, thinking, and tool calls in the open assistant message | 8 MiB (`@max_message_bytes` in `Helyx.Session.Turn`) | `{:message_too_large, bytes, max}`: nothing is added, the provider process stops, the turn fails | session |
 | blocks in the open assistant message | 1,024 (`@max_message_blocks` in `Helyx.Session.Turn`) | `{:too_many_blocks, blocks, max}`: as above | session |
 | Helyx tool requests of one turn | one runs, at most 16 wait (`@max_waiting` in `Helyx.Session.ToolQueue`) | an error result to the provider at once; nothing runs | session |

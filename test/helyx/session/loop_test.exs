@@ -406,6 +406,27 @@ defmodule Helyx.Session.LoopTest do
     assert queue_counts(second) == [%{steers: 0, follow_ups: 0}]
   end
 
+  test "each queued follow-up opens its own turn, in order", %{core: core} do
+    {:ok, session} = Session.start(core, model: gated_model())
+    {:ok, _, _} = Session.subscribe(session)
+
+    :ok = Session.prompt(session, "hello")
+    assert_receive {:waiting, stream}
+    for text <- ["a", "b", "c"], do: :ok = Session.follow_up(session, text)
+    send(stream, :go)
+    assert user_texts(collect_until(:turn_end)) == ["hello"]
+
+    turns =
+      for _turn <- 1..3 do
+        assert_receive {:waiting, stream}
+        send(stream, :go)
+        user_texts(collect_until(:turn_end))
+      end
+
+    assert turns == [["a"], ["b"], ["c"]]
+    refute_receive {:waiting, _stream}, 100
+  end
+
   test "a steer in the last model call continues the same turn", %{core: core} do
     {:ok, session} = Session.start(core, model: gated_model())
     {:ok, _, _} = Session.subscribe(session)
@@ -443,7 +464,7 @@ defmodule Helyx.Session.LoopTest do
     assert user_texts(events) == ["again"]
   end
 
-  test "abort drops queued steers and follow-ups", %{core: core} do
+  test "abort gives the queued follow-up back", %{core: core} do
     {:ok, session} = Session.start(core, model: "test/abort")
     {:ok, _, _} = Session.subscribe(session)
 
@@ -461,6 +482,7 @@ defmodule Helyx.Session.LoopTest do
     :ok = Session.abort(session)
     events = collect_until(:turn_end)
     assert stop_reason(events) == :aborted
+    assert of_type(events, :queue_dropped) == [%{texts: ["f"]}]
     assert List.last(queue_counts(events)) == %{steers: 0, follow_ups: 0}
 
     refute_receive {:helyx_event, %Event{type: :turn_start}}, 100

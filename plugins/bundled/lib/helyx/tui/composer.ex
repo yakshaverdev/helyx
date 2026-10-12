@@ -20,6 +20,7 @@ if Helyx.TUI.Composer.Available.available?() do
     alias ExRatatui.Style
     alias ExRatatui.Text.{Line, Span}
     alias ExRatatui.Widgets.{Block, Paragraph, Textarea}
+    alias Helyx.Event
     alias Helyx.TUI.{ViewModel, Wrap}
 
     # The composer shows at most this many lines inside its two borders.
@@ -113,6 +114,25 @@ if Helyx.TUI.Composer.Available.available?() do
         _no_prompt -> widget_key(composer, code)
       end
     end
+
+    @doc """
+    Applies a session event. Only `:queue_dropped` changes the composer:
+    the texts that an abort or a failed turn gave back, in their order,
+    then the draft, then a recalled prompt that shows, edited or not, one
+    per new line, with the cursor at the end. Both keep their pastes. The
+    paste rule cleans each text, so a text cannot forge a marker.
+    """
+    @spec apply(t(), Event.t()) :: t()
+    def apply(%__MODULE__{} = composer, %Event{type: :queue_dropped, data: %{texts: texts}}) do
+      # A draft behind a recalled prompt waits in `recall`; the text that
+      # shows is the draft or the recalled prompt.
+      {_at, waiting, pastes} = composer.recall || {nil, "", %{}}
+      typed = ExRatatui.textarea_get_value(composer.input)
+      parts = Enum.map(texts, &clean/1) ++ Enum.reject([waiting, typed], &(&1 == ""))
+      show(composer, "down", Enum.join(parts, "\n"), Map.merge(pastes, composer.pastes), nil)
+    end
+
+    def apply(%__MODULE__{} = composer, %Event{}), do: composer
 
     @doc "The rows of the composer with its two borders: 3 to 10."
     @spec rows(t()) :: pos_integer()

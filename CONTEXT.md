@@ -59,11 +59,11 @@ A message delivered inside the current turn, before the next model call. The pro
 _Avoid_: inject, interject
 
 **Follow-up**:
-A message delivered as a new turn after the current turn ends.
+A message for after the current turn. Each follow-up opens its own turn, in the order it was sent. Steers that the turn did not take open one turn together, before any follow-up.
 _Avoid_: queue, pending prompt, next
 
 **Abort**:
-Ending the current turn now. Queued steers and follow-ups are dropped.
+Ending the current turn now. A failed turn ends the same way. The queued steers and follow-ups leave the queue and go back to the client.
 _Avoid_: cancel, stop, kill
 
 ## Providers

@@ -23,7 +23,7 @@ if Helyx.TUI.Available.available?() do
       * Enter sends the composer as a steer (a prompt when no turn runs)
       * Alt+Enter sends it as a follow-up; a rejected send stays in the composer
       * `/model provider/model` in the composer switches the model
-      * Escape aborts the running turn
+      * Escape aborts the running turn; its queued messages come back to the composer
       * PgUp and PgDn scroll the transcript (`Helyx.TUI.Transcript`) by one screen
       * the wheel scrolls three rows; a drag copies text (`Helyx.TUI.Selection`)
       * Home and End, with an empty composer, go to the oldest and the newest output
@@ -149,6 +149,7 @@ if Helyx.TUI.Available.available?() do
 
     def handle_info({:helyx_event, event}, state) do
       state = read_branch_after_turn(%{state | vm: ViewModel.apply(state.vm, event)}, event)
+      state = update_in(state.composer, &Composer.apply(&1, event))
       {:noreply, settle(sync_busy(state))}
     end
 
@@ -210,8 +211,7 @@ if Helyx.TUI.Available.available?() do
     def handle_event(%Key{code: "esc", kind: "press"}, state) do
       # Abort waits for the hands to kill every OS process; a Task keeps that
       # wait off the render loop.
-      session = state.session
-      Task.start(fn -> Session.abort(session) end)
+      Task.start(Session, :abort, [state.session])
       {:noreply, state}
     end
 

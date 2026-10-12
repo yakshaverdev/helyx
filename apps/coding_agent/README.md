@@ -33,7 +33,7 @@ The footer shows no key hints, except "Ctrl+C again to quit" after a first Ctrl+
 | Alt+Enter | Queues the composer as a follow-up |
 | Ctrl+J, or Shift+Enter where the terminal reports it | Adds a new line |
 | Up on the first row, Down on the last row | Recalls an earlier prompt |
-| Escape | Aborts the running turn |
+| Escape | Aborts the running turn; its queued messages come back to the composer |
 | PgUp, PgDn | Scrolls the transcript by one screen |
 | Home, End with an empty composer (fn+Left, fn+Right on a MacBook) | Goes to the oldest or the newest output. With text in the composer, they move the cursor |
 | Wheel, trackpad | Scrolls the transcript by three rows |

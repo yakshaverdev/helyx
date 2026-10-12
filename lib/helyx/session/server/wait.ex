@@ -35,11 +35,11 @@ defmodule Helyx.Session.Server.Wait do
   # `:aborted`, or `{:error, reason}`. Its prepare Task is killed, and its
   # records close (`Records.finish/2`). At `done` a steer with no answer
   # yet can still be rejected after the turn (`Queue.answer/3`); an abort
-  # or a failure drops the queues. The hands release the Tasks of the turn
-  # before the next turn: always at an abort or a failure, at `done` when
-  # a Helyx tool still runs. Only an abort of a turn that sent
-  # `{:turn, ...}` gets an interrupt, after the `aborted` answers of its
-  # open tool requests.
+  # or a failure gives the queued texts back (`Queue.abort/1`). The
+  # hands release the Tasks of the turn before the next turn: always at an
+  # abort or a failure, at `done` when a Helyx tool still runs. Only an
+  # abort of a turn that sent `{:turn, ...}` gets an interrupt, after the
+  # `aborted` answers of its open tool requests.
   @spec finish(
           State.t(),
           {:done, Helyx.Message.stop_reason(), map()} | :aborted | {:error, term()}
@@ -50,7 +50,6 @@ defmodule Helyx.Session.Server.Wait do
     state = Records.finish(state, outcome)
     done? = match?({:done, _stop, _usage}, outcome)
     state = Steering.end_turn(state, turn.id, done?)
-    state = if done?, do: state, else: Steering.drop_queues(state)
     state = state |> ToolRuns.end_turn(turn) |> emit(:turn_end, end_data(outcome))
     hands = if !done? or turn.tool_queue.running, do: Hands.request_cancel(state.hands, turn.id)
     wait = if outcome == :aborted, do: interrupt(state, turn), else: %__MODULE__{}
@@ -104,13 +103,10 @@ defmodule Helyx.Session.Server.Wait do
     emit(state, nil, :notice, %{text: text})
   end
 
-  # An abort in a wait drops the queues, like the abort that started the
-  # wait, and its caller gets the reply at the end of the wait. A steer
-  # that still waits for its answer gets its notice now: a late
-  # `:rejected` must not queue it again after the abort.
+  # An abort in a wait gives the queued texts back, like the abort that
+  # started the wait (`Queue.abort/1`), and its caller gets the reply at
+  # the end of the wait.
   @spec abort(State.t(), GenServer.from()) :: State.t()
-  def abort(%State{activity: wait} = state, from) do
-    state = Steering.drop_queues(%{state | activity: %{wait | callers: [from | wait.callers]}})
-    Steering.abort(state)
-  end
+  def abort(%State{activity: wait} = state, from),
+    do: Steering.abort(%{state | activity: %{wait | callers: [from | wait.callers]}})
 end
