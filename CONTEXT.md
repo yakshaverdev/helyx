@@ -31,7 +31,7 @@ One start of a session process. It owns the transcript, the queues, and the curr
 _Avoid_: incarnation, generation
 
 **Turn**:
-The work from one turn start to its turn end. A turn ends done, aborted, or failed. A session runs one turn at a time.
+The work from one turn start to its turn end. A turn ends done, aborted, or failed; a session that stops during a turn ends it with no turn end. A session runs one turn at a time.
 _Avoid_: run, step, iteration
 
 **Prompt**:

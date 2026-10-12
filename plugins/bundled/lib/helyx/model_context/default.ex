@@ -25,7 +25,7 @@ defmodule Helyx.ModelContext.Default do
   come first, and from the first file that does not fit, that file and every
   file farther away are left out. Each build finds and reads the files
   again, so an edit to a context file takes effect at the next context
-  build, unless the total cap leaves that file out.
+  build, unless a cap leaves out that file or the edited part of it.
   `opts` can carry `:home` to override the home directory, for tests.
 
   See `docs/features/context-files.md`.
