@@ -4,7 +4,7 @@
 
 A bash command that never exits must not hold the turn until the user aborts. Each call gets a time limit: 120 s by default, or the optional `timeout` argument in seconds, at most 600 s. At the limit the tool releases the command group through the release that an abort uses, and returns an error result that says the command timed out, with the output kept so far. The result says that the group was released, not that it is gone: a group that the release does not confirm is left to the hands, which make the result an error at delivery. Issue #482.
 
-The research (`docs/research/coding-tools.md`, "Bash timeout") shows opencode with a 2 minute default and no maximum, pi with no default, and codex with 10 s. opencode stops a timed-out command as it stops an aborted one: TERM to the group, then KILL. Helyx does the same.
+The default keeps a stuck command from holding the turn for long, and a command that needs more time asks for it with `timeout`, up to 600 s. A timed-out command stops as an aborted one does: TERM to the group, then KILL. So one release path serves both, and the TERM gives the command its grace to clean up. The defaults of other coding tools are in `docs/research/coding-tools.md`, "Bash timeout".
 
 ## Interface changes
 

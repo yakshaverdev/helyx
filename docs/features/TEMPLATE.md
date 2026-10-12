@@ -4,7 +4,7 @@ Copy this file to `<slug>.md` and fill it in before the implementation. Review c
 
 ## Goal
 
-What the feature does and why. A design decision that the tools research (`docs/research/coding-tools.md`, issue #17) covered cites it here, so review can check the design against how codex, opencode, and pi behave.
+What the feature does and why. Each design decision states its Helyx reason. A decision may link a research note in `docs/research/` for the facts, for example the tools research (`docs/research/coding-tools.md`, issue #17), but the note does not decide.
 
 ## Interface changes
 

@@ -4,7 +4,7 @@ Status: accepted on 2026-09-27, ticket #192.
 
 ADR 0002 made Claude Code and Codex harness providers, and its revision made the provider flag `turn: :external`. Each external turn started the program, resumed the harness session, and ended the program. A harness could not take a message inside a turn, so a steer aborted the turn and sent it again. An abort killed the program's group. Helyx tools were not visible to the harness, because that needed an MCP server.
 
-The research of 2026-09-26 (`docs/research/claude-code-stream-json.md`, `docs/research/codex-app-server.md`) shows that both programs support one process for many turns over the same stdio. Both take a message inside a running turn: a user line during a tool call for Claude, and `turn/steer` for Codex. Both stop a turn in the program and stay alive: the control request `interrupt` for Claude, and `turn/interrupt` for Codex. Both take tools from the client over stdio: an SDK MCP server for Claude, and `dynamicTools` for Codex. t3code keeps one process per session for both programs (`docs/research/t3code-harness-adapters.md`). It does not use all of these parts: it sends Codex messages as `turn/start`, not `turn/steer`, its Claude interrupt closes the session, and it gives tools through an HTTP MCP server.
+The research of 2026-09-26 (`docs/research/claude-code-stream-json.md`, `docs/research/codex-app-server.md`) shows that both programs support one process for many turns over the same stdio. Both take a message inside a running turn: a user line during a tool call for Claude, and `turn/steer` for Codex. Both stop a turn in the program and stay alive: the control request `interrupt` for Claude, and `turn/interrupt` for Codex. Both take tools from the client over stdio: an SDK MCP server for Claude, and `dynamicTools` for Codex.
 
 ## Decision
 
@@ -20,7 +20,7 @@ Plugin code still never runs in the session process. Every event of the program 
 
 - Keep one program per turn. Rejected: every steer loses the running command, and every turn pays the start, the resume, and the replay.
 - Use the Agent SDK. Rejected: it is Node or Python, and it adds a runtime to the node for a protocol that Elixir can speak directly.
-- Expose the Helyx tools through an HTTP MCP server, as t3code does. Rejected for now: both programs take tools over the stdio that Helyx already owns, so no server, port, or token is needed.
+- Expose the Helyx tools through an HTTP MCP server. Rejected for now: both programs take tools over the stdio that Helyx already owns, so no server, port, or token is needed.
 
 ## Consequences
 

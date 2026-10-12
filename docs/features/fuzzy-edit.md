@@ -4,7 +4,7 @@ Ticket #480.
 
 ## Goal
 
-The `edit` tool (`Helyx.Tool.Edit`) needs `old_text` to match the file. Models often send text that differs only in Unicode form, trailing spaces, curly quotes, or dash types, and the edit fails. pi handles this with one fuzzy pass after the exact match (`docs/research/coding-tools.md`, "Edit matching"): NFKC, trailing whitespace, smart quotes, Unicode dashes and spaces. This feature adds the same pass. pi's leading indentation is never normalized; here too, only trailing spaces and tabs drop.
+The `edit` tool (`Helyx.Tool.Edit`) needs `old_text` to match the file. Models often send text that differs only in Unicode form, trailing spaces, curly quotes, or dash types, and the edit fails. This feature adds one fuzzy pass after the exact match: NFKC, trailing whitespace, smart quotes, Unicode dashes and spaces. With these differences ignored, the edit finds the text that the model meant, and the match must still be unique (item 4). Leading indentation is never normalized, because in code it can carry meaning, and a match that ignored it could edit a block at another level. Only trailing spaces and tabs drop. The matching of other coding tools is in `docs/research/coding-tools.md`, "Edit matching".
 
 ## Interface changes
 
@@ -44,4 +44,4 @@ No new resource. The file is read and written as before.
 
 Several edits in one call and diff output for the TUI: the ticket leaves them out, and no ticket owns them yet. A lone CR as a line end: the ticket asks only for CRLF, and no ticket owns it. A U+FEFF in `old_text` or `new_text` is text, except the one leading BOM of `new_text` that item 1 drops.
 
-Accepted: an `old_text` whose last line ends in spaces matches without them, so `foo ` can match the `foo` of `foobar` and leave the `bar`. pi has the same rule.
+Accepted: an `old_text` whose last line ends in spaces matches without them, so `foo ` can match the `foo` of `foobar` and leave the `bar`. It follows from item 3, which counts the end of the text as the end of a line.
