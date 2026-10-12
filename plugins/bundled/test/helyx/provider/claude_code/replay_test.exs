@@ -19,7 +19,7 @@ defmodule Helyx.Provider.ClaudeCode.ReplayTest do
 
     history = replay_history()
 
-    assert [{:resume, _id, 0}, {:text_delta, "ok"} | _] =
+    assert [{:resume_id, _id, 0}, {:text_delta, "ok"} | _] =
              events_of(run_direct(history, work))
   end
 
@@ -29,7 +29,7 @@ defmodule Helyx.Provider.ClaudeCode.ReplayTest do
 
     actions = run_direct([Message.user("hi")], work)
     assert {:stop, {:missing_capabilities, ["msg_lifecycle_v1"]}} = List.last(actions)
-    assert [{:resume, _id, 0}] = events_of(actions)
+    assert [{:resume_id, _id, 0}] = events_of(actions)
   end
 
   # The program writes an assistant line to its session when it reads it,
@@ -52,7 +52,7 @@ defmodule Helyx.Provider.ClaudeCode.ReplayTest do
     answer = &%Message{role: :assistant, content: [%Message.Text{text: &1}]}
     history = [Message.user("a"), answer.("b"), Message.user("c"), answer.("d"), answer.("e")]
 
-    assert [{:resume, _id, 0} | _] =
+    assert [{:resume_id, _id, 0} | _] =
              events_of(run_direct(history ++ [Message.user("x")], work))
 
     refute File.exists?(early)
@@ -67,7 +67,7 @@ defmodule Helyx.Provider.ClaudeCode.ReplayTest do
     script(bin, "quiet.1.1", [init(), replay_failed()])
     turn(bin, 1, 1, reply("ok"))
 
-    assert [{:resume, _id, 0}, {:text_delta, "ok"} | _] =
+    assert [{:resume_id, _id, 0}, {:text_delta, "ok"} | _] =
              events_of(run_direct(replay_history(), work))
 
     assert ["a", "b", "x"] =

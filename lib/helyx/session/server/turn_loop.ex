@@ -188,8 +188,8 @@ defmodule Helyx.Session.Server.TurnLoop do
     with {:ok, pid} <-
            Hands.start_provider(state.hands, turn.provider, ProviderProcess.run(args)) do
       Process.monitor(pid)
-      conn = %ProviderConn{pid: pid, model: turn.model, turn: turn.id}
-      {:ok, %{state | conn: conn, activity: %{turn | resumed: resumed}}}
+      conn = %ProviderConn{pid: pid, model: turn.model, turn: turn.id, resumed: resumed}
+      {:ok, %{state | conn: conn}}
     end
   end
 

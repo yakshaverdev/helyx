@@ -95,7 +95,7 @@ defmodule Helyx.Session.StreamTest do
   end
 
   test "a resume event passes" do
-    event = {:resume, "a", 0}
+    event = {:resume_id, "a", 0}
     assert {:send, ^event, nil} = SessionStream.check(event)
   end
 

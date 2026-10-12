@@ -31,7 +31,7 @@ defmodule Helyx.Provider do
           | {:error, term()}
           | {:message_end, stop_reason(), map()}
           | {:tool_result, String.t(), {:ok | :error, String.t()}}
-          | {:resume, String.t(), non_neg_integer()}
+          | {:resume_id, String.t(), non_neg_integer()}
           | {:user_message, String.t()}
           | {:tool_request, call_id :: String.t(), name :: String.t(),
              arguments :: map() | String.t()}

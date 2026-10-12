@@ -164,14 +164,14 @@ defmodule Helyx.Session.StreamEventsTest do
       events = harness_turn(core, "id1")
 
       assert [%{resume_id: "a"}] =
-               for(%Event{type: :provider_session, data: d} <- events, do: d)
+               for(%Event{type: :resume_id, data: d} <- events, do: d)
     end
 
     test "a harness session id of 256 bytes is kept", %{core: core} do
       events = harness_turn(core, "id256")
 
       assert [%{resume_id: id}] =
-               for(%Event{type: :provider_session, data: d} <- events, do: d)
+               for(%Event{type: :resume_id, data: d} <- events, do: d)
 
       assert byte_size(id) == 256
       assert stop_reason(events) == :end_turn
@@ -181,14 +181,14 @@ defmodule Helyx.Session.StreamEventsTest do
       events = harness_turn(core, "max_cut")
       cut = Integer.pow(10, 100) - 1
 
-      assert [%{cut: ^cut}] = for(%Event{type: :provider_session, data: d} <- events, do: d)
+      assert [%{cut: ^cut}] = for(%Event{type: :resume_id, data: d} <- events, do: d)
       assert stop_reason(events) == :end_turn
     end
 
     test "an id of 257 bytes, 0 bytes, or not UTF-8, or a cut over the digit limit or below 0 fails the turn",
          %{core: core} do
       for model <- ["id257", "id0", "raw_id", "big_cut", "neg_cut"] do
-        assert {:bad_stream_event, {:resume, _, _}} =
+        assert {:bad_stream_event, {:resume_id, _, _}} =
                  List.last(harness_turn(core, model)).data.error,
                model
       end

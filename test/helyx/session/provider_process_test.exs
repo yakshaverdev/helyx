@@ -1260,6 +1260,27 @@ defmodule Helyx.Session.ProviderProcessTest do
     end
   end
 
+  # #510: the resume id belongs to the provider process, not to the turn
+  # that started it.
+  test "a resume id lost during a start that the turn aborted is lost at the next turn",
+       %{core: core} do
+    {session, _pid, _hands} = start(core, "label")
+    %{resume_id: id} = label(turn(session, "one"))
+    :ok = Session.set_model(session, "conn/lost_label")
+
+    :ok = Session.prompt(session, "two")
+    assert_receive {:conn, :init, proc, {"lost_label", _, opts}}
+    assert opts[:resume_id] == id
+    :ok = Session.abort(session)
+    assert %{outcome: :aborted} = List.last(collect_until(:turn_end)).data
+
+    send(proc, :started)
+    events = turn(session, "three")
+    assert_received {:conn, :turn, ^proc, _request}
+    assert %{resume_id: fresh, lost: true} = label(events)
+    assert fresh != id
+  end
+
   # #282: two Cores that resumed one session continue one program session.
   # A fork below its label drops it, so a later resume of either branch
   # starts a fresh program session and gets the branch replayed.
@@ -1268,7 +1289,7 @@ defmodule Helyx.Session.ProviderProcessTest do
 
     defp stop(session), do: Helyx.Test.SessionCase.stop_session(session, &GenServer.stop/1)
 
-    defp label(events), do: Enum.find(events, &(&1.type == :provider_session)).data
+    defp label(events), do: Enum.find(events, &(&1.type == :resume_id)).data
 
     defp init_label do
       assert_receive {:conn, :init, _, {"label", _, opts}}
@@ -1288,7 +1309,7 @@ defmodule Helyx.Session.ProviderProcessTest do
       # B continues the label too: the hole of two live Cores.
       {:ok, b} = Session.resume(other, sessions_dir: dir)
       {:ok, _, _} = Session.subscribe(b)
-      refute Enum.any?(turn(b, "b1"), &(&1.type == :provider_session))
+      refute Enum.any?(turn(b, "b1"), &(&1.type == :resume_id))
       turn(a, "a1")
       stop(a)
       stop(b)

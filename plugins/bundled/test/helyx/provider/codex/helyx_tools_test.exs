@@ -106,7 +106,7 @@ defmodule Helyx.Provider.Codex.HelyxToolsTest do
                }
              } = request(bin, 1, "thread/start")
 
-      assert [{:resume, id, 0} | _] = events(actions)
+      assert [{:resume_id, id, 0} | _] = events(actions)
       assert digest?(id)
     end
 
@@ -115,7 +115,7 @@ defmodule Helyx.Provider.Codex.HelyxToolsTest do
       fresh(bin, 1, tid(), reply(tid(), "Hi."))
       {state, actions} = tools_turn(work)
       {actions, state} = pump(Codex, state, actions, &turn_ended?/1)
-      [{:resume, id, 0} | _] = events(actions)
+      [{:resume_id, id, 0} | _] = events(actions)
       close(state)
 
       runs = [
@@ -294,7 +294,7 @@ defmodule Helyx.Provider.Codex.HelyxToolsTest do
       assert transcript_calls(events) == {["call_d1"], ["call_d1"]}
       assert [{0, %{"success" => true, "contentItems" => [%{"text" => text}]}}] = answers(bin, 1)
       assert text =~ "hello"
-      assert [%{resume_id: id}] = of_type(events, :provider_session)
+      assert [%{resume_id: id}] = of_type(events, :resume_id)
       assert digest?(id)
     end
 

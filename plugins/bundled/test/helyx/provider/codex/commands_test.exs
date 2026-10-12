@@ -158,7 +158,7 @@ defmodule Helyx.Provider.Codex.CommandsTest do
     ])
 
     assert [
-             {:resume, tid(), 0},
+             {:resume_id, tid(), 0},
              {:tool_call, %{id: "exec-1"}},
              {:stop, {:malformed, "item/completed"}}
            ] = run_direct([Message.user("go")], work)
@@ -170,7 +170,7 @@ defmodule Helyx.Provider.Codex.CommandsTest do
     lines_file(bin, "failed", [running, turn_end(tid(), "failed", "usage limit")])
     fresh(bin, 1, tid(), [], ~s(out "$d/failed"\n))
 
-    assert [{:resume, tid(), 0}, {:tool_call, %{id: "exec-1"}}, {:stop, :command_running}] =
+    assert [{:resume_id, tid(), 0}, {:tool_call, %{id: "exec-1"}}, {:stop, :command_running}] =
              run_direct([Message.user("go")], work)
   end
 
@@ -186,7 +186,7 @@ defmodule Helyx.Provider.Codex.CommandsTest do
       fresh(bin, n, tid(), [start, turn_end(tid(), "completed")])
 
       assert run_direct([Message.user("go")], work) ==
-               [{:resume, tid(), 0}, {:stop, {:malformed, "item/started"}}]
+               [{:resume_id, tid(), 0}, {:stop, {:malformed, "item/started"}}]
     end
   end
 

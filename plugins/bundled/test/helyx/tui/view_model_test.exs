@@ -491,7 +491,7 @@ defmodule Helyx.TUI.ViewModelTest do
           model_change: %{model: nil},
           notice: %{},
           steer_unconfirmed: %{},
-          provider_session: %{provider: "p"}
+          resume_id: %{provider: "p"}
         ] do
       [event] = events([{type, data}])
       assert catch_error(ViewModel.apply(new(), event)), inspect(type)
@@ -708,11 +708,11 @@ defmodule Helyx.TUI.ViewModelTest do
     end
   end
 
-  test "a provider session shows a notice when the provider lost its session or got a cut transcript" do
+  test "a resume id shows a notice when the provider lost its session or got a cut transcript" do
     fresh = %{provider: "claude-code", resume_id: "s", lost: false, cut: 0}
-    assert cells(fold(provider_session: fresh)) == []
+    assert cells(fold(resume_id: fresh)) == []
 
-    assert cells(fold(provider_session: %{fresh | lost: true, cut: 4})) == [
+    assert cells(fold(resume_id: %{fresh | lost: true, cut: 4})) == [
              {:notice, "claude-code lost its own session; a fresh one got the transcript"},
              {:notice, "claude-code got the transcript without its 4 oldest messages"}
            ]

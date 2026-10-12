@@ -102,7 +102,7 @@ defmodule Helyx.Session.Stream do
   # gets the integer cap here, as every other value from a provider does.
   def check({:error, reason}), do: {:terminal, {:error, Message.cap_integers(reason)}}
 
-  def check({tag, _, _} = event) when tag in [:message_end, :tool_result, :resume] do
+  def check({tag, _, _} = event) when tag in [:message_end, :tool_result, :resume_id] do
     case provider_event(event) do
       {:ok, event} -> {:send, event, nil}
       {:error, _} = error -> {:bad, error}
@@ -189,7 +189,7 @@ defmodule Helyx.Session.Stream do
       else: {:ok, {:tool_result, id, Message.scrub({status, text})}}
   end
 
-  defp provider_event({:resume, id, cut} = event) when is_integer(cut) and cut >= 0 do
+  defp provider_event({:resume_id, id, cut} = event) when is_integer(cut) and cut >= 0 do
     # No integer over the digit limit reaches the session.
     if Message.resume_id?(id) and not Message.big_integer?(cut),
       do: {:ok, event},

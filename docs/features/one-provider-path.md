@@ -55,7 +55,7 @@ The rules of the contract above (#298, #299, #300).
 
 - `{:message_end, stop_reason, usage}`: optional (#385). The assistant message so far is complete, with this usage. `Helyx.Provider.Loop` sends it before its `tool_request` events; the harness providers send none. The session closes the open assistant message by itself, with no usage, at the first `tool_result` of one of its calls (stop reason `:tool_use`), at a taken steer (stop reason from the message, as before), and at the terminal. Send it once per message, only after content (a delta or a tool call) that no earlier close closed, and only when every call of the messages before it has its result: at each close the session gives every call of the earlier messages that is still open an `aborted` result and drops a later result; the calls of the closed message stay open for their `tool_result` events until the next close. The `done` event closes the last assistant message, so a provider sends no `message_end` for that message: a `message_end` right before `done` adds an empty assistant message (`Helyx.Session.Server.Records.finish/2`). At an `error` event or an abort, open content with text only joins with stop `:error` or `:aborted` (#432); open content with a tool call joins with stop `:tool_use`, and its calls get `aborted` (#385). At the end of the turn, the session gives `aborted` to every call with no result.
 - `{:tool_result, call_id, {:ok | :error, binary}}`: the result of a tool call. The first result of a call of the open message closes that message first (#385). The provider cuts the text to the tool result limits before it sends the event, as a tool does; the session does not cut it. A text over `@max_tool_result_bytes` (`Helyx.Session.Stream`) fails the turn with `{:tool_result_too_large, bytes, limit}`.
-- `{:resume, id, cut}`: the program started a fresh program session with this id; `cut` is the number of transcript messages the provider left out of what it sent to it.
+- `{:resume_id, id, cut}`: the program started a fresh program session with this id; `cut` is the number of transcript messages the provider left out of what it sent to it.
 
 **Stops.** A malformed event (the reason `{:bad_stream_event, event}`), a reply of the wrong shape or for no open request, an error reply to `{:turn, ...}` or `{:interrupt, ...}`, and a bad return stop the provider process: its port closes, and the watchdog stops the program. Core does not limit the open requests: the session bounds each kind (`Bounds` in `docs/features/session-lifecycle.md`).
 
@@ -98,7 +98,7 @@ A public adapter in Core, `lib/helyx/provider/loop.ex` (Decision Q1). An API pro
 | `{:interrupt, id}` | Stops the model Task with `Task.shutdown(task, :brutal_kill)` and waits for its death (L3), drops its held steers and its wait for a context or a result, and then replies `:ok`. |
 | `:idle_close`, `:close` | Replies `:ok`, and the process ends with `{:shutdown, :closed}` (L1). It has no program to keep. |
 
-The helper never sends `{:resume, ...}` or `:turn_start`, and it holds no handles, so it has no `release/3`.
+The helper never sends `{:resume_id, ...}` or `:turn_start`, and it holds no handles, so it has no `release/3`.
 
 ### Process lifetime
 

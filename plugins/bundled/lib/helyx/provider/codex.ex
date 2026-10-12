@@ -482,7 +482,7 @@ defmodule Helyx.Provider.Codex do
   # any. The turn's `turn/start` waits for the replay's answer.
   defp replay(history, state) do
     {items, cut} = Replay.items(history)
-    state = push(state, [{:resume, Tools.session_id(state.thread, state.tools.specs), cut}])
+    state = push(state, [{:resume_id, Tools.session_id(state.thread, state.tools.specs), cut}])
 
     if items == [] do
       start_turn(state)

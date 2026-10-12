@@ -62,7 +62,7 @@ defmodule Helyx.Provider.ClaudeCode.IdleCloseTest do
       {_from, actions, state} = request(harness(work), {:turn, "t1", context})
       {actions, state} = pump(ClaudeCode, state, actions, &ended?/1)
 
-      assert [{:resume, _, 0}, {:text_delta, "ok"}, {:done, _}] =
+      assert [{:resume_id, _, 0}, {:text_delta, "ok"}, {:done, _}] =
                for({:event, "t1", event} <- actions, do: event)
 
       state = settle(ClaudeCode, state, &(&1.tasks != []))
@@ -103,7 +103,7 @@ defmodule Helyx.Provider.ClaudeCode.IdleCloseTest do
     session = start(ctx)
     pid = Session.pid(session)
     :erlang.trace(pid, true, [:receive])
-    [%{resume_id: id}] = of_type(prompt(session, "hello"), :provider_session)
+    [%{resume_id: id}] = of_type(prompt(session, "hello"), :resume_id)
     # A turn that starts before the session saw the end runs on the old
     # provider process and fails (`docs/features/session-lifecycle.md`,
     # "Current limits"). A later call returns after the session handled it.

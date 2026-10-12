@@ -106,10 +106,10 @@ defmodule Helyx.Session.Server do
     do: {:noreply, ToolRuns.cancel(state, call_id)}
 
   def handle_info(
-        {:stream_event, turn_id, {:resume, id, cut}},
+        {:stream_event, turn_id, {:resume_id, id, cut}},
         %State{activity: %Turn{id: turn_id}} = state
       ),
-      do: {:noreply, Records.resume(state, id, cut)}
+      do: {:noreply, Records.resume_id(state, id, cut)}
 
   # An event that breaks the bound of the open message stops the provider
   # process (`Records.delta/2`).
