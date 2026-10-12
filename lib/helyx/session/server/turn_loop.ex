@@ -6,12 +6,12 @@ defmodule Helyx.Session.Server.TurnLoop do
   # (docs/features/session-lifecycle.md, "Turn states", "Turn end",
   # and "The wait"). The turn starts, connects its provider process,
   # prepares its context, is submitted, and ends; the wait after it lasts
-  # until the hands, the open reply, and the provider process that ends are
+  # until the hands, the open reply, and a provider process that ends are
   # done. The inputs are the client calls (`admit/3`, `abort/2`) and the
   # messages of `handle/2`; `work/1` lists the work that a session stop
   # ends (`Helyx.Session.Server.Stop`).
 
-  import Helyx.Session.Server.State, only: [ask: 4, provider_pid: 1]
+  import Helyx.Session.Server.State, only: [ask: 4]
   import Helyx.Session.Server.Events, only: [emit: 3]
 
   alias Helyx.{Context, Message}
@@ -38,35 +38,42 @@ defmodule Helyx.Session.Server.TurnLoop do
   #
   # A turn that the provider started by itself (#240) opens only with no
   # turn and no wait; any other time it is dropped with its events.
+  @spec handle(term(), State.t()) :: State.t()
   def handle(
         {:stream_event, turn_id, :turn_start},
-        %State{activity: :idle, conn: %ProviderConn{ready: true}} = state
+        %State{activity: :idle, conn: %ProviderConn{status: :ready}} = state
       ),
       do: start_provider_turn(state, turn_id)
 
   def handle({:stream_end, turn_id, terminal}, %State{activity: %Turn{id: turn_id}} = state),
     do: end_turn(terminal, state)
 
-  def handle({:provider_ready, pid}, %State{conn: %ProviderConn{pid: pid}} = state),
-    do: arm_idle(submit(put_in(state.conn.ready, true)))
+  # A process that the session stopped is `:ending`, and it stays `:ending`.
+  def handle(
+        {:provider_ready, pid},
+        %State{conn: %ProviderConn{pid: pid, status: :starting}} = state
+      ),
+      do: arm_idle(submit(put_in(state.conn.status, :ready)))
 
-  # The result of the turn's prepare Task, at the turn start or for a
-  # context request (C1-C4, `one-provider-path.md`).
+  # The result of the turn's running prepare Task, at the turn start
+  # (`preparing`) or for a context request (`submitted`, C1-C4,
+  # `one-provider-path.md`).
   def handle(
         {:prepared, turn_id, result},
-        %State{activity: %Turn{id: turn_id, phase: phase}} = state
+        %State{activity: %Turn{id: turn_id, prepare: pid}} = state
       )
-      when phase in [:preparing, :context],
+      when pid != nil,
       do: prepared(state, result)
 
   # A context request (C1-C4) comes after the events before it, and is
   # answered as a tool result is: only for the submitted turn with no
-  # context request open; at any other time it is a bad action.
+  # context request open (no prepare Task); at any other time it is a bad
+  # action.
   def handle(
         {:need_context, turn_id},
-        %State{activity: %Turn{id: turn_id, phase: :submitted}} = state
+        %State{activity: %Turn{id: turn_id, phase: :submitted, prepare: nil}} = state
       ),
-      do: prepare(put_in(state.activity.phase, :context))
+      do: prepare(state)
 
   def handle({:need_context, turn_id}, %State{activity: %Turn{id: turn_id}} = state),
     do: stop_provider(state, {:bad_action, {:need_context, turn_id}})
@@ -95,27 +102,25 @@ defmodule Helyx.Session.Server.TurnLoop do
   # every message until the answer.
   def handle(
         {:timeout, ref, :idle_close},
-        %State{idle: ref, activity: :idle, conn: %ProviderConn{pid: pid, ready: true}} = state
+        %State{idle: ref, activity: :idle, conn: %ProviderConn{pid: pid, status: :ready}} = state
       ) do
     from = ask(state, pid, :idle_close, :close)
-    %{state | idle: nil, activity: %Wait{reply: from, provider: pid}}
+    %{state | idle: nil, activity: %Wait{reply: from}}
   end
 
   # From the hands, after the release of the provider process's handles:
-  # the end of the provider process that the wait is for, or of the current
-  # one. Any other `:provider_down` is a bug and crashes the session.
-  def handle({:provider_down, pid, reason}, %State{activity: %Wait{provider: pid}} = state),
-    do: provider_down(state, pid, reason)
-
-  def handle({:provider_down, pid, reason}, %State{conn: %ProviderConn{pid: pid}} = state),
-    do: provider_down(state, pid, reason)
+  # the end of the session's provider process. A process leaves `conn`
+  # only here, so any other `:provider_down` is a bug and crashes the
+  # session.
+  def handle({:provider_down, pid, reason}, %State{conn: %ProviderConn{pid: pid} = conn} = state),
+    do: provider_down(%{state | conn: nil}, conn, reason)
 
   # The session's monitor of the current provider process (#361).
   def handle(
         {:DOWN, _ref, :process, pid, _reason},
         %State{conn: %ProviderConn{pid: pid}} = state
       ),
-      do: monitor_down(state, pid)
+      do: monitor_down(state)
 
   # The end of the turn's prepare Task before its context: it raised,
   # exited, or was killed at its bound. A Task that sent its context is no
@@ -168,11 +173,16 @@ defmodule Helyx.Session.Server.TurnLoop do
   end
 
   # Starts the provider process of the turn under the hands, with the
-  # resume id of the transcript, and monitors it: its `:DOWN` outside a
-  # turn drops it at once. A provider process of another model was closed
-  # before the turn (`close_switched/1`).
-  defp connect(%State{conn: %ProviderConn{model: model}, activity: %Turn{model: model}} = state),
-    do: {:ok, state}
+  # resume id of the transcript, and monitors it (`monitor_down/1`). A
+  # provider process of another model was closed before the turn
+  # (`close_switched/1`). An `:ending` process holds a wait, so no turn
+  # reuses it.
+  defp connect(
+         %State{conn: %ProviderConn{model: model, status: status}, activity: %Turn{model: model}} =
+           state
+       )
+       when status != :ending,
+       do: {:ok, state}
 
   defp connect(%State{conn: nil, activity: turn} = state) do
     resumed = Transcript.resumable(state.transcript, state.resume_ids, turn.model.provider)
@@ -230,9 +240,9 @@ defmodule Helyx.Session.Server.TurnLoop do
     end
   end
 
-  defp prepared(%State{activity: %Turn{phase: :context} = turn, conn: conn} = state, result) do
+  defp prepared(%State{activity: %Turn{phase: :submitted} = turn, conn: conn} = state, result) do
     ask(state, conn.pid, {:context, turn.id, result}, :reply)
-    %{state | activity: %{turn | phase: :submitted, prepare: nil}}
+    %{state | activity: %{turn | prepare: nil}}
   end
 
   # Sends `{:turn, ...}` when the provider process is ready and the context
@@ -241,7 +251,7 @@ defmodule Helyx.Session.Server.TurnLoop do
   defp submit(
          %State{
            activity: %Turn{phase: :preparing, context: context},
-           conn: %ProviderConn{pid: pid, ready: true}
+           conn: %ProviderConn{pid: pid, status: :ready}
          } = state
        )
        when context != nil do
@@ -253,36 +263,41 @@ defmodule Helyx.Session.Server.TurnLoop do
 
   defp submit(state), do: state
 
-  # The end of the provider process that the wait is for, or of the
-  # current one. In a turn it fails the turn, whose cleanup the hands then
-  # run after the release. Only a process of an earlier turn that ends
-  # while this turn prepares got nothing of it: the turn connects a new
-  # one, once.
-  defp provider_down(%State{activity: %Wait{}} = state, pid, _reason),
-    do: progress(Wait.provider_down(state, pid))
+  # The end of the session's provider process, `conn` already nil: no
+  # request to it is open any more. In a wait its reply ends too. In a turn
+  # it fails the turn, whose cleanup the hands then run after the release;
+  # the turn end gives the steer notices first. Only a process of an
+  # earlier turn that ends while this turn prepares got nothing of it: the
+  # turn connects a new one, once.
+  defp provider_down(%State{activity: %Wait{} = wait} = state, _conn, _reason),
+    do: progress(Steering.provider_down(%{state | activity: %{wait | reply: nil}}))
 
-  defp provider_down(%State{activity: %Turn{} = turn, conn: conn} = state, _pid, reason) do
-    if turn.phase == :preparing and conn.turn != turn.id,
-      do: call_provider(Steering.provider_down(%{state | conn: nil})),
-      else: fail_turn(reason, %{state | conn: nil})
-  end
+  defp provider_down(
+         %State{activity: %Turn{phase: :preparing, id: id}} = state,
+         %ProviderConn{turn: started_by},
+         _reason
+       )
+       when started_by != id,
+       do: call_provider(Steering.provider_down(state))
+
+  defp provider_down(%State{activity: %Turn{}} = state, _conn, reason),
+    do: Steering.provider_down(fail_turn(reason, state))
 
   # Idle, when it comes before the session's `:DOWN` (no order between them).
-  defp provider_down(%State{activity: :idle} = state, _pid, _reason),
-    do: Steering.provider_down(%{state | conn: nil})
+  defp provider_down(%State{activity: :idle} = state, _conn, _reason),
+    do: Steering.provider_down(state)
 
   # The session's monitor of the current provider process (#361). Outside a
-  # turn the process is dropped at once, and the next turn waits for its
-  # `:provider_down`. In a preparing turn it holds back `{:turn, ...}`
-  # until then. In a sent turn its `:provider_down` fails the turn.
-  defp monitor_down(%State{activity: %Turn{phase: :preparing}} = state, _pid),
-    do: put_in(state.conn.ready, false)
+  # sent turn the process is `:ending`: in a preparing turn it holds back
+  # `{:turn, ...}`, and with no turn the session waits, until its
+  # `:provider_down`. In a sent turn its `:provider_down` fails the turn.
+  defp monitor_down(%State{activity: %Turn{phase: phase}} = state)
+       when phase in [:submitting, :submitted],
+       do: state
 
-  defp monitor_down(%State{activity: %Turn{}} = state, _pid), do: state
-
-  defp monitor_down(%State{activity: activity} = state, pid) do
-    wait = if activity == :idle, do: %Wait{}, else: activity
-    %{state | conn: nil, activity: %{wait | provider: pid}}
+  defp monitor_down(%State{activity: activity} = state) do
+    activity = if activity == :idle, do: %Wait{}, else: activity
+    %{put_in(state.conn.status, :ending) | activity: activity}
   end
 
   # The release of the hands can take longer than the timeout of a client
@@ -303,7 +318,10 @@ defmodule Helyx.Session.Server.TurnLoop do
 
   # At the end of the wait the abort callers get their reply. An idle
   # session settles too: a late `:rejected` can queue a steer.
-  defp progress(%State{activity: %Wait{hands: nil, reply: nil, provider: nil} = wait} = state) do
+  defp progress(%State{activity: %Wait{}, conn: %ProviderConn{status: :ending}} = state),
+    do: state
+
+  defp progress(%State{activity: %Wait{hands: nil, reply: nil} = wait} = state) do
     Enum.each(wait.callers, &GenServer.reply(&1, :ok))
     settle(%{state | activity: :idle})
   end
@@ -327,7 +345,7 @@ defmodule Helyx.Session.Server.TurnLoop do
   defp close_switched(%State{model: model, conn: %ProviderConn{pid: pid, model: other}} = state)
        when other != model do
     ask(state, pid, :close, :close)
-    %{state | conn: nil, activity: %Wait{provider: pid}}
+    %{put_in(state.conn.status, :ending) | activity: %Wait{}}
   end
 
   defp close_switched(state), do: state
@@ -344,7 +362,7 @@ defmodule Helyx.Session.Server.TurnLoop do
   # Arms the idle timer when the session holds a ready provider process
   # with no turn and no wait. It cancels the earlier timer; a message of
   # it that is already in the mailbox has an old ref.
-  defp arm_idle(%State{activity: :idle, conn: %ProviderConn{ready: true}} = state) do
+  defp arm_idle(%State{activity: :idle, conn: %ProviderConn{status: :ready}} = state) do
     if state.idle, do: :erlang.cancel_timer(state.idle)
     %{state | idle: :erlang.start_timer(state.provider_ms.idle, self(), :idle_close)}
   end
@@ -363,21 +381,17 @@ defmodule Helyx.Session.Server.TurnLoop do
   # and the wait lasts until its `:provider_down`.
   def stop_provider(%State{conn: %ProviderConn{pid: pid}} = state, reason) do
     Process.exit(pid, {:shutdown, reason})
-    state = fail_turn(reason, %{state | conn: nil})
-    put_in(state.activity.provider, pid)
+    fail_turn(reason, put_in(state.conn.status, :ending))
   end
 
   defp fail_turn(reason, state), do: Wait.finish(state, {:error, reason})
 
   # The work that a session stop ends (`Helyx.Session.Server.Stop`): in a
   # turn, its prepare Task, to kill; the hands take its provider process.
-  # With no turn, the current provider process and the one the wait is for
-  # (an idle close, a switch close, an abort), to close.
+  # With no turn, the provider process, also one that ends (an idle close,
+  # a switch close, an abort), to close.
+  @spec work(State.t()) :: %{kill: [pid()], close: [pid()]}
   def work(%State{activity: %Turn{prepare: pid}}), do: %{kill: List.wrap(pid), close: []}
-
-  def work(%State{activity: %Wait{provider: wait}} = state), do: close([wait], state)
-  def work(%State{activity: :idle} = state), do: close([], state)
-
-  defp close(pids, state),
-    do: %{kill: [], close: Enum.uniq(for p <- [provider_pid(state) | pids], is_pid(p), do: p)}
+  def work(%State{conn: %ProviderConn{pid: pid}}), do: %{kill: [], close: [pid]}
+  def work(_state), do: %{kill: [], close: []}
 end

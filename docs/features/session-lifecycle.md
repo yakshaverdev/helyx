@@ -15,14 +15,13 @@ The Core turn contract: how a session starts, runs, and ends a turn with its pro
 
 ## Turn states
 
-A turn has a `phase` (`Helyx.Session.Turn`). The line between `preparing` and `submitting` is the send of `{:turn, ...}`, not its answer.
+A turn has a `phase` (`Helyx.Session.Turn`). The line between `preparing` and `submitting` is the send of `{:turn, ...}`, not its answer. A context request (`{:need_context, turn_id}`) of a `submitted` turn runs a prepare Task (`Turn.prepare`) until the session answers it. The phase stays `submitted`, so a steer goes to the provider process.
 
 | Phase | From | To | A steer |
 | --- | --- | --- | --- |
 | `preparing` | the turn starts: `turn_start`, the connect, and the prepare Task | `submitting`, when the provider process is ready and the context is prepared | stays in the local queue. At the send it joins the transcript and the end of the context as a user message: it is part of the prompt |
 | `submitting` | `{:turn, ...}` sent | `submitted` at the answer `:ok` | stays in the local queue. At `:ok` the session sends the local steers, in order |
 | `submitted` | the answer `:ok` | the end of the turn | goes to the provider process with a new `steer_id` |
-| `context` | `submitted`, with a context request (`{:need_context, turn_id}`) open | `submitted`, when the session answers the request | as `submitted` |
 
 - A turn that the provider starts by itself (`{:event, id, :turn_start}`) opens a `submitted` turn with no user message, and `turn_start` has `%{origin: :provider}`. It opens only with no turn, no wait, and a ready provider process. At any other time the session drops it and its events.
 - An answer other than `:ok` to `{:turn, ...}` stops the provider process (`ProviderRequest.stop_after/2`). Its `provider_down` fails the turn.
@@ -44,11 +43,11 @@ Every end of a turn runs one path, `Wait.finish/2`, with an outcome: `{:done, st
 4. Each open Helyx tool request of the turn gets `aborted` (`ToolRuns.end_turn/2`), while the provider process lives. No answer is awaited.
 5. `turn_end` goes out with `%{outcome: :done}`, `%{outcome: :aborted}`, or `%{outcome: :error, error: reason}`.
 6. The hands get the cleanup request (`Hands.request_cancel/2`): always at an abort or a failure, and at `done` when a Helyx tool still runs. They kill the Tasks of the turn and release their handles.
-7. Only an abort of a turn in `submitting`, `submitted`, or `context` sends `{:interrupt, turn_id}`. It goes after the `aborted` answers of step 4, so the provider process gets them first.
+7. Only an abort of a turn in `submitting` or `submitted` sends `{:interrupt, turn_id}`. It goes after the `aborted` answers of step 4, so the provider process gets them first.
 
 ## The wait
 
-`Wait` holds the parts that must end before the next turn: `hands` (the cleanup answer), `reply` (the answer to an interrupt or an idle close), and `provider` (a provider process that ends, until the hands' `provider_down`). `TurnLoop` ends the wait when no part is left. Then the abort callers get `:ok`, a provider process of another model gets `:close`, and the queues start the next turn, steers first.
+`Wait` holds the parts that must end before the next turn: `hands` (the cleanup answer) and `reply` (the answer to an interrupt or an idle close). A provider process that ends also holds the wait: it stays in `State.conn` with `ProviderConn.status` `:ending` until the hands' `provider_down`. `TurnLoop` ends the wait when no part is left and no provider process is `:ending`. Then the abort callers get `:ok`, a provider process of another model gets `:close`, and the queues start the next turn, steers first.
 
 - While the wait lasts, the session starts no turn. A prompt and a follow-up queue as follow-ups, and a steer queues as a steer. So a new turn never runs tools beside a Task of the old turn.
 - An interrupt answer `:ok` keeps the provider process. Any other answer, or its armed kill, stops it, and the wait lasts until its `provider_down`.
@@ -80,11 +79,14 @@ The session gives each sent steer a `steer_id` and keeps it in the ledger of `He
 
 The session monitors its provider process, and the hands send `{:provider_down, pid, reason}` after they release its handles. The two messages have no order between them. `reason` is `:provider_timeout` after an armed kill, the stop reason after an exit with `{:shutdown, reason}`, `{:task_exit, reason}` after any other exit, or `{:error, unconfirmed}` when the release left handles unconfirmed.
 
-- Outside a turn, the `:DOWN` drops the process at once, and the next turn waits for its `provider_down`.
+- The session holds its provider process in one place, `State.conn`. Its `status` is `:starting` until `{:provider_ready, pid}`, then `:ready`.
+- The process is `:ending` until its `provider_down`. Four events make it `:ending`: an answer to an interrupt or an idle close that stops it (`Wait.answered/3`), a stop by the session (`TurnLoop.stop_provider/2`), the `:close` of a model switch (`close_switched/1`), and its `:DOWN` outside a sent turn (`monitor_down/1`). In a sent turn, its `:DOWN` and an error answer to `{:turn, ...}` leave it `:ready`.
+- Only `provider_down` takes the process out of `conn`. An `:ending` process holds the wait (`TurnLoop.progress/1`), and `TurnLoop.connect/1` never reuses it.
+- Outside a turn, the `:DOWN` makes the process `:ending` and starts a wait, so the next turn waits for its `provider_down`.
 - In a sent turn (`submitting` or later), the `provider_down` fails the turn with `reason`.
 - In `preparing`, the `:DOWN` holds back `{:turn, ...}`. When the process was started by an earlier turn, its `provider_down` makes the turn connect a new one, once. A process that this turn started fails the turn.
 - At `provider_down` each sent steer with no notice gets `steer_unconfirmed`, and the ledger drops every entry of that process.
-- Provider output outside the contract (a bad event, a context request outside `submitted`, a message over a bound) stops the provider process with `{:shutdown, reason}` and fails the turn.
+- Provider output outside the contract (a bad event, a context request outside `submitted` or while one is open (`TurnLoop.handle/2`), a message over a bound) stops the provider process with `{:shutdown, reason}` and fails the turn.
 
 ## Idle close
 
@@ -96,7 +98,7 @@ With a ready provider process and no turn and no wait, the session arms one idle
 
 ## Session stop
 
-`terminate/2` runs `Helyx.Session.Server.Stop.run/1` on the list of `TurnLoop.work/1`. In a turn, the prepare Task is killed, and the provider process ends with the hands. With no turn, the current provider process and the one the wait is for get `:close`, in parallel, each with its armed kill. Then the session stops the hands and waits for them.
+`terminate/2` runs `Helyx.Session.Server.Stop.run/1` on the list of `TurnLoop.work/1`. In a turn, the prepare Task is killed, and the provider process ends with the hands. With no turn, the provider process gets `:close`, also when it is `:ending`, with its armed kill. Then the session stops the hands and waits for them.
 
 ## Bounds
 

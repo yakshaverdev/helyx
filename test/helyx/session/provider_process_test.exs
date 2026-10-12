@@ -8,6 +8,7 @@ defmodule Helyx.Session.ProviderProcessTest do
   import Helyx.Test.SessionCase, only: [final_text: 1]
 
   alias Helyx.{Message, Session}
+  alias Helyx.Session.Server.Wait
   alias Helyx.Test.Connected
 
   @done {:done, %{stop_reason: :end_turn, usage: %{}}}
@@ -302,7 +303,7 @@ defmodule Helyx.Session.ProviderProcessTest do
 
     test "a prompt after an idle provider process ends waits for the release of its handles",
          %{core: core} do
-      {session, _pid, hands} = start(core, "stop")
+      {session, pid, hands} = start(core, "stop")
       :ok = Session.prompt(session, "one")
       assert_receive {:conn, :turn, old, {:turn, turn_id, _}}
       assert_received {:conn, :init, ^old, _}
@@ -316,6 +317,9 @@ defmodule Helyx.Session.ProviderProcessTest do
 
       assert :ok = Session.prompt(session, "two")
       refute_received {:conn, :init, _, _}
+      # The ended process stays the session's one provider process until
+      # its `provider_down`, and no turn reuses it.
+      assert %{conn: %{pid: ^old, status: :ending}, activity: %Wait{}} = :sys.get_state(pid)
       :erlang.resume_process(hands)
 
       assert_receive {:release, :deliver, [{:report, _}]}
@@ -799,13 +803,18 @@ defmodule Helyx.Session.ProviderProcessTest do
 
     test "an interrupt answered late, within the bound, keeps the provider process",
          %{core: core} do
-      {session, _pid, _hands} = start(core, "late_interrupt")
+      {session, pid, _hands} = start(core, "late_interrupt")
       :ok = Session.prompt(session, "one")
       assert_receive {:conn, :turn, proc, _}
 
       abort = Task.async(fn -> Session.abort(session) end)
       assert_receive {:conn, :interrupt, ^proc, _}
       assert_receive {:held, from}
+      # The wait holds the answer; the provider process is only in `conn`.
+      assert %{conn: %{pid: ^proc, status: :ready}, activity: %Wait{} = wait} =
+               :sys.get_state(pid)
+
+      refute proc in Map.values(Map.from_struct(wait))
       send(proc, {:answer, from, :ok})
       assert :ok = Task.await(abort, wait_ms())
       assert Process.alive?(proc)

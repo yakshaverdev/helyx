@@ -1,12 +1,21 @@
-# ProviderConn comes first: the State functions match its struct.
 defmodule Helyx.Session.Server.ProviderConn do
   @moduledoc false
   # The provider process of the session: its pid, the model it runs, the
-  # id of the turn that started it, and whether `init/3` returned
-  # (`{:provider_ready, pid}`). `resumed` is the resume id that its start
-  # passed, until its first resume id event (`Records.resume_id/3`), or nil.
+  # id of the turn that started it, and its `status`: `:starting` until
+  # `{:provider_ready, pid}`, then `:ready`, and `:ending` from the events
+  # that end it until its `provider_down` (docs/features/session-lifecycle.md,
+  # "Provider death"). `resumed` is the resume id that its start passed,
+  # until its first resume id event (`Records.resume_id/3`), or nil.
   @enforce_keys [:pid, :model, :turn]
-  defstruct [:pid, :model, :turn, :resumed, ready: false]
+  defstruct [:pid, :model, :turn, :resumed, status: :starting]
+
+  @type t :: %__MODULE__{
+          pid: pid(),
+          model: Helyx.ModelRef.t(),
+          turn: String.t(),
+          resumed: String.t() | nil,
+          status: :starting | :ready | :ending
+        }
 end
 
 defmodule Helyx.Session.Server.State do
@@ -16,8 +25,8 @@ defmodule Helyx.Session.Server.State do
   # `activity` and `conn`, with the turn cleanup in
   # `Helyx.Session.Server.Wait` (docs/features/session-lifecycle.md).
 
-  alias Helyx.Session.{ProviderRequest, Queue}
-  alias Helyx.Session.Server.ProviderConn
+  alias Helyx.Session.{ProviderRequest, Queue, Turn}
+  alias Helyx.Session.Server.{ProviderConn, Wait}
 
   @enforce_keys [:id, :core, :model, :provider, :cwd]
 
@@ -76,8 +85,30 @@ defmodule Helyx.Session.Server.State do
     idle: nil
   ]
 
-  def provider_pid(%__MODULE__{conn: %ProviderConn{pid: pid}}), do: pid
-  def provider_pid(_state), do: nil
+  @type t :: %__MODULE__{
+          id: String.t(),
+          instance_id: String.t() | nil,
+          core: Helyx.Core.name(),
+          model: Helyx.ModelRef.t(),
+          provider: module(),
+          cwd: Path.t(),
+          hands: pid() | nil,
+          file: Helyx.Session.File.t() | nil,
+          model_context: module() | nil,
+          compaction: module() | nil,
+          tool_specs: [Helyx.Tool.spec()],
+          tool_modules: %{String.t() => module()},
+          transcript: [Helyx.Message.t()],
+          seq: non_neg_integer(),
+          subscribers: %{pid() => reference()},
+          activity: :idle | Turn.t() | Wait.t(),
+          queue: Queue.t(),
+          resume_ids: %{String.t() => {String.t(), non_neg_integer()}},
+          conn: ProviderConn.t() | nil,
+          provider_ms: %{reply: pos_integer(), close: pos_integer(), idle: pos_integer()},
+          prepare_ms: pos_integer(),
+          idle: reference() | nil
+        }
 
   # Sends `request` to the provider process with the bound `key` of `provider_ms`.
   def ask(state, pid, req, key), do: ProviderRequest.ask(pid, req, state.provider_ms[key])
