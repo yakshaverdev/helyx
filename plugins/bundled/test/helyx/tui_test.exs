@@ -1467,5 +1467,57 @@ defmodule Helyx.TUITest do
       assert {:notice, "invalid model ref" <> _} = List.last(ViewModel.cells(state.vm))
       assert value(state) == "/model fake/a\nhello"
     end
+
+    # The draft that waits behind a recalled prompt comes back after the send (#540).
+    test "the draft comes back after a recalled prompt is sent", %{core: core} do
+      state = mounted(core, "back", [["ok"], ["ok"], ["ok"]]) |> submit("first") |> drain()
+      assert value(state) == ""
+
+      draft = "fix the flaky test" <> marker(1, 6)
+      state = state |> paste("fix the flaky test") |> paste(lines(6))
+      assert value(state) == draft
+
+      state = state |> press("up") |> press("!") |> press("enter") |> drain()
+      assert Message.text(Enum.at(ViewModel.cells(state.vm), 2)) == "!first"
+      # The cursor is at the end of the draft.
+      state = press(state, "x")
+      assert value(state) == draft <> "x"
+
+      # The draft keeps its paste, and a new paste gets a new id.
+      state = state |> press("backspace") |> paste(lines(7))
+      assert value(state) == draft <> marker(2, 7)
+      state = state |> press("enter") |> drain()
+
+      assert Message.text(Enum.at(ViewModel.cells(state.vm), 4)) ==
+               "fix the flaky test" <> lines(6) <> lines(7)
+
+      # With no draft, the composer is empty after the send, and the ids start again.
+      state = state |> press("up") |> press("enter") |> drain()
+      assert value(state) == ""
+      state = paste(state, lines(6))
+      assert value(state) == marker(1, 6)
+
+      # Ctrl+C clears the draft behind a recalled prompt: Down brings nothing back.
+      {:noreply, state} = state |> press("up") |> ctrl_c()
+      assert value(state) == ""
+      assert value(press(state, "down")) == ""
+    end
+
+    test "the draft comes back after a recalled prompt switches the model", %{core: core} do
+      state = mounted(core, "switch", [["ok"]]) |> submit("first") |> drain()
+      state = state |> paste("draft") |> press("up")
+
+      # A rejected ref changes nothing.
+      ExRatatui.textarea_set_value(state.composer.input, "/model nope/any")
+      state = press(state, "enter")
+      assert {:notice, "unknown provider: nope"} = List.last(ViewModel.cells(state.vm))
+      assert value(state) == "/model nope/any"
+
+      ExRatatui.textarea_set_value(state.composer.input, "/model other/any")
+      state = press(state, "enter")
+      assert_receive {:helyx_event, %Event{type: :model_change, data: %{model: "other/any"}}}
+      assert value(state) == "draft"
+      assert state.composer.recall == nil
+    end
   end
 end

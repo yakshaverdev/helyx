@@ -299,7 +299,7 @@ if Helyx.TUI.Available.available?() do
       # A rejected message stays in the composer, and the footer says why.
       case sent do
         :ok ->
-          %{state | composer: Composer.clear(state.composer), scroll: nil}
+          %{state | composer: Composer.restore(state.composer), scroll: nil}
 
         # ExRatatui gives event text as a Rust `String`, so the composer
         # holds only valid UTF-8 and the session never answers `:invalid_utf8`.
@@ -320,7 +320,7 @@ if Helyx.TUI.Available.available?() do
     defp switch_model(ref, state) do
       case Session.set_model(state.session, ref) do
         :ok ->
-          %{state | composer: Composer.clear(state.composer)}
+          %{state | composer: Composer.restore(state.composer)}
 
         {:error, reason} ->
           %{state | vm: ViewModel.notice(state.vm, switch_error(reason))}
