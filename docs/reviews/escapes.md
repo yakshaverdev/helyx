@@ -207,3 +207,4 @@ One row per ticket that `/orchestrate` merged. An escape is a confirmed Codex fi
 | 2026-10-12 | #510 | r1 (full): 0 | gate r1 (Codex): 0 | none; ship caught all. The failure path found an older race on master, now #518 |
 | 2026-10-12 | #511 | r1 (full): 1; r2 (full): 0; rebase r1 (reduced): 0 | gate r1 (Codex): 0 | none; ship caught all |
 | 2026-10-12 | #517 | r1 (full): 0 | gate r1 (Codex): 0 | none; ship caught all. The standards axis found an older hole, now #522 |
+| 2026-10-12 | #508 | r1 (full): 2; r2 (full): 0; r3 (reduced): 0; rebase r4 (reduced): 0; r5 (full, owner changed the cut to head and tail): 0 | gate r1 (Codex): 0 | none; ship caught all |

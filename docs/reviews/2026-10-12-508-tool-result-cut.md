@@ -125,3 +125,5 @@ Round 5 reproduced no new defect: 5.1 is the defect that this round fixes, and 5
 ## Gate
 
 The coordinator runs the Codex gate after the commit of round 5. Its result and the escapes row are not in this record yet.
+
+Gate r1 (Codex): 0 findings, approve.
