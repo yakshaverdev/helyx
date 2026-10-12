@@ -107,13 +107,16 @@ if Helyx.TUI.Composer.Available.available?() do
     moves the cursor. Up leaves the cursor at the start, Down at the end, so
     the next Up or Down goes on through the prompts.
 
-    An edited recalled prompt first becomes the draft: the draft that waits,
-    then the edit, one per new line, with the pastes of both and the cursor
-    on the same character. Then the key acts on that draft.
+    Up on the first row or Down on the last row of an edited recalled prompt
+    first makes it the draft: the draft that waits, then the edit, one per
+    new line, with the pastes of both and the cursor on the same character.
+    Then the key acts on that draft. On any other row the key only moves
+    the cursor, and the recall stays.
     """
     @spec recall(t(), ViewModel.t(), String.t()) :: t()
     def recall(%__MODULE__{} = composer, vm, code) when code in ["up", "down"] do
-      composer = keep_edit(composer)
+      # Away from the edge the key only moves the cursor, so the recall stays.
+      composer = if edge?(composer, code), do: keep_edit(composer), else: composer
       position = with {at, _shown, _draft, _pastes} <- composer.recall, do: at
 
       case edge?(composer, code) && ViewModel.prompt(vm, position, direction(code)) do

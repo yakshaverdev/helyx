@@ -138,6 +138,25 @@ defmodule Helyx.TUI.ComposerTest do
     assert value(state) == "d\n!one"
   end
 
+  test "away from the edge, a key in an edited recalled prompt only moves the cursor" do
+    state = state(["a\nb\nc"]) |> type("d") |> press("up") |> press("down") |> type("X")
+    assert {value(state), row(state)} == {"a\nXb\nc", 1}
+
+    state = press(state, "down")
+    assert {value(state), row(state)} == {"a\nXb\nc", 2}
+    assert {_at, "a\nb\nc", "d", _pastes} = state.composer.recall
+
+    # Up off the first row also only moves the cursor.
+    state = press(state, "up")
+    assert {value(state), row(state)} == {"a\nXb\nc", 1}
+    assert {_at, "a\nb\nc", "d", _pastes} = state.composer.recall
+
+    # Down on the last row ends the recall with the join.
+    state = state |> press("down") |> press("down")
+    assert value(state) == "d\na\nXb\nc"
+    assert state.composer.recall == nil
+  end
+
   test "the cursor stays on the same character of a multibyte edit" do
     state = state(["hé🙂llo"]) |> type("dé🙂") |> press("up")
     state = state |> press("right") |> press("right") |> press("right") |> type("X")
