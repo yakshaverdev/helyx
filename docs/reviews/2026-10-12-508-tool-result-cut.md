@@ -1,0 +1,58 @@
+# Review: #508 One cut for tool results
+
+Invariant: every tool result text that enters the session passes `Helyx.Message.cut_result/1` at its entry point: a Helyx tool through `Hands.outcome/3` (run output, crash text, bad return, unknown tool, missing cwd, refusal, unconfirmed release), a provider `tool_result` event through `Stream.check/1`, and a tool result read from the session file through `Session.File.Codec.decode/1`. The text is then valid UTF-8 of at most 65,536 bytes with its notice, cut on a character boundary after the repair, and a large result never fails the turn. An unknown tool and a missing cwd are answered without a Task. `Helyx.Text.truncate/2` repairs before it counts, and asserts at compile time that its output fits the Core limit. Accepted: the repair of a large input copies up to three times its size before the cut, and the hands cut inside their GenServer.
+
+## Round 1 (full)
+
+Simplify: `cut/1` derives the total in its own clause (simplification); the one-caller spawn wrapper inlined (simplification). Skipped: the Core head cut shares no code with `Helyx.Text.cap/3` (Core must not call the plugin; reuse); the tests keep the literal 65,536, the documented bound (reuse, simplification); the cut moved into the tool Task (efficiency: the ticket puts it in `outcome/3`); a repaired-size count without the copy (efficiency: ticket order is repair, then cut).
+
+Bounds sensor:
+
+```
+bounds sensor: 1 candidate functions, 0 flagged, 1 without an answer
+  lib/helyx/data/message.ex:240  NO ANSWER (TimeoutError('The read operation timed out'))  defp cut(text) do
+```
+
+| # | Axis | Finding | Resolution |
+| - | ---- | ------- | ---------- |
+| 1.1 | Codex, failure path, spec | `Helyx.Text.truncate/2` counted raw bytes, and the hands repaired after it. Bash output of invalid bytes (48,004 bytes, 600 lines) grew to 142,804 bytes, and Core cut it again from the head: the tail with the exit status was lost, and two notices showed. The compile-time check did not prove its claim. Reproduced | Fixed: `truncate/2` and `truncate/3` repair invalid UTF-8 before the caps; test with 4,000 invalid lines and an exit line: the tail is kept and `cut_result/1` leaves the output unchanged |
+| 1.2 | spec | The bound "every tool result in the transcript" did not hold after a resume: the file reader put a tool result of any size into the transcript (a file before #300 had no limit, a file before #508 up to 196,608 bytes) | Fixed: `Session.File.Codec.decode/1` applies `cut_result/1` to each text block of a tool result; test with a 100,000-byte result on disk. Wider than the ticket's design list; it holds the ticket's bound on the disk path |
+| 1.3 | standards | No "Replaced mechanism" section for the deleted fail-the-turn rule | Fixed: section in `docs/features/tool-text-out-of-core.md` |
+| 1.4 | standards | `Message.tool_result/2` doc said every text went through `cut_result/1`; `Transcript.aborted/1` writes a fixed text | Fixed: the doc states the bound and names the session's own short texts |
+| 1.5 | standards | No test one byte under the limit in the unit test | Fixed: 65,535, 65,536, and 65,537 bytes in `message_test.exs` |
+| 1.6 | standards | A Core comment named `Helyx.Text`; `refuse/3` a one-line middle man; `elem(1)` hid the dropped pid | Fixed |
+| 1.7 | spec | `provider_process_tools_test.exs` matched only `"xxx" <> _` for the cut echo | Fixed: asserts the size and the notice |
+| 1.8 | spec | `docs/features/session-stream.md:71` still said Stream checks 65,536 bytes | Fixed |
+| 1.9 | standards | The `Helyx.Text` comment "pi's read and bash defaults" cites another harness | Not changed: outside the diff, and a Helyx reason for the number is not recorded |
+| 1.10 | standards | The provider cut stays in the contract while Core also cuts | Kept: the owner decision (domain review section 12); the Core cut is the safety bound |
+| 1.11 | failure path | Note: a provider result over 64 KiB is now repaired whole before the cut (16 MiB invalid: 338 ms, about 48 MiB transient) | Accepted, stated in the replaced mechanism section; the input is bounded by its source |
+| 1.12 | failure path | Held: `cut_result/1` at 65,535 to 655,360 bytes, 2- to 4-byte characters across the cut, 600 random binaries; the direct answer starts no Task | — |
+
+The fix changes about 40 code lines in four code files and adds functions, so round 2 is full.
+
+## Round 2 (full)
+
+Fix of round 1, counted from its diff: about 40 code lines added plus removed in 4 code files (`text.ex`, `codec.ex`, `hands.ex`, `message.ex`); it adds functions, so the round is full.
+
+Simplify: `cut_result/1` takes and returns a text, so no caller builds a status only to drop it (simplification, altitude); the codec cut is one clause per block (simplification); the "tool result text validity" row of `coding-agent.md` merged into the bound row (simplification). Skipped: one public repair helper for `Helyx.Message` and `Helyx.Text` (reuse: one line, and a new public function for it); `repair/1` only in the `:tail` clause, and no repair on resume (efficiency: `read_file/1` and the JSON decode already give valid text, but the extra scan costs about 4 ms per MiB and keeps `truncate/2` true for any caller).
+
+Bounds sensor:
+
+```
+bounds sensor: 4 candidate functions, 0 flagged, 0 without an answer
+```
+
+| # | Axis | Finding | Resolution |
+| - | ---- | ------- | ---------- |
+| 2.1 | Codex | Verdict approve: no finding | — |
+| 2.2 | failure path | Round-1 reproductions pass: bash output of invalid bytes keeps `END` with one notice and no Core cut; a 100,000-byte result on disk resumes at 65,536 bytes. `cut_result/1` held for every length from 65,500 to 65,560 with each trailing character class | — |
+| 2.3 | failure path, altitude | A hand-edited session file with many text blocks in one tool result resumes over the limit (2 blocks of 60,000 bytes: 120,000 bytes; 900 blocks: 58.5 MB), because the reader cuts each block on its own. Reproduced | Known ceiling, stated in the `coding-agent.md` bound row before this round: Helyx writes one text block per result, so only a file edited by hand reaches it, within the 64 MiB file limit. Open for the owner: cut the joined text of a tool result on decode |
+| 2.4 | spec | The TUI shows the first 4 lines of a result and `… N more lines`, so the notice at the end of a cut result of 5 or more lines is not shown in the transcript (`result_lines/2` in `Helyx.TUI.Transcript`). The head notice of `Helyx.Text.truncate/2` has the same place. Read from the code | Open for the owner: the ticket does not say where the notice goes; the notice first, or a TUI change, are both outside the decided design |
+| 2.5 | spec | Replaced mechanism item 7 named only two input sources for the repair copy; an in-VM provider and a third-party tool are not bounded before the cut | Fixed: item 7 names every source and states the copy as accepted |
+| 2.6 | spec | The bash result adds a prefix and an exit line (about 130 bytes) around the `truncate/2` output, which the compile-time check does not count | Kept: the result fits by about 14 KB; the doc claims only that the output of `truncate/2` is not cut again |
+| 2.7 | spec | The `cut_result/1` doc said "every invalid byte"; the repair replaces each invalid sequence | Fixed |
+| 2.8 | standards | `tool-text-out-of-core.md` kept false sentences of #121 (the "After" line, Ownership, Tests, Out of scope) | Fixed: the sentences are rewritten to the state after #508; the #121 design text of the Core check is replaced by a short history |
+| 2.9 | standards | Names: `bound/2` and `valid/1` read as a noun and an adjective; `(#508)` in a code comment | Fixed: `cut_text/2`, `repair/1`, the ticket number removed |
+| 2.10 | standards | The tests write the literal 65,536 | Kept: the tests state the documented bound |
+
+Round 2 reproduced only 2.3, a ceiling that the doc stated before the round, so the loop ends. The fixes of this round are wording, docs, and renames.

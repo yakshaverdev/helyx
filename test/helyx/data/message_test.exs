@@ -63,4 +63,48 @@ defmodule Helyx.MessageTest do
 
     assert Message.text(Message.tool_result(call, {:ok, text})) == text
   end
+
+  describe "cut_result/1" do
+    @max 65_536
+
+    test "a valid result at the limit or one under is returned unchanged; one over is cut" do
+      for bytes <- [@max - 1, @max] do
+        text = String.duplicate("x", bytes)
+        assert Message.cut_result(text) == text
+      end
+
+      cut = Message.cut_result(String.duplicate("x", @max + 1))
+      assert byte_size(cut) <= @max
+      assert cut =~ ~r/\[cut at \d+ of 65537 bytes\]$/
+    end
+
+    test "a result over the limit keeps its head and a notice, within the limit" do
+      text = String.duplicate("x", 200_000)
+      cut = Message.cut_result(text)
+
+      assert byte_size(cut) <= @max
+      assert [head, notice] = String.split(cut, "\n")
+      assert String.starts_with?(text, head)
+      assert notice == "[cut at #{byte_size(head)} of 200000 bytes]"
+    end
+
+    test "the cut drops a character that it splits" do
+      # A 4-byte character over the cut: no part of it is kept.
+      for pad <- 0..3 do
+        text = String.duplicate("x", @max - 40 - pad) <> String.duplicate("😀", 100)
+        cut = Message.cut_result(text)
+        assert String.valid?(cut)
+        assert byte_size(cut) <= @max
+      end
+    end
+
+    test "invalid bytes are replaced before the cut, so the scrubbed text is cut to the limit" do
+      cut = Message.cut_result(:binary.copy(<<255>>, 60_000))
+
+      assert String.valid?(cut)
+      assert byte_size(cut) <= @max
+      assert String.starts_with?(cut, "\uFFFD\uFFFD")
+      assert cut =~ ~r/\[cut at \d+ of 180000 bytes\]$/
+    end
+  end
 end

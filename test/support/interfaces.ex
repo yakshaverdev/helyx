@@ -478,6 +478,16 @@ defmodule Helyx.Test.Tool.Binary do
   def run(_args, _cwd), do: {:ok, <<"a", 255, "b">>}
 end
 
+defmodule Helyx.Test.Tool.Raise do
+  @moduledoc false
+  # Raises with a message of "bytes" bytes, so tests can see the hands bound
+  # the crash text.
+  use Helyx.Test.Tool, name: "raise", description: "Raises with a long message."
+
+  @impl true
+  def run(%{"bytes" => bytes}, _cwd), do: raise(String.duplicate("x", bytes))
+end
+
 defmodule Helyx.Test.Tool.Slow do
   @moduledoc false
   # Sleeps `ms` and returns `text`, so call order and finish order can differ.
@@ -661,7 +671,7 @@ defmodule Helyx.Test.Connected do
   #                `message_end`: the result closes the message
   #     "result_multibyte" a result of 65,537 bytes: a 2-byte character
   #                across the limit of 65,536
-  #     "result_raw" a result of 65,536 bytes that are not valid UTF-8
+  #     "result_raw" a result of 60,000 bytes that are not valid UTF-8
   #     "dup_id"  two tool calls with one id, then two results, with no
   #               `message_end`
   #     "open_call"  "dup_id" with no second result and no text after it
@@ -981,7 +991,7 @@ defmodule Helyx.Test.Connected do
   defp bound_call, do: %ToolCall{id: "c1", name: "bash", arguments: %{}}
 
   defp result_text("multibyte"), do: String.duplicate("x", 65_535) <> "é"
-  defp result_text("raw"), do: :binary.copy(<<255>>, 65_536)
+  defp result_text("raw"), do: :binary.copy(<<255>>, 60_000)
   defp result_text(bytes), do: String.duplicate("x", String.to_integer(bytes))
 end
 

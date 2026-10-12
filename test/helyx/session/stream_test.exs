@@ -99,13 +99,13 @@ defmodule Helyx.Session.StreamTest do
     assert {:send, ^event, nil} = SessionStream.check(event)
   end
 
-  test "a harness tool result that is not valid UTF-8 is repaired after the size check" do
-    # 65,536 invalid bytes pass the limit as sent; the repair makes each a
-    # 3-byte U+FFFD.
+  test "a harness tool result that is not valid UTF-8 is repaired, then cut to the limit" do
+    # The repair makes each invalid byte a 3-byte U+FFFD: 196,608 bytes.
     event = {:tool_result, "c1", {:ok, :binary.copy(<<255>>, 65_536)}}
 
     assert {:send, {:tool_result, "c1", {:ok, text}}, nil} = SessionStream.check(event)
-    assert text == String.duplicate("�", 65_536)
+    assert byte_size(text) <= 65_536
+    assert text =~ ~r/^\x{FFFD}+\n\[cut at \d+ of 196608 bytes\]$/u
   end
 
   test "a user_message passes with a string steer id" do

@@ -77,8 +77,10 @@ defmodule Helyx.Message do
 
   @doc """
   Builds the tool result message for a call from `{:ok, text}` or
-  `{:error, text}`. The text is valid UTF-8: the hands repair the output of
-  a tool, and `Helyx.Session.Stream` repairs a tool result of a provider.
+  `{:error, text}`. The text is valid UTF-8 of at most `max_result_bytes/0`
+  bytes: the hands, `Helyx.Session.Stream`, and the session file reader
+  pass every tool output through `cut_result/1`, and the session's own
+  texts are short.
   """
   @spec tool_result(ToolCall.t(), {:ok, String.t()} | {:error, String.t()}) :: t()
   def tool_result(%ToolCall{} = call, {:ok, text}), do: tool_result(call, text, false)
@@ -153,6 +155,10 @@ defmodule Helyx.Message do
   @integer_limit 10 ** @max_integer_digits
   @integer_marker "integer of more than #{@max_integer_digits} digits removed"
 
+  # The one limit of a tool result text (64 KiB), for every tool and every
+  # provider.
+  @max_result_bytes 65_536
+
   @doc """
   The digit limit of `cap_integers/1`.
   """
@@ -209,16 +215,40 @@ defmodule Helyx.Message do
   def big_integer?([head | tail]), do: big_integer?(head) or big_integer?(tail)
   def big_integer?(_value), do: false
 
+  @doc "The byte limit of a tool result text, notice included (`cut_result/1`)."
+  @spec max_result_bytes() :: pos_integer()
+  def max_result_bytes, do: @max_result_bytes
+
   @doc """
-  Makes the text of a tool result valid UTF-8: every invalid byte becomes
-  U+FFFD, so the text can grow up to three times. The session applies it at
+  Bounds the text of a tool result. Each invalid UTF-8 sequence becomes
+  U+FFFD, which can make the text up to three times larger. Then a text over
+  #{@max_result_bytes} bytes keeps its head, cut on a character boundary,
+  and a notice line `[cut at <kept> of <total> bytes]`, where `total` is
+  the size after the repair. The whole result is at most
+  #{@max_result_bytes} bytes and valid UTF-8. The session applies it at
   each boundary of tool text, the hands and a provider's `tool_result`.
-  Valid text, the common case, is returned without a copy.
+  A valid text within the limit, the common case, is returned without a
+  copy.
   """
-  @spec scrub({status, String.t()}) :: {status, String.t()} when status: :ok | :error
-  def scrub({status, text}) do
-    if String.valid?(text), do: {status, text}, else: {status, String.replace_invalid(text)}
+  @spec cut_result(binary()) :: String.t()
+  def cut_result(text) do
+    text = if String.valid?(text), do: text, else: String.replace_invalid(text)
+    cut(text)
   end
+
+  defp cut(text) when byte_size(text) <= @max_result_bytes, do: text
+
+  defp cut(text) do
+    total = byte_size(text)
+    # The kept count is at most the limit, so the notice with the limit in
+    # its place is the longest that the cut can make.
+    room = @max_result_bytes - byte_size(notice(@max_result_bytes, total))
+    # The text is valid, so only a character that the cut splits is invalid.
+    head = text |> binary_part(0, room) |> String.replace_invalid("")
+    head <> notice(byte_size(head), total)
+  end
+
+  defp notice(kept, total), do: "\n[cut at #{kept} of #{total} bytes]"
 
   @doc """
   Adds a stream delta to a reversed block list, newest first. Consecutive

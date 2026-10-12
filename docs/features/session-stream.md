@@ -68,7 +68,7 @@ No new input, buffer, or wait. These rows of `docs/features/coding-agent.md` kee
 | ---- | ----- | -------------- |
 | integer in tool call arguments and in usage | 100 digits (`Helyx.Message.big_integer?/1`) | a call goes on with arguments `%{}` and is rejected with an error result; a usage fails the turn as a malformed event (#435) |
 | stream event shape | the shapes of `Helyx.Provider` | the turn fails with `{:bad_stream_event, event}` |
-| harness tool result text | #121 changed this row: the provider cuts the text (`Helyx.Text.truncate/2`, `:tail`), and `Helyx.Session.Stream` checks 65,536 bytes | See the two rows "Harness tool result text" of `docs/features/coding-agent.md` |
+| harness tool result text | #121 changed this row: the provider cuts the text (`Helyx.Text.truncate/2`, `:tail`). #508 changed it again: `Helyx.Session.Stream` cuts it to 65,536 bytes with `Helyx.Message.cut_result/1` | See the row "every tool result text" of `docs/features/coding-agent.md` |
 
 The rows in `docs/features/coding-agent.md` that name `consume/3` or the session as the place of a check are updated to name `Helyx.Session.Stream`.
 

@@ -222,6 +222,18 @@ defmodule Helyx.TextTest do
            )
   end
 
+  test "invalid bytes are repaired before the caps, so Core does not cut the output again" do
+    text = Enum.map_join(1..4000, "\n", fn _ -> :binary.copy(<<255>>, 99) end) <> "\nexit 3"
+
+    for keep <- [:head, :tail] do
+      out = Text.truncate(text, keep)
+      assert String.valid?(out)
+      assert Helyx.Message.cut_result(out) == out
+    end
+
+    assert Text.truncate(text, :tail) =~ ~r/\nexit 3$/
+  end
+
   test "a cut line stays valid UTF-8" do
     line = String.duplicate("€", 20_000)
 

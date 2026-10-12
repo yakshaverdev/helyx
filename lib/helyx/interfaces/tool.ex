@@ -7,7 +7,9 @@ defmodule Helyx.Tool do
   `parameters/0` is a JSON schema map with string keys. `run/2` gets the
   decoded argument map and the working directory, and returns the text the
   model sees. `{:error, text}` marks the result as an error; a tool that
-  raises is reported the same way.
+  raises is reported the same way. The hands make every result text valid
+  UTF-8 and cut a text over `Helyx.Message.max_result_bytes/0` to its head
+  and a notice (`Helyx.Message.cut_result/1`).
 
   The optional `check/0` runs once per session start or resume, in the
   caller, before any file or process is created (`check_available/1`). A

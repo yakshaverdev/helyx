@@ -129,9 +129,13 @@ defmodule Helyx.Session.ProviderProcessToolsTest do
     assert [
              {:tool_result, _, "c2", {:error, "Helyx tool calls too large" <> _}},
              {:tool_result, _, "c4", {:error, "Helyx tool calls too large" <> _}},
-             {:tool_result, _, "c1", {:ok, ^half}},
+             # The echo of 4 MiB is cut to the tool result limit.
+             {:tool_result, _, "c1", {:ok, cut}},
              {:tool_result, _, "c3", {:ok, "C"}}
            ] = [receive_result(), receive_result(), receive_result(), receive_result()]
+
+    assert byte_size(cut) <= 65_536
+    assert cut =~ ~r/^x+\n\[cut at \d+ of 4194304 bytes\]$/
   end
 
   test "a withdrawn request gets aborted: a waiting one at once, the running one after its kill; the next one runs",

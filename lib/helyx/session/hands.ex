@@ -8,8 +8,9 @@ defmodule Helyx.Session.Hands do
   call_id, {:ok, text} | {:error, text}}`. A Task that dies without a
   result gives an error result, unless a cancel request killed it. A
   working directory that is gone when the call starts also gives an error
-  result. Result text is valid UTF-8 when it leaves the hands: each
-  invalid sequence is replaced with U+FFFD.
+  result, and so does an unknown tool; neither starts a Task. Result text
+  leaves the hands through `Helyx.Message.cut_result/1`: valid UTF-8 and
+  at most `Helyx.Message.max_result_bytes/0` bytes, notice included.
 
   A tool holds each OS resource that it creates with `Helyx.Tool.hold/1`.
   When a call ends, however its Task ended, the hands call the tool's
@@ -183,7 +184,7 @@ defmodule Helyx.Session.Hands do
     state =
       if state.unconfirmed == %{},
         do: start(state, turn_id, call),
-        else: refuse(state, turn_id, call.id)
+        else: answer(state, turn_id, call.id, refusal(state))
 
     {:noreply, state}
   end
@@ -250,16 +251,29 @@ defmodule Helyx.Session.Hands do
   defp outcome(turn_id, call_id, {:exit, reason}),
     do: outcome(turn_id, call_id, {:error, "tool crashed: #{inspect(reason)}"})
 
-  # Every result leaves the hands through here, so text is made valid once,
-  # for the ok, error, crash, and catch paths alike.
-  defp outcome(turn_id, call_id, result),
-    do: {:tool_result, turn_id, call_id, Helyx.Message.scrub(result)}
+  # Every result leaves the hands through here, so text is made valid and
+  # cut to the limit once, for the ok, error, crash, refusal, and catch paths
+  # alike.
+  defp outcome(turn_id, call_id, {status, text}),
+    do: {:tool_result, turn_id, call_id, {status, Helyx.Message.cut_result(text)}}
 
+  # A fixed error needs no Task: it is answered at once, as a refusal is.
   defp start(state, turn_id, %ToolCall{} = call) do
-    tool = if File.dir?(state.cwd), do: Map.get(state.tools, call.name, :unknown), else: :no_cwd
     cwd = state.cwd
-    {_pid, state} = spawn_task(state, turn_id, call.id, tool, fn -> run_tool(tool, call, cwd) end)
-    state
+
+    case {File.dir?(cwd), Map.fetch(state.tools, call.name)} do
+      {false, _} ->
+        answer(state, turn_id, call.id, "working directory does not exist: #{cwd}")
+
+      {true, :error} ->
+        answer(state, turn_id, call.id, "unknown tool: #{call.name}")
+
+      {true, {:ok, tool}} ->
+        {_pid, state} =
+          spawn_task(state, turn_id, call.id, tool, fn -> run_tool(tool, call, cwd) end)
+
+        state
+    end
   end
 
   # `id` is the call id or `:provider`; `module` is the tool or
@@ -276,8 +290,8 @@ defmodule Helyx.Session.Hands do
     {task.pid, %{state | tasks: Map.put(state.tasks, task.ref, {task, turn_id, id, module})}}
   end
 
-  defp refuse(state, turn_id, id) do
-    send(state.session, outcome(turn_id, id, {:error, refusal(state)}))
+  defp answer(state, turn_id, id, text) do
+    send(state.session, outcome(turn_id, id, {:error, text}))
     state
   end
 
@@ -340,9 +354,6 @@ defmodule Helyx.Session.Hands do
     |> Enum.sort()
     |> Enum.join(", ")
   end
-
-  defp run_tool(:unknown, call, _cwd), do: {:error, "unknown tool: #{call.name}"}
-  defp run_tool(:no_cwd, _call, cwd), do: {:error, "working directory does not exist: #{cwd}"}
 
   defp run_tool(tool, call, cwd) do
     case tool.run(call.arguments, cwd) do
