@@ -229,7 +229,7 @@ defmodule Helyx.Session.File do
 
   @doc """
   Appends a resume id entry: the id that the provider `provider_id` sent in
-  a `{:resume, id, cut}` stream event. Like message text, both
+  a `{:resume_id, id, cut}` stream event. Like message text, both
   strings must be valid UTF-8 when they reach the file, and the id must pass
   `Helyx.Message.resume_id?/1`, else a resume does not use it. The caller
   checks them where they enter the session.

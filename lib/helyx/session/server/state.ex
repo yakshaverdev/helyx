@@ -3,9 +3,10 @@ defmodule Helyx.Session.Server.ProviderConn do
   @moduledoc false
   # The provider process of the session: its pid, the model it runs, the
   # id of the turn that started it, and whether `init/3` returned
-  # (`{:provider_ready, pid}`).
+  # (`{:provider_ready, pid}`). `resumed` is the resume id that its start
+  # passed, until its first resume id event (`Records.resume_id/3`), or nil.
   @enforce_keys [:pid, :model, :turn]
-  defstruct [:pid, :model, :turn, ready: false]
+  defstruct [:pid, :model, :turn, :resumed, ready: false]
 end
 
 defmodule Helyx.Session.Server.State do

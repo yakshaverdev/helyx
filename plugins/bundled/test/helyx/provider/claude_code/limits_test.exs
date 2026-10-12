@@ -53,7 +53,7 @@ defmodule Helyx.Provider.ClaudeCode.LimitsTest do
         Message.user("next")
       ]
 
-      assert [{:resume, _id, 2} | _] = events_of(run_direct(messages, work))
+      assert [{:resume_id, _id, 2} | _] = events_of(run_direct(messages, work))
 
       assert [
                %{"message" => %{"content" => [%{"text" => "run it"}]}},
@@ -101,7 +101,7 @@ defmodule Helyx.Provider.ClaudeCode.LimitsTest do
           Message.user("next")
         ]
 
-        assert [{:resume, _id, ^cut} | _] = events_of(run_direct(messages, work))
+        assert [{:resume_id, _id, ^cut} | _] = events_of(run_direct(messages, work))
         assert length(stdin(bin, 1)) == 3 - cut
       end
     end
@@ -126,7 +126,7 @@ defmodule Helyx.Provider.ClaudeCode.LimitsTest do
         Message.user("next")
       ]
 
-      assert [{:resume, _id, 3} | _] = events_of(run_direct(messages, work))
+      assert [{:resume_id, _id, 3} | _] = events_of(run_direct(messages, work))
 
       assert [%{"type" => "assistant"}, %{"message" => %{"content" => [%{"text" => "next"}]}}] =
                stdin(bin, 1)
@@ -145,7 +145,7 @@ defmodule Helyx.Provider.ClaudeCode.LimitsTest do
         ~s(head -c #{bytes} /dev/zero | tr '\\0' 'x'; echo; out out.turn.1.1\n)
       )
 
-      assert [{:resume, _id, 0}, {:text_delta, "ok"}, {:done, _}] =
+      assert [{:resume_id, _id, 0}, {:text_delta, "ok"}, {:done, _}] =
                events_of(run_direct([Message.user("hi")], work))
     end
   end

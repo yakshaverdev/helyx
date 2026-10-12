@@ -163,7 +163,7 @@ defmodule Helyx.TUI.ViewModel do
     add_cell(vm, {:notice, "the steer was not confirmed; send it again if needed: " <> text})
   end
 
-  def apply(vm, %Event{type: :provider_session, data: data}) do
+  def apply(vm, %Event{type: :resume_id, data: data}) do
     %{provider: provider, lost: lost, cut: cut} = data
     lost_text = "#{provider} lost its own session; a fresh one got the transcript"
     vm = if lost, do: add_cell(vm, {:notice, lost_text}), else: vm

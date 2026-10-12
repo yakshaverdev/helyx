@@ -642,6 +642,8 @@ defmodule Helyx.Test.Connected do
   #   "label"            "echo"; a provider process started with no
   #                      `:resume_id` reports a new label on its
   #                      first turn
+  #   "lost_label"       `init/3` waits for the message `:started`, then
+  #                      "label" that lost its `:resume_id`
   #   "events.<name>"    a turn answers :ok, sends the events of <name>, then
   #                      a text delta "ok" and done:
   #     "id1"     a resume id of 1 byte
@@ -710,14 +712,14 @@ defmodule Helyx.Test.Connected do
 
   # The events of each "events.<name>" model with a fixed list.
   @events %{
-    "id1" => [{:resume, "a", 0}],
-    "id256" => [{:resume, String.duplicate("é", 128), 0}],
-    "id257" => [{:resume, "a" <> String.duplicate("é", 128), 0}],
-    "id0" => [{:resume, "", 0}],
-    "raw_id" => [{:resume, <<255>>, 0}],
-    "big_cut" => [{:resume, "a", Integer.pow(10, 100)}],
-    "max_cut" => [{:resume, "a", Integer.pow(10, 100) - 1}],
-    "neg_cut" => [{:resume, "a", -1}],
+    "id1" => [{:resume_id, "a", 0}],
+    "id256" => [{:resume_id, String.duplicate("é", 128), 0}],
+    "id257" => [{:resume_id, "a" <> String.duplicate("é", 128), 0}],
+    "id0" => [{:resume_id, "", 0}],
+    "raw_id" => [{:resume_id, <<255>>, 0}],
+    "big_cut" => [{:resume_id, "a", Integer.pow(10, 100)}],
+    "max_cut" => [{:resume_id, "a", Integer.pow(10, 100) - 1}],
+    "neg_cut" => [{:resume_id, "a", -1}],
     "orphan" => [{:tool_result, "nope", {:ok, "lost"}}],
     "raw_result_id" => [{:tool_result, <<255>>, {:ok, "lost"}}],
     "empty_between" => [
@@ -763,10 +765,22 @@ defmodule Helyx.Test.Connected do
     end
 
     case model do
-      "block_init" -> Process.sleep(:infinity)
-      "exit_init" -> exit(:normal)
-      "fail_init" -> {:error, :no_program}
-      _ -> {:ok, %{model: model, ctl: ctl, label: opts[:resume_id], closed: false}}
+      "block_init" ->
+        Process.sleep(:infinity)
+
+      "exit_init" ->
+        exit(:normal)
+
+      "fail_init" ->
+        {:error, :no_program}
+
+      "lost_label" ->
+        receive do
+          :started -> {:ok, %{model: "label", ctl: ctl, label: nil, closed: false}}
+        end
+
+      _ ->
+        {:ok, %{model: model, ctl: ctl, label: opts[:resume_id], closed: false}}
     end
   end
 
@@ -774,7 +788,7 @@ defmodule Helyx.Test.Connected do
   def request({:turn, id, _} = request, from, %{model: "label", label: nil} = state) do
     label = "h#{System.unique_integer([:positive])}"
     {:ok, [reply | events], state} = request(request, from, %{state | label: label})
-    {:ok, [reply, {:event, id, {:resume, label, 0}} | events], state}
+    {:ok, [reply, {:event, id, {:resume_id, label, 0}} | events], state}
   end
 
   def request(request, from, %{model: model, ctl: ctl} = state) do

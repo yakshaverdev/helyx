@@ -6,11 +6,10 @@ defmodule Helyx.Session.Turn do
   # count. The open tool calls come from the transcript
   # (`Transcript.open_calls/1`).
   # `model` and `provider` are fixed when the turn starts, so a model switch
-  # during the turn takes effect on the next one. `resumed` is the resume id
-  # that the connect of the turn passed to the provider, or nil. A turn has
-  # a `phase`, `:preparing`, `:submitting`, `:submitted`, or `:context`
-  # (submitted, with a context request open), the prepared `context` until
-  # it is sent, and the `pending` ref of the answer to `{:turn, ...}`.
+  # during the turn takes effect on the next one. A turn has a `phase`,
+  # `:preparing`, `:submitting`, `:submitted`, or `:context` (submitted,
+  # with a context request open), the prepared `context` until it is
+  # sent, and the `pending` ref of the answer to `{:turn, ...}`.
   # `prepare` is the pid of the running prepare Task, which the session
   # monitors and kills at the turn end, or nil.
   # `tool_queue` holds the Helyx tool requests of the turn
@@ -24,7 +23,6 @@ defmodule Helyx.Session.Turn do
     :model,
     :provider,
     :partial,
-    :resumed,
     :phase,
     :context,
     :pending,

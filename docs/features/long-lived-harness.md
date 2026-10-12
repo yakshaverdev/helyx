@@ -45,7 +45,7 @@ The protocol facts are in `docs/research/claude-code-stream-json.md` and `docs/r
 
 ## Replay
 
-A fresh harness session (no resume id, a lost session, or a changed Codex tool set) gets the rest of the transcript before the first turn's prompt, and the turn gives `{:resume, id, cut}` with the number of messages left out. The prompt is the user messages at the end of the context. The replay keeps the newest messages within `@replay_max_bytes` of `Helyx.HarnessIO` and never starts at a tool result.
+A fresh harness session (no resume id, a lost session, or a changed Codex tool set) gets the rest of the transcript before the first turn's prompt, and the turn gives `{:resume_id, id, cut}` with the number of messages left out. The prompt is the user messages at the end of the context. The replay keeps the newest messages within `@replay_max_bytes` of `Helyx.HarnessIO` and never starts at a tool result.
 
 - Claude Code writes the replay as lines that start no model call (`shouldQuery: false`), in chunks. Each chunk ends at a replayed user line, and the next chunk goes out at that line's `result` with `num_turns` 0. So the model gets the transcript in its order. A steer while chunks are held goes after the turn's line.
 - Codex sends the replay with `thread/inject_items`, then `turn/start`.

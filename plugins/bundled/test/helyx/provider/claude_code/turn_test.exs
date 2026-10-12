@@ -65,7 +65,7 @@ defmodule Helyx.Provider.ClaudeCode.TurnTest do
     events = prompt(session, "list the files")
 
     assert [%{provider: "claude-code", resume_id: id, lost: false, cut: 0}] =
-             of_type(events, :provider_session)
+             of_type(events, :resume_id)
 
     assert "--session-id=#{id}" in args(bin, 1)
     assert "--permission-mode" in args(bin, 1)
@@ -128,12 +128,12 @@ defmodule Helyx.Provider.ClaudeCode.TurnTest do
     turn(bin, 2, 1, reply("Back."))
 
     session = start(ctx)
-    [%{resume_id: id}] = of_type(prompt(session, "hello"), :provider_session)
+    [%{resume_id: id}] = of_type(prompt(session, "hello"), :resume_id)
     events = prompt(session, "again")
 
     assert programs(bin) == "1"
     assert [_first, %{"message" => %{"content" => [%{"text" => "again"}]}}] = stdin(bin, 1)
-    assert of_type(events, :provider_session) == []
+    assert of_type(events, :resume_id) == []
     assert Message.text(List.last(messages(events))) == "Again."
 
     GenServer.stop(Session.pid(session))
@@ -153,7 +153,7 @@ defmodule Helyx.Provider.ClaudeCode.TurnTest do
     turn(bin, 3, 1, [init(), replayed() | reply("Fresh.")])
 
     session = start(ctx)
-    [%{resume_id: old}] = of_type(prompt(session, "hello"), :provider_session)
+    [%{resume_id: old}] = of_type(prompt(session, "hello"), :resume_id)
     GenServer.stop(Session.pid(session))
 
     events = prompt(resume(ctx), "again")
@@ -177,7 +177,7 @@ defmodule Helyx.Provider.ClaudeCode.TurnTest do
 
     refute Map.has_key?(prompt_line, "shouldQuery")
 
-    assert [%{resume_id: fresh, lost: true, cut: 0}] = of_type(events, :provider_session)
+    assert [%{resume_id: fresh, lost: true, cut: 0}] = of_type(events, :resume_id)
     assert fresh != old
     assert "--session-id=#{fresh}" in args(bin, 3)
 
@@ -242,7 +242,7 @@ defmodule Helyx.Provider.ClaudeCode.TurnTest do
            }
 
     assert %{"type" => "tool_result", "tool_use_id" => ^id, "is_error" => true} = result
-    assert [%{lost: false, cut: 0}] = of_type(events, :provider_session)
+    assert [%{lost: false, cut: 0}] = of_type(events, :resume_id)
   end
 
   # 4.2 of the simplification review: a replace of each character outside
@@ -351,7 +351,7 @@ defmodule Helyx.Provider.ClaudeCode.TurnTest do
   test "a result of a turn with no model call ends the turn", %{bin: bin, work: work} do
     turn(bin, 1, 1, begin() ++ [result("", 0)])
 
-    assert [{:resume, _id, 0}, {:done, _}] =
+    assert [{:resume_id, _id, 0}, {:done, _}] =
              events_of(run_direct([Message.user("hi")], work))
   end
 

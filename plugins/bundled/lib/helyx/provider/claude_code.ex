@@ -268,7 +268,7 @@ defmodule Helyx.Provider.ClaudeCode do
     else
       {[first | chunks], cut, replay?} = Replay.chunks(history, prompt_line)
       HarnessIO.write(state, first)
-      event = {:event, turn.id, {:resume, state.session_id, cut}}
+      event = {:event, turn.id, {:resume_id, state.session_id, cut}}
       turn = %{turn | replay?: replay?, chunks: chunks}
       {[event], %{state | sent?: true, turn: turn}}
     end

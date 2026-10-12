@@ -45,7 +45,7 @@ defmodule Helyx.Provider.ClaudeCode.SteerTest do
                {:text_delta, "b"},
                {:done, _}
              ] =
-               actions |> events_of() |> Enum.reject(&match?({:resume, _, _}, &1))
+               actions |> events_of() |> Enum.reject(&match?({:resume_id, _, _}, &1))
     end
 
     test "that starts after a tool result gives user_message after the result",

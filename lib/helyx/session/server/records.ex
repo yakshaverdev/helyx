@@ -12,7 +12,7 @@ defmodule Helyx.Session.Server.Records do
   import Helyx.Session.Server.Events, only: [emit: 3, emit: 4]
 
   alias Helyx.{Message, ModelRef, Session}
-  alias Helyx.Session.Server.State
+  alias Helyx.Session.Server.{ProviderConn, State}
   alias Helyx.Session.{Transcript, Turn}
 
   def append_user(state, text) do
@@ -114,13 +114,16 @@ defmodule Helyx.Session.Server.Records do
 
   # A resume id of the turn's provider, with the transcript length now.
   # The provider id is the prefix of the turn's model ref: `find/2` matched
-  # it, so the session runs no plugin code for it.
-  def resume(%State{activity: %Turn{} = turn} = state, id, cut) do
+  # it, so the session runs no plugin code for it. Only the first resume id
+  # after the start of the provider process can say that it lost the
+  # resume id of its start, so this clears it.
+  def resume_id(%State{activity: %Turn{} = turn, conn: %ProviderConn{} = conn} = state, id, cut) do
     provider = turn.model.provider
     state = persist(state, &Helyx.Session.File.append_resume_id(&1, provider, id))
     ids = Map.put(state.resume_ids, provider, {id, length(state.transcript)})
-    data = %{provider: provider, resume_id: id, lost: turn.resumed != nil, cut: cut}
-    emit(%{state | resume_ids: ids}, :provider_session, data)
+    data = %{provider: provider, resume_id: id, lost: conn.resumed != nil, cut: cut}
+    state = %{state | resume_ids: ids, conn: %{conn | resumed: nil}}
+    emit(state, :resume_id, data)
   end
 
   # Emits message_start for the assistant message on the first stream event.
