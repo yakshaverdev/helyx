@@ -21,14 +21,17 @@ defmodule Helyx.Session do
   held. Its tool calls run on the session's hands (`Helyx.Session.Hands`)
   one at a time, in call order. A provider without `Helyx.Provider.Loop` can
   run the whole turn and its own tools itself. A turn ends on the terminal
-  event of the provider. It fails when its first prepare Task fails or the
+  event of the provider. It fails when its first prepare Task fails or its
   provider process ends first; a failed context build goes to the provider.
-  Each tool call with no result gets an `aborted` error result
-  (`aborted_result/0`). A follow-up during a turn waits in a queue. A steer
-  waits in a queue until the provider can take it (see `steer/2`). An abort
-  or a failure of the turn drops both queues. An abort ends the turn at
-  once. It returns when the hands have released the resources of the turn or
-  recorded them as unconfirmed (`abort/1`). Until then, the session answers
+  A provider process of an earlier turn that ends while the turn prepares is
+  replaced once. Each tool call with no result gets an `aborted` error
+  result (`aborted_result/0`). A follow-up during a turn waits in a queue. A
+  steer waits in a queue until the provider can take it (see `steer/2`). An
+  abort or a failure of the turn drops both queues. An abort ends the turn
+  at once. It returns at the end of the wait after the turn (`abort/1`): the
+  hands have released the resources of the turn or recorded them as
+  unconfirmed, the provider has answered an interrupt that it got, and a
+  provider process that stops has ended. Until then, the session answers
   every client call and starts no turn.
 
   `docs/features/session-lifecycle.md` has the turn, the queues, the

@@ -18,7 +18,7 @@ User story: I start Helyx in `~/code/proj`. The model sees `~/.helyx/AGENTS.md`,
 
 Each file is a section: `## <path>`, a blank line, and the file text, capped by `Helyx.Text.truncate/2`. A file that `Helyx.Text.read_file/1` rejects gives no section, and its folder does not fall back to the next name. A file reached twice (a symlink, or the global file when the working directory is in `~/.helyx`) loads once, at its first place; identity is the device and the inode from `File.stat/1`. The option `:home` overrides the home directory, for tests.
 
-Each context build finds and reads the files again. The session builds a context at the start of each turn that a prompt opens, after its provider process starts, and at each context request that a provider sends in a submitted turn. `Helyx.Provider.Loop` sends one before each later model call. A turn that a provider starts by itself builds no context at its start. So an edit to a context file takes effect at the next context build, unless a cap leaves out that file or the edited part of it.
+Each context build finds and reads the files again. The session builds a context at the start of each turn that a prompt opens, once it has a provider process for the turn, and at each context request that a provider sends in a submitted turn while no other context request is open. `Helyx.Provider.Loop` sends one before each later model call. A turn that a provider starts by itself builds no context at its start. So an edit to a context file takes effect at the next context build, unless a cap leaves out that file or the edited part of it.
 
 ## Replaced mechanism
 
