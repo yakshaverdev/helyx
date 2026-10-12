@@ -14,21 +14,22 @@ defmodule Helyx.Session do
       # then {:DOWN, ^ref, :process, _pid, reason} when the session
       # ends; Helyx.Session.end_reason(reason) is :stopped or :crashed
 
-  Every provider runs the turn in its provider process (ADR 0002, ADR
-  0007). An API provider runs it with `Helyx.Provider.Loop`: it calls the
-  model until an assistant message has no tool calls, and its tool calls
-  run on the session's hands (`Helyx.Session.Hands`) one at a time, in
-  call order. A provider without `Helyx.Provider.Loop` can run the whole
-  turn and its own tools itself. A turn ends on the terminal event of the
-  provider. It fails when its first prepare Task fails or the provider
-  process ends first; a failed context build goes to the provider. Each
-  tool call with no result gets an `aborted` error result
-  (`aborted_result/0`). A follow-up during a turn waits in a queue. A
-  steer waits in a queue until the provider can take it (see `steer/2`).
-  An abort or a failure of the turn drops both queues. An abort ends the
-  turn at once. It returns when the hands have released the resources of
-  the turn or recorded them as unconfirmed (`abort/1`). Until then, the
-  session answers every client call and starts no turn.
+  Every provider runs the turn in its provider process (ADR 0002, ADR 0007).
+  A model provider runs it with `Helyx.Provider.Loop`: it calls the model
+  again when the tool calls of an assistant message have their results. An
+  assistant message with no tool calls ends the turn, unless a steer is
+  held. Its tool calls run on the session's hands (`Helyx.Session.Hands`)
+  one at a time, in call order. A provider without `Helyx.Provider.Loop` can
+  run the whole turn and its own tools itself. A turn ends on the terminal
+  event of the provider. It fails when its first prepare Task fails or the
+  provider process ends first; a failed context build goes to the provider.
+  Each tool call with no result gets an `aborted` error result
+  (`aborted_result/0`). A follow-up during a turn waits in a queue. A steer
+  waits in a queue until the provider can take it (see `steer/2`). An abort
+  or a failure of the turn drops both queues. An abort ends the turn at
+  once. It returns when the hands have released the resources of the turn or
+  recorded them as unconfirmed (`abort/1`). Until then, the session answers
+  every client call and starts no turn.
 
   `docs/features/session-lifecycle.md` has the turn, the queues, the
   abort, and the provider process. `docs/features/session-subscribers.md`

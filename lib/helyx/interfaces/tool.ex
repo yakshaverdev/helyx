@@ -155,12 +155,21 @@ defmodule Helyx.Tool do
   defp parameters?(_value), do: false
 
   @doc """
-  Holds an opaque handle of a resource the tool call created with the hands
-  that run it. The hands keep it outside the Task and give it to the tool's
-  `release/3` when the call delivers or its turn is aborted, so no resource
-  outlives the call. Returns only when the hands hold the handle, so work
-  that starts after it is never unheld. A no-op when the tool runs outside
-  the hands. Raises when the tool does not implement `release/3`.
+  Holds an opaque handle of a resource that a tool call or a provider
+  process created, with the hands that run it. The hands keep the handle
+  outside the Task and give it to the `release/3` of the tool or the
+  provider. They release the handle of a tool call when the call delivers,
+  or when its turn ends while the call runs. They release the handle of a
+  provider process when the process ends. While a release leaves a handle
+  unconfirmed, the hands refuse tool calls
+  (`docs/features/tool-resource-release.md`). When the hands stop first,
+  no release runs: the tool or the provider must free the resource when
+  its own process dies (ADR 0004).
+  Returns only when the hands hold the handle, so work that starts after it
+  is never unheld. A no-op when the caller runs outside the hands, such as
+  `stream/3` in the model Task of `Helyx.Provider.Loop`. A provider holds
+  only from the callbacks of its provider process. Raises when the tool or
+  the provider does not implement `release/3`.
   """
   @spec hold(term()) :: :ok
   def hold(handle) do

@@ -91,7 +91,7 @@ defmodule Helyx.Session.Server.Wait do
     %{cleanup_notice(result, state) | activity: %{wait | hands: nil}}
   end
 
-  # The abort still replies `:ok` (ADR 0006 §5); a failed cleanup is a
+  # The abort still replies `:ok` (ADR 0006 §2); a failed cleanup is a
   # notice with a fixed text; the log has the reason, whose handle list
   # has no bound. The turn has ended, so the notice has no turn id.
   defp cleanup_notice(:ok, state), do: state

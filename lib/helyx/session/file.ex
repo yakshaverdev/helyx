@@ -18,7 +18,8 @@ defmodule Helyx.Session.File do
   @version 1
 
   # A resume loads the file whole into the calling process, so the file has a
-  # limit. Compaction is out of scope, so a session past it starts anew.
+  # limit. Compaction does not shrink the transcript, so a session past it
+  # starts anew.
   @max_bytes 64 * 1024 * 1024
 
   # The decode of a file under @max_bytes can still grow the heap by 12 to 42

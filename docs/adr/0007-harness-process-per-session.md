@@ -37,3 +37,11 @@ Plugin code still never runs in the session process. Every event of the program 
 2026-09-30 (#265, approved by the owner): a provider is one of two kinds. An API provider has a local turn: Helyx runs the loop and the tools, and the provider implements `stream/3` (today the OpenAI-compatible provider). A harness provider is connected: it exports `harness_init/3` and the harness callbacks of this ADR (today Claude Code and Codex). The export of `harness_init/3` is the only signal. The `turn/0` callback, the per-turn `:external` mode, and the start error `{:bad_provider_turn, id}` are gone, and `stream/3` is optional for a connected provider. No bundled provider used the per-turn mode; only test fakes did. A future harness program with no persistent-process mode, one that cannot keep a process across turns, would need the per-turn path again: a new decision that brings back a stream of the whole turn under the hands and a steer that aborts the turn.
 
 2026-10-02 (#300, `docs/features/one-provider-path.md`): the provider process is for every provider, not only a harness. An API provider runs in it through `Helyx.Provider.Loop` (ADR 0002, revision of 2026-10-02). The rules of this ADR, the request protocol, the deadlines, and the ownership by the hands, hold for it unchanged.
+
+## Update 2026-10-12
+
+Three statements of this ADR no longer match the code (`docs/reviews/2026-10-12-domain-review.md`, A6):
+
+- Since #361 (80bcf97), an abort releases the turn's Helyx tool calls and interrupts the program at the same time. `docs/features/session-lifecycle.md` has the order.
+- Since #197 (dd90d84), the session mailbox is bounded: a stream event sent to the session is refused when more than 10,000 messages wait in it. Then the provider process stops, and the turn that it runs fails (`docs/features/session-lifecycle.md`, "Bounds"). This replaces "an unbounded mailbox" in the Decision and the last Consequence.
+- The program closes at a model switch, also when the provider is the same. The session closes it when no turn and no wait runs and its model is not the model of the session (`docs/features/session-lifecycle.md`, "The wait"). So a switch away and back during a turn keeps the program.

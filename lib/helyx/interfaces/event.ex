@@ -7,9 +7,9 @@ defmodule Helyx.Event do
   turn id, and a sequence number that increases by one per event within an
   instance, so a client can detect gaps. Each start of the session process,
   a resume too, is a new instance: a resume keeps the session id and starts
-  `seq` at 0 again, and two Cores can hold one session id. A client drops
-  every event whose `instance_id` is not the one of its snapshot
-  (`Helyx.Session.Snapshot`).
+  `seq` at 0 again, and two Cores can hold one session id. A client that
+  reconnects drops every event whose `instance_id` is not the one of its
+  snapshot (`Helyx.Session.Snapshot`, ADR 0006).
 
   Types and their `data`:
 
