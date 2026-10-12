@@ -30,3 +30,9 @@ No round reproduced a defect of this change, so the loop ends after round 1. The
 | # | Finding | Resolution |
 | - | ------- | ---------- |
 | G1.1 | `docs/agents/review-checklist.md`, "Plugins and Core": the rule says bad configuration never raises, but `plugins: nil` and `plugins: [123]` raise (1.6). Confirmed | Fixed by narrowing the rule to a plugins value that is a list of module atoms; the other shapes still raise (#517). The code is not changed |
+
+## Gate r2 (Codex)
+
+| # | Finding | Resolution |
+| - | ------- | ---------- |
+| G2.1 | The narrowed rule still claimed too much: `start_link(plugins: [:lists])` raises `UndefinedFunctionError` for `:lists.__info__/1`, and an Erlang module atom is a module atom. Confirmed | Fixed by naming Elixir module names in the rule and Erlang modules in the exception (#517). The code is not changed |
