@@ -133,3 +133,5 @@ Round 2 result: no reproduced defect. The loop ends. The fixes of this round are
 ## Gate
 
 Rebased on `50d13ba` (#508, #517). They change no file of the session server. `HELYX_SLOW=1 .claude/skills/ship/precommit.sh` passed: 603 tests and 2 properties in the root (1 excluded), 432 and 26 in the other projects, 0 failures, Dialyzer 0 errors, no warnings.
+
+Gate r1 (Codex): 0 findings, approve.
