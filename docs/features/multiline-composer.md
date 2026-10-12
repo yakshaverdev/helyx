@@ -7,7 +7,7 @@ The TUI composer holds more than one line, so a user can write and paste code (#
 - Enter sends, as before. Alt+Enter stays the follow-up key.
 - Ctrl+J adds a new line in every terminal. In raw mode crossterm reports the LF byte as `j` with `ctrl`, so ExRatatui gives the key code `"j"` with the modifiers `["ctrl"]`.
 - Shift+Enter adds a new line where the terminal reports Shift on Enter. Elsewhere Shift+Enter is Enter and sends.
-- A paste keeps its new lines and tabs. A paste of more than 5 lines shows in the composer as one marker, `[Pasted text #1, 20 lines]`, like Claude Code and Codex. The full text is sent with the prompt, so the session saves it in the transcript. A paste of 5 lines or fewer shows as normal text. The Tab key goes to the textarea, which indents; the one-line input ignored it. Shift+Tab also goes to the textarea, which inserts spaces.
+- A paste keeps its new lines and tabs. A paste of more than 5 lines shows in the composer as one marker, `[Pasted text #1, 20 lines]`, so a long paste does not fill the composer, which shows at most 8 lines. The full text is sent with the prompt, so the session saves it in the transcript. A paste of 5 lines or fewer shows as normal text. The Tab key goes to the textarea, which indents; the one-line input ignored it. Shift+Tab also goes to the textarea, which inserts spaces.
 - A marker is one unit for every edit (orchestrator decision, 2026-09-25): no edit leaves a broken marker whose paste is dropped in silence, and only the markers that the composer made are replaced on send.
 
 The invariant: the text sent equals what the user sees, with every live marker replaced by exactly its own paste. No edit drops a paste without removing its marker, and no typed text is replaced.

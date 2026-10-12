@@ -16,7 +16,7 @@ Key design constraints:
 - Local mode runs server and TUI in one BEAM node with OTP messages. Phoenix is not in core; it arrives later as a Transport plugin.
 - Core knows only interface constructs. A concept that only one kind of plugin has (a harness, a program, a wire protocol) stays in that plugin, and Core code does not name it. A rule that every provider needs, such as the order of tool results or the completion before the next turn, is a provider construct and stays in Core.
 
-First checkpoint: a terminal coding agent (pi.dev style) built on these primitives.
+First checkpoint: a terminal coding agent built on these primitives.
 
 ## Repository layout
 

@@ -8,7 +8,7 @@ The research is in `docs/research/agent-client-protocols.md`, `docs/research/age
 
 ### 1. Helyx owns the contract
 
-Helyx chooses its event names, shapes, and rules to meet its own needs. External protocols (ACP, opencode, pi, Claude Code) are references, not rules. Compatibility with an external protocol is the job of a Transport plugin, never of core. An event change states the concrete problem that it solves.
+Helyx chooses its event names, shapes, and rules to meet its own needs. External protocols are references, not rules. Compatibility with an external protocol is the job of a Transport plugin, never of core. An event change states the concrete problem that it solves.
 
 ### 2. The contract is a closed list
 
