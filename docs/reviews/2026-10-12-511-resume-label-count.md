@@ -63,3 +63,5 @@ bounds sensor: 2 candidate functions, 0 flagged, 0 without an answer
 | 2.5 | failure path | No defect. Probes: a resumed file with a stray result and an open call, then turns across a model switch, compared the live labels and `resumable/3` with `Session.File.resume/2` after each step; two writers on one file with forks, 900 rounds. Not reached: a real short write (ENOSPC), a `resume` event in a program turn, two live Cores with labels of several providers. Noted outside this change: after a failed write the provider session keeps turns the file lacks, and a resume still continues it; the old rule answered the same | None |
 
 No round reproduced a defect in the code after round 1, so the loop ends.
+
+Gate r1 (Codex): 0 findings, approve
