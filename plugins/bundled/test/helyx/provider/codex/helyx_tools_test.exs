@@ -343,7 +343,7 @@ defmodule Helyx.Provider.Codex.HelyxToolsTest do
       :ok = Session.prompt(session, "sleep")
       pid = wait_for_pid(pidfile)
 
-      assert [%{outcome: :error, error: {:provider_stop, {:codex_exit, _}}}] =
+      assert [%{outcome: :error, error: "{:provider_stop, {:codex_exit, " <> _}] =
                of_type(collect_until(:turn_end), :turn_end)
 
       assert gone_within?(pid)

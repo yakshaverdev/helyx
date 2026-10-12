@@ -66,7 +66,6 @@ defmodule Helyx.Session.SweepTest do
       {results, release}
     end
 
-    @tag :capture_log
     test "every client call answers during the sweep of an abort", %{core: core} do
       {session, _hands, _task} = start_stuck_turn(core)
 
@@ -92,7 +91,6 @@ defmodule Helyx.Session.SweepTest do
       assert Enum.map(turns, &stop_reason/1) == [:end_turn, :end_turn, :end_turn]
     end
 
-    @tag :capture_log
     test "an abort whose cleanup fails gives a notice and still replies :ok", %{core: core} do
       {session, _hands, _task} = start_stuck_turn(core)
 
@@ -110,7 +108,6 @@ defmodule Helyx.Session.SweepTest do
                       }}
     end
 
-    @tag :capture_log
     test "a second abort during the sweep gives back the messages sent before it", %{core: core} do
       {session, _hands, _task} = start_stuck_turn(core)
 
@@ -140,7 +137,6 @@ defmodule Helyx.Session.SweepTest do
       refute_receive {:helyx_event, %Event{type: :turn_start}}, 100
     end
 
-    @tag :capture_log
     test "every client call answers during the sweep of a delivered call", %{core: core} do
       {session, _hands, task} = start_stuck_turn(core)
 
@@ -155,7 +151,6 @@ defmodule Helyx.Session.SweepTest do
       assert Helyx.Message.text(result) =~ "could not be released"
     end
 
-    @tag :capture_log
     test "hands that die during the sweep stop the session and the abort call", %{core: core} do
       {session, hands, _task} = start_stuck_turn(core)
       ref = Process.monitor(Session.pid(session))

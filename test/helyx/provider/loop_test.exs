@@ -229,16 +229,15 @@ defmodule Helyx.Provider.LoopTest do
 
       for ref <- refs, do: assert_receive({:DOWN, ^ref, :process, _, _})
 
-      assert {:bad_stream_event, {:message_end, :end_turn, %{}}} =
-               List.last(collect_until(:turn_end)).data.error
+      assert List.last(collect_until(:turn_end)).data.error ==
+               inspect({:bad_stream_event, {:message_end, :end_turn, %{}}})
     end
 
-    @tag :capture_log
     test "after a failed model call the provider process takes the next turn", %{core: core} do
       {:ok, session} = Session.start(core, model: "test/crash")
       {:ok, _, _} = Session.subscribe(session)
       :ok = Session.prompt(session, "hello")
-      assert {:task_exit, _} = List.last(collect_until(:turn_end)).data.error
+      assert List.last(collect_until(:turn_end)).data.error == "boom"
       provider = :sys.get_state(Session.pid(session)).conn.pid
 
       :ok = Session.prompt(session, "again")

@@ -385,7 +385,7 @@ defmodule Helyx.Provider.ClaudeCode.TurnTest do
     session = start(ctx)
     events = prompt(session, "go")
 
-    assert [%{outcome: :error, error: {:claude_code, "error_max_turns", "too many"}}] =
+    assert [%{outcome: :error, error: ~s({:claude_code, "error_max_turns", "too many"})}] =
              of_type(events, :turn_end)
 
     assert [

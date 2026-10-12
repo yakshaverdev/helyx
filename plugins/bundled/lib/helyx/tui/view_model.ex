@@ -46,7 +46,7 @@ defmodule Helyx.TUI.ViewModel do
   alias Helyx.{Event, Message}
   alias Helyx.Session.Snapshot
 
-  # The cut of an error notice or a tool call line (`cut_line/1`).
+  # The cut of a tool call line (`cut_line/1`).
   @render_max_bytes 8_192
 
   # `cells` is set at run time in `from_snapshot/1`: an `:array` literal in
@@ -101,7 +101,7 @@ defmodule Helyx.TUI.ViewModel do
     case data do
       %{outcome: :done} -> vm
       %{outcome: :aborted} -> add_cell(vm, {:notice, "aborted"})
-      %{outcome: :error, error: error} -> add_cell(vm, {:notice, "error: " <> error_text(error)})
+      %{outcome: :error, error: error} -> add_cell(vm, {:notice, "error: " <> error})
     end
   end
 
@@ -266,16 +266,11 @@ defmodule Helyx.TUI.ViewModel do
   defp join_arguments(line, {key, value, iterator}),
     do: join_arguments("#{line} #{cut_line("#{key}")}=#{inspect(value)}", :maps.next(iterator))
 
-  # One rule for an error notice or a tool call line that holds provider or
-  # model text: `inspect/1` escapes a character to up to four times its
-  # bytes (a control or invalid byte renders as `\x01`) and has no total
-  # limit over nested terms, so the text is cut at `@render_max_bytes`; a
-  # character cut in half is dropped (`Helyx.Text.cap/3`).
+  # A tool call line holds model text, and `inspect/1` escapes a character
+  # to up to four times its bytes (a control or invalid byte renders as
+  # `\x01`), so the line is cut at `@render_max_bytes`; a character cut in
+  # half is dropped (`Helyx.Text.cap/3`).
   defp cut_line(text), do: Helyx.Text.cap(text, @render_max_bytes, :head)
-
-  # `binaries: :as_strings` escapes a control or invalid byte, so an error
-  # text shows as text, not as a list of bytes.
-  defp error_text(error), do: error |> inspect(binaries: :as_strings) |> cut_line()
 
   # A delta with no open message is part of a message that the TUI does
   # not show, such as one of a new role, so it is dropped.

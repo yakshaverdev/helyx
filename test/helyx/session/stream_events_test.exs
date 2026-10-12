@@ -53,13 +53,12 @@ defmodule Helyx.Session.StreamEventsTest do
     :ok = Session.prompt(session, "hello")
     events = collect_until(:turn_end)
     assert stop_reason(events) == :error
-    assert List.last(events).data.error == :stream_ended
+    assert List.last(events).data.error == ":stream_ended"
 
     :ok = Session.prompt(session, "again")
     assert stop_reason(collect_until(:turn_end)) == :error
   end
 
-  @tag :capture_log
   test "a task crash fails the turn and the session accepts the next prompt", %{core: core} do
     {:ok, session} = Session.start(core, model: "test/crash")
     {:ok, _, _} = Session.subscribe(session)
@@ -67,10 +66,156 @@ defmodule Helyx.Session.StreamEventsTest do
     :ok = Session.prompt(session, "hello")
     events = collect_until(:turn_end)
     assert stop_reason(events) == :error
-    assert {:task_exit, {%RuntimeError{message: "boom"}, _}} = List.last(events).data.error
+    assert List.last(events).data.error == "boom"
+    refute handle?(events)
 
     :ok = Session.prompt(session, "again")
     assert stop_reason(collect_until(:turn_end)) == :error
+  end
+
+  describe "the error text of a failed turn (ADR 0006 §2)" do
+    defp error_of(core, model) do
+      {:ok, session} = Session.start(core, model: "test/" <> model)
+      {:ok, _, _} = Session.subscribe(session)
+      :ok = Session.prompt(session, "hello")
+      List.last(collect_until(:turn_end)).data.error
+    end
+
+    test "of 3999 and 4000 bytes is kept whole, and one of 4001 bytes is cut", %{core: core} do
+      for {n, kept} <- [{3999, 3999}, {4000, 4000}, {4001, 4000}] do
+        assert error_of(core, "error_bytes.#{n}") == String.duplicate("a", kept)
+      end
+    end
+
+    test "of a crash with its stack in a stream is its short message, with no stacktrace", %{
+      core: core
+    } do
+      for {how, text} <- [
+            {"badarg", "argument error"},
+            {"undef",
+             "function :helyx_no_such_module.f/0 is undefined (module :helyx_no_such_module is not available)"},
+            {"throw", "Erlang error: {:nocatch, :boom}"},
+            {"exit_crash", "argument error"},
+            {"exit_shutdown", "argument error"},
+            {"catch", "argument error"},
+            {"exit_signal", "argument error"}
+          ] do
+        {:ok, session} = Session.start(core, model: "test/fail_after." <> how)
+        {:ok, _, _} = Session.subscribe(session)
+        :ok = Session.prompt(session, "hello")
+        events = collect_until(:turn_end)
+
+        assert [
+                 %{type: :message_end, data: %{error: ^text}},
+                 %{type: :turn_end, data: %{error: ^text}}
+               ] = Enum.take(events, -2),
+               how
+      end
+    end
+
+    test "is at most 4000 bytes, cut on a character boundary", %{core: core} do
+      assert error_of(core, "long_error") == "a" <> String.duplicate("é", 1999)
+    end
+
+    test "of an exception is its message", %{core: core} do
+      assert error_of(core, "exception_error") == "rate limited"
+    end
+
+    test "of a plugin exception whose message throws is its name, or of a struct whose code exits is the plain term",
+         %{core: core} do
+      assert error_of(core, "throw_message") == "Helyx.Test.ThrowMessage"
+
+      assert error_of(core, "exit_inspect") =~
+               ~r/^{:oops, %{.*__struct__: Helyx.Test.ExitInspect.*}}$/
+    end
+
+    test "of plugin code that fails on a crash or a struct holds no stacktrace", %{core: core} do
+      for {how, plain} <- [
+            {"raise_message", ~r/^Helyx.Test.RaiseMessage$/},
+            {"throw_message", ~r/^Helyx.Test.ThrowMessage$/},
+            {"raise_inspect", ~r/^{:oops, %{.*__struct__: Helyx.Test.RaiseInspect.*}}$/}
+          ] do
+        assert error_of(core, "fail_after." <> how) =~ plain, how
+      end
+    end
+
+    test "holds no stacktrace from any part of the reason, and shows :stacktrace in its place",
+         %{core: core} do
+      for how <- ["exit_exception", "match", "map_key"] do
+        refute error_of(core, "fail_after." <> how) =~ "m.erl", how
+      end
+
+      assert error_of(core, "fail_after.map_key") == inspect(%{stacktrace: :key})
+      assert error_of(core, "fail_after.tail_stack") == inspect([:context, :stacktrace])
+      assert error_of(core, "fail_after.fun_frame") == "Erlang error: :oops"
+    end
+
+    test "of an improper list is its term", %{core: core} do
+      assert error_of(core, "fail_after.improper") == inspect({:failure, [:item | :tail]})
+    end
+
+    test "of a raising plugin Inspect inside a MatchError term is Inspect.Error text, a stated ceiling",
+         %{core: core} do
+      assert error_of(core, "fail_after.match_inspect") =~ "Inspect.Error"
+
+      assert error_of(core, "fail_after.exit_exception") ==
+               inspect(
+                 {:task_exit, %Helyx.Test.StackMessage{message: "held", stack: :stacktrace}}
+               )
+
+      assert error_of(core, "fail_after.match") =~
+               "{:error, {:badarg, :stacktrace}}"
+    end
+
+    test "of a plugin exception whose message exits or gives no string is its name",
+         %{core: core} do
+      for how <- ["exit_message", "atom_message"] do
+        assert error_of(core, "fail_after." <> how) == "Helyx.Test.OddMessage", how
+      end
+    end
+
+    test "comes from a walk of at most 10,000 terms; past it, the rest is :cut",
+         %{core: core} do
+      # The reason is n + 3 terms; the walk keeps the first 10,000.
+      for {n, text} <- [
+            {9_996, "9996 items, last :x"},
+            {9_997, "9997 items, last :x"},
+            {9_998, "9998 items, last :cut"}
+          ] do
+        assert error_of(core, "fail_after.nodes.#{n}") == text
+      end
+
+      for {n, text} <- [{9_997, "9997 items, last :x"}, {9_998, "9998 items, last :cut"}] do
+        assert error_of(core, "fail_after.tuple_nodes.#{n}") == text
+      end
+
+      # A map of n pairs is 2n + 3 terms: 4,998 pairs fit, and at 5,000 the
+      # rest of the map is `:cut`.
+      for {n, text} <- [{4_998, "4998 items, cut: false"}, {5_000, "5000 items, cut: true"}] do
+        assert error_of(core, "fail_after.map_nodes.#{n}") == text
+      end
+    end
+
+    test "of a provider error that ends in the atom :stacktrace reads as a crash, accepted",
+         %{core: core} do
+      assert error_of(core, "fail_after.marker") == "Erlang error: :oops"
+    end
+
+    test "of a provider error whose list looks like a stacktrace is the term", %{core: core} do
+      assert error_of(core, "fail_after.params") ==
+               inspect({:invalid_params, [{:field, :name, "required", []}]})
+    end
+
+    test "keeps the item limit of inspect, and the log line has a bound too", %{core: core} do
+      {error, log} = ExUnit.CaptureLog.with_log(fn -> error_of(core, "wide_error") end)
+      assert error == inspect(Enum.to_list(1..100), limit: 50)
+      assert error =~ "50, ...]"
+      assert log =~ "turn failed: " <> inspect(Enum.to_list(1..100), limit: 50)
+
+      {_error, log} = ExUnit.CaptureLog.with_log(fn -> error_of(core, "error_bytes.100000") end)
+      assert log =~ inspect(String.duplicate("a", 100_000), printable_limit: 160)
+      refute log =~ String.duplicate("a", 161)
+    end
   end
 
   # Halt-on-error only cancels the provider's request if the session never
@@ -82,7 +227,7 @@ defmodule Helyx.Session.StreamEventsTest do
     :ok = Session.prompt(session, "hello")
     events = collect_until(:turn_end)
     assert stop_reason(events) == :error
-    assert List.last(events).data.error == :overloaded
+    assert List.last(events).data.error == ":overloaded"
 
     :ok = Session.prompt(session, "again")
     assert stop_reason(collect_until(:turn_end)) == :error
@@ -99,7 +244,6 @@ defmodule Helyx.Session.StreamEventsTest do
     refute_receive {:helyx_event, _}, 100
   end
 
-  @tag :capture_log
   test "a failure after deltas closes the partial message with an error", %{core: core} do
     {:ok, session} = Session.start(core, model: "test/crash")
     {:ok, _, _} = Session.subscribe(session)
@@ -118,7 +262,7 @@ defmodule Helyx.Session.StreamEventsTest do
     message_end = Enum.at(events, -2)
     assert %Helyx.Message{role: :assistant, stop_reason: :error} = message_end.data.message
     assert Helyx.Message.text(message_end.data.message) == "so far"
-    assert {:task_exit, _} = message_end.data.error
+    assert message_end.data.error == "boom"
   end
 
   test "thinking, text, and tool call events build one assistant message in order", %{core: core} do
@@ -192,8 +336,8 @@ defmodule Helyx.Session.StreamEventsTest do
     test "an id of 257 bytes, 0 bytes, or not UTF-8, or a cut over the digit limit or below 0 fails the turn",
          %{core: core} do
       for model <- ["id257", "id0", "raw_id", "big_cut", "neg_cut"] do
-        assert {:bad_stream_event, {:resume_id, _, _}} =
-                 List.last(harness_turn(core, model)).data.error,
+        assert List.last(harness_turn(core, model)).data.error =~
+                 "{:bad_stream_event, {:resume_id, ",
                model
       end
     end
@@ -293,7 +437,7 @@ defmodule Helyx.Session.StreamEventsTest do
       :ok = Session.prompt(session, "hello")
       events = collect_until(:turn_end)
 
-      assert List.last(events).data.error == {:message_too_large, 8_388_609, 8_388_608}
+      assert List.last(events).data.error == inspect({:message_too_large, 8_388_609, 8_388_608})
       assert stop_reason(events) == :error
       # The provider process is stopped, and the text-only message joins the
       # transcript with the stop reason `:error`, without the event over the bound.
@@ -319,7 +463,7 @@ defmodule Helyx.Session.StreamEventsTest do
       :ok = Session.prompt(session, "hello")
       events = collect_until(:turn_end)
 
-      assert List.last(events).data.error == {:message_too_large, 8_388_624, 8_388_608}
+      assert List.last(events).data.error == inspect({:message_too_large, 8_388_624, 8_388_608})
       assert stop_reason(events) == :error
 
       assert %{conn: conn, transcript: [%{role: :user}, %{stop_reason: :error}]} =
@@ -354,7 +498,7 @@ defmodule Helyx.Session.StreamEventsTest do
       :ok = Session.prompt(session, "hello")
       events = collect_until(:turn_end)
 
-      assert List.last(events).data.error == {:too_many_blocks, 1_025, 1_024}
+      assert List.last(events).data.error == inspect({:too_many_blocks, 1_025, 1_024})
       assert stop_reason(events) == :error
 
       assert %{conn: conn, transcript: [%{role: :user}, %{stop_reason: :error}]} =
@@ -428,36 +572,33 @@ defmodule Helyx.Session.StreamEventsTest do
       assert final_text(events) == "ok"
     end
 
-    @tag :capture_log
     test "a crash reason with an integer over the digit limit is capped", %{core: core} do
       marker = "integer of more than #{Helyx.Message.max_integer_digits()} digits removed"
 
-      assert {:task_exit, {:boom, ^marker}} =
-               List.last(harness_turn(core, "exit_big")).data.error
+      assert List.last(harness_turn(core, "exit_big")).data.error ==
+               inspect({:task_exit, {:boom, marker}})
     end
   end
 
-  # Each model sends one stream event that Core rejects. The reason of
-  # `wide_int` holds the marker, not the 400,000 digits (#79).
-  for {name, model, event} <- [
-        {"a delta that is not a string", "garbage", quote(do: {:text_delta, 42})},
-        {"an event with an extra field", "wide", quote(do: {:text_delta, "hello", :extra})},
+  # Each model sends one stream event that Core rejects; the error text
+  # holds the part given. The reason of `wide_int` holds the marker, not
+  # the 400,000 digits (#79).
+  for {name, model, part} <- [
+        {"a delta that is not a string", "garbage", "{:text_delta, 42}}"},
+        {"an event with an extra field", "wide", ~s({:text_delta, "hello", :extra}})},
         {"an extra field with a wide integer", "wide_int",
-         quote(do: {:text_delta, "hello", "integer of more than 100 digits removed"})},
+         ~s({:text_delta, "hello", "integer of more than 100 digits removed"}})},
         {"a usage with a wide integer", "wide_usage",
-         quote(do: {:done, %{usage: %{input: "integer of more than 100 digits removed"}}})},
-        {"a delta that is not valid UTF-8", "raw_bytes", quote(do: {:text_delta, <<"hi", 255>>})},
-        {"a tool call that is not valid UTF-8", "raw_call", quote(do: {:tool_call, _})},
+         ~s(usage: %{input: "integer of more than 100 digits removed"})},
+        {"a delta that is not valid UTF-8", "raw_bytes", ~S({:text_delta, "hi\xFF"}})},
+        {"a tool call that is not valid UTF-8", "raw_call", ~S(name: "bash\xFF")},
         {"a tool call with an empty id", "empty_id",
-         quote(do: {:tool_call, %Helyx.Message.ToolCall{id: ""}})},
-        {"a tool call with a bad field shape", "bad_call",
-         quote(do: {:tool_call, %Helyx.Message.ToolCall{name: %{}}})},
-        {"a tool call whose arguments the file cannot hold", "bad_args",
-         quote(do: {:tool_call, _})},
-        {"a stop reason outside the format's set", "bad_stop",
-         quote(do: {:done, %{stop_reason: :refusal}})},
+         ~s({:tool_call, %Helyx.Message.ToolCall{id: "", )},
+        {"a tool call with a bad field shape", "bad_call", "name: %{}"},
+        {"a tool call whose arguments the file cannot hold", "bad_args", ~s(%{"text" => {1, 2}})},
+        {"a stop reason outside the format's set", "bad_stop", "stop_reason: :refusal"},
         {"a harness event from a model provider", "harness_event",
-         quote(do: {:message_end, :end_turn, %{}})}
+         "{:message_end, :end_turn, %{}}}"}
       ] do
     test "a malformed stream event fails the turn and the session lives: #{name}",
          %{core: core} do
@@ -466,8 +607,9 @@ defmodule Helyx.Session.StreamEventsTest do
 
       :ok = Session.prompt(session, "hello")
 
-      assert {:bad_stream_event, unquote(event)} =
-               List.last(collect_until(:turn_end)).data.error
+      error = List.last(collect_until(:turn_end)).data.error
+      assert error =~ "{:bad_stream_event, "
+      assert error =~ unquote(part)
 
       :ok = Session.prompt(session, "again")
       assert stop_reason(collect_until(:turn_end)) == :error
@@ -492,7 +634,7 @@ defmodule Helyx.Session.StreamEventsTest do
 
       :ok = Session.prompt(session, "hello")
       error = List.last(collect_until(:turn_end)).data.error
-      assert error == {:oops, "integer of more than 100 digits removed"}
+      assert error == inspect({:oops, "integer of more than 100 digits removed"})
     end
   end
 
@@ -504,7 +646,7 @@ defmodule Helyx.Session.StreamEventsTest do
 
       :ok = Session.prompt(session, "hello")
       events = collect_until(:turn_end)
-      assert {:bad_stream_event, _} = List.last(events).data.error
+      assert List.last(events).data.error =~ "{:bad_stream_event, "
       refute Enum.any?(events, &(:erlang.external_size(&1) > 10_000))
 
       :ok = Session.prompt(session, "again")

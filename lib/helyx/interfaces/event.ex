@@ -20,15 +20,20 @@ defmodule Helyx.Event do
       or `%{tool_call: Helyx.Message.ToolCall.t()}`
     * `:message_end` – `%{message: Helyx.Message.t()}`; on a failed or
       aborted turn a partial assistant message with text only has `:error`
-      or `:aborted` as its stop reason and `data.error` holds the reason; one
-      with a tool call closes with `:tool_use`, as at the other closes. Both
-      join the transcript
+      or `:aborted` as its stop reason, and `data.error` is
+      `String.t() | :aborted`: the error text of the failed turn (as in
+      `:turn_end`) or `:aborted`; one with a tool call closes with
+      `:tool_use`, as at the other closes. Both join the transcript
     * `:tool_execution_end` – `%{message: Helyx.Message.t()}`, the tool
       result message; calls run one at a time, in call order
     * `:turn_end` – `%{outcome: :done | :aborted}`, or `%{outcome: :error,
-      error: term}`; once per turn, on every end path. An aborted or failed
-      turn ends after a `:tool_execution_end` with an `aborted` error
-      result for each open tool call
+      error: String.t()}`; once per turn, on every end path. The error text
+      is for a person: Core writes it from the reason of the failure,
+      with `:stacktrace` in place of each stacktrace in the reason (a
+      crash shows as the message of its error), valid UTF-8 of at most
+      4000 bytes, and logs the reason (ADR 0006 §2). A client shows it as
+      it is. An aborted or failed turn ends after a `:tool_execution_end`
+      with an `aborted` error result for each open tool call
     * `:queue_update` – `%{steers: non_neg_integer, follow_ups: non_neg_integer}`,
       emitted whenever the session's message queues change; the drain at a
       normal turn end goes out between turns, with a nil turn id

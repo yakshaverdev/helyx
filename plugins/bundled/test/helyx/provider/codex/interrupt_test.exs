@@ -128,7 +128,7 @@ defmodule Helyx.Provider.Codex.InterruptTest do
     fresh(bin, 2, fresh_tid(), reply(fresh_tid(), "Back."))
     session = start(ctx)
 
-    assert [%{outcome: :error, error: {:provider_stop, {:malformed, "turn/completed"}}}] =
+    assert [%{outcome: :error, error: ~s({:provider_stop, {:malformed, "turn/completed"}})}] =
              of_type(prompt(session, "go"), :turn_end)
 
     assert [%{outcome: :done}] = of_type(prompt(session, "again"), :turn_end)

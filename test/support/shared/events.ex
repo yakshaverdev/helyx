@@ -15,6 +15,17 @@ defmodule Helyx.Test.Events do
   def messages(events), do: for(%Event{type: :message_end, data: %{message: m}} <- events, do: m)
   def of_type(events, type), do: for(%Event{type: ^type, data: data} <- events, do: data)
 
+  # True when the term holds a pid, a reference, a port, or a function,
+  # which no contract value may hold (ADR 0006 §2).
+  def handle?(term)
+      when is_pid(term) or is_reference(term) or is_port(term) or is_function(term),
+      do: true
+
+  def handle?(term) when is_map(term), do: handle?(:maps.to_list(term))
+  def handle?(term) when is_tuple(term), do: handle?(Tuple.to_list(term))
+  def handle?([head | tail]), do: handle?(head) or handle?(tail)
+  def handle?(_term), do: false
+
   defp collect(type, timeout, acc) do
     receive do
       {:helyx_event, %Event{type: ^type} = event} -> Enum.reverse([event | acc])

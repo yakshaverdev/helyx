@@ -233,7 +233,6 @@ defmodule Helyx.Tool.BashTest do
 
   # The link chain (ADR 0004): a killed hands takes the tool Task with it,
   # the Task's death closes the port, and the watchdog kills the command.
-  @tag :capture_log
   test "killing the hands kills the Task and the command", %{core: core, tmp_dir: dir} do
     session = start_command(core, dir, "echo $$ > pid; exec sleep 30")
     pid = wait_for_pid(Path.join(dir, "pid"))

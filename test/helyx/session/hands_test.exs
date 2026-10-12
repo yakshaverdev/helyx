@@ -114,7 +114,6 @@ defmodule Helyx.Session.HandsTest do
     assert upcase(hands, "c2") == {:ok, "HI"}
   end
 
-  @tag :capture_log
   test "a release past the deadline is killed and confirms nothing", %{core: core} do
     hands = start_hands(core, release_ms: 300)
 
@@ -134,7 +133,6 @@ defmodule Helyx.Session.HandsTest do
     end
   end
 
-  @tag :capture_log
   @tag :slow
   test "a retry has a deadline of one second", %{core: core} do
     # The first release times out, so both handles go to the retry.
@@ -156,7 +154,6 @@ defmodule Helyx.Session.HandsTest do
     assert elapsed < 1_000 + @load_ms
   end
 
-  @tag :capture_log
   test "a release that raises, exits, or returns a bad value confirms nothing", %{core: core} do
     for handle <- [:raise, :exit, :bad, :improper] do
       hands = start_hands(core)

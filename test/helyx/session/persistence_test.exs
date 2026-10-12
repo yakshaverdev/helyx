@@ -66,7 +66,6 @@ defmodule Helyx.Session.PersistenceTest do
 
   for {model, stop} <- [{"hang", :aborted}, {"crash", :error}] do
     @tag :tmp_dir
-    @tag :capture_log
     test "a text-only partial message of an #{stop} turn joins with stop #{stop}", %{
       core: core,
       tmp_dir: dir
@@ -263,7 +262,6 @@ defmodule Helyx.Session.PersistenceTest do
   end
 
   @tag :tmp_dir
-  @tag :capture_log
   test "resume after a crash mid-turn answers every open tool call", %{core: core, tmp_dir: dir} do
     {:ok, session} = Session.start(core, model: "test/abort", sessions_dir: dir)
     {:ok, _, _} = Session.subscribe(session)
@@ -293,7 +291,6 @@ defmodule Helyx.Session.PersistenceTest do
   end
 
   @tag :tmp_dir
-  @tag :capture_log
   test "a write failure turns persistence off and the session lives", %{core: core, tmp_dir: dir} do
     {:ok, session} = Session.start(core, model: "test/ok", sessions_dir: dir)
     {:ok, _, _} = Session.subscribe(session)

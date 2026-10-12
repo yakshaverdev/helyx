@@ -11,5 +11,7 @@
 
 ExUnit.start(
   exclude: if(System.get_env("HELYX_SLOW") == "1", do: [], else: [:slow]),
-  assert_receive_timeout: 30_000
+  assert_receive_timeout: 30_000,
+  # A failed turn logs its reason (ADR 0006 §2); a test that passes shows no log.
+  capture_log: true
 )
