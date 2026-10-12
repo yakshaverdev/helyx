@@ -38,21 +38,14 @@ defmodule Helyx.Interface do
   end
 
   @doc """
-  Returns the interfaces a plugin module implements, in declaration order.
-
-  A module that cannot be loaded implements nothing.
+  Returns the interfaces a loaded Elixir module implements, in declaration
+  order.
   """
   @spec implemented_by(module()) :: [module()]
   def implemented_by(plugin) do
-    case Code.ensure_loaded(plugin) do
-      {:module, ^plugin} ->
-        plugin.__info__(:attributes)
-        |> Keyword.get_values(:behaviour)
-        |> List.flatten()
-        |> Enum.filter(&declaration/1)
-
-      {:error, _reason} ->
-        []
-    end
+    plugin.__info__(:attributes)
+    |> Keyword.get_values(:behaviour)
+    |> List.flatten()
+    |> Enum.filter(&declaration/1)
   end
 end

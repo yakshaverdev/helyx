@@ -6,15 +6,20 @@ defmodule Helyx.Core.Plugins do
   @type table :: %{module() => [module()]}
 
   @doc """
-  Groups plugins by interface and checks each interface's mode.
+  Checks the shape of the plugins value, groups plugins by interface, and
+  checks each interface's mode.
 
-  A module that implements no interface is `{:not_a_plugin, module}`. A
-  plugin that does not export a required callback of an interface it
-  implements is `{:missing_callbacks, plugin, interface, [{name, arity}]}`.
+  A value that is not a proper list is `{:invalid_plugins, value}`. An entry
+  that is not an atom naming a loadable Elixir module is `{:invalid_plugin,
+  entry}`. A module that implements no interface is `{:not_a_plugin,
+  module}`. A plugin that does not export a required callback of an
+  interface it implements is `{:missing_callbacks, plugin, interface,
+  [{name, arity}]}`.
   """
-  @spec resolve([module()]) :: {:ok, table()} | {:error, term()}
+  @spec resolve(term()) :: {:ok, table()} | {:error, term()}
   def resolve(plugins) do
-    with {:ok, table} <- group(plugins) do
+    with :ok <- check_shape(plugins),
+         {:ok, table} <- group(plugins) do
       case Enum.find_value(table, &check_mode/1) do
         nil -> {:ok, table}
         error -> {:error, error}
@@ -22,7 +27,21 @@ defmodule Helyx.Core.Plugins do
     end
   end
 
-  # The plugin list is config: this is its boundary check (AGENTS.md).
+  # The plugins value is config: this is its boundary check (AGENTS.md). The
+  # checks after it trust the shape.
+  defp check_shape(plugins) do
+    if is_list(plugins) and not List.improper?(plugins),
+      do: Enum.find_value(plugins, :ok, &invalid_plugin/1),
+      else: {:error, {:invalid_plugins, plugins}}
+  end
+
+  # An Erlang module such as `:lists` has no `__info__/1`.
+  defp invalid_plugin(entry) do
+    if is_atom(entry) and Code.ensure_loaded?(entry) and function_exported?(entry, :__info__, 1),
+      do: nil,
+      else: {:error, {:invalid_plugin, entry}}
+  end
+
   defp group(plugins) do
     implemented = Enum.map(plugins, &{&1, Helyx.Interface.implemented_by(&1)})
 
@@ -39,9 +58,9 @@ defmodule Helyx.Core.Plugins do
   defp not_a_plugin({plugin, []}), do: {:not_a_plugin, plugin}
   defp not_a_plugin(_implemented), do: nil
 
-  # Both modules are loaded: `implemented_by/1` loaded the plugin and the
-  # interface. An interface without `@callback` has no `behaviour_info/1` and
-  # requires nothing.
+  # Both modules are loaded: the shape check loaded the plugin, and
+  # `implemented_by/1` loaded the interface. An interface without `@callback`
+  # has no `behaviour_info/1` and requires nothing.
   defp missing_callbacks({interface, plugin}) do
     required =
       if function_exported?(interface, :behaviour_info, 1),

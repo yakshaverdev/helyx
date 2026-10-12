@@ -35,7 +35,7 @@ A small, pure Elixir dependency is a normal dependency. `req` is the first case.
 - A new bundled plugin is a directory of modules and tests in `plugins/bundled`, not a project.
 - Given up: per-plugin dependency isolation. A product that wants only the read tool still fetches and compiles `req` and every other normal dependency of the bundled project. The optional-dependency rule bounds this for heavy deps only.
 - Given up: a compile-time check that one plugin does not call another. All bundled modules now share one project, so only review can find such a call.
-- A guarded module that is absent is a run-time error, not a compile-time error. A call to it is an `UndefinedFunctionError`, and Core rejects it in a plugin list with `{:error, {:not_a_plugin, module}}`. The fix is the product's dep list.
+- A guarded module that is absent is a run-time error, not a compile-time error. A call to it is an `UndefinedFunctionError`, and Core rejects it in a plugin list with `{:error, {:invalid_plugin, module}}` (`{:not_a_plugin, module}` before #517). The fix is the product's dep list.
 - When `__mix_recompile__?/0` answers true, Mix touches the guarded files (`lib/helyx/tui.ex`, `lib/helyx/tui/composer.ex`, `lib/helyx/tui/transcript.ex`) to force the compile, and the next Mix command prints a note that it reset their mtime. Content does not change.
 - Application env keys follow the app: the OpenAI provider's test seam moved from `:req_options` of `:helyx_provider_openai` to `:openai_req_options` of `:helyx_plugins`. All bundled plugins share that app, so a key names its plugin.
 - The per-plugin test helpers merged into one `test_helper.exs`.

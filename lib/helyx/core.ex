@@ -6,6 +6,11 @@ defmodule Helyx.Core do
 
       children = [{Helyx.Core, plugins: [Helyx.Provider.Fake]}]
 
+  Core first checks the shape of the plugins value. It refuses to start with
+  `{:invalid_plugins, value}` when the value is not a proper list, and with
+  `{:invalid_plugin, entry}` when an entry is not an atom that names a
+  loadable Elixir module (an Erlang module such as `:lists` is not one).
+
   Core checks every plugin against the interfaces it implements. It refuses to
   start when a `:single` interface receives more than one plugin, when a
   module implements no interface at all, or when a plugin does not export a
