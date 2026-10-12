@@ -96,6 +96,10 @@ _Avoid_: chunk, provider message
 The stream event that ends a turn: done, or an error.
 _Avoid_: final event, stop event
 
+**Stop reason**:
+Why an assistant message ended: end turn, tool use, token limit (`max_tokens`), refused (the provider filtered the answer or the model refused it), aborted, or error. Only the session gives aborted and error.
+_Avoid_: finish reason
+
 **Helyx tool request**:
 A stream event in which a provider asks the session to run one Helyx tool call on the hands.
 _Avoid_: tool callback, remote tool call

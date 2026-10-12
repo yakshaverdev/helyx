@@ -167,6 +167,16 @@ defmodule Helyx.Provider.OpenAI.EventsTest do
            ]
   end
 
+  # The wire values: docs/research/stop-reasons.md.
+  for {finish, stop} <- [{"length", :max_tokens}, {"content_filter", :refused}] do
+    test "the finish reason #{finish} stops with #{stop}" do
+      chunks = [sse([delta(%{content: "Hi"}), delta(%{}, unquote(finish)), "[DONE]"])]
+
+      assert Enum.to_list(Events.events(chunks)) ==
+               [{:text_delta, "Hi"}, {:done, %{stop_reason: unquote(stop), usage: %{}}}]
+    end
+  end
+
   test "a chunk that does not parse is an error event" do
     assert Enum.to_list(Events.events(["data: {oops\n\n"])) ==
              [{:error, {:bad_chunk, "{oops"}}]

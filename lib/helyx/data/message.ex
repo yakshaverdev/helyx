@@ -96,13 +96,16 @@ defmodule Helyx.Message do
     }
   end
 
-  # A closed set: the session file encodes it. The session closes the
-  # partial message of an aborted or a failed turn with `:aborted` or
-  # `:error`; a provider normalizes its wire protocol into the rest, and
-  # the session guards stream events with the rest. A session file reader decodes a stop
+  # A closed set: the session file encodes it. Only the session gives
+  # `:aborted` and `:error`, to the partial message of an aborted or a
+  # failed turn that has no tool call. A provider normalizes its wire
+  # protocol into the rest, and the session guards stream events with the
+  # rest; the session also closes a message with `:end_turn` or
+  # `:tool_use` by itself, as at a steer. `:refused` is a
+  # filtered or a refused answer. A session file reader decodes a stop
   # reason outside the set as nil, so an older reader reads a new stop
   # reason as no stop reason.
-  @stop_reasons [:end_turn, :tool_use, :max_tokens, :aborted, :error]
+  @stop_reasons [:end_turn, :tool_use, :max_tokens, :refused, :aborted, :error]
 
   # The bundled providers give a UUID as the resume id, alone or with a
   # short suffix; 256 bytes leaves room for the ids of another provider.
