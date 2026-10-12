@@ -8,6 +8,15 @@ defmodule Helyx.CoreTest do
     Helyx.Core.start_link(name: name, plugins: plugins)
   end
 
+  # A bad plugins value is an error tuple, never a raise, and Core does not
+  # start (docs/agents/review-checklist.md, "Plugins and Core").
+  defp reject(opts) do
+    name = :"core_#{System.unique_integer([:positive])}"
+    result = Helyx.Core.start_link([name: name] ++ opts)
+    assert Process.whereis(name) == nil
+    result
+  end
+
   test "boots with one plugin per single interface and any number per multi interface" do
     assert {:ok, _} = boot([Test.Provider, Test.SingleA, Test.MultiA, Test.MultiB])
   end
@@ -55,14 +64,29 @@ defmodule Helyx.CoreTest do
          quote(do: {:mode_violation, Helyx.Compaction, _})},
         {"a missing provider", [Test.SingleA], quote(do: {:missing_plugin, Helyx.Provider})},
         {"an empty plugin list", [], quote(do: {:missing_plugin, Helyx.Provider})},
-        {"a module that does not exist", [Test.Provider, Test.Missing],
-         quote(do: {:not_a_plugin, Test.Missing})},
         {"a module that implements no interface", [Test.Provider, Test.NoInterface],
-         quote(do: {:not_a_plugin, Test.NoInterface})}
+         quote(do: {:not_a_plugin, Test.NoInterface})},
+        # The shape check of #517 runs before every other check.
+        {"a value that is nil", nil, quote(do: {:invalid_plugins, nil})},
+        {"a value that is a string", "Foo", quote(do: {:invalid_plugins, "Foo"})},
+        {"an improper list", [Test.Provider | Test.MultiA],
+         quote(do: {:invalid_plugins, [Test.Provider | Test.MultiA]})},
+        {"an integer entry", [123], quote(do: {:invalid_plugin, 123})},
+        {"a string entry", ["Foo"], quote(do: {:invalid_plugin, "Foo"})},
+        {"a nil entry", [Test.Provider, nil], quote(do: {:invalid_plugin, nil})},
+        {"an Erlang module", [:lists], quote(do: {:invalid_plugin, :lists})},
+        {"a module that does not exist", [Test.Provider, Test.Missing],
+         quote(do: {:invalid_plugin, Test.Missing})},
+        {"a bad entry after a module that implements no interface", [Test.NoInterface, 123],
+         quote(do: {:invalid_plugin, 123})}
       ] do
     test "rejects #{name}" do
-      assert {:error, unquote(error)} = boot(unquote(plugins))
+      assert {:error, unquote(error)} = reject(plugins: unquote(Macro.escape(plugins)))
     end
+  end
+
+  test "an unset plugins value is an empty list" do
+    assert reject([]) == {:error, {:missing_plugin, Helyx.Provider}}
   end
 
   test "rejects a plugin that does not export a required callback of an interface" do

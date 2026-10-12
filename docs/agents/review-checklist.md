@@ -53,7 +53,7 @@ Invariants the review axes check on every diff. Add one when a review or a PR co
 
 ## Plugins and Core
 
-- For a plugins value that is a list of Elixir module names, bad configuration returns `{:error, reason}` from `start_link`; it never raises. This includes a module that does not exist, two plugins for a single-mode interface, no provider plugin, and two providers with one id. A plugins value that is not a list of Elixir module names (nil, an integer, a string, an Erlang module such as `:lists`) still raises (#517).
+- A bad plugins value returns `{:error, reason}` from `Helyx.Core.start_link/1`; it never raises, and Core does not start. This includes a value that is not a proper list (nil, a string), an entry that is not a loadable Elixir module (an integer, a string, nil, an Erlang module such as `:lists`, a module that does not exist), a module that implements no interface, two plugins for a single-mode interface, no provider plugin, and two providers with one id. The shape check in `Helyx.Core.Plugins.resolve/1` runs first, and the checks after it trust the shape (#517). Open hole: a plugin with `child_spec/1` listed twice passes `resolve/1`, and the failed supervisor start kills a caller that does not trap exits (#522).
 - Core knows no interface by name except `Helyx.Provider`, of which `Helyx.Core.start_link/1` requires at least one plugin.
 
 ## Inputs from plugins
