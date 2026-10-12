@@ -19,8 +19,9 @@ defmodule CodingAgent.CLI do
 
   @doc """
   Runs the agent with the command line `argv` until the user quits, and
-  returns the exit status. A bad argument or a failed start prints one line
-  on stderr and returns 1. `--version` prints the version and returns 0.
+  returns the exit status. A bad argument, a failed start, or a session
+  that stops while the agent runs prints one line on stderr and returns 1.
+  `--version` prints the version and returns 0.
   """
   @spec main([String.t()]) :: 0 | 1
   def main(argv) do
@@ -84,8 +85,7 @@ defmodule CodingAgent.CLI do
            ) do
       :ok
     else
-      {:error, reason} ->
-        {:error, "could not start the agent: " <> CodingAgent.error_text(reason)}
+      {:error, reason} -> {:error, CodingAgent.error_text(reason)}
     end
   end
 

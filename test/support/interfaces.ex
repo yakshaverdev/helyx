@@ -558,6 +558,35 @@ defmodule Helyx.Test.Tool.Kill do
   def run(_args, _cwd), do: Process.exit(self(), :kill)
 end
 
+defmodule Helyx.Test.Tool.Odd do
+  @moduledoc false
+  # Fails in the way that "do" names, with a pid or a stack in the term, so
+  # tests can see what reaches the result.
+  use Helyx.Test.Tool, name: "odd", description: "Fails oddly."
+
+  # The weird return is outside the contract on purpose.
+  @dialyzer {:nowarn_function, run: 2}
+  @impl true
+  def run(%{"do" => "link_crash"}, _cwd) do
+    spawn_link(fn -> raise "linked crash" end)
+    Process.sleep(:infinity)
+  end
+
+  def run(%{"do" => "weird"}, _cwd), do: {:weird, self()}
+  def run(%{"do" => "throw"}, _cwd), do: throw({:thrown, self()})
+  def run(%{"do" => "exit"}, _cwd), do: exit({:exited, self()})
+  def run(%{"do" => "huge"}, _cwd), do: throw(String.to_integer(String.duplicate("7", 400_000)))
+  # The messages of these errors `inspect` a struct whose `Inspect` raises,
+  # or call the `Exception.message/1` of an exception whose `message/1` raises.
+  def run(%{"do" => "match"}, _cwd), do: raise(MatchError, term: struct(Helyx.Test.RaiseInspect))
+  def run(%{"do" => "wrap_" <> how}, _cwd), do: raise(Helyx.Test.WrapMessage, how: how)
+  # The `Inspect` of this struct calls a safe `inspect` itself.
+  def run(%{"do" => "nest"}, _cwd), do: throw(struct(Helyx.Test.NestInspect))
+
+  def run(%{"do" => "badkey"}, _cwd),
+    do: :erlang.error({:badkey, struct(Helyx.Test.RaiseInspect), %{}})
+end
+
 defmodule Helyx.Test.Tool.Binary do
   @moduledoc false
   # Returns bytes that are not valid UTF-8, so tests can see the hands make
@@ -853,7 +882,7 @@ defmodule Helyx.Test.Connected do
   @impl true
   def release(handles, mode, _deadline) do
     for {:report, pid} <- handles, do: send(pid, {:release, mode, handles})
-    []
+    for {:keep, _pid} = handle <- handles, do: handle
   end
 
   @impl true
@@ -873,8 +902,8 @@ defmodule Helyx.Test.Connected do
       "exit_init" ->
         exit(:normal)
 
-      "fail_init" ->
-        {:error, :no_program}
+      model when model in ["fail_init", "keep_init"] ->
+        fail_init(model, ctl)
 
       "crash_init" ->
         {:error, caught_crash()}
@@ -891,6 +920,14 @@ defmodule Helyx.Test.Connected do
         {:ok, %{model: model, ctl: ctl, label: opts[:resume_id], closed: false}}
     end
   end
+
+  # "keep_init" also holds a handle that its release keeps.
+  defp fail_init("keep_init", ctl) do
+    Helyx.Tool.hold({:keep, ctl})
+    {:error, :no_program}
+  end
+
+  defp fail_init(_model, _ctl), do: {:error, :no_program}
 
   @impl true
   def request({:turn, id, _} = request, from, %{model: "label", label: nil} = state) do
@@ -1211,6 +1248,31 @@ defmodule Helyx.Test.RaiseInspect do
   defimpl Inspect do
     def inspect(_struct, _opts), do: raise("no inspect")
   end
+end
+
+defmodule Helyx.Test.NestInspect do
+  @moduledoc false
+  # A struct of a plugin whose `Inspect` inspects a struct whose `Inspect` raises.
+  defstruct [:code]
+
+  defimpl Inspect do
+    def inspect(_struct, _opts),
+      do: "#Nest<" <> Kernel.inspect(%Helyx.Test.RaiseInspect{}) <> ">"
+  end
+end
+
+defmodule Helyx.Test.WrapMessage do
+  @moduledoc false
+  # An exception of a plugin whose `message/1` inspects a struct whose
+  # `Inspect` raises, or takes the message of an exception whose
+  # `message/1` raises.
+  defexception [:how]
+
+  @impl true
+  def message(%{how: "inspect"}), do: "wrapped: " <> inspect(%Helyx.Test.RaiseInspect{})
+
+  def message(%{how: "message"}),
+    do: "wrapped: " <> Exception.message(%Helyx.Test.RaiseMessage{})
 end
 
 defmodule Helyx.Test.OddMessage do

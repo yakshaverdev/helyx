@@ -123,10 +123,10 @@ defmodule Helyx.Session.Server.TurnLoop do
       do: monitor_down(state)
 
   # The end of the turn's prepare Task before its context: it raised,
-  # exited, or was killed at its bound. A Task that sent its context is no
-  # longer `Turn.prepare`: its `:DOWN` comes after.
+  # exited, or was killed at its bound (`:context_timeout`). A Task that
+  # sent its context is no longer `Turn.prepare`: its `:DOWN` comes after.
   def handle({:DOWN, _ref, :process, pid, reason}, %State{activity: %Turn{prepare: pid}} = state),
-    do: prepared(state, {:error, {:task_exit, Message.cap_integers(reason)}})
+    do: prepared(state, {:error, prepare_down(reason)})
 
   # A message for a turn or a provider process that is no longer current,
   # or a reply that nobody waits for. The `:DOWN` of a provider process
@@ -244,6 +244,9 @@ defmodule Helyx.Session.Server.TurnLoop do
     ask(state, conn.pid, {:context, turn.id, result}, :reply)
     %{state | activity: %{turn | prepare: nil}}
   end
+
+  defp prepare_down(:killed), do: :context_timeout
+  defp prepare_down(reason), do: {:task_exit, Message.cap_integers(reason)}
 
   # Sends `{:turn, ...}` when the provider process is ready and the context
   # is prepared. The steers queued in `preparing` join the transcript and
@@ -375,7 +378,6 @@ defmodule Helyx.Session.Server.TurnLoop do
     do: progress(Wait.finish(state, {:done, stop_reason, usage}))
 
   defp end_turn({:error, reason}, state), do: fail_turn(reason, state)
-  defp end_turn(:stream_ended, state), do: fail_turn(:stream_ended, state)
 
   # A provider output outside the contract: the turn fails, and the
   # provider process stops with `{:shutdown, reason}`; the hands release it
