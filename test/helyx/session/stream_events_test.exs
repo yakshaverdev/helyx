@@ -230,37 +230,45 @@ defmodule Helyx.Session.StreamEventsTest do
                messages(events)
     end
 
-    test "the size check runs before the UTF-8 repair, which can make the text larger",
+    test "a harness tool result of 60,000 invalid bytes is stored as valid UTF-8 within the limit",
          %{core: core} do
       events = harness_turn(core, "result_raw")
 
       assert [%{message: result}] =
                for(%Event{type: :tool_execution_end, data: d} <- events, do: d)
 
-      assert Helyx.Message.text(result) == String.duplicate("�", 65_536)
+      text = Helyx.Message.text(result)
+      assert String.valid?(text)
+      assert byte_size(text) <= 65_536
+
+      assert text =~
+               ~r/^\[cut to \d+ of 180000 bytes, start and end kept\]\n\x{FFFD}+\n\[… cut …\]\n\x{FFFD}+$/u
+
       assert stop_reason(events) == :end_turn
     end
 
-    test "a harness tool result over 65,536 bytes fails the turn with no text, and the session goes on",
+    test "a harness tool result over 65,536 bytes keeps its head and tail with a notice, and the turn ends done",
          %{core: core} do
-      for {model, bytes} <- [{"result_65537", 65_537}, {"result_multibyte", 65_537}] do
-        {:ok, session} = Session.start(core, model: "conn/events.#{model}")
-        {:ok, _, _} = Session.subscribe(session)
-        :ok = Session.prompt(session, "hello")
-        events = collect_until(:turn_end)
+      for {model, bytes, ending} <- [
+            {"result_200000", 200_000, "xx"},
+            {"result_multibyte", 65_537, "xé"}
+          ] do
+        events = harness_turn(core, model)
 
-        assert List.last(events).data.error == {:tool_result_too_large, bytes, 65_536}
-        assert stop_reason(events) == :error
+        assert [%{message: result}] =
+                 for(%Event{type: :tool_execution_end, data: d} <- events, do: d)
 
-        # The failure closes the open message with its call, then the call
-        # gets `aborted`.
-        transcript = :sys.get_state(Session.pid(session)).transcript
-        assert [:user, :assistant, :tool_result] = Enum.map(transcript, & &1.role)
-        assert Helyx.Message.text(List.last(transcript)) == "aborted"
-
-        :ok = Session.set_model(session, "conn/events.id1")
-        :ok = Session.prompt(session, "again")
-        assert stop_reason(collect_until(:turn_end)) == :end_turn
+        text = Helyx.Message.text(result)
+        assert [notice, head, marker, tail] = String.split(text, "\n")
+        kept = byte_size(head) + byte_size(tail)
+        assert notice == "[cut to #{kept} of #{bytes} bytes, start and end kept]"
+        assert marker == "[… cut …]"
+        assert head == String.duplicate("x", byte_size(head))
+        # The tail keeps the end of the text, the 2-byte character included.
+        assert String.ends_with?(tail, ending)
+        assert byte_size(text) <= 65_536
+        assert stop_reason(events) == :end_turn
+        assert List.last(events).data.outcome == :done
       end
     end
 

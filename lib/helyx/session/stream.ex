@@ -10,15 +10,11 @@ defmodule Helyx.Session.Stream do
   # cut; a provider does not send them.
   @stop_reasons Message.stop_reasons() -- [:aborted, :error]
 
-  # A provider cuts each tool result (`one-provider-path.md`), as a tool
-  # does. Every output of that cut is at most 51,201 bytes of lines and a
-  # notice of less than 200 bytes, so only a result that was not cut is
-  # over this limit.
-  @max_tool_result_bytes 65_536
   # The most messages that may wait in the session mailbox before a send.
-  # A count, not bytes. Core caps a tool result before the send (above)
-  # and the open message that the session keeps (`Helyx.Session.Turn`),
-  # not the size of one waiting delta or tool call.
+  # A count, not bytes. Core cuts a tool result before the send
+  # (`Helyx.Message.cut_result/1`) and caps the open message that the
+  # session keeps (`Helyx.Session.Turn`), not the size of one waiting delta
+  # or tool call.
   @max_session_queue 10_000
 
   @integer_reason "an integer in the arguments has more than " <>
@@ -170,11 +166,10 @@ defmodule Helyx.Session.Stream do
 
   # The events that close a message, carry a result, a resume id, or a
   # taken steer. A message end is checked like the
-  # `done` terminal. The provider cuts a result to the tool result limits;
-  # a result over this limit was not cut, so it fails the turn. The check
-  # measures the text as sent. Then the text is made valid UTF-8, which can
-  # make it up to three times larger: this is the boundary of a provider
-  # result, as the hands are for a tool of the session.
+  # `done` terminal. A result text is made valid UTF-8 and cut to the tool
+  # result limit, so a large result never fails the turn: this is the
+  # boundary of a provider result, as the hands are for a tool of the
+  # session.
   defp provider_event({:message_end, reason, usage} = event)
        when reason in @stop_reasons and is_non_struct_map(usage) do
     if valid_usage?(usage), do: {:ok, {:message_end, reason, usage}}, else: malformed(event)
@@ -183,11 +178,8 @@ defmodule Helyx.Session.Stream do
   # The session uses the id only to find an open call, so an id that is
   # not valid UTF-8 is dropped there like an unknown id.
   defp provider_event({:tool_result, id, {status, text}})
-       when is_binary(id) and status in [:ok, :error] and is_binary(text) do
-    if byte_size(text) > @max_tool_result_bytes,
-      do: {:error, too_large(text)},
-      else: {:ok, {:tool_result, id, Message.scrub({status, text})}}
-  end
+       when is_binary(id) and status in [:ok, :error] and is_binary(text),
+       do: {:ok, {:tool_result, id, {status, Message.cut_result(text)}}}
 
   defp provider_event({:resume_id, id, cut} = event) when is_integer(cut) and cut >= 0 do
     # No integer over the digit limit reaches the session.
@@ -199,9 +191,6 @@ defmodule Helyx.Session.Stream do
   defp provider_event(event), do: malformed(event)
 
   defp malformed(event), do: {:error, {:bad_stream_event, event}}
-
-  # The error holds the size, never the text.
-  defp too_large(text), do: {:tool_result_too_large, byte_size(text), @max_tool_result_bytes}
 
   # The usage gets the same encodes as the arguments, so the same digit
   # limit, checked before the encode.

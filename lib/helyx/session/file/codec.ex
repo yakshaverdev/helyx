@@ -45,9 +45,11 @@ defmodule Helyx.Session.File.Codec do
   # stop reason, and the usage are optional: a bad one decodes as a missing
   # one, so it does not lose the chat.
   def decode(entry) do
+    role = decode_role(entry["role"])
+
     %Message{
-      role: decode_role(entry["role"]),
-      content: Enum.map(entry["content"], &decode_block/1),
+      role: role,
+      content: Enum.map(entry["content"], &(&1 |> decode_block() |> cut_text(role))),
       model: decode_model(entry["model"]),
       stop_reason: decode_stop_reason(entry["stop_reason"]),
       tool_call_id: optional_string(entry["tool_call_id"]),
@@ -56,6 +58,13 @@ defmodule Helyx.Session.File.Codec do
       usage: decode_usage(entry["usage"])
     }
   end
+
+  # A tool result text from the disk gets the cut of a live one, so every
+  # tool result in the transcript keeps the bound after a resume.
+  defp cut_text(%Message.Text{text: text}, :tool_result),
+    do: %Message.Text{text: Message.cut_result(text)}
+
+  defp cut_text(block, _role), do: block
 
   defp decode_role("user"), do: :user
   defp decode_role("assistant"), do: :assistant

@@ -8,6 +8,16 @@ defmodule Helyx.Text do
   # KiB): pi's read and bash defaults (`docs/research/coding-tools.md`).
   @max_lines 2000
   @max_bytes 51_200
+  # A notice holds 79 bytes of fixed text and at most six numbers. Each is a
+  # line or byte position within the text, so it has at most 20 digits.
+  @max_notice_bytes 256
+
+  # The output of `truncate/2` is at most @max_bytes of lines, one trailing
+  # newline, and one notice line, after the UTF-8 repair. It fits the Core
+  # limit, so Core never cuts the output of `truncate/2` a second time.
+  if @max_bytes + 1 + @max_notice_bytes > Helyx.Message.max_result_bytes(),
+    do: raise("the Helyx.Text cut does not fit Helyx.Message.max_result_bytes/0")
+
   # The largest file a tool reads, in bytes (10 MiB): room for any source
   # file, and small enough to load whole.
   @max_file_bytes 10_485_760
@@ -60,7 +70,9 @@ defmodule Helyx.Text do
 
   @doc """
   Caps text at #{@max_lines} lines or #{@max_bytes} bytes of line content,
-  on whole lines. One trailing newline is a terminator and does not count.
+  on whole lines. Each invalid UTF-8 sequence becomes U+FFFD first, so the
+  caps count the bytes that the model sees. One trailing newline is a
+  terminator and does not count.
   `:head` keeps the start and `:tail` keeps the end. A truncated result says
   which lines it shows; a truncated `:head` result also names the offset that
   continues the read, unless the cut line is the last line. When the line at
@@ -72,6 +84,7 @@ defmodule Helyx.Text do
   def truncate(text, :head), do: truncate(text, :head, 1)
 
   def truncate(text, :tail) do
+    text = repair(text)
     lines = lines(text)
     total = length(lines)
 
@@ -94,6 +107,7 @@ defmodule Helyx.Text do
   """
   @spec truncate(String.t(), :head, pos_integer()) :: String.t()
   def truncate(text, :head, first) do
+    text = repair(text)
     shown = Enum.drop(lines(text), first - 1)
 
     case take_within_limits(shown, :head) do
@@ -122,6 +136,9 @@ defmodule Helyx.Text do
   # head window, the last line of a tail.
   defp cut_note(nil, _line_number), do: ""
   defp cut_note(bytes, line_number), do: ", line #{line_number} cut at #{bytes} bytes"
+
+  # Valid text, the common case, is returned without a copy.
+  defp repair(text), do: if(String.valid?(text), do: text, else: String.replace_invalid(text))
 
   # One trailing newline ends the last line; more are blank lines that count.
   defp lines(text), do: text |> String.replace_suffix("\n", "") |> String.split("\n")

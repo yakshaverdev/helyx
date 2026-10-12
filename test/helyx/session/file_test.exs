@@ -64,6 +64,31 @@ defmodule Helyx.Session.FileTest do
     assert resumed.messages == messages
   end
 
+  test "a tool result text over the limit is cut on resume", %{tmp_dir: dir} do
+    {:ok, file} = Session.File.create(dir, "sess1", "/repo", "test/ok")
+    big = String.duplicate("x", 100_000)
+
+    append_raw(
+      file,
+      JSON.encode!(%{
+        "id" => "r1",
+        "type" => "message",
+        "role" => "tool_result",
+        "tool_call_id" => "c1",
+        "tool_name" => "bash",
+        "is_error" => false,
+        "content" => [%{"type" => "text", "text" => big}]
+      })
+    )
+
+    assert {:ok, resumed} = Session.File.resume(dir, "/repo")
+    assert [text] = texts(resumed)
+    assert byte_size(text) <= 65_536
+
+    assert text =~
+             ~r/^\[cut to \d+ of 100000 bytes, start and end kept\]\nx+\n\[… cut …\]\nx+$/
+  end
+
   test "a model change entry is written and restored", %{tmp_dir: dir} do
     {:ok, file} = Session.File.create(dir, "sess1", "/repo", "test/ok")
     Session.File.append_model_change(file, "test/other")

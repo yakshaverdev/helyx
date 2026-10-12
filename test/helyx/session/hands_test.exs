@@ -22,6 +22,7 @@ defmodule Helyx.Session.HandsTest do
       Helyx.Test.Tool.Hold,
       Helyx.Test.Tool.HoldTwo,
       Helyx.Test.Tool.HoldBare,
+      Helyx.Test.Tool.Raise,
       Helyx.Test.Tool.Upcase
     ]
 
@@ -191,6 +192,44 @@ defmodule Helyx.Session.HandsTest do
     assert_receive {:tool_result, "t1", "c1", {:error, text}}
     assert text =~ "release/3"
     assert upcase(hands, "c2") == {:ok, "HI"}
+  end
+
+  @max_result_bytes 65_536
+
+  @tag :tmp_dir
+  test "an unknown tool with a 100 KB name and a missing cwd get a bounded result and no Task",
+       %{core: core, tmp_dir: dir} do
+    supervisor = GenServer.whereis(Helyx.Core.task_supervisor(core))
+    :erlang.trace(supervisor, true, [:procs])
+    name = String.duplicate("n", 100_000)
+
+    for {hands, text} <- [
+          {start_hands(core), "unknown tool: nnn"},
+          {start_hands(core, cwd: Path.join(dir, "gone")), "working directory does not exist"}
+        ] do
+      :ok = Helyx.Session.Hands.run(hands, "t1", call("c1", name, %{}))
+      assert_receive {:tool_result, "t1", "c1", {:error, result}}
+      assert result =~ text
+      assert byte_size(result) <= @max_result_bytes
+    end
+
+    # Every trace message of the supervisor so far is in the mailbox.
+    ref = :erlang.trace_delivered(supervisor)
+    assert_receive {:trace_delivered, _, ^ref}
+    refute_received {:trace, ^supervisor, :spawn, _, _}
+  end
+
+  @tag :capture_log
+  test "a tool that raises with a 200 KB message gives a bounded result", %{core: core} do
+    hands = start_hands(core)
+    :ok = Helyx.Session.Hands.run(hands, "t1", call("c1", "raise", %{"bytes" => 200_000}))
+    assert_receive {:tool_result, "t1", "c1", {:error, result}}
+    assert result =~ "RuntimeError"
+
+    assert result =~
+             ~r/^\[cut to \d+ of \d+ bytes, start and end kept\]\n.+\n\[… cut …\]\n/
+
+    assert byte_size(result) <= @max_result_bytes
   end
 
   # Waits until the hands got `n` hold calls, then until they handled them,
