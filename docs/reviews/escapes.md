@@ -203,3 +203,4 @@ One row per ticket that `/orchestrate` merged. An escape is a confirmed Codex fi
 | 2026-10-04 | #486 | r1 (full): 1; r2 (reduced): 0; rebase r1 (reduced): 1; rebase r2 (reduced): 0 | gate r1 (Codex): 0 | none; ship caught all |
 | 2026-10-04 | #485 | r1 (full): 3; r2 (full): 1; r3 (full): 0; rebase r1 (reduced): 0 | gate r1 (Codex): 0 | none; ship caught all |
 | 2026-10-04 | #506 | r1 (full): 1; r2 (full): 1; r3 (full): 0 | gate r1 (Codex): 0 | none; ship caught all |
+| 2026-10-12 | #515 | r1 (full): 0 | gate r1 (Codex): 1 | the doc edit in this diff claimed a guarantee that the code does not keep; a rule text change is now checked against a probe of the claim before commit |
