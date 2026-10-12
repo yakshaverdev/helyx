@@ -13,7 +13,7 @@ One Core caller holds the helpers in Core: the session cuts the text of each har
 `Helyx.Provider` moduledoc, the `{:tool_result, call_id, {:ok | :error, binary}}` event:
 
 - Today: "the session cuts the text like a tool result (`Helyx.Tool.truncate/2`, `:tail`)".
-- After: the provider cuts the text to the tool result limits before it sends the event, as a tool does. Core then cuts a result over 65,536 bytes to its head and a notice, and the turn goes on (#508, "The cut in Core").
+- After: the provider cuts the text to the tool result limits before it sends the event, as a tool does. Core then cuts a result over 65,536 bytes to a notice line and its head, and the turn goes on (#508, "The cut in Core").
 
 `Helyx.Tool` loses `truncate/2`, `truncate/3`, `read_file/1`, and `max_bytes/0`. They move, unchanged, to `Helyx.Text` in `plugins/bundled/lib/helyx/text.ex`. The callers change to `Helyx.Text`: `Helyx.Tool.Read`, `Helyx.Tool.Edit`, `Helyx.Tool.Bash`, and `Helyx.ModelContext.Default`.
 
@@ -23,7 +23,7 @@ The old names are removed, with no delegate. Every caller is in this repository.
 
 ## The cut in Core
 
-#121 made Core check the size of each harness tool result in `Helyx.Session.Stream` and fail the turn over 65,536 bytes. #508 (`docs/reviews/2026-10-12-domain-review.md`, A1 and Q2) replaced the check with a cut: `Helyx.Message.cut_result/1` makes the text valid UTF-8, then keeps its head, cut on a character boundary, with a notice line; the whole result is at most 65,536 bytes. The harness model already has the full text, and only Helyx's copy is cut. The hands call the same function for every result of a Helyx tool, and the session file reader for every tool result text on resume. `Helyx.Text.truncate/2` repairs invalid UTF-8 before it counts, and checks at compile time that its output fits the limit, so Core never cuts the output of `truncate/2` a second time.
+#121 made Core check the size of each harness tool result in `Helyx.Session.Stream` and fail the turn over 65,536 bytes. #508 (`docs/reviews/2026-10-12-domain-review.md`, A1 and Q2) replaced the check with a cut: `Helyx.Message.cut_result/1` makes the text valid UTF-8, then puts a notice line before its head, cut on a character boundary; the whole result is at most 65,536 bytes. The harness model already has the full text, and only Helyx's copy is cut. The hands call the same function for every result of a Helyx tool, and the session file reader for every tool result text on resume. `Helyx.Text.truncate/2` repairs invalid UTF-8 before it counts, and checks at compile time that its output fits the limit, so Core never cuts the output of `truncate/2` a second time.
 
 ## Replaced mechanism (#508)
 
@@ -32,14 +32,14 @@ The old names are removed, with no delegate. Every caller is in this repository.
 3. `Helyx.Message.scrub/1` is deleted. `cut_result/1` does the repair and the cut, and the hands and `Helyx.Session.Stream` call it where they called `scrub/1`.
 4. In `Helyx.Session.Hands`, the atoms `:unknown` and `:no_cwd` in the tool slot and their `run_tool/3` clauses are deleted. An unknown tool and a missing working directory are answered at once, as a refusal is; no Task starts and no `release/3` is called for them.
 5. Tests of the old rule: the test that a result over 65,536 bytes fails the turn, gives the open call `aborted`, and lets the next prompt run, becomes the test that the result is cut with the notice and the turn ends `:done`. The test that 65,536 invalid bytes are kept as 196,608 bytes becomes the test that 60,000 invalid bytes are stored valid and within the limit. The tests at 65,535 and 65,536 bytes keep their assertions.
-6. What the user sees: a tool result over 64 KiB shows its head and the line `[cut at <kept> of <total> bytes]`, and the turn goes on. Before, the turn failed with `tool_result_too_large`, and the output was lost.
+6. What the user sees: a tool result over 64 KiB shows the line `[cut at <kept> of <total> bytes]` and then its head, and the turn goes on. The notice comes first, so a client that shows only the first lines, such as the TUI preview, shows it. Before, the turn failed with `tool_result_too_large`, and the output was lost.
 7. No state with no bound is added, but the repair before the cut makes a copy of up to three times its input, and Core sets no bound on that input. Before #508, `Helyx.Session.Stream` rejected a result over 65,536 bytes before the repair; now it repairs the whole text first. The input is bounded only by its source: the harness stdout line cap (16 MiB) for the bundled harness providers, so a copy of up to about 48 MiB, in `Helyx.Text.truncate/2` and in the cut; the bash output cap for the bundled tool; the 64 MiB file limit on resume. A provider that runs in the VM, a third-party tool, or the message of an exception it raises is already in memory when Core gets it, and is not bounded before the cut. Accepted: the copy is transient, and the order (repair, then cut) is the ticket's decision.
 
 ## Bounds
 
 | What | Bound | Over the bound |
 | ---- | ----- | -------------- |
-| harness tool result text, after the UTF-8 repair (#508) | 65,536 bytes, notice included (`Helyx.Message.cut_result/1`) | the head is kept with a notice line, and the turn goes on |
+| harness tool result text, after the UTF-8 repair (#508) | 65,536 bytes, notice included (`Helyx.Message.cut_result/1`) | a notice line, then the head; the turn goes on |
 | harness tool result text, after the provider cut | 2000 lines or 51,200 bytes of line content, on whole lines, by `Helyx.Text.truncate/2`, `:tail`, in the provider | See the row "tool result text" |
 | tool result text, file read limit | unchanged: 2000 lines, 51,200 bytes, 10 MiB per file | unchanged |
 

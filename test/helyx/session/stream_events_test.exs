@@ -240,7 +240,7 @@ defmodule Helyx.Session.StreamEventsTest do
       text = Helyx.Message.text(result)
       assert String.valid?(text)
       assert byte_size(text) <= 65_536
-      assert text =~ ~r/^\x{FFFD}+\n\[cut at \d+ of 180000 bytes\]$/u
+      assert text =~ ~r/^\[cut at \d+ of 180000 bytes\]\n\x{FFFD}+$/u
       assert stop_reason(events) == :end_turn
     end
 
@@ -252,7 +252,7 @@ defmodule Helyx.Session.StreamEventsTest do
         assert [%{message: result}] =
                  for(%Event{type: :tool_execution_end, data: d} <- events, do: d)
 
-        assert [head, notice] = String.split(Helyx.Message.text(result), "\n")
+        assert [notice, head] = String.split(Helyx.Message.text(result), "\n")
         assert head == String.duplicate("x", byte_size(head))
         assert notice == "[cut at #{byte_size(head)} of #{bytes} bytes]"
         assert byte_size(head) + 1 + byte_size(notice) <= 65_536

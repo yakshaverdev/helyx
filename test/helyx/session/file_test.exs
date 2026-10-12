@@ -84,7 +84,7 @@ defmodule Helyx.Session.FileTest do
     assert {:ok, resumed} = Session.File.resume(dir, "/repo")
     assert [text] = texts(resumed)
     assert byte_size(text) <= 65_536
-    assert text =~ ~r/^x+\n\[cut at \d+ of 100000 bytes\]$/
+    assert text =~ ~r/^\[cut at \d+ of 100000 bytes\]\nx+$/
   end
 
   test "a model change entry is written and restored", %{tmp_dir: dir} do

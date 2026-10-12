@@ -225,7 +225,7 @@ defmodule Helyx.Session.HandsTest do
     :ok = Helyx.Session.Hands.run(hands, "t1", call("c1", "raise", %{"bytes" => 200_000}))
     assert_receive {:tool_result, "t1", "c1", {:error, result}}
     assert result =~ "RuntimeError"
-    assert result =~ ~r/\[cut at \d+ of \d+ bytes\]$/
+    assert result =~ ~r/^\[cut at \d+ of \d+ bytes\]\n/
     assert byte_size(result) <= @max_result_bytes
   end
 

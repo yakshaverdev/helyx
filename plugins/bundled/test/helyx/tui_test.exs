@@ -559,6 +559,17 @@ defmodule Helyx.TUITest do
     refute "  5" in texts.("1\n2\n3\n4\n5")
   end
 
+  test "the preview of a result that Core cut shows the cut notice" do
+    call = %Helyx.Message.ToolCall{id: "c", name: "bash", arguments: %{}}
+    output = Helyx.Message.cut_result(Enum.map_join(1..20_000, "\n", &"line #{&1}"))
+    result = Helyx.Message.tool_result(call, {:ok, output})
+
+    texts = texts(view_model([{:tool, call, ViewModel.call_line(call), result}]))
+
+    assert Enum.any?(texts, &String.contains?(&1, "[cut at"))
+    assert Enum.any?(texts, &String.contains?(&1, "more lines"))
+  end
+
   describe "wrapping by display width" do
     test "a narrow grapheme is one column, also with a combining mark" do
       assert wrapped(String.duplicate("a", 7), 5) == ["aaaaa", "aa"]

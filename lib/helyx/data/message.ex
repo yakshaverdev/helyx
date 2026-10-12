@@ -222,9 +222,10 @@ defmodule Helyx.Message do
   @doc """
   Bounds the text of a tool result. Each invalid UTF-8 sequence becomes
   U+FFFD, which can make the text up to three times larger. Then a text over
-  #{@max_result_bytes} bytes keeps its head, cut on a character boundary,
-  and a notice line `[cut at <kept> of <total> bytes]`, where `total` is
-  the size after the repair. The whole result is at most
+  #{@max_result_bytes} bytes becomes a notice line
+  `[cut at <kept> of <total> bytes]` and then its head, cut on a character
+  boundary, where `total` is the size after the repair. The notice comes
+  first, so a reader of the head sees it. The whole result is at most
   #{@max_result_bytes} bytes and valid UTF-8. The session applies it at
   each boundary of tool text, the hands and a provider's `tool_result`.
   A valid text within the limit, the common case, is returned without a
@@ -245,10 +246,10 @@ defmodule Helyx.Message do
     room = @max_result_bytes - byte_size(notice(@max_result_bytes, total))
     # The text is valid, so only a character that the cut splits is invalid.
     head = text |> binary_part(0, room) |> String.replace_invalid("")
-    head <> notice(byte_size(head), total)
+    notice(byte_size(head), total) <> head
   end
 
-  defp notice(kept, total), do: "\n[cut at #{kept} of #{total} bytes]"
+  defp notice(kept, total), do: "[cut at #{kept} of #{total} bytes]\n"
 
   @doc """
   Adds a stream delta to a reversed block list, newest first. Consecutive

@@ -75,15 +75,15 @@ defmodule Helyx.MessageTest do
 
       cut = Message.cut_result(String.duplicate("x", @max + 1))
       assert byte_size(cut) <= @max
-      assert cut =~ ~r/\[cut at \d+ of 65537 bytes\]$/
+      assert cut =~ ~r/^\[cut at \d+ of 65537 bytes\]\n/
     end
 
-    test "a result over the limit keeps its head and a notice, within the limit" do
+    test "a result over the limit becomes a notice line and its head, within the limit" do
       text = String.duplicate("x", 200_000)
       cut = Message.cut_result(text)
 
       assert byte_size(cut) <= @max
-      assert [head, notice] = String.split(cut, "\n")
+      assert [notice, head] = String.split(cut, "\n")
       assert String.starts_with?(text, head)
       assert notice == "[cut at #{byte_size(head)} of 200000 bytes]"
     end
@@ -103,8 +103,7 @@ defmodule Helyx.MessageTest do
 
       assert String.valid?(cut)
       assert byte_size(cut) <= @max
-      assert String.starts_with?(cut, "\uFFFD\uFFFD")
-      assert cut =~ ~r/\[cut at \d+ of 180000 bytes\]$/
+      assert cut =~ ~r/^\[cut at \d+ of 180000 bytes\]\n\x{FFFD}+$/u
     end
   end
 end

@@ -1,6 +1,6 @@
 # Review: #508 One cut for tool results
 
-Invariant: every tool result text that enters the session passes `Helyx.Message.cut_result/1` at its entry point: a Helyx tool through `Hands.outcome/3` (run output, crash text, bad return, unknown tool, missing cwd, refusal, unconfirmed release), a provider `tool_result` event through `Stream.check/1`, and a tool result read from the session file through `Session.File.Codec.decode/1`. The text is then valid UTF-8 of at most 65,536 bytes with its notice, cut on a character boundary after the repair, and a large result never fails the turn. An unknown tool and a missing cwd are answered without a Task. `Helyx.Text.truncate/2` repairs before it counts, and asserts at compile time that its output fits the Core limit. Accepted: the repair of a large input copies up to three times its size before the cut, and the hands cut inside their GenServer.
+Invariant: every tool result is at most 65,536 bytes of valid UTF-8, and the user sees the cut notice. Every tool result text that enters the session passes `Helyx.Message.cut_result/1` at its entry point: a Helyx tool through `Hands.outcome/3` (run output, crash text, bad return, unknown tool, missing cwd, refusal, unconfirmed release), a provider `tool_result` event through `Stream.check/1`, and a tool result read from the session file through `Session.File.Codec.decode/1`. The text is then valid UTF-8 of at most 65,536 bytes with its notice, cut on a character boundary after the repair, with the notice line first, and a large result never fails the turn. An unknown tool and a missing cwd are answered without a Task. `Helyx.Text.truncate/2` repairs before it counts, and asserts at compile time that its output fits the Core limit. Accepted: the repair of a large input copies up to three times its size before the cut, the hands cut inside their GenServer, and a session file edited by hand with several text blocks in one result resumes each block cut on its own, within the 64 MiB file limit.
 
 ## Round 1 (full)
 
@@ -46,8 +46,8 @@ bounds sensor: 4 candidate functions, 0 flagged, 0 without an answer
 | - | ---- | ------- | ---------- |
 | 2.1 | Codex | Verdict approve: no finding | — |
 | 2.2 | failure path | Round-1 reproductions pass: bash output of invalid bytes keeps `END` with one notice and no Core cut; a 100,000-byte result on disk resumes at 65,536 bytes. `cut_result/1` held for every length from 65,500 to 65,560 with each trailing character class | — |
-| 2.3 | failure path, altitude | A hand-edited session file with many text blocks in one tool result resumes over the limit (2 blocks of 60,000 bytes: 120,000 bytes; 900 blocks: 58.5 MB), because the reader cuts each block on its own. Reproduced | Known ceiling, stated in the `coding-agent.md` bound row before this round: Helyx writes one text block per result, so only a file edited by hand reaches it, within the 64 MiB file limit. Open for the owner: cut the joined text of a tool result on decode |
-| 2.4 | spec | The TUI shows the first 4 lines of a result and `… N more lines`, so the notice at the end of a cut result of 5 or more lines is not shown in the transcript (`result_lines/2` in `Helyx.TUI.Transcript`). The head notice of `Helyx.Text.truncate/2` has the same place. Read from the code | Open for the owner: the ticket does not say where the notice goes; the notice first, or a TUI change, are both outside the decided design |
+| 2.3 | failure path, altitude | A hand-edited session file with many text blocks in one tool result resumes over the limit (2 blocks of 60,000 bytes: 120,000 bytes; 900 blocks: 58.5 MB), because the reader cuts each block on its own. Reproduced | Accepted hole (owner decision after round 2): only a session file edited by hand can put several text blocks in one result, and the 64 MiB file limit bounds it. The code does not change; the `coding-agent.md` bound row states it |
+| 2.4 | spec | The TUI shows the first 4 lines of a result and `… N more lines`, so the notice at the end of a cut result of 5 or more lines is not shown in the transcript (`result_lines/2` in `Helyx.TUI.Transcript`). The head notice of `Helyx.Text.truncate/2` has the same place. Read from the code | Fixed in round 3 (owner decision): `cut_result/1` puts the notice line first, so the TUI preview and the model see it; the TUI does not change, and the notices of `Helyx.Text.truncate` stay as they are |
 | 2.5 | spec | Replaced mechanism item 7 named only two input sources for the repair copy; an in-VM provider and a third-party tool are not bounded before the cut | Fixed: item 7 names every source and states the copy as accepted |
 | 2.6 | spec | The bash result adds a prefix and an exit line (about 130 bytes) around the `truncate/2` output, which the compile-time check does not count | Kept: the result fits by about 14 KB; the doc claims only that the output of `truncate/2` is not cut again |
 | 2.7 | spec | The `cut_result/1` doc said "every invalid byte"; the repair replaces each invalid sequence | Fixed |
@@ -56,3 +56,28 @@ bounds sensor: 4 candidate functions, 0 flagged, 0 without an answer
 | 2.10 | standards | The tests write the literal 65,536 | Kept: the tests state the documented bound |
 
 Round 2 reproduced only 2.3, a ceiling that the doc stated before the round, so the loop ends. The fixes of this round are wording, docs, and renames.
+
+## Round 3 (reduced)
+
+Owner decisions after round 2: the notice goes first (2.4), the multi-block resume is an accepted hole (2.3), and the "pi's read and bash defaults" comment in `text.ex` stays (1.9).
+
+Fix, counted from its diff against `28e1fa8` without test files and Markdown: 11 lines added plus removed in 1 code file (`message.ex`: the `notice/2` text, the order of the concatenation, and the doc). It adds or removes no function and changes no arity, return type, or spec, so the round is reduced. The `Helyx.Tool` moduledoc wording came after the round (3.3). Tests: every assertion of the notice place is now notice first, and `tui_test.exs` checks that the preview of a cut result of 20,000 lines shows `[cut at`.
+
+Bounds sensor:
+
+```
+bounds sensor: 1 candidate functions, 0 flagged, 0 without an answer
+```
+
+| # | Axis | Finding | Resolution |
+| - | ---- | ------- | ---------- |
+| 3.1 | failure path | Held: `cut_result/1` at every size from 8 under to 8 over the limit with 1- to 4-byte characters at offsets 0 to 3, invalid bytes, 300 random binaries of 65,534 to 200,000 bytes, and 4,000,000 invalid bytes. Each result is valid UTF-8 of at most 65,536 bytes, starts with `[cut at K of T bytes]` and a newline, and a second cut leaves it unchanged (the resume path). With the old order the new TUI test fails: the notice is line 20,001 of the preview | — |
+| 3.2 | spec | The order is within the decision: A1 and Q2 ask for the head and a notice and name no position. The bound holds because `room` reserves the notice at the limit, and the moved newline does not change its length. The render path shows the notice: `result_lines/2` takes the first four lines. Read from the code | — |
+| 3.3 | spec | The `Helyx.Tool` moduledoc and the test name in `message_test.exs` still said "its head and a notice", which reads as head first, while the docs of this round say "a notice line and its head" | Fixed: the wording only; no further round, because the round reproduced no defect |
+| 3.4 | failure path | A tool can start its own output with a `[cut at ...]` line. It was the same before this round, and the size bound holds | Not changed: the notice is information for the user and the model, not a marker that code parses |
+
+Round 3 reproduced no defect, so the loop ends. Its fixes are wording.
+
+## Gate
+
+The coordinator runs the Codex gate after the commit of round 3. Its result and the escapes row are not in this record yet.
