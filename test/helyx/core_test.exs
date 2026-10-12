@@ -54,6 +54,7 @@ defmodule Helyx.CoreTest do
         {"two compaction plugins", [Test.Provider, Test.Compaction, Test.PrepareCompaction],
          quote(do: {:mode_violation, Helyx.Compaction, _})},
         {"a missing provider", [Test.SingleA], quote(do: {:missing_plugin, Helyx.Provider})},
+        {"an empty plugin list", [], quote(do: {:missing_plugin, Helyx.Provider})},
         {"a module that does not exist", [Test.Provider, Test.Missing],
          quote(do: {:not_a_plugin, Test.Missing})},
         {"a module that implements no interface", [Test.Provider, Test.NoInterface],
@@ -83,6 +84,18 @@ defmodule Helyx.CoreTest do
 
     assert boot([plugin]) ==
              {:error, {:missing_callbacks, plugin, Helyx.Provider, [info: 2, request: 3]}}
+  end
+
+  test "an interface takes no option other than :mode" do
+    source = """
+    defmodule Helyx.Test.Required do
+      use Helyx.Interface, mode: :multi, required: true
+    end
+    """
+
+    assert_raise ArgumentError, ~r/unknown keys \[:required\]/, fn ->
+      Code.compile_string(source)
+    end
   end
 
   test "accepts a plugin of an interface without callbacks" do

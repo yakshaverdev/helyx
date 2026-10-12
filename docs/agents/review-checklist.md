@@ -53,8 +53,8 @@ Invariants the review axes check on every diff. Add one when a review or a PR co
 
 ## Plugins and Core
 
-- Bad configuration returns `{:error, reason}` from `start_link`; it never raises. This includes a module that does not exist, two plugins for a single-mode interface, no plugin for a required one, and two providers with one id.
-- Core knows no interface by name except the fixed list it checks at boot.
+- Bad configuration returns `{:error, reason}` from `start_link`; it never raises. This includes a module that does not exist, two plugins for a single-mode interface, no provider plugin, and two providers with one id.
+- Core knows no interface by name except `Helyx.Provider`, of which `Helyx.Core.start_link/1` requires at least one plugin.
 
 ## Inputs from plugins
 

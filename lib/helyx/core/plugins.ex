@@ -11,17 +11,11 @@ defmodule Helyx.Core.Plugins do
   A module that implements no interface is `{:not_a_plugin, module}`. A
   plugin that does not export a required callback of an interface it
   implements is `{:missing_callbacks, plugin, interface, [{name, arity}]}`.
-
-  Every interface in `interfaces` is checked even when no plugin implements
-  it, so a required interface with no plugin is an error. An interface that
-  only appears through a plugin's `@behaviour` is checked too.
   """
-  @spec resolve([module()], [module()]) :: {:ok, table()} | {:error, term()}
-  def resolve(plugins, interfaces) do
+  @spec resolve([module()]) :: {:ok, table()} | {:error, term()}
+  def resolve(plugins) do
     with {:ok, table} <- group(plugins) do
-      interfaces = Enum.uniq(interfaces ++ Map.keys(table))
-
-      case Enum.find_value(interfaces, &check_mode(&1, Map.get(table, &1, []))) do
+      case Enum.find_value(table, &check_mode/1) do
         nil -> {:ok, table}
         error -> {:error, error}
       end
@@ -92,11 +86,10 @@ defmodule Helyx.Core.Plugins do
   end
 
   # Returns the error for an interface and its plugins, or nil when they fit.
-  defp check_mode(interface, plugins) do
-    case {Helyx.Interface.declaration(interface), plugins} do
-      {%{required: true}, []} -> {:missing_plugin, interface}
-      {%{mode: :single}, [_, _ | _]} -> {:mode_violation, interface, plugins}
-      _ -> nil
-    end
+  defp check_mode({interface, [_, _ | _] = plugins}) do
+    if match?(%{mode: :single}, Helyx.Interface.declaration(interface)),
+      do: {:mode_violation, interface, plugins}
   end
+
+  defp check_mode(_entry), do: nil
 end

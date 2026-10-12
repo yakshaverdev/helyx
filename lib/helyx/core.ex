@@ -8,14 +8,14 @@ defmodule Helyx.Core do
 
   Core checks every plugin against the interfaces it implements. It refuses to
   start when a `:single` interface receives more than one plugin, when a
-  `required: true` interface receives none, when a module implements no
-  interface at all, or when a plugin does not export a required callback of
-  an interface it implements (`{:missing_callbacks, plugin, interface,
-  missing}`). It calls `id/0` of each provider once, and
-  refuses to start with `{:invalid_provider_id, plugin}` when one raises,
-  throws, exits, or returns a value that is not a binary, and with
-  `{:duplicate_provider_id, id, [first, second]}` when two providers share
-  an id.
+  module implements no interface at all, or when a plugin does not export a
+  required callback of an interface it implements (`{:missing_callbacks,
+  plugin, interface, missing}`). It refuses to start with
+  `{:missing_plugin, Helyx.Provider}` when no provider is listed. It calls
+  `id/0` of each provider once, and refuses to start with
+  `{:invalid_provider_id, plugin}` when one raises, throws, exits, or
+  returns a value that is not a binary, and with `{:duplicate_provider_id,
+  id, [first, second]}` when two providers share an id.
 
   A plugin that exports `child_spec/1` gets its process tree started under
   Core, with `[core: name]` as the argument.
@@ -27,10 +27,6 @@ defmodule Helyx.Core do
   use Supervisor
 
   @type name :: atom()
-
-  # Every interface Core checks at boot, so a required one with no plugin is
-  # rejected even when nothing else mentions it.
-  @interfaces [Helyx.Provider]
 
   @doc "Child spec for a product's supervision tree. Takes `name:` and `plugins:`."
   @spec child_spec(keyword()) :: Supervisor.child_spec()
@@ -48,11 +44,16 @@ defmodule Helyx.Core do
     name = Keyword.get(opts, :name, __MODULE__)
     plugins = Keyword.get(opts, :plugins, [])
 
-    with {:ok, table} <- Helyx.Core.Plugins.resolve(plugins, @interfaces),
-         {:ok, ids} <- Helyx.Core.Plugins.provider_ids(table[Helyx.Provider]) do
+    with {:ok, table} <- Helyx.Core.Plugins.resolve(plugins),
+         {:ok, providers} <- providers(table),
+         {:ok, ids} <- Helyx.Core.Plugins.provider_ids(providers) do
       Supervisor.start_link(__MODULE__, {name, plugins, table, ids}, name: name)
     end
   end
+
+  # A session needs a provider. The table holds no empty list.
+  defp providers(%{Helyx.Provider => providers}), do: {:ok, providers}
+  defp providers(_table), do: {:error, {:missing_plugin, Helyx.Provider}}
 
   @impl true
   def init({name, plugins, table, ids}) do
