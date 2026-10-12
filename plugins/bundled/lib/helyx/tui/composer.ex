@@ -43,8 +43,9 @@ if Helyx.TUI.Composer.Available.available?() do
     # stands for. `count` is the id of the last marker. Both are emptied
     # with the composer, so a marker id is not used twice before then.
     # `recall` is nil while the user edits the draft. While an earlier
-    # prompt shows, it holds the position of that prompt's cell and the draft
-    # with its pastes, so Down can bring the draft back.
+    # prompt shows, it holds the position of that prompt's cell, the text
+    # that shows for it, so an edit is seen, and the draft with its pastes,
+    # so Down can bring the draft back.
     @enforce_keys [:input]
     defstruct [:input, pastes: %{}, count: 0, recall: nil]
 
@@ -52,7 +53,7 @@ if Helyx.TUI.Composer.Available.available?() do
             input: reference(),
             pastes: %{String.t() => String.t()},
             count: non_neg_integer(),
-            recall: {non_neg_integer(), String.t(), %{String.t() => String.t()}} | nil
+            recall: {non_neg_integer(), String.t(), String.t(), %{String.t() => String.t()}} | nil
           }
 
     @doc "An empty composer."
@@ -87,7 +88,9 @@ if Helyx.TUI.Composer.Available.available?() do
 
     @doc "True when `clear/1` drops nothing: no text, and no draft that Down brings back."
     @spec nothing_to_clear?(t()) :: boolean()
-    def nothing_to_clear?(%__MODULE__{recall: {_at, draft, _pastes}}) when draft != "", do: false
+    def nothing_to_clear?(%__MODULE__{recall: {_at, _shown, draft, _pastes}}) when draft != "",
+      do: false
+
     def nothing_to_clear?(composer), do: empty?(composer)
 
     @doc "Empties the composer and forgets its pastes."
@@ -103,15 +106,26 @@ if Helyx.TUI.Composer.Available.available?() do
     Down past the newest prompt brings back the draft. Otherwise the key
     moves the cursor. Up leaves the cursor at the start, Down at the end, so
     the next Up or Down goes on through the prompts.
+
+    An edited recalled prompt first becomes the draft: the draft that waits,
+    then the edit, one per new line, with the pastes of both and the cursor
+    on the same character. Then the key acts on that draft.
     """
     @spec recall(t(), ViewModel.t(), String.t()) :: t()
     def recall(%__MODULE__{} = composer, vm, code) when code in ["up", "down"] do
-      position = with {at, _value, _pastes} <- composer.recall, do: at
+      composer = keep_edit(composer)
+      position = with {at, _shown, _draft, _pastes} <- composer.recall, do: at
 
       case edge?(composer, code) && ViewModel.prompt(vm, position, direction(code)) do
-        {at, text} -> show(composer, code, clean(text), %{}, recalled(composer, at))
-        nil when code == "down" and position != nil -> restore(composer)
-        _no_prompt -> widget_key(composer, code)
+        {at, text} ->
+          text = clean(text)
+          show(composer, code, text, %{}, recalled(composer, at, text))
+
+        nil when code == "down" and position != nil ->
+          restore(composer)
+
+        _no_prompt ->
+          widget_key(composer, code)
       end
     end
 
@@ -124,12 +138,8 @@ if Helyx.TUI.Composer.Available.available?() do
     """
     @spec apply(t(), Event.t()) :: t()
     def apply(%__MODULE__{} = composer, %Event{type: :queue_dropped, data: %{texts: texts}}) do
-      # A draft behind a recalled prompt waits in `recall`; the text that
-      # shows is the draft or the recalled prompt.
-      {_at, waiting, pastes} = composer.recall || {nil, "", %{}}
-      typed = ExRatatui.textarea_get_value(composer.input)
-      parts = Enum.map(texts, &clean/1) ++ Enum.reject([waiting, typed], &(&1 == ""))
-      show(composer, "down", Enum.join(parts, "\n"), Map.merge(pastes, composer.pastes), nil)
+      {parts, pastes} = draft_parts(composer, ExRatatui.textarea_get_value(composer.input))
+      show(composer, "down", Enum.join(Enum.map(texts, &clean/1) ++ parts, "\n"), pastes, nil)
     end
 
     def apply(%__MODULE__{} = composer, %Event{}), do: composer
@@ -185,13 +195,43 @@ if Helyx.TUI.Composer.Available.available?() do
     defp direction("down"), do: :newer
 
     # The draft stays the same while the prompts change.
-    defp recalled(%{recall: {_at, value, pastes}}, at), do: {at, value, pastes}
+    defp recalled(%{recall: {_at, _shown, draft, pastes}}, at, text),
+      do: {at, text, draft, pastes}
 
-    defp recalled(composer, at),
-      do: {at, ExRatatui.textarea_get_value(composer.input), composer.pastes}
+    defp recalled(composer, at, text),
+      do: {at, text, ExRatatui.textarea_get_value(composer.input), composer.pastes}
 
-    defp restore(%{recall: {_at, value, pastes}} = composer),
-      do: show(composer, "down", value, pastes, nil)
+    defp restore(%{recall: {_at, _shown, draft, pastes}} = composer),
+      do: show(composer, "down", draft, pastes, nil)
+
+    # A recalled prompt that differs from the text that showed for it is an
+    # edit, and it becomes the draft. The cursor stays on the same character
+    # of the edit, which comes after the waiting draft and its new line.
+    defp keep_edit(%{recall: {_at, shown, _draft, _pastes}} = composer) do
+      value = ExRatatui.textarea_get_value(composer.input)
+
+      if value == shown do
+        composer
+      else
+        {parts, pastes} = draft_parts(composer, value)
+        text = Enum.join(parts, "\n")
+        before_edit = byte_size(text) - byte_size(value)
+        cursor = before_edit + offset(value, composer.input)
+        cut(%{composer | pastes: pastes, recall: nil}, text, cursor, cursor)
+      end
+    end
+
+    defp keep_edit(composer), do: composer
+
+    # What the user typed, in order: the draft that waits behind a recalled
+    # prompt, then `value`, the composer text, which is the draft or the
+    # recalled prompt. Empty texts drop, so a join adds one new line between
+    # two texts and no other bytes. The pastes of both merge: their marker
+    # ids differ, because `count` grows until the composer empties.
+    defp draft_parts(composer, value) do
+      {_at, _shown, waiting, pastes} = composer.recall || {nil, nil, "", %{}}
+      {Enum.reject([waiting, value], &(&1 == "")), Map.merge(pastes, composer.pastes)}
+    end
 
     # `textarea_set_value/2` leaves the cursor at the start; `cut/4` of
     # nothing at the end leaves it at the end.
@@ -273,28 +313,32 @@ if Helyx.TUI.Composer.Available.available?() do
     end
 
     # The composer text and the byte span of the live marker that `hit?/3`
-    # finds for the cursor, or nil. The cursor column counts code points, so
-    # one walk of the cursor line turns it into a byte offset. One read of
-    # the composer and one search for all markers: linear in the composer
-    # text.
+    # finds for the cursor, or nil. One read of the composer and one search
+    # for all markers: linear in the composer text.
     defp marker_at(%{pastes: pastes}, _code) when map_size(pastes) == 0, do: nil
 
     defp marker_at(composer, code) do
-      {row, column} = ExRatatui.textarea_cursor(composer.input)
       value = ExRatatui.textarea_get_value(composer.input)
-      {above, [line | _]} = value |> String.split("\n", parts: row + 2) |> Enum.split(row)
-      line_start = Enum.reduce(above, 0, &(byte_size(&1) + 1 + &2))
-
-      cursor =
-        line |> String.to_charlist() |> Enum.take(column) |> List.to_string() |> byte_size()
+      cursor = offset(value, composer.input)
 
       spans =
         for {at, size} <- :binary.matches(value, Map.keys(composer.pastes)), do: {at, at + size}
 
-      case Enum.find(spans, &hit?(code, line_start + cursor, &1)) do
+      case Enum.find(spans, &hit?(code, cursor, &1)) do
         nil -> nil
         span -> {value, span}
       end
+    end
+
+    # The byte offset in `value`, the text of `input`, of its cursor. The
+    # cursor column counts code points, so one walk of the cursor line turns
+    # it into a byte offset.
+    defp offset(value, input) do
+      {row, column} = ExRatatui.textarea_cursor(input)
+      {above, [line | _]} = value |> String.split("\n", parts: row + 2) |> Enum.split(row)
+      line_start = Enum.reduce(above, 0, &(byte_size(&1) + 1 + &2))
+      column_bytes = line |> String.to_charlist() |> Enum.take(column) |> List.to_string()
+      line_start + byte_size(column_bytes)
     end
 
     defp paste(composer, content) do
