@@ -12,8 +12,8 @@ if Helyx.TUI.Composer.Available.available?() do
     stand for long pastes. A marker is one unit for every key. The rules
     and their bounds are in `docs/features/multiline-composer.md`.
 
-    The input widget is a mutable `ExRatatui` resource: a composer that
-    `edit/3` or `clear/1` returns shares it with the one they got.
+    The input widget is a mutable `ExRatatui` resource: a composer that a
+    function returns shares it with the one it got.
     """
 
     alias ExRatatui.Layout.Rect
@@ -45,7 +45,7 @@ if Helyx.TUI.Composer.Available.available?() do
     # `recall` is nil while the user edits the draft. While an earlier
     # prompt shows, it holds the position of that prompt's cell, the text
     # that shows for it, so an edit is seen, and the draft with its pastes,
-    # so Down can bring the draft back.
+    # so Down or a send can bring the draft back.
     @enforce_keys [:input]
     defstruct [:input, pastes: %{}, count: 0, recall: nil]
 
@@ -95,10 +95,14 @@ if Helyx.TUI.Composer.Available.available?() do
 
     @doc "Empties the composer and forgets its pastes."
     @spec clear(t()) :: t()
-    def clear(%__MODULE__{} = composer) do
-      ExRatatui.textarea_set_value(composer.input, "")
-      %{composer | pastes: %{}, count: 0, recall: nil}
-    end
+    def clear(%__MODULE__{} = composer), do: %{show(composer, "up", "", %{}, nil) | count: 0}
+
+    @doc "Ends a recall: the waiting draft comes back, or the composer empties."
+    @spec restore(t()) :: t()
+    def restore(%__MODULE__{recall: {_at, _shown, draft, pastes}} = composer) when draft != "",
+      do: show(composer, "down", draft, pastes, nil)
+
+    def restore(composer), do: clear(composer)
 
     @doc """
     Up or Down: recalls an earlier prompt of the session, the user messages
@@ -202,9 +206,6 @@ if Helyx.TUI.Composer.Available.available?() do
 
     defp recalled(composer, at, text),
       do: {at, text, ExRatatui.textarea_get_value(composer.input), composer.pastes}
-
-    defp restore(%{recall: {_at, _shown, draft, pastes}} = composer),
-      do: show(composer, "down", draft, pastes, nil)
 
     # A recalled prompt that differs from the text that showed for it is an
     # edit, and it becomes the draft. The cursor stays on the same character
