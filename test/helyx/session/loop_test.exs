@@ -158,8 +158,7 @@ defmodule Helyx.Session.LoopTest do
     :ok = Session.prompt(session, "hello")
     events = collect_until(:turn_end)
 
-    assert {:bad_stream_event, {:done, %{usage: %{"in" => {1, 2}}}}} =
-             List.last(events).data.error
+    assert List.last(events).data.error =~ ~s(usage: %{"in" => {1, 2}})
 
     :ok = Session.prompt(session, "again")
     collect_until(:turn_end)
@@ -287,7 +286,6 @@ defmodule Helyx.Session.LoopTest do
   # A crash of a linked process that is not the provider process, the sessions
   # Registry for example, must take the session with it: a session that
   # outlives its registration keeps working where no client can reach it.
-  @tag :capture_log
   test "an exit that is not from the provider process stops the session", %{core: core} do
     {:ok, session} = Session.start(core, model: "test/ok")
     pid = Session.pid(session)
@@ -301,7 +299,6 @@ defmodule Helyx.Session.LoopTest do
   # owner, so a killed session takes the provider process, the hands, and
   # the tool Tasks with it, even through an untrappable kill. The model
   # Task is linked to the provider process (`Helyx.Provider.Loop`).
-  @tag :capture_log
   test "killing the session kills the provider process", %{core: core} do
     {:ok, session} = Session.start(core, model: "test/hang")
     {:ok, _, _} = Session.subscribe(session)
@@ -314,7 +311,6 @@ defmodule Helyx.Session.LoopTest do
     assert_receive {:DOWN, ^ref, :process, _, _}
   end
 
-  @tag :capture_log
   test "killing the session kills the hands and the tool Task", %{core: core} do
     {:ok, session} = Session.start(core, model: "test/abort")
     {:ok, _, _} = Session.subscribe(session)

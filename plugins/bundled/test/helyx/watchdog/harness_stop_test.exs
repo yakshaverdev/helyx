@@ -33,7 +33,7 @@ defmodule Helyx.Watchdog.HarnessStopTest do
 
   test "a blocked callback: the armed kill stops the program group", %{core: core} do
     {_session, group} = start(core, "block", 300)
-    assert turn_end().data.error == :provider_timeout
+    assert turn_end().data.error == ":provider_timeout"
     assert group_gone_within?(group)
   end
 
@@ -69,7 +69,7 @@ defmodule Helyx.Watchdog.HarnessStopTest do
        %{core: core} do
     {_session, group} = start(core, "flood")
     error = turn_end().data.error
-    assert match?({:provider_stop, {:exit_status, _}}, error) or error == {:task_exit, :epipe}
+    assert error =~ ~r/^{:provider_stop, {:exit_status, \d+}}$/ or error == "{:task_exit, :epipe}"
     assert group_gone_within?(group)
   end
 end

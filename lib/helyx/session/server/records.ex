@@ -74,20 +74,21 @@ defmodule Helyx.Session.Server.Records do
   end
 
   # The close at the end of a turn, at `outcome`: `{:done, stop_reason,
-  # usage}`, `:aborted`, or `{:error, reason}`. At `done` the open message
+  # usage}`, `:aborted`, or `{:error, text}`. At `done` the open message
   # joins, an empty one too. At an abort or a failure an open message with
   # a tool call closes as at the other closes (stop `:tool_use`); one with
   # text only joins with the stop reason `:aborted` or `:error`, and its
-  # message_end has the reason in `error`. No open message, no message; an
-  # open message with no block gets its message_end and is not stored. Then
-  # each open call gets its `aborted` result.
+  # message_end has the error text or `:aborted` in `error`. No open
+  # message, no message; an open message with no block gets its
+  # message_end and is not stored. Then each open call gets its `aborted`
+  # result.
   def finish(state, outcome), do: state |> close_last(outcome) |> abort_open_calls()
 
   defp close_last(state, {:done, stop_reason, usage}),
     do: close_assistant(state, stop_reason, usage)
 
   defp close_last(state, :aborted), do: close_cut(state, :aborted, :aborted)
-  defp close_last(state, {:error, reason}), do: close_cut(state, :error, reason)
+  defp close_last(state, {:error, text}), do: close_cut(state, :error, text)
 
   defp close_cut(state, stop, reason) do
     case close_if(state, &match?(%Message.ToolCall{}, &1)) do

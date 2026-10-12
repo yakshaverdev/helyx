@@ -256,7 +256,7 @@ defmodule Helyx.TUI.ViewModelTest do
       fold([
         {:turn_start, %{}},
         {:message_end, %{message: user("hi")}},
-        {:turn_end, %{outcome: :error, error: :stream_ended}}
+        {:turn_end, %{outcome: :error, error: ":stream_ended"}}
       ])
 
     refute vm.running?
@@ -275,30 +275,11 @@ defmodule Helyx.TUI.ViewModelTest do
     refute line =~ "\n"
   end
 
-  test "an error renders in at most 8,192 bytes, with no character cut in half" do
-    # U+00A0 renders as `\u00A0`, three times its bytes; a nested term has
-    # no total `inspect/1` limit; `{:xy, "` puts the cut inside an "é".
-    nbsp = String.duplicate("\u00A0", 1_000)
-    nested = Map.new(1..50, &{&1, String.duplicate("\e", 4_096)})
-
-    for error <- [
-          {:claude_code, nbsp, nbsp},
-          {:bad_stream_event, nested},
-          {:xy, String.duplicate("é", 5_000)}
-        ] do
-      vm = fold([{:turn_end, %{outcome: :error, error: error}}])
-      assert {:notice, "error: " <> text} = List.last(cells(vm))
-      assert byte_size(text) in 8_190..8_192
-      assert String.valid?(text)
-    end
-  end
-
-  test "an error text with a control or invalid byte renders as text, not as bytes" do
-    # perl's warnings quote the environment as raw bytes (#141).
-    for text <- ["perl \x01 byte", "perl \u0085 byte", "perl \xE9 byte"] do
-      vm = fold([{:turn_end, %{outcome: :error, error: {:not_started, text}}}])
-      assert {:notice, "error: {:not_started, \"perl " <> _} = List.last(cells(vm))
-    end
+  test "an error text shows as Core wrote it" do
+    # Core bounds the text (ADR 0006 §2), so the TUI does not cut it.
+    text = String.duplicate("é", 2_000)
+    vm = fold([{:turn_end, %{outcome: :error, error: text}}])
+    assert List.last(cells(vm)) == {:notice, "error: " <> text}
   end
 
   test "queue updates change the counts, including the nil-turn drain" do
@@ -328,7 +309,7 @@ defmodule Helyx.TUI.ViewModelTest do
       fold([
         {:turn_start, %{}},
         {:message_end, %{message: user("hi")}},
-        {:turn_end, %{outcome: :error, error: :boom}}
+        {:turn_end, %{outcome: :error, error: "boom"}}
       ])
 
     assert vm.streaming == nil

@@ -119,7 +119,7 @@ defmodule Helyx.Provider.ClaudeCode.IdleCloseTest do
 
     events = prompt(start(ctx), "go")
 
-    assert [%{outcome: :error, error: {:provider_stop, {:claude_code_exit, 3}}}] =
+    assert [%{outcome: :error, error: "{:provider_stop, {:claude_code_exit, 3}}"}] =
              of_type(events, :turn_end)
   end
 end

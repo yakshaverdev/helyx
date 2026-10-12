@@ -111,7 +111,6 @@ defmodule Helyx.Provider.FakeTest do
     assert first.stop_reason == :tool_use
   end
 
-  @tag :capture_log
   test "a bad script item fails only its own turn", %{core: core} do
     :ok = Fake.script(core, "bad", [[42]])
     :ok = Fake.script(core, "good", [["fine"]])

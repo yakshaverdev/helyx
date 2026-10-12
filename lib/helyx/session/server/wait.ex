@@ -17,7 +17,7 @@ defmodule Helyx.Session.Server.Wait do
   require Logger
 
   import Helyx.Session.Server.State, only: [ask: 4]
-  import Helyx.Session.Server.Events, only: [emit: 3, emit: 4]
+  import Helyx.Session.Server.Events, only: [emit: 3, emit: 4, error_text: 1]
 
   alias Helyx.Session.{Hands, ProviderRequest, Turn}
   alias Helyx.Session.Server.{ProviderConn, Records, State, Steering, ToolRuns}
@@ -32,10 +32,11 @@ defmodule Helyx.Session.Server.Wait do
         }
 
   # The end of the turn, at `outcome`: `{:done, stop_reason, usage}`,
-  # `:aborted`, or `{:error, reason}`. Its prepare Task is killed, and its
-  # records close (`Records.finish/2`). At `done` a steer with no answer
-  # yet can still be rejected after the turn (`Queue.answer/3`); an abort
-  # or a failure gives the queued texts back (`Queue.abort/1`). The
+  # `:aborted`, or `{:error, reason}`; the reason goes to the log and
+  # becomes its text (`Events.error_text/1`). Its prepare Task is killed,
+  # and its records close (`Records.finish/2`). At `done` a steer with no
+  # answer yet can still be rejected after the turn (`Queue.answer/3`); an
+  # abort or a failure gives the queued texts back (`Queue.abort/1`). The
   # hands release the Tasks of the turn before the next turn: always at an
   # abort or a failure, at `done` when a Helyx tool still runs. Only an
   # abort of a turn that sent `{:turn, ...}` gets an interrupt, after the
@@ -46,6 +47,7 @@ defmodule Helyx.Session.Server.Wait do
         ) ::
           State.t()
   def finish(%State{activity: turn} = state, outcome) do
+    outcome = with {:error, reason} <- outcome, do: {:error, error_text(reason)}
     kill_prepare(turn)
     state = Records.finish(state, outcome)
     done? = match?({:done, _stop, _usage}, outcome)
@@ -58,7 +60,7 @@ defmodule Helyx.Session.Server.Wait do
 
   defp end_data({:done, _stop_reason, _usage}), do: %{outcome: :done}
   defp end_data(:aborted), do: %{outcome: :aborted}
-  defp end_data({:error, reason}), do: %{outcome: :error, error: reason}
+  defp end_data({:error, text}), do: %{outcome: :error, error: text}
 
   # The wait holds the answer to the interrupt.
   defp interrupt(%State{conn: %ProviderConn{pid: pid}} = state, %Turn{phase: phase, id: id})

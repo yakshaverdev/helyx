@@ -241,7 +241,7 @@ defmodule Helyx.Provider.Codex.TurnsTest do
 
     events = prompt(start(ctx), "go")
 
-    assert [%{outcome: :error, error: {:codex, "failed", "usage limit"}}] =
+    assert [%{outcome: :error, error: ~s({:codex, "failed", "usage limit"})}] =
              of_type(events, :turn_end)
 
     assert [

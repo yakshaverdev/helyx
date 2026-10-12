@@ -117,12 +117,22 @@ defmodule Helyx.Test.Provider do
   #   "empty"      an empty stream, no terminal event
   #   "crash"      one delta, then the stream raises
   #   "throw", "exit"  the stream throws or exits with :boom
+  #   "fail_after.<how>" one delta, then a crash: "badarg", "undef",
+  #                "throw", "exit_crash", "exit_shutdown", "catch",
+  #                "exit_signal", and the other cases of `fail/1`
   #   "exit_normal"  the stream ends its process with a :normal signal
   #   "self_halt"  an enumerable that halts by itself on a text delta
   #   "bad_event.<name>" the gate <name>, a message end, which only a
   #                harness may send, then the gate again
   #   "overrun"    a delta, done, then a raise if pulled further
   #   "error_tail" an error event, then a raise if pulled further
+  #   "long_error" an error whose text is over 4000 bytes, with a
+  #                character of two bytes across the cut
+  #   "exception_error" an error that is an exception
+  #   "wide_error" an error of 100 items, over the limit of `inspect/2`
+  #   "error_bytes.<n>" an error text of n bytes
+  #   "throw_message" an error that is an exception whose message throws
+  #   "exit_inspect" an error that holds a struct whose `Inspect` exits
   #   "garbage"    one event that is not a stream event
   #   "raw_bytes"  a text delta that is not valid UTF-8
   #   "raw_call"   a tool call whose name is not valid UTF-8
@@ -175,6 +185,9 @@ defmodule Helyx.Test.Provider do
     "ok" => [{:text_delta, "ok"}, @done],
     "empty" => [],
     "garbage" => [{:text_delta, 42}],
+    "long_error" => [{:error, "a" <> String.duplicate("é", 3000)}],
+    "exception_error" => [{:error, %RuntimeError{message: "rate limited"}}],
+    "wide_error" => [{:error, Enum.to_list(1..100)}],
     "raw_bytes" => [{:text_delta, <<"hi", 255>>}],
     "wide" => [{:text_delta, "hello", :extra}],
     "raw_call" => [{:tool_call, %ToolCall{id: "c", name: <<"bash", 255>>, arguments: %{}}}, @done],
@@ -312,6 +325,9 @@ defmodule Helyx.Test.Provider do
 
   def stream("crash", _context, _opts), do: {:ok, raise_after([{:text_delta, "so far"}], "boom")}
 
+  def stream("fail_after." <> how, _context, _opts),
+    do: {:ok, Stream.concat([{:text_delta, "so far"}], Stream.map([1], fn _ -> fail(how) end))}
+
   def stream("hang", _context, _opts) do
     {:ok,
      Stream.concat(
@@ -346,6 +362,15 @@ defmodule Helyx.Test.Provider do
   def stream("wide_int", _context, _opts), do: {:ok, [{:text_delta, "hello", huge()}]}
   def stream("error_int", _context, _opts), do: {:ok, [{:error, {:oops, huge()}}]}
   def stream("refuse_int", _context, _opts), do: {:error, {:oops, huge()}}
+
+  def stream("error_bytes." <> n, _context, _opts),
+    do: {:ok, [{:error, String.duplicate("a", String.to_integer(n))}]}
+
+  def stream("throw_message", _context, _opts),
+    do: {:ok, [{:error, struct(Helyx.Test.ThrowMessage)}]}
+
+  def stream("exit_inspect", _context, _opts),
+    do: {:ok, [{:error, {:oops, struct(Helyx.Test.ExitInspect)}}]}
 
   def stream("wide_usage", _context, _opts),
     do: {:ok, [{:done, %{stop_reason: :end_turn, usage: %{input: huge()}}}]}
@@ -422,7 +447,60 @@ defmodule Helyx.Test.Provider do
     Stream.concat(events, Stream.map([1], fn _ -> raise message end))
   end
 
+  # The crash shapes of the BEAM: a raw Erlang error, a throw, an exit
+  # whose reason has the shape of a crash, bare or under a shutdown, and
+  # an error event that holds a crash under the tag of an Erlang `catch`
+  # or of an exit signal.
+  @crash {:badarg, [{:m, :f, 0, [file: ~c"m.erl", line: 1]}]}
+  defp fail("badarg"), do: :erlang.error(:badarg)
+  defp fail("undef"), do: Function.identity(:helyx_no_such_module).f()
+  defp fail("throw"), do: throw(:boom)
+  defp fail("exit_crash"), do: exit(@crash)
+  defp fail("exit_shutdown"), do: exit({:shutdown, @crash})
+  defp fail("catch"), do: {:error, {:EXIT, @crash}}
+  defp fail("exit_signal"), do: {:error, {:EXIT, self(), @crash}}
+  # Plugin code that fails while Core writes the text of the crash.
+  defp fail("raise_message"), do: raise(Helyx.Test.RaiseMessage)
+  defp fail("throw_message"), do: raise(Helyx.Test.ThrowMessage)
+  defp fail("raise_inspect"), do: {:error, {:oops, struct(Helyx.Test.RaiseInspect)}}
+  defp fail("exit_message"), do: raise(Helyx.Test.OddMessage, how: :exit)
+  defp fail("atom_message"), do: raise(Helyx.Test.OddMessage, how: :atom)
+  # A stacktrace that is not the stack of the crash: in a field of an
+  # exception that is an exit reason, in the term of a `MatchError`, and in
+  # a map key.
+  defp fail("exit_exception"),
+    do: exit(struct(Helyx.Test.StackMessage, message: "held", stack: elem(@crash, 1)))
+
+  defp fail("match"), do: {:ok, _} = Function.identity({:error, @crash})
+  defp fail("map_key"), do: {:error, %{elem(@crash, 1) => :key}}
+  # An exception that holds a list, a tuple, or a map of n items: the
+  # cleaning walk visits n + 3 terms (the exception, the key `:items`, and
+  # the list or tuple), or 2n + 3 for a map.
+  defp fail("nodes." <> n), do: {:error, last_item(List.duplicate(:x, String.to_integer(n)))}
+
+  defp fail("tuple_nodes." <> n),
+    do: {:error, last_item(List.to_tuple(List.duplicate(:x, String.to_integer(n))))}
+
+  defp fail("map_nodes." <> n),
+    do: {:error, last_item(Map.new(1..String.to_integer(n), &{&1, true}))}
+
+  # A stacktrace as the rest of a list, a stacktrace whose top frame is a
+  # fun, and an improper list.
+  defp fail("tail_stack"), do: {:error, [:context | elem(@crash, 1)]}
+  defp fail("fun_frame"), do: {:error, {:oops, [{&Function.identity/1, [1], [line: 1]}]}}
+  defp fail("improper"), do: {:error, {:failure, [:item | Function.identity(:tail)]}}
+  # A plugin `Inspect` that raises inside the term of a `MatchError`.
+  defp fail("match_inspect"),
+    do: {:ok, _} = Function.identity({:error, struct(Helyx.Test.RaiseInspect)})
+
+  # A provider error that holds the marker of the cleaning walk.
+  defp fail("marker"), do: {:error, {:oops, :stacktrace}}
+  # A provider error whose list looks like a stacktrace and is not one.
+  defp fail("params"), do: {:error, {:invalid_params, [{:field, :name, "required", []}]}}
+
   defp huge, do: String.to_integer(String.duplicate("7", 400_000))
+
+  defp last_item(items), do: struct(Helyx.Test.LastItemMessage, items: items)
 end
 
 defmodule Helyx.Test.Tool do
@@ -621,6 +699,8 @@ defmodule Helyx.Test.Connected do
   #                      and `{:fail, turn_id}` sends `{:error, :failed}`
   #   "block_init"       `init/3` blocks
   #   "fail_init"        `init/3` returns an error
+  #   "crash_init"       `init/3` returns a caught crash with its stack as the error
+  #   "child_init"       `init/3` returns the failure of a supervisor whose child crashed
   #   "block_turn"       the turn callback blocks
   #   "error_turn"       a turn answers `{:error, :refused}`
   #   "crash_turn"       the turn callback raises
@@ -792,6 +872,12 @@ defmodule Helyx.Test.Connected do
       "fail_init" ->
         {:error, :no_program}
 
+      "crash_init" ->
+        {:error, caught_crash()}
+
+      "child_init" ->
+        {:error, {:shutdown, {:failed_to_start_child, :child, caught_crash()}}}
+
       "lost_label" ->
         receive do
           :started -> {:ok, %{model: "label", ctl: ctl, label: nil, closed: false}}
@@ -835,6 +921,18 @@ defmodule Helyx.Test.Connected do
   def info({:stop, actions}, state), do: {:stop, :gone, actions, state}
   def info(:bad_return, _state), do: :nope
   def info(:exit_normal, _state), do: exit(:normal)
+  def info(:stop_huge, state), do: {:stop, Integer.pow(10, 5000), state}
+  # The crash shapes of the BEAM in a callback, with no normalization.
+  def info({:crash, :badarg}, _state), do: :erlang.error(:badarg)
+  def info({:crash, :throw}, _state), do: throw(:boom)
+  def info({:crash, :exit}, _state), do: exit({:badarg, [{:m, :f, 0, []}]})
+
+  def info({:crash, :stop}, state), do: {:stop, caught_crash(), state}
+
+  def info({:crash, :call}, _state) do
+    {:ok, agent} = Agent.start(fn -> nil end)
+    Agent.get(agent, fn _ -> :erlang.error(:badarg) end)
+  end
 
   def info({:need_context, turn_id, text}, state) do
     message_end = {:message_end, :end_turn, %{}}
@@ -862,6 +960,13 @@ defmodule Helyx.Test.Connected do
 
   # Several actions from one callback, as one input batch of a program.
   def info({:batch, actions}, state), do: {:ok, actions, state}
+
+  # A crash that the plugin catches and gives back as a reason, stack included.
+  defp caught_crash do
+    :erlang.error(:badarg)
+  catch
+    :error, reason -> {reason, __STACKTRACE__}
+  end
 
   defp kind({kind, _, _, _}), do: kind
   defp kind({kind, _, _}), do: kind
@@ -1064,4 +1169,76 @@ defmodule Helyx.Test.PrepareCompaction do
       _ -> context
     end
   end
+end
+
+defmodule Helyx.Test.ThrowMessage do
+  @moduledoc false
+  # An exception of a plugin whose `message/1` throws.
+  defexception [:code]
+
+  @impl true
+  def message(_exception), do: throw(:no_message)
+end
+
+defmodule Helyx.Test.ExitInspect do
+  @moduledoc false
+  # A struct of a plugin whose `Inspect` exits.
+  defstruct [:code]
+
+  defimpl Inspect do
+    def inspect(_struct, _opts), do: exit(:no_inspect)
+  end
+end
+
+defmodule Helyx.Test.RaiseMessage do
+  @moduledoc false
+  # An exception of a plugin whose `message/1` raises.
+  defexception [:code]
+
+  @impl true
+  def message(_exception), do: raise("no message")
+end
+
+defmodule Helyx.Test.RaiseInspect do
+  @moduledoc false
+  # A struct of a plugin whose `Inspect` raises.
+  defstruct [:code]
+
+  defimpl Inspect do
+    def inspect(_struct, _opts), do: raise("no inspect")
+  end
+end
+
+defmodule Helyx.Test.OddMessage do
+  @moduledoc false
+  # An exception of a plugin whose `message/1` exits or gives an atom.
+  defexception [:how]
+
+  @impl true
+  def message(%{how: :exit}), do: exit(:no_message)
+  # The `how` field, an atom, is the message.
+  def message(%{how: how}), do: how
+end
+
+defmodule Helyx.Test.StackMessage do
+  @moduledoc false
+  # An exception of a plugin that keeps a stacktrace in a field.
+  defexception [:message, :stack]
+end
+
+defmodule Helyx.Test.LastItemMessage do
+  @moduledoc false
+  # An exception whose message tells the length and the last item of the
+  # list or tuple it got, or whether its map got the `:cut` key, so a test
+  # sees where the cleaning walk stopped.
+  defexception [:items]
+
+  @impl true
+  def message(%{items: items}) when is_list(items),
+    do: "#{length(items)} items, last #{inspect(List.last(items))}"
+
+  def message(%{items: items}) when is_tuple(items), do: message(%{items: Tuple.to_list(items)})
+
+  def message(%{items: items}) when is_map(items),
+    do: "#{map_size(items)} items, cut: #{Map.has_key?(items, :cut)}"
 end

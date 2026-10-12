@@ -13,7 +13,9 @@ unless slow?, do: Application.put_env(:stream_data, :max_runs, 25)
 
 ExUnit.start(
   exclude: [:real_claude | exclude],
-  assert_receive_timeout: 30_000
+  assert_receive_timeout: 30_000,
+  # A failed turn logs its reason (ADR 0006 §2); a test that passes shows no log.
+  capture_log: true
 )
 
 # The harness tests run their own fake `claude` and `codex` from `../bin`

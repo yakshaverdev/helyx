@@ -47,7 +47,6 @@ defmodule Helyx.Session.EndSignalTest do
       assert_not_found(session)
     end
 
-    @tag :capture_log
     test "every operation on a dead session that is still registered", %{core: core} do
       {:ok, session} = Session.start(core, model: "test/ok")
       pid = Session.pid(session)
@@ -65,7 +64,6 @@ defmodule Helyx.Session.EndSignalTest do
 
     # A reconnect subscribes again from the same process. The session then
     # sends the events of a turn and stops while the snapshot call waits.
-    @tag :capture_log
     test "a second subscribe keeps one entry, and a failed one removes it", %{core: core} do
       {:ok, session} = Session.start(core, model: "test/ok")
       {:ok, _, first} = Session.subscribe(session)
@@ -128,7 +126,6 @@ defmodule Helyx.Session.EndSignalTest do
     # like a call that timed out. The session traps exits, so the exit signal
     # is a message before the call, and the session stops on it before it
     # answers.
-    @tag :capture_log
     test "a session that stops with the reason :timeout during a call", %{core: core} do
       {:ok, session} = Session.start(core, model: "test/ok")
       pid = Session.pid(session)
@@ -150,7 +147,6 @@ defmodule Helyx.Session.EndSignalTest do
     # A prompt waits in the mailbox of the session between the late
     # subscribe and the unsubscribe, so its first events reach the caller.
     @tag :slow
-    @tag :capture_log
     test "a subscribe that times out leaves no subscription and no monitor", %{core: core} do
       {:ok, session} = Session.start(core, model: "test/ok")
       pid = Session.pid(session)
@@ -210,7 +206,6 @@ defmodule Helyx.Session.EndSignalTest do
       assert_end(ref, :stopped)
     end
 
-    @tag :capture_log
     test "a kill and a raise give :crashed", %{core: core} do
       {:ok, killed} = Session.start(core, model: "test/ok")
       {:ok, _, ref} = Session.subscribe(killed)
@@ -236,7 +231,6 @@ defmodule Helyx.Session.EndSignalTest do
       assert_end(ref, :stopped)
     end
 
-    @tag :capture_log
     test "a subscribe that gets a snapshot gets the end signal after it", %{core: core} do
       {:ok, session} = Session.start(core, model: "test/ok")
       pid = Session.pid(session)
@@ -256,7 +250,6 @@ defmodule Helyx.Session.EndSignalTest do
       assert_end(ref, :stopped)
     end
 
-    @tag :capture_log
     test "a subscribe that fails as the session ends leaves no signal and no monitor", %{
       core: core
     } do

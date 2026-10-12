@@ -210,7 +210,7 @@ defmodule Helyx.Session.ProviderProcessTest do
       :erlang.resume_process(hands)
       :erlang.resume_process(pid)
 
-      assert error(collect_until(:turn_end)) == :provider_timeout
+      assert error(collect_until(:turn_end)) == inspect(:provider_timeout)
       assert_receive {:release, :deliver, [{:report, _}]}
     end
 
@@ -227,17 +227,17 @@ defmodule Helyx.Session.ProviderProcessTest do
       :erlang.resume_process(hands)
       :erlang.resume_process(pid)
 
-      assert error(collect_until(:turn_end)) == :provider_timeout
+      assert error(collect_until(:turn_end)) == inspect(:provider_timeout)
       assert_receive {:release, :deliver, [{:report, _}]}
     end
 
     test "a failed connect fails the turn; the next turn starts a new provider process",
          %{core: core} do
       {session, _pid, _hands} = start(core, "fail_init")
-      assert error(turn(session, "one")) == {:provider_init, :no_program}
+      assert error(turn(session, "one")) == inspect({:provider_init, :no_program})
       assert_received {:conn, :init, first, _}
 
-      assert error(turn(session, "two")) == {:provider_init, :no_program}
+      assert error(turn(session, "two")) == inspect({:provider_init, :no_program})
       assert_received {:conn, :init, second, _}
       assert first != second
     end
@@ -249,7 +249,7 @@ defmodule Helyx.Session.ProviderProcessTest do
         ] do
       test "#{model} stops the provider process and fails the turn", %{core: core} do
         {session, _pid, _hands} = start(core, unquote(model))
-        assert error(turn(session, "one")) == unquote(Macro.escape(reason))
+        assert error(turn(session, "one")) == inspect(unquote(Macro.escape(reason)))
         assert_received {:conn, :init, proc, _}
         assert_received {:conn, :turn, ^proc, _}
         refute Process.alive?(proc)
@@ -259,15 +259,69 @@ defmodule Helyx.Session.ProviderProcessTest do
 
     test "a reply of the wrong shape stops the provider process", %{core: core} do
       {session, _pid, _hands} = start(core, "bad_reply")
-      assert {:bad_action, {:reply, _from, :maybe}} = error(turn(session, "one"))
+      events = turn(session, "one")
+      assert error(events) =~ ~r/^{:bad_action, {:reply, #Reference<[0-9.]+>, :maybe}}$/
+      refute handle?(events)
     end
 
-    @tag :capture_log
-    test "a crash in a callback fails the turn", %{core: core} do
+    test "a crash in a callback fails the turn with text, and the log has the term",
+         %{core: core} do
       {session, _pid, _hands} = start(core, "crash_turn")
+      {events, log} = ExUnit.CaptureLog.with_log(fn -> turn(session, "one") end)
 
-      assert {:task_exit, {%RuntimeError{message: "turn crashed"}, _}} =
-               error(turn(session, "one"))
+      assert error(events) == "turn crashed"
+      refute handle?(events)
+      assert log =~ ~s(turn failed: {:task_exit, {%RuntimeError{message: "turn crashed"}, [)
+    end
+
+    test "a raw Erlang error, a throw, a crash exit, or a caught crash in a callback ends both end events with its short message",
+         %{core: core} do
+      for {how, text} <- [
+            {:badarg, "argument error"},
+            {:throw, "Erlang error: {:nocatch, :boom}"},
+            {:exit, "argument error"},
+            {:call, "argument error"},
+            {:stop, "argument error"}
+          ] do
+        {session, _pid, _hands} = start(core, "hang")
+        :ok = Session.prompt(session, "one")
+        assert_receive {:conn, :turn, proc, _}
+        collect_until(:message_update)
+        send(proc, {:crash, how})
+
+        assert [
+                 %{type: :message_end, data: %{error: ^text}},
+                 %{type: :turn_end, data: %{error: ^text}}
+               ] = Enum.take(collect_until(:turn_end), -2),
+               inspect(how)
+      end
+    end
+
+    test "a caught crash that init returns fails the turn with its short message",
+         %{core: core} do
+      {session, _pid, _hands} = start(core, "crash_init")
+      assert error(turn(session, "one")) == "argument error"
+    end
+
+    test "a supervisor failure that init returns fails the turn with no stacktrace",
+         %{core: core} do
+      {session, _pid, _hands} = start(core, "child_init")
+
+      assert error(turn(session, "one")) ==
+               inspect(
+                 {:provider_init,
+                  {:shutdown, {:failed_to_start_child, :child, {:badarg, :stacktrace}}}}
+               )
+    end
+
+    test "a stop from info with a huge integer gets the digit cap in the text", %{core: core} do
+      {session, _pid, _hands} = start(core, "stop")
+      :ok = Session.prompt(session, "one")
+      assert_receive {:conn, :turn, proc, _}
+      send(proc, :stop_huge)
+
+      assert error(collect_until(:turn_end)) ==
+               inspect({:provider_stop, "integer of more than 100 digits removed"})
     end
 
     test "a stop from info fails the turn", %{core: core} do
@@ -275,7 +329,7 @@ defmodule Helyx.Session.ProviderProcessTest do
       :ok = Session.prompt(session, "one")
       assert_receive {:conn, :turn, proc, _}
       send(proc, :stop)
-      assert error(collect_until(:turn_end)) == {:provider_stop, :gone}
+      assert error(collect_until(:turn_end)) == inspect({:provider_stop, :gone})
     end
 
     test "a stop from info sends its actions first, in order (#457)", %{core: core} do
@@ -290,7 +344,7 @@ defmodule Helyx.Session.ProviderProcessTest do
 
       events = collect_until(:turn_end)
       assert final_text(events) == "so farab"
-      assert error(events) == {:provider_stop, :gone}
+      assert error(events) == inspect({:provider_stop, :gone})
     end
 
     test "a bad action in a stop from info wins over the stop (#457)", %{core: core} do
@@ -298,7 +352,7 @@ defmodule Helyx.Session.ProviderProcessTest do
       :ok = Session.prompt(session, "one")
       assert_receive {:conn, :turn, proc, _}
       send(proc, {:stop, [:nope]})
-      assert error(collect_until(:turn_end)) == {:bad_action, :nope}
+      assert error(collect_until(:turn_end)) == inspect({:bad_action, :nope})
     end
 
     test "a prompt after an idle provider process ends waits for the release of its handles",
@@ -364,7 +418,7 @@ defmodule Helyx.Session.ProviderProcessTest do
       assert_receive {:preparing, task}
       :erlang.suspend_process(hands)
       Process.exit(task, :kill)
-      assert error(collect_until(:turn_end)) == {:task_exit, :killed}
+      assert error(collect_until(:turn_end)) == inspect({:task_exit, :killed})
       :ok = Session.follow_up(session, "two")
 
       abort = Task.async(fn -> Session.abort(session) end)
@@ -468,8 +522,7 @@ defmodule Helyx.Session.ProviderProcessTest do
         assert_received {:conn, :init, proc, _}
         assert_received {:conn, :turn, ^proc, _}
 
-        assert error(turn(session, unquote(text))) ==
-                 {:bad_context, unquote(kind)}
+        assert error(turn(session, unquote(text))) == inspect({:bad_context, unquote(kind)})
 
         refute_received {:conn, :turn, ^proc, {:turn, _, _}}
         assert final_text(turn(session, "two")) == "echo:prepared|two"
@@ -477,10 +530,9 @@ defmodule Helyx.Session.ProviderProcessTest do
       end
     end
 
-    @tag :capture_log
     test "a prepare that raises fails the turn and keeps the provider process", %{core: core} do
       {session, _pid, _hands} = start(core, "echo")
-      assert {:task_exit, _reason} = error(turn(session, "raise_prepare"))
+      assert error(turn(session, "raise_prepare")) == "prepare failed"
       # The connect races the prepare Task, so the init message can come
       # after the turn ends. The wait is for a message that must come, not
       # an upper bound.
@@ -499,7 +551,7 @@ defmodule Helyx.Session.ProviderProcessTest do
     test "a prepare that blocks is killed at the bound and keeps the provider process",
          %{core: core} do
       {session, _pid, _hands} = start(core, "echo", prepare: @load_prepare_ms)
-      assert error(turn(session, "block_prepare")) == {:task_exit, :killed}
+      assert error(turn(session, "block_prepare")) == inspect({:task_exit, :killed})
       # The connect races the prepare Task, so the init message can come
       # after the turn ends. The wait is for a message that must come, not
       # an upper bound.
@@ -522,7 +574,7 @@ defmodule Helyx.Session.ProviderProcessTest do
       assert_receive {:DOWN, ^ref, :process, _, _}
       :erlang.resume_process(pid)
 
-      assert {:session_behind, _length, 10_000} = error(collect_until(:turn_end))
+      assert error(collect_until(:turn_end)) =~ ~r/^{:session_behind, \d+, 10000}$/
     end
   end
 
@@ -732,7 +784,7 @@ defmodule Helyx.Session.ProviderProcessTest do
       send(proc, {:fail, turn_id})
       events = collect_until(:turn_end)
       assert unconfirmed(events) == [%{text: "more"}]
-      assert error(events) == :failed
+      assert error(events) == inspect(:failed)
       send(proc, {:answer, from, :rejected})
       :ok = Session.follow_up(session, "next")
       assert_receive {:conn, :turn, ^proc, {:turn, _, context}}
@@ -764,7 +816,7 @@ defmodule Helyx.Session.ProviderProcessTest do
 
       events = collect_until(:turn_end)
       assert unconfirmed(events) == [%{text: "more"}]
-      assert error(events) == :provider_timeout
+      assert error(events) == inspect(:provider_timeout)
     end
 
     # The 32 steers count the held ones; the end of the provider process
@@ -979,7 +1031,7 @@ defmodule Helyx.Session.ProviderProcessTest do
       {_session, _pid, proc, turn_id} = context_turn(core)
       send(proc, {:batch, [{:need_context, turn_id}, {:need_context, turn_id}]})
 
-      assert error(collect_until(:turn_end)) == {:bad_action, {:need_context, turn_id}}
+      assert error(collect_until(:turn_end)) == inspect({:bad_action, {:need_context, turn_id}})
       refute Process.alive?(proc)
     end
 
@@ -993,15 +1045,17 @@ defmodule Helyx.Session.ProviderProcessTest do
       assert Process.alive?(proc)
     end
 
-    for {text, reason} <- [{"nil_build", :bad_context}, {"raise_prepare", :task_exit}] do
-      @tag :capture_log
+    for {text, reason, error} <- [
+          {"nil_build", :bad_context, "{:bad_context, :model_context}"},
+          {"raise_prepare", :task_exit, "prepare failed"}
+        ] do
       test "a context that fails (#{text}) ends the turn and keeps the provider process",
            %{core: core} do
         {session, _pid, proc, turn_id} = context_turn(core)
         send(proc, {:need_context, turn_id, unquote(text)})
 
         assert_receive {:conn, :context, ^proc, {:context, ^turn_id, {:error, reason}}}
-        assert error(collect_until(:turn_end)) == reason
+        assert error(collect_until(:turn_end)) == unquote(error)
         assert elem(reason, 0) == unquote(reason)
 
         :ok = Session.prompt(session, "two")
@@ -1014,7 +1068,7 @@ defmodule Helyx.Session.ProviderProcessTest do
       {_session, _pid, proc, turn_id} = context_turn(core, "context_hold", reply: 100)
       send(proc, {:need_context, turn_id, "fresh"})
 
-      assert error(collect_until(:turn_end)) == :provider_timeout
+      assert error(collect_until(:turn_end)) == inspect(:provider_timeout)
       refute Process.alive?(proc)
     end
 
@@ -1028,7 +1082,7 @@ defmodule Helyx.Session.ProviderProcessTest do
 
       assert_receive {:conn, :context, ^proc, {:context, ^turn_id, {:error, reason}}}
       assert reason == {:task_exit, :killed}
-      assert error(collect_until(:turn_end)) == reason
+      assert error(collect_until(:turn_end)) == inspect(reason)
       assert Process.alive?(proc)
     end
   end
@@ -1070,7 +1124,7 @@ defmodule Helyx.Session.ProviderProcessTest do
           send(proc, message)
         end
 
-        assert error(collect_until(:turn_end)) == unquote(Macro.escape(reason))
+        assert error(collect_until(:turn_end)) == inspect(unquote(Macro.escape(reason)))
         refute Process.alive?(proc)
         assert_receive {:DOWN, ^linked_ref, :process, _, down}
         assert down != :normal
@@ -1354,7 +1408,7 @@ defmodule Helyx.Session.ProviderProcessTest do
         {:ok, session} = Session.start(core, model: unquote(model))
         {:ok, _, _} = Session.subscribe(session)
 
-        assert error(turn(session, unquote(prompt))) == {:bad_context, unquote(kind)}
+        assert error(turn(session, unquote(prompt))) == inspect({:bad_context, unquote(kind)})
         assert final_text(turn(session, "two")) == unquote(text)
       end
     end

@@ -107,7 +107,7 @@ defmodule Helyx.Provider.Codex.CommandsTest do
     :ok = Session.prompt(session, "wait")
 
     # The release returns before the session gets the end of the harness.
-    assert [%{outcome: :error, error: {:provider_stop, {:line_over_limit, 16_777_216}}}] =
+    assert [%{outcome: :error, error: "{:provider_stop, {:line_over_limit, 16777216}}"}] =
              of_type(collect_until(:turn_end), :turn_end)
 
     refute os_alive?(wait_for_pid(pidfile))
@@ -134,7 +134,7 @@ defmodule Helyx.Provider.Codex.CommandsTest do
     collect_until(:message_update)
     go(bin)
 
-    assert [%{outcome: :error, error: {:provider_stop, :command_running}}] =
+    assert [%{outcome: :error, error: "{:provider_stop, :command_running}"}] =
              of_type(collect_until(:turn_end), :turn_end)
 
     # The release ended the command before the next turn.
@@ -201,7 +201,7 @@ defmodule Helyx.Provider.Codex.CommandsTest do
 
     session = start(ctx)
 
-    assert [%{outcome: :error, error: {:provider_stop, {:malformed, "item/completed"}}}] =
+    assert [%{outcome: :error, error: ~s({:provider_stop, {:malformed, "item/completed"}})}] =
              of_type(prompt(session, "go"), :turn_end)
 
     refute os_alive?(wait_for_pid(pidfile))

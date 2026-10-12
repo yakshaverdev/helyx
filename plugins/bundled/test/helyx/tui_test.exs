@@ -1070,7 +1070,7 @@ defmodule Helyx.TUITest do
       assert {1, _row} = state.scroll
       assert screen(state) == Enum.map(27..31, &"line#{&1}")
 
-      for data <- [%{outcome: :aborted}, %{outcome: :error, error: :boom}] do
+      for data <- [%{outcome: :aborted}, %{outcome: :error, error: "boom"}] do
         ended = fold(state, :turn_end, data)
         assert ended.scroll == nil
         assert "▌ m1" in screen(ended)
