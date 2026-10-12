@@ -122,9 +122,6 @@ defmodule Helyx.Session do
       # A crash can leave tool calls with no result, and the disk can hold a
       # result with no open call. The session reads them with `aborted`
       # results and without the stray results, and writes nothing (#269, #417).
-      {transcript, resume_ids} =
-        Transcript.repair(resumed.messages, resumed.resume_ids)
-
       start_child(
         %State{
           id: resumed.session_id,
@@ -133,8 +130,8 @@ defmodule Helyx.Session do
           provider: provider,
           cwd: cwd,
           file: resumed.file,
-          transcript: transcript,
-          resume_ids: resume_ids
+          transcript: Transcript.repair(resumed.messages),
+          resume_ids: resumed.resume_ids
         },
         tools
       )

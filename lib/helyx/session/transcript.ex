@@ -8,7 +8,7 @@ defmodule Helyx.Session.Transcript do
   # assistant message that the tool results after it do not answer. No
   # message goes between a call and its result, so a call of an earlier
   # message is never open, and after any other message no call is. A
-  # resumed transcript has none (see `repair/2`). O(n).
+  # resumed transcript has none (see `repair/1`). O(n).
   @spec open_calls([Message.t()]) :: [Message.ToolCall.t()]
   def open_calls(transcript) do
     {results, rest} =
@@ -16,7 +16,7 @@ defmodule Helyx.Session.Transcript do
 
     case rest do
       [%Message{role: :assistant} = message | _] ->
-        {open, _kept, _stray} = pair(message, Enum.reverse(results))
+        {open, _kept} = pair(message, Enum.reverse(results))
         open
 
       _other ->
@@ -26,23 +26,19 @@ defmodule Helyx.Session.Transcript do
 
   # Pairs the calls of `message` with `results`, the tool results right after
   # it. A result answers the first still-open call with its id. Gives the
-  # calls left open, the results that answer a call, in order, and the
-  # offset in `results` of each result that answers none.
+  # calls left open and the results that answer a call, in order.
   defp pair(%Message{content: content}, results) do
     calls = for %Message.ToolCall{} = call <- content, do: call
 
-    {open, kept, stray} =
-      results
-      |> Enum.with_index()
-      |> Enum.reduce({calls, [], []}, fn {%Message{tool_call_id: id} = result, offset},
-                                         {open, kept, stray} ->
+    {open, kept} =
+      Enum.reduce(results, {calls, []}, fn %Message{tool_call_id: id} = result, {open, kept} ->
         case Enum.find(open, &(&1.id == id)) do
-          nil -> {open, kept, [offset | stray]}
-          call -> {List.delete(open, call), [result | kept], stray}
+          nil -> {open, kept}
+          call -> {List.delete(open, call), [result | kept]}
         end
       end)
 
-    {open, Enum.reverse(kept), stray}
+    {open, Enum.reverse(kept)}
   end
 
   # The read-time repair of a resume. It gives the transcript with an
@@ -60,65 +56,32 @@ defmodule Helyx.Session.Transcript do
   #
   # A resume applies this to the transcript it reads, and it writes nothing
   # (ADR 0001: a repair never truncates). The file keeps the open call and
-  # the stray result, so every resume makes the same repair.
-  #
-  # The file counts the messages before each resume id. That count does not
-  # include the inserted results, and it includes the dropped ones. The live
-  # session after a resume counted the repaired transcript. So each count
-  # grows by the results inserted at or before it and shrinks by the results
-  # dropped before it. A count exactly at an insert point can also come from
-  # an entry written before the crash, and then the live count was lower.
-  # Both give the same `resumable/3` answer, because an inserted or a
-  # dropped result is never an assistant message.
-  @spec repair([Message.t()], %{String.t() => {String.t(), non_neg_integer()}}) ::
-          {[Message.t()], %{String.t() => {String.t(), non_neg_integer()}}}
-  def repair(transcript, resume_ids) do
-    {transcript, inserts, drops} = walk(transcript, 0, [], [], [])
+  # the stray result, so every resume makes the same repair. It adds and
+  # drops only tool results, so `assistant_count/1` holds.
+  @spec repair([Message.t()]) :: [Message.t()]
+  def repair(transcript), do: walk(transcript, [])
 
-    shifted =
-      Map.new(resume_ids, fn {provider, {id, before}} ->
-        {provider,
-         {id, before + Enum.count(inserts, &(&1 <= before)) - Enum.count(drops, &(&1 < before))}}
-      end)
-
-    {transcript, shifted}
-  end
-
-  # Builds the transcript reversed. `at` is the number of input messages
-  # read. Gives one `at` for each inserted result (the input messages before
-  # it), and the input index of each dropped result.
-  defp walk([%Message{role: :assistant} = message | rest], at, out, inserts, drops) do
+  # Builds the transcript reversed.
+  defp walk([%Message{role: :assistant} = message | rest], out) do
     {results, rest} = Enum.split_while(rest, &match?(%Message{role: :tool_result}, &1))
-    {open, kept, stray} = pair(message, results)
-    drops = Enum.map(stray, &(&1 + at + 1)) ++ drops
-    at = at + 1 + length(results)
-    out = Enum.reverse(Enum.map(open, &aborted/1), Enum.reverse(kept, [message | out]))
-    inserts = List.duplicate(at, length(open)) ++ inserts
-    walk(rest, at, out, inserts, drops)
+    {open, kept} = pair(message, results)
+    walk(rest, Enum.reverse(Enum.map(open, &aborted/1), Enum.reverse(kept, [message | out])))
   end
 
   # A tool result here follows no assistant message, so it answers nothing.
-  defp walk([%Message{role: :tool_result} | rest], at, out, inserts, drops),
-    do: walk(rest, at + 1, out, inserts, [at | drops])
-
-  defp walk([message | rest], at, out, inserts, drops),
-    do: walk(rest, at + 1, [message | out], inserts, drops)
-
-  defp walk([], _at, out, inserts, drops), do: {Enum.reverse(out), inserts, drops}
+  defp walk([%Message{role: :tool_result} | rest], out), do: walk(rest, out)
+  defp walk([message | rest], out), do: walk(rest, [message | out])
+  defp walk([], out), do: Enum.reverse(out)
 
   defp aborted(call), do: Message.tool_result(call, Session.aborted_result())
 
-  # The last assistant message, with no reversed copy of the transcript.
-  @spec last_assistant([Message.t()]) :: Message.t() | nil
-  def last_assistant(transcript) do
-    Enum.reduce(transcript, nil, fn
-      %Message{role: :assistant} = message, _last -> message
-      _message, last -> last
-    end)
-  end
+  # The count that a resume label stores: the assistant messages before it.
+  @spec assistant_count([Message.t()]) :: non_neg_integer()
+  def assistant_count(transcript),
+    do: Enum.count(transcript, &match?(%Message{role: :assistant}, &1))
 
   # The resume id to resume, or nil: the last resume id of `provider` in
-  # `resume_ids` (the id and the number of transcript messages before the
+  # `resume_ids` (the id and the number of assistant messages before the
   # provider gave it), when the last assistant message of the transcript
   # came from this provider after that point and no abort or failure cut
   # it. A message under the resume id shows that the provider read the
@@ -126,19 +89,27 @@ defmodule Helyx.Session.Transcript do
   # transcript's end (another provider answered last, the provider started
   # fresh and the turn ended before its first message, or the last message
   # is a partial reply that the session stored and the provider may not
-  # keep), and the provider gets it when it starts fresh.
+  # keep), and the provider gets it when it starts fresh. O(n).
   @spec resumable([Message.t()], %{String.t() => {String.t(), non_neg_integer()}}, String.t()) ::
           String.t() | nil
   def resumable(transcript, resume_ids, provider) do
     with {:ok, {resume_id, before}} <- Map.fetch(resume_ids, provider),
-         # Enum.drop/2 shares the tail of the list; it does not copy it.
-         %Message{model: model, stop_reason: stop}
-         when is_binary(model) and stop not in [:aborted, :error] <-
-           last_assistant(Enum.drop(transcript, before)),
+         {count, %Message{model: model, stop_reason: stop}}
+         when count > before and is_binary(model) and stop not in [:aborted, :error] <-
+           count_and_last_assistant(transcript),
          {:ok, %ModelRef{provider: ^provider}} <- ModelRef.parse(model) do
       resume_id
     else
       _other -> nil
     end
+  end
+
+  # The number of assistant messages and the last one, with no reversed
+  # copy of the transcript.
+  defp count_and_last_assistant(transcript) do
+    Enum.reduce(transcript, {0, nil}, fn
+      %Message{role: :assistant} = message, {count, _last} -> {count + 1, message}
+      _message, acc -> acc
+    end)
   end
 end

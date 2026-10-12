@@ -112,15 +112,15 @@ defmodule Helyx.Session.Server.Records do
     emit(%{state | model: ref, provider: provider}, nil, :model_change, %{model: model})
   end
 
-  # A resume id of the turn's provider, with the transcript length now.
-  # The provider id is the prefix of the turn's model ref: `find/2` matched
-  # it, so the session runs no plugin code for it. Only the first resume id
-  # after the start of the provider process can say that it lost the
-  # resume id of its start, so this clears it.
+  # A resume id of the turn's provider, with the number of assistant
+  # messages now. The provider id is the prefix of the turn's model ref:
+  # `find/2` matched it, so the session runs no plugin code for it. Only the
+  # first resume id after the start of the provider process can say that it
+  # lost the resume id of its start, so this clears it.
   def resume_id(%State{activity: %Turn{} = turn, conn: %ProviderConn{} = conn} = state, id, cut) do
     provider = turn.model.provider
     state = persist(state, &Helyx.Session.File.append_resume_id(&1, provider, id))
-    ids = Map.put(state.resume_ids, provider, {id, length(state.transcript)})
+    ids = Map.put(state.resume_ids, provider, {id, Transcript.assistant_count(state.transcript)})
     data = %{provider: provider, resume_id: id, lost: conn.resumed != nil, cut: cut}
     state = %{state | resume_ids: ids, conn: %{conn | resumed: nil}}
     emit(state, :resume_id, data)

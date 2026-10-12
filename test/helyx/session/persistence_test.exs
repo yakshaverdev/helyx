@@ -209,7 +209,7 @@ defmodule Helyx.Session.PersistenceTest do
   end
 
   @tag :tmp_dir
-  test "a resume counts the inserted results in the messages before a program session", %{
+  test "a resume label counts the assistant messages before it, not the inserted results", %{
     core: core,
     tmp_dir: dir
   } do
@@ -224,11 +224,11 @@ defmodule Helyx.Session.PersistenceTest do
     {:ok, session} = Session.resume(core, sessions_dir: dir)
     state = :sys.get_state(Session.pid(session))
     assert length(state.transcript) == 3
-    assert state.resume_ids == %{"claude-code" => {"h1", 3}}
+    assert state.resume_ids == %{"claude-code" => {"h1", 1}}
   end
 
   @tag :tmp_dir
-  test "a resume drops each result with no open call and shifts the counts, and writes nothing",
+  test "a resume drops each result with no open call, keeps the label count, and writes nothing",
        %{core: core, tmp_dir: dir} do
     call = %Helyx.Message.ToolCall{id: "c1", name: "slow", arguments: %{}}
     stray = %Helyx.Message.ToolCall{id: "x", name: "slow", arguments: %{}}
@@ -249,7 +249,7 @@ defmodule Helyx.Session.PersistenceTest do
     written = File.read!(file.path)
     {:ok, session} = Session.resume(core, sessions_dir: dir)
     assert File.read!(file.path) == written
-    assert :sys.get_state(Session.pid(session)).resume_ids == %{"claude-code" => {"h1", 4}}
+    assert :sys.get_state(Session.pid(session)).resume_ids == %{"claude-code" => {"h1", 1}}
 
     # A client mounts from the snapshot: no result there lacks its call.
     {:ok, snapshot, _} = Session.subscribe(session)

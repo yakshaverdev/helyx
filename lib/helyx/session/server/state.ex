@@ -55,7 +55,8 @@ defmodule Helyx.Session.Server.State do
     activity: :idle,
     # The steer state: the queues and the sent steers (`Helyx.Session.Queue`).
     queue: %Queue{},
-    # The last resume id per provider id, with the transcript length then.
+    # The last resume id per provider id, with the number of assistant
+    # messages then.
     resume_ids: %{},
     # The provider process (ADR 0007), a `%ProviderConn{}`, or nil.
     conn: nil,
