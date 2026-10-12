@@ -22,6 +22,12 @@ defmodule Helyx.Provider do
       is not a sent steer of the turn, or is taken already.
     * A tool call or a tool request with an empty id fails the turn: a
       result names its call by the id.
+    * When its wire protocol reports it, a provider gives the stop reason
+      `:max_tokens` for an answer that stopped at the token limit, and
+      `:refused` for an answer that the provider filtered or the model
+      refused. `Helyx.Provider.Codex` reports neither. In two cases a
+      stop reason that arrives while a steer waits is lost
+      (`docs/features/session-lifecycle.md`, "Current limits").
     * A Helyx tool request whose arguments are not a JSON object never
       runs. A provider can send such arguments as their raw text. In a turn
       that continues, the request gets an error result, so the model can

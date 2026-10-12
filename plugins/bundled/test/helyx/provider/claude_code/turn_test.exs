@@ -355,6 +355,20 @@ defmodule Helyx.Provider.ClaudeCode.TurnTest do
              events_of(run_direct([Message.user("hi")], work))
   end
 
+  # The wire values: docs/research/stop-reasons.md.
+  for {wire, stop} <- [{"max_tokens", :max_tokens}, {"refusal", :refused}] do
+    test "a success result with the stop reason #{wire} ends the turn with #{stop}", %{
+      bin: bin,
+      work: work
+    } do
+      lines = reply("partial")
+      turn(bin, 1, 1, List.update_at(lines, -1, &String.replace(&1, "end_turn", unquote(wire))))
+
+      assert {:done, %{stop_reason: unquote(stop)}} =
+               List.last(events_of(run_direct([Message.user("hi")], work)))
+    end
+  end
+
   test "an error result fails the turn, a call with no result gets an aborted one, and the program stays",
        %{bin: bin} = ctx do
     error =

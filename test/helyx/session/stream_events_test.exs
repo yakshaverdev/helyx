@@ -596,7 +596,9 @@ defmodule Helyx.Session.StreamEventsTest do
          ~s({:tool_call, %Helyx.Message.ToolCall{id: "", )},
         {"a tool call with a bad field shape", "bad_call", "name: %{}"},
         {"a tool call whose arguments the file cannot hold", "bad_args", ~s(%{"text" => {1, 2}})},
-        {"a stop reason outside the format's set", "bad_stop", "stop_reason: :refusal"},
+        {"a stop reason outside the format's set", "bad_stop", "stop_reason: :banana"},
+        {"the stop reason of an aborted turn", "aborted_stop", "stop_reason: :aborted"},
+        {"the stop reason of a failed turn", "error_stop", "stop_reason: :error"},
         {"a harness event from a model provider", "harness_event",
          "{:message_end, :end_turn, %{}}}"}
       ] do

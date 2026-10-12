@@ -251,6 +251,45 @@ defmodule Helyx.TUI.ViewModelTest do
     assert [_user, %Message{stop_reason: :aborted}, {:notice, "aborted"}] = cells(vm)
   end
 
+  # The live fold and a late client that joins with the snapshot.
+  defp stop_cells(stop) do
+    call = %Message.ToolCall{id: "c1", name: "bash", arguments: %{}}
+    answer = assistant([%Message.Text{text: "so far"}, call], stop)
+    live = fold([{:message_end, %{message: user("hi")}}, {:message_end, %{message: answer}}])
+
+    joined =
+      ViewModel.from_snapshot(%Helyx.Session.Snapshot{
+        instance_id: "i",
+        seq: 2,
+        messages: [user("hi"), answer],
+        turn: nil,
+        model: "test/model",
+        queue: %{steers: 0, follow_ups: 0}
+      })
+
+    {cells(live), cells(joined)}
+  end
+
+  for stop <- [:max_tokens, :refused] do
+    test "an answer that stopped with #{stop} gets a stop line after its tool cells" do
+      assert {[_user, _answer, {:tool, _, _, nil}, {:stop, unquote(stop)}] = cells, cells} =
+               stop_cells(unquote(stop))
+    end
+  end
+
+  for stop <- [:end_turn, :tool_use, :aborted, :error] do
+    test "an answer that stopped with #{stop} gets no stop line" do
+      assert {[_user, _answer, {:tool, _, _, nil}] = cells, cells} = stop_cells(unquote(stop))
+    end
+  end
+
+  test "the transcript draws a stop line as a notice" do
+    assert texts(view_model([{:stop, :max_tokens}, {:stop, :refused}])) == [
+             "✕ the answer stopped at the token limit",
+             "✕ the answer stopped: the provider refused or filtered it"
+           ]
+  end
+
   test "a failed turn shows the error" do
     vm =
       fold([

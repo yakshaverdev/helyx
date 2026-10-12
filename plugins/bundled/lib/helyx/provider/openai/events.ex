@@ -219,8 +219,10 @@ defmodule Helyx.Provider.OpenAI.Events do
     end
   end
 
+  # The wire values: docs/research/stop-reasons.md.
   defp stop_reason("tool_calls"), do: :tool_use
   defp stop_reason("length"), do: :max_tokens
+  defp stop_reason("content_filter"), do: :refused
   defp stop_reason(_finish), do: :end_turn
 
   defp usage(usage) do

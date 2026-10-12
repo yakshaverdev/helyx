@@ -603,15 +603,18 @@ defmodule Helyx.Session.FileTest do
   test "resume decodes stop reasons in a VM that never interned their atoms", %{tmp_dir: dir} do
     {:ok, file} = Session.File.create(dir, "sess1", "/repo", "test/ok")
 
-    Session.File.append_message(file, %Message{
-      role: :assistant,
-      stop_reason: :max_tokens,
-      content: [%Message.Text{text: "t"}]
-    })
+    for stop <- [:max_tokens, :refused], reduce: file do
+      file ->
+        Session.File.append_message(file, %Message{
+          role: :assistant,
+          stop_reason: stop,
+          content: [%Message.Text{text: "t"}]
+        })
+    end
 
     script = """
     {:ok, resumed} = Helyx.Session.File.resume(#{inspect(dir)}, "/repo")
-    [%{stop_reason: :max_tokens}] = resumed.messages
+    [%{stop_reason: :max_tokens}, %{stop_reason: :refused}] = resumed.messages
     IO.puts("resumed ok")
     """
 

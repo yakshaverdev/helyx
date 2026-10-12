@@ -19,6 +19,10 @@ defmodule Helyx.TUI.ViewModel do
       frame does not pay for the size of the call; `result` is nil until
       the tool result message comes. The message proves that the call
       exists, not that it runs, so an open cell shows "awaiting result"
+    * `{:stop, reason}` – after an assistant message and its tool cells,
+      when the message stopped at the token limit (`:max_tokens`) or was
+      filtered or refused (`:refused`). The fold makes it from the message,
+      so a snapshot shows it too; it is drawn as a notice
     * `{:notice, text}` – an aborted or failed turn, a provider that lost
       its session or got a cut transcript, a steer that was not confirmed, a
       notice of the session, or a command the client rejected
@@ -60,7 +64,12 @@ defmodule Helyx.TUI.ViewModel do
             reason: nil
 
   @type tool_cell :: {:tool, Message.ToolCall.t(), String.t(), Message.t() | nil}
-  @type cell :: Message.t() | tool_cell() | {:notice, String.t()} | {:info, String.t()}
+  @type cell ::
+          Message.t()
+          | tool_cell()
+          | {:stop, :max_tokens | :refused}
+          | {:notice, String.t()}
+          | {:info, String.t()}
 
   @type t :: %__MODULE__{
           model: String.t(),
@@ -289,12 +298,17 @@ defmodule Helyx.TUI.ViewModel do
   defp add_message(vm, %Message{role: :user} = message), do: add_cell(vm, message)
 
   defp add_message(vm, %Message{role: :assistant, content: content} = message) do
-    for %Message.ToolCall{id: id} = call <- content, reduce: add_cell(vm, message) do
-      vm ->
-        position = :array.size(vm.cells)
-        open = Map.update(vm.open, id, :queue.from_list([position]), &:queue.in(position, &1))
-        %{vm | open: open, cells: :array.set(position, tool_cell(call, nil), vm.cells)}
-    end
+    vm =
+      for %Message.ToolCall{id: id} = call <- content, reduce: add_cell(vm, message) do
+        vm ->
+          position = :array.size(vm.cells)
+          open = Map.update(vm.open, id, :queue.from_list([position]), &:queue.in(position, &1))
+          %{vm | open: open, cells: :array.set(position, tool_cell(call, nil), vm.cells)}
+      end
+
+    if message.stop_reason in [:max_tokens, :refused],
+      do: add_cell(vm, {:stop, message.stop_reason}),
+      else: vm
   end
 
   # The result closes the oldest open cell with its call id, wherever it

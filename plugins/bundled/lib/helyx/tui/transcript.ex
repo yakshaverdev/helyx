@@ -268,9 +268,13 @@ if Helyx.TUI.Transcript.Available.available?() do
     end
 
     defp cell_lines({:notice, text}, width), do: styled_lines("✕ #{text}", width, @bad)
+    defp cell_lines({:stop, reason}, width), do: cell_lines({:notice, stop_text(reason)}, width)
 
     defp cell_lines({:infos, texts}, width),
       do: styled_lines(Enum.map_join(texts, " ", &("· " <> &1)), width, @dim)
+
+    defp stop_text(:max_tokens), do: "the answer stopped at the token limit"
+    defp stop_text(:refused), do: "the answer stopped: the provider refused or filtered it"
 
     defp block_lines(blocks, width) do
       Enum.flat_map(blocks, fn

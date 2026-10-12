@@ -80,8 +80,7 @@ defmodule Helyx.Provider.ClaudeCode.Turn do
   def errors(_result), do: []
 
   def terminal(%{"is_error" => false, "subtype" => "success"} = result, turn) do
-    stop = if result["stop_reason"] == "max_tokens", do: :max_tokens, else: :end_turn
-    {:done, %{stop_reason: stop, usage: turn.usage}}
+    {:done, %{stop_reason: stop_reason(result["stop_reason"]), usage: turn.usage}}
   end
 
   def terminal(result, _turn) do
@@ -89,6 +88,11 @@ defmodule Helyx.Provider.ClaudeCode.Turn do
     text = if text == "" and is_binary(result["result"]), do: result["result"], else: text
     {:error, {:claude_code, HarnessIO.cap_error(result["subtype"]), HarnessIO.cap_error(text)}}
   end
+
+  # The wire values: docs/research/stop-reasons.md.
+  defp stop_reason("max_tokens"), do: :max_tokens
+  defp stop_reason("refusal"), do: :refused
+  defp stop_reason(_stop), do: :end_turn
 
   defp result_text(text) when is_binary(text), do: text
 
