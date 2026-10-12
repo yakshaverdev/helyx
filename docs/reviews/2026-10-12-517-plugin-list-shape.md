@@ -28,3 +28,5 @@ Round 1 reproduced no defect of this change: 1.1 is older and has a ticket, and 
 ## Codex on the final rule text
 
 Approve, no findings. Codex ran the 26 Core tests and its own probes of the boundary and the check order.
+
+Gate r1 (Codex): 0 findings, approve.
