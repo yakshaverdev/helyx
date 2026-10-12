@@ -144,12 +144,18 @@ defmodule Helyx.Reason do
   # The `Inspect` of a plugin struct runs here. With `safe: false` its
   # raise is not turned into text with a stacktrace: a raise, throw, or
   # exit gives the term with no struct implementation, and the session
-  # lives.
+  # lives. Text with a stack of an Elixir fallback gives the same.
   defp contained(term, opts) do
-    inspect(term, [safe: false] ++ opts)
+    text = inspect(term, [safe: false] ++ opts)
+    if stack_text?(text), do: inspect(term, [structs: false] ++ opts), else: text
   catch
     _class, _value -> inspect(term, [structs: false] ++ opts)
   end
+
+  # The Elixir fallbacks that turn the raise of plugin code into text (a
+  # safe `inspect`, `Exception.message/1`) put its stack after this label
+  # (docs/features/session-lifecycle.md, step 5).
+  defp stack_text?(text), do: String.contains?(text, "Stacktrace:")
 
   # The text of a cleaned reason. A crash shows as the message of its
   # error, which is shorter than the term; the cleaning, not this step,
@@ -167,13 +173,15 @@ defmodule Helyx.Reason do
   # The `message/1` of a plugin exception runs here, called directly:
   # `Exception.message/1` turns its raise into text with a stacktrace. A
   # raise, throw, or exit of it or of the normalization, or a message that
-  # is not a string, gives the name of the exception.
+  # is not a string, or a message with the stack of a fallback, gives the
+  # name of the exception.
   defp message(error) do
     %module{} = exception = Exception.normalize(:error, error, [])
 
     # A message that is not a string raises here and takes the catch.
     case module.message(exception) do
-      text when is_binary(text) -> text
+      text when is_binary(text) ->
+        if stack_text?(text), do: inspect(module), else: text
     end
   catch
     _class, _value -> no_message(error)

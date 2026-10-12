@@ -576,6 +576,15 @@ defmodule Helyx.Test.Tool.Odd do
   def run(%{"do" => "throw"}, _cwd), do: throw({:thrown, self()})
   def run(%{"do" => "exit"}, _cwd), do: exit({:exited, self()})
   def run(%{"do" => "huge"}, _cwd), do: throw(String.to_integer(String.duplicate("7", 400_000)))
+  # The messages of these errors `inspect` a struct whose `Inspect` raises,
+  # or call the `Exception.message/1` of an exception whose `message/1` raises.
+  def run(%{"do" => "match"}, _cwd), do: raise(MatchError, term: struct(Helyx.Test.RaiseInspect))
+  def run(%{"do" => "wrap_" <> how}, _cwd), do: raise(Helyx.Test.WrapMessage, how: how)
+  # The `Inspect` of this struct calls a safe `inspect` itself.
+  def run(%{"do" => "nest"}, _cwd), do: throw(struct(Helyx.Test.NestInspect))
+
+  def run(%{"do" => "badkey"}, _cwd),
+    do: :erlang.error({:badkey, struct(Helyx.Test.RaiseInspect), %{}})
 end
 
 defmodule Helyx.Test.Tool.Binary do
@@ -1239,6 +1248,31 @@ defmodule Helyx.Test.RaiseInspect do
   defimpl Inspect do
     def inspect(_struct, _opts), do: raise("no inspect")
   end
+end
+
+defmodule Helyx.Test.NestInspect do
+  @moduledoc false
+  # A struct of a plugin whose `Inspect` inspects a struct whose `Inspect` raises.
+  defstruct [:code]
+
+  defimpl Inspect do
+    def inspect(_struct, _opts),
+      do: "#Nest<" <> Kernel.inspect(%Helyx.Test.RaiseInspect{}) <> ">"
+  end
+end
+
+defmodule Helyx.Test.WrapMessage do
+  @moduledoc false
+  # An exception of a plugin whose `message/1` inspects a struct whose
+  # `Inspect` raises, or takes the message of an exception whose
+  # `message/1` raises.
+  defexception [:how]
+
+  @impl true
+  def message(%{how: "inspect"}), do: "wrapped: " <> inspect(%Helyx.Test.RaiseInspect{})
+
+  def message(%{how: "message"}),
+    do: "wrapped: " <> Exception.message(%Helyx.Test.RaiseMessage{})
 end
 
 defmodule Helyx.Test.OddMessage do

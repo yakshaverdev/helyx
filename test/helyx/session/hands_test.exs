@@ -279,6 +279,27 @@ defmodule Helyx.Session.HandsTest do
     assert log =~ "integer of more than 100 digits removed"
   end
 
+  # A safe `inspect` and `Exception.message/1` turn the raise of plugin code
+  # into text with a stack.
+  test "an error whose message holds the stack of a fallback gives its name", %{core: core} do
+    hands = start_hands(core)
+
+    for {what, name} <- [
+          {"match", "MatchError"},
+          {"badkey", "KeyError"},
+          {"wrap_inspect", "Helyx.Test.WrapMessage"},
+          {"wrap_message", "Helyx.Test.WrapMessage"}
+        ] do
+      {result, _log} = odd(hands, what)
+      assert result == name
+    end
+  end
+
+  test "a struct whose Inspect holds the stack of a fallback shows as a map", %{core: core} do
+    {result, _log} = odd(start_hands(core), "nest")
+    assert result == "{:throw, %{code: nil, __struct__: Helyx.Test.NestInspect}}"
+  end
+
   # Waits until the hands got `n` hold calls, then until they handled them,
   # and asserts that they hold the handles, so cancel finds them.
   defp await_held(hands, n) do

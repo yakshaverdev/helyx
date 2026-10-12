@@ -154,9 +154,9 @@ defmodule Helyx.Session.StreamEventsTest do
       assert error_of(core, "fail_after.improper") == inspect({:failure, [:item | :tail]})
     end
 
-    test "of a raising plugin Inspect inside a MatchError term is Inspect.Error text, a stated ceiling",
+    test "of a raising plugin Inspect inside a MatchError term is the name of the error",
          %{core: core} do
-      assert error_of(core, "fail_after.match_inspect") =~ "Inspect.Error"
+      assert error_of(core, "fail_after.match_inspect") == "MatchError"
 
       assert error_of(core, "fail_after.exit_exception") ==
                inspect(
