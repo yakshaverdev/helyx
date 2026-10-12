@@ -8,7 +8,8 @@ defmodule Helyx.Session.Server do
 
   alias Helyx.ModelRef
   alias Helyx.Session.{Hands, Id, Turn}
-  alias Helyx.Session.Server.{Events, Records, State, Steering, Stop, ToolRuns, TurnLoop}
+  alias Helyx.Session.Server.{Events, ProviderConn, Records, State, Steering, Stop, ToolRuns}
+  alias Helyx.Session.Server.{TurnLoop, Wait}
 
   use GenServer, restart: :temporary, shutdown: Stop.shutdown_ms()
 
@@ -105,11 +106,24 @@ defmodule Helyx.Session.Server do
   def handle_info({:cancel_tool, call_id}, %State{activity: %Turn{}} = state),
     do: {:noreply, ToolRuns.cancel(state, call_id)}
 
+  # A resume id of the session's live provider process, for its turn or
+  # for the turn that the current wait ended (#518). An ended process,
+  # another pid, or another turn records nothing.
   def handle_info(
-        {:stream_event, turn_id, {:resume_id, id, cut}},
-        %State{activity: %Turn{id: turn_id}} = state
+        {:resume_id, pid, turn_id, id, cut},
+        %State{activity: %Turn{id: turn_id}, conn: %ProviderConn{pid: pid, status: :ready}} =
+          state
       ),
-      do: {:noreply, Records.resume_id(state, id, cut)}
+      do: {:noreply, Records.resume_id(state, turn_id, id, cut)}
+
+  def handle_info(
+        {:resume_id, pid, turn_id, id, cut},
+        %State{activity: %Wait{turn: turn_id}, conn: %ProviderConn{pid: pid, status: :ready}} =
+          state
+      ),
+      do: {:noreply, Records.resume_id(state, turn_id, id, cut)}
+
+  def handle_info({:resume_id, _pid, _turn_id, _id, _cut}, state), do: {:noreply, state}
 
   # An event that breaks the bound of the open message stops the provider
   # process (`Records.delta/2`).

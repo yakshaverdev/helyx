@@ -53,6 +53,7 @@ Every end of a turn runs one path, `Wait.finish/2`, with an outcome: `{:done, st
 - An interrupt answer `:ok` keeps the provider process. Any other answer, or its armed kill, stops it, and the wait lasts until its `provider_down`.
 - A failed cleanup gives one `notice` with a fixed text. The abort still replies `:ok`.
 - An abort in a wait drops the queues, and its caller gets `:ok` at the end of the wait. An abort with no turn and no wait replies `:ok` at once.
+- A resume id of the session's provider process for the turn that the wait ended is recorded as in a turn, with the turn id of that turn (#518). Both bundled providers send it while they handle `{:turn, ...}`, so after an abort it comes before the answer to the interrupt, in the wait. Only the process in `State.conn` with status `:ready` records it: the provider process sends its pid with the event. A resume id at any other time, or of another turn, is dropped. `Transcript.resumable/3` still decides at the next start whether the id is reused.
 
 ## Deadlines
 

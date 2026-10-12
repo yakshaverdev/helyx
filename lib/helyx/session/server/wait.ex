@@ -8,10 +8,11 @@ defmodule Helyx.Session.Server.Wait do
   # (`ProviderConn.status` `:ending`) also holds the wait, until the hands'
   # `:provider_down`. Each part is bounded: the hands by their release
   # deadlines, a reply by its armed kill. `callers` are the abort callers,
-  # who get their reply at the end. Every message of a client queues until
-  # the end. `Helyx.Session.Server.TurnLoop` matches the inputs and ends
-  # the wait when no part is left. `finish/2` ends a turn and makes its
-  # wait; the other functions change one part of it.
+  # who get their reply at the end. `turn` is the id of the turn that the
+  # wait ended, or nil. Every message of a client queues until the end.
+  # `Helyx.Session.Server.TurnLoop` matches the inputs and ends the wait
+  # when no part is left. `finish/2` ends a turn and makes its wait; the
+  # other functions change one part of it.
 
   require Logger
 
@@ -21,11 +22,12 @@ defmodule Helyx.Session.Server.Wait do
   alias Helyx.Session.{Hands, ProviderRequest, Turn}
   alias Helyx.Session.Server.{ProviderConn, Records, State, Steering, ToolRuns}
 
-  defstruct [:hands, :reply, callers: []]
+  defstruct [:hands, :reply, :turn, callers: []]
 
   @type t :: %__MODULE__{
           hands: :gen_server.request_id() | nil,
           reply: reference() | nil,
+          turn: String.t() | nil,
           callers: [GenServer.from()]
         }
 
@@ -52,7 +54,7 @@ defmodule Helyx.Session.Server.Wait do
     state = state |> ToolRuns.end_turn(turn) |> emit(:turn_end, end_data(outcome))
     hands = if !done? or turn.tool_queue.running, do: Hands.request_cancel(state.hands, turn.id)
     wait = if outcome == :aborted, do: interrupt(state, turn), else: %__MODULE__{}
-    %{state | activity: %{wait | hands: hands}}
+    %{state | activity: %{wait | hands: hands, turn: turn.id}}
   end
 
   defp end_data({:done, _stop_reason, _usage}), do: %{outcome: :done}
