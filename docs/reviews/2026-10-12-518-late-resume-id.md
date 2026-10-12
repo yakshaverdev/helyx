@@ -71,3 +71,7 @@ bounds sensor: 0 candidate functions, 0 flagged, 0 without an answer
 | 2.7 | Codex | Approve, no findings | — |
 
 Round 2 reproduced no defect, so the loop ends. The fixes after it are a comment, docs, and a test.
+
+## Gate r1 (Codex): 0 findings
+
+Verdict approve, after a rebase on master with #514 and #522. #514 changed only doc text in the files that this diff also changes (its executable ASTs were unchanged), so the rebase got no reduced round. The ids that arrive after the wait stay dropped, as accepted.
