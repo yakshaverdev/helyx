@@ -30,9 +30,10 @@ defmodule Helyx.Session do
   abort or a failure of the turn drops both queues. An abort ends the turn
   at once. It returns at the end of the wait after the turn (`abort/1`): the
   hands have released the resources of the turn or recorded them as
-  unconfirmed, the provider has answered an interrupt that it got, and a
-  provider process that stops has ended. Until then, the session answers
-  every client call and starts no turn.
+  unconfirmed, an interrupt that the provider got has an answer or its
+  provider process has ended, and a provider process that stops has ended.
+  Until then, the session starts no turn. It answers every other client call
+  at once, and an abort call during the wait returns at the end of the wait.
 
   `docs/features/session-lifecycle.md` has the turn, the queues, the
   abort, and the provider process. `docs/features/session-subscribers.md`
