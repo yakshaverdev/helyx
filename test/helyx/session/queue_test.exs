@@ -17,7 +17,7 @@ defmodule Helyx.Session.QueueTest do
   end
 
   describe "the queues" do
-    test "keep the arrival order of each queue, and drain gives steers first" do
+    test "keep the arrival order of each queue; drain gives the steers together, then one follow-up at a time" do
       queue =
         %Queue{}
         |> push!(:follow_ups, "f1")
@@ -26,7 +26,10 @@ defmodule Helyx.Session.QueueTest do
         |> push!(:steers, "s2")
 
       assert Queue.counts(queue) == %{steers: 2, follow_ups: 2}
-      assert {["s1", "s2", "f1", "f2"], drained} = Queue.drain(queue)
+      assert {["s1", "s2"], queue} = Queue.drain(queue)
+      assert {["f1"], queue} = Queue.drain(queue)
+      assert {["f2"], queue} = Queue.drain(queue)
+      assert {[], drained} = Queue.drain(queue)
       assert Queue.counts(drained) == %{steers: 0, follow_ups: 0}
     end
 
@@ -136,7 +139,7 @@ defmodule Helyx.Session.QueueTest do
 
   test "the end of the provider process ends every request; only a steer with no notice gets one" do
     {queue, _from} = sent_one()
-    {queue, _notice} = Queue.end_turn(queue, "t1", false)
+    {queue, _effects} = Queue.end_turn(queue, "t1", false)
     assert {queue, []} = Queue.provider_down(queue)
     refute open?(queue)
 
@@ -173,5 +176,35 @@ defmodule Helyx.Session.QueueTest do
 
     assert {_queue, [{:notice, "t1", "one"}, {:notice, "t1", "two"}]} =
              Queue.end_turn(queue, "t1", false)
+  end
+
+  describe "the queued texts" do
+    setup do
+      {queue, _from} = sent_one()
+      %{queue: queue |> push!(:follow_ups, "f") |> push!(:steers, "s")}
+    end
+
+    test "an abort or a failure empties both queues and gives the texts back, steers first, after the notices",
+         %{queue: queue} do
+      assert {aborted, [{:notice, "t1", "more"}, {:dropped, ["s", "f"]}]} =
+               Queue.end_turn(queue, "t1", false)
+
+      assert Queue.counts(aborted) == %{steers: 0, follow_ups: 0}
+      assert {_queue, [{:dropped, ["s", "f"]}]} = Queue.abort(queue)
+    end
+
+    test "keep the queue order: a steer that the provider rejected joins the end of the steers" do
+      {queue, from} = sent_one()
+      queue = push!(queue, :steers, "s")
+      {queue, []} = Queue.answer(queue, from, :rejected)
+      queue = push!(queue, :follow_ups, "f")
+      assert {_queue, [{:dropped, ["s", "more", "f"]}]} = Queue.abort(queue)
+    end
+
+    test "stay at the end of the provider process", %{queue: queue} do
+      assert {queue, []} = Queue.provider_down(queue)
+      assert Queue.counts(queue) == %{steers: 1, follow_ups: 1}
+      refute open?(queue)
+    end
   end
 end

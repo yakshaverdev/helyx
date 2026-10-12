@@ -328,6 +328,56 @@ defmodule Helyx.Session.ProviderProcessTest do
       assert Message.text(List.last(context.messages)) == "two"
     end
 
+    test "an abort in the wait for an ended provider process gives the queue back at once, returns at its end",
+         %{core: core} do
+      {session, pid, hands} = start(core, "stop")
+      :ok = Session.prompt(session, "one")
+      assert_receive {:conn, :turn, old, {:turn, turn_id, _}}
+      send(old, {:finish, turn_id})
+      collect_until(:turn_end)
+
+      ref = Process.monitor(old)
+      :erlang.suspend_process(hands)
+      send(old, :stop)
+      assert_receive {:DOWN, ^ref, :process, _, _}
+      :ok = Session.prompt(session, "two")
+      assert %{activity: %Wait{}} = :sys.get_state(pid)
+
+      abort = Task.async(fn -> Session.abort(session) end)
+
+      assert_receive {:helyx_event,
+                      %{type: :queue_dropped, turn_id: nil, data: %{texts: ["two"]}}}
+
+      # The call waits for the wait: the hands hold the provider_down.
+      assert Task.yield(abort, 0) == nil
+      :erlang.resume_process(hands)
+      assert :ok = Task.await(abort, wait_ms())
+      refute_receive {:helyx_event, %{type: :turn_start}}, 100
+    end
+
+    test "an abort in the wait after a failed turn gives the queue back at once, returns at its end",
+         %{core: core} do
+      # The prepare Task dies without the hands, which then hold the
+      # cleanup of the failed turn.
+      {session, _pid, hands} = start(core, "echo")
+      :ok = Session.prompt(session, "block_prepare")
+      assert_receive {:preparing, task}
+      :erlang.suspend_process(hands)
+      Process.exit(task, :kill)
+      assert error(collect_until(:turn_end)) == {:task_exit, :killed}
+      :ok = Session.follow_up(session, "two")
+
+      abort = Task.async(fn -> Session.abort(session) end)
+
+      assert_receive {:helyx_event,
+                      %{type: :queue_dropped, turn_id: nil, data: %{texts: ["two"]}}}
+
+      assert Task.yield(abort, 0) == nil
+      :erlang.resume_process(hands)
+      assert :ok = Task.await(abort, wait_ms())
+      refute_receive {:helyx_event, %{type: :turn_start}}, 100
+    end
+
     test "an earlier turn's provider process that ends while the turn prepares: the turn runs on a new one after the release",
          %{core: core} do
       {session, pid, _hands} = start(core, "stop")
@@ -339,16 +389,21 @@ defmodule Helyx.Session.ProviderProcessTest do
       ref = Process.monitor(old)
       :ok = Session.prompt(session, "hold_prepare")
       assert %{activity: %{phase: :preparing}} = :sys.get_state(pid)
+      :ok = Session.steer(session, "kept")
       send(old, :stop)
       assert_receive {:DOWN, ^ref, :process, _, _}
       assert_receive {:release, :deliver, [{:report, _}]}
       send(prepare_task(pid), :continue)
 
+      # The queued steer stays, and goes out with the turn.
       assert_receive {:conn, :turn, new, {:turn, two, context}}
       assert new != old
-      assert Message.text(List.last(context.messages)) == "hold_prepare"
+      texts = context.messages |> Enum.take(-2) |> Enum.map(&Message.text/1)
+      assert texts == ["hold_prepare", "kept"]
       send(new, {:finish, two})
-      assert List.last(collect_until(:turn_end)).data == %{outcome: :done}
+      events = collect_until(:turn_end)
+      assert List.last(events).data == %{outcome: :done}
+      assert of_type(events, :queue_dropped) == []
     end
 
     test "a provider process that exits right after its terminal: the queued follow-up completes on a new one",
@@ -374,7 +429,8 @@ defmodule Helyx.Session.ProviderProcessTest do
       assert [%{outcome: :done}, %{outcome: :done}] = of_type(events, :turn_end)
     end
 
-    test "a steer during the wait for an ended provider process goes first", %{core: core} do
+    test "a steer during the wait for an ended provider process opens the first turn, the prompt the next",
+         %{core: core} do
       {session, _pid, hands} = start(core, "stop")
       :ok = Session.prompt(session, "one")
       assert_receive {:conn, :turn, old, {:turn, turn_id, _}}
@@ -389,10 +445,12 @@ defmodule Helyx.Session.ProviderProcessTest do
       :ok = Session.steer(session, "B")
       :erlang.resume_process(hands)
 
-      assert_receive {:conn, :turn, new, {:turn, _, context}}
+      assert_receive {:conn, :turn, new, {:turn, two, context}}
       assert new != old
-      texts = context.messages |> Enum.take(-2) |> Enum.map(&Message.text/1)
-      assert texts == ["B", "A"]
+      assert Message.text(List.last(context.messages)) == "B"
+      send(new, {:finish, two})
+      assert_receive {:conn, :turn, ^new, {:turn, _, context}}
+      assert Message.text(List.last(context.messages)) == "A"
     end
 
     for {text, kind} <- [
@@ -748,6 +806,39 @@ defmodule Helyx.Session.ProviderProcessTest do
   end
 
   describe "abort" do
+    test "gives the queued steer and follow-up back, steer first, before the turn end",
+         %{core: core} do
+      {session, _pid, _hands} = start(core, "echo")
+      :ok = Session.prompt(session, "block_prepare")
+      assert_receive {:conn, :init, _proc, _}
+      :ok = Session.follow_up(session, "f")
+      :ok = Session.steer(session, "s")
+
+      :ok = Session.abort(session)
+      events = collect_until(:turn_end)
+      [turn_start | _] = events
+
+      assert [%{turn_id: turn_id, data: %{texts: ["s", "f"]}}] =
+               Enum.filter(events, &(&1.type == :queue_dropped))
+
+      assert turn_id == turn_start.turn_id
+      assert List.last(of_type(events, :queue_update)) == %{steers: 0, follow_ups: 0}
+      refute_receive {:helyx_event, %{type: :turn_start}}, 100
+    end
+
+    test "a failed turn gives the queued texts back the same way", %{core: core} do
+      {session, _pid, _hands} = start(core, "stop")
+      :ok = Session.prompt(session, "block_prepare")
+      assert_receive {:conn, :init, proc, _}
+      :ok = Session.follow_up(session, "f")
+      :ok = Session.steer(session, "s")
+
+      send(proc, :stop)
+      events = collect_until(:turn_end)
+      assert %{outcome: :error} = List.last(events).data
+      assert of_type(events, :queue_dropped) == [%{texts: ["s", "f"]}]
+    end
+
     test "while preparing kills the prepare Task and leaves the provider process", %{core: core} do
       {session, _pid, _hands} = start(core, "echo")
       :ok = Session.prompt(session, "block_prepare")

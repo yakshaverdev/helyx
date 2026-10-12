@@ -85,11 +85,11 @@ defmodule Helyx.Session.SweepTest do
       send(release, :go)
       assert :ok = Task.await(abort, wait_ms())
 
-      # The messages sent during the sweep start one turn after it, steers
-      # first.
-      events = collect_until(:turn_end)
-      assert user_texts(events) == ["steer", "follow", "prompt"]
-      assert stop_reason(events) == :end_turn
+      # The messages sent during the sweep start after it: the steers in
+      # one turn, then each follow-up in its own turn, in order.
+      turns = for _turn <- 1..3, do: collect_until(:turn_end)
+      assert Enum.map(turns, &user_texts/1) == [["steer"], ["follow"], ["prompt"]]
+      assert Enum.map(turns, &stop_reason/1) == [:end_turn, :end_turn, :end_turn]
     end
 
     @tag :capture_log
@@ -111,7 +111,7 @@ defmodule Helyx.Session.SweepTest do
     end
 
     @tag :capture_log
-    test "a second abort during the sweep drops the messages sent before it", %{core: core} do
+    test "a second abort during the sweep gives back the messages sent before it", %{core: core} do
       {session, _hands, _task} = start_stuck_turn(core)
 
       abort = Task.async(fn -> Session.abort(session) end)
@@ -124,6 +124,10 @@ defmodule Helyx.Session.SweepTest do
 
       second = Task.async(fn -> Session.abort(session) end)
 
+      # The texts go back to the client between the turns.
+      assert_receive {:helyx_event,
+                      %Event{type: :queue_dropped, turn_id: nil, data: %{texts: ["dropped"]}}}
+
       assert_receive {:helyx_event,
                       %Event{type: :queue_update, data: %{steers: 0, follow_ups: 0}}}
 
@@ -132,6 +136,7 @@ defmodule Helyx.Session.SweepTest do
       assert :ok = Task.await(abort, wait_ms())
 
       refute_receive {:helyx_event, %Event{type: :queue_update}}, 100
+      refute_received {:helyx_event, %Event{type: :queue_dropped}}
       refute_receive {:helyx_event, %Event{type: :turn_start}}, 100
     end
 

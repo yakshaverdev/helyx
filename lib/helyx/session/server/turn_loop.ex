@@ -304,7 +304,7 @@ defmodule Helyx.Session.Server.TurnLoop do
   # call (issue #93), so the abort of a turn or a wait gets its reply when
   # the wait ends, not in the call. With no turn and no wait the reply is
   # at once; a steer of an ended turn can still wait for its answer, and
-  # gets its notice now.
+  # gets its notice now (`Queue.abort/1`).
   def abort(%State{activity: :idle} = state, from) do
     state = Steering.abort(state)
     GenServer.reply(from, :ok)
@@ -350,8 +350,9 @@ defmodule Helyx.Session.Server.TurnLoop do
 
   defp close_switched(state), do: state
 
-  # A normal turn end starts a new turn with everything still queued, steers
-  # first. The drain event goes out between the turns, with a nil turn id.
+  # A normal turn end starts the next turn from the queue (`Queue.drain/1`),
+  # so each turn end starts one more while the queue holds a text. The
+  # drain event goes out between the turns, with a nil turn id.
   defp start_queued(%State{} = state) do
     case Steering.drain(state) do
       {[], state} -> state

@@ -24,7 +24,7 @@ defmodule Helyx.TUI.ComposerTest do
         queue: %{steers: 0, follow_ups: 0}
       })
 
-    %{vm: vm, composer: Composer.new(), scroll: nil}
+    %{vm: vm, composer: Composer.new(), scroll: nil, busy: nil}
   end
 
   defp press(state, code, modifiers \\ []) do
@@ -128,6 +128,60 @@ defmodule Helyx.TUI.ComposerTest do
     marker = "[Pasted text #1, 6 lines]\u0001"
     state = state(["a\rb" <> marker]) |> press("up")
     assert value(state) == "a\nb[Pasted text #1, 6 lines]"
+  end
+
+  describe "the texts that an abort gives back" do
+    defp dropped(state, texts), do: deliver(state, :queue_dropped, %{texts: texts})
+
+    defp deliver(state, type, data) do
+      event = %Event{
+        type: type,
+        session_id: "s",
+        instance_id: "i",
+        turn_id: "t",
+        seq: 2,
+        data: data
+      }
+
+      {:noreply, state} = TUI.handle_info({:helyx_event, event}, state)
+      state
+    end
+
+    test "come before the draft, in order, one per line; no other event changes the composer" do
+      state = state([]) |> type("draft") |> deliver(:queue_update, %{steers: 0, follow_ups: 0})
+      assert value(state) == "draft"
+      state = dropped(state, ["s", "f"])
+      assert value(state) == "s\nf\ndraft"
+      assert ExRatatui.textarea_cursor(state.composer.input) == {2, 5}
+      assert Composer.submit(state.composer) == {:message, "s\nf\ndraft"}
+
+      assert value(dropped(state([]), ["s", "f"])) == "s\nf"
+    end
+
+    test "go before the draft and a recalled prompt, edited or not, with the pastes of both" do
+      state = state(["one"]) |> type("draft") |> press("up") |> dropped(["s"])
+      assert value(state) == "s\ndraft\none"
+      # No draft is left behind for Down to bring back.
+      assert value(press(state, "down")) == "s\ndraft\none"
+
+      paste = Enum.map_join(1..6, "\n", &"l#{&1}")
+      {:noreply, state} = TUI.handle_event(%Paste{content: paste}, state(["one"]))
+      state = state |> press("up") |> type("E")
+      {:noreply, state} = TUI.handle_event(%Paste{content: paste <> "!"}, state)
+      state = dropped(state, ["s"])
+      assert {:message, "s\n" <> rest} = Composer.submit(state.composer)
+      assert rest == paste <> "\nE" <> paste <> "!one"
+    end
+
+    test "keep the draft's paste, and a text cannot forge a marker" do
+      paste = Enum.map_join(1..6, "\n", &"l#{&1}")
+      {:noreply, state} = TUI.handle_event(%Paste{content: paste}, state([]))
+      marker = "[Pasted text #1, 6 lines]"
+
+      state = dropped(state, ["x" <> marker <> "\u0001\r"])
+      assert value(state) == "x" <> marker <> "\n\n" <> marker <> "\u0001"
+      assert Composer.submit(state.composer) == {:message, "x" <> marker <> "\n\n" <> paste}
+    end
   end
 
   test "a prompt of this session is recalled and Enter sends it again" do

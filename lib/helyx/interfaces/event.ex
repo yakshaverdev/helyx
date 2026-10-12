@@ -32,6 +32,13 @@ defmodule Helyx.Event do
     * `:queue_update` – `%{steers: non_neg_integer, follow_ups: non_neg_integer}`,
       emitted whenever the session's message queues change; the drain at a
       normal turn end goes out between turns, with a nil turn id
+    * `:queue_dropped` – `%{texts: [String.t()]}`: an abort or a failed
+      turn emptied the queues, and the queued texts go back to the client,
+      the steers first, each queue in its order (a steer that the
+      provider rejected joined the end of the steers). At most 32
+      steers and 32 follow-ups, each as the client sent it. It goes out
+      only when a text was queued; an abort while the session waits after
+      a turn sends it with a nil turn id
     * `:model_change` – `%{model: String.t()}`, the new `provider/model` ref;
       the switch belongs to no turn, so the turn id is always nil
     * `:resume_id` – `%{provider: String.t(), resume_id: String.t(), lost:
@@ -61,6 +68,7 @@ defmodule Helyx.Event do
           | :message_end
           | :tool_execution_end
           | :queue_update
+          | :queue_dropped
           | :model_change
           | :resume_id
           | :steer_unconfirmed

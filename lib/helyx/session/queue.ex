@@ -20,8 +20,10 @@ defmodule Helyx.Session.Queue do
   #   answer only ends the request.
   #
   # The ledger functions return the struct with the effects for the
-  # session, in order: `{:take, text}` (the text joins the transcript) and
-  # `{:notice, turn_id, text}` (a `:steer_unconfirmed` event).
+  # session, in order: `{:take, text}` (the text joins the transcript),
+  # `{:notice, turn_id, text}` (a `:steer_unconfirmed` event), and
+  # `{:dropped, texts}` (the queued texts that an abort gives back to the
+  # client).
 
   @limit 32
 
@@ -35,7 +37,8 @@ defmodule Helyx.Session.Queue do
           follow_ups: [String.t()],
           sent: [entry()]
         }
-  @type effect :: {:take, String.t()} | {:notice, String.t(), String.t()}
+  @type effect ::
+          {:take, String.t()} | {:notice, String.t(), String.t()} | {:dropped, [String.t()]}
 
   @spec push(t(), :steers | :follow_ups, String.t()) :: {:ok, t()} | {:error, :queue_full}
   def push(%__MODULE__{} = queue, :steers, text) do
@@ -58,13 +61,13 @@ defmodule Helyx.Session.Queue do
   def counts(%__MODULE__{steers: steers, follow_ups: follow_ups}),
     do: %{steers: length(steers), follow_ups: length(follow_ups)}
 
-  # Empty queues; the ledger stays.
-  @spec drop(t()) :: t()
-  def drop(%__MODULE__{} = queue), do: %{queue | steers: [], follow_ups: []}
-
-  # Every queued text, steers first, and the empty queues.
+  # The texts of the next turn: every queued steer, or with none the first
+  # follow-up. Each follow-up is a turn of its own.
   @spec drain(t()) :: {[String.t()], t()}
-  def drain(%__MODULE__{} = queue), do: {queue.steers ++ queue.follow_ups, drop(queue)}
+  def drain(%__MODULE__{steers: [], follow_ups: [next | rest]} = queue),
+    do: {[next], %{queue | follow_ups: rest}}
+
+  def drain(%__MODULE__{} = queue), do: drain_steers(queue)
 
   @spec drain_steers(t()) :: {[String.t()], t()}
   def drain_steers(%__MODULE__{steers: steers} = queue), do: {steers, %{queue | steers: []}}
@@ -110,9 +113,8 @@ defmodule Helyx.Session.Queue do
   end
 
   # The turn `turn_id` ended. An answered steer with no `user_message` gets
-  # its notice, and a steer with no answer is `{:ended, turn_id}`. At an
-  # abort or a failure (`normal?` false) a steer with no answer gets its
-  # notice too, as at an abort after the turn.
+  # its notice, and a steer with no answer is `{:ended, turn_id}`. An abort
+  # or a failure (`normal?` false) is `abort/1` after that.
   @spec end_turn(t(), String.t(), boolean()) :: {t(), [effect()]}
   def end_turn(%__MODULE__{} = queue, turn_id, true) do
     map(queue, fn
@@ -128,10 +130,29 @@ defmodule Helyx.Session.Queue do
     {queue, notices ++ more}
   end
 
-  # An abort after the turn: each steer that a late `:rejected` could still
-  # queue gets its notice now. Its request stays open until its answer.
+  # An abort, in or after a turn, or a failed turn: both queues empty, and
+  # their texts, steers first, are one `{:dropped, texts}` after the
+  # notices of `settle/1`, when a text was queued.
   @spec abort(t()) :: {t(), [effect()]}
   def abort(%__MODULE__{} = queue) do
+    {queue, notices} = settle(queue)
+    dropped = queue.steers ++ queue.follow_ups
+    effects = if dropped == [], do: notices, else: notices ++ [{:dropped, dropped}]
+    {%{queue | steers: [], follow_ups: []}, effects}
+  end
+
+  # The provider process ended: no request is open any more, and the steers
+  # with no notice yet get it. The queues stay, also in a turn that
+  # prepares: it connects a new provider process and sends them.
+  @spec provider_down(t()) :: {t(), [effect()]}
+  def provider_down(%__MODULE__{} = queue) do
+    {queue, effects} = settle(queue)
+    {%{queue | sent: []}, effects}
+  end
+
+  # Each steer that a late `:rejected` could still queue gets its notice
+  # now. Its request stays open until its answer.
+  defp settle(queue) do
     map(queue, fn
       {from, id, text, {:ended, turn_id}} ->
         {[{from, id, text, :settled}], [{:notice, turn_id, text}]}
@@ -139,14 +160,6 @@ defmodule Helyx.Session.Queue do
       entry ->
         {[entry], []}
     end)
-  end
-
-  # The provider process ended: no request is open any more, and the steers
-  # with no notice yet get it.
-  @spec provider_down(t()) :: {t(), [effect()]}
-  def provider_down(%__MODULE__{} = queue) do
-    {queue, effects} = abort(queue)
-    {%{queue | sent: []}, effects}
   end
 
   defp put(%__MODULE__{sent: sent} = queue, from, state) do

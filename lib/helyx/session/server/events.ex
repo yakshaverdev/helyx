@@ -37,14 +37,15 @@ defmodule Helyx.Session.Server.Events do
     }
   end
 
-  # Only the queue drain at a normal turn end fires between turns; every
-  # other `emit/3` with no turn is a bug and crashes here. An event with no
-  # turn by intent gives its turn id to `emit/4`.
+  # Only the queue events fire between turns: the drain at a normal turn
+  # end, and an abort in a wait. Every other `emit/3` with no turn is a bug
+  # and crashes here. An event with no turn by intent gives its turn id to
+  # `emit/4`.
   def emit(%State{activity: %Turn{id: turn_id}} = state, type, data),
     do: emit(state, turn_id, type, data)
 
-  def emit(%State{} = state, :queue_update, data),
-    do: emit(state, nil, :queue_update, data)
+  def emit(%State{} = state, type, data) when type in [:queue_update, :queue_dropped],
+    do: emit(state, nil, type, data)
 
   def emit(state, turn_id, type, data) do
     seq = state.seq + 1
