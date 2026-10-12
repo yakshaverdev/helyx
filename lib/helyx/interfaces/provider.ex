@@ -19,7 +19,7 @@ defmodule Helyx.Provider do
   are in ADR 0002 and ADR 0007.
   """
 
-  use Helyx.Interface, mode: :multi, required: true
+  use Helyx.Interface, mode: :multi
 
   @type stop_reason :: Helyx.Message.stop_reason()
 

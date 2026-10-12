@@ -15,7 +15,7 @@ Invoke `/simplify` on the working tree changes. Apply its fixes. Simplify is bug
 
 Invoke `/mattpocock-skills:code-review` for the standards and spec axes.
 
-- **Standards** covers only what Credo and Dialyzer cannot: naming, the AGENTS.md rules, and the smell baseline. Do not have it re-check style that `mix precommit` enforces.
+- **Standards** covers only what Credo and Dialyzer cannot: naming, the AGENTS.md rules, and the smell baseline. Do not have it re-check style that `mix precommit` enforces. A rule text that a diff adds or changes is checked against the code: each guarantee it states has a probe or a test.
 - **Spec** checks the diff against the ticket and the feature doc, including the bounds table and the research citations (see `docs/agents/review-checklist.md`, "Specs and bounds").
 
 Before you spawn the reviewers, run the bounds sensor with the same base the reviewers get for this round: `origin/master` in a first round, the commit or stash before the fix in a rerun round.
