@@ -1290,6 +1290,66 @@ defmodule Helyx.Session.ProviderProcessTest do
     assert fresh != id
   end
 
+  # #518: only the live provider process of the session records its resume
+  # id in the wait. A held interrupt answer holds the wait open.
+  describe "a resume id in the wait after its turn" do
+    test "after an abort is recorded, and the client gets lost: true at once",
+         %{core: core} do
+      {session, pid, _hands} = start(core, "label")
+      %{resume_id: id} = label(turn(session, "one"))
+      :ok = Session.set_model(session, "conn/late_interrupt")
+
+      :ok = Session.prompt(session, "two")
+      assert_receive {:conn, :init, proc, {"late_interrupt", _, opts}}
+      assert opts[:resume_id] == id
+      assert_receive {:conn, :turn, ^proc, {:turn, turn_id, _}}
+      abort = Task.async(fn -> Session.abort(session) end)
+      assert_receive {:held, from}
+      assert %{outcome: :aborted} = List.last(collect_until(:turn_end)).data
+
+      # A message of another pid, or of another turn, records nothing.
+      send(pid, {:resume_id, self(), turn_id, "other", 0})
+      stale = {:event, "another turn", {:resume_id, "stale", 0}}
+      fresh = {:event, turn_id, {:resume_id, "fresh", 0}}
+      send(proc, {:batch, [stale, fresh, {:reply, from, :ok}]})
+      assert :ok = Task.await(abort, wait_ms())
+
+      assert_received {:helyx_event, %Helyx.Event{type: :resume_id, turn_id: ^turn_id} = event}
+      assert %{resume_id: "fresh", lost: true} = event.data
+      refute_received {:helyx_event, %Helyx.Event{type: :resume_id}}
+      assert %{"conn" => {"fresh", _count}} = :sys.get_state(pid).resume_ids
+
+      # After the wait, idle and in the next turn, a resume id of the
+      # aborted turn records nothing.
+      send(proc, {:batch, [{:event, turn_id, {:resume_id, "idle", 0}}]})
+      :ok = Session.prompt(session, "three")
+      assert_receive {:conn, :turn, ^proc, {:turn, next, _}}
+      later = {:event, turn_id, {:resume_id, "later", 0}}
+      send(proc, {:batch, [later, {:event, next, @done}]})
+      refute Enum.any?(collect_until(:turn_end), &(&1.type == :resume_id))
+      refute_received {:helyx_event, %Helyx.Event{type: :resume_id}}
+      assert %{"conn" => {"fresh", _count}} = :sys.get_state(pid).resume_ids
+    end
+
+    # A second context request is a bad action: the session stops the
+    # process, which is `:ending` in the wait of its turn. The session is
+    # held until the resume id after it is in its mailbox.
+    test "of a provider process that ends is dropped", %{core: core} do
+      {session, pid, proc, turn_id} = context_turn(core, "late_interrupt")
+      :ok = :sys.suspend(pid)
+      need = {:need_context, turn_id}
+      send(proc, {:batch, [need, need, {:event, turn_id, {:resume_id, "late", 0}}]})
+      send(proc, {:ping, self()})
+      assert_receive :pong
+      :ok = :sys.resume(pid)
+
+      assert %{outcome: :error} = List.last(collect_until(:turn_end)).data
+      :ok = Session.abort(session)
+      refute_received {:helyx_event, %Helyx.Event{type: :resume_id}}
+      assert :sys.get_state(pid).resume_ids == %{}
+    end
+  end
+
   # #282: two Cores that resumed one session continue one program session.
   # A fork below its label drops it, so a later resume of either branch
   # starts a fresh program session and gets the branch replayed.

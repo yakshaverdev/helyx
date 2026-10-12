@@ -130,7 +130,8 @@ defmodule Helyx.Session.ProviderProcess do
 
   # An event passes the check of a provider event. A tool request goes to
   # the session with this pid and its rejection reason, and the session
-  # answers it, also after its turn. A terminal goes as `{:stream_end,
+  # answers it, also after its turn. A resume id goes with this pid too:
+  # the session records it also in the wait after its turn. A terminal goes as `{:stream_end,
   # turn_id, terminal}`, as the check returns it. A malformed event stops
   # the loop: the provider's turn is then in an unknown state.
   defp action({:event, turn_id, event}, proc) when is_binary(turn_id) do
@@ -138,6 +139,9 @@ defmodule Helyx.Session.ProviderProcess do
       {:send, {:tool_request, call, bytes}, rejection} ->
         message = {:tool_request, self(), turn_id, call, bytes, rejection}
         sent(Stream.send_checked(proc.session, message), proc)
+
+      {:send, {:resume_id, id, cut}, _rejection} ->
+        sent(Stream.send_checked(proc.session, {:resume_id, self(), turn_id, id, cut}), proc)
 
       {:send, event, _rejection} ->
         sent(Stream.send_checked(proc.session, {:stream_event, turn_id, event}), proc)

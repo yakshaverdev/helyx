@@ -35,8 +35,8 @@ defmodule Helyx.Event do
     * `:model_change` – `%{model: String.t()}`, the new `provider/model` ref;
       the switch belongs to no turn, so the turn id is always nil
     * `:resume_id` – `%{provider: String.t(), resume_id: String.t(), lost:
-      boolean, cut: non_neg_integer}`: in a turn, the provider started
-      fresh with a new resume id. `lost` is true when the provider process
+      boolean, cut: non_neg_integer}`: in a turn, or in the wait after that
+      turn, the provider started fresh with a new resume id. `lost` is true when the provider process
       was started to resume another resume id, which it no longer has, and
       this is its first new resume id since that start; `cut` is the
       number of transcript messages the provider left out of what it sent

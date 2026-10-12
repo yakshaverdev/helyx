@@ -5,7 +5,7 @@ defmodule Helyx.Session.Server.ProviderConn do
   # `{:provider_ready, pid}`, then `:ready`, and `:ending` from the events
   # that end it until its `provider_down` (docs/features/session-lifecycle.md,
   # "Provider death"). `resumed` is the resume id that its start passed,
-  # until its first resume id event (`Records.resume_id/3`), or nil.
+  # until its first resume id event (`Records.resume_id/4`), or nil.
   @enforce_keys [:pid, :model, :turn]
   defstruct [:pid, :model, :turn, :resumed, status: :starting]
 
