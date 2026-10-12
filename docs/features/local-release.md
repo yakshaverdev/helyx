@@ -39,7 +39,7 @@ helyx --version                         # helyx 0.1.0+<commit>
 | What | Bound | Over the bound | Where |
 | ---- | ----- | -------------- | ----- |
 | command line arguments | valid UTF-8, the options of `OptionParser` strict mode, at most one directory, an existing folder | one line on stderr, status 1 | `CodingAgent.CLI` |
-| error line | one line, with no length cap | control characters and invalid bytes become `?` (`CodingAgent.error_text/1`); an argument shows through `inspect/1` | `CodingAgent.CLI` |
+| error line | one line; the line of a failed start or an ended session has at most 4,000 bytes after `helyx: ` (`CodingAgent.error_text/1`); an argument error has no length cap | control characters and invalid bytes become `?` (`CodingAgent.error_text/1`); an argument shows through `inspect/1` with its default limits | `CodingAgent.CLI` |
 | `mix helyx.install` arguments | `--prefix DIR` and `--bin-dir DIR` only; `OptionParser` strict mode | the usage line, and nothing changes | `parse/1` in `Mix.Tasks.Helyx.Install` |
 | installed builds | the new build and the build before it, after a successful install | the install deletes the other entries of `<prefix>/releases`; a deletion error is a warning | `Mix.Tasks.Helyx.Install.install/3` |
 | builds of failed installs, and builds that step 4 could not delete | one per failed install or failed deletion, unbounded, accepted: each failure needs a person, and each failure prints an error | the next successful install deletes them | `Mix.Tasks.Helyx.Install.install/3` |

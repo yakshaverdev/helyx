@@ -18,6 +18,9 @@ defmodule CodingAgent do
     Helyx.Tool.Write
   ]
 
+  # The bound of the error line, the one of `Helyx.Reason.text/1`.
+  @max_line_bytes 4000
+
   @doc "The plugins the agent runs with."
   @spec plugins() :: [module()]
   def plugins, do: @plugins
@@ -67,10 +70,11 @@ defmodule CodingAgent do
   (`:invalid_cwd`), for a tool that is not available, and for the end of
   the session. The `:too_large`
   text is a sentence already and passes unchanged. An error with no clause
-  prints through `Helyx.Reason.text/1`, so it holds no stacktrace and has at
-  most 4000 bytes. Every result gets one clean pass: a whitespace
-  run becomes one space, and a control character or a byte that is not UTF-8
-  becomes `?`.
+  prints through `Helyx.Reason.text/1`, so it holds no stacktrace. Every
+  result gets one clean pass: a whitespace run becomes one space, and a
+  control character or a byte that is not UTF-8 becomes `?`. The line then
+  has at most 4000 bytes of valid UTF-8, the prefix included; a character
+  cut in half is dropped.
   """
   @spec error_text(term()) :: String.t()
   def error_text(reason) do
@@ -80,7 +84,14 @@ defmodule CodingAgent do
     |> String.split()
     |> Enum.join(" ")
     |> String.replace(~r/\p{C}/u, "?")
+    |> cut()
   end
+
+  # A clause can hold plugin text or a value from the session file, so the
+  # cap is on the whole line.
+  defp cut(line),
+    do:
+      line |> binary_part(0, min(@max_line_bytes, byte_size(line))) |> String.replace_invalid("")
 
   defp line({:session_down, _reason} = reason), do: sentence(reason)
   defp line(reason), do: "could not start the agent: " <> sentence(reason)

@@ -124,6 +124,36 @@ defmodule CodingAgentTest do
     refute text =~ "Acme.Plugin, :init"
   end
 
+  defmodule LongCheck do
+    @moduledoc false
+    # A tool whose check gives the reason that the test puts in the process.
+    def check, do: {:error, Process.get(:check_reason)}
+  end
+
+  # The two prefixes take 59 bytes, so the 3-byte character that starts at
+  # byte 3999 is cut in half and dropped.
+  test "error_text of a long tool check reason has at most 4000 bytes" do
+    Process.put(
+      :check_reason,
+      String.duplicate("a", 3940) <> "€" <> String.duplicate("b", 200_000)
+    )
+
+    assert {:error, reason} = Helyx.Tool.check_available([{LongCheck, %{name: "bash"}}])
+    text = CodingAgent.error_text(reason)
+
+    assert "could not start the agent: the bash tool is not available: " <> rest = text
+    assert byte_size(rest) == 3940
+    assert rest =~ ~r/^a+$/
+    assert String.valid?(text)
+  end
+
+  test "error_text of a long value from the session file has at most 4000 bytes" do
+    # `inspect/1` keeps 4096 characters of the string, more than the cap.
+    text = CodingAgent.error_text({:unknown_version, String.duplicate("9", 10_000)})
+    assert text =~ ~s(could not start the agent: the session file has version "999)
+    assert byte_size(text) == 4000
+  end
+
   test "error_text tells a session that ended apart from a failed start" do
     assert CodingAgent.error_text({:session_down, :crashed}) == "the session crashed and stopped"
     assert CodingAgent.error_text({:session_down, :stopped}) == "the session stopped"
