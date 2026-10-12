@@ -23,7 +23,9 @@ defmodule Helyx.ModelContext.Default do
   The text after the base prompt, headings and separators included, is at
   most #{@max_total_bytes} bytes: the files nearest the working directory
   come first, and from the first file that does not fit, that file and every
-  file farther away are left out.
+  file farther away are left out. Each build finds and reads the files
+  again, so an edit to a context file takes effect at the next context
+  build, unless a cap leaves out that file or the edited part of it.
   `opts` can carry `:home` to override the home directory, for tests.
 
   See `docs/features/context-files.md`.

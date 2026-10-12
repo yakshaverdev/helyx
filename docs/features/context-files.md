@@ -18,6 +18,8 @@ User story: I start Helyx in `~/code/proj`. The model sees `~/.helyx/AGENTS.md`,
 
 Each file is a section: `## <path>`, a blank line, and the file text, capped by `Helyx.Text.truncate/2`. A file that `Helyx.Text.read_file/1` rejects gives no section, and its folder does not fall back to the next name. A file reached twice (a symlink, or the global file when the working directory is in `~/.helyx`) loads once, at its first place; identity is the device and the inode from `File.stat/1`. The option `:home` overrides the home directory, for tests.
 
+Each context build finds and reads the files again. The session builds a context at the start of each turn that a prompt opens, once it has a provider process for the turn, and at each context request that a provider sends in a submitted turn while no other context request is open. `Helyx.Provider.Loop` sends one before each later model call. A turn that a provider starts by itself builds no context at its start. So an edit to a context file takes effect at the next context build, unless a cap leaves out that file or the edited part of it.
+
 ## Replaced mechanism
 
 The old mechanism: `AGENTS.md` of each folder from the home directory down to the working directory; a working directory outside home gave only its own `AGENTS.md`.
@@ -65,6 +67,10 @@ Accepted:
 ## Ownership
 
 None: each file is opened and closed inside `Helyx.Text.read_file/1`.
+
+## Known debt
+
+`Helyx.ModelContext.Default` also builds the system prompt on each turn that a prompt opens for a harness provider, which uses only the messages of the context (`Helyx.Provider`). The cost: the context files are read at each such turn, the turn waits for the build, and a crash of a ModelContext plugin fails a harness turn. It is not fixed because the fix adds to the provider interface. Pay it when a ModelContext plugin is slow or depends on the network.
 
 ## Out of scope
 

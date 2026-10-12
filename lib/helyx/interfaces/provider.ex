@@ -7,16 +7,32 @@ defmodule Helyx.Provider do
   hands. `init/3` starts it. `request/3` gets a `t:request/0` from Core and
   replies now or later with the action `{:reply, from, value}`. `info/2`
   gets every other message of the process. A provider that holds a handle
-  (`Helyx.Tool.hold/1`) implements `release/3`. An API provider implements
+  (`Helyx.Tool.hold/1`) implements `release/3`. A model provider implements
   `stream/3` and adds `use Helyx.Provider.Loop`, which defines the three
   callbacks.
 
+  The `Helyx.Context` of a `{:turn, ...}` or a `{:context, ...}` request is
+  for one call: its `system` and `tools` are what a model provider sends on
+  that call. A harness provider may use only its `messages`.
+
+  Rules that every provider follows:
+
+    * A steer is taken at most once. The session takes a steer at the
+      first `{:user_message, steer_id}` event for it, and drops an id that
+      is not a sent steer of the turn, or is taken already.
+    * A tool call or a tool request with an empty id fails the turn: a
+      result names its call by the id.
+    * A Helyx tool request whose arguments are not a JSON object never
+      runs. A provider can send such arguments as their raw text. In a turn
+      that continues, the request gets an error result, so the model can
+      correct it (`docs/features/rejected-tool-call.md`).
+
   The types below give the requests, the actions, and the events. The
-  rules of the protocol (replies, events, deadlines) are in
-  `docs/features/one-provider-path.md`, "The provider protocol", and its
+  rules of the protocol (replies, events, deadlines) and their reasons are
+  in `docs/features/one-provider-path.md`, "The provider protocol", and its
   bounds in the "Bounds" sections of `docs/features/session-lifecycle.md`
-  and `docs/features/coding-agent.md`. The reasons
-  are in ADR 0002 and ADR 0007.
+  and `docs/features/coding-agent.md`. ADR 0002 and ADR 0007 decide the
+  provider process.
   """
 
   use Helyx.Interface, mode: :multi

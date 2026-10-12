@@ -445,7 +445,7 @@ defmodule Helyx.Provider.Codex do
 
   # The program took a steer: its `userMessage` item carries the steer id.
   # The session drops an id that is not a sent steer of its turn, and a
-  # repeated one (`Helyx.Session.Queue.take/2`). The prompt's item has
+  # repeated one (`Helyx.Provider`). The prompt's item has
   # `clientId` null (research note).
   defp notification(
          "item/started",

@@ -9,7 +9,8 @@ Helyx is a BEAM-native substrate for malleable software. It is an Elixir framewo
 Key design constraints:
 
 - Core stays small. It contains only plugin registration, OTP supervision, and interface dispatch.
-- Everything else is a plugin: memory, tools, model context, compaction, transports, user interfaces.
+- Everything else is a plugin: memory, tools, model context, compaction, transports.
+- A user interface, such as the TUI, is a client, not a plugin. It implements no interface, so Core rejects it as a plugin.
 - The extension surface is small: Provider, Tool, ModelContext, Compaction, and one Transport (planned). Event is data, not an interface.
 - The server owns agent and session state. Clients are thin and render from the event stream.
 - Local mode runs server and TUI in one BEAM node with OTP messages. Phoenix is not in core; it arrives later as a Transport plugin.
@@ -80,6 +81,7 @@ Run from the repository root. The Mix projects are the root, `plugins/bundled` w
 - The path follows the module name, except in `lib/helyx/interfaces/`, `lib/helyx/data/`, and `credo/`. These folders group files only. They are not part of the module name.
 - Core resolves a plugin by its registration entry and a behaviour check, not by its module name. The module path is a reading aid only.
 - An interface module such as `Helyx.Provider` stays a pure behaviour and public API. It never becomes a default implementation. Implementations live one level below it.
+- Exception: `Helyx.Provider.Loop` is Core code, not a plugin. A model provider adds it with `use` (ADR 0002, revision of 2026-10-02).
 
 ## Docs conventions
 

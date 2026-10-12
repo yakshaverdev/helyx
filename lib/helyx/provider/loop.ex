@@ -1,9 +1,9 @@
 defmodule Helyx.Provider.Loop do
   @moduledoc """
-  The provider callbacks of an API provider, over one model call at a time
+  The provider callbacks of a model provider, over one model call at a time
   (`docs/features/one-provider-path.md`, "`Helyx.Provider.Loop`").
 
-  An API provider implements `stream/3` and adds `use Helyx.Provider.Loop`,
+  A model provider implements `stream/3` and adds `use Helyx.Provider.Loop`,
   which declares `Helyx.Provider` and defines its `init/3`, `request/3`,
   and `info/2`.
   The helper runs each model call in a model Task, so the provider process
