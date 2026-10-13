@@ -11,6 +11,13 @@ exclude = if slow?, do: [], else: [:slow]
 # The fast tier checks each property with fewer cases than the default 100.
 unless slow?, do: Application.put_env(:stream_data, :max_runs, 25)
 
+# No test fetches models.dev or reads the user's catalog cache: the lookup
+# uses the bundled snapshot. The catalog tests set their own env.
+Application.put_env(:helyx_plugins, :model_catalog,
+  url: nil,
+  dir: Path.expand("../_build/test_model_catalog", __DIR__)
+)
+
 ExUnit.start(
   exclude: [:real_claude | exclude],
   assert_receive_timeout: 30_000,

@@ -1,23 +1,18 @@
 defmodule Helyx.ModelInfo do
   @moduledoc false
   # The context window and the prices of a model, by steps 2 to 4 of the
-  # source rule: config, the catalog (#560), nothing. The serving side
-  # (step 1) wins in the provider. Each value comes whole from the first
-  # source that has it. `docs/features/usage-and-limits.md`, "`Helyx.ModelInfo`"
-  # and "Config". The providers of `claude-code`, `codex`, `opencode-go`,
-  # and `opencode` share it; it is not a plugin (ADR 0005).
+  # source rule: config, the catalog (`Helyx.ModelInfo.Catalog`), nothing.
+  # The serving side (step 1) wins in the provider. Each value comes whole
+  # from the first source that has it. `docs/features/usage-and-limits.md`,
+  # "`Helyx.ModelInfo`" and "Config". The providers of `claude-code`,
+  # `codex`, `opencode-go`, and `opencode` share it; it is not a plugin
+  # (ADR 0005).
   #
   # Config is a boundary: `lookup/3` checks the entry of the ref in use and
   # names the first bad key. A price is USD per million tokens.
 
   import Helyx.Usage, only: [wire_cost?: 1, wire_window?: 1]
 
-  @catalog %{
-    "claude-code" => "anthropic",
-    "codex" => "openai",
-    "opencode-go" => "opencode-go",
-    "opencode" => "opencode"
-  }
   @counts [:input, :output, :cache_read, :cache_write]
   @max_tiers 8
 
@@ -37,19 +32,15 @@ defmodule Helyx.ModelInfo do
   def lookup(provider_id, model, config \\ Application.get_env(:helyx_plugins, :models, %{})) do
     ref = provider_id <> "/" <> model
 
-    with {:ok, entry} <- entry(config, ref) do
-      catalog = catalog(@catalog[provider_id], model)
-
+    with {:ok, entry} <- entry(config, ref),
+         {:ok, catalog} <- Helyx.ModelInfo.Catalog.lookup(provider_id, model) do
       {:ok,
        %__MODULE__{
-         context_window: entry[:context_window] || catalog[:context_window],
-         prices: entry[:prices] || catalog[:prices]
+         context_window: entry[:context_window] || catalog.context_window,
+         prices: entry[:prices] || catalog.prices
        }}
     end
   end
-
-  # The catalog step returns nothing until #560.
-  defp catalog(_catalog_id, _model), do: %{}
 
   @doc false
   # The usage of one model call, priced: the cost from `prices`, and the
@@ -102,8 +93,14 @@ defmodule Helyx.ModelInfo do
   defp entry(_config, _ref), do: {:error, {:bad_config, [:models]}}
 
   defp entry_key(:context_window, window) when wire_window?(window), do: {:ok, window}
-  defp entry_key(:prices, prices), do: price_set(prices, true)
+  defp entry_key(:prices, prices), do: check_prices(prices)
   defp entry_key(_key, _value), do: :error
+
+  @doc false
+  # The check of a config price set, which the catalog shares: the price
+  # set as a map, or an error.
+  @spec check_prices(term()) :: {:ok, prices()} | {:error, term()}
+  def check_prices(prices), do: price_set(prices, true)
 
   # A price set: `input` and `output`, and the optional cache prices; the
   # top set also has `tiers`. A tier's set is whole.
@@ -134,9 +131,13 @@ defmodule Helyx.ModelInfo do
 
   defp tiers(_tiers), do: :error
 
+  @doc false
   # A keyword list whose every value passes `fun`, else the path of the
-  # first bad key: `[:models, ref, key, ...]`.
-  defp check(list, path, fun) do
+  # first bad key: `[:models, ref, key, ...]`. The catalog checks its
+  # config with it.
+  @spec check(term(), [term()], (atom(), term() -> {:ok, term()} | :error | {:error, term()})) ::
+          {:ok, keyword()} | {:error, {:bad_config, [term()]}}
+  def check(list, path, fun) do
     if Keyword.keyword?(list),
       do: Enum.reduce_while(list, {:ok, []}, &check_key(&1, &2, path, fun)),
       else: bad(path)

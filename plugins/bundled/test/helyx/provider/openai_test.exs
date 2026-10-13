@@ -536,23 +536,24 @@ defmodule Helyx.Provider.OpenAITest do
     usage = %{prompt_tokens: 1_000_000, completion_tokens: 1_000_000}
     stub([delta(%{content: "Hi"}, "stop"), %{choices: [], usage: usage}, "[DONE]"])
     entry = [context_window: 262_144, prices: [input: 0.6, output: 2.5]]
-    models(%{"opencode-go/kimi-k2" => entry})
+    models(%{"opencode-go/no-catalog-model" => entry})
 
-    assert {:ok, stream} = OpenAI.Go.stream("kimi-k2", %Helyx.Context{}, [])
+    assert {:ok, stream} = OpenAI.Go.stream("no-catalog-model", %Helyx.Context{}, [])
     assert {:done, %{usage: priced}} = List.last(Enum.to_list(stream))
     assert %Helyx.Usage{context_window: 262_144, cost_kind: :list} = priced
     assert_in_delta priced.cost, 3.1, 1.0e-9
 
-    # The other gateway has no entry for the model: no window, no cost.
-    assert {:ok, stream} = OpenAI.Zen.stream("kimi-k2", %Helyx.Context{}, [])
+    # The other gateway has no config entry, and the catalog has no entry
+    # for the model: no window, no cost.
+    assert {:ok, stream} = OpenAI.Zen.stream("no-catalog-model", %Helyx.Context{}, [])
 
     assert {:done, %{usage: %Helyx.Usage{context_window: nil, cost: nil}}} =
              List.last(Enum.to_list(stream))
 
-    models(%{"opencode-go/kimi-k2" => [context_window: 0]})
+    models(%{"opencode-go/no-catalog-model" => [context_window: 0]})
 
-    assert OpenAI.Go.stream("kimi-k2", %Helyx.Context{}, []) ==
-             {:error, {:bad_config, [:models, "opencode-go/kimi-k2", :context_window]}}
+    assert OpenAI.Go.stream("no-catalog-model", %Helyx.Context{}, []) ==
+             {:error, {:bad_config, [:models, "opencode-go/no-catalog-model", :context_window]}}
   end
 
   test "a missing api key is an error before any request" do
