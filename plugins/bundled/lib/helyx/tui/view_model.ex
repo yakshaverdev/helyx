@@ -41,6 +41,10 @@ defmodule Helyx.TUI.ViewModel do
   call of it is an open tool cell, so a frame does not make its line; the
   `message_end` makes the cells of the message again from the message.
 
+  `usage` is the usage of the session that row 2 of the footer shows
+  (`Helyx.TUI.SessionUsage`): every message adds to it, on the live path and
+  from a snapshot alike.
+
   The view model has no `instance_id` or `seq` guard: the TUI subscribes
   once, and the registration and the snapshot happen in one server handler,
   so no event of another instance or of an older `seq` reaches it (ADR 0006,
@@ -49,6 +53,7 @@ defmodule Helyx.TUI.ViewModel do
 
   alias Helyx.{Event, Message}
   alias Helyx.Session.Snapshot
+  alias Helyx.TUI.SessionUsage
 
   # The cut of a tool call line (`cut_line/1`).
   @render_max_bytes 8_192
@@ -61,7 +66,8 @@ defmodule Helyx.TUI.ViewModel do
             streaming: nil,
             running?: false,
             queue: %{steers: 0, follow_ups: 0},
-            reason: nil
+            reason: nil,
+            usage: %SessionUsage{}
 
   @type tool_cell :: {:tool, Message.ToolCall.t(), String.t(), Message.t() | nil}
   @type cell ::
@@ -78,7 +84,8 @@ defmodule Helyx.TUI.ViewModel do
           streaming: [Message.block() | tool_cell()] | nil,
           running?: boolean(),
           queue: %{steers: non_neg_integer(), follow_ups: non_neg_integer()},
-          reason: String.t() | nil
+          reason: String.t() | nil,
+          usage: SessionUsage.t()
         }
 
   @delta_keys [:text_delta, :thinking_delta, :tool_call]
@@ -292,12 +299,20 @@ defmodule Helyx.TUI.ViewModel do
   defp add_streamed(streaming, %Message.ToolCall{} = call), do: [tool_cell(call, nil) | streaming]
   defp add_streamed(streaming, block), do: [block | streaming]
 
+  # Every message of the live path and of the snapshot comes here once.
+  # The cells come first: the spec of `SessionUsage.add/2` narrows the
+  # role for Dialyzer, and a role that a later Core adds makes no cell.
+  defp add_message(vm, message) do
+    vm = add_cells(vm, message)
+    %{vm | usage: SessionUsage.add(vm.usage, message)}
+  end
+
   # A message as a transcript cell. Each call of an assistant message gets
   # an open cell; its result comes later. A message of a role that the TUI
   # does not show makes no cell.
-  defp add_message(vm, %Message{role: :user} = message), do: add_cell(vm, message)
+  defp add_cells(vm, %Message{role: :user} = message), do: add_cell(vm, message)
 
-  defp add_message(vm, %Message{role: :assistant, content: content} = message) do
+  defp add_cells(vm, %Message{role: :assistant, content: content} = message) do
     vm =
       for %Message.ToolCall{id: id} = call <- content, reduce: add_cell(vm, message) do
         vm ->
@@ -315,7 +330,7 @@ defmodule Helyx.TUI.ViewModel do
   # is: a notice can arrive while the tool runs. The first result answers
   # the first of two calls with one id, as in the session. A result with no
   # open cell crashes in `Map.fetch!/2`.
-  defp add_message(vm, %Message{role: :tool_result, tool_call_id: id} = result) do
+  defp add_cells(vm, %Message{role: :tool_result, tool_call_id: id} = result) do
     {{:value, position}, queue} = :queue.out(Map.fetch!(vm.open, id))
 
     open =
@@ -325,7 +340,7 @@ defmodule Helyx.TUI.ViewModel do
     %{vm | open: open, cells: :array.set(position, cell, vm.cells)}
   end
 
-  defp add_message(vm, %Message{}), do: vm
+  defp add_cells(vm, %Message{}), do: vm
 
   # The next free position is the array size: no cell is ever removed.
   defp add_cell(vm, cell), do: %{vm | cells: :array.set(:array.size(vm.cells), cell, vm.cells)}

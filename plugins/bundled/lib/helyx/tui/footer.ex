@@ -11,20 +11,23 @@ if Helyx.TUI.Footer.Available.available?() do
     The footer of the TUI: two dim rows under the composer, with no key
     hints but the one of a first Ctrl+C. Row 1 is the location: the working
     directory, with the home directory as `~`, and the git branch. Row 2 is
-    the model, the turn state, the queue counts when they are not zero, and
-    "scrolled" while the view is scrolled; the reason of a rejected input
-    comes first, in red, then the Ctrl+C hint, in bold. The rules
-    and the bounds are in `docs/features/coding-agent.md`, "TUI".
+    the model, the turn state, the usage values of the session, the queue
+    counts when they are not zero, and "scrolled" while the view is
+    scrolled; the reason of a rejected input comes first, in red, then the
+    Ctrl+C hint, in bold. The rules and the bounds are in
+    `docs/features/coding-agent.md`, "TUI", and the usage values and their
+    capped forms in `docs/features/usage-and-limits.md`, "The footer".
     """
 
     alias ExRatatui.Style
     alias ExRatatui.Text.{Line, Span}
     alias ExRatatui.Widgets.Paragraph
-    alias Helyx.TUI.{Quit, ViewModel}
+    alias Helyx.TUI.{Quit, SessionUsage, ViewModel}
 
     @dim %Style{modifiers: [:dim]}
     @bad %Style{fg: :red}
     @bold %Style{modifiers: [:bold]}
+    @warn %Style{fg: :yellow}
 
     @rows 2
 
@@ -156,7 +159,11 @@ if Helyx.TUI.Footer.Available.available?() do
       %{steers: steers, follow_ups: follow_ups} = vm.queue
       queued = if steers + follow_ups > 0, do: ["queued #{steers}+#{follow_ups}"], else: []
       scrolled = if scroll, do: ["scrolled"], else: []
-      status = Enum.join([vm.model, run_state(busy)] ++ queued ++ scrolled, " · ")
+
+      status =
+        ([vm.model, run_state(busy)] ++ usage(vm) ++ queued ++ scrolled)
+        |> Enum.map(&span/1)
+        |> Enum.intersperse(%Span{content: " · ", style: @dim})
 
       # The reason is a fixed text of `Helyx.TUI`, never input. It comes
       # first: the row does not wrap, and a model ref can be 256 bytes.
@@ -166,9 +173,72 @@ if Helyx.TUI.Footer.Available.available?() do
       %Paragraph{
         text: [
           %Line{spans: [%Span{content: location, style: @dim}]},
-          %Line{spans: reason ++ hint ++ [%Span{content: status, style: @dim}]}
+          %Line{spans: reason ++ hint ++ status}
         ]
       }
+    end
+
+    defp span({text, style}), do: %Span{content: text, style: style}
+    defp span(text), do: %Span{content: text, style: @dim}
+
+    # The usage values (`docs/features/usage-and-limits.md`, "The footer"),
+    # each in its capped form: the totals have no bound of their own.
+    defp usage(%ViewModel{usage: totals} = vm) do
+      prompt = totals.input + totals.cache_read + totals.cache_write
+
+      tokens =
+        if prompt + totals.output > 0,
+          do: ["in #{tokens(prompt)} out #{tokens(totals.output)}"],
+          else: []
+
+      cache = if prompt > 0, do: ["cache #{div(totals.cache_read * 100, prompt)}%"], else: []
+      tokens ++ cache ++ cost(totals) ++ context(vm)
+    end
+
+    # At most 6 columns. The tenths are cut, not rounded, so 999,999 is
+    # `999.9k` and never `1000.0k`.
+    defp tokens(n) when n < 1_000, do: "#{n}"
+    defp tokens(n) when n < 1_000_000, do: tenths(n, 1_000, "k")
+    defp tokens(n) when n < 1_000_000_000, do: tenths(n, 1_000_000, "M")
+    defp tokens(n) when n < 1_000_000_000_000, do: tenths(n, 1_000_000_000, "B")
+    defp tokens(_n), do: ">999B"
+
+    defp tenths(n, unit, suffix) do
+      tenths = div(n * 10, unit)
+      "#{div(tenths, 10)}.#{rem(tenths, 10)}#{suffix}"
+    end
+
+    # No usage, no field; only unknown costs, `$?`; a known sum with an
+    # unknown part is a lower bound, `≥`. At most 10 columns before ` list`.
+    defp cost(%{cost: nil, unknown: false}), do: []
+    defp cost(%{cost: nil}), do: ["$?"]
+
+    defp cost(%{cost: cost, unknown: unknown, list: list}),
+      do: [if(unknown, do: "≥", else: "") <> dollars(cost) <> if(list, do: " list", else: "")]
+
+    # Each form is chosen on the rounded value: 0.00999 is `$0.01`, not
+    # `$0.0100`, and 99,999.995 is `>$99999`, never `$100000.00`.
+    defp dollars(cost) do
+      case {round(cost * 10_000), round(cost * 100)} do
+        {small, _cents} when small < 100 -> "$" <> decimals(small, 10_000, 4)
+        {_small, cents} when cents > 9_999_999 -> ">$99999"
+        {_small, cents} -> "$" <> decimals(cents, 100, 2)
+      end
+    end
+
+    defp decimals(n, unit, places),
+      do:
+        "#{div(n, unit)}.#{n |> rem(unit) |> Integer.to_string() |> String.pad_leading(places, "0")}"
+
+    # At most 5 columns.
+    defp context(%ViewModel{model: model, usage: usage}) do
+      case SessionUsage.context_percent(usage, model) do
+        nil -> []
+        percent when percent > 999 -> [{">999%", @bad}]
+        percent when percent > 90 -> [{"#{percent}%", @bad}]
+        percent when percent > 70 -> [{"#{percent}%", @warn}]
+        percent -> ["#{percent}%"]
+      end
     end
 
     defp run_state(nil), do: "idle"
