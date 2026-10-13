@@ -123,12 +123,12 @@ defmodule Helyx.TUI.FooterUsageTest do
     end
 
     # `last` of two recorded notifications of one turn (codex-cli 0.162.1,
-    # 2026-10-13). No price source until #559, so the cost is not known.
+    # 2026-10-13). No price in config, so the cost is not known.
     test "codex: one turn of two calls, the window of the serving side, no cost" do
       notify = fn items, last ->
-        params = %{"tokenUsage" => %{"last" => last, "modelContextWindow" => 475_000}}
-        {[], items} = Items.notification("thread/tokenUsage/updated", params, items)
-        items
+        usage = %{"last" => last, "modelContextWindow" => 475_000}
+        params = %{"threadId" => "th", "turnId" => "tu", "tokenUsage" => usage}
+        Items.usage(%{"params" => params}, "th", "tu", items)
       end
 
       items =

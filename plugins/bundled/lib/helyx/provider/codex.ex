@@ -18,8 +18,7 @@ defmodule Helyx.Provider.Codex do
 
   @behaviour Helyx.Provider
 
-  alias Helyx.HarnessIO
-  alias Helyx.Message
+  alias Helyx.{HarnessIO, Message, ModelInfo}
   alias Helyx.Provider.Codex.{Check, Items, Replay, State, Tools}
 
   @trust %{approvalPolicy: "never", sandbox: "danger-full-access"}
@@ -33,9 +32,12 @@ defmodule Helyx.Provider.Codex do
 
   @impl true
   def init(model, tools, opts) do
-    with {:ok, exe} <- HarnessIO.find("codex"), tools <- HarnessIO.harness_tools(tools) do
+    with {:ok, info} <- ModelInfo.lookup(id(), model), {:ok, exe} <- HarnessIO.find("codex") do
+      tools = HarnessIO.harness_tools(tools)
+
       state = %State{
         model: model,
+        items: %Items{info: info},
         tools: %Tools{specs: tools},
         cwd: Keyword.fetch!(opts, :cwd),
         resume: Tools.resumable(opts[:resume_id], tools)
@@ -48,9 +50,8 @@ defmodule Helyx.Provider.Codex do
     end
   end
 
-  # Reads the program's lines until the thread is ready. The connect kill
-  # of Core bounds the wait. Only the port's messages are taken: any
-  # other stays for the provider loop.
+  # Reads the program's lines until the thread is ready. The connect kill of Core bounds
+  # the wait. Only the port's messages are taken: any other stays for the provider loop.
   defp handshake(%State{port: port} = state) do
     message =
       receive do
@@ -129,8 +130,7 @@ defmodule Helyx.Provider.Codex do
   def request({:steer, _turn_id, _steer_id, _text}, from, state),
     do: actions(reply(state, from, :rejected))
 
-  # No tool item outlives a turn; a child thread's work belongs to the
-  # program.
+  # No tool item outlives a turn; a child thread's work belongs to the program.
   def request(:idle_close, from, %State{agents: agents} = state)
       when map_size(agents) > 0,
       do: actions(reply(state, from, :busy))
@@ -172,11 +172,10 @@ defmodule Helyx.Provider.Codex do
   # Output
 
   # At `turn/completed`: the terminal, the answer to an interrupt, and the
-  # fields of a turn back to idle. A tool item still
-  # open outlives its turn (#198), whatever the status, and so does a child
-  # thread of an aborted turn, so the provider process stops instead: the
-  # release TERMs the program, which ends its commands, before a next turn
-  # starts.
+  # fields of a turn back to idle. A tool item still open outlives its turn
+  # (#198), whatever the status, and so does a child thread of an aborted
+  # turn, so the provider process stops instead: the release TERMs the
+  # program, which ends its commands, before a next turn starts.
   defp end_turn(state, terminal) do
     if reason = outlives(state) do
       %{state | terminal: {:error, reason}}
@@ -196,7 +195,6 @@ defmodule Helyx.Provider.Codex do
             state
         end
 
-      # The turn fields reset, except a usage sum with no `done` (Items).
       %{state | turn_id: nil, turn: nil, items: Items.next(terminal, state.items)}
     end
   end
@@ -230,8 +228,7 @@ defmodule Helyx.Provider.Codex do
     end
   end
 
-  # A Helyx tool call. The request only runs the tool, so it goes out at
-  # once.
+  # A Helyx tool call. The request only runs the tool, so it goes out at once.
   defp dispatch(%{"id" => rpc_id, "method" => "item/tool/call", "params" => params}, state)
        when is_map(params) do
     case Tools.call(state, rpc_id, params) do
@@ -256,8 +253,10 @@ defmodule Helyx.Provider.Codex do
     answered(method, response, %{state | due: due})
   end
 
-  # Only the notifications of this program's thread count: a sub-agent's
-  # thread stays inside the harness.
+  defp dispatch(%{"method" => "thread/tokenUsage/updated"} = line, state),
+    do: {[], %{state | items: Items.usage(line, state.thread, state.turn, state.items)}}
+
+  # Only this program's thread counts: a sub-agent's stays in the harness.
   defp dispatch(%{"method" => method, "params" => %{"threadId" => thread} = params}, state)
        when thread == state.thread and is_binary(thread),
        do: turn_notification(method, params, state)
@@ -387,8 +386,10 @@ defmodule Helyx.Provider.Codex do
          %{"turnId" => turn, "item" => %{"type" => "subAgentActivity"} = item},
          %{turn: turn} = state
        )
-       when method in ["item/started", "item/completed"] and is_binary(turn),
-       do: {[], %{state | agents: Map.put(state.agents, item["agentThreadId"], turn)}}
+       when method in ["item/started", "item/completed"] and is_binary(turn) do
+    agents = Map.put(state.agents, item["agentThreadId"], turn)
+    {[], %{state | agents: agents, items: Items.sub_agent(state.items)}}
+  end
 
   defp turn_notification(method, %{"turnId" => turn} = params, %{turn: turn} = state)
        when is_binary(turn),
@@ -412,10 +413,9 @@ defmodule Helyx.Provider.Codex do
 
   defp send_interrupt(state), do: state
 
-  # The program took a steer: its `userMessage` item carries the steer id.
-  # The session drops an id that is not a sent steer of its turn, and a
-  # repeated one (`Helyx.Provider`). The prompt's item has
-  # `clientId` null (research note).
+  # The program took a steer: its `userMessage` item carries the steer id. The session
+  # drops an id that is not a sent steer of its turn, and a repeated one
+  # (`Helyx.Provider`). The prompt's item has `clientId` null (research note).
   defp notification(
          "item/started",
          %{"item" => %{"type" => "userMessage", "clientId" => id}},

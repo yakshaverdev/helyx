@@ -18,7 +18,8 @@ defmodule Helyx.Provider.OpenAI.Events do
 
   # `buffer` holds a partial SSE line across chunks, `calls` assembles tool
   # calls by index with `tool_bytes` their size, `finish` and `usage` wait
-  # for `[DONE]`. A stream with no usage chunk gives the unknown usage.
+  # for `[DONE]`, and `info` prices the usage (`Helyx.ModelInfo`). A
+  # stream with no usage chunk gives the unknown usage.
   @acc %{buffer: "", calls: %{}, tool_bytes: 0, finish: nil, usage: %Helyx.Usage{}}
 
   import Helyx.Usage, only: [wire_tokens?: 1]
@@ -30,9 +31,9 @@ defmodule Helyx.Provider.OpenAI.Events do
   directly to feed chunks split at arbitrary boundaries; the test adapter
   delivers each recorded body as one chunk.
   """
-  @spec events(Enumerable.t()) :: Enumerable.t()
-  def events(chunks) do
-    Stream.transform(chunks, @acc, &handle/2)
+  @spec events(Enumerable.t(), Helyx.ModelInfo.t()) :: Enumerable.t()
+  def events(chunks, info \\ %Helyx.ModelInfo{}) do
+    Stream.transform(chunks, Map.put(@acc, :info, info), &handle/2)
   end
 
   # A bad chunk ended the stream; drop the rest and cancel the request.
@@ -77,7 +78,7 @@ defmodule Helyx.Provider.OpenAI.Events do
     case JSON.decode(payload) do
       # A gateway reports a mid-stream failure as an error object in the data.
       {:ok, %{"error" => error}} when error != nil -> {[{:error, {:api_error, error}}], acc}
-      {:ok, chunk} -> chunk |> fields() |> chunk_events(payload, acc)
+      {:ok, chunk} -> chunk |> fields(acc.info) |> chunk_events(payload, acc)
       {:error, _} -> {[{:error, {:bad_chunk, payload}}], :halted}
     end
   end
@@ -88,19 +89,19 @@ defmodule Helyx.Provider.OpenAI.Events do
   # `id`, and a `function` with a string `name` and `arguments`, and a
   # `usage` with token counts within the wire bound. Each of these can be
   # missing or null, except the index. Core checks the text and thinking
-  # deltas.
-  defp fields(%{} = chunk) do
+  # deltas. `info` prices the usage.
+  defp fields(%{} = chunk, info) do
     with {:ok, choice} <- first_choice(chunk["choices"]),
          %{} = delta <- field(choice, "delta", %{}),
          calls when is_list(calls) <- field(delta, "tool_calls", []),
          true <- Enum.all?(calls, &call?/1),
          true <- string?(choice["finish_reason"]),
-         {:ok, usage} <- usage(chunk["usage"]) do
+         {:ok, usage} <- usage(chunk["usage"], info) do
       {:ok, choice, delta, calls, usage}
     end
   end
 
-  defp fields(_chunk), do: :error
+  defp fields(_chunk, _info), do: :error
 
   defp first_choice([%{} = choice | _]), do: {:ok, choice}
   defp first_choice(none) when none in [nil, []], do: {:ok, %{}}
@@ -117,28 +118,37 @@ defmodule Helyx.Provider.OpenAI.Events do
 
   # The usage of one model call (`docs/features/usage-and-limits.md`, "Per
   # provider"). The prompt count includes the cached tokens, so a cached
-  # count above it is outside the wire bound.
-  defp usage(nil), do: {:ok, nil}
+  # count above it is outside the wire bound. A missing or null
+  # `prompt_tokens` or `completion_tokens` counts 0, and the call has no
+  # cost: a count is not known.
+  defp usage(nil, _info), do: {:ok, nil}
 
-  defp usage(%{} = usage) do
+  defp usage(%{} = usage, info) do
     prompt = field(usage, "prompt_tokens", 0)
     output = field(usage, "completion_tokens", 0)
     details = field(usage, "prompt_tokens_details", %{})
     cached = if is_map(details), do: field(details, "cached_tokens", 0)
 
-    if wire_tokens?(prompt) and wire_tokens?(output) and wire_tokens?(cached) and cached <= prompt,
-      do:
-        {:ok,
-         %Helyx.Usage{
-           input: prompt - cached,
-           output: output,
-           cache_read: cached,
-           context_tokens: prompt + output
-         }},
-      else: :error
+    if wire_tokens?(prompt) and wire_tokens?(output) and wire_tokens?(cached) and cached <= prompt do
+      call =
+        Helyx.ModelInfo.price(
+          %Helyx.Usage{
+            input: prompt - cached,
+            output: output,
+            cache_read: cached,
+            context_tokens: prompt + output
+          },
+          info
+        )
+
+      counted? = usage["prompt_tokens"] != nil and usage["completion_tokens"] != nil
+      {:ok, if(counted?, do: call, else: Helyx.Usage.unpriced(call))}
+    else
+      :error
+    end
   end
 
-  defp usage(_usage), do: :error
+  defp usage(_usage, _info), do: :error
 
   # A missing or null field passes this.
   defp string?(value), do: value == nil or is_binary(value)

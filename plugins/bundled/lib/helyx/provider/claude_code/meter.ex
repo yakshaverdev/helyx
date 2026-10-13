@@ -6,12 +6,13 @@ defmodule Helyx.Provider.ClaudeCode.Meter do
   # `sum` adds the `usage` of every `result` line, and `known?` is false
   # after a part whose cost is not known. `mark` is the `total_cost_usd`
   # at the last `done`: 0 for a new program, the stored sum for a resumed
-  # one (`start/1`), nil when it was not known. `total` and `window` are
-  # of the last `result`, nil when it was bad. `context` and `model` are
-  # of the last `assistant` line. `agents` holds the ids of the open
-  # `Agent` calls since the last `result`. A call is open until a tool
-  # result that is not an error: an interrupt gives a running call an
-  # error result.
+  # one (`start/2`), nil when it was not known. `total` and `window` are
+  # of the last `result`, nil when it was bad; `config_window` is the
+  # window of config (`Helyx.ModelInfo`), for a `result` that gives none.
+  # `context` and `model` are of the last `assistant` line. `agents` holds
+  # the ids of the open `Agent` calls since the last `result`. A call is
+  # open until a tool result that is not an error: an interrupt gives a
+  # running call an error result.
   # A `result` with a value outside the wire bound adds nothing and makes
   # the cost unknown.
 
@@ -24,6 +25,7 @@ defmodule Helyx.Provider.ClaudeCode.Meter do
             mark: 0,
             total: nil,
             window: nil,
+            config_window: nil,
             context: nil,
             model: nil,
             agents: []
@@ -31,8 +33,8 @@ defmodule Helyx.Provider.ClaudeCode.Meter do
   # The meter of a new program. A resumed program reports the totals of
   # its harness session: the mark is the sum of the costs that the session
   # stored for it, nil when one is not known.
-  def start(nil), do: %__MODULE__{}
-  def start(%Helyx.Usage{cost: cost}), do: %__MODULE__{mark: cost}
+  def start(nil, window), do: %__MODULE__{config_window: window}
+  def start(%Helyx.Usage{cost: cost}, window), do: %__MODULE__{mark: cost, config_window: window}
 
   # The context of the next call: the four counts of the line's usage. A
   # bad usage or model keeps the ones before.
@@ -107,7 +109,7 @@ defmodule Helyx.Provider.ClaudeCode.Meter do
       | cost: cost,
         cost_kind: cost && :list,
         context_tokens: meter.context,
-        context_window: meter.window
+        context_window: meter.window || meter.config_window
     }
 
     {usage, %{meter | sum: %Helyx.Usage{}, known?: true, mark: total}}

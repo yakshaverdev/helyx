@@ -84,6 +84,10 @@ defmodule Helyx.Usage do
     struct!(b, [{:cost, cost}, {:cost_kind, kind} | Enum.map(sums, &cap/1)])
   end
 
+  @doc "The usage with its cost not known: the cost and the kind are nil."
+  @spec unpriced(t()) :: t()
+  def unpriced(%__MODULE__{} = usage), do: %{usage | cost: nil, cost_kind: nil}
+
   defp cap({field, sum}), do: {field, min(sum, @max_tokens)}
 
   defp cost(%{cost: nil}, _b), do: {nil, nil}

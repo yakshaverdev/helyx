@@ -44,6 +44,24 @@ defmodule Helyx.Provider.Codex.ChildThreadsTest do
     assert {[{:reply, ^from, :ok}], _state} = pump(Codex, state, [], replied?(from))
   end
 
+  # The calls of a child thread are in no usage of the parent
+  # (`docs/features/usage-and-limits.md`, "Per provider"), so the cost of
+  # a turn that started one is not known.
+  test "the done of a turn that started a sub-agent has no cost", %{bin: bin, work: work} do
+    prices = %{input: 2.0, output: 10.0}
+
+    for {lines, cost?} <- [{[], true}, {agent("started"), false}] do
+      File.rm_rf!(Path.join(bin, "count"))
+      fresh(bin, 1, tid(), lines ++ reply(tid(), "Done."))
+      {:ok, state} = connect(work)
+      state = put_in(state.items.info.prices, prices)
+      {_turn, _, state} = turn_on(state)
+      {actions, _state} = pump(Codex, state, [], &turn_ended?/1)
+      assert {:done, %{usage: %Helyx.Usage{cost: cost}}} = List.last(events(actions))
+      assert is_float(cost) == cost?
+    end
+  end
+
   test "an interrupt while a child thread of the turn has open work answers an error at once and sends nothing",
        %{bin: bin, work: work} do
     fresh(bin, 1, tid(), agent("started") ++ message(tid(), "msg_1", "Waiting."))
