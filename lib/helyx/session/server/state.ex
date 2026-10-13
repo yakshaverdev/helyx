@@ -106,7 +106,7 @@ defmodule Helyx.Session.Server.State do
           subscribers: %{pid() => reference()},
           activity: :idle | Turn.t() | Wait.t(),
           queue: Queue.t(),
-          resume_ids: %{String.t() => {String.t(), non_neg_integer()}},
+          resume_ids: %{String.t() => Helyx.Session.Transcript.label()},
           conn: ProviderConn.t() | nil,
           provider_ms: %{reply: pos_integer(), close: pos_integer(), idle: pos_integer()},
           prepare_ms: pos_integer(),

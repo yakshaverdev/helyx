@@ -245,7 +245,7 @@ defmodule Helyx.Session.PersistenceTest do
     {:ok, session} = Session.resume(core, sessions_dir: dir)
     state = :sys.get_state(Session.pid(session))
     assert length(state.transcript) == 3
-    assert state.resume_ids == %{"claude-code" => {"h1", 1}}
+    assert state.resume_ids == %{"claude-code" => {"h1", 1, nil}}
   end
 
   @tag :tmp_dir
@@ -270,7 +270,7 @@ defmodule Helyx.Session.PersistenceTest do
     written = File.read!(file.path)
     {:ok, session} = Session.resume(core, sessions_dir: dir)
     assert File.read!(file.path) == written
-    assert :sys.get_state(Session.pid(session)).resume_ids == %{"claude-code" => {"h1", 1}}
+    assert :sys.get_state(Session.pid(session)).resume_ids == %{"claude-code" => {"h1", 1, nil}}
 
     # A client mounts from the snapshot: no result there lacks its call.
     {:ok, snapshot, _} = Session.subscribe(session)

@@ -143,8 +143,8 @@ defmodule Helyx.Session.FileTest do
     assert {:ok, resumed} = Session.File.resume(dir, "/repo")
 
     assert resumed.resume_ids == %{
-             "claude-code" => {"sécond", 1},
-             "codex" => {"codex-1", 0}
+             "claude-code" => {"sécond", 1, nil},
+             "codex" => {"codex-1", 0, nil}
            }
 
     # The entry has the shape the feature doc gives, and it moves the leaf.
@@ -174,7 +174,8 @@ defmodule Helyx.Session.FileTest do
       ~s({"id":"h","type":"harness_session","provider":"claude-code","harness_session_id":"h1"})
     )
 
-    assert {:ok, %{resume_ids: %{"claude-code" => {"h1", 0}}}} = Session.File.resume(dir, "/old")
+    assert {:ok, %{resume_ids: %{"claude-code" => {"h1", 0, nil}}}} =
+             Session.File.resume(dir, "/old")
   end
 
   test "a resume id entry with a bad id removes the label of its provider",
@@ -197,7 +198,7 @@ defmodule Helyx.Session.FileTest do
 
       # The stale label does not come back; the other provider keeps its own.
       assert {:ok, %{resume_ids: sessions}} = Session.File.resume(dir, "/repo#{n}")
-      assert sessions == %{"codex" => {"codex-1", 0}}
+      assert sessions == %{"codex" => {"codex-1", 0, nil}}
     end
   end
 
@@ -244,7 +245,7 @@ defmodule Helyx.Session.FileTest do
     |> append_raw(line)
     |> Session.File.append_resume_id("claude-code", "good")
 
-    assert {:ok, %{resume_ids: %{"claude-code" => {"good", 0}}}} =
+    assert {:ok, %{resume_ids: %{"claude-code" => {"good", 0, nil}}}} =
              Session.File.resume(dir, "/later")
   end
 
@@ -277,7 +278,7 @@ defmodule Helyx.Session.FileTest do
       {:ok, file} = started(dir, "long#{byte_size(id)}", cwd, "test/ok")
       Session.File.append_resume_id(file, "claude-code", id)
 
-      assert {:ok, %{resume_ids: %{"claude-code" => {^id, 0}}}} =
+      assert {:ok, %{resume_ids: %{"claude-code" => {^id, 0, nil}}}} =
                Session.File.resume(dir, cwd)
     end
   end
@@ -474,7 +475,7 @@ defmodule Helyx.Session.FileTest do
       # A fork at the label: both children of the label entry hold it.
       labelled = label.(start.(1))
       reply.(labelled, "a")
-      assert labels.("/r1") == %{"claude-code" => {"h1", 1}, "codex" => {"codex-1", 0}}
+      assert labels.("/r1") == %{"claude-code" => {"h1", 1, nil}, "codex" => {"codex-1", 0, nil}}
       reply.(labelled, "b")
       assert labels.("/r1") == %{}
 
@@ -483,7 +484,7 @@ defmodule Helyx.Session.FileTest do
       file = start.(2)
       reply.(file, "other")
       file |> reply.("mine") |> label.() |> reply.("after")
-      assert labels.("/r2") == %{"claude-code" => {"h1", 2}}
+      assert labels.("/r2") == %{"claude-code" => {"h1", 2, nil}}
     end
 
     test "a session file of one writer resumes as one chain in file order", %{tmp_dir: dir} do

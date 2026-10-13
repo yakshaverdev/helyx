@@ -95,6 +95,51 @@ defmodule Helyx.Provider.ClaudeCode.CompactTest do
     assert_in_delta cost, 0.15, 1.0e-12
   end
 
+  # A resumed program reports the totals of its harness session, and no
+  # message holds the compaction's cost, so the first done has it.
+  test "after a compaction and a reconnect, the first done has the compaction's cost",
+       %{bin: bin} = ctx do
+    turn(bin, 1, 1, begin() ++ [delta("a"), costed(result("a"), 0.1)])
+    turn(bin, 1, 2, List.update_at(compaction(9, 2), -1, &costed(&1, 0.15)))
+    turn(bin, 2, 1, begin() ++ [delta("b"), costed(result("b"), 0.25)])
+
+    session = start(ctx)
+    prompt(session, "one")
+    assert :ok = Session.compact(session)
+    collect_until(:turn_end)
+    GenServer.stop(Session.pid(session))
+
+    {:ok, session} = Session.resume(ctx.core, sessions_dir: ctx.sessions, cwd: ctx.work)
+    {:ok, _, _} = Session.subscribe(session)
+    assert [_user, %{usage: %{cost: cost}}] = messages(prompt(session, "two"))
+    assert_in_delta cost, 0.15, 1.0e-12
+    assert ["--resume=" <> _] = Enum.filter(args(bin, 2), &String.starts_with?(&1, "--resume"))
+  end
+
+  # The failed turn's message has no usage, so the mark leaves out both
+  # the failed call and the compaction call.
+  test "after a failed turn, a compaction, and a reconnect, the first done has both costs",
+       %{bin: bin} = ctx do
+    failed = aborted() |> JSON.decode!() |> Map.put("usage", %{"input_tokens" => 1}) |> j()
+    turn(bin, 1, 1, begin() ++ [delta("a"), costed(result("a"), 0.1)])
+    turn(bin, 1, 2, begin() ++ [delta("b"), costed(failed, 0.12)])
+    turn(bin, 1, 3, List.update_at(compaction(9, 2), -1, &costed(&1, 0.15)))
+    turn(bin, 2, 1, begin() ++ [delta("c"), costed(result("c"), 0.25)])
+
+    session = start(ctx)
+    prompt(session, "one")
+    assert [%{outcome: :error}] = of_type(prompt(session, "two"), :turn_end)
+    assert :ok = Session.compact(session)
+    assert List.last(collect_until(:turn_end)).data == %{outcome: :done}
+    GenServer.stop(Session.pid(session))
+
+    {:ok, session} = Session.resume(ctx.core, sessions_dir: ctx.sessions, cwd: ctx.work)
+    {:ok, _, _} = Session.subscribe(session)
+    assert [_user, %{usage: %{cost: cost}}] = messages(prompt(session, "three"))
+    assert_in_delta cost, 0.15, 1.0e-12
+    assert ["--resume=" <> _] = Enum.filter(args(bin, 2), &String.starts_with?(&1, "--resume"))
+  end
+
   test "a compaction that fails ends the turn with the program's error", %{bin: bin, work: work} do
     failed = [
       status(%{status: "compacting"}),

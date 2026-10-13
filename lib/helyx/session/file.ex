@@ -42,7 +42,9 @@ defmodule Helyx.Session.File do
     @moduledoc """
     What `resume/3` restores. `resume_ids` holds the last resume id of
     each provider: the id and the number of assistant messages before its entry,
-    without the labels that a fork drops.
+    and the number at the last compaction of that provider after it, if
+    any (`Helyx.Session.Transcript.label/0`), without the labels that a fork
+    drops.
     """
     @enforce_keys [:file, :session_id, :model, :messages]
     defstruct [:file, :session_id, :model, :messages, resume_ids: %{}]
@@ -52,7 +54,7 @@ defmodule Helyx.Session.File do
             session_id: String.t(),
             model: String.t(),
             messages: [Message.t()],
-            resume_ids: %{String.t() => {String.t(), non_neg_integer()}}
+            resume_ids: %{String.t() => Helyx.Session.Transcript.label()}
           }
   end
 
@@ -252,7 +254,8 @@ defmodule Helyx.Session.File do
 
   @doc """
   Appends a compaction entry: the provider `provider_id` compacted its own
-  history (`docs/features/harness-compaction.md`). A resume skips it.
+  history (`docs/features/harness-compaction.md`). A resume adds no message
+  for it, and reads it for the resume id of that provider.
   """
   @spec append_compaction(t(), String.t(), :manual | :auto, integer() | nil, integer() | nil) ::
           t()

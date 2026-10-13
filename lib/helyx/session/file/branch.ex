@@ -118,7 +118,8 @@ defmodule Helyx.Session.File.Branch do
   # because the reader cannot know which one it replaced. A fork at the
   # branch entry with the id `fork` removes every label at or above it
   # (#282): the other branch holds those labels too and may have continued
-  # under their resume ids.
+  # under their resume ids. A `compaction` entry of the provider after its
+  # resume id entry adds the number at that compaction.
   # The entry type "harness_session" and its key "harness_session_id" are
   # stored names (`Helyx.Session.File.append_resume_id/3`).
   def resume_ids(entries, fork) do
@@ -140,11 +141,16 @@ defmodule Helyx.Session.File.Branch do
        )
        when is_binary(provider) do
     if Message.resume_id?(entry["harness_session_id"]),
-      do: {Map.put(ids, provider, {entry["harness_session_id"], count}), count},
+      do: {Map.put(ids, provider, {entry["harness_session_id"], count, nil}), count},
       else: {Map.delete(ids, provider), count}
   end
 
   defp resume_entry(%{"type" => "harness_session"}, {_ids, count}), do: {%{}, count}
+
+  defp resume_entry(%{"type" => "compaction", "provider" => provider}, {ids, count})
+       when is_binary(provider),
+       do: {Helyx.Session.Transcript.compacted(ids, provider, count), count}
+
   defp resume_entry(_entry, acc), do: acc
 
   # The id of the last branch entry, from the first resume id entry

@@ -82,3 +82,70 @@ Guarantee table (spec review, with 1.3):
 Round 1 reproduced no defect, so the loop ends. The fixes after the round are doc text, one @doc qualifier, and tests.
 
 `HELYX_SLOW=1 .claude/skills/ship/precommit.sh` passed after the round. The first run failed on two Credo alias orders (`stop.ex`, `compaction.ex`); the fix moved one alias line in each file.
+
+## Gate fix: resume after a compaction
+
+The Codex gate of round 1 on `32ec8e9` found that an abort, then `/compact`, then a reconnect started a fresh program and lost the native summary. The owner decided that a successful native compaction after the last assistant message makes the program's history safe to resume. The rule is derived on read from the transcript and the compaction records. The accepted limit is in the feature doc: the reply that the abort cut may not be in the summary.
+
+Invariant: after a successful native compaction, a reconnect resumes the program's compacted history, and with no compaction since an abort or failure, it still starts fresh.
+
+## Round 2 (full)
+
+The fix against `32ec8e9`: 89 code lines in 5 files, with new functions (`Transcript.compacted/3`, a new `resume_entry/2` clause). A full round.
+
+Simplify (4 agents): fixed, the label has one shape, `{id, before, at | nil}`, in place of a 2-tuple and a 3-tuple.
+
+Bounds sensor (base `32ec8e9`):
+
+```
+bounds sensor: 2 candidate functions, 0 flagged, 0 without an answer
+```
+
+| # | Axis | Finding | Resolution |
+| - | ---- | ------- | ---------- |
+| 2.1 | Codex | [medium] The compaction branch of `resumable/3` skipped the check that the last assistant message came from that provider: a provider switch, a compaction, and an abort before any output resumed the new provider | Reproduced. Fixed: the provider check is in both branches, and a compaction lifts only the abort and failure check (`transcript_test.exs`, "resumes after a compaction with no assistant message after it") |
+| 2.2 | spec | Test (b) also passes before the fix | Kept: (b) is the check of the path with no abort that the owner asked for. A new resume id in a compaction turn is not reachable: a fresh program answers a compaction with `no_history` |
+| 2.3 | standards | `File.append_compaction/5` @doc and a test title said "a resume skips it" | Fixed: a resume adds no message for it, and reads it for the resume id |
+| 2.4 | standards | A long feature doc sentence; an unclear "it" in `records.ex`; a wide comment line in `branch.ex` | Fixed |
+| 2.5 | standards | Judgement: the rule is applied in two places, the file reader and the memory records | Kept: both call `Transcript.compacted/3`; the `before` count follows the same pattern |
+| 2.6 | standards | Judgement: `Records.compaction` uses `turn.model.provider`, `resume_id` uses `conn.model.provider` | Kept: both name the provider of the current turn |
+| 2.7 | failure path | Not a finding: Core gives a compaction to the provider's last label without a check that the current provider process runs under it | Not reachable with the bundled providers: a fresh program answers a compaction with `no_history`, and a model turn sends the resume id before any other event. No real provider does it, so no special handler |
+
+Guarantee table (spec review):
+
+| Guarantee | Proof |
+| --------- | ----- |
+| An abort, then a compaction: the resume id is used (memory and file) | `test/helyx/session/compaction_test.exs:247` |
+| An idle compaction: the resume id is used | `compaction_test.exs:258` |
+| An abort with no compaction: start fresh | `compaction_test.exs:267`, `test/helyx/session/transcript_test.exs:144` |
+| A reply after the compaction that an abort cuts: start fresh | `compaction_test.exs:276`, `transcript_test.exs:153` |
+| A compaction does not lift the check of the provider that answered last | `transcript_test.exs:153` |
+| A compaction of a provider with no label changes nothing | `transcript_test.exs:153` |
+| `Branch.resume_ids/2` reads compaction entries | `compaction_test.exs:247` (through the reconnect) |
+| A fork drops the labels, also after a compaction | `test/helyx/session/file_test.exs:462`; a compaction with no label changes nothing (`transcript_test.exs:153`) |
+
+Round 2 reproduced a defect (2.1), so round 3 runs.
+
+## Round 3 (full)
+
+The fix against round 2 (2.1 and the wording of 2.3 and 2.4): 32 code lines in 4 files. It removes the helper `answered?/3`. A full round.
+
+Simplify (4 agents): no finding. Reuse noted that `[:aborted, :error]` is also in `stream.ex`; kept, two uses.
+
+Bounds sensor (base: the round 2 tree):
+
+```
+bounds sensor: 2 candidate functions, 0 flagged, 0 without an answer
+```
+
+| # | Axis | Finding | Resolution |
+| - | ---- | ------- | ---------- |
+| 3.1 | Codex | Approve, no finding | None |
+| 3.2 | failure path | No defect reproduced. Probes: a changed model of the last message on disk, odd and multibyte model strings, a provider switch with a failed turn between the compaction and the restart. Not reached: a fork entry after a compaction entry, an auto compaction while a message is open, a failed file write | None |
+| 3.3 | spec | The feature doc and the `resumable/3` comment said that a compaction lifts only the abort and failure check. It also makes the check of a message under the id unnecessary (probe: a fresh program, a turn aborted before its first message, a compaction) | Fixed in both texts. The behaviour is the owner decision: the compaction shows that the program has the history |
+| 3.4 | spec | The "Init" text of `one-provider-path.md` did not say that the last assistant message must come from this provider after a compaction | Fixed |
+| 3.5 | spec | No test that a new resume id in memory drops the compaction count | Fixed: `compaction_test.exs:292`. It fails when the label keeps the count |
+| 3.6 | standards | Judgement: "lift" is a metaphor | Fixed in the texts of 3.3 |
+| 3.7 | standards | Judgement: the label is a 3-tuple that `put_elem/3` changes | Kept: one writer, `Transcript.compacted/3`; small enough |
+
+Round 3 reproduced no defect, so the loop ends. The fixes after the round are doc text and one test.

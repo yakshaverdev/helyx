@@ -80,24 +80,32 @@ defmodule Helyx.Session.Transcript do
   def assistant_count(transcript),
     do: Enum.count(transcript, &match?(%Message{role: :assistant}, &1))
 
+  # The label of a resume id: the id, the number of assistant messages
+  # before the provider gave it, and the number at the last compaction of
+  # the provider's own history under that id, or nil.
+  @type label :: {String.t(), non_neg_integer(), non_neg_integer() | nil}
+
   # The resume id to resume, or nil: the last resume id of `provider` in
-  # `resume_ids` (the id and the number of assistant messages before the
-  # provider gave it), when the last assistant message of the transcript
-  # came from this provider after that point and no abort or failure cut
-  # it. A message under the resume id shows that the provider read the
-  # replay and the prompt. Otherwise the provider does not have the
-  # transcript's end (another provider answered last, the provider started
-  # fresh and the turn ended before its first message, or the last message
-  # is a partial reply that the session stored and the provider may not
-  # keep), and the provider gets it when it starts fresh. O(n).
-  @spec resumable([Message.t()], %{String.t() => {String.t(), non_neg_integer()}}, String.t()) ::
-          String.t() | nil
+  # `resume_ids`, when the last assistant message of the transcript came
+  # from this provider after that point and no abort or failure cut it. A
+  # message under the resume id shows that the provider read the replay
+  # and the prompt. Otherwise the provider does not have the transcript's
+  # end (another provider answered last, the provider started fresh and
+  # the turn ended before its first message, or the last message is a
+  # partial reply that the session stored and the provider may not keep),
+  # and the provider gets it when it starts fresh. After a compaction under
+  # the id with no assistant message after it, two checks do not apply:
+  # the message under the id, and the abort or failure. The last assistant
+  # message must still come from this provider. The summary is now the
+  # provider's whole history, though a cut reply may not be in it
+  # (docs/features/harness-compaction.md). O(n).
+  @spec resumable([Message.t()], %{String.t() => label()}, String.t()) :: String.t() | nil
   def resumable(transcript, resume_ids, provider) do
-    with {:ok, {resume_id, before}} <- Map.fetch(resume_ids, provider),
-         {count, %Message{model: model, stop_reason: stop}}
-         when count > before and is_binary(model) and stop not in [:aborted, :error] <-
+    with {:ok, {resume_id, before, at}} <- Map.fetch(resume_ids, provider),
+         {count, %Message{model: model, stop_reason: stop}} when is_binary(model) <-
            count_and_last_assistant(transcript),
-         {:ok, %ModelRef{provider: ^provider}} <- ModelRef.parse(model) do
+         {:ok, %ModelRef{provider: ^provider}} <- ModelRef.parse(model),
+         true <- at == count or (count > before and stop not in [:aborted, :error]) do
       resume_id
     else
       _other -> nil
@@ -110,7 +118,7 @@ defmodule Helyx.Session.Transcript do
   # makes the next one start fresh. A provider can use this sum to find
   # the usage it reported before the resume
   # (`docs/features/usage-and-limits.md`, "Per provider"). O(n).
-  @spec resume([Message.t()], %{String.t() => {String.t(), non_neg_integer()}}, String.t()) ::
+  @spec resume([Message.t()], %{String.t() => label()}, String.t()) ::
           {String.t() | nil, Helyx.Usage.t() | nil}
   def resume(transcript, resume_ids, provider) do
     case resumable(transcript, resume_ids, provider) do
@@ -118,7 +126,7 @@ defmodule Helyx.Session.Transcript do
         {nil, nil}
 
       id ->
-        {_id, before} = Map.fetch!(resume_ids, provider)
+        {_id, before, _at} = Map.fetch!(resume_ids, provider)
         usages = for %Message{role: :assistant, usage: usage} <- transcript, do: usage
         {id, usages |> Enum.drop(before) |> Enum.reduce(nil, &add/2)}
     end
@@ -127,6 +135,17 @@ defmodule Helyx.Session.Transcript do
   defp add(nil, sum), do: sum
   defp add(usage, nil), do: usage
   defp add(usage, sum), do: Helyx.Usage.add(sum, usage)
+
+  # A compaction of `provider` under its resume id, at the number of
+  # assistant messages `count` (`resumable/3`).
+  @spec compacted(%{String.t() => label()}, String.t(), non_neg_integer()) ::
+          %{String.t() => label()}
+  def compacted(resume_ids, provider, count) do
+    case resume_ids do
+      %{^provider => label} -> Map.put(resume_ids, provider, put_elem(label, 2, count))
+      _no_label -> resume_ids
+    end
+  end
 
   # The number of assistant messages and the last one, with no reversed
   # copy of the transcript.

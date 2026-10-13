@@ -128,7 +128,9 @@ defmodule Helyx.Session.TranscriptTest do
 
     test "sums the usages since the resume id; a message with no usage adds nothing" do
       transcript = [used(0.5), Message.user("a"), used(0.1), assistant([]), used(0.2)]
-      {id, usage} = Transcript.resume(transcript, %{"claude-code" => {"h1", 1}}, "claude-code")
+
+      {id, usage} =
+        Transcript.resume(transcript, %{"claude-code" => {"h1", 1, nil}}, "claude-code")
 
       assert id == "h1"
       assert %Helyx.Usage{input: 2, cost_kind: :list} = usage
@@ -136,7 +138,7 @@ defmodule Helyx.Session.TranscriptTest do
     end
 
     test "a cost that is not known makes the sum's cost nil; no usage gives nil" do
-      ids = %{"claude-code" => {"h1", 0}}
+      ids = %{"claude-code" => {"h1", 0, nil}}
 
       assert {"h1", %Helyx.Usage{cost: nil}} =
                Transcript.resume([used(0.1), used(nil)], ids, "claude-code")
@@ -147,7 +149,9 @@ defmodule Helyx.Session.TranscriptTest do
     test "after another provider, the sum starts at the new resume id" do
       other = %{used(0.4) | model: "fake/echo"}
       transcript = [used(0.5), other, used(0.1)]
-      {id, usage} = Transcript.resume(transcript, %{"claude-code" => {"h2", 2}}, "claude-code")
+
+      {id, usage} =
+        Transcript.resume(transcript, %{"claude-code" => {"h2", 2, nil}}, "claude-code")
 
       assert {id, usage.cost} == {"h2", 0.1}
     end
@@ -161,23 +165,23 @@ defmodule Helyx.Session.TranscriptTest do
     test "resumes when the provider answered last after its session started" do
       transcript = [Message.user("a"), assistant([])]
 
-      assert Transcript.resumable(transcript, %{"claude-code" => {"h1", 0}}, "claude-code") ==
+      assert Transcript.resumable(transcript, %{"claude-code" => {"h1", 0, nil}}, "claude-code") ==
                "h1"
     end
 
     test "does not resume without a session, before the session answered, or after another provider" do
       transcript = [Message.user("a"), assistant([])]
-      sessions = %{"claude-code" => {"h1", 1}}
+      sessions = %{"claude-code" => {"h1", 1, nil}}
 
       assert Transcript.resumable(transcript, %{}, "claude-code") == nil
       assert Transcript.resumable(transcript, sessions, "claude-code") == nil
 
       other = transcript ++ [assistant([], "fake/echo")]
-      assert Transcript.resumable(other, %{"claude-code" => {"h1", 0}}, "claude-code") == nil
+      assert Transcript.resumable(other, %{"claude-code" => {"h1", 0, nil}}, "claude-code") == nil
     end
 
     test "does not resume when an abort or a failure cut the last assistant message" do
-      sessions = %{"claude-code" => {"h1", 0}}
+      sessions = %{"claude-code" => {"h1", 0, nil}}
 
       for stop <- [:aborted, :error] do
         cut = [Message.user("a"), assistant([]), %{assistant([]) | stop_reason: stop}]
@@ -185,9 +189,25 @@ defmodule Helyx.Session.TranscriptTest do
       end
     end
 
+    test "resumes after a compaction with no assistant message after it" do
+      cut = [Message.user("a"), %{assistant([]) | stop_reason: :aborted}]
+      ids = Transcript.compacted(%{"claude-code" => {"h1", 0, nil}}, "claude-code", 2)
+      assert Transcript.resumable(cut, ids, "claude-code") == nil
+      ids = Transcript.compacted(ids, "claude-code", 1)
+      assert Transcript.resumable(cut, ids, "claude-code") == "h1"
+      assert Transcript.resumable(cut ++ [cut |> List.last()], ids, "claude-code") == nil
+      assert Transcript.compacted(%{}, "claude-code", 1) == %{}
+
+      # The compaction does not lift the check of the provider that answered last.
+      other = [Message.user("a"), assistant([], "fake/echo")]
+      assert Transcript.resumable(other, ids, "claude-code") == nil
+    end
+
     test "does not resume after an assistant message with no model" do
       transcript = [assistant([], nil)]
-      assert Transcript.resumable(transcript, %{"claude-code" => {"h1", 0}}, "claude-code") == nil
+
+      assert Transcript.resumable(transcript, %{"claude-code" => {"h1", 0, nil}}, "claude-code") ==
+               nil
     end
 
     # The label stands at a place in the session file. The repair inserts
@@ -203,7 +223,7 @@ defmodule Helyx.Session.TranscriptTest do
         file = for _ <- 1..Enum.random(0..12)//1, do: random_message()
         place = Enum.random(0..length(file))
         before = Transcript.assistant_count(Enum.take(file, place))
-        ids = %{"claude-code" => {"h1", before}}
+        ids = %{"claude-code" => {"h1", before, nil}}
 
         assert Transcript.resumable(Transcript.repair(file), ids, "claude-code") ==
                  expected_resume(file, place),

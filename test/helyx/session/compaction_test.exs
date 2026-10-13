@@ -9,7 +9,7 @@ defmodule Helyx.Session.CompactionTest do
   alias Helyx.{Event, Session}
   alias Helyx.Test.Connected
 
-  @done {:done, %{stop_reason: :end_turn, usage: %{}}}
+  @done {:done, %{stop_reason: :end_turn, usage: nil}}
 
   setup do
     core = :"core_#{System.unique_integer([:positive])}"
@@ -191,7 +191,7 @@ defmodule Helyx.Session.CompactionTest do
   end
 
   @tag :tmp_dir
-  test "the session file records the compaction, and a resume skips it", %{
+  test "the session file records the compaction, and a resume adds no message", %{
     core: core,
     tmp_dir: dir
   } do
@@ -211,6 +211,98 @@ defmodule Helyx.Session.CompactionTest do
     assert {:ok, resumed} = Session.resume(core, sessions_dir: dir)
     {:ok, snapshot, _} = Session.subscribe(resumed)
     assert [%{role: :user}, %{role: :assistant}] = snapshot.messages
+  end
+
+  describe "a reconnect after a compaction" do
+    @describetag :tmp_dir
+
+    # A turn of a fresh program with the label "L"; its reply "so far" is
+    # open. Returns the session, the provider, and the turn id.
+    defp labelled(core, dir) do
+      session = start(core, "conn/hang", sessions_dir: dir)
+      :ok = Session.prompt(session, "one")
+      assert_receive {:conn, :init, proc, {"hang", _tools, _opts}}
+      assert_receive {:conn, :turn, ^proc, {:turn, turn_id, _}}
+      send(proc, {:batch, [{:event, turn_id, {:resume_id, "L", 0}}]})
+      assert_receive {:helyx_event, %Event{type: :resume_id}}
+      {session, proc, turn_id}
+    end
+
+    defp compacted(proc) do
+      assert_receive {:conn, :compact, ^proc, {:compact, turn_id, _}}
+      send(proc, {:batch, [{:event, turn_id, {:compaction, 9, 2}}, {:event, turn_id, @done}]})
+      assert List.last(collect_until(:turn_end)).data == %{outcome: :done}
+    end
+
+    # The session restarts from its file, as after a crash or a quit, and
+    # the next turn connects a new provider process.
+    defp reconnect(core, session, dir) do
+      :ok = GenServer.stop(Session.pid(session))
+      {:ok, resumed} = Session.resume(core, sessions_dir: dir)
+      :ok = Session.prompt(resumed, "two")
+      assert_receive {:conn, :init, _proc, {"hang", _tools, opts}}
+      opts[:resume_id]
+    end
+
+    test "after an aborted reply, the compacted history resumes", %{core: core, tmp_dir: dir} do
+      {session, proc, _turn_id} = labelled(core, dir)
+      assert :ok = Session.compact(session)
+      assert List.last(collect_until(:turn_end)).data == %{outcome: :aborted}
+      compacted(proc)
+
+      state = :sys.get_state(Session.pid(session))
+      assert Helyx.Session.Transcript.resumable(state.transcript, state.resume_ids, "conn") == "L"
+      assert reconnect(core, session, dir) == "L"
+    end
+
+    test "after an idle compaction, the history resumes", %{core: core, tmp_dir: dir} do
+      {session, proc, turn_id} = labelled(core, dir)
+      send(proc, {:finish, turn_id})
+      collect_until(:turn_end)
+      assert :ok = Session.compact(session)
+      compacted(proc)
+      assert reconnect(core, session, dir) == "L"
+    end
+
+    test "with no compaction after an abort, the program starts fresh", %{
+      core: core,
+      tmp_dir: dir
+    } do
+      {session, _proc, _turn_id} = labelled(core, dir)
+      assert :ok = Session.abort(session)
+      assert reconnect(core, session, dir) == nil
+    end
+
+    test "a reply after the compaction that an abort cuts starts fresh", %{
+      core: core,
+      tmp_dir: dir
+    } do
+      {session, proc, turn_id} = labelled(core, dir)
+      send(proc, {:finish, turn_id})
+      collect_until(:turn_end)
+      assert :ok = Session.compact(session)
+      compacted(proc)
+      :ok = Session.prompt(session, "after")
+      assert_receive {:conn, :turn, ^proc, _request}
+      assert_receive {:helyx_event, %Event{type: :message_update}}
+      assert :ok = Session.abort(session)
+      assert reconnect(core, session, dir) == nil
+    end
+
+    test "a new resume id after the compaction drops it", %{core: core, tmp_dir: dir} do
+      {session, proc, turn_id} = labelled(core, dir)
+      send(proc, {:finish, turn_id})
+      collect_until(:turn_end)
+      assert :ok = Session.compact(session)
+      assert_receive {:conn, :compact, ^proc, {:compact, turn_id, _}}
+      events = [{:compaction, 9, 2}, {:resume_id, "M", 0}, @done]
+      send(proc, {:batch, Enum.map(events, &{:event, turn_id, &1})})
+      assert List.last(collect_until(:turn_end)).data == %{outcome: :done}
+
+      state = :sys.get_state(Session.pid(session))
+      assert Helyx.Session.Transcript.resumable(state.transcript, state.resume_ids, "conn") == nil
+      assert reconnect(core, session, dir) == nil
+    end
   end
 
   # Waits until the session holds a caller in its wait.

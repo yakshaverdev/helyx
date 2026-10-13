@@ -1470,7 +1470,7 @@ defmodule Helyx.Session.ProviderProcessTest do
       assert_received {:helyx_event, %Helyx.Event{type: :resume_id, turn_id: ^turn_id} = event}
       assert %{resume_id: "fresh", lost: true} = event.data
       refute_received {:helyx_event, %Helyx.Event{type: :resume_id}}
-      assert %{"conn" => {"fresh", _count}} = :sys.get_state(pid).resume_ids
+      assert %{"conn" => {"fresh", _count, nil}} = :sys.get_state(pid).resume_ids
 
       # After the wait, idle and in the next turn, a resume id of the
       # aborted turn records nothing.
@@ -1481,7 +1481,7 @@ defmodule Helyx.Session.ProviderProcessTest do
       send(proc, {:batch, [later, {:event, next, @done}]})
       refute Enum.any?(collect_until(:turn_end), &(&1.type == :resume_id))
       refute_received {:helyx_event, %Helyx.Event{type: :resume_id}}
-      assert %{"conn" => {"fresh", _count}} = :sys.get_state(pid).resume_ids
+      assert %{"conn" => {"fresh", _count, nil}} = :sys.get_state(pid).resume_ids
     end
 
     # A second context request is a bad action: the session stops the
