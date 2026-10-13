@@ -92,6 +92,23 @@ defmodule Helyx.Provider.LoopTest do
     assert %{calls: [], turn: "t1"} = state
   end
 
+  test "a done at the token limit sends no tool request; each call gets an error result in call order" do
+    {actions, state} = pump(turn("cut"))
+    cut = {:error, "tool call not run: the reply was cut at the token limit"}
+
+    assert [
+             {:text_delta, "Trying"},
+             {:tool_call, %Message.ToolCall{id: "c1"}},
+             {:tool_call, %Message.ToolCall{id: "c2"}},
+             {:message_end, :max_tokens, %{}},
+             {:tool_result, "c1", ^cut},
+             {:tool_result, "c2", ^cut}
+           ] = events(actions)
+
+    assert List.last(actions) == {:need_context, "t1"}
+    assert %{calls: [], turn: "t1"} = state
+  end
+
   test "a held steer continues the turn: the message ends, the steer goes out, then the context request" do
     state = turn("ok")
     assert {:ok, [], state} = request({:steer, "t1", "s1", "more"}, state)

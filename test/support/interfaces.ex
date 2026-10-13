@@ -162,6 +162,8 @@ defmodule Helyx.Test.Provider do
   #   "binary"     calls the binary tool
   #   "rejected"   text, one good call, and one call whose arguments are
   #                raw text that is not a JSON object
+  #   "cut"        "rejected" with the stop reason `:max_tokens`: the reply
+  #                was cut at the token limit
   #   "abort"      three calls to the slow tool that sleep for a minute;
   #                echoes after any tool result
   #   "stuck"      one call to the hold tool: a handle whose release waits
@@ -248,14 +250,11 @@ defmodule Helyx.Test.Provider do
     end
   end
 
-  def stream("rejected", %Helyx.Context{messages: messages}, _opts) do
-    echo_after(messages, [
-      {:text_delta, "Trying"},
-      call("c1", "upcase", %{"text" => "one"}),
-      {:tool_call, %ToolCall{id: "c2", name: "upcase", arguments: ~s({"text": )}},
-      @tool_use
-    ])
-  end
+  def stream("rejected", %Helyx.Context{messages: messages}, _opts),
+    do: echo_after(messages, two_calls(:tool_use))
+
+  def stream("cut", %Helyx.Context{messages: messages}, _opts),
+    do: echo_after(messages, two_calls(:max_tokens))
 
   def stream("abort", %Helyx.Context{messages: messages}, _opts) do
     if any_result?(messages),
@@ -398,6 +397,16 @@ defmodule Helyx.Test.Provider do
 
   def stream("overrun", _context, _opts) do
     {:ok, raise_after([{:text_delta, "kept"}, @done], "pulled past done")}
+  end
+
+  # Text, one good call, and one call whose arguments are cut JSON text.
+  defp two_calls(stop) do
+    [
+      {:text_delta, "Trying"},
+      call("c1", "upcase", %{"text" => "one"}),
+      {:tool_call, %ToolCall{id: "c2", name: "upcase", arguments: ~s({"text": )}},
+      {:done, %{stop_reason: stop, usage: %{}}}
+    ]
   end
 
   defp blocks do
