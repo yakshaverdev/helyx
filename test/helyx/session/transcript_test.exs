@@ -122,6 +122,41 @@ defmodule Helyx.Session.TranscriptTest do
     end
   end
 
+  describe "resume/3" do
+    defp used(cost),
+      do: %{assistant([]) | usage: %Helyx.Usage{input: 1, cost: cost, cost_kind: cost && :list}}
+
+    test "sums the usages since the resume id; a message with no usage adds nothing" do
+      transcript = [used(0.5), Message.user("a"), used(0.1), assistant([]), used(0.2)]
+      {id, usage} = Transcript.resume(transcript, %{"claude-code" => {"h1", 1}}, "claude-code")
+
+      assert id == "h1"
+      assert %Helyx.Usage{input: 2, cost_kind: :list} = usage
+      assert_in_delta usage.cost, 0.3, 1.0e-12
+    end
+
+    test "a cost that is not known makes the sum's cost nil; no usage gives nil" do
+      ids = %{"claude-code" => {"h1", 0}}
+
+      assert {"h1", %Helyx.Usage{cost: nil}} =
+               Transcript.resume([used(0.1), used(nil)], ids, "claude-code")
+
+      assert Transcript.resume([assistant([])], ids, "claude-code") == {"h1", nil}
+    end
+
+    test "after another provider, the sum starts at the new resume id" do
+      other = %{used(0.4) | model: "fake/echo"}
+      transcript = [used(0.5), other, used(0.1)]
+      {id, usage} = Transcript.resume(transcript, %{"claude-code" => {"h2", 2}}, "claude-code")
+
+      assert {id, usage.cost} == {"h2", 0.1}
+    end
+
+    test "with no resume id there is no usage" do
+      assert Transcript.resume([used(0.1)], %{}, "claude-code") == {nil, nil}
+    end
+  end
+
   describe "resumable/3" do
     test "resumes when the provider answered last after its session started" do
       transcript = [Message.user("a"), assistant([])]

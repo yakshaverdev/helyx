@@ -51,7 +51,16 @@ defmodule Helyx.Session.FileTest do
       role: :assistant,
       model: "test/ok",
       stop_reason: :tool_use,
-      usage: %{"input" => 12, "output" => 3},
+      usage: %Helyx.Usage{
+        input: 12,
+        output: 3,
+        cache_read: 40,
+        cache_write: 5,
+        cost: 0.0125,
+        cost_kind: :list,
+        context_tokens: 60,
+        context_window: 200_000
+      },
       content: [
         %Message.Thinking{thinking: "hmm", signature: "sig"},
         %Message.Text{text: "Listing."},
@@ -70,7 +79,11 @@ defmodule Helyx.Session.FileTest do
       ]
     }
 
-    messages = [Message.user("List the tests."), assistant, result]
+    # The unknown usage and a nil usage are two values, and both stay.
+    unknown = %Message{role: :assistant, content: [], usage: %Helyx.Usage{}}
+    billed = %{unknown | usage: %Helyx.Usage{output: 1, cost: 2, cost_kind: :billed}}
+    none = %Message{role: :assistant, content: [%Message.Text{text: "cut"}]}
+    messages = [Message.user("List the tests."), assistant, result, unknown, billed, none]
 
     {:ok, file} = Session.File.create(dir, "sess1", "/repo", "test/ok")
     Enum.reduce(messages, file, &Session.File.append_message(&2, &1))
@@ -655,14 +668,9 @@ defmodule Helyx.Session.FileTest do
     assert File.read!(file.path) == before
   end
 
-  test "resume caps an integer over the digit limit in tool call arguments and usage", %{
-    tmp_dir: dir
-  } do
+  test "resume caps an integer over the digit limit in tool call arguments", %{tmp_dir: dir} do
     call = fn n -> %Message.ToolCall{id: "c1", name: "read", arguments: %{"offset" => [n]}} end
-
-    message = fn n ->
-      %Message{role: :assistant, content: [call.(n)], stop_reason: :tool_use, usage: %{"in" => n}}
-    end
+    message = fn n -> %Message{role: :assistant, content: [call.(n)], stop_reason: :tool_use} end
 
     {:ok, file} = Session.File.create(dir, "sess1", "/repo", "test/ok")
     file = Session.File.append_message(file, message.(10 ** 100))
@@ -672,29 +680,81 @@ defmodule Helyx.Session.FileTest do
 
     assert [["integer of more than 100 digits removed"], [10 ** 100 - 1]] ==
              for(%Message{content: [block]} <- resumed.messages, do: block.arguments["offset"])
-
-    assert ["integer of more than 100 digits removed", 10 ** 100 - 1] ==
-             for(%Message{usage: usage} <- resumed.messages, do: usage["in"])
   end
 
-  test "a bad usage, model, or stop reason decodes as a missing one", %{tmp_dir: dir} do
+  # The struct bound (`docs/features/usage-and-limits.md`, "Value
+  # bounds"): at the bound the usage comes back, one over gives the unknown
+  # usage, and the message stays.
+  test "a usage from the file gets the struct bound", %{tmp_dir: dir} do
+    tokens = %{"input" => 0, "output" => 0, "cache_read" => 0, "cache_write" => 0}
+
+    cases = [
+      {%{"input" => 10 ** 15}, %{"input" => 10 ** 15 + 1}},
+      {%{"output" => 10 ** 15}, %{"output" => 10 ** 15 + 1}},
+      {%{"cache_read" => 10 ** 15}, %{"cache_read" => 10 ** 15 + 1}},
+      {%{"cache_write" => 10 ** 15}, %{"cache_write" => 10 ** 15 + 1}},
+      {%{"context_tokens" => 10 ** 15}, %{"context_tokens" => 10 ** 15 + 1}},
+      {%{"cost" => 10 ** 12, "cost_kind" => "list"},
+       %{"cost" => 10 ** 12 + 0.5, "cost_kind" => "list"}},
+      {%{"cost" => 1.5, "cost_kind" => "list"}, %{"cost" => 1.5}},
+      {%{"context_window" => 1}, %{"context_window" => 0}},
+      {%{"context_window" => 10 ** 9}, %{"context_window" => 10 ** 9 + 1}},
+      {%{"input" => 10 ** 15 - 1}, %{"input" => -1}},
+      {%{}, %{"cost_kind" => "list"}},
+      {%{}, %{"extra" => 1}},
+      {%{}, %{"context_window" => nil}}
+    ]
+
+    {:ok, file} = Session.File.create(dir, "sess1", "/repo", "test/ok")
+
+    entries =
+      for {{good, bad}, i} <- Enum.with_index(cases), {usage, kind} <- [{good, :g}, {bad, :b}] do
+        message = %{"type" => "message", "role" => "assistant", "content" => []}
+        {kind, Map.merge(message, %{"id" => "#{kind}#{i}", "usage" => Map.merge(tokens, usage)})}
+      end
+
+    Enum.reduce(entries, file, fn {_kind, entry}, file ->
+      append_raw(file, JSON.encode!(entry))
+    end)
+
+    assert {:ok, resumed} = Session.File.resume(dir, "/repo")
+    assert length(resumed.messages) == length(entries)
+
+    for {{kind, entry}, %Message{usage: usage}} <- Enum.zip(entries, resumed.messages) do
+      if kind == :g do
+        fields =
+          for {key, value} <- entry["usage"],
+              do: {String.to_existing_atom(key), if(key == "cost_kind", do: :list, else: value)}
+
+        assert usage == struct!(Helyx.Usage, fields)
+      else
+        assert usage == %Helyx.Usage{}
+      end
+    end
+  end
+
+  test "a bad usage decodes as the unknown usage; a bad model or stop reason as a missing one",
+       %{tmp_dir: dir} do
     {:ok, file} = Session.File.create(dir, "sess1", "/repo", "test/ok")
 
     entries = [
       ~s({"id":"a","type":"message","role":"assistant","stop_reason":"banana","content":[]}),
       ~s({"id":"b","type":"message","role":"assistant","stop_reason":false,"content":[]}),
       ~s({"id":"c","type":"message","role":"assistant","model":42,"usage":[1],"content":[]}),
-      ~s({"id":"d","type":"message","role":"assistant","usage":"x","stop_reason":{},"content":[]})
+      ~s({"id":"d","type":"message","role":"assistant","usage":"x","stop_reason":{},"content":[]}),
+      ~s({"id":"e","type":"message","role":"assistant","usage":{"input":12,"output":3},"content":[]}),
+      ~s({"id":"f","type":"message","role":"assistant","usage":{"inputTokens":9},"content":[]}),
+      ~s({"id":"g","type":"message","role":"assistant","usage":null,"content":[]})
     ]
 
     Enum.reduce(entries, file, &append_raw(&2, &1))
 
     assert {:ok, resumed} = Session.File.resume(dir, "/repo")
-    assert length(resumed.messages) == 4
+    assert [nil, nil | unknown] = Enum.map(resumed.messages, & &1.usage)
+    assert unknown == List.duplicate(%Helyx.Usage{}, 5)
 
     for message <- resumed.messages do
-      assert %Message{role: :assistant, model: nil, stop_reason: nil, usage: usage} = message
-      assert usage == %{}
+      assert %Message{role: :assistant, model: nil, stop_reason: nil} = message
     end
   end
 

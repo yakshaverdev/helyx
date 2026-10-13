@@ -51,8 +51,8 @@ defmodule Helyx.Message do
     :stop_reason,
     :tool_call_id,
     :tool_name,
-    is_error: false,
-    usage: %{}
+    :usage,
+    is_error: false
   ]
 
   @type block :: Text.t() | Thinking.t() | ToolCall.t() | Image.t()
@@ -68,7 +68,7 @@ defmodule Helyx.Message do
           tool_call_id: String.t() | nil,
           tool_name: String.t() | nil,
           is_error: boolean(),
-          usage: map()
+          usage: Helyx.Usage.t() | nil
         }
 
   @doc "Builds a user message with one text block."

@@ -239,8 +239,8 @@ defmodule Helyx.Provider.Codex do
             state
         end
 
-      # The fields of a turn go back to their defaults.
-      %{state | turn_id: nil, turn: nil, items: %Items{}}
+      # The turn fields reset, except a usage sum with no `done` (Items).
+      %{state | turn_id: nil, turn: nil, items: Items.next(terminal, state.items)}
     end
   end
 

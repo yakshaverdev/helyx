@@ -44,7 +44,7 @@ defmodule Helyx.Test.WatchdogHarness do
   end
 
   def request({:turn, turn_id, _context}, from, %{model: "idle"} = state) do
-    done = {:done, %{stop_reason: :end_turn, usage: %{}}}
+    done = {:done, %{stop_reason: :end_turn, usage: nil}}
     {:ok, [{:reply, from, :ok}, {:event, turn_id, done}], state}
   end
 

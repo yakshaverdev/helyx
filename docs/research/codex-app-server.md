@@ -258,3 +258,10 @@ One run on 2026-10-13 with `codex-cli 0.162.1` at `~/.bun/bin/codex`, the progra
 - `last` and `total` had the six keys of the 0.155.0 note: `totalTokens` 15669, `inputTokens` 15664, `cachedInputTokens` 11648, `cacheWriteInputTokens` 0, `outputTokens` 5, `reasoningOutputTokens` 0. So `totalTokens` is `inputTokens` plus `outputTokens`, and `inputTokens` includes `cachedInputTokens`. Whether `inputTokens` also includes `cacheWriteInputTokens` was not seen: the run wrote no cache.
 - The window 475000 differs from the window of the same model id in the models.dev catalog of 2026-10-12 (1050000).
 - The same script with `codex-cli 0.144.1` (`~/.local/bin/codex`, first on the login `PATH`) failed the turn before any model call: the server rejected `gpt-6.1-sol` for a ChatGPT account on that version, and 0.144.1 warned `Model metadata for gpt-6.1-sol not found`. No `thread/tokenUsage/updated` came, so 0.144.1 is not verified.
+
+## Cache writes and sub-agent usage (2026-10-13, #557)
+
+Runs on 2026-10-13 with `codex-cli 0.162.1` at `~/.bun/bin/codex`, with the arguments and the `thread/start` of the run above, and the model `gpt-6.1-sol`.
+
+- **Cache writes** (1 run, 3 turns on one thread, each prompt longer than the one before): `cacheWriteInputTokens` was 0 in every `last` and `total`. So whether `inputTokens` includes `cacheWriteInputTokens` is still not seen. `totalTokens` was `inputTokens` plus `outputTokens` in each notification.
+- **Sub-agent usage** (2 runs, a prompt that asked the model to start one sub-agent): the child's model calls gave `thread/tokenUsage/updated` notifications with the child's `threadId` and `turnId`. The `last` and `total` of the parent thread did not include them: the parent's `total` grew only by the parent's own `last` values. In the run where the parent waited for the child, the child's notifications came about 3 s before the parent's `turn/completed`; in the run where it did not wait, the first child notification came about 0.77 s after it.

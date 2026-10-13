@@ -104,6 +104,30 @@ defmodule Helyx.Session.Transcript do
     end
   end
 
+  # The resume id of `resumable/3`, and with an id the sum of the usages
+  # of the assistant messages since the provider gave it, nil when none
+  # has one. All of them are the provider's: another provider's message
+  # makes the next one start fresh. A provider can use this sum to find
+  # the usage it reported before the resume
+  # (`docs/features/usage-and-limits.md`, "Per provider"). O(n).
+  @spec resume([Message.t()], %{String.t() => {String.t(), non_neg_integer()}}, String.t()) ::
+          {String.t() | nil, Helyx.Usage.t() | nil}
+  def resume(transcript, resume_ids, provider) do
+    case resumable(transcript, resume_ids, provider) do
+      nil ->
+        {nil, nil}
+
+      id ->
+        {_id, before} = Map.fetch!(resume_ids, provider)
+        usages = for %Message{role: :assistant, usage: usage} <- transcript, do: usage
+        {id, usages |> Enum.drop(before) |> Enum.reduce(nil, &add/2)}
+    end
+  end
+
+  defp add(nil, sum), do: sum
+  defp add(usage, nil), do: usage
+  defp add(usage, sum), do: Helyx.Usage.add(sum, usage)
+
   # The number of assistant messages and the last one, with no reversed
   # copy of the transcript.
   defp count_and_last_assistant(transcript) do

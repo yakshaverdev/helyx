@@ -27,17 +27,9 @@ defmodule Helyx.Provider.ClaudeCode do
 
   alias Helyx.HarnessIO
   alias Helyx.Message
-  alias Helyx.Provider.ClaudeCode.{Mcp, Replay, Turn}
+  alias Helyx.Provider.ClaudeCode.{Interrupt, Mcp, Meter, Replay, Turn}
 
   import Turn, only: [started?: 1]
-
-  defmodule Interrupt do
-    @moduledoc false
-    # A pending interrupt: its `from`, its `request_id` once written, and
-    # whether its control response and the turn's `result` came.
-    @enforce_keys [:from]
-    defstruct [:from, :request_id, response?: false, result?: false]
-  end
 
   defmodule State do
     @moduledoc false
@@ -53,7 +45,7 @@ defmodule Helyx.Provider.ClaudeCode do
     # `notified?` is true from a `task_notification` line until the next
     # `init` or `:busy` answer: a program turn can follow it (#240).
     # `tools` are the Helyx tool specs, and `calls` the open `tools/call`
-    # requests of `Mcp`.
+    # requests of `Mcp`. `meter` is the usage of the program (`Meter`).
     @enforce_keys [:exe, :model, :cwd]
     defstruct [
       :exe,
@@ -69,6 +61,7 @@ defmodule Helyx.Provider.ClaudeCode do
       tools: [],
       calls: %{},
       tasks: [],
+      meter: %Meter{},
       size: 0,
       init?: false,
       sent?: false,
@@ -96,7 +89,8 @@ defmodule Helyx.Provider.ClaudeCode do
         model: model,
         tools: HarnessIO.harness_tools(tools),
         cwd: Keyword.fetch!(opts, :cwd),
-        resume: opts[:resume_id]
+        resume: opts[:resume_id],
+        meter: Meter.start(opts[:resume_usage])
       }
 
       # A program that did not start has no port: `Helyx.Watchdog.start/4`
@@ -452,6 +446,8 @@ defmodule Helyx.Provider.ClaudeCode do
   # session comes before any `init` and before `started`. A skipped result
   # can also write the next held replay chunk.
   defp translate(%{"type" => "result"} = result, state) do
+    state = %{state | meter: Meter.result(state.meter, result)}
+
     cond do
       lost?(result, state) -> {[], %{state | terminal: :lost}}
       state.turn == nil -> {[], state}
@@ -478,8 +474,10 @@ defmodule Helyx.Provider.ClaudeCode do
          %{"type" => "assistant", "message" => %{"content" => blocks} = message},
          %State{turn: turn} = state
        )
-       when is_list(blocks),
-       do: emit(state, Turn.assistant(turn, message))
+       when is_list(blocks) do
+    state = %{state | meter: Meter.assistant(state.meter, message)}
+    emit(state, {Turn.assistant(blocks), turn})
+  end
 
   defp translate(
          %{"type" => "user", "message" => %{"content" => blocks}},
@@ -533,8 +531,10 @@ defmodule Helyx.Provider.ClaudeCode do
   end
 
   # The session closes the open assistant message at the terminal.
-  defp turn_result(%{"queued_turn_count" => 0} = result, state),
-    do: {[{:event, state.turn.id, Turn.terminal(result, state.turn)}], %{state | turn: nil}}
+  defp turn_result(%{"queued_turn_count" => 0} = result, state) do
+    {terminal, meter} = Turn.terminal(result, state.meter)
+    {[{:event, state.turn.id, terminal}], %{state | turn: nil, meter: meter}}
+  end
 
   defp turn_result(_result, state),
     do: {[], %{state | terminal: {:error, :no_queued_turn_count}}}

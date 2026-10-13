@@ -17,7 +17,8 @@ defmodule Helyx.Provider.Loop do
     * `{:tool_call, Helyx.Message.ToolCall.t()}`: one complete tool call,
       with the arguments of `Helyx.Provider`: a map, or the raw text of
       arguments that are not a JSON object
-    * `{:done, %{stop_reason: stop_reason, usage: map}}`: the call finished
+    * `{:done, %{stop_reason: stop_reason, usage: Helyx.Usage.t() | nil}}`:
+      the call finished
     * `{:error, term}`: the call failed
 
   `opts` carry `:core`, `:session_id`, `:turn_id`, and `:cwd`. The model
@@ -40,7 +41,9 @@ defmodule Helyx.Provider.Loop do
   held steers go out as `user_message` events, then `{:need_context,
   turn_id}`, and the next model call gets the fresh context. A done with
   no calls ends the turn, unless a steer is held: then the steers go out
-  and the model is called again in the same turn. A stream error, a stream that ends with no terminal
+  and the model is called again in the same turn; the usage of that call
+  goes into the usage of the next message of the provider process
+  (`docs/features/usage-and-limits.md`, "Per provider"). A stream error, a stream that ends with no terminal
   (`:stream_ended`), a model Task that raises, throws, or exits
   (`{:task_exit, reason}`), and a context error end the turn; the provider
   process stays. An exit signal that kills the model Task, such as one from
@@ -65,8 +68,20 @@ defmodule Helyx.Provider.Loop do
   # calls of the message with no result in the transcript yet, in call
   # order, each `{call, result}` with the result nil until it comes; the
   # call id is the request id. `steers` the ids of the held steers.
+  # `usage` is the usage of a call that sent no `message_end`, or nil; it
+  # outlives the turn.
   @enforce_keys [:provider, :model, :opts]
-  defstruct [:provider, :model, :opts, :turn, :task, content?: false, calls: [], steers: []]
+  defstruct [
+    :provider,
+    :model,
+    :opts,
+    :turn,
+    :task,
+    :usage,
+    content?: false,
+    calls: [],
+    steers: []
+  ]
 
   @doc false
   defmacro __using__(_opts) do
@@ -181,8 +196,28 @@ defmodule Helyx.Provider.Loop do
   # The process ends as it ends at a malformed event of the provider.
   defp bad(event), do: exit({:shutdown, {:bad_stream_event, event}})
 
-  defp terminal({:done, %{stop_reason: stop, usage: usage}} = done, state) do
+  # A usage that is not valid goes to Core in the done, which Core rejects.
+  defp terminal({:done, %{stop_reason: _, usage: usage} = fields} = done, state) do
+    if usage == nil or Helyx.Usage.valid?(usage),
+      do: called(fields, state),
+      else: finish(done, state)
+  end
+
+  defp terminal({:failed, reason}, state), do: finish({:error, {:task_exit, reason}}, state)
+  defp terminal(:stream_ended, state), do: finish({:error, :stream_ended}, state)
+  # An error, or a malformed done that Core rejects.
+  defp terminal({tag, _} = terminal, state) when tag in [:done, :error],
+    do: finish(terminal, state)
+
+  # The result of an enumerable that halts by itself on another value.
+  defp terminal(other, _state), do: bad(other)
+
+  # A call that finished with a valid usage. The kept usage joins it.
+  defp called(%{stop_reason: stop, usage: usage} = fields, state) do
+    usage = join(state.usage, usage)
+    done = {:done, %{fields | usage: usage}}
     message_end = {:event, state.turn, {:message_end, stop, usage}}
+    state = %{state | usage: nil}
 
     # A call sets `content?`. No call of a reply cut at the token limit
     # runs (#494).
@@ -199,18 +234,13 @@ defmodule Helyx.Provider.Loop do
         dispatch([message_end], state)
 
       true ->
-        dispatch([], state)
+        dispatch([], %{state | usage: usage})
     end
   end
 
-  defp terminal({:failed, reason}, state), do: finish({:error, {:task_exit, reason}}, state)
-  defp terminal(:stream_ended, state), do: finish({:error, :stream_ended}, state)
-  # An error, or a malformed done that Core rejects.
-  defp terminal({tag, _} = terminal, state) when tag in [:done, :error],
-    do: finish(terminal, state)
-
-  # The result of an enumerable that halts by itself on another value.
-  defp terminal(other, _state), do: bad(other)
+  defp join(nil, usage), do: usage
+  defp join(kept, nil), do: kept
+  defp join(kept, usage), do: Helyx.Usage.add(kept, usage)
 
   defp finish(terminal, state), do: {:ok, [{:event, state.turn, terminal}], end_turn(state)}
 

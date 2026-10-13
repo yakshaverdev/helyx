@@ -70,7 +70,7 @@ defmodule Helyx.Session.Server.Records do
 
   def take_steer(%State{activity: %Turn{partial: partial}} = state, text) do
     stop = if Enum.any?(partial, &match?(%Message.ToolCall{}, &1)), do: :tool_use, else: :end_turn
-    take_steer(end_assistant(state, stop, %{}), text)
+    take_steer(end_assistant(state, stop, nil), text)
   end
 
   # The close at the end of a turn, at `outcome`: `{:done, stop_reason,
@@ -102,7 +102,7 @@ defmodule Helyx.Session.Server.Records do
         emit(state, :message_end, %{message: message, error: reason})
 
       state ->
-        close_assistant(state, stop, %{}, %{error: reason})
+        close_assistant(state, stop, nil, %{error: reason})
     end
   end
 
@@ -148,7 +148,7 @@ defmodule Helyx.Session.Server.Records do
   end
 
   defp close_if(%State{activity: %Turn{partial: [_ | _] = partial}} = state, block?) do
-    if Enum.any?(partial, block?), do: end_assistant(state, :tool_use, %{}), else: state
+    if Enum.any?(partial, block?), do: end_assistant(state, :tool_use, nil), else: state
   end
 
   defp close_if(state, _block?), do: state

@@ -72,7 +72,11 @@ defmodule Helyx.Provider.OpenAITest do
              {:thinking_delta, "hmm"},
              {:text_delta, "Hel"},
              {:text_delta, "lo"},
-             {:done, %{stop_reason: :end_turn, usage: %{input: 12, output: 3}}}
+             {:done,
+              %{
+                stop_reason: :end_turn,
+                usage: %Helyx.Usage{input: 12, output: 3, context_tokens: 15}
+              }}
            ]
 
     assert_received {:request, conn, body}
@@ -105,7 +109,7 @@ defmodule Helyx.Provider.OpenAITest do
     assert Enum.to_list(stream) == [
              {:text_delta, 42},
              {:text_delta, "ok"},
-             {:done, %{stop_reason: :end_turn, usage: %{}}}
+             {:done, %{stop_reason: :end_turn, usage: %Helyx.Usage{}}}
            ]
   end
 
@@ -147,7 +151,7 @@ defmodule Helyx.Provider.OpenAITest do
              {:text_delta, "Listing."},
              {:tool_call,
               %Helyx.Message.ToolCall{id: "call_1", name: "bash", arguments: %{"command" => "ls"}}},
-             {:done, %{stop_reason: :tool_use, usage: %{}}}
+             {:done, %{stop_reason: :tool_use, usage: %Helyx.Usage{}}}
            ]
 
     assert_received {:request, conn, body}
@@ -222,7 +226,9 @@ defmodule Helyx.Provider.OpenAITest do
     }
 
     assert {:ok, stream} = OpenAI.Go.stream("kimi-k2", context, [])
-    assert List.last(Enum.to_list(stream)) == {:done, %{stop_reason: :end_turn, usage: %{}}}
+
+    assert List.last(Enum.to_list(stream)) ==
+             {:done, %{stop_reason: :end_turn, usage: %Helyx.Usage{}}}
 
     assert_received {:request, _conn, body}
 
@@ -261,7 +267,7 @@ defmodule Helyx.Provider.OpenAITest do
 
   describe "retry before the stream starts" do
     @no_wait [{"retry-after-ms", "0"}]
-    @streamed [{:text_delta, "ok"}, {:done, %{stop_reason: :end_turn, usage: %{}}}]
+    @streamed [{:text_delta, "ok"}, {:done, %{stop_reason: :end_turn, usage: %Helyx.Usage{}}}]
     # The shortest first backoff wait: 0.5 s less 25%.
     @min_backoff_ms 375
 
@@ -473,7 +479,7 @@ defmodule Helyx.Provider.OpenAITest do
              {:tool_call, %{id: "c1"}},
              {:tool_call, %{id: "c2"}},
              {:tool_call, %{id: "c3"}},
-             {:message_end, :tool_use, %{}},
+             {:message_end, :tool_use, %Helyx.Usage{}},
              {:tool_request, "c1", "read", %{"a" => 1}},
              {:tool_request, "c2", "read", "[1]"},
              {:tool_request, "c3", "bash", %{"b" => 1}}

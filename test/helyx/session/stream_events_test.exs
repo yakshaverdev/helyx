@@ -589,7 +589,7 @@ defmodule Helyx.Session.StreamEventsTest do
         {"an extra field with a wide integer", "wide_int",
          ~s({:text_delta, "hello", "integer of more than 100 digits removed"}})},
         {"a usage with a wide integer", "wide_usage",
-         ~s(usage: %{input: "integer of more than 100 digits removed"})},
+         ~s(usage: "integer of more than 100 digits removed")},
         {"a delta that is not valid UTF-8", "raw_bytes", ~S({:text_delta, "hi\xFF"}})},
         {"a tool call that is not valid UTF-8", "raw_call", ~S(name: "bash\xFF")},
         {"a tool call with an empty id", "empty_id",
@@ -600,7 +600,7 @@ defmodule Helyx.Session.StreamEventsTest do
         {"the stop reason of an aborted turn", "aborted_stop", "stop_reason: :aborted"},
         {"the stop reason of a failed turn", "error_stop", "stop_reason: :error"},
         {"a harness event from a model provider", "harness_event",
-         "{:message_end, :end_turn, %{}}}"}
+         "{:message_end, :end_turn, nil}}"}
       ] do
     test "a malformed stream event fails the turn and the session lives: #{name}",
          %{core: core} do
@@ -640,7 +640,7 @@ defmodule Helyx.Session.StreamEventsTest do
     end
   end
 
-  test "arguments or a usage that are a struct fail the turn and the session lives",
+  test "arguments or a usage of another struct type fail the turn and the session lives",
        %{core: core} do
     for model <- ["struct_usage", "struct_args"] do
       {:ok, session} = Session.start(core, model: "test/#{model}")

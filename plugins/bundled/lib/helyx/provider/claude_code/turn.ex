@@ -28,12 +28,12 @@ defmodule Helyx.Provider.ClaudeCode.Turn do
     steers: %{},
     chunks: [],
     replay?: false,
-    program?: false,
-    usage: %{}
+    program?: false
   ]
 
   alias Helyx.HarnessIO
   alias Helyx.Message
+  alias Helyx.Provider.ClaudeCode.Meter
 
   # The program started the turn's line (`command_lifecycle` `started`).
   defguard started?(turn) when turn.messages == nil
@@ -48,14 +48,10 @@ defmodule Helyx.Provider.ClaudeCode.Turn do
   def delta(_delta), do: []
 
   # The text of an assistant line already came as deltas; only its tool
-  # calls and its usage are new.
-  def assistant(turn, %{"content" => blocks} = message) do
-    calls =
-      for %{"type" => "tool_use", "id" => id, "name" => name, "input" => %{} = input} <- blocks,
-          do: {:tool_call, %Message.ToolCall{id: id, name: name, arguments: input}}
-
-    usage = if is_map(message["usage"]), do: message["usage"], else: turn.usage
-    {calls, %{turn | usage: usage}}
+  # calls are new.
+  def assistant(blocks) do
+    for %{"type" => "tool_use", "id" => id, "name" => name, "input" => %{} = input} <- blocks,
+        do: {:tool_call, %Message.ToolCall{id: id, name: name, arguments: input}}
   end
 
   # The tool results of a user line. The session closes the assistant
@@ -79,14 +75,18 @@ defmodule Helyx.Provider.ClaudeCode.Turn do
   def errors(%{"errors" => errors}) when is_list(errors), do: Enum.filter(errors, &is_binary/1)
   def errors(_result), do: []
 
-  def terminal(%{"is_error" => false, "subtype" => "success"} = result, turn) do
-    {:done, %{stop_reason: stop_reason(result["stop_reason"]), usage: turn.usage}}
+  # The terminal of the turn, and the meter after it: a `done` starts a
+  # new usage sum, and an error keeps it for the next `done`.
+  def terminal(%{"is_error" => false, "subtype" => "success"} = result, meter) do
+    {usage, meter} = Meter.done(meter)
+    {{:done, %{stop_reason: stop_reason(result["stop_reason"]), usage: usage}}, meter}
   end
 
-  def terminal(result, _turn) do
+  def terminal(result, meter) do
     text = Enum.join(errors(result), "; ")
     text = if text == "" and is_binary(result["result"]), do: result["result"], else: text
-    {:error, {:claude_code, HarnessIO.cap_error(result["subtype"]), HarnessIO.cap_error(text)}}
+    subtype = HarnessIO.cap_error(result["subtype"])
+    {{:error, {:claude_code, subtype, HarnessIO.cap_error(text)}}, meter}
   end
 
   # The wire values: docs/research/stop-reasons.md.

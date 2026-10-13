@@ -50,7 +50,7 @@ defmodule Helyx.Provider.LoopTest do
 
   defp events(actions), do: for({:event, "t1", event} <- actions, do: event)
 
-  defp done(stop), do: {:done, %{stop_reason: stop, usage: %{}}}
+  defp done(stop), do: {:done, %{stop_reason: stop, usage: nil}}
 
   test "deltas and calls go out in order; a done with calls ends the message and requests the call" do
     {actions, state} = pump(turn("blocks"))
@@ -61,7 +61,7 @@ defmodule Helyx.Provider.LoopTest do
              {:text_delta, "Listing"},
              {:text_delta, "."},
              {:tool_call, %Message.ToolCall{id: "call_1"}},
-             {:message_end, :end_turn, %{}},
+             {:message_end, :end_turn, nil},
              {:tool_request, "call_1", "bash", %{"command" => "ls"}}
            ] = events(actions)
 
@@ -100,7 +100,7 @@ defmodule Helyx.Provider.LoopTest do
              {:text_delta, "Trying"},
              {:tool_call, %Message.ToolCall{id: "c1"}},
              {:tool_call, %Message.ToolCall{id: "c2"}},
-             {:message_end, :max_tokens, %{}},
+             {:message_end, :max_tokens, nil},
              {:tool_result, "c1", ^cut},
              {:tool_result, "c2", ^cut}
            ] = events(actions)
@@ -116,12 +116,38 @@ defmodule Helyx.Provider.LoopTest do
 
     assert events(actions) == [
              {:text_delta, "ok"},
-             {:message_end, :end_turn, %{}},
+             {:message_end, :end_turn, nil},
              {:user_message, "s1"}
            ]
 
     assert List.last(actions) == {:need_context, "t1"}
     assert %{turn: "t1", steers: []} = state
+  end
+
+  # `docs/features/usage-and-limits.md`, "Per provider": a call that
+  # sends no `message_end` keeps its usage for the next message.
+  test "the usage of a call with no block while a steer is held goes into the next message" do
+    state = turn("usage_only")
+    assert {:ok, [], state} = request({:steer, "t1", "s1", "more"}, state)
+    {actions, state} = pump(state)
+
+    assert events(actions) == [{:user_message, "s1"}]
+    assert %{usage: %Helyx.Usage{input: 1, output: 2}} = state
+
+    {:ok, [_reply], state} = Loop.request({:context, "t1", {:ok, %Context{}}}, make_ref(), state)
+    {actions, state} = pump(state)
+
+    usage = %Helyx.Usage{input: 2, output: 4}
+    assert events(actions) == [{:done, %{stop_reason: :end_turn, usage: usage}}]
+    assert state.usage == nil
+  end
+
+  test "a usage that is not a Helyx.Usage goes to Core in the done, also while a steer is held" do
+    state = turn("bad_usage_only")
+    assert {:ok, [], state} = request({:steer, "t1", "s1", "more"}, state)
+    {actions, _state} = pump(state)
+
+    assert events(actions) == [{:done, %{stop_reason: :end_turn, usage: %{input: 1}}}]
   end
 
   test "a steer after the terminal is rejected" do
@@ -247,7 +273,7 @@ defmodule Helyx.Provider.LoopTest do
       for ref <- refs, do: assert_receive({:DOWN, ^ref, :process, _, _})
 
       assert List.last(collect_until(:turn_end)).data.error ==
-               inspect({:bad_stream_event, {:message_end, :end_turn, %{}}})
+               inspect({:bad_stream_event, {:message_end, :end_turn, nil}})
     end
 
     test "after a failed model call the provider process takes the next turn", %{core: core} do

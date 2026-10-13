@@ -26,7 +26,7 @@ defmodule Helyx.TUI.Test.Provider.Other do
 
   @impl true
   def stream(_model, _context, _opts) do
-    {:ok, [{:text_delta, "from other"}, {:done, %{stop_reason: :end_turn, usage: %{}}}]}
+    {:ok, [{:text_delta, "from other"}, {:done, %{stop_reason: :end_turn, usage: nil}}]}
   end
 end
 
