@@ -4,7 +4,7 @@ Replaced by #380. The `{:rejected_tool_call, call, reason}` event of #146 no lon
 
 ## Goal
 
-One tool call whose arguments do not decode does not fail the turn. The call joins the assistant message, gets an error result, and the text and the other calls of the message stay, so the model can correct the call. Issue #146, finding D4 of `docs/reviews/2026-09-26-boundary-review.md`.
+One tool call whose arguments do not decode does not fail the turn. The call joins the assistant message, gets an error result, and the text and the other calls of the message stay, so the model can correct the call. A reply of a provider on `Helyx.Provider.Loop` that stopped at the token limit is the exception: none of its calls runs. The harness providers run their own tool loops, so the exception does not reach them (#494, `docs/features/one-provider-path.md`, "`Helyx.Provider.Loop`"). Issue #146, finding D4 of `docs/reviews/2026-09-26-boundary-review.md`.
 
 ## The rule since #380
 

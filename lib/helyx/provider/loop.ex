@@ -32,13 +32,15 @@ defmodule Helyx.Provider.Loop do
   A turn: the helper replies `:ok` to `{:turn, ...}` and calls the model
   with the context. A done with calls sends `message_end`, then a
   `tool_request` for every call of the message at once, in call order; the
-  session runs or rejects them. The results join the transcript as
-  `tool_result` events in call order, each when every call before it has its
-  result. When every call has its result, the held steers go out as
-  `user_message` events, then `{:need_context, turn_id}`, and the next model
-  call gets the fresh context. A done with no calls ends the turn, unless a
-  steer is held: then the steers go out and the model is called again in the
-  same turn. A stream error, a stream that ends with no terminal
+  session runs or rejects them. A done with calls and the stop reason
+  `:max_tokens` sends no `tool_request`: each call gets the error result
+  "tool call not run: the reply was cut at the token limit". The results
+  join the transcript as `tool_result` events in call order, each when
+  every call before it has its result. When every call has its result, the
+  held steers go out as `user_message` events, then `{:need_context,
+  turn_id}`, and the next model call gets the fresh context. A done with
+  no calls ends the turn, unless a steer is held: then the steers go out
+  and the model is called again in the same turn. A stream error, a stream that ends with no terminal
   (`:stream_ended`), a model Task that raises, throws, or exits
   (`{:task_exit, reason}`), and a context error end the turn; the provider
   process stays. An exit signal that kills the model Task, such as one from
@@ -182,11 +184,22 @@ defmodule Helyx.Provider.Loop do
   defp terminal({:done, %{stop_reason: stop, usage: usage}} = done, state) do
     message_end = {:event, state.turn, {:message_end, stop, usage}}
 
-    # A call sets `content?`.
+    # A call sets `content?`. No call of a reply cut at the token limit
+    # runs (#494).
     cond do
-      state.calls == [] and state.steers == [] -> finish(done, state)
-      state.content? -> dispatch([message_end], state)
-      true -> dispatch([], state)
+      state.calls == [] and state.steers == [] ->
+        finish(done, state)
+
+      stop == :max_tokens and state.calls != [] ->
+        cut = {:error, Stream.not_run("the reply was cut at the token limit")}
+        calls = for {call, _} <- state.calls, do: {call, cut}
+        send_ready([message_end], %{state | calls: calls})
+
+      state.content? ->
+        dispatch([message_end], state)
+
+      true ->
+        dispatch([], state)
     end
   end
 

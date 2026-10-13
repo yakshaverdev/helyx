@@ -132,6 +132,27 @@ defmodule Helyx.Session.LoopTest do
     assert Helyx.Message.text(bad) == rejected
   end
 
+  test "no call of a reply cut at the token limit runs; each gets an error result in call order",
+       %{core: core} do
+    {:ok, session} = Session.start(core, model: "test/cut")
+    {:ok, _, _} = Session.subscribe(session)
+
+    :ok = Session.prompt(session, "hello")
+    events = collect_until(:turn_end)
+
+    # The good call "c1" did not run: its result is not "ONE".
+    cut = "tool call not run: the reply was cut at the token limit"
+    assert final_text(events) == "#{cut}|#{cut}"
+
+    [first_end | _] =
+      for %{type: :message_end, data: %{message: %{role: :assistant} = m}} <- events, do: m
+
+    assert %{stop_reason: :max_tokens} = first_end
+    ends = for %{type: :tool_execution_end, data: data} <- events, do: data.message
+    assert [%{tool_call_id: "c1", is_error: true}, %{tool_call_id: "c2", is_error: true}] = ends
+    assert Enum.map(ends, &Helyx.Message.text/1) == [cut, cut]
+  end
+
   test "tool calls run one at a time, in call order", %{core: core} do
     {:ok, session} = Session.start(core, model: "test/serial")
     {:ok, _, _} = Session.subscribe(session)
