@@ -30,7 +30,7 @@ The protocol facts are in `docs/research/claude-code-stream-json.md` and `docs/r
 
 ## Codex
 
-- The program runs as `codex app-server --disable shell_tool --disable unified_exec`, which turns off both shell features on codex 0.144.1. On codex 0.162.1, `codex features list` still shows `unified_exec` on with the flag, although the probe ran no command of the program (see the research note). In the probe, the model ran no command of the program although the user's `config.toml` turned `unified_exec` on. `apply_patch` stays for file changes. The model ref is `codex/<model>`.
+- The program runs as `codex app-server --disable shell_tool --disable unified_exec`. With these flags, the tool list of the model request has no command tool on codex 0.144.1 and 0.162.1, for the thread and for a sub-agent, also when the user's `config.toml` turns `unified_exec` on. On both versions `--disable shell_tool` takes out every command tool (`exec_command`, `write_stdin`, `shell_command`). `--disable unified_exec` alone changes `exec_command` into `shell_command` on 0.144.1 and has no effect on 0.162.1, where `codex features list` still shows `unified_exec` on (see the research note). `apply_patch` stays for file changes. The model ref is `codex/<model>`.
 - **Connect.** `initialize` (with `experimentalApi` when the program gets Helyx tools), then `thread/resume` with the stored id and the trust overrides, or `thread/start` (with the Helyx tools except the file tools as `dynamicTools`). A resume error with code -32600 and the exact message `no rollout found for thread id <id>` starts a fresh thread on the same program. Any other resume error fails the connect with `{:malformed, "thread/resume"}`. An error answer to `initialize` or `thread/start` fails the connect with the program's error.
 - **Thread id.** The stored id is the thread id, and when the thread has Helyx tools, `#` and the first 16 hex digits (`@digest_hex` in `Helyx.Provider.Codex.Tools`) of the SHA-256 of the JSON of its `dynamicTools`. A stored id whose digest is not the one of the session's tools starts a new thread with the replay. So a thread stored before the shell went off, with the file tools in its set, is not resumed.
 - **Turn.** `turn/start` with the prompt; `:ok` at its answer, which carries the program's turn id. An error answer to `turn/start` or `thread/inject_items` is the reply `{:error, {:codex, method, message}}`, and the provider process stops.
@@ -94,6 +94,7 @@ Users see each command as a Helyx `bash` tool cell, and Esc aborts it: the hands
 - Approvals in the UI: the answer stays `accept` (#503).
 - A product option that gives a harness its own shell. It comes when a product needs it.
 - Showing the Claude background tasks in the TUI.
+- The MCP servers of the user's own Claude or Codex config. They stay. A tool of such a server that starts a process gives it no Helyx abort, output bound, or tool event. The Codex tool lists of the probe had one named `mcp__node_repl__js` (`docs/research/harness-shell-off.md`, "The tool list of the model request").
 - `thread/fork`, `thread/revert`, `rewind_files`, and branching.
 - Compaction inside the harness (`thread/compact/start`).
 - A model switch inside one program: a switch closes the program.
