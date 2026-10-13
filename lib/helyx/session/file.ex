@@ -250,6 +250,23 @@ defmodule Helyx.Session.File do
     })
   end
 
+  @doc """
+  Appends a compaction entry: the provider `provider_id` compacted its own
+  history (`docs/features/harness-compaction.md`). A resume skips it.
+  """
+  @spec append_compaction(t(), String.t(), :manual | :auto, integer() | nil, integer() | nil) ::
+          t()
+  def append_compaction(%__MODULE__{} = file, provider_id, trigger, before, after_)
+      when is_binary(provider_id) and trigger in [:manual, :auto] do
+    append(file, %{
+      "type" => "compaction",
+      "provider" => provider_id,
+      "trigger" => Atom.to_string(trigger),
+      "tokens_before" => before,
+      "tokens_after" => after_
+    })
+  end
+
   @doc "Appends one completed message to the file."
   @spec append_message(t(), Message.t()) :: t()
   def append_message(%__MODULE__{} = file, %Message{} = message) do

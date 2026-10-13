@@ -567,6 +567,23 @@ defmodule Helyx.TUI.ViewModelTest do
     assert cells(vm) == []
   end
 
+  test "a compaction adds one information line, at most about 40 bytes" do
+    vm =
+      fold(
+        compaction: %{trigger: :manual, tokens_before: 29_557, tokens_after: 3_926},
+        compaction: %{trigger: :auto, tokens_before: 999, tokens_after: nil},
+        compaction: %{trigger: :auto, tokens_before: 1_000_000_000, tokens_after: 0}
+      )
+
+    assert cells(vm) == [
+             {:info, "compacted: 30k → 4k tokens"},
+             {:info, "compacted (auto)"},
+             {:info, "compacted: 1000000k → 0 tokens (auto)"}
+           ]
+
+    assert Enum.all?(cells(vm), fn {:info, text} -> byte_size(text) <= 40 end)
+  end
+
   test "a model change updates the model and adds an information cell" do
     vm = fold(model_change: %{model: "other/model"})
     assert vm.model == "other/model"

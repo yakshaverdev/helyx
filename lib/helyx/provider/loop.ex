@@ -55,6 +55,7 @@ defmodule Helyx.Provider.Loop do
   out when the context comes, with a new context request, before any
   model call. An interrupt kills the model Task and waits
   for its death before its `:ok`. A close or an idle close ends the process.
+  A compact request gets `:unsupported`.
   A model call has no deadline: the user aborts it.
   """
 
@@ -153,6 +154,11 @@ defmodule Helyx.Provider.Loop do
         {:ok, [{:reply, from, :ok}, {:event, turn_id, error}], end_turn(state)}
     end
   end
+
+  # The context of a model provider is the session's transcript: it keeps
+  # no history to compact.
+  def request({:compact, _turn_id, _instructions}, from, state),
+    do: {:ok, [{:reply, from, :unsupported}], state}
 
   # A close, an idle close, and a request of a turn that is not live.
   def request(_request, from, state), do: {:ok, [{:reply, from, :ok}], state}

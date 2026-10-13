@@ -14,7 +14,9 @@ defmodule Helyx.Event do
   Types and their `data`:
 
     * `:turn_start` – `%{}`, or `%{origin: :provider}` for a turn that the
-      provider started by itself, with no user message; once per turn
+      provider started by itself, with no user message, or `%{origin:
+      :compaction}` for a compaction turn (`Helyx.Session.compact/2`); once
+      per turn
     * `:message_start` – `%{message: Helyx.Message.t()}` (may be partial)
     * `:message_update` – `%{text_delta: binary}`, `%{thinking_delta: binary}`,
       or `%{tool_call: Helyx.Message.ToolCall.t()}`
@@ -57,8 +59,14 @@ defmodule Helyx.Event do
       that Helyx cannot confirm the provider took, with its text. It
       goes out at the end of the turn, or after it when the answer comes
       late. Helyx does not send it again. The user can send it again.
+    * `:compaction` – `%{trigger: :manual | :auto, tokens_before:
+      non_neg_integer | nil, tokens_after: non_neg_integer | nil}`: the
+      provider compacted the history that it keeps, `:manual` in a
+      compaction turn, `:auto` in any other turn; a count is nil when the
+      provider does not report it. The transcript does not change
     * `:notice` – `%{text: String.t()}`: a notice of the session (a failed
-      abort cleanup or session-file write) for the user, with a fixed text.
+      abort cleanup or session-file write, a provider that keeps no history
+      to compact) for the user, with a fixed text.
       It is not in the transcript, so the model never gets it
   """
 
@@ -77,6 +85,7 @@ defmodule Helyx.Event do
           | :model_change
           | :resume_id
           | :steer_unconfirmed
+          | :compaction
           | :notice
 
   @type t :: %__MODULE__{

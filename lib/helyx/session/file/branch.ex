@@ -17,7 +17,7 @@ defmodule Helyx.Session.File.Branch do
   end
 
   # The writer only produces a header on line one, then messages, model
-  # changes, and resume ids, every one with an id, every model field a
+  # changes, resume ids, and compactions, every one with an id, every model field a
   # string. Anything else on the branch is on-disk corruption, never
   # silently dropped, and never laundered by a later entry that overrides
   # it. An entry on no branch is never read, so its shape is not checked.
@@ -36,6 +36,7 @@ defmodule Helyx.Session.File.Branch do
   defp valid_entry?(%{"type" => "message"}), do: true
   defp valid_entry?(%{"type" => "model_change", "model" => model}), do: is_binary(model)
   defp valid_entry?(%{"type" => "harness_session"}), do: true
+  defp valid_entry?(%{"type" => "compaction"}), do: true
   defp valid_entry?(_entry), do: false
 
   # The branch of the newest leaf, header first. The index holds each entry

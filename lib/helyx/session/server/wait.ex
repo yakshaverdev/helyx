@@ -112,8 +112,13 @@ defmodule Helyx.Session.Server.Wait do
 
   # An abort in a wait gives the queued texts back, like the abort that
   # started the wait (`Queue.abort/1`), and its caller gets the reply at
-  # the end of the wait.
+  # the end of the wait. It drops a compaction that waits.
   @spec abort(State.t(), GenServer.from()) :: State.t()
   def abort(%State{activity: wait} = state, from),
-    do: Steering.abort(%{state | activity: %{wait | callers: [from | wait.callers]}})
+    do:
+      Steering.abort(%{
+        state
+        | pending_compact: nil,
+          activity: %{wait | callers: [from | wait.callers]}
+      })
 end

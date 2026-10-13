@@ -27,8 +27,9 @@ defmodule Helyx.TUI.ViewModel do
       its session or got a cut transcript, a steer that was not confirmed, a
       notice of the session, or a command the client rejected
       (`notice/2`), drawn as an error
-    * `{:info, text}` – information: a model change of any client, or a
-      line of the client itself (`info/2`), such as a resumed session
+    * `{:info, text}` – information: a model change of any client, a
+      compaction of the provider's own history, or a line of the client
+      itself (`info/2`), such as a resumed session
 
   `reason` is why the client rejected the last input, or nil. It is
   client-local, like a notice: `reject/2` sets it and `clear_reason/1`
@@ -169,6 +170,14 @@ defmodule Helyx.TUI.ViewModel do
     add_cell(%{vm | model: model}, {:info, "model: " <> model})
   end
 
+  # One line per compaction: `compacted: 30k → 4k tokens`, `compacted`
+  # with no counts, and ` (auto)` after one that the provider started.
+  def apply(vm, %Event{type: :compaction, data: data}) do
+    %{trigger: trigger, tokens_before: before, tokens_after: after_} = data
+    counts = if before && after_, do: ": #{tokens(before)} → #{tokens(after_)} tokens", else: ""
+    add_cell(vm, {:info, "compacted" <> counts <> if(trigger == :auto, do: " (auto)", else: "")})
+  end
+
   def apply(vm, %Event{type: :notice, data: data}) do
     %{text: text} = data
     add_cell(vm, {:notice, text})
@@ -189,6 +198,11 @@ defmodule Helyx.TUI.ViewModel do
 
   # A type that this client does not know.
   def apply(vm, %Event{}), do: vm
+
+  # A count of at most 10^9 (`Helyx.Session.Stream`), so the line stays
+  # short whatever a client folds.
+  defp tokens(n) when n < 1000, do: Integer.to_string(n)
+  defp tokens(n), do: "#{round(min(n, 1_000_000_000) / 1000)}k"
 
   @doc """
   The view model of a session from its snapshot. The snapshot messages go

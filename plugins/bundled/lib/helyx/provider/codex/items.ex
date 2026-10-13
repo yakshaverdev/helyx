@@ -6,8 +6,10 @@ defmodule Helyx.Provider.Codex.Items do
   # the ids of the messages whose text came as deltas. `usage` is the sum
   # of the thread's model calls since the last `done`
   # (`docs/features/usage-and-limits.md`, "Per provider"): it outlives a
-  # turn that ends with no `done`.
-  defstruct open: %{}, streamed: MapSet.new(), usage: %Helyx.Usage{}
+  # turn that ends with no `done`, and a compaction turn (`compact?`): no
+  # message holds the usage of a compaction, so it goes into the next
+  # `done` (docs/features/harness-compaction.md).
+  defstruct open: %{}, streamed: MapSet.new(), usage: %Helyx.Usage{}, compact?: false
 
   import Helyx.Usage, only: [wire_tokens?: 1, wire_window?: 1]
 
@@ -56,6 +58,10 @@ defmodule Helyx.Provider.Codex.Items do
       when type in @tool_item_types,
       do: {[{:tool_result, id, tool_result(item)}], %{items | open: Map.delete(items.open, id)}}
 
+  # The program compacted the thread's history. It gives no token counts.
+  def notification("item/completed", %{"item" => %{"type" => "contextCompaction"}}, items),
+    do: {[{:compaction, nil, nil}], items}
+
   # One notification after each model call. A count outside the wire
   # bound, and a cached count above the input, add nothing. The cost stays
   # unknown until a price source exists (#559).
@@ -87,6 +93,9 @@ defmodule Helyx.Provider.Codex.Items do
 
   def notification(_method, _params, items), do: {[], items}
 
+  def terminal(%{"status" => "completed"}, %__MODULE__{compact?: true}),
+    do: {:done, %{stop_reason: :end_turn, usage: nil}}
+
   def terminal(%{"status" => "completed"}, items),
     do: {:done, %{stop_reason: :end_turn, usage: items.usage}}
 
@@ -94,7 +103,7 @@ defmodule Helyx.Provider.Codex.Items do
     do: {:error, {:codex, status, HarnessIO.cap_error(error_message(result))}}
 
   # The items of the next turn. Only a `done` starts a new usage sum.
-  def next({:done, _}, _items), do: %__MODULE__{}
+  def next({:done, _}, %__MODULE__{compact?: false}), do: %__MODULE__{}
   def next(_terminal, items), do: %__MODULE__{usage: items.usage}
 
   def error_message(%{"error" => %{"message" => message}}) when is_binary(message), do: message

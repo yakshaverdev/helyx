@@ -8,7 +8,8 @@ defmodule Helyx.Session.Server do
 
   alias Helyx.ModelRef
   alias Helyx.Session.{Hands, Id, Turn}
-  alias Helyx.Session.Server.{Events, ProviderConn, Records, State, Steering, Stop, ToolRuns}
+  alias Helyx.Session.Server.{Compaction, Events, ProviderConn, Records, State, Steering, Stop}
+  alias Helyx.Session.Server.ToolRuns
   alias Helyx.Session.Server.{TurnLoop, Wait}
 
   use GenServer, restart: :temporary, shutdown: Stop.shutdown_ms()
@@ -41,6 +42,11 @@ defmodule Helyx.Session.Server do
     {:reply, reply, state}
   end
 
+  def handle_call({:compact, text}, _from, %State{} = state) do
+    {reply, state} = Compaction.admit(text, state)
+    {:reply, reply, state}
+  end
+
   def handle_call(:snapshot, _from, %State{} = state),
     do: {:reply, Events.snapshot(state), state}
 
@@ -68,6 +74,12 @@ defmodule Helyx.Session.Server do
         %State{activity: %Turn{id: turn_id}} = state
       ),
       do: {:noreply, Records.end_assistant(state, stop_reason, usage)}
+
+  def handle_info(
+        {:stream_event, turn_id, {:compaction, before, after_}},
+        %State{activity: %Turn{id: turn_id}} = state
+      ),
+      do: {:noreply, Records.compaction(state, before, after_)}
 
   # A tool result event of the provider: it closes the open message and
   # joins its open call (`Records.tool_result/3`).

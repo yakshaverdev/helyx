@@ -17,6 +17,10 @@ defmodule Helyx.Session.Stream do
   # or tool call.
   @max_session_queue 10_000
 
+  # A token count of a compaction: the wire bound of a token count
+  # (`docs/features/usage-and-limits.md`), or nil.
+  defguardp is_token_count(n) when is_nil(n) or (is_integer(n) and n >= 0 and n <= 1_000_000_000)
+
   @integer_reason "an integer in the arguments has more than " <>
                     "#{Message.max_integer_digits()} digits"
   @not_object_reason "the arguments are not a valid JSON object"
@@ -125,6 +129,12 @@ defmodule Helyx.Session.Stream do
         {:bad, malformed({:tool_request, call.id, call.name, call.arguments})}
     end
   end
+
+  # A compaction of the provider's own history, with its token counts
+  # before and after, each nil when the provider does not know it.
+  def check({:compaction, before, after_} = event)
+      when is_token_count(before) and is_token_count(after_),
+      do: {:send, event, nil}
 
   def check(other), do: {:bad, malformed(other)}
 

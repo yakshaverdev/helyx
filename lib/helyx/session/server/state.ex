@@ -82,7 +82,10 @@ defmodule Helyx.Session.Server.State do
     prepare_ms: 10_000,
     # The current idle timer (`:erlang.start_timer/3`, see
     # `TurnLoop.arm_idle/1`), or nil.
-    idle: nil
+    idle: nil,
+    # The instructions of a compaction that waits for the end of the wait,
+    # or nil (docs/features/harness-compaction.md).
+    pending_compact: nil
   ]
 
   @type t :: %__MODULE__{
@@ -107,7 +110,8 @@ defmodule Helyx.Session.Server.State do
           conn: ProviderConn.t() | nil,
           provider_ms: %{reply: pos_integer(), close: pos_integer(), idle: pos_integer()},
           prepare_ms: pos_integer(),
-          idle: reference() | nil
+          idle: reference() | nil,
+          pending_compact: String.t() | nil
         }
 
   # Sends `request` to the provider process with the bound `key` of `provider_ms`.

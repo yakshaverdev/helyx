@@ -151,7 +151,7 @@ What a provider sees on one call: the system prompt, the messages, and the tool 
 _Avoid_: prompt, window, history
 
 **Compaction**:
-Shrinking the context of one provider call so it fits the model. The transcript does not change.
+Shrinking the context of one provider call so it fits the model. The transcript does not change. A provider that keeps its own history compacts that history itself, when the session asks or by itself, and the session records the fact.
 _Avoid_: summarization, pruning, truncation
 
 ## Events

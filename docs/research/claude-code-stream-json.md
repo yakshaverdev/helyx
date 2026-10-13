@@ -453,3 +453,41 @@ Runs on 2026-10-13 with `claude` 2.1.296 at `/opt/homebrew/bin/claude`, with the
 
 - An interrupt while a sub-agent call streams, with the totals compared. The note "A sub-agent call cut by an interrupt is in no total" above is the run of #557 for this case.
 - A background sub-agent stopped by an interrupt during its turn.
+
+## Compaction (2026-10-13, #552)
+
+Runs on 2026-10-13 with version `2.1.296` at `/opt/homebrew/bin/claude`, `--model=haiku`, each in an empty temporary directory. A Python script drove the program with the flags of `Helyx.Provider.ClaudeCode` (`--output-format stream-json --verbose --include-partial-messages --input-format stream-json --permission-mode bypassPermissions --session-id=<uuid>`). A user line had its own `uuid`. The `/compact` command went as the text of a normal user line.
+
+### `/compact` after a turn (observed, 2 runs)
+
+The counts and times below are of the first run; the second run's compaction took 2,300 ms.
+
+- The program ran the command as a turn: `command_lifecycle` `queued`, then `started` with the `uuid` of the line.
+- Then a `system` `status` line with `status` `compacting`, the `SessionStart:compact` hook lines, a `status` line with `compact_result` `success`, and a new `init` line.
+- Then a `system` `compact_boundary` line with `compact_metadata`: `trigger` `manual`, `pre_tokens` 29557, `post_tokens` 3926, `cumulative_dropped_tokens`, and `duration_ms` 2903. The line also had `logical_parent_uuid`.
+- Then a `user` line with the summary as string content (list content in the run of "Compaction by the program"), and a `user` line with `isReplay` and the text `<local-command-stdout>Compacted </local-command-stdout>`.
+- The `result` had `subtype` `success`, `num_turns` 0, `stop_reason` null, `result` `""`, and `queued_turn_count` 0. Then `command_lifecycle` `completed`.
+
+### `/compact` in a fresh program (observed, 1 run)
+
+- `started`, then `status` `compacting`, then a `status` line with `compact_result` `failed` and `compact_error` `Not enough messages to compact.`, then `init`.
+- Then an `assistant` line with the model `<synthetic>`, and a `result` with `subtype` `success`, `num_turns` 0, and `queued_turn_count` 0. There was no `compact_boundary` line. So a `result` of `success` does not tell that a compaction happened; the boundary does.
+
+### Compaction by the program (observed, 1 run)
+
+- With `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=3`, the earlier turns had a `status` line with `compact_result` `failed` and the error `too_few_groups`.
+- A later turn, after its `started`, had a `compact_boundary` line with `trigger` `auto`, `pre_tokens` 36064, `post_tokens` 5292, `duration_ms` 8894, and `preserved_segment`. Then the summary `user` line, then the normal reply of the turn. The `result` had `num_turns` 2.
+- `CLAUDE_CODE_AUTO_COMPACT_WINDOW=40000` did not start a compaction in the same kind of run. The `contextWindow` of the model in the `result` was 1,000,000.
+
+### The cost of `/compact` (observed, 1 run)
+
+One run on 2026-10-13 with version `2.1.296`, `--model=haiku`, and the flags above: two short turns, then `/compact`, then a turn that asked for one word, on one process.
+
+- The `result` of `/compact` had `subtype` `success`, `num_turns` 0, `terminal_reason` null, and a `usage` with every count 0 and an empty `iterations` list.
+- Its `total_cost_usd` was 0.006357235, against 0.00494491 at the `result` before it. So the total includes the compaction call (0.001412325). Its `modelUsage` had one entry with `costBasis` `list`, and the counts of that entry grew by the compaction call (`inputTokens` 4 to 4165, `outputTokens` 288 to 1627).
+- The `result` of the next turn had `total_cost_usd` 0.008552325: the total goes on from the value at the compaction.
+
+### Not run
+
+- An interrupt during a compaction.
+- `/compact` with instructions: the text after the command was not checked in the summary.

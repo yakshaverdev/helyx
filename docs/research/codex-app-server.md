@@ -265,3 +265,23 @@ Runs on 2026-10-13 with `codex-cli 0.162.1` at `~/.bun/bin/codex`, with the argu
 
 - **Cache writes** (1 run, 3 turns on one thread, each prompt longer than the one before): `cacheWriteInputTokens` was 0 in every `last` and `total`. So whether `inputTokens` includes `cacheWriteInputTokens` is still not seen. `totalTokens` was `inputTokens` plus `outputTokens` in each notification.
 - **Sub-agent usage** (2 runs, a prompt that asked the model to start one sub-agent): the child's model calls gave `thread/tokenUsage/updated` notifications with the child's `threadId` and `turnId`. The `last` and `total` of the parent thread did not include them: the parent's `total` grew only by the parent's own `last` values. In the run where the parent waited for the child, the child's notifications came about 3 s before the parent's `turn/completed`; in the run where it did not wait, the first child notification came about 0.77 s after it.
+
+## Compaction (2026-10-13, #552)
+
+Runs on 2026-10-13 with `codex-cli 0.162.1` at `~/.bun/bin/codex`. A Python script drove `codex app-server` with the arguments of `Helyx.Provider.Codex` (`--disable shell_tool --disable unified_exec`), each in an empty temporary directory. Each run had one turn before the compaction.
+
+### `thread/compact/start` (observed, 1 run)
+
+- The request has only `threadId`; it takes no instructions. The answer `{"result": {}}` came at once.
+- Then `thread/status/changed`, and `turn/started` with a new turn id. The id came only there.
+- Then `item/started` with the item `{"type": "contextCompaction", "id": ...}`, then `thread/tokenUsage/updated` with `last` 11025 tokens (16097 before), then `item/completed` with the same item, then `turn/completed` with `status` `completed`. The compaction turn took 7836 ms.
+- The item has no token counts.
+
+### Compaction by the program (observed, 1 run)
+
+- With `-c model_auto_compact_token_limit=17000`, the `contextCompaction` item came first inside the turn that the client asked for, before the reply items of that turn.
+
+### Not run
+
+- `turn/interrupt` of a compaction turn.
+- `thread/compact/start` on a thread with no turn.

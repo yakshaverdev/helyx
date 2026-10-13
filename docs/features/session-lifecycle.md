@@ -20,11 +20,11 @@ A turn has a `phase` (`Helyx.Session.Turn`). The line between `preparing` and `s
 | Phase | From | To | A steer |
 | --- | --- | --- | --- |
 | `preparing` | the turn starts: `turn_start`, the connect, and the prepare Task | `submitting`, when the provider process is ready and the context is prepared | stays in the local queue. At the send it joins the transcript and the end of the context as a user message: it is part of the prompt |
-| `submitting` | `{:turn, ...}` sent | `submitted` at the answer `:ok` | stays in the local queue. At `:ok` the session sends the local steers, in order |
+| `submitting` | `{:turn, ...}` or `{:compact, ...}` sent | `submitted` at the answer `:ok` | stays in the local queue. At `:ok` the session sends the local steers, in order |
 | `submitted` | the answer `:ok` | the end of the turn | goes to the provider process with a new `steer_id` |
 
 - A turn that the provider starts by itself (`{:event, id, :turn_start}`) opens a `submitted` turn with no user message, and `turn_start` has `%{origin: :provider}`. It opens only with no turn, no wait, and a ready provider process. At any other time the session drops it and its events.
-- An answer other than `:ok` to `{:turn, ...}` stops the provider process (`ProviderRequest.stop_after/2`). Its `provider_down` fails the turn.
+- An answer other than `:ok` to `{:turn, ...}` stops the provider process (`ProviderRequest.stop_after/2`). Its `provider_down` fails the turn. The same holds for `{:compact, ...}`, except `:unsupported`, which ends the turn `done` with a notice (`docs/features/harness-compaction.md`).
 
 ## Message close
 
@@ -107,7 +107,7 @@ With a ready provider process and no turn and no wait, the session arms one idle
 | --- | --- | --- | --- |
 | connect: provider process start to `{:provider_ready, pid}` | 30,000 ms, armed kill (`connect_ms` in `Helyx.Session.Hands.State`) | the process ends; its `provider_down` fails the turn with `:provider_timeout` | hands |
 | prepare Task | 10,000 ms, armed kill (`prepare_ms` in `Helyx.Session.Server.State`) | the turn fails with `:context_timeout`, or a context request gets that error; the provider process stays. As for `:provider_timeout`, the session reads any `:killed` exit of the prepare Task as the timeout, so a linked process that brings the Task down with `:killed` gives the same failure | session |
-| answer to `{:turn, ...}`, `{:steer, ...}`, `{:interrupt, ...}`, `{:tool_result, ...}`, `{:context, ...}` | 2,000 ms, armed kill (`@provider_reply_ms` in `Helyx.Session.Server.State`) | the provider process ends; in a turn its `provider_down` fails the turn with `:provider_timeout`; a kill that fires in the next turn fails that turn | OTP timer server |
+| answer to `{:turn, ...}`, `{:compact, ...}`, `{:steer, ...}`, `{:interrupt, ...}`, `{:tool_result, ...}`, `{:context, ...}` | 2,000 ms, armed kill (`@provider_reply_ms` in `Helyx.Session.Server.State`) | the provider process ends; in a turn its `provider_down` fails the turn with `:provider_timeout`; a kill that fires in the next turn fails that turn | OTP timer server |
 | answer to `:close` and `:idle_close` | 5,000 ms, armed kill (`@provider_close_ms` in `Helyx.Session.Server.State`) | the provider process ends | OTP timer server |
 | `submitted`: the `:ok` answer to the terminal | unbounded, accepted: a model turn has no time bound | the user aborts; the interrupt has its armed kill | client |
 | idle time with a ready provider process | 1,800,000 ms (`provider_ms.idle` in `Helyx.Session.Server.State`) | the idle close | session |

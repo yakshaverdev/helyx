@@ -829,6 +829,10 @@ defmodule Helyx.Test.Connected do
   #     "big_cut" a cut of 101 digits, over the digit limit
   #     "max_cut" a cut of 100 digits, at the digit limit
   #     "neg_cut" a cut of -1
+  #     "compaction" a compaction with the counts 5 and nil, in a model turn
+  #     "compaction_max" a compaction with the counts 10^9 and 0
+  #     "compaction_over" a compaction with a count of 10^9 + 1
+  #     "compaction_neg" a compaction with a count of -1
   #     "result_N" a tool call and its result of N bytes, with no
   #                `message_end`: the result closes the message
   #     "result_multibyte" a result of 65,537 bytes: a 2-byte character
@@ -892,6 +896,10 @@ defmodule Helyx.Test.Connected do
     "big_cut" => [{:resume_id, "a", Integer.pow(10, 100)}],
     "max_cut" => [{:resume_id, "a", Integer.pow(10, 100) - 1}],
     "neg_cut" => [{:resume_id, "a", -1}],
+    "compaction" => [{:compaction, 5, nil}],
+    "compaction_max" => [{:compaction, 1_000_000_000, 0}],
+    "compaction_over" => [{:compaction, 1_000_000_001, 0}],
+    "compaction_neg" => [{:compaction, -1, 0}],
     "orphan" => [{:tool_result, "nope", {:ok, "lost"}}],
     "raw_result_id" => [{:tool_result, <<255>>, {:ok, "lost"}}],
     "empty_between" => [
