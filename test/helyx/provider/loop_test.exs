@@ -142,6 +142,43 @@ defmodule Helyx.Provider.LoopTest do
     assert state.usage == nil
   end
 
+  # A call that an abort or an error ends reports no usage: the next
+  # usage of the provider process has no cost, and the one after has.
+  test "the flag: after an aborted or failed call, the next usage has no cost" do
+    priced = %Helyx.Usage{input: 1, cost: 0.5, cost_kind: :list}
+
+    # "refuse_int": `stream/3` refuses before any request; the flag is
+    # set, as the feature doc states for a stream error before any call.
+    for model <- ["hang", "crash", "long_error", "empty", "refuse_int"] do
+      state = turn(model)
+
+      state =
+        if model == "hang",
+          do: elem(request({:interrupt, "t1"}, state), 2),
+          else: elem(pump(state), 1)
+
+      {actions, state} = pump(next_turn(state, "priced"))
+      assert {:done, %{usage: usage}} = List.last(events(actions))
+      assert usage == %{priced | cost: nil, cost_kind: nil}
+
+      {actions, _state} = pump(next_turn(state, "priced"))
+      assert {:done, %{usage: ^priced}} = List.last(events(actions))
+    end
+
+    # An interrupt with no model call running cuts no call.
+    {_actions, state} = pump(turn("ok"))
+    {:ok, [], state} = request({:interrupt, "t1"}, state)
+    {actions, _state} = pump(next_turn(state, "priced"))
+    assert {:done, %{usage: ^priced}} = List.last(events(actions))
+  end
+
+  defp next_turn(state, model) do
+    {:ok, [_reply], state} =
+      Loop.request({:turn, "t1", %Context{}}, make_ref(), %{state | model: model})
+
+    state
+  end
+
   test "a usage that is not a Helyx.Usage goes to Core in the done, also while a steer is held" do
     state = turn("bad_usage_only")
     assert {:ok, [], state} = request({:steer, "t1", "s1", "more"}, state)

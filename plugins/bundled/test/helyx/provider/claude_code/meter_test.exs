@@ -270,6 +270,15 @@ defmodule Helyx.Provider.ClaudeCode.MeterTest do
 
     assert {%Helyx.Usage{context_window: nil, cost: 0}, _} =
              Meter.done(call(%Meter{}, @usage1, 0, none))
+
+    # The serving side wins over config; config gives a window it lacks.
+    config = Meter.start(nil, 500_000)
+
+    assert {%Helyx.Usage{context_window: 300_000}, _} =
+             Meter.done(call(config, @usage1, 0, other))
+
+    assert {%Helyx.Usage{context_window: 500_000}, _} =
+             Meter.done(call(config, @usage1, 0, none))
   end
 
   # The wire bound: tokens 0 to 10^9, cost 0 to 10^6, window 1 to 10^9. A

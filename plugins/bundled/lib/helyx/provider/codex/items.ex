@@ -4,23 +4,33 @@ defmodule Helyx.Provider.Codex.Items do
   #
   # `open` maps the open tool items to their types, and `streamed` holds
   # the ids of the messages whose text came as deltas. `usage` is the sum
-  # of the thread's model calls since the last `done`
-  # (`docs/features/usage-and-limits.md`, "Per provider"): it outlives a
-  # turn that ends with no `done`, and a compaction turn (`compact?`): no
-  # message holds the usage of a compaction, so it goes into the next
-  # `done` (docs/features/harness-compaction.md).
-  defstruct open: %{}, streamed: MapSet.new(), usage: %Helyx.Usage{}, compact?: false
+  # of the thread's model calls since the last `done`, nil before the
+  # first (`docs/features/usage-and-limits.md`, "Per provider"): it
+  # outlives a turn that ends with no `done`, and a compaction turn
+  # (`compact?`): no message holds the usage of a compaction, so it goes
+  # into the next `done` (docs/features/harness-compaction.md). `lost?` is
+  # the flag: a call since the last `done` may be in no sum, so the cost of
+  # the next `done` is nil. `info` is the config window and prices
+  # (`Helyx.ModelInfo`).
+  defstruct open: %{},
+            streamed: MapSet.new(),
+            usage: nil,
+            compact?: false,
+            lost?: false,
+            info: %Helyx.ModelInfo{}
 
   import Helyx.Usage, only: [wire_tokens?: 1, wire_window?: 1]
 
-  alias Helyx.HarnessIO
-  alias Helyx.Message
+  alias Helyx.{HarnessIO, Message, ModelInfo}
 
   # Item types that run something (see the research note).
   @tool_item_types ~w(commandExecution fileChange mcpToolCall dynamicToolCall collabAgentToolCall
             webSearch imageView imageGeneration)
 
   @counts ~w(inputTokens cachedInputTokens cacheWriteInputTokens outputTokens)
+  # A missing cache count is 0; a missing input or output count is a bad
+  # shape.
+  @cache_counts %{"cachedInputTokens" => 0, "cacheWriteInputTokens" => 0}
 
   def tool_item?(type), do: type in @tool_item_types
 
@@ -62,18 +72,33 @@ defmodule Helyx.Provider.Codex.Items do
   def notification("item/completed", %{"item" => %{"type" => "contextCompaction"}}, items),
     do: {[{:compaction, nil, nil}], items}
 
-  # One notification after each model call. A count outside the wire
-  # bound, and a cached count above the input, add nothing. The cost stays
-  # unknown until a price source exists (#559).
-  def notification(
-        "thread/tokenUsage/updated",
-        %{"tokenUsage" => %{"last" => %{} = last} = usage},
-        items
-      ) do
-    [input, cached, write, output] = counts = for key <- @counts, do: Map.get(last, key, 0)
-    {total, window} = {last["totalTokens"], usage["modelContextWindow"]}
+  def notification(_method, _params, items), do: {[], items}
 
-    with true <- Enum.all?(counts, &wire_tokens?/1) and cached <= input,
+  # Every `thread/tokenUsage/updated` line, one after each model call. The
+  # good shape: a map `params` with a nonempty string `threadId` and a map
+  # `tokenUsage.last`. A good line of another thread is a child thread's,
+  # in no sum (the sub-agent ceiling). A line of the running turn of
+  # `thread` is priced alone and added. Any other line, a count outside
+  # the wire bound, and a cached count above the input add nothing and set
+  # the flag. Whether `inputTokens` holds the cache writes is not seen
+  # (research note), so a call with cache writes has no cost.
+  def usage(
+        %{"params" => %{"threadId" => other, "tokenUsage" => %{"last" => %{}}}},
+        thread,
+        _,
+        items
+      )
+      when is_binary(other) and other not in ["", thread],
+      do: items
+
+  def usage(line, thread, turn, items) do
+    with %{"params" => %{"threadId" => ^thread, "turnId" => ^turn} = params} <- line,
+         true <- is_binary(turn),
+         %{"tokenUsage" => %{"last" => %{} = last} = usage} <- params,
+         last = Map.merge(@cache_counts, last),
+         [input, cached, write, output] = counts = for(key <- @counts, do: last[key]),
+         {total, window} = {last["totalTokens"], usage["modelContextWindow"]},
+         true <- Enum.all?(counts, &wire_tokens?/1) and cached <= input,
          true <- total == nil or wire_tokens?(total),
          true <- window == nil or wire_window?(window) do
       call = %Helyx.Usage{
@@ -85,26 +110,39 @@ defmodule Helyx.Provider.Codex.Items do
         context_window: window
       }
 
-      {[], %{items | usage: Helyx.Usage.add(items.usage, call)}}
+      call = ModelInfo.price(call, items.info)
+      call = if write > 0, do: Helyx.Usage.unpriced(call), else: call
+      %{items | usage: if(items.usage, do: Helyx.Usage.add(items.usage, call), else: call)}
     else
-      _ -> {[], items}
+      _ -> %{items | lost?: true}
     end
   end
-
-  def notification(_method, _params, items), do: {[], items}
 
   def terminal(%{"status" => "completed"}, %__MODULE__{compact?: true}),
     do: {:done, %{stop_reason: :end_turn, usage: nil}}
 
   def terminal(%{"status" => "completed"}, items),
-    do: {:done, %{stop_reason: :end_turn, usage: items.usage}}
+    do: {:done, %{stop_reason: :end_turn, usage: usage(items)}}
 
   def terminal(%{"status" => status} = result, _items),
     do: {:error, {:codex, status, HarnessIO.cap_error(error_message(result))}}
 
-  # The items of the next turn. Only a `done` starts a new usage sum.
-  def next({:done, _}, %__MODULE__{compact?: false}), do: %__MODULE__{}
-  def next(_terminal, items), do: %__MODULE__{usage: items.usage}
+  # The items of the next turn. Only a `done` starts a new usage sum; a
+  # turn that ended `interrupted` or `failed` sets the flag.
+  def next({:done, _}, %__MODULE__{compact?: false} = items), do: %__MODULE__{info: items.info}
+
+  def next({:done, _}, items),
+    do: %__MODULE__{usage: items.usage, lost?: items.lost?, info: items.info}
+
+  def next(_terminal, items), do: %__MODULE__{usage: items.usage, lost?: true, info: items.info}
+
+  # A turn that started a sub-agent: the calls of the child thread are in
+  # no usage of this thread (research note), so the flag is set.
+  def sub_agent(items), do: %{items | lost?: true}
+
+  defp usage(%{usage: nil}), do: %Helyx.Usage{}
+  defp usage(%{usage: usage, lost?: true}), do: Helyx.Usage.unpriced(usage)
+  defp usage(%{usage: usage}), do: usage
 
   def error_message(%{"error" => %{"message" => message}}) when is_binary(message), do: message
   def error_message(_map), do: nil

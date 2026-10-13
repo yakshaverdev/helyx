@@ -43,10 +43,12 @@ defmodule Helyx.Provider.Loop do
   no calls ends the turn, unless a steer is held: then the steers go out
   and the model is called again in the same turn; the usage of that call
   goes into the usage of the next message of the provider process
-  (`docs/features/usage-and-limits.md`, "Per provider"). A stream error, a stream that ends with no terminal
-  (`:stream_ended`), a model Task that raises, throws, or exits
-  (`{:task_exit, reason}`), and a context error end the turn; the provider
-  process stays. An exit signal that kills the model Task, such as one from
+  (`docs/features/usage-and-limits.md`, "Per provider"). A call that an
+  abort or an error ends reports no usage, so the next usage of the
+  provider process has `cost: nil`. A stream error, a stream that ends
+  with no terminal (`:stream_ended`), a model Task that raises, throws, or
+  exits (`{:task_exit, reason}`), and a context error end the turn; the
+  provider process stays. An exit signal that kills the model Task, such as one from
   a process linked to it, ends the provider process too, through the link
   (L4).
 
@@ -70,7 +72,8 @@ defmodule Helyx.Provider.Loop do
   # order, each `{call, result}` with the result nil until it comes; the
   # call id is the request id. `steers` the ids of the held steers.
   # `usage` is the usage of a call that sent no `message_end`, or nil; it
-  # outlives the turn.
+  # outlives the turn. `lost?` is the flag: a call since the last usage
+  # ended with no usage, so the next usage has no cost.
   @enforce_keys [:provider, :model, :opts]
   defstruct [
     :provider,
@@ -79,6 +82,7 @@ defmodule Helyx.Provider.Loop do
     :turn,
     :task,
     :usage,
+    lost?: false,
     content?: false,
     calls: [],
     steers: []
@@ -209,21 +213,21 @@ defmodule Helyx.Provider.Loop do
       else: finish(done, state)
   end
 
-  defp terminal({:failed, reason}, state), do: finish({:error, {:task_exit, reason}}, state)
-  defp terminal(:stream_ended, state), do: finish({:error, :stream_ended}, state)
-  # An error, or a malformed done that Core rejects.
-  defp terminal({tag, _} = terminal, state) when tag in [:done, :error],
-    do: finish(terminal, state)
+  defp terminal({:failed, reason}, state), do: terminal({:error, {:task_exit, reason}}, state)
+  defp terminal(:stream_ended, state), do: terminal({:error, :stream_ended}, state)
+  defp terminal({:error, _} = error, state), do: finish(error, %{state | lost?: true})
+  # A malformed done, which Core rejects.
+  defp terminal({:done, _} = done, state), do: finish(done, state)
 
   # The result of an enumerable that halts by itself on another value.
   defp terminal(other, _state), do: bad(other)
 
   # A call that finished with a valid usage. The kept usage joins it.
   defp called(%{stop_reason: stop, usage: usage} = fields, state) do
-    usage = join(state.usage, usage)
+    usage = state.usage |> join(usage) |> lose(state.lost?)
     done = {:done, %{fields | usage: usage}}
     message_end = {:event, state.turn, {:message_end, stop, usage}}
-    state = %{state | usage: nil}
+    state = %{state | usage: nil, lost?: state.lost? and usage == nil}
 
     # A call sets `content?`. No call of a reply cut at the token limit
     # runs (#494).
@@ -247,6 +251,9 @@ defmodule Helyx.Provider.Loop do
   defp join(nil, usage), do: usage
   defp join(kept, nil), do: kept
   defp join(kept, usage), do: Helyx.Usage.add(kept, usage)
+
+  defp lose(%Helyx.Usage{} = usage, true), do: Helyx.Usage.unpriced(usage)
+  defp lose(usage, _lost?), do: usage
 
   defp finish(terminal, state), do: {:ok, [{:event, state.turn, terminal}], end_turn(state)}
 
@@ -286,9 +293,10 @@ defmodule Helyx.Provider.Loop do
   # drops them by the pid.
   defp stop_task(%{task: nil} = state), do: state
 
+  # The killed call reports no usage: the flag.
   defp stop_task(%{task: task} = state) do
     Task.shutdown(task, :brutal_kill)
-    %{state | task: nil}
+    %{state | task: nil, lost?: true}
   end
 
   # `Task.async/1` links and monitors the model Task. The provider process

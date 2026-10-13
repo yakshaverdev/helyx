@@ -30,7 +30,8 @@ defmodule Helyx.Provider.OpenAI do
 
     @impl true
     def stream(model, context, opts),
-      do: Helyx.Provider.OpenAI.stream(model, context, opts, "https://opencode.ai/zen/go/v1")
+      do:
+        Helyx.Provider.OpenAI.stream(id(), model, context, opts, "https://opencode.ai/zen/go/v1")
   end
 
   defmodule Zen do
@@ -42,7 +43,7 @@ defmodule Helyx.Provider.OpenAI do
 
     @impl true
     def stream(model, context, opts),
-      do: Helyx.Provider.OpenAI.stream(model, context, opts, "https://opencode.ai/zen/v1")
+      do: Helyx.Provider.OpenAI.stream(id(), model, context, opts, "https://opencode.ai/zen/v1")
   end
 
   alias Helyx.Provider.OpenAI.Events
@@ -51,13 +52,22 @@ defmodule Helyx.Provider.OpenAI do
   # The longest wait for the next body chunk (Req's `receive_timeout`).
   @chunk_idle_ms 120_000
 
-  @doc "The shared `stream/3` of the endpoint plugins. `base_url` selects the endpoint."
-  @spec stream(String.t(), Helyx.Context.t(), keyword(), String.t()) ::
+  @doc """
+  The shared `stream/3` of the endpoint plugins. `base_url` selects the
+  endpoint. The window and the prices of the model come from
+  `Helyx.ModelInfo`; a bad config entry fails the call with its key.
+  """
+  @spec stream(String.t(), String.t(), Helyx.Context.t(), keyword(), String.t()) ::
           {:ok, Enumerable.t()} | {:error, term()}
-  def stream(model, context, opts, base_url) do
-    case System.fetch_env(@env_var) do
-      {:ok, key} -> {:ok, Events.events(chunks(request(model, context, opts, base_url, key)))}
-      :error -> {:error, {:missing_env, @env_var}}
+  def stream(provider_id, model, context, opts, base_url) do
+    with {:ok, info} <- Helyx.ModelInfo.lookup(provider_id, model) do
+      case System.fetch_env(@env_var) do
+        {:ok, key} ->
+          {:ok, Events.events(chunks(request(model, context, opts, base_url, key)), info)}
+
+        :error ->
+          {:error, {:missing_env, @env_var}}
+      end
     end
   end
 

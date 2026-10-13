@@ -149,6 +149,7 @@ defmodule Helyx.Test.Provider do
   #   "bad_call"   a tool call whose name is not a string
   #   "empty_id"   a tool call with an empty id, then done
   #   "hang"       one delta, then the stream blocks forever
+  #   "priced"     one delta, then done with a usage that has a cost
   #   "transcript" every message in the context as "role:text" lines
   #
   # The models that call tools. Unless a line says otherwise, a model calls
@@ -187,6 +188,11 @@ defmodule Helyx.Test.Provider do
   # The models whose stream is a fixed list of events.
   @fixed %{
     "ok" => [{:text_delta, "ok"}, @done],
+    "priced" => [
+      {:text_delta, "ok"},
+      {:done,
+       %{stop_reason: :end_turn, usage: %Helyx.Usage{input: 1, cost: 0.5, cost_kind: :list}}}
+    ],
     "empty" => [],
     "garbage" => [{:text_delta, 42}],
     "long_error" => [{:error, "a" <> String.duplicate("é", 3000)}],

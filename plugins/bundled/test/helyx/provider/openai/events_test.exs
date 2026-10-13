@@ -238,6 +238,53 @@ defmodule Helyx.Provider.OpenAI.EventsTest do
               }}
   end
 
+  test "config gives the window and the prices; with neither, the usage has no window and no cost" do
+    usage = %{
+      prompt_tokens: 120,
+      completion_tokens: 30,
+      prompt_tokens_details: %{cached_tokens: 100}
+    }
+
+    chunks = [sse([delta(%{}, "stop"), %{choices: [], usage: usage}, "[DONE]"])]
+
+    info = %Helyx.ModelInfo{
+      context_window: 200_000,
+      prices: %{input: 2.0, output: 10.0, cache_read: 0.5}
+    }
+
+    assert [{:done, %{usage: %Helyx.Usage{} = priced}}] =
+             Enum.to_list(Events.events(chunks, info))
+
+    assert %{context_window: 200_000, cost_kind: :list} = priced
+    assert_in_delta priced.cost, (20 * 2.0 + 30 * 10.0 + 100 * 0.5) / 1_000_000, 1.0e-12
+
+    assert [{:done, %{usage: %Helyx.Usage{context_window: nil, cost: nil, cost_kind: nil}}}] =
+             Enum.to_list(Events.events(chunks))
+
+    # A stream with no usage chunk gives the unknown usage, prices or not.
+    assert [{:done, %{usage: %Helyx.Usage{} = unknown}}] =
+             Enum.to_list(Events.events([sse([delta(%{}, "stop"), "[DONE]"])], info))
+
+    assert unknown == %Helyx.Usage{}
+  end
+
+  test "a usage with a missing or null prompt or completion count has no cost" do
+    info = %Helyx.ModelInfo{prices: %{input: 2.0, output: 10.0}}
+
+    for usage <- [
+          %{},
+          %{completion_tokens: 30},
+          %{prompt_tokens: 120},
+          %{prompt_tokens: 120, completion_tokens: nil},
+          %{prompt_tokens: nil, completion_tokens: 30}
+        ] do
+      chunks = [sse([delta(%{}, "stop"), %{choices: [], usage: usage}, "[DONE]"])]
+
+      assert [{:done, %{usage: %Helyx.Usage{cost: nil, cost_kind: nil}}}] =
+               Enum.to_list(Events.events(chunks, info))
+    end
+  end
+
   test "a token count at the wire bound of 10^9 is mapped" do
     usage = %{prompt_tokens: 10 ** 9, completion_tokens: 10 ** 9}
     chunks = [sse([delta(%{}, "stop"), %{choices: [], usage: usage}, "[DONE]"])]

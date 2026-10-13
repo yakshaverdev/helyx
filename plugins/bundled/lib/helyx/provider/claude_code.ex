@@ -25,8 +25,7 @@ defmodule Helyx.Provider.ClaudeCode do
   # "Bounds"). Observed: 0 to 10 ms.
   @steer_wait_ms 5_000
 
-  alias Helyx.HarnessIO
-  alias Helyx.Message
+  alias Helyx.{HarnessIO, Message, ModelInfo}
   alias Helyx.Provider.ClaudeCode.{Interrupt, Mcp, Meter, Replay, Turn}
 
   import Turn, only: [started?: 1]
@@ -83,14 +82,14 @@ defmodule Helyx.Provider.ClaudeCode do
 
   @impl true
   def init(model, tools, opts) do
-    with {:ok, exe} <- HarnessIO.find("claude") do
+    with {:ok, info} <- ModelInfo.lookup(id(), model), {:ok, exe} <- HarnessIO.find("claude") do
       state = %State{
         exe: exe,
         model: model,
         tools: HarnessIO.harness_tools(tools),
         cwd: Keyword.fetch!(opts, :cwd),
         resume: opts[:resume_id],
-        meter: Meter.start(opts[:resume_usage])
+        meter: Meter.start(opts[:resume_usage], info.context_window)
       }
 
       # A program that did not start has no port: `Helyx.Watchdog.start/4`
