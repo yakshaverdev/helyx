@@ -17,8 +17,10 @@ defmodule Helyx.Provider do
 
   The options of `init/3` include `:resume_id`, the id of a `:resume_id`
   event of an earlier provider process to resume, or nil, and
-  `:resume_usage`, the sum of the usages of the messages since that event,
-  or nil when none has one.
+  `:resume_usage`, the sum of the usages of the messages since that event.
+  Its cost is nil when the last turn before the resume ended with no
+  `done`. It is nil when no message has a usage and that turn ended with a
+  `done`.
 
   Rules that every provider follows:
 

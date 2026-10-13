@@ -20,6 +20,8 @@ defmodule Helyx.Provider.ClaudeCode.MeterTest do
       prompt: 2,
       replayed: 0,
       request: 2,
+      resume: 1,
+      resume_flag?: 2,
       run_direct: 2,
       running_to: 2,
       script: 3,
@@ -477,6 +479,53 @@ defmodule Helyx.Provider.ClaudeCode.MeterTest do
 
     test "a resume where the total is below the stored sum: the cost is nil", ctx do
       assert [0.5, nil] = resumed_costs(ctx, [0.5], 0.3)
+    end
+
+    # A done at 0.1, then `abort_usage/3`'s abort with `lines`, then the
+    # turns of `between`, then a reconnect. The costs of the dones after
+    # the abort; the last one is of the resumed program.
+    defp resumed_after_abort(%{bin: bin} = ctx, lines, open_id, between) do
+      cut = JSON.decode!(aborted()) |> Map.merge(result(@usage1, 0.12)) |> j()
+      turn(bin, 1, 1, begin() ++ [total_line(0.1)])
+      turn(bin, 1, 2, begin() ++ [delta("so far")] ++ lines)
+      script(bin, "ctl.1", [interrupted(), rejected(open_id), cut])
+
+      for {total, k} <- Enum.with_index(between, 3),
+          do: turn(bin, 1, k, begin() ++ [total_line(total)])
+
+      turn(bin, 2, 1, begin() ++ [total_line(0.4)])
+
+      session = start(ctx)
+      prompt(session, "one")
+      :ok = Session.prompt(session, "agent")
+      until_tool_call()
+      :ok = Session.abort(session)
+      assert [%{outcome: :aborted}] = of_type(collect_until(:turn_end), :turn_end)
+      costs = for _total <- between, do: usage(prompt(session, "p")).cost
+      GenServer.stop(Session.pid(session))
+
+      costs = costs ++ [usage(prompt(resume(ctx), "back")).cost]
+      assert resume_flag?(bin, 2)
+      costs
+    end
+
+    # The live meter has the cost of the next done not known; the cut
+    # message has no usage, so the resumed one has it not known too.
+    test "an abort with an Agent call open, then a reconnect: the first done has no cost",
+         ctx do
+      assert [nil] = resumed_after_abort(ctx, [agent("toolu_01")], "toolu_01", [])
+    end
+
+    # The over-mark: the live cost is known, since the main call is in the
+    # total, but the transcript does not show which call the abort cut.
+    test "an abort of a plain call, then a reconnect: the first done has no cost", ctx do
+      assert [nil] = resumed_after_abort(ctx, [tool_use("toolu_02", %{})], "toolu_02", [])
+    end
+
+    test "a done with a usage after the cut message: the resumed cost is known again", ctx do
+      [live, resumed] = resumed_after_abort(ctx, [tool_use("toolu_02", %{})], "toolu_02", [0.3])
+      assert_in_delta live, 0.2, 1.0e-12
+      assert_in_delta resumed, 0.1, 1.0e-12
     end
 
     # A lost resume starts a new harness session, so its mark is 0.

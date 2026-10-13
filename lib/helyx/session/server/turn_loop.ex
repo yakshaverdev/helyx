@@ -162,7 +162,7 @@ defmodule Helyx.Session.Server.TurnLoop do
   end
 
   defp open_turn(state, turn, data),
-    do: emit(%{state | activity: turn}, :turn_start, data)
+    do: emit(%{state | activity: %{turn | start: length(state.transcript)}}, :turn_start, data)
 
   # The provider process (started at the first turn) and the prepare Task,
   # which builds the context; a turn that connects again keeps its prepare.
@@ -173,11 +173,10 @@ defmodule Helyx.Session.Server.TurnLoop do
     end
   end
 
-  # Starts the provider process of the turn under the hands, with the
-  # resume id of the transcript, and monitors it (`monitor_down/1`). A
-  # provider process of another model was closed before the turn
-  # (`close_switched/1`). An `:ending` process holds a wait, so no turn
-  # reuses it.
+  # Starts the provider process of the turn under the hands, with the resume
+  # of the messages before the turn, and monitors it (`monitor_down/1`). A
+  # process of another model was closed before (`close_switched/1`). An
+  # `:ending` process holds a wait, so no turn reuses it.
   defp connect(
          %State{conn: %ProviderConn{model: model, status: status}, activity: %Turn{model: model}} =
            state
@@ -186,7 +185,8 @@ defmodule Helyx.Session.Server.TurnLoop do
        do: {:ok, state}
 
   defp connect(%State{conn: nil, activity: turn} = state) do
-    {resumed, usage} = Transcript.resume(state.transcript, state.resume_ids, turn.model.provider)
+    history = Enum.take(state.transcript, turn.start)
+    {resumed, usage} = Transcript.resume(history, state.resume_ids, turn.model.provider)
 
     args = %{
       provider: turn.provider,

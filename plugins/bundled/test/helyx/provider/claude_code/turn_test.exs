@@ -14,14 +14,6 @@ defmodule Helyx.Provider.ClaudeCode.TurnTest do
 
   setup {Helyx.Test.ClaudeCodeFake, :setup_fake}
 
-  defp resume(ctx) do
-    {:ok, session} = Session.resume(ctx.core, sessions_dir: ctx.sessions, cwd: ctx.work)
-    {:ok, _, _} = Session.subscribe(session)
-    session
-  end
-
-  defp resume_flag?(bin, n), do: Enum.any?(args(bin, n), &String.starts_with?(&1, "--resume"))
-
   # Waits for the `message_update` of a tool call.
   defp until_tool_call do
     case List.last(collect_until(:message_update)) do

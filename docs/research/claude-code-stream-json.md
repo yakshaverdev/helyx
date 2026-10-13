@@ -487,7 +487,14 @@ One run on 2026-10-13 with version `2.1.296`, `--model=haiku`, and the flags abo
 - Its `total_cost_usd` was 0.006357235, against 0.00494491 at the `result` before it. So the total includes the compaction call (0.001412325). Its `modelUsage` had one entry with `costBasis` `list`, and the counts of that entry grew by the compaction call (`inputTokens` 4 to 4165, `outputTokens` 288 to 1627).
 - The `result` of the next turn had `total_cost_usd` 0.008552325: the total goes on from the value at the compaction.
 
+### An interrupt during `/compact` (observed, 2 runs)
+
+Two runs on 2026-10-13 with version `2.1.296`, `--model=haiku`, and the flags above with `--strict-mcp-config`: two short turns, then `/compact`, then an `interrupt` control request (`cancel_queued: true`) 0.2 s and 1.0 s after the `status` line `compacting`, then a turn that asked for one word, on one process.
+
+- After the `control_response`, a `status` line had `compact_result` `failed` and `compact_error` `API Error: Request was aborted.` Then an `init` line, an `assistant` line with the model `<synthetic>`, and the `result`. There was no `compact_boundary` line.
+- The `result` had `subtype` `success`, `is_error` false, `num_turns` 0, `terminal_reason` null, `stop_reason` null, and a `usage` with every count 0. Its `total_cost_usd` and its `modelUsage` entry were equal to those of the `result` before it (0.00449248 and 0.00445694). So the cut compaction call is in no total, and no line marks it as cut.
+- The next turn ran normally. Its `total_cost_usd` was the total before the compaction plus its own call only.
+
 ### Not run
 
-- An interrupt during a compaction.
 - `/compact` with instructions: the text after the command was not checked in the summary.

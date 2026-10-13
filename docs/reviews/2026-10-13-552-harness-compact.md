@@ -177,3 +177,28 @@ The invariants of the brief: the #552 invariant above, and the #557 invariant th
 | R.5 | failure path | A program turn queued behind `/compact` (`queued_turn_count` above 0 at its `result`) is dropped with the compaction turn's lines, and a reconnect then resumes a program with a reply that no message holds | Accepted, not fixed: no run has shown a positive count at a `/compact` result, so it gets no special handler. It is the class of the accepted ceiling of #240, where a program turn that the busy session drops is in no message |
 
 Tests of the cost rule: `compact_test.exs` (Claude Code), "the cost of the compaction call goes into the next done" and the two reconnect tests; `plugins/bundled/test/helyx/provider/codex/compact_test.exs`, "the token counts of the compaction turn go into the next done". Each fails when the meter or the sum is reset at the compaction.
+
+## Gate round 3 and its fix (full round)
+
+Gate r3 (Codex, on `b9d55d9`): done, an interrupt with `aborted_streaming` and partial text stored, a compaction, a reconnect, done. The live meter had the next cost not known; after the reconnect `Transcript.resume/3` skipped the cut message's nil usage, so the next `done` had a known cost that was too low. Confirmed by a read of the code.
+
+The branch was rebased on `origin/master` after #558 and #564 first. The conflicts were only in the research note and `escapes.md`; both texts are kept.
+
+The fix derives the rule on read and stores nothing on disk. `Transcript.resume/3` runs over the messages before the turn (the new in-memory field `Turn.start`, the transcript length at `open_turn`). When the last message that is not a tool result is not an assistant message with a usage, the last turn ended with no `done`, and the resume usage has `cost: nil`. The same rule covers two paths that resume on master too: a cut reply with a tool call (stop `:tool_use`, aborted results), and a turn cut before its first assistant message. Accepted over-mark: an interrupt of a plain tool and a failed program turn also give `cost: nil` after a reconnect.
+
+The invariant of the brief: the first done after a reconnect never shows a known cost when the live meter would have shown it unknown. The brief also named the #552 rule and the #564 rule.
+
+Round type: full (three code files, new functions). Simplify: the resume helpers of the Claude Code tests moved into `ClaudeCodeFake`; `done_last?/1` makes one pass. Bounds sensor: 1 candidate function, 0 flagged.
+
+| # | Axis | Finding | Resolution |
+| - | ---- | ------- | ---------- |
+| G3.1 | standards | The provider moduledoc and the `resume/3` comment still said "nil when none has one"; with no `done` the sum is a zero usage | Fixed: both texts name the two cases; test "after a turn with no done and no usage since the resume id, the cost is nil" |
+| G3.2 | standards | The rule had two wordings | Fixed: one wording in the comment, the moduledoc, and the feature doc |
+| G3.3 | Codex, failure path, spec | An interrupt of `/compact` whose `result` has `aborted_streaming`: the live meter sets the flag, and a compaction turn stores no message, so a resume shows a known cost | Rejected with evidence. A probe of 2026-10-13 (research note, "An interrupt during `/compact`", 2 runs) showed `compact_result` `failed`, `terminal_reason` null, and a total that leaves out the cut call, so the live meter keeps the cost known and the two agree. Tests in `compact_test.exs` use the observed shape, live and resumed. The cut compaction call in no total is a known ceiling in `usage-and-limits.md` |
+| G3.4 | spec | `harness-compaction.md` said "live and after a reconnect" for any abort or failure; live, only a call cut while it streamed gives nil | Fixed |
+| G3.5 | spec | "never as too low" was false for a turn that leaves no message | Fixed: the text names the two such turns. A program turn (#240) cut while its first call streamed has the flag only live (not run); recorded as a known ceiling; a fix needs a record on disk |
+| G3.6 | spec | No end-to-end test of the over-mark, and no test of a failed turn | Fixed: `meter_test.exs`, "an abort of a plain call, then a reconnect: the first done has no cost"; a failed message case in `transcript_test.exs` |
+
+Judgement calls not taken: the name `Turn.start` (a longer name breaks the 400-line limit of `turn_loop.ex`), the flag argument of the two test helpers, and the remaining duplicate `until_tool_call/0` from before this change.
+
+The round reproduced no defect in a shape that the program sends, so the loop ends. The fixes after the round are doc text and tests.

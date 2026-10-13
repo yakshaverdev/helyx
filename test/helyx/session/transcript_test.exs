@@ -143,7 +143,51 @@ defmodule Helyx.Session.TranscriptTest do
       assert {"h1", %Helyx.Usage{cost: nil}} =
                Transcript.resume([used(0.1), used(nil)], ids, "claude-code")
 
-      assert Transcript.resume([assistant([])], ids, "claude-code") == {"h1", nil}
+      assert Transcript.resume([used(0.1)], %{"claude-code" => {"h1", 1, 1}}, "claude-code") ==
+               {"h1", nil}
+    end
+
+    # The transcript before the turn. A turn that ended with no `done` has
+    # no assistant message with a usage after its last user message.
+    test "after a turn with no done, the sum's cost is nil and its tokens stay" do
+      cut = %{assistant([%Message.Text{text: "so far"}]) | stop_reason: :aborted}
+      failed = %{cut | stop_reason: :error}
+      cut_call = %{assistant([call("c1")]) | stop_reason: :tool_use}
+      after_compaction = %{"claude-code" => {"h1", 0, 2}}
+      ids = %{"claude-code" => {"h1", 0, nil}}
+
+      for {transcript, ids} <- [
+            {[used(0.1), Message.user("a"), cut], after_compaction},
+            {[used(0.1), Message.user("a"), failed], after_compaction},
+            {[
+               used(0.1),
+               Message.user("a"),
+               cut_call,
+               Message.tool_result(call("c1"), {:error, "aborted"})
+             ], ids},
+            {[used(0.1), Message.user("a")], ids}
+          ] do
+        assert {"h1", %Helyx.Usage{input: 1, cost: nil, cost_kind: nil}} =
+                 Transcript.resume(transcript, ids, "claude-code")
+      end
+    end
+
+    test "after a turn with no done and no usage since the resume id, the cost is nil" do
+      ids = %{"claude-code" => {"h1", 1, 1}}
+
+      assert Transcript.resume([used(0.1), Message.user("a")], ids, "claude-code") ==
+               {"h1", %Helyx.Usage{}}
+    end
+
+    test "a done with a usage after the cut turn makes the cost known again" do
+      cut_call = %{assistant([call("c1")]) | stop_reason: :tool_use}
+      aborted = Message.tool_result(call("c1"), {:error, "aborted"})
+      transcript = [used(0.1), Message.user("a"), cut_call, aborted, Message.user("b"), used(0.2)]
+
+      {"h1", usage} =
+        Transcript.resume(transcript, %{"claude-code" => {"h1", 0, nil}}, "claude-code")
+
+      assert_in_delta usage.cost, 0.3, 1.0e-12
     end
 
     test "after another provider, the sum starts at the new resume id" do

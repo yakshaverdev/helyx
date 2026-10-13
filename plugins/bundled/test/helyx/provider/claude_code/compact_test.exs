@@ -116,28 +116,86 @@ defmodule Helyx.Provider.ClaudeCode.CompactTest do
     assert ["--resume=" <> _] = Enum.filter(args(bin, 2), &String.starts_with?(&1, "--resume"))
   end
 
-  # The failed turn's message has no usage, so the mark leaves out both
-  # the failed call and the compaction call.
-  test "after a failed turn, a compaction, and a reconnect, the first done has both costs",
-       %{bin: bin} = ctx do
-    failed = aborted() |> JSON.decode!() |> Map.put("usage", %{"input_tokens" => 1}) |> j()
+  # A done, an interrupt while a call streams (that call is in no total),
+  # and a compaction. The cost of the next done is not known, live and
+  # after a reconnect: the cut message has no usage, so the resumed mark
+  # is not known either (`Transcript.resume/3`).
+  defp after_cut(%{bin: bin} = ctx, reconnect?) do
+    cut = %{"terminal_reason" => "aborted_streaming", "usage" => %{"input_tokens" => 1}}
+    cut = aborted() |> JSON.decode!() |> Map.merge(cut) |> j() |> costed(0.1)
+    {n, k} = if reconnect?, do: {2, 1}, else: {1, 4}
     turn(bin, 1, 1, begin() ++ [delta("a"), costed(result("a"), 0.1)])
-    turn(bin, 1, 2, begin() ++ [delta("b"), costed(failed, 0.12)])
+    turn(bin, 1, 2, begin() ++ [delta("so far")])
+    script(bin, "ctl.1", [interrupted(), cut])
     turn(bin, 1, 3, List.update_at(compaction(9, 2), -1, &costed(&1, 0.15)))
-    turn(bin, 2, 1, begin() ++ [delta("c"), costed(result("c"), 0.25)])
+    turn(bin, n, k, begin() ++ [delta("c"), costed(result("c"), 0.25)])
 
     session = start(ctx)
     prompt(session, "one")
-    assert [%{outcome: :error}] = of_type(prompt(session, "two"), :turn_end)
+    :ok = Session.prompt(session, "two")
+    collect_until(:message_update)
+    :ok = Session.abort(session)
+    assert [%{outcome: :aborted}] = of_type(collect_until(:turn_end), :turn_end)
     assert :ok = Session.compact(session)
     assert List.last(collect_until(:turn_end)).data == %{outcome: :done}
-    GenServer.stop(Session.pid(session))
 
-    {:ok, session} = Session.resume(ctx.core, sessions_dir: ctx.sessions, cwd: ctx.work)
-    {:ok, _, _} = Session.subscribe(session)
-    assert [_user, %{usage: %{cost: cost}}] = messages(prompt(session, "three"))
-    assert_in_delta cost, 0.15, 1.0e-12
-    assert ["--resume=" <> _] = Enum.filter(args(bin, 2), &String.starts_with?(&1, "--resume"))
+    if reconnect?, do: GenServer.stop(Session.pid(session))
+    session = if reconnect?, do: resume(ctx), else: session
+    assert [_user, %{usage: usage}] = messages(prompt(session, "three"))
+    assert resume_flag?(bin, n) == reconnect?
+    usage.cost
+  end
+
+  test "after a cut reply and a compaction, the next done has no cost", ctx do
+    assert after_cut(ctx, false) == nil
+  end
+
+  test "after a cut reply, a compaction, and a reconnect, the first done has no cost", ctx do
+    assert after_cut(ctx, true) == nil
+  end
+
+  # An interrupt during `/compact`, in the shape of the research note ("An
+  # interrupt during `/compact`"): the compaction fails, the `result` has
+  # no `terminal_reason`, and the total stays. The cut call is in no
+  # total, and the cost of the next done is known, live and resumed.
+  defp after_cut_compaction(%{bin: bin} = ctx, reconnect?) do
+    aborted = "API Error: Request was aborted."
+
+    ctl = [
+      interrupted(),
+      status(%{status: nil, compact_result: "failed", compact_error: aborted}),
+      init(),
+      assistant(%{type: "text", text: aborted}),
+      replayed() |> JSON.decode!() |> Map.put("queued_turn_count", 0) |> j() |> costed(0.1)
+    ]
+
+    {n, k} = if reconnect?, do: {2, 1}, else: {1, 3}
+    turn(bin, 1, 1, begin() ++ [delta("a"), costed(result("a"), 0.1)])
+    turn(bin, 1, 2, begin() ++ [status(%{status: "compacting"})])
+    script(bin, "ctl.1", ctl)
+    turn(bin, n, k, begin() ++ [delta("c"), costed(result("c"), 0.25)])
+
+    session = start(ctx)
+    prompt(session, "one")
+    assert :ok = Session.compact(session)
+    :ok = Session.abort(session)
+    assert [%{outcome: :aborted}] = of_type(collect_until(:turn_end), :turn_end)
+
+    if reconnect?, do: GenServer.stop(Session.pid(session))
+    session = if reconnect?, do: resume(ctx), else: session
+    assert [_user, %{usage: usage}] = messages(prompt(session, "three"))
+    assert resume_flag?(bin, n) == reconnect?
+    usage.cost
+  end
+
+  test "after an interrupt of /compact, the next done has a known cost, live and resumed",
+       ctx do
+    assert_in_delta after_cut_compaction(ctx, false), 0.15, 1.0e-12
+  end
+
+  test "after an interrupt of /compact and a reconnect, the first done has the same cost",
+       ctx do
+    assert_in_delta after_cut_compaction(ctx, true), 0.15, 1.0e-12
   end
 
   test "a compaction that fails ends the turn with the program's error", %{bin: bin, work: work} do

@@ -112,12 +112,15 @@ defmodule Helyx.Session.Transcript do
     end
   end
 
-  # The resume id of `resumable/3`, and with an id the sum of the usages
-  # of the assistant messages since the provider gave it, nil when none
-  # has one. All of them are the provider's: another provider's message
-  # makes the next one start fresh. A provider can use this sum to find
-  # the usage it reported before the resume
-  # (`docs/features/usage-and-limits.md`, "Per provider"). O(n).
+  # The resume id of `resumable/3` for the messages before a turn, and
+  # with an id the sum of the usages of the assistant messages since the
+  # provider gave it. All of them are the provider's: another provider's
+  # message makes the next one start fresh. A provider can use this sum to
+  # find the usage it reported before the resume
+  # (`docs/features/usage-and-limits.md`, "Per provider"). When the last
+  # message that is not a tool result is not an assistant message with a
+  # usage, the last turn ended with no `done`, and the sum's cost is nil.
+  # Else the sum is nil when no message has a usage. O(n).
   @spec resume([Message.t()], %{String.t() => label()}, String.t()) ::
           {String.t() | nil, Helyx.Usage.t() | nil}
   def resume(transcript, resume_ids, provider) do
@@ -128,8 +131,21 @@ defmodule Helyx.Session.Transcript do
       id ->
         {_id, before, _at} = Map.fetch!(resume_ids, provider)
         usages = for %Message{role: :assistant, usage: usage} <- transcript, do: usage
-        {id, usages |> Enum.drop(before) |> Enum.reduce(nil, &add/2)}
+        sum = usages |> Enum.drop(before) |> Enum.reduce(nil, &add/2)
+        {id, if(done_last?(transcript), do: sum, else: unknown(sum))}
     end
+  end
+
+  defp unknown(sum), do: %{(sum || %Helyx.Usage{}) | cost: nil, cost_kind: nil}
+
+  defp done_last?(transcript) do
+    last =
+      Enum.reduce(transcript, nil, fn
+        %Message{role: :tool_result}, last -> last
+        message, _last -> message
+      end)
+
+    match?(%Message{role: :assistant, usage: %Helyx.Usage{}}, last)
   end
 
   defp add(nil, sum), do: sum
