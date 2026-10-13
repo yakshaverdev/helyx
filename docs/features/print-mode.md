@@ -47,7 +47,7 @@ Decision of the worker (not in #491):
   - `main(fun, halt \\ &:erlang.halt(&1, flush: false))` runs `fun` as the whole of print mode, in this order:
     1. SIGTERM and SIGHUP are trapped: it swaps the default handler of `:erl_signal_server` for its own and sets SIGHUP to `:handle`. This is the first step, before any output. The handler starts a stop process on the first signal and ignores the later ones, so the signal server never waits. The stop process aborts the session that `run/2` named (or none, before `run/2` names one: the session can already run, but it has no prompt yet), in a process of its own that it does not link, waits for that process to end for at most `abort_ms/0` (3,000 ms), and calls `halt` with the status.
     2. The log goes to stderr: the `:default` logger handler writes to stdout, and its output type is fixed when it is added, so `main/2` removes it and adds it again with the type `:standard_error`. Without this, a warning of Core (a failed turn logs one) reaches stdout. App config cannot set the type: under `mix helyx`, Logger starts before the app config loads (probed: a `config/config.exs` with the type left the warning on stdout).
-    3. `fun` runs and returns the status, or `{:error, text}`, which `main/2` writes as one stderr line, with status 1.
+    3. `fun` runs and returns the status, or `{:error, text}`, which `main/2` writes as one stderr line, with status 1. A raise, throw, or exit of `fun` is caught and ends the same way: one stderr line with its banner (`Exception.format_banner/2`, through the clean pass), and status 1. So every way out of `fun` reaches step 4, except when the error write itself raises (see "Open", round 5). An exit signal from a linked process is not a way out of `fun`: it is not caught.
     4. It asks the handler to finish. The handler answers in one call, so the answer and a signal cannot both win: when no stop has started, the handler marks the run as done, so a later signal is ignored, and `main/2` calls `halt` with the status; when a stop has started, `main/2` waits for its halt, so the status of the signal stands. Nothing is put back: the halt ends the VM.
   - `prompt(text)` returns `{:ok, prompt}` with the piped input added, or `{:error, text}` when the input is over the bound or not UTF-8.
   - `run(session, prompt)` names `session` to the signal handler, subscribes, prints the session id, sends the prompt, and waits for the end of the turn. It returns 0 or 1. It runs inside `main/2`.
@@ -75,7 +75,7 @@ none. The TUI path does not change. `CodingAgent.run/1` picks the client from th
 
 | Resource | Created by | Held by | Released on normal end | Released when the holder crashes | Released on abort |
 | -------- | ---------- | ------- | ---------------------- | -------------------------------- | ----------------- |
-| the signal handler in `:erl_signal_server` | `main/2`, first step | the VM, until the halt | never removed: `main/2` calls `halt` | a raise in `fun` ends the CLI process with the handler still in place; the VM then stops by the BEAM path with the handler in, and a signal halts it | the stop process halts the VM |
+| the signal handler in `:erl_signal_server` | `main/2`, first step | the VM, until the halt | never removed: `main/2` calls `halt` | a raise, throw, or exit of `fun` is caught, and the halt follows; a kill of the CLI process leaves the handler in place, and a signal halts the VM | the stop process halts the VM |
 | the stop process, and its abort process | the signal handler, on the first signal | nobody: not linked | the halt ends both | a crash of the abort ends its wait; the halt follows | the halt |
 | the SIGHUP setting `:handle` | `main/2`, first step | the VM, until the halt | never set back: the halt | as on normal end | the halt |
 | the `:default` logger handler on stderr | `main/2`, after the trap | the VM, until the halt | never put back: the halt; a log line in the swap window is lost | as on normal end | the halt |
@@ -87,8 +87,7 @@ none. The TUI path does not change. `CodingAgent.run/1` picks the client from th
 - The answer goes to stdout as the provider sent it, with no clean pass: a script reads the exact text. Escape sequences in it reach a terminal when stdout is one.
 - A turn that the provider starts by itself before the prompt makes the prompt fail with `:turn_running`; the run then fails with status 1.
 - SIGINT (Ctrl+C) keeps the BEAM default: the break menu, or an exit with no abort. `os:set_signal/2` cannot handle SIGINT. (Accepted by the owner.)
-- The trap starts with the first step of print mode. Before it, the VM boots and `CodingAgent.CLI` checks the options and their combination (an argument error or a bad combination writes its line there, with status 1; the directory argument is checked inside print mode); a signal in that span gets the BEAM default. This is the known ceiling of the signal guarantee.
-- A raise in `fun` (a bug) ends the CLI process before the halt; the run then ends by the BEAM path with the trap still in place.
+- The trap starts with the first step of print mode. Before it, the VM boots and `CodingAgent.CLI` checks the options and their combination (an argument error or a bad combination writes its line there, with status 1; the directory argument is checked inside print mode); a signal in that span gets the BEAM default. The first step itself is two calls, the swap of the handler and then `:os.set_signal(:sighup, :handle)`: a SIGHUP between them gets the OS default and kills the VM with no status 129, as a SIGHUP during the boot does (the other order does not close the window, because `erl_signal_handler` ignores SIGHUP). No session and no output exist yet. This is the known ceiling of the signal guarantee. (Owner decision of 2026-10-13, after review round 4.)
 - The halt does not flush: a log line that the logger has not written yet is lost at the halt. The lines of print mode are written by the CLI process itself before the halt.
 - After a signal, output that has not reached the pipe is lost: the halt does not flush it. The answer of a run that a signal ends is not complete.
 - A turn that the abort does not end in 3,000 ms is cut by the halt: a tool process that the abort did not stop by then can outlive the VM.
@@ -98,17 +97,17 @@ none. The TUI path does not change. `CodingAgent.run/1` picks the client from th
 
 ## Open
 
-Review round 4 of #491 (owner exception round) reproduced two defects. They are not fixed; the owner decides:
+Review round 5 of #491 (reduced, owner exception) reproduced one defect. It is not fixed; the owner decides:
 
-- The first step of `main/2` is two calls: the swap of the handler, then `:os.set_signal(:sighup, :handle)`. A SIGHUP between the two calls gets the OS default: the VM dies by the signal and does not exit with 129. Codex hit the window by pausing the signal server during the swap; without a pause it lasts a few microseconds. The other order does not close it: a SIGHUP in the swap then goes to `erl_signal_handler`, which ignores it. It is a window inside the first step, outside the stated ceiling (the VM boot and the option check).
-- When stdin is a directory, the read of `prompt/1` fails inside the IO system: the reader of the terminal driver crashes, and `:io.setopts/1` returns `{:error, :terminated}`, so the match at the `:latin1` reset raises. The run ends by the BEAM path with status 1 and a stack trace, not with one error line and the halt. The trap stays, so a signal still halts with 143 or 129.
+- Only `fun.()` is in the `try`. The error write after it (`fail/1`), the logger swap before it, and the `:finish` call are not, and a raise there skips the halt. Reproduced: with stderr on a pipe whose reader has exited, the session line raises inside `fun` (the catch takes it), then `fail/1` raises again on the same write. The run ends by the BEAM crash path with status 1, no halt, and the crash report of init on stdout. So "every way out of `fun` reaches step 4" does not hold when the error line itself fails. The rule that breaks: the halt is placed after guarded code, not where every path from the trap reaches it, and the error write can raise.
+- `fun` links Core (`Helyx.Core.start_link/1` in `CodingAgent.run/1`). An exit signal from a linked process is not caught, so a crash of Core ends the run by the BEAM path with status 1 and no print-mode line. No boundary that crashes Core was found. (Judgement: an accepted hole with a ticket, or a change.)
 
-Small items from review rounds 3 and 4 of #491:
+Small items from review rounds 3 to 5 of #491:
 
 - The test "SIGTERM during the turn aborts it, then halts with 143" does not prove that the abort comes before the halt: it can subscribe and assert `turn_end` before `{:halt, 143}`.
 - The stderr case of `print_signal_test.exs` reaches the blocked write after a fixed 1 s sleep, not after a state marker.
+- A throw and an exit of `fun` have probes but no test; only a raise is tested.
 - The second-signal case of `print_signal_test.exs` orders its events by sleeps (the run returns 2 s after the trap, SIGTERM about 1 s after it): a margin of about 1 s, with no `load_` attribute. Under load the SIGTERM can come after the run returns, and the test then reads 0.
-- The `@shortdoc` of `Mix.Tasks.Helyx` still says "Starts the coding agent TUI".
 
 ## Out of scope
 

@@ -12,11 +12,16 @@ defmodule CodingAgent.PrintSignalTest do
   # loaded machine and the start of the VM.
   @load_ms 5_000
 
+  # The boot of a VM, up to the print handler, on a machine that runs the
+  # other tests and projects in parallel (5 s was too short once).
+  @load_boot_ms 20_000
+
   # `$1` is the folder, `$2` the case, the rest the command. A writer of
   # zeros fills the pipe of stdout or stderr, and `sleep` holds the read end
   # open and never reads it. For `stdin`, `sleep` holds stdin open and sends
   # nothing. `bad_stdin` fills stderr and pipes a byte that is not UTF-8.
-  # The exit status of the command goes to the file `status`.
+  # `dir_stdin` reads the folder as stdin. The exit status of the command
+  # goes to the file `status`.
   @script ~S"""
   dir=$1; mode=$2; shift 2
   case $mode in
@@ -24,6 +29,7 @@ defmodule CodingAgent.PrintSignalTest do
     stderr) { cat /dev/zero >&2 & "$@" </dev/null; echo $? >"$dir/status"; kill $!; } 2>&1 >/dev/null | sleep 20 ;;
     stdin) sleep 20 | { "$@" >/dev/null 2>&1; echo $? >"$dir/status"; } ;;
     bad_stdin) { cat /dev/zero >&2 & printf '\377' | "$@"; echo $? >"$dir/status"; kill $!; } 2>&1 >/dev/null | sleep 20 ;;
+    dir_stdin) "$@" <"$dir" >"$dir/out" 2>"$dir/err"; echo $? >"$dir/status" ;;
   esac
   """
 
@@ -89,10 +95,29 @@ defmodule CodingAgent.PrintSignalTest do
     assert await_file(Path.join(dir, "status"), Print.abort_ms() + @load_ms) == "143\n"
   end
 
+  test "stdin that is a folder ends the run with one error line and 1", %{tmp_dir: dir} do
+    launch(dir, "dir_stdin", @run)
+    assert await_file(Path.join(dir, "status"), @load_boot_ms) == "1\n"
+    assert File.read!(Path.join(dir, "out")) == ""
+
+    # The OTP log line of the crashed terminal reader also reaches stderr.
+    err = File.read!(Path.join(dir, "err"))
+    assert [_line] = Regex.scan(~r/^helyx: .*$/m, err)
+    refute err =~ "print.ex"
+  end
+
   # Starts `elixir` with the code of this build and `HOME` in `dir`: it runs
   # `run`, with `dir` bound, and writes its OS pid once the print handler is
   # in the signal server. Returns the pid once the file holds it.
   defp start(dir, mode, run) do
+    launch(dir, mode, run)
+    pid = await_file(Path.join(dir, "pid"), @load_boot_ms)
+    # The run reaches the read of stdin, a blocked write, or its wait.
+    Process.sleep(1_000)
+    pid
+  end
+
+  defp launch(dir, mode, run) do
     paths = Enum.flat_map(:code.get_path(), &["-pa", List.to_string(&1)])
     pid_file = Path.join(dir, "pid")
 
@@ -116,11 +141,6 @@ defmodule CodingAgent.PrintSignalTest do
       args: args,
       env: [{~c"HOME", String.to_charlist(dir)}]
     ])
-
-    pid = await_file(pid_file, @load_ms)
-    # The run reaches the read of stdin, a blocked write, or its wait.
-    Process.sleep(1_000)
-    pid
   end
 
   # The session file holds the answer once the turn has ended; the write to

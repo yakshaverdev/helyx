@@ -41,7 +41,8 @@ defmodule CodingAgent.Print do
   that `run/2` runs, waits at most `abort_ms/0`, and calls `halt` with 143
   or 129; later signals are ignored. Then the log goes to stderr, so stdout
   holds only the answer. `fun` returns the status, or `{:error, text}`,
-  which is written as one line on stderr and gives 1. When a signal came
+  which is written as one line on stderr and gives 1; a raise, throw, or
+  exit of `fun` gives one such line and 1 too. When a signal came
   first, its stop sets the status. `halt` halts the VM with no flush, so
   output that blocks never holds the exit, and `main/2` does not return.
   """
@@ -62,8 +63,16 @@ defmodule CodingAgent.Print do
     :ok = :logger.remove_handler(:default)
     :ok = :logger.add_handler(:default, :logger_std_h, put_in(log.config.type, :standard_error))
 
+    # Every way out of `fun` ends with the halt below.
+    result =
+      try do
+        fun.()
+      catch
+        kind, reason -> {:error, Exception.format_banner(kind, reason)}
+      end
+
     status =
-      case fun.() do
+      case result do
         {:error, text} -> fail(text)
         status -> status
       end

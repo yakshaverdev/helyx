@@ -1,5 +1,5 @@
 defmodule Mix.Tasks.Helyx do
-  @shortdoc "Starts the coding agent TUI"
+  @shortdoc "Starts the coding agent TUI, or print mode with -p"
   @moduledoc """
   Starts the coding agent from the source tree: the TUI in the alternate
   screen, or print mode with `-p`.
