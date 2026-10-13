@@ -12,6 +12,8 @@ defmodule Helyx.ModelInfo.Catalog do
   #
   # Application env of `helyx_plugins`, key `:model_catalog`: `dir`, `url`
   # (nil turns the refresh off), `req_options`, and `fetch_ms` for tests.
+  # Each lookup checks it, so a bad value fails the provider start with its
+  # key, as a bad `:models` entry does.
 
   import Helyx.Usage, only: [wire_window?: 1]
 
@@ -30,6 +32,8 @@ defmodule Helyx.ModelInfo.Catalog do
   @max_bytes 16 * 1024 * 1024
   @chunk_ms 30_000
   @day_s 86_400
+  # A fetch longer than the day would overlap the next attempt.
+  @max_fetch_ms @day_s * 1000
   # The bound of a model ref (`Helyx.ModelRef`).
   @max_id_bytes 256
   @max_etag_bytes 256
@@ -43,25 +47,48 @@ defmodule Helyx.ModelInfo.Catalog do
   @doc false
   # The window and the price set of the catalog entry of the model, each
   # nil when the catalog has none. A provider with no catalog id has none.
-  @spec lookup(String.t(), String.t()) :: Helyx.ModelInfo.t()
+  @spec lookup(String.t(), String.t()) ::
+          {:ok, Helyx.ModelInfo.t()} | {:error, {:bad_config, [term()]}}
   def lookup(provider_id, model) do
-    case @catalog_ids[provider_id] do
-      nil ->
-        %Helyx.ModelInfo{}
-
-      id ->
-        config = config()
-        data = load(config.dir).data
-        refresh(config)
-        get_in(data, [id, model]) || %Helyx.ModelInfo{}
+    with {:ok, config} <- config() do
+      {:ok, entry(@catalog_ids[provider_id], model, config)}
     end
   end
 
-  defp config do
-    config =
-      Map.merge(@defaults, Map.new(Application.get_env(:helyx_plugins, :model_catalog, [])))
+  defp entry(nil, _model, _config), do: %Helyx.ModelInfo{}
 
-    %{config | dir: Path.expand(config.dir)}
+  defp entry(id, model, config) do
+    data = load(config.dir).data
+    refresh(config)
+    get_in(data, [id, model]) || %Helyx.ModelInfo{}
+  end
+
+  # Config is a boundary: a keyword list of the known keys, else the path
+  # of the first bad key, `[:model_catalog, key]`.
+  defp config do
+    env = Application.get_env(:helyx_plugins, :model_catalog, [])
+
+    with {:ok, keys} <- Helyx.ModelInfo.check(env, [:model_catalog], &config_key/2) do
+      config = Map.merge(@defaults, Map.new(keys))
+      {:ok, %{config | dir: Path.expand(config.dir)}}
+    end
+  end
+
+  defp config_key(:dir, dir) when is_binary(dir) and dir != "", do: {:ok, dir}
+  defp config_key(:url, nil), do: {:ok, nil}
+  defp config_key(:url, url) when is_binary(url), do: if(http?(url), do: {:ok, url}, else: :error)
+  defp config_key(:fetch_ms, ms) when ms in 1..@max_fetch_ms//1, do: {:ok, ms}
+
+  defp config_key(:req_options, options),
+    do: if(Keyword.keyword?(options), do: {:ok, options}, else: :error)
+
+  defp config_key(_key, _value), do: :error
+
+  defp http?(url) do
+    match?(
+      {:ok, %URI{scheme: scheme, host: <<_, _::binary>>}} when scheme in ["http", "https"],
+      URI.new(url)
+    )
   end
 
   # Slim

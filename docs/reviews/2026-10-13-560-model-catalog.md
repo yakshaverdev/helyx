@@ -73,3 +73,18 @@ Round 2 reproduced defects (2.1 to 2.4, 2.8). The fix changed about 15 code line
 Codex adversarial on the five round 2 fixes: approve, no material finding. A Req probe confirmed that the catalog options win over `req_options`.
 
 Round 3 reproduced no defect, so the loop ends. Open: 2.8.
+
+## Round 4 (reduced, an exception to the round limit that the owner approved)
+
+The owner decided on finding 2.8: fix it in this ticket. The `:model_catalog` env gets the start check of a `:models` entry. A bad value fails each lookup with `{:error, {:bad_config, [:model_catalog, key]}}`, so the provider start fails with the key. `:openai_req_options` goes to its own ticket. The owner approved one more reduced round (spec and failure path) over the round limit of `/ship`.
+
+The fix: `Catalog.lookup/2` returns `{:ok, info}` or the error, and checks the env with `ModelInfo.check/3` (now `@doc false` public) at every lookup, also for a provider with no catalog id. One rule over all bad shapes: a keyword list of the four known keys, each value in its stated bound, else the path of the first bad key. Test: "a bad :model_catalog value fails each lookup with its key".
+
+| # | Axis | Finding | Resolution |
+| - | ---- | ------- | ---------- |
+| 4.1 | failure path | **A `url` with a byte that is not UTF-8 makes `lookup/3` raise.** `URI.new/1` raises `FunctionClauseError` from `:uri_string` on such a binary, in `http?/1`. Reproduced: `"https://models.dev/api\xFF.json"` | Open, by the owner's rule for this round: report, do not fix. One rule fixes it: `http?/1` rescues the parser exception by name and gives false; the test adds a `url` with byte 255 |
+| 4.2 | spec, failure path | The test comment "the last `url` wins" is false: `check/3` reverses the keys, so the first duplicate key wins. The test stays off the network only because "fake" has no catalog id | Open, by the same rule. Fix: the comment says that "fake" has no catalog id. Real config has no duplicate keys, because `Config` merges keyword lists |
+| 4.3 | spec | `req_options` is checked only as a keyword list; an unknown Req option crashes the refresh process, not the lookup | Kept: the docs say "a keyword list", and the old code did the same |
+| 4.4 | spec | The module comment still says "`fetch_ms` for tests" | Open, by the same rule: one word |
+
+The check form matches the `:models` check (one rule, the same error shape, the same `with` in `ModelInfo.lookup/3`). Round 4 reproduced one defect (4.1). It is not fixed in this commit.

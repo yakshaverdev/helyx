@@ -32,9 +32,8 @@ defmodule Helyx.ModelInfo do
   def lookup(provider_id, model, config \\ Application.get_env(:helyx_plugins, :models, %{})) do
     ref = provider_id <> "/" <> model
 
-    with {:ok, entry} <- entry(config, ref) do
-      catalog = Helyx.ModelInfo.Catalog.lookup(provider_id, model)
-
+    with {:ok, entry} <- entry(config, ref),
+         {:ok, catalog} <- Helyx.ModelInfo.Catalog.lookup(provider_id, model) do
       {:ok,
        %__MODULE__{
          context_window: entry[:context_window] || catalog.context_window,
@@ -132,9 +131,13 @@ defmodule Helyx.ModelInfo do
 
   defp tiers(_tiers), do: :error
 
+  @doc false
   # A keyword list whose every value passes `fun`, else the path of the
-  # first bad key: `[:models, ref, key, ...]`.
-  defp check(list, path, fun) do
+  # first bad key: `[:models, ref, key, ...]`. The catalog checks its
+  # config with it.
+  @spec check(term(), [term()], (atom(), term() -> {:ok, term()} | :error | {:error, term()})) ::
+          {:ok, keyword()} | {:error, {:bad_config, [term()]}}
+  def check(list, path, fun) do
     if Keyword.keyword?(list),
       do: Enum.reduce_while(list, {:ok, []}, &check_key(&1, &2, path, fun)),
       else: bad(path)

@@ -76,7 +76,12 @@ defmodule Helyx.ModelInfo.CatalogTest do
   # The data as a new node finds it: the first lookup loads it again.
   defp new_node(dir), do: :persistent_term.erase({Catalog, dir})
 
-  defp window, do: Catalog.lookup("codex", @model).context_window
+  defp window, do: info(@model).context_window
+
+  defp info(model) do
+    {:ok, info} = Catalog.lookup("codex", model)
+    info
+  end
 
   defp seed(cache, data), do: File.write!(cache, JSON.encode!(data))
 
@@ -106,11 +111,52 @@ defmodule Helyx.ModelInfo.CatalogTest do
       assert ModelInfo.lookup("fake", @model, %{}) == {:ok, %ModelInfo{}}
     end
 
+    test "a bad :model_catalog value fails each lookup with its key", %{tmp_dir: dir} do
+      bad = %{
+        dir: ["", ~c"dir", nil, 5],
+        url: ["", "models.dev/api.json", "ftp://models.dev/api.json", "https://", ~c"http://x", 5],
+        req_options: [%{plug: nil}, [1], nil],
+        fetch_ms: [0, -1, 86_400_001, 1.0, "60000", nil],
+        other: [1]
+      }
+
+      for {key, values} <- bad, value <- values do
+        Application.put_env(
+          :helyx_plugins,
+          :model_catalog,
+          Keyword.merge([dir: dir, url: nil], [{key, value}])
+        )
+
+        # Also for a provider with no catalog id: each provider start checks it.
+        for provider <- ["codex", "fake"] do
+          assert ModelInfo.lookup(provider, @model, %{}) ==
+                   {:error, {:bad_config, [:model_catalog, key]}}
+        end
+      end
+
+      for env <- [%{dir: dir}, "x", [:dir]] do
+        Application.put_env(:helyx_plugins, :model_catalog, env)
+        assert ModelInfo.lookup("codex", @model, %{}) == {:error, {:bad_config, [:model_catalog]}}
+      end
+
+      for good <- [
+            [url: "https://models.dev/api.json", fetch_ms: 1, req_options: []],
+            [url: nil, fetch_ms: 86_400_000]
+          ] do
+        # The refresh stays off: the last `url` wins, and "fake" has no catalog.
+        env(dir, good ++ [url: nil])
+        assert {:ok, %ModelInfo{}} = ModelInfo.lookup("fake", @model, %{})
+      end
+
+      Application.delete_env(:helyx_plugins, :model_catalog)
+      assert {:ok, %ModelInfo{}} = ModelInfo.lookup("fake", @model, %{})
+    end
+
     test "tiers become {size, prices}", %{cache: cache} do
       tier = %{"input" => 4, "output" => 20, "tier" => %{"type" => "context", "size" => 200_000}}
       seed(cache, put_in(@good, ["openai", "models", @model, "cost", "tiers"], [tier]))
 
-      assert Catalog.lookup("codex", @model).prices ==
+      assert info(@model).prices ==
                %{
                  input: 2,
                  output: 10.0,
@@ -271,13 +317,13 @@ defmodule Helyx.ModelInfo.CatalogTest do
       end)
 
       # The lookup returns while the fetch waits for :go.
-      assert Catalog.lookup("codex", model).context_window == context
+      assert info(model).context_window == context
       assert_receive {:fetch, task, _conn}
       assert File.exists?(marker)
       send(task, :go)
       await_end()
 
-      assert Catalog.lookup("codex", model).context_window == context
+      assert info(model).context_window == context
       refute File.exists?(cache)
     end
 
