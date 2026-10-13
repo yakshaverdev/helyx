@@ -121,7 +121,7 @@ defmodule Helyx.Test.Gated.Loop do
     end) ++ [done(:tool_use)]
   end
 
-  defp done(stop), do: {:done, %{stop_reason: stop, usage: %{}}}
+  defp done(stop), do: {:done, %{stop_reason: stop, usage: nil}}
 end
 
 defmodule Helyx.Test.Gated.Connected do
@@ -158,7 +158,7 @@ defmodule Helyx.Test.Gated.Connected do
 
   @impl true
   def request({:turn, turn_id, _context}, from, state) do
-    steps = steps(state.shape) ++ [{:done, %{stop_reason: :end_turn, usage: %{}}}]
+    steps = steps(state.shape) ++ [{:done, %{stop_reason: :end_turn, usage: nil}}]
     {actions, state} = run(steps, %{state | turn: turn_id})
     {:ok, [{:reply, from, :ok} | actions], state}
   end
@@ -197,7 +197,7 @@ defmodule Helyx.Test.Gated.Connected do
     calls = for id <- ~w(c1 c2 c3), do: %Message.ToolCall{id: id, name: "x", arguments: %{}}
 
     Enum.map(calls, &{:tool_call, &1}) ++
-      [{:message_end, :tool_use, %{}}, :gate] ++
+      [{:message_end, :tool_use, nil}, :gate] ++
       Enum.map(calls, &{:tool_result, &1.id, {:ok, "r"}}) ++ [{:text_delta, "end"}]
   end
 
@@ -216,7 +216,7 @@ defmodule Helyx.Test.Gated.Connected do
     [
       {:tool_call, %Message.ToolCall{id: "t", name: "read", arguments: %{}}},
       {:tool_call, %Message.ToolCall{id: "t", name: "bash", arguments: %{}}},
-      {:message_end, :tool_use, %{}},
+      {:message_end, :tool_use, nil},
       {:tool_result, "t", {:ok, "one"}},
       :gate,
       {:tool_result, "t", {:ok, "two"}},

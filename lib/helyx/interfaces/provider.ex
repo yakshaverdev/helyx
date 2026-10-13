@@ -15,6 +15,11 @@ defmodule Helyx.Provider do
   for one call: its `system` and `tools` are what a model provider sends on
   that call. A harness provider may use only its `messages`.
 
+  The options of `init/3` include `:resume_id`, the id of a `:resume_id`
+  event of an earlier provider process to resume, or nil, and
+  `:resume_usage`, the sum of the usages of the messages since that event,
+  or nil when none has one.
+
   Rules that every provider follows:
 
     * A steer is taken at most once. The session takes a steer at the
@@ -49,9 +54,9 @@ defmodule Helyx.Provider do
           {:text_delta, String.t()}
           | {:thinking_delta, String.t()}
           | {:tool_call, Helyx.Message.ToolCall.t()}
-          | {:done, %{stop_reason: stop_reason(), usage: map()}}
+          | {:done, %{stop_reason: stop_reason(), usage: Helyx.Usage.t() | nil}}
           | {:error, term()}
-          | {:message_end, stop_reason(), map()}
+          | {:message_end, stop_reason(), Helyx.Usage.t() | nil}
           | {:tool_result, String.t(), {:ok | :error, String.t()}}
           | {:resume_id, String.t(), non_neg_integer()}
           | {:user_message, String.t()}

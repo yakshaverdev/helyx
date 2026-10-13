@@ -155,6 +155,9 @@ defmodule Helyx.Test.ClaudeCodeFake do
       is_error: false,
       result: "",
       num_turns: 0,
+      total_cost_usd: 0,
+      usage: %{input_tokens: 0, output_tokens: 0},
+      modelUsage: %{},
       session_id: @sid
     })
   end

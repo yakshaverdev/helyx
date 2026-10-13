@@ -18,8 +18,10 @@ defmodule Helyx.Provider.OpenAI.Events do
 
   # `buffer` holds a partial SSE line across chunks, `calls` assembles tool
   # calls by index with `tool_bytes` their size, `finish` and `usage` wait
-  # for `[DONE]`.
-  @acc %{buffer: "", calls: %{}, tool_bytes: 0, finish: nil, usage: %{}}
+  # for `[DONE]`. A stream with no usage chunk gives the unknown usage.
+  @acc %{buffer: "", calls: %{}, tool_bytes: 0, finish: nil, usage: %Helyx.Usage{}}
+
+  import Helyx.Usage, only: [wire_tokens?: 1]
 
   @doc """
   Transforms a stream of SSE body chunks into provider stream events.
@@ -84,16 +86,17 @@ defmodule Helyx.Provider.OpenAI.Events do
   # streaming): the first choice with a string `finish_reason` and its
   # delta, the delta's tool calls, each with an integer index, a string
   # `id`, and a `function` with a string `name` and `arguments`, and a
-  # `usage` with integer token counts. Each of these can be missing or
-  # null, except the index. Core checks the text and thinking deltas.
+  # `usage` with token counts within the wire bound. Each of these can be
+  # missing or null, except the index. Core checks the text and thinking
+  # deltas.
   defp fields(%{} = chunk) do
     with {:ok, choice} <- first_choice(chunk["choices"]),
          %{} = delta <- field(choice, "delta", %{}),
          calls when is_list(calls) <- field(delta, "tool_calls", []),
          true <- Enum.all?(calls, &call?/1),
          true <- string?(choice["finish_reason"]),
-         true <- usage?(chunk["usage"]) do
-      {:ok, choice, delta, calls, chunk["usage"]}
+         {:ok, usage} <- usage(chunk["usage"]) do
+      {:ok, choice, delta, calls, usage}
     end
   end
 
@@ -112,16 +115,33 @@ defmodule Helyx.Provider.OpenAI.Events do
 
   defp call?(_call), do: false
 
-  defp usage?(nil), do: true
+  # The usage of one model call (`docs/features/usage-and-limits.md`, "Per
+  # provider"). The prompt count includes the cached tokens, so a cached
+  # count above it is outside the wire bound.
+  defp usage(nil), do: {:ok, nil}
 
-  defp usage?(usage),
-    do:
-      is_map(usage) and
-        Enum.all?([usage["prompt_tokens"], usage["completion_tokens"]], &integer?/1)
+  defp usage(%{} = usage) do
+    prompt = field(usage, "prompt_tokens", 0)
+    output = field(usage, "completion_tokens", 0)
+    details = field(usage, "prompt_tokens_details", %{})
+    cached = if is_map(details), do: field(details, "cached_tokens", 0)
 
-  # A missing or null field passes these.
+    if wire_tokens?(prompt) and wire_tokens?(output) and wire_tokens?(cached) and cached <= prompt,
+      do:
+        {:ok,
+         %Helyx.Usage{
+           input: prompt - cached,
+           output: output,
+           cache_read: cached,
+           context_tokens: prompt + output
+         }},
+      else: :error
+  end
+
+  defp usage(_usage), do: :error
+
+  # A missing or null field passes this.
   defp string?(value), do: value == nil or is_binary(value)
-  defp integer?(value), do: value == nil or is_integer(value)
 
   # A missing or null field takes the default; `false` is a value and fails
   # the shape check.
@@ -135,13 +155,13 @@ defmodule Helyx.Provider.OpenAI.Events do
   defp chunk_events({:ok, choice, delta, calls, usage}, _payload, acc) do
     acc = Enum.reduce(calls, acc, &put_call/2)
     # Normalizing here, not at flush, releases the decoded chunk: a raw
-    # `finish_reason` or `usage` is a sub-binary that pins its whole parent.
+    # `finish_reason` is a sub-binary that pins its whole parent.
     finish = choice["finish_reason"]
 
     acc = %{
       acc
       | finish: if(finish, do: stop_reason(finish), else: acc.finish),
-        usage: if(usage, do: usage(usage), else: acc.usage)
+        usage: usage || acc.usage
     }
 
     if acc.tool_bytes > @max_tool_call_bytes,
@@ -224,11 +244,4 @@ defmodule Helyx.Provider.OpenAI.Events do
   defp stop_reason("length"), do: :max_tokens
   defp stop_reason("content_filter"), do: :refused
   defp stop_reason(_finish), do: :end_turn
-
-  defp usage(usage) do
-    for {wire, key} <- [{"prompt_tokens", :input}, {"completion_tokens", :output}],
-        usage[wire] != nil,
-        into: %{},
-        do: {key, usage[wire]}
-  end
 end

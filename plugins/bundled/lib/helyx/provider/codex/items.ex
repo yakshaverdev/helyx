@@ -2,10 +2,14 @@ defmodule Helyx.Provider.Codex.Items do
   @moduledoc false
   # The item translation of `Helyx.Provider.Codex` for the running turn.
   #
-  # `open` maps the open tool items to their types, `streamed` holds the
-  # ids of the messages whose text came as deltas, and `usage` is the last
-  # token usage.
-  defstruct open: %{}, streamed: MapSet.new(), usage: %{}
+  # `open` maps the open tool items to their types, and `streamed` holds
+  # the ids of the messages whose text came as deltas. `usage` is the sum
+  # of the thread's model calls since the last `done`
+  # (`docs/features/usage-and-limits.md`, "Per provider"): it outlives a
+  # turn that ends with no `done`.
+  defstruct open: %{}, streamed: MapSet.new(), usage: %Helyx.Usage{}
+
+  import Helyx.Usage, only: [wire_tokens?: 1, wire_window?: 1]
 
   alias Helyx.HarnessIO
   alias Helyx.Message
@@ -13,6 +17,8 @@ defmodule Helyx.Provider.Codex.Items do
   # Item types that run something (see the research note).
   @tool_item_types ~w(commandExecution fileChange mcpToolCall dynamicToolCall collabAgentToolCall
             webSearch imageView imageGeneration)
+
+  @counts ~w(inputTokens cachedInputTokens cacheWriteInputTokens outputTokens)
 
   def tool_item?(type), do: type in @tool_item_types
 
@@ -50,9 +56,34 @@ defmodule Helyx.Provider.Codex.Items do
       when type in @tool_item_types,
       do: {[{:tool_result, id, tool_result(item)}], %{items | open: Map.delete(items.open, id)}}
 
-  def notification("thread/tokenUsage/updated", %{"tokenUsage" => %{"last" => usage}}, items)
-      when is_map(usage),
-      do: {[], %{items | usage: usage}}
+  # One notification after each model call. A count outside the wire
+  # bound, and a cached count above the input, add nothing. The cost stays
+  # unknown until a price source exists (#559).
+  def notification(
+        "thread/tokenUsage/updated",
+        %{"tokenUsage" => %{"last" => %{} = last} = usage},
+        items
+      ) do
+    [input, cached, write, output] = counts = for key <- @counts, do: Map.get(last, key, 0)
+    {total, window} = {last["totalTokens"], usage["modelContextWindow"]}
+
+    with true <- Enum.all?(counts, &wire_tokens?/1) and cached <= input,
+         true <- total == nil or wire_tokens?(total),
+         true <- window == nil or wire_window?(window) do
+      call = %Helyx.Usage{
+        input: input - cached,
+        output: output,
+        cache_read: cached,
+        cache_write: write,
+        context_tokens: total,
+        context_window: window
+      }
+
+      {[], %{items | usage: Helyx.Usage.add(items.usage, call)}}
+    else
+      _ -> {[], items}
+    end
+  end
 
   def notification(_method, _params, items), do: {[], items}
 
@@ -61,6 +92,10 @@ defmodule Helyx.Provider.Codex.Items do
 
   def terminal(%{"status" => status} = result, _items),
     do: {:error, {:codex, status, HarnessIO.cap_error(error_message(result))}}
+
+  # The items of the next turn. Only a `done` starts a new usage sum.
+  def next({:done, _}, _items), do: %__MODULE__{}
+  def next(_terminal, items), do: %__MODULE__{usage: items.usage}
 
   def error_message(%{"error" => %{"message" => message}}) when is_binary(message), do: message
   def error_message(_map), do: nil

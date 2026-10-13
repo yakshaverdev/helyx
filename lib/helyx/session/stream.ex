@@ -62,9 +62,10 @@ defmodule Helyx.Session.Stream do
   the JSON encode of its id, name, and arguments;
   `{:terminal, terminal}` for a `done` or an `error` event, ready to
   send, with the integer cap on an error reason; and `{:bad, error}` for
-  a malformed event. Arguments or a usage that are a struct are malformed:
-  the session file needs a plain map. A usage with an integer over the
-  digit limit is malformed. A delta or a tool call that is not valid UTF-8 is
+  a malformed event. Arguments that are a struct are malformed: the
+  session file needs a plain map. The usage of a `done` or a
+  `message_end` is nil or a `Helyx.Usage` within the struct bound
+  (`Helyx.Usage.valid?/1`); anything else is malformed. A delta or a tool call that is not valid UTF-8 is
   malformed: transcript text is valid from the moment it exists, so the
   file and the providers never see raw bytes. A tool call or a tool request with an
   empty id is malformed: a result names its call by the id.
@@ -82,13 +83,13 @@ defmodule Helyx.Session.Stream do
 
   # The stop reason set is closed (`@stop_reasons`), and the session file
   # holds only JSON. A terminal whose stop reason is outside
-  # the set, or whose usage the file cannot encode, fails the turn here,
-  # before the message exists, instead of raising in persist and silently
-  # turning persistence off for the rest of the session. A new plain map:
-  # the pattern also matches a struct and a map with more keys, and the
-  # session needs this shape.
+  # the set, or whose usage is not within the struct bound, fails the turn
+  # here, before the message exists, instead of raising in persist and
+  # silently turning persistence off for the rest of the session. A new
+  # plain map: the pattern also matches a struct and a map with more keys,
+  # and the session needs this shape.
   def check({:done, %{stop_reason: reason, usage: usage}} = terminal)
-      when reason in @stop_reasons and is_non_struct_map(usage) do
+      when reason in @stop_reasons do
     if valid_usage?(usage),
       do: {:terminal, {:done, %{stop_reason: reason, usage: usage}}},
       else: {:bad, malformed(terminal)}
@@ -170,8 +171,7 @@ defmodule Helyx.Session.Stream do
   # result limit, so a large result never fails the turn: this is the
   # boundary of a provider result, as the hands are for a tool of the
   # session.
-  defp provider_event({:message_end, reason, usage} = event)
-       when reason in @stop_reasons and is_non_struct_map(usage) do
+  defp provider_event({:message_end, reason, usage} = event) when reason in @stop_reasons do
     if valid_usage?(usage), do: {:ok, {:message_end, reason, usage}}, else: malformed(event)
   end
 
@@ -192,9 +192,9 @@ defmodule Helyx.Session.Stream do
 
   defp malformed(event), do: {:error, {:bad_stream_event, event}}
 
-  # The usage gets the same encodes as the arguments, so the same digit
-  # limit, checked before the encode.
-  defp valid_usage?(usage), do: not Message.big_integer?(usage) and Message.encodable?(usage)
+  # Range checks only, with no encode: they also keep every integer under
+  # the digit limit of `Helyx.Message`.
+  defp valid_usage?(usage), do: usage == nil or Helyx.Usage.valid?(usage)
 
   @doc "The error text of a tool call that does not run, from its rejection reason."
   @spec not_run(String.t()) :: String.t()

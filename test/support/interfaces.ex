@@ -78,7 +78,7 @@ defmodule Helyx.Test.ProviderOther do
 
   @impl true
   def stream(_model, _context, _opts) do
-    {:ok, [{:text_delta, "from other"}, {:done, %{stop_reason: :end_turn, usage: %{}}}]}
+    {:ok, [{:text_delta, "from other"}, {:done, %{stop_reason: :end_turn, usage: nil}}]}
   end
 end
 
@@ -181,8 +181,8 @@ defmodule Helyx.Test.Provider do
 
   alias Helyx.Message.ToolCall
 
-  @done {:done, %{stop_reason: :end_turn, usage: %{}}}
-  @tool_use {:done, %{stop_reason: :tool_use, usage: %{}}}
+  @done {:done, %{stop_reason: :end_turn, usage: nil}}
+  @tool_use {:done, %{stop_reason: :tool_use, usage: nil}}
 
   # The models whose stream is a fixed list of events.
   @fixed %{
@@ -201,10 +201,10 @@ defmodule Helyx.Test.Provider do
       {:tool_call, %ToolCall{id: "c", name: "bash", arguments: %{"text" => {1, 2}}}},
       @done
     ],
-    "bad_stop" => [{:text_delta, "hi"}, {:done, %{stop_reason: :banana, usage: %{}}}],
-    "aborted_stop" => [{:text_delta, "hi"}, {:done, %{stop_reason: :aborted, usage: %{}}}],
-    "error_stop" => [{:text_delta, "hi"}, {:done, %{stop_reason: :error, usage: %{}}}],
-    "harness_event" => [{:text_delta, "hi"}, {:message_end, :end_turn, %{}}, @done],
+    "bad_stop" => [{:text_delta, "hi"}, {:done, %{stop_reason: :banana, usage: nil}}],
+    "aborted_stop" => [{:text_delta, "hi"}, {:done, %{stop_reason: :aborted, usage: nil}}],
+    "error_stop" => [{:text_delta, "hi"}, {:done, %{stop_reason: :error, usage: nil}}],
+    "harness_event" => [{:text_delta, "hi"}, {:message_end, :end_turn, nil}, @done],
     "repeat_id" => [
       {:tool_call, %ToolCall{id: "c", name: "upcase", arguments: %{"text" => "a"}}},
       {:tool_call, %ToolCall{id: "c", name: "upcase", arguments: "secret"}},
@@ -218,6 +218,36 @@ defmodule Helyx.Test.Provider do
   @impl true
   def stream(model, _context, _opts) when is_map_key(@fixed, model),
     do: {:ok, Map.fetch!(@fixed, model)}
+
+  # A call with no block that reports one input token, or a usage map
+  # that is not a `Helyx.Usage`.
+  def stream("usage_only", _context, _opts),
+    do: {:ok, [{:done, %{stop_reason: :end_turn, usage: %Helyx.Usage{input: 1, output: 2}}}]}
+
+  def stream("bad_usage_only", _context, _opts),
+    do: {:ok, [{:done, %{stop_reason: :end_turn, usage: %{input: 1}}}]}
+
+  # A message closed at a tool call with a full usage, then a message with
+  # the unknown usage.
+  def stream("usage", %Helyx.Context{messages: messages}, _opts) do
+    full = %Helyx.Usage{
+      input: 3,
+      output: 4,
+      cache_read: 5,
+      cache_write: 6,
+      cost: 0.5,
+      cost_kind: :list,
+      context_tokens: 18,
+      context_window: 1000
+    }
+
+    if last_result?(messages),
+      do:
+        {:ok, [{:text_delta, "done"}, {:done, %{stop_reason: :end_turn, usage: %Helyx.Usage{}}}]},
+      else:
+        {:ok,
+         [call("1", "upcase", %{"text" => "a"}), {:done, %{stop_reason: :tool_use, usage: full}}]}
+  end
 
   def stream("blocks", %Helyx.Context{messages: messages}, _opts) do
     if last_result?(messages),
@@ -288,7 +318,9 @@ defmodule Helyx.Test.Provider do
 
     if last_result?(messages) do
       [text, {:done, done}] = echo_results(messages)
-      {:ok, [text, {:done, Map.put(%{done | usage: %{input: 2, output: 3}}, :extra, huge)}]}
+
+      {:ok,
+       [text, {:done, Map.put(%{done | usage: %Helyx.Usage{input: 2, output: 3}}, :extra, huge)}]}
     else
       {:ok,
        [
@@ -324,7 +356,7 @@ defmodule Helyx.Test.Provider do
     do: {:ok, Stream.map([1], fn _ -> Process.exit(self(), :normal) end)}
 
   def stream("bad_event." <> gate, _context, _opts),
-    do: {:ok, Helyx.Test.Gate.stream([:gate, {:message_end, :end_turn, %{}}, :gate], gate)}
+    do: {:ok, Helyx.Test.Gate.stream([:gate, {:message_end, :end_turn, nil}, :gate], gate)}
 
   def stream("crash", _context, _opts), do: {:ok, raise_after([{:text_delta, "so far"}], "boom")}
 
@@ -376,9 +408,9 @@ defmodule Helyx.Test.Provider do
     do: {:ok, [{:error, {:oops, struct(Helyx.Test.ExitInspect)}}]}
 
   def stream("wide_usage", _context, _opts),
-    do: {:ok, [{:done, %{stop_reason: :end_turn, usage: %{input: huge()}}}]}
+    do: {:ok, [{:done, %{stop_reason: :end_turn, usage: %Helyx.Usage{input: huge()}}}]}
 
-  # A struct in place of the usage map.
+  # A struct of another type in place of the usage.
   def stream("struct_usage", _context, _opts) do
     {:ok, [{:done, %{stop_reason: :end_turn, usage: %Date{year: huge(), month: 1, day: 1}}}]}
   end
@@ -386,7 +418,7 @@ defmodule Helyx.Test.Provider do
   # A struct in place of the `:done` map, with the large integer in a field.
   def stream("struct_done", _context, _opts) do
     done = %ToolCall{id: huge(), name: "x", arguments: %{}}
-    {:ok, [{:text_delta, "hi"}, {:done, Map.merge(done, %{stop_reason: :end_turn, usage: %{}})}]}
+    {:ok, [{:text_delta, "hi"}, {:done, Map.merge(done, %{stop_reason: :end_turn, usage: nil})}]}
   end
 
   # A struct in place of the arguments map.
@@ -405,7 +437,7 @@ defmodule Helyx.Test.Provider do
       {:text_delta, "Trying"},
       call("c1", "upcase", %{"text" => "one"}),
       {:tool_call, %ToolCall{id: "c2", name: "upcase", arguments: ~s({"text": )}},
-      {:done, %{stop_reason: stop, usage: %{}}}
+      {:done, %{stop_reason: stop, usage: nil}}
     ]
   end
 
@@ -839,7 +871,7 @@ defmodule Helyx.Test.Connected do
   @hang ~w(hang flood stop tools block_interrupt error_interrupt late_interrupt) ++
           ~w(steer_take steer_reject steer_error steer_hold steer_block steer_early)
 
-  @done {:done, %{stop_reason: :end_turn, usage: %{}}}
+  @done {:done, %{stop_reason: :end_turn, usage: nil}}
 
   # The kind of request that each model holds.
   @held %{
@@ -870,9 +902,9 @@ defmodule Helyx.Test.Connected do
     ],
     "late_result" => [
       {:tool_call, %ToolCall{id: "t", name: "read", arguments: %{}}},
-      {:message_end, :tool_use, %{}},
+      {:message_end, :tool_use, nil},
       {:text_delta, "x"},
-      {:message_end, :end_turn, %{}},
+      {:message_end, :end_turn, nil},
       {:tool_result, "t", {:ok, "late"}}
     ],
     "dup_id" => [
@@ -985,7 +1017,7 @@ defmodule Helyx.Test.Connected do
   end
 
   def info({:need_context, turn_id, text}, state) do
-    message_end = {:message_end, :end_turn, %{}}
+    message_end = {:message_end, :end_turn, nil}
 
     {:ok,
      [
@@ -1109,7 +1141,7 @@ defmodule Helyx.Test.Connected do
 
   # The bound of the open message is 8 MiB (`Helyx.Session.Turn`).
   defp turn_events("message_at_bound"),
-    do: bound_message() ++ [{:message_end, :end_turn, %{}}] ++ bound_message() ++ [@done]
+    do: bound_message() ++ [{:message_end, :end_turn, nil}] ++ bound_message() ++ [@done]
 
   # One byte under the bound, then a 2-byte character across it.
   defp turn_events("message_over_bound") do

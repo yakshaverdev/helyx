@@ -45,7 +45,7 @@ defmodule Helyx.Provider.OpenAI.EventsTest do
               %Helyx.Message.ToolCall{id: "c1", name: "read", arguments: %{"a" => 1}}},
              {:tool_call,
               %Helyx.Message.ToolCall{id: "c2", name: "bash", arguments: %{"b" => 2}}},
-             {:done, %{stop_reason: :tool_use, usage: %{}}}
+             {:done, %{stop_reason: :tool_use, usage: %Helyx.Usage{}}}
            ]
   end
 
@@ -86,7 +86,7 @@ defmodule Helyx.Provider.OpenAI.EventsTest do
     assert Enum.to_list(Events.events(chunks)) == [
              {:tool_call,
               %Helyx.Message.ToolCall{id: "c1", name: "bash", arguments: %{"a" => 1}}},
-             {:done, %{stop_reason: :tool_use, usage: %{}}}
+             {:done, %{stop_reason: :tool_use, usage: %Helyx.Usage{}}}
            ]
   end
 
@@ -110,7 +110,7 @@ defmodule Helyx.Provider.OpenAI.EventsTest do
              {:tool_call,
               %Helyx.Message.ToolCall{id: "c1", name: "read", arguments: %{"a" => 1}}},
              {:tool_call, %Helyx.Message.ToolCall{id: "c2", name: "bash", arguments: ~s({"b": )}},
-             {:done, %{stop_reason: :tool_use, usage: %{}}}
+             {:done, %{stop_reason: :tool_use, usage: %Helyx.Usage{}}}
            ]
   end
 
@@ -148,7 +148,7 @@ defmodule Helyx.Provider.OpenAI.EventsTest do
              [
                {:text_delta, "Hi"},
                {:tool_call, %Helyx.Message.ToolCall{id: "", name: "bash", arguments: json}},
-               {:done, %{stop_reason: :tool_use, usage: %{}}}
+               {:done, %{stop_reason: :tool_use, usage: %Helyx.Usage{}}}
              ]
   end
 
@@ -163,7 +163,7 @@ defmodule Helyx.Provider.OpenAI.EventsTest do
 
     assert Enum.to_list(Events.events(chunks)) == [
              {:text_delta, "Hi"},
-             {:done, %{stop_reason: :end_turn, usage: %{}}}
+             {:done, %{stop_reason: :end_turn, usage: %Helyx.Usage{}}}
            ]
   end
 
@@ -173,7 +173,10 @@ defmodule Helyx.Provider.OpenAI.EventsTest do
       chunks = [sse([delta(%{content: "Hi"}), delta(%{}, unquote(finish)), "[DONE]"])]
 
       assert Enum.to_list(Events.events(chunks)) ==
-               [{:text_delta, "Hi"}, {:done, %{stop_reason: unquote(stop), usage: %{}}}]
+               [
+                 {:text_delta, "Hi"},
+                 {:done, %{stop_reason: unquote(stop), usage: %Helyx.Usage{}}}
+               ]
     end
   end
 
@@ -201,6 +204,11 @@ defmodule Helyx.Provider.OpenAI.EventsTest do
         ~s({"choices":[{"delta":{},"finish_reason":false}]}),
         ~s({"choices":[],"usage":false}),
         ~s({"choices":[],"usage":{"prompt_tokens":"9"}}),
+        ~s({"choices":[],"usage":{"prompt_tokens":1000000001,"completion_tokens":1}}),
+        ~s({"choices":[],"usage":{"prompt_tokens":1,"completion_tokens":1000000001}}),
+        ~s({"choices":[],"usage":{"prompt_tokens":-1,"completion_tokens":1}}),
+        ~s({"choices":[],"usage":{"prompt_tokens":5,"prompt_tokens_details":{"cached_tokens":6}}}),
+        ~s({"choices":[],"usage":{"prompt_tokens":5,"prompt_tokens_details":7}}),
         ~s({"choices":[{"delta":{"tool_calls":false}}]}),
         ~s({"choices":[{"delta":{"tool_calls":[{"index":0,"function":false}]}}]}),
         ~s({"choices":[{"delta":{"tool_calls":[{"id":"c1","function":{"name":"bash"}}]}}]})
@@ -209,6 +217,33 @@ defmodule Helyx.Provider.OpenAI.EventsTest do
       assert Enum.to_list(Events.events([sse([unquote(chunk)])])) ==
                [{:error, {:bad_chunk, unquote(chunk)}}]
     end
+  end
+
+  # `docs/features/usage-and-limits.md`, "Per provider": the usage chunk of
+  # one model call.
+  test "a usage chunk maps the counts, with the cached tokens out of the input" do
+    usage = %{
+      prompt_tokens: 120,
+      completion_tokens: 30,
+      prompt_tokens_details: %{cached_tokens: 100}
+    }
+
+    chunks = [sse([delta(%{content: "Hi"}, "stop"), %{choices: [], usage: usage}, "[DONE]"])]
+
+    assert List.last(Enum.to_list(Events.events(chunks))) ==
+             {:done,
+              %{
+                stop_reason: :end_turn,
+                usage: %Helyx.Usage{input: 20, output: 30, cache_read: 100, context_tokens: 150}
+              }}
+  end
+
+  test "a token count at the wire bound of 10^9 is mapped" do
+    usage = %{prompt_tokens: 10 ** 9, completion_tokens: 10 ** 9}
+    chunks = [sse([delta(%{}, "stop"), %{choices: [], usage: usage}, "[DONE]"])]
+
+    assert [{:done, %{usage: %Helyx.Usage{input: 1_000_000_000, output: 1_000_000_000}}}] =
+             Enum.to_list(Events.events(chunks))
   end
 
   # Limits on network input. At the limit and one under pass; one over ends

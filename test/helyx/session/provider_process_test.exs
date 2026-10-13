@@ -11,7 +11,7 @@ defmodule Helyx.Session.ProviderProcessTest do
   alias Helyx.Session.Server.Wait
   alias Helyx.Test.Connected
 
-  @done {:done, %{stop_reason: :end_turn, usage: %{}}}
+  @done {:done, %{stop_reason: :end_turn, usage: nil}}
 
   setup do
     core = :"core_#{System.unique_integer([:positive])}"
@@ -715,7 +715,7 @@ defmodule Helyx.Session.ProviderProcessTest do
 
       assert :ok = Session.abort(session)
       assert unconfirmed(collect_until(:steer_unconfirmed)) == [%{text: "more"}]
-      done = {:done, %{stop_reason: :end_turn, usage: %{}}}
+      done = {:done, %{stop_reason: :end_turn, usage: nil}}
       program = [{:event, "p9", :turn_start}, {:event, "p9", done}]
       send(proc, {:batch, [{:reply, from, :rejected} | program]})
       assert %{type: :turn_start, turn_id: "p9"} = hd(collect_until(:turn_end))
@@ -737,7 +737,7 @@ defmodule Helyx.Session.ProviderProcessTest do
       send(
         proc,
         {:batch,
-         [{:reply, from, :ok}, {:event, next, {:done, %{stop_reason: :end_turn, usage: %{}}}}]}
+         [{:reply, from, :ok}, {:event, next, {:done, %{stop_reason: :end_turn, usage: nil}}}]}
       )
 
       assert unconfirmed(collect_until(:turn_end)) == []

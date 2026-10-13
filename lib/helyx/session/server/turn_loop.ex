@@ -185,13 +185,13 @@ defmodule Helyx.Session.Server.TurnLoop do
        do: {:ok, state}
 
   defp connect(%State{conn: nil, activity: turn} = state) do
-    resumed = Transcript.resumable(state.transcript, state.resume_ids, turn.model.provider)
+    {resumed, usage} = Transcript.resume(state.transcript, state.resume_ids, turn.model.provider)
 
     args = %{
       provider: turn.provider,
       model: turn.model.model,
       tools: state.tool_specs,
-      opts: [resume_id: resumed] ++ base_opts(state),
+      opts: [resume_id: resumed, resume_usage: usage] ++ base_opts(state),
       session: self()
     }
 

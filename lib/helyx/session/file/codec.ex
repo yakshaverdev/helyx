@@ -16,7 +16,7 @@ defmodule Helyx.Session.File.Codec do
         "stop_reason" => encode_stop_reason(message.stop_reason),
         "tool_call_id" => message.tool_call_id,
         "tool_name" => message.tool_name,
-        "usage" => map_size(message.usage) > 0 && message.usage
+        "usage" => message.usage && encode_usage(message.usage)
       }
       |> Map.reject(fn {_key, value} -> value in [nil, false] end)
 
@@ -42,8 +42,9 @@ defmodule Helyx.Session.File.Codec do
   # A bad value of a field that core needs (role, content, tool_call_id,
   # tool_name, is_error) misses its decode clause; the rescue in `load/3`
   # of `Helyx.Session.File` turns that into a rejected file. The model, the
-  # stop reason, and the usage are optional: a bad one decodes as a missing
-  # one, so it does not lose the chat.
+  # stop reason, and the usage are optional: a bad model or stop reason
+  # decodes as a missing one, and a bad usage as the unknown usage, so it
+  # does not lose the chat.
   def decode(entry) do
     role = decode_role(entry["role"])
 
@@ -55,7 +56,7 @@ defmodule Helyx.Session.File.Codec do
       tool_call_id: optional_string(entry["tool_call_id"]),
       tool_name: optional_string(entry["tool_name"]),
       is_error: decode_is_error(entry["is_error"]),
-      usage: decode_usage(entry["usage"])
+      usage: decode_usage(Map.fetch(entry, "usage"))
     }
   end
 
@@ -94,8 +95,41 @@ defmodule Helyx.Session.File.Codec do
   defp decode_model(value) when is_binary(value), do: value
   defp decode_model(_value), do: nil
 
-  defp decode_usage(value) when is_map(value), do: Message.cap_integers(value)
-  defp decode_usage(_value), do: %{}
+  # The usage object has string keys, no nil field, and the kind as a
+  # string. The reader takes only the known keys and checks the struct
+  # with `Helyx.Usage.valid?/1`, as `Helyx.Session.Stream.check/1` does: a
+  # usage that fails, such as the provider's own keys of a file from
+  # before #557, is the unknown usage, and the message stays. Only a
+  # message with no usage key has no usage.
+  @usage_keys Map.keys(%Helyx.Usage{}) -- [:__struct__]
+
+  defp encode_usage(usage) do
+    for {key, value} <- Map.from_struct(usage), value != nil, into: %{} do
+      {Atom.to_string(key), value}
+    end
+  end
+
+  defp decode_usage(:error), do: nil
+
+  defp decode_usage({:ok, %{} = object}) do
+    fields = for key <- @usage_keys, do: {key, object[Atom.to_string(key)]}
+
+    with true <- map_size(object) == Enum.count(fields, fn {_key, value} -> value != nil end),
+         {:ok, kind} <- decode_kind(object["cost_kind"]),
+         usage = struct!(Helyx.Usage, Keyword.put(fields, :cost_kind, kind)),
+         true <- Helyx.Usage.valid?(usage) do
+      usage
+    else
+      _ -> %Helyx.Usage{}
+    end
+  end
+
+  defp decode_usage({:ok, _value}), do: %Helyx.Usage{}
+
+  defp decode_kind(nil), do: {:ok, nil}
+  defp decode_kind("list"), do: {:ok, :list}
+  defp decode_kind("billed"), do: {:ok, :billed}
+  defp decode_kind(_value), do: :error
 
   defp decode_block(%{"type" => "text", "text" => text}) when is_binary(text),
     do: %Message.Text{text: text}

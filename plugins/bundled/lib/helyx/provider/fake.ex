@@ -68,7 +68,7 @@ defmodule Helyx.Provider.Fake do
   defp deltas_to_stream(deltas) do
     events = Enum.map(deltas, &to_event/1)
     stop = if Enum.any?(events, &match?({:tool_call, _}, &1)), do: :tool_use, else: :end_turn
-    Stream.concat(events, [{:done, %{stop_reason: stop, usage: %{}}}])
+    Stream.concat(events, [{:done, %{stop_reason: stop, usage: nil}}])
   end
 
   defp to_event(%Helyx.Message.ToolCall{} = call), do: {:tool_call, call}

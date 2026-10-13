@@ -93,12 +93,8 @@ defmodule Helyx.Test.CodexFake do
         fields
       )
 
-  def usage(tid) do
-    note(tid, "thread/tokenUsage/updated", %{
-      turnId: "turn1",
-      tokenUsage: %{last: %{inputTokens: 12, outputTokens: 7}, total: %{inputTokens: 12}}
-    })
-  end
+  def usage(tid, token_usage \\ %{last: %{inputTokens: 12, outputTokens: 7}, total: %{}}),
+    do: note(tid, "thread/tokenUsage/updated", %{turnId: "turn1", tokenUsage: token_usage})
 
   def turn_end(tid, status, error \\ nil) do
     note(tid, "turn/completed", %{

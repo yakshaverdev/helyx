@@ -41,6 +41,28 @@ defmodule Helyx.Session.PersistenceTest do
     assert Enum.map(entries, & &1["parent_id"]) == [nil | Enum.drop(ids, -1)]
   end
 
+  # `docs/features/usage-and-limits.md`, "Core checks".
+  @tag :tmp_dir
+  test "a resumed session has the usage of each message of the live session", %{
+    core: core,
+    tmp_dir: dir
+  } do
+    {:ok, session} = Session.start(core, model: "test/usage", sessions_dir: dir)
+    {:ok, _, _} = Session.subscribe(session)
+    :ok = Session.prompt(session, "hello")
+    collect_until(:turn_end)
+    {:ok, live, _ref} = Session.subscribe(session)
+    stop_session(session, &GenServer.stop/1)
+
+    {:ok, resumed} = Session.resume(core, sessions_dir: dir)
+    {:ok, snapshot, _ref} = Session.subscribe(resumed)
+
+    usages = Enum.map(live.messages, & &1.usage)
+    assert [nil, %Helyx.Usage{cost: 0.5}, nil, %Helyx.Usage{} = unknown] = usages
+    assert unknown == %Helyx.Usage{}
+    assert Enum.map(snapshot.messages, & &1.usage) == usages
+  end
+
   @tag :tmp_dir
   test "resume restores the transcript and the next provider call sees it", %{
     core: core,
