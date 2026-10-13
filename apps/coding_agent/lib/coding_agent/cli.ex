@@ -6,22 +6,58 @@ defmodule CodingAgent.CLI do
   `mix helyx`:
 
       helyx [directory] [--model provider/model] [--resume] [--version]
+      helyx --session id
+      helyx --list [--all] [directory]
 
   `directory` is the session's working directory and defaults to the current
   one. `--model` defaults to `#{@default_model}`, which needs
   `OPENCODE_API_KEY`. `fake/echo` runs without a key. `--resume` continues
-  the most recent session for the directory and keeps its saved model, so it
-  does not combine with `--model`. The design is in
-  `docs/features/local-release.md`.
+  the most recent session for the directory that has a message, and
+  `--session` the session with that id, in the folder of its header. Both
+  keep the saved model, so they do not combine with `--model`. `--list`
+  prints the sessions of the directory, or of every folder with `--all`,
+  one line each, newest first, and starts nothing. The design is in
+  `docs/features/local-release.md` and `docs/features/session-list.md`.
   """
 
-  @options "the options are --model provider/model, --resume, and --version"
+  alias Helyx.Session.File.Scan
+
+  @options "the options are --model provider/model, --resume, --session id, --list, --all, " <>
+             "and --version"
+
+  @switches [
+    model: :string,
+    resume: :boolean,
+    session: :string,
+    list: :boolean,
+    all: :boolean,
+    version: :boolean
+  ]
+
+  # The options that do not combine, with the reason. `:directory` is the
+  # directory argument.
+  @conflicts [
+    {:model, :resume, "; a resumed session keeps its saved model"},
+    {:model, :session, "; a resumed session keeps its saved model"},
+    {:directory, :session, "; the session runs in the folder of its header"},
+    {:resume, :session, ""},
+    {:list, :model, ""},
+    {:list, :resume, ""},
+    {:list, :session, ""},
+    {:directory, :all, ""}
+  ]
+
+  # The widths of the file text on a line of --list, in code points.
+  @prompt_width 60
+  @model_width 40
+  @folder_width 80
 
   @doc """
   Runs the agent with the command line `argv` until the user quits, and
   returns the exit status. A bad argument, a failed start, or a session
   that stops while the agent runs prints one line on stderr and returns 1.
-  `--version` prints the version and returns 0.
+  `--version` prints the version and returns 0, and so does `--list` after
+  its lines.
   """
   @spec main([String.t()]) :: 0 | 1
   def main(argv) do
@@ -54,16 +90,32 @@ defmodule CodingAgent.CLI do
   defp version(release_version), do: release_version
 
   defp start_agent(opts, args) do
-    with :ok <- check_combination(opts), {:ok, cwd} <- cwd(args), do: launch(opts, cwd)
+    with :ok <- check_combination(opts, args), do: command(opts, args)
   end
 
-  defp check_combination(opts) do
-    if opts[:resume] && opts[:model],
-      do:
-        {:error,
-         "--model does not combine with --resume; a resumed session keeps its saved model"},
-      else: :ok
+  defp command(opts, args) do
+    cond do
+      opts[:list] -> list(opts[:all], args)
+      opts[:session] -> with {:ok, cwd} <- session_cwd(opts[:session]), do: launch(opts, cwd)
+      true -> with {:ok, cwd} <- cwd(args), do: launch(opts, cwd)
+    end
   end
+
+  defp check_combination(opts, args) do
+    given = for {name, value} <- opts, value, do: name
+    given = if args == [], do: given, else: [:directory | given]
+
+    case Enum.find(@conflicts, fn {a, b, _reason} -> a in given and b in given end) do
+      {a, b, reason} ->
+        {:error, "#{switch(a)} does not combine with #{switch(b)}#{reason}"}
+
+      nil ->
+        if :all in given and :list not in given, do: {:error, "--all needs --list"}, else: :ok
+    end
+  end
+
+  defp switch(:directory), do: "a directory argument"
+  defp switch(name), do: "--#{name}"
 
   defp cwd([]), do: check_dir(File.cwd!())
   defp cwd([directory]), do: check_dir(Path.expand(directory))
@@ -73,15 +125,74 @@ defmodule CodingAgent.CLI do
     if File.dir?(cwd), do: {:ok, cwd}, else: {:error, "not a directory: #{inspect(cwd)}"}
   end
 
+  # The id is checked before it becomes part of a path (`Scan.find/2`). The
+  # folder of the header must be an absolute path to a directory. It comes
+  # from the file, so its error text gets the clean pass and the width of a
+  # list line.
+  defp session_cwd(id) do
+    case Scan.find(sessions_dir(), id) do
+      {:ok, _path, %{"cwd" => cwd}} ->
+        if Path.type(cwd) == :absolute and File.dir?(cwd),
+          do: {:ok, cwd},
+          else: {:error, ~s(not a directory: "#{folder_text(cwd)}")}
+
+      {:error, :invalid_id} ->
+        {:error, "not a session id: #{inspect(id)}"}
+
+      {:error, :not_found} ->
+        {:error, "no session #{inspect(id)}"}
+
+      {:error, reason} ->
+        {:error, CodingAgent.error_text(reason)}
+    end
+  end
+
+  defp list(all?, args) do
+    with {:ok, scope} <- if(all?, do: {:ok, :all}, else: cwd(args)) do
+      for summary <- Scan.list(sessions_dir(), scope), do: IO.puts(line(summary, all?))
+      :ok
+    end
+  end
+
+  # The folder, the model, and the prompt come from the file, so each gets
+  # the clean pass before it reaches the terminal. The end of a folder tells
+  # folders apart.
+  defp line(summary, all?) do
+    folder =
+      if all?,
+        do: [folder_text(summary.cwd)],
+        else: []
+
+    model = summary.model |> CodingAgent.one_line() |> take(@model_width)
+    prompt = summary.prompt |> CodingAgent.one_line() |> take(@prompt_width)
+    Enum.join([summary.id, time(summary.mtime)] ++ folder ++ [model, prompt], "  ")
+  end
+
+  defp folder_text(cwd), do: cwd |> CodingAgent.one_line() |> take(-@folder_width)
+
+  # A width counts code points, not graphemes: one grapheme can hold any
+  # number of combining marks. A negative count takes the end.
+  defp take(text, count), do: text |> String.to_charlist() |> Enum.take(count) |> List.to_string()
+
+  defp time(mtime) do
+    mtime
+    |> :calendar.system_time_to_local_time(:second)
+    |> NaiveDateTime.from_erl!()
+    |> NaiveDateTime.to_string()
+  end
+
+  # Application env so that a test points the agent at its own directory.
+  defp sessions_dir,
+    do: Application.get_env(:coding_agent, :sessions_dir) || Path.expand("~/.helyx/sessions")
+
   defp launch(opts, cwd) do
     with {:ok, _apps} <- Application.ensure_all_started(:coding_agent),
          :ok <-
            CodingAgent.run(
              model: Keyword.get(opts, :model, @default_model),
              cwd: cwd,
-             resume: Keyword.get(opts, :resume, false),
-             # Application env so that a test points the agent at its own directory.
-             sessions_dir: Application.get_env(:coding_agent, :sessions_dir)
+             resume: opts[:session] || Keyword.get(opts, :resume, false),
+             sessions_dir: sessions_dir()
            ) do
       :ok
     else
@@ -97,7 +208,7 @@ defmodule CodingAgent.CLI do
     if bad = Enum.find(argv, &(not String.valid?(&1))) do
       {:error, "an argument is not UTF-8: #{inspect(bad, binaries: :as_strings)}"}
     else
-      case OptionParser.parse(argv, strict: [model: :string, resume: :boolean, version: :boolean]) do
+      case OptionParser.parse(join_session(argv), strict: @switches) do
         {opts, args, []} ->
           {:ok, opts, args}
 
@@ -111,6 +222,13 @@ defmodule CodingAgent.CLI do
     # OptionParser raises on some UTF-8 switches too, such as "-=".
     ArgumentError -> {:error, "bad option in #{inspect(argv)}; #{@options}"}
   end
+
+  # A session id can start with "-", and OptionParser reads a value that
+  # starts with "-" as switches. The joined form keeps it a value.
+  defp join_session(["--" | _] = rest), do: rest
+  defp join_session(["--session", id | rest]), do: ["--session=" <> id | join_session(rest)]
+  defp join_session([arg | rest]), do: [arg | join_session(rest)]
+  defp join_session([]), do: []
 
   defp option_text({name, nil}), do: inspect(name)
   defp option_text({name, value}), do: "#{inspect(name)}=#{inspect(value)}"

@@ -4,6 +4,8 @@ defmodule Mix.Tasks.Helyx do
   Starts the coding agent in the alternate screen from the source tree.
 
       mix helyx [directory] [--model provider/model] [--resume] [--version]
+      mix helyx --session id
+      mix helyx --list [--all] [directory]
 
   The options and the errors are those of `CodingAgent.CLI`. Sessions are
   written under `~/.helyx/sessions` as they run. A bad argument or a failed

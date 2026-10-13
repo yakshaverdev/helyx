@@ -60,7 +60,7 @@ defmodule Helyx.Session.InstanceTest do
       other = start_core([Helyx.Test.Provider])
 
       {:ok, a} = Session.start(core, model: "test/ok", sessions_dir: dir)
-      {:ok, b} = Session.resume(other, sessions_dir: dir)
+      {:ok, b} = Session.resume(other, sessions_dir: dir, id: a.id)
       assert a.id == b.id
 
       {:ok, snapshot_a, _} = Session.subscribe(a)

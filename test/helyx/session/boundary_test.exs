@@ -311,7 +311,7 @@ defmodule Helyx.Session.BoundaryTest do
 
       stop_session(session, &GenServer.stop/1)
 
-      {:ok, resumed} = Session.resume(core, sessions_dir: dir)
+      {:ok, resumed} = Session.resume(core, sessions_dir: dir, id: session.id)
       assert GenServer.call(Session.pid(resumed), :snapshot).model == "other/any"
       {:ok, _, _} = Session.subscribe(resumed)
       :ok = Session.prompt(resumed, "hello")

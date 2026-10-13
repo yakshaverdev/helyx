@@ -12,8 +12,10 @@ defmodule Mix.Tasks.HelyxTest do
     setup %{tmp_dir: dir} do
       Application.put_env(:coding_agent, :sessions_dir, dir)
       on_exit(fn -> Application.delete_env(:coding_agent, :sessions_dir) end)
+      # A session with no message is not resumed, so the file has a prompt.
       {:ok, file} = Helyx.Session.File.create(dir, "s1", dir, "fake/echo")
-      %{path: file.path, header_id: file.leaf}
+      file = Helyx.Session.File.append_message(file, Helyx.Message.user("hi"))
+      %{path: file.path, leaf: file.leaf}
     end
 
     # The task stops Mix with status 1 after one line on stderr.
@@ -42,28 +44,28 @@ defmodule Mix.Tasks.HelyxTest do
                ": the session file is over the 67108864-byte limit; start a new session"
     end
 
-    # The entries below hang from the header, so they are on the branch that
+    # The entries below hang from the prompt, so they are on the branch that
     # the resume reads.
-    test "a tagged text: a damaged file", %{tmp_dir: dir, path: path, header_id: header_id} do
-      File.write!(path, ~s({"type":"bogus","id":"x","parent_id":"#{header_id}"}\n), [:append])
+    test "a tagged text: a damaged file", %{tmp_dir: dir, path: path, leaf: leaf} do
+      File.write!(path, ~s({"type":"bogus","id":"x","parent_id":"#{leaf}"}\n), [:append])
       assert resume_message(dir) =~ "the session file is damaged: entry the writer never"
     end
 
     test "a tagged text: an exception message of many lines",
-         %{tmp_dir: dir, path: path, header_id: header_id} do
-      line = ~s({"type":"message","id":"m1","parent_id":"#{header_id}","role":"user"}\n)
+         %{tmp_dir: dir, path: path, leaf: leaf} do
+      line = ~s({"type":"message","id":"m1","parent_id":"#{leaf}","role":"user"}\n)
       File.write!(path, line, [:append])
       assert resume_message(dir) =~ "the session file is damaged: protocol Enumerable"
     end
 
-    test "a saved model ref that is not valid", %{tmp_dir: dir, path: path, header_id: header_id} do
-      line = ~s({"type":"model_change","id":"m1","parent_id":"#{header_id}","model":"nope"}\n)
+    test "a saved model ref that is not valid", %{tmp_dir: dir, path: path, leaf: leaf} do
+      line = ~s({"type":"model_change","id":"m1","parent_id":"#{leaf}","model":"nope"}\n)
       File.write!(path, line, [:append])
       assert resume_message(dir) =~ "the model ref is not valid; use provider/model"
     end
 
     test "a tagged term: an unknown version", %{tmp_dir: dir, path: path} do
-      File.write!(path, ~s({"type":"session","version":99,"cwd":#{JSON.encode!(dir)}}\n))
+      File.write!(path, String.replace(File.read!(path), ~s("version":1), ~s("version":99)))
       assert resume_message(dir) =~ "version 99"
     end
 

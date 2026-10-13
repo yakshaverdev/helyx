@@ -42,7 +42,8 @@ defmodule CodingAgentTest do
   end
 
   @tag :tmp_dir
-  test "start_session persists to disk and resume restores the saved model", %{tmp_dir: dir} do
+  test "start_session persists to disk, and a resume by id restores the saved model",
+       %{tmp_dir: dir} do
     core = :"agent_core_#{System.unique_integer([:positive])}"
     start_supervised!({Helyx.Core, name: core, plugins: CodingAgent.plugins()})
 
@@ -53,8 +54,12 @@ defmodule CodingAgentTest do
 
     :ok = GenServer.stop(Session.pid(session))
 
+    # The session has no message, so the newest-session resume leaves it out.
+    assert {:error, :not_found} =
+             CodingAgent.start_session(core: core, cwd: dir, sessions_dir: dir, resume: true)
+
     {:ok, resumed} =
-      CodingAgent.start_session(core: core, cwd: dir, sessions_dir: dir, resume: true)
+      CodingAgent.start_session(core: core, cwd: dir, sessions_dir: dir, resume: session.id)
 
     assert GenServer.call(Session.pid(resumed), :snapshot).model == "fake/echo"
   end
@@ -76,6 +81,8 @@ defmodule CodingAgentTest do
 
   test "error_text turns the remaining shapes into text" do
     assert sentence(:not_regular) =~ "not a regular file"
+    assert sentence(:invalid_id) == "not a session id"
+    assert sentence(:duplicate_id) == "more than one session file has this id"
     assert sentence(:eacces) == "permission denied"
     assert sentence(:queue_full) == ":queue_full"
     assert sentence({:repair_failed, "x"}) == "could not repair the session file: x"
