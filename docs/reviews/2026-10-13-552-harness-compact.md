@@ -156,3 +156,24 @@ Round 3 reproduced no defect, so the loop ends. The fixes after the round are do
 | ----- | ------- | ---------- |
 | gate r1 (on `32ec8e9`) | Abort a reply, compact, reconnect: `Transcript.resumable/3` saw the aborted last message and started fresh, so the native summary was lost | Confirmed by a read of the code. Owner decision: a successful native compaction makes the history safe to resume. Fixed in `f8788c0` (rounds 2 and 3 above) |
 | gate r2 (on `f8788c0`) | Abort, compact, then a second turn aborted before any reply text: the count equals the compaction point, so the id resumes | Rejected. An abort before the first reply text stores no assistant message. On master the same shape without a compaction resumes too (the last assistant message is clean and `count > before` holds), so the change adds no new path. The abort rule is about a stored partial reply. The gate sentence said "an abort" too broadly |
+
+## Rebase on #557 (reduced round)
+
+The branch was rebased on `origin/master` after #557 (the usage meter, PR #565). The conflicts were in `claude_code.ex`, `claude_code/turn.ex`, `codex/items.ex`, `transcript.ex`, the two research notes, and `escapes.md`.
+
+- Claude Code `Turn.terminal/3` takes the turn and the meter. A `compact_error` gives `{:compaction_failed, text}` and keeps the meter. A compaction turn that ends `success` gives `done` with no usage and keeps the meter. Core still fails a compaction turn with no compaction event.
+- The cost of a compaction: a probe of 2026-10-13 (research note, "The cost of `/compact`") showed that the `result` of `/compact` has every `usage` count 0, and that its `total_cost_usd` includes the compaction call. No message holds the usage of a compaction turn. So `Meter.done` does not run at the compaction: the mark stays at the last `done`, and the next `done` covers the compaction call once. Codex keeps the token sum of a compaction turn the same way (`Items.compact?`). The rule is in the feature doc and in `usage-and-limits.md`.
+- `Transcript.resume/3` reads the label with three fields.
+- Both research notes keep both sections.
+
+The invariants of the brief: the #552 invariant above, and the #557 invariant that the cost of each done covers only the model calls since the previous done of the same Claude session.
+
+| # | Axis | Finding | Resolution |
+| - | ---- | ------- | ---------- |
+| R.1 | spec, failure path | The rebase committed conflict markers in `harness-compaction.md` | Fixed in the commit that had them; no marker is in the history of the branch |
+| R.2 | spec | `usage-and-limits.md` said that each `done` starts a new sum and moves the mark; a compaction `done` does neither | Fixed: one sentence that names the compaction `done` |
+| R.3 | spec | The accepted limit was wrong for Codex: its sum lives in the provider process | Fixed in the feature doc |
+| R.4 | spec | No test for a failed turn, a compaction, and a reconnect | Fixed: `plugins/bundled/test/helyx/provider/claude_code/compact_test.exs`, "after a failed turn, a compaction, and a reconnect, the first done has both costs" |
+| R.5 | failure path | A program turn queued behind `/compact` (`queued_turn_count` above 0 at its `result`) is dropped with the compaction turn's lines, and a reconnect then resumes a program with a reply that no message holds | Accepted, not fixed: no run has shown a positive count at a `/compact` result, so it gets no special handler. It is the class of the accepted ceiling of #240, where a program turn that the busy session drops is in no message |
+
+Tests of the cost rule: `compact_test.exs` (Claude Code), "the cost of the compaction call goes into the next done" and the two reconnect tests; `plugins/bundled/test/helyx/provider/codex/compact_test.exs`, "the token counts of the compaction turn go into the next done". Each fails when the meter or the sum is reset at the compaction.
