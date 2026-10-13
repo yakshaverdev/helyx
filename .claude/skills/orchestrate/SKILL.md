@@ -28,7 +28,7 @@ Every brief also says:
 - Report a wider scope before the next review round when a fix passes 100 code lines.
 - A bound that the docs state must also hold in the render path, not only at the entry points.
 - Run precommit with `.claude/skills/ship/precommit.sh`, never `mix precommit` directly.
-- The limits of `/ship`: at most three rounds, a round with no reproduced defect ends the loop, and at most 45 minutes of work. At the limit, commit only reviewed code and report what is open.
+- The limits of `/ship`: at most three rounds, then at most one small-fix round when its conditions hold (see `/ship`), a round with no reproduced defect ends the loop, and at most 45 minutes of work. At the limit, commit only reviewed code and report what is open.
 - No CPU load generator and no mutation run over a whole suite in any probe: other worktrees run tests on this machine. Put this rule in every review brief.
 
 A worker that stopped before its final report (a usage limit, a wait for its own agents) is resumed with SendMessage. Do not start a second worker for the ticket.
