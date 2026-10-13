@@ -88,3 +88,11 @@ The fix: `Catalog.lookup/2` returns `{:ok, info}` or the error, and checks the e
 | 4.4 | spec | The module comment still says "`fetch_ms` for tests" | Open, by the same rule: one word |
 
 The check form matches the `:models` check (one rule, the same error shape, the same `with` in `ModelInfo.lookup/3`). Round 4 reproduced one defect (4.1). It is not fixed in this commit.
+
+## The fix of 4.1, 4.2 and 4.4
+
+The owner decided to fix 4.1, 4.2 and 4.4 now, with no further review round. The owner approved the fix with the Codex gate of the orchestrator as its review. 4.3 stays kept.
+
+- 4.1: the `url` rule accepts only a valid UTF-8 string (`String.valid?/1` before `URI.new/1`), as part of the one `url` rule. The test adds `"https://x/" <> <<255>>`. The mutant without `String.valid?/1` fails the test.
+- 4.2: the test comment says that no refresh starts because "fake" has no catalog id.
+- 4.4: the module comment calls `fetch_ms` the whole-fetch deadline.

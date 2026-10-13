@@ -18,9 +18,10 @@
 
 - Owner decision on finding 2.8: the `:model_catalog` env is now checked at each lookup, with the key in the error, as a `:models` entry is. `:openai_req_options` goes to its own ticket.
 
+- Owner decision on findings 4.1, 4.2 and 4.4: fixed. The `url` rule accepts only a valid UTF-8 string, checked before `URI.new/1`, which raises on other binaries. The two comments are correct now. The Codex gate of the orchestrator is the review of this fix.
+
 ## Open
 
-- Review finding 4.1: a `url` in `:model_catalog` with a byte that is not UTF-8 makes `lookup/3` raise in `URI.new/1`. The fix is one rescue in `http?/1`. Findings 4.2 (a false test comment) and 4.4 (a module comment) are open too.
 - The second marker check under the registered name has no test: it guards a race between two lookups and the start of the refresh.
 - The 16 MB cap of the write has no test: the case needs a slim encode over 16 MB. The data of the four catalog ids is 26 KB.
 - Two nodes on one cache directory: the node that does not refresh keeps the data that it loaded at its start (feature doc).

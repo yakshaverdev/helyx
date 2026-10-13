@@ -114,7 +114,15 @@ defmodule Helyx.ModelInfo.CatalogTest do
     test "a bad :model_catalog value fails each lookup with its key", %{tmp_dir: dir} do
       bad = %{
         dir: ["", ~c"dir", nil, 5],
-        url: ["", "models.dev/api.json", "ftp://models.dev/api.json", "https://", ~c"http://x", 5],
+        url: [
+          "",
+          "models.dev/api.json",
+          "ftp://models.dev/api.json",
+          "https://",
+          ~c"http://x",
+          "https://x/" <> <<255>>,
+          5
+        ],
         req_options: [%{plug: nil}, [1], nil],
         fetch_ms: [0, -1, 86_400_001, 1.0, "60000", nil],
         other: [1]
@@ -143,7 +151,7 @@ defmodule Helyx.ModelInfo.CatalogTest do
             [url: "https://models.dev/api.json", fetch_ms: 1, req_options: []],
             [url: nil, fetch_ms: 86_400_000]
           ] do
-        # The refresh stays off: the last `url` wins, and "fake" has no catalog.
+        # No refresh starts: "fake" has no catalog id.
         env(dir, good ++ [url: nil])
         assert {:ok, %ModelInfo{}} = ModelInfo.lookup("fake", @model, %{})
       end

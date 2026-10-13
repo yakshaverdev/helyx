@@ -11,7 +11,8 @@ defmodule Helyx.ModelInfo.Catalog do
   # it, and a failed refresh keeps the last good copy.
   #
   # Application env of `helyx_plugins`, key `:model_catalog`: `dir`, `url`
-  # (nil turns the refresh off), `req_options`, and `fetch_ms` for tests.
+  # (nil turns the refresh off), `req_options`, and `fetch_ms` (the
+  # whole-fetch deadline).
   # Each lookup checks it, so a bad value fails the provider start with its
   # key, as a bad `:models` entry does.
 
@@ -84,11 +85,13 @@ defmodule Helyx.ModelInfo.Catalog do
 
   defp config_key(_key, _value), do: :error
 
+  # A valid UTF-8 string first: `URI.new/1` raises on other binaries.
   defp http?(url) do
-    match?(
-      {:ok, %URI{scheme: scheme, host: <<_, _::binary>>}} when scheme in ["http", "https"],
-      URI.new(url)
-    )
+    String.valid?(url) and
+      match?(
+        {:ok, %URI{scheme: scheme, host: <<_, _::binary>>}} when scheme in ["http", "https"],
+        URI.new(url)
+      )
   end
 
   # Slim
