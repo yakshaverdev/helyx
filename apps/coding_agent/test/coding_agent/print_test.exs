@@ -25,12 +25,10 @@ defmodule CodingAgent.PrintTest do
     # A group leader that stands for the `user` device of the VM, as probed on
     # OTP 28: getopts reports `stdin: true` for a terminal, and in latin1 mode
     # a latin1 read returns the raw bytes, at most the count asked. `input` is the
-    # piped bytes, nil for a terminal that must not be read, or a signal that
-    # a read sends to the signal server in place of a reply. `write` is `:ok`,
-    # or a signal that a write sends in place of a reply, as a full pipe
-    # blocks. The output is kept for `output/1`.
-    def start(stdin?, input, write \\ :ok) do
-      state = %{stdin: stdin?, input: input, write: write, encoding: :unicode, out: []}
+    # piped bytes, or nil for a terminal that must not be read. The output is
+    # kept for `output/1`.
+    def start(stdin?, input) do
+      state = %{stdin: stdin?, input: input, encoding: :unicode, out: []}
       spawn_link(fn -> loop(state) end)
     end
 
@@ -46,7 +44,7 @@ defmodule CodingAgent.PrintTest do
       receive do
         {:io_request, from, reply_as, request} ->
           {reply, state} = request(request, state)
-          if reply != :no_reply, do: send(from, {:io_reply, reply_as, reply})
+          send(from, {:io_reply, reply_as, reply})
           loop(state)
 
         {:output, pid} ->
@@ -61,22 +59,11 @@ defmodule CodingAgent.PrintTest do
     defp request({:setopts, [encoding: encoding]}, state),
       do: {:ok, %{state | encoding: encoding}}
 
-    defp request({:put_chars, :unicode, chars}, %{write: :ok} = state),
+    defp request({:put_chars, :unicode, chars}, state),
       do: {:ok, %{state | out: [IO.chardata_to_string(chars) | state.out]}}
-
-    defp request({:put_chars, :unicode, _chars}, %{write: signal} = state) do
-      :gen_event.notify(:erl_signal_server, signal)
-      {:no_reply, state}
-    end
 
     defp request({:get_chars, _encoding, _prompt, _count}, %{input: nil} = state),
       do: {{:error, :read_from_tty}, state}
-
-    defp request({:get_chars, _encoding, _prompt, _count}, %{input: signal} = state)
-         when is_atom(signal) do
-      :gen_event.notify(:erl_signal_server, signal)
-      {:no_reply, state}
-    end
 
     defp request({:get_chars, _encoding, _prompt, _count}, %{encoding: :unicode} = state),
       do: {{:error, :read_in_unicode_mode}, state}
@@ -100,15 +87,13 @@ defmodule CodingAgent.PrintTest do
   alias CodingAgent.{CLI, Print}
 
   @max Print.max_stdin_bytes()
+  # The halt after a signal waits for the abort; the margin is for a loaded machine.
+  @load_ms 5_000
 
-  # Runs `fun` with `input` piped on stdin (a binary, or a signal that the
-  # read sends), or with a terminal on stdin when `input` is `:tty`, and
-  # returns its result, stdout, and stderr.
-  defp io(input, fun, write \\ :ok) do
-    device =
-      if input == :tty,
-        do: Device.start(true, nil, write),
-        else: Device.start(false, input, write)
+  # Runs `fun` with `input` piped on stdin, or with a terminal on stdin when
+  # `input` is `:tty`, and returns its result, stdout, and stderr.
+  defp io(input, fun) do
+    device = if input == :tty, do: Device.start(true, nil), else: Device.start(false, input)
 
     old = Process.group_leader()
 
@@ -135,6 +120,30 @@ defmodule CodingAgent.PrintTest do
   end
 
   defp signal_handlers, do: Enum.sort(:gen_event.which_handlers(:erl_signal_server))
+
+  # `run/2` in the setup of print mode, with a halt that reports to `test`.
+  defp run(session, prompt, test \\ self()) do
+    Print.wrap(fn -> Print.run(session, prompt) end, &send(test, {:halt, &1}))
+  end
+
+  # After a signal, `wrap/2` puts the VM back and then waits for the halt,
+  # which here is only a message: the test ends the wait.
+  defp end_wait(task, handlers) do
+    wait_until(fn ->
+      Process.info(task.pid, :current_function) == {:current_function, {Process, :sleep, 1}}
+    end)
+
+    Task.shutdown(task, :brutal_kill)
+    assert signal_handlers() == handlers
+  end
+
+  defp wait_until(fun, ms \\ Helyx.Test.Events.wait_ms()) do
+    cond do
+      fun.() -> :ok
+      ms <= 0 -> flunk("the condition did not hold")
+      true -> Process.sleep(10) && wait_until(fun, ms - 10)
+    end
+  end
 
   describe "the CLI" do
     @describetag :tmp_dir
@@ -206,27 +215,6 @@ defmodule CodingAgent.PrintTest do
       assert {1, "", stderr} = io("", fn -> CLI.main(["-p"]) end)
       assert stderr =~ ~s("-p"; the options)
     end
-
-    test "SIGTERM while stdin is read returns 143 with nothing started", %{sessions: s} do
-      handlers = signal_handlers()
-      assert io(:sigterm, fn -> CLI.main(["-p", "x"]) end) == {143, "", ""}
-
-      assert signal_handlers() == handlers
-      refute File.exists?(s)
-      assert Process.whereis(Helyx.Core) == nil
-    end
-
-    test "a signal while Core starts sends no prompt and stops Core", %{tmp_dir: dir} do
-      # The signal handler sends this message; it waits in the mailbox.
-      send(self(), {Print, :signal, 143})
-
-      assert {143, "", "helyx: session " <> _} =
-               io(:tty, fn -> CLI.main(["-p", "x", "--model", "fake/echo", dir]) end)
-
-      assert Process.whereis(Helyx.Core) == nil
-      # No prompt went to the session, so it has nothing to list.
-      assert capture_io(fn -> CLI.main(["--list", dir]) end) == ""
-    end
   end
 
   describe "prompt/1" do
@@ -260,14 +248,14 @@ defmodule CodingAgent.PrintTest do
     test "an answer cut at the token limit is printed and returns 1" do
       {:ok, session} = Helyx.Session.start(start_core(), model: "stop/max_tokens")
 
-      assert {1, "cut\n", stderr} = io("", fn -> Print.run(session, "q") end)
+      assert {1, "cut\n", stderr} = io("", fn -> run(session, "q") end)
       assert stderr =~ ~r/\Ahelyx: session \S+\nhelyx: the answer stopped at the token limit\n\z/
     end
 
     test "a refused answer is printed with a notice and returns 0" do
       {:ok, session} = Helyx.Session.start(start_core(), model: "stop/refused")
 
-      assert {0, "cut\n", stderr} = io("", fn -> Print.run(session, "q") end)
+      assert {0, "cut\n", stderr} = io("", fn -> run(session, "q") end)
       assert stderr =~ "helyx: the answer stopped: the provider refused or filtered it\n"
     end
 
@@ -280,48 +268,79 @@ defmodule CodingAgent.PrintTest do
       assert :logger.get_handler_config(:default) == {:ok, before}
     end
 
-    test "SIGTERM during the turn returns 143, and SIGHUP gives 129" do
+    test "SIGTERM during the turn aborts it, then halts with 143" do
       gate = Helyx.Test.Gate.open()
       {:ok, session} = Helyx.Session.start(start_core(), model: "gated/" <> gate)
+      handlers = signal_handlers()
+      test = self()
 
-      assert {143, "", _} =
+      assert {:ok, _, stderr} =
                io("", fn ->
-                 task = Task.async(fn -> Print.wrap(fn -> Print.run(session, "fail") end) end)
+                 task = Task.async(fn -> run(session, "fail", test) end)
                  assert_receive {:waiting, _}
                  :gen_event.notify(:erl_signal_server, :sigterm)
-                 Task.await(task, :infinity)
+                 assert_receive {:halt, 143}
+                 end_wait(task, handlers)
+                 :ok
                end)
 
-      assert Print.wrap(fn ->
-               :gen_event.sync_notify(:erl_signal_server, :sighup)
-               :ok
-             end) == 129
+      # The halt came after the abort ended the turn.
+      assert stderr =~ "\nhelyx: the turn was aborted\n"
+      refute_received {:halt, _}
     end
 
-    test "the first signal sets the status" do
-      # The read or the wait takes the first message; no second one waits.
-      assert Print.wrap(fn ->
-               :gen_event.sync_notify(:erl_signal_server, :sigterm)
-               :gen_event.sync_notify(:erl_signal_server, :sighup)
-               assert_received {Print, :signal, status}
-               status
-             end) == 143
+    test "SIGHUP halts with 129, and the first signal sets the status" do
+      handlers = signal_handlers()
+      test = self()
+
+      task =
+        Task.async(fn ->
+          Print.wrap(
+            fn ->
+              :gen_event.sync_notify(:erl_signal_server, :sighup)
+              :gen_event.sync_notify(:erl_signal_server, :sigterm)
+            end,
+            &send(test, {:halt, &1})
+          )
+        end)
+
+      assert_receive {:halt, 129}
+      end_wait(task, handlers)
+      refute_received {:halt, _}
     end
 
-    test "a signal while the answer write blocks returns its status" do
-      {:ok, session} = Helyx.Session.start(start_core(), model: "fake/echo")
+    @tag :slow
+    test "the wait for the abort is bounded" do
+      gate = Helyx.Test.Gate.open()
+      {:ok, session} = Helyx.Session.start(start_core(), model: "gated/" <> gate)
+      handlers = signal_handlers()
+      test = self()
 
-      assert {143, "", _} =
-               io("", fn -> Print.wrap(fn -> Print.run(session, "q") end) end, :sigterm)
+      io("", fn ->
+        task = Task.async(fn -> run(session, "fail", test) end)
+        assert_receive {:waiting, gate_pid}
+        # A session that does not answer the abort.
+        pid = Helyx.Session.pid(session)
+        :erlang.suspend_process(pid)
+        started = System.monotonic_time(:millisecond)
+        :gen_event.notify(:erl_signal_server, :sigterm)
+        assert_receive {:halt, 143}, Print.abort_ms() + @load_ms
+        assert System.monotonic_time(:millisecond) - started >= Print.abort_ms()
+
+        :erlang.resume_process(pid)
+        send(gate_pid, :go)
+        end_wait(task, handlers)
+      end)
     end
 
     test "an aborted turn prints nothing on stdout and returns 1" do
+      test = self()
       gate = Helyx.Test.Gate.open()
       {:ok, session} = Helyx.Session.start(start_core(), model: "gated/" <> gate)
 
       assert {1, "", stderr} =
                io("", fn ->
-                 task = Task.async(fn -> Print.run(session, "fail") end)
+                 task = Task.async(fn -> run(session, "fail", test) end)
                  assert_receive {:waiting, _}
                  :ok = Helyx.Session.abort(session)
                  Task.await(task, :infinity)
@@ -331,6 +350,7 @@ defmodule CodingAgent.PrintTest do
     end
 
     test "a notice goes to stderr as one line of at most 4000 bytes" do
+      test = self()
       gate = Helyx.Test.Gate.open()
       {:ok, session} = Helyx.Session.start(start_core(), model: "gated/" <> gate)
 
@@ -343,27 +363,30 @@ defmodule CodingAgent.PrintTest do
         data: %{text: String.duplicate("n", 10_000) <> "\nnext"}
       }
 
-      assert {143, "", stderr} =
+      assert {1, "", stderr} =
                io("", fn ->
-                 task = Task.async(fn -> Print.run(session, "fail") end)
-                 assert_receive {:waiting, _}
+                 task = Task.async(fn -> run(session, "fail", test) end)
+                 assert_receive {:waiting, gate_pid}
                  send(task.pid, {:helyx_event, notice})
-                 send(task.pid, {Print, :signal, 143})
+                 send(gate_pid, :go)
                  Task.await(task, :infinity)
                end)
 
-      assert [_session, "helyx: " <> line] = String.split(stderr, "\n", trim: true)
+      # The log line of the failed turn comes from another process, in any order.
+      lines = String.split(stderr, "\n", trim: true)
+      assert ["helyx: " <> line] = Enum.filter(lines, &String.starts_with?(&1, "helyx: n"))
       assert byte_size(line) <= 4000
-      assert line =~ ~r/\An+/
+      refute "next" in lines
     end
 
     test "a session that stops while the turn runs returns 1" do
+      test = self()
       gate = Helyx.Test.Gate.open()
       {:ok, session} = Helyx.Session.start(start_core(), model: "gated/" <> gate)
 
       assert {1, "", stderr} =
                io("", fn ->
-                 task = Task.async(fn -> Print.run(session, "fail") end)
+                 task = Task.async(fn -> run(session, "fail", test) end)
                  assert_receive {:waiting, _}
                  GenServer.stop(Helyx.Session.pid(session))
                  Task.await(task, :infinity)
