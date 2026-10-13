@@ -68,10 +68,12 @@ defmodule Helyx.Provider.Codex.Tools do
   end
 
   # Items of the running turn only: `items` and `turn` reset at its end.
+  # Only a tool that the program was given maps.
   defp tool_call?(%{"threadId" => thread, "turnId" => turn, "callId" => id} = params, state),
     do:
       thread == state.thread and turn == state.turn and state.items.open[id] == "dynamicToolCall" and
-        is_binary(params["tool"]) and is_map(params["arguments"])
+        Enum.any?(state.tools.specs, &(&1.name == params["tool"])) and
+        is_map(params["arguments"])
 
   defp tool_call?(_params, _state), do: false
 end

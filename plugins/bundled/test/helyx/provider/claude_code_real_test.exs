@@ -8,7 +8,7 @@ defmodule Helyx.Provider.ClaudeCodeRealTest do
   import Helyx.Test.Events
   import Helyx.Test.OSHelpers
 
-  alias Helyx.{Event, Session}
+  alias Helyx.{Event, Message, Session}
   alias Helyx.Provider.ClaudeCode
 
   @moduletag :real_claude
@@ -18,16 +18,13 @@ defmodule Helyx.Provider.ClaudeCodeRealTest do
   # A turn of the real program over the network.
   @real_turn_ms 120_000
 
-  # The `Bash` tool refuses a standalone `sleep`, so the commands are python
-  # (research note, #200 section).
-  defp sleeper(file, seconds),
-    do:
-      ~s|python3 -c "import os, time; open('#{file}', 'w').write(str(os.getpid())); time.sleep(#{seconds})"|
-
-  test "a background task survives an abort and is gone after the session ends",
-       %{tmp_dir: tmp} do
+  test "a command runs on the Helyx bash, and the hands release it on abort (#478)", %{
+    tmp_dir: tmp
+  } do
     core = :"core_#{System.unique_integer([:positive])}"
-    start_supervised!({Helyx.Core, name: core, plugins: [ClaudeCode]})
+
+    plugins = [ClaudeCode, Helyx.Tool.Read, Helyx.Tool.Bash, Helyx.Tool.Edit, Helyx.Tool.Write]
+    start_supervised!({Helyx.Core, name: core, plugins: plugins})
 
     {:ok, session} =
       Session.start(core,
@@ -40,31 +37,25 @@ defmodule Helyx.Provider.ClaudeCodeRealTest do
 
     :ok =
       Session.prompt(session, """
-      Run these two commands with the Bash tool, one after the other, exactly as written.
-      First, with run_in_background set to true: #{sleeper("bg.pid", 240)}
-      Second, in the foreground, after the first one started: #{sleeper("fg.pid", 90)}
+      Run this shell command exactly as written: echo $$ > fg.pid; exec sleep 90
       """)
 
-    bg = wait_for_pid(Path.join(tmp, "bg.pid"))
-    fg = wait_for_pid(Path.join(tmp, "fg.pid"))
+    pid = wait_for_pid(Path.join(tmp, "fg.pid"))
     %{pid: harness} = :sys.get_state(Session.pid(session)).conn
-
     :ok = Session.abort(session)
+    events = collect_until(:turn_end, @real_turn_ms)
 
-    assert [%{outcome: :aborted}] =
-             for(
-               %Event{type: :turn_end, data: d} <- collect_until(:turn_end, @real_turn_ms),
-               do: d
-             )
-
-    # The interrupt ends the foreground command; the background task and
-    # the program stay.
-    assert gone_within?(fg)
-    assert os_alive?(bg)
+    assert [%{outcome: :aborted}] = of_type(events, :turn_end)
+    assert gone_within?(pid)
     assert %{pid: ^harness} = :sys.get_state(Session.pid(session)).conn
 
-    GenServer.stop(Session.pid(session))
+    names =
+      for %Event{type: :message_end, data: %{message: %Message{content: blocks}}} <- events,
+          %Message.ToolCall{name: name} <- blocks,
+          do: name
 
-    assert gone_within?(bg)
+    assert names == ["mcp__helyx__bash"]
+
+    GenServer.stop(Session.pid(session))
   end
 end

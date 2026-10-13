@@ -1,17 +1,16 @@
 defmodule Helyx.Provider.Codex do
   @moduledoc """
   A connected harness provider (ADR 0007) that drives the unmodified Codex
-  program through `codex app-server`, with JSON-RPC lines over stdio. The
-  model ref is `codex/<model>`, where `<model>` is a model id of `codex`.
+  program, with its shell off, by JSON-RPC lines of `codex app-server` on stdio.
+  The model ref is `codex/<model>`, where `<model>` is a model id of `codex`.
 
-  One program serves the session's provider process. `init/3` returns when
-  its thread is ready: `thread/resume` with `:resume_id`, or `thread/start`.
-  A `{:turn, ...}` is `turn/start`, a steer is `turn/steer`, and an
-  interrupt is `turn/interrupt`, or `{:error, :command_running}` or
-  `{:error, :agent_running}` when open work would outlive it. The Helyx
-  tools go to the thread as `dynamicTools`. A line that fails the shape
-  check, a turn that Helyx did not ask for, and the program's exit stop the
-  provider process.
+  One program serves the session's provider process. `init/3` returns when its
+  thread is ready: `thread/resume` with `:resume_id`, or `thread/start`. A
+  `{:turn, ...}` is `turn/start`, a steer is `turn/steer`, and an interrupt is
+  `turn/interrupt`, or `{:error, :command_running}` or `{:error, :agent_running}`
+  when open work would outlive it. The Helyx tools except the file tools go to
+  the thread as `dynamicTools`. A line that fails the shape check, a turn that
+  Helyx did not ask for, and the program's exit stop the provider process.
 
   The full contract is in `docs/features/long-lived-harness.md`, section
   "Codex". The protocol facts are in `docs/research/codex-app-server.md`.
@@ -78,6 +77,7 @@ defmodule Helyx.Provider.Codex do
   end
 
   @trust %{approvalPolicy: "never", sandbox: "danger-full-access"}
+  @args ~w(app-server --disable shell_tool --disable unified_exec)
 
   @impl true
   def id, do: "codex"
@@ -87,7 +87,7 @@ defmodule Helyx.Provider.Codex do
 
   @impl true
   def init(model, tools, opts) do
-    with {:ok, exe} <- HarnessIO.find("codex") do
+    with {:ok, exe} <- HarnessIO.find("codex"), tools <- HarnessIO.harness_tools(tools) do
       state = %State{
         model: model,
         tools: %Tools{specs: tools},
@@ -95,7 +95,7 @@ defmodule Helyx.Provider.Codex do
         resume: Tools.resumable(opts[:resume_id], tools)
       }
 
-      case HarnessIO.launch(exe, ["app-server"], state.cwd, state) do
+      case HarnessIO.launch(exe, @args, state.cwd, state) do
         %State{terminal: {:error, reason}} -> {:error, reason}
         state -> handshake(rpc(state, "initialize", Tools.initialize_params(tools)))
       end

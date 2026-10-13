@@ -58,8 +58,6 @@ defmodule Helyx.Provider.Codex.TurnsTest do
     assert %{"params" => %{"threadId" => tid(), "input" => [%{"text" => "list the files"}]}} =
              request(bin, 1, "turn/start")
 
-    assert ["app-server"] = bin |> Path.join("args.1") |> File.read!() |> String.split()
-
     assert [%{provider: "codex", resume_id: tid(), lost: false, cut: 0}] =
              of_type(events, :resume_id)
 

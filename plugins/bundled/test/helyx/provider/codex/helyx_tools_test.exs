@@ -9,17 +9,23 @@ defmodule Helyx.Provider.Codex.HelyxToolsTest do
 
   alias Helyx.{Message, Session}
   alias Helyx.Provider.{Codex, Fake}
+  alias Helyx.Provider.Codex.Tools
 
   @moduletag :tmp_dir
   setup {Helyx.Test.CodexFake, :setup_fake}
 
   describe "the Helyx tools" do
-    @spec_read %{name: "read", description: "Reads a file.", parameters: %{"type" => "object"}}
+    @spec_bash %{name: "bash", description: "Runs a command.", parameters: %{"type" => "object"}}
+
+    # The Helyx file tools, which a harness does not get: it keeps its own
+    # (#478).
+    @file_tools for name <- ~w(read edit write),
+                    do: %{name: name, description: "", parameters: %{}}
 
     defp dyn(id, fields \\ %{}),
       do:
         Map.merge(
-          %{type: "dynamicToolCall", id: id, tool: "read", arguments: %{}, status: "inProgress"},
+          %{type: "dynamicToolCall", id: id, tool: "bash", arguments: %{}, status: "inProgress"},
           fields
         )
 
@@ -29,8 +35,8 @@ defmodule Helyx.Provider.Codex.HelyxToolsTest do
         turnId: "turn1",
         callId: call_id,
         namespace: nil,
-        tool: "read",
-        arguments: %{path: "a.txt"}
+        tool: "bash",
+        arguments: %{command: "cat a.txt"}
       }
 
       j(%{id: rpc_id, method: "item/tool/call", params: Map.merge(params, fields)})
@@ -53,7 +59,7 @@ defmodule Helyx.Provider.Codex.HelyxToolsTest do
       ~s{(while [ ! -f "#{file}" ]; do sleep 0.02; done; out "$d/#{name}") &\n}
     end
 
-    defp tools_turn(work, tools \\ [@spec_read], opts \\ []) do
+    defp tools_turn(work, tools \\ [@spec_bash], opts \\ []) do
       {:ok, state} = Codex.init("m", tools, [cwd: work] ++ opts)
       turn = {:turn, "t1", %Helyx.Context{messages: [Message.user("x")]}}
       {_from, actions, state} = ask(state, turn)
@@ -66,7 +72,7 @@ defmodule Helyx.Provider.Codex.HelyxToolsTest do
       on(bin, 1, "initialize", [j(%{id: "@", error: %{code: -32_600, message: "no"}})])
 
       assert {:error, {:codex, "initialize", "no"}} =
-               Codex.init("m", [@spec_read], cwd: work)
+               Codex.init("m", [@spec_bash], cwd: work)
 
       error = %{
         code: -32_600,
@@ -77,18 +83,21 @@ defmodule Helyx.Provider.Codex.HelyxToolsTest do
       on(bin, 2, "thread/start", [j(%{id: "@", error: error})])
 
       assert {:error, {:codex, "thread/start", "thread/start.dynamicTools" <> _}} =
-               Codex.init("m", [@spec_read], cwd: work)
+               Codex.init("m", [@spec_bash], cwd: work)
     end
 
     defp digest?(id),
       do: match?([tid(), digest] when byte_size(digest) == 16, String.split(id, "#"))
 
-    test "initialize asks for experimentalApi, thread/start gives the tools, and the id names the tool set",
+    test "the program runs with its shell off, initialize asks for experimentalApi, thread/start gives the tools except the file tools, and the id names the tool set",
          %{bin: bin, work: work} do
       fresh(bin, 1, tid(), reply(tid(), "Hi."))
-      {state, actions} = tools_turn(work)
+      {state, actions} = tools_turn(work, @file_tools ++ [@spec_bash])
       {actions, state} = pump(Codex, state, actions, &turn_ended?/1)
       close(state)
+
+      assert File.read!(Path.join(bin, "args.1")) ==
+               "app-server\n--disable\nshell_tool\n--disable\nunified_exec\n"
 
       assert %{"params" => %{"capabilities" => %{"experimentalApi" => true}}} =
                request(bin, 1, "initialize")
@@ -98,8 +107,8 @@ defmodule Helyx.Provider.Codex.HelyxToolsTest do
                  "dynamicTools" => [
                    %{
                      "type" => "function",
-                     "name" => "read",
-                     "description" => "Reads a file.",
+                     "name" => "bash",
+                     "description" => "Runs a command.",
                      "inputSchema" => %{"type" => "object"}
                    }
                  ]
@@ -119,11 +128,17 @@ defmodule Helyx.Provider.Codex.HelyxToolsTest do
       close(state)
 
       runs = [
-        {[@spec_read], id, "thread/resume"},
-        {[@spec_read], tid(), "thread/start"},
+        {[@spec_bash], id, "thread/resume"},
+        {[@spec_bash], tid(), "thread/start"},
         {[], id, "thread/start"},
         {[], tid(), "thread/resume"},
-        {[%{@spec_read | description: "Other."}], id, "thread/start"}
+        {[%{@spec_bash | description: "Other."}], id, "thread/start"},
+        # A thread stored with the file tools in its set, before #478.
+        {@file_tools ++ [@spec_bash], id, "thread/resume"},
+        {@file_tools ++ [@spec_bash], Tools.session_id(tid(), @file_tools ++ [@spec_bash]),
+         "thread/start"},
+        # Only the file tools: the program gets no Helyx tool.
+        {@file_tools, tid(), "thread/resume"}
       ]
 
       for {{tools, stored, method}, n} <- Enum.with_index(runs, 2) do
@@ -135,7 +150,7 @@ defmodule Helyx.Provider.Codex.HelyxToolsTest do
         close(state)
         assert request(bin, n, method), "run #{n}"
         caps = request(bin, n, "initialize")["params"]["capabilities"]
-        assert caps == if(tools == [], do: nil, else: %{"experimentalApi" => true})
+        assert caps == if(tools in [[], @file_tools], do: nil, else: %{"experimentalApi" => true})
       end
 
       assert %{"params" => %{"threadId" => tid()}} = request(bin, 2, "thread/resume")
@@ -149,7 +164,7 @@ defmodule Helyx.Provider.Codex.HelyxToolsTest do
       requested? = &Enum.any?(&1, fn a -> match?({:event, _, {:tool_request, _, _, _}}, a) end)
       {actions, state} = pump(Codex, state, actions, requested?)
 
-      assert {:event, "t1", {:tool_request, "call_d1", "read", %{"path" => "a.txt"}}} =
+      assert {:event, "t1", {:tool_request, "call_d1", "bash", %{"command" => "cat a.txt"}}} =
                List.last(actions)
 
       {from, actions, state} = ask(state, {:tool_result, "t1", "call_d1", {:ok, "hello"}})
@@ -181,12 +196,12 @@ defmodule Helyx.Provider.Codex.HelyxToolsTest do
       on(bin, 1, "thread/start", [j(%{id: "@", result: %{thread: long}})])
 
       assert {:error, {:malformed, "thread/start"}} =
-               Codex.init("m", [@spec_read], cwd: work)
+               Codex.init("m", [@spec_bash], cwd: work)
 
       initialize(bin, 2)
       at = %{thread(tid()) | id: String.duplicate("a", 239)}
       on(bin, 2, "thread/start", [j(%{id: "@", result: %{thread: at}})])
-      assert {:ok, state} = Codex.init("m", [@spec_read], cwd: work)
+      assert {:ok, state} = Codex.init("m", [@spec_bash], cwd: work)
       close(state)
 
       initialize(bin, 3)
@@ -196,7 +211,7 @@ defmodule Helyx.Provider.Codex.HelyxToolsTest do
       assert {:error, {:malformed, "thread/start"}} = Codex.init("m", [], cwd: work)
     end
 
-    test "a call with no turn and one that does not map get an error and give no request",
+    test "a call with no turn, one that does not map, and one of a tool not given get an error",
          %{bin: bin, work: work} do
       initialize(bin, 1)
 
@@ -216,12 +231,15 @@ defmodule Helyx.Provider.Codex.HelyxToolsTest do
         tool_call(tid(), 5, "call_x", %{callId: 7}),
         tool_call(tid(), 6, "call_d1", %{turnId: "turn0"}),
         tool_call(tid(), 7, "call_d3", %{arguments: "a.txt"}),
+        started(tid(), dyn("call_d4", %{tool: "read"})),
+        tool_call(tid(), 8, "call_d4", %{tool: "read", arguments: %{path: "a.txt"}}),
+        completed(tid(), dyn("call_d4", %{tool: "read"})),
         completed(tid(), command("exec-1", done())),
         completed(tid(), dyn("call_d1", %{status: "failed"}))
       ]
 
       on(bin, 1, "turn/start", turn(tid(), lines ++ reply(tid(), "Done.")))
-      {state, actions} = tools_turn(work)
+      {state, actions} = tools_turn(work, @file_tools ++ [@spec_bash])
       {actions, state} = pump(Codex, state, actions, &turn_ended?/1)
       close(state)
 
@@ -238,7 +256,8 @@ defmodule Helyx.Provider.Codex.HelyxToolsTest do
                {4, "the call does not map to a tool use"},
                {5, "the call does not map to a tool use"},
                {6, "the call does not map to a tool use"},
-               {7, "the call does not map to a tool use"}
+               {7, "the call does not map to a tool use"},
+               {8, "the call does not map to a tool use"}
              ]
     end
 

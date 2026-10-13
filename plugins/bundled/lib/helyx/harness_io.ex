@@ -13,6 +13,11 @@ defmodule Helyx.HarnessIO do
 
   def line_max_bytes, do: @line_max_bytes
 
+  # The Helyx tools that a harness gets. The harness keeps its own file
+  # tools, so the Helyx file tools stay out: the model sees one tool for
+  # each job (#478).
+  def harness_tools(specs), do: Enum.reject(specs, &(&1.name in ~w(read edit write)))
+
   # The lookup of the harness program, with the check for perl: the
   # watchdog needs perl, so without it the error names perl, not the exit
   # of a run that never started.
