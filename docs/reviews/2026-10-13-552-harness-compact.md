@@ -202,3 +202,7 @@ Round type: full (three code files, new functions). Simplify: the resume helpers
 Judgement calls not taken: the name `Turn.start` (a longer name breaks the 400-line limit of `turn_loop.ex`), the flag argument of the two test helpers, and the remaining duplicate `until_tool_call/0` from before this change.
 
 The round reproduced no defect in a shape that the program sends, so the loop ends. The fixes after the round are doc text and tests.
+| gate r3 (on `b9d55d9`, after the rebase on #557) | Done, a cut reply (aborted_streaming), a compaction, a reconnect: the resumed cost mark was known where the live meter had it unknown | Confirmed by a read of the code. Fixed in `10fde08` with a full round (rows G3.1 to G3.6): a last turn with no done gives the resumed usage cost nil |
+| gate r4 (on `10fde08`) | A compaction result with missing usage sets the flag live, but the compaction stores no message, so a resume restores a known mark | Rejected (AGENTS.md, contract breaks need evidence). The real program sends a `/compact` result with zero counts and a `total_cost_usd` that holds the compaction call (probed 2026-10-13, Claude Code research note). A fix would need a record on disk, which the owner ruled out |
+
+Owner decision, 2026-10-13: two ceilings stay documented in `usage-and-limits.md` with no ticket: an interrupted `/compact` leaves its cut call out of every total, and a program turn that starts by itself (#240) and is cut while its first call streams has the flag only live.
