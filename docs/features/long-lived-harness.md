@@ -96,7 +96,7 @@ Users see each command as a Helyx `bash` tool cell, and Esc aborts it: the hands
 - Showing the Claude background tasks in the TUI.
 - The MCP servers of the user's own Claude or Codex config. They stay. A tool of such a server that starts a process gives it no Helyx abort, output bound, or tool event. The Codex tool lists of the probe had one named `mcp__node_repl__js` (`docs/research/harness-shell-off.md`, "The tool list of the model request").
 - `thread/fork`, `thread/revert`, `rewind_files`, and branching.
-- Compaction inside the harness (`thread/compact/start`).
+- Compaction inside the harness: `docs/features/harness-compaction.md` (#552).
 - A model switch inside one program: a switch closes the program.
 
 ## Current limits

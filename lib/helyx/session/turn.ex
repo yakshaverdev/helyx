@@ -13,7 +13,11 @@ defmodule Helyx.Session.Turn do
   # Task, which the session monitors and kills at the turn end, or nil: in
   # `submitted` a prepare Task is an open context request.
   # `tool_queue` holds the Helyx tool requests of the turn
-  # (`Helyx.Session.ToolQueue`).
+  # (`Helyx.Session.ToolQueue`). `compact` is nil for a turn with a prompt;
+  # for a compaction turn it is its instructions until the provider's
+  # first compaction event, then `:reported`
+  # (docs/features/harness-compaction.md). `start` is the number of
+  # transcript messages when the turn opened.
 
   alias Helyx.{Message, ModelRef}
 
@@ -27,6 +31,8 @@ defmodule Helyx.Session.Turn do
     :context,
     :pending,
     :prepare,
+    :compact,
+    :start,
     bytes: 0,
     blocks: 0,
     tool_queue: %Helyx.Session.ToolQueue{}
@@ -41,6 +47,8 @@ defmodule Helyx.Session.Turn do
           context: Helyx.Context.t() | nil,
           pending: reference() | nil,
           prepare: pid() | nil,
+          compact: String.t() | :reported | nil,
+          start: non_neg_integer() | nil,
           bytes: non_neg_integer(),
           blocks: non_neg_integer(),
           tool_queue: Helyx.Session.ToolQueue.t()

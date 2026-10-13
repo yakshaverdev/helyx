@@ -41,8 +41,12 @@ defmodule Helyx.Session.Server.Steering do
   # provider process; in `preparing` and `submitting` it stays in the local
   # queue ("Turn states"), and so it does in a wait. A sent steer counts in
   # the 32 steers until its `user_message` and its answer
-  # (`Helyx.Session.Queue`).
+  # (`Helyx.Session.Queue`). A compaction cannot be steered, so a steer on
+  # its turn stays in the local queue for the next turn.
   # Returns the reply to the client and the state.
+  def steer(%State{activity: %Turn{compact: compact}} = state, text) when compact != nil,
+    do: queue(state, :steers, text)
+
   def steer(%State{activity: %Turn{phase: :submitted}} = state, text) do
     if Queue.room?(state.queue),
       do: {:ok, send_steer(text, state)},

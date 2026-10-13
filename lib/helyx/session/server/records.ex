@@ -84,6 +84,12 @@ defmodule Helyx.Session.Server.Records do
   # result.
   def finish(state, outcome), do: state |> close_last(outcome) |> abort_open_calls()
 
+  # A compaction turn has no message of its own: after its compaction, or
+  # after the session's notice that the provider has nothing to compact.
+  defp close_last(%State{activity: %Turn{compact: compact, partial: nil}} = state, {:done, _, _})
+       when compact != nil,
+       do: state
+
   defp close_last(state, {:done, stop_reason, usage}),
     do: close_assistant(state, stop_reason, usage)
 
@@ -122,10 +128,29 @@ defmodule Helyx.Session.Server.Records do
   def resume_id(%State{conn: %ProviderConn{} = conn} = state, turn_id, id, cut) do
     provider = conn.model.provider
     state = persist(state, &Helyx.Session.File.append_resume_id(&1, provider, id))
-    ids = Map.put(state.resume_ids, provider, {id, Transcript.assistant_count(state.transcript)})
+
+    ids =
+      Map.put(state.resume_ids, provider, {id, Transcript.assistant_count(state.transcript), nil})
+
     data = %{provider: provider, resume_id: id, lost: conn.resumed != nil, cut: cut}
     state = %{state | resume_ids: ids, conn: %{conn | resumed: nil}}
     emit(state, turn_id, :resume_id, data)
+  end
+
+  # A compaction of the provider's own history: the record on disk and
+  # `:compaction`. One in a compaction turn is the one it asked for
+  # (`manual`), and marks the turn as compacted; any other is `auto`. The
+  # label of the provider's resume id gets the assistant count of this
+  # compaction (`Transcript.resumable/3`).
+  def compaction(%State{activity: %Turn{compact: compact} = turn} = state, before, after_) do
+    trigger = if compact, do: :manual, else: :auto
+    provider = turn.model.provider
+    file_append = &Helyx.Session.File.append_compaction(&1, provider, trigger, before, after_)
+    state = persist(state, file_append)
+    count = Transcript.assistant_count(state.transcript)
+    state = %{state | resume_ids: Transcript.compacted(state.resume_ids, provider, count)}
+    state = if compact, do: put_in(state.activity.compact, :reported), else: state
+    emit(state, :compaction, %{trigger: trigger, tokens_before: before, tokens_after: after_})
   end
 
   # Emits message_start for the assistant message on the first stream event.

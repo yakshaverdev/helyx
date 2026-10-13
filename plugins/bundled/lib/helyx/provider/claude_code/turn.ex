@@ -17,7 +17,9 @@ defmodule Helyx.Provider.ClaudeCode.Turn do
   # not written yet: each goes out at the `result` of the
   # replayed user line that ends the chunk before it, and the last one ends
   # with the turn's line, then any steers. `program?` marks a program turn
-  # (#240): its `id` and `uuid` are one new UUID.
+  # (#240): its `id` and `uuid` are one new UUID. `compact` is nil for a
+  # model turn; in a compaction turn it is `:asked`, then `:compacted` at
+  # its `compact_boundary`, or the `compact_error` of a failed compaction.
   @enforce_keys [:id, :uuid, :messages]
   defstruct [
     :id,
@@ -28,7 +30,8 @@ defmodule Helyx.Provider.ClaudeCode.Turn do
     steers: %{},
     chunks: [],
     replay?: false,
-    program?: false
+    program?: false,
+    compact: nil
   ]
 
   alias Helyx.HarnessIO
@@ -37,6 +40,35 @@ defmodule Helyx.Provider.ClaudeCode.Turn do
 
   # The program started the turn's line (`command_lifecycle` `started`).
   defguard started?(turn) when turn.messages == nil
+
+  # The turn of a `{:turn, ...}` or a `{:compact, ...}` request.
+  def new(:turn, id, uuid, %Helyx.Context{messages: messages}),
+    do: %__MODULE__{id: id, uuid: uuid, messages: messages}
+
+  def new(:compact, id, uuid, text) do
+    line = String.trim_trailing("/compact " <> text)
+    %__MODULE__{id: id, uuid: uuid, messages: [Message.user(line)], compact: :asked}
+  end
+
+  # A `compact_boundary` gives the compaction event, in any turn. A failed
+  # compaction gives its `compact_error` on a `status` line; one in a model
+  # turn is the program's own, and the turn goes on. Every other line of a
+  # compaction turn is dropped: the summary, and the text of a failure.
+  def compaction(turn, %{"subtype" => "compact_boundary", "compact_metadata" => %{} = meta}) do
+    compact = if turn.compact, do: :compacted
+    event = {:compaction, tokens(meta["pre_tokens"]), tokens(meta["post_tokens"])}
+    {[event], %{turn | compact: compact}}
+  end
+
+  def compaction(%{compact: :asked} = turn, %{"subtype" => "status", "compact_error" => error})
+      when is_binary(error),
+      do: {[], %{turn | compact: HarnessIO.cap_error(error)}}
+
+  def compaction(turn, _line), do: {[], turn}
+
+  # The wire bound of a token count; a count outside it is not known.
+  defp tokens(n) when is_integer(n) and n >= 0 and n <= 1_000_000_000, do: n
+  defp tokens(_n), do: nil
 
   def delta(%{"type" => "text_delta", "text" => text}) when is_binary(text) and text != "",
     do: [{:text_delta, text}]
@@ -76,13 +108,20 @@ defmodule Helyx.Provider.ClaudeCode.Turn do
   def errors(_result), do: []
 
   # The terminal of the turn, and the meter after it: a `done` starts a
-  # new usage sum, and an error keeps it for the next `done`.
-  def terminal(%{"is_error" => false, "subtype" => "success"} = result, meter) do
-    {usage, meter} = Meter.done(meter)
+  # new usage sum, and an error keeps it for the next `done`. A compaction
+  # turn keeps it too: no message holds its usage, so the cost of the
+  # compaction call goes into the next `done` of the program
+  # (docs/features/harness-compaction.md).
+  def terminal(%{"is_error" => false, "subtype" => "success"}, %{compact: error}, meter)
+      when is_binary(error),
+      do: {{:error, {:compaction_failed, error}}, meter}
+
+  def terminal(%{"is_error" => false, "subtype" => "success"} = result, turn, meter) do
+    {usage, meter} = if turn.compact, do: {nil, meter}, else: Meter.done(meter)
     {{:done, %{stop_reason: stop_reason(result["stop_reason"]), usage: usage}}, meter}
   end
 
-  def terminal(result, meter) do
+  def terminal(result, _turn, meter) do
     text = Enum.join(errors(result), "; ")
     text = if text == "" and is_binary(result["result"]), do: result["result"], else: text
     subtype = HarnessIO.cap_error(result["subtype"])

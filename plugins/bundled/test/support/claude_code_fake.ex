@@ -280,6 +280,15 @@ defmodule Helyx.Test.ClaudeCodeFake do
     session
   end
 
+  # The session of `start/2` again, from its file.
+  def resume(ctx) do
+    {:ok, session} = Session.resume(ctx.core, sessions_dir: ctx.sessions, cwd: ctx.work)
+    {:ok, _, _} = Session.subscribe(session)
+    session
+  end
+
+  def resume_flag?(bin, n), do: Enum.any?(args(bin, n), &String.starts_with?(&1, "--resume"))
+
   def prompt(session, text) do
     :ok = Session.prompt(session, text)
     collect_until(:turn_end)

@@ -85,7 +85,7 @@ defmodule Helyx.Provider.Codex.TurnsTest do
     refute result.is_error
     assert [%{outcome: :done}] = of_type(events, :turn_end)
 
-    assert {:ok, %{resume_ids: %{"codex" => {tid(), 0}}}} =
+    assert {:ok, %{resume_ids: %{"codex" => {tid(), 0, nil}}}} =
              Session.File.resume(ctx.sessions, ctx.work)
   end
 
@@ -178,7 +178,7 @@ defmodule Helyx.Provider.Codex.TurnsTest do
     assert [%Message{role: :user}, %Message{content: [%Message.Text{text: "Fresh."}]}] =
              messages(events)
 
-    assert {:ok, %{resume_ids: %{"codex" => {fresh_tid(), 1}}}} =
+    assert {:ok, %{resume_ids: %{"codex" => {fresh_tid(), 1, nil}}}} =
              Session.File.resume(ctx.sessions, ctx.work)
   end
 

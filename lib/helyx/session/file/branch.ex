@@ -17,7 +17,7 @@ defmodule Helyx.Session.File.Branch do
   end
 
   # The writer only produces a header on line one, then messages, model
-  # changes, and resume ids, every one with an id, every model field a
+  # changes, resume ids, and compactions, every one with an id, every model field a
   # string. Anything else on the branch is on-disk corruption, never
   # silently dropped, and never laundered by a later entry that overrides
   # it. An entry on no branch is never read, so its shape is not checked.
@@ -36,6 +36,7 @@ defmodule Helyx.Session.File.Branch do
   defp valid_entry?(%{"type" => "message"}), do: true
   defp valid_entry?(%{"type" => "model_change", "model" => model}), do: is_binary(model)
   defp valid_entry?(%{"type" => "harness_session"}), do: true
+  defp valid_entry?(%{"type" => "compaction"}), do: true
   defp valid_entry?(_entry), do: false
 
   # The branch of the newest leaf, header first. The index holds each entry
@@ -117,7 +118,8 @@ defmodule Helyx.Session.File.Branch do
   # because the reader cannot know which one it replaced. A fork at the
   # branch entry with the id `fork` removes every label at or above it
   # (#282): the other branch holds those labels too and may have continued
-  # under their resume ids.
+  # under their resume ids. A `compaction` entry of the provider after its
+  # resume id entry adds the number at that compaction.
   # The entry type "harness_session" and its key "harness_session_id" are
   # stored names (`Helyx.Session.File.append_resume_id/3`).
   def resume_ids(entries, fork) do
@@ -139,11 +141,16 @@ defmodule Helyx.Session.File.Branch do
        )
        when is_binary(provider) do
     if Message.resume_id?(entry["harness_session_id"]),
-      do: {Map.put(ids, provider, {entry["harness_session_id"], count}), count},
+      do: {Map.put(ids, provider, {entry["harness_session_id"], count, nil}), count},
       else: {Map.delete(ids, provider), count}
   end
 
   defp resume_entry(%{"type" => "harness_session"}, {_ids, count}), do: {%{}, count}
+
+  defp resume_entry(%{"type" => "compaction", "provider" => provider}, {ids, count})
+       when is_binary(provider),
+       do: {Helyx.Session.Transcript.compacted(ids, provider, count), count}
+
   defp resume_entry(_entry, acc), do: acc
 
   # The id of the last branch entry, from the first resume id entry

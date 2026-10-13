@@ -1,7 +1,7 @@
 defmodule Helyx.Session.Server.Stop do
   @moduledoc false
   # The stop of a session (`terminate/2` of `Helyx.Session.Server`): the
-  # work that `TurnLoop.work/1` lists ends, the kill of a prepare Task or
+  # work that `work/1` lists ends, the kill of a prepare Task or
   # the close of provider processes (`State.provider_close_ms/0`, armed
   # kill), then the stop of the hands, which can finish one release
   # (`Hands.State.release_ms/0`). Each wait has a margin for load, so the
@@ -11,7 +11,8 @@ defmodule Helyx.Session.Server.Stop do
   import Helyx.Session.Server.State, only: [ask: 4]
 
   alias Helyx.Session.Hands
-  alias Helyx.Session.Server.{State, TurnLoop}
+  alias Helyx.Session.Server.{ProviderConn, State}
+  alias Helyx.Session.Turn
 
   @load_hands_stop_ms 2_000
   @load_shutdown_ms 3_000
@@ -26,7 +27,7 @@ defmodule Helyx.Session.Server.Stop do
   # run in parallel, and a provider process that is already gone gives its
   # `:DOWN` at once.
   def run(%State{} = state) do
-    %{kill: kill, close: close} = TurnLoop.work(state)
+    %{kill: kill, close: close} = work(state)
     Enum.each(kill, &Process.exit(&1, :kill))
 
     refs =
@@ -68,4 +69,12 @@ defmodule Helyx.Session.Server.Stop do
         end
     end
   end
+
+  # The work that a session stop ends: in a turn, its prepare Task, to
+  # kill; the hands take its provider process. With no turn, the provider
+  # process, also one that ends (an idle close, a switch close, an abort),
+  # to close.
+  defp work(%State{activity: %Turn{prepare: pid}}), do: %{kill: List.wrap(pid), close: []}
+  defp work(%State{conn: %ProviderConn{pid: pid}}), do: %{kill: [], close: [pid]}
+  defp work(_state), do: %{kill: [], close: []}
 end

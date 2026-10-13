@@ -25,16 +25,10 @@ defmodule Helyx.Session do
   provider process ends first; a failed context build goes to the provider.
   A provider process of an earlier turn that ends while the turn prepares is
   replaced once. Each tool call with no result gets an `aborted` error
-  result (`aborted_result/0`). A follow-up during a turn waits in a queue. A
-  steer waits in a queue until the provider can take it (see `steer/2`). An
-  abort or a failure of the turn empties both queues, and a `:queue_dropped`
-  event gives their texts back to the client. An abort ends the turn at
-  once. It returns at the end of the wait after the turn (`abort/1`): the
-  hands have released the resources of the turn or recorded them as
-  unconfirmed, an interrupt that the provider got has an answer or its
-  provider process has ended, and a provider process that stops has ended.
-  Until then, the session starts no turn. It answers every other client call
-  at once, and an abort call during the wait returns at the end of the wait.
+  result (`aborted_result/0`). Follow-ups and steers wait in queues
+  (`follow_up/2`, `steer/2`). An abort ends the turn at once, and the
+  session starts no turn until the end of the wait after it (`abort/1`). A
+  compaction of the provider's own history is a turn too (`compact/2`).
 
   `docs/features/session-lifecycle.md` has the turn, the queues, the
   abort, and the provider process. `docs/features/session-subscribers.md`
@@ -295,17 +289,11 @@ defmodule Helyx.Session do
   `{:error, :queue_full}`. An abort or a failure of the turn gives every
   queued steer back to the client in a `:queue_dropped` event.
 
-  A steer that arrives while the turn prepares goes into the turn's
-  prompt. A steer that arrives after that, before the provider accepts
-  the turn, goes to the provider when it accepts the turn. The provider
-  takes a steer at most once, and its user message joins the transcript
-  where the provider takes it: `Helyx.Provider.Loop` takes it before the
-  next model call of the turn. A steer that the provider rejects, such as
-  one after the last model call, waits for the next turn, unless the turn aborts or
-  fails first. A steer that Helyx cannot confirm is never sent again, and
-  a `:steer_unconfirmed` event carries its text. The rules are in
-  `docs/features/session-lifecycle.md`, sections "Turn states" and
-  "Steer".
+  The provider takes a steer at most once, and its user message joins the
+  transcript where the provider takes it. A rejected steer waits for the
+  next turn, unless the turn aborts or fails first. A steer that Helyx
+  cannot confirm is never sent again; a `:steer_unconfirmed` event carries
+  its text (`docs/features/session-lifecycle.md`, "Turn states", "Steer").
   """
   @spec steer(t(), String.t()) :: :ok | {:error, :invalid_utf8 | :queue_full | :session_not_found}
   def steer(%__MODULE__{} = session, text) when is_binary(text),
@@ -323,6 +311,18 @@ defmodule Helyx.Session do
           :ok | {:error, :invalid_utf8 | :queue_full | :session_not_found}
   def follow_up(%__MODULE__{} = session, text) when is_binary(text),
     do: send_text(session, :follow_up, text)
+
+  @doc """
+  Compacts the history that the provider keeps, as a turn with no user
+  message (`docs/features/harness-compaction.md`). A running turn aborts
+  first, as at `abort/1`, and is not retried. A second compaction before
+  the first ends returns `{:error, :turn_running}`. A provider that keeps
+  no history gives a `:notice` event. The text must be valid UTF-8.
+  """
+  @spec compact(t(), String.t()) ::
+          :ok | {:error, :turn_running | :invalid_utf8 | :session_not_found}
+  def compact(%__MODULE__{} = session, instructions \\ "") when is_binary(instructions),
+    do: send_text(session, :compact, instructions)
 
   defp send_text(session, op, text) do
     if String.valid?(text) do

@@ -21,7 +21,7 @@ if Helyx.TUI.Composer.Available.available?() do
     alias ExRatatui.Text.{Line, Span}
     alias ExRatatui.Widgets.{Block, Paragraph, Textarea}
     alias Helyx.Event
-    alias Helyx.TUI.{ViewModel, Wrap}
+    alias Helyx.TUI.{Command, ViewModel, Wrap}
 
     # The composer shows at most this many lines inside its two borders.
     @composer_lines 8
@@ -71,14 +71,15 @@ if Helyx.TUI.Composer.Available.available?() do
     def edit(%__MODULE__{} = composer, :paste, content), do: paste(composer, content)
 
     @doc """
-    What Enter sends: `:empty`, a `/model` switch with its ref, or the
-    message with its paste markers expanded. The composer does not change.
+    What Enter sends: `:empty`, a slash command (`Helyx.TUI.Command`), or
+    the message, with its paste markers expanded. The composer does not
+    change.
     """
-    @spec submit(t()) :: :empty | {:model, String.t()} | {:message, String.t()}
+    @spec submit(t()) :: :empty | Command.t() | {:message, String.t()}
     def submit(%__MODULE__{} = composer) do
       case ExRatatui.textarea_get_value(composer.input) do
         "" -> :empty
-        value -> value |> expand(composer.pastes) |> command()
+        value -> value |> expand(composer.pastes) |> Command.parse()
       end
     end
 
@@ -381,19 +382,5 @@ if Helyx.TUI.Composer.Available.available?() do
 
     defp expand(value, pastes),
       do: String.replace(value, Map.keys(pastes), &Map.fetch!(pastes, &1))
-
-    # `/model` is the only command. The rule is on bytes, not on looks; the
-    # feature doc's bounds table holds the rule and its limit. A paste keeps
-    # tabs and new lines, so `/model<tab>a/b` has a separator. The text is
-    # the composer with its paste markers expanded. The ref goes to
-    # `Helyx.ModelRef` unsplit, which owns its bounds. The widget holds only
-    # valid UTF-8; the `u` flag raises on anything else.
-    defp command(text) do
-      case Regex.run(~r/\A\s*\/model([\s\p{C}]*)/u, text, return: :index) do
-        nil -> {:message, text}
-        [{0, head}, {_, 0}] when head < byte_size(text) -> {:model, ""}
-        [{0, head}, _] -> {:model, String.trim(binary_part(text, head, byte_size(text) - head))}
-      end
-    end
   end
 end

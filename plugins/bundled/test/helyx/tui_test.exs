@@ -1247,6 +1247,31 @@ defmodule Helyx.TUITest do
     end
   end
 
+  describe "/compact" do
+    # The fake provider keeps no history of its own, so the session answers
+    # with its notice (docs/features/harness-compaction.md).
+    test "asks the session to compact, and the composer clears", %{core: core} do
+      state = mounted(core, "compact", [])
+      state = submit(state, "/compact keep the plan")
+      assert ExRatatui.textarea_get_value(state.composer.input) == ""
+
+      state = drain(state)
+
+      assert {:notice, "this provider keeps no history" <> _} =
+               List.last(ViewModel.cells(state.vm))
+
+      refute Enum.any?(ViewModel.cells(state.vm), &match?(%Helyx.Message{}, &1))
+    end
+
+    test "with no separator shows usage and is never sent", %{core: core} do
+      state = mounted(core, "compact_usage", [])
+      state = submit(state, "/compactly")
+      assert {:notice, "usage: /compact [instructions]"} = List.last(ViewModel.cells(state.vm))
+      assert ExRatatui.textarea_get_value(state.composer.input) == "/compactly"
+      refute_received {:helyx_event, _}
+    end
+  end
+
   describe "multiline composer" do
     defp paste(state, text) do
       {:noreply, state} = TUI.handle_event(%ExRatatui.Event.Paste{content: text}, state)

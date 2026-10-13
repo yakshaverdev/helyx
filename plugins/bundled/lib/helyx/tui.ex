@@ -22,7 +22,8 @@ if Helyx.TUI.Available.available?() do
       * a paste of more than 5 lines shows as one marker and is sent in full
       * Enter sends the composer as a steer (a prompt when no turn runs)
       * Alt+Enter sends it as a follow-up; a rejected send stays in the composer
-      * `/model provider/model` in the composer switches the model
+      * `/model provider/model` in the composer switches the model, and
+        `/compact [instructions]` compacts the provider's own history
       * Escape aborts the running turn; its queued messages come back to the composer
       * PgUp and PgDn scroll the transcript (`Helyx.TUI.Transcript`) by one screen
       * the wheel scrolls three rows; a drag copies text (`Helyx.TUI.Selection`)
@@ -41,7 +42,7 @@ if Helyx.TUI.Available.available?() do
     alias ExRatatui.Layout.Rect
     alias ExRatatui.Subscription
     alias Helyx.Session
-    alias Helyx.TUI.{Composer, Footer, Quit, Selection, Transcript, ViewModel}
+    alias Helyx.TUI.{Command, Composer, Footer, Quit, Selection, Transcript, ViewModel}
     require Quit
 
     # One screen of scroll is the rows above the composer and the footer.
@@ -247,9 +248,9 @@ if Helyx.TUI.Available.available?() do
     def handle_event(%Key{code: "enter", kind: "press"} = key, state) do
       case Composer.submit(state.composer) do
         :empty -> {:noreply, state}
-        # A notice is a new cell, so the position gets its check.
-        {:model, ref} -> {:noreply, settle(switch_model(ref, state))}
         {:message, text} -> {:noreply, send_message(text, key, state)}
+        # A notice is a new cell, so the position gets its check.
+        command -> {:noreply, settle(run_command(command, state))}
       end
     end
 
@@ -312,26 +313,14 @@ if Helyx.TUI.Available.available?() do
       end
     end
 
-    defp switch_model("", state),
-      do: %{state | vm: ViewModel.notice(state.vm, "usage: /model provider/model")}
-
-    # The footer follows the session's `:model_change` event, not this
-    # call. A rejected ref stays in the composer, under a notice.
-    defp switch_model(ref, state) do
-      case Session.set_model(state.session, ref) do
-        :ok ->
-          %{state | composer: Composer.restore(state.composer)}
-
-        {:error, reason} ->
-          %{state | vm: ViewModel.notice(state.vm, switch_error(reason))}
+    # The footer and the transcript follow the session's events, not this
+    # call. A refused command stays in the composer, under a notice.
+    defp run_command(command, state) do
+      case Command.run(command, state.session) do
+        :ok -> %{state | composer: Composer.restore(state.composer)}
+        {:notice, text} -> %{state | vm: ViewModel.notice(state.vm, text)}
       end
     end
-
-    # A notice shows at most the provider id, which the ref bounds cap.
-    defp switch_error({:unknown_provider, id}), do: "unknown provider: #{id}"
-
-    defp switch_error({:invalid_model_ref, _ref}), do: "invalid model ref: use provider/model"
-    defp switch_error(:session_not_found), do: "the session ended"
 
     @impl true
     def render(state, frame) do

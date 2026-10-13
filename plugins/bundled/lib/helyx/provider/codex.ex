@@ -20,61 +20,7 @@ defmodule Helyx.Provider.Codex do
 
   alias Helyx.HarnessIO
   alias Helyx.Message
-  alias Helyx.Provider.Codex.{Check, Items, Replay, Tools}
-
-  defmodule State do
-    @moduledoc false
-    # The program of one provider process. `resume` is the thread id to
-    # resume, or nil; `thread` the thread's id, and `fresh?` whether it
-    # still waits for its replay. `turn_id` is the Helyx turn, `turn` the
-    # program's turn id, `from` the `{:turn, ...}` without an answer,
-    # `interrupt` an interrupt without an answer (`{:pending, from}` before
-    # the turn id is known, `{:sent, from, id}` after the `turn/interrupt`
-    # with the request id `id`), `due` maps the id of each request without
-    # an answer to its method (the turn's end settles a `turn/interrupt`;
-    # an answer with an id that is not due is dropped), `next_id` is the
-    # id of the next request, `closing` the close without an answer,
-    # `prompt` the prompt of a turn whose `turn/start` waits for the
-    # `thread/inject_items` answer, and `out` the actions to return, newest
-    # first.
-    # `terminal` set means the provider process must stop, with that error.
-    #
-    # `agents` maps each child thread with open work to the program's turn
-    # id of its last `subAgentActivity` item. It belongs to the program and
-    # stays between turns.
-    #
-    # Of the running turn: `items` the state of its items (`Items`).
-    # `asked` maps the request id of each `turn/steer` with no answer yet to
-    # its `from`; it outlives the turn, because the answer can come after
-    # `turn/completed`.
-    #
-    # `tools` holds the state of the Helyx tools (`Tools`).
-    @enforce_keys [:model, :cwd]
-    defstruct [
-      :model,
-      :cwd,
-      :resume,
-      :port,
-      :thread,
-      :terminal,
-      :turn_id,
-      :turn,
-      :from,
-      :interrupt,
-      :closing,
-      :prompt,
-      tools: %Tools{},
-      fresh?: false,
-      due: %{},
-      next_id: 1,
-      out: [],
-      buffer: [],
-      size: 0,
-      items: %Items{},
-      agents: %{},
-      asked: %{}
-    ]
-  end
+  alias Helyx.Provider.Codex.{Check, Items, Replay, State, Tools}
 
   @trust %{approvalPolicy: "never", sandbox: "danger-full-access"}
   @args ~w(app-server --disable shell_tool --disable unified_exec)
@@ -131,6 +77,17 @@ defmodule Helyx.Provider.Codex do
     actions(
       if state.fresh?, do: replay(history, %{state | fresh?: false}), else: start_turn(state)
     )
+  end
+
+  # A compaction is `thread/compact/start`; its turn id comes with `turn/started` (`turn`
+  # is `:compact` until then). A fresh thread has no history yet. No instructions.
+  def request({:compact, turn_id, _text}, from, %State{turn_id: nil, fresh?: true} = state),
+    do: {:ok, [{:reply, from, :ok}, {:event, turn_id, HarnessIO.no_history()}], state}
+
+  def request({:compact, turn_id, _text}, from, %State{turn_id: nil} = state) do
+    items = %{state.items | compact?: true}
+    state = %{state | turn_id: turn_id, from: from, turn: :compact, items: items}
+    actions(rpc(state, "thread/compact/start", %{threadId: state.thread}))
   end
 
   # An open command, and a child thread's work, outlive `turn/interrupt`
@@ -328,7 +285,12 @@ defmodule Helyx.Provider.Codex do
     do: {[], %{state | thread: thread, fresh?: true}}
 
   defp answered(method, response, state)
-       when method in ["thread/inject_items", "turn/start", "turn/interrupt"],
+       when method in [
+              "thread/inject_items",
+              "turn/start",
+              "turn/interrupt",
+              "thread/compact/start"
+            ],
        do: {[], answer(method, response, state)}
 
   # Only the exact error of a steer that crossed the turn's end confirms
@@ -360,6 +322,9 @@ defmodule Helyx.Provider.Codex do
 
   defp answer("thread/inject_items", %{"result" => _}, state), do: start_turn(state)
 
+  defp answer("thread/compact/start", %{"result" => _}, state),
+    do: reply(%{state | from: nil}, state.from, :ok)
+
   defp answer(
          "turn/interrupt",
          %{"id" => id, "error" => _} = response,
@@ -386,6 +351,10 @@ defmodule Helyx.Provider.Codex do
   defp turn_notification("turn/started", %{"turn" => %{"id" => turn}}, %{turn: turn} = state)
        when is_binary(turn),
        do: {[], state}
+
+  defp turn_notification("turn/started", %{"turn" => %{"id" => turn}}, %{turn: :compact} = state)
+       when is_binary(turn),
+       do: {[], send_interrupt(%{state | turn: turn})}
 
   defp turn_notification("turn/started", _params, state),
     do: {[], %{state | terminal: {:error, :turn_not_asked}}}
@@ -434,7 +403,7 @@ defmodule Helyx.Provider.Codex do
 
   # A pending interrupt goes out when the turn id is known.
   defp send_interrupt(%State{interrupt: {:pending, from}, turn: turn} = state)
-       when turn != nil do
+       when is_binary(turn) do
     {id, state} = open(state, "turn/interrupt")
     params = %{threadId: state.thread, turnId: turn}
     send_line(state, %{id: id, method: "turn/interrupt", params: params})

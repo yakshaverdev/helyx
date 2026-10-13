@@ -54,14 +54,15 @@ defmodule Helyx.Session.ProviderRequest do
   def reply?(_kind, :ok), do: true
   def reply?(:idle_close, :busy), do: true
   def reply?(:steer, :rejected), do: true
-  def reply?(kind, {:error, _reason}) when kind in [:turn, :interrupt, :steer], do: true
+  def reply?(:compact, :unsupported), do: true
+  def reply?(kind, {:error, _reason}) when kind in [:turn, :compact, :interrupt, :steer], do: true
   def reply?(_kind, _value), do: false
 
   @doc """
   The stop of the provider process that a reply gives, or nil when the
   process goes on.
   """
-  # After an error answer to a turn or an interrupt Helyx does not know the
+  # After an error answer to a turn, a compaction, or an interrupt Helyx does not know the
   # state of the provider, so the loop ends and the provider process stops.
   # An error answer to a steer leaves only that steer unknown, so the loop
   # goes on. An idle close with `:ok` closed the provider as a close does;

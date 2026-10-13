@@ -17,8 +17,10 @@ defmodule Helyx.Provider do
 
   The options of `init/3` include `:resume_id`, the id of a `:resume_id`
   event of an earlier provider process to resume, or nil, and
-  `:resume_usage`, the sum of the usages of the messages since that event,
-  or nil when none has one.
+  `:resume_usage`, the sum of the usages of the messages since that event.
+  Its cost is nil when the last turn before the resume ended with no
+  `done`. It is nil when no message has a usage and that turn ended with a
+  `done`.
 
   Rules that every provider follows:
 
@@ -37,6 +39,12 @@ defmodule Helyx.Provider do
       runs. A provider can send such arguments as their raw text. In a turn
       that continues, the request gets an error result, so the model can
       correct it (`docs/features/rejected-tool-call.md`).
+    * A provider that keeps its own history answers `{:compact, ...}`
+      with `:ok` and runs the compaction as that turn; a compaction
+      gives `{:compaction, tokens_before, tokens_after}`, in that turn or
+      in any other, with nil for a count that it does not know. A
+      provider that keeps no history answers `:unsupported`
+      (`docs/features/harness-compaction.md`).
 
   The types below give the requests, the actions, and the events. The
   rules of the protocol (replies, events, deadlines) and their reasons are
@@ -60,6 +68,8 @@ defmodule Helyx.Provider do
           | {:tool_result, String.t(), {:ok | :error, String.t()}}
           | {:resume_id, String.t(), non_neg_integer()}
           | {:user_message, String.t()}
+          | {:compaction, tokens_before :: non_neg_integer() | nil,
+             tokens_after :: non_neg_integer() | nil}
           | {:tool_request, call_id :: String.t(), name :: String.t(),
              arguments :: map() | String.t()}
           | :turn_start
@@ -69,6 +79,7 @@ defmodule Helyx.Provider do
 
   @type request ::
           {:turn, turn_id :: String.t(), Helyx.Context.t()}
+          | {:compact, turn_id :: String.t(), instructions :: String.t()}
           | {:steer, turn_id :: String.t(), steer_id :: String.t(), text :: String.t()}
           | {:interrupt, turn_id :: String.t()}
           | {:tool_result, turn_id :: String.t(), call_id :: String.t(),

@@ -26,6 +26,7 @@ end
 
 # Requests, Core -> provider:
 #   {:turn, turn_id, context}  {:steer, turn_id, steer_id, text}  {:interrupt, turn_id}
+#   {:compact, turn_id, instructions}
 #   {:tool_result, turn_id, call_id, result}  :close  :idle_close
 #   {:context, turn_id, {:ok, Helyx.Context.t()} | {:error, reason}}
 #
@@ -42,11 +43,12 @@ The rules of the contract above (#298, #299, #300).
 
 **The process.** The three callbacks run in one provider process per session, a Task of the hands, so `Helyx.Tool.hold/1` works in them, and a provider that holds a handle implements `release/3`. `info/2` gets every other message of the provider process: the port data, a monitor, a timer.
 
-**Init.** `init/3` gets the checked tool specs of session start. Its `opts` carry `:core`, `:session_id`, `:cwd`, and `:resume_id`: the id of the program session to resume, or nil for a fresh one. The session passes the id of the provider's last `resume_id` event only when the last assistant message of the transcript came from this provider and its stop reason is not `:aborted` or `:error` (`Transcript.resumable/3`).
+**Init.** `init/3` gets the checked tool specs of session start. Its `opts` carry `:core`, `:session_id`, `:cwd`, and `:resume_id`: the id of the program session to resume, or nil for a fresh one. The session passes the id of the provider's last `resume_id` event only when the last assistant message of the transcript came from this provider, and either its stop reason is not `:aborted` or `:error`, or the provider compacted its own history under that id after that message (`Transcript.resumable/3`, `docs/features/harness-compaction.md`).
 
 **Replies.** `request/3` gets a request from Core with its `from`. The provider replies now or later with the action `{:reply, from, value}`.
 
 - `{:turn, ...}` and `{:interrupt, ...}` take `:ok` or `{:error, reason}`.
+- `{:compact, ...}` takes `:ok`, `:unsupported` from a provider that keeps no history of its own, or `{:error, reason}` (`docs/features/harness-compaction.md`).
 - `:close` takes `:ok` after the program exited.
 - `{:steer, turn_id, steer_id, text}` comes only after the `:ok` of its turn. It takes `:ok` when the program has the steer, `:rejected` when it is confirmed that the program did not get it (the terminal of the turn went out first, or the program refused it), and `{:error, reason}` when it is not known. The session queues a rejected steer for the next turn and never sends a steer again. While a written steer is unresolved, the provider does not end the turn. When the program takes it, the provider sends the event `{:user_message, steer_id}`, and the session appends the user message there, with its own text of the steer. A taken steer first closes the open assistant message, as a `message_end` does, and then gives `aborted` to every call that is still open, the calls of the message it closed too (`take_steer/2` in `Helyx.Session.Server.Records`).
 - `:idle_close` comes after the session was idle with the program for `provider_ms.idle` (`Helyx.Session.Server`). It takes `:ok` after the program exited, as `:close`, or `:busy` when the program still runs work of its own, such as a background task. With `:busy` the program stays, and the session asks again after the next idle time.
@@ -57,7 +59,7 @@ The rules of the contract above (#298, #299, #300).
 - `{:tool_result, call_id, {:ok | :error, binary}}`: the result of a tool call. The first result of a call of the open message closes that message first (#385). The provider cuts the text to the tool result limits before it sends the event, as a tool does. `Helyx.Session.Stream` then makes the text valid UTF-8 and cuts a text over 65,536 bytes to a notice line, its head, a marker line, and its tail (`Helyx.Message.cut_result/1`, #508); a large result never fails the turn.
 - `{:resume_id, id, cut}`: the program started a fresh program session with this id; `cut` is the number of transcript messages the provider left out of what it sent to it.
 
-**Stops.** A malformed event (the reason `{:bad_stream_event, event}`), a reply of the wrong shape or for no open request, an error reply to `{:turn, ...}` or `{:interrupt, ...}`, and a bad return stop the provider process: its port closes, and the watchdog stops the program. Core does not limit the open requests: the session bounds each kind (`Bounds` in `docs/features/session-lifecycle.md`).
+**Stops.** A malformed event (the reason `{:bad_stream_event, event}`), a reply of the wrong shape or for no open request, an error reply to `{:turn, ...}`, `{:compact, ...}`, or `{:interrupt, ...}`, and a bad return stop the provider process: its port closes, and the watchdog stops the program. Core does not limit the open requests: the session bounds each kind (`Bounds` in `docs/features/session-lifecycle.md`).
 
 **A program turn.** A turn that the program starts by itself: the event `:turn_start`, with a new `turn_id` that the provider makes (an id that `Helyx.Message.resume_id?/1` accepts), opens it. With no turn and no wait, the session opens a turn with that id and no user message, and emits `turn_start` with `%{origin: :provider}`. The later events of the turn and its terminal work as for any turn, and so do a steer and an interrupt of it. At any other time the session drops it and its events, and each tool request of it gets `aborted` ("Helyx tools inside the program"); a context request of it gets nothing. The provider then must accept the next `{:turn, ...}` while the program turn runs. The provider process passes every `:turn_start` with a valid id to the session, and only the session decides (#358).
 

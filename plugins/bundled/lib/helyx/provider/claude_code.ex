@@ -105,25 +105,16 @@ defmodule Helyx.Provider.ClaudeCode do
   # A program turn that the session did not open gives way: the program
   # queues the turn's line after it, and drops its lines as before a start.
   @impl true
-  def request(
-        {:turn, id, %Helyx.Context{messages: messages}},
-        from,
-        %State{turn: turn} = state
-      )
-      when turn == nil or turn.program? do
-    turn = %Turn{id: id, uuid: uuid(), messages: messages}
-    {events, state} = write_turn(%{state | turn: turn})
+  def request({kind, id, arg}, from, %State{turn: turn} = state)
+      when kind in [:turn, :compact] and (turn == nil or turn.program?) do
+    {events, state} = write_turn(%{state | turn: Turn.new(kind, id, uuid(), arg)})
     {:ok, [{:reply, from, :ok} | events], state}
   end
 
   # A steer is a user line with a `uuid` of its own. `claude` never
   # refuses a user line, so the answer is `:ok` at the write, and the steer
   # is unresolved until the start of its line.
-  def request(
-        {:steer, id, steer_id, text},
-        from,
-        %State{turn: %Turn{id: id} = turn} = state
-      ) do
+  def request({:steer, id, steer_id, text}, from, %State{turn: %Turn{id: id} = turn} = state) do
     uuid = uuid()
     steer = Replay.user_line(uuid, Replay.user_content(Message.user(text)))
 
@@ -246,6 +237,10 @@ defmodule Helyx.Provider.ClaudeCode do
         {:ok, actions ++ events, state}
     end
   end
+
+  # A program with no turn has nothing to compact: nothing is written.
+  defp write_turn(%State{turn: %Turn{compact: :asked}, resume: nil, sent?: false} = state),
+    do: {[{:event, state.turn.id, HarnessIO.no_history()}], %{state | turn: nil}}
 
   # The prompt is the user messages at the end of the transcript. A resumed
   # harness session, or one that took a turn, has the rest; a fresh one
@@ -462,6 +457,11 @@ defmodule Helyx.Provider.ClaudeCode do
   defp translate(object, %State{turn: turn} = state) when turn == nil or not started?(turn),
     do: {[], %{state | meter: Meter.line(state.meter, object)}}
 
+  # Compaction lines; a compaction turn's model lines stay in the program.
+  defp translate(%{"type" => type} = line, %State{turn: turn} = state)
+       when type == "system" or (turn.compact != nil and type in ~w(stream_event assistant user)),
+       do: emit(state, Turn.compaction(turn, line))
+
   defp translate(
          %{
            "type" => "stream_event",
@@ -531,7 +531,7 @@ defmodule Helyx.Provider.ClaudeCode do
 
   # The session closes the open assistant message at the terminal.
   defp turn_result(%{"queued_turn_count" => 0} = result, state) do
-    {terminal, meter} = Turn.terminal(result, state.meter)
+    {terminal, meter} = Turn.terminal(result, state.turn, state.meter)
     {[{:event, state.turn.id, terminal}], %{state | turn: nil, meter: meter}}
   end
 
