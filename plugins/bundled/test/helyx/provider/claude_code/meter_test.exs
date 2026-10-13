@@ -107,6 +107,34 @@ defmodule Helyx.Provider.ClaudeCode.MeterTest do
     end
   end
 
+  # The results of two real runs (`claude` 2.1.296, haiku, 2026-10-13):
+  # an interrupt while a call streamed. The cut call is in no total, so
+  # the next done has cost nil; the done after it is known again.
+  test "a call cut while it streamed makes the cost of the next done nil" do
+    zero = %{"input_tokens" => 0, "output_tokens" => 0}
+
+    cut = fn total, model_usage ->
+      result(zero, total, model_usage)
+      |> Map.merge(%{"subtype" => "error_during_execution", "is_error" => true})
+      |> Map.merge(%{"terminal_reason" => "aborted_streaming", "num_turns" => 2})
+    end
+
+    # During the first call of a process.
+    meter = Meter.result(%Meter{}, cut.(0, %{}))
+    {usage, meter} = Meter.done(call(meter, @usage1, 0.00347625))
+    assert %Helyx.Usage{input: 2, cost: nil, cost_kind: nil} = usage
+
+    assert {%Helyx.Usage{cost: cost, cost_kind: :list}, _} =
+             Meter.done(call(meter, @usage1, 0.005))
+
+    assert_in_delta cost, 0.005 - 0.00347625, 1.0e-12
+
+    # During a later call: the total stays at the value before it.
+    {_usage, meter} = Meter.done(call(%Meter{}, @usage1, 0.00344765))
+    meter = Meter.result(meter, cut.(0.00344765, %{@model => entry()}))
+    assert {%Helyx.Usage{cost: nil}, _} = Meter.done(call(meter, @usage1, 0.004))
+  end
+
   # A replayed line's result, as a real program sends it (research note,
   # 2026-10-13): no model call, and the cost of the turn stays known.
   test "a result with an empty modelUsage keeps the cost known" do

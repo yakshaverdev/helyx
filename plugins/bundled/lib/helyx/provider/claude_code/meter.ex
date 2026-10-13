@@ -44,13 +44,16 @@ defmodule Helyx.Provider.ClaudeCode.Meter do
     %{meter | context: context, model: model}
   end
 
+  # A call cut while it streamed is in no total (research note,
+  # 2026-10-13), so its result sets the flag.
   def result(meter, result) do
     with {:ok, [input, output, read, write]} <- counts(result["usage"]),
          total when wire_cost?(total) <- result["total_cost_usd"],
          {:ok, window, list?} <- model_usage(result["modelUsage"], meter.model) do
       usage = %Helyx.Usage{input: input, output: output, cache_read: read, cache_write: write}
       sum = Helyx.Usage.add(meter.sum, usage)
-      %{meter | sum: sum, known?: meter.known? and list?, total: total, window: window}
+      known? = meter.known? and list? and result["terminal_reason"] != "aborted_streaming"
+      %{meter | sum: sum, known?: known?, total: total, window: window}
     else
       _ -> %{meter | known?: false, total: nil, window: nil}
     end

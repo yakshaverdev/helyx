@@ -20,6 +20,7 @@ Step 1 of `docs/features/usage-and-limits.md`, "Delivery".
 - The first review round found that a resumed `claude` program reports `total_cost_usd` over the whole harness session. The rule "0 for a new process" of the feature doc did not hold, so the work stopped before the commit.
 - Owner decision: derive the mark of a resumed program from the session file, and store nothing new. Core gives the provider the sum of the usages since the resume id (`:resume_usage`); a cost that is not known, or a total below the sum, gives cost nil. The feature doc and the research notes say so now, with the probe facts and the OpenCode probe that did not run.
 - The second round found that a replayed line's `result` has an empty `modelUsage` (a new probe), and the round 1 fix made an empty map give cost nil. Every fresh program that replays history lost the cost of its first `done`. The fake's replay line had no usage, so no test saw it. Fixed: an empty map has no entry to price; the fake has the real shape.
+- The third round found that a call cut by an interrupt while it streamed is in no total (`aborted_streaming`). By owner decision, `Meter` sets the flag for it; a fourth, reduced round reviewed the fix.
 - The second round also found that a program turn that the session drops while it is busy (#240) is counted at the first `done` after a resume. A fix needs a record on disk, which the owner rule does not allow, so the feature doc states it next to the accepted limit.
 
 ## Assumptions
@@ -29,6 +30,6 @@ Step 1 of `docs/features/usage-and-limits.md`, "Delivery".
 
 ## Next
 
-- Open from the third review round: a `result` with `terminal_reason` `aborted_streaming` must set the flag in `Meter` (the cut call is in no total; research note 2026-10-13). The fix is one condition and a unit test; it was not in the commit because the review rounds reached their limit.
+- Open from review round 4: a sub-agent call cut by an interrupt (`aborted_tools`) is in no total, and the next `done` gets an exact cost. A rule needs a sign of a running sub-agent; every `aborted_tools` as cut would also mark a plain tool interrupt.
 - #559: Codex and OpenCode cost, with the flag (the owner adds it to #559).
 - A recorded OpenCode usage chunk of each gateway, when a key is available.
