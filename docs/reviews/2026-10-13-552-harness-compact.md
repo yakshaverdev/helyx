@@ -149,3 +149,10 @@ bounds sensor: 2 candidate functions, 0 flagged, 0 without an answer
 | 3.7 | standards | Judgement: the label is a 3-tuple that `put_elem/3` changes | Kept: one writer, `Transcript.compacted/3`; small enough |
 
 Round 3 reproduced no defect, so the loop ends. The fixes after the round are doc text and one test.
+
+## Orchestrator gate
+
+| Round | Finding | Resolution |
+| ----- | ------- | ---------- |
+| gate r1 (on `32ec8e9`) | Abort a reply, compact, reconnect: `Transcript.resumable/3` saw the aborted last message and started fresh, so the native summary was lost | Confirmed by a read of the code. Owner decision: a successful native compaction makes the history safe to resume. Fixed in `f8788c0` (rounds 2 and 3 above) |
+| gate r2 (on `f8788c0`) | Abort, compact, then a second turn aborted before any reply text: the count equals the compaction point, so the id resumes | Rejected. An abort before the first reply text stores no assistant message. On master the same shape without a compaction resumes too (the last assistant message is clean and `count > before` holds), so the change adds no new path. The abort rule is about a stored partial reply. The gate sentence said "an abort" too broadly |
