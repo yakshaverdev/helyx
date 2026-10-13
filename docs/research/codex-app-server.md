@@ -249,3 +249,12 @@ Runs on 2026-09-30 with `codex-cli 0.157.1`, for ticket #240. A Python script dr
 ### Not run
 
 - A wait of more than 120 s; a sub-agent that ends with `failed` or `interrupted`.
+
+## Token usage and the context window (2026-10-13, #488)
+
+One run on 2026-10-13 with `codex-cli 0.162.1` at `~/.bun/bin/codex`, the program that `System.find_executable("codex")` gave in the BEAM of the run. A Python script drove `codex app-server` with the arguments of `Helyx.Provider.Codex` (`--disable shell_tool --disable unified_exec`), in an empty temporary directory. `initialize` set `experimentalApi`; `thread/start` had `approvalPolicy` `never`, `sandbox` `read-only`, and `model_reasoning_effort` `low`. The thread got the model `gpt-6.1-sol` from the user's configuration. The prompt asked for the single word `ok`.
+
+- **`thread/tokenUsage/updated` has `modelContextWindow`** (observed, 1 run): `{"threadId", "turnId", "tokenUsage": {"total": {...}, "last": {...}, "modelContextWindow": 475000}}`. `modelContextWindow` is a key of `tokenUsage`, next to `total` and `last`, not of `params`.
+- `last` and `total` had the six keys of the 0.155.0 note: `totalTokens` 15669, `inputTokens` 15664, `cachedInputTokens` 11648, `cacheWriteInputTokens` 0, `outputTokens` 5, `reasoningOutputTokens` 0. So `totalTokens` is `inputTokens` plus `outputTokens`, and `inputTokens` includes `cachedInputTokens`. Whether `inputTokens` also includes `cacheWriteInputTokens` was not seen: the run wrote no cache.
+- The window 475000 differs from the window of the same model id in the models.dev catalog of 2026-10-12 (1050000).
+- The same script with `codex-cli 0.144.1` (`~/.local/bin/codex`, first on the login `PATH`) failed the turn before any model call: the server rejected `gpt-6.1-sol` for a ChatGPT account on that version, and 0.144.1 warned `Model metadata for gpt-6.1-sol not found`. No `thread/tokenUsage/updated` came, so 0.144.1 is not verified.
