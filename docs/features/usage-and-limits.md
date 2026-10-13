@@ -4,7 +4,7 @@ Ticket #488. The domain review of 2026-10-12 (`docs/reviews/2026-10-12-domain-re
 
 ## Goal
 
-The user sees, after each turn, the tokens of the turn, the share of the prompt that came from the cache, the cost, and how full the context is. Row 2 of the footer shows these values. Helyx never guesses a value: a value that no source gives is not shown.
+The user sees the tokens and the cost of the session so far, the share of the prompt that came from the cache, and how full the context is. Row 2 of the footer shows these values. Helyx never guesses a value: a value that no source gives is not shown.
 
 Decisions and their reasons:
 
@@ -13,7 +13,8 @@ Decisions and their reasons:
 - **The usage carries the context tokens of the last model call** (`context_tokens`). The reason: a harness turn has many model calls, and the token fields hold the sum of the turn. The context % needs the size of the last prompt, not the sum.
 - **The source rule** (decided by the owner, #488). For the context window and the prices of a model, Helyx takes the first source that has the value: (1) the serving side, (2) config, (3) the models.dev catalog, (4) nothing. The window and the price set are two values. A price set comes whole from one source. The reason: prices from two sources make a price list that no source states.
 - **The cost of a turn** is the cost that the serving side reports. Otherwise it is the usage times the prices from the source rule. A token count above zero with no price makes the cost unknown. The reason: a cost without that part is a guess.
-- **The footer shows the last turn**, not the session total. The reason: the ticket asks for the values after each turn, and a session total is unknown as soon as one turn has no cost.
+- **The footer shows session totals** (decided by the owner on 2026-10-13). The tokens, the cache share, and the cost add up over every assistant message of the current branch, across resumes. The context % comes from the last model call.
+- **A total with an unknown part shows the known sum as a lower bound**, as `≥$1.23 list`. The reason: the sum of the known costs is a fact, and the mark says that the true cost is not lower. No value is guessed. To show no cost would hide a known fact for the rest of the session after one message with no price.
 - **No max output.** The ticket lists it in config. No part of this ticket reads it, so it stays out until compaction (#490) or a thinking clamp needs it.
 
 ## Interface changes
@@ -96,12 +97,12 @@ The key is a model ref. Both keys of an entry are optional; `prices` needs `inpu
 
 Row 2 becomes: the model, the run state, the usage values, the queue counts, and `scrolled`. The usage values are:
 
-- `in <n> out <n>`: the sums of `input + cache_read + cache_write` and of `output` over the turn.
-- `cache <p>%`: `cache_read` over the prompt tokens of the turn, when the prompt tokens are above 0.
-- `$<cost> list` or `$<cost>`: the sum of the costs of the turn, when every usage of the turn has a cost. `list` shows when any of them is `:list`.
+- `in <n> out <n>`: the sums of `input + cache_read + cache_write` and of `output` over the session.
+- `cache <p>%`: the sum of `cache_read` over the sum of the prompt tokens of the session, when that sum is above 0.
+- `$<cost>`: the sum of the known costs of the session, when at least one usage has a cost. `≥` comes before it when a usage of the session has no cost (`≥$1.23`). `list` comes after it when any known cost is `:list` (`$1.23 list`). With no known cost, no cost shows.
 - `<p>%`: the context %, yellow over 70, red over 90, else dim.
 
-The turn is the assistant messages after the last user message. The view model folds the values in `add_message/2`, so the live path and the snapshot path give the same values, and a resumed session shows what the live one showed. The context estimate is `context_tokens` of the last usage plus a quarter of the bytes of the text, thinking, and tool result text of the messages after it. Bytes, not characters: `byte_size/1` costs nothing, and text that is not ASCII then counts high, so the % errs high. The context % is the estimate over `context_window` of the same usage. It shows only when both are known and the model of that message is the current model of the view model: after a model switch, the old window is not the window of the new model.
+The session is every assistant message of the snapshot and of the events after it: the current branch, across resumes, and across model switches. The totals count the usage that the providers reported. A message with a nil usage adds nothing: a message that a harness closed at a tool result (the usage of its turn is on the last message of the turn), and a turn that was aborted or failed, whose usage the provider did not report. So an aborted turn does not count, and no mark shows for it. The view model folds the totals in `add_message/2`, so the live path and the snapshot path give the same values, and a resumed session shows what the live one showed. The context estimate is `context_tokens` of the last usage plus a quarter of the bytes of the text, thinking, and tool result text of the messages after it. Bytes, not characters: `byte_size/1` costs nothing, and text that is not ASCII then counts high, so the % errs high. The context % is the estimate over `context_window` of the same usage. It shows only when both are known and the model of that message is the current model of the view model: after a model switch, the old window is not the window of the new model.
 
 ## Replaced mechanism
 
@@ -132,9 +133,10 @@ The usage map of a provider is replaced by `Helyx.Usage`.
 | cache file read | 16 MB, then the checks of the slim function | the snapshot is used | `Helyx.ModelInfo.Catalog` |
 | config entry | `context_window` from 1 to 1,000,000,000; each price a number from 0 to 1,000,000; only the known keys | `{:error, {:bad_config, [:models, ref, key]}}` | `Helyx.ModelInfo.lookup/2` |
 | Claude Code cost | a `total_cost_usd` that is a non-negative number, at or above the previous one of the process | the cost of the turn is nil | `Helyx.Provider.ClaudeCode.Turn` |
-| footer usage values | a token count shows in at most 6 columns (`999`, `12.3k`, `12.3M`, `12.3B`, `>999B`); a cost in at most 9 (`$0.0042`, `$12.34`, `>$99999`); a % in at most 5 (`>999%`) | the capped form | `Helyx.TUI.Footer` |
+| footer usage values | a token count shows in at most 6 columns (`999`, `12.3k`, `12.3M`, `12.3B`, `>999B`); a cost in at most 10 (`$0.0042`, `$12.34`, `≥$12.34`, `>$99999`); a % in at most 5 (`>999%`) | the capped form | `Helyx.TUI.Footer` |
 | footer row | one row | cut at the width, as today | `Helyx.TUI.Footer` |
 | context estimate | an integer count of bytes in the view model; it grows with the transcript, as the cells do | none | `Helyx.TUI.ViewModel` |
+| session totals | four integer sums and one cost sum in the view model; each usage passed the digit limit, and the sums grow with the transcript | none; the footer shows the capped form | `Helyx.TUI.ViewModel` |
 | endpoint `/models` | the body cap and the timeout of models.dev | applies in #550 | #550 |
 
 Each numeric limit gets tests at the limit, one under, and one over; the token and cost formats also get a multibyte check of the row cut.
@@ -157,7 +159,7 @@ Each numeric limit gets tests at the limit, one under, and one over; the token a
 - Codex rate limits (`account/rateLimits/updated`).
 - Compaction (#490), which uses the context % as its trigger, and the max output.
 - A thinking level clamp.
-- A session total of tokens or cost.
+- A per-turn view of tokens or cost.
 - Images in the context estimate.
 
 ## Delivery
@@ -165,7 +167,7 @@ Each numeric limit gets tests at the limit, one under, and one over; the token a
 The change is larger than one `/ship` can review within its limits (three rounds, 45 minutes): about 700 lines of code over Core, four providers, a network refresh with files and a process, and the TUI. It goes in four tickets, in this order:
 
 1. **`Helyx.Usage` and the serving side.** The struct, `Stream.check/1`, the codec, `Message`, the provider types, the four provider mappings with the serving-side window and the Claude Code cost, and the resume test. First the three checks of "Per provider" above. No footer, no config, no catalog. About 250 lines of code.
-2. **The footer.** The fold of the turn values and the estimate in `ViewModel`, the formats and colors in `Footer`, and the per-provider footer tests from recorded streams. After 1. About 150 lines.
+2. **The footer.** The fold of the session totals and the estimate in `ViewModel`, the formats and colors in `Footer`, and the per-provider footer tests from recorded streams. After 1. About 150 lines.
 3. **Config and the price math.** `Helyx.ModelInfo.lookup/2` with steps 2 and 4 (no catalog yet), `cost/2` with tiers, the config check, and the Codex and OpenCode costs. After 1; in parallel with 2. About 150 lines.
 4. **The catalog.** The snapshot and its slim function, `:persistent_term`, the refresh process, the cache file, and the bounds and ownership rows above. After 3. About 200 lines.
 
