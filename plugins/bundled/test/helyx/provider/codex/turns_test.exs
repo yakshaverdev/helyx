@@ -76,7 +76,7 @@ defmodule Helyx.Provider.Codex.TurnsTest do
 
     assert first.content == [%Message.Text{text: "I will list."}, call]
     assert last.content == [%Message.Text{text: "One file."}]
-    assert last.usage == %Helyx.Usage{input: 12, output: 7}
+    assert %Helyx.Usage{input: 12, output: 7, cache_read: 0, cache_write: 0} = last.usage
 
     assert [%{message: %Message{role: :tool_result, tool_call_id: "exec-1"} = result}] =
              of_type(events, :tool_execution_end)
