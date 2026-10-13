@@ -3,10 +3,11 @@ defmodule CodingAgent.Print do
   Print mode, a client of one session: one prompt in, the final answer out
   on stdout, and an exit status. The session id, the notices, and the
   errors go to stderr. Piped stdin (stdin is not a terminal) is added to the
-  prompt as a block, up to 1 MiB of UTF-8. The first SIGTERM or SIGHUP
-  aborts the turn, waits at most `abort_ms/0` for the abort, and halts the
-  VM with 143 or 129 and no flush, whatever stdout and stderr do. The
-  design is in `docs/features/print-mode.md`.
+  prompt as a block, up to 1 MiB of UTF-8. Every print run ends with a halt
+  of the VM. The first SIGTERM or SIGHUP aborts the turn, waits at most
+  `abort_ms/0` for the abort, and halts the VM with 143 or 129 and no
+  flush, whatever stdout and stderr do. The design is in
+  `docs/features/print-mode.md`.
   """
 
   alias Helyx.{Event, Message, Session}
@@ -15,12 +16,15 @@ defmodule CodingAgent.Print do
   # runs, and far under the 64 MiB of a session file.
   @max_stdin_bytes 1_048_576
 
-  # The abort stops the provider and the tools; a turn that does not end in
-  # this time is cut by the halt.
+  # The abort releases the provider and the tools, or reports them as not
+  # confirmed; a turn that does not end in this time is cut by the halt.
   @abort_ms 3_000
 
   @typedoc "The exit status that `run/2` returns; a signal halts with 129 or 143."
   @type status :: 0 | 1
+
+  @typedoc "Ends the VM with the status; tests pass a function that reports it."
+  @type halt :: (0 | 1 | 129 | 143 -> term())
 
   @doc "The bound of piped stdin, in bytes."
   @spec max_stdin_bytes() :: pos_integer()
@@ -31,21 +35,18 @@ defmodule CodingAgent.Print do
   def abort_ms, do: @abort_ms
 
   @doc """
-  Runs `fun` in the setup of print mode, and puts the VM back after it.
-  SIGTERM and SIGHUP are trapped: the first one aborts the session that
-  `run/2` runs, waits at most `abort_ms/0`, and calls `halt` with 143 or
-  129. `halt` halts the VM with no flush, so output that blocks never holds
-  the exit; tests pass their own. After a signal, `wrap/2` does not
-  return: the halt ends the run. The log goes to stderr, so stdout holds
-  only the answer.
+  Runs `fun` as the whole of print mode, and ends it with `halt` and the
+  status. The first step traps SIGTERM and SIGHUP, before any output, and
+  the trap stays for the life of the VM: the first signal aborts the session
+  that `run/2` runs, waits at most `abort_ms/0`, and calls `halt` with 143
+  or 129; later signals are ignored. Then the log goes to stderr, so stdout
+  holds only the answer. `fun` returns the status, or `{:error, text}`,
+  which is written as one line on stderr and gives 1. When a signal came
+  first, its stop sets the status. `halt` halts the VM with no flush, so
+  output that blocks never holds the exit, and `main/2` does not return.
   """
-  @spec wrap((-> result), (status :: 129 | 143 -> term())) :: result when result: term()
-  def wrap(fun, halt \\ &:erlang.halt(&1, flush: false)) do
-    # The type of the handler is fixed when it is added. Under `mix helyx`
-    # Logger starts before the app config loads, so config cannot set it.
-    {:ok, log} = :logger.get_handler_config(:default)
-    put_log(put_in(log.config.type, :standard_error))
-
+  @spec main((-> status() | {:error, String.t()}), halt()) :: term()
+  def main(fun, halt \\ &:erlang.halt(&1, flush: false)) do
     :ok =
       :gen_event.swap_handler(
         :erl_signal_server,
@@ -55,23 +56,23 @@ defmodule CodingAgent.Print do
 
     :ok = :os.set_signal(:sighup, :handle)
 
-    try do
-      fun.()
-    after
-      # Elixir traps on SIGHUP are not set back; the product has none.
-      :ok = :os.set_signal(:sighup, :default)
-      # A signal between these two calls finds no handler and is dropped.
-      stopping = :gen_event.delete_handler(:erl_signal_server, __MODULE__.Signal, :restore)
-      :ok = :gen_event.add_handler(:erl_signal_server, :erl_signal_handler, [])
-      put_log(log)
-      # A stop has started: its halt sets the status, not the result of `fun`.
-      if stopping, do: Process.sleep(:infinity)
-    end
-  end
-
-  defp put_log(config) do
+    # The type of the handler is fixed when it is added. Under `mix helyx`
+    # Logger starts before the app config loads, so config cannot set it.
+    {:ok, log} = :logger.get_handler_config(:default)
     :ok = :logger.remove_handler(:default)
-    :ok = :logger.add_handler(:default, :logger_std_h, config)
+    :ok = :logger.add_handler(:default, :logger_std_h, put_in(log.config.type, :standard_error))
+
+    status =
+      case fun.() do
+        {:error, text} -> fail(text)
+        status -> status
+      end
+
+    # The handler answers `:stopping` once a signal has started its stop.
+    case :gen_event.call(:erl_signal_server, __MODULE__.Signal, :finish) do
+      :ok -> halt.(status)
+      :stopping -> Process.sleep(:infinity)
+    end
   end
 
   @doc """
@@ -116,7 +117,7 @@ defmodule CodingAgent.Print do
   Sends `prompt` to `session`, waits for the end of its turn, prints the
   answer, and returns the exit status: 0 for a normal end, 1 for a failed
   or aborted turn, an answer cut at the output limit, or a session that
-  stops. It must run inside `wrap/2`, which a signal uses to abort `session`. The
+  stops. It must run inside `main/2`, which a signal uses to abort `session`. The
   caller aborts the turn and stops Core after it.
   """
   @spec run(Session.t(), String.t()) :: status()
@@ -183,32 +184,31 @@ defmodule CodingAgent.Print do
 
   defmodule Signal do
     @moduledoc false
-    # The handler in `:erl_signal_server` while print mode runs. The first
-    # trapped signal starts the stop; the handler ignores the rest. The stop
-    # runs in its own process, so the signal server never waits on it.
+    # The handler in `:erl_signal_server` from the first step of print mode
+    # to the halt. The first trapped signal starts the stop; the handler
+    # ignores the rest. The stop runs in its own process, so the signal
+    # server never waits on it.
     @behaviour :gen_event
 
     @statuses %{sigterm: 143, sighup: 129}
 
     @impl true
-    def init({halt, _old_state}), do: {:ok, %{halt: halt, session: nil, stopping: false}}
+    def init({halt, _old_state}), do: {:ok, %{halt: halt, session: nil, done: false}}
 
     @impl true
-    def handle_event(signal, %{stopping: false} = state) when is_map_key(@statuses, signal) do
+    def handle_event(signal, %{done: false} = state) when is_map_key(@statuses, signal) do
       %{halt: halt, session: session} = state
       spawn(fn -> stop(session, Map.fetch!(@statuses, signal), halt) end)
-      {:ok, %{state | stopping: true}}
+      {:ok, %{state | done: true}}
     end
 
     def handle_event(_signal, state), do: {:ok, state}
 
     @impl true
     def handle_call({:session, session}, state), do: {:ok, :ok, %{state | session: session}}
-
-    # `wrap/2` deletes the handler with `:restore` and learns if a stop runs.
-    @impl true
-    def terminate(:restore, %{stopping: stopping}), do: stopping
-    def terminate(_arg, _state), do: :ok
+    # `done`: a signal started the stop, or the run finished first.
+    def handle_call(:finish, %{done: true} = state), do: {:ok, :stopping, state}
+    def handle_call(:finish, state), do: {:ok, :ok, %{state | done: true}}
 
     # The abort runs unlinked: a session that is gone, or one that does not
     # answer, holds the halt for at most the bound.

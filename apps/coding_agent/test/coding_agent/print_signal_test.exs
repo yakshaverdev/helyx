@@ -15,14 +15,21 @@ defmodule CodingAgent.PrintSignalTest do
   # `$1` is the folder, `$2` the case, the rest the command. A writer of
   # zeros fills the pipe of stdout or stderr, and `sleep` holds the read end
   # open and never reads it. For `stdin`, `sleep` holds stdin open and sends
-  # nothing. The exit status of the command goes to the file `status`.
+  # nothing. `bad_stdin` fills stderr and pipes a byte that is not UTF-8.
+  # The exit status of the command goes to the file `status`.
   @script ~S"""
   dir=$1; mode=$2; shift 2
   case $mode in
     stdout) { cat /dev/zero & "$@" </dev/null 2>"$dir/err"; echo $? >"$dir/status"; kill $!; } | sleep 20 ;;
     stderr) { cat /dev/zero >&2 & "$@" </dev/null; echo $? >"$dir/status"; kill $!; } 2>&1 >/dev/null | sleep 20 ;;
     stdin) sleep 20 | { "$@" >/dev/null 2>&1; echo $? >"$dir/status"; } ;;
+    bad_stdin) { cat /dev/zero >&2 & printf '\377' | "$@"; echo $? >"$dir/status"; kill $!; } 2>&1 >/dev/null | sleep 20 ;;
   esac
+  """
+
+  # A print run on the echo model.
+  @run ~S"""
+  System.halt(CodingAgent.CLI.main(["-p", "x", "--model", "fake/echo", dir]))
   """
 
   for {mode, signal, status} <- [
@@ -33,7 +40,7 @@ defmodule CodingAgent.PrintSignalTest do
       ] do
     test "SIG#{signal} with #{mode} blocked ends the run with #{status} in the bound",
          %{tmp_dir: dir} do
-      pid = start(dir, unquote(mode))
+      pid = start(dir, unquote(mode), @run)
       if unquote(mode) == "stdout", do: await_answer(dir)
       {_, 0} = System.cmd("kill", ["-#{unquote(signal)}", pid])
 
@@ -42,10 +49,50 @@ defmodule CodingAgent.PrintSignalTest do
     end
   end
 
-  # Starts `elixir` with the code of this build: it runs `-p x` on the echo
-  # model with `HOME` in `dir`, and writes its OS pid once the print handler
-  # is in the signal server. Returns the pid once the file holds it.
-  defp start(dir, mode) do
+  test "SIGTERM with log output and stdout blocked ends the run with 143", %{tmp_dir: dir} do
+    # The default log handler writes to the full stdout pipe, so the swap of
+    # the log handler blocks.
+    log = ~S"""
+    spawn(fn -> Enum.each(1..100, fn _ -> :logger.warning(~c"queued") end) end)
+    Process.sleep(200)
+    """
+
+    pid = start(dir, "stdout", log <> @run)
+    {_, 0} = System.cmd("kill", ["-TERM", pid])
+    assert await_file(Path.join(dir, "status"), Print.abort_ms() + @load_ms) == "143\n"
+  end
+
+  test "SIGTERM with the error line blocked on stderr ends the run with 143",
+       %{tmp_dir: dir} do
+    pid = start(dir, "bad_stdin", @run)
+    {_, 0} = System.cmd("kill", ["-TERM", pid])
+    assert await_file(Path.join(dir, "status"), Print.abort_ms() + @load_ms) == "143\n"
+  end
+
+  test "a SIGHUP after the run ends, while the stop of a SIGTERM waits, keeps 143",
+       %{tmp_dir: dir} do
+    # The halt of the stop waits `abort_ms`, as a slow abort does. The run
+    # returns 2 s after print mode starts, between the two signals.
+    run = ~S"""
+    halt = fn status ->
+      Process.sleep(CodingAgent.Print.abort_ms())
+      :erlang.halt(status, flush: false)
+    end
+
+    CodingAgent.Print.main(fn -> Process.sleep(2_000) && 0 end, halt)
+    """
+
+    pid = start(dir, "stdin", run)
+    {_, 0} = System.cmd("kill", ["-TERM", pid])
+    Process.sleep(2_000)
+    {_, 0} = System.cmd("kill", ["-HUP", pid])
+    assert await_file(Path.join(dir, "status"), Print.abort_ms() + @load_ms) == "143\n"
+  end
+
+  # Starts `elixir` with the code of this build and `HOME` in `dir`: it runs
+  # `run`, with `dir` bound, and writes its OS pid once the print handler is
+  # in the signal server. Returns the pid once the file holds it.
+  defp start(dir, mode, run) do
     paths = Enum.flat_map(:code.get_path(), &["-pa", List.to_string(&1)])
     pid_file = Path.join(dir, "pid")
 
@@ -56,7 +103,8 @@ defmodule CodingAgent.PrintSignalTest do
       File.write!(#{inspect(pid_file)}, System.pid())
     end)
 
-    System.halt(CodingAgent.CLI.main(["-p", "x", "--model", "fake/echo", #{inspect(dir)}]))
+    dir = #{inspect(dir)}
+    #{run}
     """
 
     args = ["-c", @script, "sh", dir, mode, System.find_executable("elixir")] ++ paths
@@ -70,7 +118,7 @@ defmodule CodingAgent.PrintSignalTest do
     ])
 
     pid = await_file(pid_file, @load_ms)
-    # The run reaches the read of stdin or its first stderr line.
+    # The run reaches the read of stdin, a blocked write, or its wait.
     Process.sleep(1_000)
     pid
   end

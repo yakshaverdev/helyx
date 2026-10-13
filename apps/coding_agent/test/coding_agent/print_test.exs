@@ -3,6 +3,28 @@ defmodule CodingAgent.PrintTest do
   # the CLI runs Core under its default name.
   use ExUnit.Case, async: false
 
+  # Print mode never puts the VM back: it ends with a halt. In the test VM
+  # the halt only reports, so each test puts the signal handler, SIGHUP,
+  # and the log back itself.
+  setup do
+    {:ok, log} = :logger.get_handler_config(:default)
+
+    on_exit(fn ->
+      if Print.Signal in :gen_event.which_handlers(:erl_signal_server) do
+        :ok =
+          :gen_event.swap_handler(
+            :erl_signal_server,
+            {Print.Signal, []},
+            {:erl_signal_handler, []}
+          )
+
+        :ok = :os.set_signal(:sighup, :default)
+        :ok = :logger.remove_handler(:default)
+        :ok = :logger.add_handler(:default, :logger_std_h, log)
+      end
+    end)
+  end
+
   defmodule Stop do
     @moduledoc false
     # Ends its one reply with the stop reason that the model names; neither
@@ -119,22 +141,28 @@ defmodule CodingAgent.PrintTest do
     core
   end
 
-  defp signal_handlers, do: Enum.sort(:gen_event.which_handlers(:erl_signal_server))
+  defp signal_handlers, do: :gen_event.which_handlers(:erl_signal_server)
 
-  # `run/2` in the setup of print mode, with a halt that reports to `test`.
+  # A halt that reports the status to `test` and returns it, so `main/2`
+  # returns the status in the test VM.
+  defp halt(test), do: &(send(test, {:halt, &1}) && &1)
+
+  # `run/2` inside print mode.
   defp run(session, prompt, test \\ self()) do
-    Print.wrap(fn -> Print.run(session, prompt) end, &send(test, {:halt, &1}))
+    Print.main(fn -> Print.run(session, prompt) end, halt(test))
   end
 
-  # After a signal, `wrap/2` puts the VM back and then waits for the halt,
-  # which here is only a message: the test ends the wait.
-  defp end_wait(task, handlers) do
+  # After a signal, `main/2` waits for the halt of the stop, which here is
+  # only a message: the test ends the wait.
+  defp end_wait(task) do
+    await_sleep(task)
+    Task.shutdown(task, :brutal_kill)
+  end
+
+  defp await_sleep(task) do
     wait_until(fn ->
       Process.info(task.pid, :current_function) == {:current_function, {Process, :sleep, 1}}
     end)
-
-    Task.shutdown(task, :brutal_kill)
-    assert signal_handlers() == handlers
   end
 
   defp wait_until(fun, ms \\ Helyx.Test.Events.wait_ms()) do
@@ -157,12 +185,13 @@ defmodule CodingAgent.PrintTest do
 
     test "-p prints the answer on stdout and the session id on stderr, and saves the session",
          %{tmp_dir: dir} do
-      handlers = signal_handlers()
-
       assert {0, "-x say this\n", "helyx: session " <> id} =
-               io("", fn -> CLI.main(["-p", "-x say this", "--model", "fake/echo", dir]) end)
+               io("", fn ->
+                 CLI.main(["-p", "-x say this", "--model", "fake/echo", dir], halt(self()))
+               end)
 
-      assert signal_handlers() == handlers
+      assert_received {:halt, 0}
+      assert Print.Signal in signal_handlers()
       assert Process.whereis(Helyx.Core) == nil
 
       # The run is a normal session: --list shows it with its prompt.
@@ -177,7 +206,7 @@ defmodule CodingAgent.PrintTest do
     test "piped stdin joins the prompt as a block", %{tmp_dir: dir} do
       assert {0, out, _} =
                io("line one\nline two", fn ->
-                 CLI.main(["--print", "why", "--model", "fake/echo", dir])
+                 CLI.main(["--print", "why", "--model", "fake/echo", dir], halt(self()))
                end)
 
       # The echo model sends the words back, so whitespace runs keep their place.
@@ -186,7 +215,9 @@ defmodule CodingAgent.PrintTest do
 
     test "a failed turn prints nothing on stdout and returns 1", %{tmp_dir: dir} do
       assert {1, "", stderr} =
-               io("", fn -> CLI.main(["-p", "x", "--model", "fake/unscripted", dir]) end)
+               io("", fn ->
+                 CLI.main(["-p", "x", "--model", "fake/unscripted", dir], halt(self()))
+               end)
 
       # The log of Core goes to stderr too, so the line is not the last one.
       assert stderr =~ ~s(\nhelyx: the turn failed: {:no_script, "unscripted"}\n)
@@ -196,7 +227,9 @@ defmodule CodingAgent.PrintTest do
       line = "helyx: the piped input is over the #{@max}-byte limit\n"
 
       assert {1, "", ^line} =
-               io(String.duplicate("a", @max + 1), fn -> CLI.main(["-p", "x", dir]) end)
+               io(String.duplicate("a", @max + 1), fn ->
+                 CLI.main(["-p", "x", dir], halt(self()))
+               end)
 
       refute File.exists?(s)
       assert Process.whereis(Helyx.Core) == nil
@@ -259,19 +292,28 @@ defmodule CodingAgent.PrintTest do
       assert stderr =~ "helyx: the answer stopped: the provider refused or filtered it\n"
     end
 
-    test "wrap/1 sends the log to stderr, and puts the handler back" do
+    test "main/2 sends the log to stderr, and an error to one stderr line with 1" do
       {:ok, before} = :logger.get_handler_config(:default)
 
-      assert Print.wrap(fn -> :logger.get_handler_config(:default) end) ==
-               {:ok, put_in(before.config.type, :standard_error)}
+      assert {1, "", "helyx: no\n"} =
+               io("", fn ->
+                 Print.main(
+                   fn ->
+                     send(self(), {:log, :logger.get_handler_config(:default)})
+                     {:error, "no"}
+                   end,
+                   halt(self())
+                 )
+               end)
 
-      assert :logger.get_handler_config(:default) == {:ok, before}
+      assert_received {:log, {:ok, log}}
+      assert log == put_in(before.config.type, :standard_error)
+      assert_received {:halt, 1}
     end
 
     test "SIGTERM during the turn aborts it, then halts with 143" do
       gate = Helyx.Test.Gate.open()
       {:ok, session} = Helyx.Session.start(start_core(), model: "gated/" <> gate)
-      handlers = signal_handlers()
       test = self()
 
       assert {:ok, _, stderr} =
@@ -280,32 +322,37 @@ defmodule CodingAgent.PrintTest do
                  assert_receive {:waiting, _}
                  :gen_event.notify(:erl_signal_server, :sigterm)
                  assert_receive {:halt, 143}
-                 end_wait(task, handlers)
+
+                 # The run has ended and waits for the halt: the handler
+                 # stays, and a second signal is ignored.
+                 await_sleep(task)
+                 :gen_event.sync_notify(:erl_signal_server, :sighup)
+                 assert Print.Signal in signal_handlers()
+                 end_wait(task)
                  :ok
                end)
 
-      # The halt came after the abort ended the turn.
       assert stderr =~ "\nhelyx: the turn was aborted\n"
       refute_received {:halt, _}
     end
 
     test "SIGHUP halts with 129, and the first signal sets the status" do
-      handlers = signal_handlers()
       test = self()
 
       task =
         Task.async(fn ->
-          Print.wrap(
+          Print.main(
             fn ->
               :gen_event.sync_notify(:erl_signal_server, :sighup)
               :gen_event.sync_notify(:erl_signal_server, :sigterm)
+              0
             end,
-            &send(test, {:halt, &1})
+            halt(test)
           )
         end)
 
       assert_receive {:halt, 129}
-      end_wait(task, handlers)
+      end_wait(task)
       refute_received {:halt, _}
     end
 
@@ -313,7 +360,6 @@ defmodule CodingAgent.PrintTest do
     test "the wait for the abort is bounded" do
       gate = Helyx.Test.Gate.open()
       {:ok, session} = Helyx.Session.start(start_core(), model: "gated/" <> gate)
-      handlers = signal_handlers()
       test = self()
 
       io("", fn ->
@@ -329,7 +375,7 @@ defmodule CodingAgent.PrintTest do
 
         :erlang.resume_process(pid)
         send(gate_pid, :go)
-        end_wait(task, handlers)
+        end_wait(task)
       end)
     end
 

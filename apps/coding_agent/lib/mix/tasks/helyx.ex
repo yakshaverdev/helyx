@@ -11,8 +11,8 @@ defmodule Mix.Tasks.Helyx do
 
   The options and the errors are those of `CodingAgent.CLI`. Sessions are
   written under `~/.helyx/sessions` as they run. A bad argument or a failed
-  start prints one line on stderr and stops Mix with status 1. `-p` stops
-  Mix with the status of print mode (`CodingAgent.Print`).
+  start prints one line on stderr and stops Mix with status 1. With `-p`,
+  print mode (`CodingAgent.Print`) halts the VM with its status itself.
   """
 
   use Mix.Task
