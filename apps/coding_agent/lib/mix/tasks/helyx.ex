@@ -1,15 +1,18 @@
 defmodule Mix.Tasks.Helyx do
   @shortdoc "Starts the coding agent TUI"
   @moduledoc """
-  Starts the coding agent in the alternate screen from the source tree.
+  Starts the coding agent from the source tree: the TUI in the alternate
+  screen, or print mode with `-p`.
 
       mix helyx [directory] [--model provider/model] [--resume] [--version]
+      mix helyx [directory] [--model provider/model] -p prompt
       mix helyx --session id
       mix helyx --list [--all] [directory]
 
   The options and the errors are those of `CodingAgent.CLI`. Sessions are
   written under `~/.helyx/sessions` as they run. A bad argument or a failed
-  start prints one line on stderr and stops Mix with status 1.
+  start prints one line on stderr and stops Mix with status 1. `-p` stops
+  Mix with the status of print mode (`CodingAgent.Print`).
   """
 
   use Mix.Task

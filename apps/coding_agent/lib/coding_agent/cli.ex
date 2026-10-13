@@ -6,6 +6,7 @@ defmodule CodingAgent.CLI do
   `mix helyx`:
 
       helyx [directory] [--model provider/model] [--resume] [--version]
+      helyx [directory] [--model provider/model] -p prompt
       helyx --session id
       helyx --list [--all] [directory]
 
@@ -16,14 +17,17 @@ defmodule CodingAgent.CLI do
   `--session` the session with that id, in the folder of its header. Both
   keep the saved model, so they do not combine with `--model`. `--list`
   prints the sessions of the directory, or of every folder with `--all`,
-  one line each, newest first, and starts nothing. The design is in
-  `docs/features/local-release.md` and `docs/features/session-list.md`.
+  one line each, newest first, and starts nothing. `-p` (`--print`) runs
+  the one prompt in a new session with no TUI (`CodingAgent.Print`). The
+  design is in `docs/features/local-release.md`,
+  `docs/features/session-list.md`, and `docs/features/print-mode.md`.
   """
 
+  alias CodingAgent.Print
   alias Helyx.Session.File.Scan
 
   @options "the options are --model provider/model, --resume, --session id, --list, --all, " <>
-             "and --version"
+             "-p prompt, and --version"
 
   @switches [
     model: :string,
@@ -31,6 +35,7 @@ defmodule CodingAgent.CLI do
     session: :string,
     list: :boolean,
     all: :boolean,
+    print: :string,
     version: :boolean
   ]
 
@@ -44,6 +49,9 @@ defmodule CodingAgent.CLI do
     {:list, :model, ""},
     {:list, :resume, ""},
     {:list, :session, ""},
+    {:print, :resume, "; a print run starts a new session"},
+    {:print, :session, "; a print run starts a new session"},
+    {:print, :list, ""},
     {:directory, :all, ""}
   ]
 
@@ -57,9 +65,9 @@ defmodule CodingAgent.CLI do
   returns the exit status. A bad argument, a failed start, or a session
   that stops while the agent runs prints one line on stderr and returns 1.
   `--version` prints the version and returns 0, and so does `--list` after
-  its lines.
+  its lines. `-p` returns the status of `CodingAgent.Print.run/2`.
   """
-  @spec main([String.t()]) :: 0 | 1
+  @spec main([String.t()]) :: Print.status()
   def main(argv) do
     release_version = System.get_env("RELEASE_VSN")
 
@@ -71,6 +79,9 @@ defmodule CodingAgent.CLI do
     case start(argv, release_version) do
       :ok ->
         0
+
+      status when is_integer(status) ->
+        status
 
       {:error, text} ->
         IO.puts(:stderr, "helyx: " <> text)
@@ -95,9 +106,17 @@ defmodule CodingAgent.CLI do
 
   defp command(opts, args) do
     cond do
-      opts[:list] -> list(opts[:all], args)
-      opts[:session] -> with {:ok, cwd} <- session_cwd(opts[:session]), do: launch(opts, cwd)
-      true -> with {:ok, cwd} <- cwd(args), do: launch(opts, cwd)
+      opts[:list] ->
+        list(opts[:all], args)
+
+      opts[:session] ->
+        with {:ok, cwd} <- session_cwd(opts[:session]), do: launch(opts, cwd)
+
+      opts[:print] ->
+        with {:ok, cwd} <- cwd(args), do: print(opts, cwd)
+
+      true ->
+        with {:ok, cwd} <- cwd(args), do: launch(opts, cwd)
     end
   end
 
@@ -185,18 +204,29 @@ defmodule CodingAgent.CLI do
   defp sessions_dir,
     do: Application.get_env(:coding_agent, :sessions_dir) || Path.expand("~/.helyx/sessions")
 
-  defp launch(opts, cwd) do
-    with {:ok, _apps} <- Application.ensure_all_started(:coding_agent),
-         :ok <-
-           CodingAgent.run(
-             model: Keyword.get(opts, :model, @default_model),
-             cwd: cwd,
-             resume: opts[:session] || Keyword.get(opts, :resume, false),
-             sessions_dir: sessions_dir()
-           ) do
-      :ok
-    else
+  # The piped input is read before any application starts.
+  defp print(opts, cwd) do
+    Print.wrap(fn ->
+      with {:ok, prompt} <- Print.prompt(opts[:print]), do: launch(opts, cwd, prompt: prompt)
+    end)
+  end
+
+  defp launch(opts, cwd, extra \\ []) do
+    result =
+      with {:ok, _apps} <- Application.ensure_all_started(:coding_agent) do
+        CodingAgent.run(
+          [
+            model: Keyword.get(opts, :model, @default_model),
+            cwd: cwd,
+            resume: opts[:session] || Keyword.get(opts, :resume, false),
+            sessions_dir: sessions_dir()
+          ] ++ extra
+        )
+      end
+
+    case result do
       {:error, reason} -> {:error, CodingAgent.error_text(reason)}
+      result -> result
     end
   end
 
@@ -208,7 +238,7 @@ defmodule CodingAgent.CLI do
     if bad = Enum.find(argv, &(not String.valid?(&1))) do
       {:error, "an argument is not UTF-8: #{inspect(bad, binaries: :as_strings)}"}
     else
-      case OptionParser.parse(join_session(argv), strict: @switches) do
+      case OptionParser.parse(join_values(argv), strict: @switches, aliases: [p: :print]) do
         {opts, args, []} ->
           {:ok, opts, args}
 
@@ -223,12 +253,16 @@ defmodule CodingAgent.CLI do
     ArgumentError -> {:error, "bad option in #{inspect(argv)}; #{@options}"}
   end
 
-  # A session id can start with "-", and OptionParser reads a value that
-  # starts with "-" as switches. The joined form keeps it a value.
-  defp join_session(["--" | _] = rest), do: rest
-  defp join_session(["--session", id | rest]), do: ["--session=" <> id | join_session(rest)]
-  defp join_session([arg | rest]), do: [arg | join_session(rest)]
-  defp join_session([]), do: []
+  # A session id and a prompt can start with "-", and OptionParser reads a
+  # value that starts with "-" as switches. The joined form keeps it a value.
+  defp join_values(["--" | _] = rest), do: rest
+  defp join_values(["--session", id | rest]), do: ["--session=" <> id | join_values(rest)]
+
+  defp join_values([switch, text | rest]) when switch in ["-p", "--print"],
+    do: ["--print=" <> text | join_values(rest)]
+
+  defp join_values([arg | rest]), do: [arg | join_values(rest)]
+  defp join_values([]), do: []
 
   defp option_text({name, nil}), do: inspect(name)
   defp option_text({name, value}), do: "#{inspect(name)}=#{inspect(value)}"

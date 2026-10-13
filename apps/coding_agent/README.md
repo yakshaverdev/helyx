@@ -23,6 +23,15 @@ helyx --version          # the version and the commit of the build
 
 `directory` defaults to the current folder. `mix helyx` in `apps/coding_agent` takes the same arguments and runs the source tree. The design is in `docs/features/local-release.md`.
 
+## Print mode
+
+```sh
+helyx -p "fix the failing test"           # the answer on stdout
+cat log | helyx -p "why does this fail"   # piped input joins the prompt, at most 1 MiB
+```
+
+`-p` runs one prompt in a new session with no TUI. stdout holds only the answer. The session id, notices, and errors go to stderr. The status is 0 for a normal end, 1 for a failed or aborted turn or an answer cut at the token limit, 143 on SIGTERM, and 129 on SIGHUP. Helyx has no timeout of its own; use `timeout`. The session is saved, so `helyx --session <id>` continues it in the TUI. The design is in `docs/features/print-mode.md`.
+
 ## Keys
 
 The footer shows no key hints, except "Ctrl+C again to quit" after a first Ctrl+C on an empty composer. These are the keys:
