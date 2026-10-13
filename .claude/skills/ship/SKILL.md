@@ -68,6 +68,7 @@ The loop ends by these rules, measured on the tickets of 2026-09-27: after round
 
 - **A round that reproduces no defect ends the loop.** Fix its wording, doc, and judgement findings, record them, and run no further round for them. A "known ceiling" that the review record already states is not a defect.
 - **At most three rounds.** If round 3 still reproduces a defect, commit nothing more, and report the defect and the state to the caller. The orchestrator parks the ticket.
+- **One small-fix round after the limit.** When the last round reproduces a defect and its fix is at most 10 code lines in one code file (count without test files and Markdown), make the fix and run one reduced round. You do not need the owner for this round. The review record names it as the small-fix round. If the fix is larger, or the small-fix round reproduces a defect, commit only reviewed code, and report the defect and the state to the caller. Owner decision of 2026-10-13: four tickets that day hit the limit with a fix of a few lines.
 - **At most 45 minutes of work for the ticket.** At the limit, finish the current step, commit only code whose last review round is done, and report what is open.
 
 Two more rules govern the loop:
