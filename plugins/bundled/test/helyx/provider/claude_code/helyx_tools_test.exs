@@ -14,7 +14,12 @@ defmodule Helyx.Provider.ClaudeCode.HelyxToolsTest do
   setup {Helyx.Test.ClaudeCodeFake, :setup_fake}
 
   describe "the Helyx tools" do
-    @spec_read %{name: "read", description: "Reads a file.", parameters: %{"type" => "object"}}
+    @spec_bash %{name: "bash", description: "Runs a command.", parameters: %{"type" => "object"}}
+
+    # The Helyx file tools, which a harness does not get: it keeps its own
+    # (#478).
+    @file_tools for name <- ~w(read edit write),
+                    do: %{name: name, description: "", parameters: %{}}
 
     # A line that changes the state, so a test knows that the lines before
     # it were read.
@@ -22,7 +27,7 @@ defmodule Helyx.Provider.ClaudeCode.HelyxToolsTest do
     defp marked?(state), do: state.tasks == ["marker"]
 
     defp tool_turn(work) do
-      {:ok, state} = ClaudeCode.init("haiku", [@spec_read], cwd: work)
+      {:ok, state} = ClaudeCode.init("haiku", [@spec_bash], cwd: work)
 
       {_from, actions, state} =
         request(state, {:turn, "t1", %Helyx.Context{messages: [Message.user("x")]}})
@@ -32,10 +37,11 @@ defmodule Helyx.Provider.ClaudeCode.HelyxToolsTest do
       end)
     end
 
-    test "the program gets the MCP config of the always loaded helyx server, and not the strict switch",
+    test "the program gets the MCP config of the always loaded helyx server, not the strict switch, and no shell of its own",
          %{bin: bin, work: work} do
       closed(harness(work))
       args = args(bin, 1)
+      assert "--disallowedTools=Bash,Monitor" in args
       assert ~s({"mcpServers":{"helyx":{"type":"sdk","name":"helyx","alwaysLoad":true}}}) in args
       refute "--strict-mcp-config" in args
     end
@@ -60,7 +66,7 @@ defmodule Helyx.Provider.ClaudeCode.HelyxToolsTest do
         marker()
       ])
 
-      {:ok, state} = ClaudeCode.init("haiku", [@spec_read], cwd: work)
+      {:ok, state} = ClaudeCode.init("haiku", @file_tools ++ [@spec_bash], cwd: work)
       closed(settle(ClaudeCode, state, &marked?/1))
 
       result = %{
@@ -71,8 +77,8 @@ defmodule Helyx.Provider.ClaudeCode.HelyxToolsTest do
 
       tools = [
         %{
-          "name" => "read",
-          "description" => "Reads a file.",
+          "name" => "bash",
+          "description" => "Runs a command.",
           "inputSchema" => %{"type" => "object"}
         }
       ]
@@ -96,7 +102,7 @@ defmodule Helyx.Provider.ClaudeCode.HelyxToolsTest do
       turn(bin, 1, 1, begin() ++ [call("m1", 2, "toolu_h1")])
       {actions, state} = tool_turn(work)
 
-      assert {:event, "t1", {:tool_request, "toolu_h1", "read", %{"path" => "a.txt"}}} =
+      assert {:event, "t1", {:tool_request, "toolu_h1", "bash", %{"command" => "cat a.txt"}}} =
                List.last(actions)
 
       {from, actions, state} = request(state, {:tool_result, "t1", "toolu_h1", {:error, "boom"}})
@@ -114,20 +120,27 @@ defmodule Helyx.Provider.ClaudeCode.HelyxToolsTest do
              } = answers(bin, 1)
     end
 
-    test "a tools/call with no tool use id, or with no turn, gets an error and gives no request",
+    test "a tools/call with no tool use id, with no turn, or of a tool not given gets an error",
          %{bin: bin, work: work} do
       script(bin, "start.1", [call("n1", 1, "toolu_early"), marker()])
       no_params = %{jsonrpc: "2.0", id: 3, method: "tools/call"}
+      read = %{name: "read", arguments: %{path: "a.txt"}, _meta: %{"claudecode/toolUseId" => "r"}}
+      not_listed = %{jsonrpc: "2.0", id: 4, method: "tools/call", params: read}
 
       turn(
         bin,
         1,
         1,
         begin() ++
-          [tools_call("n2", 2, %{progressToken: 2}), mcp_request("n3", no_params), result("done")]
+          [
+            tools_call("n2", 2, %{progressToken: 2}),
+            mcp_request("n3", no_params),
+            mcp_request("n4", not_listed),
+            result("done")
+          ]
       )
 
-      {:ok, state} = ClaudeCode.init("haiku", [@spec_read], cwd: work)
+      {:ok, state} = ClaudeCode.init("haiku", @file_tools ++ [@spec_bash], cwd: work)
       state = settle(ClaudeCode, state, &marked?/1)
 
       {_from, actions, state} =
@@ -147,14 +160,21 @@ defmodule Helyx.Provider.ClaudeCode.HelyxToolsTest do
                  }
                },
                "n2" => %{"id" => 2, "result" => %{"isError" => true}},
-               "n3" => %{"id" => 3, "result" => %{"isError" => true}}
+               "n3" => %{"id" => 3, "result" => %{"isError" => true}},
+               "n4" => %{
+                 "id" => 4,
+                 "result" => %{
+                   "isError" => true,
+                   "content" => [%{"text" => "the call does not map to a tool use"}]
+                 }
+               }
              } = answers(bin, 1)
     end
 
     test "a call whose arguments are not an object or whose name is not a string gets an error",
          %{bin: bin, work: work} do
       meta = %{"claudecode/toolUseId" => "toolu_x"}
-      bad = %{name: "read", arguments: [], _meta: meta}
+      bad = %{name: "bash", arguments: [], _meta: meta}
       bad_call = %{jsonrpc: "2.0", id: 2, method: "tools/call", params: bad}
       bad_name = %{name: 5, _meta: %{"claudecode/toolUseId" => "toolu_n"}}
       name_call = %{jsonrpc: "2.0", id: 6, method: "tools/call", params: bad_name}
@@ -166,7 +186,7 @@ defmodule Helyx.Provider.ClaudeCode.HelyxToolsTest do
         begin() ++ [mcp_request("r1", bad_call), mcp_request("r5", name_call), result("done")]
       )
 
-      {:ok, state} = ClaudeCode.init("haiku", [@spec_read], cwd: work)
+      {:ok, state} = ClaudeCode.init("haiku", [@spec_bash], cwd: work)
 
       {_from, actions, state} =
         request(state, {:turn, "t1", %Helyx.Context{messages: [Message.user("x")]}})
@@ -214,7 +234,7 @@ defmodule Helyx.Provider.ClaudeCode.HelyxToolsTest do
          %{bin: bin, work: work, sessions: sessions} do
       core = :"core_#{System.unique_integer([:positive])}"
 
-      start_supervised!({Helyx.Core, name: core, plugins: [ClaudeCode, Fake, Helyx.Tool.Read]},
+      start_supervised!({Helyx.Core, name: core, plugins: [ClaudeCode, Fake, Helyx.Tool.Bash]},
         id: :tools_core
       )
 
@@ -223,8 +243,8 @@ defmodule Helyx.Provider.ClaudeCode.HelyxToolsTest do
       use_block = %{
         type: "tool_use",
         id: "toolu_h1",
-        name: "mcp__helyx__read",
-        input: %{path: "a.txt"}
+        name: "mcp__helyx__bash",
+        input: %{command: "cat a.txt"}
       }
 
       turn(bin, 1, 1, begin() ++ [assistant(use_block), call("m1", 2, "toolu_h1")])
@@ -248,7 +268,7 @@ defmodule Helyx.Provider.ClaudeCode.HelyxToolsTest do
       calls =
         for %Message{content: blocks} <- transcript, %Message.ToolCall{} = c <- blocks, do: c
 
-      assert [%Message.ToolCall{id: "toolu_h1", name: "mcp__helyx__read"}] = calls
+      assert [%Message.ToolCall{id: "toolu_h1", name: "mcp__helyx__bash"}] = calls
 
       assert [%Message{tool_call_id: "toolu_h1"}] =
                for(%Message{role: :tool_result} = m <- transcript, do: m)

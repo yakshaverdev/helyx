@@ -50,7 +50,7 @@ defmodule Helyx.Provider.ClaudeCode.Mcp do
   def message(%{"method" => "tools/call", "id" => id} = message, request_id, state) do
     params = message["params"]
 
-    if helyx_call?(params, state.turn) do
+    if helyx_call?(params, state) do
       %{"_meta" => %{"claudecode/toolUseId" => call_id}, "name" => name} = params
       calls = Map.put(state.calls, call_id, {request_id, id})
       event = {:tool_request, call_id, name, Map.get(params, "arguments", %{})}
@@ -97,14 +97,15 @@ defmodule Helyx.Provider.ClaudeCode.Mcp do
     end
   end
 
+  # Only a tool that the program was given maps.
   defp helyx_call?(
          %{"_meta" => %{"claudecode/toolUseId" => call_id}, "name" => name} = params,
-         turn
+         %{turn: turn, tools: tools}
        )
-       when is_binary(call_id) and is_binary(name) and started?(turn),
-       do: is_map(Map.get(params, "arguments", %{}))
+       when is_binary(call_id) and started?(turn),
+       do: Enum.any?(tools, &(&1.name == name)) and is_map(Map.get(params, "arguments", %{}))
 
-  defp helyx_call?(_params, _turn), do: false
+  defp helyx_call?(_params, _state), do: false
 
   defp tool_answer(state, request_id, rpc_id, status, text) do
     result = %{content: [%{type: "text", text: text}], isError: status == :error}

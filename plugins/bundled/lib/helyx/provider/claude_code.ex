@@ -5,13 +5,13 @@ defmodule Helyx.Provider.ClaudeCode do
   model ref is `claude-code/<model>`, where `<model>` is what `claude
   --model` takes.
 
-  One `claude` at a time serves the session. A turn is one user
-  line with a `uuid`, and it ends at a `result` with `queued_turn_count` 0
-  and no unresolved steer. A steer is one more user line, and an interrupt
-  is the control request `interrupt` with `cancel_queued: true`. An `init`
-  line with no Helyx turn starts a program turn. The Helyx tools are an SDK
-  MCP server named `helyx`. A fresh harness session gets the rest of the
-  transcript as a replay before the first turn's line.
+  One `claude` at a time serves the session. A turn is one user line with a
+  `uuid`, and it ends at a `result` with `queued_turn_count` 0 and no unresolved
+  steer. A steer is one more user line, and an interrupt is the control request
+  `interrupt` with `cancel_queued: true`. An `init` line with no Helyx turn
+  starts a program turn. The program's shell is off. The Helyx tools except the
+  file tools are an SDK MCP server named `helyx`. A fresh harness session gets
+  the rest of the transcript as a replay before the first turn's line.
 
   The full contract is in `docs/features/long-lived-harness.md`, section
   "Claude Code". The protocol facts are in
@@ -94,7 +94,7 @@ defmodule Helyx.Provider.ClaudeCode do
       state = %State{
         exe: exe,
         model: model,
-        tools: tools,
+        tools: HarnessIO.harness_tools(tools),
         cwd: Keyword.fetch!(opts, :cwd),
         resume: opts[:resume_id]
       }
@@ -209,15 +209,15 @@ defmodule Helyx.Provider.ClaudeCode do
   defp read(actions, %State{terminal: {:error, reason}} = state),
     do: {:stop, reason, actions, state}
 
-  # `--model=`, `--resume=`, and `--session-id=` keep a value that starts
-  # with a dash a value.
+  # The `=` form keeps a value that starts with a dash a value, and keeps
+  # the arguments after `--disallowedTools` out of its list (#478).
   defp launch(state) do
     id = state.resume || uuid()
     session = if state.resume, do: "--resume=" <> id, else: "--session-id=" <> id
 
     flags =
-      ~w(--output-format stream-json --verbose --include-partial-messages
-         --input-format stream-json --permission-mode bypassPermissions) ++
+      ~w(--output-format stream-json --verbose --include-partial-messages --input-format
+         stream-json --permission-mode bypassPermissions --disallowedTools=Bash,Monitor) ++
         ["--model=" <> state.model, session, "--mcp-config", Mcp.config()]
 
     HarnessIO.launch(state.exe, flags, state.cwd, %{state | session_id: id})

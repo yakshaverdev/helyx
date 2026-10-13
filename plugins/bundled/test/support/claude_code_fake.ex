@@ -325,7 +325,7 @@ defmodule Helyx.Test.ClaudeCodeFake do
   end
 
   def tools_call(request_id, id, meta) do
-    params = %{name: "read", arguments: %{path: "a.txt"}, _meta: meta}
+    params = %{name: "bash", arguments: %{command: "cat a.txt"}, _meta: meta}
     mcp_request(request_id, %{jsonrpc: "2.0", id: id, method: "tools/call", params: params})
   end
 
