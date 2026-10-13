@@ -7,6 +7,7 @@ defmodule Helyx.Provider.ClaudeCode.MeterTest do
   import Helyx.Test.ClaudeCodeFake,
     only: [
       aborted: 0,
+      assistant: 1,
       begin: 0,
       init: 0,
       delta: 1,
@@ -133,6 +134,95 @@ defmodule Helyx.Provider.ClaudeCode.MeterTest do
     {_usage, meter} = Meter.done(call(%Meter{}, @usage1, 0.00344765))
     meter = Meter.result(meter, cut.(0.00344765, %{@model => entry()}))
     assert {%Helyx.Usage{cost: nil}, _} = Meter.done(call(meter, @usage1, 0.004))
+  end
+
+  # The lines of a real run (`claude` 2.1.296, haiku, 2026-10-13): an
+  # interrupt while a foreground sub-agent ran. The program answers the open
+  # `Agent` call with an `is_error` result, then `aborted_tools`. A cut
+  # sub-agent call is in no total (research note), so the next done has
+  # cost nil.
+  @agent_usage %{
+    "input_tokens" => 2,
+    "cache_creation_input_tokens" => 19_011,
+    "cache_read_input_tokens" => 10_960,
+    "output_tokens" => 470
+  }
+  @rejected "The user doesn't want to proceed with this tool use. The tool use was rejected " <>
+              "(eg. if it was a file edit, the new_string was NOT written to the file). " <>
+              "STOP what you are doing and wait for the user to tell you how to proceed."
+
+  # An assistant line with the call, and a user line with its result.
+  defp called(meter, id, name) do
+    block = %{"type" => "tool_use", "id" => id, "name" => name, "input" => %{}}
+    message = %{"model" => @model, "usage" => @agent_usage, "content" => [block]}
+    Meter.line(meter, %{"type" => "assistant", "message" => message})
+  end
+
+  defp answered(meter, id, :ok),
+    do: answered(meter, %{"tool_use_id" => id, "content" => "report"})
+
+  defp answered(meter, id, :rejected),
+    do: answered(meter, %{"tool_use_id" => id, "content" => @rejected, "is_error" => true})
+
+  defp answered(meter, block) do
+    block = Map.put(block, "type", "tool_result")
+    Meter.line(meter, %{"type" => "user", "message" => %{"content" => [block]}})
+  end
+
+  defp aborted_tools(meter) do
+    aborted = %{
+      "subtype" => "error_during_execution",
+      "is_error" => true,
+      "terminal_reason" => "aborted_tools",
+      "num_turns" => 3
+    }
+
+    Meter.result(meter, Map.merge(result(@agent_usage, 0.006134845), aborted))
+  end
+
+  test "an Agent call open at aborted_tools makes the cost of the next done nil" do
+    meter =
+      %Meter{}
+      |> called("toolu_01T88we8FNgeyLC7cdPbwgbU", "Agent")
+      |> answered("toolu_01T88we8FNgeyLC7cdPbwgbU", :rejected)
+      |> aborted_tools()
+
+    # An Agent call with no result is open too.
+    no_result = %Meter{} |> called("toolu_a", "Agent") |> aborted_tools()
+    assert {%Helyx.Usage{cost: nil}, _} = Meter.done(call(no_result, @usage1, 0.006557955))
+
+    {usage, meter} = Meter.done(call(meter, @usage1, 0.006557955))
+    assert %Helyx.Usage{input: 4, cost: nil, cost_kind: nil} = usage
+
+    # The next done is known again.
+    assert {%Helyx.Usage{cost: cost, cost_kind: :list}, _} =
+             Meter.done(call(meter, @usage1, 0.007))
+
+    assert_in_delta cost, 0.007 - 0.006557955, 1.0e-12
+  end
+
+  test "aborted_tools with only plain tool calls open keeps the cost known" do
+    # A Read call cut by the interrupt, after an Agent call that ended.
+    meter =
+      %Meter{}
+      |> called("toolu_a", "Agent")
+      |> answered("toolu_a", :ok)
+      |> called("toolu_b", "Read")
+      |> answered("toolu_b", :rejected)
+      |> aborted_tools()
+
+    assert {%Helyx.Usage{cost: 0.006557955, cost_kind: :list}, _} =
+             Meter.done(call(meter, @usage1, 0.006557955))
+  end
+
+  test "an Agent call before an earlier result is not of the aborted turn" do
+    meter =
+      %Meter{}
+      |> called("toolu_a", "Agent")
+      |> Meter.result(result(@agent_usage, 0.005))
+      |> aborted_tools()
+
+    assert {%Helyx.Usage{cost: 0.006557955}, _} = Meter.done(call(meter, @usage1, 0.006557955))
   end
 
   # A replayed line's result, as a real program sends it (research note,
@@ -276,6 +366,47 @@ defmodule Helyx.Provider.ClaudeCode.MeterTest do
                usage
                | context_window: nil
              }
+    end
+
+    # The real shape: the interrupt answers the open call with an
+    # `is_error` result, then `aborted_tools`.
+    defp abort_usage(%{bin: bin} = ctx, lines, open_id) do
+      turn(bin, 1, 1, begin() ++ [delta("so far")] ++ lines)
+      script(bin, "ctl.1", [interrupted(), rejected(open_id), j(aborted_line())])
+      turn(bin, 1, 2, begin() ++ [delta("b"), result_line(@usage2, 0.3)])
+
+      session = start(ctx)
+      :ok = Session.prompt(session, "agent")
+      until_tool_call()
+      :ok = Session.abort(session)
+      assert [%{outcome: :aborted}] = of_type(collect_until(:turn_end), :turn_end)
+      usage(prompt(session, "next"))
+    end
+
+    defp agent(id), do: assistant(%{type: "tool_use", id: id, name: "Agent", input: %{}})
+
+    defp rejected(id) do
+      block = %{tool_use_id: id, type: "tool_result", content: "no", is_error: true}
+      j(%{type: "user", message: %{role: "user", content: [block]}})
+    end
+
+    # A program turn before the start of the turn's line: its lines belong
+    # to no Helyx turn, and its calls are in the totals.
+    test "an Agent call open at aborted_tools of a program turn: the next cost is nil",
+         %{bin: bin, work: work} do
+      program = [lifecycle("queued"), init(), agent("p1"), rejected("p1"), j(aborted_line())]
+      turn(bin, 1, 1, program ++ [lifecycle("started"), init(), result_line(@usage2, 0.3)])
+
+      assert %Helyx.Usage{input: 4, cost: nil} = done_usage(run_direct([Message.user("x")], work))
+    end
+
+    test "a user abort with an Agent call open: the cost of the next done is nil", ctx do
+      assert %Helyx.Usage{input: 4, cost: nil} = abort_usage(ctx, [agent("toolu_01")], "toolu_01")
+    end
+
+    test "a user abort of a plain call after an Agent call ended: the cost is known", ctx do
+      lines = [agent("toolu_01"), tool_result("toolu_01", "report"), tool_use("toolu_02", %{})]
+      assert %Helyx.Usage{input: 4, cost: 0.3} = abort_usage(ctx, lines, "toolu_02")
     end
 
     defp until_tool_call do

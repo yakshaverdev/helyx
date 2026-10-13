@@ -457,9 +457,10 @@ defmodule Helyx.Provider.ClaudeCode do
   end
 
   # The model lines before `started` of the turn's line belong to no Helyx
-  # turn, as between turns: a program turn has no `command_lifecycle`.
-  defp translate(_object, %State{turn: nil} = state), do: {[], state}
-  defp translate(_object, %State{turn: turn} = state) when not started?(turn), do: {[], state}
+  # turn, as between turns: a program turn has no `command_lifecycle`. The
+  # meter still reads them: their calls are in the program's totals.
+  defp translate(object, %State{turn: turn} = state) when turn == nil or not started?(turn),
+    do: {[], %{state | meter: Meter.line(state.meter, object)}}
 
   defp translate(
          %{
@@ -471,20 +472,18 @@ defmodule Helyx.Provider.ClaudeCode do
        do: emit(state, {Turn.delta(delta), turn})
 
   defp translate(
-         %{"type" => "assistant", "message" => %{"content" => blocks} = message},
-         %State{turn: turn} = state
-       )
-       when is_list(blocks) do
-    state = %{state | meter: Meter.assistant(state.meter, message)}
-    emit(state, {Turn.assistant(blocks), turn})
-  end
-
-  defp translate(
-         %{"type" => "user", "message" => %{"content" => blocks}},
-         %State{turn: turn} = state
+         %{"type" => "assistant", "message" => %{"content" => blocks}} = line,
+         %State{turn: turn, meter: meter} = state
        )
        when is_list(blocks),
-       do: emit(state, {Turn.results(blocks), turn})
+       do: emit(%{state | meter: Meter.line(meter, line)}, {Turn.assistant(blocks), turn})
+
+  defp translate(
+         %{"type" => "user", "message" => %{"content" => blocks}} = line,
+         %State{turn: turn, meter: meter} = state
+       )
+       when is_list(blocks),
+       do: emit(%{state | meter: Meter.line(meter, line)}, {Turn.results(blocks), turn})
 
   defp translate(_object, state), do: {[], state}
 

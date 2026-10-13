@@ -8,7 +8,10 @@ defmodule Helyx.Provider.ClaudeCode.Meter do
   # at the last `done`: 0 for a new program, the stored sum for a resumed
   # one (`start/1`), nil when it was not known. `total` and `window` are
   # of the last `result`, nil when it was bad. `context` and `model` are
-  # of the last `assistant` line.
+  # of the last `assistant` line. `agents` holds the ids of the open
+  # `Agent` calls since the last `result`. A call is open until a tool
+  # result that is not an error: an interrupt gives a running call an
+  # error result.
   # A `result` with a value outside the wire bound adds nothing and makes
   # the cost unknown.
 
@@ -22,7 +25,8 @@ defmodule Helyx.Provider.ClaudeCode.Meter do
             total: nil,
             window: nil,
             context: nil,
-            model: nil
+            model: nil,
+            agents: []
 
   # The meter of a new program. A resumed program reports the totals of
   # its harness session: the mark is the sum of the costs that the session
@@ -41,18 +45,51 @@ defmodule Helyx.Provider.ClaudeCode.Meter do
 
     # A copy: the decoded line can hold the whole line as one binary.
     model = if is_binary(message["model"]), do: :binary.copy(message["model"]), else: meter.model
-    %{meter | context: context, model: model}
+
+    agents =
+      for %{"type" => "tool_use", "name" => "Agent", "id" => id} <- List.wrap(message["content"]),
+          is_binary(id),
+          do: :binary.copy(id)
+
+    %{meter | context: context, model: model, agents: agents ++ meter.agents}
+  end
+
+  # An `assistant` or `user` line of the main loop, also of no Helyx turn:
+  # its calls are in the totals.
+  def line(meter, %{"type" => "assistant", "message" => %{"content" => blocks} = message})
+      when is_list(blocks),
+      do: assistant(meter, message)
+
+  def line(meter, %{"type" => "user", "message" => %{"content" => blocks}}) when is_list(blocks),
+    do: results(meter, blocks)
+
+  def line(meter, _object), do: meter
+
+  # An `Agent` call with a tool result that is not an error ended.
+  defp results(meter, blocks) do
+    ended =
+      for %{"type" => "tool_result", "tool_use_id" => id} = b <- blocks,
+          b["is_error"] != true,
+          do: id
+
+    %{meter | agents: meter.agents -- ended}
   end
 
   # A call cut while it streamed is in no total (research note,
-  # 2026-10-13), so its result sets the flag.
+  # 2026-10-13), so its result sets the flag. So does an `aborted_tools`
+  # with an `Agent` call open: the interrupt can cut a call of the
+  # sub-agent, and no line tells whether it did.
   def result(meter, result) do
+    reason = result["terminal_reason"]
+    cut? = reason == "aborted_streaming" or (reason == "aborted_tools" and meter.agents != [])
+    meter = %{meter | agents: []}
+
     with {:ok, [input, output, read, write]} <- counts(result["usage"]),
          total when wire_cost?(total) <- result["total_cost_usd"],
          {:ok, window, list?} <- model_usage(result["modelUsage"], meter.model) do
       usage = %Helyx.Usage{input: input, output: output, cache_read: read, cache_write: write}
       sum = Helyx.Usage.add(meter.sum, usage)
-      known? = meter.known? and list? and result["terminal_reason"] != "aborted_streaming"
+      known? = meter.known? and list? and not cut?
       %{meter | sum: sum, known?: known?, total: total, window: window}
     else
       _ -> %{meter | known?: false, total: nil, window: nil}
