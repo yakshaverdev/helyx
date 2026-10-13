@@ -27,9 +27,10 @@ defmodule CodingAgent do
 
   @doc """
   Starts Core and a session, then runs the TUI until the user quits. The
-  session is written under `:sessions_dir` (default `~/.helyx/sessions`);
-  with `resume: true` the most recent session for `:cwd` is resumed and
-  keeps its saved model. Returns `{:error, reason}` when the model ref, the
+  session is written under `:sessions_dir`, which is required. With
+  `resume: true` the most recent session for `:cwd` that has a message is
+  resumed, and with `resume: id` the session with that id, whose header must
+  name `:cwd`. A resumed session keeps its saved model. Returns `{:error, reason}` when the model ref, the
   plugin list, or the resume is rejected. Core stops before `run/1` returns
   or raises.
   """
@@ -49,7 +50,7 @@ defmodule CodingAgent do
       try do
         Helyx.TUI.run(
           session: session,
-          resumed: opts[:resume] == true,
+          resumed: Keyword.get(opts, :resume, false) != false,
           cwd: Keyword.fetch!(opts, :cwd)
         )
       after
@@ -77,14 +78,20 @@ defmodule CodingAgent do
   cut in half is dropped.
   """
   @spec error_text(term()) :: String.t()
-  def error_text(reason) do
-    reason
-    |> line()
+  def error_text(reason), do: reason |> line() |> one_line() |> cut()
+
+  @doc """
+  The clean pass of a text for the terminal: a whitespace run becomes one
+  space, whitespace at the ends goes, and a control or format character or
+  a byte that is not UTF-8 becomes `?`. The result has no length bound.
+  """
+  @spec one_line(String.t()) :: String.t()
+  def one_line(text) do
+    text
     |> String.replace_invalid("?")
     |> String.split()
     |> Enum.join(" ")
     |> String.replace(~r/\p{C}/u, "?")
-    |> cut()
   end
 
   # A clause can hold plugin text or a value from the session file, so the
@@ -100,6 +107,8 @@ defmodule CodingAgent do
     do: "no saved session for this directory; start one without --resume"
 
   defp sentence(:not_regular), do: "the session file is not a regular file"
+  defp sentence(:invalid_id), do: "not a session id"
+  defp sentence(:duplicate_id), do: "more than one session file has this id"
   defp sentence({:too_large, text}) when is_binary(text), do: text
 
   # The text can be an exception message, and some of those have many lines.
@@ -150,16 +159,21 @@ defmodule CodingAgent do
   def start_session(opts) do
     core = Keyword.get(opts, :core, Helyx.Core)
     cwd = Keyword.fetch!(opts, :cwd)
-    dir = opts[:sessions_dir] || Path.expand("~/.helyx/sessions")
+    dir = Keyword.fetch!(opts, :sessions_dir)
 
-    if opts[:resume] do
-      Helyx.Session.resume(core, sessions_dir: dir, cwd: cwd)
-    else
-      Helyx.Session.start(core,
-        model: Keyword.fetch!(opts, :model),
-        cwd: cwd,
-        sessions_dir: dir
-      )
+    case Keyword.get(opts, :resume, false) do
+      false ->
+        Helyx.Session.start(core,
+          model: Keyword.fetch!(opts, :model),
+          cwd: cwd,
+          sessions_dir: dir
+        )
+
+      true ->
+        Helyx.Session.resume(core, sessions_dir: dir, cwd: cwd)
+
+      id ->
+        Helyx.Session.resume(core, sessions_dir: dir, cwd: cwd, id: id)
     end
   end
 end

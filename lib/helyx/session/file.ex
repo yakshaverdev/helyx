@@ -3,9 +3,9 @@ defmodule Helyx.Session.File do
   The session file: append-only JSON lines, one entry per line, a tree by
   `parent_id` (ADR 0001). A session lives at
   `<dir>/<project slug>/<session id>.jsonl`. Only completed messages are
-  appended. `resume/3` restores the branch of the newest leaf of the most
-  recently started session for a working directory, and nothing is ever
-  removed from the file.
+  appended. `resume/3` restores the branch of the newest leaf of a session,
+  and nothing is ever removed from the file. `Helyx.Session.File.Scan`
+  picks the file.
 
   The format, the rules for a damaged file, and the bounds are in
   `docs/features/coding-agent.md`, section "Session file".
@@ -14,8 +14,7 @@ defmodule Helyx.Session.File do
   alias Helyx.Message
   alias Helyx.Session.File.Branch
   alias Helyx.Session.File.Codec
-
-  @version 1
+  alias Helyx.Session.File.Scan
 
   # A resume loads the file whole into the calling process, so the file has a
   # limit. Compaction does not shrink the transcript, so the resume of a
@@ -33,14 +32,6 @@ defmodule Helyx.Session.File do
   # heap of a process, and a cap of 0 words turns the cap off. It holds for a
   # minimum heap under 1 MiB; a VM started with a larger `+hms` rejects it.
   @min_heap_bytes 1024 * 1024
-
-  # The scan for the most recent session reads this much of a file. A header
-  # holds a cwd and a model ref.
-  @max_header_bytes 65_536
-
-  # The scan reads the header of this many files: the ones with the newest
-  # modification time. Nothing deletes session files, so their count grows.
-  @max_scanned_files 256
 
   @enforce_keys [:path]
   defstruct [:path, :leaf]
@@ -75,6 +66,8 @@ defmodule Helyx.Session.File do
           | :not_regular
           | {:repair_failed, File.posix()}
           | {:create_failed, File.posix()}
+          | :invalid_id
+          | :duplicate_id
 
   @doc """
   Creates the file for a new session and writes the header. `cwd` and
@@ -82,12 +75,12 @@ defmodule Helyx.Session.File do
   """
   @spec create(Path.t(), String.t(), String.t(), String.t()) :: {:ok, t()} | {:error, error()}
   def create(dir, session_id, cwd, model) do
-    project = project_dir(dir, cwd)
+    project = Scan.project_dir(dir, cwd)
 
     # The mkdir failing is the caller's configuration, not a crash.
     case File.mkdir_p(project) do
       :ok ->
-        header = %{"type" => "session", "version" => @version, "cwd" => cwd, "model" => model}
+        header = Scan.header(cwd, model)
         {:ok, append(%__MODULE__{path: Path.join(project, session_id <> ".jsonl")}, header)}
 
       {:error, reason} ->
@@ -99,7 +92,10 @@ defmodule Helyx.Session.File do
   end
 
   @doc """
-  Resumes the most recently started session for a working directory.
+  Resumes the most recently started session for a working directory that
+  has a message, or with `:id` the session of that id. The scan that picks
+  the file and its bounds are in `Helyx.Session.File.Scan`. A session of
+  the id whose header names another directory is `:not_found`.
 
   Returns the file handle, the session id, the current model, and the
   transcript of one branch: the entries from the header to the newest
@@ -111,14 +107,7 @@ defmodule Helyx.Session.File do
 
   A file over the limit of #{@max_bytes} bytes is rejected as
   `{:too_large, text}` and is not mutated. The read itself stops one byte
-  past the limit, so a file that grows during the call is rejected too. A
-  session file has a header line of at most #{@max_header_bytes} bytes; the
-  scan for the most recent session reads no more than that of any file.
-
-  The scan reads the header of at most #{@max_scanned_files} regular files:
-  the ones with the newest modification time. An append sets that time. A
-  session older than those files is not found: the result is `:not_found`
-  when none of them has the working directory.
+  past the limit, so a file that grows during the call is rejected too.
 
   The read and the decode run in their own process with a heap cap of
   #{@max_heap_bytes} bytes, and so do the index of the entries by id and
@@ -128,10 +117,11 @@ defmodule Helyx.Session.File do
 
   `:max_bytes` lowers the file limit, `:max_heap_bytes` lowers the heap
   cap to no less than #{@min_heap_bytes} bytes, and `:max_scanned_files`
-  lowers the file count. They exist so that a test reaches a limit with
-  small input.
+  lowers the file count of the scan. They exist so that a test reaches a
+  limit with small input.
   """
   @spec resume(Path.t(), String.t(),
+          id: String.t(),
           max_bytes: pos_integer(),
           max_heap_bytes: pos_integer(),
           max_scanned_files: pos_integer()
@@ -142,24 +132,37 @@ defmodule Helyx.Session.File do
     resume_within(
       dir,
       cwd,
+      opts,
       Keyword.get(opts, :max_bytes, @max_bytes),
-      Keyword.get(opts, :max_heap_bytes, @max_heap_bytes),
-      Keyword.get(opts, :max_scanned_files, @max_scanned_files)
+      Keyword.get(opts, :max_heap_bytes, @max_heap_bytes)
     )
   end
 
   # The options only lower the limits, so the read count stays one the OS takes.
-  defp resume_within(dir, cwd, max_bytes, max_heap_bytes, max_files)
+  defp resume_within(dir, cwd, opts, max_bytes, max_heap_bytes)
        when max_bytes in 1..@max_bytes//1 and
-              max_heap_bytes in @min_heap_bytes..@max_heap_bytes//1 and
-              max_files in 1..@max_scanned_files//1 do
-    with {:ok, path, header} <- most_recent(project_dir(dir, cwd), cwd, max_files),
-         :ok <- check_version(header),
+              max_heap_bytes in @min_heap_bytes..@max_heap_bytes//1 do
+    with {:ok, path, header} <- pick(dir, cwd, opts),
+         :ok <- Scan.check_version(header),
          {:ok, resumed, tail} <- load_bounded(path, header, max_bytes, max_heap_bytes),
          # The repair write comes last, after every check passed, so a
          # file this function rejects is never mutated.
          :ok <- repair(path, tail) do
       {:ok, resumed}
+    end
+  end
+
+  defp pick(dir, cwd, opts) do
+    case Keyword.fetch(opts, :id) do
+      :error ->
+        Scan.most_recent(dir, cwd, opts)
+
+      {:ok, id} ->
+        case Scan.find(dir, id) do
+          {:ok, path, %{"cwd" => ^cwd} = header} -> {:ok, path, header}
+          {:ok, _path, _header} -> {:error, :not_found}
+          {:error, _reason} = error -> error
+        end
     end
   end
 
@@ -198,7 +201,7 @@ defmodule Helyx.Session.File do
   end
 
   defp load(path, header, max_bytes) do
-    with {:ok, raw} <- read_up_to(path, max_bytes + 1),
+    with {:ok, raw} <- Scan.read_up_to(path, max_bytes + 1),
          :ok <- check_size(byte_size(raw), max_bytes),
          {entries, tail} = parse(raw, []),
          :ok <- check_size(repaired_size(byte_size(raw), tail), max_bytes),
@@ -251,66 +254,6 @@ defmodule Helyx.Session.File do
   @spec append_message(t(), Message.t()) :: t()
   def append_message(%__MODULE__{} = file, %Message{} = message) do
     append(file, Codec.encode(message))
-  end
-
-  defp check_version(%{"version" => @version}), do: :ok
-  defp check_version(header), do: {:error, {:unknown_version, header["version"]}}
-
-  # The most recently started session whose header matches the working
-  # directory. Two directories can share a slug, so the header decides.
-  defp most_recent(project_dir, cwd, max_files) do
-    candidates =
-      for path <- newest(Path.wildcard(Path.join(project_dir, "*.jsonl")), max_files),
-          {:ok, header} <- [read_header(path)],
-          header["cwd"] == cwd do
-        {header["ts"], path, header}
-      end
-
-    case Enum.max_by(candidates, &elem(&1, 0), fn -> nil end) do
-      nil -> {:error, :not_found}
-      {_ts, path, header} -> {:ok, path, header}
-    end
-  end
-
-  # The `count` regular files with the newest modification time: one stat
-  # per file and no read. The time has a resolution of one second, so the
-  # path breaks a tie, and the same directory always gives the same files.
-  defp newest(paths, count) do
-    stats =
-      for path <- paths,
-          {:ok, %File.Stat{type: :regular, mtime: mtime}} <- [File.stat(path, time: :posix)] do
-        {mtime, path}
-      end
-
-    stats |> Enum.sort(:desc) |> Enum.take(count) |> Enum.map(&elem(&1, 1))
-  end
-
-  # A header line over the bound is cut, does not decode, and the file is
-  # not a session.
-  defp read_header(path) do
-    with {:ok, head} <- read_up_to(path, @max_header_bytes),
-         [line | _] = String.split(head, "\n", parts: 2),
-         {:ok, %{"type" => "session"} = header} <- JSON.decode(line) do
-      {:ok, header}
-    else
-      _ -> :error
-    end
-  end
-
-  # At most `bytes` from the start of a regular file. A pipe or a device
-  # would block the open or never end. The fun form of File.open closes the
-  # handle on every path.
-  defp read_up_to(path, bytes) do
-    with {:ok, %File.Stat{type: :regular}} <- File.stat(path),
-         {:ok, data} when is_binary(data) <-
-           File.open(path, [:read, :binary], &IO.binread(&1, bytes)) do
-      {:ok, data}
-    else
-      {:ok, %File.Stat{}} -> {:error, :not_regular}
-      {:ok, :eof} -> {:ok, ""}
-      {:ok, {:error, _reason} = error} -> error
-      {:error, _reason} = error -> error
-    end
   end
 
   # The newline that the repair appends counts, or the repair would make a
@@ -374,13 +317,5 @@ defmodule Helyx.Session.File do
 
     File.write!(path, [JSON.encode!(entry), "\n"], [:append])
     %{file | leaf: id}
-  end
-
-  # The slug keeps the tail of the path, the distinctive end, and stays
-  # under the filesystem name limit: 100 characters are 100 bytes because
-  # the regex collapses every non-ASCII byte to "-". Collisions are fine:
-  # the header `cwd` decides which sessions belong to a directory.
-  defp project_dir(dir, cwd) do
-    Path.join(dir, cwd |> String.replace(~r/[^A-Za-z0-9]+/, "-") |> String.slice(-100, 100))
   end
 end

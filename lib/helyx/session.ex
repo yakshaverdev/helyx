@@ -104,14 +104,14 @@ defmodule Helyx.Session do
     do: Helyx.Session.File.create(dir, id, cwd, ModelRef.to_string(ref))
 
   @doc """
-  Resumes the most recent session for the working directory from
-  `:sessions_dir`, restoring the transcript and the current model. Every
-  tool call without a result gets an `aborted` error result in the
-  transcript read, right after its message and its results, so the next
-  provider call sees complete call and result pairs. A tool result that
-  answers no open call at its place is left out of the transcript read. The
-  resume writes no entry: every resume of the file makes the same repair.
-  It only appends a newline that the last line lacks. `:cwd` is checked as in
+  Resumes from `:sessions_dir` the session `Helyx.Session.File.resume/3`
+  picks: the newest of the working directory, or with `:id` that session.
+  It restores the transcript and the current model. A tool call without a
+  result gets an `aborted` error result in the transcript read, after its
+  message and its results, so the next provider call sees complete call and
+  result pairs. A tool result that answers no open call at its place is left
+  out of the transcript read. The resume writes no entry: every resume of
+  the file only appends a newline that the last line lacks. `:cwd` is checked as in
   `start/2`, and the tool specs and the tool checks as in `start/2`, all
   before the sessions directory is read. The model ref of the file resolves
   as in `set_model/2`, with the same errors.
@@ -123,7 +123,7 @@ defmodule Helyx.Session do
     with {:ok, cwd} <- fetch_cwd(opts),
          {:ok, tools} <- Helyx.Tool.specs(core),
          :ok <- Helyx.Tool.check_available(tools),
-         {:ok, resumed} <- Helyx.Session.File.resume(dir, cwd),
+         {:ok, resumed} <- Helyx.Session.File.resume(dir, cwd, Keyword.take(opts, [:id])),
          {:ok, {ref, provider}} <- resolve_model(core, resumed.model) do
       # A crash can leave tool calls with no result, and the disk can hold a
       # result with no open call. The session reads them with `aborted`
