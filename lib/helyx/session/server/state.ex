@@ -49,6 +49,9 @@ defmodule Helyx.Session.Server.State do
     # The folder of the background output files (`Helyx.Session.Hands`).
     :background_dir,
     :file,
+    # The port of the session file's writer lock, or nil with no file or
+    # after the lock is lost (`Helyx.Session.Lock`).
+    :lock,
     # The registered ModelContext and Compaction plugins, or nil for none.
     :model_context,
     :compaction,
@@ -100,6 +103,7 @@ defmodule Helyx.Session.Server.State do
           hands: pid() | nil,
           background_dir: Path.t() | nil,
           file: Helyx.Session.File.t() | nil,
+          lock: port() | nil,
           model_context: module() | nil,
           compaction: module() | nil,
           tool_specs: [Helyx.Tool.spec()],

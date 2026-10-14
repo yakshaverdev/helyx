@@ -7,12 +7,52 @@ defmodule Helyx.Session.Server do
   # the docs of the behaviour are in `Helyx.Session`.
 
   alias Helyx.ModelRef
-  alias Helyx.Session.{Background, Hands, Id, Queue, Turn}
+  alias Helyx.Session.{Background, Hands, Id, Lock, Queue, Turn}
   alias Helyx.Session.Server.{Compaction, Events, ProviderConn, Records, State, Steering, Stop}
   alias Helyx.Session.Server.ToolRuns
   alias Helyx.Session.Server.{TurnLoop, Wait}
 
   use GenServer, restart: :temporary, shutdown: Stop.shutdown_ms()
+
+  # Starts the session process under Core for `Helyx.Session.start/2` and
+  # `resume/2`. The process takes the lock of the caller (`Lock.own/1`); a
+  # start that fails releases it. The caller unlinks the port before the
+  # start: a session process that dies in its init, after it took the port,
+  # closes the port, and the port's exit must not end the caller.
+  def start(%State{id: id, core: core} = state, tools) do
+    Lock.unlink(state.lock)
+
+    case start_child(state, tools) do
+      {:ok, _pid} ->
+        {:ok, %Helyx.Session{id: id, core: core}}
+
+      error ->
+        Lock.release(state.lock)
+        error
+    end
+  end
+
+  # A raise or exit here (the Core or its supervisor is gone) leaves the
+  # caller the owner of the port: it releases the lock and goes on with the
+  # same raise or exit.
+  defp start_child(%State{core: core} = state, tools) do
+    # The plugin table of a Core does not change after start, so a plugin
+    # resolved once here is the plugin a lookup per provider call would give.
+    # Both interfaces are single-mode: one plugin or none (nil).
+    session = %{
+      state
+      | model_context: List.first(Helyx.Core.plugins(core, Helyx.ModelContext)),
+        compaction: List.first(Helyx.Core.plugins(core, Helyx.Compaction)),
+        tool_specs: Enum.map(tools, fn {_tool, spec} -> spec end),
+        tool_modules: Map.new(tools, fn {tool, spec} -> {spec.name, tool} end)
+    }
+
+    DynamicSupervisor.start_child(Helyx.Core.session_supervisor(core), {__MODULE__, session})
+  catch
+    kind, reason ->
+      Lock.release(state.lock)
+      :erlang.raise(kind, reason, __STACKTRACE__)
+  end
 
   def start_link(%State{id: id, core: core} = state) do
     GenServer.start_link(__MODULE__, state, name: via(core, id))
@@ -24,6 +64,14 @@ defmodule Helyx.Session.Server do
     # as a message, and a death of the session takes them with it (ADR 0004).
     Process.flag(:trap_exit, true)
 
+    # First, so no hands exist yet when the lock is gone already.
+    case Lock.own(state.lock) do
+      :ok -> init_hands(state)
+      {:error, reason} -> {:stop, reason}
+    end
+  end
+
+  defp init_hands(state) do
     instance_id = Id.new()
     # One folder per process start, so two Cores that hold one session id
     # never share it. `Stop.run/1` deletes it.
@@ -191,6 +239,18 @@ defmodule Helyx.Session.Server do
   def handle_info({:DOWN, ref, :process, pid, _reason}, %State{subscribers: subscribers} = state)
       when :erlang.map_get(pid, subscribers) == ref,
       do: {:noreply, Events.subscriber_down(state, pid)}
+
+  # The lock's port closed while the session runs: perl ended, so the
+  # kernel released the lock (docs/features/session-lock.md). Its exit
+  # status comes first, then the exit of the port, also of a port that
+  # closed without a status. One notice; the session goes on unlocked.
+  def handle_info({port, {:exit_status, _status}}, %State{lock: port} = state),
+    do: {:noreply, state}
+
+  def handle_info({:EXIT, port, _reason}, %State{lock: port} = state) do
+    text = "the session lock is lost; another Helyx process can now open this session"
+    {:noreply, Events.emit(%{state | lock: nil}, nil, :notice, %{text: text})}
+  end
 
   # An exit from a linked process is vital. The hands' death takes the
   # session with it, and a session that outlived its entry in the sessions

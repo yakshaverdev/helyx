@@ -7,7 +7,7 @@ A client can tell the events of one session instance from those of another insta
 Without an instance id, two cases break a client:
 
 - **Resume.** A resume reuses the session id and starts `seq` at 0. Its subscribers are new, so a client subscribes again, and events of the old instance can still be in its mailbox.
-- **Two Cores.** Two Cores that resume one `sessions_dir` hold one id. A caller subscribed to both gets events with the same id and overlapping `seq` values from each. Both Cores write to the one session file, and each writes its own branch: the `parent_id` of an entry is the leaf of its own Core, and the reader follows `parent_id`, so the two conversations do not mix (#266, `docs/features/coding-agent.md`, "Session file").
+- **Two Cores.** Two Cores that resume one session file hold one id. Since the writer lock (#579, `docs/features/session-lock.md`), only a file that two sessions folders share (a hard link, or a copy) lets both run. A caller subscribed to both gets events with the same id and overlapping `seq` values from each. Both Cores write to the one session file, and each writes its own branch: the `parent_id` of an entry is the leaf of its own Core, and the reader follows `parent_id`, so the two conversations do not mix (#266, `docs/features/coding-agent.md`, "Session file").
 
 ## Decision
 
@@ -39,7 +39,7 @@ No external resource.
 ## Tests
 
 - Core: a start and a resume of the same id give different instance ids, and each event of an instance carries the instance id of its snapshot.
-- Core, the two-Core case: two Cores resume one `sessions_dir`; one caller subscribes to both. A subscribe to the id in Core B leaves the events of Core A in the mailbox, and every event carries the instance id of the snapshot of its Core.
+- Core, the two-Core case: two Cores resume one session, through a hard link of its file in a second sessions folder; one caller subscribes to both. A subscribe to the id in Core B leaves the events of Core A in the mailbox, and every event carries the instance id of the snapshot of its Core.
 
 ## Out of scope
 

@@ -275,6 +275,30 @@ defmodule CodingAgent.PrintTest do
       end
     end
 
+    # #579: the lock take of another process holds the session.
+    test "a session open in another process is one line and 1, with -p and without", %{
+      tmp_dir: dir,
+      sessions: s
+    } do
+      assert {0, _, "helyx: session " <> line} =
+               io("", fn -> CLI.main(["-p", "one", "--model", "fake/echo", dir], halt(self())) end)
+
+      id = String.trim_trailing(line, "\n")
+      [path] = Path.wildcard(Path.join([s, "*", id <> ".jsonl"]))
+      {:ok, lock, nil} = Helyx.Session.Lock.hold(path, fn -> {:ok, nil} end)
+      expected = "helyx: session #{id} is open in another process\n"
+
+      for argv <- [["--session", id], ["--resume", dir]] do
+        assert {1, "", ^expected} =
+                 io("", fn -> CLI.main(["-p", "two" | argv], halt(self())) end)
+
+        assert_received {:halt, 1}
+      end
+
+      assert {1, "", ^expected} = io("", fn -> CLI.main(["--session", id]) end)
+      Helyx.Session.Lock.release(lock)
+    end
+
     test "--resume skips a file whose name is not a session id", %{tmp_dir: dir, sessions: s} do
       assert {0, _, _} =
                io("", fn -> CLI.main(["-p", "one", "--model", "fake/echo", dir], halt(self())) end)

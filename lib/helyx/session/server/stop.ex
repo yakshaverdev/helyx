@@ -4,21 +4,23 @@ defmodule Helyx.Session.Server.Stop do
   # work that `work/1` lists ends, the kill of a prepare Task or
   # the close of provider processes (`State.provider_close_ms/0`, armed
   # kill), then the stop of the hands, which can finish one release
-  # (`Hands.State.release_ms/0`), and the delete of the background folder.
+  # (`Hands.State.release_ms/0`), the delete of the background folder, and
+  # the release of the writer lock (`Lock.release_ms/0`).
   # Each wait has a margin for load, so the
   # supervisor does not kill it first: `shutdown_ms/0` is the shutdown of
   # the session process.
 
   import Helyx.Session.Server.State, only: [ask: 4]
 
-  alias Helyx.Session.Hands
+  alias Helyx.Session.{Hands, Lock}
   alias Helyx.Session.Server.{ProviderConn, State}
   alias Helyx.Session.Turn
 
   @load_hands_stop_ms 2_000
   @load_shutdown_ms 3_000
   @hands_stop_ms Hands.State.release_ms() + @load_hands_stop_ms
-  def shutdown_ms, do: State.provider_close_ms() + @hands_stop_ms + @load_shutdown_ms
+  def shutdown_ms,
+    do: State.provider_close_ms() + @hands_stop_ms + Lock.release_ms() + @load_shutdown_ms
 
   # The prepare Task of a turn runs under the task supervisor, not linked:
   # it is killed here. On an untrappable kill of the session its armed
@@ -47,7 +49,9 @@ defmodule Helyx.Session.Server.Stop do
     stop_hands(state.hands)
     # After the hands: no background Task writes to the folder any more.
     File.rm_rf(state.background_dir)
-    :ok
+    # Last, so no process of the session writes to the file once another
+    # OS process can take the lock.
+    Lock.release(state.lock)
   end
 
   # The hands take the messages before the exit signal first: the end of a

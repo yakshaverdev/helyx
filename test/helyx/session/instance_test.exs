@@ -60,7 +60,9 @@ defmodule Helyx.Session.InstanceTest do
       other = start_core([Helyx.Test.Provider])
 
       {:ok, a} = Session.start(core, model: "test/ok", sessions_dir: dir)
-      {:ok, b} = Session.resume(other, sessions_dir: dir, id: a.id)
+      # A second folder with a link of the file: the lock of the first
+      # folder does not stop the second Core (docs/features/session-lock.md).
+      {:ok, b} = Session.resume(other, sessions_dir: link_session(dir, a.id), id: a.id)
       assert a.id == b.id
 
       {:ok, snapshot_a, _} = Session.subscribe(a)
@@ -92,7 +94,9 @@ defmodule Helyx.Session.InstanceTest do
       {:ok, _, _} = Session.subscribe(a)
       prompt_events(a, "shared")
 
-      {:ok, b} = Session.resume(other, sessions_dir: dir)
+      # Through a link of the file in a second folder, as a file written
+      # before the lock (docs/features/session-lock.md).
+      {:ok, b} = Session.resume(other, sessions_dir: link_session(dir, a.id))
       {:ok, _, _} = Session.subscribe(b)
       prompt_events(b, "b1")
       prompt_events(a, "a1")
