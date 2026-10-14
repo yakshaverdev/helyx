@@ -5,7 +5,7 @@ defmodule Mix.Tasks.HelyxTest do
 
   import ExUnit.CaptureIO
 
-  describe "mix helyx --resume prints a resume error as a sentence" do
+  describe "mix helyx --resume and --session print a resume error as a sentence" do
     @describetag :tmp_dir
 
     # The task has no terminal here. Every case fails before the TUI starts.
@@ -19,10 +19,10 @@ defmodule Mix.Tasks.HelyxTest do
     end
 
     # The task stops Mix with status 1 after one line on stderr.
-    defp resume_message(dir) do
+    defp resume_message(args) when is_list(args) do
       stderr =
         capture_io(:stderr, fn ->
-          assert catch_exit(Mix.Tasks.Helyx.run([dir, "--resume"])) == {:shutdown, 1}
+          assert catch_exit(Mix.Tasks.Helyx.run(args)) == {:shutdown, 1}
         end)
 
       assert "helyx: could not start the agent" <> message = stderr
@@ -30,6 +30,8 @@ defmodule Mix.Tasks.HelyxTest do
       assert [_line] = String.split(message, "\n", trim: true)
       message
     end
+
+    defp resume_message(dir), do: resume_message([dir, "--resume"])
 
     test "an atom: no saved session", %{tmp_dir: dir, path: path} do
       File.rm!(path)
@@ -64,9 +66,10 @@ defmodule Mix.Tasks.HelyxTest do
       assert resume_message(dir) =~ "the model ref is not valid; use provider/model"
     end
 
-    test "a tagged term: an unknown version", %{tmp_dir: dir, path: path} do
+    # --resume skips such a file; --session names it.
+    test "a tagged term: an unknown version", %{path: path} do
       File.write!(path, String.replace(File.read!(path), ~s("version":1), ~s("version":99)))
-      assert resume_message(dir) =~ "version 99"
+      assert resume_message(["--session", Path.basename(path, ".jsonl")]) =~ "version 99"
     end
 
     test "a tagged posix code: the repair fails", %{tmp_dir: dir, path: path} do

@@ -245,14 +245,38 @@ defmodule Helyx.Session.File.ScanTest do
     end
   end
 
-  test "the newest session skips a file whose name is not a session id, as the list does",
+  test "the newest session skips the files the list skips; resume by id stays strict",
        %{tmp_dir: dir} do
     {id, _} = session(dir, "/repo", 1_000, "valid")
 
-    # Started later, and newer by modification time.
+    # Started later, and newer by modification time: a name that is not a
+    # session id, then an unknown version, no version, a number model, and
+    # no model.
     for name <- ["sess1", "not-a-session-id"], do: session(dir, "/repo", 2_000, "bad", name)
+
+    [next_version | _] =
+      for {from, to} <- [
+            {~s("version":1), ~s("version":2)},
+            {~s("version":1), ~s("gone":1)},
+            {~s("model":"test/ok"), ~s("model":1)},
+            {~s("model":"test/ok"), ~s("gone":"test/ok")}
+          ] do
+        {bad, path} = session(dir, "/repo", 2_000, "bad")
+        File.write!(path, String.replace(File.read!(path), from, to))
+        File.touch!(path, 2_000)
+        bad
+      end
 
     assert ids(Scan.list(dir, "/repo")) == [id]
     assert {:ok, %{session_id: ^id}} = Session.File.resume(dir, "/repo")
+
+    # Each skipped file takes a slot of the scan bound: the six bad files and
+    # an empty session are the newest.
+    session(dir, "/repo", 2_000, nil)
+    assert {:error, :not_found} = Session.File.resume(dir, "/repo", max_scanned_files: 7)
+    assert {:ok, %{session_id: ^id}} = Session.File.resume(dir, "/repo", max_scanned_files: 8)
+
+    assert {:error, {:unknown_version, 2}} =
+             Session.File.resume(dir, "/repo", id: next_version)
   end
 end

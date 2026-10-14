@@ -284,15 +284,20 @@ defmodule Helyx.Session.FileTest do
     end
   end
 
-  test "a header with an unknown or missing version is rejected", %{tmp_dir: dir} do
+  # The newest-session resume skips such a file (`scan_test.exs`).
+  test "resume by id rejects a header with an unknown or missing version", %{tmp_dir: dir} do
     {:ok, file} = started(dir, "sess00000001", "/repo", "test/ok")
     header = File.read!(file.path)
 
     File.write!(file.path, String.replace(header, ~s("version":1), ~s("version":99)))
-    assert {:error, {:unknown_version, 99}} = Session.File.resume(dir, "/repo")
+
+    assert {:error, {:unknown_version, 99}} =
+             Session.File.resume(dir, "/repo", id: "sess00000001")
 
     File.write!(file.path, String.replace(header, ~s("version"), ~s("gone")))
-    assert {:error, {:unknown_version, nil}} = Session.File.resume(dir, "/repo")
+
+    assert {:error, {:unknown_version, nil}} =
+             Session.File.resume(dir, "/repo", id: "sess00000001")
   end
 
   test "a torn last line is skipped, kept in the file, and the next entry starts a new line",
@@ -623,13 +628,14 @@ defmodule Helyx.Session.FileTest do
 
     assert {:error, {:invalid_file, _}} = Session.File.resume(dir, "/repo")
 
-    # Nor a bad header model.
+    # Nor a bad header model, in a resume by id: the newest-session resume
+    # skips such a file.
     {:ok, file2} = started(dir, "sess00000002", "/repo2", "test/ok")
     header = File.read!(file2.path)
     File.write!(file2.path, String.replace(header, ~s("model":"test/ok"), ~s("model":42)))
     Session.File.append_model_change(file2, "test/other")
 
-    assert {:error, {:invalid_file, _}} = Session.File.resume(dir, "/repo2")
+    assert {:error, {:invalid_file, _}} = Session.File.resume(dir, "/repo2", id: "sess00000002")
   end
 
   test "resume decodes stop reasons in a VM that never interned their atoms", %{tmp_dir: dir} do
