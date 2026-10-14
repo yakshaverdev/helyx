@@ -46,6 +46,8 @@ defmodule Helyx.Session.Server.State do
     :provider,
     :cwd,
     :hands,
+    # The folder of the background output files (`Helyx.Session.Hands`).
+    :background_dir,
     :file,
     # The registered ModelContext and Compaction plugins, or nil for none.
     :model_context,
@@ -96,6 +98,7 @@ defmodule Helyx.Session.Server.State do
           provider: module(),
           cwd: Path.t(),
           hands: pid() | nil,
+          background_dir: Path.t() | nil,
           file: Helyx.Session.File.t() | nil,
           model_context: module() | nil,
           compaction: module() | nil,

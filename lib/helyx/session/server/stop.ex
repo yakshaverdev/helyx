@@ -4,7 +4,8 @@ defmodule Helyx.Session.Server.Stop do
   # work that `work/1` lists ends, the kill of a prepare Task or
   # the close of provider processes (`State.provider_close_ms/0`, armed
   # kill), then the stop of the hands, which can finish one release
-  # (`Hands.State.release_ms/0`). Each wait has a margin for load, so the
+  # (`Hands.State.release_ms/0`), and the delete of the background folder.
+  # Each wait has a margin for load, so the
   # supervisor does not kill it first: `shutdown_ms/0` is the shutdown of
   # the session process.
 
@@ -44,6 +45,9 @@ defmodule Helyx.Session.Server.Stop do
     end
 
     stop_hands(state.hands)
+    # After the hands: no background Task writes to the folder any more.
+    File.rm_rf(state.background_dir)
+    :ok
   end
 
   # The hands take the messages before the exit signal first: the end of a

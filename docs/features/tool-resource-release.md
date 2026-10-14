@@ -19,6 +19,7 @@ The design was reviewed in three rounds on 2026-09-25. The findings are in `docs
 - If any handle of a call stays unconfirmed, the result becomes an error, even when the tool succeeded. Today `killed_error/1` in `deliver` does this.
 - An abort returns only after every call of the turn is released or recorded as unconfirmed. The session answers client calls during the wait (#93).
 - While any unconfirmed handle is still held, later tool calls are refused with an error result. Chat, abort, and quit are not blocked.
+- No resource survives its Task. A background Task (`Helyx.Tool.started/1`) keeps its handles past its call, outside every turn, and releases them at its own end through the same delivery path; an abort does not reach it (`docs/features/background-bash.md`).
 
 ## Interface changes
 

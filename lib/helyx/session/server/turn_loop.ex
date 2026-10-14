@@ -14,7 +14,7 @@ defmodule Helyx.Session.Server.TurnLoop do
   import Helyx.Session.Server.Events, only: [emit: 3]
 
   alias Helyx.{Context, Message}
-  alias Helyx.Session.{Hands, Id, ProviderProcess, Transcript, Turn}
+  alias Helyx.Session.{Hands, Id, ProviderProcess, Queue, Transcript, Turn}
   alias Helyx.Session.Server.{Compaction, ProviderConn, Records, State, Steering, Wait}
 
   # A client prompt, steer, or follow-up by phase; returns the reply and the
@@ -150,7 +150,7 @@ defmodule Helyx.Session.Server.TurnLoop do
   # Starts a turn with one user message per text, in order.
   defp begin_turn(%State{} = state, texts) do
     turn = %Turn{id: Id.new(), model: state.model, provider: state.provider}
-    state = open_turn(state, turn, %{})
+    state = Steering.open(open_turn(state, turn, %{}))
     call_provider(Enum.reduce(texts, state, &Records.append_user(&2, &1)))
   end
 
@@ -158,7 +158,7 @@ defmodule Helyx.Session.Server.TurnLoop do
   # with no user message.
   defp start_provider_turn(%State{conn: %ProviderConn{model: model}} = state, turn_id) do
     turn = %Turn{id: turn_id, model: model, provider: state.provider, phase: :submitted}
-    open_turn(state, turn, %{origin: :provider})
+    Steering.open(open_turn(state, turn, %{origin: :provider}))
   end
 
   defp open_turn(state, turn, data),
@@ -253,8 +253,8 @@ defmodule Helyx.Session.Server.TurnLoop do
   defp prepare_down(reason), do: {:task_exit, Message.cap_integers(reason)}
 
   # Sends `{:turn, ...}` when the provider process is ready and the context
-  # is prepared. The steers queued in `preparing` join the transcript and
-  # the end of the context: they are part of the prompt, not steers.
+  # is prepared. The steers queued in `preparing`, then the background
+  # ends, join the transcript and the context: part of the prompt.
   defp submit(
          %State{
            activity: %Turn{phase: :preparing, context: context},
@@ -290,9 +290,9 @@ defmodule Helyx.Session.Server.TurnLoop do
   defp provider_down(%State{activity: %Turn{}} = state, _conn, reason),
     do: Steering.provider_down(fail_turn(reason, state))
 
-  # Idle, when it comes before the session's `:DOWN` (no order between them).
+  # Idle, before the session's `:DOWN` (no fixed order): a given-back end wakes.
   defp provider_down(%State{activity: :idle} = state, _conn, _reason),
-    do: Steering.provider_down(state)
+    do: settle(Steering.provider_down(state))
 
   # The session's monitor of the current provider process (#361). Outside a
   # sent turn the process is `:ending`: in a preparing turn it holds back
@@ -367,7 +367,7 @@ defmodule Helyx.Session.Server.TurnLoop do
 
   defp start_queued(%State{} = state) do
     case Steering.drain(state) do
-      {[], state} -> state
+      {[], state} -> if Queue.wake?(state.queue), do: begin_turn(state, []), else: state
       {texts, state} -> begin_turn(state, texts)
     end
   end

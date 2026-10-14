@@ -29,6 +29,13 @@ defmodule Helyx.Tool do
   not wait past the deadline. The tool must also free the resource by
   itself when its Task dies with no release, because the hands can die
   first and drop a late `hold/1` (ADR 0004).
+
+  A call can go on in the background: the tool takes a place with
+  `background/0` before the external work starts, gives its start answer
+  with `started/1`, and keeps running. Its return value is then the end of
+  the run, which reaches the session as a user message. An abort of the
+  turn does not end it; the stop of the session does
+  (`docs/features/background-bash.md`).
   """
 
   use Helyx.Interface, mode: :multi
@@ -182,6 +189,40 @@ defmodule Helyx.Tool do
           :ok -> :ok
           :no_release -> raise ArgumentError, "a tool without release/3 cannot hold a resource"
         end
+    end
+  end
+
+  @doc """
+  Takes a place for a background run of the calling tool call, before its
+  external work starts. Returns the id of the run and the background
+  folder of the session, mode `0700`, which the session deletes at its
+  stop; a tool keeps its files there, named by the id. `{:error, text}` with no place: the
+  session has 16 live runs, the call took a place already, the folder
+  cannot be made, or the caller is not a tool call of the hands. The
+  place is freed when the tool's Task ends.
+  """
+  @spec background() :: {:ok, %{id: String.t(), dir: String.t()}} | {:error, String.t()}
+  def background do
+    case Process.get(:helyx_hands) do
+      nil -> {:error, Helyx.Session.Background.not_a_call()}
+      hands -> GenServer.call(hands, :background, :infinity)
+    end
+  end
+
+  @doc """
+  Gives the start answer of a background run: `text` becomes the result of
+  the call at once, and the tool's Task leaves its turn. The Task then
+  runs on; its return value, or its crash, is the end of the run. Raises
+  outside the hands, and in a tool call that took no place with
+  `background/0`.
+  """
+  @spec started(String.t()) :: :ok
+  def started(text) when is_binary(text) do
+    with hands when hands != nil <- Process.get(:helyx_hands),
+         :ok <- GenServer.call(hands, {:started, text}, :infinity) do
+      :ok
+    else
+      _no_place -> raise ArgumentError, "started/1 needs a place from background/0"
     end
   end
 end

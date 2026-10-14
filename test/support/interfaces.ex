@@ -176,6 +176,8 @@ defmodule Helyx.Test.Provider do
   #                the call
   #   "steer.<name>" "steer" with one call to the gate tool of the gate
   #                <name> (`Helyx.Test.Gate`) in place of the slow call
+  #   "bg.<name>"  "steer" with one call to the background tool, which
+  #                waits for the gate <name> after its start answer
   #   "big_int"    six calls with large integers; after the results, a done
   #                map with the large integer
   use Helyx.Provider.Loop
@@ -313,6 +315,11 @@ defmodule Helyx.Test.Provider do
 
   def stream("steer." <> gate, %Helyx.Context{messages: messages}, _opts),
     do: steer_after(messages, [call("1", "gate", %{"gate" => gate}), @tool_use])
+
+  # One background run that waits for the gate <name>; after any tool
+  # result, the user message texts so far, joined with "|".
+  def stream("bg." <> gate, %Helyx.Context{messages: messages}, _opts),
+    do: steer_after(messages, [call("1", "background", %{"gate" => gate}), @tool_use])
 
   # Six calls: an integer of 400,000 digits nested in the arguments, a good
   # call whose struct has one more key with the large integer, the largest
@@ -737,6 +744,37 @@ defmodule Helyx.Test.Tool.HoldBare do
     Helyx.Tool.hold(:handle)
     {:ok, "held"}
   end
+end
+
+defmodule Helyx.Test.Tool.Background do
+  @moduledoc false
+  # A background run with no OS resource: it takes a place, holds the
+  # handles in "handles" (the release of the hold tool), answers
+  # "started <path>", then waits for the gate in "gate" and returns its
+  # "done". With "twice" it takes a second place; with "unplaced" it gives
+  # a start answer with no place; with "unstarted" it waits for the gate
+  # between its place and its start answer.
+  use Helyx.Test.Tool, name: "background", description: "Runs until its gate opens."
+
+  @impl true
+  def run(%{"unplaced" => true}, _cwd), do: Helyx.Tool.started("no place")
+
+  def run(%{"unstarted" => true} = args, _cwd) do
+    {:ok, _place} = Helyx.Tool.background()
+    Helyx.Test.Gate.wait(args["gate"])
+  end
+
+  def run(args, _cwd) do
+    with {:ok, %{id: id, dir: dir}} <- Helyx.Tool.background(),
+         {:ok, _second} <- if(args["twice"], do: Helyx.Tool.background(), else: {:ok, nil}) do
+      Enum.each(Map.get(args, "handles", []), &Helyx.Tool.hold/1)
+      :ok = Helyx.Tool.started("started " <> Path.join(dir, id))
+      Helyx.Test.Gate.wait(args["gate"])
+    end
+  end
+
+  @impl true
+  defdelegate release(handles, mode, deadline), to: Helyx.Test.Tool.Hold
 end
 
 defmodule Helyx.Test.Tool.Unavailable do
