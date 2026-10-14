@@ -105,18 +105,18 @@ defmodule Helyx.Session do
   end
 
   @doc """
-  Resumes from `:sessions_dir` the session `Helyx.Session.File.resume/3`
-  picks: the newest of the working directory, or with `:id` that session.
-  It restores the transcript and the current model. A tool call without a
-  result gets an `aborted` error result in the transcript read, after its
-  message and its results, so the next provider call sees complete call and
-  result pairs. A tool result that answers no open call at its place is left
-  out of the transcript read. The resume writes no entry: every resume of
-  the file only appends a newline that the last line lacks. `:cwd` is checked as in
-  `start/2`, and the tool specs and the tool checks as in `start/2`, all
-  before the sessions directory is read. The model ref of the file resolves
-  as in `set_model/2`, with the same errors. The lock is taken as in
-  `start/2`, before the load; a locked newest session is not skipped.
+  Resumes from `:sessions_dir` the session `Helyx.Session.File.resume/3` picks:
+  the newest of the working directory, or with `:id` that session. It restores the
+  transcript and the current model. A tool call without a result gets an error
+  result in the transcript read that says it may have run
+  (`docs/features/interrupted-calls.md`), after its message and its results, so
+  the next provider call sees complete call and result pairs. A tool result that
+  answers no open call at its place is left out of the transcript read. The resume
+  writes no entry: every resume of the file only appends a newline that the last
+  line lacks. `:cwd` is checked as in `start/2`, and the tool specs and the tool
+  checks as in `start/2`, all before the sessions directory is read. The model ref
+  of the file resolves as in `set_model/2`, with the same errors. The lock is
+  taken as in `start/2`, before the load; a locked newest session is not skipped.
   """
   @spec resume(Helyx.Core.name(), keyword()) :: {:ok, t()} | {:error, model_error() | term()}
   def resume(core \\ Helyx.Core, opts) do
@@ -128,8 +128,8 @@ defmodule Helyx.Session do
          {:ok, path, header} <- Helyx.Session.File.pick(dir, cwd, Keyword.take(opts, [:id])),
          {:ok, lock, {resumed, {ref, provider}}} <- load(core, path, header) do
       # A crash can leave tool calls with no result, and the disk can hold a
-      # result with no open call. The session reads them with `aborted`
-      # results and without the stray results, and writes nothing (#269, #417).
+      # result with no open call. The session reads them with interrupted
+      # results and without the stray results, and writes nothing (#269, #417, #584).
       Server.start(
         %State{
           id: resumed.session_id,

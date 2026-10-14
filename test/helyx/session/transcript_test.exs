@@ -37,7 +37,18 @@ defmodule Helyx.Session.TranscriptTest do
   end
 
   describe "repair/1" do
-    defp aborted(id), do: Message.tool_result(call(id), {:error, "aborted"})
+    # The session stopped while the call ran (docs/features/interrupted-calls.md).
+    @interrupted "The session stopped while this tool call ran, and its result was lost. " <>
+                   "The call may have run in full, in part, or not at all. " <>
+                   "Check its effects before you repeat it."
+
+    defp interrupted(id), do: Message.tool_result(call(id), {:error, @interrupted})
+
+    test "a stored aborted result of a user abort stays aborted" do
+      aborted = Message.tool_result(call("a"), {:error, "aborted"})
+      transcript = [assistant([call("a")]), aborted, Message.user("next")]
+      assert Transcript.repair(transcript) == transcript
+    end
 
     test "leaves a transcript with no open calls unchanged" do
       transcript = [Message.user("hi"), assistant([call("a")]), result("a"), assistant([])]
@@ -49,14 +60,14 @@ defmodule Helyx.Session.TranscriptTest do
       transcript = [assistant([call("a")]), Message.user("next"), assistant([])]
 
       assert Transcript.repair(transcript) ==
-               [assistant([call("a")]), aborted("a"), Message.user("next"), assistant([])]
+               [assistant([call("a")]), interrupted("a"), Message.user("next"), assistant([])]
     end
 
     test "a result after a later message does not answer the call, and it is dropped" do
       transcript = [assistant([call("a")]), Message.user("next"), result("a")]
 
       assert Transcript.repair(transcript) ==
-               [assistant([call("a")]), aborted("a"), Message.user("next")]
+               [assistant([call("a")]), interrupted("a"), Message.user("next")]
     end
 
     test "a result with an unknown id, a second result, and a result with no call before it are dropped" do
@@ -93,7 +104,7 @@ defmodule Helyx.Session.TranscriptTest do
                [
                  assistant([call("a"), call("b")]),
                  result("b"),
-                 aborted("a"),
+                 interrupted("a"),
                  Message.user("next")
                ]
     end
@@ -109,7 +120,7 @@ defmodule Helyx.Session.TranscriptTest do
       ]
 
       assert Transcript.repair(transcript) ==
-               List.insert_at(transcript, 3, aborted("a"))
+               List.insert_at(transcript, 3, interrupted("a"))
 
       assert Transcript.open_calls(Transcript.repair(transcript)) == []
     end
@@ -117,7 +128,7 @@ defmodule Helyx.Session.TranscriptTest do
     test "open calls at the end get their results at the end, and a second pass adds nothing" do
       transcript = [Message.user("hi"), assistant([call("a"), call("b")])]
       answered = Transcript.repair(transcript)
-      assert answered == transcript ++ [aborted("a"), aborted("b")]
+      assert answered == transcript ++ [interrupted("a"), interrupted("b")]
       assert Transcript.repair(answered) == answered
     end
   end
@@ -233,6 +244,41 @@ defmodule Helyx.Session.TranscriptTest do
       end
     end
 
+    test "does not resume when a resume found a call of the last assistant message open" do
+      sessions = %{"claude-code" => {"h1", 0, nil}}
+      file = [Message.user("a"), %{assistant([call("c1"), call("c2")]) | stop_reason: :tool_use}]
+      answered = file ++ [result("c1")]
+
+      # The provider got the answered result; a crash kept the other from it.
+      assert Transcript.resumable(answered, sessions, "claude-code") == "h1"
+      assert Transcript.resumable(Transcript.repair(answered), sessions, "claude-code") == nil
+      assert Transcript.resumable(Transcript.repair(file), sessions, "claude-code") == nil
+      later = Transcript.repair(answered ++ [Message.user("b")])
+      assert Transcript.resumable(later, sessions, "claude-code") == nil
+
+      # A compaction under the id does not give the provider the result.
+      compacted = Transcript.compacted(sessions, "claude-code", 1)
+      assert Transcript.resumable(answered, compacted, "claude-code") == "h1"
+      assert Transcript.resumable(Transcript.repair(answered), compacted, "claude-code") == nil
+
+      # A fresh start after the resume read the replay with the result, and
+      # a compaction under its id resumes.
+      fresh_compacted = %{"claude-code" => {"h2", 1, 1}}
+
+      assert Transcript.resumable(Transcript.repair(answered), fresh_compacted, "claude-code") ==
+               "h2"
+
+      # A stored `aborted` result went to the provider live.
+      aborted = answered ++ [Message.tool_result(call("c2"), {:error, "aborted"})]
+      assert Transcript.resumable(aborted, sessions, "claude-code") == "h1"
+
+      # The answer of the fresh start under a new id resumes again.
+      fresh = Transcript.repair(answered) ++ [Message.user("b"), assistant([])]
+
+      assert Transcript.resumable(fresh, %{"claude-code" => {"h2", 1, nil}}, "claude-code") ==
+               "h2"
+    end
+
     test "resumes after a compaction with no assistant message after it" do
       cut = [Message.user("a"), %{assistant([]) | stop_reason: :aborted}]
       ids = Transcript.compacted(%{"claude-code" => {"h1", 0, nil}}, "claude-code", 2)
@@ -261,7 +307,9 @@ defmodule Helyx.Session.TranscriptTest do
     # shift: drop the messages before the label's place, then take the last
     # assistant message, from the provider and not cut. Empty files and
     # replies with no tool call are generated too. ExUnit seeds `:rand` per
-    # test, so `mix test --seed` repeats a failure.
+    # test, so `mix test --seed` repeats a failure. A call of the last
+    # assistant message with no result in the file gets an interrupted
+    # result at the repair, so no id resumes (#584).
     test "on random transcripts, the assistant count gives the answer of the label's place in the file" do
       for _round <- 1..2000 do
         file = for _ <- 1..Enum.random(0..12)//1, do: random_message()
@@ -302,11 +350,26 @@ defmodule Helyx.Session.TranscriptTest do
       case last do
         %Message{model: "claude-code/" <> _, stop_reason: stop}
         when stop not in [:aborted, :error] ->
-          "h1"
+          if open_call?(file), do: nil, else: "h1"
 
         _other ->
           nil
       end
+    end
+
+    # A call of the last assistant message of the file has no result in the
+    # results right after it: more calls than results of one id (#584).
+    defp open_call?(file) do
+      {after_last, rest} =
+        file |> Enum.reverse() |> Enum.split_while(&(not match?(%Message{role: :assistant}, &1)))
+
+      [%Message{content: calls} | _] = rest
+      results = after_last |> Enum.reverse() |> Enum.take_while(&(&1.role == :tool_result))
+      ids = for %Message.ToolCall{id: id} <- calls, do: id
+
+      Enum.any?(ids, fn id ->
+        Enum.count(ids, &(&1 == id)) > Enum.count(results, &(&1.tool_call_id == id))
+      end)
     end
   end
 end

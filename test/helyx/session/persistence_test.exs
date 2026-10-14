@@ -188,8 +188,11 @@ defmodule Helyx.Session.PersistenceTest do
 
   defp memory(pid), do: pid |> Process.info(:memory) |> elem(1)
 
+  # The text that a resume gives an open call (transcript_test.exs pins it).
+  @interrupted elem(Helyx.Session.Transcript.interrupted_result(), 1)
+
   @tag :tmp_dir
-  test "a resume writes nothing, and each open call gets its aborted result right after it, once",
+  test "a resume writes nothing, and each open call gets its interrupted result right after it, once",
        %{core: core, tmp_dir: dir} do
     call = %Helyx.Message.ToolCall{id: "c1", name: "slow", arguments: %{}}
     {:ok, file} = Helyx.Session.File.create(dir, "reuse0000000", File.cwd!(), "test/transcript")
@@ -205,7 +208,7 @@ defmodule Helyx.Session.PersistenceTest do
       {:assistant, ""},
       {:tool_result, "first answer"},
       {:assistant, ""},
-      {:tool_result, "aborted"}
+      {:tool_result, @interrupted}
     ]
 
     written = File.read!(file.path)
@@ -287,7 +290,8 @@ defmodule Helyx.Session.PersistenceTest do
   end
 
   @tag :tmp_dir
-  test "resume after a crash mid-turn answers every open tool call", %{core: core, tmp_dir: dir} do
+  test "resume after a crash mid-turn says that every open tool call may have run",
+       %{core: core, tmp_dir: dir} do
     {:ok, session} = Session.start(core, model: "test/abort", sessions_dir: dir)
     {:ok, _, _} = Session.subscribe(session)
 
@@ -308,7 +312,36 @@ defmodule Helyx.Session.PersistenceTest do
     {:ok, _, _} = Session.subscribe(resumed)
 
     :ok = Session.prompt(resumed, "again")
-    assert final_text(collect_until(:turn_end)) == "aborted|aborted|aborted"
+    assert final_text(collect_until(:turn_end)) == Enum.join(List.duplicate(@interrupted, 3), "|")
+  end
+
+  # #584: the provider never got the derived result, so it starts fresh,
+  # and its first turn carries the result in the history.
+  @tag :tmp_dir
+  test "a resume with an interrupted call of a labelled provider starts that provider fresh",
+       %{tmp_dir: dir} do
+    alias Helyx.Test.Connected
+    core = start_core([Connected])
+    Process.register(self(), Connected.controller(core))
+    call = %Helyx.Message.ToolCall{id: "c1", name: "slow", arguments: %{}}
+    {:ok, file} = Helyx.Session.File.create(dir, "label0000000", File.cwd!(), "conn/hang")
+
+    file
+    |> Helyx.Session.File.append_message(Helyx.Message.user("push"))
+    |> Helyx.Session.File.append_resume_id("conn", "L")
+    |> Helyx.Session.File.append_message(%Helyx.Message{
+      role: :assistant,
+      model: "conn/hang",
+      stop_reason: :tool_use,
+      content: [call]
+    })
+
+    {:ok, session} = Session.resume(core, sessions_dir: dir)
+    :ok = Session.prompt(session, "again")
+    assert_receive {:conn, :init, proc, {"hang", _tools, opts}}
+    assert opts[:resume_id] == nil
+    assert_receive {:conn, :turn, ^proc, {:turn, _turn_id, context}}
+    assert Enum.any?(context.messages, &(Helyx.Message.text(&1) == @interrupted))
   end
 
   test "a prompt that is not valid UTF-8 is rejected and the session lives", %{core: core} do

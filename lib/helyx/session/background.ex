@@ -20,7 +20,12 @@ defmodule Helyx.Session.Background do
 
   @head ~r/\A<background id="([A-Za-z0-9_-]{12})" status="([a-z]+)">\n/
 
-  @lost "The session stopped before the end of this background run reached it. " <>
+  # The same form as the result of an interrupted call
+  # (docs/features/interrupted-calls.md): what stopped, what may have run,
+  # and a check before a repeat.
+  @lost "The session stopped while this background command ran, and its end was lost. " <>
+          "The command may have run in full or in part. " <>
+          "Check its effects before you run it again. " <>
           "Its output file was deleted with the session."
 
   # A new place for the Task `pid`, beside the places `live` (Task pid to
