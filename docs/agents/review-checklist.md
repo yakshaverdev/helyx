@@ -25,6 +25,7 @@ Invariants the review axes check on every diff. Add one when a review or a PR co
 - A public plugin entry (a tool's `run/2`, a provider's `stream/3`) is a boundary for all of its arguments, because code outside the hands and the session can call it.
 - A finding needs a reachable input: its reproduction enters through a boundary. Source: the boundary review of 2026-09-26.
 - A value from outside that confirms a safe state (an empty queue, a finished command, a ready context) is matched on the exact safe value. A missing field, `null`, a wrong type, or an unknown status takes the unsafe path: stop or fail. The failure-path review sends each of these to every such check. Source: the Codex findings of #199 (a nil context), #200 (a missing `still_queued`), and #201 (a command completed with `inProgress`), one class three times; no mechanical check can know which state is safe, so the rule is here.
+- A path that the code opens on disk is boundary input, and so is the type of file at that path. The failure-path review puts each file type there (a regular file, a folder, a FIFO with and without a reader, a device, a symlink to each, a dangling symlink) and checks that no type blocks the open past its bound or leaves a process or a handle behind. An open that can block on a FIFO or a device needs a non-blocking open and a type check on the open handle. Source: the Codex gate round 1 finding of #579 (a FIFO at the lock path left one perl process per retry).
 
 ## Races and resource ownership
 
