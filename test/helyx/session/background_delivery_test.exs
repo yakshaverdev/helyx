@@ -176,7 +176,7 @@ defmodule Helyx.Session.BackgroundDeliveryTest do
     assert_receive {:trace, ^pid, :receive, {:provider_reply, _, :steer, :rejected}}
     :erlang.trace(pid, false, [:receive])
     assert :sys.get_state(pid).queue.ends == [done(id)]
-    assert_received {:conn, :steer, ^proc, _request}
+    assert_receive {:conn, :steer, ^proc, _request}
     refute_received {:conn, :steer, _, _}
 
     send(proc, {:finish, turn_id})

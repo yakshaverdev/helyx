@@ -154,3 +154,15 @@ Round 4 reproduced no code defect: its fixes are tests, docs, and comments, so t
 | r1 (Codex, 740fea5) | none (approve) | The owner then decided the open items; the worker's round 4 (930ffe4) made the change. |
 | r2 (Codex, 930ffe4) | An idle end of the provider process with no end to give back leaves `hold` false, so a later end wakes the session; set `hold` in every `provider_down`. | Rejected. The idle close ends the provider process in the normal course (`TurnLoop`, `:idle_close`); a hold there would stop every background run that outlasts the idle close from waking the session. In a turn, `provider_down` fails the turn, and the failure sets `hold` (owner decision). The doc sentence was ambiguous and now says when the end of the provider process holds. |
 | r2 (Codex, 930ffe4) | The diff removes the id, version, and model checks from `Scan.sessions/3`. | Rejected: a stale base. #581 and #585 merged after the branch was made; the rebase on origin/master removes the reverse diff. |
+
+## Merge-gate test fix (reduced round)
+
+The merge-gate precommit failed at `background_delivery_test.exs:179` (seed 371860): `assert_received {:conn, :steer, ^proc, _}` after a wait on the trace of the `:rejected` receive. The stub's message reaches the test through the proxy, and the trace comes from the runtime, so the two have no order. Fix: `assert_receive`. 0 code lines (test only), so a reduced round. Invariant given to both agents: "a test never asserts the order of messages from two different senders."
+
+| # | Axis | Finding | Resolution |
+| - | ---- | ------- | ---------- |
+| 5.1 | failure path | No other place in `background_delivery_test.exs` or `background_test.exs` breaks the invariant; seed 371860 and 20 repeats pass | — |
+| 5.2 | failure path | The sends of `{:finish, ...}` at the steer tests depend on the causal order of the session's steer and the test's send to the provider: it holds on one node, but the runtime promises order only per sender pair | Accepted: one node, and no failure in 21 runs |
+| 5.3 | spec | `refute_received {:conn, :steer, _, _}` after the steer is weak: a late resend can arrive after it | Accepted: the weakness is older than the fix and does not make the test fail at random |
+
+The file passed 21 runs. Outside the scope: `hands_test.exs:85` and `:116` have `assert_received {:release, ...}` from a release Task after a wait on a message of the hands, the same pattern on master.
