@@ -47,3 +47,9 @@ Guarantee table (round 1, from the spec agent, rows updated for the fixes):
 | `--session` of such a file gives an error | the same scan test (version 2); `file_test.exs`, "resume by id rejects a header with an unknown or missing version" and the `"model":42` case; `helyx_test.exs`, "a tagged term: an unknown version" |
 | A skipped file counts toward the 256 | the same scan test, `max_scanned_files: 7` and 8 |
 | print-mode: a header that `--list` does not accept is skipped | the same scan test; both clients go through `Session.File.resume/3` (#581, 1.9) |
+
+## Orchestrator gate
+
+| Round | Finding | Resolution |
+| ----- | ------- | ---------- |
+| r1 (Codex) | none (approve) | n/a |
