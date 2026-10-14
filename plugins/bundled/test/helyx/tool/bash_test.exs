@@ -286,12 +286,14 @@ defmodule Helyx.Tool.BashTest do
       end
     end
 
+    # The schema allows the background maximum; `run/2` checks the bound of
+    # the mode.
     test "the spec and the description state the default and the maximum" do
-      assert %{"type" => "integer", "minimum" => 1, "maximum" => 600} =
+      assert %{"type" => "integer", "minimum" => 1, "maximum" => 86_400} =
                Helyx.Tool.Bash.parameters()["properties"]["timeout"]
 
-      assert Helyx.Tool.Bash.description() =~ "120"
-      assert Helyx.Tool.Bash.description() =~ "600"
+      for number <- ["120", "600", "3600", "86400"],
+          do: assert(Helyx.Tool.Bash.description() =~ number)
     end
 
     # TERM first, as an abort: the trap's output is kept after the limit.
@@ -453,6 +455,175 @@ defmodule Helyx.Tool.BashTest do
       params = Helyx.Tool.Bash.parameters()
       assert %{"type" => "string"} = params["properties"]["workdir"]
       assert params["required"] == ["command"]
+    end
+  end
+
+  describe "background (#577)" do
+    alias Helyx.Tool.Bash
+    alias Helyx.Tool.Bash.Out
+
+    # A session whose first turn starts `args` in the background. Returns
+    # the start answer, its process group, and its output path.
+    defp background(core, dir, args) do
+      call = %ToolCall{id: "c", name: "bash", arguments: Map.put(args, "background", true)}
+      model = "bg_#{System.unique_integer([:positive])}"
+      :ok = Fake.script(core, model, [[call], ["Started."], ["Ended."]])
+      {:ok, session} = Helyx.Session.start(core, model: "fake/#{model}", cwd: dir)
+      {:ok, _, _} = Helyx.Session.subscribe(session)
+      :ok = Helyx.Session.prompt(session, "go")
+
+      assert_receive {:helyx_event,
+                      %Helyx.Event{type: :tool_execution_end, data: %{message: answer}}},
+                     Helyx.Test.Events.wait_ms()
+
+      refute answer.is_error
+      text = Helyx.Message.text(answer)
+
+      [_all, group, path] =
+        Regex.run(~r/status="started">\nProcess group: (\d+)\nOutput file: (\S+)\n/, text)
+
+      %{text: text, group: group, path: path, session: session}
+    end
+
+    # The text of the next background end, a user message.
+    defp end_message do
+      receive do
+        {:helyx_event,
+         %Helyx.Event{type: :message_end, data: %{message: %{role: :user} = message}}} ->
+          case Helyx.Message.text(message) do
+            "<background" <> _rest = text -> text
+            _other -> end_message()
+          end
+      after
+        Helyx.Test.Events.wait_ms() -> flunk("no background end")
+      end
+    end
+
+    test "a background argument other than true, false, or null is an error result; nothing runs",
+         %{tmp_dir: dir} do
+      ran = Path.join(dir, "ran")
+
+      for value <- ["true", 1, %{}] do
+        assert {:error, "background must be true or false"} =
+                 Bash.run(%{"command" => "touch '#{ran}'", "background" => value}, dir)
+      end
+
+      assert {:ok, "(no output)"} =
+               Bash.run(%{"command" => "touch '#{ran}'", "background" => false}, dir)
+
+      assert File.exists?(ran)
+    end
+
+    # Outside the hands no place exists, so a timeout that passes its
+    # bound gets that error, and one over it the error of the bound.
+    test "a background timeout is from 1 to 86400; outside the hands nothing runs",
+         %{tmp_dir: dir} do
+      ran = Path.join(dir, "ran")
+      args = %{"command" => "touch '#{ran}'", "background" => true}
+
+      for timeout <- [0, 86_401, 5.0, "5"] do
+        assert {:error, "a background timeout must be an integer from 1 to 86400 (seconds)"} =
+                 Bash.run(Map.put(args, "timeout", timeout), dir)
+      end
+
+      for timeout <- [1, 600, 601, 86_399, 86_400, nil] do
+        assert {:error, "only a tool call can run in the background"} =
+                 Bash.run(Map.put(args, "timeout", timeout), dir)
+      end
+
+      refute File.exists?(ran)
+    end
+
+    test "the file gets at most 64 MiB; the end counts every byte and says so", %{tmp_dir: dir} do
+      max = Bash.max_file_bytes()
+      assert max == 64 * 1_048_576
+      path = Path.join(dir, "out")
+      {:ok, file} = File.open(path, [:write, :raw, :binary])
+
+      out = Bash.add(%Out{file: file, written: max - 3}, "ab")
+      assert out.written == max - 1
+      out = Bash.add(out, "cd")
+      assert out.written == max + 1
+      out = Bash.add(out, "ef")
+      assert out.written == max + 3
+      :ok = File.close(file)
+
+      assert File.read!(path) == "abc"
+      assert out.tail == "abcdef"
+
+      assert Bash.render(out) =~
+               "[the command wrote #{max + 3} bytes; the output file holds the first #{max}]\n"
+
+      refute Bash.render(%{out | written: max}) =~ "the output file holds"
+    end
+
+    test "a write error ends the writes and the end says so", %{tmp_dir: dir} do
+      path = Path.join(dir, "out")
+      File.write!(path, "")
+      {:ok, file} = File.open(path, [:read, :raw, :binary])
+      out = Bash.add(%Out{file: file}, "ab")
+      assert out.file == nil
+      assert out.tail == "ab"
+      assert Bash.render(out) =~ "[the output file could not be written: "
+      :ok = File.close(file)
+    end
+
+    test "a run answers at once, writes the file, and ends with the command, the exit code, and the tail",
+         %{core: core, tmp_dir: dir} do
+      command = "echo out; echo err >&2; exit 3\necho never"
+      %{text: text, group: group, path: path} = background(core, dir, %{"command" => command})
+      assert text =~ "Stop it with `kill -TERM -- -#{group}`."
+      assert Path.dirname(path) =~ "helyx-"
+
+      [_all, id] = Regex.run(~r/\A<background id="(\S+)"/, text)
+
+      assert end_message() ==
+               ~s(<background id="#{id}" status="done">\nCommand: echo out; echo err >&2; exit 3\n) <>
+                 "out\nerr\n\nExit code: 3\n</background>"
+
+      assert File.read!(path) == "out\nerr\n"
+    end
+
+    test "kill on its group ends a run, and its end arrives", %{core: core, tmp_dir: dir} do
+      %{group: group} = background(core, dir, %{"command" => "sleep 60"})
+      {_, 0} = System.cmd("kill", ["-TERM", "--", "-" <> group])
+      assert end_message() =~ "status=\"done\">\nCommand: sleep 60\n(no output)\nExit code: 143\n"
+    end
+
+    @tag :slow
+    test "at its timeout a run is released and its end is an error", %{core: core, tmp_dir: dir} do
+      %{} = background(core, dir, %{"command" => "sleep 60", "timeout" => 1})
+
+      assert end_message() =~
+               "status=\"error\">\nCommand: sleep 60\n(no output)\n" <>
+                 "Timed out after 1 s: the command group was released.\n</background>"
+    end
+
+    test "the first line of the command in the end is cut to 200 bytes", %{
+      core: core,
+      tmp_dir: dir
+    } do
+      # One under, at, and one over the bound; a 2-byte character that the
+      # bound splits is dropped.
+      for {command, kept} <- [
+            {"true " <> String.duplicate("x", 194), 199},
+            {"true " <> String.duplicate("x", 195), 200},
+            {"true " <> String.duplicate("x", 196), 200},
+            {"true " <> String.duplicate("x", 194) <> "é", 199}
+          ] do
+        %{} = background(core, dir, %{"command" => command <> "\necho second"})
+        [_all, line] = Regex.run(~r/\nCommand: (.*)\n/, end_message())
+        assert byte_size(line) == kept
+        assert String.starts_with?(command, line)
+      end
+    end
+
+    test "the stop of the session ends a live run", %{core: core, tmp_dir: dir} do
+      %{session: session} = background(core, dir, %{"command" => "echo $$ > pid; sleep 300"})
+      pid = wait_for_pid(Path.join(dir, "pid"))
+
+      :ok = GenServer.stop(Helyx.Session.pid(session))
+      assert gone_within?(pid)
     end
   end
 

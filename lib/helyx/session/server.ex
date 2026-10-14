@@ -7,7 +7,7 @@ defmodule Helyx.Session.Server do
   # the docs of the behaviour are in `Helyx.Session`.
 
   alias Helyx.ModelRef
-  alias Helyx.Session.{Hands, Id, Turn}
+  alias Helyx.Session.{Background, Hands, Id, Queue, Turn}
   alias Helyx.Session.Server.{Compaction, Events, ProviderConn, Records, State, Steering, Stop}
   alias Helyx.Session.Server.ToolRuns
   alias Helyx.Session.Server.{TurnLoop, Wait}
@@ -24,15 +24,33 @@ defmodule Helyx.Session.Server do
     # as a message, and a death of the session takes them with it (ADR 0004).
     Process.flag(:trap_exit, true)
 
+    instance_id = Id.new()
+    # One folder per process start, so two Cores that hold one session id
+    # never share it. `Stop.run/1` deletes it.
+    background_dir = Path.join(System.tmp_dir() || "/tmp", "helyx-" <> instance_id)
+
     {:ok, hands} =
       Hands.start_link(
         core: state.core,
         cwd: state.cwd,
+        dir: background_dir,
         session: self(),
         tools: state.tool_modules
       )
 
-    {:ok, %{state | hands: hands, instance_id: Id.new()}}
+    # A run that was live at the stop of a resumed session ended with it:
+    # its lost end waits for the next turn (docs/features/background-bash.md).
+    # A new session has no ends, so the hold matters only at a resume.
+    queue = %Queue{ends: Background.lost(state.transcript), hold: true}
+
+    {:ok,
+     %{
+       state
+       | hands: hands,
+         instance_id: instance_id,
+         background_dir: background_dir,
+         queue: queue
+     }}
   end
 
   # The admission of a client message by phase (`TurnLoop.admit/3`).
@@ -152,6 +170,12 @@ defmodule Helyx.Session.Server do
         %State{activity: %Turn{id: turn_id, tool_queue: %{running: call_id}}} = state
       ),
       do: {:noreply, ToolRuns.result(state, result)}
+
+  # The end of a background run (docs/features/background-bash.md): a
+  # steer in a submitted turn, else it waits; an idle session with no hold
+  # starts a turn for it.
+  def handle_info({:background_end, text}, state),
+    do: {:noreply, state |> Steering.push_end(text) |> TurnLoop.settle()}
 
   # A message for a turn or a call that is no longer current.
   def handle_info({:tool_result, _turn_id, _call_id, _result}, state), do: {:noreply, state}

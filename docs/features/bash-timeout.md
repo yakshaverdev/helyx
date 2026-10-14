@@ -8,7 +8,7 @@ The default keeps a stuck command from holding the turn for long, and a command 
 
 ## Interface changes
 
-- `Helyx.Tool.Bash.parameters/0` adds `timeout`, an integer from 1 to 600. The description and the moduledoc state the default and the maximum.
+- `Helyx.Tool.Bash.parameters/0` adds `timeout`, an integer from 1 to 600 (the schema maximum is 86,400 since background runs, #577; `run/2` checks the bound of the mode). The description and the moduledoc state the default and the maximum.
 - `Helyx.Tool.Bash.run/2` returns `{:error, text}` for a `timeout` that is not an integer from 1 to 600 (a float, a string, a boolean, 0, 601). Nothing runs. Missing or `null` is the default, as the read tool's `offset`.
 - `Helyx.Watchdog.start/4` returns `{:started, port, pre, handles}`: the handles it held with `Helyx.Tool.hold/1`. The bash tool gives them to `Helyx.Watchdog.Group.release/4` at the limit. The harness callers ignore them. `Helyx.Watchdog.Group.max_cancel_ms/0` gives the longest cancel release, the deadline of that release.
 
@@ -20,7 +20,7 @@ none. `collect/3` had no time limit; it gets one.
 
 | What | Bound | Over the bound |
 | ---- | ----- | -------------- |
-| `timeout` argument | an integer from 1 to 600, checked in `run/2`; missing or `null` is 120 | an error result; nothing runs |
+| `timeout` argument | an integer from 1 to 600, checked in `run/2`; missing or `null` is 120. A background call has its own bound, 1 to 86,400, default 3,600 (`docs/features/background-bash.md`) | an error result; nothing runs |
 | wait for a bash command | the `timeout` argument, else 120 s, counted from before the watchdog starts, so it counts the time of the hold of the handles and of the marker but cannot end those waits, in `collect/4`; the deadline is checked before each receive, so queued output cannot pass it | `Helyx.Watchdog.Group.release(handles, :cancel, deadline)`, the release of an abort: TERM, a grace of 500 ms, KILL; then an error result with the output so far. A command that ends near the limit is reported by what the tool reads first: output or nothing after the deadline gives the timeout, an exit status gives the exit, since the command did end and the wait is over |
 | release and drain after the limit | one deadline of 15,500 ms, `Helyx.Watchdog.Group.max_cancel_ms/0`, the worst bash release (`docs/features/tool-resource-release.md`). An abort's release has the hands' deadline, `Helyx.Session.Hands.State.release_ms/0`, 20,000 ms, which also covers other tools. The release runs in a Task beside the drain. The drain reads until the exit status, which the port sends only when stdout closes, or the deadline: a process that left the group and keeps stdout open holds it to the deadline. The wait for the release Task ends at the same deadline: a kill(1) run has no timeout of its own | the port is closed, and a release still running is killed, as the hands do; the hands release what is still held at delivery. Output that arrived after the last read stays in the mailbox of the tool's Task, which ends with the call |
 | output after the limit | the drain reads while the release runs, so the output written during the grace goes through the bounds of the output while the command runs (`keep_tail/1`) and of the result text (`Helyx.Text.truncate/2`), not into the mailbox unread | as before |

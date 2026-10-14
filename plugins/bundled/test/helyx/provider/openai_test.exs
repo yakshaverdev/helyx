@@ -209,7 +209,13 @@ defmodule Helyx.Provider.OpenAITest do
     tools = Map.new(tools, fn {tool, spec} -> {spec.name, tool} end)
 
     {:ok, hands} =
-      Helyx.Session.Hands.start_link(core: core, cwd: File.cwd!(), session: self(), tools: tools)
+      Helyx.Session.Hands.start_link(
+        core: core,
+        cwd: File.cwd!(),
+        dir: Path.join(System.tmp_dir!(), "helyx-unused"),
+        session: self(),
+        tools: tools
+      )
 
     call = %Helyx.Message.ToolCall{id: "call_1", name: "binary", arguments: %{}}
     :ok = Helyx.Session.Hands.run(hands, "t1", call)

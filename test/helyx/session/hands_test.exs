@@ -25,7 +25,8 @@ defmodule Helyx.Session.HandsTest do
       Helyx.Test.Tool.HoldBare,
       Helyx.Test.Tool.Raise,
       Helyx.Test.Tool.Odd,
-      Helyx.Test.Tool.Upcase
+      Helyx.Test.Tool.Upcase,
+      Helyx.Test.Tool.Background
     ]
 
     start_supervised!({Helyx.Core, name: core, plugins: plugins})
@@ -39,6 +40,7 @@ defmodule Helyx.Session.HandsTest do
       [
         core: core,
         cwd: File.cwd!(),
+        dir: Path.join(System.tmp_dir!(), "helyx-hands-#{System.unique_integer([:positive])}"),
         session: self(),
         tools: Map.new(tools, fn {tool, spec} -> {spec.name, tool} end)
       ] ++ opts
@@ -309,5 +311,166 @@ defmodule Helyx.Session.HandsTest do
 
     :erlang.trace(hands, false, [:receive])
     assert :sys.get_state(hands).held |> Map.values() |> List.flatten() |> length() >= n
+  end
+
+  describe "background runs" do
+    @describetag :tmp_dir
+
+    setup %{tmp_dir: tmp_dir}, do: %{dir: Path.join(tmp_dir, "background"), gate: Gate.open()}
+
+    defp background(hands, id, args) do
+      :ok = Helyx.Session.Hands.run(hands, "t1", call(id, "background", args))
+    end
+
+    test "the start answer is the result, the Task leaves its turn, and its end comes after",
+         %{core: core, dir: dir, gate: gate} do
+      hands = start_hands(core, dir: dir)
+      background(hands, "c1", %{"gate" => gate, "handles" => [{:report, self()}]})
+
+      assert_receive {:tool_result, "t1", "c1", {:ok, start}}
+
+      [_, id, path] =
+        Regex.run(
+          ~r/\A<background id="(.{12})" status="started">\nstarted (.*)\n<\/background>\z/,
+          start
+        )
+
+      assert path == Path.join(dir, id)
+      assert File.stat!(dir).access == :read_write
+      assert Bitwise.band(File.stat!(dir).mode, 0o777) == 0o700
+
+      assert_receive {:waiting, pid}
+      # An abort of the turn does not reach the run, nor release it.
+      assert cancel(hands, "t1") == :ok
+      :ok = Helyx.Session.Hands.kill(hands, "t1", "c1")
+      _ = :sys.get_state(hands)
+      assert Process.alive?(pid)
+      refute_received {:release, _mode, _handles}
+
+      send(pid, :go)
+      assert_receive {:release, :deliver, _handles}
+      assert_receive {:background_end, finish}
+      assert finish == ~s(<background id="#{id}" status="done">\ndone\n</background>)
+    end
+
+    test "a crash of the run ends it with an error", %{core: core, dir: dir, gate: gate} do
+      hands = start_hands(core, dir: dir)
+      background(hands, "c1", %{"gate" => gate})
+      assert_receive {:tool_result, "t1", "c1", {:ok, _start}}
+      assert_receive {:waiting, pid}
+
+      {_, log} =
+        with_log(fn ->
+          Process.exit(pid, :kill)
+          assert_receive {:background_end, finish}
+          assert finish =~ ~r/\A<background id=".{12}" status="error">\ntool crashed: /
+        end)
+
+      assert log =~ "tool crashed"
+    end
+
+    test "16 runs are live at most; a start over that runs nothing", %{
+      core: core,
+      dir: dir,
+      gate: gate
+    } do
+      hands = start_hands(core, dir: dir)
+
+      pids =
+        for n <- 1..16 do
+          background(hands, "c#{n}", %{"gate" => gate})
+          assert_receive {:tool_result, "t1", _, {:ok, _start}}
+          assert_receive {:waiting, pid}
+          pid
+        end
+
+      background(hands, "c17", %{"gate" => gate})
+      assert_receive {:tool_result, "t1", "c17", {:error, text}}
+      assert text == "16 background runs are live; one must end before another starts"
+      refute_received {:waiting, _pid}
+
+      # An end frees its place.
+      send(hd(pids), :go)
+      assert_receive {:background_end, _finish}
+      background(hands, "c18", %{"gate" => gate})
+      assert_receive {:tool_result, "t1", "c18", {:ok, _start}}
+    end
+
+    test "a call takes one place, and a start answer needs one", %{
+      core: core,
+      dir: dir,
+      gate: gate
+    } do
+      hands = start_hands(core, dir: dir)
+
+      background(hands, "c1", %{"gate" => gate, "twice" => true})
+
+      assert_receive {:tool_result, "t1", "c1",
+                      {:error, "a tool call can start one background run"}}
+
+      {_, _log} =
+        with_log(fn ->
+          background(hands, "c2", %{"unplaced" => true})
+          assert_receive {:tool_result, "t1", "c2", {:error, text}}
+          assert text =~ "started/1 needs a place from background/0"
+        end)
+
+      # The places of both are free again.
+      for n <- 1..16 do
+        background(hands, "d#{n}", %{"gate" => gate})
+        assert_receive {:tool_result, "t1", _, {:ok, _start}}
+      end
+    end
+
+    test "a folder that cannot be made gives an error and starts nothing",
+         %{core: core, gate: gate, tmp_dir: tmp_dir} do
+      file = Path.join(tmp_dir, "file")
+      File.write!(file, "")
+      hands = start_hands(core, dir: Path.join(file, "sub"))
+
+      background(hands, "c1", %{"gate" => gate})
+
+      assert_receive {:tool_result, "t1", "c1",
+                      {:error, "the background folder could not be made: " <> _}}
+
+      refute_received {:waiting, _pid}
+    end
+
+    # The Task dies before its start answer, by the cancel, and never
+    # delivers: the cancel frees its place.
+    test "a cancel between the place and the start answer frees the place", %{
+      core: core,
+      dir: dir,
+      gate: gate
+    } do
+      hands = start_hands(core, dir: dir)
+
+      for n <- 1..16 do
+        turn = "t#{n}"
+
+        :ok =
+          Helyx.Session.Hands.run(
+            hands,
+            turn,
+            call("c", "background", %{"gate" => gate, "unstarted" => true})
+          )
+
+        assert_receive {:waiting, _pid}
+        assert cancel(hands, turn) == :ok
+      end
+
+      for n <- 1..16 do
+        background(hands, "d#{n}", %{"gate" => gate})
+        assert_receive {:tool_result, "t1", _, {:ok, _start}}
+      end
+    end
+
+    test "outside the hands no run can start, and a start answer raises" do
+      assert Helyx.Tool.background() == {:error, "only a tool call can run in the background"}
+
+      assert_raise ArgumentError, "started/1 needs a place from background/0", fn ->
+        Helyx.Tool.started("no hands")
+      end
+    end
   end
 end
