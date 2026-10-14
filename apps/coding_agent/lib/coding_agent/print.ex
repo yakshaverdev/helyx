@@ -37,10 +37,11 @@ defmodule CodingAgent.Print do
   @doc """
   Runs `fun` as the whole of print mode, and ends it with `halt` and the
   status. The first step traps SIGTERM and SIGHUP, before any output, and
-  the trap stays for the life of the VM: the first signal aborts the session
-  that `run/2` runs, waits at most `abort_ms/0`, and calls `halt` with 143
-  or 129; later signals are ignored. Then the calling process only waits for
-  the run and halts. The run, in a process of its own, sends the log to
+  the trap stays for the life of the VM: the first of them aborts the
+  session that `run/2` runs, waits at most `abort_ms/0`, and calls `halt`
+  with 143 or 129; later ones are ignored. Other signals keep the OTP
+  default (SIGQUIT and SIGUSR1 halt the VM). Then the calling process
+  only waits for the run and halts. The run, in a process of its own, sends the log to
   stderr, so stdout holds only the answer, and calls `fun`. `fun` returns
   the status, or `{:error, text}`, which is written as one line on stderr
   and gives 1; a raise, throw, or exit of `fun` gives one such line and 1
@@ -207,8 +208,8 @@ defmodule CodingAgent.Print do
   defmodule Signal do
     @moduledoc false
     # The handler in `:erl_signal_server` from the first step of print mode
-    # to the halt. The first trapped signal starts the stop; the handler
-    # ignores the rest. The stop runs in its own process, so the signal
+    # to the halt. The first SIGTERM or SIGHUP starts the stop; the handler
+    # ignores later ones. The stop runs in its own process, so the signal
     # server never waits on it.
     @behaviour :gen_event
 
@@ -222,6 +223,14 @@ defmodule CodingAgent.Print do
       %{halt: halt, session: session} = state
       spawn(fn -> stop(session, Map.fetch!(@statuses, signal), halt) end)
       {:ok, %{state | done: true}}
+    end
+
+    # A signal that print mode does not own keeps the OTP default: SIGUSR1
+    # and SIGQUIT halt the VM, the rest are ignored.
+    def handle_event(signal, state) when not is_map_key(@statuses, signal) do
+      {:ok, otp} = :erl_signal_handler.init([])
+      {:ok, _otp} = :erl_signal_handler.handle_event(signal, otp)
+      {:ok, state}
     end
 
     def handle_event(_signal, state), do: {:ok, state}

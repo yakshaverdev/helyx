@@ -106,6 +106,23 @@ defmodule CodingAgent.PrintSignalTest do
   end
   """
 
+  # SIGUSR1 keeps the OTP default too, but its halt writes `erl_crash.dump`
+  # in the working folder, so it has no test here.
+  test "SIGQUIT keeps the OTP default: the VM halts at once, not after the run",
+       %{tmp_dir: dir} do
+    run = ~S"""
+    CodingAgent.Print.main(fn -> Process.sleep(60_000) && 0 end, halt)
+    """
+
+    pid = start(dir, "stdin", @halt <> run)
+    {_, 0} = System.cmd("kill", ["-QUIT", pid])
+
+    # `erlang:halt/0` exits with 0; the run would end only after 60 s, with
+    # the print halt.
+    assert await_file(Path.join(dir, "status"), @load_ms) == "0\n"
+    refute File.exists?(Path.join(dir, "halted"))
+  end
+
   test "an error line on a stderr pipe with no reader still ends with the halt and 1",
        %{tmp_dir: dir} do
     run = ~S"""
