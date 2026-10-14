@@ -29,9 +29,10 @@ defmodule Helyx.Tool.Bash do
   and the result is an error with the output so far
   (`docs/features/bash-timeout.md`).
 
-  The optional `workdir` argument names the folder the command runs in: a
-  relative path is resolved against the session folder, an absolute path is
-  used as it is, and missing or `null` is the session folder. It must be a
+  The optional `workdir` argument names the folder the command runs in. It
+  is expanded against the session folder with `Path.expand/2`, as the file
+  tools expand their paths, so `~` and `..` resolve; missing, `null`, or
+  `""` is the session folder. It must be a
   UTF-8 string of at most #{@max_workdir_bytes} bytes with no NUL byte, else
   the result is an error and nothing runs. A folder that the watchdog cannot
   enter fails the start, as the session folder does (`docs/features/bash-workdir.md`).
@@ -55,7 +56,8 @@ defmodule Helyx.Tool.Bash do
       "the last #{Helyx.Text.max_lines()} lines or #{div(Helyx.Text.max_bytes(), 1024)} KB, " <>
       "and the exit code when it is not zero. The command group is released after `timeout` " <>
       "seconds, #{@default_timeout_s} by default, at most #{@max_timeout_s}. " <>
-      "`workdir` runs the command in another folder, relative to the working directory or absolute."
+      "`workdir` runs the command in another folder: relative to the working directory, " <>
+      "absolute, or under `~/`, the home folder."
   end
 
   @impl true
@@ -119,7 +121,7 @@ defmodule Helyx.Tool.Bash do
   defp workdir(path, cwd)
        when is_binary(path) and byte_size(path) <= @max_workdir_bytes do
     if String.valid?(path) and not String.contains?(path, <<0>>),
-      do: {:ok, Path.absname(path, cwd)},
+      do: {:ok, Path.expand(path, cwd)},
       else: {:error, @workdir_error}
   end
 

@@ -364,19 +364,23 @@ defmodule Helyx.Tool.BashTest do
       assert Helyx.Message.text(result) == Path.join(dir, "sub") <> "\n"
     end
 
-    test "a relative workdir keeps .. and ~ as given; an empty one is the session folder", %{
-      tmp_dir: dir
-    } do
-      File.mkdir_p!(Path.join(dir, "a/~"))
+    test "a workdir is expanded as the file tools expand a path", %{tmp_dir: dir} do
+      File.mkdir_p!(Path.join(dir, "a"))
       File.mkdir_p!(Path.join(dir, "b"))
 
-      for {workdir, folder} <- [{"a/../b", "b"}, {"a/~", "a/~"}, {"", ""}] do
+      for {workdir, folder} <- [
+            {"a/../b", Path.join(dir, "b")},
+            {"a/..", dir},
+            {Path.join(dir, "a/../b"), Path.join(dir, "b")},
+            {"~", Path.expand("~")},
+            {"", dir}
+          ] do
         assert {:ok, out} = Helyx.Tool.Bash.run(%{"command" => "pwd", "workdir" => workdir}, dir)
-        assert out == Path.join([dir, folder]) <> "\n"
+        assert out == folder <> "\n", workdir
       end
     end
 
-    test "an absolute workdir is used as it is", %{tmp_dir: dir} do
+    test "an absolute workdir names that folder", %{tmp_dir: dir} do
       other = Path.join(dir, "other")
       File.mkdir_p!(other)
 
@@ -401,7 +405,7 @@ defmodule Helyx.Tool.BashTest do
                  Helyx.Tool.Bash.run(%{"command" => "touch #{ran}", "workdir" => workdir}, dir)
 
         assert "the command did not start: " <> reason = text
-        assert reason =~ Path.absname(workdir, dir)
+        assert reason =~ Path.expand(workdir, dir)
       end
 
       refute File.exists?(ran)
