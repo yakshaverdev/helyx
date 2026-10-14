@@ -92,3 +92,11 @@ The failure-path agent passed through the session: the round-2 reproduction (the
 Round 3 reproduced no defect: the loop ends. Codex: 0 findings. Failure path: 0 defects, 1 stated assumption. Spec: 3 doc findings, fixed. Standards: 0 violations, 2 judgement calls kept.
 
 Precommit: `HELYX_SLOW=1 .claude/skills/ship/precommit.sh` passed with no warnings.
+
+## Orchestrator gate
+
+| Round | Finding | Resolution |
+| ----- | ------- | ---------- |
+| r1 (Codex) | none (approve) | n/a |
+
+The owner chose the fresh start with the replay for a harness whose resume id came before an open call (2026-10-14), over a resume with a notice message and over native providers only. The gap of aborted results that a dead harness never got is #593.
