@@ -6,6 +6,10 @@ defmodule Helyx.Tool.Bash do
   @default_timeout_s 120
   @max_timeout_s 600
 
+  # The most bytes of the `workdir` argument.
+  @max_workdir_bytes 4096
+  @workdir_error "workdir must be a UTF-8 string of at most #{@max_workdir_bytes} bytes with no NUL byte"
+
   @moduledoc """
   Runs a shell command in the working directory with `bash -c`.
 
@@ -25,6 +29,13 @@ defmodule Helyx.Tool.Bash do
   and the result is an error with the output so far
   (`docs/features/bash-timeout.md`).
 
+  The optional `workdir` argument names the folder the command runs in: a
+  relative path is resolved against the session folder, an absolute path is
+  used as it is, and missing or `null` is the session folder. It must be a
+  UTF-8 string of at most #{@max_workdir_bytes} bytes with no NUL byte, else
+  the result is an error and nothing runs. A folder that the watchdog cannot
+  enter fails the start, as the session folder does (`docs/features/bash-workdir.md`).
+
   The command runs in its own process group under a perl watchdog, started
   by `Helyx.Watchdog`, which holds the group with the hands before the
   command is allowed to execute. The watchdog ties the command's life to
@@ -43,7 +54,8 @@ defmodule Helyx.Tool.Bash do
     "Run a shell command in the working directory. Returns stdout and stderr, " <>
       "the last #{Helyx.Text.max_lines()} lines or #{div(Helyx.Text.max_bytes(), 1024)} KB, " <>
       "and the exit code when it is not zero. The command group is released after `timeout` " <>
-      "seconds, #{@default_timeout_s} by default, at most #{@max_timeout_s}."
+      "seconds, #{@default_timeout_s} by default, at most #{@max_timeout_s}. " <>
+      "`workdir` runs the command in another folder, relative to the working directory or absolute."
   end
 
   @impl true
@@ -52,7 +64,8 @@ defmodule Helyx.Tool.Bash do
       "type" => "object",
       "properties" => %{
         "command" => %{"type" => "string"},
-        "timeout" => %{"type" => "integer", "minimum" => 1, "maximum" => @max_timeout_s}
+        "timeout" => %{"type" => "integer", "minimum" => 1, "maximum" => @max_timeout_s},
+        "workdir" => %{"type" => "string"}
       },
       "required" => ["command"]
     }
@@ -73,12 +86,14 @@ defmodule Helyx.Tool.Bash do
   # Port arguments are NUL-terminated C strings: a command with a NUL would
   # be cut there silently and the result would report success for something
   # that did not run as given. JSON strings can carry an escaped NUL, so the
-  # model can send one. The session checks the working directory at start.
+  # model can send one. The session checks its folder at start; the
+  # watchdog enters the folder of the call, so a bad `workdir` fails there.
   @impl true
   def run(%{"command" => command} = args, cwd) when is_binary(command) do
     with :ok <- no_nul(command),
          {:ok, timeout_s} <- timeout(args["timeout"]),
-         do: run_command(command, cwd, timeout_s * 1000)
+         {:ok, dir} <- workdir(args["workdir"], cwd),
+         do: run_command(command, dir, timeout_s * 1000)
   end
 
   def run(_args, _cwd), do: {:error, "bash needs a command"}
@@ -95,6 +110,20 @@ defmodule Helyx.Tool.Bash do
 
   defp timeout(_other),
     do: {:error, "timeout must be an integer from 1 to #{@max_timeout_s} (seconds)"}
+
+  # A NUL would cut the port argument, as in the command. The watchdog
+  # enters the folder before the command runs, so a folder that is not
+  # there fails the start.
+  defp workdir(nil, cwd), do: {:ok, cwd}
+
+  defp workdir(path, cwd)
+       when is_binary(path) and byte_size(path) <= @max_workdir_bytes do
+    if String.valid?(path) and not String.contains?(path, <<0>>),
+      do: {:ok, Path.absname(path, cwd)},
+      else: {:error, @workdir_error}
+  end
+
+  defp workdir(_other, _cwd), do: {:error, @workdir_error}
 
   @impl true
   defdelegate release(handles, mode, deadline), to: Helyx.Watchdog.Group
