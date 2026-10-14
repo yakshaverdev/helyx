@@ -12,12 +12,16 @@ defmodule Helyx.Session.Lock do
   # "<nonce> error <reason>" as one line, then waits for one byte or the end
   # of its stdin and exits. The nonce reaches it in its arguments only, so
   # no startup warning of perl, which stderr merges in, passes for the
-  # answer. `%!` loads Errno.
+  # answer. `%!` loads Errno. The open does not wait (a FIFO with no reader
+  # fails), and a file that is not regular is refused, so perl never blocks
+  # before it reads stdin.
   @program ~S"""
-  use Fcntl qw(:flock);
+  use Fcntl qw(:DEFAULT :flock);
   my ($nonce, $path) = @ARGV;
   $| = 1;
-  open(my $fh, '>>', $path) or do { print "$nonce error $!\n"; exit 0 };
+  sysopen(my $fh, $path, O_WRONLY | O_APPEND | O_CREAT | O_NONBLOCK)
+    or do { print "$nonce error $!\n"; exit 0 };
+  -f $fh or do { print "$nonce error not a regular file\n"; exit 0 };
   if (!flock($fh, LOCK_EX | LOCK_NB)) {
     print($!{EWOULDBLOCK} ? "$nonce locked\n" : "$nonce error $!\n");
     exit 0;

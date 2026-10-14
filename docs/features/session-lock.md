@@ -40,7 +40,7 @@ Two writers on one session file (#266). The tree rules of the file stay: they re
 | perl not on the PATH | `{:lock_failed, text}`; the session file is not written (the take makes its folder first) | not reached |
 | perl does not start or ends before its answer | `{:lock_failed, text}` with its output; nothing is written | not reached |
 | no answer in the bound | the port closes, `{:lock_failed, text}`; nothing is written | not reached |
-| lock file cannot be opened | `{:lock_failed, text}` with the OS reason; nothing is written | not reached |
+| lock file cannot be opened, or is not a regular file | `{:lock_failed, text}` with the OS reason; nothing is written | not reached |
 | lock held by another process | `{:session_locked, id}`; nothing is written | not reached |
 | lock free | the lock is taken, then the file is written, then the server starts and takes the port | holds the lock |
 | owner stops normally | not reached | `terminate/2` sends one byte, perl exits, and the stop waits for its exit within the bound. The lock is free when the stop returns, or, past the bound, the release is unconfirmed and perl frees the lock when it ends |
@@ -56,6 +56,7 @@ Two writers on one session file (#266). The tree rules of the file stay: they re
 | ---- | ----- | -------------- |
 | wait for perl's answer at the take | 5000 ms (`Helyx.Session.Lock`) | the port closes; `{:lock_failed, "perl gave no answer in 5000 ms"}` |
 | perl output up to its answer line, the line included (startup warnings, such as a locale warning) | 4096 bytes; the answer line carries a random nonce, so no warning passes for it | the port closes; `{:lock_failed, "perl wrote 4096 bytes with no answer in them"}` |
+| the open of the lock file | no wait: perl opens it with `O_NONBLOCK`, so a FIFO with no reader fails, and it refuses a file that is not regular (a FIFO, a device, a directory, or a symlink to one) | not reached: perl answers `error` and exits; `{:lock_failed, "cannot open the lock file: <reason>"}`, and no perl process is left |
 | wait for perl's exit at a release | 1000 ms (`Helyx.Session.Lock`), counted in `Helyx.Session.Server.Stop.shutdown_ms/0` | the port closes and the release is unconfirmed; perl frees the lock when it ends |
 | text of a `:lock_failed` reason | the answer line and output are within the 4096-byte bound above; the app line has the 4000-byte cap of `CodingAgent.error_text/1` | cut |
 
@@ -65,11 +66,11 @@ Two writers on one session file (#266). The tree rules of the file stay: they re
 | -------- | ---------- | ------- | ---------------------- | -------------------------------- | ----------------- |
 | perl process and its port | `Helyx.Session.Lock.take/1`, in the caller of `start/2` or `resume/2` | the caller until the server's `init/1` connects the port, then the session server | `Stop.run/1` releases it and waits for the exit | the port is linked to the owner and closes with it; perl exits on the end of its stdin | an abort of a turn does not touch the lock |
 | `flock` on `<id>.lock` | perl | perl | perl's exit | the kernel, at perl's exit | not touched |
-| `<id>.lock` file | perl (`open` with append) | the disk | stays | stays | stays |
+| `<id>.lock` file | perl (`sysopen` with append, with no wait) | the disk | stays | stays | stays |
 
 The caller unlinks the port right before it asks the supervisor for the session process, and stays its owner until `init/1` connects it. So a session process that dies in its `init/1` after the connect closes the port without an exit signal to the caller. A start request that exits (the supervisor is gone) is caught, and the caller releases the lock.
 
-Open race (needs a ticket): a caller that another process kills after its unlink leaves the port with a dead owner. If the start request still reaches the supervisor, `init/1` connects the port and the session runs as usual. If no init runs (the request never went out, or the supervisor ends first), nothing closes the port, and the lock stays held until the node ends.
+Open race (#589): a caller that another process kills after its unlink leaves the port with a dead owner. If the start request still reaches the supervisor, `init/1` connects the port and the session runs as usual. If no init runs (the request never went out, or the supervisor ends first), nothing closes the port, and the lock stays held until the node ends.
 
 ## Out of scope
 

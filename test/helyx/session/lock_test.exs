@@ -219,6 +219,32 @@ defmodule Helyx.Session.LockTest do
     Lock.release(lock)
   end
 
+  # The disk is a boundary: a lock path that is not a regular file fails at
+  # once, and no perl process is left. perl's arguments hold the lock path,
+  # so pgrep finds it.
+  test "a lock path that is not a regular file fails, and no perl is left", %{tmp_dir: dir} do
+    fifo = Path.join(dir, "fifo")
+    {_, 0} = System.cmd("mkfifo", [fifo])
+
+    for {name, make} <- [
+          {"fifo", &System.cmd("mkfifo", [&1])},
+          {"link", &File.ln_s!(fifo, &1)},
+          {"device", &File.ln_s!("/dev/null", &1)},
+          {"dir", &File.mkdir!/1}
+        ] do
+      lock = Path.join(dir, name <> ".lock")
+      make.(lock)
+
+      assert {:error, {:lock_failed, "cannot open the lock file: " <> _}} =
+               Lock.hold(Path.join(dir, name <> ".jsonl"), fn -> {:ok, :taken} end)
+
+      await(
+        fn -> match?({_, 1}, System.cmd("pgrep", ["-f", lock])) end,
+        "no perl process for #{name}"
+      )
+    end
+  end
+
   test "the lock errors have their Helyx.Reason text" do
     assert Helyx.Reason.text({:session_locked, "abc"}) == "session abc is open in another process"
 
