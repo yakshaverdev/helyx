@@ -356,6 +356,106 @@ defmodule Helyx.Tool.BashTest do
     end
   end
 
+  describe "workdir (#576)" do
+    test "a relative workdir runs in that folder of the session folder", %{tmp_dir: dir, run: run} do
+      File.mkdir_p!(Path.join(dir, "sub"))
+      result = run.(%{"command" => "pwd", "workdir" => "sub"})
+      refute result.is_error
+      assert Helyx.Message.text(result) == Path.join(dir, "sub") <> "\n"
+    end
+
+    test "a workdir is expanded as the file tools expand a path", %{tmp_dir: dir} do
+      File.mkdir_p!(Path.join(dir, "a"))
+      File.mkdir_p!(Path.join(dir, "b"))
+
+      for {workdir, folder} <- [
+            {"a/../b", Path.join(dir, "b")},
+            {"a/..", dir},
+            {Path.join(dir, "a/../b"), Path.join(dir, "b")},
+            {"~", Path.expand("~")},
+            {"", dir}
+          ] do
+        assert {:ok, out} = Helyx.Tool.Bash.run(%{"command" => "pwd", "workdir" => workdir}, dir)
+        assert out == folder <> "\n", workdir
+      end
+    end
+
+    test "an absolute workdir names that folder", %{tmp_dir: dir} do
+      other = Path.join(dir, "other")
+      File.mkdir_p!(other)
+
+      assert {:ok, out} =
+               Helyx.Tool.Bash.run(%{"command" => "pwd", "workdir" => other}, "/")
+
+      assert out == other <> "\n"
+    end
+
+    test "a null workdir is the session folder", %{tmp_dir: dir} do
+      assert {:ok, out} = Helyx.Tool.Bash.run(%{"command" => "pwd", "workdir" => nil}, dir)
+      assert out == dir <> "\n"
+    end
+
+    test "a workdir that is not an existing directory fails the start; nothing runs",
+         %{tmp_dir: dir} do
+      ran = Path.join(dir, "ran")
+      File.write!(Path.join(dir, "file"), "")
+
+      for workdir <- ["missing", "file", Path.join(dir, "missing")] do
+        assert {:error, text} =
+                 Helyx.Tool.Bash.run(%{"command" => "touch #{ran}", "workdir" => workdir}, dir)
+
+        assert "the command did not start: " <> reason = text
+        assert reason =~ Path.expand(workdir, dir)
+      end
+
+      refute File.exists?(ran)
+    end
+
+    test "a workdir of another type, over 4096 bytes, with a NUL, or not UTF-8 is an error result; nothing runs",
+         %{tmp_dir: dir} do
+      ran = Path.join(dir, "ran")
+
+      for workdir <- [
+            1,
+            true,
+            ["sub"],
+            %{},
+            String.duplicate("a", 4097),
+            String.duplicate("é", 2048) <> "a",
+            "sub" <> <<0>>,
+            <<0xFF>>
+          ] do
+        assert {:error, text} =
+                 Helyx.Tool.Bash.run(%{"command" => "touch #{ran}", "workdir" => workdir}, dir)
+
+        assert text ==
+                 "workdir must be a UTF-8 string of at most 4096 bytes with no NUL byte",
+               inspect(workdir, limit: 5, printable_limit: 20)
+      end
+
+      refute File.exists?(ran)
+    end
+
+    # A path of 4096 bytes passes the bound and reaches the start, which
+    # fails because the folder is not there.
+    test "a workdir of 4095 or 4096 bytes passes the bound", %{tmp_dir: dir} do
+      for workdir <- [
+            String.duplicate("a", 4095),
+            String.duplicate("a", 4096),
+            String.duplicate("é", 2048)
+          ] do
+        assert {:error, "the command did not start: " <> _reason} =
+                 Helyx.Tool.Bash.run(%{"command" => "true", "workdir" => workdir}, dir)
+      end
+    end
+
+    test "the spec has workdir as an optional string" do
+      params = Helyx.Tool.Bash.parameters()
+      assert %{"type" => "string"} = params["properties"]["workdir"]
+      assert params["required"] == ["command"]
+    end
+  end
+
   test "check reports a system without perl" do
     assert :ok = Helyx.Tool.Bash.check()
     assert {:error, message} = Helyx.Tool.Bash.check(fn _ -> nil end)
