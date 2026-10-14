@@ -44,3 +44,9 @@ Guarantee table (round 1, from the spec agent):
 | `most_recent`: `:max_scanned_files` only lowers the count | `file_test.exs`, the `max_scanned_files` tests |
 | `sessions/3`: the name is an id, not empty, newest first | `scan_test.exs`, the list test and the #581 test |
 | Feature doc: `--resume` skips the other files too | `scan_test.exs`, the #581 test; `print_test.exs`, "--resume skips a file whose name is not a session id" |
+
+## Orchestrator gate
+
+| Round | Finding | Resolution |
+| ----- | ------- | ---------- |
+| r1 (Codex) | none (approve) | n/a |
