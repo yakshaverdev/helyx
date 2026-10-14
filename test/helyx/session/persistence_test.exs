@@ -133,7 +133,7 @@ defmodule Helyx.Session.PersistenceTest do
     @describetag :tmp_dir
 
     setup %{core: core, tmp_dir: dir} do
-      {:ok, file} = Helyx.Session.File.create(dir, "big", File.cwd!(), "test/transcript")
+      {:ok, file} = Helyx.Session.File.create(dir, "big000000000", File.cwd!(), "test/transcript")
 
       Enum.reduce(1..20_000, file, fn i, file ->
         Helyx.Session.File.append_message(file, Helyx.Message.user("m#{i}"))
@@ -189,7 +189,7 @@ defmodule Helyx.Session.PersistenceTest do
   test "a resume writes nothing, and each open call gets its aborted result right after it, once",
        %{core: core, tmp_dir: dir} do
     call = %Helyx.Message.ToolCall{id: "c1", name: "slow", arguments: %{}}
-    {:ok, file} = Helyx.Session.File.create(dir, "reuse", File.cwd!(), "test/transcript")
+    {:ok, file} = Helyx.Session.File.create(dir, "reuse0000000", File.cwd!(), "test/transcript")
 
     [
       %Helyx.Message{role: :assistant, stop_reason: :tool_use, content: [call]},
@@ -235,7 +235,7 @@ defmodule Helyx.Session.PersistenceTest do
     tmp_dir: dir
   } do
     call = %Helyx.Message.ToolCall{id: "c1", name: "slow", arguments: %{}}
-    {:ok, file} = Helyx.Session.File.create(dir, "counts", File.cwd!(), "test/transcript")
+    {:ok, file} = Helyx.Session.File.create(dir, "counts000000", File.cwd!(), "test/transcript")
 
     file
     |> Helyx.Session.File.append_message(%Helyx.Message{role: :assistant, content: [call]})
@@ -253,7 +253,7 @@ defmodule Helyx.Session.PersistenceTest do
        %{core: core, tmp_dir: dir} do
     call = %Helyx.Message.ToolCall{id: "c1", name: "slow", arguments: %{}}
     stray = %Helyx.Message.ToolCall{id: "x", name: "slow", arguments: %{}}
-    {:ok, file} = Helyx.Session.File.create(dir, "orphan", File.cwd!(), "test/transcript")
+    {:ok, file} = Helyx.Session.File.create(dir, "orphan000000", File.cwd!(), "test/transcript")
 
     file
     |> Helyx.Session.File.append_message(Helyx.Message.user("hi"))
