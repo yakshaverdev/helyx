@@ -6,7 +6,8 @@ defmodule CodingAgent.CLI do
   `mix helyx`:
 
       helyx [directory] [--model provider/model] [--resume] [--version]
-      helyx [directory] [--model provider/model] -p prompt
+      helyx [directory] [--model provider/model | --resume] -p prompt
+      helyx --session id -p prompt
       helyx --session id
       helyx --list [--all] [directory]
 
@@ -18,7 +19,8 @@ defmodule CodingAgent.CLI do
   keep the saved model, so they do not combine with `--model`. `--list`
   prints the sessions of the directory, or of every folder with `--all`,
   one line each, newest first, and starts nothing. `-p` (`--print`) runs
-  the one prompt in a new session with no TUI (`CodingAgent.Print`). The
+  the one prompt with no TUI (`CodingAgent.Print`), in a new session, or
+  with `--resume` or `--session` in the session they pick. The
   design is in `docs/features/local-release.md`,
   `docs/features/session-list.md`, and `docs/features/print-mode.md`.
   """
@@ -49,8 +51,6 @@ defmodule CodingAgent.CLI do
     {:list, :model, ""},
     {:list, :resume, ""},
     {:list, :session, ""},
-    {:print, :resume, "; a print run starts a new session"},
-    {:print, :session, "; a print run starts a new session"},
     {:print, :list, ""},
     {:directory, :all, ""}
   ]
@@ -67,8 +67,8 @@ defmodule CodingAgent.CLI do
   while the agent runs. `--version` prints the version and returns 0, and
   so does `--list` after its lines. `-p` runs print mode
   (`CodingAgent.Print.main/2`) once the options and their combination are
-  checked; it checks the directory itself, ends with `halt` and its
-  status, and does not return. Tests pass their own `halt`.
+  checked; it checks the directory and the session of `--session`
+  itself, ends with `halt` and its status, and does not return. Tests pass their own `halt`.
   """
   @spec main([String.t()], Print.halt()) :: term()
   def main(argv, halt \\ &:erlang.halt(&1, flush: false)) do
@@ -112,14 +112,11 @@ defmodule CodingAgent.CLI do
       opts[:list] ->
         list(opts[:all], args)
 
-      opts[:session] ->
-        with {:ok, cwd} <- session_cwd(opts[:session]), do: launch(opts, cwd)
-
       opts[:print] ->
         Print.main(fn -> print(opts, args) end, halt)
 
       true ->
-        with {:ok, cwd} <- cwd(args), do: launch(opts, cwd)
+        with {:ok, cwd} <- run_cwd(opts, args), do: launch(opts, cwd)
     end
   end
 
@@ -138,6 +135,9 @@ defmodule CodingAgent.CLI do
 
   defp switch(:directory), do: "a directory argument"
   defp switch(name), do: "--#{name}"
+
+  # `--session` runs in the folder of the session header.
+  defp run_cwd(opts, args), do: if(id = opts[:session], do: session_cwd(id), else: cwd(args))
 
   defp cwd([]), do: check_dir(File.cwd!())
   defp cwd([directory]), do: check_dir(Path.expand(directory))
@@ -209,7 +209,7 @@ defmodule CodingAgent.CLI do
 
   # The piped input is read before any application starts.
   defp print(opts, args) do
-    with {:ok, cwd} <- cwd(args),
+    with {:ok, cwd} <- run_cwd(opts, args),
          {:ok, prompt} <- Print.prompt(opts[:print]),
          do: launch(opts, cwd, prompt: prompt)
   end
