@@ -25,12 +25,12 @@ defmodule Helyx.Session.QueueTest do
         |> push!(:follow_ups, "f2")
         |> push!(:steers, "s2")
 
-      assert Queue.counts(queue) == %{steers: 2, follow_ups: 2}
+      assert Queue.counts(queue) == %{steers: 2, follow_ups: 2, held: 0}
       assert {["s1", "s2"], queue} = Queue.drain(queue)
       assert {["f1"], queue} = Queue.drain(queue)
       assert {["f2"], queue} = Queue.drain(queue)
       assert {[], drained} = Queue.drain(queue)
-      assert Queue.counts(drained) == %{steers: 0, follow_ups: 0}
+      assert Queue.counts(drained) == %{steers: 0, follow_ups: 0, held: 0}
     end
 
     test "each queue holds at most 32 entries, and a full queue does not block the other" do
@@ -38,7 +38,7 @@ defmodule Helyx.Session.QueueTest do
       assert Queue.push(full, :steers, "s33") == {:error, :queue_full}
       refute Queue.room?(full)
       assert {:ok, queue} = Queue.push(full, :follow_ups, "f1")
-      assert Queue.counts(queue) == %{steers: 32, follow_ups: 1}
+      assert Queue.counts(queue) == %{steers: 32, follow_ups: 1, held: 0}
 
       text = String.duplicate("折🚀", 1000)
       full = Enum.reduce(1..32, %Queue{}, fn _n, queue -> push!(queue, :follow_ups, text) end)
@@ -189,7 +189,7 @@ defmodule Helyx.Session.QueueTest do
       assert {aborted, [{:notice, "t1", "more"}, {:dropped, ["s", "f"]}]} =
                Queue.end_turn(queue, "t1", false)
 
-      assert Queue.counts(aborted) == %{steers: 0, follow_ups: 0}
+      assert Queue.counts(aborted) == %{steers: 0, follow_ups: 0, held: 0}
       assert {_queue, [{:dropped, ["s", "f"]}]} = Queue.abort(queue)
     end
 
@@ -203,7 +203,7 @@ defmodule Helyx.Session.QueueTest do
 
     test "stay at the end of the provider process", %{queue: queue} do
       assert {queue, []} = Queue.provider_down(queue)
-      assert Queue.counts(queue) == %{steers: 1, follow_ups: 1}
+      assert Queue.counts(queue) == %{steers: 1, follow_ups: 1, held: 0}
       refute open?(queue)
     end
   end
@@ -223,6 +223,15 @@ defmodule Helyx.Session.QueueTest do
       refute Queue.wake?(queue)
       assert Queue.wake?(Queue.open(queue))
       assert {["e1"], %Queue{ends: []}} = Queue.drain_ends(queue)
+    end
+
+    test "count as held only while they hold" do
+      queue = Queue.push_end(%Queue{}, "e1")
+      assert Queue.counts(queue).held == 0
+      {held, _effects} = Queue.abort(queue)
+      assert Queue.counts(held).held == 1
+      assert Queue.counts(Queue.push_end(held, "e2")).held == 2
+      assert Queue.counts(Queue.open(held)).held == 0
     end
 
     test "an end goes to a turn only while one more steer fits" do

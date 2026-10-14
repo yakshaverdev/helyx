@@ -882,7 +882,7 @@ defmodule Helyx.Session.ProviderProcessTest do
                Enum.filter(events, &(&1.type == :queue_dropped))
 
       assert turn_id == turn_start.turn_id
-      assert List.last(of_type(events, :queue_update)) == %{steers: 0, follow_ups: 0}
+      assert List.last(of_type(events, :queue_update)) == %{steers: 0, follow_ups: 0, held: 0}
       refute_receive {:helyx_event, %{type: :turn_start}}, 100
     end
 

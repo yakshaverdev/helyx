@@ -95,6 +95,20 @@ defmodule Helyx.Session.BackgroundDeliveryTest do
     assert user_texts(events) == ["next", done(id)]
   end
 
+  # #591: a client sees the held ends, so print mode does not wait for them.
+  test "the held ends are counted in queue_update and in the snapshot", %{core: core} do
+    %{session: session, run: run} = started(core)
+    :ok = Session.abort(session)
+    finish(session, run)
+    held = %{steers: 0, follow_ups: 0, held: 1}
+    assert_receive {:helyx_event, %Event{type: :queue_update, data: ^held}}
+    assert {:ok, %{queue: ^held}, _ref} = Session.subscribe(session)
+
+    :ok = Session.prompt(session, "next")
+    events = collect_until(:turn_end)
+    assert of_type(events, :queue_update) == [%{steers: 0, follow_ups: 0, held: 0}]
+  end
+
   test "an end during a submitted turn goes to the provider as a steer", %{core: core} do
     %{session: session, run: run, id: id, gate: gate} = started(core)
     :ok = Session.set_model(session, "test/gate." <> gate)

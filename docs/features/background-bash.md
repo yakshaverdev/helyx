@@ -21,7 +21,7 @@ Decisions of this doc (the open items of #577):
 - **The tool contract.** Two functions of `Helyx.Tool`, called from the tool Task as `hold/1` is: `background/0` takes a place among the 16 and gives an id and the background folder of the session, before the external work starts; `started/1` gives the start answer. The Task then runs on, and its return value is the end. A place taken before the work starts is what lets a start over the limit run nothing. Bash needs the process group in its answer, which exists only after the start, so the answer is a second call.
 - **Background Task or turn Task.** The hands keep each Task under its turn id and its call id. At `started/1` the entry of the Task becomes `{nil, {:background, id}}`, the shape of the provider process, which has no turn either. `request_cancel/2` and `kill/3` match the turn id, so they never reach a background Task. Only the stop of the hands ends it.
 - **The events.** No new event type. The start answer is the call's tool result, so the clients see it in `tool_execution_end`. The end is a user message, so they see `message_start` and `message_end` when it joins the transcript, and `turn_start` when it opens a turn. A client folds both as it folds any result and any user message.
-- **Print mode.** No change. Print mode ends at the first `turn_end` after its prompt, so the session stop ends every background command that still runs. An end that arrives during that turn joins it as a steer; a later one never reaches the model in print mode. A print run that resumes a session (#574) gets the lost ends of that session in its turn, after its prompt: the resume holds them, so no turn opens before the prompt. The model gets the same start answer as in the TUI; a print run that waits for its background commands needs a wait signal that no client has now.
+- **Print mode.** Since #591, print mode waits while a background run is open and its end can open a turn; each end opens a turn as in an idle TUI session. It exits when the session settles, with the answer of the last turn. A held end does not hold it (`docs/features/print-background-wait.md`). A print run that resumes a session (#574) gets the lost ends of that session in its turn, after its prompt: the resume holds them, so no turn opens before the prompt.
 - **The id.** `Helyx.Session.Id.new/0`, 12 URL-safe characters: unique across resumes with no counter to derive.
 
 ## Interface changes
@@ -119,5 +119,4 @@ none. A foreground call does not change. The rule of the hands "no resource surv
 ## Out of scope
 
 - A tool to list, poll, or stop background runs: the agent uses `kill` through bash.
-- A wait for background runs in print mode.
-- A count of waiting ends in the snapshot or in `queue_update`.
+- A count of the ends that wait with no hold, or of the live runs, in the snapshot or in `queue_update`. Both count only the held ends (`held`, #591).

@@ -98,9 +98,16 @@ defmodule Helyx.Session.Queue do
   @spec open(t()) :: t()
   def open(%__MODULE__{} = queue), do: %{queue | hold: false, rejected: false}
 
-  @spec counts(t()) :: %{steers: non_neg_integer(), follow_ups: non_neg_integer()}
-  def counts(%__MODULE__{steers: steers, follow_ups: follow_ups}),
-    do: %{steers: length(steers), follow_ups: length(follow_ups)}
+  # The counts that a client sees (`queue_update`, the snapshot): the
+  # queued steers and follow-ups, and the ends that hold, which open no
+  # turn by themselves.
+  @spec counts(t()) ::
+          %{steers: non_neg_integer(), follow_ups: non_neg_integer(), held: non_neg_integer()}
+  def counts(%__MODULE__{steers: steers, follow_ups: follow_ups, ends: ends, hold: hold}),
+    do: %{steers: length(steers), follow_ups: length(follow_ups), held: held(ends, hold)}
+
+  defp held(ends, true), do: length(ends)
+  defp held(_ends, false), do: 0
 
   # The texts of the next turn: every queued steer, or with none the first
   # follow-up. Each follow-up is a turn of its own.

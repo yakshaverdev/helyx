@@ -21,7 +21,7 @@ defmodule Helyx.TUI.ComposerTest do
         messages: messages,
         turn: nil,
         model: "test/model",
-        queue: %{steers: 0, follow_ups: 0}
+        queue: %{steers: 0, follow_ups: 0, held: 0}
       })
 
     %{vm: vm, composer: Composer.new(), scroll: nil, busy: nil}

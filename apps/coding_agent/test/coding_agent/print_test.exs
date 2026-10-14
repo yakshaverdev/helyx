@@ -521,6 +521,158 @@ defmodule CodingAgent.PrintTest do
       refute "next" in lines
     end
 
+    # #591: a session on the model "fake/bg" whose first turn starts a
+    # background bash run that ends once the file `gate` in `dir` exists,
+    # and answers "started"; the turns after it answer `answers`. With
+    # `foreground: true` the first turn also runs a foreground bash call that
+    # ends once the file `foreground` in `dir` exists.
+    defp bg_session(dir, answers, opts \\ []) do
+      {foreground, opts} = Keyword.pop(opts, :foreground, false)
+      core = start_core()
+      gate = Path.join(dir, "gate")
+      call = bash_call("c1", gate, true)
+
+      calls =
+        if foreground,
+          do: [call, bash_call("c2", Path.join(dir, "foreground"), false)],
+          else: [call]
+
+      :ok = Helyx.Provider.Fake.script(core, "bg", [calls, ["started"] | answers])
+      {:ok, session} = Helyx.Session.start(core, [model: "fake/bg", cwd: dir] ++ opts)
+      {:ok, _, _} = Helyx.Session.subscribe(session)
+      %{core: core, session: session, gate: gate}
+    end
+
+    defp bash_call(id, file, background) do
+      command = "until [ -e '#{file}' ]; do sleep 0.2; done"
+      args = %{"command" => command, "background" => background}
+      %Helyx.Message.ToolCall{id: id, name: "bash", arguments: args}
+    end
+
+    # The run process of `main/2` is back in its wait with an empty mailbox,
+    # after a call to the session, which orders every event sent before it.
+    # Returns its pid.
+    defp await_print_wait(task, session) do
+      :sys.get_state(Helyx.Session.pid(session))
+      {:monitors, [process: run_pid]} = Process.info(task.pid, :monitors)
+      waiting = [message_queue_len: 0, current_function: {Print, :wait, 2}]
+
+      wait_until(fn ->
+        Process.info(run_pid, [:message_queue_len, :current_function]) == waiting
+      end)
+
+      run_pid
+    end
+
+    defp turn_end do
+      assert_receive {:helyx_event, %Helyx.Event{type: :turn_end, data: data}}
+      data
+    end
+
+    @tag :tmp_dir
+    test "print mode waits for a background run; its end opens the last turn", %{tmp_dir: dir} do
+      %{session: session, gate: gate} = bg_session(dir, [["finished"]])
+      test = self()
+
+      # Had print mode ended at the first turn, stdout would hold "started".
+      assert {0, "finished\n", stderr} =
+               io("", fn ->
+                 task = Task.async(fn -> run(session, "q", test) end)
+                 assert turn_end() == %{outcome: :done}
+                 File.write!(gate, "")
+                 assert turn_end() == %{outcome: :done}
+                 Task.await(task, :infinity)
+               end)
+
+      assert stderr =~ ~r/\Ahelyx: session \S+\nhelyx: waiting for background runs: 1\n\z/
+    end
+
+    @held_line "\nhelyx: background runs whose end did not reach the agent: 1\n"
+
+    @tag :tmp_dir
+    test "an end held between turns ends print mode with the last answer, one line, and 1",
+         %{tmp_dir: dir} do
+      %{session: session, gate: gate} = bg_session(dir, [])
+      test = self()
+
+      assert {1, "started\n", stderr} =
+               io("", fn ->
+                 task = Task.async(fn -> run(session, "q", test) end)
+                 assert turn_end() == %{outcome: :done}
+                 # The abort of the idle session sets the hold of the ends.
+                 :ok = Helyx.Session.abort(session)
+                 File.write!(gate, "")
+                 Task.await(task, :infinity)
+               end)
+
+      assert stderr =~ @held_line
+    end
+
+    # No Fake turn gives an end back held, so the test sends the count that
+    # the session would send.
+    @tag :tmp_dir
+    test "a normal turn end with a held end and an open run gives the answer and 1",
+         %{tmp_dir: dir} do
+      %{session: session} = bg_session(dir, [], foreground: true)
+      test = self()
+
+      hold = %Helyx.Event{
+        type: :queue_update,
+        session_id: session.id,
+        instance_id: nil,
+        turn_id: nil,
+        seq: 0,
+        data: %{steers: 0, follow_ups: 0, held: 1}
+      }
+
+      assert {1, "started\n", stderr} =
+               io("", fn ->
+                 task = Task.async(fn -> run(session, "q", test) end)
+                 assert_receive {:helyx_event, %Helyx.Event{type: :tool_execution_end}}
+                 send(await_print_wait(task, session), {:helyx_event, hold})
+                 File.write!(Path.join(dir, "foreground"), "")
+                 assert turn_end() == %{outcome: :done}
+                 Task.await(task, :infinity)
+               end)
+
+      assert stderr =~ @held_line
+    end
+
+    @tag :tmp_dir
+    test "a resumed session closes its lost runs in the prompt turn", %{tmp_dir: dir} do
+      sessions = Path.join(dir, "sessions")
+      %{core: core, session: one} = bg_session(dir, [["resumed"]], sessions_dir: sessions)
+      :ok = Helyx.Session.prompt(one, "q")
+      assert turn_end() == %{outcome: :done}
+      GenServer.stop(Helyx.Session.pid(one))
+      wait_until(fn -> Helyx.Session.pid(one) == nil end)
+
+      {:ok, two} = Helyx.Session.resume(core, sessions_dir: sessions, cwd: dir)
+      assert {0, "resumed\n", _stderr} = io("", fn -> run(two, "again") end)
+    end
+
+    for {signal, status} <- [sigterm: 143, sighup: 129] do
+      @tag :tmp_dir
+      test "#{signal} during the wait for a background run halts with #{status}",
+           %{tmp_dir: dir} do
+        %{session: session} = bg_session(dir, [])
+        test = self()
+
+        io("", fn ->
+          task = Task.async(fn -> run(session, "q", test) end)
+          assert turn_end() == %{outcome: :done}
+          run_pid = await_print_wait(task, session)
+          :gen_event.notify(:erl_signal_server, unquote(signal))
+          assert_receive {:halt, unquote(status)}
+          # In the VM the halt ends the run process, which still waits.
+          Process.exit(run_pid, :kill)
+          end_wait(task)
+        end)
+
+        refute_received {:halt, _}
+      end
+    end
+
     test "a session that stops while the turn runs returns 1" do
       test = self()
       gate = Helyx.Test.Gate.open()

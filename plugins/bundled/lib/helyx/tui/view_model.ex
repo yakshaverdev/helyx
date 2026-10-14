@@ -216,7 +216,7 @@ defmodule Helyx.TUI.ViewModel do
       model: snapshot.model,
       cells: :array.new(),
       running?: turn != nil,
-      queue: snapshot.queue
+      queue: Map.take(snapshot.queue, [:steers, :follow_ups])
     }
 
     %{Enum.reduce(messages, vm, &add_message(&2, &1)) | streaming: streaming(turn)}
