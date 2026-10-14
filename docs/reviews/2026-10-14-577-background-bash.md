@@ -146,3 +146,11 @@ bounds sensor: 3 candidate functions, 0 flagged, 0 without an answer
 | 4.9 | standards | The flag argument `which` of `return_ends/2`; a guard that would crash on an end in a notice | Judgement, kept: two values, one private function; the clause order and `return_ends/2` keep ends out of the notices (probe of 4.2) |
 
 Round 4 reproduced no code defect: its fixes are tests, docs, and comments, so the loop ends.
+
+## Orchestrator gate
+
+| Round | Finding | Resolution |
+| ----- | ------- | ---------- |
+| r1 (Codex, 740fea5) | none (approve) | The owner then decided the open items; the worker's round 4 (930ffe4) made the change. |
+| r2 (Codex, 930ffe4) | An idle end of the provider process with no end to give back leaves `hold` false, so a later end wakes the session; set `hold` in every `provider_down`. | Rejected. The idle close ends the provider process in the normal course (`TurnLoop`, `:idle_close`); a hold there would stop every background run that outlasts the idle close from waking the session. In a turn, `provider_down` fails the turn, and the failure sets `hold` (owner decision). The doc sentence was ambiguous and now says when the end of the provider process holds. |
+| r2 (Codex, 930ffe4) | The diff removes the id, version, and model checks from `Scan.sessions/3`. | Rejected: a stale base. #581 and #585 merged after the branch was made; the rebase on origin/master removes the reverse diff. |
