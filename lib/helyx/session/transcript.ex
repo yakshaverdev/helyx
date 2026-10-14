@@ -2,7 +2,14 @@ defmodule Helyx.Session.Transcript do
   @moduledoc false
   # Queries over a session transcript, a list of `Helyx.Message` in order.
 
-  alias Helyx.{Message, ModelRef, Session}
+  alias Helyx.{Message, ModelRef}
+
+  # The result of a call that a resume finds open: the session stopped while
+  # it ran, so it may have run (docs/features/interrupted-calls.md). A live
+  # abort writes `Helyx.Session.aborted_result/0` instead.
+  @interrupted "The session stopped while this tool call ran, and its result was lost. " <>
+                 "The call may have run in full, in part, or not at all. " <>
+                 "Check its effects before you repeat it."
 
   # The tool calls with no result yet, in call order: the calls of the last
   # assistant message that the tool results after it do not answer. No
@@ -42,12 +49,13 @@ defmodule Helyx.Session.Transcript do
   end
 
   # The read-time repair of a resume. It gives the transcript with an
-  # `aborted` error result for each tool call that has no result among the
+  # `interrupted_result/0` for each tool call that has no result among the
   # tool results right after its message. The results go after those tool
-  # results, in call order. A live abort puts them there too. It also drops
-  # each tool result that answers no open call at its place: a result with
-  # no call of that id, a second result for one call, or a result after a
-  # later message (the pairing of `open_calls/1`). Only that result goes.
+  # results, in call order. A live abort puts its `aborted` results there
+  # too. It also drops each tool result that answers no open call at its
+  # place: a result with no call of that id, a second result for one call,
+  # or a result after a later message (the pairing of `open_calls/1`). Only
+  # that result goes.
   #
   # The invariant after the repair: each tool result answers one call of the
   # assistant message right before its run of tool results, and each call
@@ -65,7 +73,7 @@ defmodule Helyx.Session.Transcript do
   defp walk([%Message{role: :assistant} = message | rest], out) do
     {results, rest} = Enum.split_while(rest, &match?(%Message{role: :tool_result}, &1))
     {open, kept} = pair(message, results)
-    walk(rest, Enum.reverse(Enum.map(open, &aborted/1), Enum.reverse(kept, [message | out])))
+    walk(rest, Enum.reverse(Enum.map(open, &interrupted/1), Enum.reverse(kept, [message | out])))
   end
 
   # A tool result here follows no assistant message, so it answers nothing.
@@ -73,7 +81,11 @@ defmodule Helyx.Session.Transcript do
   defp walk([message | rest], out), do: walk(rest, [message | out])
   defp walk([], out), do: Enum.reverse(out)
 
-  defp aborted(call), do: Message.tool_result(call, Session.aborted_result())
+  defp interrupted(call), do: Message.tool_result(call, interrupted_result())
+
+  # The result of a call that a resume finds open.
+  @spec interrupted_result() :: {:error, String.t()}
+  def interrupted_result, do: {:error, @interrupted}
 
   # The count that a resume label stores: the assistant messages before it.
   @spec assistant_count([Message.t()]) :: non_neg_integer()
@@ -98,14 +110,19 @@ defmodule Helyx.Session.Transcript do
   # the message under the id, and the abort or failure. The last assistant
   # message must still come from this provider. The summary is now the
   # provider's whole history, though a cut reply may not be in it
-  # (docs/features/harness-compaction.md). O(n).
+  # (docs/features/harness-compaction.md). An interrupted result of the
+  # last assistant message also makes the provider start fresh, when the
+  # id came before that message: a resume derived the result, so the
+  # provider never got it. An id given after the message came with the
+  # replay, which held the result (#584). O(n).
   @spec resumable([Message.t()], %{String.t() => label()}, String.t()) :: String.t() | nil
   def resumable(transcript, resume_ids, provider) do
     with {:ok, {resume_id, before, at}} <- Map.fetch(resume_ids, provider),
-         {count, %Message{model: model, stop_reason: stop}} when is_binary(model) <-
+         {count, %Message{model: model, stop_reason: stop}, interrupted?} when is_binary(model) <-
            count_and_last_assistant(transcript),
          {:ok, %ModelRef{provider: ^provider}} <- ModelRef.parse(model),
-         true <- at == count or (count > before and stop not in [:aborted, :error]) do
+         true <- at == count or (count > before and stop not in [:aborted, :error]),
+         false <- interrupted? and count > before do
       resume_id
     else
       _other -> nil
@@ -163,12 +180,19 @@ defmodule Helyx.Session.Transcript do
     end
   end
 
-  # The number of assistant messages and the last one, with no reversed
-  # copy of the transcript.
+  # The number of assistant messages, the last one, and whether an
+  # interrupted result follows it, with no reversed copy of the transcript.
+  # Its results follow it, so a later user message does not hide them.
   defp count_and_last_assistant(transcript) do
-    Enum.reduce(transcript, {0, nil}, fn
-      %Message{role: :assistant} = message, {count, _last} -> {count + 1, message}
-      _message, acc -> acc
+    Enum.reduce(transcript, {0, nil, false}, fn
+      %Message{role: :assistant} = message, {count, _last, _interrupted} ->
+        {count + 1, message, false}
+
+      %Message{role: :tool_result, is_error: true} = result, {count, last, interrupted} ->
+        {count, last, interrupted or Message.text(result) == @interrupted}
+
+      _message, acc ->
+        acc
     end)
   end
 end

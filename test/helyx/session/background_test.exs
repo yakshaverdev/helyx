@@ -50,10 +50,12 @@ defmodule Helyx.Session.BackgroundTest do
 
     assert [lost] = Background.lost(transcript)
 
-    assert String.starts_with?(
-             lost,
-             ~s(<background id="#{other}" status="lost">\nThe session stopped before the end of this background run reached it.)
-           )
+    assert lost ==
+             ~s(<background id="#{other}" status="lost">\n) <>
+               "The session stopped while this background command ran, and its end was lost. " <>
+               "The command may have run in full or in part. " <>
+               "Check its effects before you run it again. " <>
+               "Its output file was deleted with the session.\n</background>"
 
     assert Background.lost(transcript ++ [Message.user(lost)]) == []
 

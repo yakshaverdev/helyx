@@ -76,5 +76,5 @@ Open race (#589): a caller that another process kills after its unlink leaves th
 
 - A lock on a network filesystem: `flock` on NFS is not reliable. Out of scope like the append rule of `docs/features/coding-agent.md`.
 - A retake of a lost lock (decision 5).
-- The survival of the session file across a power loss: ticket #584.
+- The survival of the session file across a power loss: out of scope, see "Durability" in `docs/features/coding-agent.md`, section "Session file".
 - A wait for a busy session, or a skip of it in `--resume` (decision 3).

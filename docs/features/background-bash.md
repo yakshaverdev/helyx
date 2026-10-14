@@ -57,7 +57,7 @@ TEXT OF THE TOOL
 
 ```text
 <background id="ID" status="lost">
-The session stopped before the end of this background run reached it. Its output file was deleted with the session.
+The session stopped while this background command ran, and its end was lost. The command may have run in full or in part. Check its effects before you run it again. Its output file was deleted with the session.
 </background>
 ```
 
