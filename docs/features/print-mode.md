@@ -89,7 +89,7 @@ none. The TUI path does not change. `CodingAgent.run/1` picks the client from th
 ## Accepted holes
 
 - Two processes on one session: nothing stops a print run and a TUI, or two print runs, from resuming one session at once. Both append to the one file, and neither sees the turns of the other. A session must be open in one process at a time; the writer lock is ticket 579. (Owner decision of 2026-10-14, in #574.)
-- `--resume` takes the session of the folder that started last (the `ts` of its header) and has a message, as the TUI does, whatever the name of its file; it is not the session that changed last. The id of a resumed session is the name of its file. The session line gets the clean pass, so a name with control characters reaches stderr cleaned; the session runs under that name. (Worker decision, #574: the id check of `Helyx.Session.File.Scan.most_recent/3` is Core and outside the ticket.)
+- `--resume` takes the session of the folder that started last (the `ts` of its header) and has a message, as the TUI does; it is not the session that changed last. The id of a resumed session is the name of its file, and a file whose name is not a session id is skipped, as `--list` skips it (#581).
 - The answer goes to stdout as the provider sent it, with no clean pass: a script reads the exact text. Escape sequences in it reach a terminal when stdout is one.
 - A turn that the provider starts by itself before the prompt makes the prompt fail with `:turn_running`; the run then fails with status 1.
 - SIGINT (Ctrl+C) keeps the BEAM default: the break menu, or an exit with no abort. `os:set_signal/2` cannot handle SIGINT. (Accepted by the owner.)

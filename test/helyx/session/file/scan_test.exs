@@ -244,4 +244,15 @@ defmodule Helyx.Session.File.ScanTest do
       assert {:error, :invalid_id} = Session.File.resume(dir, "/repo", id: "../" <> id)
     end
   end
+
+  test "the newest session skips a file whose name is not a session id, as the list does",
+       %{tmp_dir: dir} do
+    {id, _} = session(dir, "/repo", 1_000, "valid")
+
+    # Started later, and newer by modification time.
+    for name <- ["sess1", "not-a-session-id"], do: session(dir, "/repo", 2_000, "bad", name)
+
+    assert ids(Scan.list(dir, "/repo")) == [id]
+    assert {:ok, %{session_id: ^id}} = Session.File.resume(dir, "/repo")
+  end
 end

@@ -275,16 +275,17 @@ defmodule CodingAgent.PrintTest do
       end
     end
 
-    test "the session line of a resumed file gets the clean pass", %{tmp_dir: dir, sessions: s} do
+    test "--resume skips a file whose name is not a session id", %{tmp_dir: dir, sessions: s} do
       assert {0, _, _} =
                io("", fn -> CLI.main(["-p", "one", "--model", "fake/echo", dir], halt(self())) end)
 
-      # --resume picks the newest file of the folder, whatever its name.
       [path] = Path.wildcard(Path.join([s, "*", "*.jsonl"]))
       File.rename!(path, Path.join(Path.dirname(path), "a\e[2J\nb.jsonl"))
 
-      assert {0, "two\n", "helyx: session a?[2J b\n"} =
+      assert {1, "", "helyx: could not start the agent: no saved session for this directory" <> _} =
                io("", fn -> CLI.main(["-p", "two", "--resume", dir], halt(self())) end)
+
+      assert_received {:halt, 1}
     end
 
     test "-p does not combine with the list, and a resume keeps its model and folder" do
