@@ -234,7 +234,7 @@ defmodule Helyx.Session.QueueTest do
       assert Queue.next_end(full) == nil
     end
 
-    test "a sent end that is rejected goes back to the ends; taken or unconfirmed it is its text" do
+    test "a sent end that is rejected goes back to the ends; taken it is its text" do
       from = make_ref()
       queue = Queue.sent(%Queue{}, from, "id", {:end, "e1"})
 
@@ -246,9 +246,28 @@ defmodule Helyx.Session.QueueTest do
       assert {"e1", _queue} = Queue.next_end(Queue.open(rejected))
 
       assert {_queue, [{:take, "e1"}]} = Queue.take(queue, "id")
+    end
 
-      {queue, []} = Queue.end_turn(queue, "t1", true)
-      assert {_queue, [{:notice, "t1", "e1"}]} = Queue.answer(queue, from, :ok)
+    test "a sent end that no user_message took goes back held at the end of its turn, or at its late answer" do
+      {answered, late} = {make_ref(), make_ref()}
+
+      queue =
+        %Queue{ends: ["e0"]}
+        |> Queue.sent(answered, "a", {:end, "e1"})
+        |> Queue.sent(late, "b", {:end, "e2"})
+
+      {queue, []} = Queue.answer(queue, answered, {:error, :lost})
+      assert {queue, []} = Queue.end_turn(queue, "t1", true)
+      assert %Queue{ends: ["e1", "e0"], hold: true} = queue
+
+      for reply <- [:ok, {:error, :lost}] do
+        assert {%Queue{ends: ["e2", "e1", "e0"], sent: [], hold: true} = back, []} =
+                 Queue.answer(queue, late, reply)
+
+        # Held, it wakes nothing, but an open submitted turn still sends it.
+        refute Queue.wake?(back)
+        assert {"e2", _} = Queue.next_end(back)
+      end
     end
 
     test "an abort, a failure, or the end of the provider process gives back every end that no user_message took" do
@@ -281,7 +300,8 @@ defmodule Helyx.Session.QueueTest do
       assert {down, []} = Queue.provider_down(queue)
       assert down.ends == ["e1", "e2", "e0"]
       assert down.sent == []
-      refute down.hold
+      assert down.hold
+      assert {%Queue{hold: false}, []} = Queue.provider_down(%Queue{})
     end
   end
 end

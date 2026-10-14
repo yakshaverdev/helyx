@@ -72,11 +72,12 @@ The session stopped before the end of this background run reached it. Its output
 
 The session:
 
-- `Helyx.Session.Queue` gets `ends`, the background ends that wait, and `hold`, true from an abort, a failed turn, or a resume until the next turn that is not a compaction opens. An end that waits goes as soon as a steer frees its place in a `submitted` turn.
+- `Helyx.Session.Queue` gets `ends`, the background ends that wait, and `hold`, true from an abort, a failed turn, a resume, or an end given back until the next turn that is not a compaction opens. A give-back in an open turn (a late answer from an earlier turn, or the end of an earlier provider process while a turn prepares) sets `hold` in that turn: the end goes in it, and after it the ends wait for the next prompt. An end that waits goes as soon as a steer frees its place in a `submitted` turn.
 - An end that arrives: in a `submitted` turn that is not a compaction, it goes to the provider as a steer while the 32 steers have room, else it waits. In `preparing` it joins the transcript and the context at the send of the turn, after the queued steers' place. In `submitting` it goes at the `:ok`, with the local steers. In a wait, and while idle with `hold`, it waits. While idle without `hold`, it opens a turn with no user message of its own, and joins at the send.
-- An end that a steer sent: `:rejected` puts it back with the ends, not the steers, and no end goes as a steer again until the next turn that is not a compaction opens, as a rejected steer waits for the next turn. A late `:rejected` that comes in a later turn stops the ends of that turn too, until the next one opens; the ends wait and are not dropped. A `user_message` takes it as any steer. An answer other than `:rejected`, or no answer, with no `user_message` at a normal end of its turn gives `steer_unconfirmed` with the end's text, as for a steer, and the end is not sent again.
-- An abort, a failure, and the end of the provider process put every sent end that no `user_message` took back at the front of the ends, with no notice, and an abort or a failure sets `hold`. `queue_dropped` never holds an end.
-- Accepted edge: after an abort, a failure, or the end of the provider process, an end is delivered at least once, not exactly once. The cause: the session cannot know if the provider put a sent end in its context when no `user_message` came for it, so it gives the end back, and the next turn can send it again. The other choice drops an end that the provider never got. No check removes the duplicate.
+- An end that a steer sent: `:rejected` puts it back with the ends, not the steers, and no end goes as a steer again until the next turn that is not a compaction opens, as a rejected steer waits for the next turn. A late `:rejected` that comes in a later turn stops the ends of that turn too, until the next one opens; the ends wait and are not dropped. A `user_message` takes it as any steer. An answer other than `:rejected` with no `user_message` at a normal end of its turn, or, after the end of its turn, a late answer other than `:rejected`, puts the end back at the front of the ends with `hold` set, as after an abort. It gets no `steer_unconfirmed`. An end is never dropped, and the hold stops a resend loop: the end waits for the next prompt (owner decision, 2026-10-14).
+- An abort, a failure, and the end of the provider process put every sent end that no `user_message` took back at the front of the ends, with no notice, and set `hold`. Each path that does not deliver an end puts it back once, held; only a rejected end goes to the back, with no `hold`, as above. `queue_dropped` never holds an end.
+- A failed turn and a failed compaction set `hold`, as an abort does: the ends wait for the next prompt and do not wake the session (owner decision, 2026-10-14). A failure often repeats, and a wake would start a turn that fails again with no user present.
+- Accepted edge: after an abort, a failure, the end of the provider process, or an answer other than `:rejected` with no `user_message`, an end is delivered at least once, not exactly once. The cause: the session cannot know if the provider put a sent end in its context when no `user_message` came for it, so it gives the end back, and the next turn can send it again. The other choice drops an end that the provider never got. No check removes the duplicate.
 - The session server's `init` derives the lost ends from the transcript with `Helyx.Session.Background.lost/1`, the one function that holds the derivation, and queues them with `hold`: the resume wakes nothing, and they go with the next turn.
 
 ## Replaced mechanism
@@ -97,7 +98,7 @@ none. A foreground call does not change. The rule of the hands "no resource surv
 | first line of the command in the end message | 200 bytes (`Helyx.Text.cap/3`) | cut | bash |
 | start answer | 4,096 bytes of valid UTF-8 (`@max_start_bytes` in `Helyx.Session.Background`) before the wrap, far under `Helyx.Message.max_result_bytes/0` | cut | hands |
 | wait of a background Task | the `timeout` of the run; at it the release of a timeout, as in the foreground (`docs/features/bash-timeout.md`) | the end with the timeout | bash |
-| background ends that wait in the session | outside a `submitted` turn no tool call runs, so at most the 16 live runs end there; in a `submitted` turn an end waits only while the 32 steers have no room or after the provider rejected an end, so the count there is the runs that end in one turn while the provider takes no steer: unbounded in theory, accepted (open, see "Open") | none | session |
+| background ends that wait in the session | outside a `submitted` turn no tool call runs, so at most the 16 live runs end there; an end that a turn gave back adds at most the 32 entries of the ledger; in a `submitted` turn an end waits only while the 32 steers have no room or after the provider rejected an end, so the count there is the runs that end in one turn while the provider takes no steer: unbounded in theory, #587 | none | session |
 | lost ends at resume | one per start answer in the transcript with no end message | none | `Helyx.Session.Background.lost/1` |
 
 ## Ownership
@@ -110,8 +111,8 @@ none. A foreground call does not change. The rule of the hands "no resource surv
 
 ## Open
 
-- Ends that wait in a `submitted` turn while the 32 steers have no room have no count bound. Each needs a background run that ends in that turn while the provider takes no steer. No ticket yet.
-- A session that crashes or is killed leaves its background folder in the system temp folder. No ticket yet.
+- Ends that wait in a `submitted` turn while the 32 steers have no room have no count bound. Each needs a background run that ends in that turn while the provider takes no steer. #587.
+- A session that crashes or is killed leaves its background folder in the system temp folder. #587.
 - An abort that comes between the start of a background run and the session's read of its start answer drops the answer with the turn: the call gets `aborted`, and the run goes on. Its end still arrives, with the first line of the command.
 - A foreground result whose text starts with the exact start line of a background answer counts as a start at a resume, and gets a lost end. The id must have the form of `Helyx.Session.Id`.
 

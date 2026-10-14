@@ -150,6 +150,18 @@ defmodule Helyx.Session.BackgroundDeliveryTest do
     refute_received {:helyx_event, %Event{type: :turn_start}}
   end
 
+  test "a failed compaction sets the hold, so a later end wakes nothing", %{core: core} do
+    %{session: session, run: run} = started(core)
+    :ok = Session.set_model(session, "conn/hang")
+    :ok = Session.compact(session)
+    assert_receive {:conn, :compact, proc, {:compact, turn_id, _}}
+    send(proc, {:event, turn_id, @done})
+    refute List.last(collect_until(:turn_end)).data == %{outcome: :done}
+
+    assert %{queue: %{hold: true}} = finish(session, run)
+    refute_received {:helyx_event, %Event{type: :turn_start}}
+  end
+
   test "an end that the provider rejects waits for the next turn and is not sent again in its turn",
        %{core: core} do
     %{session: session, run: run, id: id} = started(core)
@@ -175,10 +187,7 @@ defmodule Helyx.Session.BackgroundDeliveryTest do
     collect_until(:turn_end)
   end
 
-  # The runtime gives the session's `:DOWN` before `provider_down` here, so
-  # this runs the wait path; the other order is the idle clause of
-  # `TurnLoop`, which settles in the same way.
-  test "an end sent with no answer in a turn that ended goes back and wakes the session when the provider process ends",
+  test "an end sent with no answer in a turn that ended goes back held when the provider process ends, and joins the next prompt",
        %{core: core} do
     %{session: session, run: run, id: id} = started(core)
     :ok = Session.set_model(session, "conn/steer_hold")
@@ -192,11 +201,37 @@ defmodule Helyx.Session.BackgroundDeliveryTest do
     collect_until(:turn_end)
     refute_received {:helyx_event, %Event{type: :turn_start}}
 
+    pid = Session.pid(session)
+    :erlang.trace(pid, true, [:receive])
     send(proc, :stop)
+    assert_receive {:trace, ^pid, :receive, {:provider_down, ^proc, _reason}}
+    :erlang.trace(pid, false, [:receive])
+    assert %{ends: [ended], hold: true} = :sys.get_state(pid).queue
+    assert ended == done(id)
+    refute_received {:helyx_event, %Event{type: :turn_start}}
+
+    :ok = Session.prompt(session, "three")
     assert_receive {:conn, :turn, next, {:turn, next_id, context}}
     assert Helyx.Message.text(List.last(context.messages)) == done(id)
     send(next, {:finish, next_id})
-    assert done(id) in user_texts(collect_until(:turn_end))
+    assert user_texts(collect_until(:turn_end)) == ["three", done(id)]
+  end
+
+  test "an end whose steer gets an error answer and no user_message goes back held, with no notice",
+       %{core: core} do
+    %{session: session, run: run, id: id} = started(core)
+    :ok = Session.set_model(session, "conn/steer_error")
+    :ok = Session.prompt(session, "two")
+    assert_receive {:conn, :turn, proc, {:turn, turn_id, _}}
+    collect_until(:message_update)
+
+    finish(session, run)
+    send(proc, {:finish, turn_id})
+    events = collect_until(:turn_end)
+    refute Enum.any?(events, &(&1.type == :steer_unconfirmed))
+    assert %{ends: [ended], hold: true} = :sys.get_state(Session.pid(session)).queue
+    assert ended == done(id)
+    refute_received {:helyx_event, %Event{type: :turn_start}}
   end
 
   # Opens each gate of the turn and collects its events until `turn_end`.

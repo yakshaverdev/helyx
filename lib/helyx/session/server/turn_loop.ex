@@ -290,7 +290,7 @@ defmodule Helyx.Session.Server.TurnLoop do
   defp provider_down(%State{activity: %Turn{}} = state, _conn, reason),
     do: Steering.provider_down(fail_turn(reason, state))
 
-  # Idle, before the session's `:DOWN` (no fixed order): a given-back end wakes.
+  # Idle, before the session's `:DOWN` (no fixed order): given-back ends hold.
   defp provider_down(%State{activity: :idle} = state, _conn, _reason),
     do: settle(Steering.provider_down(state))
 

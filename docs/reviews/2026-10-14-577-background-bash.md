@@ -111,3 +111,38 @@ The same flag as rounds 1 and 2, accepted as for `hold/1`.
 | 3.9 | standards | Comments: "(no order)", the `next_end/1` comment, the test comment that named two orders; row 2.2 named `progress/1` | Fixed |
 
 Round 3 reproduced no defect against the feature doc, so the loop ends. Its fixes are docs and comments.
+
+## Owner decisions after the gate (2026-10-14)
+
+The Codex gate r1 on `740fea5` approved with no findings. The owner decided the open items:
+
+1. Changed: an end whose steer gets an answer other than `:rejected` (an error, or a late answer after its turn) and no `user_message` goes back to the front of the ends with `hold` set, as after an abort. It gets no `steer_unconfirmed` and is not dropped (row 3.4).
+2. Kept: a failed turn and a failed compaction set `hold` (row 3.5). A failure often repeats, and a wake would start a turn that fails again with no user present.
+3. Ticket decisions, not review findings: "an abort never drops them" (#577 Q3) and "derived, not stored" (#577 Q4).
+4. The two open holes are #587: no count bound for ends that wait in a submitted turn while the 32 steers are full, and a crashed session leaves its background folder.
+
+## Round 4 (full, owner exception)
+
+Base `740fea5`. The change of decision 1, without tests and Markdown, is 65 changed lines in `queue.ex` and one comment line in `turn_loop.ex`. It adds `give_back/2` and changes `return_ends/1` to `return_ends/2`, so the round is full. The 45-minute limit and the three-round limit are passed as an owner exception. Invariant given to every reviewer: "an end is never dropped; each path that does not deliver it puts it back in the ends exactly once, held."
+
+Simplify, four agents (reuse, simplification, efficiency, altitude). Applied: the notices no longer call `plain/1`, as no end reaches them. Skipped: give back every untaken end at a normal end of its turn, with no `{:ended, _}` state for ends. It is simpler, but a late `:rejected` would then not wake the session, which changes the documented behaviour that decision 1 keeps. The stale `hold` after a give-back in an open turn is documented as an edge.
+
+Bounds sensor (base `740fea5`):
+
+```
+bounds sensor: 3 candidate functions, 0 flagged, 0 without an answer
+```
+
+| # | Axis | Finding | Resolution |
+| - | ---- | ------- | ---------- |
+| 4.1 | Codex | Verdict approve, no material finding (24 queue tests, 48 probes) | — |
+| 4.2 | failure path | No second path breaks the invariant. Probed: a late `:ok` in the next submitted turn, an error answer there, an idle abort then each late answer | — |
+| 4.3 | failure path, spec, standards | A rejected end goes to the back with `rejected` and no `hold`, against the "each path ... held" texts | Fixed in the texts: a rejected end is the one exception, as the round 2 design and the existing test state |
+| 4.4 | spec | The new provider-end test read the state after `{:release, ...}`, before the session got `{:provider_down, ...}`: 3 of 6 runs failed | Fixed: the test traces the session until it receives `{:provider_down, ...}`; 16 runs passed. A test defect, not a code defect |
+| 4.5 | spec | No test for a failed compaction that sets `hold`, nor for a held end that an open turn still sends | Fixed: a session test of a failed compaction; a queue test that a held give-back does not wake and `next_end/1` still gives it |
+| 4.6 | spec | The bounds row of the waiting ends did not count given-back ends, and named "open" with no ticket | Fixed: at most the 32 ledger entries; #587 |
+| 4.7 | spec | "In send order" is true only within one give-back | Fixed: "in send order among them" |
+| 4.8 | standards | `session-lifecycle.md` said every steer with no `user_message` gets `steer_unconfirmed` | Fixed: a clause names the background end |
+| 4.9 | standards | The flag argument `which` of `return_ends/2`; a guard that would crash on an end in a notice | Judgement, kept: two values, one private function; the clause order and `return_ends/2` keep ends out of the notices (probe of 4.2) |
+
+Round 4 reproduced no code defect: its fixes are tests, docs, and comments, so the loop ends.

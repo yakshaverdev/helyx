@@ -74,7 +74,7 @@ The session gives each sent steer a `steer_id` and keeps it in the ledger of `He
 | `{:error, _}`, or the armed kill | the steer is unknown. It is never sent again |
 
 - At `{:user_message, steer_id}` the open assistant message closes, each open call gets `aborted`, and the session appends its own text of the steer. An unknown or repeated id is dropped.
-- A steer with `:ok` or an unknown answer and no `user_message` at the end of its turn gets a `steer_unconfirmed` event with its text. At `done` a late `:rejected` still queues it; at an abort or a failure it gets the event at once.
+- A steer with `:ok` or an unknown answer and no `user_message` at the end of its turn gets a `steer_unconfirmed` event with its text. At `done` a late `:rejected` still queues it; at an abort or a failure it gets the event at once. A background end gets no event: it goes back to the ends (`docs/features/background-bash.md`).
 
 ## Provider death
 
@@ -86,7 +86,7 @@ The session monitors its provider process, and the hands send `{:provider_down, 
 - Outside a turn, the `:DOWN` makes the process `:ending` and starts a wait, so the next turn waits for its `provider_down`.
 - In a sent turn (`submitting` or later), the `provider_down` fails the turn with `reason`.
 - In `preparing`, the `:DOWN` holds back `{:turn, ...}`. When the process was started by an earlier turn, its `provider_down` makes the turn connect a new one, once, and the queued steers stay for that turn: `Queue.provider_down/1` settles only the steer ledger. A process that this turn started fails the turn.
-- At `provider_down` each sent steer with no notice gets `steer_unconfirmed`, and the ledger drops every entry of that process.
+- At `provider_down` each sent steer with no notice gets `steer_unconfirmed`, except a background end, which goes back to the ends, and the ledger drops every entry of that process.
 - Provider output outside the contract (a bad event, a context request outside `submitted` or while one is open (`TurnLoop.handle/2`), a message over a bound) stops the provider process with `{:shutdown, reason}` and fails the turn.
 
 ## Idle close
