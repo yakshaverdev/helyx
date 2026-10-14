@@ -20,8 +20,9 @@ defmodule CodingAgent.PrintSignalTest do
   # zeros fills the pipe of stdout or stderr, and `sleep` holds the read end
   # open and never reads it. For `stdin`, `sleep` holds stdin open and sends
   # nothing. `bad_stdin` fills stderr and pipes a byte that is not UTF-8.
-  # `dir_stdin` reads the folder as stdin. The exit status of the command
-  # goes to the file `status`.
+  # `dir_stdin` reads the folder as stdin. `closed_stderr` pipes a byte that
+  # is not UTF-8, and stderr goes to a pipe whose reader has exited. `plain`
+  # has no stdin. The exit status of the command goes to the file `status`.
   @script ~S"""
   dir=$1; mode=$2; shift 2
   case $mode in
@@ -30,6 +31,8 @@ defmodule CodingAgent.PrintSignalTest do
     stdin) sleep 20 | { "$@" >/dev/null 2>&1; echo $? >"$dir/status"; } ;;
     bad_stdin) { cat /dev/zero >&2 & printf '\377' | "$@"; echo $? >"$dir/status"; kill $!; } 2>&1 >/dev/null | sleep 20 ;;
     dir_stdin) "$@" <"$dir" >"$dir/out" 2>"$dir/err"; echo $? >"$dir/status" ;;
+    closed_stderr) { printf '\377' | "$@" >"$dir/out"; echo $? >"$dir/status"; } 2>&1 | true ;;
+    plain) "$@" </dev/null >"$dir/out" 2>"$dir/err"; echo $? >"$dir/status" ;;
   esac
   """
 
@@ -93,6 +96,37 @@ defmodule CodingAgent.PrintSignalTest do
     Process.sleep(2_000)
     {_, 0} = System.cmd("kill", ["-HUP", pid])
     assert await_file(Path.join(dir, "status"), Print.abort_ms() + @load_ms) == "143\n"
+  end
+
+  # A halt that writes its status to the file `halted` first.
+  @halt ~S"""
+  halt = fn status ->
+    File.write!(Path.join(dir, "halted"), Integer.to_string(status))
+    :erlang.halt(status, flush: false)
+  end
+  """
+
+  test "an error line on a stderr pipe with no reader still ends with the halt and 1",
+       %{tmp_dir: dir} do
+    run = ~S"""
+    System.halt(CodingAgent.CLI.main(["-p", "x", "--model", "fake/echo", dir], halt))
+    """
+
+    launch(dir, "closed_stderr", @halt <> run)
+    assert await_file(Path.join(dir, "status"), @load_boot_ms) == "1\n"
+    assert File.read!(Path.join(dir, "halted")) == "1"
+    assert File.read!(Path.join(dir, "out")) == ""
+  end
+
+  test "a crash of a process linked to the run ends with the halt and 1", %{tmp_dir: dir} do
+    run = ~S"""
+    CodingAgent.Print.main(fn -> spawn_link(fn -> exit(:boom) end) && Process.sleep(:infinity) end, halt)
+    """
+
+    launch(dir, "plain", @halt <> run)
+    assert await_file(Path.join(dir, "status"), @load_boot_ms) == "1\n"
+    assert File.read!(Path.join(dir, "halted")) == "1"
+    assert File.read!(Path.join(dir, "out")) == ""
   end
 
   test "stdin that is a folder ends the run with one error line and 1", %{tmp_dir: dir} do

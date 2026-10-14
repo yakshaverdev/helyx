@@ -294,21 +294,32 @@ defmodule CodingAgent.PrintTest do
 
     test "main/2 sends the log to stderr, and an error to one stderr line with 1" do
       {:ok, before} = :logger.get_handler_config(:default)
+      test = self()
 
       assert {1, "", "helyx: no\n"} =
                io("", fn ->
                  Print.main(
                    fn ->
-                     send(self(), {:log, :logger.get_handler_config(:default)})
+                     send(test, {:log, :logger.get_handler_config(:default)})
                      {:error, "no"}
                    end,
-                   halt(self())
+                   halt(test)
                  )
                end)
 
       assert_received {:log, {:ok, log}}
       assert log == put_in(before.config.type, :standard_error)
       assert_received {:halt, 1}
+    end
+
+    test "a throw or an exit of the run gives one stderr line and 1" do
+      for {fun, line} <- [
+            {fn -> throw(:t) end, "helyx: ** (throw) :t\n"},
+            {fn -> exit(:x) end, "helyx: ** (exit) :x\n"}
+          ] do
+        assert {1, "", ^line} = io("", fn -> Print.main(fun, halt(self())) end)
+        assert_received {:halt, 1}
+      end
     end
 
     test "SIGTERM during the turn aborts it, then halts with 143" do
@@ -413,7 +424,9 @@ defmodule CodingAgent.PrintTest do
                io("", fn ->
                  task = Task.async(fn -> run(session, "fail", test) end)
                  assert_receive {:waiting, gate_pid}
-                 send(task.pid, {:helyx_event, notice})
+                 # The run, which subscribed, is the process that `main/2` monitors.
+                 {:monitors, [process: run_pid]} = Process.info(task.pid, :monitors)
+                 send(run_pid, {:helyx_event, notice})
                  send(gate_pid, :go)
                  Task.await(task, :infinity)
                end)

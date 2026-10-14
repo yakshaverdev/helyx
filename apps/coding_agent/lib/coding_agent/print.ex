@@ -39,12 +39,15 @@ defmodule CodingAgent.Print do
   status. The first step traps SIGTERM and SIGHUP, before any output, and
   the trap stays for the life of the VM: the first signal aborts the session
   that `run/2` runs, waits at most `abort_ms/0`, and calls `halt` with 143
-  or 129; later signals are ignored. Then the log goes to stderr, so stdout
-  holds only the answer. `fun` returns the status, or `{:error, text}`,
-  which is written as one line on stderr and gives 1; a raise, throw, or
-  exit of `fun` gives one such line and 1 too. When a signal came
-  first, its stop sets the status. `halt` halts the VM with no flush, so
-  output that blocks never holds the exit, and `main/2` does not return.
+  or 129; later signals are ignored. Then the calling process only waits for
+  the run and halts. The run, in a process of its own, sends the log to
+  stderr, so stdout holds only the answer, and calls `fun`. `fun` returns
+  the status, or `{:error, text}`, which is written as one line on stderr
+  and gives 1; a raise, throw, or exit of `fun` gives one such line and 1
+  too. Any other end of the run (a failed error line, a linked crash, a
+  kill) gives 1. When a signal came first, its stop sets the status. `halt`
+  halts the VM with no flush, so output that blocks never holds the exit,
+  and `main/2` does not return.
   """
   @spec main((-> status() | {:error, String.t()}), halt()) :: term()
   def main(fun, halt \\ &:erlang.halt(&1, flush: false)) do
@@ -57,13 +60,30 @@ defmodule CodingAgent.Print do
 
     :ok = :os.set_signal(:sighup, :handle)
 
+    # From here this process runs no code that can raise: every way the run
+    # ends is a `:DOWN`, and every `:DOWN` reaches the halt.
+    {_pid, ref} = spawn_monitor(fn -> exit({:shutdown, run_process(fun)}) end)
+
+    status =
+      receive do
+        {:DOWN, ^ref, :process, _pid, {:shutdown, status}} when status in [0, 1] -> status
+        {:DOWN, ^ref, :process, _pid, _reason} -> 1
+      end
+
+    # The handler answers `:stopping` once a signal has started its stop.
+    case :gen_event.call(:erl_signal_server, __MODULE__.Signal, :finish) do
+      :ok -> halt.(status)
+      :stopping -> Process.sleep(:infinity)
+    end
+  end
+
+  defp run_process(fun) do
     # The type of the handler is fixed when it is added. Under `mix helyx`
     # Logger starts before the app config loads, so config cannot set it.
     {:ok, log} = :logger.get_handler_config(:default)
     :ok = :logger.remove_handler(:default)
     :ok = :logger.add_handler(:default, :logger_std_h, put_in(log.config.type, :standard_error))
 
-    # Every way out of `fun` ends with the halt below.
     result =
       try do
         fun.()
@@ -71,16 +91,9 @@ defmodule CodingAgent.Print do
         kind, reason -> {:error, Exception.format_banner(kind, reason)}
       end
 
-    status =
-      case result do
-        {:error, text} -> fail(text)
-        status -> status
-      end
-
-    # The handler answers `:stopping` once a signal has started its stop.
-    case :gen_event.call(:erl_signal_server, __MODULE__.Signal, :finish) do
-      :ok -> halt.(status)
-      :stopping -> Process.sleep(:infinity)
+    case result do
+      {:error, text} -> fail(text)
+      status -> status
     end
   end
 
