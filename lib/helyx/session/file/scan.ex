@@ -56,9 +56,8 @@ defmodule Helyx.Session.File.Scan do
   """
   @spec list(Path.t(), Path.t() | :all) :: [Summary.t()]
   def list(dir, scope) do
-    for {mtime, path, %{"cwd" => cwd, "model" => model} = header, prompt} <-
-          sessions(dir, scope, @max_scanned_files),
-        is_binary(model) and check_version(header) == :ok do
+    for {mtime, path, %{"cwd" => cwd, "model" => model}, prompt} <-
+          sessions(dir, scope, @max_scanned_files) do
       %Summary{id: id(path), cwd: cwd, model: model, mtime: mtime, prompt: prompt}
     end
   end
@@ -93,10 +92,10 @@ defmodule Helyx.Session.File.Scan do
   end
 
   @doc false
-  # The most recently started session of `cwd` that is not empty and whose
-  # file name is a session id, as in `list/2`. The option
-  # `:max_scanned_files` only lowers the file count; a bad one raises when
-  # the scan runs (not with `:id`).
+  # The most recently started session of `cwd` that `list/2` would list:
+  # not empty, a session id as file name, a known version, and a string
+  # `model`. The option `:max_scanned_files` only lowers the file count; a
+  # bad one raises when the scan runs (not with `:id`).
   def most_recent(dir, cwd, opts),
     do: most_recent_of(dir, cwd, Keyword.get(opts, :max_scanned_files, @max_scanned_files))
 
@@ -108,8 +107,9 @@ defmodule Helyx.Session.File.Scan do
   end
 
   # The files of the scan whose name is a session id, that are not empty,
-  # and whose header names `scope`, newest first. Two directories can share
-  # a slug, so the header decides.
+  # and whose header has a known version, a string `model`, and names
+  # `scope`, newest first. Two directories can share a slug, so the header
+  # decides.
   defp sessions(dir, scope, max_files) do
     pattern =
       if scope == :all,
@@ -119,6 +119,7 @@ defmodule Helyx.Session.File.Scan do
     for {mtime, path} <- newest(Path.wildcard(pattern), max_files),
         Id.valid?(id(path)),
         {:ok, header, prompt} when prompt != :empty <- [head(path)],
+        is_binary(header["model"]) and check_version(header) == :ok,
         scope in [:all, header["cwd"]] do
       {mtime, path, header, prompt}
     end
