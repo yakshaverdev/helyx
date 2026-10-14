@@ -26,7 +26,9 @@ defmodule CodingAgent do
   def plugins, do: @plugins
 
   @doc """
-  Starts Core and a session, then runs the TUI until the user quits. The
+  Starts Core and a session, then runs the TUI until the user quits. With
+  `:prompt`, print mode (`CodingAgent.Print.run/2`) runs that one prompt in
+  place of the TUI, and its exit status is the result. The
   session is written under `:sessions_dir`, which is required. With
   `resume: true` the most recent session for `:cwd` that has a message is
   resumed, and with `resume: id` the session with that id, whose header must
@@ -34,7 +36,7 @@ defmodule CodingAgent do
   plugin list, or the resume is rejected. Core stops before `run/1` returns
   or raises.
   """
-  @spec run(keyword()) :: :ok | {:error, term()}
+  @spec run(keyword()) :: :ok | CodingAgent.Print.status() | {:error, term()}
   def run(opts) do
     with {:ok, core} <- Helyx.Core.start_link(plugins: @plugins) do
       try do
@@ -48,17 +50,27 @@ defmodule CodingAgent do
   defp run_session(opts) do
     with {:ok, session} <- start_session(opts) do
       try do
-        Helyx.TUI.run(
-          session: session,
-          resumed: Keyword.get(opts, :resume, false) != false,
-          cwd: Keyword.fetch!(opts, :cwd)
-        )
+        client(session, opts)
       after
         # The abort comes before Core stops, so a turn that the quit or a
         # failed TUI left open ends and the hands release its resources. A
         # session that died returns `{:error, :session_not_found}`.
         _ = Helyx.Session.abort(session)
       end
+    end
+  end
+
+  defp client(session, opts) do
+    case Keyword.fetch(opts, :prompt) do
+      {:ok, prompt} ->
+        CodingAgent.Print.run(session, prompt)
+
+      :error ->
+        Helyx.TUI.run(
+          session: session,
+          resumed: Keyword.get(opts, :resume, false) != false,
+          cwd: Keyword.fetch!(opts, :cwd)
+        )
     end
   end
 
@@ -78,7 +90,14 @@ defmodule CodingAgent do
   cut in half is dropped.
   """
   @spec error_text(term()) :: String.t()
-  def error_text(reason), do: reason |> line() |> one_line() |> cut()
+  def error_text(reason), do: reason |> line() |> clean_line()
+
+  @doc """
+  The clean pass of `one_line/1`, then a cut to at most 4000 bytes of valid
+  UTF-8; a character cut in half is dropped.
+  """
+  @spec clean_line(String.t()) :: String.t()
+  def clean_line(text), do: text |> one_line() |> cut()
 
   @doc """
   The clean pass of a text for the terminal: a whitespace run becomes one
