@@ -77,7 +77,8 @@ defmodule CodingAgent do
   @doc """
   Returns the one line that tells the user about an error from `run/1`.
   A session that ended while the TUI ran (`{:session_down, reason}`) gives
-  its sentence; any other error is a failed start, and its sentence comes
+  its sentence, and so does a session that another process has open
+  (`{:session_locked, id}`); any other error is a failed start, and its sentence comes
   after `could not start the agent: `. There is a clause for every shape of `t:Helyx.Session.File.error/0`,
   for the model ref and provider errors, for a bad working directory
   (`:invalid_cwd`), for a tool that is not available, and for the end of
@@ -120,6 +121,11 @@ defmodule CodingAgent do
       line |> binary_part(0, min(@max_line_bytes, byte_size(line))) |> String.replace_invalid("")
 
   defp line({:session_down, _reason} = reason), do: sentence(reason)
+
+  # The user opens a session that another process has open: the whole
+  # line, with no prefix (docs/features/session-lock.md).
+  defp line({:session_locked, _id} = reason), do: sentence(reason)
+
   defp line(reason), do: "could not start the agent: " <> sentence(reason)
 
   defp sentence(:not_found),

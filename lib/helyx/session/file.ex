@@ -77,13 +77,12 @@ defmodule Helyx.Session.File do
   """
   @spec create(Path.t(), String.t(), String.t(), String.t()) :: {:ok, t()} | {:error, error()}
   def create(dir, session_id, cwd, model) do
-    project = Scan.project_dir(dir, cwd)
+    path = path(dir, cwd, session_id)
 
     # The mkdir failing is the caller's configuration, not a crash.
-    case File.mkdir_p(project) do
+    case File.mkdir_p(Path.dirname(path)) do
       :ok ->
-        header = Scan.header(cwd, model)
-        {:ok, append(%__MODULE__{path: Path.join(project, session_id <> ".jsonl")}, header)}
+        {:ok, append(%__MODULE__{path: path}, Scan.header(cwd, model))}
 
       {:error, reason} ->
         {:error, {:create_failed, reason}}
@@ -92,6 +91,11 @@ defmodule Helyx.Session.File do
     # The header write failing right after the mkdir succeeded.
     error in File.Error -> {:error, {:create_failed, error.reason}}
   end
+
+  @doc "The path of the file that `create/4` writes for the session `session_id` of `cwd`."
+  @spec path(Path.t(), String.t(), String.t()) :: Path.t()
+  def path(dir, cwd, session_id),
+    do: Path.join(Scan.project_dir(dir, cwd), session_id <> ".jsonl")
 
   @doc """
   Resumes the most recently started session for a working directory that
@@ -129,23 +133,31 @@ defmodule Helyx.Session.File do
           max_scanned_files: pos_integer()
         ) :: {:ok, Resumed.t()} | {:error, error()}
   def resume(dir, cwd, opts \\ []) do
+    with {:ok, path, header} <- pick(dir, cwd, opts), do: resume_picked(path, header, opts)
+  end
+
+  @doc """
+  The read of `resume/3` after its pick: `path` and `header` are a result
+  of `pick/3`, and the options and errors are those of `resume/3`.
+  """
+  @spec resume_picked(Path.t(), map(), max_bytes: pos_integer(), max_heap_bytes: pos_integer()) ::
+          {:ok, Resumed.t()} | {:error, error()}
+  def resume_picked(path, header, opts \\ []) do
     # A bad option is the caller's bug and raises, it is not reported as a
     # bad file.
     resume_within(
-      dir,
-      cwd,
-      opts,
+      path,
+      header,
       Keyword.get(opts, :max_bytes, @max_bytes),
       Keyword.get(opts, :max_heap_bytes, @max_heap_bytes)
     )
   end
 
   # The options only lower the limits, so the read count stays one the OS takes.
-  defp resume_within(dir, cwd, opts, max_bytes, max_heap_bytes)
+  defp resume_within(path, header, max_bytes, max_heap_bytes)
        when max_bytes in 1..@max_bytes//1 and
               max_heap_bytes in @min_heap_bytes..@max_heap_bytes//1 do
-    with {:ok, path, header} <- pick(dir, cwd, opts),
-         :ok <- Scan.check_version(header),
+    with :ok <- Scan.check_version(header),
          {:ok, resumed, tail} <- load_bounded(path, header, max_bytes, max_heap_bytes),
          # The repair write comes last, after every check passed, so a
          # file this function rejects is never mutated.
@@ -154,7 +166,14 @@ defmodule Helyx.Session.File do
     end
   end
 
-  defp pick(dir, cwd, opts) do
+  @doc """
+  The file that `resume/3` would read, and its header, with no read past
+  the header: the session of `:id`, or the newest of `cwd`. The errors are
+  those of the pick in `resume/3`. `Helyx.Session.resume/2` takes the lock
+  of this file before `resume_picked/3`.
+  """
+  @spec pick(Path.t(), String.t(), keyword()) :: {:ok, Path.t(), map()} | {:error, error()}
+  def pick(dir, cwd, opts) do
     case Keyword.fetch(opts, :id) do
       :error ->
         Scan.most_recent(dir, cwd, opts)

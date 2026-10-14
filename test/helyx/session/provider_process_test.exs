@@ -1528,8 +1528,10 @@ defmodule Helyx.Session.ProviderProcessTest do
       %{resume_id: first} = label(turn(a, "shared"))
       assert init_label() == nil
 
-      # B continues the label too: the hole of two live Cores.
-      {:ok, b} = Session.resume(other, sessions_dir: dir)
+      # B continues the label too: the hole of two live Cores, through a
+      # link of the file in a second folder (docs/features/session-lock.md).
+      linked = Helyx.Test.SessionCase.link_session(dir, a.id)
+      {:ok, b} = Session.resume(other, sessions_dir: linked)
       {:ok, _, _} = Session.subscribe(b)
       refute Enum.any?(turn(b, "b1"), &(&1.type == :resume_id))
       turn(a, "a1")

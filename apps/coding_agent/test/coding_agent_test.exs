@@ -100,6 +100,13 @@ defmodule CodingAgentTest do
     assert sentence({:create_failed, :eacces}) =~ "session file: permission denied"
     assert sentence({:terminal_init_failed, "no tty"}) =~ "did not start: no tty"
 
+    assert sentence({:lock_failed, "perl gave no answer\nin 5000 ms"}) ==
+             "could not lock the session: perl gave no answer in 5000 ms"
+
+    # The whole line, with no start prefix (#579).
+    assert CodingAgent.error_text({:session_locked, "abc\e[2J"}) ==
+             "session abc?[2J is open in another process"
+
     assert sentence({:some, "other"}) == ~s({:some, "other"})
 
     # A Core start error names the plugins, and inspect/1 caps a long id (#169).

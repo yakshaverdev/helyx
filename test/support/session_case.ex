@@ -46,6 +46,18 @@ defmodule Helyx.Test.SessionCase do
   # each turn sends {:waiting, pid} and waits for :go.
   def gated_model, do: "test/gate." <> Helyx.Test.Gate.open()
 
+  # A second sessions folder that holds a hard link of the file of session
+  # `id` in `dir`: a session open from each folder writes the one file, and
+  # each has its own lock (docs/features/session-lock.md). Returns the folder.
+  def link_session(dir, id) do
+    [path] = Path.wildcard(Path.join([dir, "*", id <> ".jsonl"]))
+    other = Path.join(dir, "linked")
+    target = Path.join([other, Path.basename(Path.dirname(path)), Path.basename(path)])
+    File.mkdir_p!(Path.dirname(target))
+    File.ln!(path, target)
+    other
+  end
+
   # Stops the session, waits until it is down, then until the Registry
   # drops its entry, which the Registry does after the exit.
   def stop_session(session, stop) do

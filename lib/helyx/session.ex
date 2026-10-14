@@ -36,7 +36,7 @@ defmodule Helyx.Session do
   """
 
   alias Helyx.ModelRef
-  alias Helyx.Session.{Id, Server, Snapshot, Transcript}
+  alias Helyx.Session.{Id, Lock, Server, Snapshot, Transcript}
   alias Helyx.Session.Server.State
 
   @enforce_keys [:id, :core]
@@ -65,6 +65,9 @@ defmodule Helyx.Session do
   is persisted. When a write fails, the session goes on in memory, writes
   nothing more, and sends one `:notice` event. A resume writes no entry
   (see `resume/2`), so every write comes after a client can subscribe.
+  The writer lock of the file comes before its first write: a session that
+  another OS process holds gives `{:error, {:session_locked, id}}`, and a lock
+  that cannot be taken `{:error, {:lock_failed, text}}` (session-lock.md).
   """
   @spec start(Helyx.Core.name(), keyword()) :: {:ok, t()} | {:error, model_error() | term()}
   def start(core \\ Helyx.Core, opts) do
@@ -77,25 +80,29 @@ defmodule Helyx.Session do
          {:ok, tools} <- Helyx.Tool.specs(core),
          :ok <- Helyx.Tool.check_available(tools),
          {:ok, {ref, provider}} <- resolve_model(core, Keyword.fetch!(opts, :model)),
-         {:ok, file} <- create_file(opts[:sessions_dir], id, cwd, ref) do
-      start_child(
+         {:ok, lock, file} <- create_file(opts[:sessions_dir], id, cwd, ref) do
+      Server.start(
         %State{
           id: id,
           core: core,
           model: ref,
           provider: provider,
           cwd: cwd,
-          file: file
+          file: file,
+          lock: lock
         },
         tools
       )
     end
   end
 
-  defp create_file(nil, _id, _cwd, _ref), do: {:ok, nil}
+  defp create_file(nil, _id, _cwd, _ref), do: {:ok, nil, nil}
 
-  defp create_file(dir, id, cwd, ref),
-    do: Helyx.Session.File.create(dir, id, cwd, ModelRef.to_string(ref))
+  defp create_file(dir, id, cwd, ref) do
+    Lock.hold(Helyx.Session.File.path(dir, cwd, id), fn ->
+      Helyx.Session.File.create(dir, id, cwd, ModelRef.to_string(ref))
+    end)
+  end
 
   @doc """
   Resumes from `:sessions_dir` the session `Helyx.Session.File.resume/3`
@@ -108,7 +115,8 @@ defmodule Helyx.Session do
   the file only appends a newline that the last line lacks. `:cwd` is checked as in
   `start/2`, and the tool specs and the tool checks as in `start/2`, all
   before the sessions directory is read. The model ref of the file resolves
-  as in `set_model/2`, with the same errors.
+  as in `set_model/2`, with the same errors. The lock is taken as in
+  `start/2`, before the load; a locked newest session is not skipped.
   """
   @spec resume(Helyx.Core.name(), keyword()) :: {:ok, t()} | {:error, model_error() | term()}
   def resume(core \\ Helyx.Core, opts) do
@@ -117,12 +125,12 @@ defmodule Helyx.Session do
     with {:ok, cwd} <- fetch_cwd(opts),
          {:ok, tools} <- Helyx.Tool.specs(core),
          :ok <- Helyx.Tool.check_available(tools),
-         {:ok, resumed} <- Helyx.Session.File.resume(dir, cwd, Keyword.take(opts, [:id])),
-         {:ok, {ref, provider}} <- resolve_model(core, resumed.model) do
+         {:ok, path, header} <- Helyx.Session.File.pick(dir, cwd, Keyword.take(opts, [:id])),
+         {:ok, lock, {resumed, {ref, provider}}} <- load(core, path, header) do
       # A crash can leave tool calls with no result, and the disk can hold a
       # result with no open call. The session reads them with `aborted`
       # results and without the stray results, and writes nothing (#269, #417).
-      start_child(
+      Server.start(
         %State{
           id: resumed.session_id,
           core: core,
@@ -131,11 +139,21 @@ defmodule Helyx.Session do
           cwd: cwd,
           file: resumed.file,
           transcript: Transcript.repair(resumed.messages),
-          resume_ids: resumed.resume_ids
+          resume_ids: resumed.resume_ids,
+          lock: lock
         },
         tools
       )
     end
+  end
+
+  # The read of the locked file, and its model ref.
+  defp load(core, path, header) do
+    Lock.hold(path, fn ->
+      with {:ok, resumed} <- Helyx.Session.File.resume_picked(path, header),
+           {:ok, model} <- resolve_model(core, resumed.model),
+           do: {:ok, {resumed, model}}
+    end)
   end
 
   # The boundary for `cwd`. It goes into the session file as JSON, into the
@@ -156,24 +174,6 @@ defmodule Helyx.Session do
     with {:ok, ref} <- ModelRef.parse(string),
          {:ok, provider} <- Helyx.Provider.find(core, ref.provider),
          do: {:ok, {ref, provider}}
-  end
-
-  defp start_child(%State{id: id, core: core} = state, tools) do
-    # The plugin table of a Core does not change after start, so a plugin
-    # resolved once here is the plugin a lookup per provider call would give.
-    # Both interfaces are single-mode: one plugin or none (nil).
-    state = %{
-      state
-      | model_context: List.first(Helyx.Core.plugins(core, Helyx.ModelContext)),
-        compaction: List.first(Helyx.Core.plugins(core, Helyx.Compaction)),
-        tool_specs: Enum.map(tools, fn {_tool, spec} -> spec end),
-        tool_modules: Map.new(tools, fn {tool, spec} -> {spec.name, tool} end)
-    }
-
-    with {:ok, _pid} <-
-           DynamicSupervisor.start_child(Helyx.Core.session_supervisor(core), {Server, state}) do
-      {:ok, %__MODULE__{id: id, core: core}}
-    end
   end
 
   @doc """

@@ -161,6 +161,14 @@ defmodule Helyx.Reason do
   # error, which is shorter than the term; the cleaning, not this step,
   # keeps the stacktrace out.
   defp describe(text) when is_binary(text), do: text
+
+  # The errors of the session lock (docs/features/session-lock.md).
+  defp describe({:session_locked, id}) when is_binary(id),
+    do: "session #{id} is open in another process"
+
+  defp describe({:lock_failed, text}) when is_binary(text),
+    do: "could not lock the session: " <> text
+
   defp describe(%_{__exception__: true} = exception), do: message(exception)
 
   defp describe(reason) do

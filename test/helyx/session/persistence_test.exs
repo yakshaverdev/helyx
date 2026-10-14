@@ -154,7 +154,10 @@ defmodule Helyx.Session.PersistenceTest do
       {:ok, _session} = Session.resume(core, sessions_dir: dir)
       await(fn -> memory(sup) < limit end, "supervisor memory under #{limit}")
 
-      assert {:error, {:already_started, _}} = Session.resume(core, sessions_dir: dir)
+      # A link of the file in a second folder passes the lock, so the start
+      # fails in the supervisor (docs/features/session-lock.md).
+      linked = link_session(dir, "big000000000")
+      assert {:error, {:already_started, _}} = Session.resume(core, sessions_dir: linked)
       await(fn -> memory(sup) < limit end, "supervisor memory under #{limit}")
     end
 
@@ -295,7 +298,13 @@ defmodule Helyx.Session.PersistenceTest do
 
     stop_session(session, &Process.exit(&1, :kill))
 
-    {:ok, resumed} = Session.resume(core, sessions_dir: dir)
+    # The kill frees the lock once perl reads the end of its stdin.
+    await(
+      fn -> match?({:ok, _}, Session.resume(core, sessions_dir: dir)) end,
+      "the lock of the killed session to free"
+    )
+
+    resumed = %Session{id: session.id, core: core}
     {:ok, _, _} = Session.subscribe(resumed)
 
     :ok = Session.prompt(resumed, "again")

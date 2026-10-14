@@ -88,7 +88,7 @@ none. The TUI path does not change. `CodingAgent.run/1` picks the client from th
 
 ## Accepted holes
 
-- Two processes on one session: nothing stops a print run and a TUI, or two print runs, from resuming one session at once. Both append to the one file, and neither sees the turns of the other. A session must be open in one process at a time; the writer lock is ticket 579. (Owner decision of 2026-10-14, in #574.)
+- Two processes on one session: since #579 the second open fails with `helyx: session <id> is open in another process` and status 1 (`docs/features/session-lock.md`). (Owner decision of 2026-10-14, in #574.)
 - `--resume` takes the session of the folder that started last (the `ts` of its header) and has a message, as the TUI does; it is not the session that changed last. The id of a resumed session is the name of its file, and a file whose name is not a session id or whose header `--list` does not accept is skipped, as `--list` skips it (#581, #585).
 - The answer goes to stdout as the provider sent it, with no clean pass: a script reads the exact text. Escape sequences in it reach a terminal when stdout is one.
 - A turn that the provider starts by itself before the prompt makes the prompt fail with `:turn_running`; the run then fails with status 1.
@@ -118,6 +118,5 @@ Small items from review rounds 3 to 7 of #491:
 
 - JSON lines output (the Transport plugin).
 - Several prompts in one run. A model switch in print mode.
-- The writer lock of a session (ticket 579).
 - A turn or budget limit.
 - The approval gate and its print-mode rule (#503).
