@@ -235,11 +235,69 @@ defmodule CodingAgent.PrintTest do
       assert Process.whereis(Helyx.Core) == nil
     end
 
-    test "-p does not combine with a resume or the list" do
+    test "-p with --session or --resume continues the session in its folder",
+         %{tmp_dir: dir, sessions: s} do
+      assert {0, "one\n", "helyx: session " <> line} =
+               io("", fn -> CLI.main(["-p", "one", "--model", "fake/echo", dir], halt(self())) end)
+
+      id = String.trim_trailing(line, "\n")
+
+      # --session takes the folder of the header, not the current one.
+      assert {0, "two\n", stderr} =
+               io("", fn -> CLI.main(["-p", "two", "--session", id], halt(self())) end)
+
+      assert stderr == "helyx: session #{id}\n"
+
+      three = "three\n\n<stdin>\npiped\n</stdin>"
+
+      assert {0, ^three <> "\n", ^stderr} =
+               io("piped", fn -> CLI.main(["-p", "three", "--resume", dir], halt(self())) end)
+
+      assert {:ok, resumed} = Helyx.Session.File.resume(s, dir, id: id)
+
+      assert Enum.map(resumed.messages, &{&1.role, Helyx.Message.text(&1)}) ==
+               for(text <- ["one", "two", three], role <- [:user, :assistant], do: {role, text})
+
+      assert Process.whereis(Helyx.Core) == nil
+    end
+
+    test "a resume that fails is one stderr line and 1, inside print mode", %{tmp_dir: dir} do
+      missing = Helyx.Session.Id.new()
+
+      for {argv, line} <- [
+            {["--session", missing], ~s(helyx: no session "#{missing}"\n)},
+            {["--resume", dir],
+             "helyx: could not start the agent: no saved session for this directory; " <>
+               "start one without --resume\n"}
+          ] do
+        assert {1, "", ^line} = io("", fn -> CLI.main(["-p", "x" | argv], halt(self())) end)
+        assert_received {:halt, 1}
+      end
+    end
+
+    test "the session line of a resumed file gets the clean pass", %{tmp_dir: dir, sessions: s} do
+      assert {0, _, _} =
+               io("", fn -> CLI.main(["-p", "one", "--model", "fake/echo", dir], halt(self())) end)
+
+      # --resume picks the newest file of the folder, whatever its name.
+      [path] = Path.wildcard(Path.join([s, "*", "*.jsonl"]))
+      File.rename!(path, Path.join(Path.dirname(path), "a\e[2J\nb.jsonl"))
+
+      assert {0, "two\n", "helyx: session a?[2J b\n"} =
+               io("", fn -> CLI.main(["-p", "two", "--resume", dir], halt(self())) end)
+    end
+
+    test "-p does not combine with the list, and a resume keeps its model and folder" do
       for {argv, text} <- [
-            {["-p", "x", "--resume"], "--print does not combine with --resume; a print run"},
-            {["-p", "x", "--session", "abc"], "--print does not combine with --session"},
-            {["-p", "x", "--list"], "--print does not combine with --list"}
+            {["-p", "x", "--list"], "--print does not combine with --list"},
+            {["-p", "x", "--resume", "--model", "fake/echo"],
+             "--model does not combine with --resume; a resumed session keeps its saved model"},
+            {["-p", "x", "--session", "abc", "--model", "fake/echo"],
+             "--model does not combine with --session"},
+            {["-p", "x", "--session", "abc", "/tmp"],
+             "a directory argument does not combine with --session"},
+            {["-p", "x", "--session", "abc", "--resume"],
+             "--resume does not combine with --session"}
           ] do
         assert {1, "", "helyx: " <> line} = io("", fn -> CLI.main(argv) end)
         assert line =~ text

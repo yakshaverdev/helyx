@@ -9,6 +9,7 @@ helyx -p "fix the failing test"
 cat log | helyx -p "why does this fail"
 helyx --list                    # shows the print run
 helyx --session <id>            # continues it in the TUI
+helyx -p "now run the tests" --session <id>   # or with one more print run
 ```
 
 Decisions (owner, 2026-10-13, in #491):
@@ -20,7 +21,7 @@ Decisions (owner, 2026-10-13, in #491):
   - 1: a bad argument or input, a failed start, a failed turn, an aborted turn, a session that stops, or a last message that stopped at the output limit (`:max_tokens`). At the output limit the text is still printed, and a stderr line says that it was cut. A failed or aborted turn prints nothing on stdout.
   - 143 on SIGTERM and 129 on SIGHUP. The BEAM stops with status 0 on SIGTERM and dies at once on SIGHUP by default, so print mode traps both signals. Its first step installs the trap, before the logger change, the read of stdin, and any output, and the trap is never removed: every print run ends with a halt of the VM, also a failed start, a bad stdin, and an error line. The first signal aborts the turn, waits at most 3 s for the abort, and halts the VM with the status and no flush (`:erlang.halt(status, flush: false)`). The signal path never waits on output: a stdout or stderr pipe that nobody reads, a stdin pipe that stays open, or a start that hangs does not hold the exit. The first SIGTERM or SIGHUP sets the status; later ones are ignored. Every other signal keeps the OTP default, as in a plain VM: SIGQUIT halts at once with 0, SIGUSR1 writes `erl_crash.dump` and halts with 1, also during the abort wait of a SIGTERM or SIGHUP, where it replaces the status of that signal. (Owner decisions of 2026-10-13 and 2026-10-14, after review rounds 2, 3, and 6.)
 - **No timeout inside Helyx.** The caller uses `timeout(1)`, which sends SIGTERM.
-- **Session.** A print run saves a normal session under the sessions directory, and prints `helyx: session <id>` on stderr when the session starts. No opt-out flag.
+- **Session.** A print run saves a normal session under the sessions directory, or appends to the session it resumes, and prints `helyx: session <id>` on stderr when the session starts. No opt-out flag.
 - **Piped stdin.** When stdin is not a terminal, print mode reads it to the end before the agent starts. Input that is not empty is added after the prompt as a block:
 
   ```text
@@ -33,7 +34,7 @@ Decisions (owner, 2026-10-13, in #491):
 
 - **No user.** Nobody can steer or approve. No approval gate exists yet, so the tools run. #503 adds the gate and its print-mode rule.
 - **Refusal.** A last message with the stop reason `:refused` ends the turn normally (outcome `:done`), so the status is 0. Its text is printed, and a stderr line says that the provider refused or filtered the answer, as the TUI says. (Proposed by the worker, kept by the owner on 2026-10-13.)
-- **No resume.** `-p` does not combine with `--resume` or `--session`. (Proposed by the worker, kept by the owner on 2026-10-13; ticket #574 is the follow-up.)
+- **Resume (#574, owner, 2026-10-14).** `-p` combines with `--session <id>` and with `--resume`, through the resume path of the TUI (`CodingAgent.run/1` with `resume:`). The run continues that session with the one prompt, with the same output, stderr lines, signal rules, and exit status. `--session` keeps its rule: the session runs in the folder of its header, and a directory argument is an error. A resumed session keeps its saved model, so `--model` with `--session` or `--resume` stays an error. The session line names the resumed id. No lock: a session must be open in one process at a time (see "Accepted holes"; the lock is ticket 579).
 
 Decision of the worker (not in #491):
 
@@ -41,7 +42,7 @@ Decision of the worker (not in #491):
 
 ## Interface changes
 
-- `CodingAgent.CLI`: the switch `-p TEXT` / `--print TEXT`. It combines with `--model` and a directory argument. It does not combine with `--resume`, `--session`, or `--list`: a print run is one prompt in a new session (ticket #574 for a print run that resumes). A value that starts with `-` stays the value, as for `--session`. `main/2` takes `halt` (default `&:erlang.halt(&1, flush: false)`); with `-p` it runs `Print.main/2`, which ends with `halt` and the status (0, 1, 129, or 143) and does not return. Tests pass a `halt` that reports the status and returns it. The other commands return 0 or 1 as before.
+- `CodingAgent.CLI`: the switch `-p TEXT` / `--print TEXT`. It combines with `--model` and a directory argument, or with `--resume` (and a directory argument), or with `--session`. It does not combine with `--list`. `--session` and the directory argument are checked inside print mode, after the trap. A value that starts with `-` stays the value, as for `--session`. `main/2` takes `halt` (default `&:erlang.halt(&1, flush: false)`); with `-p` it runs `Print.main/2`, which ends with `halt` and the status (0, 1, 129, or 143) and does not return. Tests pass a `halt` that reports the status and returns it. The other commands return 0 or 1 as before.
 - `CodingAgent.run/1` takes the option `:prompt`. With it, `CodingAgent.Print.run/2` is the client in place of the TUI, and `run/1` returns its exit status. Core and the session start and stop as before.
 - `CodingAgent.Print` (new):
   - `main(fun, halt \\ &:erlang.halt(&1, flush: false))` runs `fun` as the whole of print mode. The calling process is the halter: after the trap it only starts the run in a process of its own (`spawn_monitor/1`), waits for its `:DOWN`, and halts. It runs no user code and writes nothing, so no way the run ends can skip the halt (up to the process limit of the VM, see "Accepted holes"). In this order:
@@ -66,12 +67,13 @@ none. The TUI path does not change. `CodingAgent.run/1` picks the client from th
 | ---- | ----- | -------------- | ----- |
 | piped stdin | 1,048,576 bytes (1 MiB), valid UTF-8, read as raw bytes: the device is set to latin1 and read with `:file.read/2` (probed on OTP 28: in unicode mode the device changes the bytes). The session file holds at most 64 MiB, and 1 MiB is about 250,000 tokens, more than the context window of the models that Helyx runs. The read takes at most one byte more than the bound | one line on stderr, status 1, before any application starts | `CodingAgent.Print.prompt/1` |
 | stdin that stays open | not bounded: the read waits for the end of the input. A caller that keeps a pipe open and sends nothing gives `</dev/null`, or `timeout(1)` stops the run with 143 | a signal halts the VM | `CodingAgent.Print.prompt/1` |
+| the session of `--session` or `--resume` | the bounds of `Helyx.Session.File`: at most 256 files of the folder scanned, a header of at most 65,536 bytes, a file of at most 64 MiB, and a heap cap for its decode | the resume error, one stderr line, status 1 | `Helyx.Session.File.resume/3` |
 | `-p` value | valid UTF-8 (the command line check); its length is the bound of the OS on arguments. An empty value is a prompt too: the turn runs with it | the argument error, status 1 | `CodingAgent.CLI` |
 | wait for the end of the turn | none inside Helyx (owner decision); the end of the session ends it, and a signal halts the VM | n/a | `CodingAgent.Print.run/2` |
 | wait for the abort after a signal | 3,000 ms (`abort_ms/0`): the abort releases the provider and the tools, or reports them as not confirmed, and the halt can drop that report; a turn that is not aborted by then is cut by the halt. From the signal to the exit: at most this bound, whatever stdout, stderr, and stdin do, from the first step of `main/2` to the halt | the halt with no abort | `CodingAgent.Print.Signal` |
 | state of the wait | the last assistant message of the turn; the deltas are not kept | n/a | `CodingAgent.Print.run/2` |
 | answer on stdout | the text of one assistant message, as the provider sent it; the provider and its output limit bound it. The write has no time bound: a pipe that nobody reads blocks it, and a signal halts the VM with no flush | n/a | `CodingAgent.Print.run/2` |
-| stderr lines | one line each: a fixed sentence, or a sentence with the turn error, a notice text, or a start error, after the clean pass and the 4,000-byte cap of `CodingAgent.clean_line/1` (a start error goes through `CodingAgent.error_text/1`, which ends in the same pass) | n/a | `CodingAgent.Print` |
+| stderr lines | one line each: a fixed sentence, or a sentence with the session id, the turn error, a notice text, or a start error, after the clean pass and the 4,000-byte cap of `CodingAgent.clean_line/1`, which the one stderr writer of print mode applies to every line | n/a | `CodingAgent.Print` |
 
 ## Ownership
 
@@ -86,10 +88,12 @@ none. The TUI path does not change. `CodingAgent.run/1` picks the client from th
 
 ## Accepted holes
 
+- Two processes on one session: nothing stops a print run and a TUI, or two print runs, from resuming one session at once. Both append to the one file, and neither sees the turns of the other. A session must be open in one process at a time; the writer lock is ticket 579. (Owner decision of 2026-10-14, in #574.)
+- `--resume` takes the session of the folder that started last (the `ts` of its header) and has a message, as the TUI does, whatever the name of its file; it is not the session that changed last. The id of a resumed session is the name of its file. The session line gets the clean pass, so a name with control characters reaches stderr cleaned; the session runs under that name. (Worker decision, #574: the id check of `Helyx.Session.File.Scan.most_recent/3` is Core and outside the ticket.)
 - The answer goes to stdout as the provider sent it, with no clean pass: a script reads the exact text. Escape sequences in it reach a terminal when stdout is one.
 - A turn that the provider starts by itself before the prompt makes the prompt fail with `:turn_running`; the run then fails with status 1.
 - SIGINT (Ctrl+C) keeps the BEAM default: the break menu, or an exit with no abort. `os:set_signal/2` cannot handle SIGINT. (Accepted by the owner.)
-- The trap starts with the first step of print mode. Before it, the VM boots and `CodingAgent.CLI` checks the options and their combination (an argument error or a bad combination writes its line there, with status 1; the directory argument is checked inside print mode); a signal in that span gets the BEAM default. The first step itself is two calls, the swap of the handler and then `:os.set_signal(:sighup, :handle)`: a SIGHUP between them gets the OS default and kills the VM with no status 129, as a SIGHUP during the boot does (the other order does not close the window, because `erl_signal_handler` ignores SIGHUP). No session and no output exist yet. This is the known ceiling of the signal guarantee. (Owner decision of 2026-10-13, after review round 4.)
+- The trap starts with the first step of print mode. Before it, the VM boots and `CodingAgent.CLI` checks the options and their combination (an argument error or a bad combination writes its line there, with status 1; the directory argument and the session of `--session` are checked inside print mode); a signal in that span gets the BEAM default. The first step itself is two calls, the swap of the handler and then `:os.set_signal(:sighup, :handle)`: a SIGHUP between them gets the OS default and kills the VM with no status 129, as a SIGHUP during the boot does (the other order does not close the window, because `erl_signal_handler` ignores SIGHUP). No session and no output exist yet. This is the known ceiling of the signal guarantee. (Owner decision of 2026-10-13, after review round 4.)
 - At the process limit of the VM, a `spawn` of print mode can fail, and the halt can be lost. In the handler (the stop process), gen_event removes the handler, so the signal gives no halt, and the halter's `:finish` call then fails. In the stop (its abort process), the handler is already done, so the halter sleeps and nothing halts. In the halter (the run process), the halter raises before it waits, with no signal. (Owner decision of 2026-10-14, after review round 6.)
 - The halt does not flush: a log line that the logger has not written yet is lost at the halt. The lines of print mode are written by the run process before it ends, so before the halt. The log line of a raise in the run process can be dropped by the halt too.
 - After a signal, output that has not reached the pipe is lost: the halt does not flush it. The answer of a run that a signal ends is not complete.
@@ -113,6 +117,7 @@ Small items from review rounds 3 to 7 of #491:
 ## Out of scope
 
 - JSON lines output (the Transport plugin).
-- Several prompts in one run, and a print run that resumes a session (ticket #574).
+- Several prompts in one run. A model switch in print mode.
+- The writer lock of a session (ticket 579).
 - A turn or budget limit.
 - The approval gate and its print-mode rule (#503).

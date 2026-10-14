@@ -30,7 +30,7 @@ helyx -p "fix the failing test"           # the answer on stdout
 cat log | helyx -p "why does this fail"   # piped input joins the prompt, at most 1 MiB
 ```
 
-`-p` runs one prompt in a new session with no TUI. stdout holds only the answer. The session id, notices, and errors go to stderr. The status is 0 for a normal end, 1 for a failed or aborted turn or an answer cut at the token limit, 143 on SIGTERM, and 129 on SIGHUP. Helyx has no timeout of its own; use `timeout`. The session is saved, so `helyx --session <id>` continues it in the TUI. The design is in `docs/features/print-mode.md`.
+`-p` runs one prompt with no TUI, in a new session, or with `--resume` or `--session <id>` in the session they pick (one process per session at a time). stdout holds only the answer. The session id, notices, and errors go to stderr. The status is 0 for a normal end, 1 for a failed or aborted turn or an answer cut at the token limit, 143 on SIGTERM, and 129 on SIGHUP. Helyx has no timeout of its own; use `timeout`. The session is saved, so `helyx --session <id>` continues it in the TUI, and `helyx -p "..." --session <id>` with one more prompt. The design is in `docs/features/print-mode.md`.
 
 ## Keys
 

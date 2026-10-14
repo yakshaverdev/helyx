@@ -162,7 +162,7 @@ defmodule CodingAgent.Print do
         wait(ref, m)
 
       {:helyx_event, %Event{type: :notice, data: %{text: text}}} ->
-        stderr(CodingAgent.clean_line(text))
+        stderr(text)
         wait(ref, last)
 
       {:helyx_event, %Event{type: :turn_end, data: data}} ->
@@ -197,13 +197,14 @@ defmodule CodingAgent.Print do
   defp status(_last), do: 0
 
   defp fail(text) when is_binary(text) do
-    stderr(CodingAgent.clean_line(text))
+    stderr(text)
     1
   end
 
   defp fail(reason), do: fail(CodingAgent.error_text(reason))
 
-  defp stderr(line), do: IO.puts(:stderr, "helyx: " <> line)
+  # Every line of print mode gets the clean pass and the cap here.
+  defp stderr(line), do: IO.puts(:stderr, "helyx: " <> CodingAgent.clean_line(line))
 
   defmodule Signal do
     @moduledoc false
