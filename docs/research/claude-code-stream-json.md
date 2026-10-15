@@ -452,7 +452,7 @@ Runs on 2026-10-13 with `claude` 2.1.296 at `/opt/homebrew/bin/claude`, with the
 ### Not run
 
 - An interrupt while a sub-agent call streams, with the totals compared. The note "A sub-agent call cut by an interrupt is in no total" above is the run of #557 for this case.
-- A background sub-agent stopped by an interrupt during its turn.
+- A background sub-agent stopped by an interrupt during its turn: run on 2026-10-15, see "A background sub-agent and the totals".
 
 ## Compaction (2026-10-13, #552)
 
@@ -498,3 +498,32 @@ Two runs on 2026-10-13 with version `2.1.296`, `--model=haiku`, and the flags ab
 ### Not run
 
 - `/compact` with instructions: the text after the command was not checked in the summary.
+
+## A background sub-agent and the totals (2026-10-15, #566)
+
+Runs on 2026-10-15 with `claude` 2.1.296 at `/opt/homebrew/bin/claude`, with the flags of `Helyx.Provider.ClaudeCode` (`--disallowedTools=Bash,Monitor` included), `--strict-mcp-config`, and `--model=haiku` (the lines reported `claude-haiku-5-5`, also for the sub-agent), each in an empty temporary directory with small text files. The prompt asked for one `Agent` call with `run_in_background: true` whose sub-agent reads 30 files (3 in run C), one `Read` per message. A Python script sent the `interrupt` control request (`cancel_queued: true`), then one more prompt on the same process. 3 runs, 1 of each kind. "Observed" means one of these runs, not a contract.
+
+- A: interrupt 2 s after the `Async agent launched successfully` tool result, while the main loop's turn ran.
+- B: the main loop replied and ended its turn; interrupt 3 s after its `result`.
+- C: no interrupt; the sub-agent ran to its end.
+
+### The lines of a stopped background sub-agent (observed, A and B)
+
+- At the interrupt, in this order: `task_updated` (`patch.status` `killed`), `task_notification` (`status` `stopped`, no `usage`), `background_tasks_changed` with an empty list, the `control_response` (`still_queued` `[]`, `cancelled` `[]`), and a `user` line with `parent_tool_use_id` set to the `Agent` id and the text `[Request interrupted by user]`.
+- In A the main loop's call streamed too: a `user` line `[Request interrupted by user]` with `parent_tool_use_id` `null`, then the `result` with `error_during_execution` and `terminal_reason` `aborted_streaming`. In B no `result` came, as in the run of 2026-09-29 ("Interrupt with `cancel_queued: true`").
+- No `stream_event` line had a `parent_tool_use_id`, so no line showed a sub-agent call in flight. The sub-agent's text was `[Request interrupted by user]`, not `[Request interrupted by user for tool use]`: in A the sub-agent had written no `assistant` line yet, and in B the interrupt came 0.94 s after the tool result of its second `Read`, while a sub-agent call took about 1.5 s. So the sub-agent had a call in flight in both runs (inferred).
+
+### The totals after the stop (observed, A and B)
+
+- **The cut sub-agent call is in no total.** `modelUsage` adds up over the process ("The `modelUsage` key of an alias"). In B, the three input counts of the next turn's `modelUsage` were the ones before the interrupt plus the two sub-agent calls that ended plus the next turn's call, exactly: `cacheReadInputTokens` 122080 = 62018 + 6769 + 21209 + 32084, and `cacheCreationInputTokens` 18476 = 1075 + 14440 + 2921 + 40. In A, the four counts of the next `modelUsage` were the ones of the `aborted_streaming` result plus the next turn's call, exactly. The output count of a sub-agent call cannot be checked this way (see the next section). Neither run had a line with the counts or the cost of the cut call.
+- So after B, the cost of the next turn (`total_cost_usd` 0.004105425 minus 0.00116858 at the `result` before the interrupt) holds the two sub-agent calls that ended and leaves out the cut one, and no `result` with a `terminal_reason` came for the interrupt.
+
+### The token counts of a sub-agent (observed, A, B, C)
+
+- **The `usage` of every `result` held only the main loop's calls, and `modelUsage` held the sub-agent's ended calls too.** In C, the `result` of the task-notification turn (`origin` `kind` `task-notification`) had `usage` `cache_read_input_tokens` 31958, its own call only, and `modelUsage` `cacheReadInputTokens` 170021 = 62014 (the first `result`) + 6769 + 21121 + 23998 + 24161 (the four sub-agent calls) + 31958. `inputTokens` and `cacheCreationInputTokens` agreed the same way. `outputTokens` did not: it was 1158, and the two `result` lines held 563 + 181, so the sub-agent added 414. The `output_tokens` of an `assistant` line is the count at the start of its call (in C the main loop's two lines had 6 and 3, its first `result` 563), and no sub-agent `stream_event` came, so no line gave the final output count of a sub-agent call to check it against.
+- `task_progress` and the `task_notification` of a completed sub-agent carry `usage.total_tokens` (24355 at the end in C). It was near the four counts of the sub-agent's last call (24274), not the sum of its calls (about 93,600), so it is not a token sum. A stopped sub-agent's `task_notification` had no `usage`.
+
+### Not run
+
+- An interrupt that stops a background sub-agent while the main loop waits on a plain tool, so that the `result` has `aborted_tools` with no `Agent` call open.
+- A sub-agent on another model than the main loop (two `modelUsage` keys).
