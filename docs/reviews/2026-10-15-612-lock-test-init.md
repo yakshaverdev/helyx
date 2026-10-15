@@ -28,3 +28,7 @@ Simplify, four agents. Applied: `:sys.get_state(sup)` replaces the poll on the s
 | 1.6 | failure path | If the init fails, the assertion shows `{:ok, _}`, not the cause | Not changed: the test still fails, and a failed init is not this ticket |
 
 Round 1 reproduced no defect, so the loop ends.
+
+## Gate (orchestrator, 2026-10-15)
+
+Codex adversarial review on `45ebfac2` (rebased on `8e7d4e3c`). Gate r1 (Codex): verdict approve, no finding. It did not run tests (read-only workspace).
