@@ -218,7 +218,7 @@ defmodule Helyx.TUI.ViewModelTest do
       messages: messages,
       turn: nil,
       model: "test/model",
-      queue: %{steers: 0, follow_ups: 0}
+      queue: %{steers: 0, follow_ups: 0, running: 0, held: 0, waiting: 0}
     }
 
     joined = ViewModel.from_snapshot(snapshot)
@@ -264,7 +264,7 @@ defmodule Helyx.TUI.ViewModelTest do
         messages: [user("hi"), answer],
         turn: nil,
         model: "test/model",
-        queue: %{steers: 0, follow_ups: 0}
+        queue: %{steers: 0, follow_ups: 0, running: 0, held: 0, waiting: 0}
       })
 
     {cells(live), cells(joined)}
@@ -437,7 +437,7 @@ defmodule Helyx.TUI.ViewModelTest do
       ],
       turn: nil,
       model: "test/model",
-      queue: %{steers: 0, follow_ups: 0}
+      queue: %{steers: 0, follow_ups: 0, running: 0, held: 0, waiting: 0}
     }
 
     assert ["▌ see [unsupported block: image]", "⚙ read", "  [unsupported block: image]"] ==
@@ -451,7 +451,7 @@ defmodule Helyx.TUI.ViewModelTest do
       messages: [],
       turn: %{id: "t", partial: %Message{role: :from_a_newer_core, content: []}, running: []},
       model: "test/model",
-      queue: %{steers: 0, follow_ups: 0}
+      queue: %{steers: 0, follow_ups: 0, running: 0, held: 0, waiting: 0}
     }
 
     assert ViewModel.from_snapshot(snapshot).streaming == nil
@@ -472,7 +472,7 @@ defmodule Helyx.TUI.ViewModelTest do
         running: []
       },
       model: "test/model",
-      queue: %{steers: 0, follow_ups: 0}
+      queue: %{steers: 0, follow_ups: 0, running: 0, held: 0, waiting: 0}
     }
 
     vm = ViewModel.from_snapshot(snapshot)

@@ -327,7 +327,7 @@ defmodule Helyx.Session.HandsTest do
       hands = start_hands(core, dir: dir)
       background(hands, "c1", %{"gate" => gate, "handles" => [{:report, self()}]})
 
-      assert_receive {:tool_result, "t1", "c1", {:ok, start}}
+      assert_receive {:tool_result, "t1", "c1", {:started, start}}
 
       [_, id, path] =
         Regex.run(
@@ -356,7 +356,7 @@ defmodule Helyx.Session.HandsTest do
     test "a crash of the run ends it with an error", %{core: core, dir: dir, gate: gate} do
       hands = start_hands(core, dir: dir)
       background(hands, "c1", %{"gate" => gate})
-      assert_receive {:tool_result, "t1", "c1", {:ok, _start}}
+      assert_receive {:tool_result, "t1", "c1", {:started, _start}}
       assert_receive {:waiting, pid}
 
       {_, log} =
@@ -379,7 +379,7 @@ defmodule Helyx.Session.HandsTest do
       pids =
         for n <- 1..16 do
           background(hands, "c#{n}", %{"gate" => gate})
-          assert_receive {:tool_result, "t1", _, {:ok, _start}}
+          assert_receive {:tool_result, "t1", _, {:started, _start}}
           assert_receive {:waiting, pid}
           pid
         end
@@ -393,7 +393,7 @@ defmodule Helyx.Session.HandsTest do
       send(hd(pids), :go)
       assert_receive {:background_end, _finish}
       background(hands, "c18", %{"gate" => gate})
-      assert_receive {:tool_result, "t1", "c18", {:ok, _start}}
+      assert_receive {:tool_result, "t1", "c18", {:started, _start}}
     end
 
     test "a call takes one place, and a start answer needs one", %{
@@ -418,7 +418,7 @@ defmodule Helyx.Session.HandsTest do
       # The places of both are free again.
       for n <- 1..16 do
         background(hands, "d#{n}", %{"gate" => gate})
-        assert_receive {:tool_result, "t1", _, {:ok, _start}}
+        assert_receive {:tool_result, "t1", _, {:started, _start}}
       end
     end
 
@@ -461,7 +461,7 @@ defmodule Helyx.Session.HandsTest do
 
       for n <- 1..16 do
         background(hands, "d#{n}", %{"gate" => gate})
-        assert_receive {:tool_result, "t1", _, {:ok, _start}}
+        assert_receive {:tool_result, "t1", _, {:started, _start}}
       end
     end
 

@@ -19,7 +19,7 @@ defmodule Helyx.Session.StreamEventsTest do
               messages: [],
               turn: nil,
               model: "test/ok",
-              queue: %{steers: 0, follow_ups: 0}
+              queue: %{steers: 0, follow_ups: 0, running: 0, held: 0, waiting: 0}
             }, _} = Session.subscribe(session)
   end
 

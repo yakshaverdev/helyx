@@ -49,7 +49,7 @@ defmodule Helyx.TUI.FooterUsageTest do
       messages: messages,
       turn: nil,
       model: model,
-      queue: %{steers: 0, follow_ups: 0}
+      queue: %{steers: 0, follow_ups: 0, running: 0, held: 0, waiting: 0}
     })
   end
 

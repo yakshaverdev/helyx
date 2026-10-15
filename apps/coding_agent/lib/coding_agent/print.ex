@@ -1,16 +1,27 @@
 defmodule CodingAgent.Print do
   @moduledoc """
   Print mode, a client of one session: one prompt in, the final answer out
-  on stdout, and an exit status. The session id, the notices, and the
-  errors go to stderr. Piped stdin (stdin is not a terminal) is added to the
-  prompt as a block, up to 1 MiB of UTF-8. Every print run ends with a halt
-  of the VM. The first SIGTERM or SIGHUP aborts the turn, waits at most
-  `abort_ms/0` for the abort, and halts the VM with 143 or 129 and no
+  on stdout, and an exit status. A background run that is live, or its end
+  that waits for a turn, holds print mode, unless the session holds the
+  ends; the answer is the one of the last turn. The session id, the notices, and the
+  errors go to stderr. Piped stdin (stdin is not a terminal) is added to
+  the prompt as a block, up to 1 MiB of UTF-8. Every print run ends with a
+  halt of the VM. The first SIGTERM or SIGHUP aborts the turn, waits at
+  most `abort_ms/0` for the abort, and halts the VM with 143 or 129 and no
   flush, whatever stdout and stderr do. The design is in
   `docs/features/print-mode.md`.
   """
 
   alias Helyx.{Event, Message, Session}
+
+  defmodule Wait do
+    @moduledoc false
+    # The state of the wait of `run/2`: `last` is the last assistant message
+    # of the turn, `queue` the last counts of the session (`queue_update`),
+    # and `idle?` true from a normal turn end that leaves the wait to the
+    # next turn.
+    defstruct [:last, :queue, idle?: false]
+  end
 
   # About 250,000 tokens, more than the context window of the models Helyx
   # runs, and far under the 64 MiB of a session file.
@@ -137,52 +148,88 @@ defmodule CodingAgent.Print do
   end
 
   @doc """
-  Sends `prompt` to `session`, waits for the end of its turn, prints the
-  answer, and returns the exit status: 0 for a normal end, 1 for a failed
-  or aborted turn, an answer cut at the output limit, or a session that
-  stops. It must run inside `main/2`, which a signal uses to abort `session`. The
-  caller aborts the turn and stops Core after it.
+  Sends `prompt` to `session`, waits until the session settles, prints the
+  answer of the last turn, and returns the exit status: 0 for a normal
+  end, 1 for a failed or aborted turn, an answer cut at the output limit,
+  a session that stops, or background runs whose ends hold. While the
+  session counts a running background run or an end that waits for a
+  turn, a normal turn end does not end the wait: the end opens the next
+  turn (`docs/features/print-background-wait.md`). It must run inside `main/2`,
+  which a signal uses to abort `session`. The caller aborts the turn and
+  stops Core after it.
   """
   @spec run(Session.t(), String.t()) :: status()
   def run(session, prompt) do
     :ok = :gen_event.call(:erl_signal_server, __MODULE__.Signal, {:session, session})
 
-    with {:ok, _snapshot, ref} <- Session.subscribe(session),
+    with {:ok, snapshot, ref} <- Session.subscribe(session),
          stderr("session " <> session.id),
          :ok <- Session.prompt(session, prompt) do
-      wait(ref, nil)
+      wait(ref, %Wait{queue: snapshot.queue})
     else
       {:error, reason} -> fail("could not run the prompt: " <> inspect(reason))
     end
   end
 
-  defp wait(ref, last) do
+  defp wait(ref, state) do
     receive do
       {:helyx_event, %Event{type: :message_end, data: %{message: %Message{role: :assistant} = m}}} ->
-        wait(ref, m)
+        wait(ref, %{state | last: m})
+
+      # While idle, a turn opens after the `queue_update` of its ends, so
+      # the counts alone end the wait only with an end that holds.
+      {:helyx_event, %Event{type: :queue_update, data: queue}} ->
+        if queue.held > 0 and state.idle?,
+          do: settle(ref, %{state | queue: queue}),
+          else: wait(ref, %{state | queue: queue})
 
       {:helyx_event, %Event{type: :notice, data: %{text: text}}} ->
         stderr(text)
-        wait(ref, last)
+        wait(ref, state)
+
+      {:helyx_event, %Event{type: :turn_start}} ->
+        wait(ref, %{state | last: nil, idle?: false})
+
+      {:helyx_event, %Event{type: :turn_end, data: %{outcome: :done}}} ->
+        settle(ref, state)
 
       {:helyx_event, %Event{type: :turn_end, data: data}} ->
-        finish(data, last)
+        finish(data)
 
       {:helyx_event, %Event{}} ->
-        wait(ref, last)
+        wait(ref, state)
 
       {:DOWN, ^ref, :process, _pid, reason} ->
         fail({:session_down, Session.end_reason(reason)})
     end
   end
 
-  defp finish(%{outcome: :done}, last) do
+  # After a normal turn end: a running run, or an end that waits for a
+  # turn, holds the wait; a held end never opens a turn, as no user sends a
+  # prompt.
+  defp settle(ref, %Wait{queue: queue, last: last} = state) do
+    case {queue.running + queue.waiting, queue.held} do
+      {0, 0} ->
+        answer(last)
+
+      {n, held} when held > 0 ->
+        _status = answer(last)
+        stderr("background runs whose end did not reach the agent: #{n + held}")
+        1
+
+      {n, 0} ->
+        stderr("waiting for background runs: #{n}")
+        wait(ref, %{state | idle?: true})
+    end
+  end
+
+  defp answer(last) do
     IO.puts(if last, do: Message.text(last), else: "")
     status(last)
   end
 
-  defp finish(%{outcome: :aborted}, _last), do: fail("the turn was aborted")
-  defp finish(%{outcome: :error, error: text}, _last), do: fail("the turn failed: " <> text)
+  defp finish(%{outcome: :aborted}), do: fail("the turn was aborted")
+  defp finish(%{outcome: :error, error: text}), do: fail("the turn failed: " <> text)
 
   defp status(%Message{stop_reason: :max_tokens}) do
     stderr("the answer stopped at the token limit")

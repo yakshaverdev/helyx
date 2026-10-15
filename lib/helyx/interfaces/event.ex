@@ -36,9 +36,18 @@ defmodule Helyx.Event do
       4000 bytes, and logs the reason (ADR 0006 §2). A client shows it as
       it is. An aborted or failed turn ends after a `:tool_execution_end`
       with an `aborted` error result for each open tool call
-    * `:queue_update` – `%{steers: non_neg_integer, follow_ups: non_neg_integer}`,
-      emitted whenever the session's message queues change; the drain at a
-      normal turn end goes out between turns, with a nil turn id
+    * `:queue_update` – `%{steers: non_neg_integer, follow_ups: non_neg_integer,
+      running: non_neg_integer, held: non_neg_integer, waiting:
+      non_neg_integer}`, emitted whenever one of the counts changes; the
+      drain at a normal turn end goes out between turns, with a nil turn
+      id. `running` counts the background runs from their start answer to
+      their end; a resume starts it at 0. `held` counts the ends of
+      background runs that wait for the next prompt and open no turn by
+      themselves: after an abort, a failed turn, a resume, or an end that a
+      turn gave back, until a turn that is not a compaction opens.
+      `waiting` counts the other ends that no turn took yet: the ends that
+      wait for a turn, and the ends that a turn sent and no `user_message`
+      took or gave back (`docs/features/background-bash.md`)
     * `:queue_dropped` – `%{texts: [String.t()]}`: an abort or a failed
       turn emptied the queues, and the queued texts go back to the client,
       the steers first, each queue in its order (a steer that the

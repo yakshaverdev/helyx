@@ -14,7 +14,9 @@ defmodule Helyx.Session.Snapshot do
     * `turn` – nil, or the running turn: its `id`, and the assistant
       message so far as `partial` (nil before the first stream event).
     * `model` – the session's `provider/model` ref.
-    * `queue` – the counts of the queued steers and follow-ups.
+    * `queue` – the counts of the queued steers and follow-ups, the
+      running background runs, and the held and waiting background ends, as
+      in `queue_update` (`Helyx.Event`).
 
   A client works with one Helyx version and is a tolerant reader within it:
   it ignores an unknown event type and an unknown field (ADR 0006, revision
@@ -32,6 +34,12 @@ defmodule Helyx.Session.Snapshot do
           messages: [Helyx.Message.t()],
           turn: turn() | nil,
           model: String.t(),
-          queue: %{steers: non_neg_integer(), follow_ups: non_neg_integer()}
+          queue: %{
+            steers: non_neg_integer(),
+            follow_ups: non_neg_integer(),
+            running: non_neg_integer(),
+            held: non_neg_integer(),
+            waiting: non_neg_integer()
+          }
         }
 end
