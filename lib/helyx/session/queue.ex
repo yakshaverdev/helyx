@@ -7,6 +7,9 @@ defmodule Helyx.Session.Queue do
   # Each queue holds at most 32, and the queued steers and the ledger share
   # the 32 of the steers (docs/features/session-lifecycle.md, "Bounds").
   #
+  # `running` counts the background runs from their start answer to their
+  # end, which then waits in `ends`; a resume starts it at 0, as its lost
+  # runs are not live.
   # `ends` are the background ends that wait, in arrival order, and `hold`
   # is true from an abort, a failed turn, a resume, or an end given back
   # until a turn that is not a compaction opens: the ends then wait and wake nothing
@@ -39,7 +42,13 @@ defmodule Helyx.Session.Queue do
 
   @limit 32
 
-  defstruct steers: [], follow_ups: [], sent: [], ends: [], hold: false, rejected: false
+  defstruct steers: [],
+            follow_ups: [],
+            sent: [],
+            ends: [],
+            hold: false,
+            rejected: false,
+            running: 0
 
   @type text :: String.t() | {:end, String.t()}
   @type entry ::
@@ -50,7 +59,8 @@ defmodule Helyx.Session.Queue do
           sent: [entry()],
           ends: [String.t()],
           hold: boolean(),
-          rejected: boolean()
+          rejected: boolean(),
+          running: non_neg_integer()
         }
   @type effect ::
           {:take, String.t()} | {:notice, String.t(), String.t()} | {:dropped, [String.t()]}
@@ -71,6 +81,15 @@ defmodule Helyx.Session.Queue do
   # Whether one more steer fits beside the queued and the sent steers.
   @spec room?(t()) :: boolean()
   def room?(%__MODULE__{steers: steers, sent: sent}), do: length(steers) + length(sent) < @limit
+
+  @spec started(t()) :: t()
+  def started(%__MODULE__{running: running} = queue), do: %{queue | running: running + 1}
+
+  # Each end follows one start (`Helyx.Session.Hands`), so `running` is
+  # above 0 here.
+  @spec ended(t(), String.t()) :: t()
+  def ended(%__MODULE__{running: running} = queue, text) when running > 0,
+    do: push_end(%{queue | running: running - 1}, text)
 
   @spec push_end(t(), String.t()) :: t()
   def push_end(%__MODULE__{ends: ends} = queue, text), do: %{queue | ends: ends ++ [text]}
@@ -99,15 +118,30 @@ defmodule Helyx.Session.Queue do
   def open(%__MODULE__{} = queue), do: %{queue | hold: false, rejected: false}
 
   # The counts that a client sees (`queue_update`, the snapshot): the
-  # queued steers and follow-ups, and the ends that hold, which open no
-  # turn by themselves.
-  @spec counts(t()) ::
-          %{steers: non_neg_integer(), follow_ups: non_neg_integer(), held: non_neg_integer()}
-  def counts(%__MODULE__{steers: steers, follow_ups: follow_ups, ends: ends, hold: hold}),
-    do: %{steers: length(steers), follow_ups: length(follow_ups), held: held(ends, hold)}
+  # queued steers and follow-ups, the running background runs, and the ends
+  # that no turn took yet, split into the ends that hold, which open no
+  # turn by themselves, and the others (`waiting`): the ends that wait for
+  # a turn, and the ends that a turn sent and no `user_message` took or
+  # gave back.
+  @spec counts(t()) :: %{
+          steers: non_neg_integer(),
+          follow_ups: non_neg_integer(),
+          running: non_neg_integer(),
+          held: non_neg_integer(),
+          waiting: non_neg_integer()
+        }
+  def counts(%__MODULE__{ends: ends} = queue) do
+    {held, waiting} = if queue.hold, do: {length(ends), 0}, else: {0, length(ends)}
+    sent = Enum.count(queue.sent, &match?({_from, _id, {:end, _text}, s} when s != :settled, &1))
 
-  defp held(ends, true), do: length(ends)
-  defp held(_ends, false), do: 0
+    %{
+      steers: length(queue.steers),
+      follow_ups: length(queue.follow_ups),
+      running: queue.running,
+      held: held,
+      waiting: waiting + sent
+    }
+  end
 
   # The texts of the next turn: every queued steer, or with none the first
   # follow-up. Each follow-up is a turn of its own.

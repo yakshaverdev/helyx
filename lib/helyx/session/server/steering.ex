@@ -42,7 +42,10 @@ defmodule Helyx.Session.Server.Steering do
   # A background end goes to a submitted turn, or waits for a turn that
   # can take it (`send_ends/1`).
   def push_end(%State{} = state, text),
-    do: send_ends(put(state, {Queue.push_end(state.queue, text), []}))
+    do: send_ends(put(state, {Queue.ended(state.queue, text), []}))
+
+  # A background run started; its end comes through `push_end/2`.
+  def started(%State{} = state), do: put(state, {Queue.started(state.queue), []})
 
   # A turn that takes the ends opened, a prompt's or the provider's, not a
   # compaction: the ends no longer hold, and a submitted turn takes them.
@@ -50,11 +53,16 @@ defmodule Helyx.Session.Server.Steering do
 
   # In a submitted turn that is not a compaction, the waiting ends go to
   # the provider process as steers, in order, while the 32 steers have
-  # room; the rest wait for the next turn.
+  # room; the rest wait for the next turn. The end moves from the ends to
+  # the ledger in one step, so `waiting` (`Queue.counts/1`) keeps it.
   def send_ends(%State{activity: %Turn{phase: :submitted, compact: nil}} = state) do
     case Queue.next_end(state.queue) do
-      {text, queue} -> send_ends(send_steer({:end, text}, put(state, {queue, []})))
-      nil -> state
+      {text, queue} ->
+        sent = send_steer({:end, text}, %{state | queue: queue})
+        send_ends(put(state, {sent.queue, []}))
+
+      nil ->
+        state
     end
   end
 

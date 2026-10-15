@@ -25,12 +25,12 @@ defmodule Helyx.Session.QueueTest do
         |> push!(:follow_ups, "f2")
         |> push!(:steers, "s2")
 
-      assert Queue.counts(queue) == %{steers: 2, follow_ups: 2, held: 0}
+      assert Queue.counts(queue) == %{steers: 2, follow_ups: 2, running: 0, held: 0, waiting: 0}
       assert {["s1", "s2"], queue} = Queue.drain(queue)
       assert {["f1"], queue} = Queue.drain(queue)
       assert {["f2"], queue} = Queue.drain(queue)
       assert {[], drained} = Queue.drain(queue)
-      assert Queue.counts(drained) == %{steers: 0, follow_ups: 0, held: 0}
+      assert Queue.counts(drained) == %{steers: 0, follow_ups: 0, running: 0, held: 0, waiting: 0}
     end
 
     test "each queue holds at most 32 entries, and a full queue does not block the other" do
@@ -38,7 +38,7 @@ defmodule Helyx.Session.QueueTest do
       assert Queue.push(full, :steers, "s33") == {:error, :queue_full}
       refute Queue.room?(full)
       assert {:ok, queue} = Queue.push(full, :follow_ups, "f1")
-      assert Queue.counts(queue) == %{steers: 32, follow_ups: 1, held: 0}
+      assert Queue.counts(queue) == %{steers: 32, follow_ups: 1, running: 0, held: 0, waiting: 0}
 
       text = String.duplicate("折🚀", 1000)
       full = Enum.reduce(1..32, %Queue{}, fn _n, queue -> push!(queue, :follow_ups, text) end)
@@ -189,7 +189,7 @@ defmodule Helyx.Session.QueueTest do
       assert {aborted, [{:notice, "t1", "more"}, {:dropped, ["s", "f"]}]} =
                Queue.end_turn(queue, "t1", false)
 
-      assert Queue.counts(aborted) == %{steers: 0, follow_ups: 0, held: 0}
+      assert Queue.counts(aborted) == %{steers: 0, follow_ups: 0, running: 0, held: 0, waiting: 0}
       assert {_queue, [{:dropped, ["s", "f"]}]} = Queue.abort(queue)
     end
 
@@ -203,7 +203,7 @@ defmodule Helyx.Session.QueueTest do
 
     test "stay at the end of the provider process", %{queue: queue} do
       assert {queue, []} = Queue.provider_down(queue)
-      assert Queue.counts(queue) == %{steers: 1, follow_ups: 1, held: 0}
+      assert Queue.counts(queue) == %{steers: 1, follow_ups: 1, running: 0, held: 0, waiting: 0}
       refute open?(queue)
     end
   end
@@ -225,13 +225,22 @@ defmodule Helyx.Session.QueueTest do
       assert {["e1"], %Queue{ends: []}} = Queue.drain_ends(queue)
     end
 
-    test "count as held only while they hold" do
+    test "count as held only while they hold, else as waiting" do
       queue = Queue.push_end(%Queue{}, "e1")
-      assert Queue.counts(queue).held == 0
+      assert %{held: 0, waiting: 1} = Queue.counts(queue)
       {held, _effects} = Queue.abort(queue)
-      assert Queue.counts(held).held == 1
+      assert %{held: 1, waiting: 0} = Queue.counts(held)
       assert Queue.counts(Queue.push_end(held, "e2")).held == 2
-      assert Queue.counts(Queue.open(held)).held == 0
+      assert %{held: 0, waiting: 1} = Queue.counts(Queue.open(held))
+    end
+
+    test "a run counts as running from its start to its end, which then waits" do
+      queue = %Queue{} |> Queue.started() |> Queue.started()
+      assert %{running: 2, waiting: 0} = Queue.counts(queue)
+      queue = Queue.ended(queue, "e1")
+      assert %{running: 1, waiting: 1} = Queue.counts(queue)
+      assert queue.ends == ["e1"]
+      assert_raise FunctionClauseError, fn -> Queue.ended(%Queue{}, "e2") end
     end
 
     test "an end goes to a turn only while one more steer fits" do

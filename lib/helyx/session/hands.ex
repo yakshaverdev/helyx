@@ -26,7 +26,7 @@ defmodule Helyx.Session.Hands do
   deadlines are in `docs/features/tool-resource-release.md`.
 
   A tool call can go on in the background (`Helyx.Tool.background/0`,
-  `Helyx.Tool.started/1`): its start answer is the result of the call, and
+  `Helyx.Tool.started/1`): its start answer is a `{:started, text}` result, and
   its Task leaves its turn, out of reach of `request_cancel/2` and `kill/3`.
   Its end follows its release as `{:background_end, text}`
   (`docs/features/background-bash.md`).
@@ -189,7 +189,7 @@ defmodule Helyx.Session.Hands do
         {:reply, :ok, state}
 
       {{ref, {task, turn_id, call_id, tool}}, %{^pid => id}} ->
-        send(state.session, outcome(turn_id, call_id, {:ok, Background.start(id, text)}))
+        send(state.session, outcome(turn_id, call_id, {:started, Background.start(id, text)}))
         tasks = Map.put(state.tasks, ref, {task, nil, {:background, id}, tool})
         {:reply, :ok, %{state | tasks: tasks}}
 

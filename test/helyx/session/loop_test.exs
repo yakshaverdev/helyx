@@ -412,7 +412,7 @@ defmodule Helyx.Session.LoopTest do
 
     first = collect_until(:turn_end)
     assert user_texts(first) == ["hello"]
-    assert queue_counts(first) == [%{steers: 0, follow_ups: 1, held: 0}]
+    assert queue_counts(first) == [%{steers: 0, follow_ups: 1, running: 0, held: 0, waiting: 0}]
 
     assert_receive {:waiting, stream}
     send(stream, :go)
@@ -420,7 +420,7 @@ defmodule Helyx.Session.LoopTest do
     assert [:queue_update, :turn_start | _] = Enum.map(second, & &1.type)
     assert List.first(second).turn_id == nil
     assert user_texts(second) == ["next"]
-    assert queue_counts(second) == [%{steers: 0, follow_ups: 0, held: 0}]
+    assert queue_counts(second) == [%{steers: 0, follow_ups: 0, running: 0, held: 0, waiting: 0}]
   end
 
   test "each queued follow-up opens its own turn, in order", %{core: core} do
@@ -500,7 +500,14 @@ defmodule Helyx.Session.LoopTest do
     events = collect_until(:turn_end)
     assert stop_reason(events) == :aborted
     assert of_type(events, :queue_dropped) == [%{texts: ["f"]}]
-    assert List.last(queue_counts(events)) == %{steers: 0, follow_ups: 0, held: 0}
+
+    assert List.last(queue_counts(events)) == %{
+             steers: 0,
+             follow_ups: 0,
+             running: 0,
+             held: 0,
+             waiting: 0
+           }
 
     refute_receive {:helyx_event, %Event{type: :turn_start}}, 100
   end
@@ -527,7 +534,7 @@ defmodule Helyx.Session.LoopTest do
         data
       end
 
-    assert List.last(counts) == %{steers: 0, follow_ups: 32, held: 0}
+    assert List.last(counts) == %{steers: 0, follow_ups: 32, running: 0, held: 0, waiting: 0}
 
     # One over the limit is rejected, changes nothing, and emits no event.
     assert Session.steer(session, "s33") == {:error, :queue_full}

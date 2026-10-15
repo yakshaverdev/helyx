@@ -212,6 +212,13 @@ defmodule Helyx.Session.Server do
     end
   end
 
+  # The hands' start answer of a background run: the run counts from here,
+  # also when its call is no longer current, and its end counts down
+  # (`{:background_end, text}`). The transcript and the provider get a
+  # plain `:ok` result.
+  def handle_info({:tool_result, turn_id, call_id, {:started, text}}, state),
+    do: handle_info({:tool_result, turn_id, call_id, {:ok, text}}, Steering.started(state))
+
   # The hands' result of the running Helyx tool.
   def handle_info(
         {:tool_result, turn_id, call_id, result},

@@ -17,7 +17,8 @@ defmodule Helyx.Session.ProviderProcessToolsTest do
       Connected,
       Helyx.Test.PrepareContext,
       Helyx.Test.Tool.Upcase,
-      Helyx.Test.Tool.Slow
+      Helyx.Test.Tool.Slow,
+      Helyx.Test.Tool.Background
     ]
 
     start_supervised!({Helyx.Core, name: core, plugins: plugins})
@@ -214,5 +215,38 @@ defmodule Helyx.Session.ProviderProcessToolsTest do
     request(proc, turn_id, "late", "upcase", %{"text" => "x"})
     assert_receive {:conn, :tool_result, _, {:tool_result, ^turn_id, "late", {:error, "aborted"}}}
     assert running(hands) == 0
+  end
+
+  # #591: Core counts a run from the start answer of the hands, whatever
+  # the program calls the tool, and the program gets a plain `:ok` result.
+  test "a background start through the program counts as running until its end",
+       %{proc: proc, turn_id: turn_id} do
+    request(proc, turn_id, "c1", "background", %{"gate" => gate()})
+
+    assert_receive {:conn, :tool_result, ^proc,
+                    {:tool_result, ^turn_id, "c1", {:ok, "<background " <> _}}}
+
+    assert_receive {:helyx_event, %Helyx.Event{type: :queue_update, data: %{running: 1}}}
+    assert_receive {:waiting, run}
+    send(run, :go)
+
+    assert_receive {:helyx_event,
+                    %Helyx.Event{type: :queue_update, data: %{running: 0, waiting: 1}}}
+  end
+
+  # The gate of `Helyx.Test.Tool.Background` is a registered name; the test
+  # process is the controller, so a proxy holds the name.
+  defp gate do
+    test = self()
+    gate = :"gate_#{System.unique_integer([:positive])}"
+
+    spawn_link(fn ->
+      Process.register(self(), gate)
+      send(test, :registered)
+      receive do: ({:waiting, run} -> send(test, {:waiting, run}))
+    end)
+
+    assert_receive :registered
+    Atom.to_string(gate)
   end
 end

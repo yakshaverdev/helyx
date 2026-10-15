@@ -78,10 +78,40 @@ defmodule Helyx.Session.BackgroundDeliveryTest do
     send(run, :go)
 
     events = collect_until(:turn_end)
-    assert [:turn_start | _] = Enum.map(events, & &1.type)
+    assert [:queue_update, :turn_start | _] = Enum.map(events, & &1.type)
     assert user_texts(events) == [done(id)]
     assert final_text(events) == "hello|" <> done(id)
   end
+
+  # #591: a run counts as running from its start answer to its end; its
+  # end then waits until the turn that it opens takes it.
+  test "queue_update and the snapshot count the running runs and the waiting ends",
+       %{core: core} do
+    gate = Helyx.Test.Gate.open()
+    {:ok, session} = Session.start(core, model: "test/bg." <> gate)
+    {:ok, %{queue: %{running: 0}}, _} = Session.subscribe(session)
+    :ok = Session.prompt(session, "hello")
+    assert_receive {:waiting, run}
+    events = collect_until(:turn_end)
+    assert of_type(events, :queue_update) == [counts(1, 0, 0)]
+    assert {:ok, %{queue: queue}, _ref} = Session.subscribe(session)
+    assert queue == counts(1, 0, 0)
+
+    send(run, :go)
+    events = collect_until(:turn_end)
+    assert of_type(events, :queue_update) == [counts(0, 0, 1), counts(0, 0, 0)]
+  end
+
+  test "a run that crashes counts down at its end", %{core: core} do
+    %{run: run} = started(core)
+    Process.exit(run, :kill)
+
+    events = collect_until(:turn_end)
+    assert of_type(events, :queue_update) == [counts(0, 0, 1), counts(0, 0, 0)]
+  end
+
+  defp counts(running, held, waiting),
+    do: %{steers: 0, follow_ups: 0, running: running, held: held, waiting: waiting}
 
   test "after an abort an end waits, wakes nothing, and joins the next turn", %{core: core} do
     %{session: session, run: run, id: id} = started(core)
@@ -100,13 +130,13 @@ defmodule Helyx.Session.BackgroundDeliveryTest do
     %{session: session, run: run} = started(core)
     :ok = Session.abort(session)
     finish(session, run)
-    held = %{steers: 0, follow_ups: 0, held: 1}
+    held = counts(0, 1, 0)
     assert_receive {:helyx_event, %Event{type: :queue_update, data: ^held}}
     assert {:ok, %{queue: ^held}, _ref} = Session.subscribe(session)
 
     :ok = Session.prompt(session, "next")
     events = collect_until(:turn_end)
-    assert of_type(events, :queue_update) == [%{steers: 0, follow_ups: 0, held: 0}]
+    assert of_type(events, :queue_update) == [counts(0, 0, 1), counts(0, 0, 0)]
   end
 
   test "an end during a submitted turn goes to the provider as a steer", %{core: core} do
@@ -120,6 +150,9 @@ defmodule Helyx.Session.BackgroundDeliveryTest do
     send(run, :go)
     assert_receive {:trace, ^pid, :receive, {:provider_reply, _, :steer, :ok}}
     :erlang.trace(pid, false, [:receive])
+    # #591: the sent end counts as waiting until its user_message.
+    assert {:ok, %{queue: queue}, _} = Session.subscribe(session)
+    assert queue == counts(0, 0, 1)
     send(stream, :go)
 
     assert_receive {:waiting, stream}
@@ -272,7 +305,9 @@ defmodule Helyx.Session.BackgroundDeliveryTest do
     stop_session(session, &GenServer.stop/1)
 
     {:ok, resumed} = Session.resume(core, sessions_dir: dir)
-    {:ok, _, _} = Session.subscribe(resumed)
+    # #591: a lost run is not live, so it does not count as running.
+    assert {:ok, %{queue: queue}, _} = Session.subscribe(resumed)
+    assert queue == counts(0, 1, 0)
     :ok = Session.prompt(resumed, "again")
 
     events = collect_until(:turn_end)

@@ -1,9 +1,9 @@
 defmodule CodingAgent.Print do
   @moduledoc """
   Print mode, a client of one session: one prompt in, the final answer out
-  on stdout, and an exit status. A background run that is open holds print
-  mode until its end opens a turn, unless the session holds the ends; the
-  answer is the one of the last turn. The session id, the notices, and the
+  on stdout, and an exit status. A background run that is live, or its end
+  that waits for a turn, holds print mode, unless the session holds the
+  ends; the answer is the one of the last turn. The session id, the notices, and the
   errors go to stderr. Piped stdin (stdin is not a terminal) is added to
   the prompt as a block, up to 1 MiB of UTF-8. Every print run ends with a
   halt of the VM. The first SIGTERM or SIGHUP aborts the turn, waits at
@@ -17,10 +17,10 @@ defmodule CodingAgent.Print do
   defmodule Wait do
     @moduledoc false
     # The state of the wait of `run/2`: `last` is the last assistant message
-    # of the turn, `runs` the ids of the open background runs, `held` the
-    # count of the held ends, and `idle?` true from a normal turn end that
-    # leaves the wait to the next turn.
-    defstruct [:last, :runs, :held, idle?: false]
+    # of the turn, `queue` the last counts of the session (`queue_update`),
+    # and `idle?` true from a normal turn end that leaves the wait to the
+    # next turn.
+    defstruct [:last, :queue, idle?: false]
   end
 
   # About 250,000 tokens, more than the context window of the models Helyx
@@ -151,10 +151,10 @@ defmodule CodingAgent.Print do
   Sends `prompt` to `session`, waits until the session settles, prints the
   answer of the last turn, and returns the exit status: 0 for a normal
   end, 1 for a failed or aborted turn, an answer cut at the output limit,
-  a session that stops, or background runs whose ends hold. While a
-  background run is open and its ends do not hold, a normal turn end does
-  not end the wait: the end of the run opens the next turn
-  (`docs/features/print-background-wait.md`). It must run inside `main/2`,
+  a session that stops, or background runs whose ends hold. While the
+  session counts a running background run or an end that waits for a
+  turn, a normal turn end does not end the wait: the end opens the next
+  turn (`docs/features/print-background-wait.md`). It must run inside `main/2`,
   which a signal uses to abort `session`. The caller aborts the turn and
   stops Core after it.
   """
@@ -165,8 +165,7 @@ defmodule CodingAgent.Print do
     with {:ok, snapshot, ref} <- Session.subscribe(session),
          stderr("session " <> session.id),
          :ok <- Session.prompt(session, prompt) do
-      runs = Enum.reduce(snapshot.messages, MapSet.new(), &runs/2)
-      wait(ref, %Wait{runs: runs, held: snapshot.queue.held})
+      wait(ref, %Wait{queue: snapshot.queue})
     else
       {:error, reason} -> fail("could not run the prompt: " <> inspect(reason))
     end
@@ -177,14 +176,12 @@ defmodule CodingAgent.Print do
       {:helyx_event, %Event{type: :message_end, data: %{message: %Message{role: :assistant} = m}}} ->
         wait(ref, %{state | last: m})
 
-      {:helyx_event, %Event{type: type, data: %{message: m}}}
-      when type in [:message_end, :tool_execution_end] ->
-        wait(ref, %{state | runs: runs(m, state.runs)})
-
-      {:helyx_event, %Event{type: :queue_update, data: %{held: held}}} ->
-        if held > 0 and state.idle?,
-          do: settle(ref, %{state | held: held}),
-          else: wait(ref, %{state | held: held})
+      # While idle, a turn opens after the `queue_update` of its ends, so
+      # the counts alone end the wait only with an end that holds.
+      {:helyx_event, %Event{type: :queue_update, data: queue}} ->
+        if queue.held > 0 and state.idle?,
+          do: settle(ref, %{state | queue: queue}),
+          else: wait(ref, %{state | queue: queue})
 
       {:helyx_event, %Event{type: :notice, data: %{text: text}}} ->
         stderr(text)
@@ -207,16 +204,17 @@ defmodule CodingAgent.Print do
     end
   end
 
-  # After a normal turn end: an open run whose end can still open a turn
-  # holds the wait; a held end never opens one, as no user sends a prompt.
-  defp settle(ref, %Wait{runs: runs, held: held, last: last} = state) do
-    case {MapSet.size(runs), held} do
-      {0, _held} ->
+  # After a normal turn end: a running run, or an end that waits for a
+  # turn, holds the wait; a held end never opens a turn, as no user sends a
+  # prompt.
+  defp settle(ref, %Wait{queue: queue, last: last} = state) do
+    case {queue.running + queue.waiting, queue.held} do
+      {0, 0} ->
         answer(last)
 
       {n, held} when held > 0 ->
         _status = answer(last)
-        stderr("background runs whose end did not reach the agent: #{n}")
+        stderr("background runs whose end did not reach the agent: #{n + held}")
         1
 
       {n, 0} ->
@@ -224,21 +222,6 @@ defmodule CodingAgent.Print do
         wait(ref, %{state | idle?: true})
     end
   end
-
-  # The start answer and the end message of a background run open with the
-  # line that names the run (docs/features/background-bash.md), as
-  # `Helyx.Session.Background.lost/1` reads them at a resume.
-  @background ~r/\A<background id="([A-Za-z0-9_-]{12})" status="([a-z]+)">\n/
-
-  defp runs(%Message{content: [%Message.Text{text: "<background " <> _ = text} | _]} = m, runs) do
-    case {m.role, m.is_error, Regex.run(@background, text, capture: :all_but_first)} do
-      {:tool_result, false, [id, "started"]} -> MapSet.put(runs, id)
-      {:user, _is_error, [id, _status]} -> MapSet.delete(runs, id)
-      _other -> runs
-    end
-  end
-
-  defp runs(%Message{}, runs), do: runs
 
   defp answer(last) do
     IO.puts(if last, do: Message.text(last), else: "")

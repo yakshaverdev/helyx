@@ -611,7 +611,7 @@ defmodule CodingAgent.PrintTest do
     # No Fake turn gives an end back held, so the test sends the count that
     # the session would send.
     @tag :tmp_dir
-    test "a normal turn end with a held end and an open run gives the answer and 1",
+    test "a normal turn end with a held end gives the answer and 1",
          %{tmp_dir: dir} do
       %{session: session} = bg_session(dir, [], foreground: true)
       test = self()
@@ -622,7 +622,7 @@ defmodule CodingAgent.PrintTest do
         instance_id: nil,
         turn_id: nil,
         seq: 0,
-        data: %{steers: 0, follow_ups: 0, held: 1}
+        data: %{steers: 0, follow_ups: 0, running: 0, held: 1, waiting: 0}
       }
 
       assert {1, "started\n", stderr} =
@@ -636,6 +636,34 @@ defmodule CodingAgent.PrintTest do
                end)
 
       assert stderr =~ @held_line
+    end
+
+    defp one_call_session(dir, args) do
+      core = start_core()
+      call = %Helyx.Message.ToolCall{id: "c1", name: "bash", arguments: args}
+      :ok = Helyx.Provider.Fake.script(core, "one", [[call], ["answered"]])
+      {:ok, session} = Helyx.Session.start(core, model: "fake/one", cwd: dir)
+      session
+    end
+
+    # The session counts the runs (`Helyx.Session.Queue`); print mode reads
+    # no result text.
+    @tag :tmp_dir
+    test "a foreground result that opens with the start line opens no run", %{tmp_dir: dir} do
+      line = ~s(<background id="abcdefghijkl" status="started">\\nfixture\\n)
+      session = one_call_session(dir, %{"command" => "printf '#{line}'"})
+
+      assert {0, "answered\n", stderr} = io("", fn -> run(session, "q") end)
+      assert stderr =~ ~r/\Ahelyx: session \S+\n\z/
+    end
+
+    @tag :tmp_dir
+    test "a background call whose result is an error opens no run", %{tmp_dir: dir} do
+      args = %{"command" => "true", "background" => true, "timeout" => 0}
+      session = one_call_session(dir, args)
+
+      assert {0, "answered\n", stderr} = io("", fn -> run(session, "q") end)
+      assert stderr =~ ~r/\Ahelyx: session \S+\n\z/
     end
 
     @tag :tmp_dir
