@@ -12,7 +12,9 @@ defmodule Helyx.Session.Snapshot do
       below it.
     * `messages` – the transcript, oldest first.
     * `turn` – nil, or the running turn: its `id`, and the assistant
-      message so far as `partial` (nil before the first stream event).
+      message so far as `partial` (nil before the first stream event). A
+      turn whose `:turn_end` waits for the cleanup of the hands still runs,
+      with `partial` nil.
     * `model` – the session's `provider/model` ref.
     * `queue` – the counts of the queued steers and follow-ups, the
       running background runs, and the held and waiting background ends, as

@@ -9,7 +9,8 @@ defmodule Helyx.Session.Server.Wait do
   # `:provider_down`. Each part is bounded: the hands by their release
   # deadlines, a reply by its armed kill. `callers` are the abort callers,
   # who get their reply at the end. `turn` is the id of the turn that the
-  # wait ended, or nil. Every message of a client queues until the end.
+  # wait ended, or nil, and `turn_end` the data of its `turn_end` while that
+  # event waits for the hands. Every message of a client queues until the end.
   # `Helyx.Session.Server.TurnLoop` matches the inputs and ends the wait
   # when no part is left. `finish/2` ends a turn and makes its wait; the
   # other functions change one part of it.
@@ -22,12 +23,13 @@ defmodule Helyx.Session.Server.Wait do
   alias Helyx.Session.{Hands, ProviderRequest, Turn}
   alias Helyx.Session.Server.{ProviderConn, Records, State, Steering, ToolRuns}
 
-  defstruct [:hands, :reply, :turn, callers: []]
+  defstruct [:hands, :reply, :turn, :turn_end, callers: []]
 
   @type t :: %__MODULE__{
           hands: :gen_server.request_id() | nil,
           reply: reference() | nil,
           turn: String.t() | nil,
+          turn_end: map() | nil,
           callers: [GenServer.from()]
         }
 
@@ -38,7 +40,9 @@ defmodule Helyx.Session.Server.Wait do
   # answer yet can still be rejected after the turn (`Queue.answer/4`); an
   # abort or a failure gives the queued texts back (`Queue.abort/1`). The
   # hands release the Tasks of the turn before the next turn: always at an
-  # abort or a failure, at `done` when a Helyx tool still runs. Only an
+  # abort or a failure, at `done` when a Helyx tool still runs. While one
+  # runs, `turn_end` waits for their answer (`cleanup/2`): a start answer
+  # that the hands took first then comes before it (#595). Only an
   # abort of a turn that sent `{:turn, ...}` gets an interrupt, after the
   # `aborted` answers of its open tool requests.
   @spec finish(
@@ -52,11 +56,23 @@ defmodule Helyx.Session.Server.Wait do
     state = Records.finish(state, outcome)
     done? = match?({:done, _stop, _usage}, outcome)
     state = Steering.end_turn(state, turn.id, done?)
-    state = state |> ToolRuns.end_turn(turn) |> emit(:turn_end, end_data(outcome))
-    hands = if !done? or turn.tool_queue.running, do: Hands.request_cancel(state.hands, turn.id)
+    state = ToolRuns.end_turn(state, turn)
+    running = turn.tool_queue.running
+    data = end_data(outcome)
+    state = if running, do: state, else: emit(state, :turn_end, data)
+    hands = if !done? or running, do: Hands.request_cancel(state.hands, turn.id)
     wait = if outcome == :aborted, do: interrupt(state, turn), else: %__MODULE__{}
-    %{state | activity: %{wait | hands: hands, turn: turn.id}}
+    %{state | activity: %{wait | hands: hands, turn: turn.id, turn_end: if(running, do: data)}}
   end
+
+  # The snapshot turn of a wait whose `turn_end` waits for the hands: the
+  # turn still runs for a client (#595). Its records are closed, so it has
+  # no partial message. No other activity has a turn.
+  @spec snapshot_turn(:idle | t()) :: Helyx.Session.Snapshot.turn() | nil
+  def snapshot_turn(%__MODULE__{turn: id, turn_end: data}) when data != nil,
+    do: %{id: id, partial: nil}
+
+  def snapshot_turn(_activity), do: nil
 
   defp end_data({:done, _stop_reason, _usage}), do: %{outcome: :done}
   defp end_data(:aborted), do: %{outcome: :aborted}
@@ -87,11 +103,12 @@ defmodule Helyx.Session.Server.Wait do
       else: state
   end
 
-  # The answer of the hands to the cleanup request. Any other message is a
-  # bug and crashes the session.
+  # The answer of the hands to the cleanup request, and then a `turn_end`
+  # that waited for it. Any other message is a bug and crashes the session.
   def cleanup(%State{activity: %__MODULE__{hands: request} = wait} = state, message) do
     {:reply, result} = :gen_server.check_response(message, request)
-    %{cleanup_notice(result, state) | activity: %{wait | hands: nil}}
+    state = if wait.turn_end, do: emit(state, wait.turn, :turn_end, wait.turn_end), else: state
+    %{cleanup_notice(result, state) | activity: %{wait | hands: nil, turn_end: nil}}
   end
 
   # The abort still replies `:ok` (ADR 0006 §2); a failed cleanup is a

@@ -241,8 +241,54 @@ defmodule Helyx.Session.ProviderProcessToolsTest do
                     %Helyx.Event{type: :queue_update, data: %{running: 0, waiting: 1}}}
   end
 
+  # #595: the turn ends with the call open, and the hands, held, have its
+  # start answer queued before the cleanup request. The run lives, so
+  # `turn_end` waits for the cleanup and the count comes before it.
+  test "a start answer that the hands take before the cleanup comes before turn_end",
+       %{session: session, proc: proc, turn_id: turn_id, hands: hands} do
+    request(proc, turn_id, "c1", "background", %{"gate" => gate(), "gated_start" => true})
+    assert_receive {:waiting, run}
+
+    :ok = :sys.suspend(hands)
+    :erlang.trace(hands, true, [:receive])
+    send(run, :go)
+    assert_receive {:trace, ^hands, :receive, {:"$gen_call", _, {:started, _}}}
+    send(proc, {:finish, turn_id})
+    assert_receive {:trace, ^hands, :receive, {:"$gen_call", _, {:cancel, ^turn_id}}}
+    :erlang.trace(hands, false, [:receive])
+    # Until its turn_end the turn still runs for a client that joins.
+    assert {:ok, %{turn: %{id: ^turn_id, partial: nil}}, _ref} = Session.subscribe(session)
+    :ok = :sys.resume(hands)
+
+    events = collect_until(:turn_end)
+    assert [%{running: 1}] = of_type(events, :queue_update)
+    assert List.last(events).data == %{outcome: :done}
+
+    assert_receive {:conn, :tool_result, ^proc,
+                    {:tool_result, ^turn_id, "c1", {:error, "aborted"}}}
+
+    # The run lives, and its end waits for a later turn.
+    assert_receive {:waiting, ^run}
+    send(run, :go)
+
+    assert_receive {:helyx_event,
+                    %Helyx.Event{type: :queue_update, data: %{running: 0, waiting: 1}}}
+  end
+
+  # An abort sends the cleanup request too, but with no Helyx call open
+  # `turn_end` does not wait for its answer.
+  test "turn_end of an abort with no open call does not wait for the hands",
+       %{session: session, hands: hands} do
+    :ok = :sys.suspend(hands)
+    abort = Task.async(fn -> Session.abort(session) end)
+    assert List.last(collect_until(:turn_end)).data == %{outcome: :aborted}
+    :ok = :sys.resume(hands)
+    assert Task.await(abort, wait_ms()) == :ok
+  end
+
   # The gate of `Helyx.Test.Tool.Background` is a registered name; the test
-  # process is the controller, so a proxy holds the name.
+  # process is the controller, so a proxy holds the name and forwards each
+  # wait.
   defp gate do
     test = self()
     gate = :"gate_#{System.unique_integer([:positive])}"
@@ -250,10 +296,15 @@ defmodule Helyx.Session.ProviderProcessToolsTest do
     spawn_link(fn ->
       Process.register(self(), gate)
       send(test, :registered)
-      receive do: ({:waiting, run} -> send(test, {:waiting, run}))
+      forward_waits(test)
     end)
 
     assert_receive :registered
     Atom.to_string(gate)
+  end
+
+  defp forward_waits(test) do
+    receive do: ({:waiting, run} -> send(test, {:waiting, run}))
+    forward_waits(test)
   end
 end

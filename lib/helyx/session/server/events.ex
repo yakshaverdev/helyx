@@ -8,7 +8,7 @@ defmodule Helyx.Session.Server.Events do
 
   alias Helyx.{Event, ModelRef}
   alias Helyx.Session.{Queue, Snapshot, Turn}
-  alias Helyx.Session.Server.State
+  alias Helyx.Session.Server.{State, Wait}
 
   def subscribe(%State{} = state, pid) do
     subscribers = Map.put_new_lazy(state.subscribers, pid, fn -> Process.monitor(pid) end)
@@ -31,11 +31,14 @@ defmodule Helyx.Session.Server.Events do
       instance_id: state.instance_id,
       seq: state.seq,
       messages: state.transcript,
-      turn: if(match?(%Turn{}, state.activity), do: Turn.snapshot(state.activity)),
+      turn: turn(state.activity),
       model: ModelRef.to_string(state.model),
       queue: Queue.counts(state.queue)
     }
   end
+
+  defp turn(%Turn{} = turn), do: Turn.snapshot(turn)
+  defp turn(activity), do: Wait.snapshot_turn(activity)
 
   # Only the queue events fire between turns: the drain at a normal turn
   # end, and an abort in a wait. Every other `emit/3` with no turn is a bug

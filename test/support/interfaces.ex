@@ -759,7 +759,8 @@ defmodule Helyx.Test.Tool.Background do
   # "started <path>", then waits for the gate in "gate" and returns its
   # "done". With "twice" it takes a second place; with "unplaced" it gives
   # a start answer with no place; with "unstarted" it waits for the gate
-  # between its place and its start answer.
+  # between its place and its start answer; with "gated_start" it waits
+  # for the gate there too, then answers.
   use Helyx.Test.Tool, name: "background", description: "Runs until its gate opens."
 
   @impl true
@@ -774,6 +775,7 @@ defmodule Helyx.Test.Tool.Background do
     with {:ok, %{id: id, dir: dir}} <- Helyx.Tool.background(),
          {:ok, _second} <- if(args["twice"], do: Helyx.Tool.background(), else: {:ok, nil}) do
       Enum.each(Map.get(args, "handles", []), &Helyx.Tool.hold/1)
+      if args["gated_start"], do: Helyx.Test.Gate.wait(args["gate"])
       :ok = Helyx.Tool.started("started " <> Path.join(dir, id))
       Helyx.Test.Gate.wait(args["gate"])
     end
