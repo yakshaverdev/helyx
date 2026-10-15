@@ -562,6 +562,42 @@ defmodule Helyx.Provider.OpenAITest do
              {:error, {:bad_config, [:models, "opencode-go/no-catalog-model", :context_window]}}
   end
 
+  test "an :openai_req_options value that is not a keyword list fails the call with its key before any request" do
+    on_exit(fn -> Application.delete_env(:helyx_plugins, :openai_req_options) end)
+
+    for value <- [:plug, %{plug: nil}, [1], [{"plug", nil}], [{:plug, nil} | :tail]] do
+      Application.put_env(:helyx_plugins, :openai_req_options, value)
+
+      assert OpenAI.Go.stream("kimi-k2", %Helyx.Context{}, []) ==
+               {:error, {:bad_config, [:openai_req_options]}}
+    end
+  end
+
+  test "a keyword list in :openai_req_options goes to Req as it is, and a later option wins" do
+    on_exit(fn -> Application.delete_env(:helyx_plugins, :openai_req_options) end)
+    test = self()
+    fail = &Plug.Conn.send_resp(&1, 400, "first plug")
+
+    pass = fn conn ->
+      send(test, {:header, Plug.Conn.get_req_header(conn, "x-a")})
+      send(test, {:auth, Plug.Conn.get_req_header(conn, "authorization")})
+      reply(conn, [delta(%{content: "Hi"}, "stop"), "[DONE]"])
+    end
+
+    Application.put_env(:helyx_plugins, :openai_req_options,
+      plug: fail,
+      headers: [{"x-a", "1"}],
+      auth: {:bearer, "other"},
+      plug: pass
+    )
+
+    assert {:ok, stream} = OpenAI.Go.stream("kimi-k2", %Helyx.Context{}, [])
+    assert {:text_delta, "Hi"} in Enum.to_list(stream)
+    assert_received {:header, ["1"]}
+    # The env comes after the options of the provider, so it replaces the key.
+    assert_received {:auth, ["Bearer other"]}
+  end
+
   test "a missing api key is an error before any request" do
     System.delete_env("OPENCODE_API_KEY")
     context = %Helyx.Context{messages: [Helyx.Message.user("hi")]}
