@@ -89,3 +89,14 @@ Run 1 failed on Credo strict: `Function body is nested too deep (max depth is 2,
 - The read of a resume in `init/1` has no time bound. A slow disk holds the starts of the Core and its stop as long as the read. Before #589 the same read ran in the caller and held only that caller. A time bound, or an open outside the supervisor's wait, needs an owner decision.
 - The lost-lock notice before the first subscribe (2.1). A perl that ends right before the check at the open, or after it and before the first subscribe, leaves a session that runs without the lock, and no client sees the notice. Master has the same window. The fix of the mechanism keeps the lost lock in `Helyx.Session.Snapshot`.
 - A perl stopped with SIGSTOP after its `flock` and before its answer holds the lock with no session after the 5000 ms bound. This was not reached in the budget, and it is older than #589.
+
+## Gate (orchestrator, 2026-10-15)
+
+Codex adversarial review on `f1cf2708` (rebased on `abcee1fb`). Gate r1 (Codex): verdict approve, no finding. It did not run tests (read-only workspace). The branch was then rebased on `f17c104b` (#587); the two changes share no module, so no reduced round ran.
+
+Decisions of the orchestrator, without the owner (roll forward):
+
+- The supervisor waits for each `init/1` (the perl take and the resume read): accepted for one user per node, ticket #605.
+- The lost lock before the first subscribe: ticket #606.
+- An id that the same Core runs from another folder gives "open in another process": accepted; only a copy by hand makes such a file.
+- `hibernate_after: 0` removed: accepted; the start message holds no transcript now, and the #103 tests stay as guards.
