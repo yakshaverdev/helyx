@@ -32,8 +32,10 @@ One worker per ticket. A worker is a Helyx session in its own worktree, on branc
 
 ```bash
 git worktree add -b ticket/<n>-<slug> .claude/worktrees/ticket-<n> origin/master
-(cd .claude/worktrees/ticket-<n> && mix deps.get && cd plugins/bundled && mix deps.get)
+for d in . plugins/* apps/*; do (cd .claude/worktrees/ticket-<n>/$d && mix deps.get); done
 ```
+
+Every Mix project needs its deps: precommit compiles each of them, and a worker without the deps of `apps/coding_agent` fetches them itself or fails.
 
 Write the brief to a file outside the worktree, for example `$(git rev-parse --git-common-dir)/orchestrate/<n>-brief.md`, so that it is not in the diff. Start the worker with the `bash` tool in the background, with the worktree as its working folder (in Helyx: `background: true` and `workdir`):
 
@@ -56,9 +58,9 @@ Every brief also says:
 - Run precommit with `.claude/skills/ship/precommit.sh`, never `mix precommit` directly.
 - The limits of `/ship`: at most three rounds, then at most one small-fix round when its conditions hold (see `/ship`), a round with no reproduced defect ends the loop, and at most 45 minutes of work. At the limit, commit only reviewed code and report what is open.
 - No CPU load generator and no mutation run over a whole suite in any probe: other worktrees run tests on this machine. Put this rule in every review brief.
-- Run every Agent call in the foreground. Put several Agent calls in one message when they must run in parallel. Never use a background agent or a scheduled wakeup: print mode waits only for Helyx background runs, so the run ends and the session stop ends the agent (#592 probe, #598).
+- Run every Agent call in the foreground: set `run_in_background` to false on each Agent call, because the default can be background (2026-10-15: workers started their `/simplify` agents in the background and had to run them again). Put several Agent calls in one message when they must run in parallel. Never use a background agent or a scheduled wakeup: print mode waits only for Helyx background runs, so the run ends and the session stop ends the agent (#592 probe, #598).
 - Run a long command (the Codex review, precommit) with the `bash` tool and `background: true`. Its end opens a new turn.
-- Until #597 is fixed, run `mix` in the `bash` tool as `mise exec -- mix`: the installed release puts its own `erl` first in `PATH`, and a plain `mix` fails at boot.
+- No probe sends a request to a real network service. Use a Req plug or a local stub (2026-10-15: a probe sent two requests with a fake key). Put this rule in every review brief.
 
 A follow-up to a worker, and the resume of a worker that stopped before its final report (a usage limit, a wait that ended the run), is one more print run on its session, after its last run ended (one process per session at a time):
 
