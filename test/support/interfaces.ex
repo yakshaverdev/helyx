@@ -679,7 +679,7 @@ defmodule Helyx.Test.Tool.Hold do
   # can drive the release without an OS resource. Its release acts on the
   # handles it gets:
   #
-  #   {:report, pid}  sends {:release, mode, handles} to pid
+  #   {:report, pid}  records the release, see `Helyx.Test.Released`
   #   {:slow, ms}     sleeps ms before the release returns
   #   %{"gate" => g}  waits for :go from the gate `g` (`Helyx.Test.Gate`)
   #   :keep           stays held
@@ -703,7 +703,7 @@ defmodule Helyx.Test.Tool.Hold do
   @dialyzer {:nowarn_function, release: 3}
   @impl true
   def release(handles, mode, _deadline) do
-    for {:report, pid} <- handles, do: send(pid, {:release, mode, handles})
+    Helyx.Test.Released.report(handles, mode)
     Process.sleep(Enum.sum(for {:slow, ms} <- handles, do: ms))
     for %{"gate" => gate} <- handles, do: Helyx.Test.Gate.wait(gate)
 
@@ -806,8 +806,8 @@ defmodule Helyx.Test.Connected do
   # It reports each callback to the test process that registered itself as
   # `controller(core)`: `{:conn, :init, pid, {model, tools, opts}}`, and
   # `{:conn, kind, pid, request}` for each request. It holds the handle
-  # `{:report, controller}` at init; its release sends `{:release, mode,
-  # handles}` to the controller. At init it also links a process that
+  # `{:report, controller}` at init; its release reports through
+  # `Helyx.Test.Released`. At init it also links a process that
   # never ends by itself and sends `{:linked, pid, linked}`.
   #
   #   "echo"             a turn answers :ok, then "echo:<system>|<last user
@@ -974,7 +974,7 @@ defmodule Helyx.Test.Connected do
 
   @impl true
   def release(handles, mode, _deadline) do
-    for {:report, pid} <- handles, do: send(pid, {:release, mode, handles})
+    Helyx.Test.Released.report(handles, mode)
     for {:keep, _pid} = handle <- handles, do: handle
   end
 

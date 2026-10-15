@@ -43,24 +43,28 @@ defmodule Helyx.Watchdog.HarnessStopTest do
   test "a Core stop with an idle provider process ends the program group", %{core: core} do
     {session, group} = start(core, "idle")
     assert turn_end().data.outcome == :done
-    hands = monitor_hands(session)
+    {hands, ref} = monitor_hands(session)
     Process.flag(:trap_exit, true)
     :ok = stop_supervised(core)
-    assert_received {:DOWN, ^hands, :process, _, :shutdown}
+    refute Process.alive?(hands)
+    assert_receive {:DOWN, ^ref, :process, _, :shutdown}
     assert group_gone_within?(group)
   end
 
   test "a Core stop during a connected turn ends the program group", %{core: core} do
     {session, group} = start(core, "hang")
-    hands = monitor_hands(session)
+    {hands, ref} = monitor_hands(session)
     Process.flag(:trap_exit, true)
     :ok = stop_supervised(core)
-    assert_received {:DOWN, ^hands, :process, _, :shutdown}
+    refute Process.alive?(hands)
+    assert_receive {:DOWN, ^ref, :process, _, :shutdown}
     assert group_gone_within?(group)
   end
 
-  defp monitor_hands(session),
-    do: Process.monitor(:sys.get_state(Session.pid(session)).hands)
+  defp monitor_hands(session) do
+    hands = :sys.get_state(Session.pid(session)).hands
+    {hands, Process.monitor(hands)}
+  end
 
   # The watchdog exits with the command's status, or the port closes with
   # `:epipe` when a part of the write still waits in it, and that exit
