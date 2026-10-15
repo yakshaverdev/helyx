@@ -357,8 +357,8 @@ defmodule Helyx.Session do
       without a result gets an `aborted` error result, so the transcript
       keeps complete call and result pairs. If texts are queued, one
       `:queue_dropped` event with the turn id gives them back before
-      `:turn_end`. The events go out at once; only this call waits, until
-      the end of the wait after the turn.
+      `:turn_end`, which waits for the hands' cleanup while a Helyx tool
+      call runs. This call waits until the end of the wait after the turn.
     * The session waits after a turn, a failed one too, or for a provider
       process that ends: if texts are queued, one `:queue_dropped` event
       with a nil turn id gives them back; the call returns at the end.

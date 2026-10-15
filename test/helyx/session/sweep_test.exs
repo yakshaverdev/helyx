@@ -70,19 +70,19 @@ defmodule Helyx.Session.SweepTest do
       {session, _hands, _task} = start_stuck_turn(core)
 
       abort = Task.async(fn -> Session.abort(session) end)
-      # The events of the abort go out at the start of the sweep.
-      assert stop_reason(collect_until(:turn_end)) == :aborted
-
       {results, release} = calls(session)
       assert results[:steer] == :ok
       assert results[:follow_up] == :ok
       assert results[:prompt] == :ok
 
       # The abort waits for the sweep, and no turn starts during it: the
-      # hands cannot take a tool call.
+      # hands cannot take a tool call. The turn had a call open, so its
+      # `turn_end` waits for the sweep too (#595).
       assert Task.yield(abort, 0) == nil
+      refute_received {:helyx_event, %Event{type: :turn_end}}
       send(release, :go)
       assert :ok = Task.await(abort, wait_ms())
+      assert stop_reason(collect_until(:turn_end)) == :aborted
 
       # The messages sent during the sweep start after it: the steers in
       # one turn, then each follow-up in its own turn, in order.
@@ -95,10 +95,10 @@ defmodule Helyx.Session.SweepTest do
       {session, _hands, _task} = start_stuck_turn(core)
 
       abort = Task.async(fn -> Session.abort(session) end)
-      assert stop_reason(collect_until(:turn_end)) == :aborted
       assert_receive {:waiting, release}
       send(release, :go)
       assert :ok = Task.await(abort, wait_ms())
+      assert stop_reason(collect_until(:turn_end)) == :aborted
 
       assert_receive {:helyx_event,
                       %Event{
@@ -112,7 +112,6 @@ defmodule Helyx.Session.SweepTest do
       {session, _hands, _task} = start_stuck_turn(core)
 
       abort = Task.async(fn -> Session.abort(session) end)
-      assert queue_counts(collect_until(:turn_end)) == []
       assert_receive {:waiting, release}
       :ok = Session.prompt(session, "dropped")
 
@@ -121,7 +120,7 @@ defmodule Helyx.Session.SweepTest do
 
       second = Task.async(fn -> Session.abort(session) end)
 
-      # The texts go back to the client between the turns.
+      # The texts go back to the client in the wait, with no turn id.
       assert_receive {:helyx_event,
                       %Event{type: :queue_dropped, turn_id: nil, data: %{texts: ["dropped"]}}}
 
@@ -131,6 +130,7 @@ defmodule Helyx.Session.SweepTest do
       send(release, :go)
       assert :ok = Task.await(second, wait_ms())
       assert :ok = Task.await(abort, wait_ms())
+      assert stop_reason(collect_until(:turn_end)) == :aborted
 
       refute_receive {:helyx_event, %Event{type: :queue_update}}, 100
       refute_received {:helyx_event, %Event{type: :queue_dropped}}
@@ -156,11 +156,12 @@ defmodule Helyx.Session.SweepTest do
       ref = Process.monitor(Session.pid(session))
 
       abort = Task.async(fn -> Session.abort(session) end)
-      collect_until(:turn_end)
       assert_receive {:waiting, _release}
       Process.exit(hands, :kill)
 
       assert_receive {:DOWN, ^ref, :process, _pid, :killed}
+      # The `:DOWN` comes after every event of the session: no turn_end (#595).
+      refute_received {:helyx_event, %Event{type: :turn_end}}
       assert {:error, :session_not_found} = Task.await(abort, wait_ms())
     end
   end
