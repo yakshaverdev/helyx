@@ -90,7 +90,10 @@ defmodule Helyx.Session.Server.State do
     idle: nil,
     # The instructions of a compaction that waits for the end of the wait,
     # or nil (docs/features/harness-compaction.md).
-    pending_compact: nil
+    pending_compact: nil,
+    # True after the session lost the lock it held: the snapshot tells a
+    # later client (`Helyx.Session.Snapshot`).
+    lock_lost: false
   ]
 
   @type t :: %__MODULE__{
@@ -104,6 +107,7 @@ defmodule Helyx.Session.Server.State do
           background_dir: Path.t() | nil,
           file: Helyx.Session.File.t() | nil,
           lock: port() | nil,
+          lock_lost: boolean(),
           model_context: module() | nil,
           compaction: module() | nil,
           tool_specs: [Helyx.Tool.spec()],

@@ -375,6 +375,20 @@ defmodule CodingAgent.PrintTest do
       assert stderr =~ "helyx: the answer stopped: the provider refused or filtered it\n"
     end
 
+    # #606: the notice of a loss before the subscribe reached no client.
+    @tag :tmp_dir
+    test "a session that lost its lock before the run writes the notice on stderr", %{
+      tmp_dir: dir
+    } do
+      {:ok, session} =
+        Helyx.Session.start(start_core(), model: "fake/echo", sessions_dir: dir, cwd: dir)
+
+      Helyx.Test.LostLock.kill(session)
+
+      assert {0, "q\n", stderr} = io("", fn -> run(session, "q") end)
+      assert stderr =~ ~r/\Ahelyx: session \S+\nhelyx: the session lock is lost; .+\n\z/
+    end
+
     test "main/2 sends the log to stderr, and an error to one stderr line with 1" do
       {:ok, before} = :logger.get_handler_config(:default)
       test = self()

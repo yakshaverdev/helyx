@@ -208,7 +208,9 @@ defmodule Helyx.TUI.ViewModel do
   The view model of a session from its snapshot. The snapshot messages go
   through the fold in order, so the live and the snapshot paths share one
   pairing rule (ADR 0006, revision of 2026-10-03). Notices and information
-  cells are not in the transcript, so a snapshot has none of them.
+  cells are not in the transcript, so a snapshot has none of them, but for
+  a lost session lock: a snapshot with `lock_lost` ends with its notice,
+  whose event came before the subscribe.
   """
   @spec from_snapshot(Snapshot.t()) :: t()
   def from_snapshot(%Snapshot{messages: messages, turn: turn} = snapshot) do
@@ -219,7 +221,8 @@ defmodule Helyx.TUI.ViewModel do
       queue: Map.take(snapshot.queue, [:steers, :follow_ups])
     }
 
-    %{Enum.reduce(messages, vm, &add_message(&2, &1)) | streaming: streaming(turn)}
+    vm = %{Enum.reduce(messages, vm, &add_message(&2, &1)) | streaming: streaming(turn)}
+    if snapshot.lock_lost, do: add_cell(vm, {:notice, Helyx.Reason.text(:lock_lost)}), else: vm
   end
 
   defp streaming(%{partial: %Message{role: :assistant} = partial}),

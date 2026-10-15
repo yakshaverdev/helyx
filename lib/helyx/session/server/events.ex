@@ -33,7 +33,8 @@ defmodule Helyx.Session.Server.Events do
       messages: state.transcript,
       turn: turn(state.activity),
       model: ModelRef.to_string(state.model),
-      queue: Queue.counts(state.queue)
+      queue: Queue.counts(state.queue),
+      lock_lost: state.lock_lost
     }
   end
 
