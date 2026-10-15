@@ -122,18 +122,25 @@ defmodule Helyx.Session.ProviderProcessToolsTest do
   test "a request over the byte bound of the open calls is not run; the next one under it runs",
        %{proc: proc, turn_id: turn_id} do
     half = String.duplicate("x", 4 * 1_048_576)
-    request(proc, turn_id, "c1", "slow", %{"ms" => 200, "text" => half})
+    # c1 runs until the gate opens, so both rejections come before its end.
+    request(proc, turn_id, "c1", "slow", %{"gate" => gate(), "text" => half})
     request(proc, turn_id, "c2", "upcase", %{"text" => half})
     request(proc, turn_id, "c3", "upcase", %{"text" => "c"})
     request(proc, turn_id, "c4", "upcase", %{"text" => String.duplicate("x", 8 * 1_048_576)})
 
     assert [
              {:tool_result, _, "c2", {:error, "Helyx tool calls too large" <> _}},
-             {:tool_result, _, "c4", {:error, "Helyx tool calls too large" <> _}},
+             {:tool_result, _, "c4", {:error, "Helyx tool calls too large" <> _}}
+           ] = [receive_result(), receive_result()]
+
+    assert_receive {:waiting, run}
+    send(run, :go)
+
+    assert [
              # The echo of 4 MiB is cut to the tool result limit.
              {:tool_result, _, "c1", {:ok, cut}},
              {:tool_result, _, "c3", {:ok, "C"}}
-           ] = [receive_result(), receive_result(), receive_result(), receive_result()]
+           ] = [receive_result(), receive_result()]
 
     assert byte_size(cut) <= 65_536
 

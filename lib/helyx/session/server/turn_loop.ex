@@ -54,11 +54,11 @@ defmodule Helyx.Session.Server.TurnLoop do
       ),
       do: arm_idle(submit(put_in(state.conn.status, :ready)))
 
-  # The result of the turn's running prepare Task, at the turn start
+  # The reply of the turn's running prepare Task, at the turn start
   # (`preparing`) or for a context request (`submitted`, C1-C4,
   # `one-provider-path.md`).
   def handle(
-        {:prepared, turn_id, result},
+        {_ref, {:prepared, turn_id, result}},
         %State{activity: %Turn{id: turn_id, prepare: pid}} = state
       )
       when pid != nil,
@@ -137,7 +137,7 @@ defmodule Helyx.Session.Server.TurnLoop do
   def handle({:stream_event, _id, :turn_start}, state), do: state
   def handle({:stream_end, _turn_id, _terminal}, state), do: state
   def handle({:provider_ready, _pid}, state), do: state
-  def handle({:prepared, _turn_id, _result}, state), do: state
+  def handle({_ref, {:prepared, _turn_id, _result}}, state), do: state
   def handle({:need_context, _turn_id}, state), do: state
   def handle({:provider_reply, _from, _kind, _reply}, state), do: state
   def handle({:timeout, _ref, :idle_close}, state), do: state
@@ -208,26 +208,25 @@ defmodule Helyx.Session.Server.TurnLoop do
 
   # The prepare Task builds the context, at the turn start and at each
   # context request. The session owns it: a child of the task supervisor,
-  # monitored, its pid in `Turn.prepare`, killed at the turn end. Its kill
-  # at `prepare_ms` is armed as its first act, before any plugin code. A
-  # compaction turn has no context: it submits at once.
+  # monitored before it runs, so a raise is never `:noproc` (#562), its pid
+  # in `Turn.prepare`, killed at the turn end. Its kill at `prepare_ms` is
+  # armed as its first act, before any plugin code. A compaction turn has
+  # no context: it submits at once.
   defp prepare(%State{activity: %Turn{compact: text}} = state) when text != nil, do: submit(state)
 
   defp prepare(%State{activity: %Turn{id: turn_id}} = state) do
-    session = self()
     %State{model_context: model_context, compaction: compaction, prepare_ms: ms} = state
     context = %Context{messages: state.transcript, tools: state.tool_specs}
     opts = [turn_id: turn_id] ++ base_opts(state)
 
-    {:ok, pid} =
-      Task.Supervisor.start_child(Helyx.Core.task_supervisor(state.core), fn ->
+    %Task{pid: pid} =
+      Task.Supervisor.async_nolink(Helyx.Core.task_supervisor(state.core), fn ->
         {:ok, tref} = :timer.kill_after(ms)
         result = Helyx.Session.Stream.prepare(model_context, compaction, context, opts)
         :timer.cancel(tref)
-        send(session, {:prepared, turn_id, result})
+        {:prepared, turn_id, result}
       end)
 
-    Process.monitor(pid)
     put_in(state.activity.prepare, pid)
   end
 

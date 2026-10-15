@@ -12,7 +12,9 @@ defmodule Helyx.Watchdog do
   # the plugin that holds the handles. perl is required.
 
   # The watchdog forks the command into its own process group and stays in
-  # the launcher's own group, so the port's OS process is the watchdog. It
+  # the launcher's own group, so the port's OS process is the watchdog. The
+  # parent sets the child's group too, before the marker, so the group
+  # exists when the marker arrives, however late the child runs (#562). It
   # writes the command's group id as the stdout marker and holds the command
   # until the go-ahead byte arrives on stdin, so either the hands hold the
   # group id before the command runs, or the command never ran. Then it

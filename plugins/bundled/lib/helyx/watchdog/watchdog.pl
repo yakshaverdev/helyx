@@ -22,6 +22,7 @@ if ($child == 0) {
 $SIG{TERM} = "IGNORE";
 $SIG{PIPE} = "IGNORE";
 close($r); close($ir) if $ir;
+setpgrp($child, $child);
 syswrite(STDOUT, "$nonce $child\n");
 if (sysread(STDIN, my $c, 1)) { syswrite($w, "g"); close($w) }
 else { close($w); kill("KILL", -$child); waitpid($child, 0); exit 0 }

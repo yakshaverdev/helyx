@@ -315,19 +315,30 @@ defmodule Helyx.Tool.BashTest do
       refute os_alive?(wait_for_pid(Path.join(dir, "pid")))
     end
 
+    # The limit holds the start of perl and bash and the poll for the pid
+    # file before the suspension (over 200 ms once under load, #562).
+    @load_start_ms 2_000
+
     # The caller is suspended past the limit while the output and the exit
-    # status queue up: a queued message must not win over the deadline.
+    # status queue up: a queued message must not win over the deadline. The
+    # command writes its output at the file `go`, after the deadline.
+    @tag :slow
     test "the limit wins over output queued after it", %{tmp_dir: dir} do
       test = self()
-      command = "echo $$ > pid; sleep 0.3; echo done"
-      caller = spawn(fn -> send(test, Helyx.Tool.Bash.run_command(command, dir, 200)) end)
+      command = "echo $$ > pid; until [ -e go ]; do sleep 0.01; done; echo done"
+
+      caller =
+        spawn(fn -> send(test, Helyx.Tool.Bash.run_command(command, dir, @load_start_ms)) end)
 
       pid = wait_for_pid(Path.join(dir, "pid"))
       true = :erlang.suspend_process(caller)
+      # The deadline came before the pid file, so it is past after the limit.
+      Process.sleep(@load_start_ms + 1)
+      File.write!(Path.join(dir, "go"), "")
       assert gone_within?(pid)
       true = :erlang.resume_process(caller)
 
-      assert_receive {:error, "done\n\nTimed out after 200 ms: the command group was released."}
+      assert_receive {:error, "done\n\nTimed out after 2 s: the command group was released."}
     end
 
     # A release that stalls (here suspended, as a kill(1) run that never

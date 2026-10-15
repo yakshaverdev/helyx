@@ -70,7 +70,7 @@ defmodule Helyx.Session.Server.Wait do
   defp interrupt(_state, _turn), do: %__MODULE__{}
 
   # Kills the prepare Task of the turn, if one runs. Its late
-  # `{:prepared, ...}` and `:DOWN` match no turn and are dropped.
+  # `{ref, {:prepared, ...}}` and `:DOWN` match no turn and are dropped.
   defp kill_prepare(%Turn{prepare: nil}), do: :ok
   defp kill_prepare(%Turn{prepare: pid}), do: Process.exit(pid, :kill)
 
