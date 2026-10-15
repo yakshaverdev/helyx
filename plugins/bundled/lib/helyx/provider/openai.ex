@@ -60,10 +60,12 @@ defmodule Helyx.Provider.OpenAI do
   @spec stream(String.t(), String.t(), Helyx.Context.t(), keyword(), String.t()) ::
           {:ok, Enumerable.t()} | {:error, term()}
   def stream(provider_id, model, context, opts, base_url) do
-    with {:ok, info} <- Helyx.ModelInfo.lookup(provider_id, model) do
+    with {:ok, info} <- Helyx.ModelInfo.lookup(provider_id, model),
+         {:ok, req_options} <- req_options() do
       case System.fetch_env(@env_var) do
         {:ok, key} ->
-          {:ok, Events.events(chunks(request(model, context, opts, base_url, key)), info)}
+          request = request(model, context, opts, base_url, key, req_options)
+          {:ok, Events.events(chunks(request), info)}
 
         :error ->
           {:error, {:missing_env, @env_var}}
@@ -71,9 +73,19 @@ defmodule Helyx.Provider.OpenAI do
     end
   end
 
+  # Config is a boundary: a keyword list. The names and the values are
+  # Req's to check.
+  defp req_options do
+    options = Application.get_env(:helyx_plugins, :openai_req_options, [])
+
+    if Keyword.keyword?(options),
+      do: {:ok, options},
+      else: {:error, {:bad_config, [:openai_req_options]}}
+  end
+
   # Request
 
-  defp request(model, context, opts, base_url, key) do
+  defp request(model, context, opts, base_url, key, req_options) do
     Req.new(
       [
         base_url: base_url,
@@ -87,7 +99,7 @@ defmodule Helyx.Provider.OpenAI do
         # Req's `:default_options`.
         retry: false,
         http_errors: :return
-      ] ++ Application.get_env(:helyx_plugins, :openai_req_options, [])
+      ] ++ req_options
     )
   end
 
