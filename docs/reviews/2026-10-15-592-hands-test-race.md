@@ -72,3 +72,12 @@ Base `2c5b5391`. The fix of 3.1 and 3.3: 13 test lines, no code file, no functio
 - 4.2: one site checks the release and the death of `proc` after two waits.
 - 3.4: no check at the return of `Session.abort/1` in `:submitting` that the interrupt was sent.
 - 1.6, 1.8, 3.6: `refute_received` of a message from another sender can pass when it should fail. #592 covers only `assert_received`.
+
+## Gate (orchestrator, 2026-10-15)
+
+Codex adversarial review, base `origin/master` (`12e5cbc`), on `41b4572`. The invariant sentence named 4.2, 3.4, and the `refute_received` race as known open items.
+
+- Gate r1 (Codex): verdict approve, no finding. It did not run tests (read-only workspace).
+
+The open items stay open without a ticket: 4.2 and 3.4 make a check weaker, and they do not make a test fail at random. The orchestrator took this decision without the owner (roll forward of 2026-10-15).
+
