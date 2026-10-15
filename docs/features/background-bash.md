@@ -16,6 +16,12 @@ Decisions of the owner (2026-10-14, in #577):
 - **Bounds and stop.** The output file is in the system temp folder, one folder per session, which the session deletes at its stop. At most 64 MiB per file; after that the output is dropped and the end message says so. At most 16 live background commands per session; a start over that gives an error result and runs nothing. A background `timeout` defaults to 3,600 s and allows up to 86,400 s. No stop tool: the agent ends a command with `kill` on its process group through bash, and the end message then arrives as usual.
 - **Harness providers.** The program gets the start answer at once. The end goes to the program as a user line, through the path of a steer or a prompt.
 
+Decisions of the owner (2026-10-15, in #587):
+
+- **Count bound.** A place of a background run stays taken until a turn takes its end, not until the run ends. The 16 places then bound the live runs and the waiting ends together, in every turn phase.
+- **Folder of a crashed session.** Accepted hole: a session that crashes or is killed leaves its background folder. The folder is in the system temp folder, which the OS cleans; a sweep at start is more code than the leak costs.
+- **The stale hold.** A give-back (`Queue.answer/4`, `Queue.provider_down/2`) sets `hold` only when no turn is open, because the open turn delivers the end.
+
 Decisions of this doc (the open items of #577):
 
 - **The tool contract.** Two functions of `Helyx.Tool`, called from the tool Task as `hold/1` is: `background/0` takes a place among the 16 and gives an id and the background folder of the session, before the external work starts; `started/1` gives the start answer. The Task then runs on, and its return value is the end. A place taken before the work starts is what lets a start over the limit run nothing. Bash needs the process group in its answer, which exists only after the start, so the answer is a second call.
@@ -33,7 +39,7 @@ Decisions of this doc (the open items of #577):
 @spec started(String.t()) :: :ok
 ```
 
-- `background/0`, from a tool Task of the hands. It takes one of the 16 places of the session and gives the id of the run and the background folder of the session, which the hands create with mode `0700` at each call. The tool names its files by the id there: bash writes `<folder>/<id>.out`. A second call from the same Task, a call from a Task that is not a tool call, a call outside the hands, a full set of 16, and a folder that cannot be made give `{:error, text}`; the tool returns an error result and starts nothing. The place stays taken until the Task ends.
+- `background/0`, from a tool Task of the hands. It takes one of the 16 places of the session and gives the id of the run and the background folder of the session, which the hands create with mode `0700` at each call. The tool names its files by the id there: bash writes `<folder>/<id>.out`. A second call from the same Task, a call from a Task that is not a tool call, a call outside the hands, a full set of 16, and a folder that cannot be made give `{:error, text}`; the tool returns an error result and starts nothing. The place of a run that gave its start answer stays taken until a turn takes its end: the session calls `Helyx.Session.Hands.taken/2` with the id when the end joins the transcript, at the send of a turn or at the `user_message` of its steer. The place of a call that ends with no start answer is freed when its Task ends, and a cancel frees the place of a Task it kills.
 - `started(text)`, from a Task that has a place. The hands send `text` as the result of the call, at once, in the form below, and move the Task out of its turn. The Task's return value, or its crash, is then the end of the run. A Task with no place raises `ArgumentError`, as `hold/1` does for a tool with no `release/3`.
 - The hands release the handles of a background Task when it ends, as at a delivery (`:deliver`), and send the session `{:background_end, text}` after the release.
 
@@ -72,7 +78,7 @@ The session stopped while this background command ran, and its end was lost. The
 
 The session:
 
-- `Helyx.Session.Queue` gets `ends`, the background ends that wait, and `hold`, true from an abort, a failed turn, a resume, or an end given back until the next turn that is not a compaction opens. A give-back in an open turn (a late answer from an earlier turn, or the end of an earlier provider process while a turn prepares) sets `hold` in that turn: the end goes in it, and after it the ends wait for the next prompt. An end that waits goes as soon as a steer frees its place in a `submitted` turn.
+- `Helyx.Session.Queue` gets `ends`, the background ends that wait, and `hold`, true from an abort, a failed turn, a resume, or an end given back until the next turn that is not a compaction opens. A give-back in an open turn that is not a compaction (a late answer from an earlier turn, or the end of an earlier provider process while a turn prepares) does not set `hold`: the open turn delivers the end, and later ends still wake the session after it (#587). An end that waits goes as soon as a steer frees its place in a `submitted` turn.
 - An end that arrives: in a `submitted` turn that is not a compaction, it goes to the provider as a steer while the 32 steers have room, else it waits. In `preparing` it joins the transcript and the context at the send of the turn, after the queued steers' place. In `submitting` it goes at the `:ok`, with the local steers. In a wait, and while idle with `hold`, it waits. While idle without `hold`, it opens a turn with no user message of its own, and joins at the send.
 - An end that a steer sent: `:rejected` puts it back with the ends, not the steers, and no end goes as a steer again until the next turn that is not a compaction opens, as a rejected steer waits for the next turn. A late `:rejected` that comes in a later turn stops the ends of that turn too, until the next one opens; the ends wait and are not dropped. A `user_message` takes it as any steer. An answer other than `:rejected` with no `user_message` at a normal end of its turn, or, after the end of its turn, a late answer other than `:rejected`, puts the end back at the front of the ends with `hold` set, as after an abort. It gets no `steer_unconfirmed`. An end is never dropped, and the hold stops a resend loop: the end waits for the next prompt (owner decision, 2026-10-14).
 - An abort, a failure, and the end of the provider process put every sent end that no `user_message` took back at the front of the ends, with no notice. An abort and a failure always set `hold`. The end of the provider process sets `hold` only when it gives an end back: the idle close ends the provider process in the normal course, and a background run that outlasts it must still wake the session. In a turn, the end of the provider process fails the turn, and the failure sets `hold`. Each path that does not deliver an end puts it back once, held; only a rejected end goes to the back, with no `hold`, as above. `queue_dropped` never holds an end.
@@ -88,7 +94,7 @@ none. A foreground call does not change. The rule of the hands "no resource surv
 
 | What | Bound | Over the bound | Where |
 | ---- | ----- | -------------- | ----- |
-| live background runs of a session | 16 places, taken at `background/0` and freed when the Task ends (`@max_live` in `Helyx.Session.Background`) | `{:error, text}` to the tool; bash returns an error result and starts nothing | hands |
+| live background runs of a session and their ends that no turn took | 16 places, taken at `background/0` and freed when a turn takes the end, or when a Task with no start answer ends (`@max_places` in `Helyx.Session.Background`) | `{:error, text}` to the tool; bash returns an error result and starts nothing | hands |
 | background `timeout` | an integer from 1 to 86,400 s, default 3,600 | an error result; nothing runs | `Helyx.Tool.Bash.run/2` |
 | foreground `timeout` | from 1 to 600 s, default 120, as before | an error result; nothing runs | `Helyx.Tool.Bash.run/2` |
 | `background` argument | `true`, `false`, missing, or `null` | an error result; nothing runs | `Helyx.Tool.Bash.run/2` |
@@ -98,7 +104,7 @@ none. A foreground call does not change. The rule of the hands "no resource surv
 | first line of the command in the end message | 200 bytes (`Helyx.Text.cap/3`) | cut | bash |
 | start answer | 4,096 bytes of valid UTF-8 (`@max_start_bytes` in `Helyx.Session.Background`) before the wrap, far under `Helyx.Message.max_result_bytes/0` | cut | hands |
 | wait of a background Task | the `timeout` of the run; at it the release of a timeout, as in the foreground (`docs/features/bash-timeout.md`) | the end with the timeout | bash |
-| background ends that wait in the session | outside a `submitted` turn no tool call runs, so at most the 16 live runs end there; an end that a turn gave back adds at most the 32 entries of the ledger; in a `submitted` turn an end waits only while the 32 steers have no room or after the provider rejected an end, so the count there is the runs that end in one turn while the provider takes no steer: unbounded in theory, #587 | none | session |
+| background ends that wait in the session | 16 with the live runs, in every turn phase: an end keeps its place until a turn takes it, and an end given back is the same end. The lost ends of a resume come on top, one per start answer with no end in the transcript, and free no place (#587) | a start over the 16 places runs nothing, as above | hands, session |
 | lost ends at resume | one per start answer in the transcript with no end message | none | `Helyx.Session.Background.lost/1` |
 
 ## Ownership
@@ -107,12 +113,10 @@ none. A foreground call does not change. The rule of the hands "no resource surv
 | -------- | ---------- | ------- | ---------------------- | -------------------------------- | ----------------- | ------------------------ |
 | command process group, watchdog | `Helyx.Watchdog.start/4` in the background Task | hands (opaque handles), the port (life) | hands, `:deliver`, when the Task ends | the watchdog when the port closes; the hands release at the delivery of the crash | not released: an abort does not end a background run | the hands stop: the Task dies, the port closes, the watchdog TERMs the group, waits the grace, and KILLs it |
 | output file handle | bash, a `:raw` file of the Task | the Task | closed when the Task ends | closed by the runtime when the Task dies | as on normal end | as on normal end |
-| background folder and its files | the hands, at the first `background/0` | the session | kept while the session runs, so the agent can read a file after its end | a session crash or kill leaves it in the system temp folder: open, see "Open" | kept | deleted by `Helyx.Session.Server.Stop.run/1` after the hands stop |
+| background folder and its files | the hands, at the first `background/0` | the session | kept while the session runs, so the agent can read a file after its end | a session crash or kill leaves it in the system temp folder: an accepted hole, the OS cleans it (#587) | kept | deleted by `Helyx.Session.Server.Stop.run/1` after the hands stop |
 
 ## Open
 
-- Ends that wait in a `submitted` turn while the 32 steers have no room have no count bound. Each needs a background run that ends in that turn while the provider takes no steer. #587.
-- A session that crashes or is killed leaves its background folder in the system temp folder. #587.
 - An abort that comes between the start of a background run and the session's read of its start answer drops the answer with the turn: the call gets `aborted`, and the run goes on. Its end still arrives, with the first line of the command. The session still counts the run in `running` from that answer (#591).
 - A foreground result whose text starts with the exact start line of a background answer counts as a start at a resume, and gets a lost end. The id must have the form of `Helyx.Session.Id`.
 

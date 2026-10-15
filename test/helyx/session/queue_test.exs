@@ -55,7 +55,7 @@ defmodule Helyx.Session.QueueTest do
       {queue, [{:take, "more"}]} = Queue.take(queue, "s1")
       assert Queue.push(queue, :steers, "s32") == {:error, :queue_full}
 
-      {queue, []} = Queue.answer(queue, from, :ok)
+      {queue, []} = Queue.answer(queue, from, :ok, false)
       assert {:ok, _queue} = Queue.push(queue, :steers, "s32")
     end
   end
@@ -63,7 +63,7 @@ defmodule Helyx.Session.QueueTest do
   describe "in the turn" do
     test "a steer with :ok joins at its user_message, with no notice at the end" do
       {queue, from} = sent_one()
-      {queue, []} = Queue.answer(queue, from, :ok)
+      {queue, []} = Queue.answer(queue, from, :ok, false)
       assert {queue, [{:take, "more"}]} = Queue.take(queue, "s1")
       assert {^queue, []} = Queue.take(queue, "s1")
       assert {queue, []} = Queue.end_turn(queue, "t1", true)
@@ -75,14 +75,14 @@ defmodule Helyx.Session.QueueTest do
       {queue, [{:take, "more"}]} = Queue.take(queue, "s1")
       assert {queue, []} = Queue.end_turn(queue, "t1", false)
       assert open?(queue)
-      assert {queue, []} = Queue.answer(queue, from, :rejected)
+      assert {queue, []} = Queue.answer(queue, from, :rejected, false)
       refute open?(queue)
       assert Queue.counts(queue).steers == 0
     end
 
     test "a confirmed rejection queues the steer again" do
       {queue, from} = sent_one()
-      assert {queue, []} = Queue.answer(queue, from, :rejected)
+      assert {queue, []} = Queue.answer(queue, from, :rejected, false)
       assert {["more"], _queue} = Queue.drain_steers(queue)
       refute open?(queue)
     end
@@ -90,14 +90,14 @@ defmodule Helyx.Session.QueueTest do
     test "an unknown steer id or a late answer changes nothing" do
       {queue, _from} = sent_one()
       assert {^queue, []} = Queue.take(queue, "other")
-      assert {^queue, []} = Queue.answer(queue, make_ref(), :ok)
+      assert {^queue, []} = Queue.answer(queue, make_ref(), :ok, false)
     end
   end
 
   describe "a normal turn end" do
     test "an answered steer with no user_message gets its notice" do
       {queue, from} = sent_one()
-      {queue, []} = Queue.answer(queue, from, {:error, :gone})
+      {queue, []} = Queue.answer(queue, from, {:error, :gone}, false)
       assert {queue, [{:notice, "t1", "more"}]} = Queue.end_turn(queue, "t1", true)
       refute open?(queue)
     end
@@ -106,7 +106,7 @@ defmodule Helyx.Session.QueueTest do
       {queue, from} = sent_one()
       assert {queue, []} = Queue.end_turn(queue, "t1", true)
       assert open?(queue)
-      assert {queue, []} = Queue.answer(queue, from, :rejected)
+      assert {queue, []} = Queue.answer(queue, from, :rejected, false)
       assert Queue.counts(queue).steers == 1
       refute open?(queue)
     end
@@ -114,7 +114,7 @@ defmodule Helyx.Session.QueueTest do
     test "a steer with no answer stays open: any other answer is its notice" do
       {queue, from} = sent_one()
       {queue, []} = Queue.end_turn(queue, "t1", true)
-      assert {queue, [{:notice, "t1", "more"}]} = Queue.answer(queue, from, :ok)
+      assert {queue, [{:notice, "t1", "more"}]} = Queue.answer(queue, from, :ok, false)
       refute open?(queue)
     end
 
@@ -123,7 +123,7 @@ defmodule Helyx.Session.QueueTest do
       {queue, []} = Queue.end_turn(queue, "t1", true)
       assert {queue, [{:notice, "t1", "more"}]} = Queue.abort(queue)
       assert {^queue, []} = Queue.abort(queue)
-      assert {queue, []} = Queue.answer(queue, from, :rejected)
+      assert {queue, []} = Queue.answer(queue, from, :rejected, false)
       assert Queue.counts(queue).steers == 0
     end
   end
@@ -132,7 +132,7 @@ defmodule Helyx.Session.QueueTest do
     {queue, from} = sent_one()
     assert {queue, [{:notice, "t1", "more"}]} = Queue.end_turn(queue, "t1", false)
     assert open?(queue)
-    assert {queue, []} = Queue.answer(queue, from, :rejected)
+    assert {queue, []} = Queue.answer(queue, from, :rejected, false)
     assert Queue.counts(queue).steers == 0
     refute open?(queue)
   end
@@ -140,23 +140,23 @@ defmodule Helyx.Session.QueueTest do
   test "the end of the provider process ends every request; only a steer with no notice gets one" do
     {queue, _from} = sent_one()
     {queue, _effects} = Queue.end_turn(queue, "t1", false)
-    assert {queue, []} = Queue.provider_down(queue)
+    assert {queue, []} = Queue.provider_down(queue, false)
     refute open?(queue)
 
     {queue, _from} = sent_one()
     {queue, []} = Queue.end_turn(queue, "t1", true)
-    assert {queue, [{:notice, "t1", "more"}]} = Queue.provider_down(queue)
+    assert {queue, [{:notice, "t1", "more"}]} = Queue.provider_down(queue, false)
     refute open?(queue)
   end
 
   test "a steer of the next turn is in the turn again" do
     {queue, from} = sent_one()
     {queue, []} = Queue.end_turn(queue, "t1", true)
-    {queue, _notice} = Queue.answer(queue, from, :ok)
+    {queue, _notice} = Queue.answer(queue, from, :ok, false)
 
     next = make_ref()
     queue = Queue.sent(queue, next, "s2", "again")
-    assert {queue, []} = Queue.answer(queue, next, :ok)
+    assert {queue, []} = Queue.answer(queue, next, :ok, false)
     assert {_queue, [{:take, "again"}]} = Queue.take(queue, "s2")
   end
 
@@ -166,7 +166,7 @@ defmodule Helyx.Session.QueueTest do
     {queue, []} = Queue.end_turn(queue, "t1", true)
     queue = Queue.sent(queue, make_ref(), "s2", "again")
 
-    assert {queue, [{:notice, "t1", "more"}]} = Queue.answer(queue, from, :ok)
+    assert {queue, [{:notice, "t1", "more"}]} = Queue.answer(queue, from, :ok, false)
     assert {queue, [{:notice, "t2", "again"}]} = Queue.end_turn(queue, "t2", false)
     assert [{_from, "s2", "again", :settled}] = queue.sent
   end
@@ -196,13 +196,13 @@ defmodule Helyx.Session.QueueTest do
     test "keep the queue order: a steer that the provider rejected joins the end of the steers" do
       {queue, from} = sent_one()
       queue = push!(queue, :steers, "s")
-      {queue, []} = Queue.answer(queue, from, :rejected)
+      {queue, []} = Queue.answer(queue, from, :rejected, false)
       queue = push!(queue, :follow_ups, "f")
       assert {_queue, [{:dropped, ["s", "more", "f"]}]} = Queue.abort(queue)
     end
 
     test "stay at the end of the provider process", %{queue: queue} do
-      assert {queue, []} = Queue.provider_down(queue)
+      assert {queue, []} = Queue.provider_down(queue, false)
       assert Queue.counts(queue) == %{steers: 1, follow_ups: 1, running: 0, held: 0, waiting: 0}
       refute open?(queue)
     end
@@ -257,13 +257,13 @@ defmodule Helyx.Session.QueueTest do
       queue = Queue.sent(%Queue{}, from, "id", {:end, "e1"})
 
       assert {%Queue{ends: ["e1"], steers: [], sent: []} = rejected, []} =
-               Queue.answer(queue, from, :rejected)
+               Queue.answer(queue, from, :rejected, false)
 
       # As a rejected steer, it waits for the next turn, and so do the others.
       assert Queue.next_end(Queue.push_end(rejected, "e2")) == nil
       assert {"e1", _queue} = Queue.next_end(Queue.open(rejected))
 
-      assert {_queue, [{:take, "e1"}]} = Queue.take(queue, "id")
+      assert {_queue, [{:take, {:end, "e1"}}]} = Queue.take(queue, "id")
     end
 
     test "a sent end that no user_message took goes back held at the end of its turn, or at its late answer" do
@@ -274,18 +274,37 @@ defmodule Helyx.Session.QueueTest do
         |> Queue.sent(answered, "a", {:end, "e1"})
         |> Queue.sent(late, "b", {:end, "e2"})
 
-      {queue, []} = Queue.answer(queue, answered, {:error, :lost})
+      {queue, []} = Queue.answer(queue, answered, {:error, :lost}, false)
       assert {queue, []} = Queue.end_turn(queue, "t1", true)
       assert %Queue{ends: ["e1", "e0"], hold: true} = queue
 
       for reply <- [:ok, {:error, :lost}] do
         assert {%Queue{ends: ["e2", "e1", "e0"], sent: [], hold: true} = back, []} =
-                 Queue.answer(queue, late, reply)
+                 Queue.answer(queue, late, reply, false)
 
         # Held, it wakes nothing, but an open submitted turn still sends it.
         refute Queue.wake?(back)
         assert {"e2", _} = Queue.next_end(back)
       end
+    end
+
+    # #587: the open turn delivers the end, so a hold would outlast it and
+    # keep later ends from waking an idle session.
+    test "an end given back while a turn is open does not hold" do
+      {late, sent} = {make_ref(), make_ref()}
+
+      queue =
+        Queue.sent(%Queue{}, late, "a", {:end, "e1"}) |> Queue.sent(sent, "b", {:end, "e2"})
+
+      {queue, []} = Queue.end_turn(queue, "t1", true)
+      open = Queue.open(queue)
+
+      assert {%Queue{ends: ["e1"], hold: false} = back, []} = Queue.answer(open, late, :ok, true)
+      assert {%Queue{ends: ["e2", "e1"], hold: false}, []} = Queue.provider_down(back, true)
+
+      # With no turn open, a give-back holds.
+      assert {%Queue{hold: true}, []} = Queue.answer(back, sent, :ok, false)
+      assert {%Queue{hold: true}, []} = Queue.provider_down(back, false)
     end
 
     test "an abort, a failure, or the end of the provider process gives back every end that no user_message took" do
@@ -298,8 +317,8 @@ defmodule Helyx.Session.QueueTest do
         |> Queue.sent(taken, "d", {:end, "e4"})
         |> Queue.sent(make_ref(), "s", "steer")
 
-      {queue, []} = Queue.answer(queue, answered, :ok)
-      {queue, [{:take, "e4"}]} = Queue.take(queue, "d")
+      {queue, []} = Queue.answer(queue, answered, :ok, false)
+      {queue, [{:take, {:end, "e4"}}]} = Queue.take(queue, "d")
 
       after_turn =
         Queue.sent(%Queue{}, ended, "c", {:end, "e3"}) |> Queue.sent(make_ref(), "s", "steer")
@@ -310,16 +329,17 @@ defmodule Helyx.Session.QueueTest do
       assert aborted.ends == ["e1", "e2", "e0"]
       assert aborted.hold
       # A late answer of a given-back end only ends its request.
-      assert {%Queue{ends: ["e1", "e2", "e0"]}, []} = Queue.answer(aborted, open, :rejected)
+      assert {%Queue{ends: ["e1", "e2", "e0"]}, []} =
+               Queue.answer(aborted, open, :rejected, false)
 
       assert {aborted, [{:notice, "t0", "steer"}]} = Queue.abort(after_turn)
       assert aborted.ends == ["e3"]
 
-      assert {down, []} = Queue.provider_down(queue)
+      assert {down, []} = Queue.provider_down(queue, false)
       assert down.ends == ["e1", "e2", "e0"]
       assert down.sent == []
       assert down.hold
-      assert {%Queue{hold: false}, []} = Queue.provider_down(%Queue{})
+      assert {%Queue{hold: false}, []} = Queue.provider_down(%Queue{}, false)
     end
   end
 end

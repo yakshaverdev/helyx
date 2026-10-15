@@ -35,7 +35,7 @@ defmodule Helyx.Session.Server.Wait do
   # `:aborted`, or `{:error, reason}`; the reason goes to the log and
   # becomes its text (`Helyx.Reason`). Its prepare Task is killed,
   # and its records close (`Records.finish/2`). At `done` a steer with no
-  # answer yet can still be rejected after the turn (`Queue.answer/3`); an
+  # answer yet can still be rejected after the turn (`Queue.answer/4`); an
   # abort or a failure gives the queued texts back (`Queue.abort/1`). The
   # hands release the Tasks of the turn before the next turn: always at an
   # abort or a failure, at `done` when a Helyx tool still runs. Only an

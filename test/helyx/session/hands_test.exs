@@ -387,14 +387,24 @@ defmodule Helyx.Session.HandsTest do
 
       background(hands, "c17", %{"gate" => gate})
       assert_receive {:tool_result, "t1", "c17", {:error, text}}
-      assert text == "16 background runs are live; one must end before another starts"
+
+      assert text ==
+               "16 background runs are live or have an end that no turn took; " <>
+                 "a turn must take an end before another run starts"
+
       refute_received {:waiting, _pid}
 
-      # An end frees its place.
+      # An end keeps its place until a turn takes it (#587); an unknown id,
+      # such as the id of a lost run, frees nothing.
       send(hd(pids), :go)
-      assert_receive {:background_end, _finish}
+      assert_receive {:background_end, finish}
+      :ok = Helyx.Session.Hands.taken(hands, "unknown_id_x")
       background(hands, "c18", %{"gate" => gate})
-      assert_receive {:tool_result, "t1", "c18", {:started, _start}}
+      assert_receive {:tool_result, "t1", "c18", {:error, ^text}}
+
+      :ok = Helyx.Session.Hands.taken(hands, Helyx.Session.Background.id(finish))
+      background(hands, "c19", %{"gate" => gate})
+      assert_receive {:tool_result, "t1", "c19", {:started, _start}}
     end
 
     test "a call takes one place, and a start answer needs one", %{

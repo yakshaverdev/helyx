@@ -85,7 +85,7 @@ The session monitors its provider process, and the hands send `{:provider_down, 
 - Only `provider_down` takes the process out of `conn`. An `:ending` process holds the wait (`TurnLoop.progress/1`), and `TurnLoop.connect/1` never reuses it.
 - Outside a turn, the `:DOWN` makes the process `:ending` and starts a wait, so the next turn waits for its `provider_down`.
 - In a sent turn (`submitting` or later), the `provider_down` fails the turn with `reason`.
-- In `preparing`, the `:DOWN` holds back `{:turn, ...}`. When the process was started by an earlier turn, its `provider_down` makes the turn connect a new one, once, and the queued steers stay for that turn: `Queue.provider_down/1` settles only the steer ledger. A process that this turn started fails the turn.
+- In `preparing`, the `:DOWN` holds back `{:turn, ...}`. When the process was started by an earlier turn, its `provider_down` makes the turn connect a new one, once, and the queued steers stay for that turn: `Queue.provider_down/2` settles only the steer ledger. A process that this turn started fails the turn.
 - At `provider_down` each sent steer with no notice gets `steer_unconfirmed`, except a background end, which goes back to the ends, and the ledger drops every entry of that process.
 - Provider output outside the contract (a bad event, a context request outside `submitted` or while one is open (`TurnLoop.handle/2`), a message over a bound) stops the provider process with `{:shutdown, reason}` and fails the turn.
 
@@ -113,7 +113,7 @@ With a ready provider process and no turn and no wait, the session arms one idle
 | idle time with a ready provider process | 1,800,000 ms (`provider_ms.idle` in `Helyx.Session.Server.State`) | the idle close | session |
 | queued steers, and sent steers until their `user_message` and their answer, also after their turn | 32 together (`@limit` in `Helyx.Session.Queue`) | `{:error, :queue_full}` to the client | session |
 | queued follow-ups | 32 (`@limit` in `Helyx.Session.Queue`) | `{:error, :queue_full}` to the client | session |
-| background ends that wait | none: outside a `submitted` turn at most the 16 live runs; in one, unbounded in theory (`docs/features/background-bash.md`, "Bounds" and "Open") | none | session |
+| background ends that wait | 16 with the live runs, in every turn phase: a run keeps its place until a turn takes its end, plus the lost ends of a resume (`docs/features/background-bash.md`, "Bounds", #587) | a start over the 16 places runs nothing | hands, session |
 | texts of one `queue_dropped` event | the queued steers and follow-ups: at most 32 and 32, each as the client sent it. The event holds no text that the queue did not hold | none: the queue limits hold it | session |
 | bytes of text, thinking, and tool calls in the open assistant message | 8 MiB (`@max_message_bytes` in `Helyx.Session.Turn`) | `{:message_too_large, bytes, max}`: nothing is added, the provider process stops, the turn fails | session |
 | blocks in the open assistant message | 1,024 (`@max_message_blocks` in `Helyx.Session.Turn`) | `{:too_many_blocks, blocks, max}`: as above | session |
