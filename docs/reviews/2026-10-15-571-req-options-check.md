@@ -78,3 +78,9 @@ Round 3 reproduced no code defect, so the loop ends. 3.3 to 3.6 are doc, test, a
 ## Open
 
 - The `req_options` of `:model_catalog` and `:openai_req_options` both leave the names and the values to Req. A bad one fails in the model call (or in the catalog refresh) with Req's error, not with the env key.
+
+## Gate (orchestrator, 2026-10-15)
+
+Codex adversarial review, base `origin/master` (`34cbcb22`), on the rebased commit. Gate r1 (Codex): verdict approve, no finding. It did not run tests (read-only workspace).
+
+The orchestrator accepted the check at each model call, not at app start: it is the place and the shape check of `:model_catalog` (#560), which the triage named.
