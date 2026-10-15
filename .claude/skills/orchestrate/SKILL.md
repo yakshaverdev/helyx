@@ -19,7 +19,33 @@ The five-worker limit assumed that the host absorbs parallel precommit runs. On 
 
 ## 2. Start a worker
 
-One worker per ticket, as an Agent with `isolation: "worktree"` on branch `ticket/<n>-<slug>` from `origin/master`. Its brief: run `/implement <n>`, which ends in `/ship`; commit on the branch; do not push, open a PR, or merge; report the invariant of the change, the review counts per round, and anything it could not decide. A worker that cannot decide something stops and reports. It does not guess.
+Workers run their own install of Helyx, apart from the `helyx` that the user or the orchestrator runs. An install keeps only the new build and the build before it, so a process that lives through two installs of its prefix loses its build and can fail later (`docs/features/local-release.md`, "Accepted holes"). At the start of a run, before the first worker, install once from `origin/master` in the main checkout:
+
+```bash
+w="$(git rev-parse --path-format=absolute --git-common-dir)/orchestrate"
+(cd apps/coding_agent && mix deps.get && mix helyx.install --prefix "$w/helyx" --bin-dir "$w/bin")
+```
+
+Start every worker with `"$w/bin/helyx"`. Do not install into that prefix again while the run has a live worker; a merge that changes Helyx reaches the workers in the next run. Never install into the default prefix during a run. The sessions stay in `~/.helyx/sessions` for every prefix.
+
+One worker per ticket. A worker is a Helyx session in its own worktree, on branch `ticket/<n>-<slug>` from `origin/master` (#578):
+
+```bash
+git worktree add -b ticket/<n>-<slug> .claude/worktrees/ticket-<n> origin/master
+(cd .claude/worktrees/ticket-<n> && mix deps.get && cd plugins/bundled && mix deps.get)
+```
+
+Write the brief to a file outside the worktree, for example `$(git rev-parse --git-common-dir)/orchestrate/<n>-brief.md`, so that it is not in the diff. Start the worker with the `bash` tool in the background, with the worktree as its working folder (in Helyx: `background: true` and `workdir`):
+
+```bash
+"$w/bin/helyx" -p "$(cat <brief file>)" < /dev/null > <answer file> 2> <stderr file>
+```
+
+Print mode reads stdin to its end when stdin is not a terminal. The stdin of a background command can be an open socket that never ends, and then the run waits before its first turn (#592 probe): always give `< /dev/null`.
+
+Add the model switch with `provider/model` when the brief names a model, for example by the kind of ticket. Otherwise the worker runs on the model of the orchestrator; name that model with the switch too, because a new session takes the default model. The first line of the stderr file is `helyx: session <id>`: keep the id for the ticket. The end of the run wakes you; the answer of the worker is the answer file, and the status of the run is 0 only for a normal end.
+
+Its brief: run `/implement <n>`, which ends in `/ship`; commit on the branch; do not push, open a PR, or merge; report the invariant of the change, the review counts per round, and anything it could not decide. A worker that cannot decide something stops and reports. It does not guess.
 
 Every brief also says:
 
@@ -30,12 +56,21 @@ Every brief also says:
 - Run precommit with `.claude/skills/ship/precommit.sh`, never `mix precommit` directly.
 - The limits of `/ship`: at most three rounds, then at most one small-fix round when its conditions hold (see `/ship`), a round with no reproduced defect ends the loop, and at most 45 minutes of work. At the limit, commit only reviewed code and report what is open.
 - No CPU load generator and no mutation run over a whole suite in any probe: other worktrees run tests on this machine. Put this rule in every review brief.
+- Run every Agent call in the foreground. Put several Agent calls in one message when they must run in parallel. Never use a background agent or a scheduled wakeup: print mode waits only for Helyx background runs, so the run ends and the session stop ends the agent (#592 probe, #598).
+- Run a long command (the Codex review, precommit) with the `bash` tool and `background: true`. Its end opens a new turn.
+- Until #597 is fixed, run `mix` in the `bash` tool as `mise exec -- mix`: the installed release puts its own `erl` first in `PATH`, and a plain `mix` fails at boot.
 
-A worker that stopped before its final report (a usage limit, a wait for its own agents) is resumed with SendMessage. Do not start a second worker for the ticket.
+A follow-up to a worker, and the resume of a worker that stopped before its final report (a usage limit, a wait that ended the run), is one more print run on its session, after its last run ended (one process per session at a time):
+
+```bash
+"$w/bin/helyx" -p "$(cat <follow-up file>)" --session <id> < /dev/null > <answer file> 2> <stderr file>
+```
+
+The session keeps its model and its folder. Do not start a second worker for the ticket.
 
 ## 3. Codex review
 
-`/ship` already ran Codex in its first round. This run is the gate on the final code. In the worker's worktree, in the foreground:
+`/ship` already ran Codex in its first round. This run is the gate on the final code. Run it in the worker's worktree with the `bash` tool in the background, its output into a file; a review takes up to 30 minutes. Its end wakes you:
 
 ```bash
 codex_dir=$(/bin/ls -d "$HOME"/.claude/plugins/cache/openai-codex/codex/*/ | sort -V | /usr/bin/tail -n 1)
@@ -48,7 +83,7 @@ The invariant sentence names the entry points it covers, every accepted hole, ev
 
 Judge every finding yourself. Reproduce it or read the code. A reviewer's claim is not a fact. Reject a finding whose reproduction enters below the boundary with a value no caller can pass; a fix for it would add defensive code. Record the rejection with the boundary that already covers the value. Reject a finding that asks for a case-specific handler of contract-breaking provider output when no real provider shows that output: a contract break gets the generic answer (the provider stops, the turn fails), and its own handler needs evidence (`docs/agents/review-checklist.md`, "Inputs from plugins"). Record the rejection with this rule. A finding that the generic failure path does not fire, a race between Core processes, and a broken safety bound stay findings. The invariant sentence also names the boundaries of the change, so the reviewer knows which checks are the designed ones.
 
-- **Confirmed:** send it to the worker (SendMessage) with the reproduction. The worker fixes it through `/ship` rules: a code fix gets its rerun round. Then run the Codex review again.
+- **Confirmed:** send it to the worker, as a follow-up on its session, with the reproduction. The worker fixes it through `/ship` rules: a code fix gets its rerun round. Then run the Codex review again.
 - **Rejected:** record it in the review record with the reason.
 
 The gate is a Codex round with no confirmed finding. Three rounds without that: park.
