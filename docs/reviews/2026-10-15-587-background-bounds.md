@@ -44,3 +44,7 @@ Base `origin/master` (`ad87a11`).
 | 1.10 | standards | Judgement calls: "a turn that is not a compaction" is matched in three places; `taken` reads like a predicate (precedent: `Tool.started/1`); tests read `:sys.get_state`; `taken/2` is a cast (its `@doc` states the order with `run/3`) | Kept |
 
 Round 1 reproduced no defect, so the loop ends. The fixes of 1.3 to 1.9 are docs, tests, and one line of style in `steering.ex`.
+
+## Gate (orchestrator, 2026-10-15)
+
+Codex adversarial review, base `origin/master` (`34cbcb22`), on the rebased commit. Gate r1 (Codex): verdict approve, no finding. It ran the 27 queue tests and did not run precommit.
