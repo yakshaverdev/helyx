@@ -64,6 +64,71 @@ defmodule CodingAgent.CLITest do
     assert {"", 0} = System.cmd("sh", ["-c", ~S(printf %s "$RELEASE_VSN$RELEASE_SYS_CONFIG")])
   end
 
+  test "in a release, the folders of the release leave the start of PATH" do
+    # The erlexec of this VM put its erts folder and the bin folder of its
+    # root at the start of PATH. A release includes erts, so the root of a
+    # release is the root of its VM. The values are not shown on a failure.
+    root = to_string(:code.root_dir())
+    path = System.get_env("PATH")
+    System.put_env("RELEASE_ROOT", root)
+    on_exit(fn -> System.put_env("PATH", path) end)
+
+    erts_first? = String.starts_with?(path, root <> "/erts-")
+    assert erts_first?
+    assert capture_io(fn -> assert CLI.main(["--version"]) == 0 end) =~ "helyx "
+
+    {out, 0} = System.cmd("sh", ["-c", ~S(printf %s "$RELEASE_ROOT$ROOTDIR$BINDIR$EMU$PROGNAME")])
+    inherited? = out != ""
+    refute inherited?
+    release_first? = String.starts_with?(System.get_env("PATH"), root <> "/")
+    refute release_first?
+  end
+
+  describe "command_env/1" do
+    @root "/h/releases/abc"
+
+    # The PATH for commands, from a release environment with `path`.
+    defp path_after(path) do
+      env = %{
+        "PATH" => path,
+        "RELEASE_ROOT" => @root,
+        "ROOTDIR" => "/r",
+        "BINDIR" => "/r/erts/bin",
+        "EMU" => "beam",
+        "PROGNAME" => "erl",
+        "HOME" => "/h"
+      }
+
+      assert {new_path, deleted} = env |> CLI.command_env() |> Map.new() |> Map.pop!("PATH")
+      assert deleted == Map.new(~w(RELEASE_ROOT ROOTDIR BINDIR EMU PROGNAME), &{&1, nil})
+      new_path
+    end
+
+    test "drops the folders of the release from the start of PATH, and the erlexec variables" do
+      # erlexec puts its two folders in front of a PATH without the root, and
+      # only its erts folder in front of a PATH with the root.
+      assert path_after("#{@root}/erts-16.4/bin:#{@root}/bin:/usr/bin:/bin") == "/usr/bin:/bin"
+      assert path_after("#{@root}/erts-16.4/bin:#{@root}/bin:") == ""
+      assert path_after("#{@root}/erts-16.4/bin:/usr/bin:#{@root}/bin") == "/usr/bin:#{@root}/bin"
+
+      # Without a PATH, the two folders are the PATH. A folder whose name
+      # only starts with the root stays.
+      assert path_after("#{@root}/erts-16.4/bin:#{@root}/bin") == nil
+      assert path_after("#{@root}x/bin:/bin") == "#{@root}x/bin:/bin"
+    end
+
+    test "leaves PATH outside a release" do
+      env = %{"PATH" => "/r/erts/bin:/r/bin", "BINDIR" => "/r/erts/bin", "HOME" => "/h"}
+
+      assert env |> CLI.command_env() |> Map.new() == %{
+               "PATH" => "/r/erts/bin:/r/bin",
+               "BINDIR" => nil
+             }
+
+      assert %{} |> CLI.command_env() |> Map.new() == %{"PATH" => nil}
+    end
+  end
+
   test "the switches of the list and of the resume by id that do not combine" do
     assert error_line(["--session", "x", "--model", "fake/echo"]) =~
              "--model does not combine with --session; a resumed session keeps its saved model"

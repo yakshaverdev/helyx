@@ -27,6 +27,7 @@ helyx --version                         # helyx 0.1.0+<commit>
 - Defaults: `--prefix ~/.helyx`, `--bin-dir ~/.local/bin`. The sessions stay in `~/.helyx/sessions`; the install touches only `releases`, `current`, and the launcher.
 - The launcher is a `sh` script: `exec '<prefix>/current/bin/helyx' eval 'System.halt(CodingAgent.CLI.main(System.argv()))' "$@"`. It passes every argument unchanged and does not change the folder. The release script resolves `current` to the physical build folder once, at start (`pwd -P`), so a later install does not move a running session to another build.
 - The release script exports `RELEASE_*` variables to the VM. `CodingAgent.CLI.main/1` reads `RELEASE_VSN`, then deletes every variable whose name starts with `RELEASE_`, so a command that the agent runs (the bash tool, a harness) does not inherit them. Without this, a `helyx` of another build, started from the bash tool, boots with the version folder of this build and fails.
+- `erlexec` (OTP `erts/etc/common/erlexec.c`) puts `<root>/erts-<v>/bin` at the start of `PATH` and removes its later copies. When `PATH` does not contain the root, it also puts `<root>/bin` second. Its `erl` script exports `ROOTDIR`, `BINDIR`, `EMU`, and `PROGNAME`. A release includes erts, so `<root>` is the release root. A child `mix` then runs the `erl` of the release, which looks for `bin/start.boot` in the release and fails at boot (#597). `main/1` also deletes those four variables, and in a release (`RELEASE_ROOT` is set) it drops the entries at the start of `PATH` that are `RELEASE_ROOT` or a folder in it. A command then finds the user's `erl` and `elixir`, as in the user's shell. Outside a release, the `erl` in front is the one the user started, so `PATH` stays. `CodingAgent.CLI.command_env/1` computes the changes.
 
 ## Replaced mechanism
 
@@ -60,7 +61,7 @@ helyx --version                         # helyx 0.1.0+<commit>
 - A session that started from a build two installs old loses its files when the next install deletes that build. The VM loads modules on demand and starts `inet_gethost` on demand, so the session can fail later. The bound of two builds is the choice of #506.
 - Two installs at the same time are not supported (the ownership row above).
 - The command line checks the syntax, the combination of options, and the folder before any application starts. The model ref is checked when the session starts, after the applications start, as `mix helyx` did before (`Helyx.ModelRef.parse/1` through `Helyx.Session.start/2`).
-- The deletion also deletes a `RELEASE_*` variable that the user set before the start.
+- The deletion also deletes a `RELEASE_*` variable that the user set before the start, and a `ROOTDIR`, `BINDIR`, `EMU`, or `PROGNAME` of the user. A `PATH` of the user that starts with a folder of the release loses that folder too, and erlexec has already removed a later copy of the erts folder of the release; with no `PATH` before the start, the commands get none. `mix helyx` with a `RELEASE_ROOT` of the user runs as a release: the leading `PATH` entries in that folder are dropped, and with an empty value every leading absolute entry.
 
 ## Manual checks
 
