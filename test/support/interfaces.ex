@@ -664,9 +664,15 @@ end
 defmodule Helyx.Test.Tool.Slow do
   @moduledoc false
   # Sleeps `ms` and returns `text`, so call order and finish order can differ.
+  # With "gate" it waits for the gate (`Helyx.Test.Gate`) instead.
   use Helyx.Test.Tool, name: "slow", description: "Sleeps, then echoes."
 
   @impl true
+  def run(%{"gate" => gate, "text" => text}, _cwd) do
+    {:ok, "done"} = Helyx.Test.Gate.wait(gate)
+    {:ok, text}
+  end
+
   def run(%{"ms" => ms, "text" => text}, _cwd) do
     Process.sleep(ms)
     {:ok, text}

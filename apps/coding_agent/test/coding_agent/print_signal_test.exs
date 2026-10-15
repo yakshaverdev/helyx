@@ -195,9 +195,10 @@ defmodule CodingAgent.PrintSignalTest do
   end
 
   # The session file holds the answer once the turn has ended; the write to
-  # stdout comes next.
+  # stdout comes next. The pid file comes before the apps and the session
+  # start, so this wait holds the rest of the boot.
   defp await_answer(dir) do
-    await(@load_ms, fn ->
+    await(@load_boot_ms, fn ->
       Path.wildcard(Path.join(dir, ".helyx/sessions/**/*.jsonl"))
       |> Enum.any?(&(File.read!(&1) =~ "assistant"))
     end)
