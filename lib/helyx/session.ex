@@ -36,7 +36,7 @@ defmodule Helyx.Session do
   """
 
   alias Helyx.ModelRef
-  alias Helyx.Session.{Id, Lock, Server, Snapshot, Transcript}
+  alias Helyx.Session.{Id, Server, Snapshot, Transcript}
   alias Helyx.Session.Server.State
 
   @enforce_keys [:id, :core]
@@ -74,34 +74,30 @@ defmodule Helyx.Session do
     id = Id.new()
 
     # The file is created only after the plugins resolve, which narrows the
-    # window for an orphan file from a failed start. A supervisor failure
-    # after this point still leaves one; the feature doc records that hole.
+    # window for an orphan file from a failed start. A crash of the
+    # session's init after the create still leaves one.
     with {:ok, cwd} <- fetch_cwd(opts),
          {:ok, tools} <- Helyx.Tool.specs(core),
          :ok <- Helyx.Tool.check_available(tools),
-         {:ok, {ref, provider}} <- resolve_model(core, Keyword.fetch!(opts, :model)),
-         {:ok, lock, file} <- create_file(opts[:sessions_dir], id, cwd, ref) do
+         {:ok, {ref, provider}} <- resolve_model(core, Keyword.fetch!(opts, :model)) do
       Server.start(
-        %State{
-          id: id,
-          core: core,
-          model: ref,
-          provider: provider,
-          cwd: cwd,
-          file: file,
-          lock: lock
-        },
-        tools
+        %State{id: id, core: core, model: ref, provider: provider, cwd: cwd},
+        tools,
+        create_spec(opts[:sessions_dir], id, cwd, ref)
       )
     end
   end
 
-  defp create_file(nil, _id, _cwd, _ref), do: {:ok, nil, nil}
+  # The open of the file, which the session process runs in its init under
+  # the lock of `path` (`Server.start/3`).
+  defp create_spec(nil, _id, _cwd, _ref), do: nil
 
-  defp create_file(dir, id, cwd, ref) do
-    Lock.hold(Helyx.Session.File.path(dir, cwd, id), fn ->
-      Helyx.Session.File.create(dir, id, cwd, ModelRef.to_string(ref))
-    end)
+  defp create_spec(dir, id, cwd, ref) do
+    {Helyx.Session.File.path(dir, cwd, id),
+     fn state ->
+       with {:ok, file} <- Helyx.Session.File.create(dir, id, cwd, ModelRef.to_string(ref)),
+            do: {:ok, %{state | file: file}}
+     end}
   end
 
   @doc """
@@ -125,35 +121,38 @@ defmodule Helyx.Session do
     with {:ok, cwd} <- fetch_cwd(opts),
          {:ok, tools} <- Helyx.Tool.specs(core),
          :ok <- Helyx.Tool.check_available(tools),
-         {:ok, path, header} <- Helyx.Session.File.pick(dir, cwd, Keyword.take(opts, [:id])),
-         {:ok, lock, {resumed, {ref, provider}}} <- load(core, path, header) do
-      # A crash can leave tool calls with no result, and the disk can hold a
-      # result with no open call. The session reads them with interrupted
-      # results and without the stray results, and writes nothing (#269, #417, #584).
+         {:ok, path, header} <- Helyx.Session.File.pick(dir, cwd, Keyword.take(opts, [:id])) do
       Server.start(
         %State{
-          id: resumed.session_id,
+          id: Path.basename(path, ".jsonl"),
           core: core,
-          model: ref,
-          provider: provider,
-          cwd: cwd,
-          file: resumed.file,
-          transcript: Transcript.repair(resumed.messages),
-          resume_ids: resumed.resume_ids,
-          lock: lock
+          model: nil,
+          provider: nil,
+          cwd: cwd
         },
-        tools
+        tools,
+        {path, &load(&1, path, header)}
       )
     end
   end
 
-  # The read of the locked file, and its model ref.
-  defp load(core, path, header) do
-    Lock.hold(path, fn ->
-      with {:ok, resumed} <- Helyx.Session.File.resume_picked(path, header),
-           {:ok, model} <- resolve_model(core, resumed.model),
-           do: {:ok, {resumed, model}}
-    end)
+  # The read of the locked file and its model ref, in the session's init.
+  # A crash can leave tool calls with no result, and the disk can hold a
+  # result with no open call. The session reads them with interrupted
+  # results and without the stray results, and writes nothing (#269, #417, #584).
+  defp load(state, path, header) do
+    with {:ok, resumed} <- Helyx.Session.File.resume_picked(path, header),
+         {:ok, {ref, provider}} <- resolve_model(state.core, resumed.model) do
+      {:ok,
+       %{
+         state
+         | model: ref,
+           provider: provider,
+           file: resumed.file,
+           transcript: Transcript.repair(resumed.messages),
+           resume_ids: resumed.resume_ids
+       }}
+    end
   end
 
   # The boundary for `cwd`. It goes into the session file as JSON, into the

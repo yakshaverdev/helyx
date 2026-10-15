@@ -37,16 +37,17 @@ defmodule Helyx.Session.LockTest do
   defp port_messages,
     do: for({port, _} = message <- mailbox(), is_port(port), do: message)
 
-  test "a session that another Core holds does not open, and its file is unchanged", %{
-    core: core,
-    tmp_dir: dir
-  } do
+  # The same Core rejects it in its Registry, before the init that takes the lock.
+  test "a session that another Core or the same Core holds does not open, and its file is unchanged",
+       %{core: core, tmp_dir: dir} do
     {session, path} = open_without_newline(core, dir)
     before = File.read!(path)
     id = session.id
 
-    assert Session.resume(other_core(), sessions_dir: dir, id: id) ==
-             {:error, {:session_locked, id}}
+    for resumer <- [other_core(), core] do
+      assert Session.resume(resumer, sessions_dir: dir, id: id) ==
+               {:error, {:session_locked, id}}
+    end
 
     assert File.read!(path) == before
     # The failed take leaves the caller no link and no message of its port.
@@ -162,24 +163,67 @@ defmodule Helyx.Session.LockTest do
     Lock.release(lock)
   end
 
-  test "a start request that exits frees the lock", %{core: core, tmp_dir: dir} do
+  # Holds the start request of `open` in the mailbox of the suspended
+  # session supervisor.
+  defp park_start(core, open) do
     sup = Process.whereis(Helyx.Core.session_supervisor(core))
     :ok = :sys.suspend(sup)
-
-    {caller, ref} =
-      spawn_monitor(fn -> Session.start(core, model: "test/ok", sessions_dir: dir) end)
+    {caller, ref} = spawn_monitor(open)
 
     await(
       fn -> Process.info(sup, :message_queue_len) == {:message_queue_len, 1} end,
       "the start request to reach the supervisor"
     )
 
+    {sup, caller, ref}
+  end
+
+  # A stopped session whose resume waits in the supervisor, with its caller killed.
+  defp park_resume_and_kill_caller(core, dir) do
+    {session, path} = open_without_newline(core, dir)
+    stop_session(session, &GenServer.stop/1)
+    resume = fn -> Session.resume(core, sessions_dir: dir, id: session.id) end
+    {sup, caller, ref} = park_start(core, resume)
+    Process.exit(caller, :kill)
+    assert_receive {:DOWN, ^ref, :process, ^caller, :killed}
+    {session, path, sup}
+  end
+
+  # The lock is taken in the session's init, so a start request that never
+  # reaches an init takes no lock and writes nothing.
+  test "a start request that exits takes no lock and writes nothing", %{core: core, tmp_dir: dir} do
+    {sup, caller, ref} =
+      park_start(core, fn -> Session.start(core, model: "test/ok", sessions_dir: dir) end)
+
     Process.exit(sup, :kill)
     assert_receive {:DOWN, ^ref, :process, ^caller, {:killed, _call}}
+    assert Path.wildcard(Path.join([dir, "**"])) == []
+  end
 
-    [path] = Path.wildcard(Path.join([dir, "*", "*.jsonl"]))
+  # The caller never owns the port, so its death holds no lock (#589).
+  test "a caller killed during its open leaves the lock free", %{core: core, tmp_dir: dir} do
+    {_session, path, sup} = park_resume_and_kill_caller(core, dir)
+    Process.exit(sup, :kill)
+
     assert {:ok, lock, :taken} = Lock.hold(path, fn -> {:ok, :taken} end)
     Lock.release(lock)
+  end
+
+  # The other branch: the start request reaches the supervisor, so the init
+  # runs and the session holds the lock until it stops (session-lock.md).
+  test "a caller killed during its open leaves a running session that holds the lock", %{
+    core: core,
+    tmp_dir: dir
+  } do
+    {session, _path, sup} = park_resume_and_kill_caller(core, dir)
+    :ok = :sys.resume(sup)
+    await(fn -> Session.pid(session) != nil end, "the session to start")
+
+    assert Session.resume(other_core(), sessions_dir: dir, id: session.id) ==
+             {:error, {:session_locked, session.id}}
+
+    stop_session(session, &GenServer.stop/1)
+    assert {:ok, _} = Session.resume(other_core(), sessions_dir: dir, id: session.id)
   end
 
   # The release waits 1000 ms for a perl that does not end.
@@ -215,6 +259,27 @@ defmodule Helyx.Session.LockTest do
   test "a raise after the take frees the lock", %{tmp_dir: dir} do
     path = Path.join(dir, "abc.jsonl")
     assert_raise RuntimeError, "boom", fn -> Lock.hold(path, fn -> raise "boom" end) end
+    assert {:ok, lock, :taken} = Lock.hold(path, fn -> {:ok, :taken} end)
+    Lock.release(lock)
+  end
+
+  # perl ends during the open, as during the resume read in the session's
+  # init: the open fails and leaves no port.
+  test "an open whose perl ends during it fails", %{tmp_dir: dir} do
+    path = Path.join(dir, "abc.jsonl")
+
+    kill_own_perl = fn ->
+      [port] = for p <- Port.list(), Port.info(p, :connected) == {:connected, self()}, do: p
+      {:os_pid, os_pid} = Port.info(port, :os_pid)
+      {_, 0} = System.cmd("kill", ["-9", Integer.to_string(os_pid)])
+      await(fn -> Port.info(port) == nil end, "the port of the killed perl to close")
+      {:ok, :taken}
+    end
+
+    assert Lock.hold(path, kill_own_perl) ==
+             {:error, {:lock_failed, "the lock ended before the session started"}}
+
+    assert port_messages() == []
     assert {:ok, lock, :taken} = Lock.hold(path, fn -> {:ok, :taken} end)
     Lock.release(lock)
   end

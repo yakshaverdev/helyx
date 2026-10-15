@@ -15,27 +15,21 @@ defmodule Helyx.Session.Server do
   use GenServer, restart: :temporary, shutdown: Stop.shutdown_ms()
 
   # Starts the session process under Core for `Helyx.Session.start/2` and
-  # `resume/2`. The process takes the lock of the caller (`Lock.own/1`); a
-  # start that fails releases it. The caller unlinks the port before the
-  # start: a session process that dies in its init, after it took the port,
-  # closes the port, and the port's exit must not end the caller.
-  def start(%State{id: id, core: core} = state, tools) do
-    Lock.unlink(state.lock)
-
-    case start_child(state, tools) do
-      {:ok, _pid} ->
-        {:ok, %Helyx.Session{id: id, core: core}}
-
-      error ->
-        Lock.release(state.lock)
-        error
+  # `resume/2`. `open` is nil with no session file, or `{path, fun}`: the
+  # init takes the lock of `path` and runs `fun` on the state under it
+  # (`Lock.hold/2`), so the port of the lock has one owner for its whole
+  # life. An error of the init comes back as it is. The Registry
+  # rejects a session that this Core runs before the init: it is open in
+  # another process, as a lock held by another Core (session-lock.md).
+  def start(%State{id: id, core: core} = state, tools, open) do
+    case start_child(state, tools, open) do
+      {:ok, _pid} -> {:ok, %Helyx.Session{id: id, core: core}}
+      {:error, {:already_started, _pid}} -> {:error, {:session_locked, id}}
+      error -> error
     end
   end
 
-  # A raise or exit here (the Core or its supervisor is gone) leaves the
-  # caller the owner of the port: it releases the lock and goes on with the
-  # same raise or exit.
-  defp start_child(%State{core: core} = state, tools) do
+  defp start_child(%State{core: core} = state, tools, open) do
     # The plugin table of a Core does not change after start, so a plugin
     # resolved once here is the plugin a lookup per provider call would give.
     # Both interfaces are single-mode: one plugin or none (nil).
@@ -47,28 +41,34 @@ defmodule Helyx.Session.Server do
         tool_modules: Map.new(tools, fn {tool, spec} -> {spec.name, tool} end)
     }
 
-    DynamicSupervisor.start_child(Helyx.Core.session_supervisor(core), {__MODULE__, session})
-  catch
-    kind, reason ->
-      Lock.release(state.lock)
-      :erlang.raise(kind, reason, __STACKTRACE__)
+    DynamicSupervisor.start_child(
+      Helyx.Core.session_supervisor(core),
+      {__MODULE__, {session, open}}
+    )
   end
 
-  def start_link(%State{id: id, core: core} = state) do
-    GenServer.start_link(__MODULE__, state, name: via(core, id))
+  def start_link({%State{id: id, core: core}, _open} = args) do
+    GenServer.start_link(__MODULE__, args, name: via(core, id))
   end
 
   @impl true
-  def init(%State{} = state) do
+  def init({%State{} = state, open}) do
     # The session traps exits: the hands are linked, so their crash arrives
     # as a message, and a death of the session takes them with it (ADR 0004).
     Process.flag(:trap_exit, true)
 
-    # First, so no hands exist yet when the lock is gone already.
-    case Lock.own(state.lock) do
-      :ok -> init_hands(state)
+    # First, so no hands exist yet when the open fails.
+    case open_file(state, open) do
+      {:ok, state} -> init_hands(state)
       {:error, reason} -> {:stop, reason}
     end
+  end
+
+  defp open_file(state, nil), do: {:ok, state}
+
+  defp open_file(state, {path, fun}) do
+    with {:ok, lock, state} <- Lock.hold(path, fn -> fun.(state) end),
+         do: {:ok, %{state | lock: lock}}
   end
 
   defp init_hands(state) do
