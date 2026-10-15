@@ -127,9 +127,9 @@ defmodule Helyx.Session.PersistenceTest do
   end
 
   describe "the session supervisor after a resume (#103)" do
-    # The start message of a resume holds the whole transcript. The supervisor
-    # hibernates after each message, which collects that copy. Short texts stay
-    # on the heap; this transcript is about 7 MB there, and the margin is 1 MB.
+    # The session's init loads the transcript (#589), so no copy of it passes
+    # through the supervisor. Short texts stay on the heap; this transcript
+    # is about 7 MB there, and the margin is 1 MB.
     @describetag :tmp_dir
 
     setup %{core: core, tmp_dir: dir} do
@@ -154,10 +154,9 @@ defmodule Helyx.Session.PersistenceTest do
       {:ok, _session} = Session.resume(core, sessions_dir: dir)
       await(fn -> memory(sup) < limit end, "supervisor memory under #{limit}")
 
-      # A link of the file in a second folder passes the lock, so the start
-      # fails in the supervisor (docs/features/session-lock.md).
-      linked = link_session(dir, "big000000000")
-      assert {:error, {:already_started, _}} = Session.resume(core, sessions_dir: linked)
+      # The Registry rejects the second start in the supervisor, before the
+      # init (docs/features/session-lock.md).
+      assert {:error, {:session_locked, "big000000000"}} = Session.resume(core, sessions_dir: dir)
       await(fn -> memory(sup) < limit end, "supervisor memory under #{limit}")
     end
 
