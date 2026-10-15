@@ -73,11 +73,7 @@ defmodule CodingAgent.CLI do
   @spec main([String.t()], Print.halt()) :: term()
   def main(argv, halt \\ &:erlang.halt(&1, flush: false)) do
     release_version = System.get_env("RELEASE_VSN")
-
-    # The release script exports RELEASE_* variables to the VM. A command
-    # that the agent runs must not inherit them: a `helyx` of another build
-    # started there would boot with the version folder of this one.
-    for {"RELEASE_" <> _ = name, _value} <- System.get_env(), do: System.delete_env(name)
+    System.put_env(command_env(System.get_env()))
 
     case start(argv, release_version, halt) do
       :ok ->
@@ -91,6 +87,31 @@ defmodule CodingAgent.CLI do
         1
     end
   end
+
+  @doc false
+  # The changes, for System.put_env/1, that give a command of the agent the
+  # environment of the user's shell (docs/features/local-release.md).
+  @spec command_env(%{String.t() => String.t()}) :: [{String.t(), String.t() | nil}]
+  def command_env(env) do
+    deleted =
+      for {name, _value} <- env,
+          String.starts_with?(name, "RELEASE_") or name in ~w(ROOTDIR BINDIR EMU PROGNAME),
+          do: {name, nil}
+
+    [{"PATH", command_path(env)} | deleted]
+  end
+
+  defp command_path(%{"PATH" => path, "RELEASE_ROOT" => root}) do
+    path
+    |> String.split(":")
+    |> Enum.drop_while(&(&1 == root or String.starts_with?(&1, root <> "/")))
+    |> case do
+      [] -> nil
+      rest -> Enum.join(rest, ":")
+    end
+  end
+
+  defp command_path(env), do: env["PATH"]
 
   defp start(argv, release_version, halt) do
     with {:ok, opts, args} <- parse(argv) do
