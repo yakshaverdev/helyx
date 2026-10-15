@@ -12,7 +12,7 @@ defmodule Helyx.Session.Server.Steering do
   import Helyx.Session.Server.State, only: [ask: 4]
   import Helyx.Session.Server.Events, only: [emit: 3, emit: 4]
 
-  alias Helyx.Session.{Id, Queue, Turn}
+  alias Helyx.Session.{Background, Hands, Id, Queue, Turn}
   alias Helyx.Session.Server.{ProviderConn, Records, State}
 
   # Returns the reply to the client and the state.
@@ -36,8 +36,13 @@ defmodule Helyx.Session.Server.Steering do
     {ends, queue} = Queue.drain_ends(queue)
     texts = steers ++ ends
     state = Enum.reduce(texts, state, &Records.append_user(&2, &1))
+    Enum.each(ends, &taken(state, &1))
     {texts, put(state, {queue, []})}
   end
+
+  # An end joined the transcript: its place among the background runs is
+  # free in the hands (#587).
+  defp taken(%State{hands: hands}, text), do: Hands.taken(hands, Background.id(text))
 
   # A background end goes to a submitted turn, or waits for a turn that
   # can take it (`send_ends/1`).
@@ -109,7 +114,7 @@ defmodule Helyx.Session.Server.Steering do
   def take(state, steer_id), do: send_ends(put(state, Queue.take(state.queue, steer_id)))
 
   def answer(state, from, reply),
-    do: send_ends(put(state, Queue.answer(state.queue, from, reply)))
+    do: send_ends(put(state, Queue.answer(state.queue, from, reply, open?(state))))
 
   def abort(state), do: put(state, Queue.abort(state.queue))
 
@@ -118,12 +123,21 @@ defmodule Helyx.Session.Server.Steering do
 
   # The provider process ended: no steer request is open any more. Its
   # `provider_down` is the only caller (`TurnLoop`).
-  def provider_down(state), do: put(state, Queue.provider_down(state.queue))
+  def provider_down(state), do: put(state, Queue.provider_down(state.queue, open?(state)))
+
+  # A turn that takes the ends is open (`open/1`): an end that goes back now
+  # goes in it, and does not hold (#587).
+  defp open?(%State{activity: activity}), do: match?(%Turn{compact: nil}, activity)
 
   defp put(%State{queue: old} = state, {queue, effects}) do
     state = Enum.reduce(effects, %{state | queue: queue}, &effect/2)
     counts = Queue.counts(queue)
     if counts == Queue.counts(old), do: state, else: emit(state, :queue_update, counts)
+  end
+
+  defp effect({:take, {:end, text}}, state) do
+    taken(state, text)
+    Records.take_steer(state, text)
   end
 
   defp effect({:take, text}, state), do: Records.take_steer(state, text)

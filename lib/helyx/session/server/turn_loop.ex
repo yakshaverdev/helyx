@@ -90,7 +90,7 @@ defmodule Helyx.Session.Server.TurnLoop do
     end
   end
 
-  # The answer to a steer, also after its turn ("Steer", `Queue.answer/3`).
+  # The answer to a steer, also after its turn ("Steer", `Queue.answer/4`).
   # A late `:rejected` queues the steer, and an idle session starts it.
   def handle({:provider_reply, from, :steer, reply}, state),
     do: progress(Steering.answer(state, from, reply))

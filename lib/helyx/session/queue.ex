@@ -12,14 +12,16 @@ defmodule Helyx.Session.Queue do
   # runs are not live.
   # `ends` are the background ends that wait, in arrival order, and `hold`
   # is true from an abort, a failed turn, a resume, or an end given back
-  # until a turn that is not a compaction opens: the ends then wait and wake nothing
-  # (docs/features/background-bash.md). An
+  # with no turn open (`open?`, from the session) until a turn that is not
+  # a compaction opens: the ends then wait and wake nothing
+  # (docs/features/background-bash.md). An end given back while such a
+  # turn is open does not hold, as the open turn takes it (#587). An
   # end that a turn sent is in the ledger as `{:end, text}`, so a
   # `:rejected` puts it back with the ends and sets `rejected`: as a
   # rejected steer, no end goes as a steer again until the next turn that
   # is not a compaction opens.
   # No path drops an end: one that a turn sent and no `user_message` took
-  # goes back to the front of the ends, once, and holds (`give_back/2`);
+  # goes back to the front of the ends, once, and holds (`give_back/3`);
   # only a rejected one goes to the back with `rejected`.
   #
   # The states of a ledger entry:
@@ -35,7 +37,8 @@ defmodule Helyx.Session.Queue do
   #   answer only ends the request.
   #
   # The ledger functions return the struct with the effects for the
-  # session, in order: `{:take, text}` (the text joins the transcript),
+  # session, in order: `{:take, text}` (the steer or the end `{:end, text}`
+  # joins the transcript),
   # `{:notice, turn_id, text}` (a `:steer_unconfirmed` event), and
   # `{:dropped, texts}` (the queued texts that an abort gives back to the
   # client).
@@ -63,7 +66,7 @@ defmodule Helyx.Session.Queue do
           running: non_neg_integer()
         }
   @type effect ::
-          {:take, String.t()} | {:notice, String.t(), String.t()} | {:dropped, [String.t()]}
+          {:take, text()} | {:notice, String.t(), String.t()} | {:dropped, [String.t()]}
 
   @spec push(t(), :steers | :follow_ups, String.t()) :: {:ok, t()} | {:error, :queue_full}
   def push(%__MODULE__{} = queue, :steers, text) do
@@ -165,8 +168,8 @@ defmodule Helyx.Session.Queue do
   @spec take(t(), String.t()) :: {t(), [effect()]}
   def take(%__MODULE__{sent: sent} = queue, steer_id) do
     case List.keyfind(sent, steer_id, 1) do
-      {from, _id, text, :sent} -> {put(queue, from, :settled), [{:take, plain(text)}]}
-      {from, _id, text, :answered} -> {delete(queue, from), [{:take, plain(text)}]}
+      {from, _id, text, :sent} -> {put(queue, from, :settled), [{:take, text}]}
+      {from, _id, text, :answered} -> {delete(queue, from), [{:take, text}]}
       _unknown_or_settled -> {queue, []}
     end
   end
@@ -174,9 +177,10 @@ defmodule Helyx.Session.Queue do
   # The answer to the steer request `from`. A ref that is not open (a late
   # answer) changes nothing. A confirmed rejection queues the steer again:
   # its place in the limit was held, so it fits. An end goes back to the
-  # ends; after its turn, any answer gives it back.
-  @spec answer(t(), reference(), term()) :: {t(), [effect()]}
-  def answer(%__MODULE__{sent: sent} = queue, from, reply) do
+  # ends; after its turn, any answer gives it back. `open?` is true while
+  # a turn that is not a compaction is open.
+  @spec answer(t(), reference(), term(), boolean()) :: {t(), [effect()]}
+  def answer(%__MODULE__{sent: sent} = queue, from, reply, open?) do
     case List.keyfind(sent, from, 0) do
       {^from, _id, text, open} when reply == :rejected and (open == :sent or is_tuple(open)) ->
         {requeue(delete(queue, from), text), []}
@@ -185,7 +189,7 @@ defmodule Helyx.Session.Queue do
         {put(queue, from, :answered), []}
 
       {^from, _id, {:end, text}, {:ended, _turn_id}} ->
-        {give_back(delete(queue, from), [text]), []}
+        {give_back(delete(queue, from), [text], open?), []}
 
       {^from, _id, text, {:ended, turn_id}} ->
         {delete(queue, from), [{:notice, turn_id, text}]}
@@ -204,7 +208,7 @@ defmodule Helyx.Session.Queue do
   # `abort/1` after that.
   @spec end_turn(t(), String.t(), boolean()) :: {t(), [effect()]}
   def end_turn(%__MODULE__{} = queue, turn_id, true) do
-    map(return_ends(queue, :answered), fn
+    map(return_ends(queue, :answered, false), fn
       {_from, _id, text, :answered} -> {[], [{:notice, turn_id, text}]}
       {from, id, text, :sent} -> {[{from, id, text, {:ended, turn_id}}], []}
       entry -> {[entry], []}
@@ -214,7 +218,7 @@ defmodule Helyx.Session.Queue do
   # Every end goes back first, so the `return_ends/2` of `abort/1` then
   # finds none.
   def end_turn(%__MODULE__{} = queue, turn_id, false) do
-    {queue, notices} = end_turn(return_ends(queue, :all), turn_id, true)
+    {queue, notices} = end_turn(return_ends(queue, :all, false), turn_id, true)
     {queue, more} = abort(queue)
     {queue, notices ++ more}
   end
@@ -224,7 +228,7 @@ defmodule Helyx.Session.Queue do
   # notices of `settle/1`, when a text was queued. The ends stay, and hold.
   @spec abort(t()) :: {t(), [effect()]}
   def abort(%__MODULE__{} = queue) do
-    {queue, notices} = settle(return_ends(queue, :all))
+    {queue, notices} = settle(return_ends(queue, :all, false))
     dropped = queue.steers ++ queue.follow_ups
     effects = if dropped == [], do: notices, else: notices ++ [{:dropped, dropped}]
     {%{queue | steers: [], follow_ups: [], hold: true}, effects}
@@ -232,10 +236,11 @@ defmodule Helyx.Session.Queue do
 
   # The provider process ended: no request is open any more, and the steers
   # with no notice yet get it. The queues stay, also in a turn that
-  # prepares: it connects a new provider process and sends them.
-  @spec provider_down(t()) :: {t(), [effect()]}
-  def provider_down(%__MODULE__{} = queue) do
-    {queue, effects} = settle(return_ends(queue, :all))
+  # prepares: it connects a new provider process and sends them. `open?`
+  # as in `answer/4`.
+  @spec provider_down(t(), boolean()) :: {t(), [effect()]}
+  def provider_down(%__MODULE__{} = queue, open?) do
+    {queue, effects} = settle(return_ends(queue, :all, open?))
     {%{queue | sent: []}, effects}
   end
 
@@ -243,7 +248,7 @@ defmodule Helyx.Session.Queue do
   # the answered ones, or with `:all` every one; a request that is still
   # open stays `:settled` until its answer. A provider that took it with no
   # `user_message` can get it twice.
-  defp return_ends(%__MODULE__{} = queue, which) do
+  defp return_ends(%__MODULE__{} = queue, which, open?) do
     {queue, texts} =
       map(queue, fn
         {_from, _id, {:end, text}, :answered} ->
@@ -256,14 +261,17 @@ defmodule Helyx.Session.Queue do
           {[entry], []}
       end)
 
-    give_back(queue, texts)
+    give_back(queue, texts, open?)
   end
 
   # Ends that a turn did not deliver go to the front of the ends, in send
-  # order among them, and hold: they wait for the next prompt, so a provider that
-  # fails them again starts no turn by itself.
-  defp give_back(queue, []), do: queue
-  defp give_back(queue, texts), do: %{queue | ends: texts ++ queue.ends, hold: true}
+  # order among them. With no turn open they hold: they wait for the next
+  # prompt, so a provider that fails them again starts no turn by itself.
+  # An open turn takes them, so they do not hold past it.
+  defp give_back(queue, [], _open?), do: queue
+
+  defp give_back(queue, texts, open?),
+    do: %{queue | ends: texts ++ queue.ends, hold: queue.hold or not open?}
 
   # Each steer that a late `:rejected` could still queue gets its notice
   # now. Its request stays open until its answer.

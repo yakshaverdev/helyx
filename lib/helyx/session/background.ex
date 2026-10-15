@@ -9,9 +9,15 @@ defmodule Helyx.Session.Background do
   alias Helyx.Message
   alias Helyx.Session.Id
 
-  # The most live runs of a session, counted from `Helyx.Tool.background/0`
-  # to the end of the Task.
-  @max_live 16
+  # The places of the runs of a session, in the hands: `live`, the id of
+  # each Task from `Helyx.Tool.background/0` to its end, and `waiting`, the
+  # ids of the ends that no turn took yet. Both count in `@max_places`, so
+  # the places bound the live runs and the waiting ends together (#587).
+  defstruct live: %{}, waiting: []
+
+  @type t :: %__MODULE__{live: %{pid() => String.t()}, waiting: [String.t()]}
+
+  @max_places 16
 
   # The start answer is short: an id, a path, a hint. The cap keeps the
   # first line whole through the cut of every later boundary of tool text
@@ -28,27 +34,55 @@ defmodule Helyx.Session.Background do
           "Check its effects before you run it again. " <>
           "Its output file was deleted with the session."
 
-  # A new place for the Task `pid`, beside the places `live` (Task pid to
-  # id), and the folder `dir`, made at each call: a new id, or the error
-  # text for the tool.
-  @spec reserve(%{pid() => String.t()}, pid(), String.t()) ::
-          {:ok, String.t()} | {:error, String.t()}
-  def reserve(live, pid, _dir) when is_map_key(live, pid),
+  # A new place for the Task `pid`, and the folder `dir`, made at each
+  # call: a new id and the places with it, or the error text for the tool.
+  @spec reserve(t(), pid(), String.t()) :: {:ok, String.t(), t()} | {:error, String.t()}
+  def reserve(%__MODULE__{live: live}, pid, _dir) when is_map_key(live, pid),
     do: {:error, "a tool call can start one background run"}
 
-  def reserve(live, _pid, _dir) when map_size(live) >= @max_live,
-    do: {:error, "#{@max_live} background runs are live; one must end before another starts"}
+  def reserve(%__MODULE__{live: live, waiting: waiting}, _pid, _dir)
+      when map_size(live) + length(waiting) >= @max_places,
+      do:
+        {:error,
+         "#{@max_places} background runs are live or have an end that no turn took; " <>
+           "a turn must take an end before another run starts"}
 
   # The files can hold secrets, such as the output of a command: only the
   # user may read them.
-  def reserve(_live, _pid, dir) do
+  def reserve(%__MODULE__{} = places, pid, dir) do
     case with(:ok <- File.mkdir_p(dir), do: File.chmod(dir, 0o700)) do
       :ok ->
-        {:ok, Id.new()}
+        id = Id.new()
+        {:ok, id, %{places | live: Map.put(places.live, pid, id)}}
 
       {:error, reason} ->
         {:error, "the background folder could not be made: #{:file.format_error(reason)}"}
     end
+  end
+
+  # The Task `pid` with the call id `call_id` ended. A run that gave its
+  # start answer keeps its place until a turn takes its end (`taken/2`);
+  # any other Task frees it.
+  @spec ended(t(), pid(), term()) :: t()
+  def ended(%__MODULE__{} = places, pid, {:background, id}),
+    do: %{places | live: Map.delete(places.live, pid), waiting: [id | places.waiting]}
+
+  def ended(%__MODULE__{} = places, pid, _call_id), do: drop(places, [pid])
+
+  # The Tasks `pids` died with no end, by a cancel: their places are free.
+  @spec drop(t(), [pid()]) :: t()
+  def drop(%__MODULE__{} = places, pids), do: %{places | live: Map.drop(places.live, pids)}
+
+  # A turn took the end of the run `id`. The id of a lost run, from an
+  # earlier session, has no place here and frees nothing.
+  @spec taken(t(), String.t()) :: t()
+  def taken(%__MODULE__{} = places, id), do: %{places | waiting: List.delete(places.waiting, id)}
+
+  # The id of a start answer or an end, which open with the fixed line.
+  @spec id(String.t()) :: String.t()
+  def id(text) do
+    [{id, _status}] = parse(text)
+    id
   end
 
   @spec not_a_call() :: String.t()
@@ -78,14 +112,17 @@ defmodule Helyx.Session.Background do
   # The id and the status of a message that opens with the fixed line.
   # Both texts are the one text part of their message, so only the first
   # part is read.
-  defp head(%Message{content: [%Message.Text{text: "<background " <> _ = text} | _]}) do
+  defp head(%Message{content: [%Message.Text{text: "<background " <> _ = text} | _]}),
+    do: parse(text)
+
+  defp head(%Message{}), do: []
+
+  defp parse(text) do
     case Regex.run(@head, text, capture: :all_but_first) do
       [id, status] -> [{id, status}]
       nil -> []
     end
   end
-
-  defp head(%Message{}), do: []
 
   defp wrap(id, status, text),
     do: ~s(<background id="#{id}" status="#{status}">\n#{text}\n</background>)

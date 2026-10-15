@@ -197,9 +197,10 @@ defmodule Helyx.Tool do
   external work starts. Returns the id of the run and the background
   folder of the session, mode `0700`, which the session deletes at its
   stop; a tool keeps its files there, named by the id. `{:error, text}` with no place: the
-  session has 16 live runs, the call took a place already, the folder
-  cannot be made, or the caller is not a tool call of the hands. The
-  place is freed when the tool's Task ends.
+  session's 16 places are taken, the call took a place already, the folder
+  cannot be made, or the caller is not a tool call of the hands. A run
+  that gave its start answer keeps its place until a turn takes its end;
+  any other call frees it when its Task ends.
   """
   @spec background() :: {:ok, %{id: String.t(), dir: String.t()}} | {:error, String.t()}
   def background do

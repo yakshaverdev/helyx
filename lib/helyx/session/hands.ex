@@ -28,8 +28,8 @@ defmodule Helyx.Session.Hands do
   A tool call can go on in the background (`Helyx.Tool.background/0`,
   `Helyx.Tool.started/1`): its start answer is a `{:started, text}` result, and
   its Task leaves its turn, out of reach of `request_cancel/2` and `kill/3`.
-  Its end follows its release as `{:background_end, text}`
-  (`docs/features/background-bash.md`).
+  Its end follows its release as `{:background_end, text}`, and its place
+  stays taken until `taken/2` (`docs/features/background-bash.md`).
 
   `start_provider/3` starts the provider process (ADR 0007) with an armed
   kill. When the provider process ends, the hands release its handles and
@@ -41,19 +41,20 @@ defmodule Helyx.Session.Hands do
   use GenServer
 
   alias Helyx.Message.ToolCall
-  alias Helyx.Session.{Background, Hands.Release}
+  alias Helyx.Session.Background
+  alias Helyx.Session.Hands.{Release, Run}
 
   defmodule State do
     @moduledoc false
     # `tools` is the tool module by name. `tasks` holds each running Task,
     # its turn, its call id, and its tool module, by monitor ref: a
     # background Task has no turn and `{:background, id}` for its call id.
-    # `background` holds the background id per Task pid, from `background/0`
-    # until the Task ends; `dir` is the background folder. `held` holds the
-    # handles per Task pid. `unconfirmed` holds the handles that no release
-    # confirmed, per tool module. `release_ms` is the release
-    # deadline of a delivery or a cancel, and `connect_ms` the armed kill of
-    # a provider process: seams for tests.
+    # `background` holds the places of the runs (`Helyx.Session.Background`),
+    # from `background/0` until a turn takes the end; `dir` is the background
+    # folder. `held` holds the handles per Task pid. `unconfirmed` holds the
+    # handles that no release confirmed, per tool module. `release_ms` is
+    # the release deadline of a delivery or a cancel, and `connect_ms` the
+    # armed kill of a provider process: seams for tests.
     @enforce_keys [:core, :cwd, :dir, :session, :tools]
 
     # The default release deadline, the one source (`Helyx.Session.Server.Stop`
@@ -68,7 +69,7 @@ defmodule Helyx.Session.Hands do
       :session,
       :tools,
       tasks: %{},
-      background: %{},
+      background: %Background{},
       held: %{},
       unconfirmed: %{},
       release_ms: @release_ms,
@@ -122,6 +123,14 @@ defmodule Helyx.Session.Hands do
   @spec kill(pid(), String.t(), String.t()) :: :ok
   def kill(hands, turn_id, call_id), do: GenServer.cast(hands, {:kill, turn_id, call_id})
 
+  @doc """
+  Frees the place of the background run `id`, whose end a turn took. An id
+  with no place, such as one of a lost run, changes nothing. A cast, as
+  `run/3`, and in its order: the next call sees the place free.
+  """
+  @spec taken(pid(), String.t()) :: :ok
+  def taken(hands, id), do: GenServer.cast(hands, {:taken, id})
+
   @impl true
   def init(%State{} = state) do
     Process.flag(:trap_exit, true)
@@ -171,9 +180,8 @@ defmodule Helyx.Session.Hands do
   # A place among the background runs, for a tool call Task.
   def handle_call(:background, {pid, _tag}, state) do
     with {_ref, _entry} <- tool_call(state, pid),
-         {:ok, id} <- Background.reserve(state.background, pid, state.dir) do
-      {:reply, {:ok, %{id: id, dir: state.dir}},
-       %{state | background: Map.put(state.background, pid, id)}}
+         {:ok, id, places} <- Background.reserve(state.background, pid, state.dir) do
+      {:reply, {:ok, %{id: id, dir: state.dir}}, %{state | background: places}}
     else
       nil -> {:reply, {:error, Background.not_a_call()}, state}
       error -> {:reply, error, state}
@@ -184,7 +192,7 @@ defmodule Helyx.Session.Hands do
   # Task leaves the turn. A Task the hands no longer run gets `:ok`; its
   # end is dropped with it.
   def handle_call({:started, text}, {pid, _tag}, state) do
-    case {tool_call(state, pid), state.background} do
+    case {tool_call(state, pid), state.background.live} do
       {nil, _background} ->
         {:reply, :ok, state}
 
@@ -223,7 +231,7 @@ defmodule Helyx.Session.Hands do
       state
       | tasks: kept,
         held: held,
-        background: Map.drop(state.background, pids),
+        background: Background.drop(state.background, pids),
         unconfirmed: Release.add(state.unconfirmed, left)
     }
 
@@ -248,6 +256,9 @@ defmodule Helyx.Session.Hands do
 
     {:noreply, state}
   end
+
+  def handle_cast({:taken, id}, state),
+    do: {:noreply, %{state | background: Background.taken(state.background, id)}}
 
   @impl true
   def handle_info({ref, result}, %State{tasks: tasks} = state) when is_map_key(tasks, ref) do
@@ -290,7 +301,7 @@ defmodule Helyx.Session.Hands do
       state
       | tasks: tasks,
         held: held,
-        background: Map.delete(state.background, task.pid),
+        background: Background.ended(state.background, task.pid, call_id),
         unconfirmed: Release.add(state.unconfirmed, left)
     }
   end
@@ -337,7 +348,7 @@ defmodule Helyx.Session.Hands do
 
       {true, {:ok, tool}} ->
         {_pid, state} =
-          spawn_task(state, turn_id, call.id, tool, fn -> run_tool(tool, call, cwd) end)
+          spawn_task(state, turn_id, call.id, tool, fn -> Run.tool(tool, call, cwd) end)
 
         state
     end
@@ -373,28 +384,4 @@ defmodule Helyx.Session.Hands do
   defp refusal, do: "a resource from an earlier call could not be released; the call was not run"
 
   defp retry(state), do: %{state | unconfirmed: Release.retry(state.unconfirmed, state.core)}
-
-  defp run_tool(tool, call, cwd) do
-    case tool.run(call.arguments, cwd) do
-      {:ok, text} when is_binary(text) ->
-        {:ok, text}
-
-      {:error, text} when is_binary(text) ->
-        {:error, text}
-
-      other ->
-        Helyx.Reason.log("tool #{call.name} returned a value outside its contract", other)
-        {:error, "the tool returned a value outside its contract"}
-    end
-  catch
-    kind, reason ->
-      # The log keeps the stack of a throw or an exit too.
-      Helyx.Reason.log("tool #{call.name} failed", {kind, reason, __STACKTRACE__})
-      {:error, Helyx.Reason.text(caught(kind, reason, __STACKTRACE__))}
-  end
-
-  # A raise is a crash, which gives the message of its exception; a throw
-  # or an exit gives its kind and its value.
-  defp caught(:error, reason, stacktrace), do: {reason, stacktrace}
-  defp caught(kind, reason, _stacktrace), do: {kind, reason}
 end
