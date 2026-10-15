@@ -68,3 +68,7 @@ The branch is rebased on `origin/master` (`98fb1103`) with no conflict. Two merg
 | 3.3 | spec | A session stop while `turn_end` is held gives no `turn_end` (reproduced with a session file and its lock); the docs named only the hands that die | Fixed: `session-lifecycle.md` and the accepted holes above name the stop too |
 
 `lib/helyx/session.ex` has 399 lines. Round 3 reproduced no defect, so the loop ends.
+
+## Gate (orchestrator, 2026-10-15)
+
+Codex adversarial review on `e2a35d06` (rebased on `98fb1103`). Gate r1 (Codex): verdict approve, no finding. It did not run tests (read-only workspace). The test failure of the first round 3 precommit is in the lock test of #589, not in this change: #612.
