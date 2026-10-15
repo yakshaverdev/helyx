@@ -217,7 +217,10 @@ defmodule Helyx.Session.LockTest do
   } do
     {session, _path, sup} = park_resume_and_kill_caller(core, dir)
     :ok = :sys.resume(sup)
-    await(fn -> Session.pid(session) != nil end, "the session to start")
+    # This call waits behind the parked start, which returns only after the
+    # init has taken the lock. The session name is registered before the
+    # init, so a wait for the name is not enough (#612).
+    _ = :sys.get_state(sup)
 
     assert Session.resume(other_core(), sessions_dir: dir, id: session.id) ==
              {:error, {:session_locked, session.id}}
