@@ -73,15 +73,24 @@ if Helyx.TUI.Available.available?() do
       case start_link(Keyword.put_new(opts, :mouse_capture, true)) do
         {:ok, pid} ->
           ref = Process.monitor(pid)
-          # Unlinked, an abnormal exit reaches the receive as a DOWN instead
-          # of killing the caller through the link before it can return the
-          # error. Unlink before restoring the flag, so no kill window opens.
-          Process.unlink(pid)
-          Process.flag(:trap_exit, trap)
+          # The TUI answers Process.info/2 only after it handles the monitor,
+          # so a live answer means the DOWN carries the real reason. A TUI that
+          # died before gives :noproc there; its EXIT comes over the link.
+          if Process.info(pid, :status) do
+            # Unlinked, an abnormal exit reaches the receive as a DOWN instead
+            # of killing the caller through the link. Unlink before restoring
+            # the flag, so no kill window opens.
+            Process.unlink(pid)
+            Process.flag(:trap_exit, trap)
 
-          receive do
-            {:DOWN, ^ref, :process, ^pid, :normal} -> flush_exit(pid, :ok)
-            {:DOWN, ^ref, :process, ^pid, reason} -> flush_exit(pid, {:error, reason})
+            receive do
+              {:DOWN, ^ref, :process, ^pid, reason} -> flush_exit(pid, exit_result(reason))
+            end
+          else
+            reason = receive do: ({:EXIT, ^pid, reason} -> reason)
+            Process.demonitor(ref, [:flush])
+            Process.flag(:trap_exit, trap)
+            exit_result(reason)
           end
 
         {:error, reason} ->
@@ -92,8 +101,10 @@ if Helyx.TUI.Available.available?() do
       end
     end
 
-    # A crash inside the trap window queues an {:EXIT, pid, _} message the
-    # restored flag can no longer prevent; drop it with the result.
+    defp exit_result(:normal), do: :ok
+    defp exit_result(reason), do: {:error, reason}
+
+    # A crash in the trap window queues an EXIT that the flag cannot stop.
     defp flush_exit(pid, result) do
       receive do
         {:EXIT, ^pid, _reason} -> result

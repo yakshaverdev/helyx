@@ -386,6 +386,43 @@ defmodule Helyx.TUITest do
     assert catch_exit(TUI.handle_info(signal, state)) == {:session_down, :crashed}
   end
 
+  # Runs in the TUI process at the end of init, before the ack: waits until
+  # the test suspends the caller of run/1, so the TUI can exit before the
+  # caller monitors it.
+  def hold_ack(_event, _measurements, _meta, {test, caller}) do
+    if match?([^caller | _], Process.get(:"$ancestors", [])) do
+      send(test, {:mounted, self()})
+      receive do: (:suspended -> :ok)
+    end
+  end
+
+  @tag :capture_log
+  test "run/1 gives the reason of a crash that comes before its monitor", %{core: core} do
+    {:ok, session} = Session.start(core, model: "fake/early")
+    test = self()
+
+    caller =
+      spawn(fn ->
+        receive do: (:go -> :ok)
+        send(test, {:run, TUI.run(session: session, test_mode: {120, 10}, name: nil)})
+      end)
+
+    handler = {__MODULE__, caller}
+    init_stop = [:ex_ratatui, :runtime, :init, :stop]
+    :ok = :telemetry.attach(handler, init_stop, &__MODULE__.hold_ack/4, {test, caller})
+    on_exit(fn -> :telemetry.detach(handler) end)
+
+    send(caller, :go)
+    assert_receive {:mounted, tui}
+    true = :erlang.suspend_process(caller)
+    send(tui, :suspended)
+    ref = Process.monitor(tui)
+    Process.exit(Session.pid(session), :kill)
+    assert_receive {:DOWN, ^ref, :process, ^tui, {:session_down, :crashed}}
+    true = :erlang.resume_process(caller)
+    assert_receive {:run, {:error, {:session_down, :crashed}}}
+  end
+
   @tag :tmp_dir
   test "a resumed session shows its history, then the notice only with resumed: true", %{
     core: core,
