@@ -169,6 +169,9 @@ defmodule Helyx.Reason do
   defp describe({:lock_failed, text}) when is_binary(text),
     do: "could not lock the session: " <> text
 
+  defp describe(:lock_lost),
+    do: "the session lock is lost; another Helyx process can now open this session"
+
   defp describe(%_{__exception__: true} = exception), do: message(exception)
 
   defp describe(reason) do

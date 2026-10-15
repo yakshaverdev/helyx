@@ -27,7 +27,8 @@ defmodule Helyx.Bench.ViewModel do
       messages: messages,
       turn: nil,
       model: "bench/m",
-      queue: %{steers: 0, follow_ups: 0, running: 0, held: 0, waiting: 0}
+      queue: %{steers: 0, follow_ups: 0, running: 0, held: 0, waiting: 0},
+      lock_lost: false
     }
 
     empty = ViewModel.from_snapshot(%{snapshot | seq: 0, messages: []})

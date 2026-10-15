@@ -12,7 +12,7 @@ defmodule CodingAgent.Print do
   `docs/features/print-mode.md`.
   """
 
-  alias Helyx.{Event, Message, Session}
+  alias Helyx.{Event, Message, Reason, Session}
 
   defmodule Wait do
     @moduledoc false
@@ -164,6 +164,8 @@ defmodule CodingAgent.Print do
 
     with {:ok, snapshot, ref} <- Session.subscribe(session),
          stderr("session " <> session.id),
+         # A lock lost before the subscribe sent its notice to no client.
+         if(snapshot.lock_lost, do: stderr(Reason.text(:lock_lost))),
          :ok <- Session.prompt(session, prompt) do
       wait(ref, %Wait{queue: snapshot.queue})
     else

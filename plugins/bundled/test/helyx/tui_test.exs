@@ -424,6 +424,22 @@ defmodule Helyx.TUITest do
     assert ViewModel.cells(live) == Enum.drop(ViewModel.cells(vm), -1)
   end
 
+  # #606: the notice of a loss before the subscribe reached no client.
+  @tag :tmp_dir
+  test "a session that lost its lock before the mount shows the lost-lock notice", %{
+    core: core,
+    tmp_dir: dir
+  } do
+    {:ok, session} = Session.start(core, model: "fake/lost", sessions_dir: dir, cwd: dir)
+    {:ok, %{vm: held}} = TUI.mount(session: session)
+    assert ViewModel.cells(held) == []
+
+    Helyx.Test.LostLock.kill(session)
+
+    {:ok, %{vm: vm}} = TUI.mount(session: session)
+    assert ViewModel.cells(vm) == [{:notice, Helyx.Reason.text(:lock_lost)}]
+  end
+
   test "mounting on a dead session exits instead of hanging", %{core: core} do
     :ok = Fake.script(core, "dead", [])
     {:ok, session} = Session.start(core, model: "fake/dead")

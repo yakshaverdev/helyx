@@ -103,9 +103,8 @@ defmodule Helyx.Session.LockTest do
     {:ok, session} = Session.start(core, model: "test/ok", sessions_dir: dir)
     {:ok, _, _} = Session.subscribe(session)
     pid = Session.pid(session)
-    {:os_pid, os_pid} = Port.info(:sys.get_state(pid).lock, :os_pid)
 
-    {_, 0} = System.cmd("kill", ["-9", Integer.to_string(os_pid)])
+    Helyx.Test.LostLock.kill(session)
 
     assert_receive {:helyx_event, %Event{type: :notice, turn_id: nil, data: %{text: text}}}
     assert text =~ "the session lock is lost"
@@ -115,6 +114,20 @@ defmodule Helyx.Session.LockTest do
     refute Enum.any?(turn(session, "after"), &(&1.type == :notice))
     assert File.read!(path(dir, session.id)) =~ "after"
     assert {:ok, _} = Session.resume(other_core(), sessions_dir: dir, id: session.id)
+  end
+
+  # The notice of a loss before the first subscribe reaches no client; the
+  # snapshot tells the later client (#606).
+  test "the snapshot says whether the session lost its lock", %{core: core, tmp_dir: dir} do
+    {:ok, held} = Session.start(core, model: "test/ok", sessions_dir: dir)
+    assert {:ok, %{lock_lost: false}, _ref} = Session.subscribe(held)
+
+    {:ok, memory} = Session.start(core, model: "test/ok")
+    assert {:ok, %{lock_lost: false}, _ref} = Session.subscribe(memory)
+
+    {:ok, session} = Session.start(core, model: "test/ok", sessions_dir: dir)
+    Helyx.Test.LostLock.kill(session)
+    assert {:ok, %{lock_lost: true}, _ref} = Session.subscribe(session)
   end
 
   test "a start whose lock file cannot be opened fails and writes nothing", %{

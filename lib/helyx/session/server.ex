@@ -250,13 +250,14 @@ defmodule Helyx.Session.Server do
   # The lock's port closed while the session runs: perl ended, so the
   # kernel released the lock (docs/features/session-lock.md). Its exit
   # status comes first, then the exit of the port, also of a port that
-  # closed without a status. One notice; the session goes on unlocked.
+  # closed without a status. One notice; the session goes on unlocked, and
+  # its snapshot tells a later client (`lock_lost`).
   def handle_info({port, {:exit_status, _status}}, %State{lock: port} = state),
     do: {:noreply, state}
 
   def handle_info({:EXIT, port, _reason}, %State{lock: port} = state) do
-    text = "the session lock is lost; another Helyx process can now open this session"
-    {:noreply, Events.emit(%{state | lock: nil}, nil, :notice, %{text: text})}
+    state = %{state | lock: nil, lock_lost: true}
+    {:noreply, Events.emit(state, nil, :notice, %{text: Helyx.Reason.text(:lock_lost)})}
   end
 
   # An exit from a linked process is vital. The hands' death takes the

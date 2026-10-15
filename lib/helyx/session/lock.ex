@@ -61,7 +61,8 @@ defmodule Helyx.Session.Lock do
   # gone, and no client is subscribed yet to see the notice of a lost lock.
   # The port closes some ms after perl ends, so a perl that ends right before
   # this check, or after it and before the first subscribe, sends its notice
-  # to no client (session-lock.md).
+  # to no client; the snapshot tells a later client (`lock_lost`,
+  # session-lock.md).
   defp held(lock, result) do
     if Port.info(lock) do
       {:ok, lock, result}
