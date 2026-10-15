@@ -17,3 +17,9 @@ Accepted (owner, triage of #566, 2026-10-15): an interrupt that stops a backgrou
 | # | Axis | Finding | Resolution |
 | - | ---- | ------- | ---------- |
 | 2.1 | Codex | The devlog said the next cost is known after the stop; in run A `aborted_streaming` makes it nil | Fixed: the devlog names run B for the known cost and run A for nil. A wording finding in the devlog, not a defect in the note or the feature doc (the feature doc says "can"), so the loop ends |
+
+## Gate (orchestrator, 2026-10-15)
+
+Codex adversarial review, base `origin/master` (`abcee1fb`), on `9266cf85`. Gate r1 (Codex): verdict approve, no finding; it checked the claims against the three raw probe logs, the earlier research, and `Meter`.
+
+The option for gap 2 (token sums from the `modelUsage` difference) is ticket #604.
