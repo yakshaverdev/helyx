@@ -61,3 +61,7 @@ The failure-path agent probed three orders with `:erlang.suspend_process/1`: the
 | the notice event text equals `Helyx.Reason.text(:lock_lost)` | spec agent probe |
 | live notice or snapshot flag, never both | failure-path agent probes above |
 | a resumed instance starts with `lock_lost: false` | spec agent probe |
+
+## Gate (orchestrator, 2026-10-15)
+
+Codex adversarial review on `b1753217` (rebased on `ec55e35b`). Gate r1 (Codex): verdict approve, no finding. It did not run tests (read-only workspace). #612 changed only the wait of one test in `lock_test.exs` after the worker's base, so no reduced round ran on the rebase.
