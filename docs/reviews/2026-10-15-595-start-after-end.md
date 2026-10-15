@@ -8,7 +8,7 @@ Accepted holes:
 
 - The run whose start answer the hands took first lives, although its call got `aborted`. Option 1 orders the events. It does not stop the run. The half of the user story "a background run never outlives a turn that already gave its call the `aborted` result" stays open. Print mode counts the run and waits for its end.
 - The release of the running call delays `turn_end`: the 500 ms TERM grace of a `bash` process group at an abort, and up to the release deadline for a stuck release. Before, `turn_end` went out at once and only the abort call waited.
-- Hands that die in the wait stop the session with no `turn_end`, as a session that dies in a turn does. The client gets the end of the session.
+- Hands that die in the wait, and a stop of the session in it, end the session with no `turn_end`, as a session that stops in a turn does. The client gets the end of the session.
 
 Bounds sensor, round 1 and round 2:
 
@@ -56,3 +56,15 @@ Simplify, four angles in two agents. Applied: the first form matched the `Wait` 
 | 2.9 | standards | `Task.await/1` with the default timeout | Fixed: `wait_ms()` |
 
 Round 2 reproduced no defect, so the loop ends. The fixes are wording, a spec, and tests.
+
+## Round 3 (reduced, after the rebase)
+
+The branch is rebased on `origin/master` (`98fb1103`) with no conflict. Two merges under it change the same modules: #562 (PR #610) monitors the prepare Task before it runs (`turn_loop.ex`, `wait.ex`), and #589 (PR #611) takes the writer lock in the session server's own `init/1` (`session.ex`, the server). Spec and failure-path agents only. Base `98fb1103` for the change, `f17c104b..98fb1103` for the merges. The brief named the three invariants: the start answer before `turn_end`, the snapshot equal to the fold, and `turn_end` at once with no running call.
+
+| # | Axis | Finding | Resolution |
+| - | ---- | ------- | ---------- |
+| 3.1 | failure path | No defect. Probed: a context request holds a prepare Task in `submitted` while a `slow` call runs, then `{:finish}` with the hands suspended, with the Task alive, killed before, and killed after the finish; the session stopped while `turn_end` is held, with the lock of `init/1`. Ten repeats of the two changed test files and the probes: 0 failures | n/a |
+| 3.2 | spec | No defect. Probed the prepare Task `:DOWN` and its late reply in the held wait, for `{:finish}` and `{:fail}`: the catch-all `:DOWN` clause of `TurnLoop` comes before the cleanup clause, so the `:DOWN` is dropped. A turn that fails in `preparing` with a call running cannot occur: a new turn has an empty tool queue. `init/1` emits no event, and the lock-lost notice has no turn id | n/a |
+| 3.3 | spec | A session stop while `turn_end` is held gives no `turn_end` (reproduced with a session file and its lock); the docs named only the hands that die | Fixed: `session-lifecycle.md` and the accepted holes above name the stop too |
+
+`lib/helyx/session.ex` has 399 lines. Round 3 reproduced no defect, so the loop ends.
