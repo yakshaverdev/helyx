@@ -59,6 +59,7 @@ Run from the repository root. The Mix projects are the root, `plugins/bundled` w
 - Prefer `GenServer.call/3` over `cast/2` so callers get back-pressure.
 - Do not add parentheses to keyword-style macro calls (`field :name, :string`, `plug :foo`).
 - A test asserts order and properties, not an upper bound of elapsed wall-clock time. Other worktrees and precommit runs load the machine, so an upper bound fails at random (#193). A wait that must not happen is checked with a margin for load, and the margin is stated. The Credo check `Helyx.Credo.WallClockUpperBound` reports an upper bound without a margin. State the margin in a module attribute whose name starts with `load_`, for example `@load_ms`.
+- Messages from two senders have no order. Use `assert_received` only for a message that the test process sent, or that came before a message of the same sender that the test process already received. Wait for any other message with `assert_receive` (#592).
 - Tag a test `@tag :slow` when it waits one second or more of real time, or scans a large space. `mix precommit` leaves it out, and `/ship` and the merge gate run it (#295). A module runs its tests one after the other, so split a module whose fast tests take more than about 4 s.
 - Tests end with `_test.exs` and mirror the `lib/` structure. Prefer async tests (`use ExUnit.Case, async: true`) unless the test touches shared state.
 - Write `@moduledoc` and `@doc` for public modules and functions. Use `@moduledoc false` for internal modules.

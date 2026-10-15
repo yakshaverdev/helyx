@@ -10,6 +10,7 @@ defmodule Helyx.Session.ProviderProcessTest do
   alias Helyx.{Message, Session}
   alias Helyx.Session.Server.Wait
   alias Helyx.Test.Connected
+  alias Helyx.Test.Released
 
   @done {:done, %{stop_reason: :end_turn, usage: nil}}
 
@@ -89,12 +90,12 @@ defmodule Helyx.Session.ProviderProcessTest do
       cwd = File.cwd!()
 
       assert final_text(turn(session, "one")) == "echo:prepared|one"
-      assert_received {:conn, :init, proc, {"echo", [%{name: "upcase"}], opts}}
+      assert_receive {:conn, :init, proc, {"echo", [%{name: "upcase"}], opts}}
       assert opts[:cwd] == cwd and opts[:resume_id] == nil
-      assert_received {:conn, :turn, ^proc, {:turn, _turn_id, _context}}
+      assert_receive {:conn, :turn, ^proc, {:turn, _turn_id, _context}}
 
       assert final_text(turn(session, "two")) == "echo:prepared|two"
-      assert_received {:conn, :turn, ^proc, _request}
+      assert_receive {:conn, :turn, ^proc, _request}
       refute_received {:conn, :init, _, _}
       assert Process.alive?(proc)
     end
@@ -127,15 +128,15 @@ defmodule Helyx.Session.ProviderProcessTest do
     test "the session end closes it, releases it, and stops the hands first", %{core: core} do
       {session, pid, hands} = start(core, "echo")
       turn(session, "one")
-      assert_received {:conn, :init, proc, _}
-      ref = Process.monitor(proc)
+      assert_receive {:conn, :init, proc, _}
       hands_ref = Process.monitor(hands)
 
       GenServer.stop(pid)
-      assert_received {:conn, :close, ^proc, :close}
-      assert_received {:DOWN, ^ref, :process, _, _}
-      assert_received {:release, :deliver, [{:report, _}]}
-      assert_received {:DOWN, ^hands_ref, :process, _, :shutdown}
+      refute Process.alive?(proc)
+      refute Process.alive?(hands)
+      assert [{:deliver, [{:report, _}]}] = Released.take()
+      assert_receive {:conn, :close, ^proc, :close}
+      assert_receive {:DOWN, ^hands_ref, :process, _, :shutdown}
     end
 
     test "the session end during a turn stops the hands first", %{core: core} do
@@ -146,7 +147,8 @@ defmodule Helyx.Session.ProviderProcessTest do
       hands_ref = Process.monitor(hands)
 
       GenServer.stop(pid)
-      assert_received {:DOWN, ^hands_ref, :process, _, :shutdown}
+      refute Process.alive?(hands)
+      assert_receive {:DOWN, ^hands_ref, :process, _, :shutdown}
       assert_receive {:DOWN, ^ref, :process, _, _}
     end
 
@@ -154,7 +156,7 @@ defmodule Helyx.Session.ProviderProcessTest do
          %{core: core} do
       {session, _pid, _hands} = start(core, "echo")
       turn(session, "one")
-      assert_received {:conn, :init, proc, _}
+      assert_receive {:conn, :init, proc, _}
 
       :ok = Session.set_model(session, "test/ok")
       assert_receive {:conn, :close, ^proc, :close}
@@ -167,7 +169,7 @@ defmodule Helyx.Session.ProviderProcessTest do
     test "a Core stop during a switch close closes and releases the program", %{core: core} do
       {session, _pid, hands} = start(core, "late_close")
       turn(session, "one")
-      assert_received {:conn, :init, proc, _}
+      assert_receive {:conn, :init, proc, _}
       ref = Process.monitor(proc)
       hands_ref = Process.monitor(hands)
 
@@ -176,22 +178,24 @@ defmodule Helyx.Session.ProviderProcessTest do
       assert_receive {:held, _from}
       Process.flag(:trap_exit, true)
       :ok = stop_supervised(core)
-      assert_received {:DOWN, ^ref, :process, _, {:shutdown, :closed}}
-      assert_received {:release, :deliver, [{:report, _}]}
-      assert_received {:DOWN, ^hands_ref, :process, _, :shutdown}
+      refute Process.alive?(proc)
+      refute Process.alive?(hands)
+      assert [{:deliver, [{:report, _}]}] = Released.take()
+      assert_receive {:DOWN, ^ref, :process, _, {:shutdown, :closed}}
+      assert_receive {:DOWN, ^hands_ref, :process, _, :shutdown}
     end
 
     test "a close that blocks is killed at the bound; a prompt waits for it", %{core: core} do
       {session, _pid, _hands} = start(core, "block_close", close: 200)
       turn(session, "one")
-      assert_received {:conn, :init, old, _}
+      assert_receive {:conn, :init, old, _}
       ref = Process.monitor(old)
 
       :ok = Session.set_model(session, "conn/echo")
       :ok = Session.prompt(session, "two")
       assert_receive {:DOWN, ^ref, :process, _, :killed}
       assert final_text(collect_until(:turn_end)) == "echo:prepared|two"
-      assert_received {:conn, :init, new, {"echo", _, _}}
+      assert_receive {:conn, :init, new, {"echo", _, _}}
       assert new != old
     end
   end
@@ -243,10 +247,10 @@ defmodule Helyx.Session.ProviderProcessTest do
          %{core: core} do
       {session, _pid, _hands} = start(core, "fail_init")
       assert error(turn(session, "one")) == inspect({:provider_init, :no_program})
-      assert_received {:conn, :init, first, _}
+      assert_receive {:conn, :init, first, _}
 
       assert error(turn(session, "two")) == inspect({:provider_init, :no_program})
-      assert_received {:conn, :init, second, _}
+      assert_receive {:conn, :init, second, _}
       assert first != second
     end
 
@@ -258,10 +262,10 @@ defmodule Helyx.Session.ProviderProcessTest do
       test "#{model} stops the provider process and fails the turn", %{core: core} do
         {session, _pid, _hands} = start(core, unquote(model))
         assert error(turn(session, "one")) == inspect(unquote(Macro.escape(reason)))
-        assert_received {:conn, :init, proc, _}
-        assert_received {:conn, :turn, ^proc, _}
+        assert_receive {:conn, :init, proc, _}
+        assert_receive {:conn, :turn, ^proc, _}
         refute Process.alive?(proc)
-        assert_received {:release, :deliver, [{:report, _}]}
+        assert [{:deliver, [{:report, _}]}] = Released.take()
       end
     end
 
@@ -527,14 +531,14 @@ defmodule Helyx.Session.ProviderProcessTest do
       test "#{text} fails the turn and keeps the provider process", %{core: core} do
         {session, _pid, _hands} = start(core, "echo")
         assert final_text(turn(session, "one")) == "echo:prepared|one"
-        assert_received {:conn, :init, proc, _}
-        assert_received {:conn, :turn, ^proc, _}
+        assert_receive {:conn, :init, proc, _}
+        assert_receive {:conn, :turn, ^proc, _}
 
         assert error(turn(session, unquote(text))) == inspect({:bad_context, unquote(kind)})
 
         refute_received {:conn, :turn, ^proc, {:turn, _, _}}
         assert final_text(turn(session, "two")) == "echo:prepared|two"
-        assert_received {:conn, :turn, ^proc, _}
+        assert_receive {:conn, :turn, ^proc, _}
       end
     end
 
@@ -547,7 +551,7 @@ defmodule Helyx.Session.ProviderProcessTest do
       assert_receive {:conn, :init, proc, _}
 
       assert final_text(turn(session, "two")) == "echo:prepared|two"
-      assert_received {:conn, :turn, ^proc, _}
+      assert_receive {:conn, :turn, ^proc, _}
       refute_received {:conn, :init, _, _}
     end
 
@@ -566,7 +570,7 @@ defmodule Helyx.Session.ProviderProcessTest do
       assert_receive {:conn, :init, proc, _}
 
       assert final_text(turn(session, "two")) == "echo:prepared|two"
-      assert_received {:conn, :turn, ^proc, _}
+      assert_receive {:conn, :turn, ^proc, _}
     end
 
     test "a flood of events over the session mailbox cap stops the provider process",
@@ -657,7 +661,7 @@ defmodule Helyx.Session.ProviderProcessTest do
          %{core: core} do
       {session, pid, _hands} = start(core, "echo")
       turn(session, "zero")
-      assert_received {:conn, :turn, _proc, _zero}
+      assert_receive {:conn, :turn, _proc, _zero}
       :ok = Session.prompt(session, "hold_prepare")
       assert %{activity: %{phase: :preparing}} = :sys.get_state(pid)
       :ok = Session.steer(session, "later")
@@ -665,7 +669,7 @@ defmodule Helyx.Session.ProviderProcessTest do
 
       events = collect_until(:turn_end)
       assert final_text(events) == "echo:prepared|later"
-      assert_received {:conn, :turn, _proc, {:turn, _, context}}
+      assert_receive {:conn, :turn, _proc, {:turn, _, context}}
       expected = ["hold_prepare", "later"]
       assert context.messages |> Enum.take(-2) |> Enum.map(&Message.text/1) == expected
       refute_received {:conn, :steer, _, _}
@@ -916,7 +920,7 @@ defmodule Helyx.Session.ProviderProcessTest do
       collect_until(:turn_end)
       refute_received {:conn, :interrupt, _, _}
       assert final_text(turn(session, "two")) == "echo:prepared|two"
-      assert_received {:conn, :turn, ^proc, _}
+      assert_receive {:conn, :turn, ^proc, _}
     end
 
     test "while submitting sends the interrupt after the turn and keeps the provider process",
@@ -927,7 +931,7 @@ defmodule Helyx.Session.ProviderProcessTest do
       assert_receive {:held, from}
 
       :ok = Session.abort(session)
-      assert_received {:conn, :interrupt, ^proc, {:interrupt, ^turn_id}}
+      assert_receive {:conn, :interrupt, ^proc, {:interrupt, ^turn_id}}
       assert Process.alive?(proc)
       collect_until(:turn_end)
 
@@ -953,7 +957,7 @@ defmodule Helyx.Session.ProviderProcessTest do
       collect_until(:message_update)
 
       :ok = Session.abort(session)
-      assert_received {:conn, :interrupt, ^proc, {:interrupt, ^turn_id}}
+      assert_receive {:conn, :interrupt, ^proc, {:interrupt, ^turn_id}}
 
       :ok = Session.prompt(session, "two")
       assert_receive {:conn, :turn, ^proc, _}
@@ -989,7 +993,7 @@ defmodule Helyx.Session.ProviderProcessTest do
 
         :ok = Session.abort(session)
         refute Process.alive?(proc)
-        assert_received {:release, :deliver, [{:report, _}]}
+        assert [{:deliver, [{:report, _}]}] = Released.take()
 
         :ok = Session.prompt(session, "two")
         assert_receive {:conn, :init, new, _}
@@ -1030,7 +1034,7 @@ defmodule Helyx.Session.ProviderProcessTest do
       ref = Process.monitor(task)
 
       :ok = Session.abort(session)
-      assert_received {:conn, :interrupt, ^proc, {:interrupt, ^turn_id}}
+      assert_receive {:conn, :interrupt, ^proc, {:interrupt, ^turn_id}}
       assert_receive {:DOWN, ^ref, :process, _, :killed}
       collect_until(:turn_end)
 
@@ -1039,7 +1043,7 @@ defmodule Helyx.Session.ProviderProcessTest do
       send(proc, {:need_context, next_id, "fresh"})
       assert List.last(collect_until(:turn_end)).data.outcome == :done
       refute_received {:conn, :context, _, {:context, ^turn_id, _}}
-      assert_received {:conn, :context, ^proc, {:context, ^next_id, {:ok, _}}}
+      assert_receive {:conn, :context, ^proc, {:context, ^next_id, {:ok, _}}}
     end
 
     test "a second need_context with one open is a bad action and stops the provider process",
@@ -1109,12 +1113,13 @@ defmodule Helyx.Session.ProviderProcessTest do
     test "a close ends the provider process and the process linked to it", %{core: core} do
       {session, pid, _hands} = start(core, "echo")
       turn(session, "one")
-      assert_received {:linked, proc, linked}
+      assert_receive {:linked, proc, linked}
       ref = Process.monitor(proc)
       linked_ref = Process.monitor(linked)
 
       GenServer.stop(pid)
-      assert_received {:DOWN, ^ref, :process, _, {:shutdown, :closed}}
+      refute Process.alive?(proc)
+      assert_receive {:DOWN, ^ref, :process, _, {:shutdown, :closed}}
       assert_receive {:DOWN, ^linked_ref, :process, _, {:shutdown, :closed}}
     end
 
@@ -1153,7 +1158,7 @@ defmodule Helyx.Session.ProviderProcessTest do
     defp idle(core) do
       {session, pid, _hands} = start(core, "echo")
       turn(session, "one")
-      assert_received {:conn, :init, proc, _}
+      assert_receive {:conn, :init, proc, _}
       {session, pid, proc}
     end
 
@@ -1231,7 +1236,7 @@ defmodule Helyx.Session.ProviderProcessTest do
          %{core: core} do
       {session, pid, _hands} = start(core, "busy_turn")
       turn(session, "one")
-      assert_received {:conn, :init, proc, _}
+      assert_receive {:conn, :init, proc, _}
 
       send(pid, {:timeout, :sys.get_state(pid).idle, :idle_close})
       assert_receive {:conn, :tool_result, ^proc, {:tool_result, "p1", "c1", aborted}}
@@ -1250,7 +1255,7 @@ defmodule Helyx.Session.ProviderProcessTest do
          %{core: core} do
       {session, _pid, _hands} = start(core, "late_close")
       turn(session, "one")
-      assert_received {:conn, :init, proc, _}
+      assert_receive {:conn, :init, proc, _}
 
       :ok = Session.set_model(session, "test/ok")
       assert_receive {:conn, :close, ^proc, :close}
@@ -1273,7 +1278,7 @@ defmodule Helyx.Session.ProviderProcessTest do
          %{core: core} do
       {session, _pid, _hands} = start(core, "echo", idle: 100)
       turn(session, "one")
-      assert_received {:conn, :init, proc, _}
+      assert_receive {:conn, :init, proc, _}
       ref = Process.monitor(proc)
 
       assert_receive {:conn, :idle_close, ^proc, :idle_close}
@@ -1281,7 +1286,7 @@ defmodule Helyx.Session.ProviderProcessTest do
       assert_receive {:release, :deliver, [{:report, _}]}
 
       assert final_text(turn(session, "two")) == "echo:prepared|two"
-      assert_received {:conn, :init, new, _}
+      assert_receive {:conn, :init, new, _}
       assert new != proc
     end
 
@@ -1317,28 +1322,28 @@ defmodule Helyx.Session.ProviderProcessTest do
       refute_receive {:conn, :idle_close, _, _}, 200
 
       :ok = Session.abort(session)
-      assert_received {:conn, :interrupt, ^proc, _}
+      assert_receive {:conn, :interrupt, ^proc, _}
       assert_receive {:conn, :idle_close, ^proc, :idle_close}
     end
 
     test "a :busy answer keeps the program and arms the timer again", %{core: core} do
       {session, _pid, _hands} = start(core, "busy", idle: 100)
       turn(session, "one")
-      assert_received {:conn, :init, proc, _}
+      assert_receive {:conn, :init, proc, _}
 
       assert_receive {:conn, :idle_close, ^proc, :idle_close}
       assert_receive {:conn, :idle_close, ^proc, :idle_close}
       assert Process.alive?(proc)
 
       assert final_text(turn(session, "two")) == "echo:prepared|two"
-      assert_received {:conn, :turn, ^proc, _}
+      assert_receive {:conn, :turn, ^proc, _}
       refute_received {:conn, :init, _, _}
     end
 
     test "a prompt during the idle close waits and runs on a new program", %{core: core} do
       {session, _pid, _hands} = start(core, "late_idle", idle: 100)
       turn(session, "one")
-      assert_received {:conn, :init, proc, _}
+      assert_receive {:conn, :init, proc, _}
 
       assert_receive {:conn, :idle_close, ^proc, :idle_close}
       assert_receive {:held, from}
@@ -1346,7 +1351,7 @@ defmodule Helyx.Session.ProviderProcessTest do
       send(proc, {:answer, from, :ok})
       assert final_text(collect_until(:turn_end)) == "echo:prepared|two"
       refute Process.alive?(proc)
-      assert_received {:conn, :init, new, _}
+      assert_receive {:conn, :init, new, _}
       assert new != proc
     end
 
@@ -1357,16 +1362,18 @@ defmodule Helyx.Session.ProviderProcessTest do
            %{core: core} do
         {session, _pid, hands} = start(core, unquote(model), idle: 100)
         turn(session, "one")
-        assert_received {:conn, :init, proc, _}
+        assert_receive {:conn, :init, proc, _}
         ref = Process.monitor(proc)
         hands_ref = Process.monitor(hands)
 
         assert_receive {:conn, :idle_close, ^proc, :idle_close}
         Process.flag(:trap_exit, true)
         :ok = stop_supervised(core)
-        assert_received {:DOWN, ^ref, :process, _, {:shutdown, :closed}}
-        assert_received {:release, :deliver, [{:report, _}]}
-        assert_received {:DOWN, ^hands_ref, :process, _, :shutdown}
+        refute Process.alive?(proc)
+        refute Process.alive?(hands)
+        assert [{:deliver, [{:report, _}]}] = Released.take()
+        assert_receive {:DOWN, ^ref, :process, _, {:shutdown, :closed}}
+        assert_receive {:DOWN, ^hands_ref, :process, _, :shutdown}
       end
     end
 
@@ -1384,22 +1391,24 @@ defmodule Helyx.Session.ProviderProcessTest do
       assert_receive {:held, _from}
       Process.flag(:trap_exit, true)
       :ok = stop_supervised(core)
-      assert_received {:DOWN, ^ref, :process, _, {:shutdown, :closed}}
-      assert_received {:release, :deliver, [{:report, _}]}
-      assert_received {:DOWN, ^hands_ref, :process, _, :shutdown}
+      refute Process.alive?(proc)
+      refute Process.alive?(hands)
+      assert [{:deliver, [{:report, _}]}] = Released.take()
+      assert_receive {:DOWN, ^ref, :process, _, {:shutdown, :closed}}
+      assert_receive {:DOWN, ^hands_ref, :process, _, :shutdown}
     end
 
     test "an idle close that blocks is killed at the close bound", %{core: core} do
       {session, _pid, _hands} = start(core, "block_idle", idle: 100, close: 200)
       turn(session, "one")
-      assert_received {:conn, :init, proc, _}
+      assert_receive {:conn, :init, proc, _}
       ref = Process.monitor(proc)
 
       assert_receive {:conn, :idle_close, ^proc, :idle_close}
       :ok = Session.prompt(session, "two")
       assert_receive {:DOWN, ^ref, :process, _, :killed}
       assert final_text(collect_until(:turn_end)) == "echo:prepared|two"
-      assert_received {:conn, :init, new, _}
+      assert_receive {:conn, :init, new, _}
       assert new != proc
     end
   end
@@ -1446,7 +1455,7 @@ defmodule Helyx.Session.ProviderProcessTest do
 
     send(proc, :started)
     events = turn(session, "three")
-    assert_received {:conn, :turn, ^proc, _request}
+    assert_receive {:conn, :turn, ^proc, _request}
     assert %{resume_id: fresh, lost: true} = label(events)
     assert fresh != id
   end
@@ -1475,7 +1484,7 @@ defmodule Helyx.Session.ProviderProcessTest do
       send(proc, {:batch, [stale, fresh, {:reply, from, :ok}]})
       assert :ok = Task.await(abort, wait_ms())
 
-      assert_received {:helyx_event, %Helyx.Event{type: :resume_id, turn_id: ^turn_id} = event}
+      assert_receive {:helyx_event, %Helyx.Event{type: :resume_id, turn_id: ^turn_id} = event}
       assert %{resume_id: "fresh", lost: true} = event.data
       refute_received {:helyx_event, %Helyx.Event{type: :resume_id}}
       assert %{"conn" => {"fresh", _count, nil}} = :sys.get_state(pid).resume_ids

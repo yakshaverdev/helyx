@@ -8,6 +8,8 @@
 # The Credo check tests need the services of Credo. A start in a module's
 # setup_all ends with that module, while other modules still run.
 {:ok, _} = Application.ensure_all_started(:credo)
+# The process that runs this file lives until the last test ends.
+Helyx.Test.Released.new()
 
 ExUnit.start(
   exclude: if(System.get_env("HELYX_SLOW") == "1", do: [], else: [:slow]),

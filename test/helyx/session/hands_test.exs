@@ -9,6 +9,7 @@ defmodule Helyx.Session.HandsTest do
 
   alias Helyx.Message.ToolCall
   alias Helyx.Test.Gate
+  alias Helyx.Test.Released
 
   # Room for scheduler load in a check of a wait that must not happen: far
   # above the delays that load makes, far below the release of 60,000 ms
@@ -82,7 +83,7 @@ defmodule Helyx.Session.HandsTest do
 
     assert text == "a resource of the call could not be released"
     assert log =~ inspect(agent)
-    assert_received {:release, :deliver, _handles}
+    assert [{:deliver, _handles}] = Released.take()
 
     # The next call is refused, and the kept handle gets a retry first. A
     # provider start is refused with a text with no pid too.
@@ -113,7 +114,7 @@ defmodule Helyx.Session.HandsTest do
     {result, log} = with_log(fn -> cancel(hands, "t1") end)
     assert {:error, "a resource of the call could not be released"} = result
     assert log =~ ":keep"
-    assert_received {:release, :cancel, _handles}
+    assert [{:cancel, _handles}] = Released.take()
 
     assert {:error, text} = upcase(hands, "c2")
     assert text =~ "earlier call"
