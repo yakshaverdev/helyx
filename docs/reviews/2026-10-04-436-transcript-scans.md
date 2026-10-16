@@ -2,6 +2,8 @@
 
 Date: 2026-10-04. Base: `origin/master` (`8397956`). Scope: `bench/transcript.exs` (new). Resolution: no code in `lib/` changes. The script is in the root project, not in `plugins/bundled/bench/`, because `Records`, `State`, and `Transcript` are root modules.
 
+Update of 2026-10-16: the second Fable review deleted the script. No gate or ticket ran it after this measurement. The results below stay. To measure again, take the script from Git at `7e8084a5`.
+
 ## Invariant
 
 At 10,000 messages, one append, one `Transcript.open_calls/1`, and one tool result each cost less than 1 ms on this machine. So the session keeps the transcript in order, with `transcript ++ [message]` and the reverse in `open_calls/1`. Accepted holes: the script does not time the file append or the event sends, and the median of one fixed state does not include the GC of a long session process.

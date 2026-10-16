@@ -45,11 +45,9 @@ Some input reaches the session with no stream event. These checks stay at their 
 
 | Input | Where | Check |
 | --- | --- | --- |
-| `:DOWN` reason of a crashed provider Task | the `:DOWN` clause of `handle_info/2` | `Message.cap_integers/1` |
-| crash reason of the stream Task of an external turn | `Helyx.Session.Hands`, where the hands make the `{:task_exit, reason}` terminal | `Message.cap_integers/1` |
 | client text | `prompt/2`, `steer/2`, `follow_up/2` | `String.valid?/1` |
 
-The terminal cap at the end of `run/1` stays too. The hands cap only the crash reason, the one terminal that `run/1` did not cap. The other terminals of the hands are text. The session does not cap the `:stream_end` terminal again.
+Update, review of 2026-10-16: `Helyx.Session.Stream.check/1` returns an `{:error, reason}` terminal as it is, and the `:DOWN` reason of a provider process (`Helyx.Session.Hands`) and the crash reason of a prepare Task (`TurnLoop`) are not capped either. Such a reason reaches only `Helyx.Reason.text/1` and `Helyx.Reason.log/2`, and both cap its integers. Removed: the early cap that replaced a whole struct in the reason by the integer marker. `Reason.text/1` now caps only the integer fields of the struct, so the error text can show more detail. The digit bound, the text bound, and the log bound stay.
 
 ## The context check (#227)
 

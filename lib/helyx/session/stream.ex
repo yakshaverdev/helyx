@@ -63,7 +63,7 @@ defmodule Helyx.Session.Stream do
   A checked tool call is `{:tool_call, call, bytes}`, with the bytes of
   the JSON encode of its id, name, and arguments;
   `{:terminal, terminal}` for a `done` or an `error` event, ready to
-  send, with the integer cap on an error reason; and `{:bad, error}` for
+  send, with an error reason as it is; and `{:bad, error}` for
   a malformed event. Arguments that are not a plain map are malformed: the
   session file needs a plain map. The error of a call whose arguments are
   raw text holds `%{}` in place of the text. The usage of a `done` or a
@@ -98,9 +98,7 @@ defmodule Helyx.Session.Stream do
       else: {:bad, malformed(terminal)}
   end
 
-  # The reason goes to the session, its events, and its log as it is, so it
-  # gets the integer cap here, as every other value from a provider does.
-  def check({:error, reason}), do: {:terminal, {:error, Message.cap_integers(reason)}}
+  def check({:error, reason}), do: {:terminal, {:error, reason}}
 
   def check({tag, _, _} = event) when tag in [:message_end, :tool_result, :resume_id] do
     case provider_event(event) do

@@ -4,8 +4,6 @@ defmodule Helyx.Session.StreamTest do
   alias Helyx.Message
   alias Helyx.Session.Stream, as: SessionStream
 
-  @marker "integer of more than 100 digits removed"
-
   defp huge, do: String.to_integer(String.duplicate("7", 400_000))
 
   # Arguments that are not a plain map are malformed. The error holds `%{}`
@@ -141,8 +139,9 @@ defmodule Helyx.Session.StreamTest do
     assert {:bad, {:error, _}} = SessionStream.check({:user_message, "s1", "more"})
   end
 
-  test "an error terminal comes back with the integer cap, ready to send" do
-    assert {:terminal, {:error, {:oops, @marker, 1}}} =
-             SessionStream.check({:error, {:oops, 10 ** 100, 1}})
+  # `Helyx.Reason` caps the integers when it makes the text and the log line.
+  test "an error terminal comes back as it is, ready to send" do
+    reason = {:oops, 10 ** 100, 1}
+    assert {:terminal, {:error, ^reason}} = SessionStream.check({:error, reason})
   end
 end

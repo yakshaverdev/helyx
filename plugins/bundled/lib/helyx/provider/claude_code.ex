@@ -308,11 +308,6 @@ defmodule Helyx.Provider.ClaudeCode do
     end
   end
 
-  defp cancelled?(%{"cancelled" => cancelled}, uuid) when is_list(cancelled),
-    do: uuid in cancelled
-
-  defp cancelled?(_response, _uuid), do: false
-
   # A pending interrupt that waited for the `init` line or the start.
   defp resume_interrupt(%State{turn: %Turn{interrupt: %Interrupt{request_id: nil}}} = state),
     do: interrupt(state)
@@ -383,10 +378,11 @@ defmodule Helyx.Provider.ClaudeCode do
        )
        when is_binary(id) do
     # Only `still_queued` exactly `[]` confirms that no queued work
-    # remains; a missing or other value answers an error (ADR 0007).
+    # remains; a missing or other value answers an error (ADR 0007). A
+    # `cancelled` that is not a list stops the provider.
     case response do
       %{"subtype" => "success", "response" => %{"still_queued" => []} = body} ->
-        if cancelled?(body, uuid),
+        if :lists.member(uuid, body["cancelled"]),
           do: answer_interrupt(state, :ok),
           else: interrupt_progress(state, :response?)
 

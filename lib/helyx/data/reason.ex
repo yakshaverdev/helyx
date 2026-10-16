@@ -69,10 +69,9 @@ defmodule Helyx.Reason do
   # Every stacktrace in the reason, inside any tuple, list, map, or struct,
   # or as the rest of a list, becomes `:stacktrace`. Past the bound of
   # visited terms, the rest of a term becomes `:cut`, so no part that the
-  # walk did not see reaches the text. An integer gets the digit cap of a
-  # provider error, because `inspect` of a huge one takes seconds: no
-  # boundary caps the value that a tool raises, throws, or exits with, or
-  # the start error of the app.
+  # walk did not see reaches the text. An integer gets the digit cap,
+  # because `inspect` of a huge one takes seconds. No boundary caps a
+  # reason before this walk, so the walk is the cap.
   defp clean(_term, 0), do: {:cut, 0}
   defp clean(list, left) when is_stacktrace(list), do: {:stacktrace, left - 1}
   defp clean(list, left) when is_list(list), do: clean_list(list, left - 1, [])

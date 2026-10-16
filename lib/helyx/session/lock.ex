@@ -45,7 +45,8 @@ defmodule Helyx.Session.Lock do
   # sends its exit to the owner, which handles it as a lock lost while the
   # session runs (session-lock.md). Any other return of `fun` releases the
   # lock and is returned. A raise, throw, or exit of `fun` goes on: the
-  # owner of the port dies with it, and the port closes.
+  # owner of the port dies with it, and the port closes. The caller traps
+  # exits: a perl that ends with no answer is seen at the exit of its port.
   def hold(path, fun) do
     with {:ok, lock} <- take(path) do
       case fun.() do
@@ -69,12 +70,13 @@ defmodule Helyx.Session.Lock do
           :binary,
           :exit_status,
           :stderr_to_stdout,
+          {:line, @max_output_bytes},
           args: ["-e", @program, "--", nonce, Path.rootname(path) <> ".lock"]
         ])
 
       deadline = System.monotonic_time(:millisecond) + @reply_ms
 
-      case read_answer(port, nonce, "", "", deadline) do
+      case read_answer(port, nonce, "", deadline) do
         :ok ->
           {:ok, port}
 
@@ -103,35 +105,37 @@ defmodule Helyx.Session.Lock do
     end
   end
 
-  # Reads whole lines until the answer line, within the output bound and
-  # the deadline. `pre` holds the lines read past.
-  defp read_answer(port, nonce, pre, acc, deadline) do
-    case String.split(acc, "\n", parts: 2) do
-      [line, rest] when byte_size(pre) + byte_size(line) < @max_output_bytes ->
-        case String.split(line, " ", parts: 3) do
-          [^nonce, "ok"] -> :ok
-          [^nonce, "locked"] -> :locked
-          [^nonce, "error", reason] -> {:error, "cannot open the lock file: " <> reason}
-          _other -> read_answer(port, nonce, pre <> line <> "\n", rest, deadline)
-        end
-
-      [_part] when byte_size(pre) + byte_size(acc) < @max_output_bytes ->
-        read_more(port, nonce, pre, acc, deadline)
-
-      # The answer line counts in the bound too.
-      _over ->
-        {:error, "perl wrote #{@max_output_bytes} bytes with no answer in them"}
-    end
-  end
-
-  # The deadline is checked before each receive: output that is queued
-  # already does not keep the read past it.
-  defp read_more(port, nonce, pre, acc, deadline) do
+  # Reads lines until the answer line, within the output bound and the
+  # deadline. `pre` holds the output read past; it and the line in hand
+  # count in the bound. The last bytes of an output with no line end come
+  # after the exit status, so the read goes on to the trapped exit of the
+  # port. The deadline is checked before each receive: output that is
+  # queued already does not keep the read past it.
+  defp read_answer(port, nonce, pre, deadline) do
     case deadline - System.monotonic_time(:millisecond) do
       wait when wait > 0 ->
         receive do
-          {^port, {:data, data}} -> read_answer(port, nonce, pre, acc <> data, deadline)
-          {^port, {:exit_status, _}} -> {:error, "perl ended with no answer: " <> pre <> acc}
+          {^port, {:data, {:eol, line}}}
+          when byte_size(pre) + byte_size(line) < @max_output_bytes ->
+            case String.split(line, " ", parts: 3) do
+              [^nonce, "ok"] -> :ok
+              [^nonce, "locked"] -> :locked
+              [^nonce, "error", reason] -> {:error, "cannot open the lock file: " <> reason}
+              _other -> read_answer(port, nonce, pre <> line <> "\n", deadline)
+            end
+
+          {^port, {:data, {:noeol, part}}}
+          when byte_size(pre) + byte_size(part) < @max_output_bytes ->
+            read_answer(port, nonce, pre <> part, deadline)
+
+          {^port, {:data, _over}} ->
+            {:error, "perl wrote #{@max_output_bytes} bytes with no answer in them"}
+
+          {^port, {:exit_status, _}} ->
+            read_answer(port, nonce, pre, deadline)
+
+          {:EXIT, ^port, _reason} ->
+            {:error, "perl ended with no answer: " <> pre}
         after
           wait -> no_answer()
         end

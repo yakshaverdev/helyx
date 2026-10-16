@@ -14,7 +14,6 @@ defmodule Helyx.Watchdog.Group do
   # `:deliver` KILLs straight away: the call is over, nothing in the group
   # has output anyone will read. `:cancel` TERMs first and KILLs after the
   # grace period (`Helyx.Watchdog.grace_ms/0`, or the `:grace_ms` option).
-  # `:retry` KILLs again and probes once, with no wait.
   #
   # No kill(1) run starts at or after the deadline: a skipped probe counts
   # the group as alive, so the handle is returned as still held. A group is
@@ -45,11 +44,6 @@ defmodule Helyx.Watchdog.Group do
     watchdogs = for {:watchdog, group} when is_integer(group) and group > 1 <- handles, do: group
     {commands, watchdogs} = sweep(commands, watchdogs, mode, deadline, grace, kill)
     Enum.map(commands, &{:command, &1}) ++ Enum.map(watchdogs, &{:watchdog, &1})
-  end
-
-  defp sweep(commands, watchdogs, :retry, _deadline, _grace, kill) do
-    signal(commands ++ watchdogs, "KILL", kill)
-    {alive(commands, kill), alive(watchdogs, kill)}
   end
 
   defp sweep(commands, watchdogs, mode, deadline, grace, kill) do

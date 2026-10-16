@@ -145,7 +145,7 @@ defmodule Helyx.Provider.OpenAITest do
       tools: [%{name: "bash", description: "Runs a command.", parameters: %{"type" => "object"}}]
     }
 
-    assert {:ok, stream} = OpenAI.Zen.stream("gpt-5", context, [])
+    assert {:ok, stream} = OpenAI.Zen.stream("gpt-5", context, session_id: "s")
 
     assert Enum.to_list(stream) == [
              {:text_delta, "Listing."},
@@ -231,7 +231,7 @@ defmodule Helyx.Provider.OpenAITest do
       ]
     }
 
-    assert {:ok, stream} = OpenAI.Go.stream("kimi-k2", context, [])
+    assert {:ok, stream} = OpenAI.Go.stream("kimi-k2", context, session_id: "s")
 
     assert List.last(Enum.to_list(stream)) ==
              {:done, %{stop_reason: :end_turn, usage: %Helyx.Usage{}}}
@@ -247,7 +247,7 @@ defmodule Helyx.Provider.OpenAITest do
   test "a transport error on every attempt is an error event after 3 retries" do
     sequence([&Req.Test.transport_error(&1, :econnrefused)])
 
-    assert {:ok, stream} = OpenAI.Go.stream("kimi-k2", %Helyx.Context{}, [])
+    assert {:ok, stream} = OpenAI.Go.stream("kimi-k2", %Helyx.Context{}, session_id: "s")
     assert [{:error, %Req.TransportError{reason: :econnrefused}}] = Enum.to_list(stream)
     assert attempts() == 4
   end
@@ -257,7 +257,7 @@ defmodule Helyx.Provider.OpenAITest do
     stub([delta(%{content: "Hel"}), delta(%{}, "stop")])
     context = %Helyx.Context{messages: [Helyx.Message.user("hi")]}
 
-    assert {:ok, stream} = OpenAI.Go.stream("kimi-k2", context, [])
+    assert {:ok, stream} = OpenAI.Go.stream("kimi-k2", context, session_id: "s")
     assert Enum.to_list(stream) == [{:text_delta, "Hel"}]
     assert_received {:request, _, _}
     refute_received {:request, _, _}
@@ -273,7 +273,7 @@ defmodule Helyx.Provider.OpenAITest do
       test "a #{status} is retried and the stream after it reaches the session" do
         sequence([error_reply(unquote(status), @no_wait), ok()])
 
-        assert {:ok, stream} = OpenAI.Go.stream("m", %Helyx.Context{}, [])
+        assert {:ok, stream} = OpenAI.Go.stream("m", %Helyx.Context{}, session_id: "s")
         assert Enum.to_list(stream) == @streamed
         assert attempts() == 2
       end
@@ -283,7 +283,7 @@ defmodule Helyx.Provider.OpenAITest do
       test "a #{status} is not retried" do
         sequence([error_reply(unquote(status), @no_wait)])
 
-        assert {:ok, stream} = OpenAI.Go.stream("m", %Helyx.Context{}, [])
+        assert {:ok, stream} = OpenAI.Go.stream("m", %Helyx.Context{}, session_id: "s")
         assert Enum.to_list(stream) == [{:error, {:http_status, unquote(status), "busy"}}]
         assert attempts() == 1
       end
@@ -292,7 +292,7 @@ defmodule Helyx.Provider.OpenAITest do
     test "a 307 is not followed: one request, and the status is the error" do
       sequence([error_reply(307, [{"location", "/again"}]), ok()])
 
-      assert {:ok, stream} = OpenAI.Go.stream("m", %Helyx.Context{}, [])
+      assert {:ok, stream} = OpenAI.Go.stream("m", %Helyx.Context{}, session_id: "s")
       assert Enum.to_list(stream) == [{:error, {:http_status, 307, "busy"}}]
       assert attempts() == 1
     end
@@ -300,7 +300,7 @@ defmodule Helyx.Provider.OpenAITest do
     test "at most 3 retries, then the last status is the error" do
       sequence([error_reply(429, @no_wait)])
 
-      assert {:ok, stream} = OpenAI.Go.stream("m", %Helyx.Context{}, [])
+      assert {:ok, stream} = OpenAI.Go.stream("m", %Helyx.Context{}, session_id: "s")
       assert Enum.to_list(stream) == [{:error, {:http_status, 429, "busy"}}]
       assert attempts() == 4
     end
@@ -312,7 +312,7 @@ defmodule Helyx.Provider.OpenAITest do
         ok()
       ])
 
-      assert {:ok, stream} = OpenAI.Go.stream("m", %Helyx.Context{}, [])
+      assert {:ok, stream} = OpenAI.Go.stream("m", %Helyx.Context{}, session_id: "s")
       assert Enum.to_list(stream) == @streamed
       assert attempts() == 3
     end
@@ -325,7 +325,7 @@ defmodule Helyx.Provider.OpenAITest do
         ok()
       ])
 
-      assert {:ok, stream} = OpenAI.Go.stream("m", %Helyx.Context{}, [])
+      assert {:ok, stream} = OpenAI.Go.stream("m", %Helyx.Context{}, session_id: "s")
       assert Enum.to_list(stream) == @streamed
       assert attempts() == 4
     end
@@ -333,7 +333,7 @@ defmodule Helyx.Provider.OpenAITest do
     test "a server delay over 60 s ends the turn with the status and the delay" do
       sequence([error_reply(429, [{"retry-after-ms", "60001"}])])
 
-      assert {:ok, stream} = OpenAI.Go.stream("m", %Helyx.Context{}, [])
+      assert {:ok, stream} = OpenAI.Go.stream("m", %Helyx.Context{}, session_id: "s")
       assert Enum.to_list(stream) == [{:error, {:retry_after_over_limit, 429, 60_001}}]
       assert attempts() == 1
     end
@@ -342,7 +342,7 @@ defmodule Helyx.Provider.OpenAITest do
       for ms <- ["-1", "1e306", "1.5", "soon", String.duplicate("9", 13)] do
         sequence([error_reply(429, [{"retry-after-ms", ms}, {"retry-after", "120"}])])
 
-        assert {:ok, stream} = OpenAI.Go.stream("m", %Helyx.Context{}, [])
+        assert {:ok, stream} = OpenAI.Go.stream("m", %Helyx.Context{}, session_id: "s")
         assert Enum.to_list(stream) == [{:error, {:retry_after_over_limit, 429, 120_000}}]
       end
     end
@@ -350,7 +350,7 @@ defmodule Helyx.Provider.OpenAITest do
     test "a 12-digit delay parses and goes over the limit" do
       sequence([error_reply(429, [{"retry-after", String.duplicate("9", 12)}])])
 
-      assert {:ok, stream} = OpenAI.Go.stream("m", %Helyx.Context{}, [])
+      assert {:ok, stream} = OpenAI.Go.stream("m", %Helyx.Context{}, session_id: "s")
 
       assert Enum.to_list(stream) == [
                {:error, {:retry_after_over_limit, 429, 999_999_999_999_000}}
@@ -365,7 +365,7 @@ defmodule Helyx.Provider.OpenAITest do
         error_reply(429, [{"retry-after", "120"}])
       ])
 
-      assert {:ok, stream} = OpenAI.Go.stream("m", %Helyx.Context{}, [])
+      assert {:ok, stream} = OpenAI.Go.stream("m", %Helyx.Context{}, session_id: "s")
       assert Enum.to_list(stream) == [{:error, {:retry_after_over_limit, 429, 120_000}}]
       assert attempts() == 4
     end
@@ -380,7 +380,7 @@ defmodule Helyx.Provider.OpenAITest do
       on_exit(fn -> Application.delete_env(:req, :default_options) end)
       sequence([error_reply(429, @no_wait)])
 
-      assert {:ok, stream} = OpenAI.Go.stream("m", %Helyx.Context{}, [])
+      assert {:ok, stream} = OpenAI.Go.stream("m", %Helyx.Context{}, session_id: "s")
       assert Enum.to_list(stream) == [{:error, {:http_status, 429, "busy"}}]
       assert attempts() == 4
     end
@@ -396,7 +396,7 @@ defmodule Helyx.Provider.OpenAITest do
 
       sequence([error_reply(503, [{"retry-after", date}])])
 
-      assert {:ok, stream} = OpenAI.Go.stream("m", %Helyx.Context{}, [])
+      assert {:ok, stream} = OpenAI.Go.stream("m", %Helyx.Context{}, session_id: "s")
       assert [{:error, {:retry_after_over_limit, 503, ms}}] = Enum.to_list(stream)
       assert ms in (120_000 - @load_ms)..120_000
     end
@@ -405,7 +405,7 @@ defmodule Helyx.Provider.OpenAITest do
       sequence([error_reply(503, [{"retry-after", "soon"}]), ok()])
       started = System.monotonic_time(:millisecond)
 
-      assert {:ok, stream} = OpenAI.Go.stream("m", %Helyx.Context{}, [])
+      assert {:ok, stream} = OpenAI.Go.stream("m", %Helyx.Context{}, session_id: "s")
       assert Enum.to_list(stream) == @streamed
       assert System.monotonic_time(:millisecond) - started >= @min_backoff_ms
       assert attempts() == 2
@@ -414,7 +414,7 @@ defmodule Helyx.Provider.OpenAITest do
     test "a transport error before the response is retried" do
       sequence([&Req.Test.transport_error(&1, :closed), ok()])
 
-      assert {:ok, stream} = OpenAI.Go.stream("m", %Helyx.Context{}, [])
+      assert {:ok, stream} = OpenAI.Go.stream("m", %Helyx.Context{}, session_id: "s")
       assert Enum.to_list(stream) == @streamed
       assert attempts() == 2
     end
@@ -423,7 +423,7 @@ defmodule Helyx.Provider.OpenAITest do
     test "an interrupt during a wait ends the turn at once" do
       sequence([error_reply(429, [{"retry-after", "60"}]), ok()])
 
-      {:ok, state} = OpenAI.Go.init("m", [], [])
+      {:ok, state} = OpenAI.Go.init("m", [], session_id: "s")
       {:ok, _, state} = OpenAI.Go.request({:turn, "t1", %Helyx.Context{}}, :from, state)
       assert_receive {:attempt, 1}, Helyx.Test.Events.wait_ms()
       task = state.task
@@ -539,21 +539,22 @@ defmodule Helyx.Provider.OpenAITest do
     entry = [context_window: 262_144, prices: [input: 0.6, output: 2.5]]
     models(%{"opencode-go/no-catalog-model" => entry})
 
-    assert {:ok, stream} = OpenAI.Go.stream("no-catalog-model", %Helyx.Context{}, [])
+    assert {:ok, stream} = OpenAI.Go.stream("no-catalog-model", %Helyx.Context{}, session_id: "s")
     assert {:done, %{usage: priced}} = List.last(Enum.to_list(stream))
     assert %Helyx.Usage{context_window: 262_144, cost_kind: :list} = priced
     assert_in_delta priced.cost, 3.1, 1.0e-9
 
     # The other gateway has no config entry, and the catalog has no entry
     # for the model: no window, no cost.
-    assert {:ok, stream} = OpenAI.Zen.stream("no-catalog-model", %Helyx.Context{}, [])
+    assert {:ok, stream} =
+             OpenAI.Zen.stream("no-catalog-model", %Helyx.Context{}, session_id: "s")
 
     assert {:done, %{usage: %Helyx.Usage{context_window: nil, cost: nil}}} =
              List.last(Enum.to_list(stream))
 
     models(%{"opencode-go/no-catalog-model" => [context_window: 0]})
 
-    assert OpenAI.Go.stream("no-catalog-model", %Helyx.Context{}, []) ==
+    assert OpenAI.Go.stream("no-catalog-model", %Helyx.Context{}, session_id: "s") ==
              {:error, {:bad_config, [:models, "opencode-go/no-catalog-model", :context_window]}}
   end
 
@@ -563,7 +564,7 @@ defmodule Helyx.Provider.OpenAITest do
     for value <- [:plug, %{plug: nil}, [1], [{"plug", nil}], [{:plug, nil} | :tail]] do
       Application.put_env(:helyx_plugins, :openai_req_options, value)
 
-      assert OpenAI.Go.stream("kimi-k2", %Helyx.Context{}, []) ==
+      assert OpenAI.Go.stream("kimi-k2", %Helyx.Context{}, session_id: "s") ==
                {:error, {:bad_config, [:openai_req_options]}}
     end
   end
@@ -586,7 +587,7 @@ defmodule Helyx.Provider.OpenAITest do
       plug: pass
     )
 
-    assert {:ok, stream} = OpenAI.Go.stream("kimi-k2", %Helyx.Context{}, [])
+    assert {:ok, stream} = OpenAI.Go.stream("kimi-k2", %Helyx.Context{}, session_id: "s")
     assert {:text_delta, "Hi"} in Enum.to_list(stream)
     assert_received {:header, ["1"]}
     # The env comes after the options of the provider, so it replaces the key.
@@ -598,7 +599,7 @@ defmodule Helyx.Provider.OpenAITest do
     context = %Helyx.Context{messages: [Helyx.Message.user("hi")]}
 
     assert {:error, {:missing_env, "OPENCODE_API_KEY"}} =
-             OpenAI.Go.stream("kimi-k2", context, [])
+             OpenAI.Go.stream("kimi-k2", context, session_id: "s")
   end
 
   @max_error_body_bytes 16_384
@@ -607,7 +608,7 @@ defmodule Helyx.Provider.OpenAITest do
     body = String.duplicate("a", @max_error_body_bytes)
     plug(&Plug.Conn.send_resp(&1, 400, body))
 
-    assert {:ok, stream} = OpenAI.Go.stream("m", %Helyx.Context{}, [])
+    assert {:ok, stream} = OpenAI.Go.stream("m", %Helyx.Context{}, session_id: "s")
     assert Enum.to_list(stream) == [{:error, {:http_status, 400, body}}]
   end
 
@@ -615,7 +616,7 @@ defmodule Helyx.Provider.OpenAITest do
     body = String.duplicate("a", @max_error_body_bytes + 1)
     plug(&Plug.Conn.send_resp(&1, 400, body))
 
-    assert {:ok, stream} = OpenAI.Go.stream("m", %Helyx.Context{}, [])
+    assert {:ok, stream} = OpenAI.Go.stream("m", %Helyx.Context{}, session_id: "s")
     assert [{:error, {:http_status, 400, cut}}] = Enum.to_list(stream)
 
     assert cut ==
@@ -627,7 +628,7 @@ defmodule Helyx.Provider.OpenAITest do
     body = String.duplicate("a", @max_error_body_bytes - 2) <> "😀😀"
     plug(&Plug.Conn.send_resp(&1, 400, body))
 
-    assert {:ok, stream} = OpenAI.Go.stream("m", %Helyx.Context{}, [])
+    assert {:ok, stream} = OpenAI.Go.stream("m", %Helyx.Context{}, session_id: "s")
     assert [{:error, {:http_status, 400, cut}}] = Enum.to_list(stream)
 
     assert cut ==

@@ -295,7 +295,7 @@ defmodule Helyx.TUI.ComposerTest do
     {:ok, session} = Session.start(core, model: "fake/again")
     {:ok, state} = TUI.mount(session: session)
 
-    state = state |> type("hi") |> press("enter") |> drain()
+    state = state |> branch_reply() |> type("hi") |> press("enter") |> drain()
     assert value(state) == ""
 
     state = state |> press("up") |> press("enter") |> drain()
@@ -309,9 +309,18 @@ defmodule Helyx.TUI.ComposerTest do
     receive do
       {:helyx_event, %Event{} = event} ->
         {:noreply, state} = TUI.handle_info({:helyx_event, event}, state)
-        if event.type == :turn_end, do: state, else: drain(state)
+        if event.type == :turn_end, do: branch_reply(state), else: drain(state)
     after
       Helyx.Test.Events.wait_ms() -> flunk("no turn_end; view model: #{inspect(state.vm)}")
     end
+  end
+
+  # The reply of the branch task that a mount or a turn_end starts. The
+  # task is linked to the test process; see the same helper in
+  # tui_test.exs.
+  defp branch_reply(%{branch_ref: ref} = state) do
+    assert_receive {^ref, _branch} = reply
+    {:noreply, state} = TUI.handle_info(reply, state)
+    state
   end
 end

@@ -117,19 +117,6 @@ defmodule Helyx.Watchdog.GroupTest do
     assert signals() == [{"-TERM", ["-100"]}, {"-KILL", ["-100"]}]
   end
 
-  test "a retry KILLs every group and probes once, with no wait" do
-    kill = fake_kill([100, 200], [100, 200])
-    handles = [{:command, 100}, {:watchdog, 200}]
-
-    assert Group.release(handles, :retry, deadline(1_000), kill: kill) == handles
-    # Each wait polls, and a poll would probe a held group again.
-    assert Enum.map(runs(), &elem(&1, 0)) == [
-             ["-KILL", "--", "-100", "-200"],
-             ["-0", "--", "-100"],
-             ["-0", "--", "-200"]
-           ]
-  end
-
   test "a group below 2 is never signalled" do
     kill = fake_kill([])
     handles = [{:command, 1}, {:watchdog, 0}, {:command, -1}]
@@ -143,7 +130,7 @@ defmodule Helyx.Watchdog.GroupTest do
       _ -> {"", 0}
     end
 
-    assert Group.release([{:command, 340}], :retry, deadline(100), kill: kill) == [
+    assert Group.release([{:command, 340}], :deliver, deadline(100), kill: kill) == [
              {:command, 340}
            ]
   end

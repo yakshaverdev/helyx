@@ -666,7 +666,6 @@ defmodule Helyx.Test.Tool.Hold do
   #   {:slow, ms}     sleeps ms before the release returns
   #   %{"gate" => g}  waits for :go from the gate `g` (`Helyx.Test.Gate`)
   #   :keep           stays held
-  #   {:keep, agent}  stays held while the Agent holds true
   #   :raise, :exit   the release raises or exits
   #   :bad            the release returns a handle it was not given
   #   :improper       the release returns an improper list
@@ -701,7 +700,6 @@ defmodule Helyx.Test.Tool.Hold do
 
   defp kept?(:keep), do: true
   defp kept?("keep"), do: true
-  defp kept?({:keep, agent}), do: Agent.get(agent, & &1)
   defp kept?(_handle), do: false
 end
 
@@ -737,7 +735,8 @@ defmodule Helyx.Test.Tool.Background do
   # "done". With "start" it answers that text; with "unplaced" it gives
   # a start answer with no place; with "unstarted" it waits for the gate
   # between its place and its start answer; with "gated_start" it waits
-  # for the gate there too, then answers.
+  # for the gate there too, then answers; with "twice" it takes its place
+  # with two calls of `background/0`.
   use Helyx.Test.Tool, name: "background", description: "Runs until its gate opens."
 
   @impl true
@@ -749,13 +748,18 @@ defmodule Helyx.Test.Tool.Background do
   end
 
   def run(args, _cwd) do
-    with {:ok, %{id: id, dir: dir}} <- Helyx.Tool.background() do
+    with {:ok, %{id: id, dir: dir}} <- place(args["twice"]) do
       Enum.each(Map.get(args, "handles", []), &Helyx.Tool.hold/1)
       if args["gated_start"], do: Helyx.Test.Gate.wait(args["gate"])
       :ok = Helyx.Tool.started(Map.get(args, "start", "started " <> Path.join(dir, id)))
       Helyx.Test.Gate.wait(args["gate"])
     end
   end
+
+  defp place(true),
+    do: with({:ok, _first} <- Helyx.Tool.background(), do: Helyx.Tool.background())
+
+  defp place(_once), do: Helyx.Tool.background()
 
   @impl true
   defdelegate release(handles, mode, deadline), to: Helyx.Test.Tool.Hold

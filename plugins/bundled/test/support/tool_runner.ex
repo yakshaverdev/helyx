@@ -50,7 +50,7 @@ defmodule Helyx.Test.ToolRunner do
     hands = :sys.get_state(Helyx.Session.pid(session)).hands
 
     [task] =
-      for {task, _turn_id, id, _module} <- Map.values(:sys.get_state(hands).tasks),
+      for {task, _turn_id, id, _module, _place} <- Map.values(:sys.get_state(hands).tasks),
           id != :provider,
           do: task.pid
 

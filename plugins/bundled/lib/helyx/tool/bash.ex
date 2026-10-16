@@ -167,9 +167,10 @@ defmodule Helyx.Tool.Bash do
   defdelegate release(handles, mode, deadline), to: Helyx.Watchdog.Group
 
   @doc false
-  # Public for the tests of the limit, which give it in ms. The limit
-  # counts from before the start, so it counts the time of the hold and the
-  # marker, but it cannot end those waits.
+  # Public for the tests of the limit. The limit is in ms and is whole
+  # seconds, as the result gives it in s. The limit counts from before the
+  # start, so it counts the time of the hold and the marker, but it cannot
+  # end those waits.
   def run_command(command, cwd, limit_ms) do
     deadline = System.monotonic_time(:millisecond) + limit_ms
 
@@ -233,7 +234,8 @@ defmodule Helyx.Tool.Bash do
         out = stop(port, handles, out)
 
         {:error,
-         render(out) <> "\nTimed out after #{duration(limit_ms)}: the command group was released."}
+         render(out) <>
+           "\nTimed out after #{div(limit_ms, 1000)} s: the command group was released."}
 
       {:exit, out, 0} ->
         {:ok, render(out)}
@@ -269,9 +271,6 @@ defmodule Helyx.Tool.Bash do
     _held = Task.yield(release, left) || Task.shutdown(release, :brutal_kill)
     out
   end
-
-  defp duration(ms) when rem(ms, 1000) == 0, do: "#{div(ms, 1000)} s"
-  defp duration(ms), do: "#{ms} ms"
 
   @doc false
   # Public for the direct test of the file bound.
@@ -334,9 +333,6 @@ defmodule Helyx.Tool.Bash do
       {:error, reason} -> %{out | file: nil, error: to_string(:file.format_error(reason))}
     end
   end
-
-  @doc false
-  def max_output_bytes, do: @max_output_bytes
 
   # Cuts at twice the cap so the copy is amortised, not once per chunk.
   # The cut can land inside a character; the hands repair the partial

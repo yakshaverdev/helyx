@@ -4,13 +4,6 @@ defmodule Helyx.Session.Hands.Release do
   # tool's `release/3`, with one deadline, and the rule of what it confirms
   # (docs/features/tool-resource-release.md).
 
-  # The release deadline of a retry, for all tools together.
-  @retry_ms 1_000
-
-  # Gives every unconfirmed handle to its tool again, with one short
-  # deadline for all tools, and returns the ones still held.
-  def retry(unconfirmed, core), do: run(unconfirmed, :retry, @retry_ms, core)
-
   # Calls `release/3` of each tool with its handles, one Task per tool, in
   # parallel, with one deadline. A Task that is still running at the
   # deadline is killed, and the wait returns only when it is gone. Returns

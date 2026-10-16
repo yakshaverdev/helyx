@@ -9,13 +9,14 @@ defmodule Helyx.Session.Background do
   alias Helyx.Message
   alias Helyx.Session.Id
 
-  # The places of the runs of a session, in the hands: `live`, the id of
-  # each Task from `Helyx.Tool.background/0` to its end, and `waiting`, the
-  # ids of the ends that no turn took yet. Both count in `@max_places`, so
-  # the places bound the live runs and the waiting ends together (#587).
-  defstruct live: %{}, waiting: []
+  # The places of the runs of a session, in the hands. A live run is a Task
+  # whose entry in the hands has a place, from `Helyx.Tool.background/0` to
+  # its end. `waiting` holds the ids of the ends that no turn took yet: an
+  # end outlives its Task. Both count in `@max_places`, so the places bound
+  # the live runs and the waiting ends together (#587).
+  defstruct waiting: []
 
-  @type t :: %__MODULE__{live: %{pid() => String.t()}, waiting: [String.t()]}
+  @type t :: %__MODULE__{waiting: [String.t()]}
 
   @max_places 16
 
@@ -36,12 +37,13 @@ defmodule Helyx.Session.Background do
           "Check its effects before you run it again. " <>
           "Its output file was deleted with the session."
 
-  # A new place for the Task `pid`, and the folder `dir`, made at each
-  # call: a new id and the places with it, or the error text for the tool.
-  # A second call of the Task gives a new id in the same place.
-  @spec reserve(t(), pid(), String.t()) :: {:ok, String.t(), t()} | {:error, String.t()}
-  def reserve(%__MODULE__{live: live, waiting: waiting}, _pid, _dir)
-      when map_size(live) + length(waiting) >= @max_places,
+  # A new place, with `live` runs, and the folder `dir`, made at each call:
+  # a new id, or the error text for the tool. The hands keep the id in the
+  # entry of the Task, so a second call of the Task gives a new id in the
+  # same place.
+  @spec reserve(t(), non_neg_integer(), String.t()) :: {:ok, String.t()} | {:error, String.t()}
+  def reserve(%__MODULE__{waiting: waiting}, live, _dir)
+      when live + length(waiting) >= @max_places,
       do:
         {:error,
          "#{@max_places} background runs are live or have an end that no turn took; " <>
@@ -49,29 +51,24 @@ defmodule Helyx.Session.Background do
 
   # The files can hold secrets, such as the output of a command: only the
   # user may read them.
-  def reserve(%__MODULE__{} = places, pid, dir) do
+  def reserve(%__MODULE__{}, _live, dir) do
     case with(:ok <- File.mkdir_p(dir), do: File.chmod(dir, 0o700)) do
       :ok ->
-        id = Id.new()
-        {:ok, id, %{places | live: Map.put(places.live, pid, id)}}
+        {:ok, Id.new()}
 
       {:error, reason} ->
         {:error, "the background folder could not be made: #{:file.format_error(reason)}"}
     end
   end
 
-  # The Task `pid` with the call id `call_id` ended. A run that gave its
-  # start answer keeps its place until a turn takes its end (`taken/2`);
-  # any other Task frees it.
-  @spec ended(t(), pid(), term()) :: t()
-  def ended(%__MODULE__{} = places, pid, {:background, id}),
-    do: %{places | live: Map.delete(places.live, pid), waiting: [id | places.waiting]}
+  # The Task with the call id `call_id` ended. A run that gave its start
+  # answer keeps its place until a turn takes its end (`taken/2`); the
+  # place of any other Task left with its entry.
+  @spec ended(t(), term()) :: t()
+  def ended(%__MODULE__{} = places, {:background, id}),
+    do: %{places | waiting: [id | places.waiting]}
 
-  def ended(%__MODULE__{} = places, pid, _call_id), do: drop(places, [pid])
-
-  # The Tasks `pids` died with no end, by a cancel: their places are free.
-  @spec drop(t(), [pid()]) :: t()
-  def drop(%__MODULE__{} = places, pids), do: %{places | live: Map.drop(places.live, pids)}
+  def ended(%__MODULE__{} = places, _call_id), do: places
 
   # A turn took the end of the run `id`. The id of a lost run, from an
   # earlier session, has no place here and frees nothing.

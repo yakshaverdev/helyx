@@ -94,12 +94,11 @@ defmodule Helyx.Session.File.Scan do
   @doc false
   # The most recently started session of `cwd` that `list/2` would list:
   # not empty, a session id as file name, a known version, and a string
-  # `model`. The option `:max_scanned_files` only lowers the file count; a
-  # bad one raises when the scan runs (not with `:id`).
-  def most_recent(dir, cwd, opts),
-    do: most_recent_of(dir, cwd, Keyword.get(opts, :max_scanned_files, @max_scanned_files))
+  # `model`. The option `:max_scanned_files` lowers the file count for a
+  # test. It is not checked.
+  def most_recent(dir, cwd, opts) do
+    max_files = Keyword.get(opts, :max_scanned_files, @max_scanned_files)
 
-  defp most_recent_of(dir, cwd, max_files) when max_files in 1..@max_scanned_files//1 do
     case Enum.max_by(sessions(dir, cwd, max_files), fn {_, _, h, _} -> h["ts"] end, fn -> nil end) do
       nil -> {:error, :not_found}
       {_mtime, path, header, _prompt} -> {:ok, path, header}
