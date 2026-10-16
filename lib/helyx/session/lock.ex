@@ -40,36 +40,22 @@ defmodule Helyx.Session.Lock do
   def release_ms, do: @release_ms
 
   # Takes the lock of the session file `path`, then runs `fun`, which writes
-  # the file. Returns `{:ok, lock, result}` for `{:ok, result}` of `fun`, or
-  # a `:lock_failed` error when the port has closed by then.
-  # Any other return of `fun` releases the lock and is returned. A raise,
-  # throw, or exit of `fun` goes on: the owner of the port dies with it, and
-  # the port closes.
+  # the file. Returns `{:ok, lock, result}` for `{:ok, result}` of `fun`.
+  # perl can end while `fun` runs, a resume read for example: the port then
+  # sends its exit to the owner, which handles it as a lock lost while the
+  # session runs (session-lock.md). Any other return of `fun` releases the
+  # lock and is returned. A raise, throw, or exit of `fun` goes on: the
+  # owner of the port dies with it, and the port closes.
   def hold(path, fun) do
     with {:ok, lock} <- take(path) do
       case fun.() do
         {:ok, result} ->
-          held(lock, result)
+          {:ok, lock, result}
 
         error ->
           release(lock)
           error
       end
-    end
-  end
-
-  # perl can end while `fun` runs, a resume read for example: the lock is
-  # gone, and no client is subscribed yet to see the notice of a lost lock.
-  # The port closes some ms after perl ends, so a perl that ends right before
-  # this check, or after it and before the first subscribe, sends its notice
-  # to no client; the snapshot tells a later client (`persisting`,
-  # session-lock.md).
-  defp held(lock, result) do
-    if Port.info(lock) do
-      {:ok, lock, result}
-    else
-      close(lock)
-      {:error, {:lock_failed, "the lock ended before the session started"}}
     end
   end
 

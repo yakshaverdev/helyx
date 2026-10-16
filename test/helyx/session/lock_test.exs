@@ -272,8 +272,11 @@ defmodule Helyx.Session.LockTest do
   end
 
   # perl ends during the open, as during the resume read in the session's
-  # init: the open fails and leaves no port.
-  test "an open whose perl ends during it fails", %{tmp_dir: dir} do
+  # init: the open returns, and the owner, which traps exits as the session
+  # does, gets the exit of the port. The session handles it as a lock lost
+  # while it runs.
+  test "an open whose perl ends during it sends the exit of the port", %{tmp_dir: dir} do
+    Process.flag(:trap_exit, true)
     path = Path.join(dir, "abc.jsonl")
 
     kill_own_perl = fn ->
@@ -284,8 +287,9 @@ defmodule Helyx.Session.LockTest do
       {:ok, :taken}
     end
 
-    assert Lock.hold(path, kill_own_perl) ==
-             {:error, {:lock_failed, "the lock ended before the session started"}}
+    assert {:ok, lock, :taken} = Lock.hold(path, kill_own_perl)
+    assert_receive {:EXIT, ^lock, _reason}
+    assert Lock.release(lock) == :ok
 
     assert {:ok, lock, :taken} = Lock.hold(path, fn -> {:ok, :taken} end)
     Lock.release(lock)
