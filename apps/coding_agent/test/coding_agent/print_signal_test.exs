@@ -3,6 +3,8 @@ defmodule CodingAgent.PrintSignalTest do
   # sends it a real signal.
   use ExUnit.Case, async: true
 
+  import Helyx.Test.Events, only: [wait_until: 3]
+
   alias CodingAgent.Print
 
   @moduletag :slow
@@ -209,18 +211,5 @@ defmodule CodingAgent.PrintSignalTest do
     File.read!(path)
   end
 
-  defp await(ms, fun), do: await_until(System.monotonic_time(:millisecond) + ms, fun)
-
-  defp await_until(deadline, fun) do
-    cond do
-      fun.() ->
-        :ok
-
-      System.monotonic_time(:millisecond) > deadline ->
-        flunk("the condition did not hold in time")
-
-      true ->
-        Process.sleep(50) && await_until(deadline, fun)
-    end
-  end
+  defp await(ms, fun), do: wait_until(fun, ms, "the condition did not hold in time")
 end

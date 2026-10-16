@@ -4,6 +4,7 @@ defmodule Helyx.Session.File.ScanTest do
   alias Helyx.{Message, Session}
   alias Helyx.Session.File.Scan
   alias Helyx.Session.File.Scan.Summary
+  alias Helyx.Test.SessionFile
 
   @moduletag :tmp_dir
 
@@ -15,6 +16,8 @@ defmodule Helyx.Session.File.ScanTest do
     File.touch!(file.path, mtime)
     {id, file.path}
   end
+
+  defp id(resumed), do: Path.basename(resumed.file.path, ".jsonl")
 
   defp ids(summaries), do: Enum.map(summaries, & &1.id)
 
@@ -105,12 +108,13 @@ defmodule Helyx.Session.File.ScanTest do
 
       {_, path} = padded(dir, 65_536)
       assert Scan.list(dir, "/repo") == []
-      assert Session.File.resume(dir, "/repo") == {:error, :not_found}
+      assert SessionFile.resume(dir, "/repo") == {:error, :not_found}
       File.rm!(path)
 
       {id, _} = padded(dir, 65_537)
       assert [%Summary{id: ^id, prompt: ""}] = Scan.list(dir, "/repo")
-      assert {:ok, %{session_id: ^id}} = Session.File.resume(dir, "/repo")
+      assert {:ok, resumed} = SessionFile.resume(dir, "/repo")
+      assert id(resumed) == id
     end
 
     test "a first prompt whose line ends at the last byte of the head is kept; one byte over, not",
@@ -239,9 +243,11 @@ defmodule Helyx.Session.File.ScanTest do
       {id, _} = session(dir, "/repo", 1_000, nil)
 
       # An empty session resumes by its id.
-      assert {:ok, %{session_id: ^id, messages: []}} = Session.File.resume(dir, "/repo", id: id)
-      assert {:error, :not_found} = Session.File.resume(dir, "/other", id: id)
-      assert {:error, :invalid_id} = Session.File.resume(dir, "/repo", id: "../" <> id)
+      assert {:ok, resumed} = SessionFile.resume(dir, "/repo", id: id)
+      assert id(resumed) == id
+      assert resumed.messages == []
+      assert {:error, :not_found} = SessionFile.resume(dir, "/other", id: id)
+      assert {:error, :invalid_id} = SessionFile.resume(dir, "/repo", id: "../" <> id)
     end
   end
 
@@ -268,15 +274,17 @@ defmodule Helyx.Session.File.ScanTest do
       end
 
     assert ids(Scan.list(dir, "/repo")) == [id]
-    assert {:ok, %{session_id: ^id}} = Session.File.resume(dir, "/repo")
+    assert {:ok, resumed} = SessionFile.resume(dir, "/repo")
+    assert id(resumed) == id
 
     # Each skipped file takes a slot of the scan bound: the six bad files and
     # an empty session are the newest.
     session(dir, "/repo", 2_000, nil)
-    assert {:error, :not_found} = Session.File.resume(dir, "/repo", max_scanned_files: 7)
-    assert {:ok, %{session_id: ^id}} = Session.File.resume(dir, "/repo", max_scanned_files: 8)
+    assert {:error, :not_found} = SessionFile.resume(dir, "/repo", max_scanned_files: 7)
+    assert {:ok, resumed} = SessionFile.resume(dir, "/repo", max_scanned_files: 8)
+    assert id(resumed) == id
 
     assert {:error, {:unknown_version, 2}} =
-             Session.File.resume(dir, "/repo", id: next_version)
+             SessionFile.resume(dir, "/repo", id: next_version)
   end
 end

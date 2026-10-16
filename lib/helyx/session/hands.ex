@@ -6,9 +6,10 @@ defmodule Helyx.Session.Hands do
 
   The result of a call goes to the session as `{:tool_result, turn_id,
   call_id, {:ok, text} | {:error, text}}`. A Task that dies without a
-  result gives an error result, unless a cancel request killed it. A
-  working directory that is gone when the call starts also gives an error
-  result, and so does an unknown tool; neither starts a Task. Result text
+  result gives an error result, unless a cancel request killed it. An
+  unknown tool gives an error result and starts no Task. The hands do not
+  check the working directory: a tool fails at its own use of a missing
+  path (`docs/features/tool-text-out-of-core.md`, item 4). Result text
   leaves the hands through `Helyx.Message.cut_result/1`: valid UTF-8 and
   at most `Helyx.Message.max_result_bytes/0` bytes, notice included. The
   text of a tool that crashes, raises, throws, or exits is
@@ -50,12 +51,13 @@ defmodule Helyx.Session.Hands do
     # its turn, its call id, and its tool module, by monitor ref: a
     # background Task has no turn and `{:background, id}` for its call id.
     # `background` holds the places of the runs (`Helyx.Session.Background`),
-    # from `background/0` until a turn takes the end; `dir` is the background
-    # folder. `held` holds the handles per Task pid. `unconfirmed` holds the
-    # handles that no release confirmed, per tool module. `release_ms` is
+    # from `background/0` until a turn takes the end; `background_dir` is
+    # the background folder. `held` holds the handles per Task pid.
+    # `unconfirmed` holds the handles that no release confirmed, per tool
+    # module. `release_ms` is
     # the release deadline of a delivery or a cancel, and `connect_ms` the
     # armed kill of a provider process: seams for tests.
-    @enforce_keys [:core, :cwd, :dir, :session, :tools]
+    @enforce_keys [:core, :cwd, :background_dir, :session, :tools]
 
     # The default release deadline, the one source (`Helyx.Session.Server.Stop`
     # derives its stop bounds from it).
@@ -65,7 +67,7 @@ defmodule Helyx.Session.Hands do
     defstruct [
       :core,
       :cwd,
-      :dir,
+      :background_dir,
       :session,
       :tools,
       tasks: %{},
@@ -78,10 +80,10 @@ defmodule Helyx.Session.Hands do
   end
 
   @doc """
-  Starts the hands for a session. Takes `core:`, `cwd:`, `dir:`, the
-  folder of the background output files, `session:`, and `tools:`, the
-  tool module by name, from the specs the session checked with
-  `Helyx.Tool.specs/1`.
+  Starts the hands for a session. Takes `core:`, `cwd:`,
+  `background_dir:`, the folder of the background output files,
+  `session:`, and `tools:`, the tool module by name, from the specs the
+  session checked with `Helyx.Tool.specs/1`.
   """
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts), do: GenServer.start_link(__MODULE__, struct!(State, opts))
@@ -171,22 +173,19 @@ defmodule Helyx.Session.Hands do
   # A place among the background runs, for a tool call Task.
   def handle_call(:background, {pid, _tag}, state) do
     with {_ref, _entry} <- tool_call(state, pid),
-         {:ok, id, places} <- Background.reserve(state.background, pid, state.dir) do
-      {:reply, {:ok, %{id: id, dir: state.dir}}, %{state | background: places}}
+         {:ok, id, places} <- Background.reserve(state.background, pid, state.background_dir) do
+      {:reply, {:ok, %{id: id, dir: state.background_dir}}, %{state | background: places}}
     else
-      nil -> {:reply, {:error, Background.not_a_call()}, state}
+      nil -> {:reply, {:error, Helyx.Tool.not_a_call()}, state}
       error -> {:reply, error, state}
     end
   end
 
   # The start answer of a background run: the result of its call, and its
-  # Task leaves the turn. A Task the hands no longer run gets `:ok`; its
-  # end is dropped with it.
+  # Task leaves the turn. Any other caller gets `:no_place`; a Task that a
+  # cancel killed gets no reply.
   def handle_call({:started, text}, {pid, _tag}, state) do
     case {tool_call(state, pid), state.background.live} do
-      {nil, _background} ->
-        {:reply, :ok, state}
-
       {{ref, {task, turn_id, call_id, tool}}, %{^pid => id}} ->
         send(state.session, outcome(turn_id, call_id, {:started, Background.start(id, text)}))
         tasks = Map.put(state.tasks, ref, {task, nil, {:background, id}, tool})
@@ -304,7 +303,7 @@ defmodule Helyx.Session.Hands do
   defp down_reason({:exit, :killed}), do: :provider_timeout
   defp down_reason({:exit, {:shutdown, reason}}), do: Helyx.Message.cap_integers(reason)
   defp down_reason({:exit, reason}), do: {:task_exit, Helyx.Message.cap_integers(reason)}
-  defp down_reason({:error, _unconfirmed} = error), do: error
+  defp down_reason({:error, _text} = error), do: error
 
   defp outcome(turn_id, call_id, result), do: {:tool_result, turn_id, call_id, checked(result)}
 
@@ -323,14 +322,11 @@ defmodule Helyx.Session.Hands do
   defp start(state, turn_id, %ToolCall{} = call) do
     cwd = state.cwd
 
-    case {File.dir?(cwd), Map.fetch(state.tools, call.name)} do
-      {false, _} ->
-        answer(state, turn_id, call.id, "working directory does not exist: #{cwd}")
-
-      {true, :error} ->
+    case Map.fetch(state.tools, call.name) do
+      :error ->
         answer(state, turn_id, call.id, "unknown tool: #{call.name}")
 
-      {true, {:ok, tool}} ->
+      {:ok, tool} ->
         {_pid, state} =
           spawn_task(state, turn_id, call.id, tool, fn -> Run.tool(tool, call, cwd) end)
 

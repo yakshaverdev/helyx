@@ -5,6 +5,8 @@ defmodule Helyx.Provider.OpenAI.EventsTest do
 
   alias Helyx.Provider.OpenAI.Events
 
+  defp events(chunks), do: Events.events(chunks, %Helyx.ModelInfo{})
+
   defp sse(chunks) do
     Enum.map_join(chunks, fn
       chunk when is_binary(chunk) -> "data: #{chunk}\n\n"
@@ -19,13 +21,13 @@ defmodule Helyx.Provider.OpenAI.EventsTest do
   test "an in-stream error object is an error event" do
     chunks = [sse([%{error: %{message: "overloaded"}}])]
 
-    assert Enum.to_list(Events.events(chunks)) ==
+    assert Enum.to_list(events(chunks)) ==
              [{:error, {:api_error, %{"message" => "overloaded"}}}]
   end
 
   test "a null error is a missing error" do
     chunks = [sse([%{error: nil, choices: [%{delta: %{content: "Hi"}}]}])]
-    assert Enum.to_list(Events.events(chunks)) == [{:text_delta, "Hi"}]
+    assert Enum.to_list(events(chunks)) == [{:text_delta, "Hi"}]
   end
 
   test "tool calls of two indexes stay separate calls" do
@@ -40,7 +42,7 @@ defmodule Helyx.Provider.OpenAI.EventsTest do
       ])
     ]
 
-    assert Enum.to_list(Events.events(chunks)) == [
+    assert Enum.to_list(events(chunks)) == [
              {:tool_call,
               %Helyx.Message.ToolCall{id: "c1", name: "read", arguments: %{"a" => 1}}},
              {:tool_call,
@@ -68,7 +70,7 @@ defmodule Helyx.Provider.OpenAI.EventsTest do
         ])
       ]
 
-      assert Enum.to_list(Events.events(chunks)) == [{:error, {:bad_chunk, bad}}]
+      assert Enum.to_list(events(chunks)) == [{:error, {:bad_chunk, bad}}]
     end
   end
 
@@ -83,7 +85,7 @@ defmodule Helyx.Provider.OpenAI.EventsTest do
       ])
     ]
 
-    assert Enum.to_list(Events.events(chunks)) == [
+    assert Enum.to_list(events(chunks)) == [
              {:tool_call,
               %Helyx.Message.ToolCall{id: "c1", name: "bash", arguments: %{"a" => 1}}},
              {:done, %{stop_reason: :tool_use, usage: %Helyx.Usage{}}}
@@ -105,7 +107,7 @@ defmodule Helyx.Provider.OpenAI.EventsTest do
       ])
     ]
 
-    assert Enum.to_list(Events.events(chunks)) == [
+    assert Enum.to_list(events(chunks)) == [
              {:text_delta, "Hi"},
              {:tool_call,
               %Helyx.Message.ToolCall{id: "c1", name: "read", arguments: %{"a" => 1}}},
@@ -128,7 +130,7 @@ defmodule Helyx.Provider.OpenAI.EventsTest do
     assert [
              {:tool_call, %Helyx.Message.ToolCall{id: "c1", arguments: "[1]"}},
              {:done, _}
-           ] = Enum.to_list(Events.events(chunks))
+           ] = Enum.to_list(events(chunks))
   end
 
   # Core rejects the empty id (`Helyx.Session.Stream`), so the turn fails.
@@ -144,7 +146,7 @@ defmodule Helyx.Provider.OpenAI.EventsTest do
       ])
     ]
 
-    assert Enum.to_list(Events.events(chunks)) ==
+    assert Enum.to_list(events(chunks)) ==
              [
                {:text_delta, "Hi"},
                {:tool_call, %Helyx.Message.ToolCall{id: "", name: "bash", arguments: json}},
@@ -161,7 +163,7 @@ defmodule Helyx.Provider.OpenAI.EventsTest do
       "\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n"
     ]
 
-    assert Enum.to_list(Events.events(chunks)) == [
+    assert Enum.to_list(events(chunks)) == [
              {:text_delta, "Hi"},
              {:done, %{stop_reason: :end_turn, usage: %Helyx.Usage{}}}
            ]
@@ -172,7 +174,7 @@ defmodule Helyx.Provider.OpenAI.EventsTest do
     test "the finish reason #{finish} stops with #{stop}" do
       chunks = [sse([delta(%{content: "Hi"}), delta(%{}, unquote(finish)), "[DONE]"])]
 
-      assert Enum.to_list(Events.events(chunks)) ==
+      assert Enum.to_list(events(chunks)) ==
                [
                  {:text_delta, "Hi"},
                  {:done, %{stop_reason: unquote(stop), usage: %Helyx.Usage{}}}
@@ -181,7 +183,7 @@ defmodule Helyx.Provider.OpenAI.EventsTest do
   end
 
   test "a chunk that does not parse is an error event" do
-    assert Enum.to_list(Events.events(["data: {oops\n\n"])) ==
+    assert Enum.to_list(events(["data: {oops\n\n"])) ==
              [{:error, {:bad_chunk, "{oops"}}]
   end
 
@@ -214,7 +216,7 @@ defmodule Helyx.Provider.OpenAI.EventsTest do
         ~s({"choices":[{"delta":{"tool_calls":[{"id":"c1","function":{"name":"bash"}}]}}]})
       ] do
     test "a chunk with the wrong shape is an error event: #{chunk}" do
-      assert Enum.to_list(Events.events([sse([unquote(chunk)])])) ==
+      assert Enum.to_list(events([sse([unquote(chunk)])])) ==
                [{:error, {:bad_chunk, unquote(chunk)}}]
     end
   end
@@ -230,7 +232,7 @@ defmodule Helyx.Provider.OpenAI.EventsTest do
 
     chunks = [sse([delta(%{content: "Hi"}, "stop"), %{choices: [], usage: usage}, "[DONE]"])]
 
-    assert List.last(Enum.to_list(Events.events(chunks))) ==
+    assert List.last(Enum.to_list(events(chunks))) ==
              {:done,
               %{
                 stop_reason: :end_turn,
@@ -259,7 +261,7 @@ defmodule Helyx.Provider.OpenAI.EventsTest do
     assert_in_delta priced.cost, (20 * 2.0 + 30 * 10.0 + 100 * 0.5) / 1_000_000, 1.0e-12
 
     assert [{:done, %{usage: %Helyx.Usage{context_window: nil, cost: nil, cost_kind: nil}}}] =
-             Enum.to_list(Events.events(chunks))
+             Enum.to_list(events(chunks))
 
     # A stream with no usage chunk gives the unknown usage, prices or not.
     assert [{:done, %{usage: %Helyx.Usage{} = unknown}}] =
@@ -290,7 +292,7 @@ defmodule Helyx.Provider.OpenAI.EventsTest do
     chunks = [sse([delta(%{}, "stop"), %{choices: [], usage: usage}, "[DONE]"])]
 
     assert [{:done, %{usage: %Helyx.Usage{input: 1_000_000_000, output: 1_000_000_000}}}] =
-             Enum.to_list(Events.events(chunks))
+             Enum.to_list(events(chunks))
   end
 
   # Limits on network input. At the limit passes; one over ends the stream
@@ -310,23 +312,23 @@ defmodule Helyx.Provider.OpenAI.EventsTest do
   test "an SSE line of #{@max_line_bytes} bytes parses normally" do
     chunks = [content_line_of(@max_line_bytes) <> "\n\ndata: [DONE]\n\n"]
 
-    assert [{:text_delta, _}] = Enum.to_list(Events.events(chunks))
+    assert [{:text_delta, _}] = Enum.to_list(events(chunks))
   end
 
   test "an SSE line over the limit ends the stream with one error event" do
     chunks = [content_line_of(@max_line_bytes + 1) <> "\n\n", sse(["[DONE]"])]
 
-    assert Enum.to_list(Events.events(chunks)) ==
+    assert Enum.to_list(events(chunks)) ==
              [{:error, {:line_over_limit, @max_line_bytes}}]
   end
 
   test "a multibyte character at the line limit parses and one over errors" do
     at = [content_line_of(@max_line_bytes, "😀") <> "\n\ndata: [DONE]\n\n"]
-    assert [{:text_delta, _}] = Enum.to_list(Events.events(at))
+    assert [{:text_delta, _}] = Enum.to_list(events(at))
 
     over = [content_line_of(@max_line_bytes + 1, "😀") <> "\n\ndata: [DONE]\n\n"]
 
-    assert Enum.to_list(Events.events(over)) ==
+    assert Enum.to_list(events(over)) ==
              [{:error, {:line_over_limit, @max_line_bytes}}]
   end
 
@@ -334,7 +336,7 @@ defmodule Helyx.Provider.OpenAI.EventsTest do
     half = String.duplicate("a", div(@max_line_bytes, 2) + 1)
     chunks = ["data: " <> half, half, half]
 
-    assert Enum.to_list(Events.events(chunks)) ==
+    assert Enum.to_list(events(chunks)) ==
              [{:error, {:line_over_limit, @max_line_bytes}}]
   end
 
@@ -366,7 +368,7 @@ defmodule Helyx.Provider.OpenAI.EventsTest do
   end
 
   test "tool arguments of #{@max_tool_call_bytes} bytes assemble into the call" do
-    events = Enum.to_list(Events.events([sse(call_deltas(@max_tool_call_bytes))]))
+    events = Enum.to_list(events([sse(call_deltas(@max_tool_call_bytes))]))
 
     assert [
              {:tool_call,
@@ -376,16 +378,16 @@ defmodule Helyx.Provider.OpenAI.EventsTest do
   end
 
   test "tool arguments over the limit end the stream with one error event" do
-    events = Enum.to_list(Events.events([sse(call_deltas(@max_tool_call_bytes + 1))]))
+    events = Enum.to_list(events([sse(call_deltas(@max_tool_call_bytes + 1))]))
 
     assert events == [{:error, {:tool_call_bytes_over_limit, @max_tool_call_bytes}}]
   end
 
   test "multibyte tool arguments at the limit assemble and one over errors" do
-    at = Enum.to_list(Events.events([sse(call_deltas(@max_tool_call_bytes, "😀"))]))
+    at = Enum.to_list(events([sse(call_deltas(@max_tool_call_bytes, "😀"))]))
     assert [{:tool_call, %Helyx.Message.ToolCall{}}, {:done, _}] = at
 
-    over = Enum.to_list(Events.events([sse(call_deltas(@max_tool_call_bytes + 1, "😀"))]))
+    over = Enum.to_list(events([sse(call_deltas(@max_tool_call_bytes + 1, "😀"))]))
     assert over == [{:error, {:tool_call_bytes_over_limit, @max_tool_call_bytes}}]
   end
 
@@ -399,7 +401,7 @@ defmodule Helyx.Provider.OpenAI.EventsTest do
               tool_calls: [%{index: i, id: "c#{i}", function: %{name: name, arguments: ""}}]
             })
 
-    events = Enum.to_list(Events.events([sse(deltas ++ ["[DONE]"])]))
+    events = Enum.to_list(events([sse(deltas ++ ["[DONE]"])]))
 
     assert events == [{:error, {:tool_call_bytes_over_limit, @max_tool_call_bytes}}]
   end
@@ -417,7 +419,7 @@ defmodule Helyx.Provider.OpenAI.EventsTest do
       sse(["[DONE]"])
     ]
 
-    assert Enum.to_list(Events.events(chunks)) ==
+    assert Enum.to_list(events(chunks)) ==
              [{:text_delta, "Hi"}, {:error, {:bad_chunk, ~s({"choices":[42]})}}]
   end
 end

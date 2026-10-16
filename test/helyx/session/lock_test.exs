@@ -320,11 +320,4 @@ defmodule Helyx.Session.LockTest do
       )
     end
   end
-
-  test "the lock errors have their Helyx.Reason text" do
-    assert Helyx.Reason.text({:session_locked, "abc"}) == "session abc is open in another process"
-
-    assert Helyx.Reason.text({:lock_failed, "perl is not on the PATH"}) ==
-             "could not lock the session: perl is not on the PATH"
-  end
 end

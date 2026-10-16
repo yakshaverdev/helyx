@@ -753,7 +753,7 @@ defmodule Helyx.Session.ProviderProcessTest do
     for model <- ["hang", "steer_error"] do
       test "#{model}: a steer with no user message ends in a notice and is not sent again",
            %{core: core} do
-        {session, pid, proc, turn_id} = submitted(core, unquote(model))
+        {session, _pid, proc, turn_id} = submitted(core, unquote(model))
         :ok = Session.steer(session, "more")
         assert_receive {:conn, :steer, ^proc, _}
         send(proc, {:finish, turn_id})
@@ -761,7 +761,7 @@ defmodule Helyx.Session.ProviderProcessTest do
         events = collect_until(:turn_end)
         assert unconfirmed(events) == [%{text: "more"}]
         assert Enum.find_index(events, &(&1.type == :steer_unconfirmed)) < length(events) - 1
-        assert %{turn: nil, queue: %{steers: 0}} = GenServer.call(pid, :snapshot)
+        assert %{turn: nil, queue: %{steers: 0}} = snapshot(session)
         # No wait is left: a follow-up starts a turn at once, with no queue
         # update (the events go out before the reply).
         :ok = Session.follow_up(session, "next")
@@ -770,14 +770,14 @@ defmodule Helyx.Session.ProviderProcessTest do
     end
 
     test "an abort with a steer that has no answer gives a notice", %{core: core} do
-      {session, pid, proc, _turn_id} = submitted(core, "steer_hold")
+      {session, _pid, proc, _turn_id} = submitted(core, "steer_hold")
       :ok = Session.steer(session, "more")
       assert_receive {:held, from}
       abort = Task.async(fn -> Session.abort(session) end)
       assert unconfirmed(collect_until(:turn_end)) == [%{text: "more"}]
       send(proc, {:answer, from, :rejected})
       assert :ok = Task.await(abort, wait_ms())
-      assert %{queue: %{steers: 0}} = GenServer.call(pid, :snapshot)
+      assert %{queue: %{steers: 0}} = snapshot(session)
     end
 
     test "a failed turn with a steer that has no answer gives a notice; a late :rejected queues nothing",
@@ -802,12 +802,20 @@ defmodule Helyx.Session.ProviderProcessTest do
       {session, pid, proc, _turn_id} = submitted(core, "steer_hold")
       :ok = Session.steer(session, "more")
       assert_receive {:held, _from}
+      # The suspended hands hold the wait: their cleanup answer and their
+      # `:provider_down` come only after the resume.
+      hands = :sys.get_state(pid).hands
+      :erlang.suspend_process(hands)
       abort = Task.async(fn -> Session.abort(session) end)
       assert unconfirmed(collect_until(:turn_end)) == [%{text: "more"}]
+      ref = Process.monitor(proc)
       send(proc, :stop)
+      assert_receive {:DOWN, ^ref, :process, _, _}
+      assert %{conn: %{pid: ^proc, status: :ending}, activity: %Wait{}} = :sys.get_state(pid)
+      :erlang.resume_process(hands)
       assert :ok = Task.await(abort, wait_ms())
       assert %{conn: nil} = :sys.get_state(pid)
-      assert %{queue: %{steers: 0}} = GenServer.call(pid, :snapshot)
+      assert %{queue: %{steers: 0}} = snapshot(session)
       refute_received {:helyx_event, %{type: :steer_unconfirmed}}
     end
 
@@ -842,7 +850,7 @@ defmodule Helyx.Session.ProviderProcessTest do
       assert unconfirmed(collect_until(:steer_unconfirmed)) == [%{text: "s"}]
       assert_receive {:conn, :turn, new, {:turn, _, _}}
       assert new != old
-      assert %{queue: %{steers: 0}} = GenServer.call(pid, :snapshot)
+      assert %{queue: %{steers: 0}} = snapshot(session)
     end
 
     test "sent steers count in the 32 until the end of the provider process",

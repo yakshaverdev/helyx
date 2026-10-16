@@ -10,6 +10,7 @@ defmodule Helyx.Tool.Bash.PreambleTest do
 
   setup do
     put_env("LC_ALL", "xx_NOPE.UTF-8")
+    Helyx.Test.Hands.fake(self())
   end
 
   defp put_env(name, value) do
@@ -19,18 +20,6 @@ defmodule Helyx.Tool.Bash.PreambleTest do
     on_exit(fn ->
       if old, do: System.put_env(name, old), else: System.delete_env(name)
     end)
-  end
-
-  # Stands in for the hands: it sends the held handles to `test`.
-  defp holds_to(test), do: spawn_link(fn -> forward_holds(test) end)
-
-  defp forward_holds(test) do
-    receive do
-      {:"$gen_call", from, {:hold, {kind, group}}} ->
-        send(test, {:held, group, kind})
-        GenServer.reply(from, :ok)
-        forward_holds(test)
-    end
   end
 
   test "the not-started marker is found after perl's own warnings (issue #52)", %{tmp_dir: dir} do
@@ -65,11 +54,8 @@ defmodule Helyx.Tool.Bash.PreambleTest do
 
   test "the close with no marker leaves no process", %{tmp_dir: dir} do
     put_env("LC_MESSAGES", String.duplicate("x", 5000))
-    test = self()
-
-    Process.put(:helyx_hands, holds_to(test))
     assert {:error, _} = Helyx.Tool.Bash.run(%{"command" => "sleep 30"}, dir)
-    assert_received {:held, watchdog, :watchdog}
+    assert_received {:held, {:watchdog, watchdog}}
     # The watchdog reaps the child it holds before it exits.
     assert gone_within?("-#{watchdog}")
   end

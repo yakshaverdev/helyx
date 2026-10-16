@@ -34,6 +34,15 @@ defmodule Helyx.Provider.ClaudeCode.Turn do
     compact: nil
   ]
 
+  defmodule Interrupt do
+    @moduledoc false
+    # A pending interrupt of the turn: its `from`, its `request_id` once
+    # written, and whether its control response and the turn's `result`
+    # came.
+    @enforce_keys [:from]
+    defstruct [:from, :request_id, response?: false, result?: false]
+  end
+
   alias Helyx.HarnessIO
   alias Helyx.Message
   alias Helyx.Provider.ClaudeCode.Meter
@@ -133,15 +142,12 @@ defmodule Helyx.Provider.ClaudeCode.Turn do
   defp stop_reason("refusal"), do: :refused
   defp stop_reason(_stop), do: :end_turn
 
+  # The content of a tool result: a string, or a list of blocks, with a
+  # placeholder for a block that is not text. Any other shape is a contract
+  # break: the clause match fails, the provider stops, and the turn fails.
   defp result_text(text) when is_binary(text), do: text
+  defp result_text(blocks) when is_list(blocks), do: Enum.map_join(blocks, "\n", &block_text/1)
 
-  defp result_text(blocks) when is_list(blocks) do
-    Enum.map_join(blocks, "\n", fn
-      %{"type" => "text", "text" => text} when is_binary(text) -> text
-      %{"type" => type} when is_binary(type) -> "[#{type}]"
-      _ -> ""
-    end)
-  end
-
-  defp result_text(_content), do: ""
+  defp block_text(%{"type" => "text", "text" => text}) when is_binary(text), do: text
+  defp block_text(%{"type" => type}) when is_binary(type) and type != "text", do: "[#{type}]"
 end

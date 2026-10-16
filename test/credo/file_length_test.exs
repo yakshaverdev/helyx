@@ -41,4 +41,9 @@ defmodule Helyx.Credo.FileLengthTest do
     issues(400, "lib/sample.ex", %{"lib/sample.ex" => {450, "reason"}})
     |> assert_issue(fn issue -> assert issue.message =~ "Remove its entry" end)
   end
+
+  test "a listed file under its count fails, so that its count goes down" do
+    issues(449, "lib/sample.ex", %{"lib/sample.ex" => {450, "reason"}})
+    |> assert_issue(fn issue -> assert issue.message =~ "Lower its entry to 449" end)
+  end
 end

@@ -61,7 +61,7 @@ defmodule Helyx.Session.ProviderProcessToolsTest do
   defp sync(proc, session) do
     send(proc, {:ping, self()})
     assert_receive :pong
-    GenServer.call(Session.pid(session), :snapshot).model
+    snapshot(session)
     :ok
   end
 
@@ -175,7 +175,7 @@ defmodule Helyx.Session.ProviderProcessToolsTest do
     events = collect_until(:turn_end)
     assert List.last(events).data.outcome == :error
     # The session asks the hands for the cleanup after it emits turn_end.
-    GenServer.call(Session.pid(session), :snapshot).model
+    snapshot(session)
     assert running(hands) == 0
   end
 
@@ -230,6 +230,10 @@ defmodule Helyx.Session.ProviderProcessToolsTest do
        %{session: session, proc: proc, turn_id: turn_id, hands: hands} do
     request(proc, turn_id, "c1", "background", %{"gate" => gate(), "gated_start" => true})
     assert_receive {:waiting, run}
+    {:ok, %{turn: %{elapsed_ms: early}}, _ref} = Session.subscribe(session)
+    mark = System.monotonic_time(:millisecond)
+    # A gap that a clock restarted at the turn end would leave out.
+    Process.sleep(50)
 
     :ok = :sys.suspend(hands)
     :erlang.trace(hands, true, [:receive])
@@ -238,8 +242,16 @@ defmodule Helyx.Session.ProviderProcessToolsTest do
     send(proc, {:finish, turn_id})
     assert_receive {:trace, ^hands, :receive, {:"$gen_call", _, {:cancel, ^turn_id}}}
     :erlang.trace(hands, false, [:receive])
-    # Until its turn_end the turn still runs for a client that joins.
-    assert {:ok, %{turn: %{id: ^turn_id, partial: nil}}, _ref} = Session.subscribe(session)
+    # Until its turn_end the turn still runs for a client that joins, with
+    # the clock of its start.
+    waited = System.monotonic_time(:millisecond) - mark
+
+    assert {:ok, %{turn: %{id: ^turn_id, partial: nil, elapsed_ms: late}}, _ref} =
+             Session.subscribe(session)
+
+    # A lower bound: the order of two instants on one clock, so load cannot break it.
+    # credo:disable-for-next-line
+    assert late >= early + waited
     :ok = :sys.resume(hands)
 
     events = collect_until(:turn_end)

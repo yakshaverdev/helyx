@@ -81,7 +81,7 @@ defmodule Helyx.Session.Server do
       Hands.start_link(
         core: state.core,
         cwd: state.cwd,
-        dir: background_dir,
+        background_dir: background_dir,
         session: self(),
         tools: state.tool_modules
       )
@@ -112,9 +112,6 @@ defmodule Helyx.Session.Server do
     {reply, state} = Compaction.admit(text, state)
     {:reply, reply, state}
   end
-
-  def handle_call(:snapshot, _from, %State{} = state),
-    do: {:reply, Events.snapshot(state), state}
 
   # The entry and the snapshot in one message, so every later event reaches
   # the caller. A repeated subscribe keeps the entry and its monitor.

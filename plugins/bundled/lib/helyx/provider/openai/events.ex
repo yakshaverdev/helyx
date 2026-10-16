@@ -8,10 +8,10 @@ defmodule Helyx.Provider.OpenAI.Events do
   @max_line_bytes 1_048_576
 
   # The bytes the tool calls of one response hold: arguments, ids, and
-  # names. Room for a Write of a large file, the read limit of the file
-  # tools (`Helyx.Text`); past this the model is looping or the peer is
-  # hostile.
-  @max_tool_call_bytes Helyx.Text.max_file_bytes()
+  # names. Room for a Write of a large file; past this the model is looping
+  # or the peer is hostile. The source is the bounds table of
+  # docs/features/coding-agent.md.
+  @max_tool_call_bytes 10_485_760
   # An index is a map key. The range bounds the number of calls, which the
   # byte count does not see, and keeps a bignum out of the keys.
   @max_call_index 10_000
@@ -32,7 +32,7 @@ defmodule Helyx.Provider.OpenAI.Events do
   delivers each recorded body as one chunk.
   """
   @spec events(Enumerable.t(), Helyx.ModelInfo.t()) :: Enumerable.t()
-  def events(chunks, info \\ %Helyx.ModelInfo{}) do
+  def events(chunks, info) do
     Stream.transform(chunks, Map.put(@acc, :info, info), &handle/2)
   end
 

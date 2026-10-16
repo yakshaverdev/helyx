@@ -9,7 +9,7 @@ defmodule Helyx.Tool.Bash do
   @max_background_s 86_400
 
   # The most bytes that a background run writes to its output file.
-  @max_file_bytes 64 * 1_048_576
+  @max_output_bytes 64 * 1_048_576
   # The most bytes of the command in the end of a background run.
   @max_command_bytes 200
 
@@ -44,17 +44,16 @@ defmodule Helyx.Tool.Bash do
   With `background: true` the call returns at once with the process group
   and the path of the output file (`Helyx.Tool.background/0`,
   `Helyx.Tool.started/1`). The command runs on; its output goes to the
-  file, at most #{@max_file_bytes} bytes, and its end, with the first line of
+  file, at most #{@max_output_bytes} bytes, and its end, with the first line of
   the command, the exit code, and the tail, is the end of the run. Its
   `timeout` is from 1 to #{@max_background_s} s, #{@default_background_s} by default.
   The agent stops it with `kill` on its group (`docs/features/background-bash.md`).
 
-  The command runs in its own process group under a perl watchdog, started
-  by `Helyx.Watchdog`, which holds the group with the hands before the
-  command is allowed to execute. The watchdog ties the command's life to
-  the port: when the port closes, because anything above the command died,
-  the watchdog kills the group. perl is required; `check/0` reports a
-  system without it when a session starts or resumes.
+  The command runs in its own process group. The hands hold the group
+  before the command runs and release it when the tool Task ends
+  (`Helyx.Tool.hold/1`); when anything above the command dies, the group
+  dies too (`Helyx.Watchdog`, ADR 0004). perl is required; `check/0`
+  reports a system without it when a session starts or resumes.
   """
 
   @behaviour Helyx.Tool
@@ -285,8 +284,8 @@ defmodule Helyx.Tool.Bash do
 
     notes = [
       out.dropped? && "[output cut: only the last #{@keep_bytes} bytes were kept]\n",
-      out.written > @max_file_bytes &&
-        "[the command wrote #{out.written} bytes; the output file holds the first #{@max_file_bytes}]\n",
+      out.written > @max_output_bytes &&
+        "[the command wrote #{out.written} bytes; the output file holds the first #{@max_output_bytes}]\n",
       out.error && "[the output file could not be written: #{out.error}]\n"
     ]
 
@@ -315,7 +314,7 @@ defmodule Helyx.Tool.Bash do
   @doc false
   # Public for the direct test of the file bound. Keeps the tail in memory
   # and, for a background run, writes `data` to the file up to
-  # `@max_file_bytes`; `written` counts every byte that the command wrote.
+  # `@max_output_bytes`; `written` counts every byte that the command wrote.
   # A write that fails ends the writes, and the end says why.
   def add(%Out{} = out, data) do
     {tail, cut?} = keep_tail(out.tail <> data)
@@ -324,11 +323,11 @@ defmodule Helyx.Tool.Bash do
 
   defp write(%Out{file: nil} = out, _data), do: out
 
-  defp write(%Out{written: written} = out, data) when written >= @max_file_bytes,
+  defp write(%Out{written: written} = out, data) when written >= @max_output_bytes,
     do: %{out | written: written + byte_size(data)}
 
   defp write(%Out{file: file, written: written} = out, data) do
-    part = binary_part(data, 0, min(@max_file_bytes - written, byte_size(data)))
+    part = binary_part(data, 0, min(@max_output_bytes - written, byte_size(data)))
 
     case :file.write(file, part) do
       :ok -> %{out | written: written + byte_size(data)}
@@ -337,7 +336,7 @@ defmodule Helyx.Tool.Bash do
   end
 
   @doc false
-  def max_file_bytes, do: @max_file_bytes
+  def max_output_bytes, do: @max_output_bytes
 
   # Cuts at twice the cap so the copy is amortised, not once per chunk.
   # The cut can land inside a character; the hands repair the partial

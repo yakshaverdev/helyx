@@ -219,8 +219,8 @@ defmodule Helyx.Session.TranscriptTest do
     test "resumes when the provider answered last after its session started" do
       transcript = [Message.user("a"), assistant([])]
 
-      assert Transcript.resumable(transcript, %{"claude-code" => {"h1", 0, nil}}, "claude-code") ==
-               "h1"
+      assert {"h1", _, _} =
+               Transcript.resumable(transcript, %{"claude-code" => {"h1", 0, nil}}, "claude-code")
     end
 
     test "does not resume without a session, before the session answered, or after another provider" do
@@ -249,7 +249,7 @@ defmodule Helyx.Session.TranscriptTest do
       answered = file ++ [result("c1")]
 
       # The provider got the answered result; a crash kept the other from it.
-      assert Transcript.resumable(answered, sessions, "claude-code") == "h1"
+      assert {"h1", _, _} = Transcript.resumable(answered, sessions, "claude-code")
       assert Transcript.resumable(Transcript.repair(answered), sessions, "claude-code") == nil
       assert Transcript.resumable(Transcript.repair(file), sessions, "claude-code") == nil
       later = Transcript.repair(answered ++ [Message.user("b")])
@@ -257,25 +257,25 @@ defmodule Helyx.Session.TranscriptTest do
 
       # A compaction under the id does not give the provider the result.
       compacted = Transcript.compacted(sessions, "claude-code", 1)
-      assert Transcript.resumable(answered, compacted, "claude-code") == "h1"
+      assert {"h1", _, _} = Transcript.resumable(answered, compacted, "claude-code")
       assert Transcript.resumable(Transcript.repair(answered), compacted, "claude-code") == nil
 
       # A fresh start after the resume read the replay with the result, and
       # a compaction under its id resumes.
       fresh_compacted = %{"claude-code" => {"h2", 1, 1}}
 
-      assert Transcript.resumable(Transcript.repair(answered), fresh_compacted, "claude-code") ==
-               "h2"
+      assert {"h2", _, _} =
+               Transcript.resumable(Transcript.repair(answered), fresh_compacted, "claude-code")
 
       # A stored `aborted` result went to the provider live.
       aborted = answered ++ [Message.tool_result(call("c2"), {:error, "aborted"})]
-      assert Transcript.resumable(aborted, sessions, "claude-code") == "h1"
+      assert {"h1", _, _} = Transcript.resumable(aborted, sessions, "claude-code")
 
       # The answer of the fresh start under a new id resumes again.
       fresh = Transcript.repair(answered) ++ [Message.user("b"), assistant([])]
 
-      assert Transcript.resumable(fresh, %{"claude-code" => {"h2", 1, nil}}, "claude-code") ==
-               "h2"
+      assert {"h2", _, _} =
+               Transcript.resumable(fresh, %{"claude-code" => {"h2", 1, nil}}, "claude-code")
     end
 
     test "resumes after a compaction with no assistant message after it" do
@@ -283,7 +283,7 @@ defmodule Helyx.Session.TranscriptTest do
       ids = Transcript.compacted(%{"claude-code" => {"h1", 0, nil}}, "claude-code", 2)
       assert Transcript.resumable(cut, ids, "claude-code") == nil
       ids = Transcript.compacted(ids, "claude-code", 1)
-      assert Transcript.resumable(cut, ids, "claude-code") == "h1"
+      assert {"h1", _, _} = Transcript.resumable(cut, ids, "claude-code")
       assert Transcript.resumable(cut ++ [cut |> List.last()], ids, "claude-code") == nil
       assert Transcript.compacted(%{}, "claude-code", 1) == %{}
 
@@ -317,7 +317,7 @@ defmodule Helyx.Session.TranscriptTest do
         ids = %{"claude-code" => {"h1", before, nil}}
 
         assert Transcript.resumable(Transcript.repair(file), ids, "claude-code") ==
-                 expected_resume(file, place),
+                 if(expected_resume(file, place), do: ids["claude-code"]),
                "file: #{inspect(file)}, place: #{place}"
       end
     end

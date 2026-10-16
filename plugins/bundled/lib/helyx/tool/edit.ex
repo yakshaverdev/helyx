@@ -171,9 +171,6 @@ defmodule Helyx.Tool.Edit do
   defp plain(c) when c in 0x2010..0x2015 or c == 0x2212, do: "-"
   defp plain(c), do: <<c::utf8>>
 
-  # The trim can cut the normalized form of a cluster: a Prepend character
-  # joins the space after it (U+0600 then a space). `boundary/5` caps its
-  # offsets at the trimmed length for that.
   defp trim_trailing(s), do: binary_part(s, 0, kept(s, byte_size(s)))
 
   defp kept(s, n) when n > 0 and binary_part(s, n - 1, 1) in [" ", "\t"], do: kept(s, n - 1)
@@ -201,16 +198,16 @@ defmodule Helyx.Tool.Edit do
         {:ok, o + byte_size(line)}
 
       true ->
-        boundary(line, target - n, o, 0, nl)
+        boundary(line, target - n, o, 0)
     end
   end
 
-  defp boundary(_line, t, k, t, _nl), do: {:ok, k}
-  defp boundary(_line, t, _k, nk, _nl) when nk > t, do: :error
+  defp boundary(_line, t, k, t), do: {:ok, k}
+  defp boundary(_line, t, _k, nk) when nk > t, do: :error
 
-  defp boundary(line, t, k, nk, nl) do
+  defp boundary(line, t, k, nk) do
     {g, rest} = next_grapheme(line)
-    boundary(rest, t, k + byte_size(g), min(nk + byte_size(norm(g)), nl), nl)
+    boundary(rest, t, k + byte_size(g), nk + byte_size(norm(g)))
   end
 
   defp read(full, path) do

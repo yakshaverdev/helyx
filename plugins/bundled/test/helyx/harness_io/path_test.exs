@@ -9,6 +9,7 @@ defmodule Helyx.HarnessIO.PathTest do
   @moduletag :tmp_dir
 
   setup %{tmp_dir: tmp} do
+    Helyx.Test.Hands.fake()
     bin = Path.join(tmp, "bin")
     File.mkdir_p!(bin)
 

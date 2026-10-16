@@ -95,9 +95,10 @@ defmodule Helyx.Provider.OpenAI do
         json: body(model, context),
         into: :self,
         receive_timeout: @chunk_idle_ms,
-        # `post/2` owns the retries and the error responses; these override
-        # Req's `:default_options`.
+        # `post/2` owns the retries and the error responses, a 3xx too;
+        # these override Req's `:default_options`.
         retry: false,
+        redirect: false,
         http_errors: :return
       ] ++ req_options
     )

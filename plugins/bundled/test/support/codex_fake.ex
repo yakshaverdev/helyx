@@ -56,6 +56,8 @@ defmodule Helyx.Test.CodexFake do
 
     core = :"core_#{System.unique_integer([:positive])}"
     start_supervised!({Helyx.Core, name: core, plugins: [Codex, Fake]})
+    # The test process runs the callbacks of the provider with no session.
+    Helyx.Test.Hands.fake()
     work = Path.join(tmp, "work")
     File.mkdir_p!(work)
     %{core: core, bin: bin, work: work, sessions: Path.join(tmp, "sessions")}

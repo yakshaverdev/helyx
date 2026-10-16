@@ -240,11 +240,13 @@ defmodule Helyx.Tool.EditTest do
       assert after_edit == "\uFEFFx\n"
     end
 
-    test "a cluster that the trailing space trim cuts still matches", %{edit: edit} do
+    test "a match that ends where the trailing space trim cuts a cluster is not found",
+         %{edit: edit} do
       # U+0600 is a Prepend character: it and the space after it are one cluster.
-      {result, after_edit} = edit.("\u2018x\u0600 \nnext\n", "'x\u0600", "y")
-      refute result.is_error
-      assert after_edit == "y\nnext\n"
+      content = "\u2018x\u0600 \nnext\n"
+      {result, after_edit} = edit.(content, "'x\u0600", "y")
+      assert Helyx.Message.text(result) == "old_text not found in n.txt"
+      assert after_edit == content
     end
 
     test "a U+FEFF in the middle of the file matches as text", %{edit: edit} do

@@ -2,6 +2,7 @@ defmodule Helyx.Session.FileTest do
   use ExUnit.Case, async: true
 
   alias Helyx.{Message, Session}
+  alias Helyx.Test.SessionFile
 
   @moduletag :tmp_dir
 
@@ -12,6 +13,8 @@ defmodule Helyx.Session.FileTest do
     File.write!(file.path, JSON.encode!(entry) <> "\n", [:append])
     %{file | leaf: entry["id"]}
   end
+
+  defp id(resumed), do: Path.basename(resumed.file.path, ".jsonl")
 
   defp texts(resumed), do: Enum.map(resumed.messages, &Message.text/1)
 
@@ -30,19 +33,19 @@ defmodule Helyx.Session.FileTest do
     # A model change is no message.
     Session.File.append_model_change(file, "test/other")
 
-    assert {:ok, resumed} = Session.File.resume(dir, "/repo")
-    assert resumed.session_id == "older0000000"
+    assert {:ok, resumed} = SessionFile.resume(dir, "/repo")
+    assert id(resumed) == "older0000000"
     assert resumed.file.path == older.path
 
     File.rm!(older.path)
-    assert {:error, :not_found} = Session.File.resume(dir, "/repo")
+    assert {:error, :not_found} = SessionFile.resume(dir, "/repo")
 
     # The skip writes nothing.
     assert [_header, _model_change] = String.split(File.read!(file.path), "\n", trim: true)
   end
 
   test "resume with no session for the directory", %{tmp_dir: dir} do
-    assert {:error, :not_found} = Session.File.resume(dir, "/repo")
+    assert {:error, :not_found} = SessionFile.resume(dir, "/repo")
   end
 
   test "messages round-trip through the file", %{tmp_dir: dir} do
@@ -86,7 +89,7 @@ defmodule Helyx.Session.FileTest do
     {:ok, file} = Session.File.create(dir, "sess00000001", "/repo", "test/ok")
     Enum.reduce(messages, file, &Session.File.append_message(&2, &1))
 
-    assert {:ok, resumed} = Session.File.resume(dir, "/repo")
+    assert {:ok, resumed} = SessionFile.resume(dir, "/repo")
     assert resumed.messages == messages
   end
 
@@ -107,7 +110,7 @@ defmodule Helyx.Session.FileTest do
       })
     )
 
-    assert {:ok, resumed} = Session.File.resume(dir, "/repo")
+    assert {:ok, resumed} = SessionFile.resume(dir, "/repo")
     assert [text] = texts(resumed)
     assert byte_size(text) <= 65_536
 
@@ -119,14 +122,14 @@ defmodule Helyx.Session.FileTest do
     {:ok, file} = started(dir, "sess00000001", "/repo", "test/ok")
     Session.File.append_model_change(file, "test/other")
 
-    assert {:ok, resumed} = Session.File.resume(dir, "/repo")
+    assert {:ok, resumed} = SessionFile.resume(dir, "/repo")
     assert resumed.model == "test/other"
   end
 
   test "resume id entries are written, and the last one per provider is restored with the assistant messages before it",
        %{tmp_dir: dir} do
     {:ok, file} = started(dir, "sess00000001", "/repo", "claude-code/opus")
-    assert {:ok, %{resume_ids: sessions}} = Session.File.resume(dir, "/repo")
+    assert {:ok, %{resume_ids: sessions}} = SessionFile.resume(dir, "/repo")
     assert sessions == %{}
 
     call = %Message.ToolCall{id: "c1", name: "read", arguments: %{}}
@@ -138,7 +141,7 @@ defmodule Helyx.Session.FileTest do
     |> Session.File.append_message(Message.tool_result(call, {:ok, "done"}))
     |> Session.File.append_resume_id("claude-code", "sécond")
 
-    assert {:ok, resumed} = Session.File.resume(dir, "/repo")
+    assert {:ok, resumed} = SessionFile.resume(dir, "/repo")
 
     assert resumed.resume_ids == %{
              "claude-code" => {"sécond", 1, nil},
@@ -173,7 +176,7 @@ defmodule Helyx.Session.FileTest do
     )
 
     assert {:ok, %{resume_ids: %{"claude-code" => {"h1", 0, nil}}}} =
-             Session.File.resume(dir, "/old")
+             SessionFile.resume(dir, "/old")
   end
 
   test "a resume id entry with a bad id removes the label of its provider",
@@ -195,7 +198,7 @@ defmodule Helyx.Session.FileTest do
       |> append_raw(line)
 
       # The stale label does not come back; the other provider keeps its own.
-      assert {:ok, %{resume_ids: sessions}} = Session.File.resume(dir, "/repo#{n}")
+      assert {:ok, %{resume_ids: sessions}} = SessionFile.resume(dir, "/repo#{n}")
       assert sessions == %{"codex" => {"codex-1", 0, nil}}
     end
   end
@@ -222,7 +225,7 @@ defmodule Helyx.Session.FileTest do
 
       # The reader cannot know which label the damaged entry replaced, so
       # the later message of the old provider does not resume the old label.
-      assert {:ok, resumed} = Session.File.resume(dir, "/repo#{n}")
+      assert {:ok, resumed} = SessionFile.resume(dir, "/repo#{n}")
       assert resumed.resume_ids == %{}
       assert [%Message{role: :assistant}] = resumed.messages
 
@@ -244,7 +247,7 @@ defmodule Helyx.Session.FileTest do
     |> Session.File.append_resume_id("claude-code", "good")
 
     assert {:ok, %{resume_ids: %{"claude-code" => {"good", 0, nil}}}} =
-             Session.File.resume(dir, "/later")
+             SessionFile.resume(dir, "/later")
   end
 
   test "a resume id of 256 bytes is kept", %{tmp_dir: dir} do
@@ -255,7 +258,7 @@ defmodule Helyx.Session.FileTest do
       Session.File.append_resume_id(file, "claude-code", id)
 
       assert {:ok, %{resume_ids: %{"claude-code" => {^id, 0, nil}}}} =
-               Session.File.resume(dir, cwd)
+               SessionFile.resume(dir, cwd)
     end
   end
 
@@ -267,12 +270,12 @@ defmodule Helyx.Session.FileTest do
     File.write!(file.path, String.replace(header, ~s("version":1), ~s("version":99)))
 
     assert {:error, {:unknown_version, 99}} =
-             Session.File.resume(dir, "/repo", id: "sess00000001")
+             SessionFile.resume(dir, "/repo", id: "sess00000001")
 
     File.write!(file.path, String.replace(header, ~s("version"), ~s("gone")))
 
     assert {:error, {:unknown_version, nil}} =
-             Session.File.resume(dir, "/repo", id: "sess00000001")
+             SessionFile.resume(dir, "/repo", id: "sess00000001")
   end
 
   test "a torn last line is skipped, kept in the file, and the next entry starts a new line",
@@ -283,7 +286,7 @@ defmodule Helyx.Session.FileTest do
     File.write!(file.path, torn, [:append])
     before = File.read!(file.path)
 
-    assert {:ok, resumed} = Session.File.resume(dir, "/repo")
+    assert {:ok, resumed} = SessionFile.resume(dir, "/repo")
     assert [%Message{role: :user}] = resumed.messages
     assert resumed.file.leaf == file.leaf
 
@@ -293,7 +296,7 @@ defmodule Helyx.Session.FileTest do
     [_header, _kept, ^torn, next] = String.split(after_append, "\n", trim: true)
     assert JSON.decode!(next)["parent_id"] == file.leaf
 
-    assert {:ok, repaired} = Session.File.resume(dir, "/repo")
+    assert {:ok, repaired} = SessionFile.resume(dir, "/repo")
     assert texts(repaired) == ["kept", "after"]
     assert File.read!(file.path) == after_append
   end
@@ -305,10 +308,10 @@ defmodule Helyx.Session.FileTest do
     file = Session.File.append_message(file, Message.user("héllo — ünïcode ✓"))
     File.write!(file.path, ~s({"torn), [:append])
 
-    assert {:ok, resumed} = Session.File.resume(dir, "/repo")
+    assert {:ok, resumed} = SessionFile.resume(dir, "/repo")
 
     Session.File.append_message(resumed.file, Message.user("after"))
-    assert {:ok, repaired} = Session.File.resume(dir, "/repo")
+    assert {:ok, repaired} = SessionFile.resume(dir, "/repo")
     assert texts(repaired) == ["héllo — ünïcode ✓", "after"]
   end
 
@@ -318,7 +321,7 @@ defmodule Helyx.Session.FileTest do
     File.write!(file.path, ~s({"torn), [:append])
     before = File.read!(file.path)
 
-    assert {:error, {:invalid_file, _}} = Session.File.resume(dir, "/repo")
+    assert {:error, {:invalid_file, _}} = SessionFile.resume(dir, "/repo")
     assert File.read!(file.path) == before
   end
 
@@ -327,10 +330,10 @@ defmodule Helyx.Session.FileTest do
     file = Session.File.append_message(file, Message.user("kept"))
     File.write!(file.path, String.trim_trailing(File.read!(file.path), "\n"))
 
-    assert {:ok, resumed} = Session.File.resume(dir, "/repo")
+    assert {:ok, resumed} = SessionFile.resume(dir, "/repo")
 
     Session.File.append_message(resumed.file, Message.user("after"))
-    assert {:ok, repaired} = Session.File.resume(dir, "/repo")
+    assert {:ok, repaired} = SessionFile.resume(dir, "/repo")
     assert Enum.map(repaired.messages, &Message.text/1) == ["kept", "after"]
   end
 
@@ -338,16 +341,16 @@ defmodule Helyx.Session.FileTest do
     {:ok, _} = started(dir, "older0000000", "/repo", "test/ok")
     {:ok, _} = started(dir, "newer0000000", "/repo", "test/ok")
 
-    assert {:ok, resumed} = Session.File.resume(dir, "/repo")
-    assert resumed.session_id == "newer0000000"
+    assert {:ok, resumed} = SessionFile.resume(dir, "/repo")
+    assert id(resumed) == "newer0000000"
   end
 
   test "two directories with one slug do not cross", %{tmp_dir: dir} do
     {:ok, _} = started(dir, "sess00000001", "/repo/a-b", "test/ok")
     {:ok, _} = started(dir, "sess00000002", "/repo/a/b", "test/ok")
 
-    assert {:ok, resumed} = Session.File.resume(dir, "/repo/a-b")
-    assert resumed.session_id == "sess00000001"
+    assert {:ok, resumed} = SessionFile.resume(dir, "/repo/a-b")
+    assert id(resumed) == "sess00000001"
   end
 
   for {name, line} <- [
@@ -362,6 +365,7 @@ defmodule Helyx.Session.FileTest do
          ~s({"id":"x","type":"message","role":"user","content":[{"type":"image","mime_type":"image/png","data":"aGk="}]})},
         {"a thinking signature, removed in #634",
          ~s({"id":"x","type":"message","role":"assistant","content":[{"type":"thinking","thinking":"t","signature":"s"}]})},
+        {"a compaction with no string provider", ~s({"id":"x","type":"compaction","provider":1})},
         {"an entry type", ~s({"id":"x","type":"note"})},
         {"a second header mid-file",
          ~s({"id":"h2","type":"session","version":1,"cwd":"/repo","model":"test/ok"})}
@@ -371,7 +375,7 @@ defmodule Helyx.Session.FileTest do
       {:ok, file} = started(dir, "sess00000001", "/repo", "test/ok")
       append_raw(file, unquote(line))
 
-      assert {:error, {:invalid_file, _}} = Session.File.resume(dir, "/repo")
+      assert {:error, {:invalid_file, _}} = SessionFile.resume(dir, "/repo")
     end
   end
 
@@ -387,8 +391,8 @@ defmodule Helyx.Session.FileTest do
     cwd = "/" <> String.duplicate("deep/", 80)
     {:ok, _} = started(dir, "sess00000001", cwd, "test/ok")
 
-    assert {:ok, resumed} = Session.File.resume(dir, cwd)
-    assert resumed.session_id == "sess00000001"
+    assert {:ok, resumed} = SessionFile.resume(dir, cwd)
+    assert id(resumed) == "sess00000001"
   end
 
   test "a line mid-file that is not an entry is skipped and kept", %{tmp_dir: dir} do
@@ -397,7 +401,7 @@ defmodule Helyx.Session.FileTest do
     Session.File.append_message(file, Message.user("kept"))
     before = File.read!(file.path)
 
-    assert {:ok, resumed} = Session.File.resume(dir, "/repo")
+    assert {:ok, resumed} = SessionFile.resume(dir, "/repo")
     assert texts(resumed) == ["kept"]
     assert File.read!(file.path) == before
   end
@@ -414,7 +418,7 @@ defmodule Helyx.Session.FileTest do
     {:ok, file} = Session.File.create(dir, "old000000000", "/repo", "test/ok")
     File.write!(file.path, Enum.map_join(lines, &(&1 <> "\n")))
 
-    assert {:ok, resumed} = Session.File.resume(dir, "/repo")
+    assert {:ok, resumed} = SessionFile.resume(dir, "/repo")
     assert texts(resumed) == ["one", "two"]
     assert resumed.model == "test/two"
     assert resumed.file.leaf == "m2"
@@ -441,7 +445,7 @@ defmodule Helyx.Session.FileTest do
       File.write!(kept.path, "not json\n" <> break.(header.leaf, kept.leaf) <> "\n", [:append])
       before = File.read!(kept.path)
 
-      assert Session.File.resume(dir, "/r#{n}") ==
+      assert SessionFile.resume(dir, "/r#{n}") ==
                {:error,
                 {:invalid_file, "line 4 does not continue the chain of the entry before it"}}
 
@@ -466,7 +470,7 @@ defmodule Helyx.Session.FileTest do
     File.write!(file.path, ~s({"torn), [:append])
     File.chmod!(file.path, 0o444)
 
-    assert {:error, {:repair_failed, :eacces}} = Session.File.resume(dir, "/repo")
+    assert {:error, {:repair_failed, :eacces}} = SessionFile.resume(dir, "/repo")
     File.chmod!(file.path, 0o644)
   end
 
@@ -478,7 +482,7 @@ defmodule Helyx.Session.FileTest do
     |> append_raw(~s({"id":"x","type":"model_change","model":42}))
     |> Session.File.append_model_change("test/other")
 
-    assert {:error, {:invalid_file, _}} = Session.File.resume(dir, "/repo")
+    assert {:error, {:invalid_file, _}} = SessionFile.resume(dir, "/repo")
 
     # Nor a bad header model, in a resume by id: the newest-session resume
     # skips such a file.
@@ -487,7 +491,7 @@ defmodule Helyx.Session.FileTest do
     File.write!(file2.path, String.replace(header, ~s("model":"test/ok"), ~s("model":42)))
     Session.File.append_model_change(file2, "test/other")
 
-    assert {:error, {:invalid_file, _}} = Session.File.resume(dir, "/repo2", id: "sess00000002")
+    assert {:error, {:invalid_file, _}} = SessionFile.resume(dir, "/repo2", id: "sess00000002")
   end
 
   test "resume decodes stop reasons in a VM that never interned their atoms", %{tmp_dir: dir} do
@@ -503,7 +507,7 @@ defmodule Helyx.Session.FileTest do
     end
 
     script = """
-    {:ok, resumed} = Helyx.Session.File.resume(#{inspect(dir)}, "/repo")
+    {:ok, resumed} = Helyx.Test.SessionFile.resume(#{inspect(dir)}, "/repo")
     [%{stop_reason: :max_tokens}, %{stop_reason: :refused}] = resumed.messages
     IO.puts("resumed ok")
     """
@@ -536,7 +540,7 @@ defmodule Helyx.Session.FileTest do
     file = Session.File.append_message(file, message.(10 ** 100))
     Session.File.append_message(file, message.(10 ** 100 - 1))
 
-    assert {:ok, resumed} = Session.File.resume(dir, "/repo")
+    assert {:ok, resumed} = SessionFile.resume(dir, "/repo")
 
     assert [["integer of more than 100 digits removed"], [10 ** 100 - 1]] ==
              for(%Message{content: [block]} <- resumed.messages, do: block.arguments["offset"])
@@ -577,7 +581,7 @@ defmodule Helyx.Session.FileTest do
       append_raw(file, JSON.encode!(entry))
     end)
 
-    assert {:ok, resumed} = Session.File.resume(dir, "/repo")
+    assert {:ok, resumed} = SessionFile.resume(dir, "/repo")
     assert length(resumed.messages) == length(entries)
 
     for {{kind, entry}, %Message{usage: usage}} <- Enum.zip(entries, resumed.messages) do
@@ -609,7 +613,7 @@ defmodule Helyx.Session.FileTest do
 
     Enum.reduce(entries, file, &append_raw(&2, &1))
 
-    assert {:ok, resumed} = Session.File.resume(dir, "/repo")
+    assert {:ok, resumed} = SessionFile.resume(dir, "/repo")
     assert [nil, nil | unknown] = Enum.map(resumed.messages, & &1.usage)
     assert unknown == List.duplicate(%Helyx.Usage{}, 5)
 
@@ -626,8 +630,8 @@ defmodule Helyx.Session.FileTest do
       Session.File.append_message(file, Message.user("héllo wörld"))
       size = File.stat!(file.path).size
 
-      assert {:ok, _} = Session.File.resume(dir, "/repo", max_bytes: size + 1)
-      assert {:ok, resumed} = Session.File.resume(dir, "/repo", max_bytes: size)
+      assert {:ok, _} = SessionFile.resume(dir, "/repo", max_bytes: size + 1)
+      assert {:ok, resumed} = SessionFile.resume(dir, "/repo", max_bytes: size)
       assert [%Message{role: :user}] = resumed.messages
 
       # One byte over. A torn tail would be repaired on an accepted file;
@@ -635,7 +639,7 @@ defmodule Helyx.Session.FileTest do
       File.write!(file.path, "{", [:append])
       before = File.read!(file.path)
 
-      assert {:error, {:too_large, text}} = Session.File.resume(dir, "/repo", max_bytes: size)
+      assert {:error, {:too_large, text}} = SessionFile.resume(dir, "/repo", max_bytes: size)
       assert text =~ "#{size}-byte limit"
       assert text =~ "start a new session"
       assert File.read!(file.path) == before
@@ -647,12 +651,12 @@ defmodule Helyx.Session.FileTest do
       File.write!(file.path, header)
 
       assert {:error, {:too_large, _}} =
-               Session.File.resume(dir, "/repo", max_bytes: byte_size(header))
+               SessionFile.resume(dir, "/repo", max_bytes: byte_size(header))
 
       assert File.read!(file.path) == header
 
-      assert {:ok, _} = Session.File.resume(dir, "/repo", max_bytes: byte_size(header) + 1)
-      assert {:ok, _} = Session.File.resume(dir, "/repo", max_bytes: byte_size(header) + 1)
+      assert {:ok, _} = SessionFile.resume(dir, "/repo", max_bytes: byte_size(header) + 1)
+      assert {:ok, _} = SessionFile.resume(dir, "/repo", max_bytes: byte_size(header) + 1)
     end
 
     test "the default limit is 64 MiB", %{tmp_dir: dir} do
@@ -663,7 +667,7 @@ defmodule Helyx.Session.FileTest do
         :ok = IO.binwrite(io, "\n")
       end)
 
-      assert {:error, {:too_large, text}} = Session.File.resume(dir, "/repo")
+      assert {:error, {:too_large, text}} = SessionFile.resume(dir, "/repo")
       assert text =~ "67108864-byte limit"
     end
   end
@@ -678,7 +682,7 @@ defmodule Helyx.Session.FileTest do
     {pid, ref} =
       spawn_monitor(fn ->
         Process.flag(:max_heap_size, %{size: div(16 * 1024 * 1024, 8), kill: true})
-        exit({:result, Session.File.resume(dir, "/repo")})
+        exit({:result, SessionFile.resume(dir, "/repo")})
       end)
 
     assert_receive {:DOWN, ^ref, :process, ^pid, {:result, {:ok, resumed}}}
@@ -689,7 +693,7 @@ defmodule Helyx.Session.FileTest do
     test "a file whose decode passes the cap is rejected and not mutated", %{tmp_dir: dir} do
       {:ok, file} = Session.File.create(dir, "sess00000001", "/repo", "test/ok")
       Session.File.append_message(file, Message.user("hi"))
-      assert {:ok, _} = Session.File.resume(dir, "/repo", max_heap_bytes: 16 * 1024 * 1024)
+      assert {:ok, _} = SessionFile.resume(dir, "/repo", max_heap_bytes: 16 * 1024 * 1024)
 
       # 1 MiB of `[` with a torn last line: the decode of deep nesting takes
       # tens of bytes of heap per file byte. The torn tail would be repaired
@@ -698,7 +702,7 @@ defmodule Helyx.Session.FileTest do
       before = File.read!(file.path)
 
       assert {:error, {:too_large, text}} =
-               Session.File.resume(dir, "/repo", max_heap_bytes: 16 * 1024 * 1024)
+               SessionFile.resume(dir, "/repo", max_heap_bytes: 16 * 1024 * 1024)
 
       assert text =~ "#{16 * 1024 * 1024} bytes of memory"
       assert text =~ "start a new session"
@@ -728,7 +732,7 @@ defmodule Helyx.Session.FileTest do
 
       File.write!(file.path, copies, [:append])
 
-      assert {:ok, resumed} = Session.File.resume(dir, "/repo")
+      assert {:ok, resumed} = SessionFile.resume(dir, "/repo")
       assert length(resumed.messages) == count
     end
 
@@ -740,7 +744,7 @@ defmodule Helyx.Session.FileTest do
       {pid, ref} =
         spawn_monitor(fn ->
           Process.flag(:max_heap_size, %{size: div(16 * 1024 * 1024, 8), kill: true})
-          exit({:result, Session.File.resume(dir, "/repo")})
+          exit({:result, SessionFile.resume(dir, "/repo")})
         end)
 
       assert_receive {:DOWN, ^ref, :process, ^pid, {:result, result}}
@@ -753,23 +757,23 @@ defmodule Helyx.Session.FileTest do
 
     for bad <- [0, -1, 1.5, nil, 64 * 1024 * 1024 + 1] do
       assert_raise FunctionClauseError, fn ->
-        Session.File.resume(dir, "/repo", max_bytes: bad)
+        SessionFile.resume(dir, "/repo", max_bytes: bad)
       end
     end
 
     for bad <- [0, -1, 1.5, nil, 8, 1024 * 1024 - 1, 1024 * 1024 * 1024 + 1] do
       assert_raise FunctionClauseError, fn ->
-        Session.File.resume(dir, "/repo", max_heap_bytes: bad)
+        SessionFile.resume(dir, "/repo", max_heap_bytes: bad)
       end
     end
 
     for good <- [1024 * 1024, 1024 * 1024 * 1024] do
-      assert {:ok, _} = Session.File.resume(dir, "/repo", max_heap_bytes: good)
+      assert {:ok, _} = SessionFile.resume(dir, "/repo", max_heap_bytes: good)
     end
 
     for bad <- [0, -1, 1.5, nil, 257] do
       assert_raise FunctionClauseError, fn ->
-        Session.File.resume(dir, "/repo", max_scanned_files: bad)
+        SessionFile.resume(dir, "/repo", max_scanned_files: bad)
       end
     end
   end
@@ -794,23 +798,23 @@ defmodule Helyx.Session.FileTest do
 
     test "a header line of 65,536 bytes is found, also with multibyte text", %{tmp_dir: dir} do
       overwrite_session(dir, header_of(65_536, "é"))
-      assert {:ok, _} = Session.File.resume(dir, "/repo")
+      assert {:ok, _} = SessionFile.resume(dir, "/repo")
 
       overwrite_session(dir, header_of(65_535, "a"))
-      assert {:ok, _} = Session.File.resume(dir, "/repo")
+      assert {:ok, _} = SessionFile.resume(dir, "/repo")
     end
 
     test "a header line one byte over is not a session", %{tmp_dir: dir} do
       overwrite_session(dir, header_of(65_537, "a"))
-      assert {:error, :not_found} = Session.File.resume(dir, "/repo")
+      assert {:error, :not_found} = SessionFile.resume(dir, "/repo")
     end
 
     test "a file that is not regular is skipped, not opened", %{tmp_dir: dir} do
       {:ok, file} = started(dir, "sess00000001", "/repo", "test/ok")
       {_, 0} = System.cmd("mkfifo", [Path.join(Path.dirname(file.path), "pipe00000000.jsonl")])
 
-      assert {:ok, resumed} = Session.File.resume(dir, "/repo")
-      assert resumed.session_id == "sess00000001"
+      assert {:ok, resumed} = SessionFile.resume(dir, "/repo")
+      assert id(resumed) == "sess00000001"
     end
   end
 
@@ -831,9 +835,9 @@ defmodule Helyx.Session.FileTest do
       session_at(dir, "b00000000000", "_repo", 2_000)
       session_at(dir, "c00000000000", "_repo", 3_000)
 
-      assert {:error, :not_found} = Session.File.resume(dir, "/repo", max_scanned_files: 2)
-      assert {:ok, resumed} = Session.File.resume(dir, "/repo", max_scanned_files: 3)
-      assert resumed.session_id == "old000000000"
+      assert {:error, :not_found} = SessionFile.resume(dir, "/repo", max_scanned_files: 2)
+      assert {:ok, resumed} = SessionFile.resume(dir, "/repo", max_scanned_files: 3)
+      assert id(resumed) == "old000000000"
     end
 
     test "the modification time selects the files, then the start time decides",
@@ -842,37 +846,39 @@ defmodule Helyx.Session.FileTest do
       session_at(dir, "second000000", "/repo", 1_000, "2026-01-01T00:00:03Z")
       session_at(dir, "third0000000", "/repo", 2_000, "2026-01-01T00:00:02Z")
 
-      assert {:ok, %{session_id: "first0000000"}} =
-               Session.File.resume(dir, "/repo", max_scanned_files: 1)
+      assert {:ok, resumed} = SessionFile.resume(dir, "/repo", max_scanned_files: 1)
+      assert id(resumed) == "first0000000"
 
-      assert {:ok, %{session_id: "second000000"}} = Session.File.resume(dir, "/repo")
+      assert {:ok, resumed} = SessionFile.resume(dir, "/repo")
+      assert id(resumed) == "second000000"
     end
 
     test "a file that is not regular does not count", %{tmp_dir: dir} do
       file = session_at(dir, "sess00000001", "/repo", 1_000)
       {_, 0} = System.cmd("mkfifo", [Path.join(Path.dirname(file.path), "pipe00000000.jsonl")])
 
-      assert {:ok, %{session_id: "sess00000001"}} =
-               Session.File.resume(dir, "/repo", max_scanned_files: 1)
+      assert {:ok, resumed} = SessionFile.resume(dir, "/repo", max_scanned_files: 1)
+      assert id(resumed) == "sess00000001"
     end
 
     test "the default limit is 256 files", %{tmp_dir: dir} do
       session_at(dir, "old000000000", "/repo", 1_000)
       for n <- 1..255, do: session_at(dir, Session.Id.new(), "_repo", 2_000 + n)
-      assert {:ok, %{session_id: "old000000000"}} = Session.File.resume(dir, "/repo")
+      assert {:ok, resumed} = SessionFile.resume(dir, "/repo")
+      assert id(resumed) == "old000000000"
 
       session_at(dir, "s10000000256", "_repo", 3_000)
-      assert {:error, :not_found} = Session.File.resume(dir, "/repo")
+      assert {:error, :not_found} = SessionFile.resume(dir, "/repo")
     end
 
     test "the path breaks a tie of the modification time", %{tmp_dir: dir} do
       session_at(dir, "a00000000000", "/repo", 1_000)
       session_at(dir, "b00000000000", "_repo", 1_000)
 
-      assert {:error, :not_found} = Session.File.resume(dir, "/repo", max_scanned_files: 1)
+      assert {:error, :not_found} = SessionFile.resume(dir, "/repo", max_scanned_files: 1)
 
-      assert {:ok, %{session_id: "b00000000000"}} =
-               Session.File.resume(dir, "_repo", max_scanned_files: 1)
+      assert {:ok, resumed} = SessionFile.resume(dir, "_repo", max_scanned_files: 1)
+      assert id(resumed) == "b00000000000"
     end
   end
 end

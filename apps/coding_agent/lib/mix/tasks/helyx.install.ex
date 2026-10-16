@@ -63,26 +63,15 @@ defmodule Mix.Tasks.Helyx.Install do
     Mix.shell().info("installed #{version} in #{Path.join(releases, name)}")
 
     # The swap is the commit point: a raise before it leaves `current` and
-    # the kept builds as they were. The deletion after it only warns, and the
-    # next install tries again.
-    for entry <- entries(releases), entry not in [name, previous] do
+    # the kept builds as they were. A deletion after it only warns, and the
+    # next install tries again; a listing that fails raises.
+    for entry <- File.ls!(releases), entry not in [name, previous] do
       with {:error, reason, file} <- File.rm_rf(Path.join(releases, entry)) do
         Mix.shell().error("could not delete #{file}: #{:file.format_error(reason)}")
       end
     end
 
     :ok
-  end
-
-  defp entries(dir) do
-    case File.ls(dir) do
-      {:ok, names} ->
-        names
-
-      {:error, reason} ->
-        Mix.shell().error("could not list #{dir}: #{:file.format_error(reason)}")
-        []
-    end
   end
 
   # The command line is a boundary. The usage text shows no argument, so no
@@ -97,16 +86,11 @@ defmodule Mix.Tasks.Helyx.Install do
     _ in [ArgumentError, UnicodeConversionError] -> Mix.raise(@usage)
   end
 
+  # No `current` is the first install. Any other error fails the `case`.
   defp previous(current) do
     case File.read_link(current) do
-      {:ok, target} ->
-        Path.basename(target)
-
-      {:error, :enoent} ->
-        nil
-
-      {:error, reason} ->
-        Mix.raise("cannot read the link #{current}: #{:file.format_error(reason)}")
+      {:ok, target} -> Path.basename(target)
+      {:error, :enoent} -> nil
     end
   end
 

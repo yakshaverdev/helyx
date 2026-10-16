@@ -180,7 +180,8 @@ defmodule Helyx.TUI.FooterUsageTest do
             &"data: #{JSON.encode!(&1)}\n\n"
           ) <> "data: [DONE]\n\n"
 
-        {:done, %{usage: usage}} = [body] |> Events.events() |> Enum.to_list() |> List.last()
+        {:done, %{usage: usage}} =
+          [body] |> Events.events(%Helyx.ModelInfo{}) |> Enum.to_list() |> List.last()
 
         assert row([Message.user("one"), assistant(usage, unquote(model))], unquote(model)) ==
                  "#{unquote(model)} · idle · in 120 out 30 · cache 83% · $?"

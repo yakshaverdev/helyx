@@ -63,15 +63,27 @@ defmodule Helyx.Session.BackgroundDeliveryTest do
 
   defp done(id), do: Background.finish(id, {:ok, "done"})
 
-  # Sends :go to the run, and returns once the session has handled its end.
+  # Sends :go to the run, and returns the queue counts once the session has
+  # handled its end.
   defp finish(session, run) do
     pid = Session.pid(session)
     :erlang.trace(pid, true, [:receive])
     send(run, :go)
     assert_receive {:trace, ^pid, :receive, {:background_end, _text}}
     :erlang.trace(pid, false, [:receive])
-    :sys.get_state(pid)
+    queue(session)
   end
+
+  # The queue counts of a new snapshot. The subscribe call is a barrier: the
+  # session handled each message that it got before the call.
+  defp queue(session) do
+    {:ok, %{queue: queue}, ref} = Session.subscribe(session)
+    Process.demonitor(ref, [:flush])
+    queue
+  end
+
+  # The hands of the session, to trace the `taken/2` casts.
+  defp hands(session), do: :sys.get_state(Session.pid(session)).hands
 
   test "an end while idle opens a turn with the end as its user message", %{core: core} do
     %{run: run, id: id} = started(core)
@@ -117,10 +129,10 @@ defmodule Helyx.Session.BackgroundDeliveryTest do
   test "after an abort an end waits, wakes nothing, and joins the next turn", %{core: core} do
     %{session: session, run: run, id: id} = started(core)
     :ok = Session.abort(session)
-    hands = finish(session, run).hands
+    assert finish(session, run) == counts(0, 1, 0)
     refute_received {:helyx_event, %Event{type: :turn_start}}
-    assert :sys.get_state(hands).background.waiting == [id]
 
+    hands = hands(session)
     :erlang.trace(hands, true, [:receive])
     :ok = Session.prompt(session, "next")
     events = collect_until(:turn_end)
@@ -157,9 +169,7 @@ defmodule Helyx.Session.BackgroundDeliveryTest do
     # #591: the sent end counts as waiting until its user_message.
     assert {:ok, %{queue: queue}, _} = Session.subscribe(session)
     assert queue == counts(0, 0, 1)
-    # #587: and so it keeps its place until then.
-    hands = :sys.get_state(pid).hands
-    assert :sys.get_state(hands).background.waiting == [id]
+    hands = hands(session)
     :erlang.trace(hands, true, [:receive])
     send(stream, :go)
 
@@ -186,8 +196,7 @@ defmodule Helyx.Session.BackgroundDeliveryTest do
         do: assert_receive({:trace, ^pid, :receive, {:provider_reply, _, :steer, :ok}})
 
     :erlang.trace(pid, false, [:receive])
-    finish(session, run)
-    assert :sys.get_state(pid).queue.ends == [done(id)]
+    assert finish(session, run) == counts(0, 0, 1)
 
     send(stream, :go)
     assert List.last(user_texts(drive([]))) == done(id)
@@ -214,7 +223,7 @@ defmodule Helyx.Session.BackgroundDeliveryTest do
     send(proc, {:event, turn_id, @done})
     refute List.last(collect_until(:turn_end)).data == %{outcome: :done}
 
-    assert %{queue: %{hold: true}} = finish(session, run)
+    assert finish(session, run) == counts(0, 1, 0)
     refute_received {:helyx_event, %Event{type: :turn_start}}
   end
 
@@ -231,7 +240,7 @@ defmodule Helyx.Session.BackgroundDeliveryTest do
     send(run, :go)
     assert_receive {:trace, ^pid, :receive, {:provider_reply, _, :steer, :rejected}}
     :erlang.trace(pid, false, [:receive])
-    assert :sys.get_state(pid).queue.ends == [done(id)]
+    assert queue(session) == counts(0, 0, 1)
     assert_receive {:conn, :steer, ^proc, _request}
     refute_received {:conn, :steer, _, _}
 
@@ -262,8 +271,7 @@ defmodule Helyx.Session.BackgroundDeliveryTest do
     send(proc, :stop)
     assert_receive {:trace, ^pid, :receive, {:provider_down, ^proc, _reason}}
     :erlang.trace(pid, false, [:receive])
-    assert %{ends: [ended], hold: true} = :sys.get_state(pid).queue
-    assert ended == done(id)
+    assert queue(session) == counts(0, 1, 0)
     refute_received {:helyx_event, %Event{type: :turn_start}}
 
     :ok = Session.prompt(session, "three")
@@ -299,7 +307,7 @@ defmodule Helyx.Session.BackgroundDeliveryTest do
     assert Helyx.Message.text(List.last(context.messages)) == done(id)
     send(new, {:finish, next_id})
     assert user_texts(collect_until(:turn_end)) == ["three", done(id)]
-    assert %{hold: false, ends: []} = :sys.get_state(pid).queue
+    assert queue(session) == counts(0, 0, 0)
   end
 
   # #587: a compaction takes no end, so a give-back in its turn holds.
@@ -324,9 +332,9 @@ defmodule Helyx.Session.BackgroundDeliveryTest do
     )
 
     assert List.last(collect_until(:turn_end)).data == %{outcome: :done}
-    assert %{hold: true, ends: [ended]} = :sys.get_state(Session.pid(session)).queue
-    assert ended == done(id)
+    assert queue(session) == counts(0, 1, 0)
     refute_received {:helyx_event, %Event{type: :turn_start}}
+    assert_next_prompt_takes(session, done(id))
   end
 
   test "an end whose steer gets an error answer and no user_message goes back held, with no notice",
@@ -341,9 +349,18 @@ defmodule Helyx.Session.BackgroundDeliveryTest do
     send(proc, {:finish, turn_id})
     events = collect_until(:turn_end)
     refute Enum.any?(events, &(&1.type == :steer_unconfirmed))
-    assert %{ends: [ended], hold: true} = :sys.get_state(Session.pid(session)).queue
-    assert ended == done(id)
+    assert queue(session) == counts(0, 1, 0)
     refute_received {:helyx_event, %Event{type: :turn_start}}
+    assert_next_prompt_takes(session, done(id))
+  end
+
+  # The next prompt sends the held end, unchanged, after its own text.
+  defp assert_next_prompt_takes(session, ended) do
+    :ok = Session.prompt(session, "three")
+    assert_receive {:conn, :turn, next, {:turn, next_id, context}}
+    assert Helyx.Message.text(List.last(context.messages)) == ended
+    send(next, {:finish, next_id})
+    assert user_texts(collect_until(:turn_end)) == ["three", ended]
   end
 
   # Opens each gate of the turn and collects its events until `turn_end`.

@@ -124,9 +124,7 @@ defmodule Mix.Tasks.Helyx.InstallTest do
        %{prefix: prefix} = context do
     File.mkdir_p!(Path.join(prefix, "current"))
 
-    assert_raise Mix.Error, ~r/cannot read the link .*current: invalid argument/, fn ->
-      install(context, "0.1.0+abc1234")
-    end
+    assert_raise CaseClauseError, ~r/:einval/, fn -> install(context, "0.1.0+abc1234") end
 
     assert builds(prefix) == [".build-test"]
   end

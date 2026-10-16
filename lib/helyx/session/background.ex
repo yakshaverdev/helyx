@@ -21,7 +21,9 @@ defmodule Helyx.Session.Background do
 
   # The start answer is short: an id, a path, a hint. The cap keeps the
   # first line whole through the cut of every later boundary of tool text
-  # (`Message.cut_result/1`), which would put a notice line before it.
+  # (`Message.cut_result/1`), which would put a notice line before it. The
+  # cap counts bytes before the UTF-8 repair of that cut, which makes each
+  # kept byte at most 3 bytes: 12,288 bytes after it.
   @max_start_bytes 4_096
 
   @head ~r/\A<background id="([A-Za-z0-9_-]{12})" status="([a-z]+)">\n/
@@ -36,10 +38,8 @@ defmodule Helyx.Session.Background do
 
   # A new place for the Task `pid`, and the folder `dir`, made at each
   # call: a new id and the places with it, or the error text for the tool.
+  # A second call of the Task gives a new id in the same place.
   @spec reserve(t(), pid(), String.t()) :: {:ok, String.t(), t()} | {:error, String.t()}
-  def reserve(%__MODULE__{live: live}, pid, _dir) when is_map_key(live, pid),
-    do: {:error, "a tool call can start one background run"}
-
   def reserve(%__MODULE__{live: live, waiting: waiting}, _pid, _dir)
       when map_size(live) + length(waiting) >= @max_places,
       do:
@@ -85,11 +85,8 @@ defmodule Helyx.Session.Background do
     id
   end
 
-  @spec not_a_call() :: String.t()
-  def not_a_call, do: "only a tool call can run in the background"
-
   @spec start(String.t(), String.t()) :: String.t()
-  def start(id, text), do: wrap(id, "started", cap(String.replace_invalid(text)))
+  def start(id, text), do: wrap(id, "started", binary_slice(text, 0, @max_start_bytes))
 
   # The end from the Task's result, already through `Message.cut_result/1`.
   @spec finish(String.t(), {:ok | :error, String.t()}) :: String.t()
@@ -126,9 +123,4 @@ defmodule Helyx.Session.Background do
 
   defp wrap(id, status, text),
     do: ~s(<background id="#{id}" status="#{status}">\n#{text}\n</background>)
-
-  defp cap(text) when byte_size(text) <= @max_start_bytes, do: text
-
-  defp cap(text),
-    do: text |> binary_part(0, @max_start_bytes) |> String.replace_invalid("")
 end

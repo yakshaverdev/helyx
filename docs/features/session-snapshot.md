@@ -19,6 +19,7 @@ The order that makes it gap-free:
 `Helyx.TUI.ViewModel.from_snapshot/1` folds the snapshot messages through the live fold, so the live and snapshot paths share one pairing rule.
 
 - The rule of a snapshot and its exclusions are in ADR 0006, section 3.
+- The `turn` of a snapshot has `elapsed_ms`: the time since the turn started, by the monotonic clock of the session, also while its `turn_end` waits for the hands. A client that joins a running turn starts its busy clock at that age by its own clock, so it needs no clock of the server. The age does not count the transport delay after the snapshot.
 - The information cell "resumed session" follows the history only when the TUI started from a resume: `mix helyx --resume` passes `resumed: true` to `Helyx.TUI.run/1`, and the mount adds the cell. A live join shows no such cell.
 
 ## Bounds

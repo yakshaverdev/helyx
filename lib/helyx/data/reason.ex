@@ -156,13 +156,6 @@ defmodule Helyx.Reason do
   # keeps the stacktrace out.
   defp describe(text) when is_binary(text), do: text
 
-  # The errors of the session lock (docs/features/session-lock.md).
-  defp describe({:session_locked, id}) when is_binary(id),
-    do: "session #{id} is open in another process"
-
-  defp describe({:lock_failed, text}) when is_binary(text),
-    do: "could not lock the session: " <> text
-
   # A snapshot with `persisting: false` (`Helyx.Session.Snapshot`).
   defp describe(:not_saved), do: "new messages of this session are not saved"
 
@@ -194,11 +187,10 @@ defmodule Helyx.Reason do
   defp no_message(error), do: contained(error, @text_opts)
 
   # A crash is an error with its stacktrace, now `{error, :stacktrace}`:
-  # bare, under an atom tag, as an exit signal, or as the exit of a call
+  # bare, under an atom tag, or as the exit of a call
   # (`{reason, {GenServer, :call, args}}`).
   defp crash({error, :stacktrace}), do: {:ok, error}
   defp crash({tag, reason}) when is_atom(tag), do: crash(reason)
-  defp crash({:EXIT, _from, reason}), do: crash(reason)
 
   defp crash({reason, {module, fun, args}})
        when is_atom(module) and is_atom(fun) and is_list(args),
