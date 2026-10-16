@@ -28,8 +28,8 @@ Decisions:
 - `Helyx.Session.File.Scan` (new, Core) owns the place and the header of a session file, and the choice of a file in a sessions directory: the scan of the newest files, the read of a head, the newest session of a folder, the file of an id, and the list. `Helyx.Session.File` keeps the entries after the header: append and load. `scan.ex` takes this code out of `file.ex`, so `file.ex` gets shorter and the calls go one way, from `File` to `Scan`.
   - `Scan.list(dir, cwd | :all)` returns `[%Scan.Summary{id, cwd, model, mtime, prompt}]`, newest first by modification time.
   - `Scan.find(dir, id)` returns `{:ok, path, header}`, `{:error, :invalid_id}`, `{:error, :not_found}`, `{:error, :duplicate_id}` (two project folders hold the id; only a copy by hand makes that), or `{:error, {:invalid_file, text}}` (the file has no session header).
-- `Helyx.Session.File.resume/3` takes the option `:id`: it loads the file of that id, and the header must name `cwd`, else `:not_found`. Without `:id`, the newest session of the folder that has a message.
-- `Helyx.Session.resume/2` passes `:id` to `Helyx.Session.File.resume/3`. `session.ex` does not grow, so it needs no split.
+- `Helyx.Session.File.pick/3` takes the option `:id`: it picks the file of that id, and the header must name `cwd`, else `:not_found`. Without `:id`, the newest session of the folder that has a message.
+- `Helyx.Session.resume/2` passes `:id` to `Helyx.Session.File.pick/3`. `session.ex` does not grow, so it needs no split.
 - `CodingAgent.run/1` and `CodingAgent.start_session/1`: `:resume` is `true` (the newest session of `:cwd`) or a session id. `:sessions_dir` is required; `CodingAgent.CLI` sets the default `~/.helyx/sessions`.
 - `CodingAgent.CLI`: the switches `--list`, `--all`, and `--session <id>`.
   - `--list` combines only with `--all` or a directory argument. `--all` needs `--list` and does not combine with a directory argument.
@@ -58,7 +58,7 @@ Decisions:
 | folder on screen (`--all`, and the error of `--session`) | the last 80 code points after the clean pass; the end of a path is the part that tells folders apart | the start is cut | `CodingAgent.CLI` |
 | session id of `--session` | the format of `Helyx.Session.Id`, checked before any path is built | `not a session id`, no file access | `Scan.find/2` |
 | files that match an id | one | two or more give `:duplicate_id` | `Scan.find/2` |
-| resume by id: file size, heap | the bounds of the resume of `Helyx.Session.File` (64 MiB, the heap cap) | as for `--resume` | `Helyx.Session.File.resume/3` |
+| resume by id: file size, heap | the bounds of the resume of `Helyx.Session.File` (64 MiB, the heap cap) | as for `--resume` | `Helyx.Session.File.resume_picked/3` |
 
 ## Ownership
 

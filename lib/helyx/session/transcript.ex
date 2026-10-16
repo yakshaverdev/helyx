@@ -97,8 +97,8 @@ defmodule Helyx.Session.Transcript do
   # the provider's own history under that id, or nil.
   @type label :: {String.t(), non_neg_integer(), non_neg_integer() | nil}
 
-  # The resume id to resume, or nil: the last resume id of `provider` in
-  # `resume_ids`, when the last assistant message of the transcript came
+  # The label of the resume id to resume, or nil: the last label of
+  # `provider` in `resume_ids`, when the last assistant message of the transcript came
   # from this provider after that point and no abort or failure cut it. A
   # message under the resume id shows that the provider read the replay
   # and the prompt. Otherwise the provider does not have the transcript's
@@ -115,15 +115,15 @@ defmodule Helyx.Session.Transcript do
   # id came before that message: a resume derived the result, so the
   # provider never got it. An id given after the message came with the
   # replay, which held the result (#584). O(n).
-  @spec resumable([Message.t()], %{String.t() => label()}, String.t()) :: String.t() | nil
+  @spec resumable([Message.t()], %{String.t() => label()}, String.t()) :: label() | nil
   def resumable(transcript, resume_ids, provider) do
-    with {:ok, {resume_id, before, at}} <- Map.fetch(resume_ids, provider),
+    with {:ok, {_id, before, at} = label} <- Map.fetch(resume_ids, provider),
          {count, %Message{model: model, stop_reason: stop}, interrupted?} when is_binary(model) <-
            count_and_last_assistant(transcript),
          {:ok, %ModelRef{provider: ^provider}} <- ModelRef.parse(model),
          true <- at == count or (count > before and stop not in [:aborted, :error]),
          false <- interrupted? and count > before do
-      resume_id
+      label
     else
       _other -> nil
     end
@@ -145,8 +145,7 @@ defmodule Helyx.Session.Transcript do
       nil ->
         {nil, nil}
 
-      id ->
-        {_id, before, _at} = Map.fetch!(resume_ids, provider)
+      {id, before, _at} ->
         usages = for %Message{role: :assistant, usage: usage} <- transcript, do: usage
         sum = usages |> Enum.drop(before) |> Enum.reduce(nil, &add/2)
         {id, if(done_last?(transcript), do: sum, else: unknown(sum))}

@@ -23,17 +23,13 @@ defmodule Helyx.Session.BackgroundTest do
              ~s(<background id="#{@id}" status="error">\nx\n</background>)
   end
 
-  test "the start text is cut to 4,096 bytes of valid UTF-8" do
+  # The UTF-8 repair is in the hands (`hands_test.exs`).
+  test "the start text is cut to 4,096 bytes" do
     at = String.duplicate("a", 4096)
     assert Background.start(@id, at) == Background.start(@id, at <> "b")
 
     assert Background.start(@id, String.duplicate("a", 4095)) =~
              "\n" <> String.duplicate("a", 4095) <> "\n"
-
-    multibyte = Background.start(@id, String.duplicate("a", 4095) <> "é")
-    assert String.valid?(multibyte)
-    refute multibyte =~ "é"
-    assert Background.start(@id, <<255>>) =~ "�"
   end
 
   test "each start answer with no end message is lost, in start order; an error result is no start" do

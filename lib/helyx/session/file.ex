@@ -3,8 +3,8 @@ defmodule Helyx.Session.File do
   The session file: append-only JSON lines, one entry per line, one chain
   by `parent_id` (ADR 0001). A session lives at
   `<dir>/<project slug>/<session id>.jsonl`. Only completed messages are
-  appended. `resume/3` restores the chain of a session, and nothing is ever
-  removed from the file. `Helyx.Session.File.Scan` picks the file.
+  appended. `pick/3` picks the file of a session, `resume_picked/3`
+  restores its chain, and nothing is ever removed from the file.
 
   The format, the rules for a damaged file, and the bounds are in
   `docs/features/coding-agent.md`, section "Session file".
@@ -39,17 +39,16 @@ defmodule Helyx.Session.File do
 
   defmodule Resumed do
     @moduledoc """
-    What `resume/3` restores. `resume_ids` holds the last resume id of
+    What `resume_picked/3` restores. `resume_ids` holds the last resume id of
     each provider: the id and the number of assistant messages before its entry,
     and the number at the last compaction of that provider after it, if
     any (`Helyx.Session.Transcript.label/0`).
     """
-    @enforce_keys [:file, :session_id, :model, :messages]
-    defstruct [:file, :session_id, :model, :messages, resume_ids: %{}]
+    @enforce_keys [:file, :model, :messages]
+    defstruct [:file, :model, :messages, resume_ids: %{}]
 
     @type t :: %__MODULE__{
             file: Helyx.Session.File.t(),
-            session_id: String.t(),
             model: String.t(),
             messages: [Message.t()],
             resume_ids: %{String.t() => Helyx.Session.Transcript.label()}
@@ -96,14 +95,11 @@ defmodule Helyx.Session.File do
     do: Path.join(Scan.project_dir(dir, cwd), session_id <> ".jsonl")
 
   @doc """
-  Resumes the most recently started session for a working directory that
-  has a message, or with `:id` the session of that id. The scan that picks
-  the file and its bounds are in `Helyx.Session.File.Scan`. A session of
-  the id whose header names another directory is `:not_found`.
+  Reads the session file at `path`, a result of `pick/3` for `cwd`.
 
-  Returns the file handle, the session id, the current model, and the
-  transcript: the entries in file order, each the child of the entry
-  before it by `parent_id`. The rules for a damaged file are in
+  Returns the file handle, the current model, and the transcript: the
+  entries in file order, each the child of the entry before it by
+  `parent_id`. The rules for a damaged file are in
   `docs/features/coding-agent.md`, "Session file": a line that does not
   decode is skipped, and an entry that does not continue the chain is
   `{:invalid_file, text}` with its line number. The read uses its own
@@ -118,24 +114,9 @@ defmodule Helyx.Session.File do
   as `{:too_large, text}` and is not mutated. The transcript is copied to
   the caller once.
 
-  `:max_bytes` lowers the file limit, `:max_heap_bytes` lowers the heap
-  cap to no less than #{@min_heap_bytes} bytes, and `:max_scanned_files`
-  lowers the file count of the scan. They exist so that a test reaches a
-  limit with small input.
-  """
-  @spec resume(Path.t(), String.t(),
-          id: String.t(),
-          max_bytes: pos_integer(),
-          max_heap_bytes: pos_integer(),
-          max_scanned_files: pos_integer()
-        ) :: {:ok, Resumed.t()} | {:error, error()}
-  def resume(dir, cwd, opts \\ []) do
-    with {:ok, path} <- pick(dir, cwd, opts), do: resume_picked(path, cwd, opts)
-  end
-
-  @doc """
-  The read of `resume/3` after its pick: `path` is a result of `pick/3`
-  for `cwd`, and the options and errors are those of `resume/3`.
+  `:max_bytes` lowers the file limit, and `:max_heap_bytes` lowers the
+  heap cap to no less than #{@min_heap_bytes} bytes. They exist so that a
+  test reaches a limit with small input.
   """
   @spec resume_picked(Path.t(), String.t(),
           max_bytes: pos_integer(),
@@ -165,10 +146,13 @@ defmodule Helyx.Session.File do
   end
 
   @doc """
-  The file that `resume/3` would read, with no read past the header: the
-  session of `:id`, or the newest of `cwd`. The errors are those of the
-  pick in `resume/3`. `Helyx.Session.resume/2` takes the lock of this
-  file before `resume_picked/3`, which reads the header again.
+  The session file to resume, with no read past the header: the session
+  of `:id`, or the most recently started session of `cwd` that has a
+  message. The scan and its bounds are in `Helyx.Session.File.Scan`;
+  `:max_scanned_files` lowers its file count for a test. A session of the
+  id whose header names another directory is `:not_found`.
+  `Helyx.Session.resume/2` takes the lock of this file before
+  `resume_picked/3`, which reads the header again.
   """
   @spec pick(Path.t(), String.t(), keyword()) :: {:ok, Path.t()} | {:error, error()}
   def pick(dir, cwd, opts) do
@@ -226,7 +210,6 @@ defmodule Helyx.Session.File do
          :ok <- check_size(repaired_size(byte_size(raw), tail), max_bytes) do
       resumed = %Resumed{
         file: %__MODULE__{path: path, leaf: read.leaf},
-        session_id: Path.basename(path, ".jsonl"),
         model: read.model,
         messages: read.messages,
         resume_ids: read.resume_ids

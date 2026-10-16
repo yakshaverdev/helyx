@@ -116,8 +116,8 @@ defmodule Helyx.Test.Provider do
   #   "crash"      one delta, then the stream raises
   #   "throw", "exit"  the stream throws or exits with :boom
   #   "fail_after.<how>" one delta, then a crash: "badarg", "undef",
-  #                "throw", "exit_crash", "exit_shutdown", "catch",
-  #                "exit_signal", and the other cases of `fail/1`
+  #                "throw", "exit_crash", "exit_shutdown", "catch", and
+  #                the other cases of `fail/1`
   #   "exit_normal"  the stream ends its process with a :normal signal
   #   "bad_event.<name>" the gate <name>, a message end, which only a
   #                harness may send, then the gate again
@@ -499,8 +499,7 @@ defmodule Helyx.Test.Provider do
 
   # The crash shapes of the BEAM: a raw Erlang error, a throw, an exit
   # whose reason has the shape of a crash, bare or under a shutdown, and
-  # an error event that holds a crash under the tag of an Erlang `catch`
-  # or of an exit signal.
+  # an error event that holds a crash under the tag of an Erlang `catch`.
   @crash {:badarg, [{:m, :f, 0, [file: ~c"m.erl", line: 1]}]}
   defp fail("badarg"), do: :erlang.error(:badarg)
   defp fail("undef"), do: Function.identity(:helyx_no_such_module).f()
@@ -508,7 +507,6 @@ defmodule Helyx.Test.Provider do
   defp fail("exit_crash"), do: exit(@crash)
   defp fail("exit_shutdown"), do: exit({:shutdown, @crash})
   defp fail("catch"), do: {:error, {:EXIT, @crash}}
-  defp fail("exit_signal"), do: {:error, {:EXIT, self(), @crash}}
   # Plugin code that fails while Core writes the text of the crash.
   defp fail("raise_message"), do: raise(Helyx.Test.RaiseMessage)
   defp fail("throw_message"), do: raise(Helyx.Test.ThrowMessage)
@@ -736,7 +734,7 @@ defmodule Helyx.Test.Tool.Background do
   # A background run with no OS resource: it takes a place, holds the
   # handles in "handles" (the release of the hold tool), answers
   # "started <path>", then waits for the gate in "gate" and returns its
-  # "done". With "twice" it takes a second place; with "unplaced" it gives
+  # "done". With "start" it answers that text; with "unplaced" it gives
   # a start answer with no place; with "unstarted" it waits for the gate
   # between its place and its start answer; with "gated_start" it waits
   # for the gate there too, then answers.
@@ -751,11 +749,10 @@ defmodule Helyx.Test.Tool.Background do
   end
 
   def run(args, _cwd) do
-    with {:ok, %{id: id, dir: dir}} <- Helyx.Tool.background(),
-         {:ok, _second} <- if(args["twice"], do: Helyx.Tool.background(), else: {:ok, nil}) do
+    with {:ok, %{id: id, dir: dir}} <- Helyx.Tool.background() do
       Enum.each(Map.get(args, "handles", []), &Helyx.Tool.hold/1)
       if args["gated_start"], do: Helyx.Test.Gate.wait(args["gate"])
-      :ok = Helyx.Tool.started("started " <> Path.join(dir, id))
+      :ok = Helyx.Tool.started(Map.get(args, "start", "started " <> Path.join(dir, id)))
       Helyx.Test.Gate.wait(args["gate"])
     end
   end

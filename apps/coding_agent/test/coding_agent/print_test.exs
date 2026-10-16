@@ -105,6 +105,7 @@ defmodule CodingAgent.PrintTest do
   end
 
   import ExUnit.CaptureIO
+  import Helyx.Test.Events, only: [wait_until: 1]
 
   alias CodingAgent.{CLI, Print}
 
@@ -163,14 +164,6 @@ defmodule CodingAgent.PrintTest do
     wait_until(fn ->
       Process.info(task.pid, :current_function) == {:current_function, {Process, :sleep, 1}}
     end)
-  end
-
-  defp wait_until(fun, ms \\ Helyx.Test.Events.wait_ms()) do
-    cond do
-      fun.() -> :ok
-      ms <= 0 -> flunk("the condition did not hold")
-      true -> Process.sleep(10) && wait_until(fun, ms - 10)
-    end
   end
 
   describe "the CLI" do
@@ -253,7 +246,7 @@ defmodule CodingAgent.PrintTest do
       assert {0, ^three <> "\n", ^stderr} =
                io("piped", fn -> CLI.main(["-p", "three", "--resume", dir], halt(self())) end)
 
-      assert {:ok, resumed} = Helyx.Session.File.resume(s, dir, id: id)
+      assert {:ok, resumed} = Helyx.Test.SessionFile.resume(s, dir, id: id)
 
       assert Enum.map(resumed.messages, &{&1.role, Helyx.Message.text(&1)}) ==
                for(text <- ["one", "two", three], role <- [:user, :assistant], do: {role, text})

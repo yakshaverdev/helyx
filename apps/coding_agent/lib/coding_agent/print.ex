@@ -62,7 +62,7 @@ defmodule CodingAgent.Print do
   and `main/2` does not return.
   """
   @spec main((-> status() | {:error, String.t()}), halt()) :: term()
-  def main(fun, halt \\ &:erlang.halt(&1, flush: false)) do
+  def main(fun, halt) do
     :ok =
       :gen_event.swap_handler(
         :erl_signal_server,

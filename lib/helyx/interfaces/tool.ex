@@ -40,9 +40,6 @@ defmodule Helyx.Tool do
 
   use Helyx.Interface, mode: :multi
 
-  # The fixed reason of `check_available/1`.
-  @bad_check_value "check/0 returned a bad value"
-
   @type spec :: %{name: String.t(), description: String.t(), parameters: map()}
 
   @callback name() :: String.t()
@@ -67,7 +64,7 @@ defmodule Helyx.Tool do
 
   A spec is accepted when `name` is a non-empty string of valid UTF-8,
   `description` is a string of valid UTF-8, and `parameters` is a map with
-  string keys at the top level that `Helyx.Message.encodable?/1` accepts.
+  string keys at the top level that `Helyx.Message.encoded_size/1` accepts.
   Otherwise the result is `{:error, {:bad_tool_spec, label}}`: the label is
   the name when the name is accepted, else the module name. Plugin code that
   raises, throws, or exits while a spec is built is not contained. Two tools
@@ -109,9 +106,9 @@ defmodule Helyx.Tool do
   Runs the optional `check/0` of each tool that `specs/1` returned, in that
   order, and stops at the first failure. `{:error, reason}` with a reason
   of valid UTF-8 gives `{:error, {:tool_unavailable, name, reason}}`, where
-  `name` is the checked spec name. Any other value but `:ok` gives the same
-  error with a fixed reason. A `check/0` that raises, throws, or exits is
-  not contained.
+  `name` is the checked spec name. Any other value but `:ok` raises in the
+  caller, as a `check/0` that raises, throws, or exits does: Core does not
+  contain it.
   """
   @spec check_available([{module(), spec()}]) ::
           :ok | {:error, {:tool_unavailable, String.t(), String.t()}}
@@ -130,11 +127,10 @@ defmodule Helyx.Tool do
 
   defp checked_result(:ok), do: :ok
 
-  defp checked_result({:error, reason} = error) do
-    if text?(reason), do: error, else: {:error, @bad_check_value}
+  defp checked_result({:error, reason} = error) when is_binary(reason) do
+    true = String.valid?(reason)
+    error
   end
-
-  defp checked_result(_other), do: {:error, @bad_check_value}
 
   defp check_unique(tools) do
     names = Enum.map(tools, fn {_tool, spec} -> spec.name end)
@@ -148,7 +144,7 @@ defmodule Helyx.Tool do
   defp text?(value), do: is_binary(value) and String.valid?(value)
 
   defp parameters?(value) when is_map(value),
-    do: Enum.all?(Map.keys(value), &is_binary/1) and Helyx.Message.encodable?(value)
+    do: Enum.all?(Map.keys(value), &is_binary/1) and Helyx.Message.encoded_size(value) != :error
 
   defp parameters?(_value), do: false
 
@@ -164,39 +160,39 @@ defmodule Helyx.Tool do
   no release runs: the tool or the provider must free the resource when
   its own process dies (ADR 0004).
   Returns only when the hands hold the handle, so work that starts after it
-  is never unheld. A no-op when the caller runs outside the hands, such as
-  `stream/3` in the model Task of `Helyx.Provider.Loop`. A provider holds
+  is never unheld. Exits when the caller runs outside the hands, such as
+  `stream/3` in the model Task of `Helyx.Provider.Loop`: a provider holds
   only from the callbacks of its provider process. Raises when the tool or
   the provider does not implement `release/3`.
   """
   @spec hold(term()) :: :ok
   def hold(handle) do
-    case Process.get(:helyx_hands) do
-      nil ->
-        :ok
-
-      hands ->
-        case GenServer.call(hands, {:hold, handle}, :infinity) do
-          :ok -> :ok
-          :no_release -> raise ArgumentError, "a tool without release/3 cannot hold a resource"
-        end
+    case GenServer.call(Process.get(:helyx_hands), {:hold, handle}, :infinity) do
+      :ok -> :ok
+      :no_release -> raise ArgumentError, "a tool without release/3 cannot hold a resource"
     end
   end
+
+  @doc false
+  # The error of `background/0` for a caller that is no tool call. The
+  # hands give it too.
+  @spec not_a_call() :: String.t()
+  def not_a_call, do: "only a tool call can run in the background"
 
   @doc """
   Takes a place for a background run of the calling tool call, before its
   external work starts. Returns the id of the run and the background
   folder of the session, mode `0700`, which the session deletes at its
   stop; a tool keeps its files there, named by the id. `{:error, text}` with no place: the
-  session's 16 places are taken, the call took a place already, the folder
-  cannot be made, or the caller is not a tool call of the hands. A run
-  that gave its start answer keeps its place until a turn takes its end;
-  any other call frees it when its Task ends.
+  session's 16 places are taken, the folder cannot be made, or the caller
+  is not a tool call of the hands. A second call gives a new id in the
+  same place. A run that gave its start answer keeps its place until a
+  turn takes its end; any other call frees it when its Task ends.
   """
   @spec background() :: {:ok, %{id: String.t(), dir: String.t()}} | {:error, String.t()}
   def background do
     case Process.get(:helyx_hands) do
-      nil -> {:error, Helyx.Session.Background.not_a_call()}
+      nil -> {:error, not_a_call()}
       hands -> GenServer.call(hands, :background, :infinity)
     end
   end
@@ -205,8 +201,9 @@ defmodule Helyx.Tool do
   Gives the start answer of a background run: `text` becomes the result of
   the call at once, and the tool's Task leaves its turn. The Task then
   runs on; its return value, or its crash, is the end of the run. Raises
-  outside the hands, and in a tool call that took no place with
-  `background/0`.
+  outside the hands, in a Task that is no tool call of a turn, such as a
+  run that gave its start answer, and in a tool call that took no place
+  with `background/0`.
   """
   @spec started(String.t()) :: :ok
   def started(text) when is_binary(text) do

@@ -14,7 +14,7 @@ defmodule Helyx.Session.File.Scan do
   The place and the header of a session file, and the choice of a file in a
   sessions directory: the list of the sessions (`list/2`), the file of an id
   (`find/2`), and the newest session of a folder for
-  `Helyx.Session.File.resume/3`. A session lives at
+  `Helyx.Session.File.pick/3`. A session lives at
   `<dir>/<project slug>/<session id>.jsonl`; `Helyx.Session.File` owns the
   entries after the header.
 

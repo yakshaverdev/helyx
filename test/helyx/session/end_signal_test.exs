@@ -331,8 +331,8 @@ defmodule Helyx.Session.EndSignalTest do
 
       # Each client subscribed before the stop, under load too.
       for client <- clients, do: assert_receive({:subscribed, ^client})
-      await_idle(pid)
-      final = GenServer.call(pid, :snapshot).seq
+      await_idle(session)
+      final = snapshot(session).seq
       :ok = GenServer.stop(pid)
 
       for client <- clients do
@@ -349,12 +349,12 @@ defmodule Helyx.Session.EndSignalTest do
     end
   end
 
-  defp await_idle(pid) do
+  defp await_idle(session) do
     collect_until(:turn_end)
 
-    case GenServer.call(pid, :snapshot) do
+    case snapshot(session) do
       %{turn: nil, queue: %{steers: 0, follow_ups: 0}} -> :ok
-      _busy -> await_idle(pid)
+      _busy -> await_idle(session)
     end
   end
 end

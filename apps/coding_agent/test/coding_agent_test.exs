@@ -61,7 +61,30 @@ defmodule CodingAgentTest do
     {:ok, resumed} =
       CodingAgent.start_session(core: core, cwd: dir, sessions_dir: dir, resume: session.id)
 
-    assert GenServer.call(Session.pid(resumed), :snapshot).model == "fake/echo"
+    assert snapshot(resumed).model == "fake/echo"
+  end
+
+  # No other async test changes the log handlers of the VM.
+  @tag :tmp_dir
+  test "log_to_file sends the log to the file while it runs, then puts the handler back",
+       %{tmp_dir: dir} do
+    {:ok, before} = :logger.get_handler_config(:default)
+    path = Path.join(dir, "tui.log")
+
+    assert CodingAgent.log_to_file(path, fn ->
+             {:ok, during} = :logger.get_handler_config(:default)
+             assert during.config.file == String.to_charlist(path)
+             require Logger
+             Logger.error("log_to_file marker")
+             :result
+           end) == :result
+
+    assert :logger.get_handler_config(:default) == {:ok, before}
+    assert File.read!(path) =~ "log_to_file marker"
+
+    # A raise puts the handler back too.
+    assert_raise RuntimeError, fn -> CodingAgent.log_to_file(path, fn -> raise "x" end) end
+    assert :logger.get_handler_config(:default) == {:ok, before}
   end
 
   # The sentence of a start error, after the prefix of every start error.

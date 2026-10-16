@@ -101,7 +101,7 @@ defmodule Helyx.Session do
   end
 
   @doc """
-  Resumes from `:sessions_dir` the session `Helyx.Session.File.resume/3` picks:
+  Resumes from `:sessions_dir` the session `Helyx.Session.File.pick/3` picks:
   the newest of the working directory, or with `:id` that session. It restores the
   transcript and the current model. A tool call without a result gets an error
   result in the transcript read that says it may have run

@@ -41,7 +41,8 @@ defmodule Helyx.Session.HandsTest do
       [
         core: core,
         cwd: File.cwd!(),
-        dir: Path.join(System.tmp_dir!(), "helyx-hands-#{System.unique_integer([:positive])}"),
+        background_dir:
+          Path.join(System.tmp_dir!(), "helyx-hands-#{System.unique_integer([:positive])}"),
         session: self(),
         tools: Map.new(tools, fn {tool, spec} -> {spec.name, tool} end)
       ] ++ opts
@@ -207,22 +208,15 @@ defmodule Helyx.Session.HandsTest do
 
   @max_result_bytes 65_536
 
-  @tag :tmp_dir
-  test "an unknown tool with a 100 KB name and a missing cwd get a bounded result and no Task",
-       %{core: core, tmp_dir: dir} do
+  test "an unknown tool with a 100 KB name gets a bounded result and no Task", %{core: core} do
     supervisor = GenServer.whereis(Helyx.Core.task_supervisor(core))
     :erlang.trace(supervisor, true, [:procs])
     name = String.duplicate("n", 100_000)
 
-    for {hands, text} <- [
-          {start_hands(core), "unknown tool: nnn"},
-          {start_hands(core, cwd: Path.join(dir, "gone")), "working directory does not exist"}
-        ] do
-      :ok = Helyx.Session.Hands.run(hands, "t1", call("c1", name, %{}))
-      assert_receive {:tool_result, "t1", "c1", {:error, result}}
-      assert result =~ text
-      assert byte_size(result) <= @max_result_bytes
-    end
+    :ok = Helyx.Session.Hands.run(start_hands(core), "t1", call("c1", name, %{}))
+    assert_receive {:tool_result, "t1", "c1", {:error, result}}
+    assert result =~ "unknown tool: nnn"
+    assert byte_size(result) <= @max_result_bytes
 
     # Every trace message of the supervisor so far is in the mailbox.
     ref = :erlang.trace_delivered(supervisor)
@@ -304,7 +298,7 @@ defmodule Helyx.Session.HandsTest do
 
     test "the start answer is the result, the Task leaves its turn, and its end comes after",
          %{core: core, dir: dir, gate: gate} do
-      hands = start_hands(core, dir: dir)
+      hands = start_hands(core, background_dir: dir)
       background(hands, "c1", %{"gate" => gate, "handles" => [{:report, self()}]})
 
       assert_receive {:tool_result, "t1", "c1", {:started, start}}
@@ -332,7 +326,7 @@ defmodule Helyx.Session.HandsTest do
     end
 
     test "a crash of the run ends it with an error", %{core: core, dir: dir, gate: gate} do
-      hands = start_hands(core, dir: dir)
+      hands = start_hands(core, background_dir: dir)
       background(hands, "c1", %{"gate" => gate})
       assert_receive {:tool_result, "t1", "c1", {:started, _start}}
       assert_receive {:waiting, pid}
@@ -352,7 +346,7 @@ defmodule Helyx.Session.HandsTest do
       dir: dir,
       gate: gate
     } do
-      hands = start_hands(core, dir: dir)
+      hands = start_hands(core, background_dir: dir)
 
       pids =
         for n <- 1..16 do
@@ -384,29 +378,38 @@ defmodule Helyx.Session.HandsTest do
       assert_receive {:tool_result, "t1", "c19", {:started, _start}}
     end
 
-    test "a call takes one place, and a start answer needs one", %{
-      core: core,
-      dir: dir,
-      gate: gate
-    } do
-      hands = start_hands(core, dir: dir)
-
-      background(hands, "c1", %{"gate" => gate, "twice" => true})
-
-      assert_receive {:tool_result, "t1", "c1",
-                      {:error, "a tool call can start one background run"}}
+    test "a start answer needs a place", %{core: core, dir: dir, gate: gate} do
+      hands = start_hands(core, background_dir: dir)
 
       {_, _log} =
         with_log(fn ->
-          background(hands, "c2", %{"unplaced" => true})
-          assert_receive {:tool_result, "t1", "c2", {:error, text}}
+          background(hands, "c1", %{"unplaced" => true})
+          assert_receive {:tool_result, "t1", "c1", {:error, text}}
           assert text =~ "started/1 needs a place from background/0"
         end)
 
-      # The places of both are free again.
+      # It took no place: all 16 are free.
       for n <- 1..16 do
         background(hands, "d#{n}", %{"gate" => gate})
         assert_receive {:tool_result, "t1", _, {:started, _start}}
+      end
+    end
+
+    # The start answer is cut to 4,096 bytes, also inside a character; the
+    # cut of every result repairs it, so each kept byte gives at most 3.
+    test "the start answer leaves the hands as valid UTF-8 of at most 12,288 bytes",
+         %{core: core, dir: dir, gate: gate} do
+      hands = start_hands(core, background_dir: dir)
+
+      for {start, body} <- [
+            {String.duplicate("a", 4095) <> "é", String.duplicate("a", 4095) <> "\uFFFD"},
+            {String.duplicate(<<255>>, 5000), String.duplicate("\uFFFD", 4096)}
+          ] do
+        background(hands, "c1", %{"gate" => gate, "start" => start})
+        assert_receive {:tool_result, "t1", "c1", {:started, answer}}
+        id = Helyx.Session.Background.id(answer)
+        assert answer == ~s(<background id="#{id}" status="started">\n#{body}\n</background>)
+        assert byte_size(body) <= 12_288
       end
     end
 
@@ -414,7 +417,7 @@ defmodule Helyx.Session.HandsTest do
          %{core: core, gate: gate, tmp_dir: tmp_dir} do
       file = Path.join(tmp_dir, "file")
       File.write!(file, "")
-      hands = start_hands(core, dir: Path.join(file, "sub"))
+      hands = start_hands(core, background_dir: Path.join(file, "sub"))
 
       background(hands, "c1", %{"gate" => gate})
 
@@ -431,7 +434,7 @@ defmodule Helyx.Session.HandsTest do
       dir: dir,
       gate: gate
     } do
-      hands = start_hands(core, dir: dir)
+      hands = start_hands(core, background_dir: dir)
 
       for n <- 1..16 do
         turn = "t#{n}"

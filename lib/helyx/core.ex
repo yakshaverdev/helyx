@@ -13,8 +13,9 @@ defmodule Helyx.Core do
   with `{:duplicate_plugin, module}` when a module is listed twice.
 
   Core checks every plugin against the interfaces it implements. It refuses to
-  start when a `:single` interface receives more than one plugin, when a
-  module implements no interface at all. It refuses to start with
+  start with `{:mode_violation, interface, plugins}` when a `:single`
+  interface receives more than one plugin, and with `{:not_a_plugin, module}`
+  when a module implements no interface at all. It refuses to start with
   `{:missing_plugin, Helyx.Provider}` when no provider is listed. It calls
   `id/0` of each provider once, and refuses to start with
   `{:invalid_provider_id, plugin}` when one returns a value that is not a
@@ -84,7 +85,7 @@ defmodule Helyx.Core do
 
   @doc "Returns the plugins registered for an interface, in registration order."
   @spec plugins(name(), module()) :: [module()]
-  def plugins(name \\ __MODULE__, interface) do
+  def plugins(name, interface) do
     Map.get(meta!(name, :plugins), interface, [])
   end
 

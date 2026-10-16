@@ -39,7 +39,7 @@ Decisions of this doc (the open items of #577):
 @spec started(String.t()) :: :ok
 ```
 
-- `background/0`, from a tool Task of the hands. It takes one of the 16 places of the session and gives the id of the run and the background folder of the session, which the hands create with mode `0700` at each call. The tool names its files by the id there: bash writes `<folder>/<id>.out`. A second call from the same Task, a call from a Task that is not a tool call, a call outside the hands, a full set of 16, and a folder that cannot be made give `{:error, text}`; the tool returns an error result and starts nothing. The place of a run that gave its start answer stays taken until a turn takes its end: the session calls `Helyx.Session.Hands.taken/2` with the id when the end joins the transcript, at the send of a turn or at the `user_message` of its steer. The place of a call that ends with no start answer is freed when its Task ends, and a cancel frees the place of a Task it kills.
+- `background/0`, from a tool Task of the hands. It takes one of the 16 places of the session and gives the id of the run and the background folder of the session, which the hands create with mode `0700` at each call. The tool names its files by the id there: bash writes `<folder>/<id>.out`. A call from a Task that is not a tool call, a call outside the hands, a full set of 16, and a folder that cannot be made give `{:error, text}`; the tool returns an error result and starts nothing. A second call from the same Task takes no second place: it gives a new id, and the run has the last id. The place of a run that gave its start answer stays taken until a turn takes its end: the session calls `Helyx.Session.Hands.taken/2` with the id when the end joins the transcript, at the send of a turn or at the `user_message` of its steer. The place of a call that ends with no start answer is freed when its Task ends, and a cancel frees the place of a Task it kills.
 - `started(text)`, from a Task that has a place. The hands send `text` as the result of the call, at once, in the form below, and move the Task out of its turn. The Task's return value, or its crash, is then the end of the run. A Task with no place raises `ArgumentError`, as `hold/1` does for a tool with no `release/3`.
 - The hands release the handles of a background Task when it ends, as at a delivery (`:deliver`), and send the session `{:background_end, text}` after the release.
 
@@ -67,7 +67,7 @@ The session stopped while this background command ran, and its end was lost. The
 </background>
 ```
 
-`Helyx.Session.Hands`: `start_link/1` takes `dir:`, the background folder of the session. The session names it `<system temp>/helyx-<instance id>` and deletes it at its stop.
+`Helyx.Session.Hands`: `start_link/1` takes `background_dir:`, the background folder of the session. The session names it `<system temp>/helyx-<instance id>` and deletes it at its stop.
 
 `Helyx.Tool.Bash`:
 
@@ -98,11 +98,11 @@ none. A foreground call does not change. The rule of the hands "no resource surv
 | background `timeout` | an integer from 1 to 86,400 s, default 3,600 | an error result; nothing runs | `Helyx.Tool.Bash.run/2` |
 | foreground `timeout` | from 1 to 600 s, default 120, as before | an error result; nothing runs | `Helyx.Tool.Bash.run/2` |
 | `background` argument | `true`, `false`, missing, or `null` | an error result; nothing runs | `Helyx.Tool.Bash.run/2` |
-| output file | 64 MiB (`@max_file_bytes` in `Helyx.Tool.Bash`): bytes past it are not written | the end message says how many bytes the command wrote and that the file holds the first 64 MiB | bash |
+| output file | 64 MiB (`@max_output_bytes` in `Helyx.Tool.Bash`): bytes past it are not written | the end message says how many bytes the command wrote and that the file holds the first 64 MiB | bash |
 | output in memory | the kept tail, `keep_tail/1`, as for a foreground call | as before | bash |
 | tail in the end message | `Helyx.Text.truncate/2` of the tail, then `Helyx.Message.cut_result/1` in the hands; the wrap adds the fixed lines | cut | bash, hands |
 | first line of the command in the end message | 200 bytes (`Helyx.Text.cap/3`) | cut | bash |
-| start answer | 4,096 bytes of valid UTF-8 (`@max_start_bytes` in `Helyx.Session.Background`) before the wrap, far under `Helyx.Message.max_result_bytes/0` | cut | hands |
+| start answer | 4,096 bytes before the wrap and before the UTF-8 repair (`@max_start_bytes` in `Helyx.Session.Background`). The repair in `Helyx.Message.cut_result/1` makes each kept byte at most 3 bytes, so the text is at most 12,288 bytes after it, far under `Helyx.Message.max_result_bytes/0` | cut, also inside a character; the repair replaces the bytes of a cut character | hands |
 | wait of a background Task | the `timeout` of the run; at it the release of a timeout, as in the foreground (`docs/features/bash-timeout.md`) | the end with the timeout | bash |
 | background ends that wait in the session | 16 with the live runs, in every turn phase: an end keeps its place until a turn takes it, and an end given back is the same end. The lost ends of a resume come on top, one per start answer with no end in the transcript, and free no place (#587) | a start over the 16 places runs nothing, as above | hands, session |
 | lost ends at resume | one per start answer in the transcript with no end message | none | `Helyx.Session.Background.lost/1` |

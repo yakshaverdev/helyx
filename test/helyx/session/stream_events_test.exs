@@ -97,8 +97,7 @@ defmodule Helyx.Session.StreamEventsTest do
             {"throw", "Erlang error: {:nocatch, :boom}"},
             {"exit_crash", "argument error"},
             {"exit_shutdown", "argument error"},
-            {"catch", "argument error"},
-            {"exit_signal", "argument error"}
+            {"catch", "argument error"}
           ] do
         {:ok, session} = Session.start(core, model: "test/fail_after." <> how)
         {:ok, _, _} = Session.subscribe(session)

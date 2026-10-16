@@ -17,7 +17,9 @@ defmodule Helyx.Session.Turn do
   # for a compaction turn it is its instructions until the provider's
   # first compaction event, then `:reported`
   # (docs/features/harness-compaction.md). `start` is the number of
-  # transcript messages when the turn opened.
+  # transcript messages when the turn opened, and `started_ms` the
+  # monotonic time of the session's node then: a snapshot gives the time
+  # since, so a late client needs no clock of the server.
 
   alias Helyx.{Message, ModelRef}
 
@@ -33,6 +35,7 @@ defmodule Helyx.Session.Turn do
     :prepare,
     :compact,
     :start,
+    :started_ms,
     bytes: 0,
     blocks: 0,
     tool_queue: %Helyx.Session.ToolQueue{}
@@ -49,6 +52,7 @@ defmodule Helyx.Session.Turn do
           prepare: pid() | nil,
           compact: String.t() | :reported | nil,
           start: non_neg_integer() | nil,
+          started_ms: integer() | nil,
           bytes: non_neg_integer(),
           blocks: non_neg_integer(),
           tool_queue: Helyx.Session.ToolQueue.t()
@@ -117,10 +121,19 @@ defmodule Helyx.Session.Turn do
     )
   end
 
+  # The turn at its open, with `transcript_length` messages before it.
+  @spec open(t(), non_neg_integer()) :: t()
+  def open(%__MODULE__{} = turn, transcript_length),
+    do: %{turn | start: transcript_length, started_ms: System.monotonic_time(:millisecond)}
+
+  # The milliseconds since `started_ms`.
+  @spec elapsed_ms(integer()) :: non_neg_integer()
+  def elapsed_ms(started_ms), do: System.monotonic_time(:millisecond) - started_ms
+
   # The turn of a snapshot (`Helyx.Session.Snapshot`).
   @spec snapshot(t()) :: Helyx.Session.Snapshot.turn()
   def snapshot(%__MODULE__{} = turn) do
     partial = if turn.partial, do: assistant_message(turn, [])
-    %{id: turn.id, partial: partial}
+    %{id: turn.id, partial: partial, elapsed_ms: elapsed_ms(turn.started_ms)}
   end
 end

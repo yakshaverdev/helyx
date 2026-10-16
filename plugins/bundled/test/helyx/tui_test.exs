@@ -340,16 +340,35 @@ defmodule Helyx.TUITest do
       assert ExRatatui.Runtime.snapshot(tui).subscription_count == 0
     end
 
-    test "a client that mounts during a turn starts the clock at mount", %{core: core} do
-      call = %Message.ToolCall{id: "c", name: "slow", arguments: %{"ms" => 60_000, "text" => "x"}}
-      state = mounted(core, "late", [[call]])
-      state = state |> press("g") |> press("o") |> press("enter")
-      assert_receive {:helyx_event, %Event{type: :turn_start}}
+    test "a client that mounts during a turn takes the time of the turn from the snapshot",
+         %{core: core} do
+      snapshot = %Session.Snapshot{
+        instance_id: "i",
+        seq: 0,
+        messages: [],
+        turn: %{id: "t", partial: nil, elapsed_ms: 12_300},
+        model: "fake/late",
+        queue: %{steers: 0, follow_ups: 0, running: 0, held: 0, waiting: 0},
+        persisting: true
+      }
 
-      {:ok, late} = TUI.mount(session: state.session)
-      assert late.vm.running?
+      # A session process that answers the subscribe with this snapshot.
+      test = self()
+
+      spawn_link(fn ->
+        {:ok, _} = Registry.register(Helyx.Core.sessions_registry(core), "late", nil)
+        send(test, :registered)
+        receive do: ({:"$gen_call", from, {:subscribe, _}} -> GenServer.reply(from, snapshot))
+        Process.sleep(:infinity)
+      end)
+
+      assert_receive :registered
+      {:ok, late} = TUI.mount(session: %Session{id: "late", core: core})
       assert [%Subscription{id: :busy}] = TUI.subscriptions(late)
-      assert status_text(late) =~ busy_status(0)
+      assert status_text(late) =~ busy_status(12)
+
+      {:noreply, late} = TUI.handle_info(:busy_tick, late)
+      assert late.busy.elapsed >= 12_300
     end
   end
 
@@ -1145,7 +1164,7 @@ defmodule Helyx.TUITest do
       assert ExRatatui.textarea_get_value(state.composer.input) == ""
       assert status_text(state) =~ "other/any"
       assert List.last(ViewModel.cells(state.vm)) == {:info, "model: other/any"}
-      assert GenServer.call(Session.pid(state.session), :snapshot).model == "other/any"
+      assert Helyx.Test.Events.snapshot(state.session).model == "other/any"
 
       state = state |> submit("hi") |> drain()
       assert last_answer(state) == "from other"
@@ -1177,7 +1196,7 @@ defmodule Helyx.TUITest do
         assert byte_size(shown) < 80
         assert ExRatatui.textarea_get_value(state.composer.input) == text
         assert status_text(state) =~ "fake/stay"
-        assert GenServer.call(Session.pid(state.session), :snapshot).model == "fake/stay"
+        assert Helyx.Test.Events.snapshot(state.session).model == "fake/stay"
       end
 
       refute_received {:helyx_event, _}
@@ -1252,7 +1271,7 @@ defmodule Helyx.TUITest do
         ExRatatui.textarea_set_value(state.composer.input, "")
         state = state |> submit(text) |> drain()
         assert last_answer(state) == "ok"
-        assert GenServer.call(Session.pid(state.session), :snapshot).model == "fake/looks"
+        assert Helyx.Test.Events.snapshot(state.session).model == "fake/looks"
       end
     end
 

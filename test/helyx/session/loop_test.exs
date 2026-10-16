@@ -153,7 +153,7 @@ defmodule Helyx.Session.LoopTest do
     :ok = Session.prompt(session, "again")
     collect_until(:turn_end)
 
-    {:ok, restored} = Helyx.Session.File.resume(dir, File.cwd!())
+    {:ok, restored} = Helyx.Test.SessionFile.resume(dir, File.cwd!())
     assert "recovered" in Enum.map(restored.messages, &Helyx.Message.text/1)
   end
 

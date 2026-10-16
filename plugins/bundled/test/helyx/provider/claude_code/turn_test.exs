@@ -8,7 +8,7 @@ defmodule Helyx.Provider.ClaudeCode.TurnTest do
   import Helyx.Test.OSHelpers
 
   alias Helyx.{HarnessIO, Message, Session}
-  alias Helyx.Provider.{ClaudeCode, Fake}
+  alias Helyx.Provider.{ClaudeCode, ClaudeCode.Turn, Fake}
 
   @moduletag :tmp_dir
 
@@ -105,7 +105,7 @@ defmodule Helyx.Provider.ClaudeCode.TurnTest do
     assert [%{outcome: :done}] = of_type(events, :turn_end)
 
     assert {:ok, %{resume_ids: %{"claude-code" => {^id, 0, nil}}}} =
-             Session.File.resume(ctx.sessions, ctx.work)
+             Helyx.Test.SessionFile.resume(ctx.sessions, ctx.work)
   end
 
   test "two turns run in one program; the session end closes it with end of input; a resumed session passes the id",
@@ -173,7 +173,7 @@ defmodule Helyx.Provider.ClaudeCode.TurnTest do
              messages(events)
 
     assert {:ok, %{resume_ids: %{"claude-code" => {^fresh, 1, nil}}}} =
-             Session.File.resume(ctx.sessions, ctx.work)
+             Helyx.Test.SessionFile.resume(ctx.sessions, ctx.work)
   end
 
   test "a fresh session aborted before its first message is not resumed after a restart",
@@ -333,6 +333,36 @@ defmodule Helyx.Provider.ClaudeCode.TurnTest do
       assert [%{outcome: :done}] = of_type(prompt(session, "next"), :turn_end)
       # The abort cut the text-only partial, so the next turn replays (#432).
       refute Enum.any?(args(bin, 2), &String.starts_with?(&1, "--resume"))
+    end
+  end
+
+  describe "the content of a tool result" do
+    defp results_of(content),
+      do: Turn.results([%{"type" => "tool_result", "tool_use_id" => "t", "content" => content}])
+
+    test "a list joins its text blocks, with a placeholder for another block" do
+      blocks = [%{"type" => "text", "text" => "alpha"}, %{"type" => "image", "source" => %{}}]
+      assert [{:tool_result, "t", {:ok, "alpha\n[image]"}}] = results_of(blocks)
+    end
+
+    test "any other shape is a contract break" do
+      for content <- [17, nil, [17], [%{"type" => "text", "text" => 17}], [%{"text" => "a"}]] do
+        assert_raise FunctionClauseError, fn -> results_of(content) end
+      end
+    end
+
+    @tag :capture_log
+    test "a contract break stops the provider and fails the turn; the session goes on",
+         %{bin: bin} = ctx do
+      turn(bin, 1, 1, begin() ++ [tool_use("toolu_01", %{}), tool_result("toolu_01", 17)])
+      turn(bin, 2, 1, reply("Next."))
+
+      session = start(ctx)
+
+      assert [%{outcome: :error, error: "no function clause matches"}] =
+               of_type(prompt(session, "go"), :turn_end)
+
+      assert [%{outcome: :done}] = of_type(prompt(session, "next"), :turn_end)
     end
   end
 

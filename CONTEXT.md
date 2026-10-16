@@ -51,7 +51,7 @@ Anything that renders a session from its snapshot and events and sends prompts t
 _Avoid_: frontend, UI, view
 
 **Provider turn**:
-A turn that a provider starts by itself, for example when a background task ends. The session shows it as a turn with no user message, and its turn start names the provider as its origin.
+A turn that a provider starts by itself, for example when a background task ends. The session shows it as a turn with no user message, and its turn start names the provider as its origin. It is a Helyx turn. The turn id of an external program is a different thing: a harness program gives an id to each of its own turns, also to a turn that a prompt opens.
 _Avoid_: background turn, notification turn
 
 **Steer**:
@@ -65,6 +65,26 @@ _Avoid_: queue, pending prompt, next
 **Abort**:
 Ending the current turn now. A failed turn ends the same way. The queued steers and follow-ups leave the queue and go back to the client.
 _Avoid_: cancel, stop, kill
+
+**Background run**:
+A tool call that goes on after its start answer. The start answer is the result of the call at once, and the run can live longer than its turn. An abort does not end it; the stop of the session does.
+_Avoid_: background task, job
+
+**Place**:
+One unit of the limit of 16 background runs of a session. A tool call takes a place before its external work starts. The place stays taken until a turn takes the end of the run, so the places also bound the ends that wait.
+_Avoid_: slot
+
+**End**:
+The result of a background run: the return value or the crash of its Task. It comes to the session as a user message, and a turn takes it into the transcript.
+_Avoid_: completion, exit, notification
+
+**Held end**:
+An end that waits for the next prompt and opens no turn by itself. When no turn that is not a compaction is open, ends are held after an abort, a failed turn, a resume, or an end that a turn gave back, until such a turn opens. An open turn that is not a compaction takes an end that is given back, and the end is not held.
+_Avoid_: parked end
+
+**Lost end**:
+The end that a resume makes for a background run whose start answer is in the transcript with no end: the session stopped while the run ran. It tells the model that the run may have run in full or in part. A resume holds its lost ends.
+_Avoid_: orphan end
 
 ## Providers
 
@@ -111,6 +131,10 @@ _Avoid_: cancel, stop
 **Resume id**:
 The id that a provider gives for its own conversation state. Helyx keeps it with the session, and in the session file when there is one. It gives the id to a later provider process when the transcript shows that the process can continue that state. Otherwise the process starts fresh.
 _Avoid_: harness session, thread, external session
+
+**Resume label**:
+What Helyx keeps for the last resume id of a provider: the resume id, the number of assistant messages before the provider gave it, and the number at the last compaction of the provider under that id, if any. The label and the transcript decide if a later provider process gets the id.
+_Avoid_: harness session entry
 
 **Model ref**:
 The string that names a model for a session, in the form `provider/model`. The prefix is the provider id, and the rest is the model.

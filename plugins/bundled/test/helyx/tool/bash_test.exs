@@ -10,6 +10,8 @@ defmodule Helyx.Tool.BashTest do
   @moduletag :tmp_dir
 
   setup %{tmp_dir: dir} do
+    # A direct `run/2` holds its groups with these hands.
+    Helyx.Test.Hands.fake()
     core = :"core_#{System.unique_integer([:positive])}"
     start_supervised!({Helyx.Core, name: core, plugins: [Helyx.Provider.Fake, Helyx.Tool.Bash]})
 
@@ -21,19 +23,9 @@ defmodule Helyx.Tool.BashTest do
     }
   end
 
-  # Starts a session whose one turn runs `command`, and returns the session
-  # once the command is running.
   defp start_command(core, dir, command) do
     call = %ToolCall{id: "c", name: "bash", arguments: %{"command" => command}}
-    :ok = Helyx.Provider.Fake.script(core, "abort", [[call]])
-    {:ok, session} = Helyx.Session.start(core, model: "fake/abort", cwd: dir)
-    {:ok, _, _} = Helyx.Session.subscribe(session)
-    :ok = Helyx.Session.prompt(session, "go")
-
-    assert_receive {:helyx_event,
-                    %Helyx.Event{type: :message_end, data: %{message: %{role: :assistant}}}}
-
-    session
+    ToolRunner.start_tool(core, call, dir)
   end
 
   # The release Task that the caller starts at the limit: its one linked
@@ -58,12 +50,6 @@ defmodule Helyx.Tool.BashTest do
     result = run.(%{"command" => "pwd; echo err >&2"})
     refute result.is_error
     assert Helyx.Message.text(result) == "#{dir}\nerr\n"
-  end
-
-  test "a non-zero exit code is in the text, not an error result", %{run: run} do
-    result = run.(%{"command" => "echo partial; exit 3"})
-    refute result.is_error
-    assert Helyx.Message.text(result) == "partial\n\nExit code: 3"
   end
 
   test "no output says so", %{run: run} do
@@ -147,21 +133,22 @@ defmodule Helyx.Tool.BashTest do
     assert text =~ "did not start"
   end
 
-  test "a real exit status 2 is an ok result (issue #52)", %{tmp_dir: dir} do
-    assert {:ok, "(no output)\nExit code: 2"} =
-             Helyx.Tool.Bash.run(%{"command" => "exit 2"}, dir)
-  end
-
   test "a command whose first output looks like a marker still ran (issue #52)",
        %{tmp_dir: dir} do
     assert {:ok, "0\nnope\n"} = Helyx.Tool.Bash.run(%{"command" => "echo 0; echo nope"}, dir)
   end
 
-  test "a real exit 127, 137, or 255 is an ok result (issue #70)", %{tmp_dir: dir} do
-    for {command, status} <- [{"exit 127", 127}, {"kill -KILL $$", 137}, {"exit 255", 255}] do
+  # A failed start can also give 2, 127, 137, or 255: a command that exits
+  # with one is not taken for a failed start (issues #52, #70).
+  test "a non-zero exit code is in the text of an ok result", %{tmp_dir: dir} do
+    for status <- [2, 3, 127, 137, 255] do
+      command = if status == 137, do: "kill -KILL $$", else: "exit #{status}"
       assert {:ok, text} = Helyx.Tool.Bash.run(%{"command" => command}, dir)
       assert text == "(no output)\nExit code: #{status}"
     end
+
+    assert {:ok, "partial\n\nExit code: 3"} =
+             Helyx.Tool.Bash.run(%{"command" => "echo partial; exit 3"}, dir)
   end
 
   test "a reason over the result limit is cut (issue #52)" do
@@ -207,18 +194,7 @@ defmodule Helyx.Tool.BashTest do
 
     pid = wait_for_pid(Path.join(dir, "pid"))
     child = wait_for_pid(Path.join(dir, "child"))
-    provider = :sys.get_state(Helyx.Session.pid(session)).conn.pid
-
-    # The provider process is a Task of the hands too.
-    [task_pid] =
-      for task <- Task.Supervisor.children(Helyx.Core.task_supervisor(core)),
-          task != provider,
-          {:dictionary, dict} = Process.info(task, :dictionary),
-          Keyword.has_key?(dict, :helyx_hands) do
-        task
-      end
-
-    true = :erlang.suspend_process(task_pid)
+    true = :erlang.suspend_process(ToolRunner.running_tool(session).task)
     assert gone_within?(pid), "the shell did not exit"
 
     :ok = Helyx.Session.abort(session)
@@ -238,17 +214,7 @@ defmodule Helyx.Tool.BashTest do
   test "killing the hands kills the Task and the command", %{core: core, tmp_dir: dir} do
     session = start_command(core, dir, "echo $$ > pid; exec sleep 30")
     pid = wait_for_pid(Path.join(dir, "pid"))
-    %{hands: hands, conn: %{pid: provider}} = :sys.get_state(Helyx.Session.pid(session))
-
-    # The provider process is a Task of the hands too.
-    [task] =
-      for task <- Task.Supervisor.children(Helyx.Core.task_supervisor(core)),
-          task != provider,
-          {:dictionary, dict} = Process.info(task, :dictionary),
-          Keyword.has_key?(dict, :helyx_hands) do
-        task
-      end
-
+    %{hands: hands, task: task} = ToolRunner.running_tool(session)
     ref = Process.monitor(task)
     Process.exit(hands, :kill)
     assert_receive {:DOWN, ^ref, :process, _, _}
@@ -282,10 +248,15 @@ defmodule Helyx.Tool.BashTest do
     end
 
     test "a timeout of 1, of 600, or null runs the command", %{tmp_dir: dir} do
-      for timeout <- [1, 600, nil] do
+      for timeout <- [600, nil] do
         assert {:ok, "hi\n"} =
                  Helyx.Tool.Bash.run(%{"command" => "echo hi", "timeout" => timeout}, dir)
       end
+
+      # Under load the command can take more than 1 s, so the test checks
+      # only that 1 passes the bound.
+      refute {:error, "timeout must be an integer from 1 to 600 (seconds)"} ==
+               Helyx.Tool.Bash.run(%{"command" => "echo hi", "timeout" => 1}, dir)
     end
 
     # The schema allows the background maximum; `run/2` checks the bound of
@@ -298,28 +269,32 @@ defmodule Helyx.Tool.BashTest do
           do: assert(Helyx.Tool.Bash.description() =~ number)
     end
 
+    # The limit of the tests below. It holds the start of perl and bash and
+    # the first output under load (over 200 ms once, #562), so the output
+    # comes before the limit. It is not whole seconds, so the result gives
+    # it in ms, a unit that only these tests reach.
+    @load_start_ms 2_500
+    @timed_out "Timed out after #{@load_start_ms} ms: the command group was released."
+
     # TERM first, as an abort: the trap's output is kept after the limit.
+    @tag :slow
     test "at the limit the command group is released and the output so far is an error result",
          %{tmp_dir: dir} do
       command = "trap 'echo stopped' TERM; echo $$ > pid; echo partial; sleep 60 & wait"
 
-      assert {:error, text} = Helyx.Tool.Bash.run_command(command, dir, 200)
-      assert text == "partial\nstopped\n\nTimed out after 200 ms: the command group was released."
+      assert {:error, text} = Helyx.Tool.Bash.run_command(command, dir, @load_start_ms)
+      assert text == "partial\nstopped\n\n" <> @timed_out
       refute os_alive?(wait_for_pid(Path.join(dir, "pid")))
     end
 
+    @tag :slow
     test "at the limit a command that ignores TERM is killed after the grace", %{tmp_dir: dir} do
       command = "trap '' TERM; echo $$ > pid; echo partial; sleep 60"
 
-      assert {:error, "partial\n\nTimed out after 100 ms: the command group was released."} =
-               Helyx.Tool.Bash.run_command(command, dir, 100)
-
+      assert {:error, text} = Helyx.Tool.Bash.run_command(command, dir, @load_start_ms)
+      assert text == "partial\n\n" <> @timed_out
       refute os_alive?(wait_for_pid(Path.join(dir, "pid")))
     end
-
-    # The limit holds the start of perl and bash and the poll for the pid
-    # file before the suspension (over 200 ms once under load, #562).
-    @load_start_ms 2_000
 
     # The caller is suspended past the limit while the output and the exit
     # status queue up: a queued message must not win over the deadline. The
@@ -330,7 +305,10 @@ defmodule Helyx.Tool.BashTest do
       command = "echo $$ > pid; until [ -e go ]; do sleep 0.01; done; echo done"
 
       caller =
-        spawn(fn -> send(test, Helyx.Tool.Bash.run_command(command, dir, @load_start_ms)) end)
+        spawn(fn ->
+          Helyx.Test.Hands.fake()
+          send(test, Helyx.Tool.Bash.run_command(command, dir, @load_start_ms))
+        end)
 
       pid = wait_for_pid(Path.join(dir, "pid"))
       true = :erlang.suspend_process(caller)
@@ -340,7 +318,7 @@ defmodule Helyx.Tool.BashTest do
       assert gone_within?(pid)
       true = :erlang.resume_process(caller)
 
-      assert_receive {:error, "done\n\nTimed out after 2 s: the command group was released."}
+      assert_receive {:error, "done\n\n" <> @timed_out}
     end
 
     # A release that stalls (here suspended, as a kill(1) run that never
@@ -350,13 +328,18 @@ defmodule Helyx.Tool.BashTest do
     test "a stalled release does not hold the call past the deadline", %{tmp_dir: dir} do
       test = self()
       command = "trap '' TERM; echo $$ > pid; echo partial; sleep 60"
-      caller = spawn(fn -> send(test, Helyx.Tool.Bash.run_command(command, dir, 100)) end)
+
+      caller =
+        spawn(fn ->
+          Helyx.Test.Hands.fake()
+          send(test, Helyx.Tool.Bash.run_command(command, dir, @load_start_ms))
+        end)
+
       pid = wait_for_pid(Path.join(dir, "pid"))
 
       true = :erlang.suspend_process(release_task(caller))
 
-      assert_receive {:error,
-                      "partial\n\nTimed out after 100 ms: the command group was released."}
+      assert_receive {:error, "partial\n\n" <> @timed_out}
 
       assert gone_within?(pid)
     end
@@ -507,6 +490,7 @@ defmodule Helyx.Tool.BashTest do
     # bound gets that error, and one over it the error of the bound.
     test "a background timeout is from 1 to 86400; outside the hands nothing runs",
          %{tmp_dir: dir} do
+      Process.delete(:helyx_hands)
       ran = Path.join(dir, "ran")
       args = %{"command" => "touch '#{ran}'", "background" => true}
 
@@ -524,7 +508,7 @@ defmodule Helyx.Tool.BashTest do
     end
 
     test "the file gets at most 64 MiB; the end counts every byte and says so", %{tmp_dir: dir} do
-      max = Bash.max_file_bytes()
+      max = Bash.max_output_bytes()
       assert max == 64 * 1_048_576
       path = Path.join(dir, "out")
       {:ok, file} = File.open(path, [:write, :raw, :binary])

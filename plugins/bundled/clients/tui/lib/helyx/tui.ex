@@ -137,12 +137,18 @@ defmodule Helyx.TUI do
        terminal_size_fn: Keyword.get(opts, :terminal_size_fn, &ExRatatui.terminal_size/0),
        # nil while idle, or the monotonic ms of the turn start and the ms
        # since then at the last tick.
-       busy: nil,
+       busy: busy(snapshot.turn),
        quit: nil
      }
-     |> sync_busy()
      |> read_branch()}
   end
+
+  # A client that joins a running turn takes its start from the snapshot,
+  # which the session makes, so every client shows the same time.
+  defp busy(nil), do: nil
+
+  defp busy(%{elapsed_ms: elapsed}),
+    do: %{started: System.monotonic_time(:millisecond) - elapsed, elapsed: elapsed}
 
   # A dead session leaves nothing to render; exiting surfaces the reason
   # through run/1 instead of an idle screen that rejects every key. The
@@ -380,9 +386,8 @@ defmodule Helyx.TUI do
   def subscriptions(%{busy: nil}), do: []
   def subscriptions(_state), do: [Subscription.interval(:busy, Footer.tick_ms(), :busy_tick)]
 
-  # The start is when this client saw the turn start: the `turn_start`
-  # event, or the mount for a client that joins a running turn, as the
-  # snapshot has no start time.
+  # After the mount, the start is when this client saw the `turn_start`
+  # event.
   defp sync_busy(%{vm: %{running?: true}, busy: nil} = state),
     do: %{state | busy: %{started: System.monotonic_time(:millisecond), elapsed: 0}}
 

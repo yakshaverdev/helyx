@@ -212,7 +212,7 @@ defmodule Helyx.Provider.OpenAITest do
       Helyx.Session.Hands.start_link(
         core: core,
         cwd: File.cwd!(),
-        dir: Path.join(System.tmp_dir!(), "helyx-unused"),
+        background_dir: Path.join(System.tmp_dir!(), "helyx-unused"),
         session: self(),
         tools: tools
       )
@@ -287,6 +287,14 @@ defmodule Helyx.Provider.OpenAITest do
         assert Enum.to_list(stream) == [{:error, {:http_status, unquote(status), "busy"}}]
         assert attempts() == 1
       end
+    end
+
+    test "a 307 is not followed: one request, and the status is the error" do
+      sequence([error_reply(307, [{"location", "/again"}]), ok()])
+
+      assert {:ok, stream} = OpenAI.Go.stream("m", %Helyx.Context{}, [])
+      assert Enum.to_list(stream) == [{:error, {:http_status, 307, "busy"}}]
+      assert attempts() == 1
     end
 
     test "at most 3 retries, then the last status is the error" do

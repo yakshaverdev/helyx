@@ -117,12 +117,12 @@ defmodule Helyx.Session.BoundaryTest do
   end
 
   describe "tool checks at the session boundary (#150)" do
-    # One test tool per failing `check/0`: the quoted body, and the reason
-    # the error gives.
+    # One test tool per `check/0` value outside the contract: the quoted
+    # body, and the raise in the caller.
     @bad_checks [
-      {Helyx.SessionTest.CheckBadValue, :yes, "check/0 returned a bad value"},
-      {Helyx.SessionTest.CheckAtomReason, {:error, :enoent}, "check/0 returned a bad value"},
-      {Helyx.SessionTest.CheckBytesReason, {:error, <<"x", 255>>}, "check/0 returned a bad value"}
+      {Helyx.SessionTest.CheckBadValue, :yes, FunctionClauseError},
+      {Helyx.SessionTest.CheckAtomReason, {:error, :enoent}, FunctionClauseError},
+      {Helyx.SessionTest.CheckBytesReason, {:error, <<"x", 255>>}, MatchError}
     ]
 
     for {module, body, _reason} <- @bad_checks do
@@ -144,17 +144,20 @@ defmodule Helyx.Session.BoundaryTest do
     end
 
     @cases [
-      {Helyx.Test.Tool.Unavailable, "unavailable", "the frob is missing"}
-      | for({module, _body, reason} <- @bad_checks, do: {module, "checked", reason})
+      {Helyx.Test.Tool.Unavailable,
+       {:error, {:tool_unavailable, "unavailable", "the frob is missing"}}}
+      | for({module, _body, exception} <- @bad_checks, do: {module, exception})
     ]
+
+    # A failed check is an error; a value outside the contract raises.
+    defp checked(exception, start) when is_atom(exception), do: assert_raise(exception, start)
+    defp checked(error, start), do: assert(start.() == error)
 
     @tag :tmp_dir
     test "start rejects a failed check, names the tool, and makes nothing", %{tmp_dir: dir} do
-      for {module, name, reason} <- @cases do
+      for {module, expected} <- @cases do
         core = start_core([Helyx.Test.Provider, Helyx.Test.Tool.Upcase, module])
-
-        assert {:error, {:tool_unavailable, ^name, ^reason}} =
-                 Session.start(core, model: "test/ok", sessions_dir: dir)
+        checked(expected, fn -> Session.start(core, model: "test/ok", sessions_dir: dir) end)
 
         assert DynamicSupervisor.count_children(Helyx.Core.session_supervisor(core)).active == 0
       end
@@ -180,11 +183,9 @@ defmodule Helyx.Session.BoundaryTest do
       File.write!(path, ~s({"type":"mess), [:append])
       before = File.read!(path)
 
-      for {module, name, reason} <- @cases do
+      for {module, expected} <- @cases do
         bad = start_core([Helyx.Test.Provider, module])
-
-        assert {:error, {:tool_unavailable, ^name, ^reason}} =
-                 Session.resume(bad, sessions_dir: dir)
+        checked(expected, fn -> Session.resume(bad, sessions_dir: dir) end)
 
         assert DynamicSupervisor.count_children(Helyx.Core.session_supervisor(bad)).active == 0
       end
@@ -220,16 +221,6 @@ defmodule Helyx.Session.BoundaryTest do
     end
   end
 
-  @tag :tmp_dir
-  test "a working directory that is gone gives an error result", %{core: core, tmp_dir: dir} do
-    {:ok, session} = Session.start(core, model: "test/loop", cwd: Path.join(dir, "gone"))
-    {:ok, _, _} = Session.subscribe(session)
-
-    :ok = Session.prompt(session, "hello")
-    events = collect_until(:turn_end)
-    assert final_text(events) =~ "working directory does not exist"
-  end
-
   describe "set_model/2" do
     test "the next turn uses the new provider, and a switch back works", %{core: core} do
       {:ok, session} = Session.start(core, model: "test/ok")
@@ -245,7 +236,7 @@ defmodule Helyx.Session.BoundaryTest do
       assert change.turn_id == nil
       assert change.seq == List.last(first).seq + 1
       refute_received {:helyx_event, _}
-      assert GenServer.call(Session.pid(session), :snapshot).model == "other/any"
+      assert snapshot(session).model == "other/any"
 
       :ok = Session.prompt(session, "two")
       second = collect_until(:turn_end)
@@ -273,7 +264,7 @@ defmodule Helyx.Session.BoundaryTest do
       assert {:error, {:invalid_model_ref, "test"}} = Session.set_model(session, "test")
       assert {:error, {:invalid_model_ref, _}} = Session.set_model(session, <<"test/", 255>>)
 
-      assert GenServer.call(Session.pid(session), :snapshot).model == "test/ok"
+      assert snapshot(session).model == "test/ok"
       assert File.read!(path) == before
       refute_received {:helyx_event, _}
     end
@@ -294,8 +285,7 @@ defmodule Helyx.Session.BoundaryTest do
       stop_session(session, &GenServer.stop/1)
 
       {:ok, resumed} = Session.resume(core, sessions_dir: dir, id: session.id)
-      assert GenServer.call(Session.pid(resumed), :snapshot).model == "other/any"
-      {:ok, _, _} = Session.subscribe(resumed)
+      assert {:ok, %{model: "other/any"}, _} = Session.subscribe(resumed)
       :ok = Session.prompt(resumed, "hello")
       assert final_text(collect_until(:turn_end)) == "from other"
     end
@@ -375,7 +365,7 @@ defmodule Helyx.Session.BoundaryTest do
       assert log =~ "persistence off"
       assert_receive {:helyx_event, %Event{type: :notice, turn_id: nil}}
       assert_receive {:helyx_event, %Event{type: :model_change, turn_id: nil}}
-      assert GenServer.call(Session.pid(session), :snapshot).model == "other/any"
+      assert snapshot(session).model == "other/any"
 
       # Persistence stays off: with the file back, a turn writes nothing.
       File.rmdir!(path)

@@ -86,7 +86,7 @@ defmodule Helyx.Provider.Codex.TurnsTest do
     assert [%{outcome: :done}] = of_type(events, :turn_end)
 
     assert {:ok, %{resume_ids: %{"codex" => {tid(), 0, nil}}}} =
-             Session.File.resume(ctx.sessions, ctx.work)
+             Helyx.Test.SessionFile.resume(ctx.sessions, ctx.work)
   end
 
   test "a later turn runs in the same program, and a resumed session resumes the thread",
@@ -179,7 +179,7 @@ defmodule Helyx.Provider.Codex.TurnsTest do
              messages(events)
 
     assert {:ok, %{resume_ids: %{"codex" => {fresh_tid(), 1, nil}}}} =
-             Session.File.resume(ctx.sessions, ctx.work)
+             Helyx.Test.SessionFile.resume(ctx.sessions, ctx.work)
   end
 
   test "a switch to a codex model replays the history, tool calls too", %{bin: bin} = ctx do

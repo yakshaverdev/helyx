@@ -251,7 +251,10 @@ defmodule Helyx.Session.CompactionTest do
       compacted(proc)
 
       state = :sys.get_state(Session.pid(session))
-      assert Helyx.Session.Transcript.resumable(state.transcript, state.resume_ids, "conn") == "L"
+
+      assert {"L", _, _} =
+               Helyx.Session.Transcript.resumable(state.transcript, state.resume_ids, "conn")
+
       assert reconnect(core, session, dir) == "L"
     end
 

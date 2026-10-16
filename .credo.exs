@@ -15,16 +15,16 @@
           # A test asserts order, not an upper bound of wall-clock time (#221).
           {Helyx.Credo.WallClockUpperBound, []},
           # A .ex file has at most 400 lines (#294). The list only shrinks: a
-          # listed file must not grow, and a file under the limit loses its
-          # entry.
+          # listed file must not grow, a file under the limit loses its
+          # entry, and a file under its count lowers it.
           {Helyx.Credo.FileLength,
            [
              allowed: %{
                "plugins/bundled/lib/helyx/provider/codex.ex" =>
-                 {496,
+                 {493,
                   "the Codex turn, thread, interrupt, and steer state over one JSON-RPC id table"},
                "plugins/bundled/lib/helyx/provider/claude_code.ex" =>
-                 {555, "the Claude Code program, turn, steer, and interrupt flow"}
+                 {544, "the Claude Code program, turn, steer, and interrupt flow"}
              }
            ]}
         ],

@@ -123,17 +123,10 @@ defmodule Helyx.Message do
     do: is_binary(id) and byte_size(id) in 1..@resume_id_max_bytes and String.valid?(id)
 
   @doc """
-  Whether the value round-trips to the session file, which holds only JSON.
-
-  It rejects text that is not valid UTF-8, and a term JSON cannot encode,
-  such as a tuple, a pid, or a non-string, non-atom map key.
-  """
-  @spec encodable?(term()) :: boolean()
-  def encodable?(value), do: encoded_size(value) != :error
-
-  @doc """
   The byte size of the JSON encode of the value, or `:error` for a value
-  that `encodable?/1` rejects.
+  that does not round-trip to the session file, which holds only JSON:
+  text that is not valid UTF-8, or a term JSON cannot encode, such as a
+  tuple, a pid, or a non-string, non-atom map key.
   """
   @spec encoded_size(term()) :: {:ok, non_neg_integer()} | :error
   def encoded_size(value) do

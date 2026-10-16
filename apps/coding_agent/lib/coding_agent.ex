@@ -21,6 +21,11 @@ defmodule CodingAgent do
   # The bound of the error line, the one of `Helyx.Reason.text/1`.
   @max_line_bytes 4000
 
+  # The rotation threshold of the log file of a TUI run. The handler
+  # writes a whole log record, then rotates when the file is over this
+  # size, so a file can pass it by one record. It keeps one older file.
+  @max_log_bytes 10_485_760
+
   @doc "The plugins the agent runs with."
   @spec plugins() :: [module()]
   def plugins, do: @plugins
@@ -66,11 +71,33 @@ defmodule CodingAgent do
         CodingAgent.Print.run(session, prompt)
 
       :error ->
-        Helyx.TUI.run(
-          session: session,
-          resumed: Keyword.get(opts, :resume, false) != false,
-          cwd: Keyword.fetch!(opts, :cwd)
-        )
+        log_to_file(Path.join(Keyword.fetch!(opts, :sessions_dir), "tui.log"), fn ->
+          Helyx.TUI.run(
+            session: session,
+            resumed: Keyword.get(opts, :resume, false) != false,
+            cwd: Keyword.fetch!(opts, :cwd)
+          )
+        end)
+    end
+  end
+
+  @doc false
+  # Runs `fun` with the `:default` log handler writing to the file `path`,
+  # so that no log line draws on the terminal of the TUI, then puts the
+  # earlier handler back. Public for its test.
+  @spec log_to_file(Path.t(), (-> result)) :: result when result: term()
+  def log_to_file(path, fun) do
+    {:ok, default} = :logger.get_handler_config(:default)
+    file = %{file: String.to_charlist(path), max_no_bytes: @max_log_bytes, max_no_files: 1}
+    :ok = :logger.remove_handler(:default)
+
+    try do
+      :ok = :logger.add_handler(:default, :logger_std_h, %{default | config: file})
+      fun.()
+    after
+      # The file handler is not there when its add failed.
+      _ = :logger.remove_handler(:default)
+      :ok = :logger.add_handler(:default, default.module, default)
     end
   end
 
@@ -134,10 +161,10 @@ defmodule CodingAgent do
   defp sentence(:not_regular), do: "the session file is not a regular file"
   defp sentence(:invalid_id), do: "not a session id"
   defp sentence(:duplicate_id), do: "more than one session file has this id"
-  defp sentence({:too_large, text}) when is_binary(text), do: text
+  defp sentence({:too_large, text}), do: text
 
   # The text can be an exception message, and some of those have many lines.
-  defp sentence({:invalid_file, text}) when is_binary(text),
+  defp sentence({:invalid_file, text}),
     do: "the session file is damaged: " <> text
 
   defp sentence({:unknown_version, version}),
@@ -153,11 +180,14 @@ defmodule CodingAgent do
   defp sentence({:invalid_model_ref, _ref}), do: "the model ref is not valid; use provider/model"
   defp sentence({:unknown_provider, id}), do: "no provider has the id #{inspect(id)}"
 
-  defp sentence({:tool_unavailable, name, reason}) when is_binary(name) and is_binary(reason),
+  defp sentence({:tool_unavailable, name, reason}),
     do: "the #{name} tool is not available: #{reason}"
 
-  defp sentence({:terminal_init_failed, text}) when is_binary(text),
-    do: "the terminal did not start: " <> text
+  defp sentence({:terminal_init_failed, text}), do: "the terminal did not start: " <> text
+
+  # The errors of the session lock (docs/features/session-lock.md).
+  defp sentence({:session_locked, id}), do: "session #{id} is open in another process"
+  defp sentence({:lock_failed, text}), do: "could not lock the session: " <> text
 
   defp sentence(:invalid_cwd), do: "the directory is not UTF-8 or holds a NUL byte"
 

@@ -162,7 +162,7 @@ defmodule Helyx.Session.Server.TurnLoop do
   end
 
   defp open_turn(state, turn, data),
-    do: emit(%{state | activity: %{turn | start: length(state.transcript)}}, :turn_start, data)
+    do: emit(%{state | activity: Turn.open(turn, length(state.transcript))}, :turn_start, data)
 
   # The provider process (started at the first turn) and the prepare Task,
   # which builds the context; a turn that connects again keeps its prepare.

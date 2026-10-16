@@ -190,10 +190,9 @@ defmodule Helyx.TUI.ViewModel do
   # A type that this client does not know.
   def apply(vm, %Event{}), do: vm
 
-  # A count of at most 10^9 (`Helyx.Session.Stream`), so the line stays
-  # short whatever a client folds.
+  # `Helyx.Session.Stream` bounds a count to 10^9, so the line stays short.
   defp tokens(n) when n < 1000, do: Integer.to_string(n)
-  defp tokens(n), do: "#{round(min(n, 1_000_000_000) / 1000)}k"
+  defp tokens(n), do: "#{round(n / 1000)}k"
 
   @doc """
   The view model of a session from its snapshot. The snapshot messages go

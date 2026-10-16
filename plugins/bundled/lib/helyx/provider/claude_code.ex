@@ -26,7 +26,7 @@ defmodule Helyx.Provider.ClaudeCode do
   @steer_wait_ms 5_000
 
   alias Helyx.{HarnessIO, Message, ModelInfo}
-  alias Helyx.Provider.ClaudeCode.{Interrupt, Mcp, Meter, Replay, Turn}
+  alias Helyx.Provider.ClaudeCode.{Mcp, Meter, Replay, Turn, Turn.Interrupt}
 
   import Turn, only: [started?: 1]
 

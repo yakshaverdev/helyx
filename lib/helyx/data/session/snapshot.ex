@@ -11,10 +11,11 @@ defmodule Helyx.Session.Snapshot do
       A client that reconnects drops each later event with a `seq` at or
       below it.
     * `messages` – the transcript, oldest first.
-    * `turn` – nil, or the running turn: its `id`, and the assistant
-      message so far as `partial` (nil before the first stream event). A
-      turn whose `:turn_end` waits for the cleanup of the hands still runs,
-      with `partial` nil.
+    * `turn` – nil, or the running turn: its `id`, the assistant message
+      so far as `partial` (nil before the first stream event), and
+      `elapsed_ms`, the milliseconds since the turn started, by the clock
+      of the session. A turn whose `:turn_end` waits for the cleanup of the
+      hands still runs, with `partial` nil.
     * `model` – the session's `provider/model` ref.
     * `queue` – the counts of the queued steers and follow-ups, the
       running background runs, and the held and waiting background ends, as
@@ -34,7 +35,11 @@ defmodule Helyx.Session.Snapshot do
   @enforce_keys [:instance_id, :seq, :messages, :turn, :model, :queue, :persisting]
   defstruct [:instance_id, :seq, :messages, :turn, :model, :queue, :persisting]
 
-  @type turn :: %{id: String.t(), partial: Helyx.Message.t() | nil}
+  @type turn :: %{
+          id: String.t(),
+          partial: Helyx.Message.t() | nil,
+          elapsed_ms: non_neg_integer()
+        }
 
   @type t :: %__MODULE__{
           instance_id: String.t(),

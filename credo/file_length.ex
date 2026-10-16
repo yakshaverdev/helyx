@@ -10,7 +10,8 @@ defmodule Helyx.Credo.FileLength do
       A file over the limit has an entry in `allowed`, in `.credo.exs`:
       its path, its line count, and a reason. A listed file must not grow.
       A listed file at or under the limit gets an issue too, so that its
-      entry goes away. The list only shrinks.
+      entry goes away, and so does a listed file under its count, so that
+      the count goes down. The list only shrinks.
 
       Split a file only where a module can own its state or its decisions.
       A line count alone is not a reason.
@@ -55,6 +56,10 @@ defmodule Helyx.Credo.FileLength do
   defp message(lines, _max, {count, _reason}) when lines > count,
     do:
       "The file has #{lines} lines, more than the #{count} in .credo.exs. A listed file must not grow."
+
+  defp message(lines, _max, {count, _reason}) when lines < count,
+    do:
+      "The file has #{lines} lines, fewer than the #{count} in .credo.exs. Lower its entry to #{lines}."
 
   defp message(_lines, _max, _entry), do: nil
 end

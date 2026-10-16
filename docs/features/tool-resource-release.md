@@ -49,6 +49,7 @@ The design was reviewed in three rounds on 2026-09-25. The findings are in `docs
 5. An abort starts one release Task per tool module, in parallel, all with the same deadline. The wait does not grow with the number of Tasks, handles, or modules.
 6. Before each call, the hands call `release(unconfirmed, :retry, deadline)` for each module that has unconfirmed handles, with one deadline for all modules. While any handle is still held, the call is refused.
 7. A call to `hold/1` from a tool whose module does not export `release/3` raises in the tool Task, so the call ends with an error result before any external work starts.
+8. A call to `hold/1` from a process outside the hands exits, so no external work starts. An older Core made it a no-op, so a bare unit test of a tool could hold with no hands; such a test now gives the tool a fake hands process.
 
 `Helyx.Tool.Bash`:
 

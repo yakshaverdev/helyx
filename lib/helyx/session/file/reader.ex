@@ -76,8 +76,6 @@ defmodule Helyx.Session.File.Reader do
   defp fold(%{"type" => "compaction", "provider" => provider}, acc) when is_binary(provider),
     do: {:ok, %{acc | resume_ids: Transcript.compacted(acc.resume_ids, provider, acc.count)}}
 
-  defp fold(%{"type" => "compaction"}, acc), do: {:ok, acc}
-
   defp fold(entry, _acc),
     do: {:error, {:invalid_file, "entry the writer never produces: #{inspect(entry["type"])}"}}
 
