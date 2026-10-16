@@ -8,26 +8,20 @@ defmodule Helyx.Session.StreamTest do
 
   defp huge, do: String.to_integer(String.duplicate("7", 400_000))
 
-  # The raw text never reaches the transcript or the error result.
-  test "arguments that are raw text become %{}, with the reason not to run the call" do
+  # Arguments that are not a plain map are malformed. The error holds `%{}`
+  # in place of raw text (#636).
+  test "arguments that are raw text are malformed, and the error drops the text" do
     call = %Message.ToolCall{id: "c1", name: "read", arguments: ~s({"path": )}
-    reason = "the arguments are not a valid JSON object"
 
-    assert {:send, {:tool_call, %Message.ToolCall{id: "c1", name: "read", arguments: %{}}, 16},
-            ^reason} = SessionStream.check({:tool_call, call})
+    assert {:bad, {:error, {:bad_stream_event, {:tool_call, %{id: "c1", arguments: %{}}}}}} =
+             SessionStream.check({:tool_call, call})
 
-    assert {:send, {:tool_request, %Message.ToolCall{id: "c1", arguments: %{}}, 16}, ^reason} =
+    assert {:bad, {:error, {:bad_stream_event, {:tool_request, "c1", "read", %{}}}}} =
              SessionStream.check({:tool_request, "c1", "read", "[1]"})
 
-    # Other arguments that are not a map stay malformed.
+    # Other arguments that are not a map stay as they are.
     request = {:tool_request, "c1", "read", [1]}
     assert {:bad, {:error, {:bad_stream_event, ^request}}} = SessionStream.check(request)
-
-    # A malformed call or request holds `%{}`, not the raw text.
-    bad_call = %Message.ToolCall{id: "", name: "read", arguments: "secret"}
-
-    assert {:bad, {:error, {:bad_stream_event, {:tool_call, %{arguments: %{}}}}}} =
-             SessionStream.check({:tool_call, bad_call})
 
     assert {:bad, {:error, {:bad_stream_event, {:tool_request, "", "read", %{}}}}} =
              SessionStream.check({:tool_request, "", "read", "secret"})

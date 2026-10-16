@@ -35,10 +35,10 @@ defmodule Helyx.Provider do
       refused. `Helyx.Provider.Codex` reports neither. In two cases a
       stop reason that arrives while a steer waits is lost
       (`docs/features/session-lifecycle.md`, "Current limits").
-    * A Helyx tool request whose arguments are not a JSON object never
-      runs. A provider can send such arguments as their raw text. In a turn
-      that continues, the request gets an error result, so the model can
-      correct it (`docs/features/rejected-tool-call.md`).
+    * The arguments of a tool call or a Helyx tool request are a map.
+      Other arguments, such as the raw text of arguments that are not a
+      JSON object, fail the turn, and the error holds `%{}` in place of
+      raw text (`docs/features/rejected-tool-call.md`).
     * A provider that keeps its own history answers `{:compact, ...}`
       with `:ok` and runs the compaction as that turn; a compaction
       gives `{:compaction, tokens_before, tokens_after}`, in that turn or
@@ -91,7 +91,6 @@ defmodule Helyx.Provider do
   @type action ::
           {:event, turn_id :: String.t(), stream_event()}
           | {:reply, from(), term()}
-          | {:cancel_tool, call_id :: String.t()}
           | {:need_context, turn_id :: String.t()}
 
   @doc """

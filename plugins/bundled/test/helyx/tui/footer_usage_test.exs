@@ -50,7 +50,7 @@ defmodule Helyx.TUI.FooterUsageTest do
       turn: nil,
       model: model,
       queue: %{steers: 0, follow_ups: 0, running: 0, held: 0, waiting: 0},
-      lock_lost: false
+      persisting: true
     })
   end
 

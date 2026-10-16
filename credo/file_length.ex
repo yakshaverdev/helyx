@@ -39,9 +39,10 @@ defmodule Helyx.Credo.FileLength do
     end
   end
 
-  # Counts lines as `wc -l` does for a file that ends with a newline.
+  # Counts lines as `wc -l` does for a file that ends with a newline. Only
+  # the final newline goes, so a blank line at the end counts (#626).
   defp count_lines(source),
-    do: source |> String.trim_trailing("\n") |> String.split("\n") |> length()
+    do: source |> String.replace_suffix("\n", "") |> String.split("\n") |> length()
 
   defp message(lines, max, nil) when lines > max,
     do:

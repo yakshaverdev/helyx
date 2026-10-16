@@ -277,16 +277,11 @@ defmodule Helyx.Provider.LoopTest do
              events(actions)
   end
 
-  # "self_halt" is an enumerable whose result is not a terminal.
   test "a repeated call id, or an event that is not a stream event, ends the process" do
-    for model <- [
-          "harness_event",
-          "repeat_id",
-          "self_halt"
-        ] do
+    for model <- ["harness_event", "repeat_id"] do
       state = turn(model)
       assert {:shutdown, {:bad_stream_event, event}} = catch_exit(pump(state))
-      assert elem(event, 0) in [:message_end, :text_delta, :tool_call], model
+      assert elem(event, 0) in [:message_end, :tool_call], model
       # A repeated call id names the call with no raw argument text.
       if model == "repeat_id", do: assert({:tool_call, %{arguments: %{}}} = event)
       Task.shutdown(state.task, :brutal_kill)

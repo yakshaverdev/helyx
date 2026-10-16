@@ -45,3 +45,7 @@ Three statements of this ADR no longer match the code (`docs/reviews/2026-10-12-
 - Since #361 (80bcf97), an abort releases the turn's Helyx tool calls and interrupts the program at the same time. `docs/features/session-lifecycle.md` has the order.
 - Since #197 (dd90d84), the session mailbox is bounded: a stream event sent to the session is refused when more than 10,000 messages wait in it. Then the provider process stops, and the turn that it runs fails (`docs/features/session-lifecycle.md`, "Bounds"). This replaces "an unbounded mailbox" in the Decision and the last Consequence.
 - The program closes at a model switch, also when the provider is the same. The session closes it when no turn and no wait runs and its model is not the model of the session (`docs/features/session-lifecycle.md`, "The wait"). So a switch away and back during a turn keeps the program.
+
+## Update 2026-10-16
+
+#627 replaces "Approvals stay `accept` until a UI ticket" in the Consequences. The launch flags make an approval request impossible: Claude Code runs with `bypassPermissions` and no `--permission-prompt-tool`, and the Codex thread runs with `approvalPolicy: "never"`. So both adapters give an approval request the error response of every other server request. Removed capability: an approval request that the launch mode should not send is refused, not accepted. This is not measured against a live harness. A UI ticket that adds approvals makes a new decision.

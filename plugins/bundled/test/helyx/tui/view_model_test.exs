@@ -219,7 +219,7 @@ defmodule Helyx.TUI.ViewModelTest do
       turn: nil,
       model: "test/model",
       queue: %{steers: 0, follow_ups: 0, running: 0, held: 0, waiting: 0},
-      lock_lost: false
+      persisting: true
     }
 
     joined = ViewModel.from_snapshot(snapshot)
@@ -266,7 +266,7 @@ defmodule Helyx.TUI.ViewModelTest do
         turn: nil,
         model: "test/model",
         queue: %{steers: 0, follow_ups: 0, running: 0, held: 0, waiting: 0},
-        lock_lost: false
+        persisting: true
       })
 
     {cells(live), cells(joined)}
@@ -304,7 +304,7 @@ defmodule Helyx.TUI.ViewModelTest do
     assert List.last(cells(vm)) == {:notice, "error: :stream_ended"}
   end
 
-  test "a tool call line of newlines is cut after they become ␤" do
+  test "a tool call line is cut at 8,192 bytes, after newlines become ␤" do
     # A name and a key of newlines, each far over the cut: "␤" is 3 bytes
     # for 1, and neither is copied whole.
     lines = String.duplicate("\n", 1_000_000)
@@ -314,6 +314,12 @@ defmodule Helyx.TUI.ViewModelTest do
     assert byte_size(line) in 8_190..8_192
     assert String.starts_with?(line, "⚙ ␤␤")
     refute line =~ "\n"
+
+    # U+00A0 renders as `\u00A0` through `inspect/1`, and the keys are raw.
+    arguments = Map.new(1..2_000, &{"k#{&1}", String.duplicate("\u00A0", 100)})
+    line = ViewModel.call_line(%Message.ToolCall{id: "c", name: "bash", arguments: arguments})
+    assert byte_size(line) in 8_190..8_192
+    assert String.starts_with?(line, "⚙ bash k")
   end
 
   test "an error text shows as Core wrote it" do
@@ -345,17 +351,6 @@ defmodule Helyx.TUI.ViewModelTest do
     assert ViewModel.apply(vm, drain).queue == %{steers: 0, follow_ups: 0}
   end
 
-  test "turn_end with an open stream and no message_end still closes it" do
-    vm =
-      fold([
-        {:turn_start, %{}},
-        {:message_end, %{message: user("hi")}},
-        {:turn_end, %{outcome: :error, error: "boom"}}
-      ])
-
-    assert vm.streaming == nil
-  end
-
   test "an event of an unknown type leaves the view model unchanged" do
     vm = fold([{:turn_start, %{}}, {:message_start, %{message: assistant([])}}])
 
@@ -377,77 +372,40 @@ defmodule Helyx.TUI.ViewModelTest do
     defstruct [:data]
   end
 
-  test "a message_update with a new data key leaves the view model unchanged" do
-    vm = fold([{:turn_start, %{}}, {:message_start, %{message: assistant([])}}])
-
-    update = %Event{
-      type: :message_update,
-      session_id: "s",
-      instance_id: "i",
-      turn_id: "t",
-      seq: 3,
-      data: %{signature_delta: "x"}
-    }
-
-    assert ViewModel.apply(vm, update) == vm
-  end
-
-  test "a message_start or a message_end with a new role leaves the view model unchanged" do
-    vm = fold([{:turn_start, %{}}])
-    message = %Message{role: :from_a_newer_core, content: [%Message.Text{text: "x"}]}
-
-    for type <- [:message_start, :message_end] do
-      event = %Event{
-        type: type,
-        session_id: "s",
-        instance_id: "i",
-        turn_id: "t",
-        seq: 2,
-        data: %{message: message}
-      }
-
-      assert ViewModel.apply(vm, event) == vm
-    end
-  end
-
-  test "an image and a new block kind show a placeholder" do
-    image = %Message.Image{mime_type: "image/png", data: "AAAA"}
-
+  test "a new block kind shows a placeholder" do
     vm =
       fold([
         {:message_start, %{message: assistant([])}},
-        {:message_end,
-         %{message: assistant([image, %NewBlock{data: 1}, %Message.Text{text: "hi"}])}}
+        {:message_end, %{message: assistant([%NewBlock{data: 1}, %Message.Text{text: "hi"}])}}
       ])
 
-    assert ["[unsupported block: image]", "[unsupported block: new_block]", "hi"] == texts(vm)
+    assert ["[unsupported block: new_block]", "hi"] == texts(vm)
   end
 
-  # The session file decodes an image block for every role.
-  test "an image in a user message or a tool result shows a placeholder" do
-    image = %Message.Image{mime_type: "image/png", data: "AAAA"}
+  test "a new block kind in a user message or a tool result shows a placeholder" do
+    block = %NewBlock{data: 1}
     call = %Message.ToolCall{id: "c1", name: "read", arguments: %{}}
-    result = %{Message.tool_result(call, {:ok, "x"}) | content: [image]}
+    result = %{Message.tool_result(call, {:ok, "x"}) | content: [block]}
 
     snapshot = %Helyx.Session.Snapshot{
       instance_id: "i",
       seq: 3,
       messages: [
-        %Message{role: :user, content: [%Message.Text{text: "see "}, image]},
+        %Message{role: :user, content: [%Message.Text{text: "see "}, block]},
         assistant([call], :tool_use),
         result
       ],
       turn: nil,
       model: "test/model",
       queue: %{steers: 0, follow_ups: 0, running: 0, held: 0, waiting: 0},
-      lock_lost: false
+      persisting: true
     }
 
-    assert ["▌ see [unsupported block: image]", "⚙ read", "  [unsupported block: image]"] ==
+    assert ["▌ see [unsupported block: new_block]", "⚙ read", "  [unsupported block: new_block]"] ==
              texts(ViewModel.from_snapshot(snapshot))
   end
 
-  test "a snapshot with a lost lock ends with its notice, after the transcript" do
+  test "a snapshot of a session that does not save ends with its notice, after the transcript" do
     snapshot = %Helyx.Session.Snapshot{
       instance_id: "i",
       seq: 2,
@@ -455,39 +413,24 @@ defmodule Helyx.TUI.ViewModelTest do
       turn: nil,
       model: "test/model",
       queue: %{steers: 0, follow_ups: 0, running: 0, held: 0, waiting: 0},
-      lock_lost: true
+      persisting: false
     }
 
     assert [%Message{role: :user}, %Message{role: :assistant}, notice] =
              ViewModel.cells(ViewModel.from_snapshot(snapshot))
 
-    assert notice == {:notice, Helyx.Reason.text(:lock_lost)}
+    assert notice == {:notice, Helyx.Reason.text(:not_saved)}
 
-    assert ViewModel.cells(ViewModel.from_snapshot(%{snapshot | lock_lost: false})) |> length() ==
+    assert ViewModel.cells(ViewModel.from_snapshot(%{snapshot | persisting: true})) |> length() ==
              2
   end
 
-  test "a snapshot partial of a new role does not show" do
+  test "a snapshot keeps a new block kind" do
     snapshot = %Helyx.Session.Snapshot{
       instance_id: "i",
-      seq: 1,
-      messages: [],
-      turn: %{id: "t", partial: %Message{role: :from_a_newer_core, content: []}, running: []},
-      model: "test/model",
-      queue: %{steers: 0, follow_ups: 0, running: 0, held: 0, waiting: 0},
-      lock_lost: false
-    }
-
-    assert ViewModel.from_snapshot(snapshot).streaming == nil
-  end
-
-  test "a snapshot drops a message of a new role and keeps a new block kind" do
-    snapshot = %Helyx.Session.Snapshot{
-      instance_id: "i",
-      seq: 4,
+      seq: 3,
       messages: [
         user("hi"),
-        %Message{role: :from_a_newer_core, content: []},
         assistant([%NewBlock{data: 1}, %Message.Text{text: "done"}])
       ],
       turn: %{
@@ -497,7 +440,7 @@ defmodule Helyx.TUI.ViewModelTest do
       },
       model: "test/model",
       queue: %{steers: 0, follow_ups: 0, running: 0, held: 0, waiting: 0},
-      lock_lost: false
+      persisting: true
     }
 
     vm = ViewModel.from_snapshot(snapshot)
@@ -509,25 +452,13 @@ defmodule Helyx.TUI.ViewModelTest do
              ["[unsupported block: new_block]", "more"] == texts(vm)
   end
 
-  test "a known type with a missing required field still crashes" do
-    event = %Event{
-      type: :message_start,
-      session_id: "s",
-      instance_id: "i",
-      turn_id: "t",
-      seq: 1,
-      data: %{}
-    }
-
-    assert_raise MatchError, fn -> ViewModel.apply(new(), event) end
-  end
-
   # Each known type that the TUI reads matches the type only, so a broken
   # payload reaches its clause and crashes; it never reaches the clause that
   # ignores an unknown type.
   test "every known type with a broken payload crashes" do
     for {type, data} <- [
           turn_end: %{},
+          message_start: %{},
           message_start: %{message: "not a message"},
           message_end: %{},
           tool_execution_end: %{message: Message.user("not a result")},
@@ -556,10 +487,12 @@ defmodule Helyx.TUI.ViewModelTest do
     assert_raise CaseClauseError, fn -> ViewModel.apply(new(), event) end
   end
 
-  test "a message_update with a known delta key of another type, or two known keys, crashes" do
+  test "a message_update with no known delta key, a known key of another type, or two known keys, crashes" do
     vm = fold([{:message_start, %{message: assistant([])}}])
 
     for data <- [
+          %{},
+          %{signature_delta: "x"},
           %{tool_call: "not a call"},
           %{text_delta: 42},
           %{thinking_delta: nil},
@@ -576,20 +509,6 @@ defmodule Helyx.TUI.ViewModelTest do
 
       assert_raise CaseClauseError, fn -> ViewModel.apply(vm, event) end
     end
-  end
-
-  test "the deltas of a message of a new role do not show" do
-    message = %Message{role: :from_a_newer_core, content: []}
-
-    vm =
-      fold([
-        {:message_start, %{message: message}},
-        {:message_update, %{text_delta: "hidden"}},
-        {:message_end, %{message: message}}
-      ])
-
-    assert vm.streaming == nil
-    assert cells(vm) == []
   end
 
   test "a compaction adds one information line, at most about 40 bytes" do
@@ -792,24 +711,13 @@ defmodule Helyx.TUI.ViewModelTest do
            ]
   end
 
-  test "a reject sets the reason, events keep it, and clear_reason/1 removes it" do
-    vm = new()
-    assert vm.reason == nil
-
-    vm = ViewModel.reject(vm, "not sent: the queue is full")
-    assert vm.reason == "not sent: the queue is full"
+  test "a reject adds no cell, and a session event keeps its reason" do
+    vm = ViewModel.reject(new(), "not sent: the queue is full")
     assert cells(vm) == []
 
     # A session event does not clear the reason; the TUI does, on a key press or a paste.
     [event] = events([{:queue_update, %{steers: 1, follow_ups: 0}}])
     kept = ViewModel.apply(vm, event)
     assert kept.reason == "not sent: the queue is full"
-
-    assert ViewModel.clear_reason(kept).reason == nil
-  end
-
-  test "a client notice joins the cells" do
-    vm = ViewModel.notice(new(), "unknown provider: x")
-    assert cells(vm) == [{:notice, "unknown provider: x"}]
   end
 end

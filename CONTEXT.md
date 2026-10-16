@@ -104,10 +104,6 @@ _Avoid_: finish reason
 A stream event in which a provider asks the session to run one Helyx tool call on the hands.
 _Avoid_: tool callback, remote tool call
 
-**Withdraw**:
-The provider takes back one Helyx tool request of the running turn. A withdrawn call that has no result yet gets an aborted result.
-_Avoid_: cancel, revoke
-
 **Interrupt**:
 The provider part of an abort: the session asks the provider to end the turn.
 _Avoid_: cancel, stop
@@ -139,7 +135,7 @@ One of user message, assistant message, or tool result message. A message holds 
 _Avoid_: entry, turn, chat message
 
 **Content block**:
-One of text, thinking, tool call, or image. The provider-neutral unit of message content.
+One of text, thinking, or tool call. The provider-neutral unit of message content.
 _Avoid_: part, chunk, segment
 
 **Entry**:

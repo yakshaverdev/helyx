@@ -85,8 +85,8 @@ end
 defmodule Helyx.Test.BadId do
   @moduledoc false
   # A provider whose `id/0` is "bad_id" until the calling process puts a
-  # mode under `:bad_id`. Then it raises, throws, exits, or returns the
-  # value, so the value "test" makes it a twin of Helyx.Test.Provider.
+  # mode under `:bad_id`. Then it raises or returns the value, so the value
+  # "test" makes it a twin of Helyx.Test.Provider.
   use Helyx.Provider.Loop
 
   # The bad results are the point of this provider.
@@ -96,8 +96,6 @@ defmodule Helyx.Test.BadId do
     case Process.get(:bad_id) do
       nil -> "bad_id"
       :raise -> raise "no id"
-      :throw -> throw(:no_id)
-      :exit -> exit(:no_id)
       other -> other
     end
   end
@@ -121,7 +119,6 @@ defmodule Helyx.Test.Provider do
   #                "throw", "exit_crash", "exit_shutdown", "catch",
   #                "exit_signal", and the other cases of `fail/1`
   #   "exit_normal"  the stream ends its process with a :normal signal
-  #   "self_halt"  an enumerable that halts by itself on a text delta
   #   "bad_event.<name>" the gate <name>, a message end, which only a
   #                harness may send, then the gate again
   #   "overrun"    a delta, done, then a raise if pulled further
@@ -148,6 +145,8 @@ defmodule Helyx.Test.Provider do
   #   "system"     the system prompt in the context, as text
   #   "bad_call"   a tool call whose name is not a string
   #   "empty_id"   a tool call with an empty id, then done
+  #   "raw_args"   a tool call whose arguments are raw text that is not a
+  #                JSON object
   #   "hang"       one delta, then the stream blocks forever
   #   "priced"     one delta, then done with a usage that has a cost
   #   "transcript" every message in the context as "role:text" lines
@@ -161,10 +160,8 @@ defmodule Helyx.Test.Provider do
   #   "serial"     three calls to the slow tool
   #   "kill"       calls the kill tool; echoes the last message text only
   #   "binary"     calls the binary tool
-  #   "rejected"   text, one good call, and one call whose arguments are
-  #                raw text that is not a JSON object
-  #   "cut"        "rejected" with the stop reason `:max_tokens`: the reply
-  #                was cut at the token limit
+  #   "cut"        text and two calls with the stop reason `:max_tokens`:
+  #                the reply was cut at the token limit
   #   "abort"      three calls to the slow tool that sleep for a minute;
   #                echoes after any tool result
   #   "stuck"      one call to the hold tool: a handle whose release waits
@@ -205,6 +202,7 @@ defmodule Helyx.Test.Provider do
     "raw_call" => [{:tool_call, %ToolCall{id: "c", name: <<"bash", 255>>, arguments: %{}}}, @done],
     "bad_call" => [{:tool_call, %ToolCall{id: "c", name: %{}, arguments: %{}}}],
     "empty_id" => [{:tool_call, %ToolCall{id: "", name: "bash", arguments: %{}}}, @done],
+    "raw_args" => [{:tool_call, %ToolCall{id: "c", name: "bash", arguments: ~s({"text": )}}],
     "bad_args" => [
       {:tool_call, %ToolCall{id: "c", name: "bash", arguments: %{"text" => {1, 2}}}},
       @done
@@ -288,9 +286,6 @@ defmodule Helyx.Test.Provider do
     end
   end
 
-  def stream("rejected", %Helyx.Context{messages: messages}, _opts),
-    do: echo_after(messages, two_calls(:tool_use))
-
   def stream("cut", %Helyx.Context{messages: messages}, _opts),
     do: echo_after(messages, two_calls(:max_tokens))
 
@@ -361,9 +356,6 @@ defmodule Helyx.Test.Provider do
 
   def stream("throw", _context, _opts), do: {:ok, Stream.map([1], fn _ -> throw(:boom) end)}
   def stream("exit", _context, _opts), do: {:ok, Stream.map([1], fn _ -> exit(:boom) end)}
-
-  def stream("self_halt", _context, _opts),
-    do: {:ok, fn _acc, _reduce -> {:done, {:text_delta, "orphaned"}} end}
 
   def stream("exit_normal", _context, _opts),
     do: {:ok, Stream.map([1], fn _ -> Process.exit(self(), :normal) end)}
@@ -449,7 +441,7 @@ defmodule Helyx.Test.Provider do
     [
       {:text_delta, "Trying"},
       call("c1", "upcase", %{"text" => "one"}),
-      {:tool_call, %ToolCall{id: "c2", name: "upcase", arguments: ~s({"text": )}},
+      call("c2", "upcase", %{"text" => "two"}),
       {:done, %{stop_reason: stop, usage: nil}}
     ]
   end
@@ -547,10 +539,6 @@ defmodule Helyx.Test.Provider do
   defp fail("tail_stack"), do: {:error, [:context | elem(@crash, 1)]}
   defp fail("fun_frame"), do: {:error, {:oops, [{&Function.identity/1, [1], [line: 1]}]}}
   defp fail("improper"), do: {:error, {:failure, [:item | Function.identity(:tail)]}}
-  # A plugin `Inspect` that raises inside the term of a `MatchError`.
-  defp fail("match_inspect"),
-    do: {:ok, _} = Function.identity({:error, struct(Helyx.Test.RaiseInspect)})
-
   # A provider error that holds the marker of the cleaning walk.
   defp fail("marker"), do: {:error, {:oops, :stacktrace}}
   # A provider error whose list looks like a stacktrace and is not one.
@@ -630,15 +618,6 @@ defmodule Helyx.Test.Tool.Odd do
   def run(%{"do" => "throw"}, _cwd), do: throw({:thrown, self()})
   def run(%{"do" => "exit"}, _cwd), do: exit({:exited, self()})
   def run(%{"do" => "huge"}, _cwd), do: throw(String.to_integer(String.duplicate("7", 400_000)))
-  # The messages of these errors `inspect` a struct whose `Inspect` raises,
-  # or call the `Exception.message/1` of an exception whose `message/1` raises.
-  def run(%{"do" => "match"}, _cwd), do: raise(MatchError, term: struct(Helyx.Test.RaiseInspect))
-  def run(%{"do" => "wrap_" <> how}, _cwd), do: raise(Helyx.Test.WrapMessage, how: how)
-  # The `Inspect` of this struct calls a safe `inspect` itself.
-  def run(%{"do" => "nest"}, _cwd), do: throw(struct(Helyx.Test.NestInspect))
-
-  def run(%{"do" => "badkey"}, _cwd),
-    do: :erlang.error({:badkey, struct(Helyx.Test.RaiseInspect), %{}})
 end
 
 defmodule Helyx.Test.Tool.Binary do
@@ -797,17 +776,6 @@ defmodule Helyx.Test.Tool.Unavailable do
   def check, do: {:error, "the frob is missing"}
 end
 
-defmodule Helyx.Test.FailingJSON do
-  @moduledoc false
-  # A value whose JSON encoder is plugin code that throws or exits.
-  defstruct [:kind]
-end
-
-defimpl JSON.Encoder, for: Helyx.Test.FailingJSON do
-  def encode(%{kind: :throw}, _encoder), do: throw(:boom)
-  def encode(%{kind: :exit}, _encoder), do: exit(:boom)
-end
-
 defmodule Helyx.Test.Connected do
   @moduledoc false
   # A connected provider (ADR 0007) whose model name selects its answers.
@@ -860,8 +828,7 @@ defmodule Helyx.Test.Connected do
   #                      then done, or the error of the context
   #   "context_hold"     "context", and a context gets no answer
   #   "tools"            "hang"; the message `{:tool_request, turn_id, id,
-  #                      name, args}` asks for a Helyx tool, and `{:cancel, id}`
-  #                      withdraws it; `{:ping, pid}`
+  #                      name, args}` asks for a Helyx tool; `{:ping, pid}`
   #                      sends `:pong` to pid
   #   "label"            "echo"; a provider process started with no
   #                      `:resume_id` reports a new label on its
@@ -1089,9 +1056,6 @@ defmodule Helyx.Test.Connected do
 
   def info({:tool_request, turn_id, id, name, args}, state),
     do: {:ok, [{:event, turn_id, {:tool_request, id, name, args}}], state}
-
-  def info({:cancel, id}, state),
-    do: {:ok, [{:cancel_tool, id}], state}
 
   def info({:ping, pid}, state) do
     send(pid, :pong)
@@ -1349,31 +1313,6 @@ defmodule Helyx.Test.RaiseInspect do
   defimpl Inspect do
     def inspect(_struct, _opts), do: raise("no inspect")
   end
-end
-
-defmodule Helyx.Test.NestInspect do
-  @moduledoc false
-  # A struct of a plugin whose `Inspect` inspects a struct whose `Inspect` raises.
-  defstruct [:code]
-
-  defimpl Inspect do
-    def inspect(_struct, _opts),
-      do: "#Nest<" <> Kernel.inspect(%Helyx.Test.RaiseInspect{}) <> ">"
-  end
-end
-
-defmodule Helyx.Test.WrapMessage do
-  @moduledoc false
-  # An exception of a plugin whose `message/1` inspects a struct whose
-  # `Inspect` raises, or takes the message of an exception whose
-  # `message/1` raises.
-  defexception [:how]
-
-  @impl true
-  def message(%{how: "inspect"}), do: "wrapped: " <> inspect(%Helyx.Test.RaiseInspect{})
-
-  def message(%{how: "message"}),
-    do: "wrapped: " <> Exception.message(%Helyx.Test.RaiseMessage{})
 end
 
 defmodule Helyx.Test.OddMessage do

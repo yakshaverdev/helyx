@@ -13,7 +13,7 @@ The agent can run a `bash` command in a folder other than the session folder, su
 ## Interface changes
 
 - `Helyx.Tool.Bash.parameters/0` adds `workdir`, a string. It is not required.
-- `Helyx.Tool.Bash.run/2` runs the command in the resolved folder. It returns `{:error, text}` for a `workdir` that is not a string, is over 4,096 bytes, is not valid UTF-8, or has a NUL byte. Nothing runs. Missing, `null`, or `""` is the session folder.
+- `Helyx.Tool.Bash.run/2` runs the command in the resolved folder. It returns `{:error, text}` for a `workdir` that is not a string or has a NUL byte. Nothing runs. `Helyx.Session.Stream.check/1` already rejects arguments that are not valid UTF-8, so `run/2` does not check it again. A path that is too long for the system fails the start, as a folder that is not there does (review of 2026-10-16, #637). Missing, `null`, or `""` is the session folder.
 - The description and the moduledoc name the argument.
 - The tool set digest of a Codex thread changes with the spec, so a Codex session stored before this change starts a new thread with the replay when it resumes (`Helyx.Provider.Codex.Tools.resumable/2`), as for any change to a tool spec.
 
@@ -25,7 +25,7 @@ none.
 
 | What | Bound | Over the bound |
 | ---- | ----- | -------------- |
-| `workdir` argument | a UTF-8 string of at most 4,096 bytes with no NUL byte, checked in `run/2`; missing, `null`, or `""` is the session folder | an error result that does not echo the value; nothing runs |
+| `workdir` argument | a string with no NUL byte, checked in `run/2`; missing, `null`, or `""` is the session folder | an error result that does not echo the value; nothing runs |
 | resolved folder in the error of a failed start | the reason of `Helyx.Watchdog.start/4` is cut to `Helyx.Watchdog.reason_max_bytes/0`, as for the session folder | cut |
 | `workdir` in the tool call line of the TUI | the generic cut of the call line (`Helyx.TUI.ViewModel.call_line/1`) | cut |
 

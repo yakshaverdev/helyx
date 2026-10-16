@@ -214,12 +214,22 @@ defmodule Helyx.Session.Server.Records do
     # at the stream boundary (see `Helyx.Session.Stream`), and a model ref by
     # `ModelRef.parse/1`, so an encode error here is a
     # bug and crashes loudly rather than silently losing the rest of the
-    # session. One notice with a fixed text tells the clients, and the
-    # log has the error.
+    # session.
     error in File.Error ->
-      Logger.warning("session file append failed, persistence off: " <> Exception.message(error))
-      text = "the session file could not be written; the rest of this session is not saved"
-      emit(%{state | file: nil}, turn_id(state.activity), :notice, %{text: text})
+      stop_saving(state, "the session file could not be written", Exception.message(error))
+  end
+
+  # Persistence goes off for the rest of the session: after a disk failure,
+  # and after the loss of the writer lock, when another process can append
+  # to the file. The turn goes on in memory. One notice with a fixed text
+  # tells the clients, the snapshot says `persisting: false`, and the log
+  # has the detail. Persistence that is off already gets no second notice.
+  def stop_saving(%State{file: nil} = state, _cause, _detail), do: state
+
+  def stop_saving(state, cause, detail) do
+    Logger.warning("#{cause}, persistence off: #{detail}")
+    text = cause <> "; the rest of this session is not saved"
+    emit(%{state | file: nil}, turn_id(state.activity), :notice, %{text: text})
   end
 
   defp turn_id(%Turn{id: id}), do: id

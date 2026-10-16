@@ -14,8 +14,6 @@ defmodule Helyx.Core.Plugins do
   entry}`. When every entry is a module, a module listed twice is
   `{:duplicate_plugin, module}`, which names the module of the first repeated
   entry. A module that implements no interface is `{:not_a_plugin, module}`.
-  A plugin that does not export a required callback of an interface it
-  implements is `{:missing_callbacks, plugin, interface, [{name, arity}]}`.
   """
   @spec resolve(term()) :: {:ok, table()} | {:error, term()}
   def resolve(plugins) do
@@ -57,8 +55,7 @@ defmodule Helyx.Core.Plugins do
     pairs =
       for {plugin, interfaces} <- implemented, interface <- interfaces, do: {interface, plugin}
 
-    case Enum.find_value(implemented, &not_a_plugin/1) ||
-           Enum.find_value(pairs, &missing_callbacks/1) do
+    case Enum.find_value(implemented, &not_a_plugin/1) do
       nil -> {:ok, Enum.group_by(pairs, &elem(&1, 0), &elem(&1, 1))}
       error -> {:error, error}
     end
@@ -67,28 +64,11 @@ defmodule Helyx.Core.Plugins do
   defp not_a_plugin({plugin, []}), do: {:not_a_plugin, plugin}
   defp not_a_plugin(_implemented), do: nil
 
-  # Both modules are loaded: the shape check loaded the plugin, and
-  # `implemented_by/1` loaded the interface. An interface without `@callback`
-  # has no `behaviour_info/1` and requires nothing.
-  defp missing_callbacks({interface, plugin}) do
-    required =
-      if function_exported?(interface, :behaviour_info, 1),
-        do: interface.behaviour_info(:callbacks) -- interface.behaviour_info(:optional_callbacks),
-        else: []
-
-    case Enum.reject(Enum.sort(required), fn {name, arity} ->
-           function_exported?(plugin, name, arity)
-         end) do
-      [] -> nil
-      missing -> {:missing_callbacks, plugin, interface, missing}
-    end
-  end
-
   @doc """
   Maps each provider id to its plugin. It calls `id/0` of each provider once,
-  at Core start. An `id/0` that raises, throws, exits, or returns a value
-  that is not a binary is `{:invalid_provider_id, plugin}`. Two different
-  providers with one id are `{:duplicate_provider_id, id, [first, second]}`.
+  at Core start. An `id/0` that returns a value that is not a binary is
+  `{:invalid_provider_id, plugin}`. Two different providers with one id are
+  `{:duplicate_provider_id, id, [first, second]}`.
   """
   @spec provider_ids([module()]) :: {:ok, %{String.t() => module()}} | {:error, term()}
   def provider_ids(providers) do
@@ -109,8 +89,6 @@ defmodule Helyx.Core.Plugins do
   defp checked_id(plugin) do
     id = plugin.id()
     if is_binary(id), do: {:ok, id}, else: :error
-  catch
-    _class, _reason -> :error
   end
 
   # Returns the error for an interface and its plugins, or nil when they fit.

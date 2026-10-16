@@ -115,7 +115,9 @@ defmodule Helyx.Tool.BashTest do
   end
 
   test "missing arguments are an error result", %{run: run} do
-    assert run.(%{}).is_error
+    result = run.(%{})
+    assert result.is_error
+    assert Helyx.Message.text(result) == "bash needs a command"
   end
 
   test "a command with a NUL byte is an error result", %{tmp_dir: dir, run: run} do
@@ -424,42 +426,18 @@ defmodule Helyx.Tool.BashTest do
       refute File.exists?(ran)
     end
 
-    test "a workdir of another type, over 4096 bytes, with a NUL, or not UTF-8 is an error result; nothing runs",
+    test "a workdir of another type or with a NUL is an error result; nothing runs",
          %{tmp_dir: dir} do
       ran = Path.join(dir, "ran")
 
-      for workdir <- [
-            1,
-            true,
-            ["sub"],
-            %{},
-            String.duplicate("a", 4097),
-            String.duplicate("é", 2048) <> "a",
-            "sub" <> <<0>>,
-            <<0xFF>>
-          ] do
+      for workdir <- [1, true, ["sub"], %{}, "sub" <> <<0>>] do
         assert {:error, text} =
                  Helyx.Tool.Bash.run(%{"command" => "touch #{ran}", "workdir" => workdir}, dir)
 
-        assert text ==
-                 "workdir must be a UTF-8 string of at most 4096 bytes with no NUL byte",
-               inspect(workdir, limit: 5, printable_limit: 20)
+        assert text == "workdir must be a string with no NUL byte", inspect(workdir)
       end
 
       refute File.exists?(ran)
-    end
-
-    # A path of 4096 bytes passes the bound and reaches the start, which
-    # fails because the folder is not there.
-    test "a workdir of 4095 or 4096 bytes passes the bound", %{tmp_dir: dir} do
-      for workdir <- [
-            String.duplicate("a", 4095),
-            String.duplicate("a", 4096),
-            String.duplicate("é", 2048)
-          ] do
-        assert {:error, "the command did not start: " <> _reason} =
-                 Helyx.Tool.Bash.run(%{"command" => "true", "workdir" => workdir}, dir)
-      end
     end
 
     test "the spec has workdir as an optional string" do

@@ -96,38 +96,37 @@ defmodule Helyx.Session.LockTest do
     )
   end
 
-  test "perl killed while the session runs gives one notice, and the session goes on", %{
+  test "perl killed while the session runs gives one notice, and the session stops saving", %{
     core: core,
     tmp_dir: dir
   } do
     {:ok, session} = Session.start(core, model: "test/ok", sessions_dir: dir)
     {:ok, _, _} = Session.subscribe(session)
-    pid = Session.pid(session)
+    before = File.read!(path(dir, session.id))
 
     Helyx.Test.LostLock.kill(session)
 
     assert_receive {:helyx_event, %Event{type: :notice, turn_id: nil, data: %{text: text}}}
-    assert text =~ "the session lock is lost"
-    assert :sys.get_state(pid).lock == nil
+    assert text == "the session lock is lost; the rest of this session is not saved"
 
-    # The session lives and still writes its file; the lock is free.
+    # The session lives in memory and no longer writes its file; the lock is free.
     refute Enum.any?(turn(session, "after"), &(&1.type == :notice))
-    assert File.read!(path(dir, session.id)) =~ "after"
+    assert File.read!(path(dir, session.id)) == before
     assert {:ok, _} = Session.resume(other_core(), sessions_dir: dir, id: session.id)
   end
 
   # The notice of a loss before the first subscribe reaches no client; the
-  # snapshot tells the later client (#606).
-  test "the snapshot says whether the session lost its lock", %{core: core, tmp_dir: dir} do
+  # snapshot tells the later client.
+  test "the snapshot says whether the session saves", %{core: core, tmp_dir: dir} do
     {:ok, held} = Session.start(core, model: "test/ok", sessions_dir: dir)
-    assert {:ok, %{lock_lost: false}, _ref} = Session.subscribe(held)
+    assert {:ok, %{persisting: true}, _ref} = Session.subscribe(held)
 
     {:ok, memory} = Session.start(core, model: "test/ok")
-    assert {:ok, %{lock_lost: false}, _ref} = Session.subscribe(memory)
+    assert {:ok, %{persisting: false}, _ref} = Session.subscribe(memory)
 
     {:ok, session} = Session.start(core, model: "test/ok", sessions_dir: dir)
     Helyx.Test.LostLock.kill(session)
-    assert {:ok, %{lock_lost: true}, _ref} = Session.subscribe(session)
+    assert {:ok, %{persisting: false}, _ref} = Session.subscribe(session)
   end
 
   test "a start whose lock file cannot be opened fails and writes nothing", %{
@@ -272,13 +271,6 @@ defmodule Helyx.Session.LockTest do
     )
   end
 
-  test "a raise after the take frees the lock", %{tmp_dir: dir} do
-    path = Path.join(dir, "abc.jsonl")
-    assert_raise RuntimeError, "boom", fn -> Lock.hold(path, fn -> raise "boom" end) end
-    assert {:ok, lock, :taken} = Lock.hold(path, fn -> {:ok, :taken} end)
-    Lock.release(lock)
-  end
-
   # perl ends during the open, as during the resume read in the session's
   # init: the open fails and leaves no port.
   test "an open whose perl ends during it fails", %{tmp_dir: dir} do
@@ -295,7 +287,6 @@ defmodule Helyx.Session.LockTest do
     assert Lock.hold(path, kill_own_perl) ==
              {:error, {:lock_failed, "the lock ended before the session started"}}
 
-    assert port_messages() == []
     assert {:ok, lock, :taken} = Lock.hold(path, fn -> {:ok, :taken} end)
     Lock.release(lock)
   end

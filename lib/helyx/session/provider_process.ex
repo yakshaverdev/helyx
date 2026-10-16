@@ -154,13 +154,9 @@ defmodule Helyx.Session.ProviderProcess do
     end
   end
 
-  # A fresh context (C2, C3), after the events before it, and a withdrawn
-  # tool request: the session checks the context against its turn, and
-  # looks the call up among the open calls of its turn.
+  # A fresh context (C2, C3), after the events before it: the session
+  # checks the context against its turn.
   defp action({:need_context, turn_id} = action, proc) when is_binary(turn_id),
-    do: sent(Stream.send_checked(proc.session, action), proc)
-
-  defp action({:cancel_tool, call_id} = action, proc) when is_binary(call_id),
     do: sent(Stream.send_checked(proc.session, action), proc)
 
   defp action({:reply, from, value} = action, %{open: open} = proc)

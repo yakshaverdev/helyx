@@ -154,10 +154,8 @@ defmodule Helyx.Session.StreamEventsTest do
       assert error_of(core, "fail_after.improper") == inspect({:failure, [:item | :tail]})
     end
 
-    test "of a raising plugin Inspect inside a MatchError term is the name of the error",
+    test "of a stacktrace in an exception field or a MatchError term is the marker",
          %{core: core} do
-      assert error_of(core, "fail_after.match_inspect") == "MatchError"
-
       assert error_of(core, "fail_after.exit_exception") ==
                inspect(
                  {:task_exit, %Helyx.Test.StackMessage{message: "held", stack: :stacktrace}}
@@ -594,6 +592,8 @@ defmodule Helyx.Session.StreamEventsTest do
         {"a tool call that is not valid UTF-8", "raw_call", ~S(name: "bash\xFF")},
         {"a tool call with an empty id", "empty_id",
          ~s({:tool_call, %Helyx.Message.ToolCall{id: "", )},
+        {"raw argument text, which the error drops", "raw_args",
+         ~s(%Helyx.Message.ToolCall{id: "c", name: "bash", arguments: %{}})},
         {"a tool call with a bad field shape", "bad_call", "name: %{}"},
         {"a tool call whose arguments the file cannot hold", "bad_args", ~s(%{"text" => {1, 2}})},
         {"a stop reason outside the format's set", "bad_stop", "stop_reason: :banana"},

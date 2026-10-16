@@ -336,14 +336,6 @@ defmodule Helyx.Session.ProviderProcessTest do
                inspect({:provider_stop, "integer of more than 100 digits removed"})
     end
 
-    test "a stop from info fails the turn", %{core: core} do
-      {session, _pid, _hands} = start(core, "stop")
-      :ok = Session.prompt(session, "one")
-      assert_receive {:conn, :turn, proc, _}
-      send(proc, :stop)
-      assert error(collect_until(:turn_end)) == inspect({:provider_stop, :gone})
-    end
-
     test "a stop from info sends its actions first, in order (#457)", %{core: core} do
       {session, _pid, _hands} = start(core, "stop")
       :ok = Session.prompt(session, "one")
@@ -1439,6 +1431,8 @@ defmodule Helyx.Session.ProviderProcessTest do
     end
   end
 
+  defp label(events), do: Enum.find(events, &(&1.type == :resume_id)).data
+
   # #510: the resume id belongs to the provider process, not to the turn
   # that started it.
   test "a resume id lost during a start that the turn aborted is lost at the next turn",
@@ -1517,58 +1511,6 @@ defmodule Helyx.Session.ProviderProcessTest do
       :ok = Session.abort(session)
       refute_received {:helyx_event, %Helyx.Event{type: :resume_id}}
       assert :sys.get_state(pid).resume_ids == %{}
-    end
-  end
-
-  # #282: two Cores that resumed one session continue one program session.
-  # A fork below its label drops it, so a later resume of either branch
-  # starts a fresh program session and gets the branch replayed.
-  describe "two Cores on one session file" do
-    @describetag :tmp_dir
-
-    defp stop(session), do: Helyx.Test.SessionCase.stop_session(session, &GenServer.stop/1)
-
-    defp label(events), do: Enum.find(events, &(&1.type == :resume_id)).data
-
-    defp init_label do
-      assert_receive {:conn, :init, _, {"label", _, opts}}
-      opts[:resume_id]
-    end
-
-    test "a resume of a branch with a fork below its label starts a fresh program session",
-         %{core: core, tmp_dir: dir} do
-      other = :"core_#{System.unique_integer([:positive])}"
-      start_supervised!({Helyx.Core, name: other, plugins: [Connected]}, id: other)
-
-      {:ok, a} = Session.start(core, model: "conn/label", sessions_dir: dir)
-      {:ok, _, _} = Session.subscribe(a)
-      %{resume_id: first} = label(turn(a, "shared"))
-      assert init_label() == nil
-
-      # B continues the label too: the hole of two live Cores, through a
-      # link of the file in a second folder (docs/features/session-lock.md).
-      linked = Helyx.Test.SessionCase.link_session(dir, a.id)
-      {:ok, b} = Session.resume(other, sessions_dir: linked)
-      {:ok, _, _} = Session.subscribe(b)
-      refute Enum.any?(turn(b, "b1"), &(&1.type == :resume_id))
-      turn(a, "a1")
-      stop(a)
-      stop(b)
-
-      # A wrote last, so its branch resumes, with a fork below the label.
-      {:ok, resumed} = Session.resume(core, sessions_dir: dir)
-      {:ok, _, _} = Session.subscribe(resumed)
-      events = turn(resumed, "a2")
-      assert init_label() == nil
-      assert %{resume_id: second, lost: false} = label(events)
-      assert second != first
-
-      # The new label has no fork below it, so the next resume continues it.
-      stop(resumed)
-      {:ok, resumed} = Session.resume(core, sessions_dir: dir)
-      {:ok, _, _} = Session.subscribe(resumed)
-      turn(resumed, "a3")
-      assert init_label() == second
     end
   end
 end

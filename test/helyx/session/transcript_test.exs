@@ -44,16 +44,15 @@ defmodule Helyx.Session.TranscriptTest do
 
     defp interrupted(id), do: Message.tool_result(call(id), {:error, @interrupted})
 
-    test "a stored aborted result of a user abort stays aborted" do
-      aborted = Message.tool_result(call("a"), {:error, "aborted"})
-      transcript = [assistant([call("a")]), aborted, Message.user("next")]
-      assert Transcript.repair(transcript) == transcript
-    end
-
     test "leaves a transcript with no open calls unchanged" do
       transcript = [Message.user("hi"), assistant([call("a")]), result("a"), assistant([])]
       assert Transcript.repair(transcript) == transcript
       assert Transcript.repair([]) == []
+
+      # A stored aborted result of a user abort stays aborted.
+      aborted = Message.tool_result(call("a"), {:error, "aborted"})
+      transcript = [assistant([call("a")]), aborted, Message.user("next")]
+      assert Transcript.repair(transcript) == transcript
     end
 
     test "a call never answered gets its result right after it, before the next user message" do

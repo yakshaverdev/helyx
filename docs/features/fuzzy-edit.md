@@ -8,9 +8,9 @@ The `edit` tool (`Helyx.Tool.Edit`) needs `old_text` to match the file. Models o
 
 ## Interface changes
 
-No change to the tool's name or parameters. One new error result: `old_text and new_text must be valid UTF-8`. Core already rejects a tool call whose arguments are not valid UTF-8 (`Helyx.Session.Stream.check/1`); `run/2` is public, so it checks at its own boundary, because the normalization cannot take such text. `run/2` behaves as follows:
+No change to the tool's name or parameters. Core rejects a tool call whose arguments are not valid UTF-8 (`Helyx.Session.Stream.check/1`), so `run/2` gets valid UTF-8 and does not check it again (review of 2026-10-16, #637). `run/2` behaves as follows:
 
-1. Both passes search the file as it is, a leading BOM included, so a U+FEFF in `old_text` matches wherever the file has one. When the matched range starts at offset 0 of a file that starts with a BOM (`old_text` named the BOM), the range starts after the BOM instead, and one leading BOM of `new_text` drops, so the file keeps exactly its BOM (`keep_bom/3`).
+1. Both passes search the file as it is, a leading BOM included, so a U+FEFF in `old_text` matches wherever the file has one. The replacement is literal: a BOM inside the matched range is replaced with the rest of the range, so an `old_text` that names the file's BOM and a `new_text` without one remove it. A BOM outside the range stays (review of 2026-10-16, #637).
 2. The exact match comes first. One exact match is the edit. Two or more is the error of today; the fuzzy pass does not run.
 3. With no exact match, both texts are normalized and matched. Normalization works on each grapheme cluster: Unicode NFKC, then the curly single quotes U+2018 to U+201B as `'`, the curly double quotes U+201C to U+201F as `"`, and the dashes U+2010 to U+2015 and U+2212 as `-` (NFKC already maps U+2011, U+FE58, U+FE63, and U+FF0D to one of these or to `-`). A CRLF line end is LF. Spaces and tabs at the end of each line drop, after NFKC, so U+00A0 and U+3000 count as spaces. The end of the text counts as the end of a line, for the file and for `old_text`.
 4. The normalized match must be unique, counting overlapping matches; two or more is the error of today. A normalized `old_text` that is empty (only spaces and tabs) has no match.
@@ -42,6 +42,6 @@ No new resource. The file is read and written as before.
 
 ## Out of scope
 
-Several edits in one call and diff output for the TUI: the ticket leaves them out, and no ticket owns them yet. A lone CR as a line end: the ticket asks only for CRLF, and no ticket owns it. A U+FEFF in `old_text` or `new_text` is text, except the one leading BOM of `new_text` that item 1 drops.
+Several edits in one call and diff output for the TUI: the ticket leaves them out, and no ticket owns them yet. A lone CR as a line end: the ticket asks only for CRLF, and no ticket owns it. A U+FEFF in `old_text` or `new_text` is text.
 
 Accepted: an `old_text` whose last line ends in spaces matches without them, so `foo ` can match the `foo` of `foobar` and leave the `bar`. It follows from item 3, which counts the end of the text as the end of a line.

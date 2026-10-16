@@ -23,10 +23,10 @@ defmodule Helyx.Message do
   end
 
   defmodule Thinking do
-    @moduledoc "A thinking block. `signature` is set when the provider sends one."
+    @moduledoc "A thinking block."
     @enforce_keys [:thinking]
-    defstruct [:thinking, :signature]
-    @type t :: %__MODULE__{thinking: String.t(), signature: String.t() | nil}
+    defstruct [:thinking]
+    @type t :: %__MODULE__{thinking: String.t()}
   end
 
   defmodule ToolCall do
@@ -34,13 +34,6 @@ defmodule Helyx.Message do
     @enforce_keys [:id, :name, :arguments]
     defstruct [:id, :name, :arguments]
     @type t :: %__MODULE__{id: String.t(), name: String.t(), arguments: map()}
-  end
-
-  defmodule Image do
-    @moduledoc "An image block with base64 `data`."
-    @enforce_keys [:mime_type, :data]
-    defstruct [:mime_type, :data]
-    @type t :: %__MODULE__{mime_type: String.t(), data: String.t()}
   end
 
   @enforce_keys [:role, :content]
@@ -55,7 +48,7 @@ defmodule Helyx.Message do
     is_error: false
   ]
 
-  @type block :: Text.t() | Thinking.t() | ToolCall.t() | Image.t()
+  @type block :: Text.t() | Thinking.t() | ToolCall.t()
   @type role :: :user | :assistant | :tool_result
   @typedoc "A stream event that `add_block/2` adds to assistant content."
   @type block_event ::

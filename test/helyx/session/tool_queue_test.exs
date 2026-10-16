@@ -66,14 +66,10 @@ defmodule Helyx.Session.ToolQueueTest do
       assert {_, [{:run, _}]} = request!(%ToolQueue{}, "c1", nil, @max)
     end
 
-    test "the bytes of a call leave the sum at its result and at a cancel of a waiting call" do
+    test "the bytes of a call leave the sum at its result" do
       {tools, _} = request!(%ToolQueue{}, "c1", nil, @max - 1)
       {tools, _} = request!(tools, "c2", nil, 1)
       assert {_, [{:result, "c3", {:error, _}}]} = request!(tools, "c3", nil, 1)
-
-      # The cancel of the waiting c2 frees 1 byte.
-      {cancelled, _} = ToolQueue.cancel(tools, "c2")
-      assert {_, []} = request!(cancelled, "c3", nil, 1)
 
       # The result of c1 frees its bytes, and c2 runs.
       {tools, _} = ToolQueue.result(tools, {:ok, "a"})
@@ -88,23 +84,6 @@ defmodule Helyx.Session.ToolQueueTest do
 
       assert {%ToolQueue{running: nil, waiting: []}, [{:result, "c2", {:error, "e"}}]} =
                ToolQueue.result(tools, {:error, "e"})
-    end
-  end
-
-  describe "cancel/2" do
-    test "the running call is killed and gets aborted at its result" do
-      assert {tools, [{:kill, "c1"}]} = ToolQueue.cancel(after_requests(["c1", "c2"]), "c1")
-
-      assert {%ToolQueue{running: "c2", killed?: false},
-              [{:result, "c1", {:error, "aborted"}}, _run]} =
-               ToolQueue.result(tools, {:ok, "late"})
-    end
-
-    test "a waiting call gets aborted at once; any other id changes nothing" do
-      tools = after_requests(["c1", "c2", "c3"])
-      assert {cancelled, [{:result, "c2", {:error, "aborted"}}]} = ToolQueue.cancel(tools, "c2")
-      assert Enum.map(cancelled.waiting, fn {c, _} -> c.id end) == ["c3"]
-      assert ToolQueue.cancel(tools, "other") == {tools, []}
     end
   end
 

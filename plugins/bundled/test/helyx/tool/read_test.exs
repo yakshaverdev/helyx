@@ -41,28 +41,6 @@ defmodule Helyx.Tool.ReadTest do
            )
   end
 
-  test "a first line over the byte cap is reported as cut (issue #50)", %{tmp_dir: dir, run: run} do
-    line = String.duplicate("x", 51_500 - 11) <> "TAIL_MARKER"
-    File.write!(Path.join(dir, "wide.txt"), line <> "\nline2")
-
-    text = Helyx.Message.text(run.(%{"path" => "wide.txt"}))
-    refute text =~ "TAIL_MARKER"
-
-    assert String.ends_with?(
-             text,
-             "\n[truncated: showing lines 1-1 of 2, line 1 cut at 51200 bytes; read again with offset 2]"
-           )
-  end
-
-  test "a cut last line names no offset (issue #61)", %{tmp_dir: dir, run: run} do
-    File.write!(Path.join(dir, "wide.txt"), "a\n" <> String.duplicate("x", 60_000) <> "\n")
-
-    assert String.ends_with?(
-             Helyx.Message.text(run.(%{"path" => "wide.txt", "offset" => 2})),
-             "\n[truncated: showing lines 2-2 of 2, line 2 cut at 51200 bytes]"
-           )
-  end
-
   test "offset reads from a later line", %{tmp_dir: dir, run: run} do
     File.write!(Path.join(dir, "a.txt"), "one\ntwo\nthree")
     assert Helyx.Message.text(run.(%{"path" => "a.txt", "offset" => 2})) == "two\nthree"

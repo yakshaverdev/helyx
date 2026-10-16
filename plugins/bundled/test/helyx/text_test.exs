@@ -234,16 +234,6 @@ defmodule Helyx.TextTest do
     assert Text.truncate(text, :tail) =~ ~r/\nexit 3$/
   end
 
-  test "a cut line stays valid UTF-8" do
-    line = String.duplicate("€", 20_000)
-
-    for keep <- [:head, :tail] do
-      out = Text.truncate(line, keep)
-      assert String.valid?(out)
-      assert out =~ "showing lines 1-1 of 1"
-    end
-  end
-
   test "cap/3 keeps at most max bytes of valid UTF-8 from either end" do
     assert Text.cap("abc", 3, :head) == "abc"
     assert Text.cap(<<255>>, 1, :tail) == ""

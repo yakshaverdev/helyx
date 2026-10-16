@@ -6,7 +6,7 @@ defmodule Helyx.Session.FileTest do
   @moduletag :tmp_dir
 
   # Appends a hand-written entry as the child of the leaf of `file`, so it
-  # is on the branch that a resume reads, and moves the leaf to it.
+  # continues the chain that a resume reads, and moves the leaf to it.
   defp append_raw(file, json) do
     entry = Map.put(JSON.decode!(json), "parent_id", file.leaf)
     File.write!(file.path, JSON.encode!(entry) <> "\n", [:append])
@@ -63,7 +63,7 @@ defmodule Helyx.Session.FileTest do
         context_window: 200_000
       },
       content: [
-        %Message.Thinking{thinking: "hmm", signature: "sig"},
+        %Message.Thinking{thinking: "hmm"},
         %Message.Text{text: "Listing."},
         call
       ]
@@ -74,10 +74,7 @@ defmodule Helyx.Session.FileTest do
       tool_call_id: "c1",
       tool_name: "bash",
       is_error: true,
-      content: [
-        %Message.Text{text: "no such directory"},
-        %Message.Image{mime_type: "image/png", data: "aGk="}
-      ]
+      content: [%Message.Text{text: "no such directory"}]
     }
 
     # The unknown usage and a nil usage are two values, and both stay.
@@ -250,28 +247,6 @@ defmodule Helyx.Session.FileTest do
              Session.File.resume(dir, "/later")
   end
 
-  test "an entry with no string id is on no branch, nor any entry below it", %{tmp_dir: dir} do
-    for {id, n} <- Enum.with_index([nil, 42]) do
-      {:ok, file} = Session.File.create(dir, Session.Id.new(), "/repo#{n}", "claude-code/opus")
-
-      entry = %{
-        "type" => "harness_session",
-        "provider" => "claude-code",
-        "harness_session_id" => "a"
-      }
-
-      entry = if id, do: Map.put(entry, "id", id), else: entry
-
-      file
-      |> append_raw(JSON.encode!(entry))
-      |> Session.File.append_message(Message.user("below"))
-
-      assert {:ok, resumed} = Session.File.resume(dir, "/repo#{n}")
-      assert resumed.messages == []
-      assert resumed.resume_ids == %{}
-    end
-  end
-
   test "a resume id of 256 bytes is kept", %{tmp_dir: dir} do
     # 256 bytes, multibyte, is the longest id kept; 255 bytes is kept too.
     for id <- [String.duplicate("é", 128), "a" <> String.duplicate("é", 127)] do
@@ -383,6 +358,10 @@ defmodule Helyx.Session.FileTest do
          ~s({"id":"x","type":"message","role":"tool_result","tool_call_id":42,"content":[]})},
         {"a content block with a wrong field type",
          ~s({"id":"x","type":"message","role":"user","content":[{"type":"text","text":42}]})},
+        {"an image block, removed in #634",
+         ~s({"id":"x","type":"message","role":"user","content":[{"type":"image","mime_type":"image/png","data":"aGk="}]})},
+        {"a thinking signature, removed in #634",
+         ~s({"id":"x","type":"message","role":"assistant","content":[{"type":"thinking","thinking":"t","signature":"s"}]})},
         {"an entry type", ~s({"id":"x","type":"note"})},
         {"a second header mid-file",
          ~s({"id":"h2","type":"session","version":1,"cwd":"/repo","model":"test/ok"})}
@@ -423,190 +402,63 @@ defmodule Helyx.Session.FileTest do
     assert File.read!(file.path) == before
   end
 
-  describe "the file as a tree" do
-    test "two writers make two branches; a resume reads the branch of the last write, unmixed",
-         %{tmp_dir: dir} do
-      {:ok, file} = Session.File.create(dir, "sess00000001", "/repo", "test/ok")
-      shared = Session.File.append_message(file, Message.user("shared"))
+  test "a session file of one chain resumes in file order", %{tmp_dir: dir} do
+    # Hand-written lines: each parent_id is the id of the line above.
+    lines = [
+      ~s({"id":"h","parent_id":null,"ts":"t","type":"session","version":1,"cwd":"/repo","model":"test/ok"}),
+      ~s({"id":"m1","parent_id":"h","ts":"t","type":"message","role":"user","content":[{"type":"text","text":"one"}]}),
+      ~s({"id":"c","parent_id":"m1","ts":"t","type":"model_change","model":"test/two"}),
+      ~s({"id":"m2","parent_id":"c","ts":"t","type":"message","role":"user","content":[{"type":"text","text":"two"}]})
+    ]
 
-      # Two writers hold the same leaf and append in turn.
-      a = Session.File.append_message(shared, Message.user("a1"))
-      b = Session.File.append_message(shared, Message.user("b1"))
-      a = Session.File.append_model_change(a, "test/a")
-      a = Session.File.append_message(a, Message.user("a2"))
-      b = Session.File.append_message(b, Message.user("b2"))
+    {:ok, file} = Session.File.create(dir, "old000000000", "/repo", "test/ok")
+    File.write!(file.path, Enum.map_join(lines, &(&1 <> "\n")))
 
-      assert {:ok, resumed} = Session.File.resume(dir, "/repo")
-      assert texts(resumed) == ["shared", "b1", "b2"]
-      assert resumed.model == "test/ok"
-      assert resumed.file.leaf == b.leaf
+    assert {:ok, resumed} = Session.File.resume(dir, "/repo")
+    assert texts(resumed) == ["one", "two"]
+    assert resumed.model == "test/two"
+    assert resumed.file.leaf == "m2"
+  end
 
-      Session.File.append_message(a, Message.user("a3"))
-      assert {:ok, resumed} = Session.File.resume(dir, "/repo")
-      assert texts(resumed) == ["shared", "a1", "a2", "a3"]
-      assert resumed.model == "test/a"
+  test "an entry that does not continue the chain is rejected with its line, the file unchanged",
+       %{tmp_dir: dir} do
+    entry = fn id, parent ->
+      ~s({"id":#{id},"parent_id":#{parent},"type":"message","role":"user","content":[]})
     end
 
-    # #282: the other branch may have continued the harness session too.
-    test "a fork at or below a resume id label drops every label; a fork above keeps it",
-         %{tmp_dir: dir} do
-      # A label counts the assistant messages on its own branch.
-      reply =
-        &Session.File.append_message(&1, %Message{
-          role: :assistant,
-          content: [%Message.Text{text: &2}]
-        })
+    breaks = [
+      # A second child of the header: the branch of a second writer.
+      fn header, _leaf -> entry.(~s("b"), ~s("#{header}")) end,
+      fn _header, _leaf -> entry.(~s("d"), ~s("gone")) end,
+      fn _header, _leaf -> entry.(~s("n"), "null") end,
+      fn _header, leaf -> entry.("42", ~s("#{leaf}")) end
+    ]
 
-      start = fn n ->
-        {:ok, file} = Session.File.create(dir, Session.Id.new(), "/r#{n}", "claude-code/opus")
+    for {break, n} <- Enum.with_index(breaks) do
+      {:ok, header} = Session.File.create(dir, Session.Id.new(), "/r#{n}", "test/ok")
+      kept = Session.File.append_message(header, Message.user("kept"))
+      # A line that does not decode is skipped, and its line still counts.
+      File.write!(kept.path, "not json\n" <> break.(header.leaf, kept.leaf) <> "\n", [:append])
+      before = File.read!(kept.path)
 
-        file
-        |> Session.File.append_resume_id("codex", "codex-1")
-        |> reply.("one")
-      end
+      assert Session.File.resume(dir, "/r#{n}") ==
+               {:error,
+                {:invalid_file, "line 4 does not continue the chain of the entry before it"}}
 
-      label = &Session.File.append_resume_id(&1, "claude-code", "h1")
-
-      labels = fn cwd ->
-        {:ok, resumed} = Session.File.resume(dir, cwd)
-        resumed.resume_ids
-      end
-
-      # A fork below the label.
-      labelled = label.(start.(0))
-      reply.(labelled, "a")
-      reply.(labelled, "b")
-      assert labels.("/r0") == %{}
-
-      # A fork at the label: both children of the label entry hold it.
-      labelled = label.(start.(1))
-      reply.(labelled, "a")
-      assert labels.("/r1") == %{"claude-code" => {"h1", 1, nil}, "codex" => {"codex-1", 0, nil}}
-      reply.(labelled, "b")
-      assert labels.("/r1") == %{}
-
-      # A fork above the label: the other branch never had it. The codex
-      # label above the fork is dropped.
-      file = start.(2)
-      reply.(file, "other")
-      file |> reply.("mine") |> label.() |> reply.("after")
-      assert labels.("/r2") == %{"claude-code" => {"h1", 2, nil}}
+      assert File.read!(kept.path) == before
     end
+  end
 
-    test "a session file of one writer resumes as one chain in file order", %{tmp_dir: dir} do
-      # The lines a writer before #266 made: each parent_id is the line above.
-      lines = [
-        ~s({"id":"h","parent_id":null,"ts":"t","type":"session","version":1,"cwd":"/repo","model":"test/ok"}),
-        ~s({"id":"m1","parent_id":"h","ts":"t","type":"message","role":"user","content":[{"type":"text","text":"one"}]}),
-        ~s({"id":"c","parent_id":"m1","ts":"t","type":"model_change","model":"test/two"}),
-        ~s({"id":"m2","parent_id":"c","ts":"t","type":"message","role":"user","content":[{"type":"text","text":"two"}]})
-      ]
+  # The file can change between the pick and the read under the lock.
+  test "the read after the pick uses the header of its own read", %{tmp_dir: dir} do
+    {:ok, _file} = started(dir, "sess00000001", "/repo", "test/ok")
+    {:ok, path} = Session.File.pick(dir, "/repo", [])
+    File.write!(path, String.replace(File.read!(path), ~s("test/ok"), ~s("test/new")))
 
-      {:ok, file} = Session.File.create(dir, "old000000000", "/repo", "test/ok")
-      File.write!(file.path, Enum.map_join(lines, &(&1 <> "\n")))
+    assert {:ok, %{model: "test/new"}} = Session.File.resume_picked(path, "/repo")
 
-      assert {:ok, resumed} = Session.File.resume(dir, "/repo")
-      assert texts(resumed) == ["one", "two"]
-      assert resumed.model == "test/two"
-      assert resumed.file.leaf == "m2"
-    end
-
-    test "an entry whose parent is not an earlier entry is on no branch, nor any entry below it",
-         %{tmp_dir: dir} do
-      message = fn id, parent, text ->
-        ~s({"id":"#{id}","parent_id":#{parent},"type":"message","role":"user","content":[{"type":"text","text":"#{text}"}]})
-      end
-
-      # A missing parent, a null parent, a parent later in the file (and so
-      # a cycle), and an entry that is its own parent.
-      cases = [
-        [message.("d", ~s("gone"), "dangling"), message.("e", ~s("d"), "below")],
-        [message.("n", "null", "null parent")],
-        [message.("f", ~s("g"), "forward"), message.("g", ~s("f"), "cycle")],
-        [message.("s", ~s("s"), "self")]
-      ]
-
-      for {lines, n} <- Enum.with_index(cases) do
-        {:ok, file} = Session.File.create(dir, Session.Id.new(), "/r#{n}", "test/ok")
-        file = Session.File.append_message(file, Message.user("kept"))
-        File.write!(file.path, Enum.map_join(lines, &(&1 <> "\n")), [:append])
-        before = File.read!(file.path)
-
-        assert {:ok, resumed} = Session.File.resume(dir, "/r#{n}")
-        assert texts(resumed) == ["kept"]
-        assert resumed.file.leaf == file.leaf
-        assert File.read!(file.path) == before
-      end
-
-      # The header is the root whatever its own parent_id names.
-      {:ok, file} = Session.File.create(dir, "root00000000", "/root", "test/ok")
-      [header] = String.split(File.read!(file.path), "\n", trim: true)
-      header = header |> JSON.decode!() |> Map.put("parent_id", "m") |> JSON.encode!()
-      File.write!(file.path, header <> "\n")
-      append_raw(file, message.("m", "null", "on the header"))
-
-      assert {:ok, resumed} = Session.File.resume(dir, "/root")
-      assert texts(resumed) == ["on the header"]
-    end
-
-    test "a repeated id: the branch before the repeat stands, a child after it is on no branch",
-         %{tmp_dir: dir} do
-      {:ok, file} = Session.File.create(dir, "sess00000001", "/repo", "test/ok")
-      first = append_raw(file, ~s({"id":"x","type":"message","role":"user","content":[]}))
-      child = Session.File.append_message(first, Message.user("child of the first"))
-      File.write!(file.path, ~s({"id":"x","parent_id":null,"type":"note"}\n), [:append])
-      before = File.read!(file.path)
-
-      assert {:ok, resumed} = Session.File.resume(dir, "/repo")
-      assert texts(resumed) == ["", "child of the first"]
-      assert resumed.file.leaf == child.leaf
-      assert File.read!(file.path) == before
-
-      # A child after the repeat cannot tell the two apart.
-      Session.File.append_message(first, Message.user("after the repeat"))
-      assert {:ok, resumed} = Session.File.resume(dir, "/repo")
-      assert texts(resumed) == ["", "child of the first"]
-
-      # The id of the header too: the header stays the root, and a child
-      # after the repeat is on no branch.
-      {:ok, file} = Session.File.create(dir, "sess00000002", "/repo2", "test/ok")
-      kept = Session.File.append_message(file, Message.user("kept"))
-      append_raw(file, ~s({"id":"#{file.leaf}","type":"model_change","model":"test/other"}))
-      Session.File.append_message(file, Message.user("after the repeat"))
-
-      assert {:ok, resumed} = Session.File.resume(dir, "/repo2")
-      assert texts(resumed) == ["kept"]
-      assert resumed.file.leaf == kept.leaf
-      assert resumed.model == "test/ok"
-    end
-
-    test "a repeated id is never the leaf, so work after a resume is kept", %{tmp_dir: dir} do
-      {:ok, file} = Session.File.create(dir, "sess00000001", "/repo", "test/ok")
-      kept = Session.File.append_message(file, Message.user("kept"))
-      x = append_raw(kept, ~s({"id":"x","type":"message","role":"user","content":[]}))
-      File.write!(x.path, ~s({"id":"x","parent_id":null,"type":"note"}\n), [:append])
-
-      assert {:ok, resumed} = Session.File.resume(dir, "/repo")
-      assert resumed.file.leaf == kept.leaf
-      assert texts(resumed) == ["kept"]
-
-      Session.File.append_message(resumed.file, Message.user("new work"))
-      assert {:ok, resumed} = Session.File.resume(dir, "/repo")
-      assert texts(resumed) == ["kept", "new work"]
-    end
-
-    test "a repeat of the header id with no other leaf is refused, the file unchanged",
-         %{tmp_dir: dir} do
-      {:ok, file} = Session.File.create(dir, "sess00000001", "/repo", "test/ok")
-      File.write!(file.path, ~s({"id":"#{file.leaf}","type":"note"}\n), [:append])
-      # A message below the repeated id: the file is not empty, and the
-      # message is on no branch.
-      Session.File.append_message(file, Message.user("lost"))
-      before = File.read!(file.path)
-
-      assert {:error, {:invalid_file, _reason}} = Session.File.resume(dir, "/repo")
-      assert File.read!(file.path) == before
-    end
+    File.write!(path, String.replace(File.read!(path), ~s("/repo"), ~s("/moved")))
+    assert Session.File.resume_picked(path, "/repo") == {:error, :not_found}
   end
 
   test "a repair that cannot write is an environment error", %{tmp_dir: dir} do
@@ -764,23 +616,6 @@ defmodule Helyx.Session.FileTest do
     for message <- resumed.messages do
       assert %Message{role: :assistant, model: nil, stop_reason: nil} = message
     end
-  end
-
-  test "an entry on no branch is not checked", %{tmp_dir: dir} do
-    {:ok, file} = Session.File.create(dir, "sess00000001", "/repo", "test/ok")
-    file = Session.File.append_message(file, Message.user("kept"))
-
-    for line <- [
-          ~s({"id":"n","parent_id":"gone","type":"note"}),
-          ~s({"id":"m","parent_id":"gone","type":"model_change","model":42}),
-          ~s({"id":"r","parent_id":"gone","type":"message","role":"system","content":[]})
-        ] do
-      File.write!(file.path, line <> "\n", [:append])
-    end
-
-    assert {:ok, resumed} = Session.File.resume(dir, "/repo")
-    assert texts(resumed) == ["kept"]
-    assert resumed.model == "test/ok"
   end
 
   describe "the file size limit" do
@@ -948,10 +783,12 @@ defmodule Helyx.Session.FileTest do
       line <> String.duplicate(" ", bytes - byte_size(line))
     end
 
-    # The header replaced, the user message kept.
+    # The header replaced, the user message kept as the child of the new one.
     defp overwrite_session(dir, header) do
+      File.rm_rf!(Session.File.path(dir, "/repo", "sess00000001"))
       {:ok, file} = started(dir, "sess00000001", "/repo", "test/ok")
-      [_header, rest] = String.split(File.read!(file.path), "\n", parts: 2)
+      [old, rest] = String.split(File.read!(file.path), "\n", parts: 2)
+      rest = String.replace(rest, JSON.decode!(old)["id"], "h")
       File.write!(file.path, header <> "\n" <> rest)
     end
 

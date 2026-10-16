@@ -1,22 +1,17 @@
 # Rejected tool call
 
-Replaced by #380. The `{:rejected_tool_call, call, reason}` event of #146 no longer exists.
+Replaced by #636. The `{:rejected_tool_call, call, reason}` event of #146 and the same-turn error result of #380 no longer exist.
 
-## Goal
+## The rule since #636
 
-One tool call whose arguments do not decode does not fail the turn. The call joins the assistant message, gets an error result, and the text and the other calls of the message stay, so the model can correct the call. A reply of a provider on `Helyx.Provider.Loop` that stopped at the token limit is the exception: none of its calls runs. The harness providers run their own tool loops, so the exception does not reach them (#494, `docs/features/one-provider-path.md`, "`Helyx.Provider.Loop`"). Issue #146, finding D4 of `docs/reviews/2026-09-26-boundary-review.md`.
-
-## The rule since #380
-
-- A provider whose model gave arguments that do not decode to a JSON object sends a normal `{:tool_call, call}` whose `arguments` is the raw argument text, a binary (`Helyx.Session.Stream.check/1`). The same holds for `{:tool_request, id, name, arguments}`.
-- `Helyx.Session.Stream.check/1` gives such a call `%{}` as arguments and the rejection reason `the arguments are not a valid JSON object`, next to the reason of an integer over the digit limit. Arguments that are neither a map nor a binary stay a malformed event.
-- The session answers the request with `tool call not run: the arguments are not a valid JSON object` (`Helyx.Session.Server.ToolRuns`), and the call never runs.
-- `Helyx.Provider.OpenAI` sends the raw text of each call whose arguments are not a JSON object. A call with no id still fails the turn at the Core boundary (#345).
+- The arguments of a tool call or a Helyx tool request are a plain map. Other arguments are a malformed event, and the turn fails through the generic path (`{:bad_stream_event, event}`, `Helyx.Session.Stream.check/1`). The user can send the prompt again.
+- A provider whose model gave arguments that do not decode to a JSON object can send them as their raw text, a binary. `Helyx.Provider.OpenAI` does. The error of such a call holds `%{}` in place of the text, so no transcript entry, session file entry, log line, or client event holds it.
+- Removed capability: before #636, such a call got an error result and the turn continued, so the model could correct the call. No observed run showed a model that sends arguments that are not a JSON object.
+- An integer over the digit limit is still found before the first JSON encode (#79). That call goes on with `%{}`, and the session answers it with `tool call not run: an integer in the arguments has more than 100 digits` (`Helyx.Session.Server.ToolRuns`).
 
 ## Bounds
 
 | What | Bound | Where enforced |
 | --- | --- | --- |
 | raw argument text | the provider's own limit: 10 MiB of tool call bytes for OpenAI | the provider |
-| raw text after the check | dropped in the provider process: the transcript, the session file, and the tool result hold `%{}`, and so do Core's error for a malformed call or request and the helper's error for a repeated call id. An error that holds a provider value as sent, such as an OpenAI `bad_chunk`, can hold it within the provider's limits | `Helyx.Session.Stream`; `Helyx.Provider.Loop` |
-| result text of this rejection | `tool call not run: the arguments are not a valid JSON object`, 60 bytes | `Helyx.Session.Stream` |
+| raw text after the check | dropped in the provider process: Core's error for a malformed call or request and the helper's error for a repeated call id hold `%{}`. An error that holds a provider value as sent, such as an OpenAI `bad_chunk`, can hold it within the provider's limits | `Helyx.Session.Stream`; `Helyx.Provider.Loop` |

@@ -34,7 +34,7 @@ defmodule Helyx.Session.Server.Events do
       turn: turn(state.activity),
       model: ModelRef.to_string(state.model),
       queue: Queue.counts(state.queue),
-      lock_lost: state.lock_lost
+      persisting: state.file != nil
     }
   end
 

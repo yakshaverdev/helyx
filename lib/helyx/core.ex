@@ -14,14 +14,13 @@ defmodule Helyx.Core do
 
   Core checks every plugin against the interfaces it implements. It refuses to
   start when a `:single` interface receives more than one plugin, when a
-  module implements no interface at all, or when a plugin does not export a
-  required callback of an interface it implements (`{:missing_callbacks,
-  plugin, interface, missing}`). It refuses to start with
+  module implements no interface at all. It refuses to start with
   `{:missing_plugin, Helyx.Provider}` when no provider is listed. It calls
   `id/0` of each provider once, and refuses to start with
-  `{:invalid_provider_id, plugin}` when one raises, throws, exits, or
-  returns a value that is not a binary, and with `{:duplicate_provider_id,
-  id, [first, second]}` when two different providers share an id.
+  `{:invalid_provider_id, plugin}` when one returns a value that is not a
+  binary, and with `{:duplicate_provider_id, id, [first, second]}` when two
+  different providers share an id. A plugin callback that raises, throws,
+  or exits at start is not contained: the error goes to the caller.
 
   A plugin that exports `child_spec/1` gets its process tree started under
   Core, with `[core: name]` as the argument.

@@ -19,19 +19,20 @@ defmodule Helyx.Session.Snapshot do
     * `queue` – the counts of the queued steers and follow-ups, the
       running background runs, and the held and waiting background ends, as
       in `queue_update` (`Helyx.Event`).
-    * `lock_lost` – true after the session lost the writer lock of its
-      file; false while it holds the lock, and for a session with no file.
-      A client shows `Helyx.Reason.text(:lock_lost)`, the text of the
-      lost-lock notice, for a snapshot with `lock_lost: true`, so a loss
-      before its subscribe reaches it too (`docs/features/session-lock.md`).
+    * `persisting` – true while the session appends to its file. It is
+      false for a session with no file, and after a write failure or the
+      loss of the writer lock stopped the saving. So `false` alone does not
+      say why. A client that tells the user shows
+      `Helyx.Reason.text(:not_saved)`; then a stop before its subscribe
+      reaches it too (`docs/features/session-lock.md`).
 
   A client works with one Helyx version and is a tolerant reader within it:
   it ignores an unknown event type and an unknown field (ADR 0006, revision
   of 2026-10-03, `docs/adr/0006-client-contract.md`).
   """
 
-  @enforce_keys [:instance_id, :seq, :messages, :turn, :model, :queue, :lock_lost]
-  defstruct [:instance_id, :seq, :messages, :turn, :model, :queue, :lock_lost]
+  @enforce_keys [:instance_id, :seq, :messages, :turn, :model, :queue, :persisting]
+  defstruct [:instance_id, :seq, :messages, :turn, :model, :queue, :persisting]
 
   @type turn :: %{id: String.t(), partial: Helyx.Message.t() | nil}
 
@@ -48,6 +49,6 @@ defmodule Helyx.Session.Snapshot do
             held: non_neg_integer(),
             waiting: non_neg_integer()
           },
-          lock_lost: boolean()
+          persisting: boolean()
         }
 end

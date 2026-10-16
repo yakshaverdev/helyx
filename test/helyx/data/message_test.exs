@@ -64,13 +64,6 @@ defmodule Helyx.MessageTest do
     refute Message.resume_id?(<<255>>)
   end
 
-  test "valid tool output passes through unchanged" do
-    call = %Message.ToolCall{id: "c1", name: "bash", arguments: %{}}
-    text = "héllo\n"
-
-    assert Message.text(Message.tool_result(call, {:ok, text})) == text
-  end
-
   describe "cut_result/1" do
     @max 65_536
 

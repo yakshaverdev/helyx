@@ -77,11 +77,7 @@ defmodule Helyx.Provider.ClaudeCode.TurnTest do
              },
              %{
                "type" => "control_response",
-               "response" => %{
-                 "subtype" => "success",
-                 "request_id" => "p1",
-                 "response" => %{"behavior" => "allow", "updatedInput" => %{"command" => "ls"}}
-               }
+               "response" => %{"subtype" => "error", "request_id" => "p1"}
              },
              %{
                "type" => "control_response",

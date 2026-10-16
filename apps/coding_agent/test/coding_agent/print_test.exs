@@ -361,8 +361,10 @@ defmodule CodingAgent.PrintTest do
   end
 
   describe "run/2" do
-    test "an answer cut at the token limit is printed and returns 1" do
-      {:ok, session} = Helyx.Session.start(start_core(), model: "stop/max_tokens")
+    @tag :tmp_dir
+    test "an answer cut at the token limit is printed and returns 1", %{tmp_dir: dir} do
+      {:ok, session} =
+        Helyx.Session.start(start_core(), model: "stop/max_tokens", sessions_dir: dir, cwd: dir)
 
       assert {1, "cut\n", stderr} = io("", fn -> run(session, "q") end)
       assert stderr =~ ~r/\Ahelyx: session \S+\nhelyx: the answer stopped at the token limit\n\z/
@@ -377,7 +379,7 @@ defmodule CodingAgent.PrintTest do
 
     # #606: the notice of a loss before the subscribe reached no client.
     @tag :tmp_dir
-    test "a session that lost its lock before the run writes the notice on stderr", %{
+    test "a session that lost its lock before the run writes the not-saved notice on stderr", %{
       tmp_dir: dir
     } do
       {:ok, session} =
@@ -386,7 +388,9 @@ defmodule CodingAgent.PrintTest do
       Helyx.Test.LostLock.kill(session)
 
       assert {0, "q\n", stderr} = io("", fn -> run(session, "q") end)
-      assert stderr =~ ~r/\Ahelyx: session \S+\nhelyx: the session lock is lost; .+\n\z/
+
+      assert stderr =~
+               ~r/\Ahelyx: session \S+\nhelyx: new messages of this session are not saved\n\z/
     end
 
     test "main/2 sends the log to stderr, and an error to one stderr line with 1" do
@@ -530,7 +534,7 @@ defmodule CodingAgent.PrintTest do
 
       # The log line of the failed turn comes from another process, in any order.
       lines = String.split(stderr, "\n", trim: true)
-      assert ["helyx: " <> line] = Enum.filter(lines, &String.starts_with?(&1, "helyx: n"))
+      assert ["helyx: " <> line] = Enum.filter(lines, &String.starts_with?(&1, "helyx: nn"))
       assert byte_size(line) <= 4000
       refute "next" in lines
     end
@@ -552,7 +556,13 @@ defmodule CodingAgent.PrintTest do
           else: [call]
 
       :ok = Helyx.Provider.Fake.script(core, "bg", [calls, ["started"] | answers])
-      {:ok, session} = Helyx.Session.start(core, [model: "fake/bg", cwd: dir] ++ opts)
+
+      {:ok, session} =
+        Helyx.Session.start(
+          core,
+          [model: "fake/bg", cwd: dir] ++ Keyword.put_new(opts, :sessions_dir, dir)
+        )
+
       {:ok, _, _} = Helyx.Session.subscribe(session)
       %{core: core, session: session, gate: gate}
     end
@@ -656,7 +666,7 @@ defmodule CodingAgent.PrintTest do
       core = start_core()
       call = %Helyx.Message.ToolCall{id: "c1", name: "bash", arguments: args}
       :ok = Helyx.Provider.Fake.script(core, "one", [[call], ["answered"]])
-      {:ok, session} = Helyx.Session.start(core, model: "fake/one", cwd: dir)
+      {:ok, session} = Helyx.Session.start(core, model: "fake/one", cwd: dir, sessions_dir: dir)
       session
     end
 

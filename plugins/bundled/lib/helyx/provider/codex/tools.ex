@@ -54,14 +54,15 @@ defmodule Helyx.Provider.Codex.Tools do
 
   # The admission of an `item/tool/call`, with the provider state as a map:
   # the call maps to an open `dynamicToolCall` item of the running turn,
-  # which puts it in the transcript, and has the shape of the schema. The
+  # which puts it in the transcript, and names a tool that the program was
+  # given. Core checks the arguments (`Helyx.Session.Stream.check/1`). The
   # session owns the call ids of the turn (#369). Gives `{:ok,
   # tool_request}` or `{:error, text}` for the error answer, and the tools.
   def call(%{tools: tools} = state, rpc_id, params) do
     if tool_call?(params, state) do
-      %{"callId" => call_id, "tool" => tool, "arguments" => args} = params
+      %{"callId" => call_id, "tool" => tool} = params
       requests = Map.put(tools.requests, call_id, rpc_id)
-      {{:ok, {:tool_request, call_id, tool, args}}, %{tools | requests: requests}}
+      {{:ok, {:tool_request, call_id, tool, params["arguments"]}}, %{tools | requests: requests}}
     else
       {{:error, "the call does not map to a tool use"}, tools}
     end
@@ -72,8 +73,7 @@ defmodule Helyx.Provider.Codex.Tools do
   defp tool_call?(%{"threadId" => thread, "turnId" => turn, "callId" => id} = params, state),
     do:
       thread == state.thread and turn == state.turn and state.items.open[id] == "dynamicToolCall" and
-        Enum.any?(state.tools.specs, &(&1.name == params["tool"])) and
-        is_map(params["arguments"])
+        Enum.any?(state.tools.specs, &(&1.name == params["tool"]))
 
   defp tool_call?(_params, _state), do: false
 end

@@ -42,11 +42,12 @@ defmodule Helyx.Session.Lock do
   # Takes the lock of the session file `path`, then runs `fun`, which writes
   # the file. Returns `{:ok, lock, result}` for `{:ok, result}` of `fun`, or
   # a `:lock_failed` error when the port has closed by then.
-  # Any other return of `fun` releases the lock and is returned; a raise,
-  # throw, or exit of `fun` releases it and goes on.
+  # Any other return of `fun` releases the lock and is returned. A raise,
+  # throw, or exit of `fun` goes on: the owner of the port dies with it, and
+  # the port closes.
   def hold(path, fun) do
     with {:ok, lock} <- take(path) do
-      case run(lock, fun) do
+      case fun.() do
         {:ok, result} ->
           held(lock, result)
 
@@ -61,7 +62,7 @@ defmodule Helyx.Session.Lock do
   # gone, and no client is subscribed yet to see the notice of a lost lock.
   # The port closes some ms after perl ends, so a perl that ends right before
   # this check, or after it and before the first subscribe, sends its notice
-  # to no client; the snapshot tells a later client (`lock_lost`,
+  # to no client; the snapshot tells a later client (`persisting`,
   # session-lock.md).
   defp held(lock, result) do
     if Port.info(lock) do
@@ -70,14 +71,6 @@ defmodule Helyx.Session.Lock do
       close(lock)
       {:error, {:lock_failed, "the lock ended before the session started"}}
     end
-  end
-
-  defp run(lock, fun) do
-    fun.()
-  catch
-    kind, reason ->
-      release(lock)
-      :erlang.raise(kind, reason, __STACKTRACE__)
   end
 
   defp take(path) do
@@ -167,15 +160,11 @@ defmodule Helyx.Session.Lock do
   # Sends perl the byte that ends it and waits for its exit, so the lock is
   # free when this returns, or unconfirmed past `@release_ms`: then the port
   # closes, and perl frees it when it ends. Only the owner of the port gets its
-  # exit status. The unlink comes first: a write to a port whose perl died
-  # closes it with `:epipe`, an exit signal that would end the caller. A
-  # message or an exit of the port that came before the unlink is dropped.
+  # exit status. The owner is the session process, which traps exits and
+  # stops after this, so the messages of the port stay in its mailbox.
   def release(nil), do: :ok
 
   def release(port) do
-    Process.unlink(port)
-    flush(port)
-
     if write(port) do
       receive do
         {^port, {:exit_status, _status}} -> :ok
@@ -185,6 +174,7 @@ defmodule Helyx.Session.Lock do
     end
 
     close(port)
+    :ok
   end
 
   defp write(port) do
@@ -193,26 +183,10 @@ defmodule Helyx.Session.Lock do
     ArgumentError -> false
   end
 
-  # A port that closed already is skipped. The close is synchronous, so
-  # after it only the messages already sent are left, and they are dropped.
+  # A port that closed already is skipped.
   defp close(port) do
-    Process.unlink(port)
-
-    try do
-      Port.close(port)
-    rescue
-      ArgumentError -> false
-    end
-
-    flush(port)
-  end
-
-  defp flush(port) do
-    receive do
-      {^port, _message} -> flush(port)
-      {:EXIT, ^port, _reason} -> flush(port)
-    after
-      0 -> :ok
-    end
+    Port.close(port)
+  rescue
+    ArgumentError -> false
   end
 end

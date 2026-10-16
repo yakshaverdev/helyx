@@ -17,7 +17,7 @@ defmodule Helyx.Test.LostLock do
   defp await_lost(_pid, 0), do: flunk("the session did not see the lost lock")
 
   defp await_lost(pid, tries) do
-    unless :sys.get_state(pid).lock_lost do
+    if :sys.get_state(pid).lock do
       Process.sleep(10)
       await_lost(pid, tries - 1)
     end

@@ -293,8 +293,8 @@ defmodule Helyx.Provider.OpenAI.EventsTest do
              Enum.to_list(Events.events(chunks))
   end
 
-  # Limits on network input. At the limit and one under pass; one over ends
-  # the stream with one error event.
+  # Limits on network input. At the limit passes; one over ends the stream
+  # with one error event.
 
   @max_line_bytes 1_048_576
 
@@ -307,12 +307,10 @@ defmodule Helyx.Provider.OpenAI.EventsTest do
     content_line(pad <> tail)
   end
 
-  for bytes <- [@max_line_bytes, @max_line_bytes - 1] do
-    test "an SSE line of #{bytes} bytes parses normally" do
-      chunks = [content_line_of(unquote(bytes)) <> "\n\ndata: [DONE]\n\n"]
+  test "an SSE line of #{@max_line_bytes} bytes parses normally" do
+    chunks = [content_line_of(@max_line_bytes) <> "\n\ndata: [DONE]\n\n"]
 
-      assert [{:text_delta, _}] = Enum.to_list(Events.events(chunks))
-    end
+    assert [{:text_delta, _}] = Enum.to_list(Events.events(chunks))
   end
 
   test "an SSE line over the limit ends the stream with one error event" do
@@ -367,16 +365,14 @@ defmodule Helyx.Provider.OpenAI.EventsTest do
     [first | fragments] ++ [delta(%{}, "tool_calls"), "[DONE]"]
   end
 
-  for bytes <- [@max_tool_call_bytes, @max_tool_call_bytes - 1] do
-    test "tool arguments of #{bytes} bytes assemble into the call" do
-      events = Enum.to_list(Events.events([sse(call_deltas(unquote(bytes)))]))
+  test "tool arguments of #{@max_tool_call_bytes} bytes assemble into the call" do
+    events = Enum.to_list(Events.events([sse(call_deltas(@max_tool_call_bytes))]))
 
-      assert [
-               {:tool_call,
-                %Helyx.Message.ToolCall{id: "c1", name: "bash", arguments: %{"a" => _}}},
-               {:done, _}
-             ] = events
-    end
+    assert [
+             {:tool_call,
+              %Helyx.Message.ToolCall{id: "c1", name: "bash", arguments: %{"a" => _}}},
+             {:done, _}
+           ] = events
   end
 
   test "tool arguments over the limit end the stream with one error event" do

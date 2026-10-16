@@ -98,22 +98,16 @@ defmodule Helyx.TUI.ViewModel do
   and checks its payload inside, so a known type with a broken payload, such
   as a `message_start` with no message, is a bug in Core and crashes the TUI.
   An event of a type that no clause names leaves the view model unchanged,
-  and its payload is not checked. Within a known type:
-
-    * a `message_update` with no delta key that the TUI knows (an empty data
-      map included) carries a new delta kind and is ignored; a known key with
-      a value of another type, or two known keys, crashes
-    * a message of a role that the TUI does not show makes no cell, and a
-      delta with no open assistant message, such as one of a message of a
-      new role, is dropped
-    * a block kind that the TUI does not render stays in the message, and
-      `Helyx.TUI.Transcript` shows a placeholder for it
+  and its payload is not checked. Within a known type, a role or a delta
+  kind that the TUI does not know also crashes. A block kind that the TUI
+  does not render stays in the message, and `Helyx.TUI.Transcript` shows a
+  placeholder for it.
   """
   @spec apply(t(), Event.t()) :: t()
   def apply(vm, %Event{type: :turn_start}), do: %{vm | running?: true}
 
   def apply(vm, %Event{type: :turn_end, data: data}) do
-    vm = %{vm | running?: false, streaming: nil}
+    vm = %{vm | running?: false}
 
     case data do
       %{outcome: :done} -> vm
@@ -127,13 +121,10 @@ defmodule Helyx.TUI.ViewModel do
     if role == :assistant, do: %{vm | streaming: []}, else: vm
   end
 
-  # Core sends one delta key for each update. An update with no known key
-  # has a delta kind that this client does not know, so it is ignored; a
-  # known key with another value, or two known keys, is a bug in Core and
-  # crashes.
+  # Core sends one delta key for each update. No known key, a known key
+  # with another value, or two known keys, is a bug in Core and crashes.
   def apply(vm, %Event{type: :message_update, data: data}) do
     case Map.to_list(Map.take(data, @delta_keys)) do
-      [] -> vm
       [{:text_delta, delta}] when is_binary(delta) -> stream(vm, {:text_delta, delta})
       [{:thinking_delta, delta}] when is_binary(delta) -> stream(vm, {:thinking_delta, delta})
       [{:tool_call, %Message.ToolCall{} = call}] -> stream(vm, {:tool_call, call})
@@ -149,7 +140,7 @@ defmodule Helyx.TUI.ViewModel do
       %{message: %Message{role: :assistant} = message} ->
         add_message(%{vm | streaming: nil}, message)
 
-      %{message: %Message{} = message} ->
+      %{message: %Message{role: :user} = message} ->
         add_message(vm, message)
     end
   end
@@ -209,8 +200,9 @@ defmodule Helyx.TUI.ViewModel do
   through the fold in order, so the live and the snapshot paths share one
   pairing rule (ADR 0006, revision of 2026-10-03). Notices and information
   cells are not in the transcript, so a snapshot has none of them, but for
-  a lost session lock: a snapshot with `lock_lost` ends with its notice,
-  whose event came before the subscribe.
+  a session that does not save: a snapshot with `persisting: false` ends
+  with the notice `Helyx.Reason.text(:not_saved)`, so a stop of the saving
+  before the subscribe shows too.
   """
   @spec from_snapshot(Snapshot.t()) :: t()
   def from_snapshot(%Snapshot{messages: messages, turn: turn} = snapshot) do
@@ -222,13 +214,14 @@ defmodule Helyx.TUI.ViewModel do
     }
 
     vm = %{Enum.reduce(messages, vm, &add_message(&2, &1)) | streaming: streaming(turn)}
-    if snapshot.lock_lost, do: add_cell(vm, {:notice, Helyx.Reason.text(:lock_lost)}), else: vm
+    if snapshot.persisting, do: vm, else: add_cell(vm, {:notice, Helyx.Reason.text(:not_saved)})
   end
 
   defp streaming(%{partial: %Message{role: :assistant} = partial}),
     do: Enum.reduce(partial.content, [], &add_streamed(&2, &1))
 
-  defp streaming(_no_partial), do: nil
+  defp streaming(%{partial: nil}), do: nil
+  defp streaming(nil), do: nil
 
   @doc "The cells, oldest first, as a list. For tests and the benchmark."
   @spec cells(t()) :: [cell()]
@@ -305,9 +298,6 @@ defmodule Helyx.TUI.ViewModel do
   # half is dropped (`Helyx.Text.cap/3`).
   defp cut_line(text), do: Helyx.Text.cap(text, @render_max_bytes, :head)
 
-  # A delta with no open message is part of a message that the TUI does
-  # not show, such as one of a new role, so it is dropped.
-  defp stream(%{streaming: nil} = vm, _delta), do: vm
   defp stream(vm, {:tool_call, call}), do: %{vm | streaming: add_streamed(vm.streaming, call)}
   defp stream(vm, delta), do: %{vm | streaming: Message.add_block(vm.streaming, delta)}
 
@@ -318,15 +308,14 @@ defmodule Helyx.TUI.ViewModel do
 
   # Every message of the live path and of the snapshot comes here once.
   # The cells come first: the spec of `SessionUsage.add/2` narrows the
-  # role for Dialyzer, and a role that a later Core adds makes no cell.
+  # role for Dialyzer.
   defp add_message(vm, message) do
     vm = add_cells(vm, message)
     %{vm | usage: SessionUsage.add(vm.usage, message)}
   end
 
   # A message as a transcript cell. Each call of an assistant message gets
-  # an open cell; its result comes later. A message of a role that the TUI
-  # does not show makes no cell.
+  # an open cell; its result comes later.
   defp add_cells(vm, %Message{role: :user} = message), do: add_cell(vm, message)
 
   defp add_cells(vm, %Message{role: :assistant, content: content} = message) do
@@ -356,8 +345,6 @@ defmodule Helyx.TUI.ViewModel do
     cell = put_elem(:array.get(position, vm.cells), 3, result)
     %{vm | open: open, cells: :array.set(position, cell, vm.cells)}
   end
-
-  defp add_cells(vm, %Message{}), do: vm
 
   # The next free position is the array size: no cell is ever removed.
   defp add_cell(vm, cell), do: %{vm | cells: :array.set(:array.size(vm.cells), cell, vm.cells)}

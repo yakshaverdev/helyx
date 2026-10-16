@@ -41,10 +41,6 @@ defmodule Helyx.Session.Server.ToolRuns do
   def result(%State{activity: %Turn{tool_queue: queue}} = state, result),
     do: apply_step(state, ToolQueue.result(queue, result))
 
-  # The provider withdrew a request (#198).
-  def cancel(%State{activity: %Turn{tool_queue: queue}} = state, id),
-    do: apply_step(state, ToolQueue.cancel(queue, id))
-
   defp apply_step(%State{activity: turn} = state, {queue, effects}) do
     state = %{state | activity: %{turn | tool_queue: queue}}
     Enum.reduce(effects, state, &effect(&2, turn.id, &1))
@@ -52,11 +48,6 @@ defmodule Helyx.Session.Server.ToolRuns do
 
   defp effect(state, turn_id, {:run, call}) do
     :ok = Hands.run(state.hands, turn_id, call)
-    state
-  end
-
-  defp effect(state, turn_id, {:kill, id}) do
-    Hands.kill(state.hands, turn_id, id)
     state
   end
 

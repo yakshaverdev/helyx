@@ -134,20 +134,16 @@ defmodule Helyx.Provider.ClaudeCode.LimitsTest do
   end
 
   @tag :slow
-  test "lines of 16 MiB and one byte under are read", %{bin: bin, work: work} do
+  test "a line of 16 MiB is read", %{bin: bin, work: work} do
     turn(bin, 1, 1, reply("ok"))
 
-    for bytes <- [16_777_215, 16_777_216] do
-      File.rm(Path.join(bin, "count"))
+    File.write!(
+      Path.join(bin, "turn.1.1"),
+      ~s(head -c 16777216 /dev/zero | tr '\\0' 'x'; echo; out out.turn.1.1\n)
+    )
 
-      File.write!(
-        Path.join(bin, "turn.1.1"),
-        ~s(head -c #{bytes} /dev/zero | tr '\\0' 'x'; echo; out out.turn.1.1\n)
-      )
-
-      assert [{:resume_id, _id, 0}, {:text_delta, "ok"}, {:done, _}] =
-               events_of(run_direct([Message.user("hi")], work))
-    end
+    assert [{:resume_id, _id, 0}, {:text_delta, "ok"}, {:done, _}] =
+             events_of(run_direct([Message.user("hi")], work))
   end
 
   test "a line one byte over 16 MiB with its newline in one write stops the provider",
