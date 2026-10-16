@@ -57,7 +57,7 @@ defmodule Helyx.Message do
           role: role(),
           content: [block()],
           model: String.t() | nil,
-          stop_reason: atom() | nil,
+          stop_reason: stop_reason() | nil,
           tool_call_id: String.t() | nil,
           tool_name: String.t() | nil,
           is_error: boolean(),

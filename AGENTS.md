@@ -33,7 +33,6 @@ docs/
 lib/helyx/         Helyx core, interfaces, session, and message shapes
 test/              Tests, mirrors lib/. test/support/ holds test-only plugins
 credo/             Custom Credo checks, loaded by .credo.exs
-bench/             Benchmark scripts, not tests
 plugins/bundled/   All bundled plugins in one Mix project, app helyx_plugins, path dependency on the root (ADR 0005)
   clients/tui/lib/ The TUI client sources, compiled by helyx_plugins; its tests are in test/helyx/tui*
 apps/<name>/       Products, one Mix project each

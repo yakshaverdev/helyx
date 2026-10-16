@@ -20,15 +20,13 @@ defmodule Helyx.Tool do
   A tool that creates an OS resource, a process group for example, holds it
   with `hold/1` before the external work starts, and implements the
   optional `release/3`. The hands call `release(handles, mode, deadline)`
-  with the handles of a call when it delivers (`:deliver`), when its turn is
-  aborted (`:cancel`), and before a later call for handles that an earlier
-  release did not confirm (`:retry`). `deadline` is absolute, in
+  with the handles of a call when it delivers (`:deliver`), and when its
+  turn is aborted (`:cancel`). `deadline` is absolute, in
   `System.monotonic_time(:millisecond)` on the node of the hands. The return
   value is the handles still held; `[]` means every one is released. The
-  callback must be safe to call again with the same handles, and it must
-  not wait past the deadline. The tool must also free the resource by
-  itself when its Task dies with no release, because the hands can die
-  first and drop a late `hold/1` (ADR 0004).
+  callback must not wait past the deadline. The tool must also free the
+  resource by itself when its Task dies with no release, because the hands
+  can die first and drop a late `hold/1` (ADR 0004).
 
   A call can go on in the background: the tool takes a place with
   `background/0` before the external work starts, gives its start answer
@@ -49,7 +47,7 @@ defmodule Helyx.Tool do
   @callback check() :: :ok | {:error, String.t()}
   @callback release(
               handles :: [term()],
-              mode :: :deliver | :cancel | :retry,
+              mode :: :deliver | :cancel,
               deadline :: integer()
             ) ::
               [term()]
@@ -154,8 +152,8 @@ defmodule Helyx.Tool do
   outside the Task and give it to the `release/3` of the tool or the
   provider. They release the handle of a tool call when the call delivers,
   or when its turn ends while the call runs. They release the handle of a
-  provider process when the process ends. While a release leaves a handle
-  unconfirmed, the hands refuse tool calls
+  provider process when the process ends. Once a release leaves a handle
+  unconfirmed, the hands refuse every later tool call
   (`docs/features/tool-resource-release.md`). When the hands stop first,
   no release runs: the tool or the provider must free the resource when
   its own process dies (ADR 0004).
@@ -173,45 +171,33 @@ defmodule Helyx.Tool do
     end
   end
 
-  @doc false
-  # The error of `background/0` for a caller that is no tool call. The
-  # hands give it too.
-  @spec not_a_call() :: String.t()
-  def not_a_call, do: "only a tool call can run in the background"
-
   @doc """
   Takes a place for a background run of the calling tool call, before its
   external work starts. Returns the id of the run and the background
   folder of the session, mode `0700`, which the session deletes at its
-  stop; a tool keeps its files there, named by the id. `{:error, text}` with no place: the
-  session's 16 places are taken, the folder cannot be made, or the caller
-  is not a tool call of the hands. A second call gives a new id in the
-  same place. A run that gave its start answer keeps its place until a
-  turn takes its end; any other call frees it when its Task ends.
+  stop; a tool keeps its files there, named by the id. `{:error, text}`
+  with no place: the session's 16 places are taken, the folder cannot be
+  made, or the caller is a Task of the hands that is no tool call. A
+  second call gives a new id in the same place. A run that gave its start
+  answer keeps its place until a turn takes its end; any other call frees
+  it when its Task ends. Exits outside the hands, as `hold/1` does.
   """
   @spec background() :: {:ok, %{id: String.t(), dir: String.t()}} | {:error, String.t()}
-  def background do
-    case Process.get(:helyx_hands) do
-      nil -> {:error, not_a_call()}
-      hands -> GenServer.call(hands, :background, :infinity)
-    end
-  end
+  def background, do: GenServer.call(Process.get(:helyx_hands), :background, :infinity)
 
   @doc """
   Gives the start answer of a background run: `text` becomes the result of
   the call at once, and the tool's Task leaves its turn. The Task then
   runs on; its return value, or its crash, is the end of the run. Raises
-  outside the hands, in a Task that is no tool call of a turn, such as a
-  run that gave its start answer, and in a tool call that took no place
-  with `background/0`.
+  in a Task that is no tool call of a turn, such as a run that gave its
+  start answer, and in a tool call that took no place with
+  `background/0`. Exits outside the hands, as `hold/1` does.
   """
   @spec started(String.t()) :: :ok
   def started(text) when is_binary(text) do
-    with hands when hands != nil <- Process.get(:helyx_hands),
-         :ok <- GenServer.call(hands, {:started, text}, :infinity) do
-      :ok
-    else
-      _no_place -> raise ArgumentError, "started/1 needs a place from background/0"
+    case GenServer.call(Process.get(:helyx_hands), {:started, text}, :infinity) do
+      :ok -> :ok
+      :no_place -> raise ArgumentError, "started/1 needs a place from background/0"
     end
   end
 end

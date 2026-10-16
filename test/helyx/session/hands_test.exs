@@ -11,11 +11,6 @@ defmodule Helyx.Session.HandsTest do
   alias Helyx.Test.Gate
   alias Helyx.Test.Released
 
-  # Room for scheduler load in a check of a wait that must not happen: far
-  # above the delays that load makes, far below the release of 60,000 ms
-  # that the check rules out.
-  @load_ms 5_000
-
   setup do
     core = :"core_#{System.unique_integer([:positive])}"
 
@@ -67,14 +62,12 @@ defmodule Helyx.Session.HandsTest do
     result
   end
 
-  test "an unconfirmed handle gives an error result and blocks calls until a retry releases it",
+  test "an unconfirmed handle gives an error result and refuses every later call",
        %{core: core} do
-    {:ok, agent} = Agent.start_link(fn -> true end)
     hands = start_hands(core)
-    handles = [{:keep, agent}, {:report, self()}]
+    handles = [:keep, {:report, self()}]
 
-    # The handle is a plugin term with a pid: the log has it, the text
-    # does not.
+    # The handle is a plugin term: the log has it, the text does not.
     {text, log} =
       with_log(fn ->
         :ok = Helyx.Session.Hands.run(hands, "t1", call("c1", "hold", %{"handles" => handles}))
@@ -83,18 +76,20 @@ defmodule Helyx.Session.HandsTest do
       end)
 
     assert text == "a resource of the call could not be released"
-    assert log =~ inspect(agent)
+    assert log =~ ":keep"
     assert [{:deliver, _handles}] = Released.take()
 
-    # The next call is refused, and the kept handle gets a retry first. A
-    # provider start is refused with a text with no pid too.
-    assert {:error, text} = upcase(hands, "c2")
-    assert text == "a resource from an earlier call could not be released; the call was not run"
-    assert {:error, ^text} = Helyx.Session.Hands.start_provider(hands, Helyx.Test.Provider, & &1)
+    # Each later call and provider start is refused, with a text with no
+    # handle, and the kept handle gets no second release.
+    for id <- ["c2", "c3"] do
+      assert {:error, text} = upcase(hands, id)
+      assert text == "a resource from an earlier call could not be released; the call was not run"
 
-    # Once the retry releases it, calls run again.
-    Agent.update(agent, fn _ -> false end)
-    assert upcase(hands, "c3") == {:ok, "HI"}
+      assert {:error, ^text} =
+               Helyx.Session.Hands.start_provider(hands, Helyx.Test.Provider, & &1)
+    end
+
+    assert Released.take() == []
   end
 
   test "cancel releases with :cancel and reports an unconfirmed handle", %{core: core} do
@@ -146,27 +141,6 @@ defmodule Helyx.Session.HandsTest do
       ref = Process.monitor(pid)
       assert_receive {:DOWN, ^ref, :process, ^pid, _reason}
     end
-  end
-
-  @tag :slow
-  test "a retry has a deadline of one second", %{core: core} do
-    # The first release times out, so both handles go to the retry.
-    hands = start_hands(core, release_ms: 100)
-
-    :ok =
-      Helyx.Session.Hands.run(hands, "t1", call("c1", "hold", %{"handles" => [{:slow, 60_000}]}))
-
-    # The release takes longer than any wait of the test, so the error comes
-    # from the timeout of the release.
-    assert_receive {:tool_result, "t1", "c1", {:error, _text}}
-
-    # The retry is killed at its deadline, and the call is refused.
-    start = System.monotonic_time(:millisecond)
-    assert {:error, text} = upcase(hands, "c2")
-    assert text =~ "earlier call"
-    elapsed = System.monotonic_time(:millisecond) - start
-    assert elapsed >= 1_000
-    assert elapsed < 1_000 + @load_ms
   end
 
   test "a release that raises, exits, or returns a bad value confirms nothing", %{core: core} do
@@ -378,6 +352,30 @@ defmodule Helyx.Session.HandsTest do
       assert_receive {:tool_result, "t1", "c19", {:started, _start}}
     end
 
+    # 15 ends wait, so one place is left. A second call of the Task that
+    # holds it gives a new id in that place; another Task gets no place.
+    test "a second place call at the limit keeps the place of its Task", %{
+      core: core,
+      dir: dir,
+      gate: gate
+    } do
+      hands = start_hands(core, background_dir: dir)
+
+      for n <- 1..15 do
+        background(hands, "c#{n}", %{"gate" => gate})
+        assert_receive {:tool_result, "t1", _, {:started, _start}}
+        assert_receive {:waiting, pid}
+        send(pid, :go)
+        assert_receive {:background_end, _finish}
+      end
+
+      background(hands, "c16", %{"gate" => gate, "twice" => true})
+      assert_receive {:tool_result, "t1", "c16", {:started, _start}}
+
+      background(hands, "c17", %{"gate" => gate})
+      assert_receive {:tool_result, "t1", "c17", {:error, "16 background runs" <> _}}
+    end
+
     test "a start answer needs a place", %{core: core, dir: dir, gate: gate} do
       hands = start_hands(core, background_dir: dir)
 
@@ -456,12 +454,9 @@ defmodule Helyx.Session.HandsTest do
       end
     end
 
-    test "outside the hands no run can start, and a start answer raises" do
-      assert Helyx.Tool.background() == {:error, "only a tool call can run in the background"}
-
-      assert_raise ArgumentError, "started/1 needs a place from background/0", fn ->
-        Helyx.Tool.started("no hands")
-      end
+    test "outside the hands a place and a start answer exit, as a hold does" do
+      assert {:noproc, _} = catch_exit(Helyx.Tool.background())
+      assert {:noproc, _} = catch_exit(Helyx.Tool.started("no hands"))
     end
   end
 end

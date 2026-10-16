@@ -271,10 +271,10 @@ defmodule Helyx.Tool.BashTest do
 
     # The limit of the tests below. It holds the start of perl and bash and
     # the first output under load (over 200 ms once, #562), so the output
-    # comes before the limit. It is not whole seconds, so the result gives
-    # it in ms, a unit that only these tests reach.
-    @load_start_ms 2_500
-    @timed_out "Timed out after #{@load_start_ms} ms: the command group was released."
+    # comes before the limit. It is whole seconds, as every limit of a tool
+    # call is.
+    @load_start_ms 3_000
+    @timed_out "Timed out after 3 s: the command group was released."
 
     # TERM first, as an abort: the trap's output is kept after the limit.
     @tag :slow
@@ -486,8 +486,8 @@ defmodule Helyx.Tool.BashTest do
       assert File.exists?(ran)
     end
 
-    # Outside the hands no place exists, so a timeout that passes its
-    # bound gets that error, and one over it the error of the bound.
+    # Outside the hands `Helyx.Tool.background/0` exits, so a timeout that
+    # passes its bound exits, and one over it gets the error of the bound.
     test "a background timeout is from 1 to 86400; outside the hands nothing runs",
          %{tmp_dir: dir} do
       Process.delete(:helyx_hands)
@@ -500,16 +500,14 @@ defmodule Helyx.Tool.BashTest do
       end
 
       for timeout <- [1, 600, 601, 86_399, 86_400, nil] do
-        assert {:error, "only a tool call can run in the background"} =
-                 Bash.run(Map.put(args, "timeout", timeout), dir)
+        assert {:noproc, _} = catch_exit(Bash.run(Map.put(args, "timeout", timeout), dir))
       end
 
       refute File.exists?(ran)
     end
 
     test "the file gets at most 64 MiB; the end counts every byte and says so", %{tmp_dir: dir} do
-      max = Bash.max_output_bytes()
-      assert max == 64 * 1_048_576
+      max = 64 * 1_048_576
       path = Path.join(dir, "out")
       {:ok, file} = File.open(path, [:write, :raw, :binary])
 

@@ -645,18 +645,18 @@ defmodule Helyx.Session.FileTest do
       assert File.read!(file.path) == before
     end
 
-    test "a last entry without its newline counts with the newline", %{tmp_dir: dir} do
+    test "the limit counts the bytes read, not the repair newline", %{tmp_dir: dir} do
       {:ok, file} = started(dir, "sess00000001", "/repo", "test/ok")
-      header = String.trim_trailing(File.read!(file.path), "\n")
-      File.write!(file.path, header)
+      content = String.trim_trailing(File.read!(file.path), "\n")
+      File.write!(file.path, content)
+      limit = byte_size(content)
 
-      assert {:error, {:too_large, _}} =
-               SessionFile.resume(dir, "/repo", max_bytes: byte_size(header))
+      # The file at the limit resumes, and the repair takes it one byte over.
+      assert {:ok, _} = SessionFile.resume(dir, "/repo", max_bytes: limit)
+      assert File.read!(file.path) == content <> "\n"
 
-      assert File.read!(file.path) == header
-
-      assert {:ok, _} = SessionFile.resume(dir, "/repo", max_bytes: byte_size(header) + 1)
-      assert {:ok, _} = SessionFile.resume(dir, "/repo", max_bytes: byte_size(header) + 1)
+      assert {:error, {:too_large, _}} = SessionFile.resume(dir, "/repo", max_bytes: limit)
+      assert File.read!(file.path) == content <> "\n"
     end
 
     test "the default limit is 64 MiB", %{tmp_dir: dir} do
@@ -749,32 +749,6 @@ defmodule Helyx.Session.FileTest do
 
       assert_receive {:DOWN, ^ref, :process, ^pid, {:result, result}}
       assert {:ok, %{messages: []}} = result
-    end
-  end
-
-  test "a limit that is not a positive integer raises; the file is not blamed", %{tmp_dir: dir} do
-    {:ok, _file} = started(dir, "sess00000001", "/repo", "test/ok")
-
-    for bad <- [0, -1, 1.5, nil, 64 * 1024 * 1024 + 1] do
-      assert_raise FunctionClauseError, fn ->
-        SessionFile.resume(dir, "/repo", max_bytes: bad)
-      end
-    end
-
-    for bad <- [0, -1, 1.5, nil, 8, 1024 * 1024 - 1, 1024 * 1024 * 1024 + 1] do
-      assert_raise FunctionClauseError, fn ->
-        SessionFile.resume(dir, "/repo", max_heap_bytes: bad)
-      end
-    end
-
-    for good <- [1024 * 1024, 1024 * 1024 * 1024] do
-      assert {:ok, _} = SessionFile.resume(dir, "/repo", max_heap_bytes: good)
-    end
-
-    for bad <- [0, -1, 1.5, nil, 257] do
-      assert_raise FunctionClauseError, fn ->
-        SessionFile.resume(dir, "/repo", max_scanned_files: bad)
-      end
     end
   end
 

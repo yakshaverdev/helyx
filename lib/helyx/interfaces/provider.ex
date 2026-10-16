@@ -107,7 +107,7 @@ defmodule Helyx.Provider do
   @callback id() :: String.t()
   @callback release(
               handles :: [term()],
-              mode :: :deliver | :cancel | :retry,
+              mode :: :deliver | :cancel,
               deadline :: integer()
             ) ::
               [term()]

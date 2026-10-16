@@ -57,13 +57,13 @@ defmodule Helyx.Provider.Codex.Replay do
   # Each item is encoded once, so the cap counts its bytes.
   defp item(map), do: JSON.encode!(map)
 
-  # The model API takes a tool name of `[a-zA-Z0-9_-]` only; the cut at 64
-  # is the function name limit of the Chat Completions API, not verified for
-  # `thread/inject_items` (see the research note).
+  # The model API takes a tool name of `[a-zA-Z0-9_-]` only (see the
+  # research note). The length is kept: no limit is known for
+  # `thread/inject_items`, and the replay budget bounds the bytes.
   defp tool_name(name) do
     case String.replace(name, ~r/[^a-zA-Z0-9_-]/u, "_") do
       "" -> "_"
-      name -> binary_part(name, 0, min(byte_size(name), 64))
+      name -> name
     end
   end
 end

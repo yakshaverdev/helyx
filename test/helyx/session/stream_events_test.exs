@@ -578,15 +578,15 @@ defmodule Helyx.Session.StreamEventsTest do
   end
 
   # Each model sends one stream event that Core rejects; the error text
-  # holds the part given. The reason of `wide_int` holds the marker, not
-  # the 400,000 digits (#79).
+  # holds the part given. The reasons of `wide_int` and `wide_usage` hold
+  # the marker, not the 400,000 digits (#79).
   for {name, model, part} <- [
         {"a delta that is not a string", "garbage", "{:text_delta, 42}}"},
         {"an event with an extra field", "wide", ~s({:text_delta, "hello", :extra}})},
         {"an extra field with a wide integer", "wide_int",
          ~s({:text_delta, "hello", "integer of more than 100 digits removed"}})},
         {"a usage with a wide integer", "wide_usage",
-         ~s(usage: "integer of more than 100 digits removed")},
+         ~s(usage: %Helyx.Usage{input: "integer of more than 100 digits removed")},
         {"a delta that is not valid UTF-8", "raw_bytes", ~S({:text_delta, "hi\xFF"}})},
         {"a tool call that is not valid UTF-8", "raw_call", ~S(name: "bash\xFF")},
         {"a tool call with an empty id", "empty_id",

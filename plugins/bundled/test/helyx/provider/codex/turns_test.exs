@@ -274,7 +274,10 @@ defmodule Helyx.Provider.Codex.TurnsTest do
            ] = answers
   end
 
-  test "a replayed call id and tool name keep to the API limits", %{bin: bin, work: work} do
+  # A tool name keeps its length, so two names that differ only after 64
+  # characters stay different.
+  test "a replayed call id keeps to the API limit and a tool name to its characters",
+       %{bin: bin, work: work} do
     fresh(bin, 1, tid(), reply(tid(), "ok"))
 
     ids = [
@@ -283,16 +286,18 @@ defmodule Helyx.Provider.Codex.TurnsTest do
       String.duplicate("c", 65),
       "é",
       "e",
-      ""
+      "",
+      "f"
     ]
 
     names = [
       String.duplicate("l", 63),
       String.duplicate("n", 64),
-      String.duplicate("m", 65),
+      String.duplicate("m", 64) <> "x",
       "é" <> String.duplicate("o", 64),
       "",
-      "p"
+      "p",
+      String.duplicate("m", 64) <> "y"
     ]
 
     calls =
@@ -301,7 +306,10 @@ defmodule Helyx.Provider.Codex.TurnsTest do
     run_direct([%Message{role: :assistant, content: calls}, Message.user("go")], work)
     %{"params" => %{"items" => items}} = request(bin, 1, "thread/inject_items")
     [a63, b64 | _] = ids
-    assert [^a63, ^b64, id65, id_multibyte, "e", "h_" <> _] = Enum.map(items, & &1["call_id"])
+
+    assert [^a63, ^b64, id65, id_multibyte, "e", "h_" <> _, "f"] =
+             Enum.map(items, & &1["call_id"])
+
     assert "h_" <> _ = id65
     assert "h_" <> _ = id_multibyte
     assert byte_size(id65) == 64
@@ -311,10 +319,11 @@ defmodule Helyx.Provider.Codex.TurnsTest do
     assert Enum.map(items, & &1["name"]) == [
              String.duplicate("l", 63),
              String.duplicate("n", 64),
-             String.duplicate("m", 64),
-             "_" <> String.duplicate("o", 63),
+             String.duplicate("m", 64) <> "x",
+             "_" <> String.duplicate("o", 64),
              "_",
-             "p"
+             "p",
+             String.duplicate("m", 64) <> "y"
            ]
   end
 

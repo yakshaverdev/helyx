@@ -121,6 +121,23 @@ defmodule Helyx.Provider.ClaudeCode.InterruptTest do
       end
     end
 
+    # A `cancelled` that is not a list is a contract break: the callback
+    # raises, so the provider process stops.
+    for {name, cancelled} <- [
+          {"a null", nil},
+          {"a string", "@U@"},
+          {"an object", %{"@U@" => true}},
+          {"an integer", 1}
+        ] do
+      test "with #{name} cancelled stops the provider", %{bin: bin, work: work} do
+        turn(bin, 1, 1, begin())
+        script(bin, "ctl.1", [interrupted([], unquote(Macro.escape(cancelled))), aborted()])
+
+        state = running(work, &started?/1)
+        assert_raise ArgumentError, fn -> interrupt(state) end
+      end
+    end
+
     test "with an error response answers the error, cut", %{bin: bin, work: work} do
       turn(bin, 1, 1, begin())
       long = String.duplicate("é", 1_500)

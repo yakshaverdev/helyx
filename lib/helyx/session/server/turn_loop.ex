@@ -249,7 +249,7 @@ defmodule Helyx.Session.Server.TurnLoop do
   end
 
   defp prepare_down(:killed), do: :context_timeout
-  defp prepare_down(reason), do: {:task_exit, Message.cap_integers(reason)}
+  defp prepare_down(reason), do: {:task_exit, reason}
 
   # Sends `{:turn, ...}` when the provider process is ready and the context
   # is prepared. The steers queued in `preparing`, then the background

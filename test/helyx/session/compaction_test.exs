@@ -103,7 +103,13 @@ defmodule Helyx.Session.CompactionTest do
     assert_receive {:held, from}
     abort = Task.async(fn -> Session.abort(session) end)
     # The abort call reaches the session before the interrupt answer.
-    :ok = await_callers(pid)
+    Helyx.Test.SessionCase.await(
+      fn ->
+        match?(%Helyx.Session.Server.Wait{callers: [_ | _]}, :sys.get_state(pid).activity)
+      end,
+      "the abort call in the wait"
+    )
+
     send(proc, {:answer, from, :ok})
 
     assert :ok = Task.await(abort)
@@ -305,18 +311,6 @@ defmodule Helyx.Session.CompactionTest do
       state = :sys.get_state(Session.pid(session))
       assert Helyx.Session.Transcript.resumable(state.transcript, state.resume_ids, "conn") == nil
       assert reconnect(core, session, dir) == nil
-    end
-  end
-
-  # Waits until the session holds a caller in its wait.
-  defp await_callers(pid, tries \\ 100) do
-    case :sys.get_state(pid).activity do
-      %Helyx.Session.Server.Wait{callers: [_ | _]} ->
-        :ok
-
-      _ when tries > 0 ->
-        Process.sleep(10)
-        await_callers(pid, tries - 1)
     end
   end
 end

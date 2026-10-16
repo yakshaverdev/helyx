@@ -18,9 +18,6 @@ defmodule CodingAgent do
     Helyx.Tool.Write
   ]
 
-  # The bound of the error line, the one of `Helyx.Reason.text/1`.
-  @max_line_bytes 4000
-
   # The rotation threshold of the log file of a TUI run. The handler
   # writes a whole log record, then rotates when the file is over this
   # size, so a file can pass it by one record. It keeps one older file.
@@ -121,11 +118,11 @@ defmodule CodingAgent do
   def error_text(reason), do: reason |> line() |> clean_line()
 
   @doc """
-  The clean pass of `one_line/1`, then a cut to at most 4000 bytes of valid
-  UTF-8; a character cut in half is dropped.
+  The clean pass of `one_line/1`, then the cut of `Helyx.Reason.text/1`: at
+  most 4000 bytes of valid UTF-8; a character cut in half is dropped.
   """
   @spec clean_line(String.t()) :: String.t()
-  def clean_line(text), do: text |> one_line() |> cut()
+  def clean_line(text), do: text |> one_line() |> Helyx.Reason.text()
 
   @doc """
   The clean pass of a text for the terminal: a whitespace run becomes one
@@ -140,12 +137,6 @@ defmodule CodingAgent do
     |> Enum.join(" ")
     |> String.replace(~r/\p{C}/u, "?")
   end
-
-  # A clause can hold plugin text or a value from the session file, so the
-  # cap is on the whole line.
-  defp cut(line),
-    do:
-      line |> binary_part(0, min(@max_line_bytes, byte_size(line))) |> String.replace_invalid("")
 
   defp line({:session_down, _reason} = reason), do: sentence(reason)
 

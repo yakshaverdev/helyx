@@ -104,12 +104,7 @@ defmodule Helyx.Provider.OpenAI do
     )
   end
 
-  defp session_header(opts) do
-    case Keyword.get(opts, :session_id) do
-      nil -> []
-      id -> [{"x-opencode-session", id}]
-    end
-  end
+  defp session_header(opts), do: [{"x-opencode-session", Keyword.fetch!(opts, :session_id)}]
 
   defp body(model, context) do
     body = %{

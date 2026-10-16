@@ -85,19 +85,6 @@ defmodule Helyx.Tool.ReadTest do
     assert Helyx.Message.text(run.(%{"path" => "nope.txt", "offset" => 0})) =~ "offset must be"
   end
 
-  test "an offset of more than 100 digits never reaches the tool (issue #79)", %{
-    tmp_dir: dir,
-    run: run
-  } do
-    File.write!(Path.join(dir, "a.txt"), "one\ntwo")
-
-    result = run.(%{"path" => "a.txt", "offset" => Integer.pow(10, 100_000)})
-    assert result.is_error
-
-    assert Helyx.Message.text(result) ==
-             "tool call not run: an integer in the arguments has more than 100 digits"
-  end
-
   test "the tool has no limit argument and ignores a limit key (issue #75)", %{
     tmp_dir: dir,
     run: run

@@ -56,6 +56,17 @@ defmodule Helyx.Session.LockPerlTest do
              {:error, {:lock_failed, "perl ended with no answer: a"}}
   end
 
+  test "a CRLF line end reads as a newline, also in the answer line", ctx do
+    fake_perl(ctx.bin, "printf 'broken\\r\\n'\nexit 3\n")
+
+    assert start(ctx.core, ctx.sessions) ==
+             {:error, {:lock_failed, "perl ended with no answer: broken\n"}}
+
+    # The nonce is the fourth argument: `-e`, the program, `--`, the nonce.
+    fake_perl(ctx.bin, "printf '%s ok\\r\\n' \"$4\"\nread x\n")
+    assert {:ok, _session} = start(ctx.core, ctx.sessions)
+  end
+
   test "output before the answer is read past up to the bound", ctx do
     # The answer line is "<16 hex> ok", 19 bytes. Under the bound: the
     # output and the answer line hold 4095 bytes.

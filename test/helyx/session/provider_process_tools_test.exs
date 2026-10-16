@@ -54,7 +54,7 @@ defmodule Helyx.Session.ProviderProcessToolsTest do
 
   # The tool Tasks of the hands; the provider process is a Task there too.
   defp running(hands),
-    do: Enum.count(:sys.get_state(hands).tasks, fn {_ref, {_, _, id, _}} -> is_binary(id) end)
+    do: Enum.count(:sys.get_state(hands).tasks, fn {_ref, {_, _, id, _, _}} -> is_binary(id) end)
 
   # The provider process sent its events before the pong, and the snapshot
   # call reaches the session after them.

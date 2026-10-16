@@ -27,11 +27,6 @@ defmodule Helyx.Session.File do
   # about 24 MiB (1 GiB / 42) is rejected.
   @max_heap_bytes 1024 * 1024 * 1024
 
-  # The floor of the heap cap option: the VM rejects a cap under the minimum
-  # heap of a process, and a cap of 0 words turns the cap off. It holds for a
-  # minimum heap under 1 MiB; a VM started with a larger `+hms` rejects it.
-  @min_heap_bytes 1024 * 1024
-
   @enforce_keys [:path]
   defstruct [:path, :leaf]
 
@@ -115,28 +110,17 @@ defmodule Helyx.Session.File do
   the caller once.
 
   `:max_bytes` lowers the file limit, and `:max_heap_bytes` lowers the
-  heap cap to no less than #{@min_heap_bytes} bytes. They exist so that a
-  test reaches a limit with small input.
+  heap cap. They exist so that a test reaches a limit with small input.
+  They are not checked.
   """
   @spec resume_picked(Path.t(), String.t(),
           max_bytes: pos_integer(),
           max_heap_bytes: pos_integer()
         ) :: {:ok, Resumed.t()} | {:error, error()}
   def resume_picked(path, cwd, opts \\ []) do
-    # A bad option is the caller's bug and raises, it is not reported as a
-    # bad file.
-    resume_within(
-      path,
-      cwd,
-      Keyword.get(opts, :max_bytes, @max_bytes),
-      Keyword.get(opts, :max_heap_bytes, @max_heap_bytes)
-    )
-  end
+    max_bytes = Keyword.get(opts, :max_bytes, @max_bytes)
+    max_heap_bytes = Keyword.get(opts, :max_heap_bytes, @max_heap_bytes)
 
-  # The options only lower the limits, so the read count stays one the OS takes.
-  defp resume_within(path, cwd, max_bytes, max_heap_bytes)
-       when max_bytes in 1..@max_bytes//1 and
-              max_heap_bytes in @min_heap_bytes..@max_heap_bytes//1 do
     with {:ok, resumed, tail} <- load_bounded(path, cwd, max_bytes, max_heap_bytes),
          # The repair write comes last, after every check passed, so a
          # file this function rejects is never mutated.
@@ -206,8 +190,7 @@ defmodule Helyx.Session.File do
   defp load(path, cwd, max_bytes) do
     with {:ok, raw} <- Scan.read_up_to(path, max_bytes + 1),
          :ok <- check_size(byte_size(raw), max_bytes),
-         {:ok, read, tail} <- Reader.read(raw, cwd),
-         :ok <- check_size(repaired_size(byte_size(raw), tail), max_bytes) do
+         {:ok, read, tail} <- Reader.read(raw, cwd) do
       resumed = %Resumed{
         file: %__MODULE__{path: path, leaf: read.leaf},
         model: read.model,
@@ -271,11 +254,6 @@ defmodule Helyx.Session.File do
   def append_message(%__MODULE__{} = file, %Message{} = message) do
     append(file, Codec.encode(message))
   end
-
-  # The newline that the repair appends counts, or the repair would make a
-  # file that the next resume rejects.
-  defp repaired_size(size, :no_newline), do: size + 1
-  defp repaired_size(size, :clean), do: size
 
   defp check_size(size, max_bytes) when size <= max_bytes, do: :ok
 

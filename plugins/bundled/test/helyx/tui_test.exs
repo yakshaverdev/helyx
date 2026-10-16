@@ -63,7 +63,21 @@ defmodule Helyx.TUITest do
   defp mounted(core, model, responses) do
     :ok = Fake.script(core, model, responses)
     {:ok, session} = Helyx.Test.SavedSession.start(core, "fake/#{model}")
-    {:ok, state} = TUI.mount(session: session)
+    mount!(session: session)
+  end
+
+  defp mount!(opts) do
+    {:ok, state} = TUI.mount(opts)
+    branch_reply(state)
+  end
+
+  # The reply of the branch task, applied as the TUI process gets it. A
+  # test waits for it after a mount or a turn_end: the task is linked to
+  # the test process, and a git port that closes while OTP still starts
+  # it prints an `erl_child_setup` line on stderr.
+  defp branch_reply(%{branch_ref: ref} = state) do
+    assert_receive {^ref, _branch} = reply
+    {:noreply, state} = TUI.handle_info(reply, state)
     state
   end
 
@@ -87,7 +101,7 @@ defmodule Helyx.TUITest do
     receive do
       {:helyx_event, %Event{} = event} ->
         {:noreply, state} = TUI.handle_info({:helyx_event, event}, state)
-        if event.type == :turn_end, do: state, else: drain(state)
+        if event.type == :turn_end, do: branch_reply(state), else: drain(state)
     after
       Helyx.Test.Events.wait_ms() -> flunk("no turn_end; view model: #{inspect(state.vm)}")
     end
@@ -298,7 +312,7 @@ defmodule Helyx.TUITest do
       # A second turn_start keeps the start time.
       assert fold(state, :turn_start, %{}).busy.started == state.busy.started
 
-      state = fold(state, :turn_end, %{outcome: :done})
+      state = state |> fold(:turn_end, %{outcome: :done}) |> branch_reply()
       assert TUI.subscriptions(state) == []
       assert status_text(state) =~ "· idle"
     end
@@ -330,14 +344,38 @@ defmodule Helyx.TUITest do
       assert [%{id: :busy, active?: true}] = ExRatatui.Runtime.snapshot(tui).subscriptions
 
       # The runtime delivers the tick to handle_info/2 as :busy_tick.
-      assert_receive {:trace, ^tui, :call, {TUI, :handle_info, [:busy_tick, _state]}},
+      assert_receive {:trace, ^tui, :call,
+                      {TUI, :handle_info, [:busy_tick, %{branch_ref: mount_ref}]}},
                      Helyx.Test.Events.wait_ms()
 
       assert [%{id: :busy, active?: true}] = ExRatatui.Runtime.snapshot(tui).subscriptions
 
+      # The branch task of the mount, when its reply has not come yet: the
+      # reply of the turn_end task below can come first.
+      if mount_ref do
+        assert_receive {:trace, ^tui, :call, {TUI, :handle_info, [{^mount_ref, _branch}, _]}}
+      end
+
       :ok = Session.abort(session)
       assert_receive {:trace, ^tui, :receive, {:helyx_event, %Event{type: :turn_end}}}
       assert ExRatatui.Runtime.snapshot(tui).subscription_count == 0
+      turn_branch_reply(tui, false)
+    end
+
+    # Takes the call traces of the TUI process in order, up to the reply of
+    # the branch task that the turn_end started, so its git port never
+    # outlives the stop of the TUI.
+    defp turn_branch_reply(tui, ended?) do
+      receive do
+        {:trace, ^tui, :call, {TUI, :handle_info, [message, state]}} ->
+          case message do
+            {:helyx_event, %Event{type: :turn_end}} -> turn_branch_reply(tui, true)
+            {ref, _branch} when ended? and ref == state.branch_ref -> :ok
+            _ -> turn_branch_reply(tui, ended?)
+          end
+      after
+        Helyx.Test.Events.wait_ms() -> flunk("no branch reply after the turn_end")
+      end
     end
 
     test "a client that mounts during a turn takes the time of the turn from the snapshot",
@@ -363,7 +401,7 @@ defmodule Helyx.TUITest do
       end)
 
       assert_receive :registered
-      {:ok, late} = TUI.mount(session: %Session{id: "late", core: core})
+      late = mount!(session: %Session{id: "late", core: core})
       assert [%Subscription{id: :busy}] = TUI.subscriptions(late)
       assert status_text(late) =~ busy_status(12)
 
@@ -446,7 +484,7 @@ defmodule Helyx.TUITest do
     assert Session.pid(session) == nil
 
     {:ok, resumed} = Session.resume(core, sessions_dir: dir, cwd: dir)
-    {:ok, %{vm: vm}} = TUI.mount(session: resumed, resumed: true)
+    %{vm: vm} = mount!(session: resumed, resumed: true)
 
     # The live cell shapes: the user message, the assistant message and its
     # tool cell with the result, the reply, then the information cell.
@@ -462,7 +500,7 @@ defmodule Helyx.TUITest do
     assert Message.text(result) == "slept"
     assert Message.text(reply) == "hello there"
 
-    {:ok, %{vm: live}} = TUI.mount(session: resumed)
+    %{vm: live} = mount!(session: resumed)
     assert ViewModel.cells(live) == Enum.drop(ViewModel.cells(vm), -1)
   end
 
@@ -473,12 +511,12 @@ defmodule Helyx.TUITest do
     tmp_dir: dir
   } do
     {:ok, session} = Session.start(core, model: "fake/lost", sessions_dir: dir, cwd: dir)
-    {:ok, %{vm: held}} = TUI.mount(session: session)
+    %{vm: held} = mount!(session: session)
     assert ViewModel.cells(held) == []
 
     Helyx.Test.LostLock.kill(session)
 
-    {:ok, %{vm: vm}} = TUI.mount(session: session)
+    %{vm: vm} = mount!(session: session)
     assert ViewModel.cells(vm) == [{:notice, Helyx.Reason.text(:not_saved)}]
   end
 
@@ -562,13 +600,6 @@ defmodule Helyx.TUITest do
     assert_receive {^old, _branch} = stale, 5_000
     assert {:noreply, ^state} = TUI.handle_info(stale, state)
     assert branch_reply(state).location =~ ~r/ \(two\)$/
-  end
-
-  # The reply of the branch task, applied as the TUI process gets it.
-  defp branch_reply(%{branch_ref: ref} = state) do
-    assert_receive {^ref, _branch} = reply, 5_000
-    {:noreply, state} = TUI.handle_info(reply, state)
-    state
   end
 
   test "the mark is drawn only inside a whole box, never on a border or in a margin" do
@@ -768,9 +799,7 @@ defmodule Helyx.TUITest do
       :ok = Fake.script(core, "scroll", [["ok"]])
       {:ok, session} = Helyx.Test.SavedSession.start(core, "fake/scroll")
 
-      {:ok, state} =
-        TUI.mount(session: session, terminal_size_fn: &size/0)
-
+      state = mount!(session: session, terminal_size_fn: &size/0)
       Enum.reduce(1..count//1, state, &say(&2, "m#{&1}"))
     end
 
@@ -1125,7 +1154,12 @@ defmodule Helyx.TUITest do
           stop_reason: stop
         }
 
-        ended = state |> fold(:message_end, %{message: message}) |> fold(:turn_end, data)
+        ended =
+          state
+          |> fold(:message_end, %{message: message})
+          |> fold(:turn_end, data)
+          |> branch_reply()
+
         assert ended.scroll == state.scroll
         assert screen(ended) == screen(state)
         assert status_text(ended) =~ "scrolled"

@@ -18,7 +18,7 @@ The design was reviewed in three rounds on 2026-09-25. The findings are in `docs
 - A result is delivered only after its release is done or recorded as unconfirmed.
 - If any handle of a call stays unconfirmed, the result becomes an error, even when the tool succeeded. Today `killed_error/1` in `deliver` does this.
 - An abort returns only after every call of the turn is released or recorded as unconfirmed. The session answers client calls during the wait (#93).
-- While any unconfirmed handle is still held, later tool calls are refused with an error result. Chat, abort, and quit are not blocked.
+- Once a handle is unconfirmed, later tool calls are refused with an error result until the session stops (rule 6). Chat, abort, and quit are not blocked.
 - No resource survives its Task. A background Task (`Helyx.Tool.started/1`) keeps its handles past its call, outside every turn, and releases them at its own end through the same delivery path; an abort does not reach it (`docs/features/background-bash.md`).
 
 ## Interface changes
@@ -29,15 +29,14 @@ The design was reviewed in three rounds on 2026-09-25. The findings are in `docs
 @spec hold(term()) :: :ok
 # Replaces register_group/2. Called from the tool Task. The handle is opaque to Core.
 
-@callback release(handles :: [term()], mode :: :deliver | :cancel | :retry,
+@callback release(handles :: [term()], mode :: :deliver | :cancel,
                   deadline :: integer()) :: [term()]
 @optional_callbacks check: 0, release: 3
 ```
 
 - `release/3` returns the handles that are still held. An empty list means that every handle is released.
-- `mode`: `:deliver` when the call ended, `:cancel` when the turn was aborted, `:retry` before a later call, for handles that are unconfirmed.
+- `mode`: `:deliver` when the call ended, `:cancel` when the turn was aborted.
 - `deadline` is absolute: `System.monotonic_time(:millisecond)` on the node of the hands.
-- `release/3` must be safe to call again with the same handles.
 - `register_group/2` is removed.
 
 `Helyx.Session.Hands` rules:
@@ -47,32 +46,32 @@ The design was reviewed in three rounds on 2026-09-25. The findings are in `docs
 3. The callback runs in a Task under Core's task supervisor. A timeout, a raise, an exit, or a return value that is not a proper list of only the given handles makes all the given handles unconfirmed. A failed probe never counts as released.
 4. On timeout, the hands stop the release Task with `Task.yield_many/2` and `on_timeout: :kill_task`, which calls `Task.shutdown(task, :brutal_kill)` and returns only when the Task is gone. A reply that arrives before the kill counts, because the release did return. Each request has its own reference, and a reply that does not match the current request is ignored. Two release attempts never run at the same time.
 5. An abort starts one release Task per tool module, in parallel, all with the same deadline. The wait does not grow with the number of Tasks, handles, or modules.
-6. Before each call, the hands call `release(unconfirmed, :retry, deadline)` for each module that has unconfirmed handles, with one deadline for all modules. While any handle is still held, the call is refused.
+6. A handle that a release leaves unconfirmed gets no second release. From then on, the hands refuse every tool call and every provider start, until the session stops. Revision of 2026-10-16: the retry of unconfirmed handles is removed. Before it, the hands called `release(unconfirmed, :retry, deadline)` before each call, with one deadline of 1,000 ms for all modules, and calls ran again when the retry confirmed every handle. No run, issue, or research note showed a handle that a retry confirmed. Removed capability: recovery from an unconfirmed handle without a restart of the session.
 7. A call to `hold/1` from a tool whose module does not export `release/3` raises in the tool Task, so the call ends with an error result before any external work starts.
 8. A call to `hold/1` from a process outside the hands exits, so no external work starts. An older Core made it a no-op, so a bare unit test of a tool could hold with no hands; such a test now gives the tool a fake hands process.
 
 `Helyx.Tool.Bash`:
 
 - Implements `release/3`, because the hands find the callback through the tool module of the call. It delegates to `Helyx.Tool.Bash.Group` (`@moduledoc false`), which #10 moved to `Helyx.Watchdog.Group`.
+- At its timeout, bash releases its own handles with `:cancel` (`docs/features/bash-timeout.md`), and the hands give the same handles to its `release/3` with `:deliver` when the call delivers. So the bash release must be safe to call again with the same handles; a group that is gone counts as released.
 - Handles are `{:watchdog, os_pid}` and `{:command, group}`. A group below 2 is never signalled: `kill -- -1` would reach every process of the user. No caller makes another handle; `Group.release/4` drops one unsignalled (#367; before it, an unknown handle was returned as still held).
 - `Helyx.Tool.Bash.Group` (now `Helyx.Watchdog.Group`, #10) receives the code that leaves `lib/helyx/session/hands.ex`: `signal`, `await_gone`, `poll_gone`, `kill_and_wait`, `sweep_watchdogs`, `split_kinds`, and the `kill_cmd` test hook, which becomes the `kill` argument of `Group.release/4`.
 - The order does not change: command groups first, the watchdog last, so the watchdog can reap its child before a KILL. A zombie child stays in its group until it is reaped, so this order also prevents an endless poll.
-- The mode selects today's sequences. `:deliver` is KILL, wait, then the watchdog sweep. `:cancel` is TERM, 500 ms grace, KILL, wait, then the watchdog sweep. `:retry` is KILL and one probe, with no wait.
+- The mode selects today's sequences. `:deliver` is KILL, wait, then the watchdog sweep. `:cancel` is TERM, 500 ms grace, KILL, wait, then the watchdog sweep.
 - The plugin computes its waits from the deadline. It never waits past it, and it starts no `kill` run at or after it: a probe that it skips counts the group as alive. A group is gone only when `kill` reports "No such process"; any other failure keeps the handle held. The watchdog KILL comes after one wait of 5,000 ms, so it needs that much time before the deadline.
 
 ## Bounds
 
 | What | Bound | Over the bound |
 | ---- | ----- | -------------- |
-| release deadline, `:deliver` and `:cancel` | `Helyx.Session.Hands.State.release_ms/0` (value in `docs/features/session-lifecycle.md`, "Bounds"), absolute monotonic time on the hands node. The worst bash release is 15,500 ms (500 ms grace and three waits of 5,000 ms, `docs/features/coding-agent.md`, row "wait for a killed process group") | the hands stop the release Task; every given handle is unconfirmed; the result is an error; later calls are refused while a handle is held |
-| release deadline, `:retry` | 1,000 ms, one deadline for all modules | every given handle stays unconfirmed; the call is refused |
+| release deadline, `:deliver` and `:cancel` | `Helyx.Session.Hands.State.release_ms/0` (value in `docs/features/session-lifecycle.md`, "Bounds"), absolute monotonic time on the hands node. The worst bash release is 15,500 ms (500 ms grace and three waits of 5,000 ms, `docs/features/coding-agent.md`, row "wait for a killed process group") | the hands stop the release Task; every given handle is unconfirmed; the result is an error; later calls are refused until the session stops |
 | TERM grace, KILL wait (bash internal) | 500 ms and 5,000 ms, unchanged | a group still alive after the KILL wait is returned as still held |
 | poll interval (bash internal) | 20 ms, unchanged | – |
 | handles per Task | 2 per program run, held by `Helyx.Watchdog` for the bash tool and both harness providers: the watchdog and the command group. The bash tool and Codex start one run per Task. Claude Code starts a second run in the same Task after a lost session, so its Task holds at most 4. Plugin code is trusted, so there is no cap; accepted (#101) | – |
 | unconfirmed handles | bounded by the refusal rule: once one is held, no new call runs, so no new handle is created. At most the handles of the calls of one turn | – |
 | wait in `hold/1` | a `GenServer.call` with `:infinity`, as `register_group/2` was. The handler only updates a map. It can wait behind one release, which the first row bounds | the command is held until the call returns, so nothing runs unheld. An abort kills the tool Task, which ends the wait |
 
-Tests at the limits: a release that returns 50 ms before the deadline, one that returns 50 ms after it, a retry that passes its deadline of 1,000 ms, a return value with a handle that was not given, an improper list, a raise, and an exit.
+Tests at the limits: a release that returns 50 ms before the deadline, one that returns 50 ms after it, a return value with a handle that was not given, an improper list, a raise, and an exit.
 
 ## Ownership
 
