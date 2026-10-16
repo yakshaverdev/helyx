@@ -60,20 +60,17 @@ defmodule Helyx.Provider.ClaudeCode.Mcp do
     end
   end
 
+  # The program cancelled a call: it forgets the call, and the result of
+  # the call's run is not written. The session is not told, so the run
+  # goes on to its end.
   def message(
         %{"method" => "notifications/cancelled", "params" => %{"requestId" => rpc_id}},
         request_id,
         state
       ) do
     answer(state, request_id, %{result: %{}})
-
-    case Enum.find(state.calls, fn {_call_id, {_request_id, id}} -> id == rpc_id end) do
-      nil ->
-        {[], state}
-
-      {call_id, _ids} ->
-        {[{:cancel_tool, call_id}], %{state | calls: Map.delete(state.calls, call_id)}}
-    end
+    calls = Map.reject(state.calls, fn {_call_id, {_request_id, id}} -> id == rpc_id end)
+    {[], %{state | calls: calls}}
   end
 
   def message(%{"id" => id}, request_id, state) do
@@ -84,7 +81,7 @@ defmodule Helyx.Provider.ClaudeCode.Mcp do
   def message(_notification, request_id, state),
     do: answer(state, request_id, %{result: %{}})
 
-  # The result of a Helyx tool call. A call that the program withdrew has
+  # The result of a Helyx tool call. A call that the program cancelled has
   # no open request, and its result is not written.
   def result(state, call_id, status, text) do
     case Map.pop(state.calls, call_id) do
@@ -99,11 +96,11 @@ defmodule Helyx.Provider.ClaudeCode.Mcp do
 
   # Only a tool that the program was given maps.
   defp helyx_call?(
-         %{"_meta" => %{"claudecode/toolUseId" => call_id}, "name" => name} = params,
+         %{"_meta" => %{"claudecode/toolUseId" => call_id}, "name" => name},
          %{turn: turn, tools: tools}
        )
        when is_binary(call_id) and started?(turn),
-       do: Enum.any?(tools, &(&1.name == name)) and is_map(Map.get(params, "arguments", %{}))
+       do: Enum.any?(tools, &(&1.name == name))
 
   defp helyx_call?(_params, _state), do: false
 

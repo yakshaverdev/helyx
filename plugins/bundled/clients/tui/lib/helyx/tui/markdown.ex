@@ -3,8 +3,8 @@ defmodule Helyx.TUI.Markdown do
   The Markdown of an assistant reply as screen rows (#487): headings, bullet
   and numbered items, bold, italic, inline code, fenced code, and links as
   their text and address. A row is a list of `{text, tags}`. The text of a
-  row is a row of `Helyx.TUI.Wrap.line_rows/2`, so the width rule holds. Pure;
-  it needs nothing from `ex_ratatui` (ADR 0005). The rules are in
+  row is a row of `Helyx.TUI.Wrap.line_rows/2`, so the width rule holds. Pure.
+  The rules are in
   `docs/features/coding-agent.md`, "TUI".
   """
 

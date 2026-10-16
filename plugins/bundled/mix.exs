@@ -33,20 +33,24 @@ defmodule Helyx.Plugins.MixProject do
     [extra_applications: [:logger]]
   end
 
-  # The root's test helpers that need only Core, shared so that each has
-  # one copy.
+  # clients/ holds client code that is not a Core plugin, such as the TUI
+  # (ADR 0005). The root's test helpers that need only Core are shared, so
+  # that each has one copy.
   defp elixirc_paths(:test),
-    do: ["lib", "test/support", Path.expand("../../test/support/shared", __DIR__)]
+    do: [
+      "lib",
+      "clients/tui/lib",
+      "test/support",
+      Path.expand("../../test/support/shared", __DIR__)
+    ]
 
-  defp elixirc_paths(_), do: ["lib"]
+  defp elixirc_paths(_), do: ["lib", "clients/tui/lib"]
 
   defp deps do
     [
       {:helyx, path: "../.."},
       {:req, "~> 0.5"},
-      # Optional: a Rust NIF that only the TUI needs. Helyx.TUI is defined
-      # only when it is loaded; a product that wants the TUI lists it (ADR 0005).
-      {:ex_ratatui, "~> 0.14", optional: true},
+      {:ex_ratatui, "~> 0.14"},
       {:plug, "~> 1.16", only: :test},
       {:stream_data, "~> 1.2", only: :test},
       {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false}

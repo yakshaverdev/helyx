@@ -101,37 +101,6 @@ defmodule Helyx.Session.LoopTest do
     assert Enum.map(events, & &1.seq) == Enum.to_list(1..length(events))
   end
 
-  test "a call whose arguments are not a JSON object gets an error result; the text and the good call stay",
-       %{core: core} do
-    {:ok, session} = Session.start(core, model: "test/rejected")
-    {:ok, _, _} = Session.subscribe(session)
-
-    :ok = Session.prompt(session, "hello")
-    events = collect_until(:turn_end)
-
-    # The next provider call gets both results, in call order.
-    rejected = "tool call not run: the arguments are not a valid JSON object"
-    assert final_text(events) == "ONE|#{rejected}"
-
-    [first_end | _] =
-      for %{type: :message_end, data: %{message: %{role: :assistant} = m}} <- events, do: m
-
-    assert [
-             %Helyx.Message.Text{text: "Trying"},
-             %Helyx.Message.ToolCall{id: "c1"},
-             %Helyx.Message.ToolCall{id: "c2", arguments: %{}}
-           ] = first_end.content
-
-    ends = for %{type: :tool_execution_end, data: data} <- events, do: data.message
-
-    assert [
-             %Helyx.Message{tool_call_id: "c1", is_error: false},
-             %Helyx.Message{tool_call_id: "c2", is_error: true} = bad
-           ] = ends
-
-    assert Helyx.Message.text(bad) == rejected
-  end
-
   test "no call of a reply cut at the token limit runs; each gets an error result in call order",
        %{core: core} do
     {:ok, session} = Session.start(core, model: "test/cut")

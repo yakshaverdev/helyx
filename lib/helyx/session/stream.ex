@@ -23,7 +23,6 @@ defmodule Helyx.Session.Stream do
 
   @integer_reason "an integer in the arguments has more than " <>
                     "#{Message.max_integer_digits()} digits"
-  @not_object_reason "the arguments are not a valid JSON object"
 
   @doc """
   Builds the context of one provider call with the ModelContext and the
@@ -60,14 +59,14 @@ defmodule Helyx.Session.Stream do
   @doc """
   Checks one event from a provider. Returns `{:send, event, rejection}`
   for an event that passes, with the checked event and, for a call with
-  an integer over the digit limit or with raw argument text (arguments
-  that are not a JSON object), the reason that it must not run, or nil.
+  an integer over the digit limit, the reason that it must not run, or nil.
   A checked tool call is `{:tool_call, call, bytes}`, with the bytes of
   the JSON encode of its id, name, and arguments;
   `{:terminal, terminal}` for a `done` or an `error` event, ready to
   send, with the integer cap on an error reason; and `{:bad, error}` for
-  a malformed event. Arguments that are a struct are malformed: the
-  session file needs a plain map. The usage of a `done` or a
+  a malformed event. Arguments that are not a plain map are malformed: the
+  session file needs a plain map. The error of a call whose arguments are
+  raw text holds `%{}` in place of the text. The usage of a `done` or a
   `message_end` is nil or a `Helyx.Usage` within the struct bound
   (`Helyx.Usage.valid?/1`); anything else is malformed. A delta or a tool call that is not valid UTF-8 is
   malformed: transcript text is valid from the moment it exists, so the
@@ -161,11 +160,10 @@ defmodule Helyx.Session.Stream do
     end
   end
 
-  # Arguments that did not decode to a JSON object come as their raw text.
-  # The text is dropped here, so the transcript, the file, and the error
-  # result never hold it.
+  # Arguments that did not decode to a JSON object can come as their raw
+  # text. The error drops the text, so the log and the client never get it.
   defp tool_call(%Message.ToolCall{arguments: args} = call) when is_binary(args),
-    do: rejected(call, @not_object_reason)
+    do: {:bad, malformed({:tool_call, %{call | arguments: %{}}})}
 
   defp tool_call(call), do: {:bad, malformed({:tool_call, call})}
 

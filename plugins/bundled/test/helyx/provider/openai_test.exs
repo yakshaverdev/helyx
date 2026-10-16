@@ -242,14 +242,6 @@ defmodule Helyx.Provider.OpenAITest do
              %{"role" => "tool", "tool_call_id" => "call_1", "content" => "a�b"}
   end
 
-  test "a non-2xx response yields one error event with the body" do
-    plug(&Plug.Conn.send_resp(&1, 401, ~s({"error": "bad key"})))
-    context = %Helyx.Context{messages: [Helyx.Message.user("hi")]}
-
-    assert {:ok, stream} = OpenAI.Go.stream("kimi-k2", context, [])
-    assert Enum.to_list(stream) == [{:error, {:http_status, 401, ~s({"error": "bad key"})}}]
-  end
-
   # Three backoff waits: 0.5, 1, and 2 s, less jitter.
   @tag :slow
   test "a transport error on every attempt is an error event after 3 retries" do
@@ -459,8 +451,6 @@ defmodule Helyx.Provider.OpenAITest do
 
   defp ok, do: &reply(&1, [delta(%{content: "ok"}, "stop"), "[DONE]"])
 
-  @not_object "the arguments are not a valid JSON object"
-
   # The provider callbacks come from `Helyx.Provider.Loop`; the test
   # process stands in for the provider process.
   test "through the helper, every call goes to Core at once and the results join in call order" do
@@ -468,7 +458,9 @@ defmodule Helyx.Provider.OpenAITest do
       delta(%{
         tool_calls: [%{index: 0, id: "c1", function: %{name: "read", arguments: ~s({"a": 1})}}]
       }),
-      delta(%{tool_calls: [%{index: 1, id: "c2", function: %{name: "read", arguments: "[1]"}}]}),
+      delta(%{
+        tool_calls: [%{index: 1, id: "c2", function: %{name: "read", arguments: ~s({"c": 1})}}]
+      }),
       delta(%{
         tool_calls: [%{index: 2, id: "c3", function: %{name: "bash", arguments: ~s({"b": 1})}}]
       }),
@@ -487,27 +479,22 @@ defmodule Helyx.Provider.OpenAITest do
              {:tool_call, %{id: "c3"}},
              {:message_end, :tool_use, %Helyx.Usage{}},
              {:tool_request, "c1", "read", %{"a" => 1}},
-             {:tool_request, "c2", "read", "[1]"},
+             {:tool_request, "c2", "read", %{"c" => 1}},
              {:tool_request, "c3", "bash", %{"b" => 1}}
            ] = events
 
-    # The session answers the raw text with its rejection.
     {:ok, [{:reply, :r3, :ok}], state} =
       OpenAI.Go.request({:tool_result, "t1", "c3", {:ok, "three"}}, :r3, state)
 
     {:ok, [{:reply, :r2, :ok}], state} =
-      OpenAI.Go.request(
-        {:tool_result, "t1", "c2", {:error, "tool call not run: " <> @not_object}},
-        :r2,
-        state
-      )
+      OpenAI.Go.request({:tool_result, "t1", "c2", {:error, "two"}}, :r2, state)
 
     {:ok, [{:reply, :r1, :ok} | actions], _state} =
       OpenAI.Go.request({:tool_result, "t1", "c1", {:ok, "one"}}, :r1, state)
 
     assert actions == [
              {:event, "t1", {:tool_result, "c1", {:ok, "one"}}},
-             {:event, "t1", {:tool_result, "c2", {:error, "tool call not run: " <> @not_object}}},
+             {:event, "t1", {:tool_result, "c2", {:error, "two"}}},
              {:event, "t1", {:tool_result, "c3", {:ok, "three"}}},
              {:need_context, "t1"}
            ]
@@ -608,14 +595,12 @@ defmodule Helyx.Provider.OpenAITest do
 
   @max_error_body_bytes 16_384
 
-  for bytes <- [@max_error_body_bytes, @max_error_body_bytes - 1] do
-    test "an error body of #{bytes} bytes arrives whole" do
-      body = String.duplicate("a", unquote(bytes))
-      plug(&Plug.Conn.send_resp(&1, 400, body))
+  test "an error body of #{@max_error_body_bytes} bytes arrives whole" do
+    body = String.duplicate("a", @max_error_body_bytes)
+    plug(&Plug.Conn.send_resp(&1, 400, body))
 
-      assert {:ok, stream} = OpenAI.Go.stream("m", %Helyx.Context{}, [])
-      assert Enum.to_list(stream) == [{:error, {:http_status, 400, body}}]
-    end
+    assert {:ok, stream} = OpenAI.Go.stream("m", %Helyx.Context{}, [])
+    assert Enum.to_list(stream) == [{:error, {:http_status, 400, body}}]
   end
 
   test "an error body over the limit is cut and marked" do

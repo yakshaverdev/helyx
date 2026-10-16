@@ -62,7 +62,7 @@ defmodule Helyx.TUITest do
 
   defp mounted(core, model, responses) do
     :ok = Fake.script(core, model, responses)
-    {:ok, session} = Session.start(core, model: "fake/#{model}")
+    {:ok, session} = Helyx.Test.SavedSession.start(core, "fake/#{model}")
     {:ok, state} = TUI.mount(session: session)
     state
   end
@@ -90,20 +90,6 @@ defmodule Helyx.TUITest do
         if event.type == :turn_end, do: state, else: drain(state)
     after
       Helyx.Test.Events.wait_ms() -> flunk("no turn_end; view model: #{inspect(state.vm)}")
-    end
-  end
-
-  test "the optional-dependency guard matches what is loaded" do
-    # ex_ratatui is always present in this project. The build without it is
-    # checked with a scratch product, see ADR 0005.
-    for guard <- [
-          Helyx.TUI.Available,
-          Helyx.TUI.Composer.Available,
-          Helyx.TUI.Selection.Available,
-          Helyx.TUI.Transcript.Available
-        ] do
-      assert guard.available?()
-      refute guard.__mix_recompile__?()
     end
   end
 
@@ -463,7 +449,7 @@ defmodule Helyx.TUITest do
 
   # #606: the notice of a loss before the subscribe reached no client.
   @tag :tmp_dir
-  test "a session that lost its lock before the mount shows the lost-lock notice", %{
+  test "a session that lost its lock before the mount shows the not-saved notice", %{
     core: core,
     tmp_dir: dir
   } do
@@ -474,7 +460,7 @@ defmodule Helyx.TUITest do
     Helyx.Test.LostLock.kill(session)
 
     {:ok, %{vm: vm}} = TUI.mount(session: session)
-    assert ViewModel.cells(vm) == [{:notice, Helyx.Reason.text(:lock_lost)}]
+    assert ViewModel.cells(vm) == [{:notice, Helyx.Reason.text(:not_saved)}]
   end
 
   test "mounting on a dead session exits instead of hanging", %{core: core} do
@@ -733,20 +719,6 @@ defmodule Helyx.TUITest do
     assert Enum.all?(texts, &(String.length(&1) <= 30))
   end
 
-  test "a tool call line is cut at 8,192 bytes" do
-    # U+00A0 renders as `\u00A0` through `inspect/1`, and the keys are raw.
-    arguments = Map.new(1..2_000, &{"k#{&1}", String.duplicate("\u00A0", 100)})
-    call = %Helyx.Message.ToolCall{id: "c", name: "bash", arguments: arguments}
-
-    # Wide enough for one row: a break would drop the space at it.
-    texts = texts(view_model([{:tool, call, ViewModel.call_line(call), nil}]), 10_000)
-    {call_rows, ["… awaiting result"]} = Enum.split(texts, -1)
-    call_line = Enum.join(call_rows)
-
-    assert byte_size(call_line) in 8_190..8_192
-    assert String.starts_with?(call_line, "⚙ bash k")
-  end
-
   describe "scrollback" do
     # A 24 by 10 terminal: the transcript has 5 rows of 20 columns, inside
     # the margins. Each message is one row and one empty row. `resize/2`
@@ -775,7 +747,7 @@ defmodule Helyx.TUITest do
 
     defp scroll_state(core, count) do
       :ok = Fake.script(core, "scroll", [["ok"]])
-      {:ok, session} = Session.start(core, model: "fake/scroll")
+      {:ok, session} = Helyx.Test.SavedSession.start(core, "fake/scroll")
 
       {:ok, state} =
         TUI.mount(session: session, terminal_size_fn: &size/0)
@@ -1108,7 +1080,7 @@ defmodule Helyx.TUITest do
       assert screen(down) == [row, "▌ " <> String.duplicate("語", 5), "▌ end"]
     end
 
-    test "a failed turn while the view is in the open message returns to the newest output",
+    test "a failed turn while the view is in the open message keeps the view in that message",
          %{core: core} do
       text = Enum.map_join(1..40, "\n", &"line#{&1}")
 
@@ -1123,11 +1095,21 @@ defmodule Helyx.TUITest do
       assert {1, _row} = state.scroll
       assert screen(state) == Enum.map(27..31, &"line#{&1}")
 
-      for data <- [%{outcome: :aborted}, %{outcome: :error, error: "boom"}] do
-        ended = fold(state, :turn_end, data)
-        assert ended.scroll == nil
-        assert "▌ m1" in screen(ended)
-        refute status_text(ended) =~ "scrolled"
+      # The session closes the open message with message_end before turn_end.
+      for {stop, data} <- [
+            aborted: %{outcome: :aborted},
+            error: %{outcome: :error, error: "boom"}
+          ] do
+        message = %Helyx.Message{
+          role: :assistant,
+          content: [%Helyx.Message.Text{text: text}],
+          stop_reason: stop
+        }
+
+        ended = state |> fold(:message_end, %{message: message}) |> fold(:turn_end, data)
+        assert ended.scroll == state.scroll
+        assert screen(ended) == screen(state)
+        assert status_text(ended) =~ "scrolled"
       end
     end
 

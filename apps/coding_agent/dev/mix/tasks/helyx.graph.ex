@@ -3,15 +3,13 @@ defmodule Mix.Tasks.Helyx.Graph do
   @moduledoc """
   Prints how the project fits together, for a person or an agent to read.
 
-      mix helyx.graph calls [Module ...] [--mermaid]
+      mix helyx.graph calls
       mix helyx.graph turn
 
   `calls` prints every function call from one project function to another,
   one `caller -> callee` line each, read from the compiled code with OTP
-  `:xref`. A module argument keeps only the lines where that module calls or
-  is called. `--mermaid` prints a Mermaid flowchart instead. The graph stops
-  at process boundaries: a `GenServer.call` shows as a call to the client
-  function, not to the process that answers it.
+  `:xref`. The graph stops at process boundaries: a `GenServer.call` shows
+  as a call to the client function, not to the process that answers it.
 
   `turn` runs one scripted turn with the fake provider and the read tool in
   a temporary directory, traces it, and prints a Mermaid sequence diagram.
@@ -25,43 +23,20 @@ defmodule Mix.Tasks.Helyx.Graph do
 
   # :xref is in the OTP :tools app, which only this task loads, at run time.
   @compile {:no_warn_undefined, :xref}
-  @dialyzer {:nowarn_function, calls: 2}
+  @dialyzer {:nowarn_function, calls: 0}
 
   @apps [:helyx, :helyx_plugins, :coding_agent]
   @core :helyx_graph
   @turn_timeout_ms 10_000
   @callbacks [:init, :handle_call, :handle_cast, :handle_info, :handle_continue]
-  @usage "usage: mix helyx.graph calls [Module ...] [--mermaid] | mix helyx.graph turn"
+  @usage "usage: mix helyx.graph calls | mix helyx.graph turn"
 
   @impl true
-  def run(argv) do
-    # OptionParser raises UnicodeConversionError or ArgumentError on a
-    # switch that is not UTF-8, and ArgumentError on some others, such as "-=".
-    if bad = Enum.find(argv, &(not String.valid?(&1))) do
-      Mix.raise("an argument is not UTF-8: #{inspect(bad, binaries: :as_strings)}; #{@usage}")
-    end
+  def run(["calls"]), do: calls()
+  def run(["turn"]), do: turn()
+  def run(_argv), do: Mix.raise(@usage)
 
-    {opts, args} =
-      try do
-        OptionParser.parse!(argv, strict: [mermaid: :boolean])
-      rescue
-        error in OptionParser.ParseError -> Mix.raise(Exception.message(error))
-        ArgumentError -> Mix.raise("bad option in #{inspect(argv)}; #{@usage}")
-      end
-
-    case args do
-      ["calls" | modules] ->
-        calls(Enum.map(modules, &Module.concat([&1])), Keyword.get(opts, :mermaid, false))
-
-      ["turn"] ->
-        turn()
-
-      _ ->
-        Mix.raise(@usage)
-    end
-  end
-
-  defp calls(filter, mermaid?) do
+  defp calls do
     Mix.Task.run("compile")
     Mix.ensure_application!(:tools)
     project = MapSet.new(project_modules())
@@ -77,33 +52,15 @@ defmodule Mix.Tasks.Helyx.Graph do
 
       edges
       |> Enum.filter(fn {{m1, f1, _}, {m2, f2, _}} ->
-        m1 in project and m2 in project and source?(f1) and source?(f2) and
-          (filter == [] or m1 in filter or m2 in filter)
+        m1 in project and m2 in project and source?(f1) and source?(f2)
       end)
       |> Enum.map(fn {from, to} -> {mfa(from), mfa(to)} end)
       |> Enum.sort()
       |> Enum.uniq()
-      |> print_calls(mermaid?)
+      |> Enum.each(fn {from, to} -> IO.puts("#{from} -> #{to}") end)
     after
       :xref.stop(xref)
     end
-  end
-
-  defp print_calls(edges, false) do
-    Enum.each(edges, fn {from, to} -> IO.puts("#{from} -> #{to}") end)
-  end
-
-  defp print_calls(edges, true) do
-    ids =
-      edges
-      |> Enum.flat_map(&Tuple.to_list/1)
-      |> Enum.uniq()
-      |> Enum.with_index(fn name, i -> {name, "n#{i}"} end)
-      |> Map.new()
-
-    IO.puts("flowchart LR")
-    Enum.each(ids, fn {name, id} -> IO.puts(~s(  #{id}["#{name}"])) end)
-    Enum.each(edges, fn {from, to} -> IO.puts("  #{ids[from]} --> #{ids[to]}") end)
   end
 
   defp turn do

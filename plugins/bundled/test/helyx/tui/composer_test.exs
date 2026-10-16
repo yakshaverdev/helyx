@@ -22,7 +22,7 @@ defmodule Helyx.TUI.ComposerTest do
         turn: nil,
         model: "test/model",
         queue: %{steers: 0, follow_ups: 0, running: 0, held: 0, waiting: 0},
-        lock_lost: false
+        persisting: true
       })
 
     %{vm: vm, composer: Composer.new(), scroll: nil, busy: nil}

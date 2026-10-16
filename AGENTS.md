@@ -10,7 +10,7 @@ Key design constraints:
 
 - Core stays small. It contains only plugin registration, OTP supervision, and interface dispatch.
 - Everything else is a plugin: memory, tools, model context, compaction, transports.
-- A user interface, such as the TUI, is a client, not a plugin. It implements no interface, so Core rejects it as a plugin.
+- The TUI is a client host. It uses the session API and is not registered as a Core plugin. Core plugins implement the server extension interfaces. A plugin package can also contain client code. A client extension would load through its client host; Helyx has no client extension API today.
 - The extension surface is small: Provider, Tool, ModelContext, Compaction, and one Transport (planned). Event is data, not an interface.
 - The server owns agent and session state. Clients are thin and render from the event stream.
 - Local mode runs server and TUI in one BEAM node with OTP messages. Phoenix is not in core; it arrives later as a Transport plugin.
@@ -35,6 +35,7 @@ test/              Tests, mirrors lib/. test/support/ holds test-only plugins
 credo/             Custom Credo checks, loaded by .credo.exs
 bench/             Benchmark scripts, not tests
 plugins/bundled/   All bundled plugins in one Mix project, app helyx_plugins, path dependency on the root (ADR 0005)
+  clients/tui/lib/ The TUI client sources, compiled by helyx_plugins; its tests are in test/helyx/tui*
 apps/<name>/       Products, one Mix project each
 ```
 
@@ -64,7 +65,7 @@ Run from the repository root. The Mix projects are the root, `plugins/bundled` w
 - Tests end with `_test.exs` and mirror the `lib/` structure. Prefer async tests (`use ExUnit.Case, async: true`) unless the test touches shared state.
 - Write `@moduledoc` and `@doc` for public modules and functions. Use `@moduledoc false` for internal modules.
 - Prefer `Req` for HTTP; avoid `:httpoison`, `:tesla`, and `:httpc`.
-- Validate at boundaries. A boundary is where data comes from something this code does not control: client input, plugin output into Core (stream events, tool results, callback returns), the disk, external programs and networks, tool arguments from the model at the tool entry, terminal input, and config. Check there, and handle the error there. Inner code trusts the check: it has no fallback clause, error return, or repair for a state that no caller can make. A state that only a bug can make crashes ("let it crash"); a pattern match or a guard that crashes is fine.
+- Validate at boundaries. A boundary is where data comes from something this code does not control: client input, plugin output into Core (stream events, tool results, callback returns), the disk, external programs and networks, tool arguments from the model, terminal input, and config. Core checks that tool arguments are a JSON object of valid UTF-8 (`Helyx.Session.Stream.check/1`); a tool checks the type and the value of each argument at its entry, and does not check UTF-8 again. Check there, and handle the error there. Inner code trusts the check: it has no fallback clause, error return, or repair for a state that no caller can make. A state that only a bug can make crashes ("let it crash"); a pattern match or a guard that crashes is fine.
 - A contract break gets one generic answer. Plugin output that the contract does not allow (a provider event, action, or reply) fails the boundary check, the provider process stops, and the turn fails. It gets no special handler or special error result; a test checks the generic failure path. A case gets its own handler only with evidence that a real provider or program does it: a research note, an observed run, or a bug report. Bounds against resource growth and data loss stay: they are safety, not behaviour. See `docs/agents/review-checklist.md`, "Inputs from plugins".
 - Remove a repeated check only when the earlier check still proves the same property. Keep a documented safety check. Check the new limits that a transformation, an accumulation, or elapsed time introduces (text that expands, a buffer that grows, a deadline that approaches).
 - Use the checked value. If an operation reads a new value, validate that value before use. A prior check of external state does not remove the need to handle a failure when the state is used.
@@ -77,7 +78,7 @@ Run from the repository root. The Mix projects are the root, `plugins/bundled` w
 - A plugin is `<Root>.<Interface>.<Name>`. The root tells you who owns the code:
   - Bundled plugins use the `Helyx` root: `Helyx.Provider.OpenAI`, `Helyx.Tool.Bash`.
   - External plugins use their own root: `Acme.Provider.Bedrock`. Do not define modules under `Helyx.*` outside this repo. Module names are global in a BEAM node, and two packages that define the same module fail to compile together.
-- A new bundled plugin is a module under `plugins/bundled/lib/helyx/<interface>/` with its tests under the same path in `test/`, not a Mix project. A small, pure Elixir dependency is a normal dependency of `helyx_plugins`. A heavy or native one is `optional: true`. The modules that need it are defined only when it is loaded. The product lists the dependency itself. `ex_ratatui` and `Helyx.TUI` are the example (ADR 0005). An application env key of `helyx_plugins` names its plugin, for example `:openai_req_options`.
+- A new bundled plugin is a module under `plugins/bundled/lib/helyx/<interface>/` with its tests under the same path in `test/`, not a Mix project. A dependency of a bundled plugin is a normal dependency of `helyx_plugins`. Client code in the bundled project, such as `Helyx.TUI`, lives under `plugins/bundled/clients/<name>/lib/` with its tests in `test/` (ADR 0005). An application env key of `helyx_plugins` names its plugin, for example `:openai_req_options`.
 - Code that two bundled plugins need is a helper module in `plugins/bundled`, such as `Helyx.Watchdog`. It is `@moduledoc false`, implements no interface, and has no registration entry. Both plugins call the helper; one plugin never calls another (ADR 0005).
 - The path follows the module name, except in `lib/helyx/interfaces/`, `lib/helyx/data/`, and `credo/`. These folders group files only. They are not part of the module name.
 - Core resolves a plugin by its registration entry and a behaviour check, not by its module name. The module path is a reading aid only.

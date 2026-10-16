@@ -211,7 +211,8 @@ defmodule Helyx.Provider.ClaudeCode do
   # (research note). A fresh program takes its place, and a turn that was
   # written to the lost one goes to the fresh one, with the replay.
   # The lost program ran no steer line either: the steers are dropped, not
-  # written again, and the session gives each a notice.
+  # written again, and the session gives each a notice. The new harness
+  # session starts a new meter with the window of config.
   defp relaunch(actions, state) do
     HarnessIO.stop(state)
     turn = state.turn && %{state.turn | steers: %{}}
@@ -221,7 +222,8 @@ defmodule Helyx.Provider.ClaudeCode do
       model: state.model,
       cwd: state.cwd,
       tools: state.tools,
-      turn: turn
+      turn: turn,
+      meter: Meter.start(nil, state.meter.config_window)
     }
 
     case launch(fresh) do
@@ -412,24 +414,12 @@ defmodule Helyx.Provider.ClaudeCode do
        when is_binary(request_id),
        do: Mcp.message(message, request_id, state)
 
-  # An approval is allowed with its input unchanged, because the program
-  # runs with `bypassPermissions`. With no `--permission-prompt-tool`, no
-  # approval comes (research note). Every other request gets an error.
-  defp translate(%{"type" => "control_request", "request_id" => id} = request, state)
+  # Every other request gets an error. The program runs with
+  # `bypassPermissions` and no `--permission-prompt-tool`, so no approval
+  # comes (research note); one that comes is refused (ADR 0007).
+  defp translate(%{"type" => "control_request", "request_id" => id}, state)
        when is_binary(id) do
-    response =
-      case request["request"] do
-        %{"subtype" => "can_use_tool", "input" => %{} = input} ->
-          %{
-            subtype: "success",
-            request_id: id,
-            response: %{behavior: "allow", updatedInput: input}
-          }
-
-        _ ->
-          %{subtype: "error", request_id: id, error: "not supported by Helyx"}
-      end
-
+    response = %{subtype: "error", request_id: id, error: "not supported by Helyx"}
     HarnessIO.write(state, Replay.line(%{type: "control_response", response: response}))
     {[], state}
   end

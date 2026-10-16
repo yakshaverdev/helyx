@@ -1,5 +1,5 @@
 defmodule Helyx.Tool.Write do
-  @moduledoc "Writes a file, creating parent directories. An existing file is replaced."
+  @moduledoc "Writes a file, creating parent directories. An existing regular file is replaced; another type of file is an error."
 
   @behaviour Helyx.Tool
 
@@ -31,13 +31,28 @@ defmodule Helyx.Tool.Write do
       when is_binary(path) and is_binary(content) do
     full = Path.expand(path, cwd)
 
-    with :ok <- File.mkdir_p(Path.dirname(full)),
+    with :ok <- regular_or_missing(full),
+         :ok <- File.mkdir_p(Path.dirname(full)),
          :ok <- File.write(full, content) do
       {:ok, "Wrote #{path}"}
     else
-      {:error, reason} -> {:error, "cannot write #{path}: #{:file.format_error(reason)}"}
+      {:error, {:not_regular, type}} ->
+        {:error, "cannot write #{path}: not a regular file (#{type})"}
+
+      {:error, reason} ->
+        {:error, "cannot write #{path}: #{:file.format_error(reason)}"}
     end
   end
 
   def run(_args, _cwd), do: {:error, "write needs a path and content"}
+
+  # The open of a FIFO or a device blocks or has side effects, so only a
+  # regular file is replaced. Another error of the stat is left to the write.
+  defp regular_or_missing(full) do
+    case File.stat(full) do
+      {:ok, %File.Stat{type: :regular}} -> :ok
+      {:ok, %File.Stat{type: type}} -> {:error, {:not_regular, type}}
+      {:error, _reason} -> :ok
+    end
+  end
 end

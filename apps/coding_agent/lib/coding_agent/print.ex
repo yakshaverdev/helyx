@@ -164,8 +164,8 @@ defmodule CodingAgent.Print do
 
     with {:ok, snapshot, ref} <- Session.subscribe(session),
          stderr("session " <> session.id),
-         # A lock lost before the subscribe sent its notice to no client.
-         if(snapshot.lock_lost, do: stderr(Reason.text(:lock_lost))),
+         # A stop of the saving before the subscribe sent its notice to no client.
+         if(not snapshot.persisting, do: stderr(Reason.text(:not_saved))),
          :ok <- Session.prompt(session, prompt) do
       wait(ref, %Wait{queue: snapshot.queue})
     else

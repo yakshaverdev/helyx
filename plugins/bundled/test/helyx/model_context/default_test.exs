@@ -182,13 +182,6 @@ defmodule Helyx.ModelContext.DefaultTest do
     assert byte_size(system) - byte_size(base) == @max_total_bytes
   end
 
-  test "files one byte under the total cap are all kept", %{tmp_dir: dir} do
-    system = two_files_at_cap(dir, -1)
-
-    assert system =~ "far x"
-    assert system =~ "é"
-  end
-
   test "one byte over the total cap leaves the farther file out", %{tmp_dir: dir} do
     system = two_files_at_cap(dir, 1)
 

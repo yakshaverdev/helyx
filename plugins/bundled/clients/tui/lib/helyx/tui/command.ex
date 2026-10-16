@@ -4,8 +4,7 @@ defmodule Helyx.TUI.Command do
   # `/compact [instructions]` (docs/features/coding-agent.md, "TUI", and
   # docs/features/harness-compaction.md). `parse/1` owns the rule of a
   # command, `run/2` its session call and the notice of a refused one. The
-  # transcript follows the session's events, not these calls. It names no
-  # module of ex_ratatui, so it needs no guard of the optional dependency.
+  # transcript follows the session's events, not these calls.
 
   alias Helyx.Session
 

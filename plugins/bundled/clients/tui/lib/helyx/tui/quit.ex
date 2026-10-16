@@ -4,9 +4,7 @@ defmodule Helyx.TUI.Quit do
   # and arms the quit for @window_ms; a second one while armed quits. Any
   # other key press or a paste disarms it, and so does the end of the
   # window: the message `{Helyx.TUI.Quit, ref}` that a first Ctrl+C sends to
-  # the calling process. The ExRatatui events are named only as atoms, in
-  # guards and map patterns, so this module needs no guard of the optional
-  # dependency (ADR 0005).
+  # the calling process.
 
   alias ExRatatui.Event.{Key, Paste}
 

@@ -20,6 +20,13 @@ defmodule Helyx.Credo.FileLengthTest do
     assert_issue(issues(401))
   end
 
+  test "a blank line at the end counts" do
+    "defmodule Sample do\n#{String.duplicate("  @a 1\n", 398)}end\n\n"
+    |> to_source_file("lib/sample.ex")
+    |> run_check(FileLength, allowed: %{})
+    |> assert_issue()
+  end
+
   test "a file outside lib/ is not checked" do
     refute_issues(issues(401, "test/sample.ex"))
   end

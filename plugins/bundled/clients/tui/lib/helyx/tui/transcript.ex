@@ -1,0 +1,327 @@
+defmodule Helyx.TUI.Transcript do
+  @moduledoc """
+  The transcript of the TUI: the cells of a `Helyx.TUI.ViewModel` as
+  screen rows, and the rule for the scroll position. An item is a cell, or
+  a run of information cells, which shows as one dim row. A position is
+  nil, which follows the newest output, or `{item, row}`, the first row on
+  the screen: an item index and a row in that item. The cost bound is in
+  `docs/features/coding-agent.md`, "Transcript scrollback", and the look in
+  its "TUI" section.
+  """
+
+  alias ExRatatui.Layout.Rect
+  alias ExRatatui.Style
+  alias ExRatatui.Text.{Line, Span}
+  alias ExRatatui.Widgets.Paragraph
+  alias Helyx.Message
+  alias Helyx.TUI.{Markdown, ViewModel, Wrap}
+
+  @dim %Style{modifiers: [:dim]}
+  @tool %Style{fg: :cyan}
+  @bad %Style{fg: :red}
+  # Palette colors, so the look follows the terminal theme. White on black
+  # reads in light and dark themes alike.
+  @user %Style{fg: :white, bg: :black}
+  @bar %Style{fg: :blue, bg: :black}
+  @code :yellow
+
+  @type position :: {non_neg_integer(), non_neg_integer()} | nil
+
+  # The rows of one wheel or trackpad step.
+  @wheel_rows 3
+
+  # A scrolled view starts at an item and a row in it. The items before the
+  # open message only grow in number, so new output does not move the view.
+  # No line cache: no operation wraps all items. A frame wraps the items it
+  # shows, and a page or a hold wraps the items it passes, a small count of
+  # screens.
+
+  @typedoc "A row of the transcript: an item index and a row in that item."
+  @type address :: {non_neg_integer(), non_neg_integer()}
+
+  @doc """
+  The transcript in `area` from `position`. With no position the view
+  follows the newest output: the first row is one screen above the end.
+  """
+  @spec widget(ViewModel.t(), position(), Rect.t()) :: Paragraph.t()
+  def widget(vm, scroll, area), do: vm |> screen(scroll, area) |> widget()
+
+  @doc "The paragraph of the rows of `screen/3`."
+  @spec widget([{address(), Line.t()}]) :: Paragraph.t()
+  def widget(rows), do: %Paragraph{text: Enum.map(rows, &elem(&1, 1))}
+
+  @doc "The rows that `widget/3` draws, each with its address, from the top of `area`."
+  @spec screen(ViewModel.t(), position(), Rect.t()) :: [{address(), Line.t()}]
+  def screen(vm, scroll, %Rect{width: width, height: height}) do
+    items = items(vm)
+    top = scroll || bottom(items, width, height)
+    items |> rows_from(top, width) |> Enum.take(height)
+  end
+
+  @typedoc "A row address and a column in it."
+  @type point :: {address(), non_neg_integer()}
+
+  @doc """
+  The text of the rows from the point `first` to the later point `last` at
+  `width` columns, lazily: one string for each row, with no blue bar and
+  no space at the end. A glyph is in the text when one of its columns is
+  in `columns/4`.
+  """
+  @spec text(ViewModel.t(), point(), point(), integer()) :: Enumerable.t(String.t())
+  def text(vm, {first_row, _} = first, {last_row, _} = last, width) do
+    vm
+    |> items()
+    |> rows_from(first_row, width)
+    |> Stream.take_while(fn {address, _line} -> address <= last_row end)
+    |> Stream.map(fn {address, line} ->
+      {from, to} = columns(address, first, last, width)
+      line |> cut(from, to) |> String.trim_trailing()
+    end)
+  end
+
+  @doc """
+  The columns, both included, of the row at `address` between the points
+  `first` and `last`: from the column of `first` on its row, to the column
+  of `last` on its row, and the whole width between them.
+  """
+  @spec columns(address(), point(), point(), integer()) :: {integer(), integer()}
+  def columns(address, {first_row, from}, {last_row, to}, width) do
+    from = if address == first_row, do: from, else: 0
+    {from, min(if(address == last_row, do: to, else: width), width - 1)}
+  end
+
+  # The graphemes of a row with a column in `from..to`, by the width rule.
+  defp cut(%Line{spans: spans}, from, to) do
+    {kept, _column} =
+      Enum.reduce(spans, {[], 0}, fn %Span{content: content, style: style}, acc ->
+        content
+        |> String.graphemes()
+        |> Enum.reduce(acc, fn grapheme, {kept, column} ->
+          # A zero-width grapheme takes no column, as ExRatatui draws it,
+          # and is in the text when its column is.
+          next = column + Wrap.columns(grapheme)
+          keep? = style != @bar and column <= to and max(next, column + 1) > from
+          {if(keep?, do: [grapheme | kept], else: kept), next}
+        end)
+      end)
+
+    kept |> Enum.reverse() |> Enum.join()
+  end
+
+  defp bottom(items, width, height),
+    do: back(Enum.reverse(items), {length(items), 0}, height, width)
+
+  @doc """
+  The one rule for a position: its row is in its item, and the rows from
+  it to the end are more than one screen of `height` rows at `width`
+  columns. If not, the row moves into the items that follow, or the result
+  is nil. A new item can take the index of the open message, and a wider
+  screen makes an item shorter. Every position in the TUI state comes from
+  here or is nil.
+  """
+  @spec hold(ViewModel.t(), {non_neg_integer(), non_neg_integer()}, integer(), pos_integer()) ::
+          position()
+  def hold(%ViewModel{} = vm, position, width, height),
+    do: hold_items(items(vm), position, width, height)
+
+  defp hold_items(items, {index, row}, width, height) do
+    top = items |> Enum.drop(index) |> forward({index, row}, width)
+    if length(items |> rows_from(top, width) |> Enum.take(height + 1)) > height, do: top
+  end
+
+  @doc """
+  One screen up (`"page_up"`) or down (`"page_down"`) from `position`, or
+  #{@wheel_rows} rows for a wheel step (`"scroll_up"`, `"scroll_down"`),
+  held by `hold/4`.
+  """
+  @spec page(ViewModel.t(), position(), String.t(), integer(), pos_integer()) :: position()
+  def page(vm, scroll, code, width, height),
+    do: move(vm, scroll, step(code, height), width, height)
+
+  defp step("page_up", height), do: -height
+  defp step("page_down", height), do: height
+  defp step("scroll_up", _height), do: -@wheel_rows
+  defp step("scroll_down", _height), do: @wheel_rows
+
+  # Down by `rows` when it is positive, else up.
+  defp move(_vm, nil, rows, _width, _height) when rows > 0, do: nil
+
+  defp move(vm, {index, row}, rows, width, height) when rows > 0,
+    do: hold(vm, {index, row + rows}, width, height)
+
+  defp move(vm, scroll, rows, width, height) do
+    items = items(vm)
+    {index, row} = scroll || bottom(items, width, height)
+    top = items |> Enum.take(index) |> Enum.reverse() |> back({index, row}, -rows, width)
+    hold_items(items, top, width, height)
+  end
+
+  # `before` is the items above the position, nearest first.
+  defp back(_before, {index, row}, count, _width) when row >= count, do: {index, row - count}
+  defp back([], _position, _count, _width), do: {0, 0}
+
+  defp back([item | before], {index, row}, count, width),
+    do: back(before, {index - 1, length(item_lines(item, width))}, count - row, width)
+
+  # Moves a row number that is past its item into the items that follow.
+  defp forward([], {index, _row}, _width), do: {index, 0}
+
+  defp forward([item | rest], {index, row}, width) do
+    case length(item_lines(item, width)) do
+      rows when row >= rows -> forward(rest, {index + 1, row - rows}, width)
+      _rows -> {index, row}
+    end
+  end
+
+  # The rows from a position on, each with its address. The row skip stays
+  # in the first item: a row past that item shows its last row. A frame can
+  # come before the check of a new width, and a skip over all rows would
+  # wrap every item that the old row number passes.
+  defp rows_from(items, {index, row}, width) do
+    case Enum.drop(items, index) do
+      [] ->
+        []
+
+      [first | rest] ->
+        lines = item_lines(first, width)
+        skip = min(row, length(lines) - 1)
+
+        lines
+        |> Enum.drop(skip)
+        |> Enum.with_index(&{{index, skip + &2}, &1})
+        |> Stream.concat(
+          rest
+          |> Stream.with_index(index + 1)
+          |> Stream.flat_map(fn {item, at} ->
+            item |> item_lines(width) |> Enum.with_index(&{{at, &2}, &1})
+          end)
+        )
+    end
+  end
+
+  # The items in position order, one O(n) fold of the array, and the open
+  # assistant message as the last one. A run of information cells is one
+  # item, `{:infos, texts}`. The items before the open message only grow in
+  # number, and only the last of them can grow a row.
+  defp items(%ViewModel{streaming: streaming, cells: cells}) do
+    :array.foldr(
+      fn _position, cell, acc -> join_info(cell, acc) end,
+      streaming_items(streaming),
+      cells
+    )
+  end
+
+  defp join_info({:info, text}, [{:infos, texts} | acc]), do: [{:infos, [text | texts]} | acc]
+  defp join_info({:info, text}, acc), do: [{:infos, [text]} | acc]
+  defp join_info(cell, acc), do: [cell | acc]
+
+  defp streaming_items(nil), do: []
+
+  # Its calls show as open tool cells after it, as when it ends.
+  defp streaming_items(streaming) do
+    {calls, blocks} =
+      streaming |> Enum.reverse() |> Enum.split_with(&match?({:tool, _, _, _}, &1))
+
+    [%Message{role: :assistant, content: blocks} | calls]
+  end
+
+  defp item_lines(item, width), do: cell_lines(item, width) ++ [%Line{}]
+
+  # A bar and a tint on every row. A row that the text width cannot hold,
+  # a glyph wider than it, has no bar, so the row stays within the width
+  # when the glyph does. Every row gets a fill of the whole width, which
+  # ExRatatui cuts at the edge: the rule can count a glyph wider than
+  # ExRatatui draws it, so a fill counted by the rule can stop short. The
+  # fill is a span of its own, so that a last character such as U+0600
+  # cannot join a space into one grapheme that ExRatatui cuts whole.
+  defp cell_lines(%Message{role: :user} = message, width) do
+    text_width = width - 2
+    fill = String.duplicate(" ", max(width, 0))
+
+    # No code point has more columns than bytes, so a short row needs no count.
+    for row <- Wrap.rows(shown_text(message), text_width) do
+      bar =
+        if byte_size(row) <= text_width or Wrap.columns(row) <= text_width,
+          do: [%Span{content: "▌ ", style: @bar}],
+          else: []
+
+      %Line{
+        spans: bar ++ [%Span{content: row, style: @user}, %Span{content: fill, style: @user}]
+      }
+    end
+  end
+
+  defp cell_lines(%Message{role: :assistant} = message, width) do
+    block_lines(message.content, width)
+  end
+
+  defp cell_lines({:tool, _call, line, result}, width) do
+    styled_lines(line, width, @tool) ++ result_lines(result, width)
+  end
+
+  defp cell_lines({:notice, text}, width), do: styled_lines("✕ #{text}", width, @bad)
+  defp cell_lines({:stop, reason}, width), do: cell_lines({:notice, stop_text(reason)}, width)
+
+  defp cell_lines({:infos, texts}, width),
+    do: styled_lines(Enum.map_join(texts, " ", &("· " <> &1)), width, @dim)
+
+  defp stop_text(:max_tokens), do: "the answer stopped at the token limit"
+  defp stop_text(:refused), do: "the answer stopped: the provider refused or filtered it"
+
+  defp block_lines(blocks, width) do
+    Enum.flat_map(blocks, fn
+      %Message.Text{text: text} -> markdown_lines(text, width)
+      %Message.Thinking{thinking: text} -> styled_lines(text, width, @dim)
+      %Message.ToolCall{} -> []
+      # A kind that this client does not know.
+      block -> styled_lines(placeholder(block), width, @dim)
+    end)
+  end
+
+  # The text of a user message or a tool result, with a placeholder in
+  # place of each block that is not text.
+  defp shown_text(%Message{content: content}) do
+    Enum.map_join(content, fn
+      %Message.Text{text: text} -> text
+      block -> placeholder(block)
+    end)
+  end
+
+  # A block that is not a struct is a bug in Core and crashes.
+  # `Helyx.Message.Thinking` is "thinking".
+  defp placeholder(%kind{}),
+    do: "[unsupported block: #{kind |> Module.split() |> List.last() |> Macro.underscore()}]"
+
+  defp result_lines(nil, width), do: styled_lines("… awaiting result", width, @dim)
+
+  # Long tool output would drown the transcript; four lines tell the story.
+  defp result_lines(%Message{} = result, width) do
+    style = if result.is_error, do: @bad, else: @dim
+    lines = result |> shown_text() |> String.trim_trailing("\n") |> String.split("\n")
+
+    shown = Enum.flat_map(Enum.take(lines, 4), &styled_lines("  " <> &1, width, style))
+
+    case length(lines) - 4 do
+      hidden when hidden > 0 ->
+        plural = if hidden == 1, do: "line", else: "lines"
+        shown ++ styled_lines("  … #{hidden} more #{plural}", width, @dim)
+
+      _ ->
+        shown
+    end
+  end
+
+  defp markdown_lines(text, width) do
+    for row <- Markdown.rows(text, width), do: %Line{spans: Enum.map(row, &markdown_span/1)}
+  end
+
+  defp markdown_span({content, tags}) do
+    fg = if :code in tags, do: @code
+    %Span{content: content, style: %Style{fg: fg, modifiers: List.delete(tags, :code)}}
+  end
+
+  # One styled Line per screen row.
+  defp styled_lines(text, width, style) do
+    for row <- Wrap.rows(text, width), do: %Line{spans: [%Span{content: row, style: style}]}
+  end
+end

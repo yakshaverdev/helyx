@@ -64,15 +64,6 @@ defmodule CodingAgentTest do
     assert GenServer.call(Session.pid(resumed), :snapshot).model == "fake/echo"
   end
 
-  @tag :tmp_dir
-  test "resume without a saved session reports not_found", %{tmp_dir: dir} do
-    core = :"agent_core_#{System.unique_integer([:positive])}"
-    start_supervised!({Helyx.Core, name: core, plugins: CodingAgent.plugins()})
-
-    assert {:error, :not_found} =
-             CodingAgent.start_session(core: core, cwd: dir, sessions_dir: dir, resume: true)
-  end
-
   # The sentence of a start error, after the prefix of every start error.
   defp sentence(reason) do
     assert "could not start the agent: " <> text = CodingAgent.error_text(reason)

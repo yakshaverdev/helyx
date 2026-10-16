@@ -4,8 +4,9 @@ defmodule Helyx.Tool.Edit do
   exactly once; zero or several matches is an error and the file is
   untouched. With no exact match, the text is matched again after Unicode
   NFKC, quote, dash, line end, and trailing space normalization; only the
-  matched range changes, and the new text takes the file's line ends. A
-  leading BOM of the file stays. See `docs/features/fuzzy-edit.md`.
+  matched range changes, and the new text takes the file's line ends. A BOM
+  is text, so an `old_text` that names it replaces it. See
+  `docs/features/fuzzy-edit.md`.
   """
 
   @behaviour Helyx.Tool
@@ -40,29 +41,14 @@ defmodule Helyx.Tool.Edit do
       when is_binary(path) and is_binary(old) and is_binary(new) do
     full = Path.expand(path, cwd)
 
-    with :ok <- valid_utf8(old, new),
-         {:ok, text} <- read(full, path),
+    with {:ok, text} <- read(full, path),
          {:ok, from, to, new} <- locate(text, old, new, path),
-         {from, new} = keep_bom(text, from, new),
          :ok <- write(full, splice(text, from, to, new), path) do
       {:ok, "Edited #{path}"}
     end
   end
 
   def run(_args, _cwd), do: {:error, "edit needs a path, old_text, and new_text"}
-
-  defp valid_utf8(old, new) do
-    if String.valid?(old) and String.valid?(new),
-      do: :ok,
-      else: {:error, "old_text and new_text must be valid UTF-8"}
-  end
-
-  # A range at the start of a file that starts with a BOM starts after the
-  # BOM, so the file keeps it; one leading BOM of the new text drops.
-  defp keep_bom(<<0xEF, 0xBB, 0xBF, _::binary>>, 0, new),
-    do: {3, String.replace_prefix(new, "\uFEFF", "")}
-
-  defp keep_bom(_text, from, new), do: {from, new}
 
   defp locate(_text, "", _new, _path), do: {:error, "old_text is empty"}
 

@@ -4,20 +4,10 @@ defmodule Mix.Tasks.Helyx.GraphTest do
 
   import ExUnit.CaptureIO
 
-  test "calls prints the function calls of a module, one line each" do
-    out = capture_io(fn -> Mix.Tasks.Helyx.Graph.run(["calls", "Helyx.Session.Hands"]) end)
-    assert out =~ "Helyx.Session.Server.ToolRuns.effect/3 -> Helyx.Session.Hands.run/3\n"
+  test "calls prints the calls between project functions, one line each" do
+    out = capture_io(fn -> Mix.Tasks.Helyx.Graph.run(["calls"]) end)
+    assert out =~ "CodingAgent.Print.run/2 -> Helyx.Session.prompt/2\n"
     refute out =~ "Enum."
-  end
-
-  test "calls --mermaid prints a flowchart" do
-    out =
-      capture_io(fn ->
-        Mix.Tasks.Helyx.Graph.run(["calls", "Helyx.Session.Hands", "--mermaid"])
-      end)
-
-    assert out =~ ~r/^flowchart LR\n/
-    assert out =~ ~s(["Helyx.Session.Hands.run/3"])
   end
 
   test "turn prints the processes and messages of one traced turn" do
@@ -31,12 +21,7 @@ defmodule Mix.Tasks.Helyx.GraphTest do
   end
 
   test "a wrong argument raises the usage" do
-    assert_raise Mix.Error, ~r/usage/, fn -> Mix.Tasks.Helyx.Graph.run(["nope"]) end
-  end
-
-  # OptionParser raises ArgumentError or UnicodeConversionError on these.
-  test "a switch OptionParser cannot read raises the usage" do
-    for argv <- [["-="], [<<"--", 255>>], [<<"-a", 255>>], [<<"-", 200, 200>>]] do
+    for argv <- [[], ["nope"], ["calls", "--mermaid"], ["calls", "Helyx.Session"]] do
       assert_raise Mix.Error, ~r/usage/, fn -> Mix.Tasks.Helyx.Graph.run(argv) end
     end
   end

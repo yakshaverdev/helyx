@@ -191,21 +191,11 @@ defmodule Helyx.ModelInfo.Catalog do
 
   # Load
 
-  # The first load of a node reads and puts under a lock of the directory,
-  # and puts only when the entry is still unset. A refresh loads before its
-  # fetch, so its put comes after every first load, and no load that read
-  # the old cache file can put it over the data of the refresh. The lock id
-  # is the resource and the requester (`:global.trans/3`).
+  # The first load of a node reads and puts. A first load that ends after
+  # a refresh can put older data until the next refresh.
   defp load(dir) do
     :persistent_term.get({__MODULE__, dir}, nil) ||
-      :global.trans(
-        {{__MODULE__, dir}, self()},
-        fn ->
-          :persistent_term.get({__MODULE__, dir}, nil) ||
-            put(dir, read(cache(dir)) || %{etag: nil, data: snapshot()})
-        end,
-        [node()]
-      )
+      put(dir, read(cache(dir)) || %{etag: nil, data: snapshot()})
   end
 
   defp put(dir, loaded) do
@@ -214,9 +204,11 @@ defmodule Helyx.ModelInfo.Catalog do
   end
 
   # The cache file, at most 16 MB, with its ETag; nil when it is missing,
-  # too large, or has no good entry.
+  # not a regular file, too large, or has no good entry. The open of a FIFO
+  # blocks.
   defp read(path) do
-    with {:ok, bytes} when is_binary(bytes) and byte_size(bytes) <= @max_bytes <-
+    with true <- File.regular?(path),
+         {:ok, bytes} when is_binary(bytes) and byte_size(bytes) <= @max_bytes <-
            File.open(path, [:read, :binary], &IO.binread(&1, @max_bytes + 1)),
          {:ok, json} <- JSON.decode(bytes),
          data when data != %{} <- slim(json) do

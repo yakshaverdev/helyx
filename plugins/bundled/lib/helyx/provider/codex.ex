@@ -237,14 +237,11 @@ defmodule Helyx.Provider.Codex do
     end
   end
 
-  # A request of the server (it has an id and a method).
-  defp dispatch(%{"id" => id, "method" => method}, state) do
-    answer =
-      if method in ["item/commandExecution/requestApproval", "item/fileChange/requestApproval"],
-        do: %{result: %{decision: "accept"}},
-        else: %{error: %{code: -32_601, message: "not supported by Helyx"}}
-
-    send_line(state, Map.put(answer, :id, id))
+  # A request of the server (it has an id and a method) gets an error. The
+  # thread runs with `approvalPolicy: "never"`, so an approval request is
+  # refused too (ADR 0007).
+  defp dispatch(%{"id" => id, "method" => _method}, state) do
+    send_line(state, %{id: id, error: %{code: -32_601, message: "not supported by Helyx"}})
     {[], state}
   end
 

@@ -37,11 +37,9 @@ defmodule Helyx.Session.EndSignalTest do
       assert monitors() == before
     end
 
-    test "every operation on an id that never existed", %{core: core} do
+    test "every operation on an id that never existed or a session that ended", %{core: core} do
       assert_not_found(%Session{id: "never", core: core})
-    end
 
-    test "every operation on a session that ended", %{core: core} do
       {:ok, session} = Session.start(core, model: "test/ok")
       stop_session(session, &GenServer.stop/1)
       assert_not_found(session)
@@ -120,28 +118,6 @@ defmodule Helyx.Session.EndSignalTest do
       :ok = Supervisor.terminate_child(core, Helyx.Core.sessions_registry(core))
 
       assert Session.subscribe(session) == {:error, :session_not_found}
-    end
-
-    # A session can stop with the reason `:timeout`, and the call then exits
-    # like a call that timed out. The session traps exits, so the exit signal
-    # is a message before the call, and the session stops on it before it
-    # answers.
-    test "a session that stops with the reason :timeout during a call", %{core: core} do
-      {:ok, session} = Session.start(core, model: "test/ok")
-      pid = Session.pid(session)
-      true = :erlang.suspend_process(pid)
-      Process.exit(pid, :timeout)
-      task = Task.async(fn -> Session.prompt(session, "hi") end)
-
-      await(
-        fn -> Process.info(pid, :message_queue_len) == {:message_queue_len, 2} end,
-        "the call"
-      )
-
-      ref = Process.monitor(pid)
-      true = :erlang.resume_process(pid)
-      assert_receive {:DOWN, ^ref, :process, ^pid, :timeout}
-      assert Task.await(task, wait_ms()) == {:error, :session_not_found}
     end
 
     # A prompt waits in the mailbox of the session between the late

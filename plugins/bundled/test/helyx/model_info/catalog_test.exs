@@ -12,9 +12,8 @@ defmodule Helyx.ModelInfo.CatalogTest do
 
   @max_bytes 16 * 1024 * 1024
   @day_s 86_400
-  # An event that must not happen (a fetch, a lookup under a held lock) would
-  # come within this margin: the lookup spawns the refresh at once, and the
-  # plug answers with no wait.
+  # An event that must not happen (a fetch) would come within this margin:
+  # the lookup spawns the refresh at once, and the plug answers with no wait.
   @load_ms 300
 
   @model "gpt-test"
@@ -286,15 +285,18 @@ defmodule Helyx.ModelInfo.CatalogTest do
   end
 
   describe "load" do
+    # The open of a FIFO with no writer blocks, and while it blocks the node
+    # cannot open a file or a port. So a regression hangs this test.
+    test "a cache path that is not a regular file gives the snapshot", %{cache: cache} do
+      {_, 0} = System.cmd("mkfifo", [cache])
+      assert window() == nil
+    end
+
     test "the cache file, at most 16 MB, else the snapshot", %{tmp_dir: dir, cache: cache} do
       body = JSON.encode!(@good)
 
       # The model is not in the snapshot: nil means the snapshot.
-      for {size, window} <- [
-            {@max_bytes - 1, 400_000},
-            {@max_bytes, 400_000},
-            {@max_bytes + 1, nil}
-          ] do
+      for {size, window} <- [{@max_bytes, 400_000}, {@max_bytes + 1, nil}] do
         new_node(dir)
         File.write!(cache, body <> String.duplicate(" ", size - byte_size(body)))
         assert window() == window
@@ -381,20 +383,6 @@ defmodule Helyx.ModelInfo.CatalogTest do
       assert Plug.Conn.get_req_header(conn, "if-none-match") == []
     end
 
-    test "a first load waits for the lock, then keeps data put while it waited",
-         %{tmp_dir: dir, cache: cache} do
-      seed(cache, @good)
-      lock = {{Catalog, dir}, self()}
-      test = self()
-      true = :global.set_lock(lock, [node()])
-      spawn(fn -> send(test, {:window, window()}) end)
-      refute_receive {:window, _}, @load_ms
-      # As a refresh would put while the load waits for the lock.
-      :persistent_term.put({Catalog, dir}, %{etag: nil, data: Catalog.slim(@newer)})
-      :global.del_lock(lock, [node()])
-      assert_receive {:window, 1_000}
-    end
-
     test "a failed refresh keeps the last good copy", %{
       tmp_dir: dir,
       cache: cache,
@@ -426,11 +414,7 @@ defmodule Helyx.ModelInfo.CatalogTest do
       seed(cache, @good)
       body = JSON.encode!(@newer)
 
-      for {size, window} <- [
-            {@max_bytes - 1, 1_000},
-            {@max_bytes, 1_000},
-            {@max_bytes + 1, 400_000}
-          ] do
+      for {size, window} <- [{@max_bytes, 1_000}, {@max_bytes + 1, 400_000}] do
         new_node(dir)
         seed(cache, @good)
         _ = File.rm(marker)

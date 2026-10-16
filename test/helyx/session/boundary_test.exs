@@ -11,9 +11,8 @@ defmodule Helyx.Session.BoundaryTest do
   setup :start_core
 
   describe "tool specs at the session boundary (#142)" do
-    # One bad test tool per rule of `Helyx.Tool.specs/1`, and one per
-    # failure class of a spec callback (raise, throw, exit), with the label
-    # the error gives. Each row holds the quoted callback bodies.
+    # One bad test tool per rule of `Helyx.Tool.specs/1`, with the label the
+    # error gives. Each row holds the quoted callback bodies.
     @empty Macro.escape(%{})
     @bad_specs [
       {Helyx.SessionTest.EmptyName, "", "d", @empty, "Helyx.SessionTest.EmptyName"},
@@ -24,19 +23,7 @@ defmodule Helyx.Session.BoundaryTest do
       {Helyx.SessionTest.ListParams, "t", "d", [], "t"},
       {Helyx.SessionTest.AtomKeys, "t", "d", Macro.escape(%{type: "object"}), "t"},
       {Helyx.SessionTest.TupleParams, "t", "d", Macro.escape(%{"type" => {:object}}), "t"},
-      {Helyx.SessionTest.BytesParams, "t", "d", Macro.escape(%{"type" => <<255>>}), "t"},
-      {Helyx.SessionTest.ThrowingEncoder, "t", "d",
-       Macro.escape(%{"type" => %Helyx.Test.FailingJSON{kind: :throw}}),
-       "Helyx.SessionTest.ThrowingEncoder"},
-      {Helyx.SessionTest.ExitingEncoder, "t", "d",
-       Macro.escape(%{"type" => %Helyx.Test.FailingJSON{kind: :exit}}),
-       "Helyx.SessionTest.ExitingEncoder"},
-      {Helyx.SessionTest.RaisingName, quote(do: raise("boom")), "d", @empty,
-       "Helyx.SessionTest.RaisingName"},
-      {Helyx.SessionTest.ThrowingDescription, "t", quote(do: throw(:boom)), @empty,
-       "Helyx.SessionTest.ThrowingDescription"},
-      {Helyx.SessionTest.ExitingParameters, "t", "d", quote(do: exit(:boom)),
-       "Helyx.SessionTest.ExitingParameters"}
+      {Helyx.SessionTest.BytesParams, "t", "d", Macro.escape(%{"type" => <<255>>}), "t"}
     ]
 
     for {module, name, description, parameters, _label} <- @bad_specs do
@@ -75,7 +62,7 @@ defmodule Helyx.Session.BoundaryTest do
     end
 
     @tag :tmp_dir
-    test "start rejects each bad or failing spec, names the tool, and makes nothing", %{
+    test "start rejects each bad spec, names the tool, and makes nothing", %{
       tmp_dir: dir
     } do
       for {module, _name, _description, _parameters, label} <- @bad_specs do
@@ -91,7 +78,7 @@ defmodule Helyx.Session.BoundaryTest do
     end
 
     @tag :tmp_dir
-    test "resume rejects a bad or failing spec before it reads or repairs the file",
+    test "resume rejects a bad spec before it reads or repairs the file",
          %{core: core, tmp_dir: dir} do
       {:ok, session} = Session.start(core, model: "test/ok", sessions_dir: dir)
       [path] = Path.wildcard(Path.join(dir, "**/#{session.id}.jsonl"))
@@ -133,11 +120,6 @@ defmodule Helyx.Session.BoundaryTest do
     # One test tool per failing `check/0`: the quoted body, and the reason
     # the error gives.
     @bad_checks [
-      {Helyx.SessionTest.CheckRaises, quote(do: raise("boom")),
-       "check/0 raised, threw, or exited"},
-      {Helyx.SessionTest.CheckThrows, quote(do: throw(:boom)),
-       "check/0 raised, threw, or exited"},
-      {Helyx.SessionTest.CheckExits, quote(do: exit(:boom)), "check/0 raised, threw, or exited"},
       {Helyx.SessionTest.CheckBadValue, :yes, "check/0 returned a bad value"},
       {Helyx.SessionTest.CheckAtomReason, {:error, :enoent}, "check/0 returned a bad value"},
       {Helyx.SessionTest.CheckBytesReason, {:error, <<"x", 255>>}, "check/0 returned a bad value"}

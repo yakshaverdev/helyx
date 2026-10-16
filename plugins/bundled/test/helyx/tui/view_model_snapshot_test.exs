@@ -29,7 +29,7 @@ defmodule Helyx.TUI.ViewModelSnapshotTest do
           do: %Message.ToolCall{id: id, name: "gate", arguments: %{"gate" => gate}}
 
     :ok = Fake.script(core, "three", [["Running." | calls], ["Done."]])
-    {:ok, session} = Session.start(core, model: "fake/three")
+    {:ok, session} = Helyx.Test.SavedSession.start(core, "fake/three")
     {:ok, first, _} = Session.subscribe(session)
     :ok = Session.prompt(session, "go")
 
@@ -56,7 +56,7 @@ defmodule Helyx.TUI.ViewModelSnapshotTest do
   end
 
   test "a subscribe in a connected turn with three open calls", %{core: core, gate: gate} do
-    {:ok, session} = Session.start(core, model: "gated/calls." <> gate)
+    {:ok, session} = Helyx.Test.SavedSession.start(core, "gated/calls." <> gate)
     {:ok, first, _} = Session.subscribe(session)
     :ok = Session.prompt(session, "go")
 
@@ -77,7 +77,7 @@ defmodule Helyx.TUI.ViewModelSnapshotTest do
     core: core,
     gate: gate
   } do
-    {:ok, session} = Session.start(core, model: "gated/dup_id." <> gate)
+    {:ok, session} = Helyx.Test.SavedSession.start(core, "gated/dup_id." <> gate)
     {:ok, first, _} = Session.subscribe(session)
     :ok = Session.prompt(session, "go")
 
@@ -113,7 +113,7 @@ defmodule Helyx.TUI.ViewModelSnapshotTest do
           do: %Message.ToolCall{id: "t", name: "gate", arguments: %{"gate" => gate, "n" => name}}
 
     :ok = Fake.script(core, "same_id", [[a], ["mid"], [z], ["end"]])
-    {:ok, session} = Session.start(core, model: "fake/same_id")
+    {:ok, session} = Helyx.Test.SavedSession.start(core, "fake/same_id")
     {:ok, first, _} = Session.subscribe(session)
     :ok = Session.prompt(session, "one")
 
@@ -142,7 +142,7 @@ defmodule Helyx.TUI.ViewModelSnapshotTest do
   # closes at its first result (#385). Its cell shows "awaiting result"
   # from the message, before the result, in a live and a late client.
   test "a call in the open message awaits its result", %{core: core, gate: gate} do
-    {:ok, session} = Session.start(core, model: "gated/harness." <> gate)
+    {:ok, session} = Helyx.Test.SavedSession.start(core, "gated/harness." <> gate)
     {:ok, first, _} = Session.subscribe(session)
     :ok = Session.prompt(session, "go")
 
@@ -168,7 +168,7 @@ defmodule Helyx.TUI.ViewModelSnapshotTest do
     core: core,
     gate: gate
   } do
-    {:ok, session} = Session.start(core, model: "gated/partial." <> gate)
+    {:ok, session} = Helyx.Test.SavedSession.start(core, "gated/partial." <> gate)
     {:ok, first, _} = Session.subscribe(session)
     :ok = Session.prompt(session, "go")
 
@@ -192,7 +192,7 @@ defmodule Helyx.TUI.ViewModelSnapshotTest do
   end
 
   test "a join after a failed turn with a partial reply", %{core: core, gate: gate} do
-    {:ok, session} = Session.start(core, model: "gated/fail." <> gate)
+    {:ok, session} = Helyx.Test.SavedSession.start(core, "gated/fail." <> gate)
     {:ok, first, _} = Session.subscribe(session)
     :ok = Session.prompt(session, "go")
 
@@ -208,7 +208,7 @@ defmodule Helyx.TUI.ViewModelSnapshotTest do
   end
 
   test "a join after an abort during a partial reply", %{core: core, gate: gate} do
-    {:ok, session} = Session.start(core, model: "gated/partial." <> gate)
+    {:ok, session} = Helyx.Test.SavedSession.start(core, "gated/partial." <> gate)
     {:ok, first, _} = Session.subscribe(session)
     :ok = Session.prompt(session, "go")
 
@@ -224,7 +224,7 @@ defmodule Helyx.TUI.ViewModelSnapshotTest do
   # A call with no result gets an `aborted` result at the normal end of a
   # connected turn: the live fold and the snapshot both show a closed cell.
   test "a join after a connected turn that ends with an open call", %{core: core, gate: gate} do
-    {:ok, session} = Session.start(core, model: "gated/dangling." <> gate)
+    {:ok, session} = Helyx.Test.SavedSession.start(core, "gated/dangling." <> gate)
     {:ok, first, _} = Session.subscribe(session)
     :ok = Session.prompt(session, "go")
     events = collect_until(:turn_end)
@@ -250,7 +250,7 @@ defmodule Helyx.TUI.ViewModelSnapshotTest do
           do: %Message.ToolCall{id: id, name: "gate", arguments: %{"gate" => gate}}
 
     :ok = Fake.script(core, "abort3", [["Running." | calls], ["Done."]])
-    {:ok, session} = Session.start(core, model: "fake/abort3")
+    {:ok, session} = Helyx.Test.SavedSession.start(core, "fake/abort3")
     {:ok, first, _} = Session.subscribe(session)
     :ok = Session.prompt(session, "go")
 
@@ -270,7 +270,7 @@ defmodule Helyx.TUI.ViewModelSnapshotTest do
   end
 
   test "a session with no events has seq 0 and no notice", %{core: core} do
-    {:ok, session} = Session.start(core, model: "fake/echo")
+    {:ok, session} = Helyx.Test.SavedSession.start(core, "fake/echo")
     {:ok, snapshot, _} = Session.subscribe(session)
 
     assert %{seq: 0, messages: [], turn: nil, model: "fake/echo"} = snapshot

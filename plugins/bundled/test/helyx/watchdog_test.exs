@@ -168,28 +168,6 @@ defmodule Helyx.WatchdogTest do
       assert group_gone_within?(group)
     end
 
-    test "open input: a command that does not read is stopped over the stdin cap (#196)" do
-      # The watchdog can exit while a part of the write still waits in the
-      # port: the port then closes with `:epipe` and sends no exit status.
-      Process.flag(:trap_exit, true)
-      port = open("echo ready; sleep 30", "bash", -2)
-      {group, rest} = read_marker(port)
-      true = Port.command(port, "\nready\n")
-      assert "" = await(port, rest, "ready\n")
-
-      # The pipe takes some bytes; the watchdog's buffer takes the rest.
-      true = Port.command(port, :binary.copy("x", 2 * Helyx.Watchdog.stdin_max_bytes()))
-
-      receive do
-        {^port, {:exit_status, status}} -> assert status == 143
-        {:EXIT, ^port, reason} -> assert reason == :epipe
-      after
-        Helyx.Test.Events.wait_ms() -> flunk("the watchdog did not stop the command")
-      end
-
-      assert group_gone_within?(group)
-    end
-
     # A command that does not read gets the cap in the watchdog plus what the
     # pipe holds: at most 65,536 bytes (macOS and Linux), and on macOS as
     # little as 512 bytes when the pipe memory of the system is short. So the
@@ -208,6 +186,9 @@ defmodule Helyx.WatchdogTest do
         true = Port.command(port, input)
 
         if unquote(stopped?) do
+          # The watchdog can exit while a part of the write still waits in
+          # the port: the port then closes with `:epipe` and sends no exit
+          # status.
           receive do
             {^port, {:exit_status, status}} -> assert status == 143
             {:EXIT, ^port, reason} -> assert reason == :epipe

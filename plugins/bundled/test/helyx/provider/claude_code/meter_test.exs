@@ -28,6 +28,7 @@ defmodule Helyx.Provider.ClaudeCode.MeterTest do
       script: 4,
       sid: 0,
       start: 1,
+      start: 2,
       tool_result: 2,
       tool_use: 2,
       turn: 4
@@ -537,19 +538,23 @@ defmodule Helyx.Provider.ClaudeCode.MeterTest do
       assert_in_delta resumed, 0.1, 1.0e-12
     end
 
-    # A lost resume starts a new harness session, so its mark is 0.
-    test "a lost resume: the cost of the new program is its own total", %{bin: bin} = ctx do
+    # A lost resume starts a new harness session, so its mark is 0. The new
+    # meter keeps the window of config (#622): this result gives none.
+    test "a lost resume: the new program has its own cost and the window of config",
+         %{bin: bin} = ctx do
+      no_window = result("ok") |> Map.merge(result(@usage1, 0.05, %{})) |> j()
       turn(bin, 1, 1, begin() ++ [total_line(0.4)])
       script(bin, "start.2", [lost(sid())], "exit 1\n")
-      turn(bin, 3, 1, [init(), replayed() | begin()] ++ [total_line(0.05)])
+      turn(bin, 3, 1, [init(), replayed() | begin()] ++ [no_window])
 
-      session = start(ctx)
+      # The catalog snapshot has the window of this model.
+      session = start(ctx, "claude-code/claude-haiku-4-5")
       assert usage(prompt(session, "p")).cost == 0.4
       GenServer.stop(Session.pid(session))
 
       {:ok, session} = Session.resume(ctx.core, sessions_dir: ctx.sessions, cwd: ctx.work)
       {:ok, _, _} = Session.subscribe(session)
-      assert usage(prompt(session, "back")).cost == 0.05
+      assert %Helyx.Usage{cost: 0.05, context_window: 200_000} = usage(prompt(session, "back"))
     end
   end
 end

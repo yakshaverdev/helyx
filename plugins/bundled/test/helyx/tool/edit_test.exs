@@ -230,21 +230,14 @@ defmodule Helyx.Tool.EditTest do
       end
     end
 
-    test "old_text or new_text that is not valid UTF-8 is an error", %{tmp_dir: dir} do
-      # Helyx.Session.Stream.check/1 rejects such a tool call before it runs;
-      # run/2 is public, so it checks too.
-      File.write!(Path.join(dir, "n.txt"), "\u00E9\n")
-      error = {:error, "old_text and new_text must be valid UTF-8"}
-      run = &Helyx.Tool.Edit.run(%{"path" => "n.txt", "old_text" => &1, "new_text" => &2}, dir)
-      assert run.(<<0xA9>>, "x") == error
-      assert run.("\u00E9", <<0xFF>>) == error
-      assert File.read!(Path.join(dir, "n.txt")) == "\u00E9\n"
-    end
-
-    test "a BOM at the start of old_text and new_text matches the file's BOM", %{edit: edit} do
-      {result, after_edit} = edit.("\uFEFFab\ncd\n", "\uFEFFab", "\uFEFFx")
+    test "a BOM in old_text is replaced like other text", %{edit: edit} do
+      {result, after_edit} = edit.("\uFEFFab\ncd\n", "\uFEFFab", "x")
       refute result.is_error
-      assert after_edit == "\uFEFFx\ncd\n"
+      assert after_edit == "x\ncd\n"
+
+      {result, after_edit} = edit.("\uFEFFa \u2014 b\n", "\uFEFFa - b", "\uFEFFx")
+      refute result.is_error
+      assert after_edit == "\uFEFFx\n"
     end
 
     test "a cluster that the trailing space trim cuts still matches", %{edit: edit} do
@@ -258,12 +251,6 @@ defmodule Helyx.Tool.EditTest do
       {result, after_edit} = edit.("b\uFEFFb\n", "\uFEFFb", "c")
       refute result.is_error
       assert after_edit == "bc\n"
-    end
-
-    test "a normalized match at the start keeps the file's BOM", %{edit: edit} do
-      {result, after_edit} = edit.("\uFEFFa \u2014 b\n", "\uFEFFa - b", "\uFEFFx")
-      refute result.is_error
-      assert after_edit == "\uFEFFx\n"
     end
 
     test "no exact and no normalized match is not found", %{edit: edit} do

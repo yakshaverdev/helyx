@@ -54,7 +54,7 @@ The delivery rules of #577 do not change.
 
 | What | Bound | Over the bound |
 | ---- | ----- | -------------- |
-| interrupted results at resume | one per open call of the branch; the file has at most 64 MiB | the file limit of `Helyx.Session.File` |
+| interrupted results at resume | one per open call of the transcript; the file has at most 64 MiB | the file limit of `Helyx.Session.File` |
 | text of one result | fixed, 165 bytes of ASCII, under the result cut of 65,536 bytes | cannot pass |
 
 ## Ownership

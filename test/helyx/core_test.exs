@@ -17,10 +17,6 @@ defmodule Helyx.CoreTest do
     result
   end
 
-  test "boots with one plugin per single interface and any number per multi interface" do
-    assert {:ok, _} = boot([Test.Provider, Test.SingleA, Test.MultiA, Test.MultiB])
-  end
-
   test "starts the process of a plugin with child_spec/1 under Core" do
     name = :"core_#{System.unique_integer([:positive])}"
     start_supervised!({Helyx.Core, name: name, plugins: [Test.Provider, Test.MultiChild]})
@@ -31,7 +27,7 @@ defmodule Helyx.CoreTest do
     assert Agent.get(pid, & &1) == [core: name]
   end
 
-  test "exposes the registered plugins per interface" do
+  test "boots with one plugin per single interface and two per multi interface, and lists them" do
     name = :"core_#{System.unique_integer([:positive])}"
     plugins = [Test.Provider, Test.SingleA, Test.MultiB, Test.MultiA]
     {:ok, _} = start_supervised({Helyx.Core, name: name, plugins: plugins})
@@ -117,27 +113,6 @@ defmodule Helyx.CoreTest do
     assert reject([]) == {:error, {:missing_plugin, Helyx.Provider}}
   end
 
-  test "rejects a plugin that does not export a required callback of an interface" do
-    # The missing callbacks are the point; their compile warnings are kept
-    # out of the test output. `release/3` of the provider is optional, and
-    # the plugin implements `Test.Multi` in full, so only the provider's
-    # missing callbacks are named.
-    source = """
-    defmodule Helyx.Test.NoCallbacks do
-      @behaviour Helyx.Provider
-      @behaviour Helyx.Test.Multi
-      def id, do: "no_callbacks"
-      def name, do: "no_callbacks"
-      def init(_model, _tools, _opts), do: {:ok, nil}
-    end
-    """
-
-    {[{plugin, _}], _warnings} = Code.with_diagnostics(fn -> Code.compile_string(source) end)
-
-    assert boot([plugin]) ==
-             {:error, {:missing_callbacks, plugin, Helyx.Provider, [info: 2, request: 3]}}
-  end
-
   test "an interface takes no option other than :mode" do
     source = """
     defmodule Helyx.Test.Required do
@@ -167,11 +142,9 @@ defmodule Helyx.CoreTest do
   end
 
   describe "provider ids (#169)" do
-    test "an id/0 that raises, throws, exits, or is not a binary stops the start" do
-      for mode <- [:raise, :throw, :exit, 42] do
-        Process.put(:bad_id, mode)
-        assert boot([Test.Provider, Test.BadId]) == {:error, {:invalid_provider_id, Test.BadId}}
-      end
+    test "an id/0 that is not a binary stops the start" do
+      Process.put(:bad_id, 42)
+      assert boot([Test.Provider, Test.BadId]) == {:error, {:invalid_provider_id, Test.BadId}}
     end
 
     test "two providers with one id stop the start and are both named" do

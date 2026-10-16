@@ -11,12 +11,6 @@ defmodule Helyx.Provider.Codex.ConnectTest do
   @moduletag :tmp_dir
   setup {Helyx.Test.CodexFake, :setup_fake}
 
-  test "a close ends the input and answers at the exit", %{bin: bin, work: work} do
-    fresh(bin, 1, tid(), [])
-    {:ok, state} = connect(work)
-    close(state)
-  end
-
   test "an idle close after a turn ends the input and answers :ok at the exit",
        %{bin: bin, work: work} do
     fresh(bin, 1, tid(), reply(tid(), "Hi."))

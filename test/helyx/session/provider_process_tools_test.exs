@@ -148,24 +148,6 @@ defmodule Helyx.Session.ProviderProcessToolsTest do
              ~r/^\[cut to \d+ of 4194304 bytes, start and end kept\]\nx+\n\[… cut …\]\nx+$/
   end
 
-  test "a withdrawn request gets aborted: a waiting one at once, the running one after its kill; the next one runs",
-       %{session: session, proc: proc, turn_id: turn_id, hands: hands} do
-    slow(proc, turn_id, "c1")
-    slow(proc, turn_id, "c2")
-    request(proc, turn_id, "c3", "upcase", %{"text" => "c"})
-    sync(proc, session)
-    assert running(hands) == 1
-
-    send(proc, {:cancel, "c2"})
-    send(proc, {:cancel, "c1"})
-
-    assert [
-             {:tool_result, _, "c2", {:error, "aborted"}},
-             {:tool_result, _, "c1", {:error, "aborted"}},
-             {:tool_result, _, "c3", {:ok, "C"}}
-           ] = for(_ <- 1..3, do: receive_result())
-  end
-
   test "an abort kills the running tool, answers the open requests before the interrupt",
        %{session: session, proc: proc, turn_id: turn_id, hands: hands} do
     slow(proc, turn_id, "c1")

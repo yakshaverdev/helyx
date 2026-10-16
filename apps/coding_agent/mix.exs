@@ -33,9 +33,13 @@ defmodule CodingAgent.MixProject do
     ]
   end
 
-  # The root's test helpers that need only Core, shared so that each has
-  # one copy.
-  defp elixirc_paths(:test), do: ["lib", Path.expand("../../test/support/shared", __DIR__)]
+  # `dev` holds the developer tasks, such as `mix helyx.graph`; a prod build
+  # leaves them out. The root's test helpers that need only Core, shared so
+  # that each has one copy.
+  defp elixirc_paths(:test),
+    do: ["lib", "dev", Path.expand("../../test/support/shared", __DIR__)]
+
+  defp elixirc_paths(:dev), do: ["lib", "dev"]
   defp elixirc_paths(_), do: ["lib"]
 
   def cli, do: [preferred_envs: ["helyx.install": :prod]]
@@ -59,8 +63,6 @@ defmodule CodingAgent.MixProject do
     [
       {:helyx, path: "../.."},
       {:helyx_plugins, path: "../../plugins/bundled"},
-      # Optional in helyx_plugins; listing it here makes Helyx.TUI exist.
-      {:ex_ratatui, "~> 0.14"},
       {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false}
     ]
   end

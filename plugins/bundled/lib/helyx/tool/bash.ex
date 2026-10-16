@@ -13,9 +13,7 @@ defmodule Helyx.Tool.Bash do
   # The most bytes of the command in the end of a background run.
   @max_command_bytes 200
 
-  # The most bytes of the `workdir` argument.
-  @max_workdir_bytes 4096
-  @workdir_error "workdir must be a UTF-8 string of at most #{@max_workdir_bytes} bytes with no NUL byte"
+  @workdir_error "workdir must be a string with no NUL byte"
 
   @moduledoc """
   Runs a shell command in the working directory with `bash -c`.
@@ -39,9 +37,8 @@ defmodule Helyx.Tool.Bash do
   The optional `workdir` argument names the folder the command runs in. It
   is expanded against the session folder with `Path.expand/2`, as the file
   tools expand their paths, so `~` and `..` resolve; missing, `null`, or
-  `""` is the session folder. It must be a
-  UTF-8 string of at most #{@max_workdir_bytes} bytes with no NUL byte, else
-  the result is an error and nothing runs. A folder that the watchdog cannot
+  `""` is the session folder. It must be a string with no NUL byte, else the
+  result is an error and nothing runs. A folder that the watchdog cannot
   enter fails the start, as the session folder does (`docs/features/bash-workdir.md`).
 
   With `background: true` the call returns at once with the process group
@@ -159,11 +156,10 @@ defmodule Helyx.Tool.Bash do
   # there fails the start.
   defp workdir(nil, cwd), do: {:ok, cwd}
 
-  defp workdir(path, cwd)
-       when is_binary(path) and byte_size(path) <= @max_workdir_bytes do
-    if String.valid?(path) and not String.contains?(path, <<0>>),
-      do: {:ok, Path.expand(path, cwd)},
-      else: {:error, @workdir_error}
+  defp workdir(path, cwd) when is_binary(path) do
+    if String.contains?(path, <<0>>),
+      do: {:error, @workdir_error},
+      else: {:ok, Path.expand(path, cwd)}
   end
 
   defp workdir(_other, _cwd), do: {:error, @workdir_error}

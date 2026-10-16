@@ -121,7 +121,7 @@ defmodule Helyx.Session do
     with {:ok, cwd} <- fetch_cwd(opts),
          {:ok, tools} <- Helyx.Tool.specs(core),
          :ok <- Helyx.Tool.check_available(tools),
-         {:ok, path, header} <- Helyx.Session.File.pick(dir, cwd, Keyword.take(opts, [:id])) do
+         {:ok, path} <- Helyx.Session.File.pick(dir, cwd, Keyword.take(opts, [:id])) do
       Server.start(
         %State{
           id: Path.basename(path, ".jsonl"),
@@ -131,7 +131,7 @@ defmodule Helyx.Session do
           cwd: cwd
         },
         tools,
-        {path, &load(&1, path, header)}
+        {path, &load(&1, path)}
       )
     end
   end
@@ -140,8 +140,8 @@ defmodule Helyx.Session do
   # A crash can leave tool calls with no result, and the disk can hold a
   # result with no open call. The session reads them with interrupted
   # results and without the stray results, and writes nothing (#269, #417, #584).
-  defp load(state, path, header) do
-    with {:ok, resumed} <- Helyx.Session.File.resume_picked(path, header),
+  defp load(state, path) do
+    with {:ok, resumed} <- Helyx.Session.File.resume_picked(path, state.cwd),
          {:ok, {ref, provider}} <- resolve_model(state.core, resumed.model) do
       {:ok,
        %{
@@ -375,9 +375,8 @@ defmodule Helyx.Session do
 
   # A call of the contract. The session is not running when no process has
   # the id, or when the process is dead (the Registry drops its name
-  # asynchronously) or dies during the call. A timeout of a running session
-  # still exits. A session that stopped with the reason `:timeout` gives the
-  # same exit, so the timeout clause checks that the process still lives.
+  # asynchronously) or dies during the call. A timeout still exits, also
+  # for a session that stopped with the reason `:timeout` (ADR 0006).
   defp call(session, request, timeout \\ @call_timeout_ms) do
     case pid(session) do
       nil -> {:error, :session_not_found}
@@ -389,9 +388,7 @@ defmodule Helyx.Session do
     GenServer.call(pid, request, timeout)
   catch
     :exit, {:timeout, _call} = reason ->
-      if Process.alive?(pid),
-        do: :erlang.raise(:exit, reason, __STACKTRACE__),
-        else: {:error, :session_not_found}
+      :erlang.raise(:exit, reason, __STACKTRACE__)
 
     :exit, {_reason, _call} ->
       {:error, :session_not_found}

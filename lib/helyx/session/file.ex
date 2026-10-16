@@ -1,19 +1,18 @@
 defmodule Helyx.Session.File do
   @moduledoc """
-  The session file: append-only JSON lines, one entry per line, a tree by
-  `parent_id` (ADR 0001). A session lives at
+  The session file: append-only JSON lines, one entry per line, one chain
+  by `parent_id` (ADR 0001). A session lives at
   `<dir>/<project slug>/<session id>.jsonl`. Only completed messages are
-  appended. `resume/3` restores the branch of the newest leaf of a session,
-  and nothing is ever removed from the file. `Helyx.Session.File.Scan`
-  picks the file.
+  appended. `resume/3` restores the chain of a session, and nothing is ever
+  removed from the file. `Helyx.Session.File.Scan` picks the file.
 
   The format, the rules for a damaged file, and the bounds are in
   `docs/features/coding-agent.md`, section "Session file".
   """
 
   alias Helyx.Message
-  alias Helyx.Session.File.Branch
   alias Helyx.Session.File.Codec
+  alias Helyx.Session.File.Reader
   alias Helyx.Session.File.Scan
 
   # A resume loads the file whole into the calling process, so the file has a
@@ -43,8 +42,7 @@ defmodule Helyx.Session.File do
     What `resume/3` restores. `resume_ids` holds the last resume id of
     each provider: the id and the number of assistant messages before its entry,
     and the number at the last compaction of that provider after it, if
-    any (`Helyx.Session.Transcript.label/0`), without the labels that a fork
-    drops.
+    any (`Helyx.Session.Transcript.label/0`).
     """
     @enforce_keys [:file, :session_id, :model, :messages]
     defstruct [:file, :session_id, :model, :messages, resume_ids: %{}]
@@ -104,22 +102,21 @@ defmodule Helyx.Session.File do
   the id whose header names another directory is `:not_found`.
 
   Returns the file handle, the session id, the current model, and the
-  transcript of one branch: the entries from the header to the newest
-  leaf, by `parent_id`. The newest leaf is the last entry in file order
-  whose chain of parents reaches the header. The rules for a damaged file
-  are in `docs/features/coding-agent.md`, "Session file": a line that does
-  not decode is skipped, and an entry with no usable parent or id is on no
-  branch. Only the branch is checked and decoded.
+  transcript: the entries in file order, each the child of the entry
+  before it by `parent_id`. The rules for a damaged file are in
+  `docs/features/coding-agent.md`, "Session file": a line that does not
+  decode is skipped, and an entry that does not continue the chain is
+  `{:invalid_file, text}` with its line number. The read uses its own
+  header: a header that names another directory is `:not_found`.
 
   A file over the limit of #{@max_bytes} bytes is rejected as
   `{:too_large, text}` and is not mutated. The read itself stops one byte
   past the limit, so a file that grows during the call is rejected too.
 
   The read and the decode run in their own process with a heap cap of
-  #{@max_heap_bytes} bytes, and so do the index of the entries by id and
-  the check for a fork below a resume id entry. A
-  file whose decode passes the cap is rejected as `{:too_large, text}` and
-  is not mutated. The transcript is copied to the caller once.
+  #{@max_heap_bytes} bytes. A file whose decode passes the cap is rejected
+  as `{:too_large, text}` and is not mutated. The transcript is copied to
+  the caller once.
 
   `:max_bytes` lowers the file limit, `:max_heap_bytes` lowers the heap
   cap to no less than #{@min_heap_bytes} bytes, and `:max_scanned_files`
@@ -133,32 +130,33 @@ defmodule Helyx.Session.File do
           max_scanned_files: pos_integer()
         ) :: {:ok, Resumed.t()} | {:error, error()}
   def resume(dir, cwd, opts \\ []) do
-    with {:ok, path, header} <- pick(dir, cwd, opts), do: resume_picked(path, header, opts)
+    with {:ok, path} <- pick(dir, cwd, opts), do: resume_picked(path, cwd, opts)
   end
 
   @doc """
-  The read of `resume/3` after its pick: `path` and `header` are a result
-  of `pick/3`, and the options and errors are those of `resume/3`.
+  The read of `resume/3` after its pick: `path` is a result of `pick/3`
+  for `cwd`, and the options and errors are those of `resume/3`.
   """
-  @spec resume_picked(Path.t(), map(), max_bytes: pos_integer(), max_heap_bytes: pos_integer()) ::
-          {:ok, Resumed.t()} | {:error, error()}
-  def resume_picked(path, header, opts \\ []) do
+  @spec resume_picked(Path.t(), String.t(),
+          max_bytes: pos_integer(),
+          max_heap_bytes: pos_integer()
+        ) :: {:ok, Resumed.t()} | {:error, error()}
+  def resume_picked(path, cwd, opts \\ []) do
     # A bad option is the caller's bug and raises, it is not reported as a
     # bad file.
     resume_within(
       path,
-      header,
+      cwd,
       Keyword.get(opts, :max_bytes, @max_bytes),
       Keyword.get(opts, :max_heap_bytes, @max_heap_bytes)
     )
   end
 
   # The options only lower the limits, so the read count stays one the OS takes.
-  defp resume_within(path, header, max_bytes, max_heap_bytes)
+  defp resume_within(path, cwd, max_bytes, max_heap_bytes)
        when max_bytes in 1..@max_bytes//1 and
               max_heap_bytes in @min_heap_bytes..@max_heap_bytes//1 do
-    with :ok <- Scan.check_version(header),
-         {:ok, resumed, tail} <- load_bounded(path, header, max_bytes, max_heap_bytes),
+    with {:ok, resumed, tail} <- load_bounded(path, cwd, max_bytes, max_heap_bytes),
          # The repair write comes last, after every check passed, so a
          # file this function rejects is never mutated.
          :ok <- repair(path, tail) do
@@ -167,20 +165,20 @@ defmodule Helyx.Session.File do
   end
 
   @doc """
-  The file that `resume/3` would read, and its header, with no read past
-  the header: the session of `:id`, or the newest of `cwd`. The errors are
-  those of the pick in `resume/3`. `Helyx.Session.resume/2` takes the lock
-  of this file before `resume_picked/3`.
+  The file that `resume/3` would read, with no read past the header: the
+  session of `:id`, or the newest of `cwd`. The errors are those of the
+  pick in `resume/3`. `Helyx.Session.resume/2` takes the lock of this
+  file before `resume_picked/3`, which reads the header again.
   """
-  @spec pick(Path.t(), String.t(), keyword()) :: {:ok, Path.t(), map()} | {:error, error()}
+  @spec pick(Path.t(), String.t(), keyword()) :: {:ok, Path.t()} | {:error, error()}
   def pick(dir, cwd, opts) do
     case Keyword.fetch(opts, :id) do
       :error ->
-        Scan.most_recent(dir, cwd, opts)
+        with {:ok, path, _header} <- Scan.most_recent(dir, cwd, opts), do: {:ok, path}
 
       {:ok, id} ->
         case Scan.find(dir, id) do
-          {:ok, path, %{"cwd" => ^cwd} = header} -> {:ok, path, header}
+          {:ok, path, %{"cwd" => ^cwd}} -> {:ok, path}
           {:ok, _path, _header} -> {:error, :not_found}
           {:error, _reason} = error -> error
         end
@@ -191,7 +189,7 @@ defmodule Helyx.Session.File do
   # and dies when its heap passes the cap, so its work is bounded. It is not
   # linked, because the heap kill would take the caller with it; a caller
   # that dies first leaves it to finish that bounded work alone.
-  defp load_bounded(path, header, max_bytes, max_heap_bytes) do
+  defp load_bounded(path, cwd, max_bytes, max_heap_bytes) do
     heap = %{
       size: div(max_heap_bytes, :erlang.system_info(:wordsize)),
       kill: true,
@@ -199,7 +197,7 @@ defmodule Helyx.Session.File do
     }
 
     {pid, ref} =
-      :erlang.spawn_opt(fn -> exit({:loaded, load(path, header, max_bytes)}) end, [
+      :erlang.spawn_opt(fn -> exit({:loaded, load(path, cwd, max_bytes)}) end, [
         :monitor,
         {:max_heap_size, heap}
       ])
@@ -221,21 +219,17 @@ defmodule Helyx.Session.File do
     end
   end
 
-  defp load(path, header, max_bytes) do
+  defp load(path, cwd, max_bytes) do
     with {:ok, raw} <- Scan.read_up_to(path, max_bytes + 1),
          :ok <- check_size(byte_size(raw), max_bytes),
-         {entries, tail} = parse(raw, []),
-         :ok <- check_size(repaired_size(byte_size(raw), tail), max_bytes),
-         {:ok, leaf, branch} <- Branch.newest(entries) do
-      # The fork scan is the last use of `entries`, so the decode does not keep it alive.
-      fork = Branch.last_fork(entries, branch)
-
+         {:ok, read, tail} <- Reader.read(raw, cwd),
+         :ok <- check_size(repaired_size(byte_size(raw), tail), max_bytes) do
       resumed = %Resumed{
-        file: %__MODULE__{path: path, leaf: leaf},
+        file: %__MODULE__{path: path, leaf: read.leaf},
         session_id: Path.basename(path, ".jsonl"),
-        model: Branch.current_model(header, branch),
-        messages: for(%{"type" => "message"} = entry <- branch, do: Codec.decode(entry)),
-        resume_ids: Branch.resume_ids(branch, fork)
+        model: read.model,
+        messages: read.messages,
+        resume_ids: read.resume_ids
       }
 
       {:ok, resumed, tail}
@@ -305,26 +299,6 @@ defmodule Helyx.Session.File do
   defp check_size(_size, max_bytes) do
     {:error,
      {:too_large, "the session file is over the #{max_bytes}-byte limit; start a new session"}}
-  end
-
-  # Walks the lines one at a time, so a file of many short lines never
-  # becomes a list of all its lines. A line that does not decode to an entry
-  # is skipped: a torn append, also one that the append of another writer
-  # was glued to. Returns the entries in file order, and whether the file
-  # ends in a newline, for `repair/2`.
-  defp parse(raw, entries) do
-    case :binary.split(raw, "\n") do
-      [line, rest] -> parse(rest, add_entry(line, entries))
-      [""] -> {Enum.reverse(entries), :clean}
-      [line] -> {Enum.reverse(add_entry(line, entries)), :no_newline}
-    end
-  end
-
-  defp add_entry(line, entries) do
-    case JSON.decode(line) do
-      {:ok, %{"type" => _} = entry} -> [entry | entries]
-      _not_an_entry -> entries
-    end
   end
 
   # Nothing is ever removed from the file: a truncate could cut bytes that

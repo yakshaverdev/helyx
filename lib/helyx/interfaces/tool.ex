@@ -40,9 +40,8 @@ defmodule Helyx.Tool do
 
   use Helyx.Interface, mode: :multi
 
-  # The fixed reasons of `check_available/1`.
+  # The fixed reason of `check_available/1`.
   @bad_check_value "check/0 returned a bad value"
-  @failed_check "check/0 raised, threw, or exited"
 
   @type spec :: %{name: String.t(), description: String.t(), parameters: map()}
 
@@ -71,10 +70,8 @@ defmodule Helyx.Tool do
   string keys at the top level that `Helyx.Message.encodable?/1` accepts.
   Otherwise the result is `{:error, {:bad_tool_spec, label}}`: the label is
   the name when the name is accepted, else the module name. Plugin code that
-  raises, throws, or exits while a spec is built or checked (a callback, or
-  a JSON encoder of a struct in `parameters`) gives the same error with the
-  module name, so a plugin failure never reaches the caller. Two tools with
-  one name give `{:error, {:duplicate_tool_name, name}}`.
+  raises, throws, or exits while a spec is built is not contained. Two tools
+  with one name give `{:error, {:duplicate_tool_name, name}}`.
   """
   @spec specs(Helyx.Core.name()) ::
           {:ok, [{module(), spec()}]}
@@ -93,8 +90,6 @@ defmodule Helyx.Tool do
          do: {:ok, Enum.sort_by(tools, fn {_tool, spec} -> spec.name end)}
   end
 
-  # The callbacks and the check run in one catch: all of it can run plugin
-  # code, and a failure there is a bad spec, not a crash of the caller.
   defp checked_spec(tool) do
     spec = %{name: tool.name(), description: tool.description(), parameters: tool.parameters()}
 
@@ -108,17 +103,15 @@ defmodule Helyx.Tool do
       true ->
         {:ok, spec}
     end
-  catch
-    _class, _reason -> {:error, {:bad_tool_spec, inspect(tool)}}
   end
 
   @doc """
   Runs the optional `check/0` of each tool that `specs/1` returned, in that
   order, and stops at the first failure. `{:error, reason}` with a reason
   of valid UTF-8 gives `{:error, {:tool_unavailable, name, reason}}`, where
-  `name` is the checked spec name. Any other value but `:ok`, and a
-  `check/0` that raises, throws, or exits, give the same error with a fixed
-  reason, so a plugin failure never reaches the caller.
+  `name` is the checked spec name. Any other value but `:ok` gives the same
+  error with a fixed reason. A `check/0` that raises, throws, or exits is
+  not contained.
   """
   @spec check_available([{module(), spec()}]) ::
           :ok | {:error, {:tool_unavailable, String.t(), String.t()}}
@@ -133,8 +126,6 @@ defmodule Helyx.Tool do
 
   defp run_check(tool) do
     if function_exported?(tool, :check, 0), do: checked_result(tool.check()), else: :ok
-  catch
-    _class, _reason -> {:error, @failed_check}
   end
 
   defp checked_result(:ok), do: :ok

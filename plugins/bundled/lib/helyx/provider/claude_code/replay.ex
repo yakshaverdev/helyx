@@ -56,7 +56,8 @@ defmodule Helyx.Provider.ClaudeCode.Replay do
       line(%{type: "user", shouldQuery: false, message: %{role: "user", content: content}})
   end
 
-  # Thinking is not replayed: its signature belongs to the model that made it.
+  # Thinking is not replayed: the model accepts only thinking that it
+  # signed, and Helyx keeps no signature.
   defp assistant_block(%Message.Text{text: text}) when text != "", do: %{type: "text", text: text}
 
   defp assistant_block(%Message.ToolCall{} = call),

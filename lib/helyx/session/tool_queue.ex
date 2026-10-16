@@ -2,14 +2,12 @@ defmodule Helyx.Session.ToolQueue do
   @moduledoc false
   # The Helyx tool requests of one turn (`docs/features/one-provider-path.md`):
   # `running`, the call id that runs on the hands, with `running_bytes`, the
-  # encoded size of its call, `killed?`, whether the provider withdrew it, and
-  # `waiting`, at most @max_waiting calls after it with their sizes, in arrival
-  # order. Each call gets exactly one result.
+  # encoded size of its call, and `waiting`, at most @max_waiting calls after
+  # it with their sizes, in arrival order. Each call gets exactly one result.
   #
   # The functions return the struct with the effects for the session, in
-  # order: `{:run, call}` (the hands run it), `{:kill, call_id}` (the hands
-  # kill the running call), and `{:result, call_id, result}` (the
-  # `{:tool_result, ...}` request to the provider process).
+  # order: `{:run, call}` (the hands run it) and `{:result, call_id, result}`
+  # (the `{:tool_result, ...}` request to the provider process).
 
   alias Helyx.Message.ToolCall
   alias Helyx.Session
@@ -20,17 +18,15 @@ defmodule Helyx.Session.ToolQueue do
   @too_many "too many Helyx tool calls: one runs and #{@max_waiting} wait"
   @too_large "Helyx tool calls too large: the running and waiting calls are over the byte bound"
 
-  defstruct running: nil, running_bytes: 0, killed?: false, waiting: []
+  defstruct running: nil, running_bytes: 0, waiting: []
 
   @type t :: %__MODULE__{
           running: String.t() | nil,
           running_bytes: non_neg_integer(),
-          killed?: boolean(),
           waiting: [{ToolCall.t(), non_neg_integer()}]
         }
   @type effect ::
           {:run, ToolCall.t()}
-          | {:kill, String.t()}
           | {:result, String.t(), {:ok | :error, String.t()}}
   @type step :: {t(), [effect()]}
 
@@ -64,12 +60,11 @@ defmodule Helyx.Session.ToolQueue do
     end
   end
 
-  # The hands' result of the running call: a killed call gets `aborted`.
-  # Then the next waiting call runs.
+  # The hands' result of the running call. Then the next waiting call runs.
   @spec result(t(), {:ok | :error, String.t()}) :: step()
   def result(%__MODULE__{running: id} = tools, result) when is_binary(id) do
-    answer = {:result, id, if(tools.killed?, do: Session.aborted_result(), else: result)}
-    tools = %{tools | running: nil, running_bytes: 0, killed?: false}
+    answer = {:result, id, result}
+    tools = %{tools | running: nil, running_bytes: 0}
 
     case tools.waiting do
       [] ->
@@ -78,19 +73,6 @@ defmodule Helyx.Session.ToolQueue do
       [next | waiting] ->
         {tools, effects} = run(%{tools | waiting: waiting}, next)
         {tools, [answer | effects]}
-    end
-  end
-
-  # The provider withdrew a request (#198): the running call is killed and
-  # gets `aborted` at the hands' result; a waiting one gets `aborted` now.
-  # Any other id has nothing open.
-  @spec cancel(t(), String.t()) :: step()
-  def cancel(%__MODULE__{running: id} = tools, id), do: {%{tools | killed?: true}, [{:kill, id}]}
-
-  def cancel(%__MODULE__{waiting: waiting} = tools, id) do
-    case Enum.split_with(waiting, &(id(&1) == id)) do
-      {[], _} -> {tools, []}
-      {_, waiting} -> {%{tools | waiting: waiting}, [{:result, id, Session.aborted_result()}]}
     end
   end
 

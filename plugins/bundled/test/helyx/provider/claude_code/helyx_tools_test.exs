@@ -171,11 +171,7 @@ defmodule Helyx.Provider.ClaudeCode.HelyxToolsTest do
              } = answers(bin, 1)
     end
 
-    test "a call whose arguments are not an object or whose name is not a string gets an error",
-         %{bin: bin, work: work} do
-      meta = %{"claudecode/toolUseId" => "toolu_x"}
-      bad = %{name: "bash", arguments: [], _meta: meta}
-      bad_call = %{jsonrpc: "2.0", id: 2, method: "tools/call", params: bad}
+    test "a call whose name is not a string gets an error", %{bin: bin, work: work} do
       bad_name = %{name: 5, _meta: %{"claudecode/toolUseId" => "toolu_n"}}
       name_call = %{jsonrpc: "2.0", id: 6, method: "tools/call", params: bad_name}
 
@@ -183,7 +179,7 @@ defmodule Helyx.Provider.ClaudeCode.HelyxToolsTest do
         bin,
         1,
         1,
-        begin() ++ [mcp_request("r1", bad_call), mcp_request("r5", name_call), result("done")]
+        begin() ++ [mcp_request("r5", name_call), result("done")]
       )
 
       {:ok, state} = ClaudeCode.init("haiku", [@spec_bash], cwd: work)
@@ -196,13 +192,10 @@ defmodule Helyx.Provider.ClaudeCode.HelyxToolsTest do
 
       refute Enum.any?(actions, &match?({:event, _, {:tool_request, _, _, _}}, &1))
 
-      assert %{
-               "r1" => %{"id" => 2, "result" => %{"isError" => true}},
-               "r5" => %{"id" => 6, "result" => %{"isError" => true}}
-             } = answers(bin, 1)
+      assert %{"r5" => %{"id" => 6, "result" => %{"isError" => true}}} = answers(bin, 1)
     end
 
-    test "notifications/cancelled withdraws the call; its later result is not written",
+    test "notifications/cancelled forgets the call and gives no action; its later result is not written",
          %{bin: bin, work: work} do
       cancelled = %{jsonrpc: "2.0", method: "notifications/cancelled", params: %{requestId: 2}}
       turn(bin, 1, 1, begin() ++ [call("m1", 2, "toolu_h1")])
@@ -216,10 +209,7 @@ defmodule Helyx.Provider.ClaudeCode.HelyxToolsTest do
         "\n"
       ])
 
-      {actions, state} =
-        pump(ClaudeCode, state, [], &Enum.any?(&1, fn a -> match?({:cancel_tool, _}, a) end))
-
-      assert [{:cancel_tool, "toolu_h1"}] = actions
+      state = settle(ClaudeCode, state, &(&1.calls == %{}), &(&1 == []))
 
       {from, [{:reply, from, :ok}], state} =
         request(state, {:tool_result, "t1", "toolu_h1", {:ok, "late"}})

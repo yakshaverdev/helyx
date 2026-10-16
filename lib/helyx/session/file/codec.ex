@@ -25,18 +25,11 @@ defmodule Helyx.Session.File.Codec do
 
   defp encode_block(%Message.Text{text: text}), do: %{"type" => "text", "text" => text}
 
-  defp encode_block(%Message.Thinking{thinking: thinking, signature: nil}),
+  defp encode_block(%Message.Thinking{thinking: thinking}),
     do: %{"type" => "thinking", "thinking" => thinking}
-
-  defp encode_block(%Message.Thinking{thinking: thinking, signature: signature}),
-    do: %{"type" => "thinking", "thinking" => thinking, "signature" => signature}
 
   defp encode_block(%Message.ToolCall{id: id, name: name, arguments: arguments}) do
     %{"type" => "tool_call", "id" => id, "name" => name, "arguments" => arguments}
-  end
-
-  defp encode_block(%Message.Image{mime_type: mime_type, data: data}) do
-    %{"type" => "image", "mime_type" => mime_type, "data" => data}
   end
 
   # A bad value of a field that core needs (role, content, tool_call_id,
@@ -134,10 +127,8 @@ defmodule Helyx.Session.File.Codec do
   defp decode_block(%{"type" => "text", "text" => text}) when is_binary(text),
     do: %Message.Text{text: text}
 
-  defp decode_block(%{"type" => "thinking", "thinking" => thinking, "signature" => signature})
-       when is_binary(thinking) and is_binary(signature),
-       do: %Message.Thinking{thinking: thinking, signature: signature}
-
+  # A block this module no longer writes, an image or a thinking signature,
+  # misses its clause, so the file is rejected and nothing is dropped.
   defp decode_block(%{"type" => "thinking", "thinking" => thinking} = block)
        when is_binary(thinking) and not is_map_key(block, "signature"),
        do: %Message.Thinking{thinking: thinking}
@@ -148,10 +139,5 @@ defmodule Helyx.Session.File.Codec do
     # integer over the digit limit. Each later provider request would pay the
     # quadratic JSON encode for it.
     %Message.ToolCall{id: id, name: name, arguments: Message.cap_integers(args)}
-  end
-
-  defp decode_block(%{"type" => "image", "mime_type" => mime_type, "data" => data})
-       when is_binary(mime_type) and is_binary(data) do
-    %Message.Image{mime_type: mime_type, data: data}
   end
 end

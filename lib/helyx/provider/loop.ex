@@ -15,16 +15,14 @@ defmodule Helyx.Provider.Loop do
     * `{:text_delta, binary}`, `{:thinking_delta, binary}`: a delta of text
       or of thinking text
     * `{:tool_call, Helyx.Message.ToolCall.t()}`: one complete tool call,
-      with the arguments of `Helyx.Provider`: a map, or the raw text of
-      arguments that are not a JSON object
+      with the arguments of `Helyx.Provider`
     * `{:done, %{stop_reason: stop_reason, usage: Helyx.Usage.t() | nil}}`:
       the call finished
     * `{:error, term}`: the call failed
 
   `opts` carry `:core`, `:session_id`, `:turn_id`, and `:cwd`. The model
   Task consumes the enumerable up to the first `done` or `error`. Any other
-  event, a call whose id repeats in the message, or an
-  enumerable that halts by itself on another value, ends the provider
+  event, or a call whose id repeats in the message, ends the provider
   process with `{:bad_stream_event, event}`; Core checks the rest as it
   checks every provider event. A stream faster than the provider process
   ends at over 10,000 waiting messages with `{:error, {:provider_behind,
@@ -218,9 +216,6 @@ defmodule Helyx.Provider.Loop do
   defp terminal({:error, _} = error, state), do: finish(error, %{state | lost?: true})
   # A malformed done, which Core rejects.
   defp terminal({:done, _} = done, state), do: finish(done, state)
-
-  # The result of an enumerable that halts by itself on another value.
-  defp terminal(other, _state), do: bad(other)
 
   # A call that finished with a valid usage. The kept usage joins it.
   defp called(%{stop_reason: stop, usage: usage} = fields, state) do

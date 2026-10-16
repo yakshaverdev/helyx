@@ -27,7 +27,7 @@ defmodule Helyx.Session.Hands do
 
   A tool call can go on in the background (`Helyx.Tool.background/0`,
   `Helyx.Tool.started/1`): its start answer is a `{:started, text}` result, and
-  its Task leaves its turn, out of reach of `request_cancel/2` and `kill/3`.
+  its Task leaves its turn, out of reach of `request_cancel/2`.
   Its end follows its release as `{:background_end, text}`, and its place
   stays taken until `taken/2` (`docs/features/background-bash.md`).
 
@@ -113,15 +113,6 @@ defmodule Helyx.Session.Hands do
   """
   @spec request_cancel(pid(), String.t()) :: :gen_server.request_id()
   def request_cancel(hands, turn_id), do: :gen_server.send_request(hands, {:cancel, turn_id})
-
-  @doc """
-  Kills the running tool Task of one call, when there is one. Its
-  delivery runs as for any Task that dies: the release, then an error
-  result to the session. A cast, as `run/3`: the session does not wait
-  for a release.
-  """
-  @spec kill(pid(), String.t(), String.t()) :: :ok
-  def kill(hands, turn_id, call_id), do: GenServer.cast(hands, {:kill, turn_id, call_id})
 
   @doc """
   Frees the place of the background run `id`, whose end a turn took. An id
@@ -246,13 +237,6 @@ defmodule Helyx.Session.Hands do
       if state.unconfirmed == %{},
         do: start(state, turn_id, call),
         else: answer(state, turn_id, call.id, refusal())
-
-    {:noreply, state}
-  end
-
-  def handle_cast({:kill, turn_id, call_id}, state) do
-    for {_ref, {task, ^turn_id, ^call_id, _tool}} <- state.tasks,
-        do: Process.exit(task.pid, :kill)
 
     {:noreply, state}
   end

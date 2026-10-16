@@ -41,7 +41,23 @@ defmodule Helyx.Tool.WriteTest do
     assert Helyx.Message.text(result) =~ "cannot write file/a.txt"
   end
 
+  # The open of a FIFO with no reader blocks; the call must return at once.
+  test "a FIFO or a folder at the path is an error result", %{tmp_dir: dir, run: run} do
+    fifo = Path.join(dir, "fifo")
+    {_, 0} = System.cmd("mkfifo", [fifo])
+    File.mkdir!(Path.join(dir, "sub"))
+
+    result = run.(%{"path" => "fifo", "content" => "x"})
+    assert result.is_error
+    assert Helyx.Message.text(result) == "cannot write fifo: not a regular file (other)"
+
+    result = run.(%{"path" => "sub", "content" => "x"})
+    assert Helyx.Message.text(result) == "cannot write sub: not a regular file (directory)"
+  end
+
   test "missing arguments are an error result", %{run: run} do
-    assert run.(%{"path" => "a.txt"}).is_error
+    result = run.(%{"path" => "a.txt"})
+    assert result.is_error
+    assert Helyx.Message.text(result) == "write needs a path and content"
   end
 end

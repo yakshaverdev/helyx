@@ -62,7 +62,7 @@ defmodule Helyx.Session.File.ScanTest do
       role: :user,
       content: [
         %Message.Text{text: "look"},
-        %Message.Image{mime_type: "image/png", data: "aGk="},
+        %Message.Thinking{thinking: "not text"},
         %Message.Text{text: "at\e[2J this"}
       ]
     })

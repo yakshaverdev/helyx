@@ -164,10 +164,9 @@ defmodule Helyx.Session.Server do
       ),
       do: {:noreply, Steering.take(state, steer_id)}
 
-  # A Helyx tool request of the provider process `pid`, and its withdrawal
-  # (`ToolRuns`). The call and its result join the transcript from the
-  # provider's own events, not from here. A request of a turn that is not
-  # current gets `aborted`.
+  # A Helyx tool request of the provider process `pid` (`ToolRuns`). The call
+  # and its result join the transcript from the provider's own events, not
+  # from here. A request of a turn that is not current gets `aborted`.
   def handle_info(
         {:tool_request, _pid, turn_id, call, bytes, rejection},
         %State{activity: %Turn{id: turn_id}} = state
@@ -180,9 +179,6 @@ defmodule Helyx.Session.Server do
 
   def handle_info({:tool_request, pid, turn_id, call, _bytes, _rejection}, state),
     do: {:noreply, ToolRuns.late(state, pid, turn_id, call.id)}
-
-  def handle_info({:cancel_tool, call_id}, %State{activity: %Turn{}} = state),
-    do: {:noreply, ToolRuns.cancel(state, call_id)}
 
   # A resume id of the session's live provider process, for its turn or
   # for the turn that the current wait ended (#518). An ended process,
@@ -234,7 +230,6 @@ defmodule Helyx.Session.Server do
 
   # A message for a turn or a call that is no longer current.
   def handle_info({:tool_result, _turn_id, _call_id, _result}, state), do: {:noreply, state}
-  def handle_info({:cancel_tool, _call_id}, state), do: {:noreply, state}
   def handle_info({:stream_event, _turn_id, _event}, state), do: {:noreply, state}
 
   # The failed subscribe of `Helyx.Session.subscribe/1`, and the end of a
@@ -250,14 +245,14 @@ defmodule Helyx.Session.Server do
   # The lock's port closed while the session runs: perl ended, so the
   # kernel released the lock (docs/features/session-lock.md). Its exit
   # status comes first, then the exit of the port, also of a port that
-  # closed without a status. One notice; the session goes on unlocked, and
-  # its snapshot tells a later client (`lock_lost`).
+  # closed without a status. Another process can now append to the file, so
+  # the session stops saving and goes on in memory (`Records.stop_saving/3`).
   def handle_info({port, {:exit_status, _status}}, %State{lock: port} = state),
     do: {:noreply, state}
 
-  def handle_info({:EXIT, port, _reason}, %State{lock: port} = state) do
-    state = %{state | lock: nil, lock_lost: true}
-    {:noreply, Events.emit(state, nil, :notice, %{text: Helyx.Reason.text(:lock_lost)})}
+  def handle_info({:EXIT, port, reason}, %State{lock: port} = state) do
+    state = %{state | lock: nil}
+    {:noreply, Records.stop_saving(state, "the session lock is lost", inspect(reason))}
   end
 
   # An exit from a linked process is vital. The hands' death takes the

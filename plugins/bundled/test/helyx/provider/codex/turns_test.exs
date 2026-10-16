@@ -248,7 +248,7 @@ defmodule Helyx.Provider.Codex.TurnsTest do
            ] = of_type(events, :tool_execution_end)
   end
 
-  test "an approval request is accepted and any other server request gets an error",
+  test "every server request gets an error, an approval request too",
        %{bin: bin, work: work} do
     fresh(
       bin,
@@ -268,8 +268,8 @@ defmodule Helyx.Provider.Codex.TurnsTest do
       for %{"id" => id} = line <- stdin(bin, 1), not is_map_key(line, "method"), do: {id, line}
 
     assert [
-             {0, %{"result" => %{"decision" => "accept"}}},
-             {"r", %{"result" => %{"decision" => "accept"}}},
+             {0, %{"error" => %{"code" => -32_601}}},
+             {"r", %{"error" => %{"code" => -32_601}}},
              {7, %{"error" => %{"code" => -32_601}}}
            ] = answers
   end
