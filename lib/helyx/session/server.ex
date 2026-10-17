@@ -346,13 +346,11 @@ defmodule Helyx.Session.Server do
   def handle_info({:memory_notice, pid, text}, %State{sync: pid} = state),
     do: {:noreply, Events.emit(state, nil, :notice, %{text: text})}
 
-  # The failed subscribe of `Helyx.Session.subscribe/1`, and the end of a
-  # subscriber: only the monitor of its entry removes the entry.
-  def handle_info({:unsubscribe, pid}, %State{} = state) do
-    {:noreply, Events.unsubscribe(state, pid)}
-  end
+  # A failed subscribe (`Helyx.Session.subscribe/1`), an ack (`ack/2`), and the
+  # end of a subscriber: only the monitor of its entry removes the entry.
+  def handle_info({:unsubscribe, pid}, %State{} = state),
+    do: {:noreply, Events.unsubscribe(state, pid)}
 
-  # An ack of a subscriber (`Helyx.Session.ack/2`).
   def handle_info({:ack, pid, seq}, state), do: {:noreply, Events.ack(state, pid, seq)}
 
   def handle_info({:DOWN, ref, :process, pid, _reason}, %State{subscribers: subscribers} = state)

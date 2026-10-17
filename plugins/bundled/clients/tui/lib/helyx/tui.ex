@@ -158,13 +158,10 @@ defmodule Helyx.TUI do
   # runs as usual, so it can set a new reason. The release and the repeat of
   # a key are not a new press: those of the rejected Enter keep the reason.
   @impl true
-  def handle_event(%Key{kind: "press"} = key, %{vm: %ViewModel{reason: reason}} = state)
-      when is_binary(reason),
-      do: handle_event(key, %{state | vm: ViewModel.clear_reason(state.vm)})
-
-  def handle_event(%Paste{} = paste, %{vm: %ViewModel{reason: reason}} = state)
-      when is_binary(reason),
-      do: handle_event(paste, %{state | vm: ViewModel.clear_reason(state.vm)})
+  def handle_event(event, %{vm: %ViewModel{reason: reason}} = state)
+      when is_binary(reason) and
+             (is_struct(event, Paste) or (is_struct(event, Key) and event.kind == "press")),
+      do: handle_event(event, %{state | vm: ViewModel.clear_reason(state.vm)})
 
   def handle_event(event, state) when Quit.handles?(state.quit, event) do
     case Quit.handle(state.quit, event, Composer.nothing_to_clear?(state.composer)) do
