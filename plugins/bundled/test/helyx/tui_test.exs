@@ -1531,7 +1531,9 @@ defmodule Helyx.TUITest do
   end
 
   describe "/help" do
-    test "adds one information cell with the commands and the keys, and starts no turn", %{core: core} do
+    test "adds one information cell with the commands and the keys, and starts no turn", %{
+      core: core
+    } do
       state = mounted(core, "help", [])
       cells = ViewModel.cells(state.vm)
       state = submit(state, " /help ")
