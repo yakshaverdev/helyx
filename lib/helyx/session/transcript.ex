@@ -24,7 +24,7 @@ defmodule Helyx.Session.Transcript do
     case rest do
       [%Message{role: :assistant} = message | _] ->
         {open, _kept} = pair(message, Enum.reverse(results))
-        open
+        Enum.map(open, &elem(&1, 0))
 
       _other ->
         []
@@ -33,13 +33,14 @@ defmodule Helyx.Session.Transcript do
 
   # Pairs the calls of `message` with `results`, the tool results right after
   # it. A result answers the first still-open call with its id. Gives the
-  # calls left open and the results that answer a call, in order.
+  # calls left open, each with its place among the calls of the message, and
+  # the results that answer a call, in order.
   defp pair(%Message{content: content}, results) do
-    calls = for %Message.ToolCall{} = call <- content, do: call
+    calls = Enum.with_index(for %Message.ToolCall{} = call <- content, do: call)
 
     {open, kept} =
       Enum.reduce(results, {calls, []}, fn %Message{tool_call_id: id} = result, {open, kept} ->
-        case Enum.find(open, &(&1.id == id)) do
+        case Enum.find(open, &match?({%Message.ToolCall{id: ^id}, _place}, &1)) do
           nil -> {open, kept}
           call -> {List.delete(open, call), [result | kept]}
         end
@@ -73,7 +74,8 @@ defmodule Helyx.Session.Transcript do
   defp walk([%Message{role: :assistant} = message | rest], out) do
     {results, rest} = Enum.split_while(rest, &match?(%Message{role: :tool_result}, &1))
     {open, kept} = pair(message, results)
-    walk(rest, Enum.reverse(Enum.map(open, &interrupted/1), Enum.reverse(kept, [message | out])))
+    results = Enum.map(open, &interrupted(message, &1))
+    walk(rest, Enum.reverse(results, Enum.reverse(kept, [message | out])))
   end
 
   # A tool result here follows no assistant message, so it answers nothing.
@@ -81,7 +83,12 @@ defmodule Helyx.Session.Transcript do
   defp walk([message | rest], out), do: walk(rest, [message | out])
   defp walk([], out), do: Enum.reverse(out)
 
-  defp interrupted(call), do: Message.tool_result(call, interrupted_result())
+  # The result is not written, so its id is derived, the same at each
+  # resume: the id of the assistant message and the place of the call in
+  # it, as a provider call id can repeat. `:` is not in the alphabet of
+  # `Helyx.Session.Id.new/0` (docs/features/message-identity.md).
+  defp interrupted(%Message{id: id}, {call, place}),
+    do: %{Message.tool_result(call, interrupted_result()) | id: id <> ":" <> to_string(place)}
 
   # The result of a call that a resume finds open.
   @spec interrupted_result() :: {:error, String.t()}

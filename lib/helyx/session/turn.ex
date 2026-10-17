@@ -29,6 +29,7 @@ defmodule Helyx.Session.Turn do
     :model,
     :provider,
     :partial,
+    :message_id,
     :phase,
     :context,
     :pending,
@@ -46,6 +47,7 @@ defmodule Helyx.Session.Turn do
           model: ModelRef.t(),
           provider: module(),
           partial: [Message.block()] | nil,
+          message_id: String.t() | nil,
           phase: nil | :preparing | :submitting | :submitted,
           context: Helyx.Context.t() | nil,
           pending: reference() | nil,
@@ -106,14 +108,16 @@ defmodule Helyx.Session.Turn do
 
   # The turn with no open assistant message.
   @spec close_partial(t()) :: t()
-  def close_partial(%__MODULE__{} = turn), do: %{turn | partial: nil, bytes: 0, blocks: 0}
+  def close_partial(%__MODULE__{} = turn),
+    do: %{turn | partial: nil, message_id: nil, bytes: 0, blocks: 0}
 
   # The assistant message of the turn from the blocks so far, with `fields`.
   @spec assistant_message(t(), keyword()) :: Message.t()
-  def assistant_message(%__MODULE__{partial: partial, model: model}, fields) do
+  def assistant_message(%__MODULE__{partial: partial, model: model} = turn, fields) do
     struct!(
       %Message{
         role: :assistant,
+        id: turn.message_id,
         content: Enum.reverse(partial),
         model: ModelRef.to_string(model)
       },

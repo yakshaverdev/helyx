@@ -6,11 +6,14 @@ defmodule Helyx.Session.File.Codec do
 
   alias Helyx.Message
 
-  def encode(%Message{role: role} = message) do
+  # The entry id is the message id (`Helyx.Session.File.append_message/2`).
+  def encode(%Message{role: role, id: id} = message) when is_binary(id) do
     encoded =
       %{
         "type" => "message",
+        "id" => id,
         "role" => Atom.to_string(role),
+        "origin" => encode_origin(message.origin),
         "content" => Enum.map(message.content, &encode_block/1),
         "model" => message.model,
         "stop_reason" => encode_stop_reason(message.stop_reason),
@@ -23,6 +26,9 @@ defmodule Helyx.Session.File.Codec do
     if role == :tool_result, do: Map.put(encoded, "is_error", message.is_error), else: encoded
   end
 
+  defp encode_origin(nil), do: nil
+  defp encode_origin(%{kind: kind, id: id}), do: %{"kind" => Atom.to_string(kind), "id" => id}
+
   defp encode_block(%Message.Text{text: text}), do: %{"type" => "text", "text" => text}
 
   defp encode_block(%Message.Thinking{thinking: thinking}),
@@ -32,8 +38,8 @@ defmodule Helyx.Session.File.Codec do
     %{"type" => "tool_call", "id" => id, "name" => name, "arguments" => arguments}
   end
 
-  # A bad value of a field that core needs (role, content, tool_call_id,
-  # tool_name, is_error) misses its decode clause; the rescue in `load/3`
+  # A bad value of a field that core needs (role, content, origin,
+  # tool_call_id, tool_name, is_error) misses its decode clause; the rescue in `load/3`
   # of `Helyx.Session.File` turns that into a rejected file. The model, the
   # stop reason, and the usage are optional: a bad model or stop reason
   # decodes as a missing one, and a bad usage as the unknown usage, so it
@@ -43,6 +49,8 @@ defmodule Helyx.Session.File.Codec do
 
     %Message{
       role: role,
+      id: entry["id"],
+      origin: decode_origin(role, Map.fetch(entry, "origin")),
       content: Enum.map(entry["content"], &(&1 |> decode_block() |> cut_text(role))),
       model: decode_model(entry["model"]),
       stop_reason: decode_stop_reason(entry["stop_reason"]),
@@ -59,6 +67,25 @@ defmodule Helyx.Session.File.Codec do
     do: %Message.Text{text: Message.cut_result(text)}
 
   defp cut_text(block, _role), do: block
+
+  # A user entry from before #649 has no origin: it reads as `:unknown`,
+  # never as `:user`. A present origin passes `Message.origin?/1`, and only
+  # a user entry has one; a present null is malformed.
+  defp decode_origin(:user, :error), do: %{kind: :unknown, id: nil}
+
+  defp decode_origin(:user, {:ok, %{"kind" => kind, "id" => id} = object})
+       when map_size(object) == 2 do
+    origin = %{kind: decode_origin_kind(kind), id: id}
+    true = Message.origin?(origin)
+    origin
+  end
+
+  defp decode_origin(_role, :error), do: nil
+
+  # Literal atoms, so a fresh VM that has loaded no other module decodes them.
+  defp decode_origin_kind("user"), do: :user
+  defp decode_origin_kind("background"), do: :background
+  defp decode_origin_kind("product"), do: :product
 
   defp decode_role("user"), do: :user
   defp decode_role("assistant"), do: :assistant

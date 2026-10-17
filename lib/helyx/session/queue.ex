@@ -3,7 +3,10 @@ defmodule Helyx.Session.Queue do
   # The steer state of a session, for its whole life: the queued steers and
   # follow-ups, each in arrival order, and the ledger `sent` of the steers
   # that a turn sent to its provider process, in send order, as
-  # `{from, steer_id, text, state}` (`from` is the ref of the request).
+  # `{from, steer_id, item, state}` (`from` is the ref of the request). An
+  # item is a user message that the session made at its admission; the
+  # queue does not look into it, so the message keeps its id and origin
+  # (docs/features/message-identity.md).
   # Each queue holds at most 32, and the queued steers and the ledger share
   # the 32 of the steers (docs/features/session-lifecycle.md, "Bounds").
   #
@@ -16,7 +19,7 @@ defmodule Helyx.Session.Queue do
   # a compaction opens: the ends then wait and wake nothing
   # (docs/features/background-bash.md). An end given back while such a
   # turn is open does not hold, as the open turn takes it (#587). An
-  # end that a turn sent is in the ledger as `{:end, text}`, so a
+  # end that a turn sent is in the ledger as `{:end, message}`, so a
   # `:rejected` puts it back with the ends and sets `rejected`: as a
   # rejected steer, no end goes as a steer again until the next turn that
   # is not a compaction opens.
@@ -37,10 +40,10 @@ defmodule Helyx.Session.Queue do
   #   answer only ends the request.
   #
   # The ledger functions return the struct with the effects for the
-  # session, in order: `{:take, text}` (the steer or the end `{:end, text}`
+  # session, in order: `{:take, item}` (the steer or the end `{:end, item}`
   # joins the transcript),
-  # `{:notice, turn_id, text}` (a `:steer_unconfirmed` event), and
-  # `{:dropped, texts}` (the queued texts that an abort gives back to the
+  # `{:notice, turn_id, item}` (a `:steer_unconfirmed` event), and
+  # `{:dropped, items}` (the queued items that an abort gives back to the
   # client).
 
   @limit 32
@@ -53,22 +56,23 @@ defmodule Helyx.Session.Queue do
             rejected: false,
             running: 0
 
-  @type text :: String.t() | {:end, String.t()}
+  @type item :: Helyx.Message.t()
+  @type text :: item() | {:end, item()}
   @type entry ::
           {reference(), String.t(), text(), :sent | {:ended, String.t()} | :answered | :settled}
   @type t :: %__MODULE__{
-          steers: [String.t()],
-          follow_ups: [String.t()],
+          steers: [item()],
+          follow_ups: [item()],
           sent: [entry()],
-          ends: [String.t()],
+          ends: [item()],
           hold: boolean(),
           rejected: boolean(),
           running: non_neg_integer()
         }
   @type effect ::
-          {:take, text()} | {:notice, String.t(), String.t()} | {:dropped, [String.t()]}
+          {:take, text()} | {:notice, String.t(), item()} | {:dropped, [item()]}
 
-  @spec push(t(), :steers | :follow_ups, String.t()) :: {:ok, t()} | {:error, :queue_full}
+  @spec push(t(), :steers | :follow_ups, item()) :: {:ok, t()} | {:error, :queue_full}
   def push(%__MODULE__{} = queue, :steers, text) do
     if room?(queue),
       do: {:ok, %{queue | steers: queue.steers ++ [text]}},
@@ -90,19 +94,19 @@ defmodule Helyx.Session.Queue do
 
   # Each end follows one start (`Helyx.Session.Hands`), so `running` is
   # above 0 here.
-  @spec ended(t(), String.t()) :: t()
+  @spec ended(t(), item()) :: t()
   def ended(%__MODULE__{running: running} = queue, text) when running > 0,
     do: push_end(%{queue | running: running - 1}, text)
 
-  @spec push_end(t(), String.t()) :: t()
+  @spec push_end(t(), item()) :: t()
   def push_end(%__MODULE__{ends: ends} = queue, text), do: %{queue | ends: ends ++ [text]}
 
-  @spec drain_ends(t()) :: {[String.t()], t()}
+  @spec drain_ends(t()) :: {[item()], t()}
   def drain_ends(%__MODULE__{ends: ends} = queue), do: {ends, %{queue | ends: []}}
 
   # The first waiting end, when one more steer fits beside the steers and
   # no end was rejected since the last turn opened, or nil.
-  @spec next_end(t()) :: {String.t(), t()} | nil
+  @spec next_end(t()) :: {item(), t()} | nil
   def next_end(%__MODULE__{rejected: true}), do: nil
 
   def next_end(%__MODULE__{ends: [text | rest]} = queue) do
@@ -146,18 +150,18 @@ defmodule Helyx.Session.Queue do
     }
   end
 
-  # The texts of the next turn: every queued steer, or with none the first
+  # The items of the next turn: every queued steer, or with none the first
   # follow-up. Each follow-up is a turn of its own.
-  @spec drain(t()) :: {[String.t()], t()}
+  @spec drain(t()) :: {[item()], t()}
   def drain(%__MODULE__{steers: [], follow_ups: [next | rest]} = queue),
     do: {[next], %{queue | follow_ups: rest}}
 
   def drain(%__MODULE__{} = queue), do: drain_steers(queue)
 
-  @spec drain_steers(t()) :: {[String.t()], t()}
+  @spec drain_steers(t()) :: {[item()], t()}
   def drain_steers(%__MODULE__{steers: steers} = queue), do: {steers, %{queue | steers: []}}
 
-  # The running turn sent the steer, or the end `{:end, text}`. It does
+  # The running turn sent the steer, or the end `{:end, item}`. It does
   # not check the limit: the caller holds the place of the steer.
   @spec sent(t(), reference(), String.t(), text()) :: t()
   def sent(%__MODULE__{sent: sent} = queue, from, steer_id, text),
@@ -293,8 +297,8 @@ defmodule Helyx.Session.Queue do
   defp requeue(queue, {:end, text}), do: %{queue | ends: queue.ends ++ [text], rejected: true}
   defp requeue(queue, text), do: %{queue | steers: queue.steers ++ [text]}
 
-  # The text of a ledger entry: a steer, or an end `{:end, text}`.
-  @spec plain(text()) :: String.t()
+  # The item of a ledger entry: a steer, or an end `{:end, item}`.
+  @spec plain(text()) :: item()
   def plain({:end, text}), do: text
   def plain(text), do: text
 

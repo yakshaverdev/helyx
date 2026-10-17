@@ -172,7 +172,7 @@ defmodule CodingAgent.CLITest do
     defp session(sessions, cwd, mtime, prompt, model \\ "fake/echo") do
       id = Helyx.Session.Id.new()
       {:ok, file} = Helyx.Session.File.create(sessions, id, cwd, model)
-      if prompt, do: Helyx.Session.File.append_message(file, Helyx.Message.user(prompt))
+      if prompt, do: Helyx.Test.SessionFile.append_message(file, Helyx.Message.user(prompt))
       File.touch!(file.path, mtime)
       {id, file.path}
     end

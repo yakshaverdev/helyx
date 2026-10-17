@@ -15,7 +15,7 @@ defmodule Helyx.UsageTest do
     done = %{stop_reason: :end_turn, usage: usage}
     assert {:terminal, {:done, ^done}} = SessionStream.check({:done, done})
 
-    message = %Message{role: :assistant, content: [], usage: usage}
+    message = %Message{role: :assistant, id: "m1", content: [], usage: usage}
     entry = message |> Codec.encode() |> JSON.encode!() |> JSON.decode!()
     assert Codec.decode(entry).usage == usage
     usage

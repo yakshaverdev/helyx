@@ -249,7 +249,10 @@ defmodule Helyx.Session.File do
     })
   end
 
-  @doc "Appends one completed message to the file."
+  @doc """
+  Appends one completed message to the file. Its entry id is the id of the
+  message, which must have one; a resume reads it back as the message id.
+  """
   @spec append_message(t(), Message.t()) :: t()
   def append_message(%__MODULE__{} = file, %Message{} = message) do
     append(file, Codec.encode(message))
@@ -280,7 +283,8 @@ defmodule Helyx.Session.File do
   # entry and its newline, opens the file with O_APPEND, and writes it with
   # one writev. Only a short write (a full disk, a signal) takes a second.
   defp append(%__MODULE__{path: path, leaf: leaf} = file, entry) do
-    id = Helyx.Session.Id.new()
+    # A message entry has the message id (`Codec.encode/1`).
+    id = Map.get_lazy(entry, "id", &Helyx.Session.Id.new/0)
 
     entry =
       Map.merge(entry, %{

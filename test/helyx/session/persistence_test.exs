@@ -136,7 +136,7 @@ defmodule Helyx.Session.PersistenceTest do
       {:ok, file} = Helyx.Session.File.create(dir, "big000000000", File.cwd!(), "test/transcript")
 
       Enum.reduce(1..20_000, file, fn i, file ->
-        Helyx.Session.File.append_message(file, Helyx.Message.user("m#{i}"))
+        Helyx.Test.SessionFile.append_message(file, Helyx.Message.user("m#{i}"))
       end)
 
       sup = Process.whereis(Helyx.Core.session_supervisor(core))
@@ -201,7 +201,7 @@ defmodule Helyx.Session.PersistenceTest do
       Helyx.Message.tool_result(call, {:ok, "first answer"}),
       %Helyx.Message{role: :assistant, stop_reason: :tool_use, content: [call]}
     ]
-    |> Enum.reduce(file, &Helyx.Session.File.append_message(&2, &1))
+    |> Enum.reduce(file, &Helyx.Test.SessionFile.append_message(&2, &1))
 
     answered = [
       {:assistant, ""},
@@ -243,8 +243,8 @@ defmodule Helyx.Session.PersistenceTest do
     {:ok, file} = Helyx.Session.File.create(dir, "counts000000", File.cwd!(), "test/transcript")
 
     file
-    |> Helyx.Session.File.append_message(%Helyx.Message{role: :assistant, content: [call]})
-    |> Helyx.Session.File.append_message(Helyx.Message.user("next"))
+    |> Helyx.Test.SessionFile.append_message(%Helyx.Message{role: :assistant, content: [call]})
+    |> Helyx.Test.SessionFile.append_message(Helyx.Message.user("next"))
     |> Helyx.Session.File.append_resume_id("claude-code", "h1")
 
     {:ok, session} = Session.resume(core, sessions_dir: dir)
@@ -261,13 +261,13 @@ defmodule Helyx.Session.PersistenceTest do
     {:ok, file} = Helyx.Session.File.create(dir, "orphan000000", File.cwd!(), "test/transcript")
 
     file
-    |> Helyx.Session.File.append_message(Helyx.Message.user("hi"))
-    |> Helyx.Session.File.append_message(%Helyx.Message{role: :assistant, content: [call]})
-    |> Helyx.Session.File.append_message(Helyx.Message.tool_result(stray, {:ok, "unknown"}))
-    |> Helyx.Session.File.append_message(Helyx.Message.tool_result(call, {:ok, "answer"}))
-    |> Helyx.Session.File.append_message(Helyx.Message.tool_result(call, {:ok, "second"}))
-    |> Helyx.Session.File.append_message(Helyx.Message.user("next"))
-    |> Helyx.Session.File.append_message(Helyx.Message.tool_result(call, {:ok, "late"}))
+    |> Helyx.Test.SessionFile.append_message(Helyx.Message.user("hi"))
+    |> Helyx.Test.SessionFile.append_message(%Helyx.Message{role: :assistant, content: [call]})
+    |> Helyx.Test.SessionFile.append_message(Helyx.Message.tool_result(stray, {:ok, "unknown"}))
+    |> Helyx.Test.SessionFile.append_message(Helyx.Message.tool_result(call, {:ok, "answer"}))
+    |> Helyx.Test.SessionFile.append_message(Helyx.Message.tool_result(call, {:ok, "second"}))
+    |> Helyx.Test.SessionFile.append_message(Helyx.Message.user("next"))
+    |> Helyx.Test.SessionFile.append_message(Helyx.Message.tool_result(call, {:ok, "late"}))
     |> Helyx.Session.File.append_resume_id("claude-code", "h1")
 
     repaired = [{:user, "hi"}, {:assistant, ""}, {:tool_result, "answer"}, {:user, "next"}]
@@ -326,9 +326,9 @@ defmodule Helyx.Session.PersistenceTest do
     {:ok, file} = Helyx.Session.File.create(dir, "label0000000", File.cwd!(), "conn/hang")
 
     file
-    |> Helyx.Session.File.append_message(Helyx.Message.user("push"))
+    |> Helyx.Test.SessionFile.append_message(Helyx.Message.user("push"))
     |> Helyx.Session.File.append_resume_id("conn", "L")
-    |> Helyx.Session.File.append_message(%Helyx.Message{
+    |> Helyx.Test.SessionFile.append_message(%Helyx.Message{
       role: :assistant,
       model: "conn/hang",
       stop_reason: :tool_use,

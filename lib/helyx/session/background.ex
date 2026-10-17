@@ -75,24 +75,25 @@ defmodule Helyx.Session.Background do
   @spec taken(t(), String.t()) :: t()
   def taken(%__MODULE__{} = places, id), do: %{places | waiting: List.delete(places.waiting, id)}
 
-  # The id of a start answer or an end, which open with the fixed line.
-  @spec id(String.t()) :: String.t()
-  def id(text) do
-    [{id, _status}] = parse(text)
-    id
-  end
-
   @spec start(String.t(), String.t()) :: String.t()
   def start(id, text), do: wrap(id, "started", binary_slice(text, 0, @max_start_bytes))
 
-  # The end from the Task's result, already through `Message.cut_result/1`.
+  # The end text from the Task's result, already through
+  # `Message.cut_result/1`.
   @spec finish(String.t(), {:ok | :error, String.t()}) :: String.t()
   def finish(id, {:ok, text}), do: wrap(id, "done", text)
   def finish(id, {:error, text}), do: wrap(id, "error", text)
 
-  # The end of each run that has a start answer in `transcript` and no end
-  # message, in start order: the session stopped while it ran.
-  @spec lost([Message.t()]) :: [String.t()]
+  # The end as the user message that joins a turn, with the run id as its
+  # origin id (docs/features/message-identity.md).
+  @spec end_message(String.t(), {:ok | :error, String.t()}) :: Message.t()
+  def end_message(id, result), do: message(id, finish(id, result))
+
+  defp message(id, text), do: Message.user(text, %{kind: :background, id: id})
+
+  # The end message of each run that has a start answer in `transcript`
+  # and no end message, in start order: the session stopped while it ran.
+  @spec lost([Message.t()]) :: [Message.t()]
   def lost(transcript) do
     ended =
       for %Message{role: :user} = m <- transcript, {id, _} <- head(m), into: MapSet.new(), do: id
@@ -100,7 +101,7 @@ defmodule Helyx.Session.Background do
     for %Message{role: :tool_result, is_error: false} = m <- transcript,
         {id, "started"} <- head(m),
         id not in ended,
-        do: wrap(id, "lost", @lost)
+        do: message(id, wrap(id, "lost", @lost))
   end
 
   # The id and the status of a message that opens with the fixed line.

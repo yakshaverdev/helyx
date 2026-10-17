@@ -23,7 +23,7 @@ defmodule Helyx.Session.FileTest do
   # a session id: the literal ids here are padded to its 12 characters.
   defp started(dir, id, cwd, model) do
     {:ok, file} = Session.File.create(dir, id, cwd, model)
-    {:ok, Session.File.append_message(file, Message.user("start"))}
+    {:ok, SessionFile.append_message(file, Message.user("start"))}
   end
 
   test "create writes a header, and the newest-session resume skips a session with no message",
@@ -84,13 +84,131 @@ defmodule Helyx.Session.FileTest do
     unknown = %Message{role: :assistant, content: [], usage: %Helyx.Usage{}}
     billed = %{unknown | usage: %Helyx.Usage{output: 1, cost: 2, cost_kind: :billed}}
     none = %Message{role: :assistant, content: [%Message.Text{text: "cut"}]}
-    messages = [Message.user("List the tests."), assistant, result, unknown, billed, none]
+
+    # Each origin kind of a new user message round-trips with its id.
+    users =
+      for origin <- [
+            %{kind: :user, id: nil},
+            %{kind: :background, id: "run000000001"},
+            %{kind: :product, id: "job 7 · run 1"}
+          ],
+          do: Message.user("List the tests.", origin)
+
+    messages =
+      Enum.map([assistant, result, unknown, billed, none], &%{&1 | id: Session.Id.new()})
+
+    messages = users ++ messages
 
     {:ok, file} = Session.File.create(dir, "sess00000001", "/repo", "test/ok")
-    Enum.reduce(messages, file, &Session.File.append_message(&2, &1))
+    Enum.reduce(messages, file, &SessionFile.append_message(&2, &1))
 
     assert {:ok, resumed} = SessionFile.resume(dir, "/repo")
     assert resumed.messages == messages
+  end
+
+  describe "message ids and origins (#649)" do
+    @assistant %{"role" => "assistant"}
+    @tool_result %{"role" => "tool_result", "tool_call_id" => "c1", "tool_name" => "bash"}
+
+    test "a message with no id does not encode: the session sets every id" do
+      assert_raise FunctionClauseError, fn -> Session.File.Codec.encode(Message.user("hi")) end
+    end
+
+    defp user_entry(id, extra) do
+      JSON.encode!(
+        Map.merge(
+          %{
+            "id" => id,
+            "type" => "message",
+            "role" => "user",
+            "content" => [%{"type" => "text", "text" => "hi"}]
+          },
+          extra
+        )
+      )
+    end
+
+    test "the entry id is the message id, and a user entry with no origin reads as :unknown",
+         %{tmp_dir: dir} do
+      {:ok, file} = Session.File.create(dir, "sess00000001", "/repo", "test/ok")
+      append_raw(file, user_entry("message00001", %{}))
+
+      assert {:ok, %{messages: [message]}} = SessionFile.resume(dir, "/repo")
+      assert %Message{id: "message00001", origin: %{kind: :unknown, id: nil}} = message
+    end
+
+    test "a malformed origin, or an origin on another role, rejects the file", %{tmp_dir: dir} do
+      bad = [
+        %{"origin" => %{"kind" => "unknown"}},
+        %{"origin" => %{"kind" => "admin", "id" => "x"}},
+        %{"origin" => %{"kind" => "product"}},
+        %{"origin" => %{"kind" => "product", "id" => ""}},
+        %{"origin" => %{"kind" => "product", "id" => String.duplicate("a", 257)}},
+        %{"origin" => %{"kind" => "background", "id" => 7}},
+        %{"origin" => %{"kind" => "user", "id" => "x"}},
+        %{"origin" => %{"kind" => "user", "extra" => 1}},
+        %{"origin" => "user"},
+        %{"origin" => nil},
+        %{"origin" => %{"kind" => "user"}},
+        # A valid origin on another role.
+        Map.put(@assistant, "origin", %{"kind" => "user", "id" => nil}),
+        Map.put(@tool_result, "origin", %{"kind" => "product", "id" => "p"})
+      ]
+
+      # The same roles with no origin resume.
+      for {extra, n} <- Enum.with_index([@assistant, @tool_result]) do
+        dir = Path.join(dir, "role#{n}")
+        {:ok, file} = Session.File.create(dir, "sess00000001", "/repo", "test/ok")
+        append_raw(file, user_entry("message00001", extra))
+        assert {:ok, _resumed} = SessionFile.resume(dir, "/repo")
+      end
+
+      for {extra, n} <- Enum.with_index(bad) do
+        dir = Path.join(dir, "case#{n}")
+        {:ok, file} = Session.File.create(dir, "sess00000001", "/repo", "test/ok")
+        append_raw(file, user_entry("message00001", extra))
+        assert {:error, {:invalid_file, _text}} = SessionFile.resume(dir, "/repo"), inspect(extra)
+      end
+
+      # At the bound the origin id is kept: 256 bytes, multibyte too.
+      for id <- [String.duplicate("a", 256), String.duplicate("é", 128)] do
+        dir = Path.join(dir, "ok#{byte_size(id)}#{String.length(id)}")
+        {:ok, file} = Session.File.create(dir, "sess00000001", "/repo", "test/ok")
+
+        append_raw(
+          file,
+          user_entry("message00001", %{"origin" => %{"kind" => "product", "id" => id}})
+        )
+
+        assert {:ok, %{messages: [%Message{origin: %{kind: :product, id: ^id}}]}} =
+                 SessionFile.resume(dir, "/repo")
+      end
+    end
+
+    test "a message id that repeats an earlier one rejects the file", %{tmp_dir: dir} do
+      {:ok, file} = Session.File.create(dir, "sess00000001", "/repo", "test/ok")
+
+      file
+      |> append_raw(user_entry("message00001", %{}))
+      |> append_raw(user_entry("message00001", %{}))
+
+      assert {:error, {:invalid_file, ~s(a message repeats the id "message00001")}} =
+               SessionFile.resume(dir, "/repo")
+    end
+
+    # An id that `Id.new/0` never makes could hold `:`, the separator of the
+    # derived ids of repair results.
+    test "a message id that Id.new/0 never makes rejects the file", %{tmp_dir: dir} do
+      for {id, n} <- Enum.with_index(["AAAAAAAAAA:0", "m1", ""]) do
+        dir = Path.join(dir, "case#{n}")
+        {:ok, file} = Session.File.create(dir, "sess00000001", "/repo", "test/ok")
+        append_raw(file, user_entry(id, %{}))
+
+        assert {:error, {:invalid_file, "a message id is not valid: " <> _}} =
+                 SessionFile.resume(dir, "/repo"),
+               inspect(id)
+      end
+    end
   end
 
   test "a tool result text over the limit is cut on resume", %{tmp_dir: dir} do
@@ -100,7 +218,7 @@ defmodule Helyx.Session.FileTest do
     append_raw(
       file,
       JSON.encode!(%{
-        "id" => "r1",
+        "id" => "toolresult01",
         "type" => "message",
         "role" => "tool_result",
         "tool_call_id" => "c1",
@@ -137,8 +255,8 @@ defmodule Helyx.Session.FileTest do
     file
     |> Session.File.append_resume_id("claude-code", "first")
     |> Session.File.append_resume_id("codex", "codex-1")
-    |> Session.File.append_message(%Message{role: :assistant, content: [call]})
-    |> Session.File.append_message(Message.tool_result(call, {:ok, "done"}))
+    |> SessionFile.append_message(%Message{role: :assistant, content: [call]})
+    |> SessionFile.append_message(Message.tool_result(call, {:ok, "done"}))
     |> Session.File.append_resume_id("claude-code", "sécond")
 
     assert {:ok, resumed} = SessionFile.resume(dir, "/repo")
@@ -217,7 +335,7 @@ defmodule Helyx.Session.FileTest do
       |> Session.File.append_resume_id("claude-code", "old")
       |> Session.File.append_resume_id("codex", "codex-1")
       |> append_raw(line)
-      |> Session.File.append_message(%Message{
+      |> SessionFile.append_message(%Message{
         role: :assistant,
         model: "claude-code/opus",
         content: [%Message.Text{text: "t"}]
@@ -281,7 +399,7 @@ defmodule Helyx.Session.FileTest do
   test "a torn last line is skipped, kept in the file, and the next entry starts a new line",
        %{tmp_dir: dir} do
     {:ok, file} = Session.File.create(dir, "sess00000001", "/repo", "test/ok")
-    file = Session.File.append_message(file, Helyx.Message.user("kept"))
+    file = SessionFile.append_message(file, Helyx.Message.user("kept"))
     torn = ~s({"id":"x","type":"mess)
     File.write!(file.path, torn, [:append])
     before = File.read!(file.path)
@@ -290,7 +408,7 @@ defmodule Helyx.Session.FileTest do
     assert [%Message{role: :user}] = resumed.messages
     assert resumed.file.leaf == file.leaf
 
-    Session.File.append_message(resumed.file, Message.user("after"))
+    SessionFile.append_message(resumed.file, Message.user("after"))
     after_append = File.read!(file.path)
     assert String.starts_with?(after_append, before <> "\n")
     [_header, _kept, ^torn, next] = String.split(after_append, "\n", trim: true)
@@ -305,12 +423,12 @@ defmodule Helyx.Session.FileTest do
     tmp_dir: dir
   } do
     {:ok, file} = Session.File.create(dir, "sess00000001", "/repo", "test/ok")
-    file = Session.File.append_message(file, Message.user("héllo — ünïcode ✓"))
+    file = SessionFile.append_message(file, Message.user("héllo — ünïcode ✓"))
     File.write!(file.path, ~s({"torn), [:append])
 
     assert {:ok, resumed} = SessionFile.resume(dir, "/repo")
 
-    Session.File.append_message(resumed.file, Message.user("after"))
+    SessionFile.append_message(resumed.file, Message.user("after"))
     assert {:ok, repaired} = SessionFile.resume(dir, "/repo")
     assert texts(repaired) == ["héllo — ünïcode ✓", "after"]
   end
@@ -327,12 +445,12 @@ defmodule Helyx.Session.FileTest do
 
   test "a complete last entry missing only its newline is repaired", %{tmp_dir: dir} do
     {:ok, file} = Session.File.create(dir, "sess00000001", "/repo", "test/ok")
-    file = Session.File.append_message(file, Message.user("kept"))
+    file = SessionFile.append_message(file, Message.user("kept"))
     File.write!(file.path, String.trim_trailing(File.read!(file.path), "\n"))
 
     assert {:ok, resumed} = SessionFile.resume(dir, "/repo")
 
-    Session.File.append_message(resumed.file, Message.user("after"))
+    SessionFile.append_message(resumed.file, Message.user("after"))
     assert {:ok, repaired} = SessionFile.resume(dir, "/repo")
     assert Enum.map(repaired.messages, &Message.text/1) == ["kept", "after"]
   end
@@ -398,7 +516,7 @@ defmodule Helyx.Session.FileTest do
   test "a line mid-file that is not an entry is skipped and kept", %{tmp_dir: dir} do
     {:ok, file} = Session.File.create(dir, "sess00000001", "/repo", "test/ok")
     File.write!(file.path, "not json\n[1]\n\n{}\n", [:append])
-    Session.File.append_message(file, Message.user("kept"))
+    SessionFile.append_message(file, Message.user("kept"))
     before = File.read!(file.path)
 
     assert {:ok, resumed} = SessionFile.resume(dir, "/repo")
@@ -410,9 +528,9 @@ defmodule Helyx.Session.FileTest do
     # Hand-written lines: each parent_id is the id of the line above.
     lines = [
       ~s({"id":"h","parent_id":null,"ts":"t","type":"session","version":1,"cwd":"/repo","model":"test/ok"}),
-      ~s({"id":"m1","parent_id":"h","ts":"t","type":"message","role":"user","content":[{"type":"text","text":"one"}]}),
-      ~s({"id":"c","parent_id":"m1","ts":"t","type":"model_change","model":"test/two"}),
-      ~s({"id":"m2","parent_id":"c","ts":"t","type":"message","role":"user","content":[{"type":"text","text":"two"}]})
+      ~s({"id":"message00001","parent_id":"h","ts":"t","type":"message","role":"user","content":[{"type":"text","text":"one"}]}),
+      ~s({"id":"c","parent_id":"message00001","ts":"t","type":"model_change","model":"test/two"}),
+      ~s({"id":"message00002","parent_id":"c","ts":"t","type":"message","role":"user","content":[{"type":"text","text":"two"}]})
     ]
 
     {:ok, file} = Session.File.create(dir, "old000000000", "/repo", "test/ok")
@@ -421,7 +539,7 @@ defmodule Helyx.Session.FileTest do
     assert {:ok, resumed} = SessionFile.resume(dir, "/repo")
     assert texts(resumed) == ["one", "two"]
     assert resumed.model == "test/two"
-    assert resumed.file.leaf == "m2"
+    assert resumed.file.leaf == "message00002"
   end
 
   test "an entry that does not continue the chain is rejected with its line, the file unchanged",
@@ -440,7 +558,7 @@ defmodule Helyx.Session.FileTest do
 
     for {break, n} <- Enum.with_index(breaks) do
       {:ok, header} = Session.File.create(dir, Session.Id.new(), "/r#{n}", "test/ok")
-      kept = Session.File.append_message(header, Message.user("kept"))
+      kept = SessionFile.append_message(header, Message.user("kept"))
       # A line that does not decode is skipped, and its line still counts.
       File.write!(kept.path, "not json\n" <> break.(header.leaf, kept.leaf) <> "\n", [:append])
       before = File.read!(kept.path)
@@ -499,7 +617,7 @@ defmodule Helyx.Session.FileTest do
 
     for stop <- [:max_tokens, :refused], reduce: file do
       file ->
-        Session.File.append_message(file, %Message{
+        SessionFile.append_message(file, %Message{
           role: :assistant,
           stop_reason: stop,
           content: [%Message.Text{text: "t"}]
@@ -522,7 +640,7 @@ defmodule Helyx.Session.FileTest do
     before = File.read!(file.path)
 
     assert_raise FunctionClauseError, fn ->
-      Session.File.append_message(file, %Message{
+      SessionFile.append_message(file, %Message{
         role: :assistant,
         stop_reason: :stop_sequence,
         content: []
@@ -537,8 +655,8 @@ defmodule Helyx.Session.FileTest do
     message = fn n -> %Message{role: :assistant, content: [call.(n)], stop_reason: :tool_use} end
 
     {:ok, file} = Session.File.create(dir, "sess00000001", "/repo", "test/ok")
-    file = Session.File.append_message(file, message.(10 ** 100))
-    Session.File.append_message(file, message.(10 ** 100 - 1))
+    file = SessionFile.append_message(file, message.(10 ** 100))
+    SessionFile.append_message(file, message.(10 ** 100 - 1))
 
     assert {:ok, resumed} = SessionFile.resume(dir, "/repo")
 
@@ -574,7 +692,12 @@ defmodule Helyx.Session.FileTest do
     entries =
       for {{good, bad}, i} <- Enum.with_index(cases), {usage, kind} <- [{good, :g}, {bad, :b}] do
         message = %{"type" => "message", "role" => "assistant", "content" => []}
-        {kind, Map.merge(message, %{"id" => "#{kind}#{i}", "usage" => Map.merge(tokens, usage)})}
+
+        {kind,
+         Map.merge(message, %{
+           "id" => entry_id("#{kind}#{i}"),
+           "usage" => Map.merge(tokens, usage)
+         })}
       end
 
     Enum.reduce(entries, file, fn {_kind, entry}, file ->
@@ -602,13 +725,13 @@ defmodule Helyx.Session.FileTest do
     {:ok, file} = Session.File.create(dir, "sess00000001", "/repo", "test/ok")
 
     entries = [
-      ~s({"id":"a","type":"message","role":"assistant","stop_reason":"banana","content":[]}),
-      ~s({"id":"b","type":"message","role":"assistant","stop_reason":false,"content":[]}),
-      ~s({"id":"c","type":"message","role":"assistant","model":42,"usage":[1],"content":[]}),
-      ~s({"id":"d","type":"message","role":"assistant","usage":"x","stop_reason":{},"content":[]}),
-      ~s({"id":"e","type":"message","role":"assistant","usage":{"input":12,"output":3},"content":[]}),
-      ~s({"id":"f","type":"message","role":"assistant","usage":{"inputTokens":9},"content":[]}),
-      ~s({"id":"g","type":"message","role":"assistant","usage":null,"content":[]})
+      ~s({"id":"assistant00a","type":"message","role":"assistant","stop_reason":"banana","content":[]}),
+      ~s({"id":"assistant00b","type":"message","role":"assistant","stop_reason":false,"content":[]}),
+      ~s({"id":"assistant00c","type":"message","role":"assistant","model":42,"usage":[1],"content":[]}),
+      ~s({"id":"assistant00d","type":"message","role":"assistant","usage":"x","stop_reason":{},"content":[]}),
+      ~s({"id":"assistant00e","type":"message","role":"assistant","usage":{"input":12,"output":3},"content":[]}),
+      ~s({"id":"assistant00f","type":"message","role":"assistant","usage":{"inputTokens":9},"content":[]}),
+      ~s({"id":"assistant00g","type":"message","role":"assistant","usage":null,"content":[]})
     ]
 
     Enum.reduce(entries, file, &append_raw(&2, &1))
@@ -627,7 +750,7 @@ defmodule Helyx.Session.FileTest do
          %{tmp_dir: dir} do
       {:ok, file} = Session.File.create(dir, "sess00000001", "/repo", "test/ok")
       # Multibyte content: the limit counts bytes, not characters.
-      Session.File.append_message(file, Message.user("héllo wörld"))
+      SessionFile.append_message(file, Message.user("héllo wörld"))
       size = File.stat!(file.path).size
 
       assert {:ok, _} = SessionFile.resume(dir, "/repo", max_bytes: size + 1)
@@ -692,7 +815,7 @@ defmodule Helyx.Session.FileTest do
   describe "the heap cap of the decode" do
     test "a file whose decode passes the cap is rejected and not mutated", %{tmp_dir: dir} do
       {:ok, file} = Session.File.create(dir, "sess00000001", "/repo", "test/ok")
-      Session.File.append_message(file, Message.user("hi"))
+      SessionFile.append_message(file, Message.user("hi"))
       assert {:ok, _} = SessionFile.resume(dir, "/repo", max_heap_bytes: 16 * 1024 * 1024)
 
       # 1 MiB of `[` with a torn last line: the decode of deep nesting takes
@@ -714,7 +837,7 @@ defmodule Helyx.Session.FileTest do
       {:ok, file} = Session.File.create(dir, "sess00000001", "/repo", "test/ok")
 
       file =
-        Session.File.append_message(
+        SessionFile.append_message(
           file,
           Message.user(String.duplicate("line of output\n", 4000))
         )
@@ -726,8 +849,8 @@ defmodule Helyx.Session.FileTest do
       # Each copy has its own id and hangs below the one before it.
       copies =
         for n <- 1..(count - 1)//1 do
-          parent = if n == 1, do: file.leaf, else: "m#{n - 1}"
-          [JSON.encode!(%{entry | "id" => "m#{n}", "parent_id" => parent}), "\n"]
+          parent = if n == 1, do: file.leaf, else: entry_id("m#{n - 1}")
+          [JSON.encode!(%{entry | "id" => entry_id("m#{n}"), "parent_id" => parent}), "\n"]
         end
 
       File.write!(file.path, copies, [:append])
@@ -855,4 +978,7 @@ defmodule Helyx.Session.FileTest do
       assert id(resumed) == "b00000000000"
     end
   end
+
+  # A valid entry id (`Helyx.Session.Id.valid?/1`) that names its case.
+  defp entry_id(name), do: String.pad_leading(name, 12, "_")
 end
