@@ -5,9 +5,10 @@ defmodule Helyx.Test.ClaudeCodeFake do
   # arguments to `args.N` and each input line to `stdin.N`. It runs
   # `start.N` first; for the K-th user line that starts a query it runs
   # `turn.N.K`, for the Q-th `shouldQuery: false` line `quiet.N.Q` (by
-  # default it writes `out.quiet`: an `init` and the replay result), for a
-  # control request `ctl.N`, for a control response `resp.N`, and at the
-  # end of input `eof.N`. In their output `@U@` is the `uuid` and `@R@` the
+  # default it writes `out.quiet`: an `init` and the replay result), for
+  # the control request `initialize` `init.N`, for another control request
+  # `ctl.N`, for a control response `resp.N`, and at the end of input
+  # `eof.N`. In their output `@U@` is the `uuid` and `@R@` the
   # `request_id` of the line read. The dispatcher of `test_helper.exs` runs
   # it from `bin` next to the session's working directory, so no test
   # changes PATH. The tests that do are in `Helyx.HarnessIO.PathTest`.
@@ -23,6 +24,10 @@ defmodule Helyx.Test.ClaudeCodeFake do
   @sid "4b3c2d1e-0000-4000-8000-000000000001"
 
   def sid, do: @sid
+
+  # The stored id of the harness session `id`, and the id of a stored id.
+  def stored(id), do: Helyx.Provider.ClaudeCode.Program.stored_id(id)
+  def bare(stored), do: hd(String.split(stored, "#"))
 
   @fake """
   #!/bin/sh
@@ -45,6 +50,7 @@ defmodule Helyx.Test.ClaudeCodeFake do
       *'"shouldQuery":false'*) q=$((q+1))
         if [ -f "$d/quiet.$n.$q" ]; then . "$d/quiet.$n.$q"; else out out.quiet; fi ;;
       *'"type":"assistant"'*) ;;
+      *'"subtype":"initialize"'*) [ -f "$d/init.$n" ] && . "$d/init.$n" ;;
       *'"type":"control_request"'*) [ -f "$d/ctl.$n" ] && . "$d/ctl.$n" ;;
       *'"type":"user"'*) k=$((k+1)); [ -f "$d/turn.$n.$k" ] && . "$d/turn.$n.$k" ;;
     esac
@@ -229,7 +235,16 @@ defmodule Helyx.Test.ClaudeCodeFake do
   def args(bin, n),
     do: bin |> Path.join("args.#{n}") |> File.read!() |> String.split("\n", trim: true)
 
-  def stdin(bin, n) do
+  # The lines after the first, the prompt of `initialize/2`.
+  def stdin(bin, n), do: tl(lines(bin, n))
+
+  # The `systemPrompt` of the first line, the control request `initialize`.
+  def initialize(bin, n) do
+    [%{"request" => %{"subtype" => "initialize", "systemPrompt" => system}} | _] = lines(bin, n)
+    system
+  end
+
+  defp lines(bin, n) do
     bin
     |> Path.join("stdin.#{n}")
     |> File.read!()
@@ -351,6 +366,12 @@ defmodule Helyx.Test.ClaudeCodeFake do
     for %{"type" => "control_response", "response" => r} <- stdin(bin, n),
         into: %{},
         do: {r["request_id"], r["response"]["mcp_response"] || r}
+  end
+
+  # With no program, the close answers at once.
+  def closed(%{port: nil} = state) do
+    {from, [{:reply, from, :ok}], _state} = request(state, :close)
+    :ok
   end
 
   def closed(state) do

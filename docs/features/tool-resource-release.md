@@ -49,6 +49,7 @@ The design was reviewed in three rounds on 2026-09-25. The findings are in `docs
 6. A handle that a release leaves unconfirmed gets no second release. From then on, the hands refuse every tool call and every provider start, until the session stops. Revision of 2026-10-16: the retry of unconfirmed handles is removed. Before it, the hands called `release(unconfirmed, :retry, deadline)` before each call, with one deadline of 1,000 ms for all modules, and calls ran again when the retry confirmed every handle. No run, issue, or research note showed a handle that a retry confirmed. Removed capability: recovery from an unconfirmed handle without a restart of the session.
 7. A call to `hold/1` from a tool whose module does not export `release/3` raises in the tool Task, so the call ends with an error result before any external work starts.
 8. A call to `hold/1` from a process outside the hands exits, so no external work starts. An older Core made it a no-op, so a bare unit test of a tool could hold with no hands; such a test now gives the tool a fake hands process.
+9. Revision of 2026-10-17 (#651): `Helyx.Tool.unhold/1` drops handles whose resources the caller released itself with its own `release/3`, and only the handles that the release confirmed. A harness provider replaces its program at a turn start, so without it the hands held two handles per relaunch until the provider process ended, and the release at that end signalled group ids that the OS could have given to other processes. A handle that the caller does not hold changes nothing.
 
 `Helyx.Tool.Bash`:
 
@@ -58,6 +59,7 @@ The design was reviewed in three rounds on 2026-09-25. The findings are in `docs
 - `Helyx.Tool.Bash.Group` (now `Helyx.Watchdog.Group`, #10) receives the code that leaves `lib/helyx/session/hands.ex`: `signal`, `await_gone`, `poll_gone`, `kill_and_wait`, `sweep_watchdogs`, `split_kinds`, and the `kill_cmd` test hook, which becomes the `kill` argument of `Group.release/4`.
 - The order does not change: command groups first, the watchdog last, so the watchdog can reap its child before a KILL. A zombie child stays in its group until it is reaped, so this order also prevents an endless poll.
 - The mode selects today's sequences. `:deliver` is KILL, wait, then the watchdog sweep. `:cancel` is TERM, 500 ms grace, KILL, wait, then the watchdog sweep.
+- Revision of 2026-10-17 (#651): the release probes every group once before any signal or wait, and a group that is gone drops out. Before it, a command group that stayed to the deadline kept the watchdog handles, which the release probes only after the commands, even when those watchdogs were gone.
 - The plugin computes its waits from the deadline. It never waits past it, and it starts no `kill` run at or after it: a probe that it skips counts the group as alive. A group is gone only when `kill` reports "No such process"; any other failure keeps the handle held. The watchdog KILL comes after one wait of 5,000 ms, so it needs that much time before the deadline.
 
 ## Bounds

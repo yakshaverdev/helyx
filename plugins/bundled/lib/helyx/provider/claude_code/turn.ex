@@ -45,7 +45,7 @@ defmodule Helyx.Provider.ClaudeCode.Turn do
 
   alias Helyx.HarnessIO
   alias Helyx.Message
-  alias Helyx.Provider.ClaudeCode.Meter
+  alias Helyx.Provider.ClaudeCode.{Mcp, Meter}
 
   # The program started the turn's line (`command_lifecycle` `started`).
   defguard started?(turn) when turn.messages == nil
@@ -91,8 +91,16 @@ defmodule Helyx.Provider.ClaudeCode.Turn do
   # The text of an assistant line already came as deltas; only its tool
   # calls are new.
   def assistant(blocks) do
+    # The model sees a Helyx tool as `mcp__helyx__<name>`; the transcript
+    # has its Helyx name, as with any provider.
     for %{"type" => "tool_use", "id" => id, "name" => name, "input" => %{} = input} <- blocks,
-        do: {:tool_call, %Message.ToolCall{id: id, name: name, arguments: input}}
+        do:
+          {:tool_call,
+           %Message.ToolCall{
+             id: id,
+             name: Mcp.helyx_name(name),
+             arguments: input
+           }}
   end
 
   # The tool results of a user line. The session closes the assistant

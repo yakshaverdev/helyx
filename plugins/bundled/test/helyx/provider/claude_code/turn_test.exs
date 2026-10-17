@@ -28,7 +28,12 @@ defmodule Helyx.Provider.ClaudeCode.TurnTest do
     # over the cut.
     missing = Path.join([work | List.duplicate(String.duplicate("d", 200), 16)])
 
-    assert {:error, {:not_started, text}} = ClaudeCode.init("m", [], cwd: missing)
+    {:ok, state} = ClaudeCode.init("m", [], cwd: missing)
+    context = %Helyx.Context{messages: [Message.user("x")]}
+
+    assert {_from, [{:reply, _, {:error, {:not_started, text}}}], _state} =
+             request(state, {:turn, "t1", context})
+
     assert byte_size(text) == 2_000
   end
 
@@ -59,7 +64,8 @@ defmodule Helyx.Provider.ClaudeCode.TurnTest do
     assert [%{provider: "claude-code", resume_id: id, lost: false, cut: 0}] =
              of_type(events, :resume_id)
 
-    assert "--session-id=#{id}" in args(bin, 1)
+    assert id == stored(bare(id))
+    assert "--session-id=#{bare(id)}" in args(bin, 1)
     assert "--permission-mode" in args(bin, 1)
     assert "bypassPermissions" in args(bin, 1)
     assert "--model=haiku" in args(bin, 1)
@@ -130,7 +136,7 @@ defmodule Helyx.Provider.ClaudeCode.TurnTest do
     session = resume(ctx)
     prompt(session, "back")
 
-    assert "--resume=#{id}" in args(bin, 2)
+    assert "--resume=#{bare(id)}" in args(bin, 2)
     assert [%{"message" => %{"content" => [%{"text" => "back"}]}}] = stdin(bin, 2)
   end
 
@@ -146,7 +152,7 @@ defmodule Helyx.Provider.ClaudeCode.TurnTest do
 
     events = prompt(resume(ctx), "again")
 
-    assert "--resume=#{old}" in args(bin, 2)
+    assert "--resume=#{bare(old)}" in args(bin, 2)
     refute resume_flag?(bin, 3)
 
     assert [
@@ -167,7 +173,7 @@ defmodule Helyx.Provider.ClaudeCode.TurnTest do
 
     assert [%{resume_id: fresh, lost: true, cut: 0}] = of_type(events, :resume_id)
     assert fresh != old
-    assert "--session-id=#{fresh}" in args(bin, 3)
+    assert "--session-id=#{bare(fresh)}" in args(bin, 3)
 
     assert [%Message{role: :user}, %Message{content: [%Message.Text{text: "Fresh."}]}] =
              messages(events)

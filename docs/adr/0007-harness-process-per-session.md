@@ -49,3 +49,7 @@ Three statements of this ADR no longer match the code (`docs/reviews/2026-10-12-
 ## Update 2026-10-16
 
 #627 replaces "Approvals stay `accept` until a UI ticket" in the Consequences. The launch flags make an approval request impossible: Claude Code runs with `bypassPermissions` and no `--permission-prompt-tool`, and the Codex thread runs with `approvalPolicy: "never"`. So both adapters give an approval request the error response of every other server request. Removed capability: an approval request that the launch mode should not send is refused, not accepted. This is not measured against a live harness. A UI ticket that adds approvals makes a new decision.
+
+## Update 2026-10-17
+
+#651 (ADR 0002, revision of 2026-10-17) replaces "The harness gets the Helyx tools next to its own tools" in the Decision: the harness gets exactly the session's tools, and its own tools are off where the program allows it. A Claude program starts at the first turn, not in `init/3`, because its prompt comes with the turn; a Codex program starts in `init/3` and opens its thread at the first turn. A changed prompt at a turn start restarts the program with a resume of its harness session.

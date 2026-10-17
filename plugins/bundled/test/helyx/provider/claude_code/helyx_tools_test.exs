@@ -16,8 +16,7 @@ defmodule Helyx.Provider.ClaudeCode.HelyxToolsTest do
   describe "the Helyx tools" do
     @spec_bash %{name: "bash", description: "Runs a command.", parameters: %{"type" => "object"}}
 
-    # The Helyx file tools, which a harness does not get: it keeps its own
-    # (#478).
+    # The Helyx file tools, which the program gets as any other tool.
     @file_tools for name <- ~w(read edit write),
                     do: %{name: name, description: "", parameters: %{}}
 
@@ -37,13 +36,30 @@ defmodule Helyx.Provider.ClaudeCode.HelyxToolsTest do
       end)
     end
 
-    test "the program gets the MCP config of the always loaded helyx server, not the strict switch, and no shell of its own",
+    test "the program starts at the first turn with only the helyx server, no tools and no user config of its own, and the turn's prompt",
          %{bin: bin, work: work} do
-      closed(harness(work))
+      state = harness(work)
+      assert state.port == nil
+      context = %Helyx.Context{system: "Be brief.", messages: [Message.user("x")]}
+      {_from, _actions, state} = request(state, {:turn, "t1", context})
+      closed(state)
       args = args(bin, 1)
-      assert "--disallowedTools=Bash,Monitor" in args
       assert ~s({"mcpServers":{"helyx":{"type":"sdk","name":"helyx","alwaysLoad":true}}}) in args
-      refute "--strict-mcp-config" in args
+
+      for flag <- ~w(--tools= --setting-sources= --strict-mcp-config --system-prompt=
+                     --system-prompt-snapshot=off),
+          do: assert(flag in args)
+
+      refute Enum.any?(args, &String.starts_with?(&1, "--disallowedTools"))
+      assert initialize(bin, 1) == "Be brief."
+    end
+
+    test "a nil system is the empty prompt, never the program's own", %{bin: bin, work: work} do
+      {_from, _actions, state} =
+        request(harness(work), {:turn, "t1", %Helyx.Context{messages: [Message.user("x")]}})
+
+      closed(state)
+      assert initialize(bin, 1) == ""
     end
 
     test "answers each initialize, the notifications, and tools/list", %{bin: bin, work: work} do
@@ -67,6 +83,10 @@ defmodule Helyx.Provider.ClaudeCode.HelyxToolsTest do
       ])
 
       {:ok, state} = ClaudeCode.init("haiku", @file_tools ++ [@spec_bash], cwd: work)
+
+      {_from, _actions, state} =
+        request(state, {:turn, "t1", %Helyx.Context{messages: [Message.user("x")]}})
+
       closed(settle(ClaudeCode, state, &marked?/1))
 
       result = %{
@@ -75,13 +95,13 @@ defmodule Helyx.Provider.ClaudeCode.HelyxToolsTest do
         "serverInfo" => %{"name" => "helyx", "version" => "0.1.0"}
       }
 
-      tools = [
-        %{
-          "name" => "bash",
-          "description" => "Runs a command.",
-          "inputSchema" => %{"type" => "object"}
-        }
-      ]
+      tools =
+        for spec <- @file_tools ++ [@spec_bash],
+            do: %{
+              "name" => spec.name,
+              "description" => spec.description,
+              "inputSchema" => spec.parameters
+            }
 
       assert %{
                "i1" => %{"id" => 0, "result" => ^result},
@@ -120,7 +140,7 @@ defmodule Helyx.Provider.ClaudeCode.HelyxToolsTest do
              } = answers(bin, 1)
     end
 
-    test "a tools/call with no tool use id, with no turn, or of a tool not given gets an error",
+    test "a tools/call with no tool use id, before the turn's start, or of a tool not given gets an error",
          %{bin: bin, work: work} do
       script(bin, "start.1", [call("n1", 1, "toolu_early"), marker()])
       no_params = %{jsonrpc: "2.0", id: 3, method: "tools/call"}
@@ -140,8 +160,7 @@ defmodule Helyx.Provider.ClaudeCode.HelyxToolsTest do
           ]
       )
 
-      {:ok, state} = ClaudeCode.init("haiku", @file_tools ++ [@spec_bash], cwd: work)
-      state = settle(ClaudeCode, state, &marked?/1)
+      {:ok, state} = ClaudeCode.init("haiku", [@spec_bash], cwd: work)
 
       {_from, actions, state} =
         request(state, {:turn, "t1", %Helyx.Context{messages: [Message.user("x")]}})
@@ -258,7 +277,7 @@ defmodule Helyx.Provider.ClaudeCode.HelyxToolsTest do
       calls =
         for %Message{content: blocks} <- transcript, %Message.ToolCall{} = c <- blocks, do: c
 
-      assert [%Message.ToolCall{id: "toolu_h1", name: "mcp__helyx__bash"}] = calls
+      assert [%Message.ToolCall{id: "toolu_h1", name: "bash"}] = calls
 
       assert [%Message{tool_call_id: "toolu_h1"}] =
                for(%Message{role: :tool_result} = m <- transcript, do: m)

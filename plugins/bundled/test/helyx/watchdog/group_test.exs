@@ -117,6 +117,15 @@ defmodule Helyx.Watchdog.GroupTest do
     assert signals() == [{"-TERM", ["-100"]}, {"-KILL", ["-100"]}]
   end
 
+  test "a group that stays to the deadline does not keep the handles of gone groups" do
+    handles = [command: 7, watchdog: 6, command: 9, watchdog: 8, command: 11, watchdog: 10]
+    kill = fake_kill([7])
+
+    assert Group.release(handles, :cancel, deadline(300), grace_ms: 5_000, kill: kill) == [
+             command: 7
+           ]
+  end
+
   test "a group below 2 is never signalled" do
     kill = fake_kill([])
     handles = [{:command, 1}, {:watchdog, 0}, {:command, -1}]

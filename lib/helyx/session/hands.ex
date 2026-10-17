@@ -16,7 +16,9 @@ defmodule Helyx.Session.Hands do
   `Helyx.Reason.text/1` of its reason; a return outside the contract and
   a handle that is not released give a fixed text. The log gets the term.
 
-  A tool holds each OS resource that it creates with `Helyx.Tool.hold/1`.
+  A tool holds each OS resource that it creates with `Helyx.Tool.hold/1`,
+  and drops a handle whose resource it released itself with
+  `Helyx.Tool.unhold/1`.
   When a call ends, however its Task ended, the hands call the tool's
   `release/3` with the handles of the Task, if it holds any. The result
   goes to the session after the release. An unconfirmed handle gets no
@@ -171,6 +173,10 @@ defmodule Helyx.Session.Hands do
         end
     end
   end
+
+  # The caller released these handles itself (`Helyx.Tool.unhold/1`).
+  def handle_call({:unhold, handles}, {pid, _tag}, state),
+    do: {:reply, :ok, %{state | held: Map.replace_lazy(state.held, pid, &(&1 -- handles))}}
 
   # A place among the background runs, for a tool call Task. The live
   # runs are the other Tasks with a place: a second call of the Task keeps

@@ -209,7 +209,9 @@ defmodule Helyx.Provider.ClaudeCode.CompactTest do
 
     turn(bin, 1, 1, begin() ++ failed)
 
-    {_from, actions, state} = request(harness(work, resume_id: sid()), {:compact, "t1", ""})
+    {_from, actions, state} =
+      request(harness(work, resume_id: stored(sid())), {:compact, "t1", ""})
+
     {actions, _state} = pump(ClaudeCode, state, actions, &ended?/1)
 
     assert [{:error, {:compaction_failed, "Not enough messages."}}] = events_of(actions)
@@ -220,30 +222,38 @@ defmodule Helyx.Provider.ClaudeCode.CompactTest do
   test "a compaction turn with no boundary ends with no event", %{bin: bin, work: work} do
     turn(bin, 1, 1, begin() ++ [result("done", 0)])
 
-    {_from, actions, state} = request(harness(work, resume_id: sid()), {:compact, "t1", ""})
+    {_from, actions, state} =
+      request(harness(work, resume_id: stored(sid())), {:compact, "t1", ""})
+
     {actions, _state} = pump(ClaudeCode, state, actions, &ended?/1)
 
     assert [{:done, _}] = events_of(actions)
   end
 
-  test "a fresh program has no history: the compaction fails, and nothing is written",
+  test "a fresh session has no history: the compaction fails, and no program starts",
        %{bin: bin, work: work} do
     state = harness(work)
     assert {from, actions, state} = request(state, {:compact, "t1", "x"})
     assert [{:reply, ^from, :ok}, {:event, "t1", {:error, {:compaction_failed, _}}}] = actions
     assert state.turn == nil and not state.sent?
     closed(state)
-    assert stdin(bin, 1) == []
+    refute File.exists?(Path.join(bin, "count"))
   end
 
   test "a lost session during a compaction fails it on the fresh program", %{bin: bin, work: work} do
     script(bin, "start.1", [lost(sid())], "exit 1\n")
 
-    {_from, actions, state} = request(harness(work, resume_id: sid()), {:compact, "t1", ""})
+    {_from, actions, state} =
+      request(harness(work, resume_id: stored(sid())), {:compact, "t1", ""})
+
     {actions, state} = pump(ClaudeCode, state, actions, &ended?/1)
 
     assert [{:error, {:compaction_failed, "no history in the program yet"}}] = events_of(actions)
     assert state.turn == nil and not state.sent?
+    # The lost program exits by itself; the release of its groups waits up
+    # to 500 ms (`HarnessIO`), ten watchdog ticks of 50 ms, the margin for
+    # load.
+    assert [command: _, watchdog: _] = Enum.sort(Helyx.Test.Hands.held())
     closed(state)
     assert programs(bin) == "2"
     assert stdin(bin, 2) == []

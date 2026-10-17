@@ -172,6 +172,20 @@ defmodule Helyx.Tool do
   end
 
   @doc """
+  Ends the hold of handles whose resources the caller released itself
+  with its own `release/3`, such as the program of a provider process that
+  another program replaced. Only a handle that the release confirmed may
+  go: the hands then do not release it again. A handle that the caller
+  does not hold changes nothing. Exits outside the hands, as `hold/1`.
+  """
+  @spec unhold([term()]) :: :ok
+  def unhold(handles) when is_list(handles) do
+    # An improper list fails here, in the caller, and not in the hands.
+    false = List.improper?(handles)
+    GenServer.call(Process.get(:helyx_hands), {:unhold, handles}, :infinity)
+  end
+
+  @doc """
   Takes a place for a background run of the calling tool call, before its
   external work starts. Returns the id of the run and the background
   folder of the session, mode `0700`, which the session deletes at its

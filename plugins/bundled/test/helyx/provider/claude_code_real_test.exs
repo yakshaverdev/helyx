@@ -54,7 +54,7 @@ defmodule Helyx.Provider.ClaudeCodeRealTest do
           %Message.ToolCall{name: name} <- blocks,
           do: name
 
-    assert names == ["mcp__helyx__bash"]
+    assert names == ["bash"]
 
     GenServer.stop(Session.pid(session))
   end

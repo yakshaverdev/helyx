@@ -147,6 +147,12 @@ defmodule Helyx.Provider.Codex.Items do
   def error_message(%{"error" => %{"message" => message}}) when is_binary(message), do: message
   def error_message(_map), do: nil
 
+  # A Helyx tool call has the Helyx name and arguments, as with an API
+  # provider (`docs/features/provider-parity.md`).
+  defp tool_call(%{"type" => "dynamicToolCall", "id" => id, "tool" => tool, "arguments" => args})
+       when is_binary(tool) and is_map(args),
+       do: {:tool_call, %Message.ToolCall{id: id, name: tool, arguments: args}}
+
   defp tool_call(%{"type" => type, "id" => id} = item),
     do: {:tool_call, %Message.ToolCall{id: id, name: type, arguments: arguments(item)}}
 
@@ -158,20 +164,35 @@ defmodule Helyx.Provider.Codex.Items do
       |> Map.drop(["id", "type", "status"])
       |> Map.reject(fn {_key, value} -> value == nil end)
 
-  # A command gives its output; any other tool item gives its fields as
-  # JSON.
+  # A command gives its output, and a Helyx tool call the content of its
+  # answer; any other tool item gives its fields as JSON.
   defp tool_result(item) do
     text =
       case item do
-        %{"type" => "commandExecution", "aggregatedOutput" => out} when is_binary(out) -> out
-        %{"type" => "commandExecution"} -> ""
-        _ -> JSON.encode!(Map.drop(item, ["id", "type"]))
+        %{"type" => "commandExecution", "aggregatedOutput" => out} when is_binary(out) ->
+          out
+
+        %{"type" => "commandExecution"} ->
+          ""
+
+        %{"type" => "dynamicToolCall", "contentItems" => [_ | _] = content} ->
+          content_text(content)
+
+        _ ->
+          JSON.encode!(Map.drop(item, ["id", "type"]))
       end
 
-    failed? =
-      item["status"] in ["failed", "declined"] or item["error"] != nil or
-        (is_integer(item["exitCode"]) and item["exitCode"] != 0)
+    {if(failed?(item), do: :error, else: :ok), Helyx.Text.truncate(text, :tail)}
+  end
 
-    {if(failed?, do: :error, else: :ok), Helyx.Text.truncate(text, :tail)}
+  defp failed?(item),
+    do:
+      item["status"] in ["failed", "declined"] or item["error"] != nil or
+        item["success"] == false or (is_integer(item["exitCode"]) and item["exitCode"] != 0)
+
+  # Helyx answers with text items only (`Helyx.Provider.Codex`).
+  defp content_text(content) do
+    texts = for %{"type" => "inputText", "text" => text} when is_binary(text) <- content, do: text
+    Enum.join(texts, "\n")
   end
 end

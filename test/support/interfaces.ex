@@ -658,8 +658,9 @@ end
 
 defmodule Helyx.Test.Tool.Hold do
   @moduledoc false
-  # Holds the handles in "handles" with the hands, then sleeps "ms", so tests
-  # can drive the release without an OS resource. Its release acts on the
+  # Holds the handles in "handles" with the hands, lets go of those in
+  # "unhold", then sleeps "ms", so tests can drive the release without an
+  # OS resource. Its release acts on the
   # handles it gets:
   #
   #   {:report, pid}  records the release, see `Helyx.Test.Released`
@@ -677,6 +678,7 @@ defmodule Helyx.Test.Tool.Hold do
   @impl true
   def run(%{"handles" => handles} = args, _cwd) do
     Enum.each(handles, &Helyx.Tool.hold/1)
+    with %{"unhold" => gone} <- args, do: Helyx.Tool.unhold(gone)
     Process.sleep(Map.get(args, "ms", 0))
     {:ok, "held"}
   end

@@ -10,33 +10,14 @@ defmodule Helyx.Provider.Codex.Tools do
   alias Helyx.HarnessIO
   alias Helyx.Message
 
-  # The hex digits of the tool set digest in a stored id.
-  @digest_hex 16
-
   def initialize_params([]), do: %{clientInfo: %{name: "helyx", version: "0"}}
 
   def initialize_params(_specs),
     do: Map.put(initialize_params([]), :capabilities, %{experimentalApi: true})
 
-  # The stored id names the thread and the digest of its Helyx tools. A
-  # thread whose tool set is not the session's is not resumed: its tool
-  # set is fixed (research note), so a new thread starts with the replay.
-  def resumable(nil, _specs), do: nil
-
-  def resumable(id, specs) do
-    case String.split(id, "#", parts: 2) do
-      [thread, digest] -> if digest == digest(specs), do: thread
-      [thread] -> if specs == [], do: thread
-    end
-  end
-
-  # The stored id can add `#` and the digest to the thread id, so the
-  # thread id must pass `Message.resume_id?/1` with that room kept free.
-  def storable?(thread),
-    do: Message.resume_id?(thread <> "#" <> String.duplicate("0", @digest_hex))
-
-  def session_id(thread, []), do: thread
-  def session_id(thread, specs), do: thread <> "#" <> digest(specs)
+  # The stored id of the thread (`HarnessIO.session_id/2`) must pass
+  # `Message.resume_id?/1`.
+  def storable?(thread), do: Message.resume_id?(HarnessIO.session_id(thread, []))
 
   # The `dynamicTools` of `thread/start`.
   def specs(specs) do
@@ -48,9 +29,6 @@ defmodule Helyx.Provider.Codex.Tools do
           inputSchema: tool.parameters
         }
   end
-
-  defp digest([]), do: nil
-  defp digest(specs), do: HarnessIO.hex_digest(JSON.encode!(specs(specs)), @digest_hex)
 
   # The admission of an `item/tool/call`, with the provider state as a map:
   # the call maps to an open `dynamicToolCall` item of the running turn,

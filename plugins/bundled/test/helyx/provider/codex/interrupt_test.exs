@@ -74,7 +74,13 @@ defmodule Helyx.Provider.Codex.InterruptTest do
     {from, [], state} = ask(state, {:interrupt, "t1"})
     {actions, _state} = pump(Codex, state, [], replied?(from))
 
-    assert [{:reply, ^turn, :ok}, {:event, "t1", {:error, _}}, {:reply, ^from, :ok}] = actions
+    assert [
+             {:event, "t1", {:resume_id, _, 0}},
+             {:reply, ^turn, :ok},
+             {:event, "t1", {:error, _}},
+             {:reply, ^from, :ok}
+           ] = actions
+
     assert %{"params" => %{"turnId" => "turn1"}} = request(bin, 1, "turn/interrupt")
   end
 

@@ -4,25 +4,28 @@ defmodule Helyx.Provider.Codex do
   program, with its shell off, by JSON-RPC lines of `codex app-server` on stdio.
   The model ref is `codex/<model>`, where `<model>` is a model id of `codex`.
 
-  One program serves the session's provider process. `init/3` returns when its
-  thread is ready: `thread/resume` with `:resume_id`, or `thread/start`. A
-  `{:turn, ...}` is `turn/start`, a steer is `turn/steer`, and an interrupt is
-  `turn/interrupt`, or `{:error, :command_running}` or `{:error, :agent_running}`
-  when open work would outlive it. The Helyx tools except the file tools go to
-  the thread as `dynamicTools`. A line that fails the shape check, a turn that
-  Helyx did not ask for, and the program's exit stop the provider process.
+  One program serves the session's provider process. `init/3` returns when it
+  answered `initialize`. The first request opens the thread with the turn's
+  system prompt as `baseInstructions`: `thread/resume` with `:resume_id`, or
+  `thread/start`; a later prompt change starts a new program that resumes the
+  thread. A `{:turn, ...}` is `turn/start`, a steer is `turn/steer`, and an
+  interrupt is `turn/interrupt`, or `{:error, :command_running}` or
+  `{:error, :agent_running}` when open work would outlive it. The session's
+  tools go to the thread as `dynamicTools`, and the user's config is off where
+  the program lets it be. A line that fails the shape check, a turn that Helyx
+  did not ask for, and the program's exit stop the provider process.
 
   The full contract is in `docs/features/long-lived-harness.md`, section
-  "Codex". The protocol facts are in `docs/research/codex-app-server.md`.
+  "Codex", and `docs/features/provider-parity.md`. The protocol facts are in
+  `docs/research/codex-app-server.md`.
   """
 
   @behaviour Helyx.Provider
 
   alias Helyx.{HarnessIO, Message, ModelInfo}
-  alias Helyx.Provider.Codex.{Check, Items, Replay, State, Tools}
+  alias Helyx.Provider.Codex.{Check, Items, Program, Replay, State, Tools}
 
-  @trust %{approvalPolicy: "never", sandbox: "danger-full-access"}
-  @args ~w(app-server --disable shell_tool --disable unified_exec)
+  import Helyx.Provider.Codex.Wire
 
   @impl true
   def id, do: "codex"
@@ -34,25 +37,25 @@ defmodule Helyx.Provider.Codex do
   def init(model, tools, opts) do
     with {:ok, info} <- ModelInfo.lookup(id(), "openai", model),
          {:ok, exe} <- HarnessIO.find("codex") do
-      tools = HarnessIO.harness_tools(tools)
-
       state = %State{
+        exe: exe,
         model: model,
         items: %Items{info: info},
         tools: %Tools{specs: tools},
         cwd: Keyword.fetch!(opts, :cwd),
-        resume: Tools.resumable(opts[:resume_id], tools)
+        resume: Program.resumable(opts[:resume_id], tools)
       }
 
-      case HarnessIO.launch(exe, @args, state.cwd, state) do
+      case Program.launch(state) do
         %State{terminal: {:error, reason}} -> {:error, reason}
-        state -> handshake(rpc(state, "initialize", Tools.initialize_params(tools)))
+        state -> handshake(state)
       end
     end
   end
 
-  # Reads the program's lines until the thread is ready. The connect kill of Core bounds
-  # the wait. Only the port's messages are taken: any other stays for the provider loop.
+  # Reads the program's lines until `initialize` has its answer. The connect kill of Core
+  # bounds the wait. Only the port's messages are taken: any other stays for the provider
+  # loop.
   defp handshake(%State{port: port} = state) do
     message =
       receive do
@@ -61,7 +64,7 @@ defmodule Helyx.Provider.Codex do
 
     case HarnessIO.port_message(message, state, &translate/2) do
       {:lines, _, %State{terminal: {:error, reason}}} -> {:error, reason}
-      {:lines, _, %State{thread: nil} = state} -> handshake(state)
+      {:lines, _, %State{due: due} = state} when map_size(due) > 0 -> handshake(state)
       {:lines, _, state} -> {:ok, state}
       {:exit, status} -> {:error, {:codex_exit, status}}
     end
@@ -69,27 +72,25 @@ defmodule Helyx.Provider.Codex do
 
   @impl true
   def request(
-        {:turn, turn_id, %Helyx.Context{messages: messages}},
+        {:turn, turn_id, %Helyx.Context{messages: messages, system: system}},
         from,
         %State{turn_id: nil} = state
       ) do
     {prompt, history} = HarnessIO.split_prompt(messages)
-    state = %{state | turn_id: turn_id, from: from, prompt: prompt}
-
-    actions(
-      if state.fresh?, do: replay(history, %{state | fresh?: false}), else: start_turn(state)
-    )
+    state = %{state | turn_id: turn_id, from: from, prompt: prompt, history: history}
+    actions(thread(state, system || ""))
   end
 
   # A compaction is `thread/compact/start`; its turn id comes with `turn/started` (`turn`
-  # is `:compact` until then). A fresh thread has no history yet. No instructions.
-  def request({:compact, turn_id, _text}, from, %State{turn_id: nil, fresh?: true} = state),
-    do: {:ok, [{:reply, from, :ok}, {:event, turn_id, HarnessIO.no_history()}], state}
+  # is `:compact` until then). A fresh thread has no history yet. No instructions. It
+  # keeps the thread's prompt; a stored thread opens with the empty one.
+  def request({:compact, turn_id, _text}, from, %State{turn_id: nil} = state)
+      when state.thread == nil and state.resume == nil,
+      do: {:ok, [{:reply, from, :ok}, {:event, turn_id, HarnessIO.no_history()}], state}
 
   def request({:compact, turn_id, _text}, from, %State{turn_id: nil} = state) do
-    items = %{state.items | compact?: true}
-    state = %{state | turn_id: turn_id, from: from, turn: :compact, items: items}
-    actions(rpc(state, "thread/compact/start", %{threadId: state.thread}))
+    state = %{state | turn_id: turn_id, from: from, turn: :compact}
+    actions(thread(state, state.system || ""))
   end
 
   # An open command, and a child thread's work, outlive `turn/interrupt`
@@ -159,17 +160,6 @@ defmodule Helyx.Provider.Codex do
     end
   end
 
-  defp actions(state), do: {:ok, Enum.reverse(state.out), %{state | out: []}}
-
-  # The output of the lines before the terminal line goes out first.
-  defp stop(reason, state), do: {:stop, reason, Enum.reverse(state.out), %{state | out: []}}
-
-  defp reply(state, from, value), do: %{state | out: [{:reply, from, value} | state.out]}
-
-  # `events` in order; `out` is newest first.
-  defp push(state, events),
-    do: %{state | out: Enum.reverse(Enum.map(events, &{:event, state.turn_id, &1}), state.out)}
-
   # Output
 
   # At `turn/completed`: the terminal, the answer to an interrupt, and the
@@ -181,24 +171,20 @@ defmodule Helyx.Provider.Codex do
     if reason = outlives(state) do
       %{state | terminal: {:error, reason}}
     else
-      state = push(state, [terminal])
-
-      state =
-        case state.interrupt do
-          {:pending, from} ->
-            reply(%{state | interrupt: nil}, from, :ok)
-
-          # A later answer to the request is not due, and is dropped.
-          {:sent, from, id} ->
-            reply(%{state | interrupt: nil, due: Map.delete(state.due, id)}, from, :ok)
-
-          nil ->
-            state
-        end
-
+      state = interrupted(push(state, [terminal]))
       %{state | turn_id: nil, turn: nil, items: Items.next(terminal, state.items)}
     end
   end
+
+  # The interrupt ends with the turn. A later answer to a sent request is
+  # not due, and is dropped.
+  defp interrupted(%State{interrupt: {:pending, from}} = state),
+    do: reply(%{state | interrupt: nil}, from, :ok)
+
+  defp interrupted(%State{interrupt: {:sent, from, id}} = state),
+    do: reply(%{state | interrupt: nil, due: Map.delete(state.due, id)}, from, :ok)
+
+  defp interrupted(state), do: state
 
   # Why the turn's work can outlive its end, or nil.
   defp outlives(state) do
@@ -260,25 +246,22 @@ defmodule Helyx.Provider.Codex do
 
   defp dispatch(_object, state), do: {[], state}
 
+  # A program of a prompt change has a waiting request: its thread opens now.
   defp answered("initialize", %{"result" => _}, state) do
     send_line(state, %{method: "initialized"})
-
-    if state.resume do
-      params = Map.merge(thread_params(state), %{threadId: state.resume, excludeTurns: true})
-      {[], rpc(state, "thread/resume", params)}
-    else
-      {[], start_thread(state)}
-    end
+    {[], if(state.turn_id, do: Program.open_thread(state), else: state)}
   end
 
   # The program has no such thread: a fresh one starts on the same run.
-  defp answered("thread/resume", %{"error" => _}, state), do: {[], start_thread(state)}
+  defp answered("thread/resume", %{"error" => _}, state),
+    do: {[], Program.open_thread(%{state | resume: nil})}
 
-  # The thread's digest is the session's (`Tools.resumable/2`).
-  defp answered("thread/resume", _response, state), do: {[], %{state | thread: state.resume}}
+  # The thread's digest is the session's (`HarnessIO.resumable/2`).
+  defp answered("thread/resume", _response, state),
+    do: {[], opened(%{state | thread: state.resume})}
 
   defp answered("thread/start", %{"result" => %{"thread" => %{"id" => thread}}}, state),
-    do: {[], %{state | thread: thread, fresh?: true}}
+    do: {[], opened(%{state | thread: thread, fresh?: true})}
 
   defp answered(method, response, state)
        when method in [
@@ -428,15 +411,30 @@ defmodule Helyx.Provider.Codex do
 
   # Input
 
-  defp thread_params(state), do: Map.merge(@trust, %{model: state.model, cwd: state.cwd})
+  # The thread of a request runs with the prompt `system`
+  # (`docs/features/provider-parity.md`).
+  defp thread(%State{thread: nil} = state, system),
+    do: Program.open_thread(%{state | system: system})
 
-  defp start_thread(%State{tools: %Tools{specs: []}} = state),
-    do: rpc(state, "thread/start", thread_params(state))
+  defp thread(%State{system: system} = state, system), do: opened(state)
+  defp thread(state, system), do: Program.replace(state, system)
 
-  defp start_thread(state) do
-    params = Map.put(thread_params(state), :dynamicTools, Tools.specs(state.tools.specs))
-    rpc(state, "thread/start", params)
+  # The thread is open: the waiting request goes on.
+  defp opened(%State{turn: :compact, fresh?: true} = state) do
+    # An interrupt of the compaction waits for its turn, and none comes.
+    state = interrupted(push(reply(state, state.from, :ok), [HarnessIO.no_history()]))
+    %{state | turn_id: nil, turn: nil, from: nil}
   end
+
+  defp opened(%State{turn: :compact} = state) do
+    state = %{state | items: %{state.items | compact?: true}}
+    rpc(state, "thread/compact/start", %{threadId: state.thread})
+  end
+
+  defp opened(%State{fresh?: true} = state),
+    do: replay(state.history, %{state | fresh?: false, history: nil})
+
+  defp opened(state), do: start_turn(%{state | history: nil})
 
   defp tool_answer(state, rpc_id, status, text) do
     result = %{contentItems: [%{type: "inputText", text: text}], success: status == :ok}
@@ -448,7 +446,11 @@ defmodule Helyx.Provider.Codex do
   # any. The turn's `turn/start` waits for the replay's answer.
   defp replay(history, state) do
     {items, cut} = Replay.items(history)
-    state = push(state, [{:resume_id, Tools.session_id(state.thread, state.tools.specs), cut}])
+
+    state =
+      push(state, [
+        {:resume_id, Program.stored_id(state.thread, state.tools.specs), cut}
+      ])
 
     if items == [] do
       start_turn(state)
@@ -477,17 +479,4 @@ defmodule Helyx.Provider.Codex do
 
     rpc(%{state | prompt: nil}, "turn/start", %{threadId: state.thread, input: input})
   end
-
-  defp rpc(state, method, params) do
-    {id, state} = open(state, method)
-    send_line(state, %{id: id, method: method, params: params})
-    state
-  end
-
-  # A new request id, due until its answer.
-  defp open(%State{next_id: id} = state, method),
-    do: {id, %{state | next_id: id + 1, due: Map.put(state.due, id, method)}}
-
-  defp send_line(state, %{} = map), do: send_line(state, JSON.encode!(map))
-  defp send_line(state, line), do: HarnessIO.write(state, [line, "\n"])
 end

@@ -9,13 +9,15 @@ defmodule Helyx.Provider.ClaudeCode do
   `uuid`, and it ends at a `result` with `queued_turn_count` 0 and no unresolved
   steer. A steer is one more user line, and an interrupt is the control request
   `interrupt` with `cancel_queued: true`. An `init` line with no Helyx turn
-  starts a program turn. The program's shell is off. The Helyx tools except the
-  file tools are an SDK MCP server named `helyx`. A fresh harness session gets
-  the rest of the transcript as a replay before the first turn's line.
+  starts a program turn. The model gets the turn's system prompt in place of
+  the program's own, and exactly the session's tools, as an SDK MCP server
+  named `helyx`; the program's tools and the user's config are off, except
+  the managed settings (ADR 0002). A fresh harness session gets the rest of
+  the transcript as a replay before the first turn's line.
 
   The full contract is in `docs/features/long-lived-harness.md`, section
-  "Claude Code". The protocol facts are in
-  `docs/research/claude-code-stream-json.md`.
+  "Claude Code", and `docs/features/provider-parity.md`. The protocol facts
+  are in `docs/research/claude-code-stream-json.md`.
   """
 
   @behaviour Helyx.Provider
@@ -26,47 +28,10 @@ defmodule Helyx.Provider.ClaudeCode do
   @steer_wait_ms 5_000
 
   alias Helyx.{HarnessIO, Message, ModelInfo}
-  alias Helyx.Provider.ClaudeCode.{Mcp, Meter, Replay, Turn, Turn.Interrupt}
+  alias Helyx.Provider.ClaudeCode.{Mcp, Meter, Program, Replay, State, Turn, Turn.Interrupt}
 
   import Turn, only: [started?: 1]
-
-  defmodule State do
-    @moduledoc false
-    # The program. `resume` is the harness session it resumed, or nil for
-    # a fresh one with the id `session_id`. `sent?` is true once a turn was
-    # written to it. `init?` is true from its first `init` line. `closing`
-    # is the `from` of a close. `terminal` stops the read of stdout:
-    # `:lost`, a program that did not start (`Helyx.HarnessIO.launch/4`), an
-    # `init` without the needed capabilities, or a line over the cap
-    # (`Helyx.HarnessIO.lines/3`). `tasks` is the `tasks` value of the last
-    # `background_tasks_changed` line: only `[]` lets an idle close stop
-    # the program.
-    # `notified?` is true from a `task_notification` line until the next
-    # `init` or `:busy` answer: a program turn can follow it (#240).
-    # `tools` are the Helyx tool specs, and `calls` the open `tools/call`
-    # requests of `Mcp`. `meter` is the usage of the program (`Meter`).
-    @enforce_keys [:exe, :model, :cwd]
-    defstruct [
-      :exe,
-      :model,
-      :cwd,
-      :resume,
-      :session_id,
-      :port,
-      :turn,
-      :closing,
-      :terminal,
-      buffer: [],
-      tools: [],
-      calls: %{},
-      tasks: [],
-      meter: %Meter{},
-      size: 0,
-      init?: false,
-      sent?: false,
-      notified?: false
-    ]
-  end
+  import Program, only: [uuid: 0]
 
   @lost "No conversation found with session ID"
 
@@ -80,24 +45,23 @@ defmodule Helyx.Provider.ClaudeCode do
   @impl true
   defdelegate release(handles, mode, deadline), to: HarnessIO
 
+  # The program starts at the first turn: it needs the turn's prompt.
   @impl true
   def init(model, tools, opts) do
     with {:ok, info} <- ModelInfo.lookup(id(), "anthropic", model),
          {:ok, exe} <- HarnessIO.find("claude") do
-      state = %State{
-        exe: exe,
-        model: model,
-        tools: HarnessIO.harness_tools(tools),
-        cwd: Keyword.fetch!(opts, :cwd),
-        resume: opts[:resume_id],
-        meter: Meter.start(opts[:resume_usage], info.context_window)
-      }
+      resume = Program.resumable(opts[:resume_id])
 
-      # A program that did not start has no port: `Helyx.Watchdog.start/4` closed it.
-      case launch(state) do
-        %State{terminal: nil} = state -> {:ok, state}
-        %State{terminal: {:error, reason}} -> {:error, reason}
-      end
+      # A stored session that is not resumed gives no cost mark.
+      {:ok,
+       %State{
+         exe: exe,
+         model: model,
+         tools: tools,
+         cwd: Keyword.fetch!(opts, :cwd),
+         resume: resume,
+         meter: Meter.start(resume && opts[:resume_usage], info.context_window)
+       }}
     end
   end
 
@@ -106,8 +70,14 @@ defmodule Helyx.Provider.ClaudeCode do
   @impl true
   def request({kind, id, arg}, from, %State{turn: turn} = state)
       when kind in [:turn, :compact] and (turn == nil or turn.program?) do
-    {events, state} = write_turn(%{state | turn: Turn.new(kind, id, uuid(), arg)})
-    {:ok, [{:reply, from, :ok} | events], state}
+    case program(state, kind, arg) do
+      %State{terminal: nil} = state ->
+        {events, state} = write_turn(%{state | turn: Turn.new(kind, id, uuid(), arg)})
+        {:ok, [{:reply, from, :ok} | events], state}
+
+      %State{terminal: {:error, reason}} = state ->
+        {:ok, [{:reply, from, {:error, reason}}], state}
+    end
   end
 
   # A steer is a user line with a `uuid` of its own. `claude` never
@@ -160,6 +130,7 @@ defmodule Helyx.Provider.ClaudeCode do
   def request(:idle_close, from, state),
     do: {:ok, [{:reply, from, :busy}], %{state | notified?: false}}
 
+  def request(:close, from, %State{port: nil} = state), do: {:ok, [{:reply, from, :ok}], state}
   def request(:close, from, state), do: {:ok, [], HarnessIO.close(state, from)}
 
   # Helyx does not know whether the program will start the steer, so the
@@ -193,19 +164,14 @@ defmodule Helyx.Provider.ClaudeCode do
   defp read(actions, %State{terminal: {:error, reason}} = state),
     do: {:stop, reason, actions, state}
 
-  # The `=` form keeps a value that starts with a dash a value, and keeps
-  # the arguments after `--disallowedTools` out of its list (#478).
-  defp launch(state) do
-    id = state.resume || uuid()
-    session = if state.resume, do: "--resume=" <> id, else: "--session-id=" <> id
-
-    flags =
-      ~w(--output-format stream-json --verbose --include-partial-messages --input-format
-         stream-json --permission-mode bypassPermissions --disallowedTools=Bash,Monitor) ++
-        ["--model=" <> state.model, session, "--mcp-config", Mcp.config()]
-
-    HarnessIO.launch(state.exe, flags, state.cwd, %{state | session_id: id})
-  end
+  # The program of a turn runs with the turn's prompt: one with another
+  # prompt is replaced by one that resumes its harness session. A
+  # compaction keeps the running program; with none, a stored harness
+  # session opens with the empty prompt, and a fresh one has nothing to
+  # compact (`write_turn/1`).
+  defp program(%State{port: nil, resume: nil} = state, :compact, _text), do: state
+  defp program(state, :compact, _text), do: Program.ensure(state, state.system || "")
+  defp program(state, :turn, context), do: Program.ensure(state, context.system || "")
 
   # The program of a lost session exits by itself, with nothing run
   # (research note). A fresh program takes its place, and a turn that was
@@ -214,19 +180,10 @@ defmodule Helyx.Provider.ClaudeCode do
   # written again, and the session gives each a notice. The new harness
   # session starts a new meter with the window of config.
   defp relaunch(actions, state) do
-    HarnessIO.stop(state)
     turn = state.turn && %{state.turn | steers: %{}}
+    fresh = Program.replace(state, turn: turn, meter: Meter.start(nil, state.meter.config_window))
 
-    fresh = %State{
-      exe: state.exe,
-      model: state.model,
-      cwd: state.cwd,
-      tools: state.tools,
-      turn: turn,
-      meter: Meter.start(nil, state.meter.config_window)
-    }
-
-    case launch(fresh) do
+    case Program.start(fresh, state.system) do
       %State{terminal: {:error, reason}} = state ->
         {:stop, reason, actions, state}
 
@@ -258,7 +215,7 @@ defmodule Helyx.Provider.ClaudeCode do
     else
       {[first | chunks], cut, replay?} = Replay.chunks(history, prompt_line)
       HarnessIO.write(state, first)
-      event = {:event, turn.id, {:resume_id, state.session_id, cut}}
+      event = {:event, turn.id, {:resume_id, Program.stored_id(state.session_id), cut}}
       turn = %{turn | replay?: replay?, chunks: chunks}
       {[event], %{state | sent?: true, turn: turn}}
     end
@@ -371,6 +328,24 @@ defmodule Helyx.Provider.ClaudeCode do
        )
        when is_map_key(steers, uuid),
        do: emit(state, Turn.steer_start(turn, uuid))
+
+  # The answer to the prompt (`Program.start/2`). With an error the program would
+  # run without the product's prompt, so the provider process stops.
+  defp translate(
+         %{
+           "type" => "control_response",
+           "response" => %{"request_id" => "initialize"} = response
+         },
+         state
+       ) do
+    case response do
+      %{"subtype" => "success"} ->
+        {[], state}
+
+      _ ->
+        {[], %{state | terminal: {:error, {:initialize, HarnessIO.cap_error(response["error"])}}}}
+    end
+  end
 
   defp translate(
          %{"type" => "control_response", "response" => %{"request_id" => id} = response},
@@ -528,13 +503,5 @@ defmodule Helyx.Provider.ClaudeCode do
   defp lost?(result, state) do
     state.resume != nil and not state.init? and
       Enum.any?(Turn.errors(result), &String.starts_with?(&1, @lost))
-  end
-
-  # A random version 4 UUID: `--session-id` takes only a UUID.
-  defp uuid do
-    <<a::48, _::4, b::12, _::2, c::62>> = :crypto.strong_rand_bytes(16)
-    hex = Base.encode16(<<a::48, 4::4, b::12, 2::2, c::62>>, case: :lower)
-    <<p1::binary-8, p2::binary-4, p3::binary-4, p4::binary-4, p5::binary-12>> = hex
-    Enum.join([p1, p2, p3, p4, p5], "-")
   end
 end
