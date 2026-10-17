@@ -154,6 +154,8 @@ defmodule Helyx.Compaction.SummaryTest do
     messages = [
       user("u1", "early"),
       assistant("a1", "early answer", usage(1, 200_000)),
+      # A message that the ModelContext added before the cut: no id.
+      Message.user("added"),
       user("u2", words(15_000)),
       assistant("a2", words(10_000)),
       user("u3", words(15_000))
@@ -161,12 +163,17 @@ defmodule Helyx.Compaction.SummaryTest do
 
     summary = %Helyx.Summary{text: "old summary", first_kept_id: "u2", tokens_before: 1}
 
+    # The added message stays after the summary.
+    assert [_framed, "added", "abcd" <> _, "abcd" <> _, "abcd" <> _] =
+             texts(compact(messages, trigger: nil, summary: summary))
+
     # The last 20,000 tokens start inside a2.
     assert {:summarize, %Plan{first_kept_id: "a2", context: context}} =
              compact(messages, trigger: :manual, summary: summary, instructions: "the plan")
 
     [prompt] = texts(context)
     refute prompt =~ "early"
+    refute prompt =~ "added"
     assert prompt =~ "<previous-summary>\nold summary\n</previous-summary>"
     assert prompt =~ "The user asks: the plan"
   end

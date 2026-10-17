@@ -34,6 +34,12 @@ defmodule Helyx.Skills do
   # first line, which `loaded?/2` reads, stays first.
   @max_folder_bytes 4_096
   @max_notice_bytes 1_024
+  # The skills that a summary carries: the bodies, and the bytes of the
+  # whole message.
+  @max_carried 5
+  @max_carried_bytes 32_768
+  @carried_intro "These skills were loaded before the summary above, newest first. " <>
+                   "Follow each one as before."
   @name_rule ~r/\A[a-z0-9]+(-[a-z0-9]+)*\z/
   @catalog_heading "## Skills\n\n" <>
                      "Each skill below is a folder of instructions for one kind of task. " <>
@@ -219,7 +225,7 @@ defmodule Helyx.Skills do
     folder = Helyx.Text.cap(skill.folder, @max_folder_bytes, :head)
 
     """
-    #{header(skill.name)}
+    <skill name="#{skill.name}">
     Folder: #{folder} (relative paths in this skill resolve against it)
 
     #{Helyx.Text.truncate(skill.content, :head)}
@@ -234,27 +240,88 @@ defmodule Helyx.Skills do
       "If that text is no longer in your context, read #{Path.join(skill.folder, "SKILL.md")}."
   end
 
-  defp header(name), do: ~s(<skill name="#{name}">)
-
   # True when a user message, or a result of the skill tool that is not an
   # error, starts with the first line of the load text of `name`.
   @spec loaded?([Helyx.Message.t()], String.t()) :: boolean()
-  def loaded?(messages, name) do
-    first = header(name) <> "\n"
+  def loaded?(messages, name), do: Enum.any?(messages, &(load_name(&1) == [name]))
 
-    Enum.any?(messages, fn message ->
-      load?(message) and starts?(message.content, first)
-    end)
+  # The text of the message that carries the skills loaded in `before`, the
+  # messages that a summary covers, and not loaded again in `kept`: newest
+  # first, at most @max_carried bodies, each the text that the model saw;
+  # every other skill gets one line. The whole text is at most
+  # @max_carried_bytes; from the first skill whose line does not fit, the
+  # rest are left out. Nil with no such skill.
+  @spec carried([Helyx.Message.t()], [Helyx.Message.t()]) :: String.t() | nil
+  def carried(before, kept) do
+    loads =
+      for(message <- Enum.reverse(before), name <- load_name(message), do: {name, message})
+      |> Enum.uniq_by(fn {name, _message} -> name end)
+
+    kept_names = MapSet.new(Enum.flat_map(kept, &load_name/1))
+
+    # Each part costs its bytes and the two bytes before it, so the sum is
+    # the size of the joined text.
+    {bodies, lines, _left} =
+      loads
+      |> Enum.reject(fn {name, _message} -> name in kept_names end)
+      |> Enum.reduce_while({[], [], @max_carried_bytes - byte_size(@carried_intro)}, fn
+        {name, message}, {bodies, lines, left} ->
+          body = if length(bodies) < @max_carried, do: body(message)
+
+          line =
+            "The skill #{name} was loaded too, and its text is not here: load it again if you need it."
+
+          cond do
+            body != nil and byte_size(body) + 2 <= left ->
+              {:cont, {[body | bodies], lines, left - byte_size(body) - 2}}
+
+            byte_size(line) + 2 <= left ->
+              {:cont, {bodies, [line | lines], left - byte_size(line) - 2}}
+
+            true ->
+              {:halt, {bodies, lines, left}}
+          end
+      end)
+
+    case Enum.reverse(bodies) ++ Enum.reverse(lines) do
+      [] -> nil
+      parts -> Enum.join([@carried_intro | parts], "\n\n")
+    end
   end
+
+  # The skill name of a load in a list, or []: a user message, or a result
+  # of the skill tool that is not an error, whose text starts with the
+  # header line of the load text.
+  defp load_name(%Helyx.Message{content: [%Helyx.Message.Text{text: text} | _]} = message)
+       when is_binary(text) do
+    with true <- load?(message),
+         [_, name] <- Regex.run(~r/\A<skill name="([a-z0-9-]{1,64})">\n/, text) do
+      [name]
+    else
+      _ -> []
+    end
+  end
+
+  defp load_name(_message), do: []
 
   defp load?(%Helyx.Message{role: :user}), do: true
   defp load?(%Helyx.Message{role: :tool_result, tool_name: @tool, is_error: false}), do: true
   defp load?(_message), do: false
 
-  defp starts?([%Helyx.Message.Text{text: text} | _], first) when is_binary(text),
-    do: String.starts_with?(text, first)
+  # The text of a load. A user command ends at the last `</skill>` line, so
+  # its arguments stay out.
+  defp body(%Helyx.Message{role: :user, content: [%Helyx.Message.Text{text: text} | _]}) do
+    case :binary.matches(text, "\n</skill>") do
+      [] ->
+        text
 
-  defp starts?(_content, _first), do: false
+      matches ->
+        {at, length} = List.last(matches)
+        binary_part(text, 0, at + length)
+    end
+  end
+
+  defp body(%Helyx.Message{content: [%Helyx.Message.Text{text: text} | _]}), do: text
 
   # The text of a user command `/name args` when `name` is a known skill:
   # the load text, then a blank line and the arguments when there are any.
