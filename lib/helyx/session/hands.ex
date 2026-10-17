@@ -101,13 +101,18 @@ defmodule Helyx.Session.Hands do
 
   @doc """
   Starts the provider process: `fun` gets the ref of the armed connect kill
-  and runs in a Task of the hands with no turn. Returns its pid, or an error
-  text once a handle is unconfirmed.
+  and runs in a Task of the hands with no turn. A cast, as `run/3`: the
+  hands can be busy with a release, and the caller stays free (#677).
+  Returns a ref; the answer goes to the session as `{:provider_start, ref,
+  {:ok, pid}}`, or with an error text once a handle is unconfirmed. It comes
+  before the `provider_down` of the process.
   """
-  @spec start_provider(pid(), module(), (:timer.tref() -> term())) ::
-          {:ok, pid()} | {:error, String.t()}
-  def start_provider(hands, provider, fun) when is_function(fun, 1),
-    do: GenServer.call(hands, {:start_provider, provider, fun})
+  @spec start_provider(pid(), module(), (:timer.tref() -> term())) :: reference()
+  def start_provider(hands, provider, fun) when is_function(fun, 1) do
+    ref = make_ref()
+    GenServer.cast(hands, {:start_provider, ref, provider, fun})
+    ref
+  end
 
   @doc """
   Asks the hands to cancel the turn's Tasks and release
@@ -134,29 +139,11 @@ defmodule Helyx.Session.Hands do
     {:ok, state}
   end
 
-  @impl true
-  def handle_call({:start_provider, provider, fun}, _from, state) do
-    if state.unconfirmed == %{} do
-      # The kill is armed at the OTP timer server as the Task's first act;
-      # `fun` gets the timer ref, before any plugin code runs.
-      ms = state.connect_ms
-
-      {pid, state} =
-        spawn_task(state, nil, :provider, provider, fn ->
-          {:ok, tref} = :timer.kill_after(ms)
-          fun.(tref)
-        end)
-
-      {:reply, {:ok, pid}, state}
-    else
-      {:reply, {:error, refusal()}, state}
-    end
-  end
-
   # A handle from a Task that was already killed is dropped: the tool frees
   # the resource when its Task dies (see `Helyx.Tool.hold/1`). A tool with
   # no `release/3` gets `:no_release`, and `Helyx.Tool.hold/1` raises in its
   # Task.
+  @impl true
   def handle_call({:hold, handle}, {pid, _tag}, state) do
     case Enum.find_value(state.tasks, fn {_ref, {task, _, _, tool, _}} ->
            task.pid == pid && tool
@@ -243,6 +230,28 @@ defmodule Helyx.Session.Hands do
         do: start(state, turn_id, call),
         else: answer(state, turn_id, call.id, refusal())
 
+    {:noreply, state}
+  end
+
+  def handle_cast({:start_provider, ref, provider, fun}, state) do
+    {result, state} =
+      if state.unconfirmed == %{} do
+        # The kill is armed at the OTP timer server as the Task's first act;
+        # `fun` gets the timer ref, before any plugin code runs.
+        ms = state.connect_ms
+
+        {pid, state} =
+          spawn_task(state, nil, :provider, provider, fn ->
+            {:ok, tref} = :timer.kill_after(ms)
+            fun.(tref)
+          end)
+
+        {{:ok, pid}, state}
+      else
+        {{:error, refusal()}, state}
+      end
+
+    send(state.session, {:provider_start, ref, result})
     {:noreply, state}
   end
 

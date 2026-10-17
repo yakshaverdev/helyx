@@ -93,8 +93,8 @@ defmodule Helyx.Session.HandsTest do
       assert {:error, text} = upcase(hands, id)
       assert text == "a resource from an earlier call could not be released; the call was not run"
 
-      assert {:error, ^text} =
-               Helyx.Session.Hands.start_provider(hands, Helyx.Test.Provider, & &1)
+      ref = Helyx.Session.Hands.start_provider(hands, Helyx.Test.Provider, & &1)
+      assert_receive {:provider_start, ^ref, {:error, ^text}}
     end
 
     assert Released.take() == []
@@ -122,6 +122,22 @@ defmodule Helyx.Session.HandsTest do
 
     assert {:error, text} = upcase(hands, "c2")
     assert text =~ "earlier call"
+  end
+
+  # A release that blocks the hands holds the answer to a provider start
+  # past any call timeout (#677); the cast leaves the caller free.
+  test "a provider start is answered after a release that blocks the hands", %{core: core} do
+    hands = start_hands(core)
+    arguments = %{"handles" => [%{"gate" => Gate.open()}]}
+    :ok = Helyx.Session.Hands.run(hands, "t1", call("c1", "hold", arguments))
+    assert_receive {:waiting, release}
+
+    ref = Helyx.Session.Hands.start_provider(hands, Helyx.Test.Provider, & &1)
+    send(release, :go)
+
+    # The hands send both, so the result of the call came first.
+    assert_receive {:provider_start, ^ref, {:ok, _pid}}
+    assert_received {:tool_result, "t1", "c1", {:ok, "held"}}
   end
 
   # The release ends 1,750 ms before its deadline: room for load.

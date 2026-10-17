@@ -153,6 +153,58 @@ defmodule Helyx.Session.SummaryTest do
     assert state(session).summary == nil
   end
 
+  # A suspended hands process stands in for a release that blocks it
+  # (#677): the start of the summary call waits for their answer, and the
+  # session takes calls meanwhile.
+  test "a summary start waits for busy hands", %{core: core} do
+    session = start(core)
+    turn(session, "hello")
+    hands = state(session).hands
+    :sys.suspend(hands)
+    :ok = Session.prompt(session, "summarize:ok")
+
+    wait_until(fn ->
+      match?(%{pid: nil, start: ref} when is_reference(ref), state(session).summary_call)
+    end)
+
+    assert {:error, :turn_running} = Session.prompt(session, "again")
+
+    :sys.resume(hands)
+    events = collect_until(:turn_end)
+    assert [%{trigger: :auto}] = of_type(events, :compaction)
+    assert List.last(events).data == %{outcome: :done}
+  end
+
+  test "an abort before the summary start is answered stops its process at the answer",
+       %{core: core} do
+    session = start(core)
+    hands = state(session).hands
+    :sys.suspend(hands)
+    :ok = Session.prompt(session, "summarize:hang")
+    wait_until(fn -> match?(%{pid: nil}, state(session).summary_call) end)
+    abort = Task.async(fn -> Session.abort(session) end)
+    assert List.last(collect_until(:turn_end)).data == %{outcome: :aborted}
+    assert Task.yield(abort, 0) == nil
+
+    :sys.resume(hands)
+    assert :ok = Task.await(abort)
+    assert %{activity: :idle, summary_call: nil} = state(session)
+  end
+
+  test "a refused summary start is a failed summary, and the turn goes on", %{core: core} do
+    session = start(core)
+    turn(session, "hello")
+    hands = state(session).hands
+    :sys.replace_state(hands, &%{&1 | unconfirmed: %{__MODULE__ => [:h]}})
+    events = turn(session, "summarize:ok")
+
+    assert [%{text: "the summary failed: a resource from an earlier call" <> _}] =
+             of_type(events, :notice)
+
+    assert of_type(events, :compaction) == []
+    assert List.last(events).data == %{outcome: :done}
+  end
+
   test "a second context request while a summary runs for the first is a bad action",
        %{core: core} do
     for why <- [:auto, :overflow] do

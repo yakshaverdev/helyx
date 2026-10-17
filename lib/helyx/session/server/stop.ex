@@ -82,8 +82,9 @@ defmodule Helyx.Session.Server.Stop do
   # kill; the hands take its provider process and a summary process
   # (`Helyx.Session.Server.Summary`). With no turn, the provider
   # process, also one that ends (an idle close, a switch close, an abort),
-  # to close.
+  # to close. A start with no answer yet has no pid: its process ends with
+  # the hands.
   defp work(%State{activity: %Turn{prepare: pid}}), do: %{kill: List.wrap(pid), close: []}
-  defp work(%State{conn: %ProviderConn{pid: pid}}), do: %{kill: [], close: [pid]}
+  defp work(%State{conn: %ProviderConn{pid: pid}}) when pid != nil, do: %{kill: [], close: [pid]}
   defp work(_state), do: %{kill: [], close: []}
 end

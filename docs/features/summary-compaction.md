@@ -76,7 +76,7 @@ The `:unsupported` answer to `{:compact, ...}` ended the compaction turn with a 
 | overflow retries in one turn | 1 | the turn fails with the overflow error | `Helyx.Provider.Loop` |
 | connect of the summary process | 30 s armed kill, as any provider process | the summary fails at its `provider_down` | `Helyx.Session.Hands` |
 | answer to the summary `{:turn, ...}` | 2,000 ms armed kill | the summary fails at its `provider_down` | OTP timer server |
-| the start of the summary process | the 5 s default of the `GenServer.call` in `Hands.start_provider/3`, as at a turn start; the hands can be busy past it while a release runs (up to 20 s), and the summary adds a start in the middle of a turn | the call exits the session; open in #677 | `Helyx.Session.Hands` |
+| the start of the summary process | the answer of the hands to `Hands.start_provider/3`, a request as at a turn start, with its bound in `docs/features/session-lifecycle.md`, "Bounds" (#677) | none: the hands' release deadlines hold it; the turn goes on, and a turn end before the answer stops the process at the answer | `Helyx.Session.Hands` |
 | the model call of the summary | unbounded, as a turn | the user aborts | client |
 | the end of the summary process after an abort or a close | the release deadlines of the hands; the wait holds until its `provider_down` | the hands report it | `Helyx.Session.Hands` |
 | the plan's `tokens_before` | 0 to 10^9 | `{:bad_context, :compaction}` | `Helyx.Session.Stream` |
@@ -88,7 +88,7 @@ The `:unsupported` answer to `{:compact, ...}` ended the compaction turn with a 
 
 | Resource | Created by | Held by | Released on normal end | Released when the holder crashes | Released on abort |
 | -------- | ---------- | ------- | ---------------------- | -------------------------------- | ----------------- |
-| summary provider process | session, through `Hands.start_provider/3` | hands (a Task of the hands); the session holds its pid in `summary_call` | the session asks `:close` after the `done`; the hands release it and send `provider_down` | the session's death takes the hands, which take the Task | the turn end stops it with `{:shutdown, :aborted}`; the wait holds until its `provider_down` |
+| summary provider process | session, through `Hands.start_provider/3` | hands (a Task of the hands); the session holds the ref of its start, then its pid, in `summary_call` | the session asks `:close` after the `done`; the hands release it and send `provider_down` | the session's death takes the hands, which take the Task | the turn end stops it with `{:shutdown, :aborted}`, or at the answer of the hands when its start has no answer yet; the wait holds until its `provider_down`, or until a refused start's answer |
 
 ## Out of scope
 
