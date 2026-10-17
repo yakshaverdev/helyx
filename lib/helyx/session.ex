@@ -68,10 +68,10 @@ defmodule Helyx.Session do
   When a write fails, the session goes on in memory, writes nothing more,
   and sends one `:notice` event. A resume writes no
   entry (see `resume/2`), so every write comes after a client can subscribe.
-  The writer lock of the file comes before its first write: a session that
-  another OS process holds gives `{:error, {:session_locked, id}}`, a lock
-  that cannot be taken `{:error, {:lock_failed, text}}`, and an open past
-  25,000 ms `{:error, :open_timeout}` (session-lock.md).
+  The writer lock of the file comes before its first write: a session that another OS process
+  holds gives `{:error, {:session_locked, id}}`, a lock that cannot be taken
+  `{:error, {:lock_failed, text}}`, an open past 25,000 ms `{:error, :open_timeout}`
+  (session-lock.md), and a start over the 64 sessions of a Core `{:error, :too_many_sessions}`.
   """
   @spec start(Helyx.Core.name(), keyword()) :: {:ok, t()} | {:error, model_error() | term()}
   def start(core \\ Helyx.Core, opts) do
@@ -113,15 +113,15 @@ defmodule Helyx.Session do
   Resumes from `:sessions_dir` the session `Helyx.Session.File.pick/3` picks:
   the newest of the working directory, or with `:id` that session. It restores the
   transcript and the current model. A tool call without a result gets an error
-  result in the transcript read that says it may have run
-  (`docs/features/interrupted-calls.md`), after its message and its results, so
-  the next provider call sees complete call and result pairs. A tool result that
-  answers no open call at its place is left out of the transcript read. The resume
-  writes no entry: every resume of the file only appends a newline that the last
-  line lacks. `:cwd`, the tool specs, and the tool checks are checked as in
-  `start/2`, all before the sessions directory is read. The model ref of the file
-  resolves as in `set_model/2`, with the same errors. The lock and its deadline are
-  as in `start/2`, before the load; a locked newest session is not skipped.
+  result in the transcript read that says it may have run (`docs/features/interrupted-calls.md`),
+  after its message and its results, so the next provider call sees complete call and result
+  pairs. A tool result that answers no open call at its place is left out of the transcript read.
+  The resume writes no entry: every resume of the file only appends a newline that the last line
+  lacks. `:cwd`, the tool specs, and the tool checks are checked as in `start/2`, all before the
+  sessions directory is read. The model ref of the file resolves as in `set_model/2`, with the
+  same errors. The lock, its deadline, and the cap are as in `start/2`, before the load; a locked
+  newest session is not skipped. A session that runs in this Core is attached: the call returns
+  it, and concurrent resumes of one id get one result (`docs/features/server-management.md`).
   """
   @spec resume(Helyx.Core.name(), keyword()) :: {:ok, t()} | {:error, model_error() | term()}
   def resume(core \\ Helyx.Core, opts) do

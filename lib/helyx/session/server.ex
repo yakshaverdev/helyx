@@ -8,9 +8,7 @@ defmodule Helyx.Session.Server do
 
   alias Helyx.Session.{Background, Hands, Id, Lock, Queue, Turn}
   alias Helyx.Session.Server.{Calls, Events, ProviderConn, Records, State, Steering, Stop}
-  alias Helyx.Session.Server.Summary
-  alias Helyx.Session.Server.ToolRuns
-  alias Helyx.Session.Server.{TurnLoop, Wait}
+  alias Helyx.Session.Server.{Summary, ToolRuns, TurnLoop, Wait}
 
   use GenServer, restart: :temporary, shutdown: Stop.shutdown_ms()
 
@@ -20,18 +18,39 @@ defmodule Helyx.Session.Server do
   # (`Lock.hold/2`), so the port of the lock has one owner for its whole
   # life. The open runs after the supervisor started the process; the
   # caller waits for its result, and an error of the open comes back as it
-  # is. The Registry rejects a session that this Core runs before the init:
-  # it is open in another process, as a lock held by another Core
-  # (session-lock.md). Past the deadline `open_ms` of the state the session
-  # is killed, and the caller gets `{:error, :open_timeout}`.
-  def start(%State{id: id, core: core} = state, tools, open) do
+  # is. Past the deadline `open_ms` of the state the session is killed, and
+  # the caller gets `{:error, :open_timeout}`. The Registry rejects a
+  # session that this Core runs before the init, and the start attaches to
+  # the running process; so does a start at the cap whose id runs
+  # (server-management.md, "Attach"). The second run of a start is its last.
+  def start(%State{id: id, core: core} = state, tools, open, runs \\ 2) do
     ref = make_ref()
+    session = %Helyx.Session{id: id, core: core}
+    start = {state, tools, open, runs}
 
     case start_child(state, tools, {open, self(), ref}) do
-      {:ok, pid} -> await_open(pid, ref, %Helyx.Session{id: id, core: core})
-      {:error, {:already_started, _pid}} -> {:error, {:session_locked, id}}
+      {:ok, pid} -> await_open(pid, ref, session)
+      {:error, {:already_started, pid}} -> attach(pid, session, start)
+      {:error, :max_children} -> attach(Helyx.Session.pid(session), session, start)
       error -> error
     end
+  end
+
+  # The process takes the call after its open. An open that failed exits
+  # with its error, which the first caller got too; the kill of the deadline
+  # is the error of `await_open/3`. Any other end of the process is no
+  # result of a start, so the start runs again. At the cap, an id that does
+  # not run has no process.
+  defp attach(nil, _session, _start), do: {:error, :too_many_sessions}
+
+  defp attach(pid, session, {state, tools, open, runs}) do
+    GenServer.call(pid, :live, :infinity)
+    {:ok, session}
+  catch
+    :exit, {{:shutdown, {:open_failed, reason}}, _call} -> {:error, reason}
+    :exit, {:killed, _call} -> {:error, :open_timeout}
+    :exit, _reason when runs > 1 -> start(state, tools, open, runs - 1)
+    :exit, _reason -> {:error, :session_not_found}
   end
 
   # The go comes after the monitor, so a crash of the open reaches the
@@ -113,9 +132,10 @@ defmodule Helyx.Session.Server do
             {:noreply, state}
         end
 
+      # The reason reaches the attaches that wait (`attach/3`).
       {:error, reason} ->
         send(caller, {ref, {:error, reason}})
-        {:stop, :normal, state}
+        {:stop, {:shutdown, {:open_failed, reason}}, state}
     end
   end
 

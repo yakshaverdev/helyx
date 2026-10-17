@@ -323,8 +323,11 @@ defmodule Helyx.TUI.SwitchTest do
 
   test "a failed resume shows the error and stays on the current session",
        %{core: core, opts: opts} do
-    # The session runs in this Core, so its lock is held.
-    open = saved(core, opts, "still open", false)
+    # The session runs in another Core, so its lock is held. A resume in
+    # the same Core would attach to it (#657).
+    other = :"switch_other_#{System.unique_integer([:positive])}"
+    start_supervised!({Helyx.Core, name: other, plugins: [Fake]}, id: other)
+    open = saved(other, opts, "still open", false)
     {:ok, current} = start(core, opts)
     state = current |> mount!(opts) |> command("/resume")
     assert [{id, _line}] = state.list.items

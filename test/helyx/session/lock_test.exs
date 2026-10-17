@@ -38,18 +38,21 @@ defmodule Helyx.Session.LockTest do
   defp port_messages,
     do: for({port, _} = message <- mailbox(), is_port(port), do: message)
 
-  # The same Core rejects it in its Registry, before the session process takes the lock.
-  test "a session that another Core or the same Core holds does not open, and its file is unchanged",
+  # The same Core rejects a second process in its Registry, before the
+  # session process takes the lock, and the resume attaches to the running
+  # one (docs/features/server-management.md).
+  test "a session that another Core holds does not open, the same Core attaches, and its file is unchanged",
        %{core: core, tmp_dir: dir} do
     {session, path} = open_without_newline(core, dir)
     before = File.read!(path)
     id = session.id
+    pid = Session.pid(session)
 
-    for resumer <- [other_core(), core] do
-      assert Session.resume(resumer, sessions_dir: dir, id: id) ==
-               {:error, {:session_locked, id}}
-    end
+    assert Session.resume(other_core(), sessions_dir: dir, id: id) ==
+             {:error, {:session_locked, id}}
 
+    assert Session.resume(core, sessions_dir: dir, id: id) == {:ok, session}
+    assert Session.pid(session) == pid
     assert File.read!(path) == before
     # The failed take leaves the caller no link and no message of its port.
     assert {:links, links} = Process.info(self(), :links)
