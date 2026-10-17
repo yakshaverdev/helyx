@@ -127,7 +127,7 @@ defmodule Helyx.Session.PersistenceTest do
   end
 
   describe "the session supervisor after a resume (#103)" do
-    # The session's init loads the transcript (#589), so no copy of it passes
+    # The session process loads the transcript (#589), so no copy of it passes
     # through the supervisor. Short texts stay on the heap; this transcript
     # is about 7 MB there, and the margin is 1 MB.
     @describetag :tmp_dir

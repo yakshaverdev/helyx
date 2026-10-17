@@ -71,7 +71,7 @@ defmodule Helyx.Session do
 
     # The file is created only after the plugins resolve, which narrows the
     # window for an orphan file from a failed start. A crash of the
-    # session's init after the create still leaves one.
+    # session's open after the create still leaves one.
     with {:ok, cwd} <- fetch_cwd(opts),
          {:ok, tools} <- Helyx.Tool.specs(core),
          :ok <- Helyx.Tool.check_available(tools),
@@ -84,7 +84,7 @@ defmodule Helyx.Session do
     end
   end
 
-  # The open of the file, which the session process runs in its init under
+  # The open of the file, which the session process runs at its start under
   # the lock of `path` (`Server.start/3`).
   defp create_spec(nil, _id, _cwd, _ref), do: nil
 
@@ -132,7 +132,7 @@ defmodule Helyx.Session do
     end
   end
 
-  # The read of the locked file and its model ref, in the session's init.
+  # The read of the locked file and its model ref, in the session's open.
   # A crash can leave tool calls with no result, and the disk can hold a
   # result with no open call. The session reads them with interrupted
   # results and without the stray results, and writes nothing (#269, #417, #584).
