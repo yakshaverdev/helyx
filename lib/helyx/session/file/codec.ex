@@ -44,6 +44,7 @@ defmodule Helyx.Session.File.Codec do
   # stop reason, and the usage are optional: a bad model or stop reason
   # decodes as a missing one, and a bad usage as the unknown usage, so it
   # does not lose the chat.
+  # A message over the block limit of the live path raises too (#673).
   def decode(entry) do
     role = decode_role(entry["role"])
 
@@ -51,7 +52,7 @@ defmodule Helyx.Session.File.Codec do
       role: role,
       id: entry["id"],
       origin: decode_origin(role, Map.fetch(entry, "origin")),
-      content: Enum.map(entry["content"], &(&1 |> decode_block() |> cut_text(role))),
+      content: decode_content(entry["content"], role),
       model: decode_model(entry["model"]),
       stop_reason: decode_stop_reason(entry["stop_reason"]),
       tool_call_id: optional_string(entry["tool_call_id"]),
@@ -60,6 +61,18 @@ defmodule Helyx.Session.File.Codec do
       usage: decode_usage(Map.fetch(entry, "usage"))
     }
   end
+
+  @max_message_blocks Helyx.Session.Turn.max_message_blocks()
+
+  # `length/1` fails the guard on a content that is not a list, so the
+  # second clause decodes it.
+  defp decode_content(content, _role) when length(content) > @max_message_blocks do
+    raise ArgumentError,
+          "a message has #{length(content)} content blocks, over the limit of #{@max_message_blocks}"
+  end
+
+  defp decode_content(content, role),
+    do: Enum.map(content, &(&1 |> decode_block() |> cut_text(role)))
 
   # A tool result text from the disk gets the cut of a live one, so every
   # tool result in the transcript keeps the bound after a resume.
