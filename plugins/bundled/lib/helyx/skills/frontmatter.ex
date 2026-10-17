@@ -6,7 +6,8 @@ defmodule Helyx.Skills.Frontmatter do
   # rejects any other text with the number of its line, so it is never
   # wider than YAML. The value of every other key is not read, but a
   # character that can start a YAML construct is out at the start of a
-  # word there. The time is linear in the bytes.
+  # word there, except a quoted scalar that starts a value and closes on
+  # its line. The time is linear in the bytes.
   # The subset is in docs/features/skills.md.
 
   @keys ["name", "description"]
@@ -106,7 +107,7 @@ defmodule Helyx.Skills.Frontmatter do
         error(n, "an indented line with no key above it")
 
       {:indented, {:skip, key}} ->
-        with :ok <- word_starts(key, line, n), do: lines(rest, open, values)
+        with :ok <- skipped_line(key, line, n), do: lines(rest, open, values)
 
       {kind, _open} when kind in [:blank, :indented] ->
         lines(rest, add(open, line, n), values)
@@ -154,8 +155,28 @@ defmodule Helyx.Skills.Frontmatter do
   end
 
   defp open(key, value, n, _values) do
-    with :ok <- word_starts(key, value, n), do: {:ok, {:skip, key}}
+    with :ok <- skipped(key, value, n), do: {:ok, {:skip, key}}
   end
+
+  # An indented line of another key: a key line of a map is checked as a
+  # top-level key line is, any other line by the rule of characters.
+  defp skipped_line(key, line, n) do
+    case Regex.run(@key, String.trim_leading(line, " ")) do
+      [_, _key, value] -> skipped(key, value, n)
+      nil -> word_starts(key, line, n)
+    end
+  end
+
+  # A quoted scalar that starts the value of another key and closes on its
+  # line is text: it cannot run past its line or hide a key line.
+  defp skipped(key, <<q, _::binary>> = value, n) when q in [?', ?"] do
+    case quoted_line(value) do
+      {:ok, _text} -> :ok
+      {:error, why} -> error(n, "the value of #{key} #{why}")
+    end
+  end
+
+  defp skipped(key, value, n), do: word_starts(key, value, n)
 
   defp word_starts(key, text, n) do
     case Regex.run(@starts, text, capture: :all_but_first) do
@@ -191,18 +212,9 @@ defmodule Helyx.Skills.Frontmatter do
   defp value(<<c, _::binary>>, _lines) when c in [?[, ?{], do: {:error, "is no string"}
   defp value(<<c, _::binary>> = header, lines) when c in [?|, ?>], do: block(header, lines)
 
-  defp value(<<q, rest::binary>>, lines) when q in [?', ?"] do
-    with {:ok, text, after_quote} <- quoted(rest, q, []) do
-      cond do
-        not Regex.match?(@after_quote, after_quote) ->
-          {:error, "has text after its closing quote"}
-
-        not comments?(lines) ->
-          {:error, "goes on to the next line"}
-
-        true ->
-          {:ok, text}
-      end
+  defp value(<<q, _::binary>> = value, lines) when q in [?', ?"] do
+    with {:ok, text} <- quoted_line(value) do
+      if comments?(lines), do: {:ok, text}, else: {:error, "goes on to the next line"}
     end
   end
 
@@ -251,6 +263,15 @@ defmodule Helyx.Skills.Frontmatter do
     do: text_end(text, n - 1)
 
   defp text_end(_text, n), do: n
+
+  # A value that is a quoted scalar with only blanks or a comment after it.
+  defp quoted_line(<<q, rest::binary>>) do
+    with {:ok, text, after_quote} <- quoted(rest, q, []) do
+      if Regex.match?(@after_quote, after_quote),
+        do: {:ok, text},
+        else: {:error, "has text after its closing quote"}
+    end
+  end
 
   # A quoted scalar that closes on its line: its text and the text after
   # the closing quote.

@@ -174,7 +174,7 @@ defmodule Helyx.SkillsTest do
       cwd,
       "ok",
       "name: ok\ndescription: >\n  Folded: with a colon\n  on two lines\nlicense: MIT\n" <>
-        "metadata:\n  version: 1.0\nallowed-tools:\n  - Read\nwhen_to_use: x\n"
+        "metadata:\n  version: \"1.0\"\nallowed-tools:\n  - Read\nwhen_to_use: x\n"
     )
 
     assert [%{description: "Folded: with a colon on two lines\n"}] = Skills.scan(cwd, home).skills

@@ -19,6 +19,27 @@ The spec is `docs/specification.mdx` @69ef37e. It is identical to https://agents
 - **Versioning**: the format has no version number.
 - **Validator**: `skills-ref` **rejects any key outside the six** (validator.py:15-22, 104-114). It also accepts `skill.md` (parser.py:23).
 
+**Frontmatter texts of the spec page** (https://agentskills.io/specification, read 2026-10-18 by the orchestrator, quoted verbatim in its decision; this note did not fetch the page again). The "Example with optional fields":
+
+```yaml
+---
+name: pdf-processing
+description: Extract PDF text, fill forms, merge files. Use when handling PDFs.
+license: Apache-2.0
+metadata:
+  author: example-org
+  version: "1.0"
+---
+```
+
+The page also gives these values of single fields:
+
+- `license: Proprietary. LICENSE.txt has complete terms`
+- `compatibility: Requires git, docker, jq, and access to the internet`
+- `allowed-tools: Bash(git:*) Bash(jq:*) Read`
+
+The page says that `metadata` is "a map from string keys to string values" and that `allowed-tools` is "a space-separated string".
+
 **Client guide** (`docs/client-implementation/adding-skills-support.mdx`). It is advice, not a rule:
 - The spec "does not mandate where skill directories live". It recommends `<project>/.<client>/skills/`, `<project>/.agents/skills/`, `~/.<client>/skills/` and `~/.agents/skills/`. Some clients also scan `.claude/skills/` and the ancestors up to the git root (47-58).
 - Scan bounds: depth 4-6 and at most 2000 directories (79).

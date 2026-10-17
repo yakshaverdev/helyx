@@ -51,6 +51,35 @@ defmodule Helyx.Skills.FrontmatterTest do
     end
   end
 
+  # The frontmatter texts of https://agentskills.io/specification, read on
+  # 2026-10-18 (docs/research/agent-skills.md).
+  test "the frontmatter texts of the specification" do
+    example = """
+    name: pdf-processing
+    description: Extract PDF text, fill forms, merge files. Use when handling PDFs.
+    license: Apache-2.0
+    metadata:
+      author: example-org
+      version: "1.0"
+    """
+
+    assert same_as_yaml(example) == %{
+             "name" => "pdf-processing",
+             "description" => "Extract PDF text, fill forms, merge files. Use when handling PDFs."
+           }
+
+    for line <- [
+          "license: Proprietary. LICENSE.txt has complete terms",
+          "compatibility: Requires git, docker, jq, and access to the internet",
+          "allowed-tools: Bash(git:*) Bash(jq:*) Read"
+        ] do
+      assert same_as_yaml("name: x\ndescription: d\n" <> line <> "\n") == %{
+               "name" => "x",
+               "description" => "d"
+             }
+    end
+  end
+
   test "a value outside the subset rejects the skill with its line" do
     cases = [
       {" ~\n", "line 3: the description is no string"},
@@ -120,9 +149,37 @@ defmodule Helyx.Skills.FrontmatterTest do
     assert read("name: x\ndescription: d\nother: a\n# the \"x\" key\n") ==
              {:ok, %{"name" => "x", "description" => "d"}}
 
+    # A quoted scalar that starts a value and closes on its line is text.
+    quoted = ~S"""
+    name: x
+    description: d
+    license: 'It''s MIT' # the "x"
+    other: "a \"b\" \x41"
+    metadata:
+      version: "1.0"
+      k: 'x'
+      a:
+        b: "y" # c
+      j:  ""
+    """
+
+    assert same_as_yaml(quoted) == %{"name" => "x", "description" => "d"}
+
+    for {line, n, why} <- [
+          {"other: 'x", 2, "has a quote that does not close on its line"},
+          {"other:\n  k: \"x", 3, "has a quote that does not close on its line"},
+          {~S(other: "\q"), 2, "has an escape that YAML does not have"},
+          {"other:\n  k: \"\\x4\"", 3, "has an escape that YAML does not have"},
+          {"other: 'x' y", 2, "has text after its closing quote"},
+          {"other:\n  k: 'x'#c", 3, "has text after its closing quote"},
+          {"other: 'x': y", 2, "has text after its closing quote"}
+        ] do
+      assert read(line <> "\n") == {:error, "line #{n}: the value of other #{why}"}, line
+    end
+
     for {line, char} <- [
-          {"other: 'x'", "'"},
-          {~s(other: "x"), ~s(")},
+          {"other: a 'x'", "'"},
+          {"other:\n  'k': x", "'"},
           {"other: [a, b]", "["},
           {"other: x ]", "]"},
           {"other: {k: v}", "{"},
@@ -139,7 +196,7 @@ defmodule Helyx.Skills.FrontmatterTest do
           {"other: a\t'b", "'"},
           {"other:\n  - 'x'", "'"},
           {~s(other:\n  - "x"), ~s(")},
-          {~s(other:\n  version: "1.0"), ~s(")},
+          {~s(other:\n  k: x "y"), ~s(")},
           {~s(other: a # the "x" key), ~s(")},
           {"other:\n  k: [a]", "["},
           {"other:\n  # a 'c'", "'"},
@@ -273,7 +330,7 @@ defmodule Helyx.Skills.FrontmatterTest do
     ~S(\x4)
   ]
   @headers ["|", "|-", "|+", ">", ">-", "> # c", "|", ">", "|-", ">-", ">+", "|2", "|x"]
-  # Values of another key in plain words over more than one line.
+  # Values of another key, most of them over more than one line.
   @skipped [
     " MIT",
     " Don't stop",
@@ -287,7 +344,10 @@ defmodule Helyx.Skills.FrontmatterTest do
     "
   # a comment
 
-  c: d"
+  c: d",
+    "
+  author: example-org
+  version: \"1.0\""
   ]
   @starts ~c"\"'[]{}!&*|>?@`%"
 
@@ -354,12 +414,33 @@ defmodule Helyx.Skills.FrontmatterTest do
     )
   end
 
+  # A quoted scalar of another key: most close on their line, some do not,
+  # and some have text after the closing quote.
+  defp other_quoted do
+    gen all(
+          q <- StreamData.member_of(["'", ~s(")]),
+          t <- text(),
+          e <- StreamData.member_of(["" | @escapes]),
+          close <- StreamData.member_of([q, q, q, ""]),
+          tail <- StreamData.member_of(["", "  ", " # c 'x'", "\t# \"", "#c", " y", ": y"])
+        ) do
+      q <> t <> e <> close <> tail
+    end
+  end
+
   defp other_value do
     StreamData.frequency([
       {6, StreamData.map(other_words(), &(" " <> &1))},
       {2, StreamData.map(other_words(), &("\n  k: " <> &1))},
       {1, StreamData.map(other_words(), &("\n  - " <> &1))},
-      {2, StreamData.member_of(@skipped)}
+      {2, StreamData.member_of(@skipped)},
+      {2, StreamData.map(other_quoted(), &(" " <> &1))},
+      {2, StreamData.map(other_quoted(), &("\n  k: " <> &1))},
+      {1,
+       StreamData.map({other_quoted(), other_quoted()}, fn {a, b} ->
+         "\n  a:  " <> a <> "\n  b:\n    c: " <> b
+       end)},
+      {1, StreamData.map(other_quoted(), &("\n  - " <> &1))}
     ])
   end
 
