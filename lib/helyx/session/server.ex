@@ -8,9 +8,7 @@ defmodule Helyx.Session.Server do
 
   alias Helyx.Session.{Background, Hands, Id, Lock, Queue, Turn}
   alias Helyx.Session.Server.{Calls, Events, ProviderConn, Records, State, Steering, Stop}
-  alias Helyx.Session.Server.Summary
-  alias Helyx.Session.Server.ToolRuns
-  alias Helyx.Session.Server.{TurnLoop, Wait}
+  alias Helyx.Session.Server.{Summary, ToolRuns, TurnLoop, Wait}
 
   use GenServer, restart: :temporary, shutdown: Stop.shutdown_ms()
 
