@@ -36,6 +36,11 @@ defmodule Helyx.TUI.ViewModel do
   clears it on the next key press, paste, or mouse press. A new reject
   replaces it. No event changes it.
 
+  `expanded?` is true while tool results show their full text, and false
+  while they show four lines (`toggle_expanded/1`, Ctrl+O). It is
+  client-local, like `reason`, and a session switch keeps it
+  (`docs/features/tui-tool-output-toggle.md`).
+
   `streaming` is the open assistant message as a reversed block list, newest
   first, or nil when none is streaming. Text and thinking deltas join it
   through `Helyx.Message.add_block/2`, the session's convention. Each tool
@@ -70,6 +75,7 @@ defmodule Helyx.TUI.ViewModel do
             running?: false,
             queue: %{steers: 0, follow_ups: 0},
             reason: nil,
+            expanded?: false,
             usage: %SessionUsage{}
 
   @type tool_cell :: {:tool, Message.ToolCall.t(), String.t(), Message.t() | nil}
@@ -88,6 +94,7 @@ defmodule Helyx.TUI.ViewModel do
           running?: boolean(),
           queue: %{steers: non_neg_integer(), follow_ups: non_neg_integer()},
           reason: String.t() | nil,
+          expanded?: boolean(),
           usage: SessionUsage.t()
         }
 
@@ -267,6 +274,10 @@ defmodule Helyx.TUI.ViewModel do
   @doc "Clears the reason. The TUI calls it on a key press, a paste, or a mouse press."
   @spec clear_reason(t()) :: t()
   def clear_reason(vm), do: %{vm | reason: nil}
+
+  @doc "Switches tool results between four lines and their full text."
+  @spec toggle_expanded(t()) :: t()
+  def toggle_expanded(vm), do: %{vm | expanded?: not vm.expanded?}
 
   @doc """
   The line of a tool call: its name, then each argument as `key=value`,

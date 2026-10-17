@@ -121,10 +121,14 @@ defmodule Helyx.TUI.SwitchTest do
     :ok = Session.set_model(old, "fake/other")
     state = until(state, &(&1.type == :model_change))
     old_instance = state.instance_id
+    # The Ctrl+O toggle is client state: it stays across a switch.
+    {:noreply, state} =
+      TUI.handle_event(%Key{code: "o", kind: "press", modifiers: ["ctrl"]}, state)
 
     state = command(state, "/new")
     assert value(state) == ""
     state = finish(state)
+    assert state.vm.expanded?
 
     refute Process.alive?(old_pid)
     assert state.session.id != old.id
@@ -300,6 +304,8 @@ defmodule Helyx.TUI.SwitchTest do
 
     # Other keys and a paste do nothing while the list shows.
     assert key(state, "x").list == state.list
+    ctrl_o = %Key{code: "o", kind: "press", modifiers: ["ctrl"]}
+    assert TUI.handle_event(ctrl_o, state) == {:noreply, state}
     assert type(state, "x") == state
 
     state = key(state, "esc")

@@ -22,6 +22,7 @@ defmodule Helyx.TUI do
     * PgUp and PgDn scroll the transcript (`Helyx.TUI.Transcript`) by one screen
     * the wheel scrolls three rows; a drag copies text (`Helyx.TUI.Selection`)
     * Home and End, with an empty composer, go to the oldest and the newest output
+    * Ctrl+O shows the full text of every tool result, or four lines again
     * Ctrl+C clears the composer; a second Ctrl+C within 500 ms quits
 
   Start it with `run/1`, which blocks until the user quits:
@@ -216,6 +217,13 @@ defmodule Helyx.TUI do
     {:noreply, edit(state, :insert, "\n")}
   end
 
+  # The toggle changes the rows of tool cells: a selection ends, as at a new
+  # size, and a scrolled view stays in its item.
+  def handle_event(%Key{code: "o", kind: "press", modifiers: ["ctrl"]}, state) do
+    state = %{state | vm: ViewModel.toggle_expanded(state.vm), selection: nil}
+    {:noreply, settle(state, &Transcript.keep/4)}
+  end
+
   # No text goes to a session that a switch ends.
   def handle_event(%Key{code: "enter", kind: "press"}, %{switch: %Switch{}} = state),
     do: {:noreply, %{state | vm: ViewModel.reject(state.vm, "not sent: a switch runs")}}
@@ -353,12 +361,11 @@ defmodule Helyx.TUI do
     end
   end
 
-  # Applies `Transcript.hold/4` after a change that no scroll key makes: a
-  # session event, a client notice, or a new size.
-  defp settle(%{scroll: nil} = state), do: state
-
-  defp settle(state),
-    do: on_screen(state, &Transcript.hold(state.vm, state.scroll, &1, &2))
+  # Applies `Transcript.hold/4`, or `rule`, after a change that no scroll
+  # key makes: a session event, a client notice, a new size, or Ctrl+O.
+  defp settle(state, rule \\ &Transcript.hold/4)
+  defp settle(%{scroll: nil} = state, _rule), do: state
+  defp settle(state, rule), do: on_screen(state, &rule.(state.vm, state.scroll, &1, &2))
 
   # Busy indicator
 
