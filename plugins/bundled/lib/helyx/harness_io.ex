@@ -183,13 +183,10 @@ defmodule Helyx.HarnessIO do
   # A compaction in a program with no history yet: the replay of the
   # transcript comes only with its first turn
   # (docs/features/harness-compaction.md).
-  def no_history, do: {:error, {:compaction_failed, "no history in the program yet"}}
-
-  # A value that is not text is empty. The text is cut to valid UTF-8
-  # (`Helyx.Text.cap/3`) at the bound of a failed start, so every error
-  # text of a harness has one bound.
-  def cap_error(text) when not is_binary(text), do: ""
-  def cap_error(text), do: Helyx.Text.cap(text, Helyx.Watchdog.reason_max_bytes(), :head)
+  def no_history(provider) do
+    text = "no history in the program yet"
+    {:error, %Helyx.ProviderError{provider: provider, kind: :compaction_failed, text: text}}
+  end
 
   # The prompt is the user messages at the end of the transcript; the
   # history is the rest. Both keep their order.

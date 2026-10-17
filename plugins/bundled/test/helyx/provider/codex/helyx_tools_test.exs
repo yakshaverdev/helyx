@@ -69,7 +69,7 @@ defmodule Helyx.Provider.Codex.HelyxToolsTest do
          %{bin: bin, work: work} do
       on(bin, 1, "initialize", [j(%{id: "@", error: %{code: -32_600, message: "no"}})])
 
-      assert {:error, {:codex, "initialize", "no"}} =
+      assert {:error, %Helyx.ProviderError{kind: "initialize", text: "no"}} =
                Codex.init("m", [@spec_bash], cwd: work)
 
       error = %{
@@ -80,7 +80,8 @@ defmodule Helyx.Provider.Codex.HelyxToolsTest do
       fresh(bin, 2, tid(), [])
       on(bin, 2, "thread/start", [j(%{id: "@", error: error})])
 
-      assert {:stop, {:codex, "thread/start", "thread/start.dynamicTools" <> _}} =
+      assert {:stop,
+              %Helyx.ProviderError{kind: "thread/start", text: "thread/start.dynamicTools" <> _}} =
                opening_stop(work, [@spec_bash])
     end
 

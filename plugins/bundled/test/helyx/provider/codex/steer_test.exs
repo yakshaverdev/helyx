@@ -65,7 +65,11 @@ defmodule Helyx.Provider.Codex.SteerTest do
 
       {from, actions} = steer(streaming(bin, work))
 
-      assert [{:reply, ^from, {:error, {:codex, "turn/steer", "expected active" <> _}}}, _done] =
+      assert [
+               {:reply, ^from,
+                {:error, %Helyx.ProviderError{kind: "turn/steer", text: "expected active" <> _}}},
+               _done
+             ] =
                actions
     end
 

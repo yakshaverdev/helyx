@@ -214,8 +214,35 @@ defmodule Helyx.Provider.ClaudeCode.CompactTest do
 
     {actions, _state} = pump(ClaudeCode, state, actions, &ended?/1)
 
-    assert [{:error, {:compaction_failed, "Not enough messages."}}] = events_of(actions)
+    assert [
+             {:error,
+              %Helyx.ProviderError{
+                provider: "claude-code",
+                kind: :compaction_failed,
+                text: "Not enough messages."
+              }}
+           ] = events_of(actions)
+
     assert [%{"message" => %{"content" => [%{"text" => "/compact"}]}}] = stdin(bin, 1)
+  end
+
+  test "a compaction that fails with no text ends the turn with its term", %{bin: bin, work: work} do
+    failed = [
+      status(%{status: "compacting"}),
+      status(%{status: nil, compact_result: "failed", compact_error: ""}),
+      init(),
+      assistant(%{type: "text", text: "Not enough messages."}),
+      replayed() |> JSON.decode!() |> Map.put("queued_turn_count", 0) |> j()
+    ]
+
+    turn(bin, 1, 1, begin() ++ failed)
+
+    {_from, actions, state} =
+      request(harness(work, resume_id: stored(sid())), {:compact, "t1", ""})
+
+    {actions, _state} = pump(ClaudeCode, state, actions, &ended?/1)
+
+    assert [{:error, {:compaction_failed, ""}}] = events_of(actions)
   end
 
   # Core fails the turn: it has no compaction event (Compaction.outcome/2).
@@ -234,7 +261,12 @@ defmodule Helyx.Provider.ClaudeCode.CompactTest do
        %{bin: bin, work: work} do
     state = harness(work)
     assert {from, actions, state} = request(state, {:compact, "t1", "x"})
-    assert [{:reply, ^from, :ok}, {:event, "t1", {:error, {:compaction_failed, _}}}] = actions
+
+    assert [
+             {:reply, ^from, :ok},
+             {:event, "t1", {:error, %Helyx.ProviderError{kind: :compaction_failed}}}
+           ] = actions
+
     assert state.turn == nil and not state.sent?
     closed(state)
     refute File.exists?(Path.join(bin, "count"))
@@ -255,7 +287,14 @@ defmodule Helyx.Provider.ClaudeCode.CompactTest do
     {actions, state} = pump(ClaudeCode, state, actions, &ended?/1)
     Helyx.Test.Hands.assert_one_program(state.handles, started)
 
-    assert [{:error, {:compaction_failed, "no history in the program yet"}}] = events_of(actions)
+    assert [
+             {:error,
+              %Helyx.ProviderError{
+                kind: :compaction_failed,
+                text: "no history in the program yet"
+              }}
+           ] = events_of(actions)
+
     assert state.turn == nil and not state.sent?
     closed(state)
     assert programs(bin) == "2"

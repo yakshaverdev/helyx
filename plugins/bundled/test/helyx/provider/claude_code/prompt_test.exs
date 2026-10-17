@@ -119,7 +119,20 @@ defmodule Helyx.Provider.ClaudeCode.PromptTest do
   end
 
   test "an error answer to initialize stops the provider with its text", %{bin: bin, work: work} do
-    response = %{subtype: "error", request_id: "initialize", error: "bad"}
+    assert {:stop, %Helyx.ProviderError{kind: :initialize} = reason} =
+             initialize_stop(bin, work, %{error: "bad"})
+
+    # The provider process stops with it, and the user reads its text.
+    assert Helyx.Reason.text({:provider_stop, reason}) == "claude-code: bad"
+  end
+
+  test "an error answer to initialize with no text stops the provider with its term",
+       %{bin: bin, work: work} do
+    assert {:stop, {:initialize, ""}} = initialize_stop(bin, work, %{})
+  end
+
+  defp initialize_stop(bin, work, error) do
+    response = Map.merge(%{subtype: "error", request_id: "initialize"}, error)
 
     File.write!(Path.join(bin, "out.init"), [
       j(%{type: "control_response", response: response}),
@@ -130,7 +143,7 @@ defmodule Helyx.Provider.ClaudeCode.PromptTest do
 
     {_from, actions, state} = request(harness(work), {:turn, "t1", context("A", ["x"])})
     {actions, _state} = pump(ClaudeCode, state, actions, &ended?/1)
-    assert {:stop, {:initialize, "bad"}} = List.last(actions)
+    List.last(actions)
   end
 
   test "a compaction of a stored session starts its program with the empty prompt",

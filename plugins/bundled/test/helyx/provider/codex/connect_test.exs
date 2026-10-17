@@ -52,12 +52,17 @@ defmodule Helyx.Provider.Codex.ConnectTest do
        %{bin: bin, work: work} do
     initialize(bin, 1)
     on(bin, 1, "thread/start", [j(%{id: "@", error: %{code: -1, message: "bad model"}})])
-    assert {:stop, {:codex, "thread/start", "bad model"}} = opening_stop(work)
+
+    assert {:stop,
+            %Helyx.ProviderError{provider: "codex", kind: "thread/start", text: "bad model"}} =
+             opening_stop(work)
   end
 
   test "an initialize error fails the connect", %{bin: bin, work: work} do
     on(bin, 1, "initialize", [j(%{id: "@", error: %{code: -1, message: "no"}})])
-    assert {:error, {:codex, "initialize", "no"}} = connect(work)
+
+    assert {:error, %Helyx.ProviderError{provider: "codex", kind: "initialize", text: "no"}} =
+             connect(work)
   end
 
   @tag :slow

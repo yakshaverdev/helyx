@@ -27,7 +27,7 @@ defmodule Helyx.Provider.ClaudeCode do
   # "Bounds"). Observed: 0 to 10 ms.
   @steer_wait_ms 5_000
 
-  alias Helyx.{HarnessIO, Message, ModelInfo}
+  alias Helyx.{HarnessIO, Message, ModelInfo, ProviderError}
   alias Helyx.Provider.ClaudeCode.{Mcp, Meter, Program, Replay, State, Turn, Turn.Interrupt}
 
   import Turn, only: [started?: 1]
@@ -198,7 +198,7 @@ defmodule Helyx.Provider.ClaudeCode do
 
   # A program with no turn has nothing to compact: nothing is written.
   defp write_turn(%State{turn: %Turn{compact: :asked}, resume: nil, sent?: false} = state),
-    do: {[{:event, state.turn.id, HarnessIO.no_history()}], %{state | turn: nil}}
+    do: {[{:event, state.turn.id, HarnessIO.no_history(id())}], %{state | turn: nil}}
 
   # The prompt is the user messages at the end of the transcript. A resumed
   # harness session, or one that took a turn, has the rest; a fresh one
@@ -338,12 +338,11 @@ defmodule Helyx.Provider.ClaudeCode do
          },
          state
        ) do
-    case response do
-      %{"subtype" => "success"} ->
-        {[], state}
-
-      _ ->
-        {[], %{state | terminal: {:error, {:initialize, HarnessIO.cap_error(response["error"])}}}}
+    if response["subtype"] == "success" do
+      {[], state}
+    else
+      error = ProviderError.reason(id(), :initialize, response["error"], {:initialize, ""})
+      {[], %{state | terminal: {:error, error}}}
     end
   end
 
@@ -365,7 +364,8 @@ defmodule Helyx.Provider.ClaudeCode do
         answer_interrupt(state, {:error, :still_queued})
 
       _error ->
-        answer_interrupt(state, {:error, {:interrupt, HarnessIO.cap_error(response["error"])}})
+        error = ProviderError.reason(id(), :interrupt, response["error"], {:interrupt, ""})
+        answer_interrupt(state, {:error, error})
     end
   end
 
