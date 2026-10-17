@@ -15,7 +15,8 @@ defmodule Helyx.Session.Totals do
   of the text, the thinking, and the tool calls of the messages after it.
   The summary compaction plugin estimates with the same rule
   (`docs/features/summary-compaction.md`). A client sets the tokens of
-  the estimate at a compaction with `compacted/2`. The sums grow with the transcript; a
+  the estimate at a compaction with `compacted/2`, and `of/2` applies the
+  last compaction after its message. The sums grow with the transcript; a
   client shows them in capped forms.
   """
 
@@ -39,6 +40,9 @@ defmodule Helyx.Session.Totals do
           list: boolean()
         }
 
+  @typedoc "The last compaction of `of/2`: the id of the message before it, and its `tokens_after`."
+  @type compaction :: {String.t(), non_neg_integer() | nil}
+
   @type context :: %{
           tokens: non_neg_integer() | nil,
           window: pos_integer() | nil,
@@ -46,11 +50,22 @@ defmodule Helyx.Session.Totals do
           bytes: non_neg_integer()
         }
 
-  @doc "The totals and the context state of `messages`, oldest first."
-  @spec of([Message.t()]) :: {t(), context() | nil}
-  def of(messages),
-    do:
-      Enum.reduce(messages, {%__MODULE__{}, nil}, fn m, {t, c} -> {add(t, m), context(c, m)} end)
+  @doc """
+  The totals and the context state of `messages`, oldest first. `compacted`
+  is the last compaction of the session: the id of the message before it
+  and its `tokens_after`, applied after that message with `compacted/2`.
+  """
+  @spec of([Message.t()], compaction() | nil) :: {t(), context() | nil}
+  def of(messages, compacted \\ nil) do
+    Enum.reduce(messages, {%__MODULE__{}, nil}, fn m, {t, c} ->
+      {add(t, m), c |> context(m) |> compacted_at(m, compacted)}
+    end)
+  end
+
+  defp compacted_at(context, %Message{id: id}, {id, tokens_after}),
+    do: compacted(context, tokens_after)
+
+  defp compacted_at(context, _message, _compacted), do: context
 
   @doc """
   Adds the usage of `message` to the totals. A nil usage adds nothing. A

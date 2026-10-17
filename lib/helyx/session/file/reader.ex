@@ -43,7 +43,16 @@ defmodule Helyx.Session.File.Reader do
     with :ok <- Scan.check_version(header),
          :ok <- check_cwd(header, cwd) do
       {:ok,
-       %{leaf: id, ids: %{}, model: model, messages: [], resume_ids: %{}, summary: nil, count: 0}}
+       %{
+         leaf: id,
+         ids: %{},
+         model: model,
+         messages: [],
+         resume_ids: %{},
+         summary: nil,
+         compacted: nil,
+         count: 0
+       }}
     end
   end
 
@@ -92,21 +101,26 @@ defmodule Helyx.Session.File.Reader do
 
   # A compaction of the provider after its resume id entry adds the number
   # of assistant messages at that compaction.
-  defp fold(%{"type" => "compaction", "provider" => provider}, acc) when is_binary(provider),
-    do: {:ok, %{acc | resume_ids: Transcript.compacted(acc.resume_ids, provider, acc.count)}}
+  defp fold(%{"type" => "compaction", "provider" => provider} = entry, acc)
+       when is_binary(provider) do
+    resume_ids = Transcript.compacted(acc.resume_ids, provider, acc.count)
+    {:ok, %{acc | resume_ids: resume_ids, compacted: compacted(entry, acc.messages)}}
+  end
 
   # A summary keeps a user or assistant message before it, has a text of
   # 1 to `Helyx.Summary.max_bytes/0` bytes, and a token count from 0 to
   # 10^9 (docs/features/summary-compaction.md). The last one wins.
   defp fold(
-         %{"type" => "summary", "summary" => text, "first_kept_id" => id, "tokens_before" => n},
+         %{"type" => "summary", "summary" => text, "first_kept_id" => id, "tokens_before" => n} =
+           entry,
          acc
        )
        when is_binary(text) and text != "" and byte_size(text) <= @max_summary_bytes and
               is_binary(id) and
-              :erlang.map_get(id, acc.ids) in [:user, :assistant] and wire_tokens?(n),
-       do:
-         {:ok, %{acc | summary: %Helyx.Summary{text: text, first_kept_id: id, tokens_before: n}}}
+              :erlang.map_get(id, acc.ids) in [:user, :assistant] and wire_tokens?(n) do
+    summary = %Helyx.Summary{text: text, first_kept_id: id, tokens_before: n}
+    {:ok, %{acc | summary: summary, compacted: compacted(entry, acc.messages)}}
+  end
 
   defp fold(%{"type" => "summary"}, _acc),
     do: {:error, {:invalid_file, "a summary entry is not valid"}}
@@ -130,6 +144,20 @@ defmodule Helyx.Session.File.Reader do
   end
 
   defp resume_id(_entry, _acc), do: %{}
+
+  # The last compaction or summary (`Helyx.Session.Totals.of/2`): the
+  # message id that its entry names, or with no `last_id` key (an entry from
+  # before #712) the message before the entry; a `last_id` that is not a
+  # string keeps none. A `tokens_after` that is not a count from 0 to 10^9
+  # reads as nil, and a summary has none: it changes only the estimate.
+  defp compacted(%{"last_id" => id} = entry, _messages) when is_binary(id),
+    do: {id, tokens_after(entry)}
+
+  defp compacted(%{"last_id" => _none}, _messages), do: nil
+  defp compacted(entry, [last | _]), do: {last.id, tokens_after(entry)}
+  defp compacted(_entry, []), do: nil
+
+  defp tokens_after(entry), do: if(wire_tokens?(entry["tokens_after"]), do: entry["tokens_after"])
 
   defp done(nil, _tail), do: {:error, {:invalid_file, @no_header}}
 

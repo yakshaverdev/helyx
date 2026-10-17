@@ -66,7 +66,7 @@ defmodule Helyx.Session.Server.Events do
   # the `seq` of its last event: a subscribe takes it in the same call. A
   # nil `tail` gives the whole transcript.
   def snapshot(%State{} = state, tail) do
-    {usage, context} = Totals.of(state.transcript)
+    {usage, context} = Totals.of(state.transcript, state.compacted)
 
     page =
       if tail,

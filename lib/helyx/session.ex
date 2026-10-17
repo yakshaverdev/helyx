@@ -153,7 +153,8 @@ defmodule Helyx.Session do
            transcript: Transcript.repair(resumed.messages),
            sync: {:replay, resumed.messages},
            summary: resumed.summary,
-           resume_ids: resumed.resume_ids
+           resume_ids: resumed.resume_ids,
+           compacted: resumed.compacted
        }}
     end
   end
@@ -326,8 +327,7 @@ defmodule Helyx.Session do
   turn did not take open one turn together before any follow-up. With no
   turn running it starts a turn at once. The text takes the checks of
   `prompt/3`. A full queue returns `{:error, :queue_full}`. An abort or a
-  failure of the turn gives it back to the client in a `:queue_dropped`
-  event.
+  failure of the turn gives it back to the client in a `:queue_dropped` event.
   """
   @spec follow_up(t(), String.t(), keyword()) :: :ok | {:error, send_error()}
   def follow_up(%__MODULE__{} = session, text, opts \\ []) when is_binary(text) and is_list(opts),

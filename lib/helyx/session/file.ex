@@ -38,16 +38,20 @@ defmodule Helyx.Session.File do
     each provider: the id and the number of assistant messages before its entry,
     and the number at the last compaction of that provider after it, if
     any (`Helyx.Session.Transcript.label/0`). `summary` is the last
-    `Helyx.Summary`, or nil.
+    `Helyx.Summary`, or nil. `compacted` is the last compaction or summary:
+    the id of the message before it that its entry names (for an entry
+    with no `last_id`, the message before the entry), and its
+    `tokens_after`, or nil (`Helyx.Session.Totals.of/2`).
     """
     @enforce_keys [:file, :model, :messages]
-    defstruct [:file, :model, :messages, :summary, resume_ids: %{}]
+    defstruct [:file, :model, :messages, :summary, :compacted, resume_ids: %{}]
 
     @type t :: %__MODULE__{
             file: Helyx.Session.File.t(),
             model: String.t(),
             messages: [Message.t()],
             summary: Helyx.Summary.t() | nil,
+            compacted: Helyx.Session.Totals.compaction() | nil,
             resume_ids: %{String.t() => Helyx.Session.Transcript.label()}
           }
   end
@@ -226,6 +230,7 @@ defmodule Helyx.Session.File do
         model: read.model,
         messages: read.messages,
         summary: read.summary,
+        compacted: read.compacted,
         resume_ids: read.resume_ids
       }
 
@@ -265,32 +270,43 @@ defmodule Helyx.Session.File do
   @doc """
   Appends a compaction entry: the provider `provider_id` compacted its own
   history (`docs/features/harness-compaction.md`). A resume adds no message
-  for it, and reads it for the resume id of that provider.
+  for it, and reads it for the resume id of that provider. `last_id` is the
+  id of the last transcript message before it, or nil
+  (`docs/features/session-snapshot.md`, "State fields").
   """
-  @spec append_compaction(t(), String.t(), :manual | :auto, integer() | nil, integer() | nil) ::
-          t()
-  def append_compaction(%__MODULE__{} = file, provider_id, trigger, before, after_)
+  @spec append_compaction(
+          t(),
+          String.t(),
+          :manual | :auto,
+          integer() | nil,
+          integer() | nil,
+          String.t() | nil
+        ) :: t()
+  def append_compaction(%__MODULE__{} = file, provider_id, trigger, before, after_, last_id)
       when is_binary(provider_id) and trigger in [:manual, :auto] do
     append(file, %{
       "type" => "compaction",
       "provider" => provider_id,
       "trigger" => Atom.to_string(trigger),
       "tokens_before" => before,
-      "tokens_after" => after_
+      "tokens_after" => after_,
+      "last_id" => last_id
     })
   end
 
   @doc """
   Appends a summary entry (`docs/features/summary-compaction.md`): a
   resume adds no message for it, and takes the last one as the summary.
+  `last_id` is as in `append_compaction/6`.
   """
-  @spec append_summary(t(), Helyx.Summary.t()) :: t()
-  def append_summary(%__MODULE__{} = file, %Helyx.Summary{} = summary) do
+  @spec append_summary(t(), Helyx.Summary.t(), String.t() | nil) :: t()
+  def append_summary(%__MODULE__{} = file, %Helyx.Summary{} = summary, last_id) do
     append(file, %{
       "type" => "summary",
       "summary" => summary.text,
       "first_kept_id" => summary.first_kept_id,
-      "tokens_before" => summary.tokens_before
+      "tokens_before" => summary.tokens_before,
+      "last_id" => last_id
     })
   end
 

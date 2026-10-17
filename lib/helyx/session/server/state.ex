@@ -103,12 +103,11 @@ defmodule Helyx.Session.Server.State do
       close: @provider_close_ms,
       idle: 1_800_000
     },
-    # The armed kill of the prepare Task (`TurnLoop`), in ms. A test seam.
-    prepare_ms: @prepare_ms,
-    # The deadline of the open, in ms: under the 30 s that #656 plans for a
-    # wire client of a start, and under `Stop.shutdown_ms/0`
-    # (session-lock.md, #665). A test seam.
-    open_ms: 25_000,
+    # The deadlines of the session's own steps, in ms: `prepare`, the armed
+    # kill of the prepare Task (`TurnLoop`), and `open`, the deadline of the
+    # open, under the 30 s that #656 plans for a wire client of a start, and
+    # under `Stop.shutdown_ms/0` (session-lock.md, #665). A test seam.
+    deadline_ms: %{prepare: @prepare_ms, open: 25_000},
     # The current idle timer (`:erlang.start_timer/3`, see
     # `TurnLoop.arm_idle/1`), or nil.
     idle: nil,
@@ -118,7 +117,10 @@ defmodule Helyx.Session.Server.State do
     # The stored summary, and the summary call that runs or ends, or nil
     # (docs/features/summary-compaction.md).
     summary: nil,
-    summary_call: nil
+    summary_call: nil,
+    # The last compaction: the id of the last transcript message before it
+    # and its `tokens_after`, or nil (`Helyx.Session.Totals.of/2`).
+    compacted: nil
   ]
 
   @type t :: %__MODULE__{
@@ -147,12 +149,12 @@ defmodule Helyx.Session.Server.State do
           resume_ids: %{String.t() => Helyx.Session.Transcript.label()},
           conn: ProviderConn.t() | nil,
           provider_ms: %{reply: pos_integer(), close: pos_integer(), idle: pos_integer()},
-          prepare_ms: pos_integer(),
-          open_ms: pos_integer(),
+          deadline_ms: %{prepare: pos_integer(), open: pos_integer()},
           idle: reference() | nil,
           pending_compact: String.t() | nil,
           summary: Helyx.Summary.t() | nil,
-          summary_call: Helyx.Session.Server.Summary.t() | nil
+          summary_call: Helyx.Session.Server.Summary.t() | nil,
+          compacted: Helyx.Session.Totals.compaction() | nil
         }
 
   # Sends `request` to the provider process with the bound `key` of `provider_ms`.

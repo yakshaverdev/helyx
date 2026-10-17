@@ -256,7 +256,7 @@ defmodule Helyx.Session.LockTest do
 
   # Starts, in a new caller, a session whose open waits under the lock until
   # the test sends `:go`. `bounds` sets fields of the state, such as
-  # `open_ms`. Returns the caller, the session process, and the session path.
+  # `deadline_ms`. Returns the caller, the session process, and the session path.
   defp start_held(core, dir, bounds \\ []) do
     test = self()
     {state, tools, path} = start_args(core, dir)
@@ -292,7 +292,10 @@ defmodule Helyx.Session.LockTest do
     core: core,
     tmp_dir: dir
   } do
-    {_caller, pid, path} = start_held(core, dir, open_ms: @load_open_ms)
+    {_caller, pid, path} =
+      start_held(core, dir,
+        deadline_ms: %{open: @load_open_ms, prepare: Session.Server.State.prepare_ms()}
+      )
 
     assert_receive {:started, {:error, :open_timeout}}
     refute Process.alive?(pid)
@@ -304,7 +307,11 @@ defmodule Helyx.Session.LockTest do
     core: core,
     tmp_dir: dir
   } do
-    {caller, pid, path} = start_held(core, dir, open_ms: @load_open_ms)
+    {caller, pid, path} =
+      start_held(core, dir,
+        deadline_ms: %{open: @load_open_ms, prepare: Session.Server.State.prepare_ms()}
+      )
+
     ref = Process.monitor(pid)
     Process.exit(caller, :kill)
     assert_receive {:DOWN, _, :process, ^caller, :killed}

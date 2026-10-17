@@ -219,6 +219,80 @@ defmodule Helyx.Session.CompactionTest do
     assert [%{role: :user}, %{role: :assistant}] = snapshot.messages
   end
 
+  describe "the context estimate after a compaction (#712)" do
+    @describetag :tmp_dir
+
+    # A turn whose usage has 800 context tokens, then a compaction to
+    # `after_` tokens, and a turn with no usage: "two" and "so far", 9 bytes.
+    defp compacted_estimate(core, dir, after_) do
+      session = start(core, "conn/hang", sessions_dir: dir)
+      :ok = Session.prompt(session, "one")
+      assert_receive {:conn, :turn, proc, {:turn, turn_id, _}}
+      usage = %Helyx.Usage{context_tokens: 800, context_window: 1000}
+      done = {:done, %{stop_reason: :end_turn, usage: usage}}
+      send(proc, {:batch, [{:event, turn_id, {:text_delta, "a"}}, {:event, turn_id, done}]})
+      collect_until(:turn_end)
+      assert :ok = Session.compact(session)
+      compacted(proc, after_)
+      :ok = Session.prompt(session, "two")
+      assert_receive {:conn, :turn, ^proc, {:turn, turn_id, _}}
+      send(proc, {:finish, turn_id})
+      collect_until(:turn_end)
+      session
+    end
+
+    test "a re-subscribe gets the estimate of the live path", %{core: core, tmp_dir: dir} do
+      session = compacted_estimate(core, dir, 40)
+      {:ok, snapshot, _} = Session.subscribe(session)
+      assert %{tokens: 40, window: 1000, bytes: 9} = snapshot.context
+    end
+
+    test "a resume gets the estimate of the live path", %{core: core, tmp_dir: dir} do
+      session = compacted_estimate(core, dir, nil)
+      {:ok, live, _} = Session.subscribe(session)
+      assert %{tokens: nil, window: 1000, bytes: 9} = live.context
+
+      Helyx.Test.SessionFile.stop(session)
+      {:ok, resumed} = Session.resume(core, sessions_dir: dir)
+      {:ok, snapshot, _} = Session.subscribe(resumed)
+      assert snapshot.context == live.context
+    end
+
+    # The interrupted result of a resume is not on disk, so the entry names
+    # the message before the compaction.
+    test "a compaction after an interrupted result keeps its estimate at the next resume", %{
+      core: core,
+      tmp_dir: dir
+    } do
+      call = %Helyx.Message.ToolCall{id: "c1", name: "slow", arguments: %{}}
+      usage = %Helyx.Usage{context_tokens: 800, context_window: 1000}
+
+      open = %Helyx.Message{
+        role: :assistant,
+        stop_reason: :tool_use,
+        content: [call],
+        usage: usage
+      }
+
+      {:ok, file} = Helyx.Session.File.create(dir, "open00000000", File.cwd!(), "conn/hang")
+      Helyx.Test.SessionFile.append_message(file, open)
+
+      {:ok, session} = Session.resume(core, sessions_dir: dir)
+      {:ok, _, _} = Session.subscribe(session)
+      assert :ok = Session.compact(session)
+      assert_receive {:conn, :compact, proc, {:compact, turn_id, _}}
+      send(proc, {:batch, [{:event, turn_id, {:compaction, 9, 40}}, {:event, turn_id, @done}]})
+      collect_until(:turn_end)
+      {:ok, live, _} = Session.subscribe(session)
+      assert %{tokens: 40, bytes: 0} = live.context
+
+      Helyx.Test.SessionFile.stop(session)
+      {:ok, resumed} = Session.resume(core, sessions_dir: dir)
+      {:ok, snapshot, _} = Session.subscribe(resumed)
+      assert snapshot.context == live.context
+    end
+  end
+
   describe "a reconnect after a compaction" do
     @describetag :tmp_dir
 
@@ -234,9 +308,10 @@ defmodule Helyx.Session.CompactionTest do
       {session, proc, turn_id}
     end
 
-    defp compacted(proc) do
+    defp compacted(proc, after_ \\ 2) do
       assert_receive {:conn, :compact, ^proc, {:compact, turn_id, _}}
-      send(proc, {:batch, [{:event, turn_id, {:compaction, 9, 2}}, {:event, turn_id, @done}]})
+      events = [{:event, turn_id, {:compaction, 9, after_}}, {:event, turn_id, @done}]
+      send(proc, {:batch, events})
       assert List.last(collect_until(:turn_end)).data == %{outcome: :done}
     end
 

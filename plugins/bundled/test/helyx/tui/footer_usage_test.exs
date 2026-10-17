@@ -364,7 +364,8 @@ defmodule Helyx.TUI.FooterUsageTest do
 
     # #697: the totals stay, the estimate takes the tokens after. A
     # compaction is an event, not a message, so this test folds the live
-    # path only: a snapshot of the same messages keeps the last usage.
+    # path only: a snapshot of the same messages with no compaction keeps
+    # the last usage (the session applies its compaction, #712).
     test "a compaction sets the estimate to its tokens after, else hides the %" do
       row = "#{@model} · idle · in 1 out 0 · cache 0% · $?"
       vm = live([at(92)], @model)
