@@ -111,7 +111,9 @@ defmodule Helyx.TUI do
 
   def handle_info({:helyx_event, %{instance_id: id} = event}, %{instance_id: id} = state) do
     :ok = Session.ack(state.session, event)
-    state = read_branch_after_turn(%{state | vm: ViewModel.apply(state.vm, event)}, event)
+    state = %{state | vm: ViewModel.apply(state.vm, event)}
+    # A turn can change the branch.
+    state = if event.type == :turn_end, do: read_branch(state), else: state
     {:noreply, settle(sync_busy(Switch.event(state, event)))}
   end
 
@@ -144,10 +146,6 @@ defmodule Helyx.TUI do
 
   # An older branch task, or its `:DOWN`, is ignored here.
   def handle_info(_msg, state), do: {:noreply, state}
-
-  # A turn can change the branch.
-  defp read_branch_after_turn(state, %{type: :turn_end}), do: read_branch(state)
-  defp read_branch_after_turn(state, _event), do: state
 
   # git runs in a task, so a slow git never holds a frame;
   # `Footer.branch/1` bounds it and never raises.
@@ -271,15 +269,10 @@ defmodule Helyx.TUI do
   end
 
   defp send_message(text, key, state) do
-    sent =
-      if "alt" in key.modifiers do
-        Session.follow_up(state.session, text)
-      else
-        Session.steer(state.session, text)
-      end
+    deliver = if "alt" in key.modifiers, do: &Session.follow_up/2, else: &Session.steer/2
 
     # A rejected message stays in the composer, and the footer says why.
-    case sent do
+    case deliver.(state.session, text) do
       :ok ->
         %{state | composer: Composer.restore(state.composer), scroll: nil}
 
