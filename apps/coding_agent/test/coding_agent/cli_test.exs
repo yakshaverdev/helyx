@@ -49,6 +49,22 @@ defmodule CodingAgent.CLITest do
     assert Process.whereis(Helyx.Core) == nil
   end
 
+  test "--help and -h print the usage, every switch, and the exit statuses, and start nothing" do
+    help = capture_io(fn -> assert CLI.main(["--help"]) == 0 end)
+    assert help =~ "usage: helyx [directory]"
+    assert help =~ "exit status"
+
+    for switch <- ~w(--model --resume --session --list --all -p --version --help),
+        do: assert(help =~ ~r/^  #{switch} /m, switch)
+
+    # The help wins over every other switch and argument.
+    for argv <- [["-h"], ["--version", "--help"], ["--list", "--session", "x", "a", "b", "-h"]],
+        do: assert(capture_io(fn -> assert CLI.main(argv) == 0 end) == help)
+
+    assert error_line(["--help", "--bogus"]) =~ "--help"
+    assert Process.whereis(Helyx.Core) == nil
+  end
+
   test "--version prints the source version outside a release" do
     assert capture_io(fn -> assert CLI.main(["--version"]) == 0 end) == "helyx 0.1.0 (source)\n"
   end

@@ -1,18 +1,31 @@
 defmodule Helyx.TUI.Command do
   @moduledoc false
-  # The slash commands of the composer: `/model provider/model`,
-  # `/compact [instructions]`, `/new`, and `/resume`
+  # The slash commands of the composer, in `@commands`
   # (docs/features/coding-agent.md, "TUI",
   # docs/features/harness-compaction.md, and
   # docs/features/tui-session-switch.md). `parse/1` owns the rule of a
-  # command, `run/2` its session call and the notice of a refused one;
-  # `Helyx.TUI` runs `/new` and `/resume`, which switch the session. The
+  # command, `run/2` its session call and the notice of a refused one, and
+  # `help/1` the text of `/help`; `Helyx.TUI` runs `/new` and `/resume`,
+  # which switch the session, and `/help`, which holds the keys. The
   # transcript follows the session's events, not these calls.
 
   alias Helyx.Session
 
-  @type name :: :model | :compact | :new | :resume
+  @type name :: :model | :compact | :new | :resume | :help
   @type t :: {name(), String.t()} | {:usage, name()}
+
+  # Each command and its usage: the one list of names that `parse/1`
+  # matches and `/help` shows.
+  @commands [
+    model: "/model provider/model",
+    compact: "/compact [instructions]",
+    new: "/new",
+    resume: "/resume",
+    help: "/help"
+  ]
+  @names Enum.map_join(@commands, "|", fn {name, _usage} -> name end)
+  # A command whose usage is its name alone takes no argument.
+  @bare for {name, usage} <- @commands, usage == "/#{name}", do: name
 
   # The rule is on bytes, not on looks; the feature doc's bounds table
   # holds the rule and its limit. A paste keeps tabs and new lines, so
@@ -22,7 +35,7 @@ defmodule Helyx.TUI.Command do
   # valid UTF-8 (a Rust `String`); the `u` flag raises on anything else.
   @spec parse(String.t()) :: t() | {:message, String.t()}
   def parse(text) do
-    case Regex.run(~r/\A\s*\/(model|compact|new|resume)([\s\p{C}]*)/u, text, return: :index) do
+    case Regex.run(~r/\A\s*\/(#{@names})([\s\p{C}]*)/u, text, return: :index) do
       nil ->
         {:message, text}
 
@@ -32,8 +45,7 @@ defmodule Helyx.TUI.Command do
 
         cond do
           separator == 0 and head < byte_size(text) -> {:usage, name}
-          # `/new` and `/resume` take no argument.
-          name in [:new, :resume] and arg != "" -> {:usage, name}
+          name in @bare and arg != "" -> {:usage, name}
           true -> {name, arg}
         end
     end
@@ -49,9 +61,19 @@ defmodule Helyx.TUI.Command do
   defp answer(:ok), do: :ok
   defp answer({:error, reason}), do: {:notice, error(reason)}
 
-  defp usage(:model), do: "/model provider/model"
-  defp usage(:compact), do: "/compact [instructions]"
-  defp usage(name), do: "/#{name}"
+  defp usage(name), do: Keyword.fetch!(@commands, name)
+
+  # The text of `/help`: the usage of each command, then the keys of
+  # `Helyx.TUI`, one line each.
+  @spec help([{String.t(), String.t()}]) :: String.t()
+  def help(keys) do
+    commands = Enum.map_join(@commands, ", ", fn {_name, usage} -> usage end)
+
+    Enum.join(
+      ["commands: " <> commands, "keys:" | for({key, text} <- keys, do: "#{key}: #{text}")],
+      "\n"
+    )
+  end
 
   # A notice shows at most the provider id, which the ref bounds cap.
   defp error({:unknown_provider, id}), do: "unknown provider: #{id}"

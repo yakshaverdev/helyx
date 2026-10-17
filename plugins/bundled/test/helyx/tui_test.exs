@@ -1530,6 +1530,37 @@ defmodule Helyx.TUITest do
     end
   end
 
+  describe "/help" do
+    test "adds one information cell with the commands and the keys, and starts no turn", %{
+      core: core
+    } do
+      state = mounted(core, "help", [])
+      cells = ViewModel.cells(state.vm)
+      state = submit(state, " /help ")
+      assert ExRatatui.textarea_get_value(state.composer.input) == ""
+      assert [{:info, help}] = ViewModel.cells(state.vm) -- cells
+
+      for text <- ["/model provider/model", "/compact [instructions]", "/new", "/resume", "/help"],
+          do: assert(help =~ text)
+
+      for key <- ["Alt+Enter", "Escape", "PgUp", "Ctrl+O", "Ctrl+F", "Ctrl+C"],
+          do: assert(help =~ key)
+
+      refute_received {:helyx_event, _}
+    end
+
+    test "with an argument, or no separator, shows its usage", %{core: core} do
+      # The composer is a NIF resource, so each text gets its own mount.
+      for {text, i} <- Enum.with_index(["/help me", "/helpful"]) do
+        state = submit(mounted(core, "help_usage_#{i}", []), text)
+        assert {:notice, "usage: /help"} = List.last(ViewModel.cells(state.vm))
+        assert ExRatatui.textarea_get_value(state.composer.input) == text
+      end
+
+      refute_received {:helyx_event, _}
+    end
+  end
+
   describe "multiline composer" do
     defp paste(state, text) do
       {:noreply, state} = TUI.handle_event(%ExRatatui.Event.Paste{content: text}, state)

@@ -1,32 +1,33 @@
 defmodule Helyx.TUI do
+  # The keys that `handle_event/2` dispatches, for the moduledoc and `/help`.
+  @keys [
+    {"Enter", "sends the composer as a steer, or as a prompt when no turn runs"},
+    {"Alt+Enter", "sends it as a follow-up"},
+    {"Ctrl+J", "adds a new line; so does Shift+Enter where the terminal reports it"},
+    {"Up, Down", "on the first and the last row, recall earlier prompts"},
+    {"Escape", "aborts the running turn; its queued messages come back to the composer"},
+    {"PgUp, PgDn", "scroll the transcript by one screen"},
+    {"wheel, drag", "the wheel scrolls three rows; a drag copies text"},
+    {"Home, End", "with an empty composer, the oldest and the newest output; else the cursor"},
+    {"Ctrl+A, Ctrl+E", "move the cursor to the start or the end of the line"},
+    {"Alt+B, Alt+F", "move the cursor one word back or forward, as Ctrl+Left and Ctrl+Right do"},
+    {"Ctrl+O", "shows the full text of every tool result, or four lines again"},
+    {"Ctrl+F", "finds text in the loaded transcript"},
+    {"Ctrl+C", "clears the composer; a second Ctrl+C within 500 ms quits"}
+  ]
+
   @moduledoc """
   The terminal interface, an `ExRatatui.App` in the alternate screen.
 
   The TUI subscribes to one session at a time and renders from `Helyx.TUI.ViewModel`,
-  a pure fold over the session's events. It holds no session state of its
-  own. It runs in the node of its Core, so it has the Helyx version of that
-  Core and needs no version check (ADR 0006). Keys, with the full rules in
-  `docs/features/coding-agent.md`, "TUI":
+  a pure fold over the session's events. It holds no session state of its own. It runs in
+  the node of its Core, so it has the Helyx version of that Core and needs no version check
+  (ADR 0006). Typing fills the composer (`Helyx.TUI.Composer`), at most 8 lines high; a
+  paste of more than 5 lines shows as one marker and is sent in full, and a rejected send
+  stays in the composer. `/help` lists the slash commands (`Helyx.TUI.Command`) and these
+  keys, with the full rules in `docs/features/coding-agent.md`, "TUI":
 
-    * typing fills the composer (`Helyx.TUI.Composer`), at most 8 lines high
-    * Ctrl+J adds a new line; so does Shift+Enter where the terminal reports it
-    * Up on the first row and Down on the last row recall earlier prompts
-    * a paste of more than 5 lines shows as one marker and is sent in full
-    * Enter sends the composer as a steer (a prompt when no turn runs)
-    * Alt+Enter sends it as a follow-up; a rejected send stays in the composer
-    * `/model provider/model` in the composer switches the model, and
-      `/compact [instructions]` compacts the provider's own history
-    * `/new` starts a new session, and `/resume` lists the other sessions
-      of the folder to resume one (`docs/features/tui-session-switch.md`)
-    * Escape aborts the running turn; its queued messages come back to the composer
-    * PgUp and PgDn scroll the transcript (`Helyx.TUI.Transcript`) by one screen
-    * the wheel scrolls three rows; a drag copies text (`Helyx.TUI.Selection`)
-    * Home and End, with an empty composer, go to the oldest and the newest output;
-      else they move the cursor, as Ctrl+A and Ctrl+E do; Alt+B and Ctrl+Left
-      move one word back, Alt+F and Ctrl+Right one word forward
-    * Ctrl+O shows the full text of every tool result, or four lines again
-    * Ctrl+F finds text in the loaded transcript (`Helyx.TUI.Search`)
-    * Ctrl+C clears the composer; a second Ctrl+C within 500 ms quits
+  #{Enum.map_join(@keys, "\n", fn {key, text} -> "* #{key}: #{text}" end)}
 
   Start it with `run/1`, which blocks until the user quits:
 
@@ -300,6 +301,9 @@ defmodule Helyx.TUI do
   # The footer and the transcript follow the session's events, not this
   # call. A refused command stays in the composer, under a notice.
   defp run_command({:new, ""}, state), do: Switch.start(restore(state), :new)
+
+  defp run_command({:help, ""}, state),
+    do: %{restore(state) | vm: ViewModel.info(state.vm, Command.help(@keys))}
 
   defp run_command({:resume, ""}, state),
     do: %{restore(state) | list: SessionList.new(state.sessions_dir, state.cwd, state.session.id)}
