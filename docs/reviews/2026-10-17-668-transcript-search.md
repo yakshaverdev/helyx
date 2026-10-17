@@ -83,3 +83,8 @@ S is `plugins/bundled/test/helyx/tui/search_test.exs`, T is `plugins/bundled/tes
 | `/new` and `/resume` close the search | `switch_test.exs` "/new ends the session"; `/resume` uses the same `Switch.bind/3` |
 | Query bound of 256 bytes | S "the query has at most 256 bytes"; probe of round 2 (failure-path) |
 | Open hole: the signs of a drawn row | probes of round 3 and the small-fix round |
+
+## Merge gate, round 1
+
+- Codex: on an 80-column terminal, a 40-byte query in hidden tool output and Enter at the oldest match drew `no older match, match no`: the query pushed the notes past the edge. Fixed: the notes are the title of the search box, on its top border. Test: `search_test.exs`, "a long query does not push the notes past the edge of an 80-column frame"; it fails without the fix with the frame row `no older match, match no│`.
+- Reduced round (spec and failure-path), as the orchestrator asked; the fix is 27 lines of `search.ex`, added plus removed. Both found that the longest notes are cut in a terminal narrower than 38 columns, as before the fix. Doc: the width is stated. The spec agent also found the stale wording "the line shows both notes". Doc: fixed.

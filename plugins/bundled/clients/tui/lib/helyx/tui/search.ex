@@ -135,31 +135,32 @@ defmodule Helyx.TUI.Search do
 
   # The search line in `area`, the rect of the composer, so an open or a
   # close does not change the transcript height: the query, a
-  # reversed space as the cursor, and the notes. `marks` are those of the
-  # frame: a match with none on the screen says so, also after an end
-  # note. A row does not wrap, so a long query is cut at the edge.
+  # reversed space as the cursor. The notes are the title of the box, on
+  # its border, so a long query cannot push them past the edge. `marks` are
+  # those of the frame: a match with none on the screen says so, also after
+  # an end note. A row does not wrap, so a long query is cut at the edge.
   @spec widgets(t(), [{Block.t(), Rect.t()}], Rect.t()) :: [{Paragraph.t(), Rect.t()}]
   def widgets(%__MODULE__{} = search, marks, area) do
     shown = if search.match && marks == [], do: "match not shown"
 
-    note =
+    title =
       case Enum.reject([search.note, shown], &is_nil/1) do
-        [] -> []
-        notes -> [%Span{content: "  " <> Enum.join(notes, ", "), style: @dim}]
+        [] -> nil
+        notes -> %Span{content: " " <> Enum.join(notes, ", ") <> " ", style: @dim}
       end
 
-    spans =
-      [
-        %Span{content: "find: ", style: @dim},
-        %Span{content: search.query},
-        %Span{content: " ", style: @cursor} | note
-      ]
+    spans = [
+      %Span{content: "find: ", style: @dim},
+      %Span{content: search.query},
+      %Span{content: " ", style: @cursor}
+    ]
 
     box = %Block{
       borders: [:all],
       border_type: :rounded,
       border_style: %Style{fg: :dark_gray},
-      padding: {1, 0, 0, 0}
+      padding: {1, 0, 0, 0},
+      title: title
     }
 
     [{%Paragraph{text: %Line{spans: spans}, block: box}, area}]

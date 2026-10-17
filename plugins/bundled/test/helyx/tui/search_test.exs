@@ -42,12 +42,14 @@ defmodule Helyx.TUI.SearchTest do
     Search.marks(state.search, rows, @area)
   end
 
-  # The text of the search line, as the frame of `state` draws it.
+  # The text of the search line, as the frame of `state` draws it, and
+  # after two spaces the notes of the box title.
   defp line(state) do
-    [{%Paragraph{text: %Line{spans: spans}}, _area}] =
+    [{%Paragraph{text: %Line{spans: spans}, block: %Block{title: title}}, _area}] =
       Search.widgets(state.search, marks(state), %Rect{x: 2, y: 5, width: 20, height: 3})
 
-    Enum.map_join(spans, & &1.content)
+    notes = if title, do: "  " <> String.trim(title.content), else: ""
+    Enum.map_join(spans, & &1.content) <> notes
   end
 
   test "Ctrl+F opens the search, and the newest match comes first" do
@@ -116,6 +118,22 @@ defmodule Helyx.TUI.SearchTest do
     state = state |> press("backspace") |> type("2")
     assert {state.search.match, state.scroll, line(state)} == {0, {0, 2}, "find: line 2 "}
     assert [{%Block{}, %Rect{x: 4, y: 0, width: 6}}] = marks(state)
+  end
+
+  test "a long query does not push the notes past the edge of an 80-column frame" do
+    # A query of 40 bytes, in a line that the short form hides.
+    prefix = String.duplicate("q", 33)
+    hidden = Enum.map_join(1..10, "\n", &"#{prefix} line #{&1}")
+    state = [tool("c1", hidden)] |> state() |> open() |> type(prefix <> " line 9")
+    state = press(state, "enter")
+    assert byte_size(state.search.query) == 40
+
+    terminal = ExRatatui.init_test_terminal(80, 3)
+    area = %Rect{x: 2, y: 0, width: 76, height: 3}
+    :ok = ExRatatui.draw(terminal, Search.widgets(state.search, marks(state), area))
+    frame = ExRatatui.get_buffer_content(terminal)
+    assert frame =~ "no older match, match not shown"
+    assert frame =~ "find: #{prefix} line 9"
   end
 
   test "the search text holds tool calls, notices, stop lines, and information cells" do
