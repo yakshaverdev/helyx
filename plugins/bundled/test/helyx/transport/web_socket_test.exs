@@ -47,7 +47,7 @@ defmodule Helyx.Transport.WebSocketTest do
     end
 
     test "a refused upgrade closes at once, and its hello is not logged", %{port: port} do
-      hello = JSON.encode!(%{"type" => "hello", "protocol" => 1, "token" => "secret"})
+      hello = JSON.encode!(Map.put(Client.hello(nil, nil), "proof", "fake"))
       # The bytes after a refusal would be the next HTTP request.
       next = [Client.text_frame(hello), "\r\n"]
 
@@ -103,44 +103,77 @@ defmodule Helyx.Transport.WebSocketTest do
     for opts <- [[token: 7], [token: ""], [origins: "https://a.example"], [origins: [:a]]] do
       assert {:error, :invalid_options} = WebSocket.start_link([core: :none, port: 0] ++ opts)
     end
+
+    # The same checks through `child_spec/1`, which gives the token in a closure.
+    for {opts, error} <- [{[token: 7], :invalid_options}, {[token: nil], :token_required}] do
+      %{start: {module, fun, [args]}} =
+        WebSocket.child_spec([core: :none, port: 0, ip: {0, 0, 0, 0}] ++ opts)
+
+      assert {:error, ^error} = apply(module, fun, [args])
+    end
   end
 
   describe "the hello" do
     setup context, do: serve(context, token: "secret")
 
-    test "the right token gets welcome, and the connection state holds no token", context do
-      assert Client.open(context.port, %{"token" => "secret"})
-      [connection] = connections(context.transport)
-      state = inspect(:sys.get_state(connection), limit: :infinity, printable_limit: :infinity)
-      assert state =~ "Helyx.Transport.WebSocket.Connection"
-      refute state =~ "secret"
+    test "the proof of the token gets welcome", context do
+      assert Client.open(context.port, "secret")
     end
 
-    test "a missing or wrong token closes with 4401", %{port: port} do
-      for hello <- [%{}, %{"token" => "wrong"}, %{"token" => 7}] do
-        {:ok, socket} = Client.upgrade(port)
-        Client.send_frame(socket, Map.merge(%{"type" => "hello", "protocol" => 1}, hello))
+    test "a missing or wrong proof, or the proof of another nonce, closes with 4401", context do
+      {:ok, other} = Client.upgrade(context.port)
+      stale = Client.proof(Client.challenge(other), "secret")
+
+      for hello <- [
+            &Client.hello(&1, nil),
+            &Map.put(Client.hello(&1, nil), "proof", "wrong"),
+            &Map.put(Client.hello(&1, nil), "proof", 7),
+            &Map.put(Client.hello(&1, nil), "proof", stale),
+            &Client.hello(&1, "secreT")
+          ] do
+        {:ok, socket} = Client.upgrade(context.port)
+        hello = hello.(Client.challenge(socket))
+        Client.send_frame(socket, hello)
         assert {:close, 4401} = Client.recv(socket)
       end
     end
 
-    test "another protocol number gets refused and 4426", %{port: port} do
-      {:ok, socket} = Client.upgrade(port)
-      Client.send_frame(socket, %{"type" => "hello", "protocol" => 2, "token" => "secret"})
+    test "a second hello closes with 4400", %{port: port} do
+      socket = Client.open(port, "secret")
+      Client.send_frame(socket, Client.hello(nonce(), "secret"))
+      assert {:close, 4400} = Client.recv(socket)
+    end
 
-      assert {:frame, %{"type" => "refused", "code" => "protocol", "server_protocol" => 1}} =
+    test "the challenge is 32 random bytes, one for each connection", %{port: port} do
+      nonces =
+        for _ <- 1..2 do
+          {:ok, socket} = Client.upgrade(port)
+          Base.decode64!(Client.challenge(socket))
+        end
+
+      assert [<<_::binary-size(32)>>, <<_::binary-size(32)>>] = nonces
+      assert Enum.uniq(nonces) == nonces
+    end
+
+    test "another protocol number gets refused and 4426, before the proof", %{port: port} do
+      {:ok, socket} = Client.upgrade(port)
+      # A client of protocol 1 sends no proof; it learns that it must update.
+      hello = Client.hello(Client.challenge(socket), nil)
+      Client.send_frame(socket, %{hello | "protocol" => 1})
+
+      assert {:frame, %{"type" => "refused", "code" => "protocol", "server_protocol" => 2}} ==
                Client.recv(socket)
 
       assert {:close, 4426} = Client.recv(socket)
     end
 
     test "a frame before welcome, bad JSON, or a binary frame closes with 4400", %{port: port} do
-      hello = %{"type" => "hello", "protocol" => 1, "token" => "secret"}
+      hello = Map.put(Client.hello(nil, nil), "proof", "fake")
       [hello_part | _] = parts(Map.put(hello, "pad", String.duplicate("p", 1_048_576)))
 
       for send <- [
             &Client.send_frame(&1, %{"type" => "req", "id" => "1", "op" => "x", "params" => %{}}),
-            # A hello as parts: its token would wait in the connection.
+            # A hello as parts: a client that gave no proof gets no buffer.
             &Client.send_text(&1, hello_part),
             &Client.send_frame(&1, %{
               "type" => "part",
@@ -152,6 +185,7 @@ defmodule Helyx.Transport.WebSocketTest do
             &Client.send_text(&1, "{}", 2)
           ] do
         {:ok, socket} = Client.upgrade(port)
+        Client.challenge(socket)
         send.(socket)
         assert {:close, 4400} = Client.recv(socket)
       end
@@ -159,24 +193,23 @@ defmodule Helyx.Transport.WebSocketTest do
 
     test "a bad frame around the hello logs nothing that holds its bytes", context do
       %{port: port, transport: transport} = context
-      hello = JSON.encode!(%{"type" => "hello", "protocol" => 1, "token" => "secret"})
-      bad_utf8 = binary_part(hello, 0, byte_size(hello) - 2) <> <<0xFF, ?", ?}>>
 
       # Not UTF-8; a continuation with no frame before it; an unknown opcode;
       # an empty continuation that is not the last.
       for {packet, code} <- [
-            {Client.text_frame(bad_utf8), 4400},
-            {[Client.text_frame(hello), Client.masked_frame(1, 0, "")], 1002},
-            {[Client.text_frame(hello), Client.masked_frame(1, 3, "")], 1002},
-            {[Client.masked_frame(0, 1, hello), Client.masked_frame(0, 0, "")], 1008}
+            {&Client.text_frame(binary_part(&1, 0, byte_size(&1) - 2) <> <<0xFF, ?", ?}>>), 4400},
+            {&[Client.text_frame(&1), Client.masked_frame(1, 0, "")], 1002},
+            {&[Client.text_frame(&1), Client.masked_frame(1, 3, "")], 1002},
+            {&[Client.masked_frame(0, 1, &1), Client.masked_frame(0, 0, "")], 1008}
           ] do
         {:ok, socket} = Client.upgrade(port)
+        hello = JSON.encode!(Client.hello(Client.challenge(socket), "secret"))
         [connection] = connections(transport)
         ref = Process.monitor(connection)
 
         log =
           capture_log(fn ->
-            :ok = :gen_tcp.send(socket, packet)
+            :ok = :gen_tcp.send(socket, packet.(hello))
             assert_receive {:DOWN, ^ref, :process, ^connection, _reason}
           end)
 
@@ -189,12 +222,153 @@ defmodule Helyx.Transport.WebSocketTest do
     @tag :slow
     test "no hello within 5,000 ms closes with 4401", %{port: port} do
       {:ok, socket} = Client.upgrade(port)
+      Client.challenge(socket)
       assert {:close, 4401} = Client.recv(socket, 10_000)
+    end
+  end
+
+  # A log handler that sends each raw event, metadata too, to the test.
+  # A formatter prints less than the event holds.
+  def log(event, %{config: %{test: pid}}), do: send(pid, {:log_event, event})
+
+  describe "no log, option, or process state holds the token or the key" do
+    setup context do
+      token = "token-" <> Base.encode16(:crypto.strong_rand_bytes(16))
+      id = :"wire_log_#{System.unique_integer([:positive])}"
+      :ok = :logger.add_handler(id, __MODULE__, %{config: %{test: self()}})
+      on_exit(fn -> :logger.remove_handler(id) end)
+      serve(Map.put(context, :token, token), token: token)
+    end
+
+    test "a socket error stops with a crash report that holds a hello in fragments", context do
+      {:ok, socket} = Client.upgrade(context.port)
+      %{"proof" => proof} = hello = Client.hello(Client.challenge(socket), context.token)
+      # The first fragment waits in the fragment buffer of the WebSocket server.
+      :ok = :gen_tcp.send(socket, Client.masked_frame(0, 1, JSON.encode!(hello), <<0::32>>))
+      [connection] = connections(context.transport)
+      Events.wait_until(fn -> inspect(:sys.get_state(connection)) =~ proof end)
+      {raw_socket, _state} = :sys.get_state(connection)
+
+      capture_log(fn ->
+        send(connection, {:tcp_error, raw_socket.socket, :etimedout})
+        assert_logged([proof], context.token)
+      end)
+    end
+
+    test "a handshake that raises logs its conn, with the bytes after the request", context do
+      {:ok, socket} = :gen_tcp.connect(~c"127.0.0.1", context.port, [:binary, active: false])
+      hello = Client.hello(nonce(), "x")
+      request = Client.upgrade_request([{"sec-websocket-extensions", ";"}])
+      frame = Client.masked_frame(1, 1, JSON.encode!(hello), <<0::32>>)
+
+      capture_log(fn ->
+        :ok = :gen_tcp.send(socket, [request, frame])
+        assert_logged([hello["proof"]], context.token)
+      end)
+    end
+
+    test "a TLS packet on the clear channel logs the plug options", context do
+      {:ok, socket} = :gen_tcp.connect(~c"127.0.0.1", context.port, [:binary, active: false])
+
+      capture_log(fn ->
+        :ok = :gen_tcp.send(socket, <<22, 3, 1>>)
+
+        assert_logged(
+          ["looks like TLS", "Helyx.Transport.WebSocket, %{", "#Function<"],
+          context.token
+        )
+      end)
+    end
+
+    test "the state of each process and the child spec hold the key only in a closure",
+         context do
+      socket = Client.open(context.port, context.token)
+      assert %{"ok" => true} = Client.request(socket, "1", "sessions.live", %{})
+
+      states =
+        for pid <- tree(context.transport) do
+          {:dictionary, dictionary} = Process.info(pid, :dictionary)
+          # A supervisor or a gen process; an acceptor takes no system message.
+          case dictionary[:"$initial_call"] do
+            {m, f, 1} when m == :supervisor or f == :init -> :sys.get_state(pid)
+            _task -> nil
+          end
+        end
+
+      spec = WebSocket.child_spec(core: :core, port: 0, token: context.token)
+      text = full_inspect({states, spec})
+      assert text =~ "Helyx.Transport.WebSocket.Connection"
+      assert text =~ "#Function<"
+      refute_secret(text, context.token)
+    end
+  end
+
+  defp nonce, do: Base.encode64(:crypto.strong_rand_bytes(32))
+
+  # Every process under the transport supervisor.
+  defp tree(sup) do
+    Enum.flat_map(Supervisor.which_children(sup), fn
+      {_id, pid, :supervisor, _} when is_pid(pid) -> [pid | tree(pid)]
+      {_id, pid, :worker, _} when is_pid(pid) -> [pid]
+      _restarting -> []
+    end)
+  end
+
+  # Waits for a log event that holds each text of `shown`, which proves that
+  # the path ran, and checks that the event holds no form of the token or the
+  # key.
+  defp assert_logged(shown, token) do
+    assert_receive {:log_event, event}
+    text = full_inspect(event)
+
+    if Enum.all?(shown, &String.contains?(text, &1)) do
+      refute_secret(text, token)
+    else
+      assert_logged(shown, token)
+    end
+  end
+
+  # A binary with a byte that is not printable shows as bytes in the first
+  # form, and as text in the second.
+  defp full_inspect(term) do
+    opts = [limit: :infinity, printable_limit: :infinity]
+    inspect(term, opts) <> inspect(term, [binaries: :as_strings] ++ opts)
+  end
+
+  # The token, and the key as bytes, as Elixir and Erlang print them, and in
+  # base16 and base64.
+  defp refute_secret(text, token) do
+    key = :crypto.hash(:sha256, token)
+
+    for form <- [
+          token,
+          key,
+          inspect(key, limit: :infinity),
+          inspect(key, binaries: :as_strings),
+          IO.chardata_to_string(:io_lib.format(~c"~w", [key])),
+          Base.encode16(key),
+          Base.encode16(key, case: :lower),
+          Base.encode64(key)
+        ] do
+      refute String.contains?(text, form), "the log holds a form of the token or the key"
     end
   end
 
   describe "requests" do
     setup context, do: serve(context)
+
+    test "a server with no token takes a hello with any proof", %{port: port} do
+      for proof <- ["fake", 7, %{}] do
+        {:ok, socket} = Client.upgrade(port)
+
+        Client.send_frame(
+          socket,
+          Map.put(Client.hello(Client.challenge(socket), nil), "proof", proof)
+        )
+
+        assert {:frame, %{"type" => "welcome", "protocol" => 2}} = Client.recv(socket)
+      end
+    end
 
     test "a session starts, takes a prompt, is live, and stops", %{port: port} do
       socket = Client.open(port)

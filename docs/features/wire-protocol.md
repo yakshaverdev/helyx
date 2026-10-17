@@ -14,7 +14,16 @@ User stories:
 ### Connection
 
 1. The client opens a WebSocket. The server checks the `Origin` header first: a header that is present and not in the configured list gets HTTP 403, and the 65th connection gets HTTP 503.
-2. The client sends `hello` within 5,000 ms. The server needs a token when it binds to an address that is not loopback; a server that has a token configured needs it from every connection, on loopback too. The processes of the transport keep only the SHA-256 of the configured token, so their state does not hold it. The bytes of a frame of the client hold its mask, so a log line that holds them holds the token. A stop on a bad frame or a closed socket logs no crash report, an HTTP or WebSocket protocol error logs nothing, the server speaks only HTTP/1.1 and closes any other protocol, and a refused upgrade (`403`, `503`, or a bad handshake) closes the connection at once, so the server does not read a `hello` sent after it as the next HTTP request. Open holes, in the WebSocket server and not in the transport: a socket error that comes as a message (`:tcp_error`, such as `:etimedout`) stops with a crash report that holds the fragment buffer, so a `hello` in fragments can be in it; an exception in the handshake of the WebSocket server, such as a bad `Sec-WebSocket-Extensions` header, logs the `conn` in the metadata of the event, with the bytes read after the request; the warning for a TLS packet on a clear channel has the plug options, with the SHA-256 of the token, in its metadata. A crash from a bug in the connection process logs its state and its last message; the child spec in the supervisor of the product holds the options that the product gives. A `hello` comes in one frame: a part before `welcome` closes the connection with `4400`, so no buffer of parts holds a token. A `hello` sent as WebSocket fragments waits in the fragment buffer of the WebSocket server until its last fragment or the auth wait of 5,000 ms: WebSock gives the transport no frame before the last fragment. A missing or wrong token where one is needed, or no `hello` in time, closes the connection with `4401`. A proxy that gives remote access to a server bound to loopback connects from loopback: such a server has a token configured, or the proxy authenticates the remote client itself. A protocol number that is not the server's gets `refused` and the close `4426`.
+2. The server sends `challenge` at once. Its `nonce` is the base64 of 32 random bytes, a new one for each connection. The client sends `hello` within 5,000 ms of the upgrade.
+   - **Token.** The server needs a token when it binds to an address that is not loopback. A server that has a token configured needs the proof of it from every connection, on loopback too. A server with no token takes any `hello` and does not read its `proof`.
+   - **Proof.** The `proof` in `hello` is the base64 of HMAC-SHA256 with the key over the 32 bytes of the nonce. The key is the SHA-256 of the token. The server compares the proof in constant time. A missing or wrong proof where one is needed, or no `hello` in time, closes the connection with `4401`.
+   - **No secret in a frame.** No frame holds the token. A proof is good for its one nonce, and the nonce for its one connection. So a `hello` in a log gives no access (ADR 0008, revision of 2026-10-18).
+   - **No secret in a term.** The key is in a closure in the plug options and in the state of every process of the transport. `child_spec/1` puts the token in a closure in the child spec that the supervisor of the product keeps. `inspect/1` of a closure does not print what it holds. So a log of the options, of a process state, or of a crash report holds neither the token nor the key. A product that writes its own child spec, not through `child_spec/1`, keeps its options there as it wrote them.
+   - **The logs of the WebSocket server.** Three logs of the WebSocket server hold frame bytes, `conn`, or the plug options, and none of them holds a secret now. The first is the crash report of a socket error that comes as a message (`:tcp_error`, such as `:etimedout`), with the fragment buffer. The second is the log of an exception in the handshake (a bad `Sec-WebSocket-Extensions` header), with `conn` in its metadata. The third is the warning for a TLS packet on a clear channel, with the plug options. A test captures each one on a loopback socket. Where the log holds a frame, the frame has a mask of zero, so the log holds the text of the frame.
+   - **Other logs.** A stop on a bad frame or a closed socket logs no crash report, and an HTTP or WebSocket protocol error logs nothing. The server speaks only HTTP/1.1 and closes any other protocol. A refused upgrade (`403`, `503`, or a bad handshake) closes the connection at once, so the server does not read the bytes after it as the next HTTP request.
+   - **Parts.** A `hello` comes in one frame: a part before `welcome` closes the connection with `4400`. So a client that did not give its proof gets no buffer of parts.
+   - **Proxy.** A proxy that gives remote access to a server bound to loopback connects from loopback. Such a server has a token configured, or the proxy authenticates the remote client itself.
+   - **Protocol.** A protocol number that is not the server's gets `refused` and the close `4426`. The server checks the protocol number before the proof, so a client of another protocol learns that it must update. `refused` holds only the protocol number of the server.
 3. The server sends `welcome`. From then on, the client sends `req` and `ack` frames, and the server sends `res`, `event`, and `session_end` frames.
 
 Over stdio, the same frames go one JSON object per line. The encoder escapes every LF inside a string, so a raw LF ends a frame, and stdout carries protocol frames only. Stdio has no `Origin` and no token: the process that starts the server owns it.
@@ -24,7 +33,7 @@ Over stdio, the same frames go one JSON object per line. The encoder escapes eve
 | Code | Meaning |
 |---|---|
 | `4400` | a frame that the contract does not allow: bad JSON or a text that is not UTF-8, an unknown `type`, a frame or a part before `welcome`, a part out of order, a request `id` whose reply was not sent, an `ack` of a `seq` that the subscription did not send |
-| `4401` | no `hello` within 5,000 ms, or a missing or wrong token |
+| `4401` | no `hello` within 5,000 ms, or a missing or wrong proof |
 | `4408` | a slow client: a subscription passed its credits (`:slow`), the outbound queue held more than 64 MiB when a frame was added, or no inbound frame or pong for 45,000 ms |
 | `4413` | an inbound frame joined from parts over 25 MiB |
 | `1002`, `1008` | a WebSocket frame that RFC 6455 does not allow, such as a continuation with no frame before it (`1002`) or an empty continuation that is not the last (`1008`): the WebSocket server closes |
@@ -108,7 +117,7 @@ The schema below is the contract. The test of #660 computes the SHA-256 of the l
 
 <!-- wire-schema:start -->
 ```text
-protocol 1
+protocol 2
 
 notation: {k: T} an object; k? may be absent (absent = null or false);
   T | U either; [T] a list; "x" that string; int a JSON integer >= 0;
@@ -116,12 +125,13 @@ notation: {k: T} an object; k? may be absent (absent = null or false);
   base64 a string of RFC 4648 base64 of at most 786,000 bytes
 
 # client to server
-hello   = {type: "hello", protocol: int, token?: string}
+hello   = {type: "hello", protocol: int, proof?: base64}
 req     = {type: "req", id: id, op: op, params: object}
 ack     = {type: "ack", sub: string, seq: int}
 part    = {type: "part", n: int, last: bool, data: base64}
 
 # server to client
+challenge   = {type: "challenge", nonce: base64}
 welcome     = {type: "welcome", protocol: int}
 refused     = {type: "refused", code: "protocol", server_protocol: int}
 res         = {type: "res", id: id, ok: true, result: object}
@@ -220,8 +230,10 @@ usage = {input: int, output: int, cache_read: int, cache_write: int,
          context_tokens?: int, context_window?: int}
 
 # order rules (a schema cannot show them; a change needs a new protocol number)
-O1 hello is the first client frame; the server sends nothing but welcome or
-   refused before it, and the client sends nothing else before welcome.
+O1 challenge is the first server frame, once; hello is the first client
+   frame; the server sends nothing but challenge before hello and nothing but
+   welcome or refused after it, and the client sends nothing else before
+   welcome. proof = base64(HMAC-SHA256(SHA-256(token), the 32 bytes of nonce)).
 O2 each req gets exactly one res, also at timeout; none after the close.
 O3 the parts of one frame are consecutive, n from 0, last on the final one.
 O4 per subscription: the subscribe res, which carries the replayed events,
@@ -250,6 +262,8 @@ Notes on the codec:
 5. **The build-id rule** of ADR 0006 (revision of 2026-10-03). Replaced by the protocol number and its schema test.
 6. **HTTP and SSE as a Transport plugin** (ADR 0006 §6). Replaced by `Helyx.Transport.WebSocket`, a bundled module with no Core interface.
 7. Tests: no test of the old remote plan exists. `test/helyx/session/end_signal_test.exs` keeps its properties for the local end signal.
+8. **The token in `hello`** (protocol 1, #660). Replaced by `challenge` and `proof` in protocol 2 (#763): a frame held the token, and the logs of the WebSocket server that hold frame bytes or `conn` held it with the frame.
+9. **The SHA-256 of the token in the plug options and the process states** (#660). The SHA-256 of the token is now the key of the proof, so it is in a closure. The test "the connection state holds no token" is replaced by the test that inspects the state of every process of the transport and the child spec, and by the three log tests (`plugins/bundled/test/helyx/transport/web_socket_test.exs`).
 
 ## Bounds
 
@@ -265,6 +279,8 @@ Notes on the codec:
 | connections per server | 64 | HTTP 503 at the upgrade | transport |
 | live sessions per server | 64 | `start` or `resume` gets `too_many_sessions`; a `resume` of a session that runs attaches | the session supervisor of Core, for every caller (`docs/features/server-management.md`, #657) |
 | auth wait | 5,000 ms from the upgrade to `hello` | close `4401` | transport |
+| challenge | one for each connection, a nonce of 32 random bytes | a second `hello`: close `4400` | transport |
+| the wait of a client for `challenge` | 5,000 ms, the auth wait: the server sends `challenge` at the upgrade, inside the auth wait | the client closes; the conformance client fails | client |
 | a peer that is gone | a ping every 15,000 ms; 45,000 ms with no inbound frame or pong | close `4408` | transport |
 | replay ring per session | 1,024 events and 4,194,304 bytes, each event counted by `:erlang.external_size/1`. A message is in the ring twice, as its deltas and as its `message_end`, so the ring holds about 2 MiB of new text | the oldest events go; an event over 4 MiB empties the ring and marks a gap, so a replay over it gives a snapshot | session (#659) |
 | replay rings of the server | 268,435,456 bytes: 64 live sessions of 4 MiB. No accounting across sessions is needed | as above | the live-session cap |
