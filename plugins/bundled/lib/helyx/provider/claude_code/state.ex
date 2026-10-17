@@ -15,6 +15,8 @@ defmodule Helyx.Provider.ClaudeCode.State do
   # `init` or `:busy` answer: a program turn can follow it (#240).
   # `tools` are the Helyx tool specs, and `calls` the open `tools/call`
   # requests of `Mcp`. `meter` is the usage of the program (`Meter`).
+  # `handles` are the held handles of the provider's programs
+  # (`Helyx.HarnessIO`).
   @enforce_keys [:exe, :model, :cwd]
   defstruct [
     :exe,
@@ -31,6 +33,7 @@ defmodule Helyx.Provider.ClaudeCode.State do
     tools: [],
     calls: %{},
     tasks: [],
+    handles: [],
     meter: %Helyx.Provider.ClaudeCode.Meter{},
     size: 0,
     init?: false,

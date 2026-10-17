@@ -28,7 +28,8 @@ defmodule Helyx.Provider.Codex.State do
   # its `from`; it outlives the turn, because the answer can come after
   # `turn/completed`.
   #
-  # `tools` holds the state of the Helyx tools (`Tools`).
+  # `tools` holds the state of the Helyx tools (`Tools`). `handles` are
+  # the held handles of the provider's programs (`Helyx.HarnessIO`).
   @enforce_keys [:exe, :model, :cwd]
   defstruct [
     :exe,
@@ -55,6 +56,7 @@ defmodule Helyx.Provider.Codex.State do
     size: 0,
     items: %Helyx.Provider.Codex.Items{},
     agents: %{},
-    asked: %{}
+    asked: %{},
+    handles: []
   ]
 end

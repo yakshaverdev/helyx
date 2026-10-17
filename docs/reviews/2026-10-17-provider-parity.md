@@ -58,3 +58,21 @@ Round 2 reproduced no defect, so the loop ends.
 ## Precommit
 
 The first run failed on two Credo findings: the complexity of `Items.tool_result/1` (10, max 9) and the nesting of `messages/1` in the conformance test. Fixed: `failed?/1` and `block/2` are new functions, with no change of behaviour. Every test and Dialyzer passed in that run.
+
+## Gate finding (Fable review, after the rebase on #649, #652, #551, #620)
+
+[medium, reproduced] The handles of a replaced program stayed held until the provider process ended: each launch holds `{:watchdog, pid}` and `{:command, group}`, and nothing dropped them at a relaunch. A probe with three prompts gave six held handles and one live watchdog. The same held for the lost-session relaunch on master.
+
+Fixed at the one point that every relaunch passes: `HarnessIO` releases the groups of the program before at each launch, with the provider's own `release/3` and a 500 ms deadline, and drops the confirmed handles with `Helyx.Tool.unhold/1`, new in Core. A handle that the release does not confirm stays held. Tests: "the hands hold the handles of one program across relaunches" in `claude_code/prompt_test.exs` and `codex/prompt_test.exs` (both fail without the fix with six handles), the lost-session assertion in `claude_code/compact_test.exs`, and "a handle that the tool let go of gets no release" in `test/helyx/session/hands_test.exs`. The three deletion notes of the review are not taken: the first changes the resume of a program that was never written to, and the other two need a check that is not part of the fix.
+
+### Reduced round (spec, failure path)
+
+| # | Source | Finding | Resolution |
+| --- | --- | --- | --- |
+| 1 | Spec (medium) | `unhold/1` took an improper list, and the hands crashed at `--` (`[1] -- [:a \| :b]` raises). | Fixed: `unhold/1` matches `false = List.improper?(handles)`, so the caller fails. |
+| 2 | Spec (low) | The 500 ms row did not name the lost-session relaunch, which runs in a turn with no reply bound, or the rest of the 2,000 ms bound. | Fixed: the row and the comment name both. |
+| 3 | Failure path | No defect. Probes: a group that ignores TERM stays held and the launch took 531 ms; a failed launch after the release leaves its watchdog held until the provider stops; 20 lost-session relaunches took at most 99 ms. | — |
+| 4 | Failure path (nit) | An `unhold([])` call when nothing was confirmed. | Fixed: no call. |
+| 5 | Failure path (note) | An unconfirmed command group gets a TERM again at each later launch, not only at the end. | Accepted: it needs a group that ignores TERM and a reused id. |
+
+Precommit after the fix failed on two Credo findings: `length/1` in the guard of `unhold/1` (now `List.improper?/1` in the body), and `claude_code.ex` at 508 lines over its 507, because the format split the `with` line of the rebase (a comment is now one line). Every test and Dialyzer passed in that run.

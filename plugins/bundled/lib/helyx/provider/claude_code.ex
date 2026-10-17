@@ -48,11 +48,11 @@ defmodule Helyx.Provider.ClaudeCode do
   # The program starts at the first turn: it needs the turn's prompt.
   @impl true
   def init(model, tools, opts) do
-    with {:ok, info} <- ModelInfo.lookup(id(), "anthropic", model), {:ok, exe} <- HarnessIO.find("claude") do
+    with {:ok, info} <- ModelInfo.lookup(id(), "anthropic", model),
+         {:ok, exe} <- HarnessIO.find("claude") do
       resume = Program.resumable(opts[:resume_id])
 
-      # The usage of a stored session that is not resumed is no mark of the
-      # fresh one.
+      # A stored session that is not resumed gives no cost mark.
       {:ok,
        %State{
          exe: exe,

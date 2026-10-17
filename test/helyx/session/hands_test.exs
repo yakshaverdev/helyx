@@ -62,6 +62,14 @@ defmodule Helyx.Session.HandsTest do
     result
   end
 
+  test "a handle that the tool let go of gets no release", %{core: core} do
+    hands = start_hands(core)
+    arguments = %{"handles" => [{:report, self()}, :keep], "unhold" => [:keep, :never_held]}
+    :ok = Helyx.Session.Hands.run(hands, "t1", call("c1", "hold", arguments))
+    assert_receive {:tool_result, "t1", "c1", {:ok, "held"}}
+    assert [{:deliver, [{:report, _pid}]}] = Released.take()
+  end
+
   test "an unconfirmed handle gives an error result and refuses every later call",
        %{core: core} do
     hands = start_hands(core)

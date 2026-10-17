@@ -43,7 +43,15 @@ defmodule Helyx.Provider.ClaudeCode.Program do
   # stopped.
   def replace(state, fields) do
     if state.port, do: HarnessIO.stop(state)
-    keep = [exe: state.exe, model: state.model, cwd: state.cwd, tools: state.tools]
+
+    keep = [
+      exe: state.exe,
+      model: state.model,
+      cwd: state.cwd,
+      tools: state.tools,
+      handles: state.handles
+    ]
+
     struct!(State, keep ++ fields)
   end
 

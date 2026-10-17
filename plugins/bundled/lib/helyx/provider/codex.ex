@@ -35,7 +35,8 @@ defmodule Helyx.Provider.Codex do
 
   @impl true
   def init(model, tools, opts) do
-    with {:ok, info} <- ModelInfo.lookup(id(), "openai", model), {:ok, exe} <- HarnessIO.find("codex") do
+    with {:ok, info} <- ModelInfo.lookup(id(), "openai", model),
+         {:ok, exe} <- HarnessIO.find("codex") do
       state = %State{
         exe: exe,
         model: model,

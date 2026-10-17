@@ -51,6 +51,15 @@ defmodule Helyx.Provider.ClaudeCode.PromptTest do
     assert File.exists?(Path.join(bin, "after.2"))
   end
 
+  test "the hands hold the handles of one program across relaunches", %{bin: bin, work: work} do
+    for n <- 1..3, do: turn(bin, n, 1, reply("ok"))
+
+    state = Enum.reduce(["A", "B", "C"], harness(work), &run(&2, &1, ["x"]))
+    assert programs(bin) == "3"
+    assert [command: _, watchdog: _] = Enum.sort(Helyx.Test.Hands.held())
+    closed(state)
+  end
+
   # The wait for the exit is 1,000 ms (`HarnessIO.finish/1`).
   @tag :slow
   test "an old program that does not exit fails the turn", %{bin: bin, work: work} do

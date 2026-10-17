@@ -250,6 +250,10 @@ defmodule Helyx.Provider.ClaudeCode.CompactTest do
 
     assert [{:error, {:compaction_failed, "no history in the program yet"}}] = events_of(actions)
     assert state.turn == nil and not state.sent?
+    # The lost program exits by itself; the release of its groups waits up
+    # to 500 ms (`HarnessIO`), ten watchdog ticks of 50 ms, the margin for
+    # load.
+    assert [command: _, watchdog: _] = Enum.sort(Helyx.Test.Hands.held())
     closed(state)
     assert programs(bin) == "2"
     assert stdin(bin, 2) == []

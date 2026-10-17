@@ -2,7 +2,8 @@ defmodule Helyx.HarnessIO do
   @moduledoc false
   # What the harness providers share (ADR 0005). It is not a plugin.
   # `state` is a provider's run state with the fields `port`, `buffer`
-  # (iodata), `size`, `terminal`, and `closing`.
+  # (iodata), `size`, `terminal`, `closing`, and `handles`, the handles
+  # that the provider holds for its programs.
 
   @line_max_bytes 16 * 1024 * 1024
   @replay_max_bytes 400_000
@@ -15,6 +16,11 @@ defmodule Helyx.HarnessIO do
   # (`docs/research/claude-code-stream-json.md`, "Processes"). The wait is
   # part of the 2,000 ms reply bound of the turn.
   @end_wait_ms 1_000
+  # The release of the groups of a program that ended, at the launch of
+  # the next one. The groups of a program that exited are gone, so the
+  # release only confirms it. At a turn start it is part of the reply
+  # bound; a lost-session relaunch in a turn makes the turn longer.
+  @let_go_ms 500
 
   # The hex digits of the digest in a stored id.
   @digest_hex 16
@@ -51,13 +57,29 @@ defmodule Helyx.HarnessIO do
   # runs only after the go-ahead. A program that did not start gives the
   # terminal error.
   defp start(argv, cwd, input, state, opts) do
+    state = let_go(state)
+
     case Helyx.Watchdog.start(argv, cwd, input, opts) do
-      {:started, port, _pre, _handles} ->
-        %{state | port: port}
+      {:started, port, _pre, handles} ->
+        %{state | port: port, handles: state.handles ++ handles}
 
       {:error, reason} ->
         %{state | terminal: {:error, {:not_started, reason}}}
     end
+  end
+
+  # The hands hold the handles of one program, not of every program of
+  # the provider process: before a launch, the groups of the program
+  # before are released, and the hands drop the handles that the release
+  # confirmed. A group that is not gone by the deadline stays held, for
+  # the next launch or the end of the provider process.
+  defp let_go(%{handles: []} = state), do: state
+
+  defp let_go(state) do
+    left = release(state.handles, :cancel, System.monotonic_time(:millisecond) + @let_go_ms)
+    gone = state.handles -- left
+    if gone != [], do: Helyx.Tool.unhold(gone)
+    %{state | handles: left}
   end
 
   # Runs `exe` with `args` under the watchdog, with open input and stderr

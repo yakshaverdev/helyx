@@ -10,7 +10,7 @@ A product picks a model ref, and the provider kind does not change what the prod
 
 - `Helyx.Provider` moduledoc: a harness provider uses the `system` of the turn's context too. Only the context per call stays a named limit. No callback changes.
 - `Helyx.HarnessIO.harness_tools/1` is removed: every provider gets the session's tools.
-- New in `Helyx.HarnessIO`: `session_id/2` and `resumable/2` for the stored id with its digest, and `finish/1`, the end of a program that another one replaces.
+- New in `Helyx.HarnessIO`: `session_id/2` and `resumable/2` for the stored id with its digest, and `finish/1`, the end of a program that another one replaces. Before each launch, `HarnessIO` releases the groups of the program before and drops their handles from the hands with `Helyx.Tool.unhold/1`, new in Core.
 - `Helyx.Provider.Codex.Items`: a `dynamicToolCall` item gives the Helyx tool name and arguments, and its result is the text of its `contentItems`, an error when `success` is false. Claude Code: the transcript has the Helyx name of a tool use, without the `mcp__helyx__` prefix. So the cells and the snapshot are the same as with an API provider.
 
 ### The prompt
@@ -71,6 +71,7 @@ Users see: the model of a harness has the product prompt and the Helyx tools onl
 | Claude launch at the first turn: the watchdog start | the same 2,000 ms; the launch waits only for the watchdog's go-ahead, not for the program | the same | Core |
 | exit of the old program at a prompt relaunch | 1,000 ms after the end of its input (`@end_wait_ms` in `Helyx.HarnessIO`). Observed: a Helyx close of Claude took 615 and 628 ms (`docs/research/claude-code-stream-json.md`, "Processes"); not measured for Codex | the program is stopped (TERM, grace, KILL), and the turn fails with `:program_not_ended`; the provider process stops | provider |
 | Codex relaunch after a prompt change: the old program's exit, program start, `initialize`, `thread/resume`, `turn/start` | the same 2,000 ms | the same | Core |
+| release of the groups of the program before, at a launch | 500 ms (`@let_go_ms` in `Helyx.HarnessIO`). At a turn start it is part of the 2,000 ms reply bound: with the 1,000 ms exit wait, at most 1,500 ms of it, and the rest is for the launch (and for Codex `initialize`, `thread/resume`, and `turn/start`). A Claude lost-session relaunch runs in a turn, with no reply bound: the turn takes up to 500 ms longer. The groups of a program that exited are gone, so the release only confirms it | the handles of a group that is not gone stay held, and the next launch or the end of the provider process releases them | provider |
 | digest of the stored id | 16 hex digits; an id is at most 36 + 1 + 16 bytes (Claude) or the thread id + 17 (Codex) | not reached: under the 256 bytes of `Helyx.Message.resume_id?/1` | provider |
 
 ## Ownership
@@ -79,6 +80,7 @@ Users see: the model of a harness has the product prompt and the Helyx tools onl
 | --- | --- | --- | --- | --- | --- |
 | program port, watchdog, program group | the first turn (Claude), `init/3` (Codex), a prompt relaunch, a Claude lost-session relaunch | as in `docs/features/long-lived-harness.md` | as there | as there | as there |
 | the program replaced by a prompt relaunch | as above | the provider process until the relaunch | `HarnessIO.finish/1`: the end of its input, then its exit, before the new launch: two programs never run one harness session | as above | n/a: the relaunch is at a turn start |
+| the hands' handles of a replaced program | `Helyx.Watchdog.start/4` at its launch | the hands | at the next launch, the provider's own `release/3`, then `Helyx.Tool.unhold/1` of the confirmed handles: the hands hold the handles of one program, not two per relaunch | the hands release them when the provider process ends | as at a crash |
 
 ## Out of scope
 

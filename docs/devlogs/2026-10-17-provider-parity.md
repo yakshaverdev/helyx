@@ -10,6 +10,7 @@
 - A conformance test runs two `bash` calls, one with an error, on each harness fake and on the API fake, and compares the events and the snapshot. It found two parity bugs: a Codex `dynamicToolCall` gave the tool name `dynamicToolCall` and the item JSON as the result, and the Claude transcript had the `mcp__helyx__` name. Both are fixed.
 
 - `/ship`: two review rounds (`docs/reviews/2026-10-17-provider-parity.md`). Round 1 found three defects: a prompt relaunch started the new program while the old one still ran (now `HarnessIO.finish/1` waits for the exit), a stored Claude id that is not resumed kept its cost mark, and a Codex interrupt of a compaction that opened a fresh thread got no answer. Round 2 found no defect.
+- Gate finding after the rebase: the hands kept the handles of every replaced program. `HarnessIO` now releases the groups of the program before at each launch and drops the confirmed handles with the new `Helyx.Tool.unhold/1` (ADR 0004, revision of 2026-10-17).
 
 ## What broke
 
