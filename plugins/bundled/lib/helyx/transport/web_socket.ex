@@ -36,10 +36,15 @@ defmodule Helyx.Transport.WebSocket do
   def schema_sha256, do: @schema_sha256
 
   # The supervisor of the product keeps the start arguments in its state and
-  # its reports, so the token goes in a closure there.
+  # its reports, so a binary token goes in a closure there; a closure stays.
   @doc false
   def child_spec(opts) do
-    opts = Keyword.replace_lazy(opts, :token, fn token -> fn -> token end end)
+    opts =
+      Keyword.replace_lazy(opts, :token, fn
+        closure when is_function(closure, 0) -> closure
+        token -> fn -> token end
+      end)
+
     %{id: __MODULE__, start: {__MODULE__, :start_link, [opts]}, type: :supervisor}
   end
 

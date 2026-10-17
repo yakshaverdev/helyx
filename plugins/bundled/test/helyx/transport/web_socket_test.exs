@@ -120,6 +120,12 @@ defmodule Helyx.Transport.WebSocketTest do
       assert Client.open(context.port, "secret")
     end
 
+    test "a token that is a closure starts under a supervisor and takes its proof", context do
+      opts = [core: context.core, port: 0, token: fn -> "closed" end]
+      transport = start_supervised!({WebSocket, opts}, id: :closure)
+      assert Client.open(WebSocket.port(transport), "closed")
+    end
+
     test "a missing or wrong proof, or the proof of another nonce, closes with 4401", context do
       {:ok, other} = Client.upgrade(context.port)
       stale = Client.proof(Client.challenge(other), "secret")
