@@ -446,7 +446,10 @@ defmodule Helyx.ModelInfo.CatalogTest do
           Process.sleep(:infinity)
           conn
         end,
-        fetch_ms: 50
+        # The fetch must reach the plug before the deadline. With no load it
+        # takes about 20 ms for the first fetch of the VM and 1 ms after it.
+        # @load_ms gives the margin for load (#709).
+        fetch_ms: @load_ms
       )
 
       assert window() == 400_000
