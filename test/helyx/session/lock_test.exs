@@ -300,15 +300,8 @@ defmodule Helyx.Session.LockTest do
     Process.exit(caller, :kill)
     assert_receive {:DOWN, _, :process, ^caller, :killed}
 
-    # The test's `:DOWN` says nothing of when the session gets its own (#592),
-    # and the session checks for it once, after the open.
-    await(
-      fn ->
-        {:messages, messages} = Process.info(pid, :messages)
-        Enum.any?(messages, &match?({:DOWN, _, :process, ^caller, _}, &1))
-      end,
-      "the session to get the end of its caller"
-    )
+    # The session checks for its `:DOWN` of the caller once, after the open.
+    await_down(pid, caller, "the session to get the end of its caller")
 
     send(pid, :go)
     assert_receive {:DOWN, ^ref, :process, ^pid, :normal}

@@ -85,6 +85,19 @@ defmodule Helyx.Test.SessionCase do
     end
   end
 
+  # Waits until the mailbox of `pid` holds its `:DOWN` of `ended`. One exit
+  # gives each monitor its own `:DOWN`, with no order between them, so the
+  # `:DOWN` of the test says nothing of the one of `pid` (#605, #670).
+  def await_down(pid, ended, what) do
+    await(
+      fn ->
+        {:messages, messages} = Process.info(pid, :messages)
+        Enum.any?(messages, &match?({:DOWN, _, :process, ^ended, _}, &1))
+      end,
+      what
+    )
+  end
+
   def user_texts(events) do
     for %{type: :message_end, data: %{message: %Helyx.Message{role: :user} = m}} <- events,
         do: Helyx.Message.text(m)

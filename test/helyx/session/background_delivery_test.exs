@@ -302,11 +302,11 @@ defmodule Helyx.Session.BackgroundDeliveryTest do
     :ok = Session.follow_up(session, "three")
 
     pid = Session.pid(session)
-    ref = Process.monitor(old)
     :erlang.suspend_process(pid)
     send(old, {:finish, turn_id})
     send(old, :stop)
-    assert_receive {:DOWN, ^ref, :process, _, _}
+    # Before its `:DOWN` of `old`, the session could send the next turn to it.
+    await_down(pid, old, "the session to get the end of the old process")
     :erlang.resume_process(pid)
     collect_until(:turn_end)
 
