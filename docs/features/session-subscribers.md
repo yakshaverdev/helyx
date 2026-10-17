@@ -18,7 +18,7 @@ The session process keeps the list of its subscribers and sends each event to th
 
 | What | Bound | Over the bound |
 |---|---|---|
-| Subscribers of one session | unbounded, ticket #659: it adds a credit bound of 16,384 unacked events and 16 MiB of them per subscriber (ADR 0008) | after #659, the session ends that subscription with `:slow` |
+| Subscribers of one session | unbounded, ticket #659: it adds a credit bound of 16,384 unacked events per subscriber (ADR 0008) | after #659, the session ends that subscription with `:slow` |
 | Monitors held by the session | one per subscriber pid (S2) | a repeated subscribe reuses the monitor |
 
 ## Ownership

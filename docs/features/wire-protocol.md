@@ -25,11 +25,11 @@ Over stdio, the same frames go one JSON object per line. The encoder escapes eve
 |---|---|
 | `4400` | a frame that the contract does not allow: bad JSON, an unknown `type`, a frame before `welcome`, a part out of order, a request `id` whose reply was not sent, an `ack` of a `seq` that the subscription did not send |
 | `4401` | no `hello` within 5,000 ms, or a missing or wrong token |
-| `4408` | a slow client: a subscription passed its credits (`:slow`), or no inbound frame or pong for 45,000 ms |
+| `4408` | a slow client: a subscription passed its credits (`:slow`), the outbound queue held more than 64 MiB when a frame was added, or no inbound frame or pong for 45,000 ms |
 | `4413` | an inbound WebSocket frame over 1 MiB, or an inbound frame joined from parts over 4 MiB |
 | `4426` | a protocol number that is not the server's, after `refused` |
 
-The server sends a WebSocket ping every 15,000 ms, so a connection whose peer is gone (a laptop lid that closed) ends within 45,000 ms.
+The server sends a WebSocket ping every 15,000 ms, so a connection whose peer is gone (a laptop lid that closed) ends within 45,000 ms. A ping is not an add to the outbound queue: the connection sends it between two frames, also between two parts of one frame.
 
 ### Parts
 
@@ -37,7 +37,7 @@ A frame whose JSON text is over 1,048,576 bytes goes as `part` frames. Part `n` 
 
 ### Operations
 
-Every `req` gets one `res`: `ok: true` with the result, or `ok: false` with an error. A `session` param is a session id. A request `id` must not be the `id` of a request whose reply the server has not sent; a duplicate closes the connection with `4400`, because its reply could not be told apart. After a `timeout` reply the `id` is free, though the worker still counts against the requests in flight.
+Every `req` gets one `res`: `ok: true` with the result, or `ok: false` with an error. A `session` param is a session id. A request `id` must not be the `id` of a request whose reply the server has not sent; a duplicate closes the connection with `4400`, because its reply could not be told apart. After a `timeout` reply the `id` is free, though the worker still counts against the requests in flight. A `subscribe` counts against the 16 subscriptions from its `req`, and against the requests in flight only until its reply.
 
 | `op` | `params` | `result` | errors |
 |---|---|---|---|
@@ -62,12 +62,12 @@ Every operation can also answer `unknown_op`, `bad_params`, `busy`, `timeout`, a
 
 ### Deadlines
 
-Past its deadline, an operation answers `timeout`: the outcome is unknown. The client does not send it again on its own (ADR 0006 §4). The worker of the request still counts against the 16 requests in flight until it ends, and its late result is dropped. A deadline covers the work of the request up to its result, not the encode and the write of the reply. One process writes each reply: the worker of the request, or for `subscribe` its subscription process. That process answers `timeout` itself when the Core call exits at its timeout, and `Helyx.Session.subscribe/1` then leaves no subscription and no monitor (`lib/helyx/session.ex:222-235`); the process ends after the reply, so a `subscribe` that answers `timeout` leaves no subscription.
+Past its deadline, an operation answers `timeout`: the outcome is unknown. The client does not send it again on its own (ADR 0006 §4). The worker of the request still counts against the 16 requests in flight until it ends, and its late result is dropped; a `subscribe` stops counting at its reply. A deadline covers the work of the request up to its result, not the encode and the write of the reply. One process writes each reply: the worker of the request, or for `subscribe` its subscription process. That process answers `timeout` itself when the Core call exits at its timeout, and `Helyx.Session.subscribe/1` then leaves no subscription and no monitor (`lib/helyx/session.ex:222-235`); the process ends after the reply, so a `subscribe` that answers `timeout` leaves no subscription.
 
 | Operation | Deadline | Why |
 |---|---|---|
 | `abort` | 46,000 ms | the hands release of the cancel, at most 20,000 ms (`Hands.State.release_ms/0`, `lib/helyx/session/hands.ex:66`, the call at `:225`); then the delivery of the provider process, which releases its handles in the same hands process, at most 20,000 ms more (`hands.ex:279`, `:292`); an abort that comes during an idle close also waits for the armed kill of the close, 5,000 ms (`State.provider_close_ms/0`, `lib/helyx/session/server/state.ex:37`, `turn_loop.ex:104-109`); and a margin of 1,000 ms. `Helyx.Session.abort/1` itself waits with no timeout (`lib/helyx/session.ex:378`). A test of the transport compares the constant with the two functions. A hands process with more releases queued takes longer: the client gets `timeout`, accepted |
-| `start`, `resume` | 30,000 ms | the tool checks, the lock, and the load of the file, in the caller and in the init of the session; a start that waits for the init of another session is #605 |
+| `start`, `resume` | 30,000 ms | the tool checks in the caller (`Helyx.Tool.check_available/1`, no timeout of its own), then the open in the session process: the lock, whose answer has 5,000 ms (`lib/helyx/session/lock.ex:33`), and the load of a file of at most 64 MiB (`lib/helyx/session/file.ex:21`). `Server.start/3` waits for the open with no timeout of its own (`lib/helyx/session/server.ex:38-50`). A longer start answers `timeout`, and the session can still start: the client sees it in `sessions.live` |
 | `sessions.saved` | 10,000 ms | a scan of at most 256 file heads of 64 KiB (`lib/helyx/session/file/scan.ex:4`, `:8`) |
 | `subscribe` | the call timeout of 5,000 ms (`lib/helyx/session.ex:39`) | the subscription process answers the exit as `timeout` |
 | every other operation | 6,000 ms | an operation on one session is one session call with the call timeout of 5,000 ms, whose exit the worker answers as `timeout`; `sessions.live` (#657) answers within the same deadline; the 1,000 ms margin is for load |
@@ -77,7 +77,7 @@ Past its deadline, an operation answers `timeout`: the outcome is unknown. The c
 - A subscription is one process under the connection. It calls `Helyx.Session.subscribe`, owns the Core subscription and its end monitor, encodes the events, and writes them to the socket in order.
 - The server makes the `sub` id. It is unique on the connection.
 - The session counts each event that it sends to the subscription, a replayed event too, and the `ack` frames of the client lower the count. `ack` with `seq` acks every event of that subscription up to `seq`. An `ack` lower than an earlier one changes nothing. An `ack` for a `sub` that the connection does not hold (it ended) is ignored. An `ack` above the last `seq` that the subscription sent closes the connection with `4400`.
-- Past 16,384 unacked events, or past 16 MiB of unacked events counted by `:erlang.external_size/1`, the session ends the subscription with `:slow`, and the transport closes the connection with `4408`. The client connects again and subscribes with `after`. A client acks at least every few thousand events; the server does not check the cadence, the bound decides.
+- Past 16,384 unacked events, the session ends the subscription with `:slow`, and the transport closes the connection with `4408`. The client connects again and subscribes with `after`. A client acks at least every few thousand events; the server does not check the cadence, the bound decides.
 - `session_end` ends the subscription. The connection stays open. A connection that closes with no `session_end` for a subscription is a lost connection: the session may still run, and the client subscribes again with `after`.
 - A client that applies the snapshot keeps its `seq` and `instance_id`. After a reconnect it subscribes with `after: {instance_id, seq}` of the last event that it applied.
 
@@ -215,9 +215,9 @@ O1 hello is the first client frame; the server sends nothing but welcome or
    refused before it, and the client sends nothing else before welcome.
 O2 each req gets exactly one res, also at timeout; none after the close.
 O3 the parts of one frame are consecutive, n from 0, last on the final one.
-O4 per subscription: the subscribe res, then its events in seq order with
-   no gap and no duplicate (replay first, then live), then at most one
-   session_end, last. No frame of a sub follows its unsubscribe res.
+O4 per subscription: the subscribe res, which carries the replayed events,
+   then its live events in seq order with no gap and no duplicate after the
+   replay, then at most one session_end, last. No frame of a sub follows its unsubscribe res.
 O5 session_end comes after every event of the session.
 O6 frames of two subscriptions, and a res and an event, have no order
    between them.
@@ -248,7 +248,7 @@ Notes on the codec:
 |---|---|---|---|
 | WebSocket frame, both ways | 1,048,576 bytes of JSON text; a larger frame goes as parts | an inbound frame over it: close `4413` | transport |
 | one inbound frame joined from parts (the request size) | 4,194,304 bytes | close `4413`; the parts are dropped as they come | transport |
-| requests in flight per connection | 16, from the `req` to the end of its worker | `res` with `busy` | transport |
+| requests in flight per connection | 16, from the `req` to the end of its worker; a `subscribe` from the `req` to its reply | `res` with `busy` | transport |
 | requests in flight per server | 1,024: 64 connections of 16 | as above | transport |
 | subscriptions per connection | 16 | `res` with `too_many_subscriptions` | transport |
 | connections per server | 64 | HTTP 503 at the upgrade | transport |
@@ -258,13 +258,14 @@ Notes on the codec:
 | replay ring per session | 1,024 events and 4,194,304 bytes, each event counted by `:erlang.external_size/1`. A message is in the ring twice, as its deltas and as its `message_end`, so the ring holds about 2 MiB of new text | the oldest events go; an event over 4 MiB empties the ring and marks a gap, so a replay over it gives a snapshot | session (#659) |
 | replay rings of the server | 268,435,456 bytes: 64 live sessions of 4 MiB. No accounting across sessions is needed | as above | the live-session cap |
 | tail snapshot and page, count | default 200, at most 1,000; or the newest group alone | a value over 1,000: `bad_params` | session (#658) |
-| tail snapshot and page, bytes | 16,777,216 bytes of message content (`:erlang.external_size/1`); or the newest group alone. A live group is about 72 MiB of JSON: an assistant message of 8 MiB of JSON encode and 1,024 blocks (`lib/helyx/session/turn.ex:69`, `:74`, `:94`) and at most 1,024 tool results of 64 KiB (`lib/helyx/data/message.ex:184`); `:erlang.external_size/1` of it can be up to about twice that. A resumed group has the bound of the 64 MiB file (`lib/helyx/session/file.ex:21`). The snapshot also carries the turn partial, at most 8 MiB. The JSON of content that the session holds raw can be six times larger (a control character is `\u00XX`) | the tail ends; it goes as parts | session (#658) |
-| encodings in flight per connection | 1: a reply, a snapshot, a page, or an event of any subscription waits for the encoding before it. The socket takes one frame at a time, so the wait costs no throughput | | transport |
-| credits per subscriber | 16,384 unacked events and 16,777,216 bytes of unacked events (`:erlang.external_size/1`, the measure of the ring), a replayed event too. The count is above the 10,000 provider messages that the session can hold waiting (`lib/helyx/session/stream.ex:18`). An event over the byte bound goes only when no event is unacked | the subscription ends with `:slow`; close `4408` | session (#659) |
-| outbound queue per connection | 67,108,864 bytes of frames written and not yet taken by the socket | a writer waits for room, so a large frame goes out in parts as the socket takes them; the credits bound the events behind it | transport |
-| memory per connection | the sum of: the outbound queue (64 MiB); one joined inbound frame (4 MiB); the unacked events of its 16 subscriptions, at most 16 MiB each by the byte credits, or one larger event (a `queue_dropped` of 64 wire texts is at most 256 MiB); the results of its 16 requests in flight (a `sessions.saved` page is at most 256 heads of 64 KiB, 16 MiB; a snapshot or page is the next row); and one encoding of a snapshot or page, at most about 80 MiB of content and six times that as JSON. With no event over 16 MiB this is about 660 MiB with plain text (64 + 4 + 256 + 256 + 80), and about 1.1 GiB with the worst escapes (the encoding at six times 80 MiB); Core admits larger events (row `queue_dropped`), and a connection that holds 16 of them holds about 4.8 GiB (64 + 4 + 16 × 256 + 256 + 480 MiB). Accepted: no real session makes such content | | transport |
-| text of `prompt`, `steer`, `follow_up`, `compact` | the request size, 4 MiB. A caller in the node, product code, has no bound: accepted, it is trusted code | | transport |
-| `queue_dropped` | 64 messages (32 steers, 32 follow-ups, `lib/helyx/session/queue.ex:49`), each at most the request size from the wire | goes as parts | Core |
+| tail snapshot and page, bytes | 16,777,216 bytes of message content (`:erlang.external_size/1`); or the newest group alone. A live group is at most 72 MiB of content: an assistant message of at most 8 MiB and 1,024 blocks (`lib/helyx/session/turn.ex:69`, `:74`, `:94`), where a text or thinking delta counts its raw bytes (`lib/helyx/session/server/records.ex:32`) and a tool call the bytes of its JSON encode (`lib/helyx/session/stream.ex:152-155`), and at most 1,024 tool results of 64 KiB (`lib/helyx/data/message.ex:184`). A resumed group is at most the 64 MiB of the file (`lib/helyx/session/file.ex:21`) plus the interrupted results that the repair adds (`lib/helyx/session/transcript.ex:74-91`), at most 1,024 once #673 refuses a message over 1,024 blocks at read. Each of them copies the id and the name of its call (`lib/helyx/data/message.ex:98-104`), and an `external_size` of a decoded term can be larger than its JSON in the file, so this bound is open: see round 4 of the review record. The snapshot also carries the turn partial, at most 8 MiB. So a snapshot or page is at most about 80 MiB of content. Its JSON can be six times larger, about 480 MiB, because a control character in raw text is `\u00XX` | the tail ends; it goes as parts | session (#658) |
+| request results per connection | 1: a `subscribe`, `history`, or `sessions.saved` request takes the one encoder slot of the connection before it reads its data from Core, and holds it until its reply is in the outbound queue. So at most one snapshot or page result exists per connection, and a waiting request holds no result. The wait for the slot is not in the deadline of the request; the request counts against the requests in flight while it waits. Another operation has a small result and takes no slot, and an event takes no slot: its subscription process encodes it | | transport |
+| credits per subscriber | 16,384 unacked events, a replayed event too. The count is chosen above the 10,000 provider messages that the session can hold waiting (`lib/helyx/session/stream.ex:18`), a heuristic: that number bounds messages, not events, and the burst test checks it. The credits count events only: the byte bound is the outbound queue | the subscription ends with `:slow`; close `4408` | session (#659) |
+| outbound queue per connection | 67,108,864 bytes of frames added and not yet taken by the socket. A subscription process encodes each event when it takes it, and a writer adds each frame with a call that the connection process answers at once, with no wait for room; the connection runs the check before each add, one add at a time. So the queue holds at most 64 MiB plus one frame, and a large frame never needs an empty queue | a queue that already holds more than 64 MiB at an add: close `4408` | transport |
+| memory per connection | the sum of: (a) the outbound queue, 64 MiB plus one frame of at most 1,536 MiB (rows "outbound queue" and "largest frame"); (b) for each of the 16 subscription processes, the event that it encodes and its frame: at most 256 MiB of content and 1,536 MiB of JSON (row `queue_dropped`); (c) the one request result and its frame: at most 80 MiB of content and 480 MiB of JSON (rows "request results" and "tail snapshot and page, bytes"; a `sessions.saved` page is smaller, 256 heads of 64 KiB, `lib/helyx/session/file/scan.ex:4`, `:8`); (d) the params of the 16 requests in flight, each in a joined frame of at most 4 MiB, and one frame that is being joined, 4 MiB (row "one inbound frame"); (e) the events in the mailbox of each subscription process that it did not take yet, at most 16,384 by the credits (#659). Terms (a) to (d) sum to at most 1,600 + 16 × 1,792 + 560 + 68 MiB, about 30.2 GiB, with the worst escapes, and 320 + 16 × 512 + 160 + 68 MiB, about 8.5 GiB, with plain text. Term (e) has a count and no byte number. The terms count content and JSON bytes, not the heap of an encode or of a decoded term. Open: see round 4 of the review record of 2026-10-17 | | transport |
+| text of `prompt`, `steer`, `follow_up`, `compact` | 4,194,304 bytes, the request size: Core refuses a longer text from any caller with `{:error, :text_too_large}` (#672), so the wire refuses no text that Core admits | no wire request meets it: the JSON of the text is in a frame of at most 4 MiB, so the request size closes `4413` first | Core (#672) |
+| `queue_dropped` | 64 messages (32 steers, 32 follow-ups, `lib/helyx/session/queue.ex:49`), each of one text of at most 4 MiB (#672): 256 MiB of content, at most 1,536 MiB as JSON | goes as parts | Core |
+| largest frame | 1,536 MiB of JSON, a `queue_dropped` of 64 texts of 4 MiB of control characters (256 MiB of plain text). A snapshot or page is at most about 480 MiB (row "tail snapshot and page, bytes"), a `message_end` at most 48 MiB (8 MiB, six times) | goes as parts | the Core bounds above |
 | request `id` | 1 to 64 bytes | `bad_params`; with no readable `id`, close `4400` | transport |
 | `sessions.saved` page | 1 to 256 items, default 50 | `bad_params` | transport |
 | live list | 64 items | | the live-session cap |
@@ -278,12 +279,12 @@ Each numeric limit gets tests at the limit, one under, and one over, and the fra
 | socket | the upgrade | the connection process | the close of either side | the socket closes with its owner | n/a |
 | request worker | a `req` | the connection process (linked) | its `res` | it dies with the connection | n/a: an `abort` request is one worker |
 | subscription process | `subscribe` | the connection process (linked) | `unsubscribe`, `session_end` | it dies with the connection; its Core subscription ends at the session's `:DOWN` of it (`session-subscribers.md`, S4) | n/a |
-| Core subscription and end monitor | the subscription process | the subscription process | its `unsubscribe` and demonitor | the session drops the entry at its `:DOWN` | n/a |
+| Core subscription and end monitor | the subscription process | the subscription process | the end of the subscription process: the session drops the entry at its `:DOWN` | the session drops the entry at its `:DOWN` | n/a |
 | replay ring | the session | the session process | ends with the session | ends with the session | n/a |
 
 ## Out of scope
 
-- Code: #657 to #662.
+- Code: #657 to #662, and the Core bounds that they build on: #672 (a text of at most 4 MiB) and #673 (a message of at most 1,024 blocks at read).
 - Push to an app that is closed: a product client host.
 - A browser client.
 - Paging inside one message body: parts carry any size (#658).
