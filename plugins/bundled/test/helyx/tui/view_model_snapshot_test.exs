@@ -277,7 +277,7 @@ defmodule Helyx.TUI.ViewModelSnapshotTest do
 
     vm = ViewModel.from_snapshot(snapshot)
     assert %{model: "fake/echo", streaming: nil, running?: false} = vm
-    assert vm.queue == %{steers: 0, follow_ups: 0}
+    assert vm.queue == %{steers: 0, follow_ups: 0, running: 0, held: 0, waiting: 0}
     assert ViewModel.cells(vm) == []
   end
 

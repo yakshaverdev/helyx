@@ -136,10 +136,29 @@ defmodule Helyx.TUI.FooterTest do
       vm = view_model([], "fake/m")
       assert rows("~/p (main)", vm) == ["~/p (main)", "fake/m · idle"]
 
-      queued = %{vm | queue: %{steers: 1, follow_ups: 2}}
+      queued = %{vm | queue: %{vm.queue | steers: 1, follow_ups: 2}}
 
       assert rows("~/p", queued, %{elapsed: 3_050}, {0, 0}) ==
                ["~/p", "fake/m · ⠋ 3s · queued 1+2 · scrolled"]
+    end
+
+    test "the background counts follow the queue counts, each only when not zero" do
+      vm = view_model([], "fake/m")
+      running = %{vm | queue: %{vm.queue | running: 1}}
+      assert rows("~", running) == ["~", "fake/m · idle · 1 running"]
+
+      all = %{vm | queue: %{steers: 1, follow_ups: 0, running: 2, held: 3, waiting: 4}}
+
+      assert rows("~", all) == [
+               "~",
+               "fake/m · idle · queued 1+0 · 2 running · 3 held · 4 waiting"
+             ]
+
+      %{text: [_row1, %{spans: spans}]} = Footer.widget("~", all, nil, nil, nil)
+      assert Enum.uniq_by(spans, & &1.style) |> Enum.map(& &1.style.modifiers) == [[:dim]]
+
+      waiting = %{vm | queue: %{vm.queue | waiting: 1}}
+      assert rows("~", waiting, nil, {0, 0}) == ["~", "fake/m · idle · 1 waiting · scrolled"]
     end
 
     test "a reason comes first on row 2, in red" do
