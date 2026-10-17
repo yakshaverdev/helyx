@@ -291,9 +291,12 @@ defmodule Helyx.Transport.WebSocketSubscribeTest do
     assert {:close, 4408} = Client.until_close(socket)
   end
 
-  test "the 17th request in flight gets busy, and a reply frees its slot", context do
-    %{core: core, socket: socket, session: session} = context
+  test "the 17th request in flight gets busy, and a slot frees after the replies", context do
+    %{core: core, port: port, session: session} = context
     pid = Helyx.Session.pid(%Helyx.Session{id: session, core: core})
+    # A new connection: the worker of the `start` counts until it ends, which
+    # can be after its reply (#769).
+    socket = Client.open(port)
     # Each call waits while the session is suspended, under its 5,000 ms timeout.
     :erlang.suspend_process(pid)
 
@@ -308,13 +311,23 @@ defmodule Helyx.Transport.WebSocketSubscribeTest do
       })
     end
 
-    assert %{"error" => %{"code" => "busy"}} = Client.request(socket, "17", "sessions.live", %{})
+    # The session is suspended, so the next frame is the reply to "17": a
+    # `busy` to an earlier request would show here.
+    Client.send_frame(socket, %{
+      "type" => "req",
+      "id" => "17",
+      "op" => "sessions.live",
+      "params" => %{}
+    })
+
+    assert {:frame, %{"id" => "17", "error" => %{"code" => "busy"}}} = Client.recv(socket)
     :erlang.resume_process(pid)
     # The replies of parallel workers have no order.
     replies = for _ <- 1..16, do: Client.recv(socket)
 
     assert Enum.sort(for {:frame, %{"ok" => true, "id" => id}} <- replies, do: id) ==
-             Enum.sort(for n <- 1..16, do: "#{n}")
+             Enum.sort(for n <- 1..16, do: "#{n}"),
+           "replies: #{inspect(replies)}"
 
     Events.wait_until(fn ->
       match?(%{"ok" => true}, Client.request(socket, "l", "sessions.live", %{}))
