@@ -76,7 +76,9 @@ defmodule Helyx.Session.File.Scan do
   end
 
   defp find_valid(dir, id) do
-    case Path.wildcard(Path.join([dir, "*", id <> ".jsonl"])) do
+    # The listed names, not a stat of a built path: a filesystem that
+    # ignores case would match an id of another case.
+    case Enum.filter(jsonl_paths(dir, :all), &(id(&1) == id)) do
       [] ->
         {:error, :not_found}
 
@@ -110,12 +112,7 @@ defmodule Helyx.Session.File.Scan do
   # `scope`, newest first. Two directories can share a slug, so the header
   # decides.
   defp sessions(dir, scope, max_files) do
-    pattern =
-      if scope == :all,
-        do: Path.join([dir, "*", "*.jsonl"]),
-        else: Path.join(project_dir(dir, scope), "*.jsonl")
-
-    for {mtime, path} <- newest(Path.wildcard(pattern), max_files),
+    for {mtime, path} <- newest(jsonl_paths(dir, scope), max_files),
         Id.valid?(id(path)),
         {:ok, header, prompt} when prompt != :empty <- [head(path)],
         is_binary(header["model"]) and check_version(header) == :ok,
@@ -125,6 +122,29 @@ defmodule Helyx.Session.File.Scan do
   end
 
   defp id(path), do: Path.basename(path, ".jsonl")
+
+  # The `.jsonl` paths in the project folder of `scope`, or in every project
+  # folder with `:all`. A list, not a wildcard: the path of `dir` can hold
+  # glob characters.
+  defp jsonl_paths(dir, scope) do
+    folders =
+      if scope == :all,
+        do: Enum.map(ls(dir), &Path.join(dir, &1)),
+        else: [project_dir(dir, scope)]
+
+    for folder <- folders,
+        name <- ls(folder),
+        Path.extname(name) == ".jsonl",
+        do: Path.join(folder, name)
+  end
+
+  # The names that do not start with `.`, as the `*` of a wildcard.
+  defp ls(dir) do
+    case File.ls(dir) do
+      {:ok, names} -> Enum.reject(names, &String.starts_with?(&1, "."))
+      {:error, _reason} -> []
+    end
+  end
 
   # The `count` regular files with the newest modification time, newest
   # first: one stat per file and no read. The time has a resolution of one
