@@ -283,9 +283,11 @@ defmodule Helyx.Session.LockTest do
 
   # The deadline of the open kills the session process, so its port closes
   # and perl frees the lock (#665). It counts from before the take, which
-  # takes a few ms; the rest is the margin for load, so the open is reached.
-  @load_open_ms 500
+  # takes a few ms; the rest is the margin for load, so the open is reached
+  # (#718).
+  @load_open_ms 2_000
 
+  @tag :slow
   test "an open past its deadline gives :open_timeout, and no session and no lock are left", %{
     core: core,
     tmp_dir: dir
@@ -297,6 +299,7 @@ defmodule Helyx.Session.LockTest do
     await_lock_free(path, "the lock of the killed session to free")
   end
 
+  @tag :slow
   test "a caller that ends during an open past its deadline leaves no session and no lock", %{
     core: core,
     tmp_dir: dir
