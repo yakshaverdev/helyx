@@ -105,11 +105,15 @@ defmodule Helyx.Session.Recall do
 
     {parts, kept, _room} =
       Enum.reduce_while(records, {[], 0, room}, fn record, {parts, kept, room} ->
-        part = record_part(record)
-
-        if byte_size(part) <= room,
-          do: {:cont, {[parts, part], kept + 1, room - byte_size(part)}},
-          else: {:halt, {parts, kept, room}}
+        # The escape never makes a text shorter, so a text longer than the
+        # room is not escaped: its escape can be six times its size.
+        with true <- byte_size(record.text) <= room,
+             part = record_part(record),
+             true <- byte_size(part) <= room do
+          {:cont, {[parts, part], kept + 1, room - byte_size(part)}}
+        else
+          false -> {:halt, {parts, kept, room}}
+        end
       end)
 
     left_out = length(records) - kept

@@ -88,7 +88,7 @@ None. No Core path recalled or synced before.
 | Markdown record text | 1,024 bytes | cut on a character boundary | `Helyx.Memory.Markdown` |
 | `memory_write` text | 1 to 4,096 bytes | an error result | `Helyx.Memory.Markdown` |
 
-The recall text grows when Core escapes it: the block bound counts the escaped bytes. A replay chunk and a live batch are copies of transcript messages, so the worker holds at most one more copy of the transcript.
+The recall text grows when Core escapes it: the block bound counts the escaped bytes. A record text longer than the room left is not escaped, so the escape of one record holds at most six times the room (about 384 KiB). A replay chunk and a live batch are copies of transcript messages, so the worker holds at most one more copy of the transcript.
 
 ## Ownership
 
