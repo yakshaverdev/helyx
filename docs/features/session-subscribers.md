@@ -6,7 +6,7 @@ The session process keeps the list of its subscribers and sends each event to th
 
 ## Design rules
 
-**S1 Subscribe.** `subscribe/1` is one call to the session, `{:subscribe, pid}`. In one step, the session adds the caller to its subscriber map and returns the snapshot. Every event after the snapshot reaches the caller, because both happen in one message of the session.
+**S1 Subscribe.** `subscribe/2` is one call to the session, `{:subscribe, pid, tail}`, with a nil `tail` for the full snapshot. In one step, the session adds the caller to its subscriber map and returns the snapshot. Every event after the snapshot reaches the caller, because both happen in one message of the session.
 
 **S2 One entry and one monitor per caller.** The map is keyed by pid. Its value is the session's monitor reference for that pid. A repeated subscribe from the same pid reuses the entry and its reference, and makes no new monitor (`Helyx.Session.Server.Events.subscribe/2`). So each event comes once. `{:unsubscribe, pid}` removes the entry and calls `Process.demonitor(ref, [:flush])` (`Events.unsubscribe/2`). For a pid with no entry, it changes nothing.
 
@@ -25,7 +25,7 @@ The session process keeps the list of its subscribers and sends each event to th
 
 | Resource | Created by | Held by | Released on normal end | Released when the holder crashes |
 |---|---|---|---|---|
-| The session's monitor of a subscriber | `{:subscribe, pid}` | the session | `{:unsubscribe, pid}`, demonitor with flush, or the subscriber's `:DOWN` | the session ends, so its monitors end |
+| The session's monitor of a subscriber | `{:subscribe, pid, tail}` | the session | `{:unsubscribe, pid}`, demonitor with flush, or the subscriber's `:DOWN` | the session ends, so its monitors end |
 
 ## Out of scope
 

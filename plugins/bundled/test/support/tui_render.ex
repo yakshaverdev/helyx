@@ -18,7 +18,10 @@ defmodule Helyx.Test.TUIRender do
       turn: nil,
       model: model,
       queue: %{steers: 0, follow_ups: 0, running: 0, held: 0, waiting: 0},
-      persisting: true
+      persisting: true,
+      more: false,
+      usage: %Helyx.Session.Totals{},
+      context: nil
     }
 
     %{ViewModel.from_snapshot(snapshot) | cells: :array.from_list(cells)}

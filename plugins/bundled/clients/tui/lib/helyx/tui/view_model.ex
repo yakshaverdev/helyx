@@ -47,9 +47,10 @@ defmodule Helyx.TUI.ViewModel do
   call of it is an open tool cell, so a frame does not make its line; the
   `message_end` makes the cells of the message again from the message.
 
-  `usage` is the usage of the session that row 2 of the footer shows
-  (`Helyx.TUI.SessionUsage`): every message adds to it, on the live path and
-  from a snapshot alike.
+  `usage` and `context` are the totals and the context state of the session
+  that row 2 of the footer shows (`Helyx.Session.Totals`). They start from
+  the snapshot, which counts every message of the transcript, and each
+  message of the live path adds to them; a snapshot message does not.
 
   The view model has no `instance_id` or `seq` guard: the TUI subscribes
   once to each session, and the registration and the snapshot happen in
@@ -60,8 +61,7 @@ defmodule Helyx.TUI.ViewModel do
   """
 
   alias Helyx.{Event, Message}
-  alias Helyx.Session.Snapshot
-  alias Helyx.TUI.SessionUsage
+  alias Helyx.Session.{Snapshot, Totals}
 
   # The cut of a tool call line (`cut_line/1`).
   @render_max_bytes 8_192
@@ -76,7 +76,8 @@ defmodule Helyx.TUI.ViewModel do
             queue: %{steers: 0, follow_ups: 0},
             reason: nil,
             expanded?: false,
-            usage: %SessionUsage{}
+            usage: %Totals{},
+            context: nil
 
   @type tool_cell :: {:tool, Message.ToolCall.t(), String.t(), Message.t() | nil}
   @type cell ::
@@ -95,7 +96,8 @@ defmodule Helyx.TUI.ViewModel do
           queue: %{steers: non_neg_integer(), follow_ups: non_neg_integer()},
           reason: String.t() | nil,
           expanded?: boolean(),
-          usage: SessionUsage.t()
+          usage: Totals.t(),
+          context: Totals.context() | nil
         }
 
   @delta_keys [:text_delta, :thinking_delta, :tool_call]
@@ -206,11 +208,13 @@ defmodule Helyx.TUI.ViewModel do
   @doc """
   The view model of a session from its snapshot. The snapshot messages go
   through the fold in order, so the live and the snapshot paths share one
-  pairing rule (ADR 0006, revision of 2026-10-03). Notices and information
-  cells are not in the transcript, so a snapshot has none of them, but for
-  a session that does not save: a snapshot with `persisting: false` ends
-  with the notice `Helyx.Reason.text(:not_saved)`, so a stop of the saving
-  before the subscribe shows too.
+  pairing rule (ADR 0006, revision of 2026-10-03). The usage and the
+  context state come from the snapshot fields, so a message adds no usage
+  here. Notices and information cells are not in the transcript, so a
+  snapshot has none of them, but for a session that does not save: a
+  snapshot with `persisting: false` ends with the notice
+  `Helyx.Reason.text(:not_saved)`, so a stop of the saving before the
+  subscribe shows too.
   """
   @spec from_snapshot(Snapshot.t()) :: t()
   def from_snapshot(%Snapshot{messages: messages, turn: turn} = snapshot) do
@@ -218,10 +222,12 @@ defmodule Helyx.TUI.ViewModel do
       model: snapshot.model,
       cells: :array.new(),
       running?: turn != nil,
-      queue: Map.take(snapshot.queue, [:steers, :follow_ups])
+      queue: Map.take(snapshot.queue, [:steers, :follow_ups]),
+      usage: snapshot.usage,
+      context: snapshot.context
     }
 
-    vm = %{Enum.reduce(messages, vm, &add_message(&2, &1)) | streaming: streaming(turn)}
+    vm = %{Enum.reduce(messages, vm, &add_cells(&2, &1)) | streaming: streaming(turn)}
     if snapshot.persisting, do: vm, else: add_cell(vm, {:notice, Helyx.Reason.text(:not_saved)})
   end
 
@@ -318,12 +324,10 @@ defmodule Helyx.TUI.ViewModel do
   defp add_streamed(streaming, %Message.ToolCall{} = call), do: [tool_cell(call, nil) | streaming]
   defp add_streamed(streaming, block), do: [block | streaming]
 
-  # Every message of the live path and of the snapshot comes here once.
-  # The cells come first: the spec of `SessionUsage.add/2` narrows the
-  # role for Dialyzer.
+  # Every message of the live path comes here once.
   defp add_message(vm, message) do
     vm = add_cells(vm, message)
-    %{vm | usage: SessionUsage.add(vm.usage, message)}
+    %{vm | usage: Totals.add(vm.usage, message), context: Totals.context(vm.context, message)}
   end
 
   # A message as a transcript cell. Each call of an assistant message gets

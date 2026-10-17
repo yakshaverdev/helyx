@@ -5,6 +5,7 @@ defmodule Helyx.Session.Server.Calls do
   # (docs/features/session-lifecycle.md, "Late calls").
 
   alias Helyx.{Message, ModelRef}
+  alias Helyx.Session.History
   alias Helyx.Session.Server.{Compaction, Events, Records, State, TurnLoop}
 
   require Logger
@@ -35,10 +36,18 @@ defmodule Helyx.Session.Server.Calls do
 
   # The entry and the snapshot in one message, so every later event reaches
   # the caller. A repeated subscribe keeps the entry and its monitor.
-  def handle({:subscribe, pid}, _from, %State{} = state) do
+  def handle({:subscribe, pid, tail}, _from, %State{} = state) do
     state = Events.subscribe(state, pid)
-    {:reply, Events.snapshot(state), state}
+    {:reply, Events.snapshot(state, tail), state}
   end
+
+  # A page reads the transcript only (session-snapshot.md, "History").
+  def handle({:history, instance_id, _before, _limit}, _from, %State{instance_id: id} = state)
+      when instance_id != id,
+      do: {:reply, {:error, :instance_changed}, state}
+
+  def handle({:history, _instance_id, before, limit}, _from, %State{} = state),
+    do: {:reply, History.page(state.transcript, before, limit), state}
 
   def handle({:set_model, %ModelRef{} = ref, provider}, _from, %State{} = state),
     do: {:reply, :ok, TurnLoop.settle(Records.set_model(state, ref, provider))}

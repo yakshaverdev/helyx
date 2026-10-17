@@ -219,7 +219,10 @@ defmodule Helyx.TUI.ViewModelTest do
       turn: nil,
       model: "test/model",
       queue: %{steers: 0, follow_ups: 0, running: 0, held: 0, waiting: 0},
-      persisting: true
+      persisting: true,
+      more: false,
+      usage: %Helyx.Session.Totals{},
+      context: nil
     }
 
     joined = ViewModel.from_snapshot(snapshot)
@@ -266,7 +269,10 @@ defmodule Helyx.TUI.ViewModelTest do
         turn: nil,
         model: "test/model",
         queue: %{steers: 0, follow_ups: 0, running: 0, held: 0, waiting: 0},
-        persisting: true
+        persisting: true,
+        more: false,
+        usage: %Helyx.Session.Totals{},
+        context: nil
       })
 
     {cells(live), cells(joined)}
@@ -398,7 +404,10 @@ defmodule Helyx.TUI.ViewModelTest do
       turn: nil,
       model: "test/model",
       queue: %{steers: 0, follow_ups: 0, running: 0, held: 0, waiting: 0},
-      persisting: true
+      persisting: true,
+      more: false,
+      usage: %Helyx.Session.Totals{},
+      context: nil
     }
 
     assert ["▌ see [unsupported block: new_block]", "⚙ read", "  [unsupported block: new_block]"] ==
@@ -413,7 +422,10 @@ defmodule Helyx.TUI.ViewModelTest do
       turn: nil,
       model: "test/model",
       queue: %{steers: 0, follow_ups: 0, running: 0, held: 0, waiting: 0},
-      persisting: false
+      persisting: false,
+      more: false,
+      usage: %Helyx.Session.Totals{},
+      context: nil
     }
 
     assert [%Message{role: :user}, %Message{role: :assistant}, notice] =
@@ -440,7 +452,10 @@ defmodule Helyx.TUI.ViewModelTest do
       },
       model: "test/model",
       queue: %{steers: 0, follow_ups: 0, running: 0, held: 0, waiting: 0},
-      persisting: true
+      persisting: true,
+      more: false,
+      usage: %Helyx.Session.Totals{},
+      context: nil
     }
 
     vm = ViewModel.from_snapshot(snapshot)
