@@ -212,6 +212,54 @@ defmodule Helyx.TUI.Transcript do
     end
   end
 
+  @doc """
+  The nearest item before (`:older`) or after (`:newer`) `from` (nil: past
+  the newest) that matches `regex`, as `{item, row}` with the first matching
+  row at `width`, else row 0; nil with no match (`docs/features/tui-search.md`).
+  """
+  @spec find(ViewModel.t(), Regex.t(), non_neg_integer() | nil, :older | :newer, integer()) ::
+          {non_neg_integer(), non_neg_integer()} | nil
+  def find(vm, regex, from, direction, width) do
+    items = vm |> items() |> Enum.with_index()
+
+    candidates =
+      case direction do
+        :older -> items |> Enum.take(from || length(items)) |> Enum.reverse()
+        :newer -> Enum.drop(items, from + 1)
+      end
+
+    with {item, index} <-
+           Enum.find(candidates, fn {item, _index} ->
+             Regex.match?(regex, Wrap.sanitize(search_text(item)))
+           end) do
+      row = item |> item_lines(width) |> Enum.find_index(&Regex.match?(regex, line_text(&1)))
+      {index, row || 0}
+    end
+  end
+
+  @doc "The text of a drawn row: its spans joined."
+  @spec line_text(Line.t()) :: String.t()
+  def line_text(%Line{spans: spans}), do: Enum.map_join(spans, & &1.content)
+
+  defp search_text(%Message{role: :assistant, content: blocks}) do
+    Enum.map_join(blocks, "\n", fn
+      %Message.Text{text: text} -> text
+      %Message.Thinking{thinking: text} -> text
+      _block -> ""
+    end)
+  end
+
+  defp search_text(%Message{} = message), do: shown_text(message)
+  defp search_text({:tool, _call, line, nil}), do: line
+  defp search_text({:tool, _call, line, result}), do: line <> "\n" <> shown_text(result)
+
+  defp search_text({:tool, call, line, result, true}),
+    do: search_text({:tool, call, line, result})
+
+  defp search_text({:notice, text}), do: text
+  defp search_text({:stop, reason}), do: stop_text(reason)
+  defp search_text({:infos, texts}), do: infos_text(texts)
+
   # The items in position order, one O(n) fold of the array, and the open
   # assistant message as the last one. A run of information cells is one
   # item, `{:infos, texts}`. With the Ctrl+O toggle on, a tool cell is an
@@ -285,8 +333,9 @@ defmodule Helyx.TUI.Transcript do
   defp cell_lines({:notice, text}, width), do: styled_lines("✕ #{text}", width, @bad)
   defp cell_lines({:stop, reason}, width), do: cell_lines({:notice, stop_text(reason)}, width)
 
-  defp cell_lines({:infos, texts}, width),
-    do: styled_lines(Enum.map_join(texts, " ", &("· " <> &1)), width, @dim)
+  defp cell_lines({:infos, texts}, width), do: styled_lines(infos_text(texts), width, @dim)
+
+  defp infos_text(texts), do: Enum.map_join(texts, " ", &("· " <> &1))
 
   defp stop_text(:max_tokens), do: "the answer stopped at the token limit"
   defp stop_text(:refused), do: "the answer stopped: the provider refused or filtered it"

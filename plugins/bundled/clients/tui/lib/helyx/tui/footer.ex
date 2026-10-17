@@ -125,6 +125,19 @@ defmodule Helyx.TUI.Footer do
     ArgumentError -> nil
   end
 
+  @doc """
+  The busy state after a change of `vm`: a start time when a turn starts
+  to run, nil when it stops. After the mount, the start is when this
+  client saw the `turn_start` event.
+  """
+  @spec busy(%{started: integer(), elapsed: non_neg_integer()} | nil, ViewModel.t()) ::
+          %{started: integer(), elapsed: non_neg_integer()} | nil
+  def busy(nil, %ViewModel{running?: true}),
+    do: %{started: System.monotonic_time(:millisecond), elapsed: 0}
+
+  def busy(_busy, %ViewModel{running?: false}), do: nil
+  def busy(busy, _vm), do: busy
+
   @doc "The rows of the footer."
   @spec rows() :: pos_integer()
   def rows, do: @rows

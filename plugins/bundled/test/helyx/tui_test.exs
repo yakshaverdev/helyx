@@ -27,7 +27,7 @@ defmodule Helyx.TUITest do
   alias Helyx.{Event, Message, Session}
   alias Helyx.Provider.Fake
   alias Helyx.TUI
-  alias Helyx.TUI.{Transcript, ViewModel}
+  alias Helyx.TUI.{Selection, Transcript, ViewModel}
 
   setup do
     core = :"tui_core_#{System.unique_integer([:positive])}"
@@ -624,7 +624,8 @@ defmodule Helyx.TUITest do
       busy: nil,
       location: "~",
       quit: nil,
-      list: nil
+      list: nil,
+      search: nil
     }
 
     :ok = ExRatatui.draw(terminal, TUI.render(state, %{width: 3, height: 5}))
@@ -904,6 +905,84 @@ defmodule Helyx.TUITest do
       assert {short.scroll, tl(screen(short))} == {{0, 0}, ["  o1", "  o2", "  o3", "  o4"]}
       # A row that the item still has stays.
       assert press(press(short, "page_down"), "o", ["ctrl"]).scroll == {0, 5}
+    end
+
+    # The text of the drawn frame of a 24 by 10 terminal.
+    defp frame_text(state) do
+      terminal = ExRatatui.init_test_terminal(24, 10)
+      :ok = ExRatatui.draw(terminal, TUI.render(state, %{width: 24, height: 10}))
+      ExRatatui.get_buffer_content(terminal)
+    end
+
+    test "Ctrl+F finds text in place of the composer, and Escape keeps the view",
+         %{core: core} do
+      state = core |> scroll_state(10) |> press("x") |> press("f", ["ctrl"])
+      assert frame_text(state) =~ "find:"
+
+      state = state |> press("m") |> press("3")
+      assert screen(state) == ["▌ m3", "▌ m4", "▌ m5"]
+      assert status_text(state) =~ "scrolled"
+
+      # The match is marked in the frame.
+      assert Enum.any?(TUI.render(state, %{width: 24, height: 10}), fn {widget, rect} ->
+               match?(%Block{style: %{bg: :yellow}}, widget) and rect.x == 4 and rect.y == 0
+             end)
+
+      # PgUp scrolls as usual; Enter moves the search and sends nothing.
+      state = press(state, "page_up")
+      assert screen(state) == ["▌ m1", "▌ m2", "▌ m3"]
+      state = press(state, "enter")
+      assert state.search.note == "no older match"
+
+      # Escape closes the search and starts no abort Task, and the composer
+      # comes back with its text. The trace of the spawns of this process is
+      # complete after `trace_delivered`.
+      :erlang.trace(self(), true, [:procs])
+      state = press(state, "esc")
+      ref = :erlang.trace_delivered(self())
+      assert_receive {:trace_delivered, _, ^ref}
+      :erlang.trace(self(), false, [:procs])
+      refute_received {:trace, _, :spawn, _, _}
+
+      assert state.search == nil
+      assert screen(state) == ["▌ m1", "▌ m2", "▌ m3"]
+      assert ExRatatui.textarea_get_value(state.composer.input) == "x"
+      refute frame_text(state) =~ "find:"
+    end
+
+    test "the search line takes the rows of the composer, and other keys keep their rule",
+         %{core: core} do
+      # A composer of four lines leaves the transcript two rows.
+      tall =
+        Enum.reduce(
+          ~w(a b c d),
+          scroll_state(core, 10),
+          &(&2 |> press(&1) |> press("j", ["ctrl"]))
+        )
+
+      tall = press(tall, "page_up")
+      before = screen(tall)
+
+      state = press(tall, "f", ["ctrl"])
+      assert {state.scroll, screen(state)} == {tall.scroll, before}
+
+      state = state |> press("m") |> press("9")
+      assert screen(state) == ["▌ m9"]
+      assert screen(press(state, "esc")) == ["▌ m9"]
+
+      # The wheel scrolls and Ctrl+O toggles with the search open.
+      assert wheel(state, "scroll_up").scroll != state.scroll
+      expanded = press(state, "o", ["ctrl"])
+      assert {expanded.vm.expanded?, expanded.search} == {true, state.search}
+
+      # Ctrl+C keeps its rule: it clears the composer.
+      cleared = press(state, "c", ["ctrl"])
+      assert ExRatatui.textarea_get_value(cleared.composer.input) == ""
+      assert cleared.search == state.search
+      assert {:stop, _state} = ctrl_c(cleared)
+
+      # A left press in the transcript starts a selection.
+      assert {{:noreply, %{selection: %Selection{}}}, ""} = mouse(state, "down", 5, 0)
     end
 
     # The answer to a mouse event, with what it wrote to standard output.

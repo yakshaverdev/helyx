@@ -23,6 +23,7 @@ defmodule Helyx.TUI do
     * the wheel scrolls three rows; a drag copies text (`Helyx.TUI.Selection`)
     * Home and End, with an empty composer, go to the oldest and the newest output
     * Ctrl+O shows the full text of every tool result, or four lines again
+    * Ctrl+F finds text in the loaded transcript (`Helyx.TUI.Search`)
     * Ctrl+C clears the composer; a second Ctrl+C within 500 ms quits
 
   Start it with `run/1`, which blocks until the user quits:
@@ -38,8 +39,8 @@ defmodule Helyx.TUI do
   alias ExRatatui.Subscription
   alias Helyx.Session
   alias Helyx.TUI.{Command, Composer, Footer, Quit, Selection, SessionList, Start, Switch}
-  alias Helyx.TUI.{Transcript, ViewModel}
-  require Quit
+  alias Helyx.TUI.{Search, Transcript, ViewModel}
+  require Helyx.TUI.{Quit, Search}
 
   # One screen of scroll is the rows above the composer and the footer.
   @footer_rows Footer.rows()
@@ -75,8 +76,9 @@ defmodule Helyx.TUI do
       sessions_dir: opts[:sessions_dir],
       # A running `Helyx.TUI.Switch`, or nil.
       switch: nil,
-      # The open `/resume` list, drawn in the place of the composer, or nil.
+      # The open `/resume` list and search, in the place of the composer, or nil.
       list: nil,
+      search: nil,
       composer: Composer.new(),
       cwd: cwd,
       # Row 1 of the footer. The branch comes from a task that starts
@@ -120,8 +122,7 @@ defmodule Helyx.TUI do
       ),
       do: {:noreply, settle(sync_busy(Switch.done(state, {:error, reason})))}
 
-  # A tick of the `subscriptions/1` timer. ExRatatui drops a tick of a
-  # cancelled timer, so one never arrives while idle.
+  # A tick of the `subscriptions/1` timer; none arrives while idle (cancelled).
   def handle_info(:busy_tick, %{busy: busy} = state) do
     elapsed = System.monotonic_time(:millisecond) - busy.started
     {:noreply, %{state | busy: %{busy | elapsed: elapsed}}}
@@ -181,6 +182,20 @@ defmodule Helyx.TUI do
   def handle_event(%type{}, %{list: %SessionList{}} = state) when type in [Key, Paste],
     do: {:noreply, state}
 
+  def handle_event(%Key{code: code, kind: kind, modifiers: []}, state)
+      when code in ["page_up", "page_down"] and kind in ["press", "repeat"],
+      do: {:noreply, on_screen(state, &Transcript.page(state.vm, state.scroll, code, &1, &2))}
+
+  # The toggle changes the rows of tool cells: a selection ends, as at a new
+  # size, and a scrolled view stays in its item.
+  def handle_event(%Key{code: "o", kind: "press", modifiers: ["ctrl"]}, state) do
+    state = %{state | vm: ViewModel.toggle_expanded(state.vm), selection: nil}
+    {:noreply, settle(state, &Transcript.keep/4)}
+  end
+
+  def handle_event(event, state) when Search.handles?(state.search, event),
+    do: Search.handle(event, state, layout(state, state.terminal_size_fn.()))
+
   def handle_event(%Key{code: "esc", kind: "press"}, state) do
     # Abort waits for the hands to kill every OS process; a Task keeps that
     # wait off the render loop.
@@ -188,18 +203,12 @@ defmodule Helyx.TUI do
     {:noreply, state}
   end
 
-  def handle_event(%Key{code: code, kind: kind, modifiers: []}, state)
-      when code in ["page_up", "page_down"] and kind in ["press", "repeat"] do
-    {:noreply, on_screen(state, &Transcript.page(state.vm, state.scroll, code, &1, &2))}
-  end
-
   def handle_event(%Resize{}, state), do: {:noreply, settle(%{state | selection: nil})}
 
   def handle_event(%Mouse{} = mouse, state),
     do: Selection.handle(mouse, state, layout(state, state.terminal_size_fn.()))
 
-  # Home and End scroll only when the composer is empty; otherwise they
-  # move its cursor.
+  # With an empty composer, Home and End scroll; else they move its cursor.
   def handle_event(%Key{code: code, kind: kind, modifiers: []}, state)
       when code in ["home", "end"] and kind in ["press", "repeat"] do
     cond do
@@ -215,13 +224,6 @@ defmodule Helyx.TUI do
       when {code, modifiers} in [{"j", ["ctrl"]}, {"enter", ["shift"]}] and
              kind in ["press", "repeat"] do
     {:noreply, edit(state, :insert, "\n")}
-  end
-
-  # The toggle changes the rows of tool cells: a selection ends, as at a new
-  # size, and a scrolled view stays in its item.
-  def handle_event(%Key{code: "o", kind: "press", modifiers: ["ctrl"]}, state) do
-    state = %{state | vm: ViewModel.toggle_expanded(state.vm), selection: nil}
-    {:noreply, settle(state, &Transcript.keep/4)}
   end
 
   # No text goes to a session that a switch ends.
@@ -242,8 +244,7 @@ defmodule Helyx.TUI do
       when code in ["up", "down"] and kind in ["press", "repeat"],
       do: {:noreply, edit(state, &Composer.recall(&1, state.vm, code))}
 
-  # Only Ctrl+J and Shift+Enter add a line: the repeat and the release of
-  # Enter do nothing.
+  # Only Ctrl+J and Shift+Enter add a line; a repeat or release of Enter does nothing.
   def handle_event(%Key{code: "enter"}, state), do: {:noreply, state}
 
   # Everything else goes to the composer, which inserts printable
@@ -320,12 +321,18 @@ defmodule Helyx.TUI do
   def render(state, frame) do
     [transcript, middle, footer] = layout(state, {frame.width, frame.height})
 
-    middle =
-      if state.list,
-        do: [{SessionList.widget(state.list), middle}],
-        else: Composer.widgets(state.composer, middle)
+    rows = Transcript.screen(state.vm, state.scroll, transcript)
+    marks = Search.marks(state.search, rows, transcript)
 
-    Selection.widgets(state.selection, state.vm, state.scroll, transcript) ++
+    middle =
+      cond do
+        state.list -> [{SessionList.widget(state.list), middle}]
+        state.search -> Search.widgets(state.search, marks, middle)
+        true -> Composer.widgets(state.composer, middle)
+      end
+
+    Selection.widgets(state.selection, rows, transcript) ++
+      marks ++
       middle ++
       [{Footer.widget(state.location, state.vm, state.busy, state.scroll, state.quit), footer}]
   end
@@ -379,13 +386,7 @@ defmodule Helyx.TUI do
   def subscriptions(%{busy: nil}), do: []
   def subscriptions(_state), do: [Subscription.interval(:busy, Footer.tick_ms(), :busy_tick)]
 
-  # After the mount, the start is when this client saw the `turn_start`
-  # event.
-  defp sync_busy(%{vm: %{running?: true}, busy: nil} = state),
-    do: %{state | busy: %{started: System.monotonic_time(:millisecond), elapsed: 0}}
-
-  defp sync_busy(%{vm: %{running?: false}} = state), do: %{state | busy: nil}
-  defp sync_busy(state), do: state
+  defp sync_busy(state), do: %{state | busy: Footer.busy(state.busy, state.vm)}
 
   # At quit, a switch that runs ends, and a session that it opened stays
   # until Core stops. The turn of the current session aborts before Core

@@ -132,8 +132,10 @@ defmodule Helyx.TUI.SelectionTest do
       |> mouse("down", 5, 0)
       |> mouse("drag", 3, 1)
 
+    rows = Transcript.screen(state.vm, state.scroll, @area)
+
     [{_paragraph, @area} | marks] =
-      widgets = Selection.widgets(state.selection, state.vm, state.scroll, @area)
+      widgets = Selection.widgets(state.selection, rows, @area)
 
     assert [{%Block{style: %{modifiers: [:reversed]}}, first}, {%Block{}, second}] = marks
     assert first == %Rect{x: 5, y: 0, width: 17, height: 1}

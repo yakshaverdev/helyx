@@ -127,8 +127,15 @@ defmodule Helyx.TUI.SwitchTest do
 
     state = command(state, "/new")
     assert value(state) == ""
+    # A search that opens while the switch runs closes at the join: its
+    # cursor is an item of the old session.
+    {:noreply, state} =
+      TUI.handle_event(%Key{code: "f", kind: "press", modifiers: ["ctrl"]}, state)
+
+    assert state.search
     state = finish(state)
     assert state.vm.expanded?
+    assert state.search == nil
 
     refute Process.alive?(old_pid)
     assert state.session.id != old.id
