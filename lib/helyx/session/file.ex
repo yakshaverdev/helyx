@@ -14,6 +14,7 @@ defmodule Helyx.Session.File do
   alias Helyx.Session.File.Codec
   alias Helyx.Session.File.Reader
   alias Helyx.Session.File.Scan
+  alias Helyx.Session.Input
 
   # A resume loads the file whole into the calling process, so the file has a
   # limit. Compaction does not shrink the transcript, so the resume of a
@@ -164,28 +165,38 @@ defmodule Helyx.Session.File do
   end
 
   @doc """
-  The session file to resume, with no read past the header: the session
-  of `:id`, or the most recently started session of `cwd` that has a
-  message. The scan and its bounds are in `Helyx.Session.File.Scan`;
-  `:max_scanned_files` lowers its file count for a test. A session of the
-  id whose header names another directory is `:not_found`.
+  The session file to resume and its folder, with no read past the
+  header: the session of `:id`, or the most recently started session of
+  `cwd` that has a message. The scan and its bounds are in
+  `Helyx.Session.File.Scan`; `:max_scanned_files` lowers its file count
+  for a test. A session of the id whose header names another directory is
+  `:not_found`. With `:id` and a nil `cwd`, the folder is the one that the
+  header names, checked as `Helyx.Session.start/2` checks a `:cwd`; a nil
+  `cwd` needs `:id`.
   `Helyx.Session.resume/2` takes the lock of this file before
   `resume_picked/3`, which reads the header again.
   """
-  @spec pick(Path.t(), String.t(), keyword()) :: {:ok, Path.t()} | {:error, error()}
+  @spec pick(Path.t(), String.t() | nil, keyword()) ::
+          {:ok, Path.t(), String.t()} | {:error, error() | :invalid_cwd}
   def pick(dir, cwd, opts) do
     case Keyword.fetch(opts, :id) do
       :error ->
-        with {:ok, path, _header} <- Scan.most_recent(dir, cwd, opts), do: {:ok, path}
+        with {:ok, path, _header} <- Scan.most_recent(dir, cwd, opts), do: {:ok, path, cwd}
 
       {:ok, id} ->
-        case Scan.find(dir, id) do
-          {:ok, path, %{"cwd" => ^cwd}} -> {:ok, path}
-          {:ok, _path, _header} -> {:error, :not_found}
-          {:error, _reason} = error -> error
-        end
+        with {:ok, path, header} <- Scan.find(dir, id), do: match_cwd(path, header["cwd"], cwd)
     end
   end
+
+  # `Scan.find/2` gives a header with a string cwd.
+  defp match_cwd(path, found, cwd) when found == cwd and is_binary(found), do: {:ok, path, cwd}
+
+  # The header is disk input.
+  defp match_cwd(path, found, nil) when is_binary(found) do
+    with {:ok, found} <- Input.cwd(found), do: {:ok, path, found}
+  end
+
+  defp match_cwd(_path, found, _cwd) when is_binary(found), do: {:error, :not_found}
 
   # The wait has no timeout: the process reads at most max_bytes + 1 bytes
   # and dies when its heap passes the cap, so its work is bounded. It is not

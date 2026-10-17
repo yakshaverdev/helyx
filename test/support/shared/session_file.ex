@@ -16,7 +16,7 @@ defmodule Helyx.Test.SessionFile do
     do: File.append_message(file, %{message | id: message.id || Helyx.Session.Id.new()})
 
   def resume(dir, cwd, opts \\ []) do
-    with {:ok, path} <- File.pick(dir, cwd, opts), do: File.resume_picked(path, cwd, opts)
+    with {:ok, path, cwd} <- File.pick(dir, cwd, opts), do: File.resume_picked(path, cwd, opts)
   end
 
   # Stops the session normally, then waits until the lock of its file is

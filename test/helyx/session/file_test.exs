@@ -743,7 +743,7 @@ defmodule Helyx.Session.FileTest do
   # The file can change between the pick and the read under the lock.
   test "the read after the pick uses the header of its own read", %{tmp_dir: dir} do
     {:ok, _file} = started(dir, "sess00000001", "/repo", "test/ok")
-    {:ok, path} = Session.File.pick(dir, "/repo", [])
+    {:ok, path, "/repo"} = Session.File.pick(dir, "/repo", [])
     File.write!(path, String.replace(File.read!(path), ~s("test/ok"), ~s("test/new")))
 
     assert {:ok, %{model: "test/new"}} = Session.File.resume_picked(path, "/repo")
