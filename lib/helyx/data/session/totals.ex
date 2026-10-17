@@ -9,10 +9,12 @@ defmodule Helyx.Session.Totals do
   of the known costs, nil when no cost is known; `unknown` is set by a usage
   with `cost: nil`, and `list` by a known cost that is a list price.
 
-  The context state is the estimate from the last usage that is not nil,
-  nil before one: its `context_tokens` as `tokens`, its `context_window` as
-  `window`, the model of its message, and the bytes of the text and the
-  thinking of the messages after it. The sums grow with the transcript; a
+  The context state is the estimate from the last usage whose
+  `context_tokens` is an integer, nil before one: those tokens as `tokens`,
+  its `context_window` as `window`, the model of its message, and the bytes
+  of the text, the thinking, and the tool calls of the messages after it.
+  The summary compaction plugin estimates with the same rule
+  (`docs/features/summary-compaction.md`). The sums grow with the transcript; a
   client shows them in capped forms.
   """
 
@@ -71,12 +73,15 @@ defmodule Helyx.Session.Totals do
   def add(totals, %Message{}), do: totals
 
   @doc """
-  Adds `message` to the context state. A usage starts a new estimate: its
-  `context_tokens` hold its own message. Another message adds its bytes.
+  Adds `message` to the context state. A usage with integer
+  `context_tokens` starts a new estimate: they hold its own message.
+  Another message, also one whose usage has nil `context_tokens`, adds its
+  bytes; a tool call counts its name and its JSON arguments.
   """
   @spec context(context() | nil, Message.t()) :: context() | nil
-  def context(_context, %Message{usage: %Helyx.Usage{} = usage, model: model}),
-    do: %{tokens: usage.context_tokens, window: usage.context_window, model: model, bytes: 0}
+  def context(_context, %Message{usage: %Helyx.Usage{context_tokens: n} = usage, model: model})
+      when is_integer(n),
+      do: %{tokens: n, window: usage.context_window, model: model, bytes: 0}
 
   def context(nil, %Message{}), do: nil
 
@@ -90,5 +95,7 @@ defmodule Helyx.Session.Totals do
 
   defp bytes(%Message.Text{text: text}), do: byte_size(text)
   defp bytes(%Message.Thinking{thinking: thinking}), do: byte_size(thinking)
-  defp bytes(_block), do: 0
+
+  defp bytes(%Message.ToolCall{name: name, arguments: args}),
+    do: byte_size(name) + byte_size(JSON.encode!(args))
 end

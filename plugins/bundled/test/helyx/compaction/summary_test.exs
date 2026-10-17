@@ -73,6 +73,33 @@ defmodule Helyx.Compaction.SummaryTest do
     assert {:summarize, %Plan{}} = compact(tiny, trigger: :auto)
   end
 
+  # #698: the footer reads the context field of the snapshot, so it shows
+  # the tokens that the trigger reads.
+  test "the estimate equals the context estimate of the session totals" do
+    call = %Message.ToolCall{id: "c", name: "bash", arguments: %{"cmd" => words(1_000)}}
+
+    messages = [
+      user("u1", words(30_000)),
+      assistant("a1", "x", usage(5_000, 200_000)),
+      Map.update!(assistant("a2", "ok", usage(nil, nil)), :content, &(&1 ++ [call])),
+      tool_result("t1", words(25_000))
+    ]
+
+    assert {:summarize, %Plan{tokens_before: tokens}} = compact(messages, trigger: :overflow)
+    {_totals, context} = Helyx.Session.Totals.of(messages)
+    assert tokens == context.tokens + div(context.bytes, 4)
+    # The usage with nil context tokens keeps the estimate of a1, and the
+    # call counts its name and its JSON arguments.
+    bytes = byte_size("ok") + byte_size("bash") + byte_size(JSON.encode!(call.arguments))
+    assert tokens == 5_000 + div(bytes, 4) + 25_000
+
+    # Before such a usage the footer has no estimate, and the trigger reads
+    # a quarter of the bytes of the context to send: "sys", "x", and the text.
+    early = [user("u1", words(30_000)), assistant("a1", "x", usage(nil, 1_000)), user("u2", "y")]
+    assert {:summarize, %Plan{tokens_before: 30_001}} = compact(early, trigger: :overflow)
+    assert {_totals, nil} = Helyx.Session.Totals.of(early)
+  end
+
   test "an unknown window turns off the automatic summary, and fails a manual one" do
     messages = [user("u1", words(30_000)), assistant("a1", "x"), user("u2", words(30_000))]
     assert %Context{} = compact(messages, trigger: :auto)
