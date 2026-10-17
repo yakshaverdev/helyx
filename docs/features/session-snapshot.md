@@ -18,7 +18,8 @@ The order that makes it gap-free:
 
 `Helyx.TUI.ViewModel.from_snapshot/1` folds the snapshot messages through the live fold, so the live and snapshot paths share one pairing rule.
 
-- The rule of a snapshot and its exclusions are in ADR 0006, section 3.
+- The rule of a snapshot and its exclusions are in ADR 0006, section 3, as revised on 2026-10-17 (ADR 0008): a snapshot equals the loaded suffix of the transcript plus the full current state. Planned in #658: a wire client gets a tail snapshot with the usage totals and the context-usage state as fields, and older messages in pages (`docs/features/wire-protocol.md`). `subscribe/1` keeps the full transcript for a client in the node until #662.
+- Planned in #659: a client that reconnects subscribes with the `instance_id` and `seq` of the last event it applied and gets the later events from the replay ring of the session; it gets a new snapshot only when the ring cannot serve them. Step 3 above is for that snapshot. Until #659, each reconnect takes a new snapshot.
 - The `turn` of a snapshot has `elapsed_ms`: the time since the turn started, by the monotonic clock of the session, also while its `turn_end` waits for the hands. A client that joins a running turn starts its busy clock at that age by its own clock, so it needs no clock of the server. The age does not count the transport delay after the snapshot.
 - The information cell "resumed session" follows the history only when the TUI started from a resume: `mix helyx --resume` passes `resumed: true` to `Helyx.TUI.run/1`, and the mount adds the cell. A live join shows no such cell.
 
@@ -38,6 +39,6 @@ No external resource.
 
 ## Out of scope
 
-- Paging of a long transcript for a remote client: the transport work, #116.
+- Paging of a long transcript for a remote client: #658 (`docs/features/wire-protocol.md`).
 - A compact render of old turns.
 - A read of the transcript without a subscription. Add a function when a caller needs it.

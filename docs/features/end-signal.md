@@ -6,7 +6,7 @@ Status: the current contract since #434.
 
 A subscriber learns from one message with data that the session ended. ADR 0006, section 2.
 
-User story: I use the TUI, and the session behind it ends or crashes. The TUI exits and says why, and the reason is data: `:stopped` or `:crashed`. A remote client gets the same reason as a last event.
+User story: I use the TUI, and the session behind it ends or crashes. The TUI exits and says why, and the reason is data: `:stopped` or `:crashed`. A remote client gets the same reason in a `session_end` frame (ADR 0008).
 
 ## Interface
 
@@ -17,7 +17,7 @@ User story: I use the TUI, and the session behind it ends or crashes. The TUI ex
 - The caller owns the ref. The session holds one subscription for each caller pid (`session-subscribers.md`, S2), so a second subscribe gives each event once, and a second ref. The caller removes a ref that it no longer wants with `Process.demonitor(ref, [:flush])`.
 - On `{:error, :session_not_found}`, and on an exit of the snapshot call at its timeout, `subscribe/1` removes its monitor with `[:flush]` and sends `{:unsubscribe, self()}` to the same pid. A live session handles it after the subscribe, because both messages come from one caller to one process. A failed subscribe also ends an earlier subscription of the caller to that session; the ref of the earlier one stays with the caller.
 
-A remote transport sends the end signal as a last event and then closes its stream (ADR 0006, section 2).
+On the wire (planned, #660), the subscription process turns the `:DOWN` into one `session_end` frame with the reason, after every event of the session. It ends that subscription; the connection stays open. A client that subscribes after the end gets `session_not_found`, and the reason is not kept (ADR 0008, `docs/features/wire-protocol.md`).
 
 ### Order
 
@@ -48,5 +48,5 @@ No external resource. The monitor is released by its `:DOWN`, by the caller's de
 
 ## Out of scope
 
-- A remote transport and its last event: its own feature doc.
+- The wire form of the end signal: `docs/features/wire-protocol.md`.
 - A helper that pairs a second subscribe with the demonitor of the first: no client subscribes twice today.
