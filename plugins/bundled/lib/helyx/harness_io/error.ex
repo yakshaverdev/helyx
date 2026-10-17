@@ -1,5 +1,3 @@
-# The check takes its suffix from the test exceptions (`*Message`).
-# credo:disable-for-next-line Credo.Check.Consistency.ExceptionNames
 defmodule Helyx.HarnessIO.Error do
   @moduledoc false
   # The error result of a program turn that has a text. Core shows an
