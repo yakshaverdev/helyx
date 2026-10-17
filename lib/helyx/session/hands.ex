@@ -285,7 +285,7 @@ defmodule Helyx.Session.Hands do
 
   # No resource survives its Task: the handles are released when the result
   # delivers, however the Task ended, and the result waits until the
-  # release returns, so the next call cannot overlap a dying one. A handle
+  # release returns, so a call that runs alone cannot overlap a dying one. A handle
   # the release does not confirm makes the result an error.
   defp deliver(ref, result, state) do
     {{task, turn_id, call_id, tool, _place}, tasks} = Map.pop!(state.tasks, ref)

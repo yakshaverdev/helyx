@@ -44,6 +44,8 @@ defmodule Helyx.Session.Server.State do
   @provider_close_ms 5_000
   def provider_close_ms, do: @provider_close_ms
 
+  # 32 fields with `concurrent_tools` (#734); open: fold it into `tool_modules`.
+  # credo:disable-for-next-line Credo.Check.Warning.StructFieldAmount
   defstruct [
     :id,
     # A new id for each start of the process, a resume too (`Helyx.Event`).
@@ -74,9 +76,10 @@ defmodule Helyx.Session.Server.State do
     :unsaved_from,
     # The checked tool specs of `Helyx.Tool.specs/1` at session start,
     # which every provider call uses, and the tool module by name for the
-    # hands.
+    # hands, and the names of the concurrent tools (`Helyx.Tool.concurrent/1`).
     tool_specs: [],
     tool_modules: %{},
+    concurrent_tools: MapSet.new(),
     transcript: [],
     # Each subscriber pid with the session's monitor of it, the ref of its
     # last subscribe, and the seq up to which it acked (replay-ring.md).
@@ -141,6 +144,7 @@ defmodule Helyx.Session.Server.State do
           unsaved_from: non_neg_integer() | nil,
           tool_specs: [Helyx.Tool.spec()],
           tool_modules: %{String.t() => module()},
+          concurrent_tools: MapSet.t(String.t()),
           transcript: [Helyx.Message.t()],
           subscribers: %{pid() => {reference(), reference(), non_neg_integer()}},
           ring: Helyx.Session.Ring.t(),

@@ -143,9 +143,27 @@ defmodule Helyx.Session.BoundaryTest do
       end
     end
 
+    # A `concurrent?/0` outside the contract raises at the same place (#734).
+    defmodule ConcurrentBadValue do
+      @moduledoc false
+      @behaviour Helyx.Tool
+
+      @impl true
+      def name, do: "maybe"
+      @impl true
+      def description, do: "d"
+      @impl true
+      def parameters, do: %{}
+      @impl true
+      def run(_args, _cwd), do: {:ok, ""}
+      @impl true
+      def concurrent?, do: :yes
+    end
+
     @cases [
       {Helyx.Test.Tool.Unavailable,
-       {:error, {:tool_unavailable, "unavailable", "the frob is missing"}}}
+       {:error, {:tool_unavailable, "unavailable", "the frob is missing"}}},
+      {ConcurrentBadValue, MatchError}
       | for({module, _body, exception} <- @bad_checks, do: {module, exception})
     ]
 
@@ -191,6 +209,17 @@ defmodule Helyx.Session.BoundaryTest do
       end
 
       assert File.read!(path) == before
+    end
+  end
+
+  describe "concurrent?/0 at the session boundary (#734)" do
+    test "a tool without the callback is not concurrent; one with it gives its value" do
+      tools = [
+        {Helyx.Test.Tool.Upcase, %{name: "upcase"}},
+        {Helyx.Test.Tool.Together, %{name: "together"}}
+      ]
+
+      assert Helyx.Tool.concurrent(tools) == MapSet.new(["together"])
     end
   end
 

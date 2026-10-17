@@ -17,6 +17,10 @@ defmodule Helyx.Tool.ReadTest do
     }
   end
 
+  test "is a concurrent tool (#734)" do
+    assert Helyx.Tool.concurrent([{Helyx.Tool.Read, %{name: "read"}}]) == MapSet.new(["read"])
+  end
+
   test "returns the content of a file relative to the working directory", %{
     tmp_dir: dir,
     run: run

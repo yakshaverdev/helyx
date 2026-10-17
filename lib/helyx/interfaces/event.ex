@@ -29,7 +29,8 @@ defmodule Helyx.Event do
       `:turn_end`) or `:aborted`; one with a tool call closes with
       `:tool_use`, as at the other closes. Both join the transcript
     * `:tool_execution_end` – `%{message: Helyx.Message.t()}`, the tool
-      result message; calls run one at a time, in call order
+      result message; the calls of concurrent tools run together, each
+      other call alone (`docs/features/concurrent-tool-calls.md`)
     * `:turn_end` – `%{outcome: :done | :aborted}`, or `%{outcome: :error,
       error: String.t()}`; once per turn, on every end path. The error text
       is for a person: Core writes it from the reason of the failure,

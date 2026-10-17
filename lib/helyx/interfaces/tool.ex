@@ -28,6 +28,11 @@ defmodule Helyx.Tool do
   resource by itself when its Task dies with no release, because the hands
   can die first and drop a late `hold/1` (ADR 0004).
 
+  The optional `concurrent?/0` returns `true` for a tool whose calls can
+  run at the same time as other calls of concurrent tools: a tool that
+  only reads, for example. A call of any other tool runs alone. At most 8
+  calls run at once in a turn (`docs/features/concurrent-tool-calls.md`).
+
   A call can go on in the background: the tool takes a place with
   `background/0` before the external work starts, gives its start answer
   with `started/1`, and keeps running. Its return value is then the end of
@@ -45,6 +50,7 @@ defmodule Helyx.Tool do
   @callback parameters() :: map()
   @callback run(arguments :: map(), cwd :: String.t()) :: {:ok, String.t()} | {:error, String.t()}
   @callback check() :: :ok | {:error, String.t()}
+  @callback concurrent?() :: boolean()
   @callback release(
               handles :: [term()],
               mode :: :deliver | :cancel,
@@ -52,7 +58,7 @@ defmodule Helyx.Tool do
             ) ::
               [term()]
 
-  @optional_callbacks check: 0, release: 3
+  @optional_callbacks check: 0, concurrent?: 0, release: 3
 
   @doc """
   Builds the spec of each registered tool plugin, checks it, and returns
@@ -121,6 +127,28 @@ defmodule Helyx.Tool do
 
   defp run_check(tool) do
     if function_exported?(tool, :check, 0), do: checked_result(tool.check()), else: :ok
+  end
+
+  @doc """
+  The names of the tools that `specs/1` returned whose optional
+  `concurrent?/0` returns `true`; a tool without it is not concurrent.
+  The session calls this once per session start or resume, in the
+  caller, after `check_available/1` and before it creates any file. A
+  return other than a boolean raises there, as a `concurrent?/0`
+  that raises, throws, or exits does: Core does not contain it.
+  """
+  @spec concurrent([{module(), spec()}]) :: MapSet.t(String.t())
+  def concurrent(tools),
+    do: MapSet.new(for {tool, spec} <- tools, concurrent?(tool), do: spec.name)
+
+  defp concurrent?(tool) do
+    if function_exported?(tool, :concurrent?, 0) do
+      concurrent? = tool.concurrent?()
+      true = is_boolean(concurrent?)
+      concurrent?
+    else
+      false
+    end
   end
 
   defp checked_result(:ok), do: :ok

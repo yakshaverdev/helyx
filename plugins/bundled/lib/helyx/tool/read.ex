@@ -15,6 +15,9 @@ defmodule Helyx.Tool.Read do
   def name, do: "read"
 
   @impl true
+  def concurrent?, do: true
+
+  @impl true
   def description do
     "Read a file. Returns at most #{Helyx.Text.max_lines()} lines or " <>
       "#{div(Helyx.Text.max_bytes(), 1024)} KB, starting at offset " <>

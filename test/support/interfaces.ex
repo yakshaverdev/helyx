@@ -660,6 +660,32 @@ defmodule Helyx.Test.Tool.Slow do
   end
 end
 
+defmodule Helyx.Test.Tool.Together do
+  @moduledoc false
+  # A concurrent tool (`docs/features/concurrent-tool-calls.md`). With
+  # "gate" it holds `{:report, pid}` for the process registered as
+  # "report", if given, waits for the gate (`Helyx.Test.Gate`), and echoes
+  # "text". With "fail" it gives that text as an error result. Its release
+  # is the one of the hold tool.
+  use Helyx.Test.Tool, name: "together", description: "Runs beside other calls."
+
+  @impl true
+  def concurrent?, do: true
+
+  @impl true
+  def run(%{"fail" => text}, _cwd), do: {:error, text}
+
+  def run(args, cwd) do
+    with %{"report" => name} <- args,
+         do: Helyx.Tool.hold({:report, Process.whereis(String.to_existing_atom(name))})
+
+    Helyx.Test.Tool.Slow.run(args, cwd)
+  end
+
+  @impl true
+  defdelegate release(handles, mode, deadline), to: Helyx.Test.Tool.Hold
+end
+
 defmodule Helyx.Test.Tool.Hold do
   @moduledoc false
   # Holds the handles in "handles" with the hands, lets go of those in

@@ -143,7 +143,13 @@ defmodule Helyx.SessionsTest do
        end}
 
     start = fn ->
-      spawn(fn -> send(test, {:started, self(), Session.Server.start(state, tools, open)}) end)
+      spawn(fn ->
+        send(
+          test,
+          {:started, self(),
+           Session.Server.start(state, {tools, Helyx.Tool.concurrent(tools)}, open)}
+        )
+      end)
     end
 
     first = start.()

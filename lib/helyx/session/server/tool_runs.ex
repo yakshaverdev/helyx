@@ -16,7 +16,9 @@ defmodule Helyx.Session.Server.ToolRuns do
   # A request of the current turn, of `bytes` encoded call bytes. An open
   # call id stops the provider process: `{:stop, reason}`.
   def request(%State{activity: %Turn{} = turn} = state, %ToolCall{} = call, bytes, rejection) do
-    case ToolQueue.request(turn.tool_queue, call, bytes, rejection) do
+    concurrent? = MapSet.member?(state.concurrent_tools, call.name)
+
+    case ToolQueue.request(turn.tool_queue, call, bytes, rejection, concurrent?) do
       {:ok, step} -> {:ok, apply_step(state, step)}
       :open -> {:stop, {:bad_action, {:event, turn.id, {:tool_request, call}}}}
     end
@@ -31,15 +33,15 @@ defmodule Helyx.Session.Server.ToolRuns do
 
   # The turn ended: each open request gets `aborted` now, before an
   # interrupt. No request goes to a process that is `:ending`, and a
-  # `:starting` one has none. The hands kill the running call.
+  # `:starting` one has none. The hands kill the running calls.
   def end_turn(%State{conn: %ProviderConn{status: :ready}} = state, %Turn{} = turn),
     do: Enum.reduce(ToolQueue.end_turn(turn.tool_queue), state, &effect(&2, turn.id, &1))
 
   def end_turn(state, _turn), do: state
 
-  # The hands' result of the running call.
-  def result(%State{activity: %Turn{tool_queue: queue}} = state, result),
-    do: apply_step(state, ToolQueue.result(queue, result))
+  # The hands' result of the running call `id`.
+  def result(%State{activity: %Turn{tool_queue: queue}} = state, id, result),
+    do: apply_step(state, ToolQueue.result(queue, id, result))
 
   defp apply_step(%State{activity: turn} = state, {queue, effects}) do
     state = %{state | activity: %{turn | tool_queue: queue}}
