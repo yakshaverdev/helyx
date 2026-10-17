@@ -12,14 +12,12 @@ defmodule Helyx.Session.ReplayTest do
 
   setup :start_core
 
-  # A session that ran one turn of the model, and the events of the turn,
-  # read and acked.
+  # A session that ran one turn of the model, and the events of the turn.
   defp after_turn(core, model) do
     {:ok, session} = Session.start(core, model: model)
     {:ok, snapshot, ref} = Session.subscribe(session)
     :ok = Session.prompt(session, "go")
     events = collect_until(:turn_end)
-    :ok = Session.ack(session, List.last(events).seq)
     Process.demonitor(ref, [:flush])
     {session, snapshot.instance_id, events}
   end
@@ -130,17 +128,18 @@ defmodule Helyx.Session.ReplayTest do
     refute {:process, slow} in monitors
   end
 
-  test "a resubscribe keeps the lower base, so it acks no event in the mailbox",
-       %{core: core} do
+  # The bound is for each subscription (replay-ring.md, "The credits").
+  test "each subscription of a pid starts with fresh credits", %{core: core} do
     {session, id, events} = after_turn(core, "test/ok")
     last = List.last(events).seq
     acked = fn -> :sys.get_state(Session.pid(session)).subscribers[self()] |> elem(2) end
 
     {:ok, {:replay, _}, _} = Session.subscribe(session, after: {id, 1})
+    assert acked.() == 1
     {:ok, %Snapshot{seq: ^last}, _} = Session.subscribe(session)
-    assert acked.() == 1
-    {:ok, {:replay, []}, _} = Session.subscribe(session, after: {id, last})
-    assert acked.() == 1
+    assert acked.() == last
+    {:ok, {:replay, _}, _} = Session.subscribe(session, after: {id, 2})
+    assert acked.() == 2
   end
 
   defp count_until_slow(ref, count, last) do

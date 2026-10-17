@@ -13,7 +13,7 @@ Decisions:
 
 1. **Replay ring.** The session keeps a ring of its own events, the newest 1,024 events and at most 4 MiB. It records each event, also when no client is subscribed. An event over 4 MiB empties the ring and marks a gap: no replay crosses it. Reason: the phone of the first story needs the events of the minutes it slept, and a dead session cannot serve them, so the ring lives and ends with the session process.
 2. **Atomic resubscribe.** `subscribe/2` takes `after: {instance_id, seq}`. One call registers the subscriber and returns the events after `seq` up to the session's `seq` B, or a snapshot at B. Live delivery starts after B. Another instance id, an interval that the ring does not hold, or a `seq` above B gives the snapshot. Reason: one message of the session does both, so no event falls between the replay and the live events (S1 of `session-subscribers.md`).
-3. **Credits.** The session counts, for each subscriber, the events that it sent and that the subscriber did not ack. `ack/2` is cumulative by `seq`. Past 16,384 unacked events, the session ends that subscription with the fixed reason `:slow` and never waits. There is no unbounded mode. Reason: a subscriber that does not read grew its mailbox with no bound (#116); the session must not wait for a client, so it drops the client.
+3. **Credits.** The session counts, for each subscription, the events that it sent and that the subscriber did not ack. `ack/2` is cumulative by `seq`. Past 16,384 unacked events, the session ends that subscription with the fixed reason `:slow` and never waits. There is no unbounded mode. Reason: a subscriber that does not read grew its mailbox with no bound (#116); the session must not wait for a client, so it drops the client.
 4. **Every subscriber acks.** The TUI, print mode, and the test subscribers that read many events pass each event to `ack/2`, which acks each `seq` that is a multiple of 1,024. Core owns the cadence, so no client holds the number. The cadence needs no state: the client passes every event that it receives, also one that it drops, so at most 1,023 events that it read are unacked.
 
 ## Interface changes
@@ -23,7 +23,7 @@ Decisions:
 - `Helyx.Session.ack(session, seq)`: `:ok`. A message to the session, no call: an ack never waits. `seq` is an integer >= 0. The session takes `max(acked, seq)`. It ignores an ack from a pid with no subscription, and an ack above its `seq`: such an ack is of an earlier instance or a bug of the client, and it acks nothing that the session sent. A session that is not running ignores it too.
 - The slow end: the session removes the entry of the subscriber, removes its own monitor of it, and sends `{:helyx_end, ref, :slow}`, where `ref` is the ref of the subscriber's last subscribe. It comes after every event that the session sent to that subscriber, and no event follows it. The caller's monitor of the session stays; the caller removes it with `Process.demonitor(ref, [:flush])`. On the wire the subscription process closes the connection with `4408` (#660).
 - `Helyx.Session.Ring`: the ring, a pure value. The session process owns it in `Helyx.Session.Server.State`. `Helyx.Session.Server.Events` owns the credits, with the subscribers.
-- The subscribe request is `{:subscribe, pid, ref, tail, after}`. The entry of a subscriber is `{monitor, ref, acked}`. A repeated subscribe of a pid keeps its monitor (S2), takes the new `ref`, and keeps the lower of its acked `seq` and the new base: the events that the session sent before are still in its mailbox.
+- The subscribe request is `{:subscribe, pid, ref, tail, after}`. The entry of a subscriber is `{monitor, ref, acked}`. A repeated subscribe of a pid keeps its monitor (S2), and takes the new `ref` and the new base: B for a snapshot, `after` for a replay.
 - The TUI exits with `{:session_down, :slow}` at the slow end, and print mode fails with it. Each acks.
 
 ### The ring
@@ -34,12 +34,13 @@ Decisions:
 
 ### The credits
 
-- The base of a subscription is the `seq` up to which the session counts it as acked: B after a snapshot, `after` after a replay, so a replayed event counts. A repeated subscribe of a pid never raises its base, so a client that resubscribes and does not read still reaches the bound.
-- At each event with `seq` S, a subscriber with `S - acked > 16,384` gets the slow end in place of the event. So a subscriber holds at most 16,384 unacked events.
+- The base of a subscription is the `seq` up to which the session counts it as acked: B after a snapshot, `after` after a replay, so a replayed event counts.
+- The bound is for each subscription, not for each process. Each subscribe, also a repeated one, a subscribe after a failed one, or a subscribe after the slow end, starts with fresh credits. A process that subscribes again and does not read its mailbox holds more than 16,384 events: it fills only its own mailbox, and the session never waits for it. A transport bounds its own outbound buffer (#660).
+- At each event with `seq` S, a subscriber with `S - acked > 16,384` gets the slow end in place of the event. So a subscription holds at most 16,384 unacked events.
 
 ## Replaced mechanism
 
-1. **`send/2` with no bound** (`Events.emit/4`). Each event still goes with `send/2`, after a credit check per subscriber; the slow end replaces the send past the bound. The order of the events of one subscriber is the send order of the session, as before.
+1. **`send/2` with no bound** (`Events.emit/4`). Each event still goes with `send/2`, after a credit check per subscription; the slow end replaces the send past the bound. The order of the events of one subscriber is the send order of the session, as before.
 2. **The subscriber entry** `pid => monitor` becomes `pid => {monitor, ref, acked}`. The `:DOWN` clause of the session matches the monitor in the tuple. S2 and S4 keep their rules.
 3. **Reconnect with a new snapshot** (ADR 0006 §3). A client that has `after` gets the events from the ring; a snapshot comes only when the ring cannot serve them. A subscribe without `after` is unchanged.
 4. **Tests.** The tests of `Helyx.Session.subscribe/2` keep their properties: they receive fewer than 16,384 events, so they need no ack. `Helyx.Test.LateClient` acks, as a model client.
@@ -53,7 +54,7 @@ Decisions:
 | replay ring per session, bytes | 4,194,304 bytes, each event by `:erlang.external_size/1` | `Helyx.Session.Ring` | the oldest events go until the sum fits; an event over the bound empties the ring, and `from` is its `seq` |
 | replay rings of the server | 268,435,456 bytes: 64 live sessions of 4 MiB | the live-session cap (#657) | as above |
 | replay list of one subscribe | the ring: 1,024 events and 4 MiB | `Helyx.Session.Ring` | n/a |
-| credits per subscriber | 16,384 unacked events, a replayed event too | `Helyx.Session.Server.Events` | the slow end, in place of the event |
+| credits per subscription | 16,384 unacked events, a replayed event too; a new subscription starts with fresh credits | `Helyx.Session.Server.Events` | the slow end, in place of the event |
 | ack | an integer from 0 to the session's `seq` | `Helyx.Session.ack/2` (type), the session (range) | a non-integer or a negative value crashes the caller (guard); a value above the `seq` is ignored |
 | `after` | a binary and an integer >= 0 | `Helyx.Session.History.subscribe/1` | `{:error, :invalid_after}` |
 | client ack cadence | one ack each 1,024 events | `Helyx.Session.ack/2` with an event; a wire client chooses its own | n/a: a client that acks less often reaches the bound sooner |
@@ -67,7 +68,7 @@ No external resource. The ring and the credits end with the session process (`wi
 ## Tests
 
 - `test/helyx/session/ring_test.exs`: the count bound at 1,024 and 1,025, the byte bound at the limit and over, an event over 4 MiB, and `from`.
-- `test/helyx/session/replay_test.exs`: a resubscribe with `after` gets the missed events, then the live ones with no gap and no duplicate; an empty replay; another instance, a future `seq`, and an interval out of the ring give a snapshot; a bad `after`. A subscriber that never acks gets the slow end after 16,384 events and no event after it; one that acks by the cadence gets a burst of 20,000 deltas with no slow end; an ack above the `seq` acks nothing; a repeated subscribe keeps the lower base.
+- `test/helyx/session/replay_test.exs`: a resubscribe with `after` gets the missed events, then the live ones with no gap and no duplicate; an empty replay; another instance, a future `seq`, and an interval out of the ring give a snapshot; a bad `after`. A subscriber that never acks gets the slow end after 16,384 events and no event after it; one that acks by the cadence gets a burst of 20,000 deltas with no slow end; an ack above the `seq` acks nothing; a new subscription of the same pid starts with fresh credits.
 - `test/helyx/session/end_signal_test.exs`: a kill of the sessions Registry stops the session, and the subscriber gets its end signal (#116).
 
 ## Out of scope

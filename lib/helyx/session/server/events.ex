@@ -19,9 +19,8 @@ defmodule Helyx.Session.Server.Events do
   # The entry and the reply of a subscribe in one step: the events after
   # `after` from the ring, or the snapshot. The base of the credits is the
   # seq that the reply ends at for the subscriber, so a replayed event
-  # counts. A repeated subscribe keeps the monitor of its entry, and the
-  # lower base: the events that the session sent before it are still in the
-  # mailbox of the caller.
+  # counts. Each subscription starts with fresh credits; a repeated
+  # subscribe keeps the monitor of its entry.
   def subscribe(%State{} = state, pid, ref, tail, after_) do
     {reply, base} =
       case replay(state, after_) do
@@ -29,13 +28,13 @@ defmodule Helyx.Session.Server.Events do
         :error -> {snapshot(state, tail), state.ring.seq}
       end
 
-    entry =
+    monitor =
       case state.subscribers do
-        %{^pid => {monitor, _ref, acked}} -> {monitor, ref, min(acked, base)}
-        _none -> {Process.monitor(pid), ref, base}
+        %{^pid => {monitor, _ref, _acked}} -> monitor
+        _none -> Process.monitor(pid)
       end
 
-    {reply, put_in(state.subscribers[pid], entry)}
+    {reply, put_in(state.subscribers[pid], {monitor, ref, base})}
   end
 
   defp replay(%State{instance_id: id, ring: %Ring{seq: seq} = ring}, {id, after_seq})
