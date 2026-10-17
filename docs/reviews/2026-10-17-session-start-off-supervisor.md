@@ -67,3 +67,12 @@ No defect in this diff. The failure path reproduced the fix: with the session su
 Open, older than this change (also in `e7543466`): when the sessions Registry of the Core is down, `Helyx.Core.plugins/2` in `Server.start/3` and the plugin lookups before it raise `ArgumentError` out of `Session.start/2` and `resume/2` in place of an error tuple; `Session.set_model/2` rescues the same raise. Not in the scope of #605; reported to the orchestrator.
 
 Precommit (`HELYX_SLOW=1`): the first run failed on Credo (nesting depth of the test helper `await_lock_free/2`); the helper's predicate became `lock_free?/1`, a test-only change, and the second run passed.
+
+## Merge gate (Fable strict review)
+
+| # | Finding | Resolution |
+| - | ------- | ---------- |
+| 1 | [low, test] "a caller that ends during its open" sent `:go` after the test's own `:DOWN` of the caller; the session's `:DOWN` of the same exit can come later (#592), so the check after the open could miss it | Fixed: the test waits until the session's mailbox holds that `:DOWN`. The other held-open tests kill no caller during the open, or kill it before the session exists, so its monitor gives `:noproc` at once |
+| 2 | Deletion note: `Process.demonitor(monitor, [:flush])` in `run_open/5` | Kept: without it a late `:DOWN` of the caller reaches `TurnLoop.handle/2`, which nothing proves drops it |
+| 3 | Deletion note: item 6 of "Replaced mechanism" in session-lock.md | Kept: the section lists every replaced test, items 1 to 5 too, and the feature doc must stand without the review record |
+| 4 | Deletion note: `await_lock_free/2` against the `Session.resume` wait of `persistence_test.exs` | Kept: one form per file; a shared helper in `test/support` is a wider change than the note |
