@@ -96,11 +96,11 @@ defmodule Helyx.Memory.Markdown do
     |> Enum.map(fn {_score, record} -> record end)
   end
 
-  # A regular file only: a FIFO or a device is never opened. A name that
-  # cannot make a valid record id is skipped.
+  # A regular file only (`Helyx.Text.read_file/1`): a FIFO or a device is
+  # never opened. A name that cannot make a valid record id is skipped.
   defp read(path, rel) do
     with true <- byte_size(rel) <= @max_path_bytes and String.valid?(rel),
-         {:ok, %File.Stat{type: :regular, size: size}} when size <= @max_file_bytes <-
+         {:ok, %File.Stat{size: size}} when size <= @max_file_bytes <-
            File.stat(path),
          {:ok, text} <- Helyx.Text.read_file(path) do
       {:ok, text}
@@ -112,14 +112,24 @@ defmodule Helyx.Memory.Markdown do
   defp matches(text, rel, terms) do
     {first, label, lines} = label(String.split(text, "\n"))
 
-    for {line, n} <- Enum.with_index(lines, first),
-        lower = String.downcase(line),
-        score = Enum.count(terms, &String.contains?(lower, &1)),
-        score > 0 do
+    hits =
+      for {line, n} <- Enum.with_index(lines, first),
+          lower = String.downcase(line),
+          score = Enum.count(terms, &String.contains?(lower, &1)),
+          score > 0,
+          do: {score, n, line}
+
+    # Only the best lines of a file can be among the best of all files, and
+    # the sort is stable. A common word matches most lines, and a record of
+    # each would cost more than the scan.
+    hits
+    |> Enum.sort_by(&elem(&1, 0), :desc)
+    |> Enum.take(@max_records)
+    |> Enum.map(fn {score, n, line} ->
       source = "#{rel}:#{n}"
       text = Helyx.Text.cap(label <> line, @max_record_bytes, :head)
       {score, %{id: source, source: source, text: text}}
-    end
+    end)
   end
 
   # The number of the first line after the header of a synced message,

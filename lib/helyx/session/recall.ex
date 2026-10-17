@@ -91,7 +91,7 @@ defmodule Helyx.Session.Recall do
   end
 
   defp record?(%{id: id, source: source, text: text} = record)
-       when map_size(record) == 3 and not is_struct(record) and is_binary(id) and
+       when map_size(record) == 3 and is_binary(id) and
               is_binary(source) and is_binary(text) and byte_size(id) in 1..@max_id_bytes//1 and
               byte_size(source) <= @max_source_bytes,
        do: String.valid?(id) and String.valid?(source) and String.valid?(text)
