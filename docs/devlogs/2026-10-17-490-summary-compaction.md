@@ -21,6 +21,8 @@
 - A failed summary outside a `/compact` gives a notice, and the turn goes on with the previous context (decision 4 of the ticket body).
 - Only a summary call that ends with `:end_turn` gives a summary.
 - The estimate is #488 with no summary, else a quarter of the bytes of the context to send.
+- Merge gate: when the ModelContext removed the first kept message of the summary, the plugin keeps all messages and a new summary starts at the first one. A failed build would fail every turn while the ModelContext removes it, so the newest user message would never reach the model.
+- Merge gate: the cut takes only a message with an id, as a ModelContext can add a message with no id.
 
 ## Next
 

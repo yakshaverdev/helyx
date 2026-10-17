@@ -66,10 +66,9 @@ defmodule Helyx.Session.Stream do
               Helyx.Usage.wire_tokens?(tokens) do
     kept? = &match?(%Message{id: ^id, role: role} when role in [:user, :assistant], &1)
 
-    with {:ok, context} <- checked_context(plan.context, :compaction),
+    with {:ok, _context} <- checked_context(plan.context, :compaction),
          true <- Enum.any?(messages, kept?) do
-      {:summarize,
-       %Helyx.Summary.Plan{context: context, first_kept_id: id, tokens_before: tokens}}
+      {:summarize, plan}
     else
       _ -> {:error, {:bad_context, :compaction}}
     end

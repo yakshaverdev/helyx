@@ -19,6 +19,7 @@ Decisions of the owner (ticket #490, decisions comment of 2026-10-17):
 Decisions of this doc:
 
 - **The plugin builds every context with the summary.** Core passes the current summary in `opts[:summary]` and the whole transcript as the messages, as before. The plugin cuts the messages at `first_kept_id` and puts its summary message in front. Reason: the framing of the summary is policy, and the plugin already runs before every provider call. With `Helyx.Compaction.None` a stored summary is not used, and the model gets the whole transcript, which loses nothing.
+- **A first kept message that the ModelContext removed cuts nothing.** The ModelContext runs before the plugin and can remove messages. When the message of `first_kept_id` is not in the built messages, the plugin puts the summary in front of all of them, and a new summary covers the messages from the first one on. Reason: the newest user message stays in the context. A failed build would fail every turn while the ModelContext removes that message. The cost is that the messages the summary covers are sent twice, which loses nothing.
 - **Core summarizes only for a model provider.** The trigger of a provider that keeps its own history (not `Helyx.Provider.Loop`) is nil: the plugin builds the context but must not ask for a summary, and a plan is a contract break. Reason: a harness compacts its own history (`harness-compaction.md`), and two summaries of one history fight each other. Such a provider still gets the context with the summary as its replay, after a model switch or a lost thread.
 - **One summary for each context build.** After a summary, Core builds the context again with trigger nil and the new summary. A plan in that build is a contract break, and the build fails with `{:bad_context, :compaction}`. Reason: a plugin whose estimate stays over its threshold would otherwise summarize forever.
 - **The summary cap is a Core bound.** The session keeps the text of the summary call in memory and writes it to the file, so the bound must hold where the text grows: in the session, not in the plugin. 64 KiB is the number of decision 5.
@@ -75,11 +76,12 @@ The `:unsupported` answer to `{:compact, ...}` ended the compaction turn with a 
 | overflow retries in one turn | 1 | the turn fails with the overflow error | `Helyx.Provider.Loop` |
 | connect of the summary process | 30 s armed kill, as any provider process | the summary fails at its `provider_down` | `Helyx.Session.Hands` |
 | answer to the summary `{:turn, ...}` | 2,000 ms armed kill | the summary fails at its `provider_down` | OTP timer server |
+| the start of the summary process | the 5 s default of the `GenServer.call` in `Hands.start_provider/3`, as at a turn start; the hands can be busy past it while a release runs (up to 20 s), and the summary adds a start in the middle of a turn | the call exits the session; open in #677 | `Helyx.Session.Hands` |
 | the model call of the summary | unbounded, as a turn | the user aborts | client |
 | the end of the summary process after an abort or a close | the release deadlines of the hands; the wait holds until its `provider_down` | the hands report it | `Helyx.Session.Hands` |
 | the plan's `tokens_before` | 0 to 10^9 | `{:bad_context, :compaction}` | `Helyx.Session.Stream` |
 | a tool result in the summary input (bundled plugin) | 2,000 bytes | cut to its first 2,000 bytes, with no mark | `Helyx.Compaction.Summary` |
-| the summary input as a whole (bundled plugin) | unbounded: a first summary of a transcript far over the window can overflow the summary call | the summary fails, and the turn goes on with the previous context; accepted, with no retry of the summary call (question 5 of the ticket body) | none |
+| the summary input as a whole (bundled plugin) | unbounded: a first summary, or one after the ModelContext removed the first kept message, of a transcript far over the window can overflow the summary call | the summary fails, and the turn goes on with the previous context; accepted, with no retry of the summary call (question 5 of the ticket body) | none |
 | the error text of the Compaction plugin | 4,000 bytes, as any failure reason | cut | `Helyx.Reason.text/1` |
 
 ## Ownership

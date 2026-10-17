@@ -107,6 +107,17 @@ defmodule Helyx.Compaction.SummaryTest do
     assert prompt =~ "## Goal\n## Constraints and preferences\n"
     refute prompt =~ "previous-summary"
 
+    # A message with no id, as a ModelContext can add, never starts the
+    # kept part.
+    added = [
+      user("u1", words(10_000)),
+      assistant("a1", "x", usage(1, 200_000)),
+      Message.user(words(20_000)),
+      user("u2", "go on")
+    ]
+
+    assert {:summarize, %Plan{first_kept_id: "u2"}} = compact(added, trigger: :manual)
+
     # Under the keep there is nothing to summarize.
     small = [user("u1", "hi"), assistant("a1", "ok", usage(1, 200_000))]
     assert compact(small, trigger: :manual) == %Context{system: "sys", messages: small}
@@ -131,5 +142,40 @@ defmodule Helyx.Compaction.SummaryTest do
     refute prompt =~ "early"
     assert prompt =~ "<previous-summary>\nold summary\n</previous-summary>"
     assert prompt =~ "The user asks: the plan"
+  end
+
+  defmodule DropA1 do
+    @moduledoc false
+    # A ModelContext that removes the message "a1".
+    @behaviour Helyx.ModelContext
+    @impl true
+    def build(context, _opts),
+      do: %{context | messages: Enum.reject(context.messages, &(&1.id == "a1"))}
+  end
+
+  test "a first kept message that the ModelContext removed trims no message" do
+    messages = [
+      user("u1", words(15_000)),
+      assistant("a1", "early answer"),
+      assistant("a2", words(10_000), usage(1, 200_000)),
+      user("u3", words(15_000))
+    ]
+
+    summary = %Helyx.Summary{text: "old summary", first_kept_id: "a1", tokens_before: 1}
+    opts = [summary: summary, model: @model, instructions: ""]
+    prepare = &Helyx.Session.Stream.prepare(DropA1, Summary, %Context{messages: messages}, &1)
+
+    assert {:ok, context} = prepare.([trigger: nil] ++ opts)
+    assert [framed, "abcd" <> _, "abcd" <> _, "abcd" <> _] = texts(context)
+    assert framed =~ "<summary>\nold summary\n</summary>"
+
+    # A summary covers the messages from the first one on, with the last
+    # summary.
+    assert {:summarize, %Plan{first_kept_id: "a2", context: context}} =
+             prepare.([trigger: :manual] ++ opts)
+
+    [prompt] = texts(context)
+    assert prompt =~ "[User]: abcd"
+    assert prompt =~ "<previous-summary>\nold summary\n</previous-summary>"
   end
 end

@@ -11,7 +11,8 @@ defmodule Helyx.Compaction.Summary do
   (`docs/features/summary-compaction.md`).
 
   Every build puts the stored summary (`opts[:summary]`) in front of the
-  messages from its first kept message on. With trigger `:auto` it asks
+  messages from its first kept message on, or of all messages when the
+  ModelContext removed that message. With trigger `:auto` it asks
   for a summary when the estimate is over the window minus
   #{@reserve_tokens} tokens (clamped to the window); with `:manual` and
   `:overflow` it asks at once. It asks only when a cut keeps a part
@@ -81,7 +82,8 @@ defmodule Helyx.Compaction.Summary do
     end
   end
 
-  # The summary, then the messages from its first kept message on.
+  # The summary, then the messages from its first kept message on, or all
+  # of them when the ModelContext removed that message.
   defp with_summary(context, nil), do: context
 
   defp with_summary(context, summary) do
@@ -89,14 +91,22 @@ defmodule Helyx.Compaction.Summary do
       "The earlier part of this conversation was compacted into this summary:\n\n" <>
         "<summary>\n#{summary.text}\n</summary>"
 
-    kept = Enum.drop_while(context.messages, &(&1.id != summary.first_kept_id))
+    kept = Enum.drop(context.messages, start(context.messages, summary))
     %{context | messages: [Message.user(framed) | kept]}
   end
+
+  # The index of the first kept message of the summary. It is 0 with no
+  # summary, and when the ModelContext removed that message: then no
+  # message is trimmed, so none that the summary does not cover is lost.
+  defp start(_messages, nil), do: 0
+
+  defp start(messages, summary),
+    do: Enum.find_index(messages, &(&1.id == summary.first_kept_id)) || 0
 
   # A plan for the messages from the last cut up to the new cut, or the
   # context to send when there is nothing new to summarize.
   defp plan(messages, sent, summary, tokens, opts) do
-    start = if summary, do: Enum.find_index(messages, &(&1.id == summary.first_kept_id)), else: 0
+    start = start(messages, summary)
 
     case cut(messages, start) do
       nil ->
@@ -116,7 +126,7 @@ defmodule Helyx.Compaction.Summary do
   end
 
   # The index of the first kept message: the first user or assistant
-  # message after `start`, at or after the last index from which the
+  # message with an id after `start`, at or after the last index from which the
   # messages to the end hold the keep, else the last such message. Nil
   # when the messages hold less than the keep, or no message can start
   # the kept part.
@@ -125,8 +135,8 @@ defmodule Helyx.Compaction.Summary do
 
     with from when from != nil <- keep_from(Enum.reverse(sizes), length(sizes) - 1, 0) do
       cuts =
-        for {%Message{role: role}, index} <- Enum.with_index(messages),
-            index > start and role in [:user, :assistant],
+        for {%Message{role: role, id: id}, index} <- Enum.with_index(messages),
+            index > start and role in [:user, :assistant] and is_binary(id),
             do: index
 
       Enum.find(cuts, &(&1 >= from)) || List.last(cuts)
