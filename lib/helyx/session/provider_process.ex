@@ -32,12 +32,20 @@ defmodule Helyx.Session.ProviderProcess do
   @doc """
   The body of the provider process, as a fun of `tref`, the connect kill
   that the hands armed; it is cancelled after `init/3` returns, before
-  `{:provider_ready, pid}` goes to the session. The fun never returns.
+  `{:provider_ready, pid}` goes to the session. The process waits for
+  `:start` from the session before `init/3`. The fun never returns.
   """
   @spec run(args()) :: (:timer.tref() -> no_return())
   @dialyzer {:nowarn_function, run: 1}
   def run(args) do
     fn tref ->
+      # The session sends `:start` once it holds this pid from the answer of
+      # the hands. `{:provider_ready, pid}` comes from this process, the
+      # answer from the hands, and two senders have no order (#677).
+      receive do
+        :start -> :ok
+      end
+
       {:stop, reason} =
         try do
           start(args, tref)
