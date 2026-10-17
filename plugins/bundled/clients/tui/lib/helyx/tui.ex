@@ -21,7 +21,9 @@ defmodule Helyx.TUI do
     * Escape aborts the running turn; its queued messages come back to the composer
     * PgUp and PgDn scroll the transcript (`Helyx.TUI.Transcript`) by one screen
     * the wheel scrolls three rows; a drag copies text (`Helyx.TUI.Selection`)
-    * Home and End, with an empty composer, go to the oldest and the newest output
+    * Home and End, with an empty composer, go to the oldest and the newest output;
+      else they move the cursor, as Ctrl+A and Ctrl+E do; Alt+B and Ctrl+Left
+      move one word back, Alt+F and Ctrl+Right one word forward
     * Ctrl+O shows the full text of every tool result, or four lines again
     * Ctrl+F finds text in the loaded transcript (`Helyx.TUI.Search`)
     * Ctrl+C clears the composer; a second Ctrl+C within 500 ms quits
@@ -247,15 +249,9 @@ defmodule Helyx.TUI do
   # Only Ctrl+J and Shift+Enter add a line; a repeat or release of Enter does nothing.
   def handle_event(%Key{code: "enter"}, state), do: {:noreply, state}
 
-  # Everything else goes to the composer, which inserts printable
-  # characters and handles its own editing keys.
-  def handle_event(%Key{} = key, state) do
-    if key.kind in ["press", "repeat"] and key.modifiers -- ["shift"] == [] do
-      {:noreply, edit(state, :key, key.code)}
-    else
-      {:noreply, state}
-    end
-  end
+  # Every other press or repeat goes to the composer: `Composer.press/3`.
+  def handle_event(%Key{kind: kind} = key, state) when kind in ["press", "repeat"],
+    do: {:noreply, edit(state, &Composer.press(&1, key.code, key.modifiers))}
 
   def handle_event(%Paste{content: content}, state),
     do: {:noreply, edit(state, :paste, content)}

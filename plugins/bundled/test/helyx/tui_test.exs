@@ -1711,12 +1711,12 @@ defmodule Helyx.TUITest do
       assert [prompt, _answer] = ViewModel.cells(state.vm)
       assert Helyx.Message.text(prompt) == lines(6) <> look <> " " <> look
 
-      # Ctrl+A, a key code with the end character of a marker (the kitty
-      # sequence `ESC [ 1 u` gives one with no modifier), or a paste with it
-      # cannot forge a marker: the keys go nowhere, and the paste drops the
-      # character.
-      state = paste(state, lines(6))
-      state = state |> press("a", ["ctrl"]) |> press("\u0001") |> paste(look <> "\u0001")
+      # Ctrl+A, which only moves the cursor (#682), a key code with the end
+      # character of a marker (the kitty sequence `ESC [ 1 u` gives one with
+      # no modifier), or a paste with it cannot forge a marker: the key code
+      # goes nowhere, and the paste drops the character.
+      state = paste(state, lines(6)) |> press("a", ["ctrl"]) |> press("e", ["ctrl"])
+      state = state |> press("\u0001") |> paste(look <> "\u0001")
       assert value(state) == marker(1, 6) <> look
       state = state |> press("enter") |> drain()
       assert Helyx.Message.text(Enum.at(ViewModel.cells(state.vm), 2)) == lines(6) <> look

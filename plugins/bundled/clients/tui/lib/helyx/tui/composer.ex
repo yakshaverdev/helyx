@@ -14,6 +14,7 @@ defmodule Helyx.TUI.Composer do
   alias ExRatatui.Widgets.{Block, Paragraph, Textarea}
   alias Helyx.Event
   alias Helyx.TUI.{Command, ViewModel, Wrap}
+  alias Helyx.TUI.Composer.Paste
 
   # The composer shows at most this many lines inside its two borders.
   @composer_lines 8
@@ -22,14 +23,12 @@ defmodule Helyx.TUI.Composer do
   # border, a space, the `›` mark, and a space.
   @text_column 4
 
-  # A paste of more lines than this shows as one marker.
-  @paste_lines 5
-
-  # The last character of a marker, a control character. A paste drops it.
-  # A key code with it goes nowhere. ExRatatui does not draw it. So only a
-  # marker that the composer made ends with it, and text that looks like a
-  # marker is sent as typed.
-  @marker_end "\u0001"
+  @word_moves %{
+    {"b", ["alt"]} => :back,
+    {"left", ["ctrl"]} => :back,
+    {"f", ["alt"]} => :forward,
+    {"right", ["ctrl"]} => :forward
+  }
 
   # `pastes` maps the text of each live marker to the full paste it
   # stands for. `count` is the id of the last marker. Both are emptied
@@ -63,6 +62,33 @@ defmodule Helyx.TUI.Composer do
   def edit(%__MODULE__{} = composer, :paste, content), do: paste(composer, content)
 
   @doc """
+  Applies a key press or repeat: Ctrl+A and Ctrl+E as Home and End, Alt+B
+  or Ctrl+Left one word back, and Alt+F or Ctrl+Right one word forward. A
+  key with no modifier but Shift goes to the widget; any other does nothing.
+  """
+  @spec press(t(), String.t(), [String.t()]) :: t()
+  def press(composer, "a", ["ctrl"]), do: widget_key(composer, "home")
+  def press(composer, "e", ["ctrl"]), do: widget_key(composer, "end")
+
+  # A marker is one word: a word move from inside a marker, or one that ends
+  # inside it (the widget moves in the `case`), stops at the first end it passes.
+  def press(composer, code, mods) when is_map_key(@word_moves, {code, mods}) do
+    from = ExRatatui.textarea_cursor(composer.input)
+
+    case marker_at(composer, :inside) || composer |> key(code, mods) |> marker_at(:inside) do
+      nil ->
+        composer
+
+      {value, span} ->
+        at = word_end(@word_moves[{code, mods}], offset(value, from), span)
+        cut(composer, value, at, at)
+    end
+  end
+
+  def press(composer, code, mods) when mods in [[], ["shift"]], do: widget_key(composer, code)
+  def press(composer, _code, _mods), do: composer
+
+  @doc """
   What Enter sends: `:empty`, a slash command (`Helyx.TUI.Command`), or
   the message, with its paste markers expanded. The composer does not
   change.
@@ -71,7 +97,7 @@ defmodule Helyx.TUI.Composer do
   def submit(%__MODULE__{} = composer) do
     case ExRatatui.textarea_get_value(composer.input) do
       "" -> :empty
-      value -> value |> expand(composer.pastes) |> Command.parse()
+      value -> value |> Paste.expand(composer.pastes) |> Command.parse()
     end
   end
 
@@ -117,7 +143,7 @@ defmodule Helyx.TUI.Composer do
 
     case edge?(composer, code) && ViewModel.prompt(vm, position, direction(code)) do
       {at, text} ->
-        text = clean(text)
+        text = Paste.clean(text)
         show(composer, code, text, %{}, recalled(composer, at, text))
 
       nil when code == "down" and position != nil ->
@@ -137,7 +163,7 @@ defmodule Helyx.TUI.Composer do
   """
   @spec apply(t(), Event.t()) :: t()
   def apply(%__MODULE__{} = composer, %Event{type: :queue_dropped, data: %{texts: texts}}),
-    do: join_draft(composer, Enum.map(texts, &clean/1))
+    do: join_draft(composer, Enum.map(texts, &Paste.clean/1))
 
   def apply(%__MODULE__{} = composer, %Event{}), do: composer
 
@@ -228,7 +254,7 @@ defmodule Helyx.TUI.Composer do
       {parts, pastes} = draft_parts(composer, value)
       text = Enum.join(parts, "\n")
       before_edit = byte_size(text) - byte_size(value)
-      cursor = before_edit + offset(value, composer.input)
+      cursor = before_edit + offset(value, ExRatatui.textarea_cursor(composer.input))
       cut(%{composer | pastes: pastes, recall: nil}, text, cursor, cursor)
     end
   end
@@ -289,8 +315,8 @@ defmodule Helyx.TUI.Composer do
     end
   end
 
-  # A key code with a control character could forge the end of a marker:
-  # the kitty keyboard sequence `ESC [ 1 u` reaches here as the key code
+  # A key code with a control character could forge the end of a marker
+  # (`Composer.Paste`): the kitty keyboard sequence `ESC [ 1 u` reaches here as the key code
   # U+0001 with no modifier.
   defp widget_key(composer, code) do
     if Wrap.drop_controls(code) == code,
@@ -313,8 +339,13 @@ defmodule Helyx.TUI.Composer do
     end
   end
 
-  defp key(composer, code) do
-    ExRatatui.textarea_handle_key(composer.input, code, [])
+  defp word_end(:back, from, {_start, stop}) when from > stop, do: stop
+  defp word_end(:back, _from, {start, _stop}), do: start
+  defp word_end(:forward, from, {start, _stop}) when from < start, do: start
+  defp word_end(:forward, _from, {_start, stop}), do: stop
+
+  defp key(composer, code, modifiers \\ []) do
+    ExRatatui.textarea_handle_key(composer.input, code, modifiers)
     composer
   end
 
@@ -330,14 +361,13 @@ defmodule Helyx.TUI.Composer do
     composer
   end
 
-  # The composer text and the byte span of the live marker that `hit?/3`
-  # finds for the cursor, or nil. One read of the composer and one search
-  # for all markers: linear in the composer text.
+  # The composer text and the byte span of the live marker that `hit?/3` finds
+  # for the cursor, or nil: one read and one search, linear in the text.
   defp marker_at(%{pastes: pastes}, _code) when map_size(pastes) == 0, do: nil
 
   defp marker_at(composer, code) do
     value = ExRatatui.textarea_get_value(composer.input)
-    cursor = offset(value, composer.input)
+    cursor = offset(value, ExRatatui.textarea_cursor(composer.input))
 
     spans =
       for {at, size} <- :binary.matches(value, Map.keys(composer.pastes)), do: {at, at + size}
@@ -348,11 +378,9 @@ defmodule Helyx.TUI.Composer do
     end
   end
 
-  # The byte offset in `value`, the text of `input`, of its cursor. The
-  # cursor column counts code points, so one walk of the cursor line turns
-  # it into a byte offset.
-  defp offset(value, input) do
-    {row, column} = ExRatatui.textarea_cursor(input)
+  # The byte offset in `value`, the composer text, of a cursor: one walk of
+  # the cursor line turns its column, which counts code points, into bytes.
+  defp offset(value, {row, column}) do
     {above, [line | _]} = value |> String.split("\n", parts: row + 2) |> Enum.split(row)
     line_start = Enum.reduce(above, 0, &(byte_size(&1) + 1 + &2))
     column_bytes = line |> String.to_charlist() |> Enum.take(column) |> List.to_string()
@@ -360,34 +388,13 @@ defmodule Helyx.TUI.Composer do
   end
 
   defp paste(composer, content) do
-    text = clean(content)
-
-    case line_count(text) do
-      lines when lines > @paste_lines ->
-        count = composer.count + 1
-        marker = "[Pasted text ##{count}, #{lines} lines]" <> @marker_end
-        pastes = Map.put(composer.pastes, marker, text)
-        insert(%{composer | pastes: pastes, count: count}, marker)
-
-      _lines ->
+    case Paste.marker(content, composer.count + 1) do
+      {nil, text} ->
         insert(composer, text)
+
+      {marker, text} ->
+        pastes = Map.put(composer.pastes, marker, text)
+        insert(%{composer | pastes: pastes, count: composer.count + 1}, marker)
     end
   end
-
-  # A terminal can send a pasted new line as CR. Control characters other
-  # than tab and new line drop, as in the transcript, so no text but a
-  # marker ends with `@marker_end`.
-  defp clean(text), do: text |> String.replace(["\r\n", "\r"], "\n") |> Wrap.drop_controls()
-
-  # A final new line does not start a line.
-  defp line_count(text) do
-    newlines = length(:binary.matches(text, "\n"))
-    if String.ends_with?(text, "\n"), do: newlines, else: newlines + 1
-  end
-
-  # One pass, so a marker inside a paste is not expanded.
-  defp expand(value, pastes) when map_size(pastes) == 0, do: value
-
-  defp expand(value, pastes),
-    do: String.replace(value, Map.keys(pastes), &Map.fetch!(pastes, &1))
 end
