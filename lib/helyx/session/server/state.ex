@@ -44,8 +44,6 @@ defmodule Helyx.Session.Server.State do
   @provider_close_ms 5_000
   def provider_close_ms, do: @provider_close_ms
 
-  # 32 fields with `concurrent_tools` (#734); open: fold it into `tool_modules`.
-  # credo:disable-for-next-line Credo.Check.Warning.StructFieldAmount
   defstruct [
     :id,
     # A new id for each start of the process, a resume too (`Helyx.Event`).
@@ -75,11 +73,10 @@ defmodule Helyx.Session.Server.State do
     # message is saved, or none when the session has no file.
     :unsaved_from,
     # The checked tool specs of `Helyx.Tool.specs/1` at session start,
-    # which every provider call uses, and the tool module by name for the
-    # hands, and the names of the concurrent tools (`Helyx.Tool.concurrent/1`).
+    # which every provider call uses, and by name each tool module, for the
+    # hands, with its flag of `Helyx.Tool.concurrent/1`, for the tool queue.
     tool_specs: [],
-    tool_modules: %{},
-    concurrent_tools: MapSet.new(),
+    tools: %{},
     transcript: [],
     # Each subscriber pid with the session's monitor of it, the ref of its
     # last subscribe, and the seq up to which it acked (replay-ring.md).
@@ -143,8 +140,7 @@ defmodule Helyx.Session.Server.State do
           sync: pid() | {:replay, [Helyx.Message.t()]} | nil,
           unsaved_from: non_neg_integer() | nil,
           tool_specs: [Helyx.Tool.spec()],
-          tool_modules: %{String.t() => module()},
-          concurrent_tools: MapSet.t(String.t()),
+          tools: %{String.t() => {module(), boolean()}},
           transcript: [Helyx.Message.t()],
           subscribers: %{pid() => {reference(), reference(), non_neg_integer()}},
           ring: Helyx.Session.Ring.t(),

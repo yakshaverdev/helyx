@@ -16,7 +16,8 @@ defmodule Helyx.Session.Server.ToolRuns do
   # A request of the current turn, of `bytes` encoded call bytes. An open
   # call id stops the provider process: `{:stop, reason}`.
   def request(%State{activity: %Turn{} = turn} = state, %ToolCall{} = call, bytes, rejection) do
-    concurrent? = MapSet.member?(state.concurrent_tools, call.name)
+    # A call of an unknown tool runs alone; the hands answer it with an error.
+    concurrent? = match?({_tool, true}, state.tools[call.name])
 
     case ToolQueue.request(turn.tool_queue, call, bytes, rejection, concurrent?) do
       {:ok, step} -> {:ok, apply_step(state, step)}

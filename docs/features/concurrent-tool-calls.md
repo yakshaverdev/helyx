@@ -38,7 +38,7 @@ Step 1 of the ticket. Each place, and what the change does there.
 
 - `Helyx.Tool`: the optional callback `concurrent?() :: boolean()`, and the function `Helyx.Tool.concurrent/1`: the names of the tools of `specs/1` whose callback returns `true`; a tool with no callback is not concurrent; a return that is not a boolean raises.
 - `Helyx.Tool.Read`: `concurrent?/0` returns `true`.
-- The internal session state gets `concurrent_tools`, the set of `Helyx.Tool.concurrent/1`. `Helyx.Session.start/2` and `resume/2` pass it to the session process with the tools.
+- The internal session state field `tools` replaces `tool_modules`: by tool name, the module and its flag of `Helyx.Tool.concurrent/1`. One map keeps the struct at 31 fields, the Credo limit. `Helyx.Session.start/2` and `resume/2` pass the set of concurrent tool names to the session process with the tools.
 - No event shape changes. The error text of the count bound changes to `too many Helyx tool calls: 8 run and 16 wait`.
 
 ## Replaced mechanism
@@ -59,9 +59,11 @@ The one-call queue of `Helyx.Session.ToolQueue`.
 | calls that wait in a turn | 16 (`@max_waiting`), unchanged | an error result to the provider at once; nothing runs | `ToolQueue.request/5` |
 | encoded bytes of the running and waiting calls | 8 MiB together, unchanged | an error result at once; nothing runs | `ToolQueue.request/5` |
 | wait of a serial call | until every running call has its result: each has the bound of its tool, or the user aborts | n/a | `ToolQueue.start_waiting/2` |
-| delivery of one call behind the release of another | the hands release in their own process, so a result waits for the release of an earlier delivery: at most the release deadline, 20 s | the release reports the handle unconfirmed | `Helyx.Session.Hands`; accepted, read has no release |
+| delivery of one call behind the release of another | the hands release in their own process, so a result waits for the release of an earlier delivery: at most the release deadline, 20 s | the release reports the handle unconfirmed | `Helyx.Session.Hands`; accepted hole |
 
 Tests at the limits: 8 running and the 9th waits, 16 waiting and the 17th rejected.
+
+Accepted hole: the release of one delivery delays the results of the other calls. `read` has no release, so no bundled tool shows it today. The agent tool (#735) is the first concurrent tool with a release; its ticket decides whether the release moves off the hands loop.
 
 ## Ownership
 

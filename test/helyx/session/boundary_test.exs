@@ -213,11 +213,27 @@ defmodule Helyx.Session.BoundaryTest do
   end
 
   describe "concurrent?/0 at the session boundary (#734)" do
+    defmodule NotConcurrent do
+      @moduledoc false
+      @behaviour Helyx.Tool
+
+      @impl true
+      def name, do: "alone"
+      @impl true
+      def description, do: "d"
+      @impl true
+      def parameters, do: %{}
+      @impl true
+      def run(_args, _cwd), do: {:ok, ""}
+      @impl true
+      def concurrent?, do: false
+    end
+
     test "a tool without the callback is not concurrent; one with it gives its value" do
-      tools = [
-        {Helyx.Test.Tool.Upcase, %{name: "upcase"}},
-        {Helyx.Test.Tool.Together, %{name: "together"}}
-      ]
+      # The Core registration loads each module, so `function_exported?/3` sees it.
+      tools = [Helyx.Test.Tool.Upcase, Helyx.Test.Tool.Together, NotConcurrent]
+      core = start_core([Helyx.Test.Provider | tools])
+      {:ok, tools} = Helyx.Tool.specs(core)
 
       assert Helyx.Tool.concurrent(tools) == MapSet.new(["together"])
     end

@@ -81,8 +81,7 @@ defmodule Helyx.Session.Server.Open do
         compaction: List.first(Helyx.Core.plugins(core, Helyx.Compaction)),
         memory: List.first(Helyx.Core.plugins(core, Helyx.Memory)),
         tool_specs: Enum.map(tools, fn {_tool, spec} -> spec end),
-        tool_modules: Map.new(tools, fn {tool, spec} -> {spec.name, tool} end),
-        concurrent_tools: concurrent
+        tools: Map.new(tools, fn {tool, %{name: name}} -> {name, {tool, name in concurrent}} end)
     }
 
     DynamicSupervisor.start_child(
@@ -180,7 +179,7 @@ defmodule Helyx.Session.Server.Open do
         cwd: state.cwd,
         background_dir: background_dir,
         session: self(),
-        tools: state.tool_modules
+        tools: Map.new(state.tools, fn {name, {tool, _concurrent?}} -> {name, tool} end)
       )
 
     # A run that was live at the stop of a resumed session ended with it:

@@ -209,6 +209,31 @@ defmodule Helyx.Session.ProviderProcessToolsTest do
       refute Enum.any?(runs, &Process.alive?/1)
       assert running(hands) == 0
     end
+
+    test "a normal end with three running answers each exactly once aborted and releases each",
+         %{core: core, session: session, proc: proc, turn_id: turn_id, hands: hands} do
+      gate = gate()
+      report = %{"report" => Atom.to_string(Connected.controller(core))}
+      for id <- ["a1", "a2", "a3"], do: together(proc, turn_id, id, gate, report)
+      runs = waiting(3)
+      sync(proc, session)
+      send(proc, {:finish, turn_id})
+
+      assert List.last(collect_until(:turn_end)).data.outcome == :done
+      assert_receive {:release, :cancel, handles}
+      assert length(handles) == 3
+
+      # The session sends the next turn after the cleanup, so every result
+      # of the ended turn comes before it.
+      :ok = Session.prompt(session, "again")
+
+      results =
+        for {:tool_result, ^turn_id, id, result} <- requests_until(:turn), do: {id, result}
+
+      assert Enum.sort(results) == for(id <- ["a1", "a2", "a3"], do: {id, {:error, "aborted"}})
+      refute Enum.any?(runs, &Process.alive?/1)
+      assert running(hands) == 0
+    end
   end
 
   test "a second request with the id of an open request stops the provider process",

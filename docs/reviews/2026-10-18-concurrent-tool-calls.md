@@ -6,7 +6,7 @@ Invariant: the session runs a call of a tool whose `concurrent?/0` is `true` bes
 
 ## Round 1 (full)
 
-Simplify (4 agents): applied the `id/1` helper (kept, not inlined), `Enum.sum_by/2` in `bytes/1`, the test tool `Together` delegating to `Slow.run/2`, and `waiting(4)`. Skipped: one `serial?` field in place of the per-call flag (a second fact to keep in sync; the flag is derived on read), a release per Task off the hands loop (accepted hole, stated in the feature doc), one map for module and flag (`tool_modules` is the hands' map), `ToolQueue.running?/1` (a guard cannot call it).
+Simplify (4 agents): applied the `id/1` helper (kept, not inlined), `Enum.sum_by/2` in `bytes/1`, the test tool `Together` delegating to `Slow.run/2`, and `waiting(4)`. Skipped: one `serial?` field in place of the per-call flag (a second fact to keep in sync; the flag is derived on read), a release per Task off the hands loop (accepted hole, stated in the feature doc), one map for module and flag (`tool_modules` is the hands' map; done in the second /ship run, below), `ToolQueue.running?/1` (a guard cannot call it).
 
 Bounds sensor (base `HEAD`):
 
@@ -41,7 +41,7 @@ Bounds sensor: not rerun; the fix changed no function that reads, buffers, waits
 | 3 | standards | the checklist lines on start checks did not name `concurrent?/0`; the feature doc cited the wrong section | read | both changed |
 | 4 | standards (judgement) | the checklist line claimed that no writing call touches the working directory beside another | read | reworded to what the code proves |
 | 5 | standards (judgement) | `@too_many` says "8 run" while one serial call runs | read | not changed: the text names the bound |
-| 6 | standards (judgement) | `docs/adr/0002-two-provider-kinds.md:16` says "one at a time" | read | not changed: an ADR records its decision; the feature doc holds the new rule |
+| 6 | standards (judgement) | `docs/adr/0002-two-provider-kinds.md:16` says "one at a time" | read | not changed then; the second /ship run adds a revision paragraph (owner decision) |
 
 Spec probe without a test: with the hands suspended and three calls running, `turn_end` waits for the cleanup (300 ms margin), then comes after the resume.
 
@@ -58,3 +58,45 @@ The first precommit run failed on one Credo warning: `Helyx.Session.Server.State
 Small-fix round (reduced: spec and failure path): no defect reproduced. Root Credo strict: "3567 mods/funs, found no issues." The disable hides only this check on this line (probe: without it, exactly this one issue; with a TODO on the line, the TODO is still reported). Accepted cost, open until the fold: with 33 keys (32 fields and `__struct__`) the state map is a hash map on the BEAM, not a flat map.
 
 Precommit (`HELYX_SLOW=1`): the second run failed one test outside this change, `Helyx.Provider.ClaudeCode.CompactTest` "a lost session during a compaction fails it on the fresh program" (`compact_test.exs:243`: a third watchdog handle still held at the assert). It passed 10 of 10 runs alone and in the first and third full runs; it uses the test hands of the Claude Code provider, not the session queue. Third run passed: root 721 tests, `apps/coding_agent` 80 tests, `plugins/bundled` 872 tests and 2 properties, 0 failures; Credo "found no issues"; Dialyzer 0 errors in each project.
+
+## Second /ship run (after the rebase onto `origin/master` 9205eb86)
+
+Owner decisions (orchestrator): fold `concurrent_tools` into one map, with no Credo suppression; a dated revision paragraph in ADR 0002, with the original text unchanged; a test of a normal `turn_end` with several concurrent calls running; the `Sessions.resume/2` read order goes to its own ticket; the release delay stays an accepted hole, and the feature doc names the agent tool (#735) as the first concurrent tool with a release.
+
+Change: the state field `tools` (by name, `{module, concurrent?}`) replaces `tool_modules` and `concurrent_tools`; the struct has 31 fields again, and the `credo:disable` line is gone. The hands get the name-to-module map, built once at the start of the hands. New test: `provider_process_tools_test.exs`, "a normal end with three running answers each exactly once aborted and releases each".
+
+### Round 1 (full)
+
+Simplify (2 agents, 4 angles): applied `name in concurrent` in `Open.start_child/3` and a clearer feature doc sentence. Skipped: the same map for the hands (they would hold a flag they never read), a shorter `@doc` of `Helyx.Tool.concurrent/1` (the order claim is a round-2 fix), a shared setup helper for two tests.
+
+Bounds sensor (base `origin/master`):
+
+```text
+bounds sensor: 6 candidate functions, 0 flagged, 0 without an answer
+```
+
+Codex adversarial review: "Verdict: approve. No material defect found against the stated invariant."
+
+| # | Source | Finding | Reproduced | Resolution |
+| - | ------ | ------- | ---------- | ---------- |
+| 1 | spec | the unit test of `Helyx.Tool.concurrent/1` (`boundary_test.exs`) failed when it ran alone: `function_exported?/3` is false for a module that no other test loaded | yes (`left: MapSet.new([])`, 5 of 5 seeds) | the test takes its list from `Helyx.Tool.specs/1` of a Core that registers the tools, the production path; production loads each tool at registration (`Helyx.Core.Plugins`) |
+| 2 | standards | the checklist line "a tool that writes declares no `concurrent?/0`" had no test | read | a bundled test checks the tools of the bundled app |
+| 3 | standards (judgement) | the ADR paragraph said that it changes "one at a time" of the 2026-10-02 revision; `Helyx.Provider.Loop` sends every request at once, and the session ran them one at a time | read | reworded to what the session did |
+| 4 | standards, spec | this record still described the `credo:disable` and the unchanged ADR | read | this section; the earlier rows point here |
+| 5 | standards (judgement) | `State.tools` and the hands' `tools` have two shapes under one name | read | not changed: the field comment states the shape |
+
+Failure path: no defect. Probes: 400 random runs of 120 steps through `request/5` and `result/3` (cap, serial alone, arrival order, exactly one result); the byte bound at 8 MiB and one over; an abort and the results in both mailbox orders with the session suspended.
+
+### Round 2 (reduced)
+
+Fix diff without tests and Markdown: 0 lines. Spec: two test gaps, reproduced by probe: the bundled test listed four tools by hand and missed `Helyx.Memory.Markdown` (`memory_write`); no test tool returned `false`. Fixed: the bundled test derives every module of the `:helyx_plugins` app that implements `Helyx.Tool`; the boundary test adds `NotConcurrent`. Failure path: no defect; production cannot pass an unloaded module to `concurrent/1` (probe with purged modules).
+
+### Round 3 (reduced)
+
+Fix diff without tests and Markdown: 0 lines. Spec: two gaps in the bundled test: it did not check that the list holds `memory_write`, and a writing tool that declares `concurrent?/0` as `false` passed it, against the checklist text. Failure path: no defect (all 70 app modules load; an in-memory recompile of `Edit` with `true` fails the test).
+
+### Small-fix round (reduced)
+
+Fix: 2 test lines in one test, 0 code lines. The test checks `memory_write` in the list and that only `Helyx.Tool.Read` exports `concurrent?/0`. Spec and failure path: no defect (an in-memory recompile of `Write` with `concurrent?/0` returning `false` fails the last assertion). The loop ends.
+
+Precommit (`HELYX_SLOW=1`): passed on the first run. Root 728 tests, `apps/coding_agent` 80 tests, `plugins/bundled` 877 tests and 2 properties, 0 failures; Credo "3602 mods/funs, found no issues"; Dialyzer "Total errors: 0" in each project.
