@@ -1,8 +1,8 @@
 defmodule Helyx.TUI.Transcript.Item do
   @moduledoc false
-  # One item of `Helyx.TUI.Transcript`: a cell, a run of information cells
-  # as `{:infos, texts}`, or a tool cell with `true` at its end when the
-  # Ctrl+O toggle is on. It owns the look of the rows of an item, the
+  # One item of `Helyx.TUI.Transcript`: a cell, such as a run of
+  # information lines `{:infos, texts}`, or a tool cell with `true` at its
+  # end when the Ctrl+O toggle is on. It owns the look of the rows of an item, the
   # search text of each row, the signs of the row left out
   # (`docs/features/tui-search.md`, "The search rows"), and the text of a
   # drawn row for a selection, the bar left out.

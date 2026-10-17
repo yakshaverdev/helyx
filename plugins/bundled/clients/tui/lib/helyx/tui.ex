@@ -136,6 +136,9 @@ defmodule Helyx.TUI do
     {:noreply, %{state | busy: %{busy | elapsed: elapsed}}}
   end
 
+  def handle_info({ref, items}, %{list: %SessionList{task: %Task{ref: ref}}} = state),
+    do: {:noreply, %{state | list: SessionList.read(state.list, items)}}
+
   def handle_info({ref, branch}, %{branch_ref: ref} = state) do
     Process.demonitor(ref, [:flush])
     {:noreply, %{state | location: Footer.location(state.cwd, branch), branch_ref: nil}}
@@ -144,7 +147,7 @@ defmodule Helyx.TUI do
   def handle_info({Quit, ref}, state),
     do: {:noreply, %{state | quit: Quit.expire(state.quit, ref)}}
 
-  # An older branch task, or its `:DOWN`, is ignored here.
+  # An older branch task or list scan, or its `:DOWN`, is ignored here.
   def handle_info(_msg, state), do: {:noreply, state}
 
   # git runs in a task, so a slow git never holds a frame;
@@ -175,7 +178,7 @@ defmodule Helyx.TUI do
     case SessionList.key(list, code) do
       {:move, list} -> {:noreply, %{state | list: list}}
       {:pick, id} -> {:noreply, settle(Switch.start(%{state | list: nil}, {:resume, id}))}
-      :close -> {:noreply, settle(%{state | list: nil})}
+      :close -> {:noreply, settle(%{state | list: SessionList.close(list)})}
       :none -> {:noreply, state}
     end
   end
@@ -330,9 +333,8 @@ defmodule Helyx.TUI do
       [{Footer.widget(state.location, state.vm, state.busy, state.scroll, state.quit), footer}]
   end
 
-  # The transcript, composer or list, and footer rects, nil with no
-  # terminal size. The frame, the scroll, and the mouse share them: one
-  # width rule.
+  # The transcript, composer or list, and footer rects, nil with no terminal size. The frame,
+  # the scroll, and the mouse share them: one width rule.
   defp layout(state, {width, height}) when is_integer(width) and is_integer(height) do
     Layout.split(
       %Rect{x: 0, y: 0, width: width, height: height},

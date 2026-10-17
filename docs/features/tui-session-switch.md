@@ -44,8 +44,8 @@ Decisions (the ticket, "Decisions (orchestrator, 2026-10-17)"):
 | What | Bound | Over the bound | Where |
 | ---- | ----- | -------------- | ----- |
 | sessions in the list | the scan bound of `Scan.list/2`: 256 files, minus the current session | the older ones are not listed | `Scan.list/2` |
-| bytes read for the list | 256 heads of 65,537 bytes, read in the TUI process when the list opens; the frame waits for it | n/a | `Scan.list/2`, `SessionList.new/2` |
-| stats and paths of the list scan | not bounded, the known ceiling of `Scan.newest/2` (`docs/features/session-list.md`): every session file of the folder is stat'ed, now also in the TUI process when the list opens | n/a | `Scan.list/2` |
+| bytes read for the list | 256 heads of 65,537 bytes, read in a Task when the list opens, so no frame waits for it: a full folder takes 41 to 342 ms (#667); until the answer comes the list shows `reading the sessions of this folder` and only Escape acts | Escape stops the scan (`SessionList.close/1`) | `Scan.list/2`, `SessionList.new/3` |
+| stats and paths of the list scan | not bounded, the known ceiling of `Scan.newest/2` (`docs/features/session-list.md`): every session file of the folder is stat'ed, also in the scan Task of the list | n/a | `Scan.list/2` |
 | a line of the list | the widths of `helyx --list`: id 12, time 19, model 40, and prompt 60 code points after the clean pass, two spaces between fields; the widget cuts a line at the box width | cut | `SessionList.line/2`; `ExRatatui.Widgets.List` in the frame |
 | list rows drawn | the rule of the composer (`Composer.fit/2`): at least one item row and the two borders, and the transcript keeps one row when the room above the footer is 4 rows or more; the widget scrolls to keep the selection on the screen | the other lines are off the screen | `SessionList.rows/2`, `Helyx.TUI` layout |
 | `queue_dropped` events kept by a switch | one for each abort or failed turn of the current session while the switch runs; the texts of each are at most the queue of the session (`Helyx.Session.Queue`), and the composer that takes them has no bound (#29) | n/a | `Switch.event/2` |
@@ -60,6 +60,7 @@ Decisions (the ticket, "Decisions (orchestrator, 2026-10-17)"):
 | Resource | Created by | Held by | Released on normal end | Released when the holder crashes | Released on abort |
 | -------- | ---------- | ------- | ---------------------- | -------------------------------- | ----------------- |
 | switch Task | `Helyx.TUI`, `Task.async/1` | the TUI, linked | its reply goes to the TUI | the link ends it; open, no ticket: a session that it started stays until Core stops | `terminate/2` of the TUI kills it at quit; open, no ticket: a session that it started stays until Core stops |
+| list scan Task | `SessionList.new/3`, `Task.async/1` | the TUI, linked | its answer goes to the TUI; Escape stops it (`SessionList.close/1`) | the link ends it; a crash of the Task itself, which only a bug makes, leaves the list at `reading the sessions of this folder` until Escape, because ExRatatui traps exits | not stopped at quit: it reads at most 256 heads, but its stats of the folder have no bound (the row of the list scan above), and its answer goes nowhere |
 | the new session | the switch Task | Core's session supervisor | the next switch ends it, or Core stops | Core stops it | a quit aborts it in `terminate/2` |
 | the old session | an earlier start | Core's session supervisor | the switch Task stops it | Core stops it | n/a |
 

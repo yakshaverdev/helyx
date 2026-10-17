@@ -1,8 +1,8 @@
 defmodule Helyx.TUI.Transcript do
   @moduledoc """
   The transcript of the TUI: the cells of a `Helyx.TUI.ViewModel` as
-  screen rows, and the rule for the scroll position. An item is a cell, or
-  a run of information cells, which shows as one dim row. A position is
+  screen rows, and the rule for the scroll position. An item is a cell; a
+  run of information lines is one cell and shows as one dim row. A position is
   nil, which follows the newest output, or `{item, row}`, the first row on
   the screen: an item index and a row in that item. The cost bound is in
   `docs/features/coding-agent.md`, "Transcript scrollback", and the look in
@@ -49,11 +49,13 @@ defmodule Helyx.TUI.Transcript do
 
   @doc "The rows that `widget/3` draws, from the top of `area`."
   @spec screen(ViewModel.t(), position(), Rect.t()) :: [row()]
-  def screen(vm, scroll, %Rect{width: width, height: height}) do
-    items = items(vm)
-    top = scroll || bottom(items, width, height)
-    items |> rows_from(top, width) |> Enum.take(height)
+  def screen(vm, nil, %Rect{width: width, height: height}) do
+    {count, newest} = newest(vm)
+    tail(newest, count - 1, width, height)
   end
+
+  def screen(vm, top, %Rect{width: width, height: height}),
+    do: vm |> items() |> rows_from(top, width) |> Enum.take(height)
 
   @typedoc "A row address and a column in it."
   @type point :: {address(), non_neg_integer()}
@@ -87,8 +89,38 @@ defmodule Helyx.TUI.Transcript do
     {from, min(if(address == last_row, do: to, else: width), width - 1)}
   end
 
-  defp bottom(items, width, height),
-    do: back(Enum.reverse(items), {length(items), 0}, height, width)
+  defp bottom(vm, width, height) do
+    case screen(vm, nil, %Rect{width: width, height: height}) do
+      [{address, _line, _search} | _rows] -> address
+      [] -> {0, 0}
+    end
+  end
+
+  # The last `height` rows, from a walk that starts at the newest item and
+  # stops at the screen, so a frame that follows the newest output wraps
+  # each item that it shows once and passes no other item (#667).
+  defp tail(newest, last, width, height) do
+    {rows, room, _index} =
+      Enum.reduce_while(newest, {[], height, last}, fn item, {rows, room, index} ->
+        lines = addressed(item, index, width)
+        room = room - length(lines)
+        acc = {lines ++ rows, room, index - 1}
+        if room > 0, do: {:cont, acc}, else: {:halt, acc}
+      end)
+
+    Enum.drop(rows, max(-room, 0))
+  end
+
+  # The item count, and the items newest first, lazily: a cell is an item.
+  defp newest(%ViewModel{streaming: streaming, cells: cells, expanded?: expanded?}) do
+    open = streaming |> streaming_items() |> Enum.reverse()
+    size = :array.size(cells)
+    older = Stream.map((size - 1)..0//-1, &item(:array.get(&1, cells), expanded?))
+    {size + length(open), Stream.concat(open, older)}
+  end
+
+  defp addressed(item, at, width),
+    do: item |> Item.rows(width) |> Enum.with_index(&{{at, &2}, elem(&1, 0), elem(&1, 1)})
 
   @doc """
   The one rule for a position: its row is in its item, and the rows from
@@ -143,7 +175,7 @@ defmodule Helyx.TUI.Transcript do
 
   defp move(vm, scroll, rows, width, height) do
     items = items(vm)
-    {index, row} = scroll || bottom(items, width, height)
+    {index, row} = scroll || bottom(vm, width, height)
     top = items |> Enum.take(index) |> Enum.reverse() |> back({index, row}, -rows, width)
     hold_items(items, top, width, height)
   end
@@ -184,9 +216,7 @@ defmodule Helyx.TUI.Transcript do
         |> Stream.concat(
           rest
           |> Stream.with_index(index + 1)
-          |> Stream.flat_map(fn {item, at} ->
-            item |> Item.rows(width) |> Enum.with_index(&{{at, &2}, elem(&1, 0), elem(&1, 1)})
-          end)
+          |> Stream.flat_map(fn {item, at} -> addressed(item, at, width) end)
         )
     end
   end
@@ -221,27 +251,20 @@ defmodule Helyx.TUI.Transcript do
   end
 
   # The items in position order, one O(n) fold of the array, and the open
-  # assistant message as the last one. A run of information cells is one
-  # item, `{:infos, texts}`. With the Ctrl+O toggle on, a tool cell is an
-  # item with `true` at its end. The items before the open message only
+  # assistant message as the last one. A cell is an item: a run of
+  # information lines is one cell. With the Ctrl+O toggle on, a tool cell is
+  # an item with `true` at its end. The items before the open message only
   # grow in number, and only the last of them can grow a row.
   defp items(%ViewModel{streaming: streaming, cells: cells, expanded?: expanded?}) do
     :array.foldr(
-      fn _position, cell, acc -> add_item(cell, expanded?, acc) end,
+      fn _position, cell, acc -> [item(cell, expanded?) | acc] end,
       streaming_items(streaming),
       cells
     )
   end
 
-  defp add_item({:info, text}, _expanded?, [{:infos, texts} | acc]),
-    do: [{:infos, [text | texts]} | acc]
-
-  defp add_item({:info, text}, _expanded?, acc), do: [{:infos, [text]} | acc]
-
-  defp add_item({:tool, call, line, result}, true, acc),
-    do: [{:tool, call, line, result, true} | acc]
-
-  defp add_item(cell, _expanded?, acc), do: [cell | acc]
+  defp item({:tool, call, line, result}, true), do: {:tool, call, line, result, true}
+  defp item(cell, _expanded?), do: cell
 
   defp streaming_items(nil), do: []
 

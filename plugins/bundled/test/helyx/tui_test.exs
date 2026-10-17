@@ -512,7 +512,7 @@ defmodule Helyx.TUITest do
              %Message{role: :assistant, content: [^call]},
              {:tool, ^call, line, %Message{role: :tool_result} = result},
              %Message{role: :assistant} = reply,
-             {:info, "resumed session"}
+             {:infos, ["resumed session"]}
            ] = ViewModel.cells(vm)
 
     assert line == ViewModel.call_line(call)
@@ -1372,7 +1372,7 @@ defmodule Helyx.TUITest do
       state = state |> submit("/model other/any") |> fold_model_change()
       assert ExRatatui.textarea_get_value(state.composer.input) == ""
       assert status_text(state) =~ "other/any"
-      assert List.last(ViewModel.cells(state.vm)) == {:info, "model: other/any"}
+      assert List.last(ViewModel.cells(state.vm)) == {:infos, ["model: other/any"]}
       assert Helyx.Test.Events.snapshot(state.session).model == "other/any"
 
       state = state |> submit("hi") |> drain()
@@ -1552,7 +1552,7 @@ defmodule Helyx.TUITest do
       cells = ViewModel.cells(state.vm)
       state = submit(state, " /help ")
       assert ExRatatui.textarea_get_value(state.composer.input) == ""
-      assert [{:info, help}] = ViewModel.cells(state.vm) -- cells
+      assert [{:infos, [help]}] = ViewModel.cells(state.vm) -- cells
 
       for text <- ["/model provider/model", "/compact [instructions]", "/new", "/resume", "/help"],
           do: assert(help =~ text)

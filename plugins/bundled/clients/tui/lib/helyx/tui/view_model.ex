@@ -27,9 +27,11 @@ defmodule Helyx.TUI.ViewModel do
       its session or got a cut transcript, a steer that was not confirmed, a
       notice of the session, or a command the client rejected
       (`notice/2`), drawn as an error
-    * `{:info, text}` – information: a model change of any client, a
-      compaction of the provider's own history, or a line of the client
-      itself (`info/2`), such as a resumed session
+    * `{:infos, texts}` – a run of information lines, oldest first: a
+      model change of any client, a compaction of the provider's own
+      history, or a line of the client itself (`info/2`), such as a resumed
+      session. A line after an information cell joins it, so each cell is
+      one item of `Helyx.TUI.Transcript`
 
   `reason` is why the client rejected the last input, or nil. It is
   client-local, like a notice: `reject/2` sets it and `clear_reason/1`
@@ -87,7 +89,7 @@ defmodule Helyx.TUI.ViewModel do
           | tool_cell()
           | {:stop, :max_tokens | :refused}
           | {:notice, String.t()}
-          | {:info, String.t()}
+          | {:infos, [String.t(), ...]}
 
   @type t :: %__MODULE__{
           model: String.t(),
@@ -174,7 +176,7 @@ defmodule Helyx.TUI.ViewModel do
 
   def apply(vm, %Event{type: :model_change, data: data}) do
     %{model: model} = data
-    add_cell(%{vm | model: model}, {:info, "model: " <> model})
+    add_info(%{vm | model: model}, "model: " <> model)
   end
 
   # One line per compaction: `compacted: 30k → 4k tokens`, `compacted`
@@ -183,7 +185,7 @@ defmodule Helyx.TUI.ViewModel do
     %{trigger: trigger, tokens_before: before, tokens_after: after_} = data
     counts = if before && after_, do: ": #{tokens(before)} → #{tokens(after_)} tokens", else: ""
     vm = %{vm | context: Totals.compacted(vm.context, after_)}
-    add_cell(vm, {:info, "compacted" <> counts <> if(trigger == :auto, do: " (auto)", else: "")})
+    add_info(vm, "compacted" <> counts <> if(trigger == :auto, do: " (auto)", else: ""))
   end
 
   def apply(vm, %Event{type: :notice, data: data}) do
@@ -282,7 +284,7 @@ defmodule Helyx.TUI.ViewModel do
 
   @doc "Adds information from the client itself, such as a resumed session."
   @spec info(t(), String.t()) :: t()
-  def info(vm, text) when is_binary(text), do: add_cell(vm, {:info, text})
+  def info(vm, text) when is_binary(text), do: add_info(vm, text)
 
   @doc "Sets the reason the footer shows for a rejected input."
   @spec reject(t(), String.t()) :: t()
@@ -375,6 +377,15 @@ defmodule Helyx.TUI.ViewModel do
 
   # The next free position is the array size: no cell is ever removed.
   defp add_cell(vm, cell), do: %{vm | cells: :array.set(:array.size(vm.cells), cell, vm.cells)}
+
+  defp add_info(vm, text) do
+    last = :array.size(vm.cells) - 1
+
+    case last >= 0 and :array.get(last, vm.cells) do
+      {:infos, texts} -> %{vm | cells: :array.set(last, {:infos, texts ++ [text]}, vm.cells)}
+      _cell -> add_cell(vm, {:infos, [text]})
+    end
+  end
 
   defp tool_cell(call, result), do: {:tool, call, call_line(call), result}
 end
