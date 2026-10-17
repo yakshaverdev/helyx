@@ -122,8 +122,7 @@ defmodule Helyx.TUI do
       ),
       do: {:noreply, settle(sync_busy(Switch.done(state, {:error, reason})))}
 
-  # A tick of the `subscriptions/1` timer. ExRatatui drops a tick of a
-  # cancelled timer, so one never arrives while idle.
+  # A tick of the `subscriptions/1` timer; none arrives while idle (cancelled).
   def handle_info(:busy_tick, %{busy: busy} = state) do
     elapsed = System.monotonic_time(:millisecond) - busy.started
     {:noreply, %{state | busy: %{busy | elapsed: elapsed}}}
@@ -184,9 +183,8 @@ defmodule Helyx.TUI do
     do: {:noreply, state}
 
   def handle_event(%Key{code: code, kind: kind, modifiers: []}, state)
-      when code in ["page_up", "page_down"] and kind in ["press", "repeat"] do
-    {:noreply, on_screen(state, &Transcript.page(state.vm, state.scroll, code, &1, &2))}
-  end
+      when code in ["page_up", "page_down"] and kind in ["press", "repeat"],
+      do: {:noreply, on_screen(state, &Transcript.page(state.vm, state.scroll, code, &1, &2))}
 
   # The toggle changes the rows of tool cells: a selection ends, as at a new
   # size, and a scrolled view stays in its item.
@@ -210,8 +208,7 @@ defmodule Helyx.TUI do
   def handle_event(%Mouse{} = mouse, state),
     do: Selection.handle(mouse, state, layout(state, state.terminal_size_fn.()))
 
-  # Home and End scroll only when the composer is empty; otherwise they
-  # move its cursor.
+  # With an empty composer, Home and End scroll; else they move its cursor.
   def handle_event(%Key{code: code, kind: kind, modifiers: []}, state)
       when code in ["home", "end"] and kind in ["press", "repeat"] do
     cond do
@@ -247,8 +244,7 @@ defmodule Helyx.TUI do
       when code in ["up", "down"] and kind in ["press", "repeat"],
       do: {:noreply, edit(state, &Composer.recall(&1, state.vm, code))}
 
-  # Only Ctrl+J and Shift+Enter add a line: the repeat and the release of
-  # Enter do nothing.
+  # Only Ctrl+J and Shift+Enter add a line; a repeat or release of Enter does nothing.
   def handle_event(%Key{code: "enter"}, state), do: {:noreply, state}
 
   # Everything else goes to the composer, which inserts printable
