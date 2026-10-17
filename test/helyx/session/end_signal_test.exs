@@ -120,19 +120,11 @@ defmodule Helyx.Session.EndSignalTest do
       assert Session.subscribe(session) == {:error, :session_not_found}
     end
 
-    # A prompt waits in the mailbox of the session between the late
-    # subscribe and the unsubscribe, so its first events reach the caller.
     @tag :slow
     test "a subscribe that times out leaves no subscription and no monitor", %{core: core} do
       {:ok, session} = Session.start(core, model: "test/ok")
       pid = Session.pid(session)
       true = :erlang.suspend_process(pid)
-      queued = fn n -> Process.info(pid, :message_queue_len) == {:message_queue_len, n} end
-
-      spawn(fn ->
-        await(fn -> queued.(1) end, "the subscribe call")
-        Task.start(fn -> Session.prompt(session, "hi") end)
-      end)
 
       exit = catch_exit(Session.subscribe(session))
       assert {:timeout, _} = exit
@@ -141,13 +133,6 @@ defmodule Helyx.Session.EndSignalTest do
 
       assert subscribers(session) == %{}
       refute {:process, self()} in monitors(pid)
-      late = for {:helyx_event, %Event{seq: seq}} <- mailbox(), do: seq
-      assert late != []
-
-      # A later subscribe has a snapshot after those events: the client
-      # drops them by `seq`.
-      assert {:ok, snapshot, _} = Session.subscribe(session)
-      assert Enum.all?(late, &(&1 <= snapshot.seq))
     end
 
     test "input errors win over session_not_found", %{core: core} do

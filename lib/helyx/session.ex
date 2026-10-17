@@ -24,8 +24,9 @@ defmodule Helyx.Session do
   every user message an origin (`docs/features/message-identity.md`).
 
   `docs/features/session-lifecycle.md` has the turn, the queues, the
-  abort, and the provider process. `docs/features/session-subscribers.md`
-  has the subscription.
+  abort, the provider process, and the late calls: a call that the session
+  takes at or past the deadline of its caller does not act.
+  `docs/features/session-subscribers.md` has the subscription.
   """
 
   alias Helyx.ModelRef
@@ -381,7 +382,7 @@ defmodule Helyx.Session do
   end
 
   defp call_pid(pid, request, timeout) do
-    GenServer.call(pid, request, timeout)
+    GenServer.call(pid, with_deadline(request, timeout), timeout)
   catch
     :exit, {:timeout, _call} = reason ->
       :erlang.raise(:exit, reason, __STACKTRACE__)
@@ -389,4 +390,10 @@ defmodule Helyx.Session do
     :exit, {_reason, _call} ->
       {:error, :session_not_found}
   end
+
+  # The request with its deadline (session-lifecycle.md, "Late calls").
+  defp with_deadline(request, :infinity), do: request
+
+  defp with_deadline(request, timeout),
+    do: {:until, System.monotonic_time(:millisecond) + timeout, request}
 end
