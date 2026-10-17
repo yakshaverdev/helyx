@@ -17,8 +17,11 @@ defmodule Helyx.Provider.OpenAI do
   of the endpoint module. Every request sends `User-Agent: helyx/<version>`.
   A key that is not set or empty fails the call with `{:missing_env,
   name}`, and a key that is not an RFC 6750 bearer token with `{:bad_env,
-  name}`. No event of the engine holds the key: each copy becomes `*`.
-  `docs/features/openai-compatible.md`.
+  name}`. In each event of the engine, each byte of each copy of the key,
+  and of its JSON form with `\\/`, becomes `*`. Accepted holes: a key in
+  `\\uXXXX` escapes, with only some of its slashes escaped, as a list of
+  character codes, or in a copy that overlaps an earlier copy is not
+  masked. `docs/features/openai-compatible.md`.
 
   A request that fails before the stream starts runs again, at most 3
   times: on a 408, 409, 429, or 5xx, and on a transport error. A server
@@ -64,8 +67,10 @@ defmodule Helyx.Provider.OpenAI do
   end
 
   # The environment is a boundary. The key is a bearer token (RFC 6750,
-  # `b64token`): JSON escapes none of its characters but `/`, so a server
-  # that echoes it in JSON writes it as it is or with `\/`.
+  # `b64token`). Many JSON encoders escape none of its characters but `/`,
+  # so the mask covers the key as it is and with `\/`. JSON also allows
+  # `\uXXXX` for any character, and some encoders write `+` or `=` that
+  # way; that form is not masked.
   defp key(nil), do: {:ok, nil}
 
   defp key(name) do
@@ -310,10 +315,11 @@ defmodule Helyx.Provider.OpenAI do
       else: body
   end
 
-  # No event of the engine holds the key, so neither does an error that
-  # Core builds from one: in every string of every event, each form of the
-  # key becomes `*` of the same length, so no bound on a text changes. A
-  # key has no `*`, so a mask cannot make a new copy.
+  # In every string of every event, so in every error that Core builds
+  # from one, each copy of the key and of its `\/` form becomes `*` of the
+  # same length, so no bound on a text changes. A key has no `*`, so a mask
+  # cannot make a new copy. A copy that overlaps one before it is masked
+  # only where the earlier one ends; the moduledoc names the other holes.
   defp redact_events(events, nil), do: events
 
   defp redact_events(events, key) do
@@ -321,7 +327,7 @@ defmodule Helyx.Provider.OpenAI do
     Stream.map(events, &redact(&1, mask))
   end
 
-  # The key and its JSON form with `\/`; the longest match wins.
+  # The key and its JSON form with `\/`.
   defp mask(nil), do: nil
   defp mask(key), do: :binary.compile_pattern(Enum.uniq([key, String.replace(key, "/", "\\/")]))
 

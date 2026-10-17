@@ -563,6 +563,13 @@ defmodule Helyx.Provider.OpenAITest do
     assert %Helyx.Usage{context_window: 262_144, cost_kind: :list} = priced
     assert_in_delta priced.cost, 3.1, 1.0e-9
 
+    # With no config entry, the `catalog:` of the endpoint gives the window
+    # and the prices: the bundled snapshot (`test_helper.exs`).
+    assert {:ok, stream} = OpenAI.Go.stream("kimi-k2.7-code", %Helyx.Context{}, session_id: "s")
+    assert {:done, %{usage: priced}} = List.last(Enum.to_list(stream))
+    assert %Helyx.Usage{context_window: 262_144, cost_kind: :list} = priced
+    assert_in_delta priced.cost, 4.95, 1.0e-9
+
     # The other endpoint has no config entry and no catalog: no window, no
     # cost, and the call does not fail.
     assert {:ok, stream} = Local.stream("no-catalog-model", %Helyx.Context{}, session_id: "s")
@@ -610,6 +617,26 @@ defmodule Helyx.Provider.OpenAITest do
     assert_received {:header, ["1"]}
     # The env comes after the options of the provider, so it replaces the key.
     assert_received {:auth, ["Bearer other"]}
+  end
+
+  # The seam is for tests only (`docs/features/coding-agent.md`); it comes
+  # after the options of the engine, so it can replace the user agent too.
+  test "the :openai_req_options seam can replace the user agent" do
+    test = self()
+
+    Application.put_env(:helyx_plugins, :openai_req_options,
+      user_agent: "other",
+      plug: fn conn ->
+        send(test, {:user_agent, Plug.Conn.get_req_header(conn, "user-agent")})
+        reply(conn, [delta(%{content: "Hi"}, "stop"), "[DONE]"])
+      end
+    )
+
+    on_exit(fn -> Application.delete_env(:helyx_plugins, :openai_req_options) end)
+
+    assert {:ok, stream} = OpenAI.Go.stream("m", %Helyx.Context{}, session_id: "s")
+    assert {:text_delta, "Hi"} in Enum.to_list(stream)
+    assert_received {:user_agent, ["other"]}
   end
 
   test "a missing or empty api key is an error before any request" do
@@ -705,7 +732,36 @@ defmodule Helyx.Provider.OpenAITest do
              Enum.to_list(stream)
   end
 
-  # JSON escapes no character of a bearer token but `/`.
+  # A tool call event is a struct: the mask walks its fields.
+  test "a key in the fields of a tool call is masked" do
+    stub([
+      delta(%{
+        tool_calls: [
+          %{
+            index: 0,
+            id: "call_test-key",
+            type: "function",
+            function: %{name: "bash", arguments: ~s({"command": "echo test-key"})}
+          }
+        ]
+      }),
+      delta(%{}, "tool_calls"),
+      "[DONE]"
+    ])
+
+    assert {:ok, stream} = OpenAI.Go.stream("m", %Helyx.Context{}, session_id: "s")
+
+    assert [{:tool_call, call}, {:done, _}] = Enum.to_list(stream)
+
+    assert call == %Helyx.Message.ToolCall{
+             id: "call_********",
+             name: "bash",
+             arguments: %{"command" => "echo ********"}
+           }
+  end
+
+  # A common JSON encoder escapes no character of a bearer token but `/`.
+  # The `\uXXXX` forms are accepted holes (`docs/features/openai-compatible.md`).
   test "a key that the server echoes in JSON with an escaped slash is masked" do
     System.put_env("OPENCODE_API_KEY", "sk-ab/cd")
     plug(&Plug.Conn.send_resp(&1, 401, ~S({"error":"bad sk-ab\/cd or sk-ab/cd"})))

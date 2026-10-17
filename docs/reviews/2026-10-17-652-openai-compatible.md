@@ -50,13 +50,32 @@ Simplify (1 agent, four angles) fixed: one compiled `:binary` pattern for the tw
 
 | # | Axis | Finding | Reproduced | Resolution |
 | - | ---- | ------- | ---------- | ---------- |
-| 15 | Spec, failure path | JSON allows `\uXXXX` for any character; Gson writes `=` as `\u003d` and .NET writes `+` as `\u002B`. A key echoed that way in an HTTP error body or a `bad_chunk` payload is not masked, and the drain reads only twice the key size past the limit | yes, with a `Req.Test` plug (the encoder defaults are the agents' knowledge, not read in source) | **Open.** The third finding on the mask mechanism, in round 3, so the small-fix round does not apply. Code committed as reviewed in this round. The feature doc states the hole |
-| 15b | Codex | A key with two slashes, of which the server escapes only one, is not masked; the pattern holds only the form with no slash escaped and the form with every slash escaped | yes (Codex, local plug) | **Open**, with 15: an escape-aware mask of JSON strings covers it |
-| 15c | Codex | A JSON array of the character codes of the key (an `error` or a `delta.content`) passes the mask, because the walk sees each integer alone; `Helyx.Reason.text/1` prints the list as a charlist, so the turn error shows the key | yes (Codex, local plug) | **Open**: mask a printable integer list that holds the key, and keep the list shape |
-| 16 | Spec | No test streams through an endpoint with `catalog:` and checks a catalog window or price | read | Open: a test-only follow-up |
-| 17 | Spec | No test shows that `:openai_req_options` can replace the user agent | read | Open: a test-only follow-up; round 1 probed it |
-| 18 | Standards | The comment "the longest match wins" above `mask/1` describes a case that cannot occur, and the comment above `key?/1` says that JSON escapes only `/` | read | Open: a comment fix with the follow-up; no code changed after this round |
-| 19 | Standards | The feature doc says that the mask covers struct fields, with no test | read | Open: a test-only follow-up; the code walks a struct as a map |
-| 20 | Standards | The moduledoc "each copy becomes `*`" can read as one `*` | read | Open: wording with the follow-up |
+| 15 | Spec, failure path | JSON allows `\uXXXX` for any character; Gson writes `=` as `\u003d` and .NET writes `+` as `\u002B`. A key echoed that way in an HTTP error body or a `bad_chunk` payload is not masked, and the drain reads only twice the key size past the limit | yes, with a `Req.Test` plug (the encoder defaults are the agents' knowledge, not read in source) | **Accepted hole** (orchestrator decision of 2026-10-17): the third finding on the mask mechanism, and no real provider is shown to echo the key in this form; a case gets its own handler only with evidence (`AGENTS.md`). The moduledoc and the feature doc name it |
+| 15b | Codex | A key with two slashes, of which the server escapes only one, is not masked; the pattern holds only the form with no slash escaped and the form with every slash escaped | yes (Codex, local plug) | **Accepted hole**, as 15 |
+| 15c | Codex | A JSON array of the character codes of the key (an `error` or a `delta.content`) passes the mask, because the walk sees each integer alone; `Helyx.Reason.text/1` prints the list as a charlist, so the turn error shows the key | yes (Codex, local plug) | **Accepted hole**, as 15 |
+| 16 | Spec | No test streams through an endpoint with `catalog:` and checks a catalog window or price | read | Fixed in the small-fix round: the config test streams `kimi-k2.7-code` through `Go` and gets the window and the prices of the snapshot |
+| 17 | Spec | No test shows that `:openai_req_options` can replace the user agent | read | Fixed in the small-fix round: "the :openai_req_options seam can replace the user agent" |
+| 18 | Standards | The comment "the longest match wins" above `mask/1` describes a case that cannot occur, and the comment above `key?/1` says that JSON escapes only `/` | read | Fixed in the small-fix round: both comments corrected, and the `key?/1` comment names the `\uXXXX` hole |
+| 19 | Standards | The feature doc says that the mask covers struct fields, with no test | read | Fixed in the small-fix round: "a key in the fields of a tool call is masked" (a `Helyx.Message.ToolCall` event) |
+| 20 | Standards | The moduledoc "each copy becomes `*`" can read as one `*` | read | Fixed in the small-fix round: "each byte of each copy ... becomes `*`", and the moduledoc names the three accepted holes |
 
-Proposed fix of 15 and 15b for the follow-up: mask a pattern in which each byte of the key matches itself or its `\u00hh` form in either hex case (and `\/` for `/`), and read six times the key size past the limit. A regex over a 4,096-byte key needs a check of the compile limit, and a compile error must not carry the key.
+Not taken: a mask of every JSON escape form of the key (each byte as itself, `\u00hh` in either hex case, or `\/`). The orchestrator decided on 2026-10-17 to keep the mask on the literal key and its `\/` form.
+
+## Small-fix round (reduced: spec, failure path)
+
+The orchestrator made 15, 15b, and 15c accepted holes and asked for 16 to 20 as tests and comments only. The fix has no code lines outside tests: comments and the moduledoc of `openai.ex` change; three tests are added to `openai_test.exs`. Bounds sensor (`--diff HEAD`):
+
+```text
+bounds sensor: 0 candidate functions, 0 flagged, 0 without an answer
+```
+
+| # | Axis | Finding | Reproduced | Resolution |
+| - | ---- | ------- | ---------- | ---------- |
+| 21 | Spec | The comment above `redact_events/2` still said "each form of the key" | read | Reworded: the key and its `\/` form |
+| 22 | Spec | The new `key?/1` comment said that a common encoder escapes only `/`, and the feature doc names Gson and .NET | read | Reworded: many encoders do; some write `+` or `=` as `\uXXXX`, and that form is not masked |
+| 23 | Spec | The catalog test cannot tell `endpoint.catalog` from `endpoint.id`: `Go` has the same value for both | read | Accepted: `catalog_test.exs` and `model_info_test.exs` cover two different ids (`codex`, `openai`). The spec agent's mutation (catalog set to nil) fails the test |
+| 24 | Failure path | A copy of the key that overlaps an earlier copy is masked only past the end of the earlier one: key `sk-abcdefs`, body `sk-abcdefsk-abcdefs` gives `**********k-abcdefs`. `:binary.replace/4` with `:global` finds copies that do not overlap | yes, with a `Req.Test` plug (constructed body) | **Accepted hole**, by the rule of 15: no real provider is shown to echo the key as overlapping copies. The moduledoc, the comment, and the feature doc name it |
+
+Mutation checks of the spec agent (each a local edit, reverted): the catalog set to nil, the seam without `:user_agent`, and the struct clause skipped each fail only their own new test. The failure-path agent checked the error body bound with a key across the cut at 16,380 to 16,385 bytes: the bound holds. Not reached by the budget: an exception during the body after a 200 (`{:task_exit, _}`), an `{:error, exception}` of `Req.post` other than a transport error, and two map keys that become one after the mask (an entry is lost, the key is not shown).
+
+No further round: the round limit is reached, and the round-3 rule says commit only reviewed code. Only comments and Markdown changed after this round.
