@@ -5,10 +5,11 @@ defmodule Helyx.ModelInfo do
   # The serving side (step 1) wins in the provider. Each value comes whole
   # from the first source that has it. `docs/features/usage-and-limits.md`,
   # "`Helyx.ModelInfo`" and "Config". The providers of `claude-code`,
-  # `codex`, `opencode-go`, and `opencode` share it; it is not a plugin
-  # (ADR 0005).
+  # `codex`, and the OpenAI-compatible endpoints share it; it is not a
+  # plugin (ADR 0005). The config entry is keyed by the ref; the provider
+  # names its catalog id, or nil for no catalog step.
   #
-  # Config is a boundary: `lookup/3` checks the entry of the ref in use and
+  # Config is a boundary: `lookup/4` checks the entry of the ref in use and
   # names the first bad key. A price is USD per million tokens.
 
   import Helyx.Usage, only: [wire_cost?: 1, wire_window?: 1]
@@ -27,13 +28,18 @@ defmodule Helyx.ModelInfo do
   defstruct context_window: nil, prices: nil
 
   @doc false
-  @spec lookup(String.t(), String.t(), term()) ::
+  @spec lookup(String.t(), String.t() | nil, String.t(), term()) ::
           {:ok, t()} | {:error, {:bad_config, [term()]}}
-  def lookup(provider_id, model, config \\ Application.get_env(:helyx_plugins, :models, %{})) do
+  def lookup(
+        provider_id,
+        catalog_id,
+        model,
+        config \\ Application.get_env(:helyx_plugins, :models, %{})
+      ) do
     ref = provider_id <> "/" <> model
 
     with {:ok, entry} <- entry(config, ref),
-         {:ok, catalog} <- Helyx.ModelInfo.Catalog.lookup(provider_id, model) do
+         {:ok, catalog} <- Helyx.ModelInfo.Catalog.lookup(catalog_id, model) do
       {:ok,
        %__MODULE__{
          context_window: entry[:context_window] || catalog.context_window,

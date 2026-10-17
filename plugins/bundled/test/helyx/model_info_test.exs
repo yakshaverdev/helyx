@@ -7,21 +7,24 @@ defmodule Helyx.ModelInfoTest do
   @ref "codex/m"
   @prices [input: 2.0, output: 10, cache_read: 0.5, cache_write: 4.0]
 
-  defp lookup(entry, ref \\ @ref), do: ModelInfo.lookup("codex", "m", %{ref => entry})
+  defp lookup(entry, ref \\ @ref), do: ModelInfo.lookup("codex", "openai", "m", %{ref => entry})
 
   defp counts(fields), do: struct!(Helyx.Usage, fields)
 
   defp cost(fields, prices), do: ModelInfo.cost(counts(fields), Map.new(prices))
 
-  describe "lookup/3" do
+  describe "lookup/4" do
     test "config gives the window and the prices; with no entry there is nothing" do
       assert {:ok, %ModelInfo{context_window: 475_000, prices: prices}} =
                lookup(context_window: 475_000, prices: @prices)
 
       assert prices == Map.new(@prices)
       assert {:ok, %{context_window: nil, prices: nil}} = lookup([])
-      assert {:ok, %{context_window: nil, prices: nil}} = ModelInfo.lookup("codex", "m", %{})
-      assert {:ok, %{context_window: nil, prices: nil}} = ModelInfo.lookup("codex", "m")
+
+      assert {:ok, %{context_window: nil, prices: nil}} =
+               ModelInfo.lookup("codex", "openai", "m", %{})
+
+      assert {:ok, %{context_window: nil, prices: nil}} = ModelInfo.lookup("codex", "openai", "m")
     end
 
     test "the window from 1 to 10^9" do
@@ -90,7 +93,7 @@ defmodule Helyx.ModelInfoTest do
                {:error, {:bad_config, [:models, @ref, :prices]}}
 
       assert lookup(%{context_window: 1}) == {:error, {:bad_config, [:models, @ref]}}
-      assert ModelInfo.lookup("codex", "m", [:x]) == {:error, {:bad_config, [:models]}}
+      assert ModelInfo.lookup("codex", "openai", "m", [:x]) == {:error, {:bad_config, [:models]}}
     end
 
     test "an entry of another ref is not checked" do

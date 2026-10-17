@@ -18,12 +18,8 @@ defmodule Helyx.ModelInfo.Catalog do
 
   import Helyx.Usage, only: [wire_window?: 1]
 
-  @catalog_ids %{
-    "claude-code" => "anthropic",
-    "codex" => "openai",
-    "opencode-go" => "opencode-go",
-    "opencode" => "opencode"
-  }
+  # The catalog ids that a provider can name; `slim/1` keeps only these.
+  @catalog_ids ~w(anthropic openai opencode-go)
   @defaults %{
     dir: "~/.helyx/cache",
     url: "https://models.dev/api.json",
@@ -47,12 +43,13 @@ defmodule Helyx.ModelInfo.Catalog do
 
   @doc false
   # The window and the price set of the catalog entry of the model, each
-  # nil when the catalog has none. A provider with no catalog id has none.
-  @spec lookup(String.t(), String.t()) ::
+  # nil when the catalog has none. A catalog id of nil has none, and starts
+  # no refresh.
+  @spec lookup(String.t() | nil, String.t()) ::
           {:ok, Helyx.ModelInfo.t()} | {:error, {:bad_config, [term()]}}
-  def lookup(provider_id, model) do
+  def lookup(catalog_id, model) do
     with {:ok, config} <- config() do
-      {:ok, entry(@catalog_ids[provider_id], model, config)}
+      {:ok, entry(catalog_id, model, config)}
     end
   end
 
@@ -63,6 +60,10 @@ defmodule Helyx.ModelInfo.Catalog do
     refresh(config)
     get_in(data, [id, model]) || %Helyx.ModelInfo{}
   end
+
+  @doc false
+  @spec ids() :: [String.t()]
+  def ids, do: @catalog_ids
 
   # Config is a boundary: a keyword list of the known keys, else the path
   # of the first bad key, `[:model_catalog, key]`.
@@ -97,7 +98,7 @@ defmodule Helyx.ModelInfo.Catalog do
   # Slim
 
   @doc false
-  # The four catalog ids of a models.dev `api.json`, each model with only
+  # The catalog ids of a models.dev `api.json`, each model with only
   # its window and its price set, each checked alone. An entry whose id is
   # not 1 to 256 bytes is dropped. A window outside the wire bound is
   # dropped (0 is unknown). A price set that fails the check of a config
@@ -108,7 +109,7 @@ defmodule Helyx.ModelInfo.Catalog do
   # refresh pass it.
   @spec slim(term()) :: %{String.t() => %{String.t() => Helyx.ModelInfo.t()}}
   def slim(api) when is_map(api) do
-    for {_provider, id} <- @catalog_ids,
+    for id <- @catalog_ids,
         %{"models" => models} when is_map(models) <- [api[id]],
         models = models(models),
         models != %{},

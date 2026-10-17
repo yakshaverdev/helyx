@@ -162,32 +162,32 @@ defmodule Helyx.TUI.FooterUsageTest do
       assert row([assistant(unknown, model)], model) == "codex/gpt-6.1-sol · idle · $?"
     end
 
-    # No chunk of either gateway is recorded (`docs/research/opencode-usage.md`):
+    # No chunk of the gateway is recorded (`docs/research/opencode-usage.md`):
     # the chunk has the shape of the feature doc. No window and no price
     # source until #559, so neither the context % nor a cost shows.
-    for model <- ["opencode-go/kimi-k2", "opencode/glm-5"] do
-      test "#{model}: one call, no window, no cost" do
-        usage = %{
-          prompt_tokens: 120,
-          completion_tokens: 30,
-          prompt_tokens_details: %{cached_tokens: 100}
-        }
+    test "opencode-go/kimi-k2: one call, no window, no cost" do
+      usage = %{
+        prompt_tokens: 120,
+        completion_tokens: 30,
+        prompt_tokens_details: %{cached_tokens: 100}
+      }
 
-        body =
-          Enum.map_join(
-            [
-              %{choices: [%{delta: %{content: "Hi."}, finish_reason: "stop"}]},
-              %{choices: [], usage: usage}
-            ],
-            &"data: #{JSON.encode!(&1)}\n\n"
-          ) <> "data: [DONE]\n\n"
+      body =
+        Enum.map_join(
+          [
+            %{choices: [%{delta: %{content: "Hi."}, finish_reason: "stop"}]},
+            %{choices: [], usage: usage}
+          ],
+          &"data: #{JSON.encode!(&1)}\n\n"
+        ) <> "data: [DONE]\n\n"
 
-        {:done, %{usage: usage}} =
-          [body] |> Events.events(%Helyx.ModelInfo{}) |> Enum.to_list() |> List.last()
+      {:done, %{usage: usage}} =
+        [body] |> Events.events(%Helyx.ModelInfo{}) |> Enum.to_list() |> List.last()
 
-        assert row([Message.user("one"), assistant(usage, unquote(model))], unquote(model)) ==
-                 "#{unquote(model)} · idle · in 120 out 30 · cache 83% · $?"
-      end
+      model = "opencode-go/kimi-k2"
+
+      assert row([Message.user("one"), assistant(usage, model)], model) ==
+               "opencode-go/kimi-k2 · idle · in 120 out 30 · cache 83% · $?"
     end
   end
 

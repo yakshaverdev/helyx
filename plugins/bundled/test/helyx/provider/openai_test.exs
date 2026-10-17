@@ -6,6 +6,15 @@ defmodule Helyx.Provider.OpenAITest do
   use ExUnit.Case, async: false
 
   alias Helyx.Provider.OpenAI
+  alias Helyx.Provider.OpenAI.Endpoint
+
+  # An endpoint of a product: a local server with no key.
+  defmodule Local do
+    @moduledoc false
+    use Helyx.Provider.OpenAI, id: "local", base_url: "http://localhost:11434/v1"
+  end
+
+  defp user_agent, do: "helyx/#{Application.spec(:helyx, :vsn)}"
 
   setup do
     System.put_env("OPENCODE_API_KEY", "test-key")
@@ -44,12 +53,13 @@ defmodule Helyx.Provider.OpenAITest do
     |> Plug.Conn.send_resp(200, sse(events))
   end
 
-  test "opencode-go and opencode refs route to the two plugins" do
+  test "each endpoint module is a plugin with its ref prefix; opencode is no longer one" do
     core = :"core_#{System.unique_integer([:positive])}"
-    start_supervised!({Helyx.Core, name: core, plugins: [OpenAI.Go, OpenAI.Zen]})
+    start_supervised!({Helyx.Core, name: core, plugins: [OpenAI.Go, Local]})
 
     assert {:ok, OpenAI.Go} = Helyx.Provider.find(core, "opencode-go")
-    assert {:ok, OpenAI.Zen} = Helyx.Provider.find(core, "opencode")
+    assert {:ok, Local} = Helyx.Provider.find(core, "local")
+    assert {:error, {:unknown_provider, "opencode"}} = Helyx.Provider.find(core, "opencode")
   end
 
   test "a streamed text response yields deltas, thinking, usage, and done" do
@@ -84,6 +94,8 @@ defmodule Helyx.Provider.OpenAITest do
     assert conn.request_path == "/zen/go/v1/chat/completions"
     assert Plug.Conn.get_req_header(conn, "authorization") == ["Bearer test-key"]
     assert Plug.Conn.get_req_header(conn, "x-opencode-session") == ["s123"]
+
+    assert Plug.Conn.get_req_header(conn, "user-agent") == [user_agent()]
 
     assert body["model"] == "kimi-k2"
     assert body["stream"] == true
@@ -145,7 +157,7 @@ defmodule Helyx.Provider.OpenAITest do
       tools: [%{name: "bash", description: "Runs a command.", parameters: %{"type" => "object"}}]
     }
 
-    assert {:ok, stream} = OpenAI.Zen.stream("gpt-5", context, session_id: "s")
+    assert {:ok, stream} = Local.stream("gpt-5", context, session_id: "s")
 
     assert Enum.to_list(stream) == [
              {:text_delta, "Listing."},
@@ -154,8 +166,15 @@ defmodule Helyx.Provider.OpenAITest do
              {:done, %{stop_reason: :tool_use, usage: %Helyx.Usage{}}}
            ]
 
+    # No key: no Authorization header. The engine's user agent still goes.
     assert_received {:request, conn, body}
-    assert conn.request_path == "/zen/v1/chat/completions"
+    assert conn.host == "localhost" and conn.port == 11_434
+    assert conn.request_path == "/v1/chat/completions"
+    assert Plug.Conn.get_req_header(conn, "authorization") == []
+
+    assert Plug.Conn.get_req_header(conn, "user-agent") == [user_agent()]
+
+    assert Plug.Conn.get_req_header(conn, "x-opencode-session") == []
 
     assert body["tools"] == [
              %{
@@ -544,10 +563,16 @@ defmodule Helyx.Provider.OpenAITest do
     assert %Helyx.Usage{context_window: 262_144, cost_kind: :list} = priced
     assert_in_delta priced.cost, 3.1, 1.0e-9
 
-    # The other gateway has no config entry, and the catalog has no entry
-    # for the model: no window, no cost.
-    assert {:ok, stream} =
-             OpenAI.Zen.stream("no-catalog-model", %Helyx.Context{}, session_id: "s")
+    # With no config entry, the `catalog:` of the endpoint gives the window
+    # and the prices: the bundled snapshot (`test_helper.exs`).
+    assert {:ok, stream} = OpenAI.Go.stream("kimi-k2.7-code", %Helyx.Context{}, session_id: "s")
+    assert {:done, %{usage: priced}} = List.last(Enum.to_list(stream))
+    assert %Helyx.Usage{context_window: 262_144, cost_kind: :list} = priced
+    assert_in_delta priced.cost, 4.95, 1.0e-9
+
+    # The other endpoint has no config entry and no catalog: no window, no
+    # cost, and the call does not fail.
+    assert {:ok, stream} = Local.stream("no-catalog-model", %Helyx.Context{}, session_id: "s")
 
     assert {:done, %{usage: %Helyx.Usage{context_window: nil, cost: nil}}} =
              List.last(Enum.to_list(stream))
@@ -594,12 +619,168 @@ defmodule Helyx.Provider.OpenAITest do
     assert_received {:auth, ["Bearer other"]}
   end
 
-  test "a missing api key is an error before any request" do
-    System.delete_env("OPENCODE_API_KEY")
+  # The seam is for tests only (`docs/features/coding-agent.md`); it comes
+  # after the options of the engine, so it can replace the user agent too.
+  test "the :openai_req_options seam can replace the user agent" do
+    test = self()
+
+    Application.put_env(:helyx_plugins, :openai_req_options,
+      user_agent: "other",
+      plug: fn conn ->
+        send(test, {:user_agent, Plug.Conn.get_req_header(conn, "user-agent")})
+        reply(conn, [delta(%{content: "Hi"}, "stop"), "[DONE]"])
+      end
+    )
+
+    on_exit(fn -> Application.delete_env(:helyx_plugins, :openai_req_options) end)
+
+    assert {:ok, stream} = OpenAI.Go.stream("m", %Helyx.Context{}, session_id: "s")
+    assert {:text_delta, "Hi"} in Enum.to_list(stream)
+    assert_received {:user_agent, ["other"]}
+  end
+
+  test "a missing or empty api key is an error before any request" do
+    plug(fn _conn -> flunk("no request") end)
     context = %Helyx.Context{messages: [Helyx.Message.user("hi")]}
+    System.delete_env("OPENCODE_API_KEY")
 
     assert {:error, {:missing_env, "OPENCODE_API_KEY"}} =
              OpenAI.Go.stream("kimi-k2", context, session_id: "s")
+
+    System.put_env("OPENCODE_API_KEY", "")
+
+    assert {:error, {:missing_env, "OPENCODE_API_KEY"}} =
+             OpenAI.Go.stream("kimi-k2", context, session_id: "s")
+  end
+
+  @max_key_bytes 4_096
+
+  test "a bearer token of #{@max_key_bytes} bytes is sent; any other key is :bad_env" do
+    test = self()
+
+    plug(fn conn ->
+      send(test, {:auth, Plug.Conn.get_req_header(conn, "authorization")})
+      reply(conn, [delta(%{content: "Hi"}, "stop"), "[DONE]"])
+    end)
+
+    key = String.duplicate("k", @max_key_bytes - 8) <> "-._~+/=="
+    System.put_env("OPENCODE_API_KEY", key)
+    assert {:ok, stream} = OpenAI.Go.stream("m", %Helyx.Context{}, session_id: "s")
+    assert {:text_delta, "Hi"} in Enum.to_list(stream)
+    assert_received {:auth, ["Bearer " <> ^key]}
+
+    for bad <- [
+          String.duplicate("k", @max_key_bytes + 1),
+          "a b",
+          "a\tb",
+          "a\rb",
+          "a\nb",
+          "a" <> <<0x7F>>,
+          "clé",
+          ~s(a"b),
+          "a\\b",
+          "a*",
+          "a=b",
+          "=",
+          "a!"
+        ] do
+      System.put_env("OPENCODE_API_KEY", bad)
+
+      assert OpenAI.Go.stream("m", %Helyx.Context{}, session_id: "s") ==
+               {:error, {:bad_env, "OPENCODE_API_KEY"}}
+    end
+
+    refute_received {:auth, _}
+  end
+
+  test "a key that the server echoes in an error body is masked" do
+    plug(&Plug.Conn.send_resp(&1, 401, "bad key test-key, test-key"))
+
+    assert {:ok, stream} = OpenAI.Go.stream("m", %Helyx.Context{}, session_id: "s")
+
+    assert Enum.to_list(stream) ==
+             [{:error, {:http_status, 401, "bad key ********, ********"}}]
+
+    # With no key, nothing is masked.
+    assert {:ok, stream} = Local.stream("m", %Helyx.Context{}, session_id: "s")
+    assert Enum.to_list(stream) == [{:error, {:http_status, 401, "bad key test-key, test-key"}}]
+  end
+
+  test "a key in an error of the stream after a 200 is masked" do
+    for {events, error} <- [
+          {[%{error: %{message: "bad test-key", "test-key": ["test-key"]}}],
+           {:api_error, %{"message" => "bad ********", "********" => ["********"]}}},
+          {["not json test-key"], {:bad_chunk, "not json ********"}}
+        ] do
+      stub(events)
+      assert {:ok, stream} = OpenAI.Go.stream("m", %Helyx.Context{}, session_id: "s")
+      assert Enum.to_list(stream) == [{:error, error}]
+    end
+  end
+
+  # Core rejects a delta that is not a string, and its error holds the event.
+  test "a key in any event is masked, also in a delta that Core rejects" do
+    stub([
+      delta(%{content: %{x: "test-key"}}),
+      delta(%{content: "say test-key"}, "stop"),
+      "[DONE]"
+    ])
+
+    assert {:ok, stream} = OpenAI.Go.stream("m", %Helyx.Context{}, session_id: "s")
+
+    assert [{:text_delta, %{"x" => "********"}}, {:text_delta, "say ********"}, {:done, _}] =
+             Enum.to_list(stream)
+  end
+
+  # A tool call event is a struct: the mask walks its fields.
+  test "a key in the fields of a tool call is masked" do
+    stub([
+      delta(%{
+        tool_calls: [
+          %{
+            index: 0,
+            id: "call_test-key",
+            type: "function",
+            function: %{name: "bash", arguments: ~s({"command": "echo test-key"})}
+          }
+        ]
+      }),
+      delta(%{}, "tool_calls"),
+      "[DONE]"
+    ])
+
+    assert {:ok, stream} = OpenAI.Go.stream("m", %Helyx.Context{}, session_id: "s")
+
+    assert [{:tool_call, call}, {:done, _}] = Enum.to_list(stream)
+
+    assert call == %Helyx.Message.ToolCall{
+             id: "call_********",
+             name: "bash",
+             arguments: %{"command" => "echo ********"}
+           }
+  end
+
+  # A common JSON encoder escapes no character of a bearer token but `/`.
+  # The `\uXXXX` forms are accepted holes (`docs/features/openai-compatible.md`).
+  test "a key that the server echoes in JSON with an escaped slash is masked" do
+    System.put_env("OPENCODE_API_KEY", "sk-ab/cd")
+    plug(&Plug.Conn.send_resp(&1, 401, ~S({"error":"bad sk-ab\/cd or sk-ab/cd"})))
+
+    assert {:ok, stream} = OpenAI.Go.stream("m", %Helyx.Context{}, session_id: "s")
+
+    assert Enum.to_list(stream) ==
+             [{:error, {:http_status, 401, ~S({"error":"bad ********* or ********"})}}]
+  end
+
+  test "with no key_env, no auth of Req's default options is sent" do
+    Application.put_env(:req, :default_options, auth: {:bearer, "other"})
+    on_exit(fn -> Application.delete_env(:req, :default_options) end)
+    stub([delta(%{content: "Hi"}, "stop"), "[DONE]"])
+
+    assert {:ok, stream} = Local.stream("m", %Helyx.Context{}, session_id: "s")
+    assert {:text_delta, "Hi"} in Enum.to_list(stream)
+    assert_received {:request, conn, _body}
+    assert Plug.Conn.get_req_header(conn, "authorization") == []
   end
 
   @max_error_body_bytes 16_384
@@ -622,6 +803,132 @@ defmodule Helyx.Provider.OpenAITest do
     assert cut ==
              binary_part(body, 0, @max_error_body_bytes) <>
                "\n[truncated at the #{@max_error_body_bytes}-byte limit]"
+  end
+
+  # The first chunk ends at the limit with a part of the key; the read goes
+  # on until the key is whole, then the cut comes after the mask.
+  test "a key across the limit and across chunks is masked before the cut" do
+    head = String.duplicate("a", @max_error_body_bytes - 3)
+
+    plug(fn conn ->
+      conn = Plug.Conn.send_chunked(conn, 401)
+      {:ok, conn} = Plug.Conn.chunk(conn, head <> "tes")
+      {:ok, conn} = Plug.Conn.chunk(conn, "t")
+      {:ok, conn} = Plug.Conn.chunk(conn, "-key" <> String.duplicate("b", 100))
+      conn
+    end)
+
+    assert {:ok, stream} = OpenAI.Go.stream("m", %Helyx.Context{}, session_id: "s")
+    assert [{:error, {:http_status, 401, cut}}] = Enum.to_list(stream)
+
+    assert cut == head <> "***" <> "\n[truncated at the #{@max_error_body_bytes}-byte limit]"
+  end
+
+  # The escaped form is longer than the key: 8 bytes for a key of 5. With a
+  # read of only the key size past the limit, the first chunk would end it.
+  test "an escaped key across the limit is whole when it is masked" do
+    System.put_env("OPENCODE_API_KEY", "a///b")
+    head = String.duplicate("x", @max_error_body_bytes - 1)
+
+    plug(fn conn ->
+      conn = Plug.Conn.send_chunked(conn, 401)
+      {:ok, conn} = Plug.Conn.chunk(conn, head <> ~S(a\/\/\/))
+      {:ok, conn} = Plug.Conn.chunk(conn, "b" <> String.duplicate("y", 20))
+      conn
+    end)
+
+    assert {:ok, stream} = OpenAI.Go.stream("m", %Helyx.Context{}, session_id: "s")
+    assert [{:error, {:http_status, 401, cut}}] = Enum.to_list(stream)
+    assert cut == head <> "*" <> "\n[truncated at the #{@max_error_body_bytes}-byte limit]"
+  end
+
+  # Many copies of a long key, and a part of one more at the end of the
+  # read: the mask keeps every position, so the part is past the cut.
+  test "a part of the key at the end of the read stays past the cut" do
+    key = "sk-" <> String.duplicate("S", 97)
+    System.put_env("OPENCODE_API_KEY", key)
+    copies = String.duplicate(key, 164)
+
+    plug(fn conn ->
+      conn = Plug.Conn.send_chunked(conn, 401)
+      {:ok, conn} = Plug.Conn.chunk(conn, copies <> binary_part(key, 0, 90))
+      {:ok, conn} = Plug.Conn.chunk(conn, binary_part(key, 90, 10))
+      conn
+    end)
+
+    assert {:ok, stream} = OpenAI.Go.stream("m", %Helyx.Context{}, session_id: "s")
+    assert [{:error, {:http_status, 401, cut}}] = Enum.to_list(stream)
+
+    assert cut ==
+             String.duplicate("*", @max_error_body_bytes) <>
+               "\n[truncated at the #{@max_error_body_bytes}-byte limit]"
+  end
+
+  test "an endpoint option outside its bound fails with its name" do
+    good = [id: "x", base_url: "http://h/v1"]
+    long = &String.duplicate("a", &1)
+
+    bad = [
+      id: "a/b",
+      id: "",
+      id: "a b",
+      id: :x,
+      base_url: "ftp://h/v1",
+      base_url: "h/v1",
+      base_url: "https://",
+      base_url: "http://h/" <> <<255>>,
+      base_url: "http://h/v1?api-version=1",
+      base_url: "http://h/v1#x",
+      key_env: "",
+      key_env: "1X",
+      key_env: "A-B",
+      key_env: "_" <> long.(256),
+      key_env: :x,
+      headers: {"x", "y"},
+      headers: [{"authorization", "x"}],
+      headers: [{"User-Agent", "x"}],
+      headers: [{"a b", "x"}],
+      headers: [{"", "x"}],
+      headers: [{long.(257), "x"}],
+      headers: [{"x", long.(4097)}],
+      headers: [{"x", "a\nb"}],
+      headers: [{"x", "é"}],
+      headers: [{"x", :turn_id}],
+      headers: [{:x, "y"}],
+      headers: List.duplicate({"x", "y"}, 17),
+      catalog: "",
+      catalog: "opencode",
+      catalog: :x
+    ]
+
+    for {key, value} <- bad do
+      assert_raise ArgumentError, ~r/option #{key}:/, fn ->
+        Endpoint.new!(Keyword.put(good, key, value))
+      end
+    end
+
+    # At the limits.
+    header = {long.(256), long.(4096)}
+    max = [headers: List.duplicate(header, 16), key_env: "_" <> long.(255), catalog: "openai"]
+    assert %Endpoint{} = Endpoint.new!(good ++ max)
+
+    assert_raise KeyError, fn -> Endpoint.new!(good ++ [base: "x"]) end
+    assert_raise ArgumentError, fn -> Endpoint.new!(base_url: "http://h") end
+    assert_raise ArgumentError, fn -> Endpoint.new!(%{id: "x"}) end
+
+    # Through `use`, the compile of the endpoint module fails.
+    assert_raise ArgumentError, ~r/option headers:/, fn ->
+      Code.compile_quoted(
+        quote do
+          defmodule Helyx.Provider.OpenAITest.Bad do
+            use Helyx.Provider.OpenAI,
+              id: "bad",
+              base_url: "http://h",
+              headers: [{"User-Agent", "x"}]
+          end
+        end
+      )
+    end
   end
 
   test "an error body cut inside a multibyte character retreats to a boundary" do
