@@ -174,7 +174,7 @@ defmodule Helyx.SkillsTest do
       cwd,
       "ok",
       "name: ok\ndescription: >\n  Folded: with a colon\n  on two lines\nlicense: MIT\n" <>
-        "metadata:\n  version: \"1\"\nallowed-tools:\n  - Read\nwhen_to_use: x\n"
+        "metadata:\n  version: 1.0\nallowed-tools:\n  - Read\nwhen_to_use: x\n"
     )
 
     assert [%{description: "Folded: with a colon on two lines\n"}] = Skills.scan(cwd, home).skills
@@ -185,12 +185,12 @@ defmodule Helyx.SkillsTest do
            )
   end
 
-  test "an anchor, an alias, or a tag drops the skill; in another key it is not read", %{
+  test "an anchor, an alias, or a tag drops the skill, also in another key", %{
     cwd: cwd,
     home: home
   } do
     # Each level repeats the one before ten times: 10^8 strings to a full
-    # YAML parser, skipped lines to the reader.
+    # YAML parser, one notice from the reader.
     bomb =
       Enum.map_join(1..8, "", fn level ->
         "l#{level}: &l#{level}\n" <> String.duplicate("  - *l#{level - 1}\n", 10)
@@ -200,15 +200,16 @@ defmodule Helyx.SkillsTest do
     skill(cwd, "bomb", "name: bomb\ndescription: x\nl0: &l0 [x]\n" <> bomb <> "x: #{deep}\n")
     skill(cwd, "raw", "name: raw\ndescription: !!binary /w==\n")
     skill(cwd, "anchor", "name: &a anchor\ndescription: x\n")
-    skill(cwd, "alias", "a: &a x\nname: alias\ndescription: *a\n")
+    skill(cwd, "alias", "name: alias\ndescription: *a\n")
 
     scan = Skills.scan(cwd, home)
-    assert names(scan) == ["bomb"]
+    assert names(scan) == []
     dir = &Path.join(cwd, ".agents/skills/#{&1}")
 
     assert scan.notices == [
-             "skill #{dir.("alias")} is not loaded: line 4: the description uses an anchor, an alias, or a tag",
+             "skill #{dir.("alias")} is not loaded: line 3: the description uses an anchor, an alias, or a tag",
              "skill #{dir.("anchor")} is not loaded: line 2: the name uses an anchor, an alias, or a tag",
+             "skill #{dir.("bomb")} is not loaded: line 4: the value of l0 has & at the start of a word",
              "skill #{dir.("raw")} is not loaded: line 3: the description uses an anchor, an alias, or a tag"
            ]
   end

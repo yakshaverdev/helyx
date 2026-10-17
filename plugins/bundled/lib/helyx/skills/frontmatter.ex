@@ -4,8 +4,9 @@ defmodule Helyx.Skills.Frontmatter do
   # lines, of which it reads only the top-level keys `name` and
   # `description`. It fails closed: it accepts a strict subset of YAML and
   # rejects any other text with the number of its line, so it is never
-  # wider than YAML. The value of every other key is not read, except that
-  # its quotes and brackets must close. The time is linear in the bytes.
+  # wider than YAML. The value of every other key is not read, but a
+  # character that can start a YAML construct is out at the start of a
+  # word there. The time is linear in the bytes.
   # The subset is in docs/features/skills.md.
 
   @keys ["name", "description"]
@@ -25,6 +26,11 @@ defmodule Helyx.Skills.Frontmatter do
   @indicator ~r/\A[-?:@`%,\]}]/
   @colon ~r/:(?:[ \t]|\z)/
   @comment ~r/\A *(?:#|\z)/
+  # In another key: a character that starts a quoted scalar, a flow
+  # collection, a block scalar, a tag, an anchor, an alias, or a reserved
+  # indicator, where a scalar can start: at the start of the value or after
+  # a blank. Each construct that can go on past its line starts so.
+  @starts ~r/(?:\A|[ \t])(["'\[\]{}!&*|>?@`%])/
   # The plain scalars that the YAML 1.2 core schema reads as a null, a
   # boolean, or a number, and any that starts as a number does: YamlElixir
   # reads `+`, `0x`, and `+0x1` as numbers too.
@@ -57,8 +63,11 @@ defmodule Helyx.Skills.Frontmatter do
   def read(content) do
     case Regex.run(@frontmatter, strip_bom(content)) do
       [_, yaml] ->
-        lines = yaml |> String.split(["\r\n", "\n"]) |> Enum.drop(-1)
-        with {:ok, values} <- lines(Enum.with_index(lines, 2), nil, %{}), do: missing(values)
+        lines = yaml |> String.split(["\r\n", "\n"]) |> Enum.drop(-1) |> Enum.with_index(2)
+
+        with :ok <- readable(yaml, lines),
+             {:ok, values} <- lines(lines, nil, %{}),
+             do: missing(values)
 
       nil ->
         {:error, "no frontmatter between two --- lines"}
@@ -67,6 +76,15 @@ defmodule Helyx.Skills.Frontmatter do
 
   defp strip_bom(<<0xFEFF::utf8, rest::binary>>), do: rest
   defp strip_bom(content), do: content
+
+  # One regex run over the text, and one per line only when it finds a
+  # character: the `\r` of a `\r\n` line end is one.
+  defp readable(yaml, lines) do
+    case Regex.match?(@control, yaml) && Enum.find(lines, &Regex.match?(@control, elem(&1, 0))) do
+      {_line, n} -> error(n, "a control character")
+      _none -> :ok
+    end
+  end
 
   defp missing(values) do
     case Enum.reject(@keys, &Map.has_key?(values, &1)) do
@@ -78,8 +96,8 @@ defmodule Helyx.Skills.Frontmatter do
   defp error(n, why), do: {:error, "line #{n}: #{why}"}
 
   # One pass over the numbered lines. The open key is `{:read, key, n,
-  # value, lines}` for `name` and `description`, `{:skip, key, n, scan}`
-  # for another key, or nil.
+  # value, lines}` for `name` and `description`, `{:skip, key}` for another
+  # key, or nil.
   defp lines([], open, values), do: close(open, values)
 
   defp lines([{line, n} | rest], open, values) do
@@ -87,13 +105,15 @@ defmodule Helyx.Skills.Frontmatter do
       {:indented, nil} ->
         error(n, "an indented line with no key above it")
 
+      {:indented, {:skip, key}} ->
+        with :ok <- word_starts(key, line, n), do: lines(rest, open, values)
+
       {kind, _open} when kind in [:blank, :indented] ->
         lines(rest, add(open, line, n), values)
 
-      # A comment at column 0 ends `name` or `description`. In another key
-      # it must not be inside a quote or a bracket.
-      {:comment, {:skip, _key, _n, _scan}} ->
-        with {:ok, values} <- close(open, values), do: lines(rest, open, values)
+      # A comment at column 0 ends `name` or `description`, not another key.
+      {:comment, {:skip, _key}} ->
+        lines(rest, open, values)
 
       {:comment, _open} ->
         with {:ok, values} <- close(open, values), do: lines(rest, nil, values)
@@ -108,11 +128,7 @@ defmodule Helyx.Skills.Frontmatter do
     end
   end
 
-  defp kind(line) do
-    if Regex.match?(@control, line),
-      do: {:out, "a control character"},
-      else: kind(line, String.trim_leading(line, " "))
-  end
+  defp kind(line), do: kind(line, String.trim_leading(line, " "))
 
   # `text` is `line` without its leading spaces. YamlElixir rejects some
   # lines with a tab after the indentation that YAML 1.2 reads.
@@ -137,31 +153,24 @@ defmodule Helyx.Skills.Frontmatter do
       else: {:ok, {:read, key, n, value, []}}
   end
 
-  # The lines of a block scalar are text: no quote or bracket opens there.
-  defp open(key, <<c, _::binary>>, n, _values) when c in [?|, ?>],
-    do: {:ok, {:skip, key, n, :block}}
-
   defp open(key, value, n, _values) do
-    case scan(value, :blank, {:plain, 0}) do
-      {:plain, 0} -> {:ok, {:skip, key, n, {:plain, 0}}}
-      _open -> error(n, "the value of #{key} does not close on its line")
+    with :ok <- word_starts(key, value, n), do: {:ok, {:skip, key}}
+  end
+
+  defp word_starts(key, text, n) do
+    case Regex.run(@starts, text, capture: :all_but_first) do
+      nil -> :ok
+      [c] -> error(n, "the value of #{key} has #{c} at the start of a word")
     end
   end
 
   defp add({:read, key, n, value, lines}, line, m),
     do: {:read, key, n, value, [{line, m} | lines]}
 
-  defp add({:skip, _key, _n, :block} = open, _line, _m), do: open
-  defp add({:skip, key, n, scan}, line, _m), do: {:skip, key, n, scan(line, :blank, scan)}
-  defp add(nil, _line, _m), do: nil
+  defp add(open, _line, _m), do: open
 
   defp close(nil, values), do: {:ok, values}
-
-  defp close({:skip, _key, _n, scan}, values) when scan in [:block, {:plain, 0}],
-    do: {:ok, values}
-
-  defp close({:skip, key, n, _scan}, _values),
-    do: error(n, "a quote or a bracket in the value of #{key} does not close")
+  defp close({:skip, _key}, values), do: {:ok, values}
 
   defp close({:read, key, n, value, lines}, values) do
     case value(value, Enum.reverse(lines)) do
@@ -170,40 +179,6 @@ defmodule Helyx.Skills.Frontmatter do
       {:error, why} -> error(n, "the #{key} #{why}")
     end
   end
-
-  # The state of the quotes and brackets of another key after `text`:
-  # `{:plain | :single | :double, depth}`, or :error for a bracket that
-  # closes none. A quote opens only where a YAML scalar can start, and a
-  # bracket counts anywhere outside a quote, so the scan can find an open
-  # value where YAML has none, but never the reverse. `prev` is :blank
-  # after a blank or at the line start, :start after a flow indicator, and
-  # :text after any other character.
-  defp scan(_text, _prev, :error), do: :error
-  defp scan(<<>>, _prev, state), do: state
-  defp scan(<<?#, _::binary>>, :blank, {:plain, _} = state), do: state
-
-  defp scan(<<q, rest::binary>>, prev, {:plain, depth}) when q in [?', ?"] and prev != :text,
-    do: scan(rest, :text, {if(q == ?', do: :single, else: :double), depth})
-
-  defp scan(<<c, rest::binary>>, _prev, {:plain, depth}) when c in [?[, ?{],
-    do: scan(rest, :start, {:plain, depth + 1})
-
-  defp scan(<<c, _::binary>>, _prev, {:plain, 0}) when c in [?], ?}], do: :error
-
-  defp scan(<<c, rest::binary>>, _prev, {:plain, depth}) when c in [?], ?}],
-    do: scan(rest, :text, {:plain, depth - 1})
-
-  defp scan(<<c, rest::binary>>, _prev, {:plain, _} = state) when c in [?\s, ?\t],
-    do: scan(rest, :blank, state)
-
-  defp scan(<<c, rest::binary>>, _prev, {:plain, _} = state) when c in [?,, ?:],
-    do: scan(rest, :start, state)
-
-  defp scan(<<?', ?', rest::binary>>, prev, {:single, _} = state), do: scan(rest, prev, state)
-  defp scan(<<?', rest::binary>>, _prev, {:single, depth}), do: scan(rest, :text, {:plain, depth})
-  defp scan(<<?\\, _, rest::binary>>, prev, {:double, _} = state), do: scan(rest, prev, state)
-  defp scan(<<?", rest::binary>>, _prev, {:double, depth}), do: scan(rest, :text, {:plain, depth})
-  defp scan(<<_, rest::binary>>, _prev, state), do: scan(rest, :text, state)
 
   # The value of `name` or `description`: a plain or a quoted scalar on the
   # key line, or a block scalar on the indented lines after it.

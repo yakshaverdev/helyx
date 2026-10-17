@@ -103,34 +103,53 @@ defmodule Helyx.Skills.FrontmatterTest do
     end
   end
 
-  test "every other key is skipped with its lines, but its quotes and brackets must close" do
+  test "every other key is skipped with its lines, but a YAML construct at a word start is out" do
     yaml =
-      "# a comment\nlicense: MIT\nmetadata:\n  a: &a [1, 2]\n  b: *a\n# inside\n  c: 'it''s'\n" <>
-        "allowed-tools: !tag x\nname: x\nx-other: {flow: [map]}\ndescription: d\nlist:\n  - a\n" <>
-        "notes: |\n  it's \"open\n_k: \"q\"\n"
+      "# a comment\nlicense: MIT\nmetadata:\n  a: 1\n  b: it's\n# inside\n  c: x\n\n" <>
+        "allowed-tools: Bash(git:*) Read\nname: x\nx-other: a\"b, c[d], e{f}, g|h>i\n" <>
+        "description: d\nlist:\n  - a\n  - don't\n_k: 50% a@b x`c` x!y x&y x?y\n"
 
     assert read(yaml) == {:ok, %{"name" => "x", "description" => "d"}}
 
     # The one exception to "never wider than YAML": YAML that no parser
     # reads, in the lines of another key.
-    assert read("name: x\ndescription: d\nmetadata:\n  a: b: c\n  b: *none\n") ==
+    assert read("name: x\ndescription: d\nmetadata:\n  a: b: c\nother: a: b: c\n") ==
              {:ok, %{"name" => "x", "description" => "d"}}
 
-    assert read("name: x\ndescription: d\nother: a: b: c\nmore: *none\n") ==
+    # A comment at column 0 is no line of another key.
+    assert read("name: x\ndescription: d\nother: a\n# the \"x\" key\n") ==
              {:ok, %{"name" => "x", "description" => "d"}}
 
-    for {yaml, why} <- [
-          {"other: 'x\n", "line 2: the value of other does not close on its line"},
-          {"other: [a,\n  b]\n", "line 2: the value of other does not close on its line"},
-          {"other:\n  k: 'x\nname: a\n",
-           "line 2: a quote or a bracket in the value of other does not close"},
-          {"other: 'it''s'\n  \t\n", "line 3: a tab after the indentation"},
-          {"other:\n  k: x]\n",
-           "line 2: a quote or a bracket in the value of other does not close"},
-          {"other:\n  k: \"x\n# c\n  y\"\n",
-           "line 2: a quote or a bracket in the value of other does not close"}
+    for {line, char} <- [
+          {"other: 'x'", "'"},
+          {~s(other: "x"), ~s(")},
+          {"other: [a, b]", "["},
+          {"other: x ]", "]"},
+          {"other: {k: v}", "{"},
+          {"other: x }", "}"},
+          {"other: !tag x", "!"},
+          {"other: &a x", "&"},
+          {"other: *a", "*"},
+          {"other: |", "|"},
+          {"other: >-", ">"},
+          {"other: ? x", "?"},
+          {"other: @x", "@"},
+          {"other: `x`", "`"},
+          {"other: %x", "%"},
+          {"other: a\t'b", "'"},
+          {"other:\n  - 'x'", "'"},
+          {~s(other:\n  - "x"), ~s(")},
+          {~s(other:\n  version: "1.0"), ~s(")},
+          {~s(other: a # the "x" key), ~s(")},
+          {"other:\n  k: [a]", "["},
+          {"other:\n  # a 'c'", "'"},
+          {"other:\n  |x", "|"}
         ] do
-      assert read(yaml) == {:error, why}, yaml
+      n = if String.contains?(line, "\n"), do: 3, else: 2
+
+      assert read(line <> "\n") ==
+               {:error, "line #{n}: the value of other has #{char} at the start of a word"},
+             line
     end
   end
 
@@ -171,7 +190,7 @@ defmodule Helyx.Skills.FrontmatterTest do
              {:ok, %{"name" => "x", "description" => "d"}}
   end
 
-  test "the reproductions of review round 3 are rejected" do
+  test "the reproductions of earlier review rounds are rejected" do
     for yaml <- [
           # A quoted value of another key hid a name key.
           "other: 'x\nname: a\ndescription: d #'\n",
@@ -187,7 +206,14 @@ defmodule Helyx.Skills.FrontmatterTest do
           # A control character, a plain value over two lines, a tab-only line in a block.
           "name: x\ndescription: a\x01b\n",
           "name: x\ndescription: text\n  more # c\n  end\n",
-          "name: x\ndescription: |\n  a\n\t\n"
+          "name: x\ndescription: |\n  a\n\t\n",
+          # Findings 39 to 41 of the third run: the quote scan of another key
+          # took a quote that YAML opens for text, or the reverse.
+          "other: !<tag:yaml.org,2002:str>\"\nname: x\ndescription: d #\"\n",
+          "other: [a:\"b, \"c]\nname: evil\ndescription: d\nz: |\n  x\"]\n",
+          "other: [a:'b, 'c]\nname: evil\ndescription: d\nz: |\n  x']\n",
+          "other: {k: a:\"b, j: \"c}\nname: evil\ndescription: d\nz: |\n  x\"}\n",
+          "other:\n  k: |\n    'x\n  j: 'y\nname: evil\ndescription: d\nz: |\n  w'\n"
         ] do
       assert {:error, "line " <> _} = read(yaml), yaml
     end
@@ -206,20 +232,32 @@ defmodule Helyx.Skills.FrontmatterTest do
 
   # The proof that the reader is never wider than YAML: every frontmatter
   # that it accepts gives the name and the description that YamlElixir
-  # gives. The other keys hold YAML that YamlElixir reads, or a quote or a
-  # bracket that does not close, which the reader rejects.
+  # gives. The one exception: YamlElixir rejects the value of another key.
+  # Then the same frontmatter with `o<n>: x` for each other key must give
+  # them, so the rejection comes from another key.
   property "an accepted frontmatter reads as YAML reads it" do
-    check all(yaml <- frontmatter(), max_runs: 3_000) do
+    check all({yaml, plain} <- frontmatter(), max_runs: 6_000) do
       case read(yaml) do
-        {:ok, values} -> assert {:ok, values} == yaml |> YamlElixir.read_from_string() |> take()
-        {:error, "line " <> _} -> :ok
-        {:error, "the frontmatter has no " <> _} -> :ok
+        {:ok, values} ->
+          case YamlElixir.read_from_string(yaml) do
+            {:error, _} ->
+              assert {:ok, values} == plain |> YamlElixir.read_from_string() |> take()
+
+            yaml_values ->
+              assert {:ok, values} == take(yaml_values)
+          end
+
+        {:error, "line " <> _} ->
+          :ok
+
+        {:error, "the frontmatter has no " <> _} ->
+          :ok
       end
     end
   end
 
   @chars Enum.concat([?a..?c, ~c" \t:-'\"|>&*!#[]{}\\,@%`?.~+12é\u0301"])
-  @word_chars Enum.concat([?a..?e, ~c"  \t'\"#:-.,é!&*?|>[]"])
+  @word_chars Enum.concat([?a..?e, ~c"  \t'\"#:-.,é!&*?|>[]{}@`%"])
   @tokens ~w(yes no on null Null ~ 12 0x1F 0o17 1_000 2024-01-01 1:20 .inf True +1 .5 1e3 1. + 0x 0o +0x1 1.2.3 e3 .e3)
   @escapes [
     ~S(\n),
@@ -235,28 +273,23 @@ defmodule Helyx.Skills.FrontmatterTest do
     ~S(\x4)
   ]
   @headers ["|", "|-", "|+", ">", ">-", "> # c", "|", ">", "|-", ">-", ">+", "|2", "|x"]
+  # Values of another key in plain words over more than one line.
   @skipped [
     " MIT",
-    " 'it''s'",
-    ~S( "q\"x"),
-    " [a, \"b]\", c]",
-    " {k: v}",
-    "\n  a: 1\n  b: [x, y]",
-    "\n  - one\n  - 'two'",
-    " |\n  it's \"open",
-    " >-\n  text\n\n  more",
-    "\n  nested: 'multi\n    line'",
     " Don't stop",
-    " a # it's"
+    " a # it's",
+    "
+  a: 1
+  b: x y",
+    "
+  - one
+  - two's",
+    "
+  # a comment
+
+  c: d"
   ]
-  @open [
-    " 'x",
-    " \"x",
-    " [a,",
-    "\n  'x",
-    "\n  k: \"x",
-    "\n  - [a,"
-  ]
+  @starts ~c"\"'[]{}!&*|>?@`%"
 
   defp text, do: StreamData.string(@chars, max_length: 10)
 
@@ -304,15 +337,37 @@ defmodule Helyx.Skills.FrontmatterTest do
     ])
   end
 
+  # A word of another key: a construct character inside a word, which is
+  # text, or at its start, which rejects the skill.
+  defp other_word do
+    StreamData.frequency([
+      {20, words()},
+      {1, StreamData.map({StreamData.member_of(@starts), text()}, fn {c, t} -> <<c>> <> t end)}
+    ])
+  end
+
+  defp other_words do
+    StreamData.map(
+      {StreamData.list_of(other_word(), min_length: 1, max_length: 3),
+       StreamData.member_of([" ", "  ", "\t"])},
+      fn {words, blank} -> Enum.join(words, blank) end
+    )
+  end
+
+  defp other_value do
+    StreamData.frequency([
+      {6, StreamData.map(other_words(), &(" " <> &1))},
+      {2, StreamData.map(other_words(), &("\n  k: " <> &1))},
+      {1, StreamData.map(other_words(), &("\n  - " <> &1))},
+      {2, StreamData.member_of(@skipped)}
+    ])
+  end
+
   defp other do
     StreamData.frequency([
       {6,
        StreamData.map(
-         {StreamData.member_of(~w(license metadata x-y)),
-          StreamData.frequency([
-            {6, StreamData.member_of(@skipped)},
-            {1, StreamData.member_of(@open)}
-          ])},
+         {StreamData.member_of(~w(license metadata x-y)), other_value()},
          fn {k, v} ->
            k <> ":" <> v
          end
@@ -339,7 +394,15 @@ defmodule Helyx.Skills.FrontmatterTest do
       keys = ["name:" <> name, "description:" <> description]
       [first, second] = if swap, do: Enum.reverse(keys), else: keys
       lines = before ++ [first] ++ between ++ [second] ++ last
-      Enum.join(lines, "\n") <> "\n"
+
+      plain =
+        lines
+        |> Enum.with_index()
+        |> Enum.map(fn {line, i} ->
+          if Regex.match?(~r/\A[a-z-]+:/, line) and line not in keys, do: "o#{i}: x", else: line
+        end)
+
+      {Enum.join(lines, "\n") <> "\n", Enum.join(plain, "\n") <> "\n"}
     end
   end
 end
