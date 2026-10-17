@@ -1,23 +1,62 @@
 defmodule Helyx.Session.Server.Events do
   @moduledoc false
-  # The event stream of a session: the only writer of `seq` and
+  # The event stream of a session: the only writer of `ring` (with `seq`) and
   # `subscribers` in `Helyx.Session.Server.State`. Each event gets the next
-  # `seq` and goes to every subscriber; the snapshot gives the `seq` of the
-  # last event (docs/features/session-snapshot.md). The records that the
-  # events tell of are written in `Helyx.Session.Server.Records`.
+  # `seq`, joins the replay ring, and goes to every subscriber that has
+  # credits; the snapshot gives the `seq` of the last event
+  # (docs/features/session-snapshot.md, docs/features/replay-ring.md). The
+  # records that the events tell of are written in
+  # `Helyx.Session.Server.Records`.
 
   alias Helyx.{Event, ModelRef}
-  alias Helyx.Session.{History, Queue, Snapshot, Totals, Turn}
+  alias Helyx.Session.{History, Queue, Ring, Snapshot, Totals, Turn}
   alias Helyx.Session.Server.{State, Wait}
 
-  def subscribe(%State{} = state, pid) do
-    subscribers = Map.put_new_lazy(state.subscribers, pid, fn -> Process.monitor(pid) end)
-    %{state | subscribers: subscribers}
+  # The unacked events of one subscriber (ADR 0008 §5).
+  @credits 16_384
+  def credits, do: @credits
+
+  # The entry and the reply of a subscribe in one step: the events after
+  # `after` from the ring, or the snapshot. The base of the credits is the
+  # seq that the reply ends at for the subscriber, so a replayed event
+  # counts. A repeated subscribe keeps the monitor of its entry, and the
+  # lower base: the events that the session sent before it are still in the
+  # mailbox of the caller.
+  def subscribe(%State{} = state, pid, ref, tail, after_) do
+    {reply, base} =
+      case replay(state, after_) do
+        {:ok, events} -> {{:replay, events}, elem(after_, 1)}
+        :error -> {snapshot(state, tail), state.ring.seq}
+      end
+
+    entry =
+      case state.subscribers do
+        %{^pid => {monitor, _ref, acked}} -> {monitor, ref, min(acked, base)}
+        _none -> {Process.monitor(pid), ref, base}
+      end
+
+    {reply, put_in(state.subscribers[pid], entry)}
   end
 
+  defp replay(%State{instance_id: id, ring: %Ring{seq: seq} = ring}, {id, after_seq})
+       when after_seq <= seq,
+       do: Ring.since(ring, after_seq)
+
+  defp replay(_state, _after), do: :error
+
+  # An ack lowers the count of its subscriber; an ack above the seq of the
+  # session, or of a pid with no entry, acks nothing that the session sent.
+  def ack(%State{subscribers: subscribers, ring: %Ring{seq: seq}} = state, pid, acked)
+      when acked <= seq and is_map_key(subscribers, pid) do
+    {monitor, ref, base} = subscribers[pid]
+    put_in(state.subscribers[pid], {monitor, ref, max(base, acked)})
+  end
+
+  def ack(state, _pid, _acked), do: state
+
   def unsubscribe(%State{} = state, pid) do
-    {ref, subscribers} = Map.pop(state.subscribers, pid)
-    _ = ref && Process.demonitor(ref, [:flush])
+    {entry, subscribers} = Map.pop(state.subscribers, pid)
+    _ = entry && Process.demonitor(elem(entry, 0), [:flush])
     %{state | subscribers: subscribers}
   end
 
@@ -37,7 +76,7 @@ defmodule Helyx.Session.Server.Events do
 
     %Snapshot{
       instance_id: state.instance_id,
-      seq: state.seq,
+      seq: state.ring.seq,
       messages: page.messages,
       more: page.more,
       turn: turn(state.activity),
@@ -63,7 +102,7 @@ defmodule Helyx.Session.Server.Events do
     do: emit(state, nil, type, data)
 
   def emit(state, turn_id, type, data) do
-    seq = state.seq + 1
+    seq = state.ring.seq + 1
 
     event = %Event{
       type: type,
@@ -74,8 +113,18 @@ defmodule Helyx.Session.Server.Events do
       data: data
     }
 
-    for {pid, _ref} <- state.subscribers, do: send(pid, {:helyx_event, event})
+    slow = for {pid, entry} <- state.subscribers, deliver(pid, entry, event) == :slow, do: pid
 
-    %{state | seq: seq}
+    %{state | ring: Ring.push(state.ring, event), subscribers: Map.drop(state.subscribers, slow)}
   end
+
+  # The event, or past the credits the slow end in its place: the entry
+  # goes, and no event follows the end.
+  defp deliver(pid, {monitor, ref, acked}, %Event{seq: seq}) when seq - acked > @credits do
+    Process.demonitor(monitor, [:flush])
+    send(pid, {:helyx_end, ref, :slow})
+    :slow
+  end
+
+  defp deliver(pid, _entry, event), do: send(pid, {:helyx_event, event})
 end

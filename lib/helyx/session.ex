@@ -187,11 +187,13 @@ defmodule Helyx.Session do
 
       {:DOWN, ref, :process, pid, reason}
 
-  `end_reason/1` maps `reason` to `:stopped` or `:crashed`. The caller owns
-  the ref. The session holds one subscription for each caller pid, so a
-  second subscribe, a reconnect for example, gets a new snapshot and each
-  event once, and a second ref. The caller removes the ref it no longer
-  wants with `Process.demonitor(ref, [:flush])`.
+  `end_reason/1` maps `reason` to `:stopped` or `:crashed`. A caller that
+  does not ack (`ack/2`) gets `{:helyx_end, ref, :slow}` in place of its
+  16,385th unacked event, and no event after it. The caller owns the ref.
+  The session holds one subscription for each caller pid, so a second
+  subscribe, a reconnect for example, gets a new reply and each live event
+  once, and a second ref; its replay can repeat events that the caller has. The caller removes the ref it no longer wants with
+  `Process.demonitor(ref, [:flush])`.
 
   A session that is not running returns `{:error, :session_not_found}`, with
   no subscription of the caller and no monitor left for it. This includes a
@@ -206,42 +208,40 @@ defmodule Helyx.Session do
 
   With `tail: n`, `n` from 1 to 1,000, the snapshot holds the newest messages
   only, cut before a user or an assistant message, and `history/4` gives the
-  older ones; any other option list is `{:error, :invalid_limit}`
-  (`docs/features/session-snapshot.md`, "Tail").
+  older ones (`docs/features/session-snapshot.md`, "Tail"). With `after:
+  {instance_id, seq}` of the last event that the caller applied, the result
+  is `{:ok, {:replay, events}, ref}` when the replay ring holds every event
+  after `seq`: those, oldest first, then the live ones. Another instance, a
+  `seq` above the session's, or an interval out of the ring gives the
+  snapshot of `tail` (`docs/features/replay-ring.md`). A bad `after` is
+  `{:error, :invalid_after}`, any other bad option list `{:error, :invalid_limit}`.
   """
   @spec subscribe(t(), keyword()) ::
-          {:ok, Snapshot.t(), reference()} | {:error, :session_not_found | :invalid_limit}
+          {:ok, Snapshot.t() | {:replay, [Helyx.Event.t()]}, reference()}
+          | {:error, :session_not_found | :invalid_limit | :invalid_after}
   def subscribe(%__MODULE__{} = session, opts \\ []) do
-    case {History.tail(opts), pid(session)} do
+    case {History.subscribe(opts), pid(session)} do
       {{:error, _} = error, _pid} -> error
-      {_tail, nil} -> {:error, :session_not_found}
-      # The monitor comes before the call, so the real exit reason of the
-      # pid of the snapshot is never lost.
-      {{:ok, tail}, pid} -> subscribe_pid(pid, {:subscribe, self(), tail}, Process.monitor(pid))
+      {_opts, nil} -> {:error, :session_not_found}
+      {{:ok, tail, after_}, pid} -> Call.subscribe(pid, tail, after_, @call_timeout_ms)
     end
   end
 
-  # On a failure the unsubscribe follows the call from this process to the
-  # same pid, so a live session handles it after the subscribe.
-  defp subscribe_pid(pid, request, ref) do
-    case Call.call_pid(pid, request, @call_timeout_ms) do
-      %Snapshot{} = snapshot ->
-        {:ok, snapshot, ref}
+  @doc """
+  Acks every event of the caller's subscription up to `seq`: past 16,384
+  unacked events the session ends the subscription with `{:helyx_end, ref,
+  :slow}`, and the caller demonitors `ref`. An ack is a message and never
+  waits; one above the session's `seq` acks nothing. With an event in place
+  of `seq` it acks only each 1,024th `seq`: a client in the node passes each
+  event that it applies (`docs/features/replay-ring.md`).
+  """
+  @spec ack(t(), non_neg_integer() | Helyx.Event.t()) :: :ok
+  def ack(session, %Helyx.Event{seq: seq}),
+    do: if(rem(seq, 1_024) == 0, do: ack(session, seq), else: :ok)
 
-      {:error, :session_not_found} ->
-        unsubscribe(pid, ref)
-        {:error, :session_not_found}
-    end
-  catch
-    # `Call.call_pid/3` lets only the timeout of a running session exit.
-    :exit, reason ->
-      unsubscribe(pid, ref)
-      :erlang.raise(:exit, reason, __STACKTRACE__)
-  end
-
-  defp unsubscribe(pid, ref) do
-    Process.demonitor(ref, [:flush])
-    send(pid, {:unsubscribe, self()})
+  def ack(%__MODULE__{} = session, seq) when is_integer(seq) and seq >= 0 do
+    with pid when is_pid(pid) <- pid(session), do: send(pid, {:ack, self(), seq})
+    :ok
   end
 
   @doc """

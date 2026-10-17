@@ -397,7 +397,7 @@ defmodule Helyx.TUITest do
         send(test, :registered)
 
         receive do
-          {:"$gen_call", from, {:until, _, {:subscribe, _, nil}}} ->
+          {:"$gen_call", from, {:until, _, {:subscribe, _, _ref, nil, nil}}} ->
             GenServer.reply(from, snapshot)
         end
 
@@ -431,6 +431,16 @@ defmodule Helyx.TUITest do
     ref = state.session_ref
     assert_receive {:DOWN, ^ref, :process, _pid, :killed} = signal
     assert catch_exit(TUI.handle_info(signal, state)) == {:session_down, :crashed}
+  end
+
+  # docs/features/replay-ring.md: the slow end of the subscription ends the
+  # TUI; the slow end of another subscription does nothing.
+  test "the TUI exits on the slow end of its subscription", %{core: core} do
+    state = mounted(core, "slow", [])
+    assert {:noreply, ^state} = TUI.handle_info({:helyx_end, make_ref(), :slow}, state)
+
+    assert catch_exit(TUI.handle_info({:helyx_end, state.session_ref, :slow}, state)) ==
+             {:session_down, :slow}
   end
 
   # Runs in the TUI process at the end of init, before the ack: waits until

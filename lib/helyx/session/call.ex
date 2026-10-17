@@ -23,6 +23,37 @@ defmodule Helyx.Session.Call do
       {:error, :session_not_found}
   end
 
+  # The subscribe of `Helyx.Session.subscribe/2`. The monitor comes before
+  # the call, so the real exit reason of the pid of the reply is never lost.
+  def subscribe(pid, tail, after_, timeout),
+    do: subscribe(pid, tail, after_, timeout, Process.monitor(pid))
+
+  # On a failure the unsubscribe follows the call from this process to the
+  # same pid, so a live session handles it after the subscribe.
+  defp subscribe(pid, tail, after_, timeout, ref) do
+    case call_pid(pid, {:subscribe, self(), ref, tail, after_}, timeout) do
+      %Helyx.Session.Snapshot{} = snapshot ->
+        {:ok, snapshot, ref}
+
+      {:replay, _events} = replay ->
+        {:ok, replay, ref}
+
+      {:error, :session_not_found} ->
+        unsubscribe(pid, ref)
+        {:error, :session_not_found}
+    end
+  catch
+    # `call_pid/3` lets only the timeout of a running session exit.
+    :exit, reason ->
+      unsubscribe(pid, ref)
+      :erlang.raise(:exit, reason, __STACKTRACE__)
+  end
+
+  defp unsubscribe(pid, ref) do
+    Process.demonitor(ref, [:flush])
+    send(pid, {:unsubscribe, self()})
+  end
+
   # The request with its deadline (session-lifecycle.md, "Late calls").
   defp with_deadline(request, :infinity), do: request
 

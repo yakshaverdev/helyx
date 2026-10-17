@@ -187,6 +187,10 @@ defmodule CodingAgentTest do
   test "error_text tells a session that ended apart from a failed start" do
     assert CodingAgent.error_text({:session_down, :crashed}) == "the session crashed and stopped"
     assert CodingAgent.error_text({:session_down, :stopped}) == "the session stopped"
+
+    assert CodingAgent.error_text({:session_down, :slow}) ==
+             "the client fell behind the session events"
+
     assert CodingAgent.error_text(:eacces) == "could not start the agent: permission denied"
 
     assert CodingAgent.error_text({:session_down, :session_not_found}) ==

@@ -192,6 +192,19 @@ defmodule Helyx.Session.EndSignalTest do
       assert_end(ref, :stopped)
     end
 
+    # #116: the session is linked to its Registry entry, so a Registry that
+    # dies stops the session by design, and its subscriber gets the reason.
+    test "a kill of the sessions Registry gives the end signal", %{core: core} do
+      {:ok, session} = Session.start(core, model: "test/ok")
+      {:ok, _, ref} = Session.subscribe(session)
+      registry = Helyx.Core.sessions_registry(core)
+
+      for {_, partition, _, _} <- Supervisor.which_children(registry),
+          do: Process.exit(partition, :kill)
+
+      assert_end(ref, :crashed)
+    end
+
     test "a subscribe that gets a snapshot gets the end signal after it", %{core: core} do
       {:ok, session} = Session.start(core, model: "test/ok")
       pid = Session.pid(session)

@@ -266,7 +266,8 @@ defmodule Helyx.Session.LoopTest do
       assert stop_reason(collect_until(:turn_end)) == :aborted
       state = :sys.get_state(pid)
       assert Process.info(pid, :message_queue_len) == {:message_queue_len, 0}
-      :erts_debug.flat_size(%{state | transcript: [], seq: 0})
+      # The transcript and the replay ring grow up to their own bounds.
+      :erts_debug.flat_size(%{state | transcript: [], ring: %Helyx.Session.Ring{}})
     end
 
     size = abort.()

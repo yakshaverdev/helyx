@@ -19,8 +19,8 @@ defmodule CodingAgent.Print do
     # The state of the wait of `run/2`: `last` is the last assistant message
     # of the turn, `queue` the last counts of the session (`queue_update`),
     # and `idle?` true from a normal turn end that leaves the wait to the
-    # next turn.
-    defstruct [:last, :queue, idle?: false]
+    # next turn. `session` gets the acks.
+    defstruct [:session, :last, :queue, idle?: false]
   end
 
   # About 250,000 tokens, more than the context window of the models Helyx
@@ -167,7 +167,7 @@ defmodule CodingAgent.Print do
          # A stop of the saving before the subscribe sent its notice to no client.
          if(not snapshot.persisting, do: stderr(Reason.text(:not_saved))),
          :ok <- Session.prompt(session, prompt) do
-      wait(ref, %Wait{queue: snapshot.queue})
+      wait(ref, %Wait{session: session, queue: snapshot.queue})
     else
       {:error, reason} -> fail("could not run the prompt: " <> inspect(reason))
     end
@@ -175,36 +175,46 @@ defmodule CodingAgent.Print do
 
   defp wait(ref, state) do
     receive do
-      {:helyx_event, %Event{type: :message_end, data: %{message: %Message{role: :assistant} = m}}} ->
-        wait(ref, %{state | last: m})
+      {:helyx_event, %Event{} = event} ->
+        :ok = Session.ack(state.session, event)
+        on_event(event, ref, state)
 
-      # While idle, a turn opens after the `queue_update` of its ends, so
-      # the counts alone end the wait only with an end that holds.
-      {:helyx_event, %Event{type: :queue_update, data: queue}} ->
-        if queue.held > 0 and state.idle?,
-          do: settle(ref, %{state | queue: queue}),
-          else: wait(ref, %{state | queue: queue})
-
-      {:helyx_event, %Event{type: :notice, data: %{text: text}}} ->
-        stderr(text)
-        wait(ref, state)
-
-      {:helyx_event, %Event{type: :turn_start}} ->
-        wait(ref, %{state | last: nil, idle?: false})
-
-      {:helyx_event, %Event{type: :turn_end, data: %{outcome: :done}}} ->
-        settle(ref, state)
-
-      {:helyx_event, %Event{type: :turn_end, data: data}} ->
-        finish(data)
-
-      {:helyx_event, %Event{}} ->
-        wait(ref, state)
+      {:helyx_end, ^ref, :slow} ->
+        fail({:session_down, :slow})
 
       {:DOWN, ^ref, :process, _pid, reason} ->
         fail({:session_down, Session.end_reason(reason)})
     end
   end
+
+  defp on_event(
+         %Event{type: :message_end, data: %{message: %Message{role: :assistant} = m}},
+         ref,
+         state
+       ),
+       do: wait(ref, %{state | last: m})
+
+  # While idle, a turn opens after the `queue_update` of its ends, so
+  # the counts alone end the wait only with an end that holds.
+  defp on_event(%Event{type: :queue_update, data: queue}, ref, state) do
+    if queue.held > 0 and state.idle?,
+      do: settle(ref, %{state | queue: queue}),
+      else: wait(ref, %{state | queue: queue})
+  end
+
+  defp on_event(%Event{type: :notice, data: %{text: text}}, ref, state) do
+    stderr(text)
+    wait(ref, state)
+  end
+
+  defp on_event(%Event{type: :turn_start}, ref, state),
+    do: wait(ref, %{state | last: nil, idle?: false})
+
+  defp on_event(%Event{type: :turn_end, data: %{outcome: :done}}, ref, state),
+    do: settle(ref, state)
+
+  defp on_event(%Event{type: :turn_end, data: data}, _ref, _state), do: finish(data)
+  defp on_event(%Event{}, ref, state), do: wait(ref, state)
 
   # After a normal turn end: a running run, or an end that waits for a
   # turn, holds the wait; a held end never opens a turn, as no user sends a

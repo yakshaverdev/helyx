@@ -107,7 +107,10 @@ defmodule Helyx.TUI do
   def handle_info({:DOWN, ref, :process, _pid, reason}, %{session_ref: ref} = state),
     do: {:noreply, Switch.down(state, reason)}
 
+  def handle_info({:helyx_end, ref, :slow}, %{session_ref: ref}), do: exit({:session_down, :slow})
+
   def handle_info({:helyx_event, %{instance_id: id} = event}, %{instance_id: id} = state) do
+    :ok = Session.ack(state.session, event)
     state = read_branch_after_turn(%{state | vm: ViewModel.apply(state.vm, event)}, event)
     {:noreply, settle(sync_busy(Switch.event(state, event)))}
   end

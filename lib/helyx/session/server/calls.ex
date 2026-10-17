@@ -34,11 +34,11 @@ defmodule Helyx.Session.Server.Calls do
     {:reply, reply, state}
   end
 
-  # The entry and the snapshot in one message, so every later event reaches
-  # the caller. A repeated subscribe keeps the entry and its monitor.
-  def handle({:subscribe, pid, tail}, _from, %State{} = state) do
-    state = Events.subscribe(state, pid)
-    {:reply, Events.snapshot(state, tail), state}
+  # The entry and the snapshot or the replay in one message, so every later
+  # event reaches the caller. A repeated subscribe keeps the entry's monitor.
+  def handle({:subscribe, pid, ref, tail, after_}, _from, %State{} = state) do
+    {reply, state} = Events.subscribe(state, pid, ref, tail, after_)
+    {:reply, reply, state}
   end
 
   # A page reads the transcript only (session-snapshot.md, "History").

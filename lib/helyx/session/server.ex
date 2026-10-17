@@ -352,8 +352,11 @@ defmodule Helyx.Session.Server do
     {:noreply, Events.unsubscribe(state, pid)}
   end
 
+  # An ack of a subscriber (`Helyx.Session.ack/2`).
+  def handle_info({:ack, pid, seq}, state), do: {:noreply, Events.ack(state, pid, seq)}
+
   def handle_info({:DOWN, ref, :process, pid, _reason}, %State{subscribers: subscribers} = state)
-      when :erlang.map_get(pid, subscribers) == ref,
+      when elem(:erlang.map_get(pid, subscribers), 0) == ref,
       do: {:noreply, Events.subscriber_down(state, pid)}
 
   # The lock's port closed while the session runs: perl ended, so the
