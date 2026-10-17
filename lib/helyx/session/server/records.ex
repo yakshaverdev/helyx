@@ -1,12 +1,12 @@
 defmodule Helyx.Session.Server.Records do
   @moduledoc false
   # The records of a session: the only writer of `transcript`, `file`,
-  # `model`, `provider`, `resume_ids`, `summary`, and `unsaved_from` in
-  # `Helyx.Session.Server.State`. Each operation changes the open assistant
-  # message, the transcript, the session file, and emits its events
-  # together. The rule: no message goes between a call and its result. A
-  # call still open gets its `aborted` result before the next message joins
-  # (docs/features/session-lifecycle.md).
+  # `model`, `provider`, `resume_ids`, `summary`, `compacted`, and
+  # `unsaved_from` in `Helyx.Session.Server.State`. Each operation changes
+  # the open assistant message, the transcript, the session file, and emits
+  # its events together. The rule: no message goes between a call and its
+  # result. A call still open gets its `aborted` result before the next
+  # message joins (docs/features/session-lifecycle.md).
 
   require Logger
 
@@ -145,8 +145,8 @@ defmodule Helyx.Session.Server.Records do
   def compaction(%State{activity: %Turn{compact: compact} = turn} = state, before, after_) do
     trigger = if compact, do: :manual, else: :auto
     provider = turn.model.provider
-    file_append = &Helyx.Session.File.append_compaction(&1, provider, trigger, before, after_)
-    state = persist(state, file_append)
+    append = &Helyx.Session.File.append_compaction(&1, provider, trigger, before, after_, &2)
+    state = persist_compaction(state, append, after_)
     count = Transcript.assistant_count(state.transcript)
     state = %{state | resume_ids: Transcript.compacted(state.resume_ids, provider, count)}
     state = if compact, do: put_in(state.activity.compact, :reported), else: state
@@ -158,11 +158,20 @@ defmodule Helyx.Session.Server.Records do
   # in memory only (`persist/2`). One in a compaction turn marks the turn
   # as compacted; an overflow summary is `auto`.
   def summary(%State{activity: %Turn{compact: compact}} = state, summary) do
-    state = persist(state, &Helyx.Session.File.append_summary(&1, summary))
+    state = persist_compaction(state, &Helyx.Session.File.append_summary(&1, summary, &2), nil)
     state = if compact, do: put_in(state.activity.compact, :reported), else: state
     trigger = if compact, do: :manual, else: :auto
     data = %{trigger: trigger, tokens_before: summary.tokens_before, tokens_after: nil}
     emit(%{state | summary: summary}, :compaction, data)
+  end
+
+  # The record on disk of a compaction or a summary with the id of the last
+  # message, and the anchor of the estimate (`Helyx.Session.Totals.of/2`).
+  # With no message there is no anchor: the compaction changes no estimate.
+  defp persist_compaction(state, append, tokens_after) do
+    last_id = with %Message{id: id} <- List.last(state.transcript), do: id
+    state = persist(state, &append.(&1, last_id))
+    %{state | compacted: last_id && {last_id, tokens_after}}
   end
 
   # Emits message_start for the assistant message on the first stream event.

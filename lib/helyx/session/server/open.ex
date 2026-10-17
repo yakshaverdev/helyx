@@ -15,7 +15,7 @@ defmodule Helyx.Session.Server.Open do
   # (`Lock.hold/2`), so the port of the lock has one owner for its whole
   # life. The open runs after the supervisor started the process; the
   # caller waits for its result, and an error of the open comes back as it
-  # is. Past the deadline `open_ms` of the state the session is killed, and
+  # is. Past the deadline `deadline_ms.open` of the state the session is killed, and
   # the caller gets `{:error, :open_timeout}`. The Registry rejects a
   # session that this Core runs before the init, and the start attaches to
   # the running process; so does a start at the cap whose id runs
@@ -135,7 +135,7 @@ defmodule Helyx.Session.Server.Open do
   # A kill ends the session at the deadline of its open even when the caller
   # is gone, so the port closes and perl frees the lock (session-lock.md).
   defp open_file(state, {path, fun}) do
-    killer = kill_after(state.open_ms)
+    killer = kill_after(state.deadline_ms.open)
     result = Lock.hold(path, fn -> fun.(state) end)
     cancel_kill(killer)
     with {:ok, lock, state} <- result, do: {:ok, %{state | lock: lock}}

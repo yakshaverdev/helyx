@@ -56,7 +56,7 @@ Prior art: the cut, the keep and reserve defaults, the sections, and the update 
 
 **Provider error:** `{:context_overflow, detail}` is the error of a model call whose context is over the window of the model. No bundled provider gives it yet: no research note records the error that the OpenCode gateways send at overflow (open, see "Out of scope").
 
-**Session file:** the entry `{"type": "summary", "summary": text, "first_kept_id": id, "tokens_before": n}`. A resume takes the last one. A summary entry whose text is not a string of 1 byte to 64 KiB, whose `first_kept_id` is not the id of an earlier user or assistant message, or whose `tokens_before` is not an integer from 0 to 10^9, makes the file invalid, as any other damaged entry does.
+**Session file:** the entry `{"type": "summary", "summary": text, "first_kept_id": id, "tokens_before": n, "last_id": id | null}`, with `last_id` as in the compaction entry (`harness-compaction.md`, #712). A resume takes the last one. A summary entry whose text is not a string of 1 byte to 64 KiB, whose `first_kept_id` is not the id of an earlier user or assistant message, or whose `tokens_before` is not an integer from 0 to 10^9, makes the file invalid, as any other damaged entry does.
 
 **Events:** `:compaction` as above. A failed summary outside a `/compact` gives a `:notice` with its failure. The summary call gives no other event.
 

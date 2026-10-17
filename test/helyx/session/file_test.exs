@@ -285,6 +285,49 @@ defmodule Helyx.Session.FileTest do
         end
       end
     end
+
+    # #712: the last compaction or summary entry gives the message id that
+    # it names and its tokens after; a count out of 0..10^9 reads as nil.
+    test "the last compaction or summary names its message and its tokens after",
+         %{tmp_dir: dir} do
+      entry = fn type, extra ->
+        fields =
+          if type == "summary",
+            do: %{"summary" => "s", "first_kept_id" => "message00001", "tokens_before" => 1},
+            else: %{"provider" => "conn", "trigger" => "auto", "tokens_before" => 1}
+
+        id = "entry#{System.unique_integer([:positive])}"
+
+        %{"id" => id, "type" => type, "last_id" => "message00001"}
+        |> Map.merge(fields)
+        |> Map.merge(extra)
+        |> JSON.encode!()
+      end
+
+      cases = [
+        {[entry.("compaction", %{"tokens_after" => 1_000_000_000})],
+         {"message00001", 1_000_000_000}},
+        {[entry.("compaction", %{"tokens_after" => 1_000_000_001})], {"message00001", nil}},
+        {[entry.("compaction", %{"tokens_after" => -1})], {"message00001", nil}},
+        {[entry.("compaction", %{"tokens_after" => 4, "last_id" => nil})], nil},
+        # An entry from before #712 names no message: the one before it.
+        {[
+           ~s({"id":"old00001","type":"compaction","provider":"conn","trigger":"auto","tokens_after":4})
+         ], {"message00001", 4}},
+        {[entry.("compaction", %{"tokens_after" => 4}), entry.("summary", %{})],
+         {"message00001", nil}},
+        {[entry.("summary", %{}), entry.("compaction", %{"tokens_after" => 4})],
+         {"message00001", 4}}
+      ]
+
+      for {{entries, expected}, n} <- Enum.with_index(cases) do
+        dir = Path.join(dir, "case#{n}")
+        {:ok, file} = Session.File.create(dir, "sess00000001", "/repo", "test/ok")
+        file = append_raw(file, user_entry("message00001", %{}))
+        Enum.reduce(entries, file, &append_raw(&2, &1))
+        assert {:ok, %{compacted: ^expected}} = SessionFile.resume(dir, "/repo")
+      end
+    end
   end
 
   test "a tool result text over the limit is cut on resume", %{tmp_dir: dir} do

@@ -45,7 +45,10 @@ defmodule Helyx.Session.ProviderProcessTest do
               state.provider_ms,
               Map.new(Keyword.take(bounds, [:reply, :close, :idle]))
             ),
-          prepare_ms: Keyword.get(bounds, :prepare, state.prepare_ms)
+          deadline_ms: %{
+            state.deadline_ms
+            | prepare: Keyword.get(bounds, :prepare, state.deadline_ms.prepare)
+          }
       }
     end)
 

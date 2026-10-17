@@ -57,8 +57,11 @@ defmodule Helyx.Session.SummaryTest do
 
     kept = hd(messages(events)).id
 
-    assert [%{"summary" => "the summary", "first_kept_id" => ^kept, "tokens_before" => 42}] =
+    # The prompt is the last message before the summary too (#712).
+    assert [%{"summary" => "the summary", "first_kept_id" => ^kept, "last_id" => ^kept} = entry] =
              for(%{"type" => "summary"} = e <- entries(dir, session), do: e)
+
+    assert entry["tokens_before"] == 42
 
     # The full history stays in the transcript; a resume keeps the summary.
     await_call_end(session)
@@ -68,6 +71,7 @@ defmodule Helyx.Session.SummaryTest do
     {:ok, resumed} = Session.resume(core, sessions_dir: dir, id: session.id)
     {:ok, _, _} = Session.subscribe(resumed)
     assert %Helyx.Summary{text: "the summary", first_kept_id: ^kept} = state(resumed).summary
+    assert state(resumed).compacted == {kept, nil}
     events = turn(resumed, "next")
     assert final(events) =~ "user:S:the summary\nuser:summarize:ok\nassistant:"
   end

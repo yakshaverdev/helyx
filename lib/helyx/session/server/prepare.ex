@@ -23,7 +23,7 @@ defmodule Helyx.Session.Server.Prepare do
   # turn that the provider did not run (`:manual`). The session owns it: a
   # child of the task supervisor, monitored before it runs, so a raise is
   # never `:noproc` (#562), its pid in `Turn.prepare`, killed at the turn
-  # end. Its kill at `prepare_ms` is armed as its first act, before any
+  # end. Its kill at `deadline_ms.prepare` is armed as its first act, before any
   # plugin code. A compaction turn has no context at its start: it submits
   # at once. Only a model provider gets a summary (`summary-compaction.md`).
   def start(%State{activity: %Turn{compact: text, phase: :preparing}} = state, _trigger)
@@ -31,7 +31,9 @@ defmodule Helyx.Session.Server.Prepare do
       do: TurnLoop.submit(state)
 
   def start(%State{activity: %Turn{id: turn_id} = turn} = state, trigger) do
-    %State{model_context: model_context, compaction: compaction, prepare_ms: ms} = state
+    %State{model_context: model_context, compaction: compaction, deadline_ms: %{prepare: ms}} =
+      state
+
     context = %Context{messages: state.transcript, tools: state.tool_specs}
     trigger = if Helyx.Provider.Loop.loop?(turn.provider), do: trigger
 
