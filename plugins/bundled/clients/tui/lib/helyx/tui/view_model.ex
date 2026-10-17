@@ -75,7 +75,7 @@ defmodule Helyx.TUI.ViewModel do
             open: %{},
             streaming: nil,
             running?: false,
-            queue: %{steers: 0, follow_ups: 0},
+            queue: %{steers: 0, follow_ups: 0, running: 0, held: 0, waiting: 0},
             reason: nil,
             expanded?: false,
             usage: %Totals{},
@@ -95,7 +95,13 @@ defmodule Helyx.TUI.ViewModel do
           open: %{String.t() => :queue.queue(non_neg_integer())},
           streaming: [Message.block() | tool_cell()] | nil,
           running?: boolean(),
-          queue: %{steers: non_neg_integer(), follow_ups: non_neg_integer()},
+          queue: %{
+            steers: non_neg_integer(),
+            follow_ups: non_neg_integer(),
+            running: non_neg_integer(),
+            held: non_neg_integer(),
+            waiting: non_neg_integer()
+          },
           reason: String.t() | nil,
           expanded?: boolean(),
           usage: Totals.t(),
@@ -164,10 +170,7 @@ defmodule Helyx.TUI.ViewModel do
     add_message(vm, result)
   end
 
-  def apply(vm, %Event{type: :queue_update, data: data}) do
-    %{steers: steers, follow_ups: follow_ups} = data
-    %{vm | queue: %{steers: steers, follow_ups: follow_ups}}
-  end
+  def apply(vm, %Event{type: :queue_update, data: data}), do: %{vm | queue: queue(data)}
 
   def apply(vm, %Event{type: :model_change, data: data}) do
     %{model: model} = data
@@ -204,6 +207,11 @@ defmodule Helyx.TUI.ViewModel do
   # A type that this client does not know.
   def apply(vm, %Event{}), do: vm
 
+  # The five counts of the snapshot and of `queue_update`; another field
+  # from a newer Core is dropped.
+  defp queue(%{steers: _, follow_ups: _, running: _, held: _, waiting: _} = counts),
+    do: Map.take(counts, [:steers, :follow_ups, :running, :held, :waiting])
+
   # `Helyx.Session.Stream` bounds a count to 10^9, so the line stays short.
   defp tokens(n) when n < 1000, do: Integer.to_string(n)
   defp tokens(n), do: "#{round(n / 1000)}k"
@@ -225,7 +233,7 @@ defmodule Helyx.TUI.ViewModel do
       model: snapshot.model,
       cells: :array.new(),
       running?: turn != nil,
-      queue: Map.take(snapshot.queue, [:steers, :follow_ups]),
+      queue: queue(snapshot.queue),
       usage: snapshot.usage,
       context: snapshot.context
     }

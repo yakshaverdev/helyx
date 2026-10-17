@@ -117,7 +117,7 @@ The key is a model ref. Both keys of an entry are optional; `prices` needs `inpu
 
 ### The footer (`Helyx.TUI.Footer`, `Helyx.TUI.ViewModel`, `Helyx.Session.Totals`)
 
-Row 2 becomes: the model, the run state, the usage values, the queue counts, and `scrolled`. The usage values are:
+Row 2 becomes: the model, the run state, the usage values, the queue counts, the background counts, and `scrolled`. The usage values are:
 
 - `in <n> out <n>`: the sums of `input + cache_read + cache_write` and of `output` over the session, when the sum of all four token fields is above 0. Every model call has prompt tokens, so a sum of 0 means that no usage reported tokens (only unknown usages), and a `0` would show an unknown count as a known one.
 - `cache <p>%`: the sum of `cache_read` over the sum of the prompt tokens of the session, when that sum is above 0.

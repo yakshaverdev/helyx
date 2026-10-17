@@ -383,7 +383,11 @@ defmodule Helyx.TUI.ComposerTest do
     end
 
     test "come before the draft, in order, one per line; no other event changes the composer" do
-      state = state([]) |> type("draft") |> deliver(:queue_update, %{steers: 0, follow_ups: 0})
+      state =
+        state([])
+        |> type("draft")
+        |> deliver(:queue_update, %{steers: 0, follow_ups: 0, running: 0, held: 0, waiting: 0})
+
       assert value(state) == "draft"
       state = dropped(state, ["s", "f"])
       assert value(state) == "s\nf\ndraft"

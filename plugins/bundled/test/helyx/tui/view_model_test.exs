@@ -339,11 +339,11 @@ defmodule Helyx.TUI.ViewModelTest do
     vm =
       fold([
         {:turn_start, %{}},
-        {:queue_update, %{steers: 1, follow_ups: 0}},
-        {:queue_update, %{steers: 1, follow_ups: 2}}
+        {:queue_update, %{steers: 1, follow_ups: 0, running: 1, held: 0, waiting: 0}},
+        {:queue_update, %{steers: 1, follow_ups: 2, running: 0, held: 1, waiting: 2, new: 7}}
       ])
 
-    assert vm.queue == %{steers: 1, follow_ups: 2}
+    assert vm.queue == %{steers: 1, follow_ups: 2, running: 0, held: 1, waiting: 2}
 
     drain = %Event{
       type: :queue_update,
@@ -351,10 +351,28 @@ defmodule Helyx.TUI.ViewModelTest do
       instance_id: "i",
       turn_id: nil,
       seq: 4,
-      data: %{steers: 0, follow_ups: 0}
+      data: %{steers: 0, follow_ups: 0, running: 0, held: 0, waiting: 0}
     }
 
-    assert ViewModel.apply(vm, drain).queue == %{steers: 0, follow_ups: 0}
+    assert ViewModel.apply(vm, drain).queue == %ViewModel{}.queue
+  end
+
+  test "a snapshot keeps the five queue counts" do
+    snapshot = %Helyx.Session.Snapshot{
+      instance_id: "i",
+      seq: 0,
+      messages: [],
+      turn: nil,
+      model: "test/model",
+      queue: %{steers: 1, follow_ups: 2, running: 3, held: 4, waiting: 5, new: 6},
+      persisting: true,
+      more: false,
+      usage: %Helyx.Session.Totals{},
+      context: nil
+    }
+
+    assert ViewModel.from_snapshot(snapshot).queue ==
+             %{steers: 1, follow_ups: 2, running: 3, held: 4, waiting: 5}
   end
 
   test "an event of an unknown type leaves the view model unchanged" do
@@ -731,7 +749,9 @@ defmodule Helyx.TUI.ViewModelTest do
     assert cells(vm) == []
 
     # A session event does not clear the reason; the TUI does, on a key press or a paste.
-    [event] = events([{:queue_update, %{steers: 1, follow_ups: 0}}])
+    [event] =
+      events([{:queue_update, %{steers: 1, follow_ups: 0, running: 0, held: 0, waiting: 0}}])
+
     kept = ViewModel.apply(vm, event)
     assert kept.reason == "not sent: the queue is full"
   end

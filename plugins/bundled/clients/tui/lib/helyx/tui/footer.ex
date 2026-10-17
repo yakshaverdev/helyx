@@ -4,7 +4,8 @@ defmodule Helyx.TUI.Footer do
   hints but the one of a first Ctrl+C. Row 1 is the location: the working
   directory, with the home directory as `~`, and the git branch. Row 2 is
   the model, the turn state, the usage values of the session, the queue
-  counts when they are not zero, and "scrolled" while the view is
+  counts and the background counts (`N running`, `N held`, `N waiting`)
+  when they are not zero, and "scrolled" while the view is
   scrolled; the reason of a rejected input comes first, in red, then the
   Ctrl+C hint, in bold. The rules and the bounds are in
   `docs/features/coding-agent.md`, "TUI", and the usage values and their
@@ -161,12 +162,20 @@ defmodule Helyx.TUI.Footer do
           Quit.t()
         ) :: Paragraph.t()
   def widget(location, %ViewModel{} = vm, busy, scroll, quit) do
-    %{steers: steers, follow_ups: follow_ups} = vm.queue
+    %{steers: steers, follow_ups: follow_ups, running: running, held: held, waiting: waiting} =
+      vm.queue
+
     queued = if steers + follow_ups > 0, do: ["queued #{steers}+#{follow_ups}"], else: []
+
+    background =
+      for {n, label} <- [{running, "running"}, {held, "held"}, {waiting, "waiting"}],
+          n > 0,
+          do: "#{n} #{label}"
+
     scrolled = if scroll, do: ["scrolled"], else: []
 
     status =
-      ([vm.model, run_state(busy)] ++ usage(vm) ++ queued ++ scrolled)
+      ([vm.model, run_state(busy)] ++ usage(vm) ++ queued ++ background ++ scrolled)
       |> Enum.map(&span/1)
       |> Enum.intersperse(%Span{content: " · ", style: @dim})
 
