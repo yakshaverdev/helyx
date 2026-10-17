@@ -11,7 +11,7 @@ Without an instance id, two cases break a client:
 
 ## Decision
 
-- Each start of a session process makes a new instance id, `Helyx.Session.Id.new/0` in the start of `Helyx.Session.Server`, after the open of the file: a start, and each resume. It is not written to the session file.
+- Each start of a session process makes a new instance id, `Helyx.Session.Id.new/0` in the open of `Helyx.Session.Server.Open`, after the open of the file: a start, and each resume. It is not written to the session file.
 - Every event and every snapshot carry it as `instance_id`.
 - **The client rule:** a client that reconnects drops every event whose `instance_id` is not the one of its snapshot, and then every event with a `seq` at or below the snapshot's `seq`. `seq` increases by one per event within an instance.
 - **No Core in the event.** The instance id is random (72 bits) for each process start, so the instances of two Cores already differ, and the client rule needs nothing more. A Core name is a module atom of the server's configuration, which a remote client cannot use.
