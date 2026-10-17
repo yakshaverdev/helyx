@@ -20,18 +20,19 @@ Helyx has four kinds of components.
 | Product | `<ProductName>` | Uses Helyx, selects plugins, and owns domain code. |
 
 Core stays small. It contains only plugin registration, OTP supervision, and interface dispatch.
-Everything else, including memory, tools, model context, compaction, and transports, is a plugin.
+Everything else, including memory, tools, model context, and compaction, is a plugin.
+A transport, such as the planned `Helyx.Transport.WebSocket`, is a client of the session API in the same node, not a plugin (`docs/adr/0008-client-server-wire.md`).
 A user interface, such as the TUI, is a client host: it uses the session API and is not registered as a Core plugin.
 
 The plugins that ship with Helyx live in one Mix project, `plugins/bundled` (app `helyx_plugins`). A product depends on it and registers the modules it wants. The project also holds client code that is not a Core plugin, such as the TUI in `plugins/bundled/clients/tui` (`docs/adr/0005-one-project-for-bundled-plugins.md`). External plugins are separate packages under their own module root.
 
 ## Architecture
 
-The server owns agent and session state. A client holds a rendered copy of it, built from the event stream. Transport plugins are planned. A local client and the server run in one BEAM node and use OTP messages.
+The server owns agent and session state. A client holds a rendered copy of it, built from the event stream. The end state is one long-running server that owns the sessions; the TUI, web and native apps, and bots are its clients over one wire: WebSocket with JSON frames (`docs/features/wire-protocol.md`, planned). Today a local client and the server run in one BEAM node and use OTP messages.
 
 ```text
 Clients (TUI, web, native)
-  ↕ Transport plugin (planned)
+  ↕ the wire: WebSocket, JSON frames (planned)
 Server
   ├── Agent processes (OTP supervised)
   ├── Plugins (provider, tools, model context, compaction, ...)

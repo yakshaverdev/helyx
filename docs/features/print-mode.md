@@ -15,7 +15,7 @@ helyx -p "now run the tests" --session <id>   # or with one more print run
 Decisions (owner, 2026-10-13, in #491):
 
 - **Start.** Print mode starts only with `-p` (or `--print`), never from a TTY check. The value of `-p` is the prompt.
-- **Output.** Text only. stdout holds only the final answer: the text of the last assistant message of the last turn, then one newline. The session id, the notices, and the errors go to stderr, one line each, after `helyx: `. A JSON lines event stream waits for the Transport plugin, so that Helyx has one wire format.
+- **Output.** Text only. stdout holds only the final answer: the text of the last assistant message of the last turn, then one newline. The session id, the notices, and the errors go to stderr, one line each, after `helyx: `. A JSON lines event stream waits for the stdio form of the wire (ADR 0008), so that Helyx has one wire format.
 - **Exit status.**
   - 0: the last turn ends normally (`:turn_end` with outcome `:done`).
   - 1: a bad argument or input, a failed start, a failed turn, an aborted turn, a session that stops, a last message that stopped at the output limit (`:max_tokens`), or background runs with a held end (`docs/features/print-background-wait.md`). At the output limit the text is still printed, and a stderr line says that it was cut. A failed or aborted turn prints nothing on stdout.
@@ -118,7 +118,7 @@ Small items from review rounds 3 to 7 of #491:
 
 ## Out of scope
 
-- JSON lines output (the Transport plugin).
+- JSON lines output (the stdio form of the wire, ADR 0008).
 - Several prompts in one run. A model switch in print mode.
 - A turn or budget limit.
 - The approval gate and its print-mode rule (#503).
