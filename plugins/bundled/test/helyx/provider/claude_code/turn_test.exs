@@ -130,7 +130,7 @@ defmodule Helyx.Provider.ClaudeCode.TurnTest do
     assert of_type(events, :resume_id) == []
     assert Message.text(List.last(messages(events))) == "Again."
 
-    GenServer.stop(Session.pid(session))
+    Helyx.Test.SessionFile.stop(session)
     assert File.read!(Path.join(bin, "eof")) == "eof\n"
 
     session = resume(ctx)
@@ -148,7 +148,7 @@ defmodule Helyx.Provider.ClaudeCode.TurnTest do
 
     session = start(ctx)
     [%{resume_id: old}] = of_type(prompt(session, "hello"), :resume_id)
-    GenServer.stop(Session.pid(session))
+    Helyx.Test.SessionFile.stop(session)
 
     events = prompt(resume(ctx), "again")
 
@@ -193,7 +193,7 @@ defmodule Helyx.Provider.ClaudeCode.TurnTest do
     collect_until(:message_update)
     :ok = Session.abort(session)
     collect_until(:turn_end)
-    GenServer.stop(Session.pid(session))
+    Helyx.Test.SessionFile.stop(session)
 
     prompt(resume(ctx), "last")
 

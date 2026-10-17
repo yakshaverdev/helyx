@@ -213,7 +213,7 @@ defmodule Helyx.Session.CompactionTest do
     assert %{"provider" => "conn", "trigger" => "auto", "tokens_before" => 5} = entry
     assert entry["tokens_after"] == nil
 
-    :ok = GenServer.stop(Session.pid(session))
+    Helyx.Test.SessionFile.stop(session)
     assert {:ok, resumed} = Session.resume(core, sessions_dir: dir)
     {:ok, snapshot, _} = Session.subscribe(resumed)
     assert [%{role: :user}, %{role: :assistant}] = snapshot.messages
@@ -243,7 +243,7 @@ defmodule Helyx.Session.CompactionTest do
     # The session restarts from its file, as after a crash or a quit, and
     # the next turn connects a new provider process.
     defp reconnect(core, session, dir) do
-      :ok = GenServer.stop(Session.pid(session))
+      Helyx.Test.SessionFile.stop(session)
       {:ok, resumed} = Session.resume(core, sessions_dir: dir)
       :ok = Session.prompt(resumed, "two")
       assert_receive {:conn, :init, _proc, {"hang", _tools, opts}}

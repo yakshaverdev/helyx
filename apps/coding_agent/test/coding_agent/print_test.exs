@@ -234,6 +234,10 @@ defmodule CodingAgent.PrintTest do
                io("", fn -> CLI.main(["-p", "one", "--model", "fake/echo", dir], halt(self())) end)
 
       id = String.trim_trailing(line, "\n")
+      [path] = Path.wildcard(Path.join([s, "*", id <> ".jsonl"]))
+
+      # Each run stops its Core, and perl frees the lock after the stop (#670).
+      Helyx.Test.SessionFile.await_lock_free(path)
 
       # --session takes the folder of the header, not the current one.
       assert {0, "two\n", stderr} =
@@ -242,6 +246,8 @@ defmodule CodingAgent.PrintTest do
       assert stderr == "helyx: session #{id}\n"
 
       three = "three\n\n<stdin>\npiped\n</stdin>"
+
+      Helyx.Test.SessionFile.await_lock_free(path)
 
       assert {0, ^three <> "\n", ^stderr} =
                io("piped", fn -> CLI.main(["-p", "three", "--resume", dir], halt(self())) end)
@@ -278,6 +284,8 @@ defmodule CodingAgent.PrintTest do
 
       id = String.trim_trailing(line, "\n")
       [path] = Path.wildcard(Path.join([s, "*", id <> ".jsonl"]))
+      # The run stops its Core, and perl frees the lock after the stop (#670).
+      Helyx.Test.SessionFile.await_lock_free(path)
       {:ok, lock, nil} = Helyx.Session.Lock.hold(path, fn -> {:ok, nil} end)
       expected = "helyx: session #{id} is open in another process\n"
 
@@ -689,8 +697,7 @@ defmodule CodingAgent.PrintTest do
       %{core: core, session: one} = bg_session(dir, [["resumed"]], sessions_dir: sessions)
       :ok = Helyx.Session.prompt(one, "q")
       assert turn_end() == %{outcome: :done}
-      GenServer.stop(Helyx.Session.pid(one))
-      wait_until(fn -> Helyx.Session.pid(one) == nil end)
+      Helyx.Test.SessionFile.stop(one)
 
       {:ok, two} = Helyx.Session.resume(core, sessions_dir: sessions, cwd: dir)
       assert {0, "resumed\n", _stderr} = io("", fn -> run(two, "again") end)

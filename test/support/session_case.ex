@@ -59,14 +59,17 @@ defmodule Helyx.Test.SessionCase do
   end
 
   # Stops the session, waits until it is down, then until the Registry
-  # drops its entry, which the Registry does after the exit.
+  # drops its entry, which the Registry does after the exit, and until the
+  # lock of its file is free: perl exits after the session (#670).
   def stop_session(session, stop) do
     pid = Session.pid(session)
+    file = :sys.get_state(pid).file
     ref = Process.monitor(pid)
     stop.(pid)
     assert_receive {:DOWN, ^ref, :process, ^pid, _reason}
     registry = Helyx.Core.sessions_registry(session.core)
     await(fn -> Registry.lookup(registry, session.id) == [] end, "the registry entry to free")
+    if file, do: Helyx.Test.SessionFile.await_lock_free(file.path)
   end
 
   # The messages in the mailbox now, in order.

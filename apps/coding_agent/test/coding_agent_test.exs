@@ -52,7 +52,7 @@ defmodule CodingAgentTest do
 
     assert [_file] = Path.wildcard(Path.join(dir, "*/*.jsonl"))
 
-    :ok = GenServer.stop(Session.pid(session))
+    Helyx.Test.SessionFile.stop(session)
 
     # The session has no message, so the newest-session resume leaves it out.
     assert {:error, :not_found} =
