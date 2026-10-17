@@ -38,7 +38,9 @@ defmodule Helyx.TUI.FooterUsageTest do
   # The path of a resume: each message through the session file, then the
   # snapshot.
   defp resumed(messages, model) do
-    decoded = for m <- messages, do: m |> Codec.encode() |> JSON.encode!() |> JSON.decode!()
+    decoded =
+      for m <- messages, do: %{m | id: "m1"} |> Codec.encode() |> JSON.encode!() |> JSON.decode!()
+
     snapshot(Enum.map(decoded, &Codec.decode/1), model)
   end
 
@@ -228,7 +230,9 @@ defmodule Helyx.TUI.FooterUsageTest do
 
       # A usage in the format of a file from before #557 decodes as the
       # unknown usage.
-      entry = assistant(nil) |> Codec.encode() |> Map.put("usage", %{"input_tokens" => 5})
+      entry =
+        %{assistant(nil) | id: "m1"} |> Codec.encode() |> Map.put("usage", %{"input_tokens" => 5})
+
       assert text(snapshot([Codec.decode(entry)], @model)) == "#{@model} · idle · $?"
     end
 

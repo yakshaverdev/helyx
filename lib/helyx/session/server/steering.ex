@@ -12,42 +12,45 @@ defmodule Helyx.Session.Server.Steering do
   import Helyx.Session.Server.State, only: [ask: 4]
   import Helyx.Session.Server.Events, only: [emit: 3, emit: 4]
 
-  alias Helyx.Session.{Background, Hands, Id, Queue, Turn}
+  alias Helyx.Message
+  alias Helyx.Session.{Hands, Id, Queue, Turn}
   alias Helyx.Session.Server.{ProviderConn, Records, State}
 
-  # Returns the reply to the client and the state.
-  def queue(%State{} = state, key, text) do
-    case Queue.push(state.queue, key, text) do
+  # Queues a user message. Returns the reply to the client and the state.
+  def queue(%State{} = state, key, message) do
+    case Queue.push(state.queue, key, message) do
       {:ok, queue} -> {:ok, put(state, {queue, []})}
       {:error, :queue_full} = error -> {error, state}
     end
   end
 
-  # The texts of the next turn (`Queue.drain/1`), and the state without them.
+  # The user messages of the next turn (`Queue.drain/1`), and the state
+  # without them.
   def drain(%State{} = state) do
     {texts, queue} = Queue.drain(state.queue)
     {texts, put(state, {queue, []})}
   end
 
-  # The queued steers, then the waiting ends, join the transcript as user
-  # messages, in order. Returns their texts.
+  # The queued steers, then the waiting ends, join the transcript, in
+  # order. Returns the user messages.
   def append_steers(%State{} = state) do
     {steers, queue} = Queue.drain_steers(state.queue)
     {ends, queue} = Queue.drain_ends(queue)
-    texts = steers ++ ends
-    state = Enum.reduce(texts, state, &Records.append_user(&2, &1))
+    messages = steers ++ ends
+    state = Enum.reduce(messages, state, &Records.append_user(&2, &1))
     Enum.each(ends, &taken(state, &1))
-    {texts, put(state, {queue, []})}
+    {messages, put(state, {queue, []})}
   end
 
   # An end joined the transcript: its place among the background runs is
   # free in the hands (#587).
-  defp taken(%State{hands: hands}, text), do: Hands.taken(hands, Background.id(text))
+  defp taken(%State{hands: hands}, %Message{origin: %{kind: :background, id: id}}),
+    do: Hands.taken(hands, id)
 
   # A background end goes to a submitted turn, or waits for a turn that
   # can take it (`send_ends/1`).
-  def push_end(%State{} = state, text),
-    do: send_ends(put(state, {Queue.ended(state.queue, text), []}))
+  def push_end(%State{} = state, message),
+    do: send_ends(put(state, {Queue.ended(state.queue, message), []}))
 
   # A background run started; its end comes through `push_end/2`.
   def started(%State{} = state), do: put(state, {Queue.started(state.queue), []})
@@ -62,8 +65,8 @@ defmodule Helyx.Session.Server.Steering do
   # the ledger in one step, so `waiting` (`Queue.counts/1`) keeps it.
   def send_ends(%State{activity: %Turn{phase: :submitted, compact: nil}} = state) do
     case Queue.next_end(state.queue) do
-      {text, queue} ->
-        sent = send_steer({:end, text}, %{state | queue: queue})
+      {message, queue} ->
+        sent = send_steer({:end, message}, %{state | queue: queue})
         send_ends(put(state, {sent.queue, []}))
 
       nil ->
@@ -82,16 +85,16 @@ defmodule Helyx.Session.Server.Steering do
   # (`Helyx.Session.Queue`). A compaction cannot be steered, so a steer on
   # its turn stays in the local queue for the next turn.
   # Returns the reply to the client and the state.
-  def steer(%State{activity: %Turn{compact: compact}} = state, text) when compact != nil,
-    do: queue(state, :steers, text)
+  def steer(%State{activity: %Turn{compact: compact}} = state, message) when compact != nil,
+    do: queue(state, :steers, message)
 
-  def steer(%State{activity: %Turn{phase: :submitted}} = state, text) do
+  def steer(%State{activity: %Turn{phase: :submitted}} = state, message) do
     if Queue.room?(state.queue),
-      do: {:ok, send_steer(text, state)},
+      do: {:ok, send_steer(message, state)},
       else: {{:error, :queue_full}, state}
   end
 
-  def steer(state, text), do: queue(state, :steers, text)
+  def steer(state, message), do: queue(state, :steers, message)
 
   # At the `:ok` of the turn, the steers that waited in `submitting` go to
   # the provider process, in order, then the waiting ends. Each steer keeps
@@ -101,12 +104,14 @@ defmodule Helyx.Session.Server.Steering do
     send_ends(Enum.reduce(steers, put(state, {queue, []}), &send_steer/2))
   end
 
-  # Sends a steer, or an end `{:end, text}`, to the provider process with
-  # its own id and the steer bound (see `Helyx.Session.ProviderProcess`).
-  # The caller holds its place in the 32 steers.
+  # Sends the text of a steer, or of an end `{:end, message}`, to the
+  # provider process with its own id and the steer bound (see
+  # `Helyx.Session.ProviderProcess`). The caller holds its place in the 32
+  # steers.
   defp send_steer(entry, %State{activity: turn, conn: %ProviderConn{pid: pid}} = state) do
     steer_id = Id.new()
-    from = ask(state, pid, {:steer, turn.id, steer_id, Queue.plain(entry)}, :reply)
+    text = Message.text(Queue.plain(entry))
+    from = ask(state, pid, {:steer, turn.id, steer_id, text}, :reply)
     %{state | queue: Queue.sent(state.queue, from, steer_id, entry)}
   end
 
@@ -135,15 +140,20 @@ defmodule Helyx.Session.Server.Steering do
     if counts == Queue.counts(old), do: state, else: emit(state, :queue_update, counts)
   end
 
-  defp effect({:take, {:end, text}}, state) do
-    taken(state, text)
-    Records.take_steer(state, text)
+  defp effect({:take, {:end, message}}, state) do
+    taken(state, message)
+    Records.take_steer(state, message)
   end
 
-  defp effect({:take, text}, state), do: Records.take_steer(state, text)
+  defp effect({:take, message}, state), do: Records.take_steer(state, message)
 
-  defp effect({:notice, turn_id, text}, state),
-    do: emit(state, turn_id, :steer_unconfirmed, %{text: text})
+  defp effect({:notice, turn_id, message}, state),
+    do: emit(state, turn_id, :steer_unconfirmed, %{text: Message.text(message), message: message})
 
-  defp effect({:dropped, texts}, state), do: emit(state, :queue_dropped, %{texts: texts})
+  defp effect({:dropped, messages}, state),
+    do:
+      emit(state, :queue_dropped, %{
+        texts: Enum.map(messages, &Message.text/1),
+        messages: messages
+      })
 end

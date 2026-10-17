@@ -12,7 +12,7 @@ defmodule Helyx.Session.File.ScanTest do
   # `mtime`.
   defp session(dir, cwd, mtime, prompt, id \\ Session.Id.new()) do
     {:ok, file} = Session.File.create(dir, id, cwd, "test/ok")
-    if prompt, do: Session.File.append_message(file, Message.user(prompt))
+    if prompt, do: Helyx.Test.SessionFile.append_message(file, Message.user(prompt))
     File.touch!(file.path, mtime)
     {id, file.path}
   end
@@ -61,7 +61,7 @@ defmodule Helyx.Session.File.ScanTest do
 
     file
     |> Session.File.append_model_change("test/other")
-    |> Session.File.append_message(%Message{
+    |> Helyx.Test.SessionFile.append_message(%Message{
       role: :user,
       content: [
         %Message.Text{text: "look"},
@@ -69,14 +69,14 @@ defmodule Helyx.Session.File.ScanTest do
         %Message.Text{text: "at\e[2J this"}
       ]
     })
-    |> Session.File.append_message(Message.user("later"))
+    |> Helyx.Test.SessionFile.append_message(Message.user("later"))
 
     # The text comes as the file holds it: the client cleans it.
     assert [%Summary{prompt: "look at\e[2J this", model: "test/ok"}] = Scan.list(dir, "/repo")
 
     # A first message that is not a user message gives no prompt.
     {:ok, file} = Session.File.create(dir, Session.Id.new(), "/b", "test/ok")
-    Session.File.append_message(file, %Message{role: :assistant, content: []})
+    Helyx.Test.SessionFile.append_message(file, %Message{role: :assistant, content: []})
     assert [%Summary{prompt: ""}] = Scan.list(dir, "/b")
   end
 
@@ -122,7 +122,7 @@ defmodule Helyx.Session.File.ScanTest do
       # The message line, newline included, ends at byte `size` of the file.
       at = fn cwd, size ->
         {:ok, file} = Session.File.create(dir, Session.Id.new(), cwd, "test/ok")
-        Session.File.append_message(file, Message.user("é"))
+        Helyx.Test.SessionFile.append_message(file, Message.user("é"))
         bytes = size - File.stat!(file.path).size
         pad = String.duplicate("é", div(bytes, 2)) <> String.duplicate("a", rem(bytes, 2))
         File.write!(file.path, String.replace(File.read!(file.path), ~s("é"), ~s("é#{pad}")))
@@ -154,14 +154,14 @@ defmodule Helyx.Session.File.ScanTest do
          %{tmp_dir: dir} do
       {:ok, file} = Session.File.create(dir, Session.Id.new(), "/repo", "test/ok")
       header_bytes = File.stat!(file.path).size
-      Session.File.append_message(file, Message.user(String.duplicate("é", 40_000)))
+      Helyx.Test.SessionFile.append_message(file, Message.user(String.duplicate("é", 40_000)))
       assert File.stat!(file.path).size > 65_536 + header_bytes
 
       assert [%Summary{prompt: ""}] = Scan.list(dir, "/repo")
 
       # The same prompt that ends inside the head is kept whole.
       {:ok, file} = Session.File.create(dir, Session.Id.new(), "/b", "test/ok")
-      Session.File.append_message(file, Message.user(String.duplicate("é", 20_000)))
+      Helyx.Test.SessionFile.append_message(file, Message.user(String.duplicate("é", 20_000)))
       assert [%Summary{prompt: prompt}] = Scan.list(dir, "/b")
       assert prompt == String.duplicate("é", 20_000)
     end

@@ -13,7 +13,7 @@ defmodule Helyx.Session.Server.TurnLoop do
   import Helyx.Session.Server.State, only: [ask: 4]
   import Helyx.Session.Server.Events, only: [emit: 3]
 
-  alias Helyx.{Context, Message}
+  alias Helyx.Context
   alias Helyx.Session.{Hands, Id, ProviderProcess, Queue, Transcript, Turn}
   alias Helyx.Session.Server.{Compaction, ProviderConn, Records, State, Steering, Wait}
 
@@ -22,13 +22,13 @@ defmodule Helyx.Session.Server.TurnLoop do
   # a tool call to the hands during their release, and that call would
   # block the session, so every message queues until the hands answer.
   # `Steering.steer/2` accepts a steer on a turn or a wait.
-  def admit(_op, text, %State{activity: :idle} = state), do: {:ok, begin_turn(state, [text])}
+  def admit(_op, user, %State{activity: :idle} = state), do: {:ok, begin_turn(state, [user])}
 
-  def admit(:prompt, _text, %State{activity: %Turn{}} = state),
+  def admit(:prompt, _user, %State{activity: %Turn{}} = state),
     do: {{:error, :turn_running}, state}
 
-  def admit(:steer, text, state), do: Steering.steer(state, text)
-  def admit(_op, text, state), do: Steering.queue(state, :follow_ups, text)
+  def admit(:steer, user, state), do: Steering.steer(state, user)
+  def admit(_op, user, state), do: Steering.queue(state, :follow_ups, user)
 
   # A lifecycle message, matched to the current turn, wait, or provider
   # process ("Turn states"). The turn is `preparing` until the session
@@ -147,11 +147,11 @@ defmodule Helyx.Session.Server.TurnLoop do
   def handle(message, %State{activity: %Wait{hands: request}} = state) when request != nil,
     do: progress(Wait.cleanup(state, message))
 
-  # Starts a turn with one user message per text, in order.
-  defp begin_turn(%State{} = state, texts) do
+  # Starts a turn with the user messages, in order.
+  defp begin_turn(%State{} = state, users) do
     turn = %Turn{id: Id.new(), model: state.model, provider: state.provider}
     state = Steering.open(open_turn(state, turn, %{}))
-    call_provider(Enum.reduce(texts, state, &Records.append_user(&2, &1)))
+    call_provider(Enum.reduce(users, state, &Records.append_user(&2, &1)))
   end
 
   # A turn that the provider started by itself (#240): a submitted turn
@@ -262,7 +262,7 @@ defmodule Helyx.Session.Server.TurnLoop do
        )
        when context != nil do
     {steers, %State{activity: turn} = state} = Steering.append_steers(state)
-    context = %{context | messages: context.messages ++ Enum.map(steers, &Message.user/1)}
+    context = %{context | messages: context.messages ++ steers}
     from = ask(state, pid, {:turn, turn.id, context}, :reply)
     %{state | activity: %{turn | phase: :submitting, pending: from, context: nil}}
   end
@@ -367,7 +367,7 @@ defmodule Helyx.Session.Server.TurnLoop do
   defp start_queued(%State{} = state) do
     case Steering.drain(state) do
       {[], state} -> if Queue.wake?(state.queue), do: begin_turn(state, []), else: state
-      {texts, state} -> begin_turn(state, texts)
+      {users, state} -> begin_turn(state, users)
     end
   end
 

@@ -8,6 +8,12 @@ defmodule Helyx.Message do
   A tool result message links to its call with `tool_call_id` and `tool_name`,
   and flags a failed call with `is_error`.
 
+  Core sets `id` on every message that joins a session, and `origin` on
+  every user message: `%{kind: :user | :background | :product, id: id}`,
+  or `:unknown` for a user message of a session file from before #649
+  (`docs/features/message-identity.md`). A message that a provider builds
+  for its own wire has neither.
+
   The module also defines the rules of the values in a message and in a
   turn: the stop reason set, the resume id, the JSON round trip,
   and the integer limit. It does not check input. Its callers are the
@@ -40,6 +46,8 @@ defmodule Helyx.Message do
   defstruct [
     :role,
     :content,
+    :id,
+    :origin,
     :model,
     :stop_reason,
     :tool_call_id,
@@ -50,12 +58,16 @@ defmodule Helyx.Message do
 
   @type block :: Text.t() | Thinking.t() | ToolCall.t()
   @type role :: :user | :assistant | :tool_result
+  @typedoc "Who made a user message (`origin?/1`)."
+  @type origin :: %{kind: :user | :background | :product | :unknown, id: String.t() | nil}
   @typedoc "A stream event that `add_block/2` adds to assistant content."
   @type block_event ::
           {:text_delta, String.t()} | {:thinking_delta, String.t()} | {:tool_call, ToolCall.t()}
   @type t :: %__MODULE__{
           role: role(),
           content: [block()],
+          id: String.t() | nil,
+          origin: origin() | nil,
           model: String.t() | nil,
           stop_reason: stop_reason() | nil,
           tool_call_id: String.t() | nil,
@@ -67,6 +79,10 @@ defmodule Helyx.Message do
   @doc "Builds a user message with one text block."
   @spec user(String.t()) :: t()
   def user(text) when is_binary(text), do: %__MODULE__{role: :user, content: [%Text{text: text}]}
+
+  @doc "Builds a user message of the session with a new id and `origin`."
+  @spec user(String.t(), origin()) :: t()
+  def user(text, origin), do: %{user(text) | id: Helyx.Session.Id.new(), origin: origin}
 
   @doc """
   Builds the tool result message for a call from `{:ok, text}` or
@@ -119,8 +135,27 @@ defmodule Helyx.Message do
   entry that fails it.
   """
   @spec resume_id?(term()) :: boolean()
-  def resume_id?(id),
-    do: is_binary(id) and byte_size(id) in 1..@resume_id_max_bytes and String.valid?(id)
+  def resume_id?(id), do: text_id?(id, @resume_id_max_bytes)
+
+  # A product id names one occurrence, such as a job id and a run number.
+  @origin_id_max_bytes 256
+
+  @doc """
+  Whether `origin` is a valid origin of a new user message: `:user` with a
+  nil id, or `:background` or `:product` with an id of valid UTF-8 of 1 to
+  #{@origin_id_max_bytes} bytes. The session API admits only `:product`
+  from product code; the session file reader checks a stored origin with it.
+  """
+  @spec origin?(term()) :: boolean()
+  def origin?(%{kind: :user, id: nil} = origin) when map_size(origin) == 2, do: true
+
+  def origin?(%{kind: kind, id: id} = origin)
+      when kind in [:background, :product] and map_size(origin) == 2,
+      do: text_id?(id, @origin_id_max_bytes)
+
+  def origin?(_origin), do: false
+
+  defp text_id?(id, max), do: is_binary(id) and byte_size(id) in 1..max and String.valid?(id)
 
   @doc """
   The byte size of the JSON encode of the value, or `:error` for a value

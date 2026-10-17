@@ -8,7 +8,7 @@ defmodule Helyx.Session.File.Reader do
 
   alias Helyx.Message
   alias Helyx.Session.File.{Codec, Scan}
-  alias Helyx.Session.Transcript
+  alias Helyx.Session.{Id, Transcript}
 
   @no_header "the first entry is not a header"
 
@@ -39,7 +39,7 @@ defmodule Helyx.Session.File.Reader do
        when is_binary(id) and is_binary(model) do
     with :ok <- Scan.check_version(header),
          :ok <- check_cwd(header, cwd) do
-      {:ok, %{leaf: id, model: model, messages: [], resume_ids: %{}, count: 0}}
+      {:ok, %{leaf: id, ids: %{}, model: model, messages: [], resume_ids: %{}, count: 0}}
     end
   end
 
@@ -59,10 +59,24 @@ defmodule Helyx.Session.File.Reader do
   # After the header the writer only produces messages, model changes,
   # resume ids, and compactions, every model field a string. Anything else
   # is damage on the disk, never dropped in silence.
-  defp fold(%{"type" => "message"} = entry, acc) do
-    message = Codec.decode(entry)
-    count = if message.role == :assistant, do: acc.count + 1, else: acc.count
-    {:ok, %{acc | messages: [message | acc.messages], count: count}}
+  # A message id is its entry id, and a client keys messages by it, so a
+  # repeated one is damage, and so is an id that `Id.new/0` never makes: it
+  # could hold `:`, the separator of the ids that `Transcript.repair/1`
+  # derives. Only message ids are kept: the other entries reach no client.
+  defp fold(%{"type" => "message", "id" => id} = entry, acc) do
+    cond do
+      is_map_key(acc.ids, id) ->
+        {:error, {:invalid_file, "a message repeats the id #{inspect(id)}"}}
+
+      not Id.valid?(id) ->
+        {:error, {:invalid_file, "a message id is not valid: #{inspect(id)}"}}
+
+      true ->
+        message = Codec.decode(entry)
+        count = if message.role == :assistant, do: acc.count + 1, else: acc.count
+        ids = Map.put(acc.ids, id, true)
+        {:ok, %{acc | messages: [message | acc.messages], count: count, ids: ids}}
+    end
   end
 
   defp fold(%{"type" => "model_change", "model" => model}, acc) when is_binary(model),
@@ -97,5 +111,7 @@ defmodule Helyx.Session.File.Reader do
   defp resume_id(_entry, _acc), do: %{}
 
   defp done(nil, _tail), do: {:error, {:invalid_file, @no_header}}
-  defp done(acc, tail), do: {:ok, %{acc | messages: Enum.reverse(acc.messages)}, tail}
+
+  defp done(acc, tail),
+    do: {:ok, %{acc | messages: Enum.reverse(acc.messages)}, tail}
 end

@@ -15,27 +15,20 @@ defmodule Helyx.Session do
       # ends; Helyx.Session.end_reason(reason) is :stopped or :crashed
 
   Every provider runs the turn in its provider process (ADR 0002, ADR 0007).
-  A model provider runs it with `Helyx.Provider.Loop`: it calls the model
-  again when the tool calls of an assistant message have their results. An
-  assistant message with no tool calls ends the turn, unless a steer is
-  held. Its tool calls run on the session's hands (`Helyx.Session.Hands`)
-  one at a time, in call order. A provider without `Helyx.Provider.Loop` can
-  run the whole turn and its own tools itself. A turn ends on the terminal
-  event of the provider. It fails when its first prepare Task fails or its
-  provider process ends first; a failed context build goes to the provider.
-  A provider process of an earlier turn that ends while the turn prepares is
-  replaced once. Each tool call with no result gets an `aborted` error
-  result (`aborted_result/0`). Follow-ups and steers wait in queues
-  (`follow_up/2`, `steer/2`). An abort ends the turn at once, and the
-  session starts no turn until the end of the wait after it (`abort/1`). A
-  compaction of the provider's own history is a turn too (`compact/2`).
+  A model provider runs it with `Helyx.Provider.Loop`, whose tool calls run
+  on the session's hands (`Helyx.Session.Hands`) one at a time, in call
+  order; another provider can run the whole turn and its own tools. A tool
+  call with no result at the turn end gets `aborted_result/0`. Steers and
+  follow-ups wait in queues. An abort ends the turn at once (`abort/1`). A
+  compaction is a turn too (`compact/2`). Every message has an id, and
+  every user message an origin (`docs/features/message-identity.md`).
 
   `docs/features/session-lifecycle.md` has the turn, the queues, the
   abort, and the provider process. `docs/features/session-subscribers.md`
   has the subscription.
   """
 
-  alias Helyx.ModelRef
+  alias Helyx.{Message, ModelRef}
   alias Helyx.Session.{Id, Server, Snapshot, Transcript}
   alias Helyx.Session.Server.State
 
@@ -46,6 +39,9 @@ defmodule Helyx.Session do
   @call_timeout_ms 5_000
 
   @type t :: %__MODULE__{id: String.t(), core: Helyx.Core.name()}
+
+  @typedoc "An error of `prompt/3`, `steer/3`, and `follow_up/3`."
+  @type send_error :: :invalid_utf8 | :invalid_origin | :queue_full | :session_not_found
 
   @typedoc "An error that stops a model ref from resolving to a provider plugin."
   @type model_error ::
@@ -274,11 +270,15 @@ defmodule Helyx.Session do
   Sends a prompt. Starts a turn if none is running. The text must be valid
   UTF-8. While an abort waits for the hands, the prompt queues as a
   follow-up, and a full queue returns `{:error, :queue_full}`.
+
+  Its message has the origin `:user`. Product code passes `origin: %{kind:
+  :product, id: id}`, an id of 1 to 256 bytes of UTF-8, unique per call; any
+  other option list is `{:error, :invalid_origin}`. `steer/3` and
+  `follow_up/3` take it too (`docs/features/message-identity.md`).
   """
-  @spec prompt(t(), String.t()) ::
-          :ok | {:error, :turn_running | :invalid_utf8 | :queue_full | :session_not_found}
-  def prompt(%__MODULE__{} = session, text) when is_binary(text),
-    do: send_text(session, :prompt, text)
+  @spec prompt(t(), String.t(), keyword()) :: :ok | {:error, :turn_running | send_error()}
+  def prompt(%__MODULE__{} = session, text, opts \\ []) when is_binary(text) and is_list(opts),
+    do: send_user(session, :prompt, text, opts)
 
   @doc """
   Steers the running turn. `:ok` means that the session accepted the
@@ -292,11 +292,11 @@ defmodule Helyx.Session do
   transcript where the provider takes it. A rejected steer waits for the
   next turn, unless the turn aborts or fails first. A steer that Helyx
   cannot confirm is never sent again; a `:steer_unconfirmed` event carries
-  its text (`docs/features/session-lifecycle.md`, "Turn states", "Steer").
+  its message (`docs/features/session-lifecycle.md`, "Turn states", "Steer").
   """
-  @spec steer(t(), String.t()) :: :ok | {:error, :invalid_utf8 | :queue_full | :session_not_found}
-  def steer(%__MODULE__{} = session, text) when is_binary(text),
-    do: send_text(session, :steer, text)
+  @spec steer(t(), String.t(), keyword()) :: :ok | {:error, send_error()}
+  def steer(%__MODULE__{} = session, text, opts \\ []) when is_binary(text) and is_list(opts),
+    do: send_user(session, :steer, text, opts)
 
   @doc """
   Queues a follow-up prompt. Each follow-up opens its own turn, in the
@@ -306,10 +306,9 @@ defmodule Helyx.Session do
   full queue returns `{:error, :queue_full}`. An abort or a failure of the
   turn gives it back to the client in a `:queue_dropped` event.
   """
-  @spec follow_up(t(), String.t()) ::
-          :ok | {:error, :invalid_utf8 | :queue_full | :session_not_found}
-  def follow_up(%__MODULE__{} = session, text) when is_binary(text),
-    do: send_text(session, :follow_up, text)
+  @spec follow_up(t(), String.t(), keyword()) :: :ok | {:error, send_error()}
+  def follow_up(%__MODULE__{} = session, text, opts \\ []) when is_binary(text) and is_list(opts),
+    do: send_user(session, :follow_up, text, opts)
 
   @doc """
   Compacts the history that the provider keeps, as a turn with no user
@@ -321,15 +320,21 @@ defmodule Helyx.Session do
   @spec compact(t(), String.t()) ::
           :ok | {:error, :turn_running | :invalid_utf8 | :session_not_found}
   def compact(%__MODULE__{} = session, instructions \\ "") when is_binary(instructions),
-    do: send_text(session, :compact, instructions)
+    do: send_text(session, {:compact, instructions}, instructions)
 
-  defp send_text(session, op, text) do
-    if String.valid?(text) do
-      call(session, {op, text})
-    else
-      {:error, :invalid_utf8}
-    end
-  end
+  defp send_user(session, op, text, opts),
+    do: with({:ok, origin} <- origin(opts), do: send_text(session, {op, text, origin}, text))
+
+  # The boundary of the origin: product code may set only `:product`.
+  defp origin([]), do: {:ok, %{kind: :user, id: nil}}
+
+  defp origin(origin: %{kind: :product} = origin),
+    do: if(Message.origin?(origin), do: {:ok, origin}, else: {:error, :invalid_origin})
+
+  defp origin(_opts), do: {:error, :invalid_origin}
+
+  defp send_text(session, request, text),
+    do: if(String.valid?(text), do: call(session, request), else: {:error, :invalid_utf8})
 
   @doc """
   Switches the session's model. The ref is parsed and its provider resolved
@@ -339,8 +344,7 @@ defmodule Helyx.Session do
   `:model_change` event. A running turn keeps the model it started with; the
   next turn uses the new one.
   """
-  @spec set_model(t(), String.t()) ::
-          :ok | {:error, model_error() | :session_not_found}
+  @spec set_model(t(), String.t()) :: :ok | {:error, model_error() | :session_not_found}
   def set_model(%__MODULE__{core: core} = session, string) when is_binary(string) do
     with {:ok, {ref, provider}} <- resolve_model(core, string) do
       call(session, {:set_model, ref, provider})

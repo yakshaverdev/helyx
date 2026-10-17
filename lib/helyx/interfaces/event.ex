@@ -17,7 +17,9 @@ defmodule Helyx.Event do
       provider started by itself, with no user message, or `%{origin:
       :compaction}` for a compaction turn (`Helyx.Session.compact/2`); once
       per turn
-    * `:message_start` – `%{message: Helyx.Message.t()}` (may be partial)
+    * `:message_start` – `%{message: Helyx.Message.t()}` (may be partial).
+      The message has its id here; `:message_end`, the transcript, and the
+      snapshot keep it (`docs/features/message-identity.md`)
     * `:message_update` – `%{text_delta: binary}`, `%{thinking_delta: binary}`,
       or `%{tool_call: Helyx.Message.ToolCall.t()}`
     * `:message_end` – `%{message: Helyx.Message.t()}`; on a failed or
@@ -48,7 +50,9 @@ defmodule Helyx.Event do
       `waiting` counts the other ends that no turn took yet: the ends that
       wait for a turn, and the ends that a turn sent and no `user_message`
       took or gave back (`docs/features/background-bash.md`)
-    * `:queue_dropped` – `%{texts: [String.t()]}`: an abort or a failed
+    * `:queue_dropped` – `%{texts: [String.t()], messages:
+      [Helyx.Message.t()]}`, the user messages with their ids and origins
+      and their texts in the same order: an abort or a failed
       turn emptied the queues, and the queued texts go back to the client,
       the steers first, each queue in its order (a steer that the
       provider rejected joined the end of the steers). At most 32
@@ -64,8 +68,9 @@ defmodule Helyx.Event do
       this is its first new resume id since that start; `cut` is the
       number of transcript messages the provider left out of what it sent
       when it started fresh
-    * `:steer_unconfirmed` – `%{text: String.t()}`: a steer of a turn
-      that Helyx cannot confirm the provider took, with its text. It
+    * `:steer_unconfirmed` – `%{text: String.t(), message:
+      Helyx.Message.t()}`: a steer of a turn that Helyx cannot confirm the
+      provider took, with its user message and its text. It
       goes out at the end of the turn, or after it when the answer comes
       late. Helyx does not send it again. The user can send it again.
     * `:compaction` – `%{trigger: :manual | :auto, tokens_before:

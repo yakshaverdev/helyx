@@ -14,7 +14,7 @@ defmodule Mix.Tasks.HelyxTest do
       on_exit(fn -> Application.delete_env(:coding_agent, :sessions_dir) end)
       # A session with no message is not resumed, so the file has a prompt.
       {:ok, file} = Helyx.Session.File.create(dir, Helyx.Session.Id.new(), dir, "fake/echo")
-      file = Helyx.Session.File.append_message(file, Helyx.Message.user("hi"))
+      file = Helyx.Test.SessionFile.append_message(file, Helyx.Message.user("hi"))
       %{path: file.path, leaf: file.leaf}
     end
 
@@ -55,7 +55,7 @@ defmodule Mix.Tasks.HelyxTest do
 
     test "a tagged text: an exception message of many lines",
          %{tmp_dir: dir, path: path, leaf: leaf} do
-      line = ~s({"type":"message","id":"m1","parent_id":"#{leaf}","role":"user"}\n)
+      line = ~s({"type":"message","id":"message00001","parent_id":"#{leaf}","role":"user"}\n)
       File.write!(path, line, [:append])
       assert resume_message(dir) =~ "the session file is damaged: protocol Enumerable"
     end

@@ -44,19 +44,19 @@ defmodule Helyx.Session.BackgroundTest do
       Message.user(Background.finish(@id, {:ok, "done"}))
     ]
 
-    assert [lost] = Background.lost(transcript)
+    assert [%Message{origin: %{kind: :background, id: ^other}} = lost] =
+             Background.lost(transcript)
 
-    assert lost ==
+    assert Message.text(lost) ==
              ~s(<background id="#{other}" status="lost">\n) <>
                "The session stopped while this background command ran, and its end was lost. " <>
                "The command may have run in full or in part. " <>
                "Check its effects before you run it again. " <>
                "Its output file was deleted with the session.\n</background>"
 
-    assert Background.lost(transcript ++ [Message.user(lost)]) == []
+    assert Background.lost(transcript ++ [lost]) == []
 
     assert [first, second] = Background.lost([start_result(other), start_result(@id)])
-    assert first =~ other
-    assert second =~ @id
+    assert {first.origin.id, second.origin.id} == {other, @id}
   end
 end

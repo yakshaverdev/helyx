@@ -7,7 +7,7 @@ defmodule Helyx.Session.TranscriptTest do
   defp call(id), do: %Message.ToolCall{id: id, name: "read", arguments: %{}}
 
   defp assistant(content, model \\ "claude-code/sonnet"),
-    do: %Message{role: :assistant, content: content, model: model}
+    do: %Message{role: :assistant, id: "m", content: content, model: model}
 
   defp result(id), do: Message.tool_result(call(id), {:ok, "done"})
 
@@ -42,7 +42,9 @@ defmodule Helyx.Session.TranscriptTest do
                    "The call may have run in full, in part, or not at all. " <>
                    "Check its effects before you repeat it."
 
-    defp interrupted(id), do: Message.tool_result(call(id), {:error, @interrupted})
+    # Its id is derived from the assistant message "m" and the place of the call.
+    defp interrupted(id, place \\ 0),
+      do: %{Message.tool_result(call(id), {:error, @interrupted}) | id: "m:#{place}"}
 
     test "leaves a transcript with no open calls unchanged" do
       transcript = [Message.user("hi"), assistant([call("a")]), result("a"), assistant([])]
@@ -127,8 +129,15 @@ defmodule Helyx.Session.TranscriptTest do
     test "open calls at the end get their results at the end, and a second pass adds nothing" do
       transcript = [Message.user("hi"), assistant([call("a"), call("b")])]
       answered = Transcript.repair(transcript)
-      assert answered == transcript ++ [interrupted("a"), interrupted("b")]
+      assert answered == transcript ++ [interrupted("a"), interrupted("b", 1)]
       assert Transcript.repair(answered) == answered
+    end
+
+    test "a call id that repeats in one message gets one derived id for each place (#649)" do
+      transcript = [%{assistant([call("a"), call("b"), call("a")]) | id: "Xy"}, result("a")]
+
+      assert [_assistant, _result, %Message{id: "Xy:1"}, %Message{id: "Xy:2"}] =
+               Transcript.repair(transcript)
     end
   end
 

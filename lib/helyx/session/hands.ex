@@ -30,7 +30,7 @@ defmodule Helyx.Session.Hands do
   A tool call can go on in the background (`Helyx.Tool.background/0`,
   `Helyx.Tool.started/1`): its start answer is a `{:started, text}` result, and
   its Task leaves its turn, out of reach of `request_cancel/2`.
-  Its end follows its release as `{:background_end, text}`, and its place
+  Its end follows its release as `{:background_end, message}`, and its place
   stays taken until `taken/2` (`docs/features/background-bash.md`).
 
   `start_provider/3` starts the provider process (ADR 0007) with an armed
@@ -292,7 +292,7 @@ defmodule Helyx.Session.Hands do
   defp outcome(_turn_id, :provider, pid, result), do: {:provider_down, pid, down_reason(result)}
 
   defp outcome(nil, {:background, id}, _pid, result),
-    do: {:background_end, Background.finish(id, checked(result))}
+    do: {:background_end, Background.end_message(id, checked(result))}
 
   defp outcome(turn_id, id, _pid, result), do: outcome(turn_id, id, result)
 

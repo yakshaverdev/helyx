@@ -6,7 +6,7 @@ defmodule Helyx.Session.LoopTest do
   import Helyx.Test.Events
   import Helyx.Test.SessionCase
 
-  alias Helyx.{Event, Session}
+  alias Helyx.{Event, Message, Session}
 
   setup :start_core
 
@@ -468,7 +468,8 @@ defmodule Helyx.Session.LoopTest do
     :ok = Session.abort(session)
     events = collect_until(:turn_end)
     assert stop_reason(events) == :aborted
-    assert of_type(events, :queue_dropped) == [%{texts: ["f"]}]
+    assert [%{texts: ["f"], messages: [%Message{} = message]}] = of_type(events, :queue_dropped)
+    assert Message.text(message) == "f"
 
     assert List.last(queue_counts(events)) == %{
              steers: 0,

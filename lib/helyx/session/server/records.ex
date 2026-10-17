@@ -12,12 +12,11 @@ defmodule Helyx.Session.Server.Records do
   import Helyx.Session.Server.Events, only: [emit: 3, emit: 4]
 
   alias Helyx.{Message, ModelRef, Session}
+  alias Helyx.Session.{Id, Transcript, Turn}
   alias Helyx.Session.Server.{ProviderConn, State}
-  alias Helyx.Session.{Transcript, Turn}
 
-  def append_user(state, text) do
-    user = Message.user(text)
-
+  # A user message that Core made at its admission, with its id and origin.
+  def append_user(state, %Message{role: :user} = user) do
     append_message(state, user)
     |> emit(:message_start, %{message: user})
     |> emit(:message_end, %{message: user})
@@ -65,12 +64,12 @@ defmodule Helyx.Session.Server.Records do
   # The provider took a steer. The open assistant message closes first,
   # as at a `message_end`. Then every call still open gets
   # its `aborted` result: no message goes between a call and its result.
-  def take_steer(%State{activity: %Turn{partial: nil}} = state, text),
-    do: state |> abort_open_calls() |> append_user(text)
+  def take_steer(%State{activity: %Turn{partial: nil}} = state, user),
+    do: state |> abort_open_calls() |> append_user(user)
 
-  def take_steer(%State{activity: %Turn{partial: partial}} = state, text) do
+  def take_steer(%State{activity: %Turn{partial: partial}} = state, user) do
     stop = if Enum.any?(partial, &match?(%Message.ToolCall{}, &1)), do: :tool_use, else: :end_turn
-    take_steer(end_assistant(state, stop, nil), text)
+    take_steer(end_assistant(state, stop, nil), user)
   end
 
   # The close at the end of a turn, at `outcome`: `{:done, stop_reason,
@@ -154,8 +153,9 @@ defmodule Helyx.Session.Server.Records do
   end
 
   # Emits message_start for the assistant message on the first stream event.
+  # The message gets its id here, so its message_start carries it.
   defp start_assistant_message(%State{activity: %Turn{partial: nil} = turn} = state) do
-    state = %{state | activity: %{turn | partial: []}}
+    state = %{state | activity: %{turn | partial: [], message_id: Id.new()}}
     emit(state, :message_start, %{message: Turn.assistant_message(state.activity, [])})
   end
 
@@ -181,7 +181,7 @@ defmodule Helyx.Session.Server.Records do
   # Appends the tool result message to the transcript and emits
   # tool_execution_end.
   defp record_result(call, result, state) do
-    message = Message.tool_result(call, result)
+    message = %{Message.tool_result(call, result) | id: Id.new()}
     emit(append_message(state, message), :tool_execution_end, %{message: message})
   end
 

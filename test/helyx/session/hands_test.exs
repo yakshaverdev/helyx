@@ -296,7 +296,10 @@ defmodule Helyx.Session.HandsTest do
       send(pid, :go)
       assert_receive {:release, :deliver, _handles}
       assert_receive {:background_end, finish}
-      assert finish == ~s(<background id="#{id}" status="done">\ndone\n</background>)
+      assert finish.origin == %{kind: :background, id: id}
+
+      assert Helyx.Message.text(finish) ==
+               ~s(<background id="#{id}" status="done">\ndone\n</background>)
     end
 
     test "a crash of the run ends it with an error", %{core: core, dir: dir, gate: gate} do
@@ -309,7 +312,9 @@ defmodule Helyx.Session.HandsTest do
         with_log(fn ->
           Process.exit(pid, :kill)
           assert_receive {:background_end, finish}
-          assert finish =~ ~r/\A<background id=".{12}" status="error">\ntool crashed: /
+
+          assert Helyx.Message.text(finish) =~
+                   ~r/\A<background id=".{12}" status="error">\ntool crashed: /
         end)
 
       assert log =~ "tool crashed"
@@ -347,7 +352,7 @@ defmodule Helyx.Session.HandsTest do
       background(hands, "c18", %{"gate" => gate})
       assert_receive {:tool_result, "t1", "c18", {:error, ^text}}
 
-      :ok = Helyx.Session.Hands.taken(hands, Helyx.Session.Background.id(finish))
+      :ok = Helyx.Session.Hands.taken(hands, finish.origin.id)
       background(hands, "c19", %{"gate" => gate})
       assert_receive {:tool_result, "t1", "c19", {:started, _start}}
     end
@@ -405,7 +410,7 @@ defmodule Helyx.Session.HandsTest do
           ] do
         background(hands, "c1", %{"gate" => gate, "start" => start})
         assert_receive {:tool_result, "t1", "c1", {:started, answer}}
-        id = Helyx.Session.Background.id(answer)
+        [id] = Regex.run(~r/\A<background id="(.{12})"/, answer, capture: :all_but_first)
         assert answer == ~s(<background id="#{id}" status="started">\n#{body}\n</background>)
         assert byte_size(body) <= 12_288
       end

@@ -600,7 +600,14 @@ defmodule Helyx.Session.ProviderProcessTest do
       {session, pid, proc, turn_id}
     end
 
-    defp unconfirmed(events), do: for(%{type: :steer_unconfirmed, data: data} <- events, do: data)
+    # The text of each notice, which is the text of its message.
+    defp unconfirmed(events) do
+      for %{type: :steer_unconfirmed, data: %{text: text, message: message}} <- events do
+        assert %Message{role: :user, id: id, origin: %{kind: :user}} = message
+        assert is_binary(id) and Message.text(message) == text
+        %{text: text}
+      end
+    end
 
     defp ends(events) do
       for %{type: :message_end, data: %{message: m}} <- events, do: {m.role, Message.text(m)}
@@ -756,6 +763,33 @@ defmodule Helyx.Session.ProviderProcessTest do
 
       assert_receive {:conn, :turn, ^proc, {:turn, _, context}}
       assert Message.text(List.last(context.messages)) == "more"
+    end
+
+    # #649: the rejected steer is one message from the steer to the file.
+    test "a rejected steer keeps its id and origin into the next turn", %{core: core} do
+      {session, _pid, proc, turn_id} = submitted(core, "steer_reject")
+      :ok = Session.steer(session, "more", origin: %{kind: :product, id: "r1"})
+      collect_until(:queue_update)
+      send(proc, {:finish, turn_id})
+      collect_until(:turn_end)
+
+      assert_receive {:conn, :turn, ^proc, {:turn, next_id, context}}
+      assert %Message{id: id, origin: %{kind: :product, id: "r1"}} = List.last(context.messages)
+      send(proc, {:finish, next_id})
+      collect_until(:turn_end)
+
+      assert [%Message{origin: %{id: "r1"}}] =
+               Enum.filter(snapshot(session).messages, &(&1.id == id))
+    end
+
+    test "a steer_unconfirmed message keeps the product origin", %{core: core} do
+      {session, _pid, proc, turn_id} = submitted(core, "hang")
+      :ok = Session.steer(session, "more", origin: %{kind: :product, id: "u1"})
+      assert_receive {:conn, :steer, ^proc, _}
+      send(proc, {:finish, turn_id})
+
+      assert [%{message: %{origin: %{kind: :product, id: "u1"}}}] =
+               of_type(collect_until(:turn_end), :steer_unconfirmed)
     end
 
     for model <- ["hang", "steer_error"] do
@@ -914,7 +948,8 @@ defmodule Helyx.Session.ProviderProcessTest do
       send(proc, :stop)
       events = collect_until(:turn_end)
       assert %{outcome: :error} = List.last(events).data
-      assert of_type(events, :queue_dropped) == [%{texts: ["s", "f"]}]
+      assert [%{texts: ["s", "f"], messages: messages}] = of_type(events, :queue_dropped)
+      assert Enum.map(messages, &Message.text/1) == ["s", "f"]
     end
 
     test "while preparing kills the prepare Task and leaves the provider process", %{core: core} do

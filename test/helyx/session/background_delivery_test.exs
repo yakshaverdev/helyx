@@ -93,6 +93,12 @@ defmodule Helyx.Session.BackgroundDeliveryTest do
     assert [:queue_update, :turn_start | _] = Enum.map(events, & &1.type)
     assert user_texts(events) == [done(id)]
     assert final_text(events) == "hello|" <> done(id)
+    # The end is marked by its origin, not by its text (#649).
+    assert [%{kind: :background, id: ^id}] = user_origins(events)
+  end
+
+  defp user_origins(events) do
+    for %{type: :message_end, data: %{message: %{role: :user} = m}} <- events, do: m.origin
   end
 
   # #591: a run counts as running from its start answer to its end; its
@@ -178,6 +184,7 @@ defmodule Helyx.Session.BackgroundDeliveryTest do
     events = collect_until(:turn_end)
     assert Enum.count(events, &(&1.type == :turn_start)) == 1
     assert user_texts(events) == ["two", done(id)]
+    assert [%{kind: :user}, %{kind: :background, id: ^id}] = user_origins(events)
     assert_receive {:trace, ^hands, :receive, {:"$gen_cast", {:taken, ^id}}}
   end
 

@@ -6,7 +6,7 @@ defmodule Helyx.Session.Server do
   # inputs and match the records of the current turn. The client API and
   # the docs of the behaviour are in `Helyx.Session`.
 
-  alias Helyx.ModelRef
+  alias Helyx.{Message, ModelRef}
   alias Helyx.Session.{Background, Hands, Id, Lock, Queue, Turn}
   alias Helyx.Session.Server.{Compaction, Events, ProviderConn, Records, State, Steering, Stop}
   alias Helyx.Session.Server.ToolRuns
@@ -89,7 +89,10 @@ defmodule Helyx.Session.Server do
     # A run that was live at the stop of a resumed session ended with it:
     # its lost end waits for the next turn (docs/features/background-bash.md).
     # A new session has no ends, so the hold matters only at a resume.
-    queue = %Queue{ends: Background.lost(state.transcript), hold: true}
+    queue = %Queue{
+      ends: Background.lost(state.transcript),
+      hold: true
+    }
 
     {:ok,
      %{
@@ -103,8 +106,9 @@ defmodule Helyx.Session.Server do
 
   # The admission of a client message by phase (`TurnLoop.admit/3`).
   @impl true
-  def handle_call({op, text}, _from, %State{} = state) when op in [:prompt, :steer, :follow_up] do
-    {reply, state} = TurnLoop.admit(op, text, state)
+  def handle_call({op, text, origin}, _from, %State{} = state)
+      when op in [:prompt, :steer, :follow_up] do
+    {reply, state} = TurnLoop.admit(op, Message.user(text, origin), state)
     {:reply, reply, state}
   end
 
@@ -207,7 +211,7 @@ defmodule Helyx.Session.Server do
 
   # The hands' start answer of a background run: the run counts from here,
   # also when its call is no longer current, and its end counts down
-  # (`{:background_end, text}`). The transcript and the provider get a
+  # (`{:background_end, message}`). The transcript and the provider get a
   # plain `:ok` result.
   def handle_info({:tool_result, turn_id, call_id, {:started, text}}, state),
     do: handle_info({:tool_result, turn_id, call_id, {:ok, text}}, Steering.started(state))
@@ -222,8 +226,8 @@ defmodule Helyx.Session.Server do
   # The end of a background run (docs/features/background-bash.md): a
   # steer in a submitted turn, else it waits; an idle session with no hold
   # starts a turn for it.
-  def handle_info({:background_end, text}, state),
-    do: {:noreply, state |> Steering.push_end(text) |> TurnLoop.settle()}
+  def handle_info({:background_end, message}, state),
+    do: {:noreply, state |> Steering.push_end(message) |> TurnLoop.settle()}
 
   # A message for a turn or a call that is no longer current.
   def handle_info({:tool_result, _turn_id, _call_id, _result}, state), do: {:noreply, state}
