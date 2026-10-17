@@ -79,3 +79,9 @@ bounds sensor: 0 candidate functions, 0 flagged, 0 without an answer
 Mutation checks of the spec agent (each a local edit, reverted): the catalog set to nil, the seam without `:user_agent`, and the struct clause skipped each fail only their own new test. The failure-path agent checked the error body bound with a key across the cut at 16,380 to 16,385 bytes: the bound holds. Not reached by the budget: an exception during the body after a 200 (`{:task_exit, _}`), an `{:error, exception}` of `Req.post` other than a transport error, and two map keys that become one after the mask (an entry is lost, the key is not shown).
 
 No further round: the round limit is reached, and the round-3 rule says commit only reviewed code. Only comments and Markdown changed after this round.
+
+## Orchestrator gate
+
+Gate round 1 (Codex): 1 finding, rejected.
+
+- **The truncation marker is outside the 16,384-byte limit** (medium). Rejected: the bound is on the body, and `docs/features/coding-agent.md` states it as "cut to valid UTF-8 and marked `[truncated at the N-byte limit]`". Master has the same behaviour. The returned text stays bounded at 16,384 bytes plus a fixed marker. The orchestrator's gate sentence said "on the returned text" by mistake.
