@@ -329,4 +329,152 @@ defmodule Helyx.ModelContext.DefaultTest do
       refute build(cwd, home, [%{name: "skill", description: "", parameters: %{}}]) =~ "## Skills"
     end
   end
+
+  describe "the skills loaded before a summary" do
+    # docs/features/skills.md, "After a summary compaction".
+    alias Helyx.Message
+
+    @max_bytes 32_768
+
+    defp user(id, text), do: %{Message.user(text) | id: id}
+
+    defp skill_result(id, text, is_error \\ false) do
+      call = %Message.ToolCall{id: "c-" <> id, name: "skill", arguments: %{}}
+      result = if is_error, do: {:error, text}, else: {:ok, text}
+      %{Message.tool_result(call, result) | id: id}
+    end
+
+    defp load(name, body \\ "body"),
+      do: ~s(<skill name="#{name}">\nFolder: /f\n\n#{body}\n</skill>)
+
+    defp messages(messages, summary, dir) do
+      opts = [cwd: dir, home: dir, model: @model, session_id: "s1", summary: summary]
+      Default.build(%Helyx.Context{messages: messages}, opts).messages
+    end
+
+    defp summary(id), do: %Helyx.Summary{text: "old", first_kept_id: id, tokens_before: 1}
+
+    test "the skills of the summarized part go in one message before the first kept message, newest first",
+         %{tmp_dir: dir} do
+      before = [
+        user("u1", load("ship") <> "\n\n730"),
+        skill_result("r1", load("tdd")),
+        user("u2", "go on")
+      ]
+
+      kept = [user("u3", "next")]
+
+      {built, [carried | ^kept]} = Enum.split(messages(before ++ kept, summary("u3"), dir), 3)
+      assert built == before
+      assert carried.role == :user and carried.id == nil
+      text = Message.text(carried)
+
+      assert text =~
+               ~r/\A.*\n\n<skill name="tdd">.*<\/skill>\n\n<skill name="ship">.*<\/skill>\z/s
+
+      refute text =~ "730"
+    end
+
+    test "with no summary, or no load before the cut, the messages do not change",
+         %{tmp_dir: dir} do
+      list = [user("u1", load("ship")), user("u2", "next")]
+      assert messages(list, nil, dir) == list
+      assert messages(list, summary("u1"), dir) == list
+      # A first kept id that is not in the messages cuts nothing.
+      assert messages(list, summary("gone"), dir) == list
+    end
+
+    test "a skill loaded again after the cut, an error result, and another tool are not carried",
+         %{tmp_dir: dir} do
+      other = %{
+        Message.tool_result(
+          %Message.ToolCall{id: "c", name: "read", arguments: %{}},
+          {:ok, load("b")}
+        )
+        | id: "r2"
+      }
+
+      before = [user("u1", load("a")), skill_result("r1", load("c"), true), other]
+      list = before ++ [user("u2", "next"), skill_result("r3", load("a"))]
+      assert messages(list, summary("u2"), dir) == list
+    end
+
+    test "at most five bodies, then one line per skill; a body over the bound gets a line",
+         %{tmp_dir: dir} do
+      big = load("big", String.duplicate("x", @max_bytes))
+      small = for n <- 1..6, do: user("u#{n}", load("s#{n}"))
+      list = [user("u0", big) | small] ++ [user("k", "next")]
+      text = list |> messages(summary("k"), dir) |> Enum.at(-2) |> Message.text()
+
+      for n <- 2..6, do: assert(text =~ ~s(<skill name="s#{n}">))
+      refute text =~ ~s(<skill name="s1">) or text =~ ~s(<skill name="big">)
+      assert text =~ ~r/\bs1\b.*load it again/
+      assert text =~ ~r/\bbig\b.*load it again/
+    end
+
+    test "the message is at most #{@max_bytes} bytes with many skills", %{tmp_dir: dir} do
+      bodies = for n <- 1..5, do: user("b#{n}", load("b#{n}", String.duplicate("y", 6_000)))
+      names = for n <- 1..1_000, do: user("n#{n}", load("name-#{n}"))
+      list = names ++ bodies ++ [user("k", "next")]
+      text = list |> messages(summary("k"), dir) |> Enum.at(-2) |> Message.text()
+
+      assert byte_size(text) <= @max_bytes
+      assert count(text, "<skill name=") == 5
+
+      # The lines go newest first, and from the first that does not fit,
+      # every older skill is left out.
+      named =
+        for [_, n] <- Regex.scan(~r/The skill name-(\d+) was loaded too/, text),
+            do: String.to_integer(n)
+
+      assert [1_000 | _] = named
+      assert named == Enum.to_list(1_000..List.last(named)//-1)
+      assert List.last(named) > 1
+    end
+
+    test "a text that fills the bound to the byte is carried; one byte more gets a line",
+         %{tmp_dir: dir} do
+      carried = fn body ->
+        [user("u1", body), user("k", "next")]
+        |> messages(summary("k"), dir)
+        |> Enum.at(-2)
+        |> Message.text()
+      end
+
+      small = load("x")
+      intro = byte_size(carried.(small)) - byte_size(small) - 2
+      fill = String.duplicate("z", @max_bytes - intro - 2 - byte_size(small) + byte_size("body"))
+      exact = load("x", fill)
+
+      assert byte_size(carried.(exact)) == @max_bytes
+      assert carried.(exact) =~ exact
+      over = carried.(load("x", fill <> "z"))
+      refute over =~ ~s(<skill name="x">)
+      assert over =~ "The skill x was loaded too"
+    end
+
+    test "a skill loaded twice before the cut carries its newest text", %{tmp_dir: dir} do
+      list = [
+        user("u1", load("ship", "first-text")),
+        user("u2", load("ship", "second-text")),
+        user("k", "next")
+      ]
+
+      text = list |> messages(summary("k"), dir) |> Enum.at(-2) |> Message.text()
+
+      assert text =~ "second-text"
+      refute text =~ "first-text"
+      assert count(text, ~s(<skill name="ship">)) == 1
+    end
+
+    test "the summary plugin keeps the message after its summary", %{tmp_dir: dir} do
+      list = [user("u1", load("ship")), user("u2", "next")]
+      context = %Helyx.Context{messages: messages(list, summary("u2"), dir)}
+      compacted = Helyx.Compaction.Summary.compact(context, summary: summary("u2"), trigger: nil)
+
+      assert [framed, carried, "next"] = Enum.map(compacted.messages, &Message.text/1)
+      assert framed =~ "<summary>"
+      assert carried =~ ~s(<skill name="ship">)
+    end
+  end
 end

@@ -12,7 +12,9 @@ defmodule Helyx.Compaction.Summary do
 
   Every build puts the stored summary (`opts[:summary]`) in front of the
   messages from its first kept message on, or of all messages when the
-  ModelContext removed that message. With trigger `:auto` it asks
+  ModelContext removed that message. A message before the cut that the
+  ModelContext added (no id) stays after the summary, and the summary
+  input does not hold it. With trigger `:auto` it asks
   for a summary when the estimate is over the window minus
   #{@reserve_tokens} tokens (clamped to the window); with `:manual` and
   `:overflow` it asks at once. It asks only when a cut keeps a part
@@ -92,8 +94,12 @@ defmodule Helyx.Compaction.Summary do
       "The earlier part of this conversation was compacted into this summary:\n\n" <>
         "<summary>\n#{summary.text}\n</summary>"
 
-    kept = Helyx.Summary.kept(context.messages, summary)
-    %{context | messages: [Message.user(framed) | kept]}
+    {before, kept} = Enum.split(context.messages, start(context.messages, summary))
+
+    # A message that the ModelContext added has no id: the summary does not
+    # cover it, so it stays after the summary.
+    added = Enum.filter(before, &is_nil(&1.id))
+    %{context | messages: [Message.user(framed) | added ++ kept]}
   end
 
   # The index of the first message that `Helyx.Summary.kept/2` keeps.

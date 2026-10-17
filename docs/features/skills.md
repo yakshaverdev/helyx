@@ -89,6 +89,36 @@ A plain value of words is in: `license: Apache-2.0`, `allowed-tools: Bash(git:*)
 
 The proof is the differential property of `plugins/bundled/test/helyx/skills/frontmatter_test.exs`. It generates frontmatter in the subset and near it, with the construct characters at the start of a word and in a word in the values of other keys, and quoted scalars there that close on their line and ones that do not, and asserts that each one that the reader accepts gives the same `name` and `description` as `YamlElixir.read_from_string/1`. When YamlElixir rejects such a frontmatter, the exception applies: the same frontmatter with a plain `o<n>: x` for each other key must give them. `yaml_elixir` is a test-only dependency of `plugins/bundled`. A probe of 100,000 generated frontmatters (2026-10-18, with the quoted scalars of other keys), of which 5,021 were accepted and 948 of those had a quoted value in another key, found no difference. The files of this repository's `.claude/skills` and the frontmatter texts of the specification all read, and give what YamlElixir gives.
 
+### After a summary compaction
+
+Ticket #745. The model loads a skill, works for a long time, and the session compacts with a summary (`summary-compaction.md`). The skill text stays in the context after the cut, so the model goes on following it.
+
+Decisions (the orchestrator's, with the owner away):
+
+1. **Derive, not store.** The skills loaded in a session come from the transcript: the loads that `loaded?/2` finds, results of the skill tool and `/name` expansions. The session stores no new list.
+2. **Where.** `Helyx.ModelContext.Default` adds the texts of the skills loaded before the cut as one user message after the summary, newest first. The ModelContext runs before the Compaction plugin, which puts the summary in front of the first kept message. So the ModelContext puts its message in front of the first kept message, with no id, and `Helyx.Compaction.Summary` keeps a message with no id before the cut after its summary: every message of the transcript has an id (`message-identity.md`), so a message with no id is one that the ModelContext added. The summary input does not hold it.
+3. **Bounds.** At most 5 skill texts and 32,768 bytes for the whole message, newest first. A skill that does not fit gets one line that tells the model to load it again if it needs it.
+4. **The file changes.** The text is the one in the transcript, the text that the model saw, not the file read again, so the context holds the same text as before the cut.
+5. **Harness providers.** A provider that keeps its own history (Claude Code, Codex) runs its own compaction (`harness-compaction.md`) and never gets the Helyx summary in a normal turn: the program's summary decides if a loaded skill stays. A load of the skill tool after it gives the note, because the Helyx transcript still holds the earlier load, and the note tells the model to read `SKILL.md` (see "Accepted"). The skills message reaches a harness only in the replay after a model switch or a lost thread, the same as the Helyx summary.
+
+The rule, at each context build with a summary (`opts[:summary]`): the messages before the first kept message (`Helyx.Summary.kept/2`) are the summarized part. A skill counts when a load of it is in the summarized part and no load of it is in the kept part: a load in the kept part is in the context already. Its text is the text of its newest load in the summarized part: the whole result of the skill tool, or a user message up to its last `\n</skill>`, so the arguments of `/name args` stay out. With no summary, or with a first kept id that is not in the messages, nothing is cut and no message is added.
+
+`Helyx.Skills.carried(before, kept)` gives the text of the message, or nil:
+
+```text
+These skills were loaded before the summary above, newest first. Follow each one as before.
+
+<skill name="ship">
+...
+</skill>
+
+The skill tdd was loaded too, and its text is not here: load it again if you need it.
+```
+
+The texts come first, newest first, then the lines, newest first. A skill gets its text when fewer than 5 have one and its text fits what is left of the bound, else its line when that fits; from the first skill whose line does not fit, it and every older one are left out.
+
+`Helyx.Tool.Skill` does not change: its transcript is the kept part, so a load of a carried skill after the cut gives the text again. The next build then finds the load in the kept part and leaves that skill out of the message, so the text is in the context once from then on.
+
 ### `Helyx.Tool.Skill`
 
 `skill` with the one required string argument `name`. A name that the scan does not know is an error result that names the catalog. A known skill that `loaded?/2` finds in `Helyx.Tool.transcript/0` gives the note: the skill is loaded, follow the earlier text, and read `<folder>/SKILL.md` if that text is no longer in the context. Else the result is `text/1`.
@@ -121,7 +151,9 @@ The TUI command rule: a command name with no separator after it, as in `/models`
 | load text | `Helyx.Text.truncate/2` of the file (2,000 lines or 51,200 bytes, with its notice), the header, and the folder line capped at 4,096 bytes: at most about 56 KiB, under `Helyx.Message.max_result_bytes/0` (65,536), so the hands never cut it and its first line stays first | cut by `truncate/2` with a notice that names the next offset |
 | skill name from the model | a string, else an error; a name that the scan does not hold is an error that echoes at most 64 bytes of it | error result |
 | user command | the composer text or the print prompt; the expanded text is under 64 KiB plus the arguments, and `Helyx.Session` checks the 4 MiB bound of a message | the session refuses it |
-| `Helyx.Tool.transcript/0` | the whole transcript, one copy per call; the call has no deadline, because the session never waits for a tool Task | none; the session holds it already. The call exits when the session ends |
+| `Helyx.Tool.transcript/0` | the messages that `Helyx.Summary.kept/2` keeps, all of them with no summary, one copy per call; the call has no deadline, because the session never waits for a tool Task | none; the session holds it already. The call exits when the session ends |
+| skills after a summary | at most 5 texts (`@max_carried`) and 32,768 bytes for the whole message (`@max_carried_bytes`), checked where the message text is joined; each part counts its bytes and the two bytes before it | the skill gets its line; from the first line that does not fit, the rest are left out |
+| the scan for loads after a summary | one pass over the transcript at each build with a summary, one `\A` match of the first text of each message, and one search for `\n</skill>` in each user message that is a candidate for one of the 5 texts | none: the session holds the transcript already |
 
 When the scan runs and what it costs: at each context build (the start of each turn, and before each model call of `Helyx.Provider.Loop`), at each skill tool call, at TUI mount, at each submitted `/word` in the TUI, and twice in print mode. So an edit to a skill takes effect at the next scan. On a folder of 200 skills of 2,046 bytes each, with a folded description, one scan with the frontmatter reader took a median of 56.5 ms (max 282.0 ms) in one run of 20 scans and 22.6 ms (max 46.2 ms) in a second, on the development machine at a load average of 5 to 7 (2026-10-18, `docs/devlogs/2026-10-18-skills.md`). The worst case reads 200 files of 64 KiB, 12.5 MiB.
 
@@ -135,6 +167,10 @@ Accepted:
 - After a native compaction of a harness, the harness can have dropped a loaded skill while the Helyx transcript still holds it; the note then tells the model to read `SKILL.md`.
 - A user command always expands to the full text, also when the session loaded the skill already: the client holds no transcript, and the user asked for the skill again.
 - The TUI user cell and the recall of an earlier prompt show the expanded text, not `/name args`.
+- After a summary, a user message that starts with a `<skill name="...">` line that the user typed counts as a load, as it does for the note of decision 2.
+- After a summary, the arguments of a `/name args` that hold a `\n</skill>` line go into the carried text up to that line.
+- With the five texts at the bound, the lines of older skills can be left out: then the summary is the only trace of them.
+- With `Helyx.Compaction.None` and a stored summary (a session file of a product with the summary plugin, resumed by one without it), the whole transcript is sent, and the carried message repeats skill texts that are in it.
 
 ## Ownership
 
@@ -142,7 +178,6 @@ None: each `SKILL.md` is opened and closed inside `Helyx.Text.read_file/1`, and 
 
 ## Out of scope
 
-- Keeping loaded skills through a summary compaction (a follow-up ticket). With the derived note, a load after a compaction gives the text again.
 - Agent definitions (a separate ticket).
 - Trust prompts for project skills: Helyx has no approval gate (#503).
 - The `.well-known/agent-skills` index.

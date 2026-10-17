@@ -64,6 +64,14 @@ defmodule Helyx.ModelContext.Default do
   found, and it does not count toward the cap of the context files. See
   `docs/features/skills.md`.
 
+  With a summary (`opts[:summary]`), the skills that the model loaded
+  before its first kept message, and not again after it, go in one user
+  message in front of that message, so the summary plugin puts it after
+  the summary: the text that the model saw, newest first, at most 5 texts
+  and 32,768 bytes in all, and one line for each other skill while
+  the lines fit. See
+  `docs/features/skills.md`, "After a summary compaction".
+
   The context files are the global file `~/.helyx/AGENTS.md`, then one file
   for each folder from the filesystem root down to the working directory, in
   that order. A folder gives the first of `AGENTS.override.md`, `AGENTS.md`,
@@ -104,7 +112,22 @@ defmodule Helyx.ModelContext.Default do
     root = opts[:docs_root] || @docs_root
     docs = if File.regular?(Path.join(root, "README.md")), do: [docs_section(root)], else: []
     sections = docs ++ [session_section(cwd, opts) | skills_section(context, cwd, home)]
-    %{context | system: Enum.join([@base_prompt | sections] ++ nearest_within_cap(files), "\n\n")}
+    system = Enum.join([@base_prompt | sections] ++ nearest_within_cap(files), "\n\n")
+    %{context | system: system, messages: carry_skills(context.messages, opts[:summary])}
+  end
+
+  # The skills loaded before the cut of the summary, as one message in
+  # front of the first kept message, so it comes after the summary.
+  defp carry_skills(messages, nil), do: messages
+
+  defp carry_skills(messages, summary) do
+    kept = Helyx.Summary.kept(messages, summary)
+    {before, kept} = Enum.split(messages, length(messages) - length(kept))
+
+    case Helyx.Skills.carried(before, kept) do
+      nil -> messages
+      text -> before ++ [Helyx.Message.user(text) | kept]
+    end
   end
 
   defp docs_section(root) do
