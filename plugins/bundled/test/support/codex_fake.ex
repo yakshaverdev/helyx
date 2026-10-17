@@ -5,9 +5,9 @@ defmodule Helyx.Test.CodexFake do
   # for the K-th request or notification of method M it runs `on.N.M.K`,
   # or else `on.N.M` (M with `/` as `_`), which prints the canned answer;
   # `out` prints a file with the id "@" set to the request's id.
-  # It exits at the end of its input. The dispatcher of `test_helper.exs`
-  # runs it from `bin` next to the session's working directory, so no test
-  # changes PATH. The tests that do are in `Helyx.HarnessIO.PathTest`.
+  # At the end of its input it runs `eof.N`, if any, and exits. The
+  # dispatcher of `test_helper.exs` runs it from `bin` next to the
+  # session's working directory, so no test changes PATH. The tests that do are in `Helyx.HarnessIO.PathTest`.
   @moduledoc false
 
   import ExUnit.Assertions
@@ -21,6 +21,12 @@ defmodule Helyx.Test.CodexFake do
   # The thread ids are macros, so that a pattern can use them.
   defmacro tid, do: "019a0000-0000-7000-8000-000000000001"
   defmacro fresh_tid, do: "019a0000-0000-7000-8000-000000000002"
+  # Their stored ids with no tools, for a pattern too.
+  defmacro stored_tid, do: Codex.Program.stored_id(tid(), [])
+  defmacro stored_fresh_tid, do: Codex.Program.stored_id(fresh_tid(), [])
+
+  # The stored id of thread `tid` with the tools `specs`.
+  def stored(tid, specs \\ []), do: Codex.Program.stored_id(tid, specs)
 
   def done, do: %{status: "completed", aggregatedOutput: "out", exitCode: 0}
 
@@ -46,6 +52,7 @@ defmodule Helyx.Test.CodexFake do
       elif [ -f "$d/on.$n.$m" ]; then . "$d/on.$n.$m"; fi
     fi
   done
+  [ -f "$d/eof.$n" ] && . "$d/eof.$n"
   """
 
   def setup_fake(%{tmp_dir: tmp}) do
@@ -212,6 +219,14 @@ defmodule Helyx.Test.CodexFake do
     {actions, state} = pump(Codex, state, actions, &turn_ended?/1)
     if not match?({:stop, _}, List.last(actions)), do: close(state)
     events(actions)
+  end
+
+  # The stop of the first turn on a new program: the thread opens at it.
+  def opening_stop(work, tools \\ [], opts \\ []) do
+    {:ok, state} = Codex.init("m", tools, [cwd: work] ++ opts)
+    {_from, actions, state} = turn_on(state)
+    {actions, _state} = pump(Codex, state, actions, &match?({:stop, _}, List.last(&1)))
+    List.last(actions)
   end
 
   # Ends the program, so it has read every line that it was sent.

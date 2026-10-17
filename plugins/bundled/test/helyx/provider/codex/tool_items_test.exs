@@ -24,7 +24,11 @@ defmodule Helyx.Provider.Codex.ToolItemsTest do
 
     fresh(bin, 1, tid(), [started(tid(), wait), turn_end(tid(), "completed")])
 
-    assert [{:resume_id, tid(), 0}, {:tool_call, %{id: "call_wait"}}, {:stop, :tool_running}] =
+    assert [
+             {:resume_id, stored_tid(), 0},
+             {:tool_call, %{id: "call_wait"}},
+             {:stop, :tool_running}
+           ] =
              run_direct([Message.user("go")], work)
   end
 
@@ -40,7 +44,7 @@ defmodule Helyx.Provider.Codex.ToolItemsTest do
     ])
 
     assert [
-             {:resume_id, tid(), 0},
+             {:resume_id, stored_tid(), 0},
              {:tool_call, %{id: "a"}},
              {:tool_call, %{id: "b"}},
              {:tool_result, "a", {:ok, "out"}},

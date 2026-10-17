@@ -58,7 +58,7 @@ defmodule Helyx.Provider.Codex.TurnsTest do
     assert %{"params" => %{"threadId" => tid(), "input" => [%{"text" => "list the files"}]}} =
              request(bin, 1, "turn/start")
 
-    assert [%{provider: "codex", resume_id: tid(), lost: false, cut: 0}] =
+    assert [%{provider: "codex", resume_id: stored_tid(), lost: false, cut: 0}] =
              of_type(events, :resume_id)
 
     call = %Message.ToolCall{
@@ -85,7 +85,7 @@ defmodule Helyx.Provider.Codex.TurnsTest do
     refute result.is_error
     assert [%{outcome: :done}] = of_type(events, :turn_end)
 
-    assert {:ok, %{resume_ids: %{"codex" => {tid(), 0, nil}}}} =
+    assert {:ok, %{resume_ids: %{"codex" => {stored_tid(), 0, nil}}}} =
              Helyx.Test.SessionFile.resume(ctx.sessions, ctx.work)
   end
 
@@ -172,13 +172,13 @@ defmodule Helyx.Provider.Codex.TurnsTest do
     assert %{"params" => %{"threadId" => fresh_tid(), "input" => [%{"text" => "again"}]}} =
              request(bin, 2, "turn/start")
 
-    assert [%{resume_id: fresh_tid(), lost: true, cut: 0}] =
+    assert [%{resume_id: stored_fresh_tid(), lost: true, cut: 0}] =
              of_type(events, :resume_id)
 
     assert [%Message{role: :user}, %Message{content: [%Message.Text{text: "Fresh."}]}] =
              messages(events)
 
-    assert {:ok, %{resume_ids: %{"codex" => {fresh_tid(), 1, nil}}}} =
+    assert {:ok, %{resume_ids: %{"codex" => {stored_fresh_tid(), 1, nil}}}} =
              Helyx.Test.SessionFile.resume(ctx.sessions, ctx.work)
   end
 
@@ -261,7 +261,7 @@ defmodule Helyx.Provider.Codex.TurnsTest do
       ] ++ reply(tid(), "ok")
     )
 
-    assert [{:resume_id, tid(), 0}, {:text_delta, "ok"}, {:done, _}] =
+    assert [{:resume_id, stored_tid(), 0}, {:text_delta, "ok"}, {:done, _}] =
              run_direct([Message.user("go")], work)
 
     answers =
@@ -331,7 +331,7 @@ defmodule Helyx.Provider.Codex.TurnsTest do
     item = %{type: "agentMessage", id: "msg_1", text: "Whole."}
     fresh(bin, 1, tid(), [completed(tid(), item), turn_end(tid(), "completed")])
 
-    assert [{:resume_id, tid(), 0}, {:text_delta, "Whole."}, {:done, _}] =
+    assert [{:resume_id, stored_tid(), 0}, {:text_delta, "Whole."}, {:done, _}] =
              run_direct([Message.user("go")], work)
   end
 
@@ -351,7 +351,7 @@ defmodule Helyx.Provider.Codex.TurnsTest do
 
     # The result and the tail fit; the assistant message with the call does
     # not, so the replay starts after the result, at the tail.
-    assert [{:resume_id, tid(), 3} | _] = run_direct(history, work)
+    assert [{:resume_id, stored_tid(), 3} | _] = run_direct(history, work)
 
     assert %{"params" => %{"items" => [%{"content" => [%{"text" => "tail"}]}]}} =
              request(bin, 1, "thread/inject_items")

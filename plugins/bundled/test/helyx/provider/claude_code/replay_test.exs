@@ -145,7 +145,11 @@ defmodule Helyx.Provider.ClaudeCode.ReplayTest do
     script(bin, "start.1", [lost(sid())], "exit 1\n")
     File.write!(Path.join(bin, "start.1"), gate <> File.read!(Path.join(bin, "start.1")))
 
-    state = harness(work, resume_id: sid())
+    context = %Helyx.Context{messages: [Helyx.Message.user("x")]}
+
+    {_from, _actions, state} =
+      request(harness(work, resume_id: stored(sid())), {:turn, "t1", context})
+
     from = make_ref()
     assert {:ok, [], state} = ClaudeCode.request(:close, from, state)
     File.write!(go, "")

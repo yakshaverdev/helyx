@@ -64,8 +64,9 @@ defmodule Helyx.Provider.HarnessEpipeTest do
   end
 
   # The generic failure path (#390): the fake codex stops its watchdog,
-  # then answers `initialize` and `thread/start`, so the `turn/start` line
-  # with the prompt waits in the port's queue. The test kills the watchdog
+  # then answers `initialize`, and `thread/start` again and again: the
+  # answers before the request are not due and are dropped. So the
+  # `turn/start` line with the prompt waits in the port's queue. The test kills the watchdog
   # only: the queued bytes get `EPIPE`, the port closes with `:epipe`, and
   # its exit signal ends the provider process. The session fails the turn
   # and lives on, and the hands' release ends the program group (ADR 0004).
@@ -78,8 +79,8 @@ defmodule Helyx.Provider.HarnessEpipeTest do
     echo $PPID > #{Path.join(dir, "watchdog")}
     echo $$ > #{Path.join(dir, "group")}
     kill -STOP $PPID
-    printf '%s\\n' '#{init}' '#{start}'
-    exec sleep 30
+    printf '%s\\n' '#{init}'
+    while :; do sleep 0.05; printf '%s\\n' '#{start}'; done
     """)
 
     core = :"core_#{System.unique_integer([:positive])}"
@@ -97,8 +98,8 @@ defmodule Helyx.Provider.HarnessEpipeTest do
     assert group_gone_within?(group)
   end
 
-  # The provider process does not trap exits: an abort while the start
-  # waits for the hold of the command group ends it at once.
+  # The provider process does not trap exits: an abort while the start at
+  # the first turn waits for the hold of the command group ends it at once.
   # The name holds no quote: `tmp_dir` puts it in the path that the fake
   # perl of `setup` holds unquoted.
   test "Claude Code: a shutdown of the hands during the start ends the harness at once",
@@ -109,7 +110,9 @@ defmodule Helyx.Provider.HarnessEpipeTest do
     {pid, ref} =
       spawn_monitor(fn ->
         Process.put(:helyx_hands, test)
-        ClaudeCode.init("haiku", [], cwd: File.cwd!())
+        {:ok, state} = ClaudeCode.init("haiku", [], cwd: File.cwd!())
+        context = %Helyx.Context{messages: [Helyx.Message.user("x")]}
+        ClaudeCode.request({:turn, "t1", context}, make_ref(), state)
       end)
 
     assert_receive {:"$gen_call", from, {:hold, {:watchdog, _watchdog}}}

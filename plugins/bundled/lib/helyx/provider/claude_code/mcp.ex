@@ -10,13 +10,18 @@ defmodule Helyx.Provider.ClaudeCode.Mcp do
 
   import Helyx.Provider.ClaudeCode.Turn, only: [started?: 1]
 
-  # The user's own MCP servers stay: the Helyx tools add to the harness
-  # tools. With `alwaysLoad`, the model called a Helyx tool without a
-  # harness tool search (research note, "`alwaysLoad` on the SDK MCP
-  # server").
+  # The only MCP server: the program runs with `--strict-mcp-config`
+  # (`docs/features/provider-parity.md`). With `alwaysLoad`, the model
+  # called a Helyx tool without a harness tool search (research note,
+  # "`alwaysLoad` on the SDK MCP server").
   @config ~s({"mcpServers":{"helyx":{"type":"sdk","name":"helyx","alwaysLoad":true}}})
 
   def config, do: @config
+
+  # The Helyx name of a tool of this server: the program names it
+  # `mcp__helyx__<name>`.
+  def helyx_name("mcp__helyx__" <> name), do: name
+  def helyx_name(name), do: name
 
   # A request has an `id`; a notification has none and gets the ack of the
   # SDK, which the program waits for (research note). `initialize` can come

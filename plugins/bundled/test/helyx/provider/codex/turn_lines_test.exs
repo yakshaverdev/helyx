@@ -159,7 +159,9 @@ defmodule Helyx.Provider.Codex.TurnLinesTest do
 
     {:ok, state} = connect(work)
     {_turn, _, state} = ask(state, {:turn, "t1", %Helyx.Context{messages: [Message.user("go")]}})
-    assert {[{:stop, :turn_not_asked}], _state} = pump(Codex, state, [], fn _ -> false end)
+
+    assert {[{:event, "t1", {:resume_id, _, 0}}, {:stop, :turn_not_asked}], _state} =
+             pump(Codex, state, [], fn _ -> false end)
   end
 
   @tag :slow

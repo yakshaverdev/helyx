@@ -10,13 +10,30 @@ defmodule Helyx.HarnessIO do
   # their own commands on TERM, but a KILL leaves them running (research
   # notes).
   @term_grace_ms 5_000
+  # The wait for the exit of a program that another one replaces, after
+  # the end of its input. A Helyx close of Claude took 615 and 628 ms
+  # (`docs/research/claude-code-stream-json.md`, "Processes"). The wait is
+  # part of the 2,000 ms reply bound of the turn.
+  @end_wait_ms 1_000
+
+  # The hex digits of the digest in a stored id.
+  @digest_hex 16
 
   def line_max_bytes, do: @line_max_bytes
 
-  # The Helyx tools that a harness gets. The harness keeps its own file
-  # tools, so the Helyx file tools stay out: the model sees one tool for
-  # each job (#478).
-  def harness_tools(specs), do: Enum.reject(specs, &(&1.name in ~w(read edit write)))
+  # The stored id of a harness session: its id, `#`, and the digest of the
+  # JSON of `fixed`, what the program fixes at the start of the session and
+  # keeps on a resume. A stored id with another digest is not resumed: a
+  # fresh harness session starts with the replay
+  # (`docs/features/provider-parity.md`, "Resume eligibility").
+  def session_id(id, fixed), do: id <> "#" <> hex_digest(JSON.encode!(fixed), @digest_hex)
+
+  def resumable(nil, _fixed), do: nil
+
+  def resumable(stored, fixed) do
+    [id | _] = String.split(stored, "#", parts: 2)
+    if session_id(id, fixed) == stored, do: id
+  end
 
   # The lookup of the harness program, with the check for perl: the
   # watchdog needs perl, so without it the error names perl, not the exit
@@ -54,15 +71,32 @@ defmodule Helyx.HarnessIO do
 
   def stop(%{port: port}), do: Helyx.Watchdog.close(port)
 
+  # Ends the input of a program that another one replaces and waits for its
+  # exit: two programs must not run one harness session at once. A program
+  # that has not exited in time is stopped, and the turn fails.
+  def finish(%{port: port} = state) do
+    end_input(state)
+
+    receive do
+      {^port, {:exit_status, _status}} -> :ok
+    after
+      @end_wait_ms ->
+        stop(state)
+        {:error, :program_not_ended}
+    end
+  end
+
   # Writes to the program's stdin through the watchdog.
   def write(%{port: port}, data), do: Helyx.Watchdog.write(port, data)
 
   # The provider's `:close`: the NUL asks the watchdog to end the program,
   # and the port's exit answers `from` (`port_message/3`).
   def close(state, from) do
-    write(state, <<0>>)
+    end_input(state)
     %{state | closing: from}
   end
+
+  defp end_input(state), do: write(state, <<0>>)
 
   # The provider's `release/3`. See `Helyx.Watchdog.Group`. A delivery
   # TERMs first too: the provider process can end (an error answer, a line

@@ -9,7 +9,6 @@ defmodule Helyx.Provider.Codex.HelyxToolsTest do
 
   alias Helyx.{Message, Session}
   alias Helyx.Provider.{Codex, Fake}
-  alias Helyx.Provider.Codex.Tools
 
   @moduletag :tmp_dir
   setup {Helyx.Test.CodexFake, :setup_fake}
@@ -17,8 +16,7 @@ defmodule Helyx.Provider.Codex.HelyxToolsTest do
   describe "the Helyx tools" do
     @spec_bash %{name: "bash", description: "Runs a command.", parameters: %{"type" => "object"}}
 
-    # The Helyx file tools, which a harness does not get: it keeps its own
-    # (#478).
+    # The Helyx file tools, which the program gets as any other tool.
     @file_tools for name <- ~w(read edit write),
                     do: %{name: name, description: "", parameters: %{}}
 
@@ -59,15 +57,15 @@ defmodule Helyx.Provider.Codex.HelyxToolsTest do
       ~s{(while [ ! -f "#{file}" ]; do sleep 0.02; done; out "$d/#{name}") &\n}
     end
 
-    defp tools_turn(work, tools \\ [@spec_bash], opts \\ []) do
-      {:ok, state} = Codex.init("m", tools, [cwd: work] ++ opts)
+    defp tools_turn(work) do
+      {:ok, state} = Codex.init("m", [@spec_bash], cwd: work)
       turn = {:turn, "t1", %Helyx.Context{messages: [Message.user("x")]}}
       {_from, actions, state} = ask(state, turn)
       {state, actions}
     end
 
     # No retry without the tools (#365).
-    test "an error answer to initialize or thread/start fails the connect with it",
+    test "an error answer to initialize fails the connect, and one to thread/start the first turn",
          %{bin: bin, work: work} do
       on(bin, 1, "initialize", [j(%{id: "@", error: %{code: -32_600, message: "no"}})])
 
@@ -82,45 +80,52 @@ defmodule Helyx.Provider.Codex.HelyxToolsTest do
       fresh(bin, 2, tid(), [])
       on(bin, 2, "thread/start", [j(%{id: "@", error: error})])
 
-      assert {:error, {:codex, "thread/start", "thread/start.dynamicTools" <> _}} =
-               Codex.init("m", [@spec_bash], cwd: work)
+      assert {:stop, {:codex, "thread/start", "thread/start.dynamicTools" <> _}} =
+               opening_stop(work, [@spec_bash])
     end
 
     defp digest?(id),
       do: match?([tid(), digest] when byte_size(digest) == 16, String.split(id, "#"))
 
-    test "the program runs with its shell off, initialize asks for experimentalApi, thread/start gives the tools except the file tools, and the id names the tool set",
+    test "the program runs with its shell and the user's config off, initialize asks for experimentalApi, thread/start gives every tool and the prompt, and the id has the digest",
          %{bin: bin, work: work} do
       fresh(bin, 1, tid(), reply(tid(), "Hi."))
-      {state, actions} = tools_turn(work, @file_tools ++ [@spec_bash])
+      tools = @file_tools ++ [@spec_bash]
+      {:ok, state} = Codex.init("m", tools, cwd: work)
+      context = %Helyx.Context{system: "Be brief.", messages: [Message.user("x")]}
+      {_from, actions, state} = ask(state, {:turn, "t1", context})
       {actions, state} = pump(Codex, state, actions, &turn_ended?/1)
       close(state)
 
-      assert File.read!(Path.join(bin, "args.1")) ==
-               "app-server\n--disable\nshell_tool\n--disable\nunified_exec\n"
+      args = bin |> Path.join("args.1") |> File.read!() |> String.split("\n", trim: true)
+      assert ["app-server", "--disable", "shell_tool", "--disable", "unified_exec" | _] = args
+
+      for flag <- ~w(apps plugins hooks goals view_image image_generation),
+          do: assert(Enum.any?(Enum.chunk_every(args, 2, 1), &(&1 == ["--disable", flag])))
+
+      assert ~s(web_search="disabled") in args and "project_doc_max_bytes=0" in args
 
       assert %{"params" => %{"capabilities" => %{"experimentalApi" => true}}} =
                request(bin, 1, "initialize")
 
+      %{"params" => %{"dynamicTools" => dynamic} = params} = request(bin, 1, "thread/start")
+      assert params["baseInstructions"] == "Be brief."
+      assert Enum.map(dynamic, & &1["name"]) == ~w(read edit write bash)
+
       assert %{
-               "params" => %{
-                 "dynamicTools" => [
-                   %{
-                     "type" => "function",
-                     "name" => "bash",
-                     "description" => "Runs a command.",
-                     "inputSchema" => %{"type" => "object"}
-                   }
-                 ]
-               }
-             } = request(bin, 1, "thread/start")
+               "type" => "function",
+               "name" => "bash",
+               "description" => "Runs a command.",
+               "inputSchema" => %{"type" => "object"}
+             } = List.last(dynamic)
 
       assert [{:resume_id, id, 0} | _] = events(actions)
-      assert digest?(id)
+      assert id == stored(tid(), tools)
     end
 
     @tag :slow
-    test "a stored id resumes only a thread with the session's tool set", %{bin: bin, work: work} do
+    test "a stored id resumes only a thread with the session's flags and tool set",
+         %{bin: bin, work: work} do
       fresh(bin, 1, tid(), reply(tid(), "Hi."))
       {state, actions} = tools_turn(work)
       {actions, state} = pump(Codex, state, actions, &turn_ended?/1)
@@ -129,16 +134,14 @@ defmodule Helyx.Provider.Codex.HelyxToolsTest do
 
       runs = [
         {[@spec_bash], id, "thread/resume"},
+        # A thread stored before #651, with the user's config.
         {[@spec_bash], tid(), "thread/start"},
+        {[], tid(), "thread/start"},
         {[], id, "thread/start"},
-        {[], tid(), "thread/resume"},
+        {[], stored(tid()), "thread/resume"},
         {[%{@spec_bash | description: "Other."}], id, "thread/start"},
-        # A thread stored with the file tools in its set, before #478.
-        {@file_tools ++ [@spec_bash], id, "thread/resume"},
-        {@file_tools ++ [@spec_bash], Tools.session_id(tid(), @file_tools ++ [@spec_bash]),
-         "thread/start"},
-        # Only the file tools: the program gets no Helyx tool.
-        {@file_tools, tid(), "thread/resume"}
+        {@file_tools ++ [@spec_bash], id, "thread/start"},
+        {@file_tools ++ [@spec_bash], stored(tid(), @file_tools ++ [@spec_bash]), "thread/resume"}
       ]
 
       for {{tools, stored, method}, n} <- Enum.with_index(runs, 2) do
@@ -147,10 +150,11 @@ defmodule Helyx.Provider.Codex.HelyxToolsTest do
         on(bin, n, "thread/start", [j(%{id: "@", result: %{thread: thread(fresh_tid())}})])
 
         {:ok, state} = Codex.init("m", tools, cwd: work, resume_id: stored)
-        close(state)
+        {_from, _actions, state} = turn_on(state)
+        close(settle(Codex, state, &(&1.thread != nil)))
         assert request(bin, n, method), "run #{n}"
         caps = request(bin, n, "initialize")["params"]["capabilities"]
-        assert caps == if(tools in [[], @file_tools], do: nil, else: %{"experimentalApi" => true})
+        assert caps == if(tools == [], do: nil, else: %{"experimentalApi" => true})
       end
 
       assert %{"params" => %{"threadId" => tid()}} = request(bin, 2, "thread/resume")
@@ -187,7 +191,7 @@ defmodule Helyx.Provider.Codex.HelyxToolsTest do
       assert [{nil, %{"success" => true}}] = answers(bin, 1)
     end
 
-    test "a thread id that is empty or leaves no room for the digest fails the connect", %{
+    test "a thread id that is empty or leaves no room for the digest fails the first turn", %{
       bin: bin,
       work: work
     } do
@@ -195,20 +199,20 @@ defmodule Helyx.Provider.Codex.HelyxToolsTest do
       long = %{thread(tid()) | id: String.duplicate("a", 240)}
       on(bin, 1, "thread/start", [j(%{id: "@", result: %{thread: long}})])
 
-      assert {:error, {:malformed, "thread/start"}} =
-               Codex.init("m", [@spec_bash], cwd: work)
+      assert {:stop, {:malformed, "thread/start"}} = opening_stop(work, [@spec_bash])
 
       initialize(bin, 2)
       at = %{thread(tid()) | id: String.duplicate("a", 239)}
       on(bin, 2, "thread/start", [j(%{id: "@", result: %{thread: at}})])
       assert {:ok, state} = Codex.init("m", [@spec_bash], cwd: work)
-      close(state)
+      {_from, _actions, state} = turn_on(state)
+      close(settle(Codex, state, &(&1.thread != nil)))
 
       initialize(bin, 3)
       empty = %{thread(tid()) | id: ""}
       on(bin, 3, "thread/start", [j(%{id: "@", result: %{thread: empty}})])
 
-      assert {:error, {:malformed, "thread/start"}} = Codex.init("m", [], cwd: work)
+      assert {:stop, {:malformed, "thread/start"}} = opening_stop(work)
     end
 
     test "a call with no turn, one that does not map, and one of a tool not given get an error",
@@ -239,7 +243,7 @@ defmodule Helyx.Provider.Codex.HelyxToolsTest do
       ]
 
       on(bin, 1, "turn/start", turn(tid(), lines ++ reply(tid(), "Done.")))
-      {state, actions} = tools_turn(work, @file_tools ++ [@spec_bash])
+      {state, actions} = tools_turn(work)
       {actions, state} = pump(Codex, state, actions, &turn_ended?/1)
       close(state)
 

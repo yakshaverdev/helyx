@@ -111,7 +111,7 @@ defmodule Helyx.Provider.ClaudeCode.IdleCloseTest do
     :erlang.trace(pid, false, [:receive])
     assert :sys.get_state(pid).conn == nil
     assert [%{outcome: :done}] = of_type(prompt(session, "again"), :turn_end)
-    assert "--resume=#{id}" in args(bin, 2)
+    assert "--resume=#{bare(id)}" in args(bin, 2)
   end
 
   test "a program that exits during a turn fails it", %{bin: bin} = ctx do

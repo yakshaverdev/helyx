@@ -13,7 +13,9 @@ defmodule Helyx.Provider do
 
   The `Helyx.Context` of a `{:turn, ...}` or a `{:context, ...}` request is
   for one call: its `system` and `tools` are what a model provider sends on
-  that call. A harness provider may use only its `messages`.
+  that call. Every provider gives the model the turn's `system` and the
+  session's tools, within the named limits of ADR 0002 (revision of
+  2026-10-17).
 
   The options of `init/3` include `:resume_id`, the id of a `:resume_id`
   event of an earlier provider process to resume, or nil, and
