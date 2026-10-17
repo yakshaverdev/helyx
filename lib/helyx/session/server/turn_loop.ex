@@ -124,13 +124,23 @@ defmodule Helyx.Session.Server.TurnLoop do
     do: provider_down(%{state | conn: nil}, conn, reason)
 
   # The answer of the hands to the start of the session's provider process
-  # (`connect/1`), in a preparing turn or in the wait after it: the session
-  # monitors the process (`monitor_down/1`) and lets it run. A refusal
-  # fails the turn; in a wait the turn has ended already.
-  def handle({:provider_start, ref, {:ok, pid}}, %State{conn: %ProviderConn{start: ref}} = state) do
+  # (`connect/1`), in a preparing turn or in the wait after it. In the turn
+  # the session monitors the process (`monitor_down/1`) and lets it run. In
+  # the wait no turn needs it: it stops before `init/3`, and the wait holds
+  # until its `provider_down`. A refusal fails the turn; in a wait the turn
+  # has ended already.
+  def handle(
+        {:provider_start, ref, {:ok, pid}},
+        %State{conn: %ProviderConn{start: ref}, activity: %Turn{}} = state
+      ) do
     Process.monitor(pid)
     send(pid, :start)
-    progress(put_in(state.conn.pid, pid))
+    put_in(state.conn.pid, pid)
+  end
+
+  def handle({:provider_start, ref, {:ok, pid}}, %State{conn: %ProviderConn{start: ref}} = state) do
+    Process.exit(pid, {:shutdown, :aborted})
+    %{state | conn: %{state.conn | pid: pid, status: :ending}}
   end
 
   def handle(
