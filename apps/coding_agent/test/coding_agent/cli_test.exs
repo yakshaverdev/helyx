@@ -256,8 +256,15 @@ defmodule CodingAgent.CLITest do
       {:ok, _} = Helyx.Session.File.create(s, dash, ".", "fake/echo")
       assert error_line(["--session", dash]) == ~s(not a directory: ".")
       control = Helyx.Session.Id.new()
-      {:ok, _} = Helyx.Session.File.create(s, control, "/x\0\e[2J", "fake/echo")
-      assert error_line(["--session", control]) == ~s(not a directory: "/x??[2J")
+      {:ok, _} = Helyx.Session.File.create(s, control, "/x\t\e[2J", "fake/echo")
+      assert error_line(["--session", control]) == ~s(not a directory: "/x ?[2J")
+
+      # A folder that a start rejects is rejected before the open.
+      nul = Helyx.Session.Id.new()
+      {:ok, _} = Helyx.Session.File.create(s, nul, "/x\0", "fake/echo")
+
+      assert error_line(["--session", nul]) ==
+               "could not start the agent: the directory is not UTF-8 or holds a NUL byte"
 
       # After "--" the words are arguments, and two files with one id fail
       # the start.
@@ -266,7 +273,7 @@ defmodule CodingAgent.CLITest do
       File.mkdir_p!(Path.dirname(copy))
 
       File.cp!(
-        Path.join(Helyx.Session.File.Scan.project_dir(s, "/x\0\e[2J"), control <> ".jsonl"),
+        Path.join(Helyx.Session.File.Scan.project_dir(s, "/x\t\e[2J"), control <> ".jsonl"),
         copy
       )
 
@@ -279,6 +286,28 @@ defmodule CodingAgent.CLITest do
 
       missing = Helyx.Session.Id.new()
       assert error_line(["--session", missing]) == ~s(no session "#{missing}")
+      assert Process.whereis(Helyx.Core) == nil
+    end
+
+    # #765: the find of the id comes after the tool checks, as for a start.
+    # The value of PATH is not shown on a failure.
+    test "--session with no perl on PATH prints the tool error of a start",
+         %{tmp_dir: dir, sessions: s} do
+      {id, file} = session(s, dir, 1_000, "p")
+      before = File.read!(file)
+      empty = Path.join(dir, "no-perl")
+      File.mkdir_p!(empty)
+      path = System.get_env("PATH")
+      on_exit(fn -> System.put_env("PATH", path) end)
+      System.put_env("PATH", empty)
+
+      start = error_line([dir])
+      assert start =~ "the bash tool is not available"
+
+      for id <- [id, Helyx.Session.Id.new(), "../x"],
+          do: assert(error_line(["--session", id]) == start)
+
+      assert File.read!(file) == before
       assert Process.whereis(Helyx.Core) == nil
     end
   end

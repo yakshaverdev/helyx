@@ -44,6 +44,8 @@ A start and a resume run their checks in one order, and the first failure is the
 3. A start resolves the model ref, then makes the folders (`Helyx.Session.File.mkdir/2`). A resume picks the file (`Helyx.Session.File.pick/3`): the find of the id, or the scan for the newest session. With `:id` and no `:cwd`, the folder of the header is checked here, as step 1 checks a given one.
 4. The start of the session process (`Helyx.Session.Server.Open.start/4`): the cap; for a resume of an id that runs, the attach (Decisions, "Attach"). Then, in the open of the process, the lock, and for a start the create of the file, for a resume the load and its model ref.
 
+The coding agent keeps this order for `--session <id>` (#765). The CLI makes no check of the id or the sessions directory of its own: it starts Core and resumes the id with no `:cwd`, so a failed tool check gives the line of a failed start, as a start does. Its own rule for the folder of the header, an absolute path to a directory, comes after step 4 (`session-list.md`, "Folder").
+
 The errors that the transport maps to the codes of `start` and `resume` (`wire-protocol.md`, Operations): `:invalid_cwd`; `:not_found` and `:invalid_id`; `{:invalid_model_ref, ref}`; `{:unknown_provider, id}`; `:too_many_sessions`; any other term is `start_failed`.
 
 ## Replaced mechanism
@@ -53,6 +55,7 @@ The errors that the transport maps to the codes of `start` and `resume` (`wire-p
 3. Tests: "a session that another Core or the same Core holds does not open, and its file is unchanged" (`test/helyx/session/lock_test.exs`) becomes "a session that another Core holds does not open, the same Core attaches, and its file is unchanged": the property holds for another Core; for the same Core the resume attaches to the same process, and the file is still unchanged. "keeps no copy after a start and after a failed start" (`test/helyx/session/persistence_test.exs`) becomes "keeps no copy after a start and after a start that the Registry rejects": the second resume is still rejected in the supervisor before the `init/1`, and then attaches. "a failed resume shows the error and stays on the current session" (`plugins/bundled/test/helyx/tui/switch_test.exs`) keeps its name: a second Core now holds the lock, because a resume in the same Core attaches.
 4. Clients see: a resume of a session that already runs in this Core gives the running session.
 5. No state without a bound: see Bounds.
+6. **The find of `--session` in the coding agent (#765).** `CodingAgent.CLI` found the id with `Scan.find/2` and checked the folder of the header before it started Core, so with no perl on `PATH` it printed `no session "<id>"` where a start printed the tool error. It now starts Core and resumes the id with no `:cwd`; `CodingAgent.run/1` reads the folder from `Helyx.Sessions.list_live/1` after the open and checks it there. Clients see: the tool error first; a header folder with a NUL byte gives the line of a failed start in place of `not a directory`. Test: "--session checks the id and the folder of its header" (`apps/coding_agent/test/coding_agent/cli_test.exs`) now uses a folder with a tab for the clean pass and has a NUL case; "--session with no perl on PATH prints the tool error of a start" is new.
 
 ## Bounds
 

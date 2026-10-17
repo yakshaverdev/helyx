@@ -33,9 +33,13 @@ defmodule CodingAgent do
   session is written under `:sessions_dir`, which is required. With
   `resume: true` the most recent session for `:cwd` that has a message is
   resumed, and with `resume: id` the session with that id, whose header must
-  name `:cwd`. A resumed session keeps its saved model. Returns `{:error, reason}` when the model ref, the
-  plugin list, or the resume is rejected. Core stops before `run/1` returns
-  or raises.
+  name `:cwd`. With `resume: id` and no `:cwd`, the session runs in the
+  folder of its header, which must be an absolute path to a directory; the
+  resume finds the id after the tool checks
+  (`docs/features/server-management.md`, "Order of the checks"). A resumed
+  session keeps its saved model. Returns `{:error, reason}` when the model
+  ref, the plugin list, the resume, or the folder of the header is rejected.
+  Core stops before `run/1` returns or raises.
   """
   @spec run(keyword()) :: :ok | CodingAgent.Print.status() | {:error, term()}
   def run(opts) do
@@ -51,7 +55,8 @@ defmodule CodingAgent do
   defp run_session(opts) do
     with {:ok, session} <- start_session(opts) do
       try do
-        client(session, opts)
+        with {:ok, cwd} <- session_cwd(session, opts[:cwd]),
+             do: client(session, Keyword.put(opts, :cwd, cwd))
       after
         # The abort comes before Core stops, so a turn that the quit or a
         # failed TUI left open ends and the hands release its resources. A
@@ -60,6 +65,23 @@ defmodule CodingAgent do
       end
     end
   end
+
+  # With no `:cwd`, the folder is the one the session runs in. A folder of
+  # a header comes from the file. A session that does not answer the live
+  # list in time is left out of it.
+  defp session_cwd(session, nil) do
+    case Enum.find(Helyx.Sessions.list_live(session.core), &(&1.id == session.id)) do
+      nil ->
+        {:error, :session_not_found}
+
+      %{cwd: cwd} ->
+        if Path.type(cwd) == :absolute and File.dir?(cwd),
+          do: {:ok, cwd},
+          else: {:error, {:not_a_directory, cwd}}
+    end
+  end
+
+  defp session_cwd(_session, cwd), do: {:ok, cwd}
 
   defp client(session, opts) do
     case Keyword.fetch(opts, :prompt) do
@@ -105,8 +127,9 @@ defmodule CodingAgent do
   (`{:session_locked, id}`); any other error is a failed start, and its sentence comes
   after `could not start the agent: `. There is a clause for every shape of `t:Helyx.Session.File.error/0`,
   for the model ref and provider errors, for a bad working directory
-  (`:invalid_cwd`), for a tool that is not available, and for the end of
-  the session. The `:too_large`
+  (`:invalid_cwd`), for a header folder that is not a directory
+  (`{:not_a_directory, cwd}`, a whole line with no prefix), for a tool
+  that is not available, and for the end of the session. The `:too_large`
   text is a sentence already and passes unchanged. An error with no clause
   prints through `Helyx.Reason.text/1`, so it holds no stacktrace. Every
   result gets one clean pass: a whitespace run becomes one space, and a
@@ -129,6 +152,10 @@ defmodule CodingAgent do
   # The user opens a session that another process has open: the whole
   # line, with no prefix (docs/features/session-lock.md).
   defp line({:session_locked, _id} = reason), do: sentence(reason)
+
+  # The folder of a session header, as the CLI shows a directory argument
+  # that is not one.
+  defp line({:not_a_directory, _cwd} = reason), do: sentence(reason)
 
   defp line(reason), do: "could not start the agent: " <> sentence(reason)
 
@@ -167,6 +194,11 @@ defmodule CodingAgent do
   defp sentence({:lock_failed, text}), do: "could not lock the session: " <> text
   defp sentence(:open_timeout), do: "the session file did not open in time"
 
+  # The folder comes from the file, so it gets the clean pass and the width
+  # of a list line.
+  defp sentence({:not_a_directory, cwd}),
+    do: ~s(not a directory: "#{Helyx.TUI.SessionList.folder(cwd)}")
+
   defp sentence(:invalid_cwd), do: "the directory is not UTF-8 or holds a NUL byte"
 
   # The exit of the TUI when its session ends (`Helyx.Session.end_reason/1`),
@@ -193,22 +225,12 @@ defmodule CodingAgent do
   @spec start_session(keyword()) :: {:ok, Helyx.Session.t()} | {:error, term()}
   def start_session(opts) do
     core = Keyword.get(opts, :core, Helyx.Core)
-    cwd = Keyword.fetch!(opts, :cwd)
-    dir = Keyword.fetch!(opts, :sessions_dir)
+    base = [sessions_dir: Keyword.fetch!(opts, :sessions_dir)] ++ Keyword.take(opts, [:cwd])
 
     case Keyword.get(opts, :resume, false) do
-      false ->
-        Helyx.Session.start(core,
-          model: Keyword.fetch!(opts, :model),
-          cwd: cwd,
-          sessions_dir: dir
-        )
-
-      true ->
-        Helyx.Session.resume(core, sessions_dir: dir, cwd: cwd)
-
-      id ->
-        Helyx.Session.resume(core, sessions_dir: dir, cwd: cwd, id: id)
+      false -> Helyx.Session.start(core, [model: Keyword.fetch!(opts, :model)] ++ base)
+      true -> Helyx.Session.resume(core, base)
+      id -> Helyx.Session.resume(core, [id: id] ++ base)
     end
   end
 end
