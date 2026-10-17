@@ -76,3 +76,16 @@ Fixed at the one point that every relaunch passes: `HarnessIO` releases the grou
 | 5 | Failure path (note) | An unconfirmed command group gets a TERM again at each later launch, not only at the end. | Accepted: it needs a group that ignores TERM and a reused id. |
 
 Precommit after the fix failed on two Credo findings: `length/1` in the guard of `unhold/1` (now `List.improper?/1` in the body), and `claude_code.ex` at 508 lines over its 507, because the format split the `with` line of the rebase (a comment is now one line). Every test and Dialyzer passed in that run.
+
+## Gate finding 2 (Codex gate, round 2 on 4894180a)
+
+[medium, reproduced] The 500 ms deadline of the release at a launch is shorter than the 5,000 ms TERM grace. A held command group that ignores TERM took the whole deadline, so `Helyx.Watchdog.Group.release/4` never probed the watchdogs: each later replacement kept one more dead watchdog handle. The probe showed three extra watchdogs after three replacements.
+
+Fixed in `Group.release/4`, the one release of every watchdog handle: it probes every group once before any signal or wait, and a gone group drops out. A group that is not proved gone stays held (ADR 0004). Tests: "a group that stays to the deadline does not keep the handles of gone groups" in `watchdog/group_test.exs` (fake kill(1); fails without the fix with three extra watchdogs), and the slow "a group that ignores TERM does not keep the handles of the later programs" in `claude_code/prompt_test.exs` (a real child that ignores TERM, then three replacements; fails without the fix).
+
+### Reduced round (spec, failure path)
+
+| # | Source | Finding | Resolution |
+| --- | --- | --- | --- |
+| 1 | Spec, failure path | No defect. Both tests fail without the fix. Probes: a probe that fails with EPERM or is skipped at the deadline keeps the handle; a gone group now gets no signal; four programs with a stuck group took 1,896 ms. | — |
+| 2 | Spec, failure path (low) | The stuck child of the slow test lived 5 s; load past that would end it and fail the match. | Fixed: it lives 60 s, and `on_exit` KILLs it. |

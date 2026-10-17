@@ -42,6 +42,11 @@ defmodule Helyx.Watchdog.Group do
     # (`parse_marker/2` in `Helyx.Watchdog`, `Port.info(port, :os_pid)`).
     commands = for {:command, group} when is_integer(group) and group > 1 <- handles, do: group
     watchdogs = for {:watchdog, group} when is_integer(group) and group > 1 <- handles, do: group
+    # A probe first: a group that stays to the deadline must not keep the
+    # handles of groups that are gone already, which the waits would not
+    # reach.
+    commands = alive(commands, kill)
+    watchdogs = alive(watchdogs, kill)
     {commands, watchdogs} = sweep(commands, watchdogs, mode, deadline, grace, kill)
     Enum.map(commands, &{:command, &1}) ++ Enum.map(watchdogs, &{:watchdog, &1})
   end

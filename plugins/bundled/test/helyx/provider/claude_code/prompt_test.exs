@@ -60,6 +60,31 @@ defmodule Helyx.Provider.ClaudeCode.PromptTest do
     closed(state)
   end
 
+  # Each launch after the first waits the 500 ms of the release for the
+  # group that ignores TERM. The stuck child lives 60 s, far past the run
+  # of about 2 s, so load cannot end it first; `on_exit` KILLs it.
+  @tag :slow
+  test "a group that ignores TERM does not keep the handles of the later programs",
+       %{bin: bin, work: work} do
+    for n <- 1..4, do: turn(bin, n, 1, reply("ok"))
+    stuck = Path.join(bin, "stuck.pid")
+
+    on_exit(fn ->
+      with {:ok, pid} <- File.read(stuck), do: System.cmd("kill", ["-KILL", String.trim(pid)])
+    end)
+
+    File.write!(Path.join(bin, "eof.1"), """
+    (trap '' TERM; exec sleep 60) </dev/null >/dev/null 2>&1 &
+    echo $! > "$d/stuck.pid"
+    """)
+
+    state = Enum.reduce(["A", "B", "C", "D"], harness(work), &run(&2, &1, ["x"]))
+    assert programs(bin) == "4"
+    assert File.exists?(stuck)
+    assert [command: _, command: _, watchdog: _] = Enum.sort(Helyx.Test.Hands.held())
+    closed(state)
+  end
+
   # The wait for the exit is 1,000 ms (`HarnessIO.finish/1`).
   @tag :slow
   test "an old program that does not exit fails the turn", %{bin: bin, work: work} do
