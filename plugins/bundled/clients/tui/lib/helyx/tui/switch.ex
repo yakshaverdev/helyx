@@ -7,11 +7,11 @@ defmodule Helyx.TUI.Switch do
   # session opens first, so a failed open leaves the old one as it was.
   # The functions take and give the state of `Helyx.TUI`.
 
-  alias Helyx.Session
+  alias Helyx.{Event, Session}
   alias Helyx.TUI.{Composer, ViewModel}
 
   @enforce_keys [:task, :target]
-  defstruct [:task, :target, down: nil]
+  defstruct [:task, :target, down: nil, dropped: []]
 
   @type target :: :new | {:resume, String.t()}
 
@@ -19,7 +19,13 @@ defmodule Helyx.TUI.Switch do
   # during the switch. The tag keeps a `nil` or `false` reason apart from
   # no signal.
   @type down :: {:down, term()} | nil
-  @type t :: %__MODULE__{task: Task.t(), target: target(), down: down()}
+  # `dropped` is the `queue_dropped` events of the switch, newest first.
+  @type t :: %__MODULE__{
+          task: Task.t(),
+          target: target(),
+          down: down(),
+          dropped: [Event.t()]
+        }
 
   # Subscribes to `session` and shows it from its snapshot: the history of
   # a resumed session, and the turn a late client joins, then the
@@ -103,6 +109,18 @@ defmodule Helyx.TUI.Switch do
   def down(%{switch: nil}, reason), do: exit({:session_down, Session.end_reason(reason)})
   def down(state, reason), do: put_in(state.switch.down, {:down, reason})
 
+  # An event of the current session for the composer. During a switch the
+  # composer takes the texts of a `queue_dropped` only when the switch
+  # fails; after a switch they go with the old session.
+  @spec event(map(), Event.t()) :: map()
+  def event(%{switch: nil} = state, event),
+    do: update_in(state.composer, &Composer.apply(&1, event))
+
+  def event(state, %Event{type: :queue_dropped} = event),
+    do: update_in(state.switch.dropped, &[event | &1])
+
+  def event(state, _event), do: state
+
   # The answer of the Task. A failed open keeps the current session while
   # it runs; when it ended during the switch, a new session takes its
   # place, and when that fails too the TUI ends.
@@ -123,13 +141,19 @@ defmodule Helyx.TUI.Switch do
     failed(%{state | vm: ViewModel.info(state.vm, text(reason))}, switch.target, down)
   end
 
-  defp failed(state, _target, nil), do: %{state | switch: nil}
+  defp failed(state, _target, nil), do: give_back(state)
 
   defp failed(_state, :new, {:down, reason}),
     do: exit({:session_down, Session.end_reason(reason)})
 
-  # The old session is gone: its end signal stays with the new switch.
-  defp failed(state, _target, down), do: start(state, :new, down)
+  # The old session is gone: its end signal stays with the new switch, and
+  # its queue comes back, because the composer stays with the TUI.
+  defp failed(state, _target, down), do: start(give_back(state), :new, down)
+
+  # The texts of the kept `queue_dropped` events go to the composer in
+  # their order, as outside a switch.
+  defp give_back(%{switch: switch} = state),
+    do: switch.dropped |> Enum.reverse() |> Enum.reduce(%{state | switch: nil}, &event(&2, &1))
 
   # `Session.pid/1` gives nil only for a dead session (the Registry checks
   # the pid), and the `:DOWN` of a dead monitored process is on its way.

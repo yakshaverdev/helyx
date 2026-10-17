@@ -101,14 +101,9 @@ defmodule Helyx.TUI do
   def handle_info({:DOWN, ref, :process, _pid, reason}, %{session_ref: ref} = state),
     do: {:noreply, Switch.down(state, reason)}
 
-  # The queues that the abort of a switch drops go with the old session.
   def handle_info({:helyx_event, %{instance_id: id} = event}, %{instance_id: id} = state) do
     state = read_branch_after_turn(%{state | vm: ViewModel.apply(state.vm, event)}, event)
-
-    state =
-      if state.switch, do: state, else: update_in(state.composer, &Composer.apply(&1, event))
-
-    {:noreply, settle(sync_busy(state))}
+    {:noreply, settle(sync_busy(Switch.event(state, event)))}
   end
 
   def handle_info({ref, result}, %{switch: %Switch{task: %Task{ref: ref}}} = state) do

@@ -79,9 +79,21 @@ Simplify: one agent on the five-line fix. The repeated comment of 2.5 is removed
 
 | # | Axis | Finding | Resolution |
 | - | ---- | ------- | ---------- |
-| 3.1 | Codex | `Helyx.TUI` skips every `queue_dropped` while a switch runs, before the result is known. Escape during a `/resume` whose open then fails (a raising tool check), or a turn that fails during the switch, drops the queue of the current session, and the TUI stays on it with the texts in neither the queue nor the composer. Reproduced | **Open.** The fix keeps the texts in the switch and joins them to the composer on a failed switch; it touches `Helyx.TUI` and `Helyx.TUI.Switch` and adds a field, so it does not meet the conditions of the small-fix round. Reported to the caller |
+| 3.1 | Codex | `Helyx.TUI` skips every `queue_dropped` while a switch runs, before the result is known. Escape during a `/resume` whose open then fails (a raising tool check), or a turn that fails during the switch, drops the queue of the current session, and the TUI stays on it with the texts in neither the queue nor the composer. Reproduced | Fixed after the limit, by owner decision (round 4): the switch keeps the `queue_dropped` events (`Switch.event/2`), and a failed switch gives their texts to the composer in their order; test "a queue that comes back during a failed switch goes to the composer" fails without the fix |
 | 3.2 | standards | One word `down` names a type, a field, a function, and a tag; the nil test checks the struct only; `start/3` is public with `down`; the Errors text says `{:session_down, reason}` for the end reason | No change: judgement calls; the doc text names `Session.end_reason/1` in the bounds of the TUI exit (`coding-agent.md`) |
 | 3.3 | spec | No defect | n/a |
 | 3.4 | failure path | No defect; not reached: `Start.run/1`, `SessionList`, `Composer.end_recall/1`, the Escape abort Task during a switch | n/a |
 
-The loop ends: round 3 reproduced 3.1, and its fix is not a small fix. The commit holds the code of round 3, whose review is done.
+Round 3 reproduced 3.1, and its fix is not a small fix, so the first commit held the code of round 3 with 3.1 open. The owner then authorized one round past the limit for this data-loss defect.
+
+## Round 4 (reduced, past the limit, owner decision)
+
+Scope: the fix of 3.1 (two code files, 36 changed lines in `Switch`, 7 in `Helyx.TUI`). Spec agent, failure-path agent, and Codex.
+
+| # | Axis | Finding | Resolution |
+| - | ---- | ------- | ---------- |
+| 4.1 | spec | When the current session ended during the switch, the `/new` that takes its place starts a new `%Switch{}`, so the kept texts are lost although the TUI keeps its composer. Reproduced | Fixed (5 code lines): the composer takes the texts before that `/new` starts (`give_back/1`); test "the queue of a session that ended during a failed switch comes back" fails without the fix |
+| 4.2 | failure path | No defect: a real failing `/resume` with the Task suspended and two Escapes gives `q2`, `q1`, then the draft; a Task crash gives the text back | n/a |
+| 4.3 | Codex | Approve, no material finding | n/a |
+
+The fix of 4.1 had no review round of its own; the orchestrator's decision ends the loop with this round.

@@ -169,6 +169,55 @@ defmodule Helyx.TUI.SwitchTest do
     assert File.read!(path) =~ ~s("aborted")
   end
 
+  test "a queue that comes back during a failed switch goes to the composer",
+       %{core: core, opts: opts} do
+    call = %Message.ToolCall{id: "c", name: "slow", arguments: %{"ms" => 60_000, "text" => "x"}}
+    :ok = Fake.script(core, "busy", [[call], ["done"]])
+    {:ok, current} = start(core, opts, "fake/busy")
+    state = mount!(current, opts) |> type("draft")
+    :ok = Session.prompt(current, "go")
+
+    state =
+      until(state, &match?(%{type: :message_end, data: %{message: %{role: :assistant}}}, &1))
+
+    :ok = Session.follow_up(current, "queued")
+    task = Task.async(fn -> :ok end)
+    Task.await(task)
+    state = %{state | switch: %Switch{task: task, target: {:resume, "AAAAAAAAAAAA"}}}
+
+    # Escape during the switch gives the queue back; the switch then fails.
+    state = state |> key("esc") |> until(&(&1.type == :queue_dropped))
+    assert value(state) == "draft"
+    state = Switch.done(state, {:error, :not_found})
+
+    assert state.session == current
+    assert value(state) == "queued\ndraft"
+  end
+
+  test "the queue of a session that ended during a failed switch comes back",
+       %{core: core, opts: opts} do
+    {:ok, current} = start(core, opts)
+    state = mount!(current, opts) |> type("draft")
+    task = Task.async(fn -> :ok end)
+    Task.await(task)
+
+    dropped = %Event{
+      type: :queue_dropped,
+      session_id: current.id,
+      instance_id: state.instance_id,
+      turn_id: nil,
+      seq: 0,
+      data: %{texts: ["queued"]}
+    }
+
+    switch = %Switch{task: task, target: {:resume, "AAAAAAAAAAAA"}, dropped: [dropped]}
+    state = info({:DOWN, state.session_ref, :process, self(), :killed}, %{state | switch: switch})
+
+    state = Switch.done(state, {:error, :not_found})
+    assert %Switch{target: :new, dropped: []} = state.switch
+    assert value(finish(state)) == "queued\ndraft"
+  end
+
   test "/resume lists the other sessions, and Enter resumes the selected one",
        %{core: core, dir: dir, opts: opts} do
     first = saved(core, opts, "first prompt")
