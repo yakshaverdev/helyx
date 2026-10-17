@@ -38,4 +38,26 @@ defmodule Helyx.SessionsCapTest do
     assert Session.resume(core, sessions_dir: dir, id: saved.id) == {:error, :too_many_sessions}
     assert Session.pid(last)
   end
+
+  test "the cap counts sessions only: no sync worker of a Memory plugin takes a place" do
+    core = start_core([Helyx.Test.MemoryProvider, Helyx.Test.Memory])
+    Process.register(self(), Helyx.Test.Memory.controller(core))
+
+    {:ok, draining} = Session.start(core, model: "mem/echo")
+    {:ok, _, ref} = Session.subscribe(draining)
+    :ok = Session.prompt(draining, "sync_hang")
+    collect_until(:turn_end)
+    assert_receive {:sync, _, _}
+
+    for _ <- 2..64, do: {:ok, _} = Session.start(core, model: "mem/echo")
+    assert Session.start(core, model: "mem/echo") == {:error, :too_many_sessions}
+
+    # The worker of the stopped session still drains its hung call, and the
+    # next start opens with a worker of its own.
+    :ok = Sessions.stop(draining)
+    assert_receive {:DOWN, ^ref, :process, _, _}
+    await(fn -> match?({:ok, _}, Session.start(core, model: "mem/echo")) end, "the place to free")
+    assert length(Sessions.list_live(core)) == 64
+    assert DynamicSupervisor.count_children(Helyx.Core.sync_supervisor(core)).active == 65
+  end
 end
