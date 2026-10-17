@@ -81,8 +81,8 @@ defmodule Helyx.TUI.Switch do
 
   defp run(target, old, opts) do
     with {:ok, new} <- open(target, old.core, opts) do
-      _ = Session.abort(old)
-      stop(old)
+      # A session that ended first gives `{:error, :session_not_found}`.
+      _ = Helyx.Sessions.stop(old)
       {:ok, new}
     end
   end
@@ -92,18 +92,6 @@ defmodule Helyx.TUI.Switch do
 
   defp open({:resume, id}, core, opts),
     do: Session.resume(core, sessions_dir: opts.sessions_dir, cwd: opts.cwd, id: id)
-
-  # Core has no stop function: the session's `terminate/2` runs its stop,
-  # whose waits `Helyx.Session.Server.Stop` bounds. A session that ends
-  # first exits the call; it is stopped either way.
-  defp stop(session) do
-    case Session.pid(session) do
-      nil -> :ok
-      pid -> GenServer.stop(pid, :shutdown, :infinity)
-    end
-  catch
-    :exit, _reason -> :ok
-  end
 
   # The end signal of the session. A dead session leaves nothing to
   # render: the exit surfaces the reason through `Helyx.TUI.run/1`. During
