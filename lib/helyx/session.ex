@@ -131,17 +131,9 @@ defmodule Helyx.Session do
          {:ok, tools} <- Helyx.Tool.specs(core),
          :ok <- Helyx.Tool.check_available(tools),
          {:ok, path} <- Helyx.Session.File.pick(dir, cwd, Keyword.take(opts, [:id])) do
-      Server.start(
-        %State{
-          id: Path.basename(path, ".jsonl"),
-          core: core,
-          model: nil,
-          provider: nil,
-          cwd: cwd
-        },
-        tools,
-        {path, &load(&1, path)}
-      )
+      id = Path.basename(path, ".jsonl")
+      state = %State{id: id, core: core, model: nil, provider: nil, cwd: cwd}
+      Server.start(state, tools, {path, &load(&1, path)})
     end
   end
 
