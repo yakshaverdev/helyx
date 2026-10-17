@@ -6,9 +6,8 @@ defmodule Helyx.Session.Server do
   # inputs and match the records of the current turn. The client API and
   # the docs of the behaviour are in `Helyx.Session`.
 
-  alias Helyx.{Message, ModelRef}
   alias Helyx.Session.{Background, Hands, Id, Lock, Queue, Turn}
-  alias Helyx.Session.Server.{Compaction, Events, ProviderConn, Records, State, Steering, Stop}
+  alias Helyx.Session.Server.{Calls, Events, ProviderConn, Records, State, Steering, Stop}
   alias Helyx.Session.Server.Summary
   alias Helyx.Session.Server.ToolRuns
   alias Helyx.Session.Server.{TurnLoop, Wait}
@@ -188,31 +187,9 @@ defmodule Helyx.Session.Server do
     }
   end
 
-  # The admission of a client message by phase (`TurnLoop.admit/3`).
+  # The calls of the client API, with their deadline (`Calls`).
   @impl true
-  def handle_call({op, text, origin}, _from, %State{} = state)
-      when op in [:prompt, :steer, :follow_up] do
-    {reply, state} = TurnLoop.admit(op, Message.user(text, origin), state)
-    {:reply, reply, state}
-  end
-
-  def handle_call({:compact, text}, _from, %State{} = state) do
-    {reply, state} = Compaction.admit(text, state)
-    {:reply, reply, state}
-  end
-
-  # The entry and the snapshot in one message, so every later event reaches
-  # the caller. A repeated subscribe keeps the entry and its monitor.
-  def handle_call({:subscribe, pid}, _from, %State{} = state) do
-    state = Events.subscribe(state, pid)
-    {:reply, Events.snapshot(state), state}
-  end
-
-  def handle_call({:set_model, %ModelRef{} = ref, provider}, _from, %State{} = state),
-    do: {:reply, :ok, TurnLoop.settle(Records.set_model(state, ref, provider))}
-
-  # The abort replies through `GenServer.reply/2` (`TurnLoop.abort/2`).
-  def handle_call(:abort, from, %State{} = state), do: {:noreply, TurnLoop.abort(state, from)}
+  def handle_call(request, from, state), do: Calls.handle(request, from, state)
 
   # The messages of the summary call's process, by its pid or by the id of
   # its turn, before every other clause (`Summary.handle/2`).

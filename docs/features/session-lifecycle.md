@@ -104,6 +104,16 @@ With a ready provider process and no turn and no wait, the session arms one idle
 
 `terminate/2` runs `Helyx.Session.Server.Stop.run/1` on the list of `TurnLoop.work/1`. In a turn, the prepare Task is killed, and the provider process ends with the hands. With no turn, the provider process gets `:close`, also when it is `:ending`, with its armed kill. Then the session stops the hands and waits for them, and deletes its background folder.
 
+## Late calls
+
+A client call of `Helyx.Session` with a timeout exits its caller at the timeout, but its message stays in the session's mailbox. A session that is busy past the timeout, in a slow file write for example, takes the message later, when no caller waits (#679).
+
+- `call_pid/3` in `Helyx.Session` is the one path of every session call. A call with a timeout goes as `{:until, deadline_ms, request}`, where `deadline_ms` is the monotonic time in milliseconds at which the caller gives up. A call with `:infinity`, `abort/1`, has no deadline.
+- `Helyx.Session.Server.Calls` takes the request only before its deadline. At or past it, the call does not act and gets no reply: a late `prompt` starts no turn, a late `steer`, `follow_up`, or `compact` queues nothing, a late `set_model` changes nothing, and a late `subscribe` adds no subscriber. No event goes out for it. A subscribe that times out still ends an earlier subscription of its caller: the caller cleans up after the timeout (`Helyx.Session.subscribe/1`). The session logs one `Logger.info` line with the op name, never the text.
+- A timeout tells the caller that it does not know the result. A call that the session takes before its deadline acts, and its reply can come after the caller's timeout. A subscriber sees the result in the event stream.
+- The deadline is a monotonic time of the caller's node. Every caller of the session API runs in the session's node. The wire transport of ADR 0008 also runs in that node.
+- Core does not count the calls that wait in the mailbox. One caller process has at most one call in flight, but a caller that catches the timeout and calls again adds one more call for each call timeout. So the count grows with the time that the session stalls, and each call keeps its text of at most 4 MiB until the session takes it. An `abort/1` has no deadline: it waits until the session takes it, and then it acts. The TUI starts one abort for each Esc. The stall itself is out of scope (#677). The wire bounds its remote callers per connection (#660).
+
 ## Bounds
 
 | What | Bound | Over the bound | Owner |
@@ -124,6 +134,8 @@ With a ready provider process and no turn and no wait, the session arms one idle
 | encoded bytes of the running and waiting Helyx tool calls | 8 MiB together (`Turn.max_message_bytes/0`, read by `ToolQueue.request/4`) | an error result to the provider at once; nothing runs | session |
 | messages that wait in the session mailbox before a provider send | 10,000 (`@max_session_queue` in `Helyx.Session.Stream`) | `{:session_behind, length, 10000}`: the provider process stops, the turn fails | provider process |
 | hands release of one cleanup or delivery | 20,000 ms (`release_ms` in `Helyx.Session.Hands.State`) | the handles stay unconfirmed, and the hands refuse tool calls and provider starts until the session stops (`docs/features/tool-resource-release.md`, rule 6); a failed cleanup gives a notice | hands |
+| wait of a client call in the session's mailbox | the deadline of its caller: the call timeout of `Helyx.Session`, 5,000 ms (`@call_timeout_ms`); `abort/1` has none | the call does not act and gets no reply; one `Logger.info` line with the op name ("Late calls") | session |
+| client calls that wait in the mailbox of a stalled session | unbounded, ticket #677: a call with a deadline, one for each caller process and each call timeout of the stall, each with a text of at most 4 MiB; an abort, one for each caller of `abort/1` ("Late calls") | each call stays until the session takes it; then a call past its deadline does not act, and an abort acts | session |
 | session stop | closes 5,000 ms, then the hands 22,000 ms (`@hands_stop_ms` in `Helyx.Session.Server.Stop`); the shutdown is `Stop.shutdown_ms/0`, 30,000 ms | the hands are killed, and the provider process and the tool Tasks end with them: no release runs | session |
 
 ## Ownership

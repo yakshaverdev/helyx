@@ -392,7 +392,11 @@ defmodule Helyx.TUITest do
       spawn_link(fn ->
         {:ok, _} = Registry.register(Helyx.Core.sessions_registry(core), "late", nil)
         send(test, :registered)
-        receive do: ({:"$gen_call", from, {:subscribe, _}} -> GenServer.reply(from, snapshot))
+
+        receive do
+          {:"$gen_call", from, {:until, _, {:subscribe, _}}} -> GenServer.reply(from, snapshot)
+        end
+
         Process.sleep(:infinity)
       end)
 
