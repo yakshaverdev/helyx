@@ -1149,7 +1149,7 @@ defmodule Helyx.TUITest do
           end
         end)
 
-      wrap = {Transcript, :item_lines, 2}
+      wrap = {Transcript.Item, :rows, 2}
       :erlang.trace_pattern(wrap, true, [:local])
       :erlang.trace(render, true, [:call])
       send(render, {:go, self()})
@@ -1161,7 +1161,7 @@ defmodule Helyx.TUITest do
       {:messages, messages} = Process.info(self(), :messages)
 
       wraps =
-        Enum.count(messages, &match?({:trace, ^render, :call, {Transcript, :item_lines, _}}, &1))
+        Enum.count(messages, &match?({:trace, ^render, :call, {Transcript.Item, :rows, _}}, &1))
 
       # The last row of the first cell is its empty row, then the next cells.
       assert wraps in 1..5

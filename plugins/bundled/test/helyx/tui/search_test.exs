@@ -315,4 +315,98 @@ defmodule Helyx.TUI.SearchTest do
     [_top, row, _bottom] = terminal |> ExRatatui.get_buffer_content() |> String.split("\n")
     assert row == "  │ find: m3qqqqqqqqq│"
   end
+
+  test "a query that starts with a space does not match the bar or the fill" do
+    # The space is on the bar and in the fill, not in the text of the row.
+    state = [Message.user("ab"), Message.user("a b")] |> state() |> open() |> type(" ")
+    assert state.search.match == 1
+    assert [{_, %Rect{x: 5, width: 1}}] = marks(state)
+
+    # The text width is 18: the space of "a b" drops at the row break, so
+    # no drawn row holds it.
+    long = [Message.user(String.duplicate("a", 18) <> " b")] |> state() |> open() |> type(" b")
+    assert {long.search.match, long.scroll} == {0, nil}
+    assert line(long) == "find:  b   match not shown"
+  end
+
+  test "more does not match the hint row, and a match in hidden lines is not shown" do
+    hidden = Enum.map_join(1..9, "\n", &"line #{&1}") <> "\nmore"
+    state = [tool("c1", hidden)] |> state() |> open() |> type("more")
+
+    assert state.search.match == 0
+    assert marks(state) == []
+    assert line(state) == "find: more   match not shown"
+
+    # The indent of a result line is a sign too, and so is the awaiting row.
+    state = [tool("c2", "x  y")] |> state() |> open() |> type("  ")
+    assert [{_, %Rect{x: 5, width: 2}}] = marks(state)
+
+    call = %Message.ToolCall{id: "c3", name: "bash", arguments: %{}}
+    awaiting = [{:tool, call, "⚙ bash", nil}] |> state() |> open() |> type("a")
+    assert [{_, %Rect{y: 0}}] = marks(awaiting)
+  end
+
+  test "a match next to the bar or the cross of a notice is marked at its columns" do
+    state = [Message.user("▌a")] |> state() |> open() |> type("▌")
+    assert [{_, %Rect{x: 4, width: 1}}] = marks(state)
+    assert [{_, %Rect{x: 4, width: 2}}] = state |> press("backspace") |> type("▌a") |> marks()
+
+    notice = [{:notice, "a ✕"}] |> state() |> open() |> type("✕")
+    assert [{_, %Rect{x: 6, width: 1}}] = marks(notice)
+
+    # A row of 1 column holds the cross alone, with no search text.
+    narrow = %Rect{@area | width: 1}
+    rows = Transcript.screen(notice.vm, {0, 0}, narrow)
+
+    assert [{_, %Rect{x: 2, y: 2, width: 1}}] =
+             Search.marks(notice.search, rows, narrow)
+  end
+
+  test "the prefix of a Markdown item or code line and an unknown block are signs" do
+    reply = fn text -> %Message{role: :assistant, content: [%Message.Text{text: text}]} end
+
+    # The code indent: the match is the two spaces of "b  c" on row 1.
+    code = [reply.("```\nab\n```\nb  c")] |> state() |> open() |> type("  ")
+    assert [{_, %Rect{x: 3, y: 1, width: 2}}] = marks(code)
+
+    bullet = [reply.("- a \u2022")] |> state() |> open() |> type("\u2022")
+    assert [{_, %Rect{x: 6, width: 1}}] = marks(bullet)
+
+    # The space before "bbb" drops at the row break; the hang indent holds
+    # no text.
+    hang = [reply.("- " <> String.duplicate("a", 15) <> " bbb")] |> state() |> open()
+    assert line(type(hang, " b")) == "find:  b   match not shown"
+
+    # The placeholder row "[unsupported block: uri]" has no search text.
+    other = %Message{role: :assistant, content: [%Message.Text{text: "say u"}, %URI{}]}
+    assert [{_, %Rect{y: 0}}] = [other] |> state() |> open() |> type("u") |> marks()
+  end
+
+  test "a sign space that a mark of the text joins on a narrow row is not search text" do
+    # At 1 column, "\u2715 \u0301a b" wraps as "\u2715", " \u0301", "a", "b".
+    narrow = %Rect{@area | width: 1}
+    state = [{:notice, "\u0301a b"}] |> state() |> open()
+    state = event(state, %Key{code: " ", kind: "press"}, narrow)
+
+    assert state.search.match == 0
+    rows = Transcript.screen(state.vm, state.scroll, narrow)
+    assert Search.marks(state.search, rows, narrow) == []
+  end
+
+  test "a sign space that the wrap drops does not hide text of a later line" do
+    # "\u2715 " and 20 letters wrap as "\u2715" and the letters; the space
+    # drops, and the second line keeps its own space.
+    state = [{:notice, String.duplicate("a", 20) <> "\n foo"}] |> state() |> open()
+    assert [{_, %Rect{x: 2, y: 2, width: 4}}] = state |> type(" foo") |> marks()
+
+    # At 2 columns, the space of the sign and U+093E of the text are one
+    # grapheme, so the mark is a sign.
+    narrow = %Rect{@area | width: 2}
+    state = [{:notice, "\u093Ex"}] |> state() |> open()
+    state = event(state, %Key{code: "\u093E", kind: "press"}, narrow)
+    assert state.search.match == 0
+
+    assert Search.marks(state.search, Transcript.screen(state.vm, state.scroll, narrow), narrow) ==
+             []
+  end
 end

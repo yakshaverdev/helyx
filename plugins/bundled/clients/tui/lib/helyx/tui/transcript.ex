@@ -10,20 +10,10 @@ defmodule Helyx.TUI.Transcript do
   """
 
   alias ExRatatui.Layout.Rect
-  alias ExRatatui.Style
-  alias ExRatatui.Text.{Line, Span}
+  alias ExRatatui.Text.Line
   alias ExRatatui.Widgets.Paragraph
   alias Helyx.Message
-  alias Helyx.TUI.{Markdown, ViewModel, Wrap}
-
-  @dim %Style{modifiers: [:dim]}
-  @tool %Style{fg: :cyan}
-  @bad %Style{fg: :red}
-  # Palette colors, so the look follows the terminal theme. White on black
-  # reads in light and dark themes alike.
-  @user %Style{fg: :white, bg: :black}
-  @bar %Style{fg: :blue, bg: :black}
-  @code :yellow
+  alias Helyx.TUI.{Transcript.Item, ViewModel, Wrap}
 
   @type position :: {non_neg_integer(), non_neg_integer()} | nil
 
@@ -46,12 +36,19 @@ defmodule Helyx.TUI.Transcript do
   @spec widget(ViewModel.t(), position(), Rect.t()) :: Paragraph.t()
   def widget(vm, scroll, area), do: vm |> screen(scroll, area) |> widget()
 
+  @typedoc """
+  A drawn row: its address, its line, and its search text, a column and
+  the text there. The signs of the row, such as the bar or the fill, are not
+  search text (`docs/features/tui-search.md`).
+  """
+  @type row :: {address(), Line.t(), Item.search()}
+
   @doc "The paragraph of the rows of `screen/3`."
-  @spec widget([{address(), Line.t()}]) :: Paragraph.t()
+  @spec widget([row()]) :: Paragraph.t()
   def widget(rows), do: %Paragraph{text: Enum.map(rows, &elem(&1, 1))}
 
-  @doc "The rows that `widget/3` draws, each with its address, from the top of `area`."
-  @spec screen(ViewModel.t(), position(), Rect.t()) :: [{address(), Line.t()}]
+  @doc "The rows that `widget/3` draws, from the top of `area`."
+  @spec screen(ViewModel.t(), position(), Rect.t()) :: [row()]
   def screen(vm, scroll, %Rect{width: width, height: height}) do
     items = items(vm)
     top = scroll || bottom(items, width, height)
@@ -72,10 +69,10 @@ defmodule Helyx.TUI.Transcript do
     vm
     |> items()
     |> rows_from(first_row, width)
-    |> Stream.take_while(fn {address, _line} -> address <= last_row end)
-    |> Stream.map(fn {address, line} ->
+    |> Stream.take_while(fn {address, _line, _search} -> address <= last_row end)
+    |> Stream.map(fn {address, line, _search} ->
       {from, to} = columns(address, first, last, width)
-      line |> cut(from, to) |> String.trim_trailing()
+      line |> Item.cut(from, to) |> String.trim_trailing()
     end)
   end
 
@@ -88,24 +85,6 @@ defmodule Helyx.TUI.Transcript do
   def columns(address, {first_row, from}, {last_row, to}, width) do
     from = if address == first_row, do: from, else: 0
     {from, min(if(address == last_row, do: to, else: width), width - 1)}
-  end
-
-  # The graphemes of a row with a column in `from..to`, by the width rule.
-  defp cut(%Line{spans: spans}, from, to) do
-    {kept, _column} =
-      Enum.reduce(spans, {[], 0}, fn %Span{content: content, style: style}, acc ->
-        content
-        |> String.graphemes()
-        |> Enum.reduce(acc, fn grapheme, {kept, column} ->
-          # A zero-width grapheme takes no column, as ExRatatui draws it,
-          # and is in the text when its column is.
-          next = column + Wrap.columns(grapheme)
-          keep? = style != @bar and column <= to and max(next, column + 1) > from
-          {if(keep?, do: [grapheme | kept], else: kept), next}
-        end)
-      end)
-
-    kept |> Enum.reverse() |> Enum.join()
   end
 
   defp bottom(items, width, height),
@@ -133,7 +112,7 @@ defmodule Helyx.TUI.Transcript do
           position()
   def keep(vm, {index, row}, width, height) do
     items = items(vm)
-    rows = items |> Enum.at(index) |> item_lines(width) |> length()
+    rows = items |> Enum.at(index) |> Item.rows(width) |> length()
     hold_items(items, {index, if(row < rows, do: row, else: 0)}, width, height)
   end
 
@@ -174,13 +153,13 @@ defmodule Helyx.TUI.Transcript do
   defp back([], _position, _count, _width), do: {0, 0}
 
   defp back([item | before], {index, row}, count, width),
-    do: back(before, {index - 1, length(item_lines(item, width))}, count - row, width)
+    do: back(before, {index - 1, length(Item.rows(item, width))}, count - row, width)
 
   # Moves a row number that is past its item into the items that follow.
   defp forward([], {index, _row}, _width), do: {index, 0}
 
   defp forward([item | rest], {index, row}, width) do
-    case length(item_lines(item, width)) do
+    case length(Item.rows(item, width)) do
       rows when row >= rows -> forward(rest, {index + 1, row - rows}, width)
       _rows -> {index, row}
     end
@@ -196,17 +175,17 @@ defmodule Helyx.TUI.Transcript do
         []
 
       [first | rest] ->
-        lines = item_lines(first, width)
+        lines = Item.rows(first, width)
         skip = min(row, length(lines) - 1)
 
         lines
         |> Enum.drop(skip)
-        |> Enum.with_index(&{{index, skip + &2}, &1})
+        |> Enum.with_index(&{{index, skip + &2}, elem(&1, 0), elem(&1, 1)})
         |> Stream.concat(
           rest
           |> Stream.with_index(index + 1)
           |> Stream.flat_map(fn {item, at} ->
-            item |> item_lines(width) |> Enum.with_index(&{{at, &2}, &1})
+            item |> Item.rows(width) |> Enum.with_index(&{{at, &2}, elem(&1, 0), elem(&1, 1)})
           end)
         )
     end
@@ -230,35 +209,16 @@ defmodule Helyx.TUI.Transcript do
 
     with {item, index} <-
            Enum.find(candidates, fn {item, _index} ->
-             Regex.match?(regex, Wrap.sanitize(search_text(item)))
+             Regex.match?(regex, Wrap.sanitize(Item.search_text(item)))
            end) do
-      row = item |> item_lines(width) |> Enum.find_index(&Regex.match?(regex, line_text(&1)))
+      row =
+        item
+        |> Item.rows(width)
+        |> Enum.find_index(fn {_line, {_column, text}} -> Regex.match?(regex, text) end)
+
       {index, row || 0}
     end
   end
-
-  @doc "The text of a drawn row: its spans joined."
-  @spec line_text(Line.t()) :: String.t()
-  def line_text(%Line{spans: spans}), do: Enum.map_join(spans, & &1.content)
-
-  defp search_text(%Message{role: :assistant, content: blocks}) do
-    Enum.map_join(blocks, "\n", fn
-      %Message.Text{text: text} -> text
-      %Message.Thinking{thinking: text} -> text
-      _block -> ""
-    end)
-  end
-
-  defp search_text(%Message{} = message), do: shown_text(message)
-  defp search_text({:tool, _call, line, nil}), do: line
-  defp search_text({:tool, _call, line, result}), do: line <> "\n" <> shown_text(result)
-
-  defp search_text({:tool, call, line, result, true}),
-    do: search_text({:tool, call, line, result})
-
-  defp search_text({:notice, text}), do: text
-  defp search_text({:stop, reason}), do: stop_text(reason)
-  defp search_text({:infos, texts}), do: infos_text(texts)
 
   # The items in position order, one O(n) fold of the array, and the open
   # assistant message as the last one. A run of information cells is one
@@ -291,110 +251,5 @@ defmodule Helyx.TUI.Transcript do
       streaming |> Enum.reverse() |> Enum.split_with(&match?({:tool, _, _, _}, &1))
 
     [%Message{role: :assistant, content: blocks} | calls]
-  end
-
-  defp item_lines(item, width), do: cell_lines(item, width) ++ [%Line{}]
-
-  # A bar and a tint on every row. A row that the text width cannot hold,
-  # a glyph wider than it, has no bar, so the row stays within the width
-  # when the glyph does. Every row gets a fill of the whole width, which
-  # ExRatatui cuts at the edge: the rule can count a glyph wider than
-  # ExRatatui draws it, so a fill counted by the rule can stop short. The
-  # fill is a span of its own, so that a last character such as U+0600
-  # cannot join a space into one grapheme that ExRatatui cuts whole.
-  defp cell_lines(%Message{role: :user} = message, width) do
-    text_width = width - 2
-    fill = String.duplicate(" ", max(width, 0))
-
-    # No code point has more columns than bytes, so a short row needs no count.
-    for row <- Wrap.rows(shown_text(message), text_width) do
-      bar =
-        if byte_size(row) <= text_width or Wrap.columns(row) <= text_width,
-          do: [%Span{content: "▌ ", style: @bar}],
-          else: []
-
-      %Line{
-        spans: bar ++ [%Span{content: row, style: @user}, %Span{content: fill, style: @user}]
-      }
-    end
-  end
-
-  defp cell_lines(%Message{role: :assistant} = message, width) do
-    block_lines(message.content, width)
-  end
-
-  defp cell_lines({:tool, call, line, result}, width),
-    do: cell_lines({:tool, call, line, result, false}, width)
-
-  defp cell_lines({:tool, _call, line, result, expanded?}, width) do
-    styled_lines(line, width, @tool) ++ result_lines(result, expanded?, width)
-  end
-
-  defp cell_lines({:notice, text}, width), do: styled_lines("✕ #{text}", width, @bad)
-  defp cell_lines({:stop, reason}, width), do: cell_lines({:notice, stop_text(reason)}, width)
-
-  defp cell_lines({:infos, texts}, width), do: styled_lines(infos_text(texts), width, @dim)
-
-  defp infos_text(texts), do: Enum.map_join(texts, " ", &("· " <> &1))
-
-  defp stop_text(:max_tokens), do: "the answer stopped at the token limit"
-  defp stop_text(:refused), do: "the answer stopped: the provider refused or filtered it"
-
-  defp block_lines(blocks, width) do
-    Enum.flat_map(blocks, fn
-      %Message.Text{text: text} -> markdown_lines(text, width)
-      %Message.Thinking{thinking: text} -> styled_lines(text, width, @dim)
-      %Message.ToolCall{} -> []
-      # A kind that this client does not know.
-      block -> styled_lines(placeholder(block), width, @dim)
-    end)
-  end
-
-  # The text of a user message or a tool result, with a placeholder in
-  # place of each block that is not text.
-  defp shown_text(%Message{content: content}) do
-    Enum.map_join(content, fn
-      %Message.Text{text: text} -> text
-      block -> placeholder(block)
-    end)
-  end
-
-  # A block that is not a struct is a bug in Core and crashes.
-  # `Helyx.Message.Thinking` is "thinking".
-  defp placeholder(%kind{}),
-    do: "[unsupported block: #{kind |> Module.split() |> List.last() |> Macro.underscore()}]"
-
-  defp result_lines(nil, _expanded?, width), do: styled_lines("… awaiting result", width, @dim)
-
-  # The short form keeps long tool output from filling the transcript.
-  # Ctrl+O shows all lines.
-  defp result_lines(%Message{} = result, expanded?, width) do
-    style = if result.is_error, do: @bad, else: @dim
-    lines = result |> shown_text() |> String.trim_trailing("\n") |> String.split("\n")
-    kept = if expanded?, do: lines, else: Enum.take(lines, 4)
-    shown = kept |> Enum.map_join("\n", &("  " <> &1)) |> styled_lines(width, style)
-
-    case length(lines) - length(kept) do
-      hidden when hidden > 0 ->
-        plural = if hidden == 1, do: "line", else: "lines"
-        shown ++ styled_lines("  … #{hidden} more #{plural} (ctrl+o to expand)", width, @dim)
-
-      _ ->
-        shown
-    end
-  end
-
-  defp markdown_lines(text, width) do
-    for row <- Markdown.rows(text, width), do: %Line{spans: Enum.map(row, &markdown_span/1)}
-  end
-
-  defp markdown_span({content, tags}) do
-    fg = if :code in tags, do: @code
-    %Span{content: content, style: %Style{fg: fg, modifiers: List.delete(tags, :code)}}
-  end
-
-  # One styled Line per screen row.
-  defp styled_lines(text, width, style) do
-    for row <- Wrap.rows(text, width), do: %Line{spans: [%Span{content: row, style: style}]}
   end
 end

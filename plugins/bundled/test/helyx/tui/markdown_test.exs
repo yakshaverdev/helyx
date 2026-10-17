@@ -62,7 +62,9 @@ defmodule Helyx.TUI.MarkdownTest do
       assert rows("**e**\u0301x") == [[{"e\u0301", [:bold]}, {"x", []}]]
       # The wrap drops the space before a space with a mark; the mark keeps its space.
       assert rows("ab  \u0301cd", 3) == [[{"ab", []}], [{" \u0301", []}, {"cd", []}]]
-      assert [[{"\u2022 \u0301", []}, {"x", [:bold]}]] = rows("- **\u0301x**")
+      assert [[{"\u2022 \u0301", [:sign]}, {"x", [:bold]}]] = rows("- **\u0301x**")
+      # A prefix as wide as the row wraps as text and stays a sign.
+      assert rows("1. x", 2) == [[{"1.", [:sign]}], [{"x", []}]]
     end
 
     test "a link whose text is its address shows it once" do
@@ -93,7 +95,7 @@ defmodule Helyx.TUI.MarkdownTest do
 
     test "a closed fence shows its lines as code, indented, without the fences" do
       assert rows("```elixir\n*x*  y\n```\nafter") == [
-               [{"  ", []}, {"*x*  y", [:code]}],
+               [{"  ", [:sign]}, {"*x*  y", [:code]}],
                [{"after", []}]
              ]
     end
