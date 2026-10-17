@@ -69,3 +69,10 @@ The first run failed in two steps:
 - Glob characters in `:sessions_dir` widen the scan (round 3, code of master).
 - #694: an attach can lose the first open error.
 - The stale comment in `switch.ex:96`, and stale cites of master in `docs/features/wire-protocol.md`.
+
+## Merge gate (orchestrator)
+
+- Orchestrator fix before the gate: the `:noproc` clause of `stop/1` matched no real exit; `GenServer.stop/3` exits with `{:noproc, {GenServer, :stop, args}}` (checked in a probe).
+- Gate r1 (Codex): 1 medium, a killed session supervisor restarts with no children while the old sessions close. Accepted hole, stated in the feature doc: nothing in Helyx kills that supervisor.
+- Gate r2 (Codex): 1 medium, a Core stop between the abort and the stop made the name lookup raise. Fixed: `stop/1` looks up the pid with `Session.pid/1` after the abort.
+- Gate r3 (Codex): 1 medium, a Core stop during the stop call exited the caller with the shutdown reason. Fixed: any other end during the stop gives `:ok`, because the session ended. The third finding on one mechanism ended the gate loop (the roll-forward cap); no race test, as the races need a Core stop at one instant.
