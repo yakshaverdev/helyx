@@ -112,7 +112,7 @@ defmodule Helyx.Provider.Codex.TurnsTest do
              messages(events)
 
     # The session end closes the program: its input ends, and it exits.
-    GenServer.stop(Session.pid(session))
+    Helyx.Test.SessionFile.stop(session)
     {:ok, session} = Session.resume(ctx.core, sessions_dir: ctx.sessions, cwd: ctx.work)
     {:ok, _, _} = Session.subscribe(session)
     prompt(session, "back")
@@ -142,7 +142,7 @@ defmodule Helyx.Provider.Codex.TurnsTest do
 
     session = start(ctx)
     prompt(session, "hello")
-    GenServer.stop(Session.pid(session))
+    Helyx.Test.SessionFile.stop(session)
     {:ok, session} = Session.resume(ctx.core, sessions_dir: ctx.sessions, cwd: ctx.work)
     {:ok, _, _} = Session.subscribe(session)
     events = prompt(session, "again")

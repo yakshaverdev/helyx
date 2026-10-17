@@ -6,6 +6,7 @@ defmodule Helyx.Session.LockTest do
 
   import Helyx.Test.Events
   import Helyx.Test.SessionCase
+  import Helyx.Test.SessionFile, only: [await_lock_free: 2]
 
   alias Helyx.{Event, Session}
   alias Helyx.Session.Lock
@@ -32,15 +33,6 @@ defmodule Helyx.Session.LockTest do
     path = path(dir, session.id)
     File.write!(path, String.trim_trailing(File.read!(path), "\n"))
     {session, path}
-  end
-
-  defp await_lock_free(path, what), do: await(fn -> lock_free?(path) end, what)
-
-  defp lock_free?(path) do
-    case Lock.hold(path, fn -> {:ok, :taken} end) do
-      {:ok, lock, :taken} -> Lock.release(lock) == :ok
-      {:error, {:session_locked, _id}} -> false
-    end
   end
 
   defp port_messages,
@@ -95,14 +87,10 @@ defmodule Helyx.Session.LockTest do
     {:ok, session} = Session.start(core, model: "test/ok", sessions_dir: dir)
     {:ok, _, _} = Session.subscribe(session)
     turn(session, "hi")
+    # perl exits when it reads the end of its stdin, after the kill, and
+    # `stop_session/2` waits for the free lock.
     stop_session(session, &Process.exit(&1, :kill))
-    other = other_core()
-
-    # perl exits when it reads the end of its stdin, after the kill.
-    await(
-      fn -> match?({:ok, _}, Session.resume(other, sessions_dir: dir, id: session.id)) end,
-      "the lock of the killed session to free"
-    )
+    assert {:ok, _} = Session.resume(other_core(), sessions_dir: dir, id: session.id)
   end
 
   test "perl killed while the session runs gives one notice, and the session stops saving", %{
@@ -300,15 +288,8 @@ defmodule Helyx.Session.LockTest do
     Process.exit(caller, :kill)
     assert_receive {:DOWN, _, :process, ^caller, :killed}
 
-    # The test's `:DOWN` says nothing of when the session gets its own (#592),
-    # and the session checks for it once, after the open.
-    await(
-      fn ->
-        {:messages, messages} = Process.info(pid, :messages)
-        Enum.any?(messages, &match?({:DOWN, _, :process, ^caller, _}, &1))
-      end,
-      "the session to get the end of its caller"
-    )
+    # The session checks for its `:DOWN` of the caller once, after the open.
+    await_down(pid, caller, "the session to get the end of its caller")
 
     send(pid, :go)
     assert_receive {:DOWN, ^ref, :process, ^pid, :normal}

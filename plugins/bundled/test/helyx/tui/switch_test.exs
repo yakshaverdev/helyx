@@ -51,7 +51,7 @@ defmodule Helyx.TUI.SwitchTest do
     assert_receive {:helyx_event, %Event{type: :turn_end}}, 5_000
 
     if stop? do
-      :ok = GenServer.stop(Session.pid(session))
+      Helyx.Test.SessionFile.stop(session)
       assert_receive {:DOWN, ^ref, :process, _pid, _reason}
     end
 

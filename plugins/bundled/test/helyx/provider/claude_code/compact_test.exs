@@ -107,7 +107,7 @@ defmodule Helyx.Provider.ClaudeCode.CompactTest do
     prompt(session, "one")
     assert :ok = Session.compact(session)
     collect_until(:turn_end)
-    GenServer.stop(Session.pid(session))
+    Helyx.Test.SessionFile.stop(session)
 
     {:ok, session} = Session.resume(ctx.core, sessions_dir: ctx.sessions, cwd: ctx.work)
     {:ok, _, _} = Session.subscribe(session)
@@ -139,7 +139,7 @@ defmodule Helyx.Provider.ClaudeCode.CompactTest do
     assert :ok = Session.compact(session)
     assert List.last(collect_until(:turn_end)).data == %{outcome: :done}
 
-    if reconnect?, do: GenServer.stop(Session.pid(session))
+    if reconnect?, do: Helyx.Test.SessionFile.stop(session)
     session = if reconnect?, do: resume(ctx), else: session
     assert [_user, %{usage: usage}] = messages(prompt(session, "three"))
     assert resume_flag?(bin, n) == reconnect?
@@ -181,7 +181,7 @@ defmodule Helyx.Provider.ClaudeCode.CompactTest do
     :ok = Session.abort(session)
     assert [%{outcome: :aborted}] = of_type(collect_until(:turn_end), :turn_end)
 
-    if reconnect?, do: GenServer.stop(Session.pid(session))
+    if reconnect?, do: Helyx.Test.SessionFile.stop(session)
     session = if reconnect?, do: resume(ctx), else: session
     assert [_user, %{usage: usage}] = messages(prompt(session, "three"))
     assert resume_flag?(bin, n) == reconnect?

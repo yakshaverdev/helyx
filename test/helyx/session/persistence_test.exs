@@ -299,13 +299,10 @@ defmodule Helyx.Session.PersistenceTest do
     assert_receive {:helyx_event,
                     %Event{type: :message_end, data: %{message: %{role: :assistant}}}}
 
+    # The kill frees the lock once perl reads the end of its stdin, and
+    # `stop_session/2` waits for it.
     stop_session(session, &Process.exit(&1, :kill))
-
-    # The kill frees the lock once perl reads the end of its stdin.
-    await(
-      fn -> match?({:ok, _}, Session.resume(core, sessions_dir: dir)) end,
-      "the lock of the killed session to free"
-    )
+    {:ok, _} = Session.resume(core, sessions_dir: dir)
 
     resumed = %Session{id: session.id, core: core}
     {:ok, _, _} = Session.subscribe(resumed)

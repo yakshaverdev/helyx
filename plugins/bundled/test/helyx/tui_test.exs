@@ -465,6 +465,10 @@ defmodule Helyx.TUITest do
 
     assert Session.pid(session) == nil
 
+    # The shutdown waits for perl only up to its release bound (#670).
+    [path] = Path.wildcard(Path.join([dir, "*", session.id <> ".jsonl"]))
+    Helyx.Test.SessionFile.await_lock_free(path)
+
     {:ok, resumed} = Session.resume(core, sessions_dir: dir, cwd: dir)
     %{vm: vm} = mount!(session: resumed, resumed: true)
 

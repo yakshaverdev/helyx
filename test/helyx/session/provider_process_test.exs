@@ -5,7 +5,7 @@ defmodule Helyx.Session.ProviderProcessTest do
   use ExUnit.Case, async: true
 
   import Helyx.Test.Events
-  import Helyx.Test.SessionCase, only: [final_text: 1]
+  import Helyx.Test.SessionCase, only: [await_down: 3, final_text: 1]
 
   alias Helyx.{Message, Session}
   alias Helyx.Session.Server.Wait
@@ -481,11 +481,11 @@ defmodule Helyx.Session.ProviderProcessTest do
       assert_receive {:conn, :turn, old, {:turn, one, _}}
       :ok = Session.follow_up(session, "two")
 
-      ref = Process.monitor(old)
       :erlang.suspend_process(pid)
       send(old, {:finish, one})
       send(old, :stop)
-      assert_receive {:DOWN, ^ref, :process, _, _}
+      # Before its `:DOWN` of `old`, the session could send the next turn to it.
+      await_down(pid, old, "the session to get the end of the old process")
       :erlang.resume_process(pid)
 
       assert_receive {:conn, :turn, new, {:turn, two, context}}
@@ -880,11 +880,11 @@ defmodule Helyx.Session.ProviderProcessTest do
       assert_receive {:held, _from}
       :ok = Session.follow_up(session, "two")
 
-      ref = Process.monitor(old)
       :erlang.suspend_process(pid)
       send(old, {:finish, one})
       send(old, :stop)
-      assert_receive {:DOWN, ^ref, :process, _, _}
+      # Before its `:DOWN` of `old`, the session could send the next turn to it.
+      await_down(pid, old, "the session to get the end of the old process")
       :erlang.resume_process(pid)
 
       assert unconfirmed(collect_until(:steer_unconfirmed)) == [%{text: "s"}]
@@ -1083,8 +1083,9 @@ defmodule Helyx.Session.ProviderProcessTest do
       assert_receive {:conn, :turn, ^proc, {:turn, next_id, _}}
       send(proc, {:need_context, next_id, "fresh"})
       assert List.last(collect_until(:turn_end)).data.outcome == :done
-      refute_received {:conn, :context, _, {:context, ^turn_id, _}}
+      # A context of the first turn from `proc` would come before the one of the next (#592).
       assert_receive {:conn, :context, ^proc, {:context, ^next_id, {:ok, _}}}
+      refute_received {:conn, :context, _, {:context, ^turn_id, _}}
     end
 
     test "a second need_context with one open is a bad action and stops the provider process",

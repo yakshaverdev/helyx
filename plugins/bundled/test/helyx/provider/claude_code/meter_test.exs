@@ -459,7 +459,7 @@ defmodule Helyx.Provider.ClaudeCode.MeterTest do
 
       session = start(ctx)
       before = for _total <- totals, do: usage(prompt(session, "p"))
-      GenServer.stop(Session.pid(session))
+      Helyx.Test.SessionFile.stop(session)
 
       {:ok, session} = Session.resume(ctx.core, sessions_dir: ctx.sessions, cwd: ctx.work)
       {:ok, _, _} = Session.subscribe(session)
@@ -512,7 +512,7 @@ defmodule Helyx.Provider.ClaudeCode.MeterTest do
       :ok = Session.abort(session)
       assert [%{outcome: :aborted}] = of_type(collect_until(:turn_end), :turn_end)
       costs = for _total <- between, do: usage(prompt(session, "p")).cost
-      GenServer.stop(Session.pid(session))
+      Helyx.Test.SessionFile.stop(session)
 
       costs = costs ++ [usage(prompt(resume(ctx), "back")).cost]
       assert resume_flag?(bin, 2)
@@ -550,7 +550,7 @@ defmodule Helyx.Provider.ClaudeCode.MeterTest do
       # The catalog snapshot has the window of this model.
       session = start(ctx, "claude-code/claude-haiku-4-5")
       assert usage(prompt(session, "p")).cost == 0.4
-      GenServer.stop(Session.pid(session))
+      Helyx.Test.SessionFile.stop(session)
 
       {:ok, session} = Session.resume(ctx.core, sessions_dir: ctx.sessions, cwd: ctx.work)
       {:ok, _, _} = Session.subscribe(session)
