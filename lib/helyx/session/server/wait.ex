@@ -95,7 +95,7 @@ defmodule Helyx.Session.Server.Wait do
   # Kills the prepare Task of the turn, if one runs. Its late
   # `{ref, {:prepared, ...}}` and `:DOWN` match no turn and are dropped.
   defp kill_prepare(%Turn{prepare: nil}), do: :ok
-  defp kill_prepare(%Turn{prepare: pid}), do: Process.exit(pid, :kill)
+  defp kill_prepare(%Turn{prepare: {pid, _messages}}), do: Process.exit(pid, :kill)
 
   # The answer to the interrupt or the idle close of the wait. The loop
   # ends itself after an answer that stops it (`ProviderRequest.stop_after/2`),

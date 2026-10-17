@@ -92,8 +92,8 @@ defmodule Helyx.Session.ProviderProcessTest do
   # The pid of the prepare Task of the session's turn, or nil.
   defp prepare_task(pid) do
     case :sys.get_state(pid).activity do
-      %Helyx.Session.Turn{prepare: task} -> task
-      _idle_or_wait -> nil
+      %Helyx.Session.Turn{prepare: {task, _messages}} -> task
+      _no_task -> nil
     end
   end
 
@@ -1067,6 +1067,26 @@ defmodule Helyx.Session.ProviderProcessTest do
       assert Message.text(last) == "fresh"
       assert List.last(collect_until(:turn_end)).data.outcome == :done
       assert Process.alive?(proc)
+    end
+
+    # The context holds the messages that the plugins saw, not the
+    # transcript at the reply (#728).
+    test "a steer that joins while the context builds is not in the context that the plugins kept",
+         %{core: core} do
+      {session, pid, proc, turn_id} = context_turn(core)
+      send(proc, {:need_context, turn_id, "hold_prepare"})
+      wait_until(fn -> prepare_task(pid) != nil end)
+
+      :ok = Session.steer(session, "more")
+      assert_receive {:conn, :steer, ^proc, {:steer, ^turn_id, steer_id, "more"}}
+      send(proc, {:batch, [{:event, turn_id, {:user_message, steer_id}}]})
+      wait_until(fn -> Message.text(List.last(:sys.get_state(pid).transcript)) == "more" end)
+      send(prepare_task(pid), :continue)
+
+      assert_receive {:conn, :context, ^proc, {:context, ^turn_id, {:ok, context}}}
+      assert context.system == "prepared"
+      assert Message.text(List.last(context.messages)) == "hold_prepare"
+      assert List.last(collect_until(:turn_end)).data.outcome == :done
     end
 
     test "an interrupt during a context request kills its build; no context comes, and the next turn asks again",

@@ -9,8 +9,9 @@ defmodule Helyx.Session.Turn do
   # during the turn takes effect on the next one. A turn has a `phase`,
   # `:preparing`, `:submitting`, or `:submitted` (nil before its connect),
   # the prepared `context` until it is sent, and the `pending` ref of the
-  # answer to `{:turn, ...}`. `prepare` is the pid of the running prepare
-  # Task, which the session monitors and kills at the turn end, or nil: in
+  # answer to `{:turn, ...}`. `prepare` is `{pid, messages}`: the pid of
+  # the running prepare Task, which the session monitors and kills at the
+  # turn end, and the messages that it got. It is nil with no Task: in
   # `submitted` a prepare Task is an open context request.
   # `tool_queue` holds the Helyx tool requests of the turn
   # (`Helyx.Session.ToolQueue`). `compact` is nil for a turn with a prompt;
@@ -56,7 +57,7 @@ defmodule Helyx.Session.Turn do
           phase: nil | :preparing | :submitting | :submitted,
           context: Helyx.Context.t() | nil,
           pending: reference() | nil,
-          prepare: pid() | nil,
+          prepare: {pid(), [Message.t()]} | nil,
           compact: String.t() | :reported | nil,
           start: non_neg_integer() | nil,
           started_ms: integer() | nil,

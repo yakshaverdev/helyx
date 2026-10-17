@@ -59,9 +59,8 @@ defmodule Helyx.Session.Server.TurnLoop do
   # `one-provider-path.md`).
   def handle(
         {_ref, {:prepared, turn_id, result}},
-        %State{activity: %Turn{id: turn_id, prepare: pid}} = state
-      )
-      when pid != nil,
+        %State{activity: %Turn{id: turn_id, prepare: {_pid, _messages}}} = state
+      ),
       do: Prepare.prepared(state, result)
 
   # A context request (C1-C4) comes after the events before it, and is
@@ -160,8 +159,8 @@ defmodule Helyx.Session.Server.TurnLoop do
   # The end of the turn's prepare Task before its context: it raised,
   # exited, or was killed at its bound (`:context_timeout`). A Task that
   # sent its context is no longer `Turn.prepare`: its `:DOWN` comes after.
-  def handle({:DOWN, _ref, :process, pid, reason}, %State{activity: %Turn{prepare: pid}} = state),
-    do: Prepare.prepared(state, {:error, Prepare.down_reason(reason)})
+  def handle({:DOWN, _, :process, pid, why}, %State{activity: %Turn{prepare: {pid, _}}} = state),
+    do: Prepare.prepared(state, {:error, Prepare.down_reason(why)})
 
   # A message for a turn or a provider process that is no longer current,
   # or a reply that nobody waits for. The `:DOWN` of a provider process
