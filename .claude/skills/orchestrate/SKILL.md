@@ -61,6 +61,10 @@ Every brief also says:
 - Run every Agent call in the foreground: set `run_in_background` to false on each Agent call, because the default can be background (2026-10-15: workers started their `/simplify` agents in the background and had to run them again). Put several Agent calls in one message when they must run in parallel. Never use a background agent or a scheduled wakeup: print mode waits only for Helyx background runs, so the run ends and the session stop ends the agent (#592 probe, #598).
 - Run a long command (the Codex review, precommit) with the `bash` tool and `background: true`. Its end opens a new turn.
 - No probe sends a request to a real network service. Use a Req plug or a local stub (2026-10-15: a probe sent two requests with a fake key). Put this rule in every review brief.
+- A probe never deletes a folder that it did not create in the same probe. A probe of a removed working folder first makes its own folder under the scratchpad and works there (2026-10-17: a review probe ran `File.rm_rf!(File.cwd!())` in the ticket worktree and deleted it). Put this rule in every review brief.
+- Report only the result lines that a tool gave you. Never write a test or precommit result that you did not read in the tool output or the log (2026-10-17: a worker wrote "passed" after its background precommit ended with the session limit and left an empty log).
+
+A change of scope after the worker started goes to the worker as a follow-up, not only as a ticket comment: a running worker does not read the ticket again (2026-10-17, #673).
 
 A follow-up to a worker, and the resume of a worker that stopped before its final report (a usage limit, a wait that ended the run), is one more print run on its session, after its last run ended (one process per session at a time):
 
@@ -81,7 +85,7 @@ env -u CODEX_COMPANION_APP_SERVER_ENDPOINT node "${codex_dir}scripts/codex-compa
 
 `env -u` drops the shared broker endpoint: through it, a review can read another worktree (found 2026-10-03).
 
-The invariant sentence names the entry points it covers, every accepted hole, every exception that the feature doc already states (for example, the write-failure policy of the session file) and every open hole that has a ticket. A reviewer that does not know a documented exception reports it as a defect. Write no text that starts with `--` in the sentence (for example a switch name such as `--model`): the companion script reads it as its own option and fails (#148). Name the switch in words.
+The invariant sentence copies the invariant of the worker's report word for word, then adds the holes and the boundaries. Do not reword it: a reworded invariant widened the scope or changed a bound, and the gate then found defects outside the ticket (2026-10-17, #649 and #652). The sentence names the entry points it covers, every accepted hole, every exception that the feature doc already states (for example, the write-failure policy of the session file) and every open hole that has a ticket. A reviewer that does not know a documented exception reports it as a defect. Write no text that starts with `--` in the sentence (for example a switch name such as `--model`): the companion script reads it as its own option and fails (#148). Name the switch in words.
 
 Judge every finding yourself. Reproduce it or read the code. A reviewer's claim is not a fact. Reject a finding whose reproduction enters below the boundary with a value no caller can pass; a fix for it would add defensive code. Record the rejection with the boundary that already covers the value. Reject a finding that asks for a case-specific handler of contract-breaking provider output when no real provider shows that output: a contract break gets the generic answer (the provider stops, the turn fails), and its own handler needs evidence (`docs/agents/review-checklist.md`, "Inputs from plugins"). Record the rejection with this rule. A finding that the generic failure path does not fire, a race between Core processes, and a broken safety bound stay findings. The invariant sentence also names the boundaries of the change, so the reviewer knows which checks are the designed ones.
 
@@ -105,7 +109,7 @@ Add one row per ticket to `docs/reviews/escapes.md`: date, ticket, ship findings
 
 Serial, one ticket at a time:
 
-1. `git fetch`, rebase the branch on `origin/master`. A conflict that is not mechanical: park.
+1. `git fetch`, rebase the branch on `origin/master`. A conflict that is not mechanical: park. Chain the rebase and the step after it (the gate or precommit) with `&&` only, never with `;` or a pipe: with `;` a failed rebase still runs the step, and a pipe hides the exit status of the rebase (2026-10-17: a gate and a precommit ran on a tree with a rebase conflict).
 2. Precommit into the log, as `AGENTS.md` says, with the slow tests: `HELYX_SLOW=1 .claude/skills/ship/precommit.sh`. It must pass after the rebase, not before it. The same failure twice: park.
 3. Push. `gh pr create` with a body that contains `Closes #<n>`. No attribution lines.
 4. `gh pr merge --merge --delete-branch`. Confirm the issue closed; close it with a pointer to the PR when it did not.
