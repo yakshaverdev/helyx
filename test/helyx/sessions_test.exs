@@ -96,13 +96,17 @@ defmodule Helyx.SessionsTest do
       assert_receive {:started, ^second, {:error, :boom}}
     end
 
-    # The kill at the deadline of the open: no `go` comes. The deadline is
-    # the margin for load in which the second start reaches the process.
-    @load_open_ms 500
-    test "both get :open_timeout when the open passes its deadline", %{core: core, tmp_dir: dir} do
-      {first, _pid, second} = held_pair(core, dir, open_ms: @load_open_ms)
+    # The deadline of the open races the second start (#716), so the test
+    # kills the open. lock_test.exs runs the deadline.
+    test "both get :open_timeout when the open is killed", %{core: core, tmp_dir: dir} do
+      {first, pid, second} = held_pair(core, dir)
+      Process.exit(pid, :kill)
       assert_receive {:started, ^first, {:error, :open_timeout}}
       assert_receive {:started, ^second, {:error, :open_timeout}}
+      # Only this line sees a run again of the second: its open blocks until
+      # its deadline (25,000 ms) gives :open_timeout inside the receive
+      # timeout (30,000 ms).
+      refute_received {:in_open, _}
     end
 
     # The session of an ended caller stops after its open: no result of a
@@ -123,10 +127,9 @@ defmodule Helyx.SessionsTest do
 
   # Two starts of one id: the open of the first waits for the test, and the
   # second is in the mailbox of the session process before the go.
-  defp held_pair(core, dir, bounds \\ []) do
+  defp held_pair(core, dir) do
     test = self()
     {state, tools} = start_args(core)
-    state = struct!(state, bounds)
 
     open =
       {Path.join(dir, state.id <> ".jsonl"),
