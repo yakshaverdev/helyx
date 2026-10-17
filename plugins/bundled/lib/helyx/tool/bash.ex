@@ -166,12 +166,10 @@ defmodule Helyx.Tool.Bash do
   @impl true
   defdelegate release(handles, mode, deadline), to: Helyx.Watchdog.Group
 
-  @doc false
-  # Public for the tests of the limit. The limit is in ms and is whole
-  # seconds, as the result gives it in s. The limit counts from before the
-  # start, so it counts the time of the hold and the marker, but it cannot
-  # end those waits.
-  def run_command(command, cwd, limit_ms) do
+  # The limit is in ms and is whole seconds, as the result gives it in s.
+  # The limit counts from before the start, so it counts the time of the
+  # hold and the marker, but it cannot end those waits.
+  defp run_command(command, cwd, limit_ms) do
     deadline = System.monotonic_time(:millisecond) + limit_ms
 
     with {:started, port, pre, handles} <- start(command, cwd),

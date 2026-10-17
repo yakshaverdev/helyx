@@ -56,11 +56,10 @@ defmodule Helyx.Session.Hands do
     # call id. The place is the id of the run from `background/0` to the end
     # of the Task, else nil. `background` holds the ends that no turn took
     # (`Helyx.Session.Background`); `background_dir` is the background
-    # folder. `held` holds the handles per Task pid.
-    # `unconfirmed` holds the handles that no release confirmed, per tool
-    # module. `release_ms` is
-    # the release deadline of a delivery or a cancel, and `connect_ms` the
-    # armed kill of a provider process: seams for tests.
+    # folder. `held` holds the handles per Task pid. `unconfirmed?` is true
+    # once a release left a handle unconfirmed; the log got the handles then.
+    # `release_ms` is the release deadline of a delivery or a cancel, and
+    # `connect_ms` the armed kill of a provider process: seams for tests.
     @enforce_keys [:core, :cwd, :background_dir, :session, :tools]
 
     # The default release deadline, the one source (`Helyx.Session.Server.Stop`
@@ -77,7 +76,7 @@ defmodule Helyx.Session.Hands do
       tasks: %{},
       background: %Background{},
       held: %{},
-      unconfirmed: %{},
+      unconfirmed?: false,
       release_ms: @release_ms,
       connect_ms: 30_000
     ]
@@ -218,7 +217,7 @@ defmodule Helyx.Session.Hands do
     left = Release.run(by_tool, :cancel, state.release_ms, state.core)
 
     # A Task killed here never delivers; its place leaves with its entry.
-    state = %{state | tasks: kept, held: held, unconfirmed: Release.add(state.unconfirmed, left)}
+    state = %{state | tasks: kept, held: held, unconfirmed?: state.unconfirmed? or left != %{}}
 
     {:reply, Release.error(left) || :ok, state}
   end
@@ -226,16 +225,18 @@ defmodule Helyx.Session.Hands do
   @impl true
   def handle_cast({:run, turn_id, call}, state) do
     state =
-      if state.unconfirmed == %{},
-        do: start(state, turn_id, call),
-        else: answer(state, turn_id, call.id, refusal())
+      if state.unconfirmed?,
+        do: answer(state, turn_id, call.id, refusal()),
+        else: start(state, turn_id, call)
 
     {:noreply, state}
   end
 
   def handle_cast({:start_provider, ref, provider, fun}, state) do
     {result, state} =
-      if state.unconfirmed == %{} do
+      if state.unconfirmed? do
+        {{:error, refusal()}, state}
+      else
         # The kill is armed at the OTP timer server as the Task's first act;
         # `fun` gets the timer ref, before any plugin code runs.
         ms = state.connect_ms
@@ -247,8 +248,6 @@ defmodule Helyx.Session.Hands do
           end)
 
         {{:ok, pid}, state}
-      else
-        {{:error, refusal()}, state}
       end
 
     send(state.session, {:provider_start, ref, result})
@@ -300,7 +299,7 @@ defmodule Helyx.Session.Hands do
       | tasks: tasks,
         held: held,
         background: Background.ended(state.background, call_id),
-        unconfirmed: Release.add(state.unconfirmed, left)
+        unconfirmed?: state.unconfirmed? or left != %{}
     }
   end
 
@@ -314,8 +313,8 @@ defmodule Helyx.Session.Hands do
   # The reason of a provider process's end. `Helyx.Reason` caps its
   # integers when it makes the text and the log line. A kill is the armed
   # kill of a request that got no answer in time. The loop ends with
-  # `{:shutdown, reason}` (L1). An unconfirmed handle stays in
-  # `unconfirmed` and refuses the next start.
+  # `{:shutdown, reason}` (L1). An unconfirmed handle sets `unconfirmed?`,
+  # which refuses the next start.
   defp down_reason({:exit, :killed}), do: :provider_timeout
   defp down_reason({:exit, {:shutdown, reason}}), do: reason
   defp down_reason({:exit, reason}), do: {:task_exit, reason}
