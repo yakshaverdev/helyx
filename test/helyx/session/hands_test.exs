@@ -23,7 +23,8 @@ defmodule Helyx.Session.HandsTest do
       Helyx.Test.Tool.Odd,
       Helyx.Test.Tool.Upcase,
       Helyx.Test.Tool.Background,
-      Helyx.Test.Tool.Context
+      Helyx.Test.Tool.Context,
+      Helyx.Test.Tool.Transcript
     ]
 
     start_supervised!({Helyx.Core, name: core, plugins: plugins})
@@ -219,6 +220,19 @@ defmodule Helyx.Session.HandsTest do
     send(second, :go)
     assert Task.await(cancel, wait_ms()) == :ok
     assert upcase(hands, "c3") == {:ok, "HI"}
+  end
+
+  test "a tool reads the transcript of the session of its hands", %{core: core} do
+    hands = start_hands(core)
+    :ok = run(hands, "t1", call("c1", "transcript", %{}))
+    # The test process is the session of the hands.
+    assert_receive {:"$gen_call", from, :transcript}, wait_ms()
+    GenServer.reply(from, [Helyx.Message.user("a"), Helyx.Message.user("b")])
+    assert_receive {:tool_result, "t1", "c1", {:ok, "2 messages"}}, wait_ms()
+  end
+
+  test "outside the hands a transcript call exits, as a hold does" do
+    assert {:noproc, _} = catch_exit(Helyx.Tool.transcript())
   end
 
   test "a tool without release/3 cannot hold a handle", %{core: core} do

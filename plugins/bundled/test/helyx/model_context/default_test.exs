@@ -294,4 +294,39 @@ defmodule Helyx.ModelContext.DefaultTest do
       assert system =~ "\n## This session\n\nWorking directory: "
     end
   end
+
+  describe "the skills section" do
+    setup %{tmp_dir: dir} do
+      cwd = Path.join(dir, "repo")
+      File.mkdir_p!(Path.join(cwd, ".git"))
+
+      write!(
+        Path.join(cwd, ".agents/skills/probe/SKILL.md"),
+        "---\nname: probe\ndescription: Probe\n  it.\n---\nbody\n"
+      )
+
+      %{cwd: cwd, home: Path.join(dir, "home")}
+    end
+
+    defp build(cwd, home, tools) do
+      opts = [cwd: cwd, home: home, model: @model, session_id: "s1"]
+      Default.build(%Helyx.Context{tools: tools}, opts).system
+    end
+
+    test "comes after the session section when the skill tool is there", %{cwd: cwd, home: home} do
+      tool = %{name: "skill", description: "", parameters: %{}}
+      system = build(cwd, home, [tool])
+
+      assert system =~
+               ~r/## This session\n.*\n\n## Skills\n\n.*skill tool.*\n\n- probe: Probe it.(\n\n|\z)/s
+
+      assert count(system, "## Skills") == 1
+    end
+
+    test "is left out without the skill tool or with no skill", %{cwd: cwd, home: home} do
+      refute build(cwd, home, [%{name: "read", description: "", parameters: %{}}]) =~ "## Skills"
+      File.rm_rf!(Path.join(cwd, ".agents"))
+      refute build(cwd, home, [%{name: "skill", description: "", parameters: %{}}]) =~ "## Skills"
+    end
+  end
 end

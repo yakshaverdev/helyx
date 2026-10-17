@@ -92,17 +92,13 @@ defmodule Helyx.Compaction.Summary do
       "The earlier part of this conversation was compacted into this summary:\n\n" <>
         "<summary>\n#{summary.text}\n</summary>"
 
-    kept = Enum.drop(context.messages, start(context.messages, summary))
+    kept = Helyx.Summary.kept(context.messages, summary)
     %{context | messages: [Message.user(framed) | kept]}
   end
 
-  # The index of the first kept message of the summary. It is 0 with no
-  # summary, and when the ModelContext removed that message: then no
-  # message is trimmed, so none that the summary does not cover is lost.
-  defp start(_messages, nil), do: 0
-
+  # The index of the first message that `Helyx.Summary.kept/2` keeps.
   defp start(messages, summary),
-    do: Enum.find_index(messages, &(&1.id == summary.first_kept_id)) || 0
+    do: length(messages) - length(Helyx.Summary.kept(messages, summary))
 
   # A plan for the messages from the last cut up to the new cut, or the
   # context to send when there is nothing new to summarize.

@@ -15,7 +15,8 @@ defmodule CodingAgent do
     Helyx.Tool.Bash,
     Helyx.Tool.Edit,
     Helyx.Tool.Write,
-    Helyx.Tool.Agent
+    Helyx.Tool.Agent,
+    Helyx.Tool.Skill
   ]
 
   # The rotation threshold of the log file of a TUI run. The handler
@@ -87,6 +88,7 @@ defmodule CodingAgent do
   defp client(session, opts) do
     case Keyword.fetch(opts, :prompt) do
       {:ok, prompt} ->
+        prompt = CodingAgent.Print.skills(prompt, Keyword.fetch!(opts, :cwd))
         CodingAgent.Print.run(session, prompt)
 
       :error ->

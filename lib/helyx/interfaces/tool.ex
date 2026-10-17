@@ -243,6 +243,19 @@ defmodule Helyx.Tool do
   end
 
   @doc """
+  Returns the messages of the session that runs the calling Task of the
+  hands, as the session holds them when it answers: from the first message
+  that its stored summary keeps (`Helyx.Summary.kept/2`), or all of them with no
+  summary. A tool result reaches the transcript through the provider's own
+  events, so the result of an earlier call of the same assistant message
+  can be missing. The call has no deadline, because the session never waits
+  for a Task of the hands, and it exits when the session ends
+  (`docs/features/skills.md`). Exits outside the hands, as `hold/1` does.
+  """
+  @spec transcript() :: [Helyx.Message.t()]
+  def transcript, do: GenServer.call(Process.get(:helyx_session), :transcript, :infinity)
+
+  @doc """
   Takes a place for a background run of the calling tool call, before its
   external work starts. Returns the id of the run and the background
   folder of the session, mode `0700`, which the session deletes at its

@@ -66,6 +66,10 @@ defmodule Helyx.Session.SummaryTest do
     # The full history stays in the transcript; a resume keeps the summary.
     await_call_end(session)
     assert length(state(session).transcript) == 4
+
+    # `Helyx.Tool.transcript/0` gets the messages from the kept one.
+    assert [%{id: ^kept} | _] = kept_messages = GenServer.call(Session.pid(session), :transcript)
+    assert length(kept_messages) == 2
     Helyx.Test.SessionCase.stop_session(session, &GenServer.stop/1)
 
     {:ok, resumed} = Session.resume(core, sessions_dir: dir, id: session.id)

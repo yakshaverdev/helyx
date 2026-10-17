@@ -100,7 +100,10 @@ defmodule Helyx.TUI do
     }
 
     info = if opts[:resumed], do: "resumed session"
-    {:ok, state |> Switch.bind(Keyword.fetch!(opts, :session), info) |> read_branch()}
+    state = state |> Switch.bind(Keyword.fetch!(opts, :session), info) |> read_branch()
+    # The notices of the skills scan (docs/features/skills.md), once.
+    notices = Helyx.Skills.scan(cwd).notices
+    {:ok, %{state | vm: Enum.reduce(notices, state.vm, &ViewModel.notice(&2, &1))}}
   end
 
   @impl true
@@ -235,7 +238,7 @@ defmodule Helyx.TUI do
     do: {:noreply, %{state | vm: ViewModel.reject(state.vm, "not sent: a switch runs")}}
 
   def handle_event(%Key{code: "enter", kind: "press"} = key, state) do
-    case Composer.submit(state.composer) do
+    case Composer.submit(state.composer, &Helyx.Skills.expand(&1, state.cwd)) do
       :empty -> {:noreply, state}
       {:message, text} -> {:noreply, send_message(text, key, state)}
       # A notice is a new cell, so the position gets its check.

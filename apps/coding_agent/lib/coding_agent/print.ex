@@ -148,6 +148,17 @@ defmodule CodingAgent.Print do
   end
 
   @doc """
+  The prompt of a print run with a skill command `/name args` expanded
+  (`Helyx.Skills.expand/3`), after each notice of the skills scan of `cwd`
+  is written on stderr (`docs/features/skills.md`).
+  """
+  @spec skills(String.t(), String.t()) :: String.t()
+  def skills(prompt, cwd) do
+    Enum.each(Helyx.Skills.scan(cwd).notices, &stderr/1)
+    Helyx.Skills.expand(prompt, cwd) || prompt
+  end
+
+  @doc """
   Sends `prompt` to `session`, waits until the session settles, prints the
   answer of the last turn, and returns the exit status: 0 for a normal
   end, 1 for a failed or aborted turn, an answer cut at the output limit,

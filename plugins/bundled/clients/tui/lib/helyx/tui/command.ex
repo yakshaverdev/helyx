@@ -13,6 +13,8 @@ defmodule Helyx.TUI.Command do
 
   @type name :: :model | :compact | :new | :resume | :help
   @type t :: {name(), String.t()} | {:usage, name()}
+  # The text of a skill command, or nil (`parse/2`).
+  @type expand :: (String.t() -> String.t() | nil)
 
   # Each command and its usage: the one list of names that `parse/1`
   # matches and `/help` shows.
@@ -30,26 +32,32 @@ defmodule Helyx.TUI.Command do
   # The rule is on bytes, not on looks; the feature doc's bounds table
   # holds the rule and its limit. A paste keeps tabs and new lines, so
   # `/model<tab>a/b` has a separator. A command name with no separator
-  # after it, as in `/models`, gives its usage. The ref goes to
+  # after it, as in `/models`, gives its usage, unless `expand` knows the
+  # word as a skill. `expand` gives the text of a skill command, or nil
+  # (`Helyx.Skills.expand/3`, docs/features/skills.md); a command wins
+  # over a skill of its name. The ref goes to
   # `Helyx.ModelRef` unsplit, which owns its bounds. The text holds only
   # valid UTF-8 (a Rust `String`); the `u` flag raises on anything else.
-  @spec parse(String.t()) :: t() | {:message, String.t()}
-  def parse(text) do
+  @spec parse(String.t(), expand()) :: t() | {:message, String.t()}
+  def parse(text, expand \\ fn _text -> nil end) do
     case Regex.run(~r/\A\s*\/(#{@names})([\s\p{C}]*)/u, text, return: :index) do
       nil ->
-        {:message, text}
+        {:message, expand.(text) || text}
 
       [{0, head}, {at, len}, {_, separator}] ->
         name = String.to_existing_atom(binary_part(text, at, len))
         arg = String.trim(binary_part(text, head, byte_size(text) - head))
 
         cond do
-          separator == 0 and head < byte_size(text) -> {:usage, name}
+          separator == 0 and head < byte_size(text) -> skill_or_usage(expand.(text), name)
           name in @bare and arg != "" -> {:usage, name}
           true -> {name, arg}
         end
     end
   end
+
+  defp skill_or_usage(nil, name), do: {:usage, name}
+  defp skill_or_usage(text, _name), do: {:message, text}
 
   # Runs a command on the session: `:ok`, or the notice of a refused one.
   @spec run(t(), Session.t()) :: :ok | {:notice, String.t()}

@@ -37,7 +37,8 @@ defmodule Helyx.ModelContext.Default do
      ]},
     {"compaction", ["docs/features/harness-compaction.md"]},
     {"context files and this prompt",
-     ["docs/features/context-files.md", "docs/features/agent-self-knowledge.md"]}
+     ["docs/features/context-files.md", "docs/features/agent-self-knowledge.md"]},
+    {"skills", ["docs/features/skills.md"]}
   ]
   @docs_topics Enum.map_join(@docs_map, "\n", fn {topic, paths} ->
                  "- #{topic}: #{Enum.join(paths, ", ")}"
@@ -45,7 +46,7 @@ defmodule Helyx.ModelContext.Default do
 
   @moduledoc """
   The default model context: a base prompt, the docs section, the session
-  section, and the context files, in that order.
+  section, the skills section, and the context files, in that order.
 
   The docs section gives the paths of the Helyx docs and a map from topic to
   file. The root is the Helyx source root at compile time; the section is
@@ -55,6 +56,13 @@ defmodule Helyx.ModelContext.Default do
   line of at most #{@max_value_bytes} bytes: `Helyx.Text.cap/3` cuts it first,
   then each line break becomes a space. Neither section counts toward the cap of
   the context files. See `docs/features/agent-self-knowledge.md`.
+
+  The skills section is the catalog of `.agents/skills` from the working
+  directory up to the git root and of `~/.agents/skills`, at most
+  #{Helyx.Skills.max_catalog_bytes()} bytes, scanned at each build. It is
+  there only when the context's tools hold the skill tool and a skill was
+  found, and it does not count toward the cap of the context files. See
+  `docs/features/skills.md`.
 
   The context files are the global file `~/.helyx/AGENTS.md`, then one file
   for each folder from the filesystem root down to the working directory, in
@@ -95,7 +103,7 @@ defmodule Helyx.ModelContext.Default do
 
     root = opts[:docs_root] || @docs_root
     docs = if File.regular?(Path.join(root, "README.md")), do: [docs_section(root)], else: []
-    sections = docs ++ [session_section(cwd, opts)]
+    sections = docs ++ [session_section(cwd, opts) | skills_section(context, cwd, home)]
     %{context | system: Enum.join([@base_prompt | sections] ++ nearest_within_cap(files), "\n\n")}
   end
 
@@ -113,6 +121,13 @@ defmodule Helyx.ModelContext.Default do
     Topics, relative to the Helyx root:
     #{@docs_topics}\
     """
+  end
+
+  # The catalog only when the model can load a skill.
+  defp skills_section(context, cwd, home) do
+    if Enum.any?(context.tools, &(&1.name == Helyx.Skills.tool())),
+      do: List.wrap(Helyx.Skills.scan(cwd, home).catalog),
+      else: []
   end
 
   defp session_section(cwd, opts) do
