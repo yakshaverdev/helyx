@@ -177,6 +177,8 @@ defmodule Helyx.Core do
   end
 
   @doc false
+  def max_sessions, do: @max_sessions
+  @doc false
   def sessions_registry(name), do: Module.concat(name, Sessions)
   @doc false
   def task_supervisor(name), do: Module.concat(name, Tasks)

@@ -3,13 +3,16 @@ defmodule Helyx.Session.MemoryTest do
   # (docs/features/memory.md), with `Helyx.Test.Memory`.
   use ExUnit.Case, async: true
 
+  import ExUnit.CaptureLog, only: [capture_log: 1]
   import Helyx.Test.Events
 
   alias Helyx.Session
-  alias Helyx.Test.{Memory, MemoryProvider}
+  alias Helyx.Test.{Memory, MemoryProvider, SessionCase}
 
   @plugins [MemoryProvider, Memory, Helyx.Test.Tool.Upcase]
   @failed "memory recall failed; the turn goes on without recall"
+  # A drain lasts 30,000 ms; a drop at once comes well under this margin for load.
+  @load_ms 5_000
 
   defp start_core(opts \\ []) do
     core = :"core_#{System.unique_integer([:positive])}"
@@ -294,6 +297,61 @@ defmodule Helyx.Session.MemoryTest do
       collect_until(:turn_end)
       turn(session, "after")
       assert_receive {:sync, [%{message: %{content: [%{text: "after"}]}} | _], _}
+    end
+
+    test "a sync that fails after the session ended logs the text of its notice" do
+      core = start_core()
+      session = start(core)
+      worker = :sys.get_state(Session.pid(session)).sync
+      worker_ref = Process.monitor(worker)
+      # The batch waits in the worker until after the session end.
+      :ok = :sys.suspend(worker)
+      turn(session, "sync_fail")
+
+      log =
+        capture_log(fn ->
+          SessionCase.stop_session(session, &GenServer.stop/1)
+          :ok = :sys.resume(worker)
+          assert_receive {:DOWN, ^worker_ref, :process, _, :normal}, @load_ms
+        end)
+
+      assert log =~ "memory sync failed for 2 messages; 2 of them were not saved and are lost"
+    end
+
+    test "a drain starts at 128 sync workers, and a session that ends past them drops its own" do
+      core = start_core()
+      sup = Helyx.Core.sync_supervisor(core)
+      oldest = start(core)
+      turn(oldest, "sync_hang")
+      assert_receive {:sync, _, _}
+      oldest_worker = :sys.get_state(Session.pid(oldest)).sync
+      # Stand-ins for the workers of other sessions and their drains: 128 with the worker.
+      for _ <- 1..127, do: {:ok, _} = DynamicSupervisor.start_child(sup, {Agent, fn -> nil end})
+
+      # The count never calls the supervisor, which a Core stop keeps busy.
+      :ok = :sys.suspend(sup)
+      SessionCase.stop_session(oldest, &GenServer.stop/1)
+      SessionCase.await(fn -> :sys.get_state(oldest_worker).session == nil end, "the drain")
+      :ok = :sys.resume(sup)
+
+      # A session starts past them with a worker that syncs.
+      newest = start(core)
+      turn(newest, "sync_hang")
+      assert_receive {:sync, _, opts}
+      assert opts[:session_id] == newest.id
+      newest_ref = Process.monitor(:sys.get_state(Session.pid(newest)).sync)
+
+      log =
+        capture_log(fn ->
+          SessionCase.stop_session(newest, &GenServer.stop/1)
+          assert_receive {:DOWN, ^newest_ref, :process, _, :normal}, @load_ms
+        end)
+
+      assert log =~
+               "memory sync stopped with 1 chunks left after the session end; " <>
+                 "2 of their messages were not saved and are lost"
+
+      assert Process.alive?(oldest_worker)
     end
   end
 end
