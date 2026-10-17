@@ -32,7 +32,8 @@ defmodule Helyx.Provider.Codex do
 
   @impl true
   def init(model, tools, opts) do
-    with {:ok, info} <- ModelInfo.lookup(id(), model), {:ok, exe} <- HarnessIO.find("codex") do
+    with {:ok, info} <- ModelInfo.lookup(id(), "openai", model),
+         {:ok, exe} <- HarnessIO.find("codex") do
       tools = HarnessIO.harness_tools(tools)
 
       state = %State{
@@ -238,8 +239,7 @@ defmodule Helyx.Provider.Codex do
   end
 
   # A request of the server (it has an id and a method) gets an error. The
-  # thread runs with `approvalPolicy: "never"`, so an approval request is
-  # refused too (ADR 0007).
+  # thread runs with `approvalPolicy: "never"`, so an approval request is refused too (ADR 0007).
   defp dispatch(%{"id" => id, "method" => _method}, state) do
     send_line(state, %{id: id, error: %{code: -32_601, message: "not supported by Helyx"}})
     {[], state}

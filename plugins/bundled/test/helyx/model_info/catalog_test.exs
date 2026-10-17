@@ -78,7 +78,7 @@ defmodule Helyx.ModelInfo.CatalogTest do
   defp window, do: info(@model).context_window
 
   defp info(model) do
-    {:ok, info} = Catalog.lookup("codex", model)
+    {:ok, info} = Catalog.lookup("openai", model)
     info
   end
 
@@ -90,24 +90,24 @@ defmodule Helyx.ModelInfo.CatalogTest do
       seed(cache, @good)
       prices = @set
 
-      assert ModelInfo.lookup("codex", @model, %{}) ==
+      assert ModelInfo.lookup("codex", "openai", @model, %{}) ==
                {:ok, %ModelInfo{context_window: 400_000, prices: prices}}
 
       # A config price set with no cache price stays whole: the catalog's
       # cache price does not join it.
       config = %{("codex/" <> @model) => [context_window: 7, prices: [input: 1, output: 2]]}
 
-      assert ModelInfo.lookup("codex", @model, config) ==
+      assert ModelInfo.lookup("codex", "openai", @model, config) ==
                {:ok, %ModelInfo{context_window: 7, prices: %{input: 1, output: 2}}}
 
       config = %{("codex/" <> @model) => [context_window: 7]}
 
-      assert ModelInfo.lookup("codex", @model, config) ==
+      assert ModelInfo.lookup("codex", "openai", @model, config) ==
                {:ok, %ModelInfo{context_window: 7, prices: prices}}
 
-      assert ModelInfo.lookup("codex", "other", %{}) == {:ok, %ModelInfo{}}
+      assert ModelInfo.lookup("codex", "openai", "other", %{}) == {:ok, %ModelInfo{}}
       # The catalog of another provider has no step for this one.
-      assert ModelInfo.lookup("fake", @model, %{}) == {:ok, %ModelInfo{}}
+      assert ModelInfo.lookup("fake", nil, @model, %{}) == {:ok, %ModelInfo{}}
     end
 
     test "a bad :model_catalog value fails each lookup with its key", %{tmp_dir: dir} do
@@ -134,16 +134,18 @@ defmodule Helyx.ModelInfo.CatalogTest do
           Keyword.merge([dir: dir, url: nil], [{key, value}])
         )
 
-        # Also for a provider with no catalog id: each provider start checks it.
-        for provider <- ["codex", "fake"] do
-          assert ModelInfo.lookup(provider, @model, %{}) ==
+        # Also with no catalog id: each provider start checks it.
+        for {provider, catalog} <- [{"codex", "openai"}, {"fake", nil}] do
+          assert ModelInfo.lookup(provider, catalog, @model, %{}) ==
                    {:error, {:bad_config, [:model_catalog, key]}}
         end
       end
 
       for env <- [%{dir: dir}, "x", [:dir]] do
         Application.put_env(:helyx_plugins, :model_catalog, env)
-        assert ModelInfo.lookup("codex", @model, %{}) == {:error, {:bad_config, [:model_catalog]}}
+
+        assert ModelInfo.lookup("codex", "openai", @model, %{}) ==
+                 {:error, {:bad_config, [:model_catalog]}}
       end
 
       for good <- [
@@ -152,11 +154,11 @@ defmodule Helyx.ModelInfo.CatalogTest do
           ] do
         # No refresh starts: "fake" has no catalog id.
         env(dir, good ++ [url: nil])
-        assert {:ok, %ModelInfo{}} = ModelInfo.lookup("fake", @model, %{})
+        assert {:ok, %ModelInfo{}} = ModelInfo.lookup("fake", nil, @model, %{})
       end
 
       Application.delete_env(:helyx_plugins, :model_catalog)
-      assert {:ok, %ModelInfo{}} = ModelInfo.lookup("fake", @model, %{})
+      assert {:ok, %ModelInfo{}} = ModelInfo.lookup("fake", nil, @model, %{})
     end
 
     test "tiers become {size, prices}", %{cache: cache} do
@@ -178,7 +180,7 @@ defmodule Helyx.ModelInfo.CatalogTest do
         new_node(Path.dirname(cache))
         seed(cache, put_in(@good, ["openai", "models", @model, "limit", "context"], context))
 
-        assert {:ok, info} = ModelInfo.lookup("codex", @model, %{})
+        assert {:ok, info} = ModelInfo.lookup("codex", "openai", @model, %{})
         assert info.context_window == window
         usage = ModelInfo.price(%Helyx.Usage{input: 1_000_000_000, output: 1_000_000_000}, info)
         assert usage.context_window == window and usage.cost_kind == :list
@@ -202,9 +204,8 @@ defmodule Helyx.ModelInfo.CatalogTest do
       api = %{
         "openai" => %{"models" => %{"ok" => five, "bad" => 1}},
         "anthropic" => %{"models" => %{long => five, wide => five, (wide <> "é") => five}},
-        "opencode" => %{"models" => %{(long <> "a") => five, "" => five}},
-        "opencode-go" => "not a map",
-        "other" => %{"models" => %{"ok" => five}}
+        "opencode-go" => %{"models" => %{(long <> "a") => five, "" => five}},
+        "opencode" => %{"models" => %{"ok" => five}}
       }
 
       entry = %ModelInfo{context_window: 5}
@@ -214,6 +215,7 @@ defmodule Helyx.ModelInfo.CatalogTest do
                "anthropic" => %{long => entry, wide => entry}
              }
 
+      assert Catalog.slim(%{"opencode-go" => "not a map"}) == %{}
       assert Catalog.slim([]) == %{}
       assert Catalog.slim(%{"openai" => %{"models" => []}}) == %{}
     end
@@ -276,10 +278,10 @@ defmodule Helyx.ModelInfo.CatalogTest do
       end
     end
 
-    test "the snapshot holds the four catalog ids, and json/1 gives it back from its slim" do
+    test "the snapshot holds the three catalog ids, and json/1 gives it back from its slim" do
       snapshot = File.read!(Application.app_dir(:helyx_plugins, "priv/models_dev.json"))
       data = JSON.decode!(snapshot)
-      assert Map.keys(data) |> Enum.sort() == ~w(anthropic openai opencode opencode-go)
+      assert Map.keys(data) |> Enum.sort() == ~w(anthropic openai opencode-go)
       assert Catalog.json(Catalog.slim(data)) == data
     end
   end

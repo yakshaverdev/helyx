@@ -6,7 +6,6 @@ defmodule CodingAgent do
 
   @plugins [
     Helyx.Provider.OpenAI.Go,
-    Helyx.Provider.OpenAI.Zen,
     Helyx.Provider.Fake,
     Helyx.Provider.ClaudeCode,
     Helyx.Provider.Codex,

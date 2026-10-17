@@ -82,7 +82,8 @@ defmodule Helyx.Provider.ClaudeCode do
 
   @impl true
   def init(model, tools, opts) do
-    with {:ok, info} <- ModelInfo.lookup(id(), model), {:ok, exe} <- HarnessIO.find("claude") do
+    with {:ok, info} <- ModelInfo.lookup(id(), "anthropic", model),
+         {:ok, exe} <- HarnessIO.find("claude") do
       state = %State{
         exe: exe,
         model: model,
@@ -92,8 +93,7 @@ defmodule Helyx.Provider.ClaudeCode do
         meter: Meter.start(opts[:resume_usage], info.context_window)
       }
 
-      # A program that did not start has no port: `Helyx.Watchdog.start/4`
-      # closed it.
+      # A program that did not start has no port: `Helyx.Watchdog.start/4` closed it.
       case launch(state) do
         %State{terminal: nil} = state -> {:ok, state}
         %State{terminal: {:error, reason}} -> {:error, reason}

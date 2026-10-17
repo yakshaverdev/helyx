@@ -66,7 +66,7 @@ defmodule Helyx.Provider.Codex.UsageTest do
     assert Items.next({:done, %{}}, items) == %Items{}
   end
 
-  # Prices in USD per million tokens; `info` as `Helyx.ModelInfo.lookup/3`
+  # Prices in USD per million tokens; `info` as `Helyx.ModelInfo.lookup/4`
   # gives it.
   @prices %{input: 2.0, output: 10.0, cache_read: 0.5, cache_write: 4.0}
   @priced %Items{info: %Helyx.ModelInfo{context_window: 400_000, prices: @prices}}
