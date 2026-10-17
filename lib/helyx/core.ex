@@ -128,6 +128,10 @@ defmodule Helyx.Core do
         # limit, and the server configuration, so a restart keeps them.
         {Registry, keys: :unique, name: sessions_registry(name), meta: meta},
         {Task.Supervisor, name: task_supervisor(name)},
+        # The memory sync workers, apart from the sessions so that the cap
+        # counts sessions only (#707). It is before the session supervisor, so
+        # it stops after the sessions and takes the batches of their stops.
+        {DynamicSupervisor, name: sync_supervisor(name), strategy: :one_for_one},
         # The session process loads a resumed transcript, so the start
         # message holds no transcript for the supervisor to keep (#103, #589).
         # The supervisor counts its children one start at a time, so
@@ -178,4 +182,6 @@ defmodule Helyx.Core do
   def task_supervisor(name), do: Module.concat(name, Tasks)
   @doc false
   def session_supervisor(name), do: Module.concat(name, SessionSupervisor)
+  @doc false
+  def sync_supervisor(name), do: Module.concat(name, SyncSupervisor)
 end

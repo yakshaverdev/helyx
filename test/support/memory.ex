@@ -10,7 +10,7 @@ defmodule Helyx.Test.Memory do
   # one record of n bytes of "a" for "size:<n>", "lt:<n>" of n "<", "mb:<n>" of n "é",
   # "none" no records. Any other text gives one record "recalled:<text>".
   # A sync with a message "sync_fail" returns an error, "sync_raise"
-  # raises, and "sync_bad" returns a wrong shape.
+  # raises, "sync_bad" returns a wrong shape, and "sync_hang" blocks.
   @behaviour Helyx.Memory
 
   def controller(core), do: :"#{core}_memory"
@@ -56,6 +56,7 @@ defmodule Helyx.Test.Memory do
       "sync_fail" in texts -> {:error, "store down"}
       "sync_raise" in texts -> raise "sync broke"
       "sync_bad" in texts -> :nope
+      "sync_hang" in texts -> Process.sleep(:infinity)
       true -> :ok
     end
   end

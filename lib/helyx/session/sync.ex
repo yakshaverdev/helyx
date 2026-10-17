@@ -1,7 +1,7 @@
 defmodule Helyx.Session.Sync do
   @moduledoc false
   # The sync worker of one session instance (docs/features/memory.md): a
-  # temporary child of Core's session supervisor that the session starts
+  # temporary child of Core's sync supervisor that the session starts
   # with its instance, and that monitors the session. It calls `sync/2` of the
   # Memory plugin one chunk at a time, in the order of the batches, each
   # call in a linked Task with a limit. A failed call drops its chunk with
@@ -35,7 +35,7 @@ defmodule Helyx.Session.Sync do
     args = {memory, opts, self()}
 
     {:ok, sync} =
-      DynamicSupervisor.start_child(Helyx.Core.session_supervisor(state.core), {__MODULE__, args})
+      DynamicSupervisor.start_child(Helyx.Core.sync_supervisor(state.core), {__MODULE__, args})
 
     messages =
       case state.sync do
