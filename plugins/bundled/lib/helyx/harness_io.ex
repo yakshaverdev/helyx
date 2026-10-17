@@ -26,6 +26,7 @@ defmodule Helyx.HarnessIO do
   @digest_hex 16
 
   def line_max_bytes, do: @line_max_bytes
+  def let_go_ms, do: @let_go_ms
 
   # The stored id of a harness session: its id, `#`, and the digest of the
   # JSON of `fixed`, what the program fixes at the start of the session and

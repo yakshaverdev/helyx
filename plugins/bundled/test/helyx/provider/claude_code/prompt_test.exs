@@ -54,15 +54,19 @@ defmodule Helyx.Provider.ClaudeCode.PromptTest do
   test "the hands hold the handles of one program across relaunches", %{bin: bin, work: work} do
     for n <- 1..3, do: turn(bin, n, 1, reply("ok"))
 
-    state = Enum.reduce(["A", "B", "C"], harness(work), &run(&2, &1, ["x"]))
+    state = Enum.reduce(["A", "B"], harness(work), &run(&2, &1, ["x"]))
+    started = System.monotonic_time(:millisecond)
+    state = run(state, "C", ["x"])
+    Helyx.Test.Hands.assert_one_program(state.handles, started)
     assert programs(bin) == "3"
-    assert [command: _, watchdog: _] = Enum.sort(Helyx.Test.Hands.held())
     closed(state)
   end
 
   # Each launch after the first waits the 500 ms of the release for the
   # group that ignores TERM. The stuck child lives 60 s, far past the run
-  # of about 2 s, so load cannot end it first; `on_exit` KILLs it.
+  # of about 2 s, so load cannot end it first; `on_exit` KILLs it. The
+  # release always reaches its deadline here, so `assert_one_program/2`
+  # cannot apply: a stall at its first probes can keep more handles (#739).
   @tag :slow
   test "a group that ignores TERM does not keep the handles of the later programs",
        %{bin: bin, work: work} do
