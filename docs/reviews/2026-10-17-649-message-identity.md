@@ -101,3 +101,9 @@ Round 2 reproduced no defect, so the loop ends. Its fixes are tests and this rec
 ## Precommit
 
 The first run failed on two Credo findings and on the host. Credo: the alias order in `records.ex`, and the nesting depth of `Transcript.pair/2`, where `Enum.find/2` now takes `&match?({%Message.ToolCall{id: ^id}, _place}, &1)` in place of an anonymous function with the same test. Both are one line each, with no change in behaviour, so no review round follows them. The host: `deps.get` of `plugins/bundled` stopped with `{:error, :eaccess}` on the Hex cache of the host (`Hex.Registry.Server.persist/2`), not a defect of the change.
+
+## Orchestrator gate
+
+Gate round 1 (Codex): 1 finding, rejected.
+
+- **Notices have no stable id and no stored record** (medium). Rejected: #649 gives ids to messages, and a notice is not a message. The orchestrator's invariant sentence named notices by mistake. The snapshot rules keep notices out of the snapshot on purpose (late-client notice exclusions, `docs/features/session-snapshot.md`). Stored or replayable notices belong to the transport tickets (replay ring), not to this change.
