@@ -195,7 +195,7 @@ defmodule Helyx.Session.SummaryTest do
     session = start(core)
     turn(session, "hello")
     hands = state(session).hands
-    :sys.replace_state(hands, &%{&1 | unconfirmed: %{__MODULE__ => [:h]}})
+    :sys.replace_state(hands, &%{&1 | unconfirmed?: true})
     events = turn(session, "summarize:ok")
 
     assert [%{text: "the summary failed: a resource from an earlier call" <> _}] =

@@ -271,10 +271,12 @@ defmodule Helyx.Tool.BashTest do
 
     # The limit of the tests below. It holds the start of perl and bash and
     # the first output under load (over 200 ms once, #562), so the output
-    # comes before the limit. It is whole seconds, as every limit of a tool
-    # call is.
-    @load_start_ms 3_000
-    @timed_out "Timed out after 3 s: the command group was released."
+    # comes before the limit. It is the `timeout` argument, in seconds.
+    @load_start_s 3
+    @timed_out "Timed out after #{@load_start_s} s: the command group was released."
+
+    defp run_limited(command, dir),
+      do: Helyx.Tool.Bash.run(%{"command" => command, "timeout" => @load_start_s}, dir)
 
     # TERM first, as an abort: the trap's output is kept after the limit.
     @tag :slow
@@ -282,7 +284,7 @@ defmodule Helyx.Tool.BashTest do
          %{tmp_dir: dir} do
       command = "trap 'echo stopped' TERM; echo $$ > pid; echo partial; sleep 60 & wait"
 
-      assert {:error, text} = Helyx.Tool.Bash.run_command(command, dir, @load_start_ms)
+      assert {:error, text} = run_limited(command, dir)
       assert text == "partial\nstopped\n\n" <> @timed_out
       refute os_alive?(wait_for_pid(Path.join(dir, "pid")))
     end
@@ -291,7 +293,7 @@ defmodule Helyx.Tool.BashTest do
     test "at the limit a command that ignores TERM is killed after the grace", %{tmp_dir: dir} do
       command = "trap '' TERM; echo $$ > pid; echo partial; sleep 60"
 
-      assert {:error, text} = Helyx.Tool.Bash.run_command(command, dir, @load_start_ms)
+      assert {:error, text} = run_limited(command, dir)
       assert text == "partial\n\n" <> @timed_out
       refute os_alive?(wait_for_pid(Path.join(dir, "pid")))
     end
@@ -307,13 +309,13 @@ defmodule Helyx.Tool.BashTest do
       caller =
         spawn(fn ->
           Helyx.Test.Hands.fake()
-          send(test, Helyx.Tool.Bash.run_command(command, dir, @load_start_ms))
+          send(test, run_limited(command, dir))
         end)
 
       pid = wait_for_pid(Path.join(dir, "pid"))
       true = :erlang.suspend_process(caller)
       # The deadline came before the pid file, so it is past after the limit.
-      Process.sleep(@load_start_ms + 1)
+      Process.sleep(:timer.seconds(@load_start_s) + 1)
       File.write!(Path.join(dir, "go"), "")
       assert gone_within?(pid)
       true = :erlang.resume_process(caller)
@@ -332,7 +334,7 @@ defmodule Helyx.Tool.BashTest do
       caller =
         spawn(fn ->
           Helyx.Test.Hands.fake()
-          send(test, Helyx.Tool.Bash.run_command(command, dir, @load_start_ms))
+          send(test, run_limited(command, dir))
         end)
 
       pid = wait_for_pid(Path.join(dir, "pid"))

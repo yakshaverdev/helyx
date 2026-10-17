@@ -74,7 +74,7 @@ defmodule Helyx.Session.HandsBusyTest do
   end
 
   # An unconfirmed handle makes the hands refuse the start.
-  defp refuse(hands), do: :sys.replace_state(hands, &%{&1 | unconfirmed: %{__MODULE__ => [:h]}})
+  defp refuse(hands), do: :sys.replace_state(hands, &%{&1 | unconfirmed?: true})
 
   test "a refused start fails the turn with the text of the hands", %{core: core} do
     {session, hands} = start(core)
