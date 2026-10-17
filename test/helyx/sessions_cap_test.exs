@@ -59,5 +59,8 @@ defmodule Helyx.SessionsCapTest do
     await(fn -> match?({:ok, _}, Session.start(core, model: "mem/echo")) end, "the place to free")
     assert length(Sessions.list_live(core)) == 64
     assert DynamicSupervisor.count_children(Helyx.Core.sync_supervisor(core)).active == 65
+
+    # The Core stop logs the hung chunk that it drops; a test that passes shows no log.
+    ExUnit.CaptureLog.capture_log(fn -> stop_supervised!(core) end)
   end
 end
