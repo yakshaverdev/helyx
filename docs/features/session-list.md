@@ -15,7 +15,7 @@ Decisions:
 
 - **New switches.** `helyx sessions` already means "start in the folder `sessions`", and `helyx --resume foo` already means "the newest session of the folder `foo`". So the list and the resume by id get their own switches: `--list`, `--all`, and `--session <id>`.
 - **Empty sessions (owner, 2026-10-13).** A start writes the header at once, so a disk error shows at start. A user who quits before the first prompt leaves a file with a header and no message. The list and the newest-session resume leave such a file out. Nothing changes in how a session is written, and the file stays on disk. A file is empty only when its head is the whole file (65,536 bytes or less) and has no message. A file larger than the head with no message in the head is not known to be empty: the list shows it with an empty first prompt, and the newest-session resume can take it.
-- **Folder (owner, 2026-10-13).** A session resumed by id runs in the folder of its header. The command line checks that this folder exists before the agent starts. A folder that no longer exists, that is not an absolute path, or that is not a valid folder name, gives the error `not a directory: "<folder>"`. The folder in that line gets the clean pass and the folder width of a list line.
+- **Folder (owner, 2026-10-13).** A session resumed by id runs in the folder of its header. The command line checks that this folder exists before the TUI or the print run starts. A folder that no longer exists, or that is not an absolute path, gives the error `not a directory: "<folder>"`. The folder in that line gets the clean pass and the folder width of a list line. Since #765 the resume of Core finds the id after the tool checks (`server-management.md`, "Order of the checks"), and it rejects a folder with a NUL byte as a start rejects such a `:cwd`: that gives the error line of a failed start. The check that the folder exists and is absolute runs after the open of the session. Accepted hole: a session rejected there was opened, so its lock file stays, as after any open, and the open added the newline that the last line lacked.
 - **Last activity** is the modification time of the file. An append sets it. Nothing new is stored.
 - **The model** on a line is the model of the header: the model that the session started with. A later model change is past the head, so the list does not read it. `--session` and `--resume` restore the current model.
 - **First prompt** is the text of the first user message in the head of the file. The first message of a session is the user prompt. If the first message in the head is not a user message (only a hand edit makes that), the first prompt is empty.
@@ -37,7 +37,7 @@ Decisions:
   - `--session` does not combine with `--model`, `--resume`, `--list`, or a directory argument. `--model` with `--resume` stays an error.
   - `--version` skips these checks, as it skips the others.
   - `--list` reads the disk and prints. It starts no application, and it returns 0, also when no session is listed.
-  - The errors of `--session`: `not a session id: "<id>"`, `no session "<id>"`, `not a directory: "<folder>"`, and the error line of a failed start for the other errors.
+  - The errors of `--session`: `not a session id: "<id>"`, `no session "<id>"`, `not a directory: "<folder>"`, and the error line of a failed start for the other errors. They come after the tool checks (see "Folder").
 
 ## Replaced mechanism
 

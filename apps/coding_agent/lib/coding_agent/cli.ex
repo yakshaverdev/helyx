@@ -153,7 +153,7 @@ defmodule CodingAgent.CLI do
         Print.main(fn -> print(opts, args) end, halt)
 
       true ->
-        with {:ok, cwd} <- run_cwd(opts, args), do: launch(opts, cwd)
+        with {:ok, run} <- run_opts(opts, args), do: launch(opts, run)
     end
   end
 
@@ -173,8 +173,14 @@ defmodule CodingAgent.CLI do
   defp switch(:directory), do: "a directory argument"
   defp switch(name), do: "--#{name}"
 
-  # `--session` runs in the folder of the session header.
-  defp run_cwd(opts, args), do: if(id = opts[:session], do: session_cwd(id), else: cwd(args))
+  # `--session` runs in the folder of the session header, which the resume
+  # finds after the tool checks (docs/features/server-management.md, "Order
+  # of the checks").
+  defp run_opts(opts, args) do
+    if opts[:session],
+      do: {:ok, []},
+      else: with({:ok, cwd} <- cwd(args), do: {:ok, [cwd: cwd]})
+  end
 
   defp cwd([]), do: check_dir(File.cwd!())
   defp cwd([directory]), do: check_dir(Path.expand(directory))
@@ -182,28 +188,6 @@ defmodule CodingAgent.CLI do
 
   defp check_dir(cwd) do
     if File.dir?(cwd), do: {:ok, cwd}, else: {:error, "not a directory: #{inspect(cwd)}"}
-  end
-
-  # The id is checked before it becomes part of a path (`Scan.find/2`). The
-  # folder of the header must be an absolute path to a directory. It comes
-  # from the file, so its error text gets the clean pass and the width of a
-  # list line.
-  defp session_cwd(id) do
-    case Scan.find(sessions_dir(), id) do
-      {:ok, _path, %{"cwd" => cwd}} ->
-        if Path.type(cwd) == :absolute and File.dir?(cwd),
-          do: {:ok, cwd},
-          else: {:error, ~s(not a directory: "#{SessionList.folder(cwd)}")}
-
-      {:error, :invalid_id} ->
-        {:error, "not a session id: #{inspect(id)}"}
-
-      {:error, :not_found} ->
-        {:error, "no session #{inspect(id)}"}
-
-      {:error, reason} ->
-        {:error, CodingAgent.error_text(reason)}
-    end
   end
 
   defp list(all?, args) do
@@ -221,18 +205,17 @@ defmodule CodingAgent.CLI do
 
   # The piped input is read before any application starts.
   defp print(opts, args) do
-    with {:ok, cwd} <- run_cwd(opts, args),
+    with {:ok, run} <- run_opts(opts, args),
          {:ok, prompt} <- Print.prompt(opts[:print]),
-         do: launch(opts, cwd, prompt: prompt)
+         do: launch(opts, [prompt: prompt] ++ run)
   end
 
-  defp launch(opts, cwd, extra \\ []) do
+  defp launch(opts, extra) do
     result =
       with {:ok, _apps} <- Application.ensure_all_started(:coding_agent) do
         CodingAgent.run(
           [
             model: Keyword.get(opts, :model, @default_model),
-            cwd: cwd,
             resume: opts[:session] || Keyword.get(opts, :resume, false),
             sessions_dir: sessions_dir()
           ] ++ extra
@@ -240,10 +223,19 @@ defmodule CodingAgent.CLI do
       end
 
     case result do
-      {:error, reason} -> {:error, CodingAgent.error_text(reason)}
+      {:error, reason} -> {:error, error_text(reason, opts[:session])}
       result -> result
     end
   end
+
+  # The find of the `--session` id names the id.
+  defp error_text(:invalid_id, id) when is_binary(id),
+    do: CodingAgent.clean_line("not a session id: #{inspect(id)}")
+
+  defp error_text(:not_found, id) when is_binary(id),
+    do: CodingAgent.clean_line("no session #{inspect(id)}")
+
+  defp error_text(reason, _id), do: CodingAgent.error_text(reason)
 
   # The command line is a boundary: every argument in an error shows through
   # inspect/1, and parse!/2 would put the raw switch name in its error. The
