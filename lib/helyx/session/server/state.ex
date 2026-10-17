@@ -85,6 +85,10 @@ defmodule Helyx.Session.Server.State do
     },
     # The armed kill of the prepare Task (`TurnLoop`), in ms. A test seam.
     prepare_ms: 10_000,
+    # The deadline of the open, in ms: under the 30 s that #656 plans for a
+    # wire client of a start, and under `Stop.shutdown_ms/0`
+    # (session-lock.md, #665). A test seam.
+    open_ms: 25_000,
     # The current idle timer (`:erlang.start_timer/3`, see
     # `TurnLoop.arm_idle/1`), or nil.
     idle: nil,
@@ -117,6 +121,7 @@ defmodule Helyx.Session.Server.State do
           conn: ProviderConn.t() | nil,
           provider_ms: %{reply: pos_integer(), close: pos_integer(), idle: pos_integer()},
           prepare_ms: pos_integer(),
+          open_ms: pos_integer(),
           idle: reference() | nil,
           pending_compact: String.t() | nil
         }

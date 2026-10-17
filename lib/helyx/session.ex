@@ -58,17 +58,17 @@ defmodule Helyx.Session do
   current directory. It must be a valid UTF-8 string with no NUL byte;
   otherwise the result is `{:error, :invalid_cwd}` and nothing is created.
   The tool specs (`Helyx.Tool.specs/1`) and the optional `check/0` of each
-  tool (`Helyx.Tool.check_available/1`) run next, before any file or
-  process is created. The model ref resolves as in `set_model/2`, with the
-  same errors.
-  With `:sessions_dir` the session is written to disk as it runs, as JSON
-  lines under `<sessions_dir>/<project>/<session>.jsonl`; without it nothing
-  is persisted. When a write fails, the session goes on in memory, writes
-  nothing more, and sends one `:notice` event. A resume writes no entry
-  (see `resume/2`), so every write comes after a client can subscribe.
+  tool (`Helyx.Tool.check_available/1`) run next, before any file or process
+  is created. The model ref resolves as in `set_model/2`, with the same
+  errors. With `:sessions_dir` the session is written to disk as it runs, as
+  JSON lines under `<sessions_dir>/<project>/<session>.jsonl`; without it
+  nothing is persisted. When a write fails, the session goes on in memory,
+  writes nothing more, and sends one `:notice` event. A resume writes no
+  entry (see `resume/2`), so every write comes after a client can subscribe.
   The writer lock of the file comes before its first write: a session that
-  another OS process holds gives `{:error, {:session_locked, id}}`, and a lock
-  that cannot be taken `{:error, {:lock_failed, text}}` (session-lock.md).
+  another OS process holds gives `{:error, {:session_locked, id}}`, a lock
+  that cannot be taken `{:error, {:lock_failed, text}}`, and an open past
+  25,000 ms `{:error, :open_timeout}` (session-lock.md).
   """
   @spec start(Helyx.Core.name(), keyword()) :: {:ok, t()} | {:error, model_error() | term()}
   def start(core \\ Helyx.Core, opts) do
@@ -110,10 +110,10 @@ defmodule Helyx.Session do
   the next provider call sees complete call and result pairs. A tool result that
   answers no open call at its place is left out of the transcript read. The resume
   writes no entry: every resume of the file only appends a newline that the last
-  line lacks. `:cwd` is checked as in `start/2`, and the tool specs and the tool
-  checks as in `start/2`, all before the sessions directory is read. The model ref
-  of the file resolves as in `set_model/2`, with the same errors. The lock is
-  taken as in `start/2`, before the load; a locked newest session is not skipped.
+  line lacks. `:cwd`, the tool specs, and the tool checks are checked as in
+  `start/2`, all before the sessions directory is read. The model ref of the file
+  resolves as in `set_model/2`, with the same errors. The lock and its deadline are
+  as in `start/2`, before the load; a locked newest session is not skipped.
   """
   @spec resume(Helyx.Core.name(), keyword()) :: {:ok, t()} | {:error, model_error() | term()}
   def resume(core \\ Helyx.Core, opts) do

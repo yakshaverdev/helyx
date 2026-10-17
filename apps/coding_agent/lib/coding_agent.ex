@@ -165,6 +165,7 @@ defmodule CodingAgent do
   # The errors of the session lock (docs/features/session-lock.md).
   defp sentence({:session_locked, id}), do: "session #{id} is open in another process"
   defp sentence({:lock_failed, text}), do: "could not lock the session: " <> text
+  defp sentence(:open_timeout), do: "the session file did not open in time"
 
   defp sentence(:invalid_cwd), do: "the directory is not UTF-8 or holds a NUL byte"
 

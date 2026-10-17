@@ -241,11 +241,12 @@ defmodule Helyx.Session.LockTest do
   end
 
   # Starts, in a new caller, a session whose open waits under the lock until
-  # the test sends `:go`. Returns the caller, the session process, and the
-  # session path.
-  defp start_held(core, dir) do
+  # the test sends `:go`. `bounds` sets fields of the state, such as
+  # `open_ms`. Returns the caller, the session process, and the session path.
+  defp start_held(core, dir, bounds \\ []) do
     test = self()
     {state, tools, path} = start_args(core, dir)
+    state = struct!(state, bounds)
 
     open =
       {path,
@@ -264,6 +265,35 @@ defmodule Helyx.Session.LockTest do
 
     assert_receive {:in_open, pid}
     {caller, pid, path}
+  end
+
+  # The deadline of the open kills the session process, so its port closes
+  # and perl frees the lock (#665). It counts from before the take, which
+  # takes a few ms; the rest is the margin for load, so the open is reached.
+  @load_open_ms 500
+
+  test "an open past its deadline gives :open_timeout, and no session and no lock are left", %{
+    core: core,
+    tmp_dir: dir
+  } do
+    {_caller, pid, path} = start_held(core, dir, open_ms: @load_open_ms)
+
+    assert_receive {:started, {:error, :open_timeout}}
+    refute Process.alive?(pid)
+    await_lock_free(path, "the lock of the killed session to free")
+  end
+
+  test "a caller that ends during an open past its deadline leaves no session and no lock", %{
+    core: core,
+    tmp_dir: dir
+  } do
+    {caller, pid, path} = start_held(core, dir, open_ms: @load_open_ms)
+    ref = Process.monitor(pid)
+    Process.exit(caller, :kill)
+    assert_receive {:DOWN, _, :process, ^caller, :killed}
+
+    assert_receive {:DOWN, ^ref, :process, ^pid, :killed}
+    await_lock_free(path, "the lock of the killed session to free")
   end
 
   # The open runs in the session process after the supervisor started it,

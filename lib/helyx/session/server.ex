@@ -22,7 +22,8 @@ defmodule Helyx.Session.Server do
   # caller waits for its result, and an error of the open comes back as it
   # is. The Registry rejects a session that this Core runs before the init:
   # it is open in another process, as a lock held by another Core
-  # (session-lock.md).
+  # (session-lock.md). Past the deadline `open_ms` of the state the session
+  # is killed, and the caller gets `{:error, :open_timeout}`.
   def start(%State{id: id, core: core} = state, tools, open) do
     ref = make_ref()
 
@@ -35,6 +36,8 @@ defmodule Helyx.Session.Server do
 
   # The go comes after the monitor, so a crash of the open reaches the
   # caller with its reason. The session sends the result before it ends.
+  # A kill before the result is the deadline of the open: the kill of a Core
+  # stop comes after `Stop.shutdown_ms/0`, which is longer.
   defp await_open(pid, ref, session) do
     monitor = Process.monitor(pid)
     send(pid, {ref, :go})
@@ -43,6 +46,9 @@ defmodule Helyx.Session.Server do
       {^ref, result} ->
         Process.demonitor(monitor, [:flush])
         with :ok <- result, do: {:ok, session}
+
+      {:DOWN, ^monitor, :process, ^pid, :killed} ->
+        {:error, :open_timeout}
 
       {:DOWN, ^monitor, :process, ^pid, reason} ->
         {:error, reason}
@@ -114,9 +120,39 @@ defmodule Helyx.Session.Server do
 
   defp open_file(state, nil), do: {:ok, state}
 
+  # A kill ends the session at the deadline of its open even when the caller
+  # is gone, so the port closes and perl frees the lock (session-lock.md).
   defp open_file(state, {path, fun}) do
-    with {:ok, lock, state} <- Lock.hold(path, fn -> fun.(state) end),
-         do: {:ok, %{state | lock: lock}}
+    killer = kill_after(state.open_ms)
+    result = Lock.hold(path, fn -> fun.(state) end)
+    cancel_kill(killer)
+    with {:ok, lock, state} <- result, do: {:ok, %{state | lock: lock}}
+  end
+
+  # `:timer.kill_after/1` cannot be cancelled once it fires: its kill can
+  # reach the session after the cancel. This cancel waits for the end of the
+  # killer, and a signal of a process comes before its `:DOWN`.
+  defp kill_after(ms) do
+    session = self()
+
+    spawn_monitor(fn ->
+      monitor = Process.monitor(session)
+
+      receive do
+        :cancel -> :ok
+        {:DOWN, ^monitor, :process, _pid, _reason} -> :ok
+      after
+        ms -> Process.exit(session, :kill)
+      end
+    end)
+  end
+
+  defp cancel_kill({pid, monitor}) do
+    send(pid, :cancel)
+
+    receive do
+      {:DOWN, ^monitor, :process, ^pid, _reason} -> :ok
+    end
   end
 
   defp init_hands(state) do
