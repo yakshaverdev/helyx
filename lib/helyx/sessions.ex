@@ -195,5 +195,7 @@ defmodule Helyx.Sessions do
     end
   catch
     :exit, {:noproc, _call} -> {:error, :session_not_found}
+    # Another end, such as a Core stop, came first: the session ended.
+    :exit, {_reason, {GenServer, :stop, _args}} -> :ok
   end
 end
