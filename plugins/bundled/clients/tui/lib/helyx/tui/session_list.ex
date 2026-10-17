@@ -17,24 +17,50 @@ defmodule Helyx.TUI.SessionList do
   @folder_width 80
 
   @empty "no other session in this folder"
+  @reading "reading the sessions of this folder"
 
   @enforce_keys [:items]
-  defstruct [:items, selected: 0]
+  defstruct [:items, :task, selected: 0]
 
-  @type t :: %__MODULE__{items: [{String.t(), String.t()}], selected: non_neg_integer()}
+  # `items` is nil while the `task` of the scan runs.
+  @type t :: %__MODULE__{
+          items: [{String.t(), String.t()}] | nil,
+          task: Task.t() | nil,
+          selected: non_neg_integer()
+        }
 
   # Without a sessions directory nothing is saved, so no session is listed.
+  # The scan of a full folder takes more than one frame (#667), so it runs
+  # in a Task: `Helyx.TUI` hands its answer to `read/2`, and `close/1`
+  # stops it.
   @spec new(Path.t() | nil, Path.t(), String.t()) :: t()
   def new(nil, _cwd, _current), do: %__MODULE__{items: []}
 
   def new(dir, cwd, current) do
-    items = for s <- Scan.list(dir, cwd), s.id != current, do: {s.id, line(s, false)}
-    %__MODULE__{items: items}
+    task =
+      Task.async(fn ->
+        for s <- Scan.list(dir, cwd), s.id != current, do: {s.id, line(s, false)}
+      end)
+
+    %__MODULE__{items: nil, task: task}
+  end
+
+  @spec read(t(), [{String.t(), String.t()}]) :: t()
+  def read(list, items), do: %{list | items: items}
+
+  @spec close(t()) :: nil
+  def close(%__MODULE__{task: nil}), do: nil
+
+  def close(%__MODULE__{task: task}) do
+    Task.shutdown(task, :brutal_kill)
+    nil
   end
 
   # A key of the open list: Up and Down move the selection, Enter picks,
-  # Escape closes; any other key does nothing.
+  # Escape closes; any other key does nothing, and while the scan runs only
+  # Escape does something.
   @spec key(t(), String.t()) :: {:move, t()} | {:pick, String.t()} | :close | :none
+  def key(%__MODULE__{items: nil}, code) when code != "esc", do: :none
   def key(%__MODULE__{selected: at} = list, "up"), do: {:move, %{list | selected: max(at - 1, 0)}}
 
   def key(%__MODULE__{items: items, selected: at} = list, "down"),
@@ -51,9 +77,11 @@ defmodule Helyx.TUI.SessionList do
   # The rows in `room` rows that the list shares with the transcript, with
   # the two borders, by the rule of the composer.
   @spec rows(t(), integer()) :: pos_integer()
-  def rows(%__MODULE__{items: items}, room), do: Composer.fit(max(length(items), 1) + 2, room)
+  def rows(%__MODULE__{items: items}, room),
+    do: Composer.fit(max(length(items || []), 1) + 2, room)
 
   @spec widget(t()) :: Rows.t() | Paragraph.t()
+  def widget(%__MODULE__{items: nil}), do: %Paragraph{text: @reading, block: box()}
   def widget(%__MODULE__{items: []}), do: %Paragraph{text: @empty, block: box()}
 
   def widget(%__MODULE__{items: items, selected: at}) do

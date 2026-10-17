@@ -552,23 +552,25 @@ defmodule Helyx.TUI.ViewModelTest do
         compaction: %{trigger: :auto, tokens_before: 1_000_000_000, tokens_after: 0}
       )
 
-    assert cells(vm) == [
-             {:info, "compacted: 30k → 4k tokens"},
-             {:info, "compacted (auto)"},
-             {:info, "compacted: 1000000k → 0 tokens (auto)"}
+    assert [{:infos, texts}] = cells(vm)
+
+    assert texts == [
+             "compacted: 30k → 4k tokens",
+             "compacted (auto)",
+             "compacted: 1000000k → 0 tokens (auto)"
            ]
 
-    assert Enum.all?(cells(vm), fn {:info, text} -> byte_size(text) <= 40 end)
+    assert Enum.all?(texts, &(byte_size(&1) <= 40))
   end
 
   test "a model change updates the model and adds an information cell" do
     vm = fold(model_change: %{model: "other/model"})
     assert vm.model == "other/model"
-    assert cells(vm) == [{:info, "model: other/model"}]
+    assert cells(vm) == [{:infos, ["model: other/model"]}]
   end
 
   test "the transcript draws an information cell dim and without the error mark" do
-    vm = view_model([{:info, "model: other/model"}, {:notice, "aborted"}], "other/model")
+    vm = view_model([{:infos, ["model: other/model"]}, {:notice, "aborted"}], "other/model")
 
     %ExRatatui.Widgets.Paragraph{text: lines} =
       Helyx.TUI.Transcript.widget(vm, {0, 0}, %ExRatatui.Layout.Rect{width: 80, height: 10})
@@ -583,12 +585,17 @@ defmodule Helyx.TUI.ViewModelTest do
 
   test "consecutive information cells join into one dim row with no empty row between" do
     vm =
-      view_model([
-        {:info, "resumed session"},
-        {:info, "model: a/b"},
-        {:notice, "aborted"},
-        {:info, "model: c/d"}
-      ])
+      new()
+      |> ViewModel.info("resumed session")
+      |> ViewModel.info("model: a/b")
+      |> ViewModel.notice("aborted")
+      |> ViewModel.info("model: c/d")
+
+    assert cells(vm) == [
+             {:infos, ["resumed session", "model: a/b"]},
+             {:notice, "aborted"},
+             {:infos, ["model: c/d"]}
+           ]
 
     %ExRatatui.Widgets.Paragraph{text: lines} =
       Helyx.TUI.Transcript.widget(vm, {0, 0}, %ExRatatui.Layout.Rect{width: 80, height: 10})
@@ -605,6 +612,57 @@ defmodule Helyx.TUI.ViewModelTest do
     # The run is one item of the scroll position: item 2 is the last run,
     # and its 2 rows to the end are not more than a screen of 3 rows.
     assert Helyx.TUI.Transcript.hold(vm, {2, 0}, 80, 3) == nil
+  end
+
+  # The view that follows the newest output walks the cells from the newest
+  # (#667); a scrolled view folds them all into a list.
+  test "the view that follows the newest output shows the last rows of the scrolled view" do
+    call = %Message.ToolCall{id: "c1", name: "bash", arguments: %{"command" => "ls"}}
+    result = Message.tool_result(call, {:ok, Enum.map_join(1..6, "\n", &"line #{&1}")})
+    open = %Message.ToolCall{id: "c2", name: "read", arguments: %{"path" => "a"}}
+
+    cells = [
+      {:infos, ["a", "b"]},
+      user("question"),
+      assistant([%Message.Text{text: "One.\n\n- two\n- three"}, call]),
+      closed(call, result),
+      {:infos, ["c"]},
+      {:notice, "aborted"},
+      {:infos, ["d", "e"]}
+    ]
+
+    streaming =
+      events([
+        {:message_start, %{message: assistant([])}},
+        {:message_update, %{thinking_delta: "hm"}},
+        {:message_update, %{text_delta: "Some **long** reply"}},
+        {:message_update, %{tool_call: open}}
+      ])
+
+    for vm <- [
+          view_model(cells),
+          Enum.reduce(streaming, view_model(cells), &ViewModel.apply(&2, &1))
+        ],
+        vm <- [vm, ViewModel.toggle_expanded(vm)],
+        width <- [12, 80] do
+      all =
+        Helyx.TUI.Transcript.screen(vm, {0, 0}, %ExRatatui.Layout.Rect{width: width, height: 500})
+
+      for height <- 1..(length(all) + 2) do
+        area = %ExRatatui.Layout.Rect{width: width, height: height}
+        assert Helyx.TUI.Transcript.screen(vm, nil, area) == Enum.take(all, -height)
+      end
+    end
+  end
+
+  # A cell with no look crashes when it is wrapped, so a frame that wraps
+  # it fails. That the frame does not fold the cells above the screen either
+  # is a cost, which the bench shows (#667).
+  test "the view that follows the newest output wraps no cell above the screen" do
+    vm = view_model([{:unknown} | List.duplicate({:notice, "aborted"}, 50)])
+    area = %ExRatatui.Layout.Rect{width: 80, height: 10}
+    assert length(Helyx.TUI.Transcript.screen(vm, nil, area)) == 10
+    assert_raise FunctionClauseError, fn -> Helyx.TUI.Transcript.screen(vm, {0, 0}, area) end
   end
 
   test "the transcript draws assistant text as Markdown and user text as it is" do

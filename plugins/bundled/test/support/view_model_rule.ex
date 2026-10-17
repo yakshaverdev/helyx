@@ -22,7 +22,7 @@ defmodule Helyx.Test.ViewModelRule do
   end
 
   defp display_only?({:notice, _}), do: true
-  defp display_only?({:info, _}), do: true
+  defp display_only?({:infos, _}), do: true
 
   defp display_only?(%Message{role: :assistant, stop_reason: stop}),
     do: stop in [:error, :aborted]

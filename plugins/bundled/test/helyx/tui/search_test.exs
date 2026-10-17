@@ -140,8 +140,7 @@ defmodule Helyx.TUI.SearchTest do
     cells = [
       {:notice, "a notice"},
       {:stop, :max_tokens},
-      {:info, "model: x/y"},
-      {:info, "resumed session"},
+      {:infos, ["model: x/y", "resumed session"]},
       %Message{role: :assistant, content: [%Message.Thinking{thinking: "deep"}]}
     ]
 

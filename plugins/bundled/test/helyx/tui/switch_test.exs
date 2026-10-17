@@ -83,6 +83,12 @@ defmodule Helyx.TUI.SwitchTest do
 
   defp command(state, text), do: state |> type(text) |> key("enter")
 
+  # Feeds the answer of the scan of `/resume`.
+  defp listed(%{list: %SessionList{task: %Task{ref: ref}}} = state) do
+    assert_receive {^ref, _items} = answer, 5_000
+    info(answer, state)
+  end
+
   defp value(state), do: ExRatatui.textarea_get_value(state.composer.input)
 
   # Feeds the messages of the TUI process until the switch ends.
@@ -142,7 +148,7 @@ defmodule Helyx.TUI.SwitchTest do
     refute Process.alive?(old_pid)
     assert state.session.id != old.id
     assert state.vm.model == "fake/other"
-    assert ViewModel.cells(state.vm) == [{:info, "new session"}]
+    assert ViewModel.cells(state.vm) == [{:infos, ["new session"]}]
     assert File.exists?(Helyx.Session.File.path(opts[:sessions_dir], dir, state.session.id))
 
     # An event of the old instance that is still in the mailbox goes.
@@ -265,7 +271,7 @@ defmodule Helyx.TUI.SwitchTest do
     second = saved(core, opts, "second prompt")
     {:ok, current} = start(core, opts)
     current_pid = Session.pid(current)
-    state = current |> mount!(opts) |> command("/resume")
+    state = current |> mount!(opts) |> command("/resume") |> listed()
 
     expected =
       for s <- Scan.list(opts[:sessions_dir], dir), s.id != current.id do
@@ -296,7 +302,7 @@ defmodule Helyx.TUI.SwitchTest do
     refute Process.alive?(current_pid)
     assert state.session.id == target
     cells = ViewModel.cells(state.vm)
-    assert List.last(cells) == {:info, "resumed session"}
+    assert List.last(cells) == {:infos, ["resumed session"]}
     prompt = if target == first.id, do: "first prompt", else: "second prompt"
     assert Enum.any?(cells, &match?(%Message{role: :user}, &1))
     assert Message.text(hd(cells)) == prompt
@@ -305,7 +311,7 @@ defmodule Helyx.TUI.SwitchTest do
   test "Escape closes the list; a list with no other session says so",
        %{core: core, opts: opts} do
     {:ok, current} = start(core, opts)
-    state = current |> mount!(opts) |> command("/resume")
+    state = current |> mount!(opts) |> command("/resume") |> listed()
     assert state.list.items == []
 
     [_transcript, {%Paragraph{text: "no other session in this folder"}, _rect}, _footer] =
@@ -323,6 +329,23 @@ defmodule Helyx.TUI.SwitchTest do
     assert state.session == current
   end
 
+  test "while the scan of /resume runs, the list says so and only Escape acts, which stops the scan",
+       %{core: core, opts: opts} do
+    _other = saved(core, opts, "saved")
+    {:ok, current} = start(core, opts)
+    state = current |> mount!(opts) |> command("/resume")
+    assert %SessionList{items: nil, task: %Task{pid: pid, ref: ref}} = state.list
+
+    [_transcript, {%Paragraph{text: "reading the sessions of this folder"}, _rect}, _footer] =
+      TUI.render(state, %{width: 80, height: 20})
+
+    for code <- ["up", "down", "enter", "x"], do: assert(key(state, code) == state)
+    state = key(state, "esc")
+    assert state.list == nil
+    refute Process.alive?(pid)
+    refute_received {^ref, _items}
+  end
+
   test "a failed resume shows the error and stays on the current session",
        %{core: core, opts: opts} do
     # The session runs in another Core, so its lock is held. A resume in
@@ -331,7 +354,7 @@ defmodule Helyx.TUI.SwitchTest do
     start_supervised!({Helyx.Core, name: other, plugins: [Fake]}, id: other)
     open = saved(other, opts, "still open", false)
     {:ok, current} = start(core, opts)
-    state = current |> mount!(opts) |> command("/resume")
+    state = current |> mount!(opts) |> command("/resume") |> listed()
     assert [{id, _line}] = state.list.items
     assert id == open.id
 
@@ -341,7 +364,7 @@ defmodule Helyx.TUI.SwitchTest do
     assert Process.alive?(Session.pid(current))
 
     assert List.last(ViewModel.cells(state.vm)) ==
-             {:info, "could not switch: session #{open.id} is open in another process"}
+             {:infos, ["could not switch: session #{open.id} is open in another process"]}
   end
 
   test "when the session ends during a failed switch, a new one takes its place; a failed /new then ends the TUI",
@@ -358,10 +381,10 @@ defmodule Helyx.TUI.SwitchTest do
 
     state = Switch.done(state, {:error, :not_found})
     assert %Switch{target: :new, down: {:down, :killed}} = state.switch
-    assert {:info, "could not switch: " <> _reason} = List.last(ViewModel.cells(state.vm))
+    assert {:infos, ["could not switch: " <> _reason]} = List.last(ViewModel.cells(state.vm))
     state = finish(state)
     assert state.session.id != current.id
-    assert ViewModel.cells(state.vm) == [{:info, "new session"}]
+    assert ViewModel.cells(state.vm) == [{:infos, ["new session"]}]
 
     failed = %{state | switch: %Switch{task: task, target: :new, down: {:down, :killed}}}
 
@@ -409,7 +432,7 @@ defmodule Helyx.TUI.SwitchTest do
 
     assert state.switch == nil
     assert state.session == current
-    assert {:info, "could not switch: " <> _reason} = List.last(ViewModel.cells(state.vm))
+    assert {:infos, ["could not switch: " <> _reason]} = List.last(ViewModel.cells(state.vm))
     assert command(state, "hi").vm.reason == nil
   end
 
@@ -450,7 +473,7 @@ defmodule Helyx.TUI.SwitchTest do
 
     assert ViewModel.cells(state.vm) == [
              {:notice, Helyx.Reason.text(:not_saved)},
-             {:info, "new session"}
+             {:infos, ["new session"]}
            ]
   end
 
