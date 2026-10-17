@@ -71,20 +71,48 @@ defmodule Helyx.Session.File do
   """
   @spec create(Path.t(), String.t(), String.t(), String.t()) :: {:ok, t()} | {:error, error()}
   def create(dir, session_id, cwd, model) do
-    path = path(dir, cwd, session_id)
-
-    # The mkdir failing is the caller's configuration, not a crash.
-    case File.mkdir_p(Path.dirname(path)) do
-      :ok ->
-        {:ok, append(%__MODULE__{path: path}, Scan.header(cwd, model))}
-
-      {:error, reason} ->
-        {:error, {:create_failed, reason}}
+    with :ok <- mkdir(dir, cwd) do
+      {:ok, append(%__MODULE__{path: path(dir, cwd, session_id)}, Scan.header(cwd, model))}
     end
   rescue
     # The header write failing right after the mkdir succeeded.
     error in File.Error -> {:error, {:create_failed, error.reason}}
   end
+
+  @doc """
+  Makes the sessions folder `dir` and the project folder of `cwd` in it. A
+  sessions folder that this call makes gets mode 0700 (#683); one that
+  exists keeps its mode. The bound is in `docs/features/coding-agent.md`,
+  row "sessions folder mode".
+  """
+  @spec mkdir(Path.t(), String.t()) :: :ok | {:error, {:create_failed, File.posix()}}
+  def mkdir(dir, cwd) do
+    # The folder that `dir` names, with no `.`, `..`, or `/` at its end, so
+    # that the result of one mkdir tells a new folder (#683). `absname`
+    # first keeps a leading `~` a name, as the other file calls read it.
+    sessions = dir |> Path.absname() |> Path.expand()
+
+    # The mkdir failing is the caller's configuration, not a crash.
+    with :ok <- File.mkdir_p(Path.dirname(sessions)),
+         :ok <- restrict(sessions, File.mkdir(sessions)),
+         :ok <- File.mkdir_p(Scan.project_dir(dir, cwd)) do
+      :ok
+    else
+      {:error, reason} -> {:error, {:create_failed, reason}}
+    end
+  end
+
+  # A folder left with its umask mode would pass for one that existed at the
+  # next start, so a failed chmod tries to remove the folder it made.
+  defp restrict(dir, :ok) do
+    with {:error, _reason} = error <- File.chmod(dir, 0o700) do
+      _ = File.rmdir(dir)
+      error
+    end
+  end
+
+  defp restrict(_dir, {:error, :eexist}), do: :ok
+  defp restrict(_dir, error), do: error
 
   @doc "The path of the file that `create/4` writes for the session `session_id` of `cwd`."
   @spec path(Path.t(), String.t(), String.t()) :: Path.t()

@@ -61,8 +61,8 @@ defmodule Helyx.Session.Lock do
   end
 
   defp take(path) do
-    with :ok <- mkdir(Path.dirname(path)),
-         {:ok, perl} <- find_perl() do
+    # `Helyx.Session.File.mkdir/2` made the folder of the lock file.
+    with {:ok, perl} <- find_perl() do
       nonce = Base.encode16(:crypto.strong_rand_bytes(8))
 
       port =
@@ -88,13 +88,6 @@ defmodule Helyx.Session.Lock do
           close(port)
           {:error, {:lock_failed, String.replace_invalid(text, "")}}
       end
-    end
-  end
-
-  defp mkdir(dir) do
-    case File.mkdir_p(dir) do
-      :ok -> :ok
-      {:error, reason} -> {:error, {:create_failed, reason}}
     end
   end
 

@@ -63,8 +63,10 @@ defmodule Helyx.Session do
   is created. The model ref resolves as in `set_model/2`, with the same
   errors. With `:sessions_dir` the session is written to disk as it runs, as
   JSON lines under `<sessions_dir>/<project>/<session>.jsonl`; without it
-  nothing is persisted. When a write fails, the session goes on in memory,
-  writes nothing more, and sends one `:notice` event. A resume writes no
+  nothing is persisted. A new sessions folder gets mode 0700, or the start
+  fails with `{:error, {:create_failed, reason}}` (`Helyx.Session.File.mkdir/2`).
+  When a write fails, the session goes on in memory, writes nothing more,
+  and sends one `:notice` event. A resume writes no
   entry (see `resume/2`), so every write comes after a client can subscribe.
   The writer lock of the file comes before its first write: a session that
   another OS process holds gives `{:error, {:session_locked, id}}`, a lock
@@ -81,7 +83,9 @@ defmodule Helyx.Session do
     with {:ok, cwd} <- fetch_cwd(opts),
          {:ok, tools} <- Helyx.Tool.specs(core),
          :ok <- Helyx.Tool.check_available(tools),
-         {:ok, {ref, provider}} <- resolve_model(core, Keyword.fetch!(opts, :model)) do
+         {:ok, {ref, provider}} <- resolve_model(core, Keyword.fetch!(opts, :model)),
+         # The folders come before the lock, whose file is in them.
+         :ok <- mkdir(opts[:sessions_dir], cwd) do
       Server.start(
         %State{id: id, core: core, model: ref, provider: provider, cwd: cwd},
         tools,
@@ -89,6 +93,9 @@ defmodule Helyx.Session do
       )
     end
   end
+
+  defp mkdir(nil, _cwd), do: :ok
+  defp mkdir(dir, cwd), do: Helyx.Session.File.mkdir(dir, cwd)
 
   # The open of the file, which the session process runs at its start under
   # the lock of `path` (`Server.start/3`).
@@ -124,17 +131,9 @@ defmodule Helyx.Session do
          {:ok, tools} <- Helyx.Tool.specs(core),
          :ok <- Helyx.Tool.check_available(tools),
          {:ok, path} <- Helyx.Session.File.pick(dir, cwd, Keyword.take(opts, [:id])) do
-      Server.start(
-        %State{
-          id: Path.basename(path, ".jsonl"),
-          core: core,
-          model: nil,
-          provider: nil,
-          cwd: cwd
-        },
-        tools,
-        {path, &load(&1, path)}
-      )
+      id = Path.basename(path, ".jsonl")
+      state = %State{id: id, core: core, model: nil, provider: nil, cwd: cwd}
+      Server.start(state, tools, {path, &load(&1, path)})
     end
   end
 
