@@ -6,7 +6,7 @@ Status: the current contract since #470.
 
 The agent can answer questions about Helyx and about its own session. It knows where the Helyx docs are and which file covers a topic, and it reads a file with its normal tools only when the user asks about Helyx. It knows its working directory, its model, its session id, and the folder of its session file.
 
-User story: in a Helyx session I ask "which model are you, and where is this session saved?". The agent answers `anthropic/claude-sonnet-5-5` and `~/.helyx/sessions/<project>/`. I ask "how do I add a tool to Helyx?". The agent reads the tools file of the docs map and answers from it.
+User story: in a Helyx session I ask "which model are you, and where is this session saved?". The agent answers `anthropic/claude-sonnet-5-5` and `/home/me/.helyx/sessions/<project>/`, the absolute path. I ask "how do I add a tool to Helyx?". The agent reads the tools file of the docs map and answers from it.
 
 ## Interface changes
 
@@ -23,9 +23,9 @@ User story: in a Helyx session I ask "which model are you, and where is this ses
 
 **Session section.** Exactly four values: the working directory, the model ref (`provider/model`), the session id, and the session directory, the folder of the session file. A session that is not saved (no `:sessions_dir`, or a write failed) shows `not saved` as its session directory. Nothing else goes in the section: no environment, no home directory, no token, no config value.
 
-**Core.** The session adds two values that it holds to the `opts` of `build/2`: `:model`, the `Helyx.ModelRef` of the turn, and `:session_dir`, the absolute path of the folder of the session file (`Path.absname/1` against the node's working directory, which is how the file writes resolve it, so a `~` stays literal) or nil. The `@moduledoc` of `Helyx.ModelContext` lists them. They go to `build/2` and `compact/2`, which get one `opts`, not to the provider process. Core gets no new construct.
+**Core.** The session adds two values that it holds to the `opts` of `build/2`: `:model`, the `Helyx.ModelRef` of the turn, and `:session_dir`, the folder of the session file (`Path.dirname/1` of its path, under `:sessions_dir` as the caller gave it; the prepare makes no other path call) or nil. The coding agent gives an absolute `:sessions_dir` (`~/.helyx/sessions`, expanded). Accepted hole: a relative `:sessions_dir` in the config shows a relative folder. Reason: each way to make it absolute calls `File.cwd/0`, which fails when the node's working directory is removed, and three review rounds found a defect in each place that made the call (#470 rounds 1 to 4). The `@moduledoc` of `Helyx.ModelContext` lists them. They go to `build/2` and `compact/2`, which get one `opts`, not to the provider process. Core gets no new construct.
 
-**Prompt stability.** The sections change only when a value changes: a model switch, a resume in another folder, a session that stops saving, or a `README.md` at the root that appears or goes away. So the system prompt is the same for the turns of one session and one model, which keeps the provider prompt cache, and a harness provider does not restart its program: `Helyx.Provider.ClaudeCode.Program.ensure/2` and the Codex thread start a new one only when the system prompt changes. No date or time goes in the sections for this reason.
+**Prompt stability.** The sections change only when a value changes: a model switch, a resume in another folder, a session that stops saving, or a `README.md` at the root that appears or goes away. So the two sections are the same for the turns of one session and one model. The system prompt then changes only when they change or when a context file changes (`docs/features/context-files.md`). This keeps the provider prompt cache, and a harness provider does not restart its program: `Helyx.Provider.ClaudeCode.Program.ensure/2` and the Codex thread start a new one only when the system prompt changes. No date or time goes in the sections for this reason.
 
 ## Replaced mechanism
 

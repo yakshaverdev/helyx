@@ -6,8 +6,9 @@ defmodule Helyx.ModelContext do
   `Helyx.Context` with the transcript and the tools, and `build/2` returns
   the context to send, usually with a system prompt added. `opts` carries
   `:core`, `:session_id`, `:turn_id`, `:cwd`, `:model` (the
-  `Helyx.ModelRef` of the turn), and `:session_dir` (the absolute path of
-  the folder of the session file, or nil when the session is not saved).
+  `Helyx.ModelRef` of the turn), and `:session_dir` (the folder of the
+  session file, under `:sessions_dir` as the caller gave it, or nil when the
+  session is not saved).
   """
 
   use Helyx.Interface, mode: :single

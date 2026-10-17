@@ -52,8 +52,8 @@ defmodule Helyx.ModelContext.Default do
   left out when `README.md` there is not a regular file. The session section
   gives the working directory, the model ref (`:model`), the session id, and
   the session directory (`:session_dir`, or `not saved`). Each value is one
-  line of at most #{@max_value_bytes} bytes: each line break becomes a space, and
-  `Helyx.Text.cap/3` cuts the rest. Neither section counts toward the cap of
+  line of at most #{@max_value_bytes} bytes: `Helyx.Text.cap/3` cuts it first,
+  then each line break becomes a space. Neither section counts toward the cap of
   the context files. See `docs/features/agent-self-knowledge.md`.
 
   The context files are the global file `~/.helyx/AGENTS.md`, then one file

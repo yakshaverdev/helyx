@@ -30,16 +30,14 @@ defmodule Helyx.ModelContext.DefaultIntegrationTest do
     core = :"core_#{System.unique_integer([:positive])}"
     plugins = [Helyx.Provider.Fake, Helyx.ModelContext.Default]
     start_supervised!({Helyx.Core, name: core, plugins: plugins})
-    # Relative to the node's working directory, which is not the session's.
-    sessions = Path.relative_to_cwd(Path.join(dir, "sessions"))
-    assert Path.type(sessions) == :relative
+    sessions = Path.join(dir, "sessions")
 
     {:ok, session} = Session.start(core, model: "fake/system", cwd: dir, sessions_dir: sessions)
     {:ok, _, _} = Session.subscribe(session)
     :ok = Session.prompt(session, "hello")
 
     text = Helyx.Message.text(List.last(messages(collect_until(:turn_end))))
-    session_dir = Path.expand(Helyx.Session.File.Scan.project_dir(sessions, dir))
+    session_dir = Helyx.Session.File.Scan.project_dir(sessions, dir)
     assert text =~ "Working directory: #{Path.expand(dir)}\n"
     assert text =~ "Model: fake/system\n"
     assert text =~ "Session id: #{session.id}\n"
