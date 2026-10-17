@@ -2,6 +2,8 @@
 
 Invariants the review axes check on every diff. Add one when a review or a PR comment finds a defect that a checklist line would have caught. The failure-path brief in the ship skill names the probe categories; the lines here are the invariants the probes must not break.
 
+A line that a review adds for one case ends with its source: the issue or the run that found the case, and the class of its input. The class is observed (a real provider, program, or user sent the input), constructed (a probe or a test made it), or not verified. The class guides the next reviewer; it does not decide whether the line stays. When a mechanism changes, review each line about it, whatever its class. Source: the joint review of 2026-10-16 (#642).
+
 ## Specs and bounds
 
 - The feature doc states the bound of every input, buffer, and wait, or says "unbounded, ticket #N". The spec axis checks that table against the diff.
