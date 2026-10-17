@@ -10,7 +10,7 @@ defmodule CodingAgent do
     Helyx.Provider.ClaudeCode,
     Helyx.Provider.Codex,
     Helyx.ModelContext.Default,
-    Helyx.Compaction.None,
+    Helyx.Compaction.Summary,
     Helyx.Tool.Read,
     Helyx.Tool.Bash,
     Helyx.Tool.Edit,

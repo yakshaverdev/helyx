@@ -37,15 +37,17 @@ defmodule Helyx.Session.File do
     What `resume_picked/3` restores. `resume_ids` holds the last resume id of
     each provider: the id and the number of assistant messages before its entry,
     and the number at the last compaction of that provider after it, if
-    any (`Helyx.Session.Transcript.label/0`).
+    any (`Helyx.Session.Transcript.label/0`). `summary` is the last
+    `Helyx.Summary`, or nil.
     """
     @enforce_keys [:file, :model, :messages]
-    defstruct [:file, :model, :messages, resume_ids: %{}]
+    defstruct [:file, :model, :messages, :summary, resume_ids: %{}]
 
     @type t :: %__MODULE__{
             file: Helyx.Session.File.t(),
             model: String.t(),
             messages: [Message.t()],
+            summary: Helyx.Summary.t() | nil,
             resume_ids: %{String.t() => Helyx.Session.Transcript.label()}
           }
   end
@@ -195,6 +197,7 @@ defmodule Helyx.Session.File do
         file: %__MODULE__{path: path, leaf: read.leaf},
         model: read.model,
         messages: read.messages,
+        summary: read.summary,
         resume_ids: read.resume_ids
       }
 
@@ -246,6 +249,20 @@ defmodule Helyx.Session.File do
       "trigger" => Atom.to_string(trigger),
       "tokens_before" => before,
       "tokens_after" => after_
+    })
+  end
+
+  @doc """
+  Appends a summary entry (`docs/features/summary-compaction.md`): a
+  resume adds no message for it, and takes the last one as the summary.
+  """
+  @spec append_summary(t(), Helyx.Summary.t()) :: t()
+  def append_summary(%__MODULE__{} = file, %Helyx.Summary{} = summary) do
+    append(file, %{
+      "type" => "summary",
+      "summary" => summary.text,
+      "first_kept_id" => summary.first_kept_id,
+      "tokens_before" => summary.tokens_before
     })
   end
 

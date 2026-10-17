@@ -9,6 +9,7 @@ defmodule Helyx.Session.Server do
   alias Helyx.{Message, ModelRef}
   alias Helyx.Session.{Background, Hands, Id, Lock, Queue, Turn}
   alias Helyx.Session.Server.{Compaction, Events, ProviderConn, Records, State, Steering, Stop}
+  alias Helyx.Session.Server.Summary
   alias Helyx.Session.Server.ToolRuns
   alias Helyx.Session.Server.{TurnLoop, Wait}
 
@@ -213,9 +214,36 @@ defmodule Helyx.Session.Server do
   # The abort replies through `GenServer.reply/2` (`TurnLoop.abort/2`).
   def handle_call(:abort, from, %State{} = state), do: {:noreply, TurnLoop.abort(state, from)}
 
+  # The messages of the summary call's process, by its pid or by the id of
+  # its turn, before every other clause (`Summary.handle/2`).
+  @impl true
+  def handle_info(
+        {:provider_ready, pid} = message,
+        %State{summary_call: %Summary{pid: pid}} = state
+      ),
+      do: {:noreply, Summary.handle(message, state)}
+
+  def handle_info({tag, id, _} = message, %State{summary_call: %Summary{id: id}} = state)
+      when tag in [:stream_event, :stream_end, :need_context],
+      do: {:noreply, Summary.handle(message, state)}
+
+  def handle_info({:need_context, id} = message, %State{summary_call: %Summary{id: id}} = state),
+    do: {:noreply, Summary.handle(message, state)}
+
+  def handle_info(
+        {:provider_down, pid, _} = message,
+        %State{summary_call: %Summary{pid: pid}} = state
+      ),
+      do: {:noreply, Summary.handle(message, state)}
+
+  def handle_info(
+        {:tool_request, pid, _, _, _, _} = message,
+        %State{summary_call: %Summary{pid: pid}} = state
+      ),
+      do: {:noreply, Summary.handle(message, state)}
+
   # A turn that the provider started by itself (#240), before the clauses
   # of the current turn's events.
-  @impl true
   def handle_info({:stream_event, _turn_id, :turn_start} = message, state),
     do: {:noreply, TurnLoop.handle(message, state)}
 

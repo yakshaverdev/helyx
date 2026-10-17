@@ -94,6 +94,7 @@ defmodule Helyx.Provider do
           {:event, turn_id :: String.t(), stream_event()}
           | {:reply, from(), term()}
           | {:need_context, turn_id :: String.t()}
+          | {:need_context, turn_id :: String.t(), :overflow}
 
   @doc """
   Finds the provider plugin whose id matches a model ref prefix. It reads the

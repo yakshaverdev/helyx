@@ -12,7 +12,8 @@ defmodule Helyx.Session.Server.Compaction do
   alias Helyx.Session.Server.{ProviderConn, State, TurnLoop, Wait}
   alias Helyx.Session.Turn
 
-  @unsupported "this provider keeps no history of its own, so there is nothing for it to compact"
+  @unsupported "this provider keeps no history of its own, and the compaction plugin " <>
+                 "made no summary, so there is nothing to compact"
 
   # A client's compaction. Idle, it starts now; in a turn, the turn aborts
   # first, as at an abort, and the compaction waits for the end of the
@@ -48,8 +49,9 @@ defmodule Helyx.Session.Server.Compaction do
 
   def submit(state), do: state
 
-  # The provider keeps no history: a notice, and the turn ends with no
-  # message. The Helyx summary of #490 takes the notice's place.
+  # The provider keeps no history, and the Compaction plugin made no
+  # summary (`Helyx.Session.Server.Prepare`): a notice, and the turn ends
+  # with no message.
   @spec unsupported(State.t()) :: State.t()
   def unsupported(state),
     do: state |> emit(:notice, %{text: @unsupported}) |> Wait.finish({:done, :end_turn, %{}})

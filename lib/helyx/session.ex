@@ -151,6 +151,7 @@ defmodule Helyx.Session do
            provider: provider,
            file: resumed.file,
            transcript: Transcript.repair(resumed.messages),
+           summary: resumed.summary,
            resume_ids: resumed.resume_ids
        }}
     end
@@ -309,12 +310,11 @@ defmodule Helyx.Session do
     do: send_user(session, :follow_up, text, opts)
 
   @doc """
-  Compacts the history that the provider keeps, as a turn with no user
-  message (`docs/features/harness-compaction.md`). A running turn aborts
-  first, as at `abort/1`, and is not retried. A second compaction before
-  the first ends returns `{:error, :turn_running}`. A provider that keeps
-  no history gives a `:notice` event. The text takes the text checks of
-  `prompt/3`.
+  Compacts the context as a turn with no user message: the provider compacts its own history, or
+  the Compaction plugin summarizes the transcript (`summary-compaction.md`), or a `:notice` says
+  neither did; an error fails the turn. A running turn aborts first, as at `abort/1`, with no
+  retry. A second compaction before the end returns `{:error, :turn_running}`. The text takes the
+  text checks of `prompt/3`.
   """
   @spec compact(t(), String.t()) ::
           :ok | {:error, :turn_running | :text_too_large | :invalid_utf8 | :session_not_found}

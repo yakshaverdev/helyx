@@ -4,6 +4,8 @@ defmodule Helyx.Session.Stream do
   # the check of each provider event, and the bounded send to the session.
   # It holds no resource and makes no decision of the turn.
 
+  require Helyx.Usage
+
   alias Helyx.Message
 
   # `:aborted` and `:error` are the stop reasons of a turn that the session
@@ -32,17 +34,48 @@ defmodule Helyx.Session.Stream do
   :model_context | :compaction}}` when a plugin returns anything but a
   `Helyx.Context` with its three fields: a system prompt that is nil or a
   string, and two lists. The reason names the plugin, not the value.
+
+  The Compaction plugin can also return `{:error, text}`, which is returned
+  as it is, or a `Helyx.Summary.Plan` when `opts[:trigger]` is not nil: a
+  context with the checks above, the id of a user or assistant message of
+  `context`, and a token count from 0 to 10^9. Any other plan is
+  `{:bad_context, :compaction}` (`docs/features/summary-compaction.md`).
   """
   @spec prepare(module() | nil, module() | nil, Helyx.Context.t(), keyword()) ::
-          {:ok, Helyx.Context.t()} | {:error, {:bad_context, :model_context | :compaction}}
+          {:ok, Helyx.Context.t()}
+          | {:summarize, Helyx.Summary.Plan.t()}
+          | {:error, {:bad_context, :model_context | :compaction} | String.t()}
   def prepare(model_context, compaction, context, opts) do
-    context = if model_context, do: model_context.build(context, opts), else: context
+    built = if model_context, do: model_context.build(context, opts), else: context
 
-    with {:ok, context} <- checked_context(context, :model_context) do
-      context = if compaction, do: compaction.compact(context, opts), else: context
-      checked_context(context, :compaction)
+    with {:ok, built} <- checked_context(built, :model_context) do
+      if compaction,
+        do: compacted(compaction.compact(built, opts), context.messages, opts[:trigger]),
+        else: {:ok, built}
     end
   end
+
+  defp compacted({:error, text} = error, _messages, _trigger) when is_binary(text), do: error
+
+  defp compacted(
+         {:summarize, %Helyx.Summary.Plan{first_kept_id: id, tokens_before: tokens} = plan},
+         messages,
+         trigger
+       )
+       when trigger != nil and map_size(plan) == 4 and is_binary(id) and
+              Helyx.Usage.wire_tokens?(tokens) do
+    kept? = &match?(%Message{id: ^id, role: role} when role in [:user, :assistant], &1)
+
+    with {:ok, context} <- checked_context(plan.context, :compaction),
+         true <- Enum.any?(messages, kept?) do
+      {:summarize,
+       %Helyx.Summary.Plan{context: context, first_kept_id: id, tokens_before: tokens}}
+    else
+      _ -> {:error, {:bad_context, :compaction}}
+    end
+  end
+
+  defp compacted(context, _messages, _trigger), do: checked_context(context, :compaction)
 
   # The size check rejects a struct that a plugin forged by removing or adding
   # keys. The elements of the lists are not checked here.

@@ -26,7 +26,7 @@ A turn has a `phase` (`Helyx.Session.Turn`). The line between `preparing` and `s
 - A turn that the provider starts by itself (`{:event, id, :turn_start}`) opens a `submitted` turn with no user message, and `turn_start` has `%{origin: :provider}`. It opens only with no turn, no wait, and a ready provider process. At any other time the session drops it and its events.
 - A failed prepare Task in `preparing` fails the turn. A failed context build of a context request in `submitted` goes to the provider as `{:error, reason}` (`docs/features/one-provider-path.md`, C3).
 - With `Helyx.Provider.Loop`, an assistant message with no tool calls ends the turn, unless the loop holds a steer (`docs/features/one-provider-path.md`).
-- An answer other than `:ok` to `{:turn, ...}` stops the provider process (`ProviderRequest.stop_after/2`). Its `provider_down` fails the turn. The same holds for `{:compact, ...}`, except `:unsupported`, which ends the turn `done` with a notice (`docs/features/harness-compaction.md`).
+- An answer other than `:ok` to `{:turn, ...}` stops the provider process (`ProviderRequest.stop_after/2`). Its `provider_down` fails the turn. The same holds for `{:compact, ...}`, except `:unsupported`, which runs the summary path of the Compaction plugin and ends the turn `done`, with a notice when no summary is made (`docs/features/harness-compaction.md`, `docs/features/summary-compaction.md`).
 
 ## Message close
 

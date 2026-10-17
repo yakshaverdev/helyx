@@ -13,9 +13,9 @@ defmodule Helyx.Session.Server.TurnLoop do
   import Helyx.Session.Server.State, only: [ask: 4]
   import Helyx.Session.Server.Events, only: [emit: 3]
 
-  alias Helyx.Context
   alias Helyx.Session.{Hands, Id, ProviderProcess, Queue, Transcript, Turn}
-  alias Helyx.Session.Server.{Compaction, ProviderConn, Records, State, Steering, Wait}
+  alias Helyx.Session.Server.{Compaction, Prepare, ProviderConn, Records, State, Steering}
+  alias Helyx.Session.Server.{Summary, Wait}
 
   # A client prompt, steer, or follow-up by phase; returns the reply and the
   # state. An abort waits for the hands: a turn that starts now could send
@@ -62,19 +62,26 @@ defmodule Helyx.Session.Server.TurnLoop do
         %State{activity: %Turn{id: turn_id, prepare: pid}} = state
       )
       when pid != nil,
-      do: prepared(state, result)
+      do: Prepare.prepared(state, result)
 
   # A context request (C1-C4) comes after the events before it, and is
   # answered as a tool result is: only for the submitted turn with no
-  # context request open (no prepare Task), not a compaction; at any other
-  # time it is a bad action.
-  def handle(
-        {:need_context, id},
-        %State{activity: %Turn{id: id, phase: :submitted, prepare: nil, compact: nil}} = state
-      ),
-      do: prepare(state)
+  # context request open (no prepare Task, no summary call for it), not a
+  # compaction; at any other time it is a bad action. One after a context
+  # overflow builds with the trigger `:overflow`
+  # (docs/features/summary-compaction.md).
+  def handle({:need_context, id}, state), do: handle({:need_context, id, :auto}, state)
 
-  def handle({:need_context, turn_id}, %State{activity: %Turn{id: turn_id}} = state),
+  def handle(
+        {:need_context, id, why},
+        %State{activity: %Turn{id: id, phase: :submitted, prepare: nil, compact: nil}} = state
+      ) do
+    if Summary.open?(state),
+      do: stop_provider(state, {:bad_action, {:need_context, id}}),
+      else: Prepare.start(state, why)
+  end
+
+  def handle({:need_context, turn_id, _why}, %State{activity: %Turn{id: turn_id}} = state),
     do: stop_provider(state, {:bad_action, {:need_context, turn_id}})
 
   # The answer to `{:turn, ...}` or `{:compact, ...}`. An error ends the
@@ -85,7 +92,7 @@ defmodule Helyx.Session.Server.TurnLoop do
 
     case {kind, reply} do
       {:turn, :ok} -> Steering.send_local_steers(state)
-      {:compact, :unsupported} -> progress(Compaction.unsupported(state))
+      {:compact, :unsupported} -> Prepare.start(state, :manual)
       _ -> state
     end
   end
@@ -127,7 +134,7 @@ defmodule Helyx.Session.Server.TurnLoop do
   # exited, or was killed at its bound (`:context_timeout`). A Task that
   # sent its context is no longer `Turn.prepare`: its `:DOWN` comes after.
   def handle({:DOWN, _ref, :process, pid, reason}, %State{activity: %Turn{prepare: pid}} = state),
-    do: prepared(state, {:error, prepare_down(reason)})
+    do: Prepare.prepared(state, {:error, Prepare.down_reason(reason)})
 
   # A message for a turn or a provider process that is no longer current,
   # or a reply that nobody waits for. The `:DOWN` of a provider process
@@ -138,7 +145,7 @@ defmodule Helyx.Session.Server.TurnLoop do
   def handle({:stream_end, _turn_id, _terminal}, state), do: state
   def handle({:provider_ready, _pid}, state), do: state
   def handle({_ref, {:prepared, _turn_id, _result}}, state), do: state
-  def handle({:need_context, _turn_id}, state), do: state
+  def handle({:need_context, _turn_id, _why}, state), do: state
   def handle({:provider_reply, _from, _kind, _reply}, state), do: state
   def handle({:timeout, _ref, :idle_close}, state), do: state
   def handle({:DOWN, _ref, :process, _pid, _reason}, state), do: state
@@ -168,8 +175,11 @@ defmodule Helyx.Session.Server.TurnLoop do
   # which builds the context; a turn that connects again keeps its prepare.
   defp call_provider(%State{activity: %Turn{phase: phase}} = state) do
     case connect(state) do
-      {:ok, state} -> if phase, do: state, else: prepare(put_in(state.activity.phase, :preparing))
-      {:error, text} -> fail_turn(text, state)
+      {:ok, state} ->
+        if phase, do: state, else: Prepare.start(put_in(state.activity.phase, :preparing), :auto)
+
+      {:error, text} ->
+        fail_turn(text, state)
     end
   end
 
@@ -192,7 +202,7 @@ defmodule Helyx.Session.Server.TurnLoop do
       provider: turn.provider,
       model: turn.model.model,
       tools: state.tool_specs,
-      opts: [resume_id: resumed, resume_usage: usage] ++ base_opts(state),
+      opts: [resume_id: resumed, resume_usage: usage] ++ State.base_opts(state),
       session: self()
     }
 
@@ -204,70 +214,23 @@ defmodule Helyx.Session.Server.TurnLoop do
     end
   end
 
-  defp base_opts(state), do: [core: state.core, session_id: state.id, cwd: state.cwd]
-
-  # The prepare Task builds the context, at the turn start and at each
-  # context request. The session owns it: a child of the task supervisor,
-  # monitored before it runs, so a raise is never `:noproc` (#562), its pid
-  # in `Turn.prepare`, killed at the turn end. Its kill at `prepare_ms` is
-  # armed as its first act, before any plugin code. A compaction turn has
-  # no context: it submits at once.
-  defp prepare(%State{activity: %Turn{compact: text}} = state) when text != nil, do: submit(state)
-
-  defp prepare(%State{activity: %Turn{id: turn_id}} = state) do
-    %State{model_context: model_context, compaction: compaction, prepare_ms: ms} = state
-    context = %Context{messages: state.transcript, tools: state.tool_specs}
-    opts = [turn_id: turn_id] ++ base_opts(state)
-
-    %Task{pid: pid} =
-      Task.Supervisor.async_nolink(Helyx.Core.task_supervisor(state.core), fn ->
-        {:ok, tref} = :timer.kill_after(ms)
-        result = Helyx.Session.Stream.prepare(model_context, compaction, context, opts)
-        :timer.cancel(tref)
-        {:prepared, turn_id, result}
-      end)
-
-    put_in(state.activity.prepare, pid)
-  end
-
-  # The checked context (`Stream.prepare/4`), or the error of the prepare
-  # Task: a plugin that returned anything else, or a Task that died. In
-  # `preparing` an error fails the turn; a context request gets it as the
-  # answer.
-  defp prepared(%State{activity: %Turn{phase: :preparing} = turn} = state, result) do
-    state = %{state | activity: %{turn | prepare: nil}}
-
-    case result do
-      {:ok, context} -> submit(put_in(state.activity.context, context))
-      {:error, reason} -> fail_turn(reason, state)
-    end
-  end
-
-  defp prepared(%State{activity: %Turn{phase: :submitted} = turn, conn: conn} = state, result) do
-    ask(state, conn.pid, {:context, turn.id, result}, :reply)
-    %{state | activity: %{turn | prepare: nil}}
-  end
-
-  defp prepare_down(:killed), do: :context_timeout
-  defp prepare_down(reason), do: {:task_exit, reason}
-
   # Sends `{:turn, ...}` when the provider process is ready and the context
   # is prepared. The steers queued in `preparing`, then the background
   # ends, join the transcript and the context: part of the prompt.
-  defp submit(
-         %State{
-           activity: %Turn{phase: :preparing, context: context},
-           conn: %ProviderConn{pid: pid, status: :ready}
-         } = state
-       )
-       when context != nil do
+  def submit(
+        %State{
+          activity: %Turn{phase: :preparing, context: context},
+          conn: %ProviderConn{pid: pid, status: :ready}
+        } = state
+      )
+      when context != nil do
     {steers, %State{activity: turn} = state} = Steering.append_steers(state)
     context = %{context | messages: context.messages ++ steers}
     from = ask(state, pid, {:turn, turn.id, context}, :reply)
     %{state | activity: %{turn | phase: :submitting, pending: from, context: nil}}
   end
 
-  defp submit(state), do: Compaction.submit(state)
+  def submit(state), do: Compaction.submit(state)
 
   # The end of the session's provider process, `conn` already nil: no
   # request to it is open any more. In a wait its reply ends too. In a turn
@@ -323,17 +286,20 @@ defmodule Helyx.Session.Server.TurnLoop do
     do: put_in(Wait.finish(state, :aborted).activity.callers, [from])
 
   # At the end of the wait the abort callers get their reply. An idle
-  # session settles too: a late `:rejected` can queue a steer.
-  defp progress(%State{activity: %Wait{}, conn: %ProviderConn{status: :ending}} = state),
+  # session settles too: a late `:rejected` can queue a steer. A process
+  # that ends, the session's or a summary call's, holds the wait.
+  def progress(%State{activity: %Wait{}, conn: %ProviderConn{status: :ending}} = state),
     do: state
 
-  defp progress(%State{activity: %Wait{hands: nil, reply: nil} = wait} = state) do
+  def progress(%State{activity: %Wait{}, summary_call: %Summary{}} = state), do: state
+
+  def progress(%State{activity: %Wait{hands: nil, reply: nil} = wait} = state) do
     Enum.each(wait.callers, &GenServer.reply(&1, :ok))
     settle(%{state | activity: :idle})
   end
 
-  defp progress(%State{activity: :idle} = state), do: settle(state)
-  defp progress(state), do: state
+  def progress(%State{activity: :idle} = state), do: settle(state)
+  def progress(state), do: state
 
   # With no turn and no wait, a provider process of another model than the
   # session's closes before the next turn starts (a provider or a model
@@ -395,5 +361,5 @@ defmodule Helyx.Session.Server.TurnLoop do
     fail_turn(reason, put_in(state.conn.status, :ending))
   end
 
-  defp fail_turn(reason, state), do: Wait.finish(state, {:error, reason})
+  def fail_turn(reason, state), do: Wait.finish(state, {:error, reason})
 end
