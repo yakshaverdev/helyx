@@ -12,8 +12,11 @@ defmodule Helyx.ModelContext.DefaultTest do
   # directory can add their own files. Each test asserts only on files under
   # its own directory.
 
-  defp system(home, cwd) do
-    %Helyx.Context{system: system} = Default.build(%Helyx.Context{}, cwd: cwd, home: home)
+  @model %Helyx.ModelRef{provider: "fake", model: "m1"}
+
+  defp system(home, cwd, opts \\ []) do
+    opts = Keyword.merge([cwd: cwd, home: home, model: @model, session_id: "s1"], opts)
+    %Helyx.Context{system: system} = Default.build(%Helyx.Context{}, opts)
     system
   end
 
@@ -153,7 +156,7 @@ defmodule Helyx.ModelContext.DefaultTest do
     refute system =~ "a rules"
     refute system =~ "global rules"
 
-    [base, _] = String.split(system, "\n\n## ", parts: 2)
+    [base, _] = String.split(system, "\n\n## /", parts: 2)
     assert byte_size(system) - byte_size(base) <= @max_total_bytes
   end
 
@@ -178,7 +181,7 @@ defmodule Helyx.ModelContext.DefaultTest do
 
     assert system =~ "far x"
     assert system =~ "é"
-    [base, _] = String.split(system, "\n\n## ", parts: 2)
+    [base, _] = String.split(system, "\n\n## /", parts: 2)
     assert byte_size(system) - byte_size(base) == @max_total_bytes
   end
 
@@ -187,5 +190,108 @@ defmodule Helyx.ModelContext.DefaultTest do
 
     refute system =~ "far x"
     assert system =~ "é"
+  end
+
+  describe "the docs and session sections" do
+    # The bound of one value line, in bytes.
+    @max_value_bytes 4_096
+
+    defp docs_root!(dir) do
+      root = Path.join(dir, "helyx")
+      write!(Path.join(root, "README.md"), "readme")
+      root
+    end
+
+    test "come after the base prompt and before the context files", %{tmp_dir: dir} do
+      root = docs_root!(dir)
+      write!(Path.join(dir, "AGENTS.md"), "proj rules")
+
+      system =
+        system(Path.join(dir, "home"), dir,
+          docs_root: root,
+          session_dir: Path.join(dir, "sessions/proj")
+        )
+
+      assert system =~ "README: #{root}/README.md\n"
+      assert system =~ "Feature docs: #{root}/docs/features/\n"
+      assert system =~ "Decisions: #{root}/docs/adr/\n"
+
+      assert system =~
+               ~r/You are a coding agent.*## Helyx docs.*## This session.*## #{dir}.*proj rules/s
+
+      # Exactly the four values, and nothing else.
+      [_, section] = Regex.run(~r/\n\n(## This session\n.*?)\n\n## \//s, system)
+
+      assert section ==
+               "## This session\n\nWorking directory: #{dir}\nModel: fake/m1\nSession id: s1\n" <>
+                 "Session directory: #{dir}/sessions/proj"
+    end
+
+    test "a session that is not saved says so", %{tmp_dir: dir} do
+      assert system(Path.join(dir, "home"), dir) =~ "Session directory: not saved\n"
+    end
+
+    test "without a README at the root, only the docs section is left out", %{tmp_dir: dir} do
+      File.mkdir_p!(Path.join(dir, "helyx/README.md"))
+
+      system = system(Path.join(dir, "home"), dir, docs_root: Path.join(dir, "helyx"))
+
+      refute system =~ "## Helyx docs"
+      assert system =~ "## This session"
+      assert system =~ "Working directory: #{dir}\n"
+    end
+
+    test "every file of the docs map exists at the default root", %{tmp_dir: dir} do
+      system = system(Path.join(dir, "home"), dir)
+      [_, section] = Regex.run(~r/## Helyx docs\n(.*)\n\n## This session/s, system)
+      [_, root] = Regex.run(~r/Helyx root: (.+)\n/, section)
+      paths = Regex.scan(~r/(?:README|docs\/[\w\/.-]+)\.md/, section) |> List.flatten()
+
+      assert paths != []
+      for path <- paths, do: assert(File.regular?(Path.join(root, path)), path)
+    end
+
+    # The value of the line with `label`, which must be the only one.
+    defp value(system, label) do
+      [value] = for line <- String.split(system, "\n"), line =~ ~r/^#{label}: /, do: line
+      String.replace_prefix(value, label <> ": ", "")
+    end
+
+    defp session_id_value(dir, id),
+      do: value(system(Path.join(dir, "home"), dir, session_id: id), "Session id")
+
+    test "a value of #{@max_value_bytes} bytes is kept whole, one over is cut", %{tmp_dir: dir} do
+      for n <- [@max_value_bytes - 1, @max_value_bytes] do
+        id = String.duplicate("a", n)
+        assert session_id_value(dir, id) == id
+      end
+
+      over = String.duplicate("a", @max_value_bytes) <> "b"
+      assert session_id_value(dir, over) == String.duplicate("a", @max_value_bytes)
+    end
+
+    test "a multibyte value is cut on a whole character", %{tmp_dir: dir} do
+      # 4,098 bytes: the cut keeps 2,048 whole characters.
+      assert session_id_value(dir, String.duplicate("é", 2_049)) == String.duplicate("é", 2_048)
+      # 4,097 bytes: the cut splits the last kept character and drops it.
+      assert session_id_value(dir, "a" <> String.duplicate("é", 2_048)) ==
+               "a" <> String.duplicate("é", 2_047)
+    end
+
+    test "invalid UTF-8 in a value is dropped before the line breaks are replaced",
+         %{tmp_dir: dir} do
+      system = system(Path.join(dir, "home"), dir, session_dir: <<"/x", 0xFF, "\ny">>)
+
+      assert value(system, "Session directory") == "/x y"
+    end
+
+    test "every line break in a value becomes one space", %{tmp_dir: dir} do
+      cwd = Path.join(dir, "a\r\nb\nc\rd\ve\ff\u0085g\u2028h\u2029i")
+
+      system = system(Path.join(dir, "home"), cwd, docs_root: docs_root!(dir))
+
+      assert value(system, "Working directory") == Path.join(dir, "a b c d e f g h i")
+      assert system =~ "\n## This session\n\nWorking directory: "
+    end
   end
 end

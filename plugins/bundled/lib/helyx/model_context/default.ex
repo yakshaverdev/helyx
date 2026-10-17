@@ -7,9 +7,54 @@ defmodule Helyx.ModelContext.Default do
   # per-file cap, with its heading and notice, always fits, so the nearest
   # file is never left out.
   @max_total_bytes 2 * Helyx.Text.max_bytes()
+  # The Helyx source root: this file is at plugins/bundled/lib/helyx/model_context.
+  @docs_root Path.expand("../../../../..", __DIR__)
+  # The cap of one value line of the docs and session sections, in bytes.
+  @max_value_bytes 4_096
+  @docs_rule "You run in Helyx. Read these files only when the user asks about Helyx itself: its plugins, " <>
+               "tools, providers, TUI, sessions, or compaction. Use your normal tools to read them."
+  # The topic map, relative to the root. A test checks that each file exists.
+  @docs_map [
+    {"plugins", ["README.md", "docs/adr/0005-one-project-for-bundled-plugins.md"]},
+    {"providers",
+     [
+       "docs/adr/0002-two-provider-kinds.md",
+       "docs/features/provider-parity.md",
+       "docs/features/openai-compatible.md"
+     ]},
+    {"tools",
+     [
+       "docs/features/coding-agent.md",
+       "docs/features/tool-text-out-of-core.md",
+       "docs/adr/0003-hands-process.md"
+     ]},
+    {"TUI", ["docs/adr/0006-client-contract.md", "docs/features/tui-session-switch.md"]},
+    {"sessions",
+     [
+       "docs/features/session-lifecycle.md",
+       "docs/features/session-list.md",
+       "docs/adr/0001-transcript-shape-and-session-file.md"
+     ]},
+    {"compaction", ["docs/features/harness-compaction.md"]},
+    {"context files and this prompt",
+     ["docs/features/context-files.md", "docs/features/agent-self-knowledge.md"]}
+  ]
+  @docs_topics Enum.map_join(@docs_map, "\n", fn {topic, paths} ->
+                 "- #{topic}: #{Enum.join(paths, ", ")}"
+               end)
 
   @moduledoc """
-  The default model context: a base prompt plus the context files.
+  The default model context: a base prompt, the docs section, the session
+  section, and the context files, in that order.
+
+  The docs section gives the paths of the Helyx docs and a map from topic to
+  file. The root is the Helyx source root at compile time; the section is
+  left out when `README.md` there is not a regular file. The session section
+  gives the working directory, the model ref (`:model`), the session id, and
+  the session directory (`:session_dir`, or `not saved`). Each value is one
+  line of at most #{@max_value_bytes} bytes: each line break becomes a space, and
+  `Helyx.Text.cap/3` cuts the rest. Neither section counts toward the cap of
+  the context files. See `docs/features/agent-self-knowledge.md`.
 
   The context files are the global file `~/.helyx/AGENTS.md`, then one file
   for each folder from the filesystem root down to the working directory, in
@@ -26,7 +71,8 @@ defmodule Helyx.ModelContext.Default do
   file farther away are left out. Each build finds and reads the files
   again, so an edit to a context file takes effect at the next context
   build, unless a cap leaves out that file or the edited part of it.
-  `opts` can carry `:home` to override the home directory, for tests.
+  `opts` can carry `:home` to override the home directory and `:docs_root`
+  to override the Helyx root, for tests.
 
   See `docs/features/context-files.md`.
   """
@@ -47,7 +93,45 @@ defmodule Helyx.ModelContext.Default do
       |> Enum.flat_map(&first_regular/1)
       |> Enum.uniq_by(fn {_path, id} -> id end)
 
-    %{context | system: Enum.join([@base_prompt | nearest_within_cap(files)], "\n\n")}
+    root = opts[:docs_root] || @docs_root
+    docs = if File.regular?(Path.join(root, "README.md")), do: [docs_section(root)], else: []
+    sections = docs ++ [session_section(cwd, opts)]
+    %{context | system: Enum.join([@base_prompt | sections] ++ nearest_within_cap(files), "\n\n")}
+  end
+
+  defp docs_section(root) do
+    """
+    ## Helyx docs
+
+    #{@docs_rule}
+
+    #{line("Helyx root", root)}
+    #{line("README", Path.join(root, "README.md"))}
+    #{line("Feature docs", Path.join(root, "docs/features") <> "/")}
+    #{line("Decisions", Path.join(root, "docs/adr") <> "/")}
+
+    Topics, relative to the Helyx root:
+    #{@docs_topics}\
+    """
+  end
+
+  defp session_section(cwd, opts) do
+    """
+    ## This session
+
+    #{line("Working directory", cwd)}
+    #{line("Model", Helyx.ModelRef.to_string(Keyword.fetch!(opts, :model)))}
+    #{line("Session id", Keyword.fetch!(opts, :session_id))}
+    #{line("Session directory", opts[:session_dir] || "not saved")}\
+    """
+  end
+
+  # One value on one line, so a value cannot add lines to these sections or
+  # grow them without bound. The cap comes first: it drops invalid UTF-8,
+  # which the Unicode regex rejects, and the replace never adds bytes. `\R`
+  # is every Unicode line break, CRLF as one.
+  defp line(label, value) do
+    "#{label}: " <> String.replace(Helyx.Text.cap(value, @max_value_bytes, :head), ~r/\R/u, " ")
   end
 
   # The folders from the filesystem root down to cwd, both included.

@@ -32,6 +32,7 @@ defmodule Helyx.Session.Server.Prepare do
 
     opts =
       [turn_id: turn_id, model: turn.model, summary: state.summary, trigger: trigger] ++
+        [session_dir: if(state.file, do: Path.dirname(state.file.path))] ++
         [instructions: if(is_binary(turn.compact), do: turn.compact, else: "")] ++
         State.base_opts(state)
 
