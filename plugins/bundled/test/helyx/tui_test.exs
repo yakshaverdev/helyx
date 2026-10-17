@@ -1,21 +1,3 @@
-defmodule Helyx.TUI.Test.Tool.Slow do
-  @moduledoc false
-  # Sleeps, so a test can hold a turn open while it fills the queues.
-  @behaviour Helyx.Tool
-
-  @impl true
-  def name, do: "slow"
-  @impl true
-  def description, do: "Sleeps, then echoes."
-  @impl true
-  def parameters, do: %{"type" => "object"}
-  @impl true
-  def run(%{"ms" => ms, "text" => text}, _cwd) do
-    Process.sleep(ms)
-    {:ok, text}
-  end
-end
-
 defmodule Helyx.TUI.Test.Provider.Other do
   @moduledoc false
   # A second provider module, so a test can switch away from Fake and back.
@@ -623,7 +605,8 @@ defmodule Helyx.TUITest do
       composer: composer,
       busy: nil,
       location: "~",
-      quit: nil
+      quit: nil,
+      list: nil
     }
 
     :ok = ExRatatui.draw(terminal, TUI.render(state, %{width: 3, height: 5}))
@@ -785,7 +768,7 @@ defmodule Helyx.TUITest do
       event = %Event{
         type: type,
         session_id: "s",
-        instance_id: "i",
+        instance_id: state.instance_id,
         turn_id: "t",
         seq: 1,
         data: data

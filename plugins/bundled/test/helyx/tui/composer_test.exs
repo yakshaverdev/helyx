@@ -25,7 +25,7 @@ defmodule Helyx.TUI.ComposerTest do
         persisting: true
       })
 
-    %{vm: vm, composer: Composer.new(), scroll: nil, busy: nil}
+    %{vm: vm, composer: Composer.new(), scroll: nil, busy: nil, instance_id: "i", switch: nil}
   end
 
   defp press(state, code, modifiers \\ []) do

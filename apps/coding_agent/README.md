@@ -49,4 +49,4 @@ The footer shows no key hints, except "Ctrl+C again to quit" after a first Ctrl+
 | Drag in the transcript | Selects text and copies it to the clipboard with OSC 52, at most 75,000 bytes. The TUI takes the mouse, so the selection of the terminal does not work |
 | Ctrl+C | Clears the composer. A second Ctrl+C within 500 ms quits and restores the terminal |
 
-`/model provider/model` in the composer switches the model. A paste of more than 5 lines shows as one marker and is sent in full.
+`/model provider/model` in the composer switches the model. `/new` starts a new session in the folder, and `/resume` lists the other sessions of the folder: Up and Down select, Enter resumes, Escape closes. A paste of more than 5 lines shows as one marker and is sent in full.
