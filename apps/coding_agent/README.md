@@ -19,6 +19,7 @@ If `~/.local/bin` is not on your `PATH`, add it, for example with `export PATH="
 ```sh
 helyx [directory] [--model provider/model] [--resume]
 helyx --version          # the version and the commit of the build
+helyx --help             # the usage, the switches, and the exit statuses
 ```
 
 `directory` defaults to the current folder. `mix helyx` in `apps/coding_agent` takes the same arguments and runs the source tree. The design is in `docs/features/local-release.md`.
@@ -53,4 +54,4 @@ The footer shows no key hints, except "Ctrl+C again to quit" after a first Ctrl+
 | Ctrl+F | Finds text in the loaded transcript, case-insensitive: type the text, Enter or Up goes to the older match, Down to the newer one, Escape closes the search and keeps the view |
 | Ctrl+C | Clears the composer. A second Ctrl+C within 500 ms quits and restores the terminal |
 
-`/model provider/model` in the composer switches the model. `/new` starts a new session in the folder, and `/resume` lists the other sessions of the folder: Up and Down select, Enter resumes, Escape closes. A paste of more than 5 lines shows as one marker and is sent in full.
+`/help` in the composer lists the slash commands and these keys. `/model provider/model` switches the model. `/new` starts a new session in the folder, and `/resume` lists the other sessions of the folder: Up and Down select, Enter resumes, Escape closes. A paste of more than 5 lines shows as one marker and is sent in full.

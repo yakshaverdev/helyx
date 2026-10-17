@@ -1,16 +1,20 @@
 defmodule CodingAgent.CLI do
   @default_model "opencode-go/kimi-k2"
 
+  # The usage lines, for the moduledoc and `--help`.
+  @usage """
+  helyx [directory] [--model provider/model] [--resume]
+  helyx [directory] [--model provider/model | --resume] -p prompt
+  helyx --session id [-p prompt]
+  helyx --list [--all] [directory]
+  helyx --version | --help
+  """
+
   @moduledoc """
   The command line of the coding agent, for the `helyx` release and for
   `mix helyx`:
 
-      helyx [directory] [--model provider/model] [--resume] [--version]
-      helyx [directory] [--model provider/model | --resume] -p prompt
-      helyx --session id -p prompt
-      helyx --session id
-      helyx --list [--all] [directory]
-
+  #{String.replace(@usage, ~r/^/m, "    ")}
   `directory` is the session's working directory and defaults to the current
   one. `--model` defaults to `#{@default_model}`, which needs
   `OPENCODE_API_KEY`. `fake/echo` runs without a key. `--resume` continues
@@ -18,7 +22,8 @@ defmodule CodingAgent.CLI do
   `--session` the session with that id, in the folder of its header. Both
   keep the saved model, so they do not combine with `--model`. `--list`
   prints the sessions of the directory, or of every folder with `--all`,
-  one line each, newest first, and starts nothing. `-p` (`--print`) runs
+  one line each, newest first, and starts nothing. `--help` (`-h`) prints
+  the usage, the switches, and the exit statuses. `-p` (`--print`) runs
   the one prompt with no TUI (`CodingAgent.Print`), in a new session, or
   with `--resume` or `--session` in the session they pick. The
   design is in `docs/features/local-release.md`,
@@ -29,18 +34,31 @@ defmodule CodingAgent.CLI do
   alias Helyx.Session.File.Scan
   alias Helyx.TUI.SessionList
 
-  @options "the options are --model provider/model, --resume, --session id, --list, --all, " <>
-             "-p prompt, and --version"
-
+  # Each switch once, with its type, its form, and its help line: the parse,
+  # the option list of an error, and `--help` read this list.
   @switches [
-    model: :string,
-    resume: :boolean,
-    session: :string,
-    list: :boolean,
-    all: :boolean,
-    print: :string,
-    version: :boolean
+    model: {:string, "--model provider/model", "the model, default #{@default_model}"},
+    resume:
+      {:boolean, "--resume", "continue the newest session of the directory that has a message"},
+    session: {:string, "--session id", "continue the session with this id, in its folder"},
+    list: {:boolean, "--list", "print the sessions of the directory, newest first"},
+    all: {:boolean, "--all", "with --list, the sessions of every folder"},
+    print: {:string, "-p prompt", "run one prompt with no TUI and print the answer (--print)"},
+    version: {:boolean, "--version", "print the version"},
+    help: {:boolean, "--help", "print this help (-h)"}
   ]
+
+  @types for {name, {type, _form, _text}} <- @switches, do: {name, type}
+  @forms for {_name, {_type, form, _text}} <- @switches, do: form
+  @options "the options are #{Enum.join(Enum.drop(@forms, -1), ", ")}, and #{List.last(@forms)}"
+
+  @help """
+  usage: #{String.replace(@usage, "\nhelyx", "\n       helyx")}
+  options:
+  #{for {_name, {_type, form, text}} <- @switches, into: "", do: "  #{String.pad_trailing(form, 24)}#{text}\n"}
+  exit status: 0 on success and 1 on an error. With -p, 0 when the turn ends normally,
+  1 when it fails, is aborted, or stops at the output limit, 143 on SIGTERM, and 129 on SIGHUP.
+  """
 
   # The options that do not combine, with the reason. `:directory` is the
   # directory argument.
@@ -111,9 +129,11 @@ defmodule CodingAgent.CLI do
 
   defp start(argv, release_version, halt) do
     with {:ok, opts, args} <- parse(argv) do
-      if opts[:version],
-        do: IO.puts("helyx " <> version(release_version)),
-        else: start_agent(opts, args, halt)
+      cond do
+        opts[:help] -> IO.write(@help)
+        opts[:version] -> IO.puts("helyx " <> version(release_version))
+        true -> start_agent(opts, args, halt)
+      end
     end
   end
 
@@ -233,7 +253,7 @@ defmodule CodingAgent.CLI do
     if bad = Enum.find(argv, &(not String.valid?(&1))) do
       {:error, "an argument is not UTF-8: #{inspect(bad, binaries: :as_strings)}"}
     else
-      case OptionParser.parse(join_values(argv), strict: @switches, aliases: [p: :print]) do
+      case OptionParser.parse(join_values(argv), strict: @types, aliases: [p: :print, h: :help]) do
         {opts, args, []} ->
           {:ok, opts, args}
 
