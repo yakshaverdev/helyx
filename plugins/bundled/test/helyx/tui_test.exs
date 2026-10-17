@@ -383,7 +383,10 @@ defmodule Helyx.TUITest do
         turn: %{id: "t", partial: nil, elapsed_ms: 12_300},
         model: "fake/late",
         queue: %{steers: 0, follow_ups: 0, running: 0, held: 0, waiting: 0},
-        persisting: true
+        persisting: true,
+        more: false,
+        usage: %Helyx.Session.Totals{},
+        context: nil
       }
 
       # A session process that answers the subscribe with this snapshot.
@@ -394,7 +397,8 @@ defmodule Helyx.TUITest do
         send(test, :registered)
 
         receive do
-          {:"$gen_call", from, {:until, _, {:subscribe, _}}} -> GenServer.reply(from, snapshot)
+          {:"$gen_call", from, {:until, _, {:subscribe, _, nil}}} ->
+            GenServer.reply(from, snapshot)
         end
 
         Process.sleep(:infinity)

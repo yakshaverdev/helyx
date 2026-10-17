@@ -14,7 +14,7 @@ defmodule Helyx.TUI.Footer do
   alias ExRatatui.Style
   alias ExRatatui.Text.{Line, Span}
   alias ExRatatui.Widgets.Paragraph
-  alias Helyx.TUI.{Quit, SessionUsage, ViewModel}
+  alias Helyx.TUI.{Quit, ViewModel}
 
   @dim %Style{modifiers: [:dim]}
   @bad %Style{fg: :red}
@@ -236,8 +236,8 @@ defmodule Helyx.TUI.Footer do
       "#{div(n, unit)}.#{n |> rem(unit) |> Integer.to_string() |> String.pad_leading(places, "0")}"
 
   # At most 5 columns.
-  defp context(%ViewModel{model: model, usage: usage}) do
-    case SessionUsage.context_percent(usage, model) do
+  defp context(%ViewModel{model: model, context: context}) do
+    case context_percent(context, model) do
       nil -> []
       percent when percent > 999 -> [{">999%", @bad}]
       percent when percent > 90 -> [{"#{percent}%", @bad}]
@@ -245,6 +245,16 @@ defmodule Helyx.TUI.Footer do
       percent -> ["#{percent}%"]
     end
   end
+
+  # The context %: the estimate, `tokens` plus a quarter of the bytes after
+  # it, over the window. Nil unless both counts are known and the message of
+  # the estimate is of `model`, the current model: after a switch, the old
+  # window is not the window of the new model.
+  defp context_percent(%{model: model} = context, model)
+       when is_integer(context.tokens) and is_integer(context.window),
+       do: div((context.tokens + div(context.bytes, 4)) * 100, context.window)
+
+  defp context_percent(_context, _model), do: nil
 
   defp run_state(nil), do: "idle"
 

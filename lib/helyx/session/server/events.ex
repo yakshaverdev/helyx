@@ -7,7 +7,7 @@ defmodule Helyx.Session.Server.Events do
   # events tell of are written in `Helyx.Session.Server.Records`.
 
   alias Helyx.{Event, ModelRef}
-  alias Helyx.Session.{Queue, Snapshot, Turn}
+  alias Helyx.Session.{History, Queue, Snapshot, Totals, Turn}
   alias Helyx.Session.Server.{State, Wait}
 
   def subscribe(%State{} = state, pid) do
@@ -25,16 +25,27 @@ defmodule Helyx.Session.Server.Events do
     do: %{state | subscribers: Map.delete(subscribers, pid)}
 
   # The state of the session in one value (`Helyx.Session.Snapshot`), with
-  # the `seq` of its last event: a subscribe takes it in the same call.
-  def snapshot(%State{} = state) do
+  # the `seq` of its last event: a subscribe takes it in the same call. A
+  # nil `tail` gives the whole transcript.
+  def snapshot(%State{} = state, tail) do
+    {usage, context} = Totals.of(state.transcript)
+
+    page =
+      if tail,
+        do: History.cut(state.transcript, tail),
+        else: %{messages: state.transcript, more: false}
+
     %Snapshot{
       instance_id: state.instance_id,
       seq: state.seq,
-      messages: state.transcript,
+      messages: page.messages,
+      more: page.more,
       turn: turn(state.activity),
       model: ModelRef.to_string(state.model),
       queue: Queue.counts(state.queue),
-      persisting: state.file != nil
+      persisting: state.file != nil,
+      usage: usage,
+      context: context
     }
   end
 

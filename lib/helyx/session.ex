@@ -30,7 +30,7 @@ defmodule Helyx.Session do
   """
 
   alias Helyx.ModelRef
-  alias Helyx.Session.{Id, Input, Server, Snapshot, Transcript}
+  alias Helyx.Session.{Call, History, Id, Input, Server, Snapshot, Transcript}
   alias Helyx.Session.Server.State
 
   @enforce_keys [:id, :core]
@@ -203,21 +203,28 @@ defmodule Helyx.Session do
   ended can stay in the caller's mailbox; a client drops it by `instance_id`
   and `seq` once it has a snapshot. The other operations return
   `{:error, :session_not_found}` for such a session too.
+
+  With `tail: n`, `n` from 1 to 1,000, the snapshot holds the newest messages
+  only, cut before a user or an assistant message, and `history/4` gives the
+  older ones; any other option list is `{:error, :invalid_limit}`
+  (`docs/features/session-snapshot.md`, "Tail").
   """
-  @spec subscribe(t()) :: {:ok, Snapshot.t(), reference()} | {:error, :session_not_found}
-  def subscribe(%__MODULE__{} = session) do
-    case pid(session) do
-      nil -> {:error, :session_not_found}
+  @spec subscribe(t(), keyword()) ::
+          {:ok, Snapshot.t(), reference()} | {:error, :session_not_found | :invalid_limit}
+  def subscribe(%__MODULE__{} = session, opts \\ []) do
+    case {History.tail(opts), pid(session)} do
+      {{:error, _} = error, _pid} -> error
+      {_tail, nil} -> {:error, :session_not_found}
       # The monitor comes before the call, so the real exit reason of the
       # pid of the snapshot is never lost.
-      pid -> subscribe_pid(pid, Process.monitor(pid))
+      {{:ok, tail}, pid} -> subscribe_pid(pid, {:subscribe, self(), tail}, Process.monitor(pid))
     end
   end
 
   # On a failure the unsubscribe follows the call from this process to the
   # same pid, so a live session handles it after the subscribe.
-  defp subscribe_pid(pid, ref) do
-    case call_pid(pid, {:subscribe, self()}, @call_timeout_ms) do
+  defp subscribe_pid(pid, request, ref) do
+    case Call.call_pid(pid, request, @call_timeout_ms) do
       %Snapshot{} = snapshot ->
         {:ok, snapshot, ref}
 
@@ -226,7 +233,7 @@ defmodule Helyx.Session do
         {:error, :session_not_found}
     end
   catch
-    # `call_pid/3` lets only the timeout of a running session exit.
+    # `Call.call_pid/3` lets only the timeout of a running session exit.
     :exit, reason ->
       unsubscribe(pid, ref)
       :erlang.raise(:exit, reason, __STACKTRACE__)
@@ -235,6 +242,22 @@ defmodule Helyx.Session do
   defp unsubscribe(pid, ref) do
     Process.demonitor(ref, [:flush])
     send(pid, {:unsubscribe, self()})
+  end
+
+  @doc """
+  A page of the live transcript, unsaved messages and the results of a
+  resume too: the messages before the message with id `before`, oldest
+  first, with the cut of `subscribe/2` and `limit: n` (1 to 1,000, default
+  200) in place of `tail`. `next` is the id to pass for the page before it,
+  nil when `more` is false. A page changes no state of the session.
+  """
+  @spec history(t(), String.t(), String.t(), keyword()) ::
+          {:ok, History.history_page()}
+          | {:error, :session_not_found | :instance_changed | :unknown_message | :invalid_limit}
+  def history(%__MODULE__{} = session, instance_id, before, opts \\ [])
+      when is_binary(instance_id) and is_binary(before) do
+    with {:ok, limit} <- History.limit(opts),
+         do: call(session, {:history, instance_id, before, limit})
   end
 
   @doc """
@@ -370,30 +393,6 @@ defmodule Helyx.Session do
   @spec abort(t()) :: :ok | {:error, :session_not_found}
   def abort(%__MODULE__{} = session), do: call(session, :abort, :infinity)
 
-  # A call of the contract. The session is not running when no process has
-  # the id, or when the process is dead (the Registry drops its name
-  # asynchronously) or dies during the call. A timeout still exits, also
-  # for a session that stopped with the reason `:timeout` (ADR 0006).
-  defp call(session, request, timeout \\ @call_timeout_ms) do
-    case pid(session) do
-      nil -> {:error, :session_not_found}
-      pid -> call_pid(pid, request, timeout)
-    end
-  end
-
-  defp call_pid(pid, request, timeout) do
-    GenServer.call(pid, with_deadline(request, timeout), timeout)
-  catch
-    :exit, {:timeout, _call} = reason ->
-      :erlang.raise(:exit, reason, __STACKTRACE__)
-
-    :exit, {_reason, _call} ->
-      {:error, :session_not_found}
-  end
-
-  # The request with its deadline (session-lifecycle.md, "Late calls").
-  defp with_deadline(request, :infinity), do: request
-
-  defp with_deadline(request, timeout),
-    do: {:until, System.monotonic_time(:millisecond) + timeout, request}
+  defp call(session, request, timeout \\ @call_timeout_ms),
+    do: Call.call(session, request, timeout)
 end

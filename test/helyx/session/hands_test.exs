@@ -132,7 +132,13 @@ defmodule Helyx.Session.HandsTest do
     :ok = Helyx.Session.Hands.run(hands, "t1", call("c1", "hold", arguments))
     assert_receive {:waiting, release}
 
-    ref = Helyx.Session.Hands.start_provider(hands, Helyx.Test.Provider, & &1)
+    # A provider process runs until it is stopped; one that returned would
+    # end with a value that no provider gives.
+    ref =
+      Helyx.Session.Hands.start_provider(hands, Helyx.Test.Provider, fn _kill ->
+        Process.sleep(:infinity)
+      end)
+
     send(release, :go)
 
     # The hands send both, so the result of the call came first.

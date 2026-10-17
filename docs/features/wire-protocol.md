@@ -47,7 +47,7 @@ Every `req` gets one `res`: `ok: true` with the result, or `ok: false` with an e
 | `resume` | `{id}`, or `{cwd}` for the newest session of the folder | `{session}`; a session that runs is attached, not started again | `invalid_cwd`, `not_found`, `invalid_model_ref`, `unknown_provider`, `too_many_sessions`, `start_failed` |
 | `subscribe` | `{session, tail?, after?}`: `tail` from 1 to 1,000, default 200; `after` is `{instance_id, seq}` | `{sub, replay: [event]}` or `{sub, snapshot}` | `session_not_found`, `too_many_subscriptions` |
 | `unsubscribe` | `{sub}` | `{}` | `unknown_sub` |
-| `history` | `{session, instance_id, before, limit?}`: `before` is a message id; `limit` from 1 to 1,000, default 200 | `{messages: [message], more}`, oldest first, all older than `before` | `session_not_found`, `instance_changed`, `unknown_message` |
+| `history` | `{session, instance_id, before, limit?}`: `before` is a message id; `limit` from 1 to 1,000, default 200 | `{messages: [message], more, next}`, oldest first, all older than `before`; `next` is the `before` of the page before it, null when `more` is false | `session_not_found`, `instance_changed`, `unknown_message` |
 | `prompt`, `steer`, `follow_up` | `{session, text, origin?}`; `origin` is `{kind: "product", id}` | `{}` | `session_not_found`, `text_too_large`, `invalid_utf8`, `invalid_origin`, `queue_full`, and for `prompt` also `turn_running` |
 | `abort` | `{session}` | `{}`; a failed cleanup still gives `{}`, and the `notice` event "abort cleanup failed" tells the clients | `session_not_found` |
 | `set_model` | `{session, model}` | `{}`; the next turn uses it, a running turn keeps its model | `session_not_found`, `invalid_model_ref`, `unknown_provider` |
@@ -63,7 +63,7 @@ Every operation can also answer `unknown_op`, `bad_params`, `busy`, `timeout`, a
 
 ### Deadlines
 
-Past its deadline, an operation answers `timeout`: the outcome is unknown. The client does not send it again on its own (ADR 0006 §4). The worker of the request still counts against the 16 requests in flight until it ends, and its late result is dropped; a `subscribe` stops counting at its reply. A deadline covers the work of the request up to its result, not the encode and the write of the reply. One process writes each reply: the worker of the request, or for `subscribe` its subscription process. That process answers `timeout` itself when the Core call exits at its timeout, and `Helyx.Session.subscribe/1` then leaves no subscription and no monitor (`lib/helyx/session.ex:222-235`); the process ends after the reply, so a `subscribe` that answers `timeout` leaves no subscription.
+Past its deadline, an operation answers `timeout`: the outcome is unknown. The client does not send it again on its own (ADR 0006 §4). The worker of the request still counts against the 16 requests in flight until it ends, and its late result is dropped; a `subscribe` stops counting at its reply. A deadline covers the work of the request up to its result, not the encode and the write of the reply. One process writes each reply: the worker of the request, or for `subscribe` its subscription process. That process answers `timeout` itself when the Core call exits at its timeout, and `Helyx.Session.subscribe/1` then leaves no subscription and no monitor (`lib/helyx/session.ex:225-239`); the process ends after the reply, so a `subscribe` that answers `timeout` leaves no subscription.
 
 | Operation | Deadline | Why |
 |---|---|---|
@@ -88,7 +88,7 @@ Past its deadline, an operation answers `timeout`: the outcome is unknown. The c
 - **Tail snapshot.** The newest messages of the transcript, at most `tail` of them and at most 16,777,216 bytes of message content, each message counted by `:erlang.external_size/1`. Then the cut moves to newer messages until the first message is a user or an assistant message, so an assistant message and its tool results stay together. When that leaves no message, the tail is the newest group alone: the last user or assistant message and the messages after it, whatever their count and size. `more` is true when older messages exist.
 - **The state in the snapshot.** The snapshot has the full current state, whatever its tail: `turn` with its partial, `model`, `queue`, `persisting`, `seq`, `usage`, and `context`. `usage` and `context` count every message of the transcript, not only the tail. The client then adds each message that a later `message_end` or `tool_execution_end` carries, with the rule of `docs/features/usage-and-limits.md`, "The footer". It adds no message of a `history` page: a page changes neither `usage` nor `context`, and it does not move `seq`.
 - **The rule of ADR 0006 §3, revised.** The snapshot at `seq` equals the loaded suffix of the transcript folded from every event up to `seq`, plus the full current state. The notices stay out, as before: "aborted", "error: …", harness notices, "resumed session". `persisting: false` still makes the not-saved text.
-- **History.** `history` serves the live transcript of the session, not the file, so it holds the unsaved messages and the interrupted results of a resume. It returns the messages before `before`, with the limits and the cut of the tail, `limit` in place of `tail`. `instance_changed` means that the session started again: the client subscribes again for a new snapshot.
+- **History.** `history` serves the live transcript of the session, not the file, so it holds the unsaved messages and the interrupted results of a resume. It returns the messages before `before`, with the limits and the cut of the tail, `limit` in place of `tail`, and the explicit cursor `next`: the id of the first message of the page while `more` is true, else null. The cursor of the tail snapshot is the id of its first message. `instance_changed` means that the session started again: the client subscribes again for a new snapshot.
 - **Replay.** `subscribe` with `after` returns the events after `seq` from the replay ring, contiguous, then the live events follow with no gap and no duplicate. When `instance_id` is not the current instance, the events after `seq` are no longer all in the ring, or `seq` is above the last event, the result is a tail snapshot instead, with `tail` of the request.
 
 ### Codec
@@ -161,7 +161,7 @@ result.sessions.saved = {items: [saved_session], next: string | null}
 result.start          = {session: string}
 result.resume         = {session: string}
 result.subscribe      = {sub: string, replay: [event]} | {sub: string, snapshot: snapshot}
-result.history        = {messages: [message], more: bool}
+result.history        = {messages: [message], more: bool, next: string | null}
 result.unsubscribe, result.prompt, result.steer, result.follow_up,
 result.abort, result.set_model, result.compact, result.stop = {}
 
@@ -238,7 +238,7 @@ Notes on the codec:
 
 ## Replaced mechanism
 
-1. **The full snapshot of every subscribe** (`Events.snapshot/1`, `lib/helyx/session/server/events.ex:29-39`). A wire subscribe gets a tail snapshot with the usage totals and the context state as fields (#658). `Helyx.Session.subscribe/1` with no `tail` keeps the full snapshot for a client in the node until #662.
+1. **The full snapshot of every subscribe** (`Events.snapshot/1` before #658). A wire subscribe gets a tail snapshot with the usage totals and the context state as fields (#658). `Helyx.Session.subscribe/1` with no `tail` keeps the full snapshot for a client in the node until #662.
 2. **Reconnect with a new full snapshot** (ADR 0006 §3). Replaced by the replay ring and `after` (#659). The new snapshot still replaces all client state when the ring cannot serve the interval.
 3. **The end signal as a `:DOWN`** (`docs/features/end-signal.md`). It stays for a client in the node. On the wire, the subscription process turns the `:DOWN` into `session_end`; it is the one process that sees both the events of the session and the `:DOWN`, and the session sends its last event before it dies, so `session_end` comes last (O5).
 4. **`send/2` with no bound** (`events.ex:66`). Replaced by the credits (#659); the `:slow` end is a new item of the closed list of ADR 0006 §2.

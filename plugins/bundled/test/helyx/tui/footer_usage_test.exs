@@ -44,7 +44,10 @@ defmodule Helyx.TUI.FooterUsageTest do
     snapshot(Enum.map(decoded, &Codec.decode/1), model)
   end
 
+  # The totals of the snapshot come from the session's fold.
   defp snapshot(messages, model) do
+    {usage, context} = Helyx.Session.Totals.of(messages)
+
     ViewModel.from_snapshot(%Snapshot{
       instance_id: "i",
       seq: 0,
@@ -52,7 +55,10 @@ defmodule Helyx.TUI.FooterUsageTest do
       turn: nil,
       model: model,
       queue: %{steers: 0, follow_ups: 0, running: 0, held: 0, waiting: 0},
-      persisting: true
+      persisting: true,
+      more: false,
+      usage: usage,
+      context: context
     })
   end
 
@@ -239,6 +245,65 @@ defmodule Helyx.TUI.FooterUsageTest do
     test "no message, or only nil usages: no cost field and no token field" do
       assert row([]) == "#{@model} · idle"
       assert row([Message.user("one"), assistant(nil), Message.user("two")]) == "#{@model} · idle"
+    end
+  end
+
+  describe "a tail snapshot (#658)" do
+    # The totals come from the snapshot fields, which count every message
+    # of the transcript; a snapshot message adds nothing to them.
+    test "a tail without the usage shows the totals of the whole transcript" do
+      costly =
+        assistant(
+          usage(
+            input: 100,
+            output: 10,
+            cost: 0.5,
+            cost_kind: :list,
+            context_tokens: 40,
+            context_window: 100
+          )
+        )
+
+      messages = [Message.user("one"), costly, Message.user("two")]
+      {usage, context} = Helyx.Session.Totals.of(messages)
+
+      tail =
+        ViewModel.from_snapshot(%Snapshot{
+          instance_id: "i",
+          seq: 0,
+          messages: [Message.user("two")],
+          more: true,
+          turn: nil,
+          model: @model,
+          queue: %{steers: 0, follow_ups: 0, running: 0, held: 0, waiting: 0},
+          persisting: true,
+          usage: usage,
+          context: context
+        })
+
+      assert text(tail) == row(messages)
+
+      # A later message adds once, as on the live path.
+      later = assistant(usage(input: 1, cost: 0.25, cost_kind: :list))
+      live_row = text(live(messages ++ [later], @model))
+      assert text(fold(tail, [event(:message_end, %{message: later})])) == live_row
+
+      # The snapshot messages add nothing: a full snapshot with zero fields
+      # shows no usage.
+      empty = %Snapshot{
+        instance_id: "i",
+        seq: 0,
+        messages: messages,
+        more: false,
+        turn: nil,
+        model: @model,
+        queue: %{steers: 0, follow_ups: 0, running: 0, held: 0, waiting: 0},
+        persisting: true,
+        usage: %Helyx.Session.Totals{},
+        context: nil
+      }
+
+      assert text(ViewModel.from_snapshot(empty)) == "#{@model} · idle"
     end
   end
 

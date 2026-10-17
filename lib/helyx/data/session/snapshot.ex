@@ -1,7 +1,7 @@
 defmodule Helyx.Session.Snapshot do
   @moduledoc """
-  The state of a session at one event, as `Helyx.Session.subscribe/1`
-  returns it.
+  The state of a session at one event, as `Helyx.Session.subscribe/2`
+  returns it (`docs/features/session-snapshot.md`).
 
     * `instance_id` – the id of the session instance. A client that
       reconnects drops each event with another `instance_id`: a resume keeps
@@ -10,7 +10,11 @@ defmodule Helyx.Session.Snapshot do
     * `seq` – the seq of the last event sent before the snapshot, 0 if none.
       A client that reconnects drops each later event with a `seq` at or
       below it.
-    * `messages` – the transcript, oldest first.
+    * `messages` – the transcript, oldest first, or with `tail` its
+      newest messages, cut before a user or an assistant message.
+    * `more` – true when older messages are not in `messages`; their
+      pages come from `Helyx.Session.history/4`, the first with the id of
+      the first message of `messages`.
     * `turn` – nil, or the running turn: its `id`, the assistant message
       so far as `partial` (nil before the first stream event), and
       `elapsed_ms`, the milliseconds since the turn started, by the clock
@@ -26,14 +30,28 @@ defmodule Helyx.Session.Snapshot do
       say why. A client that tells the user shows
       `Helyx.Reason.text(:not_saved)`; then a stop before its subscribe
       reaches it too (`docs/features/session-lock.md`).
+    * `usage` and `context` – the totals and the context state of every
+      message of the transcript, also of those that a tail leaves out
+      (`Helyx.Session.Totals`).
 
   A client works with one Helyx version and is a tolerant reader within it:
   it ignores an unknown event type and an unknown field (ADR 0006, revision
   of 2026-10-03, `docs/adr/0006-client-contract.md`).
   """
 
-  @enforce_keys [:instance_id, :seq, :messages, :turn, :model, :queue, :persisting]
-  defstruct [:instance_id, :seq, :messages, :turn, :model, :queue, :persisting]
+  @enforce_keys [
+    :instance_id,
+    :seq,
+    :messages,
+    :more,
+    :turn,
+    :model,
+    :queue,
+    :persisting,
+    :usage,
+    :context
+  ]
+  defstruct @enforce_keys
 
   @type turn :: %{
           id: String.t(),
@@ -45,6 +63,7 @@ defmodule Helyx.Session.Snapshot do
           instance_id: String.t(),
           seq: non_neg_integer(),
           messages: [Helyx.Message.t()],
+          more: boolean(),
           turn: turn() | nil,
           model: String.t(),
           queue: %{
@@ -54,6 +73,8 @@ defmodule Helyx.Session.Snapshot do
             held: non_neg_integer(),
             waiting: non_neg_integer()
           },
-          persisting: boolean()
+          persisting: boolean(),
+          usage: Helyx.Session.Totals.t(),
+          context: Helyx.Session.Totals.context() | nil
         }
 end

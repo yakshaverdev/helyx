@@ -27,7 +27,7 @@ defmodule Helyx.Session.LateCallTest do
     other = spawn(fn -> Process.sleep(:infinity) end)
     now = System.monotonic_time(:millisecond)
     request = :gen_server.send_request(pid, {:until, now, prompt})
-    subscribe = :gen_server.send_request(pid, {:until, now, {:subscribe, other}})
+    subscribe = :gen_server.send_request(pid, {:until, now, {:subscribe, other, nil}})
     state = :sys.get_state(pid)
     assert Map.keys(state.subscribers) == [self()]
     assert state.activity == :idle
