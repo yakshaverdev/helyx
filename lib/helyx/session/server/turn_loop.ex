@@ -57,12 +57,8 @@ defmodule Helyx.Session.Server.TurnLoop do
   # The reply of the turn's running prepare Task, at the turn start
   # (`preparing`) or for a context request (`submitted`, C1-C4,
   # `one-provider-path.md`).
-  def handle(
-        {_ref, {:prepared, turn_id, result}},
-        %State{activity: %Turn{id: turn_id, prepare: pid}} = state
-      )
-      when pid != nil,
-      do: Prepare.prepared(state, result)
+  def handle({ref, {:prepared, result}}, %State{activity: %Turn{prepare: {ref, _, _}}} = state),
+    do: Prepare.prepared(state, result)
 
   # A context request (C1-C4) comes after the events before it, and is
   # answered as a tool result is: only for the submitted turn with no
@@ -160,8 +156,11 @@ defmodule Helyx.Session.Server.TurnLoop do
   # The end of the turn's prepare Task before its context: it raised,
   # exited, or was killed at its bound (`:context_timeout`). A Task that
   # sent its context is no longer `Turn.prepare`: its `:DOWN` comes after.
-  def handle({:DOWN, _ref, :process, pid, reason}, %State{activity: %Turn{prepare: pid}} = state),
-    do: Prepare.prepared(state, {:error, Prepare.down_reason(reason)})
+  def handle(
+        {:DOWN, _ref, :process, pid, reason},
+        %State{activity: %Turn{prepare: {_task_ref, pid, _messages}}} = state
+      ),
+      do: Prepare.prepared(state, {:error, Prepare.down_reason(reason)})
 
   # A message for a turn or a provider process that is no longer current,
   # or a reply that nobody waits for. The `:DOWN` of a provider process
@@ -171,7 +170,7 @@ defmodule Helyx.Session.Server.TurnLoop do
   def handle({:stream_event, _id, :turn_start}, state), do: state
   def handle({:stream_end, _turn_id, _terminal}, state), do: state
   def handle({:provider_ready, _pid}, state), do: state
-  def handle({_ref, {:prepared, _turn_id, _result}}, state), do: state
+  def handle({_ref, {:prepared, _result}}, state), do: state
   def handle({:need_context, _turn_id, _why}, state), do: state
   def handle({:provider_reply, _from, _kind, _reply}, state), do: state
   def handle({:timeout, _ref, :idle_close}, state), do: state

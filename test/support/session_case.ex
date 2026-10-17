@@ -72,8 +72,8 @@ defmodule Helyx.Test.SessionCase do
     if file, do: Helyx.Test.SessionFile.await_lock_free(file.path)
   end
 
-  # The messages in the mailbox now, in order.
-  def mailbox, do: elem(Process.info(self(), :messages), 1)
+  # The messages in the mailbox of `pid` now, in order.
+  def mailbox(pid \\ self()), do: elem(Process.info(pid, :messages), 1)
 
   # Polls a condition every 10 ms, by default for the cap of a wait. Only
   # for a state that no process tells by a message: a Registry entry, a

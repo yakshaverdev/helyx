@@ -22,10 +22,11 @@ defmodule Helyx.Session.Server.Prepare do
   # context request, after a summary (`trigger` nil), and in a compaction
   # turn that the provider did not run (`:manual`). The session owns it: a
   # child of the task supervisor, monitored before it runs, so a raise is
-  # never `:noproc` (#562), its pid in `Turn.prepare`, killed at the turn
-  # end. Its kill at `deadline_ms.prepare` is armed as its first act, before any
-  # plugin code. A compaction turn has no context at its start: it submits
-  # at once. Only a model provider gets a summary (`summary-compaction.md`).
+  # never `:noproc` (#562), its ref and pid in `Turn.prepare` with the
+  # messages it got, killed at the turn end. Its kill at
+  # `deadline_ms.prepare` is armed as its first act, before any plugin
+  # code. A compaction turn has no context at its start: it submits at
+  # once. Only a model provider gets a summary (`summary-compaction.md`).
   def start(%State{activity: %Turn{compact: text, phase: :preparing}} = state, _trigger)
       when is_binary(text),
       do: TurnLoop.submit(state)
@@ -49,7 +50,7 @@ defmodule Helyx.Session.Server.Prepare do
     recall_opts = [turn_id: turn_id, instance_id: state.instance_id, recall_ms: recall_ms]
     recall_opts = recall_opts ++ State.base_opts(state)
 
-    %Task{pid: pid} =
+    %Task{pid: pid, ref: ref} =
       Task.Supervisor.async_nolink(Helyx.Core.task_supervisor(state.core), fn ->
         {:ok, tref} = :timer.kill_after(ms)
         started = System.monotonic_time(:millisecond)
@@ -64,17 +65,31 @@ defmodule Helyx.Session.Server.Prepare do
                do: {:ok, built, recall}
 
         :timer.cancel(tref)
-        {:prepared, turn_id, result}
+        {:prepared, base(result, context.messages)}
       end)
 
-    put_in(state.activity.prepare, pid)
+    put_in(state.activity.prepare, {ref, pid, context.messages})
   end
+
+  # Messages that the plugins kept go back as `:base`: the session has
+  # them (`session-lifecycle.md`). A kept list is the same term, so its
+  # match compares two pointers.
+  defp base({:ok, %Context{messages: messages} = built, recall}, messages),
+    do: {:ok, %{built | messages: :base}, recall}
+
+  defp base(result, _messages), do: result
 
   # The checked context (`Stream.prepare/4`), or the error of the prepare
   # Task: a plugin that returned anything else, or a Task that died. A
   # plan starts the summary call. In `preparing` an error fails the turn; a
   # context request gets it as the answer. A compaction turn ends with the
   # notice when the plugin made no summary.
+  def prepared(
+        %State{activity: %Turn{prepare: {_ref, _pid, messages}}} = state,
+        {:ok, %Context{messages: :base} = context, recall}
+      ),
+      do: prepared(state, {:ok, %{context | messages: messages}, recall})
+
   def prepared(%State{activity: %Turn{} = turn} = state, {:summarize, plan}),
     do: Summary.start(%{state | activity: %{turn | prepare: nil}}, plan)
 

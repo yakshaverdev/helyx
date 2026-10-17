@@ -5,7 +5,7 @@ defmodule Helyx.Session.ProviderProcessTest do
   use ExUnit.Case, async: true
 
   import Helyx.Test.Events
-  import Helyx.Test.SessionCase, only: [await_down: 3, final_text: 1]
+  import Helyx.Test.SessionCase, only: [await_down: 3, final_text: 1, mailbox: 1]
 
   alias Helyx.{Message, Session}
   alias Helyx.Session.Server.Wait
@@ -92,8 +92,8 @@ defmodule Helyx.Session.ProviderProcessTest do
   # The pid of the prepare Task of the session's turn, or nil.
   defp prepare_task(pid) do
     case :sys.get_state(pid).activity do
-      %Helyx.Session.Turn{prepare: task} -> task
-      _idle_or_wait -> nil
+      %Helyx.Session.Turn{prepare: {_ref, task, _messages}} -> task
+      _no_task -> nil
     end
   end
 
@@ -1067,6 +1067,50 @@ defmodule Helyx.Session.ProviderProcessTest do
       assert Message.text(last) == "fresh"
       assert List.last(collect_until(:turn_end)).data.outcome == :done
       assert Process.alive?(proc)
+    end
+
+    # The context holds the messages that the plugins saw, not the
+    # transcript at the reply (#728).
+    test "a steer that joins while the context builds is not in the context that the plugins kept",
+         %{core: core} do
+      {session, pid, proc, turn_id} = context_turn(core)
+      send(proc, {:need_context, turn_id, "hold_prepare"})
+      wait_until(fn -> prepare_task(pid) != nil end)
+
+      :ok = Session.steer(session, "more")
+      assert_receive {:conn, :steer, ^proc, {:steer, ^turn_id, steer_id, "more"}}
+      send(proc, {:batch, [{:event, turn_id, {:user_message, steer_id}}]})
+      wait_until(fn -> Message.text(List.last(:sys.get_state(pid).transcript)) == "more" end)
+      send(prepare_task(pid), :continue)
+
+      assert_receive {:conn, :context, ^proc, {:context, ^turn_id, {:ok, context}}}
+      assert context.system == "prepared"
+      assert Message.text(List.last(context.messages)) == "hold_prepare"
+      assert List.last(collect_until(:turn_end)).data.outcome == :done
+    end
+
+    # The session is suspended, so the reply of the old build comes after
+    # the context request of a new turn with the same id (#728).
+    test "a late reply of an ended turn's build is dropped by a new turn with the same id",
+         %{core: core} do
+      {_session, pid, proc, turn_id} = context_turn(core, "context_hold")
+      send(proc, {:need_context, turn_id, "hold_prepare"})
+      wait_until(fn -> prepare_task(pid) != nil end)
+      old = prepare_task(pid)
+
+      :erlang.suspend_process(pid)
+      text = {:text_delta, "block_prepare"}
+      next = [:turn_start, text, {:message_end, :end_turn, nil}]
+      events = for event <- [@done | next], do: {:event, turn_id, event}
+      send(proc, {:batch, events ++ [{:need_context, turn_id}]})
+      wait_until(fn -> Enum.any?(mailbox(pid), &(&1 == {:need_context, turn_id})) end)
+      send(old, :continue)
+      wait_until(fn -> Enum.any?(mailbox(pid), &match?({_ref, {:prepared, _}}, &1)) end)
+      :erlang.resume_process(pid)
+
+      assert_receive {:preparing, new}
+      assert new != old
+      assert prepare_task(pid) == new
     end
 
     test "an interrupt during a context request kills its build; no context comes, and the next turn asks again",

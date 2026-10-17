@@ -88,7 +88,11 @@ defmodule Helyx.Session.Server.Stop do
   # process, also one that ends (an idle close, a switch close, an abort),
   # to close. A start with no answer yet has no pid: its process ends with
   # the hands.
-  defp work(%State{activity: %Turn{prepare: pid}}), do: %{kill: List.wrap(pid), close: []}
+  defp work(%State{activity: %Turn{prepare: {_ref, pid, _messages}}}),
+    do: %{kill: [pid], close: []}
+
+  # A turn with no prepare Task: the hands take its provider process.
+  defp work(%State{activity: %Turn{}}), do: %{kill: [], close: []}
   defp work(%State{conn: %ProviderConn{pid: pid}}) when pid != nil, do: %{kill: [], close: [pid]}
   defp work(_state), do: %{kill: [], close: []}
 end
