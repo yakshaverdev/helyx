@@ -362,6 +362,37 @@ defmodule Helyx.TUI.FooterUsageTest do
       assert text(snapshot([old], "b/y")) == "b/y · idle · in 1 out 0 · cache 0% · $?"
     end
 
+    # #697: the totals stay, the estimate takes the tokens after. A
+    # compaction is an event, not a message, so this test folds the live
+    # path only: a snapshot of the same messages keeps the last usage.
+    test "a compaction sets the estimate to its tokens after, else hides the %" do
+      row = "#{@model} · idle · in 1 out 0 · cache 0% · $?"
+      vm = live([at(92)], @model)
+      assert text(vm) == row <> " · 92%"
+
+      compacted = fn vm, before, after_ ->
+        data = %{trigger: :manual, tokens_before: before, tokens_after: after_}
+        fold(vm, [event(:compaction, data)])
+      end
+
+      vm = compacted.(vm, 92, 4)
+      assert text(vm) == row <> " · 4%"
+      assert text(snapshot([at(92)], @model)) == row <> " · 92%"
+      # The bytes after the compaction count again.
+      vm = fold(vm, [event(:message_end, %{message: Message.user(String.duplicate("u", 40))})])
+      assert text(vm) == row <> " · 14%"
+
+      vm = compacted.(vm, 14, nil)
+      assert text(vm) == row
+      assert text(fold(vm, [event(:message_end, %{message: assistant(%Usage{})})])) == row
+
+      fresh = fold(vm, [event(:message_end, %{message: at(20)})])
+      assert text(fresh) == "#{@model} · idle · in 2 out 0 · cache 0% · $? · 20%"
+
+      # Before any estimate a compaction leaves it nil.
+      assert compacted.(view_model([], @model), 10, 4).context == nil
+    end
+
     test "a usage with nil context tokens keeps the estimate and adds its bytes" do
       text = assistant(%Usage{}, @model, [%Message.Text{text: String.duplicate("t", 40)}])
       assert row([at(10), text]) == "#{@model} · idle · in 1 out 0 · cache 0% · $? · 20%"

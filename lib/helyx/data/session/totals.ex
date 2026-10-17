@@ -14,7 +14,8 @@ defmodule Helyx.Session.Totals do
   its `context_window` as `window`, the model of its message, and the bytes
   of the text, the thinking, and the tool calls of the messages after it.
   The summary compaction plugin estimates with the same rule
-  (`docs/features/summary-compaction.md`). The sums grow with the transcript; a
+  (`docs/features/summary-compaction.md`). A client sets the tokens of
+  the estimate at a compaction with `compacted/2`. The sums grow with the transcript; a
   client shows them in capped forms.
   """
 
@@ -87,6 +88,15 @@ defmodule Helyx.Session.Totals do
 
   def context(context, %Message{content: content}),
     do: %{context | bytes: Enum.reduce(content, context.bytes, &(bytes(&1) + &2))}
+
+  @doc """
+  The context state after a compaction: the tokens become `tokens_after`
+  with no bytes after them, nil when it is unknown, and the window and the
+  model stay. With no estimate it stays nil.
+  """
+  @spec compacted(context() | nil, non_neg_integer() | nil) :: context() | nil
+  def compacted(nil, _tokens_after), do: nil
+  def compacted(context, tokens_after), do: %{context | tokens: tokens_after, bytes: 0}
 
   defp add_cost(totals, %{cost: nil}), do: %{totals | unknown: true}
 
