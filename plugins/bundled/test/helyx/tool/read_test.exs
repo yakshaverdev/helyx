@@ -17,6 +17,24 @@ defmodule Helyx.Tool.ReadTest do
     }
   end
 
+  test "is the only concurrent bundled tool; the tools that write are not (#734)" do
+    {:ok, modules} = :application.get_key(:helyx_plugins, :modules)
+
+    tools =
+      for module <- modules,
+          Code.ensure_loaded!(module),
+          Helyx.Tool in Helyx.Interface.implemented_by(module),
+          do: {module, %{name: module.name()}}
+
+    names = MapSet.new(tools, fn {_module, spec} -> spec.name end)
+    assert MapSet.subset?(MapSet.new(["bash", "edit", "memory_write", "read", "write"]), names)
+    assert Helyx.Tool.concurrent(tools) == MapSet.new(["read"])
+
+    assert for({m, _} <- tools, function_exported?(m, :concurrent?, 0), do: m) == [
+             Helyx.Tool.Read
+           ]
+  end
+
   test "returns the content of a file relative to the working directory", %{
     tmp_dir: dir,
     run: run

@@ -274,7 +274,11 @@ defmodule Helyx.Session.LockTest do
 
     {caller, _ref} =
       spawn_monitor(fn ->
-        send(test, {:started, Helyx.Session.Server.start(state, tools, open)})
+        send(
+          test,
+          {:started,
+           Helyx.Session.Server.start(state, {tools, Helyx.Tool.concurrent(tools)}, open)}
+        )
       end)
 
     assert_receive {:in_open, pid}
@@ -451,7 +455,7 @@ defmodule Helyx.Session.LockTest do
     open = {path, fn _state -> raise "open" end}
 
     assert {:error, {%RuntimeError{message: "open"}, [_ | _]}} =
-             Helyx.Session.Server.start(state, tools, open)
+             Helyx.Session.Server.start(state, {tools, Helyx.Tool.concurrent(tools)}, open)
 
     await_lock_free(path, "the lock of the crashed session to free")
   end

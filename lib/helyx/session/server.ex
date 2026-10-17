@@ -142,12 +142,13 @@ defmodule Helyx.Session.Server do
   def handle_info({:tool_result, turn_id, call_id, {:started, text}}, state),
     do: handle_info({:tool_result, turn_id, call_id, {:ok, text}}, Steering.started(state))
 
-  # The hands' result of the running Helyx tool.
+  # The hands' result of a running Helyx tool.
   def handle_info(
         {:tool_result, turn_id, call_id, result},
-        %State{activity: %Turn{id: turn_id, tool_queue: %{running: call_id}}} = state
-      ),
-      do: {:noreply, ToolRuns.result(state, result)}
+        %State{activity: %Turn{id: turn_id, tool_queue: %{running: running}}} = state
+      )
+      when is_map_key(running, call_id),
+      do: {:noreply, ToolRuns.result(state, call_id, result)}
 
   # The end of a background run (docs/features/background-bash.md): a
   # steer in a submitted turn, else it waits; an idle session with no hold

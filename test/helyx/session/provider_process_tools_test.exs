@@ -18,6 +18,7 @@ defmodule Helyx.Session.ProviderProcessToolsTest do
       Helyx.Test.PrepareContext,
       Helyx.Test.Tool.Upcase,
       Helyx.Test.Tool.Slow,
+      Helyx.Test.Tool.Together,
       Helyx.Test.Tool.Background
     ]
 
@@ -29,6 +30,20 @@ defmodule Helyx.Session.ProviderProcessToolsTest do
     assert_receive {:conn, :turn, proc, {:turn, turn_id, _context}}
     hands = :sys.get_state(Session.pid(session)).hands
     %{core: core, session: session, proc: proc, turn_id: turn_id, hands: hands}
+  end
+
+  defp together(proc, turn_id, id, gate, args \\ %{}),
+    do: request(proc, turn_id, id, "together", Map.merge(%{"gate" => gate, "text" => id}, args))
+
+  # The run pids of `n` calls that wait at their gate, all at once.
+  defp waiting(n), do: for(_ <- 1..n, do: assert_receive({:waiting, run}) && run)
+
+  # The running and waiting call ids of the session's queue.
+  defp queue(session) do
+    %{running: running, waiting: waiting} =
+      :sys.get_state(Session.pid(session)).activity.tool_queue
+
+    {Enum.sort(Map.keys(running)), Enum.map(waiting, &elem(&1, 0).id)}
   end
 
   defp request(proc, turn_id, id, name, args),
@@ -90,6 +105,135 @@ defmodule Helyx.Session.ProviderProcessToolsTest do
              {"c1", {:ok, "c1"}},
              {"c2", {:ok, "B"}}
            ]
+  end
+
+  describe "concurrent calls (docs/features/concurrent-tool-calls.md)" do
+    # Each run waits at the gate, so all of them wait at once only when
+    # they overlap: the proof is the order of the messages, not a clock.
+    test "two calls of a concurrent tool run at the same time",
+         %{proc: proc, turn_id: turn_id} do
+      gate = gate()
+      together(proc, turn_id, "a1", gate)
+      together(proc, turn_id, "a2", gate)
+
+      for run <- waiting(2), do: send(run, :go)
+      results = Enum.sort([receive_result(), receive_result()])
+
+      assert [{:tool_result, _, "a1", {:ok, "a1"}}, {:tool_result, _, "a2", {:ok, "a2"}}] =
+               results
+    end
+
+    test "a serial call waits for the running calls, and the calls after it wait for it",
+         %{session: session, proc: proc, turn_id: turn_id} do
+      gate = gate()
+      together(proc, turn_id, "a1", gate)
+      together(proc, turn_id, "a2", gate)
+      request(proc, turn_id, "s", "slow", %{"gate" => gate, "text" => "s"})
+      together(proc, turn_id, "a3", gate)
+      # The two runs report from two processes, in any order.
+      [r1, r2] = waiting(2)
+      sync(proc, session)
+      assert queue(session) == {["a1", "a2"], ["s", "a3"]}
+
+      send(r1, :go)
+      assert {:tool_result, _, first, {:ok, _}} = receive_result()
+      [second] = ["a1", "a2"] -- [first]
+      sync(proc, session)
+      assert queue(session) == {[second], ["s", "a3"]}
+
+      send(r2, :go)
+      assert {:tool_result, _, ^second, {:ok, _}} = receive_result()
+      [s] = waiting(1)
+      sync(proc, session)
+      assert queue(session) == {["s"], ["a3"]}
+
+      send(s, :go)
+      assert {:tool_result, _, "s", {:ok, "s"}} = receive_result()
+      [r3] = waiting(1)
+      send(r3, :go)
+      assert {:tool_result, _, "a3", {:ok, "a3"}} = receive_result()
+    end
+
+    test "at most 8 run at once; the 9th starts at the first result",
+         %{session: session, proc: proc, turn_id: turn_id} do
+      gate = gate()
+      ids = for i <- 1..9, do: "a#{i}"
+      for id <- ids, do: together(proc, turn_id, id, gate)
+      [first | runs] = waiting(8)
+      sync(proc, session)
+      {running, ["a9"]} = queue(session)
+      assert length(running) == 8
+
+      send(first, :go)
+      assert {:tool_result, _, _, {:ok, _}} = receive_result()
+      [ninth] = waiting(1)
+      for run <- [ninth | runs], do: send(run, :go)
+      assert length(for(_ <- 1..8, do: receive_result())) == 8
+    end
+
+    test "a failure of one of three does not stop the others",
+         %{proc: proc, turn_id: turn_id} do
+      gate = gate()
+      together(proc, turn_id, "a1", gate)
+      request(proc, turn_id, "a2", "together", %{"fail" => "boom"})
+      together(proc, turn_id, "a3", gate)
+
+      assert {:tool_result, _, "a2", {:error, "boom"}} = receive_result()
+      for run <- waiting(2), do: send(run, :go)
+      results = Enum.sort([receive_result(), receive_result()])
+
+      assert [{:tool_result, _, "a1", {:ok, "a1"}}, {:tool_result, _, "a3", {:ok, "a3"}}] =
+               results
+    end
+
+    test "an abort with three running and one waiting ends each, answers each aborted, and releases each",
+         %{core: core, session: session, proc: proc, turn_id: turn_id, hands: hands} do
+      gate = gate()
+      report = %{"report" => Atom.to_string(Connected.controller(core))}
+      for id <- ["a1", "a2", "a3"], do: together(proc, turn_id, id, gate, report)
+      request(proc, turn_id, "s", "slow", %{"gate" => gate, "text" => "s"})
+      runs = waiting(3)
+      sync(proc, session)
+      assert queue(session) == {["a1", "a2", "a3"], ["s"]}
+
+      :ok = Session.abort(session)
+      requests = requests_until(:interrupt)
+      {results, [{:interrupt, ^turn_id}]} = Enum.split(Enum.take(requests, -5), 4)
+
+      assert Enum.sort(for {:tool_result, ^turn_id, id, {:error, "aborted"}} <- results, do: id) ==
+               ["a1", "a2", "a3", "s"]
+
+      # One release of the tool module, with the handle of each call.
+      assert_receive {:release, :cancel, handles}
+      assert length(handles) == 3
+      refute Enum.any?(runs, &Process.alive?/1)
+      assert running(hands) == 0
+    end
+
+    test "a normal end with three running answers each exactly once aborted and releases each",
+         %{core: core, session: session, proc: proc, turn_id: turn_id, hands: hands} do
+      gate = gate()
+      report = %{"report" => Atom.to_string(Connected.controller(core))}
+      for id <- ["a1", "a2", "a3"], do: together(proc, turn_id, id, gate, report)
+      runs = waiting(3)
+      sync(proc, session)
+      send(proc, {:finish, turn_id})
+
+      assert List.last(collect_until(:turn_end)).data.outcome == :done
+      assert_receive {:release, :cancel, handles}
+      assert length(handles) == 3
+
+      # The session sends the next turn after the cleanup, so every result
+      # of the ended turn comes before it.
+      :ok = Session.prompt(session, "again")
+
+      results =
+        for {:tool_result, ^turn_id, id, result} <- requests_until(:turn), do: {id, result}
+
+      assert Enum.sort(results) == for(id <- ["a1", "a2", "a3"], do: {id, {:error, "aborted"}})
+      refute Enum.any?(runs, &Process.alive?/1)
+      assert running(hands) == 0
+    end
   end
 
   test "a second request with the id of an open request stops the provider process",

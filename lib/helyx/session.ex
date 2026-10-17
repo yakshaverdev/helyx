@@ -14,14 +14,14 @@ defmodule Helyx.Session do
       # then {:DOWN, ^ref, :process, _pid, reason} when the session
       # ends; Helyx.Session.end_reason(reason) is :stopped or :crashed
 
-  Every provider runs the turn in its provider process (ADR 0002, ADR 0007).
-  A model provider runs it with `Helyx.Provider.Loop`, whose tool calls run
-  on the session's hands (`Helyx.Session.Hands`) one at a time, in call
-  order; another provider can run the whole turn and its own tools. A tool
-  call with no result at the turn end gets `aborted_result/0`. Steers and
+  Every provider runs the turn in its provider process (ADR 0002, ADR 0007). A
+  model provider runs it with `Helyx.Provider.Loop`, whose tool calls run on the
+  session's hands (`Helyx.Session.Hands`), concurrent tools together and each
+  other call alone; another provider can run the whole turn and its own tools. A
+  tool call with no result at the turn end gets `aborted_result/0`. Steers and
   follow-ups wait in queues. An abort ends the turn at once (`abort/1`). A
-  compaction is a turn too (`compact/2`). Every message has an id, and
-  every user message an origin (`docs/features/message-identity.md`).
+  compaction is a turn too (`compact/2`). Every message has an id, and every
+  user message an origin (`docs/features/message-identity.md`).
 
   `docs/features/session-lifecycle.md` has the turn, the queues, the
   abort, the provider process, and the late calls: a call that the session
@@ -83,12 +83,13 @@ defmodule Helyx.Session do
     with {:ok, cwd} <- fetch_cwd(opts),
          {:ok, tools} <- Helyx.Tool.specs(core),
          :ok <- Helyx.Tool.check_available(tools),
+         concurrent = Helyx.Tool.concurrent(tools),
          {:ok, {ref, provider}} <- resolve_model(core, Keyword.fetch!(opts, :model)),
          # The folders come before the lock, whose file is in them.
          :ok <- mkdir(opts[:sessions_dir], cwd) do
       Server.start(
         %State{id: id, core: core, model: ref, provider: provider, cwd: cwd},
-        tools,
+        {tools, concurrent},
         create_spec(opts[:sessions_dir], id, cwd, ref)
       )
     end
@@ -130,10 +131,11 @@ defmodule Helyx.Session do
     with {:ok, cwd} <- fetch_cwd(opts),
          {:ok, tools} <- Helyx.Tool.specs(core),
          :ok <- Helyx.Tool.check_available(tools),
+         concurrent = Helyx.Tool.concurrent(tools),
          {:ok, path} <- Helyx.Session.File.pick(dir, cwd, Keyword.take(opts, [:id])) do
       id = Path.basename(path, ".jsonl")
       state = %State{id: id, core: core, model: nil, provider: nil, cwd: cwd}
-      Server.start(state, tools, {path, &load(&1, path)})
+      Server.start(state, {tools, concurrent}, {path, &load(&1, path)})
     end
   end
 

@@ -62,12 +62,12 @@ defmodule Helyx.Session.Server.Wait do
     state = Steering.end_turn(state, turn.id, done?)
     state = ToolRuns.end_turn(state, turn)
     Helyx.Session.Sync.push_turn(state)
-    running = turn.tool_queue.running
+    running? = turn.tool_queue.running != %{}
     data = end_data(outcome)
-    state = if running, do: state, else: emit(state, :turn_end, data)
-    hands = if !done? or running, do: Hands.request_cancel(state.hands, turn.id)
+    state = if running?, do: state, else: emit(state, :turn_end, data)
+    hands = if !done? or running?, do: Hands.request_cancel(state.hands, turn.id)
     wait = if outcome == :aborted, do: interrupt(state, turn), else: %__MODULE__{}
-    turn_end = if running, do: data
+    turn_end = if running?, do: data
     wait = %{wait | hands: hands, turn: turn.id, turn_end: turn_end, started_ms: turn.started_ms}
     %{state | activity: wait}
   end

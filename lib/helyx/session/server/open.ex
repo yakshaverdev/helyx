@@ -71,7 +71,7 @@ defmodule Helyx.Session.Server.Open do
     end
   end
 
-  defp start_child(%State{core: core} = state, tools, start) do
+  defp start_child(%State{core: core} = state, {tools, concurrent}, start) do
     # The plugin table of a Core does not change after start, so a plugin
     # resolved once here is the plugin a lookup per provider call would give.
     # The three interfaces are single-mode: one plugin or none (nil).
@@ -81,7 +81,7 @@ defmodule Helyx.Session.Server.Open do
         compaction: List.first(Helyx.Core.plugins(core, Helyx.Compaction)),
         memory: List.first(Helyx.Core.plugins(core, Helyx.Memory)),
         tool_specs: Enum.map(tools, fn {_tool, spec} -> spec end),
-        tool_modules: Map.new(tools, fn {tool, spec} -> {spec.name, tool} end)
+        tools: Map.new(tools, fn {tool, %{name: name}} -> {name, {tool, name in concurrent}} end)
     }
 
     DynamicSupervisor.start_child(
@@ -179,7 +179,7 @@ defmodule Helyx.Session.Server.Open do
         cwd: state.cwd,
         background_dir: background_dir,
         session: self(),
-        tools: state.tool_modules
+        tools: Map.new(state.tools, fn {name, {tool, _concurrent?}} -> {name, tool} end)
       )
 
     # A run that was live at the stop of a resumed session ended with it:
