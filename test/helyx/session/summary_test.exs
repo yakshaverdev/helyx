@@ -141,7 +141,11 @@ defmodule Helyx.Session.SummaryTest do
   test "an abort stops the summary call, and the wait holds until it ends", %{core: core} do
     session = start(core)
     :ok = Session.prompt(session, "summarize:hang")
-    wait_until(fn -> match?(%{status: :running}, state(session).summary_call) end)
+    # The pid is nil until the hands answer the start (#724).
+    wait_until(fn ->
+      match?(%{status: :running, pid: pid} when is_pid(pid), state(session).summary_call)
+    end)
+
     pid = state(session).summary_call.pid
     ref = Process.monitor(pid)
 
