@@ -50,7 +50,9 @@ defmodule Helyx.TUI.ViewModel do
   `usage` and `context` are the totals and the context state of the session
   that row 2 of the footer shows (`Helyx.Session.Totals`). They start from
   the snapshot, which counts every message of the transcript, and each
-  message of the live path adds to them; a snapshot message does not.
+  message of the live path adds to them; a snapshot message does not. A
+  `:compaction` event changes the context state with
+  `Helyx.Session.Totals.compacted/2`.
 
   The view model has no `instance_id` or `seq` guard: the TUI subscribes
   once to each session, and the registration and the snapshot happen in
@@ -177,6 +179,7 @@ defmodule Helyx.TUI.ViewModel do
   def apply(vm, %Event{type: :compaction, data: data}) do
     %{trigger: trigger, tokens_before: before, tokens_after: after_} = data
     counts = if before && after_, do: ": #{tokens(before)} → #{tokens(after_)} tokens", else: ""
+    vm = %{vm | context: Totals.compacted(vm.context, after_)}
     add_cell(vm, {:info, "compacted" <> counts <> if(trigger == :auto, do: " (auto)", else: "")})
   end
 

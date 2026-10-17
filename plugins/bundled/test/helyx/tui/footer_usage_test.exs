@@ -322,7 +322,7 @@ defmodule Helyx.TUI.FooterUsageTest do
       end
     end
 
-    test "the estimate adds a quarter of the bytes of the text after the last usage" do
+    test "the estimate adds a quarter of the bytes of the blocks after the last usage" do
       call = %Message.ToolCall{
         id: "c1",
         name: "read",
@@ -336,9 +336,12 @@ defmodule Helyx.TUI.FooterUsageTest do
       thinking = assistant(nil, @model, [%Message.Thinking{thinking: String.duplicate("t", 40)}])
 
       # 50 + (400 + 200 + 40) / 4 = 210 of 1,000; "é" is 2 bytes, and the
-      # arguments of the call do not count.
+      # call is in the message of the usage, whose context tokens hold it.
       messages = [calling, result, Message.user(String.duplicate("é", 100)), thinking]
       assert row(messages) =~ ~r/ · 21%$/
+
+      # A later call counts its name and its JSON arguments: 4 + 411 bytes.
+      assert row(messages ++ [assistant(nil, @model, [%{call | id: "c2"}])]) =~ ~r/ · 31%$/
 
       # A new usage starts the estimate again.
       assert row(messages ++ [at(30, 1_000)]) =~ ~r/ · 3%$/
@@ -359,8 +362,42 @@ defmodule Helyx.TUI.FooterUsageTest do
       assert text(snapshot([old], "b/y")) == "b/y · idle · in 1 out 0 · cache 0% · $?"
     end
 
-    test "an unknown usage hides the % until the next usage with a window" do
-      assert row([at(10), assistant(%Usage{})]) == "#{@model} · idle · in 1 out 0 · cache 0% · $?"
+    # #697: the totals stay, the estimate takes the tokens after. A
+    # compaction is an event, not a message, so this test folds the live
+    # path only: a snapshot of the same messages keeps the last usage.
+    test "a compaction sets the estimate to its tokens after, else hides the %" do
+      row = "#{@model} · idle · in 1 out 0 · cache 0% · $?"
+      vm = live([at(92)], @model)
+      assert text(vm) == row <> " · 92%"
+
+      compacted = fn vm, before, after_ ->
+        data = %{trigger: :manual, tokens_before: before, tokens_after: after_}
+        fold(vm, [event(:compaction, data)])
+      end
+
+      vm = compacted.(vm, 92, 4)
+      assert text(vm) == row <> " · 4%"
+      assert text(snapshot([at(92)], @model)) == row <> " · 92%"
+      # The bytes after the compaction count again.
+      vm = fold(vm, [event(:message_end, %{message: Message.user(String.duplicate("u", 40))})])
+      assert text(vm) == row <> " · 14%"
+
+      vm = compacted.(vm, 14, nil)
+      assert text(vm) == row
+      assert text(fold(vm, [event(:message_end, %{message: assistant(%Usage{})})])) == row
+
+      fresh = fold(vm, [event(:message_end, %{message: at(20)})])
+      assert text(fresh) == "#{@model} · idle · in 2 out 0 · cache 0% · $? · 20%"
+
+      # Before any estimate a compaction leaves it nil.
+      assert compacted.(view_model([], @model), 10, 4).context == nil
+    end
+
+    test "a usage with nil context tokens keeps the estimate and adds its bytes" do
+      text = assistant(%Usage{}, @model, [%Message.Text{text: String.duplicate("t", 40)}])
+      assert row([at(10), text]) == "#{@model} · idle · in 1 out 0 · cache 0% · $? · 20%"
+      # Before a usage with context tokens there is no estimate.
+      assert row([text]) == "#{@model} · idle · $?"
     end
   end
 

@@ -16,9 +16,10 @@ defmodule Helyx.Compaction.Summary do
   for a summary when the estimate is over the window minus
   #{@reserve_tokens} tokens (clamped to the window); with `:manual` and
   `:overflow` it asks at once. It asks only when a cut keeps a part
-  after the summary. The estimate is the `context_tokens` of the
-  last usage plus a quarter of the bytes after it, or with a summary a
-  quarter of the bytes of the context to send. The window is the
+  after the summary. The estimate is the integer `context_tokens` of the
+  last usage that has them plus a quarter of the bytes after it, the
+  rule of `Helyx.Session.Totals.context/2`, or with a summary a quarter
+  of the bytes of the context to send. The window is the
   `context_window` of the last usage of the same model, else the
   `:models` config. An unknown window turns off `:auto`, and `:manual`
   returns an error.
