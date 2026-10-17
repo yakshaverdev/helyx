@@ -2,8 +2,8 @@ defmodule Helyx.TUI.Markdown do
   @moduledoc """
   The Markdown of an assistant reply as screen rows (#487): headings, bullet
   and numbered items, bold, italic, inline code, fenced code, and links as
-  their text and address. A row is a list of `{text, tags}`. The text of a
-  row is a row of `Helyx.TUI.Wrap.line_rows/2`, so the width rule holds. The
+  their text and address. A row is a list of `{text, tags}`. Its text is
+  the text of a row of `Helyx.TUI.Wrap.line_slices/2`, so the width rule holds. The
   tag `:sign` marks the prefix of an item or a code line, and its indent on
   the rows after the first: it is drawn, not text of the reply. Pure.
   The rules are in
@@ -102,7 +102,7 @@ defmodule Helyx.TUI.Markdown do
   # as wide as the width wraps as text.
   defp layout(segments, "", width) do
     plain = Enum.map_join(segments, &elem(&1, 0))
-    align(segments, Wrap.line_rows(plain, width))
+    align(segments, Wrap.line_slices(plain, width))
   end
 
   defp layout(segments, prefix, width) do
@@ -132,28 +132,28 @@ defmodule Helyx.TUI.Markdown do
       else: row
   end
 
-  # The wrap only drops spaces, so each row is the segments in order with
-  # some spaces left out. A segment can end inside a row or a grapheme.
+  # A row is the bytes of the line at its start: a dropped space keeps its owner.
   defp align(segments, rows) do
-    {lines, _rest} = Enum.map_reduce(rows, segments, &take(&1, &2, []))
-    lines
+    rows
+    |> Enum.map_reduce({segments, 0}, fn {start, row}, {segments, at} ->
+      {_dropped, segments} = take(segments, start - at, [])
+      {line, segments} = take(segments, byte_size(row), [])
+      {line, {segments, start + byte_size(row)}}
+    end)
+    |> elem(0)
   end
 
-  defp take("", segments, []), do: {[{"", []}], segments}
-  defp take("", segments, acc), do: {Enum.reverse(acc), segments}
-  defp take(row, [{"", _tags} | segments], acc), do: take(row, segments, acc)
+  # The first `n` bytes of the segments, which can end inside a grapheme.
+  defp take(segments, 0, []), do: {[{"", []}], segments}
+  defp take(segments, 0, acc), do: {Enum.reverse(acc), segments}
+  defp take([{"", _tags} | segments], n, acc), do: take(segments, n, acc)
 
-  defp take(row, [{text, tags} | segments], acc) do
-    case :binary.longest_common_prefix([row, text]) do
-      0 ->
-        " " <> text = text
-        take(row, [{text, tags} | segments], acc)
+  defp take([{text, tags} | segments], n, acc) when byte_size(text) < n,
+    do: take(segments, n - byte_size(text), [{text, tags} | acc])
 
-      n ->
-        <<shown::binary-size(n), text::binary>> = text
-        <<_::binary-size(n), row::binary>> = row
-        take(row, [{text, tags} | segments], [{shown, tags} | acc])
-    end
+  defp take([{text, tags} | segments], n, acc) do
+    <<shown::binary-size(n), text::binary>> = text
+    {Enum.reverse(acc, [{shown, tags}]), [{text, tags} | segments]}
   end
 
   # Code spans first, then escapes, links and emphasis signs, which pair as

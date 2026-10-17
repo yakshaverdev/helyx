@@ -408,4 +408,25 @@ defmodule Helyx.TUI.SearchTest do
     assert Search.marks(state.search, Transcript.screen(state.vm, state.scroll, narrow), narrow) ==
              []
   end
+
+  test "a space of the text after a dropped sign space stays search text" do
+    # "\u2715 " and " \u0301" with 20 letters wrap as "\u2715" and
+    # " \u0301" with the letters: the space of the sign drops, and the
+    # space of " \u0301" is the text's.
+    text = " \u0301" <> String.duplicate("a", 20)
+    state = [{:notice, text}] |> state() |> open() |> type(" \u0301a")
+    assert [{_, %Rect{x: 2, y: 1, width: 2}}] = marks(state)
+
+    # At 4 columns, the indent "  " and the result line " \u0301abcdef"
+    # wrap as " \u0301abc" and "def": the indent drops. The call line
+    # takes rows 0 and 1.
+    narrow = %Rect{@area | width: 4}
+    state = [tool("c1", " \u0301abcdef")] |> state() |> open()
+
+    state =
+      Enum.reduce([" \u0301", "a"], state, &event(&2, %Key{code: &1, kind: "press"}, narrow))
+
+    rows = Transcript.screen(state.vm, state.scroll, narrow)
+    assert [{_, %Rect{x: 2, y: 2, width: 2}}] = Search.marks(state.search, rows, narrow)
+  end
 end
