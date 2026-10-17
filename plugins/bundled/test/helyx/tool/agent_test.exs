@@ -186,6 +186,41 @@ defmodule Helyx.Tool.AgentTest do
     assert Message.text(result) == "the session ended (crashed)"
   end
 
+  test "the cleanup of a call stops only its child, not a later instance of the id", %{
+    core: core,
+    tmp_dir: dir
+  } do
+    blocked = block()
+    _session = parent(core, dir, [[agent("c1")], blocked, blocked, ["Done."]])
+    assert_receive {:blocked, id}
+    pid = child_pid(core, id)
+    ref = Process.monitor(pid)
+
+    # The owner holds its cleanup while the child ends and a resume starts
+    # a new instance of the id with work of its own.
+    [owner] =
+      for task <- Task.Supervisor.children(Helyx.Core.task_supervisor(core)),
+          {:dictionary, dict} <- [Process.info(task, :dictionary)],
+          match?({Helyx.Tool.Agent, _, _}, dict[:"$initial_call"]),
+          do: task
+
+    true = :erlang.suspend_process(owner)
+    Process.exit(pid, :kill)
+    assert_receive {:DOWN, ^ref, :process, ^pid, :killed}
+    {:ok, replacement} = Helyx.Sessions.resume(core, id: id)
+    :ok = Session.prompt(replacement, "more")
+    assert_receive {:blocked, ^id}
+    new_pid = Session.pid(replacement)
+
+    true = :erlang.resume_process(owner)
+    [result] = results(collect_until(:turn_end))
+    assert Message.text(result) == "the session ended (crashed)"
+    # The parent's result comes after the cleanup of the owner, so a stop of
+    # the new instance would have ended it by now.
+    assert Process.alive?(new_pid)
+    assert [%{status: :running}] = for(i <- Helyx.Sessions.list_live(core), i.id == id, do: i)
+  end
+
   test "a parent that crashes takes no release, and the owner stops the child", %{
     core: core,
     tmp_dir: dir

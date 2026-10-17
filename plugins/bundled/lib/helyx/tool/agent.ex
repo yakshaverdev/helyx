@@ -59,11 +59,11 @@ defmodule Helyx.Tool.Agent do
     {owner, monitor} = start_owner(context.core, opts)
 
     receive do
-      {^owner, {:ok, child}} ->
-        :ok = Helyx.Tool.hold(child)
+      {^owner, {:ok, {child, _pid} = handle}} ->
+        :ok = Helyx.Tool.hold(handle)
         result = ask(child, prompt)
         stop(owner, monitor)
-        :ok = Helyx.Tool.unhold([child])
+        :ok = Helyx.Tool.unhold([handle])
         result
 
       {^owner, {:error, reason}} ->
@@ -77,13 +77,13 @@ defmodule Helyx.Tool.Agent do
   def run(_args, _cwd), do: {:error, "agent needs a description and a prompt, both strings"}
 
   # Stops each child; a child whose stop is not done at the deadline stays
-  # held. A child that ended already gives `:session_not_found`.
+  # held.
   @impl true
   def release(children, _mode, deadline) do
     timeout = max(deadline - System.monotonic_time(:millisecond), 0)
 
     stops =
-      Task.async_stream(children, &Helyx.Sessions.stop/1,
+      Task.async_stream(children, fn {_child, pid} -> stop_child(pid) end,
         max_concurrency: length(children),
         timeout: timeout,
         on_timeout: :kill_task
@@ -101,7 +101,11 @@ defmodule Helyx.Tool.Agent do
     {:ok, owner} =
       Task.Supervisor.start_child(Helyx.Core.task_supervisor(core), fn ->
         ref = Process.monitor(task)
-        result = Helyx.Sessions.start(core, opts)
+
+        result =
+          with {:ok, child} <- Helyx.Sessions.start(core, opts),
+               do: {:ok, {child, Session.pid(child)}}
+
         send(task, {self(), result})
 
         receive do
@@ -109,10 +113,22 @@ defmodule Helyx.Tool.Agent do
           {:DOWN, ^ref, :process, ^task, _reason} -> :ok
         end
 
-        with {:ok, child} <- result, do: Helyx.Sessions.stop(child)
+        with {:ok, {_child, pid}} <- result, do: stop_child(pid)
       end)
 
     {owner, Process.monitor(owner)}
+  end
+
+  # The process that the call started, never a lookup of its id: the child
+  # can end and a resume can start a new instance of the id, which is not
+  # the call's (docs/features/agent-tool.md, "The cleanup"). A process that
+  # is gone needs no stop. The stop ends the turn as a Core stop does.
+  defp stop_child(nil), do: :ok
+
+  defp stop_child(pid) do
+    GenServer.stop(pid, :normal, :infinity)
+  catch
+    :exit, _reason -> :ok
   end
 
   # The owner ends after the stop of the child.

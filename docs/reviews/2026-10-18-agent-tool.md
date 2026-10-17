@@ -186,3 +186,30 @@ Guarantee table (round 3 spec review):
 ## Precommit of run 2
 
 The first slow precommit run failed on Credo only: "`with` contains only one <- clause and an `else` branch, consider using `case` instead", `lib/helyx/session/file.ex:98:5`. The tests passed: 740 in the root, 941 and 2 properties in `plugins/bundled`, 80 in `apps/coding_agent`. `new_file/1` now uses `case`, with the same two branches. This is a change of form only, so it got no review round.
+
+# Merge gate 1: the cleanup of a child
+
+Codex at the merge gate, [medium]: "Bind child cleanup to the original process (plugins/bundled/lib/helyx/tool/agent.ex:112)". The finding: the owner cleanup and `release/3` looked up the child by its id again, so a new instance of the id (a resume after the child ended) was stopped. Orchestrator decision: the cleanup acts on the process that the call started, never on a new lookup of the id.
+
+Fix: the owner reads the pid of the child with `Helyx.Session.pid/1` right after the start. The handle is `{session, pid}`. The owner cleanup and `release/3` stop that pid with `GenServer.stop/3`. A process that is gone needs no stop. Test "the cleanup of a call stops only its child, not a later instance of the id": it suspends the owner, kills the child, resumes the id, and gives the new instance a turn. It failed 3 of 3 runs on the code before the fix (at `assert Process.alive?(new_pid)`), and it passes 3 of 3 after.
+
+## Reduced round (orchestrator decision: one mechanism)
+
+Count: 1 code file (`plugins/bundled/lib/helyx/tool/agent.ex`), 22 lines added and 8 removed, one private function added (`stop_child/1`). By the /ship rules this would be a full round; the orchestrator set a reduced round.
+
+Bounds sensor (base `HEAD`):
+
+```text
+bounds sensor: 3 candidate functions, 1 flagged, 0 without an answer
+  plugins/bundled/lib/helyx/tool/agent.ex:48  SIZE  def run(%{"description" => description, "prompt" => prompt},
+```
+
+| # | Source | Finding | Reproduced | Resolution |
+| - | ------ | ------- | ---------- | ---------- |
+| 1 | failure path | `ask/2` subscribes, prompts, and acks by id: a child that ends and a resume of its id between the start and the prompt give the parent's task to the new instance, and the call reports its answer | yes (a throwaway test with the owner and the Task suspended) | open. This path was in HEAD before the fix, and the decision covers the cleanup only. An exact fix needs a prompt bound to one instance in the session API (a Core change). Reported to the orchestrator; stated in the feature doc |
+| 2 | spec | decision 1 says the tool uses only the public session API; the stop is OTP's `GenServer.stop/3` on the pid | read | decision 1 names the exception |
+| 3 | spec | the accepted hole named only the window up to the read of the pid | yes (finding 1) | the feature doc states the wider open path |
+
+The spec agent ran the new test against the code before the fix, in a temporary worktree that it made and then removed: it failed at `assert Process.alive?(new_pid)`. A probe of `release/3` at an abort with a new instance present: the parent got `aborted`, and the new instance stayed alive. It has no test in the suite. The stop of a running child turn with no abort first leaves an open turn in the child file, as a Core stop does; a resume gives its calls the interrupted result.
+
+The round reproduced a defect outside the fixed mechanism, so no further round ran. The commit holds the reviewed fix.
