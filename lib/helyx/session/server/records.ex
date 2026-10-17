@@ -1,12 +1,12 @@
 defmodule Helyx.Session.Server.Records do
   @moduledoc false
   # The records of a session: the only writer of `transcript`, `file`,
-  # `model`, `provider`, `resume_ids`, and `summary` in
-  # `Helyx.Session.Server.State`, and of `unsaved_from` after the start. Each
-  # operation changes the open assistant message, the transcript, the
-  # session file, and emits its events together. The rule: no message goes
-  # between a call and its result. A call still open gets its `aborted`
-  # result before the next message joins (docs/features/session-lifecycle.md).
+  # `model`, `provider`, `resume_ids`, `summary`, and `unsaved_from` in
+  # `Helyx.Session.Server.State`. Each operation changes the open assistant
+  # message, the transcript, the session file, and emits its events
+  # together. The rule: no message goes between a call and its result. A
+  # call still open gets its `aborted` result before the next message joins
+  # (docs/features/session-lifecycle.md).
 
   require Logger
 
@@ -247,8 +247,11 @@ defmodule Helyx.Session.Server.Records do
   end
 
   # The messages that joined the transcript in the turn, each with whether
-  # the file holds it, for the sync of the Memory plugin.
-  def turn_entries(%State{activity: %Turn{start: start}, unsaved_from: unsaved} = state) do
+  # the file holds it, for the sync of the Memory plugin. A session with no
+  # file and no `unsaved_from` never had a file, so the file holds none.
+  def turn_entries(%State{activity: %Turn{start: start}} = state) do
+    unsaved = state.unsaved_from || if(state.file, do: nil, else: 0)
+
     state.transcript
     |> Enum.drop(start)
     |> Enum.with_index(start)

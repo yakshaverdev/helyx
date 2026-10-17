@@ -69,7 +69,8 @@ defmodule Helyx.Session.Server.State do
     # the messages that a resume decoded (docs/features/memory.md).
     :sync,
     # The index of the first transcript message that the file does not
-    # hold, or nil while every message is saved (`Records.stop_saving/3`).
+    # hold after a failed write (`Records.stop_saving/3`), else nil: every
+    # message is saved, or none when the session has no file.
     :unsaved_from,
     # The checked tool specs of `Helyx.Tool.specs/1` at session start,
     # which every provider call uses, and the tool module by name for the
