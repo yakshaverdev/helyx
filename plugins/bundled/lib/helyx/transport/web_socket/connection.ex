@@ -52,11 +52,12 @@ defmodule Helyx.Transport.WebSocket.Connection do
     state = %{state | last_in: now()}
 
     case Frame.decode(text, state.parts) do
-      {:frame, frame, nil} -> frame(frame, %{state | parts: nil})
-      # A hello is small: parts before it would hold its token.
-      {:more, _parts} when state.phase == :hello -> close(4400, state)
-      {:more, parts} -> {:ok, %{state | parts: parts}}
+      {:frame, frame} -> frame(frame, state)
       {:close, code} -> close(code, state)
+      # A hello is small: a part before it would hold its token.
+      {tag, _} when tag in [:joined, :more] and state.phase == :hello -> close(4400, state)
+      {:joined, frame} -> frame(frame, %{state | parts: nil})
+      {:more, parts} -> {:ok, %{state | parts: parts}}
     end
   end
 
@@ -157,8 +158,15 @@ defmodule Helyx.Transport.WebSocket.Connection do
   defp work(conn, out, core, id, op, params) do
     # The deadline of a request with a large result starts at its slot.
     if Ops.slot?(op), do: Outbound.slot(out)
-    Process.send_after(conn, {:deadline, self(), id}, Ops.deadline(op))
-    Outbound.reply(out, id, Ops.run(core, op, params))
+    timer = Process.send_after(conn, {:deadline, self(), id}, Ops.deadline(op))
+
+    try do
+      Outbound.reply(out, id, Ops.run(core, op, params))
+    after
+      # The timer ends with its worker, so the timers are at most the
+      # requests in flight.
+      Process.cancel_timer(timer)
+    end
   end
 
   # A sub holds at most one ack, and none before its subscribe reply
@@ -247,8 +255,8 @@ defmodule Helyx.Transport.WebSocket.Connection do
   # ended before its reply gets `failed`.
   def handle_info({:EXIT, pid, reason}, state) do
     in_flight? = MapSet.member?(state.flight, pid)
-    worker? = in_flight? and pid not in Map.values(state.subs)
-    id = Enum.find_value(state.ids, fn {id, writer} -> writer == pid && id end)
+    # A subscription can hold two ids: its subscribe and an unsubscribe.
+    ids = for {id, ^pid} <- state.ids, do: id
 
     state =
       release(
@@ -257,21 +265,22 @@ defmodule Helyx.Transport.WebSocket.Connection do
           | flight: MapSet.delete(state.flight, pid),
             subs: Map.reject(state.subs, fn {_sub, writer} -> writer == pid end),
             acks: Map.delete(state.acks, pid),
-            waiting: :queue.delete(pid, state.waiting)
+            waiting: :queue.delete(pid, state.waiting),
+            ids: Map.drop(state.ids, ids)
         },
         pid
       )
 
     cond do
-      # A subscription that ended before its unsubscribe reply: it is gone.
-      id != nil and not in_flight? ->
-        {:push, texts(Outbound.res(id, {:ok, %{}})), %{state | ids: Map.delete(state.ids, id)}}
+      # A subscription that ended after its subscribe reply answers its
+      # unsubscribe: it is gone. A writer that ended before its reply fails.
+      ids != [] ->
+        answer = if in_flight?, do: Outbound.error("failed"), else: {:ok, %{}}
+        {:push, Enum.flat_map(ids, &texts(Outbound.res(&1, answer))), state}
 
-      id != nil ->
-        error(id, "failed", %{state | ids: Map.delete(state.ids, id)})
-
-      # A worker that crashed after its reply, or a writer that ended.
-      reason == :normal or worker? ->
+      # A writer that ended, or a worker that crashed after its reply: a
+      # subscription in flight still has its subscribe id.
+      reason == :normal or in_flight? ->
         {:ok, state}
 
       true ->

@@ -1,6 +1,8 @@
 defmodule Helyx.Transport.WebSocketTest do
   use ExUnit.Case, async: true
 
+  import ExUnit.CaptureLog
+
   alias Helyx.Provider.Fake
   alias Helyx.Test.Events
   alias Helyx.Test.WireClient, as: Client
@@ -42,6 +44,48 @@ defmodule Helyx.Transport.WebSocketTest do
       assert {:http, 403} = Client.upgrade(port, [{"origin", "https://evil.example"}])
       assert {:ok, _socket} = Client.upgrade(port, [{"origin", "https://app.example"}])
       assert {:ok, _socket} = Client.upgrade(port)
+    end
+
+    test "a refused upgrade closes at once, and its hello is not logged", %{port: port} do
+      hello = JSON.encode!(%{"type" => "hello", "protocol" => 1, "token" => "secret"})
+      # The bytes after a refusal would be the next HTTP request.
+      next = [Client.text_frame(hello), "\r\n"]
+
+      for {version, origin, after_bytes} <- [
+            {13, "https://evil.example", next},
+            {12, "https://app.example", next},
+            {13, "https://evil.example", []}
+          ] do
+        {:ok, socket} = :gen_tcp.connect(~c"127.0.0.1", port, [:binary, active: false])
+        request = Client.upgrade_request([{"origin", origin}], version)
+
+        log =
+          capture_log(fn ->
+            :ok = :gen_tcp.send(socket, [request, after_bytes])
+            assert [_status] = Regex.scan(~r"HTTP/1.1 ", until_closed(socket, ""))
+          end)
+
+        refute log =~ "Bandit.HTTPError"
+      end
+    end
+
+    test "an HTTP/2 connection closes, and its frames are not logged", %{port: port} do
+      {:ok, socket} = :gen_tcp.connect(~c"127.0.0.1", port, [:binary, active: false])
+
+      log =
+        capture_log(fn ->
+          :ok =
+            :gen_tcp.send(socket, [
+              "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n",
+              # An empty SETTINGS frame, then a frame of an unknown type.
+              <<0::24, 4, 0, 0::32>>,
+              <<6::24, 0x2A, 0, 0::32, "secret">>
+            ])
+
+          assert "" = until_closed(socket, "")
+        end)
+
+      refute log =~ "secret"
     end
 
     test "the 65th connection gets 503, and a closed one frees its place", %{port: port} do
@@ -98,12 +142,47 @@ defmodule Helyx.Transport.WebSocketTest do
             &Client.send_frame(&1, %{"type" => "req", "id" => "1", "op" => "x", "params" => %{}}),
             # A hello as parts: its token would wait in the connection.
             &Client.send_text(&1, hello_part),
+            &Client.send_frame(&1, %{
+              "type" => "part",
+              "n" => 0,
+              "last" => true,
+              "data" => Base.encode64(JSON.encode!(hello))
+            }),
             &Client.send_text(&1, "{"),
             &Client.send_text(&1, "{}", 2)
           ] do
         {:ok, socket} = Client.upgrade(port)
         send.(socket)
         assert {:close, 4400} = Client.recv(socket)
+      end
+    end
+
+    test "a bad frame around the hello logs nothing that holds its bytes", context do
+      %{port: port, transport: transport} = context
+      hello = JSON.encode!(%{"type" => "hello", "protocol" => 1, "token" => "secret"})
+      bad_utf8 = binary_part(hello, 0, byte_size(hello) - 2) <> <<0xFF, ?", ?}>>
+
+      # Not UTF-8; a continuation with no frame before it; an unknown opcode;
+      # an empty continuation that is not the last.
+      for {packet, code} <- [
+            {Client.text_frame(bad_utf8), 4400},
+            {[Client.text_frame(hello), Client.masked_frame(1, 0, "")], 1002},
+            {[Client.text_frame(hello), Client.masked_frame(1, 3, "")], 1002},
+            {[Client.masked_frame(0, 1, hello), Client.masked_frame(0, 0, "")], 1008}
+          ] do
+        {:ok, socket} = Client.upgrade(port)
+        [connection] = connections(transport)
+        ref = Process.monitor(connection)
+
+        log =
+          capture_log(fn ->
+            :ok = :gen_tcp.send(socket, packet)
+            assert_receive {:DOWN, ^ref, :process, ^connection, _reason}
+          end)
+
+        assert {:close, ^code} = Client.until_close(socket)
+        refute log =~ inspect(connection)
+        refute log =~ "deserializing"
       end
     end
 
@@ -277,7 +356,9 @@ defmodule Helyx.Transport.WebSocketTest do
       Client.send_text(socket, under <> String.duplicate(" ", 1_048_575 - byte_size(under)))
       assert %{"ok" => true} = Client.res(socket, "2")
 
-      Client.send_text(socket, String.duplicate("x", 1_048_577))
+      # Only the header goes: the close comes before the payload, and no
+      # unread payload resets the socket before the client reads the close.
+      :ok = :gen_tcp.send(socket, <<0x81, 1::1, 127::7, 1_048_577::64, 0::32>>)
       assert {:close, 1009} = Client.recv(socket)
     end
 
@@ -293,8 +374,25 @@ defmodule Helyx.Transport.WebSocketTest do
     end
   end
 
-  # The idle check reads the clock within this time of the test.
+  # The idle check reads the clock, and a deadline timer fires, within this
+  # time of the test.
   @load_ms 1_000
+
+  @tag :slow
+  test "a request leaves no deadline timer after its reply", context do
+    %{port: port, transport: transport} = serve(context)
+    socket = Client.open(port)
+    [connection] = connections(transport)
+    :erlang.trace(connection, true, [:receive])
+
+    for n <- 1..50 do
+      params = %{"session" => "none", "model" => "fake/echo"}
+      assert %{"ok" => false} = Client.request(socket, "#{n}", "set_model", params)
+    end
+
+    refute_receive {:trace, ^connection, :receive, {:deadline, _pid, _id}},
+                   Ops.deadline("set_model") + @load_ms
+  end
 
   test "45,000 ms with no inbound frame or pong closes with 4408" do
     now = System.monotonic_time(:millisecond)
@@ -348,7 +446,7 @@ defmodule Helyx.Transport.WebSocketTest do
         Enum.reduce(texts, nil, fn text, parts ->
           case Frame.decode(text, parts) do
             {:more, parts} -> parts
-            {:frame, frame, nil} -> frame
+            {:joined, frame} -> frame
           end
         end)
 
@@ -366,6 +464,13 @@ defmodule Helyx.Transport.WebSocketTest do
     Process.exit(gate, :kill)
     assert_receive {:DOWN, ^ref, :process, ^transport, _reason}
     assert {:error, :econnrefused} = :gen_tcp.connect(~c"127.0.0.1", port, [])
+  end
+
+  defp until_closed(socket, bytes) do
+    case :gen_tcp.recv(socket, 0, 5_000) do
+      {:ok, more} -> until_closed(socket, bytes <> more)
+      {:error, :closed} -> bytes
+    end
   end
 
   defp connections(transport) do

@@ -22,3 +22,10 @@ The review record `docs/reviews/2026-10-17-660-websocket.md` lists the open find
 - The transport keeps the SHA-256 of the token. A part before `welcome` closes with 4400.
 - Codex found that Bandit keeps a handler after a normal stop and hands it later frames. Every close now stops with `{:shutdown, :closed}`, which ends the process.
 - Limit tests at 1 MiB and 25 MiB, one under each, `Outbound.taken/2`, and the crash of the gate.
+
+## Merge gate round (2026-10-18)
+
+- The worker cancels its deadline timer at its end, so a connection holds at most 16 timers.
+- Any part before `welcome` closes with 4400. A writer exit answers every id of the writer.
+- The log of the hello took three review rounds: a ThousandIsland crash report, then a Bandit HTTP/1 protocol error after a refused upgrade, then an HTTP/2 warning. The server now speaks only one HTTP/1.1 upgrade per connection and logs no protocol error.
+- Open, in Bandit and ThousandIsland: a `:tcp_error` crash report, an exception in the handshake with the `conn` in its metadata, and the TLS-sniff warning. A fix needs a dependency change or a `:logger` filter of the product.

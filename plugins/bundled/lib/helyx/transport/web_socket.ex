@@ -52,7 +52,7 @@ defmodule Helyx.Transport.WebSocket do
         {:error, :token_required}
 
       true ->
-        # Only the hash of the token is kept, so no state or crash report holds it.
+        # Only the hash of the token is kept, so no process state holds it.
         hash = token && :crypto.hash(:sha256, token)
         config = %{core: Keyword.fetch!(opts, :core), token: hash, origins: origins, gate: nil}
         start(config, ip, Keyword.fetch!(opts, :port))
@@ -78,16 +78,30 @@ defmodule Helyx.Transport.WebSocket do
   # Bandit closes a WebSocket frame over the bound with 1009 before it reads
   # the payload; 14 bytes are the frame header. A message of fragments has
   # the same bound.
+  #
+  # No log line holds the bytes of a hello, whose mask is in the frame
+  # (`docs/features/wire-protocol.md`, "Connection"): the server speaks only
+  # the one HTTP/1.1 upgrade of a connection, so a refused upgrade closes and
+  # its hello is not read as the next request, and it logs no protocol error.
   defp bandit(config, ip, port) do
-    {Bandit,
-     plug: {__MODULE__, config},
-     ip: ip,
-     port: port,
-     startup_log: false,
-     websocket_options: [
-       max_frame_size: Helyx.Transport.WebSocket.Frame.max_frame() + 14,
-       max_fragmented_message_size: Helyx.Transport.WebSocket.Frame.max_frame()
-     ]}
+    {
+      Bandit,
+      plug: {__MODULE__, config},
+      ip: ip,
+      port: port,
+      startup_log: false,
+      http_1_options: [max_requests: 1],
+      http_2_options: [enabled: false],
+      http_options: [log_protocol_errors: false],
+      thousand_island_options: [silent_terminate_on_error: true],
+      websocket_options: [
+        max_frame_size: Helyx.Transport.WebSocket.Frame.max_frame() + 14,
+        max_fragmented_message_size: Helyx.Transport.WebSocket.Frame.max_frame(),
+        # `JSON.decode/1` checks UTF-8 once; a bad text closes with 4400.
+        validate_text_frames: false,
+        log_protocol_errors: false
+      ]
+    }
   end
 
   @doc "The port that the server listens on, for a start with port 0."

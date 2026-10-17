@@ -6,20 +6,23 @@ defmodule Helyx.Test.WireClient do
 
   def upgrade(port, headers \\ []) do
     {:ok, socket} = :gen_tcp.connect(~c"127.0.0.1", port, [:binary, active: false, packet: :line])
-    key = Base.encode64(:crypto.strong_rand_bytes(16))
-
-    :ok =
-      :gen_tcp.send(socket, [
-        "GET / HTTP/1.1\r\nHost: 127.0.0.1\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n",
-        "Sec-WebSocket-Version: 13\r\nSec-WebSocket-Key: #{key}\r\n",
-        Enum.map(headers, fn {name, value} -> "#{name}: #{value}\r\n" end),
-        "\r\n"
-      ])
+    :ok = :gen_tcp.send(socket, upgrade_request(headers))
 
     {:ok, "HTTP/1.1 " <> <<status::binary-size(3), _::binary>>} = :gen_tcp.recv(socket, 0, 5_000)
     :ok = skip_head(socket)
     :ok = :inet.setopts(socket, packet: :raw)
     if status == "101", do: {:ok, socket}, else: {:http, String.to_integer(status)}
+  end
+
+  def upgrade_request(headers, version \\ 13) do
+    key = Base.encode64(:crypto.strong_rand_bytes(16))
+
+    [
+      "GET / HTTP/1.1\r\nHost: 127.0.0.1\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n",
+      "Sec-WebSocket-Version: #{version}\r\nSec-WebSocket-Key: #{key}\r\n",
+      Enum.map(headers, fn {name, value} -> "#{name}: #{value}\r\n" end),
+      "\r\n"
+    ]
   end
 
   defp skip_head(socket) do
@@ -54,10 +57,10 @@ defmodule Helyx.Test.WireClient do
   defp send_raw(socket, fin, opcode, text),
     do: :gen_tcp.send(socket, masked_frame(fin, opcode, text))
 
-  # The bytes of one masked text frame, for a test that sends many in one write.
+  # The bytes of one masked frame, for a test that sends many in one write.
   def text_frame(text), do: masked_frame(1, 1, text)
 
-  defp masked_frame(fin, opcode, text) do
+  def masked_frame(fin, opcode, text) do
     mask = :crypto.strong_rand_bytes(4)
     size = byte_size(text)
     masked = :crypto.exor(text, binary_part(:binary.copy(mask, div(size, 4) + 1), 0, size))
@@ -80,6 +83,14 @@ defmodule Helyx.Test.WireClient do
         9 -> {:ping, payload}
         _ -> recv(socket, timeout)
       end
+    end
+  end
+
+  # The frames and pings of the server are skipped until it closes.
+  def until_close(socket) do
+    case recv(socket) do
+      {tag, _frame} when tag in [:frame, :ping] -> until_close(socket)
+      other -> other
     end
   end
 

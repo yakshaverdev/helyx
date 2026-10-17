@@ -131,6 +131,40 @@ defmodule Helyx.Transport.WebSocketSubscribeTest do
     assert {:close, 4400} = Client.recv(socket)
   end
 
+  test "a subscription that dies before its subscribe reply answers its unsubscribe too",
+       context do
+    %{core: core, socket: socket, session: session} = context
+    pid = Helyx.Session.pid(%Helyx.Session{id: session, core: core})
+    :ok = :sys.suspend(pid)
+
+    req = %{
+      "type" => "req",
+      "id" => "s",
+      "op" => "subscribe",
+      "params" => %{"session" => session}
+    }
+
+    Client.send_frame(socket, req)
+    # The sub id "0" is the first of the connection; the client guesses it.
+    Client.send_frame(socket, %{
+      req
+      | "id" => "u",
+        "op" => "unsubscribe",
+        "params" => %{"sub" => "0"}
+    })
+
+    Events.wait_until(fn -> match?({:messages, [_ | _]}, Process.info(pid, :messages)) end)
+    {:messages, [{:"$gen_call", {sub, _tag}, _call}]} = Process.info(pid, :messages)
+    # The connection handled the unsubscribe before the sub dies.
+    Events.wait_until(fn -> {:unsubscribe, "u"} in elem(Process.info(sub, :messages), 1) end)
+
+    Process.exit(sub, :kill)
+    replies = for _ <- 1..2, do: Client.recv(socket)
+    failed = for {:frame, %{"id" => id, "error" => %{"code" => "failed"}}} <- replies, do: id
+    assert Enum.sort(failed) == ["s", "u"]
+    :ok = :sys.resume(pid)
+  end
+
   test "acks before the subscribe reply wait in the connection as one, then go", context do
     %{core: core, socket: socket, session: session} = context
     pid = Helyx.Session.pid(%Helyx.Session{id: session, core: core})
@@ -254,7 +288,7 @@ defmodule Helyx.Transport.WebSocketSubscribeTest do
     assert %{"ok" => true} =
              Client.request(socket, "p", "prompt", %{"session" => session, "text" => "go"})
 
-    assert {:close, 4408} = until_close(socket)
+    assert {:close, 4408} = Client.until_close(socket)
   end
 
   test "the 17th request in flight gets busy, and a reply frees its slot", context do
@@ -296,12 +330,5 @@ defmodule Helyx.Transport.WebSocketSubscribeTest do
     assert %{"error" => %{"code" => "timeout"}} = Client.request(socket, "m", "set_model", params)
     :erlang.resume_process(pid)
     assert %{"ok" => true} = Client.request(socket, "l", "sessions.live", %{})
-  end
-
-  defp until_close(socket) do
-    case Client.recv(socket) do
-      {:frame, _frame} -> until_close(socket)
-      other -> other
-    end
   end
 end
