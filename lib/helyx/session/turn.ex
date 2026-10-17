@@ -19,7 +19,10 @@ defmodule Helyx.Session.Turn do
   # (docs/features/harness-compaction.md). `start` is the number of
   # transcript messages when the turn opened, and `started_ms` the
   # monotonic time of the session's node then: a snapshot gives the time
-  # since, so a late client needs no clock of the server.
+  # since, so a late client needs no clock of the server. `recall` is the
+  # recall message of the prepared `context`, which goes last at the submit,
+  # and `recall_failed` whether the turn gave its recall notice
+  # (docs/features/memory.md).
 
   alias Helyx.{Message, ModelRef}
 
@@ -37,6 +40,8 @@ defmodule Helyx.Session.Turn do
     :compact,
     :start,
     :started_ms,
+    :recall,
+    recall_failed: false,
     bytes: 0,
     blocks: 0,
     tool_queue: %Helyx.Session.ToolQueue{}
@@ -55,6 +60,8 @@ defmodule Helyx.Session.Turn do
           compact: String.t() | :reported | nil,
           start: non_neg_integer() | nil,
           started_ms: integer() | nil,
+          recall: Message.t() | nil,
+          recall_failed: boolean(),
           bytes: non_neg_integer(),
           blocks: non_neg_integer(),
           tool_queue: Helyx.Session.ToolQueue.t()

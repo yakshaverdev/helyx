@@ -1,4 +1,8 @@
 defmodule Helyx.Core do
+  # The default limit of a recall. The most is the prepare budget less the
+  # reserve that the prepare Task keeps after it (`Helyx.Session.Recall`).
+  @recall_ms 2_000
+
   @moduledoc """
   Registers, resolves, and supervises plugins.
 
@@ -26,6 +30,10 @@ defmodule Helyx.Core do
   A plugin that exports `child_spec/1` gets its process tree started under
   Core, with `[core: name]` as the argument.
 
+  `recall_ms` is the limit of a `Helyx.Memory` recall, an integer from 1 to
+  9,000, default #{@recall_ms}; any other value stops the start with
+  `{:invalid_recall_ms, value}` (`docs/features/memory.md`).
+
   Several Core instances can run in one node under different names. Sessions
   and their subscribers are scoped to the Core that started them.
   """
@@ -34,7 +42,7 @@ defmodule Helyx.Core do
 
   @type name :: atom()
 
-  @doc "Child spec for a product's supervision tree. Takes `name:` and `plugins:`."
+  @doc "Child spec for a product's supervision tree. Takes `name:`, `plugins:`, and `recall_ms:`."
   @spec child_spec(keyword()) :: Supervisor.child_spec()
   def child_spec(opts) do
     %{
@@ -49,12 +57,21 @@ defmodule Helyx.Core do
   def start_link(opts) do
     name = Keyword.get(opts, :name, __MODULE__)
     plugins = Keyword.get(opts, :plugins, [])
+    recall_ms = Keyword.get(opts, :recall_ms, @recall_ms)
 
     with {:ok, table} <- Helyx.Core.Plugins.resolve(plugins),
          {:ok, providers} <- providers(table),
-         {:ok, ids} <- Helyx.Core.Plugins.provider_ids(providers) do
-      Supervisor.start_link(__MODULE__, {name, plugins, table, ids}, name: name)
+         {:ok, ids} <- Helyx.Core.Plugins.provider_ids(providers),
+         :ok <- check_recall_ms(recall_ms) do
+      meta = [plugins: table, provider_ids: ids, recall_ms: recall_ms]
+      Supervisor.start_link(__MODULE__, {name, plugins, meta}, name: name)
     end
+  end
+
+  defp check_recall_ms(ms) do
+    if is_integer(ms) and ms in 1..Helyx.Session.Recall.max_ms()//1,
+      do: :ok,
+      else: {:error, {:invalid_recall_ms, ms}}
   end
 
   # A session needs a provider. The table holds no empty list.
@@ -62,7 +79,7 @@ defmodule Helyx.Core do
   defp providers(_table), do: {:error, {:missing_plugin, Helyx.Provider}}
 
   @impl true
-  def init({name, plugins, table, ids}) do
+  def init({name, plugins, meta}) do
     plugin_children =
       for plugin <- plugins, function_exported?(plugin, :child_spec, 1) do
         plugin.child_spec(core: name)
@@ -70,10 +87,9 @@ defmodule Helyx.Core do
 
     children =
       [
-        # The child spec holds the plugin table and the provider ids, so a
-        # restart keeps them.
-        {Registry,
-         keys: :unique, name: sessions_registry(name), meta: [plugins: table, provider_ids: ids]},
+        # The child spec holds the plugin table, the provider ids, and the
+        # recall limit, so a restart keeps them.
+        {Registry, keys: :unique, name: sessions_registry(name), meta: meta},
         {Task.Supervisor, name: task_supervisor(name)},
         # The session process loads a resumed transcript, so the start
         # message holds no transcript for the supervisor to keep (#103, #589).
@@ -93,6 +109,11 @@ defmodule Helyx.Core do
   # The provider id to module map that Core built at start.
   @spec provider_ids(name()) :: %{String.t() => module()}
   def provider_ids(name), do: meta!(name, :provider_ids)
+
+  @doc false
+  # The limit of a recall, in ms.
+  @spec recall_ms(name()) :: pos_integer()
+  def recall_ms(name), do: meta!(name, :recall_ms)
 
   # Every Core sets these meta keys at start, so `:error` gets the answer of a
   # missing table, `ArgumentError`, which `Session.set_model/2` rescues. A

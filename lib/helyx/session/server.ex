@@ -58,11 +58,12 @@ defmodule Helyx.Session.Server do
   defp start_child(%State{core: core} = state, tools, start) do
     # The plugin table of a Core does not change after start, so a plugin
     # resolved once here is the plugin a lookup per provider call would give.
-    # Both interfaces are single-mode: one plugin or none (nil).
+    # The three interfaces are single-mode: one plugin or none (nil).
     session = %{
       state
       | model_context: List.first(Helyx.Core.plugins(core, Helyx.ModelContext)),
         compaction: List.first(Helyx.Core.plugins(core, Helyx.Compaction)),
+        memory: List.first(Helyx.Core.plugins(core, Helyx.Memory)),
         tool_specs: Enum.map(tools, fn {_tool, spec} -> spec end),
         tool_modules: Map.new(tools, fn {tool, spec} -> {spec.name, tool} end)
     }
@@ -107,7 +108,7 @@ defmodule Helyx.Session.Server do
         after
           0 ->
             Process.demonitor(monitor, [:flush])
-            state = init_hands(state)
+            state = state |> init_hands() |> Helyx.Session.Sync.open()
             send(caller, {ref, :ok})
             {:noreply, state}
         end
@@ -320,6 +321,10 @@ defmodule Helyx.Session.Server do
   # A message for a turn or a call that is no longer current.
   def handle_info({:tool_result, _turn_id, _call_id, _result}, state), do: {:noreply, state}
   def handle_info({:stream_event, _turn_id, _event}, state), do: {:noreply, state}
+
+  # A notice of the sync worker of this instance.
+  def handle_info({:memory_notice, pid, text}, %State{sync: pid} = state),
+    do: {:noreply, Events.emit(state, nil, :notice, %{text: text})}
 
   # The failed subscribe of `Helyx.Session.subscribe/1`, and the end of a
   # subscriber: only the monitor of its entry removes the entry.

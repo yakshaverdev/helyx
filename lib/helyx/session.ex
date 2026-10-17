@@ -151,6 +151,7 @@ defmodule Helyx.Session do
            provider: provider,
            file: resumed.file,
            transcript: Transcript.repair(resumed.messages),
+           sync: {:replay, resumed.messages},
            summary: resumed.summary,
            resume_ids: resumed.resume_ids
        }}

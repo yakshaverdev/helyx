@@ -248,7 +248,8 @@ defmodule Helyx.Session.Server.TurnLoop do
 
   # Sends `{:turn, ...}` when the provider process is ready and the context
   # is prepared. The steers queued in `preparing`, then the background
-  # ends, join the transcript and the context: part of the prompt.
+  # ends, join the transcript and the context: part of the prompt. The
+  # recall message goes last (docs/features/memory.md).
   def submit(
         %State{
           activity: %Turn{phase: :preparing, context: context},
@@ -257,9 +258,9 @@ defmodule Helyx.Session.Server.TurnLoop do
       )
       when context != nil do
     {steers, %State{activity: turn} = state} = Steering.append_steers(state)
-    context = %{context | messages: context.messages ++ steers}
+    context = %{context | messages: context.messages ++ steers ++ List.wrap(turn.recall)}
     from = ask(state, pid, {:turn, turn.id, context}, :reply)
-    %{state | activity: %{turn | phase: :submitting, pending: from, context: nil}}
+    %{state | activity: %{turn | phase: :submitting, pending: from, context: nil, recall: nil}}
   end
 
   def submit(state), do: Compaction.submit(state)

@@ -11,7 +11,7 @@ Key design constraints:
 - Core stays small. It contains only plugin registration, OTP supervision, and interface dispatch.
 - Everything else is a plugin: memory, tools, model context, compaction.
 - The TUI is a client host. It uses the session API and is not registered as a Core plugin. Core plugins implement the server extension interfaces. A plugin package can also contain client code. A client extension would load through its client host; Helyx has no client extension API today.
-- The extension surface is small: Provider, Tool, ModelContext, and Compaction. Event is data, not an interface. A transport is not an interface: `Helyx.Transport.WebSocket` is a bundled module that a product starts and that uses only the public session and server API (ADR 0008).
+- The extension surface is small: Provider, Tool, ModelContext, Compaction, and Memory (ADR 0009). Event is data, not an interface. A transport is not an interface: `Helyx.Transport.WebSocket` is a bundled module that a product starts and that uses only the public session and server API (ADR 0008).
 - The server owns agent and session state. Clients are thin and render from the event stream.
 - The end state is one long-running server that owns the sessions, with every client on one wire contract (ADR 0008, `docs/features/wire-protocol.md`). Local mode, server and TUI in one BEAM node with OTP messages, is a step to it.
 - Core knows only interface constructs. A concept that only one kind of plugin has (a harness, a program, a wire protocol) stays in that plugin, and Core code does not name it. A rule that every provider needs, such as the order of tool results or the completion before the next turn, is a provider construct and stays in Core.
