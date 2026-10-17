@@ -45,6 +45,7 @@ defmodule Helyx.Provider.ClaudeCode.Turn do
 
   alias Helyx.HarnessIO
   alias Helyx.Message
+  alias Helyx.Provider.ClaudeCode
   alias Helyx.Provider.ClaudeCode.{Mcp, Meter}
 
   # The program started the turn's line (`command_lifecycle` `started`).
@@ -142,7 +143,8 @@ defmodule Helyx.Provider.ClaudeCode.Turn do
     text = Enum.join(errors(result), "; ")
     text = if text == "" and is_binary(result["result"]), do: result["result"], else: text
     subtype = HarnessIO.cap_error(result["subtype"])
-    {{:error, {:claude_code, subtype, HarnessIO.cap_error(text)}}, meter}
+
+    {{:error, HarnessIO.Error.reason(:claude_code, ClaudeCode.id(), subtype, text)}, meter}
   end
 
   # The wire values: docs/research/stop-reasons.md.

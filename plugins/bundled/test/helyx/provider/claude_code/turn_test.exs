@@ -423,8 +423,7 @@ defmodule Helyx.Provider.ClaudeCode.TurnTest do
     session = start(ctx)
     events = prompt(session, "go")
 
-    assert [%{outcome: :error, error: ~s({:claude_code, "error_max_turns", "too many"})}] =
-             of_type(events, :turn_end)
+    assert [%{outcome: :error, error: "claude-code: too many"}] = of_type(events, :turn_end)
 
     assert [
              %{message: %Message{tool_call_id: "toolu_a", is_error: false}},
@@ -435,5 +434,46 @@ defmodule Helyx.Provider.ClaudeCode.TurnTest do
 
     assert [%{outcome: :done}] = of_type(prompt(session, "next"), :turn_end)
     assert programs(bin) == "1"
+  end
+
+  # The run of 2026-10-17 at the usage limit (#746): the user text is the
+  # provider id and the program's text; the log keeps the subtype.
+  test "an error result with the subtype success shows the provider id and its text",
+       %{bin: bin} = ctx do
+    limit = "You've hit your session limit · resets 1am (Asia/Makassar)"
+
+    error =
+      j(%{
+        type: "result",
+        subtype: "success",
+        is_error: true,
+        num_turns: 1,
+        queued_turn_count: 0,
+        result: limit
+      })
+
+    turn(bin, 1, 1, begin() ++ [error])
+    session = start(ctx)
+
+    {events, log} = ExUnit.CaptureLog.with_log(fn -> prompt(session, "go") end)
+
+    assert [%{outcome: :error, error: "claude-code: " <> ^limit}] = of_type(events, :turn_end)
+    assert log =~ ~s(kind: "success")
+  end
+
+  test "an error result with no text keeps the tuple as its text", %{bin: bin} = ctx do
+    error =
+      j(%{
+        type: "result",
+        subtype: "error_during_execution",
+        is_error: true,
+        num_turns: 1,
+        queued_turn_count: 0
+      })
+
+    turn(bin, 1, 1, begin() ++ [error])
+
+    assert [%{outcome: :error, error: ~s({:claude_code, "error_during_execution", ""})}] =
+             of_type(prompt(start(ctx), "go"), :turn_end)
   end
 end

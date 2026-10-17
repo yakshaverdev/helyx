@@ -14,6 +14,10 @@
         extra: [
           # A test asserts order, not an upper bound of wall-clock time (#221).
           {Helyx.Credo.WallClockUpperBound, []},
+          # The test exceptions are fixtures named for the message they make, not
+          # a naming strategy of the code.
+          {Credo.Check.Consistency.ExceptionNames,
+           files: %{excluded: ["test/", "plugins/bundled/test/"]}},
           # A .ex file has at most 400 lines (#294). The list only shrinks: a
           # listed file must not grow, a file under the limit loses its
           # entry, and a file under its count lowers it.

@@ -188,7 +188,7 @@ defmodule Helyx.Provider.ClaudeCode.LimitsTest do
 
       turn(bin, 1, 1, begin() ++ [error])
 
-      assert [_, {:error, {:claude_code, subtype, text}}] =
+      assert [_, {:error, %Helyx.HarnessIO.Error{kind: subtype, text: text}}] =
                events_of(run_direct([Message.user("hi")], work))
 
       assert {byte_size(text), byte_size(subtype)} == {want, want}
