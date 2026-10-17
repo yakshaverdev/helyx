@@ -34,10 +34,19 @@ defmodule Helyx.Session.LockTest do
     {session, path}
   end
 
+  defp await_lock_free(path, what), do: await(fn -> lock_free?(path) end, what)
+
+  defp lock_free?(path) do
+    case Lock.hold(path, fn -> {:ok, :taken} end) do
+      {:ok, lock, :taken} -> Lock.release(lock) == :ok
+      {:error, {:session_locked, _id}} -> false
+    end
+  end
+
   defp port_messages,
     do: for({port, _} = message <- mailbox(), is_port(port), do: message)
 
-  # The same Core rejects it in its Registry, before the init that takes the lock.
+  # The same Core rejects it in its Registry, before the session process takes the lock.
   test "a session that another Core or the same Core holds does not open, and its file is unchanged",
        %{core: core, tmp_dir: dir} do
     {session, path} = open_without_newline(core, dir)
@@ -201,8 +210,8 @@ defmodule Helyx.Session.LockTest do
     {session, path, sup}
   end
 
-  # The lock is taken in the session's init, so a start request that never
-  # reaches an init takes no lock and writes nothing.
+  # The lock is taken in the session process, so a start request that never
+  # reaches the supervisor takes no lock and writes nothing.
   test "a start request that exits takes no lock and writes nothing", %{core: core, tmp_dir: dir} do
     {sup, caller, ref} =
       park_start(core, fn -> Session.start(core, model: "test/ok", sessions_dir: dir) end)
@@ -213,7 +222,10 @@ defmodule Helyx.Session.LockTest do
   end
 
   # The caller never owns the port, so its death holds no lock (#589).
-  test "a caller killed during its open leaves the lock free", %{core: core, tmp_dir: dir} do
+  test "a caller killed during its start request leaves the lock free", %{
+    core: core,
+    tmp_dir: dir
+  } do
     {_session, path, sup} = park_resume_and_kill_caller(core, dir)
     Process.exit(sup, :kill)
 
@@ -221,24 +233,93 @@ defmodule Helyx.Session.LockTest do
     Lock.release(lock)
   end
 
-  # The other branch: the start request reaches the supervisor, so the init
-  # runs and the session holds the lock until it stops (session-lock.md).
-  test "a caller killed during its open leaves a running session that holds the lock", %{
+  # The arguments of `Helyx.Session.Server.start/3` for a new session with no
+  # file, whose open function a test gives.
+  defp start_args(core, dir) do
+    id = Helyx.Session.Id.new()
+    {:ok, ref} = Helyx.ModelRef.parse("test/ok")
+    {:ok, provider} = Helyx.Provider.find(core, ref.provider)
+    {:ok, tools} = Helyx.Tool.specs(core)
+
+    state = %Helyx.Session.Server.State{
+      id: id,
+      core: core,
+      model: ref,
+      provider: provider,
+      cwd: File.cwd!()
+    }
+
+    {state, tools, Path.join(dir, id <> ".jsonl")}
+  end
+
+  # Starts, in a new caller, a session whose open waits under the lock until
+  # the test sends `:go`. Returns the caller, the session process, and the
+  # session path.
+  defp start_held(core, dir) do
+    test = self()
+    {state, tools, path} = start_args(core, dir)
+
+    open =
+      {path,
+       fn state ->
+         send(test, {:in_open, self()})
+
+         receive do
+           :go -> {:ok, state}
+         end
+       end}
+
+    {caller, _ref} =
+      spawn_monitor(fn ->
+        send(test, {:started, Helyx.Session.Server.start(state, tools, open)})
+      end)
+
+    assert_receive {:in_open, pid}
+    {caller, pid, path}
+  end
+
+  # The open runs in the session process after the supervisor started it,
+  # so a slow open holds no other start of the Core (#605).
+  test "a start does not wait for the open of another session", %{core: core, tmp_dir: dir} do
+    {caller, pid, _path} = start_held(core, dir)
+
+    other = Task.async(fn -> Session.start(core, model: "test/ok", sessions_dir: dir) end)
+    assert {:ok, _} = Task.await(other, Helyx.Test.Events.wait_ms())
+
+    send(pid, :go)
+    assert_receive {:started, {:ok, %Session{}}}
+    assert_receive {:DOWN, _ref, :process, ^caller, :normal}
+  end
+
+  test "a caller that ends during its open leaves no session and no lock", %{
     core: core,
     tmp_dir: dir
   } do
-    {session, _path, sup} = park_resume_and_kill_caller(core, dir)
+    {caller, pid, path} = start_held(core, dir)
+    ref = Process.monitor(pid)
+    Process.exit(caller, :kill)
+    assert_receive {:DOWN, _, :process, ^caller, :killed}
+    send(pid, :go)
+    assert_receive {:DOWN, ^ref, :process, ^pid, :normal}
+    await_lock_free(path, "the lock of the session to free")
+  end
+
+  # The start request reaches the supervisor after its caller ended, so the
+  # session gets no go and runs no open: the file keeps its missing newline.
+  test "a caller killed before its start reaches the supervisor leaves no session and no lock", %{
+    core: core,
+    tmp_dir: dir
+  } do
+    {session, path, sup} = park_resume_and_kill_caller(core, dir)
+    before = File.read!(path)
     :ok = :sys.resume(sup)
-    # This call waits behind the parked start, which returns only after the
-    # init has taken the lock. The session name is registered before the
-    # init, so a wait for the name is not enough (#612).
+    # This call waits behind the parked start, so the session process exists
+    # after it until it sees its caller gone.
     _ = :sys.get_state(sup)
+    await(fn -> Session.pid(session) == nil end, "the session to stop")
 
-    assert Session.resume(other_core(), sessions_dir: dir, id: session.id) ==
-             {:error, {:session_locked, session.id}}
-
-    stop_session(session, &GenServer.stop/1)
-    assert {:ok, _} = Session.resume(other_core(), sessions_dir: dir, id: session.id)
+    assert File.read!(path) == before
+    await_lock_free(path, "the lock to be free")
   end
 
   # The release waits 1000 ms for a perl that does not end.
@@ -260,19 +341,11 @@ defmodule Helyx.Session.LockTest do
 
     {_, 0} = System.cmd("kill", ["-CONT", os_pid])
 
-    await(
-      fn ->
-        case Lock.hold(path, fn -> {:ok, :taken} end) do
-          {:ok, lock, :taken} -> Lock.release(lock) == :ok
-          {:error, {:session_locked, _id}} -> false
-        end
-      end,
-      "perl to free the lock when it ends"
-    )
+    await_lock_free(path, "perl to free the lock when it ends")
   end
 
   # perl ends during the open, as during the resume read in the session's
-  # init: the open returns, and the owner, which traps exits as the session
+  # open: the open returns, and the owner, which traps exits as the session
   # does, gets the exit of the port. The session handles it as a lock lost
   # while it runs.
   test "an open whose perl ends during it sends the exit of the port", %{tmp_dir: dir} do
@@ -319,5 +392,21 @@ defmodule Helyx.Session.LockTest do
         "no perl process for #{name}"
       )
     end
+  end
+
+  # The caller monitors the session before the go, so a crash of the open
+  # reaches it with its reason, not `:noproc`.
+  @tag capture_log: true
+  test "an open that raises gives the crash as an error, and the lock is free", %{
+    core: core,
+    tmp_dir: dir
+  } do
+    {state, tools, path} = start_args(core, dir)
+    open = {path, fn _state -> raise "open" end}
+
+    assert {:error, {%RuntimeError{message: "open"}, [_ | _]}} =
+             Helyx.Session.Server.start(state, tools, open)
+
+    await_lock_free(path, "the lock of the crashed session to free")
   end
 end

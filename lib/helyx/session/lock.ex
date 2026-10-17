@@ -2,7 +2,7 @@ defmodule Helyx.Session.Lock do
   @moduledoc false
   # The writer lock of a session file (docs/features/session-lock.md): a
   # `flock` on `<id>.lock` next to `<id>.jsonl`, held by a perl program on a
-  # port. The session server takes it with `hold/2` in its init, so it owns
+  # port. The session server takes it with `hold/2` at its start, so it owns
   # the port from its open, and releases it at its stop (`release/1`). When
   # the owner of the port ends, the port closes, perl reads the end of its
   # stdin and exits, and the kernel releases the lock.

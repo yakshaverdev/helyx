@@ -16,20 +16,40 @@ defmodule Helyx.Session.Server do
 
   # Starts the session process under Core for `Helyx.Session.start/2` and
   # `resume/2`. `open` is nil with no session file, or `{path, fun}`: the
-  # init takes the lock of `path` and runs `fun` on the state under it
+  # session takes the lock of `path` and runs `fun` on the state under it
   # (`Lock.hold/2`), so the port of the lock has one owner for its whole
-  # life. An error of the init comes back as it is. The Registry
-  # rejects a session that this Core runs before the init: it is open in
-  # another process, as a lock held by another Core (session-lock.md).
+  # life. The open runs after the supervisor started the process; the
+  # caller waits for its result, and an error of the open comes back as it
+  # is. The Registry rejects a session that this Core runs before the init:
+  # it is open in another process, as a lock held by another Core
+  # (session-lock.md).
   def start(%State{id: id, core: core} = state, tools, open) do
-    case start_child(state, tools, open) do
-      {:ok, _pid} -> {:ok, %Helyx.Session{id: id, core: core}}
+    ref = make_ref()
+
+    case start_child(state, tools, {open, self(), ref}) do
+      {:ok, pid} -> await_open(pid, ref, %Helyx.Session{id: id, core: core})
       {:error, {:already_started, _pid}} -> {:error, {:session_locked, id}}
       error -> error
     end
   end
 
-  defp start_child(%State{core: core} = state, tools, open) do
+  # The go comes after the monitor, so a crash of the open reaches the
+  # caller with its reason. The session sends the result before it ends.
+  defp await_open(pid, ref, session) do
+    monitor = Process.monitor(pid)
+    send(pid, {ref, :go})
+
+    receive do
+      {^ref, result} ->
+        Process.demonitor(monitor, [:flush])
+        with :ok <- result, do: {:ok, session}
+
+      {:DOWN, ^monitor, :process, ^pid, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp start_child(%State{core: core} = state, tools, start) do
     # The plugin table of a Core does not change after start, so a plugin
     # resolved once here is the plugin a lookup per provider call would give.
     # Both interfaces are single-mode: one plugin or none (nil).
@@ -43,24 +63,52 @@ defmodule Helyx.Session.Server do
 
     DynamicSupervisor.start_child(
       Helyx.Core.session_supervisor(core),
-      {__MODULE__, {session, open}}
+      {__MODULE__, {session, start}}
     )
   end
 
-  def start_link({%State{id: id, core: core}, _open} = args) do
+  def start_link({%State{id: id, core: core}, _start} = args) do
     GenServer.start_link(__MODULE__, args, name: via(core, id))
   end
 
+  # The init does no work that can wait: the supervisor waits for it.
   @impl true
-  def init({%State{} = state, open}) do
+  def init({%State{} = state, {open, caller, ref}}) do
     # The session traps exits: the hands are linked, so their crash arrives
     # as a message, and a death of the session takes them with it (ADR 0004).
     Process.flag(:trap_exit, true)
+    {:ok, state, {:continue, {open, caller, ref, Process.monitor(caller)}}}
+  end
 
-    # First, so no hands exist yet when the open fails.
+  # The open waits for the go of the caller (`await_open/3`), and runs
+  # before the hands, so no hands exist yet when it fails. A caller that
+  # ended before the go or during the open gets no session: the stop
+  # releases the lock (`terminate/2`). A caller that ends after the check
+  # below gets a session that runs, as after a start that returned.
+  @impl true
+  def handle_continue({open, caller, ref, monitor}, state) do
+    receive do
+      {^ref, :go} -> run_open(state, open, caller, ref, monitor)
+      {:DOWN, ^monitor, :process, _pid, _reason} -> {:stop, :normal, state}
+    end
+  end
+
+  defp run_open(state, open, caller, ref, monitor) do
     case open_file(state, open) do
-      {:ok, state} -> init_hands(state)
-      {:error, reason} -> {:stop, reason}
+      {:ok, state} ->
+        receive do
+          {:DOWN, ^monitor, :process, _pid, _reason} -> {:stop, :normal, state}
+        after
+          0 ->
+            Process.demonitor(monitor, [:flush])
+            state = init_hands(state)
+            send(caller, {ref, :ok})
+            {:noreply, state}
+        end
+
+      {:error, reason} ->
+        send(caller, {ref, {:error, reason}})
+        {:stop, :normal, state}
     end
   end
 
@@ -94,14 +142,13 @@ defmodule Helyx.Session.Server do
       hold: true
     }
 
-    {:ok,
-     %{
-       state
-       | hands: hands,
-         instance_id: instance_id,
-         background_dir: background_dir,
-         queue: queue
-     }}
+    %{
+      state
+      | hands: hands,
+        instance_id: instance_id,
+        background_dir: background_dir,
+        queue: queue
+    }
   end
 
   # The admission of a client message by phase (`TurnLoop.admit/3`).
@@ -276,10 +323,11 @@ defmodule Helyx.Session.Server do
   # supervisor before its task supervisor, and the release Tasks of the
   # hands run under the task supervisor. So a release that the hands start
   # after the session ended could find the task supervisor stopped.
+  #
+  # A session with no hands ended in its open: it holds the lock at most.
   @impl true
-  def terminate(_reason, state) do
-    Stop.run(state)
-  end
+  def terminate(_reason, %State{hands: nil} = state), do: Lock.release(state.lock)
+  def terminate(_reason, state), do: Stop.run(state)
 
   def via(core, id), do: {:via, Registry, {Helyx.Core.sessions_registry(core), id}}
 end

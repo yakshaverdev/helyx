@@ -75,7 +75,7 @@ defmodule Helyx.Core do
         {Registry,
          keys: :unique, name: sessions_registry(name), meta: [plugins: table, provider_ids: ids]},
         {Task.Supervisor, name: task_supervisor(name)},
-        # The session's init loads a resumed transcript, so the start
+        # The session process loads a resumed transcript, so the start
         # message holds no transcript for the supervisor to keep (#103, #589).
         {DynamicSupervisor, name: session_supervisor(name), strategy: :one_for_one}
       ] ++ plugin_children
