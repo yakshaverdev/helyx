@@ -194,6 +194,34 @@ defmodule Helyx.TUI.SwitchTest do
     assert value(state) == "queued\ndraft"
   end
 
+  test "a queue of a dead session that waits before its end signal comes back",
+       %{core: core, opts: opts} do
+    call = %Message.ToolCall{id: "c", name: "slow", arguments: %{"ms" => 60_000, "text" => "x"}}
+    :ok = Fake.script(core, "busy", [[call], ["done"]])
+    {:ok, current} = start(core, opts, "fake/busy")
+    state = mount!(current, opts) |> type("draft")
+    :ok = Session.prompt(current, "go")
+
+    state =
+      until(state, &match?(%{type: :message_end, data: %{message: %{role: :assistant}}}, &1))
+
+    :ok = Session.follow_up(current, "queued")
+    task = Task.async(fn -> :ok end)
+    Task.await(task)
+    state = %{state | switch: %Switch{task: task, target: {:resume, "AAAAAAAAAAAA"}}}
+
+    # The `queue_dropped` of the abort and the `:DOWN` wait in the mailbox
+    # when the failed answer comes.
+    :ok = Session.abort(current)
+    :ok = GenServer.stop(Session.pid(current))
+    state = info({task.ref, {:error, :not_found}}, state)
+
+    assert %Switch{target: :new} = state.switch
+    # The drained `turn_end` stops the busy timer.
+    assert state.busy == nil
+    assert value(finish(state)) == "queued\ndraft"
+  end
+
   test "the queue of a session that ended during a failed switch comes back",
        %{core: core, opts: opts} do
     {:ok, current} = start(core, opts)

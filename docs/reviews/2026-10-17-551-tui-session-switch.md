@@ -97,3 +97,17 @@ Scope: the fix of 3.1 (two code files, 36 changed lines in `Switch`, 7 in `Helyx
 | 4.3 | Codex | Approve, no material finding | n/a |
 
 The fix of 4.1 had no review round of its own; the orchestrator's decision ends the loop with this round.
+
+## Round 5 (reduced, Codex gate finding)
+
+The Codex gate of the orchestrator, round 1, found and reproduced a high finding: at a failed answer with a dead session, `ended/1` took the `:DOWN` with a selective receive and skipped a `queue_dropped` of the same session that was earlier in the mailbox. The fallback `/new` then kept that event in its own switch and dropped it when it succeeded.
+
+Fix: `drain/1` takes the events of the session and its `:DOWN` in mailbox order, so the kept texts are complete before the composer takes them and the fallback `/new` starts. Test "a queue of a dead session that waits before its end signal comes back" fails without the fix (`"draft"` against `"queued\ndraft"`).
+
+Spec agent and failure-path agent:
+
+| # | Axis | Finding | Resolution |
+| - | ---- | ------- | ---------- |
+| 5.1 | failure path, spec | A `turn_end` that `drain/1` takes sets `running?` to false, but `busy` stays set, so the timer runs while the fallback `/new` runs. Reproduced through `TUI.handle_info/2` | Fixed (2 lines): `sync_busy/1` after `Switch.done/2` in both clauses of `Helyx.TUI`; the test asserts `busy == nil` and fails without the fix |
+| 5.2 | spec, failure path | A drained `turn_end` does not read the git branch again; the drained events render after the cell `could not switch` | No change: the TUI binds a new session in the same folder at once, and the branch shows after the next turn, as the feature doc states for a branch change between turns |
+| 5.3 | failure path | `drain/1` cannot block: only the session process sends its events, every one of them comes before its `:DOWN`, and a gone Registry ends the session with it (probed). No defect | n/a |

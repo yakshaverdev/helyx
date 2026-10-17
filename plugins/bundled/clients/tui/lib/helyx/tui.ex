@@ -108,7 +108,7 @@ defmodule Helyx.TUI do
 
   def handle_info({ref, result}, %{switch: %Switch{task: %Task{ref: ref}}} = state) do
     Process.demonitor(ref, [:flush])
-    {:noreply, settle(Switch.done(state, result))}
+    {:noreply, settle(sync_busy(Switch.done(state, result)))}
   end
 
   # ExRatatui traps exits, so a crash of the switch Task reaches the TUI as
@@ -117,7 +117,7 @@ defmodule Helyx.TUI do
         {:DOWN, ref, :process, _pid, reason},
         %{switch: %Switch{task: %{ref: ref}}} = state
       ),
-      do: {:noreply, settle(Switch.done(state, {:error, reason}))}
+      do: {:noreply, settle(sync_busy(Switch.done(state, {:error, reason})))}
 
   # A tick of the `subscriptions/1` timer. ExRatatui drops a tick of a
   # cancelled timer, so one never arrives while idle.

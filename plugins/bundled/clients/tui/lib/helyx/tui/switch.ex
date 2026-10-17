@@ -133,12 +133,10 @@ defmodule Helyx.TUI.Switch do
     %{state | composer: Composer.end_recall(state.composer)}
   end
 
-  # A crash of the Task is a failed open too. The end signal of a session
-  # that died can come after the answer: the monitor makes it certain, so
-  # the TUI waits for it.
-  def done(%{switch: switch} = state, {:error, reason}) do
-    down = switch.down || ended(state)
-    failed(%{state | vm: ViewModel.info(state.vm, text(reason))}, switch.target, down)
+  # A crash of the Task is a failed open too.
+  def done(state, {:error, reason}) do
+    %{switch: switch} = state = ended(%{state | vm: ViewModel.info(state.vm, text(reason))})
+    failed(state, switch.target, switch.down)
   end
 
   defp failed(state, _target, nil), do: give_back(state)
@@ -155,15 +153,24 @@ defmodule Helyx.TUI.Switch do
   defp give_back(%{switch: switch} = state),
     do: switch.dropped |> Enum.reverse() |> Enum.reduce(%{state | switch: nil}, &event(&2, &1))
 
+  # The end signal of a session that died can come after the answer.
   # `Session.pid/1` gives nil only for a dead session (the Registry checks
   # the pid), and the `:DOWN` of a dead monitored process is on its way.
-  defp ended(%{session: session, session_ref: ref}) do
-    if Session.pid(session) do
-      nil
-    else
-      receive do
-        {:DOWN, ^ref, :process, _pid, reason} -> {:down, reason}
-      end
+  defp ended(%{switch: %{down: nil}} = state),
+    do: if(Session.pid(state.session), do: state, else: drain(state))
+
+  defp ended(state), do: state
+
+  # The events of the session come before its `:DOWN` in the mailbox, and
+  # a `queue_dropped` among them must not be skipped, so the TUI takes
+  # them in their order up to the `:DOWN`.
+  defp drain(%{session_ref: ref, instance_id: id} = state) do
+    receive do
+      {:helyx_event, %Event{instance_id: ^id} = event} ->
+        drain(event(%{state | vm: ViewModel.apply(state.vm, event)}, event))
+
+      {:DOWN, ^ref, :process, _pid, reason} ->
+        down(state, reason)
     end
   end
 
