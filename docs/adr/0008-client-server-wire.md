@@ -44,12 +44,12 @@ WebSocket, one JSON object per text frame. The same objects can go over stdio, o
 
 - A request `id` is a client string of 1 to 64 bytes, unique among the requests on the connection whose reply was not sent. It correlates a reply. It does not allow a retry: a lost reply keeps the rule of ADR 0006 §4. The result is unknown, the client subscribes again, and the user decides.
 - An error is `{"code": C, "text": X}`. `code` is from a closed list (`wire-protocol.md`), and `text` is for a person. The start-error map of ADR 0006 §2 is built here.
-- **Parts.** A frame whose JSON is over 1 MiB goes as `part` frames: each carries the base64 of the next piece of the JSON text of the whole frame, so that a piece can end inside a UTF-8 character and the part frame stays under 1 MiB, and the last part says so. The receiver joins the pieces in order and then reads the whole frame. A connection sends every part of one frame before any other frame. So every WebSocket frame is at most 1 MiB, and no content limit of Core has to fit a frame. Reason: a projection that cuts content to fit a frame cannot bound a legal message (a message of 8 MiB of control characters is 48 MiB of JSON, and a group of 1,024 tool results of 64 KiB is 64 MiB), and it makes a client read content in a second step.
+- **Parts.** A frame whose JSON is over 1 MiB goes as `part` frames: each carries the base64 of the next piece of the JSON text of the whole frame, so that a piece can end inside a UTF-8 character and the part frame stays under 1 MiB, and the last part says so. The receiver joins the pieces in order and then reads the whole frame. A connection sends every part of one frame before any other frame. So every WebSocket frame is at most 1 MiB, and no content limit of Core has to fit a frame. Reason: a projection that cuts content to fit a frame cannot bound a legal message (a message of 8 MiB of control characters is 48 MiB of JSON, and a group of 1,024 tool results with a text block of 64 KiB each is 64 MiB), and it makes a client read content in a second step.
 - An unknown `op` gets a `res` with `unknown_op`. Any other frame that the contract does not allow closes the connection with `4400`.
 
 ### 3. Operations
 
-`sessions.live`, `sessions.saved`, `start`, `resume`, `subscribe`, `unsubscribe`, `history`, `prompt`, `steer`, `follow_up`, `abort`, `set_model`, and `compact`. Their parameters, results, and errors are in `wire-protocol.md`.
+`sessions.live`, `sessions.saved`, `start`, `resume`, `subscribe`, `unsubscribe`, `history`, `prompt`, `steer`, `follow_up`, `abort`, `set_model`, `compact`, and `stop`. Their parameters, results, and errors are in `wire-protocol.md`.
 
 - `resume` of a session that runs attaches to that instance (#657).
 - A request runs outside the socket handler, so an `abort` that waits for its cleanup does not stop the events.

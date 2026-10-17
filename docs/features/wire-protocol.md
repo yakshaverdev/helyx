@@ -52,6 +52,7 @@ Every `req` gets one `res`: `ok: true` with the result, or `ok: false` with an e
 | `abort` | `{session}` | `{}`; a failed cleanup still gives `{}`, and the `notice` event "abort cleanup failed" tells the clients | `session_not_found` |
 | `set_model` | `{session, model}` | `{}`; the next turn uses it, a running turn keeps its model | `session_not_found`, `invalid_model_ref`, `unknown_provider` |
 | `compact` | `{session, text?}`: the instructions, default `""` | `{}`; a provider that keeps no history gives a `notice` event | `session_not_found`, `invalid_utf8`, `turn_running` |
+| `stop` | `{session}` | `{}` after the session ended: a running turn aborts first, as at `abort`, then the session stops and every subscription of it gets `session_end` with `stopped`. A stopped session frees its place in the live-session cap and can be resumed from its file | `session_not_found` |
 
 Every operation can also answer `unknown_op`, `bad_params`, `busy`, `timeout`, and `failed`.
 
@@ -67,6 +68,7 @@ Past its deadline, an operation answers `timeout`: the outcome is unknown. The c
 | Operation | Deadline | Why |
 |---|---|---|
 | `abort` | 46,000 ms | the hands release of the cancel, at most 20,000 ms (`Hands.State.release_ms/0`, `lib/helyx/session/hands.ex:66`, the call at `:225`); then the delivery of the provider process, which releases its handles in the same hands process, at most 20,000 ms more (`hands.ex:279`, `:292`); an abort that comes during an idle close also waits for the armed kill of the close, 5,000 ms (`State.provider_close_ms/0`, `lib/helyx/session/server/state.ex:37`, `turn_loop.ex:104-109`); and a margin of 1,000 ms. `Helyx.Session.abort/1` itself waits with no timeout (`lib/helyx/session.ex:378`). A test of the transport compares the constant with the two functions. A hands process with more releases queued takes longer: the client gets `timeout`, accepted |
+| `stop` | 47,000 ms | the `abort` deadline, then the stop of the session process, which has the 1,000 ms release bound of the lock (`Helyx.Session.Lock.release_ms/0`, `lib/helyx/session/lock.ex:38`); the Core call is part of the server-management API (#657) |
 | `start`, `resume` | 30,000 ms | the tool checks in the caller (`Helyx.Tool.check_available/1`, no timeout of its own), then the open in the session process: the lock, whose answer has 5,000 ms (`lib/helyx/session/lock.ex:33`), and the load of a file of at most 64 MiB (`lib/helyx/session/file.ex:21`). `Server.start/3` waits for the open with no timeout of its own (`lib/helyx/session/server.ex:38-50`). A longer start answers `timeout`, and the session can still start: the client sees it in `sessions.live` |
 | `sessions.saved` | 10,000 ms | a scan of at most 256 file heads of 64 KiB (`lib/helyx/session/file/scan.ex:4`, `:8`) |
 | `subscribe` | the call timeout of 5,000 ms (`lib/helyx/session.ex:39`) | the subscription process answers the exit as `timeout` |
@@ -133,7 +135,7 @@ error_code = "unknown_op" | "bad_params" | "busy" | "timeout" | "failed"
 
 op = "sessions.live" | "sessions.saved" | "start" | "resume" | "subscribe"
    | "unsubscribe" | "history" | "prompt" | "steer" | "follow_up"
-   | "abort" | "set_model" | "compact"
+   | "abort" | "set_model" | "compact" | "stop"
 
 params.sessions.live   = {}
 params.sessions.saved  = {cwd?: string, after?: string, limit?: int}
@@ -150,6 +152,7 @@ params.follow_up       = params.prompt
 params.abort           = {session: string}
 params.set_model       = {session: string, model: string}
 params.compact         = {session: string, text?: string}
+params.stop            = {session: string}
 product_origin         = {kind: "product", id: string}
 
 result.sessions.live  = {sessions: [live_session]}
@@ -159,7 +162,7 @@ result.resume         = {session: string}
 result.subscribe      = {sub: string, replay: [event]} | {sub: string, snapshot: snapshot}
 result.history        = {messages: [message], more: bool}
 result.unsubscribe, result.prompt, result.steer, result.follow_up,
-result.abort, result.set_model, result.compact = {}
+result.abort, result.set_model, result.compact, result.stop = {}
 
 live_session  = {id: string, instance_id: string, cwd: string, model: string,
                  status: "idle" | "running"}
@@ -258,7 +261,7 @@ Notes on the codec:
 | replay ring per session | 1,024 events and 4,194,304 bytes, each event counted by `:erlang.external_size/1`. A message is in the ring twice, as its deltas and as its `message_end`, so the ring holds about 2 MiB of new text | the oldest events go; an event over 4 MiB empties the ring and marks a gap, so a replay over it gives a snapshot | session (#659) |
 | replay rings of the server | 268,435,456 bytes: 64 live sessions of 4 MiB. No accounting across sessions is needed | as above | the live-session cap |
 | tail snapshot and page, count | default 200, at most 1,000; or the newest group alone | a value over 1,000: `bad_params` | session (#658) |
-| tail snapshot and page, bytes | 16,777,216 bytes of message content (`:erlang.external_size/1`); or the newest group alone. A group is one assistant message of at most 8 MiB and 1,024 blocks, live by `Helyx.Session.Turn` (`lib/helyx/session/turn.ex:69`, `:74`, `:94`) and at file read by #673, with at most one tool result for each call (at read, `Helyx.Session.Transcript.repair/1` drops a second one, `lib/helyx/session/transcript.ex:52-58`), of at most 64 KiB of text (`lib/helyx/data/message.ex:184`). The snapshot also carries the turn partial, at most 8 MiB | the tail ends; it goes as parts | session (#658) |
+| tail snapshot and page, bytes | 16,777,216 bytes of message content (`:erlang.external_size/1`); or the newest group alone. A group is one assistant message of at most 8 MiB and 1,024 blocks, live by `Helyx.Session.Turn` (`lib/helyx/session/turn.ex:69`, `:74`, `:94`) and at file read by #673, with at most one tool result for each call (at read, `Helyx.Session.Transcript.repair/1` drops a second one, `lib/helyx/session/transcript.ex:52-58`), each text block of a result at most 64 KiB (`lib/helyx/data/message.ex:184`, and at read `Codec.decode/1` cuts each block, `lib/helyx/session/file/codec.ex`); a result has no total bound of its own beyond the blocks of its message. The snapshot also carries the turn partial, at most 8 MiB | the tail ends; it goes as parts | session (#658) |
 | request results per connection | 1: a `subscribe`, `history`, or `sessions.saved` request takes the one encoder slot of the connection before it reads its data from Core, and holds it until its reply is in the outbound queue. So at most one snapshot or page result exists per connection, and a waiting request holds no result. The wait for the slot is not in the deadline of the request; the request counts against the requests in flight while it waits. Another operation has a small result and takes no slot, and an event takes no slot: its subscription process encodes it | | transport |
 | credits per subscriber | 16,384 unacked events, a replayed event too. The count is chosen above the 10,000 provider messages that the session can hold waiting (`lib/helyx/session/stream.ex:18`), a heuristic: that number bounds messages, not events, and the burst test checks it. The credits count events only: the byte bound is the outbound queue | the subscription ends with `:slow`; close `4408` | session (#659) |
 | outbound queue per connection | 67,108,864 bytes of frames added and not yet taken by the socket. A subscription process encodes each event when it takes it, and a writer adds each frame with a call that the connection process answers at once, with no wait for room. Before each add, one add at a time, the connection checks the bytes of the queue without the frame that the socket writes now, so one large frame does not close the connection at the next add | the queue holds more than 64 MiB at an add: close `4408` | transport |
