@@ -28,8 +28,8 @@ defmodule Helyx.Session do
   has the subscription.
   """
 
-  alias Helyx.{Message, ModelRef}
-  alias Helyx.Session.{Id, Server, Snapshot, Transcript}
+  alias Helyx.ModelRef
+  alias Helyx.Session.{Id, Input, Server, Snapshot, Transcript}
   alias Helyx.Session.Server.State
 
   @enforce_keys [:id, :core]
@@ -41,7 +41,12 @@ defmodule Helyx.Session do
   @type t :: %__MODULE__{id: String.t(), core: Helyx.Core.name()}
 
   @typedoc "An error of `prompt/3`, `steer/3`, and `follow_up/3`."
-  @type send_error :: :invalid_utf8 | :invalid_origin | :queue_full | :session_not_found
+  @type send_error ::
+          :text_too_large | :invalid_utf8 | :invalid_origin | :queue_full | :session_not_found
+
+  @doc "The most bytes of a text to `prompt/3`, `steer/3`, `follow_up/3`, and `compact/2`: 4 MiB."
+  @spec max_text_bytes() :: pos_integer()
+  defdelegate max_text_bytes, to: Input
 
   @typedoc "An error that stops a model ref from resolving to a provider plugin."
   @type model_error ::
@@ -151,17 +156,7 @@ defmodule Helyx.Session do
     end
   end
 
-  # The boundary for `cwd`. It goes into the session file as JSON, into the
-  # system prompt, and to programs, which cut a string at a NUL byte.
-  defp fetch_cwd(opts), do: opts |> Keyword.get_lazy(:cwd, &File.cwd!/0) |> check_cwd()
-
-  defp check_cwd(cwd) when is_binary(cwd) do
-    if String.valid?(cwd) and not String.contains?(cwd, <<0>>),
-      do: {:ok, cwd},
-      else: {:error, :invalid_cwd}
-  end
-
-  defp check_cwd(_cwd), do: {:error, :invalid_cwd}
+  defp fetch_cwd(opts), do: opts |> Keyword.get_lazy(:cwd, &File.cwd!/0) |> Input.cwd()
 
   # A model ref string to its parsed ref and its provider plugin, for start,
   # resume, and a switch alike.
@@ -267,9 +262,11 @@ defmodule Helyx.Session do
   end
 
   @doc """
-  Sends a prompt. Starts a turn if none is running. The text must be valid
-  UTF-8. While an abort waits for the hands, the prompt queues as a
-  follow-up, and a full queue returns `{:error, :queue_full}`.
+  Sends a prompt. Starts a turn if none is running. A text over
+  `max_text_bytes/0` is `{:error, :text_too_large}`, and one that is not
+  valid UTF-8 `{:error, :invalid_utf8}`. While an abort waits for the
+  hands, the prompt queues as a follow-up, and a full queue returns
+  `{:error, :queue_full}`.
 
   Its message has the origin `:user`. Product code passes `origin: %{kind:
   :product, id: id}`, an id of 1 to 256 bytes of UTF-8, unique per call; any
@@ -283,8 +280,8 @@ defmodule Helyx.Session do
   @doc """
   Steers the running turn. `:ok` means that the session accepted the
   steer. With no turn running it starts a turn, like a prompt. The text
-  must be valid UTF-8. The queued steers and the sent steers that are
-  still open count to 32. At that count the call returns
+  takes the checks of `prompt/3`. The queued steers and the sent steers
+  that are still open count to 32. At that count the call returns
   `{:error, :queue_full}`. An abort or a failure of the turn gives every
   queued steer back to the client in a `:queue_dropped` event.
 
@@ -302,9 +299,10 @@ defmodule Helyx.Session do
   Queues a follow-up prompt. Each follow-up opens its own turn, in the
   order it was sent, after the current turn ends normally; steers that the
   turn did not take open one turn together before any follow-up. With no
-  turn running it starts a turn at once. The text must be valid UTF-8. A
-  full queue returns `{:error, :queue_full}`. An abort or a failure of the
-  turn gives it back to the client in a `:queue_dropped` event.
+  turn running it starts a turn at once. The text takes the checks of
+  `prompt/3`. A full queue returns `{:error, :queue_full}`. An abort or a
+  failure of the turn gives it back to the client in a `:queue_dropped`
+  event.
   """
   @spec follow_up(t(), String.t(), keyword()) :: :ok | {:error, send_error()}
   def follow_up(%__MODULE__{} = session, text, opts \\ []) when is_binary(text) and is_list(opts),
@@ -315,26 +313,20 @@ defmodule Helyx.Session do
   message (`docs/features/harness-compaction.md`). A running turn aborts
   first, as at `abort/1`, and is not retried. A second compaction before
   the first ends returns `{:error, :turn_running}`. A provider that keeps
-  no history gives a `:notice` event. The text must be valid UTF-8.
+  no history gives a `:notice` event. The text takes the text checks of
+  `prompt/3`.
   """
   @spec compact(t(), String.t()) ::
-          :ok | {:error, :turn_running | :invalid_utf8 | :session_not_found}
+          :ok | {:error, :turn_running | :text_too_large | :invalid_utf8 | :session_not_found}
   def compact(%__MODULE__{} = session, instructions \\ "") when is_binary(instructions),
     do: send_text(session, {:compact, instructions}, instructions)
 
   defp send_user(session, op, text, opts),
-    do: with({:ok, origin} <- origin(opts), do: send_text(session, {op, text, origin}, text))
-
-  # The boundary of the origin: product code may set only `:product`.
-  defp origin([]), do: {:ok, %{kind: :user, id: nil}}
-
-  defp origin(origin: %{kind: :product} = origin),
-    do: if(Message.origin?(origin), do: {:ok, origin}, else: {:error, :invalid_origin})
-
-  defp origin(_opts), do: {:error, :invalid_origin}
+    do:
+      with({:ok, origin} <- Input.origin(opts), do: send_text(session, {op, text, origin}, text))
 
   defp send_text(session, request, text),
-    do: if(String.valid?(text), do: call(session, request), else: {:error, :invalid_utf8})
+    do: with(:ok <- Input.text(text), do: call(session, request))
 
   @doc """
   Switches the session's model. The ref is parsed and its provider resolved

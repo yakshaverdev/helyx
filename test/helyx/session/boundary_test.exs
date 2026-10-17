@@ -221,6 +221,70 @@ defmodule Helyx.Session.BoundaryTest do
     end
   end
 
+  describe "user text at the session boundary (#672)" do
+    # 4-byte characters up to the bound exactly.
+    defp at_bound, do: String.duplicate("😀", div(Session.max_text_bytes(), 4))
+
+    # One byte over the bound. The size check comes first, so bytes that
+    # are not UTF-8 get it too.
+    defp refused_everywhere(session, at) do
+      for text <- [at <> "a", <<255>> <> at] do
+        for op <- [:prompt, :steer, :follow_up] do
+          assert apply(Session, op, [session, text]) == {:error, :text_too_large}
+        end
+
+        assert Session.compact(session, text) == {:error, :text_too_large}
+      end
+
+      # At the bound the UTF-8 check runs.
+      bad = <<255>> <> binary_part(at, 1, byte_size(at) - 1)
+
+      for op <- [:prompt, :steer, :follow_up],
+          do: assert(apply(Session, op, [session, bad]) == {:error, :invalid_utf8})
+
+      assert Session.compact(session, bad) == {:error, :invalid_utf8}
+    end
+
+    test "a text over 4 MiB is :text_too_large and sends no event; each call takes one at it",
+         %{core: core} do
+      assert Session.max_text_bytes() == 4_194_304
+      at = at_bound()
+      {:ok, session} = Session.start(core, model: "test/ok")
+      {:ok, _, _} = Session.subscribe(session)
+
+      refused_everywhere(session, at)
+      refute_received {:helyx_event, _}
+
+      for op <- [:prompt, :steer, :follow_up] do
+        :ok = apply(Session, op, [session, at])
+        assert user_texts(collect_until(:turn_end)) == [at]
+      end
+
+      :ok = Session.compact(session, at)
+      assert %{origin: :compaction} = hd(collect_until(:turn_end)).data
+    end
+
+    test "a text over 4 MiB during a turn leaves no queue entry", %{core: core} do
+      at = at_bound()
+      {:ok, session} = Session.start(core, model: gated_model())
+      {:ok, _, _} = Session.subscribe(session)
+
+      :ok = Session.prompt(session, "hello")
+      assert_receive {:waiting, stream}
+      refused_everywhere(session, at)
+      :ok = Session.follow_up(session, at)
+      send(stream, :go)
+
+      first = collect_until(:turn_end)
+      assert user_texts(first) == ["hello"]
+      assert queue_counts(first) == [%{steers: 0, follow_ups: 1, running: 0, held: 0, waiting: 0}]
+
+      assert_receive {:waiting, stream}
+      send(stream, :go)
+      assert user_texts(collect_until(:turn_end)) == [at]
+    end
+  end
+
   describe "set_model/2" do
     test "the next turn uses the new provider, and a switch back works", %{core: core} do
       {:ok, session} = Session.start(core, model: "test/ok")

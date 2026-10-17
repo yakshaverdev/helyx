@@ -56,7 +56,8 @@ defmodule Helyx.Event do
       turn emptied the queues, and the queued texts go back to the client,
       the steers first, each queue in its order (a steer that the
       provider rejected joined the end of the steers). At most 32
-      steers and 32 follow-ups, each as the client sent it. It goes out
+      steers and 32 follow-ups, each as the client sent it, so each at
+      most `Helyx.Session.max_text_bytes/0`. It goes out
       only when a text was queued; an abort while the session waits after
       a turn sends it with a nil turn id
     * `:model_change` – `%{model: String.t()}`, the new `provider/model` ref;
