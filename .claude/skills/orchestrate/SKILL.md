@@ -80,10 +80,11 @@ The session keeps its model and its folder. Do not start a second worker for the
 
 ```bash
 codex_dir=$(/bin/ls -d "$HOME"/.claude/plugins/cache/openai-codex/codex/*/ | sort -V | /usr/bin/tail -n 1)
-env -u CODEX_COMPANION_APP_SERVER_ENDPOINT node "${codex_dir}scripts/codex-companion.mjs" adversarial-review "--wait --base origin/master <the invariant of the change, one sentence>"
+base=$(git merge-base origin/master HEAD)
+env -u CODEX_COMPANION_APP_SERVER_ENDPOINT node "${codex_dir}scripts/codex-companion.mjs" adversarial-review "--wait --base $base <the invariant of the change, one sentence>"
 ```
 
-`env -u` drops the shared broker endpoint: through it, a review can read another worktree (found 2026-10-03).
+`env -u` drops the shared broker endpoint: through it, a review can read another worktree (found 2026-10-03). The base is the merge base, not `origin/master`: the refs are shared between worktrees, so a merge on master during the review puts master's commits in the diff (#769).
 
 The invariant sentence copies the invariant of the worker's report word for word, then adds the holes and the boundaries. Do not reword it: a reworded invariant widened the scope or changed a bound, and the gate then found defects outside the ticket (2026-10-17, #649 and #652). The sentence names the entry points it covers, every accepted hole, every exception that the feature doc already states (for example, the write-failure policy of the session file) and every open hole that has a ticket. A reviewer that does not know a documented exception reports it as a defect. Write no text that starts with `--` in the sentence (for example a switch name such as `--model`): the companion script reads it as its own option and fails (#148). Name the switch in words.
 
@@ -93,6 +94,8 @@ Judge every finding yourself. Reproduce it or read the code. A reviewer's claim 
 - **Rejected:** record it in the review record with the reason.
 
 The gate is a Codex round with no confirmed finding. Three rounds without that: park.
+
+When Codex gives no verdict (a parse error of its last message, or "flagged for possible cybersecurity risk"), run it once more with a shorter sentence; a run with no verdict is not a round (#471). When Codex cannot run the boundary that the change crosses (its sandbox refuses loopback listeners with `:eperm`), the gate round is a `general-purpose` agent of the strongest model, in the foreground, on a real loopback socket, with its own `MIX_BUILD_PATH` under `/tmp`. Its findings are confirmed or rejected by the rules above (#660, #763).
 
 ## 4. Record the escape
 
@@ -110,7 +113,7 @@ Add one row per ticket to `docs/reviews/escapes.md`: date, ticket, ship findings
 Serial, one ticket at a time:
 
 1. `git fetch`, rebase the branch on `origin/master`. A conflict that is not mechanical: park. Chain the rebase and the step after it (the gate or precommit) with `&&` only, never with `;` or a pipe: with `;` a failed rebase still runs the step, and a pipe hides the exit status of the rebase (2026-10-17: a gate and a precommit ran on a tree with a rebase conflict).
-2. Precommit into the log, as `AGENTS.md` says, with the slow tests: `HELYX_SLOW=1 .claude/skills/ship/precommit.sh`. It must pass after the rebase, not before it. The same failure twice: park.
+2. Precommit into the log, as `AGENTS.md` says, with the slow tests: `HELYX_SLOW=1 .claude/skills/ship/precommit.sh`. It must pass after the rebase, not before it. One exception: when the master commits that the rebase brings are docs only, or tests only in a part that the branch does not touch, the precommit of the branch before the rebase stands. Any other compiled code from master needs the precommit on the rebased branch. The same failure twice: park.
 3. Push. `gh pr create` with a body that contains `Closes #<n>`. No attribution lines.
 4. `gh pr merge --merge --delete-branch`. Confirm the issue closed; close it with a pointer to the PR when it did not.
 5. Run each step only when the step before it passed (`&&`, not `;`): a failed `gh pr create` must not reach the cleanup. Before the push, `git diff origin/master | grep "^+.*icket pending"` must find nothing. Search the added lines, not the tree: old devlogs on master keep the phrase as history.

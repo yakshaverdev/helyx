@@ -18,7 +18,7 @@ Invoke `/mattpocock-skills:code-review` for the standards and spec axes.
 - **Standards** covers only what Credo and Dialyzer cannot: naming, the AGENTS.md rules, and the smell baseline. Do not have it re-check style that `mix precommit` enforces. A rule text that a diff adds or changes is checked against the code: each guarantee it states has a probe or a test.
 - **Spec** checks the diff against the ticket and the feature doc, including the bounds table and the research citations (see `docs/agents/review-checklist.md`, "Specs and bounds"). For a diff that adds or changes a contract text (a moduledoc, a glossary entry, an ADR, or a feature doc), the review record holds a guarantee table: one row per guarantee that the text states, with the test (`file:line`) that proves it or the probe that the reviewer ran. A guarantee with no test or probe, or with a test that contradicts it, is a finding (#514).
 
-Before you spawn the reviewers, run the bounds sensor with the same base the reviewers get for this round: `origin/master` in a first round, the commit or stash before the fix in a rerun round.
+Every review agent of this step and the bounds sensor read the uncommitted change: `git diff <base>` and the untracked files. The base is the merge base of the branch (`git merge-base origin/master HEAD`) in a first round, the commit or stash before the fix in a rerun round. Never `origin/master` itself: the refs are shared between worktrees, so a merge on master during the review puts master's commits in the diff (#769). The code-review skill captures `git diff <fixed-point>...HEAD`, which reads only commits, so give its agents this diff command instead. Before you spawn the reviewers, run the bounds sensor with the same base.
 
 ```bash
 python3 .claude/skills/ship/bounds_sensor.py --diff <base>
@@ -32,10 +32,10 @@ In the same message, start the **Codex adversarial review** in the background (i
 
 ```bash
 codex_dir=$(/bin/ls -d "$HOME"/.claude/plugins/cache/openai-codex/codex/*/ | sort -V | /usr/bin/tail -n 1)
-env -u CODEX_COMPANION_APP_SERVER_ENDPOINT node "${codex_dir}scripts/codex-companion.mjs" adversarial-review "--wait --base origin/master <the invariant of the change, one sentence>"
+env -u CODEX_COMPANION_APP_SERVER_ENDPOINT node "${codex_dir}scripts/codex-companion.mjs" adversarial-review "--wait --scope working-tree <the invariant of the change, one sentence>"
 ```
 
-`env -u` drops the shared broker endpoint: through it, a review can read another worktree (found 2026-10-03).
+`env -u` drops the shared broker endpoint: through it, a review can read another worktree (found 2026-10-03). The scope is the working tree, with no base: with a base the script reads only the commits from the merge base to `HEAD`, so it gives the reviewer none of the uncommitted change, and the reviewer that diffs against `origin/master` itself gets master's new commits too (#769). The working tree scope reads the whole uncommitted change against `HEAD` in every round. In a rerun round it does not show a hunk that the fix removed by restoring a file to `HEAD`; the agents see that hunk in `git diff <base>`.
 
 The sentence names the entry points, every accepted hole, every exception that the feature doc states, and every open hole that has a ticket. It contains no text that starts with `--` (#148). Judge each Codex finding as you judge the agents' findings: reproduce it or read the code. A finding that asks for a case-specific handler of contract-breaking provider output needs evidence that a real provider does it; without it, reject the finding and say so in the review record (`docs/agents/review-checklist.md`, "Inputs from plugins"). A finding that the generic failure path does not fire, a race between Core processes, and a broken safety bound stay findings.
 
@@ -79,6 +79,8 @@ Two more rules govern the loop:
 ## 3. Precommit
 
 Run it once, after the last round. Between rounds, run only the test files of the change. Run `HELYX_SLOW=1 .claude/skills/ship/precommit.sh`, with the slow tests, so that a commit never breaks a test that only the merge gate runs (#295). Search `precommit.log` as `AGENTS.md` says. A failed run also keeps a copy in `precommit-fails/` of the git common dir, and the failed line prints its path (#455). With a host set (an ssh target in `HELYX_PRECOMMIT_HOST` or in `~/.config/helyx/precommit-host`), the script copies the worktree to that host with rsync, runs `mix precommit` there, writes the output to the local `precommit.log`, and copies back the files that the format step changed. Without it, the script runs `mix precommit` here. It must pass with no warnings. Never pipe it to `tail`, and never rerun it to read an error.
+
+Never add an inline Credo disable (`# credo:disable-for-next-line` and its kin) to pass precommit. A check that misfires gets its config in `.credo.exs` with a reason. A design that a check flags is changed, or you stop and report it for a ticket (#746, #734). The only exception is an inline disable that the explanation of a check names, such as the order of two instants in `Helyx.Credo.WallClockUpperBound`.
 
 ## 4. Commit
 
