@@ -108,3 +108,43 @@ Sensor (base aabf8050): `bounds sensor: 0 candidate functions, 0 flagged,
 - Codex: approve, no findings (81 probes).
 
 The round reproduced no defect, so the loop ends (`/ship`).
+
+## Round 4 (reduced): the byte bound, scope addition of the orchestrator
+
+Change, not committed: `decode/1` refuses an assistant message over
+`Helyx.Session.Turn.max_message_bytes/0`, counted as the live path counts
+it (`byte_size/1` for text and thinking, `Helyx.Message.encoded_size/1` of
+`[id, name, arguments]` for a tool call). Sensor (base `HEAD`):
+`bounds sensor: 1 candidate functions, 0 flagged, 0 without an answer`.
+
+- Spec: no defect. A probe sent events through `Stream.check/1` and
+  `Turn.add_block/3`, then encode, JSON, and decode: the live count and
+  the read count agree (merged deltas, a refused call with `%{}`, floats,
+  atom keys, 1,024 blocks at exactly 8 MiB). Wording point: the row named
+  the tool result row unclearly; the row went with the decision below.
+- Failure path: one defect reproduced. The encode at read builds the full
+  iodata of the arguments in the load process, under its heap cap of
+  1 GiB. One assistant message with one call of `%{"a" => [0, 0, ...]}`
+  at 8,388,607 encoded bytes needs 928 MiB of heap to load, against 320 MiB
+  with no count; two such messages (a 16.8 MiB file that a live session can
+  write) fail with `{:too_large, text}`, against 480 MiB with no count.
+  The documented 12 to 42 bytes of heap per file byte no longer holds for
+  this shape.
+
+Not fixed: no change of about 20 lines removes the peak without a second
+count or a design decision. A count of the encoded size that builds no
+iodata is a second count with its own rules. An upper bound from the raw
+line is not proved for a hand-written float such as `1e5`. An encode in a
+child process with its own heap cap lets one resume use up to 2 GiB, a
+change of the documented heap bound. The orchestrator decides.
+
+## Decision (orchestrator, owner offline)
+
+The orchestrator cut the 8 MiB byte bound at read from this ticket. The
+read is already bounded by the 64 MiB file limit and the 1 GiB heap cap of
+the load process, so the byte count adds no safety: it only makes the read
+match the live path, and the count itself breaks the heap rule that the doc
+states. #672 accepted the same hole for a user message from a file. The
+byte change in `codec.ex` and `file_test.exs` is reverted; the row
+"Session file on resume" of `docs/features/coding-agent.md` states the
+hole. No review round for this: a revert and docs only.
