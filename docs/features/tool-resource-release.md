@@ -16,7 +16,7 @@ The design was reviewed in three rounds on 2026-09-25. The findings are in `docs
 - A handle from a Task that the hands no longer run is dropped. The closed port makes the watchdog clean up.
 - The release runs on every Task end, a reply or a `:DOWN` for any reason. It never depends on code in the dead Task.
 - A result is delivered only after its release is done or recorded as unconfirmed.
-- If any handle of a call stays unconfirmed, the result becomes an error, even when the tool succeeded. Today `killed_error/1` in `deliver` does this.
+- If any handle of a call stays unconfirmed, the result becomes an error, even when the tool succeeded. Today `Helyx.Session.Hands.Release.error/1` in `Helyx.Session.Hands.deliver/3` does this.
 - An abort returns only after every call of the turn is released or recorded as unconfirmed. The session answers client calls during the wait (#93).
 - Once a handle is unconfirmed, later tool calls are refused with an error result until the session stops (rule 6). Chat, abort, and quit are not blocked.
 - No resource survives its Task. A background Task (`Helyx.Tool.started/1`) keeps its handles past its call, outside every turn, and releases them at its own end through the same delivery path; an abort does not reach it (`docs/features/background-bash.md`).
