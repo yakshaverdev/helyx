@@ -65,19 +65,23 @@ defmodule Helyx.Provider.OpenAI do
       request = request(endpoint, model, context, opts, key, req_options)
       mask = mask(key)
       events = request |> chunks(key) |> Events.events(info)
-      {:ok, Stream.map(events, &(&1 |> redact(mask) |> text_error(endpoint.id)))}
+      {:ok, Stream.map(events, &text_error(&1, endpoint.id, mask))}
     end
   end
 
-  # An error with a text of the server is a `Helyx.ProviderError`, made
-  # after the mask, so its cut comes after the mask too.
-  defp text_error({:error, {:http_status, status, body}}, id),
-    do: {:error, ProviderError.reason(id, status, body, {:http_status, status, ""})}
+  # An error with a text of the server is a `Helyx.ProviderError`. The
+  # text is taken from the event before the mask, because a key can be a
+  # part of a field name, then masked, then cut. Every other event, and an
+  # error with no text, whose term reaches the user text, is masked whole.
+  defp text_error({:error, {:http_status, status, body}}, id, mask),
+    do: {:error, ProviderError.reason(id, status, redact(body, mask), {:http_status, status, ""})}
 
-  defp text_error({:error, {:api_error, %{} = error} = reason}, id),
-    do: {:error, ProviderError.reason(id, :api_error, error["message"], reason)}
+  defp text_error({:error, {:api_error, %{} = error} = reason}, id, mask) do
+    text = redact(error["message"], mask)
+    {:error, ProviderError.reason(id, :api_error, text, redact(reason, mask))}
+  end
 
-  defp text_error(event, _id), do: event
+  defp text_error(event, _id, mask), do: redact(event, mask)
 
   # The environment is a boundary. The key is a bearer token (RFC 6750,
   # `b64token`). Many JSON encoders escape none of its characters but `/`,

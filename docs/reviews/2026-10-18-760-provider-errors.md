@@ -55,7 +55,7 @@ Bounds sensor: `bounds sensor: 7 candidate functions, 0 flagged, 0 without an an
 
 | Axis | Finding | Resolution |
 | ---- | ------- | ---------- |
-| Codex | A key that is a part of the field name `message` (such as `age`) masks the name, so the lookup misses and the `api_error` keeps its term, which is not cut at 2,000 bytes | **Open.** The fix (take the message before the mask, then mask it, then cut) changes the arity of `text_error/2` and is a further finding on the mask, so it does not meet the small-fix round. No key reaches a text: the term is masked, as on `HEAD`. |
+| Codex | A key that is a part of the field name `message` (such as `age`) masks the name, so the lookup misses and the `api_error` keeps its term, which is not cut at 2,000 bytes | Open at the round limit: the fix changes the arity of `text_error/2`, so it did not meet the small-fix round. Fixed in round 4 by an owner decision. |
 | Spec | Step 5 and "Errors" said every Codex error answer is the exception; a `thread/resume` error keeps `{:malformed, "thread/resume"}` | Fixed: the doc names `failure/2` and the exception |
 | Spec | No test of an `api_error` message over 2,000 bytes | Fixed: test "an api_error message is cut at 2,000 bytes, after the mask" |
 | Spec | An exception under `:bad_stream_event` or `:bad_return` shows its message, not the tag | Accepted: the generic failure path still fires (the provider stops, the turn fails); a crash under those tags lost its tag before too |
@@ -65,10 +65,27 @@ Bounds sensor: `bounds sensor: 7 candidate functions, 0 flagged, 0 without an an
 
 The first run failed on Credo: `claude_code.ex` had 509 lines, more than the 507 in `.credo.exs`, and the `Helyx.ProviderError` alias in `openai.ex` was out of order. The answer to `initialize` became an `if` on the subtype (the same test, two lines less), and the alias moved. The second run passed: `732 tests, 0 failures`, `80 tests, 0 failures`, `2 properties, 892 tests, 0 failures (1 excluded)`, Credo `found no issues`, Dialyzer `Total errors: 0` in each project.
 
+## Round 4 (reduced, by owner decision)
+
+The owner decided the open finding of round 3: fix the order, not the mask. The branch was rebased onto `origin/master` (#765, #766); `mix deps.get` in each project changed no lock. `text_error/3` now takes the `message` of an `api_error` from the decoded object, masks it, then cuts it, and masks the rest of each event as before. The fix has 20 code lines in one file and changes an arity, which the rules count as a full round; the owner asked for a reduced round (spec and failure path), and the base is `7793ab1e`, the rebased commit before the fix. New test: "a key that is a part of the field name message does not hide the message", which fails on `7793ab1e` (`{:api_error, %{"m***age" => ...}}`, no `ProviderError`) and passes now.
+
+The decision also said that map keys of the body are never masked, because no map key reaches the user text. That premise holds on the message path only: an `api_error` with no usable message keeps its term, and `Helyx.Reason.text/1` inspects it, map keys too (spec probe: `%{ess: 1, message: 5}` gives `{:api_error, %{"***" => 1, "m***age" => 5}}`). So the term of the fallback, and every other event, stays masked whole, and the test asserts it.
+
+Bounds sensor (`--diff 7793ab1e`): `bounds sensor: 0 candidate functions, 0 flagged, 0 without an answer`.
+
+| Axis | Finding | Resolution |
+| ---- | ------- | ---------- |
+| Failure path | No reproduced defect: messages of 1,999, 2,000 and 2,001 bytes, a split 2-byte character at the cut, a copy across the cut, keys `message` and `error`, the `ess` and `\/` forms, empty, null and integer messages; invalid UTF-8 cannot reach the cut, because `JSON.decode` rejects it | None |
+| Failure path | A key of digits only, echoed as a JSON number, shows in the term | Accepted: no real provider is shown to do it; added to the holes in `openai-compatible.md` |
+| Spec | No reproduced defect; the fallback keeps the key mask for the reason above; the doc claims hold | None |
+| Spec, failure path | `redact(reason, mask)` runs also when the message is used | Accepted: the same work as before the fix, which masked each whole event |
+
+A round with no reproduced defect ends the loop.
+
 ## Accepted holes
 
 - `{:not_started, text}`, the watchdog text of a program that did not start, keeps its term: it is no error answer of the program, and `HarnessIO` has no provider id there.
 - A string `api_error` keeps its term: no evidence that a real gateway sends one.
 - The HTTP status and the subtype or status of a result are in the reason for the log only.
 - The log line of a failed turn still holds the error text (#756).
-- The open finding of round 3.
+- A key of digits only that the server echoes as a JSON number (round 4).

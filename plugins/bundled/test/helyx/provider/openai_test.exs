@@ -761,6 +761,21 @@ defmodule Helyx.Provider.OpenAITest do
     assert text == String.duplicate("a", 1_998) <> "**"
   end
 
+  # Masked first, the field name would be `m***age`, and the lookup would
+  # find no message.
+  test "a key that is a part of the field name message does not hide the message" do
+    System.put_env("OPENCODE_API_KEY", "ess")
+    stub([%{error: %{message: "bad ess " <> String.duplicate("a", 2_000)}}])
+    assert {:ok, stream} = OpenAI.Go.stream("m", %Helyx.Context{}, session_id: "s")
+    assert [{:error, %ProviderError{kind: :api_error, text: text}}] = Enum.to_list(stream)
+    assert text == binary_part("bad *** " <> String.duplicate("a", 2_000), 0, 2_000)
+
+    # With no message, the term reaches the text, so its map keys are masked.
+    stub([%{error: %{ess: 1}}])
+    assert {:ok, stream} = OpenAI.Go.stream("m", %Helyx.Context{}, session_id: "s")
+    assert Enum.to_list(stream) == [{:error, {:api_error, %{"***" => 1}}}]
+  end
+
   test "an api_error with a large object keeps its message" do
     stub([%{error: %{message: "slow", details: List.duplicate(0, 10_001)}}])
     assert {:ok, stream} = OpenAI.Go.stream("m", %Helyx.Context{}, session_id: "s")

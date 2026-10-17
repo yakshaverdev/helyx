@@ -10,6 +10,7 @@
 
 - Round 1: the UTF-8 repair in the cut joined a key that an invalid byte split after the mask. Round 2: dropping invalid bytes before the mask moved a key part from past the read under the cut. The fix: no step between the read and the cut makes the body shorter.
 - A large `api_error` object as `kind` took the walk budget of `Helyx.Reason`, and the message was lost.
+- Round 3: a key that is a part of the field name `message` masked the name, so an `api_error` kept its term. The owner decided the fix (round 4): the message is taken before the mask, then masked, then cut. The term of an `api_error` with no message stays masked whole, map keys too, because it reaches the user text.
 - A first wide unwrap of any `{atom, atom, reason}` hid `{:failed_to_start_child, :child, crash}`.
 
 ## Assumptions (owner away)
@@ -21,5 +22,4 @@
 
 ## Next
 
-- Round 3 left one open finding: a key that is a part of the field name `message` makes an `api_error` keep its term (`docs/reviews/2026-10-18-760-provider-errors.md`).
 - #756: the log of a failed turn still holds the error text.
