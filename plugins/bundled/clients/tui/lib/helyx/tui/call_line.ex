@@ -19,7 +19,8 @@ defmodule Helyx.TUI.CallLine do
   string `description` is `⚙ agent <child id>: <description>`, with the
   same cuts; the child id comes from the id of the session and of the call
   (`Helyx.Sessions.child_id/2`, `docs/features/agent-tool.md`), and with
-  no session id the line has none.
+  no session id the line has none. A call of the skill tool with a string
+  `name` is `⚙ skill: <name>`, with the same cuts (`docs/features/skills.md`).
   """
   @spec line(Message.ToolCall.t(), String.t() | nil) :: String.t()
   def line(call, session_id \\ nil)
@@ -27,6 +28,10 @@ defmodule Helyx.TUI.CallLine do
   def line(%Message.ToolCall{name: "agent", arguments: %{"description" => text}} = call, id)
       when is_binary(text),
       do: one_line("⚙ agent#{child(id, call.id)}: " <> text)
+
+  def line(%Message.ToolCall{name: "skill", arguments: %{"name" => name}}, _session_id)
+      when is_binary(name),
+      do: one_line("⚙ skill: " <> name)
 
   def line(%Message.ToolCall{name: name, arguments: arguments}, _session_id) do
     ("⚙ " <> cut_line(name))

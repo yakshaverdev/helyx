@@ -52,6 +52,10 @@ defmodule Helyx.Session.Server.Calls do
   def handle({:set_model, %ModelRef{} = ref, provider}, _from, %State{} = state),
     do: {:reply, :ok, TurnLoop.settle(Records.set_model(state, ref, provider))}
 
+  # `Helyx.Tool.transcript/0`, from a Task of the hands.
+  def handle(:transcript, _from, %State{} = state),
+    do: {:reply, Helyx.Summary.kept(state.transcript, state.summary), state}
+
   # The entry of `Helyx.Sessions.list_live/1`, and the attach of a start.
   def handle(:live, _from, %State{} = state) do
     live = %Helyx.Sessions.Live{

@@ -363,10 +363,13 @@ defmodule Helyx.Session.Hands do
   # the provider whose `release/3` gets the Task's handles.
   defp spawn_task(state, turn_id, id, module, fun) do
     hands = self()
+    session = state.session
 
     task =
       Task.Supervisor.async(Helyx.Core.task_supervisor(state.core), fn ->
         Process.put(:helyx_hands, hands)
+        # For `Helyx.Tool.transcript/0`.
+        Process.put(:helyx_session, session)
         fun.()
       end)
 

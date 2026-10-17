@@ -781,4 +781,33 @@ defmodule CodingAgent.PrintTest do
       assert stderr =~ ~r/\nhelyx: the session stopped\n\z/
     end
   end
+
+  @tag :tmp_dir
+  test "a skill command expands after the scan notices go to stderr", %{tmp_dir: dir} do
+    File.mkdir_p!(Path.join(dir, ".git"))
+
+    for {name, frontmatter} <- [
+          {"probe-skill-471", "name: probe-skill-471\ndescription: Probe.\n"},
+          {"probe-bad-471", "name: other\ndescription: Probe.\n"}
+        ] do
+      File.mkdir_p!(Path.join(dir, ".agents/skills/#{name}"))
+
+      File.write!(
+        Path.join(dir, ".agents/skills/#{name}/SKILL.md"),
+        "---\n#{frontmatter}---\nDo it.\n"
+      )
+    end
+
+    stderr =
+      capture_io(:stderr, fn ->
+        send(self(), {:prompt, Print.skills("/probe-skill-471 730", dir)})
+        send(self(), {:plain, Print.skills("/probe-none 730", dir)})
+      end)
+
+    bad = Path.join(dir, ".agents/skills/probe-bad-471")
+    assert stderr =~ "helyx: skill #{bad} is not loaded: the name other is not the folder name\n"
+    assert_received {:prompt, prompt}
+    assert prompt =~ ~r/\A<skill name="probe-skill-471">\n.*Do it\.\n\n<\/skill>\n\n730\z/s
+    assert_received {:plain, "/probe-none 730"}
+  end
 end

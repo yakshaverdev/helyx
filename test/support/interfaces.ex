@@ -571,6 +571,15 @@ defmodule Helyx.Test.Tool do
   end
 end
 
+defmodule Helyx.Test.Tool.Transcript do
+  @moduledoc false
+  # Gives the count of the messages of `Helyx.Tool.transcript/0`.
+  use Helyx.Test.Tool, name: "transcript", description: "count the transcript"
+
+  @impl true
+  def run(_args, _cwd), do: {:ok, "#{length(Helyx.Tool.transcript())} messages"}
+end
+
 defmodule Helyx.Test.Tool.Upcase do
   @moduledoc false
   use Helyx.Test.Tool,

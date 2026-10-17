@@ -23,6 +23,21 @@ defmodule Helyx.Summary do
   @spec max_bytes() :: pos_integer()
   def max_bytes, do: @max_bytes
 
+  @doc """
+  The messages that the model context keeps after `summary`: from its
+  first kept message on. All of them with no summary, and when no message
+  has that id: then none that the summary does not cover is lost.
+  """
+  @spec kept([Helyx.Message.t()], t() | nil) :: [Helyx.Message.t()]
+  def kept(messages, nil), do: messages
+
+  def kept(messages, %__MODULE__{first_kept_id: id}) do
+    case Enum.drop_while(messages, &(&1.id != id)) do
+      [] -> messages
+      kept -> kept
+    end
+  end
+
   defmodule Plan do
     @moduledoc """
     The summary that a Compaction plugin asks for: the context of the
