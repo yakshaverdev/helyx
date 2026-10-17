@@ -3,7 +3,7 @@ defmodule Helyx.Session.LateCallTest do
   # act (#679, docs/features/session-lifecycle.md, "Late calls").
   use ExUnit.Case, async: true
 
-  import ExUnit.CaptureLog, only: [with_log: 1]
+  import ExUnit.CaptureLog, only: [with_log: 2]
   import Helyx.Test.Events
   import Helyx.Test.SessionCase
 
@@ -72,13 +72,16 @@ defmodule Helyx.Session.LateCallTest do
 
     # The state is a barrier behind the late calls: the session took them all.
     {state, log} =
-      with_log(fn ->
+      with_log([metadata: [:pid]], fn ->
         :ok = :sys.resume(pid)
         :sys.get_state(pid)
       end)
 
+    # Other async tests log late calls too: count the lines of this session.
+    lines = log |> String.split("\n") |> Enum.filter(&(&1 =~ "pid=#{:erlang.pid_to_list(pid)}"))
+
     for {name, _call} <- calls do
-      assert length(String.split(log, "late session call dropped: #{name}\n")) == 2
+      assert Enum.count(lines, &String.ends_with?(&1, "late session call dropped: #{name}")) == 1
     end
 
     refute log =~ "late text"
