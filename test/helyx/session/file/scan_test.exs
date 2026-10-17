@@ -186,6 +186,58 @@ defmodule Helyx.Session.File.ScanTest do
     refute "oldest" in prompts.("/repo")
   end
 
+  test "a sessions folder with glob characters in its path finds only its own sessions",
+       %{tmp_dir: tmp} do
+    # `<tmp>/{a,b}` as a pattern reads `<tmp>/a` and `<tmp>/b`.
+    {a, _} = session(Path.join(tmp, "a"), "/repo", 1_000, "a")
+    {b, _} = session(Path.join(tmp, "b"), "/repo", 2_000, "b")
+    braces = Path.join(tmp, "{a,b}")
+    {own, path} = session(braces, "/repo", 3_000, "own")
+
+    assert ids(Scan.list(braces, :all)) == [own]
+    assert ids(Scan.list(braces, "/repo")) == [own]
+    assert {:ok, ^path, _} = Scan.find(braces, own)
+    assert Scan.find(braces, a) == {:error, :not_found}
+    assert Scan.find(braces, b) == {:error, :not_found}
+    assert {:ok, ^path, _} = Scan.most_recent(braces, "/repo", [])
+
+    # `<tmp>/[x]` as a pattern reads `<tmp>/x`, which does not exist.
+    brackets = Path.join(tmp, "[x]")
+    {x, path} = session(brackets, "/repo", 4_000, "x")
+    assert ids(Scan.list(brackets, :all)) == [x]
+    assert ids(Scan.list(brackets, "/repo")) == [x]
+    assert {:ok, ^path, _} = Scan.find(brackets, x)
+
+    # `<tmp>/*` and `<tmp>/?` as patterns read the other folders too.
+    for name <- ["*", "?"] do
+      glob = Path.join(tmp, name)
+      {own, path} = session(glob, "/repo", 5_000, name)
+      assert ids(Scan.list(glob, :all)) == [own]
+      assert {:ok, ^path, _} = Scan.find(glob, own)
+      assert Scan.find(glob, a) == {:error, :not_found}
+    end
+  end
+
+  test "the scan skips names that start with a dot; an id matches only in its case",
+       %{tmp_dir: dir} do
+    {id, path} = session(dir, "/repo", 1_000, "x", "AAAAAAAAAAAA")
+    hidden = Path.join([dir, ".hidden", "BBBBBBBBBBBB.jsonl"])
+    File.mkdir_p!(Path.dirname(hidden))
+    File.cp!(path, hidden)
+
+    # A newer file with a dot name takes no place of the scan.
+    newer = Path.join(Path.dirname(path), ".newer.jsonl")
+    File.cp!(path, newer)
+    File.touch!(newer, 2_000)
+
+    assert ids(Scan.list(dir, :all)) == [id]
+    assert Scan.find(dir, "BBBBBBBBBBBB") == {:error, :not_found}
+    assert {:ok, ^path, _} = Scan.most_recent(dir, "/repo", max_scanned_files: 1)
+
+    # Also on a filesystem that ignores case.
+    assert Scan.find(dir, "aaaaaaaaaaaa") == {:error, :not_found}
+  end
+
   describe "find/2" do
     test "the file of an id, under any project folder", %{tmp_dir: dir} do
       {id, path} = session(dir, "/repo", 1_000, nil)
