@@ -149,7 +149,27 @@ defmodule Helyx.Provider.Codex.TurnLinesTest do
     {:ok, state} = connect(work)
     {turn, _, state} = ask(state, {:turn, "t1", %Helyx.Context{messages: [Message.user("go")]}})
     {actions, _state} = pump(Codex, state, [], replied?(turn))
-    assert {:reply, turn, {:error, {:codex, "turn/start", "busy"}}} in actions
+
+    assert {:reply, turn,
+            {:error, %Helyx.ProviderError{provider: "codex", kind: "turn/start", text: "busy"}}} in actions
+  end
+
+  # With no `message` the text is Helyx's; an empty one is no text.
+  for {error, reason} <- [
+        {%{code: -1},
+         quote(do: %Helyx.ProviderError{kind: "turn/start", text: "unexpected response"})},
+        {%{code: -1, message: ""}, quote(do: {:codex, "turn/start", ""})}
+      ] do
+    test "an error answer to turn/start with #{inspect(error)}", %{bin: bin, work: work} do
+      fresh(bin, 1, tid(), [])
+      on(bin, 1, "turn/start", [j(%{id: "@", error: unquote(Macro.escape(error))})])
+      {:ok, state} = connect(work)
+      {turn, _, state} = ask(state, {:turn, "t1", %Helyx.Context{messages: [Message.user("go")]}})
+      {actions, _state} = pump(Codex, state, [], replied?(turn))
+
+      assert [{:reply, ^turn, {:error, unquote(reason)}}] =
+               Enum.filter(actions, &match?({:reply, ^turn, _}, &1))
+    end
   end
 
   test "a turn/completed before the turn is known stops the provider process",

@@ -150,8 +150,17 @@ defmodule Helyx.Provider.ClaudeCode.InterruptTest do
 
       script(bin, "ctl.1", [error])
 
-      assert {{:error, {:interrupt, text}}, _actions} = interrupt(running(work, &started?/1))
+      assert {{:error, %Helyx.ProviderError{kind: :interrupt, text: text}}, _actions} =
+               interrupt(running(work, &started?/1))
+
       assert byte_size(text) == 2_000 and String.valid?(text)
+    end
+
+    test "with an error response and no text answers its term", %{bin: bin, work: work} do
+      turn(bin, 1, 1, begin())
+      error = j(%{type: "control_response", response: %{subtype: "error", request_id: "@R@"}})
+      script(bin, "ctl.1", [error])
+      assert {{:error, {:interrupt, ""}}, _actions} = interrupt(running(work, &started?/1))
     end
   end
 end

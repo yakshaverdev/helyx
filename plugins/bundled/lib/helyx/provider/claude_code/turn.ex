@@ -43,8 +43,7 @@ defmodule Helyx.Provider.ClaudeCode.Turn do
     defstruct [:from, :request_id, response?: false, result?: false]
   end
 
-  alias Helyx.HarnessIO
-  alias Helyx.Message
+  alias Helyx.{Message, ProviderError}
   alias Helyx.Provider.ClaudeCode
   alias Helyx.Provider.ClaudeCode.{Mcp, Meter}
 
@@ -72,7 +71,7 @@ defmodule Helyx.Provider.ClaudeCode.Turn do
 
   def compaction(%{compact: :asked} = turn, %{"subtype" => "status", "compact_error" => error})
       when is_binary(error),
-      do: {[], %{turn | compact: HarnessIO.cap_error(error)}}
+      do: {[], %{turn | compact: ProviderError.cap(error)}}
 
   def compaction(turn, _line), do: {[], turn}
 
@@ -131,8 +130,10 @@ defmodule Helyx.Provider.ClaudeCode.Turn do
   # compaction call goes into the next `done` of the program
   # (docs/features/harness-compaction.md).
   def terminal(%{"is_error" => false, "subtype" => "success"}, %{compact: error}, meter)
-      when is_binary(error),
-      do: {{:error, {:compaction_failed, error}}, meter}
+      when is_binary(error) do
+    empty = {:compaction_failed, ""}
+    {{:error, ProviderError.reason(ClaudeCode.id(), :compaction_failed, error, empty)}, meter}
+  end
 
   def terminal(%{"is_error" => false, "subtype" => "success"} = result, turn, meter) do
     {usage, meter} = if turn.compact, do: {nil, meter}, else: Meter.done(meter)
@@ -142,9 +143,10 @@ defmodule Helyx.Provider.ClaudeCode.Turn do
   def terminal(result, _turn, meter) do
     text = Enum.join(errors(result), "; ")
     text = if text == "" and is_binary(result["result"]), do: result["result"], else: text
-    subtype = HarnessIO.cap_error(result["subtype"])
+    subtype = ProviderError.cap(result["subtype"])
 
-    {{:error, HarnessIO.Error.reason(:claude_code, ClaudeCode.id(), subtype, text)}, meter}
+    error = ProviderError.reason(ClaudeCode.id(), subtype, text, {:claude_code, subtype, ""})
+    {{:error, error}, meter}
   end
 
   # The wire values: docs/research/stop-reasons.md.

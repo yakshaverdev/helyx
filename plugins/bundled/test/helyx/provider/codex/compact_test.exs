@@ -69,7 +69,12 @@ defmodule Helyx.Provider.Codex.CompactTest do
     fresh(bin, 1, tid(), [])
     {:ok, state} = connect(work)
     assert {from, actions, state} = ask(state, {:compact, "t1", ""})
-    assert [{:reply, ^from, :ok}, {:event, "t1", {:error, {:compaction_failed, _}}}] = actions
+
+    assert [
+             {:reply, ^from, :ok},
+             {:event, "t1", {:error, %Helyx.ProviderError{kind: :compaction_failed}}}
+           ] = actions
+
     assert state.turn_id == nil
     close(state)
     assert request(bin, 1, "thread/compact/start") == nil
@@ -109,7 +114,13 @@ defmodule Helyx.Provider.Codex.CompactTest do
     {from, _actions, state} = ask(state, {:compact, "t2", ""})
     {actions, state} = pump(Codex, state, [], replied?(from))
 
-    assert {:reply, ^from, {:error, {:codex, "thread/compact/start", "no thread"}}} =
+    assert {:reply, ^from,
+            {:error,
+             %Helyx.ProviderError{
+               provider: "codex",
+               kind: "thread/compact/start",
+               text: "no thread"
+             }}} =
              List.last(actions)
 
     close(state)

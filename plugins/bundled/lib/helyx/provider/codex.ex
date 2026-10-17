@@ -22,7 +22,7 @@ defmodule Helyx.Provider.Codex do
 
   @behaviour Helyx.Provider
 
-  alias Helyx.{HarnessIO, Message, ModelInfo}
+  alias Helyx.{HarnessIO, Message, ModelInfo, ProviderError}
   alias Helyx.Provider.Codex.{Check, Items, Program, Replay, State, Tools}
 
   import Helyx.Provider.Codex.Wire
@@ -86,7 +86,7 @@ defmodule Helyx.Provider.Codex do
   # keeps the thread's prompt; a stored thread opens with the empty one.
   def request({:compact, turn_id, _text}, from, %State{turn_id: nil} = state)
       when state.thread == nil and state.resume == nil,
-      do: {:ok, [{:reply, from, :ok}, {:event, turn_id, HarnessIO.no_history()}], state}
+      do: {:ok, [{:reply, from, :ok}, {:event, turn_id, HarnessIO.no_history(id())}], state}
 
   def request({:compact, turn_id, _text}, from, %State{turn_id: nil} = state) do
     state = %{state | turn_id: turn_id, from: from, turn: :compact}
@@ -321,10 +321,10 @@ defmodule Helyx.Provider.Codex do
   defp answer(method, response, state),
     do: reply(%{state | from: nil}, state.from, {:error, failure(method, response)})
 
-  defp failure(method, response),
-    do:
-      {:codex, method,
-       HarnessIO.cap_error(Items.error_message(response) || "unexpected response")}
+  defp failure(method, response) do
+    text = Items.error_message(response) || "unexpected response"
+    ProviderError.reason(id(), method, text, {:codex, method, ""})
+  end
 
   # Only the turn of the `turn/start` answer, which comes first.
   defp turn_notification("turn/started", %{"turn" => %{"id" => turn}}, %{turn: turn} = state)
@@ -422,7 +422,7 @@ defmodule Helyx.Provider.Codex do
   # The thread is open: the waiting request goes on.
   defp opened(%State{turn: :compact, fresh?: true} = state) do
     # An interrupt of the compaction waits for its turn, and none comes.
-    state = interrupted(push(reply(state, state.from, :ok), [HarnessIO.no_history()]))
+    state = interrupted(push(reply(state, state.from, :ok), [HarnessIO.no_history(id())]))
     %{state | turn_id: nil, turn: nil, from: nil}
   end
 

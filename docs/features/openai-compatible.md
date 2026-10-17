@@ -56,7 +56,7 @@ The engine checks the options when the endpoint module compiles. A bad or missin
 | `key_env` | nil, or 1 to 256 bytes: a letter or `_`, then letters, digits, or `_` | the compile fails |
 | `catalog` | nil, or one of `Helyx.ModelInfo.Catalog.ids/0` (`anthropic`, `openai`, `opencode-go`) | the compile fails |
 | the API key | 1 to 4,096 bytes of `b64token`: letters, digits, `-._~+/`, then any `=` | `{:error, {:bad_env, name}}` before any request; the empty string is `{:missing_env, name}` |
-| HTTP error body | 16,384 bytes, as before. The drain reads up to the bound plus twice the key size (the longest form of the key), so a key that starts inside the bound is whole when it is masked. The mask keeps every position, so a part of the key at the end of the read stays past the cut, and the bound holds on the text that the turn error carries | cut to valid UTF-8 and marked `[truncated at the N-byte limit]` |
+| HTTP error body | 2,000 bytes, the text bound of `Helyx.ProviderError` (#760). Before the mask each invalid sequence becomes U+FFFD, which is not shorter, so no byte moves to an earlier place and no repair joins the parts of a copy of the key. The drain reads up to the bound plus twice the key size (the longest form of the key), so a key that starts inside the bound is whole when it is masked. The mask keeps every position, so a part of the key at the end of the read stays past the cut, and the bound holds on the text that the turn error carries | cut to valid UTF-8 |
 
 The other bounds of the engine (the SSE line, the tool calls, the chunk wait, the retries, the server delay) are in `docs/features/coding-agent.md` and do not change.
 

@@ -830,6 +830,7 @@ defmodule Helyx.Test.Connected do
   #   "child_init"       `init/3` returns the failure of a supervisor whose child crashed
   #   "block_turn"       the turn callback blocks
   #   "error_turn"       a turn answers `{:error, :refused}`
+  #   "text_error_turn"  a turn answers `{:error, exception}`
   #   "crash_turn"       the turn callback raises
   #   "late_turn"        a turn is held (see the end of this list)
   #   "block_interrupt"  "hang", and the interrupt callback blocks
@@ -1117,6 +1118,10 @@ defmodule Helyx.Test.Connected do
   @dialyzer {:nowarn_function, answer: 3}
   defp answer("block_turn", {:turn, _, _}, _from), do: Process.sleep(:infinity)
   defp answer("error_turn", {:turn, _, _}, from), do: [{:reply, from, {:error, :refused}}]
+
+  defp answer("text_error_turn", {:turn, _, _}, from),
+    do: [{:reply, from, {:error, %RuntimeError{message: "fake: busy"}}}]
+
   defp answer("crash_turn", {:turn, _, _}, _from), do: raise("turn crashed")
   defp answer("exit_turn", {:turn, _, _}, _from), do: exit(:normal)
   defp answer("context", {:turn, _, _}, from), do: [{:reply, from, :ok}]
@@ -1361,8 +1366,12 @@ end
 
 defmodule Helyx.Test.StackMessage do
   @moduledoc false
-  # An exception of a plugin that keeps a stacktrace in a field.
+  # An exception of a plugin that keeps a stacktrace in a field, and
+  # shows the field in its message.
   defexception [:message, :stack]
+
+  @impl true
+  def message(%{message: message, stack: stack}), do: message <> " " <> inspect(stack)
 end
 
 defmodule Helyx.Test.LastItemMessage do

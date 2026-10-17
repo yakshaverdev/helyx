@@ -150,15 +150,13 @@ defmodule Helyx.Reason do
     _class, _value -> inspect(term, [structs: false] ++ opts)
   end
 
-  # The text of a cleaned reason. A crash shows as the message of its
-  # error, which is shorter than the term; the cleaning, not this step,
-  # keeps the stacktrace out.
+  # The text of a cleaned reason. A crash and an exception show as the
+  # message of the error, which is shorter than the term; the cleaning, not
+  # this step, keeps the stacktrace out.
   defp describe(text) when is_binary(text), do: text
 
   # A snapshot with `persisting: false` (`Helyx.Session.Snapshot`).
   defp describe(:not_saved), do: "new messages of this session are not saved"
-
-  defp describe(%_{__exception__: true} = exception), do: message(exception)
 
   defp describe(reason) do
     case crash(reason) do
@@ -185,11 +183,15 @@ defmodule Helyx.Reason do
   defp no_message(%module{}) when is_atom(module), do: inspect(module)
   defp no_message(error), do: contained(error, @text_opts)
 
-  # A crash is an error with its stacktrace, now `{error, :stacktrace}`:
-  # bare, under an atom tag, or as the exit of a call
+  # A crash is an error with its stacktrace, now `{error, :stacktrace}`, or
+  # an exception: bare, under an atom tag, in the stop of a provider
+  # process at an error answer (`{:provider_error, kind, reason}`,
+  # `Helyx.Session.ProviderRequest.stop_after/2`), or as the exit of a call
   # (`{reason, {GenServer, :call, args}}`).
   defp crash({error, :stacktrace}), do: {:ok, error}
+  defp crash(%_{__exception__: true} = exception), do: {:ok, exception}
   defp crash({tag, reason}) when is_atom(tag), do: crash(reason)
+  defp crash({:provider_error, kind, reason}) when is_atom(kind), do: crash(reason)
 
   defp crash({reason, {module, fun, args}})
        when is_atom(module) and is_atom(fun) and is_list(args),

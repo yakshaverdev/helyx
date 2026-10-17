@@ -283,6 +283,12 @@ defmodule Helyx.Session.ProviderProcessTest do
       end
     end
 
+    # The user reads the message of an exception in an error answer (#760).
+    test "an error answer with an exception fails the turn with its message", %{core: core} do
+      {session, _pid, _hands} = start(core, "text_error_turn")
+      assert error(turn(session, "one")) == "fake: busy"
+    end
+
     test "a reply of the wrong shape stops the provider process", %{core: core} do
       {session, _pid, _hands} = start(core, "bad_reply")
       events = turn(session, "one")

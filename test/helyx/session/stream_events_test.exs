@@ -155,10 +155,7 @@ defmodule Helyx.Session.StreamEventsTest do
 
     test "of a stacktrace in an exception field or a MatchError term is the marker",
          %{core: core} do
-      assert error_of(core, "fail_after.exit_exception") ==
-               inspect(
-                 {:task_exit, %Helyx.Test.StackMessage{message: "held", stack: :stacktrace}}
-               )
+      assert error_of(core, "fail_after.exit_exception") == "held :stacktrace"
 
       assert error_of(core, "fail_after.match") =~
                "{:error, {:badarg, :stacktrace}}"

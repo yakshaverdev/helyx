@@ -31,6 +31,7 @@ defmodule Helyx.Provider.OpenAI do
   """
 
   alias Helyx.Provider.OpenAI.{Endpoint, Events}
+  alias Helyx.ProviderError
 
   defmacro __using__(opts) do
     quote do
@@ -62,9 +63,21 @@ defmodule Helyx.Provider.OpenAI do
          {:ok, req_options} <- req_options(),
          {:ok, key} <- key(endpoint.key_env) do
       request = request(endpoint, model, context, opts, key, req_options)
-      {:ok, request |> chunks(key) |> Events.events(info) |> redact_events(key)}
+      mask = mask(key)
+      events = request |> chunks(key) |> Events.events(info)
+      {:ok, Stream.map(events, &(&1 |> redact(mask) |> text_error(endpoint.id)))}
     end
   end
+
+  # An error with a text of the server is a `Helyx.ProviderError`, made
+  # after the mask, so its cut comes after the mask too.
+  defp text_error({:error, {:http_status, status, body}}, id),
+    do: {:error, ProviderError.reason(id, status, body, {:http_status, status, ""})}
+
+  defp text_error({:error, {:api_error, %{} = error} = reason}, id),
+    do: {:error, ProviderError.reason(id, :api_error, error["message"], reason)}
+
+  defp text_error(event, _id), do: event
 
   # The environment is a boundary. The key is a bearer token (RFC 6750,
   # `b64token`). Many JSON encoders escape none of its characters but `/`,
@@ -290,47 +303,35 @@ defmodule Helyx.Provider.OpenAI do
   end
 
   # The error body names the reason for a 401 or 429; without it the turn
-  # error is just a number. A diagnostic, so the limit is small; halting the
-  # reduce cancels the rest of the response.
-  @max_error_body_bytes 16_384
-
-  # A server can echo the key, so the key is masked before the cut. The
-  # read goes twice the key size past the limit, the size of its longest
-  # form, so a key that starts inside the limit is whole when it is masked.
+  # error is just a number. The read stops past the text bound of
+  # `Helyx.ProviderError`, which cuts the body; halting the reduce cancels
+  # the rest of the response. A server can echo the key, so the key is
+  # masked before the cut (`stream/4`). The read goes twice the key size
+  # past the bound, the size of its longest form, so a key that starts
+  # inside the bound is whole when it is masked. Before the mask, each
+  # invalid sequence becomes U+FFFD, which is not shorter: no byte moves
+  # to an earlier place, so a part of the key past the read stays past the
+  # cut, and no repair after the mask joins the parts of a copy.
   defp drain(resp, key) do
-    read = @max_error_body_bytes + 2 * byte_size(key || "")
+    read = ProviderError.max_text_bytes() + 2 * byte_size(key || "")
 
-    body =
-      resp.body
-      |> Enum.reduce_while("", fn chunk, body ->
-        body = body <> chunk
-        if byte_size(body) > read, do: {:halt, body}, else: {:cont, body}
-      end)
-      |> redact(mask(key))
-
-    if byte_size(body) > @max_error_body_bytes,
-      do:
-        Helyx.Text.cap(body, @max_error_body_bytes, :head) <>
-          "\n[truncated at the #{@max_error_body_bytes}-byte limit]",
-      else: body
-  end
-
-  # In every string of every event, so in every error that Core builds
-  # from one, each copy of the key and of its `\/` form becomes `*` of the
-  # same length, so no bound on a text changes. A key has no `*`, so a mask
-  # cannot make a new copy. A copy that overlaps one before it is masked
-  # only where the earlier one ends; the moduledoc names the other holes.
-  defp redact_events(events, nil), do: events
-
-  defp redact_events(events, key) do
-    mask = mask(key)
-    Stream.map(events, &redact(&1, mask))
+    resp.body
+    |> Enum.reduce_while("", fn chunk, body ->
+      body = body <> chunk
+      if byte_size(body) > read, do: {:halt, body}, else: {:cont, body}
+    end)
+    |> String.replace_invalid()
   end
 
   # The key and its JSON form with `\/`.
   defp mask(nil), do: nil
   defp mask(key), do: :binary.compile_pattern(Enum.uniq([key, String.replace(key, "/", "\\/")]))
 
+  # In every string of every event, so in every error that Core builds
+  # from one, each copy of the key and of its `\/` form becomes `*` of the
+  # same length, so no bound on a text changes. A key has no `*`, so a mask
+  # cannot make a new copy. A copy that overlaps one before it is masked
+  # only where the earlier one ends; the moduledoc names the other holes.
   defp redact(term, nil), do: term
 
   defp redact(binary, mask) when is_binary(binary),
