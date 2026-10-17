@@ -1,7 +1,8 @@
 defmodule Helyx.Session.Server.Records do
   @moduledoc false
   # The records of a session: the only writer of `transcript`, `file`,
-  # `model`, `provider`, `resume_ids`, and `summary` in `Helyx.Session.Server.State`. Each
+  # `model`, `provider`, `resume_ids`, and `summary` in
+  # `Helyx.Session.Server.State`, and of `unsaved_from` after the start. Each
   # operation changes the open assistant message, the transcript, the
   # session file, and emits its events together. The rule: no message goes
   # between a call and its result. A call still open gets its `aborted`
@@ -241,7 +242,19 @@ defmodule Helyx.Session.Server.Records do
   def stop_saving(state, cause, detail) do
     Logger.warning("#{cause}, persistence off: #{detail}")
     text = cause <> "; the rest of this session is not saved"
-    emit(%{state | file: nil}, turn_id(state.activity), :notice, %{text: text})
+    state = %{state | file: nil, unsaved_from: length(state.transcript)}
+    emit(state, turn_id(state.activity), :notice, %{text: text})
+  end
+
+  # The messages that joined the transcript in the turn, each with whether
+  # the file holds it, for the sync of the Memory plugin.
+  def turn_entries(%State{activity: %Turn{start: start}, unsaved_from: unsaved} = state) do
+    state.transcript
+    |> Enum.drop(start)
+    |> Enum.with_index(start)
+    |> Enum.map(fn {message, i} ->
+      %{message: message, persisted: unsaved == nil or i < unsaved}
+    end)
   end
 
   defp turn_id(%Turn{id: id}), do: id

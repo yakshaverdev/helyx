@@ -47,6 +47,10 @@ defmodule Helyx.Session.Server.Stop do
     end
 
     stop_hands(state.hands)
+    # A stop in a turn has no turn end: the sync gets the messages of the
+    # turn here, before the worker sees the session end.
+    Helyx.Session.Sync.push_turn(state)
+
     # After the hands: no background Task writes to the folder any more.
     File.rm_rf(state.background_dir)
     # Last, so no process of the session writes to the file once another

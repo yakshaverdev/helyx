@@ -87,7 +87,14 @@ defmodule Helyx.Session do
          # The folders come before the lock, whose file is in them.
          :ok <- mkdir(opts[:sessions_dir], cwd) do
       Server.start(
-        %State{id: id, core: core, model: ref, provider: provider, cwd: cwd},
+        %State{
+          id: id,
+          core: core,
+          model: ref,
+          provider: provider,
+          cwd: cwd,
+          unsaved_from: if(opts[:sessions_dir], do: nil, else: 0)
+        },
         tools,
         create_spec(opts[:sessions_dir], id, cwd, ref)
       )
@@ -151,6 +158,7 @@ defmodule Helyx.Session do
            provider: provider,
            file: resumed.file,
            transcript: Transcript.repair(resumed.messages),
+           sync: {:replay, resumed.messages},
            summary: resumed.summary,
            resume_ids: resumed.resume_ids
        }}

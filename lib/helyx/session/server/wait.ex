@@ -43,7 +43,8 @@ defmodule Helyx.Session.Server.Wait do
   # rejected after the turn (`Queue.answer/4`); an abort or a failure gives
   # the queued texts back (`Queue.abort/1`). The hands release the Tasks
   # of the turn before the next turn: always at an abort or a failure, at
-  # `done` when a Helyx tool still runs. While one
+  # `done` when a Helyx tool still runs. The messages of the turn go to
+  # the sync worker (docs/features/memory.md). While one
   # runs, `turn_end` waits for their answer (`cleanup/2`): a start answer
   # that the hands took first then comes before it (#595). Only an
   # abort of a turn that sent `{:turn, ...}` gets an interrupt, after the
@@ -60,6 +61,7 @@ defmodule Helyx.Session.Server.Wait do
     done? = match?({:done, _stop, _usage}, outcome)
     state = Steering.end_turn(state, turn.id, done?)
     state = ToolRuns.end_turn(state, turn)
+    Helyx.Session.Sync.push_turn(state)
     running = turn.tool_queue.running
     data = end_data(outcome)
     state = if running, do: state, else: emit(state, :turn_end, data)

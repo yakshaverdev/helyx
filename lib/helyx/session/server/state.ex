@@ -36,6 +36,10 @@ defmodule Helyx.Session.Server.State do
   # The armed kill of a turn, interrupt, steer, tool result, or context
   # request: a reply takes well under 10 ms, so 2 s is the margin.
   @provider_reply_ms 2_000
+  # The armed kill of the prepare Task, in ms; recall counts in it
+  # (`Helyx.Session.Recall`).
+  @prepare_ms 10_000
+  def prepare_ms, do: @prepare_ms
   # The armed kill of a close: end of input, then the exit.
   @provider_close_ms 5_000
   def provider_close_ms, do: @provider_close_ms
@@ -55,9 +59,18 @@ defmodule Helyx.Session.Server.State do
     # The port of the session file's writer lock, or nil with no file or
     # after the lock is lost (`Helyx.Session.Lock`).
     :lock,
-    # The registered ModelContext and Compaction plugins, or nil for none.
+    # The registered ModelContext, Compaction, and Memory plugins, or nil
+    # for none.
     :model_context,
     :compaction,
+    :memory,
+    # The sync worker of the instance (`Helyx.Session.Sync`), or nil with
+    # no Memory plugin. Before `Sync.open/1`, nil or `{:replay, messages}`,
+    # the messages that a resume decoded (docs/features/memory.md).
+    :sync,
+    # The index of the first transcript message that the file does not
+    # hold, or nil while every message is saved (`Records.stop_saving/3`).
+    :unsaved_from,
     # The checked tool specs of `Helyx.Tool.specs/1` at session start,
     # which every provider call uses, and the tool module by name for the
     # hands.
@@ -87,7 +100,7 @@ defmodule Helyx.Session.Server.State do
       idle: 1_800_000
     },
     # The armed kill of the prepare Task (`TurnLoop`), in ms. A test seam.
-    prepare_ms: 10_000,
+    prepare_ms: @prepare_ms,
     # The deadline of the open, in ms: under the 30 s that #656 plans for a
     # wire client of a start, and under `Stop.shutdown_ms/0`
     # (session-lock.md, #665). A test seam.
@@ -117,6 +130,9 @@ defmodule Helyx.Session.Server.State do
           lock: port() | nil,
           model_context: module() | nil,
           compaction: module() | nil,
+          memory: module() | nil,
+          sync: pid() | {:replay, [Helyx.Message.t()]} | nil,
+          unsaved_from: non_neg_integer() | nil,
           tool_specs: [Helyx.Tool.spec()],
           tool_modules: %{String.t() => module()},
           transcript: [Helyx.Message.t()],
