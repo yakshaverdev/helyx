@@ -83,13 +83,13 @@ Every bound has a number and the place that enforces it in `wire-protocol.md`, "
 | Tail snapshot and page | 200 messages by default, at most 1,000, and 16 MiB of message content; or the newest group alone |
 | Request results per connection | 1: a `subscribe`, `history`, or `sessions.saved` request takes the one encoder slot before it reads its data from Core, so a waiting request holds no result |
 | Credits per subscriber | 16,384 unacked events; they count events only |
-| Outbound queue per connection | 64 MiB: a writer adds a frame with no wait, and an add to a queue that already holds more than 64 MiB closes the connection with `4408`, so the queue holds at most 64 MiB plus one frame |
+| Outbound queue per connection | 64 MiB: a writer adds a frame with no wait, and an add to a queue that already holds more than 64 MiB, not counting the frame that the socket writes now, closes the connection with `4408` |
 | Text of `prompt`, `steer`, `follow_up`, `compact` | 4 MiB, refused by Core with `{:error, :text_too_large}` (#672) |
-| Message at file read | 1,024 blocks, as a live message (#673) |
+| Message at file read | 1,024 blocks and 8 MiB, as a live message (#673) |
 
 The credit window is chosen above the 10,000 provider messages that the session can hold waiting (`lib/helyx/session/stream.ex:18`). That number bounds waiting messages, not events (the first delta of a message gives two events), so it is a heuristic: a burst test checks it with the ack trip to the session, not only the socket reads.
 
-Core bounds what it admits (#672, #673), so the largest event has a number: a `queue_dropped` of 64 texts of 4 MiB. The byte bound of the events is in the transport: a subscription process encodes each event when it takes it, and the outbound queue closes the connection when it is full. The credits count events only, and no event has an exemption. `wire-protocol.md` gives the memory of a connection as one sum; some of its terms are open (`docs/reviews/2026-10-17-wire-adr.md`, round 4).
+Core bounds what it admits (#672, #673). The byte bound of the events is in the transport: a subscription process encodes each event when it takes it, and the outbound queue closes the connection when it is full. The credits count events only. The memory of a connection follows from these bounds and the Core bounds of #672, #673, and the 8 MiB message (`Helyx.Session.Turn.max_message_bytes/0`); `wire-protocol.md` claims no single number for it.
 
 ### 6. Security
 
@@ -118,5 +118,6 @@ A test computes the SHA-256 of the schema in `wire-protocol.md` and compares it 
 - AGENTS.md and README drop the Transport interface.
 - ADR 0006 gets a revision note for §2, §3, §5, and §6. `docs/features/session-snapshot.md` and `docs/features/end-signal.md` state the revised rules.
 - The TUI rule that it has no `seq` guard holds while the TUI subscribes in the node. With #662 the TUI attaches over the wire, reconnects with `after`, and keeps the `seq` of the last event it applied.
+- The texts that an abort gives back (`queue_dropped`) reach only the subscribers that are connected at that moment. A client that reconnects later gets a tail snapshot, which does not hold them. The TUI does the same today: the texts go to the composer of the client that saw the event.
 - Every subscriber in the node acks (#659): the TUI, print mode, and the test subscribers.
 - The tickets are #657 to #662, on the Core bounds of #672 and #673. #116 closes with #659.
