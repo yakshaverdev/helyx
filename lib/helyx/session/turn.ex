@@ -77,6 +77,10 @@ defmodule Helyx.Session.Turn do
   @spec max_message_bytes() :: pos_integer()
   def max_message_bytes, do: @max_message_bytes
 
+  # The session file reader holds every message it reads to this bound (#673).
+  @spec max_message_blocks() :: pos_integer()
+  def max_message_blocks, do: @max_message_blocks
+
   # Adds one stream event of `size` bytes to the partial assistant content.
   # An event that takes the open message over `@max_message_bytes`, or a
   # new block over `@max_message_blocks`, is a contract break:

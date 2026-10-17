@@ -509,6 +509,56 @@ defmodule Helyx.Session.FileTest do
     assert texts(repaired) == ["héllo — ünïcode ✓", "after"]
   end
 
+  # The repair adds one result for each open call, so this bound is the bound
+  # of one resumed group (#673).
+  test "a message over the block limit of the live path rejects the file", %{tmp_dir: dir} do
+    max = Session.Turn.max_message_blocks()
+
+    assistant = fn blocks ->
+      calls =
+        for n <- 1..blocks,
+            do: %{"type" => "tool_call", "id" => "c#{n}", "name" => "bash", "arguments" => %{}}
+
+      user_entry("message00001", %{"role" => "assistant", "content" => calls})
+    end
+
+    {:ok, file} = started(Path.join(dir, "at"), "sess00000001", "/repo", "test/ok")
+    append_raw(file, assistant.(max))
+    assert {:ok, %{messages: messages}} = SessionFile.resume(Path.join(dir, "at"), "/repo")
+    assert [_user, %Message{content: content} | results] = Session.Transcript.repair(messages)
+    assert length(content) == max and length(results) == max
+
+    # A user or tool result message over it is damage too: a live one has
+    # one block.
+    blocks = List.duplicate(%{"type" => "text", "text" => "x"}, max + 1)
+
+    over = [
+      assistant.(max + 1),
+      user_entry("message00001", %{"content" => blocks}),
+      user_entry("message00001", Map.put(@tool_result, "content", blocks))
+    ]
+
+    for {line, n} <- Enum.with_index(over) do
+      dir = Path.join(dir, "over#{n}")
+      {:ok, file} = started(dir, "sess00000001", "/repo", "test/ok")
+      file |> append_raw(line) |> SessionFile.append_message(Message.user("after"))
+      before = File.read!(file.path)
+
+      assert {:error, {:invalid_file, text}} = SessionFile.resume(dir, "/repo")
+      assert text == "a message has #{max + 1} content blocks, over the limit of #{max}"
+      assert File.read!(file.path) == before
+    end
+
+    # A content that is not a list has no blocks to count: it keeps its
+    # decode of before #673.
+    {:ok, file} = started(Path.join(dir, "map"), "sess00000001", "/repo", "test/ok")
+    keys = Map.new(1..(max + 1), &{"k#{&1}", 1})
+    append_raw(file, user_entry("message00001", %{"content" => keys}))
+
+    assert {:error, {:invalid_file, "no function clause matching in " <> _}} =
+             SessionFile.resume(Path.join(dir, "map"), "/repo")
+  end
+
   test "a rejected file is not repaired", %{tmp_dir: dir} do
     {:ok, file} = started(dir, "sess00000001", "/repo", "test/ok")
     append_raw(file, ~s({"id":"x","type":"note"}))
