@@ -51,7 +51,12 @@ defmodule Helyx.Plugins.MixProject do
       {:helyx, path: "../.."},
       {:req, "~> 0.5"},
       {:ex_ratatui, "~> 0.14"},
-      {:plug, "~> 1.16", only: :test},
+      {:bandit, "~> 1.12.5"},
+      {:websock, "~> 0.5.3"},
+      # A dependency of Bandit, pinned below 1.6.0, which was two days old
+      # when #660 added Bandit.
+      {:thousand_island, "~> 1.5.0"},
+      {:plug, "~> 1.16"},
       {:stream_data, "~> 1.2", only: :test},
       {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false}
     ]
