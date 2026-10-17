@@ -82,7 +82,7 @@ None. No Core path recalled or synced before.
 | live queue | 1,024 chunks and 64 MiB, replay included | the new live batch is dropped whole, notice with the unsaved count, also into an empty queue | `Helyx.Session.Sync` |
 | replay | the decoded messages of a file, under the 64 MiB file bound | never dropped | `Helyx.Session.Sync` |
 | drain after the session ends | 30,000 ms | the rest is dropped, a log line | `Helyx.Session.Sync` |
-| Markdown recall scan | the first 1,000 `.md` files (the folder, then `log/`, each in name order), each a regular file of up to 1 MiB, 16 MiB in total | a file that is not regular or is larger is skipped; at the total the scan stops | `Helyx.Memory.Markdown` |
+| Markdown recall scan | the first 1,000 `.md` files (the folder, then `log/`, each in name order), each a regular file of up to 1 MiB, 16 MiB in total | a file that is not regular or is larger is skipped, also when it grew after its stat (its read holds at most the 10 MiB of `Helyx.Text.read_file/1`); at the total the scan stops | `Helyx.Memory.Markdown` |
 | Markdown query words | 16 words | the rest are not searched | `Helyx.Memory.Markdown` |
 | Markdown records | 32 | the lines with fewer matched words are left out | `Helyx.Memory.Markdown` |
 | Markdown record text | 1,024 bytes | cut on a character boundary | `Helyx.Memory.Markdown` |

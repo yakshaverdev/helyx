@@ -102,7 +102,8 @@ defmodule Helyx.Memory.Markdown do
     with true <- byte_size(rel) <= @max_path_bytes and String.valid?(rel),
          {:ok, %File.Stat{size: size}} when size <= @max_file_bytes <-
            File.stat(path),
-         {:ok, text} <- Helyx.Text.read_file(path) do
+         # A file that grew after the stat is checked again on its text.
+         {:ok, text} when byte_size(text) <= @max_file_bytes <- Helyx.Text.read_file(path) do
       {:ok, text}
     else
       _ -> :skip
