@@ -71,7 +71,8 @@ defmodule CodingAgent do
           Helyx.TUI.run(
             session: session,
             resumed: Keyword.get(opts, :resume, false) != false,
-            cwd: Keyword.fetch!(opts, :cwd)
+            cwd: Keyword.fetch!(opts, :cwd),
+            sessions_dir: Keyword.fetch!(opts, :sessions_dir)
           )
         end)
     end
@@ -117,25 +118,11 @@ defmodule CodingAgent do
   def error_text(reason), do: reason |> line() |> clean_line()
 
   @doc """
-  The clean pass of `one_line/1`, then the cut of `Helyx.Reason.text/1`: at
+  The clean pass of `Helyx.TUI.SessionList.one_line/1`, then the cut of `Helyx.Reason.text/1`: at
   most 4000 bytes of valid UTF-8; a character cut in half is dropped.
   """
   @spec clean_line(String.t()) :: String.t()
-  def clean_line(text), do: text |> one_line() |> Helyx.Reason.text()
-
-  @doc """
-  The clean pass of a text for the terminal: a whitespace run becomes one
-  space, whitespace at the ends goes, and a control or format character or
-  a byte that is not UTF-8 becomes `?`. The result has no length bound.
-  """
-  @spec one_line(String.t()) :: String.t()
-  def one_line(text) do
-    text
-    |> String.replace_invalid("?")
-    |> String.split()
-    |> Enum.join(" ")
-    |> String.replace(~r/\p{C}/u, "?")
-  end
+  def clean_line(text), do: text |> Helyx.TUI.SessionList.one_line() |> Helyx.Reason.text()
 
   defp line({:session_down, _reason} = reason), do: sentence(reason)
 

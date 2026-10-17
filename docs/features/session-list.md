@@ -21,7 +21,7 @@ Decisions:
 - **First prompt** is the text of the first user message in the head of the file. The first message of a session is the user prompt. If the first message in the head is not a user message (only a hand edit makes that), the first prompt is empty.
 - **The id** is the file name without `.jsonl`. The list shows only a file whose name has the format of `Helyx.Session.Id` (12 characters of `A-Z a-z 0-9 _ -`), so each listed id works with `--session`. The newest-session resume (`--resume`) skips the other files too (#581). About one id in 64 starts with `-`: the command line keeps the word after `--session` as its value.
 - **A file that the reader does not accept** is left out of the list: an unknown version, a header that does not parse or has no string `cwd` or `model`, and a file of the older format with no `session` header. The newest-session resume (`--resume`) skips it too, so it takes, of the sessions that `--list` shows, the one that started last (#585). `--session <id>` of such a file gives an error, not a skip.
-- **The terminal is a boundary for file text.** The folder, the model, and the first prompt come from the file, and a hand edit can put escape sequences in them. Before a line is printed, each field gets the clean pass of `CodingAgent.one_line/1`: a whitespace run becomes one space, and a control character or a format character becomes `?`.
+- **The terminal is a boundary for file text.** The folder, the model, and the first prompt come from the file, and a hand edit can put escape sequences in them. Before a line is printed, each field gets the clean pass of `Helyx.TUI.SessionList.one_line/1` (`CodingAgent.one_line/1` before #551): a whitespace run becomes one space, and a control character or a format character becomes `?`.
 
 ## Interface changes
 
@@ -53,9 +53,9 @@ Decisions:
 | stats and paths of the scan | not bounded: the scan stats every session file of the folder, or of every folder with `--all`, and keeps every path before it takes the 256 newest; nothing deletes session files. Before this change the newest-session resume did the same for one folder. A known ceiling, with no ticket yet | n/a | `Scan.newest/2` |
 | heap of the head walk | the caller decodes one line of the head at a time, not a list of all its lines; a few MiB at most for a head of 65,535 short lines | n/a | `Scan.head/1` |
 | lines printed | at most one line for each scanned file, so 256 | n/a | `CodingAgent.CLI` |
-| first prompt on screen | 60 code points after the clean pass; a code point, not a grapheme, because one grapheme can hold any number of combining marks | cut at 60 code points | `CodingAgent.CLI` |
-| model on screen | 40 code points after the clean pass | cut at 40 code points | `CodingAgent.CLI` |
-| folder on screen (`--all`, and the error of `--session`) | the last 80 code points after the clean pass; the end of a path is the part that tells folders apart | the start is cut | `CodingAgent.CLI` |
+| first prompt on screen | 60 code points after the clean pass; a code point, not a grapheme, because one grapheme can hold any number of combining marks | cut at 60 code points | `Helyx.TUI.SessionList.line/2` (#551 moved it from `CodingAgent.CLI`) |
+| model on screen | 40 code points after the clean pass | cut at 40 code points | `Helyx.TUI.SessionList.line/2` (#551 moved it from `CodingAgent.CLI`) |
+| folder on screen (`--all`, and the error of `--session`) | the last 80 code points after the clean pass; the end of a path is the part that tells folders apart | the start is cut | `Helyx.TUI.SessionList.line/2` (#551 moved it from `CodingAgent.CLI`) |
 | session id of `--session` | the format of `Helyx.Session.Id`, checked before any path is built | `not a session id`, no file access | `Scan.find/2` |
 | files that match an id | one | two or more give `:duplicate_id` | `Scan.find/2` |
 | resume by id: file size, heap | the bounds of the resume of `Helyx.Session.File` (64 MiB, the heap cap) | as for `--resume` | `Helyx.Session.File.resume_picked/3` |

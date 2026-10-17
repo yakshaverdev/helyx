@@ -2,7 +2,7 @@ defmodule Helyx.TUI do
   @moduledoc """
   The terminal interface, an `ExRatatui.App` in the alternate screen.
 
-  The TUI subscribes to one session and renders from `Helyx.TUI.ViewModel`,
+  The TUI subscribes to one session at a time and renders from `Helyx.TUI.ViewModel`,
   a pure fold over the session's events. It holds no session state of its
   own. It runs in the node of its Core, so it has the Helyx version of that
   Core and needs no version check (ADR 0006). Keys, with the full rules in
@@ -16,6 +16,8 @@ defmodule Helyx.TUI do
     * Alt+Enter sends it as a follow-up; a rejected send stays in the composer
     * `/model provider/model` in the composer switches the model, and
       `/compact [instructions]` compacts the provider's own history
+    * `/new` starts a new session, and `/resume` lists the other sessions
+      of the folder to resume one (`docs/features/tui-session-switch.md`)
     * Escape aborts the running turn; its queued messages come back to the composer
     * PgUp and PgDn scroll the transcript (`Helyx.TUI.Transcript`) by one screen
     * the wheel scrolls three rows; a drag copies text (`Helyx.TUI.Selection`)
@@ -34,7 +36,8 @@ defmodule Helyx.TUI do
   alias ExRatatui.Layout.Rect
   alias ExRatatui.Subscription
   alias Helyx.Session
-  alias Helyx.TUI.{Command, Composer, Footer, Quit, Selection, Transcript, ViewModel}
+  alias Helyx.TUI.{Command, Composer, Footer, Quit, Selection, SessionList, Start, Switch}
+  alias Helyx.TUI.{Transcript, ViewModel}
   require Quit
 
   # One screen of scroll is the rows above the composer and the footer.
@@ -48,120 +51,73 @@ defmodule Helyx.TUI do
 
   The options are `:session`, `:resumed` (true when the session was
   resumed: an information cell "resumed session" follows the history),
-  `:cwd` (the directory that the footer shows, default `File.cwd!/0`),
-  and those of `ExRatatui.App`. The scroll keys read the terminal size through
+  `:cwd` (the directory that the footer shows and the folder of `/new` and
+  `/resume`, default `File.cwd!/0`), `:sessions_dir` (where `/new` saves
+  and `/resume` lists; without it `/new` saves nothing and `/resume` lists
+  nothing), and those of `ExRatatui.App`. The scroll keys read the terminal size through
   `:terminal_size_fn`, the option of `ExRatatui.Server`; the default is
   `ExRatatui.terminal_size/0`.
   """
   @spec run(keyword()) :: :ok | {:error, term()}
-  def run(opts) do
-    # A failed init (dead session, no terminal) exits the linked caller
-    # before start_link can return the error. Trapping for just the start
-    # window turns that into the {:error, reason} return; the flag is
-    # restored before blocking, so the caller's other links keep their kill
-    # semantics while the TUI runs.
-    trap = Process.flag(:trap_exit, true)
-
-    case start_link(Keyword.put_new(opts, :mouse_capture, true)) do
-      {:ok, pid} ->
-        ref = Process.monitor(pid)
-        # The TUI answers Process.info/2 only after it handles the monitor,
-        # so a live answer means the DOWN carries the real reason. A TUI that
-        # died before gives :noproc there; its EXIT comes over the link.
-        if Process.info(pid, :status) do
-          # Unlinked, an abnormal exit reaches the receive as a DOWN instead
-          # of killing the caller through the link. Unlink before restoring
-          # the flag, so no kill window opens.
-          Process.unlink(pid)
-          Process.flag(:trap_exit, trap)
-
-          receive do
-            {:DOWN, ^ref, :process, ^pid, reason} -> flush_exit(pid, exit_result(reason))
-          end
-        else
-          reason = receive do: ({:EXIT, ^pid, reason} -> reason)
-          Process.demonitor(ref, [:flush])
-          Process.flag(:trap_exit, trap)
-          exit_result(reason)
-        end
-
-      {:error, reason} ->
-        # proc_lib unlinks and flushes the dead child's exit signal before
-        # start_link returns an error, so there is nothing to drain here.
-        Process.flag(:trap_exit, trap)
-        {:error, reason}
-    end
-  end
-
-  defp exit_result(:normal), do: :ok
-  defp exit_result(reason), do: {:error, reason}
-
-  # A crash in the trap window queues an EXIT that the flag cannot stop.
-  defp flush_exit(pid, result) do
-    receive do
-      {:EXIT, ^pid, _reason} -> result
-    after
-      0 -> result
-    end
-  end
+  def run(opts), do: Start.run(fn -> start_link(Keyword.put_new(opts, :mouse_capture, true)) end)
 
   @impl true
   def mount(opts) do
-    session = Keyword.fetch!(opts, :session)
-
-    # The screen starts from the snapshot: the history of a resumed
-    # session, and the turn a late client joins. The end signal of the
-    # subscription ends the TUI (see handle_info/2).
-    {snapshot, ref} = subscribe!(session)
-    vm = ViewModel.from_snapshot(snapshot)
-    vm = if opts[:resumed], do: ViewModel.info(vm, "resumed session"), else: vm
     cwd = Keyword.get_lazy(opts, :cwd, &File.cwd!/0)
 
-    {:ok,
-     %{
-       session: session,
-       # The monitor of the session from the subscribe: its `:DOWN` is
-       # the end signal.
-       session_ref: ref,
-       vm: vm,
-       composer: Composer.new(),
-       cwd: cwd,
-       # Row 1 of the footer. The branch comes from a task that starts
-       # at mount and after each turn; the result of the latest wins.
-       location: Footer.location(cwd, nil),
-       branch_ref: nil,
-       # A `Transcript.position()`; nil follows the newest output.
-       scroll: nil,
-       selection: nil,
-       # The size seam of `ExRatatui.Server`, so a test sets the size.
-       terminal_size_fn: Keyword.get(opts, :terminal_size_fn, &ExRatatui.terminal_size/0),
-       # nil while idle, or the monotonic ms of the turn start and the ms
-       # since then at the last tick.
-       busy: busy(snapshot.turn),
-       quit: nil
-     }
-     |> read_branch()}
+    state = %{
+      # The session and its subscription: `Helyx.TUI.Switch.bind/3`.
+      session: nil,
+      session_ref: nil,
+      instance_id: nil,
+      vm: nil,
+      sessions_dir: opts[:sessions_dir],
+      # A running `Helyx.TUI.Switch`, or nil.
+      switch: nil,
+      # The open `/resume` list, drawn in the place of the composer, or nil.
+      list: nil,
+      composer: Composer.new(),
+      cwd: cwd,
+      # Row 1 of the footer. The branch comes from a task that starts
+      # at mount and after each turn; the result of the latest wins.
+      location: Footer.location(cwd, nil),
+      branch_ref: nil,
+      # A `Transcript.position()`; nil follows the newest output.
+      scroll: nil,
+      selection: nil,
+      # The size seam of `ExRatatui.Server`, so a test sets the size.
+      terminal_size_fn: Keyword.get(opts, :terminal_size_fn, &ExRatatui.terminal_size/0),
+      # nil while idle, or the monotonic ms of the turn start and the ms
+      # since then at the last tick.
+      busy: nil,
+      quit: nil
+    }
+
+    info = if opts[:resumed], do: "resumed session"
+    {:ok, state |> Switch.bind(Keyword.fetch!(opts, :session), info) |> read_branch()}
   end
 
-  # A client that joins a running turn takes its start from the snapshot,
-  # which the session makes, so every client shows the same time.
-  defp busy(nil), do: nil
-
-  defp busy(%{elapsed_ms: elapsed}),
-    do: %{started: System.monotonic_time(:millisecond) - elapsed, elapsed: elapsed}
-
-  # A dead session leaves nothing to render; exiting surfaces the reason
-  # through run/1 instead of an idle screen that rejects every key. The
-  # events before the signal are already applied.
   @impl true
-  def handle_info({:DOWN, ref, :process, _pid, reason}, %{session_ref: ref}),
-    do: exit({:session_down, Session.end_reason(reason)})
+  def handle_info({:DOWN, ref, :process, _pid, reason}, %{session_ref: ref} = state),
+    do: {:noreply, Switch.down(state, reason)}
 
-  def handle_info({:helyx_event, event}, state) do
+  def handle_info({:helyx_event, %{instance_id: id} = event}, %{instance_id: id} = state) do
     state = read_branch_after_turn(%{state | vm: ViewModel.apply(state.vm, event)}, event)
-    state = update_in(state.composer, &Composer.apply(&1, event))
-    {:noreply, settle(sync_busy(state))}
+    {:noreply, settle(sync_busy(Switch.event(state, event)))}
   end
+
+  def handle_info({ref, result}, %{switch: %Switch{task: %Task{ref: ref}}} = state) do
+    Process.demonitor(ref, [:flush])
+    {:noreply, settle(sync_busy(Switch.done(state, result)))}
+  end
+
+  # ExRatatui traps exits, so a crash of the switch Task reaches the TUI as
+  # its `:DOWN` (and an `:EXIT`, which the last clause drops).
+  def handle_info(
+        {:DOWN, ref, :process, _pid, reason},
+        %{switch: %Switch{task: %{ref: ref}}} = state
+      ),
+      do: {:noreply, settle(sync_busy(Switch.done(state, {:error, reason})))}
 
   # A tick of the `subscriptions/1` timer. ExRatatui drops a tick of a
   # cancelled timer, so one never arrives while idle.
@@ -190,14 +146,6 @@ defmodule Helyx.TUI do
   defp read_branch(%{cwd: cwd} = state),
     do: %{state | branch_ref: Task.async(fn -> Footer.branch(cwd) end).ref}
 
-  # A session that is not running leaves nothing to render.
-  defp subscribe!(session) do
-    case Session.subscribe(session) do
-      {:ok, snapshot, ref} -> {snapshot, ref}
-      {:error, :session_not_found} -> exit({:session_down, :session_not_found})
-    end
-  end
-
   # The next key press or paste clears the reason of the last reject, then
   # runs as usual, so it can set a new reason. The release and the repeat of
   # a key are not a new press: those of the rejected Enter keep the reason.
@@ -218,6 +166,20 @@ defmodule Helyx.TUI do
     end
   end
 
+  # The open list takes the keys and a paste. Up and Down repeat.
+  def handle_event(%Key{code: code, kind: kind}, %{list: %SessionList{} = list} = state)
+      when kind == "press" or (kind == "repeat" and code in ["up", "down"]) do
+    case SessionList.key(list, code) do
+      {:move, list} -> {:noreply, %{state | list: list}}
+      {:pick, id} -> {:noreply, settle(Switch.start(%{state | list: nil}, {:resume, id}))}
+      :close -> {:noreply, settle(%{state | list: nil})}
+      :none -> {:noreply, state}
+    end
+  end
+
+  def handle_event(%type{}, %{list: %SessionList{}} = state) when type in [Key, Paste],
+    do: {:noreply, state}
+
   def handle_event(%Key{code: "esc", kind: "press"}, state) do
     # Abort waits for the hands to kill every OS process; a Task keeps that
     # wait off the render loop.
@@ -233,7 +195,7 @@ defmodule Helyx.TUI do
   def handle_event(%Resize{}, state), do: {:noreply, settle(%{state | selection: nil})}
 
   def handle_event(%Mouse{} = mouse, state),
-    do: Selection.handle(mouse, state, layout(state.composer, state.terminal_size_fn.()))
+    do: Selection.handle(mouse, state, layout(state, state.terminal_size_fn.()))
 
   # Home and End scroll only when the composer is empty; otherwise they
   # move its cursor.
@@ -253,6 +215,10 @@ defmodule Helyx.TUI do
              kind in ["press", "repeat"] do
     {:noreply, edit(state, :insert, "\n")}
   end
+
+  # No text goes to a session that a switch ends.
+  def handle_event(%Key{code: "enter", kind: "press"}, %{switch: %Switch{}} = state),
+    do: {:noreply, %{state | vm: ViewModel.reject(state.vm, "not sent: a switch runs")}}
 
   def handle_event(%Key{code: "enter", kind: "press"} = key, state) do
     case Composer.submit(state.composer) do
@@ -324,45 +290,61 @@ defmodule Helyx.TUI do
 
   # The footer and the transcript follow the session's events, not this
   # call. A refused command stays in the composer, under a notice.
+  defp run_command({:new, ""}, state), do: Switch.start(restore(state), :new)
+
+  defp run_command({:resume, ""}, state),
+    do: %{restore(state) | list: SessionList.new(state.sessions_dir, state.cwd, state.session.id)}
+
   defp run_command(command, state) do
     case Command.run(command, state.session) do
-      :ok -> %{state | composer: Composer.restore(state.composer)}
+      :ok -> restore(state)
       {:notice, text} -> %{state | vm: ViewModel.notice(state.vm, text)}
     end
   end
 
+  defp restore(state), do: %{state | composer: Composer.restore(state.composer)}
+
   @impl true
   def render(state, frame) do
-    [transcript, composer, footer] = layout(state.composer, {frame.width, frame.height})
+    [transcript, middle, footer] = layout(state, {frame.width, frame.height})
+
+    middle =
+      if state.list,
+        do: [{SessionList.widget(state.list), middle}],
+        else: Composer.widgets(state.composer, middle)
 
     Selection.widgets(state.selection, state.vm, state.scroll, transcript) ++
-      Composer.widgets(state.composer, composer) ++
+      middle ++
       [{Footer.widget(state.location, state.vm, state.busy, state.scroll, state.quit), footer}]
   end
 
-  # The transcript, composer, and footer rects, nil with no terminal size.
-  # The frame, the scroll, and the mouse share them: one width rule.
-  defp layout(composer, {width, height}) when is_integer(width) and is_integer(height) do
+  # The transcript, composer or list, and footer rects, nil with no
+  # terminal size. The frame, the scroll, and the mouse share them: one
+  # width rule.
+  defp layout(state, {width, height}) when is_integer(width) and is_integer(height) do
     Layout.split(
       %Rect{x: 0, y: 0, width: width, height: height},
       :vertical,
       [
         {:min, 0},
-        {:length, Composer.rows(composer, height - @footer_rows)},
+        {:length, middle_rows(state, height - @footer_rows)},
         {:length, @footer_rows}
       ],
       horizontal_margin: @margin
     )
   end
 
-  defp layout(_composer, {:error, _reason}), do: nil
+  defp layout(_state, {:error, _reason}), do: nil
+
+  defp middle_rows(%{list: nil, composer: composer}, room), do: Composer.rows(composer, room)
+  defp middle_rows(%{list: list}, room), do: SessionList.rows(list, room)
 
   # Scroll position
 
   # Sets the position from the transcript rect, of at least one row. With no
   # size there is no screen to check, so the view follows the newest output.
   defp on_screen(state, position) do
-    case layout(state.composer, state.terminal_size_fn.()) do
+    case layout(state, state.terminal_size_fn.()) do
       [%Rect{width: width, height: rows} | _] ->
         %{state | scroll: position.(width, max(rows, 1))}
 
@@ -393,4 +375,14 @@ defmodule Helyx.TUI do
 
   defp sync_busy(%{vm: %{running?: false}} = state), do: %{state | busy: nil}
   defp sync_busy(state), do: state
+
+  # At quit, a switch that runs ends, and a session that it opened stays
+  # until Core stops. The turn of the current session aborts before Core
+  # stops; ExRatatui has restored the terminal.
+  @impl true
+  def terminate(_reason, state) do
+    if state.switch, do: Task.shutdown(state.switch.task, :brutal_kill)
+    _ = Session.abort(state.session)
+    :ok
+  end
 end

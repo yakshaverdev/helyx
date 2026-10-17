@@ -136,12 +136,24 @@ defmodule Helyx.TUI.Composer do
   paste rule cleans each text, so a text cannot forge a marker.
   """
   @spec apply(t(), Event.t()) :: t()
-  def apply(%__MODULE__{} = composer, %Event{type: :queue_dropped, data: %{texts: texts}}) do
-    {parts, pastes} = draft_parts(composer, ExRatatui.textarea_get_value(composer.input))
-    show(composer, "down", Enum.join(Enum.map(texts, &clean/1) ++ parts, "\n"), pastes, nil)
-  end
+  def apply(%__MODULE__{} = composer, %Event{type: :queue_dropped, data: %{texts: texts}}),
+    do: join_draft(composer, Enum.map(texts, &clean/1))
 
   def apply(%__MODULE__{} = composer, %Event{}), do: composer
+
+  @doc """
+  Ends a recall and keeps what the user has: the draft that waits, then the
+  recalled prompt that shows, edited or not, one per new line, with the
+  cursor at the end. With no recall the composer does not change.
+  """
+  @spec end_recall(t()) :: t()
+  def end_recall(%__MODULE__{recall: nil} = composer), do: composer
+  def end_recall(%__MODULE__{} = composer), do: join_draft(composer, [])
+
+  defp join_draft(composer, texts) do
+    {parts, pastes} = draft_parts(composer, ExRatatui.textarea_get_value(composer.input))
+    show(composer, "down", Enum.join(texts ++ parts, "\n"), pastes, nil)
+  end
 
   @doc "The rows of the composer with its two borders: 3 to 10."
   @spec rows(t()) :: pos_integer()
@@ -155,7 +167,11 @@ defmodule Helyx.TUI.Composer do
   at 4 rows of room or more.
   """
   @spec rows(t(), integer()) :: pos_integer()
-  def rows(composer, room), do: min(rows(composer), max(room - 1, 3))
+  def rows(composer, room), do: fit(rows(composer), room)
+
+  @doc "The rule of `rows/2` for any box of `rows` rows, such as the `/resume` list."
+  @spec fit(pos_integer(), integer()) :: pos_integer()
+  def fit(rows, room), do: min(rows, max(room - 1, 3))
 
   @doc """
   The widgets that draw the composer in `area`: a box with rounded corners

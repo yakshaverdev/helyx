@@ -47,9 +47,11 @@ defmodule Helyx.TUI.ViewModel do
   from a snapshot alike.
 
   The view model has no `instance_id` or `seq` guard: the TUI subscribes
-  once, and the registration and the snapshot happen in one server handler,
-  so no event of another instance or of an older `seq` reaches it (ADR 0006,
-  revision of 2026-10-03).
+  once to each session, and the registration and the snapshot happen in
+  one server handler, so no event of an older `seq` reaches it (ADR 0006,
+  revision of 2026-10-03). `Helyx.TUI` drops an event of another instance,
+  which is of a session that a switch left
+  (`docs/features/tui-session-switch.md`).
   """
 
   alias Helyx.{Event, Message}

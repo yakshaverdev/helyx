@@ -27,6 +27,7 @@ defmodule CodingAgent.CLI do
 
   alias CodingAgent.Print
   alias Helyx.Session.File.Scan
+  alias Helyx.TUI.SessionList
 
   @options "the options are --model provider/model, --resume, --session id, --list, --all, " <>
              "-p prompt, and --version"
@@ -54,11 +55,6 @@ defmodule CodingAgent.CLI do
     {:print, :list, ""},
     {:directory, :all, ""}
   ]
-
-  # The widths of the file text on a line of --list, in code points.
-  @prompt_width 60
-  @model_width 40
-  @folder_width 80
 
   @doc """
   Runs the agent with the command line `argv` until the user quits, and
@@ -177,7 +173,7 @@ defmodule CodingAgent.CLI do
       {:ok, _path, %{"cwd" => cwd}} ->
         if Path.type(cwd) == :absolute and File.dir?(cwd),
           do: {:ok, cwd},
-          else: {:error, ~s(not a directory: "#{folder_text(cwd)}")}
+          else: {:error, ~s(not a directory: "#{SessionList.folder(cwd)}")}
 
       {:error, :invalid_id} ->
         {:error, "not a session id: #{inspect(id)}"}
@@ -192,36 +188,11 @@ defmodule CodingAgent.CLI do
 
   defp list(all?, args) do
     with {:ok, scope} <- if(all?, do: {:ok, :all}, else: cwd(args)) do
-      for summary <- Scan.list(sessions_dir(), scope), do: IO.puts(line(summary, all?))
+      for summary <- Scan.list(sessions_dir(), scope),
+          do: IO.puts(SessionList.line(summary, all?))
+
       :ok
     end
-  end
-
-  # The folder, the model, and the prompt come from the file, so each gets
-  # the clean pass before it reaches the terminal. The end of a folder tells
-  # folders apart.
-  defp line(summary, all?) do
-    folder =
-      if all?,
-        do: [folder_text(summary.cwd)],
-        else: []
-
-    model = summary.model |> CodingAgent.one_line() |> take(@model_width)
-    prompt = summary.prompt |> CodingAgent.one_line() |> take(@prompt_width)
-    Enum.join([summary.id, time(summary.mtime)] ++ folder ++ [model, prompt], "  ")
-  end
-
-  defp folder_text(cwd), do: cwd |> CodingAgent.one_line() |> take(-@folder_width)
-
-  # A width counts code points, not graphemes: one grapheme can hold any
-  # number of combining marks. A negative count takes the end.
-  defp take(text, count), do: text |> String.to_charlist() |> Enum.take(count) |> List.to_string()
-
-  defp time(mtime) do
-    mtime
-    |> :calendar.system_time_to_local_time(:second)
-    |> NaiveDateTime.from_erl!()
-    |> NaiveDateTime.to_string()
   end
 
   # Application env so that a test points the agent at its own directory.
