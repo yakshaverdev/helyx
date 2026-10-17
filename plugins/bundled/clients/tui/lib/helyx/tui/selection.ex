@@ -26,6 +26,7 @@ defmodule Helyx.TUI.Selection do
   alias ExRatatui.Event.Mouse
   alias ExRatatui.Layout.Rect
   alias ExRatatui.Style
+  alias ExRatatui.Text.Line
   alias ExRatatui.Widgets.{Block, Paragraph}
   alias Helyx.TUI.{Transcript, ViewModel}
 
@@ -146,20 +147,18 @@ defmodule Helyx.TUI.Selection do
     end
   end
 
-  @doc """
-  The transcript in `area`, and over it a reverse video block on each
-  selected cell of the screen.
-  """
-  @spec widgets(t() | nil, ViewModel.t(), Transcript.position(), Rect.t()) :: [
-          {Paragraph.t() | Block.t(), Rect.t()}
-        ]
-  def widgets(selection, vm, scroll, area) do
-    rows = Transcript.screen(vm, scroll, area)
-    [{Transcript.widget(rows), area} | marks(selection, rows, area)]
-  end
-
   # The ends in transcript order: a drag can go up.
   defp ends(anchor, head), do: Enum.min_max([anchor, head])
+
+  @doc """
+  The transcript of `rows`, the rows of `Transcript.screen/3` in `area`,
+  and over it a reverse video block on each selected cell.
+  """
+  @spec widgets(t() | nil, [{Transcript.address(), Line.t()}], Rect.t()) :: [
+          {Paragraph.t() | Block.t(), Rect.t()}
+        ]
+  def widgets(selection, rows, area),
+    do: [{Transcript.widget(rows), area} | marks(selection, rows, area)]
 
   defp marks(nil, _rows, _area), do: []
   defp marks(%__MODULE__{anchor: same, head: same}, _rows, _area), do: []

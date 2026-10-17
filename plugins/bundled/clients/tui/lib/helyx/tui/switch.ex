@@ -48,7 +48,9 @@ defmodule Helyx.TUI.Switch do
         vm: if(info, do: ViewModel.info(vm, info), else: vm),
         busy: busy(snapshot.turn),
         scroll: nil,
-        selection: nil
+        selection: nil,
+        # The cursor of a search is an item of the session it leaves.
+        search: nil
     }
   end
 
