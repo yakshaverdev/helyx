@@ -5,9 +5,11 @@ defmodule Helyx.Session.Sync do
   # with its instance, and that monitors the session. It calls `sync/2` of the
   # Memory plugin one chunk at a time, in the order of the batches, each
   # call in a linked Task with a limit. A failed call drops its chunk with
-  # a notice to the session. After the session ends it drains the queue
-  # for at most `@drain_ms`, and not at all past the session cap plus
-  # `@drain_room` workers.
+  # a notice: a log line, also sent to the session until the worker
+  # handles its end. After the session ends it drains the queue for at
+  # most `@drain_ms`, and not at all past the session cap plus
+  # `@drain_room` workers. A stop with a queue left logs the chunks it
+  # drops.
 
   use GenServer, restart: :temporary, shutdown: 1_000
 
@@ -124,23 +126,36 @@ defmodule Helyx.Session.Sync do
 
     if not :queue.is_empty(state.queue) and
          workers(state) > Helyx.Core.max_sessions() + @drain_room do
-      drain_end(state)
+      {:stop, :normal, state}
     else
       Process.send_after(self(), :drain_end, @drain_ms)
       next(state)
     end
   end
 
-  def handle_info(:drain_end, state), do: drain_end(state)
+  def handle_info(:drain_end, state), do: {:stop, :normal, state}
 
   # The exit of a sync Task, whose `:DOWN` or reply counts, and the
   # timer of an ended call, which is left to fire.
   def handle_info({:EXIT, _pid, _reason}, state), do: {:noreply, state}
   def handle_info({:call_timeout, _ref}, state), do: {:noreply, state}
 
+  # Every stop with a queue left logs it: the drain limit, the drain cap,
+  # and a Core stop.
   @impl true
-  def terminate(_reason, %__MODULE__{task: %Task{pid: pid}}), do: Process.exit(pid, :kill)
-  def terminate(_reason, _state), do: :ok
+  def terminate(_reason, state) do
+    if state.task, do: Process.exit(state.task.pid, :kill)
+
+    if not :queue.is_empty(state.queue) do
+      chunks = :queue.to_list(state.queue)
+      lost = Enum.sum_by(chunks, fn {chunk, _bytes} -> unsaved(chunk) end)
+
+      Logger.warning(
+        "memory sync stopped with #{length(chunks)} chunks left after the session end; " <>
+          "#{lost} of their messages were not saved and are lost"
+      )
+    end
+  end
 
   # The supervisor links each child and its own parent; a call to it
   # could wait for its stop.
@@ -148,18 +163,6 @@ defmodule Helyx.Session.Sync do
     sup = Process.whereis(Helyx.Core.sync_supervisor(state.opts[:core]))
     {:links, links} = Process.info(sup, :links)
     length(links) - 1
-  end
-
-  defp drain_end(state) do
-    chunks = :queue.to_list(state.queue)
-    lost = Enum.sum_by(chunks, fn {chunk, _bytes} -> unsaved(chunk) end)
-
-    Logger.warning(
-      "memory sync stopped with #{length(chunks)} chunks left after the session end; " <>
-        "#{lost} of their messages were not saved and are lost"
-    )
-
-    {:stop, :normal, state}
   end
 
   defp next(%__MODULE__{task: nil} = state) do
@@ -198,8 +201,8 @@ defmodule Helyx.Session.Sync do
     done(state)
   end
 
-  # The notice goes through the session, which emits it; after the
-  # session ended it is a log line.
+  # The notice is always a log line, and goes to the session until the
+  # worker handles its end.
   defp notice(state, what, entries) do
     count = length(entries)
 
@@ -209,10 +212,8 @@ defmodule Helyx.Session.Sync do
         n -> "memory sync #{what} #{count} messages; #{n} of them were not saved and are lost"
       end
 
-    case state.session do
-      nil -> Logger.warning(text)
-      session -> send(session, {:memory_notice, self(), text})
-    end
+    Logger.warning(text)
+    if state.session, do: send(state.session, {:memory_notice, self(), text})
   end
 
   defp unsaved(entries), do: Enum.count(entries, &(not &1.persisted))
