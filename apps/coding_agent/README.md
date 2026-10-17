@@ -46,6 +46,7 @@ The footer shows no key hints, except "Ctrl+C again to quit" after a first Ctrl+
 | PgUp, PgDn | Scrolls the transcript by one screen |
 | Home, End with an empty composer (fn+Left, fn+Right on a MacBook) | Goes to the oldest or the newest output. With text in the composer, they move the cursor |
 | Wheel, trackpad | Scrolls the transcript by three rows |
+| Ctrl+O | Shows the full text of every tool result, or the first four lines again. The hint row of a short result names the key |
 | Drag in the transcript | Selects text and copies it to the clipboard with OSC 52, at most 75,000 bytes. The TUI takes the mouse, so the selection of the terminal does not work |
 | Ctrl+C | Clears the composer. A second Ctrl+C within 500 ms quits and restores the terminal |
 

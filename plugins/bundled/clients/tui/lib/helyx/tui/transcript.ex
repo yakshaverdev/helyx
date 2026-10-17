@@ -116,13 +116,26 @@ defmodule Helyx.TUI.Transcript do
   it to the end are more than one screen of `height` rows at `width`
   columns. If not, the row moves into the items that follow, or the result
   is nil. A new item can take the index of the open message, and a wider
-  screen makes an item shorter. Every position in the TUI state comes from
-  here or is nil.
+  screen makes an item shorter. Every position in the TUI state passes this
+  rule (through `hold/4`, `keep/4`, or `page/5`) or is nil.
   """
   @spec hold(ViewModel.t(), {non_neg_integer(), non_neg_integer()}, integer(), pos_integer()) ::
           position()
   def hold(%ViewModel{} = vm, position, width, height),
     do: hold_items(items(vm), position, width, height)
+
+  @doc """
+  The position after a change of the rows of its own item, such as Ctrl+O:
+  the row stays when the item still has it, else the view starts at the
+  first row of the item. Then `hold/4` checks it.
+  """
+  @spec keep(ViewModel.t(), {non_neg_integer(), non_neg_integer()}, integer(), pos_integer()) ::
+          position()
+  def keep(vm, {index, row}, width, height) do
+    items = items(vm)
+    rows = items |> Enum.at(index) |> item_lines(width) |> length()
+    hold_items(items, {index, if(row < rows, do: row, else: 0)}, width, height)
+  end
 
   defp hold_items(items, {index, row}, width, height) do
     top = items |> Enum.drop(index) |> forward({index, row}, width)
@@ -201,19 +214,26 @@ defmodule Helyx.TUI.Transcript do
 
   # The items in position order, one O(n) fold of the array, and the open
   # assistant message as the last one. A run of information cells is one
-  # item, `{:infos, texts}`. The items before the open message only grow in
-  # number, and only the last of them can grow a row.
-  defp items(%ViewModel{streaming: streaming, cells: cells}) do
+  # item, `{:infos, texts}`. With the Ctrl+O toggle on, a tool cell is an
+  # item with `true` at its end. The items before the open message only
+  # grow in number, and only the last of them can grow a row.
+  defp items(%ViewModel{streaming: streaming, cells: cells, expanded?: expanded?}) do
     :array.foldr(
-      fn _position, cell, acc -> join_info(cell, acc) end,
+      fn _position, cell, acc -> add_item(cell, expanded?, acc) end,
       streaming_items(streaming),
       cells
     )
   end
 
-  defp join_info({:info, text}, [{:infos, texts} | acc]), do: [{:infos, [text | texts]} | acc]
-  defp join_info({:info, text}, acc), do: [{:infos, [text]} | acc]
-  defp join_info(cell, acc), do: [cell | acc]
+  defp add_item({:info, text}, _expanded?, [{:infos, texts} | acc]),
+    do: [{:infos, [text | texts]} | acc]
+
+  defp add_item({:info, text}, _expanded?, acc), do: [{:infos, [text]} | acc]
+
+  defp add_item({:tool, call, line, result}, true, acc),
+    do: [{:tool, call, line, result, true} | acc]
+
+  defp add_item(cell, _expanded?, acc), do: [cell | acc]
 
   defp streaming_items(nil), do: []
 
@@ -255,8 +275,11 @@ defmodule Helyx.TUI.Transcript do
     block_lines(message.content, width)
   end
 
-  defp cell_lines({:tool, _call, line, result}, width) do
-    styled_lines(line, width, @tool) ++ result_lines(result, width)
+  defp cell_lines({:tool, call, line, result}, width),
+    do: cell_lines({:tool, call, line, result, false}, width)
+
+  defp cell_lines({:tool, _call, line, result, expanded?}, width) do
+    styled_lines(line, width, @tool) ++ result_lines(result, expanded?, width)
   end
 
   defp cell_lines({:notice, text}, width), do: styled_lines("✕ #{text}", width, @bad)
@@ -292,19 +315,20 @@ defmodule Helyx.TUI.Transcript do
   defp placeholder(%kind{}),
     do: "[unsupported block: #{kind |> Module.split() |> List.last() |> Macro.underscore()}]"
 
-  defp result_lines(nil, width), do: styled_lines("… awaiting result", width, @dim)
+  defp result_lines(nil, _expanded?, width), do: styled_lines("… awaiting result", width, @dim)
 
-  # Long tool output would drown the transcript; four lines tell the story.
-  defp result_lines(%Message{} = result, width) do
+  # The short form keeps long tool output from filling the transcript.
+  # Ctrl+O shows all lines.
+  defp result_lines(%Message{} = result, expanded?, width) do
     style = if result.is_error, do: @bad, else: @dim
     lines = result |> shown_text() |> String.trim_trailing("\n") |> String.split("\n")
+    kept = if expanded?, do: lines, else: Enum.take(lines, 4)
+    shown = kept |> Enum.map_join("\n", &("  " <> &1)) |> styled_lines(width, style)
 
-    shown = Enum.flat_map(Enum.take(lines, 4), &styled_lines("  " <> &1, width, style))
-
-    case length(lines) - 4 do
+    case length(lines) - length(kept) do
       hidden when hidden > 0 ->
         plural = if hidden == 1, do: "line", else: "lines"
-        shown ++ styled_lines("  … #{hidden} more #{plural}", width, @dim)
+        shown ++ styled_lines("  … #{hidden} more #{plural} (ctrl+o to expand)", width, @dim)
 
       _ ->
         shown

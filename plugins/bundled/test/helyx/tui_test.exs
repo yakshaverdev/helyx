@@ -626,9 +626,19 @@ defmodule Helyx.TUITest do
       refute Enum.any?(texts.(at_or_under), &String.contains?(&1, "more"))
     end
 
-    assert "  … 1 more line" in texts.("1\n2\n3\n4\n5")
-    assert "  … 2 more lines" in texts.("1\n2\n3\n4\n5\n6")
+    assert "  … 1 more line (ctrl+o to expand)" in texts.("1\n2\n3\n4\n5")
+    assert "  … 2 more lines (ctrl+o to expand)" in texts.("1\n2\n3\n4\n5\n6")
     refute "  5" in texts.("1\n2\n3\n4\n5")
+  end
+
+  test "an expanded view model shows every line of a tool result and no hint" do
+    call = %Helyx.Message.ToolCall{id: "c", name: "bash", arguments: %{}}
+    result = Helyx.Message.tool_result(call, {:ok, "1\n2\n3\n4\n5\n6\n"})
+    vm = view_model([{:tool, call, ViewModel.call_line(call), result}])
+
+    texts = texts(ViewModel.toggle_expanded(vm))
+    assert Enum.filter(texts, &String.starts_with?(&1, "  ")) == Enum.map(1..6, &"  #{&1}")
+    refute Enum.any?(texts, &String.contains?(&1, "more"))
   end
 
   test "the preview of a result that Core cut shows the cut notice" do
@@ -636,10 +646,17 @@ defmodule Helyx.TUITest do
     output = Helyx.Message.cut_result(Enum.map_join(1..20_000, "\n", &"line #{&1}"))
     result = Helyx.Message.tool_result(call, {:ok, output})
 
-    texts = texts(view_model([{:tool, call, ViewModel.call_line(call), result}]))
+    vm = view_model([{:tool, call, ViewModel.call_line(call), result}])
+    texts = texts(vm)
 
     assert Enum.any?(texts, &String.contains?(&1, "[cut to"))
     assert Enum.any?(texts, &String.contains?(&1, "more lines"))
+
+    # The full form shows the cut text, head and tail, and nothing more.
+    full = texts(ViewModel.toggle_expanded(vm))
+    assert "  [… cut …]" in full and "  line 1" in full and "  line 20000" in full
+    refute "  line 10000" in full
+    refute Enum.any?(full, &String.contains?(&1, "more lines"))
   end
 
   describe "wrapping by display width" do
@@ -746,7 +763,7 @@ defmodule Helyx.TUITest do
 
     assert "▌ hello world" in texts
     assert Enum.any?(texts, &String.starts_with?(&1, "⚙ bash"))
-    assert "  … 2 more lines" in texts
+    assert "  … 2 more lines (ctrl+o to" in texts
     assert String.duplicate("s", 30) in texts
     assert String.duplicate("s", 5) in texts
     assert Enum.all?(texts, &(String.length(&1) <= 30))
@@ -813,6 +830,62 @@ defmodule Helyx.TUITest do
       state = press(state, "page_down")
       assert screen(state) == ["▌ m10", "▌ new"]
       refute status_text(state) =~ "scrolled"
+    end
+
+    test "ctrl+o toggles the full text of tool results, held by the scroll rule", %{core: core} do
+      call = %Message.ToolCall{id: "c", name: "bash", arguments: %{}}
+      result = Message.tool_result(call, {:ok, Enum.map_join(1..8, "\n", &"o#{&1}")})
+      cells = [{:tool, call, ViewModel.call_line(call), result}, Message.user("m1")]
+      state = scroll_state(core, 0)
+      refute state.vm.expanded?
+      state = %{state | vm: %{state.vm | cells: :array.from_list(cells)}}
+      ctrl_o = &press(&1, "o", ["ctrl"])
+
+      assert screen(state) == ["  … 4 more lines", "(ctrl+o to expand)", "▌ m1"]
+      expanded = ctrl_o.(state)
+      assert {expanded.scroll, screen(expanded)} == {nil, ["  o7", "  o8", "▌ m1"]}
+      assert ctrl_o.(expanded).vm == state.vm
+      # No event changes the toggle.
+      assert say(expanded, "m2").vm.expanded?
+
+      # A scrolled view keeps its row while the rows from it fill a screen.
+      top = expanded |> press("home") |> press("page_down")
+      assert {top.scroll, screen(top)} == {{0, 5}, ["  o5", "  o6", "  o7", "  o8"]}
+      # Short, the rows from {0, 5} no longer fill a screen: the view follows.
+      short = ctrl_o.(top)
+      assert {short.scroll, screen(short)} == {nil, screen(state)}
+
+      for kind <- ["repeat", "release"] do
+        key = %Key{code: "o", kind: kind, modifiers: ["ctrl"]}
+        assert TUI.handle_event(key, state) == {:noreply, state}
+      end
+
+      # The copy reads the expanded rows. A toggle ends the selection: its
+      # rows would hold other text.
+      {{:noreply, selected}, ""} = mouse(top, "down", 2, 1)
+      {{:noreply, selected}, ""} = mouse(selected, "drag", 5, 3)
+      {{:noreply, _, render?: false}, copy} = mouse(selected, "up", 5, 3)
+      assert copy == "\e]52;c;" <> Base.encode64("  o6\n  o7\n  o8") <> "\a"
+      assert ctrl_o.(selected).selection == nil
+    end
+
+    test "a row that a collapse removes starts the view at its tool cell", %{core: core} do
+      call = %Message.ToolCall{id: "c", name: "bash", arguments: %{}}
+      result = Message.tool_result(call, {:ok, Enum.map_join(1..8, "\n", &"o#{&1}")})
+      tool = {:tool, call, ViewModel.call_line(call), result}
+      state = scroll_state(core, 0)
+      cells = [tool | Enum.map(1..5, &Message.user("m#{&1}"))]
+      state = %{state | vm: %{state.vm | cells: :array.from_list(cells)}}
+
+      # Row 8 of the tool cell is "  o8"; the short form has 8 rows.
+      deep = state |> press("o", ["ctrl"]) |> press("home") |> press("page_down")
+      deep = wheel(deep, "scroll_down")
+      assert {deep.scroll, hd(screen(deep))} == {{0, 8}, "  o8"}
+
+      short = press(deep, "o", ["ctrl"])
+      assert {short.scroll, tl(screen(short))} == {{0, 0}, ["  o1", "  o2", "  o3", "  o4"]}
+      # A row that the item still has stays.
+      assert press(press(short, "page_down"), "o", ["ctrl"]).scroll == {0, 5}
     end
 
     # The answer to a mouse event, with what it wrote to standard output.

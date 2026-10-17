@@ -11,7 +11,7 @@ defmodule Helyx.TUI.Selection do
   release copies the text with OSC 52. The ends are transcript addresses
   with a column, so a scroll keeps the selected text, and a selection can
   reach into the scrollback that the view passed during the drag. A press
-  outside the transcript, or a new size, clears it. The TUI draws it in
+  outside the transcript, a new size, or Ctrl+O clears it. The TUI draws it in
   reverse video until the next left press. An event that changes nothing,
   such as a move or a wheel step at an end, draws no frame.
 
