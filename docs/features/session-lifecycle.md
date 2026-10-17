@@ -117,7 +117,7 @@ With a ready provider process and no turn and no wait, the session arms one idle
 | queued steers, and sent steers until their `user_message` and their answer, also after their turn | 32 together (`@limit` in `Helyx.Session.Queue`) | `{:error, :queue_full}` to the client | session |
 | queued follow-ups | 32 (`@limit` in `Helyx.Session.Queue`) | `{:error, :queue_full}` to the client | session |
 | background ends that wait | 16 with the live runs, in every turn phase: a run keeps its place until a turn takes its end, plus the lost ends of a resume (`docs/features/background-bash.md`, "Bounds", #587) | a start over the 16 places runs nothing | hands, session |
-| texts of one `queue_dropped` event | the queued steers and follow-ups: at most 32 and 32, each as the client sent it. The event holds no text that the queue did not hold | none: the queue limits hold it | session |
+| texts of one `queue_dropped` event | the queued steers and follow-ups: at most 32 and 32, each as the client sent it, so each at most 4 MiB (`Helyx.Session.max_text_bytes/0`). The event holds no text that the queue did not hold | none: the queue limits hold it | session |
 | bytes of text, thinking, and tool calls in the open assistant message | 8 MiB (`@max_message_bytes` in `Helyx.Session.Turn`) | `{:message_too_large, bytes, max}`: nothing is added, the provider process stops, the turn fails | session |
 | blocks in the open assistant message | 1,024 (`@max_message_blocks` in `Helyx.Session.Turn`) | `{:too_many_blocks, blocks, max}`: as above | session |
 | Helyx tool requests of one turn | one runs, at most 16 wait (`@max_waiting` in `Helyx.Session.ToolQueue`) | an error result to the provider at once; nothing runs | session |

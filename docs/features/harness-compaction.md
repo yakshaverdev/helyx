@@ -47,6 +47,7 @@ The reply bound is the one of `{:turn, ...}` (2,000 ms, armed kill). `Helyx.Prov
 | a turn runs | `:ok`; the turn aborts as at `abort/1` (its queues go back to the client), and the compaction turn starts at the end of the wait |
 | the wait after a turn | `:ok`; the compaction turn starts at the end of the wait, before the queued follow-ups |
 | a compaction turn runs, or one waits | `{:error, :turn_running}` |
+| text over 4 MiB (`Helyx.Session.max_text_bytes/0`) | `{:error, :text_too_large}` |
 | text that is not valid UTF-8 | `{:error, :invalid_utf8}` |
 
 An abort drops a compaction that waits. A steer in a compaction turn is not sent to the provider: it waits in the steer queue, and the next turn starts with it. A compaction cannot be steered.
@@ -69,7 +70,7 @@ none
 
 | What | Bound | Over the bound | Enforced in |
 | ---- | ----- | -------------- | ----------- |
-| compaction instructions | valid UTF-8; the size is unbounded human input, as a prompt (#29) | `{:error, :invalid_utf8}` | `Helyx.Session.compact/2` |
+| compaction instructions | at most 4 MiB of valid UTF-8, as a prompt (#672) | `{:error, :text_too_large}` or `{:error, :invalid_utf8}` | `Helyx.Session.Input.text/1`, called by `Helyx.Session.compact/2` |
 | answer to `{:compact, ...}` | 2,000 ms, armed kill, as for `{:turn, ...}` | the provider process ends; its `provider_down` fails the turn | OTP timer server |
 | `submitted` compaction turn: the `:ok` answer to the terminal | unbounded, accepted, as a model turn: Claude Code took 2.9 s and 2.3 s, Codex 7.8 s | the user aborts; the interrupt has its armed kill | client |
 | an interrupt of a compaction turn | not verified on either program; the reply kill of 2,000 ms bounds it | the provider process ends, and the next turn starts a new one | OTP timer server |

@@ -57,5 +57,7 @@ defmodule Helyx.TUI.Command do
   defp error({:unknown_provider, id}), do: "unknown provider: #{id}"
   defp error({:invalid_model_ref, _ref}), do: "invalid model ref: use provider/model"
   defp error(:turn_running), do: "not sent: a compaction already runs"
+  # The bound is `Session.max_text_bytes/0`.
+  defp error(:text_too_large), do: "not sent: over 4 MiB"
   defp error(:session_not_found), do: "the session ended"
 end

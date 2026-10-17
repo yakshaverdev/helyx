@@ -137,6 +137,20 @@ defmodule Helyx.TUITest do
     refute status_text(state) =~ "not sent"
   end
 
+  test "a text over the session bound keeps the composer text", %{core: core} do
+    state = mounted(core, "large", [])
+    text = String.duplicate("a", Session.max_text_bytes() + 1)
+    {:noreply, state} = TUI.handle_event(%ExRatatui.Event.Paste{content: text}, state)
+
+    for modifiers <- [[], ["alt"]] do
+      state = press(state, "enter", modifiers)
+      assert state.vm.reason == "not sent: over 4 MiB"
+      assert ExRatatui.textarea_get_value(state.composer.input) == text
+    end
+
+    refute_received {:helyx_event, _}
+  end
+
   test "a paste and a modified key clear the reason", %{core: core} do
     state = mounted(core, "clear", [])
 
@@ -1409,6 +1423,15 @@ defmodule Helyx.TUITest do
                List.last(ViewModel.cells(state.vm))
 
       refute Enum.any?(ViewModel.cells(state.vm), &match?(%Helyx.Message{}, &1))
+    end
+
+    test "instructions over the session bound show a notice and are never sent", %{core: core} do
+      state = mounted(core, "compact_large", [])
+      text = "/compact " <> String.duplicate("a", Session.max_text_bytes() + 1)
+      state = submit(state, text)
+      assert {:notice, "not sent: over 4 MiB"} = List.last(ViewModel.cells(state.vm))
+      assert ExRatatui.textarea_get_value(state.composer.input) == text
+      refute_received {:helyx_event, _}
     end
 
     test "with no separator shows usage and is never sent", %{core: core} do

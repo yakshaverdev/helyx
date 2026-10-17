@@ -290,6 +290,10 @@ defmodule Helyx.TUI do
       {:error, :queue_full} ->
         %{state | vm: ViewModel.reject(state.vm, "not sent: the queue is full")}
 
+      # A paste has no size bound of its own (`Session.max_text_bytes/0`).
+      {:error, :text_too_large} ->
+        %{state | vm: ViewModel.reject(state.vm, "not sent: over 4 MiB")}
+
       # The end signal of the session ends the TUI next.
       {:error, :session_not_found} ->
         %{state | vm: ViewModel.reject(state.vm, "not sent: the session ended")}
