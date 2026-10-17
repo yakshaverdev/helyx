@@ -68,9 +68,11 @@ defmodule Helyx.Provider.Codex.PromptTest do
     resumed(bin, 3)
 
     {:ok, state} = connect(work)
-    state = Enum.reduce(["A", "B", "C"], state, &run(&2, &1, "x"))
+    state = Enum.reduce(["A", "B"], state, &run(&2, &1, "x"))
+    started = System.monotonic_time(:millisecond)
+    state = run(state, "C", "x")
+    Helyx.Test.Hands.assert_one_program(state.handles, started)
     assert runs(bin) == "3"
-    assert [command: _, watchdog: _] = Enum.sort(Helyx.Test.Hands.held())
     close(state)
   end
 

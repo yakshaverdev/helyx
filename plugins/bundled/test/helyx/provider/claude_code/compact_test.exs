@@ -248,15 +248,15 @@ defmodule Helyx.Provider.ClaudeCode.CompactTest do
 
     # The lost program exits by itself. The test waits for that exit before
     # the relaunch, so the release finds the groups gone and does not wait
-    # for their end. Its probes still have the deadline of 500 ms
-    # (`HarnessIO`), the margin for load (#718).
+    # for their end (#718).
     port = state.port
     assert_receive {^port, {:exit_status, _}}
+    started = System.monotonic_time(:millisecond)
     {actions, state} = pump(ClaudeCode, state, actions, &ended?/1)
+    Helyx.Test.Hands.assert_one_program(state.handles, started)
 
     assert [{:error, {:compaction_failed, "no history in the program yet"}}] = events_of(actions)
     assert state.turn == nil and not state.sent?
-    assert [command: _, watchdog: _] = Enum.sort(Helyx.Test.Hands.held())
     closed(state)
     assert programs(bin) == "2"
     assert stdin(bin, 2) == []
