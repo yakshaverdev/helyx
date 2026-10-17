@@ -13,7 +13,7 @@ defmodule Helyx.Transport.WebSocketTest do
     core = :"core_#{System.unique_integer([:positive])}"
     start_supervised!({Helyx.Core, name: core, plugins: [Fake]})
     transport = start_supervised!({WebSocket, [core: core, port: 0] ++ opts})
-    Map.merge(context, %{core: core, port: WebSocket.port(transport)})
+    Map.merge(context, %{core: core, port: WebSocket.port(transport), transport: transport})
   end
 
   defp schema(text) do
@@ -64,8 +64,12 @@ defmodule Helyx.Transport.WebSocketTest do
   describe "the hello" do
     setup context, do: serve(context, token: "secret")
 
-    test "the right token gets welcome", %{port: port} do
-      assert Client.open(port, %{"token" => "secret"})
+    test "the right token gets welcome, and the connection state holds no token", context do
+      assert Client.open(context.port, %{"token" => "secret"})
+      [connection] = connections(context.transport)
+      state = inspect(:sys.get_state(connection), limit: :infinity, printable_limit: :infinity)
+      assert state =~ "Helyx.Transport.WebSocket.Connection"
+      refute state =~ "secret"
     end
 
     test "a missing or wrong token closes with 4401", %{port: port} do
@@ -87,8 +91,13 @@ defmodule Helyx.Transport.WebSocketTest do
     end
 
     test "a frame before welcome, bad JSON, or a binary frame closes with 4400", %{port: port} do
+      hello = %{"type" => "hello", "protocol" => 1, "token" => "secret"}
+      [hello_part | _] = parts(Map.put(hello, "pad", String.duplicate("p", 1_048_576)))
+
       for send <- [
             &Client.send_frame(&1, %{"type" => "req", "id" => "1", "op" => "x", "params" => %{}}),
+            # A hello as parts: its token would wait in the connection.
+            &Client.send_text(&1, hello_part),
             &Client.send_text(&1, "{"),
             &Client.send_text(&1, "{}", 2)
           ] do
@@ -167,6 +176,30 @@ defmodule Helyx.Transport.WebSocketTest do
       :erlang.resume_process(pid)
     end
 
+    test "a close ends the connection process: a request after it in one packet does not run",
+         %{port: port, core: core, transport: transport} do
+      socket = Client.open(port)
+      {:ok, session} = Helyx.Sessions.start(core, cwd: File.cwd!(), model: "fake/echo")
+      pid = Helyx.Session.pid(session)
+      :ok = :sys.suspend(pid)
+
+      abort = %{
+        "type" => "req",
+        "id" => "1",
+        "op" => "abort",
+        "params" => %{"session" => session.id}
+      }
+
+      :ok =
+        :gen_tcp.send(socket, [Client.text_frame("{"), Client.text_frame(JSON.encode!(abort))])
+
+      assert {:close, 4400} = Client.recv(socket)
+
+      Events.wait_until(fn -> connections(transport) == [] end)
+      assert {:messages, []} = Process.info(pid, :messages)
+      :ok = :sys.resume(pid)
+    end
+
     test "a req with no readable id closes with 4400", %{port: port} do
       socket = Client.open(port)
       Client.send_frame(socket, %{"type" => "req", "op" => "sessions.live", "params" => %{}})
@@ -202,6 +235,27 @@ defmodule Helyx.Transport.WebSocketTest do
       assert {:close, 4400} = Client.recv(socket)
     end
 
+    test "parts that join to 25 MiB and one byte under pass", %{port: port} do
+      socket = Client.open(port)
+
+      for {size, id} <- [{26_214_400, "at"}, {26_214_399, "under"}] do
+        req =
+          JSON.encode!(%{"type" => "req", "id" => id, "op" => "sessions.live", "params" => %{}})
+
+        json = req <> String.duplicate(" ", size - byte_size(req))
+        # The client cuts the parts itself, as a client of the contract does.
+        pieces = for <<piece::binary-size(786_000) <- json>>, do: piece
+        pieces = pieces ++ [binary_part(json, 33 * 786_000, size - 33 * 786_000)]
+
+        for {piece, n} <- Enum.with_index(pieces) do
+          part = %{"type" => "part", "n" => n, "last" => n == 33, "data" => Base.encode64(piece)}
+          Client.send_frame(socket, part)
+        end
+
+        assert %{"ok" => true} = Client.res(socket, id)
+      end
+    end
+
     test "parts joined over 25 MiB close with 4413", %{port: port} do
       socket = Client.open(port)
       piece = Base.encode64(String.duplicate("x", 786_000))
@@ -214,8 +268,15 @@ defmodule Helyx.Transport.WebSocketTest do
       assert {:close, 4413} = Client.recv(socket)
     end
 
-    test "a WebSocket frame over 1 MiB closes with 1009", %{port: port} do
+    test "a WebSocket frame at 1 MiB passes, one over it closes with 1009", %{port: port} do
       socket = Client.open(port)
+      at = JSON.encode!(%{"type" => "req", "id" => "1", "op" => "sessions.live", "params" => %{}})
+      Client.send_text(socket, at <> String.duplicate(" ", 1_048_576 - byte_size(at)))
+      assert %{"ok" => true} = Client.res(socket, "1")
+      under = String.replace(at, ~s("id":"1"), ~s("id":"2"))
+      Client.send_text(socket, under <> String.duplicate(" ", 1_048_575 - byte_size(under)))
+      assert %{"ok" => true} = Client.res(socket, "2")
+
       Client.send_text(socket, String.duplicate("x", 1_048_577))
       assert {:close, 1009} = Client.recv(socket)
     end
@@ -239,7 +300,7 @@ defmodule Helyx.Transport.WebSocketTest do
     now = System.monotonic_time(:millisecond)
     connection = Helyx.Transport.WebSocket.Connection
 
-    assert {:stop, :normal, 4408, _state} =
+    assert {:stop, {:shutdown, :closed}, 4408, _state} =
              connection.handle_info(:idle, %{last_in: now - 45_000})
 
     assert {:ok, _state} = connection.handle_info(:idle, %{last_in: now - 45_000 + @load_ms})
@@ -254,6 +315,11 @@ defmodule Helyx.Transport.WebSocketTest do
     assert_received {:out, _texts, ^size}
     assert :full = Outbound.add(out, frame)
     assert_received {:close, 4408}
+
+    # The connection takes the frame it got; the count of the `:full` add
+    # stays, as the connection closes.
+    Outbound.taken(out, 67_108_864 + size)
+    assert :atomics.get(out.bytes, 1) == size
   end
 
   test "a subscribe with no tail gets the tail of 200" do
@@ -288,6 +354,26 @@ defmodule Helyx.Transport.WebSocketTest do
 
       assert joined == over
     end
+  end
+
+  test "a crash of the gate ends the transport, its listener with it", context do
+    %{port: port, transport: transport} = serve(context)
+    ref = Process.monitor(transport)
+
+    [gate] =
+      for {WebSocket.Gate, pid, :worker, _} <- Supervisor.which_children(transport), do: pid
+
+    Process.exit(gate, :kill)
+    assert_receive {:DOWN, ^ref, :process, ^transport, _reason}
+    assert {:error, :econnrefused} = :gen_tcp.connect(~c"127.0.0.1", port, [])
+  end
+
+  defp connections(transport) do
+    [gate] =
+      for {WebSocket.Gate, pid, :worker, _} <- Supervisor.which_children(transport), do: pid
+
+    {:monitors, monitors} = Process.info(gate, :monitors)
+    for {:process, pid} <- monitors, do: pid
   end
 
   defp parts(frame) do

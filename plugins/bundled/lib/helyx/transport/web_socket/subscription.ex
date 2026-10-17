@@ -14,11 +14,13 @@ defmodule Helyx.Transport.WebSocket.Subscription do
 
   defp init(out, sub, req_id, session, opts) do
     Outbound.slot(out)
+    state = %{out: out, sub: sub, session: session}
 
     case Helyx.Session.subscribe(session, opts) do
       {:ok, %Helyx.Session.Snapshot{} = snapshot, ref} ->
         Outbound.reply(out, req_id, {:ok, %{"sub" => sub, "snapshot" => Wire.snapshot(snapshot)}})
-        loop(%{out: out, sub: sub, session: session, ref: ref, seq: snapshot.seq, acked: 0})
+
+        loop(Map.merge(state, %{ref: ref, seq: snapshot.seq, acked: snapshot.seq}))
 
       {:ok, {:replay, events}, ref} ->
         Outbound.reply(
@@ -27,13 +29,10 @@ defmodule Helyx.Transport.WebSocket.Subscription do
           {:ok, %{"sub" => sub, "replay" => Enum.map(events, &Wire.event/1)}}
         )
 
-        seq =
-          case List.last(events) do
-            nil -> elem(opts[:after], 1)
-            event -> event.seq
-          end
-
-        loop(%{out: out, sub: sub, session: session, ref: ref, seq: seq, acked: 0})
+        # The credits start at the seq of `after`.
+        base = elem(opts[:after], 1)
+        seq = if events == [], do: base, else: List.last(events).seq
+        loop(Map.merge(state, %{ref: ref, seq: seq, acked: base}))
 
       {:error, :session_not_found} ->
         Outbound.reply(out, req_id, Outbound.error("session_not_found"))
@@ -54,14 +53,12 @@ defmodule Helyx.Transport.WebSocket.Subscription do
       {:ack, seq} when seq > state.seq ->
         Outbound.close(state.out, 4400)
 
-      # Only a higher ack goes to the session, so the acks that reach it
-      # are at most the events sent.
-      {:ack, seq} when seq > state.acked ->
-        Helyx.Session.ack(state.session, seq)
-        loop(%{state | acked: seq})
-
-      {:ack, _seq} ->
-        loop(state)
+      # Only an ack above the credit base goes to the session. The
+      # connection sends the next ack after this one.
+      {:ack, seq} ->
+        if seq > state.acked, do: Helyx.Session.ack(state.session, seq)
+        Outbound.acked(state.out)
+        loop(%{state | acked: max(seq, state.acked)})
 
       {:unsubscribe, req_id} ->
         Outbound.reply(state.out, req_id, {:ok, %{}})

@@ -131,6 +131,77 @@ defmodule Helyx.Transport.WebSocketSubscribeTest do
     assert {:close, 4400} = Client.recv(socket)
   end
 
+  test "acks before the subscribe reply wait in the connection as one, then go", context do
+    %{core: core, socket: socket, session: session} = context
+    pid = Helyx.Session.pid(%Helyx.Session{id: session, core: core})
+    :ok = :sys.suspend(pid)
+
+    Client.send_frame(socket, %{
+      "type" => "req",
+      "id" => "s",
+      "op" => "subscribe",
+      "params" => %{"session" => session}
+    })
+
+    # The sub id "0" is the first of the connection; the client guesses it.
+    # Only the highest of them is above the seq: a connection that kept the
+    # first or the last would not close.
+    seqs = [0 | Enum.to_list(100_000..3//-1)] ++ [0]
+    acks = for seq <- seqs, do: %{"type" => "ack", "sub" => "0", "seq" => seq}
+    :ok = :gen_tcp.send(socket, Enum.map(acks, &Client.text_frame(JSON.encode!(&1))))
+    # The connection handles its frames in order, so it took every ack.
+    assert %{"ok" => false} = Client.request(socket, "u", "nope", %{})
+
+    Events.wait_until(fn -> match?({:messages, [_ | _]}, Process.info(pid, :messages)) end)
+    {:messages, [{:"$gen_call", {sub, _tag}, _call}]} = Process.info(pid, :messages)
+    assert {:message_queue_len, 0} = Process.info(sub, :message_queue_len)
+
+    # After the reply the sub gets the highest ack, above its last seq.
+    :ok = :sys.resume(pid)
+    assert %{"ok" => true, "result" => %{"sub" => "0"}} = Client.res(socket, "s")
+    assert {:close, 4400} = Client.recv(socket)
+  end
+
+  # An ack at the credit base and one above it: only the second reaches the
+  # session. One sender, so an ack at the base would come first.
+  defp assert_acks_from_base(socket, pid, sub, base, last) do
+    :ok = :sys.suspend(pid)
+    Client.send_frame(socket, %{"type" => "ack", "sub" => sub, "seq" => base})
+    Client.send_frame(socket, %{"type" => "ack", "sub" => sub, "seq" => last})
+
+    acks = fn ->
+      {:messages, messages} = Process.info(pid, :messages)
+      for {:ack, _sub, seq} <- messages, do: seq
+    end
+
+    Events.wait_until(fn -> acks.() != [] end)
+    assert acks.() == [last]
+    :ok = :sys.resume(pid)
+  end
+
+  test "the credits start at the seq of the snapshot or of after", context do
+    %{core: core, port: port, socket: socket, session: session} = context
+    pid = Helyx.Session.pid(%Helyx.Session{id: session, core: core})
+    %{"sub" => sub, "snapshot" => %{"instance_id" => instance}} = subscribe(socket, session)
+    driver = Client.open(port)
+    prompt = %{"session" => session, "text" => "hi"}
+    assert %{"ok" => true} = Client.request(driver, "p1", "prompt", prompt)
+    [first | _] = missed = events(socket, sub, &turn_end?/1)
+
+    # A snapshot after the first turn has a seq above 0.
+    late = Client.open(port)
+    %{"sub" => snap_sub, "snapshot" => %{"seq" => base}} = subscribe(late, session)
+    assert base == List.last(missed)["seq"]
+    assert %{"ok" => true} = Client.request(driver, "p2", "prompt", prompt)
+    last = List.last(events(late, snap_sub, &turn_end?/1))["seq"]
+    assert_acks_from_base(late, pid, snap_sub, base, last)
+
+    replay = Client.open(port)
+    after_ = %{"instance_id" => instance, "seq" => first["seq"]}
+    %{"sub" => replay_sub, "replay" => [_ | _]} = subscribe(replay, session, %{"after" => after_})
+    assert_acks_from_base(replay, pid, replay_sub, first["seq"], last)
+  end
+
   test "unsubscribe ends the sub, and the 17th subscription is refused", context do
     %{socket: socket, session: session} = context
     subs = for _ <- 1..16, do: subscribe(socket, session)["sub"]

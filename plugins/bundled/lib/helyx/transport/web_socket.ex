@@ -52,7 +52,9 @@ defmodule Helyx.Transport.WebSocket do
         {:error, :token_required}
 
       true ->
-        config = %{core: Keyword.fetch!(opts, :core), token: token, origins: origins, gate: nil}
+        # Only the hash of the token is kept, so no state or crash report holds it.
+        hash = token && :crypto.hash(:sha256, token)
+        config = %{core: Keyword.fetch!(opts, :core), token: hash, origins: origins, gate: nil}
         start(config, ip, Keyword.fetch!(opts, :port))
     end
   end

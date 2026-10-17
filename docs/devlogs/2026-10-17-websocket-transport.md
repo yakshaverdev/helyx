@@ -15,3 +15,10 @@
 ## Next
 
 The review record `docs/reviews/2026-10-17-660-websocket.md` lists the open findings: the ack mechanism (a mailbox with no bound before the subscribe reply, and the start of `acked`), the token in the connection state, the worker params outside the byte bound, and the missing limit tests.
+
+## Round 3 (2026-10-18)
+
+- The connection keeps the highest ack of each subscription and gives one at a time, none before the subscribe reply; a subscription starts its acks at the credit base. 100,000 acks before the reply leave no message in the subscription mailbox.
+- The transport keeps the SHA-256 of the token. A part before `welcome` closes with 4400.
+- Codex found that Bandit keeps a handler after a normal stop and hands it later frames. Every close now stops with `{:shutdown, :closed}`, which ends the process.
+- Limit tests at 1 MiB and 25 MiB, one under each, `Outbound.taken/2`, and the crash of the gate.

@@ -26,8 +26,11 @@ defmodule Helyx.Transport.WebSocket.Connection do
     # `ids`: the request ids whose reply was not sent => the writer pid.
     # `flight`: the writers that count against the requests in flight; a
     # worker until it ends, a subscription until its reply. `subs`: sub id
-    # => pid. `slot`: the writer that holds the one encoder slot of a large
-    # result, and `waiting` the writers that wait for it, in order.
+    # => pid. `acks`: the subs that handle an ack or wait for their
+    # subscribe reply => the highest ack that waits for them, 0 for none.
+    # `slot`: the writer that holds the one encoder
+    # slot of a large result, and `waiting` the writers that wait for it, in
+    # order.
     {:ok,
      Map.merge(config, %{
        phase: :hello,
@@ -36,6 +39,7 @@ defmodule Helyx.Transport.WebSocket.Connection do
        ids: %{},
        flight: MapSet.new(),
        subs: %{},
+       acks: %{},
        next_sub: 0,
        slot: nil,
        waiting: :queue.new(),
@@ -49,6 +53,8 @@ defmodule Helyx.Transport.WebSocket.Connection do
 
     case Frame.decode(text, state.parts) do
       {:frame, frame, nil} -> frame(frame, %{state | parts: nil})
+      # A hello is small: parts before it would hold its token.
+      {:more, _parts} when state.phase == :hello -> close(4400, state)
       {:more, parts} -> {:ok, %{state | parts: parts}}
       {:close, code} -> close(code, state)
     end
@@ -69,7 +75,7 @@ defmodule Helyx.Transport.WebSocket.Connection do
 
       protocol != server ->
         refused = %{"type" => "refused", "code" => "protocol", "server_protocol" => server}
-        {:stop, :normal, 4426, texts(refused), state}
+        {:stop, {:shutdown, :closed}, 4426, texts(refused), state}
 
       true ->
         {:push, texts(%{"type" => "welcome", "protocol" => server}), %{state | phase: :open}}
@@ -92,14 +98,19 @@ defmodule Helyx.Transport.WebSocket.Connection do
   defp frame(%{"type" => "ack", "sub" => sub, "seq" => seq} = ack, %{phase: :open} = state)
        when map_size(ack) == 3 and is_binary(sub) and is_integer(seq) and seq >= 0 do
     # An ack of a sub that ended is ignored.
-    with %{^sub => pid} <- state.subs, do: send(pid, {:ack, seq})
-    {:ok, state}
+    case state.subs do
+      %{^sub => pid} -> {:ok, ack(state, pid, seq)}
+      _ -> {:ok, state}
+    end
   end
 
   defp frame(_frame, state), do: close(4400, state)
 
   defp token?(nil, _given), do: true
-  defp token?(token, given) when is_binary(given), do: Plug.Crypto.secure_compare(token, given)
+
+  defp token?(hash, given) when is_binary(given),
+    do: Plug.Crypto.secure_compare(hash, :crypto.hash(:sha256, given))
+
   defp token?(_token, _given), do: false
 
   defp request(id, "subscribe", params, state) do
@@ -108,6 +119,7 @@ defmodule Helyx.Transport.WebSocket.Connection do
       sub = Integer.to_string(state.next_sub)
       pid = Subscription.start_link(state.out, sub, id, session, opts)
       state = %{track(state, pid, id) | subs: Map.put(state.subs, sub, pid)}
+      state = %{state | acks: Map.put(state.acks, pid, 0)}
       {:ok, %{state | next_sub: state.next_sub + 1}}
     else
       :bad_params -> error(id, "bad_params", state)
@@ -149,6 +161,35 @@ defmodule Helyx.Transport.WebSocket.Connection do
     Outbound.reply(out, id, Ops.run(core, op, params))
   end
 
+  # A sub holds at most one ack, and none before its subscribe reply
+  # (`docs/features/wire-protocol.md`, "Subscriptions").
+  defp ack(state, pid, seq) do
+    case state.acks do
+      %{^pid => waiting} ->
+        %{state | acks: Map.put(state.acks, pid, max(waiting, seq))}
+
+      _ ->
+        send(pid, {:ack, seq})
+        %{state | acks: Map.put(state.acks, pid, 0)}
+    end
+  end
+
+  # The sub handled its ack or its subscribe reply went: it gets the ack
+  # that waits.
+  defp next_ack(state, pid) do
+    case state.acks do
+      %{^pid => 0} ->
+        %{state | acks: Map.delete(state.acks, pid)}
+
+      %{^pid => seq} ->
+        send(pid, {:ack, seq})
+        %{state | acks: Map.put(state.acks, pid, 0)}
+
+      _ ->
+        state
+    end
+  end
+
   defp track(state, pid, id),
     do: %{state | ids: Map.put(state.ids, id, pid), flight: MapSet.put(state.flight, pid)}
 
@@ -180,6 +221,8 @@ defmodule Helyx.Transport.WebSocket.Connection do
   end
 
   def handle_info({:close, code}, state), do: close(code, state)
+
+  def handle_info({:acked, pid}, state), do: {:ok, next_ack(state, pid)}
 
   def handle_info({:slot, pid}, state),
     do: {:ok, grant(%{state | waiting: :queue.in(pid, state.waiting)})}
@@ -213,6 +256,7 @@ defmodule Helyx.Transport.WebSocket.Connection do
           state
           | flight: MapSet.delete(state.flight, pid),
             subs: Map.reject(state.subs, fn {_sub, writer} -> writer == pid end),
+            acks: Map.delete(state.acks, pid),
             waiting: :queue.delete(pid, state.waiting)
         },
         pid
@@ -267,17 +311,21 @@ defmodule Helyx.Transport.WebSocket.Connection do
   defp now, do: System.monotonic_time(:millisecond)
 
   # The reply of request `id` went. A subscription stops counting against
-  # the requests in flight; a worker counts until it ends.
+  # the requests in flight and gets the acks that came before it; a worker
+  # counts until it ends.
   defp replied(state, pid, id) do
-    flight =
-      if pid in Map.values(state.subs), do: MapSet.delete(state.flight, pid), else: state.flight
+    state = %{state | ids: Map.delete(state.ids, id)}
 
-    %{state | ids: Map.delete(state.ids, id), flight: flight}
+    if pid in Map.values(state.subs),
+      do: next_ack(%{state | flight: MapSet.delete(state.flight, pid)}, pid),
+      else: state
   end
 
   defp error(id, code, state), do: {:push, texts(Outbound.res(id, Outbound.error(code))), state}
 
   defp texts(frame), do: Enum.map(Frame.encode(frame), &{:text, &1})
 
-  defp close(code, state), do: {:stop, :normal, code, state}
+  # Not `:normal`: after a normal stop Bandit keeps the process and hands it
+  # the later frames of the client.
+  defp close(code, state), do: {:stop, {:shutdown, :closed}, code, state}
 end

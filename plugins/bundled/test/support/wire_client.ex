@@ -51,11 +51,17 @@ defmodule Helyx.Test.WireClient do
     end
   end
 
-  defp send_raw(socket, fin, opcode, text) do
+  defp send_raw(socket, fin, opcode, text),
+    do: :gen_tcp.send(socket, masked_frame(fin, opcode, text))
+
+  # The bytes of one masked text frame, for a test that sends many in one write.
+  def text_frame(text), do: masked_frame(1, 1, text)
+
+  defp masked_frame(fin, opcode, text) do
     mask = :crypto.strong_rand_bytes(4)
     size = byte_size(text)
     masked = :crypto.exor(text, binary_part(:binary.copy(mask, div(size, 4) + 1), 0, size))
-    :gen_tcp.send(socket, [<<fin::1, 0::3, opcode::4>>, payload_length(size), mask, masked])
+    [<<fin::1, 0::3, opcode::4>>, payload_length(size), mask, masked]
   end
 
   defp payload_length(size) when size < 126, do: <<1::1, size::7>>

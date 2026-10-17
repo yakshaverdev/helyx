@@ -59,6 +59,9 @@ defmodule Helyx.Transport.WebSocket.Outbound do
     end
   end
 
+  # The writer handled the ack that the connection sent it.
+  def acked(out), do: send(out.conn, {:acked, self()})
+
   def close(out, code), do: send(out.conn, {:close, code})
 
   # The connection takes `size` bytes off the queue.
