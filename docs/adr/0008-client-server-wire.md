@@ -73,7 +73,7 @@ Every bound has a number and the place that enforces it in `wire-protocol.md`, "
 | Bound | Value |
 |---|---|
 | WebSocket frame, both ways | 1 MiB; a larger frame goes as `part` frames |
-| One inbound frame joined from parts (the request size) | 4 MiB |
+| One inbound frame joined from parts (the request size) | 25 MiB: a 4 MiB text in its worst JSON form (six bytes for each byte) plus 1 MiB for the other fields |
 | Requests in flight per connection | 16; a `subscribe` until its reply |
 | Subscriptions per connection | 16 |
 | Connections per server | 64 |

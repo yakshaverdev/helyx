@@ -26,7 +26,7 @@ Over stdio, the same frames go one JSON object per line. The encoder escapes eve
 | `4400` | a frame that the contract does not allow: bad JSON, an unknown `type`, a frame before `welcome`, a part out of order, a request `id` whose reply was not sent, an `ack` of a `seq` that the subscription did not send |
 | `4401` | no `hello` within 5,000 ms, or a missing or wrong token |
 | `4408` | a slow client: a subscription passed its credits (`:slow`), the outbound queue held more than 64 MiB when a frame was added, or no inbound frame or pong for 45,000 ms |
-| `4413` | an inbound WebSocket frame over 1 MiB, or an inbound frame joined from parts over 4 MiB |
+| `4413` | an inbound WebSocket frame over 1 MiB, or an inbound frame joined from parts over 25 MiB |
 | `4426` | a protocol number that is not the server's, after `refused` |
 
 The server sends a WebSocket ping every 15,000 ms, so a connection whose peer is gone (a laptop lid that closed) ends within 45,000 ms. A ping is not an add to the outbound queue: the connection sends it between two frames, also between two parts of one frame.
@@ -48,10 +48,10 @@ Every `req` gets one `res`: `ok: true` with the result, or `ok: false` with an e
 | `subscribe` | `{session, tail?, after?}`: `tail` from 1 to 1,000, default 200; `after` is `{instance_id, seq}` | `{sub, replay: [event]}` or `{sub, snapshot}` | `session_not_found`, `too_many_subscriptions` |
 | `unsubscribe` | `{sub}` | `{}` | `unknown_sub` |
 | `history` | `{session, instance_id, before, limit?}`: `before` is a message id; `limit` from 1 to 1,000, default 200 | `{messages: [message], more}`, oldest first, all older than `before` | `session_not_found`, `instance_changed`, `unknown_message` |
-| `prompt`, `steer`, `follow_up` | `{session, text, origin?}`; `origin` is `{kind: "product", id}` | `{}` | `session_not_found`, `invalid_utf8`, `invalid_origin`, `queue_full`, and for `prompt` also `turn_running` |
+| `prompt`, `steer`, `follow_up` | `{session, text, origin?}`; `origin` is `{kind: "product", id}` | `{}` | `session_not_found`, `text_too_large`, `invalid_utf8`, `invalid_origin`, `queue_full`, and for `prompt` also `turn_running` |
 | `abort` | `{session}` | `{}`; a failed cleanup still gives `{}`, and the `notice` event "abort cleanup failed" tells the clients | `session_not_found` |
 | `set_model` | `{session, model}` | `{}`; the next turn uses it, a running turn keeps its model | `session_not_found`, `invalid_model_ref`, `unknown_provider` |
-| `compact` | `{session, text?}`: the instructions, default `""` | `{}`; a provider that keeps no history gives a `notice` event | `session_not_found`, `invalid_utf8`, `turn_running` |
+| `compact` | `{session, text?}`: the instructions, default `""` | `{}`; a provider that keeps no history gives a `notice` event | `session_not_found`, `text_too_large`, `invalid_utf8`, `turn_running` |
 | `stop` | `{session}` | `{}` after the session ended: a running turn aborts first, as at `abort`, then the session stops and every subscription of it gets `session_end` with `stopped`. A stopped session frees its place in the live-session cap and can be resumed from its file | `session_not_found` |
 
 Every operation can also answer `unknown_op`, `bad_params`, `busy`, `timeout`, and `failed`.
@@ -132,6 +132,7 @@ error_code = "unknown_op" | "bad_params" | "busy" | "timeout" | "failed"
            | "invalid_cwd" | "invalid_model_ref" | "unknown_provider"
            | "not_found" | "start_failed"
            | "invalid_utf8" | "invalid_origin" | "queue_full" | "turn_running"
+           | "text_too_large"
 
 op = "sessions.live" | "sessions.saved" | "start" | "resume" | "subscribe"
    | "unsubscribe" | "history" | "prompt" | "steer" | "follow_up"
@@ -250,7 +251,7 @@ Notes on the codec:
 | What | Bound | Over the bound | Where enforced |
 |---|---|---|---|
 | WebSocket frame, both ways | 1,048,576 bytes of JSON text; a larger frame goes as parts | an inbound frame over it: close `4413` | transport |
-| one inbound frame joined from parts (the request size) | 4,194,304 bytes | close `4413`; the parts are dropped as they come | transport |
+| one inbound frame joined from parts (the request size) | 26,214,400 bytes (25 MiB): a text at the Core bound of 4,194,304 bytes in its worst JSON form, six bytes for each byte (`\u0001`), is 25,165,824 bytes, and the rest, 1,048,576 bytes, is for the other fields of the request | close `4413`; the parts are dropped as they come | transport |
 | requests in flight per connection | 16, from the `req` to the end of its worker; a `subscribe` from the `req` to its reply | `res` with `busy` | transport |
 | requests in flight per server | 1,024: 64 connections of 16 | as above | transport |
 | subscriptions per connection | 16 | `res` with `too_many_subscriptions` | transport |
@@ -265,7 +266,7 @@ Notes on the codec:
 | request results per connection | 1: a `subscribe`, `history`, or `sessions.saved` request takes the one encoder slot of the connection before it reads its data from Core, and holds it until its reply is in the outbound queue. So at most one snapshot or page result exists per connection, and a waiting request holds no result. The wait for the slot is not in the deadline of the request; the request counts against the requests in flight while it waits. Another operation has a small result and takes no slot, and an event takes no slot: its subscription process encodes it | | transport |
 | credits per subscriber | 16,384 unacked events, a replayed event too. The count is chosen above the 10,000 provider messages that the session can hold waiting (`lib/helyx/session/stream.ex:18`), a heuristic: that number bounds messages, not events, and the burst test checks it. The credits count events only: the byte bound is the outbound queue | the subscription ends with `:slow`; close `4408` | session (#659) |
 | outbound queue per connection | 67,108,864 bytes of frames added and not yet taken by the socket. A subscription process encodes each event when it takes it, and a writer adds each frame with a call that the connection process answers at once, with no wait for room. Before each add, one add at a time, the connection checks the bytes of the queue without the frame that the socket writes now, so one large frame does not close the connection at the next add | the queue holds more than 64 MiB at an add: close `4408` | transport |
-| text of `prompt`, `steer`, `follow_up`, `compact` | 4,194,304 bytes, the request size: Core refuses a longer text from any caller with `{:error, :text_too_large}` (#672), so the wire refuses no text that Core admits | no wire request meets it: the JSON of the text is in a frame of at most 4 MiB, so the request size closes `4413` first | Core (#672) |
+| text of `prompt`, `steer`, `follow_up`, `compact` | 4,194,304 bytes of UTF-8: Core refuses a longer text from any caller with `{:error, :text_too_large}` (#672). The request size has room for this text in any JSON form, so the wire refuses no text that Core admits | `res` with `text_too_large` | Core (#672) |
 | `queue_dropped` | 64 messages (32 steers, 32 follow-ups, `lib/helyx/session/queue.ex:49`), each of one text of at most 4 MiB (#672). It reaches only the subscribers that are connected when the session emits it; a client that connects later gets a tail snapshot, which does not hold the texts | goes as parts | Core |
 | request `id` | 1 to 64 bytes | `bad_params`; with no readable `id`, close `4400` | transport |
 | `sessions.saved` page | 1 to 256 items, default 50 | `bad_params` | transport |
