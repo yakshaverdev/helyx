@@ -14,8 +14,10 @@ User story: I use the TUI, and the session behind it ends or crashes. The TUI ex
 
 - `ref` is the caller's monitor of the session process. `subscribe/1` makes it before the subscribe call, so the real exit reason of the pid of the snapshot is never lost.
 - The end signal is the `:DOWN` of that monitor: `{:DOWN, ref, :process, pid, reason}`. `Session.end_reason/1` maps `reason` to `:stopped` (`:normal`, `:shutdown`, `{:shutdown, term}`) or `:crashed` (any other reason). The supervisor logs the full reason.
-- The caller owns the ref. The session holds one subscription for each caller pid (`session-subscribers.md`, S2), so a second subscribe gives each event once, and a second ref. The caller removes a ref that it no longer wants with `Process.demonitor(ref, [:flush])`.
+- The caller owns the ref. The session holds one subscription for each caller pid (`session-subscribers.md`, S2), so a second subscribe gives each live event once, and a second ref. The caller removes a ref that it no longer wants with `Process.demonitor(ref, [:flush])`.
 - On `{:error, :session_not_found}`, and on an exit of the snapshot call at its timeout, `subscribe/1` removes its monitor with `[:flush]` and sends `{:unsubscribe, self()}` to the same pid. A live session handles it after the subscribe, because both messages come from one caller to one process. A failed subscribe also ends an earlier subscription of the caller to that session; the ref of the earlier one stays with the caller.
+
+**The slow end.** Past 16,384 unacked events the session ends the subscription, not the session: it sends `{:helyx_end, ref, :slow}`, with the `ref` of the caller's last subscribe, after every event that it sent to the caller, and no event after it. The caller's monitor stays; the caller demonitors `ref` with `[:flush]`. The TUI exits with `{:session_down, :slow}`, and print mode fails with it (`replay-ring.md`).
 
 On the wire (planned, #660), the subscription process turns the `:DOWN` into one `session_end` frame with the reason, after every event of the session. It ends that subscription; the connection stays open. A client that subscribes after the end gets `session_not_found`, and the reason is not kept (ADR 0008, `docs/features/wire-protocol.md`).
 

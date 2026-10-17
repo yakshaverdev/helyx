@@ -78,9 +78,12 @@ defmodule Helyx.Session.Server.State do
     tool_specs: [],
     tool_modules: %{},
     transcript: [],
-    seq: 0,
-    # Each subscriber pid and the session's monitor of it (session-subscribers.md).
+    # Each subscriber pid with the session's monitor of it, the ref of its
+    # last subscribe, and the seq up to which it acked (replay-ring.md).
     subscribers: %{},
+    # The seq of the newest event, and the newest events of the session
+    # (`Helyx.Session.Ring`).
+    ring: %Helyx.Session.Ring{},
     # `:idle`, the turn in progress (a `%Turn{}`), or the wait before
     # the next turn can start (a `%Wait{}`).
     activity: :idle,
@@ -137,8 +140,8 @@ defmodule Helyx.Session.Server.State do
           tool_specs: [Helyx.Tool.spec()],
           tool_modules: %{String.t() => module()},
           transcript: [Helyx.Message.t()],
-          seq: non_neg_integer(),
-          subscribers: %{pid() => reference()},
+          subscribers: %{pid() => {reference(), reference(), non_neg_integer()}},
+          ring: Helyx.Session.Ring.t(),
           activity: :idle | Turn.t() | Wait.t(),
           queue: Queue.t(),
           resume_ids: %{String.t() => Helyx.Session.Transcript.label()},

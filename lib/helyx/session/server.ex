@@ -346,14 +346,15 @@ defmodule Helyx.Session.Server do
   def handle_info({:memory_notice, pid, text}, %State{sync: pid} = state),
     do: {:noreply, Events.emit(state, nil, :notice, %{text: text})}
 
-  # The failed subscribe of `Helyx.Session.subscribe/1`, and the end of a
-  # subscriber: only the monitor of its entry removes the entry.
-  def handle_info({:unsubscribe, pid}, %State{} = state) do
-    {:noreply, Events.unsubscribe(state, pid)}
-  end
+  # A failed subscribe (`Helyx.Session.subscribe/1`), an ack (`ack/2`), and the
+  # end of a subscriber: only the monitor of its entry removes the entry.
+  def handle_info({:unsubscribe, pid}, %State{} = state),
+    do: {:noreply, Events.unsubscribe(state, pid)}
+
+  def handle_info({:ack, pid, seq}, state), do: {:noreply, Events.ack(state, pid, seq)}
 
   def handle_info({:DOWN, ref, :process, pid, _reason}, %State{subscribers: subscribers} = state)
-      when :erlang.map_get(pid, subscribers) == ref,
+      when elem(:erlang.map_get(pid, subscribers), 0) == ref,
       do: {:noreply, Events.subscriber_down(state, pid)}
 
   # The lock's port closed while the session runs: perl ended, so the

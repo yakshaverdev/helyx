@@ -26,11 +26,15 @@ defmodule Helyx.Session.HistoryTest do
       [user("u2"), assistant("a2", [])]
   end
 
+  defp tail(opts) do
+    with {:ok, tail, nil} <- History.subscribe(opts), do: {:ok, tail}
+  end
+
   test "the option lists: none, or one count from 1 to 1,000" do
-    assert History.tail([]) == {:ok, nil}
+    assert tail([]) == {:ok, nil}
     assert History.limit([]) == {:ok, 200}
 
-    for {check, key} <- [{&History.tail/1, :tail}, {&History.limit/1, :limit}] do
+    for {check, key} <- [{&tail/1, :tail}, {&History.limit/1, :limit}] do
       assert check.([{key, 1}]) == {:ok, 1}
       assert check.([{key, 999}]) == {:ok, 999}
       assert check.([{key, 1_000}]) == {:ok, 1_000}
@@ -40,6 +44,23 @@ defmodule Helyx.Session.HistoryTest do
               [[{key, 5}, {key, 5}], [{key, 5}, other: 1], [other: 1], %{key => 5}] do
         assert check.(bad) == {:error, :invalid_limit}
       end
+    end
+  end
+
+  test "the subscribe options: after is an instance id and a seq >= 0, at most once" do
+    assert History.subscribe(after: {"i", 0}) == {:ok, nil, {"i", 0}}
+    assert History.subscribe(tail: 5, after: {"i", 7}) == {:ok, 5, {"i", 7}}
+    assert History.subscribe(after: {"i", 7}, tail: 5) == {:ok, 5, {"i", 7}}
+
+    for bad <- [{"i", -1}, {"i", 1.0}, {:i, 1}, {"i"}, "i", nil] do
+      assert History.subscribe(after: bad) == {:error, :invalid_after}
+    end
+
+    assert History.subscribe(after: {"i", 1}, after: {"i", 1}) == {:error, :invalid_after}
+    assert History.subscribe(tail: 0, after: {"i", 1}) == {:error, :invalid_limit}
+
+    for improper <- [[{:tail, 5} | :bad], [{:after, {"i", 1}} | :bad]] do
+      assert History.subscribe(improper) == {:error, :invalid_limit}
     end
   end
 

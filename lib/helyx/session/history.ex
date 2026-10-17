@@ -12,8 +12,25 @@ defmodule Helyx.Session.History do
 
   @type history_page :: %{messages: [Message.t()], more: boolean(), next: String.t() | nil}
 
-  # The option list of `Helyx.Session.subscribe/2`: none, or `tail`.
-  def tail(opts), do: count(opts, :tail, nil)
+  # The option list of `Helyx.Session.subscribe/2`: `tail`, `after`, both,
+  # or none, each at most once (docs/features/replay-ring.md). `length/1`
+  # fails the guard of an improper list.
+  def subscribe(opts) when is_list(opts) and length(opts) <= 2 do
+    {after_opts, tail_opts} = Enum.split_with(opts, &match?({:after, _}, &1))
+
+    with {:ok, tail} <- count(tail_opts, :tail, nil),
+         {:ok, after_} <- after_seq(after_opts),
+         do: {:ok, tail, after_}
+  end
+
+  def subscribe(_opts), do: {:error, :invalid_limit}
+
+  defp after_seq([]), do: {:ok, nil}
+
+  defp after_seq([{:after, {id, seq}}]) when is_binary(id) and is_integer(seq) and seq >= 0,
+    do: {:ok, {id, seq}}
+
+  defp after_seq(_opts), do: {:error, :invalid_after}
 
   # The option list of `Helyx.Session.history/4`: none, or `limit`.
   def limit(opts), do: count(opts, :limit, @default_count)

@@ -150,6 +150,7 @@ defmodule Helyx.Test.Provider do
   #   "hang"       one delta, then the stream blocks forever
   #   "priced"     one delta, then done with a usage that has a cost
   #   "transcript" every message in the context as "role:text" lines
+  #   "burst.<n>"  n text deltas of one byte, then done (`Helyx.Test.Burst`)
   #
   # The models that call tools. Unless a line says otherwise, a model calls
   # its tools until the last message is a tool result, then echoes the
@@ -345,6 +346,9 @@ defmodule Helyx.Test.Provider do
 
   def stream("gate." <> gate, _context, _opts),
     do: {:ok, Helyx.Test.Gate.stream([:gate | Map.fetch!(@fixed, "ok")], gate)}
+
+  def stream("burst." <> n, _context, opts),
+    do: {:ok, Helyx.Test.Burst.stream(String.to_integer(n), opts)}
 
   def stream("tools", %Helyx.Context{tools: tools}, _opts) do
     {:ok, [{:text_delta, Enum.map_join(tools, ",", & &1.name)}, @done]}

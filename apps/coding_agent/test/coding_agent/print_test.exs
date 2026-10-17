@@ -29,13 +29,24 @@ defmodule CodingAgent.PrintTest do
     @moduledoc false
     # Ends its one reply with the stop reason that the model names; neither
     # `Helyx.Provider.Fake` nor `Helyx.Test.Gated.Loop` ends with another
-    # reason than `:end_turn` or `:tool_use`.
+    # reason than `:end_turn` or `:tool_use`. The model "burst" sends 20,000
+    # deltas of one byte, and "burst.<gate>" first stops at the gate.
     use Helyx.Provider.Loop
 
     @impl true
     def id, do: "stop"
 
     @impl true
+    def stream("burst", _context, opts), do: {:ok, Helyx.Test.Burst.stream(20_000, opts)}
+
+    def stream("burst." <> gate, _context, opts),
+      do:
+        {:ok,
+         Stream.concat(
+           Helyx.Test.Gate.stream([:gate], gate),
+           Helyx.Test.Burst.stream(20_000, opts)
+         )}
+
     def stream(reason, _context, _opts) do
       stop = String.to_existing_atom(reason)
       {:ok, [{:text_delta, "cut"}, {:done, %{stop_reason: stop, usage: nil}}]}
@@ -369,6 +380,35 @@ defmodule CodingAgent.PrintTest do
 
       assert {1, "cut\n", stderr} = io("", fn -> run(session, "q") end)
       assert stderr =~ ~r/\Ahelyx: session \S+\nhelyx: the answer stopped at the token limit\n\z/
+    end
+
+    # Past 16,384 unacked events the session would end the subscription.
+    test "print mode acks: a burst of 20,000 deltas prints the whole answer" do
+      {:ok, session} = Helyx.Session.start(start_core(), model: "stop/burst")
+      assert {0, out, _stderr} = io("", fn -> run(session, "q") end)
+      assert out == String.duplicate("x", 20_000) <> "\n"
+    end
+
+    # The print process is suspended during the burst, so it acks nothing.
+    test "print mode fails when the session ends its subscription as slow" do
+      test = self()
+      gate = Helyx.Test.Gate.open()
+      {:ok, session} = Helyx.Session.start(start_core(), model: "stop/burst." <> gate)
+      subscribers = fn -> Map.keys(:sys.get_state(Helyx.Session.pid(session)).subscribers) end
+
+      assert {1, "", stderr} =
+               io("", fn ->
+                 task = Task.async(fn -> run(session, "q", test) end)
+                 assert_receive {:waiting, model}
+                 [print] = subscribers.()
+                 true = :erlang.suspend_process(print)
+                 send(model, :go)
+                 wait_until(fn -> subscribers.() == [] end)
+                 true = :erlang.resume_process(print)
+                 Task.await(task, :infinity)
+               end)
+
+      assert stderr =~ ~r/\nhelyx: the client fell behind the session events\n\z/
     end
 
     test "a refused answer is printed with a notice and returns 0" do

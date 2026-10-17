@@ -48,6 +48,7 @@ defmodule Helyx.Test.LateClient do
   defp serve(session, test) do
     receive do
       {:helyx_event, %Event{} = event} ->
+        :ok = Session.ack(session, event)
         send(test, {:event, self(), event})
         serve(session, test)
 

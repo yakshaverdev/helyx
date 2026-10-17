@@ -172,6 +172,8 @@ defmodule CodingAgent do
   # The exit of the TUI when its session ends (`Helyx.Session.end_reason/1`),
   # or when the session is gone before the TUI subscribes.
   defp sentence({:session_down, :crashed}), do: "the session crashed and stopped"
+  # The session ended the subscription past its credits (docs/features/replay-ring.md).
+  defp sentence({:session_down, :slow}), do: "the client fell behind the session events"
   defp sentence({:session_down, _reason}), do: "the session stopped"
 
   # A POSIX code gets its system text. Any other atom is not one.
