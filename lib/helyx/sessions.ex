@@ -185,10 +185,15 @@ defmodule Helyx.Sessions do
   """
   @spec stop(Session.t()) :: :ok | {:error, :session_not_found}
   def stop(%Session{} = session) do
+    # The session, or its whole Core, can end between the abort and the stop.
     with :ok <- Session.abort(session),
-         do: GenServer.stop(Session.Server.via(session.core, session.id), :normal, :infinity)
+         pid when is_pid(pid) <- Session.pid(session) do
+      GenServer.stop(pid, :normal, :infinity)
+    else
+      nil -> {:error, :session_not_found}
+      error -> error
+    end
   catch
-    # The session ended between the abort and the stop.
     :exit, {:noproc, _call} -> {:error, :session_not_found}
   end
 end
