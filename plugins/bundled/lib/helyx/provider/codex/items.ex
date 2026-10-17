@@ -22,6 +22,7 @@ defmodule Helyx.Provider.Codex.Items do
   import Helyx.Usage, only: [wire_tokens?: 1, wire_window?: 1]
 
   alias Helyx.{HarnessIO, Message, ModelInfo}
+  alias Helyx.Provider.Codex
 
   # Item types that run something (see the research note).
   @tool_item_types ~w(commandExecution fileChange mcpToolCall dynamicToolCall collabAgentToolCall
@@ -125,7 +126,7 @@ defmodule Helyx.Provider.Codex.Items do
     do: {:done, %{stop_reason: :end_turn, usage: usage(items)}}
 
   def terminal(%{"status" => status} = result, _items),
-    do: {:error, {:codex, status, HarnessIO.cap_error(error_message(result))}}
+    do: {:error, HarnessIO.Error.reason(:codex, Codex.id(), status, error_message(result))}
 
   # The items of the next turn. Only a `done` starts a new usage sum; a
   # turn that ended `interrupted` or `failed` sets the flag.

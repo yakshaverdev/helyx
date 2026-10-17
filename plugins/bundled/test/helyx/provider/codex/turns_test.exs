@@ -239,13 +239,22 @@ defmodule Helyx.Provider.Codex.TurnsTest do
 
     events = prompt(start(ctx), "go")
 
-    assert [%{outcome: :error, error: ~s({:codex, "failed", "usage limit"})}] =
-             of_type(events, :turn_end)
+    assert [%{outcome: :error, error: "codex: usage limit"}] = of_type(events, :turn_end)
 
     assert [
              %{message: %Message{tool_call_id: "exec-a", is_error: true}},
              %{message: %Message{tool_call_id: "exec-b", is_error: true}}
            ] = of_type(events, :tool_execution_end)
+  end
+
+  test "the error text of a failed turn is cut at 2,000 bytes, not in a character",
+       %{bin: bin} = ctx do
+    fresh(bin, 1, tid(), [turn_end(tid(), "failed", "a" <> String.duplicate("é", 1_000))])
+
+    assert [%{outcome: :error, error: "codex: " <> text}] =
+             of_type(prompt(start(ctx), "go"), :turn_end)
+
+    assert byte_size(text) == 1_999 and String.valid?(text)
   end
 
   test "every server request gets an error, an approval request too",
