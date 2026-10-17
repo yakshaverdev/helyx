@@ -117,6 +117,8 @@ defmodule CodingAgentTest do
     assert sentence({:lock_failed, "perl gave no answer\nin 5000 ms"}) ==
              "could not lock the session: perl gave no answer in 5000 ms"
 
+    assert sentence(:open_timeout) == "the session file did not open in time"
+
     # The whole line, with no start prefix (#579).
     assert CodingAgent.error_text({:session_locked, "abc\e[2J"}) ==
              "session abc?[2J is open in another process"
