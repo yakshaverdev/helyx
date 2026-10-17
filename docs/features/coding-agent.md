@@ -25,7 +25,7 @@ From the TUI, prompt the agent about a repository. It reads, edits, and runs she
 | Provider | `OpenAI` (the engine of the OpenAI wire format; each endpoint is a module with `use`, and `OpenAI.Go` for OpenCode Go is the bundled one, `openai-compatible.md`), `ClaudeCode` (one `claude` per session, stream-json over stdio, ADR 0007), `Codex` (one `codex app-server` per session, JSON-RPC over stdio), `Fake` (scripted, for tests) |
 | Tool | `Read`, `Bash`, `Edit`, `Write` |
 | ModelContext | `Default`: base prompt plus the global `~/.helyx/AGENTS.md`, then for each folder from the filesystem root down to the working directory the first of `AGENTS.override.md`, `AGENTS.md`, `CLAUDE.md` (`context-files.md`) |
-| Compaction | `None`: no-op |
+| Compaction | `Summary`: a summary of the older part of the transcript when the context is almost full, and `/compact` (`summary-compaction.md`). `None` stays as a no-op plugin |
 
 A model is named by one string, `provider/model` (`Helyx.ModelRef`). `Helyx.Session.set_model/2` switches the model of a running session; its `@doc` states the errors and the turn that keeps the old model.
 
@@ -169,4 +169,4 @@ A session file has a writer lock (#579, `docs/features/session-lock.md`): a seco
 
 ## Out of scope
 
-MCP, sub-agents, permission prompts, plan mode, todos, background shell, compaction by Helyx (#490; a harness compacts its own history, `docs/features/harness-compaction.md`), branching, editing queued messages, queue persistence, remote hands, packaging, Anthropic API key provider, dedicated grep, find, and ls tools, skills discovery.
+MCP, sub-agents, permission prompts, plan mode, todos, branching, editing queued messages, queue persistence, remote hands, packaging, Anthropic API key provider, dedicated grep, find, and ls tools, skills discovery.
