@@ -39,6 +39,7 @@ defmodule Helyx.TUI.ComposerTest do
 
   defp value(state), do: ExRatatui.textarea_get_value(state.composer.input)
   defp row(state), do: elem(ExRatatui.textarea_cursor(state.composer.input), 0)
+  defp column(state), do: elem(ExRatatui.textarea_cursor(state.composer.input), 1)
 
   test "Up recalls the prompts newest first, Down goes back to the draft" do
     state = state(["one", "two"]) |> type("draft")
@@ -226,6 +227,125 @@ defmodule Helyx.TUI.ComposerTest do
 
     state = state |> press("up") |> press("down")
     assert Composer.submit(state.composer) == {:message, paste}
+  end
+
+  describe "the line and word moves (#682)" do
+    test "Ctrl+A and Ctrl+E go to the start and the end of the cursor line" do
+      state = state([]) |> type("héllo") |> press("j", ["ctrl"]) |> type("wörld ✓")
+
+      state = state |> press("a", ["ctrl"]) |> type("X") |> press("e", ["ctrl"]) |> type("Y")
+      assert value(state) == "héllo\nXwörld ✓Y"
+
+      state = state |> press("up") |> press("e", ["ctrl"]) |> type("Z")
+      state = state |> press("a", ["ctrl"]) |> type("W")
+      assert value(state) == "WhélloZ\nXwörld ✓Y"
+    end
+
+    test "a word move stops at an end of a paste marker, never inside it" do
+      paste = Enum.map_join(1..6, "\n", &"l#{&1}")
+      marker = "[Pasted text #1, 6 lines]\u0001"
+
+      # The marker takes 26 columns: 3 to 29 with spaces around it, 2 to 28
+      # when the words touch it. A move back from after the marker stops at
+      # its end, so the word after it is not skipped.
+      typed = fn before, rest ->
+        {:noreply, state} = TUI.handle_event(%Paste{content: paste}, state([]) |> type(before))
+        type(state, rest)
+      end
+
+      for key <- [{"b", ["alt"]}, {"left", ["ctrl"]}] do
+        assert columns(typed.("ab ", " cd"), key, 4) == [30, 29, 3, 0]
+        assert columns(typed.("ab", "cd"), key, 4) == [28, 2, 0, 0]
+      end
+
+      for key <- [{"f", ["alt"]}, {"right", ["ctrl"]}] do
+        assert typed.("ab ", " cd") |> press("a", ["ctrl"]) |> columns(key, 4) == [3, 29, 30, 32]
+        assert typed.("ab", "cd") |> press("a", ["ctrl"]) |> columns(key, 4) == [2, 28, 30, 30]
+        # The widget joins `(` and `[` in one word: from column 1 it would land inside.
+        assert typed.("x(", "cd") |> press("a", ["ctrl"]) |> columns(key, 3) == [1, 2, 28]
+      end
+
+      # The cursor inside a marker, from Up on the row below, also stops at an end.
+      state = typed.("ab ", " cd") |> press("j", ["ctrl"]) |> type("0123456789")
+      assert state |> press("up") |> columns({"f", ["alt"]}, 1) == [29]
+      state = state |> press("down") |> press("up") |> press("b", ["alt"])
+      assert column(state) == 3
+
+      # From inside a marker a move goes to its end in one step, also where
+      # the widget word would pass it: before U+0001 forward, and after the
+      # `[` that follows `(` back. Left from the row below sets the column.
+      inside = fn before, rest, at ->
+        state = typed.(before, rest) |> press("j", ["ctrl"]) |> type(String.duplicate("0", 40))
+        state = Enum.reduce(1..(40 - at), state, fn _n, state -> press(state, "left") end)
+        press(state, "up")
+      end
+
+      for {before, rest, at, key, stop} <- [
+            {"ab", "cd", 27, {"f", ["alt"]}, 28},
+            {"ab", "cd", 27, {"right", ["ctrl"]}, 28},
+            {"ab ", " cd", 28, {"f", ["alt"]}, 29},
+            {"x(", "cd", 3, {"b", ["alt"]}, 2},
+            {"x(", "cd", 3, {"left", ["ctrl"]}, 2}
+          ] do
+        assert inside.(before, rest, at) |> columns(key, 1) == [stop], inspect({before, at})
+      end
+
+      state = type(state, "X")
+      assert value(state) == "ab X" <> marker <> " cd\n0123456789"
+      assert Composer.submit(state.composer) == {:message, "ab X" <> paste <> " cd\n0123456789"}
+    end
+
+    test "a word move goes to the line before and after; Ctrl+A on an empty composer does not scroll" do
+      state =
+        state([]) |> type("ab") |> press("j", ["ctrl"]) |> type("cd") |> press("a", ["ctrl"])
+
+      state = press(state, "b", ["alt"])
+      assert {row(state), column(state)} == {0, 2}
+      state = state |> press("e", ["ctrl"]) |> press("f", ["alt"])
+      assert {row(state), column(state)} == {1, 0}
+
+      # Home here would scroll, which reads the terminal size that this state
+      # lacks and so raises; Ctrl+A only moves the cursor.
+      state = state([]) |> press("a", ["ctrl"])
+      assert state.scroll == nil and value(state) == ""
+      # End here would follow the newest output: the scroll would be nil.
+      assert press(%{state | scroll: {0, 0}}, "e", ["ctrl"]).scroll == {0, 0}
+    end
+
+    test "a key with a modifier that the TUI does not map does nothing" do
+      state = state([]) |> type("abc def") |> press("left")
+
+      state =
+        for {code, modifiers} <- [
+              {"k", ["ctrl"]},
+              {"u", ["ctrl"]},
+              {"w", ["ctrl"]},
+              {"h", ["ctrl"]},
+              {"b", ["ctrl"]},
+              {"z", ["ctrl"]},
+              {"d", ["alt"]},
+              {"left", ["alt"]},
+              {"a", ["ctrl", "alt"]},
+              {"b", ["alt", "shift"]}
+            ],
+            reduce: state,
+            do: (state -> press(state, code, modifiers))
+
+      assert value(state) == "abc def"
+      assert column(state) == 6
+    end
+  end
+
+  # The cursor column after each of `n` presses of `key`. The states share
+  # one widget, so each column is read before the next press.
+  defp columns(state, {code, modifiers}, n) do
+    {columns, _state} =
+      Enum.map_reduce(1..n, state, fn _n, state ->
+        state = press(state, code, modifiers)
+        {column(state), state}
+      end)
+
+    columns
   end
 
   test "a recalled prompt is cleaned as a paste is" do

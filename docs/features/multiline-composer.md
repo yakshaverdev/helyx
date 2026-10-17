@@ -17,7 +17,14 @@ The marker rules:
 - A marker ends with U+0001, a control character. A paste drops it. A key code with a control character goes nowhere: crossterm gives Ctrl+key as the key with a `ctrl` modifier, but the kitty keyboard sequence `ESC [ 1 u` gives the key code U+0001 with no modifier. ExRatatui does not draw it. So only a marker that the composer made ends with it, and text that only looks like a marker is sent as typed.
 - Backspace with the cursor inside a marker or right after it, and Delete with the cursor at its start or inside it, remove the whole marker.
 - Left and Right pass over a marker in one step.
-- Up and Down keep the column, so they can put the cursor inside a marker. Every other key, a paste, Ctrl+J, or Shift+Enter with the cursor inside a marker first moves the cursor to the end of the marker. So Up and Down from inside a marker start at its end.
+- Up and Down keep the column, so they can put the cursor inside a marker. Every other key that the composer acts on, except a word move, and a paste, Ctrl+J, or Shift+Enter with the cursor inside a marker first move the cursor to the end of the marker. A key with Ctrl or Alt that the composer does not map leaves the cursor where it is. So Up and Down from inside a marker start at its end.
+
+Line and word moves (#682, orchestrator decision): the keys of a shell move the cursor in the composer. A key that the TUI already uses keeps its meaning.
+
+- Ctrl+A goes to the start of the cursor line and Ctrl+E to its end, as Home and End do with text in the composer. With an empty composer they do nothing; they do not scroll as Home and End do.
+- Alt+B and Ctrl+Left move one word back, and Alt+F and Ctrl+Right one word forward, by the word rule of the textarea. At the start of a line a move back goes to the end of the line before; at the end of a line a move forward goes to the start of the line after.
+- A marker is one word. A word move that starts inside a marker, where Up or Down can leave the cursor, goes to the start of the marker (back) or to its end (forward), and the textarea does not move. A word move that ends inside a marker stops at the first end of the marker that it passes: a move back that starts after the marker stops at its end, else at its start; a move forward that starts before the marker stops at its start, else at its end. The textarea counts the end character U+0001 in the class of letters and joins `(` and `[` in one word, so its word can start inside a marker or pass an end of it; without this rule a move would skip a visible word.
+- Every other key with Ctrl or Alt, alone or with another modifier, does nothing in the composer. `Helyx.TUI.Composer.press/3` holds this list.
 
 Prompt history (#469):
 
@@ -45,6 +52,7 @@ The state of `Helyx.TUI` changes:
 - `recall` is nil, or the position of the recalled prompt's cell, the text that shows for it (#532), and the draft with its `pastes` (#469). A recalled prompt shows with no pastes; the draft gets its own back. `count` does not change while a draft or a marker lives, so a marker id is not used twice. When no draft waits, `restore/1` empties the composer as `clear/1` does, and the ids start at `#1` again. The join of an edit and the join of `queue_dropped` use one helper, so both keep the same order: the draft, then the composer text.
 - `Helyx.TUI.Composer.recall/3` and `Helyx.TUI.ViewModel.prompt/3` are new (#469).
 - `Helyx.TUI.Composer.restore/1` is new (#540). It ends a recall: the draft comes back, or the composer empties. Down past the newest prompt and both accepted sends call it; Ctrl+C calls `clear/1`.
+- `Helyx.TUI.Composer.press/3` is new (#682): the TUI gives it every key press or repeat that no TUI key takes. `Helyx.TUI.Composer.Paste` holds the paste rule: the clean text, the marker form, and the expansion at a send.
 - `Helyx.TUI.Composer.apply/2` is new (#513). `Helyx.TUI` passes it every session event. At `queue_dropped` it merges the pastes of the draft and of a recalled prompt into `pastes` and sets `recall` to nil.
 
 The footer shows no key help (#484); `apps/coding_agent/README.md` lists Ctrl+J with the other keys.
@@ -65,6 +73,8 @@ The footer shows no key help (#484); `apps/coding_agent/README.md` lists Ctrl+J 
 Accepted holes:
 
 - The repeat and the release of Enter do nothing. Holding Enter does not add lines.
+- A marker with a space after it has one more word stop than a plain word: its end. A move back from the word after it stops at the end of the marker, then at its start.
+- Alt+B and Alt+F reach the TUI only where the terminal sends Option or Alt as Escape (Meta); otherwise the terminal sends a character, which the composer inserts. Where the system takes Ctrl+Left and Ctrl+Right, such as for macOS Spaces, the TUI does not get them.
 
 ## Ownership
 
@@ -73,5 +83,5 @@ No external resource. The textarea state is a NIF resource owned by the TUI proc
 ## Out of scope
 
 - The kitty keyboard protocol: needs an ExRatatui change (#108).
-- Undo and the Emacs keys of the textarea: keys with Ctrl or Alt do not reach the widget, as before.
+- Undo, the delete keys (Ctrl+K, Ctrl+U, Ctrl+W), a kill ring, and a keymap config: only the moves of #682 reach the widget with a modifier. Each delete key must keep the marker rules.
 - A limit on the composer text: unbounded human input (#29). Only the send has a bound, that of the session (#672).

@@ -45,6 +45,8 @@ The footer shows no key hints, except "Ctrl+C again to quit" after a first Ctrl+
 | Escape | Aborts the running turn; its queued messages come back to the composer |
 | PgUp, PgDn | Scrolls the transcript by one screen |
 | Home, End with an empty composer (fn+Left, fn+Right on a MacBook) | Goes to the oldest or the newest output. With text in the composer, they move the cursor |
+| Ctrl+A, Ctrl+E | Moves the cursor to the start or the end of the line in the composer |
+| Alt+B or Ctrl+Left, Alt+F or Ctrl+Right | Moves the cursor one word back or forward in the composer. Alt needs Option as Meta (Escape) in the macOS terminal |
 | Wheel, trackpad | Scrolls the transcript by three rows |
 | Ctrl+O | Shows the full text of every tool result, or the first four lines again. The hint row of a short result names the key |
 | Drag in the transcript | Selects text and copies it to the clipboard with OSC 52, at most 75,000 bytes. The TUI takes the mouse, so the selection of the terminal does not work |
