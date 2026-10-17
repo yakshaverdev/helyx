@@ -189,6 +189,6 @@ defmodule Helyx.Sessions do
          do: GenServer.stop(Session.Server.via(session.core, session.id), :normal, :infinity)
   catch
     # The session ended between the abort and the stop.
-    :exit, :noproc -> {:error, :session_not_found}
+    :exit, {:noproc, _call} -> {:error, :session_not_found}
   end
 end
