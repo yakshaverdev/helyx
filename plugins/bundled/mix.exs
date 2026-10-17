@@ -58,6 +58,7 @@ defmodule Helyx.Plugins.MixProject do
       {:thousand_island, "~> 1.5.0"},
       {:plug, "~> 1.16"},
       {:stream_data, "~> 1.2", only: :test},
+      {:yaml_elixir, "~> 2.12", only: :test},
       {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false}
     ]
   end

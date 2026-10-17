@@ -137,15 +137,16 @@ defmodule Helyx.SkillsTest do
   test "each rule of the frontmatter drops the skill with its reason", %{cwd: cwd, home: home} do
     cases = [
       {"a", "description: x\n", "the frontmatter has no name string"},
-      {"b", "name: 12\ndescription: x\n", "the frontmatter has no name string"},
+      {"b", "name: 12\ndescription: x\n", "line 2: the name is no string"},
       {"c", "name: other\ndescription: x\n", "the name other is not the folder name"},
       {"d-", "name: d-\ndescription: x\n", "the name must be"},
-      {"-e", "name: -e\ndescription: x\n", "the name must be"},
+      {"-e", "name: -e\ndescription: x\n", "line 2: the name starts with a YAML indicator"},
       {"f--g", "name: f--g\ndescription: x\n", "the name must be"},
       {"Hh", "name: Hh\ndescription: x\n", "the name must be"},
       {"i", "name: i\ndescription: \"\"\n", "the frontmatter has no description string"},
-      {"j", "name: j\ndescription: \"x\n", "the description is not valid YAML"},
-      {"k", "- a list\n", "the frontmatter is not a map of keys"}
+      {"j", "name: j\ndescription: \"x\n",
+       "line 3: the description has a quote that does not close on its line"},
+      {"k", "- a list\n", "line 2: not a key line, a comment, or a blank line"}
     ]
 
     for {name, frontmatter, _} <- cases, do: skill(cwd, name, frontmatter)
@@ -206,9 +207,9 @@ defmodule Helyx.SkillsTest do
     dir = &Path.join(cwd, ".agents/skills/#{&1}")
 
     assert scan.notices == [
-             "skill #{dir.("alias")} is not loaded: the description uses an anchor, an alias, or a tag",
-             "skill #{dir.("anchor")} is not loaded: the name uses an anchor, an alias, or a tag",
-             "skill #{dir.("raw")} is not loaded: the description uses an anchor, an alias, or a tag"
+             "skill #{dir.("alias")} is not loaded: line 4: the description uses an anchor, an alias, or a tag",
+             "skill #{dir.("anchor")} is not loaded: line 2: the name uses an anchor, an alias, or a tag",
+             "skill #{dir.("raw")} is not loaded: line 3: the description uses an anchor, an alias, or a tag"
            ]
   end
 

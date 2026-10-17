@@ -302,7 +302,7 @@ defmodule Helyx.ModelContext.DefaultTest do
 
       write!(
         Path.join(cwd, ".agents/skills/probe/SKILL.md"),
-        "---\nname: probe\ndescription: Probe\n  it.\n---\nbody\n"
+        "---\nname: probe\ndescription: Probe it.\n---\nbody\n"
       )
 
       %{cwd: cwd, home: Path.join(dir, "home")}
