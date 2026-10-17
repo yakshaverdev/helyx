@@ -32,7 +32,7 @@ The facts are in `docs/research/claude-code-stream-json.md`, "Compaction (2026-1
 | Answer | Meaning | Session |
 | --- | --- | --- |
 | `:ok` | the provider runs the compaction as the turn `turn_id`: zero or more events, then a terminal | the turn is `submitted` |
-| `:unsupported` | the provider keeps no history of its own | a `:notice` event, then the turn ends `done`; the provider process stays |
+| `:unsupported` | the provider keeps no history of its own | the Compaction plugin can summarize the transcript (`summary-compaction.md`); with no summary, a `:notice` event, then the turn ends `done`; a plugin error or a failed summary ends it `error`; the provider process stays |
 | `{:error, reason}` | as for `{:turn, ...}` | the provider process stops, and the turn fails |
 
 The reply bound is the one of `{:turn, ...}` (2,000 ms, armed kill). `Helyx.Provider.Loop` answers `:unsupported`.

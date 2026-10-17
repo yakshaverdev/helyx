@@ -46,9 +46,12 @@ defmodule Helyx.Provider.Loop do
   provider process has `cost: nil`. A stream error, a stream that ends
   with no terminal (`:stream_ended`), a model Task that raises, throws, or
   exits (`{:task_exit, reason}`), and a context error end the turn; the
-  provider process stays. An exit signal that kills the model Task, such as one from
-  a process linked to it, ends the provider process too, through the link
-  (L4).
+  provider process stays. A model call that fails with
+  `{:context_overflow, detail}` before any content asks once in a turn for
+  a fresh context, `{:need_context, turn_id, :overflow}`, and calls the
+  model again with it (`docs/features/summary-compaction.md`). An exit
+  signal that kills the model Task, such as one from a process linked to
+  it, ends the provider process too, through the link (L4).
 
   A steer of the live turn is held for the next model call; after the
   terminal it gets `:rejected`. A steer held while a context is built goes
@@ -71,7 +74,8 @@ defmodule Helyx.Provider.Loop do
   # call id is the request id. `steers` the ids of the held steers.
   # `usage` is the usage of a call that sent no `message_end`, or nil; it
   # outlives the turn. `lost?` is the flag: a call since the last usage
-  # ended with no usage, so the next usage has no cost.
+  # ended with no usage, so the next usage has no cost. `overflowed?`: the
+  # turn asked for a context after an overflow.
   @enforce_keys [:provider, :model, :opts]
   defstruct [
     :provider,
@@ -81,6 +85,7 @@ defmodule Helyx.Provider.Loop do
     :task,
     :usage,
     lost?: false,
+    overflowed?: false,
     content?: false,
     calls: [],
     steers: []
@@ -102,6 +107,12 @@ defmodule Helyx.Provider.Loop do
       defdelegate info(message, state), to: Helyx.Provider.Loop
     end
   end
+
+  @doc "Whether `module` is a model provider of this helper."
+  @spec loop?(module()) :: boolean()
+  def loop?(module),
+    do:
+      __MODULE__ in List.flatten(Keyword.get_values(module.module_info(:attributes), :behaviour))
 
   @doc "The state of a provider process of `provider`, from the `init/3` arguments."
   @spec new(module(), String.t(), keyword()) :: %__MODULE__{}
@@ -213,6 +224,14 @@ defmodule Helyx.Provider.Loop do
 
   defp terminal({:failed, reason}, state), do: terminal({:error, {:task_exit, reason}}, state)
   defp terminal(:stream_ended, state), do: terminal({:error, :stream_ended}, state)
+
+  # One retry in a turn, with a fresh context, when the call sent nothing.
+  defp terminal(
+         {:error, {:context_overflow, _detail}},
+         %{overflowed?: false, content?: false} = s
+       ),
+       do: {:ok, [{:need_context, s.turn, :overflow}], %{s | overflowed?: true, lost?: true}}
+
   defp terminal({:error, _} = error, state), do: finish(error, %{state | lost?: true})
   # A malformed done, which Core rejects.
   defp terminal({:done, _} = done, state), do: finish(done, state)
@@ -281,7 +300,7 @@ defmodule Helyx.Provider.Loop do
     {:ok, actions ++ steers ++ [{:need_context, state.turn}], %{state | steers: []}}
   end
 
-  defp end_turn(state), do: %{state | turn: nil, calls: [], steers: []}
+  defp end_turn(state), do: %{state | turn: nil, calls: [], steers: [], overflowed?: false}
 
   # `Task.shutdown/2` unlinks, kills, waits for the `:DOWN`, and flushes the
   # reply. Events that the Task sent before stay in the mailbox; `info/2`

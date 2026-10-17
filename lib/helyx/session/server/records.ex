@@ -1,7 +1,7 @@
 defmodule Helyx.Session.Server.Records do
   @moduledoc false
   # The records of a session: the only writer of `transcript`, `file`,
-  # `model`, `provider`, and `resume_ids` in `Helyx.Session.Server.State`. Each
+  # `model`, `provider`, `resume_ids`, and `summary` in `Helyx.Session.Server.State`. Each
   # operation changes the open assistant message, the transcript, the
   # session file, and emits its events together. The rule: no message goes
   # between a call and its result. A call still open gets its `aborted`
@@ -150,6 +150,18 @@ defmodule Helyx.Session.Server.Records do
     state = %{state | resume_ids: Transcript.compacted(state.resume_ids, provider, count)}
     state = if compact, do: put_in(state.activity.compact, :reported), else: state
     emit(state, :compaction, %{trigger: trigger, tokens_before: before, tokens_after: after_})
+  end
+
+  # A Helyx summary (docs/features/summary-compaction.md): the record on
+  # disk, the stored summary, and `:compaction`. A failed write leaves it
+  # in memory only (`persist/2`). One in a compaction turn marks the turn
+  # as compacted; an overflow summary is `auto`.
+  def summary(%State{activity: %Turn{compact: compact}} = state, summary) do
+    state = persist(state, &Helyx.Session.File.append_summary(&1, summary))
+    state = if compact, do: put_in(state.activity.compact, :reported), else: state
+    trigger = if compact, do: :manual, else: :auto
+    data = %{trigger: trigger, tokens_before: summary.tokens_before, tokens_after: nil}
+    emit(%{state | summary: summary}, :compaction, data)
   end
 
   # Emits message_start for the assistant message on the first stream event.

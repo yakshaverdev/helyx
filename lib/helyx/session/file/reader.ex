@@ -6,11 +6,14 @@ defmodule Helyx.Session.File.Reader do
   # append. Any other break is `{:invalid_file, text}`. A chain error names
   # its line, and the count includes the skipped lines. No I/O.
 
+  import Helyx.Usage, only: [wire_tokens?: 1]
+
   alias Helyx.Message
   alias Helyx.Session.File.{Codec, Scan}
   alias Helyx.Session.{Id, Transcript}
 
   @no_header "the first entry is not a header"
+  @max_summary_bytes Helyx.Summary.max_bytes()
 
   # Returns the leaf, the current model, the messages, and the resume ids,
   # and whether the bytes end in a newline (`:clean` or `:no_newline`).
@@ -39,7 +42,8 @@ defmodule Helyx.Session.File.Reader do
        when is_binary(id) and is_binary(model) do
     with :ok <- Scan.check_version(header),
          :ok <- check_cwd(header, cwd) do
-      {:ok, %{leaf: id, ids: %{}, model: model, messages: [], resume_ids: %{}, count: 0}}
+      {:ok,
+       %{leaf: id, ids: %{}, model: model, messages: [], resume_ids: %{}, summary: nil, count: 0}}
     end
   end
 
@@ -57,12 +61,13 @@ defmodule Helyx.Session.File.Reader do
   defp check_cwd(_header, _cwd), do: {:error, :not_found}
 
   # After the header the writer only produces messages, model changes,
-  # resume ids, and compactions, every model field a string. Anything else
+  # resume ids, compactions, and summaries, every model field a string. Anything else
   # is damage on the disk, never dropped in silence.
   # A message id is its entry id, and a client keys messages by it, so a
   # repeated one is damage, and so is an id that `Id.new/0` never makes: it
   # could hold `:`, the separator of the ids that `Transcript.repair/1`
-  # derives. Only message ids are kept: the other entries reach no client.
+  # derives. Only message ids are kept, with the role of their message:
+  # the other entries reach no client.
   defp fold(%{"type" => "message", "id" => id} = entry, acc) do
     cond do
       is_map_key(acc.ids, id) ->
@@ -74,7 +79,7 @@ defmodule Helyx.Session.File.Reader do
       true ->
         message = Codec.decode(entry)
         count = if message.role == :assistant, do: acc.count + 1, else: acc.count
-        ids = Map.put(acc.ids, id, true)
+        ids = Map.put(acc.ids, id, message.role)
         {:ok, %{acc | messages: [message | acc.messages], count: count, ids: ids}}
     end
   end
@@ -89,6 +94,22 @@ defmodule Helyx.Session.File.Reader do
   # of assistant messages at that compaction.
   defp fold(%{"type" => "compaction", "provider" => provider}, acc) when is_binary(provider),
     do: {:ok, %{acc | resume_ids: Transcript.compacted(acc.resume_ids, provider, acc.count)}}
+
+  # A summary keeps a user or assistant message before it, has a text of
+  # 1 to `Helyx.Summary.max_bytes/0` bytes, and a token count from 0 to
+  # 10^9 (docs/features/summary-compaction.md). The last one wins.
+  defp fold(
+         %{"type" => "summary", "summary" => text, "first_kept_id" => id, "tokens_before" => n},
+         acc
+       )
+       when is_binary(text) and text != "" and byte_size(text) <= @max_summary_bytes and
+              is_binary(id) and
+              :erlang.map_get(id, acc.ids) in [:user, :assistant] and wire_tokens?(n),
+       do:
+         {:ok, %{acc | summary: %Helyx.Summary{text: text, first_kept_id: id, tokens_before: n}}}
+
+  defp fold(%{"type" => "summary"}, _acc),
+    do: {:error, {:invalid_file, "a summary entry is not valid"}}
 
   defp fold(entry, _acc),
     do: {:error, {:invalid_file, "entry the writer never produces: #{inspect(entry["type"])}"}}

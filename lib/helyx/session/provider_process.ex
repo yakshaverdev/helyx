@@ -155,8 +155,12 @@ defmodule Helyx.Session.ProviderProcess do
   end
 
   # A fresh context (C2, C3), after the events before it: the session
-  # checks the context against its turn.
+  # checks the context against its turn. One after a context overflow
+  # asks for a summary (docs/features/summary-compaction.md).
   defp action({:need_context, turn_id} = action, proc) when is_binary(turn_id),
+    do: sent(Stream.send_checked(proc.session, action), proc)
+
+  defp action({:need_context, turn_id, :overflow} = action, proc) when is_binary(turn_id),
     do: sent(Stream.send_checked(proc.session, action), proc)
 
   defp action({:reply, from, value} = action, %{open: open} = proc)

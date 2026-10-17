@@ -1,0 +1,90 @@
+defmodule Helyx.Session.Server.Prepare do
+  @moduledoc false
+  # The context build of a turn (docs/features/session-lifecycle.md and
+  # docs/features/summary-compaction.md): the prepare Task, which runs the
+  # ModelContext and the Compaction plugin, and what its result starts:
+  # the submit of the turn, the answer to a context request, a summary
+  # call (`Helyx.Session.Server.Summary`), or the end of a compaction turn.
+  # `Helyx.Session.Server.TurnLoop` matches the messages and owns the turn.
+
+  import Helyx.Session.Server.State, only: [ask: 4]
+
+  alias Helyx.Context
+  alias Helyx.Session.Server.{Compaction, State, Summary, TurnLoop, Wait}
+  alias Helyx.Session.Turn
+
+  # The prepare Task builds the context, at the turn start, at each
+  # context request, after a summary (`trigger` nil), and in a compaction
+  # turn that the provider did not run (`:manual`). The session owns it: a
+  # child of the task supervisor, monitored before it runs, so a raise is
+  # never `:noproc` (#562), its pid in `Turn.prepare`, killed at the turn
+  # end. Its kill at `prepare_ms` is armed as its first act, before any
+  # plugin code. A compaction turn has no context at its start: it submits
+  # at once. Only a model provider gets a summary (`summary-compaction.md`).
+  def start(%State{activity: %Turn{compact: text, phase: :preparing}} = state, _trigger)
+      when is_binary(text),
+      do: TurnLoop.submit(state)
+
+  def start(%State{activity: %Turn{id: turn_id} = turn} = state, trigger) do
+    %State{model_context: model_context, compaction: compaction, prepare_ms: ms} = state
+    context = %Context{messages: state.transcript, tools: state.tool_specs}
+    trigger = if Helyx.Provider.Loop.loop?(turn.provider), do: trigger
+
+    opts =
+      [turn_id: turn_id, model: turn.model, summary: state.summary, trigger: trigger] ++
+        [instructions: if(is_binary(turn.compact), do: turn.compact, else: "")] ++
+        State.base_opts(state)
+
+    %Task{pid: pid} =
+      Task.Supervisor.async_nolink(Helyx.Core.task_supervisor(state.core), fn ->
+        {:ok, tref} = :timer.kill_after(ms)
+        result = Helyx.Session.Stream.prepare(model_context, compaction, context, opts)
+        :timer.cancel(tref)
+        {:prepared, turn_id, result}
+      end)
+
+    put_in(state.activity.prepare, pid)
+  end
+
+  # The checked context (`Stream.prepare/4`), or the error of the prepare
+  # Task: a plugin that returned anything else, or a Task that died. A
+  # plan starts the summary call. In `preparing` an error fails the turn; a
+  # context request gets it as the answer. A compaction turn ends with the
+  # notice when the plugin made no summary.
+  def prepared(%State{activity: %Turn{} = turn} = state, {:summarize, plan}),
+    do: Summary.start(%{state | activity: %{turn | prepare: nil}}, plan)
+
+  def prepared(%State{activity: %Turn{compact: text} = turn} = state, result)
+      when is_binary(text) do
+    state = %{state | activity: %{turn | prepare: nil}}
+
+    case result do
+      {:ok, _context} -> TurnLoop.progress(Compaction.unsupported(state))
+      {:error, reason} -> TurnLoop.fail_turn(reason, state)
+    end
+  end
+
+  def prepared(%State{activity: %Turn{phase: :preparing} = turn} = state, result) do
+    state = %{state | activity: %{turn | prepare: nil}}
+
+    case result do
+      {:ok, context} -> TurnLoop.submit(put_in(state.activity.context, context))
+      {:error, reason} -> TurnLoop.fail_turn(reason, state)
+    end
+  end
+
+  def prepared(%State{activity: %Turn{phase: :submitted} = turn, conn: conn} = state, result) do
+    ask(state, conn.pid, {:context, turn.id, result}, :reply)
+    %{state | activity: %{turn | prepare: nil}}
+  end
+
+  # After a summary: a compaction turn ends; any other builds again.
+  def summarized(%State{activity: %Turn{compact: :reported}} = state),
+    do: TurnLoop.progress(Wait.finish(state, {:done, :end_turn, %{}}))
+
+  def summarized(state), do: start(state, nil)
+
+  # The reason of a prepare Task that ended before its context.
+  def down_reason(:killed), do: :context_timeout
+  def down_reason(reason), do: {:task_exit, reason}
+end

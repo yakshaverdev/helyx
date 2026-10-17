@@ -94,7 +94,11 @@ defmodule Helyx.Session.Server.State do
     idle: nil,
     # The instructions of a compaction that waits for the end of the wait,
     # or nil (docs/features/harness-compaction.md).
-    pending_compact: nil
+    pending_compact: nil,
+    # The stored summary, and the summary call that runs or ends, or nil
+    # (docs/features/summary-compaction.md).
+    summary: nil,
+    summary_call: nil
   ]
 
   @type t :: %__MODULE__{
@@ -123,9 +127,14 @@ defmodule Helyx.Session.Server.State do
           prepare_ms: pos_integer(),
           open_ms: pos_integer(),
           idle: reference() | nil,
-          pending_compact: String.t() | nil
+          pending_compact: String.t() | nil,
+          summary: Helyx.Summary.t() | nil,
+          summary_call: Helyx.Session.Server.Summary.t() | nil
         }
 
   # Sends `request` to the provider process with the bound `key` of `provider_ms`.
   def ask(state, pid, req, key), do: ProviderRequest.ask(pid, req, state.provider_ms[key])
+
+  # The options of every plugin call of the session.
+  def base_opts(state), do: [core: state.core, session_id: state.id, cwd: state.cwd]
 end

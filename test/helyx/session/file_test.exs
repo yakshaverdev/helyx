@@ -209,6 +209,82 @@ defmodule Helyx.Session.FileTest do
                inspect(id)
       end
     end
+
+    # docs/features/summary-compaction.md: a summary keeps a user or
+    # assistant message before it, with a text of at most 65,536 bytes.
+    test "a summary entry resumes, and one out of its bounds rejects the file",
+         %{tmp_dir: dir} do
+      summary = fn extra ->
+        JSON.encode!(
+          Map.merge(
+            %{
+              "id" => "summary00001",
+              "type" => "summary",
+              "summary" => "s",
+              "first_kept_id" => "message00001",
+              "tokens_before" => 1
+            },
+            extra
+          )
+        )
+      end
+
+      cases = [
+        {%{}, :ok},
+        {%{"summary" => String.duplicate("é", 32_768)}, :ok},
+        {%{"summary" => String.duplicate("x", 65_537)}, :error},
+        {%{"first_kept_id" => "summary00001"}, :error},
+        {%{"first_kept_id" => "message00002"}, :error},
+        {%{"tokens_before" => 0}, :ok},
+        {%{"tokens_before" => 1_000_000_000}, :ok},
+        {%{"tokens_before" => -1}, :error},
+        {%{"tokens_before" => 1_000_000_001}, :error},
+        {%{"summary" => nil}, :error},
+        {%{"summary" => ""}, :error}
+      ]
+
+      for {{extra, expected}, n} <- Enum.with_index(cases) do
+        dir = Path.join(dir, "case#{n}")
+        {:ok, file} = Session.File.create(dir, "sess00000001", "/repo", "test/ok")
+
+        file
+        |> append_raw(user_entry("message00001", %{}))
+        |> append_raw(user_entry("message00002", @tool_result))
+        |> append_raw(summary.(extra))
+
+        case expected do
+          :ok ->
+            assert {:ok, %{summary: %Helyx.Summary{first_kept_id: "message00001"}}} =
+                     SessionFile.resume(dir, "/repo")
+
+          :error ->
+            assert {:error, {:invalid_file, "a summary entry is not valid"}} =
+                     SessionFile.resume(dir, "/repo"),
+                   inspect(Map.keys(extra))
+        end
+      end
+
+      # The last entry wins, and a kept id must come before its entry.
+      for {{entries, expected}, n} <-
+            Enum.with_index([
+              {[summary.(%{}), summary.(%{"id" => "summary00002", "summary" => "t"})], :ok},
+              {[summary.(%{"first_kept_id" => "message00003"}), user_entry("message00003", %{})],
+               :error}
+            ]) do
+        dir = Path.join(dir, "order#{n}")
+        {:ok, file} = Session.File.create(dir, "sess00000001", "/repo", "test/ok")
+        file = append_raw(file, user_entry("message00001", %{}))
+        Enum.reduce(entries, file, &append_raw(&2, &1))
+
+        case expected do
+          :ok ->
+            assert {:ok, %{summary: %Helyx.Summary{text: "t"}}} = SessionFile.resume(dir, "/repo")
+
+          :error ->
+            assert {:error, {:invalid_file, _}} = SessionFile.resume(dir, "/repo")
+        end
+      end
+    end
   end
 
   test "a tool result text over the limit is cut on resume", %{tmp_dir: dir} do

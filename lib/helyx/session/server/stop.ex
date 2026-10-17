@@ -79,7 +79,8 @@ defmodule Helyx.Session.Server.Stop do
   end
 
   # The work that a session stop ends: in a turn, its prepare Task, to
-  # kill; the hands take its provider process. With no turn, the provider
+  # kill; the hands take its provider process and a summary process
+  # (`Helyx.Session.Server.Summary`). With no turn, the provider
   # process, also one that ends (an idle close, a switch close, an abort),
   # to close.
   defp work(%State{activity: %Turn{prepare: pid}}), do: %{kill: List.wrap(pid), close: []}
