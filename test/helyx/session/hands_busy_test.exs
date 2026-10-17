@@ -49,14 +49,16 @@ defmodule Helyx.Session.HandsBusyTest do
     :sys.resume(hands)
     assert :ok = Task.await(abort)
 
-    # The process of the aborted turn stopped; the follow-up starts its own.
+    # The follow-up runs.
     assert stop_reason(collect_until(:turn_end)) == :end_turn
     assert %{activity: :idle, conn: %{pid: pid, status: :ready}} = state(session)
     assert is_pid(pid)
   end
 
-  # `Helyx.Test.Connected` reports its `init/3` to the test process.
-  test "a start whose turn ended stops before init/3, and the session ends with no process",
+  # `Helyx.Test.Connected` reports its `init/3` to the test process. The
+  # process runs as one whose start answer came before the abort (#726), and
+  # its idle close is armed.
+  test "a start whose turn ended runs init/3, and the session idles with the process",
        %{core: core} do
     Process.register(self(), Helyx.Test.Connected.controller(core))
     {:ok, session} = Session.start(core, model: "conn/hang")
@@ -69,8 +71,14 @@ defmodule Helyx.Session.HandsBusyTest do
 
     :sys.resume(hands)
     assert :ok = Task.await(abort)
-    assert %{activity: :idle, conn: nil} = state(session)
-    refute_received {:conn, :init, _, _}
+    assert_receive {:conn, :init, proc, _}
+
+    wait_until(fn ->
+      match?(
+        %{activity: :idle, idle: ref, conn: %{pid: ^proc, status: :ready}} when ref != nil,
+        state(session)
+      )
+    end)
   end
 
   # An unconfirmed handle makes the hands refuse the start.

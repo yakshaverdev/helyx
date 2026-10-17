@@ -542,12 +542,12 @@ defmodule Helyx.Session.ProviderProcessTest do
       end
     end
 
+    # The suspended hands answer the start after the turn ended (#726).
     test "a prepare that raises fails the turn and keeps the provider process", %{core: core} do
-      {session, _pid, _hands} = start(core, "echo")
+      {session, _pid, hands} = start(core, "echo")
+      :erlang.suspend_process(hands)
       assert error(turn(session, "raise_prepare")) == "prepare failed"
-      # The connect races the prepare Task, so the init message can come
-      # after the turn ends. The wait is for a message that must come, not
-      # an upper bound.
+      :erlang.resume_process(hands)
       assert_receive {:conn, :init, proc, _}
 
       assert final_text(turn(session, "two")) == "echo:prepared|two"
