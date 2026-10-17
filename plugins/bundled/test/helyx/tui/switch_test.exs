@@ -58,8 +58,10 @@ defmodule Helyx.TUI.SwitchTest do
     session
   end
 
+  # No terminal: the default size function forks and can block in a test (#730).
   defp mount!(session, opts) do
-    {:ok, %{branch_ref: ref} = state} = TUI.mount([session: session] ++ opts)
+    opts = [session: session] ++ opts ++ [terminal_size_fn: fn -> {:error, :no_tty} end]
+    {:ok, %{branch_ref: ref} = state} = TUI.mount(opts)
     assert_receive {^ref, _branch} = reply
     info(reply, state)
   end

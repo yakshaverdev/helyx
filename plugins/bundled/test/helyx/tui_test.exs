@@ -48,8 +48,9 @@ defmodule Helyx.TUITest do
     mount!(session: session)
   end
 
+  # No terminal: the default size function forks and can block in a test (#730).
   defp mount!(opts) do
-    {:ok, state} = TUI.mount(opts)
+    {:ok, state} = TUI.mount(opts ++ [terminal_size_fn: fn -> {:error, :no_tty} end])
     branch_reply(state)
   end
 
@@ -604,7 +605,10 @@ defmodule Helyx.TUITest do
        %{core: core, tmp_dir: dir} do
     {_, 0} = System.cmd("git", ["init", "-q", "-b", "one", dir])
     {:ok, session} = Session.start(core, model: "fake/branch")
-    {:ok, state} = TUI.mount(session: session, cwd: dir)
+
+    {:ok, state} =
+      TUI.mount(session: session, cwd: dir, terminal_size_fn: fn -> {:error, :no_tty} end)
+
     refute state.location =~ "("
     state = branch_reply(state)
     assert state.location =~ ~r/ \(one\)$/
