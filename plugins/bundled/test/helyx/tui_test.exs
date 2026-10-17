@@ -1531,12 +1531,12 @@ defmodule Helyx.TUITest do
   end
 
   describe "/help" do
-    test "adds one notice with the commands and the keys, and starts no turn", %{core: core} do
+    test "adds one information cell with the commands and the keys, and starts no turn", %{core: core} do
       state = mounted(core, "help", [])
       cells = ViewModel.cells(state.vm)
       state = submit(state, " /help ")
       assert ExRatatui.textarea_get_value(state.composer.input) == ""
-      assert [{:notice, help}] = ViewModel.cells(state.vm) -- cells
+      assert [{:info, help}] = ViewModel.cells(state.vm) -- cells
 
       for text <- ["/model provider/model", "/compact [instructions]", "/new", "/resume", "/help"],
           do: assert(help =~ text)

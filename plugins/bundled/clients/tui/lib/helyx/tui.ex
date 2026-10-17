@@ -303,7 +303,7 @@ defmodule Helyx.TUI do
   defp run_command({:new, ""}, state), do: Switch.start(restore(state), :new)
 
   defp run_command({:help, ""}, state),
-    do: %{restore(state) | vm: ViewModel.notice(state.vm, Command.help(@keys))}
+    do: %{restore(state) | vm: ViewModel.info(state.vm, Command.help(@keys))}
 
   defp run_command({:resume, ""}, state),
     do: %{restore(state) | list: SessionList.new(state.sessions_dir, state.cwd, state.session.id)}
