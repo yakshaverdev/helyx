@@ -15,7 +15,7 @@ defmodule Helyx.TUI.ViewModel do
 
     * `%Helyx.Message{}` – a completed user or assistant message
     * `{:tool, call, line, result}` – a tool call of the assistant message
-      before it, and its line (`call_line/1`), made with the cell, so a
+      before it, and its line (`Helyx.TUI.CallLine.line/2`), made with the cell, so a
       frame does not pay for the size of the call; `result` is nil until
       the tool result message comes. The message proves that the call
       exists, not that it runs, so an open cell shows "awaiting result"
@@ -66,13 +66,12 @@ defmodule Helyx.TUI.ViewModel do
 
   alias Helyx.{Event, Message}
   alias Helyx.Session.{Snapshot, Totals}
+  alias Helyx.TUI.CallLine
 
-  # The cut of a tool call line (`cut_line/1`).
-  @render_max_bytes 8_192
-
-  # `cells` is set at run time in `from_snapshot/1`: an `:array` literal in
+  # `cells` is set at run time in `from_snapshot/2`: an `:array` literal in
   # the struct default breaks the opaque type for Dialyzer.
   defstruct model: nil,
+            session_id: nil,
             cells: nil,
             open: %{},
             streaming: nil,
@@ -93,6 +92,7 @@ defmodule Helyx.TUI.ViewModel do
 
   @type t :: %__MODULE__{
           model: String.t(),
+          session_id: String.t() | nil,
           cells: :array.array(cell()),
           open: %{String.t() => :queue.queue(non_neg_integer())},
           streaming: [Message.block() | tool_cell()] | nil,
@@ -219,7 +219,8 @@ defmodule Helyx.TUI.ViewModel do
   defp tokens(n), do: "#{round(n / 1000)}k"
 
   @doc """
-  The view model of a session from its snapshot. The snapshot messages go
+  The view model of the session `session_id` from its snapshot; the id
+  goes into the line of an agent call (`Helyx.TUI.CallLine.line/2`). The snapshot messages go
   through the fold in order, so the live and the snapshot paths share one
   pairing rule (ADR 0006, revision of 2026-10-03). The usage and the
   context state come from the snapshot fields, so a message adds no usage
@@ -229,10 +230,11 @@ defmodule Helyx.TUI.ViewModel do
   `Helyx.Reason.text(:not_saved)`, so a stop of the saving before the
   subscribe shows too.
   """
-  @spec from_snapshot(Snapshot.t()) :: t()
-  def from_snapshot(%Snapshot{messages: messages, turn: turn} = snapshot) do
+  @spec from_snapshot(Snapshot.t(), String.t() | nil) :: t()
+  def from_snapshot(%Snapshot{messages: messages, turn: turn} = snapshot, session_id \\ nil) do
     vm = %__MODULE__{
       model: snapshot.model,
+      session_id: session_id,
       cells: :array.new(),
       running?: turn != nil,
       queue: queue(snapshot.queue),
@@ -240,15 +242,16 @@ defmodule Helyx.TUI.ViewModel do
       context: snapshot.context
     }
 
-    vm = %{Enum.reduce(messages, vm, &add_cells(&2, &1)) | streaming: streaming(turn)}
+    vm = Enum.reduce(messages, vm, &add_cells(&2, &1))
+    vm = %{vm | streaming: streaming(turn, vm.session_id)}
     if snapshot.persisting, do: vm, else: add_cell(vm, {:notice, Helyx.Reason.text(:not_saved)})
   end
 
-  defp streaming(%{partial: %Message{role: :assistant} = partial}),
-    do: Enum.reduce(partial.content, [], &add_streamed(&2, &1))
+  defp streaming(%{partial: %Message{role: :assistant} = partial}, session_id),
+    do: Enum.reduce(partial.content, [], &add_streamed(&2, &1, session_id))
 
-  defp streaming(%{partial: nil}), do: nil
-  defp streaming(nil), do: nil
+  defp streaming(%{partial: nil}, _session_id), do: nil
+  defp streaming(nil, _session_id), do: nil
 
   @doc "The cells, oldest first, as a list. For tests and the benchmark."
   @spec cells(t()) :: [cell()]
@@ -298,50 +301,17 @@ defmodule Helyx.TUI.ViewModel do
   @spec toggle_expanded(t()) :: t()
   def toggle_expanded(vm), do: %{vm | expanded?: not vm.expanded?}
 
-  @doc """
-  The line of a tool call: its name, then each argument as `key=value`,
-  with the key raw and the value through `inspect/1`, cut at
-  #{@render_max_bytes} bytes. The name and each key are cut before they join
-  the line, the walk over the arguments stops once the line is over the cut,
-  and the line is cut before its newlines become "␤". The fold makes the line
-  with the tool cell, and not on each frame. A call of the agent tool with a
-  string `description` is `⚙ agent: <description>`, with the same cuts
-  (`docs/features/agent-tool.md`).
-  """
-  @spec call_line(Message.ToolCall.t()) :: String.t()
-  def call_line(%Message.ToolCall{name: "agent", arguments: %{"description" => text}})
-      when is_binary(text),
-      do: one_line("⚙ agent: " <> text)
+  defp stream(vm, {:tool_call, call}),
+    do: %{vm | streaming: add_streamed(vm.streaming, call, vm.session_id)}
 
-  def call_line(%Message.ToolCall{name: name, arguments: arguments}) do
-    ("⚙ " <> cut_line(name))
-    |> join_arguments(arguments |> :maps.iterator() |> :maps.next())
-    |> one_line()
-  end
-
-  defp one_line(line), do: line |> cut_line() |> String.replace("\n", "␤") |> cut_line()
-
-  # `:maps.next/1` walks the map lazily, so a call of many keys costs no
-  # more than the keys up to the cut.
-  defp join_arguments(line, :none), do: line
-  defp join_arguments(line, _next) when byte_size(line) > @render_max_bytes, do: line
-
-  defp join_arguments(line, {key, value, iterator}),
-    do: join_arguments("#{line} #{cut_line("#{key}")}=#{inspect(value)}", :maps.next(iterator))
-
-  # A tool call line holds model text, and `inspect/1` escapes a character
-  # to up to four times its bytes (a control or invalid byte renders as
-  # `\x01`), so the line is cut at `@render_max_bytes`; a character cut in
-  # half is dropped (`Helyx.Text.cap/3`).
-  defp cut_line(text), do: Helyx.Text.cap(text, @render_max_bytes, :head)
-
-  defp stream(vm, {:tool_call, call}), do: %{vm | streaming: add_streamed(vm.streaming, call)}
   defp stream(vm, delta), do: %{vm | streaming: Message.add_block(vm.streaming, delta)}
 
   # A block of the streaming message; a tool call is an open tool cell, not
   # the block of `Message.add_block/2`, so a frame does not make its line.
-  defp add_streamed(streaming, %Message.ToolCall{} = call), do: [tool_cell(call, nil) | streaming]
-  defp add_streamed(streaming, block), do: [block | streaming]
+  defp add_streamed(streaming, %Message.ToolCall{} = call, session_id),
+    do: [tool_cell(call, nil, session_id) | streaming]
+
+  defp add_streamed(streaming, block, _session_id), do: [block | streaming]
 
   # Every message of the live path comes here once.
   defp add_message(vm, message) do
@@ -359,7 +329,8 @@ defmodule Helyx.TUI.ViewModel do
         vm ->
           position = :array.size(vm.cells)
           open = Map.update(vm.open, id, :queue.from_list([position]), &:queue.in(position, &1))
-          %{vm | open: open, cells: :array.set(position, tool_cell(call, nil), vm.cells)}
+          cell = tool_cell(call, nil, vm.session_id)
+          %{vm | open: open, cells: :array.set(position, cell, vm.cells)}
       end
 
     if message.stop_reason in [:max_tokens, :refused],
@@ -393,5 +364,6 @@ defmodule Helyx.TUI.ViewModel do
     end
   end
 
-  defp tool_cell(call, result), do: {:tool, call, call_line(call), result}
+  defp tool_cell(call, result, session_id),
+    do: {:tool, call, CallLine.line(call, session_id), result}
 end

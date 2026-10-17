@@ -2,8 +2,9 @@ defmodule Helyx.Session.File do
   @moduledoc """
   The session file: append-only JSON lines, one entry per line, one chain
   by `parent_id` (ADR 0001). A session lives at
-  `<dir>/<project slug>/<session id>.jsonl`. Only completed messages are
-  appended. `pick/3` picks the file of a session, `resume_picked/3`
+  `<dir>/<project slug>/<session id>.jsonl`, a session with a parent link
+  at `<dir>/.children/<session id>.jsonl` (`path/4`). Only completed
+  messages are appended. `pick/3` picks the file of a session, `resume_picked/3`
   restores its chain, and nothing is ever removed from the file.
 
   The format, the rules for a damaged file, and the bounds are in
@@ -73,28 +74,42 @@ defmodule Helyx.Session.File do
   @doc """
   Creates the file for a new session and writes the header. `cwd` and
   `model` must be valid UTF-8, and `parent` nil or a checked link of the
-  session to a tool call; `Helyx.Session.start/2` checks them.
+  session to a tool call; `Helyx.Session.start/2` checks them. The create
+  is exclusive: a file that exists, such as a child of a link that started
+  one before (`Helyx.Sessions.child_id/2`), gives
+  `{:error, {:create_failed, :eexist}}` and is not written.
   """
   @spec create(Path.t(), String.t(), String.t(), String.t(), map() | nil) ::
           {:ok, t()} | {:error, error()}
   def create(dir, session_id, cwd, model, parent \\ nil) do
-    with :ok <- mkdir(dir, cwd) do
-      header = Scan.header(cwd, model, parent)
-      {:ok, append(%__MODULE__{path: path(dir, cwd, session_id)}, header)}
+    path = path(dir, cwd, session_id, parent)
+
+    with :ok <- mkdir(dir, cwd, parent),
+         :ok <- new_file(path) do
+      {:ok, append(%__MODULE__{path: path}, Scan.header(cwd, model, parent))}
     end
   rescue
     # The header write failing right after the mkdir succeeded.
     error in File.Error -> {:error, {:create_failed, error.reason}}
   end
 
+  # A derived id can name the file of an earlier child.
+  defp new_file(path) do
+    case File.open(path, [:write, :exclusive]) do
+      {:ok, io} -> File.close(io)
+      {:error, reason} -> {:error, {:create_failed, reason}}
+    end
+  end
+
   @doc """
-  Makes the sessions folder `dir` and the project folder of `cwd` in it. A
+  Makes the sessions folder `dir`, the project folder of `cwd` in it, and
+  with a parent link the folder of the children in that (`path/4`). A
   sessions folder that this call makes gets mode 0700 (#683); one that
   exists keeps its mode. The bound is in `docs/features/coding-agent.md`,
   row "sessions folder mode".
   """
-  @spec mkdir(Path.t(), String.t()) :: :ok | {:error, {:create_failed, File.posix()}}
-  def mkdir(dir, cwd) do
+  @spec mkdir(Path.t(), String.t(), map() | nil) :: :ok | {:error, {:create_failed, File.posix()}}
+  def mkdir(dir, cwd, parent \\ nil) do
     # The folder that `dir` names, with no `.`, `..`, or `/` at its end, so
     # that the result of one mkdir tells a new folder (#683). `absname`
     # first keeps a leading `~` a name, as the other file calls read it.
@@ -103,7 +118,7 @@ defmodule Helyx.Session.File do
     # The mkdir failing is the caller's configuration, not a crash.
     with :ok <- File.mkdir_p(Path.dirname(sessions)),
          :ok <- restrict(sessions, File.mkdir(sessions)),
-         :ok <- File.mkdir_p(Scan.project_dir(dir, cwd)) do
+         :ok <- File.mkdir_p(Scan.folder(dir, cwd, parent)) do
       :ok
     else
       {:error, reason} -> {:error, {:create_failed, reason}}
@@ -122,10 +137,14 @@ defmodule Helyx.Session.File do
   defp restrict(_dir, {:error, :eexist}), do: :ok
   defp restrict(_dir, error), do: error
 
-  @doc "The path of the file that `create/4` writes for the session `session_id` of `cwd`."
-  @spec path(Path.t(), String.t(), String.t()) :: Path.t()
-  def path(dir, cwd, session_id),
-    do: Path.join(Scan.project_dir(dir, cwd), session_id <> ".jsonl")
+  @doc """
+  The path of the file that `create/5` writes for the session `session_id`
+  of `cwd`; a session with a parent link is in the folder of children,
+  whatever its cwd, out of the scan of the list (`Helyx.Session.File.Scan`).
+  """
+  @spec path(Path.t(), String.t(), String.t(), map() | nil) :: Path.t()
+  def path(dir, cwd, session_id, parent \\ nil),
+    do: Path.join(Scan.folder(dir, cwd, parent), session_id <> ".jsonl")
 
   @doc """
   Reads the session file at `path`, a result of `pick/3` for `cwd`.

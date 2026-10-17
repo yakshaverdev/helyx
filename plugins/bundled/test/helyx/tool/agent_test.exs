@@ -56,10 +56,7 @@ defmodule Helyx.Tool.AgentTest do
 
   defp messages(events), do: Helyx.Test.Events.messages(events)
 
-  defp child_id(%Message{} = result) do
-    [_, id] = Regex.run(~r/\A\[agent session ([A-Za-z0-9_-]{12})\]\n\n/, Message.text(result))
-    id
-  end
+  defp child_id(session, call_id), do: Helyx.Sessions.child_id(session.id, call_id)
 
   defp child_pid(core, id), do: Session.pid(%Session{id: id, core: core})
 
@@ -72,8 +69,8 @@ defmodule Helyx.Tool.AgentTest do
 
     assert [result] = results(events)
     refute result.is_error
-    id = child_id(result)
-    assert Message.text(result) == "[agent session #{id}]\n\nchild answer"
+    id = child_id(session, "c1")
+    assert Message.text(result) == "child answer"
     assert child_pid(core, id) == nil
 
     assert {:ok, _path, header} = Scan.find(dir, id)
@@ -87,32 +84,49 @@ defmodule Helyx.Tool.AgentTest do
   end
 
   test "a child has no agent tool, so it cannot start a child", %{core: core, tmp_dir: dir} do
-    _session = parent(core, dir, [[agent("c1")], [agent("c2")], ["no agent"], ["Done."]])
+    session = parent(core, dir, [[agent("c1")], [agent("c2")], ["no agent"], ["Done."]])
     [result] = results(collect_until(:turn_end))
-    assert Message.text(result) =~ ~r/\]\n\nno agent\z/
+    assert Message.text(result) == "no agent"
 
-    {:ok, path, _header} = Scan.find(dir, child_id(result))
+    {:ok, path, _header} = Scan.find(dir, child_id(session, "c1"))
     assert File.read!(path) =~ "unknown tool: agent"
   end
 
   test "a child gets no tool that the parent lacks", %{core: core, tmp_dir: dir} do
     read = %ToolCall{id: "r1", name: "read", arguments: %{"path" => "x"}}
 
-    _session =
+    session =
       parent(core, dir, [[agent("c1")], [read], ["no read"], ["Done."]], tools: ["agent"])
 
     [result] = results(collect_until(:turn_end))
-    assert Message.text(result) =~ ~r/\]\n\nno read\z/
+    assert Message.text(result) == "no read"
 
-    {:ok, path, _header} = Scan.find(dir, child_id(result))
+    {:ok, path, _header} = Scan.find(dir, child_id(session, "c1"))
     assert File.read!(path) =~ "unknown tool: read"
+  end
+
+  test "a second call with the call id of an earlier child gets an error result", %{
+    core: core,
+    tmp_dir: dir
+  } do
+    session = parent(core, dir, [[agent("c1")], ["first"], ["Done."], [agent("c1")], ["Done."]])
+    [first] = results(collect_until(:turn_end))
+    assert Message.text(first) == "first"
+
+    :ok = Session.prompt(session, "again")
+    [second] = results(collect_until(:turn_end))
+    assert second.is_error
+    assert Message.text(second) =~ "eexist"
+
+    {:ok, path, _header} = Scan.find(dir, child_id(session, "c1"))
+    assert File.read!(path) =~ "first"
   end
 
   test "a failed child turn gives an error result with the reason", %{core: core, tmp_dir: dir} do
     _session = parent(core, dir, [[agent("c1")]])
     [result] = results(collect_until(:turn_end))
     assert result.is_error
-    assert Message.text(result) =~ ~r/\]\n\nthe turn failed: .*no_script/
+    assert Message.text(result) =~ ~r/\Athe turn failed: .*no_script/
   end
 
   test "calls run together, and an abort of the parent turn ends each child", %{
@@ -124,6 +138,8 @@ defmodule Helyx.Tool.AgentTest do
 
     assert_receive {:blocked, one}
     assert_receive {:blocked, two}
+    # The ids come from the calls, so the user finds an aborted child.
+    assert Enum.sort([one, two]) == Enum.sort([child_id(session, "c1"), child_id(session, "c2")])
     pids = [child_pid(core, one), child_pid(core, two)]
     refs = Enum.map(pids, &Process.monitor/1)
 
@@ -136,6 +152,8 @@ defmodule Helyx.Tool.AgentTest do
              {true, "aborted"},
              {true, "aborted"}
            ]
+
+    for id <- [one, two], do: assert({:ok, _path, %{"parent" => _}} = Scan.find(dir, id))
   end
 
   test "a stop of the parent session ends the child", %{core: core, tmp_dir: dir} do
@@ -165,7 +183,7 @@ defmodule Helyx.Tool.AgentTest do
     Process.exit(child_pid(core, id), :kill)
     [result] = results(collect_until(:turn_end))
     assert result.is_error
-    assert Message.text(result) == "[agent session #{id}]\n\nthe session ended (crashed)"
+    assert Message.text(result) == "the session ended (crashed)"
   end
 
   test "a parent that crashes takes no release, and the owner stops the child", %{

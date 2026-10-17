@@ -35,7 +35,8 @@ defmodule Helyx.TUI.Switch do
   def bind(state, session, info) do
     {snapshot, ref} = subscribe!(session)
     # The Ctrl+O toggle belongs to the client, so a switch keeps it.
-    vm = %{ViewModel.from_snapshot(snapshot) | expanded?: match?(%{expanded?: true}, state.vm)}
+    vm = ViewModel.from_snapshot(snapshot, session.id)
+    vm = %{vm | expanded?: match?(%{expanded?: true}, state.vm)}
 
     %{
       state

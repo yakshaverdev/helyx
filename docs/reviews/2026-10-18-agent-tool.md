@@ -87,3 +87,102 @@ Round 2 reproduced no defect of the invariant, so the loop ends.
 ## Precommit
 
 The first slow precommit run failed one test: `Helyx.Tool.ReadTest`, "is the only concurrent bundled tool", expected `MapSet.new(["read"])` and got `MapSet.new(["agent", "read"])`. The test records the state of #734; the agent tool is concurrent by decision of the ticket. The test now expects `agent` and `read`. A test change only, so no review round.
+
+# Run 2: children out of the scan, a child id derived from the call
+
+Orchestrator decisions of 2026-10-18: children must not use scan slots, and the user must find the child of an aborted or stopped call. The base of every round is `d6bb41ae`, the feature commit, rebased onto `origin/master`. The rounds ran on the working tree.
+
+Invariant: one parent link has at most one child session. Its id is derived from the parent session id and the call id (`Helyx.Sessions.child_id/2`). Its file is `<sessions folder>/.children/<id>.jsonl`, whatever its cwd. A second child fails with `{:create_failed, :eexist}` at once, later, or in another cwd, and the first file stays unchanged and findable by `Scan.find/2`. `Helyx.Session.start/2` never attaches to a running process of its id. The list and the newest pick never read or count a child. The TUI cell of an agent call shows the derived id.
+
+## Round 1 (full)
+
+Simplify (4 agents): applied `Id.child/2` with the encode of `Id.new/0`, one `jsonl_paths/1` over a list of folders, the exclusive create for every session file, and the codec note in `wire-protocol.md`. Skipped: a required session id in `CallLine.line/2` (the test helpers and the bench build view models with no session), the second mkdir in `File.create/5` (pre-existing), and one `File.write` with `:exclusive` (minor).
+
+Bounds sensor (base `HEAD`):
+
+```text
+bounds sensor: 11 candidate functions, 1 flagged, 0 without an answer
+  plugins/bundled/lib/helyx/tool/agent.ex:140  SIZE  defp await(child, ref, last) do
+```
+
+| # | Source | Finding | Reproduced | Resolution |
+| - | ------ | ------- | ---------- | ---------- |
+| 1 | Codex [high] | a second child of one link while the first runs: `Server.Open.start/4` attached to the running process and skipped the exclusive create | read | `Server.Open.create/3`, a start with no attach for `Session.start/2`; test "a second child of one link while the first runs, or at once" |
+| 2 | standards | the call-line tests stayed in `view_model_test.exs` after the move to `Helyx.TUI.CallLine` | read | moved to `call_line_test.exs` |
+| 3 | standards | the scan test did not prove that a child takes no slot | read | the child is made the newest file, and a scan of one file still picks the parent |
+
+Judged and not changed: the parent map as a struct (standards; it stays an option map, checked by `Input.child/1`), and the doc reference of `child_id/2`.
+
+The spec agent and the failure-path agent of this round died with: `Agent terminated early due to an API error: You've hit your session limit · resets 6am (Asia/Makassar)`. Round 2 ran both again.
+
+## Round 2 (full)
+
+The fix of round 1 added a function (`Open.create/3`): a full round.
+
+Simplify (2 agents, two angles each): applied `launch/3`, the start shared by `start/4` and `create/3`, and the comment of `start/4`, which named `start/2`. Skipped: a helper for the children folder, a filter in the listing of `find/2` (it runs only at a resume), the header written through the exclusive handle, and the session id passed as an argument in `ViewModel` (low cost).
+
+Bounds sensor (base `HEAD`):
+
+```text
+bounds sensor: 10 candidate functions, 1 flagged, 0 without an answer
+  plugins/bundled/lib/helyx/tool/agent.ex:140  SIZE  defp await(child, ref, last) do
+```
+
+| # | Source | Finding | Reproduced | Resolution |
+| - | ------ | ------- | ---------- | ---------- |
+| 1 | failure path | the child path depended on the cwd: after the first child stopped, a second child of the link in another cwd made a second file with the id, and `Scan.find/2` gave `:duplicate_id` | yes (a throwaway test) | the second finding on the uniqueness of a derived id, so the mechanism changed and not the path: every child is in `<sessions folder>/.children/`, so the exclusive create and the lock see one file for each id. No slug starts with `.`, and the scan hides dot names. Test "a second child of one link, in any folder" |
+| 2 | spec, standards | at the Core cap, a second child of a running link gives `:too_many_sessions`; `server-management.md` said `eexist` | yes (spec probe) | the docs state the cap case; a test was added in round 3 |
+| 3 | spec | in memory, a child that stopped leaves nothing, so a second child of the link starts | yes (spec probe) | stated in the feature doc: in memory, only a running child stops a second one |
+| 4 | standards | no test fixes the value of the derived id, which the wire note states | read | test of a fixed value in `child_test.exs` |
+| 5 | standards | `File.mkdir/2` in `server-management.md`, `from_snapshot/1` in the struct comment of `ViewModel` | read | fixed |
+
+Codex [medium]: "Keep existing child files out of automatic resume". The finding: the old scan left out a header with `"parent"`, so child files in a project folder would be listed after an upgrade. Rejected: only `d6bb41ae`, the unmerged commit of this ticket, wrote child files in a project folder. No released build did, and both commits merge together.
+
+Judged and not changed: the nil session id in `CallLine.line/2` and `from_snapshot/2` (the bench and the test helpers), and the empty file that a failed header write leaves (see round 3).
+
+## Round 3 (full)
+
+The fix of round 2 is the second finding on one mechanism: a full round.
+
+Simplify (1 agent, four angles): no change. Skipped: the header written through the exclusive handle, the second mkdir, the nil defaults, the session id as an argument, and the `{:started, _}` tag (it keeps the errors of the open apart from the errors of the supervisor).
+
+Bounds sensor (base `HEAD`):
+
+```text
+bounds sensor: 11 candidate functions, 1 flagged, 0 without an answer
+  plugins/bundled/lib/helyx/tool/agent.ex:140  SIZE  defp await(child, ref, last) do
+```
+
+Codex: approve, "No material defect found within the stated scope."
+
+| # | Source | Finding | Reproduced | Resolution |
+| - | ------ | ------- | ---------- | ---------- |
+| 1 | failure path | a kill of the session between the exclusive create and the header write (the open deadline, a Core stop) leaves an empty file at the derived id; a later child of the link gets `eexist`, and `Scan.find/2` gives `{:invalid_file, _}` | yes (3 of 3) | judged as the accepted hole that the brief named: only a reused call id names that id again, and a reused call id gets no second child by decision. Before this run, the same kill left an empty file at a random id. Stated in the bounds row of a reused call id |
+| 2 | standards | the doc of `Session.start/2`, the moduledoc of `Session.File`, and `coding-agent.md` gave only the project path | read | fixed |
+| 3 | standards | "Replaced mechanism: None" in the feature doc | read | two entries: the attach of `start/2`, and the plain create |
+| 4 | standards, spec | no test of the cap for a second child of a running link | read | a test in `sessions_cap_test.exs` |
+| 5 | spec | a second Core on the sessions folder gets `{:session_locked, id}` while the first child runs, not `eexist` | yes (spec probe) | stated in the feature doc |
+| 6 | standards | "Core uses it for the id and the folder of the file only" left out the header | read | fixed |
+
+Judged and not changed: the parent map as a struct, and the names `create/3` and `start/4` (their comments state the difference). No test checks that `Helyx.TUI.Switch.bind/3` passes the session id: recorded as a gap.
+
+Round 3 reproduced no defect outside the accepted holes, so the loop ends.
+
+Guarantee table (round 3 spec review):
+
+| Guarantee | Evidence |
+| --------- | -------- |
+| a child file is at `.children/<id>.jsonl`, whatever its cwd | `test/helyx/session/child_test.exs`, "a child has the id of its link", "a second child of one link, in any folder" |
+| the list and the newest pick do not read or count a child | `child_test.exs`, the scan of one file with a newer child; the list shares the code of the pick |
+| `Scan.find/2` finds a child | `child_test.exs`; `plugins/bundled/test/helyx/tool/agent_test.exs`, the abort test |
+| the create is exclusive, gives `eexist`, and does not write | `child_test.exs`; `agent_test.exs`, "a second call with the call id of an earlier child" |
+| a second child while the first runs, or at once in memory, gets `eexist` and no attach | `child_test.exs`, "a second child of one link while the first runs, or at once" |
+| at the cap, `:too_many_sessions` before the id check | `test/helyx/sessions_cap_test.exs` |
+| the derived id has the rule of the wire note | `child_test.exs`, the fixed value |
+| the TUI cell shows the id from the call, before any result, and the cut keeps it | `plugins/bundled/test/helyx/tui/view_model_test.exs`, `call_line_test.exs` |
+| a child that ended in memory leaves nothing | probe only (spec, round 3) |
+| `Switch.bind/3` passes the session id | no test; gap |
+
+## Precommit of run 2
+
+The first slow precommit run failed on Credo only: "`with` contains only one <- clause and an `else` branch, consider using `case` instead", `lib/helyx/session/file.ex:98:5`. The tests passed: 740 in the root, 941 and 2 properties in `plugins/bundled`, 80 in `apps/coding_agent`. `new_file/1` now uses `case`, with the same two branches. This is a change of form only, so it got no review round.

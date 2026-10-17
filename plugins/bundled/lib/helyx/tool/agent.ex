@@ -3,10 +3,10 @@ defmodule Helyx.Tool.Agent do
   Runs a task in a child session and gives its final text back: a
   subagent. The child is a normal session of the same Core, with the
   model of the parent's turn, its working folder, its tools but this one,
-  and a fresh context. Its header links the parent call, which keeps it
-  out of the session list. The result is `[agent session <id>]`, an empty
-  line, and the text of the child's last assistant message; a failed or
-  ended child turn gives an error result.
+  and a fresh context. Its header links the parent call, and its id is
+  derived from the link (`Helyx.Sessions.child_id/2`); it is out of the
+  session list. The result is the text of the child's last assistant
+  message; a failed or ended child turn gives an error result.
 
   Calls run together (`concurrent?/0`). The tool holds the child, and
   `release/3` stops it, so an abort or a stop of the parent ends it; an
@@ -130,8 +130,8 @@ defmodule Helyx.Tool.Agent do
          :ok <- Session.prompt(child, prompt) do
       await(child, ref, nil)
     else
-      {:error, :session_not_found} -> failed(child, "the session ended")
-      {:error, reason} -> failed(child, "the prompt was not sent: #{reason}")
+      {:error, :session_not_found} -> {:error, "the session ended"}
+      {:error, reason} -> {:error, "the prompt was not sent: #{reason}"}
     end
   end
 
@@ -147,29 +147,25 @@ defmodule Helyx.Tool.Agent do
             await(child, ref, message)
 
           %Event{type: :turn_end, data: %{outcome: :done}} ->
-            {:ok, head(child) <> "\n\n" <> if(last, do: Message.text(last), else: "")}
+            {:ok, if(last, do: Message.text(last), else: "")}
 
           %Event{type: :turn_end, data: %{outcome: :error, error: error}} ->
-            failed(child, "the turn failed: " <> error)
+            {:error, "the turn failed: " <> error}
 
           %Event{type: :turn_end, data: %{outcome: :aborted}} ->
-            failed(child, "the turn was aborted")
+            {:error, "the turn was aborted"}
 
           _event ->
             await(child, ref, last)
         end
 
       {:helyx_end, ^ref, :slow} ->
-        failed(child, "its events were not read in time")
+        {:error, "its events were not read in time"}
 
       {:DOWN, ^ref, :process, _pid, reason} ->
-        failed(child, "the session ended (#{Session.end_reason(reason)})")
+        {:error, "the session ended (#{Session.end_reason(reason)})"}
     end
   end
-
-  defp head(child), do: "[agent session #{child.id}]"
-
-  defp failed(child, text), do: {:error, head(child) <> "\n\n" <> text}
 
   defp start_error(:too_many_sessions),
     do:

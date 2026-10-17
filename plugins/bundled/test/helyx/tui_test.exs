@@ -515,7 +515,7 @@ defmodule Helyx.TUITest do
              {:infos, ["resumed session"]}
            ] = ViewModel.cells(vm)
 
-    assert line == ViewModel.call_line(call)
+    assert line == Helyx.TUI.CallLine.line(call)
     assert Message.text(result) == "slept"
     assert Message.text(reply) == "hello there"
 
@@ -660,7 +660,7 @@ defmodule Helyx.TUITest do
     texts = fn output ->
       result = Helyx.Message.tool_result(call, {:ok, output})
 
-      texts(view_model([{:tool, call, ViewModel.call_line(call), result}]))
+      texts(view_model([{:tool, call, Helyx.TUI.CallLine.line(call), result}]))
     end
 
     for at_or_under <- ["1\n2\n3", "1\n2\n3\n4", "1\n2\n3\n4\n"] do
@@ -675,7 +675,7 @@ defmodule Helyx.TUITest do
   test "an expanded view model shows every line of a tool result and no hint" do
     call = %Helyx.Message.ToolCall{id: "c", name: "bash", arguments: %{}}
     result = Helyx.Message.tool_result(call, {:ok, "1\n2\n3\n4\n5\n6\n"})
-    vm = view_model([{:tool, call, ViewModel.call_line(call), result}])
+    vm = view_model([{:tool, call, Helyx.TUI.CallLine.line(call), result}])
 
     texts = texts(ViewModel.toggle_expanded(vm))
     assert Enum.filter(texts, &String.starts_with?(&1, "  ")) == Enum.map(1..6, &"  #{&1}")
@@ -687,7 +687,7 @@ defmodule Helyx.TUITest do
     output = Helyx.Message.cut_result(Enum.map_join(1..20_000, "\n", &"line #{&1}"))
     result = Helyx.Message.tool_result(call, {:ok, output})
 
-    vm = view_model([{:tool, call, ViewModel.call_line(call), result}])
+    vm = view_model([{:tool, call, Helyx.TUI.CallLine.line(call), result}])
     texts = texts(vm)
 
     assert Enum.any?(texts, &String.contains?(&1, "[cut to"))
@@ -772,7 +772,7 @@ defmodule Helyx.TUITest do
       texts(
         view_model([
           Helyx.Message.user("hi\e[31m there"),
-          {:tool, call, ViewModel.call_line(call), result}
+          {:tool, call, Helyx.TUI.CallLine.line(call), result}
         ])
       )
 
@@ -784,7 +784,7 @@ defmodule Helyx.TUITest do
     # stream tests cover the repair), so a CSI is the character U+009B.
     csi = Helyx.Message.tool_result(call, {:ok, <<"a", 0x9B::utf8, "[2Jb">>})
 
-    texts = texts(view_model([{:tool, call, ViewModel.call_line(call), csi}]))
+    texts = texts(view_model([{:tool, call, Helyx.TUI.CallLine.line(call), csi}]))
     assert "  a[2Jb" in texts
   end
 
@@ -795,7 +795,7 @@ defmodule Helyx.TUITest do
     vm = %{
       view_model([
         Helyx.Message.user("hello world"),
-        {:tool, call, ViewModel.call_line(call), result}
+        {:tool, call, Helyx.TUI.CallLine.line(call), result}
       ])
       | streaming: [%Helyx.Message.Text{text: String.duplicate("s", 35)}]
     }
@@ -876,7 +876,7 @@ defmodule Helyx.TUITest do
     test "ctrl+o toggles the full text of tool results, held by the scroll rule", %{core: core} do
       call = %Message.ToolCall{id: "c", name: "bash", arguments: %{}}
       result = Message.tool_result(call, {:ok, Enum.map_join(1..8, "\n", &"o#{&1}")})
-      cells = [{:tool, call, ViewModel.call_line(call), result}, Message.user("m1")]
+      cells = [{:tool, call, Helyx.TUI.CallLine.line(call), result}, Message.user("m1")]
       state = scroll_state(core, 0)
       refute state.vm.expanded?
       state = %{state | vm: %{state.vm | cells: :array.from_list(cells)}}
@@ -913,7 +913,7 @@ defmodule Helyx.TUITest do
     test "a row that a collapse removes starts the view at its tool cell", %{core: core} do
       call = %Message.ToolCall{id: "c", name: "bash", arguments: %{}}
       result = Message.tool_result(call, {:ok, Enum.map_join(1..8, "\n", &"o#{&1}")})
-      tool = {:tool, call, ViewModel.call_line(call), result}
+      tool = {:tool, call, Helyx.TUI.CallLine.line(call), result}
       state = scroll_state(core, 0)
       cells = [tool | Enum.map(1..5, &Message.user("m#{&1}"))]
       state = %{state | vm: %{state.vm | cells: :array.from_list(cells)}}

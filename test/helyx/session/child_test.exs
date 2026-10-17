@@ -57,9 +57,65 @@ defmodule Helyx.Session.ChildTest do
     assert {:ok, path, header} = Scan.find(dir, child.id)
     assert header["parent"] == %{"session_id" => "parent000000", "call_id" => "call_1"}
     assert Enum.map(Scan.list(dir, :all), & &1.id) == [top.id]
-    assert {:ok, picked} = Session.File.pick(dir, dir, [])
+    assert {:ok, picked, _cwd} = Session.File.pick(dir, dir, [])
     assert Path.basename(picked, ".jsonl") == top.id
     assert Path.basename(path, ".jsonl") == child.id
+  end
+
+  test "a child has the id of its link, in the folder of children, out of the scan count", %{
+    core: core,
+    tmp_dir: dir
+  } do
+    {:ok, top} = start(core, dir, [])
+    tool_names(top)
+    {:ok, child} = start(core, dir, parent: %{session_id: top.id, call_id: "c1"})
+    tool_names(child)
+
+    assert child.id == Helyx.Sessions.child_id(top.id, "c1")
+    # The rule of the codec note in docs/features/wire-protocol.md.
+    assert Helyx.Sessions.child_id("parent000000", "call_1") == "cq72viQEpSGW"
+    assert {:ok, path, _header} = Scan.find(dir, child.id)
+    assert Path.dirname(path) == Path.join(dir, ".children")
+    # The child is the newest file, and the one file that the scan reads is the parent.
+    File.touch!(path, System.os_time(:second) + 60)
+    assert {:ok, picked, _header} = Scan.most_recent(dir, dir, max_scanned_files: 1)
+    assert Path.basename(picked, ".jsonl") == top.id
+  end
+
+  test "a second child of one link, in any folder, starts nothing and keeps the first file", %{
+    core: core,
+    tmp_dir: dir
+  } do
+    link = parent("c1")
+    {:ok, first} = start(core, dir, parent: link)
+    tool_names(first)
+    :ok = Helyx.Sessions.stop(first)
+    {:ok, path, _header} = Scan.find(dir, first.id)
+    before = File.read!(path)
+
+    assert {:error, {:create_failed, :eexist}} = start(core, dir, parent: link)
+    other = Path.join(dir, "other")
+    File.mkdir_p!(other)
+    opts = [model: "test/tools", cwd: other, sessions_dir: dir, parent: link]
+    assert {:error, {:create_failed, :eexist}} = Session.start(core, opts)
+    assert File.read!(path) == before
+    assert {:ok, ^path, _header} = Scan.find(dir, first.id)
+  end
+
+  test "a second child of one link while the first runs, or at once, gets eexist and no attach",
+       %{
+         core: core,
+         tmp_dir: dir
+       } do
+    {:ok, first} = start(core, dir, parent: parent("c1"))
+    assert start(core, dir, parent: parent("c1")) == {:error, {:create_failed, :eexist}}
+    assert Session.pid(first) != nil
+
+    # In memory too, where no file is created.
+    opts = [model: "test/tools", cwd: dir, parent: parent("c2")]
+    results = Task.await_many(for _ <- 1..4, do: Task.async(fn -> Session.start(core, opts) end))
+    assert [{:ok, _}] = Enum.filter(results, &match?({:ok, _}, &1))
+    assert Enum.count(results, &(&1 == {:error, {:create_failed, :eexist}})) == 3
   end
 
   test "the parent call id has 1 to 256 bytes of UTF-8", %{core: core, tmp_dir: dir} do

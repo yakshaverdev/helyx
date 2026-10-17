@@ -61,9 +61,8 @@ defmodule Helyx.Session do
   optional `check/0` of each tool (`Helyx.Tool.check_available/1`) run next, before any file or
   process is created. The model ref resolves as in `set_model/2`, with the same errors. With
   `:sessions_dir` the session is written to disk as it runs, as JSON lines under
-  `<sessions_dir>/<project>/<session>.jsonl`; without it nothing is persisted. A new sessions
-  folder gets mode 0700, or the start fails with `{:error, {:create_failed, reason}}`
-  (`Helyx.Session.File.mkdir/2`). When a write fails, the session goes on in memory, writes
+  `Helyx.Session.File.path/4`; without it nothing is persisted. A new sessions folder gets
+  mode 0700, or the start fails with `{:error, {:create_failed, reason}}` (`File.mkdir/3`). When a write fails, the session goes on in memory, writes
   nothing more, and sends one `:notice` event. A resume writes no entry (see `resume/2`), so
   every write comes after a client can subscribe. The writer lock of the file comes before its
   first write: a session that another OS process holds gives `{:error, {:session_locked, id}}`,
@@ -74,20 +73,19 @@ defmodule Helyx.Session do
   """
   @spec start(Helyx.Core.name(), keyword()) :: {:ok, t()} | {:error, model_error() | term()}
   def start(core \\ Helyx.Core, opts) do
-    id = Id.new()
-
     # The file is created only after the plugins resolve, which narrows the
     # window for an orphan file from a failed start. A crash of the
     # session's open after the create still leaves one.
     with {:ok, cwd} <- fetch_cwd(opts),
          {:ok, parent, only} <- Input.child(opts),
+         id = if(parent, do: Id.child(parent.session_id, parent.call_id), else: Id.new()),
          {:ok, tools} <- Helyx.Tool.specs(core, only),
          :ok <- Helyx.Tool.check_available(tools),
          concurrent = Helyx.Tool.concurrent(tools),
          {:ok, {ref, provider}} <- resolve_model(core, Keyword.fetch!(opts, :model)),
          # The folders come before the lock, whose file is in them.
-         :ok <- mkdir(opts[:sessions_dir], cwd) do
-      Server.start(
+         :ok <- mkdir(opts[:sessions_dir], cwd, parent) do
+      Server.create(
         %State{id: id, core: core, model: ref, provider: provider, cwd: cwd},
         {tools, concurrent},
         create_spec(opts[:sessions_dir], id, cwd, ModelRef.to_string(ref), parent)
@@ -95,15 +93,15 @@ defmodule Helyx.Session do
     end
   end
 
-  defp mkdir(nil, _cwd), do: :ok
-  defp mkdir(dir, cwd), do: Helyx.Session.File.mkdir(dir, cwd)
+  defp mkdir(nil, _cwd, _parent), do: :ok
+  defp mkdir(dir, cwd, parent), do: Helyx.Session.File.mkdir(dir, cwd, parent)
 
   # The open of the file, which the session process runs at its start under
-  # the lock of `path` (`Server.start/3`).
+  # the lock of `path` (`Server.create/3`).
   defp create_spec(nil, _id, _cwd, _model, _parent), do: nil
 
   defp create_spec(dir, id, cwd, model, parent) do
-    {Helyx.Session.File.path(dir, cwd, id),
+    {Helyx.Session.File.path(dir, cwd, id, parent),
      fn state ->
        with {:ok, file} <- Helyx.Session.File.create(dir, id, cwd, model, parent),
             do: {:ok, %{state | file: file}}

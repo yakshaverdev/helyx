@@ -9,29 +9,52 @@ defmodule Helyx.Session.Server.Open do
   alias Helyx.Session.{Background, Hands, Id, Lock, Queue}
   alias Helyx.Session.Server.State
 
-  # Starts the session process under Core for `Helyx.Session.start/2` and
-  # `resume/2`. `open` is nil with no session file, or `{path, fun}`: the
-  # session takes the lock of `path` and runs `fun` on the state under it
-  # (`Lock.hold/2`), so the port of the lock has one owner for its whole
-  # life. The open runs after the supervisor started the process; the
-  # caller waits for its result, and an error of the open comes back as it
-  # is. Past the deadline `deadline_ms.open` of the state the session is killed, and
-  # the caller gets `{:error, :open_timeout}`. The Registry rejects a
-  # session that this Core runs before the init, and the start attaches to
-  # the running process; so does a start at the cap whose id runs
-  # (server-management.md, "Attach"). The second run of a start is its last.
-  def start(%State{id: id, core: core} = state, tools, open, runs \\ 2) do
-    ref = make_ref()
-    session = %Helyx.Session{id: id, core: core}
+  # Starts the session process under Core for `resume/2`. `open` is nil
+  # with no session file, or `{path, fun}`: the session takes the lock of
+  # `path` and runs `fun` on the state under it (`Lock.hold/2`), so the port
+  # of the lock has one owner for its whole life. The open runs after the
+  # supervisor started the process; the caller waits for its result, and an
+  # error of the open comes back as it is. Past the deadline
+  # `deadline_ms.open` of the state the session is killed, and the caller
+  # gets `{:error, :open_timeout}`. The Registry rejects a session that this
+  # Core runs before the init, and the start attaches to the running
+  # process; so does a start at the cap whose id runs (server-management.md,
+  # "Attach"). The second run of a start is its last.
+  def start(%State{} = state, tools, open, runs \\ 2) do
     start = {state, tools, open, runs}
 
-    case start_child(state, tools, {open, self(), ref}) do
-      {:ok, pid} -> await_open(pid, ref, session)
-      {:error, {:already_started, pid}} -> attach(pid, session, start)
-      {:error, :max_children} -> attach(Helyx.Session.pid(session), session, start)
+    case launch(state, tools, open) do
+      {:error, {:already_started, pid}} -> attach(pid, session(state), start)
+      {:error, :max_children} -> attach(Helyx.Session.pid(session(state)), session(state), start)
+      {:started, result} -> result
       error -> error
     end
   end
+
+  # The start of a new session for `Helyx.Session.start/2`, as `start/4`
+  # but with no attach: a new id is random, or derived from a parent link,
+  # so a process with the id is an earlier child of that link, not this
+  # start (docs/features/agent-tool.md, "A reused call id").
+  def create(%State{} = state, tools, open) do
+    case launch(state, tools, open) do
+      {:error, {:already_started, _pid}} -> {:error, {:create_failed, :eexist}}
+      {:error, :max_children} -> {:error, :too_many_sessions}
+      {:started, result} -> result
+      error -> error
+    end
+  end
+
+  # The result of the open, or the error of the supervisor start.
+  defp launch(state, tools, open) do
+    ref = make_ref()
+
+    case start_child(state, tools, {open, self(), ref}) do
+      {:ok, pid} -> {:started, await_open(pid, ref, session(state))}
+      error -> error
+    end
+  end
+
+  defp session(%State{id: id, core: core}), do: %Helyx.Session{id: id, core: core}
 
   # The process takes the call after its open. An open that failed exits
   # with its error, which the first caller got too; the kill of the deadline

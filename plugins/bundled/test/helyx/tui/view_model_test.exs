@@ -77,8 +77,8 @@ defmodule Helyx.TUI.ViewModelTest do
   # each call.
   defp calls_end(calls), do: {:message_end, %{message: assistant(calls, :tool_use)}}
 
-  defp open(call), do: {:tool, call, ViewModel.call_line(call), nil}
-  defp closed(call, result), do: {:tool, call, ViewModel.call_line(call), result}
+  defp open(call), do: {:tool, call, Helyx.TUI.CallLine.line(call), nil}
+  defp closed(call, result), do: {:tool, call, Helyx.TUI.CallLine.line(call), result}
 
   test "a call gets an open cell from its message, and its result closes it" do
     call = %Message.ToolCall{id: "c1", name: "bash", arguments: %{"command" => "ls"}}
@@ -310,39 +310,6 @@ defmodule Helyx.TUI.ViewModelTest do
     assert List.last(cells(vm)) == {:notice, "error: :stream_ended"}
   end
 
-  test "a tool call line is cut at 8,192 bytes, after newlines become ␤" do
-    # A name and a key of newlines, each far over the cut: "␤" is 3 bytes
-    # for 1, and neither is copied whole.
-    lines = String.duplicate("\n", 1_000_000)
-    call = %Message.ToolCall{id: "c", name: lines, arguments: %{lines => 1}}
-
-    line = ViewModel.call_line(call)
-    assert byte_size(line) in 8_190..8_192
-    assert String.starts_with?(line, "⚙ ␤␤")
-    refute line =~ "\n"
-
-    # U+00A0 renders as `\u00A0` through `inspect/1`, and the keys are raw.
-    arguments = Map.new(1..2_000, &{"k#{&1}", String.duplicate("\u00A0", 100)})
-    line = ViewModel.call_line(%Message.ToolCall{id: "c", name: "bash", arguments: arguments})
-    assert byte_size(line) in 8_190..8_192
-    assert String.starts_with?(line, "⚙ bash k")
-  end
-
-  test "an agent call line is its description, with the cuts of every call line" do
-    agent = &%Message.ToolCall{id: "c", name: "agent", arguments: &1}
-
-    assert ViewModel.call_line(agent.(%{"description" => "review", "prompt" => "p"})) ==
-             "⚙ agent: review"
-
-    line = ViewModel.call_line(agent.(%{"description" => String.duplicate("é\n", 10_000)}))
-    assert byte_size(line) in 8_190..8_192
-    assert String.starts_with?(line, "⚙ agent: é␤")
-    refute line =~ "\n"
-
-    # A description that is not a string shows as any call.
-    assert ViewModel.call_line(agent.(%{"description" => 1})) == "⚙ agent description=1"
-  end
-
   test "an error text shows as Core wrote it" do
     # Core bounds the text (ADR 0006 §2), so the TUI does not cut it.
     text = String.duplicate("é", 2_000)
@@ -445,6 +412,31 @@ defmodule Helyx.TUI.ViewModelTest do
 
     assert ["▌ see [unsupported block: new_block]", "⚙ read", "  [unsupported block: new_block]"] ==
              texts(ViewModel.from_snapshot(snapshot))
+  end
+
+  test "the cell of an agent call shows the child id from the session id, live and in a snapshot" do
+    call = %Message.ToolCall{id: "c1", name: "agent", arguments: %{"description" => "d"}}
+    line = "⚙ agent #{Helyx.Sessions.child_id("parent000000", "c1")}: d"
+
+    snapshot = %Helyx.Session.Snapshot{
+      instance_id: "i",
+      seq: 1,
+      messages: [assistant([call], :tool_use)],
+      turn: nil,
+      model: "test/model",
+      queue: %{steers: 0, follow_ups: 0, running: 0, held: 0, waiting: 0},
+      persisting: true,
+      more: false,
+      usage: %Helyx.Session.Totals{},
+      context: nil
+    }
+
+    vm = ViewModel.from_snapshot(snapshot, "parent000000")
+    assert [_message, {:tool, ^call, ^line, nil}] = ViewModel.cells(vm)
+
+    [event] = events([{:message_end, %{message: assistant([call], :tool_use)}}])
+    vm = ViewModel.apply(vm, event)
+    assert {:tool, ^call, ^line, nil} = List.last(ViewModel.cells(vm))
   end
 
   test "a snapshot of a session that does not save ends with its notice, after the transcript" do

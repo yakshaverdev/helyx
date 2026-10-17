@@ -132,6 +132,15 @@ defmodule Helyx.Sessions do
   defp cursor(_cursor), do: {:error, :invalid_cursor}
 
   @doc """
+  The id of the session that `start/2` gives with `parent: %{session_id:
+  session_id, call_id: call_id}`: derived from the link, so a client shows
+  the child of a call before the call ends (`docs/features/agent-tool.md`).
+  """
+  @spec child_id(String.t(), String.t()) :: String.t()
+  def child_id(session_id, call_id) when is_binary(session_id) and is_binary(call_id),
+    do: Helyx.Session.Id.child(session_id, call_id)
+
+  @doc """
   Starts a session as `Helyx.Session.start/2` does, with the `:sessions_dir`
   of `core`, and its default `:model` when `opts` names none. With neither
   model the error is `{:invalid_model_ref, ""}`.
