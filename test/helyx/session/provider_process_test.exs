@@ -61,6 +61,17 @@ defmodule Helyx.Session.ProviderProcessTest do
 
   defp error(events), do: List.last(events).data[:error]
 
+  # Stops the provider process `proc` and waits until the session `pid`
+  # holds it as `:ending`: the `:DOWN` of the test has no order with the
+  # session's own (#620). The hands must be suspended, or their
+  # `:provider_down` can drop `proc` between two polls.
+  defp stop_seen(pid, proc) do
+    ref = Process.monitor(proc)
+    send(proc, :stop)
+    assert_receive {:DOWN, ^ref, :process, _, _}
+    wait_until(fn -> match?(%{conn: %{pid: ^proc, status: :ending}}, :sys.get_state(pid)) end)
+  end
+
   # Answers the held turn request `from` as "echo" does: :ok, then
   # "echo:<system>|<last user text>" of its context, and done.
   defp echo(proc, from, {:turn, turn_id, context}) do
@@ -368,10 +379,8 @@ defmodule Helyx.Session.ProviderProcessTest do
       send(old, {:finish, turn_id})
       collect_until(:turn_end)
 
-      ref = Process.monitor(old)
       :erlang.suspend_process(hands)
-      send(old, :stop)
-      assert_receive {:DOWN, ^ref, :process, _, _}
+      stop_seen(pid, old)
 
       assert :ok = Session.prompt(session, "two")
       refute_received {:conn, :init, _, _}
@@ -394,10 +403,8 @@ defmodule Helyx.Session.ProviderProcessTest do
       send(old, {:finish, turn_id})
       collect_until(:turn_end)
 
-      ref = Process.monitor(old)
       :erlang.suspend_process(hands)
-      send(old, :stop)
-      assert_receive {:DOWN, ^ref, :process, _, _}
+      stop_seen(pid, old)
       :ok = Session.prompt(session, "two")
       assert %{activity: %Wait{}} = :sys.get_state(pid)
 
@@ -451,6 +458,9 @@ defmodule Helyx.Session.ProviderProcessTest do
       send(old, :stop)
       assert_receive {:DOWN, ^ref, :process, _, _}
       assert_receive {:release, :deliver, [{:report, _}]}
+      # The session's `:DOWN` has no order with the context of the Task:
+      # before it, the turn would go to the ended process (#620).
+      wait_until(fn -> not match?(%{conn: %{pid: ^old, status: :ready}}, :sys.get_state(pid)) end)
       send(prepare_task(pid), :continue)
 
       # The queued steer stays, and goes out with the turn.
@@ -489,16 +499,14 @@ defmodule Helyx.Session.ProviderProcessTest do
 
     test "a steer during the wait for an ended provider process opens the first turn, the prompt the next",
          %{core: core} do
-      {session, _pid, hands} = start(core, "stop")
+      {session, pid, hands} = start(core, "stop")
       :ok = Session.prompt(session, "one")
       assert_receive {:conn, :turn, old, {:turn, turn_id, _}}
       send(old, {:finish, turn_id})
       collect_until(:turn_end)
 
-      ref = Process.monitor(old)
       :erlang.suspend_process(hands)
-      send(old, :stop)
-      assert_receive {:DOWN, ^ref, :process, _, _}
+      stop_seen(pid, old)
       :ok = Session.prompt(session, "A")
       :ok = Session.steer(session, "B")
       :erlang.resume_process(hands)
@@ -808,10 +816,8 @@ defmodule Helyx.Session.ProviderProcessTest do
       :erlang.suspend_process(hands)
       abort = Task.async(fn -> Session.abort(session) end)
       assert unconfirmed(collect_until(:turn_end)) == [%{text: "more"}]
-      ref = Process.monitor(proc)
-      send(proc, :stop)
-      assert_receive {:DOWN, ^ref, :process, _, _}
-      assert %{conn: %{pid: ^proc, status: :ending}, activity: %Wait{}} = :sys.get_state(pid)
+      stop_seen(pid, proc)
+      assert %{activity: %Wait{}} = :sys.get_state(pid)
       :erlang.resume_process(hands)
       assert :ok = Task.await(abort, wait_ms())
       assert %{conn: nil} = :sys.get_state(pid)
