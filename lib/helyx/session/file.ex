@@ -72,12 +72,15 @@ defmodule Helyx.Session.File do
 
   @doc """
   Creates the file for a new session and writes the header. `cwd` and
-  `model` must be valid UTF-8; `Helyx.Session.start/2` checks both.
+  `model` must be valid UTF-8, and `parent` nil or a checked link of the
+  session to a tool call; `Helyx.Session.start/2` checks them.
   """
-  @spec create(Path.t(), String.t(), String.t(), String.t()) :: {:ok, t()} | {:error, error()}
-  def create(dir, session_id, cwd, model) do
+  @spec create(Path.t(), String.t(), String.t(), String.t(), map() | nil) ::
+          {:ok, t()} | {:error, error()}
+  def create(dir, session_id, cwd, model, parent \\ nil) do
     with :ok <- mkdir(dir, cwd) do
-      {:ok, append(%__MODULE__{path: path(dir, cwd, session_id)}, Scan.header(cwd, model))}
+      header = Scan.header(cwd, model, parent)
+      {:ok, append(%__MODULE__{path: path(dir, cwd, session_id)}, header)}
     end
   rescue
     # The header write failing right after the mkdir succeeded.

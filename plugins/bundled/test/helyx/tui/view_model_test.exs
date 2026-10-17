@@ -328,6 +328,21 @@ defmodule Helyx.TUI.ViewModelTest do
     assert String.starts_with?(line, "⚙ bash k")
   end
 
+  test "an agent call line is its description, with the cuts of every call line" do
+    agent = &%Message.ToolCall{id: "c", name: "agent", arguments: &1}
+
+    assert ViewModel.call_line(agent.(%{"description" => "review", "prompt" => "p"})) ==
+             "⚙ agent: review"
+
+    line = ViewModel.call_line(agent.(%{"description" => String.duplicate("é\n", 10_000)}))
+    assert byte_size(line) in 8_190..8_192
+    assert String.starts_with?(line, "⚙ agent: é␤")
+    refute line =~ "\n"
+
+    # A description that is not a string shows as any call.
+    assert ViewModel.call_line(agent.(%{"description" => 1})) == "⚙ agent description=1"
+  end
+
   test "an error text shows as Core wrote it" do
     # Core bounds the text (ADR 0006 §2), so the TUI does not cut it.
     text = String.duplicate("é", 2_000)

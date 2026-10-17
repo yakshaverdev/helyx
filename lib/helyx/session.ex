@@ -55,23 +55,22 @@ defmodule Helyx.Session do
           | {:unknown_provider, String.t()}
 
   @doc """
-  Starts a session under Core. `:model` is required. `:cwd` defaults to the
-  current directory. It must be a valid UTF-8 string with no NUL byte;
-  otherwise the result is `{:error, :invalid_cwd}` and nothing is created.
-  The tool specs (`Helyx.Tool.specs/1`) and the optional `check/0` of each
-  tool (`Helyx.Tool.check_available/1`) run next, before any file or process
-  is created. The model ref resolves as in `set_model/2`, with the same
-  errors. With `:sessions_dir` the session is written to disk as it runs, as
-  JSON lines under `<sessions_dir>/<project>/<session>.jsonl`; without it
-  nothing is persisted. A new sessions folder gets mode 0700, or the start
-  fails with `{:error, {:create_failed, reason}}` (`Helyx.Session.File.mkdir/2`).
-  When a write fails, the session goes on in memory, writes nothing more,
-  and sends one `:notice` event. A resume writes no
-  entry (see `resume/2`), so every write comes after a client can subscribe.
-  The writer lock of the file comes before its first write: a session that another OS process
-  holds gives `{:error, {:session_locked, id}}`, a lock that cannot be taken
-  `{:error, {:lock_failed, text}}`, an open past 25,000 ms `{:error, :open_timeout}`
-  (session-lock.md), and a start over the 64 sessions of a Core `{:error, :too_many_sessions}`.
+  Starts a session under Core. `:model` is required. `:cwd` defaults to the current directory.
+  It must be a valid UTF-8 string with no NUL byte; otherwise the result is
+  `{:error, :invalid_cwd}` and nothing is created. The tool specs (`Helyx.Tool.specs/2`) and the
+  optional `check/0` of each tool (`Helyx.Tool.check_available/1`) run next, before any file or
+  process is created. The model ref resolves as in `set_model/2`, with the same errors. With
+  `:sessions_dir` the session is written to disk as it runs, as JSON lines under
+  `<sessions_dir>/<project>/<session>.jsonl`; without it nothing is persisted. A new sessions
+  folder gets mode 0700, or the start fails with `{:error, {:create_failed, reason}}`
+  (`Helyx.Session.File.mkdir/2`). When a write fails, the session goes on in memory, writes
+  nothing more, and sends one `:notice` event. A resume writes no entry (see `resume/2`), so
+  every write comes after a client can subscribe. The writer lock of the file comes before its
+  first write: a session that another OS process holds gives `{:error, {:session_locked, id}}`,
+  a lock that cannot be taken `{:error, {:lock_failed, text}}`, an open past 25,000 ms
+  `{:error, :open_timeout}` (session-lock.md), and a start over the 64 sessions of a Core
+  `{:error, :too_many_sessions}`. `:tools` names the tools that the session gets, all if nil;
+  `:parent` links it to a tool call, out of the session list (`docs/features/agent-tool.md`).
   """
   @spec start(Helyx.Core.name(), keyword()) :: {:ok, t()} | {:error, model_error() | term()}
   def start(core \\ Helyx.Core, opts) do
@@ -81,7 +80,8 @@ defmodule Helyx.Session do
     # window for an orphan file from a failed start. A crash of the
     # session's open after the create still leaves one.
     with {:ok, cwd} <- fetch_cwd(opts),
-         {:ok, tools} <- Helyx.Tool.specs(core),
+         {:ok, parent, only} <- Input.child(opts),
+         {:ok, tools} <- Helyx.Tool.specs(core, only),
          :ok <- Helyx.Tool.check_available(tools),
          concurrent = Helyx.Tool.concurrent(tools),
          {:ok, {ref, provider}} <- resolve_model(core, Keyword.fetch!(opts, :model)),
@@ -90,7 +90,7 @@ defmodule Helyx.Session do
       Server.start(
         %State{id: id, core: core, model: ref, provider: provider, cwd: cwd},
         {tools, concurrent},
-        create_spec(opts[:sessions_dir], id, cwd, ref)
+        create_spec(opts[:sessions_dir], id, cwd, ModelRef.to_string(ref), parent)
       )
     end
   end
@@ -100,12 +100,12 @@ defmodule Helyx.Session do
 
   # The open of the file, which the session process runs at its start under
   # the lock of `path` (`Server.start/3`).
-  defp create_spec(nil, _id, _cwd, _ref), do: nil
+  defp create_spec(nil, _id, _cwd, _model, _parent), do: nil
 
-  defp create_spec(dir, id, cwd, ref) do
+  defp create_spec(dir, id, cwd, model, parent) do
     {Helyx.Session.File.path(dir, cwd, id),
      fn state ->
-       with {:ok, file} <- Helyx.Session.File.create(dir, id, cwd, ModelRef.to_string(ref)),
+       with {:ok, file} <- Helyx.Session.File.create(dir, id, cwd, model, parent),
             do: {:ok, %{state | file: file}}
      end}
   end

@@ -304,16 +304,22 @@ defmodule Helyx.TUI.ViewModel do
   #{@render_max_bytes} bytes. The name and each key are cut before they join
   the line, the walk over the arguments stops once the line is over the cut,
   and the line is cut before its newlines become "␤". The fold makes the line
-  with the tool cell, and not on each frame.
+  with the tool cell, and not on each frame. A call of the agent tool with a
+  string `description` is `⚙ agent: <description>`, with the same cuts
+  (`docs/features/agent-tool.md`).
   """
   @spec call_line(Message.ToolCall.t()) :: String.t()
+  def call_line(%Message.ToolCall{name: "agent", arguments: %{"description" => text}})
+      when is_binary(text),
+      do: one_line("⚙ agent: " <> text)
+
   def call_line(%Message.ToolCall{name: name, arguments: arguments}) do
     ("⚙ " <> cut_line(name))
     |> join_arguments(arguments |> :maps.iterator() |> :maps.next())
-    |> cut_line()
-    |> String.replace("\n", "␤")
-    |> cut_line()
+    |> one_line()
   end
+
+  defp one_line(line), do: line |> cut_line() |> String.replace("\n", "␤") |> cut_line()
 
   # `:maps.next/1` walks the map lazily, so a call of many keys costs no
   # more than the keys up to the cut.

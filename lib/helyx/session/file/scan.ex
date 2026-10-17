@@ -52,7 +52,7 @@ defmodule Helyx.Session.File.Scan do
   The sessions of the folder `cwd`, or of every folder with `:all`, newest
   first by modification time. A file is left out when it is empty, when its
   name is not a session id, or when its header does not parse, has an
-  unknown version, or has no string `cwd` and `model`.
+  unknown version, has no string `cwd` and `model`, or has a `parent`.
   """
   @spec list(Path.t(), Path.t() | :all) :: [Summary.t()]
   def list(dir, scope) do
@@ -108,14 +108,15 @@ defmodule Helyx.Session.File.Scan do
   end
 
   # The files of the scan whose name is a session id, that are not empty,
-  # and whose header has a known version, a string `model`, and names
-  # `scope`, newest first. Two directories can share a slug, so the header
-  # decides.
+  # and whose header has a known version, a string `model`, no `parent`
+  # (a child session is found by its id only), and names `scope`, newest
+  # first. Two directories can share a slug, so the header decides.
   defp sessions(dir, scope, max_files) do
     for {mtime, path} <- newest(jsonl_paths(dir, scope), max_files),
         Id.valid?(id(path)),
         {:ok, header, prompt} when prompt != :empty <- [head(path)],
         is_binary(header["model"]) and check_version(header) == :ok,
+        not is_map_key(header, "parent"),
         scope in [:all, header["cwd"]] do
       {mtime, path, header, prompt}
     end
@@ -198,9 +199,17 @@ defmodule Helyx.Session.File.Scan do
   end
 
   @doc false
-  # The header line of a new session.
-  def header(cwd, model),
+  # The header line of a new session, with the link of a child session to
+  # the tool call that started it (docs/features/agent-tool.md).
+  def header(cwd, model, nil),
     do: %{"type" => "session", "version" => @version, "cwd" => cwd, "model" => model}
+
+  def header(cwd, model, %{session_id: session_id, call_id: call_id}),
+    do:
+      Map.put(header(cwd, model, nil), "parent", %{
+        "session_id" => session_id,
+        "call_id" => call_id
+      })
 
   @doc false
   def check_version(%{"version" => @version}), do: :ok

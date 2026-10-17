@@ -310,9 +310,9 @@ defmodule Helyx.Session.LoopTest do
     :erlang.trace(hands, true, [:receive])
     :ok = Session.prompt(session, "go")
 
-    # `Hands.run/3` is a cast, and the hands start the Task before they
+    # `Hands.run/4` is a cast, and the hands start the Task before they
     # answer the next call.
-    assert_receive {:trace, ^hands, :receive, {:"$gen_cast", {:run, _, _}}}
+    assert_receive {:trace, ^hands, :receive, {:"$gen_cast", {:run, _, _, _}}}
     :erlang.trace(hands, false, [:receive])
     :sys.get_state(hands)
     provider = :sys.get_state(pid).conn.pid

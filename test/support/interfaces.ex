@@ -582,6 +582,20 @@ defmodule Helyx.Test.Tool.Upcase do
   def run(%{"text" => text}, _cwd), do: {:ok, String.upcase(text)}
 end
 
+defmodule Helyx.Test.Tool.Context do
+  @moduledoc false
+  # Gives the context of its call (`Helyx.Tool.context/0`) as one line.
+  use Helyx.Test.Tool, name: "context", description: "Gives its call context."
+
+  @impl true
+  def run(_args, _cwd) do
+    %{core: core, session_id: session_id, tools: tools, call_id: call_id, model: model} =
+      Helyx.Tool.context()
+
+    {:ok, "#{core} #{session_id} #{Enum.join(Enum.sort(tools), ",")} #{call_id} #{model}"}
+  end
+end
+
 defmodule Helyx.Test.Tool.UpcaseTwin do
   @moduledoc false
   # A second tool with the same name as Helyx.Test.Tool.Upcase.

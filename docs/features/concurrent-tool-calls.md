@@ -63,13 +63,13 @@ The one-call queue of `Helyx.Session.ToolQueue`.
 
 Tests at the limits: 8 running and the 9th waits, 16 waiting and the 17th rejected.
 
-Accepted hole: the release of one delivery delays the results of the other calls. `read` has no release, so no bundled tool shows it today. The agent tool (#735) is the first concurrent tool with a release; its ticket decides whether the release moves off the hands loop.
+Accepted hole: the release of one delivery delays the results of the other calls. `read` has no release. The agent tool (#735) is the first concurrent tool with a release; the release stays on the hands loop, and the tool stops its child and drops the hold in its own Task before it returns, so a normal delivery has no handle to release. Only the delivery of a crashed agent call runs a release there (`docs/features/agent-tool.md`).
 
 ## Ownership
 
 | Resource | Created by | Held by | Released on normal end | Released when the holder crashes | Released on abort |
 | -------- | ---------- | ------- | ---------------------- | -------------------------------- | ----------------- |
-| a tool Task of each running call | `Hands.run/3` | hands | its delivery | the link takes the Task with the hands | `Hands.request_cancel/2` kills every Task of the turn |
+| a tool Task of each running call | `Hands.run/4` | hands | its delivery | the link takes the Task with the hands | `Hands.request_cancel/2` kills every Task of the turn |
 | the handles of each running call | the tool's `hold/1` | hands, per Task pid | `release/3` at its delivery | the tool frees them when its Task dies (ADR 0004) | one `release/3` per tool module with the handles of all its killed Tasks |
 
 ## Out of scope
