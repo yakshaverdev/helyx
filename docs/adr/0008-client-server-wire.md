@@ -34,7 +34,8 @@ WebSocket, one JSON object per text frame. The same objects can go over stdio, o
 
 | Frame | Direction | Use |
 |---|---|---|
-| `hello` | client, first frame | the protocol number, and the token when the server has one |
+| `challenge` | server, first frame | a nonce for the proof of the token (revision of 2026-10-18) |
+| `hello` | client, first frame | the protocol number, and the proof of the token when the server has one |
 | `welcome`, `refused` | server | the answer to `hello` |
 | `req`, `res` | client, server | one operation and its one reply |
 | `event` | server | one session event of a subscription |
@@ -94,7 +95,7 @@ Core bounds what it admits (#672, #673). The byte bound of the events is in the 
 ### 6. Security
 
 - The server binds to loopback by default. Any other bind refuses to start without a token. A configured token is needed from every connection, on loopback too, so a proxy on the same machine does not pass remote clients without it.
-- The token is in the `hello` frame, never in the URL, and never in a log.
+- The token is never in a frame, never in the URL, and never in a log. The `hello` frame carries a proof of it for the nonce of the connection (revision of 2026-10-18).
 - A browser page on any site can open a WebSocket to loopback, so loopback alone does not authorize a browser. Before any frame, the server refuses the upgrade when an `Origin` header is present and is not in the configured list. An empty list allows no browser.
 - TLS and remote access go through a proxy in front of the server.
 
@@ -121,3 +122,13 @@ A test computes the SHA-256 of the schema in `wire-protocol.md` and compares it 
 - The texts that an abort gives back (`queue_dropped`) reach only the subscribers that are connected at that moment. A client that reconnects later gets a tail snapshot, which does not hold them. The TUI does the same today: the texts go to the composer of the client that saw the event.
 - Every subscriber in the node acks (#659): the TUI, print mode, and the test subscribers.
 - The tickets are #657 to #662, on the Core bounds of #672 and #673. #116 closes with #659.
+
+## Revision
+
+2026-10-18, ticket #763 (orchestrator decision, owner away). The token leaves the frames. Before, `hello` carried the token. The WebSocket server buffers a frame before the transport checks it, so every log of the server that holds frame bytes or `conn` held the token. Three such logs exist: the crash report of a socket error, with the fragment buffer; the log of an exception in the handshake, with `conn` in its metadata; and the warning for a TLS packet on a clear channel, with the plug options, which held the SHA-256 of the token. A patch on each path leaves the next one open. So the secret leaves the frames.
+
+- After the upgrade the server sends `challenge` with a nonce of 32 random bytes, one for each connection. The `hello` of the client carries `proof`, the HMAC-SHA256 of the nonce with the key, the SHA-256 of the token, and no token. The server compares it in constant time. A proof is good for its one nonce and its one connection, so a logged `hello` gives no access.
+- The server keeps the key in a closure, not as a binary, in the plug options and in every process state of the transport, and `child_spec/1` puts the token in a closure in the child spec. `inspect/1` of a closure does not print what it holds, so a log of the options, of a state, or of a crash report holds neither the token nor the key.
+- The protocol number goes from 1 to 2. The auth wait stays 5,000 ms from the upgrade to `hello`, with the challenge in it.
+
+Rejected: a filter on each log path (the next dependency log is a new leak), and the token in a header of the upgrade (the `conn` is in the handshake log).

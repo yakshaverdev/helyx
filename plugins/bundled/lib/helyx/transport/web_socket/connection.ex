@@ -30,10 +30,13 @@ defmodule Helyx.Transport.WebSocket.Connection do
     # subscribe reply => the highest ack that waits for them, 0 for none.
     # `slot`: the writer that holds the one encoder
     # slot of a large result, and `waiting` the writers that wait for it, in
-    # order.
-    {:ok,
+    # order. `nonce`: the one challenge of the connection.
+    nonce = :crypto.strong_rand_bytes(32)
+
+    {:push, texts(%{"type" => "challenge", "nonce" => Base.encode64(nonce)}),
      Map.merge(config, %{
        phase: :hello,
+       nonce: nonce,
        parts: nil,
        out: Outbound.new(self()),
        ids: %{},
@@ -54,7 +57,8 @@ defmodule Helyx.Transport.WebSocket.Connection do
     case Frame.decode(text, state.parts) do
       {:frame, frame} -> frame(frame, state)
       {:close, code} -> close(code, state)
-      # A hello is small: a part before it would hold its token.
+      # A hello is small: a client that did not prove the key gets no
+      # buffer of parts.
       {tag, _} when tag in [:joined, :more] and state.phase == :hello -> close(4400, state)
       {:joined, frame} -> frame(frame, %{state | parts: nil})
       {:more, parts} -> {:ok, %{state | parts: parts}}
@@ -70,13 +74,15 @@ defmodule Helyx.Transport.WebSocket.Connection do
        when is_integer(protocol) do
     server = Helyx.Transport.WebSocket.protocol()
 
+    # The protocol number first: a client of another protocol learns that it
+    # must update, whatever its proof.
     cond do
-      not token?(state.token, hello["token"]) ->
-        close(4401, state)
-
       protocol != server ->
         refused = %{"type" => "refused", "code" => "protocol", "server_protocol" => server}
         {:stop, {:shutdown, :closed}, 4426, texts(refused), state}
+
+      not proof?(state.key, state.nonce, hello["proof"]) ->
+        close(4401, state)
 
       true ->
         {:push, texts(%{"type" => "welcome", "protocol" => server}), %{state | phase: :open}}
@@ -107,12 +113,14 @@ defmodule Helyx.Transport.WebSocket.Connection do
 
   defp frame(_frame, state), do: close(4400, state)
 
-  defp token?(nil, _given), do: true
+  defp proof?(nil, _nonce, _given), do: true
 
-  defp token?(hash, given) when is_binary(given),
-    do: Plug.Crypto.secure_compare(hash, :crypto.hash(:sha256, given))
+  defp proof?(key, nonce, given) when is_binary(given) do
+    proof = Base.encode64(:crypto.mac(:hmac, :sha256, key.(), nonce))
+    Plug.Crypto.secure_compare(proof, given)
+  end
 
-  defp token?(_token, _given), do: false
+  defp proof?(_key, _nonce, _given), do: false
 
   defp request(id, "subscribe", params, state) do
     with {:ok, session, opts} <- Ops.subscribe_params(state.core, params),

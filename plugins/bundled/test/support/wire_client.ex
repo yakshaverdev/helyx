@@ -32,12 +32,31 @@ defmodule Helyx.Test.WireClient do
     end
   end
 
-  # A client that sent its hello and got the welcome.
-  def open(port, hello \\ %{}) do
+  # A client that got the challenge, sent its hello with the proof of
+  # `token`, and got the welcome.
+  def open(port, token \\ nil) do
     {:ok, socket} = upgrade(port)
-    send_frame(socket, Map.merge(%{"type" => "hello", "protocol" => 1}, hello))
+    send_frame(socket, hello(challenge(socket), token))
     {:frame, %{"type" => "welcome"}} = recv(socket)
     socket
+  end
+
+  # The nonce of the challenge, the first frame of the server, within the
+  # auth wait.
+  def challenge(socket) do
+    {:frame, %{"type" => "challenge", "nonce" => nonce}} = recv(socket, 5_000)
+    nonce
+  end
+
+  def hello(_nonce, nil),
+    do: %{"type" => "hello", "protocol" => Helyx.Transport.WebSocket.protocol()}
+
+  def hello(nonce, token), do: Map.put(hello(nonce, nil), "proof", proof(nonce, token))
+
+  # The HMAC-SHA256 of the nonce with the key, the SHA-256 of the token.
+  def proof(nonce, token) do
+    key = :crypto.hash(:sha256, token)
+    Base.encode64(:crypto.mac(:hmac, :sha256, key, Base.decode64!(nonce)))
   end
 
   def send_frame(socket, frame), do: send_text(socket, JSON.encode!(frame))
@@ -60,8 +79,9 @@ defmodule Helyx.Test.WireClient do
   # The bytes of one masked frame, for a test that sends many in one write.
   def text_frame(text), do: masked_frame(1, 1, text)
 
-  def masked_frame(fin, opcode, text) do
-    mask = :crypto.strong_rand_bytes(4)
+  # A zero mask leaves the payload as it is, so a log that holds the bytes of
+  # the frame holds its text.
+  def masked_frame(fin, opcode, text, mask \\ :crypto.strong_rand_bytes(4)) do
     size = byte_size(text)
     masked = :crypto.exor(text, binary_part(:binary.copy(mask, div(size, 4) + 1), 0, size))
     [<<fin::1, 0::3, opcode::4>>, payload_length(size), mask, masked]

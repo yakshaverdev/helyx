@@ -8,19 +8,22 @@ defmodule Helyx.Transport.WebSocket do
 
   Options: `:core` and `:port` are required. `:ip` is the bind address,
   loopback by default; any other address needs a `:token`, and the start
-  fails with `{:error, :token_required}` without one. A configured token is
-  needed in the `hello` of every connection. `:origins` lists the allowed
-  values of the `Origin` header, none by default: an upgrade with an
-  `Origin` outside the list gets HTTP 403, and an upgrade over the 64
-  connections of the server HTTP 503.
+  fails with `{:error, :token_required}` without one. With a token, the
+  `hello` of every connection carries the proof of the key of the token for
+  the `challenge` of that connection; no frame holds the token, and no plug
+  option or process state of the transport holds the token or the key as a
+  binary; `child_spec/1` gives `start_link/1` the token in a closure.
+  `:origins` lists the allowed values of the `Origin` header, none
+  by default: an upgrade with an `Origin` outside the list gets HTTP 403,
+  and an upgrade over the 64 connections of the server HTTP 503.
   """
 
   @behaviour Plug
 
   # The protocol number and the SHA-256 of the schema in
   # `docs/features/wire-protocol.md`; a schema change needs a new number.
-  @protocol 1
-  @schema_sha256 "774b5fc5404dd75e9e3996110e54c5bdf1dc06845531a497706c59924692fe16"
+  @protocol 2
+  @schema_sha256 "14432dd0cb12e5dd55f5e2500575c243753af6a0efbf205efb888ab71910718d"
 
   @max_connections 64
 
@@ -32,16 +35,25 @@ defmodule Helyx.Transport.WebSocket do
   @spec schema_sha256() :: String.t()
   def schema_sha256, do: @schema_sha256
 
+  # The supervisor of the product keeps the start arguments in its state and
+  # its reports, so a binary token goes in a closure there; a closure stays.
   @doc false
-  def child_spec(opts),
-    do: %{id: __MODULE__, start: {__MODULE__, :start_link, [opts]}, type: :supervisor}
+  def child_spec(opts) do
+    opts =
+      Keyword.replace_lazy(opts, :token, fn
+        closure when is_function(closure, 0) -> closure
+        token -> fn -> token end
+      end)
+
+    %{id: __MODULE__, start: {__MODULE__, :start_link, [opts]}, type: :supervisor}
+  end
 
   @doc "Starts the server; see the moduledoc for the options."
   @spec start_link(keyword()) ::
           Supervisor.on_start() | {:error, :token_required | :invalid_options}
   def start_link(opts) do
     ip = Keyword.get(opts, :ip, {127, 0, 0, 1})
-    token = Keyword.get(opts, :token)
+    token = token(Keyword.get(opts, :token))
     origins = Keyword.get(opts, :origins, [])
 
     cond do
@@ -52,9 +64,17 @@ defmodule Helyx.Transport.WebSocket do
         {:error, :token_required}
 
       true ->
-        # Only the hash of the token is kept, so no process state holds it.
-        hash = token && :crypto.hash(:sha256, token)
-        config = %{core: Keyword.fetch!(opts, :core), token: hash, origins: origins, gate: nil}
+        # The key is in a closure: `inspect/1` of a closure, and so a log of
+        # the options or of a process state, does not print it.
+        key = token && :crypto.hash(:sha256, token)
+
+        config = %{
+          core: Keyword.fetch!(opts, :core),
+          key: key && fn -> key end,
+          origins: origins,
+          gate: nil
+        }
+
         start(config, ip, Keyword.fetch!(opts, :port))
     end
   end
@@ -79,10 +99,9 @@ defmodule Helyx.Transport.WebSocket do
   # the payload; 14 bytes are the frame header. A message of fragments has
   # the same bound.
   #
-  # No log line holds the bytes of a hello, whose mask is in the frame
-  # (`docs/features/wire-protocol.md`, "Connection"): the server speaks only
-  # the one HTTP/1.1 upgrade of a connection, so a refused upgrade closes and
-  # its hello is not read as the next request, and it logs no protocol error.
+  # The server speaks only the one HTTP/1.1 upgrade of a connection, so a
+  # refused upgrade closes and the bytes after it are not read as the next
+  # request, and it logs no protocol error.
   defp bandit(config, ip, port) do
     {
       Bandit,
@@ -111,6 +130,10 @@ defmodule Helyx.Transport.WebSocket do
     {:ok, {_ip, port}} = ThousandIsland.listener_info(bandit)
     port
   end
+
+  # The token of `child_spec/1` comes in a closure.
+  defp token(closure) when is_function(closure, 0), do: closure.()
+  defp token(token), do: token
 
   defp token?(token), do: token == nil or (is_binary(token) and token != "")
   defp origins?(origins), do: is_list(origins) and Enum.all?(origins, &is_binary/1)
