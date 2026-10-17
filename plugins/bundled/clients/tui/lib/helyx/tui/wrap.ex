@@ -52,7 +52,9 @@ defmodule Helyx.TUI.Wrap do
   """
   @spec rows(String.t(), integer()) :: [String.t()]
   def rows(text, width) do
-    for line <- text |> sanitize() |> String.split("\n"), row <- line_rows(line, width), do: row
+    for line <- text |> sanitize() |> String.split("\n"),
+        {_start, row} <- line_slices(line, width),
+        do: row
   end
 
   # Model text and tool output reach the terminal raw through span content,
@@ -75,35 +77,52 @@ defmodule Helyx.TUI.Wrap do
   # row after the first. No row is wider than `width` columns, with one
   # exception: a glyph wider than the whole width gets a row of its own, so
   # that the wrap always ends.
+  @doc """
+  The rows of one line of `sanitize/1` output with no new line, as `rows/2`
+  wraps it, each with the byte offset of its start in the line. A row is a
+  slice of the line, so the bytes that no row holds are the spaces that the
+  wrap drops, and the caller knows their owner. An empty row starts at 0.
+  """
+  @spec line_slices(String.t(), integer()) :: [{non_neg_integer(), String.t()}]
   # Fast path: no code point has more columns than bytes, so a line of
   # `width` bytes or less is one row. This also covers the empty line.
-  @doc "The rows of one line of `sanitize/1` output with no new line, as `rows/2` wraps it."
-  @spec line_rows(String.t(), integer()) :: [String.t()]
-  def line_rows(line, width) when byte_size(line) <= width, do: [line]
+  def line_slices(line, width) when byte_size(line) <= width, do: [{0, line}]
 
-  def line_rows(line, width) do
+  def line_slices(line, width) do
     width = max(width, 1)
 
-    {rows, row, _used} =
-      line |> String.graphemes() |> Enum.reduce({[], [], 0}, &place(&1, &2, width))
+    {rows, row, _used, _at} =
+      line |> String.graphemes() |> Enum.reduce({[], [], 0, 0}, &place(&1, &2, width))
 
     # A line of spaces alone keeps one row.
     rows = with [] <- emit(row, rows), do: [row]
 
-    for row <- Enum.reverse(rows),
-        do: row |> Enum.reverse() |> Enum.map_join(&elem(&1, 0))
+    for row <- Enum.reverse(rows), do: slice(line, row)
   end
 
-  # A row is a reversed list of graphemes with their columns.
-  defp place(" ", {[_ | _] = rows, [], 0}, _width), do: {rows, [], 0}
+  defp slice(_line, []), do: {0, ""}
 
-  defp place(grapheme, {rows, row, used}, width) do
+  defp slice(line, [{last, _columns, at} | _] = row) do
+    {_first, _columns, start} = List.last(row)
+    {start, binary_part(line, start, at + byte_size(last) - start)}
+  end
+
+  # A row is a reversed list of graphemes with their columns and byte
+  # offsets. `at` is the offset of the grapheme that is placed.
+  defp place(" ", {[_ | _] = rows, [], 0, at}, _width), do: {rows, [], 0, at + 1}
+
+  defp place(grapheme, {rows, row, used, at}, width) do
     needs = grapheme_columns(grapheme)
 
     cond do
-      used + needs <= width or row == [] -> {rows, [{grapheme, needs} | row], used + needs}
-      grapheme == " " -> {emit(row, rows), [], 0}
-      true -> break(grapheme, rows, row, width)
+      used + needs <= width or row == [] ->
+        {rows, [{grapheme, needs, at} | row], used + needs, at + byte_size(grapheme)}
+
+      grapheme == " " ->
+        {emit(row, rows), [], 0, at + 1}
+
+      true ->
+        break(grapheme, rows, row, at, width)
     end
   end
 
@@ -112,22 +131,22 @@ defmodule Helyx.TUI.Wrap do
   # too wide. A row with no space breaks at the grapheme.
   # `List.keymember?/3` is a BIF: a row with no space costs no closure
   # call for each grapheme.
-  defp break(grapheme, rows, row, width) do
+  defp break(grapheme, rows, row, at, width) do
     if List.keymember?(row, " ", 0) do
-      {word, [_space | before]} = Enum.split_while(row, fn {g, _columns} -> g != " " end)
-      place(grapheme, {emit(before, rows), word, row_columns(word)}, width)
+      {word, [_space | before]} = Enum.split_while(row, fn {g, _columns, _at} -> g != " " end)
+      place(grapheme, {emit(before, rows), word, row_columns(word), at}, width)
     else
-      place(grapheme, {[row | rows], [], 0}, width)
+      place(grapheme, {[row | rows], [], 0, at}, width)
     end
   end
 
   # A row of spaces alone is never a row of its own: an indent too wide
   # for the row is cut, and a space at the end makes no row.
   defp emit(row, rows) do
-    if Enum.all?(row, &match?({" ", _}, &1)), do: rows, else: [row | rows]
+    if Enum.all?(row, &match?({" ", _columns, _at}, &1)), do: rows, else: [row | rows]
   end
 
-  defp row_columns(row), do: Enum.reduce(row, 0, fn {_g, columns}, sum -> columns + sum end)
+  defp row_columns(row), do: Enum.reduce(row, 0, fn {_g, columns, _at}, sum -> columns + sum end)
 
   @doc "The terminal columns of `text`, by the width rule of `rows/2`."
   @spec columns(String.t()) :: non_neg_integer()

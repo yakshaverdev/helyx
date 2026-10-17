@@ -3,6 +3,13 @@ defmodule Helyx.TUI.WrapTest do
 
   alias Helyx.TUI.Wrap
 
+  test "line_slices/2 gives each row with its byte start in the line" do
+    assert Wrap.line_slices("ab  \u0301cd", 3) == [{0, "ab"}, {3, " \u0301cd"}]
+    # A line of spaces alone keeps its last row, and an empty row starts at 0.
+    assert Wrap.line_slices("      ", 4) == [{5, " "}]
+    assert Wrap.line_slices("    ", 3) == [{0, ""}]
+  end
+
   describe "rows/2 breaks at spaces" do
     test "a word that does not fit moves to the next row whole" do
       text = "He stood in wet socks, staring at the empty place"
