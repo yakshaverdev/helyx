@@ -40,7 +40,8 @@ Two writers on one session file (#266). The tree rules of the file stay: they re
 
 | External state | What the open does | What the running session does |
 | -------------- | ------------------ | ----------------------------- |
-| perl not on the PATH | `{:lock_failed, text}`; the session file is not written (the take makes its folder first) | not reached |
+| perl not on the PATH | `{:lock_failed, text}`; the session file is not written (a start made its folders before the take) | not reached |
+| folder of the lock file missing | the take makes no folder (#683: `Helyx.Session.File.mkdir/2` makes them before a start, and a resume picked a file that exists), so a folder removed before the take gives `{:lock_failed, text}` with the OS reason; nothing is written | not reached |
 | perl does not start or ends before its answer | `{:lock_failed, text}` with its output; nothing is written | not reached |
 | no answer in the bound | the port closes, `{:lock_failed, text}`; nothing is written | not reached |
 | lock file cannot be opened, or is not a regular file | `{:lock_failed, text}` with the OS reason; nothing is written | not reached |

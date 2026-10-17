@@ -141,6 +141,16 @@ defmodule Helyx.Session.LockTest do
     assert File.ls!(project) == []
   end
 
+  # Helyx.Session.File.mkdir/2 makes the folders before a start (#683).
+  test "a take whose folder is missing makes no folder", %{tmp_dir: dir} do
+    path = Path.join([dir, "gone", "sess00000001.jsonl"])
+
+    assert {:error, {:lock_failed, "cannot open the lock file: " <> _}} =
+             Lock.hold(path, fn -> {:ok, :taken} end)
+
+    refute File.exists?(Path.dirname(path))
+  end
+
   test "a resume whose lock file cannot be opened fails and changes nothing", %{
     core: core,
     tmp_dir: dir
@@ -206,7 +216,8 @@ defmodule Helyx.Session.LockTest do
 
     Process.exit(sup, :kill)
     assert_receive {:DOWN, ^ref, :process, ^caller, {:killed, _call}}
-    assert Path.wildcard(Path.join([dir, "**"])) == []
+    # The folders come before the request (#683), so only they are left.
+    assert Path.wildcard(Path.join([dir, "**"])) |> Enum.filter(&File.regular?/1) == []
   end
 
   # The caller never owns the port, so its death holds no lock (#589).

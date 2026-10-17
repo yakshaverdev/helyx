@@ -41,6 +41,40 @@ defmodule Helyx.Session.PersistenceTest do
     assert Enum.map(entries, & &1["parent_id"]) == [nil | Enum.drop(ids, -1)]
   end
 
+  # The sessions folder holds prompts and tool output (#683).
+  for suffix <- ["", "/", "/.", "/new/.."] do
+    @tag :tmp_dir
+    test "a start creates a new sessions folder with mode 0700: #{inspect(suffix)}", %{
+      core: core,
+      tmp_dir: tmp
+    } do
+      dir = Path.join(tmp, "sessions")
+
+      {:ok, _session} =
+        Session.start(core, model: "test/ok", sessions_dir: dir <> unquote(suffix))
+
+      assert mode(dir) == 0o700
+    end
+  end
+
+  # A path through a folder that is missing, then `..`, names one that exists.
+  for path <- ["sessions", "sessions/new/..", "gone/../sessions"] do
+    @tag :tmp_dir
+    test "a start keeps the mode of a sessions folder that exists: #{path}", %{
+      core: core,
+      tmp_dir: tmp
+    } do
+      dir = Path.join(tmp, "sessions")
+      File.mkdir!(dir)
+      File.chmod!(dir, 0o755)
+
+      {:ok, _session} =
+        Session.start(core, model: "test/ok", sessions_dir: Path.join(tmp, unquote(path)))
+
+      assert mode(dir) == 0o755
+    end
+  end
+
   # `docs/features/usage-and-limits.md`, "Core checks".
   @tag :tmp_dir
   test "a resumed session has the usage of each message of the live session", %{
@@ -186,6 +220,8 @@ defmodule Helyx.Session.PersistenceTest do
   end
 
   defp memory(pid), do: pid |> Process.info(:memory) |> elem(1)
+
+  defp mode(path), do: Bitwise.band(File.stat!(path).mode, 0o777)
 
   # The text that a resume gives an open call (transcript_test.exs pins it).
   @interrupted elem(Helyx.Session.Transcript.interrupted_result(), 1)
