@@ -3,14 +3,16 @@ defmodule Helyx.TUI.Markdown do
   The Markdown of an assistant reply as screen rows (#487): headings, bullet
   and numbered items, bold, italic, inline code, fenced code, and links as
   their text and address. A row is a list of `{text, tags}`. The text of a
-  row is a row of `Helyx.TUI.Wrap.line_rows/2`, so the width rule holds. Pure.
+  row is a row of `Helyx.TUI.Wrap.line_rows/2`, so the width rule holds. The
+  tag `:sign` marks the prefix of an item or a code line, and its indent on
+  the rows after the first: it is drawn, not text of the reply. Pure.
   The rules are in
   `docs/features/coding-agent.md`, "TUI".
   """
 
   alias Helyx.TUI.Wrap
 
-  @type tag :: :bold | :italic | :underlined | :code
+  @type tag :: :bold | :italic | :underlined | :code | :sign
   @type segment :: {String.t(), [tag()]}
 
   @fence ~r/^ {0,3}(`{3,}|~{3,})(.*)$/
@@ -25,6 +27,10 @@ defmodule Helyx.TUI.Markdown do
   @link ~r/^\[(.*)\]\((.*)\)$/
   @signs ["*", "_", "`", "[", "\\"]
   @word ~r/^[[:alnum:]]/u
+
+  @doc "The rows of one line of `segments` at `width` columns, tags kept."
+  @spec segment_rows([segment()], integer()) :: [[segment()]]
+  def segment_rows(segments, width), do: segments |> layout("", width) |> Enum.map(&whole/1)
 
   @doc "The rows of `text` at `width` columns, each a list of styled segments."
   @spec rows(String.t(), integer()) :: [[segment()]]
@@ -102,7 +108,7 @@ defmodule Helyx.TUI.Markdown do
   defp layout(segments, prefix, width) do
     case width - Wrap.columns(prefix) do
       inner when inner < 1 ->
-        layout([{prefix, []} | segments], "", width)
+        layout([{prefix, [:sign]} | segments], "", width)
 
       inner ->
         hang = String.duplicate(" ", width - inner)
@@ -122,7 +128,7 @@ defmodule Helyx.TUI.Markdown do
     shown = start <> Enum.map_join(row, &elem(&1, 0))
 
     if byte_size(shown) <= width or Wrap.columns(shown) <= width,
-      do: [{start, []} | row],
+      do: [{start, [:sign]} | row],
       else: row
   end
 

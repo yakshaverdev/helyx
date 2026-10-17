@@ -166,18 +166,16 @@ defmodule Helyx.TUI.Search do
     [{%Paragraph{text: %Line{spans: spans}, block: box}, area}]
   end
 
-  # A yellow mark over each place of the query in the drawn rows of the
-  # matched item. Only the rows on the screen are scanned. The columns
-  # follow the width rule of `Helyx.TUI.Wrap`, as the selection does.
-  @spec marks(t() | nil, [{Transcript.address(), Line.t()}], Rect.t()) :: [
-          {Block.t(), Rect.t()}
-        ]
+  # A yellow mark over each place of the query in the search text of the
+  # drawn rows of the matched item, so a sign of a row is never marked.
+  # Only the rows on the screen are scanned. The columns follow the width
+  # rule of `Helyx.TUI.Wrap`, as the selection does.
+  @spec marks(t() | nil, [Transcript.row()], Rect.t()) :: [{Block.t(), Rect.t()}]
   def marks(%__MODULE__{regex: %Regex{} = regex, match: index}, rows, area)
       when is_integer(index) do
-    for {{{^index, _row}, line}, y} <- Enum.with_index(rows),
-        text = Transcript.line_text(line),
+    for {{{^index, _row}, _line, {column, text}}, y} <- Enum.with_index(rows),
         [{at, size}] <- Regex.scan(regex, text, return: :index),
-        from = Wrap.columns(binary_part(text, 0, at)),
+        from = column + Wrap.columns(binary_part(text, 0, at)),
         width = min(Wrap.columns(binary_part(text, at, size)), area.width - from),
         width > 0,
         do:

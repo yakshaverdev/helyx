@@ -26,7 +26,6 @@ defmodule Helyx.TUI.Selection do
   alias ExRatatui.Event.Mouse
   alias ExRatatui.Layout.Rect
   alias ExRatatui.Style
-  alias ExRatatui.Text.Line
   alias ExRatatui.Widgets.{Block, Paragraph}
   alias Helyx.TUI.{Transcript, ViewModel}
 
@@ -142,7 +141,7 @@ defmodule Helyx.TUI.Selection do
         nil
 
       rows ->
-        {address, _line} = Enum.at(rows, min(max(y - area.y, 0), length(rows) - 1))
+        {address, _line, _search} = Enum.at(rows, min(max(y - area.y, 0), length(rows) - 1))
         {address, min(max(x - area.x, 0), area.width - 1)}
     end
   end
@@ -154,7 +153,7 @@ defmodule Helyx.TUI.Selection do
   The transcript of `rows`, the rows of `Transcript.screen/3` in `area`,
   and over it a reverse video block on each selected cell.
   """
-  @spec widgets(t() | nil, [{Transcript.address(), Line.t()}], Rect.t()) :: [
+  @spec widgets(t() | nil, [Transcript.row()], Rect.t()) :: [
           {Paragraph.t() | Block.t(), Rect.t()}
         ]
   def widgets(selection, rows, area),
@@ -168,7 +167,7 @@ defmodule Helyx.TUI.Selection do
 
     rows
     |> Enum.with_index()
-    |> Enum.flat_map(fn {{address, _line}, y} ->
+    |> Enum.flat_map(fn {{address, _line, _search}, y} ->
       # A frame before the check of a new width can be narrower.
       {from, to} = Transcript.columns(address, first_point, last_point, area.width)
 
