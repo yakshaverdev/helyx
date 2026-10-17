@@ -29,11 +29,20 @@ Decisions:
   - `list_live(core)` returns `[%Helyx.Sessions.Live{id, instance_id, cwd, model, status}]`, at most 64. `model` is the current model ref as a string. `status` is `:idle` when the session has no turn and no wait, else `:running`. A Core that is not running gives `[]`. No order.
   - `list_saved(core, opts)` returns `{:ok, [%Helyx.Session.File.Scan.Summary{}], next}`, newest first. `:cwd` is a folder; without it, every folder. `:limit` is from 1 to 256, default 50. `:after` is the `next` of the page before. `next` is a string, or nil on the last page. Errors: `:invalid_cwd`, `:invalid_limit`, `:invalid_cursor`. The rules of the list are those of `Scan.list/2` (`docs/features/session-list.md`): an empty session is left out, and the model is the model of the header.
   - `start(core, opts)` is `Helyx.Session.start/2` with the `:sessions_dir` of the Core and, when `:model` is not given, the default model of the Core. With neither, the error is `{:invalid_model_ref, ""}`.
-  - `resume(core, opts)` is `Helyx.Session.resume/2` with the `:sessions_dir` of the Core. With `:id` and no `:cwd`, the folder is the one that the header of the session names. With `:cwd` and no `:id`, the newest session of that folder. A Core with no `:sessions_dir` gives `{:error, :not_found}`. The errors of the find are those of `Scan.find/2`: `:invalid_id`, `:not_found`, `:duplicate_id`, `{:invalid_file, text}`.
+  - `resume(core, opts)` is `Helyx.Session.resume/2` with the `:sessions_dir` of the Core. With `:id` and no `:cwd`, the folder is the one that the header of the session names; `Helyx.Session.resume/2` has the same rule since #758. With `:cwd` and no `:id`, the newest session of that folder. A Core with no `:sessions_dir` gives `{:error, :not_found}`. The errors of the find are those of `Scan.find/2`: `:invalid_id`, `:not_found`, `:duplicate_id`, `{:invalid_file, text}`. A header folder that `Helyx.Session.Input.cwd/1` rejects gives `:invalid_cwd`.
   - `stop(session)` returns `:ok` after the session ended, or `{:error, :session_not_found}` when it is not running. A session, or its Core, that ends between the abort and the stop gives `{:error, :session_not_found}` too: `stop/1` looks up the pid after the abort and stops that pid. A session that ends for another reason during the stop, such as a Core stop, gives `:ok`: it ended.
 - `Helyx.Session.start/2` and `resume/2` give `{:error, :session_not_found}` when an attach meets the end of the process twice (Decisions, "Attach").
 - `Helyx.Session.start/2` and `resume/2`: a new error `:too_many_sessions` at the cap. `resume/2` of a session that runs in the same Core returns `{:ok, session}`, the running instance, in place of `{:error, {:session_locked, id}}`. A session that another Core or another OS process holds still gives `{:session_locked, id}`.
 - The session process takes one new call, `:live`, which answers its `%Helyx.Sessions.Live{}`. The attach uses it too.
+
+### Order of the checks
+
+A start and a resume run their checks in one order, and the first failure is the result. Nothing touches the sessions directory before step 3 (#758).
+
+1. The given `:cwd` (`Helyx.Session.Input.cwd/1`): `:invalid_cwd`.
+2. The tools: the specs (`Helyx.Tool.specs/1`), each `check/0` (`Helyx.Tool.check_available/1`), and the `concurrent?/0` values (`Helyx.Tool.concurrent/1`).
+3. A start resolves the model ref, then makes the folders (`Helyx.Session.File.mkdir/2`). A resume picks the file (`Helyx.Session.File.pick/3`): the find of the id, or the scan for the newest session. With `:id` and no `:cwd`, the folder of the header is checked here, as step 1 checks a given one.
+4. The start of the session process (`Helyx.Session.Server.Open.start/4`): the cap; for a resume of an id that runs, the attach (Decisions, "Attach"). Then, in the open of the process, the lock, and for a start the create of the file, for a resume the load and its model ref.
 
 The errors that the transport maps to the codes of `start` and `resume` (`wire-protocol.md`, Operations): `:invalid_cwd`; `:not_found` and `:invalid_id`; `{:invalid_model_ref, ref}`; `{:unknown_provider, id}`; `:too_many_sessions`; any other term is `start_failed`.
 

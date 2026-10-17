@@ -210,6 +210,22 @@ defmodule Helyx.Session.BoundaryTest do
 
       assert File.read!(path) == before
     end
+
+    # With no `:cwd`, the folder comes from the header of the id (#758).
+    @tag :tmp_dir
+    test "a resume by id rejects a failed check before it looks for the id", %{tmp_dir: dir} do
+      for {module, expected} <- @cases do
+        bad = :"core_#{System.unique_integer([:positive])}"
+        plugins = [Helyx.Test.Provider, module]
+        start_supervised!({Helyx.Core, name: bad, plugins: plugins, sessions_dir: dir}, id: bad)
+
+        # A find would give `:not_found`.
+        checked(expected, fn -> Helyx.Sessions.resume(bad, id: Session.Id.new()) end)
+        checked(expected, fn -> Session.resume(bad, sessions_dir: dir, id: Session.Id.new()) end)
+
+        assert DynamicSupervisor.count_children(Helyx.Core.session_supervisor(bad)).active == 0
+      end
+    end
   end
 
   describe "concurrent?/0 at the session boundary (#734)" do

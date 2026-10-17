@@ -151,26 +151,15 @@ defmodule Helyx.Sessions do
   `:sessions_dir` of `core`: the session `:id`, in the folder that its
   header names when `opts` names no `:cwd`, or the newest session of
   `:cwd`. A Core with no `:sessions_dir` gives `{:error, :not_found}`. The
-  errors of the find of an id are those of `Helyx.Session.File.Scan.find/2`.
+  errors of the find of an id are those of `Helyx.Session.File.Scan.find/2`,
+  and `:invalid_cwd` for a header folder that a start would reject. They
+  come after the tool checks.
   """
   @spec resume(Helyx.Core.name(), keyword()) :: {:ok, Session.t()} | {:error, term()}
   def resume(core, opts) do
-    with dir when is_binary(dir) <- Helyx.Core.config(core, :sessions_dir),
-         {:ok, opts} <- folder(dir, opts) do
-      Session.resume(core, [sessions_dir: dir] ++ opts)
-    else
+    case Helyx.Core.config(core, :sessions_dir) do
       nil -> {:error, :not_found}
-      error -> error
-    end
-  end
-
-  defp folder(dir, opts) do
-    case {Keyword.fetch(opts, :id), Keyword.has_key?(opts, :cwd)} do
-      {{:ok, id}, false} ->
-        with {:ok, _path, %{"cwd" => cwd}} <- Scan.find(dir, id), do: {:ok, [cwd: cwd] ++ opts}
-
-      _ ->
-        {:ok, opts}
+      dir -> Session.resume(core, [sessions_dir: dir] ++ opts)
     end
   end
 

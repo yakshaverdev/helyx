@@ -49,13 +49,30 @@ defmodule Helyx.SessionsTest do
       assert Sessions.start(core, cwd: dir) == {:error, {:invalid_model_ref, ""}}
     end
 
-    test "a resume by id takes the folder of the header", %{core: core} do
+    test "a resume by id takes the folder of the header", %{core: core, tmp_dir: dir} do
       {:ok, session} = Sessions.start(core, cwd: "/elsewhere", model: "test/ok")
       turn(session, "hi")
       :ok = Sessions.stop(session)
 
       assert {:ok, ^session} = Sessions.resume(core, id: session.id)
       assert [%Live{cwd: "/elsewhere"}] = Sessions.list_live(core)
+      :ok = Sessions.stop(session)
+
+      # The rule is in `Session.resume/2` (#758).
+      assert {:ok, ^session} = Session.resume(core, sessions_dir: dir, id: session.id)
+      assert [%Live{cwd: "/elsewhere"}] = Sessions.list_live(core)
+    end
+
+    test "a header folder is checked as a given cwd", %{core: core, tmp_dir: dir} do
+      id = Helyx.Session.Id.new()
+      File.mkdir_p!(Path.join(dir, "p"))
+
+      header =
+        ~s({"type":"session","version":1,"id":"#{id}","cwd":"/a\\u0000b","model":"test/ok"})
+
+      File.write!(Path.join([dir, "p", id <> ".jsonl"]), header <> "\n")
+
+      assert Sessions.resume(core, id: id) == {:error, :invalid_cwd}
     end
 
     test "a resume of a session that runs attaches to it", %{core: core} do
