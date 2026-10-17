@@ -424,7 +424,7 @@ defmodule Helyx.TUI.ComposerTest do
     start_supervised!({Helyx.Core, name: core, plugins: [Fake]})
     :ok = Fake.script(core, "again", [["ok"], ["ok"]])
     {:ok, session} = Session.start(core, model: "fake/again")
-    {:ok, state} = TUI.mount(session: session)
+    {:ok, state} = TUI.mount(session: session, terminal_size_fn: fn -> {:error, :no_tty} end)
 
     state = state |> branch_reply() |> type("hi") |> press("enter") |> drain()
     assert value(state) == ""
