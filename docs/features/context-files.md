@@ -12,7 +12,7 @@ User story: I start Helyx in `~/code/proj`. The model sees `~/.helyx/AGENTS.md`,
 
 `Helyx.ModelContext.Default.build/2` builds the system prompt from:
 
-1. the base prompt;
+1. the base prompt, then the docs and session sections (`docs/features/agent-self-knowledge.md`), which are not part of the total cap below;
 2. the global file `~/.helyx/AGENTS.md` (`@global_file`, relative to the home directory, next to `~/.helyx/sessions`);
 3. for each folder from `/` down to the working directory, the first of `AGENTS.override.md`, `AGENTS.md`, `CLAUDE.md` that is a regular file there (`@file_names`).
 
@@ -68,10 +68,6 @@ Accepted:
 
 None: each file is opened and closed inside `Helyx.Text.read_file/1`.
 
-## Known debt
-
-`Helyx.ModelContext.Default` also builds the system prompt on each turn that a prompt opens for a harness provider, which uses only the messages of the context (`Helyx.Provider`). The cost: the context files are read at each such turn, the turn waits for the build, and a crash of a ModelContext plugin fails a harness turn. It is not fixed because the fix adds to the provider interface. Pay it when a ModelContext plugin is slow or depends on the network.
-
 ## Out of scope
 
-Skills (#471). The self-awareness section of the prompt (#470).
+Skills (#471).
