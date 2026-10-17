@@ -252,6 +252,7 @@ Notes on the codec:
 - `turn_end` `error` and `notice` `text` are text for a person; a client shows them as they are.
 - `arguments` of a tool call is a JSON object whose integers have at most 100 digits (`Helyx.Message.cap_integers/1`).
 - A `cost` is in USD. `elapsed_ms` is by the clock of the session; a client starts its busy clock at that age.
+- The session that a tool call starts with a parent link, such as a child of the `agent` tool, has an id that a client derives from the session id and the call id: the first 9 bytes of SHA-256 of the session id followed by the call id, as URL-safe Base64 with no padding (`Helyx.Sessions.child_id/2`, `docs/features/agent-tool.md`). No frame carries it.
 
 ## Replaced mechanism
 

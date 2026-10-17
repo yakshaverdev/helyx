@@ -14,6 +14,7 @@ defmodule Helyx.Session.Server do
 
   # The start and the open of the session process (`Open`).
   defdelegate start(state, tools, open), to: Open
+  defdelegate create(state, tools, open), to: Open
 
   def start_link({%State{id: id, core: core}, _start} = args) do
     GenServer.start_link(__MODULE__, args, name: via(core, id))

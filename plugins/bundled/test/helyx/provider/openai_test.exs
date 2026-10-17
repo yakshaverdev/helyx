@@ -241,7 +241,7 @@ defmodule Helyx.Provider.OpenAITest do
       )
 
     call = %Helyx.Message.ToolCall{id: "call_1", name: "binary", arguments: %{}}
-    :ok = Helyx.Session.Hands.run(hands, "t1", call)
+    :ok = Helyx.Session.Hands.run(hands, "t1", call, %{})
     assert_receive {:tool_result, "t1", "call_1", result}
 
     stub([delta(%{content: "ok"}, "stop"), "[DONE]"])

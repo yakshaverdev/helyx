@@ -28,6 +28,10 @@ defmodule Helyx.Tool do
   resource by itself when its Task dies with no release, because the hands
   can die first and drop a late `hold/1` (ADR 0004).
 
+  `context/0` gives a call its Core, its session, the tool names of the
+  session, its call id, and the model of its turn, for a tool that starts
+  a session of its own.
+
   The optional `concurrent?/0` returns `true` for a tool whose calls can
   run at the same time as other calls of concurrent tools: a tool that
   only reads, for example. A call of any other tool runs alone. At most 8
@@ -72,12 +76,13 @@ defmodule Helyx.Tool do
   Otherwise the result is `{:error, {:bad_tool_spec, label}}`: the label is
   the name when the name is accepted, else the module name. Plugin code that
   raises, throws, or exits while a spec is built is not contained. Two tools
-  with one name give `{:error, {:duplicate_tool_name, name}}`.
+  with one name give `{:error, {:duplicate_tool_name, name}}`. With a list
+  `only`, the result keeps only the tools that it names, after the checks.
   """
-  @spec specs(Helyx.Core.name()) ::
+  @spec specs(Helyx.Core.name(), [String.t()] | nil) ::
           {:ok, [{module(), spec()}]}
           | {:error, {:bad_tool_spec, String.t()} | {:duplicate_tool_name, String.t()}}
-  def specs(core) do
+  def specs(core, only \\ nil) do
     result =
       Enum.reduce_while(Helyx.Core.plugins(core, __MODULE__), {:ok, []}, fn tool, {:ok, acc} ->
         case checked_spec(tool) do
@@ -88,8 +93,11 @@ defmodule Helyx.Tool do
 
     with {:ok, tools} <- result,
          :ok <- check_unique(tools),
-         do: {:ok, Enum.sort_by(tools, fn {_tool, spec} -> spec.name end)}
+         do: {:ok, Enum.sort_by(keep(tools, only), fn {_tool, spec} -> spec.name end)}
   end
+
+  defp keep(tools, nil), do: tools
+  defp keep(tools, only), do: Enum.filter(tools, fn {_tool, spec} -> spec.name in only end)
 
   defp checked_spec(tool) do
     spec = %{name: tool.name(), description: tool.description(), parameters: tool.parameters()}
@@ -211,6 +219,27 @@ defmodule Helyx.Tool do
     # An improper list fails here, in the caller, and not in the hands.
     false = List.improper?(handles)
     GenServer.call(Process.get(:helyx_hands), {:unhold, handles}, :infinity)
+  end
+
+  @doc """
+  The context of the calling tool call: its Core, the id of its session,
+  the tool names of the session, its call id, and the model ref of its
+  turn, as `provider/model`. The
+  hands set it when the call's Task starts, so it needs no call to them.
+  Raises in any other process (`docs/features/agent-tool.md`).
+  """
+  @spec context() :: %{
+          core: Helyx.Core.name(),
+          session_id: String.t(),
+          tools: [String.t()],
+          call_id: String.t(),
+          model: String.t()
+        }
+  def context do
+    case Process.get(:helyx_call) do
+      %{} = context -> context
+      nil -> raise ArgumentError, "context/0 runs only in a tool call"
+    end
   end
 
   @doc """

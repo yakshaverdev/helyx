@@ -17,7 +17,7 @@ defmodule Helyx.Tool.ReadTest do
     }
   end
 
-  test "is the only concurrent bundled tool; the tools that write are not (#734)" do
+  test "read and agent are the concurrent bundled tools; the tools that write are not (#734, #735)" do
     {:ok, modules} = :application.get_key(:helyx_plugins, :modules)
 
     tools =
@@ -28,9 +28,10 @@ defmodule Helyx.Tool.ReadTest do
 
     names = MapSet.new(tools, fn {_module, spec} -> spec.name end)
     assert MapSet.subset?(MapSet.new(["bash", "edit", "memory_write", "read", "write"]), names)
-    assert Helyx.Tool.concurrent(tools) == MapSet.new(["read"])
+    assert Helyx.Tool.concurrent(tools) == MapSet.new(["agent", "read"])
 
-    assert for({m, _} <- tools, function_exported?(m, :concurrent?, 0), do: m) == [
+    assert Enum.sort(for({m, _} <- tools, function_exported?(m, :concurrent?, 0), do: m)) == [
+             Helyx.Tool.Agent,
              Helyx.Tool.Read
            ]
   end

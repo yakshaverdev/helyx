@@ -86,21 +86,25 @@ defmodule Helyx.Session.Hands do
   Starts the hands for a session. Takes `core:`, `cwd:`,
   `background_dir:`, the folder of the background output files,
   `session:`, and `tools:`, the tool module by name, from the specs the
-  session checked with `Helyx.Tool.specs/1`.
+  session checked with `Helyx.Tool.specs/2`.
   """
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts), do: GenServer.start_link(__MODULE__, struct!(State, opts))
 
   @doc """
-  Starts a tool call. The result is sent to the session. A cast: a turn
-  runs Helyx tools while the hands can release its provider process.
+  Starts a tool call. `context` has the session id and the model of
+  `Helyx.Tool.context/0`; the hands add the Core, the tool names, and the
+  call id. The result is sent to the
+  session. A cast: a turn runs Helyx tools while the hands can release its
+  provider process.
   """
-  @spec run(pid(), String.t(), ToolCall.t()) :: :ok
-  def run(hands, turn_id, %ToolCall{} = call), do: GenServer.cast(hands, {:run, turn_id, call})
+  @spec run(pid(), String.t(), ToolCall.t(), map()) :: :ok
+  def run(hands, turn_id, %ToolCall{} = call, context),
+    do: GenServer.cast(hands, {:run, turn_id, call, context})
 
   @doc """
   Starts the provider process: `fun` gets the ref of the armed connect kill
-  and runs in a Task of the hands with no turn. A cast, as `run/3`: the
+  and runs in a Task of the hands with no turn. A cast, as `run/4`: the
   hands can be busy with a release, and the caller stays free (#677).
   Returns a ref; the answer goes to the session as `{:provider_start, ref,
   {:ok, pid}}`, or with an error text once a handle is unconfirmed. It comes
@@ -127,7 +131,7 @@ defmodule Helyx.Session.Hands do
   @doc """
   Frees the place of the background run `id`, whose end a turn took. An id
   with no place, such as one of a lost run, changes nothing. A cast, as
-  `run/3`, and in its order: the next call sees the place free.
+  `run/4`, and in its order: the next call sees the place free.
   """
   @spec taken(pid(), String.t()) :: :ok
   def taken(hands, id), do: GenServer.cast(hands, {:taken, id})
@@ -223,11 +227,11 @@ defmodule Helyx.Session.Hands do
   end
 
   @impl true
-  def handle_cast({:run, turn_id, call}, state) do
+  def handle_cast({:run, turn_id, call, context}, state) do
     state =
       if state.unconfirmed?,
         do: answer(state, turn_id, call.id, refusal()),
-        else: start(state, turn_id, call)
+        else: start(state, turn_id, call, context)
 
     {:noreply, state}
   end
@@ -334,8 +338,11 @@ defmodule Helyx.Session.Hands do
   defp checked({status, text}), do: {status, Helyx.Message.cut_result(text)}
 
   # A fixed error needs no Task: it is answered at once, as a refusal is.
-  defp start(state, turn_id, %ToolCall{} = call) do
+  defp start(state, turn_id, %ToolCall{} = call, context) do
     cwd = state.cwd
+
+    context =
+      Map.merge(context, %{core: state.core, tools: Map.keys(state.tools), call_id: call.id})
 
     case Map.fetch(state.tools, call.name) do
       :error ->
@@ -343,7 +350,10 @@ defmodule Helyx.Session.Hands do
 
       {:ok, tool} ->
         {_pid, state} =
-          spawn_task(state, turn_id, call.id, tool, fn -> Run.tool(tool, call, cwd) end)
+          spawn_task(state, turn_id, call.id, tool, fn ->
+            Process.put(:helyx_call, context)
+            Run.tool(tool, call, cwd)
+          end)
 
         state
     end

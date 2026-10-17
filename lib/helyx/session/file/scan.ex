@@ -7,6 +7,12 @@ defmodule Helyx.Session.File.Scan do
   # modification time. Nothing deletes session files, so their count grows.
   @max_scanned_files 256
 
+  # The folder of every session with a parent link, in the sessions
+  # directory. No slug starts with `.`, and `ls/1` hides it, so it is no
+  # project folder. Its path does not depend on the cwd: one file and one
+  # lock for each child id.
+  @children ".children"
+
   # The version of the header that this build writes and reads.
   @version 1
 
@@ -15,8 +21,9 @@ defmodule Helyx.Session.File.Scan do
   sessions directory: the list of the sessions (`list/2`), the file of an id
   (`find/2`), and the newest session of a folder for
   `Helyx.Session.File.pick/3`. A session lives at
-  `<dir>/<project slug>/<session id>.jsonl`; `Helyx.Session.File` owns the
-  entries after the header.
+  `<dir>/<project slug>/<session id>.jsonl`, and a session with a parent
+  link at `<dir>/#{@children}/<session id>.jsonl`, where only `find/2`
+  looks; `Helyx.Session.File` owns the entries after the header.
 
   A scan reads the first #{@max_header_bytes} bytes (the head), and one
   byte more, of at most #{@max_scanned_files} regular files: the ones with
@@ -52,7 +59,8 @@ defmodule Helyx.Session.File.Scan do
   The sessions of the folder `cwd`, or of every folder with `:all`, newest
   first by modification time. A file is left out when it is empty, when its
   name is not a session id, or when its header does not parse, has an
-  unknown version, or has no string `cwd` and `model`.
+  unknown version, or has no string `cwd` and `model`. A child session is
+  in no project folder, so it is not read and is not counted.
   """
   @spec list(Path.t(), Path.t() | :all) :: [Summary.t()]
   def list(dir, scope) do
@@ -64,9 +72,10 @@ defmodule Helyx.Session.File.Scan do
 
   @doc """
   The file of the session `id` and its header, under the project folders of
-  `dir`. The id must have the format of a session id; it is checked before
-  any path is built. Two files with the id give `:duplicate_id`; only a copy
-  by hand makes them. The header has a string `cwd`.
+  `dir` and its folder of child sessions. The id must have the format of a
+  session id; it is checked before any path is built. Two files with the
+  id give `:duplicate_id`; only a copy by hand makes them. The header has a
+  string `cwd`.
   """
   @spec find(Path.t(), String.t()) ::
           {:ok, Path.t(), map()}
@@ -78,7 +87,9 @@ defmodule Helyx.Session.File.Scan do
   defp find_valid(dir, id) do
     # The listed names, not a stat of a built path: a filesystem that
     # ignores case would match an id of another case.
-    case Enum.filter(jsonl_paths(dir, :all), &(id(&1) == id)) do
+    folders = [Path.join(dir, @children) | projects(dir, :all)]
+
+    case Enum.filter(jsonl_paths(folders), &(id(&1) == id)) do
       [] ->
         {:error, :not_found}
 
@@ -112,7 +123,7 @@ defmodule Helyx.Session.File.Scan do
   # `scope`, newest first. Two directories can share a slug, so the header
   # decides.
   defp sessions(dir, scope, max_files) do
-    for {mtime, path} <- newest(jsonl_paths(dir, scope), max_files),
+    for {mtime, path} <- newest(jsonl_paths(projects(dir, scope)), max_files),
         Id.valid?(id(path)),
         {:ok, header, prompt} when prompt != :empty <- [head(path)],
         is_binary(header["model"]) and check_version(header) == :ok,
@@ -123,15 +134,13 @@ defmodule Helyx.Session.File.Scan do
 
   defp id(path), do: Path.basename(path, ".jsonl")
 
-  # The `.jsonl` paths in the project folder of `scope`, or in every project
-  # folder with `:all`. A list, not a wildcard: the path of `dir` can hold
-  # glob characters.
-  defp jsonl_paths(dir, scope) do
-    folders =
-      if scope == :all,
-        do: Enum.map(ls(dir), &Path.join(dir, &1)),
-        else: [project_dir(dir, scope)]
+  # The project folder of `scope`, or every project folder with `:all`. A
+  # list, not a wildcard: the path of `dir` can hold glob characters.
+  defp projects(dir, :all), do: Enum.map(ls(dir), &Path.join(dir, &1))
+  defp projects(dir, cwd), do: [project_dir(dir, cwd)]
 
+  # The `.jsonl` paths in `folders`.
+  defp jsonl_paths(folders) do
     for folder <- folders,
         name <- ls(folder),
         Path.extname(name) == ".jsonl",
@@ -198,9 +207,17 @@ defmodule Helyx.Session.File.Scan do
   end
 
   @doc false
-  # The header line of a new session.
-  def header(cwd, model),
+  # The header line of a new session, with the link of a child session to
+  # the tool call that started it (docs/features/agent-tool.md).
+  def header(cwd, model, nil),
     do: %{"type" => "session", "version" => @version, "cwd" => cwd, "model" => model}
+
+  def header(cwd, model, %{session_id: session_id, call_id: call_id}),
+    do:
+      Map.put(header(cwd, model, nil), "parent", %{
+        "session_id" => session_id,
+        "call_id" => call_id
+      })
 
   @doc false
   def check_version(%{"version" => @version}), do: :ok
@@ -222,6 +239,12 @@ defmodule Helyx.Session.File.Scan do
       {:error, _reason} = error -> error
     end
   end
+
+  @doc false
+  # The folder of the session files of `cwd`, or of every session with a
+  # parent link.
+  def folder(dir, cwd, nil), do: project_dir(dir, cwd)
+  def folder(dir, _cwd, %{}), do: Path.join(dir, @children)
 
   @doc false
   # The slug keeps the tail of the path, the distinctive end, and stays

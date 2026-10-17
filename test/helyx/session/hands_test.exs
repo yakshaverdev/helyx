@@ -22,11 +22,18 @@ defmodule Helyx.Session.HandsTest do
       Helyx.Test.Tool.Raise,
       Helyx.Test.Tool.Odd,
       Helyx.Test.Tool.Upcase,
-      Helyx.Test.Tool.Background
+      Helyx.Test.Tool.Background,
+      Helyx.Test.Tool.Context
     ]
 
     start_supervised!({Helyx.Core, name: core, plugins: plugins})
     %{core: core}
+  end
+
+  # A call of a turn of the model "test/ok" in the session "hands0000000".
+  defp run(hands, turn_id, call) do
+    context = %{session_id: "hands0000000", model: "test/ok"}
+    Helyx.Session.Hands.run(hands, turn_id, call, context)
   end
 
   defp start_hands(core, opts \\ []) do
@@ -57,15 +64,27 @@ defmodule Helyx.Session.HandsTest do
   end
 
   defp upcase(hands, id) do
-    :ok = Helyx.Session.Hands.run(hands, "t1", call(id, "upcase", %{"text" => "hi"}))
+    :ok = run(hands, "t1", call(id, "upcase", %{"text" => "hi"}))
     assert_receive {:tool_result, "t1", ^id, result}
     result
+  end
+
+  test "a call has its context: the Core, the tool names, and its call id", %{core: core} do
+    :ok = run(start_hands(core), "t1", call("c1", "context", %{}))
+    assert_receive {:tool_result, "t1", "c1", {:ok, text}}
+    {:ok, specs} = Helyx.Tool.specs(core)
+    names = Enum.map_join(specs, ",", fn {_tool, spec} -> spec.name end)
+    assert text == "#{core} hands0000000 #{names} c1 test/ok"
+  end
+
+  test "context/0 raises outside a tool call" do
+    assert_raise ArgumentError, "context/0 runs only in a tool call", &Helyx.Tool.context/0
   end
 
   test "a handle that the tool let go of gets no release", %{core: core} do
     hands = start_hands(core)
     arguments = %{"handles" => [{:report, self()}, :keep], "unhold" => [:keep, :never_held]}
-    :ok = Helyx.Session.Hands.run(hands, "t1", call("c1", "hold", arguments))
+    :ok = run(hands, "t1", call("c1", "hold", arguments))
     assert_receive {:tool_result, "t1", "c1", {:ok, "held"}}
     assert [{:deliver, [{:report, _pid}]}] = Released.take()
   end
@@ -78,7 +97,7 @@ defmodule Helyx.Session.HandsTest do
     # The handle is a plugin term: the log has it, the text does not.
     {text, log} =
       with_log(fn ->
-        :ok = Helyx.Session.Hands.run(hands, "t1", call("c1", "hold", %{"handles" => handles}))
+        :ok = run(hands, "t1", call("c1", "hold", %{"handles" => handles}))
         assert_receive {:tool_result, "t1", "c1", {:error, text}}
         text
       end)
@@ -105,7 +124,7 @@ defmodule Helyx.Session.HandsTest do
     handles = [:keep, {:report, self()}]
 
     :ok =
-      Helyx.Session.Hands.run(
+      run(
         hands,
         "t1",
         call("c1", "hold", %{"handles" => handles, "ms" => 60_000})
@@ -129,7 +148,7 @@ defmodule Helyx.Session.HandsTest do
   test "a provider start is answered after a release that blocks the hands", %{core: core} do
     hands = start_hands(core)
     arguments = %{"handles" => [%{"gate" => Gate.open()}]}
-    :ok = Helyx.Session.Hands.run(hands, "t1", call("c1", "hold", arguments))
+    :ok = run(hands, "t1", call("c1", "hold", arguments))
     assert_receive {:waiting, release}
 
     # A provider process runs until it is stopped; one that returned would
@@ -149,7 +168,7 @@ defmodule Helyx.Session.HandsTest do
   # The release ends 1,750 ms before its deadline: room for load.
   test "a release before the deadline confirms its handles", %{core: core} do
     hands = start_hands(core, release_ms: 2_000)
-    :ok = Helyx.Session.Hands.run(hands, "t1", call("c1", "hold", %{"handles" => [{:slow, 250}]}))
+    :ok = run(hands, "t1", call("c1", "hold", %{"handles" => [{:slow, 250}]}))
     assert_receive {:tool_result, "t1", "c1", {:ok, "held"}}
     assert upcase(hands, "c2") == {:ok, "HI"}
   end
@@ -158,7 +177,7 @@ defmodule Helyx.Session.HandsTest do
     hands = start_hands(core, release_ms: 300)
 
     :ok =
-      Helyx.Session.Hands.run(hands, "t1", call("c1", "hold", %{"handles" => [{:slow, 60_000}]}))
+      run(hands, "t1", call("c1", "hold", %{"handles" => [{:slow, 60_000}]}))
 
     # A kill after the end of the release would confirm the handle, so the
     # error shows that the kill came first. No bound on the time is needed.
@@ -176,7 +195,7 @@ defmodule Helyx.Session.HandsTest do
   test "a release that raises, exits, or returns a bad value confirms nothing", %{core: core} do
     for handle <- [:raise, :exit, :bad, :improper] do
       hands = start_hands(core)
-      :ok = Helyx.Session.Hands.run(hands, "t1", call("c1", "hold", %{"handles" => [handle]}))
+      :ok = run(hands, "t1", call("c1", "hold", %{"handles" => [handle]}))
       assert_receive {:tool_result, "t1", "c1", {:error, text}}
       assert text =~ "could not be released"
       assert {:error, text} = upcase(hands, "c2")
@@ -187,8 +206,8 @@ defmodule Helyx.Session.HandsTest do
   test "an abort releases the handles of each tool in parallel", %{core: core} do
     hands = start_hands(core)
     arguments = %{"handles" => [%{"gate" => Gate.open()}], "ms" => 60_000}
-    :ok = Helyx.Session.Hands.run(hands, "t1", call("c1", "hold", arguments))
-    :ok = Helyx.Session.Hands.run(hands, "t1", call("c2", "hold_two", arguments))
+    :ok = run(hands, "t1", call("c1", "hold", arguments))
+    :ok = run(hands, "t1", call("c2", "hold_two", arguments))
     await_held(hands, 2)
 
     # One after the other, the second release would start only after the
@@ -204,7 +223,7 @@ defmodule Helyx.Session.HandsTest do
 
   test "a tool without release/3 cannot hold a handle", %{core: core} do
     hands = start_hands(core)
-    :ok = Helyx.Session.Hands.run(hands, "t1", call("c1", "hold_bare", %{}))
+    :ok = run(hands, "t1", call("c1", "hold_bare", %{}))
     assert_receive {:tool_result, "t1", "c1", {:error, text}}
     assert text =~ "release/3"
     assert upcase(hands, "c2") == {:ok, "HI"}
@@ -217,7 +236,7 @@ defmodule Helyx.Session.HandsTest do
     :erlang.trace(supervisor, true, [:procs])
     name = String.duplicate("n", 100_000)
 
-    :ok = Helyx.Session.Hands.run(start_hands(core), "t1", call("c1", name, %{}))
+    :ok = run(start_hands(core), "t1", call("c1", name, %{}))
     assert_receive {:tool_result, "t1", "c1", {:error, result}}
     assert result =~ "unknown tool: nnn"
     assert byte_size(result) <= @max_result_bytes
@@ -236,14 +255,14 @@ defmodule Helyx.Session.HandsTest do
           {10, String.duplicate("x", 10)},
           {200_000, String.duplicate("x", 4000)}
         ] do
-      :ok = Helyx.Session.Hands.run(hands, "t1", call("c1", "raise", %{"bytes" => bytes}))
+      :ok = run(hands, "t1", call("c1", "raise", %{"bytes" => bytes}))
       assert_receive {:tool_result, "t1", "c1", {:error, ^expected}}
     end
   end
 
   defp odd(hands, what) do
     with_log(fn ->
-      :ok = Helyx.Session.Hands.run(hands, "t1", call("c1", "odd", %{"do" => what}))
+      :ok = run(hands, "t1", call("c1", "odd", %{"do" => what}))
       assert_receive {:tool_result, "t1", "c1", {:error, result}}, wait_ms()
       result
     end)
@@ -297,7 +316,7 @@ defmodule Helyx.Session.HandsTest do
     setup %{tmp_dir: tmp_dir}, do: %{dir: Path.join(tmp_dir, "background"), gate: Gate.open()}
 
     defp background(hands, id, args) do
-      :ok = Helyx.Session.Hands.run(hands, "t1", call(id, "background", args))
+      :ok = run(hands, "t1", call(id, "background", args))
     end
 
     test "the start answer is the result, the Task leaves its turn, and its end comes after",
@@ -473,7 +492,7 @@ defmodule Helyx.Session.HandsTest do
         turn = "t#{n}"
 
         :ok =
-          Helyx.Session.Hands.run(
+          run(
             hands,
             turn,
             call("c", "background", %{"gate" => gate, "unstarted" => true})

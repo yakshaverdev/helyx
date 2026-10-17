@@ -27,7 +27,7 @@ none.
 | ---- | ----- | -------------- |
 | `workdir` argument | a string with no NUL byte, checked in `run/2`; missing, `null`, or `""` is the session folder | an error result that does not echo the value; nothing runs |
 | resolved folder in the error of a failed start | the reason of `Helyx.Watchdog.start/4` is cut to `Helyx.Watchdog.reason_max_bytes/0`, as for the session folder | cut |
-| `workdir` in the tool call line of the TUI | the generic cut of the call line (`Helyx.TUI.ViewModel.call_line/1`) | cut |
+| `workdir` in the tool call line of the TUI | the generic cut of the call line (`Helyx.TUI.CallLine.line/2`) | cut |
 
 ## Ownership
 
