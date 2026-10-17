@@ -34,6 +34,13 @@ defmodule Helyx.Core do
   9,000, default #{@recall_ms}; any other value stops the start with
   `{:invalid_recall_ms, value}` (`docs/features/memory.md`).
 
+  The server configuration of `Helyx.Sessions` is two more options:
+  `:sessions_dir`, the folder of the session files, and `:model`, the
+  default model ref. A path that is not absolute, not valid UTF-8, or holds a NUL byte, or
+  a model that does not parse as a model ref, refuses the start with
+  `{:invalid_option, key}`. Core runs at most 64 sessions
+  (`docs/features/server-management.md`).
+
   Several Core instances can run in one node under different names. Sessions
   and their subscribers are scoped to the Core that started them.
   """
@@ -42,7 +49,10 @@ defmodule Helyx.Core do
 
   @type name :: atom()
 
-  @doc "Child spec for a product's supervision tree. Takes `name:`, `plugins:`, and `recall_ms:`."
+  # The live sessions of one Core (server-management.md, "Bounds").
+  @max_sessions 64
+
+  @doc "Child spec for a product's supervision tree. Takes `name:`, `plugins:`, `recall_ms:`, `sessions_dir:`, and `model:`."
   @spec child_spec(keyword()) :: Supervisor.child_spec()
   def child_spec(opts) do
     %{
@@ -59,11 +69,20 @@ defmodule Helyx.Core do
     plugins = Keyword.get(opts, :plugins, [])
     recall_ms = Keyword.get(opts, :recall_ms, @recall_ms)
 
-    with {:ok, table} <- Helyx.Core.Plugins.resolve(plugins),
+    with :ok <- check(:sessions_dir, opts[:sessions_dir]),
+         :ok <- check(:model, opts[:model]),
+         {:ok, table} <- Helyx.Core.Plugins.resolve(plugins),
          {:ok, providers} <- providers(table),
          {:ok, ids} <- Helyx.Core.Plugins.provider_ids(providers),
          :ok <- check_recall_ms(recall_ms) do
-      meta = [plugins: table, provider_ids: ids, recall_ms: recall_ms]
+      meta = [
+        plugins: table,
+        provider_ids: ids,
+        recall_ms: recall_ms,
+        sessions_dir: opts[:sessions_dir],
+        model: opts[:model]
+      ]
+
       Supervisor.start_link(__MODULE__, {name, plugins, meta}, name: name)
     end
   end
@@ -73,6 +92,24 @@ defmodule Helyx.Core do
       do: :ok,
       else: {:error, {:invalid_recall_ms, ms}}
   end
+
+  # The folder goes into file paths, as the cwd of a session does. A
+  # relative folder would move with the working directory of the node.
+  defp check(_key, nil), do: :ok
+
+  defp check(:model, model) when is_binary(model) do
+    if match?({:ok, _}, Helyx.ModelRef.parse(model)),
+      do: :ok,
+      else: {:error, {:invalid_option, :model}}
+  end
+
+  defp check(:sessions_dir, dir) do
+    if match?({:ok, _}, Helyx.Session.Input.cwd(dir)) and Path.type(dir) == :absolute,
+      do: :ok,
+      else: {:error, {:invalid_option, :sessions_dir}}
+  end
+
+  defp check(key, _value), do: {:error, {:invalid_option, key}}
 
   # A session needs a provider. The table holds no empty list.
   defp providers(%{Helyx.Provider => providers}), do: {:ok, providers}
@@ -87,13 +124,16 @@ defmodule Helyx.Core do
 
     children =
       [
-        # The child spec holds the plugin table, the provider ids, and the
-        # recall limit, so a restart keeps them.
+        # The child spec holds the plugin table, the provider ids, the recall
+        # limit, and the server configuration, so a restart keeps them.
         {Registry, keys: :unique, name: sessions_registry(name), meta: meta},
         {Task.Supervisor, name: task_supervisor(name)},
         # The session process loads a resumed transcript, so the start
         # message holds no transcript for the supervisor to keep (#103, #589).
-        {DynamicSupervisor, name: session_supervisor(name), strategy: :one_for_one}
+        # The supervisor counts its children one start at a time, so
+        # concurrent starts cannot pass the cap.
+        {DynamicSupervisor,
+         name: session_supervisor(name), strategy: :one_for_one, max_children: @max_sessions}
       ] ++ plugin_children
 
     Supervisor.init(children, strategy: :one_for_one)
@@ -114,6 +154,11 @@ defmodule Helyx.Core do
   # The limit of a recall, in ms.
   @spec recall_ms(name()) :: pos_integer()
   def recall_ms(name), do: meta!(name, :recall_ms)
+
+  @doc false
+  # An option of the server configuration, or nil.
+  @spec config(name(), :sessions_dir | :model) :: String.t() | nil
+  def config(name, key), do: meta!(name, key)
 
   # Every Core sets these meta keys at start, so `:error` gets the answer of a
   # missing table, `ArgumentError`, which `Session.set_model/2` rescues. A

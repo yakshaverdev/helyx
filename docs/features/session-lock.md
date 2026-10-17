@@ -19,7 +19,7 @@ Decisions (owner, 2026-10-14):
 ## Interface changes
 
 - `Helyx.Session.start/2` and `resume/2` with `:sessions_dir`: new errors `{:session_locked, id}`, `{:lock_failed, text}`, and `:open_timeout` (#665, an open past its deadline in Bounds). `text` is one sentence for each cause: perl is not on the PATH, the lock file cannot be opened (with the OS reason), or perl gave no answer in time.
-- With two Cores in one node, a resume of a session that the other Core holds now gives `{:session_locked, id}`. A second resume in the same Core gives `{:session_locked, id}` too, in place of `{:already_started, pid}`: the Registry rejects it before the `init/1`, and `Helyx.Session.Server.start/3` gives that rejection the shape of a held lock.
+- With two Cores in one node, a resume of a session that the other Core holds now gives `{:session_locked, id}`. A second resume in the same Core gave `{:session_locked, id}` too, in place of `{:already_started, pid}`: the Registry rejects it before the `init/1`. Since #657 it attaches to the running session (`docs/features/server-management.md`).
 - A new `:notice` event text: the lock is lost (decision 5).
 - `Helyx.Session.Snapshot` has the field `persisting`, a boolean (decision 5, #629, which replaces `lock_lost` of #606). A client is a tolerant reader (ADR 0006). The client text is `Helyx.Reason.text(:not_saved)`.
 - `CodingAgent.error_text/1`, through its private `sentence/1`: `{:session_locked, id}` gives `session <id> is open in another process`, with no "could not start the agent" prefix. `{:lock_failed, text}` gives `could not start the agent: could not lock the session: <text>`. `:open_timeout` gives `could not start the agent: the session file did not open in time`.

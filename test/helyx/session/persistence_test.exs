@@ -179,18 +179,18 @@ defmodule Helyx.Session.PersistenceTest do
     end
 
     @tag :slow
-    test "keeps no copy after a start and after a failed start", %{
+    test "keeps no copy after a start and after a start that the Registry rejects", %{
       core: core,
       tmp_dir: dir,
       sup: sup,
       limit: limit
     } do
-      {:ok, _session} = Session.resume(core, sessions_dir: dir)
+      {:ok, session} = Session.resume(core, sessions_dir: dir)
       await(fn -> memory(sup) < limit end, "supervisor memory under #{limit}")
 
       # The Registry rejects the second start in the supervisor, before the
-      # init (docs/features/session-lock.md).
-      assert {:error, {:session_locked, "big000000000"}} = Session.resume(core, sessions_dir: dir)
+      # init, and the resume attaches (docs/features/server-management.md).
+      assert {:ok, ^session} = Session.resume(core, sessions_dir: dir)
       await(fn -> memory(sup) < limit end, "supervisor memory under #{limit}")
     end
 

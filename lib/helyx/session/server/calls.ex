@@ -52,6 +52,19 @@ defmodule Helyx.Session.Server.Calls do
   def handle({:set_model, %ModelRef{} = ref, provider}, _from, %State{} = state),
     do: {:reply, :ok, TurnLoop.settle(Records.set_model(state, ref, provider))}
 
+  # The entry of `Helyx.Sessions.list_live/1`, and the attach of a start.
+  def handle(:live, _from, %State{} = state) do
+    live = %Helyx.Sessions.Live{
+      id: state.id,
+      instance_id: state.instance_id,
+      cwd: state.cwd,
+      model: ModelRef.to_string(state.model),
+      status: if(state.activity == :idle, do: :idle, else: :running)
+    }
+
+    {:reply, live, state}
+  end
+
   # The abort replies through `GenServer.reply/2` (`TurnLoop.abort/2`).
   def handle(:abort, from, %State{} = state), do: {:noreply, TurnLoop.abort(state, from)}
 end
