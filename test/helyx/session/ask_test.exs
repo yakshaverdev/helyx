@@ -240,11 +240,38 @@ defmodule Helyx.Session.AskTest do
             "t" => "q\"\\\n\t\u0001é😀/",
             "n" => [-12, 0, 1.5, 1.0e300, -2.5e-7, true, false, nil]
           },
-          %{"k\"ey" => %{"in" => [[], %{}, ["x", %{"y" => [1, [2, [3]]]}]]}}
+          %{"k\"ey" => %{"in" => [[], %{}, ["x", %{"y" => [1, [2, [3]]]}]]}},
+          Map.new(1..40, &{"k#{&1}", &1}),
+          %{"" => ""},
+          %{"n" => [10 ** 100 - 1, -(10 ** 100 - 1)]}
         ] do
       size = byte_size(JSON.encode!(value))
       assert Helyx.Session.Input.json_object(value, size) == :ok
       assert Helyx.Session.Input.json_object(value, size - 1) == :error
+    end
+  end
+
+  # Literals, which are on no process heap: a copy of the integer is the
+  # only large term that the check could make (#744: `abs/1` copied the
+  # magnitude of a negative one). The heap limit of 4,000 words is under the
+  # 10,383 words of a copy, and about 2.5 times the 1,600 words that the
+  # rest of the check takes (measured).
+  @big 10 ** 200_000
+  @negative_big -(10 ** 200_000)
+
+  test "a large integer is refused with no copy of its magnitude" do
+    test = self()
+    limit = %{size: 4_000, kill: true, error_logger: false}
+
+    for check <- [
+          fn -> Helyx.Session.Input.json_object(%{"n" => @big}, 16_384) end,
+          fn -> Helyx.Session.Input.json_object(%{"n" => @negative_big}, 16_384) end
+        ] do
+      {pid, ref} =
+        Process.spawn(fn -> send(test, {:checked, check.()}) end, [:monitor, max_heap_size: limit])
+
+      assert_receive {:checked, :error}
+      assert_receive {:DOWN, ^ref, :process, ^pid, :normal}
     end
   end
 

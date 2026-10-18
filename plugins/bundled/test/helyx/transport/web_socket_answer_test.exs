@@ -172,9 +172,9 @@ defmodule Helyx.Transport.WebSocketAnswerTest do
 
     assert :erts_debug.flat_size(call) < 100
     assert call.() == {:error, :invalid_answer}
-    # The walk stops past 16 KiB, about 2,000 items; a walk of the whole
-    # list takes more than its 3,276,800 items. The bound has a margin of
-    # several hundred times the walk to the bound.
+    # The walk stops past 16 KiB, about 2,000 items: measured, 90,000 to
+    # 410,000 reductions (the first call takes the most), so the bound is at
+    # least 2.4 times the walk to the bound. A whole walk took 200 million.
     assert later - before < @load_reductions
   end
 end

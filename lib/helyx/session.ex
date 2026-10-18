@@ -240,9 +240,9 @@ defmodule Helyx.Session do
   def max_answer_bytes, do: @max_answer_bytes
 
   @doc """
-  Gives an answer that passes `check_answer/1` to the open ask `ask_id`
-  (`Helyx.Tool.ask/1`), and the session emits `:ask_end`; an id that is not
-  open gives `{:error, :not_waiting}` (`docs/features/question-tool.md`).
+  Gives an answer that passes `check_answer/1` to the open ask `ask_id`; the
+  session emits `:ask_end`. Any other id, as of an answered ask or one whose
+  call or turn ended, gets `{:error, :not_waiting}` (`docs/features/question-tool.md`).
   """
   @spec answer(t(), String.t(), map()) ::
           :ok | {:error, :invalid_answer | :not_waiting | :session_not_found}

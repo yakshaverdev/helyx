@@ -180,3 +180,30 @@ Counts: Codex 1 defect (medium), spec 0 defects and 5 doc or comment findings, f
 | 5 | spec | no test of an accepted answer's worker heap (the agent measured 87 to 218 KB for the worst 16 KiB answers), and no test of exactness for a map of more than 32 keys, an empty string, or an integer of 100 digits (a fuzz of 20,000 values found no mismatch) | probe | **open** |
 | 6 | failure path | outside this diff: `Frame.json/1` lets `JSON.decode/3` raise `SystemLimitError` on an integer of about 4 million digits, so the connection ends with 1011 and takes its subscriptions down; no worker holds the value | yes (socket probe) | **open**, master's codec: a ticket for the transport |
 | 7 | spec | the decode in the connection of a 20 MiB answer frame raised VM memory by 801 MiB | probe | accepted: it is the documented codec of every frame ("the decoded frame stays in the connection"), not this change |
+
+## The last round: the small-fix round of the `abs/1` defect (owner decision of 2026-10-18)
+
+The fix (`lib/helyx/data/message.ex`, 8 lines added with one blank line from the formatter, and 3 removed; no added function): `big_integer?/1` and the guard of `cap_integers/1` compare with `@integer_limit` and `@integer_floor` (`-@integer_limit`, a constant), so no part of a large integer is copied. Both used `abs/1`.
+
+Other items of the decision: the comment of the 25 MiB test states the measured margin; the wire doc cell for a refused answer names the worker that replies `invalid_answer`; "the one checked object" is gone; the `@doc` of `Helyx.Session.answer/3` states the `not_waiting` cases in short form (`session.ex` stays at 400 lines); the exactness test has a map of 40 keys, an empty string, and 100-digit integers of both signs. The frame decoder is not touched (a transport ticket).
+
+The new test "a large integer is refused with no copy of its magnitude" (`test/helyx/session/ask_test.exs`) checks both signs in a process with a heap limit of 4,000 words. The integers are literals, on no process heap, so a copy of 10,383 words is the only large term that the check could make. A first form with the integer on the heap was flaky: the heap of a process grows in steps, and the positive case was killed 4 times in 20 with the fix. The literal form, 30 runs of each sign: old code, the negative case killed 30 times and the positive case normal 30 times; new code, both normal 30 times. The test failed on the old code ("1 test, 1 failure").
+
+Round D (reduced: spec and failure path, and Codex). Bounds sensor (base `HEAD`, `4772480d`):
+
+```text
+bounds sensor: 0 candidate functions, 0 flagged, 0 without an answer
+```
+
+Counts: Codex 0 (verdict approve), spec 0 defects and 3 wording findings, failure path 0 defects. No defect was reproduced, so the loop ends. The first spec and failure-path agents of this round stopped at a usage limit before they reported; both ran again.
+
+| # | Source | Finding | Reproduced | Resolution |
+| - | ------ | ------- | ---------- | ---------- |
+| 1 | spec | the 25 MiB test comment said 350,000 to 410,000 reductions; a warm run of the test measured 90,000 to 159,000, a first call 372,000 | yes | the comment states 90,000 to 410,000, so the bound is at least 2.4 times the walk to the bound |
+| 2 | spec | the heap test comment said the limit is "far over" the rest of the check, which takes 1,500 to 1,600 words | yes | the comment states about 2.5 times the 1,600 words |
+| 3 | spec | the `@doc` of `answer/3` named only the asks that were open before, not an id that never was | read | "any other id" gets `not_waiting` |
+| 4 | failure path | the review record still marked the `abs/1` finding open | read | this section closes it |
+
+Probes with no finding (the two agents): the old and the new compares agree on 2,055 integers around ±10^100, and on 10^k±2 for both signs at every boundary; the walk equals `byte_size(JSON.encode!/1)` on 4,000 random shapes at the bound and one under; a map of 1,000,000 keys, a list of 3,000,000 items, a list 1,000,000 deep, and a 25 MiB string (valid and not) each cost about 80,000 reductions or less; through `json_object/2`, `Ops.check/3`, `Session.answer/3`, and `Tool.ask/1`, a 200,000-digit integer of either sign is refused with no copy.
+
+Status of the open items of the round before: the `abs/1` defect, the test comment, the wire doc cell, the `@doc` of `answer/3`, and the exactness cases are closed. Open: no test of the worker heap of an accepted answer (probed: 87 to 218 KB for the worst 16 KiB answers); the frame decoder's `SystemLimitError` (a transport ticket of the orchestrator).
