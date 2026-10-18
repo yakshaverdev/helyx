@@ -139,3 +139,14 @@ Counts: Codex 0 (verdict approve), standards 2 hard (docs) and 7 judgement calls
 | 6 | spec | no test that a second ask of the same call gets a fresh picker | read | test added in `plugins/bundled/test/helyx/tui/question_test.exs` |
 
 Judged and not changed: the ask entry stays a tuple with the id as its key; the kill test reads the asks of the session state to find the Task; `test = self()` as in the other tests of the file. Accepted: the id is random (72 bits), as every other id of the session; a provider that reuses a call id across turns is outside the contract (#369), and the Test provider runs no tool for such a call.
+
+### Rebase onto `3c289be0` and round C (reduced)
+
+The rebase brought #779: the connection checks the params of a request with `Ops.check/3` before its worker, and runs the returned closure in the worker. The `answer` op became a `check/3` clause that returns `{:ok, fn -> Session.answer(session, ask_id, answer) end}`, the only conflict. The schema SHA still matches the doc, and the protocol stays 3. Counts: spec 1 defect and 1 stale doc, failure path 1 defect (the same mechanism).
+
+| # | Source | Finding | Reproduced | Resolution |
+| - | ------ | ------- | ---------- | ---------- |
+| 1 | spec, failure path | `check/3` checks only that `answer` is a map, so a worker holds the whole decoded value of a frame of up to 25 MiB, 8 to 13 times its JSON text, against the bounds row "params of a request worker" of #779; `Input.json_object/2` then walks and encodes the whole value before it compares the size with 16,384 bytes. A 26 MB `answer` peaked at 2.2 to 4.0 GB of VM memory | yes (closure size with `:erts_debug.flat_size`; a 26 MB answer over the wire) | **open**. This is round 3 of this fix, and the fix (a size walk that stops past the bound in `Input.json_object/2`, and the same bound at the check stage before the worker) touches two code files and changes a function, so the small-fix round does not apply: the code stays as reviewed, and the defect goes to the orchestrator |
+| 2 | spec | `docs/adr/0008-client-server-wire.md` lists the operations and did not name `answer` | read | fixed |
+
+The defect is older than the rebase: the walk and the encode of a large answer were there since the wire op came in round 1; #779 states the worker bound that makes it visible.
