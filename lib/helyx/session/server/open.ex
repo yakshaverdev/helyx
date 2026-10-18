@@ -6,7 +6,7 @@ defmodule Helyx.Session.Server.Open do
   # attaches, or gives an error (server-management.md, session-lock.md).
   # `Helyx.Session.Server` keeps the GenServer callbacks and calls in here.
 
-  alias Helyx.Session.{Background, Hands, Id, Lock, Queue}
+  alias Helyx.Session.{Background, Hands, Id, Input, Lock, Queue, Transcript}
   alias Helyx.Session.Server.State
 
   # Starts the session process under Core for `resume/2`. `open` is nil
@@ -28,6 +28,29 @@ defmodule Helyx.Session.Server.Open do
       {:error, :max_children} -> attach(Helyx.Session.pid(session(state)), session(state), start)
       {:started, result} -> result
       error -> error
+    end
+  end
+
+  # The open of `Helyx.Session.resume/2`: the read of the locked file and
+  # its model ref.
+  # A crash can leave tool calls with no result, and the disk can hold a
+  # result with no open call. The session reads them with interrupted
+  # results and without the stray results, and writes nothing (#269, #417, #584).
+  def load(state, path) do
+    with {:ok, resumed} <- Helyx.Session.File.resume_picked(path, state.cwd),
+         {:ok, {ref, provider}} <- Input.model(state.core, resumed.model) do
+      {:ok,
+       %{
+         state
+         | model: ref,
+           provider: provider,
+           file: resumed.file,
+           transcript: Transcript.repair(resumed.messages),
+           sync: {:replay, resumed.messages},
+           summary: resumed.summary,
+           resume_ids: resumed.resume_ids,
+           compacted: resumed.compacted
+       }}
     end
   end
 

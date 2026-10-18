@@ -223,8 +223,8 @@ defmodule Helyx.Tool do
 
   @doc """
   The context of the calling tool call: its Core, the id of its session,
-  the tool names of the session, its call id, and the model ref of its
-  turn, as `provider/model`. The
+  the tool names of the session, the name of the called tool, its call id,
+  and the model ref of its turn, as `provider/model`. The
   hands set it when the call's Task starts, so it needs no call to them.
   Raises in any other process (`docs/features/agent-tool.md`).
   """
@@ -232,6 +232,7 @@ defmodule Helyx.Tool do
           core: Helyx.Core.name(),
           session_id: String.t(),
           tools: [String.t()],
+          tool: String.t(),
           call_id: String.t(),
           model: String.t()
         }
@@ -240,6 +241,31 @@ defmodule Helyx.Tool do
       %{} = context -> context
       nil -> raise ArgumentError, "context/0 runs only in a tool call"
     end
+  end
+
+  # The most bytes of the JSON of a request to `ask/1`.
+  @max_request_bytes 65_536
+
+  @doc """
+  Asks the clients of the session and waits for the first answer: a JSON
+  object that a client gave with `Helyx.Session.answer/3`. The session
+  emits `request`, a JSON object of valid UTF-8 whose JSON is at most
+  #{@max_request_bytes} bytes, in an `:ask` event with the call id and the
+  tool name. `{:error, :no_client}` at once when no subscriber can answer
+  (`Helyx.Session.subscribe/2`, `answers: true`), and `{:error,
+  :not_running}` when the call is not a running call of the current turn,
+  such as a background run. The wait has no timeout: the end of the turn
+  ends it, and the hands kill the call. Raises on any other request and
+  outside a tool call (`docs/features/question-tool.md`).
+  """
+  @spec ask(map()) :: {:ok, map()} | {:error, :no_client | :not_running}
+  def ask(request) do
+    %{core: core, session_id: id, call_id: call_id, tool: tool} = context()
+
+    if Helyx.Session.Input.json_object(request, @max_request_bytes) != :ok,
+      do: raise(ArgumentError, "an ask request is a JSON object of at most 64 KiB")
+
+    GenServer.call(Helyx.Session.Server.via(core, id), {:ask, call_id, tool, request}, :infinity)
   end
 
   @doc """

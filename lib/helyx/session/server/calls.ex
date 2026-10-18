@@ -6,7 +6,7 @@ defmodule Helyx.Session.Server.Calls do
 
   alias Helyx.{Message, ModelRef}
   alias Helyx.Session.History
-  alias Helyx.Session.Server.{Compaction, Events, Records, State, TurnLoop}
+  alias Helyx.Session.Server.{Asks, Compaction, Events, Records, State, TurnLoop}
 
   require Logger
 
@@ -36,8 +36,17 @@ defmodule Helyx.Session.Server.Calls do
 
   # The entry and the snapshot or the replay in one message, so every later
   # event reaches the caller. A repeated subscribe keeps the entry's monitor.
-  def handle({:subscribe, pid, ref, tail, after_}, _from, %State{} = state) do
-    {reply, state} = Events.subscribe(state, pid, ref, tail, after_)
+  def handle({:subscribe, pid, ref, opts}, _from, %State{} = state) do
+    {reply, state} = Events.subscribe(state, pid, ref, opts)
+    {:reply, reply, state}
+  end
+
+  # The caller waits for the answer (`Asks.ask/5`).
+  def handle({:ask, call_id, tool, request}, from, %State{} = state),
+    do: Asks.ask(state, from, call_id, tool, request)
+
+  def handle({:answer, call_id, answer}, _from, %State{} = state) do
+    {reply, state} = Asks.answer(state, call_id, answer)
     {:reply, reply, state}
   end
 

@@ -1,8 +1,9 @@
 defmodule Helyx.Session.Input do
   @moduledoc false
-  # The checks of client input at the session API: the cwd of a start or a
-  # resume, the child options of a start, and the origin and the text of a
-  # send (docs/features/coding-agent.md, "Bounds";
+  # The checks of client input at the session API: the cwd and the model
+  # of a start or a resume, the child options of a start, the origin and
+  # the text of a send, and the JSON object of an answer, which also checks
+  # the request of a tool (docs/features/coding-agent.md, "Bounds";
   # docs/features/message-identity.md). Inner code trusts them.
 
   alias Helyx.Message
@@ -60,6 +61,16 @@ defmodule Helyx.Session.Input do
 
   defp tools(_names), do: {:error, :invalid_tools}
 
+  # A model ref string to its parsed ref and its provider plugin, for a
+  # start, a resume, and a switch alike.
+  @spec model(Helyx.Core.name(), String.t()) ::
+          {:ok, {Helyx.ModelRef.t(), module()}} | {:error, Helyx.Session.model_error()}
+  def model(core, string) do
+    with {:ok, ref} <- Helyx.ModelRef.parse(string),
+         {:ok, provider} <- Helyx.Provider.find(core, ref.provider),
+         do: {:ok, {ref, provider}}
+  end
+
   # Product code may set only `:product`.
   @spec origin(keyword()) :: {:ok, Message.origin()} | {:error, :invalid_origin}
   def origin([]), do: {:ok, %{kind: :user, id: nil}}
@@ -73,4 +84,28 @@ defmodule Helyx.Session.Input do
   @spec text(binary()) :: :ok | {:error, :text_too_large | :invalid_utf8}
   def text(text) when byte_size(text) > @max_text_bytes, do: {:error, :text_too_large}
   def text(text), do: if(String.valid?(text), do: :ok, else: {:error, :invalid_utf8})
+
+  # A JSON object as a JSON decoder gives it: string keys, and values that
+  # are strings, numbers, booleans, nil, lists, and such objects; every
+  # string valid UTF-8, and no integer over the digit limit, whose encode is
+  # quadratic. Its JSON encode is at most `max` bytes (docs/features/question-tool.md).
+  @spec json_object(term(), pos_integer()) :: :ok | :error
+  def json_object(value, max) do
+    with true <- is_map(value) and json?(value),
+         {:ok, size} when size <= max <- Message.encoded_size(value),
+         do: :ok,
+         else: (_ -> :error)
+  end
+
+  defp json?(value) when is_binary(value), do: String.valid?(value)
+  defp json?(value) when is_integer(value), do: not Message.big_integer?(value)
+  defp json?(value) when is_float(value) or value in [true, false, nil], do: true
+
+  defp json?(value) when is_list(value),
+    do: not List.improper?(value) and Enum.all?(value, &json?/1)
+
+  defp json?(value) when is_map(value) and not is_struct(value),
+    do: Enum.all?(value, fn {key, val} -> is_binary(key) and json?(key) and json?(val) end)
+
+  defp json?(_value), do: false
 end

@@ -42,8 +42,8 @@ defmodule Helyx.TUI do
   alias ExRatatui.Subscription
   alias Helyx.Session
   alias Helyx.TUI.{Command, Composer, Footer, Quit, Selection, SessionList, Start, Switch}
-  alias Helyx.TUI.{Search, Transcript, ViewModel}
-  require Helyx.TUI.{Quit, Search}
+  alias Helyx.TUI.{Question, Search, Transcript, ViewModel}
+  require Helyx.TUI.{Question, Quit, Search}
 
   # One screen of scroll is the rows above the composer and the footer.
   @footer_rows Footer.rows()
@@ -77,11 +77,10 @@ defmodule Helyx.TUI do
       instance_id: nil,
       vm: nil,
       sessions_dir: opts[:sessions_dir],
-      # A running `Helyx.TUI.Switch`, or nil.
       switch: nil,
-      # The open `/resume` list and search, in the place of the composer, or nil.
       list: nil,
       search: nil,
+      question: nil,
       composer: Composer.new(),
       cwd: cwd,
       # Row 1 of the footer. The branch comes from a task that starts
@@ -114,7 +113,7 @@ defmodule Helyx.TUI do
 
   def handle_info({:helyx_event, %{instance_id: id} = event}, %{instance_id: id} = state) do
     :ok = Session.ack(state.session, event)
-    state = %{state | vm: ViewModel.apply(state.vm, event)}
+    state = Question.sync(%{state | vm: ViewModel.apply(state.vm, event)})
     # A turn can change the branch.
     state = if event.type == :turn_end, do: read_branch(state), else: state
     {:noreply, settle(sync_busy(Switch.event(state, event)))}
@@ -200,15 +199,16 @@ defmodule Helyx.TUI do
     {:noreply, settle(state, &Transcript.keep/4)}
   end
 
+  # Escape aborts, also over a hidden search; a Task keeps the wait off the render loop.
+  def handle_event(%Key{code: "esc", kind: "press"}, state)
+      when state.search == nil or state.question != nil,
+      do: {:noreply, tap(state, &Task.start(Session, :abort, [&1.session]))}
+
+  def handle_event(event, state) when Question.handles?(state.question, event),
+    do: Question.handle(event, state)
+
   def handle_event(event, state) when Search.handles?(state.search, event),
     do: Search.handle(event, state, layout(state, state.terminal_size_fn.()))
-
-  def handle_event(%Key{code: "esc", kind: "press"}, state) do
-    # Abort waits for the hands to kill every OS process; a Task keeps that
-    # wait off the render loop.
-    Task.start(Session, :abort, [state.session])
-    {:noreply, state}
-  end
 
   def handle_event(%Resize{}, state), do: {:noreply, settle(%{state | selection: nil})}
 
@@ -326,6 +326,7 @@ defmodule Helyx.TUI do
     middle =
       cond do
         state.list -> [{SessionList.widget(state.list), middle}]
+        state.question -> Question.widgets(state.question, middle)
         state.search -> Search.widgets(state.search, marks, middle)
         true -> Composer.widgets(state.composer, middle)
       end
@@ -344,7 +345,7 @@ defmodule Helyx.TUI do
       :vertical,
       [
         {:min, 0},
-        {:length, middle_rows(state, height - @footer_rows)},
+        {:length, middle_rows(state, width - 2 * @margin, height - @footer_rows)},
         {:length, @footer_rows}
       ],
       horizontal_margin: @margin
@@ -353,8 +354,9 @@ defmodule Helyx.TUI do
 
   defp layout(_state, {:error, _reason}), do: nil
 
-  defp middle_rows(%{list: nil, composer: composer}, room), do: Composer.rows(composer, room)
-  defp middle_rows(%{list: list}, room), do: SessionList.rows(list, room)
+  defp middle_rows(%{list: %SessionList{} = list}, _width, room), do: SessionList.rows(list, room)
+  defp middle_rows(%{question: %Question{} = q}, width, room), do: Question.rows(q, width, room)
+  defp middle_rows(%{composer: composer}, _width, room), do: Composer.rows(composer, room)
 
   # Scroll position
 

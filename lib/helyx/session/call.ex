@@ -25,13 +25,12 @@ defmodule Helyx.Session.Call do
 
   # The subscribe of `Helyx.Session.subscribe/2`. The monitor comes before
   # the call, so the real exit reason of the pid of the reply is never lost.
-  def subscribe(pid, tail, after_, timeout),
-    do: subscribe(pid, tail, after_, timeout, Process.monitor(pid))
+  def subscribe(pid, opts, timeout), do: subscribe(pid, opts, timeout, Process.monitor(pid))
 
   # On a failure the unsubscribe follows the call from this process to the
   # same pid, so a live session handles it after the subscribe.
-  defp subscribe(pid, tail, after_, timeout, ref) do
-    case call_pid(pid, {:subscribe, self(), ref, tail, after_}, timeout) do
+  defp subscribe(pid, opts, timeout, ref) do
+    case call_pid(pid, {:subscribe, self(), ref, opts}, timeout) do
       %Helyx.Session.Snapshot{} = snapshot ->
         {:ok, snapshot, ref}
 

@@ -398,7 +398,7 @@ defmodule Helyx.TUITest do
         send(test, :registered)
 
         receive do
-          {:"$gen_call", from, {:until, _, {:subscribe, _, _ref, nil, nil}}} ->
+          {:"$gen_call", from, {:until, _, {:subscribe, _, _ref, {nil, nil, true}}}} ->
             GenServer.reply(from, snapshot)
         end
 
@@ -647,7 +647,8 @@ defmodule Helyx.TUITest do
       location: "~",
       quit: nil,
       list: nil,
-      search: nil
+      search: nil,
+      question: nil
     }
 
     :ok = ExRatatui.draw(terminal, TUI.render(state, %{width: 3, height: 5}))

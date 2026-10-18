@@ -20,7 +20,13 @@ defmodule Helyx.Tool.AgentTest do
     start_supervised!(
       {Helyx.Core,
        name: core,
-       plugins: [Fake, Helyx.Tool.Agent, Helyx.Tool.Read, Helyx.Test.Tool.Block],
+       plugins: [
+         Fake,
+         Helyx.Tool.Agent,
+         Helyx.Tool.Question,
+         Helyx.Tool.Read,
+         Helyx.Test.Tool.Block
+       ],
        sessions_dir: dir},
       id: core
     )
@@ -90,6 +96,16 @@ defmodule Helyx.Tool.AgentTest do
 
     {:ok, path, _header} = Scan.find(dir, child_id(session, "c1"))
     assert File.read!(path) =~ "unknown tool: agent"
+  end
+
+  test "a child has no question tool: no user watches it", %{core: core, tmp_dir: dir} do
+    question = %ToolCall{id: "q1", name: "question", arguments: %{"questions" => []}}
+    session = parent(core, dir, [[agent("c1")], [question], ["no question"], ["Done."]])
+    [result] = results(collect_until(:turn_end))
+    assert Message.text(result) == "no question"
+
+    {:ok, path, _header} = Scan.find(dir, child_id(session, "c1"))
+    assert File.read!(path) =~ "unknown tool: question"
   end
 
   test "a child gets no tool that the parent lacks", %{core: core, tmp_dir: dir} do

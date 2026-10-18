@@ -12,15 +12,18 @@ defmodule Helyx.Session.History do
 
   @type history_page :: %{messages: [Message.t()], more: boolean(), next: String.t() | nil}
 
-  # The option list of `Helyx.Session.subscribe/2`: `tail`, `after`, both,
-  # or none, each at most once (docs/features/replay-ring.md). `length/1`
-  # fails the guard of an improper list.
-  def subscribe(opts) when is_list(opts) and length(opts) <= 2 do
-    {after_opts, tail_opts} = Enum.split_with(opts, &match?({:after, _}, &1))
+  # The option list of `Helyx.Session.subscribe/2`: `tail`, `after`, and
+  # `answers`, each at most once (docs/features/replay-ring.md,
+  # docs/features/question-tool.md). `length/1` fails the guard of an
+  # improper list.
+  def subscribe(opts) when is_list(opts) and length(opts) <= 3 do
+    {after_opts, opts} = Enum.split_with(opts, &match?({:after, _}, &1))
+    {answers_opts, tail_opts} = Enum.split_with(opts, &match?({:answers, _}, &1))
 
     with {:ok, tail} <- count(tail_opts, :tail, nil),
          {:ok, after_} <- after_seq(after_opts),
-         do: {:ok, tail, after_}
+         {:ok, answers?} <- answers(answers_opts),
+         do: {:ok, {tail, after_, answers?}}
   end
 
   def subscribe(_opts), do: {:error, :invalid_limit}
@@ -31,6 +34,10 @@ defmodule Helyx.Session.History do
     do: {:ok, {id, seq}}
 
   defp after_seq(_opts), do: {:error, :invalid_after}
+
+  defp answers([]), do: {:ok, false}
+  defp answers([{:answers, answers?}]) when is_boolean(answers?), do: {:ok, answers?}
+  defp answers(_opts), do: {:error, :invalid_limit}
 
   # The option list of `Helyx.Session.history/4`: none, or `limit`.
   def limit(opts), do: count(opts, :limit, @default_count)

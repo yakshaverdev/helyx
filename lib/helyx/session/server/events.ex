@@ -10,7 +10,7 @@ defmodule Helyx.Session.Server.Events do
 
   alias Helyx.{Event, ModelRef}
   alias Helyx.Session.{History, Queue, Ring, Snapshot, Totals, Turn}
-  alias Helyx.Session.Server.{State, Wait}
+  alias Helyx.Session.Server.{Asks, State, Wait}
 
   # The unacked events of one subscriber (ADR 0008 §5).
   @credits 16_384
@@ -20,8 +20,8 @@ defmodule Helyx.Session.Server.Events do
   # `after` from the ring, or the snapshot. The base of the credits is the
   # seq that the reply ends at for the subscriber, so a replayed event
   # counts. Each subscription starts with fresh credits; a repeated
-  # subscribe keeps the monitor of its entry.
-  def subscribe(%State{} = state, pid, ref, tail, after_) do
+  # subscribe keeps the monitor of its entry and sets `answers?` again.
+  def subscribe(%State{} = state, pid, ref, {tail, after_, answers?}) do
     {reply, base} =
       case replay(state, after_) do
         {:ok, events} -> {{:replay, events}, elem(after_, 1)}
@@ -30,11 +30,11 @@ defmodule Helyx.Session.Server.Events do
 
     monitor =
       case state.subscribers do
-        %{^pid => {monitor, _ref, _acked}} -> monitor
+        %{^pid => {monitor, _ref, _acked, _answers?}} -> monitor
         _none -> Process.monitor(pid)
       end
 
-    {reply, put_in(state.subscribers[pid], {monitor, ref, base})}
+    {reply, put_in(state.subscribers[pid], {monitor, ref, base, answers?})}
   end
 
   defp replay(%State{instance_id: id, ring: %Ring{seq: seq} = ring}, {id, after_seq})
@@ -47,8 +47,8 @@ defmodule Helyx.Session.Server.Events do
   # session, or of a pid with no entry, acks nothing that the session sent.
   def ack(%State{subscribers: subscribers, ring: %Ring{seq: seq}} = state, pid, acked)
       when acked <= seq and is_map_key(subscribers, pid) do
-    {monitor, ref, base} = subscribers[pid]
-    put_in(state.subscribers[pid], {monitor, ref, max(base, acked)})
+    {monitor, ref, base, answers?} = subscribers[pid]
+    put_in(state.subscribers[pid], {monitor, ref, max(base, acked), answers?})
   end
 
   def ack(state, _pid, _acked), do: state
@@ -83,7 +83,8 @@ defmodule Helyx.Session.Server.Events do
       queue: Queue.counts(state.queue),
       persisting: state.file != nil,
       usage: usage,
-      context: context
+      context: context,
+      asks: Asks.snapshot(state)
     }
   end
 
@@ -119,7 +120,8 @@ defmodule Helyx.Session.Server.Events do
 
   # The event, or past the credits the slow end in its place: the entry
   # goes, and no event follows the end.
-  defp deliver(pid, {monitor, ref, acked}, %Event{seq: seq}) when seq - acked > @credits do
+  defp deliver(pid, {monitor, ref, acked, _answers?}, %Event{seq: seq})
+       when seq - acked > @credits do
     Process.demonitor(monitor, [:flush])
     send(pid, {:helyx_end, ref, :slow})
     :slow

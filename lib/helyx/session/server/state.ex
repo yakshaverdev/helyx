@@ -79,7 +79,8 @@ defmodule Helyx.Session.Server.State do
     tools: %{},
     transcript: [],
     # Each subscriber pid with the session's monitor of it, the ref of its
-    # last subscribe, and the seq up to which it acked (replay-ring.md).
+    # last subscribe, the seq up to which it acked (replay-ring.md), and
+    # whether it can answer an ask.
     subscribers: %{},
     # The seq of the newest event, and the newest events of the session
     # (`Helyx.Session.Ring`).
@@ -142,7 +143,7 @@ defmodule Helyx.Session.Server.State do
           tool_specs: [Helyx.Tool.spec()],
           tools: %{String.t() => {module(), boolean()}},
           transcript: [Helyx.Message.t()],
-          subscribers: %{pid() => {reference(), reference(), non_neg_integer()}},
+          subscribers: %{pid() => {reference(), reference(), non_neg_integer(), boolean()}},
           ring: Helyx.Session.Ring.t(),
           activity: :idle | Turn.t() | Wait.t(),
           queue: Queue.t(),

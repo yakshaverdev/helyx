@@ -93,8 +93,8 @@ defmodule Helyx.Session.Hands do
 
   @doc """
   Starts a tool call. `context` has the session id and the model of
-  `Helyx.Tool.context/0`; the hands add the Core, the tool names, and the
-  call id. The result is sent to the
+  `Helyx.Tool.context/0`; the hands add the Core, the tool names, the
+  name of the called tool, and the call id. The result is sent to the
   session. A cast: a turn runs Helyx tools while the hands can release its
   provider process.
   """
@@ -342,7 +342,12 @@ defmodule Helyx.Session.Hands do
     cwd = state.cwd
 
     context =
-      Map.merge(context, %{core: state.core, tools: Map.keys(state.tools), call_id: call.id})
+      Map.merge(context, %{
+        core: state.core,
+        tools: Map.keys(state.tools),
+        tool: call.name,
+        call_id: call.id
+      })
 
     case Map.fetch(state.tools, call.name) do
       :error ->

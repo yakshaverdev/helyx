@@ -59,19 +59,21 @@ Every `req` gets one `res`: `ok: true` with the result, or `ok: false` with an e
 | `sessions.saved` | `{cwd?, after?, limit?}`: `cwd` is a folder, or absent for every folder; `after` is the `next` of the page before; `limit` from 1 to 256, default 50 | `{items: [saved_session], next}`, newest first; `next` is null on the last page | `bad_params` |
 | `start` | `{cwd, model?}`; no `model` takes the default of the server | `{session}` | `invalid_cwd`, `invalid_model_ref`, `unknown_provider`, `too_many_sessions`, `start_failed` |
 | `resume` | `{id}`, or `{cwd}` for the newest session of the folder | `{session}`; a session that runs is attached, not started again | `invalid_cwd`, `not_found`, `invalid_model_ref`, `unknown_provider`, `too_many_sessions`, `start_failed` |
-| `subscribe` | `{session, tail?, after?}`: `tail` from 1 to 1,000, default 200; `after` is `{instance_id, seq}` | `{sub, replay: [event]}` or `{sub, snapshot}` | `session_not_found`, `too_many_subscriptions` |
+| `subscribe` | `{session, tail?, after?, answers?}`: `tail` from 1 to 1,000, default 200; `after` is `{instance_id, seq}`; `answers: true` says that this client answers asks (`docs/features/question-tool.md`) | `{sub, replay: [event]}` or `{sub, snapshot}` | `session_not_found`, `too_many_subscriptions` |
 | `unsubscribe` | `{sub}` | `{}` | `unknown_sub` |
 | `history` | `{session, instance_id, before, limit?}`: `before` is a message id; `limit` from 1 to 1,000, default 200 | `{messages: [message], more, next}`, oldest first, all older than `before`; `next` is the `before` of the page before it, null when `more` is false | `session_not_found`, `instance_changed`, `unknown_message` |
 | `prompt`, `steer`, `follow_up` | `{session, text, origin?}`; `origin` is `{kind: "product", id}` | `{}` | `session_not_found`, `text_too_large`, `invalid_utf8`, `invalid_origin`, `queue_full`, and for `prompt` also `turn_running` |
 | `abort` | `{session}` | `{}`; a failed cleanup still gives `{}`, and the `notice` event "abort cleanup failed" tells the clients. The events that the session sent before the abort still come to each subscription, then `turn_end` with `aborted`; no event of the turn follows it. The `{}` and these events have no order (O6) | `session_not_found` |
 | `set_model` | `{session, model}` | `{}`; the next turn uses it, a running turn keeps its model | `session_not_found`, `invalid_model_ref`, `unknown_provider` |
 | `compact` | `{session, text?}`: the instructions, default `""` | `{}`; a provider that keeps no history gives a `notice` event | `session_not_found`, `text_too_large`, `invalid_utf8`, `turn_running` |
+| `answer` | `{session, call_id, answer}`: `answer` is a JSON object of at most 16,384 bytes | `{}`; the first answer to an ask goes to its call, and every client gets `ask_end` | `session_not_found`, `invalid_answer`, `not_waiting` |
 | `stop` | `{session}` | `{}` after the session ended: a running turn aborts first, as at `abort`, then the session stops and every subscription of it gets `session_end` with `stopped`. A stopped session frees its place in the live-session cap and can be resumed from its file | `session_not_found` |
 
 Every operation can also answer `unknown_op`, `bad_params`, `busy`, `timeout`, and `failed`.
 
 - `live_session` is `{id, instance_id, cwd, model, status}`. `status` is `"idle"` when the session has no turn and no wait, else `"running"`.
 - `saved_session` is `{id, cwd, model, mtime, prompt}`: `mtime` in POSIX seconds, `model` from the header, `prompt` the first user text in the head of the file (`docs/features/session-list.md`). The texts come from the file: a client cleans them before it shows them.
+- An `ask` event is a tool call that waits for a user: a client that subscribed with `answers: true` shows `request` and sends `answer`. The `request` and the `answer` of the bundled `question` tool are in `docs/features/question-tool.md`. `ask_end` ends the ask for every client: `answered` when an answer went to the call, `ended` when the call or the turn ended first. The snapshot `asks` holds the asks that wait, oldest first.
 - `start_failed` is any other start error of ADR 0006 §2, a lock that another OS process holds too. Its `text` is `Helyx.Reason.text/1` of the term; the log gets the term.
 - `bad_params` is a missing key, a key of the wrong type, a value out of its range, or a key that the operation does not name. The server checks every param at its entry.
 
@@ -117,7 +119,7 @@ The schema below is the contract. The test of #660 computes the SHA-256 of the l
 
 <!-- wire-schema:start -->
 ```text
-protocol 2
+protocol 3
 
 notation: {k: T} an object; k? may be absent (absent = null or false);
   T | U either; [T] a list; "x" that string; int a JSON integer >= 0;
@@ -147,18 +149,18 @@ error_code = "unknown_op" | "bad_params" | "busy" | "timeout" | "failed"
            | "invalid_cwd" | "invalid_model_ref" | "unknown_provider"
            | "not_found" | "start_failed"
            | "invalid_utf8" | "invalid_origin" | "queue_full" | "turn_running"
-           | "text_too_large"
+           | "text_too_large" | "invalid_answer" | "not_waiting"
 
 op = "sessions.live" | "sessions.saved" | "start" | "resume" | "subscribe"
    | "unsubscribe" | "history" | "prompt" | "steer" | "follow_up"
-   | "abort" | "set_model" | "compact" | "stop"
+   | "abort" | "set_model" | "compact" | "stop" | "answer"
 
 params.sessions.live   = {}
 params.sessions.saved  = {cwd?: string, after?: string, limit?: int}
 params.start           = {cwd: string, model?: string}
 params.resume          = {id: string} | {cwd: string}
 params.subscribe       = {session: string, tail?: int,
-                          after?: {instance_id: string, seq: int}}
+                          after?: {instance_id: string, seq: int}, answers?: bool}
 params.unsubscribe     = {sub: string}
 params.history         = {session: string, instance_id: string,
                           before: string, limit?: int}
@@ -169,6 +171,7 @@ params.abort           = {session: string}
 params.set_model       = {session: string, model: string}
 params.compact         = {session: string, text?: string}
 params.stop            = {session: string}
+params.answer          = {session: string, call_id: string, answer: object}
 product_origin         = {kind: "product", id: string}
 
 result.sessions.live  = {sessions: [live_session]}
@@ -178,7 +181,7 @@ result.resume         = {session: string}
 result.subscribe      = {sub: string, replay: [event]} | {sub: string, snapshot: snapshot}
 result.history        = {messages: [message], more: bool, next: string | null}
 result.unsubscribe, result.prompt, result.steer, result.follow_up,
-result.abort, result.set_model, result.compact, result.stop = {}
+result.abort, result.set_model, result.compact, result.stop, result.answer = {}
 
 live_session  = {id: string, instance_id: string, cwd: string, model: string,
                  status: "idle" | "running"}
@@ -186,7 +189,8 @@ saved_session = {id: string, cwd: string, model: string, mtime: int, prompt: str
 
 snapshot = {instance_id: string, seq: int, messages: [message], more: bool,
             turn: turn | null, model: string, queue: queue, persisting: bool,
-            usage: totals, context: context | null}
+            usage: totals, context: context | null, asks: [ask]}
+ask      = {call_id: string, tool: string, request: object}
 turn     = {id: string, partial: message | null, elapsed_ms: int}
 queue    = {steers: int, follow_ups: int, running: int, held: int, waiting: int}
 totals   = {input: int, output: int, cache_read: int, cache_write: int,
@@ -198,7 +202,7 @@ event = {type: event_type, session_id: string, instance_id: string,
 event_type = "turn_start" | "message_start" | "message_update" | "message_end"
            | "tool_execution_end" | "turn_end" | "queue_update" | "queue_dropped"
            | "model_change" | "resume_id" | "steer_unconfirmed" | "compaction"
-           | "notice"
+           | "notice" | "ask" | "ask_end"
 data.turn_start         = {origin?: "provider" | "compaction"}
 data.message_start      = {message: message}
 data.message_update     = {text_delta: string} | {thinking_delta: string}
@@ -215,6 +219,8 @@ data.steer_unconfirmed  = {message: message}
 data.compaction         = {trigger: "manual" | "auto", tokens_before: int | null,
                            tokens_after: int | null}
 data.notice             = {text: string}
+data.ask                = ask
+data.ask_end            = {call_id: string, outcome: "answered" | "ended"}
 
 message = {id: string, role: "user" | "assistant" | "tool_result",
            content: [block], origin?: origin, model?: string,
@@ -293,6 +299,8 @@ Notes on the codec:
 | outbound queue per connection | 67,108,864 bytes of frames added and not yet taken by the socket. A subscription process encodes each event when it takes it, and a writer adds each frame with a message to the connection process and a shared byte count, with no wait for room. Before each add, the writer checks the bytes of the queue without the frames that the connection already took for the socket, so one large frame does not close the connection at the next add | the queue holds more than 64 MiB at an add: close `4408` | transport |
 | text of `prompt`, `steer`, `follow_up`, `compact` | 4,194,304 bytes of UTF-8: Core refuses a longer text from any caller with `{:error, :text_too_large}` (#672). The request size has room for this text in any JSON form, so the wire refuses no text that Core admits | `res` with `text_too_large` | Core (#672) |
 | `queue_dropped` | 64 messages (32 steers, 32 follow-ups, `lib/helyx/session/queue.ex:49`), each of one text of at most 4 MiB (#672). It reaches only the subscribers that are connected when the session emits it; a client that connects later gets a tail snapshot, which does not hold the texts | goes as parts | Core |
+| `answer` | a JSON object, else `bad_params`; 16,384 bytes of JSON of valid UTF-8 | `res` with `invalid_answer` | Core (`Helyx.Session.answer/3`) |
+| `request` of an `ask` | 65,536 bytes of JSON | the tool call fails | Core (`Helyx.Tool.ask/1`) |
 | request `id` | 1 to 64 bytes | `bad_params`; with no readable `id`, close `4400` | transport |
 | `sessions.saved` page | 1 to 256 items, default 50 | `bad_params` | Core (`Helyx.Sessions.list_saved/2`) |
 | live list | 64 items | | the live-session cap |

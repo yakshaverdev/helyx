@@ -15,9 +15,10 @@ defmodule Helyx.Session.Turn do
   # a reply with that ref is the Task's context. It is nil with no Task:
   # in `submitted` a prepare Task is an open context request.
   # `tool_queue` holds the Helyx tool requests of the turn
-  # (`Helyx.Session.ToolQueue`). `compact` is nil for a turn with a prompt;
-  # for a compaction turn it is its instructions until the provider's
-  # first compaction event, then `:reported`
+  # (`Helyx.Session.ToolQueue`), and `asks` the open asks of its calls,
+  # oldest first (`Helyx.Session.Server.Asks`). `compact` is nil for a
+  # turn with a prompt; for a compaction turn it is its instructions until
+  # the provider's first compaction event, then `:reported`
   # (docs/features/harness-compaction.md). `start` is the number of
   # transcript messages when the turn opened, and `started_ms` the
   # monotonic time of the session's node then: a snapshot gives the time
@@ -46,7 +47,8 @@ defmodule Helyx.Session.Turn do
     recall_failed: false,
     bytes: 0,
     blocks: 0,
-    tool_queue: %Helyx.Session.ToolQueue{}
+    tool_queue: %Helyx.Session.ToolQueue{},
+    asks: []
   ]
 
   @type t :: %__MODULE__{
@@ -66,7 +68,8 @@ defmodule Helyx.Session.Turn do
           recall_failed: boolean(),
           bytes: non_neg_integer(),
           blocks: non_neg_integer(),
-          tool_queue: Helyx.Session.ToolQueue.t()
+          tool_queue: Helyx.Session.ToolQueue.t(),
+          asks: [{String.t(), GenServer.from(), map()}]
         }
 
   # The most bytes of text, thinking, and tool calls in the open assistant

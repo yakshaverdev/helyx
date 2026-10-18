@@ -22,7 +22,7 @@ defmodule Helyx.Transport.WebSocket.Ops do
 
   @core_errors ~w(session_not_found too_many_sessions invalid_cwd not_found invalid_utf8
                   invalid_origin queue_full turn_running text_too_large instance_changed
-                  unknown_message)a
+                  unknown_message invalid_answer not_waiting)a
 
   # An operation whose result can be large takes the encoder slot of the
   # connection before it reads from Core.
@@ -102,6 +102,16 @@ defmodule Helyx.Transport.WebSocket.Ops do
          do: {:ok, fn -> Session.compact(session, text) end}
   end
 
+  # An answer is an object; Core checks its content and size
+  # (`Helyx.Session.answer/3`).
+  def check(core, "answer", params) do
+    with :ok <- keys(params, ~w(session call_id answer), []),
+         {:ok, session} <- session(core, params),
+         {:ok, call_id} <- string(params["call_id"]),
+         {:ok, answer} <- object(params["answer"]),
+         do: {:ok, fn -> Session.answer(session, call_id, answer) end}
+  end
+
   def check(core, "stop", params) do
     with :ok <- keys(params, ~w(session), []),
          {:ok, session} <- session(core, params),
@@ -112,9 +122,9 @@ defmodule Helyx.Transport.WebSocket.Ops do
 
   # The session and the options of a `subscribe`, or `:bad_params`.
   def subscribe_params(core, params) do
-    with :ok <- keys(params, ~w(session), ~w(tail after)),
+    with :ok <- keys(params, ~w(session), ~w(tail after answers)),
          {:ok, session} <- session(core, params),
-         {:ok, opts} <- opts(params, tail: &is_integer/1),
+         {:ok, opts} <- opts(params, tail: &is_integer/1, answers: &is_boolean/1),
          {:ok, after_} <- after_(params["after"]) do
       # A subscribe with no tail gets the default tail of the wire, not the
       # full transcript of a client in the node.
@@ -166,6 +176,9 @@ defmodule Helyx.Transport.WebSocket.Ops do
 
   defp string(value) when is_binary(value), do: {:ok, value}
   defp string(_value), do: :bad_params
+
+  defp object(value) when is_map(value), do: {:ok, value}
+  defp object(_value), do: :bad_params
 
   defp origin(nil), do: {:ok, []}
 

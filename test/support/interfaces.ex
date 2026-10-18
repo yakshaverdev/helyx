@@ -178,6 +178,9 @@ defmodule Helyx.Test.Provider do
   #                waits for the gate <name> after its start answer
   #   "big_int"    six calls with large integers; after the results, a done
   #                map with the large integer
+  #   "ask"        one call to the ask tool with the request {"q": "one"}
+  #   "ask2"       two calls to the ask tool, {"q": "one"} and {"q": "two"}
+  #   "ask_bad"    one call to the ask tool whose request is a string
   use Helyx.Provider.Loop
 
   alias Helyx.Message.ToolCall
@@ -272,6 +275,20 @@ defmodule Helyx.Test.Provider do
 
   def stream("serial", %Helyx.Context{messages: messages}, _opts),
     do: echo_after(messages, slow_calls([{"1", 60}, {"2", 30}, {"3", 0}]))
+
+  def stream("ask", %Helyx.Context{messages: messages}, _opts),
+    do: echo_after(messages, [call("a1", "ask", %{"request" => %{"q" => "one"}}), @tool_use])
+
+  def stream("ask2", %Helyx.Context{messages: messages}, _opts),
+    do:
+      echo_after(messages, [
+        call("a1", "ask", %{"request" => %{"q" => "one"}}),
+        call("a2", "ask", %{"request" => %{"q" => "two"}}),
+        @tool_use
+      ])
+
+  def stream("ask_bad", %Helyx.Context{messages: messages}, _opts),
+    do: echo_after(messages, [call("a1", "ask", %{"request" => "not an object"}), @tool_use])
 
   def stream("binary", %Helyx.Context{messages: messages}, _opts),
     do: echo_after(messages, [call("b", "binary", %{}), @done])
@@ -602,6 +619,25 @@ defmodule Helyx.Test.Tool.Context do
       Helyx.Tool.context()
 
     {:ok, "#{core} #{session_id} #{Enum.join(Enum.sort(tools), ",")} #{call_id} #{model}"}
+  end
+end
+
+defmodule Helyx.Test.Tool.Ask do
+  @moduledoc false
+  # Asks the clients with its `request` argument (`Helyx.Tool.ask/1`) and
+  # gives the answer as JSON, or the error as its name. Its calls run
+  # together, so two can ask at once.
+  use Helyx.Test.Tool, name: "ask", description: "Asks the clients."
+
+  @impl true
+  def concurrent?, do: true
+
+  @impl true
+  def run(%{"request" => request}, _cwd) do
+    case Helyx.Tool.ask(request) do
+      {:ok, answer} -> {:ok, JSON.encode!(answer)}
+      {:error, reason} -> {:error, Atom.to_string(reason)}
+    end
   end
 end
 
