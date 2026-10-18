@@ -104,16 +104,37 @@ defmodule Mix.Tasks.Helyx.Install do
   end
 
   # The launcher keeps the folder and the arguments of the user, and adds no
-  # wait and no retry. The release script resolves `current` once, at start.
+  # retry. The release script resolves `current` once, at start.
   defp write_launcher(script, bin_dir) do
     File.mkdir_p!(bin_dir)
     launcher = Path.join(bin_dir, "helyx")
     # One fixed name: the next install replaces a file that a failed one left.
     tmp = Path.join(bin_dir, ".helyx-install")
 
+    command = "#{sh_quote(script)} eval 'System.halt(CodingAgent.CLI.main(System.argv()))' \"$@\""
+
+    # `serve` runs in a process group of its own, through perl, so the
+    # SIGINT of a terminal reaches only this script, which sends SIGTERM:
+    # the VM cannot handle SIGINT (docs/features/serve.md). The trap is set
+    # before the start, and a signal before `pid` is known sends SIGTERM
+    # once `pid` is known. A wait that a signal ends while the VM runs waits
+    # again.
     File.write!(tmp, """
     #!/bin/sh
-    exec #{sh_quote(script)} eval 'System.halt(CodingAgent.CLI.main(System.argv()))' "$@"
+    if [ "$1" = serve ]; then
+      pid=
+      stop=
+      trap 'stop=1; [ -z "$pid" ] || kill -TERM "$pid" 2>/dev/null' INT TERM HUP
+      perl -e 'setpgrp(0, 0); exec { $ARGV[0] } @ARGV or die "helyx: $ARGV[0]: $!\\n"' -- #{command} </dev/null &
+      pid=$!
+      [ -z "$stop" ] || kill -TERM "$pid" 2>/dev/null
+      while :; do
+        wait "$pid"
+        status=$?
+        kill -0 "$pid" 2>/dev/null || exit "$status"
+      done
+    fi
+    exec #{command}
     """)
 
     File.chmod!(tmp, 0o755)

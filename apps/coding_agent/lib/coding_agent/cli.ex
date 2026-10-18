@@ -7,6 +7,7 @@ defmodule CodingAgent.CLI do
   helyx [directory] [--model provider/model | --resume] -p prompt
   helyx --session id [-p prompt]
   helyx --list [--all] [directory]
+  helyx serve [--host ip] [--port n] [--model provider/model]
   helyx --version | --help
   """
 
@@ -25,9 +26,12 @@ defmodule CodingAgent.CLI do
   one line each, newest first, and starts nothing. `--help` (`-h`) prints
   the usage, the switches, and the exit statuses. `-p` (`--print`) runs
   the one prompt with no TUI (`CodingAgent.Print`), in a new session, or
-  with `--resume` or `--session` in the session they pick. The
-  design is in `docs/features/local-release.md`,
-  `docs/features/session-list.md`, and `docs/features/print-mode.md`.
+  with `--resume` or `--session` in the session they pick. `serve`, the
+  first argument, runs the headless server (`CodingAgent.Serve`) on
+  `--host`, default 127.0.0.1, and `--port`, default a port that the OS
+  picks; `--model` is then the default model of the server. The design is
+  in `docs/features/local-release.md`, `docs/features/session-list.md`,
+  `docs/features/print-mode.md`, and `docs/features/serve.md`.
   """
 
   alias CodingAgent.Print
@@ -44,6 +48,8 @@ defmodule CodingAgent.CLI do
     list: {:boolean, "--list", "print the sessions of the directory, newest first"},
     all: {:boolean, "--all", "with --list, the sessions of every folder"},
     print: {:string, "-p prompt", "run one prompt with no TUI and print the answer (--print)"},
+    host: {:string, "--host ip", "with serve, the address to listen on, default 127.0.0.1"},
+    port: {:integer, "--port n", "with serve, the port, 0 to 65535; default 0, a free port"},
     version: {:boolean, "--version", "print the version"},
     help: {:boolean, "--help", "print this help (-h)"}
   ]
@@ -58,6 +64,8 @@ defmodule CodingAgent.CLI do
   #{for {_name, {_type, form, text}} <- @switches, into: "", do: "  #{String.pad_trailing(form, 24)}#{text}\n"}
   exit status: 0 on success and 1 on an error. With -p, 0 when the turn ends normally,
   1 when it fails, is aborted, or stops at the output limit, 143 on SIGTERM, and 129 on SIGHUP.
+  serve runs until SIGINT, SIGTERM, or SIGHUP and then exits 0; 1 when it does not start,
+  when another server holds the data folder, or when the server stops by a failure.
   """
 
   # The options that do not combine, with the reason. `:directory` is the
@@ -73,6 +81,10 @@ defmodule CodingAgent.CLI do
     {:print, :list, ""},
     {:directory, :all, ""}
   ]
+
+  # A switch that needs another switch, or the command `serve`, which this
+  # path never has (`serve` runs before the check).
+  @needs [all: :list, host: :serve, port: :serve]
 
   @doc """
   Runs the agent with the command line `argv` until the user quits, and
@@ -127,11 +139,19 @@ defmodule CodingAgent.CLI do
 
   defp command_path(env), do: env["PATH"]
 
+  # `serve` is the first argument only, as in the launcher of the release.
   defp start(argv, release_version, halt) do
+    {serve?, argv} =
+      case argv do
+        ["serve" | rest] -> {true, rest}
+        argv -> {false, argv}
+      end
+
     with {:ok, opts, args} <- parse(argv) do
       cond do
         opts[:help] -> IO.write(@help)
         opts[:version] -> IO.puts("helyx " <> version(release_version))
+        serve? -> serve(opts, args)
         true -> start_agent(opts, args, halt)
       end
     end
@@ -161,16 +181,53 @@ defmodule CodingAgent.CLI do
     given = for {name, value} <- opts, value, do: name
     given = if args == [], do: given, else: [:directory | given]
 
-    case Enum.find(@conflicts, fn {a, b, _reason} -> a in given and b in given end) do
-      {a, b, reason} ->
-        {:error, "#{switch(a)} does not combine with #{switch(b)}#{reason}"}
-
-      nil ->
-        if :all in given and :list not in given, do: {:error, "--all needs --list"}, else: :ok
+    with nil <- Enum.find(@conflicts, fn {a, b, _reason} -> a in given and b in given end),
+         nil <- Enum.find(@needs, fn {a, b} -> a in given and b not in given end) do
+      :ok
+    else
+      {a, b, reason} -> {:error, "#{switch(a)} does not combine with #{switch(b)}#{reason}"}
+      {a, b} -> {:error, "#{switch(a)} needs #{switch(b)}"}
     end
   end
 
+  defp serve(opts, []) do
+    with :ok <- serve_switches(opts),
+         {:ok, ip} <- ip(Keyword.get(opts, :host, "127.0.0.1")),
+         {:ok, port} <- port(Keyword.get(opts, :port, 0)),
+         {:ok, _apps} <- Application.ensure_all_started(:coding_agent) do
+      result =
+        CodingAgent.Serve.run(
+          sessions_dir: sessions_dir(),
+          model: Keyword.get(opts, :model, @default_model),
+          ip: ip,
+          port: port
+        )
+
+      # The folder in a line comes from the configuration.
+      with {:error, text} <- result, do: {:error, CodingAgent.clean_line(text)}
+    end
+  end
+
+  defp serve(_opts, args),
+    do: {:error, "serve takes no directory argument, got: #{inspect(args)}"}
+
+  defp serve_switches(opts) do
+    case Enum.find(Keyword.keys(opts), &(&1 not in [:host, :port, :model])) do
+      nil -> :ok
+      name -> {:error, "#{switch(name)} does not combine with serve"}
+    end
+  end
+
+  defp ip(host) do
+    with {:error, _} <- :inet.parse_address(String.to_charlist(host)),
+         do: {:error, "--host takes an IP address, got: #{inspect(host)}"}
+  end
+
+  defp port(port) when port in 0..65_535, do: {:ok, port}
+  defp port(port), do: {:error, "--port takes 0 to 65535, got: #{port}"}
+
   defp switch(:directory), do: "a directory argument"
+  defp switch(:serve), do: "serve"
   defp switch(name), do: "--#{name}"
 
   # `--session` runs in the folder of the session header, which the resume

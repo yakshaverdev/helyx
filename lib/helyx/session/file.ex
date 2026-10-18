@@ -110,6 +110,14 @@ defmodule Helyx.Session.File do
   """
   @spec mkdir(Path.t(), String.t(), map() | nil) :: :ok | {:error, {:create_failed, File.posix()}}
   def mkdir(dir, cwd, parent \\ nil) do
+    with :ok <- mkdir(dir),
+         {:error, reason} <- File.mkdir_p(Scan.folder(dir, cwd, parent)),
+         do: {:error, {:create_failed, reason}}
+  end
+
+  @doc "Makes the sessions folder `dir` alone, with the mode rule of `mkdir/3`."
+  @spec mkdir(Path.t()) :: :ok | {:error, {:create_failed, File.posix()}}
+  def mkdir(dir) do
     # The folder that `dir` names, with no `.`, `..`, or `/` at its end, so
     # that the result of one mkdir tells a new folder (#683). `absname`
     # first keeps a leading `~` a name, as the other file calls read it.
@@ -117,8 +125,7 @@ defmodule Helyx.Session.File do
 
     # The mkdir failing is the caller's configuration, not a crash.
     with :ok <- File.mkdir_p(Path.dirname(sessions)),
-         :ok <- restrict(sessions, File.mkdir(sessions)),
-         :ok <- File.mkdir_p(Scan.folder(dir, cwd, parent)) do
+         :ok <- restrict(sessions, File.mkdir(sessions)) do
       :ok
     else
       {:error, reason} -> {:error, {:create_failed, reason}}

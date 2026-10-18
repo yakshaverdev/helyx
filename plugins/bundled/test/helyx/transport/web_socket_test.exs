@@ -2,6 +2,7 @@ defmodule Helyx.Transport.WebSocketTest do
   use ExUnit.Case, async: true
 
   import ExUnit.CaptureLog
+  import Helyx.Test.Secret, only: [refute_secret: 2]
 
   alias Helyx.Provider.Fake
   alias Helyx.Test.Events
@@ -359,25 +360,6 @@ defmodule Helyx.Transport.WebSocketTest do
   defp full_inspect(term) do
     opts = [limit: :infinity, printable_limit: :infinity]
     inspect(term, opts) <> inspect(term, [binaries: :as_strings] ++ opts)
-  end
-
-  # The token, and the key as bytes, as Elixir and Erlang print them, and in
-  # base16 and base64.
-  defp refute_secret(text, token) do
-    key = :crypto.hash(:sha256, token)
-
-    for form <- [
-          token,
-          key,
-          inspect(key, limit: :infinity),
-          inspect(key, binaries: :as_strings),
-          IO.chardata_to_string(:io_lib.format(~c"~w", [key])),
-          Base.encode16(key),
-          Base.encode16(key, case: :lower),
-          Base.encode64(key)
-        ] do
-      refute String.contains?(text, form), "the log holds a form of the token or the key"
-    end
   end
 
   describe "requests" do

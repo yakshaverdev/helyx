@@ -1,11 +1,12 @@
 defmodule Helyx.Session.Lock do
   @moduledoc false
-  # The writer lock of a session file (docs/features/session-lock.md): a
-  # `flock` on `<id>.lock` next to `<id>.jsonl`, held by a perl program on a
-  # port. The session server takes it with `hold/2` at its start, so it owns
-  # the port from its open, and releases it at its stop (`release/1`). When
-  # the owner of the port ends, the port closes, perl reads the end of its
-  # stdin and exits, and the kernel releases the lock.
+  # The writer lock of a file, a session file for the session server
+  # (docs/features/session-lock.md): a `flock` on `<id>.lock` next to
+  # `<id>.jsonl`, held by a perl program on a port. The session server
+  # takes it with `hold/2` at its start, so it owns the port from its open,
+  # and releases it at its stop (`release/1`). When the owner of the port
+  # ends, the port closes, perl reads the end of its stdin and exits, and
+  # the kernel releases the lock.
 
   # The program writes "<nonce> ok", "<nonce> locked", or
   # "<nonce> error <reason>" as one line, then waits for one byte or the end
@@ -60,8 +61,10 @@ defmodule Helyx.Session.Lock do
     end
   end
 
-  defp take(path) do
-    # `Helyx.Session.File.mkdir/2` made the folder of the lock file.
+  # Takes the lock of `<path without extension>.lock` and returns the port
+  # that holds it; the caller owns the port. A product can lock a file of
+  # its own with it. The folder of the lock file must exist.
+  def take(path) do
     with {:ok, perl} <- find_perl() do
       nonce = Base.encode16(:crypto.strong_rand_bytes(8))
 

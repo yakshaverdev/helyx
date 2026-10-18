@@ -2,6 +2,7 @@ defmodule Mix.Tasks.Helyx.InstallTest do
   use ExUnit.Case, async: true
 
   import ExUnit.CaptureIO
+  import Helyx.Test.Events, only: [wait_until: 1]
 
   alias Mix.Tasks.Helyx.Install
 
@@ -47,6 +48,45 @@ defmodule Mix.Tasks.Helyx.InstallTest do
     assert String.split(out, "\n", trim: true) ==
              [Path.expand(work), "eval", "System.halt(CodingAgent.CLI.main(System.argv()))"] ++
                args
+  end
+
+  for signal <- ["INT", "TERM", "HUP"] do
+    test "the launcher runs serve in a process group of its own and sends SIGTERM for SIG#{signal}",
+         %{prefix: prefix, bin_dir: bin_dir, tmp_dir: dir} = context do
+      install(context, "0.1.0+abc1234")
+
+      # A release script that writes its arguments, its pid, and its
+      # process group, then waits, and exits 7 at SIGTERM.
+      File.write!(Path.join(prefix, "current/bin/helyx"), ~S"""
+      #!/bin/sh
+      trap 'echo term >"$OUT/signal"; exit 7' TERM
+      printf '%s\n' "$@" >"$OUT/args"
+      echo "$$ $(ps -o pgid= -p $$ | tr -d ' ')" >"$OUT/group.tmp" && mv "$OUT/group.tmp" "$OUT/group"
+      while :; do sleep 0.1; done
+      """)
+
+      port =
+        Port.open({:spawn_executable, Path.join(bin_dir, "helyx")}, [
+          :exit_status,
+          args: ["serve", "--port", "1"],
+          env: [{~c"OUT", String.to_charlist(dir)}]
+        ])
+
+      {:os_pid, launcher} = Port.info(port, :os_pid)
+      wait_until(fn -> File.exists?(Path.join(dir, "group")) end)
+
+      # The release script leads a process group of its own.
+      [pid, group] = String.split(File.read!(Path.join(dir, "group")))
+      assert pid == group
+      refute group == Integer.to_string(launcher)
+      {_, 0} = System.cmd("kill", ["-#{unquote(signal)}", Integer.to_string(launcher)])
+
+      assert_receive {^port, {:exit_status, 7}}
+      assert File.read!(Path.join(dir, "signal")) == "term\n"
+
+      assert File.read!(Path.join(dir, "args")) ==
+               "eval\nSystem.halt(CodingAgent.CLI.main(System.argv()))\nserve\n--port\n1\n"
+    end
   end
 
   test "a second install of one commit gets a new folder; the third deletes the oldest",

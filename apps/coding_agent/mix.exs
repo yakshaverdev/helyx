@@ -35,9 +35,15 @@ defmodule CodingAgent.MixProject do
 
   # `dev` holds the developer tasks, such as `mix helyx.graph`; a prod build
   # leaves them out. The root's test helpers that need only Core, shared so
-  # that each has one copy.
-  defp elixirc_paths(:test),
-    do: ["lib", "dev", Path.expand("../../test/support/shared", __DIR__)]
+  # that each has one copy, and the wire client of the transport tests.
+  defp elixirc_paths(:test) do
+    [
+      "lib",
+      "dev",
+      Path.expand("../../test/support/shared", __DIR__),
+      Path.expand("../../plugins/bundled/test/support/wire_client.ex", __DIR__)
+    ]
+  end
 
   defp elixirc_paths(:dev), do: ["lib", "dev"]
   defp elixirc_paths(_), do: ["lib"]
