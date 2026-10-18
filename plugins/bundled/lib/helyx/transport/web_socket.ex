@@ -112,11 +112,15 @@ defmodule Helyx.Transport.WebSocket do
       http_1_options: [max_requests: 1],
       http_2_options: [enabled: false],
       http_options: [log_protocol_errors: false],
-      thousand_island_options: [silent_terminate_on_error: true],
+      thousand_island_options: [
+        # A stop on an error logs no crash report, which would hold the bytes
+        # of the frame; a socket error that comes as a message still logs one.
+        silent_terminate_on_error: true
+      ],
       websocket_options: [
         max_frame_size: Helyx.Transport.WebSocket.Frame.max_frame() + 14,
         max_fragmented_message_size: Helyx.Transport.WebSocket.Frame.max_frame(),
-        # `JSON.decode/1` checks UTF-8 once; a bad text closes with 4400.
+        # The decode of `Frame` checks UTF-8 once; a bad text closes with 4400.
         validate_text_frames: false,
         log_protocol_errors: false
       ]

@@ -1,9 +1,10 @@
 defmodule Helyx.Transport.WebSocket.Ops do
   @moduledoc false
   # The operations of the wire on the public session and server API
-  # (`docs/features/wire-protocol.md`, "Operations", "Deadlines"). `run/3`
-  # runs in the worker of one request and returns `{:ok, result}` or
-  # `{:error, code, text}`.
+  # (`docs/features/wire-protocol.md`, "Operations", "Deadlines"). The
+  # connection checks the params with `check/3`, so a worker holds only the
+  # checked values; `run/1` runs the call in the worker of one request and
+  # returns `{:ok, result}` or `{:error, code, text}`.
 
   alias Helyx.Session
   alias Helyx.Transport.WebSocket.{Outbound, Wire}
@@ -19,14 +20,9 @@ defmodule Helyx.Transport.WebSocket.Ops do
   @default_deadline 6_000
   @default_tail 200
 
-  @ops ~w(sessions.live sessions.saved start resume history prompt steer follow_up abort set_model
-           compact stop)
-
   @core_errors ~w(session_not_found too_many_sessions invalid_cwd not_found invalid_utf8
                   invalid_origin queue_full turn_running text_too_large instance_changed
                   unknown_message)a
-
-  def known?(op), do: op in @ops
 
   # An operation whose result can be large takes the encoder slot of the
   # connection before it reads from Core.
@@ -34,88 +30,85 @@ defmodule Helyx.Transport.WebSocket.Ops do
 
   def deadline(op), do: Map.get(@deadlines, op, @default_deadline)
 
-  def run(core, op, params) do
-    op |> call(core, params) |> result()
+  def run(call) do
+    call.() |> result()
   catch
     :exit, {:timeout, _call} -> Outbound.error("timeout")
   end
 
-  defp call("sessions.live", core, params) do
+  # The Core call of a request as a closure of its checked params, run by
+  # `run/1`, or `:bad_params` or `:unknown_op`.
+  def check(core, "sessions.live", params) do
     with :ok <- keys(params, [], []) do
-      {:ok, %{"sessions" => Enum.map(Helyx.Sessions.list_live(core), &live/1)}}
+      {:ok, fn -> {:ok, %{"sessions" => Enum.map(Helyx.Sessions.list_live(core), &live/1)}} end}
     end
   end
 
-  defp call("sessions.saved", core, params) do
+  def check(core, "sessions.saved", params) do
     with :ok <- keys(params, [], ~w(cwd after limit)),
          {:ok, opts} <- opts(params, cwd: &is_binary/1, after: &is_binary/1, limit: &is_integer/1) do
-      case Helyx.Sessions.list_saved(core, opts) do
-        {:ok, items, next} -> {:ok, %{"items" => Enum.map(items, &saved/1), "next" => next}}
-        {:error, :invalid_cwd} -> {:error, :invalid_cwd}
-        {:error, _limit_or_cursor} -> :bad_params
-      end
+      {:ok, fn -> saved_page(Helyx.Sessions.list_saved(core, opts)) end}
     end
   end
 
-  defp call("start", core, params) do
+  def check(core, "start", params) do
     with :ok <- keys(params, ~w(cwd), ~w(model)),
          {:ok, opts} <- opts(params, cwd: &is_binary/1, model: &is_binary/1) do
-      core |> Helyx.Sessions.start(opts) |> started()
+      {:ok, fn -> core |> Helyx.Sessions.start(opts) |> started() end}
     end
   end
 
-  defp call("resume", core, params) do
-    with {:ok, opts} <- resume_opts(params), do: core |> Helyx.Sessions.resume(opts) |> started()
+  def check(core, "resume", params) do
+    with {:ok, opts} <- resume_opts(params),
+         do: {:ok, fn -> core |> Helyx.Sessions.resume(opts) |> started() end}
   end
 
-  defp call(op, core, params) when op in ~w(prompt steer follow_up) do
+  def check(core, op, params) when op in ~w(prompt steer follow_up) do
     with :ok <- keys(params, ~w(session text), ~w(origin)),
          {:ok, session} <- session(core, params),
          {:ok, text} <- string(params["text"]),
          {:ok, opts} <- origin(params["origin"]) do
-      apply(Session, String.to_existing_atom(op), [session, text, opts])
+      {:ok, fn -> apply(Session, String.to_existing_atom(op), [session, text, opts]) end}
     end
   end
 
-  defp call("history", core, params) do
+  def check(core, "history", params) do
     with :ok <- keys(params, ~w(session instance_id before), ~w(limit)),
          {:ok, session} <- session(core, params),
          {:ok, instance_id} <- string(params["instance_id"]),
          {:ok, before} <- string(params["before"]),
          {:ok, opts} <- opts(params, limit: &is_integer/1) do
-      case Session.history(session, instance_id, before, opts) do
-        {:ok, page} -> {:ok, Wire.value(page)}
-        {:error, :invalid_limit} -> :bad_params
-        error -> error
-      end
+      {:ok, fn -> page(Session.history(session, instance_id, before, opts)) end}
     end
   end
 
-  defp call("abort", core, params) do
+  def check(core, "abort", params) do
     with :ok <- keys(params, ~w(session), []),
          {:ok, session} <- session(core, params),
-         do: Session.abort(session)
+         do: {:ok, fn -> Session.abort(session) end}
   end
 
-  defp call("set_model", core, params) do
+  def check(core, "set_model", params) do
     with :ok <- keys(params, ~w(session model), []),
          {:ok, session} <- session(core, params),
          {:ok, model} <- string(params["model"]),
-         do: Session.set_model(session, model)
+         do: {:ok, fn -> Session.set_model(session, model) end}
   end
 
-  defp call("compact", core, params) do
+  def check(core, "compact", params) do
     with :ok <- keys(params, ~w(session), ~w(text)),
          {:ok, session} <- session(core, params),
          {:ok, text} <- string(Map.get(params, "text", "")),
-         do: Session.compact(session, text)
+         do: {:ok, fn -> Session.compact(session, text) end}
   end
 
-  defp call("stop", core, params) do
+  def check(core, "stop", params) do
     with :ok <- keys(params, ~w(session), []),
          {:ok, session} <- session(core, params),
-         do: Helyx.Sessions.stop(session)
+         do: {:ok, fn -> Helyx.Sessions.stop(session) end}
   end
+
+  def check(_core, _op, _params), do: :unknown_op
 
   # The session and the options of a `subscribe`, or `:bad_params`.
   def subscribe_params(core, params) do
@@ -202,6 +195,12 @@ defmodule Helyx.Transport.WebSocket.Ops do
     }
   end
 
+  defp saved_page({:ok, items, next}),
+    do: {:ok, %{"items" => Enum.map(items, &saved/1), "next" => next}}
+
+  defp saved_page({:error, :invalid_cwd} = error), do: error
+  defp saved_page({:error, _limit_or_cursor}), do: :bad_params
+
   defp saved(summary) do
     %{
       "id" => summary.id,
@@ -211,6 +210,10 @@ defmodule Helyx.Transport.WebSocket.Ops do
       "prompt" => summary.prompt
     }
   end
+
+  defp page({:ok, page}), do: {:ok, Wire.value(page)}
+  defp page({:error, :invalid_limit}), do: :bad_params
+  defp page(error), do: error
 
   defp result(:ok), do: {:ok, %{}}
   defp result({:ok, %{} = result}), do: {:ok, result}

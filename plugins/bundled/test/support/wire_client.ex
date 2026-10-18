@@ -123,8 +123,11 @@ defmodule Helyx.Test.WireClient do
     end
   end
 
+  def send_request(socket, id, op, params),
+    do: send_frame(socket, %{"type" => "req", "id" => id, "op" => op, "params" => params})
+
   def request(socket, id, op, params) do
-    send_frame(socket, %{"type" => "req", "id" => id, "op" => op, "params" => params})
+    send_request(socket, id, op, params)
     res(socket, id)
   end
 
