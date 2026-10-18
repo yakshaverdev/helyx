@@ -46,6 +46,69 @@ defmodule CodingAgent.ServeTest do
     {status, out, err}
   end
 
+  # A data folder of the test, with the mode that the server makes.
+  defp data_folder(sessions) do
+    File.mkdir_p!(sessions)
+    File.chmod!(sessions, 0o700)
+  end
+
+  # The perl process of the lock that the serve process took.
+  defp lock_port(before) do
+    Enum.find(Port.list() -- before, fn port ->
+      case Port.info(port, :name) do
+        {:name, name} -> Path.basename(to_string(name)) == "perl"
+        nil -> false
+      end
+    end)
+  end
+
+  defp signal(port, signal) do
+    {:os_pid, os_pid} = Port.info(port, :os_pid)
+    {_, 0} = System.cmd("kill", [signal, Integer.to_string(os_pid)])
+  end
+
+  # The handler swap comes after the lock: a suspended signal server holds
+  # the start there, before the listener.
+  defp with_signals_suspended(fun) do
+    signals = Process.whereis(:erl_signal_server)
+    :erlang.suspend_process(signals)
+
+    try do
+      fun.()
+    after
+      :erlang.resume_process(signals)
+    end
+  end
+
+  # A start that the suspended signal server holds at the swap, after the
+  # lock: its task and the perl port of its lock. Call it inside
+  # `with_signals_suspended/1`.
+  defp serve_at_swap do
+    before = Port.list()
+    task = serve(["--model", "fake/echo"])
+    wait_until(fn -> in_swap?(task.pid) end)
+    {task, lock_port(before)}
+  end
+
+  # The serve process, which the caller of `run/1` monitors, waits on the
+  # suspended signal server.
+  defp in_swap?(caller) do
+    {:monitors, monitors} = Process.info(caller, :monitors)
+
+    Enum.any?(monitors, fn {:process, pid} ->
+      {:current_stacktrace, stack} = Process.info(pid, :current_stacktrace)
+      Enum.any?(stack, &match?({:gen_event, _, _, _}, &1))
+    end)
+  end
+
+  # A lock that the poll takes goes to the test process, which keeps it.
+  defp taken?({:ok, lock}) do
+    send(self(), {:next, lock})
+    true
+  end
+
+  defp taken?({:error, _}), do: false
+
   # The server file once a server wrote it.
   defp ready(file) do
     wait_until(fn -> match?({:ok, "{" <> _}, File.read(file)) end)
@@ -57,13 +120,14 @@ defmodule CodingAgent.ServeTest do
   defp serve_process(core) do
     {:parent, server} = Process.info(core, :parent)
     {:links, links} = Process.info(server, :links)
-    {server, links}
+    # The supervised handler links the signal server too.
+    {server, links -- [Process.whereis(:erl_signal_server)]}
   end
 
-  # The OTP handler is back, and no handler of a server is left.
+  # The OTP handler is back once, and no handler of a server is left.
   defp assert_otp_handler do
     handlers = :gen_event.which_handlers(:erl_signal_server)
-    assert :erl_signal_handler in handlers
+    assert Enum.count(handlers, &(&1 == :erl_signal_handler)) == 1
     refute Enum.any?(handlers, &match?({Serve.Signal, _}, &1))
   end
 
@@ -74,11 +138,10 @@ defmodule CodingAgent.ServeTest do
 
   test "serve replaces a stale file, takes a client with the token, and a SIGTERM stops it",
        %{tmp_dir: dir, sessions: sessions, server_file: file} do
-    File.mkdir_p!(sessions)
+    data_folder(sessions)
     # The files of a server that was killed.
     File.write!(file, "stale")
-    File.mkdir_p!(Path.join(sessions, ".server.tmp"))
-    File.write!(Path.join(sessions, ".server.tmp/server.json"), "stale")
+    File.write!(file <> ".tmp", "stale")
 
     task = serve(["--model", "fake/echo"])
     info = ready(file)
@@ -89,7 +152,7 @@ defmodule CodingAgent.ServeTest do
     assert map_size(info) == 5
     assert byte_size(Base.url_decode64!(token, padding: false)) == 32
     assert (File.stat!(file).mode &&& 0o777) == 0o600
-    refute File.exists?(Path.join(sessions, ".server.tmp"))
+    refute File.exists?(file <> ".tmp")
 
     socket = WireClient.open(port, token)
     assert %{"ok" => true} = WireClient.request(socket, "1", "start", %{"cwd" => dir})
@@ -115,11 +178,13 @@ defmodule CodingAgent.ServeTest do
        %{sessions: sessions, server_file: file} do
     task = serve(["--model", "fake/echo"])
     %{"port" => port} = ready(file)
+    before = File.read!(file)
 
     # The port at its limit, and an IPv6 host: the arguments pass, and the
     # lock stops the start.
     line = "helyx: a server runs for #{sessions} at ws://127.0.0.1:#{port}\n"
     assert {1, "", ^line} = run(["--host", "::1", "--port", "65535"])
+    assert File.read!(file) == before
 
     assert {0, _out, _second_err} = stop(task, :sighup)
     refute File.exists?(file)
@@ -127,7 +192,7 @@ defmodule CodingAgent.ServeTest do
 
   test "a second start reads a server file of #{Serve.max_file_bytes()} bytes",
        %{sessions: sessions, server_file: file} do
-    File.mkdir_p!(sessions)
+    data_folder(sessions)
     {:ok, lock} = Lock.take(Path.join(sessions, "server"))
 
     for port <- [1, 65_535] do
@@ -143,22 +208,15 @@ defmodule CodingAgent.ServeTest do
 
   test "a server removes a stale server file once it holds the lock",
        %{sessions: sessions, server_file: file} do
-    File.mkdir_p!(sessions)
+    data_folder(sessions)
     File.write!(file, JSON.encode!(%{address: "127.0.0.1", port: 1}))
 
-    # The handler swap comes after the lock: a suspended signal server holds
-    # the start there, before the listener.
-    signals = Process.whereis(:erl_signal_server)
-    :erlang.suspend_process(signals)
-
     task =
-      try do
+      with_signals_suspended(fn ->
         task = serve(["--model", "fake/echo"])
         wait_until(fn -> not File.exists?(file) end)
         task
-      after
-        :erlang.resume_process(signals)
-      end
+      end)
 
     ready(file)
     assert {0, _out, ""} = stop(task)
@@ -167,7 +225,7 @@ defmodule CodingAgent.ServeTest do
   @tag :slow
   test "a second start with no valid server file gives up after the wait",
        %{sessions: sessions, server_file: file} do
-    File.mkdir_p!(sessions)
+    data_folder(sessions)
     {:ok, lock} = Lock.take(Path.join(sessions, "server"))
     json = JSON.encode!(%{address: "::1", port: 1})
 
@@ -194,14 +252,7 @@ defmodule CodingAgent.ServeTest do
     task = serve(["--model", "fake/echo"])
     ready(file)
 
-    [perl] =
-      for port <- Port.list() -- before,
-          {:name, name} <- [Port.info(port, :name)],
-          Path.basename(to_string(name)) == "perl",
-          do: port
-
-    {:os_pid, os_pid} = Port.info(perl, :os_pid)
-    {_, 0} = System.cmd("kill", ["-KILL", Integer.to_string(os_pid)])
+    signal(lock_port(before), "-KILL")
 
     line = "helyx: the lock of the data folder is lost; the server stopped\n"
     assert {1, _out, ^line} = Task.await(task, 60_000)
@@ -220,12 +271,14 @@ defmodule CodingAgent.ServeTest do
     Process.exit(server, :kill)
     for ref <- refs, do: assert_receive({:DOWN, ^ref, :process, _, _}, 30_000)
 
+    # The signal server puts the OTP handler back from another process.
     assert {1, _out, "helyx: " <> _} = Task.await(task, 60_000)
+    wait_until(fn -> :erl_signal_handler in :gen_event.which_handlers(:erl_signal_server) end)
     assert_otp_handler()
   end
 
   test "a data folder that other users can write is refused", %{sessions: sessions} do
-    File.mkdir_p!(sessions)
+    data_folder(sessions)
 
     for mode <- [0o720, 0o702] do
       File.chmod!(sessions, mode)
@@ -276,17 +329,131 @@ defmodule CodingAgent.ServeTest do
 
   test "a stale server file that the server cannot remove ends the start with 1",
        %{sessions: sessions, server_file: file} do
-    File.mkdir_p!(sessions)
+    data_folder(sessions)
     File.write!(Path.join(sessions, "server.lock"), "")
     File.write!(file, "stale")
     File.chmod!(sessions, 0o500)
     on_exit(fn -> File.chmod(sessions, 0o700) end)
 
-    line = "helyx: could not remove the stale server file: permission denied\n"
+    line = "helyx: could not remove the stale server file: Permission denied\n"
     assert {1, "", ^line} = run(["--model", "fake/echo"])
     File.chmod!(sessions, 0o700)
     assert {:ok, lock} = Lock.take(Path.join(sessions, "server"))
     Lock.release(lock)
+  end
+
+  test "a server whose lock ends during its start leaves the file of the next holder",
+       %{sessions: sessions, server_file: file} do
+    data_folder(sessions)
+
+    {task, next} =
+      with_signals_suspended(fn ->
+        {task, perl} = serve_at_swap()
+        signal(perl, "-KILL")
+
+        # The next holder takes the lock and writes its file.
+        wait_until(fn -> taken?(Lock.take(Path.join(sessions, "server"))) end)
+        assert_received {:next, next}
+        :ok = Lock.write_file(next, file, fn -> "next" end)
+        {task, next}
+      end)
+
+    assert {1, "", "helyx: could not write the server file: " <> _} = Task.await(task, 60_000)
+    assert File.read!(file) == "next"
+    Lock.release(next)
+  end
+
+  # The handler of the server is the guard of one server in a VM: a caller
+  # that ends leaves its server, and a second server, in another data
+  # folder, is refused until the first one ends.
+  test "a second server in the VM is refused, also after its caller ended",
+       %{tmp_dir: dir, server_file: file} do
+    task = serve(["--model", "fake/echo"])
+    ready(file)
+    nil = Task.shutdown(task, :brutal_kill)
+    other = Path.join(dir, "other")
+
+    assert {:error, "a server runs in this VM already"} =
+             Serve.run(sessions_dir: other, model: "fake/echo", ip: {127, 0, 0, 1}, port: 0)
+
+    refute File.exists?(Path.join(other, "server.json"))
+    assert {:ok, lock} = Lock.take(Path.join(other, "server"))
+    Lock.release(lock)
+
+    # The first server still serves, and stops at a signal.
+    {server, _links} = serve_process(Process.whereis(Helyx.Core))
+    ref = Process.monitor(server)
+    :ok = :gen_event.notify(:erl_signal_server, :sigterm)
+    assert_receive {:DOWN, ^ref, :process, _, {:shutdown, :ok}}
+    refute File.exists?(file)
+    assert_otp_handler()
+  end
+
+  # The token is in one call only, the command that writes the server file
+  # in the holder of the lock. While that command waits on a stopped perl,
+  # no frame and no dictionary entry of the serve process holds it. A start
+  # that fails there gives no crash report; its line and its logs hold no
+  # form of it.
+  test "a start that fails during the write keeps the token out of every output",
+       %{sessions: sessions} do
+    data_folder(sessions)
+
+    # Every port command of the processes that the run starts.
+    :erlang.trace_pattern({:erlang, :port_command, :_}, true, [])
+    :erlang.trace(:new_processes, true, [:call])
+
+    {{result, token, state}, log} =
+      try do
+        with_log(fn ->
+          {task, perl} =
+            with_signals_suspended(fn ->
+              {task, perl} = serve_at_swap()
+              signal(perl, "-STOP")
+              {task, perl}
+            end)
+
+          {server, token} = write_command()
+          {:backtrace, frames} = Process.info(server, :backtrace)
+          {:dictionary, dictionary} = Process.info(server, :dictionary)
+          signal(perl, "-KILL")
+          {Task.await(task, 60_000), token, frames <> inspect(dictionary, limit: :infinity)}
+        end)
+      after
+        :erlang.trace(:new_processes, false, [:call])
+        :erlang.trace_pattern({:erlang, :port_command, :_}, false, [])
+      end
+
+    assert {1, "", "helyx: could not write the server file: " <> _ = line} = result
+    assert [] = for(data <- commands(), String.contains?(data, token), do: data)
+    refute_secret(state <> line <> log, token)
+  end
+
+  # The command that writes the server file, and the process that sends it.
+  defp write_command do
+    assert_receive {:trace, server, :call, {:erlang, :port_command, [_port, data | _]}}
+    data = IO.iodata_to_binary(data)
+
+    case data do
+      <<"w", n::32, _path::binary-size(n), m::32, json::binary-size(m)>> ->
+        {server, JSON.decode!(json)["token"]}
+
+      _other ->
+        write_command()
+    end
+  end
+
+  # The data of the port commands traced after the write.
+  defp commands do
+    for {:trace, _pid, :call, {:erlang, :port_command, [_port, data | _]}} <- traces(),
+        do: IO.iodata_to_binary(data)
+  end
+
+  defp traces do
+    receive do
+      {:trace, _, _, _} = trace -> [trace | traces()]
+    after
+      0 -> []
+    end
   end
 
   # The listener logs the port in use.

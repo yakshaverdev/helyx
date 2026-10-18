@@ -9,12 +9,17 @@ defmodule Helyx.Session.Lock do
   # the kernel releases the lock.
 
   # The program writes "<nonce> ok", "<nonce> locked", or
-  # "<nonce> error <reason>" as one line, then waits for one byte or the end
-  # of its stdin and exits. The nonce reaches it in its arguments only, so
-  # no startup warning of perl, which stderr merges in, passes for the
-  # answer. `%!` loads Errno. The open does not wait (a FIFO with no reader
-  # fails), and a file that is not regular is refused, so perl never blocks
-  # before it reads stdin.
+  # "<nonce> error <reason>" as one line. With the lock, it then reads
+  # commands on stdin until a byte that is no command or the end of stdin,
+  # and exits: `w` writes a file, `r` removes one (`write_file/3`,
+  # `remove_file/2`), and each gets the line "done" or "fail <reason>". The
+  # release sends `x`. The nonce reaches it in its arguments only, so no
+  # startup warning of perl, which stderr merges in, passes for the answer;
+  # perl runs with no warnings after that. `%!` loads Errno. The open does
+  # not wait (a FIFO with no reader fails), and a file that is not regular
+  # is refused, so perl never blocks before it reads stdin. The temporary
+  # file of a write is removed first, then made with `O_EXCL|O_NOFOLLOW`
+  # and mode 0600, so no other file or link is written through.
   @program ~S"""
   use Fcntl qw(:DEFAULT :flock);
   my ($nonce, $path) = @ARGV;
@@ -27,7 +32,35 @@ defmodule Helyx.Session.Lock do
     exit 0;
   }
   print "$nonce ok\n";
-  sysread(STDIN, my $byte, 1);
+  sub take {
+    my ($n, $buf) = (shift, '');
+    while (length($buf) < $n) {
+      sysread(STDIN, $buf, $n - length($buf), length($buf)) or exit 0;
+    }
+    $buf;
+  }
+  sub field { take(unpack('N', take(4))) }
+  while (sysread(STDIN, my $op, 1)) {
+    if ($op eq 'r') {
+      my $file = field();
+      print(unlink($file) || $!{ENOENT} ? "done\n" : "fail $!\n");
+    } elsif ($op eq 'w') {
+      my ($file, $data) = (field(), field());
+      my $tmp = "$file.tmp";
+      unlink($tmp);
+      my $out;
+      my $ok = sysopen($out, $tmp, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0600)
+        && chmod(0600, $out)
+        && (syswrite($out, $data) // -1) == length($data)
+        && close($out)
+        && rename($tmp, $file);
+      my $error = "$!";
+      unlink($tmp) unless $ok;
+      print($ok ? "done\n" : "fail $error\n");
+    } else {
+      exit 0;
+    }
+  }
   """
 
   # perl answers in a few ms; the rest is the margin for load.
@@ -77,9 +110,7 @@ defmodule Helyx.Session.Lock do
           args: ["-e", @program, "--", nonce, Path.rootname(path) <> ".lock"]
         ])
 
-      deadline = System.monotonic_time(:millisecond) + @reply_ms
-
-      case read_answer(port, nonce, "", deadline) do
+      case read_answer(port, &answer(&1, nonce)) do
         :ok ->
           {:ok, port}
 
@@ -101,34 +132,73 @@ defmodule Helyx.Session.Lock do
     end
   end
 
-  # Reads lines until the answer line, within the output bound and the
-  # deadline. `pre` holds the output read past; it and the line in hand
-  # count in the bound. The last bytes of an output with no line end come
-  # after the exit status, so the read goes on to the trapped exit of the
-  # port. The deadline is checked before each receive: output that is
-  # queued already does not keep the read past it.
-  defp read_answer(port, nonce, pre, deadline) do
+  defp answer(line, nonce) do
+    case String.split(line, " ", parts: 3) do
+      [^nonce, "ok"] -> :ok
+      [^nonce, "locked"] -> :locked
+      [^nonce, "error", reason] -> {:error, "cannot open the lock file: " <> reason}
+      _other -> :other
+    end
+  end
+
+  # Writes `path` with mode 0600 through `<path>.tmp` and a rename, in the
+  # perl process that holds the lock `port`: when the lock has ended, no
+  # write happens. `data` is a closure, so its text, a secret for example,
+  # is in no frame and no argument but the one call that sends it. Returns
+  # `:ok` or `{:error, text}`. The owner traps exits, as for `take/1`.
+  def write_file(port, path, data) when is_function(data, 0),
+    do: command(port, fn -> ["w", field(path), field(data.())] end)
+
+  # Removes `path` in the perl process that holds the lock `port`; a file
+  # that is not there counts as removed.
+  def remove_file(port, path), do: command(port, fn -> ["r", field(path)] end)
+
+  defp field(text), do: [<<byte_size(text)::32>>, text]
+
+  # The command goes in one call; a port that closed with its lock gets
+  # none. The answer has the bound and the deadline of the take.
+  defp command(port, frame) do
+    if send_bytes(port, frame) do
+      with {:error, text} <- read_answer(port, &reply/1),
+           do: {:error, String.replace_invalid(text, "")}
+    else
+      {:error, "the lock has ended"}
+    end
+  end
+
+  defp reply("done"), do: :ok
+  defp reply("fail " <> reason), do: {:error, reason}
+  defp reply(_line), do: :other
+
+  defp read_answer(port, parse),
+    do: read_answer(port, parse, "", System.monotonic_time(:millisecond) + @reply_ms)
+
+  # Reads lines until the answer line that `parse` knows, within the output
+  # bound and the deadline. `pre` holds the output read past; it and the
+  # line in hand count in the bound. The last bytes of an output with no
+  # line end come after the exit status, so the read goes on to the trapped
+  # exit of the port. The deadline is checked before each receive: output
+  # that is queued already does not keep the read past it.
+  defp read_answer(port, parse, pre, deadline) do
     case deadline - System.monotonic_time(:millisecond) do
       wait when wait > 0 ->
         receive do
           {^port, {:data, {:eol, line}}}
           when byte_size(pre) + byte_size(line) < @max_output_bytes ->
-            case String.split(line, " ", parts: 3) do
-              [^nonce, "ok"] -> :ok
-              [^nonce, "locked"] -> :locked
-              [^nonce, "error", reason] -> {:error, "cannot open the lock file: " <> reason}
-              _other -> read_answer(port, nonce, pre <> line <> "\n", deadline)
+            case parse.(line) do
+              :other -> read_answer(port, parse, pre <> line <> "\n", deadline)
+              answer -> answer
             end
 
           {^port, {:data, {:noeol, part}}}
           when byte_size(pre) + byte_size(part) < @max_output_bytes ->
-            read_answer(port, nonce, pre <> part, deadline)
+            read_answer(port, parse, pre <> part, deadline)
 
           {^port, {:data, _over}} ->
             {:error, "perl wrote #{@max_output_bytes} bytes with no answer in them"}
 
           {^port, {:exit_status, _}} ->
-            read_answer(port, nonce, pre, deadline)
+            read_answer(port, parse, pre, deadline)
 
           {:EXIT, ^port, _reason} ->
             {:error, "perl ended with no answer: " <> pre}
@@ -151,7 +221,7 @@ defmodule Helyx.Session.Lock do
   def release(nil), do: :ok
 
   def release(port) do
-    if write(port) do
+    if send_bytes(port, fn -> "x" end) do
       receive do
         {^port, {:exit_status, _status}} -> :ok
       after
@@ -163,8 +233,11 @@ defmodule Helyx.Session.Lock do
     :ok
   end
 
-  defp write(port) do
-    Port.command(port, "x")
+  # A port that closed already gets nothing. The bytes come from `frame`
+  # here, and the rescue drops the stacktrace, whose top frame would hold
+  # them as an argument.
+  defp send_bytes(port, frame) do
+    Port.command(port, frame.())
   rescue
     ArgumentError -> false
   end

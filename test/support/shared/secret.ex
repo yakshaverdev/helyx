@@ -21,7 +21,7 @@ defmodule Helyx.Test.Secret do
           Base.encode16(key, case: :lower),
           Base.encode64(key)
         ] do
-      refute String.contains?(text, form), "the log holds a form of the token or the key"
+      refute String.contains?(text, form), "the text holds a form of the token or the key"
     end
   end
 end

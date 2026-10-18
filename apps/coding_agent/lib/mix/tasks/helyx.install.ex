@@ -18,6 +18,61 @@ defmodule Mix.Tasks.Helyx.Install do
   use Mix.Task
 
   @usage "usage: mix helyx.install [--prefix DIR] [--bin-dir DIR]"
+  # The ticks of the launcher of `serve` after a signal, one SIGTERM each
+  # second; a boot under load ends well within them.
+  @term_tries 20
+
+  # The supervisor of `helyx serve`, run as the launcher itself. Before the
+  # fork it catches every signal whose default ends a process, by the names
+  # of its OS: all but the ones that are ignored or stop (and IO on macOS,
+  # where it is ignored). A fault signal resets at its first delivery, so a
+  # real fault in perl ends perl and does not repeat. A handler only counts.
+  # The VM gets its pid from the fork, a group of its own, and the command.
+  # The loop wakes each 0.25 s, or at a signal: each new signal sends the VM
+  # SIGTERM, and then one tick each second sends SIGTERM again while it
+  # lives, at most `@term_tries` ticks, since a VM drops a SIGTERM that comes
+  # before its handler. `waitpid` gives the status of the VM, and the
+  # supervisor exits with it at once, so it sends nothing to a pid after its
+  # reap. The text has no single quote: it goes in one of the launcher.
+  @serve """
+  use Config; use POSIX (); use Time::HiRes (); my $stop = 0;
+  my %skip = map { $_ => 1 } qw(ZERO KILL STOP CHLD CLD CONT TSTP TTIN TTOU URG WINCH INFO NUM32 NUM33);
+  @skip{qw(IO POLL)} = (1, 1) if $^O eq "darwin";
+  my %fault = map { $_ => 1 } qw(ILL TRAP BUS FPE SEGV SYS EMT);
+  my @num = split " ", $Config{sig_num};
+  my $i = 0;
+  my $count = sub { $stop++ };
+  for my $name (split " ", $Config{sig_name}) {
+    my $n = $num[$i++];
+    next if $skip{$name};
+    if ($fault{$name}) {
+      POSIX::sigaction($n, POSIX::SigAction->new($count, POSIX::SigSet->new, POSIX::SA_RESETHAND()));
+    } else {
+      $SIG{$name} = $count;
+    }
+  }
+  my $pid = fork;
+  defined $pid or die "helyx: fork: $!\\n";
+  if (!$pid) {
+    setpgrp(0, 0);
+    exec { $ARGV[0] } @ARGV or die "helyx: $ARGV[0]: $!\\n";
+  }
+  my ($sent, $ticks, $next) = (0, 0, 0);
+  while (1) {
+    if (waitpid($pid, POSIX::WNOHANG()) == $pid) {
+      exit(POSIX::WIFEXITED($?) ? POSIX::WEXITSTATUS($?) : 128 + POSIX::WTERMSIG($?));
+    }
+    my $now = Time::HiRes::time();
+    if ($stop > $sent) {
+      ($sent, $next) = ($stop, $now + 1);
+      kill "TERM", $pid;
+    } elsif ($stop && $ticks < #{@term_tries} && $now >= $next) {
+      ($ticks, $next) = ($ticks + 1, $now + 1);
+      kill "TERM", $pid;
+    }
+    Time::HiRes::sleep(0.25);
+  }
+  """
 
   @impl true
   def run(argv) do
@@ -113,26 +168,13 @@ defmodule Mix.Tasks.Helyx.Install do
 
     command = "#{sh_quote(script)} eval 'System.halt(CodingAgent.CLI.main(System.argv()))' \"$@\""
 
-    # `serve` runs in a process group of its own, through perl, so the
-    # SIGINT of a terminal reaches only this script, which sends SIGTERM:
-    # the VM cannot handle SIGINT (docs/features/serve.md). The trap is set
-    # before the start, and a signal before `pid` is known sends SIGTERM
-    # once `pid` is known. A wait that a signal ends while the VM runs waits
-    # again.
+    # `serve` runs under a perl supervisor (`@serve`), with the VM in a
+    # process group of its own, so the SIGINT of a terminal reaches only the
+    # supervisor: the VM cannot handle SIGINT (docs/features/serve.md).
     File.write!(tmp, """
     #!/bin/sh
     if [ "$1" = serve ]; then
-      pid=
-      stop=
-      trap 'stop=1; [ -z "$pid" ] || kill -TERM "$pid" 2>/dev/null' INT TERM HUP
-      perl -e 'setpgrp(0, 0); exec { $ARGV[0] } @ARGV or die "helyx: $ARGV[0]: $!\\n"' -- #{command} </dev/null &
-      pid=$!
-      [ -z "$stop" ] || kill -TERM "$pid" 2>/dev/null
-      while :; do
-        wait "$pid"
-        status=$?
-        kill -0 "$pid" 2>/dev/null || exit "$status"
-      done
+      exec perl -e '#{@serve}' -- #{command} </dev/null
     fi
     exec #{command}
     """)

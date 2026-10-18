@@ -8,6 +8,10 @@ defmodule Mix.Tasks.Helyx.InstallTest do
 
   @moduletag :tmp_dir
 
+  # The second SIGTERM of the launcher comes after one second; the rest is
+  # the margin for load.
+  @load_ms 10_000
+
   # A quote and a space in the prefix check the quoting of the launcher.
   setup %{tmp_dir: dir} do
     prefix = Path.join(dir, "it's home")
@@ -31,6 +35,20 @@ defmodule Mix.Tasks.Helyx.InstallTest do
     capture_io(fn -> Install.install(build(prefix, version), prefix, bin_dir) end)
   end
 
+  # The launcher with `args`; the release script reads the folder `dir` in
+  # `OUT`. Returns its port and OS pid.
+  defp launch(bin_dir, dir, args) do
+    port =
+      Port.open({:spawn_executable, Path.join(bin_dir, "helyx")}, [
+        :exit_status,
+        args: args,
+        env: [{~c"OUT", String.to_charlist(dir)}]
+      ])
+
+    {:os_pid, launcher} = Port.info(port, :os_pid)
+    {port, launcher}
+  end
+
   defp builds(prefix), do: prefix |> Path.join("releases") |> File.ls!() |> Enum.sort()
   defp current(prefix), do: File.read_link!(Path.join(prefix, "current"))
 
@@ -50,7 +68,9 @@ defmodule Mix.Tasks.Helyx.InstallTest do
                args
   end
 
-  for signal <- ["INT", "TERM", "HUP"] do
+  # USR1 stands for the signals that the launcher traps beyond INT, TERM,
+  # and HUP.
+  for signal <- ["INT", "TERM", "HUP", "USR1"] do
     test "the launcher runs serve in a process group of its own and sends SIGTERM for SIG#{signal}",
          %{prefix: prefix, bin_dir: bin_dir, tmp_dir: dir} = context do
       install(context, "0.1.0+abc1234")
@@ -65,14 +85,7 @@ defmodule Mix.Tasks.Helyx.InstallTest do
       while :; do sleep 0.1; done
       """)
 
-      port =
-        Port.open({:spawn_executable, Path.join(bin_dir, "helyx")}, [
-          :exit_status,
-          args: ["serve", "--port", "1"],
-          env: [{~c"OUT", String.to_charlist(dir)}]
-        ])
-
-      {:os_pid, launcher} = Port.info(port, :os_pid)
+      {port, launcher} = launch(bin_dir, dir, ["serve", "--port", "1"])
       wait_until(fn -> File.exists?(Path.join(dir, "group")) end)
 
       # The release script leads a process group of its own.
@@ -87,6 +100,31 @@ defmodule Mix.Tasks.Helyx.InstallTest do
       assert File.read!(Path.join(dir, "args")) ==
                "eval\nSystem.halt(CodingAgent.CLI.main(System.argv()))\nserve\n--port\n1\n"
     end
+  end
+
+  # The VM drops a SIGTERM that comes before its handler: the launcher sends
+  # one each second until the VM ends.
+  @tag :slow
+  test "the launcher sends SIGTERM again until the release script ends",
+       %{prefix: prefix, bin_dir: bin_dir, tmp_dir: dir} = context do
+    install(context, "0.1.0+abc1234")
+
+    # A release script that drops its first SIGTERM and exits 7 at the
+    # second.
+    File.write!(Path.join(prefix, "current/bin/helyx"), ~S"""
+    #!/bin/sh
+    n=0
+    trap 'n=$((n + 1)); echo "$n" >>"$OUT/terms"; [ "$n" -lt 2 ] || exit 7' TERM
+    touch "$OUT/started"
+    while :; do sleep 0.1; done
+    """)
+
+    {port, launcher} = launch(bin_dir, dir, ["serve"])
+    wait_until(fn -> File.exists?(Path.join(dir, "started")) end)
+    {_, 0} = System.cmd("kill", ["-TERM", Integer.to_string(launcher)])
+
+    assert_receive {^port, {:exit_status, 7}}, @load_ms
+    assert File.read!(Path.join(dir, "terms")) == "1\n2\n"
   end
 
   test "a second install of one commit gets a new folder; the third deletes the oldest",
