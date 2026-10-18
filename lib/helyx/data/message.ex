@@ -177,6 +177,8 @@ defmodule Helyx.Message do
   # 103,819 integers of 100 digits, encode in about 50 ms (#79).
   @max_integer_digits 100
   @integer_limit 10 ** @max_integer_digits
+  # Two compares copy no part of a large integer; `abs/1` copies a negative one.
+  @integer_floor -@integer_limit
   @integer_marker "integer of more than #{@max_integer_digits} digits removed"
 
   # The one limit of a tool result text (64 KiB), for every tool and every
@@ -208,8 +210,9 @@ defmodule Helyx.Message do
   """
   @spec cap_integers(term()) :: term()
   # `@integer_limit` is the first integer over the digit limit.
-  def cap_integers(value) when is_integer(value) and abs(value) >= @integer_limit,
-    do: @integer_marker
+  def cap_integers(value)
+      when is_integer(value) and (value >= @integer_limit or value <= @integer_floor),
+      do: @integer_marker
 
   def cap_integers(%_{} = struct),
     do: if(big_integer?(struct), do: @integer_marker, else: struct)
@@ -230,7 +233,9 @@ defmodule Helyx.Message do
   builds no term, so it suits a value that is rejected as a whole.
   """
   @spec big_integer?(term()) :: boolean()
-  def big_integer?(value) when is_integer(value), do: abs(value) >= @integer_limit
+  def big_integer?(value) when is_integer(value),
+    do: value >= @integer_limit or value <= @integer_floor
+
   def big_integer?(%_{} = struct), do: big_integer?(Map.from_struct(struct))
 
   def big_integer?(value) when is_map(value),

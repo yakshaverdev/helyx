@@ -84,6 +84,14 @@ defmodule Helyx.Event do
       abort cleanup or session-file write, a provider that keeps no history
       to compact) for the user, with a fixed text.
       It is not in the transcript, so the model never gets it
+    * `:ask` – `%{ask_id: String.t(), call_id: String.t(), tool:
+      String.t(), request: map()}`: a running tool call asks the clients
+      (`Helyx.Tool.ask/1`); `request` is a JSON object that the tool made,
+      and `ask_id` is a new random id for each ask. A client that can
+      answer gives its answer with `Helyx.Session.answer/3`
+    * `:ask_end` – `%{ask_id: String.t(), outcome: :answered | :ended}`:
+      the ask got its first answer, or its call or the turn ended first
+      (`docs/features/question-tool.md`)
   """
 
   @enforce_keys [:type, :session_id, :instance_id, :turn_id, :seq, :data]
@@ -103,6 +111,8 @@ defmodule Helyx.Event do
           | :steer_unconfirmed
           | :compaction
           | :notice
+          | :ask
+          | :ask_end
 
   @type t :: %__MODULE__{
           type: type(),

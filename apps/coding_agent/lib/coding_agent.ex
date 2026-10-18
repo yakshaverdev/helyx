@@ -16,7 +16,8 @@ defmodule CodingAgent do
     Helyx.Tool.Edit,
     Helyx.Tool.Write,
     Helyx.Tool.Agent,
-    Helyx.Tool.Skill
+    Helyx.Tool.Skill,
+    Helyx.Tool.Question
   ]
 
   # The rotation threshold of the log file of a TUI run. The handler

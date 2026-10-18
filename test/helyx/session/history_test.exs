@@ -27,7 +27,7 @@ defmodule Helyx.Session.HistoryTest do
   end
 
   defp tail(opts) do
-    with {:ok, tail, nil} <- History.subscribe(opts), do: {:ok, tail}
+    with {:ok, {tail, nil, false}} <- History.subscribe(opts), do: {:ok, tail}
   end
 
   test "the option lists: none, or one count from 1 to 1,000" do
@@ -48,9 +48,15 @@ defmodule Helyx.Session.HistoryTest do
   end
 
   test "the subscribe options: after is an instance id and a seq >= 0, at most once" do
-    assert History.subscribe(after: {"i", 0}) == {:ok, nil, {"i", 0}}
-    assert History.subscribe(tail: 5, after: {"i", 7}) == {:ok, 5, {"i", 7}}
-    assert History.subscribe(after: {"i", 7}, tail: 5) == {:ok, 5, {"i", 7}}
+    assert History.subscribe(after: {"i", 0}) == {:ok, {nil, {"i", 0}, false}}
+    assert History.subscribe(tail: 5, after: {"i", 7}) == {:ok, {5, {"i", 7}, false}}
+    assert History.subscribe(after: {"i", 7}, tail: 5) == {:ok, {5, {"i", 7}, false}}
+    assert History.subscribe(answers: true, tail: 5) == {:ok, {5, nil, true}}
+    assert History.subscribe(answers: false) == {:ok, {nil, nil, false}}
+
+    for bad <- [[answers: nil], [answers: "true"], [answers: true, answers: true]] do
+      assert History.subscribe(bad) == {:error, :invalid_limit}
+    end
 
     for bad <- [{"i", -1}, {"i", 1.0}, {:i, 1}, {"i"}, "i", nil] do
       assert History.subscribe(after: bad) == {:error, :invalid_after}

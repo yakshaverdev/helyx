@@ -8,7 +8,7 @@ defmodule Helyx.TUI.Switch do
   # The functions take and give the state of `Helyx.TUI`.
 
   alias Helyx.{Event, Session}
-  alias Helyx.TUI.{Composer, ViewModel}
+  alias Helyx.TUI.{Composer, Question, ViewModel}
 
   @enforce_keys [:task, :target]
   defstruct [:task, :target, down: nil, dropped: []]
@@ -38,7 +38,7 @@ defmodule Helyx.TUI.Switch do
     vm = ViewModel.from_snapshot(snapshot, session.id)
     vm = %{vm | expanded?: match?(%{expanded?: true}, state.vm)}
 
-    %{
+    Question.sync(%{
       state
       | session: session,
         # The monitor of the session from the subscribe: its `:DOWN` is
@@ -51,13 +51,14 @@ defmodule Helyx.TUI.Switch do
         scroll: nil,
         selection: nil,
         # The cursor of a search is an item of the session it leaves.
-        search: nil
-    }
+        search: nil,
+        question: nil
+    })
   end
 
   # A session that is not running leaves nothing to render.
   defp subscribe!(session) do
-    case Session.subscribe(session) do
+    case Session.subscribe(session, answers: true) do
       {:ok, snapshot, ref} -> {snapshot, ref}
       {:error, :session_not_found} -> exit({:session_down, :session_not_found})
     end

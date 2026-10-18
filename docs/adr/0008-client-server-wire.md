@@ -50,7 +50,7 @@ WebSocket, one JSON object per text frame. The same objects can go over stdio, o
 
 ### 3. Operations
 
-`sessions.live`, `sessions.saved`, `start`, `resume`, `subscribe`, `unsubscribe`, `history`, `prompt`, `steer`, `follow_up`, `abort`, `set_model`, `compact`, and `stop`. Their parameters, results, and errors are in `wire-protocol.md`.
+`sessions.live`, `sessions.saved`, `start`, `resume`, `subscribe`, `unsubscribe`, `history`, `prompt`, `steer`, `follow_up`, `abort`, `set_model`, `compact`, `stop`, and `answer` (#744). Their parameters, results, and errors are in `wire-protocol.md`.
 
 - `resume` of a session that runs attaches to that instance (#657).
 - A request runs outside the socket handler, so an `abort` that waits for its cleanup does not stop the events.

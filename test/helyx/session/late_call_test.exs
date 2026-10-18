@@ -29,7 +29,10 @@ defmodule Helyx.Session.LateCallTest do
     request = :gen_server.send_request(pid, {:until, now, prompt})
 
     subscribe =
-      :gen_server.send_request(pid, {:until, now, {:subscribe, other, make_ref(), nil, nil}})
+      :gen_server.send_request(
+        pid,
+        {:until, now, {:subscribe, other, make_ref(), {nil, nil, false}}}
+      )
 
     state = :sys.get_state(pid)
     assert Map.keys(state.subscribers) == [self()]

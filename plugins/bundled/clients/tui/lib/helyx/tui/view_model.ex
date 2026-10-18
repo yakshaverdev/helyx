@@ -56,6 +56,10 @@ defmodule Helyx.TUI.ViewModel do
   `:compaction` event changes the context state with
   `Helyx.Session.Totals.compacted/2`.
 
+  `asks` are the open asks of tool calls, oldest first, as the snapshot
+  and the `:ask` and `:ask_end` events give them; `Helyx.TUI.Question`
+  shows the oldest of the `question` tool (`docs/features/question-tool.md`).
+
   The view model has no `instance_id` or `seq` guard: the TUI subscribes
   once to each session, and the registration and the snapshot happen in
   one server handler, so no event of an older `seq` reaches it (ADR 0006,
@@ -80,7 +84,8 @@ defmodule Helyx.TUI.ViewModel do
             reason: nil,
             expanded?: false,
             usage: %Totals{},
-            context: nil
+            context: nil,
+            asks: []
 
   @type tool_cell :: {:tool, Message.ToolCall.t(), String.t(), Message.t() | nil}
   @type cell ::
@@ -107,7 +112,8 @@ defmodule Helyx.TUI.ViewModel do
           reason: String.t() | nil,
           expanded?: boolean(),
           usage: Totals.t(),
-          context: Totals.context() | nil
+          context: Totals.context() | nil,
+          asks: [Snapshot.ask()]
         }
 
   @delta_keys [:text_delta, :thinking_delta, :tool_call]
@@ -206,6 +212,16 @@ defmodule Helyx.TUI.ViewModel do
     if cut > 0, do: add_cell(vm, {:notice, cut_text}), else: vm
   end
 
+  def apply(vm, %Event{type: :ask, data: data}) do
+    %{ask_id: _, call_id: _, tool: _, request: _} = data
+    %{vm | asks: vm.asks ++ [data]}
+  end
+
+  def apply(vm, %Event{type: :ask_end, data: data}) do
+    %{ask_id: id} = data
+    %{vm | asks: Enum.reject(vm.asks, &(&1.ask_id == id))}
+  end
+
   # A type that this client does not know.
   def apply(vm, %Event{}), do: vm
 
@@ -239,7 +255,8 @@ defmodule Helyx.TUI.ViewModel do
       running?: turn != nil,
       queue: queue(snapshot.queue),
       usage: snapshot.usage,
-      context: snapshot.context
+      context: snapshot.context,
+      asks: snapshot.asks
     }
 
     vm = Enum.reduce(messages, vm, &add_cells(&2, &1))

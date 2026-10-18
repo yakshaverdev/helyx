@@ -2,8 +2,8 @@ defmodule Helyx.Tool.Agent do
   @moduledoc """
   Runs a task in a child session and gives its final text back: a
   subagent. The child is a normal session of the same Core, with the
-  model of the parent's turn, its working folder, its tools but this one,
-  and a fresh context. Its header links the parent call, and its id is
+  model of the parent's turn, its working folder, its tools but this one
+  and `question`, and a fresh context. Its header links the parent call, and its id is
   derived from the link (`Helyx.Sessions.child_id/2`); it is out of the
   session list. The result is the text of the child's last assistant
   message; a failed or ended child turn gives an error result.
@@ -53,7 +53,8 @@ defmodule Helyx.Tool.Agent do
       model: context.model,
       cwd: cwd,
       parent: %{session_id: context.session_id, call_id: context.call_id},
-      tools: List.delete(context.tools, name())
+      # No user watches a child, so it gets no question tool either.
+      tools: context.tools -- [name(), "question"]
     ]
 
     {owner, monitor} = start_owner(context.core, opts)

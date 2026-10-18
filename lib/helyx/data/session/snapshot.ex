@@ -33,6 +33,9 @@ defmodule Helyx.Session.Snapshot do
     * `usage` and `context` – the totals and the context state of every
       message of the transcript, also of those that a tail leaves out
       (`Helyx.Session.Totals`).
+    * `asks` – the open asks of tool calls of the turn, oldest first, each
+      as the data of its `:ask` event (`Helyx.Event`); a client that can
+      answer shows them (`docs/features/question-tool.md`).
 
   A client works with one Helyx version and is a tolerant reader within it:
   it ignores an unknown event type and an unknown field (ADR 0006, revision
@@ -51,7 +54,9 @@ defmodule Helyx.Session.Snapshot do
     :usage,
     :context
   ]
-  defstruct @enforce_keys
+  defstruct @enforce_keys ++ [asks: []]
+
+  @type ask :: %{ask_id: String.t(), call_id: String.t(), tool: String.t(), request: map()}
 
   @type turn :: %{
           id: String.t(),
@@ -75,6 +80,7 @@ defmodule Helyx.Session.Snapshot do
           },
           persisting: boolean(),
           usage: Helyx.Session.Totals.t(),
-          context: Helyx.Session.Totals.context() | nil
+          context: Helyx.Session.Totals.context() | nil,
+          asks: [ask()]
         }
 end

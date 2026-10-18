@@ -181,7 +181,7 @@ defmodule Helyx.Transport.WebSocketTest do
       hello = Client.hello(Client.challenge(socket), nil)
       Client.send_frame(socket, %{hello | "protocol" => 1})
 
-      assert {:frame, %{"type" => "refused", "code" => "protocol", "server_protocol" => 2}} ==
+      assert {:frame, %{"type" => "refused", "code" => "protocol", "server_protocol" => 3}} ==
                Client.recv(socket)
 
       assert {:close, 4426} = Client.recv(socket)
@@ -392,7 +392,7 @@ defmodule Helyx.Transport.WebSocketTest do
           Map.put(Client.hello(Client.challenge(socket), nil), "proof", proof)
         )
 
-        assert {:frame, %{"type" => "welcome", "protocol" => 2}} = Client.recv(socket)
+        assert {:frame, %{"type" => "welcome", "protocol" => 3}} = Client.recv(socket)
       end
     end
 

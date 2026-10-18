@@ -22,7 +22,7 @@ defmodule Helyx.Session.Server.Wait do
   import Helyx.Session.Server.Events, only: [emit: 3, emit: 4]
 
   alias Helyx.Session.{Hands, ProviderRequest, Turn}
-  alias Helyx.Session.Server.{ProviderConn, Records, State, Steering, Summary, ToolRuns}
+  alias Helyx.Session.Server.{Asks, ProviderConn, Records, State, Steering, Summary, ToolRuns}
 
   defstruct [:hands, :reply, :turn, :turn_end, :started_ms, callers: []]
 
@@ -38,8 +38,8 @@ defmodule Helyx.Session.Server.Wait do
   # The end of the turn, at `outcome`: `{:done, stop_reason, usage}`,
   # `:aborted`, or `{:error, reason}`; the reason goes to the log and
   # becomes its text (`Helyx.Reason`). Its prepare Task is killed, its
-  # summary call stops (`Summary.stop/1`), and its records close
-  # (`Records.finish/2`). At `done` a steer with no answer yet can still be
+  # asks end (`Asks.finish/1`), its summary call stops (`Summary.stop/1`),
+  # and its records close (`Records.finish/2`). At `done` a steer with no answer yet can still be
   # rejected after the turn (`Queue.answer/4`); an abort or a failure gives
   # the queued texts back (`Queue.abort/1`). The hands release the Tasks
   # of the turn before the next turn: always at an abort or a failure, at
@@ -57,7 +57,7 @@ defmodule Helyx.Session.Server.Wait do
   def finish(%State{activity: turn} = state, outcome) do
     outcome = with {:error, reason} <- outcome, do: {:error, error_text(reason)}
     kill_prepare(turn)
-    state = state |> Summary.stop() |> Records.finish(outcome)
+    state = state |> Asks.finish() |> Summary.stop() |> Records.finish(outcome)
     done? = match?({:done, _stop, _usage}, outcome)
     state = Steering.end_turn(state, turn.id, done?)
     state = ToolRuns.end_turn(state, turn)

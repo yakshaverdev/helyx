@@ -10,7 +10,7 @@ defmodule Helyx.Session.Server.ToolRuns do
   alias Helyx.Message.ToolCall
   alias Helyx.Session
   alias Helyx.Session.{Hands, Turn}
-  alias Helyx.Session.Server.{ProviderConn, State}
+  alias Helyx.Session.Server.{Asks, ProviderConn, State}
   alias Helyx.Session.ToolQueue
 
   # A request of the current turn, of `bytes` encoded call bytes. An open
@@ -40,9 +40,10 @@ defmodule Helyx.Session.Server.ToolRuns do
 
   def end_turn(state, _turn), do: state
 
-  # The hands' result of the running call `id`.
+  # The hands' result of the running call `id`; an ask of the call ends
+  # with it.
   def result(%State{activity: %Turn{tool_queue: queue}} = state, id, result),
-    do: apply_step(state, ToolQueue.result(queue, id, result))
+    do: state |> Asks.call_end(id) |> apply_step(ToolQueue.result(queue, id, result))
 
   defp apply_step(%State{activity: turn} = state, {queue, effects}) do
     state = %{state | activity: %{turn | tool_queue: queue}}

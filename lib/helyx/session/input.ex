@@ -1,8 +1,9 @@
 defmodule Helyx.Session.Input do
   @moduledoc false
-  # The checks of client input at the session API: the cwd of a start or a
-  # resume, the child options of a start, and the origin and the text of a
-  # send (docs/features/coding-agent.md, "Bounds";
+  # The checks of client input at the session API: the cwd and the model
+  # of a start or a resume, the child options of a start, the origin and
+  # the text of a send, and the JSON object of an answer, which also checks
+  # the request of a tool (docs/features/coding-agent.md, "Bounds";
   # docs/features/message-identity.md). Inner code trusts them.
 
   alias Helyx.Message
@@ -60,6 +61,16 @@ defmodule Helyx.Session.Input do
 
   defp tools(_names), do: {:error, :invalid_tools}
 
+  # A model ref string to its parsed ref and its provider plugin, for a
+  # start, a resume, and a switch alike.
+  @spec model(Helyx.Core.name(), String.t()) ::
+          {:ok, {Helyx.ModelRef.t(), module()}} | {:error, Helyx.Session.model_error()}
+  def model(core, string) do
+    with {:ok, ref} <- Helyx.ModelRef.parse(string),
+         {:ok, provider} <- Helyx.Provider.find(core, ref.provider),
+         do: {:ok, {ref, provider}}
+  end
+
   # Product code may set only `:product`.
   @spec origin(keyword()) :: {:ok, Message.origin()} | {:error, :invalid_origin}
   def origin([]), do: {:ok, %{kind: :user, id: nil}}
@@ -73,4 +84,64 @@ defmodule Helyx.Session.Input do
   @spec text(binary()) :: :ok | {:error, :text_too_large | :invalid_utf8}
   def text(text) when byte_size(text) > @max_text_bytes, do: {:error, :text_too_large}
   def text(text), do: if(String.valid?(text), do: :ok, else: {:error, :invalid_utf8})
+
+  # A JSON object as a JSON decoder gives it: string keys, and values that
+  # are strings, numbers, booleans, nil, lists, and such objects; every
+  # string valid UTF-8, and no integer over the digit limit, whose encode is
+  # quadratic. Its JSON encode is at most `max` bytes. One walk counts the
+  # bytes of the encode and stops past `max`, so a larger value costs no
+  # more than the bound (docs/features/question-tool.md, "Bounds").
+  @spec json_object(term(), pos_integer()) :: :ok | :error
+  def json_object(value, max) when is_map(value) do
+    case size(value, max) do
+      left when is_integer(left) and left >= 0 -> :ok
+      _error_or_past -> :error
+    end
+  end
+
+  def json_object(_value, _max), do: :error
+
+  # `left` less the bytes of the encode of `value`, or :error. A negative
+  # `left` stops the walk at the next value.
+  defp size(_value, left) when left < 0, do: :error
+  defp size(value, _left) when is_struct(value), do: :error
+
+  # A string is at least its bytes and two quotes: one past the bound is
+  # neither read nor encoded.
+  defp size(value, left) when is_binary(value) do
+    if byte_size(value) + 2 <= left and String.valid?(value),
+      do: left - byte_size(JSON.encode!(value)),
+      else: :error
+  end
+
+  # An integer over the digit limit is not encoded: its encode is quadratic.
+  defp size(value, left) when is_number(value) or is_boolean(value) or is_nil(value),
+    do: if(Message.big_integer?(value), do: :error, else: left - byte_size(JSON.encode!(value)))
+
+  # The brackets, then each item, with a comma before each but the first.
+  defp size(value, left) when is_list(value), do: items(value, left - 2, 0)
+
+  defp size(value, left) when is_map(value),
+    do: pairs(:maps.next(:maps.iterator(value)), left - 2, 0)
+
+  defp size(_value, _left), do: :error
+
+  defp items([], left, _comma), do: left
+
+  defp items([value | rest], left, comma) do
+    with left when is_integer(left) <- size(value, left - comma), do: items(rest, left, 1)
+  end
+
+  defp items(_improper_tail, _left, _comma), do: :error
+
+  # The map is read one key at a time, so a large map is never listed.
+  defp pairs(:none, left, _comma), do: left
+
+  defp pairs({key, value, next}, left, comma) when is_binary(key) do
+    with left when is_integer(left) <- size(key, left - comma - 1),
+         left when is_integer(left) <- size(value, left),
+         do: pairs(:maps.next(next), left, 1)
+  end
+
+  defp pairs(_pair, _left, _comma), do: :error
 end

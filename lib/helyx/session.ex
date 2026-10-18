@@ -30,7 +30,7 @@ defmodule Helyx.Session do
   """
 
   alias Helyx.ModelRef
-  alias Helyx.Session.{Call, History, Id, Input, Server, Snapshot, Transcript}
+  alias Helyx.Session.{Call, History, Id, Input, Server, Snapshot}
   alias Helyx.Session.Server.State
 
   @enforce_keys [:id, :core]
@@ -82,7 +82,7 @@ defmodule Helyx.Session do
          {:ok, tools} <- Helyx.Tool.specs(core, only),
          :ok <- Helyx.Tool.check_available(tools),
          concurrent = Helyx.Tool.concurrent(tools),
-         {:ok, {ref, provider}} <- resolve_model(core, Keyword.fetch!(opts, :model)),
+         {:ok, {ref, provider}} <- Input.model(core, Keyword.fetch!(opts, :model)),
          # The folders come before the lock, whose file is in them.
          :ok <- mkdir(opts[:sessions_dir], cwd, parent) do
       Server.create(
@@ -133,46 +133,18 @@ defmodule Helyx.Session do
          {:ok, path, cwd} <- Helyx.Session.File.pick(dir, cwd, Keyword.take(opts, [:id])) do
       id = Path.basename(path, ".jsonl")
       state = %State{id: id, core: core, model: nil, provider: nil, cwd: cwd}
-      Server.start(state, {tools, concurrent}, {path, &load(&1, path)})
-    end
-  end
-
-  # The read of the locked file and its model ref, in the session's open.
-  # A crash can leave tool calls with no result, and the disk can hold a
-  # result with no open call. The session reads them with interrupted
-  # results and without the stray results, and writes nothing (#269, #417, #584).
-  defp load(state, path) do
-    with {:ok, resumed} <- Helyx.Session.File.resume_picked(path, state.cwd),
-         {:ok, {ref, provider}} <- resolve_model(state.core, resumed.model) do
-      {:ok,
-       %{
-         state
-         | model: ref,
-           provider: provider,
-           file: resumed.file,
-           transcript: Transcript.repair(resumed.messages),
-           sync: {:replay, resumed.messages},
-           summary: resumed.summary,
-           resume_ids: resumed.resume_ids,
-           compacted: resumed.compacted
-       }}
+      Server.start(state, {tools, concurrent}, {path, &Server.Open.load(&1, path)})
     end
   end
 
   defp fetch_cwd(opts), do: opts |> Keyword.get_lazy(:cwd, &File.cwd!/0) |> Input.cwd()
 
-  # A model ref string to its parsed ref and its provider plugin, for start,
-  # resume, and a switch alike.
-  defp resolve_model(core, string) do
-    with {:ok, ref} <- ModelRef.parse(string),
-         {:ok, provider} <- Helyx.Provider.find(core, ref.provider),
-         do: {:ok, {ref, provider}}
-  end
-
   @doc """
   Subscribes the caller to the session's events, delivered as
   `{:helyx_event, event}`, and returns the session's state as a
-  `Helyx.Session.Snapshot`. The session adds the caller and builds the
+  `Helyx.Session.Snapshot`. With `answers: true` the caller can answer the
+  asks of tool calls (`answer/3`): a tool that asks gets `{:error,
+  :no_client}` when no subscriber gave it. The session adds the caller and builds the
   snapshot in one step, so every event after the snapshot reaches it
   (`docs/features/session-subscribers.md`). A caller that reconnects drops
   an event whose `instance_id` is not `snapshot.instance_id`: it is of an
@@ -224,7 +196,7 @@ defmodule Helyx.Session do
     case {History.subscribe(opts), pid(session)} do
       {{:error, _} = error, _pid} -> error
       {_opts, nil} -> {:error, :session_not_found}
-      {{:ok, tail, after_}, pid} -> Call.subscribe(pid, tail, after_, @call_timeout_ms)
+      {{:ok, opts}, pid} -> Call.subscribe(pid, opts, @call_timeout_ms)
     end
   end
 
@@ -259,6 +231,36 @@ defmodule Helyx.Session do
       when is_binary(instance_id) and is_binary(before) do
     with {:ok, limit} <- History.limit(opts),
          do: call(session, {:history, instance_id, before, limit})
+  end
+
+  @max_answer_bytes 16_384
+
+  @doc "The most bytes of the JSON of an answer (`answer/3`)."
+  @spec max_answer_bytes() :: pos_integer()
+  def max_answer_bytes, do: @max_answer_bytes
+
+  @doc """
+  Gives an answer that passes `check_answer/1` to the open ask `ask_id`; the
+  session emits `:ask_end`. Any other id, as of an answered ask or one whose
+  call or turn ended, gets `{:error, :not_waiting}` (`docs/features/question-tool.md`).
+  """
+  @spec answer(t(), String.t(), map()) ::
+          :ok | {:error, :invalid_answer | :not_waiting | :session_not_found}
+  def answer(%__MODULE__{} = session, ask_id, answer) when is_binary(ask_id) do
+    with :ok <- check_answer(answer), do: call(session, {:answer, ask_id, answer})
+  end
+
+  @doc """
+  Checks an answer with no session: a JSON object of valid UTF-8 whose JSON
+  is at most #{@max_answer_bytes} bytes. The check stops past the bound, so
+  a transport runs it before a worker holds the answer.
+  """
+  @spec check_answer(term()) :: :ok | {:error, :invalid_answer}
+  def check_answer(answer) do
+    case Input.json_object(answer, @max_answer_bytes) do
+      :ok -> :ok
+      :error -> {:error, :invalid_answer}
+    end
   end
 
   @doc """
@@ -362,7 +364,7 @@ defmodule Helyx.Session do
   """
   @spec set_model(t(), String.t()) :: :ok | {:error, model_error() | :session_not_found}
   def set_model(%__MODULE__{core: core} = session, string) when is_binary(string) do
-    with {:ok, {ref, provider}} <- resolve_model(core, string) do
+    with {:ok, {ref, provider}} <- Input.model(core, string) do
       call(session, {:set_model, ref, provider})
     end
   rescue

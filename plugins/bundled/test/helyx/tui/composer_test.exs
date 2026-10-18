@@ -35,7 +35,8 @@ defmodule Helyx.TUI.ComposerTest do
       busy: nil,
       session: %Session{id: "s", core: :none},
       instance_id: "i",
-      switch: nil
+      switch: nil,
+      question: nil
     }
   end
 
