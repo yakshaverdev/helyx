@@ -9,13 +9,13 @@ Every commit goes through this skill. Run the steps in order. The only exemption
 
 ## 1. Simplify
 
-Invoke `/simplify` on the working tree changes. Apply its fixes. Simplify is bug-blind by design, so anything it touches is reviewed again in step 2.
+Spawn one agent with the brief of `/simplify`: review the working tree changes for reuse, quality, and efficiency, and apply the fixes. Do not invoke `/simplify` itself: its fan-out of four agents found cleanups only (#780). Simplify is bug-blind by design, so anything it touches is reviewed again in step 2.
 
 ## 2. Review on three axes
 
 Invoke `/mattpocock-skills:code-review` for the standards and spec axes.
 
-- **Standards** covers only what Credo and Dialyzer cannot: naming, the AGENTS.md rules, and the smell baseline. Do not have it re-check style that `mix precommit` enforces. A rule text that a diff adds or changes is checked against the code: each guarantee it states has a probe or a test.
+- **Standards** runs in the first round only. It covers only what Credo and Dialyzer cannot: naming, the AGENTS.md rules, and the smell baseline. Do not have it re-check style that `mix precommit` enforces. A rule text that a diff adds or changes is checked against the code: each guarantee it states has a probe or a test.
 - **Spec** checks the diff against the ticket and the feature doc, including the bounds table and the research citations (see `docs/agents/review-checklist.md`, "Specs and bounds"). For a diff that adds or changes a contract text (a moduledoc, a glossary entry, an ADR, or a feature doc), the review record holds a guarantee table: one row per guarantee that the text states, with the test (`file:line`) that proves it or the probe that the reviewer ran. A guarantee with no test or probe, or with a test that contradicts it, is a finding (#514).
 
 Every review agent of this step and the bounds sensor read the uncommitted change: `git diff <base>` and the untracked files. The base is the merge base of the branch (`git merge-base origin/master HEAD`) in a first round, the commit or stash before the fix in a rerun round. Never `origin/master` itself: the refs are shared between worktrees, so a merge on master during the review puts master's commits in the diff (#769). The code-review skill captures `git diff <fixed-point>...HEAD`, which reads only commits, so give its agents this diff command instead. Before you spawn the reviewers, run the bounds sensor with the same base.
@@ -43,24 +43,16 @@ In the same message, spawn a third agent for the **failure-path axis**. It gets 
 
 > Read the diff and `docs/agents/review-checklist.md`. The checklist names categories; you enumerate the concrete cases. For every new or changed operation, state transition, and error branch, work through each category: input shape, the boundary at every named limit (at it, one under, one over, multibyte), resource bounds for every read, buffer, and wait, concurrency between sibling operations, and adversarial arguments from the model. For code that crosses to the OS, the filesystem, or the network, build a state table: list the external states (not started, running, exited with the port open, exited with the port closed, stuck) and cross them with the BEAM events (spawn, register, abort, Task kill, delivery). Test the cells; suspending a Task with `:erlang.suspend_process/1` to hold a window open is a named technique. Write throwaway tests as `.scratch/review/<name>_test.exs` at the repository root, run them with `mise exec -- mix test .scratch/review/<name>_test.exs`, and delete them when done. `.scratch/` is ignored by git; never put a throwaway test under `test/`. Sensor flags, when given, name functions to attack first; they are hints from a classifier, not findings. Probe through a boundary. A reproduction that calls an inner function directly with a value that no caller can pass is not a finding; name the boundary that lets the value in, or drop the finding. For a provider event, action, or reply that the contract does not allow, the finding is that the generic failure path does not fire (the output reaches session state, or the provider process does not stop). A finding that asks for a case-specific handler of such output needs evidence that a real provider does it (a research note, an observed run, or a bug report); name the evidence, or drop the finding. Also report the opposite: a new check, fallback, or repair in inner code that duplicates a boundary check which still proves the same property. A documented safety check is not a duplicate. Report only findings you reproduced, each with the reproduction. Budget: at most 10 minutes of probes and at most 20 repeats of one test. No mutation run over a whole suite, and no CPU load generator (other worktrees run tests on this machine). Name what the budget did not reach. Under 300 words.
 
-Run each review agent, and the agents of `/simplify`, in the foreground, several in one message. A background agent of a harness program ends with a Helyx print run (#592 probe). A review agent that dies or stalls is rerun. Never substitute any pass by hand, whatever the diff size.
+Run each review agent, and the simplify agent, in the foreground, several in one message. A background agent of a harness program ends with a Helyx print run (#592 probe). A review agent that dies or stalls is rerun. Never substitute any pass by hand, whatever the diff size.
 
 Fix every confirmed finding. Record the findings and their resolution in `docs/reviews/YYYY-MM-DD-<scope>.md`.
 
 If step 2 changed any code, review that change again. Review is always the last pass over the code. A rerun round is smaller than the first round:
 
 - **Reduced round:** the spec and failure-path agents only. They found every real bug in the rerun rounds of PR #30; the simplify and standards agents found none.
-- **Full round:** step 1, then all of step 2.
+- **Full round:** step 1, then step 2 without the standards agent.
 
-Count the fix from its diff, without test files and Markdown. The rerun is a full round when any one of these is true:
-
-- it changes more than 15 lines, added plus removed
-- it touches more than one code file
-- it adds or removes a function, a module, a process, or a dependency
-- it changes the arity, the return shape, or the spec of a function
-- the two-findings rule below applies to it
-
-Otherwise the rerun is a reduced round. If a line of this list is in doubt, the answer is a full round. The review record states the counts and the round type for each rerun.
+A rerun round is the reduced round, whatever the size of the fix. It is a full round only when the two-findings rule below applies to it. If that is in doubt, the answer is a full round. The review record states the round type for each rerun. Owner decision of 2026-10-18 (#780): the failure-path agent and the Codex review found nearly every reproduced defect, and #661 ran five full rounds of seven or more agents, because a fix that added a function made a rerun round full.
 
 The first round is always complete. No round is ever done by hand.
 
@@ -68,7 +60,7 @@ The loop ends by these rules, measured on the tickets of 2026-09-27: after round
 
 - **A round that reproduces no defect ends the loop.** Fix its wording, doc, and judgement findings, record them, and run no further round for them. A "known ceiling" that the review record already states is not a defect.
 - **At most three rounds.** If round 3 still reproduces a defect, the small-fix round below decides what follows.
-- **One small-fix round after the limit.** It applies only when the fix of the defect that round 3 reproduced meets every condition of a reduced round above (at most 15 lines, one code file, no added or removed function, no changed arity, return shape or spec, and not a second finding on one mechanism) and is at most 10 code lines, added plus removed, without test files and Markdown. Make the fix and run one reduced round; the owner is not asked. The review record names it as the small-fix round. If the fix does not meet these conditions, or the small-fix round reproduces a defect, commit only reviewed code, and report the defect and the state to the caller. The orchestrator parks the ticket. Owner decision of 2026-10-13: four tickets that day hit the limit with a fix of a few lines.
+- **One small-fix round after the limit.** It applies only when the fix of the defect that round 3 reproduced touches one code file, adds or removes no function, changes no arity, return shape or spec, is not a second finding on one mechanism, and is at most 10 code lines, added plus removed, without test files and Markdown. Make the fix and run one reduced round; the owner is not asked. The review record names it as the small-fix round. If the fix does not meet these conditions, or the small-fix round reproduces a defect, commit only reviewed code, and report the defect and the state to the caller. The orchestrator parks the ticket. Owner decision of 2026-10-13: four tickets that day hit the limit with a fix of a few lines.
 - **At most 45 minutes of work for the ticket.** At the limit, finish the current step, commit only code whose last review round is done, and report what is open.
 
 Two more rules govern the loop:
