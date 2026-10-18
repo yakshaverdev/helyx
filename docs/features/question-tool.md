@@ -42,6 +42,7 @@ Further decisions of this doc (owner away; the option that keeps Core smallest a
 - `Helyx.Session.answer(session, ask_id, answer)`: `:ok | {:error, :invalid_answer | :not_waiting | :session_not_found}`, with the call timeout of the session API.
 - `Helyx.Session.subscribe/2`: the option `answers: boolean()`, default false.
 - `Helyx.Session.max_answer_bytes/0`: the answer bound, 16,384, for a client that bounds its input to it.
+- `Helyx.Session.check_answer(answer)`: `:ok | {:error, :invalid_answer}`, the check of `answer/3` with no session, for a transport that checks an answer before a worker holds it.
 - `Helyx.Event`: `:ask` with `%{ask_id: String.t(), call_id: String.t(), tool: String.t(), request: map()}`, and `:ask_end` with `%{ask_id: String.t(), outcome: :answered | :ended}`. Both carry the turn id.
 - `Helyx.Session.Snapshot`: `asks`, a list of `%{ask_id, call_id, tool, request}`, oldest first.
 - `Helyx.Tool.Question`: the bundled tool `question`, registered in `CodingAgent`.
@@ -64,7 +65,7 @@ None. The subscriber entry of the session gets a fourth element, the `answers` f
 | `label` | 1 to 60 bytes | an error result | `Helyx.Tool.Question.run/2` |
 | `description` | at most 300 bytes | an error result | `Helyx.Tool.Question.run/2` |
 | a request | a JSON object of valid UTF-8, at most 65,536 bytes of JSON. The largest question request, four questions at every bound in their worst JSON form (each byte a control character, six bytes of JSON), is under it: a test checks it | raises in the Task: the generic error result | `Helyx.Tool.ask/1` |
-| an answer | a JSON object of valid UTF-8 with no integer over 100 digits, at most 16,384 bytes of JSON | `{:error, :invalid_answer}`; the wire gives `bad_params` for a value that is not an object, and `invalid_answer` for the rest | `Helyx.Session.answer/3` |
+| an answer | a JSON object of valid UTF-8 with no integer over 100 digits, at most 16,384 bytes of JSON. One walk counts the bytes of the encode and stops past the bound, so a larger value costs no more than the bound: it never walks or encodes the whole value. A test checks the bound exactly for each JSON shape, and a 25 MiB answer | `{:error, :invalid_answer}`; the wire gives `bad_params` for a value that is not an object, and `invalid_answer` for the rest | `Helyx.Session.check_answer/1`, through which `Helyx.Session.answer/3` and the wire go |
 | open asks of a session | one for each running call of the current turn: at most 8, the cap of #734. A call asks from its Task, which waits in the ask (`Helyx.Tool.context/0` holds only in that Task) | n/a | `Helyx.Session.Server.Asks` |
 | the wait for an answer | none: the end of the turn is the bound | n/a | accepted, decision 6 |
 | answers to one ask | the first; a later one, or one to an id that is not open, gets `{:error, :not_waiting}` | n/a | `Helyx.Session.Server.Asks` |

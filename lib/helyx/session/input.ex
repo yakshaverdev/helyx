@@ -88,24 +88,60 @@ defmodule Helyx.Session.Input do
   # A JSON object as a JSON decoder gives it: string keys, and values that
   # are strings, numbers, booleans, nil, lists, and such objects; every
   # string valid UTF-8, and no integer over the digit limit, whose encode is
-  # quadratic. Its JSON encode is at most `max` bytes (docs/features/question-tool.md).
+  # quadratic. Its JSON encode is at most `max` bytes. One walk counts the
+  # bytes of the encode and stops past `max`, so a larger value costs no
+  # more than the bound (docs/features/question-tool.md, "Bounds").
   @spec json_object(term(), pos_integer()) :: :ok | :error
-  def json_object(value, max) do
-    with true <- is_map(value) and json?(value),
-         {:ok, size} when size <= max <- Message.encoded_size(value),
-         do: :ok,
-         else: (_ -> :error)
+  def json_object(value, max) when is_map(value) do
+    case size(value, max) do
+      left when is_integer(left) and left >= 0 -> :ok
+      _error_or_past -> :error
+    end
   end
 
-  defp json?(value) when is_binary(value), do: String.valid?(value)
-  defp json?(value) when is_integer(value), do: not Message.big_integer?(value)
-  defp json?(value) when is_float(value) or value in [true, false, nil], do: true
+  def json_object(_value, _max), do: :error
 
-  defp json?(value) when is_list(value),
-    do: not List.improper?(value) and Enum.all?(value, &json?/1)
+  # `left` less the bytes of the encode of `value`, or :error. A negative
+  # `left` stops the walk at the next value.
+  defp size(_value, left) when left < 0, do: :error
+  defp size(value, _left) when is_struct(value), do: :error
 
-  defp json?(value) when is_map(value) and not is_struct(value),
-    do: Enum.all?(value, fn {key, val} -> is_binary(key) and json?(key) and json?(val) end)
+  # A string is at least its bytes and two quotes: one past the bound is
+  # neither read nor encoded.
+  defp size(value, left) when is_binary(value) do
+    if byte_size(value) + 2 <= left and String.valid?(value),
+      do: left - byte_size(JSON.encode!(value)),
+      else: :error
+  end
 
-  defp json?(_value), do: false
+  # An integer over the digit limit is not encoded: its encode is quadratic.
+  defp size(value, left) when is_number(value) or is_boolean(value) or is_nil(value),
+    do: if(Message.big_integer?(value), do: :error, else: left - byte_size(JSON.encode!(value)))
+
+  # The brackets, then each item, with a comma before each but the first.
+  defp size(value, left) when is_list(value), do: items(value, left - 2, 0)
+
+  defp size(value, left) when is_map(value),
+    do: pairs(:maps.next(:maps.iterator(value)), left - 2, 0)
+
+  defp size(_value, _left), do: :error
+
+  defp items([], left, _comma), do: left
+
+  defp items([value | rest], left, comma) do
+    with left when is_integer(left) <- size(value, left - comma), do: items(rest, left, 1)
+  end
+
+  defp items(_improper_tail, _left, _comma), do: :error
+
+  # The map is read one key at a time, so a large map is never listed.
+  defp pairs(:none, left, _comma), do: left
+
+  defp pairs({key, value, next}, left, comma) when is_binary(key) do
+    with left when is_integer(left) <- size(key, left - comma - 1),
+         left when is_integer(left) <- size(value, left),
+         do: pairs(:maps.next(next), left, 1)
+  end
+
+  defp pairs(_pair, _left, _comma), do: :error
 end

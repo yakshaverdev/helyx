@@ -240,18 +240,25 @@ defmodule Helyx.Session do
   def max_answer_bytes, do: @max_answer_bytes
 
   @doc """
-  Answers the ask `ask_id` of a tool call (`Helyx.Tool.ask/1`, the `:ask`
-  event): the first answer goes to the call, and the session emits
-  `:ask_end`. `answer` is a JSON object of valid UTF-8 whose JSON is at
-  most #{@max_answer_bytes} bytes, else `{:error, :invalid_answer}`. An id
-  that is not open, an ask that got an answer or whose call or turn ended,
-  gives `{:error, :not_waiting}` (`docs/features/question-tool.md`).
+  Gives an answer that passes `check_answer/1` to the open ask `ask_id`
+  (`Helyx.Tool.ask/1`), and the session emits `:ask_end`; an id that is not
+  open gives `{:error, :not_waiting}` (`docs/features/question-tool.md`).
   """
   @spec answer(t(), String.t(), map()) ::
           :ok | {:error, :invalid_answer | :not_waiting | :session_not_found}
   def answer(%__MODULE__{} = session, ask_id, answer) when is_binary(ask_id) do
+    with :ok <- check_answer(answer), do: call(session, {:answer, ask_id, answer})
+  end
+
+  @doc """
+  Checks an answer with no session: a JSON object of valid UTF-8 whose JSON
+  is at most #{@max_answer_bytes} bytes. The check stops past the bound, so
+  a transport runs it before a worker holds the answer.
+  """
+  @spec check_answer(term()) :: :ok | {:error, :invalid_answer}
+  def check_answer(answer) do
     case Input.json_object(answer, @max_answer_bytes) do
-      :ok -> call(session, {:answer, ask_id, answer})
+      :ok -> :ok
       :error -> {:error, :invalid_answer}
     end
   end

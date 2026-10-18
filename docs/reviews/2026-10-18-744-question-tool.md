@@ -150,3 +150,33 @@ The rebase brought #779: the connection checks the params of a request with `Ops
 | 2 | spec | `docs/adr/0008-client-server-wire.md` lists the operations and did not name `answer` | read | fixed |
 
 The defect is older than the rebase: the walk and the encode of a large answer were there since the wire op came in round 1; #779 states the worker bound that makes it visible.
+
+## The answer bound: the fix of round C (orchestrator round, full)
+
+Owner decision of 2026-10-18: the round C defect is in scope, with one round past the `/ship` limit. Invariant: no answer reaches a session or holds a worker past its stated bound.
+
+The fix:
+
+- `Helyx.Session.Input.json_object/2` checks an answer, and the request of `Helyx.Tool.ask/1`, in one walk that counts the exact bytes of the JSON encode and stops past the bound. A string over the budget is neither read nor encoded, and a map is read one key at a time with `:maps.iterator/1`. `Helyx.Session.check_answer/1` is the public check, and `Helyx.Session.answer/3` goes through it, so the TUI and the wire get the same check.
+- The transport: the op of a request is a key in its JSON text, so `Helyx.Transport.WebSocket.Frame.decode/2` decodes every frame in the connection before anything knows its op; to read the op before the decode would need a second parser of the frame text. That decode is the existing codec of master for every op, with its own bound (a joined frame of at most 25 MiB, the decoded frame stays in the connection). The smallest change that keeps the worker bound: `Ops.check(core, "answer", params)` runs `Helyx.Session.check_answer/1` in the connection, before a worker exists, and a refused answer gives its worker a closure that holds only the error. No frame size goes through the codec, and the check is exact, so a pretty-printed answer under the bound is not refused.
+- Tests: "the size check of an answer is exact at its bound for every shape" and `check_answer/1` at 16,384 and 16,385 bytes (`test/helyx/session/ask_test.exs`); "a 25 MiB answer is refused before its worker, which holds only the error" (`plugins/bundled/test/helyx/transport/web_socket_answer_test.exs`). The 25 MiB test failed first on the old code in both halves: with the old walk, the check took 199,373,503 reductions; with the old op, the worker's closure measured 36,044,831 words with `:erts_debug.flat_size`, as round C measured it.
+
+Simplify (one agent): merged the scalar clauses of the walk and wrote `items/3` as a `with`. Skipped: a size of strings through `Message.encoded_size/1` (it rescues), a direct `res` from the connection for a refused answer (a new return of `check/3`, a connection clause), a skip of the second check in `Session.answer/3` (it is the public in-node boundary).
+
+Bounds sensor (base `HEAD`, `b39b91d7`):
+
+```text
+bounds sensor: 1 candidate functions, 0 flagged, 0 without an answer
+```
+
+Counts: Codex 1 defect (medium), spec 0 defects and 5 doc or comment findings, failure path 0 defects in the diff, 1 defect outside the diff, and 1 wrong comment. A defect was reproduced, so by the owner's rule only the reviewed code is committed, and the findings stay open.
+
+| # | Source | Finding | Reproduced | Resolution |
+| - | ------ | ------- | ---------- | ---------- |
+| 1 | Codex | the walk checks an integer with `Message.big_integer?/1`, which calls `abs/1`: for a large negative integer, `abs/1` copies the whole magnitude before the refusal (262,152 bytes allocated for a 262,144-byte integer; none for the positive one), so the check costs more than its bound for that shape | yes (allocation probe) | **open**: compare with the positive and the negative limit, with no `abs/1`, and add a test of a large negative integer |
+| 2 | spec, failure path | the comment of the 25 MiB test says the reduction margin is several hundred times the walk to the bound; measured, the walk takes 352,000 to 406,000 reductions, so the margin is about 2.5 times (a full walk takes about 200 million) | yes | **open**: state the measured margin, or raise the bound to about 10 million |
+| 3 | spec | `docs/features/wire-protocol.md`, the row "params of a request worker": its "over the bound" cell still says `bad_params` and no worker, but a refused answer gets a worker that replies `invalid_answer`; and "the one checked object is the answer" is not true, because `origin` is an object too | read | **open** |
+| 4 | spec | the `@doc` of `Helyx.Session.answer/3` no longer says that an ask that got an answer, or whose call or turn ended, gives `not_waiting` (cut to keep `session.ex` at 400 lines); the bounds row of the feature doc still states it | read | **open** |
+| 5 | spec | no test of an accepted answer's worker heap (the agent measured 87 to 218 KB for the worst 16 KiB answers), and no test of exactness for a map of more than 32 keys, an empty string, or an integer of 100 digits (a fuzz of 20,000 values found no mismatch) | probe | **open** |
+| 6 | failure path | outside this diff: `Frame.json/1` lets `JSON.decode/3` raise `SystemLimitError` on an integer of about 4 million digits, so the connection ends with 1011 and takes its subscriptions down; no worker holds the value | yes (socket probe) | **open**, master's codec: a ticket for the transport |
+| 7 | spec | the decode in the connection of a 20 MiB answer frame raised VM memory by 801 MiB | probe | accepted: it is the documented codec of every frame ("the decoded frame stays in the connection"), not this change |

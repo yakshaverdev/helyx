@@ -8,6 +8,9 @@ defmodule Helyx.Transport.WebSocketAnswerTest do
   alias Helyx.Provider.Fake
   alias Helyx.Test.WireClient, as: Client
   alias Helyx.Transport.WebSocket
+  alias Helyx.Transport.WebSocket.Ops
+
+  @load_reductions 1_000_000
 
   @questions [
     %{
@@ -35,7 +38,14 @@ defmodule Helyx.Transport.WebSocketAnswerTest do
     # The requests go on their own socket: `Client.request/4` skips the
     # events before its reply.
     driver = Client.open(WebSocket.port(transport))
-    %{socket: socket, driver: driver, session: session, port: WebSocket.port(transport)}
+
+    %{
+      socket: socket,
+      driver: driver,
+      session: session,
+      port: WebSocket.port(transport),
+      core: core
+    }
   end
 
   defp subscribe(socket, session, params) do
@@ -146,5 +156,25 @@ defmodule Helyx.Transport.WebSocketAnswerTest do
 
     assert %{"ok" => false, "error" => %{"code" => "session_not_found"}} =
              answer(socket, "nosuchsessi0", "q1", %{})
+  end
+
+  # Round C of #744 measured the closure that a worker gets: it held the
+  # whole decoded answer, 8 to 13 times its JSON text.
+  test "a 25 MiB answer is refused before its worker, which holds only the error",
+       %{session: session, core: core} do
+    # `{"a":0},` is 8 bytes: the answer of a 25 MiB frame.
+    answer = %{"l" => List.duplicate(%{"a" => 0}, 3_276_800)}
+    params = %{"session" => session, "ask_id" => "k", "answer" => answer}
+
+    {:reductions, before} = Process.info(self(), :reductions)
+    {:ok, call} = Ops.check(core, "answer", params)
+    {:reductions, later} = Process.info(self(), :reductions)
+
+    assert :erts_debug.flat_size(call) < 100
+    assert call.() == {:error, :invalid_answer}
+    # The walk stops past 16 KiB, about 2,000 items; a walk of the whole
+    # list takes more than its 3,276,800 items. The bound has a margin of
+    # several hundred times the walk to the bound.
+    assert later - before < @load_reductions
   end
 end

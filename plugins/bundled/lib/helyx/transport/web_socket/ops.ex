@@ -102,14 +102,20 @@ defmodule Helyx.Transport.WebSocket.Ops do
          do: {:ok, fn -> Session.compact(session, text) end}
   end
 
-  # An answer is an object; Core checks its content and size
-  # (`Helyx.Session.answer/3`).
+  # An answer is an object. Core checks it here, before the worker, with a
+  # walk that stops past its bound, so no worker holds an answer over it
+  # (`Helyx.Session.check_answer/1`); a refused one gives the worker only
+  # its error.
   def check(core, "answer", params) do
     with :ok <- keys(params, ~w(session ask_id answer), []),
          {:ok, session} <- session(core, params),
          {:ok, ask_id} <- string(params["ask_id"]),
-         {:ok, answer} <- object(params["answer"]),
-         do: {:ok, fn -> Session.answer(session, ask_id, answer) end}
+         {:ok, answer} <- object(params["answer"]) do
+      case Session.check_answer(answer) do
+        :ok -> {:ok, fn -> Session.answer(session, ask_id, answer) end}
+        error -> {:ok, fn -> error end}
+      end
+    end
   end
 
   def check(core, "stop", params) do

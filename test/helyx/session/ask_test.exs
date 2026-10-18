@@ -225,9 +225,27 @@ defmodule Helyx.Session.AskTest do
     end
 
     assert byte_size(JSON.encode!(answer_of(16_384))) == 16_384
+    assert Session.check_answer(answer_of(16_385)) == {:error, :invalid_answer}
+    assert Session.check_answer(answer_of(16_384)) == :ok
     assert Session.answer(session, id, answer_of(16_384)) == :ok
     assert [{false, text}] = results(collect_until(:turn_end))
     assert byte_size(text) == 16_384
+  end
+
+  test "the size check of an answer is exact at its bound for every shape" do
+    for value <- [
+          %{},
+          %{"a" => [], "b" => %{}},
+          %{
+            "t" => "q\"\\\n\t\u0001é😀/",
+            "n" => [-12, 0, 1.5, 1.0e300, -2.5e-7, true, false, nil]
+          },
+          %{"k\"ey" => %{"in" => [[], %{}, ["x", %{"y" => [1, [2, [3]]]}]]}}
+        ] do
+      size = byte_size(JSON.encode!(value))
+      assert Helyx.Session.Input.json_object(value, size) == :ok
+      assert Helyx.Session.Input.json_object(value, size - 1) == :error
+    end
   end
 
   test "an answer to a session that is not running finds none", %{core: core} do
