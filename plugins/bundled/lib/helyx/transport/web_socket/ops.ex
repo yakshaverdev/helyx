@@ -105,11 +105,11 @@ defmodule Helyx.Transport.WebSocket.Ops do
   # An answer is an object; Core checks its content and size
   # (`Helyx.Session.answer/3`).
   def check(core, "answer", params) do
-    with :ok <- keys(params, ~w(session call_id answer), []),
+    with :ok <- keys(params, ~w(session ask_id answer), []),
          {:ok, session} <- session(core, params),
-         {:ok, call_id} <- string(params["call_id"]),
+         {:ok, ask_id} <- string(params["ask_id"]),
          {:ok, answer} <- object(params["answer"]),
-         do: {:ok, fn -> Session.answer(session, call_id, answer) end}
+         do: {:ok, fn -> Session.answer(session, ask_id, answer) end}
   end
 
   def check(core, "stop", params) do

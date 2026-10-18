@@ -23,9 +23,9 @@ defmodule Helyx.TUI.Question do
   # or the option count for the "Other" line; `marks` are the marked labels
   # of a multi-select question; `answers` are those of the questions before
   # `at`, in order; `sent?` is true once the answer went.
-  @enforce_keys [:call_id, :questions]
+  @enforce_keys [:ask_id, :questions]
   defstruct [
-    :call_id,
+    :ask_id,
     :questions,
     at: 0,
     cursor: 0,
@@ -36,7 +36,7 @@ defmodule Helyx.TUI.Question do
   ]
 
   @type t :: %__MODULE__{
-          call_id: String.t(),
+          ask_id: String.t(),
           questions: [map()],
           at: non_neg_integer(),
           cursor: non_neg_integer(),
@@ -63,14 +63,14 @@ defmodule Helyx.TUI.Question do
   end
 
   defp picker(_question, nil), do: nil
-  defp picker(%__MODULE__{call_id: id} = question, %{call_id: id}), do: question
+  defp picker(%__MODULE__{ask_id: id} = question, %{ask_id: id}), do: question
 
   # The question text gets its clean pass once, not in each frame.
-  defp picker(_question, %{call_id: id, request: %{"questions" => questions}}) do
+  defp picker(_question, %{ask_id: id, request: %{"questions" => questions}}) do
     questions =
       Enum.map(questions, &Map.update!(&1, "question", fn t -> SessionList.one_line(t) end))
 
-    %__MODULE__{call_id: id, questions: questions}
+    %__MODULE__{ask_id: id, questions: questions}
   end
 
   # The answer of `Helyx.TUI.handle_event/2` to an event that `handles?/2`
@@ -176,7 +176,7 @@ defmodule Helyx.TUI.Question do
         %{state | vm: ViewModel.reject(state.vm, @too_large)}
 
       q.at + 1 < length(q.questions) ->
-        fresh = %__MODULE__{call_id: q.call_id, questions: q.questions}
+        fresh = %__MODULE__{ask_id: q.ask_id, questions: q.questions}
         %{state | question: %{fresh | at: q.at + 1, answers: answers}}
 
       true ->
@@ -202,7 +202,7 @@ defmodule Helyx.TUI.Question do
   end
 
   defp send_answers(%{question: q} = state, answers) do
-    case Helyx.Session.answer(state.session, q.call_id, %{"answers" => answers}) do
+    case Helyx.Session.answer(state.session, q.ask_id, %{"answers" => answers}) do
       :ok -> %{state | question: %{q | sent?: true}}
       {:error, reason} -> %{state | vm: ViewModel.reject(state.vm, reject(reason))}
     end

@@ -250,11 +250,11 @@ defmodule Helyx.Tool do
   Asks the clients of the session and waits for the first answer: a JSON
   object that a client gave with `Helyx.Session.answer/3`. The session
   emits `request`, a JSON object of valid UTF-8 whose JSON is at most
-  #{@max_request_bytes} bytes, in an `:ask` event with the call id and the
-  tool name. `{:error, :no_client}` at once when no subscriber can answer
-  (`Helyx.Session.subscribe/2`, `answers: true`), and `{:error,
-  :not_running}` when the call is not a running call of the current turn,
-  such as a background run. The wait has no timeout: the end of the turn
+  #{@max_request_bytes} bytes, in an `:ask` event with a new ask id, the
+  call id, and the tool name. `{:error, :no_client}` at once when no
+  subscriber can answer (`Helyx.Session.subscribe/2`, `answers: true`),
+  and `{:error, :not_running}` when the call is not a running call of the
+  current turn, such as a background run. The wait has no timeout: the end of the turn
   ends it, and the hands kill the call. Raises on any other request and
   outside a tool call (`docs/features/question-tool.md`).
   """

@@ -45,8 +45,8 @@ defmodule Helyx.Session.Server.Calls do
   def handle({:ask, call_id, tool, request}, from, %State{} = state),
     do: Asks.ask(state, from, call_id, tool, request)
 
-  def handle({:answer, call_id, answer}, _from, %State{} = state) do
-    {reply, state} = Asks.answer(state, call_id, answer)
+  def handle({:answer, ask_id, answer}, _from, %State{} = state) do
+    {reply, state} = Asks.answer(state, ask_id, answer)
     {:reply, reply, state}
   end
 

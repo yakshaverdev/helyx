@@ -126,7 +126,9 @@ defmodule Helyx.TUI.QuestionTest do
 
   test "an answer of another client closes the picker", %{core: core} do
     state = asked(core, [item("Which one?", ~w(a b))])
-    :ok = Session.answer(state.session, "q1", %{"answers" => [%{"selected" => ["a"]}]})
+    assert [%{ask_id: id, call_id: "q1"}] = state.vm.asks
+    assert state.question.ask_id == id
+    :ok = Session.answer(state.session, id, %{"answers" => [%{"selected" => ["a"]}]})
     state = until(state, &(&1.question == nil))
     assert state.vm.asks == []
     assert result(ended(state)) == "The user answered:\n\nQ: Which one?\nA: a"
@@ -195,9 +197,26 @@ defmodule Helyx.TUI.QuestionTest do
 
   test "the picker shows only an ask of the question tool" do
     vm = Helyx.Test.TUIRender.view_model([])
-    other = %{call_id: "c2", tool: "other", request: %{}}
+    other = %{ask_id: "k2", call_id: "c2", tool: "other", request: %{}}
     state = Question.sync(%{vm: %{vm | asks: [other]}, question: nil})
     assert state.question == nil
+  end
+
+  test "a second ask of the same call gets a fresh picker" do
+    vm = Helyx.Test.TUIRender.view_model([])
+
+    first = %{
+      ask_id: "k1",
+      call_id: "q1",
+      tool: "question",
+      request: %{"questions" => [item("Which one?", ~w(a b))]}
+    }
+
+    state = Question.sync(%{vm: %{vm | asks: [first]}, question: nil})
+    state = %{state | question: %{state.question | cursor: 1, sent?: true}}
+
+    state = Question.sync(%{state | vm: %{vm | asks: [%{first | ask_id: "k2"}]}})
+    assert %Question{ask_id: "k2", cursor: 0, sent?: false} = state.question
   end
 
   test "the picker fits its room: the question rows are cut first", %{core: core} do
@@ -220,14 +239,14 @@ defmodule Helyx.TUI.QuestionTest do
     do: %Event{type: type, data: data, session_id: "s", instance_id: "i", turn_id: "t", seq: 1}
 
   test "the view model folds the asks, and a snapshot gives them" do
-    ask = %{call_id: "c1", tool: "question", request: %{"questions" => []}}
-    other = %{call_id: "c2", tool: "other", request: %{}}
+    ask = %{ask_id: "k1", call_id: "c1", tool: "question", request: %{"questions" => []}}
+    other = %{ask_id: "k2", call_id: "c2", tool: "other", request: %{}}
     vm = Helyx.Test.TUIRender.view_model([])
 
     vm = ViewModel.apply(vm, event(:ask, ask))
     vm = ViewModel.apply(vm, event(:ask, other))
     assert vm.asks == [ask, other]
-    ended = event(:ask_end, %{call_id: "c1", outcome: :ended})
+    ended = event(:ask_end, %{ask_id: "k1", outcome: :ended})
     assert ViewModel.apply(vm, ended).asks == [other]
 
     snapshot = %Helyx.Session.Snapshot{

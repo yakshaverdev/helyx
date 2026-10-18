@@ -56,11 +56,11 @@ defmodule Helyx.Transport.WebSocketAnswerTest do
     end
   end
 
-  defp answer(socket, session, call_id, answer),
+  defp answer(socket, session, ask_id, answer),
     do:
       Client.request(socket, "a", "answer", %{
         "session" => session,
-        "call_id" => call_id,
+        "ask_id" => ask_id,
         "answer" => answer
       })
 
@@ -73,20 +73,31 @@ defmodule Helyx.Transport.WebSocketAnswerTest do
     assert %{"ok" => true} =
              Client.request(driver, "p", "prompt", %{"session" => session, "text" => "go"})
 
-    ask = %{"call_id" => "q1", "tool" => "question", "request" => %{"questions" => @questions}}
-    assert event(socket, sub, "ask")["data"] == ask
+    assert %{"ask_id" => id} = ask = event(socket, sub, "ask")["data"]
+
+    assert ask == %{
+             "ask_id" => id,
+             "call_id" => "q1",
+             "tool" => "question",
+             "request" => %{"questions" => @questions}
+           }
+
     assert event(watcher, watch, "ask")["data"] == ask
 
     late = Client.open(port)
     assert %{"snapshot" => %{"asks" => [^ask]}} = subscribe(late, session, %{})
 
     selected = %{"answers" => [%{"selected" => ["b"]}]}
-    assert %{"ok" => true, "result" => %{}} = answer(driver, session, "q1", selected)
 
     assert %{"ok" => false, "error" => %{"code" => "not_waiting"}} =
              answer(driver, session, "q1", selected)
 
-    ended = %{"call_id" => "q1", "outcome" => "answered"}
+    assert %{"ok" => true, "result" => %{}} = answer(driver, session, id, selected)
+
+    assert %{"ok" => false, "error" => %{"code" => "not_waiting"}} =
+             answer(driver, session, id, selected)
+
+    ended = %{"ask_id" => id, "outcome" => "answered"}
     assert event(socket, sub, "ask_end")["data"] == ended
     assert event(watcher, watch, "ask_end")["data"] == ended
 
@@ -121,7 +132,14 @@ defmodule Helyx.Transport.WebSocketAnswerTest do
              answer(socket, session, 1, %{})
 
     assert %{"ok" => false, "error" => %{"code" => "bad_params"}} =
-             Client.request(socket, "a", "answer", %{"session" => session, "call_id" => "q1"})
+             Client.request(socket, "a", "answer", %{"session" => session, "ask_id" => "q1"})
+
+    assert %{"ok" => false, "error" => %{"code" => "bad_params"}} =
+             Client.request(socket, "a", "answer", %{
+               "session" => session,
+               "call_id" => "q1",
+               "answer" => %{}
+             })
 
     assert %{"ok" => false, "error" => %{"code" => "bad_params"}} =
              Client.request(socket, "s", "subscribe", %{"session" => session, "answers" => 1})

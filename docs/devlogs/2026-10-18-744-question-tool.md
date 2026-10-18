@@ -16,6 +16,7 @@ What broke:
 - `tui.ex` went to 402 lines with the picker; one comment for the fields that take the place of the composer brought it to 400.
 
 - Credo strict refused a 32nd field in `Helyx.Session.Server.State`, so the open asks live in `Helyx.Session.Turn`: they end with the turn.
+- The merge gate found that an answer keyed by the call id could reach a later ask of the same call. Each ask now has a random id, the key of the answer, the events, the snapshot, and the wire op; protocol 3 stays.
 - Rebased onto the skills work of master: the coding agent registers both tools, and `tui.ex` stays at 400 lines.
 - Review: three rounds and a reduced round after the rebase, see `docs/reviews/2026-10-18-744-question-tool.md`. The work went over the 45 minutes of `/ship` to finish rounds 2 and 3, so that only reviewed code is committed; a usage limit stopped the session once, between rounds 2 and 3.
 

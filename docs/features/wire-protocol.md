@@ -66,14 +66,14 @@ Every `req` gets one `res`: `ok: true` with the result, or `ok: false` with an e
 | `abort` | `{session}` | `{}`; a failed cleanup still gives `{}`, and the `notice` event "abort cleanup failed" tells the clients. The events that the session sent before the abort still come to each subscription, then `turn_end` with `aborted`; no event of the turn follows it. The `{}` and these events have no order (O6) | `session_not_found` |
 | `set_model` | `{session, model}` | `{}`; the next turn uses it, a running turn keeps its model | `session_not_found`, `invalid_model_ref`, `unknown_provider` |
 | `compact` | `{session, text?}`: the instructions, default `""` | `{}`; a provider that keeps no history gives a `notice` event | `session_not_found`, `text_too_large`, `invalid_utf8`, `turn_running` |
-| `answer` | `{session, call_id, answer}`: `answer` is a JSON object of at most 16,384 bytes | `{}`; the first answer to an ask goes to its call, and every client gets `ask_end` | `session_not_found`, `invalid_answer`, `not_waiting` |
+| `answer` | `{session, ask_id, answer}`: `ask_id` is the id of an `ask` event; `answer` is a JSON object of at most 16,384 bytes | `{}`; the first answer to an open ask goes to its call, and every client gets `ask_end`; an id that is not open gets `not_waiting` | `session_not_found`, `invalid_answer`, `not_waiting` |
 | `stop` | `{session}` | `{}` after the session ended: a running turn aborts first, as at `abort`, then the session stops and every subscription of it gets `session_end` with `stopped`. A stopped session frees its place in the live-session cap and can be resumed from its file | `session_not_found` |
 
 Every operation can also answer `unknown_op`, `bad_params`, `busy`, `timeout`, and `failed`.
 
 - `live_session` is `{id, instance_id, cwd, model, status}`. `status` is `"idle"` when the session has no turn and no wait, else `"running"`.
 - `saved_session` is `{id, cwd, model, mtime, prompt}`: `mtime` in POSIX seconds, `model` from the header, `prompt` the first user text in the head of the file (`docs/features/session-list.md`). The texts come from the file: a client cleans them before it shows them.
-- An `ask` event is a tool call that waits for a user: a client that subscribed with `answers: true` shows `request` and sends `answer`. The `request` and the `answer` of the bundled `question` tool are in `docs/features/question-tool.md`. `ask_end` ends the ask for every client: `answered` when an answer went to the call, `ended` when the call or the turn ended first. The snapshot `asks` holds the asks that wait, oldest first.
+- An `ask` event is a tool call that waits for a user: a client that subscribed with `answers: true` shows `request` and sends `answer` with its `ask_id`. The session makes the id, a new random id for each ask; one call can ask more than once, and each ask has its own id. The `request` and the `answer` of the bundled `question` tool are in `docs/features/question-tool.md`. `ask_end` ends the ask for every client: `answered` when an answer went to the call, `ended` when the call or the turn ended first. The snapshot `asks` holds the asks that wait, oldest first.
 - `start_failed` is any other start error of ADR 0006 §2, a lock that another OS process holds too. Its `text` is `Helyx.Reason.text/1` of the term; the log gets the term.
 - `bad_params` is a missing key, a key of the wrong type, a value out of its range, or a key that the operation does not name. The server checks every param at its entry.
 
@@ -171,7 +171,7 @@ params.abort           = {session: string}
 params.set_model       = {session: string, model: string}
 params.compact         = {session: string, text?: string}
 params.stop            = {session: string}
-params.answer          = {session: string, call_id: string, answer: object}
+params.answer          = {session: string, ask_id: string, answer: object}
 product_origin         = {kind: "product", id: string}
 
 result.sessions.live  = {sessions: [live_session]}
@@ -190,7 +190,7 @@ saved_session = {id: string, cwd: string, model: string, mtime: int, prompt: str
 snapshot = {instance_id: string, seq: int, messages: [message], more: bool,
             turn: turn | null, model: string, queue: queue, persisting: bool,
             usage: totals, context: context | null, asks: [ask]}
-ask      = {call_id: string, tool: string, request: object}
+ask      = {ask_id: string, call_id: string, tool: string, request: object}
 turn     = {id: string, partial: message | null, elapsed_ms: int}
 queue    = {steers: int, follow_ups: int, running: int, held: int, waiting: int}
 totals   = {input: int, output: int, cache_read: int, cache_write: int,
@@ -220,7 +220,7 @@ data.compaction         = {trigger: "manual" | "auto", tokens_before: int | null
                            tokens_after: int | null}
 data.notice             = {text: string}
 data.ask                = ask
-data.ask_end            = {call_id: string, outcome: "answered" | "ended"}
+data.ask_end            = {ask_id: string, outcome: "answered" | "ended"}
 
 message = {id: string, role: "user" | "assistant" | "tool_result",
            content: [block], origin?: origin, model?: string,

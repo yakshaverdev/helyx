@@ -181,6 +181,8 @@ defmodule Helyx.Test.Provider do
   #   "ask"        one call to the ask tool with the request {"q": "one"}
   #   "ask2"       two calls to the ask tool, {"q": "one"} and {"q": "two"}
   #   "ask_bad"    one call to the ask tool whose request is a string
+  #   "ask_twice"  one call to the ask tool that asks {"q": "one"}, then
+  #                {"q": "two"}
   use Helyx.Provider.Loop
 
   alias Helyx.Message.ToolCall
@@ -289,6 +291,11 @@ defmodule Helyx.Test.Provider do
 
   def stream("ask_bad", %Helyx.Context{messages: messages}, _opts),
     do: echo_after(messages, [call("a1", "ask", %{"request" => "not an object"}), @tool_use])
+
+  def stream("ask_twice", %Helyx.Context{messages: messages}, _opts) do
+    requests = [%{"q" => "one"}, %{"q" => "two"}]
+    echo_after(messages, [call("a1", "ask", %{"requests" => requests}), @tool_use])
+  end
 
   def stream("binary", %Helyx.Context{messages: messages}, _opts),
     do: echo_after(messages, [call("b", "binary", %{}), @done])
@@ -625,14 +632,18 @@ end
 defmodule Helyx.Test.Tool.Ask do
   @moduledoc false
   # Asks the clients with its `request` argument (`Helyx.Tool.ask/1`) and
-  # gives the answer as JSON, or the error as its name. Its calls run
-  # together, so two can ask at once.
+  # gives the answer as JSON, or the error as its name. With `requests`, it
+  # asks for each in turn and gives the lines. Its calls run together, so
+  # two can ask at once.
   use Helyx.Test.Tool, name: "ask", description: "Asks the clients."
 
   @impl true
   def concurrent?, do: true
 
   @impl true
+  def run(%{"requests" => requests}, cwd),
+    do: {:ok, Enum.map_join(requests, "\n", &elem(run(%{"request" => &1}, cwd), 1))}
+
   def run(%{"request" => request}, _cwd) do
     case Helyx.Tool.ask(request) do
       {:ok, answer} -> {:ok, JSON.encode!(answer)}

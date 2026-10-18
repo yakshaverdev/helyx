@@ -1,7 +1,7 @@
 defmodule Helyx.Session.Id do
   @moduledoc false
-  # One id scheme for sessions, session instances, turns, messages, and
-  # session file entries.
+  # One id scheme for sessions, session instances, turns, messages, asks,
+  # and session file entries.
 
   @doc "A short random id, URL and filename safe."
   @spec new() :: String.t()

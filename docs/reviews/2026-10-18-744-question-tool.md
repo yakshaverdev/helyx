@@ -98,3 +98,44 @@ Judged and not changed: `ask/5` reads the asks through `asks/1`, not from its he
 The branch was rebased onto `origin/master` `485c9452` (#471 and #745 skills, #769, #776). One conflict: the plugin list of `apps/coding_agent/lib/coding_agent.ex` takes both `Helyx.Tool.Skill` and `Helyx.Tool.Question`. The skills code added three lines to `Helyx.TUI.mount/1`, so `tui.ex` had 403 lines. The Escape clause became a `do:` form with `tap/2`, and the mount comment over the overlay fields went (the render `cond` names them), which brought the file back to 400. Master's `:helyx_session` key for `Helyx.Tool.transcript/0` stays as master has it; `Helyx.Tool.ask/1` keeps the session by its registry name.
 
 The fix changes 7 lines in one code file, with no added function: a reduced round (spec and failure-path agents). Counts: spec 0, failure path 0. The spec agent drove Escape and Enter with a real skill in the composer: Escape aborts, Enter answers the question and does not submit or expand the composer. The failure-path agent drove 12 Escape cells (picker, search, key kind) and the picker render at widths and heights from 1 to 14. Open: no test asserts that `CodingAgent.plugins/0` holds both tools.
+
+## Merge gate finding: the ask id
+
+The Codex merge gate reproduced a defect (`.git/orchestrate/744-codex-gate-1.txt`): asks were keyed by the call id, so with two clients and one call that asks twice, a late answer to the first ask resolved the second. Owner decision: each ask has its own id, made by the session, the key of `ask`, `ask_end`, the snapshot, `Helyx.Session.answer/3`, and the wire `answer` op; protocol 3 stays, and the schema SHA changes.
+
+The regression test ("a late answer to an ended ask is refused; the next ask of the call stays open", `test/helyx/session/ask_test.exs`, model `ask_twice`) failed first on the code of `95f35d0b`: the late answer got `{:late, :ok}`, and the tool result was `{"n":1}\n{"n":2}`.
+
+### Round A (reduced: spec and failure path), base `95f35d0b`
+
+The first fix made the id from the call id and a count of the asks of the turn. Counts: spec 1 defect and 1 stale doc, failure path 2 defects.
+
+| # | Source | Finding | Reproduced | Resolution |
+| - | ------ | ------- | ---------- | ---------- |
+| 1 | spec, failure path | the count restarts with each turn, so a call id reused in a later turn gives the same ask id, and a stale answer reached the new ask | yes (Test provider, abort, then a new turn) | the ask id is a new random id (`Helyx.Session.Id.new/0`); the counter is gone |
+| 2 | failure path | two open asks of one call (a tool that asked from a second process with a copy of the private `:helyx_call` key) crashed the session in `take/3` | yes | `call_end/2` ends every ask of the call with `split_with`; the state is not reachable through a public path (round B, standards), so it has no test |
+| 3 | spec | the `Helyx.Tool.ask/1` doc said the event carries the call id and the tool name | read | fixed |
+
+### Round B (full), base `95f35d0b`
+
+The fix of round A changes two code files and removes a field, and it is the second finding on one mechanism: a full round.
+
+Simplify (4 agents): applied `ask_id` inline in the regression test and the `Helyx.Session.Id` comment. Skipped: a single late client instead of two (the owner asked for two clients), entries `{from, ask}` with one predicate (the key lookup with `List.keytake` stays). The empty-asks clause of `call_end/2` (efficiency) was added, then removed in this round: standards and failure path showed that it changes nothing.
+
+Bounds sensor (base `HEAD`):
+
+```text
+bounds sensor: 4 candidate functions, 0 flagged, 0 without an answer
+```
+
+Counts: Codex 0 (verdict approve), standards 2 hard (docs) and 7 judgement calls, spec 0 defects, failure path 1 window older than this change. No defect in the change was reproduced, so the loop ends.
+
+| # | Source | Finding | Reproduced | Resolution |
+| - | ------ | ------- | ---------- | ---------- |
+| 1 | standards (hard), spec | decision 7 and the bounds row described more than one ask for each call, with no bound, but `Helyx.Tool.context/0` holds only in the Task of the call | read | the text and the bound are back to one ask for each running call, at most 8; the `ask_together` test tool and its test are removed |
+| 2 | standards | the doc paragraphs of `Helyx.Event` and `Helyx.Tool.ask/1` were not wrapped; a test file was not formatted | read | fixed |
+| 3 | failure path | an answer after the asking Task died and before its result reached the session gets `:ok` and `answered`, and the call never takes it | yes (hands suspended) | accepted hole, stated in decision 5: the window is older than this change, and the Task dies in an ask only by a crash or a kill |
+| 4 | standards, failure path | the empty-asks clause of `call_end/2` is redundant | read | removed |
+| 5 | standards | `ended/2` reads as a predicate | read | renamed `end_asks/2` |
+| 6 | spec | no test that a second ask of the same call gets a fresh picker | read | test added in `plugins/bundled/test/helyx/tui/question_test.exs` |
+
+Judged and not changed: the ask entry stays a tuple with the id as its key; the kill test reads the asks of the session state to find the Task; `test = self()` as in the other tests of the file. Accepted: the id is random (72 bits), as every other id of the session; a provider that reuses a call id across turns is outside the contract (#369), and the Test provider runs no tool for such a call.

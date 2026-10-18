@@ -240,18 +240,18 @@ defmodule Helyx.Session do
   def max_answer_bytes, do: @max_answer_bytes
 
   @doc """
-  Answers the ask of the tool call `call_id` (`Helyx.Tool.ask/1`, the
-  `:ask` event): the first answer goes to the call, and the session emits
+  Answers the ask `ask_id` of a tool call (`Helyx.Tool.ask/1`, the `:ask`
+  event): the first answer goes to the call, and the session emits
   `:ask_end`. `answer` is a JSON object of valid UTF-8 whose JSON is at
-  most #{@max_answer_bytes} bytes, else `{:error, :invalid_answer}`. A call
-  with no open ask, one that got an answer or whose turn ended, gives
-  `{:error, :not_waiting}` (`docs/features/question-tool.md`).
+  most #{@max_answer_bytes} bytes, else `{:error, :invalid_answer}`. An id
+  that is not open, an ask that got an answer or whose call or turn ended,
+  gives `{:error, :not_waiting}` (`docs/features/question-tool.md`).
   """
   @spec answer(t(), String.t(), map()) ::
           :ok | {:error, :invalid_answer | :not_waiting | :session_not_found}
-  def answer(%__MODULE__{} = session, call_id, answer) when is_binary(call_id) do
+  def answer(%__MODULE__{} = session, ask_id, answer) when is_binary(ask_id) do
     case Input.json_object(answer, @max_answer_bytes) do
-      :ok -> call(session, {:answer, call_id, answer})
+      :ok -> call(session, {:answer, ask_id, answer})
       :error -> {:error, :invalid_answer}
     end
   end

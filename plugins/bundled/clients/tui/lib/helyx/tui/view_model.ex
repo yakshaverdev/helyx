@@ -213,13 +213,13 @@ defmodule Helyx.TUI.ViewModel do
   end
 
   def apply(vm, %Event{type: :ask, data: data}) do
-    %{call_id: _, tool: _, request: _} = data
+    %{ask_id: _, call_id: _, tool: _, request: _} = data
     %{vm | asks: vm.asks ++ [data]}
   end
 
   def apply(vm, %Event{type: :ask_end, data: data}) do
-    %{call_id: id} = data
-    %{vm | asks: Enum.reject(vm.asks, &(&1.call_id == id))}
+    %{ask_id: id} = data
+    %{vm | asks: Enum.reject(vm.asks, &(&1.ask_id == id))}
   end
 
   # A type that this client does not know.

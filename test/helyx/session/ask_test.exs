@@ -34,15 +34,17 @@ defmodule Helyx.Session.AskTest do
     session = start(core, "ask")
 
     assert %Event{data: ask, turn_id: turn_id} = List.last(collect_until(:ask))
-    assert ask == %{call_id: "a1", tool: "ask", request: %{"q" => "one"}}
+    assert %{ask_id: id, call_id: "a1", tool: "ask", request: %{"q" => "one"}} = ask
+    assert Helyx.Session.Id.valid?(id)
     assert turn_id != nil
     assert snapshot(session).asks == [ask]
 
-    assert Session.answer(session, "a1", %{"pick" => ["x"], "n" => 1.5}) == :ok
     assert Session.answer(session, "a1", %{"pick" => ["y"]}) == {:error, :not_waiting}
+    assert Session.answer(session, id, %{"pick" => ["x"], "n" => 1.5}) == :ok
+    assert Session.answer(session, id, %{"pick" => ["y"]}) == {:error, :not_waiting}
 
     events = collect_until(:turn_end)
-    assert of_type(events, :ask_end) == [%{call_id: "a1", outcome: :answered}]
+    assert of_type(events, :ask_end) == [%{ask_id: id, outcome: :answered}]
     assert results(events) == [{false, ~s({"n":1.5,"pick":["x"]})}]
     assert final_text(events) == ~s({"n":1.5,"pick":["x"]})
     assert snapshot(session).asks == []
@@ -78,16 +80,16 @@ defmodule Helyx.Session.AskTest do
 
   test "an abort ends the ask before turn_end, and the call is aborted", %{core: core} do
     session = start(core, "ask")
-    collect_until(:ask)
+    [%{ask_id: id}] = of_type(collect_until(:ask), :ask)
 
     :ok = Session.abort(session)
     events = collect_until(:turn_end)
 
-    assert of_type(events, :ask_end) == [%{call_id: "a1", outcome: :ended}]
+    assert of_type(events, :ask_end) == [%{ask_id: id, outcome: :ended}]
     types = Enum.map(events, & &1.type)
     assert Enum.find_index(types, &(&1 == :ask_end)) < Enum.find_index(types, &(&1 == :turn_end))
     assert results(events) == [{true, "aborted"}]
-    assert Session.answer(session, "a1", %{}) == {:error, :not_waiting}
+    assert Session.answer(session, id, %{}) == {:error, :not_waiting}
     assert snapshot(session).asks == []
   end
 
@@ -95,20 +97,52 @@ defmodule Helyx.Session.AskTest do
     session = start(core, "ask2")
     asks = of_type(collect_until(:ask) ++ collect_until(:ask), :ask)
 
-    assert Enum.sort_by(asks, & &1.call_id) == [
+    assert [
              %{call_id: "a1", tool: "ask", request: %{"q" => "one"}},
              %{call_id: "a2", tool: "ask", request: %{"q" => "two"}}
-           ]
+           ] = Enum.sort_by(asks, & &1.call_id)
 
     assert snapshot(session).asks == asks
+    %{"a1" => one, "a2" => two} = Map.new(asks, &{&1.call_id, &1.ask_id})
+    assert one != two
 
-    assert Session.answer(session, "a2", %{"to" => "two"}) == :ok
-    assert [%{call_id: "a2", outcome: :answered}] = of_type(collect_until(:ask_end), :ask_end)
-    assert snapshot(session).asks == Enum.reject(asks, &(&1.call_id == "a2"))
+    assert Session.answer(session, two, %{"to" => "two"}) == :ok
+    assert [%{ask_id: ^two, outcome: :answered}] = of_type(collect_until(:ask_end), :ask_end)
+    assert snapshot(session).asks == Enum.reject(asks, &(&1.ask_id == two))
 
-    assert Session.answer(session, "a1", %{"to" => "one"}) == :ok
+    assert Session.answer(session, one, %{"to" => "one"}) == :ok
     events = collect_until(:turn_end)
     assert Enum.sort(results(events)) == [{false, ~s({"to":"one"})}, {false, ~s({"to":"two"})}]
+  end
+
+  # Two clients answer; the late answer to the first ask of a call must not
+  # reach its second ask (merge gate of #744).
+  test "a late answer to an ended ask is refused; the next ask of the call stays open",
+       %{core: core} do
+    session = start(core, "ask_twice")
+    test = self()
+
+    late =
+      spawn_link(fn ->
+        {:ok, _, _} = Session.subscribe(session, answers: true)
+        send(test, :subscribed)
+
+        receive do: ({:answer, key} ->
+                       send(test, {:late, Session.answer(session, key, %{"n" => 2})}))
+      end)
+
+    assert_receive :subscribed
+    assert [first] = of_type(collect_until(:ask), :ask)
+    assert Session.answer(session, first.ask_id, %{"n" => 1}) == :ok
+    assert [second] = of_type(collect_until(:ask), :ask)
+    assert second.request == %{"q" => "two"}
+
+    send(late, {:answer, first.ask_id})
+    assert_receive {:late, {:error, :not_waiting}}
+    assert snapshot(session).asks == [second]
+
+    assert Session.answer(session, second.ask_id, %{"n" => 3}) == :ok
+    assert results(collect_until(:turn_end)) == [{false, ~s({"n":1}\n{"n":3})}]
   end
 
   @tag :capture_log
@@ -118,14 +152,14 @@ defmodule Helyx.Session.AskTest do
     collect_until(:ask)
     # The caller of the ask is the Task of the call.
     %{activity: %{asks: asks}} = :sys.get_state(Session.pid(session))
-    {"a1", {task, _tag}, _ask} = List.keyfind(asks, "a1", 0)
+    [{one, {task, _tag}, _ask}] = for {_, _, %{call_id: "a1"}} = entry <- asks, do: entry
     Process.exit(task, :kill)
 
-    assert [%{call_id: "a1", outcome: :ended}] = of_type(collect_until(:ask_end), :ask_end)
-    assert [%{call_id: "a2"}] = snapshot(session).asks
-    assert Session.answer(session, "a1", %{}) == {:error, :not_waiting}
+    assert [%{ask_id: ^one, outcome: :ended}] = of_type(collect_until(:ask_end), :ask_end)
+    assert [%{call_id: "a2", ask_id: two}] = snapshot(session).asks
+    assert Session.answer(session, one, %{}) == {:error, :not_waiting}
 
-    assert Session.answer(session, "a2", %{"to" => "two"}) == :ok
+    assert Session.answer(session, two, %{"to" => "two"}) == :ok
 
     assert [{false, ~s({"to":"two"})}, {true, "tool crashed: :killed"}] =
              Enum.sort(results(collect_until(:turn_end)))
@@ -170,7 +204,7 @@ defmodule Helyx.Session.AskTest do
 
   test "an answer is a JSON object of valid UTF-8 of at most 16 KiB", %{core: core} do
     session = start(core, "ask")
-    collect_until(:ask)
+    [%{ask_id: id}] = of_type(collect_until(:ask), :ask)
 
     for bad <- [
           "text",
@@ -187,11 +221,11 @@ defmodule Helyx.Session.AskTest do
           answer_of(16_385),
           %{"q" => String.duplicate("é", 8_189)}
         ] do
-      assert Session.answer(session, "a1", bad) == {:error, :invalid_answer}
+      assert Session.answer(session, id, bad) == {:error, :invalid_answer}
     end
 
     assert byte_size(JSON.encode!(answer_of(16_384))) == 16_384
-    assert Session.answer(session, "a1", answer_of(16_384)) == :ok
+    assert Session.answer(session, id, answer_of(16_384)) == :ok
     assert [{false, text}] = results(collect_until(:turn_end))
     assert byte_size(text) == 16_384
   end

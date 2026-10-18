@@ -162,7 +162,7 @@ defmodule Helyx.Tool.QuestionTest do
       ]
     }
 
-    assert Session.answer(session, "q1", answer) == :ok
+    assert Session.answer(session, ask.ask_id, answer) == :ok
 
     assert result(collect_until(:turn_end)) ==
              {false,
@@ -193,8 +193,8 @@ defmodule Helyx.Tool.QuestionTest do
           %{"answers" => [%{"selected" => ["a"]}, %{"selected" => ["a"]}]}
         ] do
       session = run(core, %{"questions" => [item()]}, answers: true)
-      collect_until(:ask)
-      assert Session.answer(session, "q1", bad) == :ok
+      [%{ask_id: id}] = of_type(collect_until(:ask), :ask)
+      assert Session.answer(session, id, bad) == :ok
 
       assert result(collect_until(:turn_end)) ==
                {true, "question: the answer of the client did not fit the questions"}

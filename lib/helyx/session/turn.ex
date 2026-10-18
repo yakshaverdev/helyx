@@ -69,7 +69,7 @@ defmodule Helyx.Session.Turn do
           bytes: non_neg_integer(),
           blocks: non_neg_integer(),
           tool_queue: Helyx.Session.ToolQueue.t(),
-          asks: [{String.t(), GenServer.from(), map()}]
+          asks: [{String.t(), GenServer.from(), Helyx.Session.Snapshot.ask()}]
         }
 
   # The most bytes of text, thinking, and tool calls in the open assistant

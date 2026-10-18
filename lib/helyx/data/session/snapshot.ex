@@ -56,7 +56,7 @@ defmodule Helyx.Session.Snapshot do
   ]
   defstruct @enforce_keys ++ [asks: []]
 
-  @type ask :: %{call_id: String.t(), tool: String.t(), request: map()}
+  @type ask :: %{ask_id: String.t(), call_id: String.t(), tool: String.t(), request: map()}
 
   @type turn :: %{
           id: String.t(),
