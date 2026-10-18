@@ -34,9 +34,9 @@ defmodule Helyx.Transport.WebSocket.Frame do
   # One inbound text with the parts joined so far: nil, or the next `n` and
   # the joined bytes, one binary, so an empty part keeps nothing. Gives
   # `{:frame, map}`, `{:joined, map}` from parts, `{:more, parts}`, or
-  # `{:close, code}`. `JSON.decode/1` refuses a text that is not UTF-8.
+  # `{:close, code}`. `json/1` refuses a text that is not UTF-8.
   def decode(text, parts) do
-    case {JSON.decode(text), parts} do
+    case {json(text), parts} do
       {{:ok, %{"type" => "part"} = part}, _parts} -> join(part, parts || {0, ""})
       {{:ok, %{"type" => type} = frame}, nil} when is_binary(type) -> {:frame, frame}
       _ -> {:close, 4400}
@@ -59,12 +59,22 @@ defmodule Helyx.Transport.WebSocket.Frame do
   defp joined(false, parts), do: {:more, parts}
 
   defp joined(true, {_n, joined}) do
-    case JSON.decode(joined) do
+    case json(joined) do
       {:ok, %{"type" => type} = frame} when is_binary(type) and type != "part" ->
         {:joined, frame}
 
       _ ->
         {:close, 4400}
+    end
+  end
+
+  # `JSON.decode/1` with each string a copy: a decoded string of more than
+  # 64 bytes is otherwise a part of the frame text, up to 25 MiB, and keeps
+  # it alive in each process that the string reaches.
+  defp json(text) do
+    case JSON.decode(text, :ok, string: &:binary.copy/1) do
+      {value, :ok, ""} -> {:ok, value}
+      _error_or_rest -> :error
     end
   end
 end

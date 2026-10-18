@@ -71,7 +71,7 @@ defmodule Helyx.Transport.WebSocket.Connection do
   def handle_control(_ping_or_pong, state), do: {:ok, %{state | last_in: now()}}
 
   defp frame(%{"type" => "hello", "protocol" => protocol} = hello, %{phase: :hello} = state)
-       when is_integer(protocol) do
+       when is_integer(protocol) and protocol >= 0 do
     server = Helyx.Transport.WebSocket.protocol()
 
     # The protocol number first: a client of another protocol learns that it
@@ -152,24 +152,31 @@ defmodule Helyx.Transport.WebSocket.Connection do
 
   defp request(id, "unsubscribe", _params, state), do: error(id, "bad_params", state)
 
+  # The params are checked here, before the worker: a worker holds only the
+  # checked values, not the decoded frame (`docs/features/wire-protocol.md`,
+  # "Bounds").
   defp request(id, op, params, state) do
-    if Ops.known?(op) do
-      {conn, out, core} = {self(), state.out, state.core}
+    case Ops.check(state.core, op, params) do
+      {:ok, call} ->
+        {conn, out} = {self(), state.out}
+        pid = spawn_link(fn -> work(conn, out, id, op, call) end)
+        {:ok, track(state, pid, id)}
 
-      pid = spawn_link(fn -> work(conn, out, core, id, op, params) end)
-      {:ok, track(state, pid, id)}
-    else
-      error(id, "unknown_op", state)
+      :bad_params ->
+        error(id, "bad_params", state)
+
+      :unknown_op ->
+        error(id, "unknown_op", state)
     end
   end
 
-  defp work(conn, out, core, id, op, params) do
+  defp work(conn, out, id, op, call) do
     # The deadline of a request with a large result starts at its slot.
     if Ops.slot?(op), do: Outbound.slot(out)
     timer = Process.send_after(conn, {:deadline, self(), id}, Ops.deadline(op))
 
     try do
-      Outbound.reply(out, id, Ops.run(core, op, params))
+      Outbound.reply(out, id, Ops.run(call))
     after
       # The timer ends with its worker, so the timers are at most the
       # requests in flight.
@@ -333,7 +340,9 @@ defmodule Helyx.Transport.WebSocket.Connection do
   defp replied(state, pid, id) do
     state = %{state | ids: Map.delete(state.ids, id)}
 
-    if pid in Map.values(state.subs),
+    # A subscription is in `acks` until its subscribe reply went, also when
+    # an unsubscribe came first and took it out of `subs`.
+    if Map.has_key?(state.acks, pid),
       do: next_ack(%{state | flight: MapSet.delete(state.flight, pid)}, pid),
       else: state
   end

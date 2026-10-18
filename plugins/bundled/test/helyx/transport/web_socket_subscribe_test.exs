@@ -6,6 +6,7 @@ defmodule Helyx.Transport.WebSocketSubscribeTest do
   alias Helyx.Test.{Events, Gate, Gated}
   alias Helyx.Test.WireClient, as: Client
   alias Helyx.Transport.WebSocket
+  alias Helyx.Transport.WebSocket.{Frame, Outbound, Subscription}
 
   defmodule Burst do
     @moduledoc false
@@ -19,18 +20,79 @@ defmodule Helyx.Transport.WebSocketSubscribeTest do
     def stream(_model, _context, opts), do: {:ok, Helyx.Test.Burst.stream(17_000, opts)}
   end
 
+  defmodule Paced do
+    @moduledoc false
+    use Helyx.Provider.Loop
+
+    @impl true
+    def id, do: "paced"
+
+    # The model is the count of deltas; 1 ms after each 5, so the stream
+    # runs while a client acts.
+    @impl true
+    def stream(count, _context, _opts) do
+      deltas =
+        Stream.map(1..String.to_integer(count), fn n ->
+          if rem(n, 5) == 0, do: Process.sleep(1)
+          {:text_delta, "x"}
+        end)
+
+      {:ok, Stream.concat(deltas, [{:done, %{stop_reason: :end_turn, usage: nil}}])}
+    end
+  end
+
   setup do
     core = :"core_#{System.unique_integer([:positive])}"
-    start_supervised!({Helyx.Core, name: core, plugins: [Gated.Loop, Gate, Burst]})
+    start_supervised!({Helyx.Core, name: core, plugins: [Gated.Loop, Gate, Burst, Paced]})
     transport = start_supervised!({WebSocket, core: core, port: 0})
     port = WebSocket.port(transport)
     socket = Client.open(port)
     gate = Gate.open()
 
-    %{"result" => %{"session" => session}} =
-      Client.request(socket, "start", "start", %{"cwd" => File.cwd!(), "model" => "gated/#{gate}"})
+    session = start(socket, "gated/#{gate}")
 
     %{core: core, port: port, socket: socket, session: session}
+  end
+
+  defp start(socket, model) do
+    %{"result" => %{"session" => session}} =
+      Client.request(socket, "start", "start", %{"cwd" => File.cwd!(), "model" => model})
+
+    session
+  end
+
+  defp prompt(socket, session) do
+    params = %{"session" => session, "text" => "go"}
+    assert %{"ok" => true} = Client.request(socket, "p", "prompt", params)
+  end
+
+  defp contiguous?(events, after_seq),
+    do:
+      Enum.map(events, & &1["seq"]) == Enum.to_list((after_seq + 1)..(after_seq + length(events)))
+
+  # The event frames of `sub` until its `session_end`.
+  defp until_end(socket, sub, acc \\ []) do
+    case Client.recv(socket) do
+      {:frame, %{"type" => "session_end", "sub" => ^sub}} ->
+        Enum.reverse(acc)
+
+      {:frame, %{"type" => "event", "sub" => ^sub, "event" => event}} ->
+        until_end(socket, sub, [event | acc])
+
+      {:frame, _other} ->
+        until_end(socket, sub, acc)
+    end
+  end
+
+  # The subscription process waits in the session for its subscribe reply.
+  defp subscriber(session_pid) do
+    Events.wait_until(fn ->
+      match?({:messages, [_ | _]}, Process.info(session_pid, :messages))
+    end)
+
+    {:messages, [{:"$gen_call", {sub, _tag}, _call}]} = Process.info(session_pid, :messages)
+    {:links, [connection]} = Process.info(sub, :links)
+    {sub, connection}
   end
 
   defp subscribe(socket, session, params \\ %{}) do
@@ -72,8 +134,7 @@ defmodule Helyx.Transport.WebSocketSubscribeTest do
     send(tool, :go)
     events = events(joiner, sub, &turn_end?/1)
 
-    assert Enum.map(events, & &1["seq"]) ==
-             Enum.to_list((snapshot["seq"] + 1)..(snapshot["seq"] + length(events)))
+    assert contiguous?(events, snapshot["seq"])
 
     Client.send_frame(joiner, %{"type" => "ack", "sub" => sub, "seq" => List.last(events)["seq"]})
     assert %{"ok" => true} = Client.request(socket, "stop", "stop", %{"session" => session})
@@ -153,8 +214,7 @@ defmodule Helyx.Transport.WebSocketSubscribeTest do
         "params" => %{"sub" => "0"}
     })
 
-    Events.wait_until(fn -> match?({:messages, [_ | _]}, Process.info(pid, :messages)) end)
-    {:messages, [{:"$gen_call", {sub, _tag}, _call}]} = Process.info(pid, :messages)
+    {sub, _connection} = subscriber(pid)
     # The connection handled the unsubscribe before the sub dies.
     Events.wait_until(fn -> {:unsubscribe, "u"} in elem(Process.info(sub, :messages), 1) end)
 
@@ -186,8 +246,7 @@ defmodule Helyx.Transport.WebSocketSubscribeTest do
     # The connection handles its frames in order, so it took every ack.
     assert %{"ok" => false} = Client.request(socket, "u", "nope", %{})
 
-    Events.wait_until(fn -> match?({:messages, [_ | _]}, Process.info(pid, :messages)) end)
-    {:messages, [{:"$gen_call", {sub, _tag}, _call}]} = Process.info(pid, :messages)
+    {sub, _connection} = subscriber(pid)
     assert {:message_queue_len, 0} = Process.info(sub, :message_queue_len)
 
     # After the reply the sub gets the highest ack, above its last seq.
@@ -280,8 +339,7 @@ defmodule Helyx.Transport.WebSocketSubscribeTest do
   end
 
   test "a consumer that does not ack closes with 4408", %{socket: socket} do
-    %{"result" => %{"session" => session}} =
-      Client.request(socket, "b", "start", %{"cwd" => File.cwd!(), "model" => "burst/x"})
+    session = start(socket, "burst/x")
 
     subscribe(socket, session)
 
@@ -343,5 +401,137 @@ defmodule Helyx.Transport.WebSocketSubscribeTest do
     assert %{"error" => %{"code" => "timeout"}} = Client.request(socket, "m", "set_model", params)
     :erlang.resume_process(pid)
     assert %{"ok" => true} = Client.request(socket, "l", "sessions.live", %{})
+  end
+
+  test "a reconnect with after while the turn streams gets the replay, then the live events",
+       context do
+    %{port: port, socket: driver} = context
+    session = start(driver, "paced/900")
+    first = Client.open(port)
+
+    %{"sub" => sub, "snapshot" => %{"instance_id" => instance, "seq" => base}} =
+      subscribe(first, session)
+
+    prompt(driver, session)
+    seen = events(first, sub, &(&1["seq"] >= base + 20))
+    assert contiguous?(seen, base)
+    # The connection is lost while the session still streams.
+    :ok = :gen_tcp.close(first)
+
+    late = Client.open(port)
+    after_ = %{"instance_id" => instance, "seq" => List.last(seen)["seq"]}
+    %{"sub" => late_sub, "replay" => replay} = subscribe(late, session, %{"after" => after_})
+    live = if Enum.any?(replay, &turn_end?/1), do: [], else: events(late, late_sub, &turn_end?/1)
+    missed = replay ++ live
+
+    assert contiguous?(missed, after_["seq"])
+    assert [%{"data" => %{"outcome" => "done"}}] = Enum.filter(missed, &turn_end?/1)
+  end
+
+  test "an abort while the turn streams: the events before it come, then the aborted end",
+       context do
+    %{port: port, socket: driver} = context
+    session = start(driver, "paced/100000")
+    client = Client.open(port)
+    %{"sub" => sub, "snapshot" => %{"seq" => base}} = subscribe(client, session)
+    prompt(driver, session)
+    before = events(client, sub, &(&1["type"] == "message_update"))
+    assert %{"ok" => true} = Client.request(driver, "a", "abort", %{"session" => session})
+    rest = events(client, sub, &turn_end?/1)
+
+    assert contiguous?(before ++ rest, base)
+    %{"turn_id" => turn} = turn_end = List.last(rest)
+    assert %{"data" => %{"outcome" => "aborted"}} = turn_end
+
+    assert Enum.any?(
+             rest,
+             &match?(
+               %{"type" => "message_end", "data" => %{"error" => %{"kind" => "aborted"}}},
+               &1
+             )
+           )
+
+    # `session_end` comes after every event: none of the turn follows its end.
+    assert %{"ok" => true} = Client.request(driver, "stop", "stop", %{"session" => session})
+    assert [] = for(%{"turn_id" => ^turn} = event <- until_end(client, sub), do: event)
+  end
+
+  test "a request with bad params answers while the encoder slot is held; a waiting one holds no result",
+       context do
+    %{core: core, socket: socket, session: session} = context
+    pid = Helyx.Session.pid(%Helyx.Session{id: session, core: core})
+    :ok = :sys.suspend(pid)
+    # The subscription takes the slot, then waits in the suspended session.
+    Client.send_request(socket, "s", "subscribe", %{"session" => session})
+    {_sub, connection} = subscriber(pid)
+    history = %{"session" => session, "instance_id" => "i", "before" => "b"}
+    Client.send_request(socket, "h", "history", history)
+    Client.send_request(socket, "bad", "history", %{history | "instance_id" => [0]})
+    assert {:frame, %{"id" => "bad", "error" => %{"code" => "bad_params"}}} = Client.recv(socket)
+
+    # The worker of "h" waits for the slot, with no call in the session.
+    Events.wait_until(fn ->
+      {:links, links} = Process.info(connection, :links)
+      waiting = {:current_function, {Outbound, :slot, 1}}
+      waiting in for(pid when is_pid(pid) <- links, do: Process.info(pid, :current_function))
+    end)
+
+    assert {:messages, [_subscribe]} = Process.info(pid, :messages)
+    :ok = :sys.resume(pid)
+    assert %{"ok" => true} = Client.res(socket, "s")
+    assert %{"error" => %{"code" => "instance_changed"}} = Client.res(socket, "h")
+  end
+
+  test "an unsubscribe handled before the subscribe reply gets {} when the sub ends after it",
+       context do
+    %{core: core, socket: socket, session: session} = context
+    pid = Helyx.Session.pid(%Helyx.Session{id: session, core: core})
+    :ok = :sys.suspend(pid)
+    Client.send_request(socket, "s", "subscribe", %{"session" => session})
+    {sub, connection} = subscriber(pid)
+
+    # The connection takes the unsubscribe before the subscribe reply.
+    :erlang.suspend_process(connection)
+    # The sub id "0" is the first of the connection; the client guesses it.
+    Client.send_request(socket, "u", "unsubscribe", %{"sub" => "0"})
+
+    Events.wait_until(fn ->
+      Process.info(connection, :message_queue_len) != {:message_queue_len, 0}
+    end)
+
+    :ok = :sys.resume(pid)
+
+    Events.wait_until(fn ->
+      Process.info(sub, :current_function) == {:current_function, {Subscription, :loop, 1}}
+    end)
+
+    # The session ends before the sub takes the unsubscribe.
+    ref = Process.monitor(sub)
+    Process.exit(pid, :kill)
+    assert_receive {:DOWN, ^ref, :process, ^sub, :normal}
+    :erlang.resume_process(connection)
+
+    assert %{"ok" => true, "result" => %{"sub" => "0"}} = Client.res(socket, "s")
+    assert %{"ok" => true, "result" => %{}} = Client.res(socket, "u")
+  end
+
+  test "a decoded string does not keep the text of its frame in the session", context do
+    %{core: core, socket: socket, session: session} = context
+    pid = Helyx.Session.pid(%Helyx.Session{id: session, core: core})
+    pad = 900_000
+    text = String.duplicate("t", 100)
+
+    # A text over 64 bytes in a frame that a key pads: one frame, then parts.
+    for {id, op, pad_bytes} <- [{"p", "prompt", pad}, {"f", "follow_up", 2 * pad}] do
+      params = %{"session" => session, "text" => text}
+      frame = %{"type" => "req", "id" => id, "op" => op, "params" => params}
+      texts = Frame.encode(Map.put(frame, "pad", String.duplicate("p", pad_bytes)))
+      for text <- texts, do: Client.send_text(socket, IO.iodata_to_binary(text))
+      assert %{"ok" => true} = Client.res(socket, id)
+    end
+
+    :erlang.garbage_collect(pid)
+    {:binary, binaries} = Process.info(pid, :binary)
+    assert Enum.all?(binaries, fn {_id, size, _refs} -> size < pad end)
   end
 end

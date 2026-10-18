@@ -88,9 +88,23 @@ defmodule Helyx.Transport.WebSocketTest do
       refute log =~ "secret"
     end
 
-    test "the 65th connection gets 503, and a closed one frees its place", %{port: port} do
+    test "the 65th connection gets 503 and closes at once, and a closed one frees its place",
+         %{port: port} do
       sockets = for _ <- 1..64, do: elem(Client.upgrade(port), 1)
-      assert {:http, 503} = Client.upgrade(port)
+      {:ok, socket} = :gen_tcp.connect(~c"127.0.0.1", port, [:binary, active: false])
+      # The bytes after a refusal would be the next HTTP request.
+      hello = JSON.encode!(Map.put(Client.hello(nil, nil), "proof", "fake"))
+
+      log =
+        capture_log(fn ->
+          :ok =
+            :gen_tcp.send(socket, [Client.upgrade_request([]), Client.text_frame(hello), "\r\n"])
+
+          assert ["HTTP/1.1 503"] =
+                   Regex.scan(~r"HTTP/1.1 \d+", until_closed(socket, "")) |> List.flatten()
+        end)
+
+      refute log =~ "Bandit.HTTPError"
       :gen_tcp.close(hd(sockets))
       Events.wait_until(fn -> match?({:ok, _}, Client.upgrade(port)) end)
     end
@@ -173,12 +187,18 @@ defmodule Helyx.Transport.WebSocketTest do
       assert {:close, 4426} = Client.recv(socket)
     end
 
-    test "a frame before welcome, bad JSON, or a binary frame closes with 4400", %{port: port} do
+    test "a frame before welcome, a protocol that is not an integer >= 0, bad JSON or a byte after it, or a binary frame closes with 4400",
+         %{port: port} do
       hello = Map.put(Client.hello(nil, nil), "proof", "fake")
       [hello_part | _] = parts(Map.put(hello, "pad", String.duplicate("p", 1_048_576)))
 
       for send <- [
             &Client.send_frame(&1, %{"type" => "req", "id" => "1", "op" => "x", "params" => %{}}),
+            &Client.send_frame(&1, %{hello | "protocol" => -1}),
+            &Client.send_frame(&1, %{hello | "protocol" => 2.0}),
+            &Client.send_frame(&1, %{hello | "protocol" => "2"}),
+            # A byte after the JSON value; whitespace passes.
+            &Client.send_text(&1, JSON.encode!(hello) <> " x"),
             # A hello as parts: a client that gave no proof gets no buffer.
             &Client.send_text(&1, hello_part),
             &Client.send_frame(&1, %{
@@ -542,6 +562,17 @@ defmodule Helyx.Transport.WebSocketTest do
       assert {:close, 1009} = Client.recv(socket)
     end
 
+    test "a crash of the connection process closes with 1011", %{port: port, transport: transport} do
+      socket = Client.open(port)
+      [connection] = connections(transport)
+
+      capture_log(fn ->
+        # A message that no clause takes: a bug.
+        send(connection, :bug)
+        assert {:close, 1011} = Client.until_close(socket)
+      end)
+    end
+
     test "a message of fragments over 1 MiB closes with 1009, one at 1 MiB passes", %{port: port} do
       socket = Client.open(port)
       at = JSON.encode!(%{"type" => "req", "id" => "1", "op" => "sessions.live", "params" => %{}})
@@ -598,6 +629,16 @@ defmodule Helyx.Transport.WebSocketTest do
     # stays, as the connection closes.
     Outbound.taken(out, 67_108_864 + size)
     assert :atomics.get(out.bytes, 1) == size
+  end
+
+  test "the deadlines of abort and stop follow the Core bounds of the docs" do
+    # Two hands releases, the armed kill of an idle close, and a margin.
+    abort =
+      2 * Helyx.Session.Hands.State.release_ms() +
+        Helyx.Session.Server.State.provider_close_ms() + 1_000
+
+    assert Ops.deadline("abort") == abort
+    assert Ops.deadline("stop") == abort + Helyx.Session.Server.Stop.shutdown_ms()
   end
 
   test "a subscribe with no tail gets the tail of 200" do
