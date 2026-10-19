@@ -59,11 +59,11 @@ defmodule Helyx.Session.Hands do
   def start_link(opts), do: GenServer.start_link(__MODULE__, struct!(State, opts))
 
   @doc """
-  Starts a tool call. `context` has the session id and the model of
-  `Helyx.Tool.context/0`; the hands add the Core, the tool names, the
-  name of the called tool, and the call id. The result is sent to the
-  session. A cast: a turn runs Helyx tools while the hands can release its
-  provider process.
+  Starts a tool call. `context` has the session id, the model, and the
+  provider options of `Helyx.Tool.context/0`; the hands add the Core, the
+  tool names, the name of the called tool, and the call id. The result is
+  sent to the session. A cast: a turn runs Helyx tools while the hands can
+  release its provider process.
   """
   @spec run(pid(), String.t(), ToolCall.t(), map()) :: :ok
   def run(hands, turn_id, %ToolCall{} = call, context),

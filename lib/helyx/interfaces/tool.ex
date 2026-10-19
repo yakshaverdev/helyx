@@ -29,8 +29,8 @@ defmodule Helyx.Tool do
   can die first and drop a late `hold/1` (ADR 0004).
 
   `context/0` gives a call its Core, its session, the tool names of the
-  session, its call id, and the model of its turn, for a tool that starts
-  a session of its own.
+  session, its call id, the model of its turn, and the provider options of
+  the session, for a tool that starts a session of its own.
 
   The optional `concurrent?/0` returns `true` for a tool whose calls can
   run at the same time as other calls of concurrent tools: a tool that
@@ -224,8 +224,9 @@ defmodule Helyx.Tool do
   @doc """
   The context of the calling tool call: its Core, the id of its session,
   the tool names of the session, the name of the called tool, its call id,
-  and the model ref of its turn, as `provider/model`. The
-  hands set it when the call's Task starts, so it needs no call to them.
+  the model ref of its turn, as `provider/model`, and the `:provider_opts`
+  of the session (`Helyx.Session.start/2`). The hands set it when the
+  call's Task starts, so it needs no call to them.
   Raises in any other process (`docs/features/agent-tool.md`).
   """
   @spec context() :: %{
@@ -234,7 +235,8 @@ defmodule Helyx.Tool do
           tools: [String.t()],
           tool: String.t(),
           call_id: String.t(),
-          model: String.t()
+          model: String.t(),
+          provider_opts: keyword()
         }
   def context do
     case Process.get(:helyx_call) do
