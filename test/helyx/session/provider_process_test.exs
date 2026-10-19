@@ -296,14 +296,14 @@ defmodule Helyx.Session.ProviderProcessTest do
       refute handle?(events)
     end
 
-    test "a crash in a callback fails the turn with text, and the log has the term",
+    test "a crash in a callback fails the turn with text, and the log has its kind",
          %{core: core} do
       {session, _pid, _hands} = start(core, "crash_turn")
       {events, log} = ExUnit.CaptureLog.with_log(fn -> turn(session, "one") end)
 
       assert error(events) == "turn crashed"
       refute handle?(events)
-      assert log =~ ~s(turn failed: {:task_exit, {%RuntimeError{message: "turn crashed"}, [)
+      assert log =~ "turn failed: :task_exit\n"
     end
 
     test "a raw Erlang error, a throw, a crash exit, or a caught crash in a callback ends both end events with its short message",

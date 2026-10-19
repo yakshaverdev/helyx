@@ -437,7 +437,8 @@ defmodule Helyx.Provider.ClaudeCode.TurnTest do
   end
 
   # The run of 2026-10-17 at the usage limit (#746): the user text is the
-  # provider id and the program's text; the log keeps the subtype.
+  # provider id and the program's text. The log holds the kind of the
+  # reason only, not the reply text (#756).
   test "an error result with the subtype success shows the provider id and its text",
        %{bin: bin} = ctx do
     limit = "You've hit your session limit · resets 1am (Asia/Makassar)"
@@ -458,7 +459,8 @@ defmodule Helyx.Provider.ClaudeCode.TurnTest do
     {events, log} = ExUnit.CaptureLog.with_log(fn -> prompt(session, "go") end)
 
     assert [%{outcome: :error, error: "claude-code: " <> ^limit}] = of_type(events, :turn_end)
-    assert log =~ ~s(kind: "success")
+    assert log =~ "turn failed: Helyx.ProviderError\n"
+    refute log =~ limit
   end
 
   test "an error result with no text keeps the tuple as its text", %{bin: bin} = ctx do

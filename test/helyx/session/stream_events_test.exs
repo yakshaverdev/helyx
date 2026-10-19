@@ -200,15 +200,12 @@ defmodule Helyx.Session.StreamEventsTest do
                inspect({:invalid_params, [{:field, :name, "required", []}]})
     end
 
-    test "keeps the item limit of inspect, and the log line has a bound too", %{core: core} do
+    test "keeps the item limit of inspect, and the log line holds the kind only", %{core: core} do
       {error, log} = ExUnit.CaptureLog.with_log(fn -> error_of(core, "wide_error") end)
       assert error == inspect(Enum.to_list(1..100), limit: 50)
       assert error =~ "50, ...]"
-      assert log =~ "turn failed: " <> inspect(Enum.to_list(1..100), limit: 50)
-
-      {_error, log} = ExUnit.CaptureLog.with_log(fn -> error_of(core, "error_bytes.100000") end)
-      assert log =~ inspect(String.duplicate("a", 100_000), printable_limit: 160)
-      refute log =~ String.duplicate("a", 161)
+      assert log =~ "turn failed: term\n"
+      refute log =~ "1, 2, 3"
     end
   end
 

@@ -13,7 +13,7 @@ User story: I use the TUI, and the session behind it ends or crashes. The TUI ex
 `Helyx.Session.subscribe/1` returns `{:ok, snapshot, ref}` or `{:error, :session_not_found}`.
 
 - `ref` is the caller's monitor of the session process. `subscribe/1` makes it before the subscribe call, so the real exit reason of the pid of the snapshot is never lost.
-- The end signal is the `:DOWN` of that monitor: `{:DOWN, ref, :process, pid, reason}`. `Session.end_reason/1` maps `reason` to `:stopped` (`:normal`, `:shutdown`, `{:shutdown, term}`) or `:crashed` (any other reason). The supervisor logs the full reason.
+- The end signal is the `:DOWN` of that monitor: `{:DOWN, ref, :process, pid, reason}`. `Session.end_reason/1` maps `reason` to `:stopped` (`:normal`, `:shutdown`, `{:shutdown, term}`) or `:crashed` (any other reason). The crash report of the session shows the kind of the reason only; with the SASL reports on, the supervisor report shows the full reason (`docs/features/session-lifecycle.md`, "Log and crash reports").
 - The caller owns the ref. The session holds one subscription for each caller pid (`session-subscribers.md`, S2), so a second subscribe gives each live event once, and a second ref. The caller removes a ref that it no longer wants with `Process.demonitor(ref, [:flush])`.
 - On `{:error, :session_not_found}`, and on an exit of the snapshot call at its timeout, `subscribe/1` removes its monitor with `[:flush]` and sends `{:unsubscribe, self()}` to the same pid. A live session handles it after the subscribe, because both messages come from one caller to one process. A failed subscribe also ends an earlier subscription of the caller to that session; the ref of the earlier one stays with the caller.
 

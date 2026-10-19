@@ -3,8 +3,10 @@ defmodule Helyx.Reason do
   The one place where a term that Helyx does not control, such as an exit
   reason, a raised value, or a plugin return, becomes text that a user or
   the model reads (ADR 0006 §2). The text holds no stacktrace of the term
-  and has a bound; the log gets the term itself, with a bound. The rules
-  are in `docs/features/session-lifecycle.md`, "Turn end", step 5.
+  and has a bound. The log gets the kind of the term only, and a crash
+  report of a session process no message text. The rules are in
+  `docs/features/session-lifecycle.md`, "Turn end", step 5, and "Log and
+  crash reports".
   """
 
   require Logger
@@ -54,17 +56,65 @@ defmodule Helyx.Reason do
   end
 
   @doc """
-  Logs `label` and `reason` as a warning. The reason keeps its
-  stacktraces; its integers get the digit cap, and the line has a bound.
+  Logs `label` and the kind of `reason` as a warning, and nothing else of
+  the reason, so the line holds no message text: the module name of a
+  struct, an atom, the kind of the first element of a tuple, or `term`.
   """
   @spec log(String.t(), term()) :: :ok
-  def log(label, reason) do
+  def log(label, reason), do: Logger.warning(fn -> label <> ": " <> kind(reason) end)
+
+  @doc """
+  Logs `label` and `reason` as a warning, with the term: for a handle, and
+  outside a session. The reason keeps its stacktraces; its integers get
+  the digit cap, and the line has a bound.
+  """
+  @spec log_term(String.t(), term()) :: :ok
+  def log_term(label, reason) do
     Logger.warning(fn ->
       # The check builds no term, so a reason with no huge integer is not copied.
       reason = if Message.big_integer?(reason), do: Message.cap_integers(reason), else: reason
       label <> ": " <> contained(reason, @log_opts)
     end)
   end
+
+  @doc """
+  The `format_status/1` of a session process: a crash report shows no
+  state, no last message, no debug log, and the reason as its kind.
+  """
+  @spec crash_status(map()) :: map()
+  def crash_status(status) do
+    status
+    |> Map.replace(:state, :redacted)
+    |> Map.replace(:message, :redacted)
+    |> Map.replace(:log, [])
+    |> Map.replace_lazy(:reason, &kind/1)
+  end
+
+  @doc """
+  Runs `fun`. A raise, a throw, or an exit in it goes on with its class and
+  its reason, and with the arguments of each stack frame replaced by their
+  count: a function clause error and a failed BIF keep the arguments of
+  the call in a frame, and a crash report prints them.
+  """
+  @spec no_args((-> result)) :: result when result: term()
+  def no_args(fun) do
+    fun.()
+  catch
+    class, reason -> :erlang.raise(class, reason, Enum.map(__STACKTRACE__, &arity/1))
+  end
+
+  defp arity({module, fun, args, location}) when is_list(args),
+    do: {module, fun, length(args), location}
+
+  defp arity({fun, args, location}) when is_list(args), do: {fun, length(args), location}
+  defp arity(frame), do: frame
+
+  # One atom in `inspect` form, so the kind has a bound; the walk takes one
+  # step for each level of first elements.
+  defp kind(%module{}) when is_atom(module), do: inspect(module)
+  defp kind(atom) when is_atom(atom), do: inspect(atom)
+  defp kind(tuple) when tuple_size(tuple) > 0, do: kind(elem(tuple, 0))
+  defp kind(_term), do: "term"
 
   # Every stacktrace in the reason, inside any tuple, list, map, or struct,
   # or as the rest of a list, becomes `:stacktrace`. Past the bound of
