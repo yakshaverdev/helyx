@@ -688,6 +688,76 @@ defmodule Helyx.Transport.WebSocketTest do
     end
   end
 
+  # The stop that closes its stalled connections at once takes milliseconds;
+  # a stall waits 15,000 ms, the shutdown of the connections.
+  @load_stop_ms 5_000
+
+  test "a stop closes the connections inside their headers at once, and a client gets 1000",
+       context do
+    %{port: port, transport: transport} = serve(context)
+    client = Client.open(port)
+
+    # The reproduction of #793: each stalled connection held its acceptor
+    # group 15,000 ms, one group after another.
+    stalled =
+      for _ <- 1..2 do
+        {:ok, socket} = :gen_tcp.connect(~c"127.0.0.1", port, [:binary, active: false])
+        :ok = :gen_tcp.send(socket, "GET / HTTP/1.1\r\nHost: x\r\n")
+        socket
+      end
+
+    [bandit] = for {_id, pid, :supervisor, _} <- Supervisor.which_children(transport), do: pid
+
+    # A stalled connection must wait inside its header read: one that has
+    # not read its bytes yet stops at once without the fix too.
+    Events.wait_until(fn ->
+      {:ok, pids} = ThousandIsland.connection_pids(bandit)
+      Enum.count(pids, &in_headers?/1) == 2
+    end)
+
+    started = System.monotonic_time(:millisecond)
+    :ok = stop_supervised!(WebSocket)
+    assert System.monotonic_time(:millisecond) - started < @load_stop_ms
+
+    assert {:close, 1000} = Client.until_close(client)
+
+    for socket <- stalled do
+      assert {:error, reason} = :gen_tcp.recv(socket, 0, 1_000)
+      assert reason in [:closed, :econnreset]
+    end
+  end
+
+  test "a closed gate gives the connections inside and admits no other" do
+    {:ok, gate} = WebSocket.Gate.start_link(64)
+    assert :ok = WebSocket.Gate.enter(gate)
+    assert WebSocket.Gate.close(gate) == [self()]
+    assert :full = Task.await(Task.async(fn -> WebSocket.Gate.enter(gate) end))
+  end
+
+  # Thousand Island kills a connection past 15,000 ms; a second acceptor
+  # group would wait 15,000 ms more.
+  @load_group_ms 5_000
+
+  @tag :slow
+  test "connections that do not stop hold the stop 15,000 ms once, in one acceptor group",
+       context do
+    %{port: port, transport: transport} = serve(context)
+    for _ <- 1..3, do: Client.open(port)
+    Enum.each(connections(transport), &:erlang.suspend_process/1)
+
+    started = System.monotonic_time(:millisecond)
+    :ok = stop_supervised!(WebSocket)
+    assert System.monotonic_time(:millisecond) - started < 15_000 + @load_group_ms
+  end
+
+  # The header read of Bandit 1.12 (`Bandit.HTTP1.Socket.read_headers/1`).
+  defp in_headers?(pid) do
+    case Process.info(pid, :current_stacktrace) do
+      {:current_stacktrace, stack} -> Enum.any?(stack, &match?({_, :read_headers, 1, _}, &1))
+      nil -> false
+    end
+  end
+
   test "a crash of the gate ends the transport, its listener with it", context do
     %{port: port, transport: transport} = serve(context)
     ref = Process.monitor(transport)
