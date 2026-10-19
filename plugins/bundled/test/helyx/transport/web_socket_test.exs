@@ -521,18 +521,24 @@ defmodule Helyx.Transport.WebSocketTest do
         req =
           JSON.encode!(%{"type" => "req", "id" => id, "op" => "sessions.live", "params" => %{}})
 
-        json = req <> String.duplicate(" ", size - byte_size(req))
-        # The client cuts the parts itself, as a client of the contract does.
-        pieces = for <<piece::binary-size(786_000) <- json>>, do: piece
-        pieces = pieces ++ [binary_part(json, 33 * 786_000, size - 33 * 786_000)]
-
-        for {piece, n} <- Enum.with_index(pieces) do
-          part = %{"type" => "part", "n" => n, "last" => n == 33, "data" => Base.encode64(piece)}
-          Client.send_frame(socket, part)
-        end
-
+        send_parts(socket, req <> String.duplicate(" ", size - byte_size(req)))
         assert %{"ok" => true} = Client.res(socket, id)
       end
+    end
+
+    test "an integer over the largest BEAM integer closes with 4400, as bad JSON", %{port: port} do
+      socket = Client.open(port)
+      # Every integer of 1,262,592 digits decodes; 1,262,593 nines are over the
+      # largest integer of the BEAM (OTP 28), so only parts carry them.
+      req = fn id, digits ->
+        ~s({"type":"req","id":"#{id}","op":"sessions.live","params":{},"n":) <>
+          String.duplicate("9", digits) <> "}"
+      end
+
+      send_parts(socket, req.("at", 1_262_592))
+      assert %{"ok" => true} = Client.res(socket, "at")
+      send_parts(socket, req.("over", 1_262_593))
+      assert {:close, 4400} = Client.recv(socket)
     end
 
     test "parts joined over 25 MiB close with 4413", %{port: port} do
@@ -706,4 +712,16 @@ defmodule Helyx.Transport.WebSocketTest do
     [_, _ | _] = parts = Frame.encode(frame)
     Enum.map(parts, &IO.iodata_to_binary/1)
   end
+
+  # The parts of a JSON text, cut by the client itself, as a client of the
+  # contract does.
+  defp send_parts(socket, json, n \\ 0) do
+    {piece, rest} = cut(json)
+    part = %{"type" => "part", "n" => n, "last" => rest == "", "data" => Base.encode64(piece)}
+    Client.send_frame(socket, part)
+    if rest != "", do: send_parts(socket, rest, n + 1)
+  end
+
+  defp cut(<<piece::binary-size(786_000), rest::binary>>), do: {piece, rest}
+  defp cut(piece), do: {piece, ""}
 end
