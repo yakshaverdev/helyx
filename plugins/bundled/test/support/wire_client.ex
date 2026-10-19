@@ -2,7 +2,8 @@ defmodule Helyx.Test.WireClient do
   @moduledoc false
   # A WebSocket client on :gen_tcp for the wire tests: the upgrade, masked
   # text frames, and the frames of the server. It talks only to a server on
-  # loopback.
+  # loopback. `fake_server/1` and its steps are a server for the tests of a
+  # client.
 
   def upgrade(port, headers \\ []) do
     {:ok, socket} = :gen_tcp.connect(~c"127.0.0.1", port, [:binary, active: false, packet: :line])
@@ -81,15 +82,19 @@ defmodule Helyx.Test.WireClient do
 
   # A zero mask leaves the payload as it is, so a log that holds the bytes of
   # the frame holds its text.
-  def masked_frame(fin, opcode, text, mask \\ :crypto.strong_rand_bytes(4)) do
-    size = byte_size(text)
-    masked = :crypto.exor(text, binary_part(:binary.copy(mask, div(size, 4) + 1), 0, size))
-    [<<fin::1, 0::3, opcode::4>>, payload_length(size), mask, masked]
-  end
+  def masked_frame(fin, opcode, text, mask \\ :crypto.strong_rand_bytes(4)),
+    do: [<<fin::1, 0::3, opcode::4>>, payload_length(1, byte_size(text)), mask, xor(mask, text)]
 
-  defp payload_length(size) when size < 126, do: <<1::1, size::7>>
-  defp payload_length(size) when size < 65_536, do: <<1::1, 126::7, size::16>>
-  defp payload_length(size), do: <<1::1, 127::7, size::64>>
+  # The mask bit, then the length in 7 bits, 16 bits, or 64 bits.
+  defp payload_length(mask_bit, size) when size < 126, do: <<mask_bit::1, size::7>>
+  defp payload_length(mask_bit, size) when size < 65_536, do: <<mask_bit::1, 126::7, size::16>>
+  defp payload_length(mask_bit, size), do: <<mask_bit::1, 127::7, size::64>>
+
+  # Masks and unmasks: the mask repeats over the data.
+  defp xor(mask, data) do
+    size = byte_size(data)
+    :crypto.exor(data, binary_part(:binary.copy(mask, div(size, 4) + 1), 0, size))
+  end
 
   # The next frame of the server: `{:frame, map}`, `{:close, code}`,
   # `{:ping, payload}`, or `{:error, reason}`.
@@ -146,4 +151,75 @@ defmodule Helyx.Test.WireClient do
 
   defp close_code(<<code::16, _reason::binary>>), do: code
   defp close_code(_payload), do: nil
+
+  # A fake server for the tests of a client: it takes one connection on
+  # loopback, closes its listen socket, and runs `fun` with the socket, which
+  # is passive and reads the HTTP request (`packet: :http_bin`). Returns the
+  # port.
+  def fake_server(fun) do
+    opts = [:binary, active: false, packet: :http_bin, ip: {127, 0, 0, 1}]
+    {:ok, listen} = :gen_tcp.listen(0, opts)
+    {:ok, port} = :inet.port(listen)
+
+    server =
+      spawn_link(fn ->
+        {:ok, socket} = :gen_tcp.accept(listen)
+        :gen_tcp.close(listen)
+        fun.(socket)
+      end)
+
+    # The listen socket lives as long as the server, not as its caller.
+    :ok = :gen_tcp.controlling_process(listen, server)
+    port
+  end
+
+  # Reads the upgrade request and returns the `Sec-WebSocket-Accept` of its key.
+  def fake_accept(socket) do
+    {:ok, {:http_request, :GET, _, _}} = :gen_tcp.recv(socket, 0, 5_000)
+    key = request_key(socket, nil)
+    :ok = :inet.setopts(socket, packet: :raw)
+    Base.encode64(:crypto.hash(:sha, key <> "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"))
+  end
+
+  defp request_key(socket, key) do
+    case :gen_tcp.recv(socket, 0, 5_000) do
+      {:ok, :http_eoh} -> key
+      {:ok, {:http_header, _, _, "Sec-WebSocket-Key", value}} -> request_key(socket, value)
+      {:ok, _header} -> request_key(socket, key)
+    end
+  end
+
+  # The `101` reply with `headers` after the three of RFC 6455. `accept`
+  # replaces the `Sec-WebSocket-Accept` of the key.
+  def fake_upgrade(socket, headers \\ [], accept \\ nil) do
+    key_accept = fake_accept(socket)
+
+    :ok =
+      :gen_tcp.send(socket, [
+        "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n",
+        "Sec-WebSocket-Accept: #{accept || key_accept}\r\n",
+        Enum.map(headers, &[&1, "\r\n"]),
+        "\r\n"
+      ])
+  end
+
+  # One frame of a server, not masked: `fin`, `opcode`, and the payload.
+  def server_frame(fin, opcode, payload),
+    do: [<<fin::1, 0::3, opcode::4>>, payload_length(0, byte_size(payload)), payload]
+
+  # Sends a challenge and returns its nonce, the 32 bytes.
+  def fake_challenge(socket) do
+    nonce = :crypto.strong_rand_bytes(32)
+    challenge = JSON.encode!(%{type: "challenge", nonce: Base.encode64(nonce)})
+    :ok = :gen_tcp.send(socket, server_frame(1, 1, challenge))
+    nonce
+  end
+
+  # The next frame of the client, masked, as a map.
+  def client_frame(socket) do
+    {:ok, <<1::1, 0::3, 1::4, 1::1, len::7>>} = :gen_tcp.recv(socket, 2, 5_000)
+    {:ok, size} = size(socket, len)
+    {:ok, <<mask::binary-size(4), masked::binary>>} = :gen_tcp.recv(socket, 4 + size, 5_000)
+    JSON.decode!(xor(mask, masked))
+  end
 end

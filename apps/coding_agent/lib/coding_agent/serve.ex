@@ -137,9 +137,9 @@ defmodule CodingAgent.Serve do
 
   # The address of the server that holds the lock, from its server file.
   defp running(dir, deadline) do
-    case read(server_file(dir)) do
-      {:ok, address} ->
-        {:error, "a server runs for #{dir} at #{address}"}
+    case read_file(dir) do
+      {:ok, ip, port, _token} ->
+        {:error, "a server runs for #{dir} at #{url(ip, port)}"}
 
       :error ->
         if System.monotonic_time(:millisecond) < deadline do
@@ -151,20 +151,29 @@ defmodule CodingAgent.Serve do
     end
   end
 
-  # The disk is a boundary: the file is read up to its bound, and only a
-  # parsed address and port reach the line. `read_up_to/2` opens only a
+  @doc false
+  # The server file of the data folder `dir`, for a second start and for a
+  # client (docs/features/tui-attach.md): `{:ok, ip, port, token}` or
+  # `:error`. The disk is a boundary: the file is read up to its bound, and
+  # only a parsed address and port reach a line. The token is in a closure,
+  # or nil when the file holds no string token. `read_up_to/2` opens only a
   # regular file (accepted hole: a FIFO swapped in after its stat).
-  defp read(path) do
+  @spec read_file(Path.t()) ::
+          {:ok, :inet.ip_address(), 1..65_535, (-> String.t()) | nil} | :error
+  def read_file(dir) do
     with {:ok, data} when byte_size(data) <= @max_file_bytes <-
-           Helyx.Session.File.Scan.read_up_to(path, @max_file_bytes + 1),
-         {:ok, %{"address" => text, "port" => port}}
+           Helyx.Session.File.Scan.read_up_to(server_file(dir), @max_file_bytes + 1),
+         {:ok, %{"address" => text, "port" => port} = json}
          when is_binary(text) and port in 1..65_535 <- JSON.decode(data),
          {:ok, ip} <- :inet.parse_address(String.to_charlist(text)) do
-      {:ok, url(ip, port)}
+      {:ok, ip, port, token(json["token"])}
     else
       _ -> :error
     end
   end
+
+  defp token(token) when is_binary(token), do: fn -> token end
+  defp token(_other), do: nil
 
   # Each step that fails stops the steps before it.
   defp start(lock, dir, opts) do
@@ -239,8 +248,11 @@ defmodule CodingAgent.Serve do
          do: {:error, "could not write the server file: " <> text}
   end
 
-  defp url({_, _, _, _} = ip, port), do: "ws://#{:inet.ntoa(ip)}:#{port}"
-  defp url(ip, port), do: "ws://[#{:inet.ntoa(ip)}]:#{port}"
+  @doc false
+  # The URL of a parsed address and a port, for a line.
+  @spec url(:inet.ip_address(), :inet.port_number()) :: String.t()
+  def url({_, _, _, _} = ip, port), do: "ws://#{:inet.ntoa(ip)}:#{port}"
+  def url(ip, port), do: "ws://[#{:inet.ntoa(ip)}]:#{port}"
 
   # A closed output fails the print: the stop then runs, with an error.
   defp print(line) do
