@@ -38,10 +38,10 @@ defmodule Helyx.Session.File.Scan do
   defmodule Summary do
     @moduledoc """
     One session of `Helyx.Session.File.Scan.list/2`. `mtime` is the POSIX
-    time of the last change of the file. `model` is the model of the
-    header. `prompt` is the text of the first message in the head when that
-    message is a user message, else `""`. The texts come from the file: a
-    client cleans them before it shows them.
+    time of the last change of the file, 0 for a time before 1970. `model`
+    is the model of the header. `prompt` is the text of the first message in
+    the head when that message is a user message, else `""`. The texts come
+    from the file: a client cleans them before it shows them.
     """
     @enforce_keys [:id, :cwd, :model, :mtime, :prompt]
     defstruct @enforce_keys
@@ -50,7 +50,7 @@ defmodule Helyx.Session.File.Scan do
             id: String.t(),
             cwd: String.t(),
             model: String.t(),
-            mtime: integer(),
+            mtime: non_neg_integer(),
             prompt: String.t()
           }
   end
@@ -163,7 +163,8 @@ defmodule Helyx.Session.File.Scan do
     stats =
       for path <- paths,
           {:ok, %File.Stat{type: :regular, mtime: mtime}} <- [File.stat(path, time: :posix)] do
-        {mtime, path}
+        # A time before 1970 is 0: `Summary.mtime` is 0 or more.
+        {max(mtime, 0), path}
       end
 
     stats |> Enum.sort(:desc) |> Enum.take(count)

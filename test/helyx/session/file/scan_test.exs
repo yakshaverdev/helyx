@@ -56,6 +56,15 @@ defmodule Helyx.Session.File.ScanTest do
     assert Scan.list(Path.join(dir, "missing"), :all) == []
   end
 
+  test "a time before 1970 is 0, and the path breaks the tie", %{tmp_dir: dir} do
+    {new, _} = session(dir, "/repo", 1, "new")
+    old = for mtime <- [-86_400, -1, 0], do: elem(session(dir, "/repo", mtime, "old"), 0)
+
+    list = Scan.list(dir, "/repo")
+    assert Enum.map(list, & &1.mtime) == [1, 0, 0, 0]
+    assert ids(list) == [new | Enum.sort(old, :desc)]
+  end
+
   test "the first prompt is the text of the first user message", %{tmp_dir: dir} do
     {:ok, file} = Session.File.create(dir, Session.Id.new(), "/repo", "test/ok")
 

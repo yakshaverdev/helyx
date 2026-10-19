@@ -12,9 +12,9 @@ defmodule Helyx.Transport.WebSocketTest do
 
   @doc_path Path.expand("../../../../../docs/features/wire-protocol.md", __DIR__)
 
-  defp serve(context, opts \\ []) do
+  defp serve(context, opts \\ [], core_opts \\ []) do
     core = :"core_#{System.unique_integer([:positive])}"
-    start_supervised!({Helyx.Core, name: core, plugins: [Fake]})
+    start_supervised!({Helyx.Core, [name: core, plugins: [Fake]] ++ core_opts})
     transport = start_supervised!({WebSocket, [core: core, port: 0] ++ opts})
     Map.merge(context, %{core: core, port: WebSocket.port(transport), transport: transport})
   end
@@ -596,6 +596,18 @@ defmodule Helyx.Transport.WebSocketTest do
       Client.send_fragments(socket, [at, pad <> " "])
       assert {:close, 1009} = Client.recv(socket)
     end
+  end
+
+  @tag :tmp_dir
+  test "a saved session from before 1970 is listed with mtime 0", %{tmp_dir: dir} = context do
+    %{port: port} = serve(context, [], sessions_dir: dir)
+    id = Helyx.Session.Id.new()
+    {:ok, file} = Helyx.Session.File.create(dir, id, "/repo", "fake/echo")
+    Helyx.Test.SessionFile.append_message(file, Helyx.Message.user("old"))
+    File.touch!(file.path, -86_400)
+
+    assert %{"ok" => true, "result" => %{"items" => [%{"id" => ^id, "mtime" => 0}]}} =
+             Client.request(Client.open(port), "1", "sessions.saved", %{})
   end
 
   # The idle check reads the clock, and a deadline timer fires, within this
