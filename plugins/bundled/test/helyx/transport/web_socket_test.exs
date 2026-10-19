@@ -508,18 +508,43 @@ defmodule Helyx.Transport.WebSocketTest do
       end
     end
 
-    test "an integer over the largest BEAM integer closes with 4400, as bad JSON", %{port: port} do
+    test "integers of 1,024 and 1,023 characters pass, one of 1,025 closes with 4400",
+         %{port: port} do
       socket = Client.open(port)
-      # Every integer of 1,262,592 digits decodes; 1,262,593 nines are over the
-      # largest integer of the BEAM (OTP 28), so only parts carry them.
-      req = fn id, digits ->
-        ~s({"type":"req","id":"#{id}","op":"sessions.live","params":{},"n":) <>
-          String.duplicate("9", digits) <> "}"
+
+      req = fn id, integer ->
+        ~s({"type":"req","id":"#{id}","op":"sessions.live","params":{},"n":#{integer}})
       end
 
-      send_parts(socket, req.("at", 1_262_592))
-      assert %{"ok" => true} = Client.res(socket, "at")
-      send_parts(socket, req.("over", 1_262_593))
+      # The minus sign counts.
+      for {id, integer} <- [
+            {"at", String.duplicate("9", 1_024)},
+            {"under", "-" <> String.duplicate("9", 1_022)}
+          ] do
+        Client.send_text(socket, req.(id, integer))
+        assert %{"ok" => true} = Client.res(socket, id)
+      end
+
+      Client.send_text(socket, req.("over", "-" <> String.duplicate("9", 1_024)))
+      assert {:close, 4400} = Client.recv(socket)
+    end
+
+    test "frames of 65,536 and 65,535 values pass, one of 65,537 closes with 4400", %{port: port} do
+      socket = Client.open(port)
+
+      # The frame takes 11 values before the zeros: the object, the keys,
+      # their values, and the list.
+      req = fn id, zeros ->
+        ~s({"type":"req","id":"#{id}","op":"sessions.live","params":{},"v":[) <>
+          Enum.join(List.duplicate("0", zeros), ",") <> "]}"
+      end
+
+      for {id, zeros} <- [{"at", 65_525}, {"under", 65_524}] do
+        Client.send_text(socket, req.(id, zeros))
+        assert %{"ok" => true} = Client.res(socket, id)
+      end
+
+      Client.send_text(socket, req.("over", 65_526))
       assert {:close, 4400} = Client.recv(socket)
     end
 
