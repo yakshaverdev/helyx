@@ -1,6 +1,8 @@
 defmodule Helyx.ReasonTest do
   use ExUnit.Case, async: true
 
+  import Helyx.Test.Events, only: [wait_ms: 0]
+
   # The label "Stacktrace:" is plain text, not a sign of a stack (#633).
   test "a message that holds the text \"Stacktrace:\" keeps its text" do
     message = "Parser could not read the field named Stacktrace:"
@@ -99,5 +101,56 @@ defmodule Helyx.ReasonTest do
     end
 
     assert Helyx.Reason.no_args(fn -> :value end) == :value
+  end
+
+  # The body of a Task of plugin code (#788).
+  test "a crash in a Task logs its kind, and the Task ends with the reason of a Task crash" do
+    sup = start_supervised!(Task.Supervisor)
+
+    # The result of the Task, and the log lines of its pid: the tests that
+    # run at the same time also log. A report of `Task` is a line too.
+    run = fn fun ->
+      {{pid, result}, log} =
+        ExUnit.CaptureLog.with_log([metadata: [:pid]], fn ->
+          task = Task.Supervisor.async_nolink(sup, fn -> Helyx.Reason.task("x crashed", fun) end)
+          {task.pid, Task.yield(task, wait_ms())}
+        end)
+
+      pid = "pid=#{:erlang.pid_to_list(pid)}"
+      {result, log |> String.split("\n") |> Enum.filter(&(&1 =~ pid)), log}
+    end
+
+    for {fun, kind, expected?} <- [
+          {&only/1, ":function_clause",
+           &match?({:function_clause, [{__MODULE__, :only, 1, _} | _]}, &1)},
+          {fn value -> throw(value) end, ":nocatch", &match?({{:nocatch, @secret}, [_ | _]}, &1)},
+          {fn value -> exit(value) end, "term", &(&1 == @secret)},
+          # A trap of exits that plugin code set does not keep the Task.
+          {fn value ->
+             Process.flag(:trap_exit, true)
+             raise value
+           end, "RuntimeError", &match?({%RuntimeError{}, [_ | _]}, &1)}
+        ] do
+      {result, lines, log} = run.(fn -> fun.(@secret) end)
+
+      assert {:exit, reason} = result
+      assert expected?.(reason)
+      # One line and no report of `Task`.
+      assert [line] = lines
+      assert line =~ "x crashed: #{kind}"
+      refute log =~ @secret
+    end
+
+    # An atom gets the report of `Task`, and `:kill` stays `:kill`: a signal
+    # would make it `:killed`. A shutdown gets no report.
+    {result, [line], _log} = run.(fn -> exit(:kill) end)
+    assert result == {:exit, :kill}
+    assert line =~ "terminating"
+
+    {result, lines, _log} = run.(fn -> exit({:shutdown, @secret}) end)
+    assert result == {:exit, {:shutdown, @secret}}
+    assert lines == []
+
+    assert Helyx.Reason.task("x crashed", fn -> :value end) == :value
   end
 end

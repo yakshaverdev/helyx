@@ -3,10 +3,11 @@ defmodule Helyx.Reason do
   The one place where a term that Helyx does not control, such as an exit
   reason, a raised value, or a plugin return, becomes text that a user or
   the model reads (ADR 0006 §2). The text holds no stacktrace of the term
-  and has a bound. The log gets the kind of the term only, and a crash
-  report of a session process no message text. The rules are in
-  `docs/features/session-lifecycle.md`, "Turn end", step 5, and "Log and
-  crash reports".
+  and has a bound. The log gets the kind of the term only. The crash
+  report of a session process and the log line of a crash of its plugin
+  code hold no message text, with the holes that the rules state. The
+  rules are in `docs/features/session-lifecycle.md`, "Turn end", step 5,
+  and "Log and crash reports".
   """
 
   require Logger
@@ -102,6 +103,41 @@ defmodule Helyx.Reason do
   catch
     class, reason -> :erlang.raise(class, reason, Enum.map(__STACKTRACE__, &arity/1))
   end
+
+  @doc """
+  Runs `fun`, the body of a process that Core starts for plugin code in a
+  session. A raise, a throw, or an exit of `fun` logs `label` and the kind
+  of the reason as an error, in place of the crash report of `Task`, and
+  ends the process with the reason of a Task crash, with the arguments of
+  each stack frame replaced by their count. An exit with an atom or with
+  `{:shutdown, term}` continues with no change: an atom is its own kind,
+  and `Task` reports no `:normal`, `:shutdown`, or `{:shutdown, term}`.
+  """
+  @spec task(String.t(), (-> result)) :: result when result: term()
+  def task(label, fun) do
+    no_args(fun)
+  catch
+    :exit, reason
+    when is_atom(reason) or
+           (is_tuple(reason) and tuple_size(reason) == 2 and elem(reason, 0) == :shutdown) ->
+      :erlang.raise(:exit, reason, __STACKTRACE__)
+
+    class, reason ->
+      reason = exit_reason(class, reason, __STACKTRACE__)
+      Logger.error(fn -> label <> ": " <> kind(reason) end)
+      # `Task` reports a raise of its body, but not an exit signal. So the
+      # process sends the signal to itself, and each link and monitor gets
+      # the reason of a Task crash. A trap of exits makes the signal a
+      # message, so the trap goes off first. The docs of `erlang:exit/2` do
+      # not say that the process ends before the call returns: it waits.
+      Process.flag(:trap_exit, false)
+      Process.exit(self(), reason)
+      Process.sleep(:infinity)
+  end
+
+  defp exit_reason(:error, reason, stacktrace), do: {reason, stacktrace}
+  defp exit_reason(:throw, value, stacktrace), do: {{:nocatch, value}, stacktrace}
+  defp exit_reason(:exit, reason, _stacktrace), do: reason
 
   defp arity({module, fun, args, location}) when is_list(args),
     do: {module, fun, length(args), location}

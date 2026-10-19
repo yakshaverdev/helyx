@@ -226,10 +226,14 @@ defmodule Helyx.Session.Hands do
         # `fun` gets the timer ref, before any plugin code runs.
         ms = state.connect_ms
 
+        body = fn ->
+          {:ok, tref} = :timer.kill_after(ms)
+          fun.(tref)
+        end
+
         {pid, state} =
           spawn_task(state, nil, :provider, provider, fn ->
-            {:ok, tref} = :timer.kill_after(ms)
-            fun.(tref)
+            Helyx.Reason.task("provider process crashed", body)
           end)
 
         {{:ok, pid}, state}
