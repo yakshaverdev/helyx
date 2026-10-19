@@ -15,14 +15,21 @@ defmodule CodingAgent.Serve do
   alias Helyx.Session.Lock
   alias Helyx.Transport.WebSocket
 
-  # A second start reads the server file of the holder of the lock this
-  # long, once each poll: the holder writes it when its listener is up.
+  # A second start reads the server file of the holder of the lock and
+  # connects to it this long, once each poll: the holder writes it when its
+  # listener is up.
   @wait_ms 5_000
   @poll_ms 100
+  # The TCP connect and the handshake of one attempt, as in
+  # `CodingAgent.Attach`.
+  @connect_ms 5_000
   # The server file is about 150 bytes.
   @max_file_bytes 4_096
 
-  @doc "The bound of the wait of a second start for the server file, in milliseconds."
+  @doc """
+  The bound of the wait of a second start for the server file and its
+  handshake, in milliseconds: no attempt starts after it.
+  """
   @spec wait_ms() :: pos_integer()
   def wait_ms, do: @wait_ms
 
@@ -135,15 +142,21 @@ defmodule CodingAgent.Serve do
     end
   end
 
-  # The address of the server that holds the lock, from its server file.
+  # The address of the server that holds the lock. The server file is a
+  # hint and the handshake with its token is the proof: from the `flock` of
+  # a new server to its remove of a stale file, the file names a server
+  # that was killed (#777). Any failure means that the server is starting.
+  # The deadline is checked after the sleep, so no attempt starts past it.
   defp running(dir, deadline) do
-    case read_file(dir) do
-      {:ok, ip, port, _token} ->
-        {:error, "a server runs for #{dir} at #{url(ip, port)}"}
+    with {:ok, ip, port, token} when is_function(token) <- read_file(dir),
+         {:ok, socket} <- Helyx.TUI.Wire.connect(ip, port, token, @connect_ms) do
+      :gen_tcp.close(socket)
+      {:error, "a server runs for #{dir} at #{url(ip, port)}"}
+    else
+      _starting ->
+        Process.sleep(@poll_ms)
 
-      :error ->
         if System.monotonic_time(:millisecond) < deadline do
-          Process.sleep(@poll_ms)
           running(dir, deadline)
         else
           {:error, "a server holds the lock of #{dir} and gave no address in #{@wait_ms} ms"}

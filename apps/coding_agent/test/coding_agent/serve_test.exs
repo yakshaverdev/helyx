@@ -12,12 +12,18 @@ defmodule CodingAgent.ServeTest do
   alias CodingAgent.{CLI, Serve}
   alias Helyx.Session.Lock
   alias Helyx.Test.WireClient
+  alias Helyx.Transport.WebSocket
 
   @moduletag :tmp_dir
 
   # The boot of a VM up to its server file, on a machine that runs other
   # tests and projects in parallel.
   @load_boot_ms 20_000
+  # The run of a second start around its waits, on a loaded machine.
+  @load_ms 1_000
+  # The mean gap between two attempts of a second start over its poll, on
+  # a loaded machine.
+  @load_poll_ms 100
 
   setup %{tmp_dir: dir} do
     sessions = Path.join(dir, "sessions")
@@ -148,7 +154,7 @@ defmodule CodingAgent.ServeTest do
     assert :gen_event.which_handlers(:erl_signal_server) == handlers
 
     assert %{"address" => "127.0.0.1", "port" => port, "token" => token} = info
-    assert info["protocol"] == Helyx.Transport.WebSocket.protocol()
+    assert info["protocol"] == WebSocket.protocol()
     assert info["pid"] == String.to_integer(System.pid())
     assert map_size(info) == 5
     assert byte_size(Base.url_decode64!(token, padding: false)) == 32
@@ -235,19 +241,139 @@ defmodule CodingAgent.ServeTest do
     refute File.exists?(file)
   end
 
+  # The text of the server file of a server at `port` on loopback.
+  defp server_json(port),
+    do: JSON.encode!(%{address: "127.0.0.1", port: port, token: "the-token"})
+
+  defp write_file(file, port), do: File.write!(file, server_json(port))
+
+  # A fake server of the token `token`. It passes the upgrade and the
+  # challenge, and reads the hello. When the proof is right, it answers with
+  # the frame `frame`. Else it closes with 4401, as the transport does. It
+  # tells the caller, with its port, when it has the hello and when the
+  # client closed.
+  defp fake(frame, token \\ "the-token") do
+    caller = self()
+
+    WireClient.fake_server(fn socket ->
+      {:ok, {_ip, port}} = :inet.sockname(socket)
+      WireClient.fake_upgrade(socket)
+      nonce = WireClient.fake_challenge(socket)
+      hello = WireClient.client_frame(socket)
+      send(caller, {:hello, port})
+
+      reply =
+        if hello["proof"] == WireClient.proof(Base.encode64(nonce), token),
+          do: frame,
+          else: WireClient.server_frame(1, 8, <<4401::16>>)
+
+      :ok = :gen_tcp.send(socket, reply)
+      {:error, :closed} = :gen_tcp.recv(socket, 0)
+      send(caller, {:closed, port})
+    end)
+  end
+
+  defp welcome do
+    json = JSON.encode!(%{type: "welcome", protocol: WebSocket.protocol()})
+    WireClient.server_frame(1, 1, json)
+  end
+
+  # Server files that a read refuses, each with a token: one byte over the
+  # bound, an address that is not an IP address, and a port out of its range
+  # on each side. The first two name `port`.
+  defp invalid_files(port) do
+    json = server_json(port)
+
+    [
+      json <> String.duplicate(" ", Serve.max_file_bytes() + 1 - byte_size(json)),
+      JSON.encode!(%{address: "\e[2J", port: port, token: "the-token"}),
+      server_json(0),
+      server_json(65_536)
+    ]
+  end
+
+  # A port with no listener, as the port of a server that was killed.
+  defp closed_port do
+    {:ok, listen} = :gen_tcp.listen(0, ip: {127, 0, 0, 1})
+    {:ok, port} = :inet.port(listen)
+    :gen_tcp.close(listen)
+    port
+  end
+
+  # Takes each connection, notes its time, and then closes it, so the
+  # client sees the close after the time. Tells `caller` the times, oldest
+  # first, when the listen socket ends.
+  defp close_each(listen, caller, times \\ []) do
+    case :gen_tcp.accept(listen) do
+      {:ok, socket} ->
+        time = System.monotonic_time(:millisecond)
+        :gen_tcp.close(socket)
+        close_each(listen, caller, [time | times])
+
+      {:error, :closed} ->
+        send(caller, {:closed_each, Enum.reverse(times)})
+    end
+  end
+
   test "a second start reads a server file of #{Serve.max_file_bytes()} bytes",
        %{sessions: sessions, server_file: file} do
     data_folder(sessions)
     {:ok, lock} = Lock.take(Path.join(sessions, "server"))
+    port = fake(welcome())
+    json = server_json(port)
+    File.write!(file, json <> String.duplicate(" ", Serve.max_file_bytes() - byte_size(json)))
 
+    line = "helyx: a server runs for #{sessions} at ws://127.0.0.1:#{port}\n"
+    assert {1, "", ^line} = run([])
+
+    # The port at each end of its range, and an IPv6 address.
     for port <- [1, 65_535] do
-      json = JSON.encode!(%{address: "::1", port: port})
-      File.write!(file, json <> String.duplicate(" ", Serve.max_file_bytes() - byte_size(json)))
-
-      line = "helyx: a server runs for #{sessions} at ws://[::1]:#{port}\n"
-      assert {1, "", ^line} = run([])
+      File.write!(file, JSON.encode!(%{address: "::1", port: port}))
+      assert {:ok, {0, 0, 0, 0, 0, 0, 0, 1} = ip, ^port, nil} = Serve.read_file(sessions)
+      assert Serve.url(ip, port) == "ws://[::1]:#{port}"
     end
 
+    # The files that a read refuses, each with a token. The slow test gives
+    # each to a second start.
+    for text <- invalid_files(port) do
+      File.write!(file, text)
+      assert Serve.read_file(sessions) == :error
+    end
+
+    Lock.release(lock)
+  end
+
+  # The server file is a hint and the handshake is the proof (#777): from
+  # the `flock` of a new server to its remove of a stale file, the file
+  # names a server that was killed.
+  test "a second start names an address only after the handshake with its token",
+       %{sessions: sessions, server_file: file} do
+    data_folder(sessions)
+    {:ok, lock} = Lock.take(Path.join(sessions, "server"))
+    refused = %{type: "refused", code: "protocol", server_protocol: WebSocket.protocol() + 1}
+    # A server of another token, which refuses the proof, a server of
+    # another protocol, whose refusal comes before the check of the proof,
+    # and the server of the lock.
+    proof = fake(welcome(), "another-token")
+    protocol = fake(WireClient.server_frame(1, 1, JSON.encode!(refused)))
+    live = fake(welcome())
+
+    # The file of a server that was killed comes first; the slow test below
+    # checks it alone. Each fake takes one connection, so the next file is
+    # written after the hello of the fake before it.
+    write_file(file, closed_port())
+    task = serve([])
+    Process.sleep(300)
+    write_file(file, proof)
+    assert_receive {:hello, ^proof}
+    write_file(file, protocol)
+    assert_receive {:hello, ^protocol}
+    write_file(file, live)
+
+    line = "helyx: a server runs for #{sessions} at ws://127.0.0.1:#{live}\n"
+    assert {1, "", ^line} = Task.await(task, 60_000)
+    # The second start closes its connection after `welcome`.
+    assert_receive {:closed, ^live}
     Lock.release(lock)
   end
 
@@ -256,23 +382,82 @@ defmodule CodingAgent.ServeTest do
        %{sessions: sessions, server_file: file} do
     data_folder(sessions)
     {:ok, lock} = Lock.take(Path.join(sessions, "server"))
-    json = JSON.encode!(%{address: "::1", port: 1})
 
     line =
       "helyx: a server holds the lock of #{sessions} and gave no address in #{Serve.wait_ms()} ms\n"
 
-    # One byte over the bound, an address that is not an IP address, and a
-    # port out of its range on each side.
-    for text <- [
-          json <> String.duplicate(" ", Serve.max_file_bytes() + 1 - byte_size(json)),
-          JSON.encode!(%{address: "\e[2J", port: 1}),
-          JSON.encode!(%{address: "::1", port: 0}),
-          JSON.encode!(%{address: "::1", port: 65_536})
-        ] do
+    # A server that would welcome the token of the files.
+    live = fake(welcome())
+
+    # The files that a read refuses, the file of a server that was killed,
+    # and a file with no token.
+    for text <-
+          invalid_files(live) ++
+            [
+              server_json(closed_port()),
+              JSON.encode!(%{address: "127.0.0.1", port: live})
+            ] do
       File.write!(file, text)
       assert {1, "", ^line} = run([])
     end
 
+    # No second start connected to the server.
+    refute_received {:hello, ^live}
+    Lock.release(lock)
+  end
+
+  # The attempts are at least 100 ms apart, and none starts after the wait,
+  # so there are at most 50. Each attempt ends within the bound of its
+  # connect.
+  @tag :slow
+  test "a second start tries again every 100 ms, each connect within its bound",
+       %{sessions: sessions, server_file: file} do
+    data_folder(sessions)
+    {:ok, lock} = Lock.take(Path.join(sessions, "server"))
+
+    line =
+      "helyx: a server holds the lock of #{sessions} and gave no address in #{Serve.wait_ms()} ms\n"
+
+    # A program on the port that closes each connection at once.
+    {:ok, listen} = :gen_tcp.listen(0, ip: {127, 0, 0, 1}, active: false)
+    {:ok, port} = :inet.port(listen)
+    caller = self()
+    spawn_link(fn -> close_each(listen, caller) end)
+    write_file(file, port)
+    assert {1, "", ^line} = run([])
+    :gen_tcp.close(listen)
+    assert_receive {:closed_each, times}
+    gaps = for [time, next] <- Enum.chunk_every(times, 2, 1, :discard), do: next - time
+    # The client sleeps after the close, which comes after the time of the
+    # attempt: no gap is under the poll, also under load.
+    assert Enum.min(gaps) >= 100
+    assert Enum.sum(gaps) / length(gaps) <= 100 + @load_poll_ms
+    assert length(times) in 2..50
+
+    # A program on the port that never answers: each connect gets the bound
+    # of 5,000 ms, which `Helyx.TUI.Wire.connect/4` keeps (its tests).
+    {:ok, mute} = :gen_tcp.listen(0, ip: {127, 0, 0, 1})
+    {:ok, port} = :inet.port(mute)
+    write_file(file, port)
+    start = System.monotonic_time(:millisecond)
+
+    {result, traces} = calls([{Helyx.TUI.Wire, :connect, 4}], fn -> run([]) end)
+
+    elapsed = System.monotonic_time(:millisecond) - start
+    assert {1, "", ^line} = result
+
+    timeouts =
+      for {:trace, _pid, :call, {Helyx.TUI.Wire, :connect, [_ip, ^port, _token, timeout]}} <-
+            traces,
+          do: timeout
+
+    assert [_ | _] = timeouts
+    assert Enum.uniq(timeouts) == [5_000]
+    # The last attempt starts before the wait ends. Its connect has the
+    # bound of 5,000 ms, and a poll of 100 ms comes before it.
+    assert elapsed >= Serve.wait_ms()
+    assert elapsed < Serve.wait_ms() + 100 + 5_000 + @load_ms
+    :gen_tcp.close(mute)
     Lock.release(lock)
   end
 
