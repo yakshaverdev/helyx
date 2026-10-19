@@ -1,8 +1,9 @@
 defmodule CodingAgent.Serve do
   @moduledoc """
   `helyx serve`: Core with the plugins of the agent and
-  `Helyx.Transport.WebSocket`, up until SIGTERM or SIGHUP; the launcher of
-  the release sends SIGTERM for SIGINT. One server runs for each data
+  `Helyx.Transport.WebSocket`, up until the stop of the VM, which the OTP
+  answer to SIGTERM starts; the launcher of the release sends SIGTERM for
+  each signal that it catches. One server runs for each data
   folder, the sessions folder: it holds the lock `server.lock` there. When
   it is ready, it writes `server.json` with mode 0600, which holds its
   address, port, token, protocol number, and OS pid, and prints one line
@@ -30,39 +31,53 @@ defmodule CodingAgent.Serve do
   def max_file_bytes, do: @max_file_bytes
 
   @doc """
-  Runs the server until the first SIGTERM or SIGHUP, then stops it with a
-  Core stop and returns `:ok`. Returns `{:error, text}` when another server
-  holds the data folder, when the start fails, or when Core, the transport,
-  or the lock ends while the server runs. The options are `:sessions_dir`
-  (the data folder, an absolute path), `:model` (the default model ref),
-  `:ip`, and `:port`. A data folder that other users can write is refused.
-  The handler of the server replaces the OTP handler in
-  `:erl_signal_server`, which is global, only when the OTP handler is in
-  place, so a VM runs one server: a second `run/1` while one serves returns
-  an error. The OTP handler and the default of SIGHUP come back at the end
-  of the server, also after its crash.
+  Runs the server until the stop of the VM, then returns `:ok`. Returns
+  `{:error, text}` when a server runs in this VM already, when another
+  server holds the data folder, when the start fails, or when Core, the
+  transport, or the lock ends while the server runs. The options are
+  `:sessions_dir` (the data folder, an absolute path), `:model` (the
+  default model ref), `:ip`, and `:port`. A data folder that other users
+  can write is refused. The server runs under the supervisor
+  `CodingAgent.Servers` of the application, so the stop of the VM
+  (`init:stop/0`, the OTP answer to SIGTERM) stops it in order; the
+  caller waits for its result and does not own it.
   """
   @spec run(keyword()) :: :ok | {:error, String.t()}
   def run(opts) do
-    {_pid, ref} = spawn_monitor(fn -> exit({:shutdown, serve(opts)}) end)
+    group_leader = Process.group_leader()
 
-    receive do
-      {:DOWN, ^ref, :process, _pid, {:shutdown, result}} -> result
-      {:DOWN, ^ref, :process, _pid, reason} -> {:error, Helyx.Reason.text(reason)}
+    # A task of the supervisor prints where its supervisor prints, so the
+    # serve process takes the group leader of the caller.
+    task =
+      Task.Supervisor.async_nolink(
+        CodingAgent.Servers,
+        fn ->
+          Process.group_leader(self(), group_leader)
+          serve(opts)
+        end,
+        # Each step of the stop has its own bound; a kill would skip the
+        # stop of Core.
+        shutdown: :infinity
+      )
+
+    case Task.yield(task, :infinity) do
+      {:ok, result} -> result
+      {:exit, reason} -> {:error, Helyx.Reason.text(reason)}
     end
   end
 
   # The serve process traps exits: the end of Core, of the transport, or of
-  # the port of the lock is a message of its wait. A signal before the
-  # handler keeps the OTP default, which stops the VM; the kernel then frees
-  # the lock, and no server file exists yet. The perl process that holds
-  # the lock does every operation on `server.json`, so a server whose lock
-  # ended does none (`Helyx.Session.Lock.write_file/3`).
+  # the port of the lock, and the stop of its supervisor, are messages of
+  # its wait. Its name is the guard of one server in a VM, taken first and
+  # held until the process ends, after its stop. The perl process that
+  # holds the lock does every operation on `server.json`, so a server whose
+  # lock ended does none (`Helyx.Session.Lock.write_file/3`).
   defp serve(opts) do
     Process.flag(:trap_exit, true)
     dir = Keyword.fetch!(opts, :sessions_dir)
 
-    with :ok <- mkdir(dir),
+    with :ok <- register(),
+         :ok <- mkdir(dir),
          {:ok, lock} <- lock(dir) do
       # The file of a server that was killed would pass for this one.
       case Lock.remove_file(lock, server_file(dir)) do
@@ -71,38 +86,16 @@ defmodule CodingAgent.Serve do
           {:error, "could not remove the stale server file: " <> text}
 
         :ok ->
-          signals(lock, dir, opts)
+          start(lock, dir, opts)
       end
     end
   end
 
-  # The state of the signal server is the guard of one server in a VM: the
-  # swap takes the place of the OTP handler only (`Signal.init/1`). The
-  # serve process supervises its handler, so the signal server removes it
-  # when the process ends, and a removal that is not this give-back puts
-  # the OTP handler back (`Signal.terminate/2`). The give-back adds the OTP
-  # handler with no supervisor, since a swap would pass the supervision on.
-  defp signals(lock, dir, opts) do
-    case :gen_event.swap_sup_handler(
-           :erl_signal_server,
-           {:erl_signal_handler, []},
-           {{__MODULE__.Signal, self()}, self()}
-         ) do
-      :ok ->
-        :ok = :os.set_signal(:sighup, :handle)
-        result = start(lock, dir, opts)
-
-        :ok =
-          :gen_event.delete_handler(:erl_signal_server, {__MODULE__.Signal, self()}, :give_back)
-
-        :ok = :gen_event.add_handler(:erl_signal_server, :erl_signal_handler, [])
-        :ok = :os.set_signal(:sighup, :default)
-        result
-
-      {:error, _taken} ->
-        Lock.release(lock)
-        {:error, "a server runs in this VM already"}
-    end
+  defp register do
+    Process.register(self(), __MODULE__)
+    :ok
+  rescue
+    ArgumentError -> {:error, "a server runs in this VM already"}
   end
 
   defp server_file(dir), do: Path.join(dir, "server.json")
@@ -200,13 +193,11 @@ defmodule CodingAgent.Serve do
       {:ok, transport} ->
         port = WebSocket.port(transport)
 
-        case write_file(lock, dir, ip, port, token) do
-          :ok ->
-            IO.puts("helyx: serving on " <> url(ip, port))
-            wait(lock, core, transport, dir)
-
-          error ->
-            stop([transport, core], lock, dir, error)
+        with :ok <- write_file(lock, dir, ip, port, token),
+             :ok <- print("helyx: serving on " <> url(ip, port)) do
+          wait(lock, core, transport, dir)
+        else
+          error -> stop([transport, core], lock, dir, error)
         end
 
       {:error, reason} ->
@@ -251,90 +242,51 @@ defmodule CodingAgent.Serve do
   defp url({_, _, _, _} = ip, port), do: "ws://#{:inet.ntoa(ip)}:#{port}"
   defp url(ip, port), do: "ws://[#{:inet.ntoa(ip)}]:#{port}"
 
-  defp wait(lock, core, transport, dir) do
-    receive do
-      :stop ->
-        stop([transport, core], lock, dir, :ok)
-
-      # The file stays: the remove of the stop goes to an ended lock.
-      {:EXIT, ^lock, _reason} ->
-        error = {:error, "the lock of the data folder is lost; the server stopped"}
-        stop([transport, core], lock, dir, error)
-
-      {:EXIT, pid, reason} when pid in [core, transport] ->
-        error = {:error, "the server stopped: " <> Helyx.Reason.text(reason)}
-        stop([transport, core], lock, dir, error)
-
-      # The handler ended (it crashed): the OTP handler is back, and a
-      # signal would no longer give a Core stop.
-      {:gen_event_EXIT, {__MODULE__.Signal, _pid}, reason} ->
-        error = {:error, "the signal handler ended: " <> Helyx.Reason.text(reason)}
-        stop([transport, core], lock, dir, error)
-
-      _other ->
-        wait(lock, core, transport, dir)
-    end
+  # A closed output fails the print: the stop then runs, with an error.
+  defp print(line) do
+    IO.puts(line)
+  catch
+    kind, _reason when kind in [:error, :exit] ->
+      {:error, "could not print the address: the output is closed"}
   end
 
-  # The file goes first, so no new client finds a server that stops; a
-  # lock that ended removes nothing, since the file can be the file of the
-  # next server. The parts stop in order, the transport before Core; a part
-  # that ended already is skipped. A signal during the stop does nothing:
-  # the handler goes back after it.
+  defp wait(lock, core, transport, dir) do
+    {:parent, supervisor} = Process.info(self(), :parent)
+
+    result =
+      receive do
+        # The file stays: the remove of the stop goes to an ended lock.
+        {:EXIT, ^lock, _reason} ->
+          {:error, "the lock of the data folder is lost; the server stopped"}
+
+        {:EXIT, pid, reason} when pid in [core, transport] ->
+          {:error, "the server stopped: " <> Helyx.Reason.text(reason)}
+
+        # The stop of the supervisor is the stop of the VM.
+        {:EXIT, ^supervisor, _reason} ->
+          :ok
+      end
+
+    stop([transport, core], lock, dir, result)
+  end
+
+  # The parts stop in order, the transport before Core, so no client is
+  # served while Core stops; a part that ended already is skipped. Then the
+  # holder of the lock removes the file, which a lock that ended does not
+  # do, since the file can be the file of the next server, and the lock
+  # goes last.
   defp stop(parts, lock, dir, result) do
-    _ = Lock.remove_file(lock, server_file(dir))
     Enum.each(parts, &stop_supervisor/1)
+    _ = Lock.remove_file(lock, server_file(dir))
     Lock.release(lock)
     result
   end
 
+  # Each part stops with the bound of its own stop, with no kill: Core
+  # stops only after the last connection (docs/features/serve.md, Bounds).
   defp stop_supervisor(pid) do
     Supervisor.stop(pid)
   catch
     :exit, _gone -> :ok
-  end
-
-  defmodule Signal do
-    @moduledoc false
-    # The handler in `:erl_signal_server` while a server runs. SIGTERM and
-    # SIGHUP send the serve process its stop; it stops at the first and
-    # ends. Other signals keep the OTP default.
-    @behaviour :gen_event
-
-    # Only the OTP handler hands over: its `terminate/2` gives `:ok`. The
-    # handler of another server, or none, is refused.
-    @impl true
-    def init({pid, :ok}), do: {:ok, pid}
-    def init({_pid, _not_otp}), do: {:error, :taken}
-
-    @impl true
-    def handle_event(signal, pid) when signal in [:sigterm, :sighup] do
-      send(pid, :stop)
-      {:ok, pid}
-    end
-
-    def handle_event(signal, pid) do
-      {:ok, otp} = :erl_signal_handler.init([])
-      {:ok, _otp} = :erl_signal_handler.handle_event(signal, otp)
-      {:ok, pid}
-    end
-
-    @impl true
-    def handle_call(_request, pid), do: {:ok, :ok, pid}
-
-    # A removal that is not the give-back of the serve process (its end, or
-    # a crash of this handler) puts the OTP handler back, from another
-    # process: a call to the signal server from here would wait on itself.
-    @impl true
-    def terminate(:give_back, _pid), do: :ok
-
-    def terminate(_reason, _pid) do
-      spawn(fn ->
-        :gen_event.add_handler(:erl_signal_server, :erl_signal_handler, [])
-        :os.set_signal(:sighup, :default)
-      end)
-
-      :ok
-    end
   end
 end

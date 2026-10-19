@@ -62,7 +62,7 @@ defmodule CodingAgent.MixProject do
   end
 
   def application do
-    [extra_applications: [:logger]]
+    [extra_applications: [:logger], mod: {CodingAgent.Application, []}]
   end
 
   defp deps do

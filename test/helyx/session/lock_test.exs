@@ -418,6 +418,26 @@ defmodule Helyx.Session.LockTest do
     Lock.release(lock)
   end
 
+  # The holder of the lock does the file commands of its owner, so a lock
+  # that ended does none (docs/features/session-lock.md, decision 6).
+  test "a file command after the end of the lock writes and removes nothing", %{tmp_dir: dir} do
+    Process.flag(:trap_exit, true)
+    {:ok, lock} = Lock.take(Path.join(dir, "server"))
+    file = Path.join(dir, "server.json")
+    assert Lock.write_file(lock, file, fn -> "one" end) == :ok
+    assert Bitwise.band(File.stat!(file).mode, 0o777) == 0o600
+
+    {:os_pid, os_pid} = Port.info(lock, :os_pid)
+    {_, 0} = System.cmd("kill", ["-KILL", Integer.to_string(os_pid)])
+    assert_receive {:EXIT, ^lock, _reason}
+
+    late = Path.join(dir, "late.json")
+    assert {:error, _text} = Lock.write_file(lock, late, fn -> "late" end)
+    assert {:error, _text} = Lock.remove_file(lock, file)
+    refute File.exists?(late)
+    assert File.read!(file) == "one"
+  end
+
   # The disk is a boundary: a lock path that is not a regular file fails at
   # once, and no perl process is left. perl's arguments hold the lock path,
   # so pgrep finds it.

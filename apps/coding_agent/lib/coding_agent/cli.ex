@@ -64,8 +64,9 @@ defmodule CodingAgent.CLI do
   #{for {_name, {_type, form, text}} <- @switches, into: "", do: "  #{String.pad_trailing(form, 24)}#{text}\n"}
   exit status: 0 on success and 1 on an error. With -p, 0 when the turn ends normally,
   1 when it fails, is aborted, or stops at the output limit, 143 on SIGTERM, and 129 on SIGHUP.
-  serve runs until SIGINT, SIGTERM, or SIGHUP and then exits 0; 1 when it does not start,
-  when another server holds the data folder, or when the server stops by a failure.
+  serve runs until SIGTERM (or, through the launcher, any signal that ends a process but a
+  fault signal) and then exits 0; 1 when it does not start, when a server holds the data
+  folder or runs in the VM, or when the server stops by a failure or a closed output.
   """
 
   # The options that do not combine, with the reason. `:directory` is the

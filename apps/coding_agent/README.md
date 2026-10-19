@@ -40,7 +40,7 @@ helyx serve                               # 127.0.0.1 and a port that the OS pic
 helyx serve --host 0.0.0.0 --port 4040    # another address needs the explicit --host
 ```
 
-`helyx serve` runs the agent with no TUI as a WebSocket server (`docs/features/wire-protocol.md`) until SIGINT, SIGTERM, or SIGHUP, then stops Core, and the sessions stay saved. One server runs for each data folder (`~/.helyx/sessions`): a second `helyx serve` exits 1 and names the address of the first. When it is ready, the server prints its address and writes `server.json`, mode 0600, with its address, port, token, protocol number, and pid. Each start makes a new token. There is no TLS: for another machine, use an SSH tunnel or a TLS proxy. The design is in `docs/features/serve.md`.
+`helyx serve` runs the agent with no TUI as a WebSocket server (`docs/features/wire-protocol.md`) until SIGINT, SIGTERM, or SIGHUP (a signal that was ignored at its start, as under `nohup`, stays ignored), then stops Core, and the sessions stay saved. `mix helyx serve`, with no launcher, stops in order only at SIGTERM. One server runs for each data folder (`~/.helyx/sessions`): a second `helyx serve` exits 1 and names the address of the first. When it is ready, the server prints its address and writes `server.json`, mode 0600, with its address, port, token, protocol number, and pid. Each start makes a new token. There is no TLS: for another machine, use an SSH tunnel or a TLS proxy. The design is in `docs/features/serve.md`.
 
 ## Keys
 

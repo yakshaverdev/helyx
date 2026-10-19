@@ -11,6 +11,9 @@ defmodule Mix.Tasks.Helyx.InstallTest do
   # The second SIGTERM of the launcher comes after one second; the rest is
   # the margin for load.
   @load_ms 10_000
+  # The supervisor of the launcher wakes each 0.25 s; a SIGTERM for an
+  # ignored SIGHUP would come within this margin for load.
+  @load_ignored_ms 1_000
 
   # A quote and a space in the prefix check the quoting of the launcher.
   setup %{tmp_dir: dir} do
@@ -36,10 +39,11 @@ defmodule Mix.Tasks.Helyx.InstallTest do
   end
 
   # The launcher with `args`; the release script reads the folder `dir` in
-  # `OUT`. Returns its port and OS pid.
-  defp launch(bin_dir, dir, args) do
+  # `OUT`. Returns its port and OS pid. `executable` is the launcher, or a
+  # program that execs it.
+  defp launch(executable, dir, args) do
     port =
-      Port.open({:spawn_executable, Path.join(bin_dir, "helyx")}, [
+      Port.open({:spawn_executable, executable}, [
         :exit_status,
         args: args,
         env: [{~c"OUT", String.to_charlist(dir)}]
@@ -75,17 +79,19 @@ defmodule Mix.Tasks.Helyx.InstallTest do
          %{prefix: prefix, bin_dir: bin_dir, tmp_dir: dir} = context do
       install(context, "0.1.0+abc1234")
 
-      # A release script that writes its arguments, its pid, and its
-      # process group, then waits, and exits 7 at SIGTERM.
+      # A release script that writes its arguments, whether its stdin is at
+      # its end, its pid, and its process group, then waits, and exits 7 at
+      # SIGTERM.
       File.write!(Path.join(prefix, "current/bin/helyx"), ~S"""
       #!/bin/sh
       trap 'echo term >"$OUT/signal"; exit 7' TERM
       printf '%s\n' "$@" >"$OUT/args"
+      if read -r line; then echo data; else echo end; fi >"$OUT/stdin"
       echo "$$ $(ps -o pgid= -p $$ | tr -d ' ')" >"$OUT/group.tmp" && mv "$OUT/group.tmp" "$OUT/group"
       while :; do sleep 0.1; done
       """)
 
-      {port, launcher} = launch(bin_dir, dir, ["serve", "--port", "1"])
+      {port, launcher} = launch(Path.join(bin_dir, "helyx"), dir, ["serve", "--port", "1"])
       wait_until(fn -> File.exists?(Path.join(dir, "group")) end)
 
       # The release script leads a process group of its own.
@@ -99,7 +105,40 @@ defmodule Mix.Tasks.Helyx.InstallTest do
 
       assert File.read!(Path.join(dir, "args")) ==
                "eval\nSystem.halt(CodingAgent.CLI.main(System.argv()))\nserve\n--port\n1\n"
+
+      # The VM reads `/dev/null`, not the stdin of the launcher.
+      assert File.read!(Path.join(dir, "stdin")) == "end\n"
     end
+  end
+
+  # Under `nohup` SIGHUP is ignored at the start of the launcher: it stays
+  # ignored, and another signal still stops the release script.
+  test "the launcher keeps a signal that was ignored at its start",
+       %{prefix: prefix, bin_dir: bin_dir, tmp_dir: dir} = context do
+    install(context, "0.1.0+abc1234")
+
+    File.write!(Path.join(prefix, "current/bin/helyx"), ~S"""
+    #!/bin/sh
+    trap 'echo term >>"$OUT/signal"; exit 7' TERM
+    touch "$OUT/started"
+    while :; do sleep 0.1; done
+    """)
+
+    {port, launcher} =
+      launch(System.find_executable("sh"), dir, [
+        "-c",
+        ~S|trap "" HUP; exec "$0" serve|,
+        Path.join(bin_dir, "helyx")
+      ])
+
+    wait_until(fn -> File.exists?(Path.join(dir, "started")) end)
+    {_, 0} = System.cmd("kill", ["-HUP", Integer.to_string(launcher)])
+    refute_receive {^port, {:exit_status, _}}, @load_ignored_ms
+    refute File.exists?(Path.join(dir, "signal"))
+
+    {_, 0} = System.cmd("kill", ["-INT", Integer.to_string(launcher)])
+    assert_receive {^port, {:exit_status, 7}}
+    assert File.read!(Path.join(dir, "signal")) == "term\n"
   end
 
   # The VM drops a SIGTERM that comes before its handler: the launcher sends
@@ -119,7 +158,7 @@ defmodule Mix.Tasks.Helyx.InstallTest do
     while :; do sleep 0.1; done
     """)
 
-    {port, launcher} = launch(bin_dir, dir, ["serve"])
+    {port, launcher} = launch(Path.join(bin_dir, "helyx"), dir, ["serve"])
     wait_until(fn -> File.exists?(Path.join(dir, "started")) end)
     {_, 0} = System.cmd("kill", ["-TERM", Integer.to_string(launcher)])
 

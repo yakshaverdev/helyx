@@ -25,8 +25,9 @@ defmodule Mix.Tasks.Helyx.Install do
   # The supervisor of `helyx serve`, run as the launcher itself. Before the
   # fork it catches every signal whose default ends a process, by the names
   # of its OS: all but the ones that are ignored or stop (and IO on macOS,
-  # where it is ignored). A fault signal resets at its first delivery, so a
-  # real fault in perl ends perl and does not repeat. A handler only counts.
+  # where it is ignored) and the fault signals, whose real delivery a
+  # handler would make repeat. A signal that was ignored at its start, as
+  # under `nohup`, stays ignored by it. A handler only counts.
   # The VM gets its pid from the fork, a group of its own, and the command.
   # The loop wakes each 0.25 s, or at a signal: each new signal sends the VM
   # SIGTERM, and then one tick each second sends SIGTERM again while it
@@ -36,20 +37,12 @@ defmodule Mix.Tasks.Helyx.Install do
   # reap. The text has no single quote: it goes in one of the launcher.
   @serve """
   use Config; use POSIX (); use Time::HiRes (); my $stop = 0;
-  my %skip = map { $_ => 1 } qw(ZERO KILL STOP CHLD CLD CONT TSTP TTIN TTOU URG WINCH INFO NUM32 NUM33);
+  my %skip = map { $_ => 1 } qw(ZERO KILL STOP CHLD CLD CONT TSTP TTIN TTOU URG WINCH INFO NUM32 NUM33
+    ILL TRAP ABRT IOT BUS FPE SEGV SYS EMT);
   @skip{qw(IO POLL)} = (1, 1) if $^O eq "darwin";
-  my %fault = map { $_ => 1 } qw(ILL TRAP BUS FPE SEGV SYS EMT);
-  my @num = split " ", $Config{sig_num};
-  my $i = 0;
   my $count = sub { $stop++ };
   for my $name (split " ", $Config{sig_name}) {
-    my $n = $num[$i++];
-    next if $skip{$name};
-    if ($fault{$name}) {
-      POSIX::sigaction($n, POSIX::SigAction->new($count, POSIX::SigSet->new, POSIX::SA_RESETHAND()));
-    } else {
-      $SIG{$name} = $count;
-    }
+    $SIG{$name} = $count unless $skip{$name} or ($SIG{$name} // "") eq "IGNORE";
   }
   my $pid = fork;
   defined $pid or die "helyx: fork: $!\\n";
