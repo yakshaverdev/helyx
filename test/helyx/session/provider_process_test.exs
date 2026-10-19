@@ -1190,6 +1190,42 @@ defmodule Helyx.Session.ProviderProcessTest do
       refute Process.alive?(proc)
     end
 
+    # The kill of the context request is armed while `proc` is suspended:
+    # its bound is the margin for load.
+    @load_reply_ms 30_000
+
+    # The suspends put the second request after the session sent the context
+    # of the first, and before the provider got it (#811).
+    test "a second need_context before the reply to the context is a bad action",
+         %{core: core} do
+      {_session, pid, proc, turn_id} = context_turn(core, "context", reply: @load_reply_ms)
+      ref = Process.monitor(proc)
+      :erlang.suspend_process(pid)
+      send(proc, {:batch, [{:need_context, turn_id}]})
+      send(proc, {:ping, self()})
+      assert_receive :pong
+      :erlang.suspend_process(proc)
+      send(proc, {:batch, [{:need_context, turn_id}]})
+      :erlang.resume_process(pid)
+      wait_until(fn -> Enum.any?(mailbox(proc), &match?({:provider_request, _, _, _}, &1)) end)
+      :erlang.resume_process(proc)
+
+      assert error(collect_until(:turn_end)) == inspect({:bad_action, {:need_context, turn_id}})
+      assert_receive {:DOWN, ^ref, :process, _, _}
+    end
+
+    test "a need_context after the reply to the context is accepted", %{core: core} do
+      {_session, _pid, proc, turn_id} = context_turn(core, "context_hold")
+      send(proc, {:batch, [{:need_context, turn_id}]})
+      assert_receive {:held, from}
+      send(proc, {:batch, [{:reply, from, :ok}, {:need_context, turn_id}]})
+
+      assert_receive {:held, _from}
+      send(proc, {:finish, turn_id})
+      assert List.last(collect_until(:turn_end)).data.outcome == :done
+      assert Process.alive?(proc)
+    end
+
     test "need_context of a turn that is not current is dropped", %{core: core} do
       {_session, _pid, proc, turn_id} = context_turn(core)
       send(proc, {:batch, [{:need_context, "other"}]})

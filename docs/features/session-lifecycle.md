@@ -15,7 +15,7 @@ The Core turn contract: how a session starts, runs, and ends a turn with its pro
 
 ## Turn states
 
-A turn has a `phase` (`Helyx.Session.Turn`). The line between `preparing` and `submitting` is the send of `{:turn, ...}`, not its answer. A context request (`{:need_context, turn_id}`) of a `submitted` turn runs a prepare Task (`Turn.prepare`) until the session answers it. The phase stays `submitted`, so a steer goes to the provider process.
+A turn has a `phase` (`Helyx.Session.Turn`). The line between `preparing` and `submitting` is the send of `{:turn, ...}`, not its answer. A context request (`{:need_context, turn_id}`) of a `submitted` turn runs a prepare Task (`Turn.prepare`) until the session answers it, and stays open until the provider replies to that `{:context, ...}` request (`Turn.pending`). The phase stays `submitted`, so a steer goes to the provider process.
 
 | Phase | From | To | A steer |
 | --- | --- | --- | --- |

@@ -930,7 +930,7 @@ defmodule Helyx.Test.Connected do
   #                      turn_id, text}` sends `text`, a `message_end`, and
   #                      `{:need_context, turn_id}`; a context answers :ok,
   #                      then done, or the error of the context
-  #   "context_hold"     "context", and a context gets no answer
+  #   "context_hold"     "context", and a context is held
   #   "tools"            "hang"; the message `{:tool_request, turn_id, id,
   #                      name, args}` asks for a Helyx tool; `{:ping, pid}`
   #                      sends `:pong` to pid
@@ -1006,7 +1006,8 @@ defmodule Helyx.Test.Connected do
     "late_interrupt" => :interrupt,
     "late_close" => :close,
     "late_idle" => :idle_close,
-    "steer_hold" => :steer
+    "steer_hold" => :steer,
+    "context_hold" => :context
   }
 
   # The events of each "events.<name>" model with a fixed list.
@@ -1202,7 +1203,6 @@ defmodule Helyx.Test.Connected do
   defp answer("context", {:context, id, {:error, reason}}, from),
     do: [{:reply, from, :ok}, {:event, id, {:error, reason}}]
 
-  defp answer("context_hold", {:context, _, _}, _from), do: []
   defp answer("context_hold", request, from), do: answer("context", request, from)
 
   defp answer("events." <> name, {:turn, id, _}, from),
