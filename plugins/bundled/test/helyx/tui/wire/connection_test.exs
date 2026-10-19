@@ -11,7 +11,7 @@ defmodule Helyx.TUI.Wire.ConnectionTest do
       client_raw: 1
     ]
 
-  alias Helyx.Event
+  alias Helyx.{Event, Message}
   alias Helyx.Session.Snapshot
   alias Helyx.Transport.WebSocket
   alias Helyx.Transport.WebSocket.Frame
@@ -112,7 +112,7 @@ defmodule Helyx.TUI.Wire.ConnectionTest do
       assert_receive {:helyx_event,
                       %Event{type: :message_end, data: %{message: %{role: :user}}} = e}
 
-      assert Helyx.Message.text(e.data.message) == text
+      assert Message.text(e.data.message) == text
     end
   end
 
@@ -228,14 +228,81 @@ defmodule Helyx.TUI.Wire.ConnectionTest do
     for frame <- [
           event("x", %{notice(1) | data: %{}}),
           event("x", %{notice(1) | seq: -1}),
-          # A key that the client does not know, over the decode bounds of
-          # the transport: 65,536 values and more.
-          event("x", Map.put(notice(1), :x, List.duplicate(0, 65_536))),
+          # A message that the decoder of the session file would repair.
+          event("x", message_end(%{"content" => %{}})),
+          event("x", message_end(%{"usage" => "bad"})),
+          event("x", message_end(%{"stop_reason" => 42})),
           text(%{type: "session_end", sub: "x", reason: "gone"})
         ] do
       {conn, ref} = subscribed([frame])
       assert_receive {:DOWN, ^ref, :process, ^conn, {:shutdown, :broken}}
     end
+  end
+
+  # A message_end of an assistant message with `fields` over its wire form.
+  defp message_end(fields) do
+    message = %Message{role: :assistant, id: "a1", content: [%Message.Text{text: "t"}]}
+    data = %{message: Map.merge(ServerWire.value(message), fields)}
+    %{notice(1) | type: "message_end", turn_id: "t1", data: data}
+  end
+
+  # The texts of a frame over the frame bound, as parts.
+  defp texts(frame), do: frame |> Frame.encode() |> Enum.map(&text/1)
+
+  test "a snapshot over the inbound decode bounds passes, and one with a broken message is a contract break" do
+    # 200 messages of 64 tool calls: more values than the inbound decode takes.
+    calls =
+      for n <- 1..64, do: %Message.ToolCall{id: "c#{n}", name: "bash", arguments: %{"n" => n}}
+
+    messages = for n <- 1..200, do: %Message{role: :assistant, id: "a#{n}", content: calls}
+    big = ServerWire.snapshot(%{snapshot() | messages: messages})
+    assert {:close, 4400} = Frame.decode(JSON.encode!(big), nil)
+
+    {conn, _ref} = replies(&texts(res(&1, %{sub: "x", snapshot: big})))
+    assert {:ok, %Snapshot{messages: ^messages}, "x"} = Connection.subscribe(conn, "s1")
+
+    broken =
+      update_in(big["messages"], fn [first | rest] -> [%{first | "content" => %{}} | rest] end)
+
+    {conn, ref} = replies(&texts(res(&1, %{sub: "x", snapshot: broken})))
+    assert Connection.subscribe(conn, "s1") == {:error, :closed}
+    assert_receive {:DOWN, ^ref, :process, ^conn, {:shutdown, :broken}}
+  end
+
+  # 64 texts of 4 MiB: 358 MB of parts through loopback, and about 1 GB in
+  # the test, the fake server, and the connection.
+  @tag :slow
+  @tag timeout: 120_000
+  test "a queue_dropped at its bound passes: 64 texts of 4 MiB" do
+    text = String.duplicate("é", div(Helyx.Session.max_text_bytes(), 2))
+    # 32 steers and 32 follow-ups (`Helyx.Session.Queue`).
+    messages = for n <- 1..64, do: Message.user(text, %{kind: :product, id: "job-#{n}"})
+    messages = Enum.with_index(messages, &%{&1 | id: "u#{&2}"})
+
+    dropped = %Event{
+      type: :queue_dropped,
+      session_id: "s1",
+      instance_id: "i1",
+      turn_id: nil,
+      seq: 1,
+      data: %{messages: messages, texts: List.duplicate(text, 64)}
+    }
+
+    {_conn, _ref} =
+      subscribed(texts(%{type: "event", sub: "x", event: ServerWire.event(dropped)}))
+
+    assert_receive {:helyx_event, ^dropped}, 60_000
+  end
+
+  # The value bound at its size is in frame_test.exs: a frame at it takes a
+  # heap of about 1 GiB.
+  test "a frame over the outbound integer bound is a contract break; one at it passes" do
+    at = Map.put(notice(1), :x, 10 ** 1_023)
+    {_conn, _ref} = subscribed([event("x", at)])
+    assert_receive {:helyx_event, %Event{seq: 1}}
+
+    {conn, ref} = subscribed([event("x", Map.put(notice(1), :x, 10 ** 1_024))])
+    assert_receive {:DOWN, ^ref, :process, ^conn, {:shutdown, :broken}}
   end
 
   defp part(n, last), do: text(%{type: "part", n: n, last: last, data: Base.encode64("{")})
@@ -264,20 +331,18 @@ defmodule Helyx.TUI.Wire.ConnectionTest do
     end
   end
 
-  # Two frames of 25 MiB through loopback take about 1 s.
+  # A frame of 25 MiB through loopback takes about 0.5 s. The outbound
+  # bound of 1,611,661,312 bytes has no test at it (tui-attach.md,
+  # "Accepted holes").
   @tag :slow
-  test "a frame joined from parts of the joined bound passes, with a ping between them; one byte more is a contract break" do
-    for {size, ok?} <- [{@max_joined, true}, {@max_joined + 1, false}] do
-      {conn, ref} =
-        replies(fn id ->
-          [first | rest] = id |> padded_res(size) |> Frame.encode() |> Enum.map(&text/1)
-          [first, server_frame(1, 9, "between") | rest]
-        end)
+  test "a frame joined from parts over the inbound joined bound passes, with a ping between them" do
+    {conn, _ref} =
+      replies(fn id ->
+        [first | rest] = id |> padded_res(@max_joined + 1) |> texts()
+        [first, server_frame(1, 9, "between") | rest]
+      end)
 
-      result = Connection.start(conn, cwd: "/")
-      if ok?, do: assert(result == {:ok, "s"}), else: assert(result == {:error, :closed})
-      if not ok?, do: assert_receive({:DOWN, ^ref, :process, ^conn, {:shutdown, :broken}})
-    end
+    assert Connection.start(conn, cwd: "/") == {:ok, "s"}
   end
 
   test "a reply in WebSocket fragments with a ping between them, and a reply written one byte at a time, pass" do
@@ -428,20 +493,36 @@ defmodule Helyx.TUI.Wire.ConnectionTest do
 
   @tag :slow
   @tag timeout: 30_000
-  test "a late reply of a broken shape is a contract break" do
+  test "a late reply of a broken shape is a contract break, a snapshot with a broken message too" do
     test = self()
+    user = %{Message.user("hi", %{kind: :user, id: nil}) | id: "u1"}
+    snapshot = ServerWire.snapshot(%{snapshot() | messages: [user]})
+    broken = update_in(snapshot["messages"], fn [user] -> [Map.put(user, "usage", "bad")] end)
 
-    {conn, ref} =
-      fake(fn socket ->
-        send(test, {:server, self()})
-        %{"id" => id, "op" => "steer"} = client_frame(socket)
-        receive do: (:late -> :ok)
-        :ok = :gen_tcp.send(socket, text(%{type: "res", id: id, ok: "yes"}))
-      end)
+    cases = [
+      {&Connection.steer(&1, "s1", "x"), &%{type: "res", id: &1, ok: "yes"}},
+      {&Connection.subscribe(&1, "s1"), &res(&1, %{sub: "x", snapshot: broken})}
+    ]
 
-    assert_receive {:server, server}
-    assert Connection.steer(conn, "s1", "x") == {:error, :timeout}
-    send(server, :late)
-    assert_receive {:DOWN, ^ref, :process, ^conn, {:shutdown, :broken}}
+    # The two wait for their deadlines at the same time.
+    tasks =
+      for {request, reply} <- cases do
+        {conn, ref} =
+          fake(fn socket ->
+            send(test, {:server, self()})
+            %{"id" => id} = client_frame(socket)
+            receive do: (:late -> :ok)
+            :ok = :gen_tcp.send(socket, text(reply.(id)))
+          end)
+
+        assert_receive {:server, server}
+        {conn, ref, server, Task.async(fn -> request.(conn) end)}
+      end
+
+    for {conn, ref, server, task} <- tasks do
+      assert Task.await(task, 20_000) == {:error, :timeout}
+      send(server, :late)
+      assert_receive {:DOWN, ^ref, :process, ^conn, {:shutdown, :broken}}
+    end
   end
 end

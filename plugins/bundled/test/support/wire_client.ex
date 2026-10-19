@@ -212,6 +212,16 @@ defmodule Helyx.Test.WireClient do
   def server_frame(fin, opcode, payload),
     do: [<<fin::1, 0::3, opcode::4>>, payload_length(0, byte_size(payload)), payload]
 
+  # The part frames of a JSON text, as `Helyx.Transport.WebSocket.Frame`
+  # cuts it: for a text that a test builds as a binary, not as a term.
+  def parts(json, n \\ 0) do
+    {piece, rest} =
+      if byte_size(json) > 786_000, do: :erlang.split_binary(json, 786_000), else: {json, ""}
+
+    part = %{"type" => "part", "n" => n, "last" => rest == "", "data" => Base.encode64(piece)}
+    [JSON.encode!(part) | if(rest == "", do: [], else: parts(rest, n + 1))]
+  end
+
   # Sends a challenge and returns its nonce, the 32 bytes.
   def fake_challenge(socket) do
     nonce = :crypto.strong_rand_bytes(32)
