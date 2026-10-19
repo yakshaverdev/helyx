@@ -4,17 +4,17 @@ defmodule Helyx.Provider.Codex do
   program, with its shell off, by JSON-RPC lines of `codex app-server` on stdio.
   The model ref is `codex/<model>`, where `<model>` is a model id of `codex`.
 
-  One program serves the session's provider process. `init/3` returns when it
-  answered `initialize`. The first request opens the thread with the turn's
-  system prompt as `baseInstructions`: `thread/resume` with `:resume_id`, or
-  `thread/start`; a later prompt change starts a new program that resumes the
-  thread, or with `persist: false` starts a new ephemeral thread with the
-  replay. A `{:turn, ...}` is `turn/start`, a steer is `turn/steer`, and an
-  interrupt is `turn/interrupt`, or `{:error, :command_running}` or
-  `{:error, :agent_running}` when open work would outlive it. The session's
-  tools go to the thread as `dynamicTools`, and the user's config is off where
-  the program lets it be. A line that fails the shape check, a turn that Helyx
-  did not ask for, and the program's exit stop the provider process.
+  One program serves the session's provider process. `init/3` returns when it answered
+  `initialize`. The first request opens the thread with the turn's system prompt as
+  `baseInstructions`: `thread/resume` with `:resume_id`, or `thread/start`; a later prompt
+  change starts a new program that resumes the thread, or with `persist: false` starts a new
+  ephemeral thread with the replay. A `{:turn, ...}` is `turn/start`, a steer is `turn/steer`,
+  and an interrupt is `turn/interrupt`, or `{:error, :command_running}` or
+  `{:error, :agent_running}` when open work would outlive it. The session's tools go to the
+  thread as `dynamicTools`, and the user's config is off where the program lets it be. The
+  options `codex_sandbox` and `codex_approval_policy` are the thread's sandbox and approval
+  policy, by default `danger-full-access` and `never`. A line that fails the shape check, a
+  turn that Helyx did not ask for, and the program's exit stop the provider process.
 
   The full contract is in `docs/features/long-lived-harness.md`, section
   "Codex", and `docs/features/provider-parity.md`. The protocol facts are in
@@ -37,7 +37,7 @@ defmodule Helyx.Provider.Codex do
   @impl true
   def init(model, tools, opts) do
     with {:ok, info} <- ModelInfo.lookup(id(), "openai", model),
-         {:ok, options} <- HarnessIO.options(opts),
+         {:ok, options} <- Program.options(opts),
          {:ok, exe} <- HarnessIO.find("codex") do
       state = %State{
         exe: exe,
@@ -226,8 +226,8 @@ defmodule Helyx.Provider.Codex do
     end
   end
 
-  # A request of the server (it has an id and a method) gets an error. The
-  # thread runs with `approvalPolicy: "never"`, so an approval request is refused too (ADR 0007).
+  # A request of the server (it has an id and a method) gets an error. Codex 0.157.1 took it
+  # as the decline of an approval (docs/research/codex-app-server.md, "Approvals").
   defp dispatch(%{"id" => id, "method" => _method}, state) do
     send_line(state, %{id: id, error: %{code: -32_601, message: "not supported by Helyx"}})
     {[], state}

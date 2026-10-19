@@ -10,7 +10,10 @@ defmodule Helyx.Provider.Codex.Program do
   alias Helyx.HarnessIO
   alias Helyx.Provider.Codex.{State, Tools}
 
-  @trust %{approvalPolicy: "never", sandbox: "danger-full-access"}
+  # The string values of `SandboxMode` and `AskForApproval` in the schema
+  # of codex 0.163.0 (research note, "Sandbox and approval values").
+  @sandboxes ~w(read-only workspace-write danger-full-access)
+  @approval_policies ~w(untrusted on-request never)
 
   # The shell is off, and so is the user's config that the program lets go
   # (`docs/research/provider-parity.md`). The stored id has their digest.
@@ -19,6 +22,25 @@ defmodule Helyx.Provider.Codex.Program do
            -c project_doc_max_bytes=0 -c web_search="disabled" -c skills.include_instructions=false
            -c skills.bundled.enabled=false -c include_permissions_instructions=false
            -c include_apps_instructions=false)
+
+  # The options of `init/3`: those of `HarnessIO.options/1`, and the trust
+  # of the thread from `codex_sandbox` and `codex_approval_policy`. The
+  # reviewer `user` sends each approval request to Helyx, not to one that
+  # the user's config names (docs/features/long-lived-harness.md, "Sandbox
+  # and approvals").
+  def options(opts) do
+    with {:ok, options} <- HarnessIO.options(opts),
+         {:ok, sandbox} <- pick(opts, :codex_sandbox, "danger-full-access", @sandboxes),
+         {:ok, policy} <- pick(opts, :codex_approval_policy, "never", @approval_policies) do
+      trust = %{sandbox: sandbox, approvalPolicy: policy, approvalsReviewer: "user"}
+      {:ok, [trust: trust] ++ options}
+    end
+  end
+
+  defp pick(opts, key, default, values) do
+    value = Keyword.get(opts, key, default)
+    if value in values, do: {:ok, value}, else: {:error, {:invalid_option, key}}
+  end
 
   # The thread of a stored id, or nil: the program fixes the flags and the
   # tools at the start of a thread.
@@ -94,7 +116,7 @@ defmodule Helyx.Provider.Codex.Program do
   # `thread/resume` never gets the option.
   defp params(state) do
     params =
-      Map.merge(@trust, %{model: state.model, cwd: state.cwd, baseInstructions: state.system})
+      Map.merge(state.trust, %{model: state.model, cwd: state.cwd, baseInstructions: state.system})
 
     if state.persist?, do: params, else: Map.put(params, :ephemeral, true)
   end

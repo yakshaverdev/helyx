@@ -300,3 +300,21 @@ From `codex app-server generate-json-schema --out <dir>` of codex-cli 0.163.0, w
 - `thread/resume` of an ephemeral thread in a new program (expected: the error of a lost thread, `no rollout found for thread id <id>`).
 - `thread/compact/start` and `thread/inject_items` on an ephemeral thread.
 - A child thread (`multi_agent`) of an ephemeral thread: is it stored?
+
+## Sandbox and approval values (2026-10-20, #753)
+
+From `codex app-server generate-json-schema --out <dir>` of codex-cli 0.163.0 at `~/.bun/bin/codex`, as for "Ephemeral threads". No program ran a thread or a turn.
+
+- `v2/ThreadStartParams.json` and `v2/ThreadResumeParams.json`: `sandbox` is a `SandboxMode` or null, and `approvalPolicy` an `AskForApproval` or null. Both also have `approvalsReviewer`, an `ApprovalsReviewer` or null, "Override where approval requests are routed for review on this thread and subsequent turns". Neither file has `additionalProperties`.
+- `SandboxMode`: a string, one of `read-only`, `workspace-write`, `danger-full-access`.
+- `AskForApproval`: `oneOf` a string, one of `untrusted`, `on-request`, `never`, or the object `{"granular": {...}}` with `additionalProperties: false`. The `granular` object requires the booleans `mcp_elicitations`, `rules`, and `sandbox_approval`, and has the booleans `request_permissions` and `skill_approval` with the default `false`. The string `on-failure` is not in the enum.
+- `ApprovalsReviewer`: a string, one of `user`, `auto_review`, `guardian_subagent`. Its description: "Configures who approval requests are routed to for review ... Defaults to `user`. `auto_review` uses a carefully prompted subagent to gather relevant context and apply a risk-based decision framework before approving or denying the request."
+- `v2/ConfigReadResponse.json`, the `Config` definition: the config keys `sandbox_mode`, `approval_policy`, and `approvals_reviewer` ("[UNSTABLE] Optional default for where approval requests are routed for review") take the same types. So a user's `config.toml` can name a reviewer other than `user`.
+- `v2/ThreadStartResponse.json`: the answer has `approvalPolicy`, `approvalsReviewer` ("Reviewer currently used for approval requests on this thread"), and `sandbox`, a `SandboxPolicy` object ("Legacy sandbox policy retained for compatibility") whose `type` is one of `dangerFullAccess`, `readOnly`, `externalSandbox`, `workspaceWrite`.
+- `v2/TurnStartParams.json` also has `approvalPolicy`, `approvalsReviewer`, and `sandboxPolicy`.
+
+### Not run
+
+- A thread with `sandbox` `read-only` on 0.163.0 and an `apply_patch` of the model under it. The 0.157.1 runs of "Approvals" in "Long-lived use" are the last observed approvals.
+- The answer of the program to an error answer for `item/permissions/requestApproval`, `item/tool/requestUserInput`, and `mcpServer/elicitation/request`.
+- A `thread/start` or `thread/resume` with `approvalsReviewer` on a live program, on 0.163.0 or an older version.
