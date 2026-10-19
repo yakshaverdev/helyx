@@ -208,17 +208,20 @@ defmodule Helyx.HarnessIO do
     end
   end
 
-  # The names that the `/bin/sh` of the launch sets itself, so that a value
-  # of the map would not reach the program: the POSIX ones, and each one
-  # that the bash of macOS or dash changed in a probe.
-  @shell_names ~w(BASH BASHOPTS BASH_COMMAND BASH_EXECUTION_STRING BASH_SUBSHELL BASH_VERSINFO
-                  BASH_VERSION CDPATH COMP_WORDBREAKS ENV HISTCMD IFS LINENO OLDPWD OPTERR OPTIND
-                  POSIXLY_CORRECT PPID PS1 PS2 PS4 PWD RANDOM SHELLOPTS SHLVL)
+  # The names that the `/bin/sh` of the launch or the OS is known to set
+  # itself: the POSIX shell ones, and each one that the review probes saw
+  # changed by the bash of macOS, dash, bash 5.3, or macOS itself.
+  @shell_names ~w(BASH BASHOPTS BASHPID BASH_ARGV0 BASH_COMMAND BASH_EXECUTION_STRING
+                  BASH_MONOSECONDS BASH_SUBSHELL BASH_VERSINFO BASH_VERSION CDPATH COMP_WORDBREAKS
+                  ENV EPOCHREALTIME EPOCHSECONDS HISTCMD IFS LINENO OLDPWD OPTERR OPTIND
+                  POSIXLY_CORRECT PPID PS1 PS2 PS4 PWD RANDOM SHELLOPTS SHLVL SRANDOM XPC_FLAGS
+                  XPC_SERVICE_NAME)
 
   # The `:env` option of a harness provider, `%{}` by default: the map that
-  # each launch adds to the inherited environment, as the charlist pairs
-  # of the port. A name is a shell identifier, since dash, a `/bin/sh` of
-  # the launch, drops any other name, and not one of `@shell_names`. A
+  # each launch sets on top of the inherited environment, as the charlist
+  # pairs of the port. A name is a shell identifier, since dash, a
+  # `/bin/sh` of the launch, drops any other name, and not one of
+  # `@shell_names`; a shell or an OS can set other names of its own. A
   # value is non-empty valid UTF-8 with no NUL: the port unsets a variable
   # with an empty value and raises for a NUL. The error names no value
   # (docs/features/harness-no-state.md).

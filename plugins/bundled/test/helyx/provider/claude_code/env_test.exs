@@ -87,12 +87,14 @@ defmodule Helyx.Provider.ClaudeCode.EnvTest do
   end
 
   # The list of docs/features/harness-no-state.md, "The check": the shell
-  # of the launch sets these names itself.
-  @shell_names ~w(BASH BASHOPTS BASH_COMMAND BASH_EXECUTION_STRING BASH_SUBSHELL BASH_VERSINFO
-                  BASH_VERSION CDPATH COMP_WORDBREAKS ENV HISTCMD IFS LINENO OLDPWD OPTERR OPTIND
-                  POSIXLY_CORRECT PPID PS1 PS2 PS4 PWD RANDOM SHELLOPTS SHLVL)
+  # of the launch or the OS sets these names itself.
+  @shell_names ~w(BASH BASHOPTS BASHPID BASH_ARGV0 BASH_COMMAND BASH_EXECUTION_STRING
+                  BASH_MONOSECONDS BASH_SUBSHELL BASH_VERSINFO BASH_VERSION CDPATH COMP_WORDBREAKS
+                  ENV EPOCHREALTIME EPOCHSECONDS HISTCMD IFS LINENO OLDPWD OPTERR OPTIND
+                  POSIXLY_CORRECT PPID PS1 PS2 PS4 PWD RANDOM SHELLOPTS SHLVL SRANDOM XPC_FLAGS
+                  XPC_SERVICE_NAME)
 
-  test "each name that the shell sets itself fails the init", %{work: work} do
+  test "each name that the shell or the OS sets itself fails the init", %{work: work} do
     accepted =
       for name <- @shell_names,
           ClaudeCode.init("haiku", [], cwd: work, env: %{name => "v"}) !=
