@@ -17,8 +17,10 @@ defmodule Helyx.Session.Hands.Release do
 
     tasks =
       for {tool, handles} <- by_tool, handles != [] do
+        release = fn -> tool.release(handles, mode, deadline) end
+
         {tool, handles,
-         Task.Supervisor.async(supervisor, tool, :release, [handles, mode, deadline])}
+         Task.Supervisor.async(supervisor, Helyx.Reason, :task, ["tool release crashed", release])}
       end
 
     timeout = max(deadline - System.monotonic_time(:millisecond), 0)

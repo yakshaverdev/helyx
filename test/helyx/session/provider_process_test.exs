@@ -341,6 +341,9 @@ defmodule Helyx.Session.ProviderProcessTest do
       assert error(events) == "turn crashed"
       refute handle?(events)
       assert log =~ "turn failed: :task_exit\n"
+      # The crash of the provider process logs its kind, not its message (#788).
+      assert log =~ "provider process crashed: RuntimeError\n"
+      refute log =~ "turn crashed"
     end
 
     test "a raw Erlang error, a throw, a crash exit, or a caught crash in a callback ends both end events with its short message",

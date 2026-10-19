@@ -180,7 +180,10 @@ defmodule Helyx.Session.Sync do
       {{:value, {chunk, _bytes}}, _queue} ->
         sup = Helyx.Core.task_supervisor(state.opts[:core])
         %{memory: memory, opts: opts} = state
-        task = Task.Supervisor.async(sup, fn -> memory.sync(chunk, opts) end)
+
+        sync = fn -> memory.sync(chunk, opts) end
+        task = Task.Supervisor.async(sup, Helyx.Reason, :task, ["memory sync crashed", sync])
+
         Process.send_after(self(), {:call_timeout, task.ref}, @call_ms)
         {:noreply, %{state | task: task}}
 

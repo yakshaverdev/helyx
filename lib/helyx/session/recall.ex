@@ -58,7 +58,9 @@ defmodule Helyx.Session.Recall do
     trap = Process.flag(:trap_exit, true)
     plugin_opts = Keyword.take(opts, [:core, :session_id, :instance_id, :cwd, :turn_id])
     sup = Helyx.Core.task_supervisor(opts[:core])
-    task = Task.Supervisor.async(sup, fn -> memory.recall(query, plugin_opts) end)
+
+    recall = fn -> memory.recall(query, plugin_opts) end
+    task = Task.Supervisor.async(sup, Helyx.Reason, :task, ["memory recall crashed", recall])
 
     result = Task.yield(task, limit) || Task.shutdown(task, :brutal_kill)
     Process.flag(:trap_exit, trap)

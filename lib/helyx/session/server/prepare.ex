@@ -49,25 +49,29 @@ defmodule Helyx.Session.Server.Prepare do
     recall_opts = [turn_id: turn_id, instance_id: state.instance_id, recall_ms: recall_ms]
     recall_opts = recall_opts ++ State.base_opts(state)
 
+    prepare = fn ->
+      {:ok, tref} = :timer.kill_after(ms)
+      started = System.monotonic_time(:millisecond)
+
+      result =
+        Helyx.Session.Stream.prepare(plugins.model_context, plugins.compaction, context, opts)
+
+      # Recall comes after the build and the compaction, with what is
+      # left of the budget (docs/features/memory.md).
+      result =
+        with {:ok, built} <- result,
+             left = ms - (System.monotonic_time(:millisecond) - started),
+             {:ok, recall} <- Recall.run(memory, context.messages, recall_opts, left),
+             do: {:ok, built, recall}
+
+      :timer.cancel(tref)
+      {:prepared, base(result, context.messages)}
+    end
+
+    sup = Helyx.Core.task_supervisor(state.core)
+
     %Task{pid: pid, ref: ref} =
-      Task.Supervisor.async_nolink(Helyx.Core.task_supervisor(state.core), fn ->
-        {:ok, tref} = :timer.kill_after(ms)
-        started = System.monotonic_time(:millisecond)
-
-        result =
-          Helyx.Session.Stream.prepare(plugins.model_context, plugins.compaction, context, opts)
-
-        # Recall comes after the build and the compaction, with what is
-        # left of the budget (docs/features/memory.md).
-        result =
-          with {:ok, built} <- result,
-               left = ms - (System.monotonic_time(:millisecond) - started),
-               {:ok, recall} <- Recall.run(memory, context.messages, recall_opts, left),
-               do: {:ok, built, recall}
-
-        :timer.cancel(tref)
-        {:prepared, base(result, context.messages)}
-      end)
+      Task.Supervisor.async_nolink(sup, Helyx.Reason, :task, ["prepare task crashed", prepare])
 
     put_in(state.activity.prepare, {ref, pid, context.messages})
   end
