@@ -62,15 +62,17 @@ defmodule Helyx.Session.Server.TurnLoop do
 
   # A context request (C1-C4) comes after the events before it, and is
   # answered as a tool result is: only for the submitted turn with no
-  # context request open (no prepare Task, no summary call for it), not a
-  # compaction; at any other time it is a bad action. One after a context
-  # overflow builds with the trigger `:overflow`
-  # (docs/features/summary-compaction.md).
+  # context request open (no prepare Task, no summary call for it, no
+  # `{:context, ...}` without the provider's reply), not a compaction; at
+  # any other time it is a bad action. One after a context overflow builds
+  # with the trigger `:overflow` (docs/features/summary-compaction.md).
   def handle({:need_context, id}, state), do: handle({:need_context, id, :auto}, state)
 
   def handle(
         {:need_context, id, why},
-        %State{activity: %Turn{id: id, phase: :submitted, prepare: nil, compact: nil}} = state
+        %State{
+          activity: %Turn{id: id, phase: :submitted, prepare: nil, pending: nil, compact: nil}
+        } = state
       ) do
     if Summary.open?(state),
       do: stop_provider(state, {:bad_action, {:need_context, id}}),
@@ -80,8 +82,9 @@ defmodule Helyx.Session.Server.TurnLoop do
   def handle({:need_context, turn_id, _why}, %State{activity: %Turn{id: turn_id}} = state),
     do: stop_provider(state, {:bad_action, {:need_context, turn_id}})
 
-  # The answer to `{:turn, ...}` or `{:compact, ...}`. An error ends the
-  # provider process, and its `:provider_down` fails the turn.
+  # The answer to `{:turn, ...}`, `{:compact, ...}`, or `{:context, ...}`;
+  # the last one closes the context request. An error ends the provider
+  # process, and its `:provider_down` fails the turn.
   def handle({:provider_reply, from, kind, reply}, %State{activity: %Turn{pending: from}} = state) do
     phase = if reply == :ok, do: :submitted, else: :submitting
     state = %{state | activity: %{state.activity | pending: nil, phase: phase}}

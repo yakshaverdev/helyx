@@ -134,8 +134,9 @@ defmodule Helyx.Session.Server.Prepare do
           {error, state}
       end
 
-    ask(state, conn.pid, {:context, turn.id, result}, :reply)
-    %{state | activity: %{state.activity | prepare: nil}}
+    # The context request stays open until the provider's reply (C3).
+    from = ask(state, conn.pid, {:context, turn.id, result}, :reply)
+    %{state | activity: %{state.activity | prepare: nil, pending: from}}
   end
 
   # A failed recall is no recall, with one notice in the turn.
