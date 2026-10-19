@@ -13,6 +13,9 @@ defmodule Helyx.Session.MemoryTest do
   @failed "memory recall failed; the turn goes on without recall"
   # A drain lasts 30,000 ms; a drop at once comes well under this margin for load.
   @load_ms 5_000
+  # The recall limit of a recall that fails at once: a margin for load (#798).
+  # Only a hang needs a short limit.
+  @load_recall_ms 5_000
 
   defp start_core(opts \\ []) do
     core = :"core_#{System.unique_integer([:positive])}"
@@ -47,6 +50,15 @@ defmodule Helyx.Session.MemoryTest do
 
   defp record(id, source, text),
     do: ~s(<record id="#{id}" source="#{source}">\n#{text}\n</record>\n)
+
+  defp assert_failed(core, text, kind) do
+    {events, log} = with_log(fn -> turn(start(core), text) end)
+    assert [%{text: @failed}] = of_type(events, :notice)
+    assert final(events) == "user:" <> text
+    assert List.last(events).data == %{outcome: :done}
+    # The log has the kind of the reason only (#756).
+    assert log =~ "memory recall failed: #{kind}\n"
+  end
 
   describe "recall" do
     @tag :tmp_dir
@@ -104,21 +116,18 @@ defmodule Helyx.Session.MemoryTest do
       assert byte_size(text) == 4_096
     end
 
-    test "an error, a raise, and a timeout give no recall and one notice in the turn" do
-      core = start_core(recall_ms: 100)
+    test "an error and a raise give no recall and one notice in the turn" do
+      core = start_core(recall_ms: @load_recall_ms)
+      assert_failed(core, "fail", "term")
+      assert_failed(core, "raise", "RuntimeError")
+    end
 
-      for {text, kind} <- [{"fail", "term"}, {"raise", "RuntimeError"}, {"hang", ":timeout"}] do
-        {events, log} = with_log(fn -> turn(start(core), text) end)
-        assert [%{text: @failed}] = of_type(events, :notice)
-        assert final(events) == "user:" <> text
-        assert List.last(events).data == %{outcome: :done}
-        # The log has the kind of the reason only (#756).
-        assert log =~ "memory recall failed: #{kind}\n"
-      end
+    test "a timeout gives no recall and one notice in the turn" do
+      assert_failed(start_core(recall_ms: 100), "hang", ":timeout")
     end
 
     test "a failed recall in a turn with two calls gives one notice" do
-      core = start_core(recall_ms: 100)
+      core = start_core(recall_ms: @load_recall_ms)
       {:ok, session} = Session.start(core, model: "mem/tool")
       {:ok, _, _} = Session.subscribe(session)
       events = turn(session, "fail")
