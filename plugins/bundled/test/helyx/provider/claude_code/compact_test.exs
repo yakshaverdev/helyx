@@ -53,7 +53,7 @@ defmodule Helyx.Provider.ClaudeCode.CompactTest do
   test "/compact gives one compaction event and no message in the transcript",
        %{bin: bin} = ctx do
     turn(bin, 1, 1, reply("Hi."))
-    turn(bin, 1, 2, compaction(29_557, 3_926))
+    turn(bin, 2, 1, compaction(29_557, 3_926))
 
     session = start(ctx)
     prompt(session, "hello")
@@ -66,12 +66,45 @@ defmodule Helyx.Provider.ClaudeCode.CompactTest do
     assert List.last(events).data == %{outcome: :done}
     assert messages(events) == []
 
-    assert [_prompt, %{"type" => "user", "uuid" => uuid, "message" => message}] = stdin(bin, 1)
+    assert [%{"type" => "user", "uuid" => uuid, "message" => message}] = stdin(bin, 2)
     assert is_binary(uuid)
     assert %{"content" => [%{"type" => "text", "text" => "/compact keep it short"}]} = message
 
     {:ok, snapshot, _} = Session.subscribe(session)
     assert [%{role: :user}, %{role: :assistant}] = snapshot.messages
+  end
+
+  # One request to the provider, until the end of its turn: the events.
+  defp run(state, request) do
+    {_from, actions, state} = request(state, request)
+    {actions, state} = pump(ClaudeCode, state, actions, &ended?/1)
+    {events_of(actions), state}
+  end
+
+  # `--disable-slash-commands` also takes out `/compact` (research note,
+  # #754): the compaction resumes the harness session in a program without
+  # the flag, with the prompt of the running program, and the next turn in
+  # one with the flag and its own prompt.
+  test "a compaction's program has the running program's prompt, no --disable-slash-commands, and its session; the next turn's has its own prompt and the flag",
+       %{bin: bin, work: work} do
+    turn(bin, 1, 1, reply("one"))
+    turn(bin, 2, 1, compaction(9, 2))
+    turn(bin, 3, 1, reply("two"))
+    context = &%Helyx.Context{system: &1, messages: [Helyx.Message.user("x")]}
+
+    {_events, state} = run(harness(work), {:turn, "t1", context.("Be brief.")})
+    assert {[{:compaction, 9, 2}, {:done, _}], state} = run(state, {:compact, "t2", ""})
+
+    assert {[{:text_delta, "two"}, {:done, _}], state} =
+             run(state, {:turn, "t3", context.("Be long.")})
+
+    closed(state)
+
+    assert programs(bin) == "3"
+    assert for(n <- 1..3, do: initialize(bin, n)) == ["Be brief.", "Be brief.", "Be long."]
+    assert for(n <- 1..3, do: "--disable-slash-commands" in args(bin, n)) == [true, false, true]
+    assert ["--session-id=" <> id] = Enum.filter(args(bin, 1), &(&1 =~ "--session-id"))
+    for n <- [2, 3], do: assert(("--resume=" <> id) in args(bin, n))
   end
 
   # A `result` line with the process total `total` (research note, "The
@@ -82,10 +115,12 @@ defmodule Helyx.Provider.ClaudeCode.CompactTest do
     line |> JSON.decode!() |> Map.merge(fields) |> j()
   end
 
+  # The compaction's program and the next turn's resume the harness
+  # session, and report its totals.
   test "the cost of the compaction call goes into the next done", %{bin: bin} = ctx do
     turn(bin, 1, 1, begin() ++ [delta("a"), costed(result("a"), 0.1)])
-    turn(bin, 1, 2, List.update_at(compaction(9, 2), -1, &costed(&1, 0.15)))
-    turn(bin, 1, 3, begin() ++ [delta("b"), costed(result("b"), 0.25)])
+    turn(bin, 2, 1, List.update_at(compaction(9, 2), -1, &costed(&1, 0.15)))
+    turn(bin, 3, 1, begin() ++ [delta("b"), costed(result("b"), 0.25)])
 
     session = start(ctx)
     assert [_user, %{usage: %{cost: 0.1}}] = messages(prompt(session, "one"))
@@ -100,8 +135,8 @@ defmodule Helyx.Provider.ClaudeCode.CompactTest do
   test "after a compaction and a reconnect, the first done has the compaction's cost",
        %{bin: bin} = ctx do
     turn(bin, 1, 1, begin() ++ [delta("a"), costed(result("a"), 0.1)])
-    turn(bin, 1, 2, List.update_at(compaction(9, 2), -1, &costed(&1, 0.15)))
-    turn(bin, 2, 1, begin() ++ [delta("b"), costed(result("b"), 0.25)])
+    turn(bin, 2, 1, List.update_at(compaction(9, 2), -1, &costed(&1, 0.15)))
+    turn(bin, 3, 1, begin() ++ [delta("b"), costed(result("b"), 0.25)])
 
     session = start(ctx)
     prompt(session, "one")
@@ -113,22 +148,22 @@ defmodule Helyx.Provider.ClaudeCode.CompactTest do
     {:ok, _, _} = Session.subscribe(session)
     assert [_user, %{usage: %{cost: cost}}] = messages(prompt(session, "two"))
     assert_in_delta cost, 0.15, 1.0e-12
-    assert ["--resume=" <> _] = Enum.filter(args(bin, 2), &String.starts_with?(&1, "--resume"))
+    assert ["--resume=" <> _] = Enum.filter(args(bin, 3), &String.starts_with?(&1, "--resume"))
   end
 
   # A done, an interrupt while a call streams (that call is in no total),
   # and a compaction. The cost of the next done is not known, live and
   # after a reconnect: the cut message has no usage, so the resumed mark
-  # is not known either (`Transcript.resume/3`).
+  # is not known either (`Transcript.resume/3`). The next turn runs in a
+  # third program either way, which resumes the harness session.
   defp after_cut(%{bin: bin} = ctx, reconnect?) do
     cut = %{"terminal_reason" => "aborted_streaming", "usage" => %{"input_tokens" => 1}}
     cut = aborted() |> JSON.decode!() |> Map.merge(cut) |> j() |> costed(0.1)
-    {n, k} = if reconnect?, do: {2, 1}, else: {1, 4}
     turn(bin, 1, 1, begin() ++ [delta("a"), costed(result("a"), 0.1)])
     turn(bin, 1, 2, begin() ++ [delta("so far")])
     script(bin, "ctl.1", [interrupted(), cut])
-    turn(bin, 1, 3, List.update_at(compaction(9, 2), -1, &costed(&1, 0.15)))
-    turn(bin, n, k, begin() ++ [delta("c"), costed(result("c"), 0.25)])
+    turn(bin, 2, 1, List.update_at(compaction(9, 2), -1, &costed(&1, 0.15)))
+    turn(bin, 3, 1, begin() ++ [delta("c"), costed(result("c"), 0.25)])
 
     session = start(ctx)
     prompt(session, "one")
@@ -142,7 +177,7 @@ defmodule Helyx.Provider.ClaudeCode.CompactTest do
     if reconnect?, do: Helyx.Test.SessionFile.stop(session)
     session = if reconnect?, do: resume(ctx), else: session
     assert [_user, %{usage: usage}] = messages(prompt(session, "three"))
-    assert resume_flag?(bin, n) == reconnect?
+    assert resume_flag?(bin, 3)
     usage.cost
   end
 
@@ -169,11 +204,10 @@ defmodule Helyx.Provider.ClaudeCode.CompactTest do
       replayed() |> JSON.decode!() |> Map.put("queued_turn_count", 0) |> j() |> costed(0.1)
     ]
 
-    {n, k} = if reconnect?, do: {2, 1}, else: {1, 3}
     turn(bin, 1, 1, begin() ++ [delta("a"), costed(result("a"), 0.1)])
-    turn(bin, 1, 2, begin() ++ [status(%{status: "compacting"})])
-    script(bin, "ctl.1", ctl)
-    turn(bin, n, k, begin() ++ [delta("c"), costed(result("c"), 0.25)])
+    turn(bin, 2, 1, begin() ++ [status(%{status: "compacting"})])
+    script(bin, "ctl.2", ctl)
+    turn(bin, 3, 1, begin() ++ [delta("c"), costed(result("c"), 0.25)])
 
     session = start(ctx)
     prompt(session, "one")
@@ -184,7 +218,7 @@ defmodule Helyx.Provider.ClaudeCode.CompactTest do
     if reconnect?, do: Helyx.Test.SessionFile.stop(session)
     session = if reconnect?, do: resume(ctx), else: session
     assert [_user, %{usage: usage}] = messages(prompt(session, "three"))
-    assert resume_flag?(bin, n) == reconnect?
+    assert resume_flag?(bin, 3)
     usage.cost
   end
 

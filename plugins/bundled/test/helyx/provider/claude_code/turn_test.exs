@@ -154,6 +154,7 @@ defmodule Helyx.Provider.ClaudeCode.TurnTest do
 
     assert "--resume=#{bare(old)}" in args(bin, 2)
     refute resume_flag?(bin, 3)
+    assert "--disable-slash-commands" in args(bin, 3)
 
     assert [
              %{

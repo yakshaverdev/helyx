@@ -23,18 +23,21 @@ defmodule Helyx.Provider.ClaudeCode.Program do
 
   def stored_id(id), do: HarnessIO.session_id(id, @flags)
 
-  # A program with the prompt `system`: the running one, or one in its
-  # place that resumes its harness session once the running one ended.
-  def ensure(%State{port: port, system: system} = state, system) when port != nil, do: state
+  # A program with the prompt `system` and `commands?`: the running one, or
+  # one in its place that resumes its harness session once the running one
+  # ended.
+  def ensure(%State{port: port, system: system, commands?: commands?} = state, system, commands?)
+      when port != nil,
+      do: state
 
-  def ensure(%State{port: nil} = state, system) do
+  def ensure(%State{port: nil} = state, system, commands?) do
     resume = if state.sent?, do: state.session_id, else: state.resume
-    start(replace(state, resume: resume, meter: state.meter), system)
+    start(replace(state, resume: resume, meter: state.meter, commands?: commands?), system)
   end
 
-  def ensure(state, system) do
+  def ensure(state, system, commands?) do
     case HarnessIO.finish(state) do
-      :ok -> ensure(%{state | port: nil}, system)
+      :ok -> ensure(%{state | port: nil}, system, commands?)
       {:error, _reason} = error -> %{state | terminal: error}
     end
   end
@@ -58,10 +61,18 @@ defmodule Helyx.Provider.ClaudeCode.Program do
   # The prompt is the first line on stdin, so its size has the stdin bound
   # of the watchdog and no argv bound. A program that did not start has no
   # port: `Helyx.Watchdog.start/4` closed it.
+  #
+  # `--disable-slash-commands` keeps a user line from running a command or
+  # a skill of the program. It also takes out `/compact`, so the program of
+  # a compaction runs without it (`docs/research/provider-parity.md`). It
+  # is a flag of one launch, so it is not in the stored id's digest.
   def start(state, system) do
     id = state.resume || uuid()
     session = if state.resume, do: "--resume=" <> id, else: "--session-id=" <> id
-    flags = @flags ++ ["--model=" <> state.model, session, "--mcp-config", Mcp.config()]
+    commands = if state.commands?, do: [], else: ["--disable-slash-commands"]
+
+    flags =
+      @flags ++ commands ++ ["--model=" <> state.model, session, "--mcp-config", Mcp.config()]
 
     state =
       HarnessIO.launch(state.exe, flags, state.cwd, %{state | session_id: id, system: system})
