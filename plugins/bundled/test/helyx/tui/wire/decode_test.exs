@@ -6,6 +6,7 @@ defmodule Helyx.TUI.Wire.DecodeTest do
   alias Helyx.Session.File.Scan
   alias Helyx.Session.{Snapshot, Totals}
   alias Helyx.Transport.WebSocket.Wire
+  alias Helyx.TUI.{Footer, ViewModel}
   alias Helyx.TUI.Wire.Decode
 
   @call %ToolCall{id: "c1", name: "bash", arguments: %{"command" => "ls", "n" => [1, 2.5]}}
@@ -255,9 +256,33 @@ defmodule Helyx.TUI.Wire.DecodeTest do
 
     assert Decode.event(no_call_id) == :error
 
-    at = %{snapshot_of([]) | usage: %Totals{cost: 1.0e12}}
+    # Two messages at the cost bound of one usage give a total of 2 × 10^12.
+    usage = %{@usage | cost: 1.0e12, cost_kind: :billed}
+    costly = [%{assistant() | id: "a1", usage: usage}, %{assistant() | id: "a3", usage: usage}]
+    {totals, context} = Totals.of(costly)
+    assert totals.cost == 2.0e12
+    real = %{snapshot_of(costly) | usage: totals, context: context}
+    assert subscribe(real) == {:ok, {:ok, real, "1"}}
+
+    # The cap, the first float over it, and an integer at it and over it.
+    at = %{snapshot_of([]) | usage: %Totals{cost: 1.0e300}}
     assert subscribe(at) == {:ok, {:ok, at, "1"}}
-    assert subscribe(%{at | usage: %Totals{cost: 1.0e12 * 1.001}}) == :error
+    <<bits::64>> = <<1.0e300::float>>
+    <<over::float>> = <<bits + 1::64>>
+    assert subscribe(%{at | usage: %Totals{cost: over}}) == :error
+    whole = %{at | usage: %Totals{cost: trunc(1.0e300)}}
+    assert subscribe(whole) == {:ok, {:ok, whole, "1"}}
+    assert subscribe(%{at | usage: %Totals{cost: trunc(1.0e300) + 1}}) == :error
+
+    # The footer draws the capped form at the cap, after a later message too.
+    vm = ViewModel.from_snapshot(at)
+    later = event(:message_end, %{message: %{assistant() | usage: usage}})
+
+    for vm <- [vm, ViewModel.apply(vm, later)] do
+      %{text: [_row1, %{spans: spans}]} = Footer.widget("~", vm, nil, nil, nil)
+      assert Enum.map_join(spans, & &1.content) =~ ">$99999"
+    end
+
     assert subscribe(%{at | model: "no-slash"}) == :error
     # A result with no call before it in the snapshot.
     assert subscribe(snapshot_of([result()])) == :error

@@ -32,12 +32,14 @@ defmodule Helyx.TUI.Wire.Decode do
   defguardp count?(value) when is_integer(value) and value >= 0
   defguardp count_or_nil?(value) when is_nil(value) or count?(value)
   # The bounds of Core that the fold trusts: a token count of a compaction
-  # (`Helyx.Session.Stream`) and the cost of a usage (`Helyx.Usage.valid?/1`),
-  # so the footer has room for its sums.
+  # (`Helyx.Session.Stream`). The total cost of a session is a sum of costs
+  # of at most 10^12 each, so it has no bound of its own below the float
+  # limit (usage-and-limits.md, "session totals"); 10^300 is far above any
+  # sum, and leaves the footer room for its `cost * 10_000`.
   defguardp tokens_or_nil?(value) when is_nil(value) or wire_tokens?(value)
 
   defguardp cost_or_nil?(value)
-            when is_nil(value) or (is_number(value) and value >= 0 and value <= 1.0e12)
+            when is_nil(value) or (is_number(value) and value >= 0 and value <= 1.0e300)
 
   @spec event(term()) :: {:ok, Event.t() | nil} | :error
   def event(value), do: decoded(fn -> event!(value) end)

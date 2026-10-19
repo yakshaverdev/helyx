@@ -61,15 +61,39 @@ Simplify: `import Helyx.Usage, only: [wire_tokens?: 1]`, a `subscribe/1` helper 
 
 | Finding | Source | Reproduced | Resolution |
 | ------- | ------ | ---------- | ---------- |
-| The cap of 10^12 USD on the total cost of a snapshot is the bound of one usage; two messages of 10^12 give a total that the client refuses | spec | yes, `Totals.of/1` of two such messages | open: the 45-minute limit of `/ship` came at the end of this round; no small-fix round ran. Stated in the feature doc. A fix: a float-safe cap, such as 1.0e300 |
+| The cap of 10^12 USD on the total cost of a snapshot is the bound of one usage; two messages of 10^12 give a total that the client refuses | spec | yes, `Totals.of/1` of two such messages | fixed in the small-fix round, by the decision of the orchestrator of 2026-10-20 |
 | An `ask` of the `question` tool with a request that the tool did not make crashes `Helyx.TUI.Question.sync/1` | Codex, spec | yes | rejected as code: a case-specific check of one tool's request, and no evidence that a real server sends it; the tool checks its own request, and the TUI in the node crashes the same way. Stated as an accepted hole |
 | Queue counts, `elapsed_ms`, and context fields have no upper bound; 200,000 digits make the footer slow | spec | no: the decode bounds of the transport refuse an integer of more than 1,024 characters, and the failure-path agent measured 2 ms for a snapshot of 1,022-digit counts | rejected |
 | The slice 2 bounds table has no row for the new checks; the hole "each event alone" | spec | n/a | wording, fixed |
 
 The failure-path agent reproduced no defect: every round 2 reproduction gives `:error` or `{:shutdown, :broken}`, and a mutation probe of about 50 extreme values for each JSON node of the events and snapshots, through `Frame.decode/2`, the fold, the composer, the footer, the question picker, and the transcript, crashed only on the accepted holes (a result of a call that is not open, the `question` request).
 
-The loop ends at the limit: three rounds and 45 minutes. The committed code is the code of round 3.
+The loop reached its limit here: three rounds and 45 minutes. Commit `667e245b` held the code of round 3.
 
 ## Precommit
 
 The first run of `HELYX_SLOW=1 .claude/skills/ship/precommit.sh` failed on `mix credo --strict`: two alias lines out of order (`decode.ex:14`, `decode_test.exs:6`). The fix swaps the two lines. The second run passed: `found no issues`, `Total errors: 0` for the three Dialyzer runs, and `783 tests, 0 failures`, `113 tests, 0 failures`, `4 properties, 1117 tests, 0 failures (1 excluded)`.
+
+## Small-fix round (reduced: spec and failure path)
+
+Orchestrator decision of 2026-10-20: the cost cap is the small-fix round of `/ship`; the round also reviews the alias swap and the doc edits after round 3; the hole of frames over the client bounds is ticket #814, which blocks slice 3 (#807).
+
+The fix: `cost_or_nil?` in `decode.ex` caps the total cost of a snapshot at 10^300, not at 10^12, the bound of one usage. One code file, no new function, 8 lines with the comment. `decode_test.exs` decodes a snapshot whose total is `Totals.of/1` of two messages of 10^12 each (2 × 10^12); the old code refuses it. Base of the round: `667e245b`.
+
+| Finding | Source | Reproduced | Resolution |
+| ------- | ------ | ---------- | ---------- |
+| The defect of round 3 | failure path | yes on `667e245b`; closed by the fix, through `Decode.result/2` and `Connection.subscribe/2` on the fake server | fixed |
+| The test of the cap checks 1.0e300 and 1.001 × 1.0e300 only: a guard of 1.0005e300 passes it; an integer total is reachable | failure path | yes, a copy of the module with that guard | test: the first float over the cap, `trunc(1.0e300)` taken and `trunc(1.0e300) + 1` refused |
+| No test draws the footer at a decoded total over 10^12 | spec | no defect: the probe draws `>$99999` at 1.0e300, also after a later message of 10^12 | test: the footer at the cap, before and after a `message_end` of 10^12 |
+| The review record still says that the cost cap is open | spec | n/a | fixed |
+| The `question` hole says that the tool checks its own request; question-tool.md says that it checks its arguments and makes the request | spec | n/a | wording, fixed |
+| "it blocks slice 3 (#807)" has no source in the repo | spec | n/a | kept: the body of #814 says "Blocks #807" |
+
+Both agents found no other path that breaks the invariant: the float and integer totals at the cap fold, take 2,000 later messages of 10^12 with no raise, and draw `>$99999`; `1e400` and an integer of 1,025 digits fail the decode bounds of the transport. The alias order passes Credo; the old order is flagged. The round reproduced no defect of the fix, so the loop ends; its test and wording findings are fixed here with no further round.
+
+
+## Rebase and precommit of the small-fix round
+
+Rebased onto `650c5e3c` (origin/master). One conflict: `client_frame/1` of `Helyx.Test.WireClient`, where #805 put every read through the capped `read/2`. Resolved: `client_raw/1` uses `read/2`, and `client_frame/1` calls it. The tests of the change pass on the new base (34 tests, 0 failures, with the slow ones).
+
+`HELYX_SLOW=1 .claude/skills/ship/precommit.sh` passed: `found no issues`, `Total errors: 0` for the three Dialyzer runs, and `783 tests, 0 failures`, `113 tests, 0 failures`, `4 properties, 1124 tests, 0 failures (1 excluded)`. The test output of `plugins/bundled` also holds the stderr line `erl_child_setup: failed with error 32 on line 284`.
