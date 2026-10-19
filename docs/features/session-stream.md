@@ -47,7 +47,7 @@ Some input reaches the session with no stream event. These checks stay at their 
 | --- | --- | --- |
 | client text | `prompt/2`, `steer/2`, `follow_up/2` | `String.valid?/1` |
 
-Update, review of 2026-10-16: `Helyx.Session.Stream.check/1` returns an `{:error, reason}` terminal as it is, and the `:DOWN` reason of a provider process (`Helyx.Session.Hands`) and the crash reason of a prepare Task (`TurnLoop`) are not capped either. Such a reason reaches only `Helyx.Reason.text/1` and `Helyx.Reason.log/2`, and both cap its integers. Removed: the early cap that replaced a whole struct in the reason by the integer marker. `Reason.text/1` now caps only the integer fields of the struct, so the error text can show more detail. The digit bound, the text bound, and the log bound stay.
+Update, review of 2026-10-16: `Helyx.Session.Stream.check/1` returns an `{:error, reason}` terminal as it is, and the `:DOWN` reason of a provider process (`Helyx.Session.Hands`) and the crash reason of a prepare Task (`TurnLoop`) are not capped either. Such a reason reaches only `Helyx.Reason.text/1`, which caps its integers, and `Helyx.Reason.log/2`, which since #756 writes its kind only. Removed: the early cap that replaced a whole struct in the reason by the integer marker. `Reason.text/1` now caps only the integer fields of the struct, so the error text can show more detail. The digit bound, the text bound, and the log bound stay.
 
 ## The context check (#227)
 

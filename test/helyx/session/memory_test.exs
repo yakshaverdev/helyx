@@ -3,7 +3,7 @@ defmodule Helyx.Session.MemoryTest do
   # (docs/features/memory.md), with `Helyx.Test.Memory`.
   use ExUnit.Case, async: true
 
-  import ExUnit.CaptureLog, only: [capture_log: 1, capture_log: 2]
+  import ExUnit.CaptureLog, only: [capture_log: 1, capture_log: 2, with_log: 1]
   import Helyx.Test.Events
 
   alias Helyx.Session
@@ -107,11 +107,13 @@ defmodule Helyx.Session.MemoryTest do
     test "an error, a raise, and a timeout give no recall and one notice in the turn" do
       core = start_core(recall_ms: 100)
 
-      for text <- ["fail", "raise", "hang"] do
-        events = turn(start(core), text)
+      for {text, kind} <- [{"fail", "term"}, {"raise", "RuntimeError"}, {"hang", ":timeout"}] do
+        {events, log} = with_log(fn -> turn(start(core), text) end)
         assert [%{text: @failed}] = of_type(events, :notice)
         assert final(events) == "user:" <> text
         assert List.last(events).data == %{outcome: :done}
+        # The log has the kind of the reason only (#756).
+        assert log =~ "memory recall failed: #{kind}\n"
       end
     end
 

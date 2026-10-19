@@ -44,8 +44,10 @@ defmodule Helyx.Session.Hands.Release do
   def error(left) when left == %{}, do: nil
 
   # The handles are plugin terms, so they go to the log, not to the text.
+  # A handle names a resource and holds no message text, and an operator
+  # needs it to free the resource.
   def error(left) do
-    Helyx.Reason.log("a resource could not be released", left)
+    Helyx.Reason.log_term("a resource could not be released", left)
     {:error, "a resource of the call could not be released"}
   end
 end

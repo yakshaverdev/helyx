@@ -269,8 +269,15 @@ defmodule Helyx.Session.HandsTest do
           {10, String.duplicate("x", 10)},
           {200_000, String.duplicate("x", 4000)}
         ] do
-      :ok = run(hands, "t1", call("c1", "raise", %{"bytes" => bytes}))
-      assert_receive {:tool_result, "t1", "c1", {:error, ^expected}}
+      {_, log} =
+        with_log(fn ->
+          :ok = run(hands, "t1", call("c1", "raise", %{"bytes" => bytes}))
+          assert_receive {:tool_result, "t1", "c1", {:error, ^expected}}
+        end)
+
+      # The log has the kind of the exception, not its message (#756).
+      assert log =~ "tool raise failed: RuntimeError\n"
+      refute log =~ String.duplicate("x", 10)
     end
   end
 
@@ -283,14 +290,14 @@ defmodule Helyx.Session.HandsTest do
   end
 
   # A stack frame of a test tool shows as its file, a pid as `#PID<`. The
-  # log has the term; the result has a short or a fixed text.
+  # log has the kind of the term; the result has a short or a fixed text.
   test "a crash or a bad return of a tool gives no stack frame and no pid", %{core: core} do
     hands = start_hands(core)
     assert {"tool crashed: linked crash", log} = odd(hands, "link_crash")
-    assert log =~ "interfaces.ex"
+    assert log =~ "tool crashed: RuntimeError\n"
 
     assert {"the tool returned a value outside its contract", log} = odd(hands, "weird")
-    assert log =~ "#PID<"
+    assert log =~ "tool odd returned a value outside its contract: :weird\n"
   end
 
   # A thrown or exited value gives its cleaned term, as a turn error does:
@@ -301,16 +308,16 @@ defmodule Helyx.Session.HandsTest do
     for kind <- ["throw", "exit"] do
       {result, log} = odd(hands, kind)
       assert result =~ ~r/^\{:#{kind}, \{:#{kind}\w*, #PID<[\d.]+>\}\}$/
-      assert log =~ "interfaces.ex"
+      assert log =~ "tool odd failed: :#{kind}\n"
     end
   end
 
-  # No boundary caps a thrown value, so the text and the log cap it:
-  # `inspect` of this integer takes seconds.
+  # No boundary caps a thrown value, so the text caps it: `inspect` of
+  # this integer takes seconds. The log has its kind only.
   test "a tool that throws a huge integer gives the digit marker", %{core: core} do
     {result, log} = odd(start_hands(core), "huge")
     assert result == "{:throw, \"integer of more than 100 digits removed\"}"
-    assert log =~ "integer of more than 100 digits removed"
+    assert log =~ "tool odd failed: :throw\n"
   end
 
   # Waits until the hands got `n` hold calls, then until they handled them,

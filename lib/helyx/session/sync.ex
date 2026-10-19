@@ -84,8 +84,16 @@ defmodule Helyx.Session.Sync do
     {:ok, %__MODULE__{memory: memory, opts: opts, session: session}}
   end
 
+  # Every callback but `init/1` runs in `Helyx.Reason.no_args/1`, and a
+  # crash report shows no state and no message
+  # (docs/features/session-lifecycle.md, "Log and crash reports").
   @impl true
-  def handle_info({:sync, kind, entries}, state) do
+  def handle_info(message, state), do: Helyx.Reason.no_args(fn -> info(message, state) end)
+
+  @impl true
+  def format_status(status), do: Helyx.Reason.crash_status(status)
+
+  defp info({:sync, kind, entries}, state) do
     chunks = chunks(entries)
     bytes = Enum.sum_by(chunks, &elem(&1, 1))
 
@@ -100,18 +108,18 @@ defmodule Helyx.Session.Sync do
     end
   end
 
-  def handle_info({ref, result}, %__MODULE__{task: %Task{ref: ref}} = state) do
+  defp info({ref, result}, %__MODULE__{task: %Task{ref: ref}} = state) do
     Process.demonitor(ref, [:flush])
     next(result(state, result))
   end
 
-  def handle_info(
-        {:DOWN, ref, :process, _pid, reason},
-        %__MODULE__{task: %Task{ref: ref}} = state
-      ),
-      do: next(failed(state, reason))
+  defp info(
+         {:DOWN, ref, :process, _pid, reason},
+         %__MODULE__{task: %Task{ref: ref}} = state
+       ),
+       do: next(failed(state, reason))
 
-  def handle_info({:call_timeout, ref}, %__MODULE__{task: %Task{ref: ref} = task} = state) do
+  defp info({:call_timeout, ref}, %__MODULE__{task: %Task{ref: ref} = task} = state) do
     # A reply that came at the limit counts.
     case Task.shutdown(task, :brutal_kill) do
       {:ok, result} -> next(result(state, result))
@@ -121,7 +129,7 @@ defmodule Helyx.Session.Sync do
 
   # The session ended: the queue drains, within a bound of time and of
   # draining workers.
-  def handle_info({:DOWN, _ref, :process, pid, _reason}, %__MODULE__{session: pid} = state) do
+  defp info({:DOWN, _ref, :process, pid, _reason}, %__MODULE__{session: pid} = state) do
     state = %{state | session: nil}
 
     if not :queue.is_empty(state.queue) and
@@ -133,17 +141,19 @@ defmodule Helyx.Session.Sync do
     end
   end
 
-  def handle_info(:drain_end, state), do: {:stop, :normal, state}
+  defp info(:drain_end, state), do: {:stop, :normal, state}
 
   # The exit of a sync Task, whose `:DOWN` or reply counts, and the
   # timer of an ended call, which is left to fire.
-  def handle_info({:EXIT, _pid, _reason}, state), do: {:noreply, state}
-  def handle_info({:call_timeout, _ref}, state), do: {:noreply, state}
+  defp info({:EXIT, _pid, _reason}, state), do: {:noreply, state}
+  defp info({:call_timeout, _ref}, state), do: {:noreply, state}
 
   # Every stop with a queue left logs it: the drain limit, the drain cap,
   # and a Core stop.
   @impl true
-  def terminate(_reason, state) do
+  def terminate(_reason, state), do: Helyx.Reason.no_args(fn -> stop(state) end)
+
+  defp stop(state) do
     if state.task, do: Process.exit(state.task.pid, :kill)
 
     if not :queue.is_empty(state.queue) do

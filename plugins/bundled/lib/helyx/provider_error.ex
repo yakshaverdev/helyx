@@ -3,8 +3,8 @@ defmodule Helyx.ProviderError do
   # An error of a provider that has a text from its program or its server.
   # Core shows an exception as its message, so the user reads `<provider
   # id>: <text>` (docs/features/session-lifecycle.md, "Turn end", step 5).
-  # `kind`, such as the subtype or the status of a result, is for the log
-  # only.
+  # `kind`, such as the subtype or the status of a result, stays in the
+  # reason; the user text and the log do not show it (#756).
   defexception [:provider, :kind, :text]
 
   @impl true

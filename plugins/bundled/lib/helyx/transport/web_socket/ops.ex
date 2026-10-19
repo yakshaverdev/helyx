@@ -200,7 +200,7 @@ defmodule Helyx.Transport.WebSocket.Ops do
   defp started({:error, {:unknown_provider, _}} = error), do: error
 
   defp started({:error, reason}) do
-    Helyx.Reason.log("wire start failed", reason)
+    Helyx.Reason.log_term("wire start failed", reason)
     {:error, "start_failed", Helyx.Reason.text(reason)}
   end
 

@@ -2,7 +2,8 @@ defmodule Helyx.Session.Hands.Run do
   @moduledoc false
   # The run of one tool call in its Task of `Helyx.Session.Hands`: the
   # return of the tool checked against its contract, and a raise, a throw,
-  # or an exit caught as an error result. The log gets the term.
+  # or an exit caught as an error result. The log gets the kind of the
+  # term.
 
   alias Helyx.Message.ToolCall
 
@@ -21,9 +22,9 @@ defmodule Helyx.Session.Hands.Run do
     end
   catch
     kind, reason ->
-      # The log keeps the stack of a throw or an exit too.
-      Helyx.Reason.log("tool #{call.name} failed", {kind, reason, __STACKTRACE__})
-      {:error, Helyx.Reason.text(caught(kind, reason, __STACKTRACE__))}
+      caught = caught(kind, reason, __STACKTRACE__)
+      Helyx.Reason.log("tool #{call.name} failed", caught)
+      {:error, Helyx.Reason.text(caught)}
   end
 
   # A raise is a crash, which gives the message of its exception; a throw
