@@ -21,6 +21,9 @@ defmodule CodingAgent.ServeTest do
   @load_boot_ms 20_000
   # The run of a second start around its waits, on a loaded machine.
   @load_ms 1_000
+  # The mean gap between two attempts of a second start over its poll, on
+  # a loaded machine.
+  @load_poll_ms 100
 
   setup %{tmp_dir: dir} do
     sessions = Path.join(dir, "sessions")
@@ -297,16 +300,18 @@ defmodule CodingAgent.ServeTest do
     port
   end
 
-  # Counts each connection that it takes, closes it at once, and tells
-  # `caller` the count when the listen socket ends.
-  defp close_each(listen, caller, count \\ 0) do
+  # Takes each connection, notes its time, and then closes it, so the
+  # client sees the close after the time. Tells `caller` the times, oldest
+  # first, when the listen socket ends.
+  defp close_each(listen, caller, times \\ []) do
     case :gen_tcp.accept(listen) do
       {:ok, socket} ->
+        time = System.monotonic_time(:millisecond)
         :gen_tcp.close(socket)
-        close_each(listen, caller, count + 1)
+        close_each(listen, caller, [time | times])
 
       {:error, :closed} ->
-        send(caller, {:closed_each, count})
+        send(caller, {:closed_each, Enum.reverse(times)})
     end
   end
 
@@ -421,16 +426,33 @@ defmodule CodingAgent.ServeTest do
     write_file(file, port)
     assert {1, "", ^line} = run([])
     :gen_tcp.close(listen)
-    assert_receive {:closed_each, attempts}
-    assert attempts in 2..50
+    assert_receive {:closed_each, times}
+    gaps = for [time, next] <- Enum.chunk_every(times, 2, 1, :discard), do: next - time
+    # The client sleeps after the close, which comes after the time of the
+    # attempt: no gap is under the poll, also under load.
+    assert Enum.min(gaps) >= 100
+    assert Enum.sum(gaps) / length(gaps) <= 100 + @load_poll_ms
+    assert length(times) in 2..50
 
-    # A program on the port that never answers.
+    # A program on the port that never answers: each connect gets the bound
+    # of 5,000 ms, which `Helyx.TUI.Wire.connect/4` keeps (its tests).
     {:ok, mute} = :gen_tcp.listen(0, ip: {127, 0, 0, 1})
     {:ok, port} = :inet.port(mute)
     write_file(file, port)
     start = System.monotonic_time(:millisecond)
-    assert {1, "", ^line} = run([])
+
+    {result, traces} = calls([{Helyx.TUI.Wire, :connect, 4}], fn -> run([]) end)
+
     elapsed = System.monotonic_time(:millisecond) - start
+    assert {1, "", ^line} = result
+
+    timeouts =
+      for {:trace, _pid, :call, {Helyx.TUI.Wire, :connect, [_ip, ^port, _token, timeout]}} <-
+            traces,
+          do: timeout
+
+    assert [_ | _] = timeouts
+    assert Enum.uniq(timeouts) == [5_000]
     # The last attempt starts before the wait ends. Its connect has the
     # bound of 5,000 ms, and a poll of 100 ms comes before it.
     assert elapsed >= Serve.wait_ms()
