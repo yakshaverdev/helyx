@@ -489,6 +489,10 @@ defmodule Helyx.Transport.WebSocketSubscribeTest do
     :ok = :sys.suspend(pid)
     Client.send_request(socket, "s", "subscribe", %{"session" => session})
     {sub, connection} = subscriber(pid)
+    # The sub waits in its call to the suspended session. The monitor comes
+    # before every step of the test that can end it, so its `:DOWN` has the
+    # real reason (#805).
+    ref = Process.monitor(sub)
 
     # The connection takes the unsubscribe before the subscribe reply.
     :erlang.suspend_process(connection)
@@ -506,7 +510,6 @@ defmodule Helyx.Transport.WebSocketSubscribeTest do
     end)
 
     # The session ends before the sub takes the unsubscribe.
-    ref = Process.monitor(sub)
     Process.exit(pid, :kill)
     assert_receive {:DOWN, ^ref, :process, ^sub, :normal}
     :erlang.resume_process(connection)

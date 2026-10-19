@@ -5,11 +5,13 @@ defmodule Helyx.Test.WireClient do
   # loopback. `fake_server/1` and its steps are a server for the tests of a
   # client.
 
+  alias Helyx.Test.Events
+
   def upgrade(port, headers \\ []) do
     {:ok, socket} = :gen_tcp.connect(~c"127.0.0.1", port, [:binary, active: false, packet: :line])
     :ok = :gen_tcp.send(socket, upgrade_request(headers))
 
-    {:ok, "HTTP/1.1 " <> <<status::binary-size(3), _::binary>>} = :gen_tcp.recv(socket, 0, 5_000)
+    {:ok, "HTTP/1.1 " <> <<status::binary-size(3), _::binary>>} = read(socket, 0)
     :ok = skip_head(socket)
     :ok = :inet.setopts(socket, packet: :raw)
     if status == "101", do: {:ok, socket}, else: {:http, String.to_integer(status)}
@@ -27,7 +29,7 @@ defmodule Helyx.Test.WireClient do
   end
 
   defp skip_head(socket) do
-    case :gen_tcp.recv(socket, 0, 5_000) do
+    case read(socket, 0) do
       {:ok, "\r\n"} -> :ok
       {:ok, _header} -> skip_head(socket)
     end
@@ -42,10 +44,9 @@ defmodule Helyx.Test.WireClient do
     socket
   end
 
-  # The nonce of the challenge, the first frame of the server, within the
-  # auth wait.
+  # The nonce of the challenge, the first frame of the server.
   def challenge(socket) do
-    {:frame, %{"type" => "challenge", "nonce" => nonce}} = recv(socket, 5_000)
+    {:frame, %{"type" => "challenge", "nonce" => nonce}} = recv(socket)
     nonce
   end
 
@@ -98,15 +99,15 @@ defmodule Helyx.Test.WireClient do
 
   # The next frame of the server: `{:frame, map}`, `{:close, code}`,
   # `{:ping, payload}`, or `{:error, reason}`.
-  def recv(socket, timeout \\ 10_000) do
-    with {:ok, <<_fin::1, _::3, opcode::4, 0::1, len::7>>} <- :gen_tcp.recv(socket, 2, timeout),
+  def recv(socket) do
+    with {:ok, <<_fin::1, _::3, opcode::4, 0::1, len::7>>} <- read(socket, 2),
          {:ok, size} <- size(socket, len),
          {:ok, payload} <- payload(socket, size) do
       case opcode do
         1 -> {:frame, JSON.decode!(payload)}
         8 -> {:close, close_code(payload)}
         9 -> {:ping, payload}
-        _ -> recv(socket, timeout)
+        _ -> recv(socket)
       end
     end
   end
@@ -139,15 +140,19 @@ defmodule Helyx.Test.WireClient do
   defp size(_socket, len) when len < 126, do: {:ok, len}
 
   defp size(socket, 126) do
-    with {:ok, <<size::16>>} <- :gen_tcp.recv(socket, 2), do: {:ok, size}
+    with {:ok, <<size::16>>} <- read(socket, 2), do: {:ok, size}
   end
 
   defp size(socket, 127) do
-    with {:ok, <<size::64>>} <- :gen_tcp.recv(socket, 8), do: {:ok, size}
+    with {:ok, <<size::64>>} <- read(socket, 8), do: {:ok, size}
   end
 
   defp payload(_socket, 0), do: {:ok, ""}
-  defp payload(socket, size), do: :gen_tcp.recv(socket, size, 10_000)
+  defp payload(socket, size), do: read(socket, size)
+
+  # Each read of the bytes of the peer is a wait that must happen, with the
+  # one cap of `Events.wait_ms/0`, so load does not fail it (#805).
+  defp read(socket, size), do: :gen_tcp.recv(socket, size, Events.wait_ms())
 
   defp close_code(<<code::16, _reason::binary>>), do: code
   defp close_code(_payload), do: nil
@@ -175,14 +180,14 @@ defmodule Helyx.Test.WireClient do
 
   # Reads the upgrade request and returns the `Sec-WebSocket-Accept` of its key.
   def fake_accept(socket) do
-    {:ok, {:http_request, :GET, _, _}} = :gen_tcp.recv(socket, 0, 5_000)
+    {:ok, {:http_request, :GET, _, _}} = read(socket, 0)
     key = request_key(socket, nil)
     :ok = :inet.setopts(socket, packet: :raw)
     Base.encode64(:crypto.hash(:sha, key <> "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"))
   end
 
   defp request_key(socket, key) do
-    case :gen_tcp.recv(socket, 0, 5_000) do
+    case read(socket, 0) do
       {:ok, :http_eoh} -> key
       {:ok, {:http_header, _, _, "Sec-WebSocket-Key", value}} -> request_key(socket, value)
       {:ok, _header} -> request_key(socket, key)
@@ -217,9 +222,10 @@ defmodule Helyx.Test.WireClient do
 
   # The next frame of the client, masked, as a map.
   def client_frame(socket) do
-    {:ok, <<1::1, 0::3, 1::4, 1::1, len::7>>} = :gen_tcp.recv(socket, 2, 5_000)
+    {:ok, <<1::1, 0::3, 1::4, 1::1, len::7>>} = read(socket, 2)
     {:ok, size} = size(socket, len)
-    {:ok, <<mask::binary-size(4), masked::binary>>} = :gen_tcp.recv(socket, 4 + size, 5_000)
+
+    {:ok, <<mask::binary-size(4), masked::binary>>} = read(socket, 4 + size)
     JSON.decode!(xor(mask, masked))
   end
 end
