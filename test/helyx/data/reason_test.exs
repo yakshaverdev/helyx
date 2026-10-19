@@ -125,7 +125,7 @@ defmodule Helyx.ReasonTest do
            &match?({:function_clause, [{__MODULE__, :only, 1, _} | _]}, &1)},
           {fn value -> throw(value) end, ":nocatch", &match?({{:nocatch, @secret}, [_ | _]}, &1)},
           {fn value -> exit(value) end, "term", &(&1 == @secret)},
-          # A trap of exits that plugin code set does not keep the Task.
+          # A body that traps exits ends with the reason of its crash.
           {fn value ->
              Process.flag(:trap_exit, true)
              raise value
@@ -141,15 +141,17 @@ defmodule Helyx.ReasonTest do
       refute log =~ @secret
     end
 
-    # An atom gets the report of `Task`, and `:kill` stays `:kill`: a signal
-    # would make it `:killed`. A shutdown gets no report.
+    # An atom is its own kind, and `:kill` stays `:kill`.
     {result, [line], _log} = run.(fn -> exit(:kill) end)
     assert result == {:exit, :kill}
-    assert line =~ "terminating"
+    assert line =~ "x crashed: :kill"
 
-    {result, lines, _log} = run.(fn -> exit({:shutdown, @secret}) end)
-    assert result == {:exit, {:shutdown, @secret}}
-    assert lines == []
+    # `Task` reports none of these, so `task/2` logs no line.
+    for reason <- [:normal, :shutdown, {:shutdown, @secret}] do
+      {result, lines, _log} = run.(fn -> exit(reason) end)
+      assert result == {:exit, reason}
+      assert lines == []
+    end
 
     assert Helyx.Reason.task("x crashed", fn -> :value end) == :value
   end

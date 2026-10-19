@@ -106,38 +106,39 @@ defmodule Helyx.Reason do
 
   @doc """
   Runs `fun`, the body of a process that Core starts for plugin code in a
-  session. A raise, a throw, or an exit of `fun` logs `label` and the kind
-  of the reason as an error, in place of the crash report of `Task`, and
-  ends the process with the reason of a Task crash, with the arguments of
-  each stack frame replaced by their count. An exit with an atom or with
-  `{:shutdown, term}` continues with no change: an atom is its own kind,
-  and `Task` reports no `:normal`, `:shutdown`, or `{:shutdown, term}`.
+  session. A raise, a throw, or an exit of `fun` that `Task` reports logs
+  `label` and the kind of the reason as an error. Then `task/2` turns off
+  the log of this process, and the crash goes on with its class and its
+  reason, with the arguments of each stack frame replaced by their count.
+  So the process ends with the reason of a Task crash, and `Task` logs no
+  report. An exit with `:normal`, `:shutdown`, or `{:shutdown, term}` goes
+  on with no line: `Task` does not report it. The holes: the translator of
+  Logger runs before the level filter and runs plugin code, such as the
+  `message/1` of an exception; when that code throws, exits, or does not
+  return, the raw report can reach the handlers
+  (`docs/features/session-lifecycle.md`, "Log and crash reports").
   """
   @spec task(String.t(), (-> result)) :: result when result: term()
   def task(label, fun) do
     no_args(fun)
   catch
     :exit, reason
-    when is_atom(reason) or
+    when reason in [:normal, :shutdown] or
            (is_tuple(reason) and tuple_size(reason) == 2 and elem(reason, 0) == :shutdown) ->
       :erlang.raise(:exit, reason, __STACKTRACE__)
 
     class, reason ->
-      reason = exit_reason(class, reason, __STACKTRACE__)
-      Logger.error(fn -> label <> ": " <> kind(reason) end)
-      # `Task` reports a raise of its body, but not an exit signal. So the
-      # process sends the signal to itself, and each link and monitor gets
-      # the reason of a Task crash. A trap of exits makes the signal a
-      # message, so the trap goes off first. The docs of `erlang:exit/2` do
-      # not say that the process ends before the call returns: it waits.
-      Process.flag(:trap_exit, false)
-      Process.exit(self(), reason)
-      Process.sleep(:infinity)
+      # A linked process that ends from now on gives a message, which the
+      # process never reads, so the reason stays that of the crash.
+      Process.flag(:trap_exit, true)
+      # A Task that throws ends with `{:nocatch, value}`.
+      kind = if class == :throw, do: ":nocatch", else: kind(reason)
+      Logger.error(fn -> label <> ": " <> kind end)
+      # The report of `Task` prints the reason, so this process logs nothing
+      # more.
+      Logger.put_process_level(self(), :none)
+      :erlang.raise(class, reason, __STACKTRACE__)
   end
-
-  defp exit_reason(:error, reason, stacktrace), do: {reason, stacktrace}
-  defp exit_reason(:throw, value, stacktrace), do: {{:nocatch, value}, stacktrace}
-  defp exit_reason(:exit, reason, _stacktrace), do: reason
 
   defp arity({module, fun, args, location}) when is_list(args),
     do: {module, fun, length(args), location}
