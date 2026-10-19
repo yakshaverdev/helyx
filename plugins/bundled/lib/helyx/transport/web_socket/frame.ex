@@ -34,7 +34,8 @@ defmodule Helyx.Transport.WebSocket.Frame do
   # One inbound text with the parts joined so far: nil, or the next `n` and
   # the joined bytes, one binary, so an empty part keeps nothing. Gives
   # `{:frame, map}`, `{:joined, map}` from parts, `{:more, parts}`, or
-  # `{:close, code}`. `json/1` refuses a text that is not UTF-8.
+  # `{:close, code}`. `json/1` refuses a text that is not UTF-8 or holds an
+  # integer over the largest integer of the BEAM.
   def decode(text, parts) do
     case {json(text), parts} do
       {{:ok, %{"type" => "part"} = part}, _parts} -> join(part, parts || {0, ""})
@@ -76,5 +77,8 @@ defmodule Helyx.Transport.WebSocket.Frame do
       {value, :ok, ""} -> {:ok, value}
       _error_or_rest -> :error
     end
+  rescue
+    # The decode raises, not returns, for an integer over the BEAM limit.
+    SystemLimitError -> :error
   end
 end

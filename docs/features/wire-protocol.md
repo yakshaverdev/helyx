@@ -32,7 +32,7 @@ Over stdio, the same frames go one JSON object per line. The encoder escapes eve
 
 | Code | Meaning |
 |---|---|
-| `4400` | a frame that the contract does not allow: bad JSON or a text that is not UTF-8, an unknown `type`, a frame or a part before `welcome`, a `hello` whose `protocol` is not an integer of 0 or more, a part out of order, a request `id` whose reply was not sent, an `ack` of a `seq` that the subscription did not send |
+| `4400` | a frame that the contract does not allow: a text that the server cannot decode (bad JSON, a text that is not UTF-8, or a number out of the range of the BEAM, see "Bounds"), an unknown `type`, a frame or a part before `welcome`, a `hello` whose `protocol` is not an integer of 0 or more, a part out of order, a request `id` whose reply was not sent, an `ack` of a `seq` that the subscription did not send |
 | `4401` | no `hello` within 5,000 ms, or a missing or wrong proof |
 | `4408` | a slow client: a subscription passed its credits (`:slow`), the outbound queue held more than 64 MiB when a frame was added, or no inbound frame or pong for 45,000 ms |
 | `4413` | an inbound frame joined from parts over 25 MiB |
@@ -279,6 +279,7 @@ Notes on the codec:
 | WebSocket frame, both ways | 1,048,576 bytes of JSON text; a larger frame goes as parts | an inbound frame over it: close `1009` | transport |
 | inbound WebSocket message of fragments | 1,048,576 bytes of the joined fragments | close `1009` | transport (the WebSocket server) |
 | one inbound frame joined from parts (the request size) | 26,214,400 bytes (25 MiB): a text at the Core bound of 4,194,304 bytes in its worst JSON form, six bytes for each byte (`\u0001`), is 25,165,824 bytes, and the rest, 1,048,576 bytes, is for the other fields of the request | close `4413`; the parts are dropped as they come | transport |
+| JSON number in an inbound frame | an integer up to the largest integer of the BEAM, 2^4,194,240 − 1 on OTP 28 (65,535 words of 64 bits, 1,262,593 digits; measured): every integer of 1,262,592 digits or fewer decodes, and 1,262,593 nines do not. A frame joined from parts can hold a larger integer; one frame of 1 MiB cannot. A float in the range of a 64-bit float: `1e400` does not decode | close `4400`, the answer of bad JSON: the connection ends, and its subscriptions with it | transport |
 | requests in flight per connection | 16, from the `req` to the end of its worker; a `subscribe` from the `req` to its reply | `res` with `busy` | transport |
 | requests in flight per server | 1,024: 64 connections of 16 | as above | transport |
 | calls that a session holds after their caller timed out | unbounded, ticket #677: Core does not count them. A caller adds one call for each call timeout while the session stalls. A call that the session takes past its deadline does not act (`docs/features/session-lifecycle.md`, "Late calls", #679). The worker of a remote request must keep its slot until the session answers or the call passes its deadline (#660) | the late call does not act and gets no reply | Core (#679), transport (#660) |
