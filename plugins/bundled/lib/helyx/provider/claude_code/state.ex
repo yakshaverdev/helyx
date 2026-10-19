@@ -8,7 +8,7 @@ defmodule Helyx.Provider.ClaudeCode.State do
   # true once a turn was written to it. `persist?` is false with the
   # option `persist: false`: no program stores or resumes the harness
   # session (docs/features/harness-no-state.md). `env` is the option `env`
-  # as charlist pairs (`Helyx.HarnessIO.env/1`); `inspect` leaves it out.
+  # as name and value pairs (`Helyx.HarnessIO.env/1`); `inspect` leaves it out.
   # `init?` is true from its first `init` line. `closing` is the `from` of
   # a close. `terminal` stops the read of stdout: `:lost`, a program that
   # did not start (`Helyx.HarnessIO.launch/4`), an `init` without the

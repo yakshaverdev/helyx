@@ -117,20 +117,31 @@ defmodule Helyx.Watchdog do
   # The option `:grace_ms` (default #{@grace_ms}) is the wait between the
   # TERM and the KILL of the command group when the port closes, or when
   # open input that the command has not read is over
-  # `@stdin_max_bytes`. The option `:env` (default `[]`) is the port's: the
-  # charlist pairs added to the inherited environment. A raise of the open,
-  # such as `:emfile`, shows no options, so no value of it reaches a crash
-  # report.
+  # `@stdin_max_bytes`. The option `:env` (default `[]`) is the name and
+  # value pairs, valid UTF-8, that the port adds to the inherited
+  # environment. A raise of the open, such as `:emfile`, shows no options,
+  # so no value reaches a crash report. In the `reason` of an error, each
+  # occurrence of a value is `@masked` (`mask/2`).
   def start(argv, cwd, input, opts \\ []) do
     nonce = random_word()
     grace = Keyword.get(opts, :grace_ms, @grace_ms)
+    env = Keyword.get(opts, :env, [])
     {exe, options} = launcher(argv, cwd, nonce, feed(input), grace)
-    options = [{:env, Keyword.get(opts, :env, [])} | options]
+    options = [{:env, for({name, value} <- env, do: {to_charlist(name), chars(value)})} | options]
     port = Helyx.Reason.no_args(fn -> Port.open({:spawn_executable, exe}, options) end)
-    handshake(port, nonce)
+    handshake(port, nonce, env |> Enum.map(&elem(&1, 1)) |> Enum.uniq())
   end
 
-  defp handshake(port, nonce) do
+  # The port writes a charlist in the native name encoding of the BEAM.
+  # With latin1, the BEAM of a locale that is not UTF-8, each byte of the
+  # value is one character, so the program gets the UTF-8 bytes in both.
+  defp chars(value) do
+    if :file.native_name_encoding() == :utf8,
+      do: String.to_charlist(value),
+      else: :binary.bin_to_list(value)
+  end
+
+  defp handshake(port, nonce, values) do
     # The runtime detaches port programs into their own process group, so
     # the port's OS pid is the watchdog's group. Held as :watchdog: the
     # release waits for it, so an abort cannot return while the command is
@@ -148,13 +159,14 @@ defmodule Helyx.Watchdog do
 
     case read_marker(port, nonce, "", "") do
       {:not_started, acc} ->
-        {:error, port |> read_to_exit(acc) |> Helyx.Text.cap(@reason_max_bytes, :tail)}
+        reason = port |> read_to_exit(acc) |> mask(values)
+        {:error, Helyx.Text.cap(reason, @reason_max_bytes, :tail)}
 
       # Names the watchdog, not a cause: perl may be gone, fail to compile
       # the watchdog, or never run (an argv over the OS limit).
       {:no_marker, text} ->
         close(port)
-        reason = "the perl watchdog gave no marker: " <> text
+        reason = "the perl watchdog gave no marker: " <> preamble(text, values)
         {:error, Helyx.Text.cap(reason, @reason_max_bytes, :head)}
 
       {group, pre} ->
@@ -176,6 +188,40 @@ defmodule Helyx.Watchdog do
       {^port, {:exit_status, _status}} -> acc
     end
   end
+
+  # perl's own output before the marker can quote a value of `:env`, such
+  # as a folder of PERL5LIB or the LC_ALL of a locale warning. Each
+  # occurrence of each value, also where two overlap, becomes `@masked`.
+  # The invalid bytes go first and the cut of `Helyx.Text.cap/3` after, so
+  # neither can join or leave a part of a value.
+  @masked "<env>"
+
+  defp mask(text, []), do: text
+
+  defp mask(text, values) do
+    text = String.replace_invalid(text, "")
+    spans = values |> Enum.flat_map(&spans(text, &1, 0)) |> Enum.sort() |> merge([])
+    masked(text, spans, 0)
+  end
+
+  defp spans(text, value, from) do
+    case :binary.match(text, value, scope: {from, byte_size(text) - from}) do
+      {at, size} -> [{at, at + size} | spans(text, value, at + 1)]
+      :nomatch -> []
+    end
+  end
+
+  defp merge([], acc), do: Enum.reverse(acc)
+
+  defp merge([{from, to} | rest], [{start, stop} | acc]) when from <= stop,
+    do: merge(rest, [{start, max(to, stop)} | acc])
+
+  defp merge([span | rest], acc), do: merge(rest, [span | acc])
+
+  defp masked(text, [], at), do: binary_part(text, at, byte_size(text) - at)
+
+  defp masked(text, [{from, to} | rest], at),
+    do: binary_part(text, at, from - at) <> @masked <> masked(text, rest, to)
 
   @doc false
   # Public for the watchdog's direct tests. `feed` is the input mode, -1
@@ -262,6 +308,14 @@ defmodule Helyx.Watchdog do
         {:no_marker, pre <> acc}
     end
   end
+
+  # The `:no_marker` text, masked. Only a read that reached the limit gives
+  # a text of `@max_preamble_bytes` or more, and it can end in a part of a
+  # value, which no mask finds: with `:env`, such a text is not shown.
+  defp preamble(text, [_ | _]) when byte_size(text) >= @max_preamble_bytes,
+    do: "perl wrote #{@max_preamble_bytes} bytes or more, not shown"
+
+  defp preamble(text, values), do: mask(text, values)
 
   # `kill -- -1` would signal every process the user may signal, so nothing
   # below 2 is ever accepted as a group. 0 is the watchdog's word for a

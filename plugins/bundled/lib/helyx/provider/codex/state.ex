@@ -20,7 +20,7 @@ defmodule Helyx.Provider.Codex.State do
   # `terminal` set means the provider process must stop, with that error.
   # `persist?` is false with the option `persist: false`: the thread is
   # ephemeral and never resumed (docs/features/harness-no-state.md). `env`
-  # is the option `env` as charlist pairs (`Helyx.HarnessIO.env/1`);
+  # is the option `env` as name and value pairs (`Helyx.HarnessIO.env/1`);
   # `inspect` leaves it out.
   #
   # `agents` maps each child thread with open work to the program's turn

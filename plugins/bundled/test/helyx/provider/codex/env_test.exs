@@ -83,6 +83,17 @@ defmodule Helyx.Provider.Codex.EnvTest do
     refute shown?
   end
 
+  # As in the Claude Code test: perl stops before the marker, and its
+  # error lists the folders of PERL5LIB.
+  test "a connect that perl fails gives the values of the map masked", %{work: work} do
+    env = %{"PERL5LIB" => "/tmp/HELYX_751_PRIVATE_CANARY", "PERL5OPT" => "-MHelyx751Missing"}
+    assert {:error, {:not_started, text}} = connect(work, env: env)
+    masked? = text =~ "<env>"
+    leaked? = text =~ "HELYX_751_PRIVATE_CANARY" or text =~ "-MHelyx751Missing"
+    assert masked?
+    refute leaked?
+  end
+
   # As in the Claude Code test.
   test "an env over the OS limit fails the connect with an error that holds no value",
        %{work: work} do

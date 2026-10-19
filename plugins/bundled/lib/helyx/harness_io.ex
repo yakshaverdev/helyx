@@ -218,18 +218,18 @@ defmodule Helyx.HarnessIO do
                   XPC_SERVICE_NAME)
 
   # The `:env` option of a harness provider, `%{}` by default: the map that
-  # each launch sets on top of the inherited environment, as the charlist
-  # pairs of the port. A name is a shell identifier, since dash, a
-  # `/bin/sh` of the launch, drops any other name, and not one of
-  # `@shell_names`; a shell or an OS can set other names of its own. A
-  # value is non-empty valid UTF-8 with no NUL: the port unsets a variable
-  # with an empty value and raises for a NUL. The error names no value
-  # (docs/features/harness-no-state.md).
+  # each launch sets on top of the inherited environment, as the name and
+  # value pairs of `Helyx.Watchdog.start/4`. A name is a shell identifier,
+  # since dash, a `/bin/sh` of the launch, drops any other name, and not
+  # one of `@shell_names`; a shell or an OS can set other names of its own.
+  # A value is non-empty valid UTF-8 with no NUL: the port unsets a
+  # variable with an empty value and raises for a NUL. The error names no
+  # value (docs/features/harness-no-state.md).
   def env(opts) do
     with env when is_map(env) <- Keyword.get(opts, :env, %{}),
          entries = Map.to_list(env),
          true <- Enum.all?(entries, &env_entry?/1) do
-      {:ok, for({name, value} <- entries, do: {to_charlist(name), env_chars(value)})}
+      {:ok, entries}
     else
       _other -> {:error, {:invalid_option, :env}}
     end
@@ -239,15 +239,6 @@ defmodule Helyx.HarnessIO do
     is_binary(name) and name =~ ~r/\A[A-Za-z_][A-Za-z0-9_]*\z/ and name not in @shell_names and
       is_binary(value) and value != "" and String.valid?(value) and
       not String.contains?(value, <<0>>)
-  end
-
-  # The port writes a charlist in the native name encoding of the BEAM.
-  # With latin1, the BEAM of a locale that is not UTF-8, each byte of the
-  # value is one character, so the program gets the UTF-8 bytes in both.
-  defp env_chars(value) do
-    if :file.native_name_encoding() == :utf8,
-      do: String.to_charlist(value),
-      else: :binary.bin_to_list(value)
   end
 
   # A compaction in a program with no history yet: the replay of the

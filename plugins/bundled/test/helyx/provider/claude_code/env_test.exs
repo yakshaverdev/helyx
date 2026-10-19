@@ -143,4 +143,77 @@ defmodule Helyx.Provider.ClaudeCode.EnvTest do
 
     assert error == {:not_started, "the perl watchdog gave no marker: "}
   end
+
+  # perl reads PERL5LIB and PERL5OPT itself: a module that is not there
+  # stops it before the marker, and its error lists the folders of
+  # PERL5LIB (the merge gate of #751). The checks print no text: perl's
+  # output can quote the machine's own variables.
+  @perl_env %{"PERL5LIB" => "/tmp/HELYX_751_PRIVATE_CANARY", "PERL5OPT" => "-MHelyx751Missing"}
+
+  defp leaked?(text), do: text =~ "HELYX_751_PRIVATE_CANARY" or text =~ "-MHelyx751Missing"
+
+  test "a start that perl fails gives each value of the map masked, in the error and in turn_end",
+       ctx do
+    state = harness(ctx.work, env: @perl_env)
+
+    assert {_from, [{:reply, _, {:error, {:not_started, text}}}], _state} =
+             request(state, {:turn, "t1", %Helyx.Context{messages: [Message.user("x")]}})
+
+    masked? = text =~ "<env>"
+    assert masked?
+    shown? = leaked?(text)
+    refute shown?
+
+    opts = [model: "claude-code/haiku", cwd: ctx.work, provider_opts: [env: @perl_env]]
+    {:ok, session} = Helyx.Session.start(ctx.core, opts)
+    {:ok, _, _} = Helyx.Session.subscribe(session)
+    {events, log} = ExUnit.CaptureLog.with_log(fn -> prompt(session, "go") end)
+    errors = for %{type: :turn_end, data: %{outcome: :error, error: error}} <- events, do: error
+    masked? = Enum.any?(errors, &(&1 =~ "<env>"))
+    assert masked?
+    shown? = Enum.any?([log, inspect(events)], &leaked?/1)
+    refute shown?
+  end
+
+  # The read of perl's output stops at 4,096 bytes, here in the folder of
+  # PERL5LIB, so the text would end in a part of the value (Codex review
+  # of #751, round 5).
+  test "a failed start whose output the read limit cuts shows no part of a value",
+       %{work: work} do
+    env = %{@perl_env | "PERL5LIB" => "/tmp/HELYX_751_LONG_" <> String.duplicate("x", 100_000)}
+    state = harness(work, env: env)
+
+    assert {_from, [{:reply, _, {:error, {:not_started, text}}}], _state} =
+             request(state, {:turn, "t1", %Helyx.Context{messages: [Message.user("x")]}})
+
+    leaked? = text =~ "HELYX_751_LONG"
+    refute leaked?
+  end
+
+  # The error of the watchdog quotes the folder that is not there: two
+  # values that overlap in its name are masked as one.
+  test "two values that overlap in the text of a failed start are both masked", %{work: work} do
+    env = %{"HELYX_A" => "AAAbbb", "HELYX_B" => "bbbCCC"}
+    state = harness(Path.join(work, "gone-AAAbbbCCC-end"), env: env)
+
+    assert {_from, [{:reply, _, {:error, {:not_started, text}}}], _state} =
+             request(state, {:turn, "t1", %Helyx.Context{messages: [Message.user("x")]}})
+
+    masked? = text =~ "gone-<env>-end"
+    assert masked?
+  end
+
+  # perl's locale warning quotes LC_ALL; a folder that is not there makes
+  # the watchdog fail after the warning, before the marker.
+  test "the locale warning of a start that fails gives the value masked", %{work: work} do
+    state = harness(Path.join(work, "missing"), env: %{"LC_ALL" => "zz_ZZ.HELYX751"})
+
+    assert {_from, [{:reply, _, {:error, {:not_started, text}}}], _state} =
+             request(state, {:turn, "t1", %Helyx.Context{messages: [Message.user("x")]}})
+
+    masked? = text =~ ~s("<env>")
+    assert masked?
+    shown? = text =~ "HELYX751"
+    refute shown?
+  end
 end
