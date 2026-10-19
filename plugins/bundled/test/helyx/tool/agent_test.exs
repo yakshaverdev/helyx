@@ -14,6 +14,32 @@ defmodule Helyx.Tool.AgentTest do
 
   @moduletag :tmp_dir
 
+  defmodule Report do
+    @moduledoc false
+    # The scripts of `Fake`; a provider option `report: pid` sends each
+    # `init/3` options to `pid` with the session id.
+    @behaviour Helyx.Provider
+    @behaviour Helyx.Provider.Loop
+
+    @impl true
+    def id, do: "report"
+
+    @impl Helyx.Provider
+    def init(model, _tools, opts) do
+      if pid = opts[:report], do: send(pid, {:init, opts[:session_id], opts})
+      {:ok, Helyx.Provider.Loop.new(__MODULE__, model, opts)}
+    end
+
+    @impl Helyx.Provider
+    defdelegate request(request, from, state), to: Helyx.Provider.Loop
+
+    @impl Helyx.Provider
+    defdelegate info(message, state), to: Helyx.Provider.Loop
+
+    @impl Helyx.Provider.Loop
+    defdelegate stream(model, context, opts), to: Fake
+  end
+
   setup %{tmp_dir: dir} do
     core = :"core_#{System.unique_integer([:positive])}"
 
@@ -22,6 +48,7 @@ defmodule Helyx.Tool.AgentTest do
        name: core,
        plugins: [
          Fake,
+         Report,
          Helyx.Tool.Agent,
          Helyx.Tool.Question,
          Helyx.Tool.Read,
@@ -46,7 +73,8 @@ defmodule Helyx.Tool.AgentTest do
   defp parent(core, dir, responses, opts \\ []) do
     model = "agent_#{System.unique_integer([:positive])}"
     :ok = Fake.script(core, model, responses)
-    {:ok, session} = Helyx.Sessions.start(core, [model: "fake/#{model}", cwd: dir] ++ opts)
+    {provider, opts} = Keyword.pop(opts, :provider, "fake")
+    {:ok, session} = Helyx.Sessions.start(core, [model: "#{provider}/#{model}", cwd: dir] ++ opts)
     {:ok, _snapshot, _ref} = Session.subscribe(session)
     :ok = Session.prompt(session, "go")
     session
@@ -106,6 +134,31 @@ defmodule Helyx.Tool.AgentTest do
 
     {:ok, path, _header} = Scan.find(dir, child_id(session, "c1"))
     assert File.read!(path) =~ "unknown tool: question"
+  end
+
+  # #797: the `init/3` of a child gets the provider options of the parent
+  # process, those of its start, then those of its resume.
+  test "a child starts with the provider options of its parent", %{core: core, tmp_dir: dir} do
+    provider_opts = [persist: false, report: self()]
+    script = [[agent("c1")], ["child"], ["Done."], [agent("c2")], ["again"], ["Done."]]
+    session = parent(core, dir, script, provider: "report", provider_opts: provider_opts)
+
+    [result] = results(collect_until(:turn_end))
+    assert Message.text(result) == "child"
+    child = child_id(session, "c1")
+    assert_receive {:init, ^child, opts}
+    assert Keyword.take(opts, [:persist, :report]) == provider_opts
+
+    :ok = Helyx.Sessions.stop(session)
+    {:ok, resumed} = Helyx.Sessions.resume(core, id: session.id, provider_opts: [report: self()])
+    {:ok, _snapshot, _ref} = Session.subscribe(resumed)
+    :ok = Session.prompt(resumed, "more")
+
+    [result] = results(collect_until(:turn_end))
+    assert Message.text(result) == "again"
+    child = child_id(session, "c2")
+    assert_receive {:init, ^child, opts}
+    assert Keyword.take(opts, [:persist, :report]) == [report: self()]
   end
 
   test "a child gets no tool that the parent lacks", %{core: core, tmp_dir: dir} do

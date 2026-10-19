@@ -53,7 +53,12 @@ defmodule Helyx.Session.Server.ToolRuns do
   # The context of the call (`Helyx.Tool.context/0`) has the model of the
   # turn, not of a later switch.
   defp effect(%State{activity: %Turn{model: model}} = state, turn_id, {:run, call}) do
-    context = %{session_id: state.id, model: Helyx.ModelRef.to_string(model)}
+    context = %{
+      session_id: state.id,
+      model: Helyx.ModelRef.to_string(model),
+      provider_opts: state.provider_opts
+    }
+
     :ok = Hands.run(state.hands, turn_id, call, context)
     state
   end
