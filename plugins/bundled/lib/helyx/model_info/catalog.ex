@@ -211,12 +211,19 @@ defmodule Helyx.ModelInfo.Catalog do
     with true <- File.regular?(path),
          {:ok, bytes} when is_binary(bytes) and byte_size(bytes) <= @max_bytes <-
            File.open(path, [:read, :binary], &IO.binread(&1, @max_bytes + 1)),
-         {:ok, json} <- JSON.decode(bytes),
+         {:ok, json} <- decode(bytes),
          data when data != %{} <- slim(json) do
       %{etag: etag(json["etag"]), data: data}
     else
       _bad -> nil
     end
+  end
+
+  # The decode raises, not returns, for an integer over the BEAM limit.
+  defp decode(text) do
+    JSON.decode(text)
+  rescue
+    SystemLimitError -> :error
   end
 
   defp snapshot,
@@ -264,7 +271,7 @@ defmodule Helyx.ModelInfo.Catalog do
          :ok <- File.touch(marker(config.dir)),
          %{etag: etag} = load(config.dir),
          {:ok, body, etag} <- fetch(config, etag),
-         {:ok, json} <- JSON.decode(body),
+         {:ok, json} <- decode(body),
          data when data != %{} <- slim(json) do
       write(config.dir, %{etag: etag, data: data})
     end

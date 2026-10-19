@@ -57,6 +57,7 @@ A fresh harness session (no resume id, a lost session, or a changed Codex tool s
 | What | Bound | Over the bound | Owner |
 | --- | --- | --- | --- |
 | stdout line | 16 MiB (`@line_max_bytes` in `Helyx.HarnessIO`) | the provider process stops | provider |
+| JSON in a stdout line | a JSON object, with each integer up to the largest integer of the BEAM: on OTP 28 every integer of 1,262,592 digits or fewer decodes, and 1,262,593 nines do not (`docs/features/wire-protocol.md`, "Bounds"); a line of 16 MiB can hold a larger one (#786) | the line is skipped, as perl's own text and any other line that does not decode to a JSON object | provider (`Helyx.HarnessIO.lines/3`) |
 | bytes written to the program and not yet read | 16 MiB (`@stdin_max_bytes` in `Helyx.Watchdog`) | the watchdog stops the program group and exits with a status; the provider process stops on that exit | watchdog |
 | TERM grace | 5,000 ms (`@term_grace_ms` in `Helyx.HarnessIO`) | KILL. The program's own command groups can stay after a KILL | watchdog |
 | replay | 400,000 bytes (`@replay_max_bytes` in `Helyx.HarnessIO`) | the oldest messages are left out; `cut` counts them | provider |

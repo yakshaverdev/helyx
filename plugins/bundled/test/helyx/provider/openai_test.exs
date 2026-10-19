@@ -209,6 +209,28 @@ defmodule Helyx.Provider.OpenAITest do
            ]
   end
 
+  # 1,262,593 digits: one over the largest integer of the BEAM on OTP 28.
+  # One SSE line of 1 MiB cannot hold them; the deltas of one call can.
+  test "arguments with an integer over the BEAM limit go on as their raw text" do
+    raw = ~s({"n":#{String.duplicate("9", 1_262_593)}})
+    {one, two} = String.split_at(raw, 700_000)
+
+    stub([
+      delta(%{tool_calls: [%{index: 0, id: "c1", function: %{name: "bash", arguments: one}}]}),
+      delta(%{tool_calls: [%{index: 0, function: %{arguments: two}}]}),
+      delta(%{}, "tool_calls"),
+      "[DONE]"
+    ])
+
+    context = %Helyx.Context{messages: [Helyx.Message.user("hi")]}
+    assert {:ok, stream} = Local.stream("gpt-5", context, session_id: "s")
+
+    assert [
+             {:tool_call, %Helyx.Message.ToolCall{id: "c1", name: "bash", arguments: ^raw}},
+             {:done, %{stop_reason: :tool_use}}
+           ] = Enum.to_list(stream)
+  end
+
   defmodule BinaryTool do
     @moduledoc false
     # A tool whose result is not valid UTF-8, so the composition test below

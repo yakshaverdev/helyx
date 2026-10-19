@@ -693,6 +693,25 @@ defmodule Helyx.Session.FileTest do
     assert File.read!(file.path) == before
   end
 
+  # 1,262,593 digits: one over the largest integer of the BEAM on OTP 28.
+  # The line comes before the first message, so the list decodes the part
+  # of it in the head: cut, it does not decode, and the prompt is empty.
+  test "a line with an integer over the BEAM limit is skipped, in the list and in the resume",
+       %{tmp_dir: dir} do
+    {:ok, file} = Session.File.create(dir, "sess00000001", "/repo", "test/ok")
+
+    over_limit = String.duplicate("9", 1_262_593)
+    File.write!(file.path, ~s({"type":"message","n":#{over_limit}}\n), [:append])
+
+    SessionFile.append_message(file, Message.user("kept"))
+    before = File.read!(file.path)
+
+    assert [%Session.File.Scan.Summary{prompt: ""}] = Session.File.Scan.list(dir, "/repo")
+    assert {:ok, resumed} = SessionFile.resume(dir, "/repo")
+    assert texts(resumed) == ["kept"]
+    assert File.read!(file.path) == before
+  end
+
   test "a session file of one chain resumes in file order", %{tmp_dir: dir} do
     # Hand-written lines: each parent_id is the id of the line above.
     lines = [
