@@ -250,7 +250,7 @@ defmodule Helyx.Transport.WebSocketTest do
     test "no hello within 5,000 ms closes with 4401", %{port: port} do
       {:ok, socket} = Client.upgrade(port)
       Client.challenge(socket)
-      assert {:close, 4401} = Client.recv(socket, 10_000)
+      assert {:close, 4401} = Client.recv(socket)
     end
   end
 
@@ -662,7 +662,7 @@ defmodule Helyx.Transport.WebSocketTest do
   test "the server pings every 15,000 ms", context do
     %{port: port} = serve(context)
     socket = Client.open(port)
-    assert {:ping, ""} = Client.recv(socket, 20_000)
+    assert {:ping, ""} = Client.recv(socket)
   end
 
   describe "parts" do
