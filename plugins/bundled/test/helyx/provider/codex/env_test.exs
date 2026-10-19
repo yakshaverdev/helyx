@@ -25,6 +25,7 @@ defmodule Helyx.Provider.Codex.EnvTest do
       [j(%{id: "@", result: %{userAgent: "fake", platformOs: "macos"}})],
       """
       { [ "$HELYX_TEST_751" = '#{@value}' ] && echo map; [ "$HOME" = '#{home}' ] && echo home
+        [ "$CODEX_HOME" = '#{home}' ] && echo folder
         case "$PATH" in *test_dispatch*) echo inherited ;; esac; } > "$d/env.#{n}"
       """
     )
@@ -46,19 +47,29 @@ defmodule Helyx.Provider.Codex.EnvTest do
     on(bin, 2, "turn/start", turn(tid(), reply(tid(), "two")))
     for n <- [1, 2], do: check(bin, n, work)
 
-    {:ok, state} = connect(work, env: %{"HELYX_TEST_751" => @value, "HOME" => work})
+    env = %{"HELYX_TEST_751" => @value, "HOME" => work, "CODEX_HOME" => work}
+    {:ok, state} = connect(work, env: env)
     # A prompt change: a new program resumes the thread.
     state = run(run(state, "A", "x"), "B", "y")
     close(state)
 
     assert runs(bin) == "2"
-    assert seen(bin, 1) == ["map", "home", "inherited"]
-    assert seen(bin, 2) == ["map", "home", "inherited"]
+    assert seen(bin, 1) == ["map", "home", "folder", "inherited"]
+    assert seen(bin, 2) == ["map", "home", "folder", "inherited"]
   end
 
   test "a name that is not a shell identifier or a value that is empty, not UTF-8, or has a NUL fails the init with the option only",
        %{work: work} do
-    for bad <- [nil, %{"A-B" => "v"}, %{"A" => ""}, %{"A" => "v\0w"}, %{"A" => <<0xFF>>}] do
+    bad = [
+      nil,
+      %{"A-B" => "v"},
+      %{"PWD" => "v"},
+      %{"A" => ""},
+      %{"A" => "v\0w"},
+      %{"A" => <<0xFF>>}
+    ]
+
+    for bad <- bad do
       assert connect(work, env: bad) == {:error, {:invalid_option, :env}}
     end
   end

@@ -19,12 +19,13 @@ defmodule Helyx.Provider.ClaudeCode.EnvTest do
   defp answer(text), do: %Message{role: :assistant, content: [%Message.Text{text: text}]}
 
   # Program `n` writes `env.n`: `map` when it has the value of the map,
-  # `home` when it has `home` in place of the inherited HOME, and
-  # `inherited` when it has the PATH that the test helper gives the BEAM.
-  # Then it runs `tail`.
+  # `home` when it has `home` in place of the inherited HOME, `folder`
+  # when its state folder is `home`, and `inherited` when it has the PATH
+  # that the test helper gives the BEAM. Then it runs `tail`.
   defp check(bin, n, home, tail \\ "") do
     File.write!(Path.join(bin, "start.#{n}"), """
     { [ "$HELYX_TEST_751" = '#{@value}' ] && echo map; [ "$HOME" = '#{home}' ] && echo home
+      [ "$CLAUDE_CONFIG_DIR" = '#{home}' ] && echo folder
       case "$PATH" in *test_dispatch*) echo inherited ;; esac; } > "$d/env.#{n}"
     #{tail}
     """)
@@ -49,7 +50,7 @@ defmodule Helyx.Provider.ClaudeCode.EnvTest do
     turn(bin, 2, 1, reply("two"))
     turn(bin, 3, 1, reply("three"))
 
-    env = %{"HELYX_TEST_751" => @value, "HOME" => work}
+    env = %{"HELYX_TEST_751" => @value, "HOME" => work, "CLAUDE_CONFIG_DIR" => work}
     state = harness(work, env: env, resume_id: stored(sid()))
     {_events, state} = run(state, "A", [Message.user("x")])
     {events, state} = run(state, "B", [Message.user("x"), answer("two"), Message.user("y")])
@@ -57,7 +58,7 @@ defmodule Helyx.Provider.ClaudeCode.EnvTest do
 
     assert [{:text_delta, "three"} | _] = events
     assert programs(bin) == "3"
-    for n <- 1..3, do: assert(seen(bin, n) == ["map", "home", "inherited"])
+    for n <- 1..3, do: assert(seen(bin, n) == ["map", "home", "folder", "inherited"])
   end
 
   test "a name that is not a shell identifier or a value that is empty, not UTF-8, or has a NUL fails the init with the option only",
@@ -70,6 +71,7 @@ defmodule Helyx.Provider.ClaudeCode.EnvTest do
           %{"A\0B" => "v"},
           %{"A-B" => "v"},
           %{"1A" => "v"},
+          %{"IFS" => "v"},
           %{"É" => "v"},
           %{"A" => ""},
           %{"A" => "v\0w"},
@@ -82,6 +84,22 @@ defmodule Helyx.Provider.ClaudeCode.EnvTest do
       assert ClaudeCode.init("haiku", [], cwd: work, env: bad) ==
                {:error, {:invalid_option, :env}}
     end
+  end
+
+  # The list of docs/features/harness-no-state.md, "The check": the shell
+  # of the launch sets these names itself.
+  @shell_names ~w(BASH BASHOPTS BASH_COMMAND BASH_EXECUTION_STRING BASH_SUBSHELL BASH_VERSINFO
+                  BASH_VERSION CDPATH COMP_WORDBREAKS ENV HISTCMD IFS LINENO OLDPWD OPTERR OPTIND
+                  POSIXLY_CORRECT PPID PS1 PS2 PS4 PWD RANDOM SHELLOPTS SHLVL)
+
+  test "each name that the shell sets itself fails the init", %{work: work} do
+    accepted =
+      for name <- @shell_names,
+          ClaudeCode.init("haiku", [], cwd: work, env: %{name => "v"}) !=
+            {:error, {:invalid_option, :env}},
+          do: name
+
+    assert accepted == []
   end
 
   # A tool result that is not text breaks the contract: the provider

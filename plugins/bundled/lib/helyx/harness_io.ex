@@ -208,12 +208,20 @@ defmodule Helyx.HarnessIO do
     end
   end
 
+  # The names that the `/bin/sh` of the launch sets itself, so that a value
+  # of the map would not reach the program: the POSIX ones, and each one
+  # that the bash of macOS or dash changed in a probe.
+  @shell_names ~w(BASH BASHOPTS BASH_COMMAND BASH_EXECUTION_STRING BASH_SUBSHELL BASH_VERSINFO
+                  BASH_VERSION CDPATH COMP_WORDBREAKS ENV HISTCMD IFS LINENO OLDPWD OPTERR OPTIND
+                  POSIXLY_CORRECT PPID PS1 PS2 PS4 PWD RANDOM SHELLOPTS SHLVL)
+
   # The `:env` option of a harness provider, `%{}` by default: the map that
   # each launch adds to the inherited environment, as the charlist pairs
-  # of the port. A name is a shell identifier: dash, a `/bin/sh` of the
-  # launch, drops any other name. A value is non-empty valid UTF-8 with no
-  # NUL: the port unsets a variable with an empty value and raises for a
-  # NUL. The error names no value (docs/features/harness-no-state.md).
+  # of the port. A name is a shell identifier, since dash, a `/bin/sh` of
+  # the launch, drops any other name, and not one of `@shell_names`. A
+  # value is non-empty valid UTF-8 with no NUL: the port unsets a variable
+  # with an empty value and raises for a NUL. The error names no value
+  # (docs/features/harness-no-state.md).
   def env(opts) do
     with env when is_map(env) <- Keyword.get(opts, :env, %{}),
          entries = Map.to_list(env),
@@ -225,8 +233,9 @@ defmodule Helyx.HarnessIO do
   end
 
   defp env_entry?({name, value}) do
-    is_binary(name) and name =~ ~r/\A[A-Za-z_][A-Za-z0-9_]*\z/ and is_binary(value) and
-      value != "" and String.valid?(value) and not String.contains?(value, <<0>>)
+    is_binary(name) and name =~ ~r/\A[A-Za-z_][A-Za-z0-9_]*\z/ and name not in @shell_names and
+      is_binary(value) and value != "" and String.valid?(value) and
+      not String.contains?(value, <<0>>)
   end
 
   # The port writes a charlist in the native name encoding of the BEAM.
