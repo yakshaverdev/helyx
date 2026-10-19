@@ -80,6 +80,18 @@ defmodule Helyx.Session.SummaryTest do
     assert final(events) =~ "user:S:the summary\nuser:summarize:ok\nassistant:"
   end
 
+  # #750: the summary call's provider process gets the session's provider
+  # options, as the turn's does.
+  test "the summary call gets the session's provider options", %{core: core} do
+    session = start(core, provider_opts: [report: self()])
+    turn(session, "summarize:ok")
+
+    # Two processes, so the two inits come in no order.
+    assert_receive {:sum_init, first}
+    assert_receive {:sum_init, second}
+    assert first[:report] == self() and second[:report] == self()
+  end
+
   test "a summary text of 65,536 bytes is kept, one byte more fails the summary",
        %{core: core} do
     session = start(core)

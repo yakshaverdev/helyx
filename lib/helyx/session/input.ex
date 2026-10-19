@@ -1,10 +1,11 @@
 defmodule Helyx.Session.Input do
   @moduledoc false
-  # The checks of client input at the session API: the cwd and the model
-  # of a start or a resume, the child options of a start, the origin and
-  # the text of a send, and the JSON object of an answer, which also checks
-  # the request of a tool (docs/features/coding-agent.md, "Bounds";
-  # docs/features/message-identity.md). Inner code trusts them.
+  # The checks of client input at the session API: the cwd, the model, and
+  # the provider options of a start or a resume, the child options of a
+  # start, the origin and the text of a send, and the JSON object of an
+  # answer, which also checks the request of a tool
+  # (docs/features/coding-agent.md, "Bounds"; docs/features/message-identity.md).
+  # Inner code trusts them.
 
   alias Helyx.Message
 
@@ -24,6 +25,18 @@ defmodule Helyx.Session.Input do
   end
 
   def cwd(_cwd), do: {:error, :invalid_cwd}
+
+  # The `:provider_opts` of a start or a resume, which every `init/3` of
+  # the session gets as they are: a provider checks the keys that it reads
+  # (docs/features/harness-no-state.md).
+  @spec provider_opts(keyword()) :: {:ok, keyword()} | {:error, :invalid_provider_opts}
+  def provider_opts(opts) do
+    provider_opts = Keyword.get(opts, :provider_opts, [])
+
+    if Keyword.keyword?(provider_opts),
+      do: {:ok, provider_opts},
+      else: {:error, :invalid_provider_opts}
+  end
 
   # The start options of a child session: `:parent`, the link to the call
   # that started it, for the header, and `:tools`, the names of the tools

@@ -6,7 +6,8 @@ defmodule Helyx.Provider.ClaudeCode.Program do
   # provider state.
 
   alias Helyx.HarnessIO
-  alias Helyx.Provider.ClaudeCode.{Mcp, Replay, State}
+  alias Helyx.Provider.ClaudeCode
+  alias Helyx.Provider.ClaudeCode.{Mcp, Meter, Replay, State}
 
   # The `=` form keeps a value that starts with a dash a value (#478).
   # `--tools=` turns off every tool of the program, `--setting-sources=`
@@ -18,10 +19,29 @@ defmodule Helyx.Provider.ClaudeCode.Program do
             stream-json --permission-mode bypassPermissions --tools= --setting-sources=
             --strict-mcp-config --system-prompt= --system-prompt-snapshot=off)
 
-  # The harness session of a stored id, or nil.
-  def resumable(stored), do: HarnessIO.resumable(stored, @flags)
+  # The `:persist` option of `init/3`, and the harness session of the
+  # stored id, or nil.
+  def resume(opts) do
+    with {:ok, persist?} <- HarnessIO.persist(opts),
+         do: {:ok, persist?, HarnessIO.resumable(opts[:resume_id], @flags)}
+  end
 
   def stored_id(id), do: HarnessIO.session_id(id, @flags)
+
+  # The resume id event of a fresh harness session; none with no stored
+  # state, which has nothing to resume.
+  def resume_events(%State{persist?: false}, _turn_id, _cut), do: []
+
+  def resume_events(state, turn_id, cut),
+    do: [{:event, turn_id, {:resume_id, stored_id(state.session_id), cut}}]
+
+  # The error of a compaction with no program of its own: a fresh harness
+  # session has no history yet, and one with no stored state cannot be
+  # resumed in the program of a compaction (docs/features/harness-no-state.md).
+  def no_compaction(%State{persist?: false}),
+    do: HarnessIO.compaction_failed(ClaudeCode.id(), "no stored state to compact")
+
+  def no_compaction(_state), do: HarnessIO.no_history(ClaudeCode.id())
 
   # A program with the prompt `system` and `commands?`: the running one, or
   # one in its place that resumes its harness session once the running one
@@ -29,6 +49,13 @@ defmodule Helyx.Provider.ClaudeCode.Program do
   def ensure(%State{port: port, system: system, commands?: commands?} = state, system, commands?)
       when port != nil,
       do: state
+
+  # A harness session with no stored state cannot be resumed: a fresh one
+  # with a new meter takes its place, and its turn gets the replay.
+  def ensure(%State{port: nil, persist?: false, sent?: true} = state, system, commands?) do
+    meter = Meter.start(nil, state.meter.config_window)
+    start(replace(state, meter: meter, commands?: commands?), system)
+  end
 
   def ensure(%State{port: nil} = state, system, commands?) do
     resume = if state.sent?, do: state.session_id, else: state.resume
@@ -52,7 +79,8 @@ defmodule Helyx.Provider.ClaudeCode.Program do
       model: state.model,
       cwd: state.cwd,
       tools: state.tools,
-      handles: state.handles
+      handles: state.handles,
+      persist?: state.persist?
     ]
 
     struct!(State, keep ++ fields)
@@ -65,14 +93,15 @@ defmodule Helyx.Provider.ClaudeCode.Program do
   # `--disable-slash-commands` keeps a user line from running a command or
   # a skill of the program. It also takes out `/compact`, so the program of
   # a compaction runs without it (`docs/research/provider-parity.md`). It
-  # is a flag of one launch, so it is not in the stored id's digest.
+  # is a flag of one launch, so it is not in the stored id's digest; nor is
+  # `--no-session-persistence`, whose harness session has no stored id.
   def start(state, system) do
     id = state.resume || uuid()
     session = if state.resume, do: "--resume=" <> id, else: "--session-id=" <> id
     commands = if state.commands?, do: [], else: ["--disable-slash-commands"]
-
-    flags =
-      @flags ++ commands ++ ["--model=" <> state.model, session, "--mcp-config", Mcp.config()]
+    persist = if state.persist?, do: [], else: ["--no-session-persistence"]
+    tail = ["--model=" <> state.model, session, "--mcp-config", Mcp.config()]
+    flags = @flags ++ commands ++ persist ++ tail
 
     state =
       HarnessIO.launch(state.exe, flags, state.cwd, %{state | session_id: id, system: system})

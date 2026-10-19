@@ -285,3 +285,18 @@ Runs on 2026-10-13 with `codex-cli 0.162.1` at `~/.bun/bin/codex`. A Python scri
 
 - `turn/interrupt` of a compaction turn.
 - `thread/compact/start` on a thread with no turn.
+
+## Ephemeral threads (2026-10-19, #750)
+
+From `codex app-server generate-json-schema --out <dir>` of codex-cli 0.163.0, which reads no config and sends no request.
+
+- `v2/ThreadStartParams.json`: `ephemeral`, type boolean or null.
+- `v2/ThreadStartResponse.json`, the `Thread` definition: `ephemeral`, "Whether the thread is ephemeral and should not be materialized on disk", and `path`, "[UNSTABLE] Path to the thread on disk", string or null.
+- `v2/ThreadResumeParams.json` has no `ephemeral`: a resumed thread keeps its stored form.
+
+### Not run
+
+- A real `thread/start` with `ephemeral: true`, and the check that no rollout file is written: it needs a model turn. The owner runs it.
+- `thread/resume` of an ephemeral thread in a new program (expected: the error of a lost thread, `no rollout found for thread id <id>`).
+- `thread/compact/start` and `thread/inject_items` on an ephemeral thread.
+- A child thread (`multi_agent`) of an ephemeral thread: is it stored?

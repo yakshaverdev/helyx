@@ -282,6 +282,25 @@ defmodule Helyx.Session.BoundaryTest do
     end
   end
 
+  describe "provider options at the session boundary (#750)" do
+    @bad_provider_opts [%{persist: false}, [{"persist", false}], [:persist], :none]
+
+    @tag :tmp_dir
+    test "start and resume reject provider options that are not a keyword list, and make nothing",
+         %{core: core, tmp_dir: dir} do
+      for opts <- @bad_provider_opts do
+        assert {:error, :invalid_provider_opts} =
+                 Session.start(core, model: "test/ok", provider_opts: opts, sessions_dir: dir)
+
+        assert {:error, :invalid_provider_opts} =
+                 Session.resume(core, provider_opts: opts, sessions_dir: dir)
+      end
+
+      assert File.ls!(dir) == []
+      assert DynamicSupervisor.count_children(Helyx.Core.session_supervisor(core)).active == 0
+    end
+  end
+
   describe "user text at the session boundary (#672)" do
     # 4-byte characters up to the bound exactly.
     defp at_bound, do: String.duplicate("😀", div(Session.max_text_bytes(), 4))

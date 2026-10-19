@@ -43,7 +43,7 @@ defmodule Helyx.Session.Server.Summary do
       provider: turn.provider,
       model: turn.model.model,
       tools: [],
-      opts: [resume_id: nil, resume_usage: nil] ++ State.base_opts(state),
+      opts: State.init_opts(state, nil, nil),
       session: self()
     }
 

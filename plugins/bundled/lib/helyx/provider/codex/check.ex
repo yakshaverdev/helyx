@@ -1,7 +1,7 @@
 defmodule Helyx.Provider.Codex.Check do
   @moduledoc false
   # The shape check of the lines of `Helyx.Provider.Codex`. It reads the
-  # provider state as a map: `due`, `thread`, and `resume`.
+  # provider state as a map: `due`, `thread`, `resume`, and `persist?`.
 
   alias Helyx.Provider.Codex.{Items, Tools}
 
@@ -66,9 +66,11 @@ defmodule Helyx.Provider.Codex.Check do
 
   defp answer?("thread/resume", _answer, _state), do: false
 
-  defp answer?("thread/start", %{"result" => %{"thread" => %{"id" => thread}}}, _state)
+  # With no stored state, only a thread that the program reports as
+  # ephemeral is safe (docs/features/harness-no-state.md).
+  defp answer?("thread/start", %{"result" => %{"thread" => %{"id" => thread} = t}}, state)
        when is_binary(thread) and thread != "",
-       do: Tools.storable?(thread)
+       do: Tools.storable?(thread) and (state.persist? or t["ephemeral"] == true)
 
   defp answer?("turn/start", %{"result" => %{"turn" => %{"id" => turn}}}, _state),
     do: is_binary(turn)

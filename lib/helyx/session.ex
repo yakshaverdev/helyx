@@ -70,6 +70,8 @@ defmodule Helyx.Session do
   `{:error, :open_timeout}` (session-lock.md), and a start over the 64 sessions of a Core
   `{:error, :too_many_sessions}`. `:tools` names the tools that the session gets, all if nil;
   `:parent` links it to a tool call, out of the session list (`docs/features/agent-tool.md`).
+  `:provider_opts`, a keyword list (default `[]`), goes to each `init/3` of the session after the
+  options of Core; another value gives `{:error, :invalid_provider_opts}` (`Helyx.Provider`).
   """
   @spec start(Helyx.Core.name(), keyword()) :: {:ok, t()} | {:error, model_error() | term()}
   def start(core \\ Helyx.Core, opts) do
@@ -77,6 +79,7 @@ defmodule Helyx.Session do
     # window for an orphan file from a failed start. A crash of the
     # session's open after the create still leaves one.
     with {:ok, cwd} <- fetch_cwd(opts),
+         {:ok, provider_opts} <- Input.provider_opts(opts),
          {:ok, parent, only} <- Input.child(opts),
          id = if(parent, do: Id.child(parent.session_id, parent.call_id), else: Id.new()),
          {:ok, tools} <- Helyx.Tool.specs(core, only),
@@ -85,28 +88,18 @@ defmodule Helyx.Session do
          {:ok, {ref, provider}} <- Input.model(core, Keyword.fetch!(opts, :model)),
          # The folders come before the lock, whose file is in them.
          :ok <- mkdir(opts[:sessions_dir], cwd, parent) do
+      state = %State{id: id, core: core, model: ref, provider: provider, cwd: cwd}
+
       Server.create(
-        %State{id: id, core: core, model: ref, provider: provider, cwd: cwd},
+        %{state | provider_opts: provider_opts},
         {tools, concurrent},
-        create_spec(opts[:sessions_dir], id, cwd, ModelRef.to_string(ref), parent)
+        Server.Open.create_spec(opts[:sessions_dir], id, cwd, ModelRef.to_string(ref), parent)
       )
     end
   end
 
   defp mkdir(nil, _cwd, _parent), do: :ok
   defp mkdir(dir, cwd, parent), do: Helyx.Session.File.mkdir(dir, cwd, parent)
-
-  # The open of the file, which the session process runs at its start under
-  # the lock of `path` (`Server.create/3`).
-  defp create_spec(nil, _id, _cwd, _model, _parent), do: nil
-
-  defp create_spec(dir, id, cwd, model, parent) do
-    {Helyx.Session.File.path(dir, cwd, id, parent),
-     fn state ->
-       with {:ok, file} <- Helyx.Session.File.create(dir, id, cwd, model, parent),
-            do: {:ok, %{state | file: file}}
-     end}
-  end
 
   @doc """
   Resumes from `:sessions_dir` the session `Helyx.Session.File.pick/3` picks: the newest of the working
@@ -119,7 +112,9 @@ defmodule Helyx.Session do
   directory is read (`docs/features/server-management.md`, "Order of the checks"). The model ref of the
   file resolves as in `set_model/2`, with the same errors. The lock, its deadline, and the cap are as in
   `start/2`, before the load; a locked newest session is not skipped. A session that runs in this Core is
-  attached: the call returns it, and concurrent resumes of one id get one result.
+  attached: the call returns it, and concurrent resumes of one id get one result. `:provider_opts` is
+  as in `start/2`, checked before the sessions directory is read; the file does not keep it, and an
+  attach to a session that runs with other `:provider_opts` gives `{:error, :provider_opts_differ}`.
   """
   @spec resume(Helyx.Core.name(), keyword()) :: {:ok, t()} | {:error, model_error() | term()}
   def resume(core \\ Helyx.Core, opts) do
@@ -127,12 +122,14 @@ defmodule Helyx.Session do
     header? = Keyword.has_key?(opts, :id) and not Keyword.has_key?(opts, :cwd)
 
     with {:ok, cwd} <- if(header?, do: {:ok, nil}, else: fetch_cwd(opts)),
+         {:ok, provider_opts} <- Input.provider_opts(opts),
          {:ok, tools} <- Helyx.Tool.specs(core),
          :ok <- Helyx.Tool.check_available(tools),
          concurrent = Helyx.Tool.concurrent(tools),
          {:ok, path, cwd} <- Helyx.Session.File.pick(dir, cwd, Keyword.take(opts, [:id])) do
       id = Path.basename(path, ".jsonl")
       state = %State{id: id, core: core, model: nil, provider: nil, cwd: cwd}
+      state = %{state | provider_opts: provider_opts}
       Server.start(state, {tools, concurrent}, {path, &Server.Open.load(&1, path)})
     end
   end

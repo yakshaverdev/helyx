@@ -33,16 +33,16 @@ Decisions:
   - `stop(session)` returns `:ok` after the session ended, or `{:error, :session_not_found}` when it is not running. A session, or its Core, that ends between the abort and the stop gives `{:error, :session_not_found}` too: `stop/1` looks up the pid after the abort and stops that pid. A session that ends for another reason during the stop, such as a Core stop, gives `:ok`: it ended.
 - `Helyx.Session.start/2` and `resume/2` give `{:error, :session_not_found}` when an attach meets the end of the process twice (Decisions, "Attach").
 - `Helyx.Session.start/2` and `resume/2`: a new error `:too_many_sessions` at the cap. `resume/2` of a session that runs in the same Core returns `{:ok, session}`, the running instance, in place of `{:error, {:session_locked, id}}`. A session that another Core or another OS process holds still gives `{:session_locked, id}`.
-- The session process takes one new call, `:live`, which answers its `%Helyx.Sessions.Live{}`. The attach uses it too.
+- The session process takes one new call, `:live`, which answers its `%Helyx.Sessions.Live{}`. Since #750 the attach asks `{:attach, provider_opts}` in its place, and a running session with other `:provider_opts` answers `{:error, :provider_opts_differ}`; so a wire `resume` of a session that a product started with `:provider_opts` gives `start_failed`.
 
 ### Order of the checks
 
 A start and a resume run their checks in one order, and the first failure is the result. Nothing touches the sessions directory before step 3 (#758).
 
-1. The given `:cwd` (`Helyx.Session.Input.cwd/1`): `:invalid_cwd`.
+1. The given `:cwd` (`Helyx.Session.Input.cwd/1`): `:invalid_cwd`. Then the `:provider_opts` (`Helyx.Session.Input.provider_opts/1`): `:invalid_provider_opts` (#750).
 2. The tools: the specs (`Helyx.Tool.specs/1`), each `check/0` (`Helyx.Tool.check_available/1`), and the `concurrent?/0` values (`Helyx.Tool.concurrent/1`).
 3. A start resolves the model ref, then makes the folders (`Helyx.Session.File.mkdir/3`). A resume picks the file (`Helyx.Session.File.pick/3`): the find of the id, or the scan for the newest session. With `:id` and no `:cwd`, the folder of the header is checked here, as step 1 checks a given one.
-4. The start of the session process (`Helyx.Session.Server.Open.start/4`, and `create/3` for a start): the cap; for a resume of an id that runs, the attach (Decisions, "Attach"). Then, in the open of the process, the lock, and for a start the create of the file, for a resume the load and its model ref.
+4. The start of the session process (`Helyx.Session.Server.Open.start/4`, and `create/3` for a start): the cap; for a resume of an id that runs, the attach (Decisions, "Attach"), which gives `:provider_opts_differ` when the running session has other `:provider_opts` (#750). Then, in the open of the process, the lock, and for a start the create of the file, for a resume the load and its model ref.
 
 The coding agent keeps this order for `--session <id>` (#765). The CLI makes no check of the id or the sessions directory of its own: it starts Core and resumes the id with no `:cwd`, so a failed tool check gives the line of a failed start, as a start does. Its own rule for the folder of the header, an absolute path to a directory, comes after step 4 (`session-list.md`, "Folder").
 

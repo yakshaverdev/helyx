@@ -8,7 +8,8 @@ defmodule Helyx.Provider.Codex do
   answered `initialize`. The first request opens the thread with the turn's
   system prompt as `baseInstructions`: `thread/resume` with `:resume_id`, or
   `thread/start`; a later prompt change starts a new program that resumes the
-  thread. A `{:turn, ...}` is `turn/start`, a steer is `turn/steer`, and an
+  thread, or with `persist: false` starts a new ephemeral thread with the
+  replay. A `{:turn, ...}` is `turn/start`, a steer is `turn/steer`, and an
   interrupt is `turn/interrupt`, or `{:error, :command_running}` or
   `{:error, :agent_running}` when open work would outlive it. The session's
   tools go to the thread as `dynamicTools`, and the user's config is off where
@@ -36,6 +37,7 @@ defmodule Helyx.Provider.Codex do
   @impl true
   def init(model, tools, opts) do
     with {:ok, info} <- ModelInfo.lookup(id(), "openai", model),
+         {:ok, persist?} <- HarnessIO.persist(opts),
          {:ok, exe} <- HarnessIO.find("codex") do
       state = %State{
         exe: exe,
@@ -43,6 +45,7 @@ defmodule Helyx.Provider.Codex do
         items: %Items{info: info},
         tools: %Tools{specs: tools},
         cwd: Keyword.fetch!(opts, :cwd),
+        persist?: persist?,
         resume: Program.resumable(opts[:resume_id], tools)
       }
 
@@ -447,10 +450,7 @@ defmodule Helyx.Provider.Codex do
   defp replay(history, state) do
     {items, cut} = Replay.items(history)
 
-    state =
-      push(state, [
-        {:resume_id, Program.stored_id(state.thread, state.tools.specs), cut}
-      ])
+    state = push(state, Program.resume_events(state, cut))
 
     if items == [] do
       start_turn(state)

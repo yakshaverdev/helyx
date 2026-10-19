@@ -59,11 +59,6 @@ defmodule Helyx.Session.Server.State do
     # The port of the session file's writer lock, or nil with no file or
     # after the lock is lost (`Helyx.Session.Lock`).
     :lock,
-    # The registered ModelContext, Compaction, and Memory plugins, or nil
-    # for none.
-    :model_context,
-    :compaction,
-    :memory,
     # The sync worker of the instance (`Helyx.Session.Sync`), or nil with
     # no Memory plugin. Before `Sync.open/1`, nil or `{:replay, messages}`,
     # the messages that a resume decoded (docs/features/memory.md).
@@ -72,11 +67,17 @@ defmodule Helyx.Session.Server.State do
     # hold after a failed write (`Records.stop_saving/3`), else nil: every
     # message is saved, or none when the session has no file.
     :unsaved_from,
+    # The registered ModelContext, Compaction, and Memory plugins by
+    # interface, each nil for none.
+    plugins: %{model_context: nil, compaction: nil, memory: nil},
     # The checked tool specs of `Helyx.Tool.specs/1` at session start,
     # which every provider call uses, and by name each tool module, for the
     # hands, with its flag of `Helyx.Tool.concurrent/1`, for the tool queue.
     tool_specs: [],
     tools: %{},
+    # The checked `:provider_opts` of the start or the resume, for each
+    # `init/3` (`init_opts/3`).
+    provider_opts: [],
     transcript: [],
     # Each subscriber pid with the session's monitor of it, the ref of its
     # last subscribe, the seq up to which it acked (replay-ring.md), and
@@ -135,12 +136,15 @@ defmodule Helyx.Session.Server.State do
           background_dir: Path.t() | nil,
           file: Helyx.Session.File.t() | nil,
           lock: port() | nil,
-          model_context: module() | nil,
-          compaction: module() | nil,
-          memory: module() | nil,
+          plugins: %{
+            model_context: module() | nil,
+            compaction: module() | nil,
+            memory: module() | nil
+          },
           sync: pid() | {:replay, [Helyx.Message.t()]} | nil,
           unsaved_from: non_neg_integer() | nil,
           tool_specs: [Helyx.Tool.spec()],
+          provider_opts: keyword(),
           tools: %{String.t() => {module(), boolean()}},
           transcript: [Helyx.Message.t()],
           subscribers: %{pid() => {reference(), reference(), non_neg_integer(), boolean()}},
@@ -163,4 +167,10 @@ defmodule Helyx.Session.Server.State do
 
   # The options of every plugin call of the session.
   def base_opts(state), do: [core: state.core, session_id: state.id, cwd: state.cwd]
+
+  # The options of a provider's `init/3`: those of Core first, so a
+  # provider option of the same name does not change one.
+  def init_opts(state, resume_id, resume_usage) do
+    [resume_id: resume_id, resume_usage: resume_usage] ++ base_opts(state) ++ state.provider_opts
+  end
 end

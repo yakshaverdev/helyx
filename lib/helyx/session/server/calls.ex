@@ -65,7 +65,15 @@ defmodule Helyx.Session.Server.Calls do
   def handle(:transcript, _from, %State{} = state),
     do: {:reply, Helyx.Summary.kept(state.transcript, state.summary), state}
 
-  # The entry of `Helyx.Sessions.list_live/1`, and the attach of a start.
+  # The attach of a start (`Server.Open`): a start with other provider
+  # options gets no session, because the session runs with its own.
+  def handle({:attach, provider_opts}, _from, %State{provider_opts: provider_opts} = state),
+    do: {:reply, :ok, state}
+
+  def handle({:attach, _provider_opts}, _from, %State{} = state),
+    do: {:reply, {:error, :provider_opts_differ}, state}
+
+  # The entry of `Helyx.Sessions.list_live/1`.
   def handle(:live, _from, %State{} = state) do
     live = %Helyx.Sessions.Live{
       id: state.id,

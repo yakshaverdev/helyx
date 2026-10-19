@@ -187,13 +187,25 @@ defmodule Helyx.HarnessIO do
     SystemLimitError -> :error
   end
 
+  # The `:persist` option of a harness provider, true by default. A harness
+  # session with no stored state cannot be resumed, so a `:resume_id` with
+  # `persist: false` fails (docs/features/harness-no-state.md).
+  def persist(opts) do
+    case {Keyword.get(opts, :persist, true), opts[:resume_id]} do
+      {false, nil} -> {:ok, false}
+      {false, _id} -> {:error, :no_state_resume}
+      {true, _id} -> {:ok, true}
+      _other -> {:error, {:invalid_option, :persist}}
+    end
+  end
+
   # A compaction in a program with no history yet: the replay of the
   # transcript comes only with its first turn
   # (docs/features/harness-compaction.md).
-  def no_history(provider) do
-    text = "no history in the program yet"
-    {:error, %Helyx.ProviderError{provider: provider, kind: :compaction_failed, text: text}}
-  end
+  def no_history(provider), do: compaction_failed(provider, "no history in the program yet")
+
+  def compaction_failed(provider, text),
+    do: {:error, %Helyx.ProviderError{provider: provider, kind: :compaction_failed, text: text}}
 
   # The prompt is the user messages at the end of the transcript; the
   # history is the rest. Both keep their order.

@@ -224,7 +224,7 @@ defmodule Helyx.Session.Server.TurnLoop do
       provider: turn.provider,
       model: turn.model.model,
       tools: state.tool_specs,
-      opts: [resume_id: resumed, resume_usage: usage] ++ State.base_opts(state),
+      opts: State.init_opts(state, resumed, usage),
       session: self()
     }
 
