@@ -102,3 +102,35 @@ The driver ran the Helyx edit as an exact single match. In both runs the model m
 
 - The isolated Claude runs made no marker file and started no project or user MCP server. Only `/v1/messages` reached the local server; other hosts of the program (telemetry, for example) were not observed.
 - The Codex runs reached the local server with `GET /v1/models`, and with the built-in provider first with seven `GET /v1/responses`, then `POST` (inferred: a WebSocket try first). The user's MCP servers started (their tools were in the list).
+
+## Program commands, and the Codex tools again (2026-10-19, #754)
+
+The same versions: Claude Code 2.1.302 and codex-cli 0.163.0, on macOS. No run sent a request to a network service: each program ran under `sandbox-exec` with a profile that denies every outbound connection except to localhost. No real inference.
+
+### Claude Code: `--disable-slash-commands`
+
+Method: the local model stub of "Method", a fake API key, and an empty config folder (`CLAUDE_CONFIG_DIR`), so no login and no user config was used. A Python driver started the program with the flags of `Helyx.Provider.ClaudeCode`, sent `initialize` with a `systemPrompt`, and wrote user lines, with and without the flag.
+
+- `claude --help`: `--disable-slash-commands  Disable all skills`.
+- Without the flag, the `initialize` answer listed 44 commands, and the `init` line 44 `slash_commands` and 16 `skills`. With the flag, all three lists were empty.
+- Without the flag, `/compact` compacted (`compact_boundary`), and `/init` sent the program's own prompt of the command (write a `CLAUDE.md`) to the model.
+- With the flag, `/compact`, `/init`, `/context`, and `/help` made no model request. The program wrote an `assistant` line with the text `/<name> isn't available in this environment.` and no stream delta, then a `result` with `subtype` `success` and that text. `/compact` gave no `compact_boundary`. A rerun by the review (`/compact keep it short`, `/init`, `/help`) had `command_lifecycle` `started`, the `assistant` line, and a `result` with `is_error` false and `queued_turn_count` 0.
+- With the flag, `/code-review please` (the name of a bundled skill, not of a built-in command) went to the model as the text of the line, after a `<system-reminder>`: "The user's message starts with the slash command /code-review, but no command with that name is available in this session, so it did not run. No slash commands are available in this session. Treat the message as a plain request and do the task with the tools you have. ..."
+- The line `/init` and its answer stayed in the harness session: the next request had `/init`, then `<local-command-stdout>/init isn't available in this environment.</local-command-stdout>`.
+- The request of a plain line (`hello`) was the same with and without the flag in every field (`system`, `tools`, `messages`, `thinking`, and the others).
+- Source (the binary of 2.1.302): the flag sets a launch option once, at the start, and the command list is then empty. A line of a headless session whose command name is a built-in name gets the "isn't available" answer. No control request compacts: the program handles about 70 subtypes (`initialize`, `interrupt`, `set_model`, `get_context_usage`, `rewind_conversation`, and others), and none of them is a compaction. The command filter of the interactive mode has no CLI flag.
+- One harness session over three programs: A with the flag (`--session-id`) ran a turn, and `/compact` got the fixed answer with no request. B without the flag (`--resume`) ran `/compact`, which compacted (`compact_boundary` with `trigger` `manual`, one model request). C with the flag (`--resume`) ran a turn, and its request held the summary. `total_cost_usd` went on over the three programs: 1.5e-06, 3e-06, 4.5e-06 (the prices of the stub's counts).
+
+### Codex: options that could remove its own tools
+
+Method: the help, the feature list, and the protocol schema of `codex app-server`, and the strings of the binary. No `codex app-server` ran, and no turn.
+
+- `codex app-server --help`: `-c`, `--enable`, `--disable`, `--strict-config`, `--code-mode-host`, `--analytics-default-enabled`, and the transport and WebSocket options. None names a tool.
+- `codex features list`: no feature for `apply_patch` (`apply_patch_freeform` is `removed`) or for the MCP resource tools. `default_mode_request_user_input` is `under development` and off, and the request of #651 had `request_user_input` with it off. `multi_agent` is `stable` and on; in #651, `--disable multi_agent` kept the `multi_agent_v1__*` tools.
+- `codex app-server generate-json-schema --experimental`: `thread/start` takes `dynamicTools`, an open `config` object, and `multiAgentMode`, marked "@deprecated Ignored". `thread/resume` and `turn/start` take no tool list. The `Config` of `config/read` has `tools` with only `web_search`.
+- `codex debug prompt-input`, with an empty `CODEX_HOME`, renders the input items with no tool list, so it does not show the tools.
+- The strings of the binary have `enabled_tools` and `disabled_tools` only next to other keys of an MCP server (`startup_timeout_sec`, `default_tools_approval_mode`, `oauth`): keys of one named server, as `mcp_servers.<name>.enabled` (inferred from the order).
+
+- Found by the review of #754: the binary has the top-level config key `model_catalog_json`, and `codex debug models --bundled` (no network) shows `apply_patch_tool_type`, `experimental_supported_tools`, `shell_type`, and `tool_mode` on each bundled model. A catalog of Helyx could change these fields. Not tried: it needs a model request to see the tool list.
+
+So in 0.163.0, no option, feature, or thread parameter that was found removes `apply_patch`, `request_user_input`, the `multi_agent_v1__*` tools, or the MCP resource tools. Open: whether a `model_catalog_json` catalog removes any of them, with a model request through a local fake provider.

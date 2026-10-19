@@ -36,7 +36,7 @@ defmodule Helyx.Provider.ClaudeCode.HelyxToolsTest do
       end)
     end
 
-    test "the program starts at the first turn with only the helyx server, no tools and no user config of its own, and the turn's prompt",
+    test "the program starts at the first turn with only the helyx server, no tools, commands, or user config of its own, and the turn's prompt",
          %{bin: bin, work: work} do
       state = harness(work)
       assert state.port == nil
@@ -47,7 +47,7 @@ defmodule Helyx.Provider.ClaudeCode.HelyxToolsTest do
       assert ~s({"mcpServers":{"helyx":{"type":"sdk","name":"helyx","alwaysLoad":true}}}) in args
 
       for flag <- ~w(--tools= --setting-sources= --strict-mcp-config --system-prompt=
-                     --system-prompt-snapshot=off),
+                     --system-prompt-snapshot=off --disable-slash-commands),
           do: assert(flag in args)
 
       refute Enum.any?(args, &String.starts_with?(&1, "--disallowedTools"))

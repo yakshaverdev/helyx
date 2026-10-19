@@ -153,6 +153,7 @@ defmodule Helyx.Provider.ClaudeCode.PromptTest do
     # The close waits for the exit, so the program wrote its files.
     closed(state)
     assert ("--resume=" <> sid()) in args(bin, 1)
+    refute "--disable-slash-commands" in args(bin, 1)
     assert initialize(bin, 1) == ""
   end
 end

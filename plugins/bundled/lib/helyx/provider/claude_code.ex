@@ -164,14 +164,14 @@ defmodule Helyx.Provider.ClaudeCode do
   defp read(actions, %State{terminal: {:error, reason}} = state),
     do: {:stop, reason, actions, state}
 
-  # The program of a turn runs with the turn's prompt: one with another
-  # prompt is replaced by one that resumes its harness session. A
-  # compaction keeps the running program; with none, a stored harness
-  # session opens with the empty prompt, and a fresh one has nothing to
-  # compact (`write_turn/1`).
-  defp program(%State{port: nil, resume: nil} = state, :compact, _text), do: state
-  defp program(state, :compact, _text), do: Program.ensure(state, state.system || "")
-  defp program(state, :turn, context), do: Program.ensure(state, context.system || "")
+  # A turn's program has the turn's prompt and no program commands; a
+  # compaction's keeps the prompt and has the commands for `/compact`. One
+  # that differs is replaced by one that resumes its harness session. With
+  # no program, a stored harness session opens with the empty prompt, and a
+  # fresh one has nothing to compact (`write_turn/1`).
+  defp program(%State{resume: nil, sent?: false} = state, :compact, _text), do: state
+  defp program(state, :compact, _text), do: Program.ensure(state, state.system || "", true)
+  defp program(state, :turn, context), do: Program.ensure(state, context.system || "", false)
 
   # The program of a lost session exits by itself, with nothing run
   # (research note). A fresh program takes its place, and a turn that was
