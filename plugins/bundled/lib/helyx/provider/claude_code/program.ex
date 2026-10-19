@@ -19,11 +19,11 @@ defmodule Helyx.Provider.ClaudeCode.Program do
             stream-json --permission-mode bypassPermissions --tools= --setting-sources=
             --strict-mcp-config --system-prompt= --system-prompt-snapshot=off)
 
-  # The `:persist` option of `init/3`, and the harness session of the
-  # stored id, or nil.
+  # The state fields of the options of `init/3` (`HarnessIO.options/1`),
+  # and the harness session of the stored id, or nil.
   def resume(opts) do
-    with {:ok, persist?} <- HarnessIO.persist(opts),
-         do: {:ok, persist?, HarnessIO.resumable(opts[:resume_id], @flags)}
+    with {:ok, options} <- HarnessIO.options(opts),
+         do: {:ok, options, HarnessIO.resumable(opts[:resume_id], @flags)}
   end
 
   def stored_id(id), do: HarnessIO.session_id(id, @flags)
@@ -80,7 +80,8 @@ defmodule Helyx.Provider.ClaudeCode.Program do
       cwd: state.cwd,
       tools: state.tools,
       handles: state.handles,
-      persist?: state.persist?
+      persist?: state.persist?,
+      env: state.env
     ]
 
     struct!(State, keep ++ fields)

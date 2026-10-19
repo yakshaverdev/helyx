@@ -49,19 +49,19 @@ defmodule Helyx.Provider.ClaudeCode do
   @impl true
   def init(model, tools, opts) do
     with {:ok, info} <- ModelInfo.lookup(id(), "anthropic", model),
-         {:ok, persist?, resume} <- Program.resume(opts),
+         {:ok, options, resume} <- Program.resume(opts),
          {:ok, exe} <- HarnessIO.find("claude") do
       # A stored session that is not resumed gives no cost mark.
-      {:ok,
-       %State{
-         exe: exe,
-         model: model,
-         tools: tools,
-         cwd: Keyword.fetch!(opts, :cwd),
-         persist?: persist?,
-         resume: resume,
-         meter: Meter.start(resume && opts[:resume_usage], info.context_window)
-       }}
+      state = %State{
+        exe: exe,
+        model: model,
+        tools: tools,
+        cwd: Keyword.fetch!(opts, :cwd),
+        resume: resume,
+        meter: Meter.start(resume && opts[:resume_usage], info.context_window)
+      }
+
+      {:ok, struct!(state, options)}
     end
   end
 

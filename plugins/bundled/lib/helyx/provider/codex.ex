@@ -37,7 +37,7 @@ defmodule Helyx.Provider.Codex do
   @impl true
   def init(model, tools, opts) do
     with {:ok, info} <- ModelInfo.lookup(id(), "openai", model),
-         {:ok, persist?} <- HarnessIO.persist(opts),
+         {:ok, options} <- HarnessIO.options(opts),
          {:ok, exe} <- HarnessIO.find("codex") do
       state = %State{
         exe: exe,
@@ -45,11 +45,10 @@ defmodule Helyx.Provider.Codex do
         items: %Items{info: info},
         tools: %Tools{specs: tools},
         cwd: Keyword.fetch!(opts, :cwd),
-        persist?: persist?,
         resume: Program.resumable(opts[:resume_id], tools)
       }
 
-      case Program.launch(state) do
+      case Program.launch(struct!(state, options)) do
         %State{terminal: {:error, reason}} -> {:error, reason}
         state -> handshake(state)
       end

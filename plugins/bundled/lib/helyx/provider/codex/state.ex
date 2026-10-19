@@ -19,7 +19,9 @@ defmodule Helyx.Provider.Codex.State do
   # return, newest first.
   # `terminal` set means the provider process must stop, with that error.
   # `persist?` is false with the option `persist: false`: the thread is
-  # ephemeral and never resumed (docs/features/harness-no-state.md).
+  # ephemeral and never resumed (docs/features/harness-no-state.md). `env`
+  # is the option `env` as name and value pairs (`Helyx.HarnessIO.env/1`);
+  # `inspect` leaves it out.
   #
   # `agents` maps each child thread with open work to the program's turn
   # id of its last `subAgentActivity` item. It belongs to the program and
@@ -33,6 +35,7 @@ defmodule Helyx.Provider.Codex.State do
   # `tools` holds the state of the Helyx tools (`Tools`). `handles` are
   # the held handles of the provider's programs (`Helyx.HarnessIO`).
   @enforce_keys [:exe, :model, :cwd]
+  @derive {Inspect, except: [:env]}
   defstruct [
     :exe,
     :model,
@@ -52,6 +55,7 @@ defmodule Helyx.Provider.Codex.State do
     tools: %Helyx.Provider.Codex.Tools{},
     fresh?: false,
     persist?: true,
+    env: [],
     due: %{},
     next_id: 1,
     out: [],

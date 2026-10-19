@@ -2,8 +2,8 @@ defmodule Helyx.HarnessIO do
   @moduledoc false
   # What the harness providers share (ADR 0005). It is not a plugin.
   # `state` is a provider's run state with the fields `port`, `buffer`
-  # (iodata), `size`, `terminal`, `closing`, and `handles`, the handles
-  # that the provider holds for its programs.
+  # (iodata), `size`, `terminal`, `closing`, `handles`, the handles that
+  # the provider holds for its programs, and `env` (`env/1`).
 
   @line_max_bytes 16 * 1024 * 1024
   @replay_max_bytes 400_000
@@ -87,9 +87,10 @@ defmodule Helyx.HarnessIO do
   # dropped. The port stays linked to the caller: a write to a watchdog
   # that died closes the port with `:epipe`, and that exit ends the caller
   # (#390). The closed port makes the watchdog end the group (ADR 0004).
+  # The program gets `state.env` on top of the inherited environment.
   def launch(exe, args, cwd, state) do
     ["/bin/sh", "-c", ~S(exec "$0" "$@" 2>/dev/null), exe | args]
-    |> start(cwd, :open, state, grace_ms: @term_grace_ms)
+    |> start(cwd, :open, state, grace_ms: @term_grace_ms, env: state.env)
   end
 
   def stop(%{port: port}), do: Helyx.Watchdog.close(port)
@@ -187,6 +188,14 @@ defmodule Helyx.HarnessIO do
     SystemLimitError -> :error
   end
 
+  # The options of `init/3` that a harness provider keeps, as the fields
+  # `persist?` and `env` of its state.
+  def options(opts) do
+    with {:ok, persist?} <- persist(opts),
+         {:ok, env} <- env(opts),
+         do: {:ok, persist?: persist?, env: env}
+  end
+
   # The `:persist` option of a harness provider, true by default. A harness
   # session with no stored state cannot be resumed, so a `:resume_id` with
   # `persist: false` fails (docs/features/harness-no-state.md).
@@ -197,6 +206,39 @@ defmodule Helyx.HarnessIO do
       {true, _id} -> {:ok, true}
       _other -> {:error, {:invalid_option, :persist}}
     end
+  end
+
+  # The names that the `/bin/sh` of the launch or the OS is known to set
+  # itself: the POSIX shell ones, and each one that the review probes saw
+  # changed by the bash of macOS, dash, bash 5.3, or macOS itself.
+  @shell_names ~w(BASH BASHOPTS BASHPID BASH_ARGV0 BASH_COMMAND BASH_EXECUTION_STRING
+                  BASH_MONOSECONDS BASH_SUBSHELL BASH_VERSINFO BASH_VERSION CDPATH COMP_WORDBREAKS
+                  ENV EPOCHREALTIME EPOCHSECONDS HISTCMD IFS LINENO OLDPWD OPTERR OPTIND
+                  POSIXLY_CORRECT PPID PS1 PS2 PS4 PWD RANDOM SHELLOPTS SHLVL SRANDOM XPC_FLAGS
+                  XPC_SERVICE_NAME)
+
+  # The `:env` option of a harness provider, `%{}` by default: the map that
+  # each launch sets on top of the inherited environment, as the name and
+  # value pairs of `Helyx.Watchdog.start/4`. A name is a shell identifier,
+  # since dash, a `/bin/sh` of the launch, drops any other name, and not
+  # one of `@shell_names`; a shell or an OS can set other names of its own.
+  # A value is non-empty valid UTF-8 with no NUL: the port unsets a
+  # variable with an empty value and raises for a NUL. The error names no
+  # value (docs/features/harness-no-state.md).
+  def env(opts) do
+    with env when is_map(env) <- Keyword.get(opts, :env, %{}),
+         entries = Map.to_list(env),
+         true <- Enum.all?(entries, &env_entry?/1) do
+      {:ok, entries}
+    else
+      _other -> {:error, {:invalid_option, :env}}
+    end
+  end
+
+  defp env_entry?({name, value}) do
+    is_binary(name) and name =~ ~r/\A[A-Za-z_][A-Za-z0-9_]*\z/ and name not in @shell_names and
+      is_binary(value) and value != "" and String.valid?(value) and
+      not String.contains?(value, <<0>>)
   end
 
   # A compaction in a program with no history yet: the replay of the
