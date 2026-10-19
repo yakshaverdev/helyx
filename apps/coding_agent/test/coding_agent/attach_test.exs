@@ -55,6 +55,12 @@ defmodule CodingAgent.AttachTest do
     lock
   end
 
+  # A run of `helyx` that ends with one line on stderr and the status 1.
+  defp helyx(argv) do
+    assert {1, line} = with_io(:stderr, fn -> CLI.main(argv) end)
+    line
+  end
+
   test "attaches to a running server, and the socket takes requests; a stopped server is none",
        %{sessions: sessions, server_file: file} do
     task =
@@ -73,6 +79,49 @@ defmodule CodingAgent.AttachTest do
     assert {{0, _out}, ""} = Task.await(task, 60_000)
 
     assert Attach.connect(sessions) == :none
+  end
+
+  # The TUI needs a terminal, so these runs of `helyx` end before it. The
+  # server runs its Core in this VM under the default name, so a run in the
+  # node would fail its start: each line comes over the wire, or from the
+  # find of a `--session` id, as in the node.
+  test "helyx attaches to a running server: the start and the resume go over the wire",
+       %{tmp_dir: dir, sessions: sessions, server_file: file} do
+    task =
+      Task.async(fn ->
+        with_io(:stderr, fn -> with_io(fn -> CLI.main(["serve", "--model", "fake/echo"]) end) end)
+      end)
+
+    wait_until(fn -> match?({:ok, "{" <> _}, File.read(file)) end)
+
+    missing = Helyx.Session.Id.new()
+    assert helyx(["--session", missing]) == ~s(helyx: no session "#{missing}"\n)
+    assert helyx(["--session", "../x"]) == ~s(helyx: not a session id: "../x"\n)
+
+    assert helyx([dir, "--model", "nope/m"]) ==
+             ~s(helyx: could not start the agent: no provider has the id "nope"\n)
+
+    assert helyx([dir, "--resume"]) ==
+             "helyx: could not start the agent: no saved session for this directory; " <>
+               "start one without --resume\n"
+
+    # `--session` runs in the folder of the header of its session, which
+    # is checked before the resume: the live session stays as it was.
+    gone = Path.join(dir, "gone")
+    File.mkdir_p!(gone)
+    {:ok, socket} = Attach.connect(sessions)
+
+    assert %{"ok" => true, "result" => %{"session" => id}} =
+             WireClient.request(socket, "1", "start", %{"cwd" => gone})
+
+    File.rmdir!(gone)
+
+    assert helyx(["--session", id]) ==
+             ~s(helyx: not a directory: "#{String.slice(gone, -80, 80)}"\n)
+
+    # The capture of the server gets the lines of stderr too.
+    :ok = Task.Supervisor.terminate_child(CodingAgent.Servers, Process.whereis(Serve))
+    assert {{0, _out}, _stderr} = Task.await(task, 60_000)
   end
 
   test "with the lock free, a server file is no server and stays; a missing data folder is none",
@@ -156,6 +205,10 @@ defmodule CodingAgent.AttachTest do
              "the server speaks protocol #{ours + 1}, this client speaks #{ours}; install the same build"
 
     refute line =~ "the-token"
+
+    # `helyx` prints the line and exits 1.
+    write_file(file, fake(%{type: "refused", code: "protocol", server_protocol: ours + 1}))
+    assert helyx([]) == "helyx: #{line}\n"
 
     port = fake(%{type: "refused", code: "protocol", server_protocol: "#{ours + 1}"})
     write_file(file, port)

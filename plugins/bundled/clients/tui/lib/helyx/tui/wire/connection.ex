@@ -9,12 +9,13 @@ defmodule Helyx.TUI.Wire.Connection do
   the schema (decision 14), turns the events of a subscription into
   `Helyx.Event` structs, sends the acks, and answers the pings.
 
-  The process that calls `open/1` owns the connection, which ends with it.
-  The owner gets the events of its subscriptions as a client in the node
-  gets them from `Helyx.Session.subscribe/2`: `{:helyx_event, event}` for
-  each event, then `{:helyx_end, sub, reason}` at the end of the session,
-  with `reason` `:stopped` or `:crashed`. It passes each event that it
-  applied to `ack/3`. The connection ends with `{:shutdown, :broken}` at a
+  The process that calls `open/1` owns the connection, which ends with it;
+  `take/1` makes another process the owner. The owner gets the events of
+  its subscriptions as a client in the node gets them from
+  `Helyx.Session.subscribe/2`: `{:helyx_event, event}` for each event, then
+  `{:helyx_end, sub, reason}` at the end of the session, with `reason`
+  `:stopped` or `:crashed`. It passes each event that it applied to
+  `ack/3`. The connection ends with `{:shutdown, :broken}` at a
   frame that the contract does not allow, and with `{:shutdown, {:closed,
   code}}` when the server closes it, `code` nil for a close with no code:
   a close of TCP, a close frame with no code, or a failed read or write.
@@ -62,9 +63,21 @@ defmodule Helyx.TUI.Wire.Connection do
     {:ok, conn, ref}
   end
 
+  @doc """
+  Makes the caller the owner of `conn` in place of the process that opened
+  it: a process that did not exist at `open/1`, such as the TUI, which
+  starts in its `start_link`. Returns the caller's monitor of it.
+  """
+  @spec take(pid()) :: reference()
+  def take(conn) do
+    ref = Process.monitor(conn)
+    # A connection that ended gives its `:DOWN` to the monitor.
+    _ = call(conn, :take)
+    ref
+  end
+
   @doc "Subscribes to `session` with `answers: true`; `sub` names the subscription."
-  @spec subscribe(pid(), String.t()) ::
-          {:ok, Snapshot.t() | {:replay, [Event.t()]}, String.t()} | {:error, error()}
+  @spec subscribe(pid(), String.t()) :: {:ok, Snapshot.t(), String.t()} | {:error, error()}
   def subscribe(conn, session),
     do: request(conn, "subscribe", %{"session" => session, "answers" => true})
 
@@ -108,6 +121,10 @@ defmodule Helyx.TUI.Wire.Connection do
   @spec abort(pid(), String.t()) :: :ok | {:error, error()}
   def abort(conn, session), do: request(conn, "abort", %{"session" => session})
 
+  @doc "Stops `session` after an abort of its turn, as `Helyx.Sessions.stop/1`."
+  @spec stop(pid(), String.t()) :: :ok | {:error, error()}
+  def stop(conn, session), do: request(conn, "stop", %{"session" => session})
+
   @doc "Sets the model of the next turn of `session`, as `Helyx.Session.set_model/2`."
   @spec set_model(pid(), String.t(), String.t()) :: :ok | {:error, error()}
   def set_model(conn, session, model),
@@ -123,16 +140,16 @@ defmodule Helyx.TUI.Wire.Connection do
 
   defp params(opts), do: Map.new(opts, fn {key, value} -> {Atom.to_string(key), value} end)
 
-  defp request(conn, op, params) do
-    GenServer.call(conn, {:request, op, params}, :infinity)
+  defp request(conn, op, params), do: call(conn, {:request, op, params})
+
+  defp call(conn, message) do
+    GenServer.call(conn, message, :infinity)
   catch
     :exit, _ended -> {:error, :closed}
   end
 
   @impl true
   def init({owner, socket}) do
-    Process.monitor(owner)
-
     # `waiting` maps the id of a request to its op and `{from, timer}`: its
     # caller and its deadline timer, `:late` after the timer, or
     # `{:unsubscribe, sub}` for the end of a subscription that a late reply
@@ -141,6 +158,7 @@ defmodule Helyx.TUI.Wire.Connection do
     {:ok,
      %{
        owner: owner,
+       monitor: Process.monitor(owner),
        socket: socket,
        buffer: "",
        joined: nil,
@@ -161,6 +179,11 @@ defmodule Helyx.TUI.Wire.Connection do
     id = Integer.to_string(state.next)
     timer = Process.send_after(self(), {:deadline, id}, Ops.deadline(op) + @margin_ms)
     send_request(state, id, op, params, {from, timer})
+  end
+
+  def handle_call(:take, {owner, _tag}, state) do
+    Process.demonitor(state.monitor, [:flush])
+    {:reply, :ok, %{state | owner: owner, monitor: Process.monitor(owner)}}
   end
 
   @impl true
@@ -271,6 +294,10 @@ defmodule Helyx.TUI.Wire.Connection do
   defp reply(_caller, "subscribe", {:ok, _snapshot_or_replay, sub}, state)
        when is_map_key(state.subs, sub),
        do: broken(state)
+
+  # A replay answers only a `subscribe` with `after`, which this client
+  # does not send.
+  defp reply(_caller, "subscribe", {:ok, {:replay, _events}, _sub}, state), do: broken(state)
 
   # A late reply: its caller got `timeout`. A subscription that it made
   # ends with `unsubscribe`, and its frames are dropped.

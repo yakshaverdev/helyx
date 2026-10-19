@@ -21,7 +21,7 @@ Decisions (the ticket, "Decisions (orchestrator, 2026-10-17)"):
 - **Errors.** A crash of the switch Task (a tool check that raises in the open, for example) is a failed open: ExRatatui traps exits, so the TUI gets the `:DOWN` of the Task and handles it as an error. A failed start or resume adds the information cell `could not switch: <reason>`, and the TUI stays on its current session. `{:session_locked, id}` reads `session <id> is open in another process`; any other reason is `Helyx.Reason.text/1`. When the current session ended during the switch (its end signal came while the Task ran, or its process is dead when the answer comes; then the TUI waits for the end signal, which its monitor makes certain, and first takes the events of that session that come before it, in their order, so a `queue_dropped` among them is kept), the TUI starts a new session in its place, as `/new`. When that start fails too, or when the failed switch was a `/new`, the TUI ends with `{:session_down, reason}`, as it does today when its session ends. A new session that ends between the answer of the Task and the subscribe ends the TUI with `{:session_down, :session_not_found}`, as at the mount, so the line says the session stopped also when it crashed (an accepted hole).
 - **The list** draws in the place of the composer, in the same box, with as many rows as fit above the footer while the transcript keeps one row. It leaves out the current session. A list with no other session shows the line `no other session in this folder`. The list is read once, when it opens, in the TUI process.
 - **One line format.** The line of a session moves from `CodingAgent.CLI` to `Helyx.TUI.SessionList.line/2`, which both call, so `helyx --list` and `/resume` show the same line. The clean pass `CodingAgent.one_line/1` moves there too, as `Helyx.TUI.SessionList.one_line/1`, because the bundled project cannot call the product; `CodingAgent.clean_line/1` calls it.
-- **Quit after a switch.** `CodingAgent` aborts the session that it started. After a switch that session is gone, so the TUI aborts its current session in its `terminate/2`, after ExRatatui restores the terminal, and kills a switch Task that still runs.
+- **Quit after a switch.** `CodingAgent` aborts the session that it started. After a switch that session is gone, so the TUI aborts its current session in its `terminate/2`, after ExRatatui restores the terminal, and kills a switch Task that still runs. Over the wire (`docs/features/tui-attach.md`, slice 3) the switch stops the old session with the `stop` request, and the quit aborts nothing.
 
 ## Interface changes
 
@@ -37,7 +37,7 @@ Decisions (the ticket, "Decisions (orchestrator, 2026-10-17)"):
 1. The TUI held one session for its whole life, and the view model had no `instance_id` guard because the TUI subscribed once. Now `Helyx.TUI` subscribes once for each session and drops an event of another `instance_id` (`handle_info/2`). The view model stays without a guard.
 2. The end signal of the session always ended the TUI. During a switch it is kept in the switch state, and the result of the switch decides (see Goal, "Errors").
 3. The `--list` line of `CodingAgent.CLI` (`line/2`, `folder_text/1`, `take/2`, `time/1`, and the widths) moves to `Helyx.TUI.SessionList` unchanged. The tests of `--list` keep their properties.
-4. The only abort at quit was the one of `CodingAgent.run/1`. It stays, for a TUI that fails to start, and the TUI adds its own for its current session. A known ceiling: a later client that switches sessions must abort its current session itself, because Core has no list of the sessions of a client.
+4. The only abort at quit was the one of `CodingAgent.run/1`. It stays, for a TUI that fails to start, and the TUI adds its own for its current session in the node; over the wire the quit aborts nothing (`docs/features/tui-attach.md`, slice 3). A known ceiling: a later client that switches sessions must abort its current session itself, because Core has no list of the sessions of a client.
 
 ## Bounds
 
@@ -52,7 +52,7 @@ Decisions (the ticket, "Decisions (orchestrator, 2026-10-17)"):
 | switches at one time | one; a second `/new` or `/resume` and every send wait for its end with a reason | rejected: `not sent: a switch runs` | `Helyx.TUI` |
 | wait of a switch | the start or resume of the new session, the abort of the old one (it waits for the hands, as Escape does), and its stop, whose waits `Stop.shutdown_ms/0` bounds; none of it in the frame loop (the wait for an end signal at a failed answer is its own row) | n/a | the switch Task |
 | wait for the end signal of a dead session at a failed answer | the `:DOWN` of the monitor of the subscribe, which a dead process sends, after the events of that session that wait before it (a dead process sends no more); `Helyx.Session.pid/1` gives nil only for a dead session or a gone Registry, and both end the session within the bound of `Stop.shutdown_ms/0` | n/a | `Switch.done/2`, in the TUI process |
-| subscribe to the new session | the 5 s call timeout of `Helyx.Session.subscribe/1`, in the TUI process | the exit ends the TUI | `Helyx.TUI` |
+| subscribe to the new session | the 5 s call timeout of `Helyx.Session.subscribe/1`, in the TUI process; over the wire the deadline of the server and the margin, 11,000 ms (`docs/features/tui-attach.md`, slice 3) | the exit ends the TUI | `Helyx.TUI` |
 | error text in the information cell | `Helyx.Reason.text/1`: 4,000 bytes; the cell is drawn through `Helyx.TUI.Wrap` | cut | `Helyx.TUI` |
 
 ## Ownership
@@ -61,7 +61,7 @@ Decisions (the ticket, "Decisions (orchestrator, 2026-10-17)"):
 | -------- | ---------- | ------- | ---------------------- | -------------------------------- | ----------------- |
 | switch Task | `Helyx.TUI`, `Task.async/1` | the TUI, linked | its reply goes to the TUI | the link ends it; open, no ticket: a session that it started stays until Core stops | `terminate/2` of the TUI kills it at quit; open, no ticket: a session that it started stays until Core stops |
 | list scan Task | `SessionList.new/3`, `Task.async/1` | the TUI, linked | its answer goes to the TUI; Escape stops it (`SessionList.close/1`) | the link ends it; a crash of the Task itself, which only a bug makes, leaves the list at `reading the sessions of this folder` until Escape, because ExRatatui traps exits | not stopped at quit: it reads at most 256 heads, but its stats of the folder have no bound (the row of the list scan above), and its answer goes nowhere |
-| the new session | the switch Task | Core's session supervisor | the next switch ends it, or Core stops | Core stops it | a quit aborts it in `terminate/2` |
+| the new session | the switch Task | Core's session supervisor | the next switch ends it, or Core stops | Core stops it | a quit aborts it in `terminate/2` in the node; over the wire it runs on in the server |
 | the old session | an earlier start | Core's session supervisor | the switch Task stops it | Core stops it | n/a |
 
 ## Out of scope

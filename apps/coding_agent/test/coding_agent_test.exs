@@ -196,4 +196,24 @@ defmodule CodingAgentTest do
     assert CodingAgent.error_text({:session_down, :session_not_found}) ==
              "the session stopped"
   end
+
+  test "error_text of the attach and of a TUI over the wire" do
+    # A line of the attach is whole, and gets the clean pass: its folder
+    # comes from the configuration.
+    assert CodingAgent.error_text({:attach, "the data folder /x\e[2J is not a directory"}) ==
+             "the data folder /x?[2J is not a directory"
+
+    assert CodingAgent.error_text({:connection_down, {:shutdown, :broken}}) ==
+             "the server broke the wire contract"
+
+    assert CodingAgent.error_text({:connection_down, :closed}) ==
+             "could not subscribe to the session: no connection to the server"
+
+    assert sentence(:too_many_sessions) == "the server runs as many sessions as it can"
+    assert sentence({:start_failed, "no\nroom"}) == "no room"
+    assert sentence(:timeout) == "no answer from the server"
+    assert sentence(:busy) == "too many requests wait"
+    assert sentence(:closed) == "no connection to the server"
+    assert sentence(:failed) == "the server failed"
+  end
 end

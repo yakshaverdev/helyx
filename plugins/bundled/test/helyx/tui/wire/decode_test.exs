@@ -179,6 +179,7 @@ defmodule Helyx.TUI.Wire.DecodeTest do
           {"sessions.saved", ok.(%{"items" => [wire(Map.from_struct(summary))], "next" => "n"}),
            {:ok, [summary], "n"}},
           {"sessions.saved", ok.(%{"items" => [], "next" => nil}), {:ok, [], nil}},
+          {"stop", ok.(%{}), :ok},
           {"subscribe", ok.(%{"sub" => "2", "replay" => [wire(Wire.event(hd(replay))), future]}),
            {:ok, {:replay, replay}, "2"}},
           {"steer", error.("queue_full"), {:error, :queue_full}},

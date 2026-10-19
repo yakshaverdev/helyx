@@ -193,6 +193,11 @@ defmodule CodingAgent.CLITest do
       {id, file.path}
     end
 
+    defp run_in_node(opts) do
+      sessions_dir = Application.fetch_env!(:coding_agent, :sessions_dir)
+      CodingAgent.run(opts ++ [resume: false, sessions_dir: sessions_dir])
+    end
+
     defp list(argv) do
       out = capture_io(fn -> send(self(), {:status, CLI.main(["--list" | argv])}) end)
       assert_received {:status, 0}
@@ -289,9 +294,11 @@ defmodule CodingAgent.CLITest do
       assert Process.whereis(Helyx.Core) == nil
     end
 
-    # #765: the find of the id comes after the tool checks, as for a start.
-    # The value of PATH is not shown on a failure.
-    test "--session with no perl on PATH prints the tool error of a start",
+    # The test of the lock of the data folder, before the TUI starts in the
+    # node, needs perl (docs/features/tui-attach.md, decision 1). #765: in
+    # the node, the find of the id comes after the tool checks, as for a
+    # start. The value of PATH is not shown on a failure.
+    test "with no perl on PATH, helyx prints the lock line, and a start in the node the tool error",
          %{tmp_dir: dir, sessions: s} do
       {id, file} = session(s, dir, 1_000, "p")
       before = File.read!(file)
@@ -301,11 +308,19 @@ defmodule CodingAgent.CLITest do
       on_exit(fn -> System.put_env("PATH", path) end)
       System.put_env("PATH", empty)
 
-      start = error_line([dir])
+      lock = error_line([dir])
+
+      assert lock ==
+               "could not test the lock of the data folder: perl is not on the PATH; " <>
+                 "Helyx needs it to lock a session"
+
+      start = CodingAgent.error_text(elem(run_in_node(cwd: dir, model: "fake/echo"), 1))
       assert start =~ "the bash tool is not available"
 
-      for id <- [id, Helyx.Session.Id.new(), "../x"],
-          do: assert(error_line(["--session", id]) == start)
+      for id <- [id, Helyx.Session.Id.new(), "../x"] do
+        assert error_line(["--session", id]) == lock
+        assert CodingAgent.error_text(elem(run_in_node(resume: id), 1)) == start
+      end
 
       assert File.read!(file) == before
       assert Process.whereis(Helyx.Core) == nil
