@@ -23,7 +23,9 @@ defmodule Helyx.TUI.Wire.ConnectionTest do
   @max_joined 26_214_400
 
   defp open(port) do
-    {:ok, socket} = Wire.connect(@loopback, port, fn -> "token" end, 5_000)
+    # The handshake is a wait that must happen: the one cap of the tests,
+    # so load does not fail it (#805).
+    {:ok, socket} = Wire.connect(@loopback, port, fn -> "token" end, Helyx.Test.Events.wait_ms())
     Connection.open(socket)
   end
 
@@ -101,6 +103,35 @@ defmodule Helyx.TUI.Wire.ConnectionTest do
                Connection.start(c.conn, cwd: "/", model: "nope/m")
 
       assert {:error, :not_found} = Connection.resume(c.conn, id: "missing")
+    end
+
+    test "take makes the caller the owner, and stop ends a session", c do
+      assert {:ok, id} = Connection.start(c.conn, cwd: File.cwd!(), model: "fake/echo")
+      test = self()
+
+      owner =
+        spawn(fn ->
+          _ref = Connection.take(c.conn)
+          {:ok, _snapshot, sub} = Connection.subscribe(c.conn, id)
+          send(test, {:sub, sub})
+          receive do: (message -> send(test, {:owner, message}))
+          Process.sleep(:infinity)
+        end)
+
+      assert_receive {:sub, sub}
+      assert :ok = Connection.stop(c.conn, id)
+      assert_receive {:owner, {:helyx_end, ^sub, :stopped}}
+      refute_received {:helyx_end, _sub, _reason}
+      assert Helyx.Sessions.list_live(c.core) == []
+      assert {:error, :session_not_found} = Connection.stop(c.conn, id)
+
+      # The connection ends with its new owner.
+      Process.exit(owner, :kill)
+      conn = c.conn
+      assert_receive {:DOWN, _ref, :process, ^conn, :normal}
+      # A take of an ended connection gives its `:DOWN` to the monitor.
+      ref = Connection.take(conn)
+      assert_receive {:DOWN, ^ref, :process, ^conn, :noproc}
     end
 
     test "a text over the frame bound goes as parts", c do
@@ -397,6 +428,18 @@ defmodule Helyx.TUI.Wire.ConnectionTest do
     :ok = Connection.ack(conn, "x", last)
     assert_receive {:client, {1, ack}}
     assert JSON.decode!(ack) == %{"type" => "ack", "sub" => "x", "seq" => 1_024}
+  end
+
+  test "a replay in reply to a subscribe, which sends no after, is a contract break" do
+    {conn, ref} =
+      fake(fn socket ->
+        %{"id" => id, "op" => "subscribe", "params" => params} = client_frame(socket)
+        false = Map.has_key?(params, "after")
+        :ok = :gen_tcp.send(socket, text(res(id, %{sub: "x", replay: []})))
+      end)
+
+    assert Connection.subscribe(conn, "s1") == {:error, :closed}
+    assert_receive {:DOWN, ^ref, :process, ^conn, {:shutdown, :broken}}
   end
 
   test "a close of the server ends the connection with its code, and a waiting request gets closed" do

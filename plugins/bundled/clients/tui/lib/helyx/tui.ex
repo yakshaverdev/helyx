@@ -21,11 +21,12 @@ defmodule Helyx.TUI do
 
   The TUI subscribes to one session at a time and renders from `Helyx.TUI.ViewModel`,
   a pure fold over the session's events. It holds no session state of its own. It runs in
-  the node of its Core, so it has the Helyx version of that Core and needs no version check
-  (ADR 0006). Typing fills the composer (`Helyx.TUI.Composer`), at most 8 lines high; a
-  paste of more than 5 lines shows as one marker and is sent in full, and a rejected send
-  stays in the composer. `/help` lists the slash commands (`Helyx.TUI.Command`) and these
-  keys, with the full rules in `docs/features/coding-agent.md`, "TUI":
+  the node of its Core, or over the wire on the server of the data folder
+  (`docs/features/tui-attach.md`), whose handshake checks the protocol. Typing fills the
+  composer (`Helyx.TUI.Composer`), at most 8 lines high; a paste of more than 5 lines shows
+  as one marker and is sent in full, and a rejected send stays in the composer. `/help`
+  lists the slash commands (`Helyx.TUI.Command`) and these keys, with the full rules in
+  `docs/features/coding-agent.md`, "TUI":
 
   #{Enum.map_join(@keys, "\n", fn {key, text} -> "* #{key}: #{text}" end)}
 
@@ -40,8 +41,7 @@ defmodule Helyx.TUI do
   alias ExRatatui.Layout
   alias ExRatatui.Layout.Rect
   alias ExRatatui.Subscription
-  alias Helyx.Session
-  alias Helyx.TUI.{Command, Composer, Footer, Quit, Selection, SessionList, Start, Switch}
+  alias Helyx.TUI.{Command, Composer, Footer, Link, Quit, Selection, SessionList, Start, Switch}
   alias Helyx.TUI.{Question, Search, Transcript, ViewModel}
   require Helyx.TUI.{Question, Quit, Search}
 
@@ -54,12 +54,14 @@ defmodule Helyx.TUI do
   @doc """
   Starts the TUI for a session and blocks until the user quits.
 
-  The options are `:session`, `:resumed` (true when the session was
-  resumed: an information cell "resumed session" follows the history),
-  `:cwd` (the directory that the footer shows and the folder of `/new` and
-  `/resume`, default `File.cwd!/0`), `:sessions_dir` (where `/new` saves
-  and `/resume` lists; without it `/new` saves nothing and `/resume` lists
-  nothing), and those of `ExRatatui.App`. The scroll keys read the terminal size through
+  The options are `:session`, a `Helyx.Session` or a `Helyx.TUI.Link` with
+  the connection that the caller opened, which the TUI takes; `:resumed`
+  (true when the session was resumed: an information cell "resumed
+  session" follows the history), `:cwd` (the directory that the footer
+  shows and the folder of `/new` and `/resume`, default `File.cwd!/0`),
+  `:sessions_dir` (where `/new` saves and `/resume` lists; without it
+  `/new` saves nothing and `/resume` lists nothing), and those of
+  `ExRatatui.App`. The scroll keys read the terminal size through
   `:terminal_size_fn`, the option of `ExRatatui.Server`; the default is
   `ExRatatui.terminal_size/0`.
   """
@@ -99,7 +101,7 @@ defmodule Helyx.TUI do
     }
 
     info = if opts[:resumed], do: "resumed session"
-    state = state |> Switch.bind(Keyword.fetch!(opts, :session), info) |> read_branch()
+    state = state |> Switch.bind(Link.own(Keyword.fetch!(opts, :session)), info) |> read_branch()
     # The notices of the skills scan (docs/features/skills.md), once.
     notices = Helyx.Skills.scan(cwd).notices
     {:ok, %{state | vm: Enum.reduce(notices, state.vm, &ViewModel.notice(&2, &1))}}
@@ -111,8 +113,15 @@ defmodule Helyx.TUI do
 
   def handle_info({:helyx_end, ref, :slow}, %{session_ref: ref}), do: exit({:session_down, :slow})
 
+  # Over the wire: the `session_end` of the subscription, and the end of the connection.
+  def handle_info({:helyx_end, sub, reason}, %{session_ref: sub} = state),
+    do: {:noreply, Switch.down(state, {:session_end, reason})}
+
+  def handle_info({:DOWN, _ref, :process, conn, reason}, %{session: %Link{conn: conn}}),
+    do: exit({:connection_down, reason})
+
   def handle_info({:helyx_event, %{instance_id: id} = event}, %{instance_id: id} = state) do
-    :ok = Session.ack(state.session, event)
+    :ok = Link.ack(state.session, state.session_ref, event)
     state = Question.sync(%{state | vm: ViewModel.apply(state.vm, event)})
     # A turn can change the branch.
     state = if event.type == :turn_end, do: read_branch(state), else: state
@@ -148,6 +157,9 @@ defmodule Helyx.TUI do
 
   def handle_info({Quit, ref}, state),
     do: {:noreply, %{state | quit: Quit.expire(state.quit, ref)}}
+
+  def handle_info({Link, :abort, text}, state),
+    do: {:noreply, %{state | vm: ViewModel.reject(state.vm, text)}}
 
   # An older branch task or list scan, or its `:DOWN`, is ignored here.
   def handle_info(_msg, state), do: {:noreply, state}
@@ -202,7 +214,7 @@ defmodule Helyx.TUI do
   # Escape aborts, also over a hidden search; a Task keeps the wait off the render loop.
   def handle_event(%Key{code: "esc", kind: "press"}, state)
       when state.search == nil or state.question != nil,
-      do: {:noreply, tap(state, &Task.start(Session, :abort, [&1.session]))}
+      do: {:noreply, tap(state, &Link.abort_async(&1.session))}
 
   def handle_event(event, state) when Question.handles?(state.question, event),
     do: Question.handle(event, state)
@@ -274,26 +286,11 @@ defmodule Helyx.TUI do
     if Composer.rows(composer) == rows, do: state, else: settle(state)
   end
 
+  # A rejected message stays in the composer, and the footer says why.
   defp send_message(text, key, state) do
-    deliver = if "alt" in key.modifiers, do: &Session.follow_up/2, else: &Session.steer/2
-
-    # A rejected message stays in the composer, and the footer says why.
-    case deliver.(state.session, text) do
-      :ok ->
-        %{state | composer: Composer.restore(state.composer), scroll: nil}
-
-      # ExRatatui gives event text as a Rust `String`, so the composer
-      # holds only valid UTF-8 and the session never answers `:invalid_utf8`.
-      {:error, :queue_full} ->
-        %{state | vm: ViewModel.reject(state.vm, "not sent: the queue is full")}
-
-      # A paste has no size bound of its own (`Session.max_text_bytes/0`).
-      {:error, :text_too_large} ->
-        %{state | vm: ViewModel.reject(state.vm, "not sent: over 4 MiB")}
-
-      # The end signal of the session ends the TUI next.
-      {:error, :session_not_found} ->
-        %{state | vm: ViewModel.reject(state.vm, "not sent: the session ended")}
+    case Link.send_text(state.session, text, "alt" in key.modifiers) do
+      :ok -> %{state | composer: Composer.restore(state.composer), scroll: nil}
+      {:reject, reason} -> %{state | vm: ViewModel.reject(state.vm, reason)}
     end
   end
 
@@ -305,7 +302,7 @@ defmodule Helyx.TUI do
     do: %{restore(state) | vm: ViewModel.info(state.vm, Command.help(@keys))}
 
   defp run_command({:resume, ""}, state),
-    do: %{restore(state) | list: SessionList.new(state.sessions_dir, state.cwd, state.session.id)}
+    do: %{restore(state) | list: SessionList.new(state.session, state.sessions_dir, state.cwd)}
 
   defp run_command(command, state) do
     case Command.run(command, state.session) do
@@ -390,11 +387,12 @@ defmodule Helyx.TUI do
 
   # At quit, a switch that runs ends, and a session that it opened stays
   # until Core stops. The turn of the current session aborts before Core
-  # stops; ExRatatui has restored the terminal.
+  # stops, and runs on in the server (`Link.quit/1`); ExRatatui has
+  # restored the terminal.
   @impl true
   def terminate(_reason, state) do
     if state.switch, do: Task.shutdown(state.switch.task, :brutal_kill)
-    _ = Session.abort(state.session)
+    _ = Link.quit(state.session)
     :ok
   end
 end

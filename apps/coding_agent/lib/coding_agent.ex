@@ -1,8 +1,16 @@
 defmodule CodingAgent do
   @moduledoc """
   The terminal coding agent: Core with the bundled plugins, one session, and
-  the TUI. Started by `CodingAgent.CLI`, from the `helyx` release or `mix helyx`.
+  the TUI, or the TUI over the wire on the server of the data folder
+  (`attach/2`). Started by `CodingAgent.CLI`, from the `helyx` release or
+  `mix helyx`.
   """
+
+  alias Helyx.Session.File.Scan
+  alias Helyx.TUI.Link
+  alias Helyx.TUI.Wire.Connection
+
+  require Link
 
   @plugins [
     Helyx.Provider.OpenAI.Go,
@@ -74,17 +82,78 @@ defmodule CodingAgent do
   # list in time is left out of it.
   defp session_cwd(session, nil) do
     case Enum.find(Helyx.Sessions.list_live(session.core), &(&1.id == session.id)) do
-      nil ->
-        {:error, :session_not_found}
-
-      %{cwd: cwd} ->
-        if Path.type(cwd) == :absolute and File.dir?(cwd),
-          do: {:ok, cwd},
-          else: {:error, {:not_a_directory, cwd}}
+      nil -> {:error, :session_not_found}
+      %{cwd: cwd} -> directory(cwd)
     end
   end
 
   defp session_cwd(_session, cwd), do: {:ok, cwd}
+
+  defp directory(cwd) do
+    if Path.type(cwd) == :absolute and File.dir?(cwd),
+      do: {:ok, cwd},
+      else: {:error, {:not_a_directory, cwd}}
+  end
+
+  @doc """
+  Runs the TUI over the wire until the user quits
+  (`docs/features/tui-attach.md`, decisions 8 and 9). `socket` is the
+  socket of `CodingAgent.Attach.connect/1`, which the caller owns and gives
+  to the connection (`Helyx.TUI.Wire.Connection`); the TUI takes the
+  connection and ends it at its quit. The options are those of `run/1`
+  with no `:prompt`; `:model` is optional: with none, a new session gets
+  the default model of the server; and `resume: id` takes no `:cwd`. The
+  session starts or resumes in the server and runs on after the quit,
+  which aborts nothing. Returns `{:error, reason}` as `run/1` does, with
+  the errors of the wire.
+  """
+  @spec attach(:gen_tcp.socket(), keyword()) :: :ok | {:error, term()}
+  def attach(socket, opts) do
+    {:ok, conn, ref} = Connection.open(socket)
+
+    try do
+      with {:ok, id, cwd} <- open_remote(conn, opts),
+           do: client(%Link{conn: conn, id: id}, Keyword.put(opts, :cwd, cwd))
+    after
+      # The connection ended with the TUI that took it; one that no TUI
+      # took ends here.
+      Process.exit(conn, :kill)
+      Process.demonitor(ref, [:flush])
+    end
+  end
+
+  # The session over the wire, and its folder. `--session` finds the file
+  # of the id as the node does (`Scan.find/2`), so its errors are those of
+  # the node, and runs in the folder of its header, where the server
+  # resumes it. The folder is checked before the open, so no session
+  # starts in the server for a folder that the TUI refuses.
+  defp open_remote(conn, opts) do
+    case Keyword.get(opts, :resume, false) do
+      id when is_binary(id) ->
+        with {:ok, _path, header} <- Scan.find(Keyword.fetch!(opts, :sessions_dir), id),
+             {:ok, cwd} <- folder(header["cwd"]),
+             {:ok, id} <- Connection.resume(conn, id: id),
+             do: {:ok, id, cwd}
+
+      resume ->
+        with {:ok, cwd} <- folder(opts[:cwd]),
+             {:ok, id} <- start_or_resume(conn, resume, opts),
+             do: {:ok, id, cwd}
+    end
+  end
+
+  # A folder that is not UTF-8 has no JSON form, and a start refuses a NUL
+  # byte: the answers of the node, in its order.
+  defp folder(cwd) do
+    if String.valid?(cwd) and not String.contains?(cwd, <<0>>),
+      do: directory(cwd),
+      else: {:error, :invalid_cwd}
+  end
+
+  defp start_or_resume(conn, false, opts),
+    do: Connection.start(conn, Keyword.take(opts, [:cwd, :model]))
+
+  defp start_or_resume(conn, true, opts), do: Connection.resume(conn, cwd: opts[:cwd])
 
   defp client(session, opts) do
     case Keyword.fetch(opts, :prompt) do
@@ -133,7 +202,10 @@ defmodule CodingAgent do
   for the model ref and provider errors, for a bad working directory
   (`:invalid_cwd`), for a header folder that is not a directory
   (`{:not_a_directory, cwd}`, a whole line with no prefix), for a tool
-  that is not available, and for the end of the session. The `:too_large`
+  that is not available, for the end of the session, and over the wire for
+  a line of the attach (`{:attach, text}`) and the end of the connection
+  (`{:connection_down, reason}`), whole lines with no prefix, and for the
+  errors of the wire (`Helyx.TUI.Link.error_text/1`). The `:too_large`
   text is a sentence already and passes unchanged. An error with no clause
   prints through `Helyx.Reason.text/1`, so it holds no stacktrace. Every
   result gets one clean pass: a whitespace run becomes one space, and a
@@ -160,6 +232,11 @@ defmodule CodingAgent do
   # The folder of a session header, as the CLI shows a directory argument
   # that is not one.
   defp line({:not_a_directory, _cwd} = reason), do: sentence(reason)
+
+  # A line of `CodingAgent.Attach.connect/1`, and the end of the connection
+  # of a TUI over the wire: whole lines, with no prefix.
+  defp line({:attach, text}), do: text
+  defp line({:connection_down, reason}), do: Link.down_text(reason)
 
   defp line(reason), do: "could not start the agent: " <> sentence(reason)
 
@@ -206,6 +283,11 @@ defmodule CodingAgent do
     do: ~s(not a directory: "#{Helyx.TUI.SessionList.folder(cwd)}")
 
   defp sentence(:invalid_cwd), do: "the directory is not UTF-8 or holds a NUL byte"
+
+  # The errors of a start or a resume over the wire.
+  defp sentence(:too_many_sessions), do: "the server runs as many sessions as it can"
+  defp sentence({:start_failed, text}), do: text
+  defp sentence(reason) when Link.wire_error?(reason), do: Link.error_text(reason)
 
   # The exit of the TUI when its session ends (`Helyx.Session.end_reason/1`),
   # or when the session is gone before the TUI subscribes.

@@ -3,12 +3,14 @@ defmodule Helyx.TUI.Switch do
   # The session of the TUI: the bind to one session at mount, and a switch
   # to another one for `/new` and `/resume`
   # (docs/features/tui-session-switch.md). A Task opens the new session,
-  # then aborts the old one, so its turn is saved, and stops it. The new
-  # session opens first, so a failed open leaves the old one as it was.
-  # The functions take and give the state of `Helyx.TUI`.
+  # then aborts the old one, so its turn is saved, and stops it, in the
+  # node or over the wire (`Helyx.TUI.Link`). The new session opens first,
+  # so a failed open leaves the old one as it was. The functions take and
+  # give the state of `Helyx.TUI`.
 
   alias Helyx.{Event, Session}
-  alias Helyx.TUI.{Composer, Question, ViewModel}
+  alias Helyx.TUI.{Composer, Link, Question, ViewModel}
+  require Link
 
   @enforce_keys [:task, :target]
   defstruct [:task, :target, down: nil, dropped: []]
@@ -31,7 +33,7 @@ defmodule Helyx.TUI.Switch do
   # a resumed session, and the turn a late client joins, then the
   # information cell `info` when it is not nil. The end signal of the
   # subscription ends the TUI (`down/2`).
-  @spec bind(map(), Session.t(), String.t() | nil) :: map()
+  @spec bind(map(), Link.session(), String.t() | nil) :: map()
   def bind(state, session, info) do
     {snapshot, ref} = subscribe!(session)
     # The Ctrl+O toggle belongs to the client, so a switch keeps it.
@@ -42,7 +44,7 @@ defmodule Helyx.TUI.Switch do
       state
       | session: session,
         # The monitor of the session from the subscribe: its `:DOWN` is
-        # the end signal.
+        # the end signal. Over the wire, the sub: its `session_end` is.
         session_ref: ref,
         # An event of another instance is of a session that a switch left.
         instance_id: snapshot.instance_id,
@@ -56,11 +58,14 @@ defmodule Helyx.TUI.Switch do
     })
   end
 
-  # A session that is not running leaves nothing to render.
+  # A session that is not running leaves nothing to render, nor does a
+  # subscribe that the wire refused. A request of this client sends no
+  # `after`, so the server answers with a snapshot.
   defp subscribe!(session) do
-    case Session.subscribe(session, answers: true) do
+    case Link.subscribe(session) do
       {:ok, snapshot, ref} -> {snapshot, ref}
       {:error, :session_not_found} -> exit({:session_down, :session_not_found})
+      {:error, reason} when Link.wire_error?(reason) -> exit({:connection_down, reason})
     end
   end
 
@@ -81,25 +86,19 @@ defmodule Helyx.TUI.Switch do
     %{state | switch: %__MODULE__{task: task, target: target, down: down}}
   end
 
+  # A refused stop of the wire fails the switch: the TUI stays on the old
+  # session, whose events it acks, and the new one runs on in the server.
   defp run(target, old, opts) do
-    with {:ok, new} <- open(target, old.core, opts) do
-      # A session that ended first gives `{:error, :session_not_found}`.
-      _ = Helyx.Sessions.stop(old)
-      {:ok, new}
-    end
+    with {:ok, new} <- Link.open(old, target, opts),
+         :ok <- Link.stop(old),
+         do: {:ok, new}
   end
-
-  defp open(:new, core, opts),
-    do: Session.start(core, model: opts.model, cwd: opts.cwd, sessions_dir: opts.sessions_dir)
-
-  defp open({:resume, id}, core, opts),
-    do: Session.resume(core, sessions_dir: opts.sessions_dir, cwd: opts.cwd, id: id)
 
   # The end signal of the session. A dead session leaves nothing to
   # render: the exit surfaces the reason through `Helyx.TUI.run/1`. During
   # a switch, the result of the switch decides.
   @spec down(map(), term()) :: map()
-  def down(%{switch: nil}, reason), do: exit({:session_down, Session.end_reason(reason)})
+  def down(%{switch: nil}, reason), do: exit({:session_down, Link.end_reason(reason)})
   def down(state, reason), do: put_in(state.switch.down, {:down, reason})
 
   # An event of the current session for the composer. During a switch the
@@ -117,10 +116,11 @@ defmodule Helyx.TUI.Switch do
   # The answer of the Task. A failed open keeps the current session while
   # it runs; when it ended during the switch, a new session takes its
   # place, and when that fails too the TUI ends.
-  @spec done(map(), {:ok, Session.t()} | {:error, term()}) :: map()
+  @spec done(map(), {:ok, Link.session()} | {:error, term()}) :: map()
   def done(%{switch: switch} = state, {:ok, session}) do
-    # The old session ended in the Task, so its end signal goes.
-    Process.demonitor(state.session_ref, [:flush])
+    # The old session ended in the Task, so its end signal goes. Over the
+    # wire the TUI drops the `session_end` of a sub that is not its own.
+    if is_reference(state.session_ref), do: Process.demonitor(state.session_ref, [:flush])
     info = if switch.target == :new, do: "new session", else: "resumed session"
     state = bind(%{state | switch: nil}, session, info)
     %{state | composer: Composer.end_recall(state.composer)}
@@ -135,7 +135,7 @@ defmodule Helyx.TUI.Switch do
   defp failed(state, _target, nil), do: give_back(state)
 
   defp failed(_state, :new, {:down, reason}),
-    do: exit({:session_down, Session.end_reason(reason)})
+    do: exit({:session_down, Link.end_reason(reason)})
 
   # The old session is gone: its end signal stays with the new switch, and
   # its queue comes back, because the composer stays with the TUI.
@@ -149,7 +149,9 @@ defmodule Helyx.TUI.Switch do
   # The end signal of a session that died can come after the answer.
   # `Session.pid/1` gives nil only for a dead session (the Registry checks
   # the pid), and the `:DOWN` of a dead monitored process is on its way.
-  defp ended(%{switch: %{down: nil}} = state),
+  # Over the wire no call tells a dead session apart: a `session_end` that
+  # comes after the answer ends the TUI (docs/features/tui-attach.md).
+  defp ended(%{switch: %{down: nil}, session: %Session{}} = state),
     do: if(Session.pid(state.session), do: state, else: drain(state))
 
   defp ended(state), do: state
@@ -170,5 +172,15 @@ defmodule Helyx.TUI.Switch do
   defp text({:session_locked, id}),
     do: "could not switch: session #{id} is open in another process"
 
-  defp text(reason), do: "could not switch: " <> Helyx.Reason.text(reason)
+  defp text(reason), do: "could not switch: " <> reason(reason)
+
+  # A fixed text for each known reason of Core or of the wire, and one for
+  # any other, so the notice holds no term (the review of #807).
+  defp reason(reason) when Link.wire_error?(reason), do: Link.error_text(reason)
+  defp reason(:too_many_sessions), do: "too many sessions on the server"
+  defp reason(:not_found), do: "no saved session with this id"
+  defp reason({:start_failed, _text}), do: "the server could not open the session"
+  defp reason({:unknown_provider, _id}), do: "the model has an unknown provider"
+  defp reason({:invalid_model_ref, _ref}), do: "the model ref is not valid"
+  defp reason(_other), do: "the session did not open"
 end

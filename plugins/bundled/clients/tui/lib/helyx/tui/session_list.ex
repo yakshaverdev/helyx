@@ -9,7 +9,8 @@ defmodule Helyx.TUI.SessionList do
   alias ExRatatui.Widgets.{Block, Paragraph}
   alias ExRatatui.Widgets.List, as: Rows
   alias Helyx.Session.File.Scan
-  alias Helyx.TUI.Composer
+  alias Helyx.TUI.{Composer, Link}
+  require Link
 
   # The widths of the file text on a line, in code points.
   @prompt_width 60
@@ -20,33 +21,39 @@ defmodule Helyx.TUI.SessionList do
   @reading "reading the sessions of this folder"
 
   @enforce_keys [:items]
-  defstruct [:items, :task, selected: 0]
+  defstruct [:items, :task, selected: 0, empty: @empty]
 
-  # `items` is nil while the `task` of the scan runs.
+  # `items` is nil while the `task` of the scan runs. `empty` is the text
+  # of a list with no item.
   @type t :: %__MODULE__{
           items: [{String.t(), String.t()}] | nil,
           task: Task.t() | nil,
-          selected: non_neg_integer()
+          selected: non_neg_integer(),
+          empty: String.t()
         }
 
-  # Without a sessions directory nothing is saved, so no session is listed.
-  # The scan of a full folder takes more than one frame (#667), so it runs
-  # in a Task: `Helyx.TUI` hands its answer to `read/2`, and `close/1`
-  # stops it.
-  @spec new(Path.t() | nil, Path.t(), String.t()) :: t()
-  def new(nil, _cwd, _current), do: %__MODULE__{items: []}
+  # The other sessions of `cwd` than `session`. Without a sessions
+  # directory nothing is saved in the node, so no session is listed. The
+  # scan of a full folder takes more than one frame (#667), and over the
+  # wire it is a request, so it runs in a Task: `Helyx.TUI` hands its
+  # answer to `read/2`, and `close/1` stops it.
+  @spec new(Link.session(), Path.t() | nil, Path.t()) :: t()
+  def new(%Helyx.Session{}, nil, _cwd), do: %__MODULE__{items: []}
 
-  def new(dir, cwd, current) do
-    task =
-      Task.async(fn ->
-        for s <- Scan.list(dir, cwd), s.id != current, do: {s.id, line(s, false)}
-      end)
+  def new(session, dir, cwd),
+    do: %__MODULE__{items: nil, task: Task.async(fn -> items(session, dir, cwd) end)}
 
-    %__MODULE__{items: nil, task: task}
+  defp items(session, dir, cwd) do
+    with {:ok, summaries} <- Link.saved(session, dir, cwd),
+         do: for(s <- summaries, s.id != session.id, do: {s.id, line(s, false)})
   end
 
-  @spec read(t(), [{String.t(), String.t()}]) :: t()
-  def read(list, items), do: %{list | items: items}
+  # A request that the wire refused shows as the text of an empty list.
+  @spec read(t(), [{String.t(), String.t()}] | {:error, atom()}) :: t()
+  def read(list, {:error, reason}) when Link.wire_error?(reason),
+    do: %{list | items: [], empty: "could not list the sessions: " <> Link.error_text(reason)}
+
+  def read(list, items) when is_list(items), do: %{list | items: items}
 
   @spec close(t()) :: nil
   def close(%__MODULE__{task: nil}), do: nil
@@ -82,7 +89,7 @@ defmodule Helyx.TUI.SessionList do
 
   @spec widget(t()) :: Rows.t() | Paragraph.t()
   def widget(%__MODULE__{items: nil}), do: %Paragraph{text: @reading, block: box()}
-  def widget(%__MODULE__{items: []}), do: %Paragraph{text: @empty, block: box()}
+  def widget(%__MODULE__{items: []} = list), do: %Paragraph{text: list.empty, block: box()}
 
   def widget(%__MODULE__{items: items, selected: at}) do
     %Rows{
@@ -100,14 +107,16 @@ defmodule Helyx.TUI.SessionList do
   The line of a session: the id, the time of the last activity, the folder
   with `all?`, the model, and the first prompt. The folder, the model, and
   the prompt come from the file, so each gets the clean pass before it
-  reaches the terminal, then its width.
+  reaches the terminal, then its width; so does the id, which comes from
+  the server over the wire.
   """
   @spec line(Scan.Summary.t(), boolean()) :: String.t()
   def line(summary, all?) do
     folder = if all?, do: [folder(summary.cwd)], else: []
     model = summary.model |> one_line() |> take(@model_width)
     prompt = summary.prompt |> one_line() |> take(@prompt_width)
-    Enum.join([summary.id, time(summary.mtime)] ++ folder ++ [model, prompt], "  ")
+    id = one_line(summary.id)
+    Enum.join([id, time(summary.mtime)] ++ folder ++ [model, prompt], "  ")
   end
 
   @doc "A folder from a file, cleaned, as its last #{@folder_width} code points: the end tells folders apart."

@@ -9,7 +9,8 @@ defmodule Helyx.TUI.Command do
   # which switch the session, and `/help`, which holds the keys. The
   # transcript follows the session's events, not these calls.
 
-  alias Helyx.Session
+  alias Helyx.TUI.Link
+  require Link
 
   @type name :: :model | :compact | :new | :resume | :help
   @type t :: {name(), String.t()} | {:usage, name()}
@@ -60,11 +61,11 @@ defmodule Helyx.TUI.Command do
   defp skill_or_usage(text, _name), do: {:message, text}
 
   # Runs a command on the session: `:ok`, or the notice of a refused one.
-  @spec run(t(), Session.t()) :: :ok | {:notice, String.t()}
+  @spec run(t(), Link.session()) :: :ok | {:notice, String.t()}
   def run({:usage, name}, _session), do: {:notice, "usage: " <> usage(name)}
   def run({:model, ""}, session), do: run({:usage, :model}, session)
-  def run({:model, ref}, session), do: answer(Session.set_model(session, ref))
-  def run({:compact, text}, session), do: answer(Session.compact(session, text))
+  def run({:model, ref}, session), do: answer(Link.set_model(session, ref))
+  def run({:compact, text}, session), do: answer(Link.compact(session, text))
 
   defp answer(:ok), do: :ok
   defp answer({:error, reason}), do: {:notice, error(reason)}
@@ -90,4 +91,5 @@ defmodule Helyx.TUI.Command do
   # The bound is `Session.max_text_bytes/0`.
   defp error(:text_too_large), do: "not sent: over 4 MiB"
   defp error(:session_not_found), do: "the session ended"
+  defp error(reason) when Link.wire_error?(reason), do: Link.error_text(reason)
 end

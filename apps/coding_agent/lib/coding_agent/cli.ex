@@ -29,9 +29,12 @@ defmodule CodingAgent.CLI do
   with `--resume` or `--session` in the session they pick. `serve`, the
   first argument, runs the headless server (`CodingAgent.Serve`) on
   `--host`, default 127.0.0.1, and `--port`, default a port that the OS
-  picks; `--model` is then the default model of the server. The design is
-  in `docs/features/local-release.md`, `docs/features/session-list.md`,
-  `docs/features/print-mode.md`, and `docs/features/serve.md`.
+  picks; `--model` is then the default model of the server. Without `-p`,
+  `helyx` runs the TUI over the wire when a server runs for the data
+  folder (`CodingAgent.attach/2`). The design is in
+  `docs/features/local-release.md`, `docs/features/session-list.md`,
+  `docs/features/print-mode.md`, `docs/features/serve.md`, and
+  `docs/features/tui-attach.md`.
   """
 
   alias CodingAgent.Print
@@ -269,20 +272,29 @@ defmodule CodingAgent.CLI do
   end
 
   defp launch(opts, extra) do
+    run = [resume: opts[:session] || Keyword.get(opts, :resume, false)] ++ extra
+
     result =
-      with {:ok, _apps} <- Application.ensure_all_started(:coding_agent) do
-        CodingAgent.run(
-          [
-            model: Keyword.get(opts, :model, @default_model),
-            resume: opts[:session] || Keyword.get(opts, :resume, false),
-            sessions_dir: sessions_dir()
-          ] ++ extra
-        )
-      end
+      with {:ok, _apps} <- Application.ensure_all_started(:coding_agent),
+           do: start_or_attach(opts, [sessions_dir: sessions_dir()] ++ run)
 
     case result do
       {:error, reason} -> {:error, error_text(reason, opts[:session])}
       result -> result
+    end
+  end
+
+  # Print mode runs in the node. The TUI attaches to the server of the data
+  # folder when one runs (docs/features/tui-attach.md), with the model of
+  # `--model`, else the default model of the server; with none it runs in
+  # the node.
+  defp start_or_attach(opts, run) do
+    attach = if run[:prompt], do: :none, else: CodingAgent.Attach.connect(run[:sessions_dir])
+
+    case attach do
+      :none -> CodingAgent.run([model: Keyword.get(opts, :model, @default_model)] ++ run)
+      {:ok, socket} -> CodingAgent.attach(socket, Keyword.take(opts, [:model]) ++ run)
+      {:error, text} -> {:error, {:attach, text}}
     end
   end
 

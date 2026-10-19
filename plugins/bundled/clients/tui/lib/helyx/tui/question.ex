@@ -3,14 +3,15 @@ defmodule Helyx.TUI.Question do
   # The picker of the `question` tool in the place of the composer
   # (docs/features/question-tool.md, "The TUI picker"). It shows the oldest
   # open ask of the tool, one question at a time, and sends the answers
-  # with `Helyx.Session.answer/3` after the last one. The request comes
+  # with `Helyx.TUI.Link.answer/3` after the last one. The request comes
   # from the bundled tool, which checked its shape. `ask_end` closes it.
 
   alias ExRatatui.Event.{Key, Paste}
   alias ExRatatui.Style
   alias ExRatatui.Text.{Line, Span}
   alias ExRatatui.Widgets.{Block, Paragraph}
-  alias Helyx.TUI.{Composer, SessionList, ViewModel, Wrap}
+  alias Helyx.TUI.{Composer, Link, SessionList, ViewModel, Wrap}
+  require Link
 
   # A longer text cannot pass the answer bound of Core, so the line keeps
   # no more.
@@ -202,7 +203,7 @@ defmodule Helyx.TUI.Question do
   end
 
   defp send_answers(%{question: q} = state, answers) do
-    case Helyx.Session.answer(state.session, q.ask_id, %{"answers" => answers}) do
+    case Link.answer(state.session, q.ask_id, %{"answers" => answers}) do
       :ok -> %{state | question: %{q | sent?: true}}
       {:error, reason} -> %{state | vm: ViewModel.reject(state.vm, reject(reason))}
     end
@@ -213,6 +214,7 @@ defmodule Helyx.TUI.Question do
 
   defp reject(:not_waiting), do: "not sent: the question is closed"
   defp reject(:session_not_found), do: "not sent: the session ended"
+  defp reject(reason) when Link.wire_error?(reason), do: Link.error_text(reason)
 
   defp question(%__MODULE__{questions: questions, at: at}), do: Enum.at(questions, at)
 
