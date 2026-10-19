@@ -103,7 +103,9 @@ defmodule Helyx.Watchdog do
   #     what came before the marker, perl's own startup output. `handles`
   #     are the handles held with `Helyx.Tool.hold/1`, for a caller that
   #     releases the groups itself (the bash tool at its time limit).
-  #   * `{:error, reason}`: no command ran, and the port is closed. Either
+  #   * `{:error, reason}`: no command ran, the port is closed, and the
+  #     watchdog hold is dropped when a release with the deadline
+  #     `@gone_ms` confirms the watchdog gone. Either
   #     the watchdog did not fork, and `reason` is the tail of the rest of
   #     the stream up to the exit status, read here; or it gave no marker,
   #     and `reason` is a head that names perl. `reason` is valid UTF-8 of
@@ -160,12 +162,13 @@ defmodule Helyx.Watchdog do
     case read_marker(port, nonce, "", "") do
       {:not_started, acc} ->
         reason = port |> read_to_exit(acc) |> mask(values)
+        let_go(port, watchdog)
         {:error, Helyx.Text.cap(reason, @reason_max_bytes, :tail)}
 
       # Names the watchdog, not a cause: perl may be gone, fail to compile
       # the watchdog, or never run (an argv over the OS limit).
       {:no_marker, text} ->
-        close(port)
+        let_go(port, watchdog)
         reason = "the perl watchdog gave no marker: " <> preamble(text, values)
         {:error, Helyx.Text.cap(reason, @reason_max_bytes, :head)}
 
@@ -176,6 +179,34 @@ defmodule Helyx.Watchdog do
         write(port, "\n")
         {:started, port, pre, [{:command, group} | watchdog]}
     end
+  end
+
+  # The wait for the watchdog of a failed start to be gone, after the close
+  # of its port: one that read to its exit is gone at the first probe, and
+  # one that still runs ends at the end of its stdin. No kill(1) run starts
+  # at or after it, and a run has no timeout of its own.
+  @gone_ms 100
+
+  # A failed start returns no handles, so it drops the watchdog hold itself
+  # once the release confirms the watchdog gone (#802,
+  # `docs/features/tool-resource-release.md`). One not gone by then stays
+  # held for the release of the hands.
+  defp let_go(port, watchdog) do
+    close(port)
+    gone = watchdog -- release(watchdog)
+    if gone != [], do: Helyx.Tool.unhold(gone)
+  end
+
+  defp release(watchdog) do
+    Helyx.Watchdog.Group.release(
+      watchdog,
+      :deliver,
+      System.monotonic_time(:millisecond) + @gone_ms
+    )
+  rescue
+    # A kill(1) that cannot run, such as one not on PATH, confirms nothing,
+    # as a raise in the release of the hands, and the start keeps its reason.
+    ErlangError -> watchdog
   end
 
   # The marker's chunk can hold only the head of the reason: the port cuts

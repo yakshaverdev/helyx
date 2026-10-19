@@ -128,6 +128,11 @@ defmodule Helyx.Tool.BashTest do
     refute File.exists?(Path.join(dir, "ran"))
   end
 
+  test "a start that did not start the command leaves no held handle (#802)", %{tmp_dir: dir} do
+    assert {:error, _} = Helyx.Tool.Bash.run(%{"command" => "pwd"}, Path.join(dir, "gone"))
+    assert Helyx.Test.Hands.held() == []
+  end
+
   test "an empty working directory is the same error (issue #52)" do
     assert {:error, text} = Helyx.Tool.Bash.run(%{"command" => "pwd"}, "")
     assert text =~ "did not start"
