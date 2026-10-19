@@ -9,6 +9,7 @@ defmodule Helyx.TUI.LinkTest do
   alias ExRatatui.Event.{Key, Paste}
   alias Helyx.{Event, Message}
   alias Helyx.Provider.Fake
+  alias Helyx.Session.File.Scan
   alias Helyx.Transport.WebSocket
   alias Helyx.TUI
   alias Helyx.TUI.{Link, SessionList, Switch, ViewModel, Wire}
@@ -29,8 +30,10 @@ defmodule Helyx.TUI.LinkTest do
     %{core: core, port: WebSocket.port(transport), cwd: dir, sessions: sessions}
   end
 
+  # The handshake is a wait that must happen: the one cap of the tests, so
+  # load does not fail it (#805).
   defp connect(port) do
-    {:ok, socket} = Wire.connect({127, 0, 0, 1}, port, fn -> "token" end, 5_000)
+    {:ok, socket} = Wire.connect({127, 0, 0, 1}, port, fn -> "token" end, wait_ms())
     {:ok, conn, ref} = Connection.open(socket)
     {conn, ref}
   end
@@ -108,16 +111,21 @@ defmodule Helyx.TUI.LinkTest do
     info(answer, state)
   end
 
-  # A process in the place of the connection, which answers each request
-  # of `op` with `answer.(op)`.
-  defp stub(answer), do: spawn_link(fn -> stub_loop(answer) end)
+  # A process in the place of the connection: it tells the test each
+  # request of `op` as `{:stub, op}`, and answers it with `answer.(op)`.
+  defp stub(answer) do
+    test = self()
+    spawn_link(fn -> stub_loop(test, answer) end)
+  end
 
-  defp stub_loop(answer) do
+  defp stub_loop(test, answer) do
     receive do
-      {:"$gen_call", from, {:request, op, _params}} -> GenServer.reply(from, answer.(op))
+      {:"$gen_call", from, {:request, op, _params}} ->
+        send(test, {:stub, op})
+        GenServer.reply(from, answer.(op))
     end
 
-    stub_loop(answer)
+    stub_loop(test, answer)
   end
 
   test "the quit aborts nothing: the turn runs on, and a TUI that resumes the folder joins it",
@@ -187,6 +195,7 @@ defmodule Helyx.TUI.LinkTest do
       "abort" -> {:error, :timeout}
       "start" -> {:ok, "AAAAAAAAAAAA"}
       "stop" -> {:error, :busy}
+      _steer_or_compact -> :ok
     end
 
     state = %{state | session: %Link{conn: stub(answers), id: id}}
@@ -201,11 +210,41 @@ defmodule Helyx.TUI.LinkTest do
     assert List.last(ViewModel.cells(state.vm)) ==
              {:infos, ["could not switch: too many requests wait"]}
 
-    # The stub answers no steer, compact, or set_model: each is refused here.
-    big = String.duplicate("a", Helyx.Session.max_text_bytes() + 1)
+    # A text at the bound of Core goes; one byte more gets the answer of
+    # Core, and no request.
+    at = String.duplicate("a", Helyx.Session.max_text_bytes())
+    assert command(state, at).vm.reason == nil
+    assert_receive {:stub, "steer"}
+    assert Link.compact(state.session, at) == :ok
+    assert_receive {:stub, "compact"}
+    assert Link.set_model(state.session, at) == :ok
+    assert_receive {:stub, "set_model"}
+
+    big = at <> "a"
     assert command(state, big).vm.reason == "not sent: over 4 MiB"
     assert Link.compact(state.session, big) == {:error, :text_too_large}
     assert Link.set_model(state.session, big) == {:error, {:invalid_model_ref, big}}
+    for op <- ["steer", "compact", "set_model"], do: refute_received({:stub, ^op})
+  end
+
+  test "a refused switch shows a fixed text for each reason, and no term", c do
+    state = started(c)
+
+    for {reason, text} <- [
+          {:too_many_sessions, "too many sessions on the server"},
+          {{:start_failed, ~s({:session_locked, "x"})}, "the server could not open the session"},
+          {{:unknown_provider, "nope"}, "the model has an unknown provider"},
+          {:bad_params, "the session did not open"}
+        ] do
+      session = %Link{conn: stub(fn "start" -> {:error, reason} end), id: state.session.id}
+      state = %{state | session: session} |> command("/new") |> finish()
+      assert List.last(ViewModel.cells(state.vm)) == {:infos, ["could not switch: " <> text]}
+    end
+  end
+
+  test "the id of a /resume line, from the server, gets the clean pass" do
+    summary = %Scan.Summary{id: "a\e[2J\nb", cwd: "/w", model: "m", mtime: 0, prompt: "p"}
+    assert SessionList.line(summary, false) =~ ~r/\Aa\?\[2J b  /
   end
 
   test "Escape aborts the turn and /model sets the model over the wire", c do

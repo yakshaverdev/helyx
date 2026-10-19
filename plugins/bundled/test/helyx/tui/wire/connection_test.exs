@@ -23,7 +23,9 @@ defmodule Helyx.TUI.Wire.ConnectionTest do
   @max_joined 26_214_400
 
   defp open(port) do
-    {:ok, socket} = Wire.connect(@loopback, port, fn -> "token" end, 5_000)
+    # The handshake is a wait that must happen: the one cap of the tests,
+    # so load does not fail it (#805).
+    {:ok, socket} = Wire.connect(@loopback, port, fn -> "token" end, Helyx.Test.Events.wait_ms())
     Connection.open(socket)
   end
 

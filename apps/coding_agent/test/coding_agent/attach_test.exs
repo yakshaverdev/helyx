@@ -116,6 +116,18 @@ defmodule CodingAgent.AttachTest do
 
     File.rmdir!(gone)
 
+    # A folder that is not UTF-8 (no JSON form, so no request) or holds a
+    # NUL byte gets the answer of the node, and no session starts.
+    live = Helyx.Sessions.list_live(Helyx.Core)
+
+    for cwd <- [dir <> <<0xFF>>, dir <> <<0>>] do
+      {:ok, socket} = Attach.connect(sessions)
+      opts = [resume: false, sessions_dir: sessions, cwd: cwd]
+      assert CodingAgent.attach(socket, opts) == {:error, :invalid_cwd}
+    end
+
+    assert Helyx.Sessions.list_live(Helyx.Core) == live
+
     assert helyx(["--session", id]) ==
              ~s(helyx: not a directory: "#{String.slice(gone, -80, 80)}"\n)
 

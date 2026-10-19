@@ -172,8 +172,15 @@ defmodule Helyx.TUI.Switch do
   defp text({:session_locked, id}),
     do: "could not switch: session #{id} is open in another process"
 
-  defp text(reason) when Link.wire_error?(reason),
-    do: "could not switch: " <> Link.error_text(reason)
+  defp text(reason), do: "could not switch: " <> reason(reason)
 
-  defp text(reason), do: "could not switch: " <> Helyx.Reason.text(reason)
+  # A fixed text for each known reason of Core or of the wire, and one for
+  # any other, so the notice holds no term (the review of #807).
+  defp reason(reason) when Link.wire_error?(reason), do: Link.error_text(reason)
+  defp reason(:too_many_sessions), do: "too many sessions on the server"
+  defp reason(:not_found), do: "no saved session with this id"
+  defp reason({:start_failed, _text}), do: "the server could not open the session"
+  defp reason({:unknown_provider, _id}), do: "the model has an unknown provider"
+  defp reason({:invalid_model_ref, _ref}), do: "the model ref is not valid"
+  defp reason(_other), do: "the session did not open"
 end
