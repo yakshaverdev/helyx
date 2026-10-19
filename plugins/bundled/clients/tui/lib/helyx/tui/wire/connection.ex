@@ -3,8 +3,10 @@ defmodule Helyx.TUI.Wire.Connection do
   The wire session of the TUI (`docs/features/tui-attach.md`, decision 7):
   one process that owns the socket of `Helyx.TUI.Wire.connect/4` after
   `welcome`. It sends the requests of the TUI and matches their replies by
-  id, joins the parts of a frame and decodes it with the codec and the
-  decode bounds of the transport, turns the events of a subscription into
+  id, joins the parts of a frame and decodes it with the codec of the
+  transport and the decode bounds of a frame of the server
+  (`docs/features/tui-attach.md`, decision 13), checks it strictly against
+  the schema (decision 14), turns the events of a subscription into
   `Helyx.Event` structs, sends the acks, and answers the pings.
 
   The process that calls `open/1` owns the connection, which ends with it.
@@ -222,7 +224,7 @@ defmodule Helyx.TUI.Wire.Connection do
   defp message({:close, _payload}, state), do: closed(nil, state)
 
   defp message({:text, text}, state) do
-    case Frame.decode(text, state.parts) do
+    case Frame.decode(text, state.parts, :outbound) do
       {:more, parts} -> {:noreply, %{state | parts: parts}}
       {:close, _code} -> broken(state)
       {_whole, frame} -> frame(frame, %{state | parts: nil})

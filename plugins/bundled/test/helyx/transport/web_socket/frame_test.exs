@@ -1,7 +1,10 @@
 defmodule Helyx.Transport.WebSocket.FrameTest do
-  # The decode bounds of one inbound frame (docs/features/wire-protocol.md,
-  # "Bounds"). The limits at the socket are in web_socket_test.exs.
+  # The decode bounds of one frame, inbound and outbound
+  # (docs/features/wire-protocol.md, "Bounds"). The limits at the socket are
+  # in web_socket_test.exs.
   use ExUnit.Case, async: true
+
+  import Helyx.Test.WireClient, only: [parts: 1]
 
   alias Helyx.Transport.WebSocket.Frame
 
@@ -56,6 +59,23 @@ defmodule Helyx.Transport.WebSocket.FrameTest do
     assert {:frame, ^frame} = Frame.decode(JSON.encode!(frame), nil)
   end
 
+  # 5 values around the zeros: the object, the two keys, "x", and the list.
+  # Each decode takes a heap of about 1 GiB (docs/features/tui-attach.md,
+  # decision 13).
+  @tag :slow
+  test "an outbound frame of 38,797,312 values passes, and one value more closes with 4400" do
+    zeros = &(~s({"type":"x","v":[) <> String.duplicate("0,", &1 - 1) <> "0]}")
+    assert {:frame, %{"v" => v}} = Frame.decode(zeros.(38_797_307), nil, :outbound)
+    assert length(v) == 38_797_307
+    assert {:close, 4400} = Frame.decode(zeros.(38_797_308), nil, :outbound)
+  end
+
+  test "an outbound frame takes more values than an inbound one" do
+    frame = JSON.encode!(%{"type" => "x", "v" => List.duplicate(0, 65_536)})
+    assert {:close, 4400} = Frame.decode(frame, nil)
+    assert {:frame, _frame} = Frame.decode(frame, nil, :outbound)
+  end
+
   # The wire doc states this limit for the JSON decoders of other
   # boundaries, which cite it.
   test "every integer of 1,262,592 digits decodes with JSON.decode/1, and 1,262,593 nines raise" do
@@ -85,13 +105,5 @@ defmodule Helyx.Transport.WebSocket.FrameTest do
     assert reason == :normal
     assert_received {:decoded, ^pid, result}
     result
-  end
-
-  defp parts(json, n \\ 0) do
-    {piece, rest} =
-      if byte_size(json) > 786_000, do: :erlang.split_binary(json, 786_000), else: {json, ""}
-
-    part = %{"type" => "part", "n" => n, "last" => rest == "", "data" => Base.encode64(piece)}
-    [JSON.encode!(part) | if(rest == "", do: [], else: parts(rest, n + 1))]
   end
 end

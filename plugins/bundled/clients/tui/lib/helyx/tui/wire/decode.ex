@@ -2,16 +2,17 @@ defmodule Helyx.TUI.Wire.Decode do
   @moduledoc false
   # The JSON values of the server as the Core values that
   # `Helyx.TUI.ViewModel` folds (`docs/features/wire-protocol.md`,
-  # "Codec"). A message is the message entry of the session file
-  # (`Helyx.Session.File.Codec`). A tolerant reader: a key that it does not
-  # know is ignored, and an event of a type that it does not know is nil. A
-  # known value with a broken shape raises, and each public function gives
+  # "Codec"). Each is checked strictly against the schema before it becomes
+  # a Core value (`docs/features/tui-attach.md`, decision 14); the tolerant
+  # decoder of the session file is not used. A key that it does not know is
+  # ignored, and an event of a type that it does not know is nil. A known
+  # value with a broken shape raises, and each public function gives
   # `:error` for it: the connection ends on a contract break.
 
   import Helyx.Usage, only: [wire_tokens?: 1]
 
-  alias Helyx.{Event, Message, ModelRef}
-  alias Helyx.Session.File.{Codec, Scan}
+  alias Helyx.{Event, Message, ModelRef, Usage}
+  alias Helyx.Session.File.Scan
   alias Helyx.Session.{Snapshot, Totals}
   alias Helyx.TUI.ViewModel
 
@@ -28,6 +29,11 @@ defmodule Helyx.TUI.Wire.Decode do
   @codes Map.new(@error_codes, &{Atom.to_string(&1), &1})
   # The codes whose text names the value: the TUI shows it.
   @texts ~w(invalid_model_ref unknown_provider start_failed)a
+
+  @stop_reasons Map.new(Message.stop_reasons(), &{Atom.to_string(&1), &1})
+  @usage_keys Map.keys(%Usage{}) -- [:__struct__]
+  @max_blocks Helyx.Session.Turn.max_message_blocks()
+  @max_result_bytes Message.max_result_bytes()
 
   defguardp count?(value) when is_integer(value) and value >= 0
   defguardp count_or_nil?(value) when is_nil(value) or count?(value)
@@ -67,13 +73,14 @@ defmodule Helyx.TUI.Wire.Decode do
   defp ok("subscribe", %{"sub" => sub, "snapshot" => snapshot}) when is_binary(sub),
     do: {:ok, snapshot!(snapshot), sub}
 
-  defp ok("subscribe", %{"sub" => sub, "replay" => events}) when is_binary(sub),
-    do: {:ok, {:replay, events |> Enum.map(&event!/1) |> Enum.reject(&is_nil/1)}, sub}
+  defp ok("subscribe", %{"sub" => sub, "replay" => events})
+       when is_binary(sub) and is_list(events),
+       do: {:ok, {:replay, events |> Enum.map(&event!/1) |> Enum.reject(&is_nil/1)}, sub}
 
   defp ok(op, %{"session" => id}) when op in ["start", "resume"] and is_binary(id), do: {:ok, id}
 
   defp ok("sessions.saved", %{"items" => items, "next" => next})
-       when is_binary(next) or is_nil(next),
+       when is_list(items) and (is_binary(next) or is_nil(next)),
        do: {:ok, Enum.map(items, &saved/1), next}
 
   defp ok(op, _empty) when op not in ["subscribe", "start", "resume", "sessions.saved"], do: :ok
@@ -215,17 +222,32 @@ defmodule Helyx.TUI.Wire.Decode do
          waiting: waiting
        }
 
+  # The server caps each integer of the arguments at 100 digits.
   defp tool_call(%{"type" => "tool_call", "id" => id, "name" => name, "arguments" => %{} = args})
-       when is_binary(id) and is_binary(name),
-       do: %Message.ToolCall{id: id, name: name, arguments: Message.cap_integers(args)}
+       when is_binary(id) and is_binary(name) do
+    false = Message.big_integer?(args)
+    %Message.ToolCall{id: id, name: name, arguments: args}
+  end
 
-  # A user message of a file from before #649 has the origin `unknown` on
-  # the wire; the session file has no origin for it.
-  defp message!(%{"id" => id, "origin" => %{"kind" => "unknown", "id" => nil}} = message)
-       when is_binary(id),
-       do: message |> Map.delete("origin") |> Codec.decode()
+  # The bounds of a message of Core: its blocks (`Helyx.Session.Turn`), and
+  # the text of a tool result (`Helyx.Message.cut_result/1`).
+  defp message!(%{"id" => id, "role" => role, "content" => content} = message)
+       when is_binary(id) and is_list(content) and length(content) <= @max_blocks do
+    role = role!(role)
 
-  defp message!(%{"id" => id} = message) when is_binary(id), do: Codec.decode(message)
+    %Message{
+      role: role,
+      id: id,
+      origin: origin!(role, message["origin"]),
+      content: Enum.map(content, &block!(&1, role)),
+      model: optional!(message["model"]),
+      stop_reason: stop_reason!(message["stop_reason"]),
+      tool_call_id: optional!(message["tool_call_id"]),
+      tool_name: optional!(message["tool_name"]),
+      is_error: flag!(message["is_error"]),
+      usage: usage!(message["usage"])
+    }
+  end
 
   # A tool result has the call id that the fold pairs it by.
   defp message!(value, :tool_result) do
@@ -238,6 +260,57 @@ defmodule Helyx.TUI.Wire.Decode do
     %Message{role: ^role} = message = message!(value)
     message
   end
+
+  defp role!("user"), do: :user
+  defp role!("assistant"), do: :assistant
+  defp role!("tool_result"), do: :tool_result
+
+  # Only a user message has an origin. `unknown` is a user message of a
+  # file from before #649.
+  defp origin!(_role, nil), do: nil
+  defp origin!(:user, %{"kind" => "unknown", "id" => nil}), do: %{kind: :unknown, id: nil}
+
+  defp origin!(:user, %{"kind" => kind, "id" => id}) do
+    origin = %{kind: origin_kind!(kind), id: id}
+    true = Message.origin?(origin)
+    origin
+  end
+
+  defp origin_kind!("user"), do: :user
+  defp origin_kind!("background"), do: :background
+  defp origin_kind!("product"), do: :product
+
+  defp block!(%{"type" => "text", "text" => text}, role)
+       when is_binary(text) and (role != :tool_result or byte_size(text) <= @max_result_bytes),
+       do: %Message.Text{text: text}
+
+  defp block!(%{"type" => "thinking", "thinking" => thinking}, _role) when is_binary(thinking),
+    do: %Message.Thinking{thinking: thinking}
+
+  defp block!(call, _role), do: tool_call(call)
+
+  defp optional!(nil), do: nil
+  defp optional!(value) when is_binary(value), do: value
+
+  defp stop_reason!(nil), do: nil
+  defp stop_reason!(reason), do: Map.fetch!(@stop_reasons, reason)
+
+  defp flag!(nil), do: false
+  defp flag!(value) when is_boolean(value), do: value
+
+  # The known keys of a usage, as Core checks a usage (`Helyx.Usage.valid?/1`).
+  defp usage!(nil), do: nil
+
+  defp usage!(%{} = object) do
+    fields = for key <- @usage_keys, do: {key, object[Atom.to_string(key)]}
+    usage = struct!(Usage, Keyword.put(fields, :cost_kind, cost_kind!(object["cost_kind"])))
+    true = Usage.valid?(usage)
+    usage
+  end
+
+  defp cost_kind!(nil), do: nil
+  defp cost_kind!("list"), do: :list
+  defp cost_kind!("billed"), do: :billed
 
   # A model ref as Core checks it (`Helyx.ModelRef.parse/1`).
   defp model!(model) do
@@ -258,7 +331,8 @@ defmodule Helyx.TUI.Wire.Decode do
          "context" => context,
          "asks" => asks
        })
-       when is_binary(instance_id) and count?(seq) and is_boolean(more) and is_boolean(persisting) do
+       when is_binary(instance_id) and count?(seq) and is_list(messages) and is_boolean(more) and
+              is_boolean(persisting) and is_list(asks) do
     snapshot = %Snapshot{
       instance_id: instance_id,
       seq: seq,
