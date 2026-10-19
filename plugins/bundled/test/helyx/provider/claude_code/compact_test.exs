@@ -74,26 +74,37 @@ defmodule Helyx.Provider.ClaudeCode.CompactTest do
     assert [%{role: :user}, %{role: :assistant}] = snapshot.messages
   end
 
+  # One request to the provider, until the end of its turn: the events.
+  defp run(state, request) do
+    {_from, actions, state} = request(state, request)
+    {actions, state} = pump(ClaudeCode, state, actions, &ended?/1)
+    {events_of(actions), state}
+  end
+
   # `--disable-slash-commands` also takes out `/compact` (research note,
   # #754): the compaction resumes the harness session in a program without
-  # the flag, with the same prompt, and the next turn in one with it.
-  test "a compaction runs in a program without --disable-slash-commands, the next turn with it",
-       %{bin: bin} = ctx do
+  # the flag, with the prompt of the running program, and the next turn in
+  # one with the flag and its own prompt.
+  test "a compaction's program has the running program's prompt, no --disable-slash-commands, and its session; the next turn's has its own prompt and the flag",
+       %{bin: bin, work: work} do
     turn(bin, 1, 1, reply("one"))
     turn(bin, 2, 1, compaction(9, 2))
     turn(bin, 3, 1, reply("two"))
+    context = &%Helyx.Context{system: &1, messages: [Helyx.Message.user("x")]}
 
-    session = start(ctx)
-    prompt(session, "hello")
-    assert :ok = Session.compact(session)
-    assert List.last(collect_until(:turn_end)).data == %{outcome: :done}
-    assert [_user, %{content: [%{text: "two"}]}] = messages(prompt(session, "again"))
+    {_events, state} = run(harness(work), {:turn, "t1", context.("Be brief.")})
+    assert {[{:compaction, 9, 2}, {:done, _}], state} = run(state, {:compact, "t2", ""})
+
+    assert {[{:text_delta, "two"}, {:done, _}], state} =
+             run(state, {:turn, "t3", context.("Be long.")})
+
+    closed(state)
 
     assert programs(bin) == "3"
+    assert for(n <- 1..3, do: initialize(bin, n)) == ["Be brief.", "Be brief.", "Be long."]
     assert for(n <- 1..3, do: "--disable-slash-commands" in args(bin, n)) == [true, false, true]
     assert ["--session-id=" <> id] = Enum.filter(args(bin, 1), &(&1 =~ "--session-id"))
     for n <- [2, 3], do: assert(("--resume=" <> id) in args(bin, n))
-    assert initialize(bin, 2) == initialize(bin, 1)
   end
 
   # A `result` line with the process total `total` (research note, "The

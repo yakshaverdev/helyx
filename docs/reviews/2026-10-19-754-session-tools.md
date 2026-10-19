@@ -39,3 +39,38 @@ Precommit (`HELYX_SLOW=1 .claude/skills/ship/precommit.sh`), first run: failed o
 Second run, after the comment fix: passed. Credo found no issues; root 766 tests, 0 failures; `apps/coding_agent` 82 tests, 0 failures; `plugins/bundled` 4 properties, 1044 tests, 0 failures (1 excluded); Dialyzer 0 errors in each project.
 
 Open: a fake test for the fixed answer of a built-in command name (finding 6), a test with a non-empty prompt for the compaction's prompt (finding 7), and whether a `model_catalog_json` catalog removes a Codex tool (finding 5).
+
+## Finding 7: the compaction's prompt (orchestrator, 2026-10-19)
+
+The orchestrator accepted the compaction design and asked for finding 7 to be fixed before the merge: a real prompt, a proof that the test fails when the compaction's program gets another prompt, and a name that says what the test proves. Test-only change, base `bd2c53b1`.
+
+The compaction test of `compact_test.exs` now drives the provider at `ClaudeCode.request/3`, as `prompt_test.exs` does, with the prompt "Be brief." on the turn before the compaction.
+
+### Round 2 (reduced: spec, failure path)
+
+| # | Finding | Resolution |
+| --- | --- | --- |
+| 12 | Turns 1 and 3 had the same prompt, so a turn after a compaction that takes `state.system \|\| context.system` passed (both reviewers reproduced it) | fixed: turn 3 has "Be long.", and the test asserts `["Be brief.", "Be brief.", "Be long."]` |
+| 13 | No test pins `--disable-slash-commands` on the lost-session relaunch: `Program.replace/2` with a default `commands?: true` passed | fixed: `turn_test.exs`, the lost-session test, asserts the flag on program 3 |
+| 14 | The name said "the turn's prompt", but a compaction has no turn context | fixed: "a compaction's program has the running program's prompt, no --disable-slash-commands, and its session; the next turn's has its own prompt and the flag" |
+| 15 | A line was not formatted | fixed: `mix format` |
+
+Mutations of lib code, each restored at once (`git diff bd2c53b1 -- plugins/bundled/lib` is empty):
+
+- The compaction's program gets `""`: the test failed, `left: ["Be brief.", "", "Be long."]`.
+- A turn takes `state.system || context.system`: the test failed, `left: ["Be brief.", "Be brief.", "Be brief."]`.
+- `Program.replace/2` keeps `commands?: true` by default: the lost-session test failed at `assert "--disable-slash-commands" in args(bin, 3)`.
+
+### Round 3 (reduced: spec, failure path)
+
+Both reviewers ran the three mutations above, in renamed copies, and each failed a test. 20 repeats of each changed test and 10 runs of both files gave 0 failures. They reproduced two gaps; the code passed their scratch tests:
+
+| # | Finding | Resolution |
+| --- | --- | --- |
+| 16 | A turn after a compaction with the same prompt: no assertion shows that it gets a new program with the flag. A mutation of `Program.ensure/3` that reuses the compaction's program for a turn passes the compaction test; only timeouts of three cost tests catch it (no script for a second line in program 2) | open: the second finding on the turn step of one test (after 12), so the small-fix round of `/ship` does not apply. Proposed fix: run the test twice, with "Be brief." and with "Be long." as the third prompt, each with the full assertions |
+| 17 | The prompt of the lost-session relaunch has no test: `relaunch/2` with `Program.start(fresh, "")` passes | open, not of this ticket: `relaunch/2` comes from #651 and the diff does not change it |
+| 18 | A prompt relaunch (`prompt_test.exs:25`) does not assert the flag on program 2 | open, minor |
+
+Round 3 is the last round. The commit holds the state that round 3 reviewed.
+
+Precommit (`HELYX_SLOW=1 .claude/skills/ship/precommit.sh`): passed. Credo found no issues; root 766 tests, 0 failures; `apps/coding_agent` 82 tests, 0 failures; `plugins/bundled` 4 properties, 1044 tests, 0 failures (1 excluded); Dialyzer 0 errors in each project.
