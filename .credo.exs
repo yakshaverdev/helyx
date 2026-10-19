@@ -25,7 +25,7 @@
            [
              allowed: %{
                "plugins/bundled/lib/helyx/provider/codex.ex" =>
-                 {482,
+                 {481,
                   "the Codex turn, thread, interrupt, and steer state over one JSON-RPC id table"},
                "plugins/bundled/lib/helyx/provider/claude_code.ex" =>
                  {507, "the Claude Code program, turn, steer, and interrupt flow"}

@@ -2,8 +2,8 @@ defmodule Helyx.HarnessIO do
   @moduledoc false
   # What the harness providers share (ADR 0005). It is not a plugin.
   # `state` is a provider's run state with the fields `port`, `buffer`
-  # (iodata), `size`, `terminal`, `closing`, and `handles`, the handles
-  # that the provider holds for its programs.
+  # (iodata), `size`, `terminal`, `closing`, `handles`, the handles that
+  # the provider holds for its programs, and `env` (`env/1`).
 
   @line_max_bytes 16 * 1024 * 1024
   @replay_max_bytes 400_000
@@ -87,9 +87,10 @@ defmodule Helyx.HarnessIO do
   # dropped. The port stays linked to the caller: a write to a watchdog
   # that died closes the port with `:epipe`, and that exit ends the caller
   # (#390). The closed port makes the watchdog end the group (ADR 0004).
+  # The program gets `state.env` on top of the inherited environment.
   def launch(exe, args, cwd, state) do
     ["/bin/sh", "-c", ~S(exec "$0" "$@" 2>/dev/null), exe | args]
-    |> start(cwd, :open, state, grace_ms: @term_grace_ms)
+    |> start(cwd, :open, state, grace_ms: @term_grace_ms, env: state.env)
   end
 
   def stop(%{port: port}), do: Helyx.Watchdog.close(port)
@@ -187,6 +188,14 @@ defmodule Helyx.HarnessIO do
     SystemLimitError -> :error
   end
 
+  # The options of `init/3` that a harness provider keeps, as the fields
+  # `persist?` and `env` of its state.
+  def options(opts) do
+    with {:ok, persist?} <- persist(opts),
+         {:ok, env} <- env(opts),
+         do: {:ok, persist?: persist?, env: env}
+  end
+
   # The `:persist` option of a harness provider, true by default. A harness
   # session with no stored state cannot be resumed, so a `:resume_id` with
   # `persist: false` fails (docs/features/harness-no-state.md).
@@ -197,6 +206,36 @@ defmodule Helyx.HarnessIO do
       {true, _id} -> {:ok, true}
       _other -> {:error, {:invalid_option, :persist}}
     end
+  end
+
+  # The `:env` option of a harness provider, `%{}` by default: the map that
+  # each launch adds to the inherited environment, as the charlist pairs
+  # of the port. A name is a shell identifier: dash, a `/bin/sh` of the
+  # launch, drops any other name. A value is non-empty valid UTF-8 with no
+  # NUL: the port unsets a variable with an empty value and raises for a
+  # NUL. The error names no value (docs/features/harness-no-state.md).
+  def env(opts) do
+    with env when is_map(env) <- Keyword.get(opts, :env, %{}),
+         entries = Map.to_list(env),
+         true <- Enum.all?(entries, &env_entry?/1) do
+      {:ok, for({name, value} <- entries, do: {to_charlist(name), env_chars(value)})}
+    else
+      _other -> {:error, {:invalid_option, :env}}
+    end
+  end
+
+  defp env_entry?({name, value}) do
+    is_binary(name) and name =~ ~r/\A[A-Za-z_][A-Za-z0-9_]*\z/ and is_binary(value) and
+      value != "" and String.valid?(value) and not String.contains?(value, <<0>>)
+  end
+
+  # The port writes a charlist in the native name encoding of the BEAM.
+  # With latin1, the BEAM of a locale that is not UTF-8, each byte of the
+  # value is one character, so the program gets the UTF-8 bytes in both.
+  defp env_chars(value) do
+    if :file.native_name_encoding() == :utf8,
+      do: String.to_charlist(value),
+      else: :binary.bin_to_list(value)
   end
 
   # A compaction in a program with no history yet: the replay of the

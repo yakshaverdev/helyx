@@ -117,12 +117,17 @@ defmodule Helyx.Watchdog do
   # The option `:grace_ms` (default #{@grace_ms}) is the wait between the
   # TERM and the KILL of the command group when the port closes, or when
   # open input that the command has not read is over
-  # `@stdin_max_bytes`.
+  # `@stdin_max_bytes`. The option `:env` (default `[]`) is the port's: the
+  # charlist pairs added to the inherited environment. A raise of the open,
+  # such as `:emfile`, shows no options, so no value of it reaches a crash
+  # report.
   def start(argv, cwd, input, opts \\ []) do
     nonce = random_word()
     grace = Keyword.get(opts, :grace_ms, @grace_ms)
     {exe, options} = launcher(argv, cwd, nonce, feed(input), grace)
-    handshake(Port.open({:spawn_executable, exe}, options), nonce)
+    options = [{:env, Keyword.get(opts, :env, [])} | options]
+    port = Helyx.Reason.no_args(fn -> Port.open({:spawn_executable, exe}, options) end)
+    handshake(port, nonce)
   end
 
   defp handshake(port, nonce) do
