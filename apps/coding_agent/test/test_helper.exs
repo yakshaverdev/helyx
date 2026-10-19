@@ -3,4 +3,9 @@
 # this long, so it is far above any delay that load makes: the precommit
 # runs every project with Dialyzer and Credo at once (#295). A wait that
 # must not happen keeps its own stated margin.
-ExUnit.start(assert_receive_timeout: 30_000)
+# `:slow` tests wait real seconds: `HELYX_SLOW=1` includes them, as
+# `/ship` and the merge gate do (#295).
+ExUnit.start(
+  exclude: if(System.get_env("HELYX_SLOW") == "1", do: [], else: [:slow]),
+  assert_receive_timeout: 30_000
+)

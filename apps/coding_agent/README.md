@@ -33,6 +33,15 @@ cat log | helyx -p "why does this fail"   # piped input joins the prompt, at mos
 
 `-p` runs one prompt with no TUI, in a new session, or with `--resume` or `--session <id>` in the session they pick (one process per session at a time). stdout holds only the answer. The session id, notices, and errors go to stderr. The status is 0 for a normal end, 1 for a failed or aborted turn or an answer cut at the token limit, 143 on SIGTERM, and 129 on SIGHUP. Helyx has no timeout of its own; use `timeout`. The session is saved, so `helyx --session <id>` continues it in the TUI, and `helyx -p "..." --session <id>` with one more prompt. The design is in `docs/features/print-mode.md`.
 
+## Server
+
+```sh
+helyx serve                               # 127.0.0.1 and a port that the OS picks
+helyx serve --host 0.0.0.0 --port 4040    # another address needs the explicit --host
+```
+
+`helyx serve` runs the agent with no TUI as a WebSocket server (`docs/features/wire-protocol.md`) until SIGINT, SIGTERM, or SIGHUP (a signal that was ignored at its start, as under `nohup`, stays ignored), then stops Core, and the sessions stay saved. `mix helyx serve`, with no launcher, stops in order only at SIGTERM. One server runs for each data folder (`~/.helyx/sessions`): a second `helyx serve` exits 1 and names the address of the first. When it is ready, the server prints its address and writes `server.json`, mode 0600, with its address, port, token, protocol number, and pid. Each start makes a new token. There is no TLS: for another machine, use an SSH tunnel or a TLS proxy. The design is in `docs/features/serve.md`.
+
 ## Keys
 
 The footer shows no key hints, except "Ctrl+C again to quit" after a first Ctrl+C on an empty composer. These are the keys:

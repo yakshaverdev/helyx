@@ -2,10 +2,18 @@ defmodule Mix.Tasks.Helyx.InstallTest do
   use ExUnit.Case, async: true
 
   import ExUnit.CaptureIO
+  import Helyx.Test.Events, only: [wait_until: 1]
 
   alias Mix.Tasks.Helyx.Install
 
   @moduletag :tmp_dir
+
+  # The second SIGTERM of the launcher comes after one second; the rest is
+  # the margin for load.
+  @load_ms 10_000
+  # The supervisor of the launcher wakes each 0.25 s; a SIGTERM for an
+  # ignored SIGHUP would come within this margin for load.
+  @load_ignored_ms 1_000
 
   # A quote and a space in the prefix check the quoting of the launcher.
   setup %{tmp_dir: dir} do
@@ -30,6 +38,21 @@ defmodule Mix.Tasks.Helyx.InstallTest do
     capture_io(fn -> Install.install(build(prefix, version), prefix, bin_dir) end)
   end
 
+  # The launcher with `args`; the release script reads the folder `dir` in
+  # `OUT`. Returns its port and OS pid. `executable` is the launcher, or a
+  # program that execs it.
+  defp launch(executable, dir, args) do
+    port =
+      Port.open({:spawn_executable, executable}, [
+        :exit_status,
+        args: args,
+        env: [{~c"OUT", String.to_charlist(dir)}]
+      ])
+
+    {:os_pid, launcher} = Port.info(port, :os_pid)
+    {port, launcher}
+  end
+
   defp builds(prefix), do: prefix |> Path.join("releases") |> File.ls!() |> Enum.sort()
   defp current(prefix), do: File.read_link!(Path.join(prefix, "current"))
 
@@ -47,6 +70,100 @@ defmodule Mix.Tasks.Helyx.InstallTest do
     assert String.split(out, "\n", trim: true) ==
              [Path.expand(work), "eval", "System.halt(CodingAgent.CLI.main(System.argv()))"] ++
                args
+  end
+
+  # USR1 stands for the signals that the launcher traps beyond INT, TERM,
+  # and HUP.
+  for signal <- ["INT", "TERM", "HUP", "USR1"] do
+    test "the launcher runs serve in a process group of its own and sends SIGTERM for SIG#{signal}",
+         %{prefix: prefix, bin_dir: bin_dir, tmp_dir: dir} = context do
+      install(context, "0.1.0+abc1234")
+
+      # A release script that writes its arguments, whether its stdin is at
+      # its end, its pid, and its process group, then waits, and exits 7 at
+      # SIGTERM.
+      File.write!(Path.join(prefix, "current/bin/helyx"), ~S"""
+      #!/bin/sh
+      trap 'echo term >"$OUT/signal"; exit 7' TERM
+      printf '%s\n' "$@" >"$OUT/args"
+      if read -r line; then echo data; else echo end; fi >"$OUT/stdin"
+      echo "$$ $(ps -o pgid= -p $$ | tr -d ' ')" >"$OUT/group.tmp" && mv "$OUT/group.tmp" "$OUT/group"
+      while :; do sleep 0.1; done
+      """)
+
+      {port, launcher} = launch(Path.join(bin_dir, "helyx"), dir, ["serve", "--port", "1"])
+      wait_until(fn -> File.exists?(Path.join(dir, "group")) end)
+
+      # The release script leads a process group of its own.
+      [pid, group] = String.split(File.read!(Path.join(dir, "group")))
+      assert pid == group
+      refute group == Integer.to_string(launcher)
+      {_, 0} = System.cmd("kill", ["-#{unquote(signal)}", Integer.to_string(launcher)])
+
+      assert_receive {^port, {:exit_status, 7}}
+      assert File.read!(Path.join(dir, "signal")) == "term\n"
+
+      assert File.read!(Path.join(dir, "args")) ==
+               "eval\nSystem.halt(CodingAgent.CLI.main(System.argv()))\nserve\n--port\n1\n"
+
+      # The VM reads `/dev/null`, not the stdin of the launcher.
+      assert File.read!(Path.join(dir, "stdin")) == "end\n"
+    end
+  end
+
+  # Under `nohup` SIGHUP is ignored at the start of the launcher: it stays
+  # ignored, and another signal still stops the release script.
+  test "the launcher keeps a signal that was ignored at its start",
+       %{prefix: prefix, bin_dir: bin_dir, tmp_dir: dir} = context do
+    install(context, "0.1.0+abc1234")
+
+    File.write!(Path.join(prefix, "current/bin/helyx"), ~S"""
+    #!/bin/sh
+    trap 'echo term >>"$OUT/signal"; exit 7' TERM
+    touch "$OUT/started"
+    while :; do sleep 0.1; done
+    """)
+
+    {port, launcher} =
+      launch(System.find_executable("sh"), dir, [
+        "-c",
+        ~S|trap "" HUP; exec "$0" serve|,
+        Path.join(bin_dir, "helyx")
+      ])
+
+    wait_until(fn -> File.exists?(Path.join(dir, "started")) end)
+    {_, 0} = System.cmd("kill", ["-HUP", Integer.to_string(launcher)])
+    refute_receive {^port, {:exit_status, _}}, @load_ignored_ms
+    refute File.exists?(Path.join(dir, "signal"))
+
+    {_, 0} = System.cmd("kill", ["-INT", Integer.to_string(launcher)])
+    assert_receive {^port, {:exit_status, 7}}
+    assert File.read!(Path.join(dir, "signal")) == "term\n"
+  end
+
+  # The VM drops a SIGTERM that comes before its handler: the launcher sends
+  # one each second until the VM ends.
+  @tag :slow
+  test "the launcher sends SIGTERM again until the release script ends",
+       %{prefix: prefix, bin_dir: bin_dir, tmp_dir: dir} = context do
+    install(context, "0.1.0+abc1234")
+
+    # A release script that drops its first SIGTERM and exits 7 at the
+    # second.
+    File.write!(Path.join(prefix, "current/bin/helyx"), ~S"""
+    #!/bin/sh
+    n=0
+    trap 'n=$((n + 1)); echo "$n" >>"$OUT/terms"; [ "$n" -lt 2 ] || exit 7' TERM
+    touch "$OUT/started"
+    while :; do sleep 0.1; done
+    """)
+
+    {port, launcher} = launch(Path.join(bin_dir, "helyx"), dir, ["serve"])
+    wait_until(fn -> File.exists?(Path.join(dir, "started")) end)
+    {_, 0} = System.cmd("kill", ["-TERM", Integer.to_string(launcher)])
+
+    assert_receive {^port, {:exit_status, 7}}, @load_ms
+    assert File.read!(Path.join(dir, "terms")) == "1\n2\n"
   end
 
   test "a second install of one commit gets a new folder; the third deletes the oldest",
