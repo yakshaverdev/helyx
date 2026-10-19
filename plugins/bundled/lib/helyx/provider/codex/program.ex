@@ -26,6 +26,13 @@ defmodule Helyx.Provider.Codex.Program do
 
   def stored_id(thread, specs), do: HarnessIO.session_id(thread, fixed(specs))
 
+  # The resume id of a fresh thread; none for an ephemeral thread, which
+  # has nothing to resume (docs/features/harness-no-state.md).
+  def resume_events(%State{persist?: false}, _cut), do: []
+
+  def resume_events(state, cut),
+    do: [{:resume_id, stored_id(state.thread, state.tools.specs), cut}]
+
   defp fixed(specs), do: [@args, Tools.specs(specs)]
 
   # The program, with its `initialize` sent.
@@ -48,7 +55,9 @@ defmodule Helyx.Provider.Codex.Program do
         reply(s, from, {:error, :restarted})
       end)
 
-    fields = [port: nil, thread: nil, resume: state.thread, system: system, buffer: [], size: 0]
+    # An ephemeral thread cannot be resumed: a fresh one gets the replay.
+    resume = if state.persist?, do: state.thread
+    fields = [port: nil, thread: nil, resume: resume, system: system, buffer: [], size: 0]
 
     with :ok <- HarnessIO.finish(state),
          %State{terminal: nil} = state <-
@@ -81,6 +90,12 @@ defmodule Helyx.Provider.Codex.Program do
         Map.merge(params(state), %{threadId: state.resume, excludeTurns: true})
       )
 
-  defp params(state),
-    do: Map.merge(@trust, %{model: state.model, cwd: state.cwd, baseInstructions: state.system})
+  # A thread with no stored state is ephemeral. It is never resumed, so
+  # `thread/resume` never gets the option.
+  defp params(state) do
+    params =
+      Map.merge(@trust, %{model: state.model, cwd: state.cwd, baseInstructions: state.system})
+
+    if state.persist?, do: params, else: Map.put(params, :ephemeral, true)
+  end
 end

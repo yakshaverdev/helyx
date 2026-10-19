@@ -5,7 +5,9 @@ defmodule Helyx.Provider.ClaudeCode.State do
   # the id `session_id`. `system` is the prompt it runs with, nil before
   # the first launch. `commands?` is true for the program of a compaction,
   # which runs with the program's commands (`Program.start/2`). `sent?` is
-  # true once a turn was written to it.
+  # true once a turn was written to it. `persist?` is false with the
+  # option `persist: false`: no program stores or resumes the harness
+  # session (docs/features/harness-no-state.md).
   # `init?` is true from its first `init` line. `closing` is the `from` of
   # a close. `terminal` stops the read of stdout: `:lost`, a program that
   # did not start (`Helyx.HarnessIO.launch/4`), an `init` without the
@@ -41,6 +43,7 @@ defmodule Helyx.Provider.ClaudeCode.State do
     init?: false,
     commands?: false,
     sent?: false,
-    notified?: false
+    notified?: false,
+    persist?: true
   ]
 end

@@ -34,9 +34,9 @@ defmodule Helyx.Session.Sync do
   # Starts the worker of the calling session at its instance start. The
   # worker gets the replay of a resume first, before any turn can start.
   @spec open(State.t()) :: State.t()
-  def open(%State{memory: nil} = state), do: %{state | sync: nil}
+  def open(%State{plugins: %{memory: nil}} = state), do: %{state | sync: nil}
 
-  def open(%State{memory: memory} = state) do
+  def open(%State{plugins: %{memory: memory}} = state) do
     opts = [instance_id: state.instance_id] ++ State.base_opts(state)
     args = {memory, opts, self()}
 

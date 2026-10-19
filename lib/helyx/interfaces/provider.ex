@@ -22,7 +22,9 @@ defmodule Helyx.Provider do
   `:resume_usage`, the sum of the usages of the messages since that event.
   Its cost is nil when the last turn before the resume ended with no
   `done`. It is nil when no message has a usage and that turn ended with a
-  `done`.
+  `done`. The session's `:provider_opts` (`Helyx.Session.start/2`) come
+  after the options of Core, as they are: a provider checks the keys that
+  it reads and ignores the others (`docs/features/harness-no-state.md`).
 
   Rules that every provider follows:
 

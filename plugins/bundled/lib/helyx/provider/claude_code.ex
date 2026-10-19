@@ -49,9 +49,8 @@ defmodule Helyx.Provider.ClaudeCode do
   @impl true
   def init(model, tools, opts) do
     with {:ok, info} <- ModelInfo.lookup(id(), "anthropic", model),
+         {:ok, persist?, resume} <- Program.resume(opts),
          {:ok, exe} <- HarnessIO.find("claude") do
-      resume = Program.resumable(opts[:resume_id])
-
       # A stored session that is not resumed gives no cost mark.
       {:ok,
        %State{
@@ -59,6 +58,7 @@ defmodule Helyx.Provider.ClaudeCode do
          model: model,
          tools: tools,
          cwd: Keyword.fetch!(opts, :cwd),
+         persist?: persist?,
          resume: resume,
          meter: Meter.start(resume && opts[:resume_usage], info.context_window)
        }}
@@ -167,9 +167,10 @@ defmodule Helyx.Provider.ClaudeCode do
   # A turn's program has the turn's prompt and no program commands; a
   # compaction's keeps the prompt and has the commands for `/compact`. One
   # that differs is replaced by one that resumes its harness session. With
-  # no program, a stored harness session opens with the empty prompt, and a
-  # fresh one has nothing to compact (`write_turn/1`).
+  # no program, a stored harness session opens with the empty prompt. A fresh
+  # one, or one with no stored state, has nothing to compact (`write_turn/1`).
   defp program(%State{resume: nil, sent?: false} = state, :compact, _text), do: state
+  defp program(%State{persist?: false} = state, :compact, _text), do: state
   defp program(state, :compact, _text), do: Program.ensure(state, state.system || "", true)
   defp program(state, :turn, context), do: Program.ensure(state, context.system || "", false)
 
@@ -196,9 +197,9 @@ defmodule Helyx.Provider.ClaudeCode do
     end
   end
 
-  # A program with no turn has nothing to compact: nothing is written.
-  defp write_turn(%State{turn: %Turn{compact: :asked}, resume: nil, sent?: false} = state),
-    do: {[{:event, state.turn.id, HarnessIO.no_history(id())}], %{state | turn: nil}}
+  # A compaction with no program of its own (`program/3`) fails and writes nothing.
+  defp write_turn(%State{turn: %Turn{compact: :asked}, commands?: false} = state),
+    do: {[{:event, state.turn.id, Program.no_compaction(state)}], %{state | turn: nil}}
 
   # The prompt is the user messages at the end of the transcript. A resumed
   # harness session, or one that took a turn, has the rest; a fresh one
@@ -215,9 +216,8 @@ defmodule Helyx.Provider.ClaudeCode do
     else
       {[first | chunks], cut, replay?} = Replay.chunks(history, prompt_line)
       HarnessIO.write(state, first)
-      event = {:event, turn.id, {:resume_id, Program.stored_id(state.session_id), cut}}
       turn = %{turn | replay?: replay?, chunks: chunks}
-      {[event], %{state | sent?: true, turn: turn}}
+      {Program.resume_events(state, turn.id, cut), %{state | sent?: true, turn: turn}}
     end
   end
 

@@ -114,6 +114,43 @@ defmodule Helyx.Session.ProviderProcessTest do
       assert Process.alive?(proc)
     end
 
+    # #750: Core gives the session's provider options to `init/3` as they
+    # are, after its own, so a key of Core keeps its value.
+    test "init gets the session's provider options after the options of Core", %{core: core} do
+      cwd = File.cwd!()
+      provider_opts = [persist: false, cwd: "/elsewhere", other: {:any, "value"}]
+      {:ok, session} = Session.start(core, model: "conn/echo", provider_opts: provider_opts)
+      {:ok, _, _} = Session.subscribe(session)
+
+      assert final_text(turn(session, "one")) == "echo:prepared|one"
+      assert_receive {:conn, :init, _proc, {"echo", _tools, opts}}
+      assert opts[:cwd] == cwd and opts[:resume_id] == nil
+      assert Keyword.take(opts, [:persist, :other]) == [persist: false, other: {:any, "value"}]
+    end
+
+    # #750: a resume gives its own provider options; the file does not
+    # keep them. An attach to the running session takes only the same.
+    @tag :tmp_dir
+    test "a resume gives its provider options to init, and an attach needs the same",
+         %{core: core, tmp_dir: dir} do
+      cwd = File.cwd!()
+      opts = [cwd: cwd, sessions_dir: dir]
+      {:ok, session} = Session.start(core, [model: "conn/echo", provider_opts: [one: 1]] ++ opts)
+
+      resume = &Session.resume(core, [id: session.id, provider_opts: &1] ++ opts)
+      assert resume.(two: 2) == {:error, :provider_opts_differ}
+      assert resume.([]) == {:error, :provider_opts_differ}
+      assert resume.(one: 1) == {:ok, session}
+
+      Helyx.Test.SessionCase.stop_session(session, &GenServer.stop/1)
+      assert {:ok, resumed} = resume.(two: 2)
+      {:ok, _, _} = Session.subscribe(resumed)
+
+      assert final_text(turn(resumed, "one")) == "echo:prepared|one"
+      assert_receive {:conn, :init, _proc, {"echo", _tools, init_opts}}
+      assert init_opts[:two] == 2 and init_opts[:one] == nil
+    end
+
     # The session owns the prepare Task (#386): a turn on a running
     # provider process needs nothing of the hands, so a hands loop that is
     # held, as in a release of up to 20 s, does not hold the turn back.

@@ -54,6 +54,19 @@ defmodule Helyx.Session.Server.Open do
     end
   end
 
+  # The open of the file of a new session, which the session process runs
+  # at its start under the lock of `path` (`create/3`), or nil with no
+  # sessions dir.
+  def create_spec(nil, _id, _cwd, _model, _parent), do: nil
+
+  def create_spec(dir, id, cwd, model, parent) do
+    {Helyx.Session.File.path(dir, cwd, id, parent),
+     fn state ->
+       with {:ok, file} <- Helyx.Session.File.create(dir, id, cwd, model, parent),
+            do: {:ok, %{state | file: file}}
+     end}
+  end
+
   # The start of a new session for `Helyx.Session.start/2`, as `start/4`
   # but with no attach: a new id is random, or derived from a parent link,
   # so a process with the id is an earlier child of that link, not this
@@ -83,12 +96,13 @@ defmodule Helyx.Session.Server.Open do
   # with its error, which the first caller got too; the kill of the deadline
   # is the error of `await_open/3`. Any other end of the process is no
   # result of a start, so the start runs again. At the cap, an id that does
-  # not run has no process.
+  # not run has no process. A running session with other provider options
+  # gives `{:error, :provider_opts_differ}`.
   defp attach(nil, _session, _start), do: {:error, :too_many_sessions}
 
   defp attach(pid, session, {state, tools, open, runs}) do
-    GenServer.call(pid, :live, :infinity)
-    {:ok, session}
+    with :ok <- GenServer.call(pid, {:attach, state.provider_opts}, :infinity),
+         do: {:ok, session}
   catch
     :exit, {{:shutdown, {:open_failed, reason}}, _call} -> {:error, reason}
     :exit, {:killed, _call} -> {:error, :open_timeout}
@@ -121,11 +135,15 @@ defmodule Helyx.Session.Server.Open do
     # The plugin table of a Core does not change after start, so a plugin
     # resolved once here is the plugin a lookup per provider call would give.
     # The three interfaces are single-mode: one plugin or none (nil).
+    plugins = %{
+      model_context: List.first(Helyx.Core.plugins(core, Helyx.ModelContext)),
+      compaction: List.first(Helyx.Core.plugins(core, Helyx.Compaction)),
+      memory: List.first(Helyx.Core.plugins(core, Helyx.Memory))
+    }
+
     session = %{
       state
-      | model_context: List.first(Helyx.Core.plugins(core, Helyx.ModelContext)),
-        compaction: List.first(Helyx.Core.plugins(core, Helyx.Compaction)),
-        memory: List.first(Helyx.Core.plugins(core, Helyx.Memory)),
+      | plugins: plugins,
         tool_specs: Enum.map(tools, fn {_tool, spec} -> spec end),
         tools: Map.new(tools, fn {tool, %{name: name}} -> {name, {tool, name in concurrent}} end)
     }

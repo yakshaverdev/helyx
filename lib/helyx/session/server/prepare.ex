@@ -32,8 +32,7 @@ defmodule Helyx.Session.Server.Prepare do
       do: TurnLoop.submit(state)
 
   def start(%State{activity: %Turn{id: turn_id} = turn} = state, trigger) do
-    %State{model_context: model_context, compaction: compaction, deadline_ms: %{prepare: ms}} =
-      state
+    %State{plugins: plugins, deadline_ms: %{prepare: ms}} = state
 
     context = %Context{messages: state.transcript, tools: state.tool_specs}
     trigger = if Helyx.Provider.Loop.loop?(turn.provider), do: trigger
@@ -45,7 +44,7 @@ defmodule Helyx.Session.Server.Prepare do
         State.base_opts(state)
 
     # A compaction turn sends no context, so it gets no recall.
-    memory = if turn.compact == nil, do: state.memory
+    memory = if turn.compact == nil, do: plugins.memory
     recall_ms = Helyx.Core.recall_ms(state.core)
     recall_opts = [turn_id: turn_id, instance_id: state.instance_id, recall_ms: recall_ms]
     recall_opts = recall_opts ++ State.base_opts(state)
@@ -54,7 +53,9 @@ defmodule Helyx.Session.Server.Prepare do
       Task.Supervisor.async_nolink(Helyx.Core.task_supervisor(state.core), fn ->
         {:ok, tref} = :timer.kill_after(ms)
         started = System.monotonic_time(:millisecond)
-        result = Helyx.Session.Stream.prepare(model_context, compaction, context, opts)
+
+        result =
+          Helyx.Session.Stream.prepare(plugins.model_context, plugins.compaction, context, opts)
 
         # Recall comes after the build and the compaction, with what is
         # left of the budget (docs/features/memory.md).

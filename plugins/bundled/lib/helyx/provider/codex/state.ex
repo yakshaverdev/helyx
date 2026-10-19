@@ -18,6 +18,8 @@ defmodule Helyx.Provider.Codex.State do
   # transcript for the replay of a fresh thread, and `out` the actions to
   # return, newest first.
   # `terminal` set means the provider process must stop, with that error.
+  # `persist?` is false with the option `persist: false`: the thread is
+  # ephemeral and never resumed (docs/features/harness-no-state.md).
   #
   # `agents` maps each child thread with open work to the program's turn
   # id of its last `subAgentActivity` item. It belongs to the program and
@@ -49,6 +51,7 @@ defmodule Helyx.Provider.Codex.State do
     :history,
     tools: %Helyx.Provider.Codex.Tools{},
     fresh?: false,
+    persist?: true,
     due: %{},
     next_id: 1,
     out: [],

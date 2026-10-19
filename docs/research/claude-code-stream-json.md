@@ -527,3 +527,15 @@ Runs on 2026-10-15 with `claude` 2.1.296 at `/opt/homebrew/bin/claude`, with the
 
 - An interrupt that stops a background sub-agent while the main loop waits on a plain tool, so that the `result` has `aborted_tools` with no `Agent` call open.
 - A sub-agent on another model than the main loop (two `modelUsage` keys).
+
+## No session persistence (2026-10-19, #750)
+
+Static reads of `claude` 2.1.302 (the Homebrew cask binary), with no model call and no network request.
+
+- `claude --help` lists `--no-session-persistence`: "Disable session persistence - sessions will not be saved to disk and cannot be resumed (only works with --print)".
+- The Agent SDK code inside the binary builds its launch as `--output-format stream-json --verbose --input-format stream-json ...` with no `-p`, and adds `--no-session-persistence` when its option `persistSession` is `false`. So the flag is used in the launch mode of `Helyx.Provider.ClaudeCode`, which also has no `-p` (see "Long-lived session and the control protocol").
+
+### Not run
+
+- A real turn with the flag, and the check that no file under `~/.claude/projects/` is written: it needs a model call. The owner runs it.
+- `--resume` of a session id that a run with the flag used.

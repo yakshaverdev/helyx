@@ -10,7 +10,8 @@ defmodule Helyx.Test.SummaryProvider do
   # unless the last user message starts with "overflow" and the context has
   # no summary, or is "overflow_always": then the call fails with a context
   # overflow. The message `{:again, why}` sends a second context request
-  # for the open turn.
+  # for the open turn. A provider option `report: pid` sends each `init/3`
+  # options to `pid`.
   @behaviour Helyx.Provider
   @behaviour Helyx.Provider.Loop
 
@@ -20,7 +21,10 @@ defmodule Helyx.Test.SummaryProvider do
   def id, do: "sum"
 
   @impl Helyx.Provider
-  def init(model, _tools, opts), do: {:ok, Helyx.Provider.Loop.new(__MODULE__, model, opts)}
+  def init(model, _tools, opts) do
+    if pid = opts[:report], do: send(pid, {:sum_init, opts})
+    {:ok, Helyx.Provider.Loop.new(__MODULE__, model, opts)}
+  end
 
   @impl Helyx.Provider
   defdelegate request(request, from, state), to: Helyx.Provider.Loop
