@@ -21,7 +21,8 @@ defmodule Helyx.Provider.Codex.State do
   # `persist?` is false with the option `persist: false`: the thread is
   # ephemeral and never resumed (docs/features/harness-no-state.md). `env`
   # is the option `env` as name and value pairs (`Helyx.HarnessIO.env/1`);
-  # `inspect` leaves it out.
+  # `inspect` leaves it out. `trust` holds the `sandbox`, `approvalPolicy`,
+  # and `approvalsReviewer` of the thread (`Program.options/1`).
   #
   # `agents` maps each child thread with open work to the program's turn
   # id of its last `subAgentActivity` item. It belongs to the program and
@@ -52,6 +53,7 @@ defmodule Helyx.Provider.Codex.State do
     :closing,
     :prompt,
     :history,
+    :trust,
     tools: %Helyx.Provider.Codex.Tools{},
     fresh?: false,
     persist?: true,

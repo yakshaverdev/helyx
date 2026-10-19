@@ -53,3 +53,7 @@ Three statements of this ADR no longer match the code (`docs/reviews/2026-10-12-
 ## Update 2026-10-17
 
 #651 (ADR 0002, revision of 2026-10-17) replaces "The harness gets the Helyx tools next to its own tools" in the Decision: the harness gets exactly the session's tools, and its own tools are off where the program allows it. A Claude program starts at the first turn, not in `init/3`, because its prompt comes with the turn; a Codex program starts in `init/3` and opens its thread at the first turn. A changed prompt at a turn start restarts the program with a resume of its harness session.
+
+## Update 2026-10-20
+
+#753 makes the Codex approval policy and sandbox provider options, with the defaults `never` and `danger-full-access` (`docs/features/long-lived-harness.md`, "Sandbox and approvals"). So the update of 2026-10-16 holds for Codex only with the default policy. With another policy an approval request can come. It gets the same error answer, which codex 0.157.1 took as a decline (`docs/research/codex-app-server.md`). Helyx still accepts no approval request; a UI ticket that adds approvals makes a new decision.
