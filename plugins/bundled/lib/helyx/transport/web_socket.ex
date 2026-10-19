@@ -16,6 +16,11 @@ defmodule Helyx.Transport.WebSocket do
   `:origins` lists the allowed values of the `Origin` header, none
   by default: an upgrade with an `Origin` outside the list gets HTTP 403,
   and an upgrade over the 64 connections of the server HTTP 503.
+
+  The stop takes at most 20,000 ms (`docs/features/wire-protocol.md`,
+  Bounds): a connection that has not finished its upgrade closes at once,
+  and each WebSocket connection gets close `1000`. After a crash of the gate
+  or of the listener, every connection stops within 15,000 ms.
   """
 
   @behaviour Plug
@@ -80,13 +85,16 @@ defmodule Helyx.Transport.WebSocket do
   end
 
   # A crash of the gate or of the listener ends the transport, and its
-  # supervisor in the product starts both again with a new gate.
+  # supervisor in the product starts both again with a new gate. The drain
+  # starts last, so it is the first step of the stop.
   defp start(config, ip, port) do
     {:ok, sup} = Supervisor.start_link([], strategy: :one_for_all, max_restarts: 0)
 
     with {:ok, gate} <-
            Supervisor.start_child(sup, {Helyx.Transport.WebSocket.Gate, @max_connections}),
-         {:ok, _bandit} <- Supervisor.start_child(sup, bandit(%{config | gate: gate}, ip, port)) do
+         {:ok, bandit} <- Supervisor.start_child(sup, bandit(%{config | gate: gate}, ip, port)),
+         {:ok, _drain} <-
+           Supervisor.start_child(sup, {Helyx.Transport.WebSocket.Drain, {bandit, gate}}) do
       {:ok, sup}
     else
       error ->
@@ -115,7 +123,12 @@ defmodule Helyx.Transport.WebSocket do
       thousand_island_options: [
         # A stop on an error logs no crash report, which would hold the bytes
         # of the frame; a socket error that comes as a message still logs one.
-        silent_terminate_on_error: true
+        silent_terminate_on_error: true,
+        # Thousand Island stops its acceptor groups one after another, each
+        # within the shutdown of its connections, so one group gives the stop
+        # one bound (`docs/features/wire-protocol.md`, Bounds).
+        num_acceptors: 1,
+        shutdown_timeout: 15_000
       ],
       websocket_options: [
         max_frame_size: Helyx.Transport.WebSocket.Frame.max_frame() + 14,
