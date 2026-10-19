@@ -220,12 +220,17 @@ defmodule Helyx.Test.WireClient do
     nonce
   end
 
-  # The next frame of the client, masked, as a map.
-  def client_frame(socket) do
-    {:ok, <<1::1, 0::3, 1::4, 1::1, len::7>>} = read(socket, 2)
+  # The next frame of the client, masked: its opcode and its payload.
+  def client_raw(socket) do
+    {:ok, <<1::1, 0::3, opcode::4, 1::1, len::7>>} = read(socket, 2)
     {:ok, size} = size(socket, len)
-
     {:ok, <<mask::binary-size(4), masked::binary>>} = read(socket, 4 + size)
-    JSON.decode!(xor(mask, masked))
+    {opcode, xor(mask, masked)}
+  end
+
+  # The next text frame of the client as a map.
+  def client_frame(socket) do
+    {1, text} = client_raw(socket)
+    JSON.decode!(text)
   end
 end

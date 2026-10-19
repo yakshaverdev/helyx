@@ -207,11 +207,13 @@ defmodule Helyx.TUI.Wire do
   end
 
   # A control frame is whole and at most 125 bytes; a text starts with
-  # opcode 1, and its fragments go on with opcode 0.
-  defp check(opcode, 1, size, _joined) when opcode in [8, 9, 10] and size <= 125, do: :ok
-  defp check(1, _fin, size, nil), do: within(size, "")
-  defp check(0, _fin, size, joined) when is_binary(joined), do: within(size, joined)
-  defp check(_opcode, _fin, _size, _joined), do: {:error, :broken}
+  # opcode 1, and its fragments go on with opcode 0. `Helyx.TUI.Wire.Reader`
+  # checks each frame after the handshake with it too.
+  @doc false
+  def check(opcode, 1, size, _joined) when opcode in [8, 9, 10] and size <= 125, do: :ok
+  def check(1, _fin, size, nil), do: within(size, "")
+  def check(0, _fin, size, joined) when is_binary(joined), do: within(size, joined)
+  def check(_opcode, _fin, _size, _joined), do: {:error, :broken}
 
   defp within(size, joined) do
     if byte_size(joined) + size <= Frame.max_frame(), do: :ok, else: {:error, :broken}
@@ -249,13 +251,16 @@ defmodule Helyx.TUI.Wire do
     end
   end
 
-  # A text frame of the client, masked (RFC 6455, section 5.3).
-  defp send_frame(socket, frame) do
-    text = JSON.encode!(frame)
-    size = byte_size(text)
+  defp send_frame(socket, frame), do: send_frame(socket, 1, JSON.encode!(frame))
+
+  # A whole frame of the client with `opcode`, masked (RFC 6455, section
+  # 5.3): a text, or the pong of `Helyx.TUI.Wire.Connection`.
+  @doc false
+  def send_frame(socket, opcode, payload) do
+    size = byte_size(payload)
     mask = :crypto.strong_rand_bytes(4)
-    masked = :crypto.exor(text, binary_part(:binary.copy(mask, div(size, 4) + 1), 0, size))
-    :gen_tcp.send(socket, [<<1::1, 0::3, 1::4>>, payload_length(size), mask, masked])
+    masked = :crypto.exor(payload, binary_part(:binary.copy(mask, div(size, 4) + 1), 0, size))
+    :gen_tcp.send(socket, [<<1::1, 0::3, opcode::4>>, payload_length(size), mask, masked])
   end
 
   defp payload_length(size) when size < 126, do: <<1::1, size::7>>
