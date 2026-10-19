@@ -170,7 +170,7 @@ defmodule Helyx.HarnessIO do
         state = %{state | buffer: [], size: 0}
 
         {events, state} =
-          case JSON.decode(line) do
+          case json(line) do
             {:ok, %{} = object} -> decode.(object, state)
             _ -> {[], state}
           end
@@ -178,6 +178,13 @@ defmodule Helyx.HarnessIO do
         {more, state} = lines(rest, state, decode)
         {events ++ more, state}
     end
+  end
+
+  # The decode raises, not returns, for an integer over the BEAM limit.
+  defp json(line) do
+    JSON.decode(line)
+  rescue
+    SystemLimitError -> :error
   end
 
   # A compaction in a program with no history yet: the replay of the

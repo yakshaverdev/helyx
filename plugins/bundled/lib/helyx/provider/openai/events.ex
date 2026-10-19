@@ -240,10 +240,18 @@ defmodule Helyx.Provider.OpenAI.Events do
   # Arguments that are not a JSON object go on as their raw text. Core
   # fails the turn at the call and drops the text (`Helyx.Provider`).
   defp decode_arguments(call, json) do
-    case JSON.decode(json) do
+    case decode(json) do
       {:ok, arguments} when is_map(arguments) -> {:tool_call, %{call | arguments: arguments}}
       _ -> {:tool_call, %{call | arguments: json}}
     end
+  end
+
+  # The decode raises, not returns, for an integer over the BEAM limit. An
+  # SSE line is too short to hold one; joined arguments are not.
+  defp decode(json) do
+    JSON.decode(json)
+  rescue
+    SystemLimitError -> :error
   end
 
   # The wire values: docs/research/stop-reasons.md.

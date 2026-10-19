@@ -304,7 +304,13 @@ defmodule Helyx.ModelInfo.CatalogTest do
         assert window() == window
       end
 
-      for bad <- ["not json", "[]", JSON.encode!(%{"openai" => %{"models" => %{"m" => 1}}})] do
+      for bad <- [
+            "not json",
+            "[]",
+            JSON.encode!(%{"openai" => %{"models" => %{"m" => 1}}}),
+            # One over the largest integer of the BEAM on OTP 28.
+            String.duplicate("9", 1_262_593)
+          ] do
         new_node(dir)
         File.write!(cache, bad)
         assert window() == nil
@@ -406,6 +412,31 @@ defmodule Helyx.ModelInfo.CatalogTest do
         assert window() == 400_000
         assert File.read!(cache) == written
       end
+    end
+
+    # The refresh holds its name while the plug waits, so the monitor is set
+    # before the body arrives. 1,262,593 digits: one over the largest
+    # integer of the BEAM on OTP 28.
+    test "a body with an integer over the BEAM limit is bad JSON: the refresh ends normally",
+         %{tmp_dir: dir, cache: cache} do
+      seed(cache, @good)
+      written = File.read!(cache)
+
+      serve(dir, fn conn ->
+        receive do
+          :go -> Plug.Conn.send_resp(conn, 200, String.duplicate("9", 1_262_593))
+        end
+      end)
+
+      assert window() == 400_000
+      assert_receive {:fetch, task, _conn}
+      refresh = Process.whereis(Catalog)
+      ref = Process.monitor(refresh)
+      send(task, :go)
+
+      assert_receive {:DOWN, ^ref, :process, ^refresh, :normal}
+      assert window() == 400_000
+      assert File.read!(cache) == written
     end
 
     test "the body cap: 16 MB counted as the chunks arrive", %{

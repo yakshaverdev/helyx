@@ -155,6 +155,16 @@ defmodule Helyx.Provider.ClaudeCode.LimitsTest do
              List.last(run_direct([Message.user("hi")], work))
   end
 
+  # 1,262,593 digits: one over the largest integer of the BEAM on OTP 28.
+  test "a line with an integer over the BEAM limit is skipped, as a line that is not JSON",
+       %{bin: bin, work: work} do
+    line = ~s({"type":"assistant","n":#{String.duplicate("9", 1_262_593)}})
+    turn(bin, 1, 1, [line | reply("ok")])
+
+    assert [{:resume_id, _id, 0}, {:text_delta, "ok"}, {:done, _}] =
+             events_of(run_direct([Message.user("hi")], work))
+  end
+
   @tag :slow
   test "a line over 16 MiB stops the provider", %{bin: bin, work: work} do
     File.write!(Path.join(bin, "turn.1.1"), ~s(head -c 16777217 /dev/zero | tr '\\0' 'x'\n))
