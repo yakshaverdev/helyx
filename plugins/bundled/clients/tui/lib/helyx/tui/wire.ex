@@ -251,16 +251,16 @@ defmodule Helyx.TUI.Wire do
     end
   end
 
-  defp send_frame(socket, frame), do: send_frame(socket, 1, JSON.encode!(frame))
+  defp send_frame(socket, frame), do: :gen_tcp.send(socket, masked(1, JSON.encode!(frame)))
 
-  # A whole frame of the client with `opcode`, masked (RFC 6455, section
-  # 5.3): a text, or the pong of `Helyx.TUI.Wire.Connection`.
+  # The iodata of a whole frame of the client with `opcode`, masked (RFC
+  # 6455, section 5.3): a text, or the pong of `Helyx.TUI.Wire.Writer`.
   @doc false
-  def send_frame(socket, opcode, payload) do
+  def masked(opcode, payload) do
     size = byte_size(payload)
     mask = :crypto.strong_rand_bytes(4)
     masked = :crypto.exor(payload, binary_part(:binary.copy(mask, div(size, 4) + 1), 0, size))
-    :gen_tcp.send(socket, [<<1::1, 0::3, opcode::4>>, payload_length(size), mask, masked])
+    [<<1::1, 0::3, opcode::4>>, payload_length(size), mask, masked]
   end
 
   defp payload_length(size) when size < 126, do: <<1::1, size::7>>
