@@ -4,7 +4,7 @@ defmodule Helyx.TUI.LinkTest do
   # Task, is the TUI process.
   use ExUnit.Case, async: true
 
-  import Helyx.Test.Events, only: [wait_ms: 0]
+  import Helyx.Test.Events, only: [wait_ms: 0, wait_until: 1]
 
   alias ExRatatui.Event.{Key, Paste}
   alias Helyx.{Event, Message}
@@ -225,6 +225,62 @@ defmodule Helyx.TUI.LinkTest do
     assert Link.compact(state.session, big) == {:error, :text_too_large}
     assert Link.set_model(state.session, big) == {:error, {:invalid_model_ref, big}}
     for op <- ["steer", "compact", "set_model"], do: refute_received({:stub, ^op})
+  end
+
+  # The acceptance of #821. On this machine the old write in the connection
+  # process passed it too; the tests of `Helyx.TUI.Wire.Connection` with a
+  # server that does not read while it writes show the reads during a write.
+  test "a plain text at the bound, then a follow-up: the connection stays open", c do
+    {conn, ref} = connect(c.port)
+    {:ok, id} = Connection.start(conn, cwd: c.cwd)
+    {:ok, _snapshot, _sub} = Connection.subscribe(conn, id)
+    session = %Link{conn: conn, id: id}
+    text = String.duplicate("a", Helyx.Session.max_text_bytes())
+
+    assert Link.send_text(session, text, false) == :ok
+    assert Link.send_text(session, text, true) == :ok
+    turn_ends(2)
+    refute_received {:DOWN, ^ref, :process, ^conn, _reason}
+  end
+
+  # The worst JSON form of the bound, 4 MiB of control characters, is about
+  # 24 MiB of JSON for each event of its turn. A client that reads them late
+  # passes the outbound queue of the server, 64 MiB, which closes it with
+  # 4408 (an accepted hole of tui-attach.md). The client gives the owner
+  # 4408, or nil when a write of the client, such as a pong, fails at the
+  # close: gen_tcp then drops the close frame that waits to be read.
+  @tag :slow
+  test "the worst JSON form at the bound and a slow client: the server closes it with 4408", c do
+    {:ok, socket} = Wire.connect({127, 0, 0, 1}, c.port, fn -> "token" end, wait_ms())
+    {:ok, {_ip, mine}} = :inet.sockname(socket)
+
+    [server] =
+      for port <- Port.list(),
+          Port.info(port, :name) == {:name, ~c"tcp_inet"},
+          :inet.peername(port) == {:ok, {{127, 0, 0, 1}, mine}},
+          {:connected, pid} = Port.info(port, :connected),
+          do: pid
+
+    {:ok, conn, ref} = Connection.open(socket)
+    {:ok, id} = Connection.start(conn, cwd: c.cwd)
+    {:ok, _snapshot, _sub} = Connection.subscribe(conn, id)
+    text = String.duplicate("\u0001", Helyx.Session.max_text_bytes())
+    assert Link.send_text(%Link{conn: conn, id: id}, text, false) == :ok
+
+    # The client reads nothing until the queue of the server is over its
+    # bound: the server process has the close in its mailbox.
+    :erlang.suspend_process(conn)
+    wait_until(fn -> {:close, 4408} in elem(Process.info(server, :messages), 1) end)
+    :erlang.resume_process(conn)
+    assert_receive {:DOWN, ^ref, :process, ^conn, {:shutdown, {:closed, code}}}
+    assert code in [4408, nil]
+  end
+
+  defp turn_ends(0), do: :ok
+
+  defp turn_ends(n) do
+    assert_receive {:helyx_event, %Event{type: type}}, wait_ms()
+    turn_ends(if type == :turn_end, do: n - 1, else: n)
   end
 
   test "a refused switch shows a fixed text for each reason, and no term", c do
