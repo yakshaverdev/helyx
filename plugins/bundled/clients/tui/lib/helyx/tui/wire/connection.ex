@@ -28,8 +28,8 @@ defmodule Helyx.TUI.Wire.Connection do
   it, its wait for the writer included (decision 15), then gives
   `{:error, :timeout}`: the outcome is unknown, and the late reply is
   dropped. At most 16 requests wait for a reply, late ones too, and at
-  most 16 request frames of the callers wait for the writer; one more
-  gives `{:error, :busy}` and sends nothing. After the end of the connection an operation
+  most 16 request frames wait for the writer; one more gives `{:error,
+  :busy}` and sends nothing. After the end of the connection an operation
   gives `{:error, :closed}`.
   """
 
@@ -154,8 +154,10 @@ defmodule Helyx.TUI.Wire.Connection do
     # `{:unsubscribe, sub}` for the end of a subscription that a late reply
     # made. `subs` maps a subscription to `:live`, or to `:dropped` for one
     # that a late reply made. `unwritten` counts the request frames that
-    # wait for the writer; `control` is `:waiting` while a batch of a pong
-    # and acks waits for it, and `pong` and `acks` hold the next batch.
+    # wait for the writer, and `unsubscribes` holds the `{id, sub}` of each
+    # unsubscribe that waits for a place among them; `control` is `:waiting`
+    # while a batch of a pong and acks waits for the writer, and `pong` and
+    # `acks` hold the next batch.
     {:ok,
      %{
        owner: owner,
@@ -163,6 +165,7 @@ defmodule Helyx.TUI.Wire.Connection do
        socket: socket,
        writer: Writer.start_link(socket),
        unwritten: 0,
+       unsubscribes: [],
        control: :idle,
        pong: nil,
        acks: %{},
@@ -184,7 +187,7 @@ defmodule Helyx.TUI.Wire.Connection do
     # An id is never used again, so a late reply is told apart.
     id = Integer.to_string(state.next)
     timer = Process.send_after(self(), {:deadline, id}, Ops.deadline(op) + @margin_ms)
-    send_request(state, id, op, params, {from, timer})
+    write_request(register(state, id, op, {from, timer}), id, op, params)
   end
 
   def handle_call(:take, {owner, _tag}, state) do
@@ -227,28 +230,12 @@ defmodule Helyx.TUI.Wire.Connection do
       else: {:noreply, state}
   end
 
-  def handle_info(:written, state), do: {:noreply, %{state | unwritten: state.unwritten - 1}}
+  def handle_info(:written, state), do: unsubscribe(%{state | unwritten: state.unwritten - 1})
   def handle_info(:sent, state), do: control(%{state | control: :idle})
 
-  # A failed write ends the connection after the bytes that the socket
-  # holds, at most its receive buffer, so a close frame of the server that
-  # came before the failure gives its code (decision 15).
-  def handle_info(:write_failed, %{socket: socket} = state) do
-    _ = :inet.setopts(socket, active: false)
-
-    data =
-      receive do
-        {:tcp, ^socket, data} -> data
-      after
-        0 -> ""
-      end
-
-    case Reader.held(state.buffer <> data, state.joined, socket) do
-      {:close, _payload} = close -> message(close, state)
-      :none -> closed(nil, state)
-      :broken -> broken(state)
-    end
-  end
+  # gen_tcp drops the bytes that wait to be read at a failed send, so a
+  # close frame that waits there has no code to give (decision 15).
+  def handle_info(:write_failed, state), do: closed(nil, state)
 
   def handle_info({:DOWN, _ref, :process, owner, _reason}, %{owner: owner} = state),
     do: {:stop, :normal, state}
@@ -328,11 +315,13 @@ defmodule Helyx.TUI.Wire.Connection do
   defp reply(_caller, "subscribe", {:ok, {:replay, _events}, _sub}, state), do: broken(state)
 
   # A late reply: its caller got `timeout`. A subscription that it made
-  # ends with `unsubscribe`, and its frames are dropped.
+  # ends with `unsubscribe`, which takes the place of the reply among those
+  # that wait, and its frames are dropped.
   defp reply(:late, "subscribe", {:ok, _snapshot_or_replay, sub}, state) do
-    state = put_in(state.subs[sub], :dropped)
     id = Integer.to_string(state.next)
-    send_request(state, id, "unsubscribe", %{"sub" => sub}, {:unsubscribe, sub})
+    state = register(state, id, "unsubscribe", {:unsubscribe, sub})
+    state = put_in(state.subs[sub], :dropped)
+    unsubscribe(%{state | unsubscribes: state.unsubscribes ++ [{id, sub}]})
   end
 
   defp reply(:late, _op, _result, state), do: {:noreply, state}
@@ -350,17 +339,25 @@ defmodule Helyx.TUI.Wire.Connection do
     end
   end
 
-  defp send_request(state, id, op, params, caller) do
-    frame = %{"type" => "req", "id" => id, "op" => op, "params" => params}
-    Writer.write(state.writer, [frame], :written)
+  defp register(state, id, op, caller),
+    do: %{state | next: state.next + 1, waiting: Map.put(state.waiting, id, {op, caller})}
 
-    {:noreply,
-     %{
-       state
-       | next: state.next + 1,
-         unwritten: state.unwritten + 1,
-         waiting: Map.put(state.waiting, id, {op, caller})
-     }}
+  # An unsubscribe goes to the writer when a place among the 16 request
+  # frames is free.
+  defp unsubscribe(%{unsubscribes: [{id, sub} | rest]} = state)
+       when state.unwritten < @max_waiting,
+       do: write_request(%{state | unsubscribes: rest}, id, "unsubscribe", %{"sub" => sub})
+
+  defp unsubscribe(state), do: {:noreply, state}
+
+  defp write_request(state, id, op, params) do
+    Writer.write(
+      state.writer,
+      [%{"type" => "req", "id" => id, "op" => op, "params" => params}],
+      :written
+    )
+
+    {:noreply, %{state | unwritten: state.unwritten + 1}}
   end
 
   # At most one batch of a pong and acks waits for the writer, so pings

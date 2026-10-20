@@ -230,7 +230,6 @@ defmodule Helyx.TUI.LinkTest do
   # The acceptance of #821. On this machine the old write in the connection
   # process passed it too; the tests of `Helyx.TUI.Wire.Connection` with a
   # server that does not read while it writes show the reads during a write.
-  @tag :slow
   test "a plain text at the bound, then a follow-up: the connection stays open", c do
     {conn, ref} = connect(c.port)
     {:ok, id} = Connection.start(conn, cwd: c.cwd)
@@ -247,9 +246,11 @@ defmodule Helyx.TUI.LinkTest do
   # The worst JSON form of the bound, 4 MiB of control characters, is about
   # 24 MiB of JSON for each event of its turn. A client that reads them late
   # passes the outbound queue of the server, 64 MiB, which closes it with
-  # 4408 (an accepted hole of tui-attach.md): the client ends with the code.
+  # 4408 (an accepted hole of tui-attach.md). The client gives the owner
+  # 4408, or nil when a write of the client, such as a pong, fails at the
+  # close: gen_tcp then drops the close frame that waits to be read.
   @tag :slow
-  test "the worst JSON form at the bound and a slow client: the client ends with 4408", c do
+  test "the worst JSON form at the bound and a slow client: the server closes it with 4408", c do
     {:ok, socket} = Wire.connect({127, 0, 0, 1}, c.port, fn -> "token" end, wait_ms())
     {:ok, {_ip, mine}} = :inet.sockname(socket)
 
@@ -271,7 +272,8 @@ defmodule Helyx.TUI.LinkTest do
     :erlang.suspend_process(conn)
     wait_until(fn -> {:close, 4408} in elem(Process.info(server, :messages), 1) end)
     :erlang.resume_process(conn)
-    assert_receive {:DOWN, ^ref, :process, ^conn, {:shutdown, {:closed, 4408}}}
+    assert_receive {:DOWN, ^ref, :process, ^conn, {:shutdown, {:closed, code}}}
+    assert code in [4408, nil]
   end
 
   defp turn_ends(0), do: :ok

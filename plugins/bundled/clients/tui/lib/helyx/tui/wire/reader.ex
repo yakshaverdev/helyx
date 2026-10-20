@@ -30,32 +30,6 @@ defmodule Helyx.TUI.Wire.Reader do
     end
   end
 
-  # The first close frame in `buffer` and the bytes that `socket` holds,
-  # read with no wait until a close frame, an empty socket, or the size of
-  # its receive buffer: `{:close, payload}`, `:none`, or `:broken`. The
-  # connection reads them after a failed write (tui-attach.md, decision 15).
-  @spec held(binary(), binary() | nil, :gen_tcp.socket()) ::
-          {:close, binary()} | :none | :broken
-  def held(buffer, joined, socket) do
-    case :inet.getopts(socket, [:recbuf]) do
-      {:ok, [recbuf: budget]} -> held(buffer, joined, socket, budget)
-      {:error, _closed} -> held(buffer, joined, socket, 0)
-    end
-  end
-
-  defp held(buffer, joined, socket, budget) do
-    with {:ok, messages, rest, joined} <- read(buffer, joined),
-         nil <- List.keyfind(messages, :close, 0),
-         true <- budget > 0,
-         {:ok, more} <- :gen_tcp.recv(socket, 0, 0) do
-      held(rest <> more, joined, socket, budget - byte_size(more))
-    else
-      :broken -> :broken
-      {:close, _payload} = close -> close
-      _empty -> :none
-    end
-  end
-
   # A server does not mask (RFC 6455, section 5.1) and sets no reserved bit.
   defp header(<<fin::1, 0::3, opcode::4, 0::1, len::7, rest::binary>>) do
     case {len, rest} do

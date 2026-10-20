@@ -1,13 +1,12 @@
 defmodule Helyx.TUI.Wire.Writer do
   @moduledoc false
   # The writer of `Helyx.TUI.Wire.Connection` (docs/features/tui-attach.md,
-  # decision 15): it sends the frames of the connection in their order, so
-  # the connection reads while a frame goes out. It sends on its own
-  # descriptor of the socket, as gen_tcp drops the bytes that wait to be
-  # read at a failed send, and the connection reads them for the close
-  # code. Each send has the send timeout of the socket. It answers each
-  # batch with its `done` message, and a failed send with `:write_failed`,
-  # and then ends; the connection kills it at its own end.
+  # decision 15): it sends the frames of the connection in their order on
+  # the socket of the connection, which stays its controlling process and
+  # reads, so the connection reads while a frame goes out. Each send has
+  # the send timeout of the socket. It answers each batch with its `done`
+  # message, and a failed send with `:write_failed`, and then ends; the
+  # connection kills it at its own end.
 
   alias Helyx.Transport.WebSocket.Frame
   alias Helyx.TUI.Wire
@@ -20,11 +19,7 @@ defmodule Helyx.TUI.Wire.Writer do
   @spec start_link(:gen_tcp.socket()) :: pid()
   def start_link(socket) do
     conn = self()
-    {:ok, fd} = :inet.getfd(socket)
-    {:ok, [send_timeout: timeout]} = :inet.getopts(socket, [:send_timeout])
-    {:ok, {ip, _port}} = :inet.sockname(socket)
-    domain = if tuple_size(ip) == 4, do: :inet, else: :inet6
-    spawn_link(fn -> run(conn, fd, domain, timeout) end)
+    spawn_link(fn -> loop(conn, socket) end)
   end
 
   # Sends `items` after the batches before them, then `done` to the caller
@@ -35,18 +30,13 @@ defmodule Helyx.TUI.Wire.Writer do
     :ok
   end
 
-  defp run(conn, fd, domain, timeout) do
-    {:ok, socket} = :socket.open(fd, %{domain: domain, type: :stream, protocol: :tcp})
-    loop(conn, socket, timeout)
-  end
-
-  defp loop(conn, socket, timeout) do
+  defp loop(conn, socket) do
     receive do
       {:write, items, done} ->
-        case send_all(items, socket, timeout) do
+        case send_all(items, socket) do
           :ok ->
             send(conn, done)
-            loop(conn, socket, timeout)
+            loop(conn, socket)
 
           {:error, _reason} ->
             send(conn, :write_failed)
@@ -56,11 +46,11 @@ defmodule Helyx.TUI.Wire.Writer do
 
   # The texts of a frame, its parts too, go out one after the other, so no
   # pong comes between them.
-  defp send_all(items, socket, timeout) do
+  defp send_all(items, socket) do
     items
     |> Stream.flat_map(&frames/1)
     |> Enum.reduce_while(:ok, fn frame, :ok ->
-      case :socket.send(socket, frame, timeout) do
+      case :gen_tcp.send(socket, frame) do
         :ok -> {:cont, :ok}
         {:error, _reason} = error -> {:halt, error}
       end

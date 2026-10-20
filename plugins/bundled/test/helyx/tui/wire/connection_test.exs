@@ -490,43 +490,6 @@ defmodule Helyx.TUI.Wire.ConnectionTest do
   defp ack(%{"type" => "ack", "seq" => seq}, acc), do: [{:ack, seq} | acc]
   defp ack(_part, acc), do: acc
 
-  # The server closes with 4408 while the writer sends a steer that it does
-  # not read, which makes the close a reset. The connection does not read
-  # at that moment, so the failed write comes first, and the close frame
-  # waits in the socket (decision 15).
-  test "a failed write ends the connection with the code of a close frame that came before it" do
-    test = self()
-
-    {conn, ref} =
-      fake(fn socket ->
-        send(test, {:server, self()})
-        {1, _first_part} = client_raw(socket)
-        send(test, :writing)
-        receive do: (:ping -> :ok = :gen_tcp.send(socket, server_frame(1, 9, "p")))
-        receive do: (:close -> :ok = :gen_tcp.send(socket, server_frame(1, 8, <<4408::16>>)))
-        :ok = :gen_tcp.close(socket)
-      end)
-
-    assert_receive {:server, server}
-    writer_ref = Process.monitor(writer(conn))
-    steer = Task.async(fn -> Connection.steer(conn, "s1", String.duplicate("a", 16_777_216)) end)
-    assert_receive :writing
-    # The ping waits in the mailbox of the suspended connection, which reads
-    # the socket again only after it takes the ping.
-    :erlang.suspend_process(conn)
-    send(server, :ping)
-
-    wait_until(fn ->
-      Enum.any?(elem(Process.info(conn, :messages), 1), &match?({:tcp, _, _}, &1))
-    end)
-
-    send(server, :close)
-    assert_receive {:DOWN, ^writer_ref, :process, _writer, :normal}
-    :erlang.resume_process(conn)
-    assert_receive {:DOWN, ^ref, :process, ^conn, {:shutdown, {:closed, 4408}}}
-    assert Task.await(steer) == {:error, :closed}
-  end
-
   # A server that replies to a request before it reads it frees the place
   # of the request among those that wait for a reply, while its frame waits
   # for the writer behind a steer that the server does not read.
@@ -557,6 +520,66 @@ defmodule Helyx.TUI.Wire.ConnectionTest do
 
     assert Connection.abort(conn, "s1") == {:error, :busy}
     Task.shutdown(steer, :brutal_kill)
+  end
+
+  # Subscribes behind a steer that the server does not read pass their
+  # deadlines, the call timeout of the server, 6,000 ms, and the margin,
+  # 5,000 ms; the server then replies to them before it reads them. The
+  # unsubscribe of each late reply waits for a place among the 16 request
+  # frames, and goes out when the writer frees one.
+  @tag :slow
+  @tag timeout: 60_000
+  test "the unsubscribe of a late subscribe reply waits for a place among the 16 request frames" do
+    test = self()
+    ids = Enum.map(2..16, &Integer.to_string/1)
+
+    {conn, _ref} =
+      fake(fn socket ->
+        send(test, {:server, self()})
+        {1, _first_part} = client_raw(socket)
+        send(test, :writing)
+        snapshot = ServerWire.snapshot(snapshot())
+        receive do: (:reply -> :ok)
+
+        :ok =
+          :gen_tcp.send(
+            socket,
+            for(id <- ids, do: text(res(id, %{sub: "x" <> id, snapshot: snapshot})))
+          )
+
+        receive do: (:read -> :ok)
+        send(test, {:unsubscribed, unsubscribes(socket, length(ids), [])})
+      end)
+
+    assert_receive {:server, server}
+    steer = Task.async(fn -> Connection.steer(conn, "s1", String.duplicate("a", 16_777_216)) end)
+    assert_receive :writing
+    subscribes = for _id <- ids, do: Task.async(fn -> Connection.subscribe(conn, "s1") end)
+    for task <- subscribes, do: assert(Task.await(task, 20_000) == {:error, :timeout})
+
+    send(server, :reply)
+    wait_until(fn -> map_size(:sys.get_state(conn).subs) == length(ids) end)
+    # The writer sends the steer; the 15 subscribes wait for it, and no
+    # unsubscribe.
+    assert Process.info(writer(conn), :message_queue_len) == {:message_queue_len, length(ids)}
+
+    send(server, :read)
+    assert_receive {:unsubscribed, subs}
+    assert subs == Enum.sort(for id <- ids, do: "x" <> id)
+    Task.shutdown(steer, :brutal_kill)
+  end
+
+  # The subs of the first `n` unsubscribe frames of the client, sorted.
+  defp unsubscribes(_socket, 0, acc), do: Enum.sort(acc)
+
+  defp unsubscribes(socket, n, acc) do
+    case client_frame(socket) do
+      %{"op" => "unsubscribe", "params" => %{"sub" => sub}} ->
+        unsubscribes(socket, n - 1, [sub | acc])
+
+      _part_or_subscribe ->
+        unsubscribes(socket, n, acc)
+    end
   end
 
   test "a replay in reply to a subscribe, which sends no after, is a contract break" do
@@ -607,7 +630,6 @@ defmodule Helyx.TUI.Wire.ConnectionTest do
     Process.exit(owner, :kill)
     assert_receive {:DOWN, ^ref, :process, ^conn, :normal}
     assert_receive {:DOWN, ^writer_ref, :process, _writer, :killed}
-    # The writer holds a descriptor of the socket too.
     assert_receive {:closed, {:error, :closed}}
 
     # A crash of the connection ends the writer by the link.
@@ -624,8 +646,8 @@ defmodule Helyx.TUI.Wire.ConnectionTest do
   end
 
   # A server that reads nothing, and a send timeout of 1,000 ms: the write
-  # fails, the socket holds no close frame, and the connection ends with no
-  # code. 16 MiB of text pass the socket buffers of both sides.
+  # fails, and the connection ends with no code. 16 MiB of text pass the
+  # socket buffers of both sides.
   @tag :slow
   test "a write past the send timeout ends the connection with no code, and the request gets closed" do
     socket = connect(fake_port(fn _socket -> :ok end))
