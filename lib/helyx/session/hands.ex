@@ -283,9 +283,10 @@ defmodule Helyx.Session.Hands do
   # GenServer before handle_info.
   defp info(_message, state), do: {:noreply, state}
 
-  # The hands stop only for a trapped reason; on an untrappable kill the
-  # links do the same work. Each tool frees its resources when its Task dies
-  # (see `Helyx.Tool.hold/1`).
+  # Kills a provider Task that `Helyx.Reason.task/2` left trapping exits
+  # in its crash log; the links end every other Task. A kill of the hands
+  # skips it (docs/features/tool-resource-release.md, rule 10). Each tool
+  # frees its resources when its Task dies (see `Helyx.Tool.hold/1`).
   @impl true
   def terminate(_reason, state) do
     Helyx.Reason.no_args(fn ->
