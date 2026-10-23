@@ -136,6 +136,62 @@ defmodule CodingAgent.AttachTest do
     assert {{0, _out}, _stderr} = Task.await(task, 60_000)
   end
 
+  # Each run ends at the model of its session, before the TUI: the default
+  # model of the server and the models of the saved sessions name no
+  # provider, so the line tells a start from a resume, and which session.
+  # The server logs the failed resume of the locked session.
+  @tag :capture_log
+  test "helyx reattaches to the newest session of its folder; --new and --model start one",
+       %{tmp_dir: dir, sessions: sessions, server_file: file} do
+    task =
+      Task.async(fn ->
+        with_io(:stderr, fn -> with_io(fn -> CLI.main(["serve", "--model", "none/m"]) end) end)
+      end)
+
+    wait_until(fn -> match?({:ok, "{" <> _}, File.read(file)) end)
+
+    for model <- ["older/m", "newest/m"] do
+      {:ok, session} = Helyx.Session.File.create(sessions, Helyx.Session.Id.new(), dir, model)
+      Helyx.Test.SessionFile.append_message(session, Helyx.Message.user("p"))
+    end
+
+    # A session with no message is not picked, as for --resume.
+    empty = Path.join(dir, "empty")
+    File.mkdir_p!(empty)
+    {:ok, _} = Helyx.Session.File.create(sessions, Helyx.Session.Id.new(), empty, "empty/m")
+
+    no_provider = &"helyx: could not start the agent: no provider has the id \"#{&1}\"\n"
+
+    assert helyx([dir]) ==
+             "helyx: could not reattach to the newest session (helyx --new starts one): " <>
+               ~s(no provider has the id "newest"\n)
+
+    assert helyx([dir, "--resume"]) == no_provider.("newest")
+    assert helyx([dir, "--new"]) == no_provider.("none")
+    assert helyx([dir, "--model", "nope/m"]) == no_provider.("nope")
+    assert helyx([empty]) == no_provider.("none")
+
+    # A newest session that another OS process has open is not skipped.
+    locked = Path.join(dir, "locked")
+    File.mkdir_p!(locked)
+    {:ok, session} = Helyx.Session.File.create(sessions, Helyx.Session.Id.new(), locked, "x/m")
+    Helyx.Test.SessionFile.append_message(session, Helyx.Message.user("p"))
+    {:ok, lock} = Lock.take(Path.rootname(session.path))
+
+    assert helyx([locked]) =~
+             ~r/^helyx: could not reattach to the newest session \(helyx --new starts one\): .*session_locked/
+
+    Lock.release(lock)
+
+    assert helyx([empty, "--resume"]) ==
+             "helyx: could not start the agent: no saved session for this directory; " <>
+               "start one without --resume\n"
+
+    assert Helyx.Sessions.list_live(Helyx.Core) == []
+    :ok = Task.Supervisor.terminate_child(CodingAgent.Servers, Process.whereis(Serve))
+    assert {{0, _out}, _stderr} = Task.await(task, 60_000)
+  end
+
   test "with the lock free, a server file is no server and stays; a missing data folder is none",
        %{tmp_dir: dir, sessions: sessions, server_file: file} do
     missing = Path.join(dir, "missing")

@@ -3,7 +3,7 @@ defmodule CodingAgent.CLI do
 
   # The usage lines, for the moduledoc and `--help`.
   @usage """
-  helyx [directory] [--model provider/model] [--resume]
+  helyx [directory] [--model provider/model] [--new | --resume]
   helyx [directory] [--model provider/model | --resume] -p prompt
   helyx --session id [-p prompt]
   helyx --list [--all] [directory]
@@ -31,7 +31,10 @@ defmodule CodingAgent.CLI do
   `--host`, default 127.0.0.1, and `--port`, default a port that the OS
   picks; `--model` is then the default model of the server. Without `-p`,
   `helyx` runs the TUI over the wire when a server runs for the data
-  folder (`CodingAgent.attach/2`). The design is in
+  folder (`CodingAgent.attach/2`): it reattaches to the newest session of
+  the directory, as `--resume` picks it, and starts one when the directory
+  has none; `--new` and `--model` start one. A newest session that does
+  not resume gives a line that names `--new`. The design is in
   `docs/features/local-release.md`, `docs/features/session-list.md`,
   `docs/features/print-mode.md`, `docs/features/serve.md`, and
   `docs/features/tui-attach.md`.
@@ -47,6 +50,7 @@ defmodule CodingAgent.CLI do
     model: {:string, "--model provider/model", "the model, default #{@default_model}"},
     resume:
       {:boolean, "--resume", "continue the newest session of the directory that has a message"},
+    new: {:boolean, "--new", "start a new session, not the newest of the directory on a server"},
     session: {:string, "--session id", "continue the session with this id, in its folder"},
     list: {:boolean, "--list", "print the sessions of the directory, newest first"},
     all: {:boolean, "--all", "with --list, the sessions of every folder"},
@@ -79,6 +83,9 @@ defmodule CodingAgent.CLI do
     {:model, :session, "; a resumed session keeps its saved model"},
     {:directory, :session, "; the session runs in the folder of its header"},
     {:resume, :session, ""},
+    {:new, :resume, ""},
+    {:new, :session, ""},
+    {:list, :new, ""},
     {:list, :model, ""},
     {:list, :resume, ""},
     {:list, :session, ""},
@@ -292,10 +299,23 @@ defmodule CodingAgent.CLI do
     attach = if run[:prompt], do: :none, else: CodingAgent.Attach.connect(run[:sessions_dir])
 
     case attach do
-      :none -> CodingAgent.run([model: Keyword.get(opts, :model, @default_model)] ++ run)
-      {:ok, socket} -> CodingAgent.attach(socket, Keyword.take(opts, [:model]) ++ run)
-      {:error, text} -> {:error, {:attach, text}}
+      :none ->
+        CodingAgent.run([model: Keyword.get(opts, :model, @default_model)] ++ run)
+
+      {:ok, socket} ->
+        CodingAgent.attach(socket, Keyword.take(opts, [:model]) ++ reattach(opts, run))
+
+      {:error, text} ->
+        {:error, {:attach, text}}
     end
+  end
+
+  # On a server, `helyx` reattaches to the newest session of its folder;
+  # `--new` and `--model` start one (docs/features/tui-attach.md, decision 16).
+  defp reattach(opts, run) do
+    if opts[:new] || opts[:model] || run[:resume],
+      do: run,
+      else: Keyword.put(run, :resume, :reattach)
   end
 
   # The find of the `--session` id names the id.
