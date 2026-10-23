@@ -3,6 +3,7 @@ defmodule CodingAgent.AttachTest do
   # one server.
   use ExUnit.Case, async: false
 
+  import Bitwise
   import ExUnit.CaptureIO
   import Helyx.Test.Events, only: [wait_until: 1]
 
@@ -190,6 +191,148 @@ defmodule CodingAgent.AttachTest do
     assert Helyx.Sessions.list_live(Helyx.Core) == []
     :ok = Task.Supervisor.terminate_child(CodingAgent.Servers, Process.whereis(Serve))
     assert {{0, _out}, _stderr} = Task.await(task, 60_000)
+  end
+
+  # A launcher of the test: it writes its arguments, its pid and process
+  # group, and its stdin to files of `dir`, prints one line, and then
+  # writes `ready`. With a `serve` model, a process of the test runs
+  # `helyx serve` in this VM after `ready`, in the place of the server of
+  # the launcher.
+  defp launcher(dir, serve \\ nil) do
+    path = Path.join(dir, "launcher")
+
+    File.write!(path, """
+    #!/bin/sh
+    printf '%s\\n' "$@" > '#{dir}/args'
+    echo $$ $(ps -o pgid= -p $$) > '#{dir}/group'
+    cat > '#{dir}/stdin'
+    echo launcher output
+    : > '#{dir}/ready'
+    """)
+
+    File.chmod!(path, 0o755)
+    if serve, do: spawn_link(fn -> serve_when_ready(dir, serve) end)
+    path
+  end
+
+  defp serve_when_ready(dir, model) do
+    wait_until(fn -> File.exists?(Path.join(dir, "ready")) end)
+    with_io(:stderr, fn -> with_io(fn -> CLI.main(["serve", "--model", model]) end) end)
+  end
+
+  test "with no server, a start runs the launcher in the background and attaches to its server",
+       %{tmp_dir: dir, sessions: sessions} do
+    assert {:ok, socket} = Attach.start(sessions, launcher(dir, "fake/echo"))
+
+    assert %{"ok" => true, "result" => %{"sessions" => []}} =
+             WireClient.request(socket, "1", "sessions.live", %{})
+
+    # The launcher got `serve`, a process group and a session of its own,
+    # stdin on /dev/null, and its output in the log of the data folder,
+    # which the start made with mode 0700.
+    assert File.read!(Path.join(dir, "args")) == "serve\n"
+    assert [pid, pid] = dir |> Path.join("group") |> File.read!() |> String.split()
+    assert File.read!(Path.join(dir, "stdin")) == ""
+    assert File.read!(Path.join(sessions, "server.log")) == "launcher output\n"
+    assert (File.stat!(sessions).mode &&& 0o777) == 0o700
+  end
+
+  # The TUI needs a terminal, so the run ends at the model of the server,
+  # which names no provider, before it.
+  test "helyx starts a server with the launcher of the release; mix helyx, with none, runs in the node",
+       %{tmp_dir: dir, sessions: sessions} do
+    System.put_env("HELYX_LAUNCHER", launcher(dir, "none/m"))
+    on_exit(fn -> System.delete_env("HELYX_LAUNCHER") end)
+
+    assert helyx([dir]) == ~s(helyx: could not start the agent: no provider has the id "none"\n)
+    assert File.read!(Path.join(dir, "args")) == "serve\n"
+    assert System.get_env("HELYX_LAUNCHER") == nil
+
+    # With no launcher and no server, the TUI runs in the node, which ends
+    # at its model too.
+    :ok = Task.Supervisor.terminate_child(CodingAgent.Servers, Process.whereis(Serve))
+    wait_until(fn -> Attach.connect(sessions) == :none end)
+    File.rm!(Path.join(dir, "args"))
+
+    assert helyx([dir, "--model", "nope/m"]) ==
+             ~s(helyx: could not start the agent: no provider has the id "nope"\n)
+
+    refute File.exists?(Path.join(dir, "args"))
+  end
+
+  # The open of the log does not wait: a FIFO with no reader would hold
+  # it with no bound.
+  test "a server.log that is not a regular file fails the start at once",
+       %{tmp_dir: dir, sessions: sessions} do
+    data_folder(sessions)
+    log = Path.join(sessions, "server.log")
+    {_, 0} = System.cmd("mkfifo", [log])
+
+    assert {:error, "could not start a server: " <> reason} =
+             Attach.start(sessions, launcher(dir))
+
+    assert reason =~ log
+    refute File.exists?(Path.join(dir, "args"))
+  end
+
+  # A server needs perl, as the node does: the line is that of today.
+  test "with no perl on the PATH, helyx gives the line of the node and starts no server",
+       %{tmp_dir: dir, sessions: sessions} do
+    path = System.get_env("PATH")
+    on_exit(fn -> System.put_env("PATH", path) end)
+    on_exit(fn -> System.delete_env("HELYX_LAUNCHER") end)
+    launcher = launcher(dir)
+    empty = Path.join(dir, "bin")
+    File.mkdir_p!(empty)
+    System.put_env("PATH", empty)
+
+    node = helyx([dir])
+    System.put_env("HELYX_LAUNCHER", launcher)
+    assert helyx([dir]) == node
+    assert node =~ "perl"
+    refute File.exists?(Path.join(dir, "args"))
+    refute File.exists?(Path.join(sessions, "server.log"))
+  end
+
+  # perl writes a warning of a locale that is not there before its error.
+  test "the reason of a failed start is the last line of perl", %{
+    tmp_dir: dir,
+    sessions: sessions
+  } do
+    data_folder(sessions)
+    log = Path.join(sessions, "server.log")
+    {_, 0} = System.cmd("mkfifo", [log])
+    locale = System.get_env("LC_ALL")
+    System.put_env("LC_ALL", "xx_XX.UTF-8")
+
+    on_exit(fn ->
+      if locale, do: System.put_env("LC_ALL", locale), else: System.delete_env("LC_ALL")
+    end)
+
+    assert {:error, "could not start a server: " <> reason} =
+             Attach.start(sessions, launcher(dir))
+
+    assert reason =~ ~r/\A#{Regex.escape(log)}: [^\n]+\z/
+  end
+
+  @tag :slow
+  test "a launcher that starts no server gives one line after the wait", %{
+    tmp_dir: dir,
+    sessions: sessions
+  } do
+    log = Path.join(sessions, "server.log")
+
+    assert Attach.start(sessions, launcher(dir)) ==
+             {:error,
+              "could not attach to the server of #{sessions} in #{Serve.wait_ms()} ms: " <>
+                "the server did not start; see #{log}"}
+
+    assert Attach.start(sessions, Path.join(dir, "missing")) ==
+             {:error,
+              "could not attach to the server of #{sessions} in #{Serve.wait_ms()} ms: " <>
+                "the server did not start; see #{log}"}
+
+    assert File.read!(log) =~ ~r/launcher output\nhelyx: .*missing: No such file or directory\n/
   end
 
   test "with the lock free, a server file is no server and stays; a missing data folder is none",

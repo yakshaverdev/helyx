@@ -376,7 +376,8 @@ defmodule Helyx.TUI.ComposerTest do
         session_id: "s",
         instance_id: "i",
         turn_id: "t",
-        seq: 2,
+        # The TUI applies each seq once.
+        seq: state.vm.seq + 1,
         data: data
       }
 

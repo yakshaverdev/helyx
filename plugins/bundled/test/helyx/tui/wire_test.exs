@@ -19,6 +19,10 @@ defmodule Helyx.TUI.WireTest do
 
   @token "the-token"
   @loopback {127, 0, 0, 1}
+  # The deadline of a handshake that must end at its deadline: the
+  # upgrade, the challenge, and the hello pass well within it on a loaded
+  # machine (a deadline of 20 ms did not, in a precommit run).
+  @load_ms 500
 
   # Every result of a test, an error too, is checked for the token.
   defp connect(port, timeout \\ 5_000) do
@@ -141,7 +145,9 @@ defmodule Helyx.TUI.WireTest do
           <<first::binary-size(cut), rest::binary>> = text
           :ok = :gen_tcp.send(socket, server_frame(0, 1, first))
           :ok = :gen_tcp.send(socket, server_frame(1, 9, "ping"))
-          :ok = :gen_tcp.send(socket, server_frame(1, 0, rest))
+          # The client closes at the header of a fragment over the bound,
+          # so the send of its payload can fail.
+          _ = :gen_tcp.send(socket, server_frame(1, 0, rest))
         end)
 
       result = connect(port)
@@ -154,7 +160,9 @@ defmodule Helyx.TUI.WireTest do
 
     for {size, ok?} <- [{max - 1, true}, {max, true}, {max + 1, false}] do
       {text, _cut} = padded_welcome(size)
-      port = server(&send_text(&1, text))
+      # The client closes at the header of a frame over the bound, so the
+      # send of its payload can fail.
+      port = server(&(_ = :gen_tcp.send(&1, server_frame(1, 1, text))))
       result = connect(port)
       if ok?, do: assert({:ok, _} = result), else: assert(result == {:error, :broken})
     end
@@ -225,20 +233,15 @@ defmodule Helyx.TUI.WireTest do
     assert {:ok, _socket} = connect(port)
   end
 
-  # 300,000 pings take the client about 200 ms on the dev machine, ten times
-  # the timeout, and load only makes them slower. A read past the deadline
-  # would take them all and then the welcome.
+  # The server sends pings until the client closes: a read past the
+  # deadline would take them with no end.
   test "pings that wait in the socket do not keep the handshake past its deadline" do
-    port =
-      server(fn socket ->
-        _ =
-          :gen_tcp.send(socket, [
-            :binary.copy(<<0x89, 0>>, 300_000),
-            server_frame(1, 1, welcome())
-          ])
-      end)
+    port = server(&pings/1)
+    assert connect(port, @load_ms) == {:error, "no welcome from the server in #{@load_ms} ms"}
+  end
 
-    assert connect(port, 20) == {:error, "no welcome from the server in 20 ms"}
+  defp pings(socket) do
+    with :ok <- :gen_tcp.send(socket, :binary.copy(<<0x89, 0>>, 10_000)), do: pings(socket)
   end
 
   test "a length field cut by a close of the server gives a text" do

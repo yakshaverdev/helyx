@@ -34,7 +34,10 @@ defmodule CodingAgent.CLI do
   folder (`CodingAgent.attach/2`): it reattaches to the newest session of
   the directory, as `--resume` picks it, and starts one when the directory
   has none; `--new` and `--model` start one. A newest session that does
-  not resume gives a line that names `--new`. The design is in
+  not resume gives a line that names `--new`. With no server, the `helyx`
+  of the release starts `helyx serve` in the background with its launcher
+  and attaches to it; `mix helyx`, with no launcher, runs the TUI in the
+  node. The design is in
   `docs/features/local-release.md`, `docs/features/session-list.md`,
   `docs/features/print-mode.md`, `docs/features/serve.md`, and
   `docs/features/tui-attach.md`.
@@ -110,9 +113,10 @@ defmodule CodingAgent.CLI do
   @spec main([String.t()], Print.halt()) :: term()
   def main(argv, halt \\ &:erlang.halt(&1, flush: false)) do
     release_version = System.get_env("RELEASE_VSN")
+    launcher = System.get_env("HELYX_LAUNCHER")
     System.put_env(command_env(System.get_env()))
 
-    case start(argv, release_version, halt) do
+    case start(argv, release_version, launcher, halt) do
       :ok ->
         0
 
@@ -132,7 +136,8 @@ defmodule CodingAgent.CLI do
   def command_env(env) do
     deleted =
       for {name, _value} <- env,
-          String.starts_with?(name, "RELEASE_") or name in ~w(ROOTDIR BINDIR EMU PROGNAME),
+          String.starts_with?(name, "RELEASE_") or
+            name in ~w(ROOTDIR BINDIR EMU PROGNAME HELYX_LAUNCHER),
           do: {name, nil}
 
     [{"PATH", command_path(env)} | deleted]
@@ -151,7 +156,7 @@ defmodule CodingAgent.CLI do
   defp command_path(env), do: env["PATH"]
 
   # `serve` is the first argument only, as in the launcher of the release.
-  defp start(argv, release_version, halt) do
+  defp start(argv, release_version, launcher, halt) do
     {serve?, argv} =
       case argv do
         ["serve" | rest] -> {true, rest}
@@ -163,7 +168,7 @@ defmodule CodingAgent.CLI do
         opts[:help] -> IO.write(@help)
         opts[:version] -> IO.puts("helyx " <> version(release_version))
         serve? -> serve(opts, args)
-        true -> start_agent(opts, args, halt)
+        true -> start_agent(opts, args, launcher, halt)
       end
     end
   end
@@ -171,11 +176,11 @@ defmodule CodingAgent.CLI do
   defp version(nil), do: "#{Application.spec(:coding_agent, :vsn)} (source)"
   defp version(release_version), do: release_version
 
-  defp start_agent(opts, args, halt) do
-    with :ok <- check_combination(opts, args), do: command(opts, args, halt)
+  defp start_agent(opts, args, launcher, halt) do
+    with :ok <- check_combination(opts, args), do: command(opts, args, launcher, halt)
   end
 
-  defp command(opts, args, halt) do
+  defp command(opts, args, launcher, halt) do
     cond do
       opts[:list] ->
         list(opts[:all], args)
@@ -184,7 +189,7 @@ defmodule CodingAgent.CLI do
         Print.main(fn -> print(opts, args) end, halt)
 
       true ->
-        with {:ok, run} <- run_opts(opts, args), do: launch(opts, run)
+        with {:ok, run} <- run_opts(opts, args), do: launch(opts, run, launcher)
     end
   end
 
@@ -275,15 +280,15 @@ defmodule CodingAgent.CLI do
   defp print(opts, args) do
     with {:ok, run} <- run_opts(opts, args),
          {:ok, prompt} <- Print.prompt(opts[:print]),
-         do: launch(opts, [prompt: prompt] ++ run)
+         do: launch(opts, [prompt: prompt] ++ run, nil)
   end
 
-  defp launch(opts, extra) do
+  defp launch(opts, extra, launcher) do
     run = [resume: opts[:session] || Keyword.get(opts, :resume, false)] ++ extra
 
     result =
       with {:ok, _apps} <- Application.ensure_all_started(:coding_agent),
-           do: start_or_attach(opts, [sessions_dir: sessions_dir()] ++ run)
+           do: start_or_attach(opts, [sessions_dir: sessions_dir()] ++ run, launcher)
 
     case result do
       {:error, reason} -> {:error, error_text(reason, opts[:session])}
@@ -293,22 +298,26 @@ defmodule CodingAgent.CLI do
 
   # Print mode runs in the node. The TUI attaches to the server of the data
   # folder when one runs (docs/features/tui-attach.md), with the model of
-  # `--model`, else the default model of the server; with none it runs in
-  # the node.
-  defp start_or_attach(opts, run) do
-    attach = if run[:prompt], do: :none, else: CodingAgent.Attach.connect(run[:sessions_dir])
+  # `--model`, else the default model of the server. With none, the
+  # launcher of the release starts one (decision 10); with no launcher, as
+  # `mix helyx`, the TUI runs in the node. A server needs perl, as the
+  # tools of the node do: with none on the PATH, the node gives the line of
+  # its tool check.
+  defp start_or_attach(opts, run, launcher) do
+    dir = run[:sessions_dir]
+    found = if run[:prompt], do: :none, else: CodingAgent.Attach.connect(dir)
 
-    case attach do
-      :none ->
-        CodingAgent.run([model: Keyword.get(opts, :model, @default_model)] ++ run)
-
-      {:ok, socket} ->
-        CodingAgent.attach(socket, Keyword.take(opts, [:model]) ++ reattach(opts, run))
-
-      {:error, text} ->
-        {:error, {:attach, text}}
+    case {found, launcher && System.find_executable("perl")} do
+      {:none, nil} -> CodingAgent.run([model: Keyword.get(opts, :model, @default_model)] ++ run)
+      {:none, _perl} -> attach(opts, run, CodingAgent.Attach.start(dir, launcher))
+      {found, _perl} -> attach(opts, run, found)
     end
   end
+
+  defp attach(opts, run, {:ok, socket}),
+    do: CodingAgent.attach(socket, Keyword.take(opts, [:model]) ++ reattach(opts, run))
+
+  defp attach(_opts, _run, {:error, text}), do: {:error, {:attach, text}}
 
   # On a server, `helyx` reattaches to the newest session of its folder;
   # `--new` and `--model` start one (docs/features/tui-attach.md, decision 16).

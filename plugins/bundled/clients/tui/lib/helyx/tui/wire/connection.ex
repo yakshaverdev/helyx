@@ -75,10 +75,19 @@ defmodule Helyx.TUI.Wire.Connection do
     ref
   end
 
-  @doc "Subscribes to `session` with `answers: true`; `sub` names the subscription."
-  @spec subscribe(pid(), String.t()) :: {:ok, Snapshot.t(), String.t()} | {:error, error()}
-  def subscribe(conn, session),
-    do: request(conn, "subscribe", %{"session" => session, "answers" => true})
+  @doc """
+  Subscribes to `session` with `answers: true`; `sub` names the
+  subscription. With `after: %{instance_id: id, seq: seq}` of the last
+  event that the owner applied, the server answers with the events after
+  it, `{:replay, events}`, or with a snapshot (`docs/features/tui-attach.md`,
+  decision 11); with no `after`, a replay is a contract break.
+  """
+  @spec subscribe(pid(), String.t(), after: %{instance_id: String.t(), seq: non_neg_integer()}) ::
+          {:ok, Snapshot.t() | {:replay, [Event.t()]}, String.t()} | {:error, error()}
+  def subscribe(conn, session, opts \\ []) do
+    params = Map.merge(params(opts), %{"session" => session, "answers" => true})
+    request(conn, "subscribe", params)
+  end
 
   @doc """
   Acks the events of `sub` up to `event`, which the owner applied. As
@@ -152,12 +161,13 @@ defmodule Helyx.TUI.Wire.Connection do
     # `waiting` maps the id of a request to its op and `{from, timer}`: its
     # caller and its deadline timer, `:late` after the timer, or
     # `{:unsubscribe, sub}` for the end of a subscription that a late reply
-    # made. `subs` maps a subscription to `:live`, or to `:dropped` for one
-    # that a late reply made. `unwritten` counts the request frames that
-    # wait for the writer, and `unsubscribes` holds the `{id, sub}` of each
-    # unsubscribe that waits for a place among them; `control` is `:waiting`
-    # while a batch of a pong and acks waits for the writer, and `pong` and
-    # `acks` hold the next batch.
+    # made; `replays` holds the id of each `subscribe` with `after`, which
+    # alone a replay answers. `subs` maps a subscription to `:live`, or to
+    # `:dropped` for one that a late reply made. `unwritten` counts the
+    # request frames that wait for the writer, and `unsubscribes` holds the
+    # `{id, sub}` of each unsubscribe that waits for a place among them;
+    # `control` is `:waiting` while a batch of a pong and acks waits for the
+    # writer, and `pong` and `acks` hold the next batch.
     {:ok,
      %{
        owner: owner,
@@ -174,6 +184,7 @@ defmodule Helyx.TUI.Wire.Connection do
        parts: nil,
        next: 1,
        waiting: %{},
+       replays: MapSet.new(),
        subs: %{}
      }}
   end
@@ -187,6 +198,7 @@ defmodule Helyx.TUI.Wire.Connection do
     # An id is never used again, so a late reply is told apart.
     id = Integer.to_string(state.next)
     timer = Process.send_after(self(), {:deadline, id}, Ops.deadline(op) + @margin_ms)
+    state = if params["after"], do: update_in(state.replays, &MapSet.put(&1, id)), else: state
     write_request(register(state, id, op, {from, timer}), id, op, params)
   end
 
@@ -272,9 +284,12 @@ defmodule Helyx.TUI.Wire.Connection do
   # Every reply is checked, a late one too.
   defp frame(%{"type" => "res", "id" => id} = res, state) when is_map_key(state.waiting, id) do
     {{op, caller}, waiting} = Map.pop(state.waiting, id)
+    replay? = MapSet.member?(state.replays, id)
+    state = %{state | waiting: waiting, replays: MapSet.delete(state.replays, id)}
 
     case Decode.result(op, res) do
-      {:ok, result} -> reply(caller, op, result, %{state | waiting: waiting})
+      {:ok, {:ok, {:replay, _events}, _sub}} when not replay? -> broken(state)
+      {:ok, result} -> reply(caller, op, result, state)
       :error -> broken(state)
     end
   end
@@ -309,10 +324,6 @@ defmodule Helyx.TUI.Wire.Connection do
   defp reply(_caller, "subscribe", {:ok, _snapshot_or_replay, sub}, state)
        when is_map_key(state.subs, sub),
        do: broken(state)
-
-  # A replay answers only a `subscribe` with `after`, which this client
-  # does not send.
-  defp reply(_caller, "subscribe", {:ok, {:replay, _events}, _sub}, state), do: broken(state)
 
   # A late reply: its caller got `timeout`. A subscription that it made
   # ends with `unsubscribe`, which takes the place of the reply among those

@@ -112,11 +112,17 @@ defmodule CodingAgent.CLITest do
         "BINDIR" => "/r/erts/bin",
         "EMU" => "beam",
         "PROGNAME" => "erl",
+        "HELYX_LAUNCHER" => "/h/.local/bin/helyx",
         "HOME" => "/h"
       }
 
+      # The launcher is for the client alone: a `mix helyx` that a command
+      # runs keeps the path of the node (docs/features/tui-attach.md).
       assert {new_path, deleted} = env |> CLI.command_env() |> Map.new() |> Map.pop!("PATH")
-      assert deleted == Map.new(~w(RELEASE_ROOT ROOTDIR BINDIR EMU PROGNAME), &{&1, nil})
+
+      assert deleted ==
+               Map.new(~w(RELEASE_ROOT ROOTDIR BINDIR EMU PROGNAME HELYX_LAUNCHER), &{&1, nil})
+
       new_path
     end
 

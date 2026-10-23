@@ -23,7 +23,7 @@ defmodule Helyx.TUI.LinkTest do
   setup %{tmp_dir: dir} do
     core = :"link_core_#{System.unique_integer([:positive])}"
     sessions = Path.join(dir, "sessions")
-    plugins = [Fake, Helyx.TUI.Test.Tool.Slow]
+    plugins = [Fake, Helyx.TUI.Test.Tool.Slow, Helyx.Tool.Question]
     core_opts = [name: core, plugins: plugins, sessions_dir: sessions, model: "fake/echo"]
     start_supervised!({Helyx.Core, core_opts})
     transport = start_supervised!({WebSocket, core: core, port: 0})
@@ -46,11 +46,51 @@ defmodule Helyx.TUI.LinkTest do
   end
 
   # No terminal: the default size function forks and can block in a test (#730).
-  defp mount!(session, cwd) do
-    opts = [session: session, cwd: cwd, terminal_size_fn: fn -> {:error, :no_tty} end]
+  defp mount!(session, cwd, opts \\ []) do
+    opts = [session: session, cwd: cwd, terminal_size_fn: fn -> {:error, :no_tty} end] ++ opts
     {:ok, state} = TUI.mount(opts)
     branch_reply(state)
   end
+
+  # The server side of the client `socket`: its end is a lost connection
+  # for the client.
+  defp server_of(socket) do
+    {:ok, {_ip, mine}} = :inet.sockname(socket)
+
+    [server] =
+      for port <- Port.list(),
+          Port.info(port, :name) == {:name, ~c"tcp_inet"},
+          :inet.peername(port) == {:ok, {{127, 0, 0, 1}, mine}},
+          {:connected, pid} = Port.info(port, :connected),
+          do: pid
+
+    server
+  end
+
+  # Kills the server side of the connection of the TUI, and gives the
+  # `:DOWN` of the connection that the TUI takes.
+  defp lose(state) do
+    conn = state.session.conn
+    Process.exit(server_of(:sys.get_state(conn).socket), :kill)
+    assert_receive {:DOWN, _ref, :process, ^conn, {:shutdown, {:closed, _code}}} = down
+    down
+  end
+
+  # A turn of a prompt of another client, to its end, while the TUI has no
+  # connection.
+  defp other_turn(c, id, text) do
+    Task.await(
+      Task.async(fn ->
+        {conn, _ref} = connect(c.port)
+        {:ok, _snapshot, _sub} = Connection.subscribe(conn, id)
+        :ok = Connection.steer(conn, id, text)
+        turn_ends(1)
+      end)
+    )
+  end
+
+  defp texts(state, role),
+    do: for(%Message{role: ^role} = m <- ViewModel.cells(state.vm), do: Message.text(m))
 
   # The reply of the branch task after a mount or a turn_end: a git port
   # that closes while OTP still starts it prints on stderr.
@@ -252,15 +292,7 @@ defmodule Helyx.TUI.LinkTest do
   @tag :slow
   test "the worst JSON form at the bound and a slow client: the server closes it with 4408", c do
     {:ok, socket} = Wire.connect({127, 0, 0, 1}, c.port, fn -> "token" end, wait_ms())
-    {:ok, {_ip, mine}} = :inet.sockname(socket)
-
-    [server] =
-      for port <- Port.list(),
-          Port.info(port, :name) == {:name, ~c"tcp_inet"},
-          :inet.peername(port) == {:ok, {{127, 0, 0, 1}, mine}},
-          {:connected, pid} = Port.info(port, :connected),
-          do: pid
-
+    server = server_of(socket)
     {:ok, conn, ref} = Connection.open(socket)
     {:ok, id} = Connection.start(conn, cwd: c.cwd)
     {:ok, _snapshot, _sub} = Connection.subscribe(conn, id)
@@ -354,6 +386,118 @@ defmodule Helyx.TUI.LinkTest do
     state = state |> command("/resume") |> listed()
     assert state.list.items == []
     assert state.list.empty == "could not list the sessions: " <> closed
+  end
+
+  # docs/features/tui-attach.md, decision 11.
+  test "a lost connection connects again: a replay gives the missed events once, a snapshot replaces the state",
+       c do
+    {conn, _ref} = connect(c.port)
+    {:ok, id} = Connection.start(conn, cwd: c.cwd)
+    reconnect = fn -> Wire.connect({127, 0, 0, 1}, c.port, fn -> "token" end, wait_ms()) end
+    state = mount!(%Link{conn: conn, id: id}, c.cwd, reconnect: reconnect)
+    state = state |> command("one") |> until(&(&1.type == :turn_end))
+    instance = state.instance_id
+
+    # The events of the turn of another client come in the replay.
+    down = lose(state)
+    other_turn(c, id, "two")
+    state = branch_reply(info(down, state))
+    refute state.session.conn == conn
+    assert state.instance_id == instance
+    assert texts(state, :user) == ["one", "two"]
+    assert texts(state, :assistant) == ["one", "two"]
+    assert List.last(ViewModel.cells(state.vm)) == {:infos, ["reconnected"]}
+
+    # The new connection carries the live events. An event at or below
+    # the seq of the fold changes nothing: no ack, fold, composer, or read
+    # of the branch.
+    state = state |> command("three") |> until(&(&1.type == :turn_end))
+    assert texts(state, :user) == ["one", "two", "three"]
+
+    for {type, data} <- [
+          queue_dropped: %{messages: [Message.user("again")], texts: ["again"]},
+          turn_end: %{outcome: :done}
+        ] do
+      again = %Event{
+        type: type,
+        session_id: id,
+        instance_id: instance,
+        turn_id: nil,
+        seq: state.vm.seq,
+        data: data
+      }
+
+      assert info({:helyx_event, again}, state) == state
+    end
+
+    # A resume makes a new instance: the reconnect gets a snapshot.
+    down = lose(state)
+    :ok = Helyx.Sessions.stop(%Helyx.Session{id: id, core: c.core})
+    {other, _ref} = connect(c.port)
+    {:ok, ^id} = Connection.resume(other, id: id)
+    state = branch_reply(info(down, state))
+    refute state.instance_id == instance
+    assert texts(state, :user) == ["one", "two", "three"]
+    assert List.last(ViewModel.cells(state.vm)) == {:infos, ["reconnected"]}
+
+    # A failed reconnect, and a session that ended meanwhile, end the TUI.
+    down = lose(state)
+    failed = %{state | reconnect: fn -> {:error, "no server runs for /d"} end}
+
+    assert catch_exit(info(down, failed)) ==
+             {:connection_down, {:reconnect, "no server runs for /d"}}
+
+    assert Link.down_text({:reconnect, "no server runs for /d"}) ==
+             "lost the connection to the server: no server runs for /d"
+
+    :ok = Helyx.Sessions.stop(%Helyx.Session{id: id, core: c.core})
+    assert catch_exit(info(down, state)) == {:session_down, :session_not_found}
+  end
+
+  # A seq above the last event makes the server answer `after` with a
+  # snapshot (wire-protocol.md, "Join, pages, and replay").
+  test "a snapshot reconnect keeps the picker of the same ask; another ask gets a fresh one", c do
+    question = fn text ->
+      %{
+        "question" => text,
+        "header" => "Pick",
+        "multi_select" => false,
+        "options" => [
+          %{"label" => "a", "description" => "A"},
+          %{"label" => "b", "description" => "B"}
+        ]
+      }
+    end
+
+    call = %Message.ToolCall{
+      id: "q1",
+      name: "question",
+      arguments: %{"questions" => [question.("One?"), question.("Two?")]}
+    }
+
+    :ok = Fake.script(c.core, "ask", [[call], ["Done."]])
+    {conn, _ref} = connect(c.port)
+    {:ok, id} = Connection.start(conn, cwd: c.cwd, model: "fake/ask")
+    reconnect = fn -> Wire.connect({127, 0, 0, 1}, c.port, fn -> "token" end, wait_ms()) end
+    state = mount!(%Link{conn: conn, id: id}, c.cwd, reconnect: reconnect)
+    state = state |> command("go") |> until(&match?(%Event{type: :ask}, &1))
+
+    # The answer of the first question, then unsent text on the second.
+    state = state |> key("down") |> key("enter")
+    state = Enum.reduce(~w(x y), state, &key(&2, &1))
+    picker = state.question
+    assert %{at: 1, answers: [_], other: "xy"} = picker
+
+    down = lose(state)
+    state = branch_reply(info(down, put_in(state.vm.seq, state.vm.seq + 1_000)))
+    assert List.last(ViewModel.cells(state.vm)) == {:infos, ["reconnected"]}
+    assert state.question == picker
+
+    down = lose(state)
+    other = put_in(state.question.ask_id, "another")
+    state = branch_reply(info(down, %{other | vm: %{other.vm | seq: other.vm.seq + 1_000}}))
+    assert %{ask_id: ask, at: 0, answers: [], other: ""} = state.question
+    assert ask == picker.ask_id
   end
 
   test "the end of the session and the end of the connection end the TUI", c do

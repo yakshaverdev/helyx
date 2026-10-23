@@ -152,7 +152,8 @@ defmodule Mix.Tasks.Helyx.Install do
   end
 
   # The launcher keeps the folder and the arguments of the user, and adds no
-  # retry. The release script resolves `current` once, at start.
+  # retry. The release script resolves `current` once, at start. `bin_dir`
+  # is an absolute path.
   defp write_launcher(script, bin_dir) do
     File.mkdir_p!(bin_dir)
     launcher = Path.join(bin_dir, "helyx")
@@ -163,12 +164,16 @@ defmodule Mix.Tasks.Helyx.Install do
 
     # `serve` runs under a perl supervisor (`@serve`), with the VM in a
     # process group of its own, so the SIGINT of a terminal reaches only the
-    # supervisor: the VM cannot handle SIGINT (docs/features/serve.md).
+    # supervisor: the VM cannot handle SIGINT (docs/features/serve.md). Any
+    # other command gets the path of the launcher, which starts a server
+    # with it (docs/features/tui-attach.md, decision 10).
     File.write!(tmp, """
     #!/bin/sh
     if [ "$1" = serve ]; then
       exec perl -e '#{@serve}' -- #{command} </dev/null
     fi
+    HELYX_LAUNCHER=#{sh_quote(launcher)}
+    export HELYX_LAUNCHER
     exec #{command}
     """)
 

@@ -15,9 +15,9 @@ defmodule CodingAgent.Serve do
   alias Helyx.Session.Lock
   alias Helyx.Transport.WebSocket
 
-  # A second start reads the server file of the holder of the lock and
-  # connects to it this long, once each poll: the holder writes it when its
-  # listener is up.
+  # A second start takes the lock again, reads the server file of the
+  # holder of the lock, and connects to it this long, once each poll: the
+  # holder writes it when its listener is up.
   @wait_ms 5_000
   @poll_ms 100
   # The TCP connect and the handshake of one attempt, as in
@@ -85,7 +85,7 @@ defmodule CodingAgent.Serve do
 
     with :ok <- register(),
          :ok <- mkdir(dir),
-         {:ok, lock} <- lock(dir) do
+         {:ok, lock} <- lock(dir, System.monotonic_time(:millisecond) + @wait_ms) do
       # The file of a server that was killed would pass for this one.
       case Lock.remove_file(lock, server_file(dir)) do
         {:error, text} ->
@@ -107,10 +107,13 @@ defmodule CodingAgent.Serve do
 
   defp server_file(dir), do: Path.join(dir, "server.json")
 
+  @doc false
   # The sessions folder gets mode 0700 when this makes it, as at a start.
   # Another user who can write the folder could replace the server file or
-  # its temporary file, so such a folder is refused.
-  defp mkdir(dir) do
+  # its temporary file, so such a folder is refused. A client that starts
+  # a server makes the folder for its `server.log` (`CodingAgent.Attach`).
+  @spec mkdir(Path.t()) :: :ok | {:error, String.t()}
+  def mkdir(dir) do
     with :ok <- Helyx.Session.File.mkdir(dir),
          {:ok, %File.Stat{mode: mode}} when (mode &&& 0o022) == 0 <- File.stat(dir) do
       :ok
@@ -129,20 +132,24 @@ defmodule CodingAgent.Serve do
   defp folder_error(reason),
     do: {:error, "could not make the data folder: #{:file.format_error(reason)}"}
 
-  defp lock(dir) do
+  # A second start takes the lock again at each poll: the lock test of a
+  # client holds it for a moment, and a start in that moment goes on when
+  # the client lets it go (docs/features/tui-attach.md, decision 10).
+  defp lock(dir, deadline) do
     case Lock.take(Path.join(dir, "server")) do
       {:ok, lock} ->
         {:ok, lock}
 
       {:error, {:session_locked, _}} ->
-        running(dir, System.monotonic_time(:millisecond) + @wait_ms)
+        running(dir, deadline)
 
       {:error, {:lock_failed, text}} ->
         {:error, "could not lock the data folder: " <> text}
     end
   end
 
-  # The address of the server that holds the lock. The server file is a
+  # The address of the server that holds the lock, or the lock when the
+  # next take gets it. The server file is a
   # hint and the handshake with its token is the proof: from the `flock` of
   # a new server to its remove of a stale file, the file names a server
   # that was killed (#777). Any failure means that the server is starting.
@@ -157,7 +164,7 @@ defmodule CodingAgent.Serve do
         Process.sleep(@poll_ms)
 
         if System.monotonic_time(:millisecond) < deadline do
-          running(dir, deadline)
+          lock(dir, deadline)
         else
           {:error, "a server holds the lock of #{dir} and gave no address in #{@wait_ms} ms"}
         end
