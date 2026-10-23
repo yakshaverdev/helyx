@@ -28,11 +28,6 @@ defmodule CodingAgent do
     Helyx.Tool.Question
   ]
 
-  # The rotation threshold of the log file of a TUI run. The handler
-  # writes a whole log record, then rotates when the file is over this
-  # size, so a file can pass it by one record. It keeps one older file.
-  @max_log_bytes 10_485_760
-
   @doc "The plugins the agent runs with."
   @spec plugins() :: [module()]
   def plugins, do: @plugins
@@ -120,12 +115,13 @@ defmodule CodingAgent do
       with {:ok, id, cwd, resumed} <- open_remote(conn, opts) do
         dir = Keyword.fetch!(opts, :sessions_dir)
 
-        log_to_file(Path.join(dir, "tui.log"), fn ->
+        CodingAgent.LogFile.run(Path.join(dir, "tui.log"), fn held ->
           Helyx.TUI.run(
             session: %Link{conn: conn, id: id},
             resumed: resumed,
             cwd: cwd,
-            reconnect: reconnect(dir)
+            reconnect: reconnect(dir),
+            notices: notices(held)
           )
         end)
       end
@@ -136,6 +132,10 @@ defmodule CodingAgent do
       Process.demonitor(ref, [:flush])
     end
   end
+
+  # A `tui.log` that does not open: the TUI runs with no file log.
+  defp notices(:ok), do: []
+  defp notices({:error, notice}), do: [notice]
 
   # After a lost connection the TUI attaches again to the server of the
   # data folder, and starts none (docs/features/tui-attach.md, decision 11).
@@ -191,26 +191,6 @@ defmodule CodingAgent do
       {:error, :not_found} -> start_or_resume(conn, false, opts)
       {:error, {_code, _text} = reason} -> {:error, {:reattach, reason}}
       result -> result
-    end
-  end
-
-  @doc false
-  # Runs `fun` with the `:default` log handler writing to the file `path`,
-  # so that no log line draws on the terminal of the TUI, then puts the
-  # earlier handler back. Public for its test.
-  @spec log_to_file(Path.t(), (-> result)) :: result when result: term()
-  def log_to_file(path, fun) do
-    {:ok, default} = :logger.get_handler_config(:default)
-    file = %{file: String.to_charlist(path), max_no_bytes: @max_log_bytes, max_no_files: 1}
-    :ok = :logger.remove_handler(:default)
-
-    try do
-      :ok = :logger.add_handler(:default, :logger_std_h, %{default | config: file})
-      fun.()
-    after
-      # The file handler is not there when its add failed.
-      _ = :logger.remove_handler(:default)
-      :ok = :logger.add_handler(:default, default.module, default)
     end
   end
 

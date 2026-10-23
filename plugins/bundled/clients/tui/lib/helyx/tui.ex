@@ -60,10 +60,11 @@ defmodule Helyx.TUI do
   "resumed session" follows the history), `:cwd` (the directory that the
   footer shows and the folder of `/new` and `/resume`, default
   `File.cwd!/0`), `:reconnect` (the connect after a lost connection:
-  `{:ok, socket}`, owned by the caller, or `{:error, text}`), and those of
-  `ExRatatui.App`. The scroll keys read the terminal size through
-  `:terminal_size_fn`, the option of `ExRatatui.Server`; the default is
-  `ExRatatui.terminal_size/0`.
+  `{:ok, socket}`, owned by the caller, or `{:error, text}`), `:notices`
+  (lines of the caller, each a notice cell after those of the skills
+  scan, default none), and those of `ExRatatui.App`. The scroll keys read
+  the terminal size through `:terminal_size_fn`, the option of
+  `ExRatatui.Server`; the default is `ExRatatui.terminal_size/0`.
   """
   @spec run(keyword()) :: :ok | {:error, term()}
   def run(opts), do: Start.run(fn -> start_link(Keyword.put_new(opts, :mouse_capture, true)) end)
@@ -103,7 +104,7 @@ defmodule Helyx.TUI do
     info = if opts[:resumed], do: "resumed session"
     state = state |> Switch.bind(Link.own(Keyword.fetch!(opts, :session)), info) |> read_branch()
     # The notices of the skills scan (docs/features/skills.md), once.
-    notices = Helyx.Skills.scan(cwd).notices
+    notices = Helyx.Skills.scan(cwd).notices ++ Keyword.get(opts, :notices, [])
     {:ok, %{state | vm: Enum.reduce(notices, state.vm, &ViewModel.notice(&2, &1))}}
   end
 

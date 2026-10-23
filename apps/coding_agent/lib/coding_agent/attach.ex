@@ -64,8 +64,8 @@ defmodule CodingAgent.Attach do
   server that ends before the attach gives `could not start a server:
   <its line>` at the next attempt. Neither its line of the address nor
   its log goes to the terminal, which the TUI owns: the log of the VM
-  goes to `<dir>/tui.log` until the server stops. Returns the result of
-  `fun`.
+  goes to `<dir>/tui.log` until the server stops
+  (`CodingAgent.LogFile.run/2`). Returns the result of `fun`.
   """
   @spec serve(Path.t(), String.t(), ({:ok, :gen_tcp.socket()} | {:error, String.t()} -> result)) ::
           result
@@ -77,7 +77,9 @@ defmodule CodingAgent.Attach do
       # to the file of the TUI (decision 9), and a failed start prints one
       # line.
       :ok ->
-        CodingAgent.log_to_file(Path.join(dir, "tui.log"), fn -> run_server(dir, model, fun) end)
+        CodingAgent.LogFile.run(Path.join(dir, "tui.log"), fn _held ->
+          run_server(dir, model, fun)
+        end)
 
       error ->
         fun.(error)
