@@ -225,7 +225,11 @@ defmodule Helyx.Session.Server do
 
   # A session with no hands ended in its open: it holds the lock at most.
   defp stop(%State{hands: nil} = state), do: Lock.release(state.lock)
-  defp stop(state), do: Stop.run(state)
+
+  defp stop(state) do
+    report = Stop.run(state)
+    if state.stopper, do: GenServer.reply(state.stopper, report)
+  end
 
   def via(core, id), do: {:via, Registry, {Helyx.Core.sessions_registry(core), id}}
 end

@@ -9,8 +9,8 @@ defmodule Helyx.Session.Hands.State do
   # call id. The place is the id of the run from `background/0` to the end
   # of the Task, else nil. `background` holds the ends that no turn took
   # (`Helyx.Session.Background`); `background_dir` is the background
-  # folder. `held` holds the handles per Task pid. `unconfirmed?` is true
-  # once a release left a handle unconfirmed; the log got the handles then.
+  # folder. `held` holds the handles per Task pid. `unconfirmed` holds
+  # each handle that a release left unconfirmed; the log got it then.
   # `release_ms` is the release deadline of a delivery or a cancel, and
   # `connect_ms` the armed kill of a provider process: seams for tests.
   @enforce_keys [:core, :cwd, :background_dir, :session, :tools]
@@ -29,7 +29,7 @@ defmodule Helyx.Session.Hands.State do
     tasks: %{},
     background: %Background{},
     held: %{},
-    unconfirmed?: false,
+    unconfirmed: [],
     release_ms: @release_ms,
     connect_ms: 30_000
   ]

@@ -122,7 +122,10 @@ defmodule Helyx.Session.Server.State do
     summary_call: nil,
     # The last compaction: the id of the last transcript message before it
     # and its `tokens_after`, or nil (`Helyx.Session.Totals.of/2`).
-    compacted: nil
+    compacted: nil,
+    # The caller of `Helyx.Sessions.stop/1`, which `terminate/2` answers
+    # with the stop report, or nil.
+    stopper: nil
   ]
 
   @type t :: %__MODULE__{
@@ -159,7 +162,8 @@ defmodule Helyx.Session.Server.State do
           pending_compact: String.t() | nil,
           summary: Helyx.Summary.t() | nil,
           summary_call: Helyx.Session.Server.Summary.t() | nil,
-          compacted: Helyx.Session.Totals.compaction() | nil
+          compacted: Helyx.Session.Totals.compaction() | nil,
+          stopper: GenServer.from() | nil
         }
 
   # Sends `request` to the provider process with the bound `key` of `provider_ms`.

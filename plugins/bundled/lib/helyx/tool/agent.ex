@@ -9,10 +9,13 @@ defmodule Helyx.Tool.Agent do
   result is the text of the child's last assistant message; a failed or
   ended child turn gives an error result.
 
-  Calls run together (`concurrent?/0`). The tool holds the child, and
-  `release/3` stops it, so an abort or a stop of the parent ends it; an
-  owner process stops it when the call's Task dies with no release. The
-  design and the bounds are in `docs/features/agent-tool.md`.
+  Calls run together (`concurrent?/0`). The tool holds the child. An owner
+  process stops it once with `Helyx.Sessions.stop/1`: at the end of the
+  call, at the end of the call's Task, as an abort or a stop of the parent
+  does, or at the end of the parent session. `release/3` takes that stop
+  report, and a child whose report is not `:ok` stays held, so a stop of
+  the parent reports it. The design and the bounds are in
+  `docs/features/agent-tool.md`.
   """
 
   @behaviour Helyx.Tool
@@ -59,14 +62,16 @@ defmodule Helyx.Tool.Agent do
       tools: context.tools -- [name(), "question"]
     ]
 
-    {owner, monitor} = start_owner(context.core, opts)
+    parent = Session.pid(%Session{id: context.session_id, core: context.core})
+    {owner, monitor} = start_owner(context.core, opts, parent)
 
     receive do
-      {^owner, {:ok, {child, _pid} = handle}} ->
+      {^owner, {:ok, {child, _pid}}} ->
+        handle = {child, owner}
         :ok = Helyx.Tool.hold(handle)
         result = ask(child, prompt)
-        stop(owner, monitor)
-        :ok = Helyx.Tool.unhold([handle])
+        # A child whose stop left a handle held stays held (`release/3`).
+        if report(owner, monitor) == :ok, do: :ok = Helyx.Tool.unhold([handle])
         result
 
       {^owner, {:error, reason}} ->
@@ -79,67 +84,81 @@ defmodule Helyx.Tool.Agent do
 
   def run(_args, _cwd), do: {:error, "agent needs a description and a prompt, both strings"}
 
-  # Stops each child; a child whose stop is not done at the deadline stays
-  # held.
+  # Asks the owner of each child for the report of its stop. A child whose
+  # report is not `:ok`, or that has none at the deadline, stays held.
   @impl true
   def release(children, _mode, deadline) do
     timeout = max(deadline - System.monotonic_time(:millisecond), 0)
 
-    stops =
-      Task.async_stream(children, fn {_child, pid} -> stop_child(pid) end,
+    reports =
+      Task.async_stream(children, fn {_child, owner} -> report(owner, Process.monitor(owner)) end,
         max_concurrency: length(children),
         timeout: timeout,
         on_timeout: :kill_task
       )
 
-    for {{:exit, :timeout}, child} <- Enum.zip(stops, children), do: child
+    for {report, child} <- Enum.zip(reports, children), report != {:ok, :ok}, do: child
   end
 
   # The owner starts the child, so no kill of the Task between the start
-  # and the hold leaves a child that no process stops (ADR 0004). It stops
-  # the child when the Task asks or ends, whichever comes first.
-  defp start_owner(core, opts) do
+  # and the hold leaves a child that no process stops (ADR 0004).
+  defp start_owner(core, opts, parent) do
     task = self()
 
     {:ok, owner} =
       Task.Supervisor.start_child(Helyx.Core.task_supervisor(core), fn ->
-        ref = Process.monitor(task)
+        watch = {task, Process.monitor(task), Process.monitor(parent)}
 
         result =
           with {:ok, child} <- Helyx.Sessions.start(core, opts),
                do: {:ok, {child, Session.pid(child)}}
 
         send(task, {self(), result})
-
-        receive do
-          :stop -> :ok
-          {:DOWN, ^ref, :process, ^task, _reason} -> :ok
-        end
-
-        with {:ok, {_child, pid}} <- result, do: stop_child(pid)
+        with {:ok, {_child, pid}} when is_pid(pid) <- result, do: own(pid, watch, nil)
       end)
 
     {owner, Process.monitor(owner)}
   end
 
-  # The process that the call started, never a lookup of its id: the child
-  # can end and a resume can start a new instance of the id, which is not
-  # the call's (docs/features/agent-tool.md, "The cleanup"). A process that
-  # is gone needs no stop. The stop ends the turn as a Core stop does.
-  defp stop_child(nil), do: :ok
+  # The owner stops the child once, at the first ask for the report, at the
+  # end of the Task, or at the end of the parent session, and answers each
+  # ask with that report. It ends when the Task returned with the report,
+  # after the ask of the release of any other end of the Task, or with the
+  # parent session. A Task that returns did not always ask: the hands turn
+  # a raise, a throw, or an exit of `run/2` into its result.
+  # The stop acts on the process that the call started, never on a later
+  # instance of its id (docs/features/agent-tool.md, "The cleanup").
+  defp own(pid, {task, task_ref, parent_ref} = watch, report) do
+    receive do
+      {:report, from, ref} ->
+        report = report || Helyx.Sessions.stop(pid)
+        send(from, {ref, report})
+        if from == task, do: own(pid, watch, report)
 
-  defp stop_child(pid) do
-    GenServer.stop(pid, :normal, :infinity)
-  catch
-    :exit, _reason -> :ok
+      {:DOWN, ^task_ref, :process, ^task, :normal} when report != nil ->
+        :ok
+
+      {:DOWN, ^task_ref, :process, ^task, _reason} ->
+        own(pid, watch, report || Helyx.Sessions.stop(pid))
+
+      {:DOWN, ^parent_ref, :process, _parent, _reason} ->
+        report || Helyx.Sessions.stop(pid)
+    end
   end
 
-  # The owner ends after the stop of the child.
-  defp stop(owner, monitor) do
-    send(owner, :stop)
+  # The report of the child's stop from its owner, which `monitor` watches.
+  # An owner that is gone gave its report to the call, which kept the child
+  # held, or it never owned a child.
+  defp report(owner, monitor) do
+    send(owner, {:report, self(), monitor})
 
     receive do
-      {:DOWN, ^monitor, :process, ^owner, _reason} -> :ok
+      {^monitor, report} ->
+        Process.demonitor(monitor, [:flush])
+        report
+
+      {:DOWN, ^monitor, :process, ^owner, _reason} ->
+        :gone
     end
   end
 

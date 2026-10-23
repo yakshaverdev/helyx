@@ -188,9 +188,10 @@ defmodule Helyx.Tool do
   outside the Task and give it to the `release/3` of the tool or the
   provider. They release the handle of a tool call when the call delivers,
   or when its turn ends while the call runs. They release the handle of a
-  provider process when the process ends. Once a release leaves a handle
-  unconfirmed, the hands refuse every later tool call
-  (`docs/features/tool-resource-release.md`). When the hands stop first,
+  provider process when the process ends, and the handles of every Task at
+  the stop of the session. Once a release leaves a handle unconfirmed, the
+  hands refuse every later tool call
+  (`docs/features/tool-resource-release.md`). When the hands die first,
   no release runs: the tool or the provider must free the resource when
   its own process dies (ADR 0004).
   Returns only when the hands hold the handle, so work that starts after it

@@ -254,6 +254,54 @@ defmodule Helyx.SessionsTest do
       assert Sessions.list_live(core) == []
       assert {:ok, ^session} = Sessions.resume(core, id: session.id)
     end
+
+    # The "stuck" call holds a handle whose release waits for the gate, and
+    # "keep", which its release keeps (#752).
+    test "reports the handles that a release left held" do
+      core = start_core([Helyx.Test.Provider, Helyx.Test.Tool.Hold])
+      {:ok, session} = Sessions.start(core, cwd: "/repo", model: "test/stuck")
+      hands = :sys.get_state(Session.pid(session)).hands
+      :ok = Session.prompt(session, Helyx.Test.Gate.open())
+
+      await(
+        fn -> :sys.get_state(hands).held |> Map.values() |> List.flatten() |> length() == 2 end,
+        "the two holds"
+      )
+
+      stop = Task.async(fn -> Sessions.stop(session) end)
+      assert_receive {:waiting, release}, wait_ms()
+      send(release, :go)
+      assert Task.await(stop, wait_ms()) == {:error, {:not_released, ["keep"]}}
+      assert Session.pid(session) == nil
+    end
+
+    # The stop's abort waits for the release; another stop ends the session
+    # first, so the report is unknown, not `:session_not_found`.
+    test "another end during the abort gives :unknown" do
+      core = start_core([Helyx.Test.Provider, Helyx.Test.Tool.Hold])
+      {:ok, session} = Sessions.start(core, cwd: "/repo", model: "test/stuck")
+      pid = Session.pid(session)
+      hands = :sys.get_state(pid).hands
+      :ok = Session.prompt(session, Helyx.Test.Gate.open())
+
+      await(
+        fn -> :sys.get_state(hands).held |> Map.values() |> List.flatten() |> length() == 2 end,
+        "the two holds"
+      )
+
+      stop = Task.async(fn -> Sessions.stop(session) end)
+      assert_receive {:waiting, release}, wait_ms()
+      :erlang.trace(hands, true, [:receive])
+      other = Task.async(fn -> GenServer.stop(pid) end)
+
+      assert_receive {:trace, ^hands, :receive, {:"$gen_call", _from, {:stop, _deadline}}},
+                     wait_ms()
+
+      send(release, :go)
+
+      assert Task.await(stop, wait_ms()) == {:error, {:not_released, :unknown}}
+      assert Task.await(other, wait_ms()) == :ok
+    end
   end
 
   describe "list_saved/2" do

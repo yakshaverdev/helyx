@@ -5,6 +5,7 @@ defmodule Helyx.Tool.AgentTest do
   # by itself (docs/features/agent-tool.md).
   use ExUnit.Case, async: true
 
+  import ExUnit.CaptureLog, only: [with_log: 1]
   import Helyx.Test.Events, only: [collect_until: 1]
 
   alias Helyx.{Message, Session}
@@ -40,6 +41,30 @@ defmodule Helyx.Tool.AgentTest do
     defdelegate stream(model, context, opts), to: Fake
   end
 
+  defmodule Kept do
+    @moduledoc false
+    # Holds `:kept`, which its release keeps, then blocks as the block tool
+    # does: the stop of a child that runs it leaves a handle held.
+    @behaviour Helyx.Tool
+
+    @impl true
+    def name, do: "kept"
+    @impl true
+    def description, do: "Holds a handle that its release keeps."
+    @impl true
+    def parameters, do: %{"type" => "object"}
+
+    @dialyzer {:nowarn_function, run: 2}
+    @impl true
+    def run(args, cwd) do
+      :ok = Helyx.Tool.hold(:kept)
+      Helyx.Test.Tool.Block.run(args, cwd)
+    end
+
+    @impl true
+    def release(handles, _mode, _deadline), do: handles
+  end
+
   setup %{tmp_dir: dir} do
     core = :"core_#{System.unique_integer([:positive])}"
 
@@ -52,7 +77,8 @@ defmodule Helyx.Tool.AgentTest do
          Helyx.Tool.Agent,
          Helyx.Tool.Question,
          Helyx.Tool.Read,
-         Helyx.Test.Tool.Block
+         Helyx.Test.Tool.Block,
+         Kept
        ],
        sessions_dir: dir},
       id: core
@@ -235,6 +261,24 @@ defmodule Helyx.Tool.AgentTest do
     assert_receive {:DOWN, ^ref, :process, ^pid, _reason}
   end
 
+  # The child's stop leaves `:kept` held, so its owner's report is not
+  # `:ok`, and the release keeps the child held in the parent (#752).
+  test "a stop of the parent reports a child whose stop left a handle held", %{
+    core: core,
+    tmp_dir: dir
+  } do
+    kept = [%ToolCall{id: "k1", name: "kept", arguments: %{"to" => Helyx.Test.Gate.open()}}]
+    session = parent(core, dir, [[agent("c1")], kept])
+    assert_receive {:blocked, id}
+    pid = child_pid(core, id)
+    ref = Process.monitor(pid)
+
+    {result, log} = with_log(fn -> Helyx.Sessions.stop(session) end)
+    assert {:error, {:not_released, [{%Session{id: ^id}, _owner}]}} = result
+    assert log =~ ":kept"
+    assert_receive {:DOWN, ^ref, :process, ^pid, _reason}
+  end
+
   test "a Core stop ends the child", %{core: core, tmp_dir: dir} do
     _session = parent(core, dir, [[agent("c1")], block()])
     assert_receive {:blocked, id}
@@ -252,7 +296,8 @@ defmodule Helyx.Tool.AgentTest do
     Process.exit(child_pid(core, id), :kill)
     [result] = results(collect_until(:turn_end))
     assert result.is_error
-    assert Message.text(result) == "the session ended (crashed)"
+    # A killed child has no stop report, so the child stays held (#752).
+    assert Message.text(result) == "a resource of the call could not be released"
   end
 
   test "the cleanup of a call stops only its child, not a later instance of the id", %{
@@ -283,7 +328,8 @@ defmodule Helyx.Tool.AgentTest do
 
     true = :erlang.resume_process(owner)
     [result] = results(collect_until(:turn_end))
-    assert Message.text(result) == "the session ended (crashed)"
+    # The killed child has no stop report, so it stays held (#752).
+    assert Message.text(result) == "a resource of the call could not be released"
     # The parent's result comes after the cleanup of the owner, so a stop of
     # the new instance would have ended it by now.
     assert Process.alive?(new_pid)

@@ -3,9 +3,11 @@ defmodule Helyx.Session.Server.Stop do
   # The stop of a session (`terminate/2` of `Helyx.Session.Server`): the
   # work that `work/1` lists ends, the kill of a prepare Task or
   # the close of provider processes (`State.provider_close_ms/0`, armed
-  # kill), then the stop of the hands, which can finish one release
-  # (`Hands.State.release_ms/0`), the delete of the background folder, and
-  # the release of the writer lock (`Lock.release_ms/0`).
+  # kill), then the stop of the hands, which release every handle that
+  # their Tasks hold within one release deadline (`Hands.State.release_ms/0`),
+  # the delete of the background folder, and the release of the writer
+  # lock (`Lock.release_ms/0`). `run/1` returns the stop report
+  # (docs/features/session-lifecycle.md, "Session stop").
   # Each wait has a margin for load, so the
   # supervisor does not kill it first: `shutdown_ms/0` is the shutdown of
   # the session process.
@@ -46,7 +48,7 @@ defmodule Helyx.Session.Server.Stop do
       end
     end
 
-    stop_hands(state.hands)
+    left = stop_hands(state.hands)
     # A stop in a turn has no turn end: the sync gets the messages of the
     # turn here, before the worker sees the session end.
     Helyx.Session.Sync.push_turn(state)
@@ -56,29 +58,32 @@ defmodule Helyx.Session.Server.Stop do
     # Last, so no process of the session writes to the file once another
     # OS process can take the lock.
     Lock.release(state.lock)
+    if left == [], do: :ok, else: {:error, {:not_released, left}}
   end
 
-  # The hands take the messages before the exit signal first: the end of a
+  # The hands take the messages before the stop call first: the end of a
   # closed provider process gets its release. That end reaches the hands
   # before the provider process's `:DOWN` reaches the session, on one node.
-  # If it came later, the hands would end with no release of the
-  # handles of the provider process. Each release has its deadline,
-  # so the wait is bounded; over @hands_stop_ms the hands are killed, and a
-  # killed process runs no release. Hands that are already gone give their
-  # `:DOWN` at once.
+  # If it came later, the hands would kill the provider process and release
+  # its handles with `:cancel`. The releases of the stop end by one release
+  # deadline from here, so the wait is bounded; over @hands_stop_ms the
+  # hands are killed, a killed process runs no release, and the handles
+  # left are unknown. Hands that are already gone answer no call.
   defp stop_hands(hands) do
     ref = Process.monitor(hands)
-    Process.exit(hands, :shutdown)
+    deadline = System.monotonic_time(:millisecond) + Hands.State.release_ms()
+
+    left =
+      try do
+        Hands.stop(hands, deadline, @hands_stop_ms)
+      catch
+        :exit, _reason ->
+          Process.exit(hands, :kill)
+          :unknown
+      end
 
     receive do
-      {:DOWN, ^ref, :process, _pid, _reason} -> :ok
-    after
-      @hands_stop_ms ->
-        Process.exit(hands, :kill)
-
-        receive do
-          {:DOWN, ^ref, :process, _pid, _reason} -> :ok
-        end
+      {:DOWN, ^ref, :process, _pid, _reason} -> left
     end
   end
 

@@ -331,6 +331,23 @@ defmodule Helyx.Session.HandsTest do
     assert :sys.get_state(hands).held |> Map.values() |> List.flatten() |> length() >= n
   end
 
+  defp stop(hands),
+    do: Helyx.Session.Hands.stop(hands, System.monotonic_time(:millisecond) + 5_000, :infinity)
+
+  test "the stop answers a handle whose release at the stop fails", %{core: core} do
+    hands = start_hands(core)
+    arguments = %{"handles" => [:keep, {:report, self()}], "ms" => 60_000}
+    :ok = run(hands, "t1", call("c1", "hold", arguments))
+    await_held(hands, 2)
+    Process.unlink(hands)
+
+    {answer, log} = with_log(fn -> stop(hands) end)
+
+    assert [:keep] = answer
+    assert log =~ ":keep"
+    assert [{:cancel, _handles}] = Released.take()
+  end
+
   describe "background runs" do
     @describetag :tmp_dir
 
@@ -527,6 +544,34 @@ defmodule Helyx.Session.HandsTest do
         background(hands, "d#{n}", %{"gate" => gate})
         assert_receive {:tool_result, "t1", _, {:started, _start}}
       end
+    end
+
+    # The stop of the session (#752): every Task ends with a release, and
+    # the answer holds each handle that a release of the hands left held.
+    test "the stop releases each running Task with :cancel and answers every unconfirmed handle",
+         %{core: core, dir: dir, gate: gate} do
+      hands = start_hands(core, background_dir: dir)
+      ref = Process.monitor(hands)
+      background(hands, "c1", %{"gate" => gate, "handles" => [{:report, self()}, :run]})
+      assert_receive {:tool_result, "t1", "c1", {:started, _start}}
+      assert_receive {:waiting, _pid}
+
+      # A delivered call leaves its handle unconfirmed, and later calls are refused.
+      {_, log} =
+        with_log(fn ->
+          :ok = run(hands, "t1", call("c2", "hold", %{"handles" => [:keep]}))
+          assert_receive {:tool_result, "t1", "c2", {:error, _text}}
+        end)
+
+      assert log =~ ":keep"
+
+      # The test process is the session, which traps the exit of the hands.
+      Process.unlink(hands)
+
+      # The release of the run confirms both of its handles.
+      assert [:keep] = stop(hands)
+      assert [{:cancel, [:run, {:report, _pid}]}] = Released.take()
+      assert_receive {:DOWN, ^ref, :process, ^hands, :shutdown}
     end
 
     test "outside the hands a place and a start answer exit, as a hold does" do
