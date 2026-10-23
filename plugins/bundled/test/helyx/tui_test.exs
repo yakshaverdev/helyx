@@ -834,8 +834,10 @@ defmodule Helyx.TUITest do
         data: data
       }
 
-      {:noreply, state} = TUI.handle_info({:helyx_event, event}, state)
-      state
+      # The seq goes back, so the events of the real session of the test
+      # still apply.
+      {:noreply, folded} = TUI.handle_info({:helyx_event, event}, state)
+      put_in(folded.vm.seq, state.vm.seq)
     end
 
     defp scroll_state(core, count) do

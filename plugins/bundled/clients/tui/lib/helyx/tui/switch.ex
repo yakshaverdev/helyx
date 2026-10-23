@@ -204,7 +204,9 @@ defmodule Helyx.TUI.Switch do
 
   # The events of the session come before its `:DOWN` in the mailbox, and
   # a `queue_dropped` among them must not be skipped, so the TUI takes
-  # them in their order up to the `:DOWN`.
+  # them in their order up to the `:DOWN`. It runs in the node only, which
+  # subscribes once and has no replay, so no event comes twice here; the
+  # fold drops one by its seq all the same.
   defp drain(%{session_ref: ref, instance_id: id} = state) do
     receive do
       {:helyx_event, %Event{instance_id: ^id} = event} ->

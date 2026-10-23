@@ -409,20 +409,26 @@ defmodule Helyx.TUI.LinkTest do
     assert List.last(ViewModel.cells(state.vm)) == {:infos, ["reconnected"]}
 
     # The new connection carries the live events. An event at or below
-    # the seq of the fold changes nothing: no ack, fold, or composer.
+    # the seq of the fold changes nothing: no ack, fold, composer, or read
+    # of the branch.
     state = state |> command("three") |> until(&(&1.type == :turn_end))
     assert texts(state, :user) == ["one", "two", "three"]
 
-    again = %Event{
-      type: :queue_dropped,
-      session_id: id,
-      instance_id: instance,
-      turn_id: nil,
-      seq: state.vm.seq,
-      data: %{messages: [Message.user("again")], texts: ["again"]}
-    }
+    for {type, data} <- [
+          queue_dropped: %{messages: [Message.user("again")], texts: ["again"]},
+          turn_end: %{outcome: :done}
+        ] do
+      again = %Event{
+        type: type,
+        session_id: id,
+        instance_id: instance,
+        turn_id: nil,
+        seq: state.vm.seq,
+        data: data
+      }
 
-    assert info({:helyx_event, again}, state) == state
+      assert info({:helyx_event, again}, state) == state
+    end
 
     # A resume makes a new instance: the reconnect gets a snapshot.
     down = lose(state)

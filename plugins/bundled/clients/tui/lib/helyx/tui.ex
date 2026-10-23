@@ -124,10 +124,10 @@ defmodule Helyx.TUI do
     do: {:noreply, settle(sync_busy(read_branch(Switch.reconnect(state, reason))))}
 
   def handle_info({:helyx_event, %{instance_id: id} = event}, %{instance_id: id} = state) do
+    # A turn can change the branch; an event at or below the seq of the fold changes nothing.
+    branch? = event.type == :turn_end and event.seq > state.vm.seq
     state = Switch.apply_event(state, event)
-    # A turn can change the branch.
-    state = if event.type == :turn_end, do: read_branch(state), else: state
-    {:noreply, settle(sync_busy(state))}
+    {:noreply, settle(sync_busy(if branch?, do: read_branch(state), else: state))}
   end
 
   def handle_info({ref, result}, %{switch: %Switch{task: %Task{ref: ref}}} = state) do

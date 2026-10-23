@@ -300,15 +300,17 @@ defmodule CodingAgent.CLI do
   # folder when one runs (docs/features/tui-attach.md), with the model of
   # `--model`, else the default model of the server. With none, the
   # launcher of the release starts one (decision 10); with no launcher, as
-  # `mix helyx`, the TUI runs in the node.
+  # `mix helyx`, the TUI runs in the node. A server needs perl, as the
+  # tools of the node do: with none on the PATH, the node gives the line of
+  # its tool check.
   defp start_or_attach(opts, run, launcher) do
     dir = run[:sessions_dir]
     found = if run[:prompt], do: :none, else: CodingAgent.Attach.connect(dir)
 
-    case {found, launcher} do
+    case {found, launcher && System.find_executable("perl")} do
       {:none, nil} -> CodingAgent.run([model: Keyword.get(opts, :model, @default_model)] ++ run)
-      {:none, launcher} -> attach(opts, run, CodingAgent.Attach.start(dir, launcher))
-      {found, _launcher} -> attach(opts, run, found)
+      {:none, _perl} -> attach(opts, run, CodingAgent.Attach.start(dir, launcher))
+      {found, _perl} -> attach(opts, run, found)
     end
   end
 

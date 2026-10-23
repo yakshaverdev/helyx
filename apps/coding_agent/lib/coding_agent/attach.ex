@@ -42,7 +42,8 @@ defmodule CodingAgent.Attach do
   session of its own, so no signal of the terminal reaches it, with stdin
   on `/dev/null` and its output added to `<dir>/server.log`, which must be
   a regular file or not there. The folder is made with mode 0700 when it
-  is not there. Returns `{:ok, socket}` or `{:error, text}`.
+  is not there. perl must be on the PATH: `CodingAgent.CLI` checks it
+  before a start. Returns `{:ok, socket}` or `{:error, text}`.
   """
   @spec start(Path.t(), Path.t()) :: {:ok, :gen_tcp.socket()} | {:error, String.t()}
   def start(dir, launcher) do
@@ -74,13 +75,19 @@ defmodule CodingAgent.Attach do
   exec { $launcher } $launcher, "serve" or die "helyx: $launcher: $!\n";
   """
 
-  # The lock test of `connect/1` before it needs perl too. `--` keeps a
-  # launcher path that starts with `-` an argument.
+  # `CodingAgent.CLI` starts a server only with perl on the PATH. `--`
+  # keeps a launcher path that starts with `-` an argument.
   defp spawn_server(launcher, log) do
     case System.cmd("perl", ["-e", @spawn, "--", launcher, log], stderr_to_stdout: true) do
       {_out, 0} -> :ok
-      {out, _status} -> {:error, "could not start a server: " <> String.trim(out)}
+      {out, _status} -> {:error, "could not start a server: " <> last_line(out)}
     end
+  end
+
+  # perl dies with one line, after any warning of its own, such as one of
+  # a locale that is not there.
+  defp last_line(out) do
+    out |> String.trim() |> String.split("\n") |> List.last()
   end
 
   # A user who can write the data folder could write a server file that

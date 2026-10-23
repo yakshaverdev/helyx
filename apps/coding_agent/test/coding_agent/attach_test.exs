@@ -275,6 +275,46 @@ defmodule CodingAgent.AttachTest do
     refute File.exists?(Path.join(dir, "args"))
   end
 
+  # A server needs perl, as the node does: the line is that of today.
+  test "with no perl on the PATH, helyx gives the line of the node and starts no server",
+       %{tmp_dir: dir, sessions: sessions} do
+    path = System.get_env("PATH")
+    on_exit(fn -> System.put_env("PATH", path) end)
+    on_exit(fn -> System.delete_env("HELYX_LAUNCHER") end)
+    launcher = launcher(dir)
+    empty = Path.join(dir, "bin")
+    File.mkdir_p!(empty)
+    System.put_env("PATH", empty)
+
+    node = helyx([dir])
+    System.put_env("HELYX_LAUNCHER", launcher)
+    assert helyx([dir]) == node
+    assert node =~ "perl"
+    refute File.exists?(Path.join(dir, "args"))
+    refute File.exists?(Path.join(sessions, "server.log"))
+  end
+
+  # perl writes a warning of a locale that is not there before its error.
+  test "the reason of a failed start is the last line of perl", %{
+    tmp_dir: dir,
+    sessions: sessions
+  } do
+    data_folder(sessions)
+    log = Path.join(sessions, "server.log")
+    {_, 0} = System.cmd("mkfifo", [log])
+    locale = System.get_env("LC_ALL")
+    System.put_env("LC_ALL", "xx_XX.UTF-8")
+
+    on_exit(fn ->
+      if locale, do: System.put_env("LC_ALL", locale), else: System.delete_env("LC_ALL")
+    end)
+
+    assert {:error, "could not start a server: " <> reason} =
+             Attach.start(sessions, launcher(dir))
+
+    assert reason =~ ~r/\A#{Regex.escape(log)}: [^\n]+\z/
+  end
+
   @tag :slow
   test "a launcher that starts no server gives one line after the wait", %{
     tmp_dir: dir,
