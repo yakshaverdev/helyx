@@ -102,18 +102,19 @@ defmodule CodingAgent do
   to the connection (`Helyx.TUI.Wire.Connection`); the TUI takes the
   connection and ends it at its quit. The options are those of `run/1`
   with no `:prompt`; `:model` is optional: with none, a new session gets
-  the default model of the server; and `resume: id` takes no `:cwd`. The
-  session starts or resumes in the server and runs on after the quit,
-  which aborts nothing. Returns `{:error, reason}` as `run/1` does, with
-  the errors of the wire.
+  the default model of the server; `resume: id` takes no `:cwd`; and
+  `resume: :reattach` resumes the newest session of `:cwd`, or starts one
+  when the folder has none (decision 16). The session starts or resumes in
+  the server and runs on after the quit, which aborts nothing. Returns
+  `{:error, reason}` as `run/1` does, with the errors of the wire.
   """
   @spec attach(:gen_tcp.socket(), keyword()) :: :ok | {:error, term()}
   def attach(socket, opts) do
     {:ok, conn, ref} = Connection.open(socket)
 
     try do
-      with {:ok, id, cwd} <- open_remote(conn, opts),
-           do: client(%Link{conn: conn, id: id}, Keyword.put(opts, :cwd, cwd))
+      with {:ok, id, cwd, resumed} <- open_remote(conn, opts),
+           do: client(%Link{conn: conn, id: id}, Keyword.merge(opts, cwd: cwd, resume: resumed))
     after
       # The connection ended with the TUI that took it; one that no TUI
       # took ends here.
@@ -133,12 +134,12 @@ defmodule CodingAgent do
         with {:ok, _path, header} <- Scan.find(Keyword.fetch!(opts, :sessions_dir), id),
              {:ok, cwd} <- folder(header["cwd"]),
              {:ok, id} <- Connection.resume(conn, id: id),
-             do: {:ok, id, cwd}
+             do: {:ok, id, cwd, true}
 
       resume ->
         with {:ok, cwd} <- folder(opts[:cwd]),
-             {:ok, id} <- start_or_resume(conn, resume, opts),
-             do: {:ok, id, cwd}
+             {:ok, id, resumed} <- start_or_resume(conn, resume, opts),
+             do: {:ok, id, cwd, resumed}
     end
   end
 
@@ -150,10 +151,25 @@ defmodule CodingAgent do
       else: {:error, :invalid_cwd}
   end
 
-  defp start_or_resume(conn, false, opts),
-    do: Connection.start(conn, Keyword.take(opts, [:cwd, :model]))
+  defp start_or_resume(conn, false, opts) do
+    with {:ok, id} <- Connection.start(conn, Keyword.take(opts, [:cwd, :model])),
+         do: {:ok, id, false}
+  end
 
-  defp start_or_resume(conn, true, opts), do: Connection.resume(conn, cwd: opts[:cwd])
+  defp start_or_resume(conn, true, opts) do
+    with {:ok, id} <- Connection.resume(conn, cwd: opts[:cwd]), do: {:ok, id, true}
+  end
+
+  # A newest session that does not resume (its file, its lock, or its saved
+  # model) names `--new`. The wire gives a `{code, text}` for those, and for
+  # a few causes outside the session (tui-attach.md, Accepted holes).
+  defp start_or_resume(conn, :reattach, opts) do
+    case start_or_resume(conn, true, opts) do
+      {:error, :not_found} -> start_or_resume(conn, false, opts)
+      {:error, {_code, _text} = reason} -> {:error, {:reattach, reason}}
+      result -> result
+    end
+  end
 
   defp client(session, opts) do
     case Keyword.fetch(opts, :prompt) do
@@ -204,7 +220,8 @@ defmodule CodingAgent do
   (`{:not_a_directory, cwd}`, a whole line with no prefix), for a tool
   that is not available, for the end of the session, and over the wire for
   a line of the attach (`{:attach, text}`) and the end of the connection
-  (`{:connection_down, reason}`), whole lines with no prefix, and for the
+  (`{:connection_down, reason}`), whole lines with no prefix, for a newest
+  session that does not reattach (`{:reattach, reason}`), and for the
   errors of the wire (`Helyx.TUI.Link.error_text/1`). The `:too_large`
   text is a sentence already and passes unchanged. An error with no clause
   prints through `Helyx.Reason.text/1`, so it holds no stacktrace. Every
@@ -237,6 +254,10 @@ defmodule CodingAgent do
   # of a TUI over the wire: whole lines, with no prefix.
   defp line({:attach, text}), do: text
   defp line({:connection_down, reason}), do: Link.down_text(reason)
+
+  # The way out comes first: the cut of the line keeps it.
+  defp line({:reattach, reason}),
+    do: "could not reattach to the newest session (helyx --new starts one): " <> sentence(reason)
 
   defp line(reason), do: "could not start the agent: " <> sentence(reason)
 

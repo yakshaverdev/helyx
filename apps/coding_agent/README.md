@@ -17,12 +17,12 @@ If `~/.local/bin` is not on your `PATH`, add it, for example with `export PATH="
 ## Run
 
 ```sh
-helyx [directory] [--model provider/model] [--resume]
+helyx [directory] [--model provider/model] [--new | --resume]
 helyx --version          # the version and the commit of the build
 helyx --help             # the usage, the switches, and the exit statuses
 ```
 
-`directory` defaults to the current folder. `mix helyx` in `apps/coding_agent` takes the same arguments and runs the source tree. The design is in `docs/features/local-release.md`.
+`directory` defaults to the current folder. When `helyx serve` runs for the data folder, `helyx` reattaches to the newest session of the folder, and `--new` or `--model` starts a new one (`docs/features/tui-attach.md`, decision 16). `mix helyx` in `apps/coding_agent` takes the same arguments and runs the source tree. The design is in `docs/features/local-release.md`.
 
 ## Print mode
 

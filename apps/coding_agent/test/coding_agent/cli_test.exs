@@ -54,7 +54,7 @@ defmodule CodingAgent.CLITest do
     assert help =~ "usage: helyx [directory]"
     assert help =~ "exit status"
 
-    for switch <- ~w(--model --resume --session --list --all -p --version --help),
+    for switch <- ~w(--model --resume --new --session --list --all -p --version --help),
         do: assert(help =~ ~r/^  #{switch} /m, switch)
 
     # The help wins over every other switch and argument.
@@ -161,6 +161,9 @@ defmodule CodingAgent.CLITest do
              "--list does not combine with --model"
 
     assert error_line(["--list", "--resume"]) =~ "--list does not combine with --resume"
+    assert error_line(["--new", "--resume"]) =~ "--new does not combine with --resume"
+    assert error_line(["--new", "--session", "x"]) =~ "--new does not combine with --session"
+    assert error_line(["--list", "--new"]) =~ "--list does not combine with --new"
 
     assert error_line(["--list", "--all", "/tmp"]) =~
              "a directory argument does not combine with --all"
