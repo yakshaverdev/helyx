@@ -18,8 +18,8 @@ defmodule Helyx.Text do
   if @max_bytes + 1 + @max_notice_bytes > Helyx.Message.max_result_bytes(),
     do: raise("the Helyx.Text cut does not fit Helyx.Message.max_result_bytes/0")
 
-  # The largest file a tool reads, in bytes (10 MiB): room for any source
-  # file, and small enough to load whole.
+  # The default bound of `read_file/2`, the largest file a tool reads, in
+  # bytes (10 MiB): room for any source file, and small enough to load whole.
   @max_file_bytes 10_485_760
 
   @doc "The line limit of `truncate/2` and `truncate/3`."
@@ -30,41 +30,39 @@ defmodule Helyx.Text do
   @spec max_bytes() :: pos_integer()
   def max_bytes, do: @max_bytes
 
-  @doc "The byte limit of `read_file/1`."
+  @doc "The default byte limit of `read_file/2`."
   @spec max_file_bytes() :: pos_integer()
   def max_file_bytes, do: @max_file_bytes
 
   @doc """
-  Reads a regular file of at most #{@max_file_bytes} bytes, whole. A device,
-  a directory, a larger file, or a file that is not valid UTF-8 is an error,
-  so a tool never loads unbounded input and never returns text a later
-  encoder cannot handle. The read itself is bounded, so a file that grows
-  after the check is still an error. The error is a short reason without
-  the path.
+  Reads a regular file of at most `max` bytes, #{@max_file_bytes} by default,
+  whole. A device, a directory, a larger file, or a file that is not valid
+  UTF-8 is an error, so a caller never loads unbounded input and never gets
+  text a later encoder cannot handle. The read itself reads at most
+  `max + 1` bytes, so a file that grows after the check is still an error.
+  The error is a short reason without the path.
   """
-  @spec read_file(Path.t()) :: {:ok, String.t()} | {:error, String.t()}
-  def read_file(full) do
+  @spec read_file(Path.t(), pos_integer()) :: {:ok, String.t()} | {:error, String.t()}
+  def read_file(full, max \\ @max_file_bytes) when is_integer(max) and max > 0 do
     case File.stat(full) do
-      {:ok, %File.Stat{type: :regular}} -> read_bounded(full)
+      {:ok, %File.Stat{type: :regular}} -> read_bounded(full, max)
       {:ok, %File.Stat{type: type}} -> {:error, "not a regular file (#{type})"}
       {:error, reason} -> {:error, to_string(:file.format_error(reason))}
     end
   end
 
-  defp read_bounded(full) do
-    case File.open(full, [:read, :binary], &IO.binread(&1, @max_file_bytes + 1)) do
-      {:ok, data} -> bounded(data)
-      {:error, _} = error -> bounded(error)
+  defp read_bounded(full, max) do
+    case File.open(full, [:read, :binary], &IO.binread(&1, max + 1)) do
+      {:ok, data} -> bounded(data, max)
+      {:error, _} = error -> bounded(error, max)
     end
   end
 
-  defp bounded(:eof), do: {:ok, ""}
-  defp bounded({:error, reason}), do: {:error, to_string(:file.format_error(reason))}
+  defp bounded(:eof, _max), do: {:ok, ""}
+  defp bounded({:error, reason}, _max), do: {:error, to_string(:file.format_error(reason))}
+  defp bounded(bin, max) when byte_size(bin) > max, do: {:error, "over the #{max}-byte limit"}
 
-  defp bounded(bin) when byte_size(bin) > @max_file_bytes,
-    do: {:error, "over the #{@max_file_bytes}-byte limit"}
-
-  defp bounded(bin) do
+  defp bounded(bin, _max) do
     if String.valid?(bin), do: {:ok, bin}, else: {:error, "binary file, #{byte_size(bin)} bytes"}
   end
 

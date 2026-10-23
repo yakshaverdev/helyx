@@ -151,29 +151,10 @@ defmodule Helyx.Skills do
   end
 
   defp read(dir) do
-    path = Path.join(dir, "SKILL.md")
-
-    with {:ok, %File.Stat{type: :regular, size: size}} when size <= @max_file_bytes <-
-           File.stat(path),
-         {:ok, content} when byte_size(content) <= @max_file_bytes <- Helyx.Text.read_file(path),
+    with {:ok, content} <- Helyx.Text.read_file(Path.join(dir, "SKILL.md"), @max_file_bytes),
          {:ok, keys} <- Helyx.Skills.Frontmatter.read(content),
          {:ok, name, description} <- fields(keys, Path.basename(dir)) do
       {:ok, %Skill{name: name, description: description, folder: dir, content: content}}
-    else
-      {:ok, %File.Stat{type: :regular}} ->
-        {:error, "SKILL.md is over #{@max_file_bytes} bytes"}
-
-      {:ok, %File.Stat{}} ->
-        {:error, "SKILL.md is not a regular file"}
-
-      {:ok, content} when is_binary(content) ->
-        {:error, "SKILL.md is over #{@max_file_bytes} bytes"}
-
-      {:error, reason} when is_atom(reason) ->
-        {:error, "SKILL.md: #{:file.format_error(reason)}"}
-
-      {:error, why} ->
-        {:error, why}
     end
   end
 

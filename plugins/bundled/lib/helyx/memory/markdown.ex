@@ -96,14 +96,14 @@ defmodule Helyx.Memory.Markdown do
     |> Enum.map(fn {_score, record} -> record end)
   end
 
-  # A regular file only (`Helyx.Text.read_file/1`): a FIFO or a device is
-  # never opened. A name that cannot make a valid record id is skipped.
+  # A regular file only (`Helyx.Text.read_file/2`): a FIFO or a device is
+  # never opened. A name that cannot make a valid record id is skipped. The
+  # stat skips a large file unread; the bounded read skips one that grew
+  # after the stat.
   defp read(path, rel) do
     with true <- byte_size(rel) <= @max_path_bytes and String.valid?(rel),
-         {:ok, %File.Stat{size: size}} when size <= @max_file_bytes <-
-           File.stat(path),
-         # A file that grew after the stat is checked again on its text.
-         {:ok, text} when byte_size(text) <= @max_file_bytes <- Helyx.Text.read_file(path) do
+         {:ok, %File.Stat{size: size}} when size <= @max_file_bytes <- File.stat(path),
+         {:ok, text} <- Helyx.Text.read_file(path, @max_file_bytes) do
       {:ok, text}
     else
       _ -> :skip

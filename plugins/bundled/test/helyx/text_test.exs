@@ -114,6 +114,17 @@ defmodule Helyx.TextTest do
     assert Text.read_file(path) == {:ok, "héllo wörld €😀"}
   end
 
+  @tag :tmp_dir
+  test "read_file/2 reads a file of max bytes and refuses one of max + 1", %{tmp_dir: dir} do
+    at = Path.join(dir, "at.txt")
+    over = Path.join(dir, "over.txt")
+    File.write!(at, "é" <> String.duplicate("x", 6))
+    File.write!(over, String.duplicate("x", 9))
+    assert Text.read_file(at, 8) == {:ok, "é" <> String.duplicate("x", 6)}
+    assert Text.read_file(over, 8) == {:error, "over the 8-byte limit"}
+    assert Text.read_file(dir, 8) == {:error, "not a regular file (directory)"}
+  end
+
   test "short text is returned as is" do
     assert Text.truncate("a\nb", :head) == "a\nb"
     assert Text.truncate("a\nb", :tail) == "a\nb"
