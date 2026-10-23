@@ -187,22 +187,27 @@ defmodule Helyx.Sessions do
   survive any stop. A session that is not running at the call gives
   `{:error, :session_not_found}`. The supervisor frees the place of the
   session in the cap when it handles the exit.
+
+  With the pid of a session process, the stop acts on that process only,
+  never on a later instance of its id, and a process that is gone gives
+  `{:error, {:not_released, :unknown}}` (`docs/features/agent-tool.md`).
   """
-  @spec stop(Session.t()) ::
+  @spec stop(Session.t() | pid()) ::
           :ok | {:error, :session_not_found | {:not_released, [term()] | :unknown}}
   def stop(%Session{} = session) do
     case Session.pid(session) do
-      nil ->
-        {:error, :session_not_found}
+      nil -> {:error, :session_not_found}
+      pid -> stop(pid)
+    end
+  end
 
-      pid ->
-        ref = Process.monitor(pid)
-        report = stop_pid(pid)
+  def stop(pid) when is_pid(pid) do
+    ref = Process.monitor(pid)
+    report = stop_pid(pid)
 
-        # `terminate/2` replies; the session ends after it.
-        receive do
-          {:DOWN, ^ref, :process, _pid, _reason} -> report
-        end
+    # `terminate/2` replies; the session ends after it.
+    receive do
+      {:DOWN, ^ref, :process, _pid, _reason} -> report
     end
   end
 

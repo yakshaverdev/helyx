@@ -63,7 +63,7 @@ The one-call queue of `Helyx.Session.ToolQueue`.
 
 Tests at the limits: 8 running and the 9th waits, 16 waiting and the 17th rejected.
 
-Accepted hole: the release of one delivery delays the results of the other calls. `read` has no release. The agent tool (#735) is the first concurrent tool with a release; the release stays on the hands loop, and the tool stops its child and drops the hold in its own Task before it returns, so a normal delivery has no handle to release. Only the delivery of a crashed agent call runs a release there (`docs/features/agent-tool.md`).
+Accepted hole: the release of one delivery delays the results of the other calls. `read` has no release. The agent tool (#735) is the first concurrent tool with a release; the release stays on the hands loop, and the tool has its owner stop its child and drops the hold in its own Task before it returns when the stop report of the child is `:ok`, so a normal delivery has no handle to release. Only the delivery of a crashed agent call, or of a call whose child report is not `:ok`, runs a release there; the second finds the owner gone, or gets the same report at once (`docs/features/agent-tool.md`).
 
 ## Ownership
 
