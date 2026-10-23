@@ -23,6 +23,7 @@ A class of defect that the reviews find a second time gets a mechanical check: i
 
 - Each input is checked at its boundary (see `AGENTS.md`, "Elixir guidelines"). The spec axis names the boundary of every new input.
 - A library function that parses boundary input can raise on some inputs, not only return an error. `OptionParser.parse/2` raises `ArgumentError` on `-=` (#148). At the boundary, contain the exceptions of such a parser by name, and probe it with generated input, not only with the cases a reviewer thinks of.
+- A JSON decode in `lib/` code goes through `Helyx.JSON.decode/1`: `JSON.decode/1` raises `SystemLimitError` for an integer over the largest integer of the BEAM. The mechanical check is the Credo check `Helyx.Credo.JSONDecode`, which reports a call written `JSON.decode` or `JSON.decode!` there; its explanation names the calls that it does not see. Source: #782 and #786, the same raise at five boundaries; constructed.
 - A reviewer reports defensive handling in inner code (`AGENTS.md`, "Validate at boundaries") as a finding, with every caller and the upstream check (`file:line`). A repeated check follows `AGENTS.md`, "Remove a repeated check".
 - `AGENTS.md`, "Use the checked value": a new read of the source is a finding only when its value is used under the earlier check with no check of its own.
 - `AGENTS.md`, "Reject the smallest unit": the failure path names what one bad value destroys, and the feature doc states each case where missing identity, damaged structure, or an unresolved resource requires a larger failure.

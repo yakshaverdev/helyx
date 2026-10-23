@@ -211,7 +211,7 @@ defmodule Helyx.ModelInfo.Catalog do
     with true <- File.regular?(path),
          {:ok, bytes} when is_binary(bytes) and byte_size(bytes) <= @max_bytes <-
            File.open(path, [:read, :binary], &IO.binread(&1, @max_bytes + 1)),
-         {:ok, json} <- decode(bytes),
+         {:ok, json} <- Helyx.JSON.decode(bytes),
          data when data != %{} <- slim(json) do
       %{etag: etag(json["etag"]), data: data}
     else
@@ -219,20 +219,13 @@ defmodule Helyx.ModelInfo.Catalog do
     end
   end
 
-  # The decode raises, not returns, for an integer over the BEAM limit.
-  defp decode(text) do
-    JSON.decode(text)
-  rescue
-    SystemLimitError -> :error
+  # The snapshot ships with the package: a snapshot that does not decode is
+  # a bug, and crashes.
+  defp snapshot do
+    path = Application.app_dir(:helyx_plugins, "priv/models_dev.json")
+    {:ok, json} = path |> File.read!() |> Helyx.JSON.decode()
+    slim(json)
   end
-
-  defp snapshot,
-    do:
-      :helyx_plugins
-      |> Application.app_dir("priv/models_dev.json")
-      |> File.read!()
-      |> JSON.decode!()
-      |> slim()
 
   defp cache(dir), do: Path.join(dir, "models.dev.json")
   defp marker(dir), do: Path.join(dir, "models.dev.attempt")
@@ -271,7 +264,7 @@ defmodule Helyx.ModelInfo.Catalog do
          :ok <- File.touch(marker(config.dir)),
          %{etag: etag} = load(config.dir),
          {:ok, body, etag} <- fetch(config, etag),
-         {:ok, json} <- decode(body),
+         {:ok, json} <- Helyx.JSON.decode(body),
          data when data != %{} <- slim(json) do
       write(config.dir, %{etag: etag, data: data})
     end
