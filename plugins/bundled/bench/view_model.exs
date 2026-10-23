@@ -1,6 +1,7 @@
 # The cost of a long transcript in the TUI view model (#407, #667). Not a
-# test: it asserts nothing and only prints the numbers. Run from
-# plugins/bundled:
+# test: it prints the numbers, and it asserts only that the streamed reply
+# holds every delta, so each delta frame folds a delta and does not only
+# redraw (#841). Run from plugins/bundled:
 #
 #     mix run bench/view_model.exs [cells ...]
 #
@@ -27,8 +28,8 @@ defmodule Helyx.Bench.ViewModel do
   alias Helyx.TUI.{Transcript, ViewModel}
 
   @area %Rect{width: 100, height: 40}
-  # 200 deltas of 150 bytes, and a paragraph break after every fourth: a
-  # reply of 30,100 bytes. Few frames keep a run under a minute on a loaded
+  # 200 deltas of 144 bytes, and a paragraph break after every fourth: a
+  # reply of 28,900 bytes. Few frames keep a run under a minute on a loaded
   # machine.
   @deltas 200
   @spinner_frames 50
@@ -58,14 +59,19 @@ defmodule Helyx.Bench.ViewModel do
     {frame_ms, _widget} = ms(fn -> frame(vm) end)
     count = length(ViewModel.cells(vm))
 
+    # The view model drops an event at or below its seq, so the reply
+    # continues the seq of the live fold.
+    start = vm.seq + 1
+
     vm =
       ViewModel.apply(
         vm,
-        event(:message_start, %{message: %Message{role: :assistant, content: []}}, 0)
+        event(:message_start, %{message: %Message{role: :assistant, content: []}}, start)
       )
 
-    deltas = Enum.map(1..@deltas, &delta/1)
+    deltas = Enum.map(1..@deltas, &delta(&1, start + &1))
     {vm, delta_line} = frames(vm, deltas, &frame(ViewModel.apply(&2, &1)))
+    check_streamed!(vm, deltas)
 
     {_vm, spinner_line} =
       frames(vm, List.duplicate(nil, @spinner_frames), fn _, vm -> frame(vm) end)
@@ -112,11 +118,25 @@ defmodule Helyx.Bench.ViewModel do
     Enum.at(sorted, min(length(sorted) - 1, div(length(sorted) * p, 100)))
   end
 
-  # A text delta, and a paragraph break after every fourth.
-  defp delta(i) do
+  # The `i`th text delta at `seq`, and a paragraph break after every fourth.
+  defp delta(i, seq) do
     text = if rem(i, 4) == 0, do: @delta <> "\n\n", else: @delta
 
-    event(:message_update, %{text_delta: text}, i)
+    event(:message_update, %{text_delta: text}, seq)
+  end
+
+  # The streaming message is one text block that holds every delta in order.
+  defp check_streamed!(vm, deltas) do
+    expected = Enum.map_join(deltas, & &1.data.text_delta)
+
+    case vm.streaming do
+      [%Message.Text{text: ^expected}] ->
+        :ok
+
+      streaming ->
+        raise "the streamed reply does not hold the #{length(deltas)} deltas: " <>
+                "#{byte_size(expected)} bytes expected, got #{inspect(streaming, limit: 3, printable_limit: 80)}"
+    end
   end
 
   defp messages(i) do
