@@ -402,6 +402,20 @@ defmodule Helyx.Transport.WebSocketTest do
                Client.request(socket, "5", "abort", %{"session" => id})
     end
 
+    # The wire does not carry the stop report of `Helyx.Sessions.stop/1` (#752).
+    test "a stop with a handle that is not released answers {}", %{core: core, port: port} do
+      socket = Client.open(port)
+
+      %{"ok" => true, "result" => %{"session" => id}} =
+        Client.request(socket, "1", "start", %{"cwd" => File.cwd!(), "model" => "fake/echo"})
+
+      hands = :sys.get_state(Helyx.Session.pid(%Helyx.Session{id: id, core: core})).hands
+      :sys.replace_state(hands, &%{&1 | unconfirmed: [:held]})
+
+      assert %{"ok" => true, "result" => %{}} =
+               Client.request(socket, "2", "stop", %{"session" => id})
+    end
+
     test "an unknown op, a bad param, and an unknown key get their errors", %{port: port} do
       socket = Client.open(port)
       assert %{"error" => %{"code" => "unknown_op"}} = Client.request(socket, "1", "nope", %{})

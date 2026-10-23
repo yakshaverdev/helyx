@@ -121,7 +121,7 @@ defmodule Helyx.Transport.WebSocket.Ops do
   def check(core, "stop", params) do
     with :ok <- keys(params, ~w(session), []),
          {:ok, session} <- session(core, params),
-         do: {:ok, fn -> Helyx.Sessions.stop(session) end}
+         do: {:ok, fn -> stopped(Helyx.Sessions.stop(session)) end}
   end
 
   def check(_core, _op, _params), do: :unknown_op
@@ -229,6 +229,10 @@ defmodule Helyx.Transport.WebSocket.Ops do
       "prompt" => summary.prompt
     }
   end
+
+  # The session ended: the wire does not carry the stop report (#752).
+  defp stopped({:error, {:not_released, _handles}}), do: :ok
+  defp stopped(result), do: result
 
   defp page({:ok, page}), do: {:ok, Wire.value(page)}
   defp page({:error, :invalid_limit}), do: :bad_params

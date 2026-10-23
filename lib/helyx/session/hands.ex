@@ -27,7 +27,8 @@ defmodule Helyx.Session.Hands do
   result, and provider starts with an error.
   `request_cancel/2` kills the Tasks of a turn and releases their handles.
   Its answer is a fixed error text when a handle stays unconfirmed, and
-  the log names the handles. The rules and the
+  the log names the handles. `stop/3` does the same for every Task at the
+  stop of the session and answers each unconfirmed handle. The rules and the
   deadlines are in `docs/features/tool-resource-release.md`.
 
   A tool call can go on in the background (`Helyx.Tool.background/0`,
@@ -94,6 +95,15 @@ defmodule Helyx.Session.Hands do
   """
   @spec request_cancel(pid(), String.t()) :: :gen_server.request_id()
   def request_cancel(hands, turn_id), do: :gen_server.send_request(hands, {:cancel, turn_id})
+
+  @doc """
+  Stops the hands with `:shutdown` at the stop of the session: every Task
+  ends, and its handles get a release with `:cancel` by `deadline`
+  (monotonic ms). The answer is every handle that a release of the hands
+  left unconfirmed (`docs/features/tool-resource-release.md`, rule 10).
+  """
+  @spec stop(pid(), integer(), timeout()) :: [term()]
+  def stop(hands, deadline, timeout), do: GenServer.call(hands, {:stop, deadline}, timeout)
 
   @doc """
   Frees the place of the background run `id`, whose end a turn took. An id
@@ -186,31 +196,42 @@ defmodule Helyx.Session.Hands do
         id == turn_id
       end)
 
-    cancelled = Map.values(cancelled)
-    pids = Enum.map(cancelled, fn {task, _, _, _, _} -> task.pid end)
+    {error, state} = cancel(cancelled, kept, state.release_ms, state)
+    {:reply, error || :ok, state}
+  end
 
-    Enum.each(cancelled, fn {task, _turn, _call_id, _tool, _place} ->
-      Task.shutdown(task, :brutal_kill)
-    end)
+  # The stop of the session: no Task outlives the hands unreleased.
+  defp call({:stop, deadline}, _from, state) do
+    ms = max(deadline - System.monotonic_time(:millisecond), 0)
+    {_error, state} = cancel(state.tasks, %{}, ms, state)
+    {:stop, :shutdown, state.unconfirmed, state}
+  end
 
-    {taken, held} = Map.split(state.held, pids)
+  # Kills the Tasks of `cancelled` and releases their handles with
+  # `:cancel` within `ms`. A Task killed here never delivers; its place
+  # leaves with its entry.
+  defp cancel(cancelled, kept, ms, state) do
+    cancelled = for {_ref, {task, _, _, tool, _}} <- cancelled, do: {task, tool}
+    Enum.each(cancelled, fn {task, _tool} -> Task.shutdown(task, :brutal_kill) end)
+    {taken, held} = Map.split(state.held, for({task, _tool} <- cancelled, do: task.pid))
 
     by_tool =
-      Enum.reduce(cancelled, %{}, fn {task, _, _, tool, _}, acc ->
+      Enum.reduce(cancelled, %{}, fn {task, tool}, acc ->
         Release.add(acc, %{tool => Map.get(taken, task.pid, [])})
       end)
 
-    left = Release.run(by_tool, :cancel, state.release_ms, state.core)
-
-    # A Task killed here never delivers; its place leaves with its entry.
-    state = %{state | tasks: kept, held: held, unconfirmed?: state.unconfirmed? or left != %{}}
-
-    {:reply, Release.error(left) || :ok, state}
+    left = Release.run(by_tool, :cancel, ms, state.core)
+    {Release.error(left), keep_unconfirmed(%{state | tasks: kept, held: held}, left)}
   end
+
+  # The handles that a release left held refuse the next start, and the
+  # stop answers them.
+  defp keep_unconfirmed(state, left),
+    do: %{state | unconfirmed: state.unconfirmed ++ Enum.concat(Map.values(left))}
 
   defp cast({:run, turn_id, call, context}, state) do
     state =
-      if state.unconfirmed?,
+      if state.unconfirmed != [],
         do: answer(state, turn_id, call.id, refusal()),
         else: start(state, turn_id, call, context)
 
@@ -219,7 +240,7 @@ defmodule Helyx.Session.Hands do
 
   defp cast({:start_provider, ref, provider, fun}, state) do
     {result, state} =
-      if state.unconfirmed? do
+      if state.unconfirmed != [] do
         {{:error, refusal()}, state}
       else
         # The kill is armed at the OTP timer server as the Task's first act;
@@ -283,14 +304,8 @@ defmodule Helyx.Session.Hands do
     left = Release.run(%{tool => handles}, :deliver, state.release_ms, state.core)
 
     send(state.session, outcome(turn_id, call_id, task.pid, Release.error(left) || result))
-
-    %{
-      state
-      | tasks: tasks,
-        held: held,
-        background: Background.ended(state.background, call_id),
-        unconfirmed?: state.unconfirmed? or left != %{}
-    }
+    state = %{state | tasks: tasks, held: held}
+    keep_unconfirmed(%{state | background: Background.ended(state.background, call_id)}, left)
   end
 
   defp outcome(_turn_id, :provider, pid, result), do: {:provider_down, pid, down_reason(result)}
@@ -303,7 +318,7 @@ defmodule Helyx.Session.Hands do
   # The reason of a provider process's end. `Helyx.Reason` caps its
   # integers when it makes the text. A kill is the armed
   # kill of a request that got no answer in time. The loop ends with
-  # `{:shutdown, reason}` (L1). An unconfirmed handle sets `unconfirmed?`,
+  # `{:shutdown, reason}` (L1). An unconfirmed handle joins `unconfirmed`,
   # which refuses the next start.
   defp down_reason({:exit, :killed}), do: :provider_timeout
   defp down_reason({:exit, {:shutdown, reason}}), do: reason

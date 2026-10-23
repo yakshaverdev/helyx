@@ -88,4 +88,7 @@ defmodule Helyx.Session.Server.Calls do
 
   # The abort replies through `GenServer.reply/2` (`TurnLoop.abort/2`).
   def handle(:abort, from, %State{} = state), do: {:noreply, TurnLoop.abort(state, from)}
+
+  # The stop of `Helyx.Sessions.stop/1`: `terminate/2` replies.
+  def handle(:stop, from, %State{} = state), do: {:stop, :normal, %{state | stopper: from}}
 end

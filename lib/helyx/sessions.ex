@@ -178,23 +178,40 @@ defmodule Helyx.Sessions do
   `Helyx.Session.abort/1`, then the session process stops, so each
   subscriber gets its end signal, whose `Helyx.Session.end_reason/1` is
   `:stopped`, and the lock of its file is released. Returns after the
-  session ended. A session that is not running gives
+  session ended: `:ok` when every handle of the session was released, and
+  `{:error, {:not_released, handles}}` when a release failed or timed
+  out, with the handles still held, or `:unknown` when the stop got no
+  answer of the hands or another end of the session, such as a second stop
+  or a Core stop, came first (`docs/features/session-lifecycle.md`,
+  "Session stop"). A child process that left its process group can
+  survive any stop. A session that is not running at the call gives
   `{:error, :session_not_found}`. The supervisor frees the place of the
   session in the cap when it handles the exit.
   """
-  @spec stop(Session.t()) :: :ok | {:error, :session_not_found}
+  @spec stop(Session.t()) ::
+          :ok | {:error, :session_not_found | {:not_released, [term()] | :unknown}}
   def stop(%Session{} = session) do
-    # The session, or its whole Core, can end between the abort and the stop.
-    with :ok <- Session.abort(session),
-         pid when is_pid(pid) <- Session.pid(session) do
-      GenServer.stop(pid, :normal, :infinity)
-    else
-      nil -> {:error, :session_not_found}
-      error -> error
+    case Session.pid(session) do
+      nil ->
+        {:error, :session_not_found}
+
+      pid ->
+        ref = Process.monitor(pid)
+        report = stop_pid(pid)
+
+        # `terminate/2` replies; the session ends after it.
+        receive do
+          {:DOWN, ^ref, :process, _pid, _reason} -> report
+        end
     end
+  end
+
+  # The abort and the stop go to the one pid that ran at the call.
+  defp stop_pid(pid) do
+    :ok = GenServer.call(pid, :abort, :infinity)
+    GenServer.call(pid, :stop, :infinity)
   catch
-    :exit, {:noproc, _call} -> {:error, :session_not_found}
-    # Another end, such as a Core stop, came first: the session ended.
-    :exit, {_reason, {GenServer, :stop, _args}} -> :ok
+    # Another end came first: the session ended with no report.
+    :exit, {_reason, {GenServer, :call, _args}} -> {:error, {:not_released, :unknown}}
   end
 end
