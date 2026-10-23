@@ -1330,9 +1330,11 @@ defmodule Helyx.Test.PrepareContext do
   # "hold_prepare" (it waits for `:continue`, then sets "prepared"),
   # "raise_prepare" (it raises), "nil_build" (it returns nil), "bad_build"
   # (it returns a map), "forged_build" (a struct without :system),
-  # "bad_system" (a system prompt that is not a string), or
-  # "bad_messages_build" (the messages are not a list). A last message
-  # "fresh" sets it to "prepared for <turn_id>".
+  # "bad_system" (a system prompt that is not a string),
+  # "bad_messages_build" (the messages are not a list), "improper_build"
+  # (the messages are an improper list), or "improper_tools_build" (the
+  # tools are an improper list). A last message "fresh" sets it to
+  # "prepared for <turn_id>".
   @behaviour Helyx.ModelContext
 
   @impl true
@@ -1353,9 +1355,14 @@ defmodule Helyx.Test.PrepareContext do
       "forged_build" -> Map.delete(context, :system)
       "bad_system" -> %{context | system: :prepared}
       "bad_messages_build" -> %{context | messages: nil}
+      text when text in ["improper_build", "improper_tools_build"] -> improper(text, context)
       _ -> %{context | system: "prepared"}
     end
   end
+
+  # `++` makes the improper list: Dialyzer rejects a literal one.
+  defp improper("improper_build", context), do: %{context | messages: context.messages ++ :tail}
+  defp improper("improper_tools_build", context), do: %{context | tools: [:tool] ++ :tail}
 
   defp block(opts) do
     ctl = Process.whereis(Helyx.Test.Connected.controller(opts[:core]))
@@ -1369,7 +1376,9 @@ defmodule Helyx.Test.PrepareCompaction do
   # Keeps the context, unless the last user message is "nil_compact" (it
   # returns nil), "bad_compact" (it returns a map), "forged_compact" (a
   # struct without :system), "bad_system_compact" (a system prompt that is
-  # not a string), or "bad_messages" (the messages are not a list).
+  # not a string), "bad_messages" (the messages are not a list),
+  # "improper_compact" (the messages are an improper list), or
+  # "improper_tools_compact" (the tools are an improper list).
   @behaviour Helyx.Compaction
 
   @impl true
@@ -1380,6 +1389,8 @@ defmodule Helyx.Test.PrepareCompaction do
       "forged_compact" -> Map.delete(context, :system)
       "bad_system_compact" -> %{context | system: :compacted}
       "bad_messages" -> %{context | messages: nil}
+      "improper_compact" -> %{context | messages: context.messages ++ :tail}
+      "improper_tools_compact" -> %{context | tools: [:tool] ++ :tail}
       _ -> context
     end
   end

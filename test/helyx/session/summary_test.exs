@@ -313,6 +313,14 @@ defmodule Helyx.Session.SummaryTest do
     assert prepare.({:summarize, %{plan | first_kept_id: "t1"}}, trigger: :auto) == bad
     assert prepare.({:summarize, %{plan | first_kept_id: "u2"}}, trigger: :auto) == bad
     assert prepare.({:summarize, %{plan | context: %{}}}, trigger: :auto) == bad
+
+    for improper <- [
+          %Helyx.Context{messages: [user | :tail]},
+          %Helyx.Context{tools: [:t | :tail]}
+        ] do
+      assert prepare.({:summarize, %{plan | context: improper}}, trigger: :auto) == bad
+    end
+
     assert prepare.({:summarize, Map.put(plan, :extra, 1)}, trigger: :auto) == bad
     assert prepare.({:error, "nope"}, trigger: :auto) == {:error, "nope"}
     assert prepare.({:error, :nope}, trigger: :auto) == bad

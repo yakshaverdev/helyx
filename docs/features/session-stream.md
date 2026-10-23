@@ -53,7 +53,7 @@ Update, review of 2026-10-16: `Helyx.Session.Stream.check/1` returns an `{:error
 
 The ModelContext and the Compaction plugin are outside Core, so their returns are a boundary. `run/1` builds the context with `Helyx.Session.Stream.prepare/4`, the check of a connected turn (`docs/features/session-lifecycle.md`). So a local, an external, and a connected turn check the context in the same way.
 
-- The check runs after each plugin. A return passes when it is a `Helyx.Context` with exactly its three fields, a `system` that is nil or a string, and `messages` and `tools` that are lists. The check does not look into the list elements.
+- The check runs after each plugin. A return passes when it is a `Helyx.Context` with exactly its three fields, a `system` that is nil or a string, and `messages` and `tools` that are proper lists. An improper list fails the check: the session appends to the messages, and the append of an improper list raises in the session process (#837); Core and the providers walk both lists. The check does not look into the list elements.
 - A return that fails the check ends the provider call before `provider.stream/3` with the terminal `{:error, {:bad_context, plugin}}`, where `plugin` is `:model_context` or `:compaction`. The turn fails with that reason. The reason names the plugin, never the value.
 - A plugin that raises is not a return: the Task crashes, and the turn fails with `{:task_exit, reason}`, as before.
 - The session stays, and the next turn runs the plugins again.

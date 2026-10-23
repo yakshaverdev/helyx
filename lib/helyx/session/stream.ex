@@ -33,7 +33,7 @@ defmodule Helyx.Session.Stream do
   each plugin is checked at the boundary. Returns `{:error, {:bad_context,
   :model_context | :compaction}}` when a plugin returns anything but a
   `Helyx.Context` with its three fields: a system prompt that is nil or a
-  string, and two lists. The reason names the plugin, not the value.
+  string, and two proper lists. The reason names the plugin, not the value.
 
   The Compaction plugin can also return `{:error, text}`, which is returned
   as it is, or a `Helyx.Summary.Plan` when `opts[:trigger]` is not nil: a
@@ -77,14 +77,19 @@ defmodule Helyx.Session.Stream do
   defp compacted(context, _messages, _trigger), do: checked_context(context, :compaction)
 
   # The size check rejects a struct that a plugin forged by removing or adding
-  # keys. The elements of the lists are not checked here.
+  # keys. An improper list is rejected too: the session appends to the
+  # messages, and Core and the providers walk both lists. The elements of
+  # the lists are not checked here.
   defp checked_context(
          %Helyx.Context{system: system, messages: messages, tools: tools} = context,
-         _plugin
+         plugin
        )
        when map_size(context) == 4 and (is_nil(system) or is_binary(system)) and
-              is_list(messages) and is_list(tools),
-       do: {:ok, context}
+              is_list(messages) and is_list(tools) do
+    if List.improper?(messages) or List.improper?(tools),
+      do: {:error, {:bad_context, plugin}},
+      else: {:ok, context}
+  end
 
   defp checked_context(_other, plugin), do: {:error, {:bad_context, plugin}}
 
