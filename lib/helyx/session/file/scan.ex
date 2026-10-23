@@ -180,7 +180,7 @@ defmodule Helyx.Session.File.Scan do
          head = binary_part(data, 0, min(byte_size(data), @max_header_bytes)),
          [line | rest] = :binary.split(head, "\n"),
          {:ok, %{"type" => "session", "cwd" => cwd} = header} when is_binary(cwd) <-
-           JSON.decode(line) do
+           Helyx.JSON.decode(line) do
       # `rest` is the rest of the head, or nothing. A lazy walk: the head
       # as a list of 65,535 short lines is about 4 MiB of heap.
       lines = Stream.flat_map(rest, &String.splitter(&1, "\n"))
@@ -201,7 +201,7 @@ defmodule Helyx.Session.File.Scan do
   defp prompt(_message, _whole?), do: ""
 
   defp message(line) do
-    case JSON.decode(line) do
+    case Helyx.JSON.decode(line) do
       {:ok, %{"type" => "message"} = entry} -> entry
       _ -> nil
     end

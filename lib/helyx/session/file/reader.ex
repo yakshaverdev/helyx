@@ -30,17 +30,10 @@ defmodule Helyx.Session.File.Reader do
   end
 
   defp line(text, n, cwd, acc) do
-    case decode(text) do
+    case Helyx.JSON.decode(text) do
       {:ok, %{"type" => _} = entry} -> add(entry, n, cwd, acc)
       _not_an_entry -> {:ok, acc}
     end
-  end
-
-  # The decode raises, not returns, for an integer over the BEAM limit.
-  defp decode(text) do
-    JSON.decode(text)
-  rescue
-    SystemLimitError -> :error
   end
 
   # The header: the first entry, with a string id and model, a known

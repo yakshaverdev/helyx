@@ -96,6 +96,9 @@ defmodule Helyx.Transport.WebSocket.Frame do
       object_finish: &object/2
     ]
 
+    # The decoders need `JSON.decode/3`, not `Helyx.JSON.decode/1`;
+    # `integer/1` bounds the digits, so it does not raise `SystemLimitError`.
+    # credo:disable-for-next-line Helyx.Credo.JSONDecode
     case JSON.decode(text, {max_values, []}, decoders) do
       {value, _acc, ""} -> {:ok, value}
       _error_or_rest -> :error

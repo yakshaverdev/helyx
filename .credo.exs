@@ -14,6 +14,8 @@
         extra: [
           # A test asserts order, not an upper bound of wall-clock time (#221).
           {Helyx.Credo.WallClockUpperBound, []},
+          # A JSON decode in lib/ code goes through Helyx.JSON.decode/1 (#792).
+          {Helyx.Credo.JSONDecode, []},
           # The test exceptions are fixtures named for the message they make, not
           # a naming strategy of the code.
           {Credo.Check.Consistency.ExceptionNames,

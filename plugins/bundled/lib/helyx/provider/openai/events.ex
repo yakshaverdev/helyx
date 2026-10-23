@@ -75,7 +75,7 @@ defmodule Helyx.Provider.OpenAI.Events do
   # A chunk that does not parse or has the wrong shape ends the stream with
   # one error event; nothing after it is processed, so no `done` follows.
   defp data(payload, acc) do
-    case JSON.decode(payload) do
+    case Helyx.JSON.decode(payload) do
       # A gateway reports a mid-stream failure as an error object in the data.
       {:ok, %{"error" => error}} when error != nil -> {[{:error, {:api_error, error}}], acc}
       {:ok, chunk} -> chunk |> fields(acc.info) |> chunk_events(payload, acc)
@@ -240,18 +240,10 @@ defmodule Helyx.Provider.OpenAI.Events do
   # Arguments that are not a JSON object go on as their raw text. Core
   # fails the turn at the call and drops the text (`Helyx.Provider`).
   defp decode_arguments(call, json) do
-    case decode(json) do
+    case Helyx.JSON.decode(json) do
       {:ok, arguments} when is_map(arguments) -> {:tool_call, %{call | arguments: arguments}}
       _ -> {:tool_call, %{call | arguments: json}}
     end
-  end
-
-  # The decode raises, not returns, for an integer over the BEAM limit. An
-  # SSE line is too short to hold one; joined arguments are not.
-  defp decode(json) do
-    JSON.decode(json)
-  rescue
-    SystemLimitError -> :error
   end
 
   # The wire values: docs/research/stop-reasons.md.

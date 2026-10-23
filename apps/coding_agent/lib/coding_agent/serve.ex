@@ -177,7 +177,7 @@ defmodule CodingAgent.Serve do
     with {:ok, data} when byte_size(data) <= @max_file_bytes <-
            Helyx.Session.File.Scan.read_up_to(server_file(dir), @max_file_bytes + 1),
          {:ok, %{"address" => text, "port" => port} = json}
-         when is_binary(text) and port in 1..65_535 <- JSON.decode(data),
+         when is_binary(text) and port in 1..65_535 <- Helyx.JSON.decode(data),
          {:ok, ip} <- :inet.parse_address(String.to_charlist(text)) do
       {:ok, ip, port, token(json["token"])}
     else
