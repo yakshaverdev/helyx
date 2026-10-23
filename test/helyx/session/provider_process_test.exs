@@ -575,7 +575,11 @@ defmodule Helyx.Session.ProviderProcessTest do
           {"bad_system", :model_context},
           {"bad_messages", :compaction},
           {"nil_compact", :compaction},
-          {"bad_compact", :compaction}
+          {"bad_compact", :compaction},
+          {"improper_build", :model_context},
+          {"improper_tools_build", :model_context},
+          {"improper_compact", :compaction},
+          {"improper_tools_compact", :compaction}
         ] do
       test "#{text} fails the turn and keeps the provider process", %{core: core} do
         {session, _pid, _hands} = start(core, "echo")
@@ -1594,11 +1598,15 @@ defmodule Helyx.Session.ProviderProcessTest do
           {"forged_build", :model_context},
           {"bad_system", :model_context},
           {"bad_messages_build", :model_context},
+          {"improper_build", :model_context},
+          {"improper_tools_build", :model_context},
           {"nil_compact", :compaction},
           {"bad_compact", :compaction},
           {"forged_compact", :compaction},
           {"bad_system_compact", :compaction},
-          {"bad_messages", :compaction}
+          {"bad_messages", :compaction},
+          {"improper_compact", :compaction},
+          {"improper_tools_compact", :compaction}
         ] do
       test "#{prompt} fails a #{mode} turn, and the next turn succeeds", %{core: core} do
         {:ok, session} = Session.start(core, model: unquote(model))

@@ -31,7 +31,7 @@ No hard violations. Judgement call, fixed: a comment in `server.ex` was reflowed
 
 ### Failure path
 
-No reproduced findings. Probes: a struct with an extra key and `tools: nil` are rejected; `system: ""` passes; a throw and an exit in `build/2` give `{:task_exit, _}`, and the next turn succeeds. `system` that is not valid UTF-8 and an improper list pass the check. On a local turn the stream check or the provider stops them, and the session stays. These are in the accepted holes. Not reached: a real provider with invalid UTF-8 in `system`, and a Compaction plugin that raises on a local turn.
+No reproduced findings. Probes: a struct with an extra key and `tools: nil` are rejected; `system: ""` passes; a throw and an exit in `build/2` give `{:task_exit, _}`, and the next turn succeeds. `system` that is not valid UTF-8 and an improper list pass the check. On a local turn the stream check or the provider stops them, and the session stays. These are in the accepted holes. Update, #837: this was wrong for the improper list. The session appends to the messages before the provider sees them, the append raises `badarg`, and the session crashes. The context check now rejects an improper `messages` or `tools` list with `{:bad_context, plugin}`. Not reached: a real provider with invalid UTF-8 in `system`, and a Compaction plugin that raises on a local turn.
 
 ### Codex
 
