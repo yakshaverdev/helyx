@@ -439,11 +439,11 @@ defmodule Helyx.Provider.ClaudeCode do
        do: emit(%{state | meter: Meter.line(meter, line)}, {Turn.assistant(blocks), turn})
 
   defp translate(
-         %{"type" => "user", "message" => %{"content" => blocks}} = line,
-         %State{turn: turn, meter: meter} = state
+         %{"type" => "user", "message" => %{"content" => blocks}},
+         %State{turn: turn} = state
        )
        when is_list(blocks),
-       do: emit(%{state | meter: Meter.line(meter, line)}, {Turn.results(blocks), turn})
+       do: emit(state, {Turn.results(blocks), turn})
 
   defp translate(_object, state), do: {[], state}
 
