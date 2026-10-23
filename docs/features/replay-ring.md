@@ -44,7 +44,7 @@ Decisions:
 2. **The subscriber entry** `pid => monitor` becomes `pid => {monitor, ref, acked}`. The `:DOWN` clause of the session matches the monitor in the tuple. S2 and S4 keep their rules.
 3. **Reconnect with a new snapshot** (ADR 0006 §3). A client that has `after` gets the events from the ring; a snapshot comes only when the ring cannot serve them. A subscribe without `after` is unchanged.
 4. **Tests.** The tests of `Helyx.Session.subscribe/2` keep their properties: they receive fewer than 16,384 events, so they need no ack. `Helyx.Test.LateClient` acks, as a model client.
-5. Users see no change while their client reads its events. A client in the node that stops reading for 16,384 events loses its subscription: the TUI exits with "the client fell behind the session events", and print mode fails with the same text.
+5. Users see no change while their client reads its events. A client in the node that stops reading for 16,384 events loses its subscription: print mode fails with "the client fell behind the session events". The TUI is a client of the wire from #809: the server closes a slow connection with `4408`, and the TUI connects again and subscribes with `after` (`docs/features/tui-attach.md`, decision 11); with no reconnect function, it exits with "the server closed a slow connection".
 
 ## Bounds
 

@@ -13,9 +13,10 @@ defmodule Helyx.TUI.Test.Provider.Other do
 end
 
 defmodule Helyx.TUITest do
-  # The app callbacks, driven directly: mount subscribes the caller, key
-  # events edit and send the composer, session events fold into the view
-  # model. The fold itself is tested in view_model_test.exs.
+  # The app callbacks, driven directly: mount subscribes the caller over
+  # the wire, key events edit and send the composer, session events fold
+  # into the view model. The fold itself is tested in view_model_test.exs.
+  # The wire tests of the TUI are in tui/link_test.exs.
   use ExUnit.Case, async: true
 
   import Helyx.Test.TUIRender
@@ -48,11 +49,35 @@ defmodule Helyx.TUITest do
     mount!(session: session)
   end
 
+  # The TUI uses only the wire (docs/features/tui-attach.md, decision 12):
+  # the mount takes a new connection of the test process to a transport of
+  # the Core of `:session`, so the events come to the test process as
+  # `{:helyx_event, event}`, decoded.
   # No terminal: the default size function forks and can block in a test (#730).
   defp mount!(opts) do
+    opts = Keyword.update!(opts, :session, &Helyx.Test.TUIWire.link/1)
     {:ok, state} = TUI.mount(opts ++ [terminal_size_fn: fn -> {:error, :no_tty} end])
     branch_reply(state)
   end
+
+  # The session in Core that the TUI shows: a call of `Helyx.Session` on it
+  # does not go through the connection of the TUI.
+  defp core_session(state, core), do: %Session{id: state.session.id, core: core}
+
+  # The snapshot of the session in Core from another process, so the test
+  # process gets none of its events. Core makes it after each call that
+  # came before, and a request of the TUI is such a call: it ends when
+  # Core answered it.
+  defp snapshot(state, core) do
+    task = Task.async(fn -> Helyx.Test.Events.snapshot(core_session(state, core)) end)
+    Task.await(task, Helyx.Test.Events.wait_ms())
+  end
+
+  # No event is new in Core since `seq`, by default the seq of the fold. An
+  # event goes through the wire after Core makes it, so `refute_received`
+  # alone cannot show that none was made.
+  defp assert_no_event(state, core, seq \\ nil),
+    do: assert(snapshot(state, core).seq == (seq || state.vm.seq))
 
   # The reply of the branch task, applied as the TUI process gets it. A
   # test waits for it after a mount or a turn_end: the task is linked to
@@ -104,7 +129,7 @@ defmodule Helyx.TUITest do
     assert_receive {:helyx_event,
                     %Event{type: :message_end, data: %{message: %{role: :assistant}}}}
 
-    for n <- 1..32, do: :ok = Session.steer(state.session, "s#{n}")
+    for n <- 1..32, do: :ok = Session.steer(core_session(state, core), "s#{n}")
 
     state = state |> press("x") |> press("enter")
     assert ExRatatui.textarea_get_value(state.composer.input) == "x"
@@ -128,7 +153,7 @@ defmodule Helyx.TUITest do
     assert state.vm.reason == "not sent: the queue is full"
 
     # The follow-up queue has its own cap.
-    for n <- 1..32, do: :ok = Session.follow_up(state.session, "f#{n}")
+    for n <- 1..32, do: :ok = Session.follow_up(core_session(state, core), "f#{n}")
     state = state |> press("left") |> press("enter", ["alt"])
     assert state.vm.reason == "not sent: the queue is full"
 
@@ -150,6 +175,7 @@ defmodule Helyx.TUITest do
     end
 
     refute_received {:helyx_event, _}
+    assert_no_event(state, core)
   end
 
   test "a paste and a modified key clear the reason", %{core: core} do
@@ -206,6 +232,7 @@ defmodule Helyx.TUITest do
 
     state = press(state, "enter")
     refute_received {:helyx_event, _}
+    assert_no_event(state, core)
 
     state = state |> press("g") |> press("o") |> press("enter", ["alt"])
     state = drain(state)
@@ -216,15 +243,17 @@ defmodule Helyx.TUITest do
 
   test "escape aborts without blocking the caller", %{core: core} do
     state = mounted(core, "quiet", [])
-    pid = Session.pid(state.session)
+    pid = Session.pid(core_session(state, core))
     :erlang.trace(pid, true, [:receive])
     {:noreply, _state} = TUI.handle_event(%Key{code: "esc", kind: "press"}, state)
 
-    # The TUI's Task sends the abort. A later call returns after the session
+    # The TUI's Task sends the abort over the wire, and a worker of the
+    # server calls the session. A later call returns after the session
     # handled it, and the session sends its events before its reply.
     assert_receive {:trace, ^pid, :receive, {:"$gen_call", _from, :abort}}
     :sys.get_state(pid)
     refute_received {:helyx_event, %Event{type: :turn_end}}
+    assert_no_event(state, core)
   end
 
   describe "ctrl+c" do
@@ -331,7 +360,9 @@ defmodule Helyx.TUITest do
       call = %Message.ToolCall{id: "c", name: "slow", arguments: %{"ms" => 60_000, "text" => "x"}}
       :ok = Fake.script(core, "runtime", [[call], ["done"]])
       {:ok, session} = Session.start(core, model: "fake/runtime")
-      tui = start_supervised!({TUI, session: session, test_mode: {120, 10}})
+      # The TUI process takes the connection that the test process opened.
+      link = Helyx.Test.TUIWire.link(session)
+      tui = start_supervised!({TUI, session: link, test_mode: {120, 10}})
       assert ExRatatui.Runtime.snapshot(tui).subscription_count == 0
 
       :erlang.trace(tui, true, [:receive, :call])
@@ -390,7 +421,8 @@ defmodule Helyx.TUITest do
         context: nil
       }
 
-      # A session process that answers the subscribe with this snapshot.
+      # A session process that answers the subscribe with this snapshot. The
+      # wire subscribes with the default tail of 200 messages.
       test = self()
 
       spawn_link(fn ->
@@ -398,7 +430,7 @@ defmodule Helyx.TUITest do
         send(test, :registered)
 
         receive do
-          {:"$gen_call", from, {:until, _, {:subscribe, _, _ref, {nil, nil, true}}}} ->
+          {:"$gen_call", from, {:until, _, {:subscribe, _, _ref, {200, nil, true}}}} ->
             GenServer.reply(from, snapshot)
         end
 
@@ -415,6 +447,8 @@ defmodule Helyx.TUITest do
     end
   end
 
+  # The end signal is the `session_end` of the subscription on the wire
+  # (`{:helyx_end, sub, reason}`); the link_test.exs covers `:stopped`.
   test "the TUI exits on the end signal of its session, and only then", %{core: core} do
     state = mounted(core, "gone", [])
 
@@ -424,24 +458,49 @@ defmodule Helyx.TUITest do
     assert_receive {:DOWN, _ref, :process, _pid, :normal} = other
     assert {:noreply, ^state} = TUI.handle_info(other, state)
 
-    # The end signal of another session does nothing.
-    other = {:DOWN, make_ref(), :process, self(), :killed}
+    # The end signal of another subscription does nothing.
+    other = {:helyx_end, state.session_ref <> "x", :crashed}
     assert {:noreply, ^state} = TUI.handle_info(other, state)
 
-    Process.exit(Session.pid(state.session), :kill)
-    ref = state.session_ref
-    assert_receive {:DOWN, ^ref, :process, _pid, :killed} = signal
+    Process.exit(Session.pid(core_session(state, core)), :kill)
+    sub = state.session_ref
+    assert_receive {:helyx_end, ^sub, :crashed} = signal
     assert catch_exit(TUI.handle_info(signal, state)) == {:session_down, :crashed}
   end
 
-  # docs/features/replay-ring.md: the slow end of the subscription ends the
-  # TUI; the slow end of another subscription does nothing.
-  test "the TUI exits on the slow end of its subscription", %{core: core} do
-    state = mounted(core, "slow", [])
-    assert {:noreply, ^state} = TUI.handle_info({:helyx_end, make_ref(), :slow}, state)
+  # The server side of the client `socket`: its process holds the
+  # connection of the server.
+  defp server_of(socket) do
+    {:ok, {_ip, mine}} = :inet.sockname(socket)
 
-    assert catch_exit(TUI.handle_info({:helyx_end, state.session_ref, :slow}, state)) ==
-             {:session_down, :slow}
+    [server] =
+      for port <- Port.list(),
+          Port.info(port, :name) == {:name, ~c"tcp_inet"},
+          :inet.peername(port) == {:ok, {{127, 0, 0, 1}, mine}},
+          {:connected, pid} = Port.info(port, :connected),
+          do: pid
+
+    server
+  end
+
+  # docs/features/wire-protocol.md, "Close codes": a slow client, past its
+  # credits or its outbound queue, gets a close with 4408 from the server,
+  # which ends its connection; the TUI ends with it. The `:DOWN` of
+  # another process does nothing. The link_test.exs closes a real slow
+  # client.
+  test "the TUI exits on the slow close of its connection, and only then", %{core: core} do
+    state = mounted(core, "slow", [])
+    conn = state.session.conn
+    reason = {:shutdown, {:closed, 4408}}
+
+    other = {:DOWN, make_ref(), :process, self(), reason}
+    assert {:noreply, ^state} = TUI.handle_info(other, state)
+
+    # The close that the server sends when its outbound queue is full.
+    send(server_of(:sys.get_state(conn).socket), {:close, 4408})
+    assert_receive {:DOWN, _ref, :process, ^conn, ^reason} = down
+    assert catch_exit(TUI.handle_info(down, state)) == {:connection_down, reason}
+    assert Helyx.TUI.Link.down_text(reason) == "the server closed a slow connection"
   end
 
   # Runs in the TUI process at the end of init, before the ack: waits until
@@ -457,12 +516,14 @@ defmodule Helyx.TUITest do
   @tag :capture_log
   test "run/1 gives the reason of a crash that comes before its monitor", %{core: core} do
     {:ok, session} = Session.start(core, model: "fake/early")
+    # The test process opens the connection, which the TUI takes.
+    link = Helyx.Test.TUIWire.link(session)
     test = self()
 
     caller =
       spawn(fn ->
         receive do: (:go -> :ok)
-        send(test, {:run, TUI.run(session: session, test_mode: {120, 10}, name: nil)})
+        send(test, {:run, TUI.run(session: link, test_mode: {120, 10}, name: nil)})
       end)
 
     handler = {__MODULE__, caller}
@@ -551,17 +612,20 @@ defmodule Helyx.TUITest do
     # The Registry drops the dead entry later, but a lookup by name skips a
     # dead pid.
     assert Session.pid(session) == nil
-    monitors = Process.info(self(), :monitors)
+    link = Helyx.Test.TUIWire.link(session)
+    {:monitors, monitors} = Process.info(self(), :monitors)
 
-    assert catch_exit(TUI.mount(session: session)) ==
-             {:session_down, :session_not_found}
+    assert catch_exit(TUI.mount(session: link)) == {:session_down, :session_not_found}
 
-    assert Process.info(self(), :monitors) == monitors
+    # The mount took the connection, so its monitor is the one that the
+    # mount leaves; it holds no other, such as one of the session.
+    {:monitors, after_mount} = Process.info(self(), :monitors)
+    assert after_mount -- monitors == [process: link.conn]
   end
 
   test "a send and a model switch to an ended session keep the composer", %{core: core} do
     state = mounted(core, "ended", [])
-    :ok = GenServer.stop(Session.pid(state.session))
+    :ok = GenServer.stop(Session.pid(core_session(state, core)))
 
     state = state |> press("x") |> press("enter")
     assert ExRatatui.textarea_get_value(state.composer.input) == "x"
@@ -607,7 +671,11 @@ defmodule Helyx.TUITest do
     {:ok, session} = Session.start(core, model: "fake/branch")
 
     {:ok, state} =
-      TUI.mount(session: session, cwd: dir, terminal_size_fn: fn -> {:error, :no_tty} end)
+      TUI.mount(
+        session: Helyx.Test.TUIWire.link(session),
+        cwd: dir,
+        terminal_size_fn: fn -> {:error, :no_tty} end
+      )
 
     refute state.location =~ "("
     state = branch_reply(state)
@@ -1377,7 +1445,7 @@ defmodule Helyx.TUITest do
       assert ExRatatui.textarea_get_value(state.composer.input) == ""
       assert status_text(state) =~ "other/any"
       assert List.last(ViewModel.cells(state.vm)) == {:infos, ["model: other/any"]}
-      assert Helyx.Test.Events.snapshot(state.session).model == "other/any"
+      assert snapshot(state, core).model == "other/any"
 
       state = state |> submit("hi") |> drain()
       assert last_answer(state) == "from other"
@@ -1409,10 +1477,11 @@ defmodule Helyx.TUITest do
         assert byte_size(shown) < 80
         assert ExRatatui.textarea_get_value(state.composer.input) == text
         assert status_text(state) =~ "fake/stay"
-        assert Helyx.Test.Events.snapshot(state.session).model == "fake/stay"
+        assert snapshot(state, core).model == "fake/stay"
       end
 
       refute_received {:helyx_event, _}
+      assert_no_event(state, core)
     end
 
     test "a line that starts with /model but has no separator shows usage and is never sent",
@@ -1427,6 +1496,7 @@ defmodule Helyx.TUITest do
       end
 
       refute_received {:helyx_event, _}
+      assert_no_event(state, core)
 
       # A slash elsewhere, or another first word, is a message.
       ExRatatui.textarea_set_value(state.composer.input, "")
@@ -1460,8 +1530,9 @@ defmodule Helyx.TUITest do
       assert {:notice, "unknown provider: nope"} = List.last(ViewModel.cells(state.vm))
       assert ExRatatui.textarea_get_value(state.composer.input) == "/model nope/x"
       refute_received {:helyx_event, %Event{type: :queue_update}}
+      assert %{steers: 0, follow_ups: 0} = snapshot(state, core).queue
 
-      :ok = Session.abort(state.session)
+      :ok = Session.abort(core_session(state, core))
     end
 
     test "the rule is on bytes: a line that only looks like the command is a message", %{
@@ -1484,7 +1555,7 @@ defmodule Helyx.TUITest do
         ExRatatui.textarea_set_value(state.composer.input, "")
         state = state |> submit(text) |> drain()
         assert last_answer(state) == "ok"
-        assert Helyx.Test.Events.snapshot(state.session).model == "fake/looks"
+        assert snapshot(state, core).model == "fake/looks"
       end
     end
 
@@ -1493,7 +1564,7 @@ defmodule Helyx.TUITest do
       state = mounted(core, "bom", [])
 
       for text <- ["/model\u200Bother/any", "\u2003 /model\u180E other/any"] do
-        :ok = Session.set_model(state.session, "fake/bom")
+        :ok = Session.set_model(core_session(state, core), "fake/bom")
         assert_receive {:helyx_event, %Event{type: :model_change}}
         ExRatatui.textarea_set_value(state.composer.input, "")
         submit(state, text)
@@ -1503,6 +1574,8 @@ defmodule Helyx.TUITest do
 
       # Inside the ref, or after it, such a character is the ref's problem:
       # it is not trimmed, so the ref is rejected, and nothing is sent.
+      seq = snapshot(state, core).seq
+
       for text <- ["/model fake/a\u200Bb", "/model fake/ab\u200B"] do
         ExRatatui.textarea_set_value(state.composer.input, "")
         state = submit(state, text)
@@ -1511,6 +1584,7 @@ defmodule Helyx.TUITest do
       end
 
       refute_received {:helyx_event, _}
+      assert_no_event(state, core, seq)
     end
   end
 
@@ -1537,6 +1611,7 @@ defmodule Helyx.TUITest do
       assert {:notice, "not sent: over 4 MiB"} = List.last(ViewModel.cells(state.vm))
       assert ExRatatui.textarea_get_value(state.composer.input) == text
       refute_received {:helyx_event, _}
+      assert_no_event(state, core)
     end
 
     test "with no separator shows usage and is never sent", %{core: core} do
@@ -1545,6 +1620,7 @@ defmodule Helyx.TUITest do
       assert {:notice, "usage: /compact [instructions]"} = List.last(ViewModel.cells(state.vm))
       assert ExRatatui.textarea_get_value(state.composer.input) == "/compactly"
       refute_received {:helyx_event, _}
+      assert_no_event(state, core)
     end
   end
 
@@ -1565,6 +1641,7 @@ defmodule Helyx.TUITest do
           do: assert(help =~ key)
 
       refute_received {:helyx_event, _}
+      assert_no_event(state, core)
     end
 
     test "with an argument, or no separator, shows its usage", %{core: core} do
@@ -1573,6 +1650,7 @@ defmodule Helyx.TUITest do
         state = submit(mounted(core, "help_usage_#{i}", []), text)
         assert {:notice, "usage: /help"} = List.last(ViewModel.cells(state.vm))
         assert ExRatatui.textarea_get_value(state.composer.input) == text
+        assert_no_event(state, core)
       end
 
       refute_received {:helyx_event, _}

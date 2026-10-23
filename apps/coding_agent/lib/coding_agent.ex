@@ -1,9 +1,9 @@
 defmodule CodingAgent do
   @moduledoc """
-  The terminal coding agent: Core with the bundled plugins, one session, and
-  the TUI, or the TUI over the wire on the server of the data folder
-  (`attach/2`). Started by `CodingAgent.CLI`, from the `helyx` release or
-  `mix helyx`.
+  The terminal coding agent: the TUI over the wire on the server of the
+  data folder (`attach/2`), or print mode in the node, with Core, the
+  bundled plugins, and one session (`run/1`). Started by `CodingAgent.CLI`,
+  from the `helyx` release or `mix helyx`.
   """
 
   alias Helyx.Session.File.Scan
@@ -38,39 +38,41 @@ defmodule CodingAgent do
   def plugins, do: @plugins
 
   @doc """
-  Starts Core and a session, then runs the TUI until the user quits. With
-  `:prompt`, print mode (`CodingAgent.Print.run/2`) runs that one prompt in
-  place of the TUI, and its exit status is the result. The
-  session is written under `:sessions_dir`, which is required. With
-  `resume: true` the most recent session for `:cwd` that has a message is
-  resumed, and with `resume: id` the session with that id, whose header must
-  name `:cwd`. With `resume: id` and no `:cwd`, the session runs in the
-  folder of its header, which must be an absolute path to a directory; the
-  resume finds the id after the tool checks
+  Starts Core and a session in the node, then runs print mode
+  (`CodingAgent.Print.run/2`) on the prompt `:prompt`, which is required,
+  and its exit status is the result; the TUI runs only over the wire
+  (`attach/2`). The session is written under `:sessions_dir`, which is
+  required. With `resume: true` the most recent session for `:cwd` that has
+  a message is resumed, and with `resume: id` the session with that id,
+  whose header must name `:cwd`. With `resume: id` and no `:cwd`, the
+  session runs in the folder of its header, which must be an absolute path
+  to a directory; the resume finds the id after the tool checks
   (`docs/features/server-management.md`, "Order of the checks"). A resumed
   session keeps its saved model. Returns `{:error, reason}` when the model
   ref, the plugin list, the resume, or the folder of the header is rejected.
   Core stops before `run/1` returns or raises.
   """
-  @spec run(keyword()) :: :ok | CodingAgent.Print.status() | {:error, term()}
+  @spec run(keyword()) :: CodingAgent.Print.status() | {:error, term()}
   def run(opts) do
+    prompt = Keyword.fetch!(opts, :prompt)
+
     with {:ok, core} <- Helyx.Core.start_link(plugins: @plugins) do
       try do
-        run_session(opts)
+        run_session(prompt, opts)
       after
         :ok = Supervisor.stop(core)
       end
     end
   end
 
-  defp run_session(opts) do
+  defp run_session(prompt, opts) do
     with {:ok, session} <- start_session(opts) do
       try do
         with {:ok, cwd} <- session_cwd(session, opts[:cwd]),
-             do: client(session, Keyword.put(opts, :cwd, cwd))
+             do: CodingAgent.Print.run(session, CodingAgent.Print.skills(prompt, cwd))
       after
-        # The abort comes before Core stops, so a turn that the quit or a
-        # failed TUI left open ends and the hands release its resources. A
+        # The abort comes before Core stops, so a turn that a signal or a
+        # failed print left open ends and the hands release its resources. A
         # session that died returns `{:error, :session_not_found}`.
         _ = Helyx.Session.abort(session)
       end
@@ -116,9 +118,16 @@ defmodule CodingAgent do
 
     try do
       with {:ok, id, cwd, resumed} <- open_remote(conn, opts) do
-        reconnect = reconnect(Keyword.fetch!(opts, :sessions_dir))
-        opts = Keyword.merge(opts, cwd: cwd, resume: resumed, reconnect: reconnect)
-        client(%Link{conn: conn, id: id}, opts)
+        dir = Keyword.fetch!(opts, :sessions_dir)
+
+        log_to_file(Path.join(dir, "tui.log"), fn ->
+          Helyx.TUI.run(
+            session: %Link{conn: conn, id: id},
+            resumed: resumed,
+            cwd: cwd,
+            reconnect: reconnect(dir)
+          )
+        end)
       end
     after
       # The connection ended with the TUI that took it; one that no TUI
@@ -182,25 +191,6 @@ defmodule CodingAgent do
       {:error, :not_found} -> start_or_resume(conn, false, opts)
       {:error, {_code, _text} = reason} -> {:error, {:reattach, reason}}
       result -> result
-    end
-  end
-
-  defp client(session, opts) do
-    case Keyword.fetch(opts, :prompt) do
-      {:ok, prompt} ->
-        prompt = CodingAgent.Print.skills(prompt, Keyword.fetch!(opts, :cwd))
-        CodingAgent.Print.run(session, prompt)
-
-      :error ->
-        log_to_file(Path.join(Keyword.fetch!(opts, :sessions_dir), "tui.log"), fn ->
-          Helyx.TUI.run(
-            session: session,
-            resumed: Keyword.get(opts, :resume, false) != false,
-            cwd: Keyword.fetch!(opts, :cwd),
-            sessions_dir: Keyword.fetch!(opts, :sessions_dir),
-            reconnect: opts[:reconnect]
-          )
-        end)
     end
   end
 
@@ -344,7 +334,7 @@ defmodule CodingAgent do
 
   @doc """
   Starts or resumes the session `run/1` uses. Public so tests can drive the
-  wiring without the terminal. `:core` defaults to `Helyx.Core`.
+  wiring on a Core of their own. `:core` defaults to `Helyx.Core`.
   """
   @spec start_session(keyword()) :: {:ok, Helyx.Session.t()} | {:error, term()}
   def start_session(opts) do

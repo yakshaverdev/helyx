@@ -1,9 +1,9 @@
 defmodule CodingAgent.Attach do
   @moduledoc """
   The client side of `helyx serve`: finds the server of a data folder by its
-  server file and its lock, or starts one with the launcher, and connects
-  to it over the wire (`Helyx.TUI.Wire`). The rules are in
-  `docs/features/tui-attach.md`.
+  server file and its lock, or waits for one that the launcher or this VM
+  starts, and connects to it over the wire (`Helyx.TUI.Wire`). The rules
+  are in `docs/features/tui-attach.md`.
   """
 
   import Bitwise
@@ -52,6 +52,48 @@ defmodule CodingAgent.Attach do
     with :ok <- Serve.mkdir(dir),
          :ok <- spawn_server(launcher, log),
          do: attempt(dir, deadline(), {:starting, "the server did not start; see #{log}"})
+  end
+
+  @doc """
+  Starts `helyx serve` for the data folder `dir` in this VM, with the
+  default model `model` and a port of the loopback that the OS picks
+  (`CodingAgent.Serve.start/2`), when no launcher is set, as for `mix
+  helyx` (`docs/features/tui-attach.md`, decision 12). It connects to it
+  as `start/2` does, then calls `fun` with `{:ok, socket}` or `{:error,
+  text}`, and stops the server when `fun` returns: `fun` runs the TUI. A
+  server that ends before the attach gives `could not start a server:
+  <its line>` at the next attempt. Neither its line of the address nor
+  its log goes to the terminal, which the TUI owns: the log of the VM
+  goes to `<dir>/tui.log` until the server stops. Returns the result of
+  `fun`.
+  """
+  @spec serve(Path.t(), String.t(), ({:ok, :gen_tcp.socket()} | {:error, String.t()} -> result)) ::
+          result
+        when result: term()
+  def serve(dir, model, fun) do
+    # The data folder comes first: the lock test of the wait needs it.
+    case Serve.mkdir(dir) do
+      # One VM has one set of log handlers, so the log of the server goes
+      # to the file of the TUI (decision 9), and a failed start prints one
+      # line.
+      :ok ->
+        CodingAgent.log_to_file(Path.join(dir, "tui.log"), fn -> run_server(dir, model, fun) end)
+
+      error ->
+        fun.(error)
+    end
+  end
+
+  defp run_server(dir, model, fun) do
+    {:ok, output} = StringIO.open("")
+    server = Serve.start([sessions_dir: dir, model: model, ip: {127, 0, 0, 1}, port: 0], output)
+
+    try do
+      fun.(attempt(dir, deadline(), {:serving, server}))
+    after
+      Serve.stop(server)
+      StringIO.close(output)
+    end
   end
 
   defp deadline, do: System.monotonic_time(:millisecond) + Serve.wait_ms()
@@ -112,15 +154,31 @@ defmodule CodingAgent.Attach do
   end
 
   # `free` is the answer to a free lock: `:none`, or for a server that the
-  # client started `{:starting, reason}`, an attempt again.
+  # client started `{:starting, reason}`, an attempt again, and for the
+  # server of this VM `{:serving, task}`, an attempt again while it runs.
   defp attempt(dir, deadline, free) do
     case {test_lock(dir), free} do
       {true, _free} -> read(dir, deadline, free)
       {false, :none} -> :none
       {false, {:starting, text}} -> again(dir, deadline, free, text)
+      {false, {:serving, task}} -> serving(dir, deadline, free, Task.yield(task, 0))
       {error, _free} -> error
     end
   end
+
+  # The server of this VM gives its line when it ended: no server comes.
+  defp serving(dir, deadline, free, nil),
+    do: again(dir, deadline, free, "the server did not start")
+
+  defp serving(_dir, _deadline, _free, {:ok, {:error, text}}),
+    do: {:error, "could not start a server: " <> text}
+
+  # The stop of the VM, or of the supervisor, ends a server with `:ok`.
+  defp serving(_dir, _deadline, _free, {:ok, :ok}),
+    do: {:error, "could not start a server: the server stopped"}
+
+  defp serving(_dir, _deadline, _free, {:exit, reason}),
+    do: {:error, "could not start a server: " <> Helyx.Reason.text(reason)}
 
   defp read(dir, deadline, free) do
     case Serve.read_file(dir) do

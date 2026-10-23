@@ -1,7 +1,7 @@
 defmodule Helyx.TUI.Test.Tool.Raises do
   @moduledoc false
   # A tool whose check raises once a test sets the flag, so the open of a
-  # session in a switch Task crashes. Only one test registers it.
+  # session on the server fails. Only one test registers it.
   @behaviour Helyx.Tool
 
   def flag, do: {__MODULE__, :raise}
@@ -35,12 +35,23 @@ defmodule Helyx.TUI.SwitchTest do
 
   setup %{tmp_dir: dir} do
     core = :"switch_core_#{System.unique_integer([:positive])}"
-    start_supervised!({Helyx.Core, name: core, plugins: [Fake, Helyx.TUI.Test.Tool.Slow]})
-    %{core: core, dir: dir, opts: [sessions_dir: Path.join(dir, "sessions"), cwd: dir]}
+    sessions = Path.join(dir, "sessions")
+
+    core_opts = [
+      name: core,
+      plugins: [Fake, Helyx.TUI.Test.Tool.Slow],
+      sessions_dir: sessions,
+      model: "fake/echo"
+    ]
+
+    start_supervised!({Helyx.Core, core_opts})
+    %{core: core, dir: dir, sessions: sessions, opts: [cwd: dir]}
   end
 
+  # The server saves in the `sessions_dir` of its Core, so the TUI has no
+  # option for it (docs/features/tui-attach.md, decision 12).
   defp start(core, opts, model \\ "fake/echo"),
-    do: Session.start(core, [model: model] ++ Keyword.take(opts, [:sessions_dir, :cwd]))
+    do: Helyx.Sessions.start(core, model: model, cwd: opts[:cwd])
 
   # A session with one prompt and its answer. With `stop?` its process
   # ends, so its lock is free for a resume.
@@ -59,9 +70,17 @@ defmodule Helyx.TUI.SwitchTest do
   end
 
   # No terminal: the default size function forks and can block in a test (#730).
+  # The TUI mounts on a link of the session over the wire.
   defp mount!(session, opts) do
-    opts = [session: session] ++ opts ++ [terminal_size_fn: fn -> {:error, :no_tty} end]
-    {:ok, %{branch_ref: ref} = state} = TUI.mount(opts)
+    link = Helyx.Test.TUIWire.link(session)
+    opts = [session: link] ++ opts ++ [terminal_size_fn: fn -> {:error, :no_tty} end]
+    {:ok, state} = TUI.mount(opts)
+    branch_reply(state)
+  end
+
+  # The reply of the branch task after a mount or a turn_end: a git port
+  # that closes while OTP still starts it prints on stderr.
+  defp branch_reply(%{branch_ref: ref} = state) do
     assert_receive {^ref, _branch} = reply
     info(reply, state)
   end
@@ -89,15 +108,31 @@ defmodule Helyx.TUI.SwitchTest do
     info(answer, state)
   end
 
+  # A process in the place of the connection: it answers each request but
+  # that of `start`, which it holds, and tells the test of it.
+  defp hold_start do
+    test = self()
+    spawn_link(fn -> hold_loop(test) end)
+  end
+
+  defp hold_loop(test) do
+    receive do
+      {:"$gen_call", _from, {:request, "start", _params}} -> send(test, :start_held)
+      {:"$gen_call", from, {:request, _op, _params}} -> GenServer.reply(from, :ok)
+    end
+
+    hold_loop(test)
+  end
+
   defp value(state), do: ExRatatui.textarea_get_value(state.composer.input)
 
   # Feeds the messages of the TUI process until the switch ends.
   defp finish(%{switch: nil} = state), do: state
 
-  defp finish(%{switch: %Switch{task: %Task{ref: task}}, session_ref: session} = state) do
+  defp finish(%{switch: %Switch{task: %Task{ref: task}}} = state) do
     receive do
       {:helyx_event, _event} = message -> finish(info(message, state))
-      {:DOWN, ^session, :process, _pid, _reason} = message -> finish(info(message, state))
+      {:helyx_end, _sub, _reason} = message -> finish(info(message, state))
       {^task, _result} = message -> finish(info(message, state))
     after
       5_000 -> flunk("the switch did not end")
@@ -111,18 +146,19 @@ defmodule Helyx.TUI.SwitchTest do
     if match?.(event), do: state, else: until(state, match?)
   end
 
-  test "the commands take no argument", %{core: core, opts: opts} do
+  test "the commands take no argument" do
     assert Command.parse("/new") == {:new, ""}
     assert Command.parse(" /resume ") == {:resume, ""}
     assert Command.parse("/newer") == {:usage, :new}
-    {:ok, session} = start(core, opts)
+    # A usage notice needs no request, so the link has no connection.
+    session = %Helyx.TUI.Link{conn: nil, id: "s"}
     assert Command.parse("/new x") == {:usage, :new}
     assert Command.run(Command.parse("/new x"), session) == {:notice, "usage: /new"}
     assert Command.run(Command.parse("/resume x"), session) == {:notice, "usage: /resume"}
   end
 
   test "/new ends the session and starts one in the folder with the current model",
-       %{core: core, dir: dir, opts: opts} do
+       %{core: core, dir: dir, sessions: sessions, opts: opts} do
     {:ok, old} = start(core, opts)
     old_pid = Session.pid(old)
     state = mount!(old, opts)
@@ -149,7 +185,7 @@ defmodule Helyx.TUI.SwitchTest do
     assert state.session.id != old.id
     assert state.vm.model == "fake/other"
     assert ViewModel.cells(state.vm) == [{:infos, ["new session"]}]
-    assert File.exists?(Helyx.Session.File.path(opts[:sessions_dir], dir, state.session.id))
+    assert File.exists?(Helyx.Session.File.path(sessions, dir, state.session.id))
 
     # An event of the old instance that is still in the mailbox goes.
     event = %Event{
@@ -165,7 +201,7 @@ defmodule Helyx.TUI.SwitchTest do
   end
 
   test "/new during a turn saves the aborted turn, keeps the draft, and drops the queue",
-       %{core: core, dir: dir, opts: opts} do
+       %{core: core, dir: dir, sessions: sessions, opts: opts} do
     call = %Message.ToolCall{id: "c", name: "slow", arguments: %{"ms" => 60_000, "text" => "x"}}
     :ok = Fake.script(core, "busy", [[call], ["done"]])
     {:ok, old} = start(core, opts, "fake/busy")
@@ -184,7 +220,7 @@ defmodule Helyx.TUI.SwitchTest do
     state = finish(state)
 
     assert value(state) == "draft"
-    path = Helyx.Session.File.path(opts[:sessions_dir], dir, old.id)
+    path = Helyx.Session.File.path(sessions, dir, old.id)
     assert File.read!(path) =~ ~s("aborted")
   end
 
@@ -194,6 +230,7 @@ defmodule Helyx.TUI.SwitchTest do
     :ok = Fake.script(core, "busy", [[call], ["done"]])
     {:ok, current} = start(core, opts, "fake/busy")
     state = mount!(current, opts) |> type("draft")
+    link = state.session
     :ok = Session.prompt(current, "go")
 
     state =
@@ -209,11 +246,14 @@ defmodule Helyx.TUI.SwitchTest do
     assert value(state) == "draft"
     state = Switch.done(state, {:error, :not_found})
 
-    assert state.session == current
+    assert state.session == link
     assert value(state) == "queued\ndraft"
   end
 
-  test "a queue of a dead session that waits before its end signal comes back",
+  # Over the wire the answer of the switch Task and the `session_end` come
+  # from two processes, and the TUI does not wait for the second: the
+  # accepted hole of docs/features/tui-attach.md.
+  test "the failed answer before the end of the session: its queue comes back, and the end ends the TUI",
        %{core: core, opts: opts} do
     call = %Message.ToolCall{id: "c", name: "slow", arguments: %{"ms" => 60_000, "text" => "x"}}
     :ok = Fake.script(core, "busy", [[call], ["done"]])
@@ -229,16 +269,19 @@ defmodule Helyx.TUI.SwitchTest do
     Task.await(task)
     state = %{state | switch: %Switch{task: task, target: {:resume, "AAAAAAAAAAAA"}}}
 
-    # The `queue_dropped` of the abort and the `:DOWN` wait in the mailbox
-    # when the failed answer comes.
-    :ok = Session.abort(current)
-    :ok = GenServer.stop(Session.pid(current))
+    # The stop aborts the turn. The `queue_dropped` of the abort and the
+    # `session_end` wait in the mailbox when the failed answer comes.
+    sub = state.session_ref
+    :ok = Helyx.Sessions.stop(current)
+    assert_receive {:helyx_end, ^sub, :stopped} = ended, 5_000
     state = info({task.ref, {:error, :not_found}}, state)
 
-    assert %Switch{target: :new} = state.switch
-    # The drained `turn_end` stops the busy timer.
+    # No drain: the switch is over, and the events that wait fold outside it.
+    assert state.switch == nil
+    state = state |> until(&(&1.type == :turn_end)) |> branch_reply()
     assert state.busy == nil
-    assert value(finish(state)) == "queued\ndraft"
+    assert value(state) == "queued\ndraft"
+    assert catch_exit(info(ended, state)) == {:session_down, :stopped}
   end
 
   test "the queue of a session that ended during a failed switch comes back",
@@ -258,7 +301,7 @@ defmodule Helyx.TUI.SwitchTest do
     }
 
     switch = %Switch{task: task, target: {:resume, "AAAAAAAAAAAA"}, dropped: [dropped]}
-    state = info({:DOWN, state.session_ref, :process, self(), :killed}, %{state | switch: switch})
+    state = info({:helyx_end, state.session_ref, :crashed}, %{state | switch: switch})
 
     state = Switch.done(state, {:error, :not_found})
     assert %Switch{target: :new, dropped: []} = state.switch
@@ -266,7 +309,7 @@ defmodule Helyx.TUI.SwitchTest do
   end
 
   test "/resume lists the other sessions, and Enter resumes the selected one",
-       %{core: core, dir: dir, opts: opts} do
+       %{core: core, dir: dir, sessions: sessions, opts: opts} do
     first = saved(core, opts, "first prompt")
     second = saved(core, opts, "second prompt")
     {:ok, current} = start(core, opts)
@@ -274,7 +317,7 @@ defmodule Helyx.TUI.SwitchTest do
     state = current |> mount!(opts) |> command("/resume") |> listed()
 
     expected =
-      for s <- Scan.list(opts[:sessions_dir], dir), s.id != current.id do
+      for s <- Scan.list(sessions, dir), s.id != current.id do
         {s.id, SessionList.line(s, false)}
       end
 
@@ -312,6 +355,7 @@ defmodule Helyx.TUI.SwitchTest do
        %{core: core, opts: opts} do
     {:ok, current} = start(core, opts)
     state = current |> mount!(opts) |> command("/resume") |> listed()
+    link = state.session
     assert state.list.items == []
 
     [_transcript, {%Paragraph{text: "no other session in this folder"}, _rect}, _footer] =
@@ -326,7 +370,7 @@ defmodule Helyx.TUI.SwitchTest do
     state = key(state, "esc")
     assert state.list == nil
     assert state.switch == nil
-    assert state.session == current
+    assert state.session == link
   end
 
   test "while the scan of /resume runs, the list says so and only Escape acts, which stops the scan",
@@ -347,24 +391,27 @@ defmodule Helyx.TUI.SwitchTest do
   end
 
   test "a failed resume shows the error and stays on the current session",
-       %{core: core, opts: opts} do
+       %{core: core, sessions: sessions, opts: opts} do
     # The session runs in another Core, so its lock is held. A resume in
     # the same Core would attach to it (#657).
     other = :"switch_other_#{System.unique_integer([:positive])}"
-    start_supervised!({Helyx.Core, name: other, plugins: [Fake]}, id: other)
+    other_opts = [name: other, plugins: [Fake], sessions_dir: sessions, model: "fake/echo"]
+    start_supervised!({Helyx.Core, other_opts}, id: other)
     open = saved(other, opts, "still open", false)
     {:ok, current} = start(core, opts)
     state = current |> mount!(opts) |> command("/resume") |> listed()
+    link = state.session
     assert [{id, _line}] = state.list.items
     assert id == open.id
 
     state = state |> key("enter") |> finish()
 
-    assert state.session == current
+    assert state.session == link
     assert Process.alive?(Session.pid(current))
 
+    # The server gives one fixed text, with no term of its error.
     assert List.last(ViewModel.cells(state.vm)) ==
-             {:infos, ["could not switch: session #{open.id} is open in another process"]}
+             {:infos, ["could not switch: the server could not open the session"]}
   end
 
   test "when the session ends during a failed switch, a new one takes its place; a failed /new then ends the TUI",
@@ -376,98 +423,90 @@ defmodule Helyx.TUI.SwitchTest do
 
     # The end signal during a switch waits for the result of the switch.
     switch = %Switch{task: task, target: {:resume, "AAAAAAAAAAAA"}}
-    state = info({:DOWN, state.session_ref, :process, self(), :killed}, %{state | switch: switch})
-    assert state.switch.down == {:down, :killed}
+    state = info({:helyx_end, state.session_ref, :crashed}, %{state | switch: switch})
+    assert state.switch.down == {:down, :crashed}
 
     state = Switch.done(state, {:error, :not_found})
-    assert %Switch{target: :new, down: {:down, :killed}} = state.switch
+    assert %Switch{target: :new, down: {:down, :crashed}} = state.switch
     assert {:infos, ["could not switch: " <> _reason]} = List.last(ViewModel.cells(state.vm))
     state = finish(state)
     assert state.session.id != current.id
     assert ViewModel.cells(state.vm) == [{:infos, ["new session"]}]
 
-    failed = %{state | switch: %Switch{task: task, target: :new, down: {:down, :killed}}}
+    failed = %{state | switch: %Switch{task: task, target: :new, down: {:down, :crashed}}}
 
     assert catch_exit(Switch.done(failed, {:error, :invalid_cwd})) ==
              {:session_down, :crashed}
   end
 
-  test "terminate ends a switch and aborts the turn of the current session",
-       %{core: core, opts: opts} do
-    call = %Message.ToolCall{id: "c", name: "slow", arguments: %{"ms" => 60_000, "text" => "x"}}
-    :ok = Fake.script(core, "quit", [[call], ["done"]])
+  # The quit aborts no turn: the session runs on in the server (link_test.exs,
+  # "the quit aborts nothing ...").
+  test "terminate ends a switch that runs", %{core: core, opts: opts} do
     {:ok, idle} = start(core, opts)
     state = idle |> mount!(opts) |> command("/new")
     pid = state.switch.task.pid
     ref = Process.monitor(pid)
     assert TUI.terminate(:normal, state) == :ok
     assert_receive {:DOWN, ^ref, :process, ^pid, _reason}
-
-    # With no switch, the quit aborts the turn of the current session.
-    {:ok, busy} = start(core, opts, "fake/quit")
-    state = mount!(busy, opts)
-    :ok = Session.prompt(busy, "go")
-
-    state =
-      until(state, &match?(%{type: :message_end, data: %{message: %{role: :assistant}}}, &1))
-
-    assert TUI.terminate(:normal, state) == :ok
-    until(state, &match?(%{type: :turn_end, data: %{outcome: :aborted}}, &1))
   end
 
-  test "a crash of the switch Task is a failed switch, and Enter works again", %{opts: opts} do
-    core = :"switch_raise_#{System.unique_integer([:positive])}"
-    plugins = [Fake, Helyx.TUI.Test.Tool.Raises]
-    start_supervised!({Helyx.Core, name: core, plugins: plugins}, id: core)
+  test "a crash of the switch Task is a failed switch, and Enter works again",
+       %{core: core, opts: opts} do
     {:ok, current} = start(core, opts)
     state = mount!(current, opts)
-    :persistent_term.put(Helyx.TUI.Test.Tool.Raises.flag(), true)
-    on_exit(fn -> :persistent_term.erase(Helyx.TUI.Test.Tool.Raises.flag()) end)
+    session = %{state.session | conn: hold_start()}
+    state = %{state | session: session}
 
     # The TUI traps exits, as `ExRatatui.Server` does.
     Process.flag(:trap_exit, true)
-    %{switch: %{task: %Task{ref: ref}}} = state = command(state, "/new")
-    assert_receive {:DOWN, ^ref, :process, _pid, _reason} = down
+    %{switch: %{task: %Task{pid: pid, ref: ref}}} = state = command(state, "/new")
+    assert_receive :start_held
+    Process.exit(pid, :kill)
+    assert_receive {:DOWN, ^ref, :process, ^pid, :killed} = down
     state = info(down, state)
 
     assert state.switch == nil
-    assert state.session == current
+    assert state.session == session
     assert {:infos, ["could not switch: " <> _reason]} = List.last(ViewModel.cells(state.vm))
     assert command(state, "hi").vm.reason == nil
   end
 
-  test "an end signal with a nil reason still counts as ended", %{core: core, opts: opts} do
+  # The server raises at the open: over the wire that is an answer of the
+  # server, not a crash of the Task.
+  test "a server that fails at the open is a failed switch, and Enter works again",
+       %{sessions: sessions, opts: opts} do
+    core = :"switch_raise_#{System.unique_integer([:positive])}"
+    plugins = [Fake, Helyx.TUI.Test.Tool.Raises]
+    core_opts = [name: core, plugins: plugins, sessions_dir: sessions, model: "fake/echo"]
+    start_supervised!({Helyx.Core, core_opts}, id: core)
     {:ok, current} = start(core, opts)
     state = mount!(current, opts)
-    task = Task.async(fn -> :ok end)
-    Task.await(task)
-    switch = %Switch{task: task, target: {:resume, "AAAAAAAAAAAA"}}
-    state = info({:DOWN, state.session_ref, :process, self(), nil}, %{state | switch: switch})
+    link = state.session
+    :persistent_term.put(Helyx.TUI.Test.Tool.Raises.flag(), true)
+    on_exit(fn -> :persistent_term.erase(Helyx.TUI.Test.Tool.Raises.flag()) end)
 
-    assert %Switch{target: :new, down: {:down, nil}} =
-             Switch.done(state, {:error, :not_found}).switch
+    %{switch: %{task: %Task{ref: ref}}} = state = command(state, "/new")
+    assert_receive {^ref, {:error, :failed}} = answer
+    state = info(answer, state)
+
+    assert state.switch == nil
+    assert state.session == link
+
+    assert List.last(ViewModel.cells(state.vm)) ==
+             {:infos, ["could not switch: the server failed"]}
+
+    assert command(state, "hi").vm.reason == nil
   end
 
-  test "a session that died with its end signal still on the way counts as ended",
-       %{core: core, opts: opts} do
-    {:ok, current} = start(core, opts)
-    state = mount!(current, opts)
-    task = Task.async(fn -> :ok end)
-    Task.await(task)
-    :ok = GenServer.stop(Session.pid(current))
-
-    state = %{state | switch: %Switch{task: task, target: {:resume, "AAAAAAAAAAAA"}}}
-    state = Switch.done(state, {:error, :not_found})
-    assert %Switch{target: :new, down: {:down, :normal}} = state.switch
-    assert finish(state).session.id != current.id
-  end
-
-  test "without a sessions directory /new saves nothing and /resume lists nothing",
+  # A server whose Core has no `:sessions_dir`.
+  test "a server with no sessions directory: /new saves nothing and /resume lists nothing",
        %{core: core, opts: opts} do
     _other = saved(core, opts, "saved")
-    {:ok, current} = start(core, opts)
-    opts = Keyword.delete(opts, :sessions_dir)
-    state = current |> mount!(opts) |> command("/resume")
+    bare = :"switch_bare_#{System.unique_integer([:positive])}"
+    bare_opts = [name: bare, plugins: [Fake], model: "fake/echo"]
+    start_supervised!({Helyx.Core, bare_opts}, id: bare)
+    {:ok, current} = start(bare, opts)
+    state = current |> mount!(opts) |> command("/resume") |> listed()
     assert state.list.items == []
     state = state |> key("esc") |> command("/new") |> finish()
 

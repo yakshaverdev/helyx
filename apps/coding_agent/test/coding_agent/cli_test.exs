@@ -202,9 +202,10 @@ defmodule CodingAgent.CLITest do
       {id, file.path}
     end
 
+    # Print mode, which runs in the node (docs/features/tui-attach.md, decision 12).
     defp run_in_node(opts) do
       sessions_dir = Application.fetch_env!(:coding_agent, :sessions_dir)
-      CodingAgent.run(opts ++ [resume: false, sessions_dir: sessions_dir])
+      CodingAgent.run(opts ++ [resume: false, sessions_dir: sessions_dir, prompt: "p"])
     end
 
     defp list(argv) do
@@ -303,11 +304,11 @@ defmodule CodingAgent.CLITest do
       assert Process.whereis(Helyx.Core) == nil
     end
 
-    # The test of the lock of the data folder, before the TUI starts in the
-    # node, needs perl (docs/features/tui-attach.md, decision 1). #765: in
+    # The test of the lock of the data folder needs perl
+    # (docs/features/tui-attach.md, decision 1). #765: in print mode, in
     # the node, the find of the id comes after the tool checks, as for a
     # start. The value of PATH is not shown on a failure.
-    test "with no perl on PATH, helyx prints the lock line, and a start in the node the tool error",
+    test "with no perl on PATH, helyx prints the lock line, and print mode the tool error",
          %{tmp_dir: dir, sessions: s} do
       {id, file} = session(s, dir, 1_000, "p")
       before = File.read!(file)

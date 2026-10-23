@@ -239,8 +239,8 @@ defmodule CodingAgent.AttachTest do
 
   # The TUI needs a terminal, so the run ends at the model of the server,
   # which names no provider, before it.
-  test "helyx starts a server with the launcher of the release; mix helyx, with none, runs in the node",
-       %{tmp_dir: dir, sessions: sessions} do
+  test "helyx starts a server with the launcher of the release; mix helyx, with none, in its own VM",
+       %{tmp_dir: dir, sessions: sessions, server_file: file} do
     System.put_env("HELYX_LAUNCHER", launcher(dir, "none/m"))
     on_exit(fn -> System.delete_env("HELYX_LAUNCHER") end)
 
@@ -248,16 +248,64 @@ defmodule CodingAgent.AttachTest do
     assert File.read!(Path.join(dir, "args")) == "serve\n"
     assert System.get_env("HELYX_LAUNCHER") == nil
 
-    # With no launcher and no server, the TUI runs in the node, which ends
-    # at its model too.
+    # With no launcher and no server, the server runs in this VM until the
+    # run ends, and the TUI attaches to it over the wire: `helyx` reattaches
+    # to the newest session of the folder, which the node never did
+    # (decision 16), and ends at its model. The stop of the server removes
+    # its file.
     :ok = Task.Supervisor.terminate_child(CodingAgent.Servers, Process.whereis(Serve))
     wait_until(fn -> Attach.connect(sessions) == :none end)
     File.rm!(Path.join(dir, "args"))
+    {:ok, saved} = Helyx.Session.File.create(sessions, Helyx.Session.Id.new(), dir, "older/m")
+    Helyx.Test.SessionFile.append_message(saved, Helyx.Message.user("p"))
+
+    assert helyx([dir]) ==
+             "helyx: could not reattach to the newest session (helyx --new starts one): " <>
+               ~s(no provider has the id "older"\n)
 
     assert helyx([dir, "--model", "nope/m"]) ==
              ~s(helyx: could not start the agent: no provider has the id "nope"\n)
 
+    assert Process.whereis(Serve) == nil
+    refute File.exists?(file)
+    assert Attach.connect(sessions) == :none
     refute File.exists?(Path.join(dir, "args"))
+  end
+
+  # A server of this VM that ends before the attach gives its line at once,
+  # not the line of the wait: here the guard of one server in a VM.
+  test "a server of this VM that does not start gives its line",
+       %{tmp_dir: dir, server_file: file} do
+    task =
+      Task.async(fn ->
+        with_io(:stderr, fn -> with_io(fn -> CLI.main(["serve", "--model", "fake/echo"]) end) end)
+      end)
+
+    wait_until(fn -> match?({:ok, "{" <> _}, File.read(file)) end)
+    other = Path.join(dir, "other")
+
+    assert Attach.serve(other, "fake/echo", & &1) ==
+             {:error, "could not start a server: a server runs in this VM already"}
+
+    assert (File.stat!(other).mode &&& 0o777) == 0o700
+    :ok = Task.Supervisor.terminate_child(CodingAgent.Servers, Process.whereis(Serve))
+    assert {{0, _out}, ""} = Task.await(task, 60_000)
+  end
+
+  # The stop of the VM ends the server of this VM with `:ok`. A stop in
+  # the wait of the client is a line too: the client is held while the
+  # server stops, before its first welcome.
+  test "a server of this VM that stops during the wait gives a line", %{sessions: sessions} do
+    client = Task.async(fn -> Attach.serve(sessions, "fake/echo", & &1) end)
+    wait_until(fn -> Process.whereis(Serve) != nil end)
+    :erlang.suspend_process(client.pid)
+    :ok = Task.Supervisor.terminate_child(CodingAgent.Servers, Process.whereis(Serve))
+    true = :erlang.resume_process(client.pid)
+
+    assert Task.await(client) ==
+             {:error, "could not start a server: the server stopped"}
+
+    assert Attach.connect(sessions) == :none
   end
 
   # The open of the log does not wait: a FIFO with no reader would hold
@@ -275,8 +323,10 @@ defmodule CodingAgent.AttachTest do
     refute File.exists?(Path.join(dir, "args"))
   end
 
-  # A server needs perl, as the node does: the line is that of today.
-  test "with no perl on the PATH, helyx gives the line of the node and starts no server",
+  # A server needs perl, as the tools do: the line is the line of the tool
+  # check, which the node gave before #809, and no server starts, in this
+  # VM or by the launcher. The value of PATH is not shown on a failure.
+  test "with no perl on the PATH, helyx gives the line of the tool check and starts no server",
        %{tmp_dir: dir, sessions: sessions} do
     path = System.get_env("PATH")
     on_exit(fn -> System.put_env("PATH", path) end)
@@ -286,12 +336,16 @@ defmodule CodingAgent.AttachTest do
     File.mkdir_p!(empty)
     System.put_env("PATH", empty)
 
-    node = helyx([dir])
+    line =
+      "helyx: could not start the agent: the bash tool is not available: " <>
+        "perl not found: the bash tool needs perl to watch its commands\n"
+
+    assert helyx([dir]) == line
     System.put_env("HELYX_LAUNCHER", launcher)
-    assert helyx([dir]) == node
-    assert node =~ "perl"
+    assert helyx([dir]) == line
     refute File.exists?(Path.join(dir, "args"))
-    refute File.exists?(Path.join(sessions, "server.log"))
+    refute File.exists?(sessions)
+    assert Process.whereis(Serve) == nil
   end
 
   # perl writes a warning of a locale that is not there before its error.

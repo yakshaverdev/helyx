@@ -36,8 +36,9 @@ defmodule CodingAgent.CLI do
   has none; `--new` and `--model` start one. A newest session that does
   not resume gives a line that names `--new`. With no server, the `helyx`
   of the release starts `helyx serve` in the background with its launcher
-  and attaches to it; `mix helyx`, with no launcher, runs the TUI in the
-  node. The design is in
+  and attaches to it; `mix helyx`, with no launcher, runs the server in
+  its own VM until the TUI ends, and the TUI attaches to it over the
+  loopback. The design is in
   `docs/features/local-release.md`, `docs/features/session-list.md`,
   `docs/features/print-mode.md`, `docs/features/serve.md`, and
   `docs/features/tui-attach.md`.
@@ -45,6 +46,7 @@ defmodule CodingAgent.CLI do
 
   alias CodingAgent.Print
   alias Helyx.Session.File.Scan
+  alias Helyx.Tool.Bash
   alias Helyx.TUI.SessionList
 
   # Each switch once, with its type, its form, and its help line: the parse,
@@ -298,19 +300,25 @@ defmodule CodingAgent.CLI do
 
   # Print mode runs in the node. The TUI attaches to the server of the data
   # folder when one runs (docs/features/tui-attach.md), with the model of
-  # `--model`, else the default model of the server. With none, the
-  # launcher of the release starts one (decision 10); with no launcher, as
-  # `mix helyx`, the TUI runs in the node. A server needs perl, as the
-  # tools of the node do: with none on the PATH, the node gives the line of
-  # its tool check.
+  # `--model`, else the default model of the server.
   defp start_or_attach(opts, run, launcher) do
-    dir = run[:sessions_dir]
-    found = if run[:prompt], do: :none, else: CodingAgent.Attach.connect(dir)
+    if run[:prompt],
+      do: CodingAgent.run([model: Keyword.get(opts, :model, @default_model)] ++ run),
+      else: find_server(opts, run, launcher)
+  end
 
-    case {found, launcher && System.find_executable("perl")} do
-      {:none, nil} -> CodingAgent.run([model: Keyword.get(opts, :model, @default_model)] ++ run)
-      {:none, _perl} -> attach(opts, run, CodingAgent.Attach.start(dir, launcher))
-      {found, _perl} -> attach(opts, run, found)
+  # With no server, the launcher of the release starts one (decision 10),
+  # and with no launcher, as `mix helyx`, this VM runs one until the TUI
+  # ends (decision 12). A server needs perl, as the tools do: with none on
+  # the PATH, the line of the tool check.
+  defp find_server(opts, run, launcher) do
+    dir = run[:sessions_dir]
+
+    case {CodingAgent.Attach.connect(dir), launcher, Bash.check()} do
+      {:none, _launcher, {:error, reason}} -> {:error, {:tool_unavailable, Bash.name(), reason}}
+      {:none, nil, :ok} -> CodingAgent.Attach.serve(dir, @default_model, &attach(opts, run, &1))
+      {:none, launcher, :ok} -> attach(opts, run, CodingAgent.Attach.start(dir, launcher))
+      {found, _launcher, _perl} -> attach(opts, run, found)
     end
   end
 

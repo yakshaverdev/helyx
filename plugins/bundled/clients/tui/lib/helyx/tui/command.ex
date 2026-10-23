@@ -61,7 +61,7 @@ defmodule Helyx.TUI.Command do
   defp skill_or_usage(text, _name), do: {:message, text}
 
   # Runs a command on the session: `:ok`, or the notice of a refused one.
-  @spec run(t(), Link.session()) :: :ok | {:notice, String.t()}
+  @spec run(t(), Link.t()) :: :ok | {:notice, String.t()}
   def run({:usage, name}, _session), do: {:notice, "usage: " <> usage(name)}
   def run({:model, ""}, session), do: run({:usage, :model}, session)
   def run({:model, ref}, session), do: answer(Link.set_model(session, ref))
