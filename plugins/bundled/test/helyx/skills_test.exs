@@ -266,7 +266,7 @@ defmodule Helyx.SkillsTest do
 
     scan = Skills.scan(cwd, home)
     assert names(scan) == ["a"]
-    assert scan.notices == ["skill #{b} is not loaded: SKILL.md is over 65536 bytes"]
+    assert scan.notices == ["skill #{b} is not loaded: over the 65536-byte limit"]
   end
 
   test "a SKILL.md that is a folder, not UTF-8, or a dangling symlink is dropped", %{
@@ -291,8 +291,8 @@ defmodule Helyx.SkillsTest do
     scan = Skills.scan(cwd, home)
     assert scan.skills == []
     assert [a, b] = scan.notices
-    assert a == "skill #{root}/a is not loaded: SKILL.md is not a regular file"
-    assert b =~ "skill #{root}/b is not loaded: "
+    assert a == "skill #{root}/a is not loaded: not a regular file (directory)"
+    assert b == "skill #{root}/b is not loaded: binary file, 31 bytes"
   end
 
   test "a symlinked skill folder is followed, and a folder reached twice loads once", %{

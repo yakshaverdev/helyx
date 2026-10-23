@@ -142,7 +142,7 @@ The TUI command rule: a command name with no separator after it, as in `/models`
 | folders walked | the components of the working directory path, up to the git root | none; a path is short |
 | entries of one skills folder | unbounded: `File.ls/1` lists every name, and each name gets one `File.stat/1` of `<name>/SKILL.md` | accepted: the folders are the user's own; the stat is cheap and nothing is read |
 | skill folders in one scan | 200 entries that have a `SKILL.md` entry (`@max_skills`), in precedence order: nearest project folder first, names sorted in a folder, the user folder last. A hidden one counts and is not read | the rest are not read, one notice with their count; so the user skills are cut first, then the farthest project folders |
-| one `SKILL.md` | 65,536 bytes (`@max_file_bytes`), a regular file, valid UTF-8, checked on the stat and again on the read text | dropped with a notice |
+| one `SKILL.md` | 65,536 bytes (`@max_file_bytes`), a regular file, valid UTF-8, checked by one `Helyx.Text.read_file/2` that reads at most 65,537 bytes | dropped with a notice that gives the reason of `read_file/2` |
 | frontmatter read | in the scanning process, one pass over the lines of the frontmatter, linear in its bytes: at most 65,536 bytes from the file bound; the lines of another key are checked by the rule of characters or as a quoted scalar of one line and not kept, and no value expands (an anchor, an alias, or a tag drops the skill). Measured on 64 KB of each of the worst shapes (2026-10-18, `docs/devlogs/2026-10-18-skills.md`): at most 31.9 ms at a load average of 16.2, and at most 2.5 times the time on 32 KB | none |
 | catalog text | 16,384 bytes (`@max_catalog_bytes`), the whole section, heading and rule line included | filled in precedence order; from the first skill that does not fit, that skill and every later one are left out of the catalog, the tool, and the command, with one notice |
 | catalog skills | at most 200, from the read bound | as above |
@@ -159,7 +159,7 @@ When the scan runs and what it costs: at each context build (the start of each t
 
 Accepted:
 
-- A file can change between the stat and the read; the read text is checked again.
+- A file can change between the stat and the read of `Helyx.Text.read_file/2`; the read itself reads at most 65,537 bytes, so a file that grew after the stat is still dropped.
 - Folder identity by inode assumes a POSIX filesystem.
 - The scan, the tool, and the TUI read the skills of the machine that runs them. With a remote client, the TUI notices and the `/name` command read the client's disk, and the catalog and the tool read the server's disk.
 - `Helyx.ModelContext.Default` takes the home folder from its `:home` option; the tool and the clients use `System.user_home!/0`. No product sets `:home`; a product that does gets a catalog that the tool does not match.
@@ -174,7 +174,7 @@ Accepted:
 
 ## Ownership
 
-None: each `SKILL.md` is opened and closed inside `Helyx.Text.read_file/1`, and `File.ls/1` and `File.stat/1` hold no handle after they return. The frontmatter reader starts no process.
+None: each `SKILL.md` is opened and closed inside `Helyx.Text.read_file/2`, and `File.ls/1` and `File.stat/1` hold no handle after they return. The frontmatter reader starts no process.
 
 ## Out of scope
 
