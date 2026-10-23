@@ -60,12 +60,11 @@ defmodule Helyx.TUI.ViewModel do
   and the `:ask` and `:ask_end` events give them; `Helyx.TUI.Question`
   shows the oldest of the `question` tool (`docs/features/question-tool.md`).
 
-  The view model has no `instance_id` or `seq` guard: the TUI subscribes
-  once to each session, and the registration and the snapshot happen in
-  one server handler, so no event of an older `seq` reaches it (ADR 0006,
-  revision of 2026-10-03). `Helyx.TUI` drops an event of another instance,
-  which is of a session that a switch left
-  (`docs/features/tui-session-switch.md`).
+  `seq` is the `seq` of the snapshot or of the last event that the fold
+  applied. The fold applies an event only once, by its `seq`: an event at
+  or below it leaves the view model unchanged
+  (`docs/features/tui-attach.md`, decision 11). `Helyx.TUI` drops an event of another instance, which is
+  of a session that a switch left (`docs/features/tui-session-switch.md`).
   """
 
   alias Helyx.{Event, Message}
@@ -85,7 +84,8 @@ defmodule Helyx.TUI.ViewModel do
             expanded?: false,
             usage: %Totals{},
             context: nil,
-            asks: []
+            asks: [],
+            seq: 0
 
   @type tool_cell :: {:tool, Message.ToolCall.t(), String.t(), Message.t() | nil}
   @type cell ::
@@ -113,7 +113,8 @@ defmodule Helyx.TUI.ViewModel do
           expanded?: boolean(),
           usage: Totals.t(),
           context: Totals.context() | nil,
-          asks: [Snapshot.ask()]
+          asks: [Snapshot.ask()],
+          seq: non_neg_integer()
         }
 
   @delta_keys [:text_delta, :thinking_delta, :tool_call]
@@ -124,16 +125,20 @@ defmodule Helyx.TUI.ViewModel do
   event type first: each known type has a clause that matches the type only
   and checks its payload inside, so a known type with a broken payload, such
   as a `message_start` with no message, is a bug in Core and crashes the TUI.
-  An event of a type that no clause names leaves the view model unchanged,
-  and its payload is not checked. Within a known type, a role or a delta
+  An event at or below `seq` leaves the view model unchanged. An event of
+  a type that no clause names changes only `seq`, and its payload is not
+  checked. Within a known type, a role or a delta
   kind that the TUI does not know also crashes. A block kind that the TUI
   does not render stays in the message, and `Helyx.TUI.Transcript` shows a
   placeholder for it.
   """
   @spec apply(t(), Event.t()) :: t()
-  def apply(vm, %Event{type: :turn_start}), do: %{vm | running?: true}
+  def apply(%__MODULE__{seq: last} = vm, %Event{seq: seq}) when seq <= last, do: vm
+  def apply(vm, %Event{seq: seq} = event), do: %{fold(vm, event) | seq: seq}
 
-  def apply(vm, %Event{type: :turn_end, data: data}) do
+  defp fold(vm, %Event{type: :turn_start}), do: %{vm | running?: true}
+
+  defp fold(vm, %Event{type: :turn_end, data: data}) do
     vm = %{vm | running?: false}
 
     case data do
@@ -143,14 +148,14 @@ defmodule Helyx.TUI.ViewModel do
     end
   end
 
-  def apply(vm, %Event{type: :message_start, data: data}) do
+  defp fold(vm, %Event{type: :message_start, data: data}) do
     %{message: %Message{role: role}} = data
     if role == :assistant, do: %{vm | streaming: []}, else: vm
   end
 
   # Core sends one delta key for each update. No known key, a known key
   # with another value, or two known keys, is a bug in Core and crashes.
-  def apply(vm, %Event{type: :message_update, data: data}) do
+  defp fold(vm, %Event{type: :message_update, data: data}) do
     case Map.to_list(Map.take(data, @delta_keys)) do
       [{:text_delta, delta}] when is_binary(delta) -> stream(vm, {:text_delta, delta})
       [{:thinking_delta, delta}] when is_binary(delta) -> stream(vm, {:thinking_delta, delta})
@@ -159,7 +164,7 @@ defmodule Helyx.TUI.ViewModel do
   end
 
   # A tool result shows in its call's cell at `tool_execution_end`.
-  def apply(vm, %Event{type: :message_end, data: data}) do
+  defp fold(vm, %Event{type: :message_end, data: data}) do
     case data do
       %{message: %Message{role: :tool_result}} ->
         vm
@@ -173,38 +178,38 @@ defmodule Helyx.TUI.ViewModel do
   end
 
   # A result of another role would leave its cell open, so it crashes.
-  def apply(vm, %Event{type: :tool_execution_end, data: data}) do
+  defp fold(vm, %Event{type: :tool_execution_end, data: data}) do
     %{message: %Message{role: :tool_result} = result} = data
     add_message(vm, result)
   end
 
-  def apply(vm, %Event{type: :queue_update, data: data}), do: %{vm | queue: queue(data)}
+  defp fold(vm, %Event{type: :queue_update, data: data}), do: %{vm | queue: queue(data)}
 
-  def apply(vm, %Event{type: :model_change, data: data}) do
+  defp fold(vm, %Event{type: :model_change, data: data}) do
     %{model: model} = data
     add_info(%{vm | model: model}, "model: " <> model)
   end
 
   # One line per compaction: `compacted: 30k → 4k tokens`, `compacted`
   # with no counts, and ` (auto)` after one that the provider started.
-  def apply(vm, %Event{type: :compaction, data: data}) do
+  defp fold(vm, %Event{type: :compaction, data: data}) do
     %{trigger: trigger, tokens_before: before, tokens_after: after_} = data
     counts = if before && after_, do: ": #{tokens(before)} → #{tokens(after_)} tokens", else: ""
     vm = %{vm | context: Totals.compacted(vm.context, after_)}
     add_info(vm, "compacted" <> counts <> if(trigger == :auto, do: " (auto)", else: ""))
   end
 
-  def apply(vm, %Event{type: :notice, data: data}) do
+  defp fold(vm, %Event{type: :notice, data: data}) do
     %{text: text} = data
     add_cell(vm, {:notice, text})
   end
 
-  def apply(vm, %Event{type: :steer_unconfirmed, data: data}) do
+  defp fold(vm, %Event{type: :steer_unconfirmed, data: data}) do
     %{text: text} = data
     add_cell(vm, {:notice, "the steer was not confirmed; send it again if needed: " <> text})
   end
 
-  def apply(vm, %Event{type: :resume_id, data: data}) do
+  defp fold(vm, %Event{type: :resume_id, data: data}) do
     %{provider: provider, lost: lost, cut: cut} = data
     lost_text = "#{provider} lost its own session; a fresh one got the transcript"
     vm = if lost, do: add_cell(vm, {:notice, lost_text}), else: vm
@@ -212,18 +217,18 @@ defmodule Helyx.TUI.ViewModel do
     if cut > 0, do: add_cell(vm, {:notice, cut_text}), else: vm
   end
 
-  def apply(vm, %Event{type: :ask, data: data}) do
+  defp fold(vm, %Event{type: :ask, data: data}) do
     %{ask_id: _, call_id: _, tool: _, request: _} = data
     %{vm | asks: vm.asks ++ [data]}
   end
 
-  def apply(vm, %Event{type: :ask_end, data: data}) do
+  defp fold(vm, %Event{type: :ask_end, data: data}) do
     %{ask_id: id} = data
     %{vm | asks: Enum.reject(vm.asks, &(&1.ask_id == id))}
   end
 
   # A type that this client does not know.
-  def apply(vm, %Event{}), do: vm
+  defp fold(vm, %Event{}), do: vm
 
   # The five counts of the snapshot and of `queue_update`; another field
   # from a newer Core is dropped.
@@ -256,7 +261,8 @@ defmodule Helyx.TUI.ViewModel do
       queue: queue(snapshot.queue),
       usage: snapshot.usage,
       context: snapshot.context,
-      asks: snapshot.asks
+      asks: snapshot.asks,
+      seq: snapshot.seq
     }
 
     vm = Enum.reduce(messages, vm, &add_cells(&2, &1))

@@ -1,8 +1,9 @@
 defmodule CodingAgent.Attach do
   @moduledoc """
   The client side of `helyx serve`: finds the server of a data folder by its
-  server file and its lock, and connects to it over the wire
-  (`Helyx.TUI.Wire`). The rules are in `docs/features/tui-attach.md`.
+  server file and its lock, or starts one with the launcher, and connects
+  to it over the wire (`Helyx.TUI.Wire`). The rules are in
+  `docs/features/tui-attach.md`.
   """
 
   import Bitwise
@@ -29,8 +30,57 @@ defmodule CodingAgent.Attach do
   """
   @spec connect(Path.t()) :: {:ok, :gen_tcp.socket()} | :none | {:error, String.t()}
   def connect(dir) do
-    with :ok <- folder(dir),
-         do: attempt(dir, System.monotonic_time(:millisecond) + Serve.wait_ms())
+    with :ok <- folder(dir), do: attempt(dir, deadline(), :none)
+  end
+
+  @doc """
+  Starts `helyx serve` for the data folder `dir` in the background with
+  the launcher at the path `launcher`, then connects to it as
+  `connect/1` does while a server starts; until the server takes the lock,
+  a free lock means that it is starting too
+  (`docs/features/tui-attach.md`, decision 10). The server runs in a
+  session of its own, so no signal of the terminal reaches it, with stdin
+  on `/dev/null` and its output added to `<dir>/server.log`, which must be
+  a regular file or not there. The folder is made with mode 0700 when it
+  is not there. Returns `{:ok, socket}` or `{:error, text}`.
+  """
+  @spec start(Path.t(), Path.t()) :: {:ok, :gen_tcp.socket()} | {:error, String.t()}
+  def start(dir, launcher) do
+    log = Path.join(dir, "server.log")
+
+    with :ok <- Serve.mkdir(dir),
+         :ok <- spawn_server(launcher, log),
+         do: attempt(dir, deadline(), {:starting, "the server did not start; see #{log}"})
+  end
+
+  defp deadline, do: System.monotonic_time(:millisecond) + Serve.wait_ms()
+
+  # perl forks the server and exits at once; the child leaves the session
+  # of the terminal (`setsid`), so it is in a new process group too, and
+  # execs the launcher. An error of the child goes to the log. The open
+  # does not wait, as the lock does not: a FIFO at the path of the log
+  # fails it, or the check of a regular file.
+  @spawn ~S"""
+  use POSIX ();
+  use Fcntl;
+  my ($launcher, $log) = @ARGV;
+  sysopen(my $out, $log, O_WRONLY | O_APPEND | O_CREAT | O_NONBLOCK, 0600) or die "$log: $!\n";
+  -f $out or die "$log: not a regular file\n";
+  my $pid = fork // die "fork: $!\n";
+  exit 0 if $pid;
+  POSIX::setsid();
+  open(STDIN, "<", "/dev/null") && open(STDOUT, ">&", $out) && open(STDERR, ">&", $out)
+    or die "helyx: $!\n";
+  exec { $launcher } $launcher, "serve" or die "helyx: $launcher: $!\n";
+  """
+
+  # The lock test of `connect/1` before it needs perl too. `--` keeps a
+  # launcher path that starts with `-` an argument.
+  defp spawn_server(launcher, log) do
+    case System.cmd("perl", ["-e", @spawn, "--", launcher, log], stderr_to_stdout: true) do
+      {_out, 0} -> :ok
+      {out, _status} -> {:error, "could not start a server: " <> String.trim(out)}
+    end
   end
 
   # A user who can write the data folder could write a server file that
@@ -54,23 +104,26 @@ defmodule CodingAgent.Attach do
     end
   end
 
-  defp attempt(dir, deadline) do
-    case test_lock(dir) do
-      true -> read(dir, deadline)
-      false -> :none
-      error -> error
+  # `free` is the answer to a free lock: `:none`, or for a server that the
+  # client started `{:starting, reason}`, an attempt again.
+  defp attempt(dir, deadline, free) do
+    case {test_lock(dir), free} do
+      {true, _free} -> read(dir, deadline, free)
+      {false, :none} -> :none
+      {false, {:starting, text}} -> again(dir, deadline, free, text)
+      {error, _free} -> error
     end
   end
 
-  defp read(dir, deadline) do
+  defp read(dir, deadline, free) do
     case Serve.read_file(dir) do
-      {:ok, ip, port, token} when is_function(token) -> open(dir, deadline, ip, port, token)
-      {:ok, _ip, _port, nil} -> again(dir, deadline, "the server file holds no token")
-      :error -> again(dir, deadline, "no valid server file")
+      {:ok, ip, port, token} when is_function(token) -> open(dir, deadline, free, ip, port, token)
+      {:ok, _ip, _port, nil} -> again(dir, deadline, free, "the server file holds no token")
+      :error -> again(dir, deadline, free, "no valid server file")
     end
   end
 
-  defp open(dir, deadline, ip, port, token) do
+  defp open(dir, deadline, free, ip, port, token) do
     case Wire.connect(ip, port, token, @connect_ms) do
       {:ok, socket} ->
         {:ok, socket}
@@ -86,16 +139,16 @@ defmodule CodingAgent.Attach do
            "the server broke the wire contract"}
 
       {:error, text} ->
-        again(dir, deadline, text)
+        again(dir, deadline, free, text)
     end
   end
 
   # The deadline is checked after the sleep, so no attempt starts past it.
-  defp again(dir, deadline, text) do
+  defp again(dir, deadline, free, text) do
     Process.sleep(@poll_ms)
 
     if System.monotonic_time(:millisecond) < deadline,
-      do: attempt(dir, deadline),
+      do: attempt(dir, deadline, free),
       else: {:error, "could not attach to the server of #{dir} in #{Serve.wait_ms()} ms: #{text}"}
   end
 

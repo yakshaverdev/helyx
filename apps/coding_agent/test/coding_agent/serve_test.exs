@@ -406,6 +406,31 @@ defmodule CodingAgent.ServeTest do
     Lock.release(lock)
   end
 
+  # The lock test of a client holds the lock for a moment
+  # (docs/features/tui-attach.md, decision 10): a start in that moment
+  # takes the lock at a later poll and serves.
+  test "a second start takes the lock when its holder lets it go, and serves",
+       %{sessions: sessions, server_file: file} do
+    data_folder(sessions)
+    {:ok, lock} = Lock.take(Path.join(sessions, "server"))
+
+    {result, _traces} =
+      calls([{Lock, :take, 1}], fn ->
+        task = serve(["--model", "fake/echo"])
+
+        # Two takes of the start find the lock held.
+        for _ <- 1..2,
+            do: assert_receive({:trace, _pid, :call, {Lock, :take, [_path]}}, @load_boot_ms)
+
+        refute File.exists?(file)
+        Lock.release(lock)
+        assert %{"port" => _} = ready(file)
+        stop(task)
+      end)
+
+    assert {0, "helyx: serving on ws://127.0.0.1:" <> _, _err} = result
+  end
+
   # The attempts are at least 100 ms apart, and none starts after the wait,
   # so there are at most 50. Each attempt ends within the bound of its
   # connect.

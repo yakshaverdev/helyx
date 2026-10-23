@@ -23,13 +23,19 @@ defmodule Mix.Tasks.Helyx.InstallTest do
   end
 
   # A fake build: the version file of a release, and a `bin/helyx` that
-  # prints its folder and its arguments, one per line.
+  # prints its folder, the launcher that it names, and its arguments, one
+  # per line.
   defp build(prefix, version) do
     build = Path.join(prefix, "releases/.build-test")
     File.mkdir_p!(Path.join(build, "bin"))
     File.mkdir_p!(Path.join(build, "releases"))
     File.write!(Path.join(build, "releases/start_erl.data"), "16.4 #{version}\n")
-    File.write!(Path.join(build, "bin/helyx"), ~s(#!/bin/sh\nprintf '%s\\n' "$PWD" "$@"\n))
+
+    File.write!(
+      Path.join(build, "bin/helyx"),
+      ~s(#!/bin/sh\nprintf '%s\\n' "$PWD" "$HELYX_LAUNCHER" "$@"\n)
+    )
+
     File.chmod!(Path.join(build, "bin/helyx"), 0o755)
     build
   end
@@ -67,9 +73,11 @@ defmodule Mix.Tasks.Helyx.InstallTest do
     args = ["a b", "--resume", "$HOME", "it's"]
     {out, 0} = System.cmd(Path.join(bin_dir, "helyx"), args, cd: work)
 
+    # The launcher names itself, for the start of a server
+    # (docs/features/tui-attach.md, decision 10).
     assert String.split(out, "\n", trim: true) ==
-             [Path.expand(work), "eval", "System.halt(CodingAgent.CLI.main(System.argv()))"] ++
-               args
+             [Path.expand(work), Path.join(bin_dir, "helyx")] ++
+               ["eval", "System.halt(CodingAgent.CLI.main(System.argv()))"] ++ args
   end
 
   # USR1 stands for the signals that the launcher traps beyond INT, TERM,

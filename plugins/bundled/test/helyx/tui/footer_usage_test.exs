@@ -22,7 +22,17 @@ defmodule Helyx.TUI.FooterUsageTest do
   @model "m/x"
 
   defp event(type, data),
-    do: %Event{type: type, session_id: "s", instance_id: "i", turn_id: "t", seq: 1, data: data}
+    do: %Event{
+      type: type,
+      session_id: "s",
+      instance_id: "i",
+      turn_id: "t",
+      seq: seq(),
+      data: data
+    }
+
+  # The fold applies each seq once, so each event gets a higher one.
+  defp seq, do: System.unique_integer([:positive, :monotonic])
 
   # The live path: each message as the event that brings it to the TUI.
   defp live(messages, model) do

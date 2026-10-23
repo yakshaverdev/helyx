@@ -45,11 +45,21 @@ defmodule Helyx.TUI.Link do
   def own(%Session{} = session), do: session
 
   # The subscription with the asks: `{:ok, snapshot, ref}` with the monitor
-  # of the session in the node, or with the sub over the wire.
-  @spec subscribe(session()) ::
-          {:ok, Session.Snapshot.t(), reference() | String.t()} | {:error, term()}
-  def subscribe(%Session{} = session), do: Session.subscribe(session, answers: true)
-  def subscribe(%__MODULE__{conn: conn, id: id}), do: Connection.subscribe(conn, id)
+  # of the session in the node, or with the sub over the wire. Over the
+  # wire, `after:` gives a replay or a snapshot (`Connection.subscribe/3`).
+  @spec subscribe(session(), keyword()) ::
+          {:ok, Session.Snapshot.t() | {:replay, [Helyx.Event.t()]}, reference() | String.t()}
+          | {:error, term()}
+  def subscribe(%Session{} = session, []), do: Session.subscribe(session, answers: true)
+  def subscribe(%__MODULE__{conn: conn, id: id}, opts), do: Connection.subscribe(conn, id, opts)
+
+  # The session over a new connection on `socket` after a lost one. The
+  # socket goes to the connection, which the caller owns.
+  @spec reopen(t(), :gen_tcp.socket()) :: t()
+  def reopen(%__MODULE__{} = session, socket) do
+    {:ok, conn, _ref} = Connection.open(socket)
+    %{session | conn: conn}
+  end
 
   @spec ack(session(), reference() | String.t(), Helyx.Event.t()) :: :ok
   def ack(%Session{} = session, _ref, event), do: Session.ack(session, event)
@@ -175,8 +185,8 @@ defmodule Helyx.TUI.Link do
   end
 
   # The line of the exit `{:connection_down, reason}` of the TUI: the end
-  # of its connection (`Helyx.TUI.Wire.Connection`), or a subscribe that
-  # the wire refused (`Helyx.TUI.Switch.bind/3`).
+  # of its connection (`Helyx.TUI.Wire.Connection`), a subscribe that the
+  # wire refused (`Helyx.TUI.Switch.bind/3`), or a failed reconnect.
   @spec down_text(term()) :: String.t()
   def down_text({:shutdown, :broken}), do: "the server broke the wire contract"
   # A slow client: past its credits, its outbound queue, or its silence
@@ -186,6 +196,9 @@ defmodule Helyx.TUI.Link do
 
   def down_text(reason) when wire_error?(reason),
     do: "could not subscribe to the session: " <> error_text(reason)
+
+  # A lost connection whose reconnect failed: the line of the attach.
+  def down_text({:reconnect, text}), do: "lost the connection to the server: " <> text
 
   # A connection that ended before the take, or crashed.
   def down_text(_reason), do: "the connection to the server ended"

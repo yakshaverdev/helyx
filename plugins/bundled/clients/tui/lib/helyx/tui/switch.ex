@@ -1,12 +1,13 @@
 defmodule Helyx.TUI.Switch do
   @moduledoc false
-  # The session of the TUI: the bind to one session at mount, and a switch
+  # The session of the TUI: the bind to one session at mount, a switch
   # to another one for `/new` and `/resume`
-  # (docs/features/tui-session-switch.md). A Task opens the new session,
-  # then aborts the old one, so its turn is saved, and stops it, in the
-  # node or over the wire (`Helyx.TUI.Link`). The new session opens first,
-  # so a failed open leaves the old one as it was. The functions take and
-  # give the state of `Helyx.TUI`.
+  # (docs/features/tui-session-switch.md), and the bind again after a lost
+  # connection (`reconnect/2`, docs/features/tui-attach.md, decision 11).
+  # A Task opens the new session, then aborts the old one, so its turn is
+  # saved, and stops it, in the node or over the wire (`Helyx.TUI.Link`).
+  # The new session opens first, so a failed open leaves the old one as it
+  # was. The functions take and give the state of `Helyx.TUI`.
 
   alias Helyx.{Event, Session}
   alias Helyx.TUI.{Composer, Link, Question, ViewModel}
@@ -35,7 +36,11 @@ defmodule Helyx.TUI.Switch do
   # subscription ends the TUI (`down/2`).
   @spec bind(map(), Link.session(), String.t() | nil) :: map()
   def bind(state, session, info) do
-    {snapshot, ref} = subscribe!(session)
+    {snapshot, ref} = subscribe!(session, [])
+    show(state, session, snapshot, ref, info)
+  end
+
+  defp show(state, session, snapshot, ref, info) do
     # The Ctrl+O toggle belongs to the client, so a switch keeps it.
     vm = ViewModel.from_snapshot(snapshot, session.id)
     vm = %{vm | expanded?: match?(%{expanded?: true}, state.vm)}
@@ -59,13 +64,44 @@ defmodule Helyx.TUI.Switch do
   end
 
   # A session that is not running leaves nothing to render, nor does a
-  # subscribe that the wire refused. A request of this client sends no
-  # `after`, so the server answers with a snapshot.
-  defp subscribe!(session) do
-    case Link.subscribe(session) do
+  # subscribe that the wire refused. A subscribe with no `after` gets a
+  # snapshot.
+  defp subscribe!(session, opts) do
+    case Link.subscribe(session, opts) do
       {:ok, snapshot, ref} -> {snapshot, ref}
       {:error, :session_not_found} -> exit({:session_down, :session_not_found})
       {:error, reason} when Link.wire_error?(reason) -> exit({:connection_down, reason})
+    end
+  end
+
+  # The end of the connection over the wire. A lost one, a close of the
+  # server or of TCP, connects again with the `reconnect` function of the
+  # TUI, in its process, and subscribes with `after`: the instance and the
+  # seq of the last event that the fold applied. A replay gives the events
+  # that the TUI missed, which it applies as live ones; a snapshot
+  # replaces its state, as at a switch. A contract break, a lost connection
+  # during a switch, and a failed reconnect end the TUI.
+  @spec reconnect(map(), term()) :: map()
+  def reconnect(%{switch: nil, reconnect: reconnect} = state, {:shutdown, {:closed, _}})
+      when is_function(reconnect, 0) do
+    case reconnect.() do
+      {:ok, socket} -> resubscribe(state, Link.reopen(state.session, socket))
+      {:error, text} -> exit({:connection_down, {:reconnect, text}})
+    end
+  end
+
+  def reconnect(_state, reason), do: exit({:connection_down, reason})
+
+  defp resubscribe(state, session) do
+    case subscribe!(session, after: %{instance_id: state.instance_id, seq: state.vm.seq}) do
+      {{:replay, events}, sub} ->
+        state = %{state | session: session, session_ref: sub}
+        state = Enum.reduce(events, state, &apply_event(&2, &1))
+
+        %{state | vm: ViewModel.info(state.vm, "reconnected")}
+
+      {snapshot, sub} ->
+        show(state, session, snapshot, sub, "reconnected")
     end
   end
 
@@ -101,17 +137,27 @@ defmodule Helyx.TUI.Switch do
   def down(%{switch: nil}, reason), do: exit({:session_down, Link.end_reason(reason)})
   def down(state, reason), do: put_in(state.switch.down, {:down, reason})
 
+  # An event of the current session, live or of a replay: the ack, the
+  # fold, the question of an ask, and the composer. An event at or below
+  # the seq of the fold changes nothing (decision 11).
+  @spec apply_event(map(), Event.t()) :: map()
+  def apply_event(%{vm: %{seq: last}} = state, %Event{seq: seq}) when seq <= last, do: state
+
+  def apply_event(state, event) do
+    :ok = Link.ack(state.session, state.session_ref, event)
+    event(Question.sync(%{state | vm: ViewModel.apply(state.vm, event)}), event)
+  end
+
   # An event of the current session for the composer. During a switch the
   # composer takes the texts of a `queue_dropped` only when the switch
   # fails; after a switch they go with the old session.
-  @spec event(map(), Event.t()) :: map()
-  def event(%{switch: nil} = state, event),
+  defp event(%{switch: nil} = state, event),
     do: update_in(state.composer, &Composer.apply(&1, event))
 
-  def event(state, %Event{type: :queue_dropped} = event),
+  defp event(state, %Event{type: :queue_dropped} = event),
     do: update_in(state.switch.dropped, &[event | &1])
 
-  def event(state, _event), do: state
+  defp event(state, _event), do: state
 
   # The answer of the Task. A failed open keeps the current session while
   # it runs; when it ended during the switch, a new session takes its

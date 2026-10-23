@@ -829,7 +829,8 @@ defmodule Helyx.TUITest do
         session_id: "s",
         instance_id: state.instance_id,
         turn_id: "t",
-        seq: 1,
+        # The fold applies each seq once.
+        seq: state.vm.seq + 1,
         data: data
       }
 

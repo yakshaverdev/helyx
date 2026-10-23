@@ -582,13 +582,20 @@ defmodule Helyx.TUI.Wire.ConnectionTest do
     end
   end
 
-  test "a replay in reply to a subscribe, which sends no after, is a contract break" do
+  # docs/features/tui-attach.md, decision 11.
+  test "a replay answers a subscribe with after; to one with no after it is a contract break" do
     {conn, ref} =
       fake(fn socket ->
         %{"id" => id, "op" => "subscribe", "params" => params} = client_frame(socket)
+        %{"session" => "s1", "after" => %{"instance_id" => "i1", "seq" => 1}} = params
+        :ok = :gen_tcp.send(socket, text(res(id, %{sub: "x", replay: [notice(2)]})))
+        %{"id" => id, "op" => "subscribe", "params" => params} = client_frame(socket)
         false = Map.has_key?(params, "after")
-        :ok = :gen_tcp.send(socket, text(res(id, %{sub: "x", replay: []})))
+        :ok = :gen_tcp.send(socket, text(res(id, %{sub: "y", replay: []})))
       end)
+
+    assert {:ok, {:replay, [%Event{type: :notice, seq: 2}]}, "x"} =
+             Connection.subscribe(conn, "s1", after: %{instance_id: "i1", seq: 1})
 
     assert Connection.subscribe(conn, "s1") == {:error, :closed}
     assert_receive {:DOWN, ^ref, :process, ^conn, {:shutdown, :broken}}

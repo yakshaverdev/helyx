@@ -7,10 +7,11 @@ defmodule Helyx.TUI.ViewModelTest do
 
   import Helyx.Test.TUIRender, only: [texts: 1, view_model: 1, view_model: 2]
 
-  # Builds a session's event list with sequence numbers assigned in order.
-  defp events(specs) do
+  # Builds a session's event list with sequence numbers assigned in order,
+  # from `first`.
+  defp events(specs, first \\ 1) do
     specs
-    |> Enum.with_index(1)
+    |> Enum.with_index(first)
     |> Enum.map(fn {{type, data}, seq} ->
       %Event{type: type, session_id: "s", instance_id: "i", turn_id: "t", seq: seq, data: data}
     end)
@@ -111,7 +112,7 @@ defmodule Helyx.TUI.ViewModelTest do
 
     ended =
       Enum.reduce(
-        events([calls_end([%Message.Text{text: "Listing."}, call]), tool_end(result)]),
+        events([calls_end([%Message.Text{text: "Listing."}, call]), tool_end(result)], 5),
         streaming,
         &ViewModel.apply(&2, &1)
       )
@@ -130,7 +131,7 @@ defmodule Helyx.TUI.ViewModelTest do
         [calls_end([call])]
         |> fold()
         |> ViewModel.notice("usage: /model provider/model")
-        |> ViewModel.apply(hd(events([tool_end(result)])))
+        |> ViewModel.apply(hd(events([tool_end(result)], 2)))
 
       assert cells(vm) == [
                assistant([call], :tool_use),
@@ -369,7 +370,24 @@ defmodule Helyx.TUI.ViewModelTest do
       data: %{}
     }
 
-    assert ViewModel.apply(vm, unknown) == vm
+    # Only its seq moves, so a replay after a reconnect starts past it.
+    assert ViewModel.apply(vm, unknown) == %{vm | seq: 3}
+  end
+
+  # A replay after a reconnect can give an event again
+  # (docs/features/tui-attach.md, decision 11).
+  test "the fold applies an event only once, by its seq" do
+    [start, message] = events([{:turn_start, %{}}, {:message_end, %{message: user("hi")}}])
+    vm = Enum.reduce([start, message], new(), &ViewModel.apply(&2, &1))
+    assert vm.seq == 2
+
+    for event <- [start, message, %{message | seq: 0}],
+        do: assert(ViewModel.apply(vm, event) == vm)
+
+    # A snapshot gives its seq: an event at it is in the snapshot.
+    snapshot = %{view_model([]) | seq: 7}
+    assert ViewModel.apply(snapshot, %{message | seq: 7}) == snapshot
+    assert [%Message{}] = cells(ViewModel.apply(snapshot, %{message | seq: 8}))
   end
 
   # A value from a newer Core in a known event type.

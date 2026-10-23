@@ -235,8 +235,11 @@ defmodule Helyx.TUI.QuestionTest do
     refute text =~ "end?"
   end
 
-  defp event(type, data),
-    do: %Event{type: type, data: data, session_id: "s", instance_id: "i", turn_id: "t", seq: 1}
+  # The fold applies each seq once, so each event gets a higher one.
+  defp event(type, data) do
+    seq = System.unique_integer([:positive, :monotonic])
+    %Event{type: type, data: data, session_id: "s", instance_id: "i", turn_id: "t", seq: seq}
+  end
 
   test "the view model folds the asks, and a snapshot gives them" do
     ask = %{ask_id: "k1", call_id: "c1", tool: "question", request: %{"questions" => []}}

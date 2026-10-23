@@ -105,7 +105,9 @@ defmodule CodingAgent do
   the default model of the server; `resume: id` takes no `:cwd`; and
   `resume: :reattach` resumes the newest session of `:cwd`, or starts one
   when the folder has none (decision 16). The session starts or resumes in
-  the server and runs on after the quit, which aborts nothing. Returns
+  the server and runs on after the quit, which aborts nothing. After a
+  lost connection the TUI connects again (`CodingAgent.Attach.connect/1`)
+  and subscribes with `after` (decision 11). Returns
   `{:error, reason}` as `run/1` does, with the errors of the wire.
   """
   @spec attach(:gen_tcp.socket(), keyword()) :: :ok | {:error, term()}
@@ -113,13 +115,25 @@ defmodule CodingAgent do
     {:ok, conn, ref} = Connection.open(socket)
 
     try do
-      with {:ok, id, cwd, resumed} <- open_remote(conn, opts),
-           do: client(%Link{conn: conn, id: id}, Keyword.merge(opts, cwd: cwd, resume: resumed))
+      with {:ok, id, cwd, resumed} <- open_remote(conn, opts) do
+        reconnect = reconnect(Keyword.fetch!(opts, :sessions_dir))
+        opts = Keyword.merge(opts, cwd: cwd, resume: resumed, reconnect: reconnect)
+        client(%Link{conn: conn, id: id}, opts)
+      end
     after
       # The connection ended with the TUI that took it; one that no TUI
       # took ends here.
       Process.exit(conn, :kill)
       Process.demonitor(ref, [:flush])
+    end
+  end
+
+  # After a lost connection the TUI attaches again to the server of the
+  # data folder, and starts none (docs/features/tui-attach.md, decision 11).
+  defp reconnect(dir) do
+    fn ->
+      with :none <- CodingAgent.Attach.connect(dir),
+           do: {:error, "no server runs for #{dir}"}
     end
   end
 
@@ -183,7 +197,8 @@ defmodule CodingAgent do
             session: session,
             resumed: Keyword.get(opts, :resume, false) != false,
             cwd: Keyword.fetch!(opts, :cwd),
-            sessions_dir: Keyword.fetch!(opts, :sessions_dir)
+            sessions_dir: Keyword.fetch!(opts, :sessions_dir),
+            reconnect: opts[:reconnect]
           )
         end)
     end

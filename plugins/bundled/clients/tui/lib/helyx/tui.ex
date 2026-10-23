@@ -60,10 +60,11 @@ defmodule Helyx.TUI do
   session" follows the history), `:cwd` (the directory that the footer
   shows and the folder of `/new` and `/resume`, default `File.cwd!/0`),
   `:sessions_dir` (where `/new` saves and `/resume` lists; without it
-  `/new` saves nothing and `/resume` lists nothing), and those of
-  `ExRatatui.App`. The scroll keys read the terminal size through
-  `:terminal_size_fn`, the option of `ExRatatui.Server`; the default is
-  `ExRatatui.terminal_size/0`.
+  `/new` saves nothing and `/resume` lists nothing), `:reconnect` (over the
+  wire, the connect after a lost connection: `{:ok, socket}`, owned by the
+  caller, or `{:error, text}`), and those of `ExRatatui.App`. The scroll
+  keys read the terminal size through `:terminal_size_fn`, the option of
+  `ExRatatui.Server`; the default is `ExRatatui.terminal_size/0`.
   """
   @spec run(keyword()) :: :ok | {:error, term()}
   def run(opts), do: Start.run(fn -> start_link(Keyword.put_new(opts, :mouse_capture, true)) end)
@@ -79,6 +80,7 @@ defmodule Helyx.TUI do
       instance_id: nil,
       vm: nil,
       sessions_dir: opts[:sessions_dir],
+      reconnect: opts[:reconnect],
       switch: nil,
       list: nil,
       search: nil,
@@ -117,15 +119,15 @@ defmodule Helyx.TUI do
   def handle_info({:helyx_end, sub, reason}, %{session_ref: sub} = state),
     do: {:noreply, Switch.down(state, {:session_end, reason})}
 
-  def handle_info({:DOWN, _ref, :process, conn, reason}, %{session: %Link{conn: conn}}),
-    do: exit({:connection_down, reason})
+  # A reconnect can replay the end of a turn, so the branch is read again.
+  def handle_info({:DOWN, _ref, :process, conn, reason}, %{session: %Link{conn: conn}} = state),
+    do: {:noreply, settle(sync_busy(read_branch(Switch.reconnect(state, reason))))}
 
   def handle_info({:helyx_event, %{instance_id: id} = event}, %{instance_id: id} = state) do
-    :ok = Link.ack(state.session, state.session_ref, event)
-    state = Question.sync(%{state | vm: ViewModel.apply(state.vm, event)})
+    state = Switch.apply_event(state, event)
     # A turn can change the branch.
     state = if event.type == :turn_end, do: read_branch(state), else: state
-    {:noreply, settle(sync_busy(Switch.event(state, event)))}
+    {:noreply, settle(sync_busy(state))}
   end
 
   def handle_info({ref, result}, %{switch: %Switch{task: %Task{ref: ref}}} = state) do
