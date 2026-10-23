@@ -40,7 +40,10 @@ defmodule Helyx.TUI.Switch do
     show(state, session, snapshot, ref, info)
   end
 
-  defp show(state, session, snapshot, ref, info) do
+  # `question` is the picker to keep when the snapshot holds its ask
+  # (`Question.sync/1`): a reconnect keeps the answers so far, the
+  # position, and the text of the Other line. A switch keeps none.
+  defp show(state, session, snapshot, ref, info, question \\ nil) do
     # The Ctrl+O toggle belongs to the client, so a switch keeps it.
     vm = ViewModel.from_snapshot(snapshot, session.id)
     vm = %{vm | expanded?: match?(%{expanded?: true}, state.vm)}
@@ -59,7 +62,7 @@ defmodule Helyx.TUI.Switch do
         selection: nil,
         # The cursor of a search is an item of the session it leaves.
         search: nil,
-        question: nil
+        question: question
     })
   end
 
@@ -79,8 +82,9 @@ defmodule Helyx.TUI.Switch do
   # TUI, in its process, and subscribes with `after`: the instance and the
   # seq of the last event that the fold applied. A replay gives the events
   # that the TUI missed, which it applies as live ones; a snapshot
-  # replaces its state, as at a switch. A contract break, a lost connection
-  # during a switch, and a failed reconnect end the TUI.
+  # replaces its state, as at a switch, but for the picker of an ask that
+  # is still open. A contract break, a lost connection during a switch,
+  # and a failed reconnect end the TUI.
   @spec reconnect(map(), term()) :: map()
   def reconnect(%{switch: nil, reconnect: reconnect} = state, {:shutdown, {:closed, _}})
       when is_function(reconnect, 0) do
@@ -101,7 +105,7 @@ defmodule Helyx.TUI.Switch do
         %{state | vm: ViewModel.info(state.vm, "reconnected")}
 
       {snapshot, sub} ->
-        show(state, session, snapshot, sub, "reconnected")
+        show(state, session, snapshot, sub, "reconnected", state.question)
     end
   end
 

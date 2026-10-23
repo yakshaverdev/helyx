@@ -23,7 +23,7 @@ defmodule Helyx.TUI.LinkTest do
   setup %{tmp_dir: dir} do
     core = :"link_core_#{System.unique_integer([:positive])}"
     sessions = Path.join(dir, "sessions")
-    plugins = [Fake, Helyx.TUI.Test.Tool.Slow]
+    plugins = [Fake, Helyx.TUI.Test.Tool.Slow, Helyx.Tool.Question]
     core_opts = [name: core, plugins: plugins, sessions_dir: sessions, model: "fake/echo"]
     start_supervised!({Helyx.Core, core_opts})
     transport = start_supervised!({WebSocket, core: core, port: 0})
@@ -452,6 +452,52 @@ defmodule Helyx.TUI.LinkTest do
 
     :ok = Helyx.Sessions.stop(%Helyx.Session{id: id, core: c.core})
     assert catch_exit(info(down, state)) == {:session_down, :session_not_found}
+  end
+
+  # A seq above the last event makes the server answer `after` with a
+  # snapshot (wire-protocol.md, "Join, pages, and replay").
+  test "a snapshot reconnect keeps the picker of the same ask; another ask gets a fresh one", c do
+    question = fn text ->
+      %{
+        "question" => text,
+        "header" => "Pick",
+        "multi_select" => false,
+        "options" => [
+          %{"label" => "a", "description" => "A"},
+          %{"label" => "b", "description" => "B"}
+        ]
+      }
+    end
+
+    call = %Message.ToolCall{
+      id: "q1",
+      name: "question",
+      arguments: %{"questions" => [question.("One?"), question.("Two?")]}
+    }
+
+    :ok = Fake.script(c.core, "ask", [[call], ["Done."]])
+    {conn, _ref} = connect(c.port)
+    {:ok, id} = Connection.start(conn, cwd: c.cwd, model: "fake/ask")
+    reconnect = fn -> Wire.connect({127, 0, 0, 1}, c.port, fn -> "token" end, wait_ms()) end
+    state = mount!(%Link{conn: conn, id: id}, c.cwd, reconnect: reconnect)
+    state = state |> command("go") |> until(&match?(%Event{type: :ask}, &1))
+
+    # The answer of the first question, then unsent text on the second.
+    state = state |> key("down") |> key("enter")
+    state = Enum.reduce(~w(x y), state, &key(&2, &1))
+    picker = state.question
+    assert %{at: 1, answers: [_], other: "xy"} = picker
+
+    down = lose(state)
+    state = branch_reply(info(down, put_in(state.vm.seq, state.vm.seq + 1_000)))
+    assert List.last(ViewModel.cells(state.vm)) == {:infos, ["reconnected"]}
+    assert state.question == picker
+
+    down = lose(state)
+    other = put_in(state.question.ask_id, "another")
+    state = branch_reply(info(down, %{other | vm: %{other.vm | seq: other.vm.seq + 1_000}}))
+    assert %{ask_id: ask, at: 0, answers: [], other: ""} = state.question
+    assert ask == picker.ask_id
   end
 
   test "the end of the session and the end of the connection end the TUI", c do
