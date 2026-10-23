@@ -263,7 +263,7 @@ Notes on the codec:
 
 ## Replaced mechanism
 
-1. **The full snapshot of every subscribe** (`Events.snapshot/1` before #658). A wire subscribe gets a tail snapshot with the usage totals and the context state as fields (#658). `Helyx.Session.subscribe/1` with no `tail` keeps the full snapshot for a client in the node until #662.
+1. **The full snapshot of every subscribe** (`Events.snapshot/1` before #658). A wire subscribe gets a tail snapshot with the usage totals and the context state as fields (#658). `Helyx.Session.subscribe/1` with no `tail` keeps the full snapshot for a client in the node. From #809 the TUI subscribes only over the wire; the callers in the node with no `tail` are print mode (`CodingAgent.Print`), which reads the queue and `persisting` of the snapshot, the agent tool (`Helyx.Tool.Agent`), which reads none of it, the dev task `mix helyx.graph` (`apps/coding_agent/dev`), which reads none of it, and tests. No caller needs the transcript of the snapshot, and the rule stays: a print run that resumes a long session copies its transcript once.
 2. **Reconnect with a new full snapshot** (ADR 0006 §3). Replaced by the replay ring and `after` (#659). The new snapshot still replaces all client state when the ring cannot serve the interval.
 3. **The end signal as a `:DOWN`** (`docs/features/end-signal.md`). It stays for a client in the node. On the wire, the subscription process turns the `:DOWN` into `session_end`; it is the one process that sees both the events of the session and the `:DOWN`, and the session sends its last event before it dies, so `session_end` comes last (O5).
 4. **`send/2` with no bound** (`events.ex:66`). Replaced by the credits (#659); the `:slow` end is a new item of the closed list of ADR 0006 §2.

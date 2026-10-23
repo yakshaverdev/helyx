@@ -36,7 +36,7 @@ defmodule CodingAgentTest do
   @tag :tmp_dir
   test "run/1 rejects a bad model ref and stops the Core it started", %{tmp_dir: dir} do
     assert {:error, {:invalid_model_ref, "not-a-ref"}} =
-             CodingAgent.run(model: "not-a-ref", cwd: dir, sessions_dir: dir)
+             CodingAgent.run(model: "not-a-ref", cwd: dir, sessions_dir: dir, prompt: "p")
 
     assert Process.whereis(Helyx.Core) == nil
   end

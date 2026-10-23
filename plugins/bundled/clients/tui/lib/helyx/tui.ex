@@ -20,19 +20,19 @@ defmodule Helyx.TUI do
   The terminal interface, an `ExRatatui.App` in the alternate screen.
 
   The TUI subscribes to one session at a time and renders from `Helyx.TUI.ViewModel`,
-  a pure fold over the session's events. It holds no session state of its own. It runs in
-  the node of its Core, or over the wire on the server of the data folder
-  (`docs/features/tui-attach.md`), whose handshake checks the protocol. Typing fills the
-  composer (`Helyx.TUI.Composer`), at most 8 lines high; a paste of more than 5 lines shows
-  as one marker and is sent in full, and a rejected send stays in the composer. `/help`
-  lists the slash commands (`Helyx.TUI.Command`) and these keys, with the full rules in
+  a pure fold over the session's events. It holds no session state of its own. It runs
+  over the wire on the server of the data folder (`docs/features/tui-attach.md`), whose
+  handshake checks the protocol. Typing fills the composer (`Helyx.TUI.Composer`), at
+  most 8 lines high; a paste of more than 5 lines shows as one marker and is sent in
+  full, and a rejected send stays in the composer. `/help` lists the slash commands
+  (`Helyx.TUI.Command`) and these keys, with the full rules in
   `docs/features/coding-agent.md`, "TUI":
 
   #{Enum.map_join(@keys, "\n", fn {key, text} -> "* #{key}: #{text}" end)}
 
   Start it with `run/1`, which blocks until the user quits:
 
-      Helyx.TUI.run(session: session)
+      Helyx.TUI.run(session: %Helyx.TUI.Link{conn: conn, id: id})
   """
 
   use ExRatatui.App
@@ -54,17 +54,16 @@ defmodule Helyx.TUI do
   @doc """
   Starts the TUI for a session and blocks until the user quits.
 
-  The options are `:session`, a `Helyx.Session` or a `Helyx.TUI.Link` with
-  the connection that the caller opened, which the TUI takes; `:resumed`
-  (true when the session was resumed: an information cell "resumed
-  session" follows the history), `:cwd` (the directory that the footer
-  shows and the folder of `/new` and `/resume`, default `File.cwd!/0`),
-  `:sessions_dir` (where `/new` saves and `/resume` lists; without it
-  `/new` saves nothing and `/resume` lists nothing), `:reconnect` (over the
-  wire, the connect after a lost connection: `{:ok, socket}`, owned by the
-  caller, or `{:error, text}`), and those of `ExRatatui.App`. The scroll
-  keys read the terminal size through `:terminal_size_fn`, the option of
-  `ExRatatui.Server`; the default is `ExRatatui.terminal_size/0`.
+  The options are `:session`, a `Helyx.TUI.Link` with the connection that
+  the caller opened (`Helyx.TUI.Wire.Connection`), which the TUI takes;
+  `:resumed` (true when the session was resumed: an information cell
+  "resumed session" follows the history), `:cwd` (the directory that the
+  footer shows and the folder of `/new` and `/resume`, default
+  `File.cwd!/0`), `:reconnect` (the connect after a lost connection:
+  `{:ok, socket}`, owned by the caller, or `{:error, text}`), and those of
+  `ExRatatui.App`. The scroll keys read the terminal size through
+  `:terminal_size_fn`, the option of `ExRatatui.Server`; the default is
+  `ExRatatui.terminal_size/0`.
   """
   @spec run(keyword()) :: :ok | {:error, term()}
   def run(opts), do: Start.run(fn -> start_link(Keyword.put_new(opts, :mouse_capture, true)) end)
@@ -79,7 +78,6 @@ defmodule Helyx.TUI do
       session_ref: nil,
       instance_id: nil,
       vm: nil,
-      sessions_dir: opts[:sessions_dir],
       reconnect: opts[:reconnect],
       switch: nil,
       list: nil,
@@ -109,15 +107,10 @@ defmodule Helyx.TUI do
     {:ok, %{state | vm: Enum.reduce(notices, state.vm, &ViewModel.notice(&2, &1))}}
   end
 
+  # The `session_end` of the subscription, and the end of the connection.
   @impl true
-  def handle_info({:DOWN, ref, :process, _pid, reason}, %{session_ref: ref} = state),
-    do: {:noreply, Switch.down(state, reason)}
-
-  def handle_info({:helyx_end, ref, :slow}, %{session_ref: ref}), do: exit({:session_down, :slow})
-
-  # Over the wire: the `session_end` of the subscription, and the end of the connection.
   def handle_info({:helyx_end, sub, reason}, %{session_ref: sub} = state),
-    do: {:noreply, Switch.down(state, {:session_end, reason})}
+    do: {:noreply, Switch.down(state, reason)}
 
   # A reconnect can replay the end of a turn, so the branch is read again.
   def handle_info({:DOWN, _ref, :process, conn, reason}, %{session: %Link{conn: conn}} = state),
@@ -304,7 +297,7 @@ defmodule Helyx.TUI do
     do: %{restore(state) | vm: ViewModel.info(state.vm, Command.help(@keys))}
 
   defp run_command({:resume, ""}, state),
-    do: %{restore(state) | list: SessionList.new(state.session, state.sessions_dir, state.cwd)}
+    do: %{restore(state) | list: SessionList.new(state.session, state.cwd)}
 
   defp run_command(command, state) do
     case Command.run(command, state.session) do
@@ -387,14 +380,12 @@ defmodule Helyx.TUI do
 
   defp sync_busy(state), do: %{state | busy: Footer.busy(state.busy, state.vm)}
 
-  # At quit, a switch that runs ends, and a session that it opened stays
-  # until Core stops. The turn of the current session aborts before Core
-  # stops, and runs on in the server (`Link.quit/1`); ExRatatui has
+  # At quit, a switch that runs ends, and a session that it opened runs on
+  # in the server, as the current one does (decision 8); ExRatatui has
   # restored the terminal.
   @impl true
   def terminate(_reason, state) do
     if state.switch, do: Task.shutdown(state.switch.task, :brutal_kill)
-    _ = Link.quit(state.session)
     :ok
   end
 end

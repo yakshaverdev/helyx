@@ -32,19 +32,16 @@ defmodule Helyx.TUI.SessionList do
           empty: String.t()
         }
 
-  # The other sessions of `cwd` than `session`. Without a sessions
-  # directory nothing is saved in the node, so no session is listed. The
-  # scan of a full folder takes more than one frame (#667), and over the
-  # wire it is a request, so it runs in a Task: `Helyx.TUI` hands its
-  # answer to `read/2`, and `close/1` stops it.
-  @spec new(Link.session(), Path.t() | nil, Path.t()) :: t()
-  def new(%Helyx.Session{}, nil, _cwd), do: %__MODULE__{items: []}
+  # The other sessions of `cwd` than `session`. The list is a request of
+  # the wire, and the scan of a full folder takes more than one frame
+  # (#667), so it runs in a Task: `Helyx.TUI` hands its answer to
+  # `read/2`, and `close/1` stops it.
+  @spec new(Link.t(), Path.t()) :: t()
+  def new(session, cwd),
+    do: %__MODULE__{items: nil, task: Task.async(fn -> items(session, cwd) end)}
 
-  def new(session, dir, cwd),
-    do: %__MODULE__{items: nil, task: Task.async(fn -> items(session, dir, cwd) end)}
-
-  defp items(session, dir, cwd) do
-    with {:ok, summaries} <- Link.saved(session, dir, cwd),
+  defp items(session, cwd) do
+    with {:ok, summaries} <- Link.saved(session, cwd),
          do: for(s <- summaries, s.id != session.id, do: {s.id, line(s, false)})
   end
 
@@ -56,8 +53,6 @@ defmodule Helyx.TUI.SessionList do
   def read(list, items) when is_list(items), do: %{list | items: items}
 
   @spec close(t()) :: nil
-  def close(%__MODULE__{task: nil}), do: nil
-
   def close(%__MODULE__{task: task}) do
     Task.shutdown(task, :brutal_kill)
     nil

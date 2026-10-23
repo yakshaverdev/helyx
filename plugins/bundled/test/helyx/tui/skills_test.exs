@@ -32,7 +32,11 @@ defmodule Helyx.TUI.SkillsTest do
     {:ok, session} = Helyx.Session.start(core, model: "fake/skills", cwd: dir)
 
     {:ok, state} =
-      TUI.mount(session: session, cwd: dir, terminal_size_fn: fn -> {:error, :no_tty} end)
+      TUI.mount(
+        session: Helyx.Test.TUIWire.link(session),
+        cwd: dir,
+        terminal_size_fn: fn -> {:error, :no_tty} end
+      )
 
     %{state: state}
   end

@@ -1,6 +1,6 @@
 # Coding agent
 
-A terminal coding agent on Helyx: Core with the bundled plugins, one session, and the TUI. The design is in `docs/features/coding-agent.md`.
+A terminal coding agent on Helyx: the TUI over the wire on the server of the data folder, which runs Core with the bundled plugins. The design is in `docs/features/coding-agent.md` and `docs/features/tui-attach.md`.
 
 ## Install
 
@@ -22,7 +22,7 @@ helyx --version          # the version and the commit of the build
 helyx --help             # the usage, the switches, and the exit statuses
 ```
 
-`directory` defaults to the current folder. When `helyx serve` runs for the data folder, `helyx` reattaches to the newest session of the folder, and `--new` or `--model` starts a new one (`docs/features/tui-attach.md`, decision 16). `mix helyx` in `apps/coding_agent` takes the same arguments and runs the source tree. The design is in `docs/features/local-release.md`.
+`directory` defaults to the current folder. When `helyx serve` runs for the data folder, `helyx` reattaches to the newest session of the folder, and `--new` or `--model` starts a new one (`docs/features/tui-attach.md`, decision 16). `mix helyx` in `apps/coding_agent` takes the same arguments and runs the source tree; with no server, it runs one in its own VM until the TUI ends (decision 12). The design is in `docs/features/local-release.md`.
 
 ## Print mode
 

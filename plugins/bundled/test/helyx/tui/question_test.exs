@@ -34,7 +34,8 @@ defmodule Helyx.TUI.QuestionTest do
     call = %ToolCall{id: "q1", name: "question", arguments: %{"questions" => questions}}
     :ok = Fake.script(core, model, [[call], ["Done."]])
     {:ok, session} = Helyx.Test.SavedSession.start(core, "fake/#{model}")
-    {:ok, state} = TUI.mount(session: session, terminal_size_fn: fn -> {80, 24} end)
+    link = Helyx.Test.TUIWire.link(session)
+    {:ok, state} = TUI.mount(session: link, terminal_size_fn: fn -> {80, 24} end)
     assert_receive {ref, _branch} when ref == state.branch_ref
     :ok = Session.prompt(session, "go")
     until(state, &(&1.question != nil))
@@ -128,7 +129,8 @@ defmodule Helyx.TUI.QuestionTest do
     state = asked(core, [item("Which one?", ~w(a b))])
     assert [%{ask_id: id, call_id: "q1"}] = state.vm.asks
     assert state.question.ask_id == id
-    :ok = Session.answer(state.session, id, %{"answers" => [%{"selected" => ["a"]}]})
+    session = %Session{id: state.session.id, core: core}
+    :ok = Session.answer(session, id, %{"answers" => [%{"selected" => ["a"]}]})
     state = until(state, &(&1.question == nil))
     assert state.vm.asks == []
     assert result(ended(state)) == "The user answered:\n\nQ: Which one?\nA: a"
@@ -151,7 +153,7 @@ defmodule Helyx.TUI.QuestionTest do
 
     assert state.vm.reason == "not sent: the answers are over 16 KiB"
     assert state.question.at == 0
-    assert Helyx.Test.Events.snapshot(state.session).asks != []
+    assert Helyx.Test.Events.snapshot(%Session{id: state.session.id, core: core}).asks != []
   end
 
   test "an answer goes on only with room for each later question", %{core: core} do

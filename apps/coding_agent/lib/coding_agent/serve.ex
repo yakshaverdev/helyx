@@ -51,26 +51,46 @@ defmodule CodingAgent.Serve do
   """
   @spec run(keyword()) :: :ok | {:error, String.t()}
   def run(opts) do
-    group_leader = Process.group_leader()
-
-    # A task of the supervisor prints where its supervisor prints, so the
-    # serve process takes the group leader of the caller.
-    task =
-      Task.Supervisor.async_nolink(
-        CodingAgent.Servers,
-        fn ->
-          Process.group_leader(self(), group_leader)
-          serve(opts)
-        end,
-        # Each step of the stop has its own bound; a kill would skip the
-        # stop of Core.
-        shutdown: :infinity
-      )
-
-    case Task.yield(task, :infinity) do
+    case Task.yield(start(opts, Process.group_leader()), :infinity) do
       {:ok, result} -> result
       {:exit, reason} -> {:error, Helyx.Reason.text(reason)}
     end
+  end
+
+  @doc """
+  Starts the server as `run/1` does, with its output on the IO device
+  `output`, and returns its Task, which the caller owns, with no wait:
+  its result is the result of `run/1`. `stop/1` stops it.
+  `CodingAgent.Attach.serve/3` runs it in the VM of the TUI when no
+  launcher is set (`docs/features/tui-attach.md`, decision 12).
+  """
+  @spec start(keyword(), IO.device()) :: Task.t()
+  def start(opts, output) do
+    # A task of the supervisor prints where its supervisor prints, so the
+    # serve process takes the device of the caller as its group leader.
+    Task.Supervisor.async_nolink(
+      CodingAgent.Servers,
+      fn ->
+        Process.group_leader(self(), output)
+        serve(opts)
+      end,
+      # Each step of the stop has its own bound; a kill would skip the
+      # stop of Core.
+      shutdown: :infinity
+    )
+  end
+
+  @doc """
+  Stops the server of `start/2`, in order, as the stop of the VM does,
+  and returns when it has ended. A server that ended already is left as
+  it is.
+  """
+  @spec stop(Task.t()) :: :ok
+  def stop(task) do
+    _ = Task.Supervisor.terminate_child(CodingAgent.Servers, task.pid)
+    # The monitor of the caller goes, and with it the reply of the Task.
+    _ = Task.ignore(task)
+    :ok
   end
 
   # The serve process traps exits: the end of Core, of the transport, or of

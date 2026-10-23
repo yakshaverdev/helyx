@@ -307,7 +307,10 @@ defmodule CodingAgent.PrintTest do
         assert_received {:halt, 1}
       end
 
-      assert {1, "", ^expected} = io("", fn -> CLI.main(["--session", id]) end)
+      # Without -p the TUI asks the server, whose `start_failed` holds the
+      # term (docs/features/tui-attach.md, Accepted holes).
+      wire = ~s(helyx: could not start the agent: {:session_locked, "#{id}"}\n)
+      assert {1, "", ^wire} = io("", fn -> CLI.main(["--session", id]) end)
       Helyx.Session.Lock.release(lock)
     end
 
