@@ -4,8 +4,9 @@ defmodule Helyx.TUI.SecondClientTest do
   # joins during streaming, disconnects (its process ends), subscribes again,
   # and sends a steer. The test process is the client that watched from the
   # start. Each join checks the rule of ADR 0006 section 3 against it: the
-  # view models are equal except for notices and the partial reply of an
-  # aborted or failed turn (`transcript/1`).
+  # view models are equal except for notices and information cells
+  # (`transcript/1`). The partial reply of an aborted or failed turn is in
+  # the transcript, so the comparison includes it.
   use ExUnit.Case, async: true
 
   alias Helyx.{Event, Message, Session}
@@ -85,8 +86,7 @@ defmodule Helyx.TUI.SecondClientTest do
 
   # The second client joins while the reply streams, checks the rule, and
   # disconnects. The gate is released after it is gone. A snapshot shows no
-  # notice and no partial reply of a failed or aborted turn, so only the
-  # live side leaves them out.
+  # notice, so `transcript/1` leaves the notices out of both sides.
   defp join_during_streaming(session, live) do
     assert_receive {:waiting, stream}
     {client, snapshot} = LateClient.connect(session)
