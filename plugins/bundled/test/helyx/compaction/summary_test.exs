@@ -178,6 +178,34 @@ defmodule Helyx.Compaction.SummaryTest do
     assert prompt =~ "The user asks: the plan"
   end
 
+  # #838: the keep counts only the messages since the last summary.
+  test "a manual summary after a summary with less than the keep after it has nothing to do" do
+    old = [user("u1", words(30_000)), assistant("a1", "x", usage(1, 200_000))]
+    kept = [user("u2", "two"), assistant("a2", "x", usage(2, 200_000)), user("u3", "three")]
+    summary = %Helyx.Summary{text: "old summary", first_kept_id: "u2", tokens_before: 1}
+    sent = compact(old ++ kept, trigger: nil, summary: summary)
+
+    # As with no summary over the kept part alone.
+    assert compact(kept, trigger: :manual) == %Context{system: "sys", messages: kept}
+    assert compact(old ++ kept, trigger: :manual, summary: summary) == sent
+    assert compact(old ++ kept, trigger: :auto, summary: summary) == sent
+
+    # At the keep after the summary ("three" is 1 token), a cut; one token
+    # under it, none.
+    at = [user("u4", words(19_999))]
+
+    assert {:summarize, %Plan{first_kept_id: "u3", context: context}} =
+             compact(old ++ kept ++ at, trigger: :manual, summary: summary)
+
+    assert [prompt] = texts(context)
+    assert prompt =~ "[User]: two"
+    refute prompt =~ "abcd"
+
+    under = [user("u4", words(19_998))]
+    under_sent = compact(old ++ kept ++ under, trigger: nil, summary: summary)
+    assert compact(old ++ kept ++ under, trigger: :manual, summary: summary) == under_sent
+  end
+
   defmodule DropA1 do
     @moduledoc false
     # A ModelContext that removes the message "a1".

@@ -27,7 +27,8 @@ defmodule Helyx.Compaction.Summary do
   returns an error.
 
   The summary keeps about #{@keep_tokens} recent tokens, cut only at a user
-  or assistant message, so a call keeps its results. Its input is the
+  or assistant message, so a call keeps its results; the keep counts only
+  the messages since the last summary. Its input is the
   messages since the last summary, as text with each tool result cut to
   #{@max_result_bytes} bytes, and the last summary, which it updates.
   """
@@ -131,12 +132,15 @@ defmodule Helyx.Compaction.Summary do
   # The index of the first kept message: the first user or assistant
   # message with an id after `start`, at or after the last index from which the
   # messages to the end hold the keep, else the last such message. Nil
-  # when the messages hold less than the keep, or no message can start
-  # the kept part.
+  # when the messages from `start` on hold less than the keep, or no
+  # message can start the kept part.
   defp cut(messages, start) do
-    sizes = Enum.map(messages, &div(bytes(&1), 4))
+    # Only the messages from `start` on count: the part before it is
+    # summarized already (#838). `keep_from` counts down from the last
+    # index of `messages`, so `from` stays an index into `messages`.
+    sizes = messages |> Enum.drop(start) |> Enum.map(&div(bytes(&1), 4))
 
-    with from when from != nil <- keep_from(Enum.reverse(sizes), length(sizes) - 1, 0) do
+    with from when from != nil <- keep_from(Enum.reverse(sizes), length(messages) - 1, 0) do
       cuts =
         for {%Message{role: role, id: id}, index} <- Enum.with_index(messages),
             index > start and role in [:user, :assistant] and is_binary(id),
