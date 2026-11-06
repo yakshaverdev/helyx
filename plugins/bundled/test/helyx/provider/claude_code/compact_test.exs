@@ -13,6 +13,10 @@ defmodule Helyx.Provider.ClaudeCode.CompactTest do
 
   @moduletag :tmp_dir
 
+  # A hang guard for the fake program's turns: far above the local reply, so
+  # a loaded machine does not fail a test.
+  @load_ms 30_000
+
   setup {Helyx.Test.ClaudeCodeFake, :setup_fake}
 
   defp status(fields),
@@ -58,7 +62,12 @@ defmodule Helyx.Provider.ClaudeCode.CompactTest do
     session = start(ctx)
     prompt(session, "hello")
     assert :ok = Session.compact(session, "keep it short")
-    events = collect_until(:turn_end)
+    events = collect_until(:turn_end, @load_ms)
+
+    # The compact aborts the running prompt turn first: that turn_end has no
+    # compaction event, so the next turn_end is the compaction turn's.
+    events =
+      if of_type(events, :compaction) == [], do: collect_until(:turn_end, @load_ms), else: events
 
     assert [%{trigger: :manual, tokens_before: 29_557, tokens_after: 3_926}] =
              of_type(events, :compaction)
