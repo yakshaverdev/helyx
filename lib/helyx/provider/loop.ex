@@ -197,8 +197,9 @@ defmodule Helyx.Provider.Loop do
 
   defp event({:tool_call, %Message.ToolCall{} = call}, state), do: call(call, state)
 
-  # Core checks the payload.
-  defp event({tag, _} = event, state) when tag in [:text_delta, :thinking_delta, :tool_call],
+  # Core checks the payload. A `{:tool_call, term}` that is not a
+  # `%Message.ToolCall{}` is a contract break, as the moduledoc says.
+  defp event({tag, _} = event, state) when tag in [:text_delta, :thinking_delta],
     do: {:ok, [{:event, state.turn, event}], %{state | content?: true}}
 
   defp event(event, _state), do: bad(event)
