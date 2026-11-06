@@ -313,6 +313,19 @@ defmodule Helyx.Message do
     for %Text{text: text} <- content, into: "", do: text
   end
 
+  @doc """
+  The bytes of the text, the thinking, and the JSON arguments of the tool
+  calls of `message`. The context estimate counts this way.
+  """
+  @spec bytes(t()) :: non_neg_integer()
+  def bytes(%__MODULE__{content: content}), do: Enum.sum_by(content, &block_bytes/1)
+
+  defp block_bytes(%Text{text: text}), do: byte_size(text)
+  defp block_bytes(%Thinking{thinking: thinking}), do: byte_size(thinking)
+
+  defp block_bytes(%ToolCall{name: name, arguments: arguments}),
+    do: byte_size(name) + byte_size(JSON.encode!(arguments))
+
   @doc false
   # The JSON map of a message: the session file entry without its `type`, and
   # the wire message (`docs/features/wire-protocol.md`, "Codec"). One owner

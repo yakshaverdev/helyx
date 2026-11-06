@@ -101,8 +101,8 @@ defmodule Helyx.Session.Totals do
 
   def context(nil, %Message{}), do: nil
 
-  def context(context, %Message{content: content}),
-    do: %{context | bytes: Enum.reduce(content, context.bytes, &(bytes(&1) + &2))}
+  def context(context, %Message{} = message),
+    do: %{context | bytes: context.bytes + Message.bytes(message)}
 
   @doc """
   The context state after a compaction: the tokens become `tokens_after`
@@ -117,10 +117,4 @@ defmodule Helyx.Session.Totals do
 
   defp add_cost(totals, %{cost: cost, cost_kind: kind}),
     do: %{totals | cost: (totals.cost || 0) + cost, list: totals.list or kind == :list}
-
-  defp bytes(%Message.Text{text: text}), do: byte_size(text)
-  defp bytes(%Message.Thinking{thinking: thinking}), do: byte_size(thinking)
-
-  defp bytes(%Message.ToolCall{name: name, arguments: args}),
-    do: byte_size(name) + byte_size(JSON.encode!(args))
 end

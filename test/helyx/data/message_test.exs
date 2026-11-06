@@ -107,4 +107,16 @@ defmodule Helyx.MessageTest do
                ~r/^\[cut to \d+ of 180000 bytes, start and end kept\]\n\x{FFFD}+\n\[… cut …\]\n\x{FFFD}+$/u
     end
   end
+
+  test "bytes counts text, thinking, and the JSON arguments of a tool call" do
+    call = %Message.ToolCall{id: "c", name: "bash", arguments: %{"cmd" => "ls"}}
+
+    message = %Message{
+      role: :assistant,
+      content: [%Message.Text{text: "ab"}, %Message.Thinking{thinking: "cd"}, call]
+    }
+
+    assert Message.bytes(message) ==
+             2 + 2 + byte_size("bash") + byte_size(JSON.encode!(call.arguments))
+  end
 end

@@ -139,7 +139,7 @@ defmodule Helyx.Compaction.Summary do
     # Only the messages from `start` on count: the part before it is
     # summarized already (#838). `keep_from` counts down from the last
     # index of `messages`, so `from` stays an index into `messages`.
-    sizes = messages |> Enum.drop(start) |> Enum.map(&div(bytes(&1), 4))
+    sizes = messages |> Enum.drop(start) |> Enum.map(&div(Message.bytes(&1), 4))
 
     with from when from != nil <- keep_from(Enum.reverse(sizes), length(messages) - 1, 0) do
       cuts =
@@ -204,15 +204,7 @@ defmodule Helyx.Compaction.Summary do
   defp estimate(_context, sent, _summary), do: size(sent)
 
   defp size(%Context{system: system, messages: messages}),
-    do: div(byte_size(system || "") + Enum.sum_by(messages, &bytes/1), 4)
-
-  defp bytes(%Message{content: content}), do: Enum.sum_by(content, &block_bytes/1)
-
-  defp block_bytes(%Message.Text{text: text}), do: byte_size(text)
-  defp block_bytes(%Message.Thinking{thinking: text}), do: byte_size(text)
-
-  defp block_bytes(%Message.ToolCall{name: name, arguments: args}),
-    do: byte_size(name) + byte_size(JSON.encode!(args))
+    do: div(byte_size(system || "") + Enum.sum_by(messages, &Message.bytes/1), 4)
 
   # The window of the last usage of this model, which the provider fills
   # from the serving side or `Helyx.ModelInfo`; else of config, as only the
