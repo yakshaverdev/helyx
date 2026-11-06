@@ -8,11 +8,12 @@ defmodule Helyx.Session.Server.UIBlocks do
   # for the snapshot. The blocks of a call leave when its result joins the
   # transcript (`call_end/2`); the turn takes the rest with it.
   #
-  # `helyx_calls` holds an entry for each Helyx tool request of the turn whose
-  # result has not joined the transcript: the UI blocks of the hands'
-  # result, `[]` until it comes. The result message gets them when the
-  # provider's `tool_result` event joins it (`result_blocks/2`). An entry
-  # also names the call as a Helyx call, so a provider block never names it.
+  # `helyx_calls` holds an entry for each Helyx tool request of the turn
+  # whose call was open at the request and whose result has not joined the
+  # transcript: the UI blocks of the hands' result, `[]` until it comes.
+  # The result message gets them when the provider's `tool_result` event
+  # joins it (`result_blocks/2`). The entry is the window of the call's
+  # blocks: a tool's block only inside it, a provider block never.
 
   import Helyx.Session.Server.Events, only: [emit: 3]
 
@@ -24,11 +25,21 @@ defmodule Helyx.Session.Server.UIBlocks do
   # A Helyx tool request of the turn. A call that has blocks of the
   # provider is one that the provider ran itself: it names it in a request
   # too, a contract break (`:shown`), and the session stops the provider.
+  # Only a call that is open gets a window. A request for a call with no
+  # open tool call, one that has its result or that was never streamed,
+  # runs as before (#369) and shows no block, so no block comes after a
+  # result, and every entry ends with its call's result.
   def request(%State{activity: %Turn{} = turn} = state, call_id) do
-    if Enum.any?(turn.ui_blocks, fn {{id, _key}, _block} -> id == call_id end),
-      do: :shown,
-      else:
+    cond do
+      Enum.any?(turn.ui_blocks, fn {{id, _key}, _block} -> id == call_id end) ->
+        :shown
+
+      open_call?(state, call_id) ->
         {:ok, %{state | activity: %{turn | helyx_calls: Map.put(turn.helyx_calls, call_id, [])}}}
+
+      true ->
+        {:ok, state}
+    end
   end
 
   # The blocks of the hands' result of a running Helyx call. A call whose
@@ -91,10 +102,13 @@ defmodule Helyx.Session.Server.UIBlocks do
     end
   end
 
-  defp provider_call?(%State{activity: %Turn{} = turn} = state, call_id) do
-    not is_map_key(turn.helyx_calls, call_id) and
-      (Enum.any?(turn.partial || [], &match?(%Helyx.Message.ToolCall{id: ^call_id}, &1)) or
-         Enum.any?(Transcript.open_calls(state.transcript), &(&1.id == call_id)))
+  defp provider_call?(%State{activity: %Turn{} = turn} = state, call_id),
+    do: not is_map_key(turn.helyx_calls, call_id) and open_call?(state, call_id)
+
+  # A call of the open assistant message, or of the transcript with no result.
+  defp open_call?(%State{activity: %Turn{partial: partial}} = state, call_id) do
+    Enum.any?(partial || [], &match?(%Helyx.Message.ToolCall{id: ^call_id}, &1)) or
+      Enum.any?(Transcript.open_calls(state.transcript), &(&1.id == call_id))
   end
 
   defp put(%State{activity: %Turn{ui_blocks: blocks} = turn} = state, call_id, key, block) do

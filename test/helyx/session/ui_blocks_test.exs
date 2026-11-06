@@ -292,6 +292,56 @@ defmodule Helyx.Session.UIBlocksTest do
       assert of_type(events, :ui_block) == []
     end
 
+    # Round 3 of the #878 review: a request for a call with no open tool
+    # call runs (#369), but only an open call gets a window.
+    test "a request for an answered call shows no block after the call's result",
+         %{core: core} do
+      turn = started(core)
+      request(turn, "c1", "result", %{"mode" => "n.1"})
+      assert echo_result(turn, "c1") == {:ok, "r"}
+      collect_until(:tool_execution_end)
+
+      events(turn.proc, turn.turn_id, [
+        {:tool_request, "c1", "show", %{"shows" => [["k", "again"]]}}
+      ])
+
+      assert_receive {:conn, :tool_result, _, {:tool_result, _, "c1", result}}
+      assert result == {:ok, "{:error, :not_running}"}
+      # The echo finds no open call and is dropped.
+      events(turn.proc, turn.turn_id, [{:tool_result, "c1", result}])
+      assert sync(turn).ui_blocks == []
+      assert of_type(finish(turn), :ui_block) == []
+      assert snapshot(turn.session).ui_blocks == []
+    end
+
+    test "a request before its tool call gets no window: no block, and no blocks on its result",
+         %{core: core} do
+      turn = started(core)
+      events(turn.proc, turn.turn_id, [{:tool_request, "x1", "show", %{"shows" => [["k", "v"]]}}])
+      assert_receive {:conn, :tool_result, _, {:tool_result, _, "x1", shown}}
+      assert shown == {:ok, "{:error, :not_running}"}
+
+      events(turn.proc, turn.turn_id, [{:tool_request, "x2", "result", %{"mode" => "n.2"}}])
+      assert_receive {:conn, :tool_result, _, {:tool_result, _, "x2", result}}
+
+      # The calls join late: their results carry no blocks.
+      events(turn.proc, turn.turn_id, [
+        {:tool_call, %ToolCall{id: "x1", name: "show", arguments: %{}}},
+        {:tool_call, %ToolCall{id: "x2", name: "result", arguments: %{}}},
+        {:message_end, :tool_use, nil},
+        {:tool_result, "x1", shown},
+        {:tool_result, "x2", result}
+      ])
+
+      events = collect_n(:tool_execution_end, 2)
+      assert of_type(events, :ui_block) == []
+      messages = for %{message: m} <- of_type(events, :tool_execution_end), do: m
+
+      assert Enum.map(messages, & &1.tool_call_id) == ["x1", "x2"]
+      assert Enum.all?(messages, &(&1.ui_blocks == []))
+      assert of_type(finish(turn), :ui_block) == []
+    end
+
     test "8 keys pass, a known key replaces after them, a 9th key raises", %{core: core} do
       turn = started(core)
       keys = for i <- 1..8, do: ["k#{i}", "v#{i}"]
