@@ -48,6 +48,24 @@ defmodule Helyx.TUI.SkillsTest do
     assert {:notice, notice} in ViewModel.cells(state.vm)
   end
 
+  test "mount shows the notices of the caller after those of the scan", %{tmp_dir: dir} do
+    core = :"tui_notices_#{System.unique_integer([:positive])}"
+    start_supervised!({Helyx.Core, name: core, plugins: [Fake]}, id: core)
+    {:ok, session} = Helyx.Session.start(core, model: "fake/skills", cwd: dir)
+
+    {:ok, state} =
+      TUI.mount(
+        session: Helyx.Test.TUIWire.link(session),
+        cwd: dir,
+        notices: ["no log file for this run"],
+        terminal_size_fn: fn -> {:error, :no_tty} end
+      )
+
+    notices = for {:notice, text} <- ViewModel.cells(state.vm), do: text
+    assert List.last(notices) == "no log file for this run"
+    assert Enum.count(notices, &(&1 == "no log file for this run")) == 1
+  end
+
   test "/name args sends the load text and the arguments", %{state: state, tmp_dir: dir} do
     {:noreply, state} = TUI.handle_event(%Paste{content: "/#{@name} 730"}, state)
 
