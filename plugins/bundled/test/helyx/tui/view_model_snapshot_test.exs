@@ -1,9 +1,10 @@
 defmodule Helyx.TUI.ViewModelSnapshotTest do
   # `ViewModel.from_snapshot/1` against a real session: a client that
   # subscribes late shows the transcript cells that a client that watched
-  # from the start shows. Notices and the partial reply of an aborted or
-  # failed turn are not in the transcript, so each comparison leaves them
-  # out (`transcript/1`).
+  # from the start shows. Notices and information cells are not in the
+  # transcript, so each comparison leaves them out (`transcript/1`). The
+  # partial reply of an aborted or failed turn is in the transcript, so the
+  # comparison includes it.
   use ExUnit.Case, async: true
 
   alias Helyx.{Event, Message, Session}
