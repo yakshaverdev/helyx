@@ -261,6 +261,18 @@ Notes on the codec:
 - A `cost` is in USD. `elapsed_ms` is by the clock of the session; a client starts its busy clock at that age.
 - The session that a tool call starts with a parent link, such as a child of the `agent` tool, has an id that a client derives from the session id and the call id: the first 9 bytes of SHA-256 of the session id followed by the call id, as URL-safe Base64 with no padding (`Helyx.Sessions.child_id/2`, `docs/features/agent-tool.md`). No frame carries it.
 
+## Conformance fixtures
+
+`test/fixtures/wire/` holds fixtures of protocol 3 as plain JSON (#855): the frames that a client sends, each with the frames and the close code of the server; the frames that a server sends, each valid, ignored, or a contract break for a client; and folds, event sequences with the state that a client holds after them. Its `README.md` states what a conforming client or server must pass and which rules are in prose only. The transport tests run the client frames against the server, and the TUI tests run the server frames and the folds against the client and its view model, so the fixtures and the Elixir code cannot drift.
+
+What this doc does not pin down for an implementation that does not run on the BEAM. Each is open, not decided here:
+
+- **The size of a message.** The byte bounds of the tail snapshot, of a `history` page, and of the replay ring count each message or event with `:erlang.external_size/1`, the size of the term in the external format of Erlang. A server on another runtime cannot compute it, and a client cannot predict where a tail ends. A portable admission rule, such as a count over the JSON text, would be a protocol change.
+- **Replay.** The replay ring is in the memory of one session instance and bounded (1,024 events and 4 MiB). A restart of the session, a new `instance_id`, or a gap in the ring gives a tail snapshot, not the missed events. Replay is not durable; a durable replay would revise ADR 0008.
+- **The form of a model ref.** The schema gives `model` as a string. The client of the TUI also checks it as a model ref, `provider/model` with no whitespace or control character (`Helyx.ModelRef`), and ends the connection on another string.
+- **A session id.** The schema gives `id` as a string. A `resume` of an id that is not 12 URL-safe characters gets `start_failed`, not `not_found`.
+- **A request id over its bound.** A `req` whose `id` is a string of more than 64 bytes gets `bad_params` ("Bounds"), and that `res` carries the same `id`, though the schema gives the `id` of a `res` as 1 to 64 bytes.
+
 ## Replaced mechanism
 
 1. **The full snapshot of every subscribe** (`Events.snapshot/1` before #658). A wire subscribe gets a tail snapshot with the usage totals and the context state as fields (#658). `Helyx.Session.subscribe/1` with no `tail` keeps the full snapshot for a client in the node. From #809 the TUI subscribes only over the wire; the callers in the node with no `tail` are print mode (`CodingAgent.Print`), which reads the queue and `persisting` of the snapshot, the agent tool (`Helyx.Tool.Agent`), which reads none of it, the dev task `mix helyx.graph` (`apps/coding_agent/dev`), which reads none of it, and tests. No caller needs the transcript of the snapshot, and the rule stays: a print run that resumes a long session copies its transcript once.
