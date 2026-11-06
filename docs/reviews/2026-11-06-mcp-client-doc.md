@@ -51,3 +51,10 @@ Three findings in a row landed on the start of a server, so the mechanism was qu
 - A server Task monitors its source and ends with it, so a source that dies leaves no running server.
 
 The owner accepted the tool source inside the Tool interface and the restart after a cancelled call on #492 (2026-11-06); decisions 3 and 14 say so, and decision 14 no longer reads as "stops its server".
+
+## Gate round 1 (the orchestrator's Codex gate), confirmed by the orchestrator
+
+| # | Finding | Resolution |
+| - | ------- | ---------- |
+| 1 | [high] `launch/1` returned a pid from the hands, and the hands run `Release.run/4` in their own process for up to `release_ms` (`hands.ex:302-308`): a launch during a release blocked the source, its call routing, and the timers of its other servers | `launch/1` is an asynchronous request with a reply message, as `start_provider/3` is (`hands.ex:82-86`). The source sets each server's timer and absolute deadline at the send of the request, so no wait in the hands moves them; a late `{:ok, pid}` after the timer gets its Task killed. Pending requests and live server Tasks of a source: 16 together, one per server. Tests named in slice 2 |
+| 2 | [medium] `deferred/1` waited until no group was `:starting`, so a search for a ready server B waited up to 30 s for a stalled server A | `deferred/2` takes a registry version and answers at once when the registry changed; the search ranks the ready groups first and waits, one change at a time, only when it has no match while a group is starting or a source is pending. New accepted hole: a better match in a server still starting is not in an answer that a ready server gave. The slice 8 test: B is activated and called while A stays in its handshake |
