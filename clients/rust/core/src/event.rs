@@ -6,8 +6,8 @@ use crate::check::{
     Broken, Checked, boolean, field, int_key, int_or_null, list_of, object, one_of, optional,
     optional_one_of, string, string_or_null,
 };
+use crate::json::Json;
 use crate::message::{Ask, Block, Message, Queue, Role, parse_tool_call};
-use serde_json::{Map, Value};
 
 /// What `message_end` says of a turn that did not end well.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -69,7 +69,7 @@ pub struct Event {
 
 /// Checks an event. The envelope is checked for every event, so an event of
 /// a type that the client does not know still has a valid `seq`.
-pub fn parse_event(value: &Value) -> Checked<Event> {
+pub fn parse_event(value: &Json) -> Checked<Event> {
     let map = object(value, "event")?;
     let kind = string(map, "type", "event type")?;
     let data = object(field(map, "data", "event data")?, "event data")?;
@@ -82,12 +82,12 @@ pub fn parse_event(value: &Value) -> Checked<Event> {
     })
 }
 
-fn message(data: &Map<String, Value>, what: &'static str) -> Checked<Message> {
+fn message(data: &Json, what: &'static str) -> Checked<Message> {
     Message::parse(field(data, "message", what)?)
 }
 
 /// `message` of `data`, which must have `role`.
-fn message_with(data: &Map<String, Value>, role: Role, what: &'static str) -> Checked<Message> {
+fn message_with(data: &Json, role: Role, what: &'static str) -> Checked<Message> {
     has_role(message(data, what)?, role, what)
 }
 
@@ -97,7 +97,7 @@ fn has_role(message: Message, role: Role, what: &'static str) -> Checked<Message
         .ok_or(Broken(what))
 }
 
-fn parse_message_error(value: &Value) -> Checked<MessageError> {
+fn parse_message_error(value: &Json) -> Checked<MessageError> {
     let error = object(value, "message_end error")?;
     let kind = one_of(error, "kind", &["aborted", "failed"], "message_end error")?;
     Ok(match kind {
@@ -107,10 +107,10 @@ fn parse_message_error(value: &Value) -> Checked<MessageError> {
 }
 
 /// The delta of a `message_update`: exactly one of its three keys.
-fn parse_delta(data: &Map<String, Value>) -> Checked<Delta> {
+fn parse_delta(data: &Json) -> Checked<Delta> {
     let mut keys = ["text_delta", "thinking_delta", "tool_call"]
         .into_iter()
-        .filter(|key| data.contains_key(*key));
+        .filter(|key| data.get(key).is_some());
     Ok(match (keys.next(), keys.next()) {
         (Some("text_delta"), None) => {
             Delta::Text(string(data, "text_delta", "text_delta")?.to_owned())
@@ -118,16 +118,17 @@ fn parse_delta(data: &Map<String, Value>) -> Checked<Delta> {
         (Some("thinking_delta"), None) => {
             Delta::Thinking(string(data, "thinking_delta", "thinking_delta")?.to_owned())
         }
-        (Some(_), None) => {
-            Delta::ToolCall(parse_tool_call(object(&data["tool_call"], "tool_call")?)?)
-        }
+        (Some(_), None) => Delta::ToolCall(parse_tool_call(object(
+            field(data, "tool_call", "tool_call")?,
+            "tool_call",
+        )?)?),
         _ => return Err(Broken("message_update")),
     })
 }
 
 /// The data of an event of type `kind`; `None` for a type that the client
 /// does not know.
-fn parse_data(kind: &str, data: &Map<String, Value>) -> Checked<Option<EventData>> {
+fn parse_data(kind: &str, data: &Json) -> Checked<Option<EventData>> {
     Ok(Some(match kind {
         "turn_start" => {
             let origins = &["provider", "compaction"];
@@ -142,14 +143,8 @@ fn parse_data(kind: &str, data: &Map<String, Value>) -> Checked<Option<EventData
                 .map(parse_message_error)
                 .transpose()?,
         },
-        // A tool result has the call id that the fold pairs it by, as in the TUI.
         "tool_execution_end" => {
-            let message = message_with(data, Role::ToolResult, "tool_execution_end")?;
-            message
-                .tool_call_id
-                .is_some()
-                .then_some(EventData::ToolExecutionEnd(message))
-                .ok_or(Broken("tool_execution_end"))?
+            EventData::ToolExecutionEnd(message_with(data, Role::ToolResult, "tool_execution_end")?)
         }
         "turn_end" => EventData::TurnEnd(
             match one_of(data, "outcome", &["done", "aborted", "error"], "turn_end")? {

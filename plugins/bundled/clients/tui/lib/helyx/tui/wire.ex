@@ -161,7 +161,7 @@ defmodule Helyx.TUI.Wire do
         :ok
 
       {:ok, %{"type" => "refused", "code" => "protocol", "server_protocol" => server}}
-      when is_integer(server) and server >= 0 ->
+      when is_integer(server) and server >= 0 and server != protocol ->
         {:error, {:refused, server}}
 
       {:error, _} = error ->

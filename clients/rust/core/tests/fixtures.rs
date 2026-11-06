@@ -8,6 +8,8 @@ use helyx_client_core::frame::{self, OPS, Reply, ServerFrame};
 use helyx_client_core::handshake::{Handshake, PROTOCOL, Step};
 use serde_json::{Value, json};
 use std::path::PathBuf;
+mod common;
+use common::{j, s};
 
 fn load(name: &str) -> Value {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -50,7 +52,7 @@ fn handshake() {
         let mut handshake = Handshake::new(None);
         let mut outcome = Ok(None);
         for frame in case["frames"].as_array().unwrap() {
-            outcome = handshake.step(frame).map(Some);
+            outcome = handshake.step(&j(frame)).map(Some);
             if !matches!(outcome, Ok(Some(Step::Send(_)))) {
                 break;
             }
@@ -70,18 +72,18 @@ fn hello_carries_the_proof_of_the_token_and_not_the_token() {
     let mut handshake = Handshake::new(Some("secret".to_owned()));
     let challenge =
         json!({"type": "challenge", "nonce": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="});
-    let Ok(Step::Send(hello)) = handshake.step(&challenge) else {
+    let Ok(Step::Send(hello)) = handshake.step(&j(&challenge)) else {
         panic!()
     };
     // base64(HMAC-SHA256(SHA-256("secret"), 32 zero bytes)), computed with Python.
     let proof = "4S4uSYUrpAhYdX9/8bK9oHO08/6IFKJIHMUaRdEiUyQ=";
     assert_eq!(
-        hello,
+        s(&hello),
         json!({"type": "hello", "protocol": 3, "proof": proof})
     );
-    assert!(!hello.to_string().contains("secret"));
+    assert!(!hello.encode().contains("secret"));
     // A second challenge is a break of O1.
-    assert!(handshake.step(&challenge).is_err());
+    assert!(handshake.step(&j(&challenge)).is_err());
 }
 
 #[test]
@@ -89,17 +91,17 @@ fn hello_with_no_token_has_no_proof() {
     let mut handshake = Handshake::new(None);
     let challenge =
         json!({"type": "challenge", "nonce": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="});
-    assert_eq!(
-        handshake.step(&challenge),
-        Ok(Step::Send(json!({"type": "hello", "protocol": 3})))
-    );
+    let Ok(Step::Send(hello)) = handshake.step(&j(&challenge)) else {
+        panic!()
+    };
+    assert_eq!(s(&hello), json!({"type": "hello", "protocol": 3}));
 }
 
 #[test]
 fn res() {
     for case in cases(&load("server_frames.json"), "res") {
         let request_op = op(case["op"].as_str().unwrap());
-        let parsed = frame::parse(&case["frame"], |id| (id == "1").then_some(request_op));
+        let parsed = frame::parse(&j(&case["frame"]), |id| (id == "1").then_some(request_op));
         let got = if parsed.is_ok() { "valid" } else { "broken" };
         assert_eq!(json!(got), case["expect"], "{}: {parsed:?}", case["name"]);
     }
@@ -108,13 +110,13 @@ fn res() {
 #[test]
 fn a_res_of_no_request_is_a_break() {
     let res = json!({"type": "res", "id": "9", "ok": true, "result": {}});
-    assert!(frame::parse(&res, |_| None).is_err());
+    assert!(frame::parse(&j(&res), |_| None).is_err());
 }
 
 #[test]
 fn event() {
     for case in cases(&load("server_frames.json"), "event") {
-        let got = match frame::parse(&case["frame"], |_| None) {
+        let got = match frame::parse(&j(&case["frame"]), |_| None) {
             Ok(ServerFrame::Event { event, .. }) if event.data.is_none() => "ignored",
             Ok(ServerFrame::Event { .. }) => "valid",
             Ok(other) => panic!("{}: {other:?}", case["name"]),
@@ -127,7 +129,7 @@ fn event() {
 #[test]
 fn session_end() {
     for case in cases(&load("server_frames.json"), "session_end") {
-        let got = match frame::parse(&case["frame"], |_| None) {
+        let got = match frame::parse(&j(&case["frame"]), |_| None) {
             Ok(ServerFrame::SessionEnd { .. }) => "valid",
             Ok(other) => panic!("{}: {other:?}", case["name"]),
             Err(_) => "broken",
@@ -163,13 +165,17 @@ fn folds() {
                 // The client sends the subscribe that the step names, with
                 // `after` of the state that it holds.
                 let session = request["params"]["session"].as_str().unwrap();
-                assert_eq!(state.subscribe_params(session), request["params"], "{name}");
+                assert_eq!(
+                    s(&state.subscribe_params(session)),
+                    request["params"],
+                    "{name}"
+                );
                 in_flight = Some((
                     request["id"].as_str().unwrap().to_owned(),
                     op(request["op"].as_str().unwrap()),
                 ));
             } else if let Some(server) = step.get("server") {
-                let parsed = frame::parse(server, |id| {
+                let parsed = frame::parse(&j(server), |id| {
                     in_flight
                         .as_ref()
                         .filter(|(req, _)| req == id)

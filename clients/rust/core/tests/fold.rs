@@ -8,19 +8,19 @@ use helyx_client_core::message::{Block, Snapshot};
 use serde_json::{Value, json};
 
 mod common;
-use common::snapshot_json;
+use common::{j, s, snapshot_json};
 
 fn snapshot(instance_id: &str, turn: Value) -> Subscribed {
     Subscribed::Snapshot(Box::new(
-        Snapshot::parse(&snapshot_json(instance_id, turn)).unwrap(),
+        Snapshot::parse(&j(&snapshot_json(instance_id, turn))).unwrap(),
     ))
 }
 
 fn event(instance_id: &str, seq: u64, kind: &str, data: Value) -> Event {
-    parse_event(
+    parse_event(&j(
         &json!({"type": kind, "session_id": "s1", "instance_id": instance_id,
                         "turn_id": "t1", "seq": seq, "data": data}),
-    )
+    ))
     .unwrap()
 }
 
@@ -31,14 +31,34 @@ fn subscribed(instance_id: &str, turn: Value) -> State {
 }
 
 #[test]
-fn an_event_of_another_instance_changes_nothing() {
+fn an_event_before_a_snapshot_or_of_another_instance_is_a_break() {
     let mut state = State::default();
-    assert_eq!(state.apply(event("i1", 1, "turn_start", json!({}))), Ok(()));
+    let broken = Err(Broken("event instance"));
+    assert_eq!(state.apply(event("i1", 1, "turn_start", json!({}))), broken);
     assert_eq!(state, State::default());
     let mut state = subscribed("i1", Value::Null);
     let before = state.clone();
-    assert_eq!(state.apply(event("i2", 5, "turn_start", json!({}))), Ok(()));
+    assert_eq!(state.apply(event("i2", 5, "turn_start", json!({}))), broken);
     assert_eq!(state, before);
+    // Inside a replay too.
+    let replay = vec![event("i2", 5, "turn_start", json!({}))];
+    assert_eq!(state.subscribed(Subscribed::Replay(replay)), broken);
+    assert_eq!(state, before);
+}
+
+#[test]
+fn a_replay_to_a_state_with_no_snapshot_is_a_break() {
+    let mut state = State::default();
+    assert_eq!(
+        state.subscribed(Subscribed::Replay(vec![])),
+        Err(Broken("replay"))
+    );
+    let replay = vec![event("i1", 1, "turn_start", json!({}))];
+    assert_eq!(
+        state.subscribed(Subscribed::Replay(replay)),
+        Err(Broken("replay"))
+    );
+    assert_eq!(state, State::default());
 }
 
 #[test]
@@ -113,6 +133,7 @@ fn a_block_of_an_unknown_kind_keeps_its_kind() {
 #[test]
 fn an_ack_goes_when_a_frame_passes_a_multiple_of_the_cadence() {
     let frame = |seq| Some(json!({"type": "ack", "sub": "0", "seq": seq}));
+    let ack = |sub, from, to| ack(sub, from, to).map(|frame| s(&frame));
     assert_eq!(ack("0", 0, 0), None);
     assert_eq!(ack("0", 0, ACK_EVERY - 1), None);
     assert_eq!(ack("0", ACK_EVERY - 1, ACK_EVERY), frame(ACK_EVERY));

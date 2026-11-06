@@ -8,6 +8,8 @@ pub mod event;
 pub mod fold;
 pub mod frame;
 pub mod handshake;
+pub mod json;
 pub mod message;
+pub mod transcript;
 
 pub use check::{Broken, Checked};

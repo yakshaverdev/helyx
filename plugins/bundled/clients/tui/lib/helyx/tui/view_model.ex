@@ -18,7 +18,8 @@ defmodule Helyx.TUI.ViewModel do
       before it, and its line (`Helyx.TUI.CallLine.line/2`), made with the cell, so a
       frame does not pay for the size of the call; `result` is nil until
       the tool result message comes. The message proves that the call
-      exists, not that it runs, so an open cell shows "awaiting result"
+      exists, not that it runs, so an open cell shows "awaiting result".
+      A tool result with no open call is a cell `{:tool, nil, line, result}`
     * `{:stop, reason}` – after an assistant message and its tool cells,
       when the message stopped at the token limit (`:max_tokens`) or was
       filtered or refused (`:refused`). The fold makes it from the message,
@@ -90,7 +91,7 @@ defmodule Helyx.TUI.ViewModel do
             ui_blocks: [],
             seq: 0
 
-  @type tool_cell :: {:tool, Message.ToolCall.t(), String.t(), Message.t() | nil}
+  @type tool_cell :: {:tool, Message.ToolCall.t() | nil, String.t(), Message.t() | nil}
   @type cell ::
           Message.t()
           | tool_cell()
@@ -371,9 +372,12 @@ defmodule Helyx.TUI.ViewModel do
 
   # The result closes the oldest open cell with its call id, wherever it
   # is: a notice can arrive while the tool runs. The first result answers
-  # the first of two calls with one id, as in the session. A result with no
-  # open cell crashes in `Map.fetch!/2`.
-  defp add_cells(vm, %Message{role: :tool_result, tool_call_id: id} = result) do
+  # the first of two calls with one id, as in the session. The session pairs
+  # each result with its call, so the client does not enforce it: a result
+  # with no open cell, or with no call id, is an orphan cell of its own
+  # (`docs/features/client-kit.md`, "Pairing").
+  defp add_cells(vm, %Message{role: :tool_result, tool_call_id: id} = result)
+       when is_map_key(vm.open, id) do
     {{:value, position}, queue} = :queue.out(Map.fetch!(vm.open, id))
 
     open =
@@ -382,6 +386,9 @@ defmodule Helyx.TUI.ViewModel do
     cell = put_elem(:array.get(position, vm.cells), 3, result)
     %{vm | open: open, cells: :array.set(position, cell, vm.cells)}
   end
+
+  defp add_cells(vm, %Message{role: :tool_result} = result),
+    do: add_cell(vm, {:tool, nil, "a tool result with no call", result})
 
   # The next free position is the array size: no cell is ever removed.
   defp add_cell(vm, cell), do: %{vm | cells: :array.set(:array.size(vm.cells), cell, vm.cells)}

@@ -3,19 +3,19 @@
 //! token, the server sends `welcome` or `refused`. Any other frame is a break.
 
 use crate::check::{Broken, Checked, int_key, object, one_of, string};
+use crate::json::Json;
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use hmac::{Hmac, Mac};
-use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
 /// The protocol number of this client.
 pub const PROTOCOL: u64 = 3;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Step {
     /// Send this `hello` frame, then wait for the answer.
-    Send(Value),
+    Send(Json),
     /// The server took the `hello`: requests may go.
     Welcome,
     /// The server speaks protocol `n`: the client must update.
@@ -50,7 +50,7 @@ impl Handshake {
 
     /// Takes the next server frame of the handshake. After a break, or after
     /// `welcome` or `refused`, every frame is a break.
-    pub fn step(&mut self, frame: &Value) -> Checked<Step> {
+    pub fn step(&mut self, frame: &Json) -> Checked<Step> {
         let step = self.take(frame);
         if step.is_err() {
             self.phase = Phase::Done;
@@ -58,7 +58,7 @@ impl Handshake {
         step
     }
 
-    fn take(&mut self, frame: &Value) -> Checked<Step> {
+    fn take(&mut self, frame: &Json) -> Checked<Step> {
         let map = object(frame, "handshake frame")?;
         match (self.phase, string(map, "type", "handshake frame")?) {
             (Phase::Challenge, "challenge") => {
@@ -67,11 +67,14 @@ impl Handshake {
                     .map_err(|_| Broken("challenge nonce"))?;
                 let nonce: [u8; 32] = nonce.try_into().map_err(|_| Broken("challenge nonce"))?;
                 self.phase = Phase::Answer;
-                let mut hello = json!({"type": "hello", "protocol": PROTOCOL});
+                let mut hello = vec![
+                    ("type".to_owned(), "hello".into()),
+                    ("protocol".to_owned(), PROTOCOL.into()),
+                ];
                 if let Some(token) = &self.token {
-                    hello["proof"] = Value::String(proof(token, &nonce));
+                    hello.push(("proof".to_owned(), Json::String(proof(token, &nonce))));
                 }
-                Ok(Step::Send(hello))
+                Ok(Step::Send(Json::Object(hello)))
             }
             (Phase::Answer, "welcome") if int_key(map, "protocol", "welcome")? == PROTOCOL => {
                 self.phase = Phase::Done;
@@ -79,7 +82,11 @@ impl Handshake {
             }
             (Phase::Answer, "refused") => {
                 one_of(map, "code", &["protocol"], "refused")?;
+                // The server refuses only a protocol that is not its own.
                 let server_protocol = int_key(map, "server_protocol", "refused")?;
+                if server_protocol == PROTOCOL {
+                    return Err(Broken("refused"));
+                }
                 self.phase = Phase::Done;
                 Ok(Step::Refused(server_protocol))
             }

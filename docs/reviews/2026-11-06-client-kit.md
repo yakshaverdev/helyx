@@ -48,3 +48,42 @@ Simplify moved a snapshot helper of the tests to `core/tests/common/mod.rs`. The
 | 4 | Codex | With `arbitrary_precision`, the `Value` decoder of `serde_json` 1.0.154 reads an object whose only key is `$serde_json::private::Number` as a number, so a tool call argument of that shape changes, or a tool call whose arguments are that object breaks. Read in the source of the pinned crate; not run. Second finding on the integer precision of round 1. | Open. The mechanism needs a lossless decode of the host (slice 3), not the feature of `serde_json`. |
 
 Not reached by the budget: frames split into parts, the results of `history` and `sessions.live`, the size bounds of slice 3.
+
+# Cycle A: the four open defects (#860, owner decision of 2026-11-06)
+
+Base `6e1e06d5`. The fix passes 100 code lines (a decoder of about 400 lines, the pairing, the TUI change), reported before round 1. Bounds sensor (base `HEAD`, before the round 1 fixes): `bounds sensor: 2 candidate functions, 0 flagged, 0 without an answer`.
+
+Decisions: the client enforces the shape and the bounds of each frame, and only renders the pairing of tool results ("Pairing" in the feature doc); a `refused` of the client's protocol, an event of another instance, and a replay with no snapshot are breaks by the wire doc; the core decodes JSON itself, losslessly; the transcript has the bound of the TUI view model, none of its own.
+
+## Round 1 (full: simplify, standards, spec, failure path, Codex)
+
+| # | Source | Finding | Resolution |
+|---|---|---|---|
+| 1 | spec, failure path, Codex | A `cost` of `-0.0` was a break; the server's `>= 0` check passes it and Elixir encodes it as `-0.0`. Reproduced. | Fixed: compared by value; test `a_cost_of_signed_zero_is_zero`. |
+| 2 | Codex | A tool call block of a user message opened a call in `transcript::rows`, so it took the result of an assistant call. Reproduced by reading; the test fails before the fix. | Fixed: only an assistant message opens calls; test. |
+| 3 | spec (unproven claim) | "As the decoders of the server do" for the last pair of a key: the decoders of Elixir keep the first (probed). | Fixed: the lookup takes the first pair. |
+| 4 | spec (unproven claim) | "No provider is known to send" nesting over 1,024 levels had no source. | Doc: stated as an open, accepted hole with the stack probe. |
+| 5 | standards | "Replaced mechanism" listed only the TUI items; a doc comment named 1,024 where the code reads the limit. | Fixed. |
+| 6 | standards | The orphan arm of `rows` also caught a state that only a bug makes. | Fixed: `unreachable!`. |
+| 7 | standards (judgement) | `object()` returns `&Json`; test helpers named `j` and `s`; the wire limits test repeats the numbers. | Kept: the numbers are the doc's, so the test pins them; the helpers are test-only. |
+
+## Round 2 (reduced: spec, failure path)
+
+| # | Source | Finding | Resolution |
+|---|---|---|---|
+| 1 | spec, failure path | An `int` written `-0` was a break (`as_u64` read digits only); `JSON.decode/1` reads it as 0, and the TUI and the server pass it. Reproduced. Second finding on one mechanism: a number judged by its text. | Mechanism fixed: both readers of a number, `as_u64` and `as_nonnegative_f64`, judge the value; the grammar of the decoder admits `-0` as the one signed integer zero. Test in `tests/checks.rs`. |
+
+Fixes B (pairing) and C (first pair) held on every other path tried. Two findings on one mechanism, so round 3 is a full round.
+
+## Round 3 (full: simplify, spec, failure path, Codex)
+
+Simplify brought `json.rs` to 400 lines. The `-0` reproduction holds fixed; the core and the TUI agree on every number form probed (`-0`, `-0.0`, `-1e-400`, `-5e-324`, `1E2` and `1.0` as an int, `1e400`, integers of 1,024 and 1,025 characters). Codex: approve, no finding. No defect reproduced, so the loop ends.
+
+| # | Source | Finding | Resolution |
+|---|---|---|---|
+| 1 | spec | The TUI checks a usage with `Helyx.Usage.valid?/1`, beyond the schema; the core takes those values. Not a break of the invariant (the core never breaks where the TUI takes a frame). | Doc: a Bounds row states the difference. |
+| 2 | failure path | An `int` above 2^64 − 1 is a break in the core and taken by the TUI. The Bounds row stated the `u64` bound. | Doc: the row now states the difference. |
+
+## Small-fix round (reduced: spec, failure path)
+
+Precommit failed on `Helyx.Credo.FileLength`: `view_model.ex` had 405 lines. The fix rewrote the `add_cells` clause of a tool result as a guarded clause and an orphan clause, and inlined the orphan text: 399 lines, one file, no function or return shape changed. Spec and failure path: no defect; the snapshot path and the live path give the same cells for an orphan, a nil id, a closed call, and two calls of one id.

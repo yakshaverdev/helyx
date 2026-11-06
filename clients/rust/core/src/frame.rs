@@ -6,8 +6,8 @@ use crate::check::{
     Broken, Checked, boolean, field, id, int_key, list_of, object, one_of, string, string_or_null,
 };
 use crate::event::{Event, parse_event};
+use crate::json::Json;
 use crate::message::{Message, Snapshot};
-use serde_json::{Map, Value};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Subscribed {
@@ -117,7 +117,7 @@ const ERROR_CODES: &[&str] = &[
 /// Checks a frame after `welcome`. `op_of` gives the op of the request with
 /// that id; a `res` of no request in flight is a break.
 pub fn parse(
-    value: &Value,
+    value: &Json,
     op_of: impl FnOnce(&str) -> Option<&'static str>,
 ) -> Checked<ServerFrame> {
     let map = object(value, "frame")?;
@@ -156,7 +156,7 @@ pub fn parse(
     }
 }
 
-fn parse_result(op: &str, map: &Map<String, Value>) -> Checked<Reply> {
+fn parse_result(op: &str, map: &Json) -> Checked<Reply> {
     Ok(match op {
         "subscribe" => {
             let sub = string(map, "sub", "subscribe sub")?.to_owned();

@@ -20,6 +20,7 @@
      "frames": [{"type": "challenge", "nonce": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="},
                 {"type": "refused", "code": "protocol", "server_protocol": 6}],
      "expect": {"refused": 6}},
+    {"name": "refused: the protocol of the client", "frames": [{"type": "challenge", "nonce": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="}, {"type": "refused", "code": "protocol", "server_protocol": 5}], "expect": "broken"},
     {"name": "refused: a server_protocol that is a string",
      "frames": [{"type": "challenge", "nonce": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="},
                 {"type": "refused", "code": "protocol", "server_protocol": "6"}],
@@ -137,6 +138,7 @@
     {"name": "tool_execution_end", "expect": "valid",
      "frame": {"type": "event", "sub": "0", "event": {"type": "tool_execution_end", "session_id": "s1", "instance_id": "i1", "turn_id": "t1", "seq": 1, "data": {
        "message": {"id": "r1", "role": "tool_result", "content": [{"type": "text", "text": "ok"}], "tool_call_id": "c1", "tool_name": "bash", "is_error": false}}}}},
+    {"name": "tool_execution_end: a result with no call id", "expect": "valid", "frame": {"type": "event", "sub": "0", "event": {"type": "tool_execution_end", "session_id": "s1", "instance_id": "i1", "turn_id": "t1", "seq": 1, "data": {"message": {"id": "r1", "role": "tool_result", "content": [{"type": "text", "text": "ok"}], "tool_name": "bash", "is_error": false}}}}},
     {"name": "tool_execution_end: a user message", "expect": "broken",
      "frame": {"type": "event", "sub": "0", "event": {"type": "tool_execution_end", "session_id": "s1", "instance_id": "i1", "turn_id": "t1", "seq": 1, "data": {
        "message": {"id": "u1", "role": "user", "content": [{"type": "text", "text": "hi"}]}}}}},

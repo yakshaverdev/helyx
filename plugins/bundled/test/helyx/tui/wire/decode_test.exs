@@ -331,7 +331,8 @@ defmodule Helyx.TUI.Wire.DecodeTest do
     no_call_id =
       wire(Wire.event(event(:tool_execution_end, %{message: %{result() | tool_call_id: nil}})))
 
-    assert Decode.event(no_call_id) == :error
+    # The schema has `tool_call_id` optional; the fold shows an orphan.
+    assert {:ok, %Event{}} = Decode.event(no_call_id)
 
     # Two messages at the cost bound of one usage give a total of 2 × 10^12.
     usage = %{@usage | cost: 1.0e12, cost_kind: :billed}
@@ -361,8 +362,9 @@ defmodule Helyx.TUI.Wire.DecodeTest do
     end
 
     assert subscribe(%{at | model: "no-slash"}) == :error
-    # A result with no call before it in the snapshot.
-    assert subscribe(snapshot_of([result()])) == :error
+    # A result with no call before it in the snapshot is an orphan cell.
+    orphan = snapshot_of([result()])
+    assert subscribe(orphan) == {:ok, {:ok, orphan, "1"}}
     paired = snapshot_of([assistant(), result()])
     assert subscribe(paired) == {:ok, {:ok, paired, "1"}}
   end

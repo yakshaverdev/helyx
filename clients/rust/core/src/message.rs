@@ -5,7 +5,7 @@ use crate::check::{
     Broken, Checked, boolean, field, int, int_key, int_or_null, list_of, number, object, one_of,
     optional, optional_bool, optional_one_of, string, string_or_null,
 };
-use serde_json::{Map, Value};
+use crate::json::Json;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Role {
@@ -23,7 +23,7 @@ pub enum Block {
     ToolCall {
         id: String,
         name: String,
-        arguments: Map<String, Value>,
+        arguments: Json,
     },
     Unknown(String),
 }
@@ -51,7 +51,7 @@ const STOP_REASONS: &[&str] = &[
 const ORIGIN_KINDS: &[&str] = &["user", "background", "product", "unknown"];
 
 impl Message {
-    pub fn parse(value: &Value) -> Checked<Message> {
+    pub fn parse(value: &Json) -> Checked<Message> {
         let map = object(value, "message")?;
         let role = match string(map, "role", "message role")? {
             "user" => Role::User,
@@ -81,13 +81,13 @@ impl Message {
     }
 }
 
-fn optional_string(map: &Map<String, Value>, key: &str) -> Checked<Option<String>> {
+fn optional_string(map: &Json, key: &str) -> Checked<Option<String>> {
     optional(map, key)
         .map(|v| v.as_str().map(str::to_owned).ok_or(Broken("message field")))
         .transpose()
 }
 
-pub fn parse_block(value: &Value) -> Checked<Block> {
+pub fn parse_block(value: &Json) -> Checked<Block> {
     let map = object(value, "block")?;
     Ok(match string(map, "type", "block type")? {
         "text" => Block::Text(string(map, "text", "text block")?.to_owned()),
@@ -97,7 +97,7 @@ pub fn parse_block(value: &Value) -> Checked<Block> {
     })
 }
 
-pub fn parse_tool_call(map: &Map<String, Value>) -> Checked<Block> {
+pub fn parse_tool_call(map: &Json) -> Checked<Block> {
     one_of(map, "type", &["tool_call"], "tool_call")?;
     Ok(Block::ToolCall {
         id: string(map, "id", "tool_call")?.to_owned(),
@@ -106,7 +106,7 @@ pub fn parse_tool_call(map: &Map<String, Value>) -> Checked<Block> {
     })
 }
 
-fn parse_usage(value: &Value) -> Checked<()> {
+fn parse_usage(value: &Json) -> Checked<()> {
     let map = object(value, "usage")?;
     for key in ["input", "output", "cache_read", "cache_write"] {
         int_key(map, key, "usage")?;
@@ -133,12 +133,12 @@ pub struct Queue {
 }
 
 impl Queue {
-    pub fn parse(value: &Value) -> Checked<Queue> {
+    pub fn parse(value: &Json) -> Checked<Queue> {
         Queue::from_map(object(value, "queue")?)
     }
 
     /// `parse` of a value already checked as an object.
-    pub fn from_map(map: &Map<String, Value>) -> Checked<Queue> {
+    pub fn from_map(map: &Json) -> Checked<Queue> {
         Ok(Queue {
             steers: int_key(map, "steers", "queue")?,
             follow_ups: int_key(map, "follow_ups", "queue")?,
@@ -154,16 +154,16 @@ pub struct Ask {
     pub ask_id: String,
     pub call_id: String,
     pub tool: String,
-    pub request: Map<String, Value>,
+    pub request: Json,
 }
 
 impl Ask {
-    pub fn parse(value: &Value) -> Checked<Ask> {
+    pub fn parse(value: &Json) -> Checked<Ask> {
         Ask::from_map(object(value, "ask")?)
     }
 
     /// `parse` of a value already checked as an object.
-    pub fn from_map(map: &Map<String, Value>) -> Checked<Ask> {
+    pub fn from_map(map: &Json) -> Checked<Ask> {
         Ok(Ask {
             ask_id: string(map, "ask_id", "ask")?.to_owned(),
             call_id: string(map, "call_id", "ask")?.to_owned(),
@@ -195,16 +195,16 @@ pub struct Snapshot {
 }
 
 impl Snapshot {
-    pub fn parse(value: &Value) -> Checked<Snapshot> {
+    pub fn parse(value: &Json) -> Checked<Snapshot> {
         let map = object(value, "snapshot")?;
         let turn = match field(map, "turn", "snapshot turn")? {
-            Value::Null => None,
+            Json::Null => None,
             turn => {
                 let turn = object(turn, "snapshot turn")?;
                 Some(Turn {
                     id: string(turn, "id", "snapshot turn")?.to_owned(),
                     partial: match field(turn, "partial", "snapshot turn")? {
-                        Value::Null => None,
+                        Json::Null => None,
                         // Only an assistant message streams, as in the TUI.
                         partial => match Message::parse(partial)? {
                             message if message.role == Role::Assistant => Some(message),
@@ -217,8 +217,8 @@ impl Snapshot {
         };
         parse_totals(field(map, "usage", "snapshot usage")?)?;
         match field(map, "context", "snapshot context")? {
-            Value::Null => {}
-            Value::Object(context) => {
+            Json::Null => {}
+            context @ Json::Object(_) => {
                 int_or_null(context, "tokens", "snapshot context")?;
                 int_or_null(context, "window", "snapshot context")?;
                 string_or_null(context, "model", "snapshot context")?;
@@ -240,7 +240,7 @@ impl Snapshot {
     }
 }
 
-fn parse_totals(value: &Value) -> Checked<()> {
+fn parse_totals(value: &Json) -> Checked<()> {
     let map = object(value, "usage totals")?;
     for key in ["input", "output", "cache_read", "cache_write"] {
         int_key(map, key, "usage totals")?;

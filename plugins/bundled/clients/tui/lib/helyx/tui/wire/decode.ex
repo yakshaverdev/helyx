@@ -253,13 +253,6 @@ defmodule Helyx.TUI.Wire.Decode do
     }
   end
 
-  # A tool result has the call id that the fold pairs it by.
-  defp message!(value, :tool_result) do
-    %Message{role: :tool_result, tool_call_id: id} = message = message!(value)
-    true = is_binary(id)
-    message
-  end
-
   defp message!(value, role) do
     %Message{role: ^role} = message = message!(value)
     message
@@ -354,8 +347,7 @@ defmodule Helyx.TUI.Wire.Decode do
       ui_blocks: Enum.map(ui_blocks, &UIBlocks.shown!/1)
     }
 
-    # The fold pairs each tool result with an earlier call; a snapshot that
-    # it cannot take raises here, not in the owner.
+    # A snapshot that the fold cannot take raises here, not in the owner.
     ViewModel.from_snapshot(snapshot)
     snapshot
   end

@@ -7,8 +7,8 @@
 use crate::check::{Broken, Checked};
 use crate::event::{Delta, Event, EventData, TurnOutcome};
 use crate::frame::Subscribed;
+use crate::json::{Json, object as obj};
 use crate::message::{Ask, Block, Message, Queue, Role};
-use serde_json::{Value, json};
 
 /// The client acks each event whose `seq` is a multiple of this, as the TUI
 /// does: far below the 16,384 unacked events that end a subscription (`4408`).
@@ -40,18 +40,26 @@ pub struct State {
 impl State {
     /// The params of a `subscribe` for `session`: with `after` when the state
     /// holds a snapshot, so the server can replay the events after it.
-    pub fn subscribe_params(&self, session: &str) -> Value {
+    pub fn subscribe_params(&self, session: &str) -> Json {
         match &self.instance_id {
-            None => json!({"session": session}),
-            Some(instance_id) => json!({
-                "session": session,
-                "after": {"instance_id": instance_id, "seq": self.seq},
-            }),
+            None => obj([("session", session.into())]),
+            Some(instance_id) => obj([
+                ("session", session.into()),
+                (
+                    "after",
+                    obj([
+                        ("instance_id", instance_id.as_str().into()),
+                        ("seq", self.seq.into()),
+                    ]),
+                ),
+            ]),
         }
     }
 
-    /// Applies the result of a `subscribe`. A replayed event out of order is a
-    /// break, as in `apply`; the events before it stay applied.
+    /// Applies the result of a `subscribe`. A replay answers only a subscribe
+    /// with `after`, which the state sends when it holds a snapshot, so a
+    /// replay to a state with no snapshot is a break. A replayed event that
+    /// `apply` refuses is a break; the events before it stay applied.
     pub fn subscribed(&mut self, subscribed: Subscribed) -> Checked<()> {
         match subscribed {
             Subscribed::Snapshot(snapshot) => {
@@ -70,20 +78,23 @@ impl State {
                 };
                 Ok(())
             }
+            Subscribed::Replay(_) if self.instance_id.is_none() => Err(Broken("replay")),
             Subscribed::Replay(events) => {
                 events.into_iter().try_for_each(|event| self.apply(event))
             }
         }
     }
 
-    /// Applies one event. An event of a type that the client does not know
-    /// moves `seq` only. An event of another instance than that of the last
-    /// snapshot changes nothing, as in the TUI. An event of the instance whose
-    /// `seq` is not the next one is a break of O4 (no gap, no duplicate), and
-    /// changes nothing.
+    /// Applies one event of the subscription. An event of a type that the
+    /// client does not know moves `seq` only. Every event of a subscription
+    /// comes after its snapshot or its replay and is of that instance: a
+    /// restart ends the subscription with `session_end`, and a replay comes
+    /// from the ring of the instance of `after`. So an event before a
+    /// snapshot, of another instance, or whose `seq` is not the next one (O4:
+    /// no gap, no duplicate) is a break, and changes nothing.
     pub fn apply(&mut self, event: Event) -> Checked<()> {
         if self.instance_id.as_deref() != Some(event.instance_id.as_str()) {
-            return Ok(());
+            return Err(Broken("event instance"));
         }
         if self.seq.checked_add(1) != Some(event.seq) {
             return Err(Broken("event seq"));
@@ -150,6 +161,12 @@ impl State {
 /// passed a multiple of `ACK_EVERY`, so a replay that crosses one acks too.
 /// `from` is the `seq` before the frame, or that of the snapshot, the credit
 /// base of the server.
-pub fn ack(sub: &str, from: u64, to: u64) -> Option<Value> {
-    (to / ACK_EVERY > from / ACK_EVERY).then(|| json!({"type": "ack", "sub": sub, "seq": to}))
+pub fn ack(sub: &str, from: u64, to: u64) -> Option<Json> {
+    (to / ACK_EVERY > from / ACK_EVERY).then(|| {
+        obj([
+            ("type", "ack".into()),
+            ("sub", sub.into()),
+            ("seq", to.into()),
+        ])
+    })
 }

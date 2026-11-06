@@ -41,7 +41,7 @@ Each fold is a list of steps, applied in order:
   - `model`, `queue`, `asks` (the ids of the open asks, oldest first).
   - `running`: true from a snapshot with a `turn` or a `turn_start`, until a `turn_end`.
   - `ui_blocks`: the UI blocks that the client shows from the snapshot and the `ui_block` events, each as `{call_id, key, block}`, in the order of the first of each pair of `call_id` and `key`. A `ui_block` with the same pair replaces the block in place; `tool_execution_end` drops the blocks of its call, and `turn_end` drops them all. The UI blocks of a tool result message are part of the message, not of this list.
-  - `messages`: the ids of the transcript, oldest first: each user and assistant message, and each tool result after the assistant message of its call.
+  - `messages`: the ids of the transcript, oldest first: each user and assistant message, and each tool result after the assistant message of its call. The session pairs each result with its call, so a client does not enforce it: a tool result with no open call of its id, or with no call id, is in its place in the transcript, shown as an orphan.
 
 A reply follows its request before the next request. The Elixir run serves the steps from a fake server to the client of the TUI, one connection up to each close, and folds what the client gives into its view model. The client of the TUI sends only `subscribe` among the requests of the folds: it does not page `history`, so no fold has the `instance_changed` error of `history`; a client that gets it subscribes again, and the fold of an instance that changed shows the snapshot that it gets.
 
