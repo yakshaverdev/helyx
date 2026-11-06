@@ -43,7 +43,7 @@ Ticket #751. The decision is in the triage comment of the ticket (2026-10-19).
 - `Helyx.HarnessIO.env/1`: the `:env` check of both harness providers. It gives the map as name and value pairs, which the provider state keeps in the field `env`. `Helyx.HarnessIO.options/1` runs both checks and gives the state fields `persist?` and `env`. `Helyx.HarnessIO.launch/4` gives `state.env` to `Helyx.Watchdog.start/4`, whose new option `:env` (default `[]`) it converts to the charlists of `Port.open/2`; the same values are masked in the reason of a start that fails. The bash tool gives none.
 - Claude Code launch: `--no-session-persistence` with `persist: false`. Codex `thread/start`: `ephemeral: true` with `persist: false`.
 - The attach of a resume (`Helyx.Session.Server.Open`) asks the running session `{:attach, provider_opts}`, in place of `:live`.
-- `Helyx.Session.Server.State`: the field `provider_opts`, and the three single-mode plugins in one field `plugins`, so the struct keeps 31 fields (Credo `StructFieldAmount`).
+- `Helyx.Session.Server.State`: the field `provider_opts`, and the three plugins of a session (ModelContext, Compaction, Memory) in one field `plugins`, so the struct keeps 31 fields (Credo `StructFieldAmount`).
 
 ## Replaced mechanism
 

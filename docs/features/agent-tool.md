@@ -33,7 +33,7 @@ Further decisions of this doc (owner away; the option that keeps Core smallest a
 
 ## Interface changes
 
-- `Helyx.Tool.context/0`: `%{core: Helyx.Core.name(), session_id: String.t(), tools: [String.t()], tool: String.t(), call_id: String.t(), model: String.t(), provider_opts: keyword()}`, in a tool call Task of the hands. It raises in any other process.
+- `Helyx.Tool.context/0`: `%{core: Helyx.Core.name(), session_id: String.t(), tools: [String.t()], tool: String.t(), call_id: String.t(), model: String.t(), provider_opts: keyword(), model_context: module() | nil}`, in a tool call Task of the hands. It raises in any other process. `model_context` is the ModelContext plugin of the session, which the tool gives to the child (#854, `session-model-context.md`).
 - `Helyx.Session.start/2` (and `Helyx.Sessions.start/2`): the options `:parent`, `%{session_id: String.t(), call_id: String.t()}`, and `:tools`, the list of tool names that the session gets, nil (the default) for all. A bad `:parent` gives `{:error, :invalid_parent}` and a bad `:tools` `{:error, :invalid_tools}` (`Helyx.Session.resume/2` takes neither), before any file or process is created. A name of no registered tool adds nothing.
 - `Helyx.Tool.specs/2`: the second argument `only`, nil or a list of the tool names to keep, applied after the checks.
 - The session header: the optional key `"parent"`. The header version stays 1. A child file is in `<sessions folder>/.children/`, which a build before this one does not read: it does not list a child and cannot open one by id.

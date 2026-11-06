@@ -70,6 +70,8 @@ defmodule Helyx.Session do
   `{:error, :open_timeout}` (session-lock.md), and a start over the 64 sessions of a Core
   `{:error, :too_many_sessions}`. `:tools` names the tools that the session gets, all if nil;
   `:parent` links it to a tool call, out of the session list (`docs/features/agent-tool.md`).
+  `:model_context` names a registered ModelContext plugin, the first one if nil; another value
+  gives `{:error, :invalid_model_context}` before any file or process (`session-model-context.md`).
   `:provider_opts`, a keyword list (default `[]`), goes to each `init/3` of the session after the
   options of Core; another value gives `{:error, :invalid_provider_opts}` (`Helyx.Provider`).
   """
@@ -80,7 +82,7 @@ defmodule Helyx.Session do
     # session's open after the create still leaves one.
     with {:ok, cwd} <- fetch_cwd(opts),
          {:ok, provider_opts} <- Input.provider_opts(opts),
-         {:ok, parent, only} <- Input.child(opts),
+         {:ok, parent, only, model_context} <- Input.start_options(core, opts),
          id = if(parent, do: Id.child(parent.session_id, parent.call_id), else: Id.new()),
          {:ok, tools} <- Helyx.Tool.specs(core, only),
          :ok <- Helyx.Tool.check_available(tools),
@@ -89,9 +91,10 @@ defmodule Helyx.Session do
          # The folders come before the lock, whose file is in them.
          :ok <- mkdir(opts[:sessions_dir], cwd, parent) do
       state = %State{id: id, core: core, model: ref, provider: provider, cwd: cwd}
+      plugins = %{state.plugins | model_context: model_context}
 
       Server.create(
-        %{state | provider_opts: provider_opts},
+        %{state | provider_opts: provider_opts, plugins: plugins},
         {tools, concurrent},
         Server.Open.create_spec(opts[:sessions_dir], id, cwd, ModelRef.to_string(ref), parent)
       )
