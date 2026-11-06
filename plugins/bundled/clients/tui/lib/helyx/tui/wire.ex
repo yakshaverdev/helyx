@@ -3,16 +3,26 @@ defmodule Helyx.TUI.Wire do
   The wire client of the TUI: a WebSocket connection to `helyx serve` over
   TCP and the handshake of `docs/features/wire-protocol.md` (O1). The rules
   of the client are in `docs/features/tui-attach.md`.
+
+  Mint upgrades the connection and encodes and decodes the WebSocket frames
+  (`Mint.WebSocket`); the socket stays a raw `:gen_tcp` socket that the
+  connection process reads and the writer process writes (decision 15).
   """
 
   alias Helyx.Transport.WebSocket
   alias Helyx.Transport.WebSocket.Frame
+  alias Helyx.TUI.Wire.Reader
 
-  # RFC 6455, section 1.3: the suffix of the key in `Sec-WebSocket-Accept`.
-  @accept_guid "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
-  # The HTTP head of the upgrade reply: each line and the count of headers.
-  @max_line 8_192
-  @max_headers 64
+  # Mint.WebSocket.recv/3 types the connection of its error as its opaque
+  # WebSocket type, and Reader.read/2 takes that opaque type, so Dialyzer
+  # drops both branches. They run: recv delegates to Mint.HTTP.recv/3 before
+  # new/5, and decode returns the same state it takes.
+  @dialyzer {:nowarn_function, [reply: 5, early: 2, next: 5]}
+
+  # The head of the upgrade reply, in all: Mint refuses a larger head and a
+  # longer status line or header. The old client capped each line at 8,192
+  # bytes and the lines at 64, which Mint does not.
+  @max_head 64 * 8_192
 
   @typedoc """
   `{:refused, server_protocol}` for a server of another protocol, `:broken`
@@ -25,124 +35,226 @@ defmodule Helyx.TUI.Wire do
   Connects to the server at `ip` and `port`, upgrades the connection, and
   passes the handshake with the proof of the token that `token` returns,
   all within `timeout` milliseconds. Returns the socket after `welcome`,
-  passive and owned by the caller. A failure up to the `101` reply, a close
+  passive and owned by the caller, and the WebSocket state that the caller
+  keeps for the frames after it. A failure up to the `101` reply, a close
   of the server, and the timeout give a text; the socket is closed on every
   error. No error holds the token.
   """
   @spec connect(:inet.ip_address(), :inet.port_number(), (-> binary()), pos_integer()) ::
-          {:ok, :gen_tcp.socket()} | {:error, error()}
+          {:ok, :gen_tcp.socket(), term()} | {:error, error()}
   def connect(ip, port, token, timeout) do
     deadline = System.monotonic_time(:millisecond) + timeout
 
     opts = [
-      :binary,
-      active: false,
-      packet: :http_bin,
-      packet_size: @max_line,
-      send_timeout: timeout
+      protocols: [:http1],
+      mode: :passive,
+      hostname: host(ip),
+      # The conventional casing of the handshake headers, as the old client
+      # sent them.
+      case_sensitive_headers: true,
+      max_header_list_size: @max_head,
+      transport_opts: [timeout: left(deadline), send_timeout: timeout]
     ]
 
-    case :gen_tcp.connect(ip, port, opts, timeout) do
-      {:ok, socket} ->
-        case handshake(socket, ip, port, token, deadline) do
-          :ok ->
-            {:ok, socket}
+    case Mint.HTTP.connect(:http, ip, port, opts) do
+      {:ok, conn} -> connected(conn, token, timeout, deadline)
+      {:error, error} -> {:error, error_text(error, timeout)}
+    end
+  end
 
-          error ->
-            :gen_tcp.close(socket)
-            result(error, timeout)
+  defp connected(conn, token, timeout, deadline) do
+    with {:ok, conn, ref} <- upgrade(conn, timeout),
+         {:ok, conn, status, headers, early} <- reply(conn, ref, deadline, timeout),
+         {:ok, conn, ws} <- websocket(conn, ref, status, headers) do
+      socket = Mint.HTTP.get_socket(conn)
+      :ok = :inet.setopts(socket, active: false, packet: :raw)
+
+      case handshake(socket, ws, early, token, deadline, timeout) do
+        {:ok, ws} ->
+          {:ok, socket, ws}
+
+        {:error, reason} ->
+          :gen_tcp.close(socket)
+          {:error, reason}
+      end
+    else
+      {:error, conn, text} ->
+        Mint.HTTP.close(conn)
+        {:error, text}
+
+      {:error, text} ->
+        {:error, text}
+    end
+  end
+
+  defp upgrade(conn, timeout) do
+    case Mint.WebSocket.upgrade(:ws, conn, "/", []) do
+      {:ok, conn, ref} -> {:ok, conn, ref}
+      {:error, conn, error} -> {:error, conn, error_text(error, timeout)}
+    end
+  end
+
+  # The reply by its lines: the status, the headers, and any bytes of the
+  # frames that came after them. A status that is not `101` ends the read at
+  # once, as the old client did, not at the end of a body.
+  defp reply(conn, ref, deadline, timeout, acc \\ {nil, [], []}) do
+    case left(deadline) do
+      0 -> {:error, "no welcome from the server in #{timeout} ms"}
+      wait -> recv_reply(conn, ref, deadline, timeout, acc, wait)
+    end
+  end
+
+  defp recv_reply(conn, ref, deadline, timeout, acc, wait) do
+    case Mint.WebSocket.recv(conn, 0, wait) do
+      {:ok, conn, responses} ->
+        reply_responses(conn, ref, deadline, timeout, acc, responses)
+
+      {:error, conn, error, responses} ->
+        case responses(conn, responses, ref, acc) do
+          {:ok, _acc} -> {:error, conn, error_text(error, timeout)}
+          {:done, status, headers, early} -> {:ok, conn, status, headers, early}
+          {:error, conn, text} -> {:error, conn, text}
+        end
+    end
+  end
+
+  defp reply_responses(conn, ref, deadline, timeout, acc, responses) do
+    case responses(conn, responses, ref, acc) do
+      {:ok, acc} -> reply(conn, ref, deadline, timeout, acc)
+      {:done, status, headers, early} -> {:ok, conn, status, headers, early}
+      {:error, conn, text} -> {:error, conn, text}
+    end
+  end
+
+  defp responses(_conn, [], _ref, acc), do: {:ok, acc}
+
+  defp responses(conn, [{:status, ref, 101} | rest], ref, {_status, headers, early}),
+    do: responses(conn, rest, ref, {101, headers, early})
+
+  defp responses(conn, [{:status, ref, status} | _rest], ref, _acc),
+    do: {:error, conn, "the upgrade got HTTP #{status}"}
+
+  defp responses(conn, [{:headers, ref, headers} | rest], ref, {status, _old, early}),
+    do: responses(conn, rest, ref, {status, headers, early})
+
+  defp responses(conn, [{:data, ref, data} | rest], ref, {status, headers, early}),
+    do: responses(conn, rest, ref, {status, headers, [early, data]})
+
+  defp responses(_conn, [{:done, ref} | _rest], ref, {101, headers, early}),
+    do: {:done, 101, headers, IO.iodata_to_binary(early)}
+
+  defp responses(conn, [{:done, ref} | _rest], ref, _acc),
+    do: {:error, conn, "the reply to the upgrade is not a WebSocket upgrade"}
+
+  defp responses(conn, [_other | rest], ref, acc), do: responses(conn, rest, ref, acc)
+
+  @spec websocket(Mint.HTTP.t(), reference(), 101, Mint.Types.headers()) ::
+          {:ok, Mint.HTTP.t(), term()}
+          | {:error, Mint.HTTP.t(), String.t()}
+  defp websocket(conn, ref, 101, headers) do
+    case Mint.WebSocket.new(conn, ref, 101, headers, mode: :passive) do
+      {:ok, conn, ws} ->
+        {:ok, conn, ws}
+
+      {:error, conn, _error} ->
+        {:error, conn, "the reply to the upgrade is not a WebSocket upgrade"}
+    end
+  end
+
+  # The challenge, the hello with the proof of the token, and the welcome.
+  # The frames that came with the `101` reply go first; anything after
+  # `welcome` came before a request, so a close ends the handshake, and a
+  # text or a broken frame is a contract break. A ping is skipped, as it was
+  # before the rewrite.
+  defp handshake(socket, ws, early, token, deadline, timeout) do
+    with {:ok, ws, queue} <- early(ws, early),
+         {:ok, nonce, ws, queue} <- challenge(socket, ws, queue, deadline, timeout),
+         {:ok, ws} <- send_frame(socket, ws, hello(nonce, token), timeout),
+         {:ok, ws, queue} <- welcome(socket, ws, queue, deadline, timeout),
+         :ok <- settle(queue) do
+      {:ok, ws}
+    end
+  end
+
+  defp settle([]), do: :ok
+  defp settle([{:ping, _data} | rest]), do: settle(rest)
+  defp settle([{:close, code, _reason} | _rest]), do: {:error, close_text(code)}
+  defp settle([_text_or_broken | _rest]), do: {:error, :broken}
+
+  # The frames that came with the `101` reply, decoded before the reads.
+  defp early(ws, ""), do: {:ok, ws, []}
+
+  defp early(ws, bytes) do
+    case Reader.read(ws, bytes) do
+      {:ok, messages, ws} -> {:ok, ws, messages}
+      {:partial, messages, ws} -> {:ok, ws, messages ++ [:broken]}
+      :broken -> {:error, :broken}
+    end
+  end
+
+  # The next text of the server, decoded with the decode bounds of the wire
+  # (`Helyx.Transport.WebSocket.Frame`): a JSON map, or `:broken`. A ping
+  # between the frames is skipped, as it was before the rewrite.
+  defp text(socket, ws, queue, deadline, timeout) do
+    case next(socket, ws, queue, deadline, timeout) do
+      {:ok, {:text, text}, ws, queue} ->
+        case Frame.decode(text, nil) do
+          {:frame, frame} -> {:ok, frame, ws, queue}
+          _ -> {:error, :broken}
         end
 
-      error ->
-        result(error, timeout)
-    end
-  end
+      {:ok, {:ping, _data}, ws, queue} ->
+        text(socket, ws, queue, deadline, timeout)
 
-  # A socket error, the timeout among them, as its text.
-  defp result({:error, :broken} = error, _timeout), do: error
-
-  defp result({:error, reason}, timeout) when is_atom(reason),
-    do: {:error, error_text(reason, timeout)}
-
-  defp result(result, _timeout), do: result
-
-  defp handshake(socket, ip, port, token, deadline) do
-    key = Base.encode64(:crypto.strong_rand_bytes(16))
-
-    with :ok <- :gen_tcp.send(socket, upgrade(ip, port, key)),
-         :ok <- upgraded(socket, key, deadline),
-         :ok <- :inet.setopts(socket, packet: :raw),
-         {:ok, nonce} <- challenge(socket, deadline),
-         :ok <- send_frame(socket, hello(nonce, token)) do
-      welcome(socket, deadline)
-    end
-  end
-
-  defp upgrade(ip, port, key) do
-    host = if tuple_size(ip) == 4, do: :inet.ntoa(ip), else: [?[, :inet.ntoa(ip), ?]]
-
-    [
-      "GET / HTTP/1.1\r\nHost: ",
-      host,
-      ":#{port}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n",
-      "Sec-WebSocket-Version: 13\r\nSec-WebSocket-Key: ",
-      key,
-      "\r\n\r\n"
-    ]
-  end
-
-  # The `101` reply with the headers of RFC 6455, section 4.1. Any other
-  # reply is no server of this data folder yet: the port of a stale file
-  # can be in use by another program (#777).
-  defp upgraded(socket, key, deadline) do
-    with {:ok, {:http_response, _version, 101, _reason}} <- recv(socket, 0, deadline),
-         {:ok, headers} <- headers(socket, deadline, %{}),
-         "websocket" <- String.downcase(Map.get(headers, "upgrade", "")),
-         true <- "upgrade" in tokens(Map.get(headers, "connection", "")),
-         true <- headers["sec-websocket-accept"] == accept(key) do
-      :ok
-    else
-      {:ok, {:http_response, _version, status, _reason}} ->
-        {:error, "the upgrade got HTTP #{status}"}
+      {:ok, {:close, code, _reason}, _ws, _queue} ->
+        {:error, close_text(code)}
 
       {:error, _} = error ->
         error
-
-      _ ->
-        {:error, "the reply to the upgrade is not a WebSocket upgrade"}
     end
   end
 
-  # The headers by their lower-case names, at most `@max_headers` lines.
-  defp headers(socket, deadline, headers, lines \\ 0) do
-    case recv(socket, 0, deadline) do
-      {:ok, :http_eoh} ->
-        {:ok, headers}
+  defp next(_socket, _ws, [:broken | _rest], _deadline, _timeout), do: {:error, :broken}
 
-      {:ok, {:http_header, _, _, name, value}} when lines < @max_headers ->
-        headers(socket, deadline, Map.put(headers, String.downcase(name), value), lines + 1)
+  defp next(_socket, ws, [message | rest], _deadline, _timeout),
+    do: {:ok, message, ws, rest}
+
+  defp next(socket, ws, [], deadline, timeout) do
+    case left(deadline) do
+      0 -> {:error, "no welcome from the server in #{timeout} ms"}
+      wait -> recv_next(socket, ws, deadline, timeout, wait)
+    end
+  end
+
+  defp recv_next(socket, ws, deadline, timeout, wait) do
+    case :gen_tcp.recv(socket, 0, wait) do
+      {:ok, data} -> next_read(socket, ws, data, deadline, timeout)
+      {:error, reason} -> {:error, error_text(%Mint.TransportError{reason: reason}, timeout)}
+    end
+  end
+
+  defp next_read(socket, ws, data, deadline, timeout) do
+    case Reader.read(ws, data) do
+      {:ok, [], ws} -> next(socket, ws, [], deadline, timeout)
+      {:ok, messages, ws} -> next(socket, ws, messages, deadline, timeout)
+      {:partial, messages, ws} -> next(socket, ws, messages ++ [:broken], deadline, timeout)
+      :broken -> {:error, :broken}
+    end
+  end
+
+  defp challenge(socket, ws, queue, deadline, timeout) do
+    case text(socket, ws, queue, deadline, timeout) do
+      {:ok, %{"type" => "challenge", "nonce" => nonce}, ws, queue} when is_binary(nonce) ->
+        case Base.decode64(nonce) do
+          {:ok, <<_::binary-size(32)>> = bytes} -> {:ok, bytes, ws, queue}
+          _ -> {:error, :broken}
+        end
+
+      {:ok, _other, _ws, _queue} ->
+        {:error, :broken}
 
       {:error, _} = error ->
         error
-
-      _ ->
-        {:error, "the reply to the upgrade is not a WebSocket upgrade"}
-    end
-  end
-
-  defp tokens(value),
-    do: value |> String.downcase() |> String.split(",", trim: true) |> Enum.map(&String.trim/1)
-
-  defp accept(key), do: Base.encode64(:crypto.hash(:sha, key <> @accept_guid))
-
-  defp challenge(socket, deadline) do
-    with {:ok, %{"type" => "challenge", "nonce" => nonce}} when is_binary(nonce) <-
-           frame(socket, deadline),
-         {:ok, <<_::binary-size(32)>> = bytes} <- Base.decode64(nonce) do
-      {:ok, bytes}
-    else
-      {:error, _} = error -> error
-      _ -> {:error, :broken}
     end
   end
 
@@ -153,121 +265,56 @@ defmodule Helyx.TUI.Wire do
     %{"type" => "hello", "protocol" => WebSocket.protocol(), "proof" => Base.encode64(proof)}
   end
 
-  defp welcome(socket, deadline) do
-    protocol = WebSocket.protocol()
+  defp welcome(socket, ws, queue, deadline, timeout) do
+    case text(socket, ws, queue, deadline, timeout) do
+      {:ok, %{"type" => "welcome", "protocol" => protocol}, ws, queue} ->
+        if protocol == WebSocket.protocol(), do: {:ok, ws, queue}, else: {:error, :broken}
 
-    case frame(socket, deadline) do
-      {:ok, %{"type" => "welcome", "protocol" => ^protocol}} ->
-        :ok
-
-      {:ok, %{"type" => "refused", "code" => "protocol", "server_protocol" => server}}
+      {:ok, %{"type" => "refused", "code" => "protocol", "server_protocol" => server}, _ws,
+       _queue}
       when is_integer(server) and server >= 0 ->
         {:error, {:refused, server}}
 
+      {:ok, _other, _ws, _queue} ->
+        {:error, :broken}
+
       {:error, _} = error ->
         error
+    end
+  end
 
-      {:ok, _other} ->
+  defp send_frame(socket, ws, frame, timeout) do
+    case Mint.WebSocket.encode(ws, {:text, JSON.encode!(frame)}) do
+      {:ok, ws, bytes} ->
+        case :gen_tcp.send(socket, bytes) do
+          :ok -> {:ok, ws}
+          {:error, reason} -> {:error, error_text(%Mint.TransportError{reason: reason}, timeout)}
+        end
+
+      {:error, _ws, _reason} ->
         {:error, :broken}
     end
   end
 
-  # The next frame of the server, decoded with the codec and the decode
-  # bounds of the transport. A close is an error with its code; a part is
-  # a contract break in the handshake.
-  defp frame(socket, deadline) do
-    with {:ok, text} <- text(socket, deadline, nil),
-         {:frame, frame} <- Frame.decode(text, nil) do
-      {:ok, frame}
-    else
-      {:error, _} = error -> error
-      _ -> {:error, :broken}
-    end
-  end
-
-  # The next text message, its fragments joined, at most the frame bound of
-  # the wire; `joined` is nil before its first fragment. A ping or a pong
-  # between them is skipped. A server does not mask (RFC 6455, section 5.1)
-  # and sets no reserved bit.
-  defp text(socket, deadline, joined) do
-    with {:ok, <<fin::1, 0::3, opcode::4, 0::1, len::7>>} <- recv(socket, 2, deadline),
-         {:ok, size} <- size(socket, len, deadline),
-         :ok <- check(opcode, fin, size, joined),
-         {:ok, payload} <- payload(socket, size, deadline) do
-      case {opcode, fin} do
-        {8, _} -> {:error, closed(payload)}
-        {control, _} when control in [9, 10] -> text(socket, deadline, joined)
-        {_text, 1} -> {:ok, (joined || "") <> payload}
-        {_text, 0} -> text(socket, deadline, (joined || "") <> payload)
-      end
-    else
-      {:ok, _bad_header} -> {:error, :broken}
-      error -> error
-    end
-  end
-
-  # A control frame is whole and at most 125 bytes; a text starts with
-  # opcode 1, and its fragments go on with opcode 0. `Helyx.TUI.Wire.Reader`
-  # checks each frame after the handshake with it too.
-  @doc false
-  def check(opcode, 1, size, _joined) when opcode in [8, 9, 10] and size <= 125, do: :ok
-  def check(1, _fin, size, nil), do: within(size, "")
-  def check(0, _fin, size, joined) when is_binary(joined), do: within(size, joined)
-  def check(_opcode, _fin, _size, _joined), do: {:error, :broken}
-
-  defp within(size, joined) do
-    if byte_size(joined) + size <= Frame.max_frame(), do: :ok, else: {:error, :broken}
-  end
-
-  defp closed(<<code::16, _reason::binary>>), do: "the server closed the connection with #{code}"
-  defp closed(_payload), do: "the server closed the connection"
-
-  defp size(_socket, len, _deadline) when len < 126, do: {:ok, len}
-
-  defp size(socket, 126, deadline) do
-    with {:ok, <<size::16>>} <- recv(socket, 2, deadline), do: {:ok, size}
-  end
-
-  defp size(socket, 127, deadline) do
-    with {:ok, <<size::64>>} <- recv(socket, 8, deadline), do: {:ok, size}
-  end
-
-  defp payload(_socket, 0, _deadline), do: {:ok, ""}
-  defp payload(socket, size, deadline), do: recv(socket, size, deadline)
-
   # The deadline is checked before each read, so bytes that wait in the
-  # socket do not keep the handshake past it. A read that gives fewer bytes
-  # than it asked for ends at a close of the server.
-  defp recv(socket, size, deadline) do
-    case deadline - System.monotonic_time(:millisecond) do
-      wait when wait > 0 ->
-        case :gen_tcp.recv(socket, size, wait) do
-          {:ok, data} when size > 0 and byte_size(data) != size -> {:error, :closed}
-          result -> result
-        end
+  # socket do not keep the handshake past it.
+  defp left(deadline), do: max(deadline - System.monotonic_time(:millisecond), 0)
 
-      _past ->
-        {:error, :timeout}
-    end
-  end
+  defp host(ip) when tuple_size(ip) == 4, do: ip |> :inet.ntoa() |> to_string()
+  defp host(ip), do: "[" <> (ip |> :inet.ntoa() |> to_string()) <> "]"
 
-  defp send_frame(socket, frame), do: :gen_tcp.send(socket, masked(1, JSON.encode!(frame)))
+  defp close_text(nil), do: "the server closed the connection"
+  defp close_text(code), do: "the server closed the connection with #{code}"
 
-  # The iodata of a whole frame of the client with `opcode`, masked (RFC
-  # 6455, section 5.3): a text, or the pong of `Helyx.TUI.Wire.Writer`.
-  @doc false
-  def masked(opcode, payload) do
-    size = byte_size(payload)
-    mask = :crypto.strong_rand_bytes(4)
-    masked = :crypto.exor(payload, binary_part(:binary.copy(mask, div(size, 4) + 1), 0, size))
-    [<<1::1, 0::3, opcode::4>>, payload_length(size), mask, masked]
-  end
+  defp error_text(%Mint.TransportError{reason: :timeout}, timeout),
+    do: "no welcome from the server in #{timeout} ms"
 
-  defp payload_length(size) when size < 126, do: <<1::1, size::7>>
-  defp payload_length(size) when size < 65_536, do: <<1::1, 126::7, size::16>>
-  defp payload_length(size), do: <<1::1, 127::7, size::64>>
+  defp error_text(%Mint.TransportError{reason: :closed}, _timeout),
+    do: "the server closed the connection"
 
-  defp error_text(:timeout, timeout), do: "no welcome from the server in #{timeout} ms"
-  defp error_text(:closed, _timeout), do: "the server closed the connection"
-  defp error_text(reason, _timeout), do: to_string(:inet.format_error(reason))
+  defp error_text(%Mint.TransportError{reason: reason}, _timeout),
+    do: to_string(:inet.format_error(reason))
+
+  defp error_text(_error, _timeout),
+    do: "the reply to the upgrade is not a WebSocket upgrade"
 end

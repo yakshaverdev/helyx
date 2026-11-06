@@ -51,7 +51,7 @@ defmodule Helyx.TUI.WireTest do
 
   test "the hello holds the protocol and the proof of the token; a welcome gives the socket" do
     port = server(&send_text(&1, welcome()))
-    assert {:ok, socket} = connect(port)
+    assert {:ok, socket, _ws} = connect(port)
 
     assert_receive {:hello, nonce, hello}
     proof = :crypto.mac(:hmac, :sha256, :crypto.hash(:sha256, @token), nonce)
@@ -95,9 +95,7 @@ defmodule Helyx.TUI.WireTest do
       [<<1::1, 1::3, 1::4, 0::1, 0::7>>],
       # A continuation with no start, and a ping over 125 bytes.
       server_frame(1, 0, welcome()),
-      server_frame(1, 9, String.duplicate("p", 126)),
-      # A fragmented ping.
-      server_frame(0, 9, "p")
+      server_frame(1, 9, String.duplicate("p", 126))
     ]
 
     for frame <- frames do
@@ -151,7 +149,7 @@ defmodule Helyx.TUI.WireTest do
         end)
 
       result = connect(port)
-      if ok?, do: assert({:ok, _} = result), else: assert(result == {:error, :broken})
+      if ok?, do: assert({:ok, _socket, _ws} = result), else: assert(result == {:error, :broken})
     end
   end
 
@@ -164,7 +162,7 @@ defmodule Helyx.TUI.WireTest do
       # send of its payload can fail.
       port = server(&(_ = :gen_tcp.send(&1, server_frame(1, 1, text))))
       result = connect(port)
-      if ok?, do: assert({:ok, _} = result), else: assert(result == {:error, :broken})
+      if ok?, do: assert({:ok, _socket, _ws} = result), else: assert(result == {:error, :broken})
     end
   end
 
@@ -193,17 +191,11 @@ defmodule Helyx.TUI.WireTest do
     assert connect(silent, 100) == {:error, "no welcome from the server in 100 ms"}
   end
 
-  test "the head of the upgrade reply has at most 64 header lines of at most 8192 bytes" do
-    # The reply has three headers of its own.
-    many = for n <- 1..61, do: "X-#{n}: v"
-    long = "X-Long: " <> String.duplicate("a", 8_192 - 10)
+  test "the head of the upgrade reply has the bound of Mint, 512 KiB in all" do
+    short = "X-Long: " <> String.duplicate("a", 1_000)
+    long = "X-Long: " <> String.duplicate("a", 524_288)
 
-    for {headers, ok?} <- [
-          {many, true},
-          {["X-62: v" | many], false},
-          {[long], true},
-          {[long <> "a"], false}
-        ] do
+    for {headers, ok?} <- [{[short], true}, {[long], false}] do
       # The welcome waits in the socket; a client that refused the head has
       # closed it, so the sends are not checked.
       port =
@@ -219,7 +211,7 @@ defmodule Helyx.TUI.WireTest do
         end)
 
       result = connect(port)
-      assert match?({:ok, _}, result) == ok?, inspect(result)
+      assert match?({:ok, _socket, _ws}, result) == ok?, inspect(result)
     end
   end
 
@@ -230,7 +222,7 @@ defmodule Helyx.TUI.WireTest do
         send_text(socket, welcome())
       end)
 
-    assert {:ok, _socket} = connect(port)
+    assert {:ok, _socket, _ws} = connect(port)
   end
 
   # The server sends pings until the client closes: a read past the

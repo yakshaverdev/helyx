@@ -62,7 +62,7 @@ defmodule Helyx.TUI do
   `File.cwd!/0`), `:home` (the folder of the user skills that the mount
   scans, default `System.user_home!/0`), `:reconnect` (the connect after
   a lost connection:
-  `{:ok, socket}`, owned by the caller, or `{:error, text}`), `:notices`
+  `{:ok, socket, ws}`, owned by the caller, or `{:error, text}`), `:notices`
   (lines of the caller, each a notice cell after those of the skills
   scan, default none), and those of `ExRatatui.App`. The scroll keys read
   the terminal size through `:terminal_size_fn`, the option of

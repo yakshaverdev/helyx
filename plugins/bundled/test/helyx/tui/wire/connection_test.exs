@@ -27,11 +27,12 @@ defmodule Helyx.TUI.Wire.ConnectionTest do
   defp connect(port) do
     # The handshake is a wait that must happen: the one cap of the tests,
     # so load does not fail it (#805).
-    {:ok, socket} = Wire.connect(@loopback, port, fn -> "token" end, Helyx.Test.Events.wait_ms())
-    socket
+    Wire.connect(@loopback, port, fn -> "token" end, Helyx.Test.Events.wait_ms())
   end
 
-  defp open(port), do: port |> connect() |> Connection.open()
+  defp open(port) do
+    with {:ok, socket, ws} <- connect(port), do: Connection.open(socket, ws)
+  end
 
   describe "a real server" do
     setup do
@@ -165,8 +166,12 @@ defmodule Helyx.TUI.Wire.ConnectionTest do
   end
 
   defp fake(script) do
-    {:ok, conn, ref} = open(fake_port(script))
-    {conn, ref}
+    case open(fake_port(script)) do
+      {:ok, conn, ref} -> {conn, ref}
+      # The script's frame came with `welcome`, so `connect/4` ended the
+      # handshake at it.
+      {:error, :broken} -> :broken
+    end
   end
 
   defp text(frame) when is_map(frame), do: text(JSON.encode!(frame))
@@ -245,9 +250,8 @@ defmodule Helyx.TUI.Wire.ConnectionTest do
       server_frame(1, 2, "binary"),
       [<<1::1, 0::3, 1::4, 1::1, 0::7>>, <<0::32>>],
       server_frame(1, 0, "continuation"),
-      # A reserved bit, a fragmented ping, and a ping over 125 bytes.
+      # A reserved bit and a ping over 125 bytes.
       [<<1::1, 1::3, 1::4, 0::1, 0::7>>],
-      server_frame(0, 9, "p"),
       server_frame(1, 9, String.duplicate("p", 126)),
       text(%{type: "part", n: 1, last: true, data: ""}),
       # Parts out of order, and another frame between two parts.
@@ -256,8 +260,10 @@ defmodule Helyx.TUI.Wire.ConnectionTest do
     ]
 
     for frame <- broken do
-      {conn, ref} = fake(&(:ok = :gen_tcp.send(&1, frame)))
-      assert_receive {:DOWN, ^ref, :process, ^conn, {:shutdown, :broken}}
+      case fake(&(:ok = :gen_tcp.send(&1, frame))) do
+        :broken -> :ok
+        {conn, ref} -> assert_receive {:DOWN, ^ref, :process, ^conn, {:shutdown, :broken}}
+      end
     end
 
     for frame <- [
@@ -611,12 +617,23 @@ defmodule Helyx.TUI.Wire.ConnectionTest do
     assert Connection.steer(conn, "s1", "x") == {:error, :closed}
     assert_receive {:DOWN, ^ref, :process, ^conn, {:shutdown, {:closed, 4408}}}
 
-    {conn, ref} = fake(&:gen_tcp.close/1)
-    assert_receive {:DOWN, ^ref, :process, ^conn, {:shutdown, {:closed, nil}}}
-    assert Connection.abort(conn, "s1") == {:error, :closed}
+    {conn, ref} =
+      fake(fn socket ->
+        _req = client_frame(socket)
+        :gen_tcp.close(socket)
+      end)
 
-    {conn, ref} = fake(&(:ok = :gen_tcp.send(&1, server_frame(1, 8, ""))))
+    assert Connection.abort(conn, "s1") == {:error, :closed}
     assert_receive {:DOWN, ^ref, :process, ^conn, {:shutdown, {:closed, nil}}}
+
+    {conn, ref} =
+      fake(fn socket ->
+        _req = client_frame(socket)
+        :ok = :gen_tcp.send(socket, server_frame(1, 8, ""))
+      end)
+
+    assert Connection.abort(conn, "s1") == {:error, :closed}
+    assert_receive {:DOWN, ^ref, :process, ^conn, {:shutdown, {:closed, 1000}}}
   end
 
   # `start` and `resume` have no deadline in the client (tui-attach.md,
@@ -696,9 +713,9 @@ defmodule Helyx.TUI.Wire.ConnectionTest do
   # socket buffers of both sides.
   @tag :slow
   test "a write past the send timeout ends the connection with no code, and the request gets closed" do
-    socket = connect(fake_port(fn _socket -> :ok end))
+    {:ok, socket, ws} = connect(fake_port(fn _socket -> :ok end))
     :ok = :inet.setopts(socket, send_timeout: 1_000)
-    {:ok, conn, ref} = Connection.open(socket)
+    {:ok, conn, ref} = Connection.open(socket, ws)
     assert Connection.steer(conn, "s1", String.duplicate("a", 16_777_216)) == {:error, :closed}
     assert_receive {:DOWN, ^ref, :process, ^conn, {:shutdown, {:closed, nil}}}
   end

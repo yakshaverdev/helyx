@@ -47,11 +47,12 @@ defmodule Helyx.TUI.Link do
           | {:error, term()}
   def subscribe(%__MODULE__{conn: conn, id: id}, opts), do: Connection.subscribe(conn, id, opts)
 
-  # The session over a new connection on `socket` after a lost one. The
-  # socket goes to the connection, which the caller owns.
-  @spec reopen(t(), :gen_tcp.socket()) :: t()
-  def reopen(%__MODULE__{} = session, socket) do
-    {:ok, conn, _ref} = Connection.open(socket)
+  # The session over a new connection on `socket` after a lost one, with the
+  # WebSocket state of `Helyx.TUI.Wire.connect/4`. The socket goes to the
+  # connection, which the caller owns.
+  @spec reopen(t(), :gen_tcp.socket(), term()) :: t()
+  def reopen(%__MODULE__{} = session, socket, ws) do
+    {:ok, conn, _ref} = Connection.open(socket, ws)
     %{session | conn: conn}
   end
 

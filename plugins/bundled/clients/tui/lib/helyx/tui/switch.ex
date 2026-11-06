@@ -87,7 +87,7 @@ defmodule Helyx.TUI.Switch do
   def reconnect(%{switch: nil, reconnect: reconnect} = state, {:shutdown, {:closed, _}})
       when is_function(reconnect, 0) do
     case reconnect.() do
-      {:ok, socket} -> resubscribe(state, Link.reopen(state.session, socket))
+      {:ok, socket, ws} -> resubscribe(state, Link.reopen(state.session, socket, ws))
       {:error, text} -> exit({:connection_down, {:reconnect, text}})
     end
   end

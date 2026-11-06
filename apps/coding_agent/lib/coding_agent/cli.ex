@@ -322,8 +322,8 @@ defmodule CodingAgent.CLI do
     end
   end
 
-  defp attach(opts, run, {:ok, socket}),
-    do: CodingAgent.attach(socket, Keyword.take(opts, [:model]) ++ reattach(opts, run))
+  defp attach(opts, run, {:ok, socket, ws}),
+    do: CodingAgent.attach(socket, ws, Keyword.take(opts, [:model]) ++ reattach(opts, run))
 
   defp attach(_opts, _run, {:error, text}), do: {:error, {:attach, text}}
 

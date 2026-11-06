@@ -71,7 +71,7 @@ defmodule CodingAgent.AttachTest do
 
     wait_until(fn -> match?({:ok, "{" <> _}, File.read(file)) end)
 
-    assert {:ok, socket} = Attach.connect(sessions)
+    assert {:ok, socket, _ws} = Attach.connect(sessions)
 
     assert %{"ok" => true, "result" => %{"sessions" => []}} =
              WireClient.request(socket, "1", "sessions.live", %{})
@@ -110,7 +110,7 @@ defmodule CodingAgent.AttachTest do
     # is checked before the resume: the live session stays as it was.
     gone = Path.join(dir, "gone")
     File.mkdir_p!(gone)
-    {:ok, socket} = Attach.connect(sessions)
+    {:ok, socket, _ws} = Attach.connect(sessions)
 
     assert %{"ok" => true, "result" => %{"session" => id}} =
              WireClient.request(socket, "1", "start", %{"cwd" => gone})
@@ -122,9 +122,9 @@ defmodule CodingAgent.AttachTest do
     live = Helyx.Sessions.list_live(Helyx.Core)
 
     for cwd <- [dir <> <<0xFF>>, dir <> <<0>>] do
-      {:ok, socket} = Attach.connect(sessions)
+      {:ok, socket, ws} = Attach.connect(sessions)
       opts = [resume: false, sessions_dir: sessions, cwd: cwd]
-      assert CodingAgent.attach(socket, opts) == {:error, :invalid_cwd}
+      assert CodingAgent.attach(socket, ws, opts) == {:error, :invalid_cwd}
     end
 
     assert Helyx.Sessions.list_live(Helyx.Core) == live
@@ -222,7 +222,7 @@ defmodule CodingAgent.AttachTest do
 
   test "with no server, a start runs the launcher in the background and attaches to its server",
        %{tmp_dir: dir, sessions: sessions} do
-    assert {:ok, socket} = Attach.start(sessions, launcher(dir, "fake/echo"))
+    assert {:ok, socket, _ws} = Attach.start(sessions, launcher(dir, "fake/echo"))
 
     assert %{"ok" => true, "result" => %{"sessions" => []}} =
              WireClient.request(socket, "1", "sessions.live", %{})
@@ -502,12 +502,12 @@ defmodule CodingAgent.AttachTest do
         :gen_tcp.close(socket)
       end)
 
-    {:ok, socket} =
+    {:ok, socket, ws} =
       Helyx.TUI.Wire.connect({127, 0, 0, 1}, port, fn -> "t" end, Helyx.Test.Events.wait_ms())
 
     stderr =
       capture_io(:stderr, fn ->
-        result = CodingAgent.attach(socket, resume: true, sessions_dir: dir, cwd: dir)
+        result = CodingAgent.attach(socket, ws, resume: true, sessions_dir: dir, cwd: dir)
         send(self(), {:result, result})
       end)
 
@@ -539,7 +539,7 @@ defmodule CodingAgent.AttachTest do
       send(test, :written)
     end)
 
-    assert {:ok, _socket} = Attach.connect(sessions)
+    assert {:ok, _socket, _ws} = Attach.connect(sessions)
     assert_receive :written
     Lock.release(lock)
   end

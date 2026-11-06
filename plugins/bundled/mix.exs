@@ -53,6 +53,7 @@ defmodule Helyx.Plugins.MixProject do
       {:ex_ratatui, "~> 0.14"},
       {:bandit, "~> 1.12.5"},
       {:websock, "~> 0.5.3"},
+      {:mint_web_socket, "~> 1.0"},
       # A dependency of Bandit, pinned below 1.6.0, which was two days old
       # when #660 added Bandit.
       {:thousand_island, "~> 1.5.0"},

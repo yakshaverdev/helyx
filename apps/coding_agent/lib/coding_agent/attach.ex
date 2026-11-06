@@ -20,15 +20,17 @@ defmodule CodingAgent.Attach do
   @connect_ms 5_000
 
   @doc """
-  Connects to the server of the data folder `dir`. Returns `{:ok, socket}`
-  after `welcome`, with the socket owned by the caller, `:none` when no
-  server runs, or `{:error, text}` with one line. While the lock is held, a
-  missing or invalid server file and a failed connect mean that the server
-  is starting: the attempt runs again every #{@poll_ms} ms, and none starts
-  after `CodingAgent.Serve.wait_ms/0`. The client never writes or removes
-  the server file.
+  Connects to the server of the data folder `dir`. Returns
+  `{:ok, socket, ws}` after `welcome`, with the socket owned by the caller
+  and the WebSocket state for `Helyx.TUI.Wire.Connection.open/2`, `:none`
+  when no server runs, or `{:error, text}` with one line. While the lock is
+  held, a missing or invalid server file and a failed connect mean that the
+  server is starting: the attempt runs again every #{@poll_ms} ms, and none
+  starts after `CodingAgent.Serve.wait_ms/0`. The client never writes or
+  removes the server file.
   """
-  @spec connect(Path.t()) :: {:ok, :gen_tcp.socket()} | :none | {:error, String.t()}
+  @spec connect(Path.t()) ::
+          {:ok, :gen_tcp.socket(), term()} | :none | {:error, String.t()}
   def connect(dir) do
     with :ok <- folder(dir), do: attempt(dir, deadline(), :none)
   end
@@ -43,9 +45,10 @@ defmodule CodingAgent.Attach do
   on `/dev/null` and its output added to `<dir>/server.log`, which must be
   a regular file or not there. The folder is made with mode 0700 when it
   is not there. perl must be on the PATH: `CodingAgent.CLI` checks it
-  before a start. Returns `{:ok, socket}` or `{:error, text}`.
+  before a start. Returns `{:ok, socket, ws}` or `{:error, text}`.
   """
-  @spec start(Path.t(), Path.t()) :: {:ok, :gen_tcp.socket()} | {:error, String.t()}
+  @spec start(Path.t(), Path.t()) ::
+          {:ok, :gen_tcp.socket(), term()} | {:error, String.t()}
   def start(dir, launcher) do
     log = Path.join(dir, "server.log")
 
@@ -59,7 +62,7 @@ defmodule CodingAgent.Attach do
   default model `model` and a port of the loopback that the OS picks
   (`CodingAgent.Serve.start/2`), when no launcher is set, as for `mix
   helyx` (`docs/features/tui-attach.md`, decision 12). It connects to it
-  as `start/2` does, then calls `fun` with `{:ok, socket}` or `{:error,
+  as `start/2` does, then calls `fun` with `{:ok, socket, ws}` or `{:error,
   text}`, and stops the server when `fun` returns: `fun` runs the TUI. A
   server that ends before the attach gives `could not start a server:
   <its line>` at the next attempt. Neither its line of the address nor
@@ -67,8 +70,11 @@ defmodule CodingAgent.Attach do
   goes to `<dir>/tui.log` until the server stops
   (`CodingAgent.LogFile.run/2`). Returns the result of `fun`.
   """
-  @spec serve(Path.t(), String.t(), ({:ok, :gen_tcp.socket()} | {:error, String.t()} -> result)) ::
-          result
+  @spec serve(
+          Path.t(),
+          String.t(),
+          ({:ok, :gen_tcp.socket(), term()} | {:error, String.t()} -> result)
+        ) :: result
         when result: term()
   def serve(dir, model, fun) do
     # The data folder comes first: the lock test of the wait needs it.
@@ -192,8 +198,8 @@ defmodule CodingAgent.Attach do
 
   defp open(dir, deadline, free, ip, port, token) do
     case Wire.connect(ip, port, token, @connect_ms) do
-      {:ok, socket} ->
-        {:ok, socket}
+      {:ok, socket, ws} ->
+        {:ok, socket, ws}
 
       {:error, {:refused, server}} ->
         {:error,

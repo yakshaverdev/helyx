@@ -33,8 +33,8 @@ defmodule Helyx.TUI.LinkTest do
   # The handshake is a wait that must happen: the one cap of the tests, so
   # load does not fail it (#805).
   defp connect(port) do
-    {:ok, socket} = Wire.connect({127, 0, 0, 1}, port, fn -> "token" end, wait_ms())
-    {:ok, conn, ref} = Connection.open(socket)
+    {:ok, socket, ws} = Wire.connect({127, 0, 0, 1}, port, fn -> "token" end, wait_ms())
+    {:ok, conn, ref} = Connection.open(socket, ws)
     {conn, ref}
   end
 
@@ -291,9 +291,9 @@ defmodule Helyx.TUI.LinkTest do
   # close: gen_tcp then drops the close frame that waits to be read.
   @tag :slow
   test "the worst JSON form at the bound and a slow client: the server closes it with 4408", c do
-    {:ok, socket} = Wire.connect({127, 0, 0, 1}, c.port, fn -> "token" end, wait_ms())
+    {:ok, socket, ws} = Wire.connect({127, 0, 0, 1}, c.port, fn -> "token" end, wait_ms())
     server = server_of(socket)
-    {:ok, conn, ref} = Connection.open(socket)
+    {:ok, conn, ref} = Connection.open(socket, ws)
     {:ok, id} = Connection.start(conn, cwd: c.cwd)
     {:ok, _snapshot, _sub} = Connection.subscribe(conn, id)
     text = String.duplicate("\u0001", Helyx.Session.max_text_bytes())

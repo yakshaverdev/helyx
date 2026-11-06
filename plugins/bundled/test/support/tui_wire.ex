@@ -20,8 +20,8 @@ defmodule Helyx.Test.TUIWire do
   # A new connection of the caller to the transport of `core`. The
   # handshake is a wait that must happen: the cap of the tests (#805).
   defp conn(core) do
-    {:ok, socket} = Wire.connect({127, 0, 0, 1}, port(core), fn -> "token" end, wait_ms())
-    {:ok, conn, _ref} = Connection.open(socket)
+    {:ok, socket, ws} = Wire.connect({127, 0, 0, 1}, port(core), fn -> "token" end, wait_ms())
+    {:ok, conn, _ref} = Connection.open(socket, ws)
     conn
   end
 

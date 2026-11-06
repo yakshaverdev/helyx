@@ -96,10 +96,10 @@ defmodule CodingAgent do
 
   @doc """
   Runs the TUI over the wire until the user quits
-  (`docs/features/tui-attach.md`, decisions 8 and 9). `socket` is the
-  socket of `CodingAgent.Attach.connect/1`, which the caller owns and gives
-  to the connection (`Helyx.TUI.Wire.Connection`); the TUI takes the
-  connection and ends it at its quit. The options are those of `run/1`
+  (`docs/features/tui-attach.md`, decisions 8 and 9). `socket` and `ws` are
+  from `CodingAgent.Attach.connect/1`, which the caller owns and gives to
+  the connection (`Helyx.TUI.Wire.Connection`); the TUI takes the connection
+  and ends it at its quit. The options are those of `run/1`
   with no `:prompt`; `:model` is optional: with none, a new session gets
   the default model of the server; `resume: id` takes no `:cwd`; and
   `resume: :reattach` resumes the newest session of `:cwd`, or starts one
@@ -109,9 +109,9 @@ defmodule CodingAgent do
   and subscribes with `after` (decision 11). Returns
   `{:error, reason}` as `run/1` does, with the errors of the wire.
   """
-  @spec attach(:gen_tcp.socket(), keyword()) :: :ok | {:error, term()}
-  def attach(socket, opts) do
-    {:ok, conn, ref} = Connection.open(socket)
+  @spec attach(:gen_tcp.socket(), term(), keyword()) :: :ok | {:error, term()}
+  def attach(socket, ws, opts) do
+    {:ok, conn, ref} = Connection.open(socket, ws)
 
     try do
       with {:ok, id, cwd, resumed} <- loading(fn -> open_remote(conn, opts) end) do

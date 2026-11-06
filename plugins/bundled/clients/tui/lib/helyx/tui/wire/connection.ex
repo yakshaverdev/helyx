@@ -45,13 +45,10 @@ defmodule Helyx.TUI.Wire.Connection do
 
   @type error :: atom() | {atom(), String.t()}
 
-  @doc """
-  Starts the connection on `socket`, which the caller owns and gives to it.
-  Returns the connection and the caller's monitor of it.
-  """
-  @spec open(:gen_tcp.socket()) :: {:ok, pid(), reference()}
-  def open(socket) do
-    {:ok, conn} = GenServer.start(__MODULE__, {self(), socket})
+  @doc "Starts the connection on `socket` and the WebSocket state of `Helyx.TUI.Wire.connect/4`. Returns the connection and the caller's monitor of it."
+  @spec open(:gen_tcp.socket(), term()) :: {:ok, pid(), reference()}
+  def open(socket, ws) do
+    {:ok, conn} = GenServer.start(__MODULE__, {self(), socket, ws})
     ref = Process.monitor(conn)
     :ok = :gen_tcp.controlling_process(socket, conn)
     send(conn, :read)
@@ -153,7 +150,7 @@ defmodule Helyx.TUI.Wire.Connection do
   end
 
   @impl true
-  def init({owner, socket}) do
+  def init({owner, socket, ws}) do
     # `waiting` maps the id of a request to its op and `{from, timer}`: its
     # caller and its deadline timer, `:late` after the timer, or
     # `{:unsubscribe, sub}` for the end of a subscription that a late reply
@@ -169,14 +166,14 @@ defmodule Helyx.TUI.Wire.Connection do
        owner: owner,
        monitor: Process.monitor(owner),
        socket: socket,
-       writer: Writer.start_link(socket),
+       writer: Writer.start_link(socket, ws),
+       ws: ws,
+       pending: 0,
        unwritten: 0,
        unsubscribes: [],
        control: :idle,
        pong: nil,
        acks: %{},
-       buffer: "",
-       joined: nil,
        parts: nil,
        next: 1,
        waiting: %{},
@@ -208,9 +205,12 @@ defmodule Helyx.TUI.Wire.Connection do
   def handle_info(:read, state), do: active(state)
 
   def handle_info({:tcp, socket, data}, %{socket: socket} = state) do
-    case Reader.read(state.buffer <> data, state.joined) do
-      {:ok, messages, buffer, joined} ->
-        messages(messages, %{state | buffer: buffer, joined: joined})
+    case Reader.read(state.ws, data, state.pending) do
+      {:ok, messages, ws, pending} ->
+        messages(messages, %{state | ws: ws, pending: pending})
+
+      {:partial, messages, ws} ->
+        messages(messages ++ [:broken], %{state | ws: ws, pending: 0})
 
       :broken ->
         broken(state)
@@ -267,8 +267,8 @@ defmodule Helyx.TUI.Wire.Connection do
 
   defp message({:ping, payload}, state), do: control(%{state | pong: payload})
 
-  defp message({:close, <<code::16, _reason::binary>>}, state), do: closed(code, state)
-  defp message({:close, _payload}, state), do: closed(nil, state)
+  defp message({:close, code, _reason}, state), do: closed(code, state)
+  defp message(:broken, state), do: broken(state)
 
   defp message({:text, text}, state) do
     case Frame.decode(text, state.parts, :outbound) do

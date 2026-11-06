@@ -39,7 +39,7 @@ defmodule Helyx.TUI.WireFixturesTest do
       result = Wire.connect(@loopback, port, fn -> "token" end, Events.wait_ms())
 
       case expect do
-        "welcome" -> assert {:ok, _socket} = result, name
+        "welcome" -> assert {:ok, _socket, _ws} = result, name
         "broken" -> assert {:error, :broken} = result, name
         %{"refused" => protocol} -> assert {:error, {:refused, ^protocol}} = result, name
       end
@@ -61,8 +61,8 @@ defmodule Helyx.TUI.WireFixturesTest do
         Process.sleep(:infinity)
       end)
 
-    {:ok, socket} = Wire.connect(@loopback, port, fn -> "token" end, Events.wait_ms())
-    Connection.open(socket)
+    {:ok, socket, ws} = Wire.connect(@loopback, port, fn -> "token" end, Events.wait_ms())
+    Connection.open(socket, ws)
   end
 
   defp with_id(%{"type" => "res"} = res, id), do: %{res | "id" => id}
@@ -201,8 +201,8 @@ defmodule Helyx.TUI.WireFixturesTest do
         Process.sleep(:infinity)
       end)
 
-    {:ok, socket} = Wire.connect(@loopback, port, fn -> "token" end, Events.wait_ms())
-    Connection.open(socket)
+    {:ok, socket, ws} = Wire.connect(@loopback, port, fn -> "token" end, Events.wait_ms())
+    Connection.open(socket, ws)
   end
 
   defp fake_step({socket, test}, %{"client" => %{"id" => id}}, ids) do

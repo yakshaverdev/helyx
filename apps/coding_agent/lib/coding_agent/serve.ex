@@ -176,7 +176,7 @@ defmodule CodingAgent.Serve do
   # The deadline is checked after the sleep, so no attempt starts past it.
   defp running(dir, deadline) do
     with {:ok, ip, port, token} when is_function(token) <- read_file(dir),
-         {:ok, socket} <- Helyx.TUI.Wire.connect(ip, port, token, @connect_ms) do
+         {:ok, socket, _ws} <- Helyx.TUI.Wire.connect(ip, port, token, @connect_ms) do
       :gen_tcp.close(socket)
       {:error, "a server runs for #{dir} at #{url(ip, port)}"}
     else
