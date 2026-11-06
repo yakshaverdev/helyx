@@ -80,3 +80,19 @@ Precommit, once after this round, with `HELYX_SLOW=1 .claude/skills/ship/precomm
 Left on disk: `.scratch/review-failure-path-3/` of the round 3 agent that stopped at the usage limit. No probe of this work created it, so none deleted it.
 
 Round counts: round 1 (full): 8 findings, 7 fixed, 1 not changed. Round 2 (reduced): 5, all fixed. Round 3 (reduced): 6, 5 fixed, 1 rejected. Small-fix round (reduced): 8, 7 open, 1 out of scope.
+
+## Owner decisions on the open findings (2026-11-06)
+
+The owner decided the seven open findings of the small-fix round. They are text fixes; by the owner's decision they get no review round, and the Codex gate follows.
+
+| # | Decision | Change |
+| --- | --- | --- |
+| 1 | Drop the perl lock holder; keep only examples that were reproduced or read in the Mix source. | `/ship` step 3: the misses are a list, each with its evidence. The wire schema is dropped too (not checked). A fixture stays, qualified: missed unless a module names it in `@external_resource` (`compilers/test.ex` compares only the test file, its external resources, and the beams). |
+| 2 | `--stale` also runs a new or changed test file. | `/ship` step 3 and the `AGENTS.md` Commands line. |
+| 3 | The devlog matches the rules. | The devlog names both places that set `HELYX_SLOW=1`, and the new or changed test file. |
+| 4 | "then step 1 and this step". | `/orchestrate` 5.2. |
+| 5 | The slow precommit runs on the rebased tree that lands; a fast-forward push reaches master. | `/ship` step 3 and `AGENTS.md`. |
+| 6, 7 | State both as limits in `/ship`, with the reproductions, and what a worker does. | `/ship` step 3: the two items, and "after a rename or a delete of a module, or when in doubt, run the full test files of the change; the full precommit before the commit stays the gate". |
+
+One more correction from a probe of this follow-up, in a throwaway project: a plugin in a literal list (`def plugins, do: [P]`) was followed by `--stale` (the test ran and failed after a change of `P`); a module reached by `Module.concat(["Q"])` and `apply` was missed (`--stale` ran `1 test, 1 failure`, `mix test` gave `2 tests, 2 failures`). So the miss "a plugin resolved by its registration entry" became "a module that a test reaches only by a name that is not a literal in code, from config or computed".
+
