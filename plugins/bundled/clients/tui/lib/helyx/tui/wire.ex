@@ -17,7 +17,7 @@ defmodule Helyx.TUI.Wire do
   # WebSocket type, and Reader.read/2 takes that opaque type, so Dialyzer
   # drops both branches. They run: recv delegates to Mint.HTTP.recv/3 before
   # new/5, and decode returns the same state it takes.
-  @dialyzer {:nowarn_function, [reply: 5, early: 2, next: 5]}
+  @dialyzer {:nowarn_function, [reply: 5, recv_reply: 6, early: 2, next: 5]}
 
   # The head of the upgrade reply, in all: Mint refuses a larger head and a
   # longer status line or header. The old client capped each line at 8,192
