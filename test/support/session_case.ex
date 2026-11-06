@@ -6,6 +6,7 @@ defmodule Helyx.Test.SessionCase do
   import ExUnit.Callbacks
 
   alias Helyx.Session
+  alias Helyx.Test.Events
 
   @plugins [
     Helyx.Test.Provider,
@@ -40,7 +41,7 @@ defmodule Helyx.Test.SessionCase do
     end
   end
 
-  def final_message(events), do: List.last(Helyx.Test.Events.messages(events))
+  def final_message(events), do: List.last(Events.messages(events))
 
   # The model "test/gate.<name>" with the test process registered as <name>:
   # each turn sends {:waiting, pid} and waits for :go.
@@ -75,18 +76,11 @@ defmodule Helyx.Test.SessionCase do
   # The messages in the mailbox of `pid` now, in order.
   def mailbox(pid \\ self()), do: elem(Process.info(pid, :messages), 1)
 
-  # Polls a condition every 10 ms, by default for the cap of a wait. Only
-  # for a state that no process tells by a message: a Registry entry, a
-  # mailbox length, memory.
-  def await(condition, what, tries \\ div(Helyx.Test.Events.wait_ms(), 10))
-  def await(_condition, what, 0), do: flunk("timed out waiting for #{what}")
-
-  def await(condition, what, tries) do
-    unless condition.() do
-      Process.sleep(10)
-      await(condition, what, tries - 1)
-    end
-  end
+  # Polls a condition every 10 ms for the cap of a wait. Only for a state
+  # that no process tells by a message: a Registry entry, a mailbox length,
+  # memory.
+  def await(condition, what),
+    do: Events.wait_until(condition, Events.wait_ms(), "timed out waiting for #{what}")
 
   # Waits until the mailbox of `pid` holds its `:DOWN` of `ended`. One exit
   # gives each monitor its own `:DOWN`, with no order between them, so the
