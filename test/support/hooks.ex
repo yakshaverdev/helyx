@@ -65,6 +65,16 @@ defmodule Helyx.Test.Hook.Short do
   use Helyx.Test.Hook, limit: 100
 end
 
+defmodule Helyx.Test.Hook.Before do
+  @moduledoc false
+  # A hook on `before_tool` only, scripted as the others.
+  @behaviour Helyx.Hook
+  @impl true
+  def limit(_point), do: 2_000
+  @impl true
+  def before_tool(input), do: Helyx.Test.Hook.run(__MODULE__, :before_tool, input, :allow)
+end
+
 defmodule Helyx.Test.Hook.BeforeOnly do
   @moduledoc false
   @behaviour Helyx.Hook

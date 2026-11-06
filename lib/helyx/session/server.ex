@@ -151,12 +151,13 @@ defmodule Helyx.Session.Server do
   # also when its call is no longer current, and its end counts down
   # (`{:background_end, message}`). The transcript and the provider get the
   # result with the status that the `after_tool` hooks left.
-  # Its call Task leaves the turn, and with it its record of an asker.
-  defp info({:tool_result, turn_id, call_id, {:started, result}}, state),
+  # Its call Task leaves the turn, and with it its record of an asker;
+  # then the run goes on (`Asks.started/3`).
+  defp info({:tool_result, turn_id, call_id, {:started, result, pid}}, state),
     do:
       info(
         {:tool_result, turn_id, call_id, result},
-        Asks.started(Steering.started(state), call_id)
+        Asks.started(Steering.started(state), call_id, pid)
       )
 
   # The hands' result of a running Helyx tool.
@@ -177,14 +178,16 @@ defmodule Helyx.Session.Server do
   defp info({:tool_result, _turn_id, _call_id, _result}, state), do: {:noreply, state}
   defp info({:stream_event, _turn_id, _event}, state), do: {:noreply, state}
 
-  # A call or hook Task that the hands started, before it runs
-  # (`Asks.asker/4`).
+  # A call or hook Task that the hands started: the session stores its
+  # record, then lets it run (`Asks.asker/4`).
   defp info({:asker, turn_id, pid, kind}, state),
     do: {:noreply, Asks.asker(state, turn_id, pid, kind)}
 
-  # An answer of a hook, from the hands (`Records.hook/3`).
+  # An answer of a hook, from the hands (`Records.hook/3`). Its Task
+  # ended, and an ask that it left open ends before the next hook of the
+  # chain can ask (`Asks.ended/2`).
   defp info({:hook_answer, turn_id, record}, state),
-    do: {:noreply, Records.hook(state, turn_id, record)}
+    do: {:noreply, state |> Records.hook(turn_id, record) |> Asks.ended(record.pid)}
 
   # A notice of the sync worker of this instance.
   defp info({:memory_notice, pid, text}, %State{sync: pid} = state),

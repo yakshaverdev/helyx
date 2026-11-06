@@ -358,21 +358,12 @@ defmodule Helyx.Session.File do
     do: system |> binary_part(0, @max_system_bytes) |> String.replace_invalid("")
 
   @doc """
-  Appends a `hook` entry: one answer of a hook (`docs/features/hooks.md`).
-  The caller cuts the reason and the arguments; a resume reads no `hook`
-  entry.
-  """
-  @spec append_hook(t(), map()) :: t()
-  def append_hook(%__MODULE__{} = file, %{"type" => "hook"} = entry), do: append(file, entry)
-
-  @doc """
   Appends one completed message to the file. Its entry id is the id of the
   message, which must have one; a resume reads it back as the message id.
   """
   @spec append_message(t(), Message.t()) :: t()
-  def append_message(%__MODULE__{} = file, %Message{} = message) do
-    append(file, Codec.encode(message))
-  end
+  def append_message(%__MODULE__{} = file, %Message{} = message),
+    do: append(file, Codec.encode(message))
 
   # Nothing is ever removed from the file: a truncate could cut bytes that
   # another writer appended. A last line without its newline gets one, so
@@ -391,7 +382,8 @@ defmodule Helyx.Session.File do
   # One entry is one append write: File.write/3 makes one binary of the
   # entry and its newline, opens the file with O_APPEND, and writes it with
   # one writev. Only a short write (a full disk, a signal) takes a second.
-  defp append(%__MODULE__{path: path, leaf: leaf} = file, entry) do
+  @doc false
+  def append(%__MODULE__{path: path, leaf: leaf} = file, entry) do
     # A message entry has the message id (`Codec.encode/1`).
     id = Map.get_lazy(entry, "id", &Helyx.Session.Id.new/0)
 

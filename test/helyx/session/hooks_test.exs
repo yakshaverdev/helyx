@@ -3,13 +3,17 @@ defmodule Helyx.Session.HooksTest do
   # call (ADR 0013, docs/features/hooks.md).
   use ExUnit.Case, async: true
 
-  import Helyx.Test.Events, only: [collect_until: 1, of_type: 2, snapshot: 1]
+  import Helyx.Test.Events, only: [collect_until: 1, of_type: 2, snapshot: 1, wait_until: 1]
   import Helyx.Test.SessionCase, only: [start_core: 1, stop_session: 2]
 
   alias Helyx.{Message, Session}
   alias Helyx.Test.Hook
 
   @tools [Helyx.Test.Tool.Upcase, Helyx.Test.Tool.Ask]
+
+  # The margin of a wait for a message that must not come: a hook that ran
+  # would send it within this time even on a loaded machine.
+  @load_ms 300
 
   # The hooks report to a proxy of the test process, so that the test
   # process stays free for a gate (`Helyx.Test.Gate.open/0`).
@@ -42,6 +46,30 @@ defmodule Helyx.Session.HooksTest do
         %{message: m} <- of_type(events, :tool_execution_end),
         do: {m.tool_call_id, m.is_error, Message.text(m)}
       )
+
+  # The pid of the after_tool hook Task of "c1" whose record waits in the
+  # mailbox of the session `pid`, or nil.
+  defp after_record(pid) do
+    {:messages, messages} = Process.info(pid, :messages)
+
+    Enum.find_value(messages, fn
+      {:asker, _turn_id, hook, {:hook, "c1"}} -> hook
+      _other -> nil
+    end)
+  end
+
+  # Whether the start answer of "1" waits in the mailbox of `pid`.
+  defp start_answer?(pid) do
+    {:messages, messages} = Process.info(pid, :messages)
+    Enum.any?(messages, &match?({:tool_result, _, "1", {:started, _, _}}, &1))
+  end
+
+  # The index of the first message in the mailbox of `pid` that `fun`
+  # takes, or nil.
+  defp mailbox_index(pid, fun) do
+    {:messages, messages} = Process.info(pid, :messages)
+    Enum.find_index(messages, fun)
+  end
 
   # The events that came so far.
   defp collect_until_quiet(acc \\ []) do
@@ -273,7 +301,8 @@ defmodule Helyx.Session.HooksTest do
         call_id: "c9",
         hook: Hook.A,
         outcome: {:failed, "late"},
-        call: nil
+        call: nil,
+        pid: nil
       }
 
       send(Session.pid(session), {:hook_answer, "ended-turn", record})
@@ -577,6 +606,71 @@ defmodule Helyx.Session.HooksTest do
       assert snapshot(session).asks == []
     end
 
+    test "a hook Task runs only after the session stored its record and let it go" do
+      core = core([Hook.A])
+      test = self()
+
+      Hook.script(core, Hook.A, :before_tool, fn _ ->
+        send(test, {:before, self()})
+        receive do: (:go -> :allow)
+      end)
+
+      Hook.script(core, Hook.A, :after_tool, fn _ ->
+        send(test, :after_ran)
+        :keep
+      end)
+
+      session = run(core, "loop")
+      pid = Session.pid(session)
+      assert_receive {:before, before}
+      # The session handles no message until it resumes.
+      :ok = :sys.suspend(pid)
+      send(before, :go)
+
+      # The hands started the after_tool hook and sent its record; the
+      # hook waits for the session.
+      wait_until(fn -> after_record(pid) != nil end)
+      hook = after_record(pid)
+      assert Process.alive?(hook)
+      refute_receive :after_ran, @load_ms
+
+      :ok = :sys.resume(pid)
+      assert_receive :after_ran
+      assert [{"c1", false, "HI"} | _] = results(collect_until(:turn_end))
+    end
+
+    test "a background run goes on only after the session took its start answer" do
+      core = core([Hook.Before], [Helyx.Test.Tool.BgAsk, Helyx.Test.Tool.GateWait])
+      test = self()
+
+      Hook.script(core, Hook.Before, :before_tool, fn _ ->
+        send(test, {:before, self()})
+        receive do: (:go -> :allow)
+      end)
+
+      gate = Helyx.Test.Gate.open()
+      session = run(core, "reuse." <> gate)
+      pid = Session.pid(session)
+      assert_receive {:before, before}
+      :ok = :sys.suspend(pid)
+      send(before, :go)
+
+      # The start answer waits in the mailbox of the session, and the run
+      # waits for the session.
+      wait_until(fn -> start_answer?(pid) end)
+      refute_receive {:bg, _run}, @load_ms
+
+      :ok = :sys.resume(pid)
+      assert_receive {:bg, run}
+      assert_receive {:before, second}
+      send(second, :go)
+      assert_receive {:call, call}
+      send(run, :go)
+      assert_receive {:bg_ask, {:error, :not_running}}
+      send(call, :go)
+      collect_until(:turn_end)
+    end
+
     test "an ask is taken at once while the hands release another Task" do
       core = core([], [Helyx.Test.Tool.SlowRelease, Helyx.Test.Tool.GateAsk])
       gate = Helyx.Test.Gate.open()
@@ -613,6 +707,62 @@ defmodule Helyx.Session.HooksTest do
       core = core([Hook.A], [Helyx.Test.Tool.HookAsk])
       run(core, "call.hook_ask")
       assert [{"c1", false, "not_running"}] = results(collect_until(:turn_end))
+    end
+
+    test "the answer of a hook ends its ask, whatever the order of its :DOWN" do
+      core = core([Hook.A])
+      test = self()
+
+      Hook.script(core, Hook.A, :before_tool, fn _ ->
+        send(test, {:asking, self()})
+        Helyx.Hook.ask(%{"q" => 1})
+      end)
+
+      session = run(core, "ask")
+      assert_receive {:asking, hook}
+      assert %{data: %{ask_id: id}, turn_id: turn_id} = List.last(collect_until(:ask))
+
+      # The answer of the hook as the hands send it when the hook ended,
+      # here while the hook Task lives, so no :DOWN can end the ask.
+      record = %{point: :before_tool, call_id: "a1", hook: Hook.A, outcome: {:failed, "x"}}
+
+      send(
+        Session.pid(session),
+        {:hook_answer, turn_id, Map.merge(record, %{call: nil, pid: hook})}
+      )
+
+      assert [%{ask_id: ^id, outcome: :ended}] = of_type(collect_until(:ask_end), :ask_end)
+      assert Process.alive?(hook)
+      assert snapshot(session).asks == []
+      :ok = Session.abort(session)
+      collect_until(:turn_end)
+    end
+
+    test "the hands send the answer of a hook killed while it asks with its pid, before the next record" do
+      core = core([Hook.Short, Hook.A])
+      test = self()
+
+      # The after_tool chain goes on past a failed hook.
+      Hook.script(core, Hook.Short, :after_tool, fn _ ->
+        send(test, {:asking, self()})
+        Helyx.Hook.ask(%{"q" => 1})
+      end)
+
+      session = run(core, "loop")
+      pid = Session.pid(session)
+      assert_receive {:asking, hook}
+      collect_until(:ask)
+      :ok = :sys.suspend(pid)
+
+      # Short is killed at its limit; the hands answer for it, then start A.
+      next = &match?({:asker, _, _, {:hook, "c1"}}, &1)
+      wait_until(fn -> mailbox_index(pid, next) != nil end)
+      answer = mailbox_index(pid, &match?({:hook_answer, _, %{pid: ^hook}}, &1))
+      assert answer != nil
+      assert answer < mailbox_index(pid, next)
+
+      :ok = :sys.resume(pid)
+      collect_until(:turn_end)
     end
 
     test "a hook Task that calls Helyx.Tool.ask/1 gets not_running" do

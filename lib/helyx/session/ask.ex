@@ -12,6 +12,19 @@ defmodule Helyx.Session.Ask do
 
   def max_request_bytes, do: @max_request_bytes
 
+  # The wait of a call or hook Task, before any plugin code runs (a hook
+  # Task arms the kill of its limit first), for the session's go: the
+  # session sends it after it handled the record of the Task that the
+  # hands sent. So the session handled the record before the Task can
+  # ask, by the order of what the session itself received and sent. A
+  # background run waits for it after its start answer too
+  # (docs/features/hooks.md).
+  def await_go do
+    receive do
+      :helyx_go -> :ok
+    end
+  end
+
   def ask(kind, request) do
     %{core: core, session_id: id, call_id: call_id, tool: tool} = Helyx.Tool.context()
 

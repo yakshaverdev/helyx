@@ -9,9 +9,11 @@ defmodule Helyx.Session.Server.Asks do
   # that asked. The session takes an ask only from a Task in `askers`, of
   # the kind that its call names: the call Task of the call for
   # `Helyx.Tool.ask/1`, a hook Task of it for `Helyx.Hook.ask/1`
-  # (docs/features/hooks.md). The hands send that record before the Task
-  # runs (`asker/4`). The `:DOWN` of the Task drops its record and ends
-  # its ask (`down/3`), the end of the call ends its asks (`call_end/2`),
+  # (docs/features/hooks.md). The hands send that record when they start
+  # the Task, and the session lets the Task run once it handled it
+  # (`asker/4`). The `:DOWN` of the Task, or the answer of a hook Task
+  # from the hands, drops its record and ends its ask (`down/3`,
+  # `ended/2`), the end of the call ends its asks (`call_end/2`),
   # and the end of the turn ends them all (`finish/1`), before its
   # `turn_end`.
 
@@ -24,23 +26,31 @@ defmodule Helyx.Session.Server.Asks do
   # The record of a call or hook Task of the current turn, with a
   # monitor: at most one for each live Task of the turn. A Task of a turn
   # that is no longer current gets none: its call does not run, so it
-  # cannot ask.
+  # cannot ask. Then the Task runs: the session sends its go after it
+  # handled the record.
   def asker(%State{activity: %Turn{id: turn_id} = turn} = state, turn_id, pid, kind) do
     askers = Map.put(turn.askers, pid, {Process.monitor(pid), kind})
-    %{state | activity: %{turn | askers: askers}}
+    go(%{state | activity: %{turn | askers: askers}}, pid)
   end
 
-  def asker(state, _turn_id, _pid, _kind), do: state
+  def asker(state, _turn_id, pid, _kind), do: go(state, pid)
 
-  # A call Task that went on in the background is no call of the turn:
-  # its record goes, as the hands drop it from the turn.
-  def started(%State{activity: %Turn{askers: askers} = turn} = state, call_id) do
+  defp go(state, pid) do
+    send(pid, :helyx_go)
+    state
+  end
+
+  # A call Task `pid` that went on in the background is no call of the
+  # turn: its record goes, as the hands drop it from the turn. Then the run
+  # goes on: it waits in `Helyx.Tool.started/1` for this go, so an ask of
+  # the run comes after the drop.
+  def started(%State{activity: %Turn{askers: askers} = turn} = state, call_id, pid) do
     {gone, kept} = Map.split_with(askers, fn {_pid, {_ref, kind}} -> kind == {:tool, call_id} end)
     Enum.each(gone, fn {_pid, {ref, _kind}} -> Process.demonitor(ref, [:flush]) end)
-    %{state | activity: %{turn | askers: kept}}
+    go(%{state | activity: %{turn | askers: kept}}, pid)
   end
 
-  def started(state, _call_id), do: state
+  def started(state, _call_id, pid), do: go(state, pid)
 
   # An ask of a Task whose record has the kind, for a call that runs in
   # the current turn, when a subscriber can answer. The reply waits for
@@ -71,14 +81,26 @@ defmodule Helyx.Session.Server.Asks do
 
   # A call or hook Task of the turn ended: its record goes, and its ask
   # ends, whatever the cause. `:error` for a monitor of no record.
-  def down(%State{activity: %Turn{askers: %{} = askers} = turn} = state, monitor, pid)
-      when :erlang.map_get(pid, askers) |> elem(0) == monitor do
-    state = %{state | activity: %{turn | askers: Map.delete(askers, pid)}}
-    {ended, rest} = Enum.split_with(asks(state), &(elem(&1, 3) == pid))
-    {:ok, state |> put_asks(rest) |> end_asks(ended)}
-  end
+  def down(%State{activity: %Turn{askers: %{} = askers}} = state, monitor, pid)
+      when :erlang.map_get(pid, askers) |> elem(0) == monitor,
+      do: {:ok, ended(state, pid)}
 
   def down(_state, _monitor, _pid), do: :error
+
+  # The Task `pid` ended: at its `:DOWN`, or for a hook Task at its answer
+  # from the hands, which comes before the record of the next hook of the
+  # chain. Its record and its monitor go, and its open ask ends. A Task
+  # with no record changes nothing.
+  def ended(%State{activity: %Turn{askers: askers} = turn} = state, pid)
+      when is_map_key(askers, pid) do
+    {{monitor, _kind}, askers} = Map.pop!(askers, pid)
+    Process.demonitor(monitor, [:flush])
+    state = %{state | activity: %{turn | askers: askers}}
+    {ended, rest} = Enum.split_with(asks(state), &(elem(&1, 3) == pid))
+    state |> put_asks(rest) |> end_asks(ended)
+  end
+
+  def ended(state, _pid), do: state
 
   # The first answer to an open ask goes to its caller; any other answer
   # finds no ask.

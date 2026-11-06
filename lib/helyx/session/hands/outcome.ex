@@ -40,7 +40,7 @@ defmodule Helyx.Session.Hands.Outcome do
 
   # The start answer of a background run, with the status that the
   # `after_tool` hooks left (docs/features/hooks.md).
-  defp checked({:started, {status, text}}), do: {:started, checked({status, text})}
+  defp checked({:started, result, pid}), do: {:started, checked(result), pid}
 
   # The ok, error, crash, refusal, and catch paths alike.
   defp checked({status, text}), do: {status, Helyx.Message.cut_result(text)}

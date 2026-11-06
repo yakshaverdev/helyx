@@ -182,10 +182,11 @@ defmodule Helyx.Session.Server.Records do
 
   # An answer of a hook (docs/features/hooks.md): a `hook` entry of the
   # file, whatever the turn, and for a failed `after_tool` hook of the
-  # current turn a notice.
+  # current turn a notice. `Helyx.Session.HookEntry` owns the shape of the
+  # entry, so it goes through the plain append of the file.
   def hook(state, turn_id, record) do
     entry = HookEntry.entry(turn_id, record)
-    state = persist(state, &Helyx.Session.File.append_hook(&1, entry))
+    state = persist(state, &Helyx.Session.File.append(&1, entry))
 
     case {entry, state.activity} do
       {%{"point" => "after_tool", "answer" => "failed", "reason" => reason}, %Turn{id: ^turn_id}} ->

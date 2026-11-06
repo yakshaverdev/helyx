@@ -36,6 +36,7 @@ defmodule Helyx.Session.Hands.Hooks do
           # act, so the limit holds while the hands are busy with a
           # release; a reply that came before the kill counts.
           {:ok, _tref} = :timer.kill_after(request.ms)
+          Helyx.Session.Ask.await_go()
           Process.put(:helyx_call, request.context)
           Run.hook(request.module, request.point, request.input)
         end)
@@ -56,6 +57,7 @@ defmodule Helyx.Session.Hands.Hooks do
     {handles, held} = Map.pop(state.held, task.pid, [])
     left = Release.run(%{module => handles}, mode, state.release_ms, state.core)
     outcome = if Release.error(left), do: unreleased(), else: outcome(result, run)
+    run = Map.put(run, :pid, task.pid)
     state = answer(%{state | tasks: tasks, held: held, hook_runs: runs}, run, outcome)
     Hands.keep_unconfirmed(state, left)
   end
@@ -78,7 +80,9 @@ defmodule Helyx.Session.Hands.Hooks do
   defp unreleased, do: {:failed, "a resource of the hook could not be released"}
 
   # The record goes to the session before the call Task gets the answer,
-  # and so before the next hook starts.
+  # and so before the record of the next hook: the session ends an ask of
+  # the ended hook Task `pid` there, by the order of the hands alone. A
+  # refused start has no Task.
   defp answer(state, run, outcome) do
     if recorded?(run.point, outcome) do
       record = %{
@@ -86,7 +90,8 @@ defmodule Helyx.Session.Hands.Hooks do
         call_id: run.call_id,
         hook: run.module,
         outcome: outcome,
-        call: run.record
+        call: run.record,
+        pid: Map.get(run, :pid)
       }
 
       send(state.session, {:hook_answer, run.turn_id, record})

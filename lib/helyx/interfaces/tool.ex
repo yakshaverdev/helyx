@@ -303,7 +303,8 @@ defmodule Helyx.Tool do
   Gives the start answer of a background run: `text` becomes the result of
   the call once the `after_tool` hooks ran on it, which can replace its
   text and its status (`docs/features/hooks.md`), and the tool's Task
-  leaves its turn. The Task then
+  leaves its turn. It returns once the session took the start answer, so
+  an ask of the run after it gets `{:error, :not_running}`. The Task then
   runs on; its return value, or its crash, is the end of the run. Raises
   in a Task that is no tool call of a turn, such as a run that gave its
   start answer, and in a tool call that took no place with
@@ -316,7 +317,8 @@ defmodule Helyx.Tool do
     result = Helyx.Session.Hands.Chain.after_start({:ok, text})
 
     case GenServer.call(Process.get(:helyx_hands), {:started, result}, :infinity) do
-      :ok -> :ok
+      # The session took the start answer before it lets the run go on.
+      :ok -> Helyx.Session.Ask.await_go()
       :no_place -> raise ArgumentError, "started/1 needs a place from background/0"
     end
   end

@@ -33,8 +33,9 @@ defmodule Helyx.Session.Hands do
   deadlines are in `docs/features/tool-resource-release.md`.
 
   A tool call can go on in the background (`Helyx.Tool.background/0`,
-  `Helyx.Tool.started/1`): its start answer is a `{:started, result}`
-  result, and its Task leaves its turn, out of reach of `request_cancel/2`.
+  `Helyx.Tool.started/1`): its start answer is a `{:started, result, pid}`
+  result, after which the session lets its Task go on, and its Task
+  leaves its turn, out of reach of `request_cancel/2`.
   Its end follows its release as `{:background_end, message}`, and its place
   stays taken until `taken/2` (`docs/features/background-bash.md`).
 
@@ -183,7 +184,7 @@ defmodule Helyx.Session.Hands do
   defp call({:started, {status, text}}, {pid, _tag}, state) do
     case tool_call(state, pid) do
       {ref, {task, turn_id, call_id, tool, id}} when id != nil ->
-        result = {:started, {status, Background.start(id, text)}}
+        result = {:started, {status, Background.start(id, text)}, pid}
         send(state.session, Outcome.of(turn_id, call_id, result))
         tasks = Map.put(state.tasks, ref, {task, nil, {:background, id}, tool, id})
         {:reply, :ok, %{state | tasks: tasks}}
@@ -345,6 +346,7 @@ defmodule Helyx.Session.Hands do
         {_task, state} =
           spawn_task(state, turn_id, call.id, tool, fn ->
             Process.put(:helyx_call, context)
+            Helyx.Session.Ask.await_go()
             Chain.run(tool, call, cwd, turn_id, hooks)
           end)
 
@@ -366,14 +368,12 @@ defmodule Helyx.Session.Hands do
         Process.put(:helyx_hands, hands)
         # For `Helyx.Tool.transcript/0`.
         Process.put(:helyx_session, session)
-        if asker, do: receive(do: (:helyx_go -> :ok))
         fun.()
       end)
 
-    # The session gets the record of a Task that can ask before the Task
-    # runs: both messages are local sends, and the Task waits for the
-    # second (docs/features/hooks.md, "The caller check of an ask").
-    if asker, do: send(session, {:asker, turn_id, task.pid, asker}) && send(task.pid, :helyx_go)
+    # A call or hook Task waits for the session's go, which the session
+    # sends once it handled this record (`Helyx.Session.Ask.await_go/0`).
+    if asker, do: send(session, {:asker, turn_id, task.pid, asker})
 
     {task, %{state | tasks: Map.put(state.tasks, task.ref, {task, turn_id, id, module, nil})}}
   end
