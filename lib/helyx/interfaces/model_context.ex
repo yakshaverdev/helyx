@@ -8,10 +8,21 @@ defmodule Helyx.ModelContext do
   `:core`, `:session_id`, `:turn_id`, `:cwd`, `:model` (the
   `Helyx.ModelRef` of the turn), `:session_dir` (the folder of the
   session file, under `:sessions_dir` as the caller gave it, or nil when the
-  session is not saved), and `:summary` (the stored `Helyx.Summary`, or
-  nil). A message that the plugin adds has no id, so the Compaction plugin
-  can tell it from a message of the transcript
+  session is not saved), `:summary` (the stored `Helyx.Summary`, or nil),
+  and `:deadline`. A message that the plugin adds has no id, so the
+  Compaction plugin can tell it from a message of the transcript
   (`docs/features/summary-compaction.md`).
+
+  `:deadline` is the monotonic time in milliseconds
+  (`System.monotonic_time(:millisecond)`) at which the session kills the
+  prepare Task, 10,000 ms after its start. The build, the
+  `Helyx.Compaction.compact/2` call, and the `Helyx.Memory` recall run in
+  that Task and share the budget, in that order: the recall gets what is
+  left. At the kill the turn fails with `:context_timeout`, or a context
+  request of the provider gets that error
+  (`docs/features/session-lifecycle.md`). A plugin that calls a slow
+  service sets its own limit before the deadline, with room for the steps
+  after it.
 
   A Core can register several. A session uses the one that its start
   names with `:model_context`, or the first one registered
