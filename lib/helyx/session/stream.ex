@@ -33,7 +33,8 @@ defmodule Helyx.Session.Stream do
   each plugin is checked at the boundary. Returns `{:error, {:bad_context,
   :model_context | :compaction}}` when a plugin returns anything but a
   `Helyx.Context` with its three fields: a system prompt that is nil or a
-  string, and two proper lists. The reason names the plugin, not the value.
+  valid UTF-8 string, and two proper lists. The reason names the plugin,
+  not the value.
 
   The Compaction plugin can also return `{:error, text}`, which is returned
   as it is, or a `Helyx.Summary.Plan` when `opts[:trigger]` is not nil: a
@@ -86,9 +87,12 @@ defmodule Helyx.Session.Stream do
        )
        when map_size(context) == 4 and (is_nil(system) or is_binary(system)) and
               is_list(messages) and is_list(tools) do
-    if List.improper?(messages) or List.improper?(tools),
-      do: {:error, {:bad_context, plugin}},
-      else: {:ok, context}
+    # The session file stores the system prompt (docs/features/turn-record.md),
+    # and its JSON encode raises on bytes that are not UTF-8.
+    if List.improper?(messages) or List.improper?(tools) or
+         not (is_nil(system) or String.valid?(system)),
+       do: {:error, {:bad_context, plugin}},
+       else: {:ok, context}
   end
 
   defp checked_context(_other, plugin), do: {:error, {:bad_context, plugin}}

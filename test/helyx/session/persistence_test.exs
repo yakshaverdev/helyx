@@ -27,6 +27,8 @@ defmodule Helyx.Session.PersistenceTest do
     assert [
              %{"type" => "session", "version" => 1, "model" => "test/blocks"},
              %{"type" => "message", "role" => "user"},
+             # No ModelContext: the record of a nil prompt (turn-record.md).
+             %{"type" => "system_prompt", "system" => nil, "bytes" => 0},
              %{"type" => "message", "role" => "assistant", "stop_reason" => "end_turn"},
              %{"type" => "message", "role" => "tool_result", "tool_call_id" => "call_1"},
              %{"type" => "message", "role" => "assistant"}
@@ -35,7 +37,7 @@ defmodule Helyx.Session.PersistenceTest do
     assert Enum.at(entries, 0)["cwd"] == File.cwd!()
 
     assert [%{"type" => "thinking"}, %{"type" => "text"}, %{"type" => "tool_call"}] =
-             Enum.at(entries, 2)["content"]
+             Enum.at(entries, 3)["content"]
 
     ids = Enum.map(entries, & &1["id"])
     assert Enum.map(entries, & &1["parent_id"]) == [nil | Enum.drop(ids, -1)]

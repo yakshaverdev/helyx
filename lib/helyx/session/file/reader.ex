@@ -169,8 +169,9 @@ defmodule Helyx.Session.File.Reader do
   defp check_cwd(_header, _cwd), do: {:error, :not_found}
 
   # After the header the writer only produces messages, model changes,
-  # resume ids, compactions, and summaries, every model field a string. Anything else
-  # is damage on the disk, never dropped in silence.
+  # resume ids, compactions, summaries, and system prompts, every model
+  # field a string. Anything else is damage on the disk, never dropped in
+  # silence, except in a system prompt entry (see its clause).
   # A message id is its entry id, and a client keys messages by it, so a
   # repeated one is damage, and so is an id that `Id.new/0` never makes: it
   # could hold `:`, the separator of the ids that `Transcript.repair/1`
@@ -223,6 +224,13 @@ defmodule Helyx.Session.File.Reader do
 
   defp fold(%{"type" => "summary"}, _acc),
     do: {:error, {:invalid_file, "a summary entry is not valid"}}
+
+  # A system prompt entry is a record for a reader of the file, and a
+  # resume sends a fresh build: the chain check of `add/4` is all that it
+  # needs, and nothing of it is kept, whatever its fields hold. So an
+  # entry over the cap of the writer is skipped, not damage that stops the
+  # resume (docs/features/turn-record.md, decisions 2 and 3).
+  defp fold(%{"type" => "system_prompt"}, acc), do: {:ok, acc}
 
   defp fold(entry, _acc),
     do: {:error, {:invalid_file, "entry the writer never produces: #{inspect(entry["type"])}"}}

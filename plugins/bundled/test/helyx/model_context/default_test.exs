@@ -27,6 +27,18 @@ defmodule Helyx.ModelContext.DefaultTest do
 
   defp count(system, text), do: length(String.split(system, text)) - 1
 
+  # The session file stores the prompt up to its entry cap
+  # (docs/features/turn-record.md, "Bounds"): the bundled prompt must stay
+  # under it. The prompt with no context file and no skills section holds
+  # the fixed text and the value lines as they are here; each of its 8
+  # value lines is counted again at its cap of 4,096 bytes, and the two
+  # capped parts are added with 64 bytes of separators.
+  test "the largest prompt stays under the cap of the session file entry", %{tmp_dir: dir} do
+    fixed = byte_size(system(Path.join(dir, "home"), dir))
+    largest = fixed + 8 * 4_096 + Helyx.Skills.max_catalog_bytes() + @max_total_bytes + 64
+    assert largest < Helyx.Session.File.max_system_bytes()
+  end
+
   test "concatenates one file per folder from the top down to the working directory",
        %{tmp_dir: dir} do
     cwd = Path.join(dir, "code/proj")

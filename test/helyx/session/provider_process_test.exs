@@ -573,6 +573,7 @@ defmodule Helyx.Session.ProviderProcessTest do
           {"bad_build", :model_context},
           {"forged_build", :model_context},
           {"bad_system", :model_context},
+          {"raw_system", :model_context},
           {"bad_messages", :compaction},
           {"nil_compact", :compaction},
           {"bad_compact", :compaction},
@@ -1604,6 +1605,7 @@ defmodule Helyx.Session.ProviderProcessTest do
           {"bad_compact", :compaction},
           {"forged_compact", :compaction},
           {"bad_system_compact", :compaction},
+          {"raw_system_compact", :compaction},
           {"bad_messages", :compaction},
           {"improper_compact", :compaction},
           {"improper_tools_compact", :compaction}

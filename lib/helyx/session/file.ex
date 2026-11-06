@@ -27,10 +27,19 @@ defmodule Helyx.Session.File do
   # a session-written entry needs (row "Session file on resume").
   @max_heap_bytes 1024 * 1024 * 1024
 
-  @enforce_keys [:path]
-  defstruct [:path, :leaf]
+  # The most bytes of the text of one system prompt entry (turn-record.md).
+  @max_system_bytes 262_144
 
-  @type t :: %__MODULE__{path: Path.t(), leaf: String.t() | nil}
+  # `system_hash`: the SHA-256 of the last system prompt written, nil for
+  # nil, or `:unset` before the first (docs/features/turn-record.md).
+  @enforce_keys [:path]
+  defstruct [:path, :leaf, system_hash: :unset]
+
+  @type t :: %__MODULE__{
+          path: Path.t(),
+          leaf: String.t() | nil,
+          system_hash: binary() | nil | :unset
+        }
 
   defmodule Resumed do
     @moduledoc """
@@ -310,6 +319,43 @@ defmodule Helyx.Session.File do
       "last_id" => last_id
     })
   end
+
+  @doc """
+  Appends a system prompt entry (`docs/features/turn-record.md`): the
+  system prompt of the next provider call, or nil, and `bytes`, the size
+  of the whole text, unless it is the last prompt that this file holds:
+  then the file is returned as it is. A text over #{@max_system_bytes} bytes is stored cut
+  to its first #{@max_system_bytes} bytes, on a character boundary. The
+  text is valid UTF-8 (`Helyx.Session.Stream.prepare/4` checks it).
+  """
+  @spec append_system_prompt(t(), String.t() | nil) :: t()
+  def append_system_prompt(%__MODULE__{system_hash: last} = file, system)
+      when is_binary(system) or is_nil(system) do
+    case system && :crypto.hash(:sha256, system) do
+      ^last ->
+        file
+
+      hash ->
+        entry = %{
+          "type" => "system_prompt",
+          "system" => cap_system(system),
+          "bytes" => if(system, do: byte_size(system), else: 0)
+        }
+
+        %{append(file, entry) | system_hash: hash}
+    end
+  end
+
+  @doc "The most bytes of the text of one system prompt entry: #{@max_system_bytes}."
+  @spec max_system_bytes() :: pos_integer()
+  def max_system_bytes, do: @max_system_bytes
+
+  # The text is valid, so only a character that the cut splits is invalid.
+  defp cap_system(system) when is_nil(system) or byte_size(system) <= @max_system_bytes,
+    do: system
+
+  defp cap_system(system),
+    do: system |> binary_part(0, @max_system_bytes) |> String.replace_invalid("")
 
   @doc """
   Appends one completed message to the file. Its entry id is the id of the

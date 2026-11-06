@@ -13,7 +13,7 @@ defmodule Helyx.Session.Server.Prepare do
 
   alias Helyx.Context
   alias Helyx.Session.Recall
-  alias Helyx.Session.Server.{Compaction, State, Summary, TurnLoop, Wait}
+  alias Helyx.Session.Server.{Compaction, Records, State, Summary, TurnLoop, Wait}
   alias Helyx.Session.Turn
 
   @recall_failed "memory recall failed; the turn goes on without recall"
@@ -118,6 +118,7 @@ defmodule Helyx.Session.Server.Prepare do
 
     case result do
       {:ok, context, recall} ->
+        state = Records.system_prompt(state, context.system)
         {recall, state} = recall_notice(state, recall)
         TurnLoop.submit(%{state | activity: %{state.activity | context: context, recall: recall}})
 
@@ -130,6 +131,7 @@ defmodule Helyx.Session.Server.Prepare do
     {result, state} =
       case result do
         {:ok, context, recall} ->
+          state = Records.system_prompt(state, context.system)
           {recall, state} = recall_notice(state, recall)
           {{:ok, %{context | messages: context.messages ++ List.wrap(recall)}}, state}
 
