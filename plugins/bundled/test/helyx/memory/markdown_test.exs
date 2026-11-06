@@ -107,6 +107,73 @@ defmodule Helyx.Memory.MarkdownTest do
              Markdown.recall(%{text: "alpha", origin: nil}, opts(dir))
   end
 
+  # 1,000 files or more: about 1 s on a loaded machine.
+  @tag :slow
+  @tag :tmp_dir
+  test "recall reads the notes, then the newest log files, past 1,000 log files",
+       %{tmp_dir: dir} do
+    log = Path.join(dir, "log")
+    File.mkdir_p!(log)
+    # Older files whose names sort before every hash name: in name order
+    # they fill the 1,000 files, and the new message is not read.
+    old = DateTime.to_unix(~U[2020-01-01 00:00:00Z])
+
+    for n <- 1..1_100 do
+      path = Path.join(log, "00000000-#{n}.md")
+      File.write!(path, "zephyr old #{n} k#{n}x\n")
+      File.touch!(path, old + n)
+    end
+
+    {:ok, "saved"} = Markdown.write_note("zephyr note", dir)
+    :ok = Markdown.sync(entries([user("zephyr quokka new", "u-new")]), opts(dir))
+
+    assert {:ok, [first, second | rest]} =
+             Markdown.recall(%{text: "zephyr quokka", origin: nil}, opts(dir))
+
+    # The new message matches two words; then the note and the old files,
+    # one word each, in read order up to the 32 records.
+    assert first.text == "zephyr quokka new"
+    assert second.id == "notes.md:1"
+
+    assert Enum.map(rest, & &1.text) ==
+             for(n <- 1_100..1_071//-1, do: "zephyr old #{n} k#{n}x")
+
+    # 1,000 files: the note, the new message, and the old files 1,100 to 103.
+    assert {:ok, [%{text: "zephyr old 103 k103x"}]} =
+             Markdown.recall(%{text: "k103x k102x", origin: nil}, opts(dir))
+  end
+
+  # 1,000 files or more: about 1 s on a loaded machine.
+  @tag :slow
+  @tag :tmp_dir
+  test "recall reads log files of one mtime in name order, and leaves out one with no stat",
+       %{tmp_dir: dir} do
+    log = Path.join(dir, "log")
+    File.mkdir_p!(log)
+
+    for {name, time} <- [{"b.md", 100}, {"a.md", 100}, {"c.md", 200}] do
+      path = Path.join(log, name)
+      File.write!(path, "walrus #{name}\n")
+      File.touch!(path, time)
+    end
+
+    # 997 older files make 1,000 with a stat; the link with no stat takes
+    # none of them, so the oldest file is still read.
+    for n <- 1..997 do
+      path = Path.join(log, "f-#{n}.md")
+      File.write!(path, "k#{n}x\n")
+      File.touch!(path, n)
+    end
+
+    :ok = File.ln_s("missing", Path.join(log, "0.md"))
+
+    assert {:ok, records} = Markdown.recall(%{text: "walrus", origin: nil}, opts(dir))
+    assert Enum.map(records, & &1.id) == ["log/c.md:1", "log/a.md:1", "log/b.md:1"]
+
+    assert {:ok, [%{id: "log/f-1.md:1"}]} =
+             Markdown.recall(%{text: "k1x", origin: nil}, opts(dir))
+  end
+
   @tag :tmp_dir
   test "recall skips a file whose name cannot make a record id of 256 bytes",
        %{tmp_dir: dir} do
