@@ -36,6 +36,7 @@ credo/             Custom Credo checks, loaded by .credo.exs
 plugins/bundled/   All bundled plugins in one Mix project, app helyx_plugins, path dependency on the root (ADR 0005)
   clients/tui/lib/ The TUI client sources, compiled by helyx_plugins; its tests are in test/helyx/tui*
 apps/<name>/       Products, one Mix project each
+clients/rust/      The client kit: a Cargo workspace, the Rust client core and its apps (docs/features/client-kit.md)
 ```
 
 ## Commands
@@ -49,6 +50,7 @@ Run from the repository root. The Mix projects are the root, `plugins/bundled` w
 - `mix precommit`: in every project, `deps.get --check-locked`, format, and compile with warnings as errors. Then, in parallel, Dialyzer and test, and in the root also Credo strict over all sources. The projects run in parallel, and each step is its own `mix` process. A new project needs no alias: the root finds it. It sets its own Dialyzer `plt_core_path`, as the others do, because the parallel Dialyzer runs must not write one core PLT. The first step is `deps.get --check-locked`, so a fresh worktree or a rebase that brings a new project needs no manual fetch. Tests tagged `:slow` run only with `HELYX_SLOW=1`. Only the merge gate of `/orchestrate` sets it, or the precommit before work reaches master outside `/orchestrate` (a merge, a fast-forward push, or a commit on master); `/ship` runs without it. `mix precommit` never changes a lock file: after you change a dependency in a `mix.exs`, update the locks yourself and commit them. Projects depend on each other by path, so one change can make other locks stale. Fetch in all of them: `for d in . plugins/* apps/*; do (cd "$d" && mix deps.get); done`. Run `mix precommit` before you finish any change.
 - Send precommit output to a log file and search the log: `mix precommit > precommit.log 2>&1 && echo passed || { echo failed; false; }`, then `grep -n "==> precommit\|\*\* (\|error\|warning\|failure" precommit.log`. The run prints `==> precommit <project>: <command> (<seconds> s)` before the output of each step, so the last such line above an error names the project and the step. The last line names every step that failed. Git ignores `precommit.log`. The line that names the failure is rarely among the last ones. Never pipe it to `tail`, and never rerun it to read an error.
 - `cd plugins/bundled && mix test test/helyx/tool/read_test.exs`: run one test file of a plugin
+- `cd clients/rust && mise exec -- cargo test`: run the tests of the Rust client kit. `.claude/skills/ship/precommit.sh` also runs `cargo fmt --check`, `cargo clippy --locked --all-targets -- -D warnings`, and `cargo test --locked` in each `clients/*/Cargo.toml` after `mix precommit`, each after a line `==> precommit <project>: cargo <step>` with no seconds; the Rust version is the `rust` line of `.tool-versions`
 
 ## Elixir guidelines
 

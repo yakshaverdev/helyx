@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Runs `mix precommit` for the worktree in the current directory and writes
-# the output to precommit.log. With a host set (an ssh target, in
+# Runs the precommit steps of precommit-run.sh (`mix precommit`, and the
+# Cargo steps of clients/*/Cargo.toml) for the worktree in the current
+# directory and writes the output to precommit.log. With a host set (an ssh target, in
 # HELYX_PRECOMMIT_HOST or in ~/.config/helyx/precommit-host), it copies the worktree to that host and runs there, so parallel workers do
 # not load this machine. The format step rewrites files, so the files that it
 # changed on the host are copied back, the same as a local run. Nothing may
@@ -50,13 +51,14 @@ fi
 host=${HELYX_PRECOMMIT_HOST:-$(cat ~/.config/helyx/precommit-host 2>/dev/null)}
 
 if [ -z "$host" ]; then
-  mise exec -- mix precommit > precommit.log 2>&1
+  bash .claude/skills/ship/precommit-run.sh > precommit.log 2>&1
   finish $?
 fi
 
 dir="precommit/$(basename "$root")"
 excludes=(--exclude=.git --exclude=_build/ --exclude=deps/ --exclude=.elixir_ls/
-  --exclude=.scratch/ --exclude=precommit.log --exclude=tmp/ --exclude=cover/)
+  --exclude=.scratch/ --exclude=precommit.log --exclude=tmp/ --exclude=cover/
+  --exclude=target/)
 sources="find . \\( -name _build -o -name deps -o -name .scratch \\) -prune -o -type f \\( -name '*.ex' -o -name '*.exs' -o -name '*.heex' \\) -print0 | xargs -0 md5sum"
 
 ssh -o BatchMode=yes "$host" "mkdir -p '$dir'" || exit 1
@@ -83,7 +85,7 @@ isolate="sudo -n unshare --pid --fork --mount-proc --kill-child=SIGKILL sh -c '\
 # --verbose writes the real wait in seconds.
 lock="~/.helyx-precommit.lock"
 announce="{ flock -n $lock true || echo 'precommit: waiting for the host lock'; }"
-ssh -o BatchMode=yes "$host" "cd '$dir' && $sources > .before && $announce && $isolate flock --verbose $lock ~/.local/bin/mise exec -- mix precommit" > precommit.log 2>&1
+ssh -o BatchMode=yes "$host" "cd '$dir' && $sources > .before && $announce && $isolate flock --verbose $lock bash .claude/skills/ship/precommit-run.sh" > precommit.log 2>&1
 status=$?
 
 # md5sum -c exits 1 on a changed file. Only status 0, or 1 with a

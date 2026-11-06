@@ -1,0 +1,13 @@
+[package]
+name = "helyx-client-core"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+description = "The client core of Helyx: the frame checks of wire protocol 3, the handshake, and the event fold"
+publish = false
+
+[dependencies]
+base64 = "0.22"
+hmac = "0.12"
+serde_json = { version = "1", features = ["arbitrary_precision"] }
+sha2 = "0.10"
