@@ -285,10 +285,9 @@ defmodule Helyx.Session.Server.Open do
 
     # A run that was live at the stop of a resumed session ended with it:
     # its lost end waits for the next turn (docs/features/background-bash.md).
-    # A new session has no ends, so the hold matters only at a resume.
+    # A new session has no ends, so the wake matters only at a resume.
     queue = %Queue{
-      ends: Background.lost(state.transcript),
-      hold: true
+      ends: %Queue.Ends{items: Background.lost(state.transcript), wake: :off}
     }
 
     %{
