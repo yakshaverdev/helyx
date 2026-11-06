@@ -7,7 +7,7 @@
       strict: true,
       files: %{
         included: ["lib/", "test/", "plugins/", "apps/", "credo/"],
-        excluded: [~r"/_build/", ~r"/deps/"]
+        excluded: [~r"/_build/", ~r"/deps/", ~r"/tmp/"]
       },
       requires: ["credo/*.ex"],
       checks: %{
