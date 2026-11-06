@@ -265,12 +265,46 @@ defmodule Helyx.Memory.MarkdownTest do
              ["walrus two", "walrus new", "walrus old a", "walrus old b"]
   end
 
+  # 1,000 files or more: about 1 s on a loaded machine.
+  @tag :slow
+  @tag :tmp_dir
+  test "a listing error while sync looks for the next number fails the sync, past 1,000 messages",
+       %{tmp_dir: dir} do
+    for bucket <- 0..1 do
+      first = time_name(dir, bucket * 1_000, hash("m#{bucket * 1_000}"))
+      write!(first, "old\n")
+
+      for n <- (bucket * 1_000 + 1)..(bucket * 1_000 + 999)//1,
+          do: :ok = :prim_file.make_link(first, time_name(dir, n, hash("m#{n}")))
+    end
+
+    time = Path.join([dir, "log", "time"])
+    bucket = Path.join(time, "000000001")
+    on_exit(fn -> for d <- [time, bucket], do: File.chmod(d, 0o755) end)
+
+    # Write and path access, no listing: a link in the folder still works,
+    # so a number from the empty view would put the message below the
+    # newest 1,000 for good.
+    for folder <- [bucket, time] do
+      File.chmod!(folder, 0o300)
+
+      assert {:error, "memory folder failed: permission denied"} =
+               Markdown.sync(entries([user("zephyr new", "u-new")]), opts(dir))
+
+      refute File.exists?(Path.join([dir, "log", hash("u-new") <> ".md"]))
+      File.chmod!(folder, 0o755)
+    end
+
+    :ok = Markdown.sync(entries([user("zephyr new", "u-new")]), opts(dir))
+    assert File.exists?(time_name(dir, 2_000, hash("u-new")))
+  end
+
   @tag :tmp_dir
   test "a file at the highest bucket name fails sync with an error (a hand-made entry)",
        %{tmp_dir: dir} do
     write!(Path.join([dir, "log", "time", "000000005"]), "not a folder\n")
 
-    assert {:error, "memory write failed: " <> _} =
+    assert {:error, "memory folder failed: not a directory"} =
              Markdown.sync(entries([user("one", "u1")]), opts(dir))
   end
 

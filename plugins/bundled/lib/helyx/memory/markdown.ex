@@ -127,10 +127,15 @@ defmodule Helyx.Memory.Markdown do
 
   # The names of `dir` in name order, or none when it cannot be listed.
   defp dir_names(dir, pattern \\ ~r//) do
-    case File.ls(dir) do
-      {:ok, names} -> for name <- Enum.sort(names), name =~ pattern, do: name
+    case list_names(dir, pattern) do
+      {:ok, names} -> names
       {:error, _reason} -> []
     end
+  end
+
+  defp list_names(dir, pattern) do
+    with {:ok, names} <- File.ls(dir),
+         do: {:ok, for(name <- Enum.sort(names), name =~ pattern, do: name)}
   end
 
   defp scan(files, dir, terms) do
@@ -212,37 +217,44 @@ defmodule Helyx.Memory.Markdown do
   def sync(entries, opts) do
     log = Path.join(dir(opts), "log")
 
-    case File.mkdir_p(Path.join(log, "time")) do
-      :ok ->
-        entries
-        |> Enum.reject(
-          &(&1.message.role == :assistant and &1.message.stop_reason in [:aborted, :error])
-        )
-        |> Enum.reduce_while({:ok, next_seq(log)}, &store_next(&1, &2, log, opts))
-        |> elem(0)
-
-      {:error, reason} ->
-        {:error, "memory folder failed: #{:file.format_error(reason)}"}
+    with :ok <- File.mkdir_p(Path.join(log, "time")),
+         {:ok, seq} <- next_seq(log) do
+      entries
+      |> Enum.reject(
+        &(&1.message.role == :assistant and &1.message.stop_reason in [:aborted, :error])
+      )
+      |> Enum.reduce_while({:ok, seq}, &store_next(&1, &2, log, opts))
+      |> elem(0)
+    else
+      {:error, reason} -> {:error, "memory folder failed: #{:file.format_error(reason)}"}
     end
   end
 
   # The next write number: one above the highest in the highest bucket, and
   # at least the first number of that bucket. Fixed widths: the last name is
   # the highest. Two calls at once can take one number; the tie sorts by hash.
+  # A listing that fails fails the sync: a number from a partial view would
+  # sort the message below the newest ones for good, as the replay skips it.
+  # An empty listing, or a `log/time/` that is gone, starts at 0.
   defp next_seq(log) do
     time = Path.join(log, "time")
 
-    case List.last(dir_names(time, @bucket)) do
-      nil ->
-        0
+    case list_names(time, @bucket) do
+      {:ok, []} -> {:ok, 0}
+      {:error, :enoent} -> {:ok, 0}
+      {:ok, buckets} -> next_in(time, List.last(buckets))
+      error -> error
+    end
+  end
 
-      bucket ->
-        top = String.to_integer(bucket) * @per_bucket
+  defp next_in(time, bucket) do
+    top = String.to_integer(bucket) * @per_bucket
 
-        case List.last(dir_names(Path.join(time, bucket), @time_name)) do
-          nil -> top
-          <<seq::binary-12, _rest::binary>> -> max(top, String.to_integer(seq) + 1)
-        end
+    with {:ok, names} <- list_names(Path.join(time, bucket), @time_name) do
+      case List.last(names) do
+        nil -> {:ok, top}
+        <<seq::binary-12, _rest::binary>> -> {:ok, max(top, String.to_integer(seq) + 1)}
+      end
     end
   end
 
@@ -309,17 +321,9 @@ defmodule Helyx.Memory.Markdown do
 
   # The loser of a race, or a failed link, removes its own time name.
   defp link_id(tmp, name, time) do
-    case File.ln(tmp, name) do
-      :ok ->
-        :ok
-
-      {:error, :eexist} ->
-        File.rm(time)
-        :ok
-
-      error ->
-        File.rm(time)
-        error
+    with {:error, reason} <- File.ln(tmp, name) do
+      File.rm(time)
+      if reason == :eexist, do: :ok, else: {:error, reason}
     end
   end
 
