@@ -11,6 +11,11 @@ defmodule Helyx.Memory.Markdown do
   # A record id is `<path>:<line>` and Core takes at most 256 bytes; a file
   # of 1 MiB has at most 7 digits of line number.
   @max_path_bytes 240
+  # The write order (#852): a time name `log/time/<bucket>/<seq>-<hash>.md`,
+  # with `bucket` the `seq` divided by 1,000. Fixed widths sort as text.
+  @per_bucket 1_000
+  @bucket ~r/\A[0-9]{9}\z/
+  @time_name ~r/\A[0-9]{12}-[0-9a-f]{64}\.md\z/
 
   @moduledoc """
   The reference memory: a folder of markdown files (`docs/features/memory.md`).
@@ -19,11 +24,14 @@ defmodule Helyx.Memory.Markdown do
   `helyx_plugins`, else `~/.helyx/memory`. `sync/2` writes each message to
   its own file, `log/<sha256 of the id>.md`, with a header line, through a
   temporary file and a hard link: the link fails when the name exists, so a
-  message is stored once, also for two calls at once. It skips assistant
-  messages with the stop reason `:aborted` or `:error`.
+  message is stored once, also for two calls at once. Before that link, a
+  second link of the same file at `log/time/<bucket>/<seq>-<sha256>.md`
+  keeps the write order. It skips assistant messages with the stop reason
+  `:aborted` or `:error`.
 
-  `recall/2` searches the `.md` files of the folder in name order, then of
-  `log/` newest first by mtime, line by line, for the words of three or more
+  `recall/2` searches the `.md` files of the folder in name order, then the
+  time names newest first, one per hash, then the `log/` names that have no
+  time name in name order, line by line, for the words of three or more
   characters of the query (at most #{@max_terms}), case-insensitively. It
   reads at most #{@max_files} files of at most #{@max_file_bytes} bytes each,
   and #{@max_scan_bytes} bytes in total. A line with more matched words comes
@@ -59,26 +67,69 @@ defmodule Helyx.Memory.Markdown do
   end
 
   defp files(dir) do
-    Enum.take(md_files(dir) ++ newest_first(md_files(Path.join(dir, "log"))), @max_files)
+    notes = Enum.take(md_files(dir), @max_files)
+    notes ++ log_files(Path.join(dir, "log"), @max_files - length(notes))
   end
 
-  # A log name is a hash, so only the time orders the log. The mtime has
-  # whole seconds; the sort is stable, so a tie stays in name order. A file
-  # with no stat is left out.
-  defp newest_first(paths) do
-    for(path <- paths, {:ok, stat} <- [File.stat(path, time: :posix)], do: {stat.mtime, path})
-    |> Enum.sort_by(&elem(&1, 0), :desc)
-    |> Enum.map(&elem(&1, 1))
+  # The newest time names, one per hash, and only when they are fewer than
+  # `room`, the id names with no time name (a folder of an earlier version).
+  defp log_files(_log, 0), do: []
+
+  defp log_files(log, room) do
+    time = Path.join(log, "time")
+    buckets = Enum.reverse(dir_names(time, @bucket))
+    {paths, seen, left} = newest(buckets, time, {[], MapSet.new(), room})
+
+    case left do
+      0 ->
+        Enum.reverse(paths)
+
+      left ->
+        old =
+          for name <- md_names(log),
+              not MapSet.member?(seen, Path.rootname(name)),
+              do: Path.join(log, name)
+
+        Enum.reverse(paths, Enum.take(old, left))
+    end
+  end
+
+  # `acc` is the paths newest last, the hashes taken, and the room left.
+  defp newest(_buckets, _time, {_paths, _seen, 0} = acc), do: acc
+  defp newest([], _time, acc), do: acc
+
+  defp newest([bucket | buckets], time, acc) do
+    dir = Path.join(time, bucket)
+
+    acc =
+      dir
+      |> dir_names(@time_name)
+      |> Enum.reverse()
+      |> Enum.reduce_while(acc, &take_newest(&1, &2, dir))
+
+    newest(buckets, time, acc)
+  end
+
+  defp take_newest(_name, {_paths, _seen, 0} = acc, _dir), do: {:halt, acc}
+
+  defp take_newest(<<_seq::binary-12, ?-, hash::binary-64, ".md">> = name, acc, dir) do
+    {paths, seen, room} = acc
+
+    if MapSet.member?(seen, hash),
+      do: {:cont, acc},
+      else: {:cont, {[Path.join(dir, name) | paths], MapSet.put(seen, hash), room - 1}}
   end
 
   # A list, not a wildcard: the folder name can hold glob characters.
-  defp md_files(dir) do
-    case File.ls(dir) do
-      {:ok, names} ->
-        for name <- Enum.sort(names), Path.extname(name) == ".md", do: Path.join(dir, name)
+  defp md_files(dir), do: for(name <- md_names(dir), do: Path.join(dir, name))
 
-      {:error, _reason} ->
-        []
+  defp md_names(dir), do: for(name <- dir_names(dir), Path.extname(name) == ".md", do: name)
+
+  # The names of `dir` in name order, or none when it cannot be listed.
+  defp dir_names(dir, pattern \\ ~r//) do
+    case File.ls(dir) do
+      {:ok, names} -> for name <- Enum.sort(names), name =~ pattern, do: name
+      {:error, _reason} -> []
     end
   end
 
@@ -161,47 +212,115 @@ defmodule Helyx.Memory.Markdown do
   def sync(entries, opts) do
     log = Path.join(dir(opts), "log")
 
-    case File.mkdir_p(log) do
+    case File.mkdir_p(Path.join(log, "time")) do
       :ok ->
         entries
         |> Enum.reject(
           &(&1.message.role == :assistant and &1.message.stop_reason in [:aborted, :error])
         )
-        |> Enum.reduce_while(:ok, &store_next(&1, &2, log, opts))
+        |> Enum.reduce_while({:ok, next_seq(log)}, &store_next(&1, &2, log, opts))
+        |> elem(0)
 
       {:error, reason} ->
         {:error, "memory folder failed: #{:file.format_error(reason)}"}
     end
   end
 
-  defp store_next(%{message: message}, :ok, log, opts) do
-    case store(log, message, opts) do
-      :ok -> {:cont, :ok}
-      {:error, reason} -> {:halt, {:error, "memory write failed: #{:file.format_error(reason)}"}}
+  # The next write number: one above the highest in the highest bucket, and
+  # at least the first number of that bucket. Fixed widths: the last name is
+  # the highest. Two calls at once can take one number; the tie sorts by hash.
+  defp next_seq(log) do
+    time = Path.join(log, "time")
+
+    case List.last(dir_names(time, @bucket)) do
+      nil ->
+        0
+
+      bucket ->
+        top = String.to_integer(bucket) * @per_bucket
+
+        case List.last(dir_names(Path.join(time, bucket), @time_name)) do
+          nil -> top
+          <<seq::binary-12, _rest::binary>> -> max(top, String.to_integer(seq) + 1)
+        end
+    end
+  end
+
+  defp store_next(%{message: message}, {:ok, seq}, log, opts) do
+    case store(log, message, seq, opts) do
+      {:ok, next} ->
+        {:cont, {:ok, next}}
+
+      {:error, reason} ->
+        {:halt, {{:error, "memory write failed: #{:file.format_error(reason)}"}, seq}}
     end
   end
 
   # Insert-or-ignore: the link to the name of the id fails when the name
   # exists. A crash before the link leaves a `.tmp-` file, which recall
   # does not read, and the replay writes the message again.
-  defp store(log, message, opts) do
-    name = Path.join(log, Base.encode16(:crypto.hash(:sha256, message.id), case: :lower) <> ".md")
-    if File.exists?(name), do: :ok, else: link(log, name, message, opts)
+  defp store(log, message, seq, opts) do
+    hash = Base.encode16(:crypto.hash(:sha256, message.id), case: :lower)
+    name = Path.join(log, hash <> ".md")
+
+    if File.exists?(name),
+      do: {:ok, seq},
+      else: link(log, name, {seq, hash}, message, opts)
   end
 
-  defp link(log, name, message, opts) do
+  defp time_name(log, seq, hash) do
+    bucket = pad(div(seq, @per_bucket), 9)
+    Path.join([log, "time", bucket, "#{pad(seq, 12)}-#{hash}.md"])
+  end
+
+  defp pad(n, width), do: n |> Integer.to_string() |> String.pad_leading(width, "0")
+
+  # The time name first: a crash after it leaves a second time name at the
+  # replay, which recall reads once; a crash after the id name first would
+  # leave the message with no time name, and recall would not read it.
+  defp link(log, name, number, message, opts) do
     tmp = Path.join(log, ".tmp-" <> Base.url_encode64(:crypto.strong_rand_bytes(12)))
 
     result =
-      with :ok <- File.write(tmp, [header(message, opts), "\n", body(message), "\n"]) do
-        case File.ln(tmp, name) do
-          {:error, :eexist} -> :ok
-          other -> other
-        end
-      end
+      with :ok <- File.write(tmp, [header(message, opts), "\n", body(message), "\n"]),
+           {:ok, time, next} <- link_time(tmp, log, number),
+           :ok <- link_id(tmp, name, time),
+           do: {:ok, next}
 
     File.rm(tmp)
     result
+  end
+
+  # A call with its own time name: a time name that exists belongs to
+  # another call of the same message at the same number, which can still
+  # fail, so this call takes the next number. Each try takes a name that
+  # exists, so the tries end.
+  defp link_time(tmp, log, {seq, hash}) do
+    time = time_name(log, seq, hash)
+
+    with :ok <- File.mkdir_p(Path.dirname(time)) do
+      case File.ln(tmp, time) do
+        :ok -> {:ok, time, seq + 1}
+        {:error, :eexist} -> link_time(tmp, log, {seq + 1, hash})
+        error -> error
+      end
+    end
+  end
+
+  # The loser of a race, or a failed link, removes its own time name.
+  defp link_id(tmp, name, time) do
+    case File.ln(tmp, name) do
+      :ok ->
+        :ok
+
+      {:error, :eexist} ->
+        File.rm(time)
+        :ok
+
+      error ->
+        File.rm(time)
+        error
+    end
   end
 
   defp header(message, opts) do
