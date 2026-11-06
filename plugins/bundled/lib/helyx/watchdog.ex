@@ -11,59 +11,11 @@ defmodule Helyx.Watchdog do
   # ran (ADR 0004). `Helyx.Watchdog.Group.release/4` is the `release/3` of
   # the plugin that holds the handles. perl is required.
 
-  # The watchdog forks the command into its own process group and stays in
-  # the launcher's own group, so the port's OS process is the watchdog. The
-  # parent sets the child's group too, before the marker, so the group
-  # exists when the marker arrives, however late the child runs (#562). It
-  # writes the command's group id as the stdout marker and holds the command
-  # until the go-ahead byte arrives on stdin, so either the hands hold the
-  # group id before the command runs, or the command never ran. Then it
-  # watches: when its stdin ends, because the port closed, it TERMs the
-  # group, waits the grace period (its fourth argument, in ms), KILLs it,
-  # and reaps the command before it exits (a read that fails gives undef,
-  # which is also false, so a read error kills the group too). The wait
-  # ends when its direct child exits, not when the group is empty. When
-  # the command ends first, the watchdog exits with the command's status
-  # (128 plus the signal for a signal death). The watchdog ignores TERM in
-  # the parent only, after the fork, so a release can TERM every held
-  # group without cutting the cleanup short; ignored dispositions survive
-  # exec, so the child must not inherit one. The 50 ms select tick is the
-  # poll for both stdin and the child.
-  #
-  # The input (#10). The second argument is the input mode: -1 for none or
-  # -2 for open. With none, the command's stdin is /dev/null. With open
-  # (#11), it is a pipe: the watchdog forwards everything that follows the
-  # go-ahead byte on its own stdin up to the first NUL byte, then closes the
-  # pipe and sets the mode to 0, the mark of a closed input. A protocol of
-  # JSON lines never holds a raw NUL, so a NUL ends the input and the
-  # command reads end of file while the watch of stdin goes on. The
-  # go-ahead is read as one byte, so no buffer takes input bytes from the
-  # loop. The pipe is non-blocking and the loop writes it only when select
-  # reports it writable, so a command that does not read cannot stop the
-  # watch of stdin. A write that fails for any other reason than a full
-  # pipe (the command closed its stdin) drops the rest of the input.
-  # SIGPIPE is ignored in the parent only, after the fork, like TERM. Open
-  # input has a cap (#196), the fifth argument: when the input that the
-  # command has not read is over it, after a read of stdin, the command is
-  # stuck. The watchdog stops the group as at the end of its stdin, then
-  # exits as at the command's own end, with its status. The watchdog reads
-  # stdin at every tick, so a closed port is seen at once; a cap on the
-  # read would hold a stuck command past the close.
-  #
-  # The watchdog enters the working directory itself, before the fork. The
-  # port's cd option has no failure signal: the emulator's child exits with
-  # status 2, which a real command can also do. A chdir, pipe, or fork that
-  # fails writes the marker with `0`, which is never a group id, then the
-  # reason, and no command exists. A held child whose `exec` fails writes
-  # "cannot run <program>: <reason>" and exits with 127, as a shell does.
-  #
-  # A marker line is "<nonce> <number>". The nonce is random for each call
-  # and reaches the watchdog in its arguments only. The command is held
-  # until the go-ahead, so no command output can come before the marker.
-  # perl's own startup output can, because stderr is merged: a bad locale
-  # warning prints environment values, which can hold any line. It cannot
-  # hold the nonce, so no text can pass for a marker; `read_marker/4` reads
-  # past the rest.
+  # `watchdog/watchdog.pl` owns the protocol: the marker before the
+  # go-ahead, the input modes, the grace, the reap, and the select tick.
+  # ADR 0004 and `docs/features/tool-resource-release.md` own the reasons.
+  # The nonce of the marker is random for each call and reaches the program
+  # in its arguments only, so command output cannot pass for a marker.
   @watchdog_path Path.join(__DIR__, "watchdog/watchdog.pl")
   @external_resource @watchdog_path
   @watchdog File.read!(@watchdog_path)
