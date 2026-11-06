@@ -91,3 +91,11 @@ The owner accepted the tool source inside the Tool interface and the restart aft
 - The release record moves to `Helyx.Watchdog`: one record per group that `start/4` makes, carried in its handles, and `Group.release/4` takes it before any signal on every path (`release/3` of `bash` and MCP, `let_go/2`, a failed start, the harness providers). The MCP doc drops its own `:atomics` record and the `:wrap` option of `start/4`.
 - The helper change and its tests are slice 8 of the doc; the MCP start and the MCP calls are now slices 9 and 10 (the slice numbers in the sections above this one are the old ones). The slice names the test that a reused group number is never signalled on any path: the abort and the delayed server Task, the second release of one bash handle, and the failed-start cleanup that kills its Task between the release and `unhold/1`.
 - `docs/features/tool-resource-release.md` gets the rule, "The release record", with its states. Added while writing it: one release that gets two handles with one record (the stop of the session, one release Task per module) takes it once and gives both one outcome; without it the second handle would find the record taken by the same release and stay unconfirmed.
+
+## Gate after the owner's third answer
+
+| # | Finding | Resolution |
+| - | ------- | ---------- |
+| 1 | [medium, confirmed by the orchestrator] `activate/1` appended its names best first and dropped from the front, so one call's names over the byte cap lost its best matches, against the stated order | the activated list is kept in drop order: `activate/1` appends its names in reverse rank, best last, and every cap, after `activate/1` and after `put_tools/2`, drops from the front. Older activations leave first, and within one activation the lowest ranked. Slice 3 test: one activation over the byte cap keeps its best matches |
+
+The gate found no defect in the release record design.
