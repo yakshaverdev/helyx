@@ -39,6 +39,7 @@ defmodule Helyx.Compaction.Summary do
                     "set it in the :models config of :helyx_plugins"
 
   alias Helyx.{Context, Message, ModelRef}
+  alias Helyx.Session.Totals
 
   @system "You write the summary of a conversation between a user and a coding agent. " <>
             "The agent continues the work from your summary alone, without the messages. " <>
@@ -191,26 +192,16 @@ defmodule Helyx.Compaction.Summary do
     do: "[Assistant tool call]: #{name} #{JSON.encode!(args)}"
 
   # The estimate of #488 with no summary; with one, the usages in the
-  # kept messages count the context from before it.
+  # kept messages count the context from before it. The rule is
+  # `Helyx.Session.Totals`, which the snapshot carries.
   defp estimate(context, sent, nil) do
-    {after_usage, usage} =
-      context.messages
-      |> Enum.reverse()
-      |> Enum.split_while(&(not context_tokens?(&1)))
-
-    case usage do
-      [%Message{usage: %Helyx.Usage{context_tokens: tokens}} | _] ->
-        tokens + div(Enum.sum_by(after_usage, &bytes/1), 4)
-
-      [] ->
-        size(sent)
+    case Totals.of(context.messages) do
+      {_totals, nil} -> size(sent)
+      {_totals, %{tokens: tokens, bytes: bytes}} -> tokens + div(bytes, 4)
     end
   end
 
   defp estimate(_context, sent, _summary), do: size(sent)
-
-  defp context_tokens?(%Message{usage: %Helyx.Usage{context_tokens: n}}), do: is_integer(n)
-  defp context_tokens?(_message), do: false
 
   defp size(%Context{system: system, messages: messages}),
     do: div(byte_size(system || "") + Enum.sum_by(messages, &bytes/1), 4)

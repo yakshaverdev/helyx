@@ -75,7 +75,7 @@ defmodule Helyx.Compaction.SummaryTest do
 
   # #698: the footer reads the context field of the snapshot, so it shows
   # the tokens that the trigger reads.
-  test "the estimate equals the context estimate of the session totals" do
+  test "the trigger counts the last usage and the bytes after it" do
     call = %Message.ToolCall{id: "c", name: "bash", arguments: %{"cmd" => words(1_000)}}
 
     messages = [
@@ -86,8 +86,6 @@ defmodule Helyx.Compaction.SummaryTest do
     ]
 
     assert {:summarize, %Plan{tokens_before: tokens}} = compact(messages, trigger: :overflow)
-    {_totals, context} = Helyx.Session.Totals.of(messages)
-    assert tokens == context.tokens + div(context.bytes, 4)
     # The usage with nil context tokens keeps the estimate of a1, and the
     # call counts its name and its JSON arguments.
     bytes = byte_size("ok") + byte_size("bash") + byte_size(JSON.encode!(call.arguments))
