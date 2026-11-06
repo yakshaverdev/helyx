@@ -1,0 +1,17 @@
+[package]
+name = "helyx-desktop"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+description = "The reference desktop app of Helyx: GPUI on macOS over the client core"
+publish = false
+
+[dependencies]
+helyx-client-core = { path = "../core" }
+tungstenite = { version = "0.30", default-features = false, features = ["handshake"] }
+
+# The window builds on macOS only: GPUI needs system packages on Linux
+# (docs/features/client-kit.md, slice 4). `runtime_shaders` compiles the
+# Metal shaders at run time, so the build needs no Metal toolchain.
+[target.'cfg(target_os = "macos")'.dependencies]
+gpui = { version = "=0.2.2", default-features = false, features = ["runtime_shaders", "font-kit"] }

@@ -22,10 +22,27 @@ pub enum Step {
     Refused(u64),
 }
 
+/// The token of the server. Its `Debug` form holds no byte of it, so no log
+/// or crash report of a state that holds it shows it.
+#[derive(Clone, PartialEq, Eq)]
+pub struct Token(String);
+
+impl Token {
+    pub fn new(token: String) -> Token {
+        Token(token)
+    }
+}
+
+impl std::fmt::Debug for Token {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Token(..)")
+    }
+}
+
 /// The state of one handshake: it waits for `challenge`, then for the answer.
 #[derive(Debug)]
 pub struct Handshake {
-    token: Option<String>,
+    token: Option<Token>,
     phase: Phase,
 }
 
@@ -41,7 +58,7 @@ enum Phase {
 impl Handshake {
     /// A handshake that proves `token`, or sends no proof when the server has
     /// no token. The proof is made from the token here and the token is in no frame.
-    pub fn new(token: Option<String>) -> Handshake {
+    pub fn new(token: Option<Token>) -> Handshake {
         Handshake {
             token,
             phase: Phase::Challenge,
@@ -72,7 +89,7 @@ impl Handshake {
                     ("protocol".to_owned(), PROTOCOL.into()),
                 ];
                 if let Some(token) = &self.token {
-                    hello.push(("proof".to_owned(), Json::String(proof(token, &nonce))));
+                    hello.push(("proof".to_owned(), Json::String(proof(&token.0, &nonce))));
                 }
                 Ok(Step::Send(Json::Object(hello)))
             }

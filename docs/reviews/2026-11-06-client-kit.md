@@ -129,3 +129,48 @@ Simplify added test helpers. The reproductions of round 2 hold fixed. Round 3 re
 | 3 | failure path (doc) | The Bounds row says a renewal takes a place; it needs a wanted session, so it takes none. | Open, doc only. |
 
 Not reached by the budget: a host session id over 26 MB, a `failed` reply to `unsubscribe`, a reply that breaks a subscribe while a renewal is set.
+
+# Cycle C: slice 4, the GPUI macOS app (#860)
+
+Base `2904efd2`. Bounds sensor: `bounds sensor: 0 candidate functions, 0 flagged, 0 without an answer`. Before the build: GPUI 0.2.2 needs `pkg-config` and the X11, Wayland, and font dev packages on Linux, and the host has none (`dpkg-query`, 2026-11-06); on this Mac it builds with `runtime_shaders` in 1 m 52 s, as Xcode here has no Metal toolchain.
+
+## Round 1 (full: simplify, standards, spec, failure path, Codex)
+
+The round 1 fixes pass 100 code lines (the waits of `net`, the token type of the core, the gate), stated here before round 2.
+
+| # | Source | Finding | Resolution |
+|---|---|---|---|
+| 1 | Codex | The derived `Debug` of `Client` and `Handshake` held the token, so a `Debug` of `Shared` printed it. Reproduced. | `handshake::Token`, whose `Debug` is `Token(..)`; tests in the core and the app. |
+| 2 | Codex | The list count came from one read of the rows and the drawn rows from another: a shorter state between them panicked at an index. Reproduced by reading. | The count and the rows are one snapshot in `render`. |
+| 3 | standards, spec, failure path, Codex | Pings before `welcome` held the 5,000 ms wait open. Reproduced. | The wait is checked at each frame; test. |
+| 4 | failure path | The upgrade had a 5,000 ms bound for each read, not in all (one byte each 400 ms held it). Reproduced. | A watchdog shuts the socket down at 5,000 ms. |
+| 5 | spec | `refused` was overwritten by "the connection ended". Reproduced. | It keeps its line; test. |
+| 6 | spec | No pause between reconnects (1,939 connections a second). Reproduced. | 1,000 ms. |
+| 7 | spec | A frame over the bound reconnected; and `broken` returned the `Reconnect` of the core for a break that only the socket saw. Reproduced. | A break stops; a reset with no close frame stays a lost connection; test. |
+| 8 | spec | A missing data folder gave a read error, not "no server". Reproduced. | Fixed; test. |
+| 9 | failure path | A server that stalls after the welcome is not ended. Reproduced. | A 45,000 ms silence rule ends a server that is gone; a server that pings and never replies stays open, accepted in the doc. |
+| 10 | spec | The host gate built the app's `settings` and `net`, against the owner's "the host gate runs only the core". | `macos-only` and the gate; the app is checked on the Mac. |
+| 11 | standards | No Unix mode refused nothing; untested bounds; a mutex poisoned by a panic of the thread panicked the window. | Refused; tests added; the window takes the poisoned lock. |
+| 12 | standards (judgement) | The symlink swap between the stat and the open; the duplicated `closed` lines; `Unfollowed` not shown. | Kept: the swap needs write access to a folder that only the user can write (doc); the rest are judgement calls. |
+
+## Round 2 (reduced: spec, failure path)
+
+| # | Source | Finding | Resolution |
+|---|---|---|---|
+| 1 | spec, failure path | The watchdog of the upgrade that round 1 recorded was not in the code (the edit did not apply after a format) though the doc claimed it; a `101` one byte each 400 ms held the upgrade for 20 s. Reproduced. | Mechanism replaced (below); test. |
+| 2 | spec, failure path | A frame that comes a byte at a time held a read open past the wait for `welcome`, and past the silence rule. Reproduced. Second finding on the waits. | Mechanism replaced; test. |
+| 3 | failure path | A batch of writes had a bound only for each write call: a slow reader held a send of 3 MB for over 15 s. Reproduced. | Mechanism replaced. |
+| 4 | spec | A text frame that is not UTF-8 reconnected. Reproduced. | A break; test. |
+
+The mechanism: the waits of a connection were bounds for each read and write call, checked between frames. Now every wait after the connect is one deadline of the socket, held by a watchdog thread of the connection (`net::Watchdog`) that shuts the socket down when it passes, whatever call is in progress. Round 3 is a full round.
+
+## Round 3 (full: simplify, spec, failure path, Codex)
+
+Simplify made `send` restore the deadline it found, and added a test helper. The reproductions of round 2 hold fixed: the slow `101` (5,000 ms), the slow frame before `welcome`, the slow reader of a 3 MB send (shut at 5.2 s), and a text that is not UTF-8. The failure-path agent found no defect: no watchdog outlives its connection, none acts on another socket, and a welcome at 4,950 ms is taken. Round 3 reproduced a defect on the waits again, so the cycle ends at its limit; the small-fix round does not apply (a third finding on one mechanism). The commit holds the code as round 3 reviewed it, and these stay open:
+
+| # | Source | Finding | State |
+|---|---|---|---|
+| 1 | spec (reproduced), Codex | A batch of sends sets the deadline to 5,000 ms from its start, and the next batch can start from a restored deadline that has passed: with sends queued from 41 s, a silent server held the socket for 61 s and 76 s, past the 45,000 ms of the Bounds row. | Open. The fix: a batch takes the earlier of the deadline it finds and its own, and a passed deadline ends the connection before the next batch. |
+| 2 | Codex (by reading) | `tungstenite` keeps a binary frame that is not final without returning it, so the stop of a binary frame does not run; a close after it reconnects, and pings keep the silence wait open. | Open, not reproduced. The fix: refuse a binary opcode at its first frame. |
+| 3 | spec (doc) | The Ownership row says the thread sends a close at a wait over its bound; the watchdog shuts the socket down and sends none. | Open, doc only. |
+| 4 | spec (no proof) | The TCP connect bound of 5,000 ms and the watchdog thread's end within 100 ms of its drop have no test (the failure-path agent saw the thread count fall back after each connection). | Open. |

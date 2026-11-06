@@ -647,6 +647,14 @@ fn the_frame_and_subscription_breaks() {
 
 /// A snapshot is the credit base: no ack, also at a multiple of 1,024.
 #[test]
+fn no_debug_form_holds_the_token() {
+    let mut client = Client::new(Some("tok-7f3a9".into()));
+    assert!(!format!("{client:?}").contains("tok-7f3a9"));
+    client.connect();
+    assert!(!format!("{client:?}").contains("tok-7f3a9"));
+}
+
+#[test]
 fn a_snapshot_is_not_acked() {
     let mut client = Client::new(None);
     welcomed(&mut client);

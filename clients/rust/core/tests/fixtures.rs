@@ -69,7 +69,9 @@ fn handshake() {
 
 #[test]
 fn hello_carries_the_proof_of_the_token_and_not_the_token() {
-    let mut handshake = Handshake::new(Some("secret".to_owned()));
+    let mut handshake = Handshake::new(Some(helyx_client_core::handshake::Token::new(
+        "secret".to_owned(),
+    )));
     let challenge =
         json!({"type": "challenge", "nonce": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="});
     let Ok(Step::Send(hello)) = handshake.step(&j(&challenge)) else {

@@ -4,7 +4,7 @@
 //! frames; `Client` keeps what outlives the connection.
 
 use crate::check::{Broken, Checked};
-use crate::handshake::Handshake;
+use crate::handshake::{Handshake, Token};
 use crate::json::{self, Json, Limits, object};
 use crate::parts::{self, FRAME_BYTES, Joiner, TooLarge};
 use std::collections::HashMap;
@@ -65,7 +65,7 @@ pub(crate) struct Connection {
 }
 
 impl Connection {
-    pub fn new(token: Option<String>) -> Connection {
+    pub fn new(token: Option<Token>) -> Connection {
         Connection {
             handshake: Handshake::new(token),
             welcomed: false,

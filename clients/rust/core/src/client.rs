@@ -11,7 +11,7 @@ use crate::connection::{Connection, Decoded, Request};
 use crate::fold::{State, ack};
 use crate::follow::Session;
 use crate::frame::{self, Reply, ServerFrame, Subscribed};
-use crate::handshake::Step;
+use crate::handshake::{Step, Token};
 use crate::json::{self, Json, Limits, object};
 use std::collections::HashMap;
 
@@ -56,7 +56,7 @@ pub enum Next {
 
 #[derive(Debug)]
 pub struct Client {
-    token: Option<String>,
+    token: Option<Token>,
     limits: Limits,
     sessions: HashMap<String, Session>,
     connection: Option<Connection>,
@@ -71,7 +71,7 @@ impl Client {
     /// A client with other decode bounds, for tests.
     pub fn with_limits(token: Option<String>, limits: Limits) -> Client {
         Client {
-            token,
+            token: token.map(Token::new),
             limits,
             sessions: HashMap::new(),
             connection: None,
