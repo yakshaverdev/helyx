@@ -11,7 +11,12 @@ defmodule Helyx.Compaction do
   `:trigger`: `:auto` before a call, `:manual` in a `/compact`, `:overflow`
   after a context overflow, or nil when the plugin must not ask for a
   summary (a provider that keeps its own history, or the build after a
-  summary or a failed one).
+  summary or a failed one). It also carries `:deadline`, the monotonic time
+  in milliseconds at which the session kills the prepare Task, the same
+  value that `Helyx.ModelContext.build/2` got. The build, the compaction,
+  and the `Helyx.Memory` recall share the budget of that Task, 10,000 ms
+  from its start; at the kill the turn fails with `:context_timeout` (see
+  `Helyx.ModelContext`).
 
   It returns the context to send, `{:summarize, %Helyx.Summary.Plan{}}` to
   have the session run the summary call and build again, or `{:error,

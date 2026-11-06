@@ -24,9 +24,9 @@ defmodule Helyx.Session.Server.Prepare do
   # child of the task supervisor, monitored before it runs, so a raise is
   # never `:noproc` (#562), its ref and pid in `Turn.prepare` with the
   # messages it got, killed at the turn end. Its kill at
-  # `deadline_ms.prepare` is armed as its first act, before any plugin
-  # code. A compaction turn has no context at its start: it submits at
-  # once. Only a model provider gets a summary (`summary-compaction.md`).
+  # `deadline_ms.prepare` is armed before any plugin code. A compaction
+  # turn has no context at its start: it submits at once. Only a model
+  # provider gets a summary (`summary-compaction.md`).
   def start(%State{activity: %Turn{compact: text, phase: :preparing}} = state, _trigger)
       when is_binary(text),
       do: TurnLoop.submit(state)
@@ -50,8 +50,11 @@ defmodule Helyx.Session.Server.Prepare do
     recall_opts = recall_opts ++ State.base_opts(state)
 
     prepare = fn ->
+      # The plugins get `:deadline`. It is read before the kill is armed, and
+      # the clock rounds down, so the kill comes at or after it.
+      deadline = System.monotonic_time(:millisecond) + ms
       {:ok, tref} = :timer.kill_after(ms)
-      started = System.monotonic_time(:millisecond)
+      opts = [{:deadline, deadline} | opts]
 
       result =
         Helyx.Session.Stream.prepare(plugins.model_context, plugins.compaction, context, opts)
@@ -60,7 +63,7 @@ defmodule Helyx.Session.Server.Prepare do
       # left of the budget (docs/features/memory.md).
       result =
         with {:ok, built} <- result,
-             left = ms - (System.monotonic_time(:millisecond) - started),
+             left = deadline - System.monotonic_time(:millisecond),
              {:ok, recall} <- Recall.run(memory, context.messages, recall_opts, left),
              do: {:ok, built, recall}
 
