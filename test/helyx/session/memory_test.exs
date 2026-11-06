@@ -86,7 +86,10 @@ defmodule Helyx.Session.MemoryTest do
       entries =
         path |> File.read!() |> String.split("\n", trim: true) |> Enum.map(&JSON.decode!/1)
 
-      assert [%{"role" => "user"}, %{"role" => "assistant"}] = tl(entries)
+      # The system prompt entry records the nil prompt (turn-record.md).
+      assert [%{"role" => "user"}, %{"type" => "system_prompt"}, %{"role" => "assistant"}] =
+               tl(entries)
+
       assert length(messages(events)) == 2
     end
 

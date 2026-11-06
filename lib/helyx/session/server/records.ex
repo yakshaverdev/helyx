@@ -165,6 +165,12 @@ defmodule Helyx.Session.Server.Records do
     emit(%{state | summary: summary}, :compaction, data)
   end
 
+  # The system prompt of the provider call that the session sends now
+  # (docs/features/turn-record.md): an entry when it is not the last one
+  # that the file holds (`Helyx.Session.File.append_system_prompt/2`).
+  def system_prompt(state, system),
+    do: persist(state, &Helyx.Session.File.append_system_prompt(&1, system))
+
   # The record on disk of a compaction or a summary with the id of the last
   # message, and the anchor of the estimate (`Helyx.Session.Totals.of/2`).
   # With no message there is no anchor: the compaction changes no estimate.

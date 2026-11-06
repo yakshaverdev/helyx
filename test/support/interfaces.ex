@@ -1357,7 +1357,8 @@ defmodule Helyx.Test.PrepareContext do
   # "hold_prepare" (it waits for `:continue`, then sets "prepared"),
   # "raise_prepare" (it raises), "nil_build" (it returns nil), "bad_build"
   # (it returns a map), "forged_build" (a struct without :system),
-  # "bad_system" (a system prompt that is not a string),
+  # "bad_system" (a system prompt that is not a string), "raw_system" (a
+  # system prompt that is not valid UTF-8),
   # "bad_messages_build" (the messages are not a list), "improper_build"
   # (the messages are an improper list), or "improper_tools_build" (the
   # tools are an improper list). A last message "fresh" sets it to
@@ -1368,6 +1369,7 @@ defmodule Helyx.Test.PrepareContext do
   def build(context, opts) do
     case context.messages |> List.last() |> Helyx.Message.text() do
       "fresh" -> %{context | system: "prepared for #{opts[:turn_id]}"}
+      "raw_system" -> %{context | system: <<255>>}
       "hold_prepare" -> receive(do: (:continue -> %{context | system: "prepared"}))
       "block_prepare" -> block(opts)
       text -> build_text(text, context)
@@ -1403,7 +1405,8 @@ defmodule Helyx.Test.PrepareCompaction do
   # Keeps the context, unless the last user message is "nil_compact" (it
   # returns nil), "bad_compact" (it returns a map), "forged_compact" (a
   # struct without :system), "bad_system_compact" (a system prompt that is
-  # not a string), "bad_messages" (the messages are not a list),
+  # not a string), "raw_system_compact" (a system prompt that is not valid
+  # UTF-8), "bad_messages" (the messages are not a list),
   # "improper_compact" (the messages are an improper list), or
   # "improper_tools_compact" (the tools are an improper list).
   @behaviour Helyx.Compaction
@@ -1414,13 +1417,16 @@ defmodule Helyx.Test.PrepareCompaction do
       "nil_compact" -> nil
       "bad_compact" -> Map.from_struct(context)
       "forged_compact" -> Map.delete(context, :system)
-      "bad_system_compact" -> %{context | system: :compacted}
       "bad_messages" -> %{context | messages: nil}
       "improper_compact" -> %{context | messages: context.messages ++ :tail}
       "improper_tools_compact" -> %{context | tools: [:tool] ++ :tail}
-      _ -> context
+      text -> system(text, context)
     end
   end
+
+  defp system("bad_system_compact", context), do: %{context | system: :compacted}
+  defp system("raw_system_compact", context), do: %{context | system: <<255>>}
+  defp system(_text, context), do: context
 end
 
 defmodule Helyx.Test.ThrowMessage do
@@ -1497,4 +1503,39 @@ defmodule Helyx.Test.LastItemMessage do
 
   def message(%{items: items}) when is_map(items),
     do: "#{map_size(items)} items, cut: #{Map.has_key?(items, :cut)}"
+end
+
+defmodule Helyx.Test.PromptContext do
+  @moduledoc false
+  # Sets the system prompt from the last user message
+  # (docs/features/turn-record.md): "prompt:<text>" gives <text>,
+  # "bytes:<n>" gives <n> bytes that end in "é" (two bytes), "nil" gives
+  # nil, "raw" gives bytes that are not UTF-8, "break" moves the session
+  # file to "<path>.old" and puts a folder in its place, so its next write
+  # fails, and gives
+  # "same", as any other text does.
+  @behaviour Helyx.ModelContext
+
+  @impl true
+  def build(context, opts) do
+    last = context.messages |> Enum.filter(&(&1.role == :user)) |> List.last()
+    text = Helyx.Message.text(last)
+    if text == "break", do: break(opts)
+    %{context | system: system(text)}
+  end
+
+  defp break(opts) do
+    path = Path.join(opts[:session_dir], opts[:session_id] <> ".jsonl")
+    File.rename!(path, path <> ".old")
+    File.mkdir!(path)
+  end
+
+  defp system("prompt:" <> text), do: text
+
+  defp system("bytes:" <> n),
+    do: String.duplicate("x", String.to_integer(n) - 2) <> "é"
+
+  defp system("nil"), do: nil
+  defp system("raw"), do: <<255>>
+  defp system(_text), do: "same"
 end
