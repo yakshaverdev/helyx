@@ -11,15 +11,16 @@ defmodule Helyx.Session.Lock do
   # The program writes "<nonce> ok", "<nonce> locked", or
   # "<nonce> error <reason>" as one line. With the lock, it then reads
   # commands on stdin until a byte that is no command or the end of stdin,
-  # and exits: `w` writes a file, `r` removes one (`write_file/3`,
-  # `remove_file/2`), and each gets the line "done" or "fail <reason>". The
-  # release sends `x`. The nonce reaches it in its arguments only, so no
-  # startup warning of perl, which stderr merges in, passes for the answer;
-  # perl runs with no warnings after that. `%!` loads Errno. The open does
-  # not wait (a FIFO with no reader fails), and a file that is not regular
-  # is refused, so perl never blocks before it reads stdin. The temporary
-  # file of a write is removed first, then made with `O_EXCL|O_NOFOLLOW`
-  # and mode 0600, so no other file or link is written through.
+  # and exits: `w` writes a file, `r` removes one, `m` renames one
+  # (`write_file/3`, `remove_file/2`, `rename_file/3`), and each gets the
+  # line "done" or "fail <reason>". The release sends `x`. The nonce
+  # reaches it in its arguments only, so no startup warning of perl, which
+  # stderr merges in, passes for the answer; perl runs with no warnings
+  # after that. `%!` loads Errno. The open does not wait (a FIFO with no
+  # reader fails), and a file that is not regular is refused, so perl
+  # never blocks before it reads stdin. The temporary file of a write is
+  # removed first, then made with `O_EXCL|O_NOFOLLOW` and mode 0600, so no
+  # other file or link is written through.
   @program ~S"""
   use Fcntl qw(:DEFAULT :flock);
   my ($nonce, $path) = @ARGV;
@@ -44,6 +45,9 @@ defmodule Helyx.Session.Lock do
     if ($op eq 'r') {
       my $file = field();
       print(unlink($file) || $!{ENOENT} ? "done\n" : "fail $!\n");
+    } elsif ($op eq 'm') {
+      my ($from, $to) = (field(), field());
+      print(rename($from, $to) ? "done\n" : "fail $!\n");
     } elsif ($op eq 'w') {
       my ($file, $data) = (field(), field());
       my $tmp = "$file.tmp";
@@ -152,6 +156,10 @@ defmodule Helyx.Session.Lock do
   # Removes `path` in the perl process that holds the lock `port`; a file
   # that is not there counts as removed.
   def remove_file(port, path), do: command(port, fn -> ["r", field(path)] end)
+
+  # Renames `from` to `to` in the perl process that holds the lock `port`,
+  # so the rename happens only while the lock is held.
+  def rename_file(port, from, to), do: command(port, fn -> ["m", field(from), field(to)] end)
 
   defp field(text), do: [<<byte_size(text)::32>>, text]
 

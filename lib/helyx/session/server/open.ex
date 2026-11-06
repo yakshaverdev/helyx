@@ -6,7 +6,7 @@ defmodule Helyx.Session.Server.Open do
   # attaches, or gives an error (server-management.md, session-lock.md).
   # `Helyx.Session.Server` keeps the GenServer callbacks and calls in here.
 
-  alias Helyx.Session.{Background, Hands, Id, Input, Lock, Queue, Transcript}
+  alias Helyx.Session.{Background, Hands, Id, Input, Killer, Lock, Queue, Transcript}
   alias Helyx.Session.Server.State
 
   # Starts the session process under Core for `resume/2`. `open` is nil
@@ -209,15 +209,15 @@ defmodule Helyx.Session.Server.Open do
   # is gone, so the port closes and perl frees the lock (session-lock.md).
   # After the take, the deadline of the load grows with the file.
   defp open_file(state, {path, fun}) do
-    killer = kill_after(state.deadline_ms.open)
+    killer = Killer.arm(state.deadline_ms.open)
 
     result =
       Lock.hold(path, fn ->
-        move_kill(killer, state.deadline_ms.open + div(file_size(path), @load_bytes_per_ms))
+        Killer.move(killer, state.deadline_ms.open + div(file_size(path), @load_bytes_per_ms))
         fun.(state)
       end)
 
-    cancel_kill(killer)
+    Killer.cancel(killer)
     with {:ok, lock, state} <- result, do: {:ok, %{state | lock: lock}}
   end
 
@@ -227,44 +227,6 @@ defmodule Helyx.Session.Server.Open do
     case File.stat(path) do
       {:ok, %File.Stat{size: size}} -> size
       {:error, _reason} -> 0
-    end
-  end
-
-  # `:timer.kill_after/1` cannot be cancelled once it fires: its kill can
-  # reach the session after the cancel. This cancel waits for the end of the
-  # killer, and a signal of a process comes before its `:DOWN`.
-  defp kill_after(ms) do
-    session = self()
-
-    spawn_monitor(fn -> kill_at(session, Process.monitor(session), ms) end)
-  end
-
-  # The longest wait of a `receive`: a longer `after` crashes the killer,
-  # and the open would have no deadline. A file of 4.29 TB reaches it.
-  @max_wait_ms 4_294_967_295
-
-  # A move restarts the wait with its own ms. One that comes after the
-  # kill finds no killer: the kill was sent.
-  defp kill_at(session, monitor, ms) when ms > @max_wait_ms,
-    do: kill_at(session, monitor, @max_wait_ms)
-
-  defp kill_at(session, monitor, ms) do
-    receive do
-      :cancel -> :ok
-      {:move, ms} -> kill_at(session, monitor, ms)
-      {:DOWN, ^monitor, :process, _pid, _reason} -> :ok
-    after
-      ms -> Process.exit(session, :kill)
-    end
-  end
-
-  defp move_kill({pid, _monitor}, ms), do: send(pid, {:move, ms})
-
-  defp cancel_kill({pid, monitor}) do
-    send(pid, :cancel)
-
-    receive do
-      {:DOWN, ^monitor, :process, ^pid, _reason} -> :ok
     end
   end
 

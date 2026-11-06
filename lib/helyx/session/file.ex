@@ -5,7 +5,9 @@ defmodule Helyx.Session.File do
   `<dir>/<project slug>/<session id>.jsonl`, a session with a parent link
   at `<dir>/.children/<session id>.jsonl` (`path/4`). Only completed
   messages are appended. `pick/3` picks the file of a session, `resume_picked/3`
-  restores its chain, and nothing is ever removed from the file.
+  restores its chain, and a session never removes anything from the file;
+  only `Helyx.Sessions.delete/2` and `Helyx.Sessions.remove_message/3`
+  change a saved file, under its lock (`docs/features/session-edit.md`).
 
   The format, the rules for a damaged file, and the bounds are in
   `docs/features/coding-agent.md`, section "Session file".
@@ -186,17 +188,28 @@ defmodule Helyx.Session.File do
           max_heap_bytes: pos_integer()
         ) :: {:ok, Resumed.t()} | {:error, error()}
   def resume_picked(path, cwd, opts \\ []) do
-    limits = %Reader.Limits{
-      entry: Keyword.get(opts, :max_entry_bytes, @max_entry_bytes),
-      heap: Keyword.get(opts, :max_heap_bytes, @max_heap_bytes)
-    }
-
-    with {:ok, resumed, tail} <- load(path, cwd, limits),
+    with {:ok, resumed, tail} <- load(path, cwd, limits(opts)),
          # The repair write comes last, after every check passed, so a
          # file this function rejects is never mutated.
          :ok <- repair(path, tail) do
       {:ok, resumed}
     end
+  end
+
+  @doc false
+  # The read and the checks of `resume_picked/3`, with no repair write.
+  def read_picked(path, cwd) do
+    with {:ok, resumed, _tail} <- load(path, cwd, limits([])), do: {:ok, resumed}
+  end
+
+  @doc false
+  # The limits of the read of one line, with the options of
+  # `resume_picked/3`.
+  def limits(opts) do
+    %Reader.Limits{
+      entry: Keyword.get(opts, :max_entry_bytes, @max_entry_bytes),
+      heap: Keyword.get(opts, :max_heap_bytes, @max_heap_bytes)
+    }
   end
 
   @doc """
@@ -365,11 +378,11 @@ defmodule Helyx.Session.File do
   def append_message(%__MODULE__{} = file, %Message{} = message),
     do: append(file, Codec.encode(message))
 
-  # Nothing is ever removed from the file: a truncate could cut bytes that
-  # another writer appended. A last line without its newline gets one, so
-  # the next entry starts on a line of its own. A whole last entry is kept;
-  # a torn one stays a line that every read skips. A repair that cannot
-  # write is an environment failure, not a malformed file.
+  # The repair never removes anything from the file: a truncate could cut
+  # bytes that another writer appended. A last line without its newline
+  # gets one, so the next entry starts on a line of its own. A whole last
+  # entry is kept; a torn one stays a line that every read skips. A repair
+  # that cannot write is an environment failure, not a malformed file.
   defp repair(_path, :clean), do: :ok
 
   defp repair(path, :no_newline) do
