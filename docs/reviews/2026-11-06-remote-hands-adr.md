@@ -124,3 +124,21 @@ The brief allowed one round, so the defect is not fixed. The commit holds the te
 
 1. **Runner stop at the end of the lease** (Codex, round 6). A runner-side mechanism at the end of the lease must act apart from the queue of the hands: it kills the live Tasks and bounds the queued releases within one release budget, keeps the report of the unconfirmed handles, and adds no server-side deadline. Until then the accepted-hole bounds after the end of the lease (one release duration) and after a replace or a half-open close (one lease plus one release) are too low by the releases queued ahead of the stop.
 2. **Wording** of round 6 (spec), above.
+
+## Revision: the kill at the end of the runner's lease (2026-11-06)
+
+The orchestrator decided open item 1 of round 6 from the owner's rule that the runner arms every bound of its side on its own clock. At the end of its lease the runner does not stop its hands with a call that waits in the queue of the hands. It kills the hands process and every tool and provider process of the connection, on its own clock, and does not wait for queued releases. The release path of ADR 0004 (the port close and the watchdog) ends the commands within the TERM grace: 500 ms (`Helyx.Watchdog.grace_ms/0`), or 5,000 ms for a harness program (`Helyx.HarnessIO`). The two accepted-hole bounds now read:
+- after the end of the lease: the TERM grace, plus the clock drift over one lease;
+- after a replace or a half-open close: one lease duration plus the TERM grace, plus the drift.
+
+The holes of ADR 0004 are named on the runner.
+
+The four wording points of round 6 are applied:
+- the stand-in ends after it passes on the stop answer, so the `:DOWN` wait of `stop_hands` is the third wait inside the shared deadline;
+- the runner's first lease runs from the send of its registration;
+- the 45,000 ms idle close cites `wire-protocol.md`;
+- the clock drift adds to both accepted-hole bounds.
+
+The judgement item (the full 20,000 ms release duration in the stop) stays as it is. A sentence that a round-2 edit had moved into the wrong accepted hole is back with the hole on old commands.
+
+No review round ran, on the orchestrator's order: the Codex gate of the orchestrator follows.
