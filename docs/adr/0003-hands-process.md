@@ -16,3 +16,7 @@ Every session has a hands process that owns the working directory and runs tool 
 ## Update 2026-10-12: the session owns the tool set
 
 The consequence "The set of available tools is reported by the hands" no longer holds since #142 (af73030, `docs/reviews/2026-09-26-tool-specs.md`). `Helyx.Session` builds the tool set at the start and the resume of a session, checks it, and gives the hands the tool modules by name. The plugin table of a Core and the tool set of a session do not change after start. The tool set and the tool checks, such as the perl check of the bash tool, run on the node of the session. Remote hands, the reason for this ADR, would need both on their own node, so this part is decided again when remote hands come. A tool set that changes during a session is #473, open. Found by `docs/reviews/2026-10-12-domain-review.md`, A6.
+
+## Update 2026-11-06: the hands report the tool set again
+
+ADR 0012 (#856) decides remote hands. The hands build the tool set and run the tool checks on their own node and report them to the session, for local and for remote hands. This reverts the update of 2026-10-12 above. Until the build tickets of ADR 0012 land, the code still works as that update states.
