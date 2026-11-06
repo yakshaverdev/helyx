@@ -338,7 +338,8 @@ Each numeric limit gets tests at the limit, one under, and one over, and the fra
 ## Out of scope
 
 - Code: #657 to #662, and the Core bounds that they build on: #672 (a text of at most 4 MiB) and #673 (at file read, a message of at most 1,024 blocks and 8 MiB).
-- Push to an app that is closed: a product client host.
+- Push to an app that is closed: `Helyx.Hub` sends it, and the client host receives it (ADR 0010).
+- Users, session records, and the `hub.*` operations: `Helyx.Hub` (ADR 0010), with a new protocol number when the first `hub.*` operation is in the schema.
 - A browser client.
 - Paging inside one message body: parts carry any size (#658).
 - stdio framing code: same frames, a later ticket when a client needs it (#660).

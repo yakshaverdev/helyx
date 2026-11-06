@@ -132,3 +132,5 @@ A test computes the SHA-256 of the schema in `wire-protocol.md` and compares it 
 - The protocol number goes from 1 to 2. The auth wait stays 5,000 ms from the upgrade to `hello`, with the challenge in it.
 
 Rejected: a filter on each log path (the next dependency log is a new leak), and the token in a header of the upgrade (the `conn` is in the handshake log).
+
+2026-11-06, ticket #857 (ADR 0010). §1: push to an app that is closed is sent by `Helyx.Hub`, a bundled module beside the transport; the client host receives it. §6: when a product gives the transport the authority of Hub, a user credential replaces the one server token, with the same proof for the nonce and no secret in a frame, and the check covers every operation and every subscription, not only `hello`. Hub operations go on this wire, in the `hub` namespace of operations, with a new protocol number (ADR 0010 §3).
