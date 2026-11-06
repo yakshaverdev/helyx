@@ -7,10 +7,9 @@ defmodule Helyx.Session.Turn do
   # (`Transcript.open_calls/1`).
   # `model` and `provider` are fixed when the turn starts, so a model switch
   # during the turn takes effect on the next one. A turn has a `phase`,
-  # `:preparing`, `:submitting`, or `:submitted` (nil before its connect),
-  # the prepared `context` until it is sent, and the `pending` ref of the
-  # answer to `{:turn, ...}` or `{:compact, ...}`, or in `submitted` to
-  # `{:context, ...}`.
+  # `:preparing`, `:submitting`, or `:submitted`, the prepared `context`
+  # until it is sent, and the `pending` ref of the answer to `{:turn, ...}`
+  # or `{:compact, ...}`, or in `submitted` to `{:context, ...}`.
   # `prepare` is `{ref, pid, messages}`: the ref and the pid of the
   # running prepare Task, which the session monitors and kills at the turn
   # end, and the messages that it got. Only a reply with that ref is the
@@ -38,7 +37,6 @@ defmodule Helyx.Session.Turn do
     :provider,
     :partial,
     :message_id,
-    :phase,
     :context,
     :pending,
     :prepare,
@@ -49,6 +47,7 @@ defmodule Helyx.Session.Turn do
     recall_failed: false,
     bytes: 0,
     blocks: 0,
+    phase: :preparing,
     tool_queue: %Helyx.Session.ToolQueue{},
     asks: []
   ]
@@ -59,7 +58,7 @@ defmodule Helyx.Session.Turn do
           provider: module(),
           partial: [Message.block()] | nil,
           message_id: String.t() | nil,
-          phase: nil | :preparing | :submitting | :submitted,
+          phase: :preparing | :submitting | :submitted,
           context: Helyx.Context.t() | nil,
           pending: reference() | nil,
           prepare: {reference(), pid(), [Message.t()]} | nil,

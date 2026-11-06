@@ -202,10 +202,10 @@ defmodule Helyx.Session.Server.TurnLoop do
 
   # The provider process (started at the first turn) and the prepare Task,
   # which builds the context; a turn that connects again keeps its prepare.
-  defp call_provider(%State{activity: %Turn{phase: phase}} = state) do
-    state = connect(state)
-    if phase, do: state, else: Prepare.start(put_in(state.activity.phase, :preparing), :auto)
-  end
+  defp call_provider(%State{activity: %Turn{phase: :preparing, prepare: nil}} = state),
+    do: state |> connect() |> Prepare.start(:auto)
+
+  defp call_provider(state), do: connect(state)
 
   # Asks the hands to start the provider process of the turn, with the
   # resume of the messages before the turn; their answer comes to
