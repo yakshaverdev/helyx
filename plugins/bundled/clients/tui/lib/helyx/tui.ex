@@ -324,10 +324,13 @@ defmodule Helyx.TUI do
         true -> Composer.widgets(state.composer, middle)
       end
 
-    Selection.widgets(state.selection, rows, transcript) ++
-      marks ++
-      middle ++
-      [{Footer.widget(state.location, state.vm, state.busy, state.scroll, state.quit), footer}]
+    # A switch that runs is an open that the footer shows (tui-attach.md, decision 17).
+    loading = state.switch != nil
+
+    bottom =
+      Footer.widget(state.location, state.vm, state.busy, state.scroll, state.quit, loading)
+
+    Selection.widgets(state.selection, rows, transcript) ++ marks ++ middle ++ [{bottom, footer}]
   end
 
   # The transcript, composer or list, and footer rects, nil with no terminal size. The frame,

@@ -112,7 +112,7 @@ defmodule CodingAgent do
     {:ok, conn, ref} = Connection.open(socket)
 
     try do
-      with {:ok, id, cwd, resumed} <- open_remote(conn, opts) do
+      with {:ok, id, cwd, resumed} <- loading(fn -> open_remote(conn, opts) end) do
         dir = Keyword.fetch!(opts, :sessions_dir)
 
         CodingAgent.LogFile.run(Path.join(dir, "tui.log"), fn held ->
@@ -130,6 +130,28 @@ defmodule CodingAgent do
       # took ends here.
       Process.exit(conn, :kill)
       Process.demonitor(ref, [:flush])
+    end
+  end
+
+  # The open has no deadline in the client (docs/features/tui-attach.md,
+  # decision 17): the answer, the end of the connection, or Ctrl+C ends it.
+  # An open that has not answered in this time gets one line on stderr.
+  @loading_ms 500
+
+  defp loading(open) do
+    notice =
+      spawn_link(fn ->
+        receive do
+          :done -> :ok
+        after
+          @loading_ms -> IO.puts(:stderr, "helyx: loading the session...")
+        end
+      end)
+
+    try do
+      open.()
+    after
+      send(notice, :done)
     end
   end
 

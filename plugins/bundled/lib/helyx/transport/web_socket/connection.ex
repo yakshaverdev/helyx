@@ -173,16 +173,20 @@ defmodule Helyx.Transport.WebSocket.Connection do
   defp work(conn, out, id, op, call) do
     # The deadline of a request with a large result starts at its slot.
     if Ops.slot?(op), do: Outbound.slot(out)
-    timer = Process.send_after(conn, {:deadline, self(), id}, Ops.deadline(op))
+    timer = arm(conn, id, Ops.deadline(op))
 
     try do
       Outbound.reply(out, id, Ops.run(call))
     after
       # The timer ends with its worker, so the timers are at most the
       # requests in flight.
-      Process.cancel_timer(timer)
+      if timer, do: Process.cancel_timer(timer)
     end
   end
+
+  # An open has no deadline here: the session bounds it (#834).
+  defp arm(_conn, _id, :infinity), do: nil
+  defp arm(conn, id, ms), do: Process.send_after(conn, {:deadline, self(), id}, ms)
 
   # A sub holds at most one ack, and none before its subscribe reply
   # (`docs/features/wire-protocol.md`, "Subscriptions").

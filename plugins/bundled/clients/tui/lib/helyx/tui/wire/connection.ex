@@ -1,13 +1,11 @@
 defmodule Helyx.TUI.Wire.Connection do
   @moduledoc """
-  The wire session of the TUI (`docs/features/tui-attach.md`, decision 7):
-  one process that owns the socket of `Helyx.TUI.Wire.connect/4` after
-  `welcome`. It sends the requests of the TUI and matches their replies by
-  id, joins the parts of a frame and decodes it with the codec of the
-  transport and the decode bounds of a frame of the server
-  (`docs/features/tui-attach.md`, decision 13), checks it strictly against
-  the schema (decision 14), turns the events of a subscription into
-  `Helyx.Event` structs, sends the acks, and answers the pings.
+  The wire session of the TUI (`docs/features/tui-attach.md`, decision 7): one process that owns
+  the socket of `Helyx.TUI.Wire.connect/4` after `welcome`. It sends the requests of the TUI and
+  matches their replies by id, joins the parts of a frame and decodes it with the codec of the
+  transport and the decode bounds of a frame of the server (`docs/features/tui-attach.md`,
+  decision 13), checks it strictly against the schema (decision 14), turns the events of a
+  subscription into `Helyx.Event` structs, sends the acks, and answers the pings.
 
   The process that calls `open/1` owns the connection, which ends with it;
   `take/1` makes another process the owner. The owner gets the events of
@@ -20,17 +18,15 @@ defmodule Helyx.TUI.Wire.Connection do
   code}}` when the server closes it, `code` nil for a close with no code:
   a close of TCP, a close frame with no code, or a failed read or write.
 
-  An operation gives the result of the Core call of the server, or
-  `{:error, code}` with the error code of the wire as an atom; for
-  `invalid_model_ref`, `unknown_provider`, and `start_failed`, `{code,
-  text}`. It waits for its reply at most the deadline of the server for the
-  operation and 5,000 ms more from the moment that the connection takes
-  it, its wait for the writer included (decision 15), then gives
-  `{:error, :timeout}`: the outcome is unknown, and the late reply is
-  dropped. At most 16 requests wait for a reply, late ones too, and at
-  most 16 request frames wait for the writer; one more gives `{:error,
-  :busy}` and sends nothing. After the end of the connection an operation
-  gives `{:error, :closed}`.
+  An operation gives the result of the Core call of the server, or `{:error, code}` with the
+  error code of the wire as an atom; for `invalid_model_ref`, `unknown_provider`, and
+  `start_failed`, `{code, text}`. It waits for its reply at most the deadline of the server for
+  the operation and 5,000 ms more from the moment that the connection takes it, its wait for the
+  writer included (decision 15), then gives `{:error, :timeout}`: the outcome is unknown, and
+  the late reply is dropped; `start` and `resume` wait while the connection lives (decision 17).
+  At most 16 requests wait for a reply, late ones too, and at most 16 request frames wait for
+  the writer; one more gives `{:error, :busy}` and sends nothing. After the end of the
+  connection an operation gives `{:error, :closed}`.
   """
 
   use GenServer
@@ -197,7 +193,8 @@ defmodule Helyx.TUI.Wire.Connection do
   def handle_call({:request, op, params}, from, state) do
     # An id is never used again, so a late reply is told apart.
     id = Integer.to_string(state.next)
-    timer = Process.send_after(self(), {:deadline, id}, Ops.deadline(op) + @margin_ms)
+    timer = arm(id, Ops.deadline(op))
+
     state = if params["after"], do: update_in(state.replays, &MapSet.put(&1, id)), else: state
     write_request(register(state, id, op, {from, timer}), id, op, params)
   end
@@ -341,7 +338,7 @@ defmodule Helyx.TUI.Wire.Connection do
     do: {:noreply, %{state | subs: Map.delete(state.subs, sub)}}
 
   defp reply({from, timer}, op, result, state) do
-    Process.cancel_timer(timer)
+    if timer, do: Process.cancel_timer(timer)
     GenServer.reply(from, result)
 
     case {op, result} do
@@ -349,6 +346,9 @@ defmodule Helyx.TUI.Wire.Connection do
       _other -> {:noreply, state}
     end
   end
+
+  defp arm(_id, :infinity), do: nil
+  defp arm(id, ms), do: Process.send_after(self(), {:deadline, id}, ms + @margin_ms)
 
   defp register(state, id, op, caller),
     do: %{state | next: state.next + 1, waiting: Map.put(state.waiting, id, {op, caller})}

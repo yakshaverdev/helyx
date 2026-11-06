@@ -57,6 +57,14 @@ defmodule Helyx.TUI.FooterTest do
     line_texts(lines)
   end
 
+  # A switch that opens a session (tui-attach.md, decision 17).
+  test "while a switch runs, row 2 starts with loading the session" do
+    vm = view_model([], "fake/m")
+    %{text: lines} = Footer.widget("~", vm, nil, nil, nil, true)
+    assert [_row1, "loading the session · fake/m · idle"] = line_texts(lines)
+    assert [_row1, "fake/m · idle"] = rows("~", vm)
+  end
+
   describe "branch/1" do
     @describetag :tmp_dir
 

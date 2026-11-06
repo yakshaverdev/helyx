@@ -9,12 +9,13 @@ defmodule Helyx.Transport.WebSocket.Ops do
   alias Helyx.Session
   alias Helyx.Transport.WebSocket.{Outbound, Wire}
 
-  # Each deadline and its reason is in the table "Deadlines".
+  # Each deadline and its reason is in the table "Deadlines". `start` and
+  # `resume` have none: the open deadlines of the session bound them (#834).
   @deadlines %{
     "abort" => 46_000,
     "stop" => 77_000,
-    "start" => 30_000,
-    "resume" => 30_000,
+    "start" => :infinity,
+    "resume" => :infinity,
     "sessions.saved" => 10_000
   }
   @default_deadline 6_000
@@ -28,6 +29,7 @@ defmodule Helyx.Transport.WebSocket.Ops do
   # connection before it reads from Core.
   def slot?(op), do: op in ~w(sessions.saved history)
 
+  @spec deadline(String.t()) :: pos_integer() | :infinity
   def deadline(op), do: Map.get(@deadlines, op, @default_deadline)
 
   def run(call) do

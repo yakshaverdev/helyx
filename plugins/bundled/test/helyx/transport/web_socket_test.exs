@@ -685,6 +685,13 @@ defmodule Helyx.Transport.WebSocketTest do
     assert Ops.deadline("stop") == abort + Helyx.Session.Server.Stop.shutdown_ms()
   end
 
+  # The open deadlines of the session bound them (#834, wire-protocol.md,
+  # "Deadlines").
+  test "start and resume have no deadline of the wire" do
+    assert Ops.deadline("start") == :infinity
+    assert Ops.deadline("resume") == :infinity
+  end
+
   test "a subscribe with no tail gets the tail of 200" do
     assert {:ok, _session, [tail: 200]} = Ops.subscribe_params(:core, %{"session" => "s"})
   end

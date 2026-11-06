@@ -150,18 +150,20 @@ defmodule Helyx.TUI.Footer do
   @doc """
   The two rows: `location` from `location/2`, then the state of `vm`. The
   turn state is "idle" for a nil `busy`, else a spinner frame and the whole
-  seconds of `busy.elapsed`. A non-nil `scroll` adds "scrolled". The hint
-  of `quit` (`Helyx.TUI.Quit.hint/1`) comes after the reason. A row does
-  not wrap.
+  seconds of `busy.elapsed`. A non-nil `scroll` adds "scrolled". A true
+  `loading`, while a switch opens a session, puts "loading the session"
+  first (`docs/features/tui-attach.md`, decision 17). The hint of `quit`
+  (`Helyx.TUI.Quit.hint/1`) comes after the reason. A row does not wrap.
   """
   @spec widget(
           String.t(),
           ViewModel.t(),
           %{elapsed: non_neg_integer()} | nil,
           term(),
-          Quit.t()
+          Quit.t(),
+          boolean()
         ) :: Paragraph.t()
-  def widget(location, %ViewModel{} = vm, busy, scroll, quit) do
+  def widget(location, %ViewModel{} = vm, busy, scroll, quit, loading \\ false) do
     %{steers: steers, follow_ups: follow_ups, running: running, held: held, waiting: waiting} =
       vm.queue
 
@@ -173,9 +175,10 @@ defmodule Helyx.TUI.Footer do
           do: "#{n} #{label}"
 
     scrolled = if scroll, do: ["scrolled"], else: []
+    loading = if loading, do: [{"loading the session", @bold}], else: []
 
     status =
-      ([vm.model, run_state(busy)] ++ usage(vm) ++ queued ++ background ++ scrolled)
+      (loading ++ [vm.model, run_state(busy)] ++ usage(vm) ++ queued ++ background ++ scrolled)
       |> Enum.map(&span/1)
       |> Enum.intersperse(%Span{content: " · ", style: @dim})
 

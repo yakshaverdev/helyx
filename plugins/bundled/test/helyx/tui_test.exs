@@ -716,7 +716,8 @@ defmodule Helyx.TUITest do
       quit: nil,
       list: nil,
       search: nil,
-      question: nil
+      question: nil,
+      switch: nil
     }
 
     :ok = ExRatatui.draw(terminal, TUI.render(state, %{width: 3, height: 5}))

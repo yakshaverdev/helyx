@@ -85,3 +85,28 @@ Bounds sensor (base `HEAD`): `bounds sensor: 2 candidate functions, 0 flagged, 0
 No reproduced defect: the loop ends. The cap sits at the exact limit of a `receive` (probe: 4,294,967,295 ms waits, one more crashes), it applies to the arm and the move, and the cap test fails without it (spec probe, the file restored by checksum). Wording, fixed: the row "Session file on resume" still said that the open deadline can refuse a file that a session wrote; it now says that the deadline of the load grows with the file.
 
 Not reached: a stat or a load blocked in the OS on a stuck file system (a hole from before #834); an end-to-end run at the cap with a file of 4.29 TB.
+
+## Decision of the owner on the wire (2026-11-06, after round 5)
+
+Option 1: while the connection lives, the client waits for the answer to `start` and `resume`, and the TUI shows that it is loading; the load deadline of the server is the only bound of the open. Rebase on `origin/master` (`a33d8334`): no conflict.
+
+The change: `Ops.deadline/1` gives `:infinity` for `start` and `resume`, and the server worker and the client connection arm no timer for them; `CodingAgent.attach/2` writes `helyx: loading the session...` on stderr after 500 ms with no answer; row 2 of the footer shows `loading the session` while a switch runs. Rule in `tui-attach.md` decision 17, `wire-protocol.md` "Deadlines", `session-lock.md`, `tui-session-switch.md`. The protocol number stays: no message, field, or error code changes.
+
+Bounds sensor (base `HEAD`): `bounds sensor: 6 candidate functions, 0 flagged, 0 without an answer`.
+
+## Round 6 (reduced: spec and failure path)
+
+No reproduced defect: the loop ends.
+
+| Axis | Finding | Resolution |
+|---|---|---|
+| Spec | no test that the server arms no timer for `start` and `resume` | fixed: `web_socket_test.exs`, "start and resume have no deadline of the wire" |
+| Spec | decision 17 said that a closed connection during a switch shows `could not switch` and ends the TUI; the order of the end of the connection and the answer of the switch decides which | fixed: the decision states both orders |
+| Spec | the footer test calls `Footer.widget/6` only; no test of the wiring `state.switch != nil` | accepted: one expression in the render of `Helyx.TUI` |
+| Failure path | no defect: the loading line with its notice process suspended past 500 ms (3 of 3 runs, no line after the open returned); the client timer is nil only for `start` and `resume` and `reply/4` checks it; a worker cannot outlive its connection | none |
+
+Not reached: a live server worker whose Core call blocks while the connection is killed (read only); the notice already inside `IO.puts` when the TUI takes the terminal; Ctrl+C before the TUI under `mix` (the BREAK menu, older than this change). The slow test of the client wait passed in 36.3 s (spec agent).
+
+## After round 6: precommit
+
+The first run failed on two points: `Helyx.TUI.Wire.Connection` at 405 lines (Credo), and a test of `tui_test.exs` that renders a state map with no `switch` key. Fixed with no change of behaviour: the timer of a request comes from a small `arm/2`, two paragraphs of the moduledoc are rewrapped (399 lines), and the test map has `switch: nil`.
