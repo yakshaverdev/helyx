@@ -47,3 +47,29 @@ Not fixed in the committed text. The build ticket or the owner decides:
 4. **Stop report wording.** §4: the report of a lost remote hands names the hands as lost; the server cannot list handles that only the runner held.
 5. **Owner confirmation.** The revert of the update of 2026-10-12 of ADR 0003 for local hands too, and a missed deadline that stops every session of a runner.
 6. **Feature doc items.** A turn context over the term limit fails every turn on remote hands. Compaction is the way out, and the feature doc states this. It also gives the direction of the 16 requests in flight on a hands connection.
+
+## Follow-up after the owner decision (2026-11-06)
+
+The owner accepted the four choices of "Open" item 5 and added the key rule: a runner that the agent controls never holds a long-lived model key, and gets model access through a server-side proxy with a token for one session; a runner that its owner controls may hold the owner's keys. The follow-up states the key rule in §6 and fixes Open items 1 to 4:
+
+1. Liveness through the request handler, local bounds on the runner, and a rule for a class of waits: each answer that the server waits for, the `provider_down` after a stop of a provider process included, has the local bound of the operation plus a network margin. The stop of a provider process becomes a request.
+2. The connection process watches the stand-in. At any end of it, the connection sends the runner a stop of that session instance, or closes when the stop is not answered.
+3. The runner logs with `Helyx.Reason.log/2`, the kind only.
+4. The stop report of a lost hands gives `:unknown`, as `Helyx.Session.Server.Stop` does today.
+
+It also moved one sentence back into the "Provider start" bullet, where a round-2 edit had put it in the wrong bullet.
+
+### Round 4 (reduced: spec and failure path), base `9be5da87`
+
+| Axis | Reproduced defects | Other findings |
+|---|---|---|
+| Spec | 0 | judgement: `@hands_stop_ms` (`stop.ex:22`), not only `Stop.shutdown_ms/0`, would need the network margin; wording: "tool arguments, or a credential" goes beyond ADR 0006, which names message text; wording: "a call of a tool into its session" is in the list of server waits, but the server answers it; wording: the liveness row of the bounds table does not say "past it the server closes the connection" |
+| Failure path | 3, all in the deadline mechanism: (a) the hands run each release in their own process, each up to `release_ms` (`hands.ex:199,207,305`), so a cancel, a stop, or a liveness answer in the same queue waits for the sum of the releases ahead of it; "local bound plus margin" then closes the connection of a runner that is only slow; (b) the wait for the provider end in `Stop.run` (`stop.ex:45-49`, no `after`) does not watch the stand-in, so a session stop with a dead stand-in ends only at the supervisor kill, and the stop report is lost (a probe showed the receive stays blocked); `shutdown_ms` counts only `provider_close_ms` for that wait; (c) `Hands.stop/3` takes a monotonic deadline (`stop.ex:74`), which means nothing on another node | duplicate: the stop wait has two deadlines, the call timeout `@hands_stop_ms` and the stand-in deadline, with different values |
+
+These are more defects in the deadline mechanism, which was already patched in rounds 1, 2, and 3 and in this follow-up. On the orchestrator's order they are not patched. The commit holds the text as round 4 reviewed it.
+
+## Open after round 4
+
+1. **Deadline mechanism** (round 4 failure path, a to c, and the duplicate). A per-operation bound on the server does not hold while the runner runs its releases one after another in one process. A design step decides it, not another patch. The question: is a server deadline per answer needed at all, or does the liveness answer (which shows that the handler works) plus the local bounds on the runner bound every wait, with one stop deadline and durations, not monotonic instants, on the protocol?
+2. **Wording** (round 4 spec): `@hands_stop_ms`; the reason "tool arguments, or a credential"; a call of a tool into its session in the list of server waits; the liveness row of the bounds table.
+3. **Not reached by the review:** whether a stand-in learns of the connection's death sooner than the liveness deadline; what `ProviderConn.pid`, the armed kill of `ProviderRequest.ask/3`, and the provider monitor (`turn_loop.ex:131`) become with a provider id; the replace cell with an old runner that is half open; the lease while liveness frames keep arriving but the request handler is stuck.
