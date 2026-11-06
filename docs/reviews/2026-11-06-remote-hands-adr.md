@@ -73,3 +73,31 @@ These are more defects in the deadline mechanism, which was already patched in r
 1. **Deadline mechanism** (round 4 failure path, a to c, and the duplicate). A per-operation bound on the server does not hold while the runner runs its releases one after another in one process. A design step decides it, not another patch. The question: is a server deadline per answer needed at all, or does the liveness answer (which shows that the handler works) plus the local bounds on the runner bound every wait, with one stop deadline and durations, not monotonic instants, on the protocol?
 2. **Wording** (round 4 spec): `@hands_stop_ms`; the reason "tool arguments, or a credential"; a call of a tool into its session in the list of server waits; the liveness row of the bounds table.
 3. **Not reached by the review:** whether a stand-in learns of the connection's death sooner than the liveness deadline; what `ProviderConn.pid`, the armed kill of `ProviderRequest.ask/3`, and the provider monitor (`turn_loop.ex:131`) become with a provider id; the replace cell with an old runner that is half open; the lease while liveness frames keep arriving but the request handler is stuck.
+
+## Revision after the owner decision on the deadline model (2026-11-06)
+
+The owner chose one lease, with the runner owning its own bounds. The protocol carries durations, never instants. The runner arms every bound of its side on its own clock. The server bounds one thing for each connection: a liveness lease that the runner's request queue answers. At its end every hands of the connection counts as dead: one stop deadline, `:unknown`, and the turn fails as a lost hands does today.
+
+§3 now states this. The per-answer deadlines, their network margin, and their `:timer.exit_after/3` arming are removed. The bounds:
+- the lease: 45,000 ms by default, set from 30,000 to 120,000 ms, renewed at each answer to a liveness request sent every third of it;
+- the queue: one request process for each connection on the runner, which gives each request to the hands without waiting;
+- the stop: one deadline, `@hands_stop_ms`;
+- the runner's lease: the same duration, with no frame from the server.
+
+The text names a window as an accepted hole: the runner can release later than the server counts its hands as dead. The branch was rebased on `origin/master` (`52087db9`). The one conflict was two Out-of-scope lines in `docs/features/wire-protocol.md`, and both are kept.
+
+### Round 5 (reduced: spec and Codex), base `c8bfdc2e`
+
+| Axis | Reproduced defects | Other findings |
+|---|---|---|
+| Spec | 1: the wait of `Stop.run` for the provider end (`stop.ex:45-49`) comes before the stop deadline. On remote hands it ends only with the stand-in, at the end of the lease (45,000 to 120,000 ms) or at the wire's idle close (45,000 ms), both over `Stop.shutdown_ms/0` (31,000 ms). The supervisor kill then comes first, and the stop report is lost. So "when the lease ends first, :unknown" does not hold for it | judgement: a hands stuck on a live runner keeps the lease alive (named in round 4 as not reached; the owner's decision trusts the runner here); wording: the list of waits leaves out the answer to a provider request; "every frame that the runner gets comes before the end" should be "sent before"; the bounds row "a duration on the protocol" for every bound of the runner; a lease over 45,000 ms matters only for a peer that answers the WebSocket pings |
+| Codex | 2: the same `Stop.run` wait (two queued releases on the runner can delay `provider_down` by 40 s while the queue keeps answering the lease); a frame sent before the end of the server's lease can arrive much later, so the runner's lease can run past the "one lease duration" of the accepted hole (a 45,000 ms example: the server ends at 45 s, the runner at 133 s) | none |
+
+The brief allowed one round, so these are not fixed. The commit holds the text as round 5 reviewed it.
+
+## Open after round 5
+
+1. **The stop budget.** The wait of `Stop.run` for the end of a remote provider must share the one stop deadline: one deadline for the provider-close wait and the stop answer, then `:unknown`. `Stop.shutdown_ms/0` must cover the whole path.
+2. **Freshness of the runner's lease.** A stale frame must not renew the runner's lease. One option: a liveness request carries its sequence number, and the runner renews only on a request newer than the last one it answered, measured on its own clock from when it got that request. The accepted-hole bound must then be restated, or the window named as open.
+3. **Hands stuck on a live runner.** Accept it as a hole in the Consequences, like a stuck local hands today, or bound it.
+4. **Wording** of round 5 (spec), above.
