@@ -80,20 +80,7 @@ defmodule CodingAgent.LogFileTest do
   end
 
   test "a holder that was killed leaves no hold", %{tmp_dir: dir} do
-    test = self()
-
-    holder =
-      spawn(fn ->
-        LogFile.run(Path.join(dir, "first.log"), fn :ok ->
-          send(test, :holding)
-          Process.sleep(:infinity)
-        end)
-      end)
-
-    assert_receive :holding
-    ref = Process.monitor(holder)
-    Process.exit(holder, :kill)
-    assert_receive {:DOWN, ^ref, :process, ^holder, :killed}
+    kill_holder(Path.join(dir, "first.log"))
 
     second = Path.join(dir, "second.log")
     LogFile.run(second, fn :ok -> Logger.error("to the second") end)
@@ -115,6 +102,130 @@ defmodule CodingAgent.LogFileTest do
       _ = :logger.remove_handler(:default)
       :ok = :logger.add_handler(:default, default.module, default)
     end
+  end
+
+  # A config can turn `:default` off (`:default_handler` false), and the
+  # logger removes it while it restarts after an overload kill (#862).
+  describe "with no :default handler" do
+    setup do
+      {:ok, default} = :logger.get_handler_config(:default)
+      :ok = :logger.remove_handler(:default)
+
+      on_exit(fn ->
+        _ = :persistent_term.erase({LogFile, :hold})
+        _ = :logger.add_handler(:default, default.module, default)
+      end)
+
+      %{default: default}
+    end
+
+    test "the log goes to the file, and a call inside runs in the hold", %{tmp_dir: dir} do
+      path = Path.join(dir, "tui.log")
+
+      assert LogFile.run(path, fn held ->
+               assert held == :ok
+               assert marked?()
+               refute closed?()
+               assert LogFile.run(Path.join(dir, "inner.log"), fn held -> held end) == :ok
+               Logger.error("no default marker")
+               :result
+             end) == :result
+
+      refute marked?()
+      assert closed?()
+      assert File.read!(path) =~ "[error] no default marker"
+      refute File.exists?(Path.join(dir, "inner.log"))
+      assert :logger.get_handler_config(:default) == {:error, {:not_found, :default}}
+
+      assert_raise RuntimeError, fn -> LogFile.run(path, fn :ok -> raise "x" end) end
+      refute marked?()
+      assert closed?()
+    end
+
+    test "a bad path gives the notice", %{tmp_dir: dir} do
+      File.mkdir!(Path.join(dir, "tui.log"))
+
+      assert {:error, notice} = LogFile.run(Path.join(dir, "tui.log"), & &1)
+      assert notice =~ "(is a folder)"
+      refute marked?()
+    end
+
+    test "a holder that was killed leaves no hold", %{tmp_dir: dir} do
+      kill_holder(Path.join(dir, "first.log"))
+
+      second = Path.join(dir, "second.log")
+
+      LogFile.run(second, fn :ok ->
+        assert marked?()
+        Logger.error("to the second")
+      end)
+
+      assert File.read!(second) =~ "to the second"
+      refute marked?()
+    end
+
+    # The state of the hold is in one place, whatever `:default` does: a
+    # `:default` that comes back finds the filter of the killed holder.
+    test "a killed holder, then :default back", %{tmp_dir: dir, default: default} do
+      kill_holder(Path.join(dir, "first.log"))
+      assert marked?()
+
+      :ok = :logger.add_handler(:default, default.module, default)
+
+      assert LogFile.run(Path.join(dir, "second.log"), fn :ok ->
+               assert dropping?()
+               :ran
+             end) == :ran
+
+      refute marked?()
+      refute dropping?()
+    end
+  end
+
+  # The restart of `:default` after an overload kill adds it back with the
+  # filters it had at the kill, the drop filter of a hold among them.
+  test "a :default that has the drop filter already", %{tmp_dir: dir} do
+    :ok = :logger.add_handler_filter(:default, :helyx_tui_log, {&LogFile.drop/2, :held})
+    on_exit(fn -> _ = :logger.remove_handler_filter(:default, :helyx_tui_log) end)
+
+    assert LogFile.run(Path.join(dir, "tui.log"), fn :ok -> dropping?() end)
+    refute dropping?()
+  end
+
+  # The process of `:default` ends while the hold waits for it: in a VM of
+  # its own, the handler process is held until the drain call is in its
+  # queue, then killed.
+  @tag :slow
+  test "a terminal handler that ends during the drain", %{tmp_dir: dir} do
+    ebin = Path.dirname(:code.which(LogFile))
+    script = Path.join(dir, "drain.exs")
+
+    File.write!(script, """
+    handler = Process.whereis(:logger_std_h_default)
+    main = self()
+
+    spawn(fn ->
+      :erlang.suspend_process(handler)
+      send(main, :suspended)
+      # The drain call is the one message the idle handler gets.
+      wait = fn wait ->
+        case Process.info(handler, :message_queue_len) do
+          {:message_queue_len, 0} -> Process.sleep(5); wait.(wait)
+          _queued -> Process.exit(handler, :kill)
+        end
+      end
+      wait.(wait)
+    end)
+
+    receive do: (:suspended -> :ok)
+    result = CodingAgent.LogFile.run(#{inspect(Path.join(dir, "tui.log"))}, fn :ok -> :ran end)
+    IO.puts("RESULT \#{inspect(result)}")
+    """)
+
+    {out, 0} =
+      System.cmd(System.find_executable("elixir"), ["-pa", ebin, script], stderr_to_stdout: true)
+
+    assert out =~ "RESULT :ran"
   end
 
   describe "a bad tui.log gives one notice and a run with no file log" do
@@ -214,6 +325,32 @@ defmodule CodingAgent.LogFileTest do
     assert before =~ "switched from"
   end
 
+  # The process of the file handler ends during the hold, as when its
+  # file fails: the close has nothing to write, and the run keeps the
+  # result of `fun`. In a VM of its own.
+  @tag :slow
+  test "a file handler that ends during the hold", %{tmp_dir: dir} do
+    ebin = Path.dirname(:code.which(LogFile))
+    script = Path.join(dir, "close.exs")
+
+    File.write!(script, """
+    result =
+      CodingAgent.LogFile.run(#{inspect(Path.join(dir, "tui.log"))}, fn :ok ->
+        handler = Process.whereis(:logger_std_h_helyx_tui_log)
+        ref = Process.monitor(handler)
+        Process.exit(handler, :kill)
+        receive do: ({:DOWN, ^ref, _, _, _} -> :ran)
+      end)
+
+    IO.puts("RESULT \#{inspect(result)}")
+    """)
+
+    {out, 0} =
+      System.cmd(System.find_executable("elixir"), ["-pa", ebin, script], stderr_to_stdout: true)
+
+    assert out =~ "RESULT :ran"
+  end
+
   # A Logger line of another process during the change of the handlers
   # reaches no terminal: in a VM of its own, so that its stderr is the
   # terminal. The loggers note each line whose log call ran inside one
@@ -297,6 +434,24 @@ defmodule CodingAgent.LogFileTest do
     notice
   end
 
+  # A hold on `path` whose process is killed while it holds.
+  defp kill_holder(path) do
+    test = self()
+
+    holder =
+      spawn(fn ->
+        LogFile.run(path, fn :ok ->
+          send(test, :holding)
+          Process.sleep(:infinity)
+        end)
+      end)
+
+    assert_receive :holding
+    ref = Process.monitor(holder)
+    Process.exit(holder, :kill)
+    assert_receive {:DOWN, ^ref, :process, ^holder, :killed}
+  end
+
   # No file handler, or one with the closing filter.
   defp closed? do
     case :logger.get_handler_config(:helyx_tui_log) do
@@ -304,6 +459,9 @@ defmodule CodingAgent.LogFileTest do
       {:error, {:not_found, _}} -> true
     end
   end
+
+  # The state of a hold, live or left by a killed holder.
+  defp marked?, do: :persistent_term.get({LogFile, :hold}, nil) != nil
 
   defp dropping? do
     {:ok, %{filters: filters}} = :logger.get_handler_config(:default)
