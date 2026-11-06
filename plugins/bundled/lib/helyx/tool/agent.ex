@@ -1,21 +1,15 @@
 defmodule Helyx.Tool.Agent do
   @moduledoc """
-  Runs a task in a child session and gives its final text back: a
-  subagent. The child is a normal session of the same Core, with the
-  model of the parent's turn, its working folder, its `:provider_opts`,
-  its ModelContext plugin, its tools but this one and `question`, and a
-  fresh context. Its header links the parent call, and its id is derived
-  from the link (`Helyx.Sessions.child_id/2`); it is out of the session
-  list. The result is the text of the child's last assistant message; a
-  failed or ended child turn gives an error result.
+  Runs a task in a child session and gives its final text back: a subagent.
+  The child is a normal session of the same Core, with the model of the
+  parent's turn, its working folder, its `:provider_opts`, its ModelContext
+  plugin, its tools but this one and `question`, and a fresh context. Its id
+  derives from its link to the parent call, so it is out of the session list.
 
-  Calls run together (`concurrent?/0`). The tool holds the child. An owner
-  process stops it once with `Helyx.Sessions.stop/1`: at the end of the
-  call, at the end of the call's Task, as an abort or a stop of the parent
-  does, or at the end of the parent session. `release/3` takes that stop
-  report, and a child whose report is not `:ok` stays held, so a stop of
-  the parent reports it. The design and the bounds are in
-  `docs/features/agent-tool.md`.
+  The result is the text of the child's last assistant message; a failed or
+  ended child turn gives an error result. `release/3` takes the stop report of
+  the child, and a child whose report is not `:ok` stays held. The design and
+  the bounds are in `docs/features/agent-tool.md`.
   """
 
   @behaviour Helyx.Tool

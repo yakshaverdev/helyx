@@ -1,47 +1,18 @@
 defmodule Helyx.Session.Hands do
   @moduledoc """
-  Runs tool calls for one session in one working directory, as Tasks
-  linked to the hands (ADR 0003, ADR 0004). The session starts the hands
-  and addresses it by pid.
+  Runs tool calls for one session in one working directory, as Tasks linked
+  to the hands (ADR 0003, ADR 0004).
 
-  The result of a call goes to the session as `{:tool_result, turn_id,
-  call_id, {:ok, text} | {:error, text}}`. A Task that dies without a
-  result gives an error result, unless a cancel request killed it. An
-  unknown tool gives an error result and starts no Task. The hands do not
-  check the working directory: a tool fails at its own use of a missing
-  path (`docs/features/tool-text-out-of-core.md`, item 4). Result text
-  leaves the hands through `Helyx.Message.cut_result/1`: valid UTF-8 and
-  at most `Helyx.Message.max_result_bytes/0` bytes, notice included. The
-  text of a tool that crashes, raises, throws, or exits is
-  `Helyx.Reason.text/1` of its reason; a return outside the contract and
-  a handle that is not released give a fixed text. The log gets the kind
-  of the term, and the term of a handle that is not released.
+  A result goes to the session as `{:tool_result, turn_id, call_id, {:ok,
+  text} | {:error, text}}`; an unknown tool gives an error result and starts
+  no Task. The hands call the tool's `release/3` with the handles of a Task
+  when the call ends, however it ended, and an unconfirmed handle refuses
+  later calls and provider starts
+  (`docs/features/tool-resource-release.md`).
 
-  A tool holds each OS resource that it creates with `Helyx.Tool.hold/1`,
-  and drops a handle whose resource it released itself with
-  `Helyx.Tool.unhold/1`.
-  When a call ends, however its Task ended, the hands call the tool's
-  `release/3` with the handles of the Task, if it holds any. The result
-  goes to the session after the release. An unconfirmed handle gets no
-  second release: from then on, the hands refuse tool calls with an error
-  result, and provider starts with an error.
-  `request_cancel/2` kills the Tasks of a turn and releases their handles.
-  Its answer is a fixed error text when a handle stays unconfirmed, and
-  the log names the handles. `stop/3` does the same for every Task at the
-  stop of the session and answers each unconfirmed handle. The rules and the
-  deadlines are in `docs/features/tool-resource-release.md`.
-
-  A tool call can go on in the background (`Helyx.Tool.background/0`,
-  `Helyx.Tool.started/1`): its start answer is a `{:started, text}` result, and
-  its Task leaves its turn, out of reach of `request_cancel/2`.
-  Its end follows its release as `{:background_end, message}`, and its place
-  stays taken until `taken/2` (`docs/features/background-bash.md`).
-
-  `start_provider/3` starts the provider process (ADR 0007) with an armed
-  kill. When the provider process ends, the hands release its handles and
-  send `{:provider_down, pid, reason}`. The deadlines and the reasons are in
-  `docs/features/session-lifecycle.md`, sections "Deadlines", "Bounds",
-  and "Provider death".
+  A provider start answers as `{:provider_start, ref, {:ok, pid} | {:error,
+  text}}` and its process end as `{:provider_down, pid, reason}` (ADR 0007,
+  `docs/features/session-lifecycle.md`).
   """
 
   use GenServer
@@ -51,20 +22,15 @@ defmodule Helyx.Session.Hands do
   alias Helyx.Session.Hands.{Release, Run, State}
 
   @doc """
-  Starts the hands for a session. Takes `core:`, `cwd:`,
-  `background_dir:`, the folder of the background output files,
-  `session:`, and `tools:`, the tool module by name, from the specs the
-  session checked with `Helyx.Tool.specs/2`.
+  Starts the hands for a session. Takes `core:`, `cwd:`, `background_dir:`,
+  `session:`, and `tools:`, the tool module by name.
   """
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts), do: GenServer.start_link(__MODULE__, struct!(State, opts))
 
   @doc """
-  Starts a tool call. `context` has the session id, the model, the
-  provider options, and the ModelContext plugin of `Helyx.Tool.context/0`;
-  the hands add the Core, the tool names, the name of the called tool, and
-  the call id. The result is sent to the session. A cast: a turn runs
-  Helyx tools while the hands can release its provider process.
+  Starts a tool call with the map of `Helyx.Tool.context/0`; the hands add
+  the Core, the tool names, the called tool, and the call id. A cast.
   """
   @spec run(pid(), String.t(), ToolCall.t(), map()) :: :ok
   def run(hands, turn_id, %ToolCall{} = call, context),
@@ -72,11 +38,9 @@ defmodule Helyx.Session.Hands do
 
   @doc """
   Starts the provider process: `fun` gets the ref of the armed connect kill
-  and runs in a Task of the hands with no turn. A cast, as `run/4`: the
-  hands can be busy with a release, and the caller stays free (#677).
-  Returns a ref; the answer goes to the session as `{:provider_start, ref,
-  {:ok, pid}}`, or with an error text once a handle is unconfirmed. It comes
-  before the `provider_down` of the process.
+  and runs in a Task of the hands. Returns a ref; the answer comes as
+  `{:provider_start, ref, {:ok, pid}}`, or with an error text once a handle
+  is unconfirmed.
   """
   @spec start_provider(pid(), module(), (:timer.tref() -> term())) :: reference()
   def start_provider(hands, provider, fun) when is_function(fun, 1) do
@@ -86,29 +50,27 @@ defmodule Helyx.Session.Hands do
   end
 
   @doc """
-  Asks the hands to cancel the turn's Tasks and release
-  their handles. Sends the request and returns at once, so the caller stays
-  free during the release. Read the answer with
-  `:gen_server.check_response/2` or `:gen_server.receive_response/2`: `:ok`
-  when every release has returned, or an error with a fixed text when a
-  handle stays unconfirmed; the log names the handles.
+  Asks the hands to cancel the turn's Tasks and release their handles.
+  Returns at once; read the answer with `:gen_server.check_response/2` or
+  `:gen_server.receive_response/2`: `:ok`, or an error with a fixed text
+  when a handle stays unconfirmed.
   """
   @spec request_cancel(pid(), String.t()) :: :gen_server.request_id()
   def request_cancel(hands, turn_id), do: :gen_server.send_request(hands, {:cancel, turn_id})
 
   @doc """
   Stops the hands with `:shutdown` at the stop of the session: every Task
-  ends, and its handles get a release with `:cancel` by `deadline`
-  (monotonic ms). The answer is every handle that a release of the hands
-  left unconfirmed (`docs/features/tool-resource-release.md`, rule 10).
+  ends, and its handles get a release with `:cancel` by `deadline` (monotonic
+  ms). The answer is every handle that a release left unconfirmed
+  (`docs/features/tool-resource-release.md`, rule 10).
   """
   @spec stop(pid(), integer(), timeout()) :: [term()]
   def stop(hands, deadline, timeout), do: GenServer.call(hands, {:stop, deadline}, timeout)
 
   @doc """
   Frees the place of the background run `id`, whose end a turn took. An id
-  with no place, such as one of a lost run, changes nothing. A cast, as
-  `run/4`, and in its order: the next call sees the place free.
+  with no place changes nothing. A cast, as `run/4`
+  (`docs/features/background-bash.md`).
   """
   @spec taken(pid(), String.t()) :: :ok
   def taken(hands, id), do: GenServer.cast(hands, {:taken, id})

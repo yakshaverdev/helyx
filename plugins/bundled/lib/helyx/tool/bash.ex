@@ -16,44 +16,30 @@ defmodule Helyx.Tool.Bash do
   @workdir_error "workdir must be a string with no NUL byte"
 
   @moduledoc """
-  Runs a shell command in the working directory with `bash -c`.
+  Runs a shell command in the working directory with `bash -c`. The arguments
+  are `command`, `timeout`, `workdir`, and `background`.
 
-  stdout and stderr are merged. Long output is cut from the head end and the
-  result says which lines it shows. Only the last #{@keep_bytes} bytes are
-  kept while the command runs, so a command that never stops writing does
-  not grow the buffer; the result then says so, and its line count is of
-  the kept part. A non-zero exit code is reported in the text; the result
-  is an error only when the command could not start or timed out. stdin is
-  `/dev/null`. The call returns when stdout closes, so a background child
-  that keeps stdout open holds the call until it exits, or until the
-  release deadline after the limit.
-
-  Each call has a time limit: the optional `timeout` argument, in seconds
-  from 1 to #{@max_timeout_s}; missing or `null` is #{@default_timeout_s} s. At the limit the
-  tool releases the command group as an abort does (TERM, a grace, KILL),
-  and the result is an error with the output so far
+  `timeout` is in seconds from 1 to #{@max_timeout_s}, #{@default_timeout_s} by
+  default; at the limit the tool releases the command group as an abort does
+  (TERM, a grace, KILL), and the result is an error with the output so far
   (`docs/features/bash-timeout.md`).
 
-  The optional `workdir` argument names the folder the command runs in. It
-  is expanded against the session folder with `Path.expand/2`, as the file
-  tools expand their paths, so `~` and `..` resolve; missing, `null`, or
-  `""` is the session folder. It must be a string with no NUL byte, else the
-  result is an error and nothing runs. A folder that the watchdog cannot
-  enter fails the start, as the session folder does (`docs/features/bash-workdir.md`).
+  `workdir` is expanded against the session folder with `Path.expand/2`;
+  missing, `null`, or `""` is the session folder, and a value with a NUL byte
+  is an error with nothing run (`docs/features/bash-workdir.md`).
 
-  With `background: true` the call returns at once with the process group
-  and the path of the output file (`Helyx.Tool.background/0`,
-  `Helyx.Tool.started/1`). The command runs on; its output goes to the
-  file, at most #{@max_output_bytes} bytes, and its end, with the first line of
-  the command, the exit code, and the tail, is the end of the run. Its
-  `timeout` is from 1 to #{@max_background_s} s, #{@default_background_s} by default.
-  The agent stops it with `kill` on its group (`docs/features/background-bash.md`).
+  `background: true` returns at once with the process group and the output
+  file, and the end of the run arrives as a message; the file holds at most
+  #{@max_output_bytes} bytes, and its `timeout` is from 1 to
+  #{@max_background_s} s (`docs/features/background-bash.md`).
 
-  The command runs in its own process group. The hands hold the group
-  before the command runs and release it when the tool Task ends
-  (`Helyx.Tool.hold/1`); when anything above the command dies, the group
-  dies too (`Helyx.Watchdog`, ADR 0004). perl is required; `check/0`
-  reports a system without it when a session starts or resumes.
+  stdout and stderr are merged, only the last #{@keep_bytes} bytes are kept,
+  a non-zero exit code goes in the text, and the result is an error only when
+  the command could not start or timed out. stdin is `/dev/null`, and the
+  call returns when stdout closes, so a background child that keeps stdout
+  open holds the call until it exits. The command runs in its own process
+  group, held with `Helyx.Tool.hold/1` and released when the tool Task ends;
+  perl is required and `check/0` reports a system without it (ADR 0004).
   """
 
   @behaviour Helyx.Tool

@@ -1,68 +1,29 @@
 defmodule Helyx.Provider do
   @moduledoc """
-  Produces assistant messages for a session. `id/0` is the prefix in a
-  model ref such as `fake/echo`.
+  Produces assistant messages for a session. `id/0` is the prefix in a model
+  ref such as `fake/echo`.
 
-  Every provider runs in one provider process per session, a Task of the
-  hands. `init/3` starts it. `request/3` gets a `t:request/0` from Core and
-  replies now or later with the action `{:reply, from, value}`. `info/2`
-  gets every other message of the process. A provider that holds a handle
-  (`Helyx.Tool.hold/1`) implements `release/3`. A model provider implements
-  `stream/3` and adds `use Helyx.Provider.Loop`, which defines the three
-  callbacks.
-
-  The `Helyx.Context` of a `{:turn, ...}` or a `{:context, ...}` request is
-  for one call: its `system` and `tools` are what a model provider sends on
-  that call. Every provider gives the model the turn's `system` and the
-  session's tools, within the named limits of ADR 0002 (revision of
-  2026-10-17).
-
-  The options of `init/3` include `:resume_id`, the id of a `:resume_id`
-  event of an earlier provider process to resume, or nil, and
-  `:resume_usage`, the sum of the usages of the messages since that event.
-  Its cost is nil when the last turn before the resume ended with no
-  `done`. It is nil when no message has a usage and that turn ended with a
-  `done`. The session's `:provider_opts` (`Helyx.Session.start/2`) come
-  after the options of Core, as they are: a provider checks the keys that
-  it reads and ignores the others (`docs/features/harness-no-state.md`).
-  The option `:max_output_tokens` is the session's limit of the output
-  tokens of each assistant message, or nil. A provider whose optional
-  `max_output_tokens?/0` returns `true` applies it to each model call; the
-  session rejects the limit for any other provider at its start and at a
-  model switch. Core calls `max_output_tokens?/0` once, at its start, and
-  another return than a boolean fails the start with
-  `{:invalid_max_output_tokens, module}` (`docs/features/output-limit.md`).
+  The protocol is in `docs/features/one-provider-path.md`, "The provider
+  protocol", with its bounds in `docs/features/session-lifecycle.md` and
+  `docs/features/coding-agent.md`; ADR 0002 and ADR 0007 decide the provider
+  process.
 
   Rules that every provider follows:
 
-    * A steer is taken at most once. The session takes a steer at the
-      first `{:user_message, steer_id}` event for it, and drops an id that
-      is not a sent steer of the turn, or is taken already.
+    * A steer is taken at most once. The session takes a steer at the first
+      `{:user_message, steer_id}` event for it, and drops an id that is
+      not a sent steer of the turn, or is taken already.
     * A tool call or a tool request with an empty id fails the turn: a
       result names its call by the id.
     * When its wire protocol reports it, a provider gives the stop reason
-      `:max_tokens` for an answer that stopped at the token limit, and
-      `:refused` for an answer that the provider filtered or the model
-      refused. `Helyx.Provider.Codex` reports neither. In two cases a
-      stop reason that arrives while a steer waits is lost
-      (`docs/features/session-lifecycle.md`, "Current limits").
-    * The arguments of a tool call or a Helyx tool request are a map.
-      Other arguments, such as the raw text of arguments that are not a
-      JSON object, fail the turn, and the error holds `%{}` in place of
-      raw text (`docs/features/rejected-tool-call.md`).
-    * A provider that keeps its own history answers `{:compact, ...}`
-      with `:ok` and runs the compaction as that turn; a compaction
-      gives `{:compaction, tokens_before, tokens_after}`, in that turn or
-      in any other, with nil for a count that it does not know. A
-      provider that keeps no history answers `:unsupported`
+      `:max_tokens` or `:refused`; `Helyx.Provider.Codex` reports neither.
+    * The arguments of a tool call or a Helyx tool request are a map; other
+      arguments fail the turn, and the error holds `%{}` in place of raw
+      text (`docs/features/rejected-tool-call.md`).
+    * A provider that keeps its own history answers `{:compact, ...}` with
+      `:ok` and gives `{:compaction, tokens_before, tokens_after}`; one that
+      keeps no history answers `:unsupported`
       (`docs/features/harness-compaction.md`).
-
-  The types below give the requests, the actions, and the events. The
-  rules of the protocol (replies, events, deadlines) and their reasons are
-  in `docs/features/one-provider-path.md`, "The provider protocol", and its
-  bounds in the "Bounds" sections of `docs/features/session-lifecycle.md`
-  and `docs/features/coding-agent.md`. ADR 0002 and ADR 0007 decide the
-  provider process.
   """
 
   use Helyx.Interface, mode: :multi
