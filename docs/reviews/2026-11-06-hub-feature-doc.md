@@ -60,6 +60,48 @@ Both reproduced defects, by reading the doc against the code. Round 3 is the las
 
 Question for the owner, from the rule on two findings on one mechanism: the confirmation of a wake-up keeps finding paths. One way out is to drop exactly-once by the transcript and pick one plain guarantee: at most once (send once, record `sent`, never send again; a lost wake-up shows `unconfirmed`), or at least once (send again after any doubt; a doubled wake-up is the hole). Either removes the instance tracking of decision 12.
 
+## The decision of the owner, and the revision after round 3
+
+The owner answered the question of round 3 on #868 (2026-11-06): at most once. Hub sends a wake-up once and never again; a wake-up in doubt ends `unconfirmed`, and the user sends it again by hand. The instance tracking goes, and the admission count is derived from the live callers. The other four choices of the first commit stand (the default owner, `helyx serve` starts Hub in #869 and the schedule ops come with protocol 5 in #870, the close codes `4403` and `4503`, SQLite through `exqlite` with exclusive locking and a store in memory for a Core with no data folder).
+
+The revision of decision 12 removes the transcript check, the subscription and the history pages of the delivery Task, the confirmation, the states `waiting` and `sent`, the column `instance_id`, the last check, and the accepted holes that only they needed. The new rule: a write of the outcome `unconfirmed` and the next pending wake-up comes before the prompt call, so no path sends twice; a definite refusal (`turn_running`, `queue_full`, `session_not_found`) writes the row back. The round-3 items, after the revision:
+
+| Round 3 item | State |
+|---|---|
+| A resume error writes over `sent` and skips the check | gone with `sent` and the check; a resume error comes before the decided write |
+| A row in `sent` gets no `next_try_at` | gone; a row is pending with a `next_try_at`, set to the start plus 150,000 ms when its Task starts |
+| A late call or a `queue_dropped` with no Task subscribed loses the wake-up outside the holes | gone: an exit of the call is `unconfirmed` by the rule; a queued and dropped wake-up shows `delivered`, an accepted hole |
+| The last check resumes with no end | gone: no last check; a pending row past its life ends `missed` with no resume |
+| A caller killed before its send leaves the admission count up | fixed: no stored count; the caller reads the mailbox length of Hub, bound 1,024 plus one for each live caller, 2,628 |
+| Two maximums of delivery Tasks | fixed: one per session and 4 in all |
+| How Hub learns the step of a Task; a failed write of the decided send | fixed: no step tracking; a failed write sends nothing |
+| `pending`, a row that comes due at `at`, a one-run row after its run | fixed in decision 12 and the op table |
+| A kill during a resume starts a session outside the live set | an accepted hole |
+| `4503` on `busy` and an exit | fixed in the close codes and the bounds |
+| The ownership row of a reserved place named only `result` | fixed: `result`, `release`, the `:DOWN`, the 60,000 ms timer |
+
+## Round 4 (reduced: Codex and spec)
+
+The last round that the brief of the owner allows. Both reproduced the first defect, by reading the code.
+
+| Finding | Source | Resolution |
+|---|---|---|
+| `session_not_found` of the prompt call was read as "took nothing", but `Helyx.Session.Call.call_pid/3` (`lib/helyx/session/call.ex:16-23`) gives it also for a session that died in the call, and an idle session writes the user message before its reply (`TurnLoop.admit/3`): the row went back and the wake-up could be sent twice | spec (defect), Codex (high) | Fixed in the small-fix round: `session_not_found` of the prompt call is `unconfirmed`; only `turn_running` and `queue_full` write the row back |
+| After a crash of Hub, a Task of the old Hub still in its resume and a Task of the new Hub could both pass the write of step 2 | spec (defect) | Fixed in the small-fix round: the write of step 2 applies only when the row holds the run number and the `next_try_at` of the start of this Task; the Tasks are linked to Hub |
+| "two Hub calls" in the deadline of a Task | spec (wording) | Fixed: at most four |
+| The admission bound of 2,628 counts only the tools of #859 as callers of the Elixir API; a product or an operator that calls it from more processes passes the bound, so the mailbox has no fixed number | Codex (medium), spec (wording) | Open: the second finding on the admission bound (round 3: a caller that died before its send). The rule on two findings on one mechanism stops the patching; the derived bound of decision 5 needs a numeric limit on the callers of the Elixir API, or an accepted hole, which the owner decides |
+
+## Small-fix round (reduced: Codex and spec)
+
+The two fixes of decision 12 touch one file and a few lines, and are the first findings on the rule of at most once, so they took the small-fix round of `/ship`. Codex: approve, no material findings. Spec: no double send reproduced; it checked that `turn_running` and `queue_full` leave the session state unchanged (`turn_loop.ex:27`, `steering.ex:20-24`), that a late prompt call does not act (`calls.ex:15-22`), and the races of the write-back with a new Task and a delete. The round reproduced no defect, so the loop ended; its doc findings were fixed with no further round:
+
+| Finding | Resolution |
+|---|---|
+| The accepted hole named three causes of `unconfirmed`; decision 12 gives more (`session_not_found`, a late reply of the write of step 2, a failed write of `delivered`, a failed write-back), and two of them show a wrong outcome | Fixed: the hole lists every cause and says the outcome can be wrong either way, the session getting the prompt at most once |
+| `invalid_utf8` and `invalid_origin` of `prompt/3` not named | Fixed: they cannot come, and a crash leaves `unconfirmed` |
+| The example of two Tasks cannot happen with the link | Fixed: the condition is a second guard |
+| An empty section heading in this record | Fixed |
+
 ## Guarantee table (spec agent, round 1)
 
 | Guarantee about existing code | Proof |
