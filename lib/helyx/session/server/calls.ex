@@ -5,7 +5,7 @@ defmodule Helyx.Session.Server.Calls do
   # (docs/features/session-lifecycle.md, "Late calls").
 
   alias Helyx.{Message, ModelRef}
-  alias Helyx.Session.History
+  alias Helyx.Session.{History, Input}
   alias Helyx.Session.Server.{Asks, Compaction, Events, Records, State, TurnLoop}
 
   require Logger
@@ -58,8 +58,15 @@ defmodule Helyx.Session.Server.Calls do
   def handle({:history, _instance_id, before, limit}, _from, %State{} = state),
     do: {:reply, History.page(state.transcript, before, limit), state}
 
-  def handle({:set_model, %ModelRef{} = ref, provider}, _from, %State{} = state),
-    do: {:reply, :ok, TurnLoop.settle(Records.set_model(state, ref, provider))}
+  # A provider that cannot apply the session's limit leaves the model as
+  # it was (docs/features/output-limit.md, decision 4). The caller read
+  # whether the provider applies a limit (`Input.limit_supported?/2`).
+  def handle({:set_model, %ModelRef{} = ref, provider, supported?}, _from, %State{} = state) do
+    case Input.limit(supported? or state.init.max_output_tokens == nil, ref.provider) do
+      :ok -> {:reply, :ok, TurnLoop.settle(Records.set_model(state, ref, provider))}
+      error -> {:reply, error, state}
+    end
+  end
 
   # `Helyx.Tool.transcript/0`, from a Task of the hands.
   def handle(:transcript, _from, %State{} = state),
@@ -67,7 +74,7 @@ defmodule Helyx.Session.Server.Calls do
 
   # The attach of a start (`Server.Open`): a start with other provider
   # options gets no session, because the session runs with its own.
-  def handle({:attach, provider_opts}, _from, %State{provider_opts: provider_opts} = state),
+  def handle({:attach, opts}, _from, %State{init: %{provider_opts: opts}} = state),
     do: {:reply, :ok, state}
 
   def handle({:attach, _provider_opts}, _from, %State{} = state),

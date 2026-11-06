@@ -82,6 +82,25 @@ defmodule Helyx.Test.ProviderOther do
   end
 end
 
+defmodule Helyx.Test.BadLimit do
+  @moduledoc false
+  # A provider whose `max_output_tokens?/0` breaks its contract: a return
+  # that is not a boolean.
+  use Helyx.Provider.Loop
+
+  @impl true
+  def id, do: "badlimit"
+
+  # The bad result is the point of this provider.
+  @dialyzer {:nowarn_function, max_output_tokens?: 0}
+  @impl Helyx.Provider
+  def max_output_tokens?, do: :yes
+
+  @impl true
+  def stream(_model, _context, _opts),
+    do: {:ok, [{:text_delta, "bad"}, {:done, %{stop_reason: :end_turn, usage: nil}}]}
+end
+
 defmodule Helyx.Test.BadId do
   @moduledoc false
   # A provider whose `id/0` is "bad_id" until the calling process puts a
@@ -151,6 +170,8 @@ defmodule Helyx.Test.Provider do
   #   "priced"     one delta, then done with a usage that has a cost
   #   "transcript" every message in the context as "role:text" lines
   #   "burst.<n>"  n text deltas of one byte, then done (`Helyx.Test.Burst`)
+  #   "limit"      the `:max_output_tokens` of its opts, inspected, as text;
+  #                the provider applies the limit (`max_output_tokens?/0`)
   #
   # The models that call tools. Unless a line says otherwise, a model calls
   # its tools until the last message is a tool result, then echoes the
@@ -227,12 +248,18 @@ defmodule Helyx.Test.Provider do
   @impl true
   def id, do: "test"
 
+  @impl Helyx.Provider
+  def max_output_tokens?, do: true
+
   @impl true
   def stream(model, _context, _opts) when is_map_key(@fixed, model),
     do: {:ok, Map.fetch!(@fixed, model)}
 
   # A call with no block that reports one input token, or a usage map
   # that is not a `Helyx.Usage`.
+  def stream("limit", _context, opts),
+    do: {:ok, [{:text_delta, inspect(opts[:max_output_tokens])}, @done]}
+
   def stream("usage_only", _context, _opts),
     do: {:ok, [{:done, %{stop_reason: :end_turn, usage: %Helyx.Usage{input: 1, output: 2}}}]}
 

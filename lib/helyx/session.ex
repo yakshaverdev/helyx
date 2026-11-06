@@ -53,6 +53,7 @@ defmodule Helyx.Session do
   @type model_error ::
           {:invalid_model_ref, String.t()}
           | {:unknown_provider, String.t()}
+          | {:max_output_tokens_unsupported, String.t()}
 
   @doc """
   Starts a session under Core. `:model` is required. `:cwd` defaults to the current directory.
@@ -74,27 +75,28 @@ defmodule Helyx.Session do
   gives `{:error, :invalid_model_context}` before any file or process (`session-model-context.md`).
   `:provider_opts`, a keyword list (default `[]`), goes to each `init/3` of the session after the
   options of Core; another value gives `{:error, :invalid_provider_opts}` (`Helyx.Provider`).
+  `:max_output_tokens` limits each assistant message, also after `set_model/2` (`output-limit.md`).
   """
   @spec start(Helyx.Core.name(), keyword()) :: {:ok, t()} | {:error, model_error() | term()}
   def start(core \\ Helyx.Core, opts) do
     # The file is created only after the plugins resolve, which narrows the
     # window for an orphan file from a failed start. A crash of the
     # session's open after the create still leaves one.
-    with {:ok, cwd} <- fetch_cwd(opts),
+    with {:ok, cwd} <- Input.cwd_option(opts),
          {:ok, provider_opts} <- Input.provider_opts(opts),
-         {:ok, parent, only, model_context} <- Input.start_options(core, opts),
+         {:ok, parent, only, model_context, limit} <- Input.start_options(core, opts),
          id = if(parent, do: Id.child(parent.session_id, parent.call_id), else: Id.new()),
          {:ok, tools} <- Helyx.Tool.specs(core, only),
          :ok <- Helyx.Tool.check_available(tools),
          concurrent = Helyx.Tool.concurrent(tools),
-         {:ok, {ref, provider}} <- Input.model(core, Keyword.fetch!(opts, :model)),
+         {:ok, {ref, provider}} <- Input.model(core, Keyword.fetch!(opts, :model), limit),
          # The folders come before the lock, whose file is in them.
          :ok <- mkdir(opts[:sessions_dir], cwd, parent) do
       state = %State{id: id, core: core, model: ref, provider: provider, cwd: cwd}
-      plugins = %{state.plugins | model_context: model_context}
+      init = %{provider_opts: provider_opts, max_output_tokens: limit}
 
       Server.create(
-        %{state | provider_opts: provider_opts, plugins: plugins},
+        %{state | init: init, plugins: %{state.plugins | model_context: model_context}},
         {tools, concurrent},
         Server.Open.create_spec(opts[:sessions_dir], id, cwd, ModelRef.to_string(ref), parent)
       )
@@ -124,7 +126,7 @@ defmodule Helyx.Session do
     dir = Keyword.fetch!(opts, :sessions_dir)
     header? = Keyword.has_key?(opts, :id) and not Keyword.has_key?(opts, :cwd)
 
-    with {:ok, cwd} <- if(header?, do: {:ok, nil}, else: fetch_cwd(opts)),
+    with {:ok, cwd} <- if(header?, do: {:ok, nil}, else: Input.cwd_option(opts)),
          {:ok, provider_opts} <- Input.provider_opts(opts),
          {:ok, tools} <- Helyx.Tool.specs(core),
          :ok <- Helyx.Tool.check_available(tools),
@@ -132,12 +134,10 @@ defmodule Helyx.Session do
          {:ok, path, cwd} <- Helyx.Session.File.pick(dir, cwd, Keyword.take(opts, [:id])) do
       id = Path.basename(path, ".jsonl")
       state = %State{id: id, core: core, model: nil, provider: nil, cwd: cwd}
-      state = %{state | provider_opts: provider_opts}
+      state = %{state | init: %{state.init | provider_opts: provider_opts}}
       Server.start(state, {tools, concurrent}, {path, &Server.Open.load(&1, path)})
     end
   end
-
-  defp fetch_cwd(opts), do: opts |> Keyword.get_lazy(:cwd, &File.cwd!/0) |> Input.cwd()
 
   @doc """
   Subscribes the caller to the session's events, delivered as
@@ -365,7 +365,7 @@ defmodule Helyx.Session do
   @spec set_model(t(), String.t()) :: :ok | {:error, model_error() | :session_not_found}
   def set_model(%__MODULE__{core: core} = session, string) when is_binary(string) do
     with {:ok, {ref, provider}} <- Input.model(core, string) do
-      call(session, {:set_model, ref, provider})
+      call(session, {:set_model, ref, provider, Input.limit_supported?(core, provider)})
     end
   rescue
     # The plugin table is gone with its Core, and so is the session.

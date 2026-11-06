@@ -25,6 +25,13 @@ defmodule Helyx.Provider do
   `done`. The session's `:provider_opts` (`Helyx.Session.start/2`) come
   after the options of Core, as they are: a provider checks the keys that
   it reads and ignores the others (`docs/features/harness-no-state.md`).
+  The option `:max_output_tokens` is the session's limit of the output
+  tokens of each assistant message, or nil. A provider whose optional
+  `max_output_tokens?/0` returns `true` applies it to each model call; the
+  session rejects the limit for any other provider at its start and at a
+  model switch. Core calls `max_output_tokens?/0` once, at its start, and
+  another return than a boolean fails the start with
+  `{:invalid_max_output_tokens, module}` (`docs/features/output-limit.md`).
 
   Rules that every provider follows:
 
@@ -110,6 +117,7 @@ defmodule Helyx.Provider do
   end
 
   @callback id() :: String.t()
+  @callback max_output_tokens?() :: boolean()
   @callback release(
               handles :: [term()],
               mode :: :deliver | :cancel,
@@ -125,5 +133,5 @@ defmodule Helyx.Provider do
               | {:stop, reason :: term(), term()}
               | {:stop, reason :: term(), [action()], term()}
 
-  @optional_callbacks release: 3
+  @optional_callbacks release: 3, max_output_tokens?: 0
 end

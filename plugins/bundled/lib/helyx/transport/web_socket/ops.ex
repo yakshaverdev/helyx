@@ -248,6 +248,10 @@ defmodule Helyx.Transport.WebSocket.Ops do
   defp result({:error, {code, text}}) when code in [:invalid_model_ref, :unknown_provider],
     do: {:error, Atom.to_string(code), text}
 
+  # The wire has no code for it: no wire start sets the limit
+  # (docs/features/output-limit.md).
+  defp result({:error, {:max_output_tokens_unsupported, _id}}), do: Outbound.error("failed")
+
   defp result({:error, code}) when code in @core_errors,
     do: {:error, Atom.to_string(code), String.replace(Atom.to_string(code), "_", " ")}
 end

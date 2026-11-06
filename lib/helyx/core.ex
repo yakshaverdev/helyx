@@ -24,8 +24,12 @@ defmodule Helyx.Core do
   `id/0` of each provider once, and refuses to start with
   `{:invalid_provider_id, plugin}` when one returns a value that is not a
   binary, and with `{:duplicate_provider_id, id, [first, second]}` when two
-  different providers share an id. A plugin callback that raises, throws,
-  or exits at start is not contained: the error goes to the caller.
+  different providers share an id. It calls the optional
+  `max_output_tokens?/0` of each provider once, and refuses to start with
+  `{:invalid_max_output_tokens, plugin}` when one returns a value that is
+  not a boolean (`docs/features/output-limit.md`). A plugin callback that
+  raises, throws, or exits at start is not contained: the error goes to the
+  caller.
 
   A plugin that exports `child_spec/1` gets its process tree started under
   Core, with `[core: name]` as the argument.
@@ -74,10 +78,12 @@ defmodule Helyx.Core do
          {:ok, table} <- Helyx.Core.Plugins.resolve(plugins),
          {:ok, providers} <- providers(table),
          {:ok, ids} <- Helyx.Core.Plugins.provider_ids(providers),
+         {:ok, limited} <- Helyx.Core.Plugins.limit_providers(providers),
          :ok <- check_recall_ms(recall_ms) do
       meta = [
         plugins: table,
         provider_ids: ids,
+        limit_providers: limited,
         recall_ms: recall_ms,
         sessions_dir: opts[:sessions_dir],
         model: opts[:model]
@@ -153,6 +159,12 @@ defmodule Helyx.Core do
   # The provider id to module map that Core built at start.
   @spec provider_ids(name()) :: %{String.t() => module()}
   def provider_ids(name), do: meta!(name, :provider_ids)
+
+  @doc false
+  # The providers that apply a session's `:max_output_tokens`, which Core
+  # found at start.
+  @spec limit_providers(name()) :: [module()]
+  def limit_providers(name), do: meta!(name, :limit_providers)
 
   @doc false
   # The limit of a recall, in ms.

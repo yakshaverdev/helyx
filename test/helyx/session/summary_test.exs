@@ -92,6 +92,16 @@ defmodule Helyx.Session.SummaryTest do
     assert first[:report] == self() and second[:report] == self()
   end
 
+  # The summary call gets no output limit (output-limit.md, decision 9).
+  test "the summary call gets no max_output_tokens, the turn gets the session's", %{core: core} do
+    session = start(core, max_output_tokens: 5, provider_opts: [report: self()])
+    turn(session, "summarize:ok")
+
+    assert_receive {:sum_init, first}
+    assert_receive {:sum_init, second}
+    assert Enum.sort([first[:max_output_tokens], second[:max_output_tokens]]) == [5, nil]
+  end
+
   test "a summary text of 65,536 bytes is kept, one byte more fails the summary",
        %{core: core} do
     session = start(core)

@@ -1,7 +1,7 @@
 defmodule Helyx.Session.Input do
   @moduledoc false
   # The checks of client input at the session API: the cwd, the model, and
-  # the provider options of a start or a resume, the child options of a
+  # the provider options of a start or a resume, the other options of a
   # start, the origin and the text of a send, and the JSON object of an
   # answer, which also checks the request of a tool
   # (docs/features/coding-agent.md, "Bounds"; docs/features/message-identity.md).
@@ -26,6 +26,10 @@ defmodule Helyx.Session.Input do
 
   def cwd(_cwd), do: {:error, :invalid_cwd}
 
+  # The `:cwd` of a start or a resume, the current directory by default.
+  @spec cwd_option(keyword()) :: {:ok, String.t()} | {:error, :invalid_cwd}
+  def cwd_option(opts), do: opts |> Keyword.get_lazy(:cwd, &File.cwd!/0) |> cwd()
+
   # The `:provider_opts` of a start or a resume, which every `init/3` of
   # the session gets as they are: a provider checks the keys that it reads
   # (docs/features/harness-no-state.md).
@@ -41,16 +45,22 @@ defmodule Helyx.Session.Input do
   # The start options that a resume does not take: `:parent`, the link to
   # the call that started a child, for the header, `:tools`, the names of
   # the tools that the session gets, nil for all (docs/features/agent-tool.md,
-  # "Bounds"), and `:model_context`, a ModelContext plugin of the Core, nil
-  # for the first (docs/features/session-model-context.md).
+  # "Bounds"), `:model_context`, a ModelContext plugin of the Core, nil
+  # for the first (docs/features/session-model-context.md), and
+  # `:max_output_tokens`, nil for none (docs/features/output-limit.md).
   @spec start_options(Helyx.Core.name(), keyword()) ::
-          {:ok, map() | nil, [String.t()] | nil, module() | nil}
-          | {:error, :invalid_parent | :invalid_tools | :invalid_model_context}
+          {:ok, map() | nil, [String.t()] | nil, module() | nil, pos_integer() | nil}
+          | {:error,
+             :invalid_parent
+             | :invalid_tools
+             | :invalid_model_context
+             | :invalid_max_output_tokens}
   def start_options(core, opts) do
     with {:ok, parent} <- parent(opts[:parent]),
          {:ok, names} <- tools(opts[:tools]),
          {:ok, model_context} <- model_context(core, opts[:model_context]),
-         do: {:ok, parent, names, model_context}
+         {:ok, limit} <- max_output_tokens(opts[:max_output_tokens]),
+         do: {:ok, parent, names, model_context, limit}
   end
 
   # The call id bound keeps the header far under the head that a scan reads.
@@ -88,15 +98,39 @@ defmodule Helyx.Session.Input do
       else: {:error, :invalid_model_context}
   end
 
+  # The largest signed 32-bit integer: a server that reads the field as an
+  # integer takes it (docs/features/output-limit.md, "Bounds").
+  @max_output_tokens 2_147_483_647
+
+  defp max_output_tokens(nil), do: {:ok, nil}
+
+  defp max_output_tokens(limit) when is_integer(limit) and limit in 1..@max_output_tokens,
+    do: {:ok, limit}
+
+  defp max_output_tokens(_limit), do: {:error, :invalid_max_output_tokens}
+
   # A model ref string to its parsed ref and its provider plugin, for a
-  # start, a resume, and a switch alike.
-  @spec model(Helyx.Core.name(), String.t()) ::
+  # start, a resume, and a switch alike. With a limit, the provider must
+  # apply it (docs/features/output-limit.md, decision 3).
+  @spec model(Helyx.Core.name(), String.t(), pos_integer() | nil) ::
           {:ok, {Helyx.ModelRef.t(), module()}} | {:error, Helyx.Session.model_error()}
-  def model(core, string) do
+  def model(core, string, limit \\ nil) do
     with {:ok, ref} <- Helyx.ModelRef.parse(string),
          {:ok, provider} <- Helyx.Provider.find(core, ref.provider),
+         :ok <- limit(limit == nil or limit_supported?(core, provider), ref.provider),
          do: {:ok, {ref, provider}}
   end
+
+  # Whether the provider applies a limit: Core read its callback at start,
+  # so no plugin code runs here.
+  @spec limit_supported?(Helyx.Core.name(), module()) :: boolean()
+  def limit_supported?(core, provider), do: provider in Helyx.Core.limit_providers(core)
+
+  # Whether a session's limit allows the provider of the ref prefix `id`.
+  @spec limit(boolean(), String.t()) ::
+          :ok | {:error, {:max_output_tokens_unsupported, String.t()}}
+  def limit(true, _id), do: :ok
+  def limit(false, id), do: {:error, {:max_output_tokens_unsupported, id}}
 
   # Product code may set only `:product`.
   @spec origin(keyword()) :: {:ok, Message.origin()} | {:error, :invalid_origin}

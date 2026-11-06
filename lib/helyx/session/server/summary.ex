@@ -43,7 +43,9 @@ defmodule Helyx.Session.Server.Summary do
       provider: turn.provider,
       model: turn.model.model,
       tools: [],
-      opts: State.init_opts(state, nil, nil),
+      # A summary is not an assistant message: no limit
+      # (docs/features/output-limit.md, decision 9).
+      opts: State.init_opts(put_in(state.init.max_output_tokens, nil), nil, nil),
       session: self()
     }
 
