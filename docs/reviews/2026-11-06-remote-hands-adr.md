@@ -101,3 +101,26 @@ The brief allowed one round, so these are not fixed. The commit holds the text a
 2. **Freshness of the runner's lease.** A stale frame must not renew the runner's lease. One option: a liveness request carries its sequence number, and the runner renews only on a request newer than the last one it answered, measured on its own clock from when it got that request. The accepted-hole bound must then be restated, or the window named as open.
 3. **Hands stuck on a live runner.** Accept it as a hole in the Consequences, like a stuck local hands today, or bound it.
 4. **Wording** of round 5 (spec), above.
+
+## Revision: stop budget and lease freshness (2026-11-06)
+
+The branch was rebased on `origin/master` with no conflict. Fixes of the two round-5 defects, inside the one-lease design:
+
+1. **Stop budget.** On remote hands, `Stop.run/1` arms one deadline of `@hands_stop_ms` (22,000 ms), and two waits share it: the wait for the provider ends and the wait for the stop answer. The remote path takes at most 22,000 + 1,000 = 23,000 ms against `Stop.shutdown_ms/0` of 31,000 ms. That also holds with two queued releases (40,000 ms) on a live runner, because the shared deadline gives `:unknown` at 22,000 ms.
+2. **Lease freshness.** Each liveness request carries its sequence number and the number of the last answer that the server got. The runner renews only on a newer acknowledged answer, and it times the lease from when it sent that answer, on its own clock. So the runner's lease ends no later than the server's under any delay, reordering, or duplicate. The author added the number of the acknowledged answer to the order. A sequence number alone does not bound a delayed request: the spec agent checked the case and called the change needed and correct.
+
+The revision also applies the round-5 wording points, and states the rule for a stuck hands on a live runner (the runner's own bounds, trusted as a local hands is) with its accepted hole.
+
+### Round 6 (reduced: spec and Codex), base `637423ed`
+
+| Axis | Reproduced defects | Other findings |
+|---|---|---|
+| Spec | 0 | judgement: the stop sends the full release duration even when little of the shared deadline is left; wording: on remote hands the stand-in must end after its stop answer, or the `:DOWN` wait of `stop_hands` (`stop.ex:85-87`) shares the deadline; when the runner's lease starts before the first acknowledged answer (from the send of the registration); the 45,000 ms idle close is stated in `wire-protocol.md`, not in ADR 0008; clock drift adds to both accepted-hole bounds without a margin |
+| Codex | 1: the accepted-hole bound "at most one release duration after the end of the lease" does not follow. The runner's stop is a `GenServer.call` to the hands, which run each release in their own process (`deliver/3`) and kill live Tasks only when the stop is handled. Two earlier releases can keep a command running for nearly 40,000 ms after the lease ends. An isolated local probe showed a live Task past the stop deadline until both earlier releases finished | none |
+
+The brief allowed one round, so the defect is not fixed. The commit holds the text as round 6 reviewed it.
+
+## Open after round 6
+
+1. **Runner stop at the end of the lease** (Codex, round 6). A runner-side mechanism at the end of the lease must act apart from the queue of the hands: it kills the live Tasks and bounds the queued releases within one release budget, keeps the report of the unconfirmed handles, and adds no server-side deadline. Until then the accepted-hole bounds after the end of the lease (one release duration) and after a replace or a half-open close (one lease plus one release) are too low by the releases queued ahead of the stop.
+2. **Wording** of round 6 (spec), above.
