@@ -54,10 +54,34 @@ defmodule Helyx.TUITest do
   # the Core of `:session`, so the events come to the test process as
   # `{:helyx_event, event}`, decoded.
   # No terminal: the default size function forks and can block in a test (#730).
+  # A clean folder is the cwd and the home of the mount, so the skills scan
+  # finds nothing: the machine's own `~/.agents/skills` would otherwise add
+  # a notice cell to every transcript, and the scroll tests count rows.
   defp mount!(opts) do
     opts = Keyword.update!(opts, :session, &Helyx.Test.TUIWire.link/1)
+    clean = clean_dir()
+
+    opts =
+      opts |> Keyword.put_new(:cwd, clean) |> Keyword.put_new(:home, clean)
+
     {:ok, state} = TUI.mount(opts ++ [terminal_size_fn: fn -> {:error, :no_tty} end])
     branch_reply(state)
+  end
+
+  defp clean_dir do
+    case Process.get(:tui_clean_dir) do
+      nil ->
+        dir =
+          Path.join(System.tmp_dir!(), "helyx-tui-#{System.unique_integer([:positive])}")
+
+        File.mkdir_p!(dir)
+        ExUnit.Callbacks.on_exit(fn -> File.rm_rf!(dir) end)
+        Process.put(:tui_clean_dir, dir)
+        dir
+
+      dir ->
+        dir
+    end
   end
 
   # The session in Core that the TUI shows: a call of `Helyx.Session` on it

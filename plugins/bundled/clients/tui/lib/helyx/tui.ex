@@ -59,7 +59,9 @@ defmodule Helyx.TUI do
   `:resumed` (true when the session was resumed: an information cell
   "resumed session" follows the history), `:cwd` (the directory that the
   footer shows and the folder of `/new` and `/resume`, default
-  `File.cwd!/0`), `:reconnect` (the connect after a lost connection:
+  `File.cwd!/0`), `:home` (the folder of the user skills that the mount
+  scans, default `System.user_home!/0`), `:reconnect` (the connect after
+  a lost connection:
   `{:ok, socket}`, owned by the caller, or `{:error, text}`), `:notices`
   (lines of the caller, each a notice cell after those of the skills
   scan, default none), and those of `ExRatatui.App`. The scroll keys read
@@ -72,6 +74,7 @@ defmodule Helyx.TUI do
   @impl true
   def mount(opts) do
     cwd = Keyword.get_lazy(opts, :cwd, &File.cwd!/0)
+    home = Keyword.get_lazy(opts, :home, &System.user_home!/0)
 
     state = %{
       # The session and its subscription: `Helyx.TUI.Switch.bind/3`.
@@ -86,6 +89,8 @@ defmodule Helyx.TUI do
       question: nil,
       composer: Composer.new(),
       cwd: cwd,
+      # The folder of the user skills, for the mount scan and `/name`.
+      home: home,
       # Row 1 of the footer. The branch comes from a task that starts
       # at mount and after each turn; the result of the latest wins.
       location: Footer.location(cwd, nil),
@@ -104,7 +109,7 @@ defmodule Helyx.TUI do
     info = if opts[:resumed], do: "resumed session"
     state = state |> Switch.bind(Link.own(Keyword.fetch!(opts, :session)), info) |> read_branch()
     # The notices of the skills scan (docs/features/skills.md), once.
-    notices = Helyx.Skills.scan(cwd).notices ++ Keyword.get(opts, :notices, [])
+    notices = Helyx.Skills.scan(cwd, home).notices ++ Keyword.get(opts, :notices, [])
     {:ok, %{state | vm: Enum.reduce(notices, state.vm, &ViewModel.notice(&2, &1))}}
   end
 
@@ -246,7 +251,7 @@ defmodule Helyx.TUI do
     do: {:noreply, %{state | vm: ViewModel.reject(state.vm, "not sent: a switch runs")}}
 
   def handle_event(%Key{code: "enter", kind: "press"} = key, state) do
-    case Composer.submit(state.composer, &Helyx.Skills.expand(&1, state.cwd)) do
+    case Composer.submit(state.composer, &Helyx.Skills.expand(&1, state.cwd, state.home)) do
       :empty -> {:noreply, state}
       {:message, text} -> {:noreply, send_message(text, key, state)}
       # A notice is a new cell, so the position gets its check.
