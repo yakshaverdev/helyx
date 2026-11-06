@@ -113,13 +113,16 @@ defmodule Helyx.Session do
   transcript read that says it may have run (`docs/features/interrupted-calls.md`), after its message and
   its results, so the next provider call sees complete call and result pairs. A tool result that answers
   no open call at its place is left out of the transcript read. The resume writes no entry, only a newline
-  that the last line lacks. A `:cwd` and the tool checks are as in `start/2`, before the sessions
-  directory is read (`docs/features/server-management.md`, "Order of the checks"). The model ref of the
-  file resolves as in `set_model/2`, with the same errors. The lock, its deadline, and the cap are as in
-  `start/2`, before the load; a locked newest session is not skipped. A session that runs in this Core is
-  attached: the call returns it, and concurrent resumes of one id get one result. `:provider_opts` is
-  as in `start/2`, checked before the sessions directory is read; the file does not keep it, and an
-  attach to a session that runs with other `:provider_opts` gives `{:error, :provider_opts_differ}`.
+  that the last line lacks. The file has no size limit: the resume reads it one line at a time. A line over
+  64 MiB, or whose decode passes 1 GiB of heap, fails with `{:error, {:too_large, text}}`, and a read past
+  the open deadline of `start/2` with `{:error, :open_timeout}` (open, #834); the file does not change
+  (`docs/features/coding-agent.md`, "Session file on resume"). A `:cwd` and the tool checks are as in
+  `start/2`, before the sessions directory is read (`server-management.md`, "Order of the checks"). The
+  model ref of the file resolves as in `set_model/2`, with the same errors. The lock, its deadline, and
+  the cap are as in `start/2`, before the load; a locked newest session is not skipped. A session that
+  runs in this Core is attached: the call returns it, and concurrent resumes of one id get one result.
+  `:provider_opts` is as in `start/2`, checked before the sessions directory is read; the file does not
+  keep it, and an attach to a session with other `:provider_opts` gives `{:error, :provider_opts_differ}`.
   """
   @spec resume(Helyx.Core.name(), keyword()) :: {:ok, t()} | {:error, model_error() | term()}
   def resume(core \\ Helyx.Core, opts) do

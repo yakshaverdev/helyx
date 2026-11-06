@@ -30,7 +30,7 @@ none. The short form stays as it was, with the key added to its hint row.
 
 | What | Bound | Over the bound |
 | ---- | ----- | -------------- |
-| the text of one expanded tool result | the tool result bound: 65,536 bytes of valid UTF-8 (`Helyx.Message.cut_result/1`, the bounds table of `docs/features/coding-agent.md`). The accepted hole of that row stays: a session file edited by hand can put several text blocks in one result, and the result then passes 65,536 bytes, within the 64 MiB file limit | Core cut it before the TUI got it; the TUI shows the cut text |
+| the text of one expanded tool result | the tool result bound: 65,536 bytes of valid UTF-8 (`Helyx.Message.cut_result/1`, the bounds table of `docs/features/coding-agent.md`). The accepted hole of that row stays: a session file edited by hand can put several text blocks in one result, and the result then passes 65,536 bytes, within the 64 MiB line limit of the session file | Core cut it before the TUI got it; the TUI shows the cut text |
 | the work of a frame | a frame wraps only the items that it shows, and the scroll keys and the wheel only the items that they pass (the "Transcript scrollback" row of `docs/features/coding-agent.md`). An expanded result is one item, so a frame that shows one row of it wraps its whole text, at most 65,536 bytes, or more for the hand-edited file of the row above | an item off the screen costs nothing |
 | the rows sent to the terminal | the rows of the transcript area: `Transcript.screen/3` takes `height` rows | the rows below the screen are not drawn |
 

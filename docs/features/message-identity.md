@@ -65,7 +65,7 @@ Repair results: `Helyx.Session.Transcript.repair/1` writes nothing, so each resu
 | origin kind | closed set; `:product` only from product code | same | `{:error, :invalid_origin}` |
 | origin in the file | the same check | `Helyx.Session.File.Codec` | the file is rejected |
 | message entry ids of a file | each once, each of 12 characters of the alphabet of `Id.new/0` | `Helyx.Session.File.Reader` | the file is rejected |
-| the message ids that the reader keeps for that check | one per message entry; the file limit of 64 MiB bounds them (row "Session file on resume" of `coding-agent.md`), inside the heap cap of the read process | `Helyx.Session.File.Reader` | the read process dies at its heap cap: `{:too_large, text}` |
+| the message ids that the reader keeps for that check | one per message entry, as the transcript has one message per id; the file has no size limit (#834, row "Session file on resume" of `coding-agent.md`), so they follow the transcript | `Helyx.Session.File.Reader` | none: they are held with the transcript |
 | derived ids | one per open call of a resumed transcript | `Transcript.repair/1` | n/a |
 
 The queues keep their bounds (32 steers, 32 follow-ups); the message adds a 12-byte id and an origin of at most 256 bytes to each entry.

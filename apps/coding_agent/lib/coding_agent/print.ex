@@ -24,7 +24,7 @@ defmodule CodingAgent.Print do
   end
 
   # About 250,000 tokens, more than the context window of the models Helyx
-  # runs, and far under the 64 MiB of a session file.
+  # runs, and far under the 64 MiB of one line of a session file.
   @max_stdin_bytes 1_048_576
 
   # The abort releases the provider and the tools, or reports them as not

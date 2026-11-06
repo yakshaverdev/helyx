@@ -1,10 +1,12 @@
 defmodule Helyx.Session.File.Reader do
   @moduledoc false
-  # Reads the bytes of a session file as one chain (ADR 0001): the header
-  # first, then each entry with the id of the entry before it as its
-  # `parent_id`. A line that does not decode to an entry is skipped: a torn
-  # append. Any other break is `{:invalid_file, text}`. A chain error names
-  # its line, and the count includes the skipped lines. No I/O.
+  # Reads an open session file as one chain (ADR 0001): the header first,
+  # then each entry with the id of the entry before it as its `parent_id`.
+  # A line that does not decode to an entry is skipped: a torn append. Any
+  # other break is `{:invalid_file, text}`. A chain error names its line,
+  # and the count includes the skipped lines. The file is read one line at
+  # a time, so only the transcript grows with the file
+  # (docs/features/coding-agent.md, row "Session file on resume").
 
   import Helyx.Usage, only: [wire_tokens?: 1]
 
@@ -15,24 +17,121 @@ defmodule Helyx.Session.File.Reader do
   @no_header "the first entry is not a header"
   @max_summary_bytes Helyx.Summary.max_bytes()
 
-  # Returns the leaf, the current model, the messages, and the resume ids,
-  # and whether the bytes end in a newline (`:clean` or `:no_newline`).
-  # Walks the lines one at a time, so a file of many short lines never
-  # becomes a list of all its lines.
-  def read(raw, cwd), do: lines(raw, 1, cwd, nil)
+  # One read of the file.
+  @chunk_bytes 1_048_576
 
-  defp lines(raw, n, cwd, acc) do
-    case :binary.split(raw, "\n") do
-      [line, rest] -> with {:ok, acc} <- line(line, n, cwd, acc), do: lines(rest, n + 1, cwd, acc)
-      [""] -> done(acc, :clean)
-      [line] -> with {:ok, acc} <- line(line, n, cwd, acc), do: done(acc, :no_newline)
+  # A line up to this size decodes in the caller, a longer one in a
+  # process of its own with the heap cap (the heap of the caller's decode
+  # is in the row "Session file on resume").
+  @caller_decode_bytes 65_536
+
+  defmodule Limits do
+    @moduledoc false
+    # `entry`: the most bytes of one line. `heap`: the heap cap of the
+    # decode of one line.
+    @enforce_keys [:entry, :heap]
+    defstruct @enforce_keys
+  end
+
+  # Returns the leaf, the current model, the messages, and the resume ids,
+  # and whether the file ends in a newline (`:clean` or `:no_newline`). A
+  # line over either limit is `{:too_large, text}`.
+  def read(io, cwd, %Limits{} = limits), do: lines(io, "", 1, cwd, limits, nil)
+
+  # `buffer` holds the bytes read after the last line taken.
+  defp lines(io, buffer, n, cwd, limits, acc) do
+    case :binary.split(buffer, "\n") do
+      [line, rest] ->
+        with {:ok, acc} <- line(line, n, cwd, limits, acc),
+             do: lines(io, rest, n + 1, cwd, limits, acc)
+
+      [partial] ->
+        more(io, partial, n, cwd, limits, acc)
     end
   end
 
-  defp line(text, n, cwd, acc) do
-    case Helyx.JSON.decode(text) do
-      {:ok, %{"type" => _} = entry} -> add(entry, n, cwd, acc)
-      _not_an_entry -> {:ok, acc}
+  # Reads on until the line that starts with `partial` ends. Only the new
+  # chunk is searched for its newline, so a long line costs one pass, and
+  # `partial` never holds more than `limits.entry` bytes.
+  defp more(io, partial, n, cwd, limits, acc) do
+    case :file.read(io, @chunk_bytes) do
+      {:ok, chunk} ->
+        chunk(io, partial, :binary.split(chunk, "\n"), n, cwd, limits, acc)
+
+      :eof when partial == "" ->
+        done(acc, :clean)
+
+      :eof ->
+        with {:ok, acc} <- line(partial, n, cwd, limits, acc), do: done(acc, :no_newline)
+
+      {:error, _reason} = error ->
+        error
+    end
+  end
+
+  # The split of a new chunk at its first newline.
+  defp chunk(io, partial, [line, rest], n, cwd, limits, acc) do
+    with {:ok, acc} <- line(partial <> line, n, cwd, limits, acc),
+         do: lines(io, rest, n + 1, cwd, limits, acc)
+  end
+
+  defp chunk(_io, partial, [chunk], n, _cwd, limits, _acc)
+       when byte_size(partial) + byte_size(chunk) > limits.entry,
+       do: over_entry(n, limits)
+
+  defp chunk(io, partial, [chunk], n, cwd, limits, acc),
+    do: more(io, partial <> chunk, n, cwd, limits, acc)
+
+  # A line over the limit is no entry that a session writes, nor a torn
+  # part of one.
+  defp line(text, n, _cwd, limits, _acc) when byte_size(text) > limits.entry,
+    do: over_entry(n, limits)
+
+  defp line(text, n, cwd, limits, acc) do
+    case decode(text, limits.heap) do
+      {:ok, %{"type" => _} = entry} ->
+        add(entry, n, cwd, acc)
+
+      :killed ->
+        {:error,
+         {:too_large,
+          "line #{n} of the session file needs more than #{limits.heap} bytes of memory " <>
+            "to load; start a new session"}}
+
+      _not_an_entry ->
+        {:ok, acc}
+    end
+  end
+
+  defp over_entry(n, limits) do
+    {:error,
+     {:too_large,
+      "line #{n} of the session file is over the #{limits.entry}-byte limit of one entry; " <>
+        "start a new session"}}
+  end
+
+  defp decode(text, _heap) when byte_size(text) <= @caller_decode_bytes,
+    do: Helyx.JSON.decode(text)
+
+  # The decode runs in its own process with the heap cap, so a hostile or
+  # corrupt line kills only that process. It is not linked, because the
+  # heap kill would take the caller with it. The wait has no timeout: the
+  # decode of at most `limits.entry` bytes in a capped heap is bounded work.
+  defp decode(text, heap) do
+    cap = %{size: div(heap, :erlang.system_info(:wordsize)), kill: true, error_logger: false}
+
+    {pid, ref} =
+      :erlang.spawn_opt(fn -> exit({:decoded, Helyx.JSON.decode(text)}) end, [
+        :monitor,
+        {:max_heap_size, cap}
+      ])
+
+    receive do
+      {:DOWN, ^ref, :process, ^pid, {:decoded, result}} -> result
+      {:DOWN, ^ref, :process, ^pid, :killed} -> :killed
+      # `Helyx.JSON.decode/1` returns an error for any text that does not
+      # decode, so another exit is a bug.
+      {:DOWN, ^ref, :process, ^pid, reason} -> exit(reason)
     end
   end
 
