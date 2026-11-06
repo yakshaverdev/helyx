@@ -74,7 +74,8 @@ Every operation can also answer `unknown_op`, `bad_params`, `busy`, `timeout`, a
 
 - `live_session` is `{id, instance_id, cwd, model, status}`. `status` is `"idle"` when the session has no turn and no wait, else `"running"`.
 - `saved_session` is `{id, cwd, model, mtime, prompt}`: `mtime` in POSIX seconds, 0 for a file time before 1970, `model` from the header, `prompt` the first user text in the head of the file (`docs/features/session-list.md`). The texts come from the file: a client cleans them before it shows them.
-- An `ask` event is a tool call that waits for a user: a client that subscribed with `answers: true` shows `request` and sends `answer` with its `ask_id`. The session makes the id, a new random id for each ask; one call can ask more than once, and each ask has its own id. The `request` and the `answer` of the bundled `question` tool are in `docs/features/question-tool.md`. `ask_end` ends the ask for every client: `answered` when an answer went to the call, `ended` when the call or the turn ended first. The snapshot `asks` holds the asks that wait, oldest first.
+- An `ask` event is a tool call that waits for a user: a client that subscribed with `answers: true` shows `request` and sends `answer` with its `ask_id`. The session makes the id, a new random id for each ask; one call can ask more than once, and each ask has its own id. The `request` and the `answer` of the bundled `question` tool are in `docs/features/question-tool.md`. A `request` with the key `kind` is an input UI block (`docs/features/ui-blocks.md`): it has the envelope of a UI block (`kind`, `text`, and `cut` when present), and one with `kind` and another envelope is a contract break. A client picks the renderer of an ask by its `kind`, and by the tool name for a request with no `kind`. A client that does not know the kind, or cannot read its fields, shows its `text` and gives no answer; the ask stays open for another client. `ask_end` ends the ask for every client: `answered` when an answer went to the call, `ended` when the call or the turn ended first. The snapshot `asks` holds the asks that wait, oldest first.
+- A UI block (ADR 0011, `docs/features/ui-blocks.md`) is a JSON object that a client shows: its `kind`, its fallback `text`, `cut` when it was cut, and the fields of its kind, each at most 65,536 bytes of JSON with integers of at most 100 digits. It comes in two carriers. A tool result `message` has `ui_blocks`, at most 8 blocks, left out when it has none; a client that joins later gets them with the message. A `ui_block` event shows a block during a running call (`call_id`) or a turn (`call_id` null): a later one with the same `call_id` and `key` replaces it in place, and the others show side by side. A client drops the blocks of a call at its `tool_execution_end` and every block at `turn_end`; they are not in the transcript. The snapshot `ui_blocks` holds the newest block of each `call_id` and `key` of the running turn, in the order of the first event of each pair, as the data of its event.
 - `start_failed` is any other start error of ADR 0006 §2, a lock that another OS process holds too. Its `text` is `Helyx.Reason.text/1` of the term; the log gets the term.
 - `bad_params` is a missing key, a key of the wrong type, a value out of its range, or a key that the operation does not name. The server checks every param at its entry.
 
@@ -110,9 +111,9 @@ Past its deadline, an operation answers `timeout`: the outcome is unknown. The c
 
 ### Codec
 
-Every value is JSON. An atom is its name as a string. A message has the shape of a message entry of the session file without its `type` key (`lib/helyx/session/file/codec.ex:9-27`): a key whose value is nil or false is left out, but for `is_error`, which a tool result always has. A reader takes a missing key as null or false.
+Every value is JSON. An atom is its name as a string. A message has the shape of a message entry of the session file without its `type` key (`lib/helyx/session/file/codec.ex:9-27`): a key whose value is nil or false is left out, but for `is_error`, which a tool result always has. `ui_blocks` is on a tool result that has blocks, and left out when it has none. A reader takes a missing key as null or false, and a missing `ui_blocks` as no blocks.
 
-A client is a tolerant reader (ADR 0006, revisions of 2026-10-03 and 2026-10-16): it dispatches on the `type` of an event first, ignores an event type that it does not know and a key that it does not know, and shows a placeholder for a block kind that it does not know. A known type with a broken shape is a contract break.
+A client is a tolerant reader (ADR 0006, revisions of 2026-10-03 and 2026-10-16): it dispatches on the `type` of an event first, ignores an event type that it does not know and a key that it does not know, and shows a placeholder for a block kind that it does not know. A client shows the `text` of a UI block of a kind that it does not know, or whose fields it cannot read, with a mark when `cut` is true: the schema has the envelope of a UI block and no kind, so a new kind needs no new protocol number (ADR 0011 §5). A known type with a broken shape is a contract break.
 
 The wire leaves out two fields of Core events: `texts` of `queue_dropped` and `text` of `steer_unconfirmed`. The messages carry the same texts, so the frame is half the size.
 
@@ -120,12 +121,13 @@ The schema below is the contract. The test of #660 computes the SHA-256 of the l
 
 <!-- wire-schema:start -->
 ```text
-protocol 3
+protocol 4
 
 notation: {k: T} an object; k? may be absent (absent = null or false);
   T | U either; [T] a list; "x" that string; int a JSON integer >= 0;
   number a JSON number >= 0; id a string of 1 to 64 bytes;
-  base64 a string of RFC 4648 base64 of at most 786,000 bytes
+  base64 a string of RFC 4648 base64 of at most 786,000 bytes;
+  name a string of 1 to 64 bytes of a-z, 0-9, and _; json any JSON value
 
 # client to server
 hello   = {type: "hello", protocol: int, proof?: base64}
@@ -190,8 +192,10 @@ saved_session = {id: string, cwd: string, model: string, mtime: int, prompt: str
 
 snapshot = {instance_id: string, seq: int, messages: [message], more: bool,
             turn: turn | null, model: string, queue: queue, persisting: bool,
-            usage: totals, context: context | null, asks: [ask]}
+            usage: totals, context: context | null, asks: [ask],
+            ui_blocks: [shown_block]}
 ask      = {ask_id: string, call_id: string, tool: string, request: object}
+shown_block = {call_id: string | null, key: string, block: ui_block}
 turn     = {id: string, partial: message | null, elapsed_ms: int}
 queue    = {steers: int, follow_ups: int, running: int, held: int, waiting: int}
 totals   = {input: int, output: int, cache_read: int, cache_write: int,
@@ -203,7 +207,7 @@ event = {type: event_type, session_id: string, instance_id: string,
 event_type = "turn_start" | "message_start" | "message_update" | "message_end"
            | "tool_execution_end" | "turn_end" | "queue_update" | "queue_dropped"
            | "model_change" | "resume_id" | "steer_unconfirmed" | "compaction"
-           | "notice" | "ask" | "ask_end"
+           | "notice" | "ask" | "ask_end" | "ui_block"
 data.turn_start         = {origin?: "provider" | "compaction"}
 data.message_start      = {message: message}
 data.message_update     = {text_delta: string} | {thinking_delta: string}
@@ -222,11 +226,12 @@ data.compaction         = {trigger: "manual" | "auto", tokens_before: int | null
 data.notice             = {text: string}
 data.ask                = ask
 data.ask_end            = {ask_id: string, outcome: "answered" | "ended"}
+data.ui_block           = shown_block
 
 message = {id: string, role: "user" | "assistant" | "tool_result",
            content: [block], origin?: origin, model?: string,
            stop_reason?: stop_reason, tool_call_id?: string, tool_name?: string,
-           is_error?: bool, usage?: usage}
+           is_error?: bool, usage?: usage, ui_blocks?: [ui_block]}
 block     = {type: "text", text: string} | {type: "thinking", thinking: string}
           | tool_call
 tool_call = {type: "tool_call", id: string, name: string, arguments: object}
@@ -235,6 +240,8 @@ stop_reason = "end_turn" | "tool_use" | "max_tokens" | "refused" | "aborted" | "
 usage = {input: int, output: int, cache_read: int, cache_write: int,
          cost?: number, cost_kind?: "list" | "billed",
          context_tokens?: int, context_window?: int}
+# the envelope of a UI block; each other key is a field of its kind
+ui_block = {kind: name, text: string, cut?: bool, *: json}
 
 # order rules (a schema cannot show them; a change needs a new protocol number)
 O1 challenge is the first server frame, once; hello is the first client
@@ -263,7 +270,7 @@ Notes on the codec:
 
 ## Conformance fixtures
 
-`test/fixtures/wire/` holds fixtures of protocol 3 as plain JSON (#855): the frames that a client sends, each with the frames and the close code of the server; the frames that a server sends, each valid, ignored, or a contract break for a client; and folds, event sequences with the state that a client holds after them. Its `README.md` states what a conforming client or server must pass and which rules are in prose only. The transport tests run the client frames against the server, and the TUI tests run the server frames and the folds against the client and its view model, so the fixtures and the Elixir code cannot drift.
+`test/fixtures/wire/` holds fixtures of protocol 4 as plain JSON (#855): the frames that a client sends, each with the frames and the close code of the server; the frames that a server sends, each valid, ignored, or a contract break for a client; and folds, event sequences with the state that a client holds after them. Its `README.md` states what a conforming client or server must pass and which rules are in prose only. The transport tests run the client frames against the server, and the TUI tests run the server frames and the folds against the client and its view model, so the fixtures and the Elixir code cannot drift.
 
 What this doc does not pin down for an implementation that does not run on the BEAM. Each is open, not decided here:
 
@@ -319,6 +326,7 @@ What this doc does not pin down for an implementation that does not run on the B
 | `queue_dropped` | 64 messages (32 steers, 32 follow-ups, `lib/helyx/session/queue.ex:49`), each of one text of at most 4 MiB (#672). It reaches only the subscribers that are connected when the session emits it; a client that connects later gets a tail snapshot, which does not hold the texts | goes as parts | Core |
 | `answer` | a JSON object, else `bad_params`; 16,384 bytes of JSON of valid UTF-8, checked in the connection before the worker | `res` with `invalid_answer`; an answer whose frame is also over the decode bounds closes with `4400` | Core (`Helyx.Session.check_answer/1`) |
 | `request` of an `ask` | 65,536 bytes of JSON | the tool call fails | Core (`Helyx.Tool.ask/1`) |
+| a UI block, in `ui_blocks` of a message and in a `ui_block` event | 65,536 bytes of JSON, and integers of at most 100 digits; at most 8 blocks in a tool result, and 8 keys of `ui_block` for one call and for `call_id` null in one turn (`docs/features/ui-blocks.md`) | Core cuts a block over the byte bound to `{kind, text, cut: true}` and refuses any other break at its carrier, so a client never gets one: for a client it is a contract break | Core (`Helyx.UIBlock.check/1`) |
 | request `id` | 1 to 64 bytes | `bad_params`; with no readable `id`, close `4400` | transport |
 | `sessions.saved` page | 1 to 256 items, default 50 | `bad_params` | Core (`Helyx.Sessions.list_saved/2`) |
 | live list | 64 items | | the live-session cap |
@@ -355,5 +363,4 @@ Each numeric limit gets tests at the limit, one under, and one over, and the fra
 - A browser client.
 - Paging inside one message body: parts carry any size (#658).
 - stdio framing code: same frames, a later ticket when a client needs it (#660).
-- UI blocks (ADR 0011, #858): `ui_blocks` in a tool result `message`, the `ui_block` event, and the snapshot field come with their build ticket and a new protocol number.
 - The `hands` role of `hello` and the `hands.*` operations and events of remote hands: decided in ADR 0012 (#856); the codec and a new protocol number come with its build ticket.

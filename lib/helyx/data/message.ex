@@ -6,7 +6,10 @@ defmodule Helyx.Message do
   lists under the session file.
 
   A tool result message links to its call with `tool_call_id` and `tool_name`,
-  and flags a failed call with `is_error`.
+  and flags a failed call with `is_error`. Its `ui_blocks` are the UI blocks
+  that the tool returned for the clients (`Helyx.UIBlock`,
+  `docs/features/ui-blocks.md`); a provider never sends them to the model.
+  Every other message has none.
 
   Core sets `id` on every message that joins a session, and `origin` on
   every user message: `%{kind: :user | :background | :product, id: id}`,
@@ -53,7 +56,8 @@ defmodule Helyx.Message do
     :tool_call_id,
     :tool_name,
     :usage,
-    is_error: false
+    is_error: false,
+    ui_blocks: []
   ]
 
   @type block :: Text.t() | Thinking.t() | ToolCall.t()
@@ -73,7 +77,8 @@ defmodule Helyx.Message do
           tool_call_id: String.t() | nil,
           tool_name: String.t() | nil,
           is_error: boolean(),
-          usage: Helyx.Usage.t() | nil
+          usage: Helyx.Usage.t() | nil,
+          ui_blocks: [Helyx.UIBlock.t()]
         }
 
   @doc "Builds a user message with one text block."

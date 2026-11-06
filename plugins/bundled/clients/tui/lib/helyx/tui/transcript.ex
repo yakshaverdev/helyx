@@ -13,7 +13,7 @@ defmodule Helyx.TUI.Transcript do
   alias ExRatatui.Text.Line
   alias ExRatatui.Widgets.Paragraph
   alias Helyx.Message
-  alias Helyx.TUI.{Transcript.Item, ViewModel, Wrap}
+  alias Helyx.TUI.{Transcript.Item, ViewModel, ViewModel.UIBlocks, Wrap}
 
   @type position :: {non_neg_integer(), non_neg_integer()} | nil
 
@@ -112,10 +112,14 @@ defmodule Helyx.TUI.Transcript do
   end
 
   # The item count, and the items newest first, lazily: a cell is an item.
-  defp newest(%ViewModel{streaming: streaming, cells: cells, expanded?: expanded?}) do
-    open = streaming |> streaming_items() |> Enum.reverse()
+  defp newest(%ViewModel{cells: cells, expanded?: expanded?} = vm) do
+    placed = UIBlocks.placed(vm)
+    open = vm |> streaming_items(placed) |> Enum.reverse()
     size = :array.size(cells)
-    older = Stream.map((size - 1)..0//-1, &item(:array.get(&1, cells), expanded?))
+
+    older =
+      Stream.map((size - 1)..0//-1, &item(:array.get(&1, cells), expanded?, placed.cells[&1]))
+
     {size + length(open), Stream.concat(open, older)}
   end
 
@@ -253,26 +257,39 @@ defmodule Helyx.TUI.Transcript do
   # The items in position order, one O(n) fold of the array, and the open
   # assistant message as the last one. A cell is an item: a run of
   # information lines is one cell. With the Ctrl+O toggle on, a tool cell is
-  # an item with `true` at its end. The items before the open message only
-  # grow in number, and only the last of them can grow a row.
-  defp items(%ViewModel{streaming: streaming, cells: cells, expanded?: expanded?}) do
+  # an item with `true` at its end; an open tool cell with UI blocks of the
+  # running turn has them after the toggle. The UI blocks of the turn that
+  # no cell shows are the last item (`UIBlocks.placed/1`). The items before
+  # the open message only grow in number; an open tool cell can grow rows.
+  defp items(%ViewModel{cells: cells, expanded?: expanded?} = vm) do
+    placed = UIBlocks.placed(vm)
+
     :array.foldr(
-      fn _position, cell, acc -> [item(cell, expanded?) | acc] end,
-      streaming_items(streaming),
+      fn position, cell, acc -> [item(cell, expanded?, placed.cells[position]) | acc] end,
+      streaming_items(vm, placed),
       cells
     )
   end
 
-  defp item({:tool, call, line, result}, true), do: {:tool, call, line, result, true}
-  defp item(cell, _expanded?), do: cell
+  defp item({:tool, call, line, result}, expanded?, [_ | _] = blocks),
+    do: {:tool, call, line, result, expanded?, blocks}
 
-  defp streaming_items(nil), do: []
+  defp item({:tool, call, line, result}, true, nil), do: {:tool, call, line, result, true}
+  defp item(cell, _expanded?, _blocks), do: cell
+
+  defp streaming_items(%ViewModel{streaming: nil} = vm, placed), do: turn_item(vm, placed)
 
   # Its calls show as open tool cells after it, as when it ends.
-  defp streaming_items(streaming) do
+  defp streaming_items(%ViewModel{streaming: streaming, expanded?: expanded?} = vm, placed) do
     {calls, blocks} =
       streaming |> Enum.reverse() |> Enum.split_with(&match?({:tool, _, _, _}, &1))
 
-    [%Message{role: :assistant, content: blocks} | calls]
+    calls =
+      for {:tool, call, _, _} = cell <- calls, do: item(cell, expanded?, placed.calls[call.id])
+
+    [%Message{role: :assistant, content: blocks} | calls] ++ turn_item(vm, placed)
   end
+
+  defp turn_item(_vm, %{turn: []}), do: []
+  defp turn_item(vm, %{turn: blocks}), do: [{:ui_blocks, blocks, vm.expanded?}]
 end

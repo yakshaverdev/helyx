@@ -10,18 +10,21 @@ defmodule Helyx.Session.Server.ToolRuns do
   alias Helyx.Message.ToolCall
   alias Helyx.Session
   alias Helyx.Session.{Hands, Turn}
-  alias Helyx.Session.Server.{Asks, ProviderConn, State}
+  alias Helyx.Session.Server.{Asks, ProviderConn, State, UIBlocks}
   alias Helyx.Session.ToolQueue
 
   # A request of the current turn, of `bytes` encoded call bytes. An open
-  # call id stops the provider process: `{:stop, reason}`.
+  # call id, or one that has UI blocks of the provider, stops the provider
+  # process: `{:stop, reason}`.
   def request(%State{activity: %Turn{} = turn} = state, %ToolCall{} = call, bytes, rejection) do
     # A call of an unknown tool runs alone; the hands answer it with an error.
     concurrent? = match?({_tool, true}, state.tools[call.name])
 
-    case ToolQueue.request(turn.tool_queue, call, bytes, rejection, concurrent?) do
-      {:ok, step} -> {:ok, apply_step(state, step)}
-      :open -> {:stop, {:bad_action, {:event, turn.id, {:tool_request, call}}}}
+    with {:ok, step} <- ToolQueue.request(turn.tool_queue, call, bytes, rejection, concurrent?),
+         {:ok, state} <- UIBlocks.request(state, call.id) do
+      {:ok, apply_step(state, step)}
+    else
+      _open_or_shown -> {:stop, {:bad_action, {:event, turn.id, {:tool_request, call}}}}
     end
   end
 
@@ -41,7 +44,11 @@ defmodule Helyx.Session.Server.ToolRuns do
   def end_turn(state, _turn), do: state
 
   # The hands' result of the running call `id`; an ask of the call ends
-  # with it.
+  # with it. Its UI blocks wait for the provider's result event
+  # (`UIBlocks`): the provider gets the text alone.
+  def result(state, id, {status, text, blocks}),
+    do: state |> UIBlocks.result(id, blocks) |> result(id, {status, text})
+
   def result(%State{activity: %Turn{tool_queue: queue}} = state, id, result),
     do: state |> Asks.call_end(id) |> apply_step(ToolQueue.result(queue, id, result))
 

@@ -83,6 +83,7 @@ defmodule Helyx.Provider do
              tokens_after :: non_neg_integer() | nil}
           | {:tool_request, call_id :: String.t(), name :: String.t(),
              arguments :: map() | String.t()}
+          | {:ui_block, call_id :: String.t() | nil, key :: String.t(), Helyx.UIBlock.t()}
           | :turn_start
 
   @typedoc "The ref of a request from Core, for its reply."

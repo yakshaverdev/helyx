@@ -10,7 +10,9 @@ defmodule Helyx.Session.Server.Wait do
   # deadlines, a reply by its armed kill. `callers` are the abort callers,
   # who get their reply at the end. `turn` is the id of the turn that the
   # wait ended, or nil, and `turn_end` the data of its `turn_end` while that
-  # event waits for the hands, with `started_ms` of that turn. Every
+  # event waits for the hands, with `started_ms` of that turn and the UI
+  # blocks that the turn still shows (`ui_blocks`, as in
+  # `Helyx.Session.Turn`), which its `turn_end` drops. Every
   # message of a client queues until the end.
   # `Helyx.Session.Server.TurnLoop` matches the inputs and ends the wait
   # when no part is left. `finish/2` ends a turn and makes its wait; the
@@ -24,7 +26,7 @@ defmodule Helyx.Session.Server.Wait do
   alias Helyx.Session.{Hands, ProviderRequest, Turn}
   alias Helyx.Session.Server.{Asks, ProviderConn, Records, State, Steering, Summary, ToolRuns}
 
-  defstruct [:hands, :reply, :turn, :turn_end, :started_ms, callers: []]
+  defstruct [:hands, :reply, :turn, :turn_end, :started_ms, callers: [], ui_blocks: []]
 
   @type t :: %__MODULE__{
           hands: :gen_server.request_id() | nil,
@@ -32,7 +34,8 @@ defmodule Helyx.Session.Server.Wait do
           turn: String.t() | nil,
           turn_end: map() | nil,
           started_ms: integer() | nil,
-          callers: [GenServer.from()]
+          callers: [GenServer.from()],
+          ui_blocks: [{{String.t() | nil, String.t()}, Helyx.UIBlock.t()}]
         }
 
   # The end of the turn, at `outcome`: `{:done, stop_reason, usage}`,
@@ -67,8 +70,17 @@ defmodule Helyx.Session.Server.Wait do
     state = if running?, do: state, else: emit(state, :turn_end, data)
     hands = if !done? or running?, do: Hands.request_cancel(state.hands, turn.id)
     wait = if outcome == :aborted, do: interrupt(state, turn), else: %__MODULE__{}
-    turn_end = if running?, do: data
-    wait = %{wait | hands: hands, turn: turn.id, turn_end: turn_end, started_ms: turn.started_ms}
+    {turn_end, blocks} = if running?, do: {data, state.activity.ui_blocks}, else: {nil, []}
+
+    wait = %{
+      wait
+      | hands: hands,
+        turn: turn.id,
+        turn_end: turn_end,
+        started_ms: turn.started_ms,
+        ui_blocks: blocks
+    }
+
     %{state | activity: wait}
   end
 

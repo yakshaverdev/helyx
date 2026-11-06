@@ -4,18 +4,18 @@ defmodule Helyx.Session.Hands do
   linked to the hands (ADR 0003, ADR 0004). The session starts the hands
   and addresses it by pid.
 
-  The result of a call goes to the session as `{:tool_result, turn_id,
-  call_id, {:ok, text} | {:error, text}}`. A Task that dies without a
-  result gives an error result, unless a cancel request killed it. An
-  unknown tool gives an error result and starts no Task. The hands do not
-  check the working directory: a tool fails at its own use of a missing
-  path (`docs/features/tool-text-out-of-core.md`, item 4). Result text
-  leaves the hands through `Helyx.Message.cut_result/1`: valid UTF-8 and
-  at most `Helyx.Message.max_result_bytes/0` bytes, notice included. The
-  text of a tool that crashes, raises, throws, or exits is
-  `Helyx.Reason.text/1` of its reason; a return outside the contract and
-  a handle that is not released give a fixed text. The log gets the kind
-  of the term, and the term of a handle that is not released.
+  The result of a call goes to the session as `{:tool_result, turn_id, call_id,
+  {status, text} | {status, text, ui_blocks}}` (`docs/features/ui-blocks.md`).
+  A Task that dies without a result gives an error result, unless a cancel
+  request killed it. An unknown tool gives an error result and starts no Task.
+  The hands do not check the working directory: a tool fails at its own use of
+  a missing path (`docs/features/tool-text-out-of-core.md`, item 4). Result
+  text leaves the hands through `Helyx.Message.cut_result/1`: valid UTF-8 and
+  at most `Helyx.Message.max_result_bytes/0` bytes, notice included. The text
+  of a tool that crashes, raises, throws, or exits is `Helyx.Reason.text/1` of
+  its reason; a return outside the contract and a handle that is not released
+  give a fixed text. The log gets the kind of the term, and the term of a
+  handle that is not released.
 
   A tool holds each OS resource that it creates with `Helyx.Tool.hold/1`,
   and drops a handle whose resource it released itself with
@@ -336,8 +336,8 @@ defmodule Helyx.Session.Hands do
 
   # Every result and background end leaves the hands through here, so text
   # is made valid and cut to the limit once, for the ok, error, crash,
-  # refusal, and catch paths alike.
-  defp checked({status, text}), do: {status, Helyx.Message.cut_result(text)}
+  # refusal, and catch paths alike. UI blocks stay the third element.
+  defp checked(result), do: put_elem(result, 1, Helyx.Message.cut_result(elem(result, 1)))
 
   # A fixed error needs no Task: it is answered at once, as a refusal is.
   defp start(state, turn_id, %ToolCall{} = call, context) do

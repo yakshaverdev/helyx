@@ -14,7 +14,7 @@ defmodule Helyx.Session.Server.Records do
 
   alias Helyx.{Message, ModelRef, Session}
   alias Helyx.Session.{Id, Transcript, Turn}
-  alias Helyx.Session.Server.{ProviderConn, State}
+  alias Helyx.Session.Server.{ProviderConn, State, UIBlocks}
 
   # A user message that Core made at its admission, with its id and origin.
   def append_user(state, %Message{role: :user} = user) do
@@ -58,7 +58,7 @@ defmodule Helyx.Session.Server.Records do
 
     case Enum.find(Transcript.open_calls(state.transcript), &(&1.id == call_id)) do
       nil -> state
-      call -> record_result(call, result, state)
+      call -> record_result(call, result, state, UIBlocks.result_blocks(state, call_id))
     end
   end
 
@@ -206,10 +206,12 @@ defmodule Helyx.Session.Server.Records do
 
   defp close_if(state, _block?), do: state
 
-  # Appends the tool result message to the transcript and emits
-  # tool_execution_end.
-  defp record_result(call, result, state) do
-    message = %{Message.tool_result(call, result) | id: Id.new()}
+  # Appends the tool result message to the transcript, with the UI blocks
+  # of a Helyx tool's result, and emits tool_execution_end. The UI blocks
+  # of the call leave the turn (`UIBlocks.call_end/2`).
+  defp record_result(call, result, state, blocks \\ []) do
+    message = %{Message.tool_result(call, result) | id: Id.new(), ui_blocks: blocks}
+    state = UIBlocks.call_end(state, call.id)
     emit(append_message(state, message), :tool_execution_end, %{message: message})
   end
 

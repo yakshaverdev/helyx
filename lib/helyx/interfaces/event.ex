@@ -92,6 +92,12 @@ defmodule Helyx.Event do
     * `:ask_end` – `%{ask_id: String.t(), outcome: :answered | :ended}`:
       the ask got its first answer, or its call or the turn ended first
       (`docs/features/question-tool.md`)
+    * `:ui_block` – `%{call_id: String.t() | nil, key: String.t(), block:
+      Helyx.UIBlock.t()}`: a running tool call (`Helyx.Tool.show/2`) or the
+      provider of the turn shows a UI block. A later one with the same
+      call id and key replaces it. A client drops the blocks of a call at
+      its `:tool_execution_end`, and every block at `:turn_end`. It is not
+      in the transcript (`docs/features/ui-blocks.md`)
   """
 
   @enforce_keys [:type, :session_id, :instance_id, :turn_id, :seq, :data]
@@ -113,6 +119,7 @@ defmodule Helyx.Event do
           | :notice
           | :ask
           | :ask_end
+          | :ui_block
 
   @type t :: %__MODULE__{
           type: type(),

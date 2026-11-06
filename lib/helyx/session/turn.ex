@@ -27,7 +27,8 @@ defmodule Helyx.Session.Turn do
   # since, so a late client needs no clock of the server. `recall` is the
   # recall message of the prepared `context`, which goes last at the submit,
   # and `recall_failed` whether the turn gave its recall notice
-  # (docs/features/memory.md).
+  # (docs/features/memory.md). `ui_blocks` and `helyx_calls` are the UI blocks
+  # of the turn (`Helyx.Session.Server.UIBlocks`).
 
   alias Helyx.{Message, ModelRef}
 
@@ -50,7 +51,9 @@ defmodule Helyx.Session.Turn do
     bytes: 0,
     blocks: 0,
     tool_queue: %Helyx.Session.ToolQueue{},
-    asks: []
+    asks: [],
+    ui_blocks: [],
+    helyx_calls: %{}
   ]
 
   @type t :: %__MODULE__{
@@ -71,7 +74,9 @@ defmodule Helyx.Session.Turn do
           bytes: non_neg_integer(),
           blocks: non_neg_integer(),
           tool_queue: Helyx.Session.ToolQueue.t(),
-          asks: [{String.t(), GenServer.from(), Helyx.Session.Snapshot.ask()}]
+          asks: [{String.t(), GenServer.from(), Helyx.Session.Snapshot.ask()}],
+          ui_blocks: [{{String.t() | nil, String.t()}, Helyx.UIBlock.t()}],
+          helyx_calls: %{String.t() => [Helyx.UIBlock.t()]}
         }
 
   # The most bytes of text, thinking, and tool calls in the open assistant

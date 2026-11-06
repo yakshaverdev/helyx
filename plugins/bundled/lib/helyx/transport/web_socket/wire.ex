@@ -26,12 +26,25 @@ defmodule Helyx.Transport.WebSocket.Wire do
   defp data(:message_end, %{error: text} = data) when is_binary(text),
     do: value(%{data | error: %{kind: :failed, text: text}})
 
+  defp data(:ui_block, data), do: ui_block(data)
   defp data(_type, data), do: value(data)
 
-  def snapshot(%Helyx.Session.Snapshot{} = snapshot), do: value(Map.from_struct(snapshot))
+  def snapshot(%Helyx.Session.Snapshot{ui_blocks: blocks} = snapshot) do
+    snapshot
+    |> Map.from_struct()
+    |> Map.delete(:ui_blocks)
+    |> value()
+    |> Map.put("ui_blocks", Enum.map(blocks, &ui_block/1))
+  end
+
+  # A UI block is a JSON object with string keys already (`Helyx.UIBlock`):
+  # it goes as it is.
+  defp ui_block(%{call_id: call_id, key: key, block: block}),
+    do: %{"call_id" => call_id, "key" => key, "block" => block}
 
   # The shape of a message entry of the session file without its `type`: a
-  # nil or false field is left out, but `is_error` of a tool result.
+  # nil or false field is left out, but `is_error` of a tool result, and
+  # `ui_blocks` of a tool result when it has any, each block as it is.
   def value(%Message{} = message) do
     encoded =
       %{
@@ -47,9 +60,7 @@ defmodule Helyx.Transport.WebSocket.Wire do
       }
       |> Map.reject(fn {_key, value} -> value in [nil, false] end)
 
-    if message.role == :tool_result,
-      do: Map.put(encoded, "is_error", message.is_error),
-      else: encoded
+    if message.role == :tool_result, do: result(encoded, message), else: encoded
   end
 
   def value(%Message.Text{text: text}), do: %{"type" => "text", "text" => text}
@@ -79,4 +90,10 @@ defmodule Helyx.Transport.WebSocket.Wire do
   def value(atom) when atom in [nil, true, false], do: atom
   def value(atom) when is_atom(atom), do: Atom.to_string(atom)
   def value(other), do: other
+
+  defp result(encoded, %Message{ui_blocks: []} = message),
+    do: Map.put(encoded, "is_error", message.is_error)
+
+  defp result(encoded, message),
+    do: Map.merge(encoded, %{"is_error" => message.is_error, "ui_blocks" => message.ui_blocks})
 end
