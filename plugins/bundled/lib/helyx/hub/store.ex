@@ -23,6 +23,13 @@ defmodule Helyx.Hub.Store do
           created_at: integer()
         }
 
+  @typedoc """
+  The deadline of a write, in `System.monotonic_time(:millisecond)`, or
+  `:infinity`. A write that ends at or past it rolls back and answers
+  `{:error, :timeout}`.
+  """
+  @type deadline :: integer() | :infinity
+
   @typedoc "A token as a listing shows it: no key."
   @type token_info :: %{id: String.t(), name: String.t(), created_at: integer()}
 
@@ -42,11 +49,12 @@ defmodule Helyx.Hub.Store do
   @callback users(t()) :: {:ok, [user()]} | {:error, :failed}
 
   @doc "Inserts `user` unless the store holds `max` users or its name is taken."
-  @callback add_user(t(), user(), max :: pos_integer()) ::
-              :ok | {:error, :too_many_users | :name_taken | :failed}
+  @callback add_user(t(), user(), max :: pos_integer(), deadline()) ::
+              :ok | {:error, :too_many_users | :name_taken | :timeout | :failed}
 
   @doc "Deletes a user with its tokens and every row that it owns."
-  @callback remove_user(t(), user_id :: String.t()) :: :ok | {:error, :not_found | :failed}
+  @callback remove_user(t(), user_id :: String.t(), deadline()) ::
+              :ok | {:error, :not_found | :timeout | :failed}
 
   @doc "The token row of `token_id`."
   @callback token(t(), token_id :: String.t()) :: {:ok, token()} | {:error, :not_found | :failed}
@@ -55,13 +63,13 @@ defmodule Helyx.Hub.Store do
   @callback tokens(t(), user_id :: String.t()) :: {:ok, [token_info()]} | {:error, :failed}
 
   @doc "Inserts `token` unless its user holds `max` tokens or does not exist."
-  @callback add_token(t(), token(), max :: pos_integer()) ::
-              :ok | {:error, :too_many_tokens | :unknown_user | :failed}
+  @callback add_token(t(), token(), max :: pos_integer(), deadline()) ::
+              :ok | {:error, :too_many_tokens | :unknown_user | :timeout | :failed}
 
   @doc """
   Deletes a token. With a user id, only a token of that user goes; a token
   of another user answers `:not_found`, as a missing one.
   """
-  @callback revoke_token(t(), user_id :: String.t() | :any, token_id :: String.t()) ::
-              :ok | {:error, :not_found | :failed}
+  @callback revoke_token(t(), user_id :: String.t() | :any, token_id :: String.t(), deadline()) ::
+              :ok | {:error, :not_found | :timeout | :failed}
 end

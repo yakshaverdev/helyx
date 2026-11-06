@@ -16,6 +16,7 @@ defmodule Helyx.Hub.Store.SQLite do
   @behaviour Helyx.Hub.Store
 
   alias Exqlite.Sqlite3
+  alias Helyx.Hub.Store.SQLite.Disk
 
   @version 1
   # The busy wait of every query and of the lock at the open (Bounds).
@@ -92,119 +93,107 @@ defmodule Helyx.Hub.Store.SQLite do
 
   @impl true
   def open(opts) do
-    path = Keyword.get(opts, :path)
+    case Keyword.get(opts, :path) do
+      nil -> open_memory()
+      path -> open_file(path)
+    end
+  end
 
-    with :ok <- prepare_file(path),
-         {:ok, db} <- Sqlite3.open(path || ":memory:") do
-      case setup(db, path) do
-        :ok ->
-          {:ok, db}
+  defp open_memory do
+    {:ok, db} = Sqlite3.open(":memory:")
+    started(db, [&settings/1, &schema/1])
+  end
 
-        {:error, _} = error ->
-          :ok = Sqlite3.close(db)
-          error
+  # The order of decision 9: every name is checked before any change, a
+  # missing file is made, the lock is taken with no write, the file and its
+  # version are checked again under the lock, and only then does the store
+  # set the modes and write. So a refused start writes nothing.
+  defp open_file(path) do
+    with {:ok, db} <- prepare(path) do
+      started(db, [
+        &settings/1,
+        &lock/1,
+        &version/1,
+        fn _db -> Disk.own(path) end,
+        &exec(&1, "PRAGMA journal_mode = WAL"),
+        &schema/1
+      ])
+    end
+  end
+
+  defp prepare(path) do
+    created =
+      case Disk.check(path) do
+        :missing -> Disk.create(path)
+        other -> other
+      end
+
+    with :ok <- created do
+      case Sqlite3.open(path, mode: :readwrite) do
+        {:ok, db} -> {:ok, db}
+        {:error, _} -> {:error, {:invalid_option, :path}}
       end
     end
   end
 
-  # The path and the files that SQLite keeps beside it are each a regular
-  # file with one name, or nothing: a link could put a file in a folder that
-  # others can write, and a chmod through it would change its target. A new
-  # file is made in a folder of mode 0700, set to 0600 there, and linked into
-  # place, which fails when the name exists, so no other user can open it
-  # while it has the mode of the umask, and no start replaces a file that
-  # another store holds. SQLite gives a new WAL file the mode of the database.
-  @sidecars ["-wal", "-shm", "-journal"]
+  defp started(db, steps) do
+    case Enum.reduce_while(steps, :ok, &step(&1, &2, db)) do
+      :ok ->
+        {:ok, db}
 
-  defp prepare_file(nil), do: :ok
-
-  defp prepare_file(path) do
-    main = with :missing <- private_file(path), do: create(path)
-    with :ok <- main, do: sidecars(path)
-  end
-
-  defp sidecars(path) do
-    Enum.reduce_while(@sidecars, :ok, fn suffix, :ok ->
-      case private_file(path <> suffix) do
-        {:error, _} = error -> {:halt, error}
-        _ok_or_missing -> {:cont, :ok}
-      end
-    end)
-  end
-
-  # :ok when the file is a regular file with one name, now of mode 0600.
-  defp private_file(path) do
-    case File.lstat(path) do
-      {:ok, %File.Stat{type: :regular, links: 1}} -> chmod(path)
-      {:error, :enoent} -> :missing
-      _ -> {:error, {:invalid_option, :path}}
+      {:error, _} = error ->
+        :ok = Sqlite3.close(db)
+        error
     end
   end
 
-  defp create(path) do
-    private =
-      Path.join(Path.dirname(path), ".hub-" <> Base.url_encode64(:crypto.strong_rand_bytes(9)))
-
-    file = Path.join(private, "hub.db")
-
-    try do
-      with :ok <- File.mkdir(private),
-           :ok <- File.chmod(private, 0o700),
-           :ok <- File.touch(file),
-           :ok <- File.chmod(file, 0o600) do
-        link(file, path)
-      else
-        _ -> {:error, {:invalid_option, :path}}
-      end
-    after
-      File.rm_rf(private)
+  defp step(fun, :ok, db) do
+    case fun.(db) do
+      :ok -> {:cont, :ok}
+      {:error, _} = error -> {:halt, error}
     end
   end
 
-  # A file that came at the path after the lstat is the file of a store that
-  # starts at the same moment.
-  defp link(file, path) do
-    case File.ln(file, path) do
-      :ok -> :ok
-      {:error, :eexist} -> {:error, :store_locked}
-      {:error, _} -> {:error, {:invalid_option, :path}}
-    end
+  defp settings(db) do
+    with :ok <- Sqlite3.set_busy_timeout(db, @busy_ms), do: exec(db, "PRAGMA foreign_keys = ON")
   end
 
-  defp chmod(path) do
-    case File.chmod(path, 0o600) do
-      :ok -> :ok
-      {:error, _} -> {:error, {:invalid_option, :path}}
-    end
-  end
-
-  defp setup(db, path) do
-    with :ok <- Sqlite3.set_busy_timeout(db, @busy_ms),
-         :ok <- exec(db, "PRAGMA foreign_keys = ON"),
-         :ok <- lock(db, path) do
-      schema(db)
-    end
-  end
-
-  # The write lock taken here stays until the connection closes.
-  defp lock(_db, nil), do: :ok
-
-  defp lock(db, _path) do
+  # The write lock taken here stays until the connection closes. The
+  # rollback writes nothing: a commit would write the first page of an empty
+  # file.
+  defp lock(db) do
     with :ok <- exec(db, "PRAGMA locking_mode = EXCLUSIVE"),
-         :ok <- locked(exec(db, "PRAGMA journal_mode = WAL")),
          :ok <- locked(exec(db, "BEGIN EXCLUSIVE")) do
-      exec(db, "COMMIT")
+      exec(db, "ROLLBACK")
     end
   end
 
   defp locked({:error, :busy}), do: {:error, :store_locked}
   defp locked(other), do: other
 
+  defp version(db) do
+    case one(db, "PRAGMA user_version", []) do
+      {:ok, [@version]} -> :ok
+      {:ok, [0]} -> empty(db)
+      {:ok, [n]} -> {:error, {:store_version, n}}
+      {:error, _} = error -> error
+    end
+  end
+
+  # A file of version 0 is new only when it holds no schema: a database of
+  # another program is refused before the store changes it.
+  defp empty(db) do
+    case one(db, "SELECT count(*) FROM sqlite_schema", []) do
+      {:ok, [0]} -> :ok
+      {:ok, [_]} -> {:error, {:store_version, 0}}
+      {:error, _} = error -> error
+    end
+  end
+
   defp schema(db) do
     case one(db, "PRAGMA user_version", []) do
       {:ok, [@version]} -> :ok
-      {:ok, [0]} -> transaction(db, fn -> create_schema(db) end)
-      {:ok, [n]} -> {:error, {:store_version, n}}
+      {:ok, [0]} -> transaction(db, :infinity, fn -> create_schema(db) end)
       {:error, _} = error -> error
     end
   end
@@ -226,10 +215,10 @@ defmodule Helyx.Hub.Store.SQLite do
   end
 
   @impl true
-  def add_user(db, %{id: id, name: name, created_at: at}, max) do
+  def add_user(db, %{id: id, name: name, created_at: at}, max, deadline) do
     sql = "SELECT count(*), count(*) FILTER (WHERE name = ?1) FROM users"
 
-    transaction(db, fn ->
+    transaction(db, deadline, fn ->
       with {:ok, [count, taken]} <- one(db, sql, [name]),
            do: insert_user(db, [id, name, at], count >= max, taken > 0)
     end)
@@ -242,8 +231,8 @@ defmodule Helyx.Hub.Store.SQLite do
     do: run(db, "INSERT INTO users (id, name, created_at) VALUES (?1, ?2, ?3)", row)
 
   @impl true
-  def remove_user(db, user_id) do
-    delete(db, "DELETE FROM users WHERE id = ?1", [user_id])
+  def remove_user(db, user_id, deadline) do
+    delete(db, deadline, "DELETE FROM users WHERE id = ?1", [user_id])
   end
 
   @impl true
@@ -274,20 +263,20 @@ defmodule Helyx.Hub.Store.SQLite do
   defp info([id, name, at]), do: %{id: id, name: name, created_at: at}
 
   @impl true
-  def add_token(db, token, max) do
+  def add_token(db, token, max, deadline) do
     sql =
       "SELECT (SELECT count(*) FROM users WHERE id = ?1), " <>
         "(SELECT count(*) FROM tokens WHERE user_id = ?1)"
 
-    transaction(db, fn ->
+    transaction(db, deadline, fn ->
       with {:ok, [user, count]} <- one(db, sql, [token.user_id]),
-           do: add_token(db, token, user > 0, count >= max)
+           do: checked_token(db, token, user > 0, count >= max)
     end)
   end
 
-  defp add_token(_db, _token, false = _user?, _full), do: {:error, :unknown_user}
-  defp add_token(_db, _token, true, true = _full), do: {:error, :too_many_tokens}
-  defp add_token(db, token, true, false), do: insert_token(db, token)
+  defp checked_token(_db, _token, false = _user?, _full), do: {:error, :unknown_user}
+  defp checked_token(_db, _token, true, true = _full), do: {:error, :too_many_tokens}
+  defp checked_token(db, token, true, false), do: insert_token(db, token)
 
   defp insert_token(db, t) do
     run(
@@ -298,15 +287,19 @@ defmodule Helyx.Hub.Store.SQLite do
   end
 
   @impl true
-  def revoke_token(db, :any, token_id),
-    do: delete(db, "DELETE FROM tokens WHERE id = ?1", [token_id])
+  def revoke_token(db, :any, token_id, deadline),
+    do: delete(db, deadline, "DELETE FROM tokens WHERE id = ?1", [token_id])
 
-  def revoke_token(db, user_id, token_id),
-    do: delete(db, "DELETE FROM tokens WHERE id = ?1 AND user_id = ?2", [token_id, user_id])
+  def revoke_token(db, user_id, token_id, deadline),
+    do:
+      delete(db, deadline, "DELETE FROM tokens WHERE id = ?1 AND user_id = ?2", [
+        token_id,
+        user_id
+      ])
 
   # A delete and its count of rows in one step; no row is :not_found.
-  defp delete(db, sql, args) do
-    transaction(db, fn ->
+  defp delete(db, deadline, sql, args) do
+    transaction(db, deadline, fn ->
       with :ok <- run(db, sql, args), do: changed(db)
     end)
   end
@@ -320,22 +313,28 @@ defmodule Helyx.Hub.Store.SQLite do
   end
 
   # One step: the body and its writes commit together or not at all. Any
-  # answer but :ok or {:ok, _} rolls back.
-  defp transaction(db, body) do
+  # answer but :ok or {:ok, _} rolls back, and so does a body that ends at or
+  # past the deadline of its Hub call, so its caller, which waits the
+  # deadline and a margin, gets the answer of every write that committed.
+  defp transaction(db, deadline, body) do
     case exec(db, "BEGIN IMMEDIATE") do
-      :ok -> finish(db, body.())
+      :ok -> finish(db, deadline, body.())
       {:error, _} -> {:error, :failed}
     end
   end
 
-  defp finish(db, :ok), do: commit(db, :ok)
-  defp finish(db, {:ok, _} = result), do: commit(db, result)
-  defp finish(db, result), do: rollback(db, result)
+  defp finish(db, deadline, :ok), do: commit(db, deadline, :ok)
+  defp finish(db, deadline, {:ok, _} = result), do: commit(db, deadline, result)
+  defp finish(db, _deadline, result), do: rollback(db, result)
 
-  defp commit(db, result) do
-    case exec(db, "COMMIT") do
-      :ok -> result
-      {:error, _} -> rollback(db, {:error, :failed})
+  defp commit(db, deadline, result) do
+    if deadline != :infinity and System.monotonic_time(:millisecond) >= deadline do
+      rollback(db, {:error, :timeout})
+    else
+      case exec(db, "COMMIT") do
+        :ok -> result
+        {:error, _} -> rollback(db, {:error, :failed})
+      end
     end
   end
 

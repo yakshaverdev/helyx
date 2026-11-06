@@ -63,3 +63,50 @@ The first precommit failed on Credo (`Refactoring.Nesting` in `add_user/3` and `
 
 - The findings 1, 2, 4, 5, 6, and 7 of round 3. A question for the owner first (`/ship`, two findings on one mechanism): does the mechanism need to exist? A store folder of mode 0700 (no group or other access) would make the file mode and the create window irrelevant to other users, but decision 9 states a folder check of `0o022` and a file of 0600.
 - The rest of #869: the authority behaviour and the `:authority` option of the transport, `hello`/`check`/`run`/`result`/`release`, the `hub.*` operations, records and projects, `sessions.saved` and `resume` `{cwd}` under a Hub, the live set and its caps, the connection monitors and `close/2`, protocol 4 and the schema of `wire-protocol.md`, the wiring of `helyx serve`, and the access tests with the mechanical check of a refused id against a missing id.
+
+# Cycle 2: the owner's decisions A and B
+
+The owner's judgement of slice 1 (2026-11-06, in the session): (A) the private folder of the create is the protection, not the file mode: chmod it to 0700, then check it is the server's, 0700, and empty; a refused start changes nothing on the disk; the lock comes before the classification, so a second start gets `:store_locked`; `{:global, _}` is refused. (B) decision 5 stays: the store checks the deadline before the commit and rolls back past it; the caller waits the deadline and a margin; one hole, a commit longer than the margin.
+
+Scope: the fix passes 100 code lines (the new module `Helyx.Hub.Store.SQLite.Disk`, 140 lines, and the deadline argument of each write callback of the store, an arity change of `add_user`, `remove_user`, `add_token`, `revoke_token`). The deadline of a Hub call is 4,000 ms after the send and the caller waits 5,000 ms, so every sum of decision 5 keeps its numbers.
+
+The ownership of the private folder is shown by the `chmod`: only the owner of a folder (or root) can change its mode. No uid compare: the BEAM gives no `getuid`.
+
+## Round A1 (reduced, with Codex: the change edits the feature doc)
+
+Bounds sensor: `10 candidate functions, 1 flagged`: `hub.ex default_owner` (SIZE): it reads the users, at most 64 rows; not a finding.
+
+| # | Source | Finding | Resolution |
+|---|---|---|---|
+| 1 | Spec and failure path, reproduced | A file of another `user_version` was set to 0600 and switched to WAL before the version check refused it | Fixed: the version is read under the lock before any change |
+| 2 | Codex (high), read in the code | The `COMMIT` of the lock wrote the first page of an empty file with a second name before the link check refused it | Fixed: the lock is `BEGIN EXCLUSIVE` and `ROLLBACK`, with no write; the lock tests in this node and in another OS process pass |
+| 3 | Failure path, reproduced | A start held more than 100 ms between its link and the removal of its folder made the other start answer `{:invalid_option, :path}` | Changed in round A2 (cleanup by the lock holder) |
+| 4 | Spec | `{:via, :global, _}` was accepted | Fixed |
+| 5 | Spec | Decision 9 does not describe the private folder or the order of the checks | Kept: the owner keeps decision 9 as written; the rules are in the moduledoc of `Helyx.Hub.Store.SQLite` and the comment of `Disk` |
+
+## Round A2 (reduced, with Codex)
+
+| # | Source | Finding | Resolution |
+|---|---|---|---|
+| 1 | Failure path and Codex, reproduced | A version-0 database of another program was set to 0600 and switched to WAL before its schema failed | Fixed: version 0 with any schema object is refused as `{:store_version, 0}` before any change; test |
+| 2 | Spec, failure path, Codex, reproduced | SQLite replays the crash log (a WAL with frames, a hot journal) of a file that the version check then refuses, and checkpoints at the close | Accepted hole in `hub.md`: SQLite recovery on open, as any SQLite program does; refusing such a file would also refuse the crash recovery of this Hub's own store |
+| 3 | Failure path, reproduced | A start refused by the default owner step (a store of 64 users) leaves the store at 0600 and in WAL | Accepted hole in `hub.md`: the file is this Hub's own store |
+| 4 | Failure path, reproduced | A start killed after its link left a second name, and every later start got `:store_locked` | Fixed: under the lock, the holder removes a `.hub-*` folder whose `hub.db` is the store file |
+
+Round A2 found a second defect on the mechanism, so round A3 is the last of the cycle.
+
+## Round A3 (reduced, with Codex)
+
+Bounds sensor: `11 candidate functions, 2 flagged`: `hub.ex default_owner` (as above) and `disk.ex left_create` (SIZE): it lists the folder of the store once, only when a second name stays; the data folder has no bound of its count (as the existence check of decision 8).
+
+Every reproduction of rounds A1 and A2 passes; 40 rounds of 4 starts with one killed gave at most one start each.
+
+| # | Source | Finding | State |
+|---|---|---|---|
+| 1 | Failure path and Codex (high), reproduced | `left_create/2` removes a whole `.hub-*` folder whose `hub.db` is the store file, with other files in it; with a third name elsewhere it then refuses after the removal | **Open.** Fix: remove only a folder of mode 0700 that holds only `hub.db`, with `File.rm` and `File.rmdir`, and refuse any other layout before a removal |
+| 2 | Failure path and Codex, reproduced | A `.hub-*` folder that the server cannot empty (mode 0500) makes `left_create/2` and `one_name/2` call each other with no end while the start holds the lock | **Open.** Fix: one cleanup pass, then one link check; a failed removal refuses |
+| 3 | Spec | A kill between the `touch` and the link leaves a private folder with a file of one name, which stays | Open, wording of the hole |
+| 4 | Spec | The `deadline` typedoc says "ends at or past it"; the code checks when the write reaches its commit | Open, wording |
+| 5 | Spec | No test of the check of the private folder (0700, empty) | Open: the window is a race of another OS user |
+
+Both open defects need a folder named `.hub-*` in the folder of the store that the server's OS user made by hand: the folder of the store refuses group and other write, so no other user can make one. Round A3 is the last round of the cycle and the fix does not meet the small-fix rule (a second finding on the mechanism, more than 10 lines), so the cycle commits the reviewed code with them open.

@@ -18,7 +18,7 @@ defmodule Helyx.Hub.Store.SQLiteTest do
     {:ok, db} = SQLite.open(path: path)
     assert {:ok, %File.Stat{mode: mode}} = File.stat(path)
     assert Bitwise.band(mode, 0o777) == 0o600
-    :ok = SQLite.add_user(db, user("ann"), 64)
+    :ok = SQLite.add_user(db, user("ann"), 64, :infinity)
     # WAL journal: the log exists while the store is open, with the mode of the file.
     assert Bitwise.band(File.stat!(path <> "-wal").mode, 0o777) == 0o600
     :ok = SQLite.close(db)
@@ -39,7 +39,7 @@ defmodule Helyx.Hub.Store.SQLiteTest do
 
   test "a store in memory ends with its connection" do
     {:ok, db} = SQLite.open(path: nil)
-    :ok = SQLite.add_user(db, user("ann"), 64)
+    :ok = SQLite.add_user(db, user("ann"), 64, :infinity)
     :ok = SQLite.close(db)
     {:ok, db} = SQLite.open(path: nil)
     assert SQLite.users(db) == {:ok, []}
@@ -50,29 +50,45 @@ defmodule Helyx.Hub.Store.SQLiteTest do
     {:ok, db} = SQLite.open(path: nil)
     :ok = Exqlite.Sqlite3.execute(db, "DROP TABLE tokens")
     assert SQLite.tokens(db, "u") == {:error, :failed}
-    assert SQLite.add_token(db, token("t1", "u"), 2) == {:error, :failed}
+    assert SQLite.add_token(db, token("t1", "u"), 2, :infinity) == {:error, :failed}
+    :ok = SQLite.close(db)
+  end
+
+  test "a write that ends at or past its deadline rolls back and answers :timeout" do
+    {:ok, db} = SQLite.open(path: nil)
+    past = System.monotonic_time(:millisecond)
+    assert SQLite.add_user(db, user("ann"), 64, past) == {:error, :timeout}
+    assert SQLite.users(db) == {:ok, []}
+
+    :ok = SQLite.add_user(db, user("ann"), 64, past + 60_000)
+    assert SQLite.add_token(db, token("t1", user("ann").id), 16, past) == {:error, :timeout}
+    assert SQLite.tokens(db, user("ann").id) == {:ok, []}
+    :ok = SQLite.add_token(db, token("t1", user("ann").id), 16, :infinity)
+    assert SQLite.revoke_token(db, :any, "t1", past) == {:error, :timeout}
+    assert SQLite.remove_user(db, user("ann").id, past) == {:error, :timeout}
+    assert {:ok, %{id: "t1"}} = SQLite.token(db, "t1")
     :ok = SQLite.close(db)
   end
 
   test "the user cap and the unique name hold in one step" do
     {:ok, db} = SQLite.open(path: nil)
-    :ok = SQLite.add_user(db, user("a"), 2)
-    assert SQLite.add_user(db, %{user("b") | name: "a"}, 2) == {:error, :name_taken}
-    :ok = SQLite.add_user(db, user("b"), 2)
-    assert SQLite.add_user(db, user("c"), 2) == {:error, :too_many_users}
+    :ok = SQLite.add_user(db, user("a"), 2, :infinity)
+    assert SQLite.add_user(db, %{user("b") | name: "a"}, 2, :infinity) == {:error, :name_taken}
+    :ok = SQLite.add_user(db, user("b"), 2, :infinity)
+    assert SQLite.add_user(db, user("c"), 2, :infinity) == {:error, :too_many_users}
   end
 
   test "the token cap, a token of an unknown user, and a revoke scoped to its user" do
     {:ok, db} = SQLite.open(path: nil)
-    :ok = SQLite.add_user(db, user("a"), 64)
-    :ok = SQLite.add_user(db, user("b"), 64)
+    :ok = SQLite.add_user(db, user("a"), 64, :infinity)
+    :ok = SQLite.add_user(db, user("b"), 64, :infinity)
     a = user("a").id
     b = user("b").id
 
-    assert SQLite.add_token(db, token("t1", "nobody"), 2) == {:error, :unknown_user}
-    :ok = SQLite.add_token(db, token("t1", a), 2)
-    :ok = SQLite.add_token(db, token("t2", a), 2)
-    assert SQLite.add_token(db, token("t3", a), 2) == {:error, :too_many_tokens}
+    assert SQLite.add_token(db, token("t1", "nobody"), 2, :infinity) == {:error, :unknown_user}
+    :ok = SQLite.add_token(db, token("t1", a), 2, :infinity)
+    :ok = SQLite.add_token(db, token("t2", a), 2, :infinity)
+    assert SQLite.add_token(db, token("t3", a), 2, :infinity) == {:error, :too_many_tokens}
 
     assert {:ok, %{user_id: ^a, key: key}} = SQLite.token(db, "t1")
     assert key == :crypto.hash(:sha256, "t1")
@@ -80,25 +96,25 @@ defmodule Helyx.Hub.Store.SQLiteTest do
     refute Enum.any?(infos, &Map.has_key?(&1, :key))
 
     # Oldest first, in the order of insert within one second.
-    :ok = SQLite.add_token(db, token("zz", b), 4)
-    :ok = SQLite.add_token(db, token("aa", b), 4)
+    :ok = SQLite.add_token(db, token("zz", b), 4, :infinity)
+    :ok = SQLite.add_token(db, token("aa", b), 4, :infinity)
     assert {:ok, [%{id: "zz"}, %{id: "aa"}]} = SQLite.tokens(db, b)
 
-    assert SQLite.revoke_token(db, b, "t1") == {:error, :not_found}
-    assert SQLite.revoke_token(db, b, "missing") == {:error, :not_found}
-    assert SQLite.revoke_token(db, a, "t1") == :ok
+    assert SQLite.revoke_token(db, b, "t1", :infinity) == {:error, :not_found}
+    assert SQLite.revoke_token(db, b, "missing", :infinity) == {:error, :not_found}
+    assert SQLite.revoke_token(db, a, "t1", :infinity) == :ok
     assert SQLite.token(db, "t1") == {:error, :not_found}
-    assert SQLite.revoke_token(db, :any, "t2") == :ok
-    assert SQLite.revoke_token(db, :any, "t2") == {:error, :not_found}
+    assert SQLite.revoke_token(db, :any, "t2", :infinity) == :ok
+    assert SQLite.revoke_token(db, :any, "t2", :infinity) == {:error, :not_found}
   end
 
   test "a removed user takes its tokens" do
     {:ok, db} = SQLite.open(path: nil)
-    :ok = SQLite.add_user(db, user("a"), 64)
-    :ok = SQLite.add_token(db, token("t1", user("a").id), 16)
-    assert SQLite.remove_user(db, user("a").id) == :ok
+    :ok = SQLite.add_user(db, user("a"), 64, :infinity)
+    :ok = SQLite.add_token(db, token("t1", user("a").id), 16, :infinity)
+    assert SQLite.remove_user(db, user("a").id, :infinity) == :ok
     assert SQLite.token(db, "t1") == {:error, :not_found}
-    assert SQLite.remove_user(db, user("a").id) == {:error, :not_found}
+    assert SQLite.remove_user(db, user("a").id, :infinity) == {:error, :not_found}
   end
 
   @tag :slow

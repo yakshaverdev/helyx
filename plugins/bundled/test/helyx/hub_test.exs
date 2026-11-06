@@ -48,6 +48,8 @@ defmodule Helyx.HubTest do
             store: "store",
             store: File,
             name: {:via, :no_such_module, :x},
+            name: {:global, :hub},
+            name: {:via, :global, :hub},
             default_owner: "",
             default_owner: "a\nb",
             server_token: "secret",
@@ -270,6 +272,7 @@ defmodule Helyx.HubTest do
                {:error, {:invalid_option, :path}}
 
       assert mode(other) == 0o644
+      assert File.read!(other) == ""
 
       File.rm!(path)
       File.ln_s!(other, path <> "-wal")
@@ -282,10 +285,8 @@ defmodule Helyx.HubTest do
 
     test "an existing file and its WAL file get mode 0600", %{tmp_dir: dir} do
       path = Path.join(dir, "hub.db")
-      {:ok, db} = Exqlite.Sqlite3.open(path)
-      :ok = Exqlite.Sqlite3.execute(db, "PRAGMA journal_mode = WAL")
-      :ok = Exqlite.Sqlite3.execute(db, "CREATE TABLE t (x INTEGER)")
-      :ok = Exqlite.Sqlite3.close(db)
+      {:ok, hub} = start(path)
+      GenServer.stop(hub)
       File.write!(path <> "-wal", "")
 
       for file <- [path, path <> "-wal"], do: File.chmod!(file, 0o644)
@@ -298,6 +299,81 @@ defmodule Helyx.HubTest do
       GenServer.stop(hub)
     end
 
+    test "a refused start changes nothing on the disk", %{tmp_dir: dir} do
+      # A new path: no file is made.
+      fresh = Path.join(dir, "fresh.db")
+      File.ln_s!(Path.join(dir, "nowhere"), fresh <> "-journal")
+      assert start(fresh) == {:error, {:invalid_option, :path}}
+      assert File.ls!(dir) == ["fresh.db-journal"]
+
+      # An existing file keeps its mode.
+      path = Path.join(dir, "hub.db")
+      {:ok, hub} = start(path)
+      GenServer.stop(hub)
+      File.chmod!(path, 0o644)
+      File.mkdir!(path <> "-shm")
+      bytes = File.read!(path)
+      assert start(path) == {:error, {:invalid_option, :path}}
+      assert mode(path) == 0o644
+      assert File.read!(path) == bytes
+
+      # A file of another version: refused after the lock, with no write.
+      other = Path.join(dir, "other.db")
+      {:ok, db} = Exqlite.Sqlite3.open(other)
+      :ok = Exqlite.Sqlite3.execute(db, "PRAGMA user_version = 7")
+      :ok = Exqlite.Sqlite3.close(db)
+      File.chmod!(other, 0o644)
+      bytes = File.read!(other)
+      assert start(other) == {:error, {:store_version, 7}}
+      assert mode(other) == 0o644
+      assert File.read!(other) == bytes
+      refute File.exists?(other <> "-wal")
+
+      # A database of another program, version 0: refused with no write.
+      foreign = Path.join(dir, "foreign.db")
+      {:ok, db} = Exqlite.Sqlite3.open(foreign)
+      :ok = Exqlite.Sqlite3.execute(db, "CREATE TABLE users (x INTEGER)")
+      :ok = Exqlite.Sqlite3.close(db)
+      File.chmod!(foreign, 0o644)
+      bytes = File.read!(foreign)
+      assert start(foreign) == {:error, {:store_version, 0}}
+      assert mode(foreign) == 0o644
+      assert File.read!(foreign) == bytes
+    end
+
+    test "the second name that a killed create left is removed by the next start", %{
+      tmp_dir: dir
+    } do
+      path = Path.join(dir, "hub.db")
+      {:ok, hub} = start(path)
+      GenServer.stop(hub)
+      left = Path.join(dir, ".hub-killed")
+      File.mkdir!(left)
+      File.ln!(path, Path.join(left, "hub.db"))
+
+      assert {:ok, hub} = start(path)
+      refute File.exists?(left)
+      GenServer.stop(hub)
+    end
+
+    @tag :slow
+    test "starts at once on a new path: one starts, the others get :store_locked", %{
+      tmp_dir: dir
+    } do
+      path = Path.join(dir, "hub.db")
+      core = core()
+
+      results =
+        1..4
+        |> Enum.map(fn _ -> Task.async(fn -> start_unlinked(core, path) end) end)
+        |> Task.await_many(30_000)
+
+      assert Enum.count(results, &match?({:ok, _}, &1)) == 1, inspect(results)
+      assert Enum.count(results, &(&1 == {:error, :store_locked})) == 3
+      for {:ok, pid} <- results, do: GenServer.stop(pid)
+      assert dir |> File.ls!() |> Enum.reject(&String.starts_with?(&1, "hub.db")) == []
+    end
+
     test "a new file has mode 0600 and leaves no other file behind", %{tmp_dir: dir} do
       start_hub(dir)
       assert mode(Path.join(dir, "hub.db")) == 0o600
@@ -305,7 +381,36 @@ defmodule Helyx.HubTest do
     end
   end
 
+  # A store whose add_user reaches its commit at the deadline of the call.
+  defmodule SlowStore do
+    @behaviour Helyx.Hub.Store
+    alias Helyx.Hub.Store.SQLite
+    defdelegate open(opts), to: SQLite
+    defdelegate close(db), to: SQLite
+    defdelegate users(db), to: SQLite
+    defdelegate remove_user(db, id, deadline), to: SQLite
+    defdelegate token(db, id), to: SQLite
+    defdelegate tokens(db, id), to: SQLite
+    defdelegate add_token(db, token, max, deadline), to: SQLite
+    defdelegate revoke_token(db, user, id, deadline), to: SQLite
+
+    def add_user(db, user, max, :infinity), do: SQLite.add_user(db, user, max, :infinity)
+
+    def add_user(db, user, max, deadline) do
+      Process.sleep(max(deadline - System.monotonic_time(:millisecond), 0))
+      SQLite.add_user(db, user, max, deadline)
+    end
+  end
+
   describe "Hub calls" do
+    @tag :slow
+    test "a write that reaches its commit at the deadline answers :timeout and writes nothing",
+         %{tmp_dir: dir} do
+      hub = start_hub(dir, store: SlowStore)
+      assert Hub.add_user(hub, "ann") == {:error, :timeout}
+      assert {:ok, [%{name: "owner"}]} = Hub.users(hub)
+    end
+
     test "one under the admission bound sends the call", %{tmp_dir: dir} do
       hub = start_hub(dir)
       :erlang.suspend_process(hub)
@@ -369,6 +474,14 @@ defmodule Helyx.HubTest do
   end
 
   defp start(path), do: Hub.start_link(core: core(), default_owner: "o", path: path)
+
+  # A start whose Hub outlives the Task that started it.
+  defp start_unlinked(core, path) do
+    with {:ok, pid} = ok <- Hub.start_link(core: core, default_owner: "o", path: path) do
+      Process.unlink(pid)
+      ok
+    end
+  end
 
   defp mode(path), do: Bitwise.band(File.stat!(path).mode, 0o777)
 

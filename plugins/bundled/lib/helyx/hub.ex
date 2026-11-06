@@ -17,10 +17,14 @@ defmodule Helyx.Hub do
   holds `{:error, :store_locked}`, and a folder of the file that its group
   or other users can write `{:error, :unsafe_folder}`.
 
-  Every function here is a Hub call: a call with a deadline of 5,000 ms,
+  Every function here is a Hub call: a call with a timeout of 5,000 ms,
   sent only while the mailbox of Hub holds fewer than 1,024 messages, else
   `{:error, :busy}` at once (decision 5). Hub drops a call that it takes at
-  or past its deadline before it reads or writes.
+  or past its deadline before it reads or writes, and rolls back a write
+  that ends at or past it; the deadline is 4,000 ms after the send, and the
+  caller waits it and a margin of 1,000 ms for the answer, so a caller that got a timeout gets no late
+  change of state (a commit that takes longer than the margin is the hole,
+  `docs/features/hub.md`, Accepted holes).
   """
 
   use GenServer
@@ -30,6 +34,10 @@ defmodule Helyx.Hub do
   # The Hub call (decision 5): its timeout, and the mailbox length at which a
   # caller sends nothing.
   @call_ms 5_000
+  # The wait of the caller past the deadline of the call, within @call_ms:
+  # the answer of a write that committed just before the deadline still
+  # comes within it.
+  @commit_margin_ms 1_000
   @admission 1_024
   # The caps of the operator API (Bounds).
   @max_users 64
@@ -69,14 +77,14 @@ defmodule Helyx.Hub do
   character, unique in the Hub; a Hub holds at most 64 users.
   """
   @spec add_user(hub(), String.t()) ::
-          {:ok, user()} | {:error, :invalid_name | :too_many_users | :busy | :failed}
+          {:ok, user()} | {:error, :invalid_name | :too_many_users | :busy | :timeout | :failed}
   def add_user(hub, name) do
     if name?(name), do: hub_call(hub, {:add_user, name}), else: {:error, :invalid_name}
   end
 
   @doc "Removes a user with its tokens and records. The default owner stays."
   @spec remove_user(hub(), String.t()) ::
-          :ok | {:error, :unknown_user | :default_owner | :busy | :failed}
+          :ok | {:error, :unknown_user | :default_owner | :busy | :timeout | :failed}
   def remove_user(hub, user_id) when is_binary(user_id),
     do: hub_call(hub, {:remove_user, user_id})
 
@@ -92,7 +100,8 @@ defmodule Helyx.Hub do
   """
   @spec create_token(hub(), String.t(), String.t()) ::
           {:ok, String.t()}
-          | {:error, :invalid_name | :unknown_user | :too_many_tokens | :busy | :failed}
+          | {:error,
+             :invalid_name | :unknown_user | :too_many_tokens | :busy | :timeout | :failed}
   def create_token(hub, user_id, name) when is_binary(user_id) do
     if name?(name),
       do: hub_call(hub, {:create_token, user_id, name}),
@@ -100,7 +109,8 @@ defmodule Helyx.Hub do
   end
 
   @doc "Revokes a token of any user."
-  @spec revoke_token(hub(), String.t()) :: :ok | {:error, :unknown_token | :busy | :failed}
+  @spec revoke_token(hub(), String.t()) ::
+          :ok | {:error, :unknown_token | :busy | :timeout | :failed}
   def revoke_token(hub, token_id) when is_binary(token_id),
     do: hub_call(hub, {:revoke_token, token_id})
 
@@ -113,7 +123,7 @@ defmodule Helyx.Hub do
         {:error, :busy}
 
       _ ->
-        deadline = System.monotonic_time(:millisecond) + @call_ms
+        deadline = System.monotonic_time(:millisecond) + @call_ms - @commit_margin_ms
         GenServer.call(pid, {:hub, deadline, request}, @call_ms)
     end
   end
@@ -143,7 +153,10 @@ defmodule Helyx.Hub do
 
   defp live_cap?(n), do: is_integer(n) and n in 1..@max_live
 
-  defp name_option?({:global, _}), do: true
+  # The admission check reads the mailbox of a local pid only; a global name
+  # can name a pid of another node.
+  defp name_option?({:global, _}), do: false
+  defp name_option?({:via, :global, _}), do: false
 
   defp name_option?({:via, mod, _}),
     do: loaded?(mod) and function_exported?(mod, :register_name, 2)
@@ -235,15 +248,15 @@ defmodule Helyx.Hub do
     with {:ok, users} <- mod.users(store) do
       case Enum.find(users, &(&1.name == name)) do
         %{id: id} -> {:ok, id}
-        nil -> insert_user(mod, store, name)
+        nil -> insert_user(mod, store, name, :infinity)
       end
     end
   end
 
-  defp insert_user(mod, store, name) do
+  defp insert_user(mod, store, name, deadline) do
     user = %{id: new_id(), name: name, created_at: System.os_time(:second)}
 
-    case mod.add_user(store, user, @max_users) do
+    case mod.add_user(store, user, @max_users, deadline) do
       :ok -> {:ok, user.id}
       {:error, :name_taken} -> {:error, :invalid_name}
       {:error, _} = error -> error
@@ -256,34 +269,35 @@ defmodule Helyx.Hub do
     # writes: its caller already exited on its timeout.
     if System.monotonic_time(:millisecond) >= deadline,
       do: {:noreply, state},
-      else: {:reply, handle(request, state), state}
+      else: {:reply, handle(request, deadline, state), state}
   end
 
   @impl true
   def terminate(_reason, state), do: state.store.close(state.db)
 
-  defp handle({:add_user, name}, %{store: mod, db: db}) do
-    with {:ok, id} <- insert_user(mod, db, name) do
+  defp handle({:add_user, name}, deadline, %{store: mod, db: db}) do
+    with {:ok, id} <- insert_user(mod, db, name, deadline) do
       {:ok, %{id: id, name: name}}
     end
   end
 
-  defp handle({:remove_user, id}, %{default_owner_id: id}), do: {:error, :default_owner}
+  defp handle({:remove_user, id}, _deadline, %{default_owner_id: id}),
+    do: {:error, :default_owner}
 
-  defp handle({:remove_user, id}, %{store: mod, db: db}) do
-    case mod.remove_user(db, id) do
+  defp handle({:remove_user, id}, deadline, %{store: mod, db: db}) do
+    case mod.remove_user(db, id, deadline) do
       {:error, :not_found} -> {:error, :unknown_user}
       other -> other
     end
   end
 
-  defp handle(:users, %{store: mod, db: db}) do
+  defp handle(:users, _deadline, %{store: mod, db: db}) do
     with {:ok, users} <- mod.users(db) do
       {:ok, Enum.map(users, &Map.take(&1, [:id, :name]))}
     end
   end
 
-  defp handle({:create_token, user_id, name}, %{store: mod, db: db}) do
+  defp handle({:create_token, user_id, name}, deadline, %{store: mod, db: db}) do
     id = new_id()
     text = id <> "." <> Base.url_encode64(:crypto.strong_rand_bytes(32), padding: false)
 
@@ -295,11 +309,11 @@ defmodule Helyx.Hub do
       created_at: System.os_time(:second)
     }
 
-    with :ok <- mod.add_token(db, token, @max_tokens), do: {:ok, text}
+    with :ok <- mod.add_token(db, token, @max_tokens, deadline), do: {:ok, text}
   end
 
-  defp handle({:revoke_token, token_id}, %{store: mod, db: db}) do
-    case mod.revoke_token(db, :any, token_id) do
+  defp handle({:revoke_token, token_id}, deadline, %{store: mod, db: db}) do
+    case mod.revoke_token(db, :any, token_id, deadline) do
       {:error, :not_found} -> {:error, :unknown_token}
       other -> other
     end
