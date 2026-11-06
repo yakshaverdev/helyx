@@ -21,6 +21,9 @@ defmodule Helyx.Test.SummaryProvider do
   def id, do: "sum"
 
   @impl Helyx.Provider
+  def max_output_tokens?, do: true
+
+  @impl Helyx.Provider
   def init(model, _tools, opts) do
     if pid = opts[:report], do: send(pid, {:sum_init, opts})
     {:ok, Helyx.Provider.Loop.new(__MODULE__, model, opts)}

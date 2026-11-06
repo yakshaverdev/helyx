@@ -75,9 +75,10 @@ defmodule Helyx.Session.Server.State do
     # hands, with its flag of `Helyx.Tool.concurrent/1`, for the tool queue.
     tool_specs: [],
     tools: %{},
-    # The checked `:provider_opts` of the start or the resume, for each
-    # `init/3` (`init_opts/3`).
-    provider_opts: [],
+    # The checked options of the start or the resume for each `init/3`
+    # (`init_opts/3`): `provider_opts`, and `max_output_tokens`, the limit
+    # of the start or nil (docs/features/output-limit.md).
+    init: %{provider_opts: [], max_output_tokens: nil},
     transcript: [],
     # Each subscriber pid with the session's monitor of it, the ref of its
     # last subscribe, the seq up to which it acked (replay-ring.md), and
@@ -147,7 +148,7 @@ defmodule Helyx.Session.Server.State do
           sync: pid() | {:replay, [Helyx.Message.t()]} | nil,
           unsaved_from: non_neg_integer() | nil,
           tool_specs: [Helyx.Tool.spec()],
-          provider_opts: keyword(),
+          init: %{provider_opts: keyword(), max_output_tokens: pos_integer() | nil},
           tools: %{String.t() => {module(), boolean()}},
           transcript: [Helyx.Message.t()],
           subscribers: %{pid() => {reference(), reference(), non_neg_integer(), boolean()}},
@@ -175,6 +176,9 @@ defmodule Helyx.Session.Server.State do
   # The options of a provider's `init/3`: those of Core first, so a
   # provider option of the same name does not change one.
   def init_opts(state, resume_id, resume_usage) do
-    [resume_id: resume_id, resume_usage: resume_usage] ++ base_opts(state) ++ state.provider_opts
+    %{provider_opts: provider_opts, max_output_tokens: limit} = state.init
+
+    [resume_id: resume_id, resume_usage: resume_usage, max_output_tokens: limit] ++
+      base_opts(state) ++ provider_opts
   end
 end

@@ -20,9 +20,11 @@ defmodule Helyx.Provider.Loop do
       the call finished
     * `{:error, term}`: the call failed
 
-  `opts` carry `:core`, `:session_id`, `:turn_id`, and `:cwd`. The model
-  Task consumes the enumerable up to the first `done` or `error`. Any other
-  event, or a call whose id repeats in the message, ends the provider
+  `opts` carry `:core`, `:session_id`, `:turn_id`, `:cwd`, and
+  `:max_output_tokens`, the session's limit or nil: a provider that applies
+  it defines `max_output_tokens?/0` (`docs/features/output-limit.md`). The
+  model Task consumes the enumerable up to the first `done` or `error`. Any
+  other event, or a call whose id repeats in the message, ends the provider
   process with `{:bad_stream_event, event}`; Core checks the rest as it
   checks every provider event. A stream faster than the provider process
   ends at over 10,000 waiting messages with `{:error, {:provider_behind,
@@ -120,7 +122,7 @@ defmodule Helyx.Provider.Loop do
     do: %__MODULE__{
       provider: provider,
       model: model,
-      opts: Keyword.take(opts, ~w(core session_id cwd)a)
+      opts: Keyword.take(opts, ~w(core session_id cwd max_output_tokens)a)
     }
 
   @doc "The `request/3` callback of `Helyx.Provider`."

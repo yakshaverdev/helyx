@@ -5,14 +5,22 @@ defmodule Helyx.Provider.OpenAI.Endpoint do
   # `docs/features/openai-compatible.md`.
 
   @enforce_keys [:id, :base_url]
-  defstruct [:id, :base_url, key_env: nil, headers: [], catalog: nil]
+  defstruct [
+    :id,
+    :base_url,
+    key_env: nil,
+    headers: [],
+    catalog: nil,
+    max_tokens_field: :max_completion_tokens
+  ]
 
   @type t :: %__MODULE__{
           id: String.t(),
           base_url: String.t(),
           key_env: String.t() | nil,
           headers: [{String.t(), String.t() | :session_id}],
-          catalog: String.t() | nil
+          catalog: String.t() | nil,
+          max_tokens_field: :max_completion_tokens | :max_tokens
         }
 
   @max_headers 16
@@ -50,6 +58,7 @@ defmodule Helyx.Provider.OpenAI.Endpoint do
     do: is_binary(name) and name =~ ~r/\A[A-Za-z_][A-Za-z0-9_]{0,255}\z/
 
   defp valid?(:catalog, id), do: id in [nil | Helyx.ModelInfo.Catalog.ids()]
+  defp valid?(:max_tokens_field, field), do: field in [:max_completion_tokens, :max_tokens]
 
   defp valid?(:headers, headers),
     do: is_list(headers) and length(headers) <= @max_headers and Enum.all?(headers, &header?/1)

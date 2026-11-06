@@ -86,6 +86,21 @@ defmodule Helyx.Core.Plugins do
     end)
   end
 
+  # The providers whose optional `max_output_tokens?/0` returns `true`; any
+  # other return than a boolean fails the start
+  # (docs/features/output-limit.md, decision 3).
+  @spec limit_providers([module()]) ::
+          {:ok, [module()]} | {:error, {:invalid_max_output_tokens, module()}}
+  def limit_providers(providers) do
+    Enum.reduce_while(providers, {:ok, []}, fn plugin, {:ok, limited} ->
+      case function_exported?(plugin, :max_output_tokens?, 0) and plugin.max_output_tokens?() do
+        true -> {:cont, {:ok, [plugin | limited]}}
+        false -> {:cont, {:ok, limited}}
+        _other -> {:halt, {:error, {:invalid_max_output_tokens, plugin}}}
+      end
+    end)
+  end
+
   defp checked_id(plugin) do
     id = plugin.id()
     if is_binary(id), do: {:ok, id}, else: :error

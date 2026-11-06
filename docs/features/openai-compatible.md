@@ -27,6 +27,7 @@ A product owner adds one such module under the product root and registers it, an
 | `key_env` | the name of the environment variable that holds the API key, or nil. Nil sends no `Authorization` header, for a local server; it also replaces an `auth` of Req's `:default_options` | nil |
 | `headers` | a list of `{name, value}`. A value is a string, or `:session_id` for the Helyx session id of the call | `[]` |
 | `catalog` | the catalog id of `Helyx.ModelInfo.Catalog` for the window and the prices: one of the ids that the catalog keeps, or nil | nil |
+| `max_tokens_field` | the body field of the session's `:max_output_tokens`: `:max_completion_tokens` or `:max_tokens` (`output-limit.md`, #836) | `:max_completion_tokens` |
 
 The engine checks the options when the endpoint module compiles. A bad or missing option raises `ArgumentError` and an unknown option raises `KeyError`, so the compile fails with the name of the option. The key is read at each call.
 
@@ -55,6 +56,7 @@ The engine checks the options when the endpoint module compiles. A bad or missin
 | endpoint header value | a string of 0 to 4,096 bytes of printable ASCII, space, or tab; or `:session_id` | the compile fails |
 | `key_env` | nil, or 1 to 256 bytes: a letter or `_`, then letters, digits, or `_` | the compile fails |
 | `catalog` | nil, or one of `Helyx.ModelInfo.Catalog.ids/0` (`anthropic`, `openai`, `opencode-go`) | the compile fails |
+| `max_tokens_field` | `:max_completion_tokens` or `:max_tokens` | the compile fails |
 | the API key | 1 to 4,096 bytes of `b64token`: letters, digits, `-._~+/`, then any `=` | `{:error, {:bad_env, name}}` before any request; the empty string is `{:missing_env, name}` |
 | HTTP error body | 2,000 bytes, the text bound of `Helyx.ProviderError` (#760). Before the mask each invalid sequence becomes U+FFFD, which is not shorter, so no byte moves to an earlier place and no repair joins the parts of a copy of the key. The drain reads up to the bound plus twice the key size (the longest form of the key), so a key that starts inside the bound is whole when it is masked. The mask keeps every position, so a part of the key at the end of the read stays past the cut, and the bound holds on the text that the turn error carries | cut to valid UTF-8 |
 

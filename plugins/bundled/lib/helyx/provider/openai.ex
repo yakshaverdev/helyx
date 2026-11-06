@@ -12,16 +12,18 @@ defmodule Helyx.Provider.OpenAI do
   The options: `id` (the ref prefix), `base_url` (with any `/v1` prefix;
   the engine appends `/chat/completions`), `key_env` (the variable of the
   API key, or nil for no `Authorization` header), `headers` (`{name,
-  value}`, a value a string or `:session_id`), and `catalog` (the catalog
-  id for the window and the prices, or nil). A bad option fails the compile
-  of the endpoint module. Every request sends `User-Agent: helyx/<version>`.
-  A key that is not set or empty fails the call with `{:missing_env,
-  name}`, and a key that is not an RFC 6750 bearer token with `{:bad_env,
-  name}`. In each event of the engine, each byte of each copy of the key,
-  and of its JSON form with `\\/`, becomes `*`. Accepted holes: a key in
-  `\\uXXXX` escapes, with only some of its slashes escaped, as a list of
-  character codes, or in a copy that overlaps an earlier copy is not
-  masked. `docs/features/openai-compatible.md`.
+  value}`, a value a string or `:session_id`), `catalog` (the catalog id
+  for the window and the prices, or nil), and `max_tokens_field` (the body
+  field of the session's `:max_output_tokens`: `:max_completion_tokens`,
+  the default, or `:max_tokens`; `docs/features/output-limit.md`). A bad
+  option fails the compile of the endpoint module. Every request sends
+  `User-Agent: helyx/<version>`. A key that is not set or empty fails the
+  call with `{:missing_env, name}`, and a key that is not an RFC 6750
+  bearer token with `{:bad_env, name}`. In each event of the engine, each
+  byte of each copy of the key, and of its JSON form with `\\/`, becomes
+  `*`. Accepted holes: a key in `\\uXXXX` escapes, with only some of its
+  slashes escaped, as a list of character codes, or in a copy that
+  overlaps an earlier copy is not masked. `docs/features/openai-compatible.md`.
 
   A request that fails before the stream starts runs again, at most 3
   times: on a 408, 409, 429, or 5xx, and on a transport error. A server
@@ -41,6 +43,9 @@ defmodule Helyx.Provider.OpenAI do
 
       @impl Helyx.Provider
       def id, do: @helyx_endpoint.id
+
+      @impl Helyx.Provider
+      def max_output_tokens?, do: true
 
       @impl Helyx.Provider.Loop
       def stream(model, context, opts),
@@ -120,7 +125,7 @@ defmodule Helyx.Provider.OpenAI do
         url: "/chat/completions",
         headers: headers(endpoint.headers, opts),
         user_agent: "helyx/#{Application.spec(:helyx, :vsn)}",
-        json: body(model, context),
+        json: body(endpoint, model, context, opts[:max_output_tokens]),
         into: :self,
         receive_timeout: @chunk_idle_ms,
         # `post/2` owns the retries and the error responses, a 3xx too;
@@ -141,19 +146,22 @@ defmodule Helyx.Provider.OpenAI do
   defp value(:session_id, opts), do: Keyword.fetch!(opts, :session_id)
   defp value(value, _opts), do: value
 
-  defp body(model, context) do
-    body = %{
+  defp body(endpoint, model, context, limit) do
+    %{
       model: model,
       stream: true,
       stream_options: %{include_usage: true},
       messages: messages(context)
     }
-
-    case context.tools do
-      [] -> body
-      tools -> Map.put(body, :tools, Enum.map(tools, &tool/1))
-    end
+    |> put_tools(context.tools)
+    |> put_limit(endpoint.max_tokens_field, limit)
   end
+
+  defp put_tools(body, []), do: body
+  defp put_tools(body, tools), do: Map.put(body, :tools, Enum.map(tools, &tool/1))
+
+  defp put_limit(body, _field, nil), do: body
+  defp put_limit(body, field, limit), do: Map.put(body, field, limit)
 
   defp tool(spec) do
     %{

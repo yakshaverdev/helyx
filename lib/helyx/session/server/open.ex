@@ -101,7 +101,7 @@ defmodule Helyx.Session.Server.Open do
   defp attach(nil, _session, _start), do: {:error, :too_many_sessions}
 
   defp attach(pid, session, {state, tools, open, runs}) do
-    with :ok <- GenServer.call(pid, {:attach, state.provider_opts}, :infinity),
+    with :ok <- GenServer.call(pid, {:attach, state.init.provider_opts}, :infinity),
          do: {:ok, session}
   catch
     :exit, {{:shutdown, {:open_failed, reason}}, _call} -> {:error, reason}
