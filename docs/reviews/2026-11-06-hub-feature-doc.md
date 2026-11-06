@@ -133,6 +133,20 @@ The fix of the project id is one line of the op table and a first finding, so it
 | The project-null rule is in the op table, not in the `record` codec; "a user who does not own the record" is the plainer rule | spec (wording) | open |
 | The order of `bad_params` and the access check is not stated (an error-order channel) | spec (wording) | open |
 
+## Fixes after the small-fix round (no review round; the Codex gate of the orchestrator follows)
+
+At the request of the orchestrator, the open items that need no decision of the owner were fixed without a review round:
+
+| Open item | Fix |
+|---|---|
+| The delivery id showed the schedule id and the run count to readers of a `"hub"` session | A random delivery id of 12 characters for each pending wake-up, kept in the schedule row (`delivery_id`); a write-back keeps it; an access test reads a scheduled message as another user |
+| The Bounds row of `check`, `result`, `run` against the 15,000 ms `run` of `sessions.saved` | The row and the transport changes name the 15,000 ms |
+| "the 256 newest files of the data folder" with a `cwd` | The 256 newest files of the folder of `cwd`, or of the whole data folder with no `cwd` |
+| The project-null rule only in the op table | In the `record` codec: null for a user who does not own the record |
+| The order of `bad_params` and the access check | Stated in decision 5: the params first, so `bad_params` never depends on an object of another user; an access test |
+
+Still open for the owner, on the ticket and unchanged in the doc: the count channel of the shared 256-file scan, and the default owner telling a private session from a missing one by the derived record.
+
 ## Guarantee table (spec agent, round 1)
 
 | Guarantee about existing code | Proof |
