@@ -218,11 +218,10 @@ defmodule Helyx.Sessions do
              | File.posix()}
   def delete(core, id) when is_binary(id) do
     with {:ok, dir} <- sessions_dir(core),
-         {:ok, path} <- Scan.locate(dir, id),
-         :ok <- not_running(core, id) do
+         {:ok, path} <- Scan.locate(dir, id) do
       # The take, two removes, and the release each have the bound of
       # `Helyx.Session.Lock`.
-      Edit.run(core, nil, fn nil -> Edit.delete(path) end)
+      Edit.run(core, nil, fn nil -> Edit.delete(core, id, path) end)
     end
   end
 
@@ -266,10 +265,9 @@ defmodule Helyx.Sessions do
   def remove_message(core, id, message_id) when is_binary(id) and is_binary(message_id) do
     with {:ok, dir} <- sessions_dir(core),
          {:ok, path, %{"cwd" => cwd}} <- Scan.find(dir, id),
-         :ok <- not_running(core, id),
          {:ok, size} <- size(path) do
       budget = @remove_base_ms + div(size * @remove_passes, 1_000)
-      Edit.run(core, budget, &Edit.remove_message(path, cwd, message_id, &1))
+      Edit.run(core, budget, &Edit.remove_message({core, id, path}, cwd, message_id, &1))
     end
   end
 
@@ -286,15 +284,6 @@ defmodule Helyx.Sessions do
     case Helyx.Core.config(core, :sessions_dir) do
       nil -> {:error, :not_found}
       dir -> {:ok, dir}
-    end
-  end
-
-  # A session of the id that runs in `core` has its lock, or takes it at
-  # the end of its open; a session in another process is seen at the take.
-  defp not_running(core, id) do
-    case Registry.lookup(Helyx.Core.sessions_registry(core), id) do
-      [] -> :ok
-      _running -> {:error, :running}
     end
   end
 

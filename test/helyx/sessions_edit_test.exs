@@ -342,4 +342,50 @@ defmodule Helyx.SessionsEditTest do
       assert File.read!(path) == before
     end
   end
+
+  describe "a session that lost its lock" do
+    # The edit waits at the Task supervisor of its Core, so before its take;
+    # a resume takes the lock, its perl ends, and the session goes on in
+    # memory, registered. The edit then takes the free lock (Codex gate of
+    # #833).
+    test "is refused after the take, and the file does not change", %{tmp_dir: dir} do
+      dir = Path.join(dir, "lost")
+      core = :"core_#{System.unique_integer([:positive])}"
+
+      start_supervised!(
+        {Helyx.Core, name: core, plugins: [Helyx.Test.Provider], sessions_dir: dir},
+        id: core
+      )
+
+      first = msg(:user, "one")
+      {id, path} = saved(dir, [first, msg(:user, "two")])
+      parent = self()
+
+      for {name, call} <- [
+            remove: fn -> Sessions.remove_message(core, id, first.id) end,
+            delete: fn -> Sessions.delete(core, id) end
+          ] do
+        sup = Process.whereis(Helyx.Core.task_supervisor(core))
+        true = :erlang.suspend_process(sup)
+        spawn(fn -> send(parent, {name, call.()}) end)
+
+        await(
+          fn -> Process.info(sup, :message_queue_len) == {:message_queue_len, 1} end,
+          "the edit to wait"
+        )
+
+        {:ok, session} = Sessions.resume(core, id: id)
+        pid = Session.pid(session)
+        {:os_pid, os_pid} = Port.info(:sys.get_state(pid).lock, :os_pid)
+        {_, 0} = System.cmd("kill", ["-KILL", Integer.to_string(os_pid)])
+        await(fn -> :sys.get_state(pid).lock == nil end, "the session to lose its lock")
+        before = File.read!(path)
+
+        true = :erlang.resume_process(sup)
+        assert_receive {^name, {:error, :running}}, 5_000
+        assert File.read!(path) == before
+        :ok = Sessions.stop(session)
+      end
+    end
+  end
 end

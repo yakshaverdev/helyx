@@ -3,7 +3,8 @@ defmodule Helyx.Session.File.Edit do
   # The delete of a saved session file and the removal of messages from it
   # (docs/features/session-edit.md). Each call takes the writer lock of the
   # file (`Helyx.Session.Lock`), works under it, and releases it, so no
-  # session writes the file meanwhile; a held lock is `{:error, :running}`.
+  # session writes the file meanwhile; a held lock, or a session of the id
+  # in the Registry of the Core after the take, is `{:error, :running}`.
   # The caller traps exits, as `Lock.take/1` needs, and owns the port:
   # `run/3` runs each call in such a Task and derives its report. The
   # change of the file itself, an unlink or the rename of the rewritten
@@ -86,13 +87,13 @@ defmodule Helyx.Session.File.Edit do
   end
 
   @doc false
-  # Removes the session file `path` and the copy that a removal left. The
-  # lock file stays, as at a stop: only its `flock` counts, and a removed
-  # lock file would let a second process lock a new file of that path while
-  # an older open still holds the first.
+  # Removes the file `path` of the session `id` of `core` and the copy that
+  # a removal left. The lock file stays, as at a stop: only its `flock`
+  # counts, and a removed lock file would let a second process lock a new
+  # file of that path while an older open still holds the first.
   # The copy goes first, so an error leaves the session file and a retry.
-  def delete(path) do
-    locked(path, fn lock ->
+  def delete(core, id, path) do
+    locked({core, id, path}, fn lock ->
       with :ok <- exists(path),
            :ok <- edit_failed(Lock.remove_file(lock, tmp(path))),
            do: edit_failed(Lock.remove_file(lock, path))
@@ -101,14 +102,14 @@ defmodule Helyx.Session.File.Edit do
 
   @doc false
   # Removes the message `message_id` and the messages that pair with it from
-  # the session file `path` of `cwd`, and gives their ids in file order. The
-  # file is read and checked as a resume reads it, with no repair write,
-  # then copied without them to `<path>.tmp`, and the copy replaces the
-  # file by a rename. The `killer` of the deadline (`Helyx.Session.Killer`)
-  # is disarmed before the rename is sent: past that point the result is
-  # the answer of perl.
-  def remove_message(path, cwd, message_id, killer) do
-    locked(path, fn lock ->
+  # the file `path` of the session `id` of `core`, of the folder `cwd`, and
+  # gives their ids in file order. The file is read and checked as a resume
+  # reads it, with no repair write, then copied without them to
+  # `<path>.tmp`, and the copy replaces the file by a rename. The `killer`
+  # of the deadline (`Helyx.Session.Killer`) is disarmed before the rename
+  # is sent: past that point the result is the answer of perl.
+  def remove_message({_core, _id, path} = session, cwd, message_id, killer) do
+    locked(session, fn lock ->
       with :ok <- exists(path),
            {:ok, resumed} <- SessionFile.read_picked(path, cwd),
            {:ok, ids} <- group(resumed.messages, message_id) do
@@ -117,10 +118,17 @@ defmodule Helyx.Session.File.Edit do
     end)
   end
 
-  defp locked(path, fun) do
+  # A session of the id in the Registry of `core` is refused after the
+  # take: one that lost its lock goes on, and one in its open takes the lock
+  # after it, so the check before the take is not enough. A session that
+  # registers after this check gets `{:session_locked, id}` at its take. A
+  # session of another Core or OS process is seen at the take while it
+  # holds the lock; one that lost its lock is not seen (session-edit.md,
+  # accepted holes).
+  defp locked({core, id, path}, fun) do
     case Lock.take(path) do
       {:ok, lock} ->
-        result = fun.(lock)
+        result = if registered?(core, id), do: {:error, :running}, else: fun.(lock)
         Lock.release(lock)
         result
 
@@ -131,6 +139,8 @@ defmodule Helyx.Session.File.Edit do
         error
     end
   end
+
+  defp registered?(core, id), do: Registry.lookup(Helyx.Core.sessions_registry(core), id) != []
 
   # The file can go between the find and the take, by another delete. A
   # symlink is refused: the unlink and the rename would change the link and
