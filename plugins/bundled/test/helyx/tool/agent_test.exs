@@ -65,6 +65,35 @@ defmodule Helyx.Tool.AgentTest do
     def release(handles, _mode, _deadline), do: handles
   end
 
+  defmodule Marked do
+    @moduledoc false
+    # Two ModelContext plugins that send each build, with the session id,
+    # to the process registered as `<core>_builds`, if one is.
+    defmacro __using__(_opts) do
+      quote do
+        @behaviour Helyx.ModelContext
+
+        @impl true
+        def build(context, opts) do
+          if pid = Process.whereis(:"#{opts[:core]}_builds"),
+            do: send(pid, {:built, opts[:session_id], __MODULE__})
+
+          context
+        end
+      end
+    end
+  end
+
+  defmodule First do
+    @moduledoc false
+    use Marked
+  end
+
+  defmodule Second do
+    @moduledoc false
+    use Marked
+  end
+
   setup %{tmp_dir: dir} do
     core = :"core_#{System.unique_integer([:positive])}"
 
@@ -185,6 +214,25 @@ defmodule Helyx.Tool.AgentTest do
     child = child_id(session, "c2")
     assert_receive {:init, ^child, opts}
     assert Keyword.take(opts, [:persist, :report]) == [report: self()]
+  end
+
+  # #854: the child gets the ModelContext of its parent, not the first one.
+  test "a child gets the ModelContext of its parent", %{tmp_dir: dir} do
+    core = :"core_#{System.unique_integer([:positive])}"
+    plugins = [Fake, Helyx.Tool.Agent, First, Second]
+    start_supervised!({Helyx.Core, name: core, plugins: plugins, sessions_dir: dir}, id: core)
+    Process.register(self(), :"#{core}_builds")
+
+    session =
+      parent(core, dir, [[agent("c1")], ["child"], ["Done."]], model_context: Second)
+
+    [result] = results(collect_until(:turn_end))
+    assert Message.text(result) == "child"
+    parent_id = session.id
+    child = child_id(session, "c1")
+    assert_receive {:built, ^parent_id, Second}
+    assert_receive {:built, ^child, Second}
+    refute_received {:built, _id, First}
   end
 
   test "a child gets no tool that the parent lacks", %{core: core, tmp_dir: dir} do

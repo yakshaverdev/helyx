@@ -134,9 +134,12 @@ defmodule Helyx.Session.Server.Open do
   defp start_child(%State{core: core} = state, {tools, concurrent}, start) do
     # The plugin table of a Core does not change after start, so a plugin
     # resolved once here is the plugin a lookup per provider call would give.
-    # The three interfaces are single-mode: one plugin or none (nil).
+    # Compaction and Memory are single-mode: one plugin or none (nil). The
+    # ModelContext is the one that the start named, else the first, so a
+    # resume gets the first (docs/features/session-model-context.md).
     plugins = %{
-      model_context: List.first(Helyx.Core.plugins(core, Helyx.ModelContext)),
+      model_context:
+        state.plugins.model_context || List.first(Helyx.Core.plugins(core, Helyx.ModelContext)),
       compaction: List.first(Helyx.Core.plugins(core, Helyx.Compaction)),
       memory: List.first(Helyx.Core.plugins(core, Helyx.Memory))
     }

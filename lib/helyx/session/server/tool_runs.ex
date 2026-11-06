@@ -56,7 +56,8 @@ defmodule Helyx.Session.Server.ToolRuns do
     context = %{
       session_id: state.id,
       model: Helyx.ModelRef.to_string(model),
-      provider_opts: state.provider_opts
+      provider_opts: state.provider_opts,
+      model_context: state.plugins.model_context
     }
 
     :ok = Hands.run(state.hands, turn_id, call, context)

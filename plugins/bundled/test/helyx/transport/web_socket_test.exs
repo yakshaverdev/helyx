@@ -424,6 +424,11 @@ defmodule Helyx.Transport.WebSocketTest do
       assert %{"error" => %{"code" => "bad_params"}} =
                Client.request(socket, "3", "sessions.live", %{"x" => 1})
 
+      # The wire has no field for the ModelContext of a start (#854,
+      # docs/features/session-model-context.md, "Out of scope").
+      start = %{"cwd" => File.cwd!(), "model" => "fake/echo", "model_context" => "x"}
+      assert %{"error" => %{"code" => "bad_params"}} = Client.request(socket, "4", "start", start)
+
       assert %{"error" => %{"code" => "bad_params"}} =
                Client.request(socket, String.duplicate("i", 65), "sessions.live", %{})
 

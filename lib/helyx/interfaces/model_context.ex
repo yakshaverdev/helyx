@@ -12,9 +12,13 @@ defmodule Helyx.ModelContext do
   nil). A message that the plugin adds has no id, so the Compaction plugin
   can tell it from a message of the transcript
   (`docs/features/summary-compaction.md`).
+
+  A Core can register several. A session uses the one that its start
+  names with `:model_context`, or the first one registered
+  (`docs/features/session-model-context.md`).
   """
 
-  use Helyx.Interface, mode: :single
+  use Helyx.Interface, mode: :multi
 
   @callback build(context :: Helyx.Context.t(), opts :: keyword()) :: Helyx.Context.t()
 end

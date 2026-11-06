@@ -225,9 +225,10 @@ defmodule Helyx.Tool do
   @doc """
   The context of the calling tool call: its Core, the id of its session,
   the tool names of the session, the name of the called tool, its call id,
-  the model ref of its turn, as `provider/model`, and the `:provider_opts`
-  of the session (`Helyx.Session.start/2`). The hands set it when the
-  call's Task starts, so it needs no call to them.
+  the model ref of its turn, as `provider/model`, the `:provider_opts`
+  of the session (`Helyx.Session.start/2`), and its ModelContext plugin,
+  nil with none (`docs/features/session-model-context.md`). The hands set
+  it when the call's Task starts, so it needs no call to them.
   Raises in any other process (`docs/features/agent-tool.md`).
   """
   @spec context() :: %{
@@ -237,7 +238,8 @@ defmodule Helyx.Tool do
           tool: String.t(),
           call_id: String.t(),
           model: String.t(),
-          provider_opts: keyword()
+          provider_opts: keyword(),
+          model_context: module() | nil
         }
   def context do
     case Process.get(:helyx_call) do

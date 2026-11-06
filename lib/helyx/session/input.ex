@@ -38,15 +38,19 @@ defmodule Helyx.Session.Input do
       else: {:error, :invalid_provider_opts}
   end
 
-  # The start options of a child session: `:parent`, the link to the call
-  # that started it, for the header, and `:tools`, the names of the tools
-  # that it gets, nil for all (docs/features/agent-tool.md, "Bounds").
-  @spec child(keyword()) ::
-          {:ok, map() | nil, [String.t()] | nil} | {:error, :invalid_parent | :invalid_tools}
-  def child(opts) do
+  # The start options that a resume does not take: `:parent`, the link to
+  # the call that started a child, for the header, `:tools`, the names of
+  # the tools that the session gets, nil for all (docs/features/agent-tool.md,
+  # "Bounds"), and `:model_context`, a ModelContext plugin of the Core, nil
+  # for the first (docs/features/session-model-context.md).
+  @spec start_options(Helyx.Core.name(), keyword()) ::
+          {:ok, map() | nil, [String.t()] | nil, module() | nil}
+          | {:error, :invalid_parent | :invalid_tools | :invalid_model_context}
+  def start_options(core, opts) do
     with {:ok, parent} <- parent(opts[:parent]),
          {:ok, names} <- tools(opts[:tools]),
-         do: {:ok, parent, names}
+         {:ok, model_context} <- model_context(core, opts[:model_context]),
+         do: {:ok, parent, names, model_context}
   end
 
   # The call id bound keeps the header far under the head that a scan reads.
@@ -73,6 +77,16 @@ defmodule Helyx.Session.Input do
   end
 
   defp tools(_names), do: {:error, :invalid_tools}
+
+  # nil stays nil: the session resolves it to the first one at its start
+  # (`Helyx.Session.Server.Open`).
+  defp model_context(_core, nil), do: {:ok, nil}
+
+  defp model_context(core, module) do
+    if module in Helyx.Core.plugins(core, Helyx.ModelContext),
+      do: {:ok, module},
+      else: {:error, :invalid_model_context}
+  end
 
   # A model ref string to its parsed ref and its provider plugin, for a
   # start, a resume, and a switch alike.

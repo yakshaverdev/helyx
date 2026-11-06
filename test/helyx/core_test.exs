@@ -37,6 +37,18 @@ defmodule Helyx.CoreTest do
     assert Helyx.Core.plugins(name, Helyx.Provider) == [Test.Provider]
   end
 
+  # #854: a session picks one with `:model_context`, the first by default.
+  test "boots with two model context plugins and lists them in registration order" do
+    name = :"core_#{System.unique_integer([:positive])}"
+    plugins = [Test.Provider, Test.PrepareContext, Test.ModelContext]
+    {:ok, _} = start_supervised({Helyx.Core, name: name, plugins: plugins})
+
+    assert Helyx.Core.plugins(name, Helyx.ModelContext) == [
+             Test.PrepareContext,
+             Test.ModelContext
+           ]
+  end
+
   test "the plugin table survives a restart of the sessions Registry" do
     name = :"core_#{System.unique_integer([:positive])}"
     {:ok, _} = start_supervised({Helyx.Core, name: name, plugins: [Test.Provider, Test.MultiA]})
@@ -64,8 +76,6 @@ defmodule Helyx.CoreTest do
   for {name, plugins, error} <- [
         {"two plugins for a single interface", [Test.Provider, Test.SingleA, Test.SingleB],
          quote(do: {:mode_violation, Test.Single, [Test.SingleA, Test.SingleB]})},
-        {"two model context plugins", [Test.Provider, Test.ModelContext, Test.PrepareContext],
-         quote(do: {:mode_violation, Helyx.ModelContext, _})},
         {"two compaction plugins", [Test.Provider, Test.Compaction, Test.PrepareCompaction],
          quote(do: {:mode_violation, Helyx.Compaction, _})},
         {"a missing provider", [Test.SingleA], quote(do: {:missing_plugin, Helyx.Provider})},
