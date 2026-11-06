@@ -102,6 +102,37 @@ The two fixes of decision 12 touch one file and a few lines, and are the first f
 | The example of two Tasks cannot happen with the link | Fixed: the condition is a second guard |
 | An empty section heading in this record | Fixed |
 
+## The Codex gate, and the admission decision of the owner
+
+The Codex gate of the orchestrator (round 1) found one defect, confirmed in the code: under a Hub, `sessions.saved` kept the page of Core and left out the sessions that the user may not read, but Core makes `next` as `<mtime>:<session id>` of the last summary of its page (`lib/helyx/sessions.ex:119`). When that summary was a hidden one, the cursor carried a private session id and its time, and with `limit: 1` a user could list every hidden session. Fixed: under an authority, `sessions.saved` goes to `run`; the authority reads the whole scan of Core (one `list_saved/2` with `limit: 256`, the 256 newest files), filters by access, then makes the page and `next` from readable sessions only (decision 7). The other operations were checked for the same leak: `hub.records.search` filters in its query before it pages, and its cursor is of a returned record; a project, a token, or a schedule of another user gives the answer of a missing one; `sessions.live` has no cursor; `history` pages only a session that the user may read; the shared Core cap tells only that the server is full (accepted hole). An access test list for #869 is in the doc.
+
+The owner answered the open admission finding on #868 (2026-11-06): accept it as a stated hole; a product bounds its own callers of the Elixir API, the wire keeps its numbers, and Hub stores no count. Written in decision 5, the bounds, and the accepted holes.
+
+## Round after the gate (reduced: Codex and spec)
+
+Both confirmed that the cursor leak of `sessions.saved` is closed: one `list_saved/2` with `limit: 256` returns every summary of the scan of 256 files (`scan.ex:8`, `sessions.ex:22`, `:114`), with the order and the cursor format of Core (`sessions.ex:92`, `:116`, `:119`). Both found leak paths by reading the code; the round reproduced defects, and it was the one round that the brief allowed.
+
+| Finding | Source | State |
+|---|---|---|
+| The scan takes the 256 newest files of every user before the filter, so a new private session of A pushes an old session of B out of B's `sessions.saved` and `resume` `{cwd}`: a count channel; the access test "the pages of B are the same as on a server where that session does not exist" cannot pass | Codex (medium), spec (defect) | open: a decision of the owner, an accepted hole (the scan is shared, and the user learns that newer sessions exist, not their ids or times) or a design that selects readable files before the bound of 256, which needs a Core change |
+| The default owner gets a derived record for an id with no row, and `session_not_found` for a private session of another user, so it can tell that such a session exists | Codex (medium), spec (defect) | open: a decision of the owner, an accepted hole (the default owner is the operator, who reads the data folder, decision 8) or a bounded existence check before a derived record |
+| A shared record returned the project id of its owner to other users | Codex (medium) | fixed in the small-fix round: `project` is null for a user who does not own the project |
+| `hub.records.search` does not reach the default owner's sessions with no record | spec (wording) | fixed |
+| `resume` `{cwd}` under a Hub orders by file time, Core by header time | spec (wording) | fixed: stated |
+| The deadline and the encoder slot of the `run` of `sessions.saved` | spec (wording) | fixed: 15,000 ms and the encoder slot |
+
+## Small-fix round after the gate (reduced: Codex and spec)
+
+The fix of the project id is one line of the op table and a first finding, so it took the small-fix round; the wording fixes went with it. Spec: no leak reproduced; the fixes (a) to (c) hold, `scan.ex:113` and `sessions.ex:92`, `:116` confirm the order of (c), and the encoder slot of `wire-protocol.md` holds. Codex reproduced a leak by reading the code, so the loop stops here, and the doc is committed as this round reviewed it. Open:
+
+| Finding | Source | State |
+|---|---|---|
+| The delivery id `<schedule id>:<run number>` is the origin id of the prompt; Core keeps it in the message, and the wire sends it in events and `history`, so a reader of a `"hub"` session learns the private schedule id and the run count of its owner | Codex (medium) | open: an opaque delivery id (random, kept in the schedule row) and an access test that reads a scheduled message as another user |
+| The Bounds row "`check`, `result`, `run`: 5,000 ms each" contradicts the 15,000 ms of the `run` of `sessions.saved` (decisions 5 and 7); the transport Interface changes do not name that deadline | spec (defect, contradiction) | open: one row and one line |
+| "the 256 newest files of the data folder" is wrong with a `cwd`: the scan takes the 256 newest files of that folder (`scan.ex:120`, `:131`) | spec (defect, false claim) | open: "of the folder of `cwd`, or of the data folder without one" |
+| The project-null rule is in the op table, not in the `record` codec; "a user who does not own the record" is the plainer rule | spec (wording) | open |
+| The order of `bad_params` and the access check is not stated (an error-order channel) | spec (wording) | open |
+
 ## Guarantee table (spec agent, round 1)
 
 | Guarantee about existing code | Proof |
