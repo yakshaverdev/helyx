@@ -7,23 +7,22 @@ defmodule Helyx.Provider.ClaudeCode.State do
   # which runs with the program's commands (`Program.start/2`). `sent?` is
   # true once a turn was written to it. `persist?` is false with the
   # option `persist: false`: no program stores or resumes the harness
-  # session (docs/features/harness-no-state.md). `env` is the option `env`
-  # as name and value pairs (`Helyx.HarnessIO.env/1`); `inspect` leaves it out.
-  # `init?` is true from its first `init` line. `closing` is the `from` of
-  # a close. `terminal` stops the read of stdout: `:lost`, a program that
-  # did not start (`Helyx.HarnessIO.launch/4`), an `init` without the
-  # needed capabilities, an error answer to `initialize`, or a line over
-  # the cap (`Helyx.HarnessIO.lines/3`). `tasks` is the `tasks` value of
+  # session (docs/features/harness-no-state.md). `init?` is true from its
+  # first `init` line. `tasks` is the `tasks` value of
   # the last `background_tasks_changed` line: only `[]` lets an idle close
   # stop the program.
   # `notified?` is true from a `task_notification` line until the next
   # `init` or `:busy` answer: a program turn can follow it (#240).
   # `tools` are the Helyx tool specs, and `calls` the open `tools/call`
   # requests of `Mcp`. `meter` is the usage of the program (`Meter`).
-  # `handles` are the held handles of the provider's programs
-  # (`Helyx.HarnessIO`).
+  # `stream` holds what the provider shares with `Helyx.HarnessIO`: the
+  # port, the read buffer, the terminal, the close, the held handles, and
+  # the env (`Helyx.HarnessIO.Stream`). A terminal stops the read of
+  # stdout: `:lost`, a program that did not start
+  # (`Helyx.HarnessIO.launch/4`), an `init` without the needed
+  # capabilities, an error answer to `initialize`, or a line over the cap
+  # (`Helyx.HarnessIO.lines/3`).
   @enforce_keys [:exe, :model, :cwd]
-  @derive {Inspect, except: [:env]}
   defstruct [
     :exe,
     :model,
@@ -31,22 +30,16 @@ defmodule Helyx.Provider.ClaudeCode.State do
     :resume,
     :session_id,
     :system,
-    :port,
     :turn,
-    :closing,
-    :terminal,
-    buffer: [],
     tools: [],
     calls: %{},
     tasks: [],
-    handles: [],
     meter: %Helyx.Provider.ClaudeCode.Meter{},
-    size: 0,
     init?: false,
     commands?: false,
     sent?: false,
     notified?: false,
     persist?: true,
-    env: []
+    stream: %Helyx.HarnessIO.Stream{}
   ]
 end

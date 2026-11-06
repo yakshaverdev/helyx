@@ -6,6 +6,7 @@ defmodule Helyx.Provider.ClaudeCode.Program do
   # provider state.
 
   alias Helyx.HarnessIO
+  alias Helyx.HarnessIO.Stream
   alias Helyx.Provider.ClaudeCode
   alias Helyx.Provider.ClaudeCode.{Mcp, Meter, Replay, State}
 
@@ -46,42 +47,49 @@ defmodule Helyx.Provider.ClaudeCode.Program do
   # A program with the prompt `system` and `commands?`: the running one, or
   # one in its place that resumes its harness session once the running one
   # ended.
-  def ensure(%State{port: port, system: system, commands?: commands?} = state, system, commands?)
+  def ensure(
+        %State{stream: %Stream{port: port}, system: system, commands?: commands?} = state,
+        system,
+        commands?
+      )
       when port != nil,
       do: state
 
   # A harness session with no stored state cannot be resumed: a fresh one
   # with a new meter takes its place, and its turn gets the replay.
-  def ensure(%State{port: nil, persist?: false, sent?: true} = state, system, commands?) do
+  def ensure(
+        %State{stream: %Stream{port: nil}, persist?: false, sent?: true} = state,
+        system,
+        commands?
+      ) do
     meter = Meter.start(nil, state.meter.config_window)
     start(replace(state, meter: meter, commands?: commands?), system)
   end
 
-  def ensure(%State{port: nil} = state, system, commands?) do
+  def ensure(%State{stream: %Stream{port: nil}} = state, system, commands?) do
     resume = if state.sent?, do: state.session_id, else: state.resume
     start(replace(state, resume: resume, meter: state.meter, commands?: commands?), system)
   end
 
   def ensure(state, system, commands?) do
     case HarnessIO.finish(state) do
-      :ok -> ensure(%{state | port: nil}, system, commands?)
-      {:error, _reason} = error -> %{state | terminal: error}
+      :ok -> ensure(HarnessIO.update(state, port: nil), system, commands?)
+      {:error, _reason} = error -> HarnessIO.update(state, terminal: error)
     end
   end
 
   # A new state in place of the running program's, with that program
   # stopped.
   def replace(state, fields) do
-    if state.port, do: HarnessIO.stop(state)
+    if state.stream.port, do: HarnessIO.stop(state)
 
     keep = [
       exe: state.exe,
       model: state.model,
       cwd: state.cwd,
       tools: state.tools,
-      handles: state.handles,
       persist?: state.persist?,
-      env: state.env
+      stream: %Stream{handles: state.stream.handles, env: state.stream.env}
     ]
 
     struct!(State, keep ++ fields)
@@ -109,7 +117,7 @@ defmodule Helyx.Provider.ClaudeCode.Program do
 
     request = %{subtype: "initialize", systemPrompt: system}
     line = %{type: "control_request", request_id: "initialize", request: request}
-    if state.port, do: HarnessIO.write(state, Replay.line(line))
+    if state.stream.port, do: HarnessIO.write(state, Replay.line(line))
     state
   end
 

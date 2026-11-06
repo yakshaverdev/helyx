@@ -71,7 +71,7 @@ defmodule Helyx.Provider.Codex.PromptTest do
     state = Enum.reduce(["A", "B"], state, &run(&2, &1, "x"))
     started = System.monotonic_time(:millisecond)
     state = run(state, "C", "x")
-    Helyx.Test.Hands.assert_one_program(state.handles, started)
+    Helyx.Test.Hands.assert_one_program(state.stream.handles, started)
     assert runs(bin) == "3"
     close(state)
   end

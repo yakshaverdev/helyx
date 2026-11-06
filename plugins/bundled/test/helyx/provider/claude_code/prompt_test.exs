@@ -57,7 +57,7 @@ defmodule Helyx.Provider.ClaudeCode.PromptTest do
     state = Enum.reduce(["A", "B"], harness(work), &run(&2, &1, ["x"]))
     started = System.monotonic_time(:millisecond)
     state = run(state, "C", ["x"])
-    Helyx.Test.Hands.assert_one_program(state.handles, started)
+    Helyx.Test.Hands.assert_one_program(state.stream.handles, started)
     assert programs(bin) == "3"
     closed(state)
   end

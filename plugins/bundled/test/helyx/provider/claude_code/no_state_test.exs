@@ -103,7 +103,7 @@ defmodule Helyx.Provider.ClaudeCode.NoStateTest do
     assert %Helyx.ProviderError{kind: :compaction_failed, text: "no stored state to compact"} =
              error
 
-    assert state.port != nil
+    assert state.stream.port != nil
     closed(state)
     assert programs(bin) == "1"
   end

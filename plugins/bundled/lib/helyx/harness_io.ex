@@ -1,9 +1,13 @@
 defmodule Helyx.HarnessIO do
   @moduledoc false
   # What the harness providers share (ADR 0005). It is not a plugin.
-  # `state` is a provider's run state with the fields `port`, `buffer`
-  # (iodata), `size`, `terminal`, `closing`, `handles`, the handles that
-  # the provider holds for its programs, and `env` (`env/1`).
+  # `state` is a provider's run state with the field `stream`
+  # (`Helyx.HarnessIO.Stream`): the port, the read buffer, the size, the
+  # terminal, the close, the handles that the provider holds for its
+  # programs, and `env` (`env/1`). Only that struct is read and written
+  # here.
+
+  alias Helyx.HarnessIO.Stream
 
   @line_max_bytes 16 * 1024 * 1024
   @replay_max_bytes 400_000
@@ -59,13 +63,14 @@ defmodule Helyx.HarnessIO do
   # terminal error.
   defp start(argv, cwd, input, state, opts) do
     state = let_go(state)
+    %{stream: %Stream{handles: held}} = state
 
     case Helyx.Watchdog.start(argv, cwd, input, opts) do
       {:started, port, _pre, handles} ->
-        %{state | port: port, handles: state.handles ++ handles}
+        update(state, port: port, handles: held ++ handles)
 
       {:error, reason} ->
-        %{state | terminal: {:error, {:not_started, reason}}}
+        update(state, terminal: {:error, {:not_started, reason}})
     end
   end
 
@@ -74,31 +79,36 @@ defmodule Helyx.HarnessIO do
   # before are released, and the hands drop the handles that the release
   # confirmed. A group that is not gone by the deadline stays held, for
   # the next launch or the end of the provider process.
-  defp let_go(%{handles: []} = state), do: state
+  defp let_go(%{stream: %Stream{handles: []}} = state), do: state
 
-  defp let_go(state) do
-    left = release(state.handles, :cancel, System.monotonic_time(:millisecond) + @let_go_ms)
-    gone = state.handles -- left
+  defp let_go(%{stream: %Stream{handles: handles}} = state) do
+    left = release(handles, :cancel, System.monotonic_time(:millisecond) + @let_go_ms)
+    gone = handles -- left
     if gone != [], do: Helyx.Tool.unhold(gone)
-    %{state | handles: left}
+    update(state, handles: left)
   end
+
+  # The state with the `fields` of its stream replaced. `struct!` rejects a
+  # field that the shared shape does not have.
+  def update(%{stream: stream} = state, fields),
+    do: %{state | stream: struct!(stream, fields)}
 
   # Runs `exe` with `args` under the watchdog, with open input and stderr
   # dropped. The port stays linked to the caller: a write to a watchdog
   # that died closes the port with `:epipe`, and that exit ends the caller
   # (#390). The closed port makes the watchdog end the group (ADR 0004).
-  # The program gets `state.env` on top of the inherited environment.
-  def launch(exe, args, cwd, state) do
+  # The program gets `state.stream.env` on top of the inherited environment.
+  def launch(exe, args, cwd, %{stream: %Stream{env: env}} = state) do
     ["/bin/sh", "-c", ~S(exec "$0" "$@" 2>/dev/null), exe | args]
-    |> start(cwd, :open, state, grace_ms: @term_grace_ms, env: state.env)
+    |> start(cwd, :open, state, grace_ms: @term_grace_ms, env: env)
   end
 
-  def stop(%{port: port}), do: Helyx.Watchdog.close(port)
+  def stop(%{stream: %Stream{port: port}}), do: Helyx.Watchdog.close(port)
 
   # Ends the input of a program that another one replaces and waits for its
   # exit: two programs must not run one harness session at once. A program
   # that has not exited in time is stopped, and the turn fails.
-  def finish(%{port: port} = state) do
+  def finish(%{stream: %Stream{port: port}} = state) do
     end_input(state)
 
     receive do
@@ -111,13 +121,13 @@ defmodule Helyx.HarnessIO do
   end
 
   # Writes to the program's stdin through the watchdog.
-  def write(%{port: port}, data), do: Helyx.Watchdog.write(port, data)
+  def write(%{stream: %Stream{port: port}}, data), do: Helyx.Watchdog.write(port, data)
 
   # The provider's `:close`: the NUL asks the watchdog to end the program,
   # and the port's exit answers `from` (`port_message/3`).
   def close(state, from) do
     end_input(state)
-    %{state | closing: from}
+    update(state, closing: from)
   end
 
   defp end_input(state), do: write(state, <<0>>)
@@ -135,20 +145,24 @@ defmodule Helyx.HarnessIO do
   # gives `{:lines, events, state}` (see `lines/3`). The port's exit gives
   # `{:closed, from}` during a close, the end the close waits for, and
   # `{:exit, status}` at any other time. Any other message, such as one of
-  # a closed port, is `:other`. `state.closing` is the `from` of a close,
-  # or nil.
-  def port_message({port, {:data, data}}, %{port: port} = state, decode) do
+  # a closed port, is `:other`. `state.stream.closing` is the `from` of a
+  # close, or nil.
+  def port_message({port, {:data, data}}, %{stream: %Stream{port: port}} = state, decode) do
     {events, state} = lines(data, state, decode)
     {:lines, events, state}
   end
 
-  def port_message({port, {:exit_status, status}}, %{port: port} = state, _decode),
-    do: exited(status, state)
+  def port_message(
+        {port, {:exit_status, status}},
+        %{stream: %Stream{port: port}} = state,
+        _decode
+      ),
+      do: exited(status, state)
 
   def port_message(_message, _state, _decode), do: :other
 
-  defp exited(status, %{closing: nil}), do: {:exit, status}
-  defp exited(_status, %{closing: from}), do: {:closed, from}
+  defp exited(status, %{stream: %Stream{closing: nil}}), do: {:exit, status}
+  defp exited(_status, %{stream: %Stream{closing: from}}), do: {:closed, from}
 
   # Reads a chunk of stdout: `decode` gets each complete line that is a
   # JSON object, and the state; other lines (perl's own text) are skipped.
@@ -156,19 +170,21 @@ defmodule Helyx.HarnessIO do
   # is searched for a newline, so a long line costs one pass over its
   # bytes. A line over the cap, with its newline in this chunk or not, ends
   # the stream with an error.
-  def lines(_data, %{terminal: terminal} = state, _decode) when terminal != nil, do: {[], state}
+  def lines(_data, %{stream: %Stream{terminal: terminal}} = state, _decode)
+      when terminal != nil,
+      do: {[], state}
 
-  def lines(data, state, decode) do
+  def lines(data, %{stream: %Stream{} = stream} = state, decode) do
     case :binary.split(data, "\n") do
-      [part | _] when state.size + byte_size(part) > @line_max_bytes ->
-        {[], %{state | terminal: {:error, {:line_over_limit, @line_max_bytes}}}}
+      [part | _] when stream.size + byte_size(part) > @line_max_bytes ->
+        {[], update(state, terminal: {:error, {:line_over_limit, @line_max_bytes}})}
 
       [part] ->
-        {[], %{state | buffer: [state.buffer, part], size: state.size + byte_size(part)}}
+        {[], update(state, buffer: [stream.buffer, part], size: stream.size + byte_size(part))}
 
       [part, rest] ->
-        line = IO.iodata_to_binary([state.buffer, part])
-        state = %{state | buffer: [], size: 0}
+        line = IO.iodata_to_binary([stream.buffer, part])
+        state = update(state, buffer: [], size: 0)
 
         {events, state} =
           case Helyx.JSON.decode(line) do
@@ -182,11 +198,11 @@ defmodule Helyx.HarnessIO do
   end
 
   # The options of `init/3` that a harness provider keeps, as the fields
-  # `persist?` and `env` of its state.
+  # `persist?` and `stream` of its state. The stream starts with `env`.
   def options(opts) do
     with {:ok, persist?} <- persist(opts),
          {:ok, env} <- env(opts),
-         do: {:ok, persist?: persist?, env: env}
+         do: {:ok, [persist?: persist?, stream: %Stream{env: env}]}
   end
 
   # The `:persist` option of a harness provider, true by default. A harness

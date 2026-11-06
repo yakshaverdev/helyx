@@ -49,7 +49,7 @@ defmodule Helyx.Provider.Codex do
       }
 
       case Program.launch(struct!(state, options)) do
-        %State{terminal: {:error, reason}} -> {:error, reason}
+        %State{stream: %{terminal: {:error, reason}}} -> {:error, reason}
         state -> handshake(state)
       end
     end
@@ -58,14 +58,14 @@ defmodule Helyx.Provider.Codex do
   # Reads the program's lines until `initialize` has its answer. The connect kill of Core
   # bounds the wait. Only the port's messages are taken: any other stays for the provider
   # loop.
-  defp handshake(%State{port: port} = state) do
+  defp handshake(%State{stream: %{port: port}} = state) do
     message =
       receive do
         {^port, _} = message -> message
       end
 
     case HarnessIO.port_message(message, state, &translate/2) do
-      {:lines, _, %State{terminal: {:error, reason}}} -> {:error, reason}
+      {:lines, _, %State{stream: %{terminal: {:error, reason}}}} -> {:error, reason}
       {:lines, _, %State{due: due} = state} when map_size(due) > 0 -> handshake(state)
       {:lines, _, state} -> {:ok, state}
       {:exit, status} -> {:error, {:codex_exit, status}}
@@ -154,7 +154,7 @@ defmodule Helyx.Provider.Codex do
   @impl true
   def info(message, state) do
     case HarnessIO.port_message(message, state, &translate/2) do
-      {:lines, _, %State{terminal: {:error, reason}} = state} -> stop(reason, state)
+      {:lines, _, %State{stream: %{terminal: {:error, reason}}} = state} -> stop(reason, state)
       {:lines, _, state} -> actions(state)
       {:closed, from} -> actions(reply(state, from, :ok))
       {:exit, status} -> {:stop, {:codex_exit, status}, state}
@@ -171,7 +171,7 @@ defmodule Helyx.Provider.Codex do
   # program, which ends its commands, before a next turn starts.
   defp end_turn(state, terminal) do
     if reason = outlives(state) do
-      %{state | terminal: {:error, reason}}
+      HarnessIO.update(state, terminal: {:error, reason})
     else
       state = interrupted(push(state, [terminal]))
       %{state | turn_id: nil, turn: nil, items: Items.next(terminal, state.items)}
@@ -213,7 +213,7 @@ defmodule Helyx.Provider.Codex do
         {[], push(state, events)}
 
       what ->
-        {[], %{state | terminal: {:error, {:malformed, what}}}}
+        {[], HarnessIO.update(state, terminal: {:error, {:malformed, what}})}
     end
   end
 
@@ -294,7 +294,7 @@ defmodule Helyx.Provider.Codex do
   end
 
   defp answered(method, response, state),
-    do: {[], %{state | terminal: {:error, failure(method, response)}}}
+    do: {[], HarnessIO.update(state, terminal: {:error, failure(method, response)})}
 
   # The program's turn id comes with the answer, before `turn/started`
   # (research note); a pending interrupt goes out then.
@@ -338,7 +338,7 @@ defmodule Helyx.Provider.Codex do
        do: {[], send_interrupt(%{state | turn: turn})}
 
   defp turn_notification("turn/started", _params, state),
-    do: {[], %{state | terminal: {:error, :turn_not_asked}}}
+    do: {[], HarnessIO.update(state, terminal: {:error, :turn_not_asked})}
 
   defp turn_notification(
          "turn/completed",
@@ -349,7 +349,7 @@ defmodule Helyx.Provider.Codex do
 
   # The end of a turn that did not start, or that already ended.
   defp turn_notification("turn/completed", _params, state),
-    do: {[], %{state | terminal: {:error, :turn_not_asked}}}
+    do: {[], HarnessIO.update(state, terminal: {:error, :turn_not_asked})}
 
   # A child thread's work outlives its turn: its `completed` item can come
   # with the id of an ended turn (#226), and only it confirms that the work
@@ -380,7 +380,7 @@ defmodule Helyx.Provider.Codex do
   # An item of a turn that is not the running one, such as the late
   # `item/completed` of a command that `turn/interrupt` left running.
   defp turn_notification("item/" <> _, %{"turnId" => turn}, state) when is_binary(turn),
-    do: {[], %{state | terminal: {:error, :item_of_ended_turn}}}
+    do: {[], HarnessIO.update(state, terminal: {:error, :item_of_ended_turn})}
 
   defp turn_notification(_method, _params, state), do: {[], state}
 

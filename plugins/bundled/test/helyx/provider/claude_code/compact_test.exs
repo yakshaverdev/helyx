@@ -315,11 +315,11 @@ defmodule Helyx.Provider.ClaudeCode.CompactTest do
     # The lost program exits by itself. The test waits for that exit before
     # the relaunch, so the release finds the groups gone and does not wait
     # for their end (#718).
-    port = state.port
+    port = state.stream.port
     assert_receive {^port, {:exit_status, _}}
     started = System.monotonic_time(:millisecond)
     {actions, state} = pump(ClaudeCode, state, actions, &ended?/1)
-    Helyx.Test.Hands.assert_one_program(state.handles, started)
+    Helyx.Test.Hands.assert_one_program(state.stream.handles, started)
 
     assert [
              {:error,

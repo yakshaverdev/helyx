@@ -71,11 +71,11 @@ defmodule Helyx.Provider.ClaudeCode do
   def request({kind, id, arg}, from, %State{turn: turn} = state)
       when kind in [:turn, :compact] and (turn == nil or turn.program?) do
     case program(state, kind, arg) do
-      %State{terminal: nil} = state ->
+      %State{stream: %{terminal: nil}} = state ->
         {events, state} = write_turn(%{state | turn: Turn.new(kind, id, uuid(), arg)})
         {:ok, [{:reply, from, :ok} | events], state}
 
-      %State{terminal: {:error, reason}} = state ->
+      %State{stream: %{terminal: {:error, reason}}} = state ->
         {:ok, [{:reply, from, {:error, reason}}], state}
     end
   end
@@ -130,7 +130,9 @@ defmodule Helyx.Provider.ClaudeCode do
   def request(:idle_close, from, state),
     do: {:ok, [{:reply, from, :busy}], %{state | notified?: false}}
 
-  def request(:close, from, %State{port: nil} = state), do: {:ok, [{:reply, from, :ok}], state}
+  def request(:close, from, %State{stream: %{port: nil}} = state),
+    do: {:ok, [{:reply, from, :ok}], state}
+
   def request(:close, from, state), do: {:ok, [], HarnessIO.close(state, from)}
 
   # Helyx does not know whether the program will start the steer, so the
@@ -141,27 +143,22 @@ defmodule Helyx.Provider.ClaudeCode do
 
   def info(message, state) do
     case HarnessIO.port_message(message, state, &translate/2) do
-      {:lines, actions, state} ->
-        read(actions, state)
-
-      {:closed, from} ->
-        {:ok, [{:reply, from, :ok}], %{state | port: nil}}
-
-      {:exit, status} ->
-        {:stop, {:claude_code_exit, status}, state}
-
+      {:lines, actions, state} -> read(actions, state)
+      {:closed, from} -> {:ok, [{:reply, from, :ok}], HarnessIO.update(state, port: nil)}
+      {:exit, status} -> {:stop, {:claude_code_exit, status}, state}
       # A message of a closed port, such as the port of a lost session.
-      :other ->
-        {:ok, [], state}
+      :other -> {:ok, [], state}
     end
   end
 
-  defp read(actions, %State{terminal: nil} = state), do: {:ok, actions, state}
+  defp read(actions, %State{stream: %{terminal: nil}} = state), do: {:ok, actions, state}
   # A close waits for the lost program's exit, which answers it.
-  defp read(actions, %State{terminal: :lost, closing: nil} = state), do: relaunch(actions, state)
-  defp read(actions, %State{terminal: :lost} = state), do: {:ok, actions, state}
+  defp read(actions, %State{stream: %{terminal: :lost, closing: nil}} = state),
+    do: relaunch(actions, state)
 
-  defp read(actions, %State{terminal: {:error, reason}} = state),
+  defp read(actions, %State{stream: %{terminal: :lost}} = state), do: {:ok, actions, state}
+
+  defp read(actions, %State{stream: %{terminal: {:error, reason}}} = state),
     do: {:stop, reason, actions, state}
 
   # A turn's program has the turn's prompt and no program commands; a
@@ -185,7 +182,7 @@ defmodule Helyx.Provider.ClaudeCode do
     fresh = Program.replace(state, turn: turn, meter: Meter.start(nil, state.meter.config_window))
 
     case Program.start(fresh, state.system) do
-      %State{terminal: {:error, reason}} = state ->
+      %State{stream: %{terminal: {:error, reason}}} = state ->
         {:stop, reason, actions, state}
 
       %State{turn: nil} = state ->
@@ -300,7 +297,7 @@ defmodule Helyx.Provider.ClaudeCode do
 
     cond do
       missing != [] ->
-        {[], %{state | terminal: {:error, {:missing_capabilities, missing}}}}
+        {[], HarnessIO.update(state, terminal: {:error, {:missing_capabilities, missing}})}
 
       state.turn == nil ->
         id = uuid()
@@ -342,7 +339,7 @@ defmodule Helyx.Provider.ClaudeCode do
       {[], state}
     else
       error = ProviderError.reason(id(), :initialize, response["error"], {:initialize, ""})
-      {[], %{state | terminal: {:error, error}}}
+      {[], HarnessIO.update(state, terminal: {:error, error})}
     end
   end
 
@@ -404,7 +401,7 @@ defmodule Helyx.Provider.ClaudeCode do
     state = %{state | meter: Meter.result(state.meter, result)}
 
     cond do
-      lost?(result, state) -> {[], %{state | terminal: :lost}}
+      lost?(result, state) -> {[], HarnessIO.update(state, terminal: :lost)}
       state.turn == nil -> {[], state}
       started?(state.turn) -> turn_result(result, state)
       true -> release(result, state)
@@ -496,7 +493,7 @@ defmodule Helyx.Provider.ClaudeCode do
   end
 
   defp turn_result(_result, state),
-    do: {[], %{state | terminal: {:error, :no_queued_turn_count}}}
+    do: {[], HarnessIO.update(state, terminal: {:error, :no_queued_turn_count})}
 
   # Only the first line of a resumed program can say that the session is
   # lost; it comes before any `init`.

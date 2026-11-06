@@ -39,7 +39,7 @@ defmodule Helyx.Provider.ClaudeCode.HelyxToolsTest do
     test "the program starts at the first turn with only the helyx server, no tools, commands, or user config of its own, and the turn's prompt",
          %{bin: bin, work: work} do
       state = harness(work)
-      assert state.port == nil
+      assert state.stream.port == nil
       context = %Helyx.Context{system: "Be brief.", messages: [Message.user("x")]}
       {_from, _actions, state} = request(state, {:turn, "t1", context})
       closed(state)

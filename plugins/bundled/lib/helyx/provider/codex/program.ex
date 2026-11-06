@@ -8,6 +8,7 @@ defmodule Helyx.Provider.Codex.Program do
   import Helyx.Provider.Codex.Wire, only: [reply: 3, rpc: 3]
 
   alias Helyx.HarnessIO
+  alias Helyx.HarnessIO.Stream
   alias Helyx.Provider.Codex.{State, Tools}
 
   # The string values of `SandboxMode` and `AskForApproval` in the schema
@@ -61,7 +62,7 @@ defmodule Helyx.Provider.Codex.Program do
   def launch(state) do
     state = HarnessIO.launch(state.exe, @args, state.cwd, state)
 
-    if state.port,
+    if state.stream.port,
       do: rpc(state, "initialize", Tools.initialize_params(state.tools.specs)),
       else: state
   end
@@ -79,15 +80,16 @@ defmodule Helyx.Provider.Codex.Program do
 
     # An ephemeral thread cannot be resumed: a fresh one gets the replay.
     resume = if state.persist?, do: state.thread
-    fields = [port: nil, thread: nil, resume: resume, system: system, buffer: [], size: 0]
+    fields = [thread: nil, resume: resume, system: system]
 
     with :ok <- HarnessIO.finish(state),
-         %State{terminal: nil} = state <-
+         state = HarnessIO.update(state, port: nil, buffer: [], size: 0),
+         %State{stream: %Stream{terminal: nil}} = state <-
            launch(struct!(state, fields ++ [due: %{}, agents: %{}])) do
       state
     else
       {:error, reason} -> failed(state, reason)
-      %State{terminal: {:error, reason}} = state -> failed(state, reason)
+      %State{stream: %Stream{terminal: {:error, reason}}} = state -> failed(state, reason)
     end
   end
 

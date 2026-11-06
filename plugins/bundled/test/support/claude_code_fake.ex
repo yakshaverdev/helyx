@@ -369,7 +369,7 @@ defmodule Helyx.Test.ClaudeCodeFake do
   end
 
   # With no program, the close answers at once.
-  def closed(%{port: nil} = state) do
+  def closed(%{stream: %{port: nil}} = state) do
     {from, [{:reply, from, :ok}], _state} = request(state, :close)
     :ok
   end
