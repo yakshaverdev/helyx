@@ -40,3 +40,14 @@ Every wait of the start path in `watchdog.ex`: `Port.open/2` (an OS spawn), `hol
 The doc is committed as round 4 reviewed it; the two findings above stay open for slice 8.
 
 No round was done by hand.
+
+## Follow-up: the premise of the split start (no review round; the orchestrator's Codex gate follows)
+
+Three findings in a row landed on the start of a server, so the mechanism was questioned before a fix. The split into `open/4` and `step/2` existed only because the launch had to run in the one source process: the hands keep a `hold/1` only from one of their Tasks (`lib/helyx/session/hands.ex:142-147`). Today the hands start Tasks only for the session: tool calls (`run/4`, `hands.ex:70`) and provider processes (`start_provider/3`, `hands.ex:82,241`). The source process is itself new Core of slice 2, so slice 2 also gives it `Helyx.Tool.launch/1`: a server Task of the hands per server, whose holds the hands keep and release at its end. Then `start/4` with its `:deadline` blocks only that Task, and the split is dropped.
+
+- Round 4, finding 1 (late go-ahead): shrinks to one check in `start/4`, after the command hold and before the go-ahead; the doc names it and its test.
+- Round 4, finding 2 (cleanup in the source loop): falls away. `let_go/2` runs in the server Task, and the source's 30 s timer kills a server Task that a stalled `kill(1)` holds; the hands release its handles with their release deadline.
+- New bound: 16 live server Tasks per source, and one per server, since a new one starts only after the `:DOWN` of the old one.
+- A server Task monitors its source and ends with it, so a source that dies leaves no running server.
+
+The owner accepted the tool source inside the Tool interface and the restart after a cancelled call on #492 (2026-11-06); decisions 3 and 14 say so, and decision 14 no longer reads as "stops its server".
