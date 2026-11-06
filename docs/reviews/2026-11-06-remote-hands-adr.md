@@ -142,3 +142,19 @@ The four wording points of round 6 are applied:
 The judgement item (the full 20,000 ms release duration in the stop) stays as it is. A sentence that a round-2 edit had moved into the wrong accepted hole is back with the hole on old commands.
 
 No review round ran, on the orchestrator's order: the Codex gate of the orchestrator follows.
+
+## Codex gate, round 1 (orchestrator, 2026-11-06)
+
+[high] §5 had the runner connect with "the same token proof" as a client. The server token permits every client operation, and §6 allows a runner that the agent controls, which the agent can read. So the agent could open a second connection as a client and read or stop unrelated sessions. The orchestrator confirmed it.
+
+Fix (§5a, from the owner's key rule): a runner proves a hands credential, valid only for the `hands` role and one runner name.
+- **Mint:** through the public API of the server, by the product or integration module that starts the runner. It is 32 random bytes, and a new mint for a name replaces the old one.
+- **Delivery:** the product gives it to the runner by a channel that it owns, never in a frame.
+- **Lifetime:** until it is revoked, replaced, or the server stops. The server keeps its SHA-256 in memory only.
+- **Revoke:** a revoke or a new mint closes the connection of the old credential.
+- **Refusals:** a client `hello`, or a `hello` or registration with another name, closes with `4401`.
+- **The server token** still works on the hands role, for an owner's runner.
+
+The key rule in §6 now covers every long-lived secret, the wire credential included. The tests of the build ticket are named in step 3 of the build order. A new accepted hole: the agent can open hands connections with its own runner name.
+
+Author's choices that the owner's decisions do not name: the lifetime (until revoked, replaced, or the server stops, memory only, no disk), and the server token still accepted on the hands role. No review round ran, on the orchestrator's order.
