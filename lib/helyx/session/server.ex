@@ -151,8 +151,13 @@ defmodule Helyx.Session.Server do
   # also when its call is no longer current, and its end counts down
   # (`{:background_end, message}`). The transcript and the provider get the
   # result with the status that the `after_tool` hooks left.
+  # Its call Task leaves the turn, and with it its record of an asker.
   defp info({:tool_result, turn_id, call_id, {:started, result}}, state),
-    do: info({:tool_result, turn_id, call_id, result}, Steering.started(state))
+    do:
+      info(
+        {:tool_result, turn_id, call_id, result},
+        Asks.started(Steering.started(state), call_id)
+      )
 
   # The hands' result of a running Helyx tool.
   defp info(
@@ -172,10 +177,10 @@ defmodule Helyx.Session.Server do
   defp info({:tool_result, _turn_id, _call_id, _result}, state), do: {:noreply, state}
   defp info({:stream_event, _turn_id, _event}, state), do: {:noreply, state}
 
-  # An ask that the hands passed on from the Task `pid`, which waits for
-  # the answer (`Asks.ask/5`).
-  defp info({:ask, from, pid, call_id, tool, request}, state),
-    do: {:noreply, Asks.ask(state, {from, pid}, call_id, tool, request)}
+  # A call or hook Task that the hands started, before it runs
+  # (`Asks.asker/4`).
+  defp info({:asker, turn_id, pid, kind}, state),
+    do: {:noreply, Asks.asker(state, turn_id, pid, kind)}
 
   # An answer of a hook, from the hands (`Records.hook/3`).
   defp info({:hook_answer, turn_id, record}, state),
@@ -196,10 +201,10 @@ defmodule Helyx.Session.Server do
        when elem(:erlang.map_get(pid, subscribers), 0) == ref,
        do: {:noreply, Events.subscriber_down(state, pid)}
 
-  # The end of a Task with an open ask; any other `:DOWN` is a lifecycle
+  # The end of a call or hook Task; any other `:DOWN` is a lifecycle
   # input.
-  defp info({:DOWN, ref, :process, _pid, _reason} = message, state) do
-    case Asks.down(state, ref) do
+  defp info({:DOWN, ref, :process, pid, _reason} = message, state) do
+    case Asks.down(state, ref, pid) do
       {:ok, state} -> {:noreply, state}
       :error -> {:noreply, TurnLoop.handle(message, state)}
     end

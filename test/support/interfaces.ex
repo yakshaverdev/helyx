@@ -202,6 +202,10 @@ defmodule Helyx.Test.Provider do
   #   "ask"        one call to the ask tool with the request {"q": "one"}
   #   "big_args"   one call to upcase with a text of 3,000 "é", 6,000 bytes
   #   "call.<name>" one call to the tool <name> with no arguments
+  #   "reuse.<gate>" a call "1" to bg_ask, then a second call "1" to
+  #                gate_wait, both with the gate <gate>; then echoes
+  #   "release_ask.<gate>" a call to slow_release and one to gate_ask, both
+  #                with the gate <gate> (`test/support/hooks.ex`)
   #   "ask2"       two calls to the ask tool, {"q": "one"} and {"q": "two"}
   #   "ask_bad"    one call to the ask tool whose request is a string
   #   "ask_twice"  one call to the ask tool that asks {"q": "one"}, then
@@ -306,6 +310,22 @@ defmodule Helyx.Test.Provider do
 
   def stream("serial", %Helyx.Context{messages: messages}, _opts),
     do: echo_after(messages, slow_calls([{"1", 60}, {"2", 30}, {"3", 0}]))
+
+  def stream("release_ask." <> gate, %Helyx.Context{messages: messages}, _opts),
+    do:
+      echo_after(messages, [
+        call("c1", "slow_release", %{"gate" => gate}),
+        call("a1", "gate_ask", %{"gate" => gate}),
+        @tool_use
+      ])
+
+  def stream("reuse." <> gate, %Helyx.Context{messages: messages}, _opts) do
+    case Enum.count(messages, &(&1.role == :tool_result)) do
+      0 -> {:ok, [call("1", "bg_ask", %{"gate" => gate}), @tool_use]}
+      1 -> {:ok, [call("1", "gate_wait", %{"gate" => gate}), @tool_use]}
+      _ -> {:ok, echo_results(messages)}
+    end
+  end
 
   def stream("call." <> name, %Helyx.Context{messages: messages}, _opts),
     do: echo_after(messages, [call("c1", name, %{}), @tool_use])

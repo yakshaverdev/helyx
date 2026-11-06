@@ -577,6 +577,38 @@ defmodule Helyx.Session.HooksTest do
       assert snapshot(session).asks == []
     end
 
+    test "an ask is taken at once while the hands release another Task" do
+      core = core([], [Helyx.Test.Tool.SlowRelease, Helyx.Test.Tool.GateAsk])
+      gate = Helyx.Test.Gate.open()
+      session = run(core, "release_ask." <> gate)
+      assert_receive {:ready, asker}
+      # The hands are in the release of c1 until `releaser` gets :go.
+      assert_receive {:releasing, releaser}
+      send(asker, :go)
+
+      assert [%{ask_id: id, call_id: "a1", request: %{"q" => "now"}}] =
+               of_type(collect_until(:ask), :ask)
+
+      assert Session.answer(session, id, %{"ok" => true}) == :ok
+      send(releaser, :go)
+
+      assert Enum.sort(results(collect_until(:turn_end))) ==
+               [{"a1", false, ~s({"ok":true})}, {"c1", false, "held"}]
+    end
+
+    test "a background run cannot ask as a later call of the same id" do
+      core = core([], [Helyx.Test.Tool.BgAsk, Helyx.Test.Tool.GateWait])
+      gate = Helyx.Test.Gate.open()
+      run(core, "reuse." <> gate)
+      assert_receive {:bg, bg}
+      # The second call "1" runs now.
+      assert_receive {:call, call}
+      send(bg, :go)
+      assert_receive {:bg_ask, {:error, :not_running}}
+      send(call, :go)
+      collect_until(:turn_end)
+    end
+
     test "a call Task that calls Helyx.Hook.ask/1 gets not_running" do
       core = core([Hook.A], [Helyx.Test.Tool.HookAsk])
       run(core, "call.hook_ask")

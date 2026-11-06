@@ -129,15 +129,4 @@ defmodule Helyx.Session.Hands.Hooks do
     left = Release.run(by_module, :cancel, state.release_ms, state.core)
     Hands.keep_unconfirmed(drop(%{state | tasks: kept, held: held}), left)
   end
-
-  # The caller check of an ask: the call Task of the call id for
-  # `Helyx.Tool.ask/1`, a hook Task of the call for `Helyx.Hook.ask/1`.
-  def asker?(state, pid, kind, call_id) do
-    Enum.any?(state.tasks, fn {_ref, {task, turn_id, id, _module, _place}} ->
-      task.pid == pid and turn_id != nil and id == expected(kind, call_id)
-    end)
-  end
-
-  defp expected(:tool, call_id), do: call_id
-  defp expected(:hook, call_id), do: {:hook, call_id}
 end

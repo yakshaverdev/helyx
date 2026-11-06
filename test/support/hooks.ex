@@ -126,3 +126,73 @@ defmodule Helyx.Test.Tool.NoPlace do
     {:ok, "never"}
   end
 end
+
+defmodule Helyx.Test.Tool.SlowRelease do
+  @moduledoc false
+  # Holds a handle whose release tells the gate `{:releasing, pid}` and
+  # waits for `:go`: the hands are busy until then.
+  use Helyx.Test.Tool, name: "slow_release", description: "Holds a slow handle."
+
+  @impl true
+  def concurrent?, do: true
+
+  @impl true
+  def run(%{"gate" => gate}, _cwd) do
+    :ok = Helyx.Tool.hold({:slow, gate})
+    {:ok, "held"}
+  end
+
+  @impl true
+  def release([{:slow, gate}], _mode, _deadline) do
+    send(String.to_existing_atom(gate), {:releasing, self()})
+    receive do: (:go -> [])
+  end
+end
+
+defmodule Helyx.Test.Tool.GateAsk do
+  @moduledoc false
+  # Tells the gate `{:ready, pid}`, waits for `:go`, then asks the
+  # clients and gives the answer as JSON.
+  use Helyx.Test.Tool, name: "gate_ask", description: "Asks after the gate."
+
+  @impl true
+  def concurrent?, do: true
+
+  @impl true
+  def run(%{"gate" => gate}, _cwd) do
+    send(String.to_existing_atom(gate), {:ready, self()})
+    receive do: (:go -> :ok)
+    {:ok, answer} = Helyx.Tool.ask(%{"q" => "now"})
+    {:ok, JSON.encode!(answer)}
+  end
+end
+
+defmodule Helyx.Test.Tool.BgAsk do
+  @moduledoc false
+  # Goes on in the background, tells the gate `{:bg, pid}`, waits for
+  # `:go`, then asks and tells the gate `{:bg_ask, result}`.
+  use Helyx.Test.Tool, name: "bg_ask", description: "Asks from the background."
+
+  @impl true
+  def run(%{"gate" => gate}, _cwd) do
+    gate = String.to_existing_atom(gate)
+    {:ok, _place} = Helyx.Tool.background()
+    :ok = Helyx.Tool.started("started")
+    send(gate, {:bg, self()})
+    receive do: (:go -> :ok)
+    send(gate, {:bg_ask, Helyx.Tool.ask(%{"q" => "late"})})
+    {:ok, "end"}
+  end
+end
+
+defmodule Helyx.Test.Tool.GateWait do
+  @moduledoc false
+  # Tells the gate `{:call, pid}` and waits for `:go`.
+  use Helyx.Test.Tool, name: "gate_wait", description: "Waits for the gate."
+
+  @impl true
+  def run(%{"gate" => gate}, _cwd) do
+    send(String.to_existing_atom(gate), {:call, self()})
+    receive do: (:go -> {:ok, "waited"})
+  end
+end

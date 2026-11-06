@@ -198,17 +198,6 @@ defmodule Helyx.Session.Hands do
   defp call({:hook, request}, {pid, _tag} = from, state),
     do: {:noreply, Hooks.start(state, from, pid, request)}
 
-  # An ask goes on to the session with its caller, which the session
-  # monitors, only from the Task that may ask (`Hooks.asker?/4`).
-  defp call({:ask, kind, call_id, tool, request}, {pid, _tag} = from, state) do
-    if Hooks.asker?(state, pid, kind, call_id) do
-      send(state.session, {:ask, from, pid, call_id, tool, request})
-      {:noreply, state}
-    else
-      {:reply, {:error, :not_running}, state}
-    end
-  end
-
   defp call({:cancel, turn_id}, _from, state) do
     {cancelled, kept} =
       Map.split_with(state.tasks, fn {_ref, {_task, id, _call_id, _tool, _place}} ->
@@ -370,17 +359,28 @@ defmodule Helyx.Session.Hands do
   def spawn_task(state, turn_id, id, module, fun) do
     hands = self()
     session = state.session
+    asker = asker(turn_id, id)
 
     task =
       Task.Supervisor.async(Helyx.Core.task_supervisor(state.core), fn ->
         Process.put(:helyx_hands, hands)
         # For `Helyx.Tool.transcript/0`.
         Process.put(:helyx_session, session)
+        if asker, do: receive(do: (:helyx_go -> :ok))
         fun.()
       end)
 
+    # The session gets the record of a Task that can ask before the Task
+    # runs: both messages are local sends, and the Task waits for the
+    # second (docs/features/hooks.md, "The caller check of an ask").
+    if asker, do: send(session, {:asker, turn_id, task.pid, asker}) && send(task.pid, :helyx_go)
+
     {task, %{state | tasks: Map.put(state.tasks, task.ref, {task, turn_id, id, module, nil})}}
   end
+
+  defp asker(nil, _id), do: nil
+  defp asker(_turn_id, {:hook, call_id}), do: {:hook, call_id}
+  defp asker(_turn_id, call_id), do: {:tool, call_id}
 
   defp answer(state, turn_id, id, text) do
     send(state.session, Outcome.of(turn_id, id, {:error, text}))

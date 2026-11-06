@@ -53,11 +53,11 @@ The call Task of the hands runs: the `before_tool` chain, then the tool, then th
 
 ### The caller check of an ask
 
-`Helyx.Tool.ask/1` and `Helyx.Hook.ask/1` go to the hands, which know each Task: the hands pass an ask on to the session only when the caller is the call Task of the call id of its context (`Helyx.Tool.ask/1`) or a hook Task of that call (`Helyx.Hook.ask/1`). Any other caller gets `{:error, :not_running}`: a hook Task that calls `Helyx.Tool.ask/1`, a call Task that calls `Helyx.Hook.ask/1`, a background run, and a process that a hook or a tool started (it has no hands in its process dictionary). A process with no call context raises, as before.
+The session checks the caller of each ask (ADR 0013 §3), and the session never waits for the hands to do it.
 
-The session then checks that the call id runs in the tool queue of the current turn, as before, and monitors the asking Task with each ask that it takes. At the `:DOWN` of that Task, whatever the cause, the ask ends with the outcome `:ended`, so no question stays open on a client while later hooks run. The end of the call and the end of the turn still end the asks, and remove their monitors. A Task asks one question at a time (the ask is a call), so one monitor for each ask is one monitor for each asking Task.
-
-The pass through the hands waits while the hands release the handles of another Task (ADR 0004).
+- **The record.** When the hands start a call Task or a hook Task, they send the session `{:asker, turn_id, pid, {:tool | :hook, call_id}}`, then let the Task run: the Task waits for a `:helyx_go` from the hands as its first act. Both are local sends of the hands, so the record is in the session's mailbox before the Task can send an ask. The session keeps the record in the current turn when the turn id matches, with a monitor of the Task, and drops it at the Task's `:DOWN`; the end of the turn drops every record and its monitor. A record of a turn that is no longer current is not kept: its call does not run, so its Task could not ask. The start answer of a background run drops the record of its call Task, as the hands drop the Task from the turn, so a later call of the same id in the turn is not the run's.
+- **The check.** `Helyx.Tool.ask/1` and `Helyx.Hook.ask/1` call the session. It takes an ask only when the caller's record is `{:tool, call_id}` for `Helyx.Tool.ask/1` or `{:hook, call_id}` for `Helyx.Hook.ask/1`, with the call id of its context, and that call id runs in the tool queue of the current turn, as before. Any other caller gets `{:error, :not_running}`: a hook Task that calls `Helyx.Tool.ask/1`, a call Task that calls `Helyx.Hook.ask/1`, a background run (its call no longer runs), and a process that a hook or a tool started (it has no record). A process with no call context raises, as before.
+- **The end.** At the `:DOWN` of the Task, whatever the cause, its open ask ends with the outcome `:ended`, so no question stays open on a client while later hooks run. The end of the call and the end of the turn still end the asks. A Task asks one question at a time (the ask is a call).
 
 ### The `hook` entry of the session file
 
@@ -77,11 +77,11 @@ The hands send each answer of a hook to the session as they deliver it, before t
 
 ## Replaced mechanism
 
-1. The ask: `Helyx.Tool.ask/1` called the session; it now calls the hands, which pass it on with the caller's pid. The session took an ask from any process while its call id ran; now only the call Task of the call or a hook Task of it. The reply rules (`:no_client`, `:not_running`, the answer, `:not_waiting`) stay.
+1. The ask: `Helyx.Tool.ask/1` still calls the session, with the kind of the ask. The session took an ask from any process while its call id ran; now only from the Task whose record, sent by the hands at its start, has that kind and call id. The reply rules (`:no_client`, `:not_running`, the answer, `:not_waiting`) stay. A call Task and a hook Task wait for the hands' `:helyx_go` before they run.
 2. The ask's end: the end of the call and of the turn ended an ask; the `:DOWN` of the asking Task now ends it too.
 3. The hold: the hands took a hold only from a call Task; now from a hook Task too, released with the hook module's `release/3`.
-4. The start answer of a background run went to the session as `{:started, text}`; it is now `{:started, {status, text}}`, so a hook's replace keeps its status. `Helyx.Session.Background.lost/1` took only a start answer of an ok result; it now takes one of an error result too, since a hook can give it that status. Its test changes with it.
-5. Tests: `test/helyx/session/ask_test.exs` sent a raw `{:ask, …}` call to the session; it now goes through the hands.
+4. The start answer of a background run went to the session as `{:started, text}`; it is now `{:started, {status, text}}`, so a hook's replace keeps its status. **Changed rule:** `Helyx.Session.Background.lost/1` took only a start answer of an ok result ("an error result is no start"); it now takes one of an error result too. Reason: a hook can give a start answer the error status while the run goes on, and the run did start, so a stop that loses it must give its lost end, which tells the model to check its effects. Its test changes with it.
+5. Tests: `test/helyx/session/ask_test.exs` sent a raw `{:ask, call_id, tool, request}` call to the session; the call now carries the kind, `{:ask, kind, call_id, tool, request}`.
 
 ## Bounds
 
@@ -95,13 +95,14 @@ The hands send each answer of a hook to the session as they deliver it, before t
 | `hook` entries of a chain | one for each hook of the point on one call | the 64 MiB of a session file line, as every entry |
 | the text of an after_tool failure notice | the failure text, cut at 4,096 bytes | cut |
 | an ask request and answer | as `Helyx.Tool.ask/1`: 64 KiB and 16 KiB of JSON | as before |
+| the session's records of call and hook Tasks | one for each call Task and hook Task of the current turn that lives: at most 8 call Tasks that run at once, and one hook Task for each of them; a call Task that goes on in the background loses its record at its start answer | not reachable: a record goes at the `:DOWN` of its Task, and all go at the turn end |
 
 ## Ownership
 
 | Resource | Created by | Held by | Released on normal end | Released when the holder crashes | Released on abort |
 | -------- | ---------- | ------- | ---------------------- | -------------------------------- | ----------------- |
 | a resource that a hook holds with `Helyx.Tool.hold/1` | the hook in its Task | the hands | `release/3` of the hook, `:deliver`, before the chain goes on | the same, at the Task's `:DOWN`; `:cancel` at its limit and when its call Task dies; the hook frees it itself when the hands are gone (ADR 0004) | `release/3`, `:cancel`, in the cancel of the turn |
-| the monitor of an asking Task | the session | the session | removed at the answer, the call end, or the turn end | its `:DOWN` ends the ask | removed at the turn end |
+| the monitor of a call or hook Task | the session, at the hands' record | the session | its `:DOWN` at the Task's end drops the record; the turn end demonitors the rest | the same | the turn end demonitors it |
 
 ## Out of scope
 

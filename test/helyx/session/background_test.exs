@@ -32,7 +32,7 @@ defmodule Helyx.Session.BackgroundTest do
              "\n" <> String.duplicate("a", 4095) <> "\n"
   end
 
-  test "each start answer with no end message is lost, in start order, an error result too" do
+  test "each start answer with no end message is lost, in start order, an error result too: a hook can give it that status, and the run did start" do
     other = "mnopqrstuvwx"
     third = "yz0123456789"
 

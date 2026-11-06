@@ -66,7 +66,8 @@ defmodule Helyx.Hook do
   does from a call Task: the same request rules, the same `:ask` event
   with the call id and the tool name, and the same answers. Any other
   caller than a hook Task of a running call gets `{:error,
-  :not_running}`. The session ends the ask with the outcome `:ended` when
+  :not_running}`: the session checks it against its record of the call
+  and hook Tasks that the hands started. The session ends the ask with the outcome `:ended` when
   the hook Task ends, so a hook killed at its limit leaves no question
   open.
   """
