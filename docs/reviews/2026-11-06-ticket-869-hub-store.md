@@ -110,3 +110,20 @@ Every reproduction of rounds A1 and A2 passes; 40 rounds of 4 starts with one ki
 | 5 | Spec | No test of the check of the private folder (0700, empty) | Open: the window is a race of another OS user |
 
 Both open defects need a folder named `.hub-*` in the folder of the store that the server's OS user made by hand: the folder of the store refuses group and other write, so no other user can make one. Round A3 is the last round of the cycle and the fix does not meet the small-fix rule (a second finding on the mechanism, more than 10 lines), so the cycle commits the reviewed code with them open.
+
+# Fix after cycle 2: the lock at the open
+
+The precommit of slice C1, on the Linux host, failed the slow test of cycle 2 "starts at once on a new path": all four starts got `:store_locked`. Cause: the lock was `locking_mode = EXCLUSIVE` and `BEGIN EXCLUSIVE` under the busy wait of 5,000 ms in one connection, and in the exclusive locking mode a connection keeps the shared lock of a failed try, so concurrent starts held each other off until every wait ended (a raw probe of round 1 confirmed that a failed try keeps the lock until the close). Fix: each try of the lock runs on a new connection with no busy wait; a try that fails closes its connection and tries again after a random pause of 1 to 20 ms, until 5,000 ms after the start of the open; a query after the lock has the busy wait of 5,000 ms again.
+
+## Round L1 (reduced: spec, failure path)
+
+No reproduced defect. Probes: 2, 8, 16, and 32 starts at once, on a new and an existing file, starts in 4 other VMs with starts in this node, a holder that keeps the lock, a holder that keeps only a shared lock, a holder that lets go at 2,000 ms and near 5,000 ms, and kills of waiting starts: one winner in every round, `:store_locked` at 5,000 to 5,040 ms, no livelock, descriptors back to the base after the holder closes.
+
+| # | Finding | Resolution |
+|---|---|---|
+| 1 | The 8-start test does not fail on the old code on macOS | Added a test that does: a writer holds the file, two opens wait, the writer lets go after 200 ms; the old code failed both |
+| 2 | The moduledoc said "after the busy wait of 5,000 ms" | Fixed: the open tries the lock until 5,000 ms after its start |
+| 3 | The Bounds row of `hub.md` ("`BEGIN EXCLUSIVE` ... fails after the busy wait") and decision 9 ("then `COMMIT`") describe the old lock; the value, 5,000 ms, holds | Open, wording for the owner: decision 9 stays as the owner wrote it |
+| 4 | The answer can come up to one pause and one try (about 40 ms) after 5,000 ms | Accepted: the check of the deadline comes before the pause |
+
+The second precommit failed only on Credo: `sqlite.ex` had 413 lines. The schema text and its version moved to `Helyx.Hub.Store.SQLite.Schema`, the module that owns the schema of `user_version` 1. A reduced review compared the moved SQL with the committed text: the same 2,154 bytes, the same 22 rows of `sqlite_schema`, version 1.

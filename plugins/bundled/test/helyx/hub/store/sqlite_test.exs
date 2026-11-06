@@ -127,6 +127,27 @@ defmodule Helyx.Hub.Store.SQLiteTest do
     :ok = SQLite.close(db)
   end
 
+  # The open that loses waits the 5,000 ms of the open.
+  @tag :slow
+  test "two opens that wait for a lock: one takes it when the holder lets go", %{tmp_dir: dir} do
+    path = Path.join(dir, "hub.db")
+    {:ok, db} = SQLite.open(path: path)
+    :ok = SQLite.close(db)
+
+    # A writer of another program holds the file for a moment.
+    {:ok, holder} = Exqlite.Sqlite3.open(path)
+    :ok = Exqlite.Sqlite3.execute(holder, "BEGIN IMMEDIATE")
+    opens = for _ <- 1..2, do: Task.async(fn -> SQLite.open(path: path) end)
+    Process.sleep(200)
+    :ok = Exqlite.Sqlite3.execute(holder, "ROLLBACK")
+    :ok = Exqlite.Sqlite3.close(holder)
+
+    results = Task.await_many(opens, 10_000)
+    assert Enum.count(results, &match?({:ok, _}, &1)) == 1, inspect(results)
+    assert Enum.count(results, &(&1 == {:error, :store_locked})) == 1
+    for {:ok, db} <- results, do: SQLite.close(db)
+  end
+
   @tag :slow
   test "a file that another OS process holds fails the open", %{tmp_dir: dir} do
     path = Path.join(dir, "hub.db")

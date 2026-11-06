@@ -6,7 +6,8 @@ defmodule Helyx.Hub.Store.SQLite do
   A file store holds the SQLite write lock from its open to its close
   (`locking_mode = EXCLUSIVE`), so a second store on the file, in this node
   or in another OS process, fails its open with `{:error, :store_locked}`
-  after the busy wait of 5,000 ms. The file and the WAL, SHM, and journal
+  when it has not taken the lock 5,000 ms after the start of the open; of
+  several opens at once, one takes it. The file and the WAL, SHM, and journal
   files beside it have mode 0600; each is a regular file with one name or
   nothing, else the open gives `{:error, {:invalid_option, :path}}`. The
   journal is WAL. With no `:path` the store is a database in memory that ends with its
@@ -16,80 +17,14 @@ defmodule Helyx.Hub.Store.SQLite do
   @behaviour Helyx.Hub.Store
 
   alias Exqlite.Sqlite3
-  alias Helyx.Hub.Store.SQLite.Disk
+  alias Helyx.Hub.Store.SQLite.{Disk, Schema}
 
-  @version 1
-  # The busy wait of every query and of the lock at the open (Bounds).
+  @version Schema.version()
+
+  # The busy wait of every query, and the time an open tries the lock (Bounds).
   @busy_ms 5_000
-
-  @schema """
-  CREATE TABLE users (
-    id TEXT PRIMARY KEY,
-    name TEXT NOT NULL UNIQUE,
-    created_at INTEGER NOT NULL
-  ) STRICT;
-
-  CREATE TABLE tokens (
-    id TEXT PRIMARY KEY,
-    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    name TEXT NOT NULL,
-    key BLOB NOT NULL,
-    created_at INTEGER NOT NULL
-  ) STRICT;
-  CREATE INDEX tokens_user ON tokens (user_id);
-
-  CREATE TABLE projects (
-    id TEXT PRIMARY KEY,
-    owner TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    name TEXT NOT NULL,
-    created_at INTEGER NOT NULL,
-    UNIQUE (owner, name)
-  ) STRICT;
-
-  CREATE TABLE records (
-    session_id TEXT PRIMARY KEY,
-    owner TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    project_id TEXT REFERENCES projects(id) ON DELETE SET NULL,
-    title TEXT NOT NULL DEFAULT '',
-    cwd TEXT NOT NULL,
-    model TEXT NOT NULL,
-    prompt TEXT NOT NULL DEFAULT '',
-    active_at INTEGER NOT NULL,
-    visibility TEXT NOT NULL DEFAULT 'private' CHECK (visibility IN ('private', 'hub')),
-    archived INTEGER NOT NULL DEFAULT 0 CHECK (archived IN (0, 1)),
-    created_at INTEGER NOT NULL,
-    updated_at INTEGER NOT NULL
-  ) STRICT;
-  CREATE INDEX records_owner ON records (owner, updated_at);
-  CREATE INDEX records_visibility ON records (visibility, updated_at);
-  CREATE INDEX records_owner_active ON records (owner, cwd, active_at);
-  CREATE INDEX records_visibility_active ON records (visibility, cwd, active_at);
-
-  CREATE TABLE labels (
-    session_id TEXT NOT NULL REFERENCES records(session_id) ON DELETE CASCADE,
-    label TEXT NOT NULL,
-    PRIMARY KEY (session_id, label)
-  ) STRICT;
-
-  CREATE TABLE schedules (
-    id TEXT PRIMARY KEY,
-    owner TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    session_id TEXT NOT NULL,
-    prompt TEXT NOT NULL,
-    at INTEGER NOT NULL,
-    every INTEGER,
-    run INTEGER NOT NULL DEFAULT 0,
-    delivery_id TEXT,
-    due_at INTEGER,
-    next_try_at INTEGER,
-    last_at INTEGER,
-    last_outcome TEXT CHECK (last_outcome IN ('delivered', 'missed', 'refused', 'unconfirmed')),
-    created_at INTEGER NOT NULL
-  ) STRICT;
-  CREATE INDEX schedules_at ON schedules (at);
-  CREATE INDEX schedules_next_try ON schedules (next_try_at);
-  CREATE INDEX schedules_session ON schedules (session_id);
-  """
+  # The longest pause between two tries of the lock at the open.
+  @lock_pause_ms 20
 
   @impl true
   def open(opts) do
@@ -109,10 +44,12 @@ defmodule Helyx.Hub.Store.SQLite do
   # version are checked again under the lock, and only then does the store
   # set the modes and write. So a refused start writes nothing.
   defp open_file(path) do
-    with {:ok, db} <- prepare(path) do
+    deadline = System.monotonic_time(:millisecond) + @busy_ms
+
+    with :ok <- prepare(path),
+         {:ok, db} <- locked_open(path, deadline) do
       started(db, [
         &settings/1,
-        &lock/1,
         &version/1,
         fn _db -> Disk.own(path) end,
         &exec(&1, "PRAGMA journal_mode = WAL"),
@@ -122,17 +59,44 @@ defmodule Helyx.Hub.Store.SQLite do
   end
 
   defp prepare(path) do
-    created =
-      case Disk.check(path) do
-        :missing -> Disk.create(path)
-        other -> other
-      end
+    case Disk.check(path) do
+      :missing -> Disk.create(path)
+      other -> other
+    end
+  end
 
-    with :ok <- created do
-      case Sqlite3.open(path, mode: :readwrite) do
-        {:ok, db} -> {:ok, db}
-        {:error, _} -> {:error, {:invalid_option, :path}}
-      end
+  # The lock of the file, within the busy wait of the open. Each try takes
+  # it with no wait on a new connection, and a try that fails closes its
+  # connection: in the exclusive locking mode a connection keeps the shared
+  # lock of a failed try until it closes, so two starts that waited in one
+  # connection each would hold the other off to the end of the wait. A
+  # random pause between tries lets one start take the lock alone.
+  defp locked_open(path, deadline) do
+    case Sqlite3.open(path, mode: :readwrite) do
+      {:ok, db} ->
+        case lock(db) do
+          :ok -> {:ok, db}
+          error -> retry(path, deadline, db, error)
+        end
+
+      {:error, _} ->
+        {:error, {:invalid_option, :path}}
+    end
+  end
+
+  defp retry(path, deadline, db, error) do
+    :ok = Sqlite3.close(db)
+
+    cond do
+      error != {:error, :busy} ->
+        error
+
+      System.monotonic_time(:millisecond) < deadline ->
+        Process.sleep(:rand.uniform(@lock_pause_ms))
+        locked_open(path, deadline)
+
+      true ->
+        {:error, :store_locked}
     end
   end
 
@@ -160,16 +124,14 @@ defmodule Helyx.Hub.Store.SQLite do
 
   # The write lock taken here stays until the connection closes. The
   # rollback writes nothing: a commit would write the first page of an empty
-  # file.
+  # file. `{:error, :busy}` when another connection holds a lock of the file.
   defp lock(db) do
-    with :ok <- exec(db, "PRAGMA locking_mode = EXCLUSIVE"),
-         :ok <- locked(exec(db, "BEGIN EXCLUSIVE")) do
+    with :ok <- Sqlite3.set_busy_timeout(db, 0),
+         :ok <- exec(db, "PRAGMA locking_mode = EXCLUSIVE"),
+         :ok <- exec(db, "BEGIN EXCLUSIVE") do
       exec(db, "ROLLBACK")
     end
   end
-
-  defp locked({:error, :busy}), do: {:error, :store_locked}
-  defp locked(other), do: other
 
   defp version(db) do
     case one(db, "PRAGMA user_version", []) do
@@ -199,7 +161,7 @@ defmodule Helyx.Hub.Store.SQLite do
   end
 
   defp create_schema(db) do
-    with :ok <- exec(db, @schema), do: exec(db, "PRAGMA user_version = #{@version}")
+    with :ok <- exec(db, Schema.sql()), do: exec(db, "PRAGMA user_version = #{@version}")
   end
 
   @impl true

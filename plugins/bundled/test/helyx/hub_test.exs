@@ -364,12 +364,12 @@ defmodule Helyx.HubTest do
       core = core()
 
       results =
-        1..4
+        1..8
         |> Enum.map(fn _ -> Task.async(fn -> start_unlinked(core, path) end) end)
         |> Task.await_many(30_000)
 
       assert Enum.count(results, &match?({:ok, _}, &1)) == 1, inspect(results)
-      assert Enum.count(results, &(&1 == {:error, :store_locked})) == 3
+      assert Enum.count(results, &(&1 == {:error, :store_locked})) == 7
       for {:ok, pid} <- results, do: GenServer.stop(pid)
       assert dir |> File.ls!() |> Enum.reject(&String.starts_with?(&1, "hub.db")) == []
     end
