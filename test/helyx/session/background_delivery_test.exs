@@ -61,7 +61,7 @@ defmodule Helyx.Session.BackgroundDeliveryTest do
     %{session: session, run: run, id: id, path: path, gate: gate}
   end
 
-  defp done(id), do: Background.finish(id, {:ok, "done"})
+  defp done(id), do: Helyx.Message.text(Background.end_message(id, {:ok, "done"}))
 
   # Sends :go to the run, and returns the queue counts once the session has
   # handled its end.

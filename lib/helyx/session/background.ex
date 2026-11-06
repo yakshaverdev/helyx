@@ -78,16 +78,12 @@ defmodule Helyx.Session.Background do
   @spec start(String.t(), String.t()) :: String.t()
   def start(id, text), do: wrap(id, "started", binary_slice(text, 0, @max_start_bytes))
 
-  # The end text from the Task's result, already through
-  # `Message.cut_result/1`.
-  @spec finish(String.t(), {:ok | :error, String.t()}) :: String.t()
-  def finish(id, {:ok, text}), do: wrap(id, "done", text)
-  def finish(id, {:error, text}), do: wrap(id, "error", text)
-
   # The end as the user message that joins a turn, with the run id as its
-  # origin id (docs/features/message-identity.md).
+  # origin id (docs/features/message-identity.md). The text of the end is
+  # `wrap/3`, the only reader of the two result shapes.
   @spec end_message(String.t(), {:ok | :error, String.t()}) :: Message.t()
-  def end_message(id, result), do: message(id, finish(id, result))
+  def end_message(id, {:ok, text}), do: message(id, wrap(id, "done", text))
+  def end_message(id, {:error, text}), do: message(id, wrap(id, "error", text))
 
   defp message(id, text), do: Message.user(text, %{kind: :background, id: id})
 

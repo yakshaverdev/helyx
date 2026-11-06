@@ -98,11 +98,11 @@ defmodule Helyx.Session.ToolQueue do
     end
   end
 
-  defp may_start?(running, _concurrent?) when running == %{}, do: true
-  defp may_start?(_running, false), do: false
-
-  defp may_start?(running, true),
-    do: map_size(running) < @max_running and Enum.all?(running, fn {_, {_, c?}} -> c? end)
+  defp may_start?(running, concurrent?),
+    do:
+      map_size(running) == 0 or
+        (concurrent? and map_size(running) < @max_running and
+           Enum.all?(running, fn {_, {_, c?}} -> c? end))
 
   defp id({%ToolCall{id: id}, _bytes, _concurrent?}), do: id
 

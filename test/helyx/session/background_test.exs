@@ -16,10 +16,10 @@ defmodule Helyx.Session.BackgroundTest do
     assert Background.start(@id, "go") ==
              ~s(<background id="#{@id}" status="started">\ngo\n</background>)
 
-    assert Background.finish(@id, {:ok, "out"}) ==
+    assert Message.text(Background.end_message(@id, {:ok, "out"})) ==
              ~s(<background id="#{@id}" status="done">\nout\n</background>)
 
-    assert Background.finish(@id, {:error, "x"}) ==
+    assert Message.text(Background.end_message(@id, {:error, "x"})) ==
              ~s(<background id="#{@id}" status="error">\nx\n</background>)
   end
 
@@ -41,7 +41,7 @@ defmodule Helyx.Session.BackgroundTest do
       start_result(@id),
       start_result(other),
       start_result(third, :error),
-      Message.user(Background.finish(@id, {:ok, "done"}))
+      Background.end_message(@id, {:ok, "done"})
     ]
 
     assert [%Message{origin: %{kind: :background, id: ^other}} = lost] =
