@@ -278,6 +278,24 @@ defmodule Helyx.TUITest do
       assert {:stop, _state} = ctrl_c(state)
     end
 
+    test "a queue_dropped that fills the composer hides the hint", %{core: core} do
+      {:noreply, state} = core |> mounted("bye", []) |> ctrl_c()
+      assert status_text(state) =~ "Ctrl+C again to quit"
+
+      event = %Event{
+        type: :queue_dropped,
+        session_id: state.session.id,
+        instance_id: state.instance_id,
+        turn_id: nil,
+        seq: state.vm.seq + 1,
+        data: %{texts: ["dropped"]}
+      }
+
+      {:noreply, state} = TUI.handle_info({:helyx_event, event}, state)
+      assert value(state) == "dropped"
+      refute status_text(state) =~ "Ctrl+C again to quit"
+    end
+
     test "the release of ctrl+c keeps the quit armed", %{core: core} do
       {:noreply, state} = core |> mounted("bye", []) |> ctrl_c()
       release = %Key{code: "c", kind: "release", modifiers: ["ctrl"]}

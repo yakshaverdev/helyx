@@ -327,8 +327,8 @@ defmodule Helyx.TUI do
     # A switch that runs is an open that the footer shows (tui-attach.md, decision 17).
     loading = state.switch != nil
 
-    bottom =
-      Footer.widget(state.location, state.vm, state.busy, state.scroll, state.quit, loading)
+    hint = Quit.hint(state.quit, Composer.nothing_to_clear?(state.composer))
+    bottom = Footer.widget(state.location, state.vm, state.busy, state.scroll, hint, loading)
 
     Selection.widgets(state.selection, rows, transcript) ++ marks ++ middle ++ [{bottom, footer}]
   end

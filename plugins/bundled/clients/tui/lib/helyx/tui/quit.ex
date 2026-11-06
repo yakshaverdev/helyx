@@ -11,8 +11,9 @@ defmodule Helyx.TUI.Quit do
   @window_ms 500
 
   # nil while disarmed, or the ref of the armed window and whether the
-  # footer shows the hint.
-  @type t :: nil | {reference(), hint? :: boolean()}
+  # composer was empty when it was armed. The footer shows the hint only
+  # while that flag holds and the composer is still empty.
+  @type t :: nil | {reference(), armed_on_empty? :: boolean()}
 
   # A Ctrl+C press, or an event that disarms an armed quit: a key press
   # other than Ctrl+C, or a paste. A release or a repeat is not a new key.
@@ -48,8 +49,12 @@ defmodule Helyx.TUI.Quit do
   def expire({ref, _hint?}, ref), do: nil
   def expire(quit, _ref), do: quit
 
-  @doc "The footer hint while an arm on an empty composer lasts, else nil."
-  @spec hint(t()) :: String.t() | nil
-  def hint({_ref, true}), do: "Ctrl+C again to quit"
-  def hint(_quit), do: nil
+  @doc """
+  The footer hint while an arm on a composer that was empty and is still
+  empty lasts, else nil. A text that an event gives back during the window
+  hides the hint, as the second Ctrl+C would clear it.
+  """
+  @spec hint(t(), nothing_to_clear? :: boolean()) :: String.t() | nil
+  def hint({_ref, true}, true), do: "Ctrl+C again to quit"
+  def hint(_quit, _nothing_to_clear?), do: nil
 end

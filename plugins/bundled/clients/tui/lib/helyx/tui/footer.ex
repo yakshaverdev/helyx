@@ -15,7 +15,7 @@ defmodule Helyx.TUI.Footer do
   alias ExRatatui.Style
   alias ExRatatui.Text.{Line, Span}
   alias ExRatatui.Widgets.Paragraph
-  alias Helyx.TUI.{Quit, ViewModel}
+  alias Helyx.TUI.ViewModel
 
   @dim %Style{modifiers: [:dim]}
   @bad %Style{fg: :red}
@@ -152,18 +152,18 @@ defmodule Helyx.TUI.Footer do
   turn state is "idle" for a nil `busy`, else a spinner frame and the whole
   seconds of `busy.elapsed`. A non-nil `scroll` adds "scrolled". A true
   `loading`, while a switch opens a session, puts "loading the session"
-  first (`docs/features/tui-attach.md`, decision 17). The hint of `quit`
-  (`Helyx.TUI.Quit.hint/1`) comes after the reason. A row does not wrap.
+  first (`docs/features/tui-attach.md`, decision 17). The `hint` text, or
+  nil, comes after the reason. A row does not wrap.
   """
   @spec widget(
           String.t(),
           ViewModel.t(),
           %{elapsed: non_neg_integer()} | nil,
           term(),
-          Quit.t(),
+          String.t() | nil,
           boolean()
         ) :: Paragraph.t()
-  def widget(location, %ViewModel{} = vm, busy, scroll, quit, loading \\ false) do
+  def widget(location, %ViewModel{} = vm, busy, scroll, hint, loading \\ false) do
     %{steers: steers, follow_ups: follow_ups, running: running, held: held, waiting: waiting} =
       vm.queue
 
@@ -185,7 +185,7 @@ defmodule Helyx.TUI.Footer do
     # The reason is a fixed text of `Helyx.TUI`, never input. It comes
     # first: the row does not wrap, and a model ref can be 256 bytes.
     reason = if vm.reason, do: [%Span{content: "✕ #{vm.reason} ", style: @bad}], else: []
-    hint = if text = Quit.hint(quit), do: [%Span{content: "#{text} ", style: @bold}], else: []
+    hint = if hint, do: [%Span{content: "#{hint} ", style: @bold}], else: []
 
     %Paragraph{
       text: [
