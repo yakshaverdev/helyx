@@ -63,8 +63,10 @@ defmodule CodingAgent do
   defp run_session(prompt, opts) do
     with {:ok, session} <- start_session(opts) do
       try do
+        home = Application.get_env(:coding_agent, :home, System.user_home!())
+
         with {:ok, cwd} <- session_cwd(session, opts[:cwd]),
-             do: CodingAgent.Print.run(session, CodingAgent.Print.skills(prompt, cwd))
+             do: CodingAgent.Print.run(session, CodingAgent.Print.skills(prompt, cwd, home))
       after
         # The abort comes before Core stops, so a turn that a signal or a
         # failed print left open ends and the hands release its resources. A

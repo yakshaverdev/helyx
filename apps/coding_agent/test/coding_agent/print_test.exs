@@ -183,7 +183,14 @@ defmodule CodingAgent.PrintTest do
     setup %{tmp_dir: dir} do
       sessions = Path.join(dir, "sessions")
       Application.put_env(:coding_agent, :sessions_dir, sessions)
-      on_exit(fn -> Application.delete_env(:coding_agent, :sessions_dir) end)
+      # The user skills of the host are not part of the CLI's stderr.
+      Application.put_env(:coding_agent, :home, dir)
+
+      on_exit(fn ->
+        Application.delete_env(:coding_agent, :sessions_dir)
+        Application.delete_env(:coding_agent, :home)
+      end)
+
       %{sessions: sessions}
     end
 

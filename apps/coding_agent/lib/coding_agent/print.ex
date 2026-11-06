@@ -150,12 +150,12 @@ defmodule CodingAgent.Print do
   @doc """
   The prompt of a print run with a skill command `/name args` expanded
   (`Helyx.Skills.expand/3`), after each notice of the skills scan of `cwd`
-  is written on stderr (`docs/features/skills.md`).
+  and `home` is written on stderr (`docs/features/skills.md`).
   """
-  @spec skills(String.t(), String.t()) :: String.t()
-  def skills(prompt, cwd) do
-    Enum.each(Helyx.Skills.scan(cwd).notices, &stderr/1)
-    Helyx.Skills.expand(prompt, cwd) || prompt
+  @spec skills(String.t(), String.t(), String.t()) :: String.t()
+  def skills(prompt, cwd, home \\ System.user_home!()) do
+    Enum.each(Helyx.Skills.scan(cwd, home).notices, &stderr/1)
+    Helyx.Skills.expand(prompt, cwd, home) || prompt
   end
 
   @doc """
