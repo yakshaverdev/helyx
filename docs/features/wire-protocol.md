@@ -356,3 +356,4 @@ Each numeric limit gets tests at the limit, one under, and one over, and the fra
 - Paging inside one message body: parts carry any size (#658).
 - stdio framing code: same frames, a later ticket when a client needs it (#660).
 - UI blocks (ADR 0011, #858): `ui_blocks` in a tool result `message`, the `ui_block` event, and the snapshot field come with their build ticket and a new protocol number.
+- The `hands` role of `hello` and the `hands.*` operations and events of remote hands: decided in ADR 0012 (#856); the codec and a new protocol number come with its build ticket.
