@@ -158,6 +158,12 @@ The owner decided on #868 (2026-11-06) to fix both channels.
 
 A deviation from the words of the decision, for the gate and the owner: the decision names "one file stat" as the bound of the check. One stat cannot do it: an id with no row has no stored `cwd`, and the path of a session file depends on its `cwd` (`Helyx.Session.File.path/4`, `Helyx.Session.File.Scan.folder/3`); Core finds a file by id by listing the folders and matching the names (`Scan.find/2`, `lib/helyx/session/file/scan.ex`), which also avoids a built path that a filesystem that ignores case could match for another id. So the check is that find, in a Task with a deadline of 5,000 ms; past the deadline it answers `session_not_found`, and its memory is the names that the listing read by then. Both are in the accepted holes of the doc.
 
+## The Codex gate, round 2 (no review round; the gate round 3 follows)
+
+| Finding | Source | Fix |
+|---|---|---|
+| The doc exempted the operations that go to Core from the existence check, claiming that Core answers a missing session as Hub answers a refused one. Core checks some params before its lookup: `Helyx.Session.set_model/2` runs `Input.model/2` first (`lib/helyx/session.ex:363-366`), and `prompt/3` checks the origin, so for the default owner a missing id got the param error where a private session of another user got `session_not_found` | Codex gate (medium), confirmed by the orchestrator in the code | One rule in decision 8: before every operation on an id with no row, the check runs, and an id that it does not confirm gets `session_not_found` (`not_found` for `resume`) before any Core call; an operation that needs a running session confirms that it runs, the others that it runs or has a file. The exempting sentence is gone. Access tests for the default owner on every operation of the session namespace, with params that Core checks before its lookup |
+
 ## Guarantee table (spec agent, round 1)
 
 | Guarantee about existing code | Proof |
