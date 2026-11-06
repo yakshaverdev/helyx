@@ -185,16 +185,19 @@ defmodule Helyx.TUI.WireFixturesTest do
     run_fold(name, rest, fold_step(name, step, state))
   end
 
-  # A fake server that reads each request of the steps, sends each server
-  # frame, a reply with the id of its request, and closes at a close step.
+  # A fake server that reads each request of the steps and gives it to the
+  # test, sends each server frame, a reply with the id of its request, and
+  # closes at a close step.
   defp fake_fold(steps) do
+    test = self()
+
     port =
       fake_server(fn socket ->
         fake_upgrade(socket)
         fake_challenge(socket)
         _hello = client_frame(socket)
         :ok = :gen_tcp.send(socket, text(%{type: "welcome", protocol: WebSocket.protocol()}))
-        _ids = Enum.reduce(steps, %{}, &fake_step(socket, &1, &2))
+        _ids = Enum.reduce(steps, %{}, &fake_step({socket, test}, &1, &2))
         Process.sleep(:infinity)
       end)
 
@@ -202,10 +205,13 @@ defmodule Helyx.TUI.WireFixturesTest do
     Connection.open(socket)
   end
 
-  defp fake_step(socket, %{"client" => %{"id" => id}}, ids),
-    do: Map.put(ids, id, client_frame(socket)["id"])
+  defp fake_step({socket, test}, %{"client" => %{"id" => id}}, ids) do
+    frame = client_frame(socket)
+    send(test, {:client_frame, frame})
+    Map.put(ids, id, frame["id"])
+  end
 
-  defp fake_step(socket, %{"server" => frame}, ids) do
+  defp fake_step({socket, _test}, %{"server" => frame}, ids) do
     frame =
       if frame["type"] == "res", do: %{frame | "id" => Map.fetch!(ids, frame["id"])}, else: frame
 
@@ -213,24 +219,24 @@ defmodule Helyx.TUI.WireFixturesTest do
     ids
   end
 
-  defp fake_step(socket, %{"close" => nil}, ids) do
+  defp fake_step({socket, _test}, %{"close" => nil}, ids) do
     :ok = :gen_tcp.close(socket)
     ids
   end
 
-  defp fake_step(socket, %{"close" => code}, ids) do
+  defp fake_step({socket, _test}, %{"close" => code}, ids) do
     :ok = :gen_tcp.send(socket, server_frame(1, 8, <<code::16>>))
     ids
   end
 
-  defp fake_step(_socket, %{"expect" => _}, ids), do: ids
+  defp fake_step(_peer, %{"expect" => _}, ids), do: ids
 
   # A subscribe with after names the instance and the seq of the last event
   # that the client applied. The call returns at its reply, which the
   # reply step applies.
   defp fold_step(
          name,
-         %{"client" => %{"id" => id, "op" => "subscribe", "params" => params}},
+         %{"client" => %{"id" => id, "op" => "subscribe", "params" => params} = client},
          state
        ) do
     opts =
@@ -244,7 +250,11 @@ defmodule Helyx.TUI.WireFixturesTest do
       end
 
     result = Connection.subscribe(state.conn, params["session"], opts)
-    refute result == {:error, :closed}, name
+    # A reply came: no close and no deadline of the client.
+    refute result in [{:error, :closed}, {:error, :timeout}], name
+    # The request on the wire is the step, its id mapped.
+    assert_receive {:client_frame, frame}, Events.wait_ms(), name
+    assert WireFixtures.matches?(Map.delete(client, "id"), Map.delete(frame, "id")), name
     %{state | results: Map.put(state.results, id, result)}
   end
 

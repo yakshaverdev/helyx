@@ -49,3 +49,18 @@ The fix of both is in the fold runner only: match the frame that the fake server
 ## Precommit
 
 `HELYX_SLOW=1 .claude/skills/ship/precommit.sh`: the first run failed on one Credo warning, the unused return of `Enum.reduce/3` in the fake server of the fold runner; it is bound to `_ids`, with no change of behaviour. The second run passed.
+
+## Follow-up: open findings 1 and 2 of round 3 (orchestrator)
+
+Base: `eb65499b`. The orchestrator confirmed round-3 findings 1 and 2 as findings. Fix, in the fold runner only (`plugins/bundled/test/helyx/tui/wire_fixtures_test.exs`, 21 lines added, 11 removed): the fake server gives each request that it reads to the test, and the `client` step must match it by the match rule, its `id` left out; a subscribe result of `{:error, :closed}` or `{:error, :timeout}` fails the step.
+
+Mutation checks, each on `test/fixtures/wire/folds.json`, restored after with `cmp` showing no difference:
+
+| Fix | Mutation | Result |
+|---|---|---|
+| 1 | the first `client` step with `type` `"reqx"` | `5 tests, 1 failure` |
+| 1 | the first `client` step with the param `"tail": 5`, which the client does not send | `5 tests, 1 failure` |
+| 1 | the `after` of fold 2 with an extra key `"x": 1` | `5 tests, 1 failure` (the check of `after` against the state of the runner fails first) |
+| 2 | a `client` step appended to fold 1 with no reply step | `5 tests, 1 failure`, after 11.3 s |
+
+Reduced round (spec, failure path) on `git diff eb65499b`: no reproduced defect. The spec agent reran each mutation against the runner of `eb65499b` too: the `type`, `tail`, and no-reply mutations pass there and fail with the fix; it showed the wire check of `after` by removing the state check and by a client that sends `seq + 1`, each failing at the new match. Not findings: a `client` step that leaves a key out is not checked for it (the match rule checks only the keys that a fixture names, as README states).
