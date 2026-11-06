@@ -58,3 +58,30 @@ Options for the owner, not decided here: the resume load gets its own deadline, 
 ## After round 3: precommit
 
 Credo reported `lib/helyx/session.ex` at 403 lines and a nesting depth of 3 in `Reader.more/6`. Fixed with no change of behaviour: the doc of `resume/2` is rewrapped and shorter, and the split of a new chunk moved into `Reader.chunk/7` with the same three cases. `file_test.exs` with the slow tests passes.
+
+## Decision of the owner (2026-11-06, after round 3)
+
+Option 1: the resume load gets its own deadline, bounded by the file size and the heap cap of each line; `deadline_ms.open` no longer covers the load; no new size limit. The snapshot of a hand-edited file over the client frame bounds stays an accepted hole (`tui-attach.md`, decision 13). A faster decode is out of scope.
+
+Rebase on `origin/master` (`52087db9`): one mechanical conflict in `docs/features/memory.md` (master changed the Markdown recall row, this branch the drains row); both kept.
+
+The fix: `Helyx.Session.Server.Open.open_file/2` stats the session file under the lock and moves the kill to `deadline_ms.open` plus 1 ms for each 1,000 bytes. Test: `lock_test.exs`, "the deadline of the load grows with the file" (fails without the move).
+
+Bounds sensor (base `HEAD`): `bounds sensor: 2 candidate functions, 0 flagged, 0 without an answer`.
+
+## Round 4 (reduced: spec and failure path)
+
+| Axis | Finding | Resolution |
+|---|---|---|
+| Spec | reproduced: a `receive ... after` over 4,294,967,295 ms crashes the killer with `:timeout_value`, so a file of about 4.29 TB (a sparse file costs no disk) loses its kill | fixed: `kill_at/3` caps the wait there; test "a deadline past the longest wait keeps its kill" fails without the cap |
+| Spec | session-lock.md row "the open passes its deadline" and the comment of `await_open/3` said a Core stop kills only after the open deadline | fixed; the failure-path probe of a Core stop during a held load of 40 MB gave `:open_timeout` at 31,003 ms and a free lock, now cited in the row |
+| Spec | the doc of `start/2` said "an open past 25,000 ms" | fixed: "past its deadlines" |
+| Spec | no test showed that the moved deadline still kills | fixed: "the moved deadline of the load still kills" |
+| Spec | over the wire, a resume past 30,000 ms answers `timeout`; the TUI shows `no answer from the server`, exits at launch or stays on its session at `/resume`, while the session opens in the server | not decided here: written as open in the row "wait of the caller" of session-lock.md, reported to the owner |
+| Failure path | no defect: a move after the kill, a cancel and a move, a missing file, a FIFO at the path, an error after the take, a Core stop during a long load | none |
+
+## Round 5 (reduced: spec and failure path)
+
+No reproduced defect: the loop ends. The cap sits at the exact limit of a `receive` (probe: 4,294,967,295 ms waits, one more crashes), it applies to the arm and the move, and the cap test fails without it (spec probe, the file restored by checksum). Wording, fixed: the row "Session file on resume" still said that the open deadline can refuse a file that a session wrote; it now says that the deadline of the load grows with the file.
+
+Not reached: a stat or a load blocked in the OS on a stuck file system (a hole from before #834); an end-to-end run at the cap with a file of 4.29 TB.

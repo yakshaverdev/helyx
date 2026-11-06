@@ -14,9 +14,10 @@ defmodule Helyx.Session.Server.Open do
   # `path` and runs `fun` on the state under it (`Lock.hold/2`), so the port
   # of the lock has one owner for its whole life. The open runs after the
   # supervisor started the process; the caller waits for its result, and an
-  # error of the open comes back as it is. Past the deadline
-  # `deadline_ms.open` of the state the session is killed, and the caller
-  # gets `{:error, :open_timeout}`. The Registry rejects a session that this
+  # error of the open comes back as it is. Past the deadline of the take
+  # (`deadline_ms.open` of the state) or of the load, which grows with the
+  # file (`open_file/2`), the session is killed, and the caller gets
+  # `{:error, :open_timeout}`. The Registry rejects a session that this
   # Core runs before the init, and the start attaches to the running
   # process; so does a start at the cap whose id runs (server-management.md,
   # "Attach"). The second run of a start is its last.
@@ -112,8 +113,8 @@ defmodule Helyx.Session.Server.Open do
 
   # The go comes after the monitor, so a crash of the open reaches the
   # caller with its reason. The session sends the result before it ends.
-  # A kill before the result is the deadline of the open: the kill of a Core
-  # stop comes after `Stop.shutdown_ms/0`, which is longer.
+  # A kill before the result is the deadline of the open, or the kill of a
+  # Core stop after `Stop.shutdown_ms/0` during a long load.
   defp await_open(pid, ref, session) do
     monitor = Process.monitor(pid)
     send(pid, {ref, :go})
@@ -199,13 +200,34 @@ defmodule Helyx.Session.Server.Open do
 
   defp open_file(state, nil), do: {:ok, state}
 
+  # The load reads at least this many bytes of the session file in each ms:
+  # a third of the slowest content that a session writes (session-lock.md,
+  # row "wait of the caller").
+  @load_bytes_per_ms 1_000
+
   # A kill ends the session at the deadline of its open even when the caller
   # is gone, so the port closes and perl frees the lock (session-lock.md).
+  # After the take, the deadline of the load grows with the file.
   defp open_file(state, {path, fun}) do
     killer = kill_after(state.deadline_ms.open)
-    result = Lock.hold(path, fn -> fun.(state) end)
+
+    result =
+      Lock.hold(path, fn ->
+        move_kill(killer, state.deadline_ms.open + div(file_size(path), @load_bytes_per_ms))
+        fun.(state)
+      end)
+
     cancel_kill(killer)
     with {:ok, lock, state} <- result, do: {:ok, %{state | lock: lock}}
+  end
+
+  # A file that is not there, as for a new session, or not readable, loads
+  # nothing; the load gives its own error for it.
+  defp file_size(path) do
+    case File.stat(path) do
+      {:ok, %File.Stat{size: size}} -> size
+      {:error, _reason} -> 0
+    end
   end
 
   # `:timer.kill_after/1` cannot be cancelled once it fires: its kill can
@@ -214,17 +236,29 @@ defmodule Helyx.Session.Server.Open do
   defp kill_after(ms) do
     session = self()
 
-    spawn_monitor(fn ->
-      monitor = Process.monitor(session)
-
-      receive do
-        :cancel -> :ok
-        {:DOWN, ^monitor, :process, _pid, _reason} -> :ok
-      after
-        ms -> Process.exit(session, :kill)
-      end
-    end)
+    spawn_monitor(fn -> kill_at(session, Process.monitor(session), ms) end)
   end
+
+  # The longest wait of a `receive`: a longer `after` crashes the killer,
+  # and the open would have no deadline. A file of 4.29 TB reaches it.
+  @max_wait_ms 4_294_967_295
+
+  # A move restarts the wait with its own ms. One that comes after the
+  # kill finds no killer: the kill was sent.
+  defp kill_at(session, monitor, ms) when ms > @max_wait_ms,
+    do: kill_at(session, monitor, @max_wait_ms)
+
+  defp kill_at(session, monitor, ms) do
+    receive do
+      :cancel -> :ok
+      {:move, ms} -> kill_at(session, monitor, ms)
+      {:DOWN, ^monitor, :process, _pid, _reason} -> :ok
+    after
+      ms -> Process.exit(session, :kill)
+    end
+  end
+
+  defp move_kill({pid, _monitor}, ms), do: send(pid, {:move, ms})
 
   defp cancel_kill({pid, monitor}) do
     send(pid, :cancel)
