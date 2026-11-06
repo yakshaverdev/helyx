@@ -282,4 +282,64 @@ defmodule Helyx.SessionsEditTest do
       :ok = Sessions.stop(session)
     end
   end
+
+  describe "the end of the edit Task" do
+    # The edit Task of `core`, held with `:erlang.suspend_process/1`.
+    defp held_task(core) do
+      sup = Helyx.Core.task_supervisor(core)
+
+      poll_until(fn ->
+        case Task.Supervisor.children(sup) do
+          [pid] -> :erlang.suspend_process(pid) and pid
+          _none -> false
+        end
+      end)
+    end
+
+    defp poll_until(fun) do
+      case fun.() do
+        false -> poll_until(fun)
+        value -> value
+      end
+    end
+
+    defp big_session(dir) do
+      saved(dir, for(n <- 1..3_000, do: msg(:user, String.duplicate("x", 1_000) <> "#{n}")))
+    end
+
+    # A kill that the killer did not send, as the kill of the Task
+    # supervisor at a Core stop, can come after the rename was sent.
+    test "a kill that is not the killer's is :unknown", %{core: core, tmp_dir: dir} do
+      {id, _path} = big_session(dir)
+      [first | _] = resumed(dir, id)
+      parent = self()
+      spawn(fn -> send(parent, {:removed, Sessions.remove_message(core, id, first.id)}) end)
+
+      Process.exit(held_task(core), :kill)
+      assert_receive {:removed, {:error, :unknown}}, 5_000
+
+      {id, _path} = big_session(dir)
+      spawn(fn -> send(parent, {:deleted, Sessions.delete(core, id)}) end)
+      Process.exit(held_task(core), :kill)
+      assert_receive {:deleted, {:error, :unknown}}, 5_000
+    end
+
+    # The deadline of a small file is 25,000 ms and some.
+    @tag :slow
+    @tag timeout: 120_000
+    test "the kill of the killer is :timeout, and the file does not change",
+         %{core: core, tmp_dir: dir} do
+      {id, path} = big_session(dir)
+      before = File.read!(path)
+      [first | _] = resumed(dir, id)
+      parent = self()
+      spawn(fn -> send(parent, {:removed, Sessions.remove_message(core, id, first.id)}) end)
+
+      task = held_task(core)
+      ref = Process.monitor(task)
+      assert_receive {:removed, {:error, :timeout}}, 60_000
+      assert_receive {:DOWN, ^ref, :process, ^task, :killed}
+      assert File.read!(path) == before
+    end
+  end
 end

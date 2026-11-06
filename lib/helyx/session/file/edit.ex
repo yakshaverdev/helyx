@@ -4,7 +4,8 @@ defmodule Helyx.Session.File.Edit do
   # (docs/features/session-edit.md). Each call takes the writer lock of the
   # file (`Helyx.Session.Lock`), works under it, and releases it, so no
   # session writes the file meanwhile; a held lock is `{:error, :running}`.
-  # The caller traps exits, as `Lock.take/1` needs, and owns the port. The
+  # The caller traps exits, as `Lock.take/1` needs, and owns the port:
+  # `run/3` runs each call in such a Task and derives its report. The
   # change of the file itself, an unlink or the rename of the rewritten
   # copy, is a command of the perl process that holds the lock, so it never
   # happens after the lock has ended.
@@ -22,6 +23,66 @@ defmodule Helyx.Session.File.Edit do
     # each of them (`next`).
     @enforce_keys [:removed]
     defstruct [:removed, :leaf, :last, pending: [], next: %{}]
+  end
+
+  @doc false
+  # Runs `fun`, the work of a call of `Helyx.Sessions`, in a Task of `core`
+  # and gives its report. The work runs in a Task that owns the port of the lock and traps its
+  # exits, so the caller gets no message of it. With a budget, the caller
+  # arms a killer of the Task, which kills it at its deadline, also when the
+  # caller is gone: its port closes, and perl exits and frees the lock.
+  # `fun` gets the pid of the killer and disarms it before it sends the
+  # rename, so a kill of the killer never follows a sent rename. The report
+  # derives from what happened: `:timeout` only when the killer reports its
+  # own kill, and `:unknown` for any other end of the Task with no result,
+  # such as the kill of its supervisor at a Core stop, which can come after
+  # the rename was sent.
+  def run(core, budget, fun) do
+    caller = self()
+
+    task =
+      Task.Supervisor.async_nolink(Helyx.Core.task_supervisor(core), fn ->
+        Process.flag(:trap_exit, true)
+        fun.(killer(caller, budget))
+      end)
+
+    killer = if budget, do: Killer.arm(task.pid, budget)
+    if killer, do: send(task.pid, {:killer, elem(killer, 0)})
+    report(Task.yield(task, :infinity), killer)
+  end
+
+  # The killer comes from the caller; a caller that ends first sends none.
+  defp killer(_caller, nil), do: nil
+
+  defp killer(caller, _budget) do
+    monitor = Process.monitor(caller)
+
+    receive do
+      {:killer, pid} ->
+        Process.demonitor(monitor, [:flush])
+        pid
+
+      {:DOWN, ^monitor, :process, _pid, _reason} ->
+        exit(:normal)
+    end
+  end
+
+  defp report({:ok, result}, nil), do: result
+
+  defp report({:ok, result}, killer) do
+    Killer.cancel(killer)
+    result
+  end
+
+  defp report({:exit, _reason}, nil), do: {:error, :unknown}
+
+  # The killer ends after the Task, at its kill or at the `:DOWN` of the
+  # Task.
+  defp report({:exit, _reason}, {pid, monitor}) do
+    receive do
+      {:DOWN, ^monitor, :process, ^pid, :fired} -> {:error, :timeout}
+      {:DOWN, ^monitor, :process, ^pid, _reason} -> {:error, :unknown}
+    end
   end
 
   @doc false
@@ -44,7 +105,7 @@ defmodule Helyx.Session.File.Edit do
   # file is read and checked as a resume reads it, with no repair write,
   # then copied without them to `<path>.tmp`, and the copy replaces the
   # file by a rename. The `killer` of the deadline (`Helyx.Session.Killer`)
-  # is cancelled before the rename is sent: past that point the result is
+  # is disarmed before the rename is sent: past that point the result is
   # the answer of perl.
   def remove_message(path, cwd, message_id, killer) do
     locked(path, fn lock ->
@@ -132,7 +193,7 @@ defmodule Helyx.Session.File.Edit do
            :ok <- edit_failed(Lock.remove_file(lock, tmp)),
            :ok <- copy(path, tmp, MapSet.new(ids)),
            :ok <- File.chmod(tmp, mode),
-           :ok <- Killer.cancel(killer),
+           :ok <- Killer.disarm(killer),
            do: edit_failed(Lock.rename_file(lock, tmp, path))
 
     if result != :ok, do: Lock.remove_file(lock, tmp)
@@ -140,13 +201,13 @@ defmodule Helyx.Session.File.Edit do
   end
 
   # The copy is made new, with `O_EXCL`, so no file or link at its path is
-  # written through.
+  # written through. Its mode is 0600 before its first byte, as the
+  # sessions folder can be readable by others; the copy gets the mode of
+  # the session file after it is written.
   defp copy(path, tmp, removed) do
     result =
       File.open(tmp, [:write, :exclusive, :binary, :raw], fn out ->
-        File.open(path, [:read, :binary, :raw, :read_ahead], fn input ->
-          lines(input, out, 1, SessionFile.limits([]), %Copy{removed: removed})
-        end)
+        with :ok <- File.chmod(tmp, 0o600), do: copy_into(out, path, removed)
       end)
 
     case result do
@@ -154,6 +215,12 @@ defmodule Helyx.Session.File.Edit do
       {:ok, error} -> error
       error -> error
     end
+  end
+
+  defp copy_into(out, path, removed) do
+    File.open(path, [:read, :binary, :raw, :read_ahead], fn input ->
+      lines(input, out, 1, SessionFile.limits([]), %Copy{removed: removed})
+    end)
   end
 
   # The read under the lock checked every line and the chain; the file has

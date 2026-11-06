@@ -15,7 +15,7 @@ defmodule Helyx.Sessions do
   alias Helyx.Session
   alias Helyx.Session.File, as: SessionFile
   alias Helyx.Session.File.{Edit, Scan}
-  alias Helyx.Session.{Id, Input, Killer}
+  alias Helyx.Session.{Id, Input}
 
   # The timeout of each call of `Helyx.Session` but `abort/1`.
   @call_timeout_ms 5_000
@@ -193,9 +193,10 @@ defmodule Helyx.Sessions do
   holds its lock; the caller stops it first. `:not_regular` for a path
   that is a symlink or not a file, `{:lock_failed, text}` when the lock
   cannot be taken, `{:edit_failed, text}` when a remove fails, and a POSIX
-  reason of the stat of the file. One exception: an
-  `{:edit_failed, text}` that says perl gave no answer in time can come
-  after the remove ran.
+  reason of the stat of the file. Two exceptions, where the file may or
+  may not have changed: an `{:edit_failed, text}` that says perl gave no
+  answer in time, and `:unknown`, an end of the work with no result, such
+  as at a stop of the Core.
 
   It does not remove what is kept outside the file: the empty lock file
   `<id>.lock`, the child sessions that its tool calls started (each its
@@ -212,6 +213,7 @@ defmodule Helyx.Sessions do
              | :duplicate_id
              | :running
              | :not_regular
+             | :unknown
              | {:lock_failed | :edit_failed, String.t()}
              | File.posix()}
   def delete(core, id) when is_binary(id) do
@@ -220,7 +222,7 @@ defmodule Helyx.Sessions do
          :ok <- not_running(core, id) do
       # The take, two removes, and the release each have the bound of
       # `Helyx.Session.Lock`.
-      edit_task(core, fn -> Edit.delete(path) end)
+      Edit.run(core, nil, fn nil -> Edit.delete(path) end)
     end
   end
 
@@ -240,8 +242,9 @@ defmodule Helyx.Sessions do
   errors of a resume of the file (such as `{:invalid_file, text}`),
   `:message_not_found` for an id that is no message of the file, and
   `:timeout` past the deadline, 25,000 ms plus 3 ms for each 1,000 bytes
-  of the file; the deadline ends before the rename is sent. The exception
-  of `delete/2` holds for the rename.
+  of the file: the deadline ends before the rename is sent, and only a kill
+  of the deadline gives `:timeout`. The two exceptions of `delete/2` hold
+  for the rename.
 
   It does not remove the text from anything but the file: the copies of
   `delete/2`, a summary that a model wrote of the text, the resume id of a
@@ -257,6 +260,7 @@ defmodule Helyx.Sessions do
              | :running
              | :message_not_found
              | :timeout
+             | :unknown
              | {:lock_failed | :edit_failed, String.t()}
              | SessionFile.error()}
   def remove_message(core, id, message_id) when is_binary(id) and is_binary(message_id) do
@@ -265,7 +269,7 @@ defmodule Helyx.Sessions do
          :ok <- not_running(core, id),
          {:ok, size} <- size(path) do
       budget = @remove_base_ms + div(size * @remove_passes, 1_000)
-      edit_task(core, fn -> Edit.remove_message(path, cwd, message_id, Killer.arm(budget)) end)
+      Edit.run(core, budget, &Edit.remove_message(path, cwd, message_id, &1))
     end
   end
 
@@ -291,25 +295,6 @@ defmodule Helyx.Sessions do
     case Registry.lookup(Helyx.Core.sessions_registry(core), id) do
       [] -> :ok
       _running -> {:error, :running}
-    end
-  end
-
-  # The work runs in a Task that owns the port of the lock and traps its
-  # exits, so the caller gets no message of it. A killer that `fun` arms
-  # kills the Task at its deadline, also when the caller is gone: its port
-  # closes, and perl exits and frees the lock. `fun` cancels it before it
-  # sends the rename, so a kill never follows a sent rename.
-  defp edit_task(core, fun) do
-    task =
-      Task.Supervisor.async_nolink(Helyx.Core.task_supervisor(core), fn ->
-        Process.flag(:trap_exit, true)
-        fun.()
-      end)
-
-    case Task.yield(task, :infinity) do
-      {:ok, result} -> result
-      {:exit, :killed} -> {:error, :timeout}
-      {:exit, reason} -> exit(reason)
     end
   end
 
