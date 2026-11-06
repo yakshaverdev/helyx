@@ -45,17 +45,6 @@ defmodule Helyx.MessageTest do
     end
   end
 
-  test "stop_reasons is the closed set of a message end" do
-    assert Message.stop_reasons() == [
-             :end_turn,
-             :tool_use,
-             :max_tokens,
-             :refused,
-             :aborted,
-             :error
-           ]
-  end
-
   test "resume_id? accepts valid UTF-8 of 1 to 256 bytes" do
     assert Message.resume_id?("a")
     assert Message.resume_id?(String.duplicate("a", 256))

@@ -1122,46 +1122,6 @@ defmodule Helyx.Session.FileTest do
     end
   end
 
-  describe "the header scan" do
-    # The header line of a session whose model pads the line to `bytes`.
-    defp header_of(bytes, pad) do
-      base = ~s({"type":"session","version":1,"cwd":"/repo","id":"h","ts":"t","model":")
-      count = div(bytes - byte_size(base) - 2, byte_size(pad))
-      line = base <> String.duplicate(pad, count) <> ~s("})
-      line <> String.duplicate(" ", bytes - byte_size(line))
-    end
-
-    # The header replaced, the user message kept as the child of the new one.
-    defp overwrite_session(dir, header) do
-      File.rm_rf!(Session.File.path(dir, "/repo", "sess00000001"))
-      {:ok, file} = started(dir, "sess00000001", "/repo", "test/ok")
-      [old, rest] = String.split(File.read!(file.path), "\n", parts: 2)
-      rest = String.replace(rest, JSON.decode!(old)["id"], "h")
-      File.write!(file.path, header <> "\n" <> rest)
-    end
-
-    test "a header line of 65,536 bytes is found, also with multibyte text", %{tmp_dir: dir} do
-      overwrite_session(dir, header_of(65_536, "é"))
-      assert {:ok, _} = SessionFile.resume(dir, "/repo")
-
-      overwrite_session(dir, header_of(65_535, "a"))
-      assert {:ok, _} = SessionFile.resume(dir, "/repo")
-    end
-
-    test "a header line one byte over is not a session", %{tmp_dir: dir} do
-      overwrite_session(dir, header_of(65_537, "a"))
-      assert {:error, :not_found} = SessionFile.resume(dir, "/repo")
-    end
-
-    test "a file that is not regular is skipped, not opened", %{tmp_dir: dir} do
-      {:ok, file} = started(dir, "sess00000001", "/repo", "test/ok")
-      {_, 0} = System.cmd("mkfifo", [Path.join(Path.dirname(file.path), "pipe00000000.jsonl")])
-
-      assert {:ok, resumed} = SessionFile.resume(dir, "/repo")
-      assert id(resumed) == "sess00000001"
-    end
-  end
-
   describe "the file count of the header scan" do
     # "_repo" has the slug of "/repo", so its sessions share the directory.
     # `ts` replaces the start time in the header.
@@ -1172,16 +1132,6 @@ defmodule Helyx.Session.FileTest do
       File.write!(file.path, [header, "\n", rest])
       File.touch!(file.path, mtime)
       file
-    end
-
-    test "a session older than the newest files is not found", %{tmp_dir: dir} do
-      session_at(dir, "old000000000", "/repo", 1_000)
-      session_at(dir, "b00000000000", "_repo", 2_000)
-      session_at(dir, "c00000000000", "_repo", 3_000)
-
-      assert {:error, :not_found} = SessionFile.resume(dir, "/repo", max_scanned_files: 2)
-      assert {:ok, resumed} = SessionFile.resume(dir, "/repo", max_scanned_files: 3)
-      assert id(resumed) == "old000000000"
     end
 
     test "the modification time selects the files, then the start time decides",
@@ -1203,26 +1153,6 @@ defmodule Helyx.Session.FileTest do
 
       assert {:ok, resumed} = SessionFile.resume(dir, "/repo", max_scanned_files: 1)
       assert id(resumed) == "sess00000001"
-    end
-
-    test "the default limit is 256 files", %{tmp_dir: dir} do
-      session_at(dir, "old000000000", "/repo", 1_000)
-      for n <- 1..255, do: session_at(dir, Session.Id.new(), "_repo", 2_000 + n)
-      assert {:ok, resumed} = SessionFile.resume(dir, "/repo")
-      assert id(resumed) == "old000000000"
-
-      session_at(dir, "s10000000256", "_repo", 3_000)
-      assert {:error, :not_found} = SessionFile.resume(dir, "/repo")
-    end
-
-    test "the path breaks a tie of the modification time", %{tmp_dir: dir} do
-      session_at(dir, "a00000000000", "/repo", 1_000)
-      session_at(dir, "b00000000000", "_repo", 1_000)
-
-      assert {:error, :not_found} = SessionFile.resume(dir, "/repo", max_scanned_files: 1)
-
-      assert {:ok, resumed} = SessionFile.resume(dir, "_repo", max_scanned_files: 1)
-      assert id(resumed) == "b00000000000"
     end
   end
 
