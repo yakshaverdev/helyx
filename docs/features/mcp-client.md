@@ -1,0 +1,168 @@
+# MCP client and tool search
+
+Status: design, ticket #492 with #473 folded in (owner decisions of 2026-10-23 and 2026-11-06: feature doc first; tool search comes with the MCP client). No code yet; "Slice order" lists the build.
+
+## Goal
+
+The user names MCP servers in a config file. Their tools reach the model as Helyx tools, on every provider, without filling the context window: the model sees a search tool, and a tool's schema goes to the model only after a search finds it.
+
+Facts about other MCP clients and about tool search are in `docs/research/mcp-client.md`; the decisions below stand on Helyx reasons.
+
+User stories:
+
+- I add a server to `~/.helyx/mcp.json` and start a session. The model sees `tool_search`. When my task needs the server, the model searches, the matching tools load, and the model calls them by name, as it calls `read`.
+- My config names 10 servers with 300 tools. The first request of a session holds the bundled tools and `tool_search`, not 300 schemas.
+- A server's command is wrong. The session starts as before; a search answers that the server failed, with the reason, and the other servers work.
+- A server crashes in the middle of a session. Its open call ends with an error that says the call may have run; its tools leave the session; nothing restarts it.
+- I resume a session in which the model loaded three tools of a server. After the resume, the three tools are loaded again once the server lists them.
+
+### Decisions
+
+1. **Config: one user file, JSON.** The MCP plugin reads `~/.helyx/mcp.json` at each session start and resume. A product sets another path with the application env key `:mcp_config` of `helyx_plugins`, as `:memory_markdown_dir` sets a folder (`plugins/bundled/lib/helyx/memory/markdown.ex:222`). Reason: Helyx already parses JSON and keeps user state under `~/.helyx`; a file read per session start makes a config change apply to the next session with no reload command. Helyx reads no project file of servers: a project file would start programs that a cloned repository names, and Helyx has no trust gate (#503). That waits for #503; see "Out of scope".
+2. **Config shape.** `{"mcpServers": {"<name>": {"command": "...", "args": [...], "env": {...}, "disabled": false}}}`. The key `mcpServers` and the keys of a server are the shape that server READMEs give for copy and paste, so a user pastes a snippet unchanged. Helyx ignores a key that it does not know. A server with `url`, `httpUrl`, or `type` other than `"stdio"` is skipped with a reason: Helyx speaks stdio only (see "Out of scope").
+3. **One Tool plugin, `Helyx.Tool.MCP`, as a tool source.** A Tool plugin today is one module, one tool, with a fixed name (`lib/helyx/interfaces/tool.ex:52-65`). The MCP plugin learns its tools only after it starts the servers, so the Tool interface gains a second kind of plugin, the **tool source**: a plugin that runs one process per session in the hands and offers tools that it learns at run time. Reason: the hands already hold every OS process of a session (ADR 0004); a source process in the hands holds its server groups with `Helyx.Tool.hold/1` through `Helyx.Watchdog.start/4` unchanged, and the hands release them at the stop of the session, as they release a provider process. No new interface: a source is a Tool plugin, so ADR 0009's extension surface stays.
+4. **A session's tool set changes during the session.** The session keeps a **registry**: every tool it can run, from the fixed tool plugins and from the sources. Each entry has an **exposure**, `direct` or `deferred`. The **active set** is the direct tools plus the deferred tools that a search **activated**. A provider gets the specs of the active set, sorted by name. Reason: the session is the one process that sees the registry, the provider requests, and the tool calls, so it alone can keep the three in step.
+5. **MCP tools are deferred, always.** Reason: the bytes of a server's tools are known only after it starts, so a threshold would make the first request depend on how fast the servers started; a fixed rule keeps the first request the same on every start and resume. A server's tools cost the context nothing until the model searches.
+6. **Search is a plain Tool plugin, `Helyx.Tool.ToolSearch`, named `tool_search`.** It ranks the deferred tools of the registry by BM25 over the name, the description, and the parameter names and descriptions, and activates the matches. An empty query lists the groups (servers) with their state and tool count. Reason: the search reads only the registry, so it serves any source, not only MCP; it is a fixed tool, so it is in the first request.
+7. **An activation is a session log entry, `tools_change`.** It holds the full list of activated names after the change, so a resume restores it by the last entry, as `model_change` restores the model (`lib/helyx/session/file/reader.ex:96-97`). The registry is not written: a resume starts the servers again and lists their tools. Reason: the activation is what the model saw and what it decided; the registry is the servers' state, which a restart gives again.
+8. **Unique names.** An MCP tool is `<server>__<tool>`. A server name matches `^[a-z0-9][a-z0-9-]{0,15}$`: it has no `_`, so the first `__` ends the server part and two servers never give one name. Each character of the tool name outside `[A-Za-z0-9_-]` becomes `_`. A name over 52 bytes keeps its first 43 bytes, then `_`, then the first 8 hex digits of the SHA-256 of the MCP tool name. Core rejects a source tool whose name is in the registry already (a fixed tool, or another group's tool), with a notice; the earlier one stays. Reason for 52: every tool name, fixed or not, matches `^[A-Za-z0-9_-]{1,52}$` from now on (slice 1). The smallest name limit that a Helyx provider is known to have is 64 (OpenAI function names; the Codex rule `^[a-zA-Z0-9_-]+$` is in `docs/research/codex-app-server.md:42`), and Claude Code shows a Helyx tool as `mcp__helyx__<name>`, 12 bytes more (`plugins/bundled/lib/helyx/provider/claude_code/mcp.ex:22-23`): 52 + 12 = 64.
+9. **A failed or dead server.** No restart and no retry. A server that does not finish its start in 30 s, or exits, or breaks the protocol, is **failed**: its tools leave the registry, its open call gets an error result, and a search names it with the reason. Reason: a `tools/call` can have side effects, so a retry can run it twice; a server that crashed once tends to crash again, and a restart loop costs the user processes and tokens with no answer. A new session or a resume starts it again. One case is not a failure: a call that ends with no response (decision 14).
+10. **Providers that resend and providers that render.** A model provider (`Helyx.Provider.Loop`) gets a fresh context for each model call (`lib/helyx/provider/loop.ex:41-42`), so it sends the active specs on each call: a tool that a search activates is callable at the next model call of the same turn. A harness provider gets its tools once per program or thread today (`claude_code.ex:50-58`, `codex/program.ex:96-105`). From slice 6 it compares the tools of each `{:turn, ...}` context with the tools of its program, and a change takes effect at that turn start, through the path that a prompt change takes today (`docs/features/provider-parity.md`, "The prompt"): Claude Code restarts its program with a resume of its harness session and the new tool list; Codex starts a fresh thread with the replay, because a thread's tools are fixed at `thread/start` (`docs/research/codex-app-server.md:128-129`) and its stored id already holds a digest of the tools (`codex/program.ex:46-58`). So on a harness provider a tool that a search activates is callable from the next turn. Reason: both paths exist and are tested; an in-turn path for a harness is an open research question (`docs/research/mcp-client.md`, "Open questions") and needs an observed run with a real program before any build.
+11. **No source in a session that names its tools.** A session started with `:tools` (the child sessions of the agent tool, `plugins/bundled/lib/helyx/tool/agent.ex:54,63`, or a product that picks tools) opens no source. Reason: each child would start its own copy of every server, and a source process belongs to one session's hands, so it cannot be shared. The agent tool leaves `tool_search` out of the list of a child (slice 9).
+12. **The environment of a server.** A server gets `HOME`, `LOGNAME`, `PATH`, `SHELL`, `TERM`, `USER`, `TMPDIR`, and `LANG` of the node, then the `env` of its config; every other variable of the node is unset for it. Reason: a server is a third-party program, and the node's environment holds the provider keys. The values of `env` are never logged and are masked in a start error, as the harness providers do (`docs/features/harness-no-state.md`, "Never logged"; `Helyx.Watchdog.start/4`, option `:env`).
+13. **The config file must not be writable by others.** A file whose group or other write bit is set is refused, with one notice, and no server starts. Reason: the file names programs to run, the same reason the server refuses a data folder that the group or other users can write (`docs/features/serve.md:53`).
+14. **A call that ends with no response stops its server.** At the time limit of a call, and when an abort kills the call Task, the source sends `notifications/cancelled`, stops the server with its process group, and starts it again, as at the session start; the call is not run again. Reason: MCP gives no confirmation that a cancelled request stopped (the SDK server only aborts a signal, `docs/research/mcp-client.md`), so a server that stays up can run the cancelled call while the next one starts, and repeated cancels pile up calls with side effects. The kill of the group ends any handler. A server restarts this way at most 3 times per session; at the fourth call that ends with no response it is failed, as in decision 9, so a server that never answers cannot loop.
+15. **One server's failure stays with that server.** The source process traps exits. The exit of one server's port, such as the `:epipe` of a write to a dead watchdog (`plugins/bundled/lib/helyx/watchdog.ex:291`, `plugins/bundled/test/helyx/provider/harness_epipe_test.exs`), fails that server only. An exit signal from any other process, the hands for example, ends the source. Reason: one source process holds all ports of the plugin, so without this, one dead server would take the tools of every other server with it.
+
+## Interface changes
+
+### `Helyx.Tool` (Core)
+
+- **Two kinds of Tool plugin.** A fixed tool exports `name/0`, `description/0`, `parameters/0`, and `run/2`, as today. A tool source exports `source/1` and `run/2`, and no `name/0`. Core checks each Tool plugin at its start: one that exports neither `name/0` nor `source/1`, or both, gives `{:error, {:invalid_tool_plugin, module}}`, next to the existing checks of `Helyx.Core.Plugins`. `Helyx.Tool.specs/2` skips the sources.
+- **Name rule.** `Helyx.Tool.specs/2` accepts a name only when it matches `^[A-Za-z0-9_-]{1,52}$`; another name gives `{:error, {:bad_tool_spec, label}}` as a bad name does today (`tool.ex:102-114`). The bundled names (`read`, `bash`, `edit`, `write`, `agent`, `skill`, `question`) pass.
+- **`source(info)` (new optional callback).** The session calls it in a new Task of its hands, the **source process**, once per source plugin, after the hands start (`lib/helyx/session/server/open.ex:188`), at a start and a resume of a session that has no `:tools`. `info` is `%{core, session_id, cwd}`. The Task runs for the life of the session: it is not a tool call, it counts against no call cap, and an abort of a turn does not touch it. Its handles, held with `hold/1`, are released when it ends and at the stop of the session, as those of a provider process (`tool.ex`, `hold/1`). When it ends, the session removes every group that it put, with one notice per group.
+- **`announce(groups)` (new).** Called once from a source process, before its first `put_tools/2`: the names of all its groups, possibly none, each put as `:starting`. From the start of its Task until this call a source is **pending**. Reason: the session starts the Task before the source has read its config, so without it a search that comes first would see no group and not wait. A second call, or a `put_tools/2` before it, exits the caller.
+- **`put_tools(group, value)` (new).** Called from a source process. `group` is a group that `announce/1` kept. `value` is `:starting`, `{:ok, entries}`, or `{:error, text}`. An entry is `%{name, description, parameters, exposure}` with exposure `:direct` or `:deferred`. It replaces the group's entries; `{:error, text}` removes them and keeps the text for the search. The session checks each entry at this boundary, rejects the smallest unit (one entry) with a notice, and keeps the rest; see "Bounds". A group that would pass the registry's tool cap is rejected whole, with its own `{:error, text}`. Exits outside a source process.
+- **`deferred(wait_ms)` (new).** Called from a tool call. Returns the deferred entries of the registry, the activated names, and the state of each group (`:starting`, `:ready`, or `{:error, text}`). The answer waits until no source is pending and no group is `:starting`, or until `wait_ms` passed, at most 30,000.
+- **`activate(names)` (new).** Called from a tool call, with the names in rank order, best first. Adds the registered deferred names among them to the end of the activated list, then applies the cap of "Bounds": it drops names from the front of the list, the oldest first, so the names of this call are dropped last, and among them the lowest ranked first. Writes one `tools_change` entry and emits one `:tools_change` event when the list changed. Returns the activated list. A name that is not a registered deferred tool is ignored.
+- **The cap after every change.** The byte cap of the activated list counts the spec JSON of the names that the registry holds now, so a `put_tools/2` with larger schemas, or a group that lists its tools after a resume, can pass it. The session applies the same cap after each `put_tools/2`, the oldest first, and writes a `tools_change` entry and a `:tools_change` event with a nil turn id when that drops a name. So no context holds more activated spec JSON than the cap.
+- **`context/0`** gains `source`: the pid of the source process of the called tool's plugin, or nil. An MCP tool's `run/2` reads `context().tool` for the name that was called and `context().source` for the process that owns its server.
+
+### The session (Core)
+
+- The state fields `tool_specs` and `tools` (`lib/helyx/session/server/state.ex:76-77`) become the registry and the activated list. The base context of each provider call holds the active specs, sorted by name (`prepare.ex:37` today holds all specs). A ModelContext plugin can still change them on one call (`lib/helyx/session/stream.ex:84-89`).
+- The hands' map of tool name to module (`open.ex:249`) follows the registry: the session sends each change to the hands before it builds any context that holds it. Both messages go from the session to the hands, so a tool call of a model that saw a tool reaches hands that know it. A call of a name that is no longer registered gets the error result `unknown tool: <name>`, as today (`lib/helyx/session/hands.ex:354-356`).
+- `{tools, concurrent}` of `Helyx.Session.start/2` and `resume/2` (`lib/helyx/session.ex:89-100,131-138`) stays the fixed tools; source tools are never concurrent. Reason: an MCP tool's `readOnlyHint` comes from the server and nothing checks it.
+
+### Event and session file
+
+- **Event `:tools_change`**, `%{activated: [String.t()]}`, with the turn id of the call that activated.
+- **Entry `tools_change`**: `{"type": "tools_change", "activated": [...]}`, plus the `id`, `parent_id`, and `ts` that every entry gets (`lib/helyx/session/file.ex:386-398`). The reader folds it as it folds `model_change`: the last one gives the activated list. Names that no source registers yet stay in the list and are sent once their group lists them.
+- **An older Helyx and this entry.** The reader of today returns `{:error, {:invalid_file, "entry the writer never produces: \"tools_change\""}}` for an entry type it does not know (`reader.ex:128-129`), so an older Helyx refuses to resume a file that holds a `tools_change` entry. The refusal changes nothing on disk, and the file resumes again in a Helyx that knows the entry. The header version stays 1: a version 2 would make an older Helyx refuse every new file, also those with no activation. The rewrite of #834 keeps this rule for unknown entries (branch `ticket/834-resume-reads-all` at `7c9403de`, `reader.ex:227-228`), so slice 3 adds its fold clause to whichever reader is on master then; this run changes no file of `Helyx.Session.File`.
+- **Snapshot** gains `activated`, the same list.
+- **Wire.** The event and the snapshot field enter the schema of `docs/features/wire-protocol.md`, with a new protocol number, as the schema test of #660 requires (ADR 0008). A client of the old number is refused with `4426`, as for any schema change.
+
+### `Helyx.Tool.MCP` (bundled, `plugins/bundled/lib/helyx/tool/mcp.ex`)
+
+A tool source. Its `check/0` reports a missing `perl`, as the bash tool does (`plugins/bundled/lib/helyx/tool/bash.ex:101`). Its source process reads the config, calls `announce/1` with the names of the servers that passed the checks, starts each server with `Helyx.Watchdog.start/4` (input `:open`, stderr to `/dev/null` as `Helyx.HarnessIO.launch/4` does), and speaks JSON-RPC 2.0 over stdin and stdout, one JSON message per line:
+
+1. `initialize` with protocol version `2025-06-18` and no client capability (no roots, sampling, or elicitation). The server's answer must name a version of `2024-11-05`, `2025-03-26`, `2025-06-18`, or `2025-11-25`; another fails the server.
+2. `notifications/initialized`, then `tools/list`, following `nextCursor`. A tool whose `execution.taskSupport` is `"required"` is left out, with a notice: Helyx sends plain `tools/call` requests only, and the SDK server refuses those for such a tool (`server/mcp.js:116-118` of the SDK copy that the research note names). Then `put_tools(server, {:ok, entries})`, every entry deferred.
+3. A `tools/call` from `run/2`: the call Task asks the source process, which sends the request and answers the Task. At the time limit the call gets an error result that says the call may have run, and the source cancels as decision 14 says. When the call Task dies (an abort kills it), the source sees the `:DOWN` and cancels the same way. A call of a server that is restarting waits for its start, within the call's own time limit.
+4. A result becomes text: each `text` block as is; an `image` or `audio` block as the line `[image <mimeType>, <n> bytes, not shown]`; a `resource_link` as `[resource <name>: <uri>]`; an embedded resource as its text, or `[resource <uri>, <n> bytes, not shown]` for a blob; with no content block, the JSON of `structuredContent`. Blocks join with a newline. `isError: true` gives `{:error, text}`. The hands cut the text to `Helyx.Message.max_result_bytes/0`, head and tail kept (`lib/helyx/data/message.ex:266-292`).
+5. `notifications/tools/list_changed` lists the tools again and puts the group again. A listing that does not end within 30,000 ms fails the server, as a start does. A request of the server gets the JSON-RPC error `-32601`, but `ping`, which gets `{}`. Any other notification is dropped.
+
+### `Helyx.Tool.ToolSearch` (bundled, `plugins/bundled/lib/helyx/tool/tool_search.ex`)
+
+A fixed tool, `tool_search`, with `query` (a string) and `limit` (an integer, default 5). It calls `deferred/1` with a wait of 30,000 ms, ranks, calls `activate/1` with the matches, and answers with one line (`name: description`) per match that the returned list holds, a line that names the matches that the cap dropped, and a last line that says that the listed tools are callable from the next model call. An empty query activates nothing and answers with the groups. An exact name in the query ranks first.
+
+## Replaced mechanism
+
+The fixed tool set of a session.
+
+1. Old: `Helyx.Tool.specs/2` builds every spec once at a start or resume (`tool.ex:85-97`); the private `start_child/3` of `Helyx.Session.Server.Open` stores `tool_specs` and `tools` once (`open.ex:134-151`; the ticket calls it `Helyx.Session.start_child/2`, which does not exist); the hands get a fixed map (`open.ex:249`); every context holds every spec (`prepare.ex:37`); `context().tools` is the keys of the hands' map (`hands.ex:346-351`); harness providers take the specs at `init/3` and never again. New: the fixed tools are built the same way and are direct entries of the registry; the registry changes through `put_tools/2` and `activate/1`; the contexts hold the active set; `context().tools` holds the registered names; harness providers read the tools of each turn context. No reply is removed.
+2. The one ordering guarantee that changes: "a tool that the provider was given is in the hands' map". Today it holds because both are fixed at open. After the change the session process, which sends both the hands' map and every context, sends the map first.
+3. Tests that assume a fixed set keep their property for the fixed tools: `test/helyx/session/hands_test.exs` (unknown tool), `plugins/bundled/test/helyx/provider/codex/helyx_tools_test.exs` and `claude_code/helyx_tools_test.exs` (the tools reach the program), `test/helyx/session/provider_process_tools_test.exs`. The test of the stored Codex id with a digest of the tools keeps its property; slice 6 adds the change case.
+4. Users see: `tool_search` in the tool list of a product that registers it, the `tools_change` event, the snapshot field, and the new protocol number.
+5. State with no bound: none new; see "Bounds".
+
+## Bounds
+
+| What | Bound | Over the bound |
+| ---- | ----- | -------------- |
+| config file | 64 KiB, read with a bound; JSON; a regular file without the group or other write bit | refused, one notice, no server starts |
+| servers in the config | 16, by name order | the rest skipped, one notice |
+| server name | `^[a-z0-9][a-z0-9-]{0,15}$` | that server skipped, notice |
+| a duplicate server name | decoded with ordered objects, so a duplicate key is seen | file refused, notice |
+| `command` | 1 to 4,096 bytes, UTF-8, no NUL | that server skipped, notice |
+| `args` | 64 strings, each 4,096 bytes, UTF-8, no NUL | that server skipped, notice |
+| `env` | 64 pairs; a name `^[A-Za-z_][A-Za-z0-9_]{0,127}$`, a value 4,096 bytes, UTF-8, no NUL | that server skipped, notice; the value is never in the text |
+| server start | 30,000 ms from the spawn to the last page of `tools/list` | server failed, stopped, its group `{:error, "did not start in 30 s"}` |
+| `tools/list` pages | 16 per listing | server failed |
+| tools of one server | 256, by MCP name order | the rest dropped, notice |
+| a line from a server | 16 MiB, as `Helyx.HarnessIO` (`harness_io.ex:8,159-182`) | server failed: the client cannot tell which request the line answered |
+| a line that is not a JSON object | skipped, as `Helyx.HarnessIO.lines/3` does | skipped |
+| open requests to one server | 1 call (source tools run alone) plus 1 listing; a cancelled call never overlaps the next, because its server stops first (decision 14) | none over: the hands run source tools one at a time |
+| a re-list after `list_changed` | one listing at a time; at most one more queued; at least 1,000 ms apart | further notices fold into the queued one |
+| one re-list | 30,000 ms from its request to its last page, and 16 pages | server failed, stopped, its group `{:error, text}` |
+| one `tools/call` | 60,000 ms, no retry | error result "timed out after 60 s; the call may have run"; the server is cancelled, stopped, and started again (decision 14) |
+| restarts of one server after a call with no response | 3 per session | at the fourth, the server is failed |
+| a result | `Helyx.Message.max_result_bytes/0`, 65,536 bytes, head and tail kept | cut by the hands, the text says so |
+| binary content in a result | not decoded; replaced by a line with its byte count | — |
+| tool name in Core | `^[A-Za-z0-9_-]{1,52}$`, fixed and source tools | fixed: `{:bad_tool_spec, label}` at start; source: that entry rejected, notice |
+| description of a source entry | 4,096 bytes, UTF-8 | the MCP plugin cuts it at a character boundary before `put_tools/2`; Core rejects a longer one, notice |
+| `parameters` of a source entry | a JSON object with `"type": "object"`, at most 16,384 bytes of JSON (`Helyx.Message.encoded_size/1`) | that entry rejected, notice |
+| groups of a session | 64, all named in `announce/1`, each 1 to 64 bytes of UTF-8 | `announce/1` past the cap keeps the first 64 by name order, notice; `put_tools/2` of a group that `announce/1` did not keep exits the source |
+| source entries of a session | 1,024 | the group that would pass it rejected whole, notice |
+| activated names | 32 names and 65,536 bytes of the spec JSON that the registry holds for them, checked after each `activate/1` and each `put_tools/2` | the oldest names leave first, the names of the current activation last and lowest ranked first; one `tools_change` entry and event; the search answer lists only the names kept |
+| `tool_search` query | 1,024 bytes | error result |
+| `tool_search` limit | 1 to 10 | error result |
+| `tool_search` answer | 10 matches, each description cut to 1,024 bytes in the answer | — |
+| wait of `deferred/1` | 30,000 ms, while a source is pending or a group is `:starting` | answers with the groups as they are; a pending source has no group yet |
+| a notice text from a source | 2,000 bytes, as a watchdog start reason (`watchdog.ex:90`) | cut |
+| TERM grace when a server stops | 2,000 ms, then KILL (`Helyx.Watchdog`, option `:grace_ms`) | killed |
+
+The render path keeps the bounds: the search answer is built from entries that `put_tools/2` checked, cut again per line, and the notice texts are cut where they are built.
+
+## Ownership
+
+| Resource | Created by | Held by | Released on normal end | Released when the holder crashes | Released on abort |
+| -------- | ---------- | ------- | ---------------------- | -------------------------------- | ----------------- |
+| MCP server process group | the source process, `Helyx.Watchdog.start/4` | the hands (handle from `hold/1`); the port by the source process | the hands release it at the stop of the session (`:cancel`, with its deadline) | the source process dies: its port closes, the watchdog sends TERM, then KILL after the grace; the hands release its handles as those of an ended provider process. The hands die: the ports of the source die with their links, and the watchdog kills the group | the server of the aborted call: `notifications/cancelled`, then its port closes and the hands release its group with the deadline of a release, before it starts again (decision 14); other servers: not touched |
+| the source process | the session, as a Task of the hands | the hands | ends at the stop of the session | the session removes its groups, with a notice | not touched |
+
+The source process is a Task of the hands, which the template marks as a flag. It is answered here: the hands, not the Task, hold the handle of each server group, so the reference outlives the Task, as for a provider process.
+
+## Accepted holes
+
+- After a resume, a call of an activated tool before its server lists it gets `unknown tool: <name>`; a search waits for the start and loads it again.
+- On a harness provider, a tool that a search activates is callable from the next turn (decision 10). The search answer says "from the next model call"; on a harness that is the next turn.
+- Each activation changes the tools of the next request, so a provider's prompt cache misses once per activation. The cap of activated names bounds it per session.
+- An abort or a time limit during an MCP call restarts that server, so the server loses the state it held in memory, a browser page for example (decision 14).
+- A server's stderr is dropped, so a start failure shows the exit status and no log text.
+- A server process that leaves its process group is not released, the known limit of `docs/features/tool-resource-release.md`.
+
+## Slice order
+
+Each slice is one `/ship`. Test files are named for the build; a slice may split a file that passes 4 s.
+
+1. **Tool name rule.** `^[A-Za-z0-9_-]{1,52}$` in `Helyx.Tool.specs/2`. Tests: `test/helyx/tool_test.exs` (new): at 52 bytes, 53, a multibyte name, each forbidden character class, the bundled names.
+2. **Tool sources in Core.** The two plugin kinds and the Core start check; `source/1` in a Task of the hands; `put_tools/2` with `:starting`, `{:ok, entries}` and `{:error, text}`, direct entries only; the registry in the session, the hands' map in step with it, `context().source`; `announce/1` and the pending state; removal at the end of the source process; no source with `:tools`. Tests: `test/helyx/session/tool_source_test.exs` (new) with a test-only source in `test/support/interfaces.ex`: a put tool reaches the next context and runs; the hands know a tool before any context holds it; an entry over each bound is rejected alone; a name clash keeps the earlier one; a source crash removes its groups and releases its handles; `announce/1` twice, or `put_tools/2` before it, exits the source; the stop of the session releases them; a session with `:tools` starts no source; the Core start check.
+3. **Deferred exposure and activation.** `deferred/1`, `activate/1`, the cap of activated names, the `tools_change` entry and event, the reader fold, the snapshot field in Core. Tests: `test/helyx/session/tool_activation_test.exs` (new): the active set in the context; the oldest leave at 32 names and at 65,536 bytes, and in one activation the lowest ranked leave first; a `put_tools/2` with larger schemas drops the oldest and writes a `tools_change` with a nil turn id; a group listed after a resume over the cap does the same; resume restores the list; a name not yet registered stays and is sent once put; the wait of `deferred/1` covers a pending source, ends at the last start and at its bound. `test/helyx/session/file_test.exs`: the entry is written and folded.
+4. **Wire.** The event and the snapshot field in `docs/features/wire-protocol.md`, the transport codec, the new protocol number. Tests: the schema test of #660 and `plugins/bundled/test/helyx/transport/web_socket_fixtures_test.exs`.
+5. **`tool_search`.** BM25, the empty query, exact names, the bounds. Tests: `plugins/bundled/test/helyx/tool/tool_search_test.exs` (new): the answer lists only the names that `activate/1` kept, and names the dropped ones.
+6. **Harness providers follow the active set.** Claude Code restarts with a resume and the new tool list at a turn start that has other tools; Codex starts a fresh thread with the replay. Tests: `plugins/bundled/test/helyx/provider/claude_code/helyx_tools_test.exs` and `plugins/bundled/test/helyx/provider/codex/helyx_tools_test.exs`, with the fakes in `plugins/bundled/test/support/`.
+7. **MCP config.** `Helyx.Tool.MCP.Config`: read, check, and map names, with no process. Tests: `plugins/bundled/test/helyx/tool/mcp/config_test.exs` (new): every row of the config part of "Bounds" at the limit, one under, one over, and multibyte; the file mode; a duplicate key; the name mapping at 52 bytes and the hash suffix.
+8. **MCP start and listing.** The source process, `initialize`, `tools/list` with pages, the 30 s start, the environment, `list_changed`, the 30 s bound of a re-list, the omission of task-only tools. Tests: `plugins/bundled/test/helyx/tool/mcp/start_test.exs` (new) against a stub server in `plugins/bundled/test/support/mcp_stub.ex` that the test starts as a local program, with a case of a server that stops answering a re-list after its start; no network and no server from the network.
+9. **MCP calls and wiring.** `tools/call`, the time limit, the cancel on abort with the stop and the restart of decision 14 and its cap of 3, result conversion, server death during a call, the trap of port exits of decision 15, the registration in `apps/coding_agent/lib/coding_agent.ex`, and `tool_search` out of the agent tool's child list. Tests: `plugins/bundled/test/helyx/tool/mcp/call_test.exs` (new) with the stub: a cancelled call whose stub handler keeps running is killed before the next call reaches the server; the fourth call with no response fails the server; one server's port that ends with `:epipe` leaves another server's tools callable; `plugins/bundled/test/helyx/tool/agent_test.exs`.
+
+The in-turn render of a tool change on a harness (decision 10) is not a slice: it needs an observed run with a real program first.
+
+## Out of scope
+
+- Project-local server files, until the trust gate of #503.
+- HTTP and SSE transports, OAuth, and server headers: they need a credential store that Helyx does not have. No ticket.
+- MCP resources, prompts, sampling, roots, elicitation, and the `ui://` resources of MCP Apps. No ticket.
+- Direct exposure of MCP tools, and a deferred exposure of fixed tools. No ticket.
+- Source tools in the child sessions of the agent tool (decision 11). No ticket.
+- The in-turn render of a tool change on Claude Code (`notifications/tools/list_changed` on its SDK server) and on Codex (`deferLoading`): research questions in `docs/research/mcp-client.md`.
