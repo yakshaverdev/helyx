@@ -19,7 +19,7 @@ defmodule Helyx.Session.Server.Asks do
   # An ask of a call that runs in the current turn, when a subscriber can
   # answer. The reply waits for the answer.
   def ask(
-        %State{activity: %Turn{tool_queue: %{running: running}}} = state,
+        %State{phase: %{turn: %Turn{tool_queue: %{running: running}}}} = state,
         from,
         call_id,
         tool,
@@ -74,9 +74,9 @@ defmodule Helyx.Session.Server.Asks do
   end
 
   # Only a running turn has asks.
-  defp asks(%State{activity: %Turn{asks: asks}}), do: asks
+  defp asks(%State{phase: %{turn: %Turn{asks: asks}}}), do: asks
   defp asks(_state), do: []
 
-  defp put_asks(%State{activity: %Turn{} = turn} = state, asks),
-    do: %{state | activity: %{turn | asks: asks}}
+  defp put_asks(%State{phase: %{turn: %Turn{} = turn} = phase} = state, asks),
+    do: %{state | phase: %{phase | turn: %{turn | asks: asks}}}
 end

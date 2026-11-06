@@ -7,6 +7,7 @@ defmodule Helyx.Session.CompactionTest do
   import Helyx.Test.Events
 
   alias Helyx.{Event, Session}
+  alias Helyx.Session.Server.Flow
   alias Helyx.Test.Connected
 
   @done {:done, %{stop_reason: :end_turn, usage: nil}}
@@ -105,7 +106,7 @@ defmodule Helyx.Session.CompactionTest do
     # The abort call reaches the session before the interrupt answer.
     Helyx.Test.SessionCase.await(
       fn ->
-        match?(%Helyx.Session.Server.Wait{callers: [_ | _]}, :sys.get_state(pid).activity)
+        match?(%Helyx.Session.Server.Wait{callers: [_ | _]}, :sys.get_state(pid).phase.wait)
       end,
       "the abort call in the wait"
     )
@@ -113,7 +114,7 @@ defmodule Helyx.Session.CompactionTest do
     send(proc, {:answer, from, :ok})
 
     assert :ok = Task.await(abort)
-    assert :sys.get_state(pid).activity == :idle
+    assert %Flow.Idle{} = :sys.get_state(pid).phase
     refute_received {:conn, :compact, _, _}
   end
 
@@ -147,7 +148,7 @@ defmodule Helyx.Session.CompactionTest do
     session = start(core, "test/ok")
     :ok = Session.prompt(session, "before")
     collect_until(:turn_end)
-    provider = :sys.get_state(Session.pid(session)).conn.pid
+    provider = :sys.get_state(Session.pid(session)).phase.provider.pid
 
     assert :ok = Session.compact(session)
     events = collect_until(:turn_end)
@@ -160,7 +161,7 @@ defmodule Helyx.Session.CompactionTest do
 
     :ok = Session.prompt(session, "after")
     assert List.last(collect_until(:turn_end)).data == %{outcome: :done}
-    assert :sys.get_state(Session.pid(session)).conn.pid == provider
+    assert :sys.get_state(Session.pid(session)).phase.provider.pid == provider
   end
 
   test "a compaction in a model turn is automatic, and the turn goes on", %{core: core} do

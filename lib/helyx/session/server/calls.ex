@@ -7,6 +7,7 @@ defmodule Helyx.Session.Server.Calls do
   alias Helyx.{Message, ModelRef}
   alias Helyx.Session.{History, Input}
   alias Helyx.Session.Server.{Asks, Compaction, Events, Records, State, TurnLoop}
+  alias Helyx.Session.Server.Flow
 
   require Logger
 
@@ -87,7 +88,7 @@ defmodule Helyx.Session.Server.Calls do
       instance_id: state.instance_id,
       cwd: state.cwd,
       model: ModelRef.to_string(state.model),
-      status: if(state.activity == :idle, do: :idle, else: :running)
+      status: if(Flow.idle?(state.phase), do: :idle, else: :running)
     }
 
     {:reply, live, state}

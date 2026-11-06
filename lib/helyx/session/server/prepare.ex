@@ -27,11 +27,11 @@ defmodule Helyx.Session.Server.Prepare do
   # `deadline_ms.prepare` is armed before any plugin code. A compaction
   # turn has no context at its start: it submits at once. Only a model
   # provider gets a summary (`summary-compaction.md`).
-  def start(%State{activity: %Turn{compact: text, phase: :preparing}} = state, _trigger)
+  def start(%State{phase: %{turn: %Turn{compact: text, phase: :preparing}}} = state, _trigger)
       when is_binary(text),
       do: TurnLoop.submit(state)
 
-  def start(%State{activity: %Turn{id: turn_id} = turn} = state, trigger) do
+  def start(%State{phase: %{turn: %Turn{id: turn_id} = turn}} = state, trigger) do
     %State{plugins: plugins, deadline_ms: %{prepare: ms}} = state
 
     context = %Context{messages: state.transcript, tools: state.tool_specs}
@@ -76,7 +76,7 @@ defmodule Helyx.Session.Server.Prepare do
     %Task{pid: pid, ref: ref} =
       Task.Supervisor.async_nolink(sup, Helyx.Reason, :task, ["prepare task crashed", prepare])
 
-    put_in(state.activity.prepare, {ref, pid, context.messages})
+    put_in(state.phase.turn.prepare, {ref, pid, context.messages})
   end
 
   # Messages that the plugins kept go back as `:base`: the session has
@@ -93,17 +93,17 @@ defmodule Helyx.Session.Server.Prepare do
   # context request gets it as the answer. A compaction turn ends with the
   # notice when the plugin made no summary.
   def prepared(
-        %State{activity: %Turn{prepare: {_ref, _pid, messages}}} = state,
+        %State{phase: %{turn: %Turn{prepare: {_ref, _pid, messages}}}} = state,
         {:ok, %Context{messages: :base} = context, recall}
       ),
       do: prepared(state, {:ok, %{context | messages: messages}, recall})
 
-  def prepared(%State{activity: %Turn{} = turn} = state, {:summarize, plan}),
-    do: Summary.start(%{state | activity: %{turn | prepare: nil}}, plan)
+  def prepared(%State{phase: %{turn: %Turn{} = turn} = phase} = state, {:summarize, plan}),
+    do: Summary.start(%{state | phase: %{phase | turn: %{turn | prepare: nil}}}, plan)
 
-  def prepared(%State{activity: %Turn{compact: text} = turn} = state, result)
+  def prepared(%State{phase: %{turn: %Turn{compact: text} = turn} = phase} = state, result)
       when is_binary(text) do
-    state = %{state | activity: %{turn | prepare: nil}}
+    state = %{state | phase: %{phase | turn: %{turn | prepare: nil}}}
 
     case result do
       {:ok, _context, _recall} -> TurnLoop.progress(Compaction.unsupported(state))
@@ -113,21 +113,29 @@ defmodule Helyx.Session.Server.Prepare do
 
   # The recall message waits in the turn and goes last at the submit,
   # after the steers that join there.
-  def prepared(%State{activity: %Turn{phase: :preparing} = turn} = state, result) do
-    state = %{state | activity: %{turn | prepare: nil}}
+  def prepared(%State{phase: %{turn: %Turn{phase: :preparing} = turn} = phase} = state, result) do
+    state = %{state | phase: %{phase | turn: %{turn | prepare: nil}}}
 
     case result do
       {:ok, context, recall} ->
         state = Records.system_prompt(state, context.system)
         {recall, state} = recall_notice(state, recall)
-        TurnLoop.submit(%{state | activity: %{state.activity | context: context, recall: recall}})
+
+        TurnLoop.submit(%{
+          state
+          | phase: %{state.phase | turn: %{state.phase.turn | context: context, recall: recall}}
+        })
 
       {:error, reason} ->
         TurnLoop.fail_turn(reason, state)
     end
   end
 
-  def prepared(%State{activity: %Turn{phase: :submitted} = turn, conn: conn} = state, result) do
+  def prepared(
+        %State{phase: %{turn: %Turn{phase: :submitted} = turn, provider: %{pid: pid}} = phase} =
+          state,
+        result
+      ) do
     {result, state} =
       case result do
         {:ok, context, recall} ->
@@ -140,19 +148,21 @@ defmodule Helyx.Session.Server.Prepare do
       end
 
     # The context request stays open until the provider's reply (C3).
-    from = ask(state, conn.pid, {:context, turn.id, result}, :reply)
-    %{state | activity: %{state.activity | prepare: nil, pending: from}}
+    from = ask(state, pid, {:context, turn.id, result}, :reply)
+    turn = %{state.phase.turn | prepare: nil, pending: from}
+    %{state | phase: %{phase | turn: turn}}
   end
 
   # A failed recall is no recall, with one notice in the turn.
-  defp recall_notice(%State{activity: %Turn{recall_failed: false}} = state, :failed),
-    do: {nil, put_in(emit(state, :notice, %{text: @recall_failed}).activity.recall_failed, true)}
+  defp recall_notice(%State{phase: %{turn: %Turn{recall_failed: false}}} = state, :failed),
+    do:
+      {nil, put_in(emit(state, :notice, %{text: @recall_failed}).phase.turn.recall_failed, true)}
 
   defp recall_notice(state, :failed), do: {nil, state}
   defp recall_notice(state, recall), do: {recall, state}
 
   # After a summary: a compaction turn ends; any other builds again.
-  def summarized(%State{activity: %Turn{compact: :reported}} = state),
+  def summarized(%State{phase: %{turn: %Turn{compact: :reported}}} = state),
     do: TurnLoop.progress(Wait.finish(state, {:done, :end_turn, %{}}))
 
   def summarized(state), do: start(state, nil)

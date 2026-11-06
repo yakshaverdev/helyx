@@ -1,14 +1,15 @@
 defmodule Helyx.Session.Server do
   @moduledoc false
   # The session process: the GenServer callbacks. The turn lifecycle, with
-  # the match of each lifecycle input to the current activity, is in
+  # the match of each lifecycle input to the current phase, is in
   # `Helyx.Session.Server.TurnLoop`; the callbacks here forward those
   # inputs and match the records of the current turn. The client API and
   # the docs of the behaviour are in `Helyx.Session`.
 
   alias Helyx.Reason
   alias Helyx.Session.{Lock, Turn}
-  alias Helyx.Session.Server.{Calls, Events, Open, ProviderConn, Records, State, Steering}
+  alias Helyx.Session.Server.{Calls, Events, Flow, Open, Records, State, Steering}
+  alias Helyx.Session.Server.Flow.Up
   alias Helyx.Session.Server.{Stop, Summary, ToolRuns, TurnLoop, Wait}
 
   use GenServer, restart: :temporary, shutdown: Stop.shutdown_ms()
@@ -76,13 +77,13 @@ defmodule Helyx.Session.Server do
 
   defp info(
          {:stream_event, turn_id, {:message_end, stop_reason, usage}},
-         %State{activity: %Turn{id: turn_id}} = state
+         %State{phase: %{turn: %Turn{id: turn_id}}} = state
        ),
        do: {:noreply, Records.end_assistant(state, stop_reason, usage)}
 
   defp info(
          {:stream_event, turn_id, {:compaction, before, after_}},
-         %State{activity: %Turn{id: turn_id}} = state
+         %State{phase: %{turn: %Turn{id: turn_id}}} = state
        ),
        do: {:noreply, Records.compaction(state, before, after_)}
 
@@ -90,7 +91,7 @@ defmodule Helyx.Session.Server do
   # joins its open call (`Records.tool_result/3`).
   defp info(
          {:stream_event, turn_id, {:tool_result, call_id, result}},
-         %State{activity: %Turn{id: turn_id}} = state
+         %State{phase: %{turn: %Turn{id: turn_id}}} = state
        ),
        do: {:noreply, Records.tool_result(state, call_id, result)}
 
@@ -99,7 +100,7 @@ defmodule Helyx.Session.Server do
   # `Queue.take/2`).
   defp info(
          {:stream_event, turn_id, {:user_message, steer_id}},
-         %State{activity: %Turn{id: turn_id}} = state
+         %State{phase: %{turn: %Turn{id: turn_id}}} = state
        ),
        do: {:noreply, Steering.take(state, steer_id)}
 
@@ -108,7 +109,7 @@ defmodule Helyx.Session.Server do
   # from here. A request of a turn that is not current gets `aborted`.
   defp info(
          {:tool_request, _pid, turn_id, call, bytes, rejection},
-         %State{activity: %Turn{id: turn_id}} = state
+         %State{phase: %{turn: %Turn{id: turn_id}}} = state
        ) do
     case ToolRuns.request(state, call, bytes, rejection) do
       {:ok, state} -> {:noreply, state}
@@ -124,14 +125,13 @@ defmodule Helyx.Session.Server do
   # another pid, or another turn records nothing.
   defp info(
          {:resume_id, pid, turn_id, id, cut},
-         %State{activity: %Turn{id: turn_id}, conn: %ProviderConn{pid: pid, status: :ready}} =
-           state
+         %State{phase: %{turn: %Turn{id: turn_id}, provider: %Up{pid: pid}}} = state
        ),
        do: {:noreply, Records.resume_id(state, turn_id, id, cut)}
 
   defp info(
          {:resume_id, pid, turn_id, id, cut},
-         %State{activity: %Wait{turn: turn_id}, conn: %ProviderConn{pid: pid, status: :ready}} =
+         %State{phase: %Flow.Waiting{wait: %Wait{turn: turn_id}, provider: %Up{pid: pid}}} =
            state
        ),
        do: {:noreply, Records.resume_id(state, turn_id, id, cut)}
@@ -140,7 +140,7 @@ defmodule Helyx.Session.Server do
 
   # An event that breaks the bound of the open message stops the provider
   # process (`Records.delta/2`).
-  defp info({:stream_event, turn_id, event}, %State{activity: %Turn{id: turn_id}} = state) do
+  defp info({:stream_event, turn_id, event}, %State{phase: %{turn: %Turn{id: turn_id}}} = state) do
     case Records.delta(state, event) do
       {:ok, state} -> {:noreply, state}
       {:error, reason, state} -> {:noreply, TurnLoop.stop_provider(state, reason)}
@@ -157,7 +157,7 @@ defmodule Helyx.Session.Server do
   # The hands' result of a running Helyx tool.
   defp info(
          {:tool_result, turn_id, call_id, result},
-         %State{activity: %Turn{id: turn_id, tool_queue: %{running: running}}} = state
+         %State{phase: %{turn: %Turn{id: turn_id, tool_queue: %{running: running}}}} = state
        )
        when is_map_key(running, call_id),
        do: {:noreply, ToolRuns.result(state, call_id, result)}

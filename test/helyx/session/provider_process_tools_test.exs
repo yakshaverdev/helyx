@@ -41,7 +41,7 @@ defmodule Helyx.Session.ProviderProcessToolsTest do
   # The running and waiting call ids of the session's queue.
   defp queue(session) do
     %{running: running, waiting: waiting} =
-      :sys.get_state(Session.pid(session)).activity.tool_queue
+      :sys.get_state(Session.pid(session)).phase.turn.tool_queue
 
     {Enum.sort(Map.keys(running)), Enum.map(waiting, &elem(&1, 0).id)}
   end

@@ -14,7 +14,7 @@ defmodule Helyx.Session.Server.Steering do
 
   alias Helyx.Message
   alias Helyx.Session.{Hands, Id, Queue, Turn}
-  alias Helyx.Session.Server.{ProviderConn, Records, State}
+  alias Helyx.Session.Server.{Records, State}
 
   # Queues a user message. Returns the reply to the client and the state.
   def queue(%State{} = state, key, message) do
@@ -63,7 +63,7 @@ defmodule Helyx.Session.Server.Steering do
   # the provider process as steers, in order, while the 32 steers have
   # room; the rest wait for the next turn. The end moves from the ends to
   # the ledger in one step, so `waiting` (`Queue.counts/1`) keeps it.
-  def send_ends(%State{activity: %Turn{phase: :submitted, compact: nil}} = state) do
+  def send_ends(%State{phase: %{turn: %Turn{phase: :submitted, compact: nil}}} = state) do
     case Queue.next_end(state.queue) do
       {message, queue} ->
         sent = send_steer({:end, message}, %{state | queue: queue})
@@ -85,10 +85,10 @@ defmodule Helyx.Session.Server.Steering do
   # (`Helyx.Session.Queue`). A compaction cannot be steered, so a steer on
   # its turn stays in the local queue for the next turn.
   # Returns the reply to the client and the state.
-  def steer(%State{activity: %Turn{compact: compact}} = state, message) when compact != nil,
+  def steer(%State{phase: %{turn: %Turn{compact: compact}}} = state, message) when compact != nil,
     do: queue(state, :steers, message)
 
-  def steer(%State{activity: %Turn{phase: :submitted}} = state, message) do
+  def steer(%State{phase: %{turn: %Turn{phase: :submitted}}} = state, message) do
     if Queue.room?(state.queue),
       do: {:ok, send_steer(message, state)},
       else: {{:error, :queue_full}, state}
@@ -108,7 +108,7 @@ defmodule Helyx.Session.Server.Steering do
   # provider process with its own id and the steer bound (see
   # `Helyx.Session.ProviderProcess`). The caller holds its place in the 32
   # steers.
-  defp send_steer(entry, %State{activity: turn, conn: %ProviderConn{pid: pid}} = state) do
+  defp send_steer(entry, %State{phase: %{turn: turn, provider: %{pid: pid}}} = state) do
     steer_id = Id.new()
     text = Message.text(Queue.plain(entry))
     from = ask(state, pid, {:steer, turn.id, steer_id, text}, :reply)
@@ -132,7 +132,7 @@ defmodule Helyx.Session.Server.Steering do
 
   # A turn that takes the ends is open (`open/1`): an end that goes back now
   # goes in it, and does not hold (#587).
-  defp open?(%State{activity: activity}), do: match?(%Turn{compact: nil}, activity)
+  defp open?(%State{phase: phase}), do: match?(%{turn: %Turn{compact: nil}}, phase)
 
   defp put(%State{queue: old} = state, {queue, effects}) do
     state = Enum.reduce(effects, %{state | queue: queue}, &effect/2)

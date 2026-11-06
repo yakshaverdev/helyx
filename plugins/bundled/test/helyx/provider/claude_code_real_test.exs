@@ -41,13 +41,13 @@ defmodule Helyx.Provider.ClaudeCodeRealTest do
       """)
 
     pid = wait_for_pid(Path.join(tmp, "fg.pid"))
-    %{pid: harness} = :sys.get_state(Session.pid(session)).conn
+    %{pid: harness} = :sys.get_state(Session.pid(session)).phase.provider
     :ok = Session.abort(session)
     events = collect_until(:turn_end, @real_turn_ms)
 
     assert [%{outcome: :aborted}] = of_type(events, :turn_end)
     assert gone_within?(pid)
-    assert %{pid: ^harness} = :sys.get_state(Session.pid(session)).conn
+    assert %{pid: ^harness} = :sys.get_state(Session.pid(session)).phase.provider
 
     names =
       for %Event{type: :message_end, data: %{message: %Message{content: blocks}}} <- events,

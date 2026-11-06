@@ -10,7 +10,7 @@ defmodule Helyx.Session.Server.Events do
 
   alias Helyx.{Event, ModelRef}
   alias Helyx.Session.{History, Queue, Ring, Snapshot, Totals, Turn}
-  alias Helyx.Session.Server.{Asks, State, Wait}
+  alias Helyx.Session.Server.{Asks, Flow, State, Wait}
 
   # The unacked events of one subscriber (ADR 0008 §5).
   @credits 16_384
@@ -78,7 +78,7 @@ defmodule Helyx.Session.Server.Events do
       seq: state.ring.seq,
       messages: page.messages,
       more: page.more,
-      turn: turn(state.activity),
+      turn: turn(state.phase),
       model: ModelRef.to_string(state.model),
       queue: Queue.counts(state.queue),
       persisting: state.file != nil,
@@ -88,14 +88,15 @@ defmodule Helyx.Session.Server.Events do
     }
   end
 
-  defp turn(%Turn{} = turn), do: Turn.snapshot(turn)
-  defp turn(activity), do: Wait.snapshot_turn(activity)
+  defp turn(%{turn: %Turn{} = turn}), do: Turn.snapshot(turn)
+  defp turn(%Flow.Waiting{wait: wait}), do: Wait.snapshot_turn(wait)
+  defp turn(_phase), do: nil
 
   # Only the queue events fire between turns: the drain at a normal turn
   # end, and an abort in a wait. Every other `emit/3` with no turn is a bug
   # and crashes here. An event with no turn by intent gives its turn id to
   # `emit/4`.
-  def emit(%State{activity: %Turn{id: turn_id}} = state, type, data),
+  def emit(%State{phase: %{turn: %Turn{id: turn_id}}} = state, type, data),
     do: emit(state, turn_id, type, data)
 
   def emit(%State{} = state, type, data) when type in [:queue_update, :queue_dropped],

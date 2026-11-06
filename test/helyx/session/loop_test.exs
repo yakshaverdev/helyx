@@ -315,7 +315,7 @@ defmodule Helyx.Session.LoopTest do
     assert_receive {:trace, ^hands, :receive, {:"$gen_cast", {:run, _, _, _}}}
     :erlang.trace(hands, false, [:receive])
     :sys.get_state(hands)
-    provider = :sys.get_state(pid).conn.pid
+    provider = :sys.get_state(pid).phase.provider.pid
 
     # The provider process is a Task of the hands too.
     [task] =

@@ -8,6 +8,7 @@ defmodule Helyx.Session.ProviderProcessTest do
   import Helyx.Test.SessionCase, only: [await_down: 3, final_text: 1, mailbox: 1]
 
   alias Helyx.{Message, Session}
+  alias Helyx.Session.Server.Flow
   alias Helyx.Session.Server.Wait
   alias Helyx.Test.Connected
   alias Helyx.Test.Released
@@ -72,7 +73,10 @@ defmodule Helyx.Session.ProviderProcessTest do
     ref = Process.monitor(proc)
     send(proc, :stop)
     assert_receive {:DOWN, ^ref, :process, _, _}
-    wait_until(fn -> match?(%{conn: %{pid: ^proc, status: :ending}}, :sys.get_state(pid)) end)
+
+    wait_until(fn ->
+      match?(%{phase: %{provider: %Flow.Dying{pid: ^proc}}}, :sys.get_state(pid))
+    end)
   end
 
   # Answers the held turn request `from` as "echo" does: :ok, then
@@ -91,7 +95,7 @@ defmodule Helyx.Session.ProviderProcessTest do
 
   # The pid of the prepare Task of the session's turn, or nil.
   defp prepare_task(pid) do
-    case :sys.get_state(pid).activity do
+    case :sys.get_state(pid).phase.turn do
       %Helyx.Session.Turn{prepare: {_ref, task, _messages}} -> task
       _no_task -> nil
     end
@@ -168,7 +172,7 @@ defmodule Helyx.Session.ProviderProcessTest do
       :ok = Session.prompt(session, "one")
       assert_receive {:conn, :turn, proc, request}
       assert_receive {:held, from}
-      assert %{activity: %{phase: :submitting}} = :sys.get_state(pid)
+      assert %{phase: %{turn: %{phase: :submitting}}} = :sys.get_state(pid)
       echo(proc, from, request)
       assert final_text(collect_until(:turn_end)) == "echo:prepared|one"
     end
@@ -435,7 +439,9 @@ defmodule Helyx.Session.ProviderProcessTest do
       refute_received {:conn, :init, _, _}
       # The ended process stays the session's one provider process until
       # its `provider_down`, and no turn reuses it.
-      assert %{conn: %{pid: ^old, status: :ending}, activity: %Wait{}} = :sys.get_state(pid)
+      assert %{phase: %Flow.Waiting{wait: %Wait{}, provider: %Flow.Dying{pid: ^old}}} =
+               :sys.get_state(pid)
+
       :erlang.resume_process(hands)
 
       assert_receive {:release, :deliver, [{:report, _}]}
@@ -455,7 +461,7 @@ defmodule Helyx.Session.ProviderProcessTest do
       :erlang.suspend_process(hands)
       stop_seen(pid, old)
       :ok = Session.prompt(session, "two")
-      assert %{activity: %Wait{}} = :sys.get_state(pid)
+      assert %{phase: %Flow.Waiting{}} = :sys.get_state(pid)
 
       abort = Task.async(fn -> Session.abort(session) end)
 
@@ -502,14 +508,17 @@ defmodule Helyx.Session.ProviderProcessTest do
 
       ref = Process.monitor(old)
       :ok = Session.prompt(session, "hold_prepare")
-      assert %{activity: %{phase: :preparing}} = :sys.get_state(pid)
+      assert %{phase: %{turn: %{phase: :preparing}}} = :sys.get_state(pid)
       :ok = Session.steer(session, "kept")
       send(old, :stop)
       assert_receive {:DOWN, ^ref, :process, _, _}
       assert_receive {:release, :deliver, [{:report, _}]}
       # The session's `:DOWN` has no order with the context of the Task:
       # before it, the turn would go to the ended process (#620).
-      wait_until(fn -> not match?(%{conn: %{pid: ^old, status: :ready}}, :sys.get_state(pid)) end)
+      wait_until(fn ->
+        not match?(%{phase: %{provider: %Flow.Up{pid: ^old}}}, :sys.get_state(pid))
+      end)
+
       send(prepare_task(pid), :continue)
 
       # The queued steer stays, and goes out with the turn.
@@ -724,7 +733,7 @@ defmodule Helyx.Session.ProviderProcessTest do
       turn(session, "zero")
       assert_receive {:conn, :turn, _proc, _zero}
       :ok = Session.prompt(session, "hold_prepare")
-      assert %{activity: %{phase: :preparing}} = :sys.get_state(pid)
+      assert %{phase: %{turn: %{phase: :preparing}}} = :sys.get_state(pid)
       :ok = Session.steer(session, "later")
       send(prepare_task(pid), :continue)
 
@@ -741,7 +750,7 @@ defmodule Helyx.Session.ProviderProcessTest do
       :ok = Session.prompt(session, "one")
       assert_receive {:conn, :turn, proc, {:turn, turn_id, _} = request}
       assert_receive {:held, from}
-      assert %{activity: %{phase: :submitting}} = :sys.get_state(pid)
+      assert %{phase: %{turn: %{phase: :submitting}}} = :sys.get_state(pid)
       :ok = Session.steer(session, "more")
       assert %{data: %{steers: 1}} = List.last(collect_until(:queue_update))
       refute_received {:conn, :steer, _, _}
@@ -905,10 +914,10 @@ defmodule Helyx.Session.ProviderProcessTest do
       abort = Task.async(fn -> Session.abort(session) end)
       assert unconfirmed(collect_until(:turn_end)) == [%{text: "more"}]
       stop_seen(pid, proc)
-      assert %{activity: %Wait{}} = :sys.get_state(pid)
+      assert %{phase: %Flow.Waiting{}} = :sys.get_state(pid)
       :erlang.resume_process(hands)
       assert :ok = Task.await(abort, wait_ms())
-      assert %{conn: nil} = :sys.get_state(pid)
+      assert %{phase: %{provider: :none}} = :sys.get_state(pid)
       assert %{queue: %{steers: 0}} = snapshot(session)
       refute_received {:helyx_event, %{type: :steer_unconfirmed}}
     end
@@ -1035,7 +1044,7 @@ defmodule Helyx.Session.ProviderProcessTest do
       :ok = Session.prompt(session, "two")
       assert_receive {:conn, :turn, ^proc, two}
       assert_receive {:held, two_from}
-      assert %{activity: %{phase: :submitting}} = :sys.get_state(pid)
+      assert %{phase: %{turn: %{phase: :submitting}}} = :sys.get_state(pid)
       echo(proc, from, one)
       echo(proc, two_from, two)
       events = collect_until(:turn_end)
@@ -1069,7 +1078,7 @@ defmodule Helyx.Session.ProviderProcessTest do
       assert_receive {:conn, :interrupt, ^proc, _}
       assert_receive {:held, from}
       # The wait holds the answer; the provider process is only in `conn`.
-      assert %{conn: %{pid: ^proc, status: :ready}, activity: %Wait{} = wait} =
+      assert %{phase: %Flow.Waiting{wait: wait, provider: %Flow.Up{pid: ^proc}}} =
                :sys.get_state(pid)
 
       refute proc in Map.values(Map.from_struct(wait))

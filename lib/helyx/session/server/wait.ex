@@ -1,11 +1,11 @@
 defmodule Helyx.Session.Server.Wait do
   @moduledoc false
   # The turn cleanup (docs/features/session-lifecycle.md, "Turn end"):
-  # the end of a turn, and the wait before the next turn. The wait holds
-  # the answer of the hands to `Hands.request_cancel/2` (`hands`) and the
-  # answer of the provider process in `State.conn` to an interrupt or an
+  # the end of a turn, and the wait before the next turn. The wait holds the
+  # answer of the hands to `Hands.request_cancel/2` (`hands`) and the answer
+  # of the provider process in the phase's provider to an interrupt or an
   # idle close (`reply`). A provider process that ends
-  # (`ProviderConn.status` `:ending`) also holds the wait, until the hands'
+  # (`Helyx.Session.Server.Flow.Dying`) also holds the wait, until the hands'
   # `:provider_down`. Each part is bounded: the hands by their release
   # deadlines, a reply by its armed kill. `callers` are the abort callers,
   # who get their reply at the end. `turn` is the id of the turn that the
@@ -22,7 +22,7 @@ defmodule Helyx.Session.Server.Wait do
   import Helyx.Session.Server.Events, only: [emit: 3, emit: 4]
 
   alias Helyx.Session.{Hands, ProviderRequest, Turn}
-  alias Helyx.Session.Server.{Asks, ProviderConn, Records, State, Steering, Summary, ToolRuns}
+  alias Helyx.Session.Server.{Asks, Flow, Records, State, Steering, Summary, ToolRuns}
 
   defstruct [:hands, :reply, :turn, :turn_end, :started_ms, callers: []]
 
@@ -54,7 +54,7 @@ defmodule Helyx.Session.Server.Wait do
           {:done, Helyx.Message.stop_reason(), map()} | :aborted | {:error, term()}
         ) ::
           State.t()
-  def finish(%State{activity: turn} = state, outcome) do
+  def finish(%State{phase: %{turn: turn}} = state, outcome) do
     outcome = with {:error, reason} <- outcome, do: {:error, error_text(reason)}
     kill_prepare(turn)
     state = state |> Asks.finish() |> Summary.stop() |> Records.finish(outcome)
@@ -69,24 +69,24 @@ defmodule Helyx.Session.Server.Wait do
     wait = if outcome == :aborted, do: interrupt(state, turn), else: %__MODULE__{}
     turn_end = if running?, do: data
     wait = %{wait | hands: hands, turn: turn.id, turn_end: turn_end, started_ms: turn.started_ms}
-    %{state | activity: wait}
+    %{state | phase: %Flow.Waiting{wait: wait, provider: state.phase.provider}}
   end
 
   # The snapshot turn of a wait whose `turn_end` waits for the hands: the
   # turn still runs for a client (#595). Its records are closed, so it has
-  # no partial message. No other activity has a turn.
+  # no partial message. No other phase has a turn.
   @spec snapshot_turn(:idle | t()) :: Helyx.Session.Snapshot.turn() | nil
   def snapshot_turn(%__MODULE__{turn: id, turn_end: data, started_ms: started}) when data != nil,
     do: %{id: id, partial: nil, elapsed_ms: Turn.elapsed_ms(started)}
 
-  def snapshot_turn(_activity), do: nil
+  def snapshot_turn(_phase), do: nil
 
   defp end_data({:done, _stop_reason, _usage}), do: %{outcome: :done}
   defp end_data(:aborted), do: %{outcome: :aborted}
   defp end_data({:error, text}), do: %{outcome: :error, error: text}
 
   # The wait holds the answer to the interrupt.
-  defp interrupt(%State{conn: %ProviderConn{pid: pid}} = state, %Turn{phase: phase, id: id})
+  defp interrupt(%State{phase: %{provider: %{pid: pid}}} = state, %Turn{phase: phase, id: id})
        when phase in [:submitting, :submitted],
        do: %__MODULE__{reply: ask(state, pid, {:interrupt, id}, :reply)}
 
@@ -101,22 +101,25 @@ defmodule Helyx.Session.Server.Wait do
   # The answer to the interrupt or the idle close of the wait. The loop
   # ends itself after an answer that stops it (`ProviderRequest.stop_after/2`),
   # and the wait then lasts until its `:provider_down`. Any other answer
-  # leaves the status: if a `:DOWN` came first, it is `:ending` already.
+  # leaves the provider: if a `:DOWN` came first, it is dying already.
   @spec answered(State.t(), atom(), term()) :: State.t()
-  def answered(%State{activity: wait} = state, kind, reply) do
-    state = %{state | activity: %{wait | reply: nil}}
+  def answered(%State{phase: %Flow.Waiting{wait: wait} = phase} = state, kind, reply) do
+    state = %{state | phase: %{phase | wait: %{wait | reply: nil}}}
 
     if ProviderRequest.stop_after(kind, reply),
-      do: put_in(state.conn.status, :ending),
+      do: %{state | phase: %{state.phase | provider: Flow.dying(state.phase.provider)}},
       else: state
   end
 
   # The answer of the hands to the cleanup request, and then a `turn_end`
   # that waited for it. Any other message is a bug and crashes the session.
-  def cleanup(%State{activity: %__MODULE__{hands: request} = wait} = state, message) do
+  def cleanup(
+        %State{phase: %Flow.Waiting{wait: %__MODULE__{hands: request} = wait} = phase} = state,
+        message
+      ) do
     {:reply, result} = :gen_server.check_response(message, request)
     state = if wait.turn_end, do: emit(state, wait.turn, :turn_end, wait.turn_end), else: state
-    %{cleanup_notice(result, state) | activity: %{wait | hands: nil, turn_end: nil}}
+    %{cleanup_notice(result, state) | phase: %{phase | wait: %{wait | hands: nil, turn_end: nil}}}
   end
 
   # The abort still replies `:ok` (ADR 0006 §2); a failed cleanup is a
@@ -139,11 +142,11 @@ defmodule Helyx.Session.Server.Wait do
   # started the wait (`Queue.abort/1`), and its caller gets the reply at
   # the end of the wait. It drops a compaction that waits.
   @spec abort(State.t(), GenServer.from()) :: State.t()
-  def abort(%State{activity: wait} = state, from),
+  def abort(%State{phase: %Flow.Waiting{wait: wait} = phase} = state, from),
     do:
       Steering.abort(%{
         state
         | pending_compact: nil,
-          activity: %{wait | callers: [from | wait.callers]}
+          phase: %{phase | wait: %{wait | callers: [from | wait.callers]}}
       })
 end

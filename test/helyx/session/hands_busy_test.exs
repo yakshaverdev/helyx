@@ -10,6 +10,7 @@ defmodule Helyx.Session.HandsBusyTest do
   import Helyx.Test.SessionCase
 
   alias Helyx.Session
+  alias Helyx.Session.Server.Flow
 
   setup :start_core
 
@@ -28,7 +29,7 @@ defmodule Helyx.Session.HandsBusyTest do
 
     assert :ok = Session.prompt(session, "hi")
     assert {:error, :turn_running} = Session.prompt(session, "again")
-    assert %{conn: %{pid: nil, status: :starting}} = state(session)
+    assert %{phase: %{provider: %Flow.Connecting{pid: nil}}} = state(session)
 
     :sys.resume(hands)
     assert stop_reason(collect_until(:turn_end)) == :end_turn
@@ -51,7 +52,7 @@ defmodule Helyx.Session.HandsBusyTest do
 
     # The follow-up runs.
     assert stop_reason(collect_until(:turn_end)) == :end_turn
-    assert %{activity: :idle, conn: %{pid: pid, status: :ready}} = state(session)
+    assert %{phase: %Flow.Idle{provider: %Flow.Up{pid: pid}}} = state(session)
     assert is_pid(pid)
   end
 
@@ -75,7 +76,7 @@ defmodule Helyx.Session.HandsBusyTest do
 
     wait_until(fn ->
       match?(
-        %{activity: :idle, idle: ref, conn: %{pid: ^proc, status: :ready}} when ref != nil,
+        %{phase: %Flow.Idle{provider: %Flow.Up{pid: ^proc}}, idle: ref} when ref != nil,
         state(session)
       )
     end)
@@ -94,7 +95,7 @@ defmodule Helyx.Session.HandsBusyTest do
              error: "a resource from an earlier call could not be released; the call was not run"
            }
 
-    assert %{conn: nil} = state(session)
+    assert %{phase: %{provider: :none}} = state(session)
   end
 
   test "a refused start in the wait of an aborted turn ends the wait", %{core: core} do
@@ -107,6 +108,6 @@ defmodule Helyx.Session.HandsBusyTest do
 
     :sys.resume(hands)
     assert :ok = Task.await(abort)
-    assert %{activity: :idle, conn: nil} = state(session)
+    assert %{phase: %Flow.Idle{provider: :none}} = state(session)
   end
 end

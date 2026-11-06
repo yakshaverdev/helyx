@@ -298,7 +298,7 @@ defmodule Helyx.Provider.LoopTest do
       :ok = Session.prompt(session, "hello")
 
       assert_receive {:waiting, task}
-      provider = :sys.get_state(Session.pid(session)).conn.pid
+      provider = :sys.get_state(Session.pid(session)).phase.provider.pid
       refs = for pid <- [task, provider], do: Process.monitor(pid)
       send(task, :go)
 
@@ -313,11 +313,11 @@ defmodule Helyx.Provider.LoopTest do
       {:ok, _, _} = Session.subscribe(session)
       :ok = Session.prompt(session, "hello")
       assert List.last(collect_until(:turn_end)).data.error == "boom"
-      provider = :sys.get_state(Session.pid(session)).conn.pid
+      provider = :sys.get_state(Session.pid(session)).phase.provider.pid
 
       :ok = Session.prompt(session, "again")
       assert stop_reason(collect_until(:turn_end)) == :error
-      assert :sys.get_state(Session.pid(session)).conn.pid == provider
+      assert :sys.get_state(Session.pid(session)).phase.provider.pid == provider
     end
   end
 end

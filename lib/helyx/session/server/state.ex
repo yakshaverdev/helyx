@@ -1,35 +1,12 @@
-defmodule Helyx.Session.Server.ProviderConn do
-  @moduledoc false
-  # The provider process of the session: its pid, the model it runs, the
-  # id of the turn that started it, and its `status`: `:starting` until
-  # `{:provider_ready, pid}`, then `:ready`, and `:ending` from the events
-  # that end it until its `provider_down` (docs/features/session-lifecycle.md,
-  # "Provider death"). `resumed` is the resume id that its start passed,
-  # until its first resume id event (`Records.resume_id/4`), or nil.
-  # `start` is the ref of the start request; `pid` is nil until the answer
-  # of the hands.
-  @enforce_keys [:start, :model, :turn]
-  defstruct [:pid, :start, :model, :turn, :resumed, status: :starting]
-
-  @type t :: %__MODULE__{
-          pid: pid() | nil,
-          start: reference(),
-          model: Helyx.ModelRef.t(),
-          turn: String.t(),
-          resumed: String.t() | nil,
-          status: :starting | :ready | :ending
-        }
-end
-
 defmodule Helyx.Session.Server.State do
   @moduledoc false
   # The state of one session process, and the requests to its provider
   # process. `Helyx.Session.Server.TurnLoop` makes the transitions of
-  # `activity` and `conn`, with the turn cleanup in
+  # `phase` (`Helyx.Session.Server.Flow`), with the turn cleanup in
   # `Helyx.Session.Server.Wait` (docs/features/session-lifecycle.md).
 
-  alias Helyx.Session.{ProviderRequest, Queue, Turn}
-  alias Helyx.Session.Server.{ProviderConn, Wait}
+  alias Helyx.Session.{ProviderRequest, Queue}
+  alias Helyx.Session.Server.Flow
 
   @enforce_keys [:id, :core, :model, :provider, :cwd]
 
@@ -87,16 +64,14 @@ defmodule Helyx.Session.Server.State do
     # The seq of the newest event, and the newest events of the session
     # (`Helyx.Session.Ring`).
     ring: %Helyx.Session.Ring{},
-    # `:idle`, the turn in progress (a `%Turn{}`), or the wait before
-    # the next turn can start (a `%Wait{}`).
-    activity: :idle,
+    # The turn in progress, the wait before the next turn can start, or none,
+    # with the provider process of the session (`Helyx.Session.Server.Flow`).
+    phase: %Flow.Idle{},
     # The steer state: the queues and the sent steers (`Helyx.Session.Queue`).
     queue: %Queue{},
     # The last resume id per provider id, with the number of assistant
     # messages then.
     resume_ids: %{},
-    # The provider process (ADR 0007), a `%ProviderConn{}`, or nil.
-    conn: nil,
     # The bounds of the requests to the provider process, in ms: the armed
     # kills `reply` and `close` (see `Helyx.Session.ProviderProcess`), and
     # `idle`, the time with no turn after which the session sends
@@ -154,10 +129,9 @@ defmodule Helyx.Session.Server.State do
           transcript: [Helyx.Message.t()],
           subscribers: %{pid() => {reference(), reference(), non_neg_integer(), boolean()}},
           ring: Helyx.Session.Ring.t(),
-          activity: :idle | Turn.t() | Wait.t(),
+          phase: Flow.t(),
           queue: Queue.t(),
           resume_ids: %{String.t() => Helyx.Session.Transcript.label()},
-          conn: ProviderConn.t() | nil,
           provider_ms: %{reply: pos_integer(), close: pos_integer(), idle: pos_integer()},
           deadline_ms: %{prepare: pos_integer(), open: pos_integer()},
           idle: reference() | nil,

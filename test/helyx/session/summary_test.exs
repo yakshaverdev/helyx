@@ -7,6 +7,7 @@ defmodule Helyx.Session.SummaryTest do
   import Helyx.Test.Events
 
   alias Helyx.Session
+  alias Helyx.Session.Server.Flow
   alias Helyx.Test.{Connected, SummaryPlugin, SummaryProvider}
 
   setup do
@@ -181,7 +182,7 @@ defmodule Helyx.Session.SummaryTest do
 
     assert :ok = Session.abort(session)
     assert_receive {:DOWN, ^ref, :process, ^pid, {:shutdown, :aborted}}
-    assert state(session).activity == :idle
+    assert %Flow.Idle{} = state(session).phase
     assert state(session).summary_call == nil
     assert List.last(collect_until(:turn_end)).data == %{outcome: :aborted}
     assert state(session).summary == nil
@@ -222,7 +223,7 @@ defmodule Helyx.Session.SummaryTest do
 
     :sys.resume(hands)
     assert :ok = Task.await(abort)
-    assert %{activity: :idle, summary_call: nil} = state(session)
+    assert %{phase: %Flow.Idle{}, summary_call: nil} = state(session)
   end
 
   test "a refused summary start is a failed summary, and the turn goes on", %{core: core} do
@@ -245,7 +246,7 @@ defmodule Helyx.Session.SummaryTest do
       session = start(core)
       :ok = Session.prompt(session, "overflow:hang")
       wait_until(fn -> match?(%{status: :running}, state(session).summary_call) end)
-      send(state(session).conn.pid, {:again, why})
+      send(state(session).phase.provider.pid, {:again, why})
       assert %{outcome: :error, error: error} = List.last(collect_until(:turn_end)).data
       assert error =~ "bad_action"
       assert Process.alive?(Session.pid(session))

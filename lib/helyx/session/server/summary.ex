@@ -38,7 +38,7 @@ defmodule Helyx.Session.Server.Summary do
   def start(%State{summary_call: %__MODULE__{status: :ending} = call} = state, plan),
     do: %{state | summary_call: %{call | next: plan}}
 
-  def start(%State{summary_call: nil, activity: %Turn{} = turn} = state, plan) do
+  def start(%State{summary_call: nil, phase: %{turn: %Turn{} = turn}} = state, plan) do
     args = %{
       provider: turn.provider,
       model: turn.model.model,
@@ -168,7 +168,7 @@ defmodule Helyx.Session.Server.Summary do
   # A failed summary keeps the previous state: a compaction turn fails with
   # it, and any other turn goes on with the context of the last summary,
   # after a notice.
-  defp fail(%State{activity: %Turn{compact: text}} = state, reason) when is_binary(text),
+  defp fail(%State{phase: %{turn: %Turn{compact: text}}} = state, reason) when is_binary(text),
     do: TurnLoop.fail_turn(failed(reason), state)
 
   defp fail(state, reason),

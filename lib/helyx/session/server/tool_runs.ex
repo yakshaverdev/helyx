@@ -10,12 +10,18 @@ defmodule Helyx.Session.Server.ToolRuns do
   alias Helyx.Message.ToolCall
   alias Helyx.Session
   alias Helyx.Session.{Hands, Turn}
-  alias Helyx.Session.Server.{Asks, ProviderConn, State}
+  alias Helyx.Session.Server.{Asks, State}
+  alias Helyx.Session.Server.Flow.Up
   alias Helyx.Session.ToolQueue
 
   # A request of the current turn, of `bytes` encoded call bytes. An open
   # call id stops the provider process: `{:stop, reason}`.
-  def request(%State{activity: %Turn{} = turn} = state, %ToolCall{} = call, bytes, rejection) do
+  def request(
+        %State{phase: %{turn: %Turn{} = turn}} = state,
+        %ToolCall{} = call,
+        bytes,
+        rejection
+      ) do
     # A call of an unknown tool runs alone; the hands answer it with an error.
     concurrent? = match?({_tool, true}, state.tools[call.name])
 
@@ -33,26 +39,26 @@ defmodule Helyx.Session.Server.ToolRuns do
     do: send_result(state, pid, turn_id, id, Session.aborted_result())
 
   # The turn ended: each open request gets `aborted` now, before an
-  # interrupt. No request goes to a process that is `:ending`, and a
-  # `:starting` one has none. The hands kill the running calls.
-  def end_turn(%State{conn: %ProviderConn{status: :ready}} = state, %Turn{} = turn),
+  # interrupt. No request goes to a provider process that is dying, and a
+  # connecting one has none. The hands kill the running calls.
+  def end_turn(%State{phase: %{provider: %Up{}}} = state, %Turn{} = turn),
     do: Enum.reduce(ToolQueue.end_turn(turn.tool_queue), state, &effect(&2, turn.id, &1))
 
   def end_turn(state, _turn), do: state
 
   # The hands' result of the running call `id`; an ask of the call ends
   # with it.
-  def result(%State{activity: %Turn{tool_queue: queue}} = state, id, result),
+  def result(%State{phase: %{turn: %Turn{tool_queue: queue}}} = state, id, result),
     do: state |> Asks.call_end(id) |> apply_step(ToolQueue.result(queue, id, result))
 
-  defp apply_step(%State{activity: turn} = state, {queue, effects}) do
-    state = %{state | activity: %{turn | tool_queue: queue}}
+  defp apply_step(%State{phase: %{turn: turn} = phase} = state, {queue, effects}) do
+    state = %{state | phase: %{phase | turn: %{turn | tool_queue: queue}}}
     Enum.reduce(effects, state, &effect(&2, turn.id, &1))
   end
 
   # The context of the call (`Helyx.Tool.context/0`) has the model of the
   # turn, not of a later switch.
-  defp effect(%State{activity: %Turn{model: model}} = state, turn_id, {:run, call}) do
+  defp effect(%State{phase: %{turn: %Turn{model: model}}} = state, turn_id, {:run, call}) do
     context = %{
       session_id: state.id,
       model: Helyx.ModelRef.to_string(model),
@@ -64,7 +70,7 @@ defmodule Helyx.Session.Server.ToolRuns do
     state
   end
 
-  defp effect(%State{conn: %ProviderConn{pid: pid}} = state, turn_id, {:result, id, result}),
+  defp effect(%State{phase: %{provider: %{pid: pid}}} = state, turn_id, {:result, id, result}),
     do: send_result(state, pid, turn_id, id, result)
 
   defp send_result(state, pid, turn_id, id, result) do

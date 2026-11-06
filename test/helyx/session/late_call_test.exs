@@ -8,6 +8,7 @@ defmodule Helyx.Session.LateCallTest do
   import Helyx.Test.SessionCase
 
   alias Helyx.Session
+  alias Helyx.Session.Server.Flow
 
   setup :start_core
 
@@ -36,7 +37,7 @@ defmodule Helyx.Session.LateCallTest do
 
     state = :sys.get_state(pid)
     assert Map.keys(state.subscribers) == [self()]
-    assert state.activity == :idle
+    assert %Flow.Idle{} = state.phase
     assert :gen_server.receive_response(request, 0) == :timeout
     assert :gen_server.receive_response(subscribe, 0) == :timeout
     refute_received {:helyx_event, _}
@@ -89,7 +90,7 @@ defmodule Helyx.Session.LateCallTest do
 
     refute log =~ "late text"
     refute_received {:helyx_event, _}
-    assert state.activity == :idle
+    assert %Flow.Idle{} = state.phase
     assert state.model.model == "ok"
     assert Map.keys(state.subscribers) == [self()]
 

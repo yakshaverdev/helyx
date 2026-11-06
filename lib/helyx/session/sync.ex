@@ -70,7 +70,7 @@ defmodule Helyx.Session.Sync do
   @spec push_turn(State.t()) :: :ok
   def push_turn(%State{sync: nil}), do: :ok
 
-  def push_turn(%State{activity: %Helyx.Session.Turn{}} = state),
+  def push_turn(%State{phase: %{turn: %Helyx.Session.Turn{}}} = state),
     do: push(state.sync, :live, Helyx.Session.Server.Records.turn_entries(state))
 
   def push_turn(_state), do: :ok

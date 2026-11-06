@@ -151,7 +151,7 @@ defmodule Helyx.Session.AskTest do
     collect_until(:ask)
     collect_until(:ask)
     # The caller of the ask is the Task of the call.
-    %{activity: %{asks: asks}} = :sys.get_state(Session.pid(session))
+    %{phase: %{turn: %{asks: asks}}} = :sys.get_state(Session.pid(session))
     [{one, {task, _tag}, _ask}] = for {_, _, %{call_id: "a1"}} = entry <- asks, do: entry
     Process.exit(task, :kill)
 
