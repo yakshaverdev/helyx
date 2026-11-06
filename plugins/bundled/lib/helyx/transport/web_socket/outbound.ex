@@ -39,6 +39,8 @@ defmodule Helyx.Transport.WebSocket.Outbound do
   # The error of a code of the transport, with its fixed text.
   def error(code), do: {:error, code, Map.fetch!(@texts, code)}
 
+  def transport_code?(code), do: Map.has_key?(@texts, code)
+
   def res(id, {:ok, result}), do: %{"type" => "res", "id" => id, "ok" => true, "result" => result}
 
   def res(id, {:error, code, text}),

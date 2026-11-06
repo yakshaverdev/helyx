@@ -13,6 +13,14 @@ defmodule Helyx.Transport.WebSocket do
   the `challenge` of that connection; no frame holds the token, and no plug
   option or process state of the transport holds the token or the key as a
   binary; `child_spec/1` gives `start_link/1` the token in a closure.
+  `:authority`, `{module, arg}` with `module` a
+  `Helyx.Transport.WebSocket.Authority`, takes the place of `:token`: it
+  decides the credential of each `hello` and the access of each request and
+  subscription; a start with both gives `{:error, :invalid_options}`, and an
+  address that is not loopback needs one of the two. The authority closes a
+  connection with `4401` (no credential), `4503` (no answer at the `hello`),
+  or `4403` (its access changed, also through `close/2`). With no authority,
+  an operation whose name starts with `hub.` answers `unknown_op`.
   `:origins` lists the allowed values of the `Origin` header, none
   by default: an upgrade with an `Origin` outside the list gets HTTP 403,
   and an upgrade over the 64 connections of the server HTTP 503.
@@ -60,15 +68,13 @@ defmodule Helyx.Transport.WebSocket do
     ip = Keyword.get(opts, :ip, {127, 0, 0, 1})
     token = token(Keyword.get(opts, :token))
     origins = Keyword.get(opts, :origins, [])
+    authority = Keyword.get(opts, :authority)
 
-    cond do
-      not token?(token) or not origins?(origins) ->
-        {:error, :invalid_options}
+    case options(token, origins, authority, ip) do
+      {:error, _reason} = error ->
+        error
 
-      token == nil and not loopback?(ip) ->
-        {:error, :token_required}
-
-      true ->
+      :ok ->
         # The key is in a closure: `inspect/1` of a closure, and so a log of
         # the options or of a process state, does not print it.
         key = token && :crypto.hash(:sha256, token)
@@ -77,6 +83,7 @@ defmodule Helyx.Transport.WebSocket do
           core: Keyword.fetch!(opts, :core),
           key: key && fn -> key end,
           origins: origins,
+          authority: authority,
           gate: nil
         }
 
@@ -152,8 +159,49 @@ defmodule Helyx.Transport.WebSocket do
   defp token(closure) when is_function(closure, 0), do: closure.()
   defp token(token), do: token
 
+  defp options(token, origins, authority, ip) do
+    cond do
+      not valid?(token, origins, authority) ->
+        {:error, :invalid_options}
+
+      token == nil and authority == nil and not loopback?(ip) ->
+        {:error, :token_required}
+
+      true ->
+        :ok
+    end
+  end
+
+  # One credential rule: the server token or the authority, not both.
+  defp valid?(token, origins, authority),
+    do:
+      token?(token) and origins?(origins) and authority?(authority) and
+        (token == nil or authority == nil)
+
   defp token?(token), do: token == nil or (is_binary(token) and token != "")
   defp origins?(origins), do: is_list(origins) and Enum.all?(origins, &is_binary/1)
+
+  defp authority?(nil), do: true
+
+  defp authority?({mod, _arg}) when is_atom(mod) do
+    Code.ensure_loaded?(mod) and
+      Helyx.Transport.WebSocket.Authority in List.flatten(
+        Keyword.get_values(mod.module_info(:attributes), :behaviour)
+      )
+  end
+
+  defp authority?(_authority), do: false
+
+  @doc """
+  Closes a connection with `code` 4403, after the frames that it took
+  before: the authority calls it when the access of the user of the
+  connection changes (`docs/features/hub.md`, decision 13).
+  """
+  @spec close(pid(), 4403) :: :ok
+  def close(connection, 4403 = code) when is_pid(connection) do
+    send(connection, {:close, code})
+    :ok
+  end
 
   defp loopback?({127, _, _, _}), do: true
   defp loopback?({0, 0, 0, 0, 0, 0, 0, 1}), do: true

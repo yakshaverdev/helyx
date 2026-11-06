@@ -8,7 +8,7 @@ defmodule Helyx.Transport.WebSocket.Connection do
 
   @behaviour WebSock
 
-  alias Helyx.Transport.WebSocket.{Frame, Ops, Outbound, Subscription}
+  alias Helyx.Transport.WebSocket.{Authorize, Frame, Ops, Outbound, Subscription}
 
   @hello_ms 5_000
   @ping_ms 15_000
@@ -37,6 +37,7 @@ defmodule Helyx.Transport.WebSocket.Connection do
      Map.merge(config, %{
        phase: :hello,
        nonce: nonce,
+       auth: nil,
        parts: nil,
        out: Outbound.new(self()),
        ids: %{},
@@ -76,16 +77,18 @@ defmodule Helyx.Transport.WebSocket.Connection do
 
     # The protocol number first: a client of another protocol learns that it
     # must update, whatever its proof.
-    cond do
-      protocol != server ->
-        refused = %{"type" => "refused", "code" => "protocol", "server_protocol" => server}
-        {:stop, {:shutdown, :closed}, 4426, texts(refused), state}
+    if protocol != server do
+      refused = %{"type" => "refused", "code" => "protocol", "server_protocol" => server}
+      {:stop, {:shutdown, :closed}, 4426, texts(refused), state}
+    else
+      case authenticate(state, hello) do
+        {:ok, auth} ->
+          welcome = texts(%{"type" => "welcome", "protocol" => server})
+          {:push, welcome, %{state | phase: :open, auth: auth}}
 
-      not proof?(state.key, state.nonce, hello["proof"]) ->
-        close(4401, state)
-
-      true ->
-        {:push, texts(%{"type" => "welcome", "protocol" => server}), %{state | phase: :open}}
+        {:close, code} ->
+          close(code, state)
+      end
     end
   end
 
@@ -113,6 +116,14 @@ defmodule Helyx.Transport.WebSocket.Connection do
 
   defp frame(_frame, state), do: close(4400, state)
 
+  # With an authority, the authority decides the credential of the
+  # connection; with none, the proof of the server token.
+  defp authenticate(%{authority: nil} = state, hello) do
+    if proof?(state.key, state.nonce, hello["proof"]), do: {:ok, nil}, else: {:close, 4401}
+  end
+
+  defp authenticate(state, hello), do: Authorize.hello(state.authority, state.nonce, hello)
+
   defp proof?(nil, _nonce, _given), do: true
 
   defp proof?(key, nonce, given) when is_binary(given) do
@@ -126,7 +137,8 @@ defmodule Helyx.Transport.WebSocket.Connection do
     with {:ok, session, opts} <- Ops.subscribe_params(state.core, params),
          true <- map_size(state.subs) < @max_subscriptions || "too_many_subscriptions" do
       sub = Integer.to_string(state.next_sub)
-      pid = Subscription.start_link(state.out, sub, id, session, opts)
+      access = state.authority && {{state.authority, state.auth}, state.core, params}
+      pid = Subscription.start_link(state.out, sub, id, session, opts, access)
       state = %{track(state, pid, id) | subs: Map.put(state.subs, sub, pid)}
       state = %{state | acks: Map.put(state.acks, pid, 0)}
       {:ok, %{state | next_sub: state.next_sub + 1}}
@@ -155,11 +167,13 @@ defmodule Helyx.Transport.WebSocket.Connection do
   # The params are checked here, before the worker: a worker holds only the
   # checked values, not the decoded frame (`docs/features/wire-protocol.md`,
   # "Bounds").
+  #
+  # Under an authority the worker holds the params too: its `check` and
+  # `run` get them (`Helyx.Transport.WebSocket.Authority`).
   defp request(id, op, params, state) do
-    case Ops.check(state.core, op, params) do
-      {:ok, call} ->
-        {conn, out} = {self(), state.out}
-        pid = spawn_link(fn -> work(conn, out, id, op, call) end)
+    case worker(id, op, params, state) do
+      {:ok, work} ->
+        pid = spawn_link(work)
         {:ok, track(state, pid, id)}
 
       :bad_params ->
@@ -170,23 +184,18 @@ defmodule Helyx.Transport.WebSocket.Connection do
     end
   end
 
-  defp work(conn, out, id, op, call) do
-    # The deadline of a request with a large result starts at its slot.
-    if Ops.slot?(op), do: Outbound.slot(out)
-    timer = arm(conn, id, Ops.deadline(op))
+  # The closure of the worker holds only the values it needs, not the state.
+  defp worker(id, op, params, %{authority: nil} = state) do
+    {conn, out} = {self(), state.out}
 
-    try do
-      Outbound.reply(out, id, Ops.run(call))
-    after
-      # The timer ends with its worker, so the timers are at most the
-      # requests in flight.
-      if timer, do: Process.cancel_timer(timer)
+    with {:ok, call} <- Ops.check(state.core, op, params) do
+      reply = fn -> Outbound.reply(out, id, Ops.run(call)) end
+      {:ok, fn -> Ops.within(conn, out, id, op, Ops.deadline(op), reply) end}
     end
   end
 
-  # An open has no deadline here: the session bounds it (#834).
-  defp arm(_conn, _id, :infinity), do: nil
-  defp arm(conn, id, ms), do: Process.send_after(conn, {:deadline, self(), id}, ms)
+  defp worker(id, op, params, state),
+    do: Authorize.worker(self(), state.out, id, op, params, state)
 
   # A sub holds at most one ack, and none before its subscribe reply
   # (`docs/features/wire-protocol.md`, "Subscriptions").
