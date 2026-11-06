@@ -312,4 +312,65 @@ defmodule Helyx.Message do
   def text(%__MODULE__{content: content}) do
     for %Text{text: text} <- content, into: "", do: text
   end
+
+  @doc false
+  # The JSON map of a message: the session file entry without its `type`, and
+  # the wire message (`docs/features/wire-protocol.md`, "Codec"). One owner
+  # for the shape, so a new field reaches both.
+  @spec to_map(t()) :: map()
+  def to_map(%__MODULE__{role: role, stop_reason: stop_reason} = message) do
+    check_stop_reason(stop_reason)
+
+    encoded =
+      %{
+        "id" => message.id,
+        "role" => Atom.to_string(role),
+        "origin" => message.origin && origin_to_map(message.origin),
+        "content" => Enum.map(message.content, &block_to_map/1),
+        "model" => message.model,
+        "stop_reason" => stop_reason && Atom.to_string(stop_reason),
+        "tool_call_id" => message.tool_call_id,
+        "tool_name" => message.tool_name,
+        "usage" => message.usage && usage_to_map(message.usage)
+      }
+      |> Map.reject(fn {_key, value} -> value in [nil, false] end)
+
+    if role == :tool_result, do: Map.put(encoded, "is_error", message.is_error), else: encoded
+  end
+
+  @doc false
+  # The JSON map of a usage: string keys, no nil field. The values keep their
+  # type; the JSON encoder writes an atom as its name.
+  @spec usage_to_map(Helyx.Usage.t()) :: map()
+  def usage_to_map(%Helyx.Usage{} = usage) do
+    for {key, value} <- Map.from_struct(usage), value != nil, into: %{} do
+      {Atom.to_string(key), value}
+    end
+  end
+
+  defp origin_to_map(%{kind: kind, id: id}),
+    do: %{"kind" => Atom.to_string(kind), "id" => id}
+
+  @doc false
+  # The JSON map of one content block. The wire sends a bare block in a
+  # `message_update` event, so the shape has one owner here.
+  @spec block_to_map(block()) :: map()
+  def block_to_map(%Text{text: text}), do: %{"type" => "text", "text" => text}
+
+  def block_to_map(%Thinking{thinking: thinking}),
+    do: %{"type" => "thinking", "thinking" => thinking}
+
+  def block_to_map(%ToolCall{id: id, name: name, arguments: arguments}),
+    do: %{"type" => "tool_call", "id" => id, "name" => name, "arguments" => arguments}
+
+  # The atoms are interned here, so a fresh VM that has loaded no provider
+  # still writes and checks a stop reason. A reason outside the set raises,
+  # so the file writer and the wire reject it instead of writing an entry
+  # that a later reader would see as no stop reason.
+  defp check_stop_reason(nil), do: :ok
+  for reason <- @stop_reasons, do: defp(check_stop_reason(unquote(reason)), do: :ok)
+
+  defp check_stop_reason(other) do
+    raise ArgumentError, "a stop reason outside the set: #{inspect(other)}"
+  end
 end

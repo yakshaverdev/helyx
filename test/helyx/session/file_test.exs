@@ -835,7 +835,7 @@ defmodule Helyx.Session.FileTest do
     {:ok, file} = Session.File.create(dir, "sess00000001", "/repo", "test/ok")
     before = File.read!(file.path)
 
-    assert_raise FunctionClauseError, fn ->
+    assert_raise ArgumentError, "a stop reason outside the set: :stop_sequence", fn ->
       SessionFile.append_message(file, %Message{
         role: :assistant,
         stop_reason: :stop_sequence,

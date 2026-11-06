@@ -7,35 +7,8 @@ defmodule Helyx.Session.File.Codec do
   alias Helyx.Message
 
   # The entry id is the message id (`Helyx.Session.File.append_message/2`).
-  def encode(%Message{role: role, id: id} = message) when is_binary(id) do
-    encoded =
-      %{
-        "type" => "message",
-        "id" => id,
-        "role" => Atom.to_string(role),
-        "origin" => encode_origin(message.origin),
-        "content" => Enum.map(message.content, &encode_block/1),
-        "model" => message.model,
-        "stop_reason" => encode_stop_reason(message.stop_reason),
-        "tool_call_id" => message.tool_call_id,
-        "tool_name" => message.tool_name,
-        "usage" => message.usage && encode_usage(message.usage)
-      }
-      |> Map.reject(fn {_key, value} -> value in [nil, false] end)
-
-    if role == :tool_result, do: Map.put(encoded, "is_error", message.is_error), else: encoded
-  end
-
-  defp encode_origin(nil), do: nil
-  defp encode_origin(%{kind: kind, id: id}), do: %{"kind" => Atom.to_string(kind), "id" => id}
-
-  defp encode_block(%Message.Text{text: text}), do: %{"type" => "text", "text" => text}
-
-  defp encode_block(%Message.Thinking{thinking: thinking}),
-    do: %{"type" => "thinking", "thinking" => thinking}
-
-  defp encode_block(%Message.ToolCall{id: id, name: name, arguments: arguments}) do
-    %{"type" => "tool_call", "id" => id, "name" => name, "arguments" => arguments}
+  def encode(%Message{id: id} = message) when is_binary(id) do
+    message |> Message.to_map() |> Map.put("type", "message")
   end
 
   # A bad value of a field that core needs (role, content, origin,
@@ -106,15 +79,11 @@ defmodule Helyx.Session.File.Codec do
 
   # The clauses are built at compile time from `Message.stop_reasons/0`, so
   # the atoms are interned in this module: a fresh VM that has loaded no
-  # provider still decodes a saved file. A stop reason outside the set has
-  # no encode clause, so the writer raises an error instead of appending an
-  # entry that a later resume would read as no stop reason. On decode, any
-  # value outside the set, false too, is no stop reason.
-  defp encode_stop_reason(nil), do: nil
-
+  # provider still decodes a saved file. On decode, any value outside the
+  # set, false too, is no stop reason. A stop reason outside the set raises
+  # on encode, in `Message.to_map/1`.
   for reason <- Message.stop_reasons() do
     defp decode_stop_reason(unquote(Atom.to_string(reason))), do: unquote(reason)
-    defp encode_stop_reason(unquote(reason)), do: unquote(Atom.to_string(reason))
   end
 
   defp decode_stop_reason(_value), do: nil
@@ -135,12 +104,6 @@ defmodule Helyx.Session.File.Codec do
   # before #557, is the unknown usage, and the message stays. Only a
   # message with no usage key has no usage.
   @usage_keys Map.keys(%Helyx.Usage{}) -- [:__struct__]
-
-  defp encode_usage(usage) do
-    for {key, value} <- Map.from_struct(usage), value != nil, into: %{} do
-      {Atom.to_string(key), value}
-    end
-  end
 
   defp decode_usage(:error), do: nil
 
