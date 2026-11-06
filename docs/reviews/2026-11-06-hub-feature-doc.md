@@ -114,8 +114,8 @@ Both confirmed that the cursor leak of `sessions.saved` is closed: one `list_sav
 
 | Finding | Source | State |
 |---|---|---|
-| The scan takes the 256 newest files of every user before the filter, so a new private session of A pushes an old session of B out of B's `sessions.saved` and `resume` `{cwd}`: a count channel; the access test "the pages of B are the same as on a server where that session does not exist" cannot pass | Codex (medium), spec (defect) | open: a decision of the owner, an accepted hole (the scan is shared, and the user learns that newer sessions exist, not their ids or times) or a design that selects readable files before the bound of 256, which needs a Core change |
-| The default owner gets a derived record for an id with no row, and `session_not_found` for a private session of another user, so it can tell that such a session exists | Codex (medium), spec (defect) | open: a decision of the owner, an accepted hole (the default owner is the operator, who reads the data folder, decision 8) or a bounded existence check before a derived record |
+| The scan takes the 256 newest files of every user before the filter, so a new private session of A pushes an old session of B out of B's `sessions.saved` and `resume` `{cwd}`: a count channel; the access test "the pages of B are the same as on a server where that session does not exist" cannot pass | Codex (medium), spec (defect) | fixed after the decision of the owner of 2026-11-06: the listings read the store (see below) |
+| The default owner gets a derived record for an id with no row, and `session_not_found` for a private session of another user, so it can tell that such a session exists | Codex (medium), spec (defect) | fixed after the decision of the owner of 2026-11-06: an existence check before a derived record (see below) |
 | A shared record returned the project id of its owner to other users | Codex (medium) | fixed in the small-fix round: `project` is null for a user who does not own the project |
 | `hub.records.search` does not reach the default owner's sessions with no record | spec (wording) | fixed |
 | `resume` `{cwd}` under a Hub orders by file time, Core by header time | spec (wording) | fixed: stated |
@@ -145,7 +145,18 @@ At the request of the orchestrator, the open items that need no decision of the 
 | The project-null rule only in the op table | In the `record` codec: null for a user who does not own the record |
 | The order of `bad_params` and the access check | Stated in decision 5: the params first, so `bad_params` never depends on an object of another user; an access test |
 
-Still open for the owner, on the ticket and unchanged in the doc: the count channel of the shared 256-file scan, and the default owner telling a private session from a missing one by the derived record.
+The two channels for the owner were fixed after the decision below.
+
+## The two channels, after the decision of the owner (no review round; the Codex gate of the orchestrator follows)
+
+The owner decided on #868 (2026-11-06) to fix both channels.
+
+| Channel | Fix in the doc |
+|---|---|
+| The scan of 256 files across users | `sessions.saved` and `resume` `{cwd}` read the stored records of the store, where the owner and the visibility are columns (decision 7); the records gain `cwd`, `model`, `prompt` (1,024 bytes), and `active_at`, written by the `result` of a start and by the Hub calls of `check` (Store schema). Only the derived records of the default owner come from the scan of Core. A page is one Hub call of at most `limit` + 1 rows in 5,000 ms; with the scan for the default owner, 15,000 ms. A record whose file was deleted stays listed until a `resume` gets `not_found`, which deletes the row (decision 8, accepted hole) |
+| The derived record of the default owner | Before a derived record, a check confirms that the session runs or that `Helyx.Session.File.Scan.find/2` finds its file; a missing session and a private session of another user both give `session_not_found` (decision 8). The access tests run with B as the default owner too |
+
+A deviation from the words of the decision, for the gate and the owner: the decision names "one file stat" as the bound of the check. One stat cannot do it: an id with no row has no stored `cwd`, and the path of a session file depends on its `cwd` (`Helyx.Session.File.path/4`, `Helyx.Session.File.Scan.folder/3`); Core finds a file by id by listing the folders and matching the names (`Scan.find/2`, `lib/helyx/session/file/scan.ex`), which also avoids a built path that a filesystem that ignores case could match for another id. So the check is that find, in a Task with a deadline of 5,000 ms; past the deadline it answers `session_not_found`, and its memory is the names that the listing read by then. Both are in the accepted holes of the doc.
 
 ## Guarantee table (spec agent, round 1)
 
