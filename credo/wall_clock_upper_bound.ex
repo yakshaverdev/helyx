@@ -34,6 +34,19 @@ defmodule Helyx.Credo.WallClockUpperBound do
 
           assert System.monotonic_time(:millisecond) - start < @load_ms
 
+      A wait with a wall-clock timeout is an upper bound too. The check
+      reports `Task.yield/2` and `Task.yield_many/2` inside an assertion
+      when the timeout is a positive integer literal, or an `@attribute`
+      bound to one in the same module. A timeout of `:infinity` or `0`, a
+      timeout from an attribute named `@load_...`, and a timeout from a
+      call such as `wait_ms()` are no issue. A timeout from a variable is no
+      issue either: a duration is not a clock reading, and the check does
+      not follow it.
+
+      A `Task.await/2`, `Task.shutdown/2`, or `GenServer.call/3` timeout is
+      no issue: it is a hang guard on work that must finish, not an
+      assertion that a clock value stayed under a bound.
+
       The check sees only the syntax of one file. It does not follow a time
       value through a `case` clause, a message, a process, a function of
       another module, a function parameter, or a pipe into the operator.
@@ -75,6 +88,7 @@ defmodule Helyx.Credo.WallClockUpperBound do
     ctx = Context.build(source_file, params, __MODULE__)
     ast = SourceFile.ast(source_file)
     fns = time_fns(ast)
+    attrs = attribute_values(ast)
 
     # Each test or function is one scope for the variables; a scope is not
     # walked again below its node.
@@ -84,7 +98,9 @@ defmodule Helyx.Credo.WallClockUpperBound do
           taint = {tainted(scope, fns), fns},
           node <- nodes(scope),
           {trigger, meta, how, values, limit} <- bounds(node),
-          Enum.any?(values, &time?(&1, how, taint)) and not load_margin?(limit),
+          (Enum.any?(values, &time?(&1, how, taint)) or
+             (how == :any and budget?(limit, attrs))) and
+            not load_margin?(limit),
           do: {trigger, meta}
 
     Enum.reduce(found, ctx, &issue/2).issues
@@ -120,6 +136,13 @@ defmodule Helyx.Credo.WallClockUpperBound do
     fixpoint(fn fns ->
       for {name, body} <- defs, time?(body, :contains, {MapSet.new(), fns}), into: fns, do: name
     end)
+  end
+
+  # The values of the module attributes bound in this file. `value_nodes/1`
+  # leaves an attribute out, so a timeout needs its own scan to resolve
+  # `@name` to the literal that the module binds.
+  defp attribute_values(ast) do
+    for {:@, _, [{name, _, [value]}]} <- nodes(ast), is_atom(name), into: %{}, do: {name, value}
   end
 
   # The names of the variables in the scope that hold a time value.
@@ -167,6 +190,23 @@ defmodule Helyx.Credo.WallClockUpperBound do
     bound(asserted, cmp, meta, left, right) ++ bounds([left, right], negated)
   end
 
+  # A `Task.yield` with a wall-clock timeout is a bound too (#852): a test
+  # that yields with one fails when load pushes the task past the timeout,
+  # exactly as an elapsed-time assertion does. `:any` marks that the bound
+  # itself is the limit, so `budget?/2` decides it instead of a time value.
+  # `Task.await`, `Task.shutdown`, and `GenServer.call` stay silent: their
+  # timeout is a hang guard, not a liveness assertion.
+  defp bounds({{:., _, [{:__aliases__, _, [:Task]}, :yield]}, meta, [_task, timeout]}, _negated),
+    do: [{:yield, meta, :any, [], timeout}]
+
+  # `Task.yield_many/2` takes its timeout as an option in Elixir 1.19; an
+  # older positional timeout is still a bound.
+  defp bounds(
+         {{:., _, [{:__aliases__, _, [:Task]}, :yield_many]}, meta, [_tasks, timeout]},
+         _negated
+       ),
+       do: [{:yield_many, meta, :any, [], yield_many_timeout(timeout)}]
+
   defp bounds({call, _, args}, negated) when is_list(args), do: bounds([call | args], negated)
   defp bounds({left, right}, negated), do: bounds([left, right], negated)
   defp bounds(list, negated) when is_list(list), do: Enum.flat_map(list, &bounds(&1, negated))
@@ -188,18 +228,37 @@ defmodule Helyx.Credo.WallClockUpperBound do
 
   defp bound(_op, _cmp, _meta, _left, _right), do: []
 
+  # The option `timeout:` of `Task.yield_many/2`, or an older positional
+  # timeout. A list with no `timeout:` option has no explicit bound.
+  defp yield_many_timeout(opts) when is_list(opts) do
+    Enum.find_value(opts, fn
+      {:timeout, timeout} -> timeout
+      _option -> nil
+    end)
+  end
+
+  defp yield_many_timeout(timeout), do: timeout
+
   defp issue({trigger, meta}, ctx) do
     put_issue(
       ctx,
       format_issue(ctx,
-        message:
-          "An upper bound of elapsed time fails under load. Assert order, " <>
-            "or add a margin from a module attribute named `@load_...`.",
+        message: message(trigger),
         trigger: to_string(trigger),
         line_no: meta[:line]
       )
     )
   end
+
+  defp message(trigger) when trigger in [:yield, :yield_many],
+    do:
+      "A wall-clock timeout fails under load. Give the wait a margin from " <>
+        "a module attribute named `@load_...`."
+
+  defp message(_trigger),
+    do:
+      "An upper bound of elapsed time fails under load. Assert order, " <>
+        "or add a margin from a module attribute named `@load_...`."
 
   # `:contains`: the value holds a time value anywhere. `:itself`: the value
   # is a time value, or a sum or a difference of one.
@@ -217,6 +276,16 @@ defmodule Helyx.Credo.WallClockUpperBound do
 
   defp time_call?({:__aliases__, _, mod}, fun), do: {mod, fun} in @time_calls
   defp time_call?(mod, fun), do: {mod, fun} in @time_calls
+
+  # Only a positive budget is a wall-clock bound. A duration that shares a
+  # name with a clock reading is not one, so a variable or a call is silent.
+  defp budget?({:@, _, [{name, _, nil}]}, attrs) when is_atom(name),
+    do: budget?(Map.get(attrs, name))
+
+  defp budget?(limit, _attrs), do: budget?(limit)
+
+  defp budget?(limit) when is_integer(limit), do: limit > 0
+  defp budget?(_limit), do: false
 
   defp load_margin?(ast) do
     Enum.any?(nodes(ast), fn

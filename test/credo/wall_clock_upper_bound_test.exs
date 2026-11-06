@@ -185,6 +185,74 @@ defmodule Helyx.Credo.WallClockUpperBoundTest do
     |> refute_issues()
   end
 
+  test "a task timeout literal inside an assertion is an issue" do
+    issues("""
+    test "t" do
+      task = Task.async(fn -> :ok end)
+      assert Task.yield(task, 2_000)
+    end
+    """)
+    |> assert_issue(fn issue ->
+      assert issue.trigger == "yield"
+      assert issue.line_no == 4
+    end)
+  end
+
+  test "an attribute bound to a positive integer is a timeout budget" do
+    issues("""
+    @recall_ms 2_000
+    test "t" do
+      task = Task.async(fn -> :ok end)
+      assert Task.yield(task, @recall_ms)
+    end
+    """)
+    |> assert_issue(fn issue -> assert issue.trigger == "yield" end)
+  end
+
+  test "both yield forms with a budget are issues" do
+    issues("""
+    test "t" do
+      task = Task.async(fn -> :ok end)
+      assert Task.yield_many([task], timeout: 2_000)
+      assert Task.yield(task, 2_000)
+    end
+    """)
+    |> assert_issues(fn issues ->
+      assert issues |> Enum.map(& &1.trigger) |> Enum.sort() == ["yield", "yield_many"]
+    end)
+  end
+
+  test "a timeout that is no budget is no issue" do
+    issues("""
+    @load_ms 2_000
+    defp wait_ms, do: 2_000
+
+    test "t" do
+      task = Task.async(fn -> :ok end)
+      assert Task.yield(task, :infinity)
+      assert Task.yield(task, 0)
+      assert Task.yield(task, @load_ms)
+      assert Task.yield(task, wait_ms())
+      assert Task.yield_many([task], timeout: :infinity)
+      assert Task.yield_many([task], timeout: @load_ms)
+      assert Task.yield_many([task], timeout: wait_ms())
+      assert Task.shutdown(task, :brutal_kill)
+    end
+    """)
+    |> refute_issues()
+  end
+
+  test "a variable timeout is no issue: a duration is not a clock reading" do
+    issues("""
+    test "t" do
+      task = Task.async(fn -> :ok end)
+      timeout = 2_000
+      assert Task.yield(task, timeout)
+    end
+    """)
+    |> refute_issues()
+  end
+
   test "a variable of the same name in another test is no time" do
     issues("""
     test "a" do

@@ -232,10 +232,15 @@ defmodule Helyx.Memory.MarkdownTest do
     # The bound is the acceptance of #852, the Core default of `recall_ms`,
     # not a margin: the recall lists 101 bucket names and 2 buckets and reads
     # 1,000 small files: 324 to 456 ms on a loaded laptop (2026-11-06).
+    # The load-margin rule does not apply here: a miss fails the acceptance.
     task = Task.async(fn -> Markdown.recall(%{text: "zephyr quokka", origin: nil}, opts(dir)) end)
+    yielded = Task.yield(task, @recall_ms)
+    result = yielded || Task.shutdown(task, :brutal_kill)
 
-    assert {:ok, {:ok, [%{text: "zephyr quokka new"} | _]}} =
-             Task.yield(task, @recall_ms) || Task.shutdown(task, :brutal_kill)
+    assert yielded != nil,
+           "recall timed out at the Core default recall_ms of #{@recall_ms} ms (#852)"
+
+    assert {:ok, {:ok, [%{text: "zephyr quokka new"} | _]}} = result
   end
 
   @tag :tmp_dir
