@@ -18,6 +18,14 @@ defmodule Helyx.Session.FileTest do
 
   defp texts(resumed), do: Enum.map(resumed.messages, &Message.text/1)
 
+  defp call_message(id, args) do
+    %Message{
+      role: :assistant,
+      content: [%Message.ToolCall{id: id, name: "bash", arguments: args}],
+      stop_reason: :tool_use
+    }
+  end
+
   # A session with a first prompt. The resume of the newest session leaves
   # out a session with a header and no message, and a file whose name is not
   # a session id: the literal ids here are padded to its 12 characters.
@@ -933,53 +941,70 @@ defmodule Helyx.Session.FileTest do
     end
   end
 
-  describe "the file size limit" do
-    test "a file at the limit resumes; one byte over is rejected and not mutated",
+  describe "the line limit" do
+    test "a line at the limit resumes; one byte over is rejected and not mutated",
          %{tmp_dir: dir} do
       {:ok, file} = Session.File.create(dir, "sess00000001", "/repo", "test/ok")
       # Multibyte content: the limit counts bytes, not characters.
-      SessionFile.append_message(file, Message.user("héllo wörld"))
-      size = File.stat!(file.path).size
+      file = SessionFile.append_message(file, Message.user("héllo wörld"))
+      [header, line] = String.split(File.read!(file.path), "\n", trim: true)
+      limit = max(byte_size(header), byte_size(line))
 
-      assert {:ok, _} = SessionFile.resume(dir, "/repo", max_bytes: size + 1)
-      assert {:ok, resumed} = SessionFile.resume(dir, "/repo", max_bytes: size)
+      assert {:ok, resumed} = SessionFile.resume(dir, "/repo", max_entry_bytes: limit)
       assert [%Message{role: :user}] = resumed.messages
 
-      # One byte over. A torn tail would be repaired on an accepted file;
-      # here it must stay.
-      File.write!(file.path, "{", [:append])
+      # One byte over, as a torn last line: it would be repaired on an
+      # accepted file; here it must stay.
+      File.write!(file.path, String.duplicate("x", limit + 1), [:append])
       before = File.read!(file.path)
 
-      assert {:error, {:too_large, text}} = SessionFile.resume(dir, "/repo", max_bytes: size)
-      assert text =~ "#{size}-byte limit"
+      assert {:error, {:too_large, text}} =
+               SessionFile.resume(dir, "/repo", max_entry_bytes: limit)
+
+      assert text =~ "line 3 of the session file is over the #{limit}-byte limit"
       assert text =~ "start a new session"
       assert File.read!(file.path) == before
     end
 
-    test "the limit counts the bytes read, not the repair newline", %{tmp_dir: dir} do
-      {:ok, file} = started(dir, "sess00000001", "/repo", "test/ok")
-      content = String.trim_trailing(File.read!(file.path), "\n")
-      File.write!(file.path, content)
-      limit = byte_size(content)
+    test "a line longer than one read is joined, and checked before it is whole",
+         %{tmp_dir: dir} do
+      {:ok, file} = Session.File.create(dir, "sess00000001", "/repo", "test/ok")
+      # 3 MiB of text: the line spans four reads of 1 MiB.
+      text = String.duplicate("é", 3 * 512 * 1024)
+      SessionFile.append_message(file, Message.user(text))
 
-      # The file at the limit resumes, and the repair takes it one byte over.
-      assert {:ok, _} = SessionFile.resume(dir, "/repo", max_bytes: limit)
-      assert File.read!(file.path) == content <> "\n"
+      assert {:ok, resumed} = SessionFile.resume(dir, "/repo")
+      assert texts(resumed) == [text]
 
-      assert {:error, {:too_large, _}} = SessionFile.resume(dir, "/repo", max_bytes: limit)
-      assert File.read!(file.path) == content <> "\n"
+      assert {:error, {:too_large, reason}} =
+               SessionFile.resume(dir, "/repo", max_entry_bytes: 2 * 1024 * 1024)
+
+      assert reason =~ "line 2 "
     end
 
-    test "the default limit is 64 MiB", %{tmp_dir: dir} do
+    test "the file has no size limit: the lines together pass the line limit",
+         %{tmp_dir: dir} do
       {:ok, file} = Session.File.create(dir, "sess00000001", "/repo", "test/ok")
-      # A sparse file: 64 MiB + 1 byte of size, no data blocks written.
+      file = Enum.reduce(1..50, file, &SessionFile.append_message(&2, Message.user("m#{&1}")))
+
+      limit =
+        file.path |> File.read!() |> String.split("\n") |> Enum.map(&byte_size/1) |> Enum.max()
+
+      assert File.stat!(file.path).size > 10 * limit
+      assert {:ok, resumed} = SessionFile.resume(dir, "/repo", max_entry_bytes: limit)
+      assert length(resumed.messages) == 50
+    end
+
+    test "the default line limit is 64 MiB", %{tmp_dir: dir} do
+      {:ok, file} = Session.File.create(dir, "sess00000001", "/repo", "test/ok")
+      # A sparse line of 64 MiB + 1 zero bytes, no data blocks written.
       File.open!(file.path, [:read, :write, :binary], fn io ->
-        {:ok, _} = :file.position(io, 64 * 1024 * 1024)
-        :ok = IO.binwrite(io, "\n")
+        {:ok, _} = :file.position(io, {:eof, 64 * 1024 * 1024})
+        :ok = IO.binwrite(io, <<0>>)
       end)
 
       assert {:error, {:too_large, text}} = SessionFile.resume(dir, "/repo")
-      assert text =~ "67108864-byte limit"
+      assert text =~ "line 2 of the session file is over the 67108864-byte limit"
     end
   end
 
@@ -988,8 +1013,8 @@ defmodule Helyx.Session.FileTest do
     {:ok, file} = Session.File.create(dir, "sess00000001", "/repo", "test/ok")
     File.write!(file.path, String.duplicate("\n", 4 * 1024 * 1024), [:append])
 
-    # 4 MiB of empty lines as a list is over 100 MiB of heap. The file
-    # binary itself is off-heap. The process dies if its heap passes 16 MiB.
+    # 4 MiB of empty lines as a list is over 100 MiB of heap. Each read of
+    # the file is off-heap. The process dies if its heap passes 16 MiB.
     {pid, ref} =
       spawn_monitor(fn ->
         Process.flag(:max_heap_size, %{size: div(16 * 1024 * 1024, 8), kill: true})
@@ -1015,36 +1040,70 @@ defmodule Helyx.Session.FileTest do
       assert {:error, {:too_large, text}} =
                SessionFile.resume(dir, "/repo", max_heap_bytes: 16 * 1024 * 1024)
 
-      assert text =~ "#{16 * 1024 * 1024} bytes of memory"
+      assert text =~ "line 3 of the session file needs more than #{16 * 1024 * 1024} bytes"
       assert text =~ "start a new session"
       assert File.read!(file.path) == before
     end
 
-    @tag :slow
-    test "a text-heavy session near the file limit fits the default cap", %{tmp_dir: dir} do
+    test "the cap holds for one line: lines whose decodes pass it together resume",
+         %{tmp_dir: dir} do
       {:ok, file} = Session.File.create(dir, "sess00000001", "/repo", "test/ok")
+      # About 200 KiB of `0,` each: a decode heap of several MiB per line.
+      # The whole-file cap before #834 rejected this file at 16 MiB.
+      args = %{"a" => List.duplicate(0, 100_000)}
 
       file =
-        SessionFile.append_message(
-          file,
-          Message.user(String.duplicate("line of output\n", 4000))
-        )
+        Enum.reduce(1..10, file, fn n, file ->
+          SessionFile.append_message(file, call_message("c#{n}", args))
+        end)
 
-      [_header, line] = String.split(File.read!(file.path), "\n", trim: true)
-      count = div(63 * 1024 * 1024, byte_size(line) + 1)
-      entry = JSON.decode!(line)
+      cap = 16 * 1024 * 1024
+      assert {:ok, resumed} = SessionFile.resume(dir, "/repo", max_heap_bytes: cap)
+      assert length(resumed.messages) == 10
+      assert File.stat!(file.path).size > 1_000_000
+    end
 
-      # Each copy has its own id and hangs below the one before it.
-      copies =
-        for n <- 1..(count - 1)//1 do
-          parent = if n == 1, do: file.leaf, else: entry_id("m#{n - 1}")
-          [JSON.encode!(%{entry | "id" => entry_id("m#{n}"), "parent_id" => parent}), "\n"]
-        end
+    # A session writes this file through the live bounds: an assistant text
+    # of 8 MiB in its worst JSON form (`\u0001`, 6 bytes for each byte), and
+    # a tool call of 8 MiB of nested arrays `[[[...]]]`, the content with the
+    # most heap for each byte (row "Session file on resume"). The file is
+    # over 64 MiB, and the nested call needs more heap than a call of `0,`.
+    @tag :slow
+    test "a file of the largest entries that the live bounds allow resumes", %{tmp_dir: dir} do
+      {:ok, file} = Session.File.create(dir, "sess00000001", "/repo", "test/ok")
+      max = Helyx.Session.Turn.max_message_bytes()
+      text = String.duplicate(<<1>>, max)
+      # `["c1","bash",{"a":[[...]]}]` within the 8 MiB the live path counts.
+      nested = %{"a" => Enum.reduce(1..div(max - 32, 2), [], fn _, acc -> [acc] end)}
+      flat = %{"a" => List.duplicate(0, div(max - 64, 2))}
 
-      File.write!(file.path, copies, [:append])
+      for args <- [nested, flat] do
+        {:ok, bytes} = Message.encoded_size(["c1", "bash", args])
+        assert bytes in (max - 64)..max
+      end
 
+      file =
+        file
+        |> SessionFile.append_message(%Message{
+          role: :assistant,
+          content: [%Message.Text{text: text}],
+          stop_reason: :end_turn
+        })
+        |> SessionFile.append_message(call_message("c1", nested))
+        |> SessionFile.append_message(call_message("c2", flat))
+
+      assert File.stat!(file.path).size > 64 * 1024 * 1024
       assert {:ok, resumed} = SessionFile.resume(dir, "/repo")
-      assert length(resumed.messages) == count
+      assert [%Message{content: [%Message.Text{text: ^text}]}, first, second] = resumed.messages
+      assert [%Message.ToolCall{arguments: ^nested}] = first.content
+      assert [%Message.ToolCall{arguments: ^flat}] = second.content
+
+      # The nested call is the heavy line: 384 MiB, enough for the call of
+      # `0,`, is not enough for it (line 3).
+      assert {:error, {:too_large, reason}} =
+               SessionFile.resume(dir, "/repo", max_heap_bytes: 384 * 1024 * 1024)
+
+      assert reason =~ "line 3 "
     end
 
     test "the caller's heap does not hold the decode", %{tmp_dir: dir} do

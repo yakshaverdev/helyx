@@ -64,11 +64,13 @@ defmodule Mix.Tasks.HelyxTest do
     end
 
     test "a tagged text: the too_large sentence is printed as it is", %{tmp_dir: dir, path: path} do
-      # A sparse file one byte over the limit.
-      File.open!(path, [:read, :write], &:file.pwrite(&1, 67_108_864, "x"))
+      # A sparse last line one byte over the limit of one line.
+      at = File.stat!(path).size + 67_108_864
+      File.open!(path, [:read, :write], &:file.pwrite(&1, at, "x"))
 
       assert node_message(cwd: dir, resume: true) =~
-               ": the session file is over the 67108864-byte limit; start a new session"
+               "of the session file is over the 67108864-byte limit of one entry; " <>
+                 "start a new session"
 
       assert wire_line([dir, "--resume"]) =~ "{:too_large, "
     end

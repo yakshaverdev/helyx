@@ -108,8 +108,9 @@ defmodule Helyx.Session.Server.State do
     },
     # The deadlines of the session's own steps, in ms: `prepare`, the armed
     # kill of the prepare Task (`TurnLoop`), and `open`, the deadline of the
-    # open, under the 30 s that #656 plans for a wire client of a start, and
-    # under `Stop.shutdown_ms/0` (session-lock.md, #665). A test seam.
+    # lock take and the base of the deadline of the load, which grows with
+    # the file (session-lock.md, row "wait of the caller", #665, #834). A
+    # test seam.
     deadline_ms: %{prepare: @prepare_ms, open: 25_000},
     # The current idle timer (`:erlang.start_timer/3`, see
     # `TurnLoop.arm_idle/1`), or nil.

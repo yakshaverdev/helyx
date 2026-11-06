@@ -17,16 +17,14 @@ defmodule Helyx.Session.File do
   alias Helyx.Session.File.Scan
   alias Helyx.Session.Input
 
-  # A resume loads the file whole into the calling process, so the file has a
-  # limit. Compaction does not shrink the transcript, so the resume of a
-  # session past it fails, and the user starts a new session.
-  @max_bytes 64 * 1024 * 1024
+  # The most bytes of one line. The largest entry that a session writes is
+  # an assistant message: 8 MiB of content (`Helyx.Session.Turn`), at most
+  # 6 bytes of JSON for each byte (`\u0001`), is 48 MiB, plus the framing
+  # of its 1,024 blocks and its other fields.
+  @max_entry_bytes 64 * 1024 * 1024
 
-  # The decode of a file under @max_bytes can still grow the heap by 12 to 42
-  # bytes per file byte (#64). The parse runs in its own process with this
-  # heap cap, so a hostile or corrupt file kills only that process. At 12
-  # bytes per file byte a 64 MiB file fits (768 MiB); at 42 a file over
-  # about 24 MiB (1 GiB / 42) is rejected.
+  # The heap cap of the decode of one line, above the largest decode that
+  # a session-written entry needs (row "Session file on resume").
   @max_heap_bytes 1024 * 1024 * 1024
 
   @enforce_keys [:path]
@@ -164,28 +162,27 @@ defmodule Helyx.Session.File do
   `{:invalid_file, text}` with its line number. The read uses its own
   header: a header that names another directory is `:not_found`.
 
-  A file over the limit of #{@max_bytes} bytes is rejected as
-  `{:too_large, text}` and is not mutated. The read itself stops one byte
-  past the limit, so a file that grows during the call is rejected too.
+  The read takes one line at a time, so the file has no size limit: the
+  resume holds the transcript, and the bytes of the file that its texts
+  share. A line over #{@max_entry_bytes} bytes, or one whose decode needs
+  a heap over #{@max_heap_bytes} bytes, is no entry that a session writes:
+  it is rejected as `{:too_large, text}`, and the file is not mutated.
 
-  The read and the decode run in their own process with a heap cap of
-  #{@max_heap_bytes} bytes. A file whose decode passes the cap is rejected
-  as `{:too_large, text}` and is not mutated. The transcript is copied to
-  the caller once.
-
-  `:max_bytes` lowers the file limit, and `:max_heap_bytes` lowers the
-  heap cap. They exist so that a test reaches a limit with small input.
-  They are not checked.
+  `:max_entry_bytes` lowers the line limit, and `:max_heap_bytes` the heap
+  cap. They exist so that a test reaches a limit with small input. They
+  are not checked.
   """
   @spec resume_picked(Path.t(), String.t(),
-          max_bytes: pos_integer(),
+          max_entry_bytes: pos_integer(),
           max_heap_bytes: pos_integer()
         ) :: {:ok, Resumed.t()} | {:error, error()}
   def resume_picked(path, cwd, opts \\ []) do
-    max_bytes = Keyword.get(opts, :max_bytes, @max_bytes)
-    max_heap_bytes = Keyword.get(opts, :max_heap_bytes, @max_heap_bytes)
+    limits = %Reader.Limits{
+      entry: Keyword.get(opts, :max_entry_bytes, @max_entry_bytes),
+      heap: Keyword.get(opts, :max_heap_bytes, @max_heap_bytes)
+    }
 
-    with {:ok, resumed, tail} <- load_bounded(path, cwd, max_bytes, max_heap_bytes),
+    with {:ok, resumed, tail} <- load(path, cwd, limits),
          # The repair write comes last, after every check passed, so a
          # file this function rejects is never mutated.
          :ok <- repair(path, tail) do
@@ -227,44 +224,8 @@ defmodule Helyx.Session.File do
 
   defp match_cwd(_path, found, _cwd) when is_binary(found), do: {:error, :not_found}
 
-  # The wait has no timeout: the process reads at most max_bytes + 1 bytes
-  # and dies when its heap passes the cap, so its work is bounded. It is not
-  # linked, because the heap kill would take the caller with it; a caller
-  # that dies first leaves it to finish that bounded work alone.
-  defp load_bounded(path, cwd, max_bytes, max_heap_bytes) do
-    heap = %{
-      size: div(max_heap_bytes, :erlang.system_info(:wordsize)),
-      kill: true,
-      error_logger: false
-    }
-
-    {pid, ref} =
-      :erlang.spawn_opt(fn -> exit({:loaded, load(path, cwd, max_bytes)}) end, [
-        :monitor,
-        {:max_heap_size, heap}
-      ])
-
-    receive do
-      {:DOWN, ^ref, :process, ^pid, {:loaded, result}} ->
-        result
-
-      {:DOWN, ^ref, :process, ^pid, :killed} ->
-        {:error,
-         {:too_large,
-          "the session file needs more than #{max_heap_bytes} bytes of memory to load; " <>
-            "start a new session"}}
-
-      # A crash that load/3 does not rescue is a bug here, as it was when the
-      # parse ran in the caller.
-      {:DOWN, ^ref, :process, ^pid, reason} ->
-        exit(reason)
-    end
-  end
-
-  defp load(path, cwd, max_bytes) do
-    with {:ok, raw} <- Scan.read_up_to(path, max_bytes + 1),
-         :ok <- check_size(byte_size(raw), max_bytes),
-         {:ok, read, tail} <- Reader.read(raw, cwd) do
+  defp load(path, cwd, limits) do
+    with {:ok, read, tail} <- Scan.with_regular(path, &Reader.read(&1, cwd, limits)) do
       resumed = %Resumed{
         file: %__MODULE__{path: path, leaf: read.leaf},
         model: read.model,
@@ -357,13 +318,6 @@ defmodule Helyx.Session.File do
   @spec append_message(t(), Message.t()) :: t()
   def append_message(%__MODULE__{} = file, %Message{} = message) do
     append(file, Codec.encode(message))
-  end
-
-  defp check_size(size, max_bytes) when size <= max_bytes, do: :ok
-
-  defp check_size(_size, max_bytes) do
-    {:error,
-     {:too_large, "the session file is over the #{max_bytes}-byte limit; start a new session"}}
   end
 
   # Nothing is ever removed from the file: a truncate could cut bytes that

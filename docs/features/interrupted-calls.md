@@ -54,7 +54,7 @@ The delivery rules of #577 do not change.
 
 | What | Bound | Over the bound |
 | ---- | ----- | -------------- |
-| interrupted results at resume | one per open call of the transcript; the file has at most 64 MiB | the file limit of `Helyx.Session.File` |
+| interrupted results at resume | one per open call of the transcript, and at most 1,024 after one assistant message (its block limit); the file has no size limit (#834), so the count follows the transcript | the block limit of `Helyx.Session.File.Codec` |
 | text of one result | fixed, 165 bytes of ASCII, under the result cut of 65,536 bytes | cannot pass |
 
 ## Ownership

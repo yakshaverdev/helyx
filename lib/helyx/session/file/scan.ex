@@ -225,18 +225,26 @@ defmodule Helyx.Session.File.Scan do
   def check_version(header), do: {:error, {:unknown_version, header["version"]}}
 
   @doc false
-  # At most `bytes` from the start of a regular file. A pipe or a device
-  # would block the open or never end. The fun form of File.open closes the
-  # handle on every path.
+  # At most `bytes` from the start of a regular file.
   def read_up_to(path, bytes) do
+    with_regular(path, fn io ->
+      case :file.read(io, bytes) do
+        :eof -> {:ok, ""}
+        result -> result
+      end
+    end)
+  end
+
+  @doc false
+  # The result of `fun` on a regular file opened raw for reading. A pipe or
+  # a device would block the open or never end. The fun form of File.open
+  # closes the handle on every path.
+  def with_regular(path, fun) do
     with {:ok, %File.Stat{type: :regular}} <- File.stat(path),
-         {:ok, data} when is_binary(data) <-
-           File.open(path, [:read, :binary], &IO.binread(&1, bytes)) do
-      {:ok, data}
+         {:ok, result} <- File.open(path, [:read, :binary, :raw], fun) do
+      result
     else
       {:ok, %File.Stat{}} -> {:error, :not_regular}
-      {:ok, :eof} -> {:ok, ""}
-      {:ok, {:error, _reason} = error} -> error
       {:error, _reason} = error -> error
     end
   end

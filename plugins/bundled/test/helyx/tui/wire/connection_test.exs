@@ -619,6 +619,45 @@ defmodule Helyx.TUI.Wire.ConnectionTest do
     assert_receive {:DOWN, ^ref, :process, ^conn, {:shutdown, {:closed, nil}}}
   end
 
+  # `start` and `resume` have no deadline in the client (tui-attach.md,
+  # decision 17): the old one was 30,000 ms and a margin of 5,000 ms. The
+  # answer here comes 1,000 ms after it.
+  @old_open_ms 35_000
+  @tag :slow
+  @tag timeout: 60_000
+  test "a resume waits for its answer past the old deadline of the client" do
+    {conn, ref} =
+      fake(fn socket ->
+        %{"id" => id, "op" => "resume"} = client_frame(socket)
+        Process.sleep(@old_open_ms + 1_000)
+        :ok = :gen_tcp.send(socket, text(res(id, %{session: "s1"})))
+      end)
+
+    assert Connection.resume(conn, id: "s1") == {:ok, "s1"}
+    refute_received {:DOWN, ^ref, _, _, _}
+  end
+
+  test "a close of the connection ends the wait of a start and of a resume" do
+    test = self()
+
+    for op <- [:start, :resume] do
+      {conn, ref} =
+        fake(fn socket ->
+          %{"op" => _open} = client_frame(socket)
+          send(test, {:asked, self()})
+          receive do: (:close -> :gen_tcp.close(socket))
+        end)
+
+      opener = Task.async(fn -> apply(Connection, op, [conn, [cwd: "/repo"]]) end)
+      assert_receive {:asked, server}
+      # The request waits with no deadline timer.
+      assert [{_id, {_op, {_from, nil}}}] = Map.to_list(:sys.get_state(conn).waiting)
+      send(server, :close)
+      assert Task.await(opener) == {:error, :closed}
+      assert_receive {:DOWN, ^ref, :process, ^conn, {:shutdown, {:closed, nil}}}
+    end
+  end
+
   test "the connection ends with its owner, and the socket and the writer end with it" do
     test = self()
 

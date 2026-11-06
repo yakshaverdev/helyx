@@ -485,6 +485,39 @@ defmodule CodingAgent.AttachTest do
     Lock.release(lock)
   end
 
+  # The open has no deadline in the client (tui-attach.md, decision 17):
+  # after 500 ms the line of the wait, then the close ends it with a line.
+  test "an open that waits shows that it loads, and a closed connection ends it with a line",
+       %{tmp_dir: dir} do
+    port =
+      fake_server(fn socket ->
+        fake_upgrade(socket)
+        fake_challenge(socket)
+        _hello = client_frame(socket)
+        welcome = JSON.encode!(%{type: "welcome", protocol: WebSocket.protocol()})
+        :ok = :gen_tcp.send(socket, server_frame(1, 1, welcome))
+        %{"op" => "resume"} = client_frame(socket)
+        # Twice the 500 ms after which the line of the wait comes.
+        Process.sleep(1_000)
+        :gen_tcp.close(socket)
+      end)
+
+    {:ok, socket} =
+      Helyx.TUI.Wire.connect({127, 0, 0, 1}, port, fn -> "t" end, Helyx.Test.Events.wait_ms())
+
+    stderr =
+      capture_io(:stderr, fn ->
+        result = CodingAgent.attach(socket, resume: true, sessions_dir: dir, cwd: dir)
+        send(self(), {:result, result})
+      end)
+
+    assert stderr == "helyx: loading the session...\n"
+    assert_received {:result, {:error, :closed}}
+
+    assert CodingAgent.error_text(:closed) ==
+             "could not start the agent: no connection to the server"
+  end
+
   test "while the server starts, a refused connection and a file with no token are tried again",
        %{sessions: sessions, server_file: file} do
     data_folder(sessions)

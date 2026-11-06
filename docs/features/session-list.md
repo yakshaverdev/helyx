@@ -62,7 +62,7 @@ Decisions:
 | folder on screen (`--all`, and the error of `--session`) | the last 80 code points after the clean pass; the end of a path is the part that tells folders apart | the start is cut | `Helyx.TUI.SessionList.line/2` (#551 moved it from `CodingAgent.CLI`) |
 | session id of `--session` | the format of `Helyx.Session.Id`, checked before any path is built | `not a session id`, no file access | `Scan.find/2` |
 | files that match an id | one | two or more give `:duplicate_id` | `Scan.find/2` |
-| resume by id: file size, heap | the bounds of the resume of `Helyx.Session.File` (64 MiB, the heap cap) | as for `--resume` | `Helyx.Session.File.resume_picked/3` |
+| resume by id: file size, heap | the bounds of the resume of `Helyx.Session.File` (no file limit, 64 MiB for one line, the heap cap of the decode of one line) | as for `--resume` | `Helyx.Session.File.resume_picked/3` |
 
 ## Ownership
 

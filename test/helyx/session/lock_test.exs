@@ -256,11 +256,17 @@ defmodule Helyx.Session.LockTest do
 
   # Starts, in a new caller, a session whose open waits under the lock until
   # the test sends `:go`. `bounds` sets fields of the state, such as
-  # `deadline_ms`. Returns the caller, the session process, and the session path.
+  # `deadline_ms`, and `:file_bytes` makes a sparse session file of that
+  # size before the start. Returns the caller, the session process, and the
+  # session path.
   defp start_held(core, dir, bounds \\ []) do
     test = self()
+    {file_bytes, bounds} = Keyword.pop(bounds, :file_bytes, 0)
     {state, tools, path} = start_args(core, dir)
     state = struct!(state, bounds)
+
+    if file_bytes > 0,
+      do: File.open!(path, [:write], &:file.pwrite(&1, file_bytes - 1, "\n"))
 
     open =
       {path,
@@ -304,6 +310,54 @@ defmodule Helyx.Session.LockTest do
     assert_receive {:started, {:error, :open_timeout}}
     refute Process.alive?(pid)
     await_lock_free(path, "the lock of the killed session to free")
+  end
+
+  # After the take, the deadline of the load is `open` plus 1 ms for each
+  # 1,000 bytes of the file (#834): 8,388,608 bytes give 8,388 ms more. The
+  # load here outlasts `open` by its own length, and the go comes far
+  # before the end of the deadline of the load: the rest is the margin.
+  @tag :slow
+  test "the deadline of the load grows with the file", %{core: core, tmp_dir: dir} do
+    {_caller, pid, _path} =
+      start_held(core, dir,
+        file_bytes: 8 * 1024 * 1024,
+        deadline_ms: %{open: @load_open_ms, prepare: Session.Server.State.prepare_ms()}
+      )
+
+    Process.sleep(2 * @load_open_ms)
+    assert Process.alive?(pid)
+    send(pid, :go)
+    assert_receive {:started, {:ok, %Session{}}}
+  end
+
+  # 2,097,152 bytes give 2,097 ms more than `open`: the kill comes after
+  # `open` from the take, and still comes.
+  @tag :slow
+  test "the moved deadline of the load still kills", %{core: core, tmp_dir: dir} do
+    {_caller, pid, path} =
+      start_held(core, dir,
+        file_bytes: 2 * 1024 * 1024,
+        deadline_ms: %{open: @load_open_ms, prepare: Session.Server.State.prepare_ms()}
+      )
+
+    Process.sleep(div(@load_open_ms * 5, 4))
+    assert Process.alive?(pid)
+    assert_receive {:started, {:error, :open_timeout}}, 4 * @load_open_ms
+    refute Process.alive?(pid)
+    await_lock_free(path, "the lock of the killed session to free")
+  end
+
+  # A `receive` waits at most 4,294,967,295 ms; a longer deadline would
+  # crash the process that kills. The session monitors it from the arm on.
+  test "a deadline past the longest wait keeps its kill", %{core: core, tmp_dir: dir} do
+    {caller, pid, _path} =
+      start_held(core, dir, deadline_ms: %{open: 5_000_000_000, prepare: 1_000})
+
+    # The caller watches the session too (`await_open/3`).
+    {:monitored_by, watchers} = Process.info(pid, :monitored_by)
+    assert Enum.any?(watchers, &(is_pid(&1) and &1 != caller and Process.alive?(&1)))
+    send(pid, :go)
+    assert_receive {:started, {:ok, %Session{}}}
   end
 
   @tag :slow

@@ -13,7 +13,7 @@
 #   * copy: one send of the transcript to another process, which answers
 #     `:ok`. A provider round sends its context in the same way
 #     (`Server.Prepare`).
-#   * resume fold: `File.Reader.read/2` and `Transcript.repair/1` of the file.
+#   * resume fold: `File.resume_picked/3` and `Transcript.repair/1` of the file.
 #   * file append: `File.append_message/2` of one 1 KiB and one 64 KiB result.
 #   * json: `JSON.encode!/1` of the entry of the same results.
 #   * batch: one turn through a resumed session with the Fake provider and no
@@ -36,7 +36,7 @@ defmodule Helyx.Bench.SessionAppend do
   @moduledoc false
 
   alias Helyx.{Event, Message, Session}
-  alias Helyx.Session.File.{Codec, Reader}
+  alias Helyx.Session.File.Codec
   alias Helyx.Session.{Id, Transcript}
 
   @runs 21
@@ -84,9 +84,8 @@ defmodule Helyx.Bench.SessionAppend do
     echo = spawn_link(&echo/0)
     line("n=#{n} copy (#{mib} MiB)", measure(transcript, &copy(echo, &1)))
 
-    raw = File.read!(file.path)
-    label = "n=#{n} resume fold (#{div(byte_size(raw), 1024)} KiB)"
-    line(label, measure(raw, &fold/1, 5))
+    label = "n=#{n} resume fold (#{div(File.stat!(file.path).size, 1024)} KiB)"
+    line(label, measure(file.path, &fold/1, 5))
 
     for {rounds, bytes} <- [{1, 1024}, {1, 65_536}, {4, 1024}], persist <- [:on, :off] do
       batch_dir = Path.join(root, "b#{size}-#{rounds}-#{bytes}-#{persist}")
@@ -102,9 +101,9 @@ defmodule Helyx.Bench.SessionAppend do
     end
   end
 
-  defp fold(raw) do
-    {:ok, read, _tail} = Reader.read(raw, @cwd)
-    Transcript.repair(read.messages)
+  defp fold(path) do
+    {:ok, resumed} = Helyx.Session.File.resume_picked(path, @cwd)
+    Transcript.repair(resumed.messages)
   end
 
   # A one-way copy: the echo process answers `:ok`.
