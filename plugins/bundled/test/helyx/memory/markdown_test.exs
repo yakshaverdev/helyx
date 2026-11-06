@@ -17,6 +17,10 @@ defmodule Helyx.Memory.MarkdownTest do
   # The default `recall_ms` of `Helyx.Core`.
   @recall_ms 2_000
 
+  # A hang guard for the concurrent writes: far above the write time, so a
+  # loaded machine does not fail it.
+  @load_ms 30_000
+
   defp entries(messages), do: Enum.map(messages, &%{message: &1, persisted: true})
   defp opts(dir), do: [dir: dir, session_id: "s1"]
   defp logs(dir), do: Path.wildcard(Path.join([dir, "log", "*.md"]))
@@ -68,8 +72,15 @@ defmodule Helyx.Memory.MarkdownTest do
 
     results =
       1..8
-      |> Task.async_stream(fn _ -> Markdown.sync(entries(Enum.shuffle(messages)), opts(dir)) end)
-      |> Enum.map(fn {:ok, result} -> result end)
+      |> Task.async_stream(
+        fn _ -> Markdown.sync(entries(Enum.shuffle(messages)), opts(dir)) end,
+        timeout: @load_ms,
+        on_timeout: :kill_task
+      )
+      |> Enum.map(fn
+        {:ok, result} -> result
+        {:exit, :timeout} -> flunk("the concurrent sync did not finish in #{@load_ms} ms")
+      end)
 
     assert Enum.uniq(results) == [:ok]
     assert length(logs(dir)) == 20
