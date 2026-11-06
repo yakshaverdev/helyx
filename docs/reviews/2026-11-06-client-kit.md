@@ -87,3 +87,45 @@ Simplify brought `json.rs` to 400 lines. The `-0` reproduction holds fixed; the 
 ## Small-fix round (reduced: spec, failure path)
 
 Precommit failed on `Helyx.Credo.FileLength`: `view_model.ex` had 405 lines. The fix rewrote the `add_cells` clause of a tool result as a guarded clause and an orphan clause, and inlined the orphan text: 399 lines, one file, no function or return shape changed. Spec and failure path: no defect; the snapshot path and the live path give the same cells for an orphan, a nil id, a closed call, and two calls of one id.
+
+# Cycle B: slice 3, the connection (#860)
+
+Base `8c5eb3d7`. Bounds sensor: `bounds sensor: 0 candidate functions, 0 flagged, 0 without an answer`.
+
+## Round 1 (full: simplify, standards, spec, failure path, Codex)
+
+| # | Source | Finding | Resolution |
+|---|---|---|---|
+| 1 | failure path, Codex | An `unsubscribe` reply cleared the session by name: after a `session_end` and a new subscribe, it ended the new subscription, cleared the following of a subscribe on the way, and let `forget` drop a state that a later reply then needed (panic at an `expect`). Reproduced. | Mechanism replaced (below). |
+| 2 | standards, spec, failure path | The `again` flag of `instance_changed` outlived its subscription: after a reconnect or an unsubscribe, a later `session_end` sent a subscribe that no one asked for. Reproduced. Second finding on the following flags. | Mechanism replaced. |
+| 3 | Codex | A resubscribe refused as `Busy` at a `session_end` was dropped, and a reconnect skipped the session. Reproduced by reading. | Mechanism replaced. |
+| 4 | spec | A snapshot with an `instance_id` over the request size made the welcome panic (`expect` of room). Reproduced. | Fixed: the subscribe leaves out `after`; test. |
+| 5 | standards, spec | Untested: a frame over 1 MiB, a reused `sub`, a `session_end` of no sub, `TooLarge` through `request`, `NotSubscribed`, no ack for a snapshot, a request before the welcome. | Tests added. |
+| 6 | standards | The challenge row had an empty cell; `Connection` was fields that `Client` reached into; `Joiner` public. | Doc fixed; `live_sub` and `attached` moved into `Connection`; `Joiner` crate-private. |
+
+The mechanism: the stored flags `following` and `again` are replaced by one stored intent, `wanted`, with `renew` for `instance_changed`. Whether a session has a live subscription or a subscribe on the way is read from the connection. One function, the pump, sends each due subscribe after every input, so the welcome, a freed place, a `session_end`, and a renewal all take one path. An `unsubscribe` request names its sub, and its reply ends only that sub. `forget` refuses a session with a subscription or a subscribe on the way. A session is never subscribed while a subscription of it lives. Round 2 is a full round (two findings on one mechanism).
+
+## Round 2 (full: simplify, spec, failure path, Codex)
+
+The reproductions of round 1 hold fixed. Simplify made `connection` private.
+
+| # | Source | Finding | Resolution |
+|---|---|---|---|
+| 1 | spec | After a `timeout` reply the server still holds the place, so a subscribe could get `busy`; that cleared the intent and gave the host a reply of an id it never had. Reproduced. | A refused subscribe gives `Output::Unfollowed` with the session and the error; the Bounds row states the `timeout` case. |
+| 2 | spec, failure path | A renewal was set on a live subscription that already followed the new instance (the `history` page named the old one), so its later `session_end` subscribed again. Reproduced. | A renewal needs the page's `instance_id` to be that of the state; the request keeps it. |
+| 3 | spec, Codex | An old `session_end` of an unsubscribed sub cleared a newer subscribe of the host that waited for it. Reproduced. | A `session_end` of a sub with an `unsubscribe` in flight leaves the intent. |
+| 4 | failure path, Codex | A late `instance_changed` after an `unsubscribe` followed the session again. Reproduced. | A renewal needs a wanted session; the "subscribe at once after the end" rule is dropped (the host follows again). |
+
+The intent rules moved to `follow` (`follow::Session`), which owns `wanted` and `renew` and decides each change of them. Round 3 is the last round of the cycle.
+
+## Round 3 (full: simplify, spec, failure path, Codex)
+
+Simplify added test helpers. The reproductions of round 2 hold fixed. Round 3 reproduced two defects on the follow intent. The cycle is at its limit of three rounds, and the small-fix round does not apply (a further finding on one mechanism), so the commit holds the code as round 3 reviewed it, and both stay open:
+
+| # | Source | Finding | State |
+|---|---|---|---|
+| 1 | spec, failure path, Codex | An `unsubscribe` answered with an error (`busy` after a `timeout` frees a place in the client but not in the server, or `timeout`) leaves its subscription live with the intent cleared: events still apply, `forget` refuses, and the host gets no output. `unknown_sub` also leaves the sub in the client. | Open. The fix: give the host an output for a refused `unsubscribe`, and drop the sub at `unknown_sub`. |
+| 2 | spec, failure path | `unsubscribe` is refused (`NotSubscribed`) for a wanted session with no live subscription: before the welcome, after a close, or with its subscribe in flight; the pump then subscribes it, against the host's latest intent. | Open. The fix: `unsubscribe` clears the intent whatever the connection holds, and sends the `unsubscribe` only for a live sub; a subscribe reply of an unwanted session sends one. |
+| 3 | failure path (doc) | The Bounds row says a renewal takes a place; it needs a wanted session, so it takes none. | Open, doc only. |
+
+Not reached by the budget: a host session id over 26 MB, a `failed` reply to `unsubscribe`, a reply that breaks a subscribe while a renewal is set.

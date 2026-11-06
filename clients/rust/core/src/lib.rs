@@ -4,12 +4,16 @@
 //! it the decoded frames of one connection and sends the frames it returns.
 
 mod check;
+pub mod client;
+mod connection;
 pub mod event;
 pub mod fold;
+mod follow;
 pub mod frame;
 pub mod handshake;
 pub mod json;
 pub mod message;
+pub mod parts;
 pub mod transcript;
 
 pub use check::{Broken, Checked};
