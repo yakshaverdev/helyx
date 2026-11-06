@@ -152,7 +152,7 @@ defmodule Helyx.Session.AskTest do
     collect_until(:ask)
     # The caller of the ask is the Task of the call.
     %{activity: %{asks: asks}} = :sys.get_state(Session.pid(session))
-    [{one, {task, _tag}, _ask}] = for {_, _, %{call_id: "a1"}} = entry <- asks, do: entry
+    [{one, {task, _tag}, _ask, _monitor}] = for {_, _, %{call_id: "a1"}, _} = e <- asks, do: e
     Process.exit(task, :kill)
 
     assert [%{ask_id: ^one, outcome: :ended}] = of_type(collect_until(:ask_end), :ask_end)
@@ -174,22 +174,19 @@ defmodule Helyx.Session.AskTest do
     assert results(events) == [{true, "an ask request is a JSON object of at most 64 KiB"}]
   end
 
-  test "a request of at most 64 KiB of JSON goes to the session", %{core: core} do
+  test "a request of at most 64 KiB of JSON goes to the hands", %{core: core} do
     Process.put(:helyx_call, %{core: core, session_id: "s1", call_id: "c1", tool: "ask"})
-    test = self()
 
-    # A session process that answers with the request.
-    spawn_link(fn ->
-      {:ok, _} = Registry.register(Helyx.Core.sessions_registry(core), "s1", nil)
-      send(test, :registered)
+    # Hands that answer with the request.
+    hands =
+      spawn_link(fn ->
+        receive do
+          {:"$gen_call", from, {:ask, :tool, "c1", "ask", request}} ->
+            GenServer.reply(from, {:ok, request})
+        end
+      end)
 
-      receive do
-        {:"$gen_call", from, {:ask, "c1", "ask", request}} ->
-          GenServer.reply(from, {:ok, request})
-      end
-    end)
-
-    assert_receive :registered
+    Process.put(:helyx_hands, hands)
     assert_raise ArgumentError, fn -> Helyx.Tool.ask(answer_of(65_537)) end
     assert Helyx.Tool.ask(answer_of(65_536)) == {:ok, answer_of(65_536)}
   end
@@ -198,8 +195,10 @@ defmodule Helyx.Session.AskTest do
     {:ok, session} = Session.start(core, model: "test/ask")
     {:ok, _snapshot, _ref} = Session.subscribe(session, answers: true)
 
-    assert GenServer.call(Session.pid(session), {:ask, "a1", "ask", %{}}) ==
-             {:error, :not_running}
+    # The ask as the hands pass it on, from this process.
+    ref = make_ref()
+    send(Session.pid(session), {:ask, {self(), ref}, self(), "a1", "ask", %{}})
+    assert_receive {^ref, {:error, :not_running}}
   end
 
   test "an answer is a JSON object of valid UTF-8 of at most 16 KiB", %{core: core} do

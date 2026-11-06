@@ -280,7 +280,8 @@ defmodule Helyx.Session.Server.Open do
         cwd: state.cwd,
         background_dir: background_dir,
         session: self(),
-        tools: Map.new(state.tools, fn {name, {tool, _concurrent?}} -> {name, tool} end)
+        tools: Map.new(state.tools, fn {name, {tool, _concurrent?}} -> {name, tool} end),
+        hooks: Helyx.Core.hooks(state.core)
       )
 
     # A run that was live at the stop of a resumed session ended with it:

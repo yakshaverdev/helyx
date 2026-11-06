@@ -248,30 +248,22 @@ defmodule Helyx.Tool do
     end
   end
 
-  # The most bytes of the JSON of a request to `ask/1`.
-  @max_request_bytes 65_536
-
   @doc """
   Asks the clients of the session and waits for the first answer: a JSON
   object that a client gave with `Helyx.Session.answer/3`. The session
   emits `request`, a JSON object of valid UTF-8 whose JSON is at most
-  #{@max_request_bytes} bytes, in an `:ask` event with a new ask id, the
+  #{Helyx.Session.Ask.max_request_bytes()} bytes, in an `:ask` event with a new ask id, the
   call id, and the tool name. `{:error, :no_client}` at once when no
   subscriber can answer (`Helyx.Session.subscribe/2`, `answers: true`),
   and `{:error, :not_running}` when the call is not a running call of the
-  current turn, such as a background run. The wait has no timeout: the end of the turn
+  current turn, such as a background run, or when the caller is not the
+  call's own Task, such as a hook Task or a process that the tool started
+  (`docs/features/hooks.md`). The wait has no timeout: the end of the turn
   ends it, and the hands kill the call. Raises on any other request and
   outside a tool call (`docs/features/question-tool.md`).
   """
   @spec ask(map()) :: {:ok, map()} | {:error, :no_client | :not_running}
-  def ask(request) do
-    %{core: core, session_id: id, call_id: call_id, tool: tool} = context()
-
-    if Helyx.Session.Input.json_object(request, @max_request_bytes) != :ok,
-      do: raise(ArgumentError, "an ask request is a JSON object of at most 64 KiB")
-
-    GenServer.call(Helyx.Session.Server.via(core, id), {:ask, call_id, tool, request}, :infinity)
-  end
+  def ask(request), do: Helyx.Session.Ask.ask(:tool, request)
 
   @doc """
   Returns the messages of the session that runs the calling Task of the
@@ -298,11 +290,20 @@ defmodule Helyx.Tool do
   it when its Task ends. Exits outside the hands, as `hold/1` does.
   """
   @spec background() :: {:ok, %{id: String.t(), dir: String.t()}} | {:error, String.t()}
-  def background, do: GenServer.call(Process.get(:helyx_hands), :background, :infinity)
+  def background do
+    with {:ok, _place} = place <-
+           GenServer.call(Process.get(:helyx_hands), :background, :infinity) do
+      # The `after_tool` hooks of `started/1` run only with a place.
+      Process.put(:helyx_place, true)
+      place
+    end
+  end
 
   @doc """
   Gives the start answer of a background run: `text` becomes the result of
-  the call at once, and the tool's Task leaves its turn. The Task then
+  the call once the `after_tool` hooks ran on it, which can replace its
+  text and its status (`docs/features/hooks.md`), and the tool's Task
+  leaves its turn. The Task then
   runs on; its return value, or its crash, is the end of the run. Raises
   in a Task that is no tool call of a turn, such as a run that gave its
   start answer, and in a tool call that took no place with
@@ -310,7 +311,11 @@ defmodule Helyx.Tool do
   """
   @spec started(String.t()) :: :ok
   def started(text) when is_binary(text) do
-    case GenServer.call(Process.get(:helyx_hands), {:started, text}, :infinity) do
+    # The `after_tool` hooks run on the start answer, in the call Task
+    # (docs/features/hooks.md).
+    result = Helyx.Session.Hands.Chain.after_start({:ok, text})
+
+    case GenServer.call(Process.get(:helyx_hands), {:started, result}, :infinity) do
       :ok -> :ok
       :no_place -> raise ArgumentError, "started/1 needs a place from background/0"
     end

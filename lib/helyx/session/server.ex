@@ -8,7 +8,7 @@ defmodule Helyx.Session.Server do
 
   alias Helyx.Reason
   alias Helyx.Session.{Lock, Turn}
-  alias Helyx.Session.Server.{Calls, Events, Open, ProviderConn, Records, State, Steering}
+  alias Helyx.Session.Server.{Asks, Calls, Events, Open, ProviderConn, Records, State, Steering}
   alias Helyx.Session.Server.{Stop, Summary, ToolRuns, TurnLoop, Wait}
 
   use GenServer, restart: :temporary, shutdown: Stop.shutdown_ms()
@@ -149,10 +149,10 @@ defmodule Helyx.Session.Server do
 
   # The hands' start answer of a background run: the run counts from here,
   # also when its call is no longer current, and its end counts down
-  # (`{:background_end, message}`). The transcript and the provider get a
-  # plain `:ok` result.
-  defp info({:tool_result, turn_id, call_id, {:started, text}}, state),
-    do: info({:tool_result, turn_id, call_id, {:ok, text}}, Steering.started(state))
+  # (`{:background_end, message}`). The transcript and the provider get the
+  # result with the status that the `after_tool` hooks left.
+  defp info({:tool_result, turn_id, call_id, {:started, result}}, state),
+    do: info({:tool_result, turn_id, call_id, result}, Steering.started(state))
 
   # The hands' result of a running Helyx tool.
   defp info(
@@ -172,6 +172,15 @@ defmodule Helyx.Session.Server do
   defp info({:tool_result, _turn_id, _call_id, _result}, state), do: {:noreply, state}
   defp info({:stream_event, _turn_id, _event}, state), do: {:noreply, state}
 
+  # An ask that the hands passed on from the Task `pid`, which waits for
+  # the answer (`Asks.ask/5`).
+  defp info({:ask, from, pid, call_id, tool, request}, state),
+    do: {:noreply, Asks.ask(state, {from, pid}, call_id, tool, request)}
+
+  # An answer of a hook, from the hands (`Records.hook/3`).
+  defp info({:hook_answer, turn_id, record}, state),
+    do: {:noreply, Records.hook(state, turn_id, record)}
+
   # A notice of the sync worker of this instance.
   defp info({:memory_notice, pid, text}, %State{sync: pid} = state),
     do: {:noreply, Events.emit(state, nil, :notice, %{text: text})}
@@ -186,6 +195,15 @@ defmodule Helyx.Session.Server do
   defp info({:DOWN, ref, :process, pid, _reason}, %State{subscribers: subscribers} = state)
        when elem(:erlang.map_get(pid, subscribers), 0) == ref,
        do: {:noreply, Events.subscriber_down(state, pid)}
+
+  # The end of a Task with an open ask; any other `:DOWN` is a lifecycle
+  # input.
+  defp info({:DOWN, ref, :process, _pid, _reason} = message, state) do
+    case Asks.down(state, ref) do
+      {:ok, state} -> {:noreply, state}
+      :error -> {:noreply, TurnLoop.handle(message, state)}
+    end
+  end
 
   # The lock's port closed while the session runs: perl ended, so the
   # kernel released the lock (docs/features/session-lock.md). Its exit

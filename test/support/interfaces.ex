@@ -200,6 +200,8 @@ defmodule Helyx.Test.Provider do
   #   "big_int"    six calls with large integers; after the results, a done
   #                map with the large integer
   #   "ask"        one call to the ask tool with the request {"q": "one"}
+  #   "big_args"   one call to upcase with a text of 3,000 "é", 6,000 bytes
+  #   "call.<name>" one call to the tool <name> with no arguments
   #   "ask2"       two calls to the ask tool, {"q": "one"} and {"q": "two"}
   #   "ask_bad"    one call to the ask tool whose request is a string
   #   "ask_twice"  one call to the ask tool that asks {"q": "one"}, then
@@ -304,6 +306,16 @@ defmodule Helyx.Test.Provider do
 
   def stream("serial", %Helyx.Context{messages: messages}, _opts),
     do: echo_after(messages, slow_calls([{"1", 60}, {"2", 30}, {"3", 0}]))
+
+  def stream("call." <> name, %Helyx.Context{messages: messages}, _opts),
+    do: echo_after(messages, [call("c1", name, %{}), @tool_use])
+
+  def stream("big_args", %Helyx.Context{messages: messages}, _opts),
+    do:
+      echo_after(messages, [
+        call("c1", "upcase", %{"text" => String.duplicate("é", 3_000)}),
+        @tool_use
+      ])
 
   def stream("ask", %Helyx.Context{messages: messages}, _opts),
     do: echo_after(messages, [call("a1", "ask", %{"request" => %{"q" => "one"}}), @tool_use])

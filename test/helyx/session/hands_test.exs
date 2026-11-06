@@ -362,7 +362,7 @@ defmodule Helyx.Session.HandsTest do
       hands = start_hands(core, background_dir: dir)
       background(hands, "c1", %{"gate" => gate, "handles" => [{:report, self()}]})
 
-      assert_receive {:tool_result, "t1", "c1", {:started, start}}
+      assert_receive {:tool_result, "t1", "c1", {:started, {:ok, start}}}
 
       [_, id, path] =
         Regex.run(
@@ -496,7 +496,7 @@ defmodule Helyx.Session.HandsTest do
             {String.duplicate(<<255>>, 5000), String.duplicate("\uFFFD", 4096)}
           ] do
         background(hands, "c1", %{"gate" => gate, "start" => start})
-        assert_receive {:tool_result, "t1", "c1", {:started, answer}}
+        assert_receive {:tool_result, "t1", "c1", {:started, {:ok, answer}}}
         [id] = Regex.run(~r/\A<background id="(.{12})"/, answer, capture: :all_but_first)
         assert answer == ~s(<background id="#{id}" status="started">\n#{body}\n</background>)
         assert byte_size(body) <= 12_288

@@ -41,10 +41,6 @@ defmodule Helyx.Session.Server.Calls do
     {:reply, reply, state}
   end
 
-  # The caller waits for the answer (`Asks.ask/5`).
-  def handle({:ask, call_id, tool, request}, from, %State{} = state),
-    do: Asks.ask(state, from, call_id, tool, request)
-
   def handle({:answer, ask_id, answer}, _from, %State{} = state) do
     {reply, state} = Asks.answer(state, ask_id, answer)
     {:reply, reply, state}
