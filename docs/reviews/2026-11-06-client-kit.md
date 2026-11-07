@@ -174,3 +174,52 @@ Simplify made `send` restore the deadline it found, and added a test helper. The
 | 2 | Codex (by reading) | `tungstenite` keeps a binary frame that is not final without returning it, so the stop of a binary frame does not run; a close after it reconnects, and pings keep the silence wait open. | Open, not reproduced. The fix: refuse a binary opcode at its first frame. |
 | 3 | spec (doc) | The Ownership row says the thread sends a close at a wait over its bound; the watchdog shuts the socket down and sends none. | Open, doc only. |
 | 4 | spec (no proof) | The TCP connect bound of 5,000 ms and the watchdog thread's end within 100 ms of its drop have no test (the failure-path agent saw the thread count fall back after each connection). | Open. |
+
+## The owner's rule on the app gate
+
+The window of the app builds on macOS only, and the merge gate on the Linux host leaves it out (`clients/rust/macos-only`). The orchestrator's judgement of 2026-11-06: the owner's rule stands, and the orchestrator tells the owner that the merge gate does not build the app.
+
+# Cycle D: the follow intent (#860, judgement of the orchestrator of 2026-11-06)
+
+Base `cce1d0fb` (the branch after the rebase on `origin/master`). The open items 1 and 2 of cycle B round 3. Chosen mechanism: the intent that the host states is the state, and only the host changes it; `subscribe` and `unsubscribe` set it, are never refused but by the cap of 16, and can be stated again. The client reconciles each session after each input (`reconcile`). An error answer leaves the intent and reports the server state to the host (`Output::Failed`, `Client::subscribed`), and holds the session on that connection, so a refusing server gives no request loop; a restatement of the host or a new connection ends the hold. `unknown_sub` marks the subscription gone. Accepted with its source: no deadline for a reply (#834, `docs/features/tui-attach.md`, decision 17).
+
+Bounds sensor: `bounds sensor: 0 candidate functions, 0 flagged, 0 without an answer`.
+
+## Round 1 (full: simplify, standards, spec, failure path, Codex)
+
+| # | Source | Finding | Resolution |
+|---|---|---|---|
+| 1 | standards, spec, Codex | After a `session_end`, a subscribe went while the `unsubscribe` of the session waited: two requests of one session in flight, against the Bounds row. Reproduced. | The pump skips a session with a subscribe or an `unsubscribe` in flight; the tests wait for the reply. |
+| 2 | standards, spec, failure path, Codex | A renewal lifted the hold of a refused subscribe, so a subscribe went with no restatement. Reproduced. | A hold has its reason (`Hold::Ended`, `Hold::Refused`); a renewal ends only an end hold; test. |
+| 3 | spec | The cap counted wanted sessions, not the subscriptions that the server holds: with an unsubscribed sub live, a 17th subscribe went and got `too_many_subscriptions`. Reproduced. | A subscribe goes while the live subscriptions and the subscribes in flight are under 16; test. |
+| 4 | spec, failure path | A subscribe reply with a sub id in `gone` was taken, and its frames dropped. Reproduced. | A break; test. |
+| 5 | failure path | `held` kept the entries of forgotten sessions. Reproduced. | `forget` drops the hold. |
+| 6 | failure path | A session id over the request size took a place and was skipped at each input with no report. Reproduced. | `subscribe` refuses it (`Refusal::TooLarge`); an `unsubscribe` too large for its sub id holds the session; test. |
+| 7 | standards, spec (doc) | "Oldest session id first" (the order is the byte order of the ids); the no-deadline row too broad for `start` and `resume`. | Fixed. |
+| 8 | standards (judgement) | `reconcile` widens fields to `pub(crate)`; `Output::Failed.op` a string; the `unknown_sub` handler needs evidence. | Kept: `reconcile` owns the decision of which requests go. The server sends `unknown_sub` (`plugins/bundled/lib/helyx/transport/web_socket/connection.ex`), and an `unsubscribe` after a `timeout` that took effect gets it. |
+
+Round 2 is a full round: the mechanism had findings in cycle B.
+
+## Round 2 (full: simplify, spec, failure path, Codex)
+
+The reproductions of round 1 hold fixed.
+
+| # | Source | Finding | Resolution |
+|---|---|---|---|
+| 1 | spec, Codex | A `session_end` replaced a `Refused` hold with an `Ended` one, which a renewal then lifted: a subscribe with no restatement. Reproduced. Second finding on the hold. | A `session_end` keeps a `Refused` hold; test. |
+| 2 | spec, failure path | A refused `unsubscribe` of a session forgotten meanwhile left a hold with no state. Reproduced. | No hold for a forgotten session; test. |
+| 3 | failure path, Codex | A late `unsubscribe` reply removed, or marked gone, a sub id that the server gave again to another session after an end. Reproduced. | The reply acts only on a sub that is still that of its session; test. |
+| 4 | spec (doc) | An `unsubscribe` too large for its sub id is held with no report, unlike an error answer; the no-deadline row named server deadlines that the wire doc and the server code disagree on. | Doc fixed. |
+| 5 | spec | The app dropped a refused follow with no word. | The app's line says so. |
+
+Round 3 is a full round.
+
+## Round 3 (full: simplify, spec, failure path, Codex)
+
+Simplify merged two arms of `unsubscribed`. The reproductions of round 2 hold fixed. Codex: approve, no finding. A random walk of the failure-path agent (400 seeds of 600 steps against a model of the server) found no two requests of a session in flight, no 17th subscription, no request of a held session, no loop, and no panic. Round 3 reproduced two defects on the hold, so the cycle ends at its limit; the small-fix round does not apply (a further finding on one mechanism). The commit holds the code as round 3 reviewed it, and these stay open:
+
+| # | Source | Finding | State |
+|---|---|---|---|
+| 1 | spec, failure path | A `busy` to an `unsubscribe` that comes after the `session_end` of its sub holds a follow that the host stated after the end, a forgotten and followed-again session too: the subscribe does not go until the host states it a third time. | Open. The fix: hold only when the sub of the reply is still that of the session (`ours`), as for `ok` and `unknown_sub`. |
+| 2 | spec | With 16 live subscriptions, one of them of a session whose `unsubscribe` was refused, a new wanted session waits for a place that no reply frees, with no report to the host. | Open. The fix: report the wait, or count the place of a refused `unsubscribe` to the host. |
+| 3 | spec (doc) | "A sub id that the server gave again to another session after an end stays live": the server never gives a sub id again (`next_sub` only grows, `plugins/bundled/lib/helyx/transport/web_socket/connection.ex`). The guard holds for a server that breaks the contract. | Open, doc only. |

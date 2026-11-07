@@ -234,6 +234,11 @@ fn connection(
                         format!("the server speaks protocol {n}: update the app"),
                     );
                 }
+                Output::Failed {
+                    session, op, code, ..
+                } => {
+                    guard.line = format!("{op} of {session}: {code}");
+                }
                 Output::Reply {
                     result: Ok(Reply::SessionsLive(live)),
                     ..
@@ -292,9 +297,12 @@ fn open(server: &Server) -> Result<(Socket, Watchdog), String> {
 fn follow(shared: &mut Shared, Command::Follow(session): Command) -> Vec<String> {
     let mut frames = vec![];
     if let Some(old) = shared.followed.take().filter(|old| *old != session) {
-        frames.extend(shared.client.unsubscribe(&old).unwrap_or_default());
+        frames.extend(shared.client.unsubscribe(&old));
     }
-    frames.extend(shared.client.subscribe(&session).unwrap_or_default());
+    match shared.client.subscribe(&session) {
+        Ok(more) => frames.extend(more),
+        Err(refusal) => shared.line = format!("could not follow {session}: {refusal:?}"),
+    }
     shared.followed = Some(session);
     frames
 }

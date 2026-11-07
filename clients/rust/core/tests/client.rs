@@ -223,14 +223,28 @@ fn a_session_end_ends_the_following() {
             crashed: true
         }]
     );
-    // No resubscribe after a reconnect; the state stays.
+    // Held on this connection: no subscribe at the next input.
+    let other = id_of(&client.subscribe("s2").unwrap());
+    let outputs = client
+        .receive(&res(&other, json!({"sub": "1", "snapshot": snapshot(1)})))
+        .unwrap();
+    assert!(sent(&outputs).is_empty());
+    // The intent stays: a new connection subscribes it again, and the state
+    // stays until the host forgets an unwanted session.
     assert_eq!(client.closed(None), Next::Reconnect);
-    assert_eq!(sent(&welcomed(&mut client)), Vec::<Value>::new());
+    let again = sent(&welcomed(&mut client));
+    assert_eq!(again[0]["params"]["session"], json!("s1"));
     assert_eq!(client.state("s1").unwrap().seq, 4);
-    // An event of the ended sub is a break.
-    assert!(client.receive(&notice(5)).is_err());
+    assert!(!client.forget("s1"));
+    let refused = res_error(&again[0]["id"], "session_not_found");
+    client.receive(&refused).unwrap();
+    client.unsubscribe("s1");
     assert!(client.forget("s1"));
     assert_eq!(client.state("s1"), None);
+    // An event of an ended sub is a break.
+    let mut client = following(4);
+    client.receive(&stopped("0")).unwrap();
+    assert!(client.receive(&notice(5)).is_err());
     // A followed session is not forgotten.
     let mut client = following(4);
     assert!(!client.forget("s1"));
@@ -255,12 +269,19 @@ fn instance_changed_of_history_subscribes_again() {
         .unwrap();
     let again = json!({"session": "s1", "after": {"instance_id": "i1", "seq": 4}});
     assert_eq!(sent(&outputs)[0]["params"], again);
-    // The subscription has ended: the session is not followed, and a page
-    // of it renews nothing; the host follows it again if it wants to.
+    // The subscription has ended, and the wanted session is held: a page of
+    // the instance of its state renews it, and the subscribe goes at once.
     let mut client = following(4);
     client
         .receive(r#"{"type":"session_end","sub":"0","reason":"stopped"}"#)
         .unwrap();
+    let (id, _) = client.request("history", params()).unwrap();
+    let outputs = client.receive(&history(&id)).unwrap();
+    assert_eq!(sent(&outputs)[0]["params"], again);
+    // A page of a session that the host does not follow renews nothing.
+    let mut client = following(4);
+    client.unsubscribe("s1");
+    client.receive(&stopped("0")).unwrap();
     let (id, _) = client.request("history", params()).unwrap();
     let outputs = client.receive(&history(&id)).unwrap();
     assert!(sent(&outputs).is_empty());
@@ -281,7 +302,8 @@ fn the_requests_in_flight_are_bounded() {
     // Before a welcome, the subscribe waits for it.
     assert_eq!(client.subscribe("s1"), Ok(vec![]));
     assert_eq!(sent(&welcomed(&mut client))[0]["op"], json!("subscribe"));
-    assert_eq!(client.subscribe("s1"), Err(Refusal::Subscribed));
+    // A statement again of the same intent changes nothing.
+    assert_eq!(client.subscribe("s1"), Ok(vec![]));
     assert_eq!(
         client.request("subscribe", json_params()),
         Err(Refusal::Subscription)
@@ -309,7 +331,7 @@ fn the_requests_in_flight_are_bounded() {
 #[test]
 fn unsubscribe_ends_the_subscription_at_its_reply() {
     let mut client = following(4);
-    let frames = client.unsubscribe("s1").unwrap();
+    let frames = client.unsubscribe("s1");
     let frame: Value = serde_json::from_str(&frames[0]).unwrap();
     assert_eq!(frame["params"], json!({"sub": "0"}));
     let id = frame["id"].as_str().unwrap().to_owned();
@@ -452,11 +474,18 @@ fn at_most_16_sessions_are_followed_and_each_resubscribes() {
     assert_eq!(client.closed(None), Next::Reconnect);
     let frames = sent(&welcomed(&mut client));
     assert_eq!(frames.len(), MAX_IN_FLIGHT);
-    // A refused subscribe ends the following and frees its place.
-    let refused =
-        r#"{"type":"res","id":"0","ok":false,"error":{"code":"session_not_found","text":"x"}}"#;
-    client.receive(refused).unwrap();
+    // A refused subscribe keeps its place; the host's unsubscribe frees it.
+    client
+        .receive(&res_error(&json!("0"), "session_not_found"))
+        .unwrap();
+    assert_eq!(client.subscribe("s99"), Err(Refusal::TooManySubscriptions));
+    client.unsubscribe("s0");
     assert!(client.subscribe("s99").is_ok());
+}
+
+/// An error reply of `code` to the request `id`.
+fn res_error(id: &Value, code: &str) -> String {
+    json!({"type": "res", "id": id, "ok": false, "error": {"code": code, "text": "x"}}).to_string()
 }
 
 /// A `session_end` of `sub`, stopped.
@@ -486,52 +515,51 @@ fn id_of(frames: &[String]) -> Value {
     frame["id"].clone()
 }
 
-/// An unsubscribe whose reply comes after the `session_end` of its sub, and
-/// after a new subscribe of the session: it ends only the sub that it named.
+/// An unsubscribe whose reply comes after the `session_end` of its sub: a
+/// new subscribe of the session waits for that reply, which ends only the
+/// sub that it named.
 #[test]
 fn a_late_unsubscribe_reply_ends_only_its_own_sub() {
-    for new_reply_first in [false, true] {
-        let mut client = following(4);
-        let unsubscribe = id_of(&client.unsubscribe("s1").unwrap());
-        client.receive(&stopped("0")).unwrap();
-        let subscribe = id_of(&client.subscribe("s1").unwrap());
-        let new = res(&subscribe, json!({"sub": "1", "snapshot": snapshot(10)}));
-        let old = res(&unsubscribe, json!({}));
-        let order = if new_reply_first {
-            [new, old]
-        } else {
-            [old, new]
-        };
-        for frame in order {
-            client.receive(&frame).unwrap();
-        }
-        // The new sub stays live and followed.
-        assert_eq!(
-            client.unsubscribe("s1").map(|_| ()),
-            Ok(()),
-            "{new_reply_first}"
-        );
-        let event = notice(11).replace(r#""sub":"0""#, r#""sub":"1""#);
-        assert!(client.receive(&event).is_ok(), "{new_reply_first}");
-        assert!(!client.forget("s1"), "{new_reply_first}");
-    }
-}
-
-#[test]
-fn forget_keeps_a_session_with_a_subscribe_on_the_way() {
     let mut client = following(4);
-    client.unsubscribe("s1").unwrap();
+    let unsubscribe = id_of(&client.unsubscribe("s1"));
     client.receive(&stopped("0")).unwrap();
-    let subscribe = id_of(&client.subscribe("s1").unwrap());
-    client.unsubscribe("s1").unwrap_err();
-    assert!(!client.forget("s1"));
+    // One request of a session in flight at a time.
+    assert_eq!(client.subscribe("s1"), Ok(vec![]));
+    let outputs = client.receive(&res(&unsubscribe, json!({}))).unwrap();
+    let subscribe = sent(&outputs)[0]["id"].clone();
     client
         .receive(&res(
             &subscribe,
             json!({"sub": "1", "snapshot": snapshot(10)}),
         ))
         .unwrap();
+    assert!(client.subscribed("s1"));
+    let event = notice(11).replace(r#""sub":"0""#, r#""sub":"1""#);
+    assert!(client.receive(&event).is_ok());
+    assert!(!client.forget("s1"));
+}
+
+#[test]
+fn forget_keeps_a_session_with_a_subscribe_on_the_way() {
+    let mut client = following(4);
+    let unsubscribe = id_of(&client.unsubscribe("s1"));
+    client.receive(&stopped("0")).unwrap();
+    client
+        .receive(&res_error(&unsubscribe, "unknown_sub"))
+        .unwrap();
+    let subscribe = id_of(&client.subscribe("s1").unwrap());
+    // With the subscribe in flight, the unsubscribe waits for its reply.
+    assert!(client.unsubscribe("s1").is_empty());
+    assert!(!client.forget("s1"));
+    let outputs = client
+        .receive(&res(
+            &subscribe,
+            json!({"sub": "1", "snapshot": snapshot(10)}),
+        ))
+        .unwrap();
     assert_eq!(client.state("s1").unwrap().seq, 10);
+    // The reply gives a live sub of an unwanted session: it is unsubscribed.
+    assert_eq!(sent(&outputs)[0]["params"], json!({"sub": "1"}));
 }
 
 /// `instance_changed` renews the following once: a reconnect or an
@@ -554,7 +582,7 @@ fn a_renewal_ends_with_its_subscribe() {
     // An unsubscribe ends the renewal.
     let mut client = following(4);
     history(&mut client);
-    let unsubscribe = id_of(&client.unsubscribe("s1").unwrap());
+    let unsubscribe = id_of(&client.unsubscribe("s1"));
     client.receive(&res(&unsubscribe, json!({}))).unwrap();
     let subscribe = id_of(&client.subscribe("s1").unwrap());
     client
@@ -642,7 +670,7 @@ fn the_frame_and_subscription_breaks() {
         client.request("abort", json_params()),
         Err(Refusal::NotReady)
     );
-    assert_eq!(client.unsubscribe("s1"), Err(Refusal::NotSubscribed));
+    assert!(client.unsubscribe("s1").is_empty());
 }
 
 /// A snapshot is the credit base: no ack, also at a multiple of 1,024.
@@ -671,40 +699,238 @@ fn a_snapshot_is_not_acked() {
 fn a_late_instance_changed_keeps_an_unsubscribe() {
     let mut client = following(4);
     let (history, _) = client.request("history", history_params()).unwrap();
-    let unsubscribe = id_of(&client.unsubscribe("s1").unwrap());
+    let unsubscribe = id_of(&client.unsubscribe("s1"));
     client.receive(&res(&unsubscribe, json!({}))).unwrap();
     let outputs = client.receive(&instance_changed(&history)).unwrap();
     assert!(sent(&outputs).is_empty());
     assert!(client.forget("s1"));
 }
 
-/// A subscribe of the host that waits for the end of the old subscription,
-/// which it unsubscribed, goes at that end.
+/// A subscribe of the host that waits for its old subscription goes at the
+/// `unsubscribe` reply; a `session_end` instead holds it until the host
+/// states it again.
 #[test]
-fn a_subscribe_waiting_for_an_unsubscribed_end_goes_at_the_end() {
+fn a_subscribe_waiting_for_its_old_subscription() {
     let mut client = following(4);
-    client.unsubscribe("s1").unwrap();
+    let unsubscribe = id_of(&client.unsubscribe("s1"));
+    assert_eq!(client.subscribe("s1"), Ok(vec![]));
+    let outputs = client.receive(&res(&unsubscribe, json!({}))).unwrap();
+    let again = json!({"session": "s1", "after": {"instance_id": "i1", "seq": 4}});
+    assert_eq!(sent(&outputs)[0]["params"], again);
+
+    let mut client = following(4);
+    let unsubscribe = id_of(&client.unsubscribe("s1"));
     assert_eq!(client.subscribe("s1"), Ok(vec![]));
     let end = r#"{"type":"session_end","sub":"0","reason":"crashed"}"#;
     let outputs = client.receive(end).unwrap();
-    let again = json!({"session": "s1", "after": {"instance_id": "i1", "seq": 4}});
+    assert_eq!(
+        outputs,
+        [Output::Ended {
+            session: "s1".into(),
+            crashed: true
+        }]
+    );
+    // Held: the host states it again, and it goes at the reply of the
+    // unsubscribe, which the server answers `unknown_sub`.
+    assert_eq!(client.subscribe("s1"), Ok(vec![]));
+    let outputs = client
+        .receive(&res_error(&unsubscribe, "unknown_sub"))
+        .unwrap();
     assert_eq!(sent(&outputs)[0]["params"], again);
 }
 
-/// A refused subscribe ends the following and tells the host which session.
+/// A refused subscribe leaves the intent, tells the host, and holds the
+/// session until the host states it again: no request loop.
 #[test]
-fn a_refused_subscribe_unfollows_its_session() {
+fn a_refused_subscribe_keeps_the_intent_and_waits_for_the_host() {
     let mut client = Client::new(None);
     welcomed(&mut client);
     let id = id_of(&client.subscribe("s1").unwrap());
-    let busy = json!({"type": "res", "id": id, "ok": false,
-                      "error": {"code": "busy", "text": "busy"}});
-    let outputs = client.receive(&busy.to_string()).unwrap();
-    let unfollowed = Output::Unfollowed {
+    let outputs = client.receive(&res_error(&id, "busy")).unwrap();
+    let failed = Output::Failed {
         session: "s1".into(),
+        op: "subscribe",
         code: "busy".into(),
-        text: "busy".into(),
+        text: "x".into(),
     };
-    assert_eq!(outputs, [unfollowed]);
-    assert!(client.subscribe("s1").is_ok());
+    assert_eq!(outputs, [failed]);
+    // No retry at the next input.
+    let other = id_of(&client.subscribe("s2").unwrap());
+    let outputs = client
+        .receive(&res(&other, json!({"sub": "0", "snapshot": snapshot(1)})))
+        .unwrap();
+    assert!(sent(&outputs).is_empty());
+    // The host states it again: the subscribe goes.
+    assert_eq!(client.subscribe("s1").unwrap().len(), 1);
+    // A new connection reconciles every wanted session.
+    assert_eq!(client.closed(None), Next::Reconnect);
+    assert_eq!(sent(&welcomed(&mut client)).len(), 2);
+}
+
+/// An `unsubscribe` answered with an error leaves the subscription live:
+/// the host is told, `subscribed` says so, and the events still apply.
+#[test]
+fn a_refused_unsubscribe_reports_the_live_subscription() {
+    let mut client = following(4);
+    let id = id_of(&client.unsubscribe("s1"));
+    let outputs = client.receive(&res_error(&id, "busy")).unwrap();
+    let failed = Output::Failed {
+        session: "s1".into(),
+        op: "unsubscribe",
+        code: "busy".into(),
+        text: "x".into(),
+    };
+    assert_eq!(outputs, [failed]);
+    assert!(client.subscribed("s1"));
+    assert!(!client.forget("s1"));
+    let outputs = client.receive(&notice(5)).unwrap();
+    assert!(sent(&outputs).is_empty());
+    assert_eq!(client.state("s1").unwrap().seq, 5);
+    // The host states it again: the unsubscribe goes.
+    assert_eq!(client.unsubscribe("s1").len(), 1);
+    // `unknown_sub`: the server holds the sub no more; a frame of it still
+    // on the way is dropped, and nothing goes again.
+    let mut client = following(4);
+    let id = id_of(&client.unsubscribe("s1"));
+    let gone = res_error(&id, "unknown_sub");
+    assert_eq!(client.receive(&gone).unwrap(), []);
+    assert!(!client.subscribed("s1"));
+    assert!(client.forget("s1"));
+    assert_eq!(client.receive(&notice(5)).unwrap(), []);
+    assert_eq!(client.receive(&stopped("0")).unwrap(), []);
+}
+
+/// The host stops following a session with no live subscription: before a
+/// welcome, nothing goes, and the next connection subscribes none.
+#[test]
+fn an_unsubscribe_with_no_live_subscription_is_kept() {
+    let mut client = following(4);
+    assert_eq!(client.closed(None), Next::Reconnect);
+    assert!(client.unsubscribe("s1").is_empty());
+    assert!(sent(&welcomed(&mut client)).is_empty());
+    assert!(client.forget("s1"));
+}
+
+/// A renewal ends only the hold of an ended subscription, not that of a
+/// refused subscribe.
+#[test]
+fn a_renewal_does_not_lift_a_refused_hold() {
+    let mut client = following(4);
+    assert_eq!(client.closed(None), Next::Reconnect);
+    let again = sent(&welcomed(&mut client));
+    let (history, _) = client.request("history", history_params()).unwrap();
+    client.receive(&res_error(&again[0]["id"], "busy")).unwrap();
+    let outputs = client.receive(&instance_changed(&history)).unwrap();
+    assert!(sent(&outputs).is_empty());
+}
+
+/// The server holds 16 subscriptions of a connection: a subscribe waits while
+/// 16 live, an unsubscribed one among them, until a reply frees a place.
+#[test]
+fn a_subscribe_waits_for_a_place_among_the_live_subscriptions() {
+    let mut client = Client::new(None);
+    welcomed(&mut client);
+    for n in 0..MAX_IN_FLIGHT {
+        let session = format!("s{n:02}");
+        let id = id_of(&client.subscribe(&session).unwrap());
+        let reply = json!({"sub": format!("{n}"), "snapshot": snapshot(1)});
+        client.receive(&res(&id, reply)).unwrap();
+    }
+    let unsubscribe = id_of(&client.unsubscribe("s05"));
+    assert_eq!(client.subscribe("a"), Ok(vec![]));
+    let outputs = client.receive(&res(&unsubscribe, json!({}))).unwrap();
+    assert_eq!(sent(&outputs)[0]["params"], json!({"session": "a"}));
+}
+
+/// A statement again at the cap is taken; a 17th session is not.
+#[test]
+fn a_restatement_at_the_cap_is_taken() {
+    let mut client = Client::new(None);
+    welcomed(&mut client);
+    for n in 0..MAX_IN_FLIGHT {
+        client.subscribe(&format!("s{n}")).unwrap();
+    }
+    assert_eq!(client.subscribe("s0"), Ok(vec![]));
+    assert_eq!(client.subscribe("s16"), Err(Refusal::TooManySubscriptions));
+}
+
+/// A subscribe reply with a sub id that the server ended (`unknown_sub`) is a
+/// break: a sub id is unique on the connection.
+#[test]
+fn a_reused_gone_sub_id_is_a_break() {
+    let mut client = following(4);
+    let unsubscribe = id_of(&client.unsubscribe("s1"));
+    client
+        .receive(&res_error(&unsubscribe, "unknown_sub"))
+        .unwrap();
+    let subscribe = id_of(&client.subscribe("s1").unwrap());
+    let reused = res(&subscribe, json!({"sub": "0", "snapshot": snapshot(10)}));
+    assert_eq!(client.receive(&reused), Err(Broken("subscribe sub")));
+}
+
+/// A session id whose subscribe cannot fit a request is refused at once.
+#[test]
+fn a_session_id_over_the_request_size_is_refused() {
+    let mut client = Client::new(None);
+    welcomed(&mut client);
+    let huge = "s".repeat(REQUEST_BYTES);
+    assert_eq!(client.subscribe(&huge), Err(Refusal::TooLarge));
+    assert_eq!(client.state(&huge), None);
+}
+
+/// A `session_end` keeps a `Refused` hold, so a renewal after it does not
+/// lift it.
+#[test]
+fn a_session_end_keeps_a_refused_hold() {
+    let mut client = following(4);
+    let unsubscribe = id_of(&client.unsubscribe("s1"));
+    assert_eq!(client.subscribe("s1"), Ok(vec![]));
+    let (history, _) = client.request("history", history_params()).unwrap();
+    client.receive(&res_error(&unsubscribe, "busy")).unwrap();
+    client.receive(&stopped("0")).unwrap();
+    let outputs = client.receive(&instance_changed(&history)).unwrap();
+    assert!(sent(&outputs).is_empty());
+}
+
+/// A refused `unsubscribe` of a session that the host forgot meanwhile is
+/// reported, and holds nothing.
+#[test]
+fn a_forgotten_session_gets_no_hold() {
+    let mut client = following(4);
+    let unsubscribe = id_of(&client.unsubscribe("s1"));
+    client.receive(&stopped("0")).unwrap();
+    assert!(client.forget("s1"));
+    let outputs = client.receive(&res_error(&unsubscribe, "busy")).unwrap();
+    assert!(matches!(
+        &outputs[..],
+        [Output::Failed {
+            op: "unsubscribe",
+            ..
+        }]
+    ));
+    assert!(format!("{client:?}").contains("held: {}"));
+}
+
+/// A late `unsubscribe` reply acts only on the sub of its own session: a sub
+/// id that the server gave again to another session stays live.
+#[test]
+fn a_late_unsubscribe_reply_leaves_a_sub_id_of_another_session() {
+    for unknown in [false, true] {
+        let mut client = following(4);
+        let unsubscribe = id_of(&client.unsubscribe("s1"));
+        client.receive(&stopped("0")).unwrap();
+        let s2 = id_of(&client.subscribe("s2").unwrap());
+        client
+            .receive(&res(&s2, json!({"sub": "0", "snapshot": snapshot(1)})))
+            .unwrap();
+        let reply = if unknown {
+            res_error(&unsubscribe, "unknown_sub")
+        } else {
+            res(&unsubscribe, json!({}))
+        };
+        client.receive(&reply).unwrap();
+        assert!(client.subscribed("s2"), "{reply}");
+        client.receive(&notice(2)).unwrap();
+        assert_eq!(client.state("s2").unwrap().seq, 2, "{reply}");
+    }
 }

@@ -7,7 +7,7 @@ use crate::check::{Broken, Checked};
 use crate::handshake::{Handshake, Token};
 use crate::json::{self, Json, Limits, object};
 use crate::parts::{self, FRAME_BYTES, Joiner, TooLarge};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 /// The requests in flight on one connection, as the server bounds them.
 pub const MAX_IN_FLIGHT: usize = 16;
@@ -19,10 +19,6 @@ pub enum Refusal {
     NotReady,
     /// `MAX_IN_FLIGHT` requests wait for their replies.
     Busy,
-    /// The session has a subscription, or one on the way.
-    Subscribed,
-    /// The session has no subscription on this connection.
-    NotSubscribed,
     /// `MAX_IN_FLIGHT` sessions are followed, the subscriptions of one
     /// connection.
     TooManySubscriptions,
@@ -31,6 +27,16 @@ pub enum Refusal {
     /// `subscribe` and `unsubscribe` go through their own functions, which
     /// keep the state of the session.
     Subscription,
+}
+
+/// Why a session is held.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Hold {
+    /// Its subscription ended with `session_end`: a renewal ends the hold.
+    Ended,
+    /// The server answered a request that reconciles it with an error, or no
+    /// request of it fits the request size.
+    Refused,
 }
 
 #[derive(Debug)]
@@ -62,6 +68,13 @@ pub(crate) struct Connection {
     pub requests: HashMap<String, Request>,
     /// The session of each live subscription.
     pub subs: HashMap<String, String>,
+    /// The sessions that the client sends no request for on this connection
+    /// until the host states its intent again, and why.
+    pub held: HashMap<String, Hold>,
+    /// The subscriptions that an `unsubscribe` got `unknown_sub` for: the
+    /// server holds none of them. A frame of one that was on the way is
+    /// dropped.
+    pub gone: HashSet<String>,
 }
 
 impl Connection {
@@ -74,6 +87,8 @@ impl Connection {
             next_id: 0,
             requests: HashMap::new(),
             subs: HashMap::new(),
+            held: HashMap::new(),
+            gone: HashSet::new(),
         }
     }
 
@@ -148,20 +163,27 @@ impl Connection {
             .map(|(sub, _)| sub.clone())
     }
 
-    /// An `unsubscribe` of `sub` is in flight.
-    pub fn unsubscribing(&self, sub: &str) -> bool {
-        self.requests
-            .values()
-            .any(|r| r.op == "unsubscribe" && r.sub.as_deref() == Some(sub))
-    }
-
     /// `session` has a live subscription or a subscribe in flight.
     pub fn attached(&self, session: &str) -> bool {
-        self.subs.values().any(|s| s == session)
-            || self
+        self.subs.values().any(|s| s == session) || self.in_flight(session, &["subscribe"])
+    }
+
+    /// A request of one of `ops` for `session` is in flight.
+    pub fn in_flight(&self, session: &str, ops: &[&str]) -> bool {
+        self.requests
+            .values()
+            .any(|r| ops.contains(&r.op) && r.session.as_deref() == Some(session))
+    }
+
+    /// The subscriptions that the server holds or can hold for the
+    /// connection: the live ones and the subscribes in flight.
+    pub fn subscriptions(&self) -> usize {
+        self.subs.len()
+            + self
                 .requests
                 .values()
-                .any(|r| r.op == "subscribe" && r.session.as_deref() == Some(session))
+                .filter(|r| r.op == "subscribe")
+                .count()
     }
 }
 
