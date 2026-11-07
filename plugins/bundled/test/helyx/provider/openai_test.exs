@@ -36,6 +36,9 @@ defmodule Helyx.Provider.OpenAITest do
   defp http_error(status, text, id \\ "opencode-go"),
     do: {:error, %ProviderError{provider: id, kind: status, text: text}}
 
+  # The text of an HTTP error with no structured detail.
+  defp status_error(status, id \\ "opencode-go"), do: http_error(status, "HTTP #{status}", id)
+
   defp plug(fun) do
     Application.put_env(:helyx_plugins, :openai_req_options, plug: fun)
     on_exit(fn -> Application.delete_env(:helyx_plugins, :openai_req_options) end)
@@ -329,7 +332,7 @@ defmodule Helyx.Provider.OpenAITest do
         sequence([error_reply(unquote(status), @no_wait)])
 
         assert {:ok, stream} = OpenAI.Go.stream("m", %Helyx.Context{}, session_id: "s")
-        assert Enum.to_list(stream) == [http_error(unquote(status), "busy")]
+        assert Enum.to_list(stream) == [status_error(unquote(status))]
         assert attempts() == 1
       end
     end
@@ -338,7 +341,7 @@ defmodule Helyx.Provider.OpenAITest do
       sequence([error_reply(307, [{"location", "/again"}]), ok()])
 
       assert {:ok, stream} = OpenAI.Go.stream("m", %Helyx.Context{}, session_id: "s")
-      assert Enum.to_list(stream) == [http_error(307, "busy")]
+      assert Enum.to_list(stream) == [status_error(307)]
       assert attempts() == 1
     end
 
@@ -346,7 +349,7 @@ defmodule Helyx.Provider.OpenAITest do
       sequence([error_reply(429, @no_wait)])
 
       assert {:ok, stream} = OpenAI.Go.stream("m", %Helyx.Context{}, session_id: "s")
-      assert Enum.to_list(stream) == [http_error(429, "busy")]
+      assert Enum.to_list(stream) == [status_error(429)]
       assert attempts() == 4
     end
 
@@ -426,7 +429,7 @@ defmodule Helyx.Provider.OpenAITest do
       sequence([error_reply(429, @no_wait)])
 
       assert {:ok, stream} = OpenAI.Go.stream("m", %Helyx.Context{}, session_id: "s")
-      assert Enum.to_list(stream) == [http_error(429, "busy")]
+      assert Enum.to_list(stream) == [status_error(429)]
       assert attempts() == 4
     end
 
@@ -719,106 +722,131 @@ defmodule Helyx.Provider.OpenAITest do
     refute_received {:auth, _}
   end
 
-  test "a key that the server echoes in an error body is masked" do
-    plug(&Plug.Conn.send_resp(&1, 401, "bad key test-key, test-key"))
+  # The text of an HTTP error names the status and the two fields of an
+  # error object. The message and the raw body never reach it, so no copy
+  # of the key can, not even one that overlaps another.
+  test "an HTTP error text names the status and the type and code of the error object" do
+    body =
+      ~s({"error":{"type":"authentication_error","code":"invalid_api_key","message":"bad key test-key"}})
+
+    plug(&Plug.Conn.send_resp(&1, 401, body))
 
     assert {:ok, stream} = OpenAI.Go.stream("m", %Helyx.Context{}, session_id: "s")
 
     assert Enum.to_list(stream) ==
-             [http_error(401, "bad key ********, ********")]
-
-    # With no key, nothing is masked.
-    assert {:ok, stream} = Local.stream("m", %Helyx.Context{}, session_id: "s")
-    assert Enum.to_list(stream) == [http_error(401, "bad key test-key, test-key", "local")]
+             [http_error(401, "HTTP 401 (authentication_error: invalid_api_key)")]
   end
 
-  test "an error with a text shows the provider id and the text; one with none keeps its term" do
+  test "a body without the error object gives the status alone" do
+    for body <- [
+          "bad key test-key",
+          "",
+          ~s({"message":"bad key test-key"}),
+          ~s({"error":"test-key"}),
+          ~s({"error":{"message":"bad test-key"}})
+        ] do
+      plug(&Plug.Conn.send_resp(&1, 401, body))
+
+      assert {:ok, stream} = OpenAI.Go.stream("m", %Helyx.Context{}, session_id: "s")
+      assert Enum.to_list(stream) == [http_error(401, "HTTP 401")]
+
+      # With no key too, the body is not text.
+      assert {:ok, stream} = Local.stream("m", %Helyx.Context{}, session_id: "s")
+      assert Enum.to_list(stream) == [http_error(401, "HTTP 401", "local")]
+    end
+  end
+
+  test "a type or code that holds the key, or has another shape, is left out" do
+    key = "test-key"
+    System.put_env("OPENCODE_API_KEY", key)
+
+    for {fields, text} <- [
+          {%{type: key, code: "invalid_api_key"}, "HTTP 400 (code: invalid_api_key)"},
+          {%{type: "x" <> key <> key, code: "invalid_api_key"},
+           "HTTP 400 (code: invalid_api_key)"},
+          {%{type: "test", code: "key"}, "HTTP 400 (test: key)"},
+          {%{type: "UPPER", code: "invalid_api_key"}, "HTTP 400 (code: invalid_api_key)"},
+          {%{type: String.duplicate("a", 65), code: "invalid_api_key"},
+           "HTTP 400 (code: invalid_api_key)"},
+          {%{type: 1, code: "invalid_api_key"}, "HTTP 400 (code: invalid_api_key)"},
+          {%{message: key, details: List.duplicate(key, 10)}, "HTTP 400"}
+        ] do
+      plug(&Plug.Conn.send_resp(&1, 400, JSON.encode!(%{error: fields})))
+
+      assert {:ok, stream} = OpenAI.Go.stream("m", %Helyx.Context{}, session_id: "s")
+      assert Enum.to_list(stream) == [http_error(400, text)]
+    end
+  end
+
+  test "an error text shows the provider id and the text" do
     plug(&Plug.Conn.send_resp(&1, 401, "bad key"))
     assert {:ok, stream} = OpenAI.Go.stream("m", %Helyx.Context{}, session_id: "s")
     assert [{:error, reason}] = Enum.to_list(stream)
-    assert Helyx.Reason.text(reason) == "opencode-go: bad key"
+    assert Helyx.Reason.text(reason) == "opencode-go: HTTP 401"
 
     plug(&Plug.Conn.send_resp(&1, 401, ""))
     assert {:ok, stream} = OpenAI.Go.stream("m", %Helyx.Context{}, session_id: "s")
-    assert Enum.to_list(stream) == [{:error, {:http_status, 401, ""}}]
+    assert [{:error, reason}] = Enum.to_list(stream)
+    assert Helyx.Reason.text(reason) == "opencode-go: HTTP 401"
 
     for error <- [%{code: 1}, %{message: ""}, %{message: 1}, "rate limited"] do
       stub([%{error: error}])
       assert {:ok, stream} = OpenAI.Go.stream("m", %Helyx.Context{}, session_id: "s")
-      assert [{:error, {:api_error, _}}] = Enum.to_list(stream)
+      assert [{:error, reason}] = Enum.to_list(stream)
+      assert Helyx.Reason.text(reason) == "opencode-go: API error"
     end
   end
 
-  # Dropped after the mask, the invalid byte would join the key again.
-  test "an invalid byte in a key in an error body does not join it" do
-    plug(&Plug.Conn.send_resp(&1, 401, "bad test" <> <<255>> <> "-key"))
+  test "an api_error text names the type and code, not the message" do
+    stub([
+      %{error: %{type: "rate_limit_error", code: "rate_limit_exceeded", message: "bad test-key"}}
+    ])
+
     assert {:ok, stream} = OpenAI.Go.stream("m", %Helyx.Context{}, session_id: "s")
-    assert Enum.to_list(stream) == [http_error(401, "bad test\uFFFD-key")]
+
+    assert Enum.to_list(stream) ==
+             [
+               {:error,
+                %ProviderError{
+                  provider: "opencode-go",
+                  kind: :api_error,
+                  text: "API error (rate_limit_error: rate_limit_exceeded)"
+                }}
+             ]
   end
 
-  # Dropped, the invalid bytes would move the part of the key at the end
-  # of the read to a place under the cut.
-  test "invalid bytes before a part of the key at the end of the read move nothing back" do
-    key = "sk-" <> String.duplicate("S", 96) <> "Z"
-    System.put_env("OPENCODE_API_KEY", key)
-
-    plug(fn conn ->
-      conn = Plug.Conn.send_chunked(conn, 401)
-      head = String.duplicate(<<255>>, 1_200) <> String.duplicate("a", 1_002)
-      {:ok, conn} = Plug.Conn.chunk(conn, head <> binary_part(key, 0, 99))
-      {:ok, conn} = Plug.Conn.chunk(conn, "Z")
-      conn
-    end)
-
-    assert {:ok, stream} = OpenAI.Go.stream("m", %Helyx.Context{}, session_id: "s")
-    assert [{:error, %ProviderError{text: text}}] = Enum.to_list(stream)
-    refute text =~ "sk-"
-    assert text == binary_part(String.duplicate("\uFFFD", 1_200), 0, 1_998)
-  end
-
-  test "an api_error message is cut at 2,000 bytes, after the mask" do
-    stub([%{error: %{message: String.duplicate("a", 1_998) <> "test-key"}}])
-    assert {:ok, stream} = OpenAI.Go.stream("m", %Helyx.Context{}, session_id: "s")
-    assert [{:error, %ProviderError{text: text}}] = Enum.to_list(stream)
-    assert text == String.duplicate("a", 1_998) <> "**"
-  end
-
-  # Masked first, the field name would be `m***age`, and the lookup would
-  # find no message.
-  test "a key that is a part of the field name message does not hide the message" do
-    System.put_env("OPENCODE_API_KEY", "ess")
-    stub([%{error: %{message: "bad ess " <> String.duplicate("a", 2_000)}}])
-    assert {:ok, stream} = OpenAI.Go.stream("m", %Helyx.Context{}, session_id: "s")
-    assert [{:error, %ProviderError{kind: :api_error, text: text}}] = Enum.to_list(stream)
-    assert text == binary_part("bad *** " <> String.duplicate("a", 2_000), 0, 2_000)
-
-    # With no message, the term reaches the text, so its map keys are masked.
-    stub([%{error: %{ess: 1}}])
-    assert {:ok, stream} = OpenAI.Go.stream("m", %Helyx.Context{}, session_id: "s")
-    assert Enum.to_list(stream) == [{:error, {:api_error, %{"***" => 1}}}]
-  end
-
-  test "an api_error with a large object keeps its message" do
-    stub([%{error: %{message: "slow", details: List.duplicate(0, 10_001)}}])
+  test "an api_error with no type or code gives a generic text" do
+    stub([%{error: %{message: "bad test-key " <> String.duplicate("a", 2_000)}}])
     assert {:ok, stream} = OpenAI.Go.stream("m", %Helyx.Context{}, session_id: "s")
     assert [{:error, reason}] = Enum.to_list(stream)
-    assert Helyx.Reason.text(reason) == "opencode-go: slow"
+    assert Helyx.Reason.text(reason) == "opencode-go: API error"
   end
 
-  test "a key in an error of the stream after a 200 is masked" do
-    for {events, error} <- [
-          {[%{error: %{message: "bad test-key", "test-key": ["test-key"]}}],
-           %ProviderError{
-             provider: "opencode-go",
-             kind: :api_error,
-             text: "bad ********"
-           }},
-          {["not json test-key"], {:bad_chunk, "not json ********"}}
-        ] do
-      stub(events)
-      assert {:ok, stream} = OpenAI.Go.stream("m", %Helyx.Context{}, session_id: "s")
-      assert Enum.to_list(stream) == [{:error, error}]
-    end
+  test "an api_error with a large object drops it" do
+    stub([%{error: %{type: "overloaded_error", details: List.duplicate(0, 10_001)}}])
+    assert {:ok, stream} = OpenAI.Go.stream("m", %Helyx.Context{}, session_id: "s")
+    assert [{:error, reason}] = Enum.to_list(stream)
+    assert Helyx.Reason.text(reason) == "opencode-go: API error (overloaded_error)"
+  end
+
+  test "a key in an error of the stream after a 200 does not reach the text" do
+    stub([
+      %{
+        error: %{
+          type: "test-key",
+          code: "test-key",
+          message: "bad test-key",
+          "test-key": ["test-key"]
+        }
+      }
+    ])
+
+    assert {:ok, stream} = OpenAI.Go.stream("m", %Helyx.Context{}, session_id: "s")
+    assert [{:error, %ProviderError{kind: :api_error, text: "API error"}}] = Enum.to_list(stream)
+
+    stub(["not json test-key"])
+    assert {:ok, stream} = OpenAI.Go.stream("m", %Helyx.Context{}, session_id: "s")
+    assert Enum.to_list(stream) == [{:error, {:bad_chunk, ""}}]
   end
 
   # Core rejects a delta that is not a string, and its error holds the event.
@@ -863,16 +891,15 @@ defmodule Helyx.Provider.OpenAITest do
            }
   end
 
-  # A common JSON encoder escapes no character of a bearer token but `/`.
-  # The `\uXXXX` forms are accepted holes (`docs/features/openai-compatible.md`).
-  test "a key that the server echoes in JSON with an escaped slash is masked" do
+  # A message is never read, so neither its `\/` form nor its decoded form
+  # reaches the text.
+  test "a key in a message with an escaped slash does not reach the text" do
     System.put_env("OPENCODE_API_KEY", "sk-ab/cd")
-    plug(&Plug.Conn.send_resp(&1, 401, ~S({"error":"bad sk-ab\/cd or sk-ab/cd"})))
+    plug(&Plug.Conn.send_resp(&1, 401, ~S({"error":{"message":"bad sk-ab\/cd or sk-ab/cd"}})))
 
     assert {:ok, stream} = OpenAI.Go.stream("m", %Helyx.Context{}, session_id: "s")
 
-    assert Enum.to_list(stream) ==
-             [http_error(401, ~S({"error":"bad ********* or ********"}))]
+    assert Enum.to_list(stream) == [http_error(401, "HTTP 401")]
   end
 
   test "with no key_env, no auth of Req's default options is sent" do
@@ -888,79 +915,25 @@ defmodule Helyx.Provider.OpenAITest do
 
   @max_text_bytes 2_000
 
-  test "an error body of #{@max_text_bytes} bytes arrives whole" do
-    body = String.duplicate("a", @max_text_bytes)
-    plug(&Plug.Conn.send_resp(&1, 400, body))
-
-    assert {:ok, stream} = OpenAI.Go.stream("m", %Helyx.Context{}, session_id: "s")
-    assert Enum.to_list(stream) == [http_error(400, body)]
-  end
-
-  test "an error body over the limit is cut" do
+  test "a body over the text bound does not decode and gives the status alone" do
     body = String.duplicate("a", @max_text_bytes + 1)
     plug(&Plug.Conn.send_resp(&1, 400, body))
 
     assert {:ok, stream} = OpenAI.Go.stream("m", %Helyx.Context{}, session_id: "s")
-    assert [{:error, %ProviderError{kind: 400, text: cut}}] = Enum.to_list(stream)
-
-    assert cut == binary_part(body, 0, @max_text_bytes)
+    assert Enum.to_list(stream) == [http_error(400, "HTTP 400")]
   end
 
-  # The first chunk ends at the limit with a part of the key; the read goes
-  # on until the key is whole, then the cut comes after the mask.
-  test "a key across the limit and across chunks is masked before the cut" do
-    head = String.duplicate("a", @max_text_bytes - 3)
+  test "an error object inside the bound still names its fields" do
+    body =
+      ~s({"error":{"type":"invalid_request_error","code":"context_length_exceeded","message":") <>
+        String.duplicate("a", @max_text_bytes - 100) <> ~s("}})
 
-    plug(fn conn ->
-      conn = Plug.Conn.send_chunked(conn, 401)
-      {:ok, conn} = Plug.Conn.chunk(conn, head <> "tes")
-      {:ok, conn} = Plug.Conn.chunk(conn, "t")
-      {:ok, conn} = Plug.Conn.chunk(conn, "-key" <> String.duplicate("b", 100))
-      conn
-    end)
+    plug(&Plug.Conn.send_resp(&1, 400, body))
 
     assert {:ok, stream} = OpenAI.Go.stream("m", %Helyx.Context{}, session_id: "s")
-    assert [{:error, %ProviderError{kind: 401, text: cut}}] = Enum.to_list(stream)
 
-    assert cut == head <> "***"
-  end
-
-  # The escaped form is longer than the key: 8 bytes for a key of 5. With a
-  # read of only the key size past the limit, the first chunk would end it.
-  test "an escaped key across the limit is whole when it is masked" do
-    System.put_env("OPENCODE_API_KEY", "a///b")
-    head = String.duplicate("x", @max_text_bytes - 1)
-
-    plug(fn conn ->
-      conn = Plug.Conn.send_chunked(conn, 401)
-      {:ok, conn} = Plug.Conn.chunk(conn, head <> ~S(a\/\/\/))
-      {:ok, conn} = Plug.Conn.chunk(conn, "b" <> String.duplicate("y", 20))
-      conn
-    end)
-
-    assert {:ok, stream} = OpenAI.Go.stream("m", %Helyx.Context{}, session_id: "s")
-    assert [{:error, %ProviderError{kind: 401, text: cut}}] = Enum.to_list(stream)
-    assert cut == head <> "*"
-  end
-
-  # Many copies of a long key, and a part of one more at the end of the
-  # read: the mask keeps every position, so the part is past the cut.
-  test "a part of the key at the end of the read stays past the cut" do
-    key = "sk-" <> String.duplicate("S", 97)
-    System.put_env("OPENCODE_API_KEY", key)
-    copies = String.duplicate(key, div(@max_text_bytes, 100) + 1)
-
-    plug(fn conn ->
-      conn = Plug.Conn.send_chunked(conn, 401)
-      {:ok, conn} = Plug.Conn.chunk(conn, copies <> binary_part(key, 0, 90))
-      {:ok, conn} = Plug.Conn.chunk(conn, binary_part(key, 90, 10))
-      conn
-    end)
-
-    assert {:ok, stream} = OpenAI.Go.stream("m", %Helyx.Context{}, session_id: "s")
-    assert [{:error, %ProviderError{kind: 401, text: cut}}] = Enum.to_list(stream)
-
-    assert cut == String.duplicate("*", @max_text_bytes)
+    assert Enum.to_list(stream) ==
+             [http_error(400, "HTTP 400 (invalid_request_error: context_length_exceeded)")]
   end
 
   test "an endpoint option outside its bound fails with its name" do
@@ -1030,15 +1003,11 @@ defmodule Helyx.Provider.OpenAITest do
     end
   end
 
-  test "an error body cut inside a multibyte character retreats to a boundary" do
+  test "a body with an invalid or cut multibyte sequence gives the status alone" do
     body = String.duplicate("a", @max_text_bytes - 2) <> "😀😀"
     plug(&Plug.Conn.send_resp(&1, 400, body))
 
     assert {:ok, stream} = OpenAI.Go.stream("m", %Helyx.Context{}, session_id: "s")
-    assert [{:error, %ProviderError{kind: 400, text: cut}}] = Enum.to_list(stream)
-
-    assert cut == String.duplicate("a", @max_text_bytes - 2)
-
-    assert String.valid?(cut)
+    assert Enum.to_list(stream) == [http_error(400, "HTTP 400")]
   end
 end

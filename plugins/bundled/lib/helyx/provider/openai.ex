@@ -19,11 +19,14 @@ defmodule Helyx.Provider.OpenAI do
   option fails the compile of the endpoint module. Every request sends
   `User-Agent: helyx/<version>`. A key that is not set or empty fails the
   call with `{:missing_env, name}`, and a key that is not an RFC 6750
-  bearer token with `{:bad_env, name}`. In each event of the engine, each
-  byte of each copy of the key, and of its JSON form with `\\/`, becomes
-  `*`. Accepted holes: a key in `\\uXXXX` escapes, with only some of its
-  slashes escaped, as a list of character codes, or in a copy that
-  overlaps an earlier copy is not masked. `docs/features/openai-compatible.md`.
+  bearer token with `{:bad_env, name}`. An error text is built from an HTTP
+  status and the `type` and `code` of an error object, never from its
+  message, body, or payload, so no server text carries the key into it. In
+  every other event, each byte of each copy of the key, and of its JSON
+  form with `\\/`, becomes `*`. Accepted holes there: a key in `\\uXXXX`
+  escapes, with only some of its slashes escaped, as a list of character
+  codes, or in a copy that overlaps an earlier copy is not masked.
+  `docs/features/openai-compatible.md`.
 
   A request that fails before the stream starts runs again, at most 3
   times: on a 408, 409, 429, or 5xx, and on a transport error. A server
@@ -32,7 +35,7 @@ defmodule Helyx.Provider.OpenAI do
   `docs/features/coding-agent.md` (#479).
   """
 
-  alias Helyx.Provider.OpenAI.{Endpoint, Events}
+  alias Helyx.Provider.OpenAI.{Endpoint, ErrorText, Events}
   alias Helyx.ProviderError
 
   defmacro __using__(opts) do
@@ -69,24 +72,36 @@ defmodule Helyx.Provider.OpenAI do
          {:ok, key} <- key(endpoint.key_env) do
       request = request(endpoint, model, context, opts, key, req_options)
       mask = mask(key)
-      events = request |> chunks(key) |> Events.events(info)
-      {:ok, Stream.map(events, &text_error(&1, endpoint.id, mask))}
+      events = request |> chunks() |> Events.events(info)
+      {:ok, Stream.map(events, &text_error(&1, endpoint.id, key, mask))}
     end
   end
 
-  # An error with a text of the server is a `Helyx.ProviderError`. The
-  # text is taken from the event before the mask, because a key can be a
-  # part of a field name, then masked, then cut. Every other event, and an
-  # error with no text, whose term reaches the user text, is masked whole.
-  defp text_error({:error, {:http_status, status, body}}, id, mask),
-    do: {:error, ProviderError.reason(id, status, redact(body, mask), {:http_status, status, ""})}
-
-  defp text_error({:error, {:api_error, %{} = error} = reason}, id, mask) do
-    text = redact(error["message"], mask)
-    {:error, ProviderError.reason(id, :api_error, text, redact(reason, mask))}
+  # An error text comes from the HTTP status and the `type` and `code` of an
+  # error object. The message, the body, and the payload never reach it: a
+  # gateway can echo the key there, also as a copy that overlaps another,
+  # and a mask cannot prove it gone (`docs/adr/0014-hole-proofing-invariants.md`,
+  # invariant 2). Every other event is masked, for an echo in the content.
+  defp text_error({:error, {:http_status, status, body}}, id, key, _mask) do
+    {:error,
+     ProviderError.reason(
+       id,
+       status,
+       ErrorText.http(status, body, key),
+       {:http_status, status, ""}
+     )}
   end
 
-  defp text_error(event, _id, mask), do: redact(event, mask)
+  defp text_error({:error, {:api_error, error}}, id, key, _mask),
+    do:
+      {:error, ProviderError.reason(id, :api_error, ErrorText.api(error, key), {:api_error, ""})}
+
+  # The payload of a bad chunk is raw body text, so it does not reach the
+  # text; the tag names the failure.
+  defp text_error({:error, {:bad_chunk, _payload}}, _id, _key, _mask),
+    do: {:error, {:bad_chunk, ""}}
+
+  defp text_error(event, _id, _key, mask), do: redact(event, mask)
 
   # The environment is a boundary. The key is a bearer token (RFC 6750,
   # `b64token`). Many JSON encoders escape none of its characters but `/`,
@@ -222,26 +237,26 @@ defmodule Helyx.Provider.OpenAI do
   # consumer halts. A transport error while streaming raises, which fails the
   # turn as `{:task_exit, reason}`. Elements are binaries or one
   # `{:error, reason}` tuple.
-  defp chunks(req, key), do: Stream.flat_map([req], &post(&1, key, 0))
+  defp chunks(req), do: Stream.flat_map([req], &post(&1, 0))
 
   # Only a 200 yields body chunks, so no chunk reaches the session before a
   # retry. The wait runs in the model Task, so an abort kills it at once.
   @max_retries 3
   @max_server_delay_ms 60_000
 
-  defp post(req, key, retries) do
+  defp post(req, retries) do
     case Req.post(req) do
       {:ok, %Req.Response{status: 200, body: body}} -> body
-      result -> fail_or_retry(req, key, result, retries)
+      result -> fail_or_retry(req, result, retries)
     end
   end
 
-  defp fail_or_retry(req, key, result, retries) do
+  defp fail_or_retry(req, result, retries) do
     case delay(result, retries) do
       {:wait, ms} when retries < @max_retries ->
         cancel(result)
         Process.sleep(ms)
-        post(req, key, retries + 1)
+        post(req, retries + 1)
 
       # Fails at once: the body is not read, so it cannot stall the error.
       {:too_long, status, ms} ->
@@ -250,18 +265,18 @@ defmodule Helyx.Provider.OpenAI do
 
       # The retries are used up.
       {:wait, _} ->
-        [{:error, reason(result, key)}]
+        [{:error, reason(result)}]
 
       :none ->
-        [{:error, reason(result, key)}]
+        [{:error, reason(result)}]
     end
   end
 
   defp cancel({:ok, resp}), do: Req.cancel_async_response(resp)
   defp cancel({:error, _}), do: :ok
 
-  defp reason({:ok, resp}, key), do: {:http_status, resp.status, drain(resp, key)}
-  defp reason({:error, reason}, _key), do: reason
+  defp reason({:ok, resp}), do: {:http_status, resp.status, drain(resp)}
+  defp reason({:error, reason}), do: reason
 
   defp delay({:ok, %Req.Response{status: status} = resp}, retries)
        when status in [408, 409, 429] or status in 500..599 do
@@ -314,23 +329,19 @@ defmodule Helyx.Provider.OpenAI do
     end
   end
 
-  # The error body names the reason for a 401 or 429; without it the turn
-  # error is just a number. The read stops past the text bound of
-  # `Helyx.ProviderError`, which cuts the body; halting the reduce cancels
-  # the rest of the response. A server can echo the key, so the key is
-  # masked before the cut (`stream/4`). The read goes twice the key size
-  # past the bound, the size of its longest form, so a key that starts
-  # inside the bound is whole when it is masked. Before the mask, each
-  # invalid sequence becomes U+FFFD, which is not shorter: no byte moves
-  # to an earlier place, so a part of the key past the read stays past the
-  # cut, and no repair after the mask joins the parts of a copy.
-  defp drain(resp, key) do
-    read = ProviderError.max_text_bytes() + 2 * byte_size(key || "")
-
+  # The error body is read only for the structured fields of an error
+  # object, never as text. The read stops past the text bound, so a body
+  # that a server sends without end cannot grow; a body cut there does not
+  # decode, and the text is the status alone. Halting the reduce cancels
+  # the rest of the response.
+  defp drain(resp) do
     resp.body
     |> Enum.reduce_while("", fn chunk, body ->
       body = body <> chunk
-      if byte_size(body) > read, do: {:halt, body}, else: {:cont, body}
+
+      if byte_size(body) > ProviderError.max_text_bytes(),
+        do: {:halt, body},
+        else: {:cont, body}
     end)
     |> String.replace_invalid()
   end
@@ -339,11 +350,13 @@ defmodule Helyx.Provider.OpenAI do
   defp mask(nil), do: nil
   defp mask(key), do: :binary.compile_pattern(Enum.uniq([key, String.replace(key, "/", "\\/")]))
 
-  # In every string of every event, so in every error that Core builds
-  # from one, each copy of the key and of its `\/` form becomes `*` of the
-  # same length, so no bound on a text changes. A key has no `*`, so a mask
-  # cannot make a new copy. A copy that overlaps one before it is masked
-  # only where the earlier one ends; the moduledoc names the other holes.
+  # In every string of every event that is not an error, so in every error
+  # that Core builds from one, each copy of the key and of its `\/` form
+  # becomes `*` of the same length, so no bound on a text changes. A key has
+  # no `*`, so a mask cannot make a new copy. A copy that overlaps one before
+  # it is masked only where the earlier one ends; the moduledoc names the
+  # other holes. An error text does not come through here: it is built from
+  # the status and two structured fields.
   defp redact(term, nil), do: term
 
   defp redact(binary, mask) when is_binary(binary),
