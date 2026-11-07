@@ -76,8 +76,8 @@ defmodule Helyx.Tool do
   callbacks `name/0`, `description/0`, and `parameters/0` run once per
   session, and every provider call uses the checked value.
 
-  A spec is accepted when `name` is a non-empty string of valid UTF-8,
-  `description` is a string of valid UTF-8, and `parameters` is a map with
+  A spec is accepted when `name` is 1 to 52 bytes, each an ASCII letter, a
+  digit, `_`, or `-`, `description` is a string of valid UTF-8, and `parameters` is a map with
   string keys at the top level that `Helyx.Message.encoded_size/1` accepts.
   Otherwise the result is `{:error, {:bad_tool_spec, label}}`: the label is
   the name when the name is accepted, else the module name. Plugin code that
@@ -109,7 +109,7 @@ defmodule Helyx.Tool do
     spec = %{name: tool.name(), description: tool.description(), parameters: tool.parameters()}
 
     cond do
-      not text?(spec.name) or spec.name == "" ->
+      not name?(spec.name) ->
         {:error, {:bad_tool_spec, inspect(tool)}}
 
       not text?(spec.description) or not parameters?(spec.parameters) ->
@@ -182,6 +182,13 @@ defmodule Helyx.Tool do
   end
 
   defp text?(value), do: is_binary(value) and String.valid?(value)
+
+  # The smallest name limit known among the providers is 64 bytes of this
+  # set, and Claude Code shows a Helyx tool as `mcp__helyx__<name>`, 12 bytes
+  # more (docs/features/mcp-client.md, decision 8).
+  @name_pattern ~r/\A[A-Za-z0-9_-]{1,52}\z/
+
+  defp name?(value), do: is_binary(value) and Regex.match?(@name_pattern, value)
 
   defp parameters?(value) when is_map(value),
     do: Enum.all?(Map.keys(value), &is_binary/1) and Helyx.Message.encoded_size(value) != :error
