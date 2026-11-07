@@ -265,28 +265,74 @@ defmodule Helyx.HarnessIO do
     {Enum.reverse(prompt), Enum.reverse(history)}
   end
 
-  # Encodes entries from the newest and keeps them within the byte cap,
-  # then drops kept entries up to the first one the replay may start at.
-  # An entry is {group, messages, start?}; `encode` gives a group's iodata
-  # or false. Returns {group, iodata} for each kept iodata, oldest first,
-  # and the number of messages left out of `total`.
+  # Encodes entries from the newest and keeps them within the byte cap, but
+  # the cut applies to closed history only: the last entry at which the
+  # replay may start, which is the message with the open calls, and every
+  # entry after it, which holds their results, stay. The entries before it
+  # are cut from the oldest, and the kept ones drop up to the first entry at
+  # which the replay may start. An entry is {group, messages, start?};
+  # `encode` gives a group's iodata or false. Returns {:ok, kept, cut},
+  # where kept is {group, iodata} for each kept iodata, oldest first, and
+  # cut is the number of messages left out of `total`. When the open turn
+  # alone passes the cap the answer is {:error, {:replay_over_limit, bytes}},
+  # a typed turn error, not a silent cut
+  # (docs/adr/0014-hole-proofing-invariants.md, invariant 3).
   def cap_replay(entries, total, encode) do
-    {kept, _bytes} =
-      entries
-      |> Enum.reverse()
-      |> Enum.reduce_while({[], 0}, fn {group, n, start?}, {kept, bytes} ->
-        data = encode.(group)
-        bytes = bytes + if(data, do: IO.iodata_length(data), else: 0)
+    {closed, open} = Enum.split(entries, open_start(entries))
+    open = encode_entries(open, encode)
+    open_bytes = Enum.sum(Enum.map(open, &entry_bytes/1))
 
-        if bytes > @replay_max_bytes,
-          do: {:halt, {kept, bytes}},
-          else: {:cont, {[{group, data, n, start?} | kept], bytes}}
-      end)
+    if open_bytes > @replay_max_bytes do
+      {:error, {:replay_over_limit, open_bytes}}
+    else
+      {closed, _bytes} = keep_closed(Enum.reverse(closed), open_bytes, encode)
+      kept = Enum.drop_while(closed ++ open, &(not elem(&1, 3)))
+      {:ok, iodata(kept), total - Enum.sum(Enum.map(kept, &elem(&1, 2)))}
+    end
+  end
 
-    kept = Enum.drop_while(kept, fn {_group, _data, _n, start?} -> not start? end)
+  defp encode_entries(entries, encode),
+    do: for({group, n, start?} <- entries, do: {group, encode.(group), n, start?})
 
-    {for({group, data, _n, _start?} <- kept, data, do: {group, data}),
-     total - Enum.sum(for {_, _, n, _} <- kept, do: n)}
+  defp entry_bytes({_group, data, _n, _start?}), do: bytes(data)
+
+  # Keeps closed history from the newest while it fits under the cap,
+  # encoding each entry once.
+  defp keep_closed(entries, bytes, encode) do
+    Enum.reduce_while(entries, {[], bytes}, fn {group, n, start?}, {kept, bytes} ->
+      data = encode.(group)
+      bytes = bytes + bytes(data)
+
+      if bytes > @replay_max_bytes,
+        do: {:halt, {kept, bytes}},
+        else: {:cont, {[{group, data, n, start?} | kept], bytes}}
+    end)
+  end
+
+  defp iodata(kept), do: for({group, data, _n, _start?} <- kept, data, do: {group, data})
+
+  # The index of the last entry at which the replay may start: the message
+  # with the open calls. A history with none is all open, so nothing is cut.
+  defp open_start(entries) do
+    entries
+    |> Enum.with_index()
+    |> Enum.reduce(0, fn {{_group, _n, start?}, index}, last ->
+      if start?, do: index, else: last
+    end)
+  end
+
+  defp bytes(false), do: 0
+  defp bytes(data), do: IO.iodata_length(data)
+
+  # The turn error of a replay whose open turn alone passes the bound
+  # (docs/adr/0014-hole-proofing-invariants.md, invariant 3).
+  def replay_error(provider, {:replay_over_limit, bytes}) do
+    %Helyx.ProviderError{
+      provider: provider,
+      kind: :replay_over_limit,
+      text:
+        "the open turn is #{bytes} bytes of the replay, over the #{@replay_max_bytes}-byte bound"
+    }
   end
 
   # The model APIs take a tool call id of `[a-zA-Z0-9_-]`, at most 64

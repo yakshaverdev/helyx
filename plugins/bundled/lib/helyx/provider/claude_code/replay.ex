@@ -11,9 +11,11 @@ defmodule Helyx.Provider.ClaudeCode.Replay do
   # replay may start at an assistant line or at a user line with no tool
   # result, because the call of every kept result is then kept too. The
   # kept lines and `last` go out in chunks, each ending at a user line; the
-  # last chunk ends with `last`. Gives the chunks, the number of messages
-  # left out, and whether any line is kept.
-  def chunks(history, last) do
+  # last chunk ends with `last`. Gives {:ok, chunks, cut, replay?}, where
+  # cut is the number of messages left out and replay? says whether any line
+  # is kept; or {:error, error} when the open turn alone passes the replay
+  # bound (`Helyx.HarnessIO.cap_replay/3`).
+  def chunks(history, last, provider) do
     entries =
       history
       |> Enum.chunk_by(&(&1.role == :assistant))
@@ -26,20 +28,22 @@ defmodule Helyx.Provider.ClaudeCode.Replay do
           [{{:user, messages}, length(messages), start?}]
       end)
 
-    {kept, cut} = HarnessIO.cap_replay(entries, length(history), &entry_line/1)
+    case HarnessIO.cap_replay(entries, length(history), &entry_line/1) do
+      {:ok, kept, cut} -> {:ok, chunks(kept, last), cut, kept != []}
+      {:error, reason} -> {:error, HarnessIO.replay_error(provider, reason)}
+    end
+  end
 
-    chunks =
-      Enum.chunk_while(
-        kept,
-        [],
-        fn
-          {{:user, _}, line}, acc -> {:cont, Enum.reverse(acc, [line]), []}
-          {{:assistant, _}, line}, acc -> {:cont, [line | acc]}
-        end,
-        &{:cont, Enum.reverse(&1, [last]), []}
-      )
-
-    {chunks, cut, kept != []}
+  defp chunks(kept, last) do
+    Enum.chunk_while(
+      kept,
+      [],
+      fn
+        {{:user, _}, line}, acc -> {:cont, Enum.reverse(acc, [line]), []}
+        {{:assistant, _}, line}, acc -> {:cont, [line | acc]}
+      end,
+      &{:cont, Enum.reverse(&1, [last]), []}
+    )
   end
 
   defp entry_line({:assistant, %Message{content: blocks}}) do

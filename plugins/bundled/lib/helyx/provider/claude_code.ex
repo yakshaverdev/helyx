@@ -72,8 +72,10 @@ defmodule Helyx.Provider.ClaudeCode do
       when kind in [:turn, :compact] and (turn == nil or turn.program?) do
     case program(state, kind, arg) do
       %State{stream: %{terminal: nil}} = state ->
-        {events, state} = write_turn(%{state | turn: Turn.new(kind, id, uuid(), arg)})
-        {:ok, [{:reply, from, :ok} | events], state}
+        case write_turn(%{state | turn: Turn.new(kind, id, uuid(), arg)}) do
+          {:ok, events, state} -> {:ok, [{:reply, from, :ok} | events], state}
+          {:error, reason} -> {:ok, [{:reply, from, {:error, reason}}], state}
+        end
 
       %State{stream: %{terminal: {:error, reason}}} = state ->
         {:ok, [{:reply, from, {:error, reason}}], state}
@@ -161,22 +163,18 @@ defmodule Helyx.Provider.ClaudeCode do
   defp read(actions, %State{stream: %{terminal: {:error, reason}}} = state),
     do: {:stop, reason, actions, state}
 
-  # A turn's program has the turn's prompt and no program commands; a
-  # compaction's keeps the prompt and has the commands for `/compact`. One
-  # that differs is replaced by one that resumes its harness session. With
-  # no program, a stored harness session opens with the empty prompt. A fresh
-  # one, or one with no stored state, has nothing to compact (`write_turn/1`).
+  # A turn's program has its prompt and no commands; a compaction's has the
+  # commands for `/compact`. A differing one is replaced by one that resumes the
+  # harness session; a fresh one, or one with no state, has nothing to compact.
   defp program(%State{resume: nil, sent?: false} = state, :compact, _text), do: state
   defp program(%State{persist?: false} = state, :compact, _text), do: state
   defp program(state, :compact, _text), do: Program.ensure(state, state.system || "", true)
   defp program(state, :turn, context), do: Program.ensure(state, context.system || "", false)
 
-  # The program of a lost session exits by itself, with nothing run
-  # (research note). A fresh program takes its place, and a turn that was
-  # written to the lost one goes to the fresh one, with the replay.
-  # The lost program ran no steer line either: the steers are dropped, not
-  # written again, and the session gives each a notice. The new harness
-  # session starts a new meter with the window of config.
+  # The program of a lost session exits by itself, with nothing run (research
+  # note). A fresh one takes its place, and a turn written to the lost one goes
+  # to it with the replay. The steers are dropped, not written again, and each
+  # gets a notice; the new session starts a meter with the window of config.
   defp relaunch(actions, state) do
     turn = state.turn && %{state.turn | steers: %{}}
     fresh = Program.replace(state, turn: turn, meter: Meter.start(nil, state.meter.config_window))
@@ -189,32 +187,34 @@ defmodule Helyx.Provider.ClaudeCode do
         {:ok, actions, state}
 
       state ->
-        {events, state} = write_turn(state)
-        {:ok, actions ++ events, state}
+        case write_turn(state) do
+          {:ok, events, state} -> {:ok, actions ++ events, state}
+          {:error, reason} -> {:stop, reason, actions, state}
+        end
     end
   end
 
   # A compaction with no program of its own (`program/3`) fails and writes nothing.
   defp write_turn(%State{turn: %Turn{compact: :asked}, commands?: false} = state),
-    do: {[{:event, state.turn.id, Program.no_compaction(state)}], %{state | turn: nil}}
+    do: {:ok, [{:event, state.turn.id, Program.no_compaction(state)}], %{state | turn: nil}}
 
-  # The prompt is the user messages at the end of the transcript. A resumed
-  # harness session, or one that took a turn, has the rest; a fresh one
-  # gets the rest first.
+  # The prompt is the user messages at the end of the transcript; a resumed
+  # harness session, or one that took a turn, has the rest. An open turn over
+  # the replay bound fails the turn with a typed error, not a silent cut.
   defp write_turn(%State{turn: turn} = state) do
     {prompt, history} = HarnessIO.split_prompt(turn.messages)
     content = Enum.flat_map(prompt, &Replay.user_content/1)
-
     prompt_line = Replay.user_line(turn.uuid, content)
 
     if state.resume || state.sent? do
       HarnessIO.write(state, prompt_line)
-      {[], %{state | sent?: true}}
+      {:ok, [], %{state | sent?: true}}
     else
-      {[first | chunks], cut, replay?} = Replay.chunks(history, prompt_line)
-      HarnessIO.write(state, first)
-      turn = %{turn | replay?: replay?, chunks: chunks}
-      {Program.resume_events(state, turn.id, cut), %{state | sent?: true, turn: turn}}
+      with {:ok, [first | chunks], cut, replay?} <- Replay.chunks(history, prompt_line, id()) do
+        HarnessIO.write(state, first)
+        turn = %{turn | replay?: replay?, chunks: chunks}
+        {:ok, Program.resume_events(state, turn.id, cut), %{state | sent?: true, turn: turn}}
+      end
     end
   end
 

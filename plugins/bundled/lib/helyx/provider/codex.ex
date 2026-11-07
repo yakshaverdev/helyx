@@ -444,29 +444,29 @@ defmodule Helyx.Provider.Codex do
     state
   end
 
-  # The first turn of a fresh thread: its id and cut, then the replay, if
-  # any. The turn's `turn/start` waits for the replay's answer.
   defp replay(history, state) do
-    {items, cut} = Replay.items(history)
-
-    state = push(state, Program.resume_events(state, cut))
-
-    if items == [] do
-      start_turn(state)
-    else
-      {id, state} = open(state, "thread/inject_items")
-
-      # The items are JSON already: the line is joined from them.
-      send_line(state, [
-        ~s({"id":#{id},"method":"thread/inject_items","params":{"threadId":),
-        JSON.encode!(state.thread),
-        ~s(,"items":[),
-        Enum.intersperse(items, ","),
-        "]}}"
-      ])
-
-      state
+    case Replay.items(history, id()) do
+      {:error, reason} -> reply(%{state | history: nil}, state.from, {:error, reason})
+      {:ok, items, cut} -> inject(items, cut, state)
     end
+  end
+
+  defp inject([], cut, state),
+    do: state |> push(Program.resume_events(state, cut)) |> start_turn()
+
+  defp inject(items, cut, state) do
+    state = push(state, Program.resume_events(state, cut))
+    {id, state} = open(state, "thread/inject_items")
+
+    send_line(state, [
+      ~s({"id":#{id},"method":"thread/inject_items","params":{"threadId":),
+      JSON.encode!(state.thread),
+      ~s(,"items":[),
+      Enum.intersperse(items, ","),
+      "]}}"
+    ])
+
+    state
   end
 
   defp start_turn(%State{prompt: prompt} = state) do

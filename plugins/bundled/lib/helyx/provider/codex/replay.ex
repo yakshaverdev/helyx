@@ -10,18 +10,24 @@ defmodule Helyx.Provider.Codex.Replay do
   # message gives a message item per text and a `function_call` per tool
   # call (thinking is not replayed), a user message a message item, and a
   # tool result a `function_call_output`. The replay may start at any
-  # message but a tool result, so every kept result keeps its call.
-  def items(history) do
+  # message but a tool result, so every kept result keeps its call. Gives
+  # {:ok, items, cut}, or {:error, error} when the open turn alone passes
+  # the replay bound (`Helyx.HarnessIO.cap_replay/3`).
+  def items(history, provider) do
     entries = for message <- history, do: {message, 1, message.role != :tool_result}
 
-    {kept, cut} =
-      HarnessIO.cap_replay(entries, length(history), fn message ->
-        items = message_items(message)
-        items != [] && items
-      end)
-
-    {for({_message, items} <- kept, item <- items, do: item), cut}
+    case HarnessIO.cap_replay(entries, length(history), &encode/1) do
+      {:ok, kept, cut} -> {:ok, items(kept), cut}
+      {:error, reason} -> {:error, HarnessIO.replay_error(provider, reason)}
+    end
   end
+
+  defp encode(message) do
+    items = message_items(message)
+    items != [] && items
+  end
+
+  defp items(kept), do: for({_message, items} <- kept, item <- items, do: item)
 
   defp message_items(%Message{role: :tool_result} = message) do
     [
