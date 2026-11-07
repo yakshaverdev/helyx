@@ -1,175 +1,8 @@
-//! The JSON of the wire, lossless: a number keeps its text, so an integer of
-//! a tool call keeps every digit, and no object key has a meaning of its own.
-//! `decode` holds the outbound decode bounds of `docs/features/wire-protocol.md`
-//! ("Bounds") and the depth bound of this client (`docs/features/client-kit.md`).
+//! The decoder of the JSON of a server frame, within the bounds of
+//! `Limits` (`docs/features/client-kit.md`, "Bounds").
 
+use super::{Json, Limits, WIRE};
 use crate::check::{Broken, Checked};
-use std::fmt::Write;
-
-/// A JSON value. An object keeps its pairs in their order; a lookup takes the
-/// first pair of a key, as `JSON.decode/1` of Elixir and the frame decoder
-/// of the server and the TUI (`Helyx.Transport.WebSocket.Frame`) do.
-#[derive(Debug, Clone, PartialEq)]
-pub enum Json {
-    Null,
-    Bool(bool),
-    /// The text of the number, as it came.
-    Number(String),
-    String(String),
-    Array(Vec<Json>),
-    Object(Vec<(String, Json)>),
-}
-
-/// The bounds of one decode.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Limits {
-    /// The bytes of the text.
-    pub frame_bytes: usize,
-    /// The values, counted as the server counts them: each value, and each
-    /// object key.
-    pub values: usize,
-    /// The characters of an integer, the minus sign included.
-    pub integer_chars: usize,
-    /// The nesting of arrays and objects.
-    pub depth: usize,
-}
-
-/// The bounds of a server frame: the outbound decode bounds of the wire (the
-/// largest frame that the server sends by its bounds, joined from parts), and
-/// a depth bound of this client. The parse, the clone, and the drop of a
-/// value recurse, so the depth bounds the stack of the client.
-pub const WIRE: Limits = Limits {
-    frame_bytes: 1_611_661_312,
-    values: 38_797_312,
-    integer_chars: 1_024,
-    depth: 1_024,
-};
-
-impl Json {
-    /// The value of `key` in an object.
-    pub fn get(&self, key: &str) -> Option<&Json> {
-        match self {
-            Json::Object(pairs) => pairs.iter().find(|(k, _)| k == key).map(|(_, v)| v),
-            _ => None,
-        }
-    }
-
-    pub fn is_null(&self) -> bool {
-        matches!(self, Json::Null)
-    }
-
-    pub fn as_str(&self) -> Option<&str> {
-        match self {
-            Json::String(text) => Some(text),
-            _ => None,
-        }
-    }
-
-    pub fn as_bool(&self) -> Option<bool> {
-        match self {
-            Json::Bool(b) => Some(*b),
-            _ => None,
-        }
-    }
-
-    pub fn as_array(&self) -> Option<&[Json]> {
-        match self {
-            Json::Array(items) => Some(items),
-            _ => None,
-        }
-    }
-
-    /// An integer >= 0 that fits in a `u64`, judged by its value: `-0` is
-    /// zero, as `JSON.decode/1` of Elixir reads it.
-    pub fn as_u64(&self) -> Option<u64> {
-        match self {
-            Json::Number(text) if text == "-0" => Some(0),
-            Json::Number(text) if text.bytes().all(|b| b.is_ascii_digit()) => text.parse().ok(),
-            _ => None,
-        }
-    }
-
-    /// A number >= 0, as a float; `-0.0` is zero, as the `>= 0` of the server.
-    pub fn as_nonnegative_f64(&self) -> Option<f64> {
-        match self {
-            Json::Number(text) => text.parse().ok().filter(|n: &f64| *n >= 0.0),
-            _ => None,
-        }
-    }
-
-    /// The JSON text of the value.
-    pub fn encode(&self) -> String {
-        let mut out = String::new();
-        self.write(&mut out);
-        out
-    }
-
-    fn write(&self, out: &mut String) {
-        match self {
-            Json::Null => out.push_str("null"),
-            Json::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
-            Json::Number(text) => out.push_str(text),
-            Json::String(text) => write_string(text, out),
-            Json::Array(items) => write_list(out, ['[', ']'], items, |item, out| item.write(out)),
-            Json::Object(pairs) => write_list(out, ['{', '}'], pairs, |(key, value), out| {
-                write_string(key, out);
-                out.push(':');
-                value.write(out);
-            }),
-        }
-    }
-}
-
-fn write_list<T>(
-    out: &mut String,
-    [open, close]: [char; 2],
-    items: &[T],
-    item: impl Fn(&T, &mut String),
-) {
-    out.push(open);
-    for (i, each) in items.iter().enumerate() {
-        if i > 0 {
-            out.push(',');
-        }
-        item(each, out);
-    }
-    out.push(close);
-}
-
-impl From<&str> for Json {
-    fn from(text: &str) -> Json {
-        Json::String(text.to_owned())
-    }
-}
-
-impl From<u64> for Json {
-    fn from(n: u64) -> Json {
-        Json::Number(n.to_string())
-    }
-}
-
-/// An object of `pairs`, for the frames that the client sends.
-pub fn object<const N: usize>(pairs: [(&str, Json); N]) -> Json {
-    Json::Object(pairs.into_iter().map(|(k, v)| (k.to_owned(), v)).collect())
-}
-
-fn write_string(text: &str, out: &mut String) {
-    out.push('"');
-    for c in text.chars() {
-        match c {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            c if (c as u32) < 0x20 => {
-                let _ = write!(out, "\\u{:04x}", c as u32);
-            }
-            c => out.push(c),
-        }
-    }
-    out.push('"');
-}
 
 /// Decodes the text of one server frame within the bounds of `WIRE`. A text
 /// over a bound, or that is not JSON, is a break of the server.
@@ -244,13 +77,20 @@ impl Parser<'_> {
     fn value(&mut self, depth: usize) -> Checked<Json> {
         self.count()?;
         match self.peek().ok_or(BAD)? {
+            b'[' | b'{' if depth >= self.limits.depth => self.deep(),
+            b'[' => self.items(b']', |p| p.value(depth + 1)).map(Json::Array),
+            b'{' => self.items(b'}', |p| p.pair(depth + 1)).map(Json::Object),
+            _ => self.scalar(),
+        }
+    }
+
+    /// A value that is not an array or an object.
+    fn scalar(&mut self) -> Checked<Json> {
+        match self.peek().ok_or(BAD)? {
             b'n' => self.literal("null", Json::Null),
             b't' => self.literal("true", Json::Bool(true)),
             b'f' => self.literal("false", Json::Bool(false)),
             b'"' => self.string().map(Json::String),
-            b'[' | b'{' if depth >= self.limits.depth => Err(Broken("json depth")),
-            b'[' => self.items(b']', |p| p.value(depth + 1)).map(Json::Array),
-            b'{' => self.items(b'}', |p| p.pair(depth + 1)).map(Json::Object),
             b'-' | b'0'..=b'9' => self.number(),
             _ => Err(BAD),
         }
@@ -280,13 +120,71 @@ impl Parser<'_> {
         }
     }
 
-    /// A key of an object, counted as a value, and its value.
-    fn pair(&mut self, depth: usize) -> Checked<(String, Json)> {
+    /// A container past the depth: checked by the same grammar and bounds,
+    /// with a stack of its open containers on the heap, and kept as its
+    /// text. `value` counted the container itself.
+    fn deep(&mut self) -> Checked<Json> {
+        let start = self.at;
+        let mut closes: Vec<u8> = Vec::new();
+        let mut at_value = self.open(&mut closes)?;
+        loop {
+            if at_value {
+                self.count()?;
+                at_value = match self.peek().ok_or(BAD)? {
+                    b'[' | b'{' => self.open(&mut closes)?,
+                    _ => {
+                        self.scalar()?;
+                        false
+                    }
+                };
+                continue;
+            }
+            let Some(&close) = closes.last() else {
+                return Ok(Json::Deep(self.text[start..self.at].to_owned()));
+            };
+            self.space();
+            match self.next()? {
+                b',' => {
+                    self.space();
+                    if close == b'}' {
+                        self.key()?;
+                    }
+                    at_value = true;
+                }
+                byte if byte == close => drop(closes.pop()),
+                _ => return Err(BAD),
+            }
+        }
+    }
+
+    /// The `[` or `{` of a container in `deep`, and the key of a first pair;
+    /// `true` when a value follows, `false` for an empty container.
+    fn open(&mut self, closes: &mut Vec<u8>) -> Checked<bool> {
+        let close = if self.next()? == b'[' { b']' } else { b'}' };
+        self.space();
+        if self.eat(close).is_ok() {
+            return Ok(false);
+        }
+        closes.push(close);
+        if close == b'}' {
+            self.key()?;
+        }
+        Ok(true)
+    }
+
+    /// A key of an object, counted as a value, then its `:`.
+    fn key(&mut self) -> Checked<String> {
         self.count()?;
         let key = self.string()?;
         self.space();
         self.eat(b':')?;
         self.space();
+        Ok(key)
+    }
+
+    /// A key of an object, counted as a value, and its value.
+    fn pair(&mut self, depth: usize) -> Checked<(String, Json)> {
+        let key = self.key()?;
         Ok((key, self.value(depth)?))
     }
 

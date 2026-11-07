@@ -9,6 +9,7 @@ use crate::event::{Delta, Event, EventData, TurnOutcome};
 use crate::frame::Subscribed;
 use crate::json::{Json, object as obj};
 use crate::message::{Ask, Block, Message, Queue, Role};
+use crate::seq::Seq;
 
 /// The client acks each event whose `seq` is a multiple of this, as the TUI
 /// does: far below the 16,384 unacked events that end a subscription (`4408`).
@@ -19,7 +20,7 @@ pub struct State {
     /// The instance of the last snapshot; `None` before the first one.
     pub instance_id: Option<String>,
     /// That of the last snapshot or of the last event applied after it.
-    pub seq: u64,
+    pub seq: Seq,
     pub model: String,
     pub queue: Queue,
     /// The open asks, oldest first.
@@ -49,7 +50,7 @@ impl State {
                     "after",
                     obj([
                         ("instance_id", instance_id.as_str().into()),
-                        ("seq", self.seq.into()),
+                        ("seq", (&self.seq).into()),
                     ]),
                 ),
             ]),
@@ -96,7 +97,7 @@ impl State {
         if self.instance_id.as_deref() != Some(event.instance_id.as_str()) {
             return Err(Broken("event instance"));
         }
-        if self.seq.checked_add(1) != Some(event.seq) {
+        if event.seq != self.seq.next() {
             return Err(Broken("event seq"));
         }
         self.seq = event.seq;
@@ -161,8 +162,8 @@ impl State {
 /// passed a multiple of `ACK_EVERY`, so a replay that crosses one acks too.
 /// `from` is the `seq` before the frame, or that of the snapshot, the credit
 /// base of the server.
-pub fn ack(sub: &str, from: u64, to: u64) -> Option<Json> {
-    (to / ACK_EVERY > from / ACK_EVERY).then(|| {
+pub fn ack(sub: &str, from: &Seq, to: &Seq) -> Option<Json> {
+    Seq::passes(from, to, ACK_EVERY).then(|| {
         obj([
             ("type", "ack".into()),
             ("sub", sub.into()),

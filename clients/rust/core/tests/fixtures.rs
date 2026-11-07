@@ -1,45 +1,31 @@
 //! Runs the wire conformance fixtures of `test/fixtures/wire/` against the
 //! client core: `server_frames.json` against the frame checks and the
-//! handshake, `folds.json` against the fold.
+//! handshake, `folds.json` against the fold. The files are read with the
+//! decoder of the core, so an integer past 2^64 - 1 keeps its digits, and a
+//! frame keeps its nesting.
 
 use helyx_client_core::Broken;
 use helyx_client_core::fold::State;
 use helyx_client_core::frame::{self, OPS, Reply, ServerFrame};
-use helyx_client_core::handshake::{Handshake, PROTOCOL, Step};
-use serde_json::{Value, json};
-use std::path::PathBuf;
+use helyx_client_core::handshake::{Handshake, Step};
+use helyx_client_core::json::{self, Json, object};
+use serde_json::json;
 mod common;
-use common::{j, s};
+use common::{at, j, load, matches, observe, s};
 
-fn load(name: &str) -> Value {
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../../test/fixtures/wire")
-        .join(name);
-    let fixture: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
-    // Each file names its protocol, so a protocol change fails here.
-    assert_eq!(fixture["protocol"], json!(PROTOCOL), "{name}");
-    fixture
+fn text(value: &Json) -> &str {
+    value.as_str().unwrap()
 }
 
-fn cases<'a>(fixture: &'a Value, key: &str) -> &'a [Value] {
-    let cases = fixture[key].as_array().unwrap();
+/// `value` as the server sends it: its text, decoded as a frame.
+fn frame(value: &Json) -> Json {
+    json::decode(&value.encode()).unwrap()
+}
+
+fn cases<'a>(fixture: &'a Json, key: &str) -> &'a [Json] {
+    let cases = at(fixture, key).as_array().unwrap();
     assert!(!cases.is_empty(), "{key}");
     cases
-}
-
-/// The match rule of the fixtures: an expected object matches an object that
-/// holds each of its keys with a matching value; a list matches a list of the
-/// same length, item by item; any other value matches an equal value.
-fn matches(expected: &Value, actual: &Value) -> bool {
-    match (expected, actual) {
-        (Value::Object(e), Value::Object(a)) => e
-            .iter()
-            .all(|(key, value)| a.get(key).is_some_and(|got| matches(value, got))),
-        (Value::Array(e), Value::Array(a)) => {
-            e.len() == a.len() && e.iter().zip(a).all(|(e, a)| matches(e, a))
-        }
-        _ => expected == actual,
-    }
 }
 
 fn op(name: &str) -> &'static str {
@@ -51,19 +37,19 @@ fn handshake() {
     for case in cases(&load("server_frames.json"), "handshake") {
         let mut handshake = Handshake::new(None);
         let mut outcome = Ok(None);
-        for frame in case["frames"].as_array().unwrap() {
-            outcome = handshake.step(&j(frame)).map(Some);
+        for sent in at(case, "frames").as_array().unwrap() {
+            outcome = handshake.step(&frame(sent)).map(Some);
             if !matches!(outcome, Ok(Some(Step::Send(_)))) {
                 break;
             }
         }
         let got = match outcome {
-            Ok(Some(Step::Welcome)) => json!("welcome"),
-            Ok(Some(Step::Refused(n))) => json!({"refused": n}),
-            Err(Broken(_)) => json!("broken"),
-            other => panic!("{}: {other:?}", case["name"]),
+            Ok(Some(Step::Welcome)) => "welcome".into(),
+            Ok(Some(Step::Refused(n))) => object([("refused", n.into())]),
+            Err(Broken(_)) => "broken".into(),
+            other => panic!("{}: {other:?}", text(at(case, "name"))),
         };
-        assert_eq!(got, case["expect"], "{}", case["name"]);
+        assert_eq!(&got, at(case, "expect"), "{}", text(at(case, "name")));
     }
 }
 
@@ -102,10 +88,13 @@ fn hello_with_no_token_has_no_proof() {
 #[test]
 fn res() {
     for case in cases(&load("server_frames.json"), "res") {
-        let request_op = op(case["op"].as_str().unwrap());
-        let parsed = frame::parse(&j(&case["frame"]), |id| (id == "1").then_some(request_op));
+        let request_op = op(text(at(case, "op")));
+        let parsed = frame::parse(&frame(at(case, "frame")), |id| {
+            (id == "1").then_some(request_op)
+        });
         let got = if parsed.is_ok() { "valid" } else { "broken" };
-        assert_eq!(json!(got), case["expect"], "{}: {parsed:?}", case["name"]);
+        let name = text(at(case, "name"));
+        assert_eq!(&Json::from(got), at(case, "expect"), "{name}: {parsed:?}");
     }
 }
 
@@ -118,66 +107,54 @@ fn a_res_of_no_request_is_a_break() {
 #[test]
 fn event() {
     for case in cases(&load("server_frames.json"), "event") {
-        let got = match frame::parse(&j(&case["frame"]), |_| None) {
+        let name = text(at(case, "name"));
+        let got = match frame::parse(&frame(at(case, "frame")), |_| None) {
             Ok(ServerFrame::Event { event, .. }) if event.data.is_none() => "ignored",
             Ok(ServerFrame::Event { .. }) => "valid",
-            Ok(other) => panic!("{}: {other:?}", case["name"]),
+            Ok(other) => panic!("{name}: {other:?}"),
             Err(_) => "broken",
         };
-        assert_eq!(json!(got), case["expect"], "{}", case["name"]);
+        assert_eq!(&Json::from(got), at(case, "expect"), "{name}");
     }
 }
 
 #[test]
 fn session_end() {
     for case in cases(&load("server_frames.json"), "session_end") {
-        let got = match frame::parse(&j(&case["frame"]), |_| None) {
+        let name = text(at(case, "name"));
+        let got = match frame::parse(&frame(at(case, "frame")), |_| None) {
             Ok(ServerFrame::SessionEnd { .. }) => "valid",
-            Ok(other) => panic!("{}: {other:?}", case["name"]),
+            Ok(other) => panic!("{name}: {other:?}"),
             Err(_) => "broken",
         };
-        assert_eq!(json!(got), case["expect"], "{}", case["name"]);
+        assert_eq!(&Json::from(got), at(case, "expect"), "{name}");
     }
-}
-
-/// The state of the fold in the shape of an `expect` step.
-fn observe(state: &State) -> Value {
-    json!({
-        "instance_id": state.instance_id,
-        "seq": state.seq,
-        "model": state.model,
-        "running": state.running,
-        "queue": {
-            "steers": state.queue.steers, "follow_ups": state.queue.follow_ups,
-            "running": state.queue.running, "held": state.queue.held, "waiting": state.queue.waiting,
-        },
-        "asks": state.asks.iter().map(|ask| ask.ask_id.clone()).collect::<Vec<_>>(),
-        "messages": state.messages.iter().map(|m| m.id.clone()).collect::<Vec<_>>(),
-    })
 }
 
 #[test]
 fn folds() {
     for case in cases(&load("folds.json"), "cases") {
-        let name = &case["name"];
+        let name = text(at(case, "name"));
         let mut state = State::default();
         let mut in_flight: Option<(String, &'static str)> = None;
-        for step in case["steps"].as_array().unwrap() {
+        for step in at(case, "steps").as_array().unwrap() {
             if let Some(request) = step.get("client") {
                 // The client sends the subscribe that the step names, with
                 // `after` of the state that it holds.
-                let session = request["params"]["session"].as_str().unwrap();
-                assert_eq!(
-                    s(&state.subscribe_params(session)),
-                    request["params"],
-                    "{name}"
+                let params = at(request, "params");
+                let sent = state.subscribe_params(text(at(params, "session")));
+                assert!(
+                    matches(params, &sent) && matches(&sent, params),
+                    "{name}: {} against {}",
+                    sent.encode(),
+                    params.encode()
                 );
                 in_flight = Some((
-                    request["id"].as_str().unwrap().to_owned(),
-                    op(request["op"].as_str().unwrap()),
+                    text(at(request, "id")).to_owned(),
+                    op(text(at(request, "op"))),
                 ));
             } else if let Some(server) = step.get("server") {
-                let parsed = frame::parse(&j(server), |id| {
+                let parsed = frame::parse(&frame(server), |id| {
                     in_flight
                         .as_ref()
                         .filter(|(req, _)| req == id)
@@ -188,18 +165,20 @@ fn folds() {
                         result: Ok(Reply::Subscribe { subscribed, .. }),
                         ..
                     } => state.subscribed(subscribed),
-                    ServerFrame::Event { event, .. } => state.apply(event),
+                    ServerFrame::Event { event, .. } => state.apply(*event),
                     ServerFrame::Res { .. } | ServerFrame::SessionEnd { .. } => Ok(()),
                 };
                 applied.unwrap_or_else(|broken| panic!("{name}: {broken:?}"));
             } else if let Some(expect) = step.get("expect") {
+                let held = observe(&state);
                 assert!(
-                    matches(expect, &observe(&state)),
-                    "{name}: {expect} against {}",
-                    observe(&state)
+                    matches(expect, &held),
+                    "{name}: {} against {}",
+                    expect.encode(),
+                    held.encode()
                 );
             } else {
-                assert!(step.get("close").is_some(), "{name}: {step}");
+                assert!(step.get("close").is_some(), "{name}: {}", step.encode());
             }
         }
     }

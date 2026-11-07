@@ -3,9 +3,10 @@
 
 use crate::check::{
     Broken, Checked, boolean, field, int, int_key, int_or_null, list_of, number, object, one_of,
-    optional, optional_bool, optional_one_of, string, string_or_null,
+    optional, optional_bool, optional_one_of, seq_key, string, string_or_null,
 };
 use crate::json::Json;
+use crate::seq::Seq;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Role {
@@ -184,7 +185,7 @@ pub struct Turn {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Snapshot {
     pub instance_id: String,
-    pub seq: u64,
+    pub seq: Seq,
     pub messages: Vec<Message>,
     pub more: bool,
     pub turn: Option<Turn>,
@@ -228,7 +229,7 @@ impl Snapshot {
         }
         Ok(Snapshot {
             instance_id: string(map, "instance_id", "snapshot")?.to_owned(),
-            seq: int_key(map, "seq", "snapshot seq")?,
+            seq: seq_key(map, "seq", "snapshot seq")?,
             messages: list_of(map, "messages", "snapshot messages", Message::parse)?,
             more: boolean(map, "more", "snapshot more")?,
             turn,

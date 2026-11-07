@@ -25,14 +25,27 @@ fn the_wire_limits() {
         frame_bytes: 1_611_661_312,
         values: 38_797_312,
         integer_chars: 1_024,
-        depth: 1_024,
+        depth: 64,
     };
     assert_eq!(WIRE, doc);
     assert!(decode(&"9".repeat(1_024)).is_ok());
     assert!(decode(&"9".repeat(1_025)).is_err());
-    let nest = |n| format!("{}{}", "[".repeat(n), "]".repeat(n));
-    assert!(decode(&nest(1_024)).is_ok());
-    assert!(decode(&nest(1_025)).is_err());
+}
+
+/// The wire states no bound of nesting but the values, and the TUI decodes
+/// any nesting within them: so does the core, a million levels too, with
+/// no stack for them in the parse, the clone, the compare, the encode, or
+/// the drop.
+#[test]
+fn any_nesting_within_the_values_decodes() {
+    let n = 1_000_000;
+    for open_close in [("[", "]"), (r#"{"a":"#, "}")] {
+        let text = format!("{}1{}", open_close.0.repeat(n), open_close.1.repeat(n));
+        let value = decode(&text).unwrap();
+        let copy = value.clone();
+        assert_eq!(copy, value);
+        assert_eq!(value.encode(), text);
+    }
 }
 
 #[test]
@@ -78,13 +91,46 @@ fn the_grammar_of_numbers() {
 }
 
 #[test]
-fn nesting_has_at_most_the_depth() {
+fn a_nesting_past_the_depth_is_kept_as_its_text_and_checked() {
     let nest = |n| format!("{}{}", "[".repeat(n), "]".repeat(n));
-    assert!(ok(&nest(MAX_DEPTH)));
-    assert!(!ok(&nest(MAX_DEPTH + 1)));
-    let objects = |n| format!("{}1{}", r#"{"a":"#.repeat(n), "}".repeat(n));
-    assert!(ok(&objects(MAX_DEPTH)));
-    assert!(!ok(&objects(MAX_DEPTH + 1)));
+    assert_eq!(
+        decode_within(&nest(MAX_DEPTH), SMALL).unwrap().encode(),
+        nest(MAX_DEPTH)
+    );
+    // At the depth, a container is its text, spaces and all.
+    let deep = "[[[ [ 1 , {\"k\" : 2} ] ]]]";
+    let value = decode_within(deep, SMALL).unwrap();
+    let Json::Array(level) = &value else { panic!() };
+    let Json::Array(level) = &level[0] else {
+        panic!()
+    };
+    let Json::Array(level) = &level[0] else {
+        panic!()
+    };
+    assert_eq!(level[0], Json::Deep("[ 1 , {\"k\" : 2} ]".into()));
+    // Shallow levels are encoded anew; the deep one as it came.
+    assert_eq!(value.encode(), "[[[[ 1 , {\"k\" : 2} ]]]]");
+    // Inside it, the grammar and the bounds hold as anywhere.
+    let deep_value = |inner: &str| decode_within(&format!("[[[{inner}]]]"), SMALL);
+    for bad in [
+        "[1,]",
+        "[01]",
+        r#"{"a" 1}"#,
+        "{1:2}",
+        r#"["\x"]"#,
+        "[1 2]",
+        "[",
+        "[tru]",
+        "[999999]",
+    ] {
+        assert!(deep_value(bad).is_err(), "{bad}");
+    }
+    // Values: three arrays, the deep one, and six items are 10 of 10.
+    assert!(deep_value("[0,0,0,0,0,0]").is_ok());
+    assert!(deep_value("[0,0,0,0,0,0,0]").is_err());
+    // A key counts one value inside it too: 4, then 3 keys and 3 values.
+    assert!(deep_value(r#"{"a":0,"b":0,"c":0}"#).is_ok());
+    assert!(deep_value(r#"{"a":0,"b":0,"c":0,"d":0}"#).is_err());
 }
 
 #[test]

@@ -1,6 +1,6 @@
 //! The checks of the schema at their bounds, which the fixtures do not hold.
 
-use helyx_client_core::event::parse_event;
+use helyx_client_core::event::{EventData, parse_event};
 use helyx_client_core::frame::{self, ServerFrame};
 use helyx_client_core::handshake::{Handshake, Step};
 use helyx_client_core::message::{Block, Message};
@@ -60,15 +60,31 @@ fn notice_seq(seq: &str) -> bool {
 }
 
 #[test]
-fn an_int_is_from_0_to_the_largest_u64() {
+fn an_int_is_any_integer_from_0() {
     assert!(notice_seq("0"));
     // `-0` is zero, as Elixir decodes it.
     assert!(notice_seq("-0"));
     assert!(notice_seq("18446744073709551615"));
-    assert!(!notice_seq("18446744073709551616"));
+    // Past 2^64 - 1 too: the schema has no upper bound.
+    assert!(notice_seq("18446744073709551616"));
+    assert!(notice_seq(&"9".repeat(1_024)));
     assert!(!notice_seq("-1"));
     assert!(!notice_seq("1.0"));
     assert!(!notice_seq("1e3"));
+}
+
+#[test]
+fn an_int_past_the_largest_u64_reads_as_the_largest_u64() {
+    let text = r#"{"type":"queue_update","session_id":"s1","instance_id":"i1","turn_id":null,"seq":1,
+        "data":{"steers":18446744073709551616,"follow_ups":-0,"running":0,"held":1,"waiting":0}}"#;
+    let event = parse_event(&helyx_client_core::json::decode(text).unwrap()).unwrap();
+    let Some(EventData::QueueUpdate(queue)) = event.data else {
+        panic!("{event:?}")
+    };
+    assert_eq!(
+        (queue.steers, queue.follow_ups, queue.held),
+        (u64::MAX, 0, 1)
+    );
 }
 
 #[test]

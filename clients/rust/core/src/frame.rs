@@ -62,7 +62,7 @@ pub enum ServerFrame {
     },
     Event {
         sub: String,
-        event: Event,
+        event: Box<Event>,
     },
     SessionEnd {
         sub: String,
@@ -145,7 +145,7 @@ pub fn parse(
         }
         "event" => Ok(ServerFrame::Event {
             sub: string(map, "sub", "event sub")?.to_owned(),
-            event: parse_event(field(map, "event", "event")?)?,
+            event: Box::new(parse_event(field(map, "event", "event")?)?),
         }),
         "session_end" => Ok(ServerFrame::SessionEnd {
             sub: string(map, "sub", "session_end sub")?.to_owned(),

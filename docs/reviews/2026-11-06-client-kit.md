@@ -262,3 +262,49 @@ Simplify split the deadline tests into `tests/deadlines.rs` with a shared stub m
 | 1 | failure path (reproduced 8 of 8), Codex | The welcome and a binary frame in one write: the tap marks the binary frame, the welcome is taken, and a send that then fails (its deadline, a reset) ends in `lost`, which reconnects; the mark is checked only after a failed read. | Open. The fix: check the mark in `lost` too, so a send failure after a mark stops with the break. |
 | 2 | spec (reproduced 10 of 10) | `tungstenite` flushes a pending pong at the start of a read; a failed flush fails the read while a text frame is still buffered, and the mark then stops the app with that frame lost. | Open. The fix: stop on the mark only when the tap itself failed the read. |
 | 3 | spec (doc) | The silence row says "a frame that comes a byte at a time counts from its start"; the silence counts from the last frame read before it (shut 1,018 ms after it, 418 ms into the slow frame, with a silence of 1,000 ms). | Open, doc only. |
+
+# Cycle F: the frames that the schema allows (#860, judgement of the orchestrator of 2026-11-06)
+
+Base `c652b055`. Items 4 and 5 of the judgement. `docs/features/wire-protocol.md` states no bound on the nesting of an outbound frame, only its values, so both clients decode any nesting within the values. Seen first, by the tests of the old rules: the core broke on 1,025 levels (`json::decode`, depth 1,024) and on an `int` of 2^64 (`as_u64` gave none), and the TUI on a usage of 10^16 tokens, a cost with no kind, a window of 0, a count of a compaction over 10^9, and a total cost over 10^300 (`decode_test.exs` had each as `:error`). Choices: the core keeps a container past 64 levels as its text (`Json::Deep`), checked with a stack on the heap; a `seq` is a big integer (`seq::Seq`), exact in the fold, the `after` of a subscribe, and the ack; another `int` past 2^64 − 1 reads as 2^64 − 1. The TUI reads a usage that `Helyx.Usage.valid?/1` does not take as the unknown usage, a total cost over 10^300 as 10^300, a window of 0 as no window, and a count of a compaction of any size, in integers. Fixtures: a frame of 1,029 levels, a notice and a fold past 2^64 − 1, usages and totals past the bounds of Core, and a negative cost as a break. Probe: with the expectation of each new case flipped, both runners fail (core: `res`, `event`, `folds`; TUI: the three same tests). The core runner reads the fixture files with the decoder of the core: `serde_json` reads an integer past 2^64 − 1 as a float, and its `arbitrary_precision` feature would reach the `serde_json` of gpui in a workspace test build. Also fixed: `docs/features/tui-attach.md` still had a tool result with no call id as a break, stale since cycle A. Open, not decided: the TUI checks beyond the schema that the judgement did not name (`docs/features/client-kit.md`, row "the values that the TUI checks beyond the schema").
+
+Bounds sensor: `bounds sensor: 0 candidate functions, 0 flagged, 0 without an answer`.
+
+## Round 1 (full: simplify, standards, spec, failure path, Codex)
+
+Simplify shared the scalar grammar of the deep scanner with the tree parse (`scalar`), shared the integer rule of `as_u64` and `Seq::parse` (`json::natural`), merged the cost guards of the TUI decode, and kept `view_model.ex` at 400 lines. It found that `tests/client.rs` read `folds.json` with `serde_json` and failed on the new fold (a `seq` past 2^64 − 1 read as a float); the runner now reads the fixtures with the decoder of the core, and the helpers of both runners are in `tests/common`. Codex: approve, no findings.
+
+| # | Source | Finding | Resolution |
+|---|---|---|---|
+| 1 | spec, failure path (both reproduced) | An `mtime` of `sessions.saved` of 2^64 or 10^24, which the schema allows and the decode takes, raised `ArgumentError` in `SessionList.line/2` (the local time of the calendar), in the Task of the list. | A time past 9999-12-31 23:59:59 UTC shows as `>9999-12-31`; test in `link_test.exs` (2^64, 10^1023, and the last second). |
+| 2 | standards, spec | No test of the ack past 2^64 − 1. | `tests/fold.rs`: the ack of 2^64 carries every digit; the fold runner of `tests/client.rs` checks that each ack has the `seq` that the client holds. |
+| 3 | standards, spec | No test that another `int` past 2^64 − 1 reads as 2^64 − 1. | `tests/checks.rs`, "an int past the largest u64 reads as the largest u64". |
+| 4 | spec | No test that the footer counts totals and the context in integers. | `decode_test.exs`: counts of 10^1023 render `>999B` and `>999%`. |
+| 5 | spec (doc) | Decision 14 said that no value of the schema past the bounds of Core is a break, while it keeps the blocks, the result text, and the origin as breaks; "the fixtures hold each" held only at the entry. | Decision 14 names what is read in a form; client-kit.md says the fixtures hold the entry and names the tests of the fold and the render. |
+| 6 | standards (doc) | Replaced mechanism did not name two renamed tests; the sentence on the depth of `serde_json` did not parse. | Named; rewritten. |
+| 7 | standards (judgement) | The test name "the bounds of Core that the fold trusts" no longer fits; `Seq` derived `Ord` and `Hash` with no use; two functions named `digits`. | Renamed the test; dropped the derives; `json::digits` is `json::natural`. |
+| 8 | standards, spec (judgement) | The TUI still breaks on a model that is not a model ref, more than 1,024 blocks, a tool result text over 65,536 bytes, a tool-call integer of more than 100 digits, and an origin on a message that is not a user message, which the core shows. | Not decided: the judgement named the usage values and the integers only. The row states the reason, and the report to the orchestrator names it. |
+
+Guarantee table of the changed contract texts:
+
+| Guarantee | Test or probe |
+|---|---|
+| The core decodes any nesting within the values; past 64 levels a container is its text | `tests/json.rs`, "any nesting within the values decodes" (a million levels); fixture of 1,029 levels; probe (spec): a million levels through the fold, `transcript::rows`, clone, and drop |
+| The TUI decodes any nesting | fixture of 1,029 levels; probe (spec, failure path): a million and 200,000 levels through `Decode`, `ViewModel`, and `CallLine` |
+| A `seq` is exact in the fold, `after`, and the ack | `tests/fold.rs`, "a seq past the largest u64 counts on"; `folds.json`; `tests/client.rs`, the fold runner |
+| Another `int` past 2^64 − 1 reads as 2^64 − 1; `-0` is 0 | `tests/checks.rs`, "an int past the largest u64 reads as the largest u64", "an int is any integer from 0" |
+| The TUI reads a usage that `Usage.valid?/1` refuses as the unknown usage | `decode_test.exs`, "a usage that Core would not make is the unknown usage" |
+| A total cost over 10^300 counts as 10^300, and the footer shows `>$99999` | `decode_test.exs`, "a value of the schema past the bounds of Core …" |
+| A window of 0 is no window; counts of any size in integers, in the fold and the footer | the same test |
+| An `mtime` past the year 9999 shows as `>9999-12-31` | `link_test.exs`, "a /resume line of a time past the year 9999 …" |
+
+## Round 2 (reduced: spec, failure path)
+
+The reproduction of round 1 holds fixed: an `mtime` of 2^64, 10^24, 10^1023, or 1,024 nines renders `>9999-12-31` in four time zones (UTC, Asia/Kolkata, Pacific/Kiritimati, America/Los_Angeles). The failure-path agent sent every int of a snapshot and of the events at 1,024 digits, costs from 5e-324 to the largest float, and windows of 0 and 1 through the TUI decode, the view model, the footer, and a draw. It sent arguments nested 10^7 levels through the TUI. In the core, in a debug build, it sent a `seq` across 2^64 with its ack, a `seq` of 1,024 digits and a reconnect with it, and a nesting at the value bound through `transcript::rows`. None crashed. No reproduced defect, so the loop ends.
+
+| # | Source | Finding | Resolution |
+|---|---|---|---|
+| 1 | spec (doc) | client-kit.md says that the fixtures hold a count of a compaction over 10^9, and no fixture had one. | Fixture "compaction: counts past the bounds of Core, 10^9 + 1 and 2^64", valid. Both runners pass, and both fail with its expectation flipped (probe). |
+| 2 | spec, failure path (judgement) | With `elapsed_ms` and the queue counts at 10^1023, the second footer row is about 6,250 characters, and the usage values fall past the screen. It does not crash, and no stated bound covers it. These checks did not change in this cycle. | Recorded. No change. |
+| 3 | failure path (judgement) | East of UTC, the last second of 9999 UTC shows as its local time, `10000-01-01 05:29:59`, and the next second shows `>9999-12-31`: the cap is set in UTC. | Recorded. No change: it renders, and the test takes a year of 4 or 5 digits. |
+
+Not reached by the budget: the gpui render of the app, deep frames over 1 MiB sent as parts through `Client::receive`, and the `history` result.

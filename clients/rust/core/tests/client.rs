@@ -4,13 +4,13 @@
 
 #[allow(unused)]
 mod common;
+use common::{at, load, matches, observe};
 use helyx_client_core::Broken;
 use helyx_client_core::client::{Client, MAX_IN_FLIGHT, Next, Output, Refusal};
-use helyx_client_core::json::{Limits, WIRE, decode};
+use helyx_client_core::json::{Json, Limits, WIRE, decode};
 use helyx_client_core::parts::{self, FRAME_BYTES, PART_BYTES, REQUEST_BYTES, TooLarge};
 use serde_json::{Value, json};
 use std::collections::HashMap;
-use std::path::PathBuf;
 
 const CHALLENGE: &str =
     r#"{"type":"challenge","nonce":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="}"#;
@@ -37,28 +37,31 @@ fn welcomed(client: &mut Client) -> Vec<Output> {
     outputs
 }
 
-fn observe(client: &Client) -> Value {
-    let state = client.state("s1").unwrap();
-    json!({
-        "instance_id": state.instance_id, "seq": state.seq, "model": state.model,
-        "running": state.running,
-        "queue": {"steers": state.queue.steers, "follow_ups": state.queue.follow_ups,
-                  "running": state.queue.running, "held": state.queue.held,
-                  "waiting": state.queue.waiting},
-        "asks": state.asks.iter().map(|a| a.ask_id.clone()).collect::<Vec<_>>(),
-        "messages": state.messages.iter().map(|m| m.id.clone()).collect::<Vec<_>>(),
-    })
+/// The frames that the client sends among `outputs`, decoded by the core, so
+/// a `seq` past 2^64 - 1 keeps its digits.
+fn sent_frames(outputs: &[Output]) -> Vec<Json> {
+    outputs
+        .iter()
+        .filter_map(|o| match o {
+            Output::Send(text) => Some(decode(text).unwrap()),
+            _ => None,
+        })
+        .collect()
 }
 
-fn matches(expected: &Value, actual: &Value) -> bool {
-    match (expected, actual) {
-        (Value::Object(e), Value::Object(a)) => e
-            .iter()
-            .all(|(k, v)| a.get(k).is_some_and(|got| matches(v, got))),
-        (Value::Array(e), Value::Array(a)) => {
-            e.len() == a.len() && e.iter().zip(a).all(|(e, a)| matches(e, a))
-        }
-        _ => expected == actual,
+/// `frame` with the `id` that `ids` maps its `id` to, when it has one.
+fn with_id(frame: &Json, ids: &HashMap<String, String>) -> Json {
+    match frame {
+        Json::Object(pairs) => Json::Object(
+            pairs
+                .iter()
+                .map(|(key, value)| match (key.as_str(), value.as_str()) {
+                    ("id", Some(id)) => (key.clone(), Json::String(ids[id].clone())),
+                    _ => (key.clone(), value.clone()),
+                })
+                .collect(),
+        ),
+        other => other.clone(),
     }
 }
 
@@ -67,52 +70,55 @@ fn matches(expected: &Value, actual: &Value) -> bool {
 /// client sends at the welcome.
 #[test]
 fn the_folds_through_connections() {
-    let path =
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../test/fixtures/wire/folds.json");
-    let fixture: Value = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
-    for case in fixture["cases"].as_array().unwrap() {
-        let name = &case["name"];
+    let fixture = load("folds.json");
+    for case in at(&fixture, "cases").as_array().unwrap() {
+        let name = at(case, "name").as_str().unwrap();
         let mut client = Client::new(None);
         // The frames that the client sent and the fixture has not named yet.
-        let mut unsent = sent(&welcomed(&mut client));
+        let mut unsent = sent_frames(&welcomed(&mut client));
         let mut ids: HashMap<String, String> = HashMap::new();
-        for step in case["steps"].as_array().unwrap() {
+        for step in at(case, "steps").as_array().unwrap() {
             if let Some(request) = step.get("client") {
+                let params = at(request, "params");
                 if unsent.is_empty() {
-                    let session = request["params"]["session"].as_str().unwrap();
-                    let frames = client.subscribe(session).unwrap();
-                    unsent = frames
-                        .iter()
-                        .map(|t| serde_json::from_str(t).unwrap())
-                        .collect();
+                    let frames = client.subscribe(at(params, "session").as_str().unwrap());
+                    unsent = frames.unwrap().iter().map(|t| decode(t).unwrap()).collect();
                 }
                 let frame = unsent.remove(0);
-                assert_eq!(frame["params"], request["params"], "{name}");
-                assert_eq!(frame["op"], request["op"], "{name}");
+                let sent_params = at(&frame, "params");
+                assert!(
+                    matches(params, sent_params) && matches(sent_params, params),
+                    "{name}: {} against {}",
+                    sent_params.encode(),
+                    params.encode()
+                );
+                assert_eq!(at(&frame, "op"), at(request, "op"), "{name}");
                 ids.insert(
-                    request["id"].as_str().unwrap().into(),
-                    frame["id"].as_str().unwrap().into(),
+                    at(request, "id").as_str().unwrap().into(),
+                    at(&frame, "id").as_str().unwrap().into(),
                 );
             } else if let Some(server) = step.get("server") {
-                let mut server = server.clone();
-                if let Some(id) = server["id"].as_str() {
-                    server["id"] = json!(ids[id]);
-                }
                 let outputs = client
-                    .receive(&server.to_string())
+                    .receive(&with_id(server, &ids).encode())
                     .unwrap_or_else(|broken| panic!("{name}: {broken:?}"));
-                // No ack in these folds: their seqs stay below 1,024.
-                assert!(sent(&outputs).is_empty(), "{name}");
+                // An ack at most, of the seq that the client holds: only the
+                // fold past 2^64 - 1 crosses a multiple of 1,024.
+                let held = &observe(client.state("s1").unwrap());
+                for frame in sent_frames(&outputs) {
+                    assert_eq!(at(&frame, "type").as_str(), Some("ack"), "{name}");
+                    assert_eq!(at(&frame, "seq"), at(held, "seq"), "{name}");
+                }
             } else if let Some(close) = step.get("close") {
                 let code = close.as_u64().map(|c| c as u16);
                 assert_eq!(client.closed(code), Next::Reconnect, "{name}");
-                unsent = sent(&welcomed(&mut client));
+                unsent = sent_frames(&welcomed(&mut client));
             } else {
-                let expect = &step["expect"];
+                let (expect, held) = (at(step, "expect"), observe(client.state("s1").unwrap()));
                 assert!(
-                    matches(expect, &observe(&client)),
-                    "{name}: {expect} against {}",
-                    observe(&client)
+                    matches(expect, &held),
+                    "{name}: {} against {}",
+                    expect.encode(),
+                    held.encode()
                 );
             }
         }

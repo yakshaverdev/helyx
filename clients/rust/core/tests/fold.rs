@@ -73,7 +73,7 @@ fn an_event_that_is_not_the_next_seq_is_a_break_and_changes_nothing() {
     }
     assert_eq!(state.apply(notice(5)), Ok(()));
     assert_eq!(state.apply(notice(5)), Err(Broken("event seq")));
-    assert_eq!((state.seq, state.notices.len()), (5, 1));
+    assert_eq!((state.seq.to_u64(), state.notices.len()), (Some(5), 1));
 }
 
 #[test]
@@ -82,7 +82,7 @@ fn a_replay_out_of_order_stops_at_the_broken_event() {
     let replay = [5, 6, 6, 7].map(|seq| event("i1", seq, "notice", json!({"text": "n"})));
     let result = state.subscribed(Subscribed::Replay(replay.into()));
     assert_eq!(result, Err(Broken("event seq")));
-    assert_eq!((state.seq, state.notices.len()), (6, 2));
+    assert_eq!((state.seq.to_u64(), state.notices.len()), (Some(6), 2));
 }
 
 #[test]
@@ -133,7 +133,7 @@ fn a_block_of_an_unknown_kind_keeps_its_kind() {
 #[test]
 fn an_ack_goes_when_a_frame_passes_a_multiple_of_the_cadence() {
     let frame = |seq| Some(json!({"type": "ack", "sub": "0", "seq": seq}));
-    let ack = |sub, from, to| ack(sub, from, to).map(|frame| s(&frame));
+    let ack = |sub, from: u64, to: u64| ack(sub, &from.into(), &to.into()).map(|frame| s(&frame));
     assert_eq!(ack("0", 0, 0), None);
     assert_eq!(ack("0", 0, ACK_EVERY - 1), None);
     assert_eq!(ack("0", ACK_EVERY - 1, ACK_EVERY), frame(ACK_EVERY));
@@ -142,6 +142,43 @@ fn an_ack_goes_when_a_frame_passes_a_multiple_of_the_cadence() {
     assert_eq!(ack("0", 1_020, 1_029), frame(1_029));
     // A snapshot is the credit base: no ack for it.
     assert_eq!(ack("0", 2 * ACK_EVERY, 2 * ACK_EVERY), None);
+}
+
+/// A `seq` of any size: the fold counts on past 2^64 - 1 exactly.
+#[test]
+fn a_seq_past_the_largest_u64_counts_on() {
+    let mut state = State::default();
+    let snap = json!({"instance_id": "i1", "seq": u64::MAX, "messages": [], "more": false,
+        "turn": null, "model": "fake/echo", "persisting": true, "context": null, "asks": [],
+        "queue": {"steers": 0, "follow_ups": 0, "running": 0, "held": 0, "waiting": 0},
+        "usage": {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0,
+                  "cost": null, "unknown": false, "list": false}});
+    let snapshot = Snapshot::parse(&j(&snap)).unwrap();
+    state
+        .subscribed(Subscribed::Snapshot(Box::new(snapshot)))
+        .unwrap();
+    let past = |seq: &str| {
+        let text = format!(
+            r#"{{"type":"notice","session_id":"s1","instance_id":"i1","turn_id":null,"seq":{seq},"data":{{"text":"n"}}}}"#
+        );
+        parse_event(&helyx_client_core::json::decode(&text).unwrap()).unwrap()
+    };
+    state.apply(past("18446744073709551616")).unwrap();
+    assert_eq!(state.seq.to_string(), "18446744073709551616");
+    assert!(state.apply(past("18446744073709551618")).is_err());
+    let after = state.subscribe_params("s1").encode();
+    assert!(after.contains(r#""seq":18446744073709551616"#), "{after}");
+    // 2^64 is a multiple of 1,024: the ack of it carries every digit.
+    let from = u64::MAX.into();
+    let acked = ack("0", &from, &state.seq).unwrap().encode();
+    assert_eq!(
+        acked,
+        r#"{"type":"ack","sub":"0","seq":18446744073709551616}"#
+    );
+    assert_eq!(
+        ack("0", &state.seq, &past("18446744073709551617").seq),
+        None
+    );
 }
 
 #[test]

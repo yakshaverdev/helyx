@@ -237,8 +237,9 @@ defmodule Helyx.TUI.Wire.DecodeTest do
           %{"usage" => %{}},
           %{"usage" => %{"input" => 1, "output" => 2, "cache_read" => 3}},
           %{"usage" => %{"input" => -1, "output" => 2, "cache_read" => 3, "cache_write" => 4}},
-          %{"usage" => Map.delete(wire(Wire.value(@usage)), "cost_kind")},
           %{"usage" => %{wire(Wire.value(@usage)) | "cost_kind" => "free"}},
+          %{"usage" => %{wire(Wire.value(@usage)) | "cost" => -1}},
+          %{"usage" => %{wire(Wire.value(@usage)) | "context_window" => 1.5}},
           %{"stop_reason" => 42},
           %{"stop_reason" => "done"},
           %{"model" => 1},
@@ -314,14 +315,37 @@ defmodule Helyx.TUI.Wire.DecodeTest do
     }
   end
 
-  test "the bounds of Core that the fold trusts" do
+  test "a usage that Core would not make is the unknown usage" do
+    wired = wire(Wire.value(@usage))
+    unknown = %{assistant() | usage: %Helyx.Usage{}}
+
+    for usage <- [
+          Map.delete(wired, "cost_kind"),
+          Map.delete(wired, "cost"),
+          %{wired | "input" => 10 ** 16},
+          %{wired | "context_tokens" => 2 ** 64},
+          %{wired | "cost" => 1.0e13},
+          %{wired | "context_window" => 0}
+        ] do
+      assert {:ok, %Event{data: %{message: ^unknown}}} =
+               Decode.event(message_end(assistant(), %{"usage" => usage})),
+             inspect(usage)
+    end
+  end
+
+  test "a value of the schema past the bounds of Core is read in a form that the fold holds" do
     compaction =
       &wire(
-        Wire.event(event(:compaction, %{trigger: :auto, tokens_before: &1, tokens_after: nil}))
+        Wire.event(event(:compaction, %{trigger: :auto, tokens_before: &1, tokens_after: &1}))
       )
 
-    assert {:ok, %Event{}} = Decode.event(compaction.(1_000_000_000))
-    assert Decode.event(compaction.(1_000_000_001)) == :error
+    # Any count of the schema, past the float range too: the line counts
+    # in integers.
+    big = 10 ** 1_023
+    assert {:ok, %Event{} = compacted} = Decode.event(compaction.(big))
+    vm = ViewModel.apply(ViewModel.from_snapshot(snapshot_of([])), compacted)
+    assert [{:infos, [line]}] = ViewModel.cells(vm)
+    assert line =~ "compacted: #{div(big, 1000)}k → "
 
     model = &wire(Wire.event(event(:model_change, %{model: &1}, nil)))
     assert {:ok, %Event{}} = Decode.event(model.("p/" <> String.duplicate("m", 254)))
@@ -342,15 +366,38 @@ defmodule Helyx.TUI.Wire.DecodeTest do
     real = %{snapshot_of(costly) | usage: totals, context: context}
     assert subscribe(real) == {:ok, {:ok, real, "1"}}
 
-    # The cap, the first float over it, and an integer at it and over it.
+    # The cap, the first float over it, the largest float, and an integer at
+    # it and over it: a cost over the cap counts as the cap.
     at = %{snapshot_of([]) | usage: %Totals{cost: 1.0e300}}
     assert subscribe(at) == {:ok, {:ok, at, "1"}}
     <<bits::64>> = <<1.0e300::float>>
     <<over::float>> = <<bits + 1::64>>
-    assert subscribe(%{at | usage: %Totals{cost: over}}) == :error
+    <<largest::float>> = <<0x7FEFFFFFFFFFFFFF::64>>
     whole = %{at | usage: %Totals{cost: trunc(1.0e300)}}
     assert subscribe(whole) == {:ok, {:ok, whole, "1"}}
-    assert subscribe(%{at | usage: %Totals{cost: trunc(1.0e300) + 1}}) == :error
+
+    for cost <- [over, largest, trunc(1.0e300) + 1, 10 ** 1_023] do
+      assert subscribe(%{at | usage: %Totals{cost: cost}}) == {:ok, {:ok, at, "1"}}
+    end
+
+    # A window of 0 is no window.
+    windowless = %{at | context: %{tokens: 1, window: nil, model: "fake/echo", bytes: 0}}
+    zero = %{windowless | context: %{windowless.context | window: 0}}
+    assert subscribe(zero) == {:ok, {:ok, windowless, "1"}}
+
+    # Counts past the float range: the footer counts them in integers.
+    huge = %{
+      at
+      | usage: %Totals{input: big, output: big, cache_read: big, cache_write: 0, cost: nil},
+        context: %{tokens: big, window: 1, model: "fake/echo", bytes: big}
+    }
+
+    assert {:ok, {:ok, decoded, "1"}} = subscribe(huge)
+
+    %{text: [_row1, %{spans: spans}]} =
+      Footer.widget("~", ViewModel.from_snapshot(decoded), nil, nil, nil)
+
+    assert Enum.map_join(spans, & &1.content) =~ ~r/in >999B out >999B.*cache 50%.*>999%/
 
     # The footer draws the capped form at the cap, after a later message too.
     vm = ViewModel.from_snapshot(at)

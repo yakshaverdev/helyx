@@ -243,9 +243,10 @@ defmodule Helyx.TUI.ViewModel do
   defp queue(%{steers: _, follow_ups: _, running: _, held: _, waiting: _} = counts),
     do: Map.take(counts, [:steers, :follow_ups, :running, :held, :waiting])
 
-  # `Helyx.Session.Stream` bounds a count to 10^9, so the line stays short.
+  # Integer arithmetic: a count of the schema can pass the float range, and
+  # the decode bound of 1,024 characters bounds the line.
   defp tokens(n) when n < 1000, do: Integer.to_string(n)
-  defp tokens(n), do: "#{round(n / 1000)}k"
+  defp tokens(n), do: "#{div(n + 500, 1000)}k"
 
   @doc """
   The view model of the session `session_id` from its snapshot; the id

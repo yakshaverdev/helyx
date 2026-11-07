@@ -15,6 +15,7 @@ pub mod json;
 pub mod message;
 pub mod parts;
 mod reconcile;
+pub mod seq;
 pub mod transcript;
 
 pub use check::{Broken, Checked};

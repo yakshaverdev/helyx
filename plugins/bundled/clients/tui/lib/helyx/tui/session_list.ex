@@ -14,6 +14,8 @@ defmodule Helyx.TUI.SessionList do
 
   # The widths of the file text on a line, in code points.
   @prompt_width 60
+  # 9999-12-31 23:59:59 UTC.
+  @last_second 253_402_300_799
   @model_width 40
   @folder_width 80
 
@@ -135,6 +137,10 @@ defmodule Helyx.TUI.SessionList do
   # A width counts code points, not graphemes: one grapheme can hold any
   # number of combining marks. A negative count takes the end.
   defp take(text, count), do: text |> String.to_charlist() |> Enum.take(count) |> List.to_string()
+
+  # The schema bounds no `mtime`, and the local time of the calendar raises
+  # far past the year 9999: a later time shows in the capped form.
+  defp time(mtime) when mtime > @last_second, do: ">9999-12-31"
 
   defp time(mtime) do
     mtime

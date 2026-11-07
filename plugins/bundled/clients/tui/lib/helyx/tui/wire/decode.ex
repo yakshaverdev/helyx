@@ -9,8 +9,6 @@ defmodule Helyx.TUI.Wire.Decode do
   # value with a broken shape raises, and each public function gives
   # `:error` for it: the connection ends on a contract break.
 
-  import Helyx.Usage, only: [wire_tokens?: 1]
-
   alias Helyx.{Event, Message, ModelRef, Usage}
   alias Helyx.Session.File.Scan
   alias Helyx.Session.{Snapshot, Totals}
@@ -38,15 +36,11 @@ defmodule Helyx.TUI.Wire.Decode do
 
   defguardp count?(value) when is_integer(value) and value >= 0
   defguardp count_or_nil?(value) when is_nil(value) or count?(value)
-  # The bounds of Core that the fold trusts: a token count of a compaction
-  # (`Helyx.Session.Stream`). The total cost of a session is a sum of costs
-  # of at most 10^12 each, so it has no bound of its own below the float
-  # limit (usage-and-limits.md, "session totals"); 10^300 is far above any
-  # sum, and leaves the footer room for its `cost * 10_000`.
-  defguardp tokens_or_nil?(value) when is_nil(value) or wire_tokens?(value)
-
-  defguardp cost_or_nil?(value)
-            when is_nil(value) or (is_number(value) and value >= 0 and value <= 1.0e300)
+  defguardp cost_or_nil?(value) when is_nil(value) or (is_number(value) and value >= 0)
+  # A cost of the totals over 10^300 counts as 10^300: the footer shows
+  # `>$99999` for both, and adding a message cost of at most 10^12 to it
+  # stays in the float range (usage-and-limits.md, "session totals").
+  @max_total_cost 1.0e300
 
   @spec event(term()) :: {:ok, Event.t() | nil} | :error
   def event(value), do: decoded(fn -> event!(value) end)
@@ -172,7 +166,7 @@ defmodule Helyx.TUI.Wire.Decode do
          "tokens_before" => before,
          "tokens_after" => after_
        })
-       when trigger in ["manual", "auto"] and tokens_or_nil?(before) and tokens_or_nil?(after_),
+       when trigger in ["manual", "auto"] and count_or_nil?(before) and count_or_nil?(after_),
        do: %{trigger: trigger(trigger), tokens_before: before, tokens_after: after_}
 
   defp data(:notice, %{"text" => text}) when is_binary(text), do: %{text: text}
@@ -296,14 +290,21 @@ defmodule Helyx.TUI.Wire.Decode do
   defp flag!(nil), do: false
   defp flag!(value) when is_boolean(value), do: value
 
-  # The known keys of a usage, as Core checks a usage (`Helyx.Usage.valid?/1`).
+  # The known keys of a usage, checked by the schema. A usage that Core
+  # would not make (`Helyx.Usage.valid?/1`) is the unknown usage `%Usage{}`,
+  # the usage of a message whose accounting is missing.
   defp usage!(nil), do: nil
 
   defp usage!(%{} = object) do
     fields = for key <- @usage_keys, do: {key, object[Atom.to_string(key)]}
     usage = struct!(Usage, Keyword.put(fields, :cost_kind, cost_kind!(object["cost_kind"])))
-    true = Usage.valid?(usage)
-    usage
+    counts = [usage.input, usage.output, usage.cache_read, usage.cache_write]
+
+    true =
+      Enum.all?(counts, &count?(&1)) and count_or_nil?(usage.context_tokens) and
+        count_or_nil?(usage.context_window) and cost_or_nil?(usage.cost)
+
+    if Usage.valid?(usage), do: usage, else: %Usage{}
   end
 
   defp cost_kind!(nil), do: nil
@@ -377,7 +378,7 @@ defmodule Helyx.TUI.Wire.Decode do
       output: output,
       cache_read: cache_read,
       cache_write: cache_write,
-      cost: cost,
+      cost: cost && min(cost, @max_total_cost),
       unknown: unknown,
       list: list
     }
@@ -385,8 +386,9 @@ defmodule Helyx.TUI.Wire.Decode do
 
   defp context(nil), do: nil
 
+  # A window of 0 is no window: the footer shows no context % for it.
   defp context(%{"tokens" => tokens, "window" => window, "model" => model, "bytes" => bytes})
-       when count_or_nil?(tokens) and (is_nil(window) or (is_integer(window) and window > 0)) and
+       when count_or_nil?(tokens) and count_or_nil?(window) and
               (is_nil(model) or is_binary(model)) and count?(bytes),
-       do: %{tokens: tokens, window: window, model: model, bytes: bytes}
+       do: %{tokens: tokens, window: if(window != 0, do: window), model: model, bytes: bytes}
 end

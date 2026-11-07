@@ -14,6 +14,7 @@ use crate::frame::{self, Reply, ServerFrame, Subscribed};
 use crate::handshake::{Step, Token};
 use crate::json::{self, Json, Limits};
 use crate::reconcile::subscribe_fits;
+use crate::seq::Seq;
 use std::collections::HashMap;
 
 pub use crate::connection::{MAX_IN_FLIGHT, Refusal};
@@ -275,9 +276,9 @@ impl Client {
                     .get_mut(&session)
                     .expect("a subscribed session")
                     .state;
-                let from = state.seq;
-                state.apply(event)?;
-                let mut outputs = ack_output(&sub, from, state.seq);
+                let from = state.seq.clone();
+                state.apply(*event)?;
+                let mut outputs = ack_output(&sub, &from, &state.seq);
                 outputs.push(Output::Changed(session));
                 Ok(outputs)
             }
@@ -322,11 +323,11 @@ impl Client {
                     .expect("a session with a subscribe");
                 s.subscribed();
                 let snapshot = matches!(subscribed, Subscribed::Snapshot(_));
-                let from = s.state.seq;
+                let from = s.state.seq.clone();
                 s.state.subscribed(subscribed)?;
                 // A snapshot is the credit base of the server: no ack for it.
-                let from = if snapshot { s.state.seq } else { from };
-                let mut outputs = ack_output(&sub, from, s.state.seq);
+                let from = if snapshot { s.state.seq.clone() } else { from };
+                let mut outputs = ack_output(&sub, &from, &s.state.seq);
                 c.subs.insert(sub, session.clone());
                 outputs.push(Output::Changed(session));
                 Ok(outputs)
@@ -366,7 +367,7 @@ impl Client {
     }
 }
 
-fn ack_output(sub: &str, from: u64, to: u64) -> Vec<Output> {
+fn ack_output(sub: &str, from: &Seq, to: &Seq) -> Vec<Output> {
     ack(sub, from, to)
         .map(|frame| Output::Send(frame.encode()))
         .into_iter()

@@ -3,6 +3,7 @@
 //! allow: the frame is a contract break of the server.
 
 use crate::json::Json;
+use crate::seq::Seq;
 
 /// A frame that breaks the contract of the wire: the client ends the connection.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -40,8 +41,7 @@ pub(crate) fn id<'a>(map: &'a Json, key: &str, what: &'static str) -> Checked<&'
         .ok_or(Broken(what))
 }
 
-/// `int` of the schema: a JSON integer >= 0. An integer above `u64::MAX` is a
-/// break too: no bound of the server comes near it.
+/// `int` of the schema: a JSON integer >= 0, read as `Json::as_u64` reads it.
 pub(crate) fn int(value: &Json, what: &'static str) -> Checked<u64> {
     value.as_u64().ok_or(Broken(what))
 }
@@ -114,4 +114,12 @@ pub(crate) fn list_of<T>(
     item: impl Fn(&Json) -> Checked<T>,
 ) -> Checked<Vec<T>> {
     list(map, key, what)?.iter().map(item).collect()
+}
+
+/// The `seq` of `key`: an `int` of the schema, exact.
+pub(crate) fn seq_key(map: &Json, key: &str, what: &'static str) -> Checked<Seq> {
+    match field(map, key, what)? {
+        Json::Number(text) => Seq::parse(text).ok_or(Broken(what)),
+        _ => Err(Broken(what)),
+    }
 }

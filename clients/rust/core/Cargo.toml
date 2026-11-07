@@ -9,6 +9,7 @@ publish = false
 [dependencies]
 base64 = "0.22"
 hmac = "0.12"
+num-bigint = { version = "0.4", default-features = false }
 sha2 = "0.10"
 
 [dev-dependencies]

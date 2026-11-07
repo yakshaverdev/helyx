@@ -4,10 +4,11 @@
 
 use crate::check::{
     Broken, Checked, boolean, field, int_key, int_or_null, list_of, object, one_of, optional,
-    optional_one_of, string, string_or_null,
+    optional_one_of, seq_key, string, string_or_null,
 };
 use crate::json::Json;
 use crate::message::{Ask, Block, Message, Queue, Role, parse_tool_call};
+use crate::seq::Seq;
 
 /// What `message_end` says of a turn that did not end well.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -61,7 +62,7 @@ pub struct Event {
     pub session_id: String,
     pub instance_id: String,
     pub turn_id: Option<String>,
-    pub seq: u64,
+    pub seq: Seq,
     /// `None` for an event of a type that the client does not know: it skips
     /// the event, and the event still moves `seq`.
     pub data: Option<EventData>,
@@ -77,7 +78,7 @@ pub fn parse_event(value: &Json) -> Checked<Event> {
         session_id: string(map, "session_id", "event session_id")?.to_owned(),
         instance_id: string(map, "instance_id", "event instance_id")?.to_owned(),
         turn_id: string_or_null(map, "turn_id", "event turn_id")?.map(str::to_owned),
-        seq: int_key(map, "seq", "event seq")?,
+        seq: seq_key(map, "seq", "event seq")?,
         data: parse_data(kind, data)?,
     })
 }

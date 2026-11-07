@@ -95,6 +95,17 @@
       {"server": {"type": "event", "sub": "0", "event": {"type": "tool_execution_end", "session_id": "s1", "instance_id": "i1", "turn_id": "t2", "seq": 5, "data": {"message": {"id": "r1", "role": "tool_result", "content": [{"type": "text", "text": "ok"}], "tool_call_id": "c9", "tool_name": "bash", "is_error": false}}}}},
       {"server": {"type": "event", "sub": "0", "event": {"type": "tool_execution_end", "session_id": "s1", "instance_id": "i1", "turn_id": "t2", "seq": 6, "data": {"message": {"id": "r2", "role": "tool_result", "content": [{"type": "text", "text": "ok"}], "tool_name": "bash", "is_error": false}}}}},
       {"expect": {"seq": 6, "messages": ["u1", "r0", "r1", "r2"]}}
+     ]},
+    {"name": "a seq past 2^64 - 1 counts on, and a reconnect with after names it",
+     "steps": [
+      {"client": {"type": "req", "id": "1", "op": "subscribe", "params": {"session": "s1"}}},
+      {"server": {"type": "res", "id": "1", "ok": true, "result": {"sub": "0", "snapshot": {"instance_id": "i1", "seq": 18446744073709551615, "messages": [], "more": false, "turn": null, "model": "fake/echo", "queue": {"steers": 0, "follow_ups": 0, "running": 0, "held": 0, "waiting": 0}, "persisting": true, "usage": {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0, "cost": null, "unknown": false, "list": false}, "context": null, "asks": []}}}},
+      {"server": {"type": "event", "sub": "0", "event": {"type": "notice", "session_id": "s1", "instance_id": "i1", "turn_id": null, "seq": 18446744073709551616, "data": {"text": "n"}}}},
+      {"expect": {"instance_id": "i1", "seq": 18446744073709551616, "messages": []}},
+      {"close": null},
+      {"client": {"type": "req", "id": "2", "op": "subscribe", "params": {"session": "s1", "after": {"instance_id": "i1", "seq": 18446744073709551616}}}},
+      {"server": {"type": "res", "id": "2", "ok": true, "result": {"sub": "0", "replay": [{"type": "notice", "session_id": "s1", "instance_id": "i1", "turn_id": null, "seq": 18446744073709551617, "data": {"text": "n"}}]}}},
+      {"expect": {"instance_id": "i1", "seq": 18446744073709551617, "messages": []}}
      ]}
   ]
 }

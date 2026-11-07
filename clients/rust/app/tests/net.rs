@@ -91,7 +91,7 @@ fn a_follow_survives_a_slow_close() {
     );
     let shared = shared.lock().unwrap();
     let state = shared.client.state("s1").unwrap();
-    assert_eq!((state.seq, state.notices.len()), (5, 1));
+    assert_eq!((state.seq.to_u64(), state.notices.len()), (Some(5), 1));
 }
 
 /// Runs the network thread against one stub connection, `serve`, and gives

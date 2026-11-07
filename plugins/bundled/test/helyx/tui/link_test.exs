@@ -335,6 +335,16 @@ defmodule Helyx.TUI.LinkTest do
     assert SessionList.line(summary, false) =~ ~r/\Aa\?\[2J b  /
   end
 
+  test "a /resume line of a time past the year 9999, which the schema allows, has the capped form" do
+    summary = %Scan.Summary{id: "a", cwd: "/w", model: "m", mtime: 0, prompt: "p"}
+
+    for mtime <- [253_402_300_800, 2 ** 64, 10 ** 1_023] do
+      assert SessionList.line(%{summary | mtime: mtime}, false) == "a  >9999-12-31  m  p"
+    end
+
+    assert SessionList.line(%{summary | mtime: 253_402_300_799}, false) =~ ~r/\Aa  \d{4,5}-/
+  end
+
   test "Escape aborts the turn and /model sets the model over the wire", c do
     :ok = Fake.script(c.core, "slow", [[@slow], ["done"]])
     state = c |> started("fake/slow") |> command("go") |> until(&tool_running?/1)
