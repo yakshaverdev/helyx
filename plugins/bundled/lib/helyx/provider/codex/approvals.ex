@@ -2,26 +2,41 @@ defmodule Helyx.Provider.Codex.Approvals do
   @moduledoc false
   # The server requests of the program (ADR 0013 §4,
   # `docs/research/codex-app-server.md`, "An `apply_patch` approval under
-  # `untrusted` and `read-only`"). An approval request for an item of the
-  # program's own tools, in a Helyx turn, goes to Core as `{:approval,
-  # approval_id, item_id}`, and Core's answer goes back as `accept` or
-  # `decline`. Any other server request gets the JSON-RPC error -32601,
-  # which the program took as the decline of an approval.
+  # `untrusted` and `read-only`"). An approval request of the provider's
+  # thread and its current turn, for an open item of the type that its
+  # method names, goes to Core as `{:approval, approval_id, item_id}`, and
+  # Core's answer goes back as `accept` or `decline`. Any other approval
+  # request with an integer or string id, such as one of a child thread,
+  # of an earlier turn, outside a Helyx turn, or for another item, is
+  # declined at once, with no chain: its `itemId` could name another call
+  # of the current turn, whose hooks would then decide another item. Any
+  # other server request gets the JSON-RPC error -32601, which the program
+  # took as the decline of an approval.
 
   import Helyx.Provider.Codex.Wire
 
-  @methods ~w(item/commandExecution/requestApproval item/fileChange/requestApproval)
+  @types %{
+    "item/commandExecution/requestApproval" => "commandExecution",
+    "item/fileChange/requestApproval" => "fileChange"
+  }
 
   # The approval id is the JSON of the JSON-RPC id, so an integer id and a
-  # string id never give one approval id. A request of a child thread goes
-  # to Core too: its item is no open call of the turn, and Core denies it.
-  def dispatch(%{"id" => rpc_id, "method" => method, "params" => %{"itemId" => item}}, state)
-      when method in @methods and is_binary(item) and (is_integer(rpc_id) or is_binary(rpc_id)) and
-             state.turn_id != nil do
-    approval_id = JSON.encode!(rpc_id)
+  # string id never give one approval id. One over 256 bytes fails the
+  # stream check of Core, and the provider process stops.
+  def dispatch(%{"id" => rpc_id, "method" => method} = request, state)
+      when is_map_key(@types, method) and (is_integer(rpc_id) or is_binary(rpc_id)) do
+    case request["params"] do
+      %{"threadId" => thread, "turnId" => turn, "itemId" => item}
+      when thread == state.thread and turn == state.turn and is_binary(turn) and
+             :erlang.map_get(method, @types) == :erlang.map_get(item, state.items.open) and
+             state.turn_id != nil ->
+        approval_id = JSON.encode!(rpc_id)
+        {[{:approval, approval_id, item}], put_in(state.approvals[approval_id], rpc_id)}
 
-    {[{:approval, approval_id, item}],
-     %{state | approvals: Map.put(state.approvals, approval_id, rpc_id)}}
+      _other ->
+        send_line(state, %{id: rpc_id, result: %{decision: "decline"}})
+        {[], state}
+    end
   end
 
   def dispatch(%{"id" => id}, state) do

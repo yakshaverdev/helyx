@@ -2,9 +2,13 @@
 
 Change: the stream event `{:approval, approval_id, call_id}` and the request `{:approval, turn_id, approval_id, decision}` of `Helyx.Provider`; the check of `approval_id` in `Helyx.Session.Stream.check/1` (`Helyx.Message.approval_id?/1`); the set of chains of a turn (`Helyx.Session.HarnessChains`) and its session module (`Helyx.Session.Server.Approvals`); the chain Task of the hands (`Hands.approve/5`, `Hooks.approve/5`, `Chain.approve/5`); the deny at every turn end before the interrupt; the Codex mapping (`Helyx.Provider.Codex.Approvals`); the research run on codex 0.166.0; `docs/features/hooks.md`, `docs/features/long-lived-harness.md`, and the ADR 0007 update.
 
-The ticket worker hit the 45-minute limit of `/ship` after round 1. The commit holds the code as round 1 reviewed it. The findings below are open: none was fixed after the review, and no round 2 ran.
+The first commit (`7a5227f4`, rebased as `cf43f44a`) stopped at the 45-minute limit after round 1, with the round-1 findings open. The owner decided them on 2026-11-07 (below), and a second `/ship` cycle fixed them in rounds 2 and 3.
+
+Owner decisions of 2026-11-07: finding 1 is fixed in the Codex mapping (own thread and current turn only, any other declined at once, a test with one item id in two threads and two turns); finding 2: AGENTS.md wins, the Core set is `ApprovalChains` / `approval_chains`, and `hooks.md` maps it to ADR 0013's "set of harness chains"; the deny at every turn end stays ("never dropped"); the stub model of the research run stays and the note says so; the other round-1 findings are fixed, and the rewrap of the `hands.ex` moduledoc is undone.
 
 ## Round 1 (full)
+
+The state column shows the state after round 1; the resolution of each finding is in "Round 2".
 
 Bounds sensor (base `d3840c0c`):
 
@@ -37,3 +41,54 @@ The first precommit run failed in Dialyzer (`plugins/bundled` and `apps/coding_a
 The spec agent reran the research script against the local stub (`decline`, `accept`, `error`, `interrupt`) on codex 0.166.0, and every claim of the research note matched.
 
 Failure path: no reproduced defect. Probes: the `approval_id` bounds at the check (1 byte, 256 bytes multibyte, empty, 257 bytes, a cut character, invalid UTF-8, a call id that is not a binary); a pending id with a 5 MB call id that is not valid UTF-8 (the generic failure, its text cut and valid); 25 requests through a live session (8 run, 16 wait, the 25th denied, the second request for a waiting call denied, a decision starts the next one, the abort denies all 24 before the interrupt, each answered once); a turn that ends at `done` while a chain runs (denied, the hook Task killed, the next turn's approval allowed). Not reached: the Codex fake end to end with an oversized string id and the order of the decline and the interrupt on the program's input; chains while the hands refuse after an unconfirmed release; a suspended window between a chain result and the turn end; a session stop with pending requests. Noted, not a finding: each request reads the open calls of the whole transcript, and the requests denied at once have no count bound in a turn.
+
+## Round 2 (reduced: spec and failure path)
+
+The fix of the round-1 findings, and the two specs and the alias removed from `codex/approvals.ex` after round 1 with no review. Base: `HEAD` (`cf43f44a`). Bounds sensor: `4 candidate functions, 0 flagged, 0 without an answer`. Invariant named in the briefs: a provider's approval request runs the `before_tool` chain of a call only when it is the provider's own request for that call in the current turn.
+
+Resolution of round 1:
+
+| Round-1 # | Resolution |
+|---|---|
+| 1 | `Codex.Approvals.dispatch/2` maps only a request of the provider's thread and current turn; any other approval request is declined at once. Tests: `turns_test.exs` "one item id in two threads and two turns", "an approval request after the end of the Helyx turn". |
+| 2 | `Helyx.Session.ApprovalChains`, `approval_chains`; Core comments say "the provider"; `hooks.md` maps the name to the ADR's. |
+| 3 | `hooks.md` "Replaced mechanism" items 6 to 8. |
+| 4 | `hooks.md` Bounds rows for a waiting approval chain and the Codex `approvals` map. |
+| 5 | Tests in `approvals_test.exs`: the deny and the kill of the chain at a `done`, the cut deny reason, the crash of the chain Task, a call of a closed message, a call open in the tool queue, the order deny, aborted, interrupt at an abort, and a decision after the end of its turn. Codex: `turns_test.exs`, an approval with no item and a v1 request. |
+| 6, 7, 8 | Texts fixed: `hooks.md` (the exception of an `:ending` process), ADR 0007 update (decline and error, the text the model reads), `long-lived-harness.md` (the id over 256 bytes). |
+| 9 | The `hands.ex` moduledoc is the base text again; `Hands.tool_call/2` moved to `Hands.State` with `chain_call/2` and `chain_id/1`. |
+| 10 | `Hooks.start/4` uses `Hands.State.chain_call/2`; the test that asks from a hook Task is renamed. The copied bounds 8 and 16 stay (ADR 0013 sets the set's bounds equal to the tool queue's, as two sets). |
+| 12 | The research note states the stub (owner decision). The script stays in `.scratch/`, not committed. |
+
+| # | Source | Finding | Reproduced | Resolution |
+|---|---|---|---|---|
+| 13 | failure path | An approval request for a Helyx tool call whose tool request has not come yet runs a chain; the tool request then runs a second chain on the same call id. Both hook Tasks have the id `{:hook, call_id}`, so `Hooks.orphans/3` at the end of the tool Task kills the approval chain's hook, and the chain Task waits forever: the provider gets no answer until the turn ends. Through Codex: a `dynamicToolCall` item, an approval for it, then its `item/tool/call`. | yes, `Helyx.Test.Connected` probe (no answer in 3.5 s; control 1 s) | Second finding on the binding of a request to its call (round 1 #1), so the mechanism is fixed, not the path: Core keeps one chain for each call id, and a tool request for a call with a pending approval request stops the provider (the generic path), as the opposite order is a deny. Codex binds a request to an open item of the type that its method names, as its tool path binds `item/tool/call` to an open `dynamicToolCall`. Tests: `approvals_test.exs` "a tool request for a call with a pending approval request stops the provider" (fails without the check), `turns_test.exs` "an approval request for an item of another type, or for no open item". |
+| 14 | failure path | Codex sends Core an approval for a `dynamicToolCall` item (constructed; no evidence that a real program does it). | yes, CodexFake | Fixed with 13. |
+| 15 | spec | Two Core comments still said "harness" (`approval_chains.ex`, `server/approvals.ex`). | n/a (rule) | Fixed. |
+| 16 | spec | "Any other request of these two methods gets `decline` ... or with another shape": a request with no `params` got -32601. | yes, spec probe | The mapping reads `params` from the request, so one with no `params` is declined; the text names the integer or string id. Test: `turns_test.exs` request 4. |
+| 17 | spec | The Codex `approvals` Bounds row had no number and said "at the latest at the end of its turn", which does not hold for a request of an ended turn. | n/a (text) | Row rewritten (24 wait for a chain; a late request is denied when the session handles it). |
+| 18 | spec | The devlog was stale; `hooks.md` did not record that Codex itself declines the child-thread request that ADR 0013 §4 names as a Core deny. | n/a (text) | Fixed. |
+| 19 | spec | Credo alias order in `server/approvals.ex` after the rename. | yes, Credo | Fixed. |
+| 20 | spec | `Helyx.Provider`: "a process that the session stopped gets no answer" is not true for a late request (`Approvals.late/4` answers the sender). | n/a (text) | Reworded: at most one answer, and one for every request of a process that the session did not stop. |
+
+The spec agent checked that nothing depended on the removed specs and alias. Not reached by the failure-path budget: an approval during a compaction turn, a request of the old program in the window of `Program.replace`, a resumed thread whose item ids repeat, the bounds of waiting chains.
+
+## Round 3 (reduced: spec and failure path, the last round)
+
+The fixes of round 2 (findings 13 to 20). Base: `HEAD`, scope named in the briefs. The invariant named in the briefs: a provider's approval request runs the `before_tool` chain of a call only when it is the provider's own request for that call in the current turn, and one call id never has two chains in the hands at once.
+
+The round-2 fix holds: the reproduction of finding 13 now stops the provider and fails the turn, and across a turn boundary the hands hold only the new turn's Tasks of a call id (the cancel of the old turn ends its Tasks first). The spec agent found no conflict of the new Core stop with ADR 0013, and the Codex item-type check agrees with the research note (the `item/started` of the item comes first).
+
+| # | Source | Finding | Reproduced | State |
+|---|---|---|---|---|
+| 21 | failure path | An approval request for a Helyx call that Core answered, before the provider's own `tool_result` event closes it, runs the `before_tool` chain with `provider` set, and the provider gets `:allow`: `Approvals.open_call/2` leaves out only the calls that run or wait in the tool queue. This breaks ADR 0013 §4 ("a request whose call id names no open harness call of the turn ... gets `{:deny, reason}` at once") and the moduledoc of `Helyx.Session.Server.Approvals`. Codex reaches it only if the program reuses an item id (constructed; no evidence). | yes, `Helyx.Test.Connected` probe | **Open defect.** Third finding on the binding of a call id to its owner (rounds 1 and 2), so the fix is the mechanism: one map for each turn from call id to its owner (a Helyx tool request or a call that the provider runs itself), set by the first tool request or approval request and checked by both. That adds functions and is over 10 lines, so no small-fix round applies (`/ship`). Not fixed. |
+| 22 | failure path | A Helyx tool request for a call id whose approval request was answered runs the call in Helyx (with its own `before_tool` chain, `provider: nil`); the check of round 2 looks only at pending approval requests. No two chains run at once. | yes, `Helyx.Test.Connected` probe | **Open**, same mechanism as 21, fixed by the same map. Reaches Codex only through a reused item id. |
+| 23 | spec | The comment at `lib/helyx/session/server/approvals.ex:9` says "Every request gets exactly one answer, as long as the provider process lives"; a process that the session stopped (`:ending`) lives and gets no answer. The contract texts (`Helyx.Provider`, `hooks.md`) are exact. | yes, spec probe | **Open** (a comment; no code changed after the last round). |
+| 24 | spec | Two guarantees have only a probe, no test: a tool request for a call whose approval chain waits (not runs) stops the provider; an approval request for a call that waits in the tool queue is denied. | probes passed | Open (tests to add) |
+
+Not a finding: a program that sends one JSON-RPC id twice while the first is pending, with no hook, makes `Codex.Approvals.answer/3` raise at the second deny (`Map.pop!`), so the provider process crashes and the turn fails: the generic path, and no real program is known to do it. Two item types for one item id bind to the latest type, and Core takes the latest call of the id; the binding holds.
+
+Not reached: the background-run variant of finding 21, an approval in a compaction turn through Core, and a probe of the `Program.replace` window (read only).
+
+The loop ends here: round 3 reproduced defects whose fix does not meet the conditions of the small-fix round. The commit holds the code as rounds 2 and 3 reviewed it; findings 21 to 24 are open.
+

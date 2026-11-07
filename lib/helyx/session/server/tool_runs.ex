@@ -9,19 +9,23 @@ defmodule Helyx.Session.Server.ToolRuns do
 
   alias Helyx.Message.ToolCall
   alias Helyx.Session
-  alias Helyx.Session.{Hands, Turn}
+  alias Helyx.Session.{ApprovalChains, Hands, ToolQueue, Turn}
   alias Helyx.Session.Server.{Asks, ProviderConn, State}
-  alias Helyx.Session.ToolQueue
 
   # A request of the current turn, of `bytes` encoded call bytes. An open
-  # call id stops the provider process: `{:stop, reason}`.
+  # call id stops the provider process: `{:stop, reason}`; so does the id
+  # of a call with a pending approval request, which the provider named
+  # as a call that it runs itself (`docs/features/hooks.md`, "Harness
+  # approvals"), so one call id never has two chains in the hands.
   def request(%State{activity: %Turn{} = turn} = state, %ToolCall{} = call, bytes, rejection) do
     # A call of an unknown tool runs alone; the hands answer it with an error.
     concurrent? = match?({_tool, true}, state.tools[call.name])
 
-    case ToolQueue.request(turn.tool_queue, call, bytes, rejection, concurrent?) do
-      {:ok, step} -> {:ok, apply_step(state, step)}
-      :open -> {:stop, {:bad_action, {:event, turn.id, {:tool_request, call}}}}
+    with false <- ApprovalChains.pending_call?(turn.approval_chains, call.id),
+         {:ok, step} <- ToolQueue.request(turn.tool_queue, call, bytes, rejection, concurrent?) do
+      {:ok, apply_step(state, step)}
+    else
+      _open -> {:stop, {:bad_action, {:event, turn.id, {:tool_request, call}}}}
     end
   end
 

@@ -7,7 +7,7 @@ defmodule Helyx.Session.Server do
   # the docs of the behaviour are in `Helyx.Session`.
 
   alias Helyx.Reason
-  alias Helyx.Session.{HarnessChains, Lock, Turn}
+  alias Helyx.Session.{ApprovalChains, Lock, Turn}
   alias Helyx.Session.Server.{Approvals, Asks, Calls, Events, Open, ProviderConn, Records}
   alias Helyx.Session.Server.{Settle, State, Steering}
   alias Helyx.Session.Server.{Stop, Summary, ToolRuns, TurnLoop, Wait}
@@ -139,9 +139,9 @@ defmodule Helyx.Session.Server do
   # turn that ended is dropped: the turn's end denied its request.
   defp info(
          {:approval_result, turn_id, call_id, decision},
-         %State{activity: %Turn{id: turn_id, harness_chains: chains}} = state
+         %State{activity: %Turn{id: turn_id, approval_chains: chains}} = state
        ) do
-    if HarnessChains.running?(chains, call_id),
+    if ApprovalChains.running?(chains, call_id),
       do: {:noreply, Approvals.result(state, call_id, decision)},
       else: {:noreply, state}
   end

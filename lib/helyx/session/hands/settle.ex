@@ -40,9 +40,4 @@ defmodule Helyx.Session.Hands.Settle do
 
     state
   end
-
-  @doc false
-  # The entry of the chain Task `pid` of the hands, or nil.
-  def chain(state, pid),
-    do: Enum.find(state.tasks, &match?({_ref, {%Task{pid: ^pid}, _, {:settle, _}, _, _}}, &1))
 end

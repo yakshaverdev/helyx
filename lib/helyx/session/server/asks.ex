@@ -54,7 +54,7 @@ defmodule Helyx.Session.Server.Asks do
 
   # An ask of a Task whose record has the kind, for a call that runs in
   # the tool queue of the current turn, or for a hook Task, a call whose
-  # approval chain runs in its set of harness chains, when a subscriber
+  # approval chain runs in its set of approval chains, when a subscriber
   # can answer. The reply waits for the answer.
   def ask(
         %State{activity: %Turn{tool_queue: %{running: running}} = turn} = state,
@@ -64,7 +64,7 @@ defmodule Helyx.Session.Server.Asks do
         request
       )
       when (is_map_key(running, call_id) or
-              (kind_name == :hook and is_map_key(turn.harness_chains.running, call_id))) and
+              (kind_name == :hook and is_map_key(turn.approval_chains.running, call_id))) and
              elem(:erlang.map_get(pid, turn.askers), 1) == kind do
     if Enum.any?(state.subscribers, fn {_pid, entry} -> elem(entry, 3) end) do
       ask = %{ask_id: Id.new(), call_id: call_id, tool: tool, request: request}

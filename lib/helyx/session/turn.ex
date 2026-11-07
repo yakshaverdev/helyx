@@ -17,9 +17,9 @@ defmodule Helyx.Session.Turn do
   # Task's context. It is nil with no Task: in `submitted` a prepare Task
   # or a `pending` context is an open context request.
   # `tool_queue` holds the Helyx tool requests of the turn
-  # (`Helyx.Session.ToolQueue`), `harness_chains` the approval requests
+  # (`Helyx.Session.ToolQueue`), `approval_chains` the approval requests
   # of the provider for calls of its own tools
-  # (`Helyx.Session.HarnessChains`), `asks` the open asks of its calls,
+  # (`Helyx.Session.ApprovalChains`), `asks` the open asks of its calls,
   # oldest first, and `askers` the call and hook Tasks of the turn that
   # may ask, by pid, with the session's monitor and their kind
   # (`Helyx.Session.Server.Asks`). `compact` is nil for a
@@ -54,7 +54,7 @@ defmodule Helyx.Session.Turn do
     bytes: 0,
     blocks: 0,
     tool_queue: %Helyx.Session.ToolQueue{},
-    harness_chains: %Helyx.Session.HarnessChains{},
+    approval_chains: %Helyx.Session.ApprovalChains{},
     asks: [],
     askers: %{}
   ]
@@ -77,7 +77,7 @@ defmodule Helyx.Session.Turn do
           bytes: non_neg_integer(),
           blocks: non_neg_integer(),
           tool_queue: Helyx.Session.ToolQueue.t(),
-          harness_chains: Helyx.Session.HarnessChains.t(),
+          approval_chains: Helyx.Session.ApprovalChains.t(),
           asks: [{String.t(), GenServer.from(), Helyx.Session.Snapshot.ask(), pid()}],
           askers: %{pid() => {reference(), {:tool | :hook, String.t()}}}
         }

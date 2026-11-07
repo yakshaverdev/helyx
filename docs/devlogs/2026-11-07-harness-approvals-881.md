@@ -9,6 +9,8 @@ Done:
 
 Broke on the way: `hands.ex` passed 400 lines; its moduledoc was rewrapped (same words) and the call context moved to `Hands.Hooks`.
 
-Open: the change hit the 45-minute limit after review round 1, and the findings of that round are not fixed (`docs/reviews/2026-11-07-harness-approvals-881.md`). The first is a defect: the Codex mapping does not check the thread and the turn of a request. The second is a question for the owner: Core names "harness" in `HarnessChains`, which ADR 0013 names and AGENTS.md forbids.
+Second cycle (owner decisions of 2026-11-07, after the first commit): the Codex mapping binds a request to the provider's thread, its current turn, and an open item of the type that its method names, and declines any other at once; Core stops the provider at a Helyx tool request for a call with a pending approval, so one call id never has two chains in the hands (review round 2). The Core set is `Helyx.Session.ApprovalChains`, since AGENTS.md forbids Core to name a harness; `hooks.md` maps it to ADR 0013's "set of harness chains". The deny at every turn end stays, as the ADR's "never dropped" reads. The stub model of the research run stays (the no-network rule). The round-1 tests, the replaced-mechanism rows, and the bounds rows were added, and the rewrap of the `hands.ex` moduledoc was undone; `Hands.tool_call/2` moved to `Hands.State` to keep the file under 400 lines.
 
-The ticket has no triage comment; the decisions come from ADR 0013.
+Open after review round 3, the last: an approval request for a Helyx call that Core answered, and a tool request for a call whose approval request was answered, are not caught, because the session keeps no owner of a call id once its tool request or approval ended (review record, findings 21 and 22). The first breaks ADR 0013 §4. The fix is one map for each turn from call id to its owner; it is a mechanism change past the small-fix round, so it is not in this commit.
+
+The ticket has no triage comment; the decisions come from ADR 0013 and the owner's answers of 2026-11-07.

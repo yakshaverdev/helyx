@@ -6,7 +6,7 @@ defmodule Helyx.Session.ApprovalsTest do
   # approval_id, decision}`.
   use ExUnit.Case, async: true
 
-  import Helyx.Test.Events, only: [collect_until: 1, of_type: 2, snapshot: 1]
+  import Helyx.Test.Events, only: [collect_until: 1, of_type: 2, snapshot: 1, wait_until: 1]
   import Helyx.Test.SessionCase, only: [start_core: 1]
 
   alias Helyx.Message.ToolCall
@@ -21,8 +21,8 @@ defmodule Helyx.Session.ApprovalsTest do
 
   # The controller of `Helyx.Test.Connected` and the test name of the
   # hooks are two names, so two proxies forward to the test process.
-  defp core(hooks) do
-    core = start_core([Helyx.Test.Connected | hooks])
+  defp core(hooks, tools \\ []) do
+    core = start_core([Helyx.Test.Connected | tools ++ hooks])
     test = self()
     Process.register(spawn_link(fn -> forward(test) end), Hook.test_name(core))
     Process.register(spawn_link(fn -> forward(test) end), Helyx.Test.Connected.controller(core))
@@ -49,6 +49,32 @@ defmodule Helyx.Session.ApprovalsTest do
 
   defp events(pid, turn_id, events),
     do: send(pid, {:batch, Enum.map(events, &{:event, turn_id, &1})})
+
+  @upcase %ToolCall{id: "c1", name: "upcase", arguments: %{"text" => "hi"}}
+
+  # The first request of `kinds` that the provider process `pid` reported.
+  defp next_request(pid, kinds) do
+    kinds = Map.from_keys(kinds, true)
+
+    receive do
+      {:conn, kind, ^pid, request} when is_map_key(kinds, kind) -> request
+    after
+      5_000 -> flunk("no request of #{inspect(Map.keys(kinds))}")
+    end
+  end
+
+  defp in_mailbox?(pid, fun) do
+    {:messages, messages} = Process.info(pid, :messages)
+    Enum.any?(messages, fun)
+  end
+
+  # A hook that reports the call it decides and blocks.
+  defp blocking(core, test) do
+    Hook.script(core, Hook.A, :before_tool, fn %{tool: tool} ->
+      send(test, {:deciding, tool})
+      Process.sleep(:infinity)
+    end)
+  end
 
   defp hook_entries(dir) do
     [path] = Path.wildcard(Path.join([dir, "*", "*.jsonl"]))
@@ -161,7 +187,7 @@ defmodule Helyx.Session.ApprovalsTest do
     refute_receive {:conn, :approval, ^pid, _}, @load_ms
   end
 
-  test "a hook of a harness chain asks the clients, and the answer decides" do
+  test "a hook of an approval chain asks the clients, and the answer decides" do
     core = core([Hook.A])
 
     Hook.script(core, Hook.A, :before_tool, fn _ ->
@@ -177,7 +203,7 @@ defmodule Helyx.Session.ApprovalsTest do
     assert_receive {:conn, :approval, ^pid, {:approval, ^turn_id, "0", :allow}}
   end
 
-  test "a call Task's Helyx.Tool.ask/1 of the call id of a harness chain gets not_running" do
+  test "a hook Task that calls Helyx.Tool.ask/1 in an approval chain gets not_running" do
     # A hook Task of the chain may ask; the chain Task itself has no record.
     core = core([Hook.A])
     test = self()
@@ -201,5 +227,162 @@ defmodule Helyx.Session.ApprovalsTest do
     assert_receive {:conn, :approval, ^pid, {:approval, ^turn_id, "0", {:deny, _reason}}}
     refute_receive {:hook, Hook.A, :before_tool, _}, @load_ms
     assert %{} = snapshot(session)
+  end
+
+  test "at a done the pending request is denied, and the hands end its running chain" do
+    core = core([Hook.A])
+    test = self()
+
+    Hook.script(core, Hook.A, :before_tool, fn _ ->
+      :ok = Helyx.Tool.hold({test, :handle})
+      send(test, {:deciding, "fileChange"})
+      Process.sleep(:infinity)
+    end)
+
+    {_session, pid, turn_id} = turn(core)
+    events(pid, turn_id, [{:tool_call, @call}, {:approval, "0", "i1"}])
+    assert_receive {:deciding, "fileChange"}
+    send(pid, {:finish, turn_id})
+
+    assert {:approval, ^turn_id, "0", {:deny, reason}} = next_request(pid, [:approval])
+    assert reason =~ "the turn ended"
+    assert_receive {:released, Hook.A, [{_test, :handle}], :cancel}
+    assert %{data: %{outcome: :done}} = List.last(collect_until(:turn_end))
+    refute_receive {:conn, :approval, ^pid, _}, @load_ms
+  end
+
+  test "a deny reason over the result bound is cut as a result" do
+    core = core([Hook.A])
+    Hook.script(core, Hook.A, :before_tool, fn _ -> {:deny, String.duplicate("é", 40_000)} end)
+    {_session, pid, turn_id} = turn(core)
+    events(pid, turn_id, [{:tool_call, @call}, {:approval, "0", "i1"}])
+
+    assert {:approval, ^turn_id, "0", {:deny, reason}} = next_request(pid, [:approval])
+    assert byte_size(reason) <= Helyx.Message.max_result_bytes() and String.valid?(reason)
+    assert reason =~ "the hook Helyx.Test.Hook.A denied the call: é"
+  end
+
+  @tag :capture_log
+  test "a crash of the chain Task is a deny" do
+    core = core([Hook.A])
+    test = self()
+
+    Hook.script(core, Hook.A, :before_tool, fn _ ->
+      send(test, {:hands, Process.get(:helyx_hands)})
+      Process.sleep(:infinity)
+    end)
+
+    {_session, pid, turn_id} = turn(core)
+    events(pid, turn_id, [{:tool_call, @call}, {:approval, "0", "i1"}])
+    assert_receive {:hands, hands}
+
+    [chain] =
+      for {_ref, {task, _turn, {:approval, "i1"}, _module, _place}} <- :sys.get_state(hands).tasks,
+          do: task.pid
+
+    Process.exit(chain, :crash)
+    assert {:approval, ^turn_id, "0", {:deny, reason}} = next_request(pid, [:approval])
+    assert reason =~ "the approval chain crashed"
+  end
+
+  test "a call of a closed message of the turn with no result is open: its chain runs" do
+    core = core([Hook.A])
+    {_session, pid, turn_id} = turn(core)
+
+    events(pid, turn_id, [
+      {:tool_call, @call},
+      {:message_end, :tool_use, nil},
+      {:approval, "0", "i1"}
+    ])
+
+    assert {:approval, ^turn_id, "0", :allow} = next_request(pid, [:approval])
+    assert_received {:hook, Hook.A, :before_tool, %{call_id: "i1", provider: "conn"}}
+  end
+
+  test "a call that is open in the tool queue is no call of the provider's own tools: denied" do
+    core = core([Hook.A], [Helyx.Test.Tool.Upcase])
+    blocking(core, self())
+    {_session, pid, turn_id} = turn(core)
+
+    events(pid, turn_id, [
+      {:tool_call, @upcase},
+      {:tool_request, "c1", "upcase", %{"text" => "hi"}}
+    ])
+
+    assert_receive {:deciding, "upcase"}
+    events(pid, turn_id, [{:approval, "0", "c1"}])
+    assert {:approval, ^turn_id, "0", {:deny, reason}} = next_request(pid, [:approval])
+    assert reason =~ "no open call"
+    refute_receive {:deciding, _tool}, @load_ms
+  end
+
+  test "at an abort: the deny of each pending request, then the aborted tool results, then the interrupt" do
+    core = core([Hook.A], [Helyx.Test.Tool.Upcase])
+    blocking(core, self())
+    {session, pid, turn_id} = turn(core)
+
+    events(pid, turn_id, [
+      {:tool_call, @upcase},
+      {:tool_request, "c1", "upcase", %{"text" => "hi"}},
+      {:tool_call, @call},
+      {:approval, "0", "i1"}
+    ])
+
+    assert_receive {:deciding, "upcase"}
+    assert_receive {:deciding, "fileChange"}
+    :ok = Session.abort(session)
+
+    kinds = [:approval, :tool_result, :interrupt]
+    assert {:approval, ^turn_id, "0", {:deny, _reason}} = next_request(pid, kinds)
+    assert {:tool_result, ^turn_id, "c1", {:error, "aborted"}} = next_request(pid, kinds)
+    assert {:interrupt, ^turn_id} = next_request(pid, kinds)
+  end
+
+  test "a decision that comes after its turn ended is dropped: the request has one answer" do
+    core = core([Hook.A])
+    test = self()
+
+    Hook.script(core, Hook.A, :before_tool, fn _ ->
+      send(test, {:deciding, self()})
+      receive do: (:go -> :allow)
+    end)
+
+    {session, pid, turn_id} = turn(core)
+    events(pid, turn_id, [{:tool_call, @call}, {:approval, "0", "i1"}])
+    assert_receive {:deciding, hook}
+
+    # The session takes the end of the turn before the decision.
+    spid = Session.pid(session)
+    :ok = :sys.suspend(spid)
+    send(pid, {:finish, turn_id})
+    wait_until(fn -> in_mailbox?(spid, &match?({:stream_end, ^turn_id, _}, &1)) end)
+    send(hook, :go)
+
+    wait_until(fn ->
+      in_mailbox?(spid, &match?({:approval_result, ^turn_id, "i1", :allow}, &1))
+    end)
+
+    :ok = :sys.resume(spid)
+
+    assert {:approval, ^turn_id, "0", {:deny, _reason}} = next_request(pid, [:approval])
+    refute_receive {:conn, :approval, ^pid, _}, @load_ms
+  end
+
+  # A call with a pending approval request is one that the provider runs
+  # itself: a tool request for it breaks the contract, and one call id
+  # never has two chains in the hands.
+  test "a tool request for a call with a pending approval request stops the provider, and the turn fails" do
+    core = core([Hook.A], [Helyx.Test.Tool.Upcase])
+    blocking(core, self())
+    {_session, pid, turn_id} = turn(core)
+    ref = Process.monitor(pid)
+    events(pid, turn_id, [{:tool_call, @upcase}, {:approval, "0", "c1"}])
+    assert_receive {:deciding, "upcase"}
+
+    events(pid, turn_id, [{:tool_request, "c1", "upcase", %{"text" => "hi"}}])
+    assert %{data: %{outcome: :error, error: error}} = List.last(collect_until(:turn_end))
+    assert error =~ "tool_request"
+    assert_receive {:DOWN, ^ref, :process, ^pid, _reason}
+    refute_receive {:deciding, _tool}, @load_ms
   end
 end

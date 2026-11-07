@@ -73,7 +73,7 @@ defmodule Helyx.Session.Server.Wait do
     running? = turn.tool_queue.running != %{}
     data = end_data(outcome)
     state = if running?, do: state, else: emit(state, :turn_end, data)
-    chains? = turn.harness_chains.running != %{}
+    chains? = turn.approval_chains.running != %{}
     hands = if !done? or running? or chains?, do: Hands.request_cancel(state.hands, turn.id)
     wait = if outcome == :aborted, do: interrupt(state, turn), else: %__MODULE__{}
     turn_end = if running?, do: data

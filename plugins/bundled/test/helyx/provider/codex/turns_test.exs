@@ -258,7 +258,7 @@ defmodule Helyx.Provider.Codex.TurnsTest do
     assert byte_size(text) == 1_999 and String.valid?(text)
   end
 
-  test "a server request that is no approval of an item gets an error",
+  test "an approval request with no item is declined at once; any other server request gets an error",
        %{bin: bin, work: work} do
     fresh(
       bin,
@@ -267,7 +267,8 @@ defmodule Helyx.Provider.Codex.TurnsTest do
       [
         j(%{id: 0, method: "item/commandExecution/requestApproval", params: %{threadId: tid()}}),
         j(%{id: "r", method: "item/fileChange/requestApproval", params: %{threadId: tid()}}),
-        j(%{id: 7, method: "item/tool/requestUserInput", params: %{threadId: tid()}})
+        j(%{id: 7, method: "item/tool/requestUserInput", params: %{threadId: tid()}}),
+        j(%{id: 8, method: "applyPatchApproval", params: %{conversationId: tid()}})
       ] ++ reply(tid(), "ok")
     )
 
@@ -278,10 +279,136 @@ defmodule Helyx.Provider.Codex.TurnsTest do
       for %{"id" => id} = line <- stdin(bin, 1), not is_map_key(line, "method"), do: {id, line}
 
     assert [
-             {0, %{"error" => %{"code" => -32_601}}},
-             {"r", %{"error" => %{"code" => -32_601}}},
-             {7, %{"error" => %{"code" => -32_601}}}
+             {0, %{"result" => %{"decision" => "decline"}}},
+             {"r", %{"result" => %{"decision" => "decline"}}},
+             {7, %{"error" => %{"code" => -32_601}}},
+             {8, %{"error" => %{"code" => -32_601}}}
            ] = answers
+  end
+
+  # A request of another thread or turn whose item id names an open call of
+  # the current turn must not get that call's decision.
+  test "one item id in two threads and two turns: only the request of the thread and its turn goes to Core",
+       %{bin: bin, work: work} do
+    approval = fn id, thread, turn, item ->
+      j(%{
+        id: id,
+        method: "item/fileChange/requestApproval",
+        params: %{threadId: thread, turnId: turn, itemId: item}
+      })
+    end
+
+    child = "019a0000-0000-7000-8000-00000000000f"
+
+    fresh(bin, 1, tid(), [
+      started(tid(), %{type: "fileChange", id: "call_1", changes: [], status: "inProgress"}),
+      approval.(1, child, "turn1", "call_1"),
+      approval.(2, tid(), "turn0", "call_1"),
+      approval.(3, child, "turnc", "call_1"),
+      approval.(0, tid(), "turn1", "call_1")
+    ])
+
+    {:ok, state} = connect(work)
+    {_from, actions, state} = turn_on(state)
+
+    {actions, state} =
+      pump(Codex, state, actions, fn actions ->
+        Enum.any?(actions, &match?({:event, _, {:approval, _, _}}, &1))
+      end)
+
+    assert [{:approval, "0", "call_1"}] =
+             for({:event, "t1", {:approval, _, _} = event} <- actions, do: event)
+
+    {_from, _actions, state} = ask(state, {:approval, "t1", "0", :allow})
+    close(state)
+
+    answers =
+      for %{"id" => id} = line <- stdin(bin, 1), not is_map_key(line, "method"), do: {id, line}
+
+    assert [
+             {1, %{"result" => %{"decision" => "decline"}}},
+             {2, %{"result" => %{"decision" => "decline"}}},
+             {3, %{"result" => %{"decision" => "decline"}}},
+             {0, %{"result" => %{"decision" => "accept"}}}
+           ] = answers
+  end
+
+  # The type of the item binds the request to a call of the program's own
+  # tools: a Helyx tool call (`dynamicToolCall`) gets no approval.
+  test "an approval request for an item of another type, or for no open item, is declined at once",
+       %{bin: bin, work: work} do
+    approval = fn id, method, item ->
+      j(%{
+        id: id,
+        method: method,
+        params: %{threadId: tid(), turnId: "turn1", itemId: item}
+      })
+    end
+
+    dynamic = %{
+      type: "dynamicToolCall",
+      id: "call_d",
+      tool: "read",
+      arguments: %{},
+      status: "inProgress"
+    }
+
+    fresh(bin, 1, tid(), [
+      started(tid(), dynamic),
+      started(tid(), %{type: "fileChange", id: "call_f", changes: [], status: "inProgress"}),
+      approval.(1, "item/fileChange/requestApproval", "call_d"),
+      approval.(2, "item/commandExecution/requestApproval", "call_f"),
+      approval.(3, "item/fileChange/requestApproval", "call_x"),
+      j(%{id: 4, method: "item/fileChange/requestApproval"}),
+      approval.(0, "item/fileChange/requestApproval", "call_f")
+    ])
+
+    {:ok, state} = connect(work)
+    {_from, actions, state} = turn_on(state)
+
+    {actions, state} =
+      pump(Codex, state, actions, fn actions ->
+        Enum.any?(actions, &match?({:event, _, {:approval, _, _}}, &1))
+      end)
+
+    assert [{:approval, "0", "call_f"}] =
+             for({:event, "t1", {:approval, _, _} = event} <- actions, do: event)
+
+    {_from, _actions, state} = ask(state, {:approval, "t1", "0", {:deny, "no"}})
+    close(state)
+
+    answers =
+      for %{"id" => id} = line <- stdin(bin, 1), not is_map_key(line, "method"), do: {id, line}
+
+    assert [
+             {1, %{"result" => %{"decision" => "decline"}}},
+             {2, %{"result" => %{"decision" => "decline"}}},
+             {3, %{"result" => %{"decision" => "decline"}}},
+             {4, %{"result" => %{"decision" => "decline"}}},
+             {0, %{"result" => %{"decision" => "decline"}}}
+           ] = answers
+  end
+
+  test "an approval request after the end of the Helyx turn is declined at once",
+       %{bin: bin, work: work} do
+    late =
+      j(%{
+        id: 5,
+        method: "item/fileChange/requestApproval",
+        params: %{threadId: tid(), turnId: "turn1", itemId: "call_1"}
+      })
+
+    fresh(bin, 1, tid(), reply(tid(), "ok") ++ [late])
+
+    assert [{:resume_id, stored_tid(), 0}, {:text_delta, "ok"}, {:done, _}] =
+             run_direct([Message.user("go")], work)
+
+    assert [{5, %{"result" => %{"decision" => "decline"}}}] =
+             for(
+               %{"id" => id} = line <- stdin(bin, 1),
+               not is_map_key(line, "method"),
+               do: {id, line}
+             )
   end
 
   # ADR 0013 §4; docs/research/codex-app-server.md, "An `apply_patch`
@@ -295,6 +422,7 @@ defmodule Helyx.Provider.Codex.TurnsTest do
     fresh(bin, 1, tid(), [
       started(tid(), %{type: "fileChange", id: "call_1", changes: [], status: "inProgress"}),
       approval.(0, "item/fileChange/requestApproval", "call_1"),
+      started(tid(), command("call_2", %{status: "inProgress"})),
       approval.("0", "item/commandExecution/requestApproval", "call_2")
     ])
 

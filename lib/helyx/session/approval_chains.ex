@@ -1,13 +1,13 @@
-defmodule Helyx.Session.HarnessChains do
+defmodule Helyx.Session.ApprovalChains do
   @moduledoc false
-  # The set of harness chains of one turn (ADR 0013 §3 and §4,
+  # The set of approval chains of one turn (ADR 0013 §3 and §4,
   # `docs/features/hooks.md`, "Harness approvals"): the approval requests
   # of the provider for calls of its own tools, each decided by the
   # `before_tool` chain of its call. `running` holds the chains that run on
   # the hands, by call id, with the approval id of their request, and
   # `waiting` at most @max_waiting more, in arrival order. A call has at
   # most one pending request (its chain runs or waits). The set takes no
-  # place of the tool queue: the program, not the hands, gives the result
+  # place of the tool queue: the provider, not the hands, gives the result
   # of the call.
   #
   # The functions return the struct with the effects for the session, in
@@ -41,7 +41,7 @@ defmodule Helyx.Session.HarnessChains do
   def pending?(%__MODULE__{} = chains, approval_id), do: approval_id in pending(chains)
 
   # The request `approval_id`, of an id that is not pending, for the open
-  # harness call `call`. A second request for a call, and a request past
+  # call `call` that the provider runs itself. A second request for a call, and a request past
   # the bounds, is denied at once.
   @spec request(t(), String.t(), ToolCall.t()) :: step()
   def request(%__MODULE__{} = chains, approval_id, %ToolCall{id: call_id} = call) do
@@ -90,7 +90,9 @@ defmodule Helyx.Session.HarnessChains do
   def pending(%__MODULE__{} = chains),
     do: Map.values(chains.running) ++ Enum.map(chains.waiting, &elem(&1, 0))
 
-  defp pending_call?(chains, call_id),
+  # Whether the call `call_id` has a pending request.
+  @spec pending_call?(t(), String.t()) :: boolean()
+  def pending_call?(%__MODULE__{} = chains, call_id),
     do:
       is_map_key(chains.running, call_id) or
         Enum.any?(chains.waiting, fn {_id, call} -> call.id == call_id end)

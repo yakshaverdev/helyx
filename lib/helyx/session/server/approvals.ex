@@ -2,16 +2,17 @@ defmodule Helyx.Session.Server.Approvals do
   @moduledoc false
   # The approval requests of the provider for calls of its own tools
   # (ADR 0013 §4, `docs/features/hooks.md`, "Harness approvals"): the only
-  # writer of `harness_chains` in `Helyx.Session.Turn`. A request names an
+  # writer of `approval_chains` in `Helyx.Session.Turn`. A request names an
   # open call of the turn that the provider runs itself; the `before_tool`
   # chain of that call decides it, in a Task of the hands, and the session
   # answers the provider with `{:approval, turn_id, approval_id, decision}`.
-  # Every request gets exactly one answer: the program waits for it.
+  # Every request gets exactly one answer, as long as the provider process
+  # lives: the provider waits for it.
 
   import Helyx.Session.Server.State, only: [ask: 4, tool_context: 2]
 
   alias Helyx.Message
-  alias Helyx.Session.{Hands, HarnessChains, ToolQueue, Transcript, Turn}
+  alias Helyx.Session.{ApprovalChains, Hands, ToolQueue, Transcript, Turn}
   alias Helyx.Session.Server.{ProviderConn, State}
 
   @no_hook "no before_tool hook decides a call of the provider's own tools"
@@ -19,15 +20,15 @@ defmodule Helyx.Session.Server.Approvals do
   @ended "the turn ended before the approval was decided"
 
   # A request of the current turn. A pending approval id stops the
-  # provider process: `{:stop, reason}`. A request with no open harness
-  # call, or with no `before_tool` hook, is denied at once, with no entry
-  # (ADR 0013 §6).
+  # provider process: `{:stop, reason}`. A request with no open call that
+  # the provider runs itself, or with no `before_tool` hook, is denied at
+  # once, with no entry (ADR 0013 §6).
   def request(%State{activity: %Turn{} = turn} = state, approval_id, call_id) do
-    chains = turn.harness_chains
+    chains = turn.approval_chains
     call = open_call(state, call_id)
 
     cond do
-      HarnessChains.pending?(chains, approval_id) ->
+      ApprovalChains.pending?(chains, approval_id) ->
         {:stop, {:bad_action, {:event, turn.id, {:approval, approval_id, call_id}}}}
 
       call == nil ->
@@ -37,7 +38,7 @@ defmodule Helyx.Session.Server.Approvals do
         {:ok, answer(state, turn.id, approval_id, {:deny, @no_hook})}
 
       true ->
-        {:ok, apply_step(state, HarnessChains.request(chains, approval_id, call))}
+        {:ok, apply_step(state, ApprovalChains.request(chains, approval_id, call))}
     end
   end
 
@@ -49,14 +50,14 @@ defmodule Helyx.Session.Server.Approvals do
   end
 
   # The decision of the running chain of `call_id`.
-  def result(%State{activity: %Turn{harness_chains: chains}} = state, call_id, decision),
-    do: apply_step(state, HarnessChains.result(chains, call_id, decision))
+  def result(%State{activity: %Turn{approval_chains: chains}} = state, call_id, decision),
+    do: apply_step(state, ApprovalChains.result(chains, call_id, decision))
 
   # The turn ended: each pending request is denied now, before an
   # interrupt. No request goes to a process that is `:ending`. The hands
   # kill the running chains.
   def end_turn(%State{conn: %ProviderConn{status: :ready}} = state, %Turn{} = turn) do
-    Enum.reduce(HarnessChains.pending(turn.harness_chains), state, fn approval_id, state ->
+    Enum.reduce(ApprovalChains.pending(turn.approval_chains), state, fn approval_id, state ->
       answer(state, turn.id, approval_id, {:deny, @ended})
     end)
   end
@@ -74,12 +75,13 @@ defmodule Helyx.Session.Server.Approvals do
   end
 
   defp apply_step(%State{activity: turn} = state, {chains, effects}) do
-    turn = %{turn | harness_chains: chains}
+    turn = %{turn | approval_chains: chains}
     Enum.reduce(effects, %{state | activity: turn}, &effect(&2, turn, &1))
   end
 
   defp effect(state, %Turn{model: model} = turn, {:run, _approval_id, call}) do
-    :ok = Hands.approve(state.hands, turn.id, call, tool_context(state, model), model.provider)
+    context = tool_context(state, model)
+    :ok = Hands.Approval.request(state.hands, turn.id, call, context, model.provider)
     state
   end
 

@@ -60,10 +60,12 @@ defmodule Helyx.Provider do
       `{:approval, approval_id, call_id}`: `approval_id` is its own id of
       the request, 1 to 256 bytes of valid UTF-8, and unique among its
       pending requests of the turn; `call_id` names an open call of the
-      turn that it runs itself. The session answers each request once,
-      with `{:approval, turn_id, approval_id, :allow | {:deny, reason}}`
-      (ADR 0013 §4, `docs/features/hooks.md`, "Harness approvals"). A
-      pending id fails the turn.
+      turn that it runs itself. The session answers each request at most
+      once, with `{:approval, turn_id, approval_id, :allow | {:deny,
+      reason}}`, and answers every request of a provider process that it
+      did not stop (ADR 0013 §4, `docs/features/hooks.md`, "Harness
+      approvals"). A pending id fails the turn, and so does a Helyx tool
+      request for a call with a pending request.
 
   The types below give the requests, the actions, and the events. The
   rules of the protocol (replies, events, deadlines) and their reasons are
