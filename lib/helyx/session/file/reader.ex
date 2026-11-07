@@ -14,7 +14,7 @@ defmodule Helyx.Session.File.Reader do
 
   alias Helyx.Message
   alias Helyx.Session.File.{Codec, Scan}
-  alias Helyx.Session.{HookEntry, Id, Transcript}
+  alias Helyx.Session.{HookEntry, Id, ToolRegistry, Transcript}
 
   @no_header "the first entry is not a header"
   @max_summary_bytes Helyx.Summary.max_bytes()
@@ -161,6 +161,7 @@ defmodule Helyx.Session.File.Reader do
          resume_ids: %{},
          summary: nil,
          compacted: nil,
+         activated: [],
          count: 0
        }}
     end
@@ -180,10 +181,10 @@ defmodule Helyx.Session.File.Reader do
   defp check_cwd(_header, _cwd), do: {:error, :not_found}
 
   # After the header the writer only produces messages, model changes,
-  # resume ids, compactions, summaries, system prompts, and hook entries,
-  # every model field a string. Anything else is damage on the disk, never
-  # dropped in silence, except in a system prompt entry (see its clause)
-  # and a hook entry (see its clause).
+  # tools changes, resume ids, compactions, summaries, system prompts, and
+  # hook entries, every model field a string. Anything else is damage on
+  # the disk, never dropped in silence, except in a system prompt entry
+  # (see its clause) and a hook entry (see its clause).
   # A message id is its entry id, and a client keys messages by it, so a
   # repeated one is damage, and so is an id that `Id.new/0` never makes: it
   # could hold `:`, the separator of the ids that `Transcript.repair/1`
@@ -207,6 +208,19 @@ defmodule Helyx.Session.File.Reader do
 
   defp fold(%{"type" => "model_change", "model" => model}, acc) when is_binary(model),
     do: {:ok, %{acc | model: model}}
+
+  # The last tools change gives the activated tool names: distinct tool
+  # names, as many as the cap of the writer at most
+  # (docs/features/mcp-client.md).
+  defp fold(%{"type" => "tools_change", "activated" => names}, acc) when is_list(names) do
+    if length(names) <= ToolRegistry.max_activated() and Enum.all?(names, &Helyx.Tool.name?/1) and
+         length(Enum.uniq(names)) == length(names),
+       do: {:ok, %{acc | activated: names}},
+       else: {:error, {:invalid_file, "a tools change entry is not valid"}}
+  end
+
+  defp fold(%{"type" => "tools_change"}, _acc),
+    do: {:error, {:invalid_file, "a tools change entry is not valid"}}
 
   defp fold(%{"type" => "harness_session"} = entry, acc),
     do: {:ok, %{acc | resume_ids: resume_id(entry, acc)}}

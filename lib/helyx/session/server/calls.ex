@@ -80,6 +80,15 @@ defmodule Helyx.Session.Server.Calls do
   def handle({:put_tools, _group, _value} = request, from, %State{} = state),
     do: source_call(request, from, state)
 
+  # `Helyx.Tool.deferred/2` and `activate/1`, from a tool call.
+  def handle({:deferred, version, wait_ms}, from, %State{} = state),
+    do: Sources.deferred(state, from, version, wait_ms)
+
+  def handle({:activate, names}, {pid, _tag}, %State{} = state) do
+    {activated, state} = Sources.activate(state, call_turn(state, pid), names)
+    {:reply, activated, state}
+  end
+
   # `Helyx.Tool.transcript/0`, from a Task of the hands.
   def handle(:transcript, _from, %State{} = state),
     do: {:reply, Helyx.Summary.kept(state.transcript, state.summary), state}
@@ -117,4 +126,12 @@ defmodule Helyx.Session.Server.Calls do
       :error -> {:reply, :error, state}
     end
   end
+
+  # The turn of a caller that is a running call or hook Task of it (the
+  # askers of `Asks`), else nil: a background run left its turn.
+  defp call_turn(%State{activity: %Helyx.Session.Turn{id: id, askers: askers}}, pid)
+       when is_map_key(askers, pid),
+       do: id
+
+  defp call_turn(_state, _pid), do: nil
 end

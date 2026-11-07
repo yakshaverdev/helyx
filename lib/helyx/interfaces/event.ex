@@ -63,6 +63,11 @@ defmodule Helyx.Event do
       a turn sends it with a nil turn id
     * `:model_change` – `%{model: String.t()}`, the new `provider/model` ref;
       the switch belongs to no turn, so the turn id is always nil
+    * `:tools_change` – `%{activated: [String.t()]}`, the activated deferred
+      tool names after a change, in drop order: with the turn id of the
+      tool call or hook that activated while it runs in that turn, else nil,
+      as for a background run and for a put of a tool source that dropped
+      names at the cap (`docs/features/mcp-client.md`)
     * `:resume_id` – `%{provider: String.t(), resume_id: String.t(), lost:
       boolean, cut: non_neg_integer}`: in a turn, or in the wait after that
       turn, the provider started fresh with a new resume id. `lost` is true when the provider process
@@ -113,6 +118,7 @@ defmodule Helyx.Event do
           | :queue_update
           | :queue_dropped
           | :model_change
+          | :tools_change
           | :resume_id
           | :steer_unconfirmed
           | :compaction

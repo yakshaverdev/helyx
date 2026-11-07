@@ -57,7 +57,7 @@ User stories:
 
 ### Event and session file
 
-- **Event `:tools_change`**, `%{activated: [String.t()]}`, with the turn id of the call that activated.
+- **Event `:tools_change`**, `%{activated: [String.t()]}`, with the turn id of the call or hook that activated while it runs in that turn, else nil: a background run left its turn, and the cap after a put has none (decided in slice 3).
 - **Entry `tools_change`**: `{"type": "tools_change", "activated": [...]}`, plus the `id`, `parent_id`, and `ts` that every entry gets (`lib/helyx/session/file.ex:386-398`). The reader folds it as it folds `model_change`: the last one gives the activated list. Names that no source registers yet stay in the list and are sent once their group lists them.
 - **An older Helyx and this entry.** The reader of today returns `{:error, {:invalid_file, "entry the writer never produces: \"tools_change\""}}` for an entry type it does not know (`reader.ex:128-129`), so an older Helyx refuses to resume a file that holds a `tools_change` entry. The refusal changes nothing on disk, and the file resumes again in a Helyx that knows the entry. The header version stays 1: a version 2 would make an older Helyx refuse every new file, also those with no activation. The rewrite of #834 keeps this rule for unknown entries (branch `ticket/834-resume-reads-all` at `7c9403de`, `reader.ex:227-228`), so slice 3 adds its fold clause to whichever reader is on master then; this run changes no file of `Helyx.Session.File`.
 - **Snapshot** gains `activated`, the same list.
@@ -136,10 +136,13 @@ The fixed tool set of a session.
 | groups of a session | 64, all named in `announce/1`, each 1 to 64 bytes of UTF-8 | `announce/1` past the cap fills the room that earlier announces left with its first groups by name order and returns them, and its notice names the left-out groups that fit in its 2,000 bytes with the count of all, so its work is bounded by the cut; `put_tools/2` of a group that `announce/1` did not keep exits the source |
 | source entries of a session | 1,024 | the group that would pass it rejected whole, notice |
 | activated names | 32 names and 65,536 bytes of the spec JSON that the registry holds for them, checked after each `activate/1` and each `put_tools/2` | the oldest names leave first, the names of the current activation last and lowest ranked first; one `tools_change` entry and event; the search answer lists only the names kept |
+| names of one `activate/1` | a proper list of at most 1,024 strings (the cap of source entries), decided in slice 3 | `ArgumentError` in the tool call |
+| a `tools_change` entry on read | at most 32 distinct names that pass the tool name rule, decided in slice 3 | `{:invalid_file, "a tools change entry is not valid"}`: the resume stops and changes nothing, as for a bad `model_change` |
+| `wait_ms` of `deferred/2` | a non-negative integer, taken as at most 30,000 | a larger one waits 30,000 ms; another value raises in the call |
 | `tool_search` query | 1,024 bytes | error result |
 | `tool_search` limit | 1 to 10 | error result |
 | `tool_search` answer | 10 matches, each description cut to 1,024 bytes in the answer | — |
-| wait of a search | none when a ready group has a match, or no group is `:starting` and no source is pending; else 30,000 ms from the first `deferred/2` call, over the calls of `deferred/2`, each of which waits for one change; the session holds one waiting `deferred/2` per call Task, so at most 8 at once (the call cap) | answers with the matches it has, and names the groups that are still starting |
+| wait of a search | none when a ready group has a match, or no group is `:starting` and no source is pending; else 30,000 ms from the first `deferred/2` call, over the calls of `deferred/2`, each of which waits for one change; the session holds one waiting `deferred/2` per live caller, a Task of the hands with a call context: at most 8 calls, 8 hooks, and 16 background runs, so 32; a waiter whose process ended is dropped before the count (decided in slice 3: background runs and hooks can call too) | answers with the matches it has, and names the groups that are still starting; past 32 live waiters, `deferred/2` answers at once |
 | launch requests and server Tasks of one source | 16 together, one per server | the hands answer a 17th live Task with `{:error, :too_many_tasks}`; the source never sends it |
 | answer of the hands to a launch | no timer of the hands: it comes after the messages before the request, each release within `release_ms` | the server's timer, set at the request, fails the server at 30,000 ms; a late `{:ok, pid}` gets its Task killed |
 | a notice text from a source | 2,000 bytes, as a watchdog start reason (`watchdog.ex:90`) | cut |

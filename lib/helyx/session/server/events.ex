@@ -85,7 +85,8 @@ defmodule Helyx.Session.Server.Events do
       usage: usage,
       context: context,
       asks: Asks.snapshot(state),
-      ui_blocks: UIBlocks.snapshot(state)
+      ui_blocks: UIBlocks.snapshot(state),
+      activated: state.registry.activated
     }
   end
 

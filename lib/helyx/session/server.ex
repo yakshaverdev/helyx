@@ -239,6 +239,10 @@ defmodule Helyx.Session.Server do
   defp info({:source, pid, plugin}, state), do: {:noreply, Sources.started(state, pid, plugin)}
   defp info({:source_down, pid}, state), do: {:noreply, Sources.down(state, pid)}
 
+  # The timer of a caller of `Helyx.Tool.deferred/2` (`Sources.deferred/4`).
+  defp info({:timeout, _timer, {:deferred, ref}}, state),
+    do: {:noreply, Sources.timeout(state, ref)}
+
   # A notice of the sync worker of this instance.
   defp info({:memory_notice, pid, text}, %State{sync: pid} = state),
     do: {:noreply, Events.emit(state, nil, :notice, %{text: text})}

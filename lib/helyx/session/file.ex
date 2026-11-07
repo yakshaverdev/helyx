@@ -12,9 +12,7 @@ defmodule Helyx.Session.File do
   """
 
   alias Helyx.Message
-  alias Helyx.Session.File.Codec
-  alias Helyx.Session.File.Reader
-  alias Helyx.Session.File.Scan
+  alias Helyx.Session.File.{Codec, Reader, Scan}
   alias Helyx.Session.Input
 
   # The most bytes of one line. The largest entry that a session writes is
@@ -43,17 +41,17 @@ defmodule Helyx.Session.File do
 
   defmodule Resumed do
     @moduledoc """
-    What `resume_picked/3` restores. `resume_ids` holds the last resume id of
-    each provider: the id and the number of assistant messages before its entry,
-    and the number at the last compaction of that provider after it, if
-    any (`Helyx.Session.Transcript.label/0`). `summary` is the last
-    `Helyx.Summary`, or nil. `compacted` is the last compaction or summary:
-    the id of the message before it that its entry names (for an entry
-    with no `last_id`, the message before the entry), and its
-    `tokens_after`, or nil (`Helyx.Session.Totals.of/2`).
+    What `resume_picked/3` restores. `resume_ids` holds the last resume id of each
+    provider: the id and the number of assistant messages before its entry, and the
+    number at the last compaction of that provider after it, if any
+    (`Helyx.Session.Transcript.label/0`). `summary` is the last `Helyx.Summary`, or
+    nil. `compacted` is the last compaction or summary: the id of the message before
+    it that its entry names (for an entry with no `last_id`, the message before the
+    entry), and its `tokens_after`, or nil (`Helyx.Session.Totals.of/2`).
+    `activated` holds the names of the last `tools_change` entry (`mcp-client.md`).
     """
     @enforce_keys [:file, :model, :messages]
-    defstruct [:file, :model, :messages, :summary, :compacted, resume_ids: %{}]
+    defstruct [:file, :model, :messages, :summary, :compacted, resume_ids: %{}, activated: []]
 
     @type t :: %__MODULE__{
             file: Helyx.Session.File.t(),
@@ -61,7 +59,8 @@ defmodule Helyx.Session.File do
             messages: [Message.t()],
             summary: Helyx.Summary.t() | nil,
             compacted: Helyx.Session.Totals.compaction() | nil,
-            resume_ids: %{String.t() => Helyx.Session.Transcript.label()}
+            resume_ids: %{String.t() => Helyx.Session.Transcript.label()},
+            activated: [String.t()]
           }
   end
 
@@ -112,8 +111,7 @@ defmodule Helyx.Session.File do
   Makes the sessions folder `dir`, the project folder of `cwd` in it, and
   with a parent link the folder of the children in that (`path/4`). A
   sessions folder that this call makes gets mode 0700 (#683); one that
-  exists keeps its mode. The bound is in `docs/features/coding-agent.md`,
-  row "sessions folder mode".
+  exists keeps its mode (`coding-agent.md`, row "sessions folder mode").
   """
   @spec mkdir(Path.t(), String.t(), map() | nil) :: :ok | {:error, {:create_failed, File.posix()}}
   def mkdir(dir, cwd, parent \\ nil) do
@@ -164,8 +162,7 @@ defmodule Helyx.Session.File do
   Reads the session file at `path`, a result of `pick/3` for `cwd`.
 
   Returns the file handle, the current model, and the transcript: the
-  entries in file order, each the child of the entry before it by
-  `parent_id`. The rules for a damaged file are in
+  entries in file order, chained by `parent_id`. The rules for a damaged file are in
   `docs/features/coding-agent.md`, "Session file": a line that does not
   decode is skipped, and an entry that does not continue the chain is
   `{:invalid_file, text}` with its line number. The read uses its own
@@ -178,8 +175,7 @@ defmodule Helyx.Session.File do
   it is rejected as `{:too_large, text}`, and the file is not mutated.
 
   `:max_entry_bytes` lowers the line limit, and `:max_heap_bytes` the heap
-  cap. They exist so that a test reaches a limit with small input. They
-  are not checked.
+  cap, so that a test reaches a limit with small input; they are not checked.
   """
   @spec resume_picked(Path.t(), String.t(),
           max_entry_bytes: pos_integer(),
@@ -242,7 +238,8 @@ defmodule Helyx.Session.File do
         messages: read.messages,
         summary: read.summary,
         compacted: read.compacted,
-        resume_ids: read.resume_ids
+        resume_ids: read.resume_ids,
+        activated: read.activated
       }
 
       {:ok, resumed, tail, limits}
@@ -255,16 +252,19 @@ defmodule Helyx.Session.File do
 
   @doc "Appends a model change entry recording a model ref switch."
   @spec append_model_change(t(), String.t()) :: t()
-  def append_model_change(%__MODULE__{} = file, model) when is_binary(model) do
-    append(file, %{"type" => "model_change", "model" => model})
-  end
+  def append_model_change(%__MODULE__{} = file, model) when is_binary(model),
+    do: append(file, %{"type" => "model_change", "model" => model})
+
+  @doc "Appends a tools change entry: the activated tool names (`mcp-client.md`)."
+  @spec append_tools_change(t(), [String.t()]) :: t()
+  def append_tools_change(%__MODULE__{} = file, names) when is_list(names),
+    do: append(file, %{"type" => "tools_change", "activated" => names})
 
   @doc """
   Appends a resume id entry: the id that the provider `provider_id` sent in
-  a `{:resume_id, id, cut}` stream event. Like message text, both
-  strings must be valid UTF-8 when they reach the file, and the id must pass
-  `Helyx.Message.resume_id?/1`, else a resume does not use it. The caller
-  checks them where they enter the session.
+  a `{:resume_id, id, cut}` stream event. Both strings must be valid UTF-8,
+  and the id must pass `Helyx.Message.resume_id?/1`, else a resume does not
+  use it; the caller checks them where they enter the session.
   """
   @spec append_resume_id(t(), String.t(), String.t()) :: t()
   def append_resume_id(%__MODULE__{} = file, provider_id, id)

@@ -17,30 +17,23 @@ defmodule Helyx.Tool do
   line, its head, a marker line, and its tail (`Helyx.Message.cut_result/1`).
 
   The optional `check/0` runs once per session start or resume, in the
-  caller, before any file or process is created (`check_available/1`). A
-  tool that needs something from the system, an executable for example,
-  reports it missing there. Then the session fails to start with a clear
-  error, and no call fails later for that reason.
+  caller, before any file or process is created (`check_available/1`): a
+  tool that needs something from the system reports it missing there, the
+  session fails to start with a clear error, and no call fails later for it.
+  The optional `concurrent?/0` returns `true` for a tool whose calls can run
+  with other calls of concurrent tools; any other call runs alone, and at
+  most 8 calls of a turn run at once (`concurrent-tool-calls.md`).
 
-  A tool that creates an OS resource, a process group for example, holds it
-  with `hold/1` before the external work starts, and implements the
-  optional `release/3`. The hands call `release(handles, mode, deadline)`
-  with the handles of a call when it delivers (`:deliver`), and when its
-  turn is aborted (`:cancel`). `deadline` is absolute, in
-  `System.monotonic_time(:millisecond)` on the node of the hands. The return
-  value is the handles still held; `[]` means every one is released. The
-  callback must not wait past the deadline. The tool must also free the
-  resource by itself when its Task dies with no release, because the hands
-  can die first and drop a late `hold/1` (ADR 0004).
-
-  `context/0` gives a call its Core, its session, the tool names of the
-  session, its call id, the model of its turn, and the provider options of
-  the session, for a tool that starts a session of its own.
-
-  The optional `concurrent?/0` returns `true` for a tool whose calls can
-  run at the same time as other calls of concurrent tools: a tool that
-  only reads, for example. A call of any other tool runs alone. At most 8
-  calls run at once in a turn (`docs/features/concurrent-tool-calls.md`).
+  A tool that creates an OS resource holds it with `hold/1` before the
+  external work starts and implements the optional `release/3`: the hands
+  call `release(handles, mode, deadline)` when a call delivers (`:deliver`)
+  and when its turn is aborted (`:cancel`), with an absolute `deadline` in
+  `System.monotonic_time(:millisecond)` on the node of the hands that the
+  callback must not pass, and keep only the handles it returns. It also frees the
+  resource when its Task dies with no release (ADR 0004). `context/0`,
+  `ask/1`, `transcript/0`, and the background runs of `background/0` and
+  `started/1` are for a call; a background run outlives an abort of its
+  turn and ends at the stop of the session (`background-bash.md`).
 
   A tool source exports `source/1` in place of `name/0`, `description/0`,
   and `parameters/0`: its source process puts the tools that it learns at
@@ -48,16 +41,9 @@ defmodule Helyx.Tool do
   each of them. Its process traps exits, and Core kills it when its hands
   end; any other exit signal but a kill is a message, and the source must
   end at an `{:EXIT, pid, reason}` of a pid that is no server Task of its
-  own. Core
-  refuses any other plugin at its start with
-  `{:invalid_tool_plugin, module}` (`docs/features/mcp-client.md`).
-
-  A call can go on in the background: the tool takes a place with
-  `background/0` before the external work starts, gives its start answer
-  with `started/1`, and keeps running. Its return value is then the end of
-  the run, which reaches the session as a user message. An abort of the
-  turn does not end it; the stop of the session does
-  (`docs/features/background-bash.md`).
+  own. Core refuses any other plugin at its start with `{:invalid_tool_plugin,
+  module}`. A tool call finds and activates the deferred tools of the sources
+  with `deferred/2` and `activate/1` (`docs/features/mcp-client.md`).
   """
 
   use Helyx.Interface, mode: :multi
@@ -211,21 +197,15 @@ defmodule Helyx.Tool do
 
   @doc """
   Holds an opaque handle of a resource that a tool call or a provider
-  process created, with the hands that run it. The hands keep the handle
-  outside the Task and give it to the `release/3` of the tool or the
-  provider. They release the handle of a tool call when the call delivers,
-  or when its turn ends while the call runs. They release the handle of a
-  provider process when the process ends, and the handles of every Task at
-  the stop of the session. Once a release leaves a handle unconfirmed, the
-  hands refuse every later tool call
-  (`docs/features/tool-resource-release.md`). When the hands die first,
-  no release runs: the tool or the provider must free the resource when
-  its own process dies (ADR 0004).
-  Returns only when the hands hold the handle, so work that starts after it
-  is never unheld. Exits when the caller runs outside the hands, such as
-  `stream/3` in the model Task of `Helyx.Provider.Loop`: a provider holds
-  only from the callbacks of its provider process. Raises when the tool or
-  the provider does not implement `release/3`.
+  process created, with the hands that run it: they keep it outside the
+  Task and give it to the plugin's `release/3` when the call delivers, when
+  its turn ends while it runs, when a provider process ends, and at the
+  stop of the session. Once a release leaves a handle unconfirmed, the
+  hands refuse every later tool call (`tool-resource-release.md`). When the
+  hands die first, no release runs, and the plugin frees the resource when
+  its own process dies (ADR 0004). Returns only when the hands hold the
+  handle. Exits outside the hands, such as in `stream/3` in the model Task
+  of `Helyx.Provider.Loop`; raises for a plugin with no `release/3`.
   """
   @spec hold(term()) :: :ok
   def hold(handle) do
@@ -236,11 +216,10 @@ defmodule Helyx.Tool do
   end
 
   @doc """
-  Ends the hold of handles whose resources the caller released itself
-  with its own `release/3`, such as the program of a provider process that
-  another program replaced. Only a handle that the release confirmed may
-  go: the hands then do not release it again. A handle that the caller
-  does not hold changes nothing. Exits outside the hands, as `hold/1`.
+  Ends the hold of handles whose resources the caller released itself with
+  its own `release/3`, such as the program of a provider process that
+  another program replaced; only handles that the release confirmed go. A
+  handle that the caller does not hold changes nothing. Exits outside the hands.
   """
   @spec unhold([term()]) :: :ok
   def unhold(handles) when is_list(handles) do
@@ -250,16 +229,14 @@ defmodule Helyx.Tool do
   end
 
   @doc """
-  The context of the calling tool call: its Core, the id of its session,
-  the tool names of the session, the name of the called tool, its call id,
-  the model ref of its turn, as `provider/model`, the `:provider_opts`
-  of the session (`Helyx.Session.start/2`), and its ModelContext plugin,
-  nil with none (`docs/features/session-model-context.md`), and `source`,
-  the pid of the source process of a source tool, else nil. The hands set
-  it when the call's Task starts, so it needs no call to them. A hook Task
-  has the context of its call; a `before_settle` hook has no call, and
-  its `tool` and `call_id` are nil (`docs/features/before-settle.md`).
-  Raises in any other process (`docs/features/agent-tool.md`).
+  The context of the calling tool call: its Core, the session id, the tool
+  names of the session, the called tool, its call id, the model ref of its
+  turn as `provider/model`, the session's `:provider_opts`, its ModelContext
+  plugin or nil, and `source`, the pid of the source process of a source
+  tool, else nil. The hands set it when the call's Task starts. A hook Task
+  has the context of its call; a `before_settle` hook has no call, and its
+  `tool` and `call_id` are nil (`before-settle.md`). Raises in any other
+  process (`docs/features/agent-tool.md`).
   """
   @spec context() :: %{
           core: Helyx.Core.name(),
@@ -280,22 +257,18 @@ defmodule Helyx.Tool do
   end
 
   @doc """
-  Asks the clients of the session and waits for the first answer: a JSON
-  object that a client gave with `Helyx.Session.answer/3`. The session
-  emits `request`, a JSON object of valid UTF-8 whose JSON is at most
-  #{Helyx.Session.Ask.max_request_bytes()} bytes, in an `:ask` event with a new ask id, the
-  call id, and the tool name. `{:error, :no_client}` at once when no
-  subscriber can answer (`Helyx.Session.subscribe/2`, `answers: true`),
-  and `{:error, :not_running}` when the call is not a running call of the
-  current turn, such as a background run, or when the caller is not the
-  call's own Task, such as a hook Task or a process that the tool started
-  (`docs/features/hooks.md`), or when the call's result is already in the
-  transcript, which also ends an open ask. The wait has no timeout: the end
-  of the turn ends it, and the hands kill the call. A request with the key `"kind"` is
-  an input UI block, such as a `form`: it must also pass
-  `Helyx.UIBlock.envelope?/1`. Raises on any other request and
-  outside a tool call (`docs/features/question-tool.md`,
-  `docs/features/ui-blocks.md`).
+  Asks the clients and waits for the first answer of
+  `Helyx.Session.answer/3`, a JSON object. The session emits `request`, a
+  JSON object of valid UTF-8 of at most #{Helyx.Session.Ask.max_request_bytes()} bytes, in an
+  `:ask` event with a new ask id, the call id, and the tool name.
+  `{:error, :no_client}` at once when no subscriber can answer
+  (`answers: true`), and `{:error, :not_running}` for a call that is not a
+  running call of the turn, or a caller that is not its own Task
+  (`docs/features/hooks.md`), or a call whose result is in the transcript,
+  which also ends an open ask. No timeout: the end of the turn ends it. A
+  request with the key `"kind"` is an input UI block, such as a `form`, and
+  must also pass `Helyx.UIBlock.envelope?/1`. Raises on another request and
+  outside a call (`question-tool.md`, `ui-blocks.md`).
   """
   @spec ask(map()) :: {:ok, map()} | {:error, :no_client | :not_running}
   def ask(request), do: Helyx.Session.Ask.ask(:tool, request)
@@ -341,28 +314,24 @@ defmodule Helyx.Tool do
   end
 
   @doc """
-  Returns the messages of the session that runs the calling Task of the
-  hands, as the session holds them when it answers: from the first message
-  that its stored summary keeps (`Helyx.Summary.kept/2`), or all of them with no
-  summary. A tool result reaches the transcript through the provider's own
-  events, so the result of an earlier call of the same assistant message
-  can be missing. The call has no deadline, because the session never waits
-  for a Task of the hands, and it exits when the session ends
-  (`docs/features/skills.md`). Exits outside the hands, as `hold/1` does.
+  Returns the messages of the session of the calling Task of the hands as
+  the session holds them: from the first message that its stored summary
+  keeps (`Helyx.Summary.kept/2`), or all of them. The result of an earlier
+  call of the same assistant message can be missing. No deadline: the
+  session never waits for a Task of the hands, and the call exits when the
+  session ends or outside the hands (`docs/features/skills.md`).
   """
   @spec transcript() :: [Helyx.Message.t()]
   def transcript, do: GenServer.call(Process.get(:helyx_session), :transcript, :infinity)
 
   @doc """
   Takes a place for a background run of the calling tool call, before its
-  external work starts. Returns the id of the run and the background
-  folder of the session, mode `0700`, which the session deletes at its
-  stop; a tool keeps its files there, named by the id. `{:error, text}`
-  with no place: the session's 16 places are taken, the folder cannot be
-  made, or the caller is a Task of the hands that is no tool call. A
-  second call gives a new id in the same place. A run that gave its start
-  answer keeps its place until a turn takes its end; any other call frees
-  it when its Task ends. Exits outside the hands, as `hold/1` does.
+  external work starts: the id of the run and the session's background
+  folder, mode `0700`, which the session deletes at its stop. `{:error,
+  text}` when the 16 places are taken, the folder cannot be made, or the
+  caller is no tool call. A second call gives a new id in the same place.
+  A run that gave its start answer keeps its place until a turn takes its
+  end; any other call frees it when its Task ends. Exits outside the hands.
   """
   @spec background() :: {:ok, %{id: String.t(), dir: String.t()}} | {:error, String.t()}
   def background do
@@ -375,15 +344,12 @@ defmodule Helyx.Tool do
   end
 
   @doc """
-  Gives the start answer of a background run: `text` becomes the result of
-  the call once the `after_tool` hooks ran on it, which can replace its
-  text and its status (`docs/features/hooks.md`), and the tool's Task
-  leaves its turn. It returns once the session took the start answer, so
-  an ask of the run after it gets `{:error, :not_running}`. The Task then
-  runs on; its return value, or its crash, is the end of the run. Raises
-  in a Task that is no tool call of a turn, such as a run that gave its
-  start answer, and in a tool call that took no place with
-  `background/0`. Exits outside the hands, as `hold/1` does.
+  Gives the start answer of a background run: `text`, after the
+  `after_tool` hooks, which can replace its text and its status (`hooks.md`),
+  becomes the result of the call, and the Task leaves its turn. It returns once the session took it, so a later ask
+  of the run gets `{:error, :not_running}`; the Task runs on, and its
+  return or crash ends the run. Raises in a Task that is no tool call of a
+  turn and in a call with no place of `background/0`; exits outside the hands.
   """
   @spec started(String.t()) :: :ok
   def started(text) when is_binary(text) do
@@ -403,9 +369,8 @@ defmodule Helyx.Tool do
   returns a ref at once. The hands answer `{ref, {:ok, pid}}`, or `{ref,
   {:error, :unconfirmed | :too_many_tasks}}` (16 server Tasks per source).
   The Task links to its source before `fun` runs and does not trap exits;
-  its `hold/1` handles go to the plugin's `release/3` when it ends, and
-  then the source gets `{ref, :released, :ok | :unconfirmed}`. Exits
-  outside a source process (`docs/features/mcp-client.md`).
+  its `hold/1` handles go to the plugin's `release/3` when it ends, then
+  the source gets `{ref, :released, :ok | :unconfirmed}`. Exits outside a source.
   """
   @spec launch((-> term())) :: reference()
   def launch(fun) when is_function(fun, 0) do
@@ -427,17 +392,49 @@ defmodule Helyx.Tool do
   def announce(groups), do: source_call({:announce, groups})
 
   @doc """
-  Puts a group that the source announced: `:starting`, `{:ok, entries}`,
-  or `{:error, text}`. Each replaces the group's entries; `:starting` and
-  an error leave none. An entry is `%{name:, description:, parameters:,
-  exposure: :direct}`; the session rejects one entry that breaks a bound
-  with a notice, keeps the rest, and rejects a group whole when the
-  session would hold more than 1,024 source entries. The bounds are in
-  `docs/features/mcp-client.md`, "Bounds". Any other value, a group that
-  was not kept, and a call outside a source process exit the caller.
+  Puts a group that the source kept: `:starting`, `{:ok, entries}`, or
+  `{:error, text}`, which replaces its entries (`:starting` and an error
+  leave none). An entry is `%{name:, description:, parameters:, exposure:
+  :direct | :deferred}`; one that breaks a bound is left out with a notice,
+  and a group whole when the session would hold more than 1,024 source
+  entries (`mcp-client.md`, "Bounds"). Another value, a group not kept, and
+  a call outside a source process exit the caller.
   """
   @spec put_tools(String.t(), :starting | {:ok, [map()]} | {:error, String.t()}) :: :ok
   def put_tools(group, value), do: source_call({:put_tools, group, value})
+
+  @doc """
+  From a tool call or a hook: a map of the `version` of the tools of the
+  sources, their deferred `entries` (`name`, `description`, `parameters`,
+  `group`), the `activated` names, the `groups`, and the `pending` sources.
+  At once when the version is past `version` or it is nil, or 32 callers
+  wait; else at the next change, or after `wait_ms`, at most 30,000.
+  """
+  @spec deferred(non_neg_integer() | nil, non_neg_integer()) :: map()
+  def deferred(version, wait_ms)
+      when (is_nil(version) or is_integer(version)) and is_integer(wait_ms) and wait_ms >= 0 do
+    context()
+    request = {:deferred, version, min(wait_ms, 30_000)}
+    GenServer.call(Process.get(:helyx_session), request, :infinity)
+  end
+
+  @doc """
+  From a tool call or a hook: activates the registered deferred tools among
+  `names`, best first, and returns the activated list; a change gives a
+  `tools_change` entry and event. Past 32 names or 65,536 bytes of specs the
+  oldest leave, and in one call the lowest ranked. Raises on anything but a
+  list of at most 1,024 strings (`mcp-client.md`).
+  """
+  @spec activate([String.t()]) :: [String.t()]
+  def activate(names) do
+    context()
+
+    unless is_list(names) and not List.improper?(names) and length(names) <= 1_024 and
+             Enum.all?(names, &is_binary/1),
+           do: raise(ArgumentError, "activate/1 takes a list of at most 1,024 names")
+
+    GenServer.call(Process.get(:helyx_session), {:activate, names}, :infinity)
+  end
 
   defp source_call(request) do
     source!()

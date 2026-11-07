@@ -5,6 +5,7 @@ defmodule Helyx.Session.ToolSourceTest do
 
   import Helyx.Test.Events
   import Helyx.Test.SessionCase, only: [start_core: 1, final_text: 1]
+  import Helyx.Test.SourceCase
 
   alias Helyx.Session
   alias Helyx.Test.Source
@@ -17,12 +18,6 @@ defmodule Helyx.Session.ToolSourceTest do
     %{core: core}
   end
 
-  # The test process observes the `Source` processes of `core`.
-  defp observe(core) do
-    :persistent_term.put({Source, core}, self())
-    on_exit(fn -> :persistent_term.erase({Source, core}) end)
-  end
-
   # A session of `model` and its source process.
   defp start(core, model \\ "test/tools") do
     {:ok, session} = Session.start(core, model: model)
@@ -31,39 +26,6 @@ defmodule Helyx.Session.ToolSourceTest do
     assert_receive {:source_up, src, %{session_id: ^id, core: ^core, cwd: ^cwd}}
     {:ok, _snapshot, _ref} = Session.subscribe(session)
     {session, src}
-  end
-
-  # Runs `fun` in the source process `src` and gives its result.
-  defp in_source(src, fun) do
-    send(src, {:do, self(), fun})
-    assert_receive {:done, ^src, result}
-    result
-  end
-
-  defp entry(name, overrides \\ %{}) do
-    Map.merge(
-      %{name: name, description: "d", parameters: %{"type" => "object"}, exposure: :direct},
-      overrides
-    )
-  end
-
-  defp put(src, group, entries) do
-    in_source(src, fn ->
-      {:ok, [^group]} = Helyx.Tool.announce([group])
-      Helyx.Tool.put_tools(group, {:ok, entries})
-    end)
-  end
-
-  defp turn_text(session, text \\ "go") do
-    :ok = Session.prompt(session, text)
-    final_text(collect_until(:turn_end))
-  end
-
-  # The next notice event: the session sent it before its reply to the
-  # source, but the source's answer to the test is another sender's.
-  defp notice do
-    assert_receive {:helyx_event, %Helyx.Event{type: :notice, data: %{text: text}}}
-    text
   end
 
   defp hands(session), do: :sys.get_state(Session.pid(session)).hands

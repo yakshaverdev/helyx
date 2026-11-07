@@ -50,7 +50,8 @@ defmodule Helyx.Session.Server.Open do
            sync: {:replay, resumed.messages},
            summary: resumed.summary,
            resume_ids: resumed.resume_ids,
-           compacted: resumed.compacted
+           compacted: resumed.compacted,
+           registry: Helyx.Session.ToolRegistry.restore(state.registry, resumed.activated)
        }}
     end
   end

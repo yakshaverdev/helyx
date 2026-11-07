@@ -119,6 +119,14 @@ defmodule Helyx.Session.Server.Records do
     emit(%{state | model: ref, provider: provider}, nil, :model_change, %{model: model})
   end
 
+  # A change of the activated tool names: the record on disk and
+  # `tools_change`, with the turn of the call that activated, or nil for the
+  # cap after a put (docs/features/mcp-client.md).
+  def tools_change(%State{} = state, turn_id, activated) do
+    state = persist(state, &Helyx.Session.File.append_tools_change(&1, activated))
+    emit(state, turn_id, :tools_change, %{activated: activated})
+  end
+
   # A resume id of the provider process, with the number of assistant
   # messages now; its event has the turn id that the provider process
   # sent. The provider id is the prefix of the process's model ref:

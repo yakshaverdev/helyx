@@ -1637,3 +1637,20 @@ defmodule Helyx.Test.Source do
 
   defp released?({:stuck, _id}, _mode, _deadline), do: false
 end
+
+defmodule Helyx.Test.Tool.InCall do
+  @moduledoc false
+  # Runs, in a tool call, the function that the test put for the session
+  # (`put/2`), sends its result to the test, and answers with its inspect.
+  use Helyx.Test.Tool, name: "in_call", description: "Runs the test's function."
+
+  def put(session_id, fun), do: :persistent_term.put({__MODULE__, session_id}, {self(), fun})
+
+  @impl true
+  def run(_args, _cwd) do
+    {test, fun} = :persistent_term.get({__MODULE__, Helyx.Tool.context().session_id})
+    result = fun.()
+    send(test, {:in_call, result})
+    {:ok, inspect(result)}
+  end
+end

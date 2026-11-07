@@ -118,3 +118,36 @@ Base `e82013cb`. Bounds sensor: `bounds sensor: 4 candidate functions, 1 flagged
 #### Round 3 (reduced)
 
 No reproduced defect: the failure-path agent matched the notice byte for byte with a reference at 1,999 to 2,002 bytes, multibyte, and 40 random lists. Spec findings, fixed as wording: the slice 10 list lacked the rule of the open launches; the Core check sentence of the doc named only `name/0` and `source/1`; the `announce/1` doc said "with their count" for the count of all; a `refute` in a test could not fail. Kept: no test of the guard for hands that crash or stop normally (the guard acts on any `:DOWN`; a kill is the case that skips `terminate/2`). The loop ended.
+
+## Slice 3: deferred tools and activation
+
+Invariant: a deferred source entry reaches a provider context only while its name is in the session's activated list; `activate/1` and the cap after each put keep that list in drop order within 32 names and 65,536 bytes of spec JSON, older calls first and within one call the lowest ranked first; each change of the list writes one `tools_change` entry and emits one `:tools_change` event, with the turn of a call that runs in it, else nil; a resume restores the list in order; `deferred/2` answers at once when the version moved or it is nil, else at the next change or its bound, and a dead waiter never blocks a live one.
+
+Base `fc06b7ac` (slice 2 follow-up, rebased on master). Bounds sensor:
+
+```
+bounds sensor: 8 candidate functions, 2 flagged, 0 without an answer
+  lib/helyx/interfaces/tool.ex:399  WAIT  def deferred(version, wait_ms)
+  lib/helyx/interfaces/tool.ex:414  WAIT  def activate(names) do
+```
+
+Decided inside the doc's design (no new concept), stated in the doc: the bounds of `activate/1`'s input (1,024 strings), of a `tools_change` entry on read (32 distinct names of the name rule), and of `wait_ms` (taken as at most 30,000).
+
+### Round 1 (full)
+
+Simplify: `capped/2` encodes only the names on the list; `wake/1` builds no view with no waiter; helpers moved to `test/support/source_case.ex`, and `tool_source_test.exs` uses them.
+
+| # | Source | Finding | Check | Resolution |
+| - | ------ | ------- | ----- | ---------- |
+| 1 | failure path, spec, standards | The waiter cap of 8 counted dead waiters (a call aborted while it waited stays until its timer), and live background runs pass 8 too; past the cap a waiting `deferred/2` answered at once, so a search would loop | reproduced (8 aborted waiters; 8 live background runs) | a waiter whose process ended goes before the count; the cap is 32, the live Tasks with a call context (8 calls, 8 hooks, 16 background runs). Test "a waiter whose call ended does not fill the waiters" (33 aborted waiters); it fails with the old code |
+| 2 | failure path, spec, standards | `:tools_change` took the current turn's id, so a background run that activated during a later turn got that turn's id | reproduced | the turn id is that of a caller that is a running call or hook of the current turn (the askers of `Asks`), else nil; the doc and the event doc say so. Test "an activation of a background run has no turn", which activates during a later turn; it fails with the old code |
+| 3 | standards | A FileLength entry for `lib/helyx/interfaces/tool.ex` breaks the rule of `.credo.exs` that the list only shrinks | read | the entry is gone; the moduledoc and the docs of `hold/1`, `unhold/1`, `context/0`, `ask/1`, `transcript/0`, `background/0`, and `started/1` are shorter, with their guarantees kept, so the file is at 400 |
+| 4 | Codex | An activated name stays when its entry leaves or turns direct, so a later deferred entry of that name is active with no new activation | read | rejected: the doc decides that activated names stay while no source registers them ("Names that no source registers yet stay in the list and are sent once their group lists them"), and a tool name of a source is `<server>__<tool>`, so the same name is the same tool of the same server |
+| 5 | spec | No test at exactly 65,536 bytes, of the list on disk after the cap drops on a put, of the version at a source's end, of bad `activate/1` lists, of the 30,000 ms clamp | read | a test each |
+| 6 | spec | The snapshot field and the event reach the WebSocket wire under protocol 3, before slice 4 | read | kept for one commit: slice 4 puts them in the schema with a new protocol number; the branch merges with both |
+| 7 | standards | `waiters` lives in the pure registry struct; `File.Reader` calls `ToolRegistry.max_activated/0`; `SourceCase` is a helper module, not a case template | judgement | kept: the waiters wait on the registry's version, which only the registry holds, and Credo's struct field limit of `Server.State` is reached; the reader takes the one source of the cap; the name follows `Helyx.Test.SessionCase` |
+| 8 | standards | Doc rewording in `file.ex` to stay at 400 | judgement | kept: every guarantee of the old text stands |
+
+### Round 2 (reduced: spec and failure path; the failure-path agent of the first try ended at the usage limit of the model account and was rerun)
+
+No reproduced defect. The failure-path agent held both fixes on other paths: 32 helper processes with a copied call context fill the waiters, a 33rd answers at once, and a killed one frees its place; a helper of turn 1 that activates during turn 2 gives a nil turn id; `before_tool` and `after_tool` hooks give the current turn id and one event each; a source's end answers the waiting call. Spec findings, fixed as wording: the shorter `tool.ex` docs had lost that a failed `check/0` stops the start with a clear error, that the release deadline is on the node of the hands, that the `after_tool` hooks of `started/1` can change the status, and that the cap of 8 is of the calls of a turn; the `deferred/2` and `activate/1` docs did not name hooks or the answer at once past 32 waiters; the doc's event line did not name hooks. The loop ended.
