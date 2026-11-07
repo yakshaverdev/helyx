@@ -90,7 +90,8 @@ defmodule Helyx.Session.Server.State do
     # `:idle`, the turn in progress (a `%Turn{}`), or the wait before
     # the next turn can start (a `%Wait{}`).
     activity: :idle,
-    # The steer state: the queues and the sent steers (`Helyx.Session.Queue`).
+    # The steer state: the queues and the sent steers, and a hook's
+    # continue with the count of turns in a row (`Helyx.Session.Queue`).
     queue: %Queue{},
     # The last resume id per provider id, with the number of assistant
     # messages then.

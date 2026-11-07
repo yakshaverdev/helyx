@@ -17,10 +17,12 @@ defmodule Helyx.Session.Hands do
   a handle that is not released give a fixed text. The log gets the kind
   of the term, and the term of a handle that is not released.
 
-  Each hook of a call runs in a Task of its own, released and refused as
-  a call Task (`docs/features/hooks.md`). A tool or a hook holds each OS
-  resource that it creates with `Helyx.Tool.hold/1`, and drops a handle
-  whose resource it released itself with `Helyx.Tool.unhold/1`.
+  Each hook runs in a Task of its own, released and refused as a call
+  Task, from its call Task (`docs/features/hooks.md`) or from a
+  `before_settle` chain Task (`Helyx.Session.Hands.Settle`). A tool or a
+  hook holds each OS resource that it creates with `Helyx.Tool.hold/1`,
+  and drops a handle whose resource it released itself with
+  `Helyx.Tool.unhold/1`.
   When a call ends, however its Task ended, the hands call the tool's
   `release/3` with the handles of the Task, if it holds any. The result
   goes to the session after the release. An unconfirmed handle gets no
@@ -50,7 +52,7 @@ defmodule Helyx.Session.Hands do
 
   alias Helyx.Message.ToolCall
   alias Helyx.Session.Background
-  alias Helyx.Session.Hands.{Chain, Hooks, Outcome, Release, State}
+  alias Helyx.Session.Hands.{Chain, Hooks, Outcome, Release, Settle, State}
 
   @doc """
   Starts the hands for a session. Takes `core:`, `cwd:`,
@@ -194,8 +196,8 @@ defmodule Helyx.Session.Hands do
     end
   end
 
-  # A hook of the chain of the calling call Task (`Hooks`); the answer
-  # comes after the release of the hook's handles.
+  # A hook of the chain of the calling call or chain Task (`Hooks`); the
+  # answer comes after the release of the hook's handles.
   defp call({:hook, request}, {pid, _tag} = from, state),
     do: {:noreply, Hooks.start(state, from, pid, request)}
 
@@ -274,6 +276,9 @@ defmodule Helyx.Session.Hands do
     send(state.session, {:provider_start, ref, result})
     {:noreply, state}
   end
+
+  defp cast({:settle, _ref, _turn_id, _input, _context} = request, state),
+    do: {:noreply, Settle.start(state, request)}
 
   defp cast({:taken, id}, state),
     do: {:noreply, %{state | background: Background.taken(state.background, id)}}
@@ -355,13 +360,13 @@ defmodule Helyx.Session.Hands do
   end
 
   @doc false
-  # `id` is the call id, `{:hook, call_id}`, or `:provider`; `module` is
-  # the tool, the hook, or the provider whose `release/3` gets the Task's
-  # handles.
+  # `id` is the call id, `{:hook, id}`, `{:settle, ref}`, or `:provider`;
+  # `module` is the tool, the hook, or the provider whose `release/3` gets
+  # the Task's handles, or nil for a chain Task, which holds none.
   def spawn_task(state, turn_id, id, module, fun) do
     hands = self()
     session = state.session
-    asker = asker(turn_id, id)
+    asker = Helyx.Session.Ask.asker(turn_id, id)
 
     task =
       Task.Supervisor.async(Helyx.Core.task_supervisor(state.core), fn ->
@@ -377,10 +382,6 @@ defmodule Helyx.Session.Hands do
 
     {task, %{state | tasks: Map.put(state.tasks, task.ref, {task, turn_id, id, module, nil})}}
   end
-
-  defp asker(nil, _id), do: nil
-  defp asker(_turn_id, {:hook, call_id}), do: {:hook, call_id}
-  defp asker(_turn_id, call_id), do: {:tool, call_id}
 
   defp answer(state, turn_id, id, text) do
     send(state.session, Outcome.of(turn_id, id, {:error, text}))

@@ -106,11 +106,14 @@ defmodule Helyx.Core.Plugins do
   (`docs/features/hooks.md`). A hook plugin that exports no point is
   `{:no_hook_point, module}`. A `limit/1` that is not exported, or that
   returns for a point of the plugin a value that is not an integer from 1
-  to `Helyx.Hook.max_limit_ms/0`, is `{:invalid_hook_limit, module}`.
+  to `Helyx.Hook.max_limit_ms/0`, is `{:invalid_hook_limit, module}`. A
+  plugin on `before_settle` whose name is over the bytes of an origin id,
+  the id of its continue message, is `{:invalid_hook_name, module}`
+  (`docs/features/before-settle.md`).
   """
   @spec hooks([module()]) ::
           {:ok, %{Helyx.Hook.point() => [{module(), pos_integer()}]}}
-          | {:error, {:no_hook_point | :invalid_hook_limit, module()}}
+          | {:error, {:no_hook_point | :invalid_hook_limit | :invalid_hook_name, module()}}
   def hooks(plugins) do
     checked =
       Enum.reduce_while(plugins, {:ok, []}, fn plugin, {:ok, acc} ->
@@ -133,10 +136,14 @@ defmodule Helyx.Core.Plugins do
 
     cond do
       points == [] -> {:error, {:no_hook_point, plugin}}
-      Enum.all?(limits, &limit?(elem(&1, 1))) -> {:ok, limits}
-      true -> {:error, {:invalid_hook_limit, plugin}}
+      not Enum.all?(limits, &limit?(elem(&1, 1))) -> {:error, {:invalid_hook_limit, plugin}}
+      :before_settle in points and not name?(plugin) -> {:error, {:invalid_hook_name, plugin}}
+      true -> {:ok, limits}
     end
   end
+
+  # The name of a hook is the origin id of its continue message.
+  defp name?(plugin), do: Helyx.Message.origin?(Helyx.Message.hook_origin(plugin))
 
   defp limit(plugin, point),
     do: if(function_exported?(plugin, :limit, 1), do: plugin.limit(point))

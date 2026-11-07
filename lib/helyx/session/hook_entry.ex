@@ -4,8 +4,8 @@ defmodule Helyx.Session.HookEntry do
   # `hook` entry of the session file"): its encode for the writer and its
   # shape check for the reader. A resume reads nothing from it.
 
-  @points ~w(before_tool after_tool)
-  @answers ~w(allow deny replace failed)
+  @points ~w(before_tool after_tool before_settle)
+  @answers ~w(allow deny replace continue failed)
   # The most bytes of a reason and of the JSON of the arguments.
   @max_bytes 4_096
 
@@ -14,6 +14,7 @@ defmodule Helyx.Session.HookEntry do
   defp answer({:answer, {:allow, reason}}), do: {"allow", cut_text(reason)}
   defp answer({:answer, {:deny, reason}}), do: {"deny", cut_text(reason)}
   defp answer({:answer, {:replace, _result}}), do: {"replace", nil}
+  defp answer({:answer, {:continue, _text}}), do: {"continue", nil}
   defp answer({:failed, how}), do: {"failed", cut_text(how)}
 
   defp cut_text(text), do: text |> cut() |> elem(0)

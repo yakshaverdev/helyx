@@ -29,9 +29,10 @@ Reasons:
 | `:user` | Core, for `prompt`, `steer`, `follow_up` with no `:origin` option | nil |
 | `:background` | Core, for the end of a background run, a lost end too | the run id |
 | `:product` | product code, with the `:origin` option | the product's id, unique per occurrence |
+| `:hook` | Core, for the continue of a `before_settle` hook (#880, `docs/features/before-settle.md`) | the name of the hook module |
 | `:unknown` | the file reader only, for a user message of a file from before #649 | nil |
 
-`Helyx.Session.prompt/3`, `steer/3`, and `follow_up/3` take `origin: %{kind: :product, id: id}`. Any other option list, or a product id that fails the bound below, is `{:error, :invalid_origin}`, and nothing is queued. `:user` and `:background` are for Core only.
+`Helyx.Session.prompt/3`, `steer/3`, and `follow_up/3` take `origin: %{kind: :product, id: id}`. Any other option list, or a product id that fails the bound below, is `{:error, :invalid_origin}`, and nothing is queued. `:user`, `:background`, and `:hook` are for Core only.
 
 The id stays with the message:
 
@@ -44,7 +45,7 @@ The id stays with the message:
 Session file:
 
 - The version stays 1: the fields are additive. The entry id of a message is the message id: `Helyx.Session.File.append_message/2` writes the id of the message and makes none. A message with no id raises (`Codec.encode/1`): the session sets the id of every message that it appends.
-- A user entry has `"origin": {"kind": "user" | "background" | "product", "id": ...}`, with `"id": null` for `:user`.
+- A user entry has `"origin": {"kind": "user" | "background" | "product" | "hook", "id": ...}`, with `"id": null` for `:user`.
 - The reader decodes the entry id as the message id. A user entry with no `origin` key is `:unknown`. A present origin that is malformed (null, an unknown kind, a missing or bad id, an extra key), or an origin on another role, rejects the file as the other bad fields do.
 - A message entry id that repeats an earlier message entry id, or that does not have the format of `Helyx.Session.Id.new/0` (`Id.valid?/1`), rejects the file (`Helyx.Session.File.Reader`): a client must not get two messages with one id, and an id of another format could hold `:`, the separator of the derived ids below. Core never writes either: every entry id since the first session file came from `Id.new/0`. The ids of the other entries reach no client and are not checked.
 

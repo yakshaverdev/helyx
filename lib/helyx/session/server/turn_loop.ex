@@ -14,8 +14,8 @@ defmodule Helyx.Session.Server.TurnLoop do
   import Helyx.Session.Server.Events, only: [emit: 3]
 
   alias Helyx.Session.{Hands, Id, ProviderProcess, Queue, Transcript, Turn}
-  alias Helyx.Session.Server.{Compaction, Prepare, ProviderConn, Records, State, Steering}
-  alias Helyx.Session.Server.{Summary, Wait}
+  alias Helyx.Session.Server.{Compaction, Prepare, ProviderConn, Records, Settle, State}
+  alias Helyx.Session.Server.{Steering, Summary, Wait}
 
   # A client prompt, steer, or follow-up by phase; returns the reply and the
   # state. An abort waits for the hands: a turn that starts now could send
@@ -183,10 +183,11 @@ defmodule Helyx.Session.Server.TurnLoop do
   def handle(message, %State{activity: %Wait{hands: request}} = state) when request != nil,
     do: progress(Wait.cleanup(state, message))
 
-  # Starts a turn with the user messages, in order.
+  # Starts a turn with the user messages, in order, and counts it
+  # (`Queue.count/2`).
   defp begin_turn(%State{} = state, users) do
     turn = %Turn{id: Id.new(), model: state.model, provider: state.provider}
-    state = Steering.open(open_turn(state, turn, %{}))
+    state = Steering.open(open_turn(Steering.count(state, users), turn, %{}))
     call_provider(Enum.reduce(users, state, &Records.append_user(&2, &1)))
   end
 
@@ -315,13 +316,16 @@ defmodule Helyx.Session.Server.TurnLoop do
   # session settles too: a late `:rejected` can queue a steer. A process
   # that ends, the session's or a summary call's, holds the wait. A start
   # with no answer holds it too: the cleanup request went to the hands after
-  # it, and the hands answer in order.
+  # it, and the hands answer in order. A due `before_settle` chain is last.
   def progress(%State{activity: %Wait{}, conn: %ProviderConn{status: :ending}} = state),
     do: state
 
   def progress(%State{activity: %Wait{}, summary_call: %Summary{}} = state), do: state
 
-  def progress(%State{activity: %Wait{hands: nil, reply: nil} = wait} = state) do
+  def progress(%State{activity: %Wait{hands: nil, reply: nil, settle: {:due, _, _}}} = state),
+    do: Settle.start(state)
+
+  def progress(%State{activity: %Wait{hands: nil, reply: nil, settle: nil} = wait} = state) do
     Enum.each(wait.callers, &GenServer.reply(&1, :ok))
     settle(%{state | activity: :idle})
   end
@@ -351,8 +355,9 @@ defmodule Helyx.Session.Server.TurnLoop do
   defp close_switched(state), do: state
 
   # A normal turn end starts the next turn: a waiting compaction, else one
-  # from the queue (`Queue.drain/1`), so each turn end starts one more while
-  # one waits. The drain event goes out between the turns, with no turn id.
+  # from the queue, a hook's continue first (`Queue.drain/1`), so each turn
+  # end starts one more while one waits.
+  # The drain event goes out between the turns, with no turn id.
   defp start_queued(%State{pending_compact: text} = state) when text != nil do
     turn = %Turn{id: Id.new(), model: state.model, provider: state.provider, compact: text}
     call_provider(open_turn(%{state | pending_compact: nil}, turn, %{origin: :compaction}))

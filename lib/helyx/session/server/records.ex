@@ -14,7 +14,7 @@ defmodule Helyx.Session.Server.Records do
 
   alias Helyx.{Message, ModelRef, Session}
   alias Helyx.Session.{HookEntry, Id, Transcript, Turn}
-  alias Helyx.Session.Server.{ProviderConn, State}
+  alias Helyx.Session.Server.{ProviderConn, Settle, State}
 
   # A user message that Core made at its admission, with its id and origin.
   def append_user(state, %Message{role: :user} = user) do
@@ -181,9 +181,10 @@ defmodule Helyx.Session.Server.Records do
   end
 
   # An answer of a hook (docs/features/hooks.md): a `hook` entry of the
-  # file, whatever the turn, and for a failed `after_tool` hook of the
-  # current turn a notice. `Helyx.Session.HookEntry` owns the shape of the
-  # entry, so it goes through the plain append of the file.
+  # file, whatever the turn, and a notice for a failed `after_tool` hook of
+  # the current turn, and for a failed `before_settle` hook of the current
+  # chain, with no turn id: its turn ended. `Helyx.Session.HookEntry` owns
+  # the shape of the entry, so it goes through the plain append of the file.
   def hook(state, turn_id, record) do
     entry = HookEntry.entry(turn_id, record)
     state = persist(state, &Helyx.Session.File.append(&1, entry))
@@ -194,6 +195,14 @@ defmodule Helyx.Session.Server.Records do
           "the hook #{inspect(record.hook)} failed after the call #{record.call_id}: #{reason}"
 
         emit(state, :notice, %{text: text})
+
+      {%{"point" => "before_settle", "answer" => "failed", "reason" => reason}, _activity} ->
+        if Settle.current?(state, turn_id) do
+          text = "the hook #{inspect(record.hook)} failed before the session settled: #{reason}"
+          emit(state, nil, :notice, %{text: text})
+        else
+          state
+        end
 
       _recorded ->
         state

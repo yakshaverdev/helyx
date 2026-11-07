@@ -228,15 +228,17 @@ defmodule Helyx.Tool do
   the model ref of its turn, as `provider/model`, the `:provider_opts`
   of the session (`Helyx.Session.start/2`), and its ModelContext plugin,
   nil with none (`docs/features/session-model-context.md`). The hands set
-  it when the call's Task starts, so it needs no call to them.
+  it when the call's Task starts, so it needs no call to them. A hook Task
+  has the context of its call; a `before_settle` hook has no call, and
+  its `tool` and `call_id` are nil (`docs/features/before-settle.md`).
   Raises in any other process (`docs/features/agent-tool.md`).
   """
   @spec context() :: %{
           core: Helyx.Core.name(),
           session_id: String.t(),
           tools: [String.t()],
-          tool: String.t(),
-          call_id: String.t(),
+          tool: String.t() | nil,
+          call_id: String.t() | nil,
           model: String.t(),
           provider_opts: keyword(),
           model_context: module() | nil

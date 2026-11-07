@@ -9,7 +9,7 @@ defmodule Helyx.Session.Server do
   alias Helyx.Reason
   alias Helyx.Session.{Lock, Turn}
   alias Helyx.Session.Server.{Asks, Calls, Events, Open, ProviderConn, Records, State, Steering}
-  alias Helyx.Session.Server.{Stop, Summary, ToolRuns, TurnLoop, Wait}
+  alias Helyx.Session.Server.{Settle, Stop, Summary, ToolRuns, TurnLoop, Wait}
 
   use GenServer, restart: :temporary, shutdown: Stop.shutdown_ms()
 
@@ -188,6 +188,10 @@ defmodule Helyx.Session.Server do
   # chain can ask (`Asks.ended/2`).
   defp info({:hook_answer, turn_id, record}, state),
     do: {:noreply, state |> Records.hook(turn_id, record) |> Asks.ended(record.pid)}
+
+  # The answer of the `before_settle` chain of a wait (`Settle.answer/3`).
+  defp info({:settle_answer, ref, answer}, state),
+    do: {:noreply, Settle.answer(state, ref, answer)}
 
   # A notice of the sync worker of this instance.
   defp info({:memory_notice, pid, text}, %State{sync: pid} = state),

@@ -9,17 +9,19 @@ defmodule Helyx.Session.Hands.Hooks do
   # answer}` or `{:failed, how}`.
 
   alias Helyx.Session.Hands
-  alias Helyx.Session.Hands.{Outcome, Release, Run}
+  alias Helyx.Session.Hands.{Outcome, Release, Run, Settle}
 
-  # A hook of a call Task of a turn. Once a handle is unconfirmed, a hook
-  # start is refused: a failed hook. A request of a Task that a cancel
-  # killed after it sent it finds no call Task and gets no answer.
+  # A hook of a call Task of a turn, or of a `before_settle` chain Task
+  # (`Settle`), whose id stands for the call id. Once a handle is
+  # unconfirmed, a hook start is refused: a failed hook. A request of a
+  # Task that a cancel killed after it sent it finds no Task and gets no
+  # answer.
   def start(state, from, pid, request) do
-    case Hands.tool_call(state, pid) do
+    case Hands.tool_call(state, pid) || Settle.chain(state, pid) do
       nil ->
         state
 
-      {_ref, {_task, turn_id, call_id, _tool, _place}} ->
+      {_ref, {_task, turn_id, call_id, _module, _place}} ->
         start(state, from, request, turn_id, call_id)
     end
   end
@@ -87,7 +89,7 @@ defmodule Helyx.Session.Hands.Hooks do
     if recorded?(run.point, outcome) do
       record = %{
         point: run.point,
-        call_id: run.call_id,
+        call_id: call_id(run.call_id),
         hook: run.module,
         outcome: outcome,
         call: run.record,
@@ -101,9 +103,14 @@ defmodule Helyx.Session.Hands.Hooks do
     state
   end
 
-  # Every answer of a `before_tool` hook; an `after_tool` keep changes
+  # A `before_settle` hook has no call, and its entry no call id.
+  defp call_id({:settle, _ref}), do: nil
+  defp call_id(call_id), do: call_id
+
+  # Every answer of a `before_tool` hook; a keep and a settle change
   # nothing (ADR 0013 §6).
   defp recorded?(:after_tool, {:answer, :keep}), do: false
+  defp recorded?(:before_settle, {:answer, :settle}), do: false
   defp recorded?(_point, _outcome), do: true
 
   # The runs of the Tasks that a cancel killed: no answer, their callers
