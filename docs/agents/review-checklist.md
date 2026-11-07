@@ -51,6 +51,17 @@ A class of defect that the reviews find a second time gets a mechanical check: i
 - A test that monitors a process it just spawned uses `spawn_monitor/1`. With `Process.monitor(spawn(...))` the process can exit before the monitor is set, and the `:DOWN` reason is `:noproc`. Source: the Codex round 1 finding of #170.
 - A wait that orders two effects (a barrier: act only after another process has handled something) has no timeout that falls through to the act. A timeout there is a path that breaks the order. The failure-path brief states the order as an invariant, and the review treats each timeout, error, and exit of the wait as a path of it. A bound on such a wait comes from the monitor of the process it waits for, or is stated as "unbounded, and accepted". Source: the Codex round 1 finding of #189.
 
+## Accepted holes
+
+The audit of 2026-11-07 found that the accepted-hole sentence often hides a bound, a lifetime, or an authority at the wrong layer. These six questions are the test. Source: `docs/reviews/2026-11-07-accepted-holes.md`, observed and constructed.
+
+- Is every bound measured at the boundary that enforces it: a text bound in the encoded frame, a log bound at the sink? A value legal under the documented bound must not fail a later bound in the same path.
+- Can a secret enter a text path, even as an overlapping copy? A post-hoc mask is not proof; the key must not be in the string space that the formatter reaches.
+- Does truncation keep the open turn, its calls, and their results, and cut only closed history? A client that sees a tail gets `has_more` and a notice.
+- Does every run, session, and build have an explicit lease? An abort revokes the run's lease; a switch detaches a client, not the session; a release deletes only a build with no lease.
+- Is authority checked on delivery, not only at hello? A revoke removes the grant from live subscriptions, and a multi-user product has a per-user executor.
+- Does one status owner decide the result of a run, and can a later signal overwrite it? The first owned signal sets the status.
+
 ## Events
 
 - Every `message_start` gets a `message_end` on the same turn, on success and on failure.
