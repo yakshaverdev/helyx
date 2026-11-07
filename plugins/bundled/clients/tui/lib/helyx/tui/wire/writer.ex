@@ -76,8 +76,8 @@ defmodule Helyx.TUI.Wire.Writer do
           {:error, _reason} = error -> error
         end
 
-      {:error, _ws, _reason} = error ->
-        error
+      {:error, _ws, reason} ->
+        {:error, reason}
     end
   end
 end

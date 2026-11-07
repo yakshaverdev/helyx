@@ -81,9 +81,6 @@ defmodule Helyx.TUI.Wire do
       {:error, conn, text} ->
         Mint.HTTP.close(conn)
         {:error, text}
-
-      {:error, text} ->
-        {:error, text}
     end
   end
 
@@ -99,7 +96,7 @@ defmodule Helyx.TUI.Wire do
   # once, as the old client did, not at the end of a body.
   defp reply(conn, ref, deadline, timeout, acc \\ {nil, [], []}) do
     case left(deadline) do
-      0 -> {:error, "no welcome from the server in #{timeout} ms"}
+      0 -> {:error, conn, "no welcome from the server in #{timeout} ms"}
       wait -> recv_reply(conn, ref, deadline, timeout, acc, wait)
     end
   end
@@ -214,30 +211,31 @@ defmodule Helyx.TUI.Wire do
     end
   end
 
-  defp next(_socket, _ws, [:broken | _rest], _deadline, _timeout), do: {:error, :broken}
+  defp next(socket, ws, messages, deadline, timeout, pending \\ 0)
+  defp next(_socket, _ws, [:broken | _rest], _deadline, _timeout, _pending), do: {:error, :broken}
 
-  defp next(_socket, ws, [message | rest], _deadline, _timeout),
+  defp next(_socket, ws, [message | rest], _deadline, _timeout, _pending),
     do: {:ok, message, ws, rest}
 
-  defp next(socket, ws, [], deadline, timeout) do
+  defp next(socket, ws, [], deadline, timeout, pending) do
     case left(deadline) do
       0 -> {:error, "no welcome from the server in #{timeout} ms"}
-      wait -> recv_next(socket, ws, deadline, timeout, wait)
+      wait -> recv_next(socket, ws, deadline, timeout, wait, pending)
     end
   end
 
-  defp recv_next(socket, ws, deadline, timeout, wait) do
+  defp recv_next(socket, ws, deadline, timeout, wait, pending) do
     case :gen_tcp.recv(socket, 0, wait) do
-      {:ok, data} -> next_read(socket, ws, data, deadline, timeout)
+      {:ok, data} -> next_read(socket, ws, data, deadline, timeout, pending)
       {:error, reason} -> {:error, error_text(%Mint.TransportError{reason: reason}, timeout)}
     end
   end
 
-  defp next_read(socket, ws, data, deadline, timeout) do
-    case Reader.read(ws, data) do
-      {:ok, [], ws} -> next(socket, ws, [], deadline, timeout)
-      {:ok, messages, ws} -> next(socket, ws, messages, deadline, timeout)
-      {:partial, messages, ws} -> next(socket, ws, messages ++ [:broken], deadline, timeout)
+  defp next_read(socket, ws, data, deadline, timeout, pending) do
+    case Reader.read(ws, data, pending) do
+      {:ok, [], ws, pending} -> next(socket, ws, [], deadline, timeout, pending)
+      {:ok, messages, ws, _pending} -> next(socket, ws, messages, deadline, timeout, 0)
+      {:partial, messages, ws} -> next(socket, ws, messages ++ [:broken], deadline, timeout, 0)
       :broken -> {:error, :broken}
     end
   end
