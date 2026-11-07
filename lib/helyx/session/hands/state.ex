@@ -5,9 +5,10 @@ defmodule Helyx.Session.Hands.State do
 
   # `tools` is the tool module by name. `tasks` holds each running Task,
   # its turn, its call id, its tool module, and its place, by monitor
-  # ref: a background Task has no turn and `{:background, id}` for its
-  # call id. The place is the id of the run from `background/0` to the end
-  # of the Task, else nil. `background` holds the ends that no turn took
+  # ref: a background Task keeps its turn for the lease and has
+  # `{:background, id}` for its call id after its start answer. The place
+  # is the id of the run from `background/0` to the end of the Task, else
+  # nil. `background` holds the ends that no turn took
   # (`Helyx.Session.Background`); `background_dir` is the background
   # folder. `held` holds the handles per Task pid. `unconfirmed` holds
   # each handle that a release left unconfirmed; the log got it then.

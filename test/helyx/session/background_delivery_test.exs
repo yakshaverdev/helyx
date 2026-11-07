@@ -120,6 +120,46 @@ defmodule Helyx.Session.BackgroundDeliveryTest do
     assert of_type(events, :queue_update) == [counts(0, 0, 1), counts(0, 0, 0)]
   end
 
+  # #595, ADR 0014 invariant 4: an abort revokes the lease of the turn's
+  # background runs. The run ends, and its end joins no later turn.
+  test "an abort revokes the run of its turn: the run ends and no end joins a later turn",
+       %{core: core} do
+    gate = Helyx.Test.Gate.open()
+    {:ok, session} = Session.start(core, model: "conn/tools")
+    {:ok, _, _} = Session.subscribe(session)
+    :ok = Session.prompt(session, "hello")
+    assert_receive {:conn, :turn, proc, {:turn, turn_id, _}}
+
+    # The call starts while the turn is open: the provider does not end it.
+    send(proc, {:tool_request, turn_id, "bg", "background", %{"gate" => gate}})
+    assert_receive {:waiting, run}
+
+    assert_receive {:conn, :tool_result, ^proc, {:tool_result, _turn_id, "bg", {:ok, start}}}
+
+    [_, id] = Regex.run(~r/\A<background id="(\S+)"/, start)
+    assert queue(session) == counts(1, 0, 0)
+
+    ref = Process.monitor(run)
+    :ok = Session.abort(session)
+
+    assert_receive {:DOWN, ^ref, :process, ^run, _reason}
+
+    events = collect_until(:turn_end)
+
+    refute Enum.any?(events, fn
+             %{type: :message_end, data: %{message: %{origin: %{id: ^id}}}} -> true
+             _other -> false
+           end)
+
+    # The run's count went with it, so no client sees a run that is gone.
+    assert queue(session) == counts(0, 0, 0)
+
+    :ok = Session.prompt(session, "next")
+    assert_receive {:conn, :turn, next, {:turn, next_id, _}}
+    send(next, {:finish, next_id})
+    assert user_texts(collect_until(:turn_end)) == ["next"]
+  end
+
   test "a run that crashes counts down at its end", %{core: core} do
     %{run: run} = started(core)
     Process.exit(run, :kill)

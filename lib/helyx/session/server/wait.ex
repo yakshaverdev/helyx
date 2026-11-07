@@ -43,7 +43,9 @@ defmodule Helyx.Session.Server.Wait do
   # rejected after the turn (`Queue.answer/4`); an abort or a failure gives
   # the queued texts back (`Queue.abort/1`). The hands release the Tasks
   # of the turn before the next turn: always at an abort or a failure, at
-  # `done` when a Helyx tool still runs. The messages of the turn go to
+  # `done` when a Helyx tool still runs. An abort or a failure revokes the
+  # lease of the turn's background runs: their Tasks end, and no end joins
+  # a later turn (ADR 0014, invariant 4). The messages of the turn go to
   # the sync worker (docs/features/memory.md). While one
   # runs, `turn_end` waits for their answer (`cleanup/2`): a start answer
   # that the hands took first then comes before it (#595). Only an
@@ -65,7 +67,14 @@ defmodule Helyx.Session.Server.Wait do
     running? = turn.tool_queue.running != %{}
     data = end_data(outcome)
     state = if running?, do: state, else: emit(state, :turn_end, data)
-    hands = if !done? or running?, do: Hands.request_cancel(state.hands, turn.id)
+
+    hands =
+      cond do
+        !done? -> Hands.request_revoke(state.hands, turn.id)
+        running? -> Hands.request_cancel(state.hands, turn.id)
+        true -> nil
+      end
+
     wait = if outcome == :aborted, do: interrupt(state, turn), else: %__MODULE__{}
     turn_end = if running?, do: data
     wait = %{wait | hands: hands, turn: turn.id, turn_end: turn_end, started_ms: turn.started_ms}
@@ -119,13 +128,21 @@ defmodule Helyx.Session.Server.Wait do
       ) do
     {:reply, result} = :gen_server.check_response(message, request)
     state = if wait.turn_end, do: emit(state, wait.turn, :turn_end, wait.turn_end), else: state
+    state = revoke(result, state)
     %{cleanup_notice(result, state) | phase: %{phase | wait: %{wait | hands: nil, turn_end: nil}}}
   end
+
+  # The runs that the abort or the failure revoked delivered no end, so the
+  # session drops their count (ADR 0014, invariant 4).
+  defp revoke({:revoked, ids, _error}, state), do: Steering.revoked(state, ids)
+  defp revoke(_result, state), do: state
 
   # The abort still replies `:ok` (ADR 0006 §2); a failed cleanup is a
   # notice with a fixed text; the log has the reason, and the hands log
   # the handles. The turn has ended, so the notice has no turn id.
   defp cleanup_notice(:ok, state), do: state
+  defp cleanup_notice({:revoked, _ids, nil}, state), do: state
+  defp cleanup_notice({:revoked, _ids, error}, state), do: cleanup_notice(error, state)
 
   defp cleanup_notice({:error, reason}, state) do
     Logger.warning("abort cleanup failed: " <> reason)

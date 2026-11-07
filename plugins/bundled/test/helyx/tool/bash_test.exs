@@ -603,6 +603,40 @@ defmodule Helyx.Tool.BashTest do
       :ok = GenServer.stop(Helyx.Session.pid(session))
       assert gone_within?(pid)
     end
+
+    # ADR 0014, invariant 4: the abort of the turn revokes the lease of its
+    # run, so the OS process group ends and no end follows.
+    test "a revoke of the turn ends the run's OS process and sends no end",
+         %{core: core, tmp_dir: dir} do
+      {:ok, tools} = Helyx.Tool.specs(core)
+      tools = Map.new(tools, fn {tool, spec} -> {spec.name, tool} end)
+
+      {:ok, hands} =
+        Helyx.Session.Hands.start_link(
+          core: core,
+          cwd: dir,
+          background_dir: Path.join(dir, "background"),
+          session: self(),
+          tools: tools
+        )
+
+      call = %ToolCall{
+        id: "c",
+        name: "bash",
+        arguments: %{"command" => "echo $$ > pid; sleep 300", "background" => true}
+      }
+
+      :ok = Helyx.Session.Hands.run(hands, "t1", call, %{})
+      assert_receive {:tool_result, "t1", "c", {:started, start}}, Helyx.Test.Events.wait_ms()
+      [_, id] = Regex.run(~r/\A<background id="(\S+)"/, start)
+      pid = wait_for_pid(Path.join(dir, "pid"))
+
+      request = Helyx.Session.Hands.request_revoke(hands, "t1")
+      assert {:reply, {:revoked, [^id], nil}} = :gen_server.receive_response(request, :infinity)
+
+      assert gone_within?(pid)
+      refute_received {:background_end, _}
+    end
   end
 
   test "check reports a system without perl" do

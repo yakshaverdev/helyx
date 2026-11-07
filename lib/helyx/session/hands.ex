@@ -50,13 +50,24 @@ defmodule Helyx.Session.Hands do
   end
 
   @doc """
-  Asks the hands to cancel the turn's Tasks and release their handles.
-  Returns at once; read the answer with `:gen_server.check_response/2` or
-  `:gen_server.receive_response/2`: `:ok`, or an error with a fixed text
-  when a handle stays unconfirmed.
+  Asks the hands to cancel the turn's call Tasks and release their handles;
+  a background run of the turn is not a call Task and stays
+  (`docs/features/background-bash.md`). Returns at once; read the answer
+  with `:gen_server.check_response/2` or `:gen_server.receive_response/2`:
+  `:ok`, or an error with a fixed text when a handle stays unconfirmed.
   """
   @spec request_cancel(pid(), String.t()) :: :gen_server.request_id()
   def request_cancel(hands, turn_id), do: :gen_server.send_request(hands, {:cancel, turn_id})
+
+  @doc """
+  Asks the hands to revoke the turn: cancel its call Tasks and its
+  background runs, and release their handles. The answer is
+  `{:revoked, ids, error}`: `ids` are the runs whose start answer the
+  session counted, and `error` is nil or the fixed text of a handle that
+  stays unconfirmed (ADR 0014, invariant 4).
+  """
+  @spec request_revoke(pid(), String.t()) :: :gen_server.request_id()
+  def request_revoke(hands, turn_id), do: :gen_server.send_request(hands, {:revoke, turn_id})
 
   @doc """
   Stops the hands with `:shutdown` at the stop of the session: every Task
@@ -137,14 +148,15 @@ defmodule Helyx.Session.Hands do
     end
   end
 
-  # The start answer of a background run: the result of its call, and its
-  # Task leaves the turn. Any other caller gets `:no_place`; a Task that a
-  # cancel killed gets no reply.
+  # The start answer of a background run: the result of its call. The Task
+  # leaves its turn, but keeps its id, so the abort or the failure of the
+  # turn can revoke the run. Any other caller gets `:no_place`; a Task that
+  # a cancel killed gets no reply.
   defp call({:started, text}, {pid, _tag}, state) do
     case tool_call(state, pid) do
       {ref, {task, turn_id, call_id, tool, id}} when id != nil ->
         send(state.session, outcome(turn_id, call_id, {:started, Background.start(id, text)}))
-        tasks = Map.put(state.tasks, ref, {task, nil, {:background, id}, tool, id})
+        tasks = Map.put(state.tasks, ref, {task, turn_id, {:background, id}, tool, id})
         {:reply, :ok, %{state | tasks: tasks}}
 
       _no_place ->
@@ -154,12 +166,28 @@ defmodule Helyx.Session.Hands do
 
   defp call({:cancel, turn_id}, _from, state) do
     {cancelled, kept} =
-      Map.split_with(state.tasks, fn {_ref, {_task, id, _call_id, _tool, _place}} ->
-        id == turn_id
+      Map.split_with(state.tasks, fn {_ref, {_task, id, call_id, _tool, _place}} ->
+        id == turn_id and not background?(call_id)
       end)
 
     {error, state} = cancel(cancelled, kept, state.release_ms, state)
     {:reply, error || :ok, state}
+  end
+
+  # The abort or the failure of the turn revokes the lease of its background
+  # runs: each Task ends, its handles get a release with `:cancel`, and its
+  # end never arrives, so no later turn takes it (ADR 0014, invariant 4).
+  # The ids are the runs that gave their start answer, the ones the session
+  # counts; a Task that a release left unconfirmed is still answered.
+  defp call({:revoke, turn_id}, _from, state) do
+    {cancelled, kept} =
+      Map.split_with(state.tasks, fn {_ref, {_task, id, _call_id, _tool, _place}} ->
+        id == turn_id
+      end)
+
+    ids = for {_ref, {_task, _turn_id, {:background, id}, _tool, _place}} <- cancelled, do: id
+    {error, state} = cancel(cancelled, kept, state.release_ms, state)
+    {:reply, {:revoked, ids, error}, state}
   end
 
   # The stop of the session: no Task outlives the hands unreleased.
@@ -273,7 +301,7 @@ defmodule Helyx.Session.Hands do
 
   defp outcome(_turn_id, :provider, pid, result), do: {:provider_down, pid, down_reason(result)}
 
-  defp outcome(nil, {:background, id}, _pid, result),
+  defp outcome(_turn_id, {:background, id}, _pid, result),
     do: {:background_end, Background.end_message(id, checked(result))}
 
   defp outcome(turn_id, id, _pid, result), do: outcome(turn_id, id, result)
@@ -350,12 +378,17 @@ defmodule Helyx.Session.Hands do
     state
   end
 
-  # The entry of the turn Task `pid` of a tool call, or nil.
+  # The entry of the turn Task `pid` of a tool call, or nil. A Task that
+  # gave its start answer is a background run: its call id is
+  # `{:background, id}`, and a second place or start answer is refused.
   defp tool_call(state, pid) do
-    Enum.find(state.tasks, fn {_ref, {task, turn_id, _id, _tool, _place}} ->
-      task.pid == pid and turn_id != nil
+    Enum.find(state.tasks, fn {_ref, {task, turn_id, call_id, _tool, _place}} ->
+      task.pid == pid and turn_id != nil and not background?(call_id)
     end)
   end
+
+  defp background?({:background, _id}), do: true
+  defp background?(_call_id), do: false
 
   # The handles went to the log when they became unconfirmed.
   defp refusal, do: "a resource from an earlier call could not be released; the call was not run"

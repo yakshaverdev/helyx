@@ -55,6 +55,12 @@ defmodule Helyx.Session.Server.Steering do
   # A background run started; its end comes through `push_end/2`.
   def started(%State{} = state), do: put(state, {Queue.started(state.queue), []})
 
+  # The runs whose start answer the session counted, ended by the hands at
+  # the abort or the failure of their turn: their count goes, and no end
+  # arrives, so no later turn takes one (`Wait.revoke/2`, ADR 0014,
+  # invariant 4).
+  def revoked(%State{} = state, ids), do: put(state, {Queue.revoked(state.queue, ids), []})
+
   # A turn that takes the ends opened, a prompt's or the provider's, not a
   # compaction: the ends no longer hold, and a submitted turn takes them.
   def open(%State{} = state), do: send_ends(put(state, {Queue.open(state.queue), []}))

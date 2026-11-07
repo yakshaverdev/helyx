@@ -134,6 +134,15 @@ defmodule Helyx.Session.Queue do
   def ended(%__MODULE__{ends: %Ends{running: running}} = queue, text) when running > 0,
     do: push_end(%{queue | ends: %{queue.ends | running: running - 1}}, text)
 
+  # The runs that an abort or a failure revoked delivered no end
+  # (`Helyx.Session.Hands.request_revoke/2`, ADR 0014, invariant 4): their
+  # count goes and nothing is queued. Each id is a counted run, so more ids
+  # than `running` is a contract violation and crashes.
+  @spec revoked(t(), [String.t()]) :: t()
+  def revoked(%__MODULE__{ends: %Ends{running: running} = ends} = queue, ids)
+      when length(ids) <= running,
+      do: %{queue | ends: %{ends | running: running - length(ids)}}
+
   @spec push_end(t(), item()) :: t()
   def push_end(%__MODULE__{ends: ends} = queue, text),
     do: %{queue | ends: %{ends | items: ends.items ++ [text]}}

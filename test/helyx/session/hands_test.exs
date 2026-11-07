@@ -64,6 +64,12 @@ defmodule Helyx.Session.HandsTest do
     result
   end
 
+  defp revoke(hands, turn_id) do
+    request = Helyx.Session.Hands.request_revoke(hands, turn_id)
+    {:reply, result} = :gen_server.receive_response(request, :infinity)
+    result
+  end
+
   defp upcase(hands, id) do
     :ok = run(hands, "t1", call(id, "upcase", %{"text" => "hi"}))
     assert_receive {:tool_result, "t1", ^id, result}
@@ -375,7 +381,7 @@ defmodule Helyx.Session.HandsTest do
       assert Bitwise.band(File.stat!(dir).mode, 0o777) == 0o700
 
       assert_receive {:waiting, pid}
-      # An abort of the turn does not reach the run, nor release it.
+      # A cancel of the turn's call Tasks does not reach the run, nor release it.
       assert cancel(hands, "t1") == :ok
       assert Process.alive?(pid)
       refute_received {:release, _mode, _handles}
@@ -387,6 +393,31 @@ defmodule Helyx.Session.HandsTest do
 
       assert Helyx.Message.text(finish) ==
                ~s(<background id="#{id}" status="done">\ndone\n</background>)
+    end
+
+    # An abort or a failure revokes the lease of the turn's background
+    # runs: the Task ends, its handles get a release with `:cancel`, its end
+    # never arrives, and its place is free (ADR 0014, invariant 4).
+    test "a revoke ends the run of the turn, releases it, and sends no end",
+         %{core: core, dir: dir, gate: gate} do
+      hands = start_hands(core, background_dir: dir)
+      background(hands, "c1", %{"gate" => gate, "handles" => [{:report, self()}]})
+      assert_receive {:tool_result, "t1", "c1", {:started, start}}
+      [_, id] = Regex.run(~r/\A<background id="(.{12})" status="started">/, start)
+      assert_receive {:waiting, pid}
+      ref = Process.monitor(pid)
+
+      assert {:revoked, [^id], nil} = revoke(hands, "t1")
+
+      assert_receive {:DOWN, ^ref, :process, ^pid, _reason}
+      refute_received {:background_end, _}
+      assert [{:cancel, [{:report, _pid}]}] = Released.take()
+
+      # The place went with the Task: 16 runs can start again.
+      for n <- 1..16 do
+        background(hands, "d#{n}", %{"gate" => gate})
+        assert_receive {:tool_result, "t1", _, {:started, _start}}
+      end
     end
 
     test "a crash of the run ends it with an error", %{core: core, dir: dir, gate: gate} do
