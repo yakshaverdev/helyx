@@ -16,8 +16,10 @@ defmodule Helyx.Hub.Store.SQLite do
 
   @behaviour Helyx.Hub.Store
 
+  import Helyx.Hub.Store.SQLite.Query
+
   alias Exqlite.Sqlite3
-  alias Helyx.Hub.Store.SQLite.{Disk, Schema}
+  alias Helyx.Hub.Store.SQLite.{Disk, Records, Schema}
 
   @version Schema.version()
 
@@ -177,6 +179,15 @@ defmodule Helyx.Hub.Store.SQLite do
   end
 
   @impl true
+  def user(db, user_id) do
+    case one(db, "SELECT id, name, created_at FROM users WHERE id = ?1", [user_id]) do
+      {:ok, nil} -> {:error, :not_found}
+      {:ok, row} -> {:ok, info(row)}
+      {:error, _} = error -> error
+    end
+  end
+
+  @impl true
   def add_user(db, %{id: id, name: name, created_at: at}, max, deadline) do
     sql = "SELECT count(*), count(*) FILTER (WHERE name = ?1) FROM users"
 
@@ -259,87 +270,14 @@ defmodule Helyx.Hub.Store.SQLite do
         user_id
       ])
 
-  # A delete and its count of rows in one step; no row is :not_found.
-  defp delete(db, deadline, sql, args) do
-    transaction(db, deadline, fn ->
-      with :ok <- run(db, sql, args), do: changed(db)
-    end)
-  end
-
-  defp changed(db) do
-    case Sqlite3.changes(db) do
-      {:ok, 0} -> {:error, :not_found}
-      {:ok, _} -> :ok
-      {:error, _} -> {:error, :failed}
-    end
-  end
-
-  # One step: the body and its writes commit together or not at all. Any
-  # answer but :ok or {:ok, _} rolls back, and so does a body that ends at or
-  # past the deadline of its Hub call, so its caller, which waits the
-  # deadline and a margin, gets the answer of every write that committed.
-  defp transaction(db, deadline, body) do
-    case exec(db, "BEGIN IMMEDIATE") do
-      :ok -> finish(db, deadline, body.())
-      {:error, _} -> {:error, :failed}
-    end
-  end
-
-  defp finish(db, deadline, :ok), do: commit(db, deadline, :ok)
-  defp finish(db, deadline, {:ok, _} = result), do: commit(db, deadline, result)
-  defp finish(db, _deadline, result), do: rollback(db, result)
-
-  defp commit(db, deadline, result) do
-    if deadline != :infinity and System.monotonic_time(:millisecond) >= deadline do
-      rollback(db, {:error, :timeout})
-    else
-      case exec(db, "COMMIT") do
-        :ok -> result
-        {:error, _} -> rollback(db, {:error, :failed})
-      end
-    end
-  end
-
-  defp rollback(db, result) do
-    _ = exec(db, "ROLLBACK")
-    result
-  end
-
-  defp exec(db, sql) do
-    case Sqlite3.execute(db, sql) do
-      :ok -> :ok
-      {:error, reason} -> {:error, error(reason)}
-    end
-  end
-
-  defp run(db, sql, args) do
-    with {:ok, _} <- all(db, sql, args), do: :ok
-  end
-
-  defp one(db, sql, args) do
-    with {:ok, rows} <- all(db, sql, args), do: {:ok, List.first(rows)}
-  end
-
-  defp all(db, sql, args) do
-    case Sqlite3.prepare(db, sql) do
-      {:ok, stmt} ->
-        try do
-          with :ok <- Sqlite3.bind(stmt, args),
-               {:ok, _rows} = ok <- Sqlite3.fetch_all(db, stmt) do
-            ok
-          else
-            {:error, reason} -> {:error, error(reason)}
-          end
-        after
-          Sqlite3.release(db, stmt)
-        end
-
-      {:error, reason} ->
-        {:error, error(reason)}
-    end
-  end
-
-  # SQLite names a held lock "database is locked"; the rest is a failed query.
-  defp error("database is locked" <> _), do: :busy
-  defp error(_), do: :failed
+  @impl true
+  defdelegate record(db, session_id), to: Records
+  @impl true
+  defdelegate records(db, session_ids), to: Records
+  @impl true
+  defdelegate count_records(db, owner), to: Records
+  @impl true
+  defdelegate put_record(db, record, max, deadline), to: Records
+  @impl true
+  defdelegate touch_record(db, session_id, at, prompt, deadline), to: Records
 end

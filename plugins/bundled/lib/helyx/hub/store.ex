@@ -14,7 +14,11 @@ defmodule Helyx.Hub.Store do
   @typedoc "A user row."
   @type user :: %{id: String.t(), name: String.t(), created_at: integer()}
 
-  @typedoc "A token row. `key` is `SHA-256(token text)`; it never leaves Hub."
+  @typedoc """
+  A token row. `key` is `SHA-256(token text)`; it leaves the Hub process
+  only to the authority of the Hub, which computes the proof of a `hello`,
+  and no frame carries it.
+  """
   @type token :: %{
           id: String.t(),
           user_id: String.t(),
@@ -29,6 +33,28 @@ defmodule Helyx.Hub.Store do
   `{:error, :timeout}`.
   """
   @type deadline :: integer() | :infinity
+
+  @typedoc """
+  A record row (`docs/features/hub.md`, "Store schema"). `prompt` is the
+  first user text that Hub authorized, cut to 1,024 bytes, or `""`.
+  """
+  @type record :: %{
+          session_id: String.t(),
+          owner: String.t(),
+          project_id: String.t() | nil,
+          title: String.t(),
+          cwd: String.t(),
+          model: String.t(),
+          prompt: String.t(),
+          active_at: integer(),
+          visibility: String.t(),
+          archived: boolean(),
+          created_at: integer(),
+          updated_at: integer()
+        }
+
+  @typedoc "The access of a session that has a row."
+  @type access :: %{owner: String.t(), visibility: String.t()}
 
   @typedoc "A token as a listing shows it: no key."
   @type token_info :: %{id: String.t(), name: String.t(), created_at: integer()}
@@ -72,4 +98,42 @@ defmodule Helyx.Hub.Store do
   """
   @callback revoke_token(t(), user_id :: String.t() | :any, token_id :: String.t(), deadline()) ::
               :ok | {:error, :not_found | :timeout | :failed}
+
+  @doc "The user of `user_id`."
+  @callback user(t(), user_id :: String.t()) :: {:ok, user()} | {:error, :not_found | :failed}
+
+  @doc "The record row of a session."
+  @callback record(t(), session_id :: String.t()) ::
+              {:ok, record()} | {:error, :not_found | :failed}
+
+  @doc """
+  The owner and visibility of each id of `session_ids` that has a row, at
+  most 256 ids (the filter of a list).
+  """
+  @callback records(t(), session_ids :: [String.t()]) ::
+              {:ok, %{String.t() => access()}} | {:error, :failed}
+
+  @doc "The number of rows that `owner` owns."
+  @callback count_records(t(), owner :: String.t()) ::
+              {:ok, non_neg_integer()} | {:error, :failed}
+
+  @doc """
+  Inserts a new row with `session_id`, `owner`, `cwd`, `model`, `prompt`,
+  `active_at`, and `created_at`, unless its owner holds `max` rows.
+  """
+  @callback put_record(t(), record :: map(), max :: pos_integer(), deadline()) ::
+              :ok | {:error, :too_many_records | :timeout | :failed}
+
+  @doc """
+  Sets `active_at` of the row of a session to `at`, and its `prompt` to
+  `prompt` when the row has none; a session with no row is left as it is.
+  """
+  @callback touch_record(
+              t(),
+              session_id :: String.t(),
+              at :: integer(),
+              String.t() | nil,
+              deadline()
+            ) ::
+              :ok | {:error, :timeout | :failed}
 end

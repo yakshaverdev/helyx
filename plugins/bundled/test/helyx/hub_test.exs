@@ -393,6 +393,12 @@ defmodule Helyx.HubTest do
     defdelegate tokens(db, id), to: SQLite
     defdelegate add_token(db, token, max, deadline), to: SQLite
     defdelegate revoke_token(db, user, id, deadline), to: SQLite
+    defdelegate user(db, id), to: SQLite
+    defdelegate record(db, id), to: SQLite
+    defdelegate records(db, ids), to: SQLite
+    defdelegate count_records(db, owner), to: SQLite
+    defdelegate put_record(db, record, max, deadline), to: SQLite
+    defdelegate touch_record(db, id, at, prompt, deadline), to: SQLite
 
     def add_user(db, user, max, :infinity), do: SQLite.add_user(db, user, max, :infinity)
 
