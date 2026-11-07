@@ -8,12 +8,15 @@ defmodule Helyx.Session.Server.UIBlocks do
   # for the snapshot. The blocks of a call leave when its result joins the
   # transcript (`call_end/2`); the turn takes the rest with it.
   #
-  # `helyx_calls` holds an entry for each Helyx tool request of the turn
-  # whose call was open at the request and whose result has not joined the
-  # transcript: the UI blocks of the hands' result, `[]` until it comes.
-  # The result message gets them when the provider's `tool_result` event
-  # joins it (`result_blocks/2`). The entry is the window of the call's
-  # blocks: a tool's block only inside it, a provider block never.
+  # `helyx_calls` holds the mark of each Helyx tool request of the turn
+  # whose result has not joined the transcript: the UI blocks of the
+  # hands' result, `[]` until it comes. The result message gets them when
+  # the provider's `tool_result` event joins it (`result_blocks/2`). A
+  # provider block never names a marked call. Whether a call is open is
+  # read from the transcript at each block, not stored: a tool's block
+  # shows only while its call is open, so an early request (before its
+  # tool call) shows blocks once its call streams, and no block comes
+  # after the result.
 
   import Helyx.Session.Server.Events, only: [emit: 3]
 
@@ -22,24 +25,15 @@ defmodule Helyx.Session.Server.UIBlocks do
 
   @max_keys Helyx.UIBlock.max_keys()
 
-  # A Helyx tool request of the turn. A call that has blocks of the
-  # provider is one that the provider ran itself: it names it in a request
-  # too, a contract break (`:shown`), and the session stops the provider.
-  # Only a call that is open gets a window. A request for a call with no
-  # open tool call, one that has its result or that was never streamed,
-  # runs as before (#369) and shows no block, so no block comes after a
-  # result, and every entry ends with its call's result.
+  # A Helyx tool request of the turn: its mark. A call that has blocks of
+  # the provider is one that the provider ran itself: it names it in a
+  # request too, a contract break (`:shown`), and the session stops the
+  # provider.
   def request(%State{activity: %Turn{} = turn} = state, call_id) do
-    cond do
-      Enum.any?(turn.ui_blocks, fn {{id, _key}, _block} -> id == call_id end) ->
-        :shown
-
-      open_call?(state, call_id) ->
+    if Enum.any?(turn.ui_blocks, fn {{id, _key}, _block} -> id == call_id end),
+      do: :shown,
+      else:
         {:ok, %{state | activity: %{turn | helyx_calls: Map.put(turn.helyx_calls, call_id, [])}}}
-
-      true ->
-        {:ok, state}
-    end
   end
 
   # The blocks of the hands' result of a running Helyx call. A call whose
@@ -68,10 +62,9 @@ defmodule Helyx.Session.Server.UIBlocks do
 
   # A block of a running Helyx call (`Helyx.Tool.show/2`), which waits for
   # the reply: `:ok`, `{:error, :not_running}`, or `:too_many` for a new
-  # key past the count, on which the caller raises. The entry in
-  # `helyx_calls` is the window of the call's blocks, from its request to
-  # its result in the transcript, as it is for a provider block: a Task
-  # that runs on after an `aborted` result shows nothing.
+  # key past the count, on which the caller raises. It shows only while
+  # the call is marked and open: not before its tool call streams, and not
+  # after its result, such as a Task that runs on after an `aborted` result.
   def tool_block(
         %State{activity: %Turn{tool_queue: %{running: running}, helyx_calls: calls}} = state,
         call_id,
@@ -79,9 +72,13 @@ defmodule Helyx.Session.Server.UIBlocks do
         block
       )
       when is_map_key(running, call_id) and is_map_key(calls, call_id) do
-    case put(state, call_id, key, block) do
-      {:ok, state} -> {:reply, :ok, state}
-      :too_many -> {:reply, :too_many, state}
+    if open_call?(state, call_id) do
+      case put(state, call_id, key, block) do
+        {:ok, state} -> {:reply, :ok, state}
+        :too_many -> {:reply, :too_many, state}
+      end
+    else
+      {:reply, {:error, :not_running}, state}
     end
   end
 

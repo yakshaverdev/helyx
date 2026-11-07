@@ -293,10 +293,10 @@ defmodule Helyx.Tool do
   blocks of the call at its result. The block is checked here with
   `Helyx.UIBlock.check/1`, and one over the bound is cut. Waits for the
   session: `:ok`, or `{:error, :not_running}` when the call is not a
-  running call of the current turn, such as a background run, when its
-  result is already in the transcript, such as the `aborted` result of a
-  call that runs on after a steer, or when its call was not open at its
-  tool request. Raises on a
+  running call of the current turn, such as a background run, or when its
+  call is not open: its tool call has not streamed yet, or its result is
+  already in the transcript, such as the `aborted` result of a call that
+  runs on after a steer. Raises on a
   bad key or block, on a new key past #{Helyx.UIBlock.max_keys()} for the
   call, and outside a tool call (`docs/features/ui-blocks.md`).
   """

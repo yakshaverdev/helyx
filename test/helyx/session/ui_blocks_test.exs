@@ -26,7 +26,8 @@ defmodule Helyx.Session.UIBlocksTest.Show do
   @moduledoc false
   # Shows a block for each [key, spec] of "shows" with `Helyx.Tool.show/2`,
   # then, with "gate", waits for the gate (`Helyx.Test.Gate`), then shows
-  # each of "after". Gives the inspected replies, joined with ",". A spec is "max" or "big" for a
+  # each of "after". Gives the inspected replies, joined with ",", and with
+  # "result", that one block in its result. A spec is "max" or "big" for a
   # block with an integer of 100 or 101 digits, "huge" for a block over the
   # byte bound, and any other text for a block with that text.
   use Helyx.Test.Tool, name: "show", description: "Shows UI blocks."
@@ -41,7 +42,12 @@ defmodule Helyx.Session.UIBlocksTest.Show do
     replies = for [key, spec] <- shows, do: Helyx.Tool.show(key, block(spec))
     with %{"gate" => gate} <- args, do: {:ok, "done"} = Helyx.Test.Gate.wait(gate)
     later = for [key, spec] <- Map.get(args, "after", []), do: Helyx.Tool.show(key, block(spec))
-    {:ok, Enum.map_join(replies ++ later, ",", &inspect/1)}
+    text = Enum.map_join(replies ++ later, ",", &inspect/1)
+
+    case args do
+      %{"result" => spec} -> {:ok, text, [block(spec)]}
+      _none -> {:ok, text}
+    end
   end
 end
 
@@ -292,8 +298,8 @@ defmodule Helyx.Session.UIBlocksTest do
       assert of_type(events, :ui_block) == []
     end
 
-    # Round 3 of the #878 review: a request for a call with no open tool
-    # call runs (#369), but only an open call gets a window.
+    # Round 3 of the #878 review: a request for an answered call runs
+    # (#369), but its call is not open, so its Task shows no block.
     test "a request for an answered call shows no block after the call's result",
          %{core: core} do
       turn = started(core)
@@ -314,31 +320,59 @@ defmodule Helyx.Session.UIBlocksTest do
       assert snapshot(turn.session).ui_blocks == []
     end
 
-    test "a request before its tool call gets no window: no block, and no blocks on its result",
+    # Round 4 of the #878 review: an early request (before its tool call)
+    # is marked at once, and its call is open from the moment it streams.
+    test "an early request shows blocks once its call streams, and its result keeps them",
          %{core: core} do
       turn = started(core)
-      events(turn.proc, turn.turn_id, [{:tool_request, "x1", "show", %{"shows" => [["k", "v"]]}}])
-      assert_receive {:conn, :tool_result, _, {:tool_result, _, "x1", shown}}
-      assert shown == {:ok, "{:error, :not_running}"}
+      gate = gate()
 
-      events(turn.proc, turn.turn_id, [{:tool_request, "x2", "result", %{"mode" => "n.2"}}])
-      assert_receive {:conn, :tool_result, _, {:tool_result, _, "x2", result}}
+      args = %{
+        "shows" => [["a", "early"]],
+        "gate" => gate,
+        "after" => [["b", "late"]],
+        "result" => "res"
+      }
 
-      # The calls join late: their results carry no blocks.
+      events(turn.proc, turn.turn_id, [{:tool_request, "x1", "show", args}])
+      assert_receive {:waiting, run}
+      assert sync(turn).ui_blocks == []
+
       events(turn.proc, turn.turn_id, [
-        {:tool_call, %ToolCall{id: "x1", name: "show", arguments: %{}}},
-        {:tool_call, %ToolCall{id: "x2", name: "result", arguments: %{}}},
-        {:message_end, :tool_use, nil},
-        {:tool_result, "x1", shown},
-        {:tool_result, "x2", result}
+        {:tool_call, %ToolCall{id: "x1", name: "show", arguments: args}},
+        {:message_end, :tool_use, nil}
       ])
 
-      events = collect_n(:tool_execution_end, 2)
-      assert of_type(events, :ui_block) == []
-      messages = for %{message: m} <- of_type(events, :tool_execution_end), do: m
+      sync(turn)
+      send(run, :go)
+      assert echo_result(turn, "x1") == {:ok, "{:error, :not_running},:ok"}
+      events = collect_until(:tool_execution_end)
+      assert of_type(events, :ui_block) == [ui("x1", "b", Show.block("late"))]
+      [%{message: m}] = of_type(events, :tool_execution_end)
+      assert m.ui_blocks == [Show.block("res")]
+      assert snapshot(turn.session).ui_blocks == []
+      assert of_type(finish(turn), :ui_block) == []
+    end
 
-      assert Enum.map(messages, & &1.tool_call_id) == ["x1", "x2"]
-      assert Enum.all?(messages, &(&1.ui_blocks == []))
+    test "a provider block for a call with a Helyx mark is dropped, also for an early request",
+         %{core: core} do
+      turn = started(core)
+      gate = gate()
+      args = %{"shows" => [], "gate" => gate, "after" => [["k", "tool"]]}
+      events(turn.proc, turn.turn_id, [{:tool_request, "x1", "show", args}])
+      assert_receive {:waiting, run}
+
+      events(turn.proc, turn.turn_id, [
+        {:tool_call, %ToolCall{id: "x1", name: "show", arguments: args}},
+        {:ui_block, "x1", "k", Show.block("provider")},
+        {:ui_block, "x1", "p", Show.block("provider")}
+      ])
+
+      assert sync(turn).ui_blocks == []
+      send(run, :go)
+      assert echo_result(turn, "x1") == {:ok, ":ok"}
+      events = collect_until(:tool_execution_end)
+      assert of_type(events, :ui_block) == [ui("x1", "k", Show.block("tool"))]
       assert of_type(finish(turn), :ui_block) == []
     end
 
