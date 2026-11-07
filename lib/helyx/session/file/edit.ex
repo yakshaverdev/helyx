@@ -116,9 +116,9 @@ defmodule Helyx.Session.File.Edit do
   def remove_message({_core, _id, path} = session, cwd, message_id, killer) do
     locked(session, fn lock ->
       with :ok <- exists(path),
-           {:ok, resumed} <- SessionFile.read_picked(path, cwd),
+           {:ok, resumed, _tail, limits} <- SessionFile.read_picked(path, cwd, []),
            {:ok, ids} <- group(resumed.messages, message_id) do
-        replace(lock, path, ids, killer)
+        replace(lock, {path, limits}, ids, killer)
       end
     end)
   end
@@ -198,7 +198,7 @@ defmodule Helyx.Session.File.Edit do
 
   defp tool_result?(message), do: message.role == :tool_result
 
-  defp replace(lock, path, ids, killer) do
+  defp replace(lock, {path, limits}, ids, killer) do
     tmp = tmp(path)
 
     # Every change of the copy is a command of the lock holder: after the
@@ -207,7 +207,7 @@ defmodule Helyx.Session.File.Edit do
     result =
       with {:ok, %File.Stat{mode: mode}} <- File.stat(path),
            :ok <- edit_failed(Lock.create_copy(lock, tmp)),
-           :ok <- copy(lock, path, MapSet.new(ids)),
+           :ok <- copy(lock, {path, limits}, MapSet.new(ids)),
            :ok <- edit_failed(Lock.close_copy(lock, mode)),
            :ok <- Killer.disarm(killer),
            do: edit_failed(Lock.rename_file(lock, tmp, path))
@@ -220,12 +220,12 @@ defmodule Helyx.Session.File.Edit do
   # new with `O_EXCL` and mode 0600 (`Lock.create_copy/2`), so no file or
   # link at its path is written through and no other user reads it. The
   # kept lines go to perl in batches of at least `@batch_bytes`.
-  defp copy(lock, path, removed) do
+  defp copy(lock, {path, limits}, removed) do
     result =
       File.open(path, [:read, :binary, :raw, :read_ahead], fn input ->
         state = %Copy{removed: removed, lock: lock}
 
-        with {:ok, state} <- lines(input, 1, SessionFile.limits([]), state),
+        with {:ok, state} <- lines(input, 1, limits, state),
              do: flush(state)
       end)
 

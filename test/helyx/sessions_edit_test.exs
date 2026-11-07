@@ -150,6 +150,101 @@ defmodule Helyx.SessionsEditTest do
   end
 
   describe "remove_message" do
+    # The entries of the file in order, each a map, with no torn line.
+    defp entries(path) do
+      for line <- String.split(File.read!(path), "\n", trim: true),
+          {:ok, entry} = Helyx.JSON.decode(line),
+          do: entry
+    end
+
+    # A `hook` entry as the session writes it (docs/features/hooks.md).
+    defp hook_entry(call_id, arguments) do
+      %{
+        "type" => "hook",
+        "point" => "before_tool",
+        "turn_id" => Helyx.Session.Id.new(),
+        "call_id" => call_id,
+        "hook" => "Acme.Hook.Gate",
+        "answer" => "allow",
+        "reason" => "fine",
+        "tool" => "read",
+        "arguments" => arguments,
+        "arguments_cut" => false
+      }
+    end
+
+    # docs/features/turn-record.md, "Overlap with #833": every
+    # `system_prompt` entry stays as it is, cut text and `bytes` included,
+    # in the order of the chain, with the parent of a removed message as
+    # its parent; a `hook` entry stays in the same way (orchestrator rule
+    # of the merge of #553 and #879).
+    test "keeps every system_prompt and hook entry in chain order", %{core: core, tmp_dir: dir} do
+      u1 = msg(:user, "u1")
+
+      a1 =
+        msg(:assistant, "calling", model: "test/ok")
+        |> Map.update!(:content, &(&1 ++ [call("c1")]))
+
+      r1 = result("c1", "R-ONE")
+      u2 = msg(:user, "u2")
+      a2 = msg(:assistant, "done", model: "test/ok")
+      long = String.duplicate("p", SessionFile.max_system_bytes() + 10)
+
+      {id, path} =
+        saved(dir, [u1], fn file, _ ->
+          file
+          |> SessionFile.append_system_prompt("first")
+          |> SessionFile.append_message(a1)
+          |> SessionFile.append(hook_entry("c1", ~s({"path":"c1"})))
+          |> SessionFile.append_message(r1)
+          |> SessionFile.append_system_prompt(long)
+          |> SessionFile.append_message(u2)
+          |> SessionFile.append_message(a2)
+        end)
+
+      before = entries(path)
+
+      records = fn entries ->
+        for %{"type" => t} = e <- entries,
+            t in ["system_prompt", "hook"],
+            do: Map.delete(e, "parent_id")
+      end
+
+      assert Sessions.remove_message(core, id, a1.id) == {:ok, [a1.id, r1.id]}
+
+      after_ = entries(path)
+      # The same records, the cut text and `bytes` of the long prompt
+      # included: its parent was `r1`, so it is encoded again.
+      assert records.(after_) == records.(before)
+      assert %{"system" => cut} = Enum.find(records.(after_), &(&1["bytes"] == byte_size(long)))
+      assert byte_size(cut) == SessionFile.max_system_bytes()
+      # File order is the order before, without the removed messages.
+      assert Enum.map(after_, & &1["id"]) == Enum.map(before, & &1["id"]) -- [a1.id, r1.id]
+      # One chain: each entry after the header has the entry before it as
+      # its parent, so the hook entry has the parent of `a1`, and the long
+      # prompt the parent of `r1`.
+      for [prev, next] <- Enum.chunk_every(after_, 2, 1, :discard),
+          do: assert(next["parent_id"] == prev["id"])
+
+      assert ids(resumed(dir, id)) == [u1.id, u2.id, a2.id]
+
+      # A resume reads the records and keeps none: no entry is invalid.
+      log =
+        ExUnit.CaptureLog.capture_log(fn ->
+          {:ok, session} = Sessions.resume(core, id: id)
+          :ok = Sessions.stop(session)
+        end)
+
+      refute log =~ "not valid"
+
+      # The hook entry of the removed call keeps the copy of its arguments
+      # (an accepted hole, docs/features/session-edit.md).
+      assert File.read!(path) =~ ~s({\\"path\\":\\"c1\\"})
+
+      assert Sessions.delete(core, id) == :ok
+      refute File.exists?(path)
+    end
+
     test "the file holds no byte of the text, and a resume keeps the order",
          %{core: core, tmp_dir: dir} do
       [a, b, c] = messages = [msg(:user, "one"), msg(:user, "SECRET-TEXT"), msg(:user, "three")]

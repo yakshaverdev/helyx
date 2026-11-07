@@ -143,3 +143,5 @@ No new resource. The entry is one more append to the session file, through the f
 - the chain links: an entry whose parent is the removed message gets the parent of the removed message, as any entry after it does.
 
 A removal that rewrites the file must also keep the `system_prompt` entries as they are, cut text and `bytes` included.
+
+Built by #833 (`session-edit.md`, decision 5): the removal keeps every `system_prompt` entry with all its fields, in the order of the chain, and relinks only its `parent_id`.

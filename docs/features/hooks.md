@@ -74,6 +74,7 @@ The hands send each answer of a hook to the session as they deliver it, before t
 - `tool`, `arguments`, and `arguments_cut` are only in the first entry that a chain writes on a call (one chain is one point on one call): `arguments` is the JSON of the arguments, cut at 4,096 bytes at a character boundary, and `arguments_cut` says whether it was cut. The call Task makes this copy, so the session encodes nothing large.
 - A resume reads no `hook` entry (a log only). The reader checks the shape: a bad entry is dropped and logged, and the chain goes on.
 - A chain with no closing answer in the file counts as not run: a saved call with no result gets the interrupted result at the resume, as before.
+- `Helyx.Sessions.remove_message/3` keeps every `hook` entry, also one of a removed call, with its copy of the arguments (`session-edit.md`, decision 5 and "What the calls do not remove").
 
 ## Replaced mechanism
 
