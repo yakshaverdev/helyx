@@ -223,3 +223,42 @@ Simplify merged two arms of `unsubscribed`. The reproductions of round 2 hold fi
 | 1 | spec, failure path | A `busy` to an `unsubscribe` that comes after the `session_end` of its sub holds a follow that the host stated after the end, a forgotten and followed-again session too: the subscribe does not go until the host states it a third time. | Open. The fix: hold only when the sub of the reply is still that of the session (`ours`), as for `ok` and `unknown_sub`. |
 | 2 | spec | With 16 live subscriptions, one of them of a session whose `unsubscribe` was refused, a new wanted session waits for a place that no reply frees, with no report to the host. | Open. The fix: report the wait, or count the place of a refused `unsubscribe` to the host. |
 | 3 | spec (doc) | "A sub id that the server gave again to another session after an end stays live": the server never gives a sub id again (`next_sub` only grows, `plugins/bundled/lib/helyx/transport/web_socket/connection.ex`). The guard holds for a server that breaks the contract. | Open, doc only. |
+
+# Cycle E: the waits of the app socket (#860, judgement of the orchestrator of 2026-11-06)
+
+Base `7390fc43`. The open items 1, 2, and 4 of cycle C round 3, and the doc item 3. Reproduced first: an unfinished binary frame (`02 01 78`), then pings and a close, reconnected instead of stopping (test `an_unfinished_binary_frame_is_a_break` failed with `could not connect …`). Choices: the read deadline is an instant that only a frame read moves, and a batch of sends has a deadline of its own, both held by the watchdog (`socket::Watchdog`); a tap on the socket marks a binary frame at its first frame (`socket::Tap`); the close frame at a watchdog shutdown: the doc is fixed, no frame is sent, because a write of the app can be in progress and a frame in its middle would break the stream. Tests: the silence while sends stall, the TCP connect to a full backlog (on this Mac the 129th local connect times out), and the end of the watchdog thread. The waits became `socket::Waits`, so the tests run with short waits.
+
+Bounds sensor: `bounds sensor: 0 candidate functions, 0 flagged, 0 without an answer`.
+
+## Round 1 (full: simplify, standards, spec, failure path, Codex)
+
+| # | Source | Finding | Resolution |
+|---|---|---|---|
+| 1 | failure path | An HTTP reply with bare `\n` line ends, or empty lines before its status line, kept the tap in HTTP or put it off the frame bounds, so a binary frame went unmarked; `httparse` takes both. Reproduced. | The tap ends the reply by the rules of the parser; unit tests of the three forms. |
+| 2 | failure path | A text frame in the same read as a binary header was dropped. Reproduced. | At a binary frame the tap gives only the bytes before it; the flag is checked before each read and after a failed one; test. |
+| 3 | Codex (by reading) | Continuation frames with no ping kept `ws.read()` from returning, so the flag was not checked until the silence. | The tap fails every read after a binary frame; test with continuations and no ping. |
+| 4 | standards, spec | The send deadline had no test. | Test: a stalled batch ends at it; an ended batch clears it. |
+| 5 | spec | "Ends within 100 ms": the test allows 2.1 s, the probe measured 102 ms. | Doc: at its next check, one poll and the wake-up. |
+| 6 | spec (doc) | The challenge row named `net::connection` and a close. | Fixed. |
+| 7 | standards (judgement) | The binary arm no input reaches; `live_watchdogs` a test counter in code; frame-length tests. | The arm stays with a comment; the counter stays, `#[doc(hidden)]`; unit tests of the tap cover 0 to 70,000-byte frames in reads of 1 byte to 200,000. |
+
+## Round 2 (reduced: spec, failure path)
+
+The reproductions of round 1 hold fixed. The failure-path agent compared the end of the HTTP reply with `httparse` 1.10.1 over 100,000 random replies (the same byte for each of the 11,705 complete ones) and the frame bounds over 3,000 random frame sequences in reads of 1 to 9 bytes (no false mark).
+
+| # | Source | Finding | Resolution |
+|---|---|---|---|
+| 1 | spec, failure path | The check of the binary mark before each read dropped the frames that `tungstenite` still held: a ping, a text frame, and a binary frame in one write lost the text. Reproduced. Second finding on the stop of a binary frame. | The check runs only after a failed read: the tap fails a read only when the frames before the binary one are taken; test. |
+| 2 | spec | The send-deadline test passed with `Watchdog::sending` a no-op: the write timeout ends a fully stalled batch too. Reproduced by the mutant. | The test reads 16 KiB each 20 ms, so writes go on and only the send deadline ends the batch; it fails with the mutant (checked). |
+
+Round 3 is a full round.
+
+## Round 3 (full: simplify, spec, failure path, Codex)
+
+Simplify split the deadline tests into `tests/deadlines.rs` with a shared stub module, and added tap tests of a final binary frame and a masked frame. The reproductions of round 2 hold fixed, and the send-deadline test fails against the no-op mutant. The failure-path agent checked 14,691 two- and three-way splits of HTTP, ping, text, close, fragment, masked continuation, and binary bytes: the tap marked each and gave exactly the bytes before the binary frame. Round 3 reproduced defects on the stop of a binary frame again, so the cycle ends at its limit; the small-fix round does not apply (a further finding on one mechanism). The commit holds the code as round 3 reviewed it, and these stay open:
+
+| # | Source | Finding | State |
+|---|---|---|---|
+| 1 | failure path (reproduced 8 of 8), Codex | The welcome and a binary frame in one write: the tap marks the binary frame, the welcome is taken, and a send that then fails (its deadline, a reset) ends in `lost`, which reconnects; the mark is checked only after a failed read. | Open. The fix: check the mark in `lost` too, so a send failure after a mark stops with the break. |
+| 2 | spec (reproduced 10 of 10) | `tungstenite` flushes a pending pong at the start of a read; a failed flush fails the read while a text frame is still buffered, and the mark then stops the app with that frame lost. | Open. The fix: stop on the mark only when the tap itself failed the read. |
+| 3 | spec (doc) | The silence row says "a frame that comes a byte at a time counts from its start"; the silence counts from the last frame read before it (shut 1,018 ms after it, 418 ms into the slow frame, with a silence of 1,000 ms). | Open, doc only. |

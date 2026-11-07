@@ -2,38 +2,22 @@
 //! driven by `helyx_client_core::client::Client`. The window reads `Shared`
 //! and sends `Command`s; the thread calls `notify` after each change.
 //!
-//! Every wait of a connection is one deadline of its socket, which a
-//! watchdog thread holds: it shuts the socket down when the deadline passes,
-//! whatever read or write is in progress (`Watchdog`).
+//! Every wait of a connection after its TCP connect is a deadline of its
+//! socket, which a watchdog thread holds (`socket::Watchdog`).
 
 use crate::settings::Server;
+use crate::socket::{Tap, WAITS, Waits, Watchdog};
 use helyx_client_core::client::{Client, Next, Output};
 use helyx_client_core::frame::{LiveSession, Reply};
 use helyx_client_core::json::object;
 use helyx_client_core::parts::FRAME_BYTES;
 use std::io::ErrorKind;
-use std::net::{Shutdown, SocketAddr, TcpStream};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::net::{SocketAddr, TcpStream};
+use std::sync::Mutex;
 use std::sync::mpsc::Receiver;
-use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
 use tungstenite::error::ProtocolError;
 use tungstenite::protocol::WebSocketConfig;
 use tungstenite::{Error, Message, WebSocket};
-
-/// The TCP connect; then the upgrade and the wait for `welcome` in all, the
-/// auth wait of the server (`docs/features/wire-protocol.md`, "Bounds"); and
-/// each batch of frames that the thread sends.
-pub const WAIT: Duration = Duration::from_millis(5_000);
-/// The read timeout of the socket: how often the thread takes the commands
-/// of the window while the server sends nothing.
-pub const POLL: Duration = Duration::from_millis(100);
-/// A server that is gone: the server pings every 15,000 ms, so 45,000 ms with
-/// no inbound frame ends the connection as lost, as the server ends a client.
-pub const SILENCE: Duration = Duration::from_millis(45_000);
-/// The pause before each reconnect, so a server that welcomes and closes at
-/// once gets at most one connection a second.
-pub const PAUSE: Duration = Duration::from_millis(1_000);
 
 /// What the window asks.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -65,60 +49,6 @@ impl Shared {
     }
 }
 
-/// The deadline of one socket. A thread checks it every `POLL` and shuts the
-/// socket down once it has passed; it ends with the `Watchdog`, or at the
-/// shutdown.
-struct Watchdog {
-    start: Instant,
-    /// Milliseconds from `start`.
-    deadline: Arc<AtomicU64>,
-    fired: Arc<AtomicBool>,
-    done: Arc<AtomicBool>,
-}
-
-impl Watchdog {
-    fn start(stream: &TcpStream, wait: Duration) -> std::io::Result<Watchdog> {
-        let watched = stream.try_clone()?;
-        let start = Instant::now();
-        let deadline = Arc::new(AtomicU64::new(wait.as_millis() as u64));
-        let fired = Arc::new(AtomicBool::new(false));
-        let done = Arc::new(AtomicBool::new(false));
-        let (d, f, e) = (deadline.clone(), fired.clone(), done.clone());
-        std::thread::spawn(move || {
-            while !e.load(Ordering::SeqCst) {
-                if start.elapsed().as_millis() as u64 > d.load(Ordering::SeqCst) {
-                    f.store(true, Ordering::SeqCst);
-                    let _ = watched.shutdown(Shutdown::Both);
-                    return;
-                }
-                std::thread::sleep(POLL);
-            }
-        });
-        Ok(Watchdog {
-            start,
-            deadline,
-            fired,
-            done,
-        })
-    }
-
-    /// The deadline is `wait` from now.
-    fn set(&self, wait: Duration) {
-        let at = (self.start.elapsed() + wait).as_millis() as u64;
-        self.deadline.store(at, Ordering::SeqCst);
-    }
-
-    fn fired(&self) -> bool {
-        self.fired.load(Ordering::SeqCst)
-    }
-}
-
-impl Drop for Watchdog {
-    fn drop(&mut self) {
-        self.done.store(true, Ordering::SeqCst);
-    }
-}
-
 /// Runs connections until one ends with `Next::Stop`, and gives its line.
 pub fn run(
     server: &Server,
@@ -126,26 +56,38 @@ pub fn run(
     commands: &Receiver<Command>,
     notify: &dyn Fn(),
 ) -> String {
+    run_with(server, shared, commands, notify, WAITS)
+}
+
+/// `run` with other waits, for tests.
+pub fn run_with(
+    server: &Server,
+    shared: &Mutex<Shared>,
+    commands: &Receiver<Command>,
+    notify: &dyn Fn(),
+    waits: Waits,
+) -> String {
     loop {
-        let (next, line) = connection(server, shared, commands, notify);
+        let (next, line) = connection(server, shared, commands, notify, waits);
         shared.lock().unwrap().line = line.clone();
         notify();
         if next == Next::Stop {
             return line;
         }
-        std::thread::sleep(PAUSE);
+        std::thread::sleep(waits.pause);
     }
 }
 
-type Socket = WebSocket<TcpStream>;
+type Socket = WebSocket<Tap>;
 
 fn connection(
     server: &Server,
     shared: &Mutex<Shared>,
     commands: &Receiver<Command>,
     notify: &dyn Fn(),
+    waits: Waits,
 ) -> (Next, String) {
-    let (mut ws, watchdog) = match open(server) {
+    let (mut ws, watchdog) = match open(server, waits) {
         Ok(opened) => opened,
         Err(text) => {
             let next = shared.lock().unwrap().client.closed(None);
@@ -158,7 +100,10 @@ fn connection(
     let lost = |welcomed: bool| {
         let next = shared.lock().unwrap().client.closed(None);
         let line = match (watchdog.fired(), welcomed, next) {
-            (true, false, _) => format!("the server did not answer in {} ms", WAIT.as_millis()),
+            (true, false, _) => format!(
+                "the server did not answer in {} ms",
+                waits.welcome.as_millis()
+            ),
             (_, _, Next::Reconnect) => "reconnecting".into(),
             (_, _, Next::Stop) => "the connection ended".into(),
         };
@@ -167,11 +112,15 @@ fn connection(
     loop {
         for command in commands.try_iter() {
             let frames = follow(&mut shared.lock().unwrap(), command);
-            if send(&mut ws, &watchdog, welcomed, frames).is_err() {
+            if send(&mut ws, &watchdog, waits, frames).is_err() {
                 return lost(welcomed);
             }
         }
         let text = match ws.read() {
+            // A binary frame, at its first byte: the tap gave the frames
+            // before it, which the reads take one by one, and then fails the
+            // read.
+            Err(_) if ws.get_ref().binary() => return broken(shared, &mut ws),
             Ok(Message::Text(text)) => text,
             Ok(Message::Close(frame)) => {
                 let next = shared
@@ -190,12 +139,13 @@ fn connection(
             Err(Error::Protocol(ProtocolError::ResetWithoutClosingHandshake)) => {
                 return lost(welcomed);
             }
+            // A binary message: the tap stops it at its first frame first.
             Ok(Message::Binary(_))
             | Err(Error::Capacity(_) | Error::Protocol(_) | Error::Utf8(_)) => {
                 return broken(shared, &mut ws);
             }
             Ok(_) => {
-                heard(&watchdog, welcomed);
+                heard(&watchdog, welcomed, waits);
                 continue;
             }
             Err(Error::Io(e))
@@ -207,7 +157,7 @@ fn connection(
             }
             Err(_) => return lost(welcomed),
         };
-        heard(&watchdog, welcomed);
+        heard(&watchdog, welcomed, waits);
         let mut guard = shared.lock().unwrap();
         let Ok(outputs) = guard.client.receive(text.as_str()) else {
             drop(guard);
@@ -219,7 +169,7 @@ fn connection(
                 Output::Send(text) => frames.push(text),
                 Output::Welcome => {
                     welcomed = true;
-                    heard(&watchdog, welcomed);
+                    heard(&watchdog, welcomed, waits);
                     guard.line = "connected".into();
                     if let Ok((_, live)) = guard.client.request("sessions.live", object([])) {
                         frames.extend(live);
@@ -248,45 +198,47 @@ fn connection(
         }
         drop(guard);
         notify();
-        if send(&mut ws, &watchdog, welcomed, frames).is_err() {
+        if send(&mut ws, &watchdog, waits, frames).is_err() {
             return lost(welcomed);
         }
     }
 }
 
-/// An inbound frame: after the welcome, the silence starts again. Before
+/// A frame was read: after the welcome, the silence starts again. Before
 /// it, the deadline of the welcome stands.
-fn heard(watchdog: &Watchdog, welcomed: bool) {
+fn heard(watchdog: &Watchdog, welcomed: bool, waits: Waits) {
     if welcomed {
-        watchdog.set(SILENCE);
+        watchdog.heard(waits.silence);
     }
 }
 
-/// The TCP connect within `WAIT`, then the upgrade, under the watchdog that
-/// also holds the wait for `welcome`.
-fn open(server: &Server) -> Result<(Socket, Watchdog), String> {
+/// The TCP connect within its wait, then the upgrade, under the watchdog
+/// whose read deadline is the wait for `welcome`.
+fn open(server: &Server, waits: Waits) -> Result<(Socket, Watchdog), String> {
     let address = SocketAddr::new(server.address, server.port);
-    let stream = TcpStream::connect_timeout(&address, WAIT).map_err(|e| e.to_string())?;
+    let stream = TcpStream::connect_timeout(&address, waits.connect).map_err(|e| e.to_string())?;
     stream
-        .set_read_timeout(Some(POLL))
+        .set_read_timeout(Some(waits.poll))
         .map_err(|e| e.to_string())?;
     stream
-        .set_write_timeout(Some(WAIT))
+        .set_write_timeout(Some(waits.send))
         .map_err(|e| e.to_string())?;
-    let watchdog = Watchdog::start(&stream, WAIT).map_err(|e| e.to_string())?;
+    let watchdog =
+        Watchdog::start(&stream, waits.welcome, waits.poll).map_err(|e| e.to_string())?;
     let config = WebSocketConfig::default()
         .max_message_size(Some(FRAME_BYTES))
         .max_frame_size(Some(FRAME_BYTES));
     // A read of the upgrade that times out is retried until the watchdog
     // shuts the socket down.
-    let mut handshake = tungstenite::client::client_with_config(server.url(), stream, Some(config));
+    let mut handshake =
+        tungstenite::client::client_with_config(server.url(), Tap::new(stream), Some(config));
     loop {
         match handshake {
             Ok((ws, _)) => return Ok((ws, watchdog)),
             Err(tungstenite::HandshakeError::Interrupted(mid)) => handshake = mid.handshake(),
             Err(tungstenite::HandshakeError::Failure(e)) => {
                 return Err(match watchdog.fired() {
-                    true => format!("the upgrade took over {} ms", WAIT.as_millis()),
+                    true => format!("the upgrade took over {} ms", waits.welcome.as_millis()),
                     false => e.to_string(),
                 });
             }
@@ -307,27 +259,23 @@ fn follow(shared: &mut Shared, Command::Follow(session): Command) -> Vec<String>
     frames
 }
 
-/// Sends `frames` within `WAIT` in all, then gives back the deadline of
-/// reading: the silence from the last inbound frame after the welcome, the
-/// wait for it before.
+/// Sends `frames` within the send wait in all. The read deadline does not
+/// move: the silence counts from the last frame read, however many frames
+/// go.
 fn send(
     ws: &mut Socket,
     watchdog: &Watchdog,
-    welcomed: bool,
+    waits: Waits,
     frames: Vec<String>,
 ) -> Result<(), Error> {
     if frames.is_empty() {
         return Ok(());
     }
-    let before = watchdog.deadline.load(Ordering::SeqCst);
-    // Before the welcome, the sends stay inside the wait for it.
-    if welcomed {
-        watchdog.set(WAIT);
-    }
+    watchdog.sending(waits.send);
     for frame in frames {
         ws.send(Message::text(frame))?;
     }
-    watchdog.deadline.store(before, Ordering::SeqCst);
+    watchdog.sent();
     Ok(())
 }
 
