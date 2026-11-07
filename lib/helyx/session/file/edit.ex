@@ -22,9 +22,14 @@ defmodule Helyx.Session.File.Edit do
     # entry (`leaf`) and message (`last`), the removed ids that wait for the
     # next kept user or assistant message (`pending`), and that message for
     # each of them (`next`).
-    @enforce_keys [:removed]
-    defstruct [:removed, :leaf, :last, pending: [], next: %{}]
+    # `lock` writes the copy; `buffer` holds the kept lines not yet sent,
+    # reversed, `size` bytes.
+    @enforce_keys [:removed, :lock]
+    defstruct [:removed, :lock, :leaf, :last, pending: [], next: %{}, buffer: [], size: 0]
   end
+
+  # The bytes of kept lines in one append to the copy.
+  @batch_bytes 1_048_576
 
   @doc false
   # Runs `fun`, the work of a call of `Helyx.Sessions`, in a Task of `core`
@@ -196,13 +201,14 @@ defmodule Helyx.Session.File.Edit do
   defp replace(lock, path, ids, killer) do
     tmp = tmp(path)
 
-    # The removes of the copy are commands of the lock holder too: after
-    # the lock has ended, another removal can own a copy at that path.
+    # Every change of the copy is a command of the lock holder: after the
+    # lock has ended, perl has ended, so no byte reaches the copy, and a
+    # delete or another removal that takes the lock owns the copy's path.
     result =
       with {:ok, %File.Stat{mode: mode}} <- File.stat(path),
-           :ok <- edit_failed(Lock.remove_file(lock, tmp)),
-           :ok <- copy(path, tmp, MapSet.new(ids)),
-           :ok <- File.chmod(tmp, mode),
+           :ok <- edit_failed(Lock.create_copy(lock, tmp)),
+           :ok <- copy(lock, path, MapSet.new(ids)),
+           :ok <- edit_failed(Lock.close_copy(lock, mode)),
            :ok <- Killer.disarm(killer),
            do: edit_failed(Lock.rename_file(lock, tmp, path))
 
@@ -210,52 +216,62 @@ defmodule Helyx.Session.File.Edit do
     with :ok <- result, do: {:ok, ids}
   end
 
-  # The copy is made new, with `O_EXCL`, so no file or link at its path is
-  # written through. Its mode is 0600 before its first byte, as the
-  # sessions folder can be readable by others; the copy gets the mode of
-  # the session file after it is written.
-  defp copy(path, tmp, removed) do
+  # The BEAM reads the session file; perl writes the copy, which it made
+  # new with `O_EXCL` and mode 0600 (`Lock.create_copy/2`), so no file or
+  # link at its path is written through and no other user reads it. The
+  # kept lines go to perl in batches of at least `@batch_bytes`.
+  defp copy(lock, path, removed) do
     result =
-      File.open(tmp, [:write, :exclusive, :binary, :raw], fn out ->
-        with :ok <- File.chmod(tmp, 0o600), do: copy_into(out, path, removed)
+      File.open(path, [:read, :binary, :raw, :read_ahead], fn input ->
+        state = %Copy{removed: removed, lock: lock}
+
+        with {:ok, state} <- lines(input, 1, SessionFile.limits([]), state),
+             do: flush(state)
       end)
 
-    case result do
-      {:ok, {:ok, result}} -> result
-      {:ok, error} -> error
-      error -> error
-    end
+    with {:ok, result} <- result, do: result
   end
 
-  defp copy_into(out, path, removed) do
-    File.open(path, [:read, :binary, :raw, :read_ahead], fn input ->
-      lines(input, out, 1, SessionFile.limits([]), %Copy{removed: removed})
-    end)
+  defp flush(%Copy{buffer: []}), do: :ok
+
+  defp flush(state),
+    do: edit_failed(Lock.append_copy(state.lock, Enum.reverse(state.buffer)))
+
+  # The batch holds at most `@batch_bytes` and one line of at most the line
+  # limit of the read (64 MiB).
+  defp emit(state, data) do
+    state = %{state | buffer: [data | state.buffer], size: state.size + IO.iodata_length(data)}
+
+    if state.size < @batch_bytes do
+      {:ok, state}
+    else
+      with :ok <- flush(state), do: {:ok, %{state | buffer: [], size: 0}}
+    end
   end
 
   # The read under the lock checked every line and the chain; the file has
   # not changed since. A line that does not decode to an entry, a torn
   # append, is not copied: a read skips it.
-  defp lines(input, out, n, limits, state) do
+  defp lines(input, n, limits, state) do
     case :file.read_line(input) do
       :eof ->
-        :ok
+        {:ok, state}
 
       {:ok, line} ->
         text = String.trim_trailing(line, "\n")
 
-        with {:ok, state} <- line(out, text, Reader.entry(text, n, limits), state),
-             do: lines(input, out, n + 1, limits, state)
+        with {:ok, state} <- line(text, Reader.entry(text, n, limits), state),
+             do: lines(input, n + 1, limits, state)
 
       {:error, _reason} = error ->
         error
     end
   end
 
-  defp line(_out, _text, :none, state), do: {:ok, state}
-  defp line(_out, _text, {:error, _reason} = error, _state), do: error
+  defp line(_text, :none, state), do: {:ok, state}
+  defp line(_text, {:error, _reason} = error, _state), do: error
 
-  defp line(out, text, {:ok, entry}, state) do
+  defp line(text, {:ok, entry}, state) do
     case keep(entry, state) do
       {:drop, state} ->
         {:ok, state}
@@ -263,7 +279,7 @@ defmodule Helyx.Session.File.Edit do
       {:keep, kept, state} ->
         # An entry that keeps its fields keeps its bytes.
         text = if kept == entry, do: text, else: JSON.encode!(kept)
-        with :ok <- IO.binwrite(out, [text, "\n"]), do: {:ok, %{state | leaf: kept["id"]}}
+        emit(%{state | leaf: kept["id"]}, [text, "\n"])
     end
   end
 

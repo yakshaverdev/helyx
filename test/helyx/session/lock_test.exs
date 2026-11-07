@@ -10,6 +10,7 @@ defmodule Helyx.Session.LockTest do
 
   alias Helyx.{Event, Session}
   alias Helyx.Session.Lock
+  alias Helyx.Test.PerlSignal
 
   @moduletag :tmp_dir
 
@@ -434,16 +435,17 @@ defmodule Helyx.Session.LockTest do
   } do
     {:ok, session} = Session.start(core, model: "test/ok", sessions_dir: dir)
     pid = Session.pid(session)
-    {:os_pid, os_pid} = Port.info(:sys.get_state(pid).lock, :os_pid)
-    os_pid = Integer.to_string(os_pid)
+    path = path(dir, session.id)
+    lock_path = Path.rootname(path) <> ".lock"
+    perl = PerlSignal.pid(:sys.get_state(pid).lock, lock_path)
+    on_exit(fn -> PerlSignal.continue(perl, lock_path) end)
 
-    {_, 0} = System.cmd("kill", ["-STOP", os_pid])
+    PerlSignal.send!(perl, "STOP", lock_path)
     :ok = GenServer.stop(pid)
 
-    path = path(dir, session.id)
     assert Lock.hold(path, fn -> {:ok, :taken} end) == {:error, {:session_locked, session.id}}
 
-    {_, 0} = System.cmd("kill", ["-CONT", os_pid])
+    PerlSignal.send!(perl, "CONT", lock_path)
 
     await_lock_free(path, "perl to free the lock when it ends")
   end
@@ -458,8 +460,8 @@ defmodule Helyx.Session.LockTest do
 
     kill_own_perl = fn ->
       [port] = for p <- Port.list(), Port.info(p, :connected) == {:connected, self()}, do: p
-      {:os_pid, os_pid} = Port.info(port, :os_pid)
-      {_, 0} = System.cmd("kill", ["-9", Integer.to_string(os_pid)])
+      lock_path = Path.join(dir, "abc.lock")
+      PerlSignal.send!(PerlSignal.pid(port, lock_path), "KILL", lock_path)
       await(fn -> Port.info(port) == nil end, "the port of the killed perl to close")
       {:ok, :taken}
     end
@@ -469,6 +471,51 @@ defmodule Helyx.Session.LockTest do
     assert Lock.release(lock) == :ok
 
     assert {:ok, lock, :taken} = Lock.hold(path, fn -> {:ok, :taken} end)
+    Lock.release(lock)
+  end
+
+  # The signals of these tests go only to the perl of a lock: a pid of 0
+  # would signal the process group of the test VM (#833).
+  test "the signal helper refuses a pid that is not the perl of the lock", %{tmp_dir: dir} do
+    lock_path = Path.join(dir, "s.lock")
+    assert_raise FunctionClauseError, fn -> PerlSignal.send!(0, "STOP", lock_path) end
+    assert_raise FunctionClauseError, fn -> PerlSignal.send!(-1, "STOP", lock_path) end
+
+    sleep = Port.open({:spawn_executable, System.find_executable("sleep")}, args: ["30"])
+    {:os_pid, pid} = Port.info(sleep, :os_pid)
+    # The check fails before the `kill`.
+    assert_raise ExUnit.AssertionError, fn -> PerlSignal.send!(pid, "KILL", lock_path) end
+    Port.close(sleep)
+  end
+
+  # The copy of a removal (docs/features/session-edit.md): made new with
+  # mode 0600 before its first byte, written and closed by the holder.
+  test "a copy is made with mode 0600, appended to, and gets its mode at its close",
+       %{tmp_dir: dir} do
+    Process.flag(:trap_exit, true)
+    {:ok, lock} = Lock.take(Path.join(dir, "s.jsonl"))
+    copy = Path.join(dir, "s.jsonl.tmp")
+    File.write!(copy, "old")
+
+    assert Lock.create_copy(lock, copy) == :ok
+    assert File.read!(copy) == ""
+    assert Bitwise.band(File.stat!(copy).mode, 0o777) == 0o600
+    assert Lock.append_copy(lock, ["a", "é\n"]) == :ok
+    assert Lock.append_copy(lock, "b\n") == :ok
+    assert Lock.close_copy(lock, 0o100644) == :ok
+    assert File.read!(copy) == "aé\nb\n"
+    assert Bitwise.band(File.stat!(copy).mode, 0o777) == 0o644
+
+    # With no open copy, an append and a close fail.
+    assert {:error, "no copy"} = Lock.append_copy(lock, "x")
+    assert {:error, "no copy"} = Lock.close_copy(lock, 0o600)
+    # A symlink at the path is removed, not written through.
+    target = Path.join(dir, "target")
+    File.write!(target, "keep")
+    File.rm!(copy)
+    File.ln_s!(target, copy)
+    assert Lock.create_copy(lock, copy) == :ok
+    assert File.read!(target) == "keep"
     Lock.release(lock)
   end
 
@@ -487,12 +534,14 @@ defmodule Helyx.Session.LockTest do
     assert Lock.rename_file(lock, file, moved) == :ok
     # A rename of a file that is not there fails.
     assert {:error, _text} = Lock.rename_file(lock, file, moved)
-    {:os_pid, os_pid} = Port.info(lock, :os_pid)
-    {_, 0} = System.cmd("kill", ["-KILL", Integer.to_string(os_pid)])
+    lock_path = Path.join(dir, "server.lock")
+    PerlSignal.send!(PerlSignal.pid(lock, lock_path), "KILL", lock_path)
     assert_receive {:EXIT, ^lock, _reason}
 
     late = Path.join(dir, "late.json")
     assert {:error, _text} = Lock.write_file(lock, late, fn -> "late" end)
+    assert {:error, _text} = Lock.create_copy(lock, late)
+    assert {:error, _text} = Lock.append_copy(lock, "late")
     assert {:error, _text} = Lock.remove_file(lock, moved)
     assert {:error, _text} = Lock.rename_file(lock, moved, file)
     refute File.exists?(late)

@@ -12,7 +12,9 @@ defmodule Helyx.Session.Lock do
   # "<nonce> error <reason>" as one line. With the lock, it then reads
   # commands on stdin until a byte that is no command or the end of stdin,
   # and exits: `w` writes a file, `r` removes one, `m` renames one
-  # (`write_file/3`, `remove_file/2`, `rename_file/3`), and each gets the
+  # (`write_file/3`, `remove_file/2`, `rename_file/3`); `c` makes a copy
+  # file, `a` appends to it, and `k` sets its mode and closes it
+  # (`create_copy/2`, `append_copy/2`, `close_copy/2`); and each gets the
   # line "done" or "fail <reason>". The release sends `x`. The nonce
   # reaches it in its arguments only, so no startup warning of perl, which
   # stderr merges in, passes for the answer; perl runs with no warnings
@@ -41,8 +43,33 @@ defmodule Helyx.Session.Lock do
     $buf;
   }
   sub field { take(unpack('N', take(4))) }
+  my $copy;
   while (sysread(STDIN, my $op, 1)) {
-    if ($op eq 'r') {
+    if ($op eq 'c') {
+      my $file = field();
+      close($copy) if $copy;
+      unlink($file);
+      my $ok = sysopen($copy, $file, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0600)
+        && chmod(0600, $copy);
+      my $error = "$!";
+      undef $copy unless $ok;
+      print($ok ? "done\n" : "fail $error\n");
+    } elsif ($op eq 'a') {
+      my $data = field();
+      my ($ok, $at) = (defined($copy), 0);
+      while ($ok && $at < length($data)) {
+        my $n = syswrite($copy, $data, length($data) - $at, $at);
+        $ok = defined($n) && $n > 0;
+        $at += $n if $ok;
+      }
+      print($ok ? "done\n" : defined($copy) ? "fail $!\n" : "fail no copy\n");
+    } elsif ($op eq 'k') {
+      my $mode = unpack('N', take(4));
+      my $ok = defined($copy) && chmod($mode, $copy) && close($copy);
+      my $error = defined($copy) ? "$!" : "no copy";
+      undef $copy;
+      print($ok ? "done\n" : "fail $error\n");
+    } elsif ($op eq 'r') {
       my $file = field();
       print(unlink($file) || $!{ENOENT} ? "done\n" : "fail $!\n");
     } elsif ($op eq 'm') {
@@ -161,7 +188,22 @@ defmodule Helyx.Session.Lock do
   # so the rename happens only while the lock is held.
   def rename_file(port, from, to), do: command(port, fn -> ["m", field(from), field(to)] end)
 
-  defp field(text), do: [<<byte_size(text)::32>>, text]
+  # Makes the file `path` new with mode 0600 in the perl process that holds
+  # the lock `port`, after a remove of a file at that path, and keeps it
+  # open there for `append_copy/2` and `close_copy/2`: the copy of a
+  # removal (docs/features/session-edit.md). When the lock ends, perl ends,
+  # so no byte is written to the copy after it. A second create closes the
+  # copy before.
+  def create_copy(port, path), do: command(port, fn -> ["c", field(path)] end)
+
+  # Appends the iodata `data`, under 4 GiB, to the open copy.
+  def append_copy(port, data), do: command(port, fn -> ["a", field(data)] end)
+
+  # Sets the permission bits of `mode` on the open copy and closes it.
+  def close_copy(port, mode),
+    do: command(port, fn -> ["k", <<Bitwise.band(mode, 0o7777)::32>>] end)
+
+  defp field(text), do: [<<IO.iodata_length(text)::32>>, text]
 
   # The command goes in one call; a port that closed with its lock gets
   # none. The answer has the bound and the deadline of the take.

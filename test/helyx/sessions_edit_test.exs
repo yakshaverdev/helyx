@@ -8,8 +8,10 @@ defmodule Helyx.SessionsEditTest do
 
   alias Helyx.{Message, Session, Sessions}
   alias Helyx.Session.File, as: SessionFile
+  alias Helyx.Session.File.Edit
   alias Helyx.Session.Lock
   alias Helyx.Test.Memory
+  alias Helyx.Test.PerlSignal
   alias Helyx.Test.SessionFile, as: Saved
 
   @moduletag :tmp_dir
@@ -284,9 +286,18 @@ defmodule Helyx.SessionsEditTest do
   end
 
   describe "the end of the edit Task" do
-    # The edit Task of `core`, held with `:erlang.suspend_process/1`.
-    defp held_task(core) do
-      sup = Helyx.Core.task_supervisor(core)
+    # Runs `call` in a new process that sends `{tag, result}`, and gives the
+    # edit Task that the call starts, held with `:erlang.suspend_process/1`:
+    # the Task supervisor of `core` waits while the call queues its start,
+    # so the poll finds the Task new, after a short run that as a rule ends
+    # before its lock take.
+    defp held_task(core, tag, call) do
+      sup = Process.whereis(Helyx.Core.task_supervisor(core))
+      parent = self()
+      true = :erlang.suspend_process(sup)
+      spawn(fn -> send(parent, {tag, call.()}) end)
+      poll_until(fn -> Process.info(sup, :message_queue_len) == {:message_queue_len, 1} end)
+      true = :erlang.resume_process(sup)
 
       poll_until(fn ->
         case Task.Supervisor.children(sup) do
@@ -296,10 +307,16 @@ defmodule Helyx.SessionsEditTest do
       end)
     end
 
-    defp poll_until(fun) do
+    # Polls `fun` until it gives a value other than false, and flunks after
+    # 10,000 ms: the window of a race that the poll waits for can pass.
+    defp poll_until(fun, deadline \\ System.monotonic_time(:millisecond) + 10_000) do
       case fun.() do
-        false -> poll_until(fun)
-        value -> value
+        false ->
+          if System.monotonic_time(:millisecond) > deadline, do: flunk("the poll timed out")
+          poll_until(fun, deadline)
+
+        value ->
+          value
       end
     end
 
@@ -312,15 +329,12 @@ defmodule Helyx.SessionsEditTest do
     test "a kill that is not the killer's is :unknown", %{core: core, tmp_dir: dir} do
       {id, _path} = big_session(dir)
       [first | _] = resumed(dir, id)
-      parent = self()
-      spawn(fn -> send(parent, {:removed, Sessions.remove_message(core, id, first.id)}) end)
-
-      Process.exit(held_task(core), :kill)
+      task = held_task(core, :removed, fn -> Sessions.remove_message(core, id, first.id) end)
+      Process.exit(task, :kill)
       assert_receive {:removed, {:error, :unknown}}, 5_000
 
       {id, _path} = big_session(dir)
-      spawn(fn -> send(parent, {:deleted, Sessions.delete(core, id)}) end)
-      Process.exit(held_task(core), :kill)
+      Process.exit(held_task(core, :deleted, fn -> Sessions.delete(core, id) end), :kill)
       assert_receive {:deleted, {:error, :unknown}}, 5_000
     end
 
@@ -332,10 +346,7 @@ defmodule Helyx.SessionsEditTest do
       {id, path} = big_session(dir)
       before = File.read!(path)
       [first | _] = resumed(dir, id)
-      parent = self()
-      spawn(fn -> send(parent, {:removed, Sessions.remove_message(core, id, first.id)}) end)
-
-      task = held_task(core)
+      task = held_task(core, :removed, fn -> Sessions.remove_message(core, id, first.id) end)
       ref = Process.monitor(task)
       assert_receive {:removed, {:error, :timeout}}, 60_000
       assert_receive {:DOWN, ^ref, :process, ^task, :killed}
@@ -376,8 +387,8 @@ defmodule Helyx.SessionsEditTest do
 
         {:ok, session} = Sessions.resume(core, id: id)
         pid = Session.pid(session)
-        {:os_pid, os_pid} = Port.info(:sys.get_state(pid).lock, :os_pid)
-        {_, 0} = System.cmd("kill", ["-KILL", Integer.to_string(os_pid)])
+        lock_path = Path.rootname(path) <> ".lock"
+        PerlSignal.send!(PerlSignal.pid(:sys.get_state(pid).lock, lock_path), "KILL", lock_path)
         await(fn -> :sys.get_state(pid).lock == nil end, "the session to lose its lock")
         before = File.read!(path)
 
@@ -386,6 +397,98 @@ defmodule Helyx.SessionsEditTest do
         assert File.read!(path) == before
         :ok = Sessions.stop(session)
       end
+    end
+  end
+
+  describe "a removal whose lock holder ends" do
+    # The removal waits for perl's answer to a command on its copy; perl
+    # answers and then ends, so the lock is free, and a delete takes it and
+    # removes the file and the copy. The removal goes on in its Task, which
+    # traps exits, and must write no copy after that (Codex gate of #833,
+    # round 2). The hold is at the first command after the read: the create
+    # of the copy (`c`), or `r` of an old copy in the code before the fix.
+    test "leaves no copy after a delete, held at the create of the copy",
+         %{core: core, tmp_dir: dir} do
+      lose_lock(core, dir, [])
+    end
+
+    # The hold is at the first append to the copy: the copy is made and the
+    # session file is open in the Task, so a write of the copy that does
+    # not go through perl would make the copy again after the delete.
+    test "leaves no copy after a delete, held at an append to the copy",
+         %{core: core, tmp_dir: dir} do
+      lose_lock(core, dir, [{Edit, :flush}])
+    end
+
+    # perl stops after its answer to the take, so the Task, after its read
+    # of the file, waits at its first command; each frame of `then` lets
+    # perl answer that command and stops it again, so the Task waits at its
+    # next command, the one in `frame`. At the last hold perl answers and
+    # is killed, and a delete runs before the Task goes on.
+    defp lose_lock(core, dir, then) do
+      text = String.duplicate("x", 1_000)
+      {id, path} = saved(dir, for(n <- 1..3_000, do: msg(:user, text <> "#{n}")))
+      tmp = path <> ".tmp"
+      [first | _] = resumed(dir, id)
+      task = held_task(core, :removed, fn -> Sessions.remove_message(core, id, first.id) end)
+
+      # perl starts in some ms; the Task waits for its answer to the take.
+      # The port is in the list before the VM has started perl, and it
+      # reports the os pid 0 until then: `PerlSignal.pid/2` waits for the
+      # pid and checks it (a `kill -STOP 0` froze a precommit run).
+      true = :erlang.resume_process(task)
+      port = poll_until(fn -> lock_port(task) end)
+      true = :erlang.suspend_process(task)
+      lock_path = Path.rootname(path) <> ".lock"
+      perl = PerlSignal.pid(port, lock_path)
+      on_exit(fn -> PerlSignal.continue(perl, lock_path) end)
+      if in_frames?(task, {Lock, :read_answer}), do: answered(task)
+      refute File.exists?(tmp)
+      PerlSignal.send!(perl, "STOP", lock_path)
+      true = :erlang.resume_process(task)
+      waits_at(task, {Edit, :replace})
+
+      for frame <- then do
+        PerlSignal.send!(perl, "CONT", lock_path)
+        answered(task)
+        PerlSignal.send!(perl, "STOP", lock_path)
+        true = :erlang.resume_process(task)
+        waits_at(task, frame)
+      end
+
+      PerlSignal.send!(perl, "CONT", lock_path)
+      answered(task)
+      PerlSignal.send!(perl, "KILL", lock_path)
+      Saved.await_lock_free(path)
+
+      assert Sessions.delete(core, id) == :ok
+      true = :erlang.resume_process(task)
+      assert_receive {:removed, {:error, _reason}}, 10_000
+      refute File.exists?(path)
+      refute File.exists?(tmp)
+    end
+
+    # The Task waits for the answer of a command that `frame` sent, and is
+    # held there.
+    defp waits_at(task, frame) do
+      poll_until(fn -> in_frames?(task, {Lock, :read_answer}) and in_frames?(task, frame) end)
+      true = :erlang.suspend_process(task)
+    end
+
+    # The held Task has the answer of perl in its mailbox.
+    defp answered(task),
+      do: poll_until(fn -> Process.info(task, :message_queue_len) != {:message_queue_len, 0} end)
+
+    defp lock_port(task) do
+      case for(p <- Port.list(), Port.info(p, :connected) == {:connected, task}, do: p) do
+        [port] -> port
+        [] -> false
+      end
+    end
+
+    defp in_frames?(task, frame) do
+      {:current_stacktrace, stack} = Process.info(task, :current_stacktrace)
+      frame in for({module, function, _arity, _location} <- stack, do: {module, function})
     end
   end
 end
