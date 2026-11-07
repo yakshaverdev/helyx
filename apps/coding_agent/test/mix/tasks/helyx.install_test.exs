@@ -4,9 +4,14 @@ defmodule Mix.Tasks.Helyx.InstallTest do
   import ExUnit.CaptureIO
   import Helyx.Test.Events, only: [wait_until: 1]
 
+  alias CodingAgent.Lease
   alias Mix.Tasks.Helyx.Install
 
   @moduletag :tmp_dir
+
+  # Far above the pid_max of Linux (4,194,304) and of macOS, so no process
+  # has it.
+  @dead_pid 999_999_999
 
   # The second SIGTERM of the launcher comes after one second; the rest is
   # the margin for load.
@@ -194,6 +199,34 @@ defmodule Mix.Tasks.Helyx.InstallTest do
     File.ln_s!("releases/x", Path.join(prefix, "releases/.current-123"))
     install(context, "0.1.0+abc1234")
     assert builds(prefix) == ["abc1234", "def5678-dirty"]
+  end
+
+  # ADR 0014, invariant 4: a build holds a lease from each running VM, and
+  # the install deletes only a build with no lease.
+  test "an install keeps a build that a live VM holds; a dead pid's marker is stale",
+       %{prefix: prefix} = context do
+    install(context, "0.1.0+abc1234")
+    install(context, "0.1.0+bcd2345")
+
+    held = Path.join(prefix, "releases/abc1234")
+    live = Path.join(held, Lease.marker_name())
+    File.write!(live, "#{System.pid()} abc1234\n")
+
+    assert install(context, "0.1.0+cde3456") =~ "keeping abc1234: a VM runs from it"
+    assert builds(prefix) == ["abc1234", "bcd2345", "cde3456"]
+    assert File.exists?(live)
+
+    # The VM ended and removed its marker: the next install deletes its
+    # build as before.
+    File.rm!(live)
+    install(context, "0.1.0+def5678")
+    assert builds(prefix) == ["cde3456", "def5678"]
+
+    # A marker of a pid that no process has, as a SIGKILL leaves, is stale.
+    stale = Path.join(prefix, "releases/cde3456")
+    File.write!(Path.join(stale, Lease.marker_name(@dead_pid)), "#{@dead_pid} cde3456\n")
+    install(context, "0.1.0+efg7890")
+    assert builds(prefix) == ["def5678", "efg7890"]
   end
 
   test "a launcher that cannot be written leaves current and the kept builds",

@@ -44,6 +44,7 @@ defmodule CodingAgent.CLI do
   `docs/features/tui-attach.md`.
   """
 
+  alias CodingAgent.Lease
   alias CodingAgent.Print
   alias Helyx.Session.File.Scan
   alias Helyx.Tool.Bash
@@ -116,19 +117,34 @@ defmodule CodingAgent.CLI do
   def main(argv, halt \\ &:erlang.halt(&1, flush: false)) do
     release_version = System.get_env("RELEASE_VSN")
     launcher = System.get_env("HELYX_LAUNCHER")
-    System.put_env(command_env(System.get_env()))
 
-    case start(argv, release_version, launcher, halt) do
-      :ok ->
-        0
+    case Lease.acquire(System.get_env()) do
+      {:ok, lease} ->
+        System.put_env(command_env(System.get_env()))
+        # Print mode ends the VM itself, so the lease goes before its halt;
+        # every other end returns from `start/4` and runs the `after`.
+        halt = fn status ->
+          Lease.release(lease)
+          halt.(status)
+        end
 
-      status when is_integer(status) ->
-        status
+        try do
+          result(start(argv, release_version, launcher, halt))
+        after
+          Lease.release(lease)
+        end
 
       {:error, text} ->
-        IO.puts(:stderr, "helyx: " <> text)
-        1
+        result({:error, text})
     end
+  end
+
+  defp result(:ok), do: 0
+  defp result(status) when is_integer(status), do: status
+
+  defp result({:error, text}) do
+    IO.puts(:stderr, "helyx: " <> text)
+    1
   end
 
   @doc false

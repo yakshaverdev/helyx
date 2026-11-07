@@ -10,12 +10,14 @@ defmodule Mix.Tasks.Helyx.Install do
   `~/.helyx`), `<prefix>/current` points at it, and `<bin-dir>/helyx`
   (default `~/.local/bin`) starts it. An existing build folder is never
   replaced.
-  The install keeps the build that `current` pointed at before and deletes
-  the older ones. The task runs in `prod`. The design is in
-  `docs/features/local-release.md`.
+  The install keeps the build that `current` pointed at before and every
+  build that a running VM holds, and deletes the older ones. The task runs in
+  `prod`. The design is in `docs/features/local-release.md`.
   """
 
   use Mix.Task
+
+  alias CodingAgent.Lease
 
   @usage "usage: mix helyx.install [--prefix DIR] [--bin-dir DIR]"
   # The ticks of the launcher of `serve` after a signal, one SIGTERM each
@@ -112,14 +114,23 @@ defmodule Mix.Tasks.Helyx.Install do
 
     # The swap is the commit point: a raise before it leaves `current` and
     # the kept builds as they were. A deletion after it only warns, and the
-    # next install tries again; a listing that fails raises.
+    # next install tries again; a listing that fails raises. A build that a
+    # running VM holds stays, so a session of it keeps its modules (ADR 0014).
     for entry <- File.ls!(releases), entry not in [name, previous] do
-      with {:error, reason, file} <- File.rm_rf(Path.join(releases, entry)) do
-        Mix.shell().error("could not delete #{file}: #{:file.format_error(reason)}")
-      end
+      delete(Path.join(releases, entry), entry)
     end
 
     :ok
+  end
+
+  defp delete(build, entry) do
+    if Lease.held?(build) do
+      Mix.shell().info("keeping #{entry}: a VM runs from it")
+    else
+      with {:error, reason, file} <- File.rm_rf(build) do
+        Mix.shell().error("could not delete #{file}: #{:file.format_error(reason)}")
+      end
+    end
   end
 
   # The command line is a boundary. The usage text shows no argument, so no

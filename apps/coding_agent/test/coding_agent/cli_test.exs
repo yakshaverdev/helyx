@@ -3,6 +3,8 @@ defmodule CodingAgent.CLITest do
   # goes to the shared stderr.
   use ExUnit.Case, async: false
 
+  @moduletag :tmp_dir
+
   import ExUnit.CaptureIO
 
   alias CodingAgent.CLI
@@ -78,6 +80,18 @@ defmodule CodingAgent.CLITest do
              "helyx 0.1.0+abc1234\n"
 
     assert {"", 0} = System.cmd("sh", ["-c", ~S(printf %s "$RELEASE_VSN$RELEASE_SYS_CONFIG")])
+  end
+
+  test "a release run takes the lease of its build and removes it at the end",
+       %{tmp_dir: root} do
+    System.put_env("RELEASE_ROOT", root)
+    System.put_env("RELEASE_VSN", "0.1.0+abc1234")
+    on_exit(fn -> Enum.each(~w(RELEASE_ROOT RELEASE_VSN), &System.delete_env/1) end)
+
+    assert capture_io(fn -> assert CLI.main(["--version"]) == 0 end) ==
+             "helyx 0.1.0+abc1234\n"
+
+    assert File.ls!(root) == []
   end
 
   test "in a release, the folders of the release leave the start of PATH" do
