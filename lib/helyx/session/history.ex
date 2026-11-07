@@ -10,7 +10,12 @@ defmodule Helyx.Session.History do
   @default_count 200
   @max_bytes 16 * 1024 * 1024
 
-  @type history_page :: %{messages: [Message.t()], more: boolean(), next: String.t() | nil}
+  @type history_page :: %{
+          messages: [Message.t()],
+          more: boolean(),
+          older: non_neg_integer(),
+          next: String.t() | nil
+        }
 
   # The option list of `Helyx.Session.subscribe/2`: `tail`, `after`, and
   # `answers`, each at most once (docs/features/replay-ring.md,
@@ -76,9 +81,12 @@ defmodule Helyx.Session.History do
     {run, older} = take(newest, count, @max_bytes, [])
 
     case Enum.split_while(run, &(&1.role == :tool_result)) do
-      {_dropped, []} -> group(newest)
+      {_dropped, []} ->
+        group(newest)
+
       # A dropped result has its call in `older`, so `older` is not empty then.
-      {_dropped, messages} -> %{messages: messages, more: older != []}
+      {_dropped, messages} ->
+        %{messages: messages, more: older != [], older: length(newest) - length(messages)}
     end
   end
 
@@ -97,10 +105,10 @@ defmodule Helyx.Session.History do
   # transcript has a user or an assistant message before each tool result
   # (`Helyx.Session.Transcript.repair/1`, `Records`), so only an empty one
   # has none.
-  defp group([]), do: %{messages: [], more: false}
+  defp group([]), do: %{messages: [], more: false, older: 0}
 
   defp group(newest) do
     {results, [head | older]} = Enum.split_while(newest, &(&1.role == :tool_result))
-    %{messages: [head | Enum.reverse(results)], more: older != []}
+    %{messages: [head | Enum.reverse(results)], more: older != [], older: length(older)}
   end
 end

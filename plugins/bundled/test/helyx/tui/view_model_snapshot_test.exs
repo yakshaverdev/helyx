@@ -282,6 +282,31 @@ defmodule Helyx.TUI.ViewModelSnapshotTest do
     assert ViewModel.cells(vm) == []
   end
 
+  test "a tail snapshot says how many older messages it leaves out", %{core: core} do
+    {:ok, session} = Helyx.Test.SavedSession.start(core, "fake/echo")
+    {:ok, _, _} = Session.subscribe(session)
+    :ok = Session.prompt(session, "one")
+    collect_until(:turn_end)
+    :ok = Session.prompt(session, "two")
+    collect_until(:turn_end)
+
+    {:ok, full, _} = Session.subscribe(session)
+    {:ok, tail, _} = Session.subscribe(session, tail: 2)
+
+    assert length(full.messages) == 4
+    assert full.older == 0
+    assert tail.older == 2
+    assert tail.more
+
+    vm = ViewModel.from_snapshot(tail)
+    assert [{:infos, ["2 older messages"]} | cells] = ViewModel.cells(vm)
+    assert length(cells) == 2
+    assert "· 2 older messages" in texts(vm)
+
+    full_cells = ViewModel.cells(ViewModel.from_snapshot(full))
+    refute Enum.any?(full_cells, &match?({:infos, _}, &1))
+  end
+
   # A client that joins after the turn ended shows the transcript cells of
   # the client that watched, the partial reply too, and not its notice.
   defp assert_joins_after_end(session, live, events) do

@@ -43,12 +43,15 @@ defmodule Helyx.Session.TailSnapshotTest do
     assert tail.more
     # The tail has no message with a cost, and the totals still count it.
     assert {tail.usage, tail.context} == {full.usage, full.context}
+    assert tail.older == 3
 
     # Two would start at the result: the cut moves to the last message.
     assert {:ok, %{messages: [^last], more: true}, _} = Session.subscribe(session, tail: 2)
     assert {:ok, %{messages: messages, more: true}, _} = Session.subscribe(session, tail: 3)
     assert messages == tl(full.messages)
-    assert Map.drop(tail, [:messages, :more]) == Map.drop(full, [:messages, :more])
+
+    assert Map.drop(tail, [:messages, :more, :older]) ==
+             Map.drop(full, [:messages, :more, :older])
   end
 
   test "a tail during a turn keeps the turn and its partial", %{core: core} do
@@ -80,7 +83,7 @@ defmodule Helyx.Session.TailSnapshotTest do
     assert next == hd(older).id
 
     assert Session.history(session, tail.instance_id, next) ==
-             {:ok, %{messages: [hd(full.messages)], more: false, next: nil}}
+             {:ok, %{messages: [hd(full.messages)], more: false, older: 0, next: nil}}
 
     # No event, and the same seq, totals, and transcript.
     refute_received {:helyx_event, _}

@@ -318,26 +318,34 @@ defmodule Helyx.TUI.Wire.Decode do
     model
   end
 
-  defp snapshot!(%{
-         "instance_id" => instance_id,
-         "seq" => seq,
-         "messages" => messages,
-         "more" => more,
-         "turn" => turn,
-         "model" => model,
-         "queue" => queue,
-         "persisting" => persisting,
-         "usage" => usage,
-         "context" => context,
-         "asks" => asks
-       })
+  defp snapshot!(
+         %{
+           "instance_id" => instance_id,
+           "seq" => seq,
+           "messages" => messages,
+           "more" => more,
+           "turn" => turn,
+           "model" => model,
+           "queue" => queue,
+           "persisting" => persisting,
+           "usage" => usage,
+           "context" => context,
+           "asks" => asks
+         } = wire
+       )
        when is_binary(instance_id) and count?(seq) and is_list(messages) and is_boolean(more) and
               is_boolean(persisting) and is_list(asks) do
+    # The count is additive: a server of an older build sends none, and the
+    # client shows no notice then.
+    older = Map.get(wire, "older", 0)
+    true = count?(older)
+
     snapshot = %Snapshot{
       instance_id: instance_id,
       seq: seq,
       messages: Enum.map(messages, &message!/1),
       more: more,
+      older: older,
       turn: turn(turn),
       model: model!(model),
       queue: queue(queue),

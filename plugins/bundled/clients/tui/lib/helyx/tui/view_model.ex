@@ -249,7 +249,9 @@ defmodule Helyx.TUI.ViewModel do
   snapshot has none of them, but for a session that does not save: a
   snapshot with `persisting: false` ends with the notice
   `Helyx.Reason.text(:not_saved)`, so a stop of the saving before the
-  subscribe shows too.
+  subscribe shows too. A tail snapshot whose `older` is not zero starts
+  with the information cell `<older> older messages`, so a client that
+  shows the tail says that the transcript goes on.
   """
   @spec from_snapshot(Snapshot.t(), String.t() | nil) :: t()
   def from_snapshot(%Snapshot{messages: messages, turn: turn} = snapshot, session_id \\ nil) do
@@ -265,6 +267,7 @@ defmodule Helyx.TUI.ViewModel do
       seq: snapshot.seq
     }
 
+    vm = if snapshot.older > 0, do: add_info(vm, "#{snapshot.older} older messages"), else: vm
     vm = Enum.reduce(messages, vm, &add_cells(&2, &1))
     vm = %{vm | streaming: streaming(turn, vm.session_id)}
     if snapshot.persisting, do: vm, else: add_cell(vm, {:notice, Helyx.Reason.text(:not_saved)})

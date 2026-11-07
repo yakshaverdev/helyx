@@ -15,6 +15,9 @@ defmodule Helyx.Session.Snapshot do
     * `more` – true when older messages are not in `messages`; their
       pages come from `Helyx.Session.history/4`, the first with the id of
       the first message of `messages`.
+    * `older` – the count of the older messages that `messages` leaves out,
+      0 when none. A client can tell the user how much of the transcript it
+      does not show (`docs/features/tui-attach.md`, "Accepted holes").
     * `turn` – nil, or the running turn: its `id`, the assistant message
       so far as `partial` (nil before the first stream event), and
       `elapsed_ms`, the milliseconds since the turn started, by the clock
@@ -54,7 +57,7 @@ defmodule Helyx.Session.Snapshot do
     :usage,
     :context
   ]
-  defstruct @enforce_keys ++ [asks: []]
+  defstruct @enforce_keys ++ [asks: [], older: 0]
 
   @type ask :: %{ask_id: String.t(), call_id: String.t(), tool: String.t(), request: map()}
 
@@ -69,6 +72,7 @@ defmodule Helyx.Session.Snapshot do
           seq: non_neg_integer(),
           messages: [Helyx.Message.t()],
           more: boolean(),
+          older: non_neg_integer(),
           turn: turn() | nil,
           model: String.t(),
           queue: %{
