@@ -84,15 +84,24 @@ defmodule Helyx.Session.File.Reader do
   defp chunk(io, partial, [chunk], n, cwd, limits, acc),
     do: more(io, partial <> chunk, n, cwd, limits, acc)
 
-  # A line over the limit is no entry that a session writes, nor a torn
-  # part of one.
-  defp line(text, n, _cwd, limits, _acc) when byte_size(text) > limits.entry,
-    do: over_entry(n, limits)
-
   defp line(text, n, cwd, limits, acc) do
+    case entry(text, n, limits) do
+      {:ok, entry} -> add(entry, n, cwd, acc)
+      :none -> {:ok, acc}
+      error -> error
+    end
+  end
+
+  # The entry of the line `text`, number `n`: `{:ok, entry}`, `:none` for a
+  # line that does not decode to an entry (a torn append, skipped), or
+  # `{:error, {:too_large, text}}` for a line over a limit. A line over the
+  # limit is no entry that a session writes, nor a torn part of one.
+  def entry(text, n, limits) when byte_size(text) > limits.entry, do: over_entry(n, limits)
+
+  def entry(text, n, limits) do
     case decode(text, limits.heap) do
       {:ok, %{"type" => _} = entry} ->
-        add(entry, n, cwd, acc)
+        {:ok, entry}
 
       :killed ->
         {:error,
@@ -101,7 +110,7 @@ defmodule Helyx.Session.File.Reader do
             "to load; start a new session"}}
 
       _not_an_entry ->
-        {:ok, acc}
+        :none
     end
   end
 

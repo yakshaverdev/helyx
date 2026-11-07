@@ -13,7 +13,8 @@ defmodule Helyx.Sessions do
   """
 
   alias Helyx.Session
-  alias Helyx.Session.File.Scan
+  alias Helyx.Session.File, as: SessionFile
+  alias Helyx.Session.File.{Edit, Scan}
   alias Helyx.Session.{Id, Input}
 
   # The timeout of each call of `Helyx.Session` but `abort/1`.
@@ -21,6 +22,14 @@ defmodule Helyx.Sessions do
 
   @max_page 256
   @default_page 50
+
+  # The deadline of `remove_message/3` up to its rename: a base for the
+  # lock and the small file, then one ms for each 1,000 bytes of each of
+  # the three passes over the file (the read, the copy, and its write), as
+  # the open of a session counts its load (`docs/features/session-edit.md`,
+  # "Bounds").
+  @remove_base_ms 25_000
+  @remove_passes 3
 
   defmodule Live do
     @moduledoc """
@@ -170,6 +179,114 @@ defmodule Helyx.Sessions do
     case Helyx.Core.config(core, :sessions_dir) do
       nil -> {:error, :not_found}
       dir -> Session.resume(core, [sessions_dir: dir] ++ opts)
+    end
+  end
+
+  @doc """
+  Deletes the saved session `id` from the `:sessions_dir` of `core`: its
+  file and the copy that a failed `remove_message/3` left. Takes the writer
+  lock of the file first, so no session writes it during the delete.
+
+  Errors, each with no change: `:not_found` for an id with no file (or a
+  Core with no `:sessions_dir`), `:invalid_id`, `:duplicate_id`, and
+  `:running` when a session of the id runs in `core`, or another process
+  holds its lock; the caller stops it first. `:not_regular` for a path
+  that is a symlink or not a file, `{:lock_failed, text}` when the lock
+  cannot be taken, `{:edit_failed, text}` when a remove fails, and a POSIX
+  reason of the stat of the file. Two exceptions, where the file may or
+  may not have changed: an `{:edit_failed, text}` that says perl gave no
+  answer in time, and `:unknown`, an end of the work with no result, such
+  as at a stop of the Core.
+
+  It does not remove what is kept outside the file: the empty lock file
+  `<id>.lock`, the child sessions that its tool calls started (each its
+  own saved session, `child_id/2`), the stored state of a harness program
+  that its resume ids name, the copies that a memory plugin or another
+  plugin keeps, and the bytes that the filesystem or a backup keeps
+  (`docs/features/session-edit.md`).
+  """
+  @spec delete(Helyx.Core.name(), String.t()) ::
+          :ok
+          | {:error,
+             :not_found
+             | :invalid_id
+             | :duplicate_id
+             | :running
+             | :not_regular
+             | :unknown
+             | {:lock_failed | :edit_failed, String.t()}
+             | File.posix()}
+  def delete(core, id) when is_binary(id) do
+    with {:ok, dir} <- sessions_dir(core),
+         {:ok, path} <- Scan.locate(dir, id) do
+      # The take, two removes, and the release each have the bound of
+      # `Helyx.Session.Lock`.
+      Edit.run(core, nil, fn nil -> Edit.delete(core, id, path) end)
+    end
+  end
+
+  @doc """
+  Removes the message `message_id` from the saved session `id` of the
+  `:sessions_dir` of `core`, and returns the ids of every message that it
+  removed, in their order, message ids only. The transcript keeps complete
+  tool call and result pairs: a removed assistant message takes the tool
+  results right after it, and a removed tool result takes that assistant
+  message and its other results. The `hook` entries that name a call id
+  of the removed messages go too, by the call id alone. The call takes the
+  writer lock of the file, reads the file as a resume does, writes a copy
+  without them, and replaces the file with it under the lock. After it the
+  file holds no byte of the removed messages, is one chain, and a resume,
+  and its `Helyx.Memory` sync, gives the other messages in their order.
+
+  Errors, each with no change of the file: those of `delete/2`, the read
+  errors of a resume of the file (such as `{:invalid_file, text}`),
+  `:message_not_found` for an id that is no message of the file, and
+  `:timeout` past the deadline, 25,000 ms plus 3 ms for each 1,000 bytes
+  of the file: the deadline ends before the rename is sent, and only a kill
+  of the deadline gives `:timeout`. The two exceptions of `delete/2` hold
+  for the rename.
+
+  It does not remove: the copies of `delete/2`, a summary that a model
+  wrote of the text, a system prompt entry that a ModelContext plugin
+  built with the text, the end message of a background run that a removed
+  call started, the resume id of a provider and the history that it
+  names, and the transcript of a running session, which it refuses
+  (`docs/features/session-edit.md`).
+  """
+  @spec remove_message(Helyx.Core.name(), String.t(), String.t()) ::
+          {:ok, [String.t()]}
+          | {:error,
+             :not_found
+             | :invalid_id
+             | :duplicate_id
+             | :running
+             | :message_not_found
+             | :timeout
+             | :unknown
+             | {:lock_failed | :edit_failed, String.t()}
+             | SessionFile.error()}
+  def remove_message(core, id, message_id) when is_binary(id) and is_binary(message_id) do
+    with {:ok, dir} <- sessions_dir(core),
+         {:ok, path, %{"cwd" => cwd}} <- Scan.find(dir, id),
+         {:ok, size} <- size(path) do
+      budget = @remove_base_ms + div(size * @remove_passes, 1_000)
+      Edit.run(core, budget, &Edit.remove_message({core, id, path}, cwd, message_id, &1))
+    end
+  end
+
+  # A delete can remove the file after the find.
+  defp size(path) do
+    case File.stat(path) do
+      {:ok, %File.Stat{size: size}} -> {:ok, size}
+      {:error, :enoent} -> {:error, :not_found}
+      {:error, _reason} = error -> error
+    end
+  end
+
+  defp sessions_dir(core) do
+    case Helyx.Core.config(core, :sessions_dir) do
+      nil -> {:error, :not_found}
+      dir -> {:ok, dir}
     end
   end
 

@@ -81,28 +81,32 @@ defmodule Helyx.Session.File.Scan do
           {:ok, Path.t(), map()}
           | {:error, :invalid_id | :not_found | :duplicate_id | {:invalid_file, String.t()}}
   def find(dir, id) do
-    if Id.valid?(id), do: find_valid(dir, id), else: {:error, :invalid_id}
-  end
-
-  defp find_valid(dir, id) do
-    # The listed names, not a stat of a built path: a filesystem that
-    # ignores case would match an id of another case.
-    folders = [Path.join(dir, @children) | projects(dir, :all)]
-
-    case Enum.filter(jsonl_paths(folders), &(id(&1) == id)) do
-      [] ->
-        {:error, :not_found}
-
-      [path] ->
-        case head(path) do
-          {:ok, header, _prompt} -> {:ok, path, header}
-          :error -> {:error, {:invalid_file, "the file does not start with a session header"}}
-        end
-
-      _paths ->
-        {:error, :duplicate_id}
+    with {:ok, path} <- locate(dir, id) do
+      case head(path) do
+        {:ok, header, _prompt} -> {:ok, path, header}
+        :error -> {:error, {:invalid_file, "the file does not start with a session header"}}
+      end
     end
   end
+
+  @doc false
+  # The path of the file of the session `id` as `find/2` finds it, with no
+  # read of the file: a file whose header does not parse is found too. The
+  # id is checked before any path is built.
+  def locate(dir, id) do
+    # The listed names, not a stat of a built path: a filesystem that
+    # ignores case would match an id of another case.
+    if Id.valid?(id) do
+      folders = [Path.join(dir, @children) | projects(dir, :all)]
+      one_path(Enum.filter(jsonl_paths(folders), &(id(&1) == id)))
+    else
+      {:error, :invalid_id}
+    end
+  end
+
+  defp one_path([]), do: {:error, :not_found}
+  defp one_path([path]), do: {:ok, path}
+  defp one_path(_paths), do: {:error, :duplicate_id}
 
   @doc false
   # The most recently started session of `cwd` that `list/2` would list:
