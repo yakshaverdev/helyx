@@ -101,6 +101,48 @@ defmodule Helyx.Core.Plugins do
     end)
   end
 
+  @doc """
+  The hook modules of each point with their limits, in plugin order
+  (`docs/features/hooks.md`). A hook plugin that exports no point is
+  `{:no_hook_point, module}`. A `limit/1` that is not exported, or that
+  returns for a point of the plugin a value that is not an integer from 1
+  to `Helyx.Hook.max_limit_ms/0`, is `{:invalid_hook_limit, module}`.
+  """
+  @spec hooks([module()]) ::
+          {:ok, %{Helyx.Hook.point() => [{module(), pos_integer()}]}}
+          | {:error, {:no_hook_point | :invalid_hook_limit, module()}}
+  def hooks(plugins) do
+    checked =
+      Enum.reduce_while(plugins, {:ok, []}, fn plugin, {:ok, acc} ->
+        case hook_limits(plugin) do
+          {:ok, limits} ->
+            {:cont, {:ok, acc ++ for({point, ms} <- limits, do: {point, {plugin, ms}})}}
+
+          error ->
+            {:halt, error}
+        end
+      end)
+
+    with {:ok, pairs} <- checked,
+         do: {:ok, Enum.group_by(pairs, &elem(&1, 0), &elem(&1, 1))}
+  end
+
+  defp hook_limits(plugin) do
+    points = Enum.filter(Helyx.Hook.points(), &function_exported?(plugin, &1, 1))
+    limits = for point <- points, do: {point, limit(plugin, point)}
+
+    cond do
+      points == [] -> {:error, {:no_hook_point, plugin}}
+      Enum.all?(limits, &limit?(elem(&1, 1))) -> {:ok, limits}
+      true -> {:error, {:invalid_hook_limit, plugin}}
+    end
+  end
+
+  defp limit(plugin, point),
+    do: if(function_exported?(plugin, :limit, 1), do: plugin.limit(point))
+
+  defp limit?(ms), do: is_integer(ms) and ms in 1..Helyx.Hook.max_limit_ms()//1
+
   defp checked_id(plugin) do
     id = plugin.id()
     if is_binary(id), do: {:ok, id}, else: :error

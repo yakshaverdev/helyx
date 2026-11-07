@@ -258,7 +258,7 @@ defmodule Helyx.Provider.OpenAITest do
         core: core,
         cwd: File.cwd!(),
         background_dir: Path.join(System.tmp_dir!(), "helyx-unused"),
-        session: self(),
+        session: Helyx.Test.FakeSession.start(),
         tools: tools
       )
 

@@ -9,9 +9,9 @@ Helyx is a BEAM-native substrate for malleable software. It is an Elixir framewo
 Key design constraints:
 
 - Core stays small. It contains only plugin registration, OTP supervision, and interface dispatch.
-- Everything else is a plugin: memory, tools, model context, compaction.
+- Everything else is a plugin: memory, tools, model context, compaction, hooks.
 - The TUI is a client host. It uses the session API and is not registered as a Core plugin. Core plugins implement the server extension interfaces. A plugin package can also contain client code. A client extension would load through its client host; Helyx has no client extension API today.
-- The extension surface is small: Provider, Tool, ModelContext, Compaction, and Memory (ADR 0009). Event is data, not an interface. A transport is not an interface: `Helyx.Transport.WebSocket` is a bundled module that a product starts and that uses only the public session and server API (ADR 0008).
+- The extension surface is small: Provider, Tool, ModelContext, Compaction, Memory (ADR 0009), and Hook (ADR 0013). Event is data, not an interface. A transport is not an interface: `Helyx.Transport.WebSocket` is a bundled module that a product starts and that uses only the public session and server API (ADR 0008).
 - The server owns agent and session state. Clients are thin and render from the event stream.
 - The end state is one long-running server that owns the sessions, with every client on one wire contract (ADR 0008, `docs/features/wire-protocol.md`). The TUI uses only the wire; `mix helyx` with no server runs the server in its own VM, and the TUI connects to it over the loopback (`docs/features/tui-attach.md`, decision 12).
 - Core knows only interface constructs. A concept that only one kind of plugin has (a harness, a program, a wire protocol) stays in that plugin, and Core code does not name it. A rule that every provider needs, such as the order of tool results or the completion before the next turn, is a provider construct and stays in Core.

@@ -17,8 +17,10 @@ defmodule Helyx.Session.Turn do
   # Task's context. It is nil with no Task: in `submitted` a prepare Task
   # or a `pending` context is an open context request.
   # `tool_queue` holds the Helyx tool requests of the turn
-  # (`Helyx.Session.ToolQueue`), and `asks` the open asks of its calls,
-  # oldest first (`Helyx.Session.Server.Asks`). `compact` is nil for a
+  # (`Helyx.Session.ToolQueue`), `asks` the open asks of its calls,
+  # oldest first, and `askers` the call and hook Tasks of the turn that
+  # may ask, by pid, with the session's monitor and their kind
+  # (`Helyx.Session.Server.Asks`). `compact` is nil for a
   # turn with a prompt; for a compaction turn it is its instructions until
   # the provider's first compaction event, then `:reported`
   # (docs/features/harness-compaction.md). `start` is the number of
@@ -50,7 +52,8 @@ defmodule Helyx.Session.Turn do
     bytes: 0,
     blocks: 0,
     tool_queue: %Helyx.Session.ToolQueue{},
-    asks: []
+    asks: [],
+    askers: %{}
   ]
 
   @type t :: %__MODULE__{
@@ -71,7 +74,8 @@ defmodule Helyx.Session.Turn do
           bytes: non_neg_integer(),
           blocks: non_neg_integer(),
           tool_queue: Helyx.Session.ToolQueue.t(),
-          asks: [{String.t(), GenServer.from(), Helyx.Session.Snapshot.ask()}]
+          asks: [{String.t(), GenServer.from(), Helyx.Session.Snapshot.ask(), pid()}],
+          askers: %{pid() => {reference(), {:tool | :hook, String.t()}}}
         }
 
   # The most bytes of text, thinking, and tool calls in the open assistant
