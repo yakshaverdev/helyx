@@ -50,8 +50,9 @@ defmodule CodingAgent.Print do
   status. The first step traps SIGTERM and SIGHUP, before any output, and
   the trap stays for the life of the VM: the first of them aborts the
   session that `run/2` runs, waits at most `abort_ms/0`, and calls `halt`
-  with 143 or 129; later ones are ignored. Other signals keep the OTP
-  default (SIGQUIT and SIGUSR1 halt the VM). Then the calling process
+  with 143 or 129; later ones are ignored, and so is every other signal while
+  the stop runs, so it cannot overwrite the first status. Outside the stop,
+  the other signals keep the OTP default (SIGQUIT and SIGUSR1 halt the VM). Then the calling process
   only waits for the run and halts. The run, in a process of its own, sends the log to
   stderr, so stdout holds only the answer, and calls `fun`. `fun` returns
   the status, or `{:error, text}`, which is written as one line on stderr
@@ -287,14 +288,22 @@ defmodule CodingAgent.Print do
     @statuses %{sigterm: 143, sighup: 129}
 
     @impl true
-    def init({halt, _old_state}), do: {:ok, %{halt: halt, session: nil, done: false}}
+    def init({halt, _old_state}),
+      do: {:ok, %{halt: halt, session: nil, done: false, stopping: nil}}
 
     @impl true
     def handle_event(signal, %{done: false} = state) when is_map_key(@statuses, signal) do
       %{halt: halt, session: session} = state
-      spawn(fn -> stop(session, Map.fetch!(@statuses, signal), halt) end)
-      {:ok, %{state | done: true}}
+      status = Map.fetch!(@statuses, signal)
+      spawn(fn -> stop(session, status, halt) end)
+      {:ok, %{state | done: true, stopping: status}}
     end
+
+    # The stop owns the result. A later signal must not reach the OTP default
+    # and halt the VM with its own status before the stop halts with the
+    # first one.
+    def handle_event(_signal, %{stopping: status} = state) when status != nil,
+      do: {:ok, state}
 
     # A signal that print mode does not own keeps the OTP default: SIGUSR1
     # and SIGQUIT halt the VM, the rest are ignored.
@@ -308,8 +317,10 @@ defmodule CodingAgent.Print do
 
     @impl true
     def handle_call({:session, session}, state), do: {:ok, :ok, %{state | session: session}}
-    # `done`: a signal started the stop, or the run finished first.
-    def handle_call(:finish, %{done: true} = state), do: {:ok, :stopping, state}
+    # `stopping`: a signal started the stop. `done`: the run finished first.
+    def handle_call(:finish, %{stopping: status} = state) when status != nil,
+      do: {:ok, :stopping, state}
+
     def handle_call(:finish, state), do: {:ok, :ok, %{state | done: true}}
 
     # The abort runs unlinked: a session that is gone, or one that does not
