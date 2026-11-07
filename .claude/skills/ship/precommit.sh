@@ -6,7 +6,7 @@
 # changed on the host are copied back, the same as a local run. Nothing may
 # edit the worktree during the run: a copied-back file replaces a local edit.
 # A local run has no PID namespace. HELYX_SLOW=1 runs the slow tests too,
-# as /ship and the merge gate of /orchestrate do (#295).
+# as the merge gate of /orchestrate does; /ship runs without them (#295).
 # On the host, the runs wait in a queue (#330). Each run holds a flock on
 # ~/.helyx-precommit.lock, so only one run at a time loads the host. A run
 # that must wait writes a line to precommit.log when the wait starts. Each

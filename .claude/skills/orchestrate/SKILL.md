@@ -60,6 +60,7 @@ Every brief also says:
 - No CPU load generator and no mutation run over a whole suite in any probe: other worktrees run tests on this machine. Put this rule in every review brief.
 - Run every Agent call in the foreground: set `run_in_background` to false on each Agent call, because the default can be background (2026-10-15: workers started their `/simplify` agents in the background and had to run them again). Put several Agent calls in one message when they must run in parallel. Never use a background agent or a scheduled wakeup: print mode waits only for Helyx background runs, so the run ends and the session stop ends the agent (#592 probe, #598).
 - Run a long command (the Codex review, precommit) with the `bash` tool and `background: true`. Its end opens a new turn.
+- Never wait for a background run with `sleep`, a poll loop, or `kill -0`. Do the work that does not depend on it, then end the turn: the end of the run opens a new turn with its result. On 2026-11-06 the owner measured the worker transcripts: workers waited with fixed sleeps (`sleep 590; cat <output>`, poll loops, `while kill -0 ...; do sleep 15; done`), about 5 h in total, while a Codex review takes a median of 3.2 min, so a fixed 10-minute sleep wastes most of its wait.
 - No probe sends a request to a real network service. Use a Req plug or a local stub (2026-10-15: a probe sent two requests with a fake key). Put this rule in every review brief.
 - A probe never deletes a folder that it did not create in the same probe. A probe of a removed working folder first makes its own folder under the scratchpad and works there (2026-10-17: a review probe ran `File.rm_rf!(File.cwd!())` in the ticket worktree and deleted it). Put this rule in every review brief.
 - Report only the result lines that a tool gave you. Never write a test or precommit result that you did not read in the tool output or the log (2026-10-17: a worker wrote "passed" after its background precommit ended with the session limit and left an empty log).
@@ -113,7 +114,7 @@ Add one row per ticket to `docs/reviews/escapes.md`: date, ticket, ship findings
 Serial, one ticket at a time:
 
 1. `git fetch`, rebase the branch on `origin/master`. A conflict that is not mechanical: park. Chain the rebase and the step after it (the gate or precommit) with `&&` only, never with `;` or a pipe: with `;` a failed rebase still runs the step, and a pipe hides the exit status of the rebase (2026-10-17: a gate and a precommit ran on a tree with a rebase conflict).
-2. Precommit into the log, as `AGENTS.md` says, with the slow tests: `HELYX_SLOW=1 .claude/skills/ship/precommit.sh`. It must pass after the rebase, not before it. One exception: when the master commits that the rebase brings are docs only, or tests only in a part that the branch does not touch, the precommit of the branch before the rebase stands. Any other compiled code from master needs the precommit on the rebased branch. The same failure twice: park.
+2. Precommit into the log, as `AGENTS.md` says, with the slow tests: `HELYX_SLOW=1 .claude/skills/ship/precommit.sh`. It must pass after the rebase, not before it. One exception: when the master commits that the rebase brings are docs only, or tests only in a part that the branch does not touch, a precommit of the branch with the slow tests before the rebase stands; the precommit of `/ship` does not, as it runs without them. Any other compiled code from master needs the precommit on the rebased branch. A slow test can fail here first: send the failure to the worker as a follow-up, as section 3 does with a confirmed finding; the fix goes through the Codex review of section 3 again, then step 1 and this step. The same failure twice, or a second slow-test failure of the branch of any test: park.
 3. Push. `gh pr create` with a body that contains `Closes #<n>`. No attribution lines.
 4. `gh pr merge --merge --delete-branch`. Confirm the issue closed; close it with a pointer to the PR when it did not.
 5. Run each step only when the step before it passed (`&&`, not `;`): a failed `gh pr create` must not reach the cleanup. Before the push, `git diff origin/master | grep "^+.*icket pending"` must find nothing. Search the added lines, not the tree: old devlogs on master keep the phrase as history.
@@ -121,7 +122,7 @@ Serial, one ticket at a time:
 
 ## Park
 
-Park when: three Codex rounds are not clean; a conflict is not mechanical; precommit fails twice for one cause; the ticket needs a design decision, an interface change, or an ADR it does not state; anything would need a destructive or irreversible step outside step 5.
+Park when: three Codex rounds are not clean; a conflict is not mechanical; precommit fails twice for one cause; a second slow-test failure of the branch at the merge gate; the ticket needs a design decision, an interface change, or an ADR it does not state; anything would need a destructive or irreversible step outside step 5.
 
 To park: push the branch, keep the worktree, comment on the ticket, and swap the label to `ready-for-human`. The comment is what `/hitl` reads, so it has this exact shape:
 
