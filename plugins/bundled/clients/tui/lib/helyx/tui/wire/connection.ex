@@ -35,7 +35,7 @@ defmodule Helyx.TUI.Wire.Connection do
   alias Helyx.Session.File.Scan
   alias Helyx.Session.Snapshot
   alias Helyx.Transport.WebSocket.{Frame, Ops}
-  alias Helyx.TUI.Wire.{Decode, Reader, Writer}
+  alias Helyx.TUI.Wire.{Decode, Reader, Subscriptions, Writer}
 
   # The wait of the server for its encoder slot and the encode of a large
   # result are outside its deadline (wire-protocol.md, "Deadlines").
@@ -126,6 +126,10 @@ defmodule Helyx.TUI.Wire.Connection do
   @spec stop(pid(), String.t()) :: :ok | {:error, error()}
   def stop(conn, session), do: request(conn, "stop", %{"session" => session})
 
+  @doc "Ends the subscription `sub`; the session runs on (decision 18)."
+  @spec unsubscribe(pid(), String.t()) :: :ok | {:error, error()}
+  def unsubscribe(conn, sub), do: call(conn, {:unsubscribe, sub})
+
   @doc "Sets the model of the next turn of `session`, as `Helyx.Session.set_model/2`."
   @spec set_model(pid(), String.t(), String.t()) :: :ok | {:error, error()}
   def set_model(conn, session, model),
@@ -151,16 +155,13 @@ defmodule Helyx.TUI.Wire.Connection do
 
   @impl true
   def init({owner, socket, ws}) do
-    # `waiting` maps the id of a request to its op and `{from, timer}`: its
-    # caller and its deadline timer, `:late` after the timer, or
-    # `{:unsubscribe, sub}` for the end of a subscription that a late reply
-    # made; `replays` holds the id of each `subscribe` with `after`, which
-    # alone a replay answers. `subs` maps a subscription to `:live`, or to
-    # `:dropped` for one that a late reply made. `unwritten` counts the
-    # request frames that wait for the writer, and `unsubscribes` holds the
-    # `{id, sub}` of each unsubscribe that waits for a place among them;
-    # `control` is `:waiting` while a batch of a pong and acks waits for the
-    # writer, and `pong` and `acks` hold the next batch.
+    # `waiting` maps the id of a request to its op and `{from, timer}`, or
+    # `:late` after the timer, or `{:unsubscribe, sub}` for the end of a sub
+    # that a late reply made; `replays` holds the id of each `subscribe`
+    # with `after`. `subs` holds the subscriptions
+    # (`Helyx.TUI.Wire.Subscriptions`), `unwritten` counts the request
+    # frames that wait for the writer, and `control` and `pong` hold the
+    # next batch of a pong and acks.
     {:ok,
      %{
        owner: owner,
@@ -170,15 +171,13 @@ defmodule Helyx.TUI.Wire.Connection do
        ws: ws,
        pending: 0,
        unwritten: 0,
-       unsubscribes: [],
        control: :idle,
        pong: nil,
-       acks: %{},
        parts: nil,
        next: 1,
        waiting: %{},
        replays: MapSet.new(),
-       subs: %{}
+       subs: Subscriptions.new()
      }}
   end
 
@@ -187,13 +186,21 @@ defmodule Helyx.TUI.Wire.Connection do
       when map_size(state.waiting) >= @max_waiting or state.unwritten >= @max_waiting,
       do: {:reply, {:error, :busy}, state}
 
-  def handle_call({:request, op, params}, from, state) do
-    # An id is never used again, so a late reply is told apart.
-    id = Integer.to_string(state.next)
-    timer = arm(id, Ops.deadline(op))
+  def handle_call({:request, op, params}, from, state),
+    do: start_request(state, op, params, op, from)
 
-    state = if params["after"], do: update_in(state.replays, &MapSet.put(&1, id)), else: state
-    write_request(register(state, id, op, {from, timer}), id, op, params)
+  def handle_call({:unsubscribe, _sub}, _from, state)
+      when map_size(state.waiting) >= @max_waiting,
+      do: {:reply, {:error, :busy}, state}
+
+  def handle_call({:unsubscribe, sub}, from, state) do
+    case Subscriptions.detach(state.subs, sub) do
+      {:ok, op} ->
+        start_request(state, "unsubscribe", %{"sub" => sub}, op, from)
+
+      {:error, reason} ->
+        {:reply, {:error, reason}, state}
+    end
   end
 
   def handle_call(:take, {owner, _tag}, state) do
@@ -234,12 +241,15 @@ defmodule Helyx.TUI.Wire.Connection do
   end
 
   def handle_info({:ack, sub, seq}, state) do
-    if state.subs[sub] == :live,
-      do: control(put_in(state.acks[sub], seq)),
+    if Subscriptions.live?(state.subs, sub),
+      do: control(%{state | subs: Subscriptions.ack(state.subs, sub, seq)}),
       else: {:noreply, state}
   end
 
-  def handle_info(:written, state), do: unsubscribe(%{state | unwritten: state.unwritten - 1})
+  def handle_info(:written, state) do
+    Subscriptions.flush(%{state | unwritten: state.unwritten - 1}, @max_waiting, &write_request/4)
+  end
+
   def handle_info(:sent, state), do: control(%{state | control: :idle})
 
   # gen_tcp drops the bytes that wait to be read at a failed send, so a
@@ -291,60 +301,46 @@ defmodule Helyx.TUI.Wire.Connection do
     end
   end
 
-  defp frame(%{"type" => "event", "sub" => sub, "event" => event}, state)
-       when is_map_key(state.subs, sub) do
-    case Decode.event(event) do
-      {:ok, %Event{} = event} ->
-        if state.subs[sub] == :live, do: send(state.owner, {:helyx_event, event})
-        {:noreply, state}
-
-      # An event of a type that this client does not know.
-      {:ok, nil} ->
-        {:noreply, state}
-
-      :error ->
-        broken(state)
+  defp frame(%{"type" => "event", "sub" => sub, "event" => event}, state) do
+    case Subscriptions.event(state.subs, state.owner, sub, Decode.event(event)) do
+      {:ok, subs} -> {:noreply, %{state | subs: subs}}
+      :broken -> broken(state)
     end
   end
 
   defp frame(%{"type" => "session_end", "sub" => sub, "reason" => reason}, state)
-       when is_map_key(state.subs, sub) and reason in ["stopped", "crashed"] do
-    {kind, subs} = Map.pop(state.subs, sub)
-    reason = if reason == "stopped", do: :stopped, else: :crashed
-    if kind == :live, do: send(state.owner, {:helyx_end, sub, reason})
-    {:noreply, %{state | subs: subs}}
+       when reason in ["stopped", "crashed"] do
+    case Subscriptions.ended(state.subs, state.owner, sub, reason) do
+      {:ok, subs} -> {:noreply, %{state | subs: subs}}
+      :broken -> broken(state)
+    end
   end
 
   defp frame(_frame, state), do: broken(state)
 
-  # The server makes each `sub` unique on the connection.
-  defp reply(_caller, "subscribe", {:ok, _snapshot_or_replay, sub}, state)
-       when is_map_key(state.subs, sub),
-       do: broken(state)
+  # The reply of the subscription ops; `:next` for every other op.
+  defp reply(caller, op, result, state) do
+    case Subscriptions.reply(state.subs, caller, op, result) do
+      {:next, subs} ->
+        reply_caller(caller, result, %{state | subs: subs})
 
-  # A late reply: its caller got `timeout`. A subscription that it made
-  # ends with `unsubscribe`, which takes the place of the reply among those
-  # that wait, and its frames are dropped.
-  defp reply(:late, "subscribe", {:ok, _snapshot_or_replay, sub}, state) do
-    id = Integer.to_string(state.next)
-    state = register(state, id, "unsubscribe", {:unsubscribe, sub})
-    state = put_in(state.subs[sub], :dropped)
-    unsubscribe(%{state | unsubscribes: state.unsubscribes ++ [{id, sub}]})
+      {:detached, subs} ->
+        {:noreply, %{state | subs: subs}}
+
+      {:late_subscribe, sub, subs} ->
+        Subscriptions.late_subscribe(%{state | subs: subs}, sub, @max_waiting, &write_request/4)
+
+      :broken ->
+        broken(state)
+    end
   end
 
-  defp reply(:late, _op, _result, state), do: {:noreply, state}
+  defp reply_caller(:late, _result, state), do: {:noreply, state}
 
-  defp reply({:unsubscribe, sub}, _op, _result, state),
-    do: {:noreply, %{state | subs: Map.delete(state.subs, sub)}}
-
-  defp reply({from, timer}, op, result, state) do
+  defp reply_caller({from, timer}, result, state) do
     if timer, do: Process.cancel_timer(timer)
     GenServer.reply(from, result)
-
-    case {op, result} do
-      {"subscribe", {:ok, _snapshot_or_replay, sub}} -> {:noreply, put_in(state.subs[sub], :live)}
-      _other -> {:noreply, state}
-    end
+    {:noreply, state}
   end
 
   defp arm(_id, :infinity), do: nil
@@ -353,13 +349,14 @@ defmodule Helyx.TUI.Wire.Connection do
   defp register(state, id, op, caller),
     do: %{state | next: state.next + 1, waiting: Map.put(state.waiting, id, {op, caller})}
 
-  # An unsubscribe goes to the writer when a place among the 16 request
-  # frames is free.
-  defp unsubscribe(%{unsubscribes: [{id, sub} | rest]} = state)
-       when state.unwritten < @max_waiting,
-       do: write_request(%{state | unsubscribes: rest}, id, "unsubscribe", %{"sub" => sub})
-
-  defp unsubscribe(state), do: {:noreply, state}
+  # The request of an op, or of a detach, whose `pending` op is `{:unsub,
+  # sub}`. An id is never used again, so a late reply is told apart.
+  defp start_request(state, op, params, pending, from) do
+    id = Integer.to_string(state.next)
+    state = if params["after"], do: update_in(state.replays, &MapSet.put(&1, id)), else: state
+    timer = arm(id, Ops.deadline(op))
+    write_request(register(state, id, pending, {from, timer}), id, op, params)
+  end
 
   defp write_request(state, id, op, params) do
     Writer.write(
@@ -375,16 +372,16 @@ defmodule Helyx.TUI.Wire.Connection do
   # and events that come faster than it writes do not grow its queue. The
   # next batch holds the latest ping (RFC 6455, section 5.5.3) and the
   # latest seq of each live sub: an ack covers the events before it.
-  defp control(%{control: :idle} = state) when state.pong != nil or map_size(state.acks) > 0 do
+  defp control(%{control: :idle} = state) do
+    {acks, subs} = Subscriptions.take_acks(state.subs)
     pong = if state.pong, do: [{:pong, state.pong}], else: []
 
-    acks =
-      for {sub, seq} <- state.acks,
-          state.subs[sub] == :live,
-          do: %{"type" => "ack", "sub" => sub, "seq" => seq}
-
-    Writer.write(state.writer, acks ++ pong, :sent)
-    {:noreply, %{state | control: :waiting, pong: nil, acks: %{}}}
+    if acks == [] and pong == [] do
+      {:noreply, %{state | subs: subs}}
+    else
+      Writer.write(state.writer, acks ++ pong, :sent)
+      {:noreply, %{state | subs: subs, control: :waiting, pong: nil}}
+    end
   end
 
   defp control(state), do: {:noreply, state}

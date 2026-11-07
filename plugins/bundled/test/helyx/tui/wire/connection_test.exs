@@ -139,6 +139,17 @@ defmodule Helyx.TUI.Wire.ConnectionTest do
       assert_receive {:DOWN, ^ref, :process, ^conn, :noproc}
     end
 
+    test "unsubscribe detaches from the session, which runs on", c do
+      assert {:ok, id} = Connection.start(c.conn, cwd: File.cwd!(), model: "fake/echo")
+      assert {:ok, _snapshot, sub} = Connection.subscribe(c.conn, id, [])
+      assert :ok = Connection.unsubscribe(c.conn, sub)
+      assert {:error, :unknown_sub} = Connection.unsubscribe(c.conn, sub)
+
+      # The session is still live, and a new subscription joins it.
+      assert Enum.any?(Helyx.Sessions.list_live(c.core), &(&1.id == id))
+      assert {:ok, _snapshot, _sub} = Connection.subscribe(c.conn, id, [])
+    end
+
     test "a text over the frame bound goes as parts", c do
       assert {:ok, id} = Connection.start(c.conn, cwd: File.cwd!(), model: "fake/echo")
       assert {:ok, _snapshot, _sub} = Connection.subscribe(c.conn, id)

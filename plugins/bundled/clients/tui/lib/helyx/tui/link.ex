@@ -149,8 +149,22 @@ defmodule Helyx.TUI.Link do
     with {:ok, id} <- result, do: {:ok, %__MODULE__{conn: conn, id: id}}
   end
 
-  # The end of the session that a switch leaves: its turn aborts first. A
-  # session that ended first gives `:ok` too; a wire error fails the switch.
+  # The end of the session that a switch leaves: a detach, not a stop
+  # (docs/features/tui-attach.md, decision 18). The session runs on for its
+  # other clients and for a later resume. A session that ended first gives
+  # `:ok` too; a wire error fails the switch.
+  @spec unsubscribe(t(), String.t()) :: :ok | {:error, term()}
+  def unsubscribe(%__MODULE__{conn: conn}, sub) do
+    case Connection.unsubscribe(conn, sub) do
+      {:error, reason} when wire_error?(reason) -> {:error, reason}
+      _detached_or_gone -> :ok
+    end
+  end
+
+  # The explicit stop of a session: a running turn aborts first, and every
+  # subscription of the session gets `session_end` (`serve.md`,
+  # decision 11). The TUI commands do not stop a session; a switch detaches
+  # (`unsubscribe/2`).
   @spec stop(t()) :: :ok | {:error, term()}
   def stop(%__MODULE__{conn: conn, id: id}) do
     case Connection.stop(conn, id) do

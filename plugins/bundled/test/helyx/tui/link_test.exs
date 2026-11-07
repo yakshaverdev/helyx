@@ -164,6 +164,10 @@ defmodule Helyx.TUI.LinkTest do
       {:"$gen_call", from, {:request, op, _params}} ->
         send(test, {:stub, op})
         GenServer.reply(from, answer.(op))
+
+      {:"$gen_call", from, {:unsubscribe, _sub}} ->
+        send(test, {:stub, "unsubscribe"})
+        GenServer.reply(from, answer.("unsubscribe"))
     end
 
     stub_loop(test, answer)
@@ -227,7 +231,7 @@ defmodule Helyx.TUI.LinkTest do
 
   # The answers of the wire that Core does not give, from a stub in the
   # place of the connection.
-  test "a refused abort shows why, a refused stop fails the switch, and a text over 4 MiB is not sent",
+  test "a refused abort shows why, a refused detach fails the switch, and a text over 4 MiB is not sent",
        c do
     state = started(c)
     id = state.session.id
@@ -235,7 +239,7 @@ defmodule Helyx.TUI.LinkTest do
     answers = fn
       "abort" -> {:error, :timeout}
       "start" -> {:ok, "AAAAAAAAAAAA"}
-      "stop" -> {:error, :busy}
+      "unsubscribe" -> {:error, :busy}
       _steer_or_compact -> :ok
     end
 
@@ -362,14 +366,16 @@ defmodule Helyx.TUI.LinkTest do
     assert state.vm.model == "fake/echo"
   end
 
-  test "/new stops the session it leaves, and /resume lists the saved sessions over the wire",
+  test "/new detaches from the session it leaves, and /resume lists the saved sessions over the wire",
        c do
     state = c |> started() |> command("first") |> until(&(&1.type == :turn_end))
     first = state.session.id
 
     state = state |> command("/new") |> finish()
     assert %Link{id: second} = state.session
-    assert Enum.map(Helyx.Sessions.list_live(c.core), & &1.id) == [second]
+    # The old session runs on (decision 18); the new one is live too.
+    live = Enum.map(Helyx.Sessions.list_live(c.core), & &1.id)
+    assert Enum.sort(live) == Enum.sort([first, second])
     assert List.last(ViewModel.cells(state.vm)) == {:infos, ["new session"]}
 
     # The new session has no message, so it is not listed. One page holds

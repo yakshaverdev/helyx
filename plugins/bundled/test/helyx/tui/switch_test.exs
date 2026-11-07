@@ -29,7 +29,7 @@ defmodule Helyx.TUI.SwitchTest do
   alias Helyx.Provider.Fake
   alias Helyx.Session.File.Scan
   alias Helyx.TUI
-  alias Helyx.TUI.{Command, Composer, SessionList, Switch, ViewModel}
+  alias Helyx.TUI.{Command, Composer, Link, SessionList, Switch, ViewModel}
 
   @moduletag :tmp_dir
 
@@ -157,7 +157,7 @@ defmodule Helyx.TUI.SwitchTest do
     assert Command.run(Command.parse("/resume x"), session) == {:notice, "usage: /resume"}
   end
 
-  test "/new ends the session and starts one in the folder with the current model",
+  test "/new detaches from the session and starts one in the folder with the current model",
        %{core: core, dir: dir, sessions: sessions, opts: opts} do
     {:ok, old} = start(core, opts)
     old_pid = Session.pid(old)
@@ -181,7 +181,8 @@ defmodule Helyx.TUI.SwitchTest do
     assert state.vm.expanded?
     assert state.search == nil
 
-    refute Process.alive?(old_pid)
+    # The switch detaches: the old session runs on (decision 18).
+    assert Process.alive?(old_pid)
     assert state.session.id != old.id
     assert state.vm.model == "fake/other"
     assert ViewModel.cells(state.vm) == [{:infos, ["new session"]}]
@@ -200,11 +201,12 @@ defmodule Helyx.TUI.SwitchTest do
     assert info({:helyx_event, event}, state) == state
   end
 
-  test "/new during a turn saves the aborted turn, keeps the draft, and drops the queue",
-       %{core: core, dir: dir, sessions: sessions, opts: opts} do
+  test "/new during a turn leaves the turn running, keeps the draft, and sends no text",
+       %{core: core, opts: opts} do
     call = %Message.ToolCall{id: "c", name: "slow", arguments: %{"ms" => 60_000, "text" => "x"}}
     :ok = Fake.script(core, "busy", [[call], ["done"]])
     {:ok, old} = start(core, opts, "fake/busy")
+    old_pid = Session.pid(old)
     state = mount!(old, opts)
     :ok = Session.prompt(old, "go")
 
@@ -214,14 +216,42 @@ defmodule Helyx.TUI.SwitchTest do
     :ok = Session.follow_up(old, "queued")
 
     state = command(state, "/new") |> type("draft")
-    # No text goes to the session that the switch ends.
+    # No text goes to the session that the switch leaves.
     state = key(state, "enter")
     assert state.vm.reason == "not sent: a switch runs"
     state = finish(state)
 
     assert value(state) == "draft"
-    path = Helyx.Session.File.path(sessions, dir, old.id)
-    assert File.read!(path) =~ ~s("aborted")
+    # A switch sends no abort: the old turn and its queued follow-up run on.
+    assert Process.alive?(old_pid)
+    refute state.session.id == old.id
+  end
+
+  # ADR 0014, invariant 4: a session holds a lease from its subscribers, and
+  # a switch detaches its client; it stops the session for no one
+  # (docs/features/tui-attach.md, decision 18).
+  test "a switch detaches: a second client stays subscribed, and the session is reattachable",
+       %{core: core, opts: opts} do
+    {:ok, old} = start(core, opts)
+    old_pid = Session.pid(old)
+
+    # The other client: its own connection to the same server.
+    other = Helyx.Test.TUIWire.link(old)
+    {:ok, _snapshot, other_sub} = Link.subscribe(other, [])
+
+    state = mount!(old, opts) |> command("/new") |> finish()
+    assert state.session.id != old.id
+
+    # The old session runs on, and the other client still gets its events.
+    assert Process.alive?(old_pid)
+    assert :ok = Link.send_text(other, "still here", false)
+    assert_receive {:helyx_event, %Event{session_id: id}}, 5_000
+    assert id == old.id
+    refute_received {:helyx_end, ^other_sub, _}
+
+    # A client that comes later finds the session live and attaches to it.
+    assert {:ok, again} = Helyx.Sessions.resume(core, id: old.id)
+    assert Session.pid(again) == old_pid
   end
 
   test "a queue that comes back during a failed switch goes to the composer",
@@ -342,7 +372,8 @@ defmodule Helyx.TUI.SwitchTest do
     assert state.list == nil
     state = finish(state)
 
-    refute Process.alive?(current_pid)
+    # The switch detaches: the session that it left runs on.
+    assert Process.alive?(current_pid)
     assert state.session.id == target
     cells = ViewModel.cells(state.vm)
     assert List.last(cells) == {:infos, ["resumed session"]}

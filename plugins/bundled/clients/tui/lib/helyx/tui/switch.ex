@@ -4,10 +4,12 @@ defmodule Helyx.TUI.Switch do
   # to another one for `/new` and `/resume`
   # (docs/features/tui-session-switch.md), and the bind again after a lost
   # connection (`reconnect/2`, docs/features/tui-attach.md, decision 11).
-  # A Task opens the new session, then aborts the old one, so its turn is
-  # saved, and stops it, over the wire (`Helyx.TUI.Link`).
-  # The new session opens first, so a failed open leaves the old one as it
-  # was. The functions take and give the state of `Helyx.TUI`.
+  # A Task opens the new session, then detaches from the old one over the
+  # wire (`Helyx.TUI.Link`): the old session runs on, for its other
+  # clients and for a later resume (docs/features/tui-attach.md,
+  # decision 18). The new session opens first, so a failed open leaves the
+  # old one as it was. The functions take and give the state of
+  # `Helyx.TUI`.
 
   alias Helyx.Event
   alias Helyx.TUI.{Composer, Link, Question, ViewModel}
@@ -115,20 +117,22 @@ defmodule Helyx.TUI.Switch do
     do: %{started: System.monotonic_time(:millisecond) - elapsed, elapsed: elapsed}
 
   # Starts a switch: the Task opens `target` in the folder of the TUI, with
-  # the current model for `/new`.
+  # the current model for `/new`, then detaches from the old session, which
+  # runs on (decision 18).
   @spec start(map(), target(), down()) :: map()
   def start(state, target, down \\ nil) do
     opts = %{model: state.vm.model, cwd: state.cwd}
     old = state.session
-    task = Task.async(fn -> run(target, old, opts) end)
+    task = Task.async(fn -> run(target, old, opts, state.session_ref) end)
     %{state | switch: %__MODULE__{task: task, target: target, down: down}}
   end
 
-  # A refused stop of the wire fails the switch: the TUI stays on the old
-  # session, whose events it acks, and the new one runs on in the server.
-  defp run(target, old, opts) do
+  # A switch detaches from the old session and leaves it running for its
+  # other clients (`docs/features/tui-attach.md`, decision 18): the old
+  # subscription ends, so its events stop, and the session stays live.
+  defp run(target, old, opts, sub) do
     with {:ok, new} <- Link.open(old, target, opts),
-         :ok <- Link.stop(old),
+         :ok <- Link.unsubscribe(old, sub),
          do: {:ok, new}
   end
 
