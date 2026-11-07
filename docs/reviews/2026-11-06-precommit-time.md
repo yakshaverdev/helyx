@@ -96,3 +96,9 @@ The owner decided the seven open findings of the small-fix round. They are text 
 
 One more correction from a probe of this follow-up, in a throwaway project: a plugin in a literal list (`def plugins, do: [P]`) was followed by `--stale` (the test ran and failed after a change of `P`); a module reached by `Module.concat(["Q"])` and `apply` was missed (`--stale` ran `1 test, 1 failure`, `mix test` gave `2 tests, 2 failures`). So the miss "a plugin resolved by its registration entry" became "a module that a test reaches only by a name that is not a literal in code, from config or computed".
 
+## Owner item: no sleep waits for background runs (2026-11-06)
+
+Text change only; by the owner's decision it gets no review round, and the Codex gate follows. `/ship` step 2 and step 3 and `/orchestrate` section 2 ("Every brief also says") state the rule with the owner's measurement as its reason. A search of `.claude/skills/implement/` and `docs/agents/` for `sleep`, `poll`, `kill -0`, `wait`, and `background` found no worker instruction to change.
+
+Precommit with `HELYX_SLOW=1`: the first run failed in `plugins/bundled` with `4 properties, 1179 tests, 1 failure (1 excluded)`: `Helyx.Tool.WriteTest`, "a FIFO or a folder at the path is an error result" (`test/helyx/tool/write_test.exs:45`), `GenServer.call(... {:prompt, "go", ...}, 5000)` exited with `time out` in `Helyx.Test.ToolRunner.start_tool/3`. The change since the last passing precommit (`3b6c23b8`) is Markdown only, and the test passed in the two runs before. The second run passed: root `839 tests, 0 failures`, `apps/coding_agent` `149 tests, 0 failures`, `plugins/bundled` `4 properties, 1179 tests, 0 failures (1 excluded)`. The failure is a call timeout of the session prompt under load, open for a ticket; none is made here.
+

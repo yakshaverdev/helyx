@@ -10,6 +10,8 @@ Owner request in chat, no ticket. Three decisions: `mix test --stale` between re
 
 - Follow-up of the same day, on the owner's decisions of the open review findings: `/ship` step 3 lists the limits of `--stale`, each with its probe or its line in the Mix source (a name from config or a computed one, `config/runtime.exs`, a file that no module names in `@external_resource`, a renamed or deleted module, file times in whole seconds), and what a worker does about them. A literal plugin list is followed; the earlier text said a registration entry is missed. See `docs/reviews/2026-11-06-precommit-time.md`.
 
+- Second follow-up, owner item of the same day: no `sleep` waits for background runs. The owner measured in the worker transcripts about 5 h of fixed sleeps and poll loops (`sleep 590; cat <output>`, `while kill -0 ...; do sleep 15; done`), against a median Codex review of 3.2 min. `/ship` step 2 (the Codex review) and step 3 (precommit, now stated as a background run), and the "Every brief also says" list of `/orchestrate` section 2, say: never wait with `sleep`, a poll loop, or `kill -0`; do the work that does not depend on the run, then end the turn; its end opens a new turn. `/implement` and `docs/agents/` had no instruction to sleep or poll; the poll and sleep in `docs/agents/review-checklist.md` (line 99) is about waits inside tests, not a worker's wait.
+
 ## Measurements of `apps/coding_agent`, this machine
 
 Two runs, one after the other, at `b67f4ea2`:
