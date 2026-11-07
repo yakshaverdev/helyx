@@ -228,14 +228,15 @@ defmodule Helyx.Sessions do
   @doc """
   Removes the message `message_id` from the saved session `id` of the
   `:sessions_dir` of `core`, and returns the ids of every message that it
-  removed, in their order. The transcript keeps complete tool call and
-  result pairs: a removed assistant message takes the tool results right
-  after it, and a removed tool result takes that assistant message and
-  its other results. The call takes the writer lock of the file, reads the
-  file as a resume does, writes a copy without the messages, and replaces
-  the file with it under the lock. After it the file holds no byte of the
-  removed messages, is one chain, and a resume, and its `Helyx.Memory`
-  sync, gives the other messages in their order.
+  removed, in their order, message ids only. The transcript keeps complete
+  tool call and result pairs: a removed assistant message takes the tool
+  results right after it, and a removed tool result takes that assistant
+  message and its other results. The `hook` entries that name a call id
+  of the removed messages go too, by the call id alone. The call takes the
+  writer lock of the file, reads the file as a resume does, writes a copy
+  without them, and replaces the file with it under the lock. After it the
+  file holds no byte of the removed messages, is one chain, and a resume,
+  and its `Helyx.Memory` sync, gives the other messages in their order.
 
   Errors, each with no change of the file: those of `delete/2`, the read
   errors of a resume of the file (such as `{:invalid_file, text}`),
@@ -245,10 +246,12 @@ defmodule Helyx.Sessions do
   of the deadline gives `:timeout`. The two exceptions of `delete/2` hold
   for the rename.
 
-  It does not remove the text from anything but the file: the copies of
-  `delete/2`, a summary that a model wrote of the text, the resume id of a
-  provider and the history that it names, and the transcript of a running
-  session, which it refuses (`docs/features/session-edit.md`).
+  It does not remove: the copies of `delete/2`, a summary that a model
+  wrote of the text, a system prompt entry that a ModelContext plugin
+  built with the text, the end message of a background run that a removed
+  call started, the resume id of a provider and the history that it
+  names, and the transcript of a running session, which it refuses
+  (`docs/features/session-edit.md`).
   """
   @spec remove_message(Helyx.Core.name(), String.t(), String.t()) ::
           {:ok, [String.t()]}

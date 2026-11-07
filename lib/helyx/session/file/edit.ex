@@ -18,14 +18,15 @@ defmodule Helyx.Session.File.Edit do
 
   defmodule Copy do
     @moduledoc false
-    # The state of the copy: the removed ids, the id of the last kept
+    # The state of the copy: the removed message ids, and the call ids of
+    # their tool calls and results (`calls`), the id of the last kept
     # entry (`leaf`) and message (`last`), the removed ids that wait for the
     # next kept user or assistant message (`pending`), and that message for
     # each of them (`next`).
     # `lock` writes the copy; `buffer` holds the kept lines not yet sent,
     # reversed, `size` bytes.
-    @enforce_keys [:removed, :lock]
-    defstruct [:removed, :lock, :leaf, :last, pending: [], next: %{}, buffer: [], size: 0]
+    @enforce_keys [:removed, :calls, :lock]
+    defstruct [:removed, :calls, :lock, :leaf, :last, pending: [], next: %{}, buffer: [], size: 0]
   end
 
   # The bytes of kept lines in one append to the copy.
@@ -108,19 +109,26 @@ defmodule Helyx.Session.File.Edit do
   @doc false
   # Removes the message `message_id` and the messages that pair with it from
   # the file `path` of the session `id` of `core`, of the folder `cwd`, and
-  # gives their ids in file order. The file is read and checked as a resume
-  # reads it, with no repair write, then copied without them to
-  # `<path>.tmp`, and the copy replaces the file by a rename. The `killer`
+  # gives their ids in file order, message ids only: no caller knows the id
+  # of another entry. The `hook` entries of their calls go too, and are not
+  # in the ids. The file is read and checked as a resume reads it, with no
+  # repair write, then copied without them to `<path>.tmp`, and the copy
+  # replaces the file by a rename. The `killer`
   # of the deadline (`Helyx.Session.Killer`) is disarmed before the rename
   # is sent: past that point the result is the answer of perl.
   def remove_message({_core, _id, path} = session, cwd, message_id, killer) do
     locked(session, fn lock ->
       with :ok <- exists(path),
            {:ok, resumed, _tail, limits} <- SessionFile.read_picked(path, cwd, []),
-           {:ok, ids} <- group(resumed.messages, message_id) do
-        replace(lock, {path, limits}, ids, killer)
-      end
+           {:ok, ids} <- group(resumed.messages, message_id),
+           :ok <- replace(copy_state(lock, resumed.messages, ids), {path, limits}, killer),
+           do: {:ok, ids}
     end)
+  end
+
+  defp copy_state(lock, messages, ids) do
+    removed = MapSet.new(ids)
+    %Copy{removed: removed, calls: call_ids(messages, removed), lock: lock}
   end
 
   # A session of the id in the Registry of `core` is refused after the
@@ -198,7 +206,21 @@ defmodule Helyx.Session.File.Edit do
 
   defp tool_result?(message), do: message.role == :tool_result
 
-  defp replace(lock, {path, limits}, ids, killer) do
+  # The call ids of the removed messages: the tool calls of a removed
+  # assistant message and the call of a removed tool result.
+  defp call_ids(messages, removed) do
+    for %Message{id: id} = message <- messages,
+        MapSet.member?(removed, id),
+        call_id <- calls(message),
+        is_binary(call_id),
+        into: MapSet.new(),
+        do: call_id
+  end
+
+  defp calls(%Message{role: :tool_result, tool_call_id: id}), do: [id]
+  defp calls(%Message{content: content}), do: for(%Message.ToolCall{id: id} <- content, do: id)
+
+  defp replace(%Copy{lock: lock} = state, {path, limits}, killer) do
     tmp = tmp(path)
 
     # Every change of the copy is a command of the lock holder: after the
@@ -207,24 +229,22 @@ defmodule Helyx.Session.File.Edit do
     result =
       with {:ok, %File.Stat{mode: mode}} <- File.stat(path),
            :ok <- edit_failed(Lock.create_copy(lock, tmp)),
-           :ok <- copy(lock, {path, limits}, MapSet.new(ids)),
+           :ok <- copy(state, {path, limits}),
            :ok <- edit_failed(Lock.close_copy(lock, mode)),
            :ok <- Killer.disarm(killer),
            do: edit_failed(Lock.rename_file(lock, tmp, path))
 
     if result != :ok, do: Lock.remove_file(lock, tmp)
-    with :ok <- result, do: {:ok, ids}
+    result
   end
 
   # The BEAM reads the session file; perl writes the copy, which it made
   # new with `O_EXCL` and mode 0600 (`Lock.create_copy/2`), so no file or
   # link at its path is written through and no other user reads it. The
   # kept lines go to perl in batches of at least `@batch_bytes`.
-  defp copy(lock, {path, limits}, removed) do
+  defp copy(state, {path, limits}) do
     result =
       File.open(path, [:read, :binary, :raw, :read_ahead], fn input ->
-        state = %Copy{removed: removed, lock: lock}
-
         with {:ok, state} <- lines(input, 1, limits, state),
              do: flush(state)
       end)
@@ -304,6 +324,16 @@ defmodule Helyx.Session.File.Edit do
       nil -> {:drop, state}
       first -> {:keep, relink(%{entry | "first_kept_id" => first}, state), state}
     end
+  end
+
+  # A `hook` entry of a removed call goes: it is a log of the answers about
+  # that call for the user (docs/features/hooks.md), no code reads it, and
+  # its `arguments` and `reason` can hold text of the call and its result.
+  # It goes wherever it is in the file, and by its call id alone.
+  defp keep(%{"type" => "hook", "call_id" => id} = entry, state) do
+    if MapSet.member?(state.calls, id),
+      do: {:drop, state},
+      else: {:keep, relink(entry, state), state}
   end
 
   defp keep(entry, state), do: {:keep, relink(entry, state), state}
