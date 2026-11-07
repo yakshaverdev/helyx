@@ -6,15 +6,14 @@ defmodule Helyx.Session.Turn do
   # count. The open tool calls come from the transcript
   # (`Transcript.open_calls/1`).
   # `model` and `provider` are fixed when the turn starts, so a model switch
-  # during the turn takes effect on the next one. A turn has a `phase`,
-  # `:preparing`, `:submitting`, or `:submitted`, the prepared `context`
-  # until it is sent, and the `pending` ref of the answer to `{:turn, ...}`
-  # or `{:compact, ...}`, or in `submitted` to `{:context, ...}`.
+  # during the turn takes effect on the next one. The turn's step is the
+  # session's phase, not a field here (`Helyx.Session.Server.Flow`): the
+  # prepared `context` is on the turn until it is sent.
   # `prepare` is `{ref, pid, messages}`: the ref and the pid of the
   # running prepare Task, which the session monitors and kills at the turn
   # end, and the messages that it got. Only a reply with that ref is the
-  # Task's context. It is nil with no Task: in `submitted` a prepare Task
-  # or a `pending` context is an open context request.
+  # Task's context. It is nil with no Task: in a context request a prepare
+  # Task or a pending reply is an open request.
   # `tool_queue` holds the Helyx tool requests of the turn
   # (`Helyx.Session.ToolQueue`), and `asks` the open asks of its calls,
   # oldest first (`Helyx.Session.Server.Asks`). `compact` is nil for a
@@ -38,7 +37,6 @@ defmodule Helyx.Session.Turn do
     :partial,
     :message_id,
     :context,
-    :pending,
     :prepare,
     :compact,
     :start,
@@ -47,7 +45,6 @@ defmodule Helyx.Session.Turn do
     recall_failed: false,
     bytes: 0,
     blocks: 0,
-    phase: :preparing,
     tool_queue: %Helyx.Session.ToolQueue{},
     asks: []
   ]
@@ -58,9 +55,7 @@ defmodule Helyx.Session.Turn do
           provider: module(),
           partial: [Message.block()] | nil,
           message_id: String.t() | nil,
-          phase: :preparing | :submitting | :submitted,
           context: Helyx.Context.t() | nil,
-          pending: reference() | nil,
           prepare: {reference(), pid(), [Message.t()]} | nil,
           compact: String.t() | :reported | nil,
           start: non_neg_integer() | nil,

@@ -56,13 +56,23 @@ defmodule Helyx.Session.Server.Wait do
           {:done, Helyx.Message.stop_reason(), map()} | :aborted | {:error, term()}
         ) ::
           State.t()
-  def finish(%State{phase: %{turn: turn}} = state, outcome) do
+  def finish(state, outcome), do: finish(state, outcome, state.phase.provider)
+
+  # `provider` is the provider process that the wait holds: `:none` when it
+  # ended before the turn did (`TurnLoop.provider_down/3`), so no request
+  # goes to it.
+  @spec finish(
+          State.t(),
+          {:done, Helyx.Message.stop_reason(), map()} | :aborted | {:error, term()},
+          Flow.provider()
+        ) :: State.t()
+  def finish(%State{phase: %{turn: turn} = phase} = state, outcome, provider) do
     outcome = with {:error, reason} <- outcome, do: {:error, error_text(reason)}
     kill_prepare(turn)
     state = state |> Asks.finish() |> Summary.stop() |> Records.finish(outcome)
     done? = match?({:done, _stop, _usage}, outcome)
     state = Steering.end_turn(state, turn.id, done?)
-    state = ToolRuns.end_turn(state, turn)
+    state = if match?(%Flow.Up{}, provider), do: ToolRuns.end_turn(state, turn), else: state
     Helyx.Session.Sync.push_turn(state)
     running? = turn.tool_queue.running != %{}
     data = end_data(outcome)
@@ -75,10 +85,10 @@ defmodule Helyx.Session.Server.Wait do
         true -> nil
       end
 
-    wait = if outcome == :aborted, do: interrupt(state, turn), else: %__MODULE__{}
+    wait = if outcome == :aborted, do: interrupt(state, phase, provider), else: %__MODULE__{}
     turn_end = if running?, do: data
     wait = %{wait | hands: hands, turn: turn.id, turn_end: turn_end, started_ms: turn.started_ms}
-    %{state | phase: %Flow.Waiting{wait: wait, provider: state.phase.provider}}
+    %{state | phase: %Flow.Waiting{wait: wait, provider: provider}}
   end
 
   # The snapshot turn of a wait whose `turn_end` waits for the hands: the
@@ -94,12 +104,15 @@ defmodule Helyx.Session.Server.Wait do
   defp end_data(:aborted), do: %{outcome: :aborted}
   defp end_data({:error, text}), do: %{outcome: :error, error: text}
 
-  # The wait holds the answer to the interrupt.
-  defp interrupt(%State{phase: %{provider: %{pid: pid}}} = state, %Turn{phase: phase, id: id})
-       when phase in [:submitting, :submitted],
-       do: %__MODULE__{reply: ask(state, pid, {:interrupt, id}, :reply)}
+  # The wait holds the answer to the interrupt, for a turn that sent its
+  # request.
+  defp interrupt(state, %Flow.Sending{turn: %Turn{id: id}}, %Flow.Up{pid: pid}),
+    do: %__MODULE__{reply: ask(state, pid, {:interrupt, id}, :reply)}
 
-  defp interrupt(_state, _turn), do: %__MODULE__{}
+  defp interrupt(state, %Flow.Live{turn: %Turn{id: id}}, %Flow.Up{pid: pid}),
+    do: %__MODULE__{reply: ask(state, pid, {:interrupt, id}, :reply)}
+
+  defp interrupt(_state, _phase, _provider), do: %__MODULE__{}
 
   # Kills the prepare Task of the turn, if one runs. Its late
   # `{ref, {:prepared, ...}}` and `:DOWN` match no `Turn.prepare`, also of

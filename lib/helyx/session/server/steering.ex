@@ -14,6 +14,7 @@ defmodule Helyx.Session.Server.Steering do
 
   alias Helyx.Message
   alias Helyx.Session.{Hands, Id, Queue, Turn}
+  alias Helyx.Session.Server.Flow.Live
   alias Helyx.Session.Server.{Records, State}
 
   # Queues a user message. Returns the reply to the client and the state.
@@ -69,7 +70,7 @@ defmodule Helyx.Session.Server.Steering do
   # the provider process as steers, in order, while the 32 steers have
   # room; the rest wait for the next turn. The end moves from the ends to
   # the ledger in one step, so `waiting` (`Queue.counts/1`) keeps it.
-  def send_ends(%State{phase: %{turn: %Turn{phase: :submitted, compact: nil}}} = state) do
+  def send_ends(%State{phase: %Live{turn: %Turn{compact: nil}}} = state) do
     case Queue.next_end(state.queue) do
       {message, queue} ->
         sent = send_steer({:end, message}, %{state | queue: queue})
@@ -84,8 +85,8 @@ defmodule Helyx.Session.Server.Steering do
 
   # Accepts a client steer on a turn or a wait, in one step: it takes a
   # place in the 32 steers or is rejected with `:queue_full`. A steer on a
-  # `submitted` turn, also with a context request open, goes to the
-  # provider process; in `preparing` and `submitting` it stays in the local
+  # `Live` turn, also with a context request open, goes to the provider
+  # process; in `Preparing` and `Sending` it stays in the local
   # queue ("Turn states"), and so it does in a wait. A sent steer counts in
   # the 32 steers until its `user_message` and its answer
   # (`Helyx.Session.Queue`). A compaction cannot be steered, so a steer on
@@ -94,7 +95,7 @@ defmodule Helyx.Session.Server.Steering do
   def steer(%State{phase: %{turn: %Turn{compact: compact}}} = state, message) when compact != nil,
     do: queue(state, :steers, message)
 
-  def steer(%State{phase: %{turn: %Turn{phase: :submitted}}} = state, message) do
+  def steer(%State{phase: %Live{turn: %Turn{}}} = state, message) do
     if Queue.room?(state.queue),
       do: {:ok, send_steer(message, state)},
       else: {{:error, :queue_full}, state}
@@ -102,7 +103,7 @@ defmodule Helyx.Session.Server.Steering do
 
   def steer(state, message), do: queue(state, :steers, message)
 
-  # At the `:ok` of the turn, the steers that waited in `submitting` go to
+  # At the `:ok` of the turn, the steers that waited in `Sending` go to
   # the provider process, in order, then the waiting ends. Each steer keeps
   # the place it took in the queue.
   def send_local_steers(%State{} = state) do

@@ -172,7 +172,7 @@ defmodule Helyx.Session.ProviderProcessTest do
       :ok = Session.prompt(session, "one")
       assert_receive {:conn, :turn, proc, request}
       assert_receive {:held, from}
-      assert %{phase: %{turn: %{phase: :submitting}}} = :sys.get_state(pid)
+      assert %{phase: %Flow.Sending{}} = :sys.get_state(pid)
       echo(proc, from, request)
       assert final_text(collect_until(:turn_end)) == "echo:prepared|one"
     end
@@ -508,7 +508,7 @@ defmodule Helyx.Session.ProviderProcessTest do
 
       ref = Process.monitor(old)
       :ok = Session.prompt(session, "hold_prepare")
-      assert %{phase: %{turn: %{phase: :preparing}}} = :sys.get_state(pid)
+      assert %{phase: %Flow.Preparing{}} = :sys.get_state(pid)
       :ok = Session.steer(session, "kept")
       send(old, :stop)
       assert_receive {:DOWN, ^ref, :process, _, _}
@@ -733,7 +733,7 @@ defmodule Helyx.Session.ProviderProcessTest do
       turn(session, "zero")
       assert_receive {:conn, :turn, _proc, _zero}
       :ok = Session.prompt(session, "hold_prepare")
-      assert %{phase: %{turn: %{phase: :preparing}}} = :sys.get_state(pid)
+      assert %{phase: %Flow.Preparing{}} = :sys.get_state(pid)
       :ok = Session.steer(session, "later")
       send(prepare_task(pid), :continue)
 
@@ -750,7 +750,7 @@ defmodule Helyx.Session.ProviderProcessTest do
       :ok = Session.prompt(session, "one")
       assert_receive {:conn, :turn, proc, {:turn, turn_id, _} = request}
       assert_receive {:held, from}
-      assert %{phase: %{turn: %{phase: :submitting}}} = :sys.get_state(pid)
+      assert %{phase: %Flow.Sending{}} = :sys.get_state(pid)
       :ok = Session.steer(session, "more")
       assert %{data: %{steers: 1}} = List.last(collect_until(:queue_update))
       refute_received {:conn, :steer, _, _}
@@ -1044,7 +1044,7 @@ defmodule Helyx.Session.ProviderProcessTest do
       :ok = Session.prompt(session, "two")
       assert_receive {:conn, :turn, ^proc, two}
       assert_receive {:held, two_from}
-      assert %{phase: %{turn: %{phase: :submitting}}} = :sys.get_state(pid)
+      assert %{phase: %Flow.Sending{}} = :sys.get_state(pid)
       echo(proc, from, one)
       echo(proc, two_from, two)
       events = collect_until(:turn_end)

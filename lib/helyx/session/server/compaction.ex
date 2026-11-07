@@ -40,15 +40,14 @@ defmodule Helyx.Session.Server.Compaction do
   def submit(
         %State{
           phase: %Preparing{
-            turn: %Turn{phase: :preparing, compact: text} = turn,
+            turn: %Turn{compact: text} = turn,
             provider: %Up{pid: pid} = provider
           }
         } = state
       )
       when is_binary(text) do
     from = ask(state, pid, {:compact, turn.id, text}, :reply)
-    turn = %{turn | phase: :submitting, pending: from}
-    %{state | phase: %Sending{turn: turn, provider: provider}}
+    %{state | phase: %Sending{turn: turn, provider: provider, pending: from}}
   end
 
   def submit(state), do: state

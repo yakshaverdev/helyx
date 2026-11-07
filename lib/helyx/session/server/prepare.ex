@@ -14,6 +14,7 @@ defmodule Helyx.Session.Server.Prepare do
   alias Helyx.Context
   alias Helyx.Session.Recall
   alias Helyx.Session.Server.{Compaction, Records, State, Summary, TurnLoop, Wait}
+  alias Helyx.Session.Server.Flow.{Live, Preparing}
   alias Helyx.Session.Turn
 
   @recall_failed "memory recall failed; the turn goes on without recall"
@@ -27,7 +28,7 @@ defmodule Helyx.Session.Server.Prepare do
   # `deadline_ms.prepare` is armed before any plugin code. A compaction
   # turn has no context at its start: it submits at once. Only a model
   # provider gets a summary (`summary-compaction.md`).
-  def start(%State{phase: %{turn: %Turn{compact: text, phase: :preparing}}} = state, _trigger)
+  def start(%State{phase: %Preparing{turn: %Turn{compact: text}}} = state, _trigger)
       when is_binary(text),
       do: TurnLoop.submit(state)
 
@@ -89,7 +90,7 @@ defmodule Helyx.Session.Server.Prepare do
 
   # The checked context (`Stream.prepare/4`), or the error of the prepare
   # Task: a plugin that returned anything else, or a Task that died. A
-  # plan starts the summary call. In `preparing` an error fails the turn; a
+  # plan starts the summary call. In `Preparing` an error fails the turn; a
   # context request gets it as the answer. A compaction turn ends with the
   # notice when the plugin made no summary.
   def prepared(
@@ -113,7 +114,7 @@ defmodule Helyx.Session.Server.Prepare do
 
   # The recall message waits in the turn and goes last at the submit,
   # after the steers that join there.
-  def prepared(%State{phase: %{turn: %Turn{phase: :preparing} = turn} = phase} = state, result) do
+  def prepared(%State{phase: %Preparing{turn: %Turn{} = turn} = phase} = state, result) do
     state = %{state | phase: %{phase | turn: %{turn | prepare: nil}}}
 
     case result do
@@ -132,8 +133,7 @@ defmodule Helyx.Session.Server.Prepare do
   end
 
   def prepared(
-        %State{phase: %{turn: %Turn{phase: :submitted} = turn, provider: %{pid: pid}} = phase} =
-          state,
+        %State{phase: %Live{turn: %Turn{} = turn, provider: %{pid: pid}} = phase} = state,
         result
       ) do
     {result, state} =
@@ -149,8 +149,8 @@ defmodule Helyx.Session.Server.Prepare do
 
     # The context request stays open until the provider's reply (C3).
     from = ask(state, pid, {:context, turn.id, result}, :reply)
-    turn = %{state.phase.turn | prepare: nil, pending: from}
-    %{state | phase: %{phase | turn: turn}}
+    turn = %{turn | prepare: nil}
+    %{state | phase: %Live{turn: turn, provider: phase.provider, pending: from}}
   end
 
   # A failed recall is no recall, with one notice in the turn.
