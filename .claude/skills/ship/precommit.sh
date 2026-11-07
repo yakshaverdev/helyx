@@ -33,6 +33,20 @@ finish() {
   exit "$1"
 }
 
+# A change of Markdown files only (and .gitattributes) cannot fail format,
+# compile, Credo, Dialyzer or a test, so it skips the run. The one Markdown
+# file that a test reads is the wire doc (web_socket_test.exs checks its
+# schema); a change to it runs precommit. A failed git call runs precommit.
+if base=$(git merge-base origin/master HEAD 2>/dev/null) &&
+  changed=$({ git diff --name-only "$base" && git ls-files --others --exclude-standard; } 2>/dev/null) &&
+  [ -n "$changed" ] &&
+  ! printf '%s\n' "$changed" | grep -v -E '\.md$|^\.gitattributes$' | grep -q . &&
+  ! printf '%s\n' "$changed" | grep -qx 'docs/features/wire-protocol.md'; then
+  printf 'precommit: skipped, the change is Markdown only:\n%s\n' "$changed" > precommit.log
+  echo passed
+  exit 0
+fi
+
 host=${HELYX_PRECOMMIT_HOST:-$(cat ~/.config/helyx/precommit-host 2>/dev/null)}
 
 if [ -z "$host" ]; then
