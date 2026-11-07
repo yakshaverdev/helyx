@@ -112,24 +112,37 @@ defmodule Helyx.Hub do
 
   @doc """
   The value of the option `:authority` of `Helyx.Transport.WebSocket` for
-  this Hub (decision 5).
+  this Hub (decision 5). It asks the Hub, so the product starts the
+  transport after the Hub: a Hub that does not answer raises. Give the Hub
+  a registered name, so the authority reaches it after a restart.
   """
-  @spec authority(hub()) :: {module(), hub()}
-  def authority(hub), do: {Helyx.Hub.Access, hub}
+  @spec authority(hub()) :: {module(), map()}
+  def authority(hub) do
+    {:ok, config} = call(hub, :authority)
+    {Helyx.Hub.Access, Map.put(config, :hub, hub)}
+  end
 
   # A Hub call (decision 5). No counter: the admission count is the mailbox.
+  # `until`, a monotonic time in ms, is a deadline of the caller that can
+  # come before the one of the call: a wire operation whose deadline holds
+  # the existence check and the Hub call gives it, so no write commits after
+  # the wire answered `timeout`.
   @doc false
-  @spec call(hub(), term()) :: term()
-  def call(hub, request) do
+  @spec call(hub(), term(), integer() | :infinity) :: term()
+  def call(hub, request, until \\ :infinity) do
     pid = GenServer.whereis(hub) || exit({:noproc, {__MODULE__, :call, [hub, request]}})
+    now = System.monotonic_time(:millisecond)
+    deadline = min(now + @call_ms - @commit_margin_ms, until)
 
     case Process.info(pid, :message_queue_len) do
+      _ when deadline <= now ->
+        {:error, :timeout}
+
       {:message_queue_len, n} when n >= @admission ->
         {:error, :busy}
 
       _ ->
-        deadline = System.monotonic_time(:millisecond) + @call_ms - @commit_margin_ms
-        GenServer.call(pid, {:hub, deadline, request}, @call_ms)
+        GenServer.call(pid, {:hub, deadline, request}, deadline - now + @commit_margin_ms)
     end
   end
 
@@ -147,6 +160,7 @@ defmodule Helyx.Hub do
       {:ok,
        %{
          core: core,
+         sessions_dir: sessions_dir,
          default_owner: owner,
          server_token: server_token,
          store: store,
@@ -224,8 +238,5 @@ defmodule Helyx.Hub do
   # 1 to 64 bytes of UTF-8 with no control character (C0, DEL, C1).
   @doc false
   @spec name?(term()) :: boolean()
-  def name?(name) do
-    is_binary(name) and byte_size(name) in 1..@max_name_bytes and String.valid?(name) and
-      not String.match?(name, ~r/[\x{0}-\x{1f}\x{7f}-\x{9f}]/u)
-  end
+  def name?(name), do: Helyx.Hub.Params.text?(name, 1, @max_name_bytes)
 end

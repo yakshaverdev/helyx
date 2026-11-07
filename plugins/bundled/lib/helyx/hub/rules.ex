@@ -60,9 +60,11 @@ defmodule Helyx.Hub.Rules do
     end
   end
 
-  def handle({:session, auth, kind, session_id, touch}, deadline, state) do
+  # `exists?`: the existence check of the caller (decision 8), which counts
+  # only for a session with no row.
+  def handle({:session, auth, kind, session_id, exists?, touch}, deadline, state) do
     with :ok <- credential(auth, state),
-         {:ok, access} <- access(session_id, state),
+         {:ok, access} <- access(session_id, exists?, state),
          :ok <- allowed(kind, access, auth.user) do
       touch(session_id, touch, deadline, state)
     end
@@ -84,6 +86,9 @@ defmodule Helyx.Hub.Rules do
     end
   end
 
+  # The record and project operations.
+  def handle(request, deadline, state), do: Helyx.Hub.Records.handle(request, deadline, state)
+
   defp record(owner, start, deadline, %{store: mod, db: db} = state) do
     with {:ok, model} <- model(start.model, state.core) do
       now = System.os_time(:second)
@@ -102,7 +107,7 @@ defmodule Helyx.Hub.Rules do
 
   defp model(model, _core), do: {:ok, model}
 
-  defp credential(auth, state) do
+  def credential(auth, state) do
     with {:ok, _user} <- holder(auth, state), do: :ok
   end
 
@@ -129,35 +134,46 @@ defmodule Helyx.Hub.Rules do
     end
   end
 
+  # The cap of the stored records of a user, which the first update of a
+  # derived record (`Helyx.Hub.Records`) checks too.
+  def max_records, do: @max_records
+
   defp places({:ok, n}) when n < @max_records, do: :ok
   defp places({:ok, _n}), do: {:error, :too_many_records}
   defp places(error), do: error
 
-  # The record of a session: its row, or the derived record of the default
-  # owner (decision 8).
-  defp access(session_id, %{store: mod, db: db} = state) do
+  # The access of a session: its row; for a session with no row that the
+  # existence check confirmed, the derived record of the default owner
+  # (decision 8); else `:missing`, which every rule refuses. `stored` tells
+  # a row from a derived record.
+  def access(session_id, exists?, %{store: mod, db: db} = state) do
     case mod.record(db, session_id) do
-      {:ok, row} -> {:ok, Map.take(row, [:owner, :visibility])}
-      {:error, :not_found} -> {:ok, derived(state)}
+      {:ok, row} -> {:ok, %{owner: row.owner, visibility: row.visibility, stored: true}}
+      {:error, :not_found} when exists? -> {:ok, derived(state)}
+      {:error, :not_found} -> {:ok, :missing}
       error -> error
     end
   end
 
-  defp derived(state), do: %{owner: state.default_owner_id, visibility: "private"}
+  defp derived(state), do: %{owner: state.default_owner_id, visibility: "private", stored: false}
 
+  defp readable?(:missing, _user), do: false
   defp readable?(%{owner: user}, user), do: true
   defp readable?(%{visibility: visibility}, _user), do: visibility == "hub"
 
-  # Decisions 4 and 7: a reader reads, only the owner writes or resumes.
-  defp allowed(:read, access, user),
+  # Decisions 4 and 7: a reader reads, only the owner writes or resumes; a
+  # missing session is refused as one that the user may not read.
+  def allowed(:resume, :missing, _user), do: {:error, :not_found}
+
+  def allowed(:read, access, user),
     do: if(readable?(access, user), do: :ok, else: {:error, :session_not_found})
 
-  defp allowed(:resume, %{owner: owner}, user),
+  def allowed(:resume, %{owner: owner}, user),
     do: if(owner == user, do: :ok, else: {:error, :not_found})
 
-  defp allowed(:write, %{owner: user}, user), do: :ok
+  def allowed(:write, %{owner: user}, user), do: :ok
 
-  defp allowed(:write, access, user),
+  def allowed(:write, access, user),
     do: if(readable?(access, user), do: {:error, :forbidden}, else: {:error, :session_not_found})
 
   # A resume or a user text that Hub authorized moves `active_at`, and the

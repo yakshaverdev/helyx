@@ -136,4 +136,61 @@ defmodule Helyx.Hub.Store do
               deadline()
             ) ::
               :ok | {:error, :timeout | :failed}
+
+  @typedoc "A project as a listing shows it."
+  @type project :: %{id: String.t(), name: String.t(), created_at: integer()}
+
+  @doc "The labels of each id of `session_ids` that has some, at most 256 ids."
+  @callback labels(t(), session_ids :: [String.t()]) ::
+              {:ok, %{String.t() => [String.t()]}} | {:error, :failed}
+
+  @doc """
+  In one step: inserts `new` when it is not nil (a derived record that gets
+  its row, within `max` rows of its owner), then applies `changes` (`:title`,
+  `:visibility`, `:archived`, `:project_id`, `:labels`) and sets
+  `updated_at`. A project that the owner of the row does not own answers
+  `:unknown_project`.
+  """
+  @callback update_record(
+              t(),
+              String.t(),
+              new :: map() | nil,
+              changes :: map(),
+              pos_integer(),
+              deadline()
+            ) ::
+              :ok
+              | {:error, :not_found | :too_many_records | :unknown_project | :timeout | :failed}
+
+  @doc "Deletes the row of a session with its labels."
+  @callback delete_record(t(), String.t(), deadline()) ::
+              :ok | {:error, :not_found | :timeout | :failed}
+
+  @doc """
+  The stored records that `user` may read, newest `updated_at` first, then
+  by session id, at most `limit` + 1. `filters`: `:limit`, and the optional
+  `:mine`, `:query`, `:labels`, `:project_id`, `:archived`, and `:after`
+  (`{updated_at, session_id}`).
+  """
+  @callback search(t(), user :: String.t(), filters :: map()) ::
+              {:ok, [record()]} | {:error, :failed}
+
+  @doc "The projects of `owner`, by name."
+  @callback projects(t(), owner :: String.t()) :: {:ok, [project()]} | {:error, :failed}
+
+  @doc "The project `project_id` when `owner` owns it."
+  @callback project(t(), owner :: String.t(), project_id :: String.t()) ::
+              {:ok, project()} | {:error, :not_found | :failed}
+
+  @doc "Inserts a project unless its owner holds `max` or one of its name."
+  @callback put_project(t(), project :: map(), pos_integer(), deadline()) ::
+              :ok | {:error, :too_many_projects | :name_taken | :timeout | :failed}
+
+  @doc "Renames a project of `owner`."
+  @callback rename_project(t(), String.t(), String.t(), String.t(), deadline()) ::
+              :ok | {:error, :not_found | :name_taken | :timeout | :failed}
+
+  @doc "Deletes a project of `owner`; its records lose it."
+  @callback delete_project(t(), String.t(), String.t(), deadline()) ::
+              :ok | {:error, :not_found | :timeout | :failed}
 end

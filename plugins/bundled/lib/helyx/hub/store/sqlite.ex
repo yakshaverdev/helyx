@@ -19,7 +19,7 @@ defmodule Helyx.Hub.Store.SQLite do
   import Helyx.Hub.Store.SQLite.Query
 
   alias Exqlite.Sqlite3
-  alias Helyx.Hub.Store.SQLite.{Disk, Records, Schema}
+  alias Helyx.Hub.Store.SQLite.{Disk, Projects, Records, Schema}
 
   @version Schema.version()
 
@@ -280,4 +280,22 @@ defmodule Helyx.Hub.Store.SQLite do
   defdelegate put_record(db, record, max, deadline), to: Records
   @impl true
   defdelegate touch_record(db, session_id, at, prompt, deadline), to: Records
+  @impl true
+  defdelegate labels(db, session_ids), to: Records
+  @impl true
+  defdelegate update_record(db, session_id, new, changes, max, deadline), to: Records
+  @impl true
+  defdelegate delete_record(db, session_id, deadline), to: Records
+  @impl true
+  defdelegate search(db, user, filters), to: Records
+  @impl true
+  defdelegate projects(db, owner), to: Projects
+  @impl true
+  defdelegate project(db, owner, project_id), to: Projects
+  @impl true
+  defdelegate put_project(db, project, max, deadline), to: Projects
+  @impl true
+  defdelegate rename_project(db, owner, project_id, name, deadline), to: Projects
+  @impl true
+  defdelegate delete_project(db, owner, project_id, deadline), to: Projects
 end

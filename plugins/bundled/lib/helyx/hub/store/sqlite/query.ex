@@ -14,7 +14,7 @@ defmodule Helyx.Hub.Store.SQLite.Query do
     end)
   end
 
-  defp changed(db) do
+  def changed(db) do
     case Sqlite3.changes(db) do
       {:ok, 0} -> {:error, :not_found}
       {:ok, _} -> :ok

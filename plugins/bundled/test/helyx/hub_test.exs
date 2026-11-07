@@ -399,6 +399,15 @@ defmodule Helyx.HubTest do
     defdelegate count_records(db, owner), to: SQLite
     defdelegate put_record(db, record, max, deadline), to: SQLite
     defdelegate touch_record(db, id, at, prompt, deadline), to: SQLite
+    defdelegate labels(db, ids), to: SQLite
+    defdelegate update_record(db, id, new, changes, max, deadline), to: SQLite
+    defdelegate delete_record(db, id, deadline), to: SQLite
+    defdelegate search(db, user, filters), to: SQLite
+    defdelegate projects(db, owner), to: SQLite
+    defdelegate project(db, owner, id), to: SQLite
+    defdelegate put_project(db, project, max, deadline), to: SQLite
+    defdelegate rename_project(db, owner, id, name, deadline), to: SQLite
+    defdelegate delete_project(db, owner, id, deadline), to: SQLite
 
     def add_user(db, user, max, :infinity), do: SQLite.add_user(db, user, max, :infinity)
 
@@ -461,6 +470,15 @@ defmodule Helyx.HubTest do
       :erlang.suspend_process(hub)
       assert {:timeout, _} = catch_exit(Hub.users(hub))
       :erlang.resume_process(hub)
+    end
+
+    test "a deadline of the caller before the one of the call: the write rolls back",
+         %{tmp_dir: dir} do
+      hub = start_hub(dir, store: SlowStore)
+      now = System.monotonic_time(:millisecond)
+      assert Hub.call(hub, {:add_user, "ann"}, now) == {:error, :timeout}
+      assert Hub.call(hub, {:add_user, "ann"}, now + 300) == {:error, :timeout}
+      assert {:ok, [%{name: "owner"}]} = Hub.users(hub)
     end
 
     test "a Hub that does not run exits the caller" do

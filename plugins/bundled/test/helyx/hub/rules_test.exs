@@ -27,9 +27,15 @@ defmodule Helyx.Hub.RulesTest do
       )
   end
 
-  defp ask(state, user, kind, session, touch \\ nil),
+  # The session exists unless `exists?` says no (the existence check of the
+  # caller, decision 8).
+  defp ask(state, user, kind, session, touch \\ nil, exists? \\ true),
     do:
-      Rules.handle({:session, %{user: user, token: nil}, kind, session, touch}, :infinity, state)
+      Rules.handle(
+        {:session, %{user: user, token: nil}, kind, session, exists?, touch},
+        :infinity,
+        state
+      )
 
   test "a hub record: a reader reads, gets forbidden on a write and not_found on a resume",
        %{state: state, db: db} do
@@ -51,6 +57,14 @@ defmodule Helyx.Hub.RulesTest do
     # A session with no row is the default owner's (decision 8).
     assert ask(state, "owner", :write, "NOROWxxxxxxx") == :ok
     assert ask(state, "bob", :write, "NOROWxxxxxxx") == {:error, :session_not_found}
+
+    # An id with no row that the existence check did not confirm is missing
+    # for every user, the default owner too.
+    for user <- ~w(owner bob), kind <- [:read, :write] do
+      assert ask(state, user, kind, "NOROWxxxxxxx", nil, false) == {:error, :session_not_found}
+    end
+
+    assert ask(state, "owner", :resume, "NOROWxxxxxxx", nil, false) == {:error, :not_found}
 
     auth = %{user: "bob", token: nil}
     ids = ~w(SHAREDxxxxxx PRIVATExxxxx NOROWxxxxxxx)
@@ -82,6 +96,23 @@ defmodule Helyx.Hub.RulesTest do
     :ok = Exqlite.Sqlite3.execute(db, "DELETE FROM records WHERE session_id = 's10000xxxxxx'")
     assert Rules.handle({:started, auth, start}, :infinity, state) == :ok
     assert {:ok, %{owner: "ann", prompt: ""}} = SQLite.record(db, "s10001xxxxxx")
+  end
+
+  test "the first update of a derived record holds the cap of 10,000 records",
+       %{state: state, db: db} do
+    :ok = Exqlite.Sqlite3.execute(db, "BEGIN")
+
+    for n <- 1..9_999,
+        do: row(db, "o" <> String.pad_leading(Integer.to_string(n), 11, "0"), "owner", "private")
+
+    :ok = Exqlite.Sqlite3.execute(db, "COMMIT")
+    auth = %{user: "owner", token: nil}
+    found = %{cwd: "/w", model: "fake/echo"}
+    update = &Rules.handle({:record_update, auth, &1, found, %{title: "t"}}, :infinity, state)
+
+    assert {:ok, %{stored: true}} = update.("DERIVED1xxxx")
+    assert update.("DERIVED2xxxx") == {:error, :too_many_records}
+    assert SQLite.record(db, "DERIVED2xxxx") == {:error, :not_found}
   end
 
   test "the cwd of a start of a user: 1 to 4,096 bytes", %{state: state} do

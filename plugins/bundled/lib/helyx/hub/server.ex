@@ -78,6 +78,11 @@ defmodule Helyx.Hub.Server do
     end
   end
 
+  # What the authority of the transport needs in the caller: the Core of the
+  # existence check and its data folder (decision 8).
+  defp handle(:authority, _deadline, state),
+    do: {:ok, %{core: state.core, dir: state.sessions_dir}}
+
   defp handle(:users, _deadline, %{store: mod, db: db}) do
     with {:ok, users} <- mod.users(db) do
       {:ok, Enum.map(users, &Map.take(&1, [:id, :name]))}
