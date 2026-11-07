@@ -15,10 +15,13 @@ defmodule Helyx.Event do
     * `:message_end` – `%{message: Helyx.Message.t()}`, with `error: String.t() | :aborted` on a failed or aborted turn
     * `:tool_execution_end` – `%{message: Helyx.Message.t()}`, the tool result message
     * `:turn_end` – `%{outcome: :done | :aborted}`, or `%{outcome: :error, error: String.t()}`; once per turn
-    * `:queue_update` – `%{steers: _, follow_ups: _, running: _, held: _, waiting: _}` counts
+    * `:queue_update` – `%{steers: _, follow_ups: _, running: _, held: _, waiting: _}` counts.
+      Between turns it follows the drain, so the counts are the next turn's queue
     * `:queue_dropped` – `%{texts: [String.t()], messages: [Helyx.Message.t()]}`
-    * `:model_change` – `%{model: String.t()}`
-    * `:resume_id` – `%{provider: String.t(), resume_id: String.t(), lost: boolean, cut: non_neg_integer}`
+    * `:model_change` – `%{model: String.t()}`; the turn id is nil, because the
+      change is outside a turn
+    * `:resume_id` – `%{provider: String.t(), resume_id: String.t(), lost: boolean, cut: non_neg_integer}`;
+      `lost` is true when the provider lost its own session, and the TUI shows its notice
     * `:steer_unconfirmed` – `%{text: String.t(), message: Helyx.Message.t()}`
     * `:compaction` – `%{trigger: :manual | :auto, tokens_before: non_neg_integer | nil, tokens_after: non_neg_integer | nil}`
     * `:notice` – `%{text: String.t()}`, not in the transcript

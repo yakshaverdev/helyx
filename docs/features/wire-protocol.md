@@ -110,7 +110,7 @@ Past its deadline, an operation answers `timeout`: the outcome is unknown. The c
 
 ### Codec
 
-Every value is JSON. An atom is its name as a string. A message has the shape of a message entry of the session file without its `type` key (`lib/helyx/session/file/codec.ex:9-27`): a key whose value is nil or false is left out, but for `is_error`, which a tool result always has. A reader takes a missing key as null or false.
+Every value is JSON. An atom is its name as a string. A message has the shape of a message entry of the session file without its `type` key (`lib/helyx/data/message.ex:333-389`): a key whose value is nil or false is left out, but for `is_error`, which a tool result always has. A reader takes a missing key as null or false.
 
 A client is a tolerant reader (ADR 0006, revisions of 2026-10-03 and 2026-10-16): it dispatches on the `type` of an event first, ignores an event type that it does not know and a key that it does not know, and shows a placeholder for a block kind that it does not know. A known type with a broken shape is a contract break.
 

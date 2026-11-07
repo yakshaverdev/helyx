@@ -37,7 +37,8 @@ defmodule CodingAgent do
   (`CodingAgent.Print.run/2`) on the prompt `:prompt`, which is required,
   and its exit status is the result; the TUI runs only over the wire
   (`attach/2`). The session is written under `:sessions_dir`, which is
-  required. With `resume: true` the most recent session for `:cwd` that has
+  required. The skills scan and `/name` use `:home` of the `:coding_agent`
+  application, default `System.user_home!/0`. With `resume: true` the most recent session for `:cwd` that has
   a message is resumed, and with `resume: id` the session with that id,
   whose header must name `:cwd`. With `resume: id` and no `:cwd`, the
   session runs in the folder of its header, which must be an absolute path

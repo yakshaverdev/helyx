@@ -160,7 +160,7 @@ defmodule Helyx.Transport.WebSocketTest do
       assert {:close, 4400} = Client.recv(socket)
     end
 
-    test "the challenge is 32 random bytes, one for each connection", %{port: port} do
+    test "the challenge is 32 random bytes", %{port: port} do
       nonces =
         for _ <- 1..2 do
           {:ok, socket} = Client.upgrade(port)

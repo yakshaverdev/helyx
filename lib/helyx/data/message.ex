@@ -314,8 +314,8 @@ defmodule Helyx.Message do
   end
 
   @doc """
-  The bytes of the text, the thinking, and the JSON arguments of the tool
-  calls of `message`. The context estimate counts this way.
+  The bytes of the text, the thinking, and the name and JSON arguments of
+  the tool calls of `message`. The context estimate counts this way.
   """
   @spec bytes(t()) :: non_neg_integer()
   def bytes(%__MODULE__{content: content}), do: Enum.sum_by(content, &block_bytes/1)
