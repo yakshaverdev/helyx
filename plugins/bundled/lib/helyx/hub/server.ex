@@ -78,10 +78,12 @@ defmodule Helyx.Hub.Server do
     end
   end
 
-  # What the authority of the transport needs in the caller: the Core of the
-  # existence check and its data folder (decision 8).
+  # What the authority of the transport needs in the caller: the Core and
+  # its data folder for the existence check (decision 8), and for the scan
+  # of saved sessions (decision 7) the Core and the default owner, who alone
+  # gets that scan.
   defp handle(:authority, _deadline, state),
-    do: {:ok, %{core: state.core, dir: state.sessions_dir}}
+    do: {:ok, %{core: state.core, dir: state.sessions_dir, default_owner: state.default_owner_id}}
 
   defp handle(:users, _deadline, %{store: mod, db: db}) do
     with {:ok, users} <- mod.users(db) do

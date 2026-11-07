@@ -193,4 +193,16 @@ defmodule Helyx.Hub.Store do
   @doc "Deletes a project of `owner`; its records lose it."
   @callback delete_project(t(), String.t(), String.t(), deadline()) ::
               :ok | {:error, :not_found | :timeout | :failed}
+
+  @doc """
+  The stored records that `user` may read, of the folder `cwd` when not
+  nil, newest `active_at` first, then by session id, both descending, after
+  `cursor` (`{time, session_id}` or nil), at most `limit` (`sessions.saved`).
+  """
+  @callback saved(t(), String.t(), String.t() | nil, {integer(), String.t()} | nil, pos_integer()) ::
+              {:ok, [record()]} | {:error, :failed}
+
+  @doc "The newest record of the folder `cwd` that `owner` owns."
+  @callback newest(t(), owner :: String.t(), cwd :: String.t()) ::
+              {:ok, record()} | {:error, :not_found | :failed}
 end

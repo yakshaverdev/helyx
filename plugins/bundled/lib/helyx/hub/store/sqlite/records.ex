@@ -219,4 +219,47 @@ defmodule Helyx.Hub.Store.SQLite.Records do
 
   # The placeholders of an `IN` list of ids.
   defp marks(ids), do: Enum.map_join(ids, ", ", fn _ -> "?" end)
+
+  # The stored records that `user` may read for `sessions.saved` (decision
+  # 7): its own and the "hub" records of others, of the folder `cwd` when
+  # given, newest `active_at` first, then by session id, both descending as
+  # the list of Core, after the cursor `{time, id}`, at most `limit` rows.
+  def saved(db, user, cwd, cursor, limit) do
+    clauses = Enum.reject([access(user, false), cwd(cwd), saved_after(cursor)], &is_nil/1)
+
+    sql =
+      "SELECT #{@columns} FROM records WHERE #{Enum.map_join(clauses, " AND ", &elem(&1, 0))} " <>
+        "ORDER BY active_at DESC, session_id DESC LIMIT ?"
+
+    args = Enum.flat_map(clauses, &elem(&1, 1)) ++ [limit]
+    with {:ok, rows} <- all(db, sql, args), do: {:ok, Enum.map(rows, &row/1)}
+  end
+
+  defp cwd(nil), do: nil
+  defp cwd(cwd), do: {"cwd = ?", [cwd]}
+
+  # A time past the integers of SQLite, which it cannot bind, is past every
+  # row: a later one keeps every row, an earlier one none.
+  @max_time 2 ** 63 - 1
+  @min_time -(2 ** 63)
+
+  defp saved_after(nil), do: nil
+  defp saved_after({time, _id}) when time > @max_time, do: nil
+  defp saved_after({time, _id}) when time < @min_time, do: {"0 = 1", []}
+
+  defp saved_after({time, id}),
+    do: {"(active_at < ? OR (active_at = ? AND session_id < ?))", [time, time, id]}
+
+  # The newest record that `owner` owns of the folder `cwd`.
+  def newest(db, owner, cwd) do
+    sql =
+      "SELECT #{@columns} FROM records WHERE owner = ?1 AND cwd = ?2 " <>
+        "ORDER BY active_at DESC, session_id DESC LIMIT 1"
+
+    case one(db, sql, [owner, cwd]) do
+      {:ok, nil} -> {:error, :not_found}
+      {:ok, row} -> {:ok, row(row)}
+      error -> error
+    end
+  end
 end

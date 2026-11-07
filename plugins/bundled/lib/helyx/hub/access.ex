@@ -2,7 +2,8 @@ defmodule Helyx.Hub.Access do
   @moduledoc false
   # The authority of a transport for a Hub (`Helyx.Transport.WebSocket.
   # Authority`, `docs/features/hub.md`, decision 5): `Helyx.Hub.authority/1`
-  # gives `{Helyx.Hub.Access, %{hub: hub, core: core, dir: sessions_dir}}`.
+  # gives `{Helyx.Hub.Access, %{hub: hub, core: core, dir: sessions_dir,
+  # default_owner: user_id}}`.
   # Each callback runs in the process of the transport that calls it, and
   # each but `release` makes one Hub call, which first checks the
   # credential: one that no longer holds closes the connection with 4403.
@@ -10,7 +11,7 @@ defmodule Helyx.Hub.Access do
   @behaviour Helyx.Transport.WebSocket.Authority
 
   alias Helyx.Hub
-  alias Helyx.Hub.Params
+  alias Helyx.Hub.{Params, Saved}
 
   # The bound of the `prompt` of a record: the caller cuts the text, so no
   # Hub call carries more of it (Store schema).
@@ -83,10 +84,14 @@ defmodule Helyx.Hub.Access do
         params
       )
 
-  # The resume of a folder under a Hub (decision 7) is not built yet: it
-  # resumes nothing.
-  def check(arg, auth, "resume", %{"cwd" => _}),
-    do: passed(Hub.call(arg.hub, {:credential, auth}), {:error, "not_found"})
+  # The resume of a folder becomes the resume of the newest session of the
+  # folder that the user owns (decision 7).
+  def check(arg, auth, "resume", %{"cwd" => cwd}) do
+    case Saved.newest(arg, auth, cwd) do
+      {:ok, id} -> {:ok, %{"id" => id}}
+      other -> refused(other)
+    end
+  end
 
   def check(arg, auth, op, %{"session" => id} = params) when op in @read_ops,
     do: passed(Hub.call(arg.hub, {:session, auth, :read, id, running?(arg, id), nil}), params)
@@ -145,7 +150,6 @@ defmodule Helyx.Hub.Access do
 
   defp checked(nil), do: nil
 
-  defp passed(:ok, {:error, _} = refusal), do: refusal
   defp passed(:ok, params), do: {:ok, params}
   defp passed(other, _params), do: refused(other)
 
@@ -213,9 +217,13 @@ defmodule Helyx.Hub.Access do
       when op in ~w(hub.me hub.tokens.list hub.tokens.revoke hub.projects.list),
       do: after_credential(arg, auth, @bad_params)
 
-  # The page of `sessions.saved` under a Hub (decision 7) is not built yet.
-  def run(arg, auth, "sessions.saved", _params),
-    do: after_credential(arg, auth, {:error, "failed", "the operation failed"})
+  # The page of `sessions.saved` under a Hub (decision 7).
+  def run(arg, auth, "sessions.saved", params) do
+    case Saved.page(arg, auth, params) do
+      {:ok, _page} = ok -> ok
+      other -> error(other)
+    end
+  end
 
   def run(arg, auth, _op, _params),
     do: after_credential(arg, auth, {:error, "unknown_op", "unknown operation"})
@@ -281,10 +289,11 @@ defmodule Helyx.Hub.Access do
     }
   end
 
-  # The codes of the Hub operations, with the text of the code; a name that
-  # another project of the user has is `bad_params` (`hub.projects.*`).
+  # The codes of the Hub operations and of `sessions.saved`, with the text
+  # of the code; a name that another project of the user has is
+  # `bad_params` (`hub.projects.*`).
   @codes ~w(session_not_found forbidden too_many_records too_many_projects unknown_project
-            unknown_token)a
+            unknown_token invalid_cwd)a
 
   defp error(:revoked), do: {:close, 4403}
   defp error({:error, :busy}), do: {:error, "busy", "too many requests in flight"}

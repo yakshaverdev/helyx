@@ -54,6 +54,32 @@ defmodule Helyx.Hub.Records do
     end
   end
 
+  # The two sources of `sessions.saved` (decision 7): the stored records
+  # that the user may read, at most `limit` + 1 after the cursor; and for the
+  # default owner, of the ids of the scan of Core, those with no row.
+  def handle({:saved, auth, cwd, cursor, limit, scanned}, _deadline, state) do
+    %{store: mod, db: db} = state
+
+    with :ok <- Rules.credential(auth, state),
+         {:ok, stored} <- mod.saved(db, auth.user, cwd, cursor, limit + 1),
+         {:ok, derived} <- without_row(scanned, auth.user, state),
+         do: {:ok, stored, derived}
+  end
+
+  # The session of the `resume` of a folder (decision 7): the newer of the
+  # newest own record of the folder and, for the default owner, the newest
+  # id of the scan with no row; its `active_at` moves as for the `resume` of
+  # its id. `scanned` maps each id of the scan to its `mtime`.
+  def handle({:newest, auth, cwd, scanned}, deadline, state) do
+    with :ok <- Rules.credential(auth, state),
+         {:ok, derived} <- without_row(Map.keys(scanned), auth.user, state),
+         {:ok, stored} <- newest_row(auth.user, cwd, state) do
+      (stored ++ for(id <- derived, do: {Map.fetch!(scanned, id), id, :derived}))
+      |> Enum.max_by(&Tuple.delete_at(&1, 2), fn -> nil end)
+      |> resume(deadline, state)
+    end
+  end
+
   def handle({:projects, auth}, _deadline, %{store: mod, db: db} = state) do
     with :ok <- Rules.credential(auth, state), do: mod.projects(db, auth.user)
   end
@@ -75,6 +101,29 @@ defmodule Helyx.Hub.Records do
   def handle({:project_delete, auth, project_id}, deadline, %{store: mod, db: db} = state) do
     with :ok <- Rules.credential(auth, state),
          do: mod.delete_project(db, auth.user, project_id, deadline) |> unknown()
+  end
+
+  # The ids of a scan of Core that have no row: the derived records of the
+  # default owner. Another user owns no derived record.
+  defp without_row(ids, user, %{default_owner_id: user, store: mod, db: db}) do
+    with {:ok, rows} <- mod.records(db, ids), do: {:ok, Enum.reject(ids, &Map.has_key?(rows, &1))}
+  end
+
+  defp without_row(_ids, _user, _state), do: {:ok, []}
+
+  defp newest_row(user, cwd, %{store: mod, db: db}) do
+    case mod.newest(db, user, cwd) do
+      {:ok, row} -> {:ok, [{row.active_at, row.session_id, :stored}]}
+      {:error, :not_found} -> {:ok, []}
+      error -> error
+    end
+  end
+
+  defp resume(nil, _deadline, _state), do: {:error, :not_found}
+  defp resume({_time, id, :derived}, _deadline, _state), do: {:ok, id}
+
+  defp resume({_time, id, :stored}, deadline, %{store: mod, db: db}) do
+    with :ok <- mod.touch_record(db, id, System.os_time(:second), nil, deadline), do: {:ok, id}
   end
 
   defp unknown({:error, :not_found}), do: {:error, :unknown_project}

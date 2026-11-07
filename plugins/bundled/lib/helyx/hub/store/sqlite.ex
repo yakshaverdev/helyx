@@ -298,4 +298,8 @@ defmodule Helyx.Hub.Store.SQLite do
   defdelegate rename_project(db, owner, project_id, name, deadline), to: Projects
   @impl true
   defdelegate delete_project(db, owner, project_id, deadline), to: Projects
+  @impl true
+  defdelegate saved(db, user, cwd, cursor, limit), to: Records
+  @impl true
+  defdelegate newest(db, owner, cwd), to: Records
 end
