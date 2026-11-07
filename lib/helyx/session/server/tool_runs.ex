@@ -5,7 +5,7 @@ defmodule Helyx.Session.Server.ToolRuns do
   # awaited: a late reply is dropped by its ref, and a kill that fires in
   # the next turn fails that turn.
 
-  import Helyx.Session.Server.State, only: [ask: 4]
+  import Helyx.Session.Server.State, only: [ask: 4, tool_context: 2]
 
   alias Helyx.Message.ToolCall
   alias Helyx.Session
@@ -50,17 +50,8 @@ defmodule Helyx.Session.Server.ToolRuns do
     Enum.reduce(effects, state, &effect(&2, turn.id, &1))
   end
 
-  # The context of the call (`Helyx.Tool.context/0`) has the model of the
-  # turn, not of a later switch.
   defp effect(%State{activity: %Turn{model: model}} = state, turn_id, {:run, call}) do
-    context = %{
-      session_id: state.id,
-      model: Helyx.ModelRef.to_string(model),
-      provider_opts: state.init.provider_opts,
-      model_context: state.plugins.model_context
-    }
-
-    :ok = Hands.run(state.hands, turn_id, call, context)
+    :ok = Hands.run(state.hands, turn_id, call, tool_context(state, model))
     state
   end
 

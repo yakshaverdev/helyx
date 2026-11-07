@@ -24,8 +24,8 @@ defmodule Helyx.Session.Server.Wait do
   import Helyx.Session.Server.Events, only: [emit: 3, emit: 4]
 
   alias Helyx.Session.{Hands, ProviderRequest, Turn}
-  alias Helyx.Session.Server.{Asks, ProviderConn, Records, Settle, State, Steering, Summary}
-  alias Helyx.Session.Server.ToolRuns
+  alias Helyx.Session.Server.{Approvals, Asks, ProviderConn, Records, Settle, State, Steering}
+  alias Helyx.Session.Server.{Summary, ToolRuns}
 
   defstruct [:hands, :reply, :turn, :turn_end, :started_ms, :settle, callers: []]
 
@@ -52,7 +52,9 @@ defmodule Helyx.Session.Server.Wait do
   # runs, `turn_end` waits for their answer (`cleanup/2`): a start answer
   # that the hands took first then comes before it (#595). Only an
   # abort of a turn that sent `{:turn, ...}` gets an interrupt, after the
-  # `aborted` answers of its open tool requests. `Settle.finish/3` adds the
+  # deny of its pending approval requests and the `aborted` answers of its
+  # open tool requests; the hands also release at `done` when a chain of
+  # an approval request still runs. `Settle.finish/3` adds the
   # `before_settle` chain when it is due; an abort or a failure drops a
   # waiting continue with the queues (`Queue.abort/1`).
   @spec finish(
@@ -66,12 +68,13 @@ defmodule Helyx.Session.Server.Wait do
     state = state |> Asks.finish() |> Summary.stop() |> Records.finish(outcome)
     done? = match?({:done, _stop, _usage}, outcome)
     state = Steering.end_turn(state, turn.id, done?)
-    state = ToolRuns.end_turn(state, turn)
+    state = state |> Approvals.end_turn(turn) |> ToolRuns.end_turn(turn)
     Helyx.Session.Sync.push_turn(state)
     running? = turn.tool_queue.running != %{}
     data = end_data(outcome)
     state = if running?, do: state, else: emit(state, :turn_end, data)
-    hands = if !done? or running?, do: Hands.request_cancel(state.hands, turn.id)
+    chains? = turn.harness_chains.running != %{}
+    hands = if !done? or running? or chains?, do: Hands.request_cancel(state.hands, turn.id)
     wait = if outcome == :aborted, do: interrupt(state, turn), else: %__MODULE__{}
     turn_end = if running?, do: data
     wait = %{wait | hands: hands, turn: turn.id, turn_end: turn_end, started_ms: turn.started_ms}

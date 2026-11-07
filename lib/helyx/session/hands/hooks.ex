@@ -9,21 +9,47 @@ defmodule Helyx.Session.Hands.Hooks do
   # answer}` or `{:failed, how}`.
 
   alias Helyx.Session.Hands
-  alias Helyx.Session.Hands.{Outcome, Release, Run, Settle}
+  alias Helyx.Session.Hands.{Chain, Outcome, Release, Run, Settle}
 
-  # A hook of a call Task of a turn, or of a `before_settle` chain Task
-  # (`Settle`), whose id stands for the call id. Once a handle is
-  # unconfirmed, a hook start is refused: a failed hook. A request of a
-  # Task that a cancel killed after it sent it finds no Task and gets no
-  # answer.
+  # A hook of a call Task of a turn, of the chain Task of an approval
+  # request, or of a `before_settle` chain Task (`Settle`), whose id stands
+  # for the call id. Once a handle is unconfirmed, a hook start is refused:
+  # a failed hook. A request of a Task that a cancel killed after it sent
+  # it finds no Task and gets no answer.
   def start(state, from, pid, request) do
-    case Hands.tool_call(state, pid) || Settle.chain(state, pid) do
+    case Hands.tool_call(state, pid) || Settle.chain(state, pid) ||
+           approval_chain(state, pid) do
       nil ->
         state
 
-      {_ref, {_task, turn_id, call_id, _module, _place}} ->
-        start(state, from, request, turn_id, call_id)
+      {_ref, {_task, turn_id, id, _module, _place}} ->
+        start(state, from, request, turn_id, chain_id(id))
     end
+  end
+
+  # The id that the hook Tasks of a chain Task stand under: the call id of
+  # an approval chain, else the chain Task's own id.
+  def chain_id({:approval, call_id}), do: call_id
+  def chain_id(id), do: id
+
+  defp approval_chain(state, pid),
+    do: Enum.find(state.tasks, &match?({_ref, {%Task{pid: ^pid}, _, {:approval, _}, _, _}}, &1))
+
+  # The chain Task of an approval request of the provider `provider` for
+  # its own call `call` (ADR 0013 §4). It holds nothing and asks nothing:
+  # each hook runs in a hook Task of its own, as for a Helyx call.
+  def approve(state, turn_id, call, context, provider) do
+    cwd = state.cwd
+    hooks = Map.get(state.hooks, :before_tool, [])
+    context = call_context(state, call, context)
+
+    {_task, state} =
+      Hands.spawn_task(state, turn_id, {:approval, call.id}, nil, fn ->
+        Process.put(:helyx_call, context)
+        Chain.approve(call, cwd, turn_id, hooks, provider)
+      end)
+
+    state
   end
 
   defp start(state, from, request, turn_id, call_id) do
@@ -46,6 +72,14 @@ defmodule Helyx.Session.Hands.Hooks do
       run = Map.put(run, :started_ms, System.monotonic_time(:millisecond))
       %{state | hook_runs: Map.put(state.hook_runs, task.ref, run)}
     end
+  end
+
+  # The context of a call Task and of the chain Task of an approval
+  # request (`Helyx.Tool.context/0`): the session's, with the Core, the
+  # tool names, the name of the called tool, and the call id.
+  def call_context(state, call, context) do
+    fields = %{core: state.core, tools: Map.keys(state.tools), tool: call.name, call_id: call.id}
+    Map.merge(context, fields)
   end
 
   # The end of a hook Task, however it ended: its handles are released

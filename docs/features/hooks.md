@@ -1,6 +1,6 @@
 # Hooks: the interface and the tool chain
 
-Ticket #879, follow-up 1 of ADR 0013 (`docs/adr/0013-hooks.md`). The ADR holds the decisions and their reasons; this doc states the shape that the build adds for `before_tool` and `after_tool`. `before_settle` and the continue turn (#880, `docs/features/before-settle.md`), harness approvals (#881), the approval gate (#882), and the command hook (#883) are later tickets.
+Ticket #879, follow-up 1 of ADR 0013 (`docs/adr/0013-hooks.md`). The ADR holds the decisions and their reasons; this doc states the shape that the build adds for `before_tool` and `after_tool`, and, with #881, for harness approvals. `before_settle` and the continue turn (#880, `docs/features/before-settle.md`), the approval gate (#882), and the command hook (#883) are later tickets.
 
 ## Goal
 
@@ -76,6 +76,16 @@ The hands send each answer of a hook to the session as they deliver it, before t
 - A chain with no closing answer in the file counts as not run: a saved call with no result gets the interrupted result at the resume, as before.
 - `Helyx.Sessions.remove_message/3` removes every `hook` entry whose `call_id` is a call of the removed messages, with its copy of the arguments and its reason, and keeps every other one, relinked to one chain (`session-edit.md`, decision 5).
 
+### Harness approvals (#881)
+
+A provider asks for a decision on a call of its own tools (ADR 0013 §4); Codex does for an approval request of the program (`docs/features/long-lived-harness.md`, "Server requests").
+
+- **The event and the request.** `{:approval, approval_id, call_id}` is a stream event of `Helyx.Provider`, and `{:approval, turn_id, approval_id, :allow | {:deny, reason}}` a request to the provider, answered with `:ok` as a tool result is. `Helyx.Session.Stream.check/1` takes the event when both ids are strings and `approval_id` is 1 to 256 bytes of valid UTF-8 (`Helyx.Message.approval_id?/1`); any other is a malformed event, and the provider process stops. The provider process sends it to the session with its pid, as a tool request, so a request of a turn that is not current is denied too.
+- **The checks of the session**, in order (`Helyx.Session.Server.Approvals`): an `approval_id` that is pending in the turn's set of harness chains is a contract break, and the provider process stops, as for an open tool call id. A `call_id` that names no open call that the provider runs itself (a call of the open assistant message, or of a closed message of the turn with no result, that is not open in the tool queue) is denied at once. With no `before_tool` hook the request is denied at once. Then the set (`Helyx.Session.HarnessChains`): a second request for a call with a pending one is denied at once; 8 chains run and 16 wait, in arrival order, and a request past them is denied at once. These denials have no `hook` entry.
+- **The chain.** The hands run the `before_tool` chain of the call in a Task of the turn, with the context of a call Task, the hook input with `provider` set to the provider id, and the deny and failure texts of a Helyx call as the reason; each hook runs in a hook Task as for a Helyx call, with the same entries. The chain Task runs no plugin code, holds nothing, and has no ask record. Its decision goes to the session as `{:approval_result, turn_id, call_id, decision}`, a deny reason cut by `Helyx.Message.cut_result/1`; a crash of the chain Task is a deny. A decision of a turn that ended is dropped.
+- **Asks.** A hook Task of a harness chain asks with `Helyx.Hook.ask/1` while its chain runs in the set; any other Task of that call id gets `{:error, :not_running}`.
+- **The end of the turn.** At any end of the turn the session denies each pending request, before an interrupt and before the `aborted` answers of the open tool requests; the hands kill the running chains, also at a `done`.
+
 ## Replaced mechanism
 
 1. The ask: `Helyx.Tool.ask/1` still calls the session, with the kind of the ask. The session took an ask from any process while its call id ran; now only from the Task whose record, sent by the hands at its start, has that kind and call id. The reply rules (`:no_client`, `:not_running`, the answer, `:not_waiting`) stay. A call Task and a hook Task wait for the session's `:helyx_go` before they run, and a background run waits for it again after its start answer, which the hands now send as `{:started, result, pid}`.
@@ -96,7 +106,10 @@ The hands send each answer of a hook to the session as they deliver it, before t
 | `hook` entries of a chain | one for each hook of the point on one call | the 64 MiB of a session file line, as every entry |
 | the text of an after_tool failure notice | the failure text, cut at 4,096 bytes | cut |
 | an ask request and answer | as `Helyx.Tool.ask/1`: 64 KiB and 16 KiB of JSON | as before |
-| the session's records of call and hook Tasks | one for each call Task and hook Task of the current turn that lives: at most 8 call Tasks that run at once, and one hook Task for each of them; a call Task that goes on in the background loses its record at its start answer | not reachable: a record goes at the `:DOWN` of its Task or, for a hook Task, at its answer, and all go at the turn end |
+| the set of harness chains of a turn | 8 run and 16 wait; one pending request for each call | denied at once |
+| an `approval_id` | 1 to 256 bytes of valid UTF-8, unique among the pending requests of the turn; no ended ids are kept | a malformed event: the provider process stops |
+| hook Tasks at once, with harness chains | one for each of the 8 calls and the 8 harness chains that run at once | not reachable: a chain runs one hook at a time |
+| the session's records of call and hook Tasks | one for each call Task and hook Task of the current turn that lives: at most 8 call Tasks that run at once, and one hook Task for each of them and for each of the 8 harness chains that run; a call Task that goes on in the background loses its record at its start answer | not reachable: a record goes at the `:DOWN` of its Task or, for a hook Task, at its answer, and all go at the turn end |
 
 ## Ownership
 
@@ -107,4 +120,4 @@ The hands send each answer of a hook to the session as they deliver it, before t
 
 ## Out of scope
 
-`before_settle` and the continue turn (#880), harness approvals and their chain set (#881), the approval gate (#882), the command hook (#883). The `hook` entries reach no client.
+The approval gate (#882), the command hook (#883). `before_settle` and the continue turn are in `docs/features/before-settle.md` (#880). The `hook` entries reach no client.

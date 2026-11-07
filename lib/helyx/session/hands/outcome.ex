@@ -17,6 +17,11 @@ defmodule Helyx.Session.Hands.Outcome do
   # session (`Helyx.Session.Hands.Settle`).
   def of(_turn_id, {:settle, ref}, _pid, answer), do: {:settle_answer, ref, answer}
 
+  # The decision of the chain of an approval request; a deny reason is cut
+  # as a result.
+  def of(turn_id, {:approval, call_id}, _pid, result),
+    do: {:approval_result, turn_id, call_id, decision(result)}
+
   def of(turn_id, id, _pid, result), do: of(turn_id, id, result)
 
   def of(turn_id, call_id, result), do: {:tool_result, turn_id, call_id, checked(result)}
@@ -35,6 +40,14 @@ defmodule Helyx.Session.Hands.Outcome do
   defp down_reason({:exit, {:shutdown, reason}}), do: reason
   defp down_reason({:exit, reason}), do: {:task_exit, reason}
   defp down_reason({:error, _text} = error), do: error
+
+  defp decision(:allow), do: :allow
+  defp decision({:deny, text}), do: {:deny, Helyx.Message.cut_result(text)}
+
+  defp decision({:exit, reason}) do
+    Helyx.Reason.log("approval chain crashed", reason)
+    decision({:deny, "the approval chain crashed: " <> Helyx.Reason.text(reason)})
+  end
 
   # A crash of the Task: the log gets the kind of its reason, the result its text.
   defp checked({:exit, reason}) do

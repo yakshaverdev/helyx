@@ -33,6 +33,8 @@ defmodule Helyx.Provider.Codex.State do
   # its `from`; it outlives the turn, because the answer can come after
   # `turn/completed`.
   #
+  # `approvals` holds the JSON-RPC id of each approval request that waits
+  # for Core, by its approval id (`Approvals`).
   # `tools` holds the state of the Helyx tools (`Tools`). `handles` are
   # the held handles of the provider's programs (`Helyx.HarnessIO`).
   @enforce_keys [:exe, :model, :cwd]
@@ -66,6 +68,7 @@ defmodule Helyx.Provider.Codex.State do
     items: %Helyx.Provider.Codex.Items{},
     agents: %{},
     asked: %{},
+    approvals: %{},
     handles: []
   ]
 end

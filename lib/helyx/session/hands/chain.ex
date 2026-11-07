@@ -22,22 +22,37 @@ defmodule Helyx.Session.Hands.Chain do
       do: Run.tool(tool, call, cwd)
 
   def run(tool, %ToolCall{} = call, cwd, turn_id, hooks) do
-    input = %{
-      tool: call.name,
-      arguments: call.arguments,
-      cwd: cwd,
-      session_id: Helyx.Tool.context().session_id,
-      turn_id: turn_id,
-      call_id: call.id,
-      provider: nil
-    }
-
+    input = input(call, cwd, turn_id, nil)
     Process.put(:helyx_chain, %{hooks: hooks, input: input, after: :pending})
 
     case before(Map.get(hooks, :before_tool, []), input, :first) do
       :allow -> after_tool(Run.tool(tool, call, cwd))
       {:error, _text} = denied -> denied
     end
+  end
+
+  # The `before_tool` chain of an approval request of the provider
+  # `provider` for its own call (ADR 0013 §4), in its chain Task: the
+  # decision, with the text of a Helyx call's deny as the reason.
+  @spec approve(ToolCall.t(), String.t(), String.t(), [{module(), pos_integer()}], String.t()) ::
+          :allow | {:deny, String.t()}
+  def approve(%ToolCall{} = call, cwd, turn_id, hooks, provider) do
+    case before(hooks, input(call, cwd, turn_id, provider), :first) do
+      :allow -> :allow
+      {:error, text} -> {:deny, text}
+    end
+  end
+
+  defp input(call, cwd, turn_id, provider) do
+    %{
+      tool: call.name,
+      arguments: call.arguments,
+      cwd: cwd,
+      session_id: Helyx.Tool.context().session_id,
+      turn_id: turn_id,
+      call_id: call.id,
+      provider: provider
+    }
   end
 
   defp before([], _input, _record), do: :allow

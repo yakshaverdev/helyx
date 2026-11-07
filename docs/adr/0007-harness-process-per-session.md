@@ -57,3 +57,7 @@ Three statements of this ADR no longer match the code (`docs/reviews/2026-10-12-
 ## Update 2026-10-20
 
 #753 makes the Codex approval policy and sandbox provider options, with the defaults `never` and `danger-full-access` (`docs/features/long-lived-harness.md`, "Sandbox and approvals"). So the update of 2026-10-16 holds for Codex only with the default policy. With another policy an approval request can come. It gets the same error answer, which codex 0.157.1 took as a decline (`docs/research/codex-app-server.md`). Helyx still accepts no approval request; a UI ticket that adds approvals makes a new decision.
+
+## Update 2026-11-07
+
+#881 builds ADR 0013 §4 and replaces "Helyx still accepts no approval request" of the update of 2026-10-20. A Codex approval request for an item of the program's own tools (`item/commandExecution/requestApproval`, `item/fileChange/requestApproval`) goes through the `before_tool` hook chain of the item's call: the provider gives `{:approval, approval_id, call_id}`, the session answers `{:approval, turn_id, approval_id, :allow | {:deny, reason}}`, and the provider sends `accept` or `decline`. With no `before_tool` hook the request is denied, as before; at an abort the session denies each pending request before the interrupt. Every other server request keeps the error answer. Claude Code is unchanged: its own tools are off, so every call of its model is a Helyx tool call (`docs/features/hooks.md`, "Harness approvals").

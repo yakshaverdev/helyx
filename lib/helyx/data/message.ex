@@ -166,6 +166,13 @@ defmodule Helyx.Message do
   @spec hook_origin(module()) :: origin()
   def hook_origin(module), do: %{kind: :hook, id: inspect(module)}
 
+  @doc """
+  Whether `id` is a valid approval id of a provider (ADR 0013 §4): valid
+  UTF-8 of 1 to #{@origin_id_max_bytes} bytes, the bound of an origin id.
+  """
+  @spec approval_id?(term()) :: boolean()
+  def approval_id?(id), do: text_id?(id, @origin_id_max_bytes)
+
   defp text_id?(id, max), do: is_binary(id) and byte_size(id) in 1..max and String.valid?(id)
 
   @doc """

@@ -3,10 +3,11 @@ defmodule Helyx.Provider.Codex.TurnsTest do
   use ExUnit.Case, async: true
 
   import Helyx.Test.CodexFake
+  import Helyx.Test.HarnessDriver, only: [pump: 4]
   import Helyx.Test.Events
 
   alias Helyx.{Message, Session}
-  alias Helyx.Provider.Fake
+  alias Helyx.Provider.{Codex, Fake}
 
   @moduletag :tmp_dir
   setup {Helyx.Test.CodexFake, :setup_fake}
@@ -257,7 +258,7 @@ defmodule Helyx.Provider.Codex.TurnsTest do
     assert byte_size(text) == 1_999 and String.valid?(text)
   end
 
-  test "every server request gets an error, an approval request too",
+  test "a server request that is no approval of an item gets an error",
        %{bin: bin, work: work} do
     fresh(
       bin,
@@ -280,6 +281,47 @@ defmodule Helyx.Provider.Codex.TurnsTest do
              {0, %{"error" => %{"code" => -32_601}}},
              {"r", %{"error" => %{"code" => -32_601}}},
              {7, %{"error" => %{"code" => -32_601}}}
+           ] = answers
+  end
+
+  # ADR 0013 §4; docs/research/codex-app-server.md, "An `apply_patch`
+  # approval under `untrusted` and `read-only`".
+  test "an approval request of an item is an approval event; Core's answer is accept or decline",
+       %{bin: bin, work: work} do
+    approval = fn id, method, item ->
+      j(%{id: id, method: method, params: %{threadId: tid(), turnId: "turn1", itemId: item}})
+    end
+
+    fresh(bin, 1, tid(), [
+      started(tid(), %{type: "fileChange", id: "call_1", changes: [], status: "inProgress"}),
+      approval.(0, "item/fileChange/requestApproval", "call_1"),
+      approval.("0", "item/commandExecution/requestApproval", "call_2")
+    ])
+
+    {:ok, state} = connect(work)
+    {_from, actions, state} = turn_on(state)
+
+    {actions, state} =
+      pump(Codex, state, actions, fn actions ->
+        Enum.count(actions, &match?({:event, _, {:approval, _, _}}, &1)) == 2
+      end)
+
+    # The JSON of the id: the integer 0 and the string "0" are two ids.
+    assert [{:approval, "0", "call_1"}, {:approval, ~s("0"), "call_2"}] =
+             for({:event, "t1", {:approval, _, _} = event} <- actions, do: event)
+
+    {from, actions, state} = ask(state, {:approval, "t1", ~s("0"), {:deny, "no"}})
+    assert [{:reply, ^from, :ok}] = actions
+    {from, actions, state} = ask(state, {:approval, "t1", "0", :allow})
+    assert [{:reply, ^from, :ok}] = actions
+    close(state)
+
+    answers =
+      for %{"id" => id} = line <- stdin(bin, 1), not is_map_key(line, "method"), do: {id, line}
+
+    assert [
+             {"0", %{"result" => %{"decision" => "decline"}}},
+             {0, %{"result" => %{"decision" => "accept"}}}
            ] = answers
   end
 

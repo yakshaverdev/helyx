@@ -168,6 +168,14 @@ defmodule Helyx.Session.Stream do
     end
   end
 
+  # An approval request of the provider for its open call `call_id`. The
+  # check holds no turn state: the shape and the bytes of the id only
+  # (ADR 0013 §4). The session checks the pending ids and the call.
+  def check({:approval, approval_id, call_id} = event)
+      when is_binary(approval_id) and is_binary(call_id) do
+    if Message.approval_id?(approval_id), do: {:send, event, nil}, else: {:bad, malformed(event)}
+  end
+
   # A compaction of the provider's own history, with its token counts
   # before and after, each nil when the provider does not know it.
   def check({:compaction, before, after_} = event)
