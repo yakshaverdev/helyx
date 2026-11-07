@@ -335,8 +335,7 @@ defmodule Helyx.TUI.Wire.Decode do
        )
        when is_binary(instance_id) and count?(seq) and is_list(messages) and is_boolean(more) and
               is_boolean(persisting) and is_list(asks) do
-    # The count is additive: a server of an older build sends none, and the
-    # client shows no notice then.
+    # Additive: an older server sends none, and the client shows no notice.
     older = Map.get(wire, "older", 0)
     true = count?(older)
 

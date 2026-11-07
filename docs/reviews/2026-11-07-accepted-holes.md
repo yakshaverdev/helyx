@@ -94,6 +94,27 @@ caps. The invariants do not remove them.
 
 ## Resolution
 
-The six invariants are in `docs/adr/0014-hole-proofing-invariants.md`. The checklist has six
-questions for the next review. The code changes follow in the order of the ADR: status owner,
-secret type, wire bound, semantic replay, log sink, then the leases.
+Implemented on `deslop/2026-11-06`:
+
+- **Invariant 6** (status owner): the print signal handler marks the stop and ignores every later
+  signal, so a SIGQUIT or SIGUSR1 cannot turn 143 into 0.
+- **Invariant 2** (secret): the OpenAI error text is built from the status and structured
+  `type`/`code`; the body, `message`, and chunks never reach it. Content and tool-call deltas
+  keep the exact mask, which is the remaining bound; a gateway that already holds the key is a
+  different threat.
+- **Invariant 1** (bounds): the 4 MiB text bound, the 25 MiB joined wire bound, and the 64 MiB
+  outbound queue are distinct. A plain 4 MiB text and its parts form are accepted; a genuinely
+  over-joined request is rejected at the composer; `server.log` rotates at 10 MiB. A slow client
+  can still meet the 4408 queue policy; that is a read-pace bound, not an input rejection.
+- **Invariant 3** (truncation): the replay cut keeps the open turn, its calls, and their results,
+  or fails with `replay_over_limit`. The snapshot carries `older` and the TUI shows the notice.
+  Pagination is not built, so the notice is inert; a `history` request is the follow-up. The
+  `older` field is optional on decode; the wire schema doc and a protocol bump are still a
+  parent decision.
+- **Invariant 4** (leases): an abort or failed turn revokes its background runs; a switch
+  detaches a client and the session runs on; a release keeps a build with a live VM marker.
+- **Invariant 5** (authority): design only. Hub remains blocked on the per-user executor and the
+  per-delivery grant.
+
+The six questions are in `docs/agents/review-checklist.md`. The branch gate is
+`mix precommit` with all three projects green.
