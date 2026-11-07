@@ -49,7 +49,7 @@ defmodule Helyx.Session.ToolSourceTest do
 
   defp put(src, group, entries) do
     in_source(src, fn ->
-      :ok = Helyx.Tool.announce([group])
+      {:ok, [^group]} = Helyx.Tool.announce([group])
       Helyx.Tool.put_tools(group, {:ok, entries})
     end)
   end
@@ -145,7 +145,7 @@ defmodule Helyx.Session.ToolSourceTest do
 
     assert :ok =
              in_source(src, fn ->
-               :ok = Helyx.Tool.announce(["a", "b"])
+               {:ok, ["a", "b"]} = Helyx.Tool.announce(["a", "b"])
                :ok = Helyx.Tool.put_tools("a", {:ok, [entry("shared"), entry("shared")]})
                Helyx.Tool.put_tools("b", {:ok, [entry("upcase"), entry("shared")]})
              end)
@@ -168,7 +168,7 @@ defmodule Helyx.Session.ToolSourceTest do
 
     assert :ok =
              in_source(src, fn ->
-               :ok = Helyx.Tool.announce(["a", "b"])
+               {:ok, ["a", "b"]} = Helyx.Tool.announce(["a", "b"])
                :ok = Helyx.Tool.put_tools("a", {:ok, names})
                Helyx.Tool.put_tools("b", {:ok, [entry("b__one")]})
              end)
@@ -183,7 +183,8 @@ defmodule Helyx.Session.ToolSourceTest do
     {_session, src} = start(core)
     groups = for n <- 1..66, do: "g#{String.pad_leading("#{n}", 2, "0")}"
 
-    assert :ok = in_source(src, fn -> Helyx.Tool.announce(Enum.reverse(groups)) end)
+    assert {:ok, kept} = in_source(src, fn -> Helyx.Tool.announce(Enum.reverse(groups)) end)
+    assert kept == Enum.take(groups, 64)
     assert notice() =~ "2 tool groups over the cap of 64 were left out: g65, g66"
 
     # A group that was not kept is a contract break.
@@ -194,9 +195,11 @@ defmodule Helyx.Session.ToolSourceTest do
 
   test "a second announce, a put before it, and a bad value exit the source", %{core: core} do
     for request <- [
-          fn -> :ok = Helyx.Tool.announce(["g"]) && Helyx.Tool.announce(["h"]) end,
+          fn -> {:ok, ["g"]} = Helyx.Tool.announce(["g"]) && Helyx.Tool.announce(["h"]) end,
           fn -> Helyx.Tool.put_tools("g", :starting) end,
-          fn -> :ok = Helyx.Tool.announce(["g"]) && Helyx.Tool.put_tools("g", :ready) end,
+          fn ->
+            {:ok, ["g"]} = Helyx.Tool.announce(["g"]) && Helyx.Tool.put_tools("g", :ready)
+          end,
           fn -> Helyx.Tool.announce(["g", "g"]) end,
           fn -> Helyx.Tool.announce(["", "g"]) end,
           fn -> Helyx.Tool.announce([String.duplicate("g", 65)]) end,
@@ -204,8 +207,12 @@ defmodule Helyx.Session.ToolSourceTest do
           fn -> Helyx.Tool.announce([<<"g", 255>>]) end,
           fn -> Helyx.Tool.announce("g") end,
           fn -> Helyx.Tool.announce(["g" | "h"]) end,
-          fn -> :ok = Helyx.Tool.announce(["g"]) && Helyx.Tool.put_tools("g", {:ok, :x}) end,
-          fn -> :ok = Helyx.Tool.announce(["g"]) && Helyx.Tool.put_tools("g", {:error, :x}) end
+          fn ->
+            {:ok, ["g"]} = Helyx.Tool.announce(["g"]) && Helyx.Tool.put_tools("g", {:ok, :x})
+          end,
+          fn ->
+            {:ok, ["g"]} = Helyx.Tool.announce(["g"]) && Helyx.Tool.put_tools("g", {:error, :x})
+          end
         ] do
       {session, src} = start(core)
       monitor = Process.monitor(src)
@@ -226,7 +233,7 @@ defmodule Helyx.Session.ToolSourceTest do
 
     assert :ok =
              in_source(src, fn ->
-               :ok = Helyx.Tool.announce(["g", "h"])
+               {:ok, ["g", "h"]} = Helyx.Tool.announce(["g", "h"])
                :ok = Helyx.Tool.put_tools("g", {:ok, [entry("g__one")]})
                Helyx.Tool.put_tools("h", {:ok, [entry("h__one")]})
              end)
@@ -388,28 +395,62 @@ defmodule Helyx.Session.ToolSourceTest do
   end
 
   test "Core refuses a Tool plugin that is neither kind" do
-    # A Tool plugin with no `run/2`; its missing callback warns at compile.
-    {{:module, no_run, _, _}, _warnings} =
-      Code.with_diagnostics(fn ->
-        Module.create(
-          Module.concat(__MODULE__, NoRun),
-          quote do
-            @behaviour Helyx.Tool
-            def name, do: "norun"
-            def description, do: "d"
-            def parameters, do: %{}
-          end,
-          Macro.Env.location(__ENV__)
+    # Tool plugins with no `run/2`, whose missing callback warns at compile,
+    # and a source that also exports `description/0`.
+    no_run =
+      plugin(
+        NoRun,
+        quote(
+          do:
+            (
+              def name, do: "norun"
+              def description, do: "d"
+              def parameters, do: %{}
+            )
         )
-      end)
+      )
 
-    for plugin <- [Neither, Both, NoDescription, no_run] do
+    source_no_run = plugin(SourceNoRun, quote(do: def(source(_info), do: :ok)))
+
+    source_description =
+      plugin(
+        SourceDescription,
+        quote(
+          do:
+            (
+              def source(_info), do: :ok
+              def description, do: "d"
+              def run(_a, _c), do: {:ok, ""}
+            )
+        )
+      )
+
+    for plugin <- [Neither, Both, NoDescription, no_run, source_no_run, source_description] do
       assert {:error, {:invalid_tool_plugin, ^plugin}} =
                Helyx.Core.start_link(
                  name: :"bad_#{System.unique_integer([:positive])}",
                  plugins: [Helyx.Test.Provider, plugin]
                )
     end
+  end
+
+  defp plugin(name, body) do
+    {{:module, module, _, _}, _warnings} =
+      Code.with_diagnostics(fn ->
+        Module.create(
+          Module.concat(__MODULE__, name),
+          quote(
+            do:
+              (
+                @behaviour Helyx.Tool
+                unquote(body)
+              )
+          ),
+          Macro.Env.location(__ENV__)
+        )
+      end)
+
+    module
   end
 
   defmodule Unavailable do
@@ -484,7 +525,7 @@ defmodule Helyx.Session.ToolSourceTest do
   test "a group name of 64 bytes passes, multibyte too", %{core: core} do
     {session, src} = start(core)
     groups = [String.duplicate("g", 64), String.duplicate("é", 32), "g"]
-    assert :ok = in_source(src, fn -> Helyx.Tool.announce(groups) end)
+    assert in_source(src, fn -> Helyx.Tool.announce(groups) end) == {:ok, Enum.sort(groups)}
 
     # Each starts as `:starting`, with no tools.
     registry = :sys.get_state(Session.pid(session)).registry
@@ -496,11 +537,14 @@ defmodule Helyx.Session.ToolSourceTest do
   test "exactly 64 groups need no notice, and 65 leave one out", %{core: core} do
     {_session, src} = start(core)
     groups = for n <- 1..64, do: "g#{n}"
-    assert :ok = in_source(src, fn -> Helyx.Tool.announce(groups) end)
+    assert in_source(src, fn -> Helyx.Tool.announce(groups) end) == {:ok, Enum.sort(groups)}
     refute_receive {:helyx_event, %Helyx.Event{type: :notice}}, 100
 
     {_session, src} = start(core)
-    assert :ok = in_source(src, fn -> Helyx.Tool.announce(["z" | groups]) end)
+
+    assert in_source(src, fn -> Helyx.Tool.announce(["z" | groups]) end) ==
+             {:ok, Enum.sort(groups)}
+
     assert notice() =~ "1 tool groups over the cap of 64 were left out: z"
   end
 
@@ -510,7 +554,7 @@ defmodule Helyx.Session.ToolSourceTest do
 
     assert :ok =
              in_source(src, fn ->
-               :ok = Helyx.Tool.announce(["a", "b"])
+               {:ok, ["a", "b"]} = Helyx.Tool.announce(["a", "b"])
                :ok = Helyx.Tool.put_tools("a", {:ok, names})
                Helyx.Tool.put_tools("b", {:ok, [entry("b__one"), entry("b.bad")]})
              end)
@@ -653,5 +697,105 @@ defmodule Helyx.Session.ToolSourceTest do
 
     assert final_text(collect_until(:turn_end)) ==
              "ran a__echo from #{inspect(a)}|unknown tool: a__echo"
+  end
+
+  defp two_sources do
+    core = start_core([Helyx.Test.Provider, Source, OtherSource])
+    observe(core)
+    {:ok, session} = Session.start(core, model: "test/tools")
+    assert_receive {:source_up, one, _}
+    assert_receive {:source_up, two, _}
+    {:ok, _snapshot, _ref} = Session.subscribe(session)
+    sources = :sys.get_state(Session.pid(session)).sources
+    [a, b] = Enum.sort_by([one, two], &(sources[&1] == OtherSource))
+    {session, a, b}
+  end
+
+  test "the 64-group cap counts the groups of every source", %{core: _core} do
+    {session, a, b} = two_sources()
+    a_groups = for n <- 1..60, do: "a#{n}"
+    b_groups = for n <- 1..10, do: "b#{String.pad_leading("#{n}", 2, "0")}"
+
+    assert in_source(a, fn -> Helyx.Tool.announce(a_groups) end) == {:ok, Enum.sort(a_groups)}
+    assert {:ok, kept} = in_source(b, fn -> Helyx.Tool.announce(b_groups) end)
+    assert kept == ["b01", "b02", "b03", "b04"]
+
+    assert notice() ==
+             "6 tool groups over the cap of 64 were left out: b05, b06, b07, b08, b09, b10"
+
+    # A source puts only to the groups that it kept.
+    assert in_source(b, fn -> Helyx.Tool.put_tools("b04", {:ok, [entry("b04__one")]}) end) == :ok
+    assert turn_text(session) == "b04__one"
+  end
+
+  test "a long left-out list gives a notice of at most 2,000 bytes with the full count" do
+    {_session, a, b} = two_sources()
+    assert {:ok, _kept} = in_source(a, fn -> Helyx.Tool.announce(for n <- 1..64, do: "a#{n}") end)
+    groups = for n <- 1..10_000, do: "b#{String.pad_leading("#{n}", 5, "0")}"
+
+    assert in_source(b, fn -> Helyx.Tool.announce(groups) end) == {:ok, []}
+    text = notice()
+    assert text =~ "10000 tool groups over the cap of 64 were left out: b00001, b00002"
+    assert byte_size(text) <= 2_000 and String.valid?(text)
+    # Only whole names, a prefix of the left-out list.
+    [_head, names] = String.split(text, ": ", parts: 2)
+    listed = String.split(names, ", ")
+    assert listed == Enum.take(groups, length(listed))
+    assert byte_size(text) + byte_size(", b00000") > 2_000
+  end
+
+  test "a left-out name that does not fit whole is not in the notice" do
+    {_session, a, b} = two_sources()
+
+    assert {:ok, _kept} =
+             in_source(a, fn -> Helyx.Tool.announce(["k" | for(n <- 1..63, do: "a#{n}")]) end)
+
+    long =
+      for n <- 1..29, do: "j#{String.pad_leading("#{n}", 2, "0")}" <> String.duplicate("x", 61)
+
+    groups = long ++ ["j99" <> String.duplicate("y", 31), "k" <> String.duplicate("z", 63)]
+
+    assert in_source(b, fn -> Helyx.Tool.announce(groups) end) == {:ok, []}
+    text = notice()
+    [_head, names] = String.split(text, ": ", parts: 2)
+    listed = String.split(names, ", ")
+    assert Enum.all?(listed, &(&1 in groups))
+  end
+
+  test "a kept error text is valid UTF-8 cut to 2,000 bytes", %{core: core} do
+    {session, src} = start(core)
+    assert :ok = put(src, "g", [entry("g__one")])
+
+    assert in_source(src, fn ->
+             Helyx.Tool.put_tools("g", {:error, "a" <> String.duplicate("é", 1_500)})
+           end) == :ok
+
+    # The cut at 2,000 bytes falls inside a 2-byte character, which goes.
+    {:error, kept} = :sys.get_state(Session.pid(session)).registry.groups[{Source, "g"}].state
+    assert byte_size(kept) == 1_999
+    assert String.valid?(kept)
+  end
+
+  test "an exit signal of another process reaches the source as a message", %{core: core} do
+    {_session, src} = start(core)
+    Process.exit(src, {:shutdown, :elsewhere})
+    assert_receive {:source_got, ^src, {:EXIT, _pid, {:shutdown, :elsewhere}}}
+    assert Process.alive?(src)
+  end
+
+  test "a left-out name that ends the notice at exactly 2,000 bytes is in it" do
+    {_session, a, b} = two_sources()
+    assert {:ok, _kept} = in_source(a, fn -> Helyx.Tool.announce(for n <- 1..64, do: "a#{n}") end)
+
+    long =
+      for n <- 1..29, do: "j#{String.pad_leading("#{n}", 2, "0")}" <> String.duplicate("x", 61)
+
+    head = "30 tool groups over the cap of 64 were left out: "
+    last = "jz" <> String.duplicate("y", 2_000 - byte_size(head) - 29 * 66 - 2)
+
+    assert in_source(b, fn -> Helyx.Tool.announce(long ++ [last]) end) == {:ok, []}
+    text = notice()
+    assert byte_size(text) == 2_000
+    assert String.ends_with?(text, ", " <> last)
   end
 end

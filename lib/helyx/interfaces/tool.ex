@@ -45,9 +45,11 @@ defmodule Helyx.Tool do
   A tool source exports `source/1` in place of `name/0`, `description/0`,
   and `parameters/0`: its source process puts the tools that it learns at
   run time (`announce/1`, `put_tools/2`, `launch/1`), and its `run/2` runs
-  each of them. The source process traps exits: it ends at an `{:EXIT, pid,
-  reason}` of a pid that is no server Task of its own, and Core kills it
-  when its hands end. Core refuses any other plugin at its start with
+  each of them. Its process traps exits, and Core kills it when its hands
+  end; any other exit signal but a kill is a message, and the source must
+  end at an `{:EXIT, pid, reason}` of a pid that is no server Task of its
+  own. Core
+  refuses any other plugin at its start with
   `{:invalid_tool_plugin, module}` (`docs/features/mcp-client.md`).
 
   A call can go on in the background: the tool takes a place with
@@ -111,7 +113,6 @@ defmodule Helyx.Tool do
   defp fixed(core), do: Enum.reject(Helyx.Core.plugins(core, __MODULE__), &source?/1)
 
   @doc false
-  # Whether `plugin` is a tool source (`source/1`).
   def source?(plugin), do: function_exported?(plugin, :source, 1)
 
   defp keep(tools, nil), do: tools
@@ -417,11 +418,12 @@ defmodule Helyx.Tool do
   @doc """
   Names every group of the calling source once, before `put_tools/2`: a
   list of distinct strings of 1 to 64 bytes of UTF-8, each `:starting`.
-  Past 64 groups in the session the first by name order stay, and a notice
-  names the rest. A second call, a bad list, and a call outside a source
-  process exit the caller.
+  Returns `{:ok, kept}`, sorted: the room that earlier announces left of
+  the session's 64 groups takes the first by name, and a notice names the
+  rest that fit in it and counts all. A put of a group not kept, a second
+  call, a bad list, and a call outside a source exit the caller.
   """
-  @spec announce([String.t()]) :: :ok
+  @spec announce([String.t()]) :: {:ok, [String.t()]}
   def announce(groups), do: source_call({:announce, groups})
 
   @doc """
@@ -441,8 +443,8 @@ defmodule Helyx.Tool do
     source!()
 
     case GenServer.call(Process.get(:helyx_session), request, :infinity) do
-      :ok -> :ok
       :error -> exit({:bad_source_call, elem(request, 0)})
+      reply -> reply
     end
   end
 

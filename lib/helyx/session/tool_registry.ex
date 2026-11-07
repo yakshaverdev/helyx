@@ -90,7 +90,7 @@ defmodule Helyx.Session.ToolRegistry do
           announced: Map.put(registry.announced, source, kept)
       }
 
-      {:ok, registry, left_out(left)}
+      {:ok, registry, left_out(left), {:ok, kept}}
     end
   end
 
@@ -105,22 +105,33 @@ defmodule Helyx.Session.ToolRegistry do
 
   defp left_out([]), do: []
 
-  defp left_out(groups),
-    do: [
-      cap(
-        "#{length(groups)} tool groups over the cap of #{@max_groups} were left out: " <>
-          Enum.join(groups, ", ")
-      )
-    ]
+  # The names that fit in the notice and a count of all: the work is
+  # bounded by the cut, not by the list.
+  defp left_out(groups) do
+    head = "#{length(groups)} tool groups over the cap of #{@max_groups} were left out: "
+    # The first name has no separator: 2 bytes of room more.
+    room = @max_text_bytes - byte_size(head) + 2
+    [cap(head <> Enum.join(fitting(groups, room, []), ", "))]
+  end
+
+  # A whole name or none: the list stops at the first name that does not
+  # fit with its separator.
+  defp fitting([name | rest], room, acc) when byte_size(name) + 2 <= room,
+    do: fitting(rest, room - byte_size(name) - 2, [name | acc])
+
+  defp fitting(_names, _room, acc), do: Enum.reverse(acc)
 
   # A put of a group that the source announced and kept. `:starting` and
   # `{:error, text}` remove the group's entries; `{:ok, entries}` replaces
   # them with the entries that pass the checks. Any other value, or a group
   # that the source did not keep, is a contract break: `:error`.
   def put(%__MODULE__{} = registry, source, group, value) do
-    if group in Map.get(registry.announced, source, []),
-      do: put_group(registry, {source, group}, value),
-      else: :error
+    with true <- group in Map.get(registry.announced, source, []),
+         {:ok, registry, notices} <- put_group(registry, {source, group}, value) do
+      {:ok, registry, notices, :ok}
+    else
+      _error -> :error
+    end
   end
 
   defp put_group(registry, key, :starting),

@@ -113,7 +113,7 @@ defmodule Helyx.Session.Server.Calls do
 
   defp source_call(request, {pid, _tag}, state) do
     case Sources.call(state, pid, request) do
-      {:ok, state} -> {:reply, :ok, state}
+      {:ok, reply, state} -> {:reply, reply, state}
       :error -> {:reply, :error, state}
     end
   end

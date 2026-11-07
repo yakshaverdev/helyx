@@ -33,12 +33,12 @@ defmodule Helyx.Session.Server.Sources do
     sync(%{state | sources: sources}, registry, notices)
   end
 
-  # A call of a source process; any other caller, and a contract break,
-  # get `:error`, which exits the caller (`Helyx.Tool`).
+  # A call of a source process and its reply; any other caller, and a
+  # contract break, get `:error`, which exits the caller (`Helyx.Tool`).
   def call(%State{} = state, pid, request) do
     with {:ok, plugin} <- Map.fetch(state.sources, pid),
-         {:ok, registry, notices} <- apply_call(state.registry, plugin, request) do
-      {:ok, sync(state, registry, notices)}
+         {:ok, registry, notices, reply} <- apply_call(state.registry, plugin, request) do
+      {:ok, reply, sync(state, registry, notices)}
     end
   end
 

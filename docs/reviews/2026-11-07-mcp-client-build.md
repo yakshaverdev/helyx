@@ -85,3 +85,36 @@ The invariant, restated after round 3: a source process runs per session without
 The loop ended at three rounds with findings 1 and 2 reproduced, and neither fix meets the conditions of the small-fix round together. The slice also passed its 45 minutes. So the code as round 3 reviewed it is committed, and the slice is reported open; slices 3 to 10 are not built.
 
 After round 3, the first precommit failed on Dialyzer only (`lib/helyx/session/hands/sources.ex:40:50:no_return`: the body of the source process never returns, because `run/3` always exits). The body moved to `body/3` with `@spec ... :: (-> no_return())` and `@dialyzer {:nowarn_function, body: 3}`, the pattern of `Helyx.Session.ProviderProcess.run/1`. No behaviour changed and the slice tests pass, but this move had no review round: precommit is its only gate.
+
+### The open items of slice 2, decided (orchestrator, 2026-11-07)
+
+1. `announce/1` returns `{:ok, kept}`, sorted; the doc, `Helyx.Tool`, and the tests follow (two sources, the cap across them).
+2. The left-out notice names only the names that fit whole in its 2,000 bytes and counts all.
+3. The link-and-trap design stays; the doc follows the code: Core ends a source when its hands end; any other exit signal but a kill is a message, and the source loop ends at an `{:EXIT, pid, reason}` from a process that is not one of its server Tasks. A contract of a tool source, checked in slice 10.
+4. Tests: a kept error text cut to 2,000 bytes; Core refuses a source with no `run/2` and a source that exports `description/0`; the 64-group cap across two sources.
+5. The note for slice 10 stays.
+
+Base `e82013cb`. Bounds sensor: `bounds sensor: 4 candidate functions, 1 flagged, 0 without an answer` with `lib/helyx/interfaces/tool.ex:389  WAIT  defp source_call(request) do` (the call to the session, answered at once).
+
+#### Round 1 (reduced: spec and failure path)
+
+| # | Source | Finding | Check | Resolution |
+| - | ------ | ------- | ----- | ---------- |
+| 1 | spec, failure path | `fitting/3` added a name while any room was left, even one that did not fit; the cut then left a part of it in the notice, even the whole name of another group, a kept one too | reproduced | a name goes in only when it fits whole with its separator, and the list stops there. Tests "a long left-out list ...", "a left-out name that does not fit whole is not in the notice"; both fail on the old guard |
+| 2 | spec | The kept error text test could not fail on its UTF-8 part | read | the text starts with an odd byte, so the cut falls in a character |
+| 3 | spec | No test that another exit signal reaches the source as a message | read | test added |
+| 4 | spec | The `announce/1` doc did not say that `kept` is sorted | read | it does |
+
+#### Round 2 (reduced). The failure-path agent of the first try ended at the usage limit of the model account and was rerun.
+
+| # | Source | Finding | Check | Resolution |
+| - | ------ | ------- | ----- | ---------- |
+| 1 | failure path | The notice charged a separator to its first name, so a name that ends it at 1,999 or 2,000 bytes was left out | reproduced | the room starts 2 bytes higher. Test "a left-out name that ends the notice at exactly 2,000 bytes is in it" |
+| 2 | spec | "past 64 groups the first by name order stay": across sources the room fills in the order of the announces, and by name within one | reproduced (a probe) | the texts say so |
+| 3 | spec | "any other exit signal reaches the source as a message": a kill does not | read | "but a kill" |
+| 4 | spec | A server Task's `:EXIT` and the hands' `{ref, {:ok, pid}}` have no order, so a source can see the exit of a server Task that it has not learned | read (200 probes kept the safe order, which nothing guarantees) | the doc states the rule for a source: while a launch is open, it takes the hands' answers first; slice 10 checks it |
+| 5 | failure path | A group name with `", "` reads as two names in the notice | reproduced | kept, a judgement: the notice is text for a person, and its count is right; a group name is plugin input of the MCP plugin, whose server names are `^[a-z0-9][a-z0-9-]{0,15}$` |
+
+#### Round 3 (reduced)
+
+No reproduced defect: the failure-path agent matched the notice byte for byte with a reference at 1,999 to 2,002 bytes, multibyte, and 40 random lists. Spec findings, fixed as wording: the slice 10 list lacked the rule of the open launches; the Core check sentence of the doc named only `name/0` and `source/1`; the `announce/1` doc said "with their count" for the count of all; a `refute` in a test could not fail. Kept: no test of the guard for hands that crash or stop normally (the guard acts on any `:DOWN`; a kill is the case that skips `terminate/2`). The loop ended.
