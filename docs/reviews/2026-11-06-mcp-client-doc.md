@@ -99,3 +99,17 @@ The owner accepted the tool source inside the Tool interface and the restart aft
 | 1 | [medium, confirmed by the orchestrator] `activate/1` appended its names best first and dropped from the front, so one call's names over the byte cap lost its best matches, against the stated order | the activated list is kept in drop order: `activate/1` appends its names in reverse rank, best last, and every cap, after `activate/1` and after `put_tools/2`, drops from the front. Older activations leave first, and within one activation the lowest ranked. Slice 3 test: one activation over the byte cap keeps its best matches |
 
 The gate found no defect in the release record design.
+
+## The slow recall test (2026-11-07), the condition of the merge
+
+Owner decision of 2026-11-07 on #492 (option 1: measure, then decide). The test "recall over 100,000 log files ..." of `plugins/bundled/test/helyx/memory/markdown_test.exs` waits `@recall_ms + @load_ms`, with the orchestrator's measurement on the idle precommit host (69 to 85 ms) in its comment. Base `89d84792`. One reduced round (spec and failure path), as the orchestrator asked. Bounds sensor: `0 candidate functions, 0 flagged, 0 without an answer` (a test file only).
+
+| # | Axis | Finding | Check | Resolution |
+| - | ---- | ------- | ----- | ---------- |
+| 1 | spec | The test name still said "ends within the default recall_ms" | true | renamed: "ends within the largest recall_ms" |
+| 2 | spec | The factor "sixty" had no source: it mixed setup and removal on a loaded laptop with the setup alone on the idle host | true | the comment gives the measured slowdowns (4 to 6 times for a recall on a loaded laptop, more than 23 times in the gate runs, about 27 times for the setup, marked as an estimate across two machines) and calls the margin a judgement on them |
+| 3 | spec | "Far above the delays that load makes" had no measurement: no loaded recall was timed to its end | true | stated in the comment |
+| 4 | spec and failure path | The first margin, 8,000 ms, made a bound of 10,000 ms, above the largest `recall_ms` that Core accepts, 9,000 (`lib/helyx/core.ex:41-42`, `Helyx.Session.Recall.max_ms/0`): the test passed a recall that every Core setting would cut | read in the code | `@load_ms` is 7,000, so the bound is 9,000 ms, that limit: the wait that must not happen |
+| 5 | spec | "three test suites and Dialyzer": the precommit alias runs the tests and Dialyzer of three projects and Credo (`mix.exs:55-60`) | true | wording fixed |
+
+The failure-path agent reproduced no defect: a recall that hangs fails the match at about 10 s with the 8,000 ms margin, the kill leaves no process (20 kills inside a scan over 1,000 real files), Credo reports nothing, and the full test passed in 97.9 s. No finding was a reproduced defect, so the loop ends after this round; the fixes above are wording and judgement.
