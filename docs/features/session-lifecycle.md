@@ -6,12 +6,29 @@ The Core turn contract: how a session starts, runs, and ends a turn with its pro
 
 ## Owners
 
-- `Helyx.Session.Server.TurnLoop` owns the lifecycle. It matches each input (a client call or a message) to the current activity: `:idle`, a `%Turn{}`, or a `%Wait{}`. A lifecycle message of a turn, a wait, or a provider process that is no longer current is dropped there. Any other message crashes the session. `Helyx.Session.Server` drops a stream event or a tool result of a turn that is not current. A tool request of a turn that is not current gets the answer `aborted`.
+- `Helyx.Session.Server.TurnLoop` owns the lifecycle. It matches each input (a client call or a message) to the current phase: `%Helyx.Session.Server.Flow.Idle{}`, a turn phase (`Preparing`, `Sending`, or `Live`), or `%Helyx.Session.Server.Flow.Waiting{}`. A lifecycle message of a turn, a wait, or a provider process that is no longer current is dropped there. Any other message crashes the session. `Helyx.Session.Server` drops a stream event or a tool result of a turn that is not current. A tool request of a turn that is not current gets the answer `aborted`.
 - `Helyx.Session.Server.Wait` owns the turn end (`Wait.finish/2`) and the wait after it.
 - `Helyx.Session.Server.Records` is the only writer of the transcript and the session file. `Records.finish/2` closes the records of a turn.
 - `Helyx.Session.Server.Steering` is the only writer of the steer state (`Helyx.Session.Queue`).
 - `Helyx.Session.Server.Events` is the only writer of `seq` and the subscribers.
 - The provider process (`Helyx.Session.ProviderProcess`) is a Task of the hands. `init/3`, `request/3`, and `info/2` run only there. Core calls `id/0` when it registers the plugin, and the hands run `release/3` in their own Tasks under the release deadline. The provider process keeps no turn state.
+
+## Phases
+
+`State.phase` is one value, and each phase holds only the provider states it can have
+(`Helyx.Session.Server.Flow`):
+
+| phase | provider | meaning |
+|---|---|---|
+| `Flow.Idle` | gone, connecting, or up | no turn and no wait |
+| `Flow.Preparing` | connecting, up, or `:none` | a turn before its `{:turn, ...}`; the context builds |
+| `Flow.Sending` | up, or `:none` | the send of `{:turn, ...}` or `{:compact, ...}` to its answer |
+| `Flow.Live` | up, or `:none` | the `:ok` answer to the turn end |
+| `Flow.Waiting` | gone, connecting, up, or dying | the wait after a turn |
+
+A turn phase is `Preparing`, `Sending`, or `Live` by the `Turn.phase` it holds
+(`Flow.swap/1`). The `:none` provider in a turn phase is only the one step of
+`TurnLoop.provider_down/3` before the turn ends and the phase becomes `Waiting`.
 
 ## Turn states
 
@@ -50,13 +67,13 @@ Every end of a turn runs one path, `Wait.finish/2`, with an outcome: `{:done, st
 
 ## The wait
 
-`Wait` holds the parts that must end before the next turn: `hands` (the cleanup answer) and `reply` (the answer to an interrupt or an idle close). A provider process that ends also holds the wait: it stays in `State.conn` with `ProviderConn.status` `:ending` until the hands' `provider_down`. A provider start with no answer of the hands yet holds the wait too: a turn that ends in `preparing` ends with an abort or a failure, so its cleanup request goes to the hands after the start, and the hands answer in order. So no idle session has a `conn` with no pid. `TurnLoop` ends the wait when no part is left and no provider process is `:ending`. Then the abort callers get `:ok`, a provider process of another model gets `:close`, and the queue starts the next turn (`Queue.drain/1`): every queued steer together, or with none the first follow-up. Each follow-up is a turn of its own, and each normal turn end starts one more while the queue holds a text. With no queued text, background ends that do not hold open a turn with no user message of its own; they join it at the send.
+`Wait` holds the parts that must end before the next turn: `hands` (the cleanup answer) and `reply` (the answer to an interrupt or an idle close). A provider process that ends also holds the wait: it stays in `State.phase.provider` as `%Helyx.Session.Server.Flow.Dying{}` until the hands' `provider_down`. A provider start with no answer of the hands yet holds the wait too: a turn that ends in `preparing` ends with an abort or a failure, so its cleanup request goes to the hands after the start, and the hands answer in order. So no idle session holds a provider process with no pid. `TurnLoop` ends the wait when no part is left and no provider process is `Dying`. Then the abort callers get `:ok`, a provider process of another model gets `:close`, and the queue starts the next turn (`Queue.drain/1`): every queued steer together, or with none the first follow-up. Each follow-up is a turn of its own, and each normal turn end starts one more while the queue holds a text. With no queued text, background ends that do not hold open a turn with no user message of its own; they join it at the send.
 
 - While the wait lasts, the session starts no turn. A prompt and a follow-up queue as follow-ups, and a steer queues as a steer. So a new turn never runs tools beside a Task of the old turn.
 - An interrupt answer `:ok` keeps the provider process. Any other answer, or its armed kill, stops it, and the wait lasts until its `provider_down`.
 - A failed cleanup gives one `notice` with a fixed text. The abort still replies `:ok`.
 - An abort in a wait gives the queued texts back in a `queue_dropped` event with a nil turn id, as the abort of a turn does, and its caller gets `:ok` at the end of the wait. An abort with no turn and no wait replies `:ok` at once.
-- A resume id of the session's provider process for the turn that the wait ended is recorded as in a turn, with the turn id of that turn (#518). Both bundled providers send it while they handle `{:turn, ...}`, so after an abort it comes before the answer to the interrupt, in the wait. Only the process in `State.conn` with status `:ready` records it: the provider process sends its pid with the event. A resume id at any other time, or of another turn, is dropped. `Transcript.resumable/3` still decides at the next start whether the id is reused.
+- A resume id of the session's provider process for the turn that the wait ended is recorded as in a turn, with the turn id of that turn (#518). Both bundled providers send it while they handle `{:turn, ...}`, so after an abort it comes before the answer to the interrupt, in the wait. Only the process in `State.phase.provider` as `%Helyx.Session.Server.Flow.Up{}` records it: the provider process sends its pid with the event. A resume id at any other time, or of another turn, is dropped. `Transcript.resumable/3` still decides at the next start whether the id is reused.
 
 ## Deadlines
 
@@ -83,10 +100,10 @@ The session gives each sent steer a `steer_id` and keeps it in the ledger of `He
 
 The session monitors its provider process, and the hands send `{:provider_down, pid, reason}` after they release its handles. The two messages have no order between them. `reason` is `:provider_timeout` after an armed kill, the stop reason after an exit with `{:shutdown, reason}`, `{:task_exit, reason}` after any other exit, or `{:error, text}`, with the fixed text of `Helyx.Session.Hands.Release.error/1`, when the release left handles unconfirmed.
 
-- The session holds its provider process in one place, `State.conn`. Its `status` is `:starting` until `{:provider_ready, pid}`, then `:ready`.
-- The start is a request to the hands (`Hands.start_provider/3`), not a call: the hands can be busy with a release, so the session waits for their answer in its loop (#677). Until the answer `{:provider_start, ref, result}`, `conn` has the ref in `start` and no pid; the turn stays `preparing`, and the session takes client calls and an abort. An answer `{:error, text}` fails a turn with `text`; in a wait it only clears `conn`. With `{:ok, pid}`, in the turn or in the wait after it, the session monitors the process and sends it `:start`. So a turn that ends before the answer keeps the process, as one that ends after it does (#726). The process is `:starting` until its `{:provider_ready, pid}`. The next turn of its model takes it; after a model switch it closes (`close_switched/1`). The process waits for `:start` before `init/3`: `{:provider_ready, pid}` comes from the process and the answer from the hands, and two senders have no order. The process of a summary call (`docs/features/summary-compaction.md`) waits for `:start` too, but a call that ended before the answer stops its process at the answer: that process serves only its call.
-- The process is `:ending` until its `provider_down`. Four events make it `:ending`: an answer to an interrupt or an idle close that stops it (`Wait.answered/3`), a stop by the session (`TurnLoop.stop_provider/2`), the `:close` of a model switch (`close_switched/1`), and its `:DOWN` outside a sent turn (`monitor_down/1`). In a sent turn, its `:DOWN` and an error answer to `{:turn, ...}` leave it `:ready`.
-- Only `provider_down` takes the process out of `conn`. An `:ending` process holds the wait (`TurnLoop.progress/1`), and `TurnLoop.connect/1` never reuses it.
+- The session holds its provider process in one place, `State.phase.provider`. It is `%Helyx.Session.Server.Flow.Connecting{}` until `{:provider_ready, pid}`, then `%Helyx.Session.Server.Flow.Up{}`.
+- The start is a request to the hands (`Hands.start_provider/3`), not a call: the hands can be busy with a release, so the session waits for their answer in its loop (#677). Until the answer `{:provider_start, ref, result}`, the `Connecting` provider has the ref in `start` and no pid; the turn stays `preparing`, and the session takes client calls and an abort. An answer `{:error, text}` fails a turn with `text`; in a wait it only clears the provider. With `{:ok, pid}`, in the turn or in the wait after it, the session monitors the process and sends it `:start`. So a turn that ends before the answer keeps the process, as one that ends after it does (#726). The process is `Connecting` until its `{:provider_ready, pid}`. The next turn of its model takes it; after a model switch it closes (`close_switched/1`). The process waits for `:start` before `init/3`: `{:provider_ready, pid}` comes from the process and the answer from the hands, and two senders have no order. The process of a summary call (`docs/features/summary-compaction.md`) waits for `:start` too, but a call that ended before the answer stops its process at the answer: that process serves only its call.
+- The process is `%Helyx.Session.Server.Flow.Dying{}` until its `provider_down`. Four events make it `Dying`: an answer to an interrupt or an idle close that stops it (`Wait.answered/3`), a stop by the session (`TurnLoop.stop_provider/2`), the `:close` of a model switch (`close_switched/1`), and its `:DOWN` outside a sent turn (`monitor_down/1`). In a sent turn, its `:DOWN` and an error answer to `{:turn, ...}` leave it `Up`.
+- Only `provider_down` takes the process out of the phase. A `Dying` process holds the wait (`TurnLoop.progress/1`), and `Connect.run/1` never reuses it.
 - Outside a turn, the `:DOWN` makes the process `:ending` and starts a wait, so the next turn waits for its `provider_down`.
 - In a sent turn (`submitting` or later), the `provider_down` fails the turn with `reason`.
 - In `preparing`, the `:DOWN` holds back `{:turn, ...}`. When the process was started by an earlier turn, its `provider_down` makes the turn connect a new one, once, and the queued steers stay for that turn: `Queue.provider_down/2` settles only the steer ledger. A process that this turn started fails the turn.
