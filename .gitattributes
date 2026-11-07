@@ -1,0 +1,2 @@
+# Rows are only appended; keep the lines of both sides on a merge or a rebase.
+docs/reviews/escapes.md merge=union
