@@ -14,13 +14,21 @@ defmodule CodingAgent.LogFile do
   # primary config that it read at its start, so a change between is lost.
   @hold {__MODULE__, :hold}
 
-  # The rotation threshold of the log file of a TUI run. The handler
-  # writes a whole log record, then rotates when the file is over this
-  # size, so a file can pass it by one record. It keeps one older file.
+  # The rotation threshold of a log file: the sink of the TUI holds at this
+  # size, and the sink of `server.log` starts a new file before a write
+  # would pass it. One path a product writes gets one cap.
   @max_log_bytes 10_485_760
 
   @typedoc "`:ok` when the lines go to the file, or the notice of a run with no file log."
   @type held() :: :ok | {:error, String.t()}
+
+  @doc """
+  The cap of a log file, in bytes, before the sink rotates it: the log of
+  the TUI at this size and the log of `server.log` before a write passes
+  it. Each keeps one older file, `<path>.0`.
+  """
+  @spec max_bytes() :: pos_integer()
+  def max_bytes, do: @max_log_bytes
 
   @doc """
   Runs `fun` with the log held: the file handler `:helyx_tui_log` writes

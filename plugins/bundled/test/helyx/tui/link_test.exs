@@ -11,6 +11,7 @@ defmodule Helyx.TUI.LinkTest do
   alias Helyx.Provider.Fake
   alias Helyx.Session.File.Scan
   alias Helyx.Transport.WebSocket
+  alias Helyx.Transport.WebSocket.Frame
   alias Helyx.TUI
   alias Helyx.TUI.{Link, SessionList, Switch, ViewModel, Wire}
   alias Helyx.TUI.Wire.Connection
@@ -267,6 +268,19 @@ defmodule Helyx.TUI.LinkTest do
     for op <- ["steer", "compact", "set_model"], do: refute_received({:stub, ^op})
   end
 
+  # The wire carries a request in parts, and the server joins them up to
+  # 25 MiB: a request over that bound is refused at the composer, with a
+  # fixed reason, and the text stays there.
+  test "a request over the joined bound of the server keeps the composer text" do
+    session = %Link{conn: self(), id: String.duplicate("s", Frame.max_inbound())}
+
+    assert Link.send_text(session, "hello", false) ==
+             {:reject, "not sent: over 25 MiB of wire text"}
+
+    assert Link.send_text(session, "hello", true) ==
+             {:reject, "not sent: over 25 MiB of wire text"}
+  end
+
   # The acceptance of #821. On this machine the old write in the connection
   # process passed it too; the tests of `Helyx.TUI.Wire.Connection` with a
   # server that does not read while it writes show the reads during a write.
@@ -283,12 +297,16 @@ defmodule Helyx.TUI.LinkTest do
     refute_received {:DOWN, ^ref, :process, ^conn, _reason}
   end
 
-  # The worst JSON form of the bound, 4 MiB of control characters, is about
-  # 24 MiB of JSON for each event of its turn. A client that reads them late
-  # passes the outbound queue of the server, 64 MiB, which closes it with
-  # 4408 (an accepted hole of tui-attach.md). The client gives the owner
-  # 4408, or nil when a write of the client, such as a pong, fails at the
-  # close: gen_tcp then drops the close frame that waits to be read.
+  # Three bounds, not one. The text bound of Core is 4 MiB, and the request
+  # goes to the server in parts that fit the 25 MiB it joins. The events of
+  # the turn carry the text again: message_start and message_end of the
+  # user message (about 24 MiB of JSON each), then message_update with the
+  # echo delta (about 24 MiB), then the assistant message_end (about 24
+  # MiB). A client that reads them late leaves the first three in the 64
+  # MiB outbound queue (about 72 MiB), so the assistant message_end is the
+  # add that finds the queue over its bound and the server closes with
+  # 4408. The composer does not reject the legal text for that; the queue
+  # is the last bound, not the input rule.
   @tag :slow
   test "the worst JSON form at the bound and a slow client: the server closes it with 4408", c do
     {:ok, socket, ws} = Wire.connect({127, 0, 0, 1}, c.port, fn -> "token" end, wait_ms())

@@ -108,27 +108,75 @@ defmodule CodingAgent.Attach do
 
   # perl forks the server and exits at once; the child leaves the session
   # of the terminal (`setsid`), so it is in a new process group too, and
-  # execs the launcher. An error of the child goes to the log. The open
-  # does not wait, as the lock does not: a FIFO at the path of the log
-  # fails it, or the check of a regular file.
+  # execs the launcher. The open does not wait, as the lock does not: a
+  # FIFO at the path of the log fails it, or the check of a regular file.
+  # A second child is the one sink of the log: the server writes to a
+  # pipe, and the sink appends to `server.log`, starts a new file before a
+  # write would pass the cap of `CodingAgent.LogFile.max_bytes/0`, and
+  # keeps one older file as `server.log.0`. Its stdout and stderr go to
+  # `/dev/null`, so the port of the caller closes with its own process.
   @spawn ~S"""
   use POSIX ();
-  use Fcntl;
-  my ($launcher, $log) = @ARGV;
-  sysopen(my $out, $log, O_WRONLY | O_APPEND | O_CREAT | O_NONBLOCK, 0600) or die "$log: $!\n";
-  -f $out or die "$log: not a regular file\n";
+  use Fcntl qw(O_WRONLY O_APPEND O_CREAT O_NONBLOCK);
+  my ($launcher, $log, $cap) = @ARGV;
+  $cap = int($cap);
+  sysopen(my $check, $log, O_WRONLY | O_APPEND | O_CREAT | O_NONBLOCK, 0600) or die "$log: $!\n";
+  -f $check or die "$log: not a regular file\n";
+  close($check);
+  pipe(my $read, my $write) or die "helyx: pipe: $!\n";
+  my $drain = fork // die "fork: $!\n";
+  if (!$drain) {
+    close($write);
+    POSIX::setsid();
+    open(STDOUT, ">", "/dev/null") or exit 1;
+    open(STDERR, ">&", STDOUT) or exit 1;
+    sysopen(my $out, $log, O_WRONLY | O_APPEND | O_CREAT, 0600) or exit 1;
+    my $size = -s $log;
+    my $rotate = sub {
+      close($out);
+      rename($log, "$log.0");
+      sysopen($out, $log, O_WRONLY | O_APPEND | O_CREAT, 0600) or exit 1;
+      $size = 0;
+    };
+    $rotate->() if $size >= $cap;
+    my $buf;
+    while (my $n = sysread($read, $buf, 65536)) {
+      my $off = 0;
+      while ($off < $n) {
+        my $nl = index($buf, "\n", $off);
+        my $end = $nl < 0 ? $n : $nl + 1;
+        my $piece = substr($buf, $off, $end - $off);
+        $off = $end;
+        while (length $piece) {
+          $rotate->() if $size >= $cap;
+          my $room = $cap - $size;
+          my $part = length($piece) > $room ? substr($piece, 0, $room) : $piece;
+          syswrite($out, $part);
+          $size += length($part);
+          $piece = substr($piece, length($part));
+        }
+      }
+    }
+    close($out);
+    exit 0;
+  }
+  close($read);
   my $pid = fork // die "fork: $!\n";
   exit 0 if $pid;
   POSIX::setsid();
-  open(STDIN, "<", "/dev/null") && open(STDOUT, ">&", $out) && open(STDERR, ">&", $out)
+  open(STDIN, "<", "/dev/null") && open(STDOUT, ">&", $write) && open(STDERR, ">&", $write)
     or die "helyx: $!\n";
+  close($write);
   exec { $launcher } $launcher, "serve" or die "helyx: $launcher: $!\n";
   """
 
   # `CodingAgent.CLI` starts a server only with perl on the PATH. `--`
   # keeps a launcher path that starts with `-` an argument.
   defp spawn_server(launcher, log) do
-    case System.cmd("perl", ["-e", @spawn, "--", launcher, log], stderr_to_stdout: true) do
+    cap = Integer.to_string(CodingAgent.LogFile.max_bytes())
+    args = ["-e", @spawn, "--", launcher, log, cap]
+
+    case System.cmd("perl", args, stderr_to_stdout: true) do
       {_out, 0} -> :ok
       {out, _status} -> {:error, "could not start a server: " <> last_line(out)}
     end

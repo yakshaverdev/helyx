@@ -10,7 +10,7 @@ defmodule CodingAgent.AttachTest do
   import Helyx.Test.WireClient,
     only: [fake_challenge: 1, fake_server: 1, fake_upgrade: 1, server_frame: 3, client_frame: 1]
 
-  alias CodingAgent.{Attach, CLI, Serve}
+  alias CodingAgent.{Attach, CLI, LogFile, Serve}
   alias Helyx.Session.Lock
   alias Helyx.Test.WireClient
   alias Helyx.Transport.WebSocket
@@ -233,8 +233,42 @@ defmodule CodingAgent.AttachTest do
     assert File.read!(Path.join(dir, "args")) == "serve\n"
     assert [pid, pid] = dir |> Path.join("group") |> File.read!() |> String.split()
     assert File.read!(Path.join(dir, "stdin")) == ""
-    assert File.read!(Path.join(sessions, "server.log")) == "launcher output\n"
+
+    wait_until(fn ->
+      File.read(Path.join(sessions, "server.log")) == {:ok, "launcher output\n"}
+    end)
+
     assert (File.stat!(sessions).mode &&& 0o777) == 0o700
+  end
+
+  # The sink of `server.log` is one writer for the whole output of the
+  # server: it starts a new file before a write would pass the cap, and
+  # keeps one older file (#808: a server that ran long filled the disk).
+  @tag :slow
+  test "server.log rotates before its cap and keeps one older file",
+       %{tmp_dir: dir, sessions: sessions} do
+    cap = LogFile.max_bytes()
+    path = Path.join(dir, "launcher")
+
+    File.write!(path, """
+    #!/bin/sh
+    yes 'a line of the log of the server' | head -c #{cap + 1_000_000}
+    echo tail
+    : > '#{dir}/ready'
+    """)
+
+    File.chmod!(path, 0o755)
+    spawn_link(fn -> serve_when_ready(dir, "fake/echo") end)
+
+    assert {:ok, _socket, _ws} = Attach.start(sessions, path)
+
+    live = Path.join(sessions, "server.log")
+    older = live <> ".0"
+    wait_until(fn -> File.exists?(older) and File.stat!(older).size == cap end)
+
+    assert File.stat!(older).size == cap
+    assert File.stat!(live).size <= cap
+    assert File.read!(live) =~ "tail\n"
   end
 
   # The TUI needs a terminal, so the run ends at the model of the server,

@@ -9,6 +9,7 @@ defmodule Helyx.TUI.Link do
   # TUI (decision 8). The TUI uses only the wire (decision 12).
 
   alias Helyx.Session.File.Scan
+  alias Helyx.Transport.WebSocket.Frame
   alias Helyx.TUI.Wire.Connection
 
   @enforce_keys [:conn, :id]
@@ -16,10 +17,16 @@ defmodule Helyx.TUI.Link do
 
   @type t :: %__MODULE__{conn: pid(), id: String.t()}
 
-  # A frame over the bound of the server closes the connection (4413), so
-  # a text over the bound of Core gets the answer of Core here: 4 MiB of
-  # text is at most 24 MiB of JSON, under the 25 MiB of a frame of parts.
+  # Three bounds, three layers. The text bound of Core is 4 MiB of source
+  # bytes. The wire carries a request of any size in one text frame or in
+  # parts (`Helyx.Transport.WebSocket.Frame.encode/1`), and the server joins
+  # the parts up to 25 MiB: the worst JSON form of a legal text, 4 MiB of
+  # `\u0001`, is about 24 MiB (25,165,901 bytes), so it fits. The outbound
+  # queue of the server is 64 MiB, and a client that reads the events of
+  # such a turn late can pass it and get 4408; that is not a reason to
+  # reject the text at the composer.
   @max_text_bytes Helyx.Session.max_text_bytes()
+  @max_inbound Frame.max_inbound()
 
   # The errors of a request of the wire that no call of Core gives.
   defguard wire_error?(reason) when reason in [:timeout, :busy, :closed, :failed]
@@ -66,6 +73,7 @@ defmodule Helyx.TUI.Link do
     result =
       cond do
         byte_size(text) > @max_text_bytes -> {:error, :text_too_large}
+        not fits_wire?(session, text) -> {:error, :wire_too_large}
         follow_up? -> Connection.follow_up(session.conn, session.id, text)
         true -> Connection.steer(session.conn, session.id, text)
       end
@@ -73,11 +81,28 @@ defmodule Helyx.TUI.Link do
     with {:error, reason} <- result, do: {:reject, not_sent(reason)}
   end
 
+  # The request as the writer encodes it, joined from its parts, under the
+  # inbound bound of the server. The id of the request is a placeholder
+  # with more digits than the connection uses: a request at the edge is
+  # refused a few bytes early, never late.
+  defp fits_wire?(%__MODULE__{id: id}, text) do
+    frame = %{
+      "type" => "req",
+      "id" => "999999",
+      "op" => "follow_up",
+      "params" => %{"session" => id, "text" => text}
+    }
+
+    IO.iodata_length(JSON.encode_to_iodata!(frame)) <= @max_inbound
+  end
+
   # ExRatatui gives event text as a Rust `String`, so the composer holds
   # only valid UTF-8 and the session never answers `:invalid_utf8`.
   defp not_sent(:queue_full), do: "not sent: the queue is full"
-  # A paste has no size bound of its own (`Helyx.Session.max_text_bytes/0`).
+  # A paste has no bound of its own: `Helyx.Session.max_text_bytes/0` is
+  # the text bound of Core, and the joined request is the wire bound.
   defp not_sent(:text_too_large), do: "not sent: over 4 MiB"
+  defp not_sent(:wire_too_large), do: "not sent: over 25 MiB of wire text"
   # The end signal of the session ends the TUI next.
   defp not_sent(:session_not_found), do: "not sent: the session ended"
   defp not_sent(reason) when wire_error?(reason), do: error_text(reason)
