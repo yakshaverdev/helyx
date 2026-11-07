@@ -1,7 +1,7 @@
 defmodule Helyx.HookTest do
   # The check of the hook plugins at Core start (docs/features/hooks.md,
-  # "Core start"). Not async: `Helyx.Test.Hook.Limit` reads its limit from
-  # one persistent term.
+  # "Core start", docs/features/before-settle.md). Not async:
+  # `Helyx.Test.Hook.Limit` reads its limit from one persistent term.
   use ExUnit.Case, async: false
 
   alias Helyx.Test.Hook
@@ -71,5 +71,54 @@ defmodule Helyx.HookTest do
     for ms <- [0, 600_001, -1, 1.0] do
       assert start_with_limit(ms) == {:error, {:invalid_hook_limit, Hook.Limit}}
     end
+  end
+
+  test "a before_settle limit from 1 to 600,000 ms starts, one past either end stops" do
+    for ms <- [1, 600_000] do
+      :persistent_term.put({Hook.Limit, :ms}, ms)
+      assert {:ok, pid} = start([Helyx.Test.Provider, Hook.SettleLimit])
+      {:registered_name, core} = Process.info(pid, :registered_name)
+      assert Helyx.Core.hooks(core) == %{before_settle: [{Hook.SettleLimit, ms}]}
+      Supervisor.stop(pid)
+    end
+
+    for ms <- [0, 600_001] do
+      :persistent_term.put({Hook.Limit, :ms}, ms)
+
+      assert start([Helyx.Test.Provider, Hook.SettleLimit]) ==
+               {:error, {:invalid_hook_limit, Hook.SettleLimit}}
+    end
+  end
+
+  # A hook module named `name`, on `point`.
+  defp hook_named(name, point) do
+    module = String.to_atom(name)
+
+    body =
+      quote do
+        @behaviour Helyx.Hook
+        def limit(_point), do: 1_000
+        def unquote(point)(_input), do: :settle
+      end
+
+    Module.create(module, body, Macro.Env.location(__ENV__))
+    module
+  end
+
+  test "a before_settle hook whose name is over 256 bytes stops the start" do
+    # Two-byte characters make the name, as `inspect/1` writes it, 256 and
+    # 257 bytes.
+    at = hook_named("Elixir.Helyx.Test.Hook.NN" <> String.duplicate("é", 114), :before_settle)
+    over = hook_named("Elixir.Helyx.Test.Hook.NNa" <> String.duplicate("é", 114), :before_settle)
+    tool = hook_named("Elixir.Helyx.Test.Hook.NNb" <> String.duplicate("é", 114), :before_tool)
+    assert {byte_size(inspect(at)), byte_size(inspect(over))} == {256, 257}
+
+    assert {:ok, pid} = start([Helyx.Test.Provider, at])
+    Supervisor.stop(pid)
+    assert start([Helyx.Test.Provider, over]) == {:error, {:invalid_hook_name, over}}
+
+    # The name is an origin id only on `before_settle`.
+    assert {:ok, pid} = start([Helyx.Test.Provider, tool])
+    Supervisor.stop(pid)
   end
 end

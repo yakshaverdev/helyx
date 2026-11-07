@@ -7,6 +7,8 @@ defmodule Helyx.Session.Hands.Chain do
   # to the hands, which answer after the release of the hook's handles.
   # The chain state is in the process dictionary of the call Task, so
   # `Helyx.Tool.started/1` runs the `after_tool` hooks on a start answer.
+  # The `before_settle` chain runs the same way from a chain Task of its
+  # own (`settle/2`, docs/features/before-settle.md).
 
   alias Helyx.Message.ToolCall
   alias Helyx.Session.Hands.Run
@@ -15,8 +17,9 @@ defmodule Helyx.Session.Hands.Chain do
   # `hooks` is `%{point => [{module, limit_ms}]}`. Returns the result for
   # the hands to deliver.
   @spec run(module(), ToolCall.t(), String.t(), String.t(), map()) :: {:ok | :error, String.t()}
-  def run(tool, %ToolCall{} = call, cwd, _turn_id, hooks) when hooks == %{},
-    do: Run.tool(tool, call, cwd)
+  def run(tool, %ToolCall{} = call, cwd, _turn_id, hooks)
+      when not is_map_key(hooks, :before_tool) and not is_map_key(hooks, :after_tool),
+      do: Run.tool(tool, call, cwd)
 
   def run(tool, %ToolCall{} = call, cwd, turn_id, hooks) do
     input = %{
@@ -87,6 +90,20 @@ defmodule Helyx.Session.Hands.Chain do
       {:answer, :keep} -> after_each(rest, input, record, result)
       {:answer, {:replace, replaced}} -> after_each(rest, input, nil, replaced)
       {:failed, _how} -> after_each(rest, input, nil, result)
+    end
+  end
+
+  # The `before_settle` hooks in plugin order, from the chain Task
+  # (`Helyx.Session.Hands.Settle`): the first continue ends the chain; a
+  # settle and a failed hook go on.
+  @spec settle([{module(), pos_integer()}], Helyx.Hook.settle()) ::
+          :settle | {:continue, module(), String.t()}
+  def settle([], _input), do: :settle
+
+  def settle([{module, ms} | rest], input) do
+    case step(module, ms, :before_settle, input, nil) do
+      {:answer, {:continue, text}} -> {:continue, module, text}
+      _settle_or_failed -> settle(rest, input)
     end
   end
 

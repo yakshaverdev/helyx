@@ -30,8 +30,10 @@ defmodule Helyx.Core do
   not a boolean (`docs/features/output-limit.md`). It calls `limit/1` of
   each hook plugin once for each point that the plugin exports, and
   refuses to start with `{:no_hook_point, plugin}` when a hook plugin
-  exports no point, and with `{:invalid_hook_limit, plugin}` when a limit
-  is not an integer from 1 to 600,000 (`docs/features/hooks.md`). A plugin callback that
+  exports no point, with `{:invalid_hook_limit, plugin}` when a limit
+  is not an integer from 1 to 600,000 (`docs/features/hooks.md`), and with
+  `{:invalid_hook_name, plugin}` when a plugin on `before_settle` has a
+  name over 256 bytes (`docs/features/before-settle.md`). A plugin callback that
   raises, throws, or exits at start is not contained: the error goes to the
   caller.
 

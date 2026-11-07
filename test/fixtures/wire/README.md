@@ -1,6 +1,6 @@
 # Wire conformance fixtures
 
-Fixtures of the wire protocol 3 (`docs/features/wire-protocol.md`) as plain JSON, for a client or a server in any language. They describe protocol 3 as it is. Each file names its `protocol`; a protocol change fails the Elixir tests until the fixtures follow it.
+Fixtures of the wire protocol 4 (`docs/features/wire-protocol.md`) as plain JSON, for a client or a server in any language. They describe protocol 4 as it is. Each file names its `protocol`; a protocol change fails the Elixir tests until the fixtures follow it.
 
 The Elixir code runs every case: `plugins/bundled/test/helyx/transport/web_socket_fixtures_test.exs` runs `client_frames.json` against the server, and `plugins/bundled/test/helyx/tui/wire_fixtures_test.exs` runs `server_frames.json` against the client of the TUI and `folds.json` against its view model. The runners are in the bundled project and read this folder by its path in the repository.
 

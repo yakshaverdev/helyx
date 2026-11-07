@@ -279,6 +279,7 @@ defmodule Helyx.TUI.Wire.Decode do
   defp origin_kind!("user"), do: :user
   defp origin_kind!("background"), do: :background
   defp origin_kind!("product"), do: :product
+  defp origin_kind!("hook"), do: :hook
 
   defp block!(%{"type" => "text", "text" => text}, role)
        when is_binary(text) and (role != :tool_result or byte_size(text) <= @max_result_bytes),

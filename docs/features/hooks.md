@@ -1,6 +1,6 @@
 # Hooks: the interface and the tool chain
 
-Ticket #879, follow-up 1 of ADR 0013 (`docs/adr/0013-hooks.md`). The ADR holds the decisions and their reasons; this doc states the shape that the build adds for `before_tool` and `after_tool`. `before_settle` and the continue turn (#880), harness approvals (#881), the approval gate (#882), and the command hook (#883) are later tickets.
+Ticket #879, follow-up 1 of ADR 0013 (`docs/adr/0013-hooks.md`). The ADR holds the decisions and their reasons; this doc states the shape that the build adds for `before_tool` and `after_tool`. `before_settle` and the continue turn (#880, `docs/features/before-settle.md`), harness approvals (#881), the approval gate (#882), and the command hook (#883) are later tickets.
 
 ## Goal
 

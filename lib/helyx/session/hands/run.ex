@@ -53,6 +53,13 @@ defmodule Helyx.Session.Hands.Run do
   defp answer?(:after_tool, {:replace, {status, text}}) when status in [:ok, :error],
     do: text?(text)
 
+  # The text of a continue is a user message: the bound of a client text,
+  # checked before its UTF-8.
+  defp answer?(:before_settle, :settle), do: true
+
+  defp answer?(:before_settle, {:continue, text}) when is_binary(text),
+    do: Helyx.Session.Input.text(text) == :ok
+
   defp answer?(_point, _answer), do: false
 
   defp text?(value), do: is_binary(value) and String.valid?(value)

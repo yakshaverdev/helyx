@@ -3,10 +3,13 @@ defmodule Helyx.Test.Hook do
   # Test hook plugins (docs/features/hooks.md). Each one runs the function
   # that a test set for its point and its Core (`script/3`), with the call
   # input, and sends `{:hook, module, point, input}` to the process
-  # registered as `<core>.Test` first. A point with no function allows or
-  # keeps. `release/3` sends `{:released, module, handles, mode}` to the
-  # pid of each handle `{pid, tag}`, and confirms every handle whose tag
-  # is not `:stuck`.
+  # registered as `<core>.Test` first. A point with no function allows,
+  # keeps, or settles. `release/3` sends `{:released, module, handles,
+  # mode}` to the pid of each handle `{pid, tag}`, and confirms every
+  # handle whose tag is not `:stuck`. The option `points:` gives the
+  # points of the hook, `before_tool` and `after_tool` by default.
+
+  @defaults %{before_tool: :allow, after_tool: :keep, before_settle: :settle}
 
   # Sets `fun` for `module` at `point` in the Core `core`.
   def script(core, module, point, fun), do: :persistent_term.put({module, core, point}, fun)
@@ -16,17 +19,24 @@ defmodule Helyx.Test.Hook do
   defmacro __using__(opts) do
     limit = Keyword.get(opts, :limit, 2_000)
 
+    points =
+      for point <- Keyword.get(opts, :points, [:before_tool, :after_tool]) do
+        default = Map.fetch!(@defaults, point)
+
+        quote do
+          @impl true
+          def unquote(point)(input),
+            do: Helyx.Test.Hook.run(__MODULE__, unquote(point), input, unquote(default))
+        end
+      end
+
     quote do
       @behaviour Helyx.Hook
 
       @impl true
       def limit(_point), do: unquote(limit)
 
-      @impl true
-      def before_tool(input), do: Helyx.Test.Hook.run(__MODULE__, :before_tool, input, :allow)
-
-      @impl true
-      def after_tool(input), do: Helyx.Test.Hook.run(__MODULE__, :after_tool, input, :keep)
+      unquote_splicing(points)
 
       # A handle is `{test_pid, tag}`: the release runs in a Task of its
       # own, with no call context.
@@ -205,4 +215,32 @@ defmodule Helyx.Test.Tool.GateWait do
     send(String.to_existing_atom(gate), {:call, self()})
     receive do: (:go -> {:ok, "waited"})
   end
+end
+
+defmodule Helyx.Test.Hook.SettleA do
+  @moduledoc false
+  # A hook on `before_settle` only (docs/features/before-settle.md).
+  use Helyx.Test.Hook, points: [:before_settle]
+end
+
+defmodule Helyx.Test.Hook.SettleB do
+  @moduledoc false
+  use Helyx.Test.Hook, points: [:before_settle]
+end
+
+defmodule Helyx.Test.Hook.SettleShort do
+  @moduledoc false
+  # A `before_settle` hook with a limit of 100 ms.
+  use Helyx.Test.Hook, points: [:before_settle], limit: 100
+end
+
+defmodule Helyx.Test.Hook.SettleLimit do
+  @moduledoc false
+  # A `before_settle` hook whose limit is the value in the persistent term
+  # `{Helyx.Test.Hook.Limit, :ms}`, read at Core start.
+  @behaviour Helyx.Hook
+  @impl true
+  def limit(_point), do: :persistent_term.get({Helyx.Test.Hook.Limit, :ms})
+  @impl true
+  def before_settle(_input), do: :settle
 end

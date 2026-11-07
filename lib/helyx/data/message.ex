@@ -9,7 +9,8 @@ defmodule Helyx.Message do
   and flags a failed call with `is_error`.
 
   Core sets `id` on every message that joins a session, and `origin` on
-  every user message: `%{kind: :user | :background | :product, id: id}`,
+  every user message: `%{kind: :user | :background | :product | :hook, id:
+  id}`,
   or `:unknown` for a user message of a session file from before #649
   (`docs/features/message-identity.md`). A message that a provider builds
   for its own wire has neither.
@@ -59,7 +60,10 @@ defmodule Helyx.Message do
   @type block :: Text.t() | Thinking.t() | ToolCall.t()
   @type role :: :user | :assistant | :tool_result
   @typedoc "Who made a user message (`origin?/1`)."
-  @type origin :: %{kind: :user | :background | :product | :unknown, id: String.t() | nil}
+  @type origin :: %{
+          kind: :user | :background | :product | :hook | :unknown,
+          id: String.t() | nil
+        }
   @typedoc "A stream event that `add_block/2` adds to assistant content."
   @type block_event ::
           {:text_delta, String.t()} | {:thinking_delta, String.t()} | {:tool_call, ToolCall.t()}
@@ -142,18 +146,25 @@ defmodule Helyx.Message do
 
   @doc """
   Whether `origin` is a valid origin of a new user message: `:user` with a
-  nil id, or `:background` or `:product` with an id of valid UTF-8 of 1 to
-  #{@origin_id_max_bytes} bytes. The session API admits only `:product`
+  nil id, or `:background`, `:product`, or `:hook` with an id of valid
+  UTF-8 of 1 to #{@origin_id_max_bytes} bytes. The session API admits only `:product`
   from product code; the session file reader checks a stored origin with it.
   """
   @spec origin?(term()) :: boolean()
   def origin?(%{kind: :user, id: nil} = origin) when map_size(origin) == 2, do: true
 
   def origin?(%{kind: kind, id: id} = origin)
-      when kind in [:background, :product] and map_size(origin) == 2,
+      when kind in [:background, :product, :hook] and map_size(origin) == 2,
       do: text_id?(id, @origin_id_max_bytes)
 
   def origin?(_origin), do: false
+
+  @doc """
+  The origin of the continue message of the hook plugin `module`: the kind
+  `:hook` with the name of the module (`docs/features/before-settle.md`).
+  """
+  @spec hook_origin(module()) :: origin()
+  def hook_origin(module), do: %{kind: :hook, id: inspect(module)}
 
   defp text_id?(id, max), do: is_binary(id) and byte_size(id) in 1..max and String.valid?(id)
 

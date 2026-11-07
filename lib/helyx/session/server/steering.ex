@@ -123,6 +123,11 @@ defmodule Helyx.Session.Server.Steering do
 
   def abort(state), do: put(state, Queue.abort(state.queue))
 
+  # A hook's continue, and the count of a turn start
+  # (docs/features/before-settle.md).
+  def continue(state, message), do: put(state, {Queue.continue(state.queue, message), []})
+  def count(state, users), do: put(state, {Queue.count(state.queue, users), []})
+
   def end_turn(state, turn_id, normal?),
     do: put(state, Queue.end_turn(state.queue, turn_id, normal?))
 

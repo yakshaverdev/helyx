@@ -1,28 +1,28 @@
 {
-  "protocol": 3,
+  "protocol": 4,
   "handshake": [
     {"name": "challenge, then welcome",
      "frames": [{"type": "challenge", "nonce": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="},
-                {"type": "welcome", "protocol": 3}],
+                {"type": "welcome", "protocol": 4}],
      "expect": "welcome"},
     {"name": "challenge: a nonce of 16 bytes",
      "frames": [{"type": "challenge", "nonce": "AAAAAAAAAAAAAAAAAAAAAA=="},
-                {"type": "welcome", "protocol": 3}],
+                {"type": "welcome", "protocol": 4}],
      "expect": "broken"},
     {"name": "welcome before the challenge",
-     "frames": [{"type": "welcome", "protocol": 3}],
+     "frames": [{"type": "welcome", "protocol": 4}],
      "expect": "broken"},
     {"name": "welcome: another protocol",
      "frames": [{"type": "challenge", "nonce": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="},
-                {"type": "welcome", "protocol": 2}],
+                {"type": "welcome", "protocol": 3}],
      "expect": "broken"},
     {"name": "refused",
      "frames": [{"type": "challenge", "nonce": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="},
-                {"type": "refused", "code": "protocol", "server_protocol": 4}],
-     "expect": {"refused": 4}},
+                {"type": "refused", "code": "protocol", "server_protocol": 5}],
+     "expect": {"refused": 5}},
     {"name": "refused: a server_protocol that is a string",
      "frames": [{"type": "challenge", "nonce": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="},
-                {"type": "refused", "code": "protocol", "server_protocol": "4"}],
+                {"type": "refused", "code": "protocol", "server_protocol": "5"}],
      "expect": "broken"}
   ],
   "res": [
@@ -100,6 +100,12 @@
      "frame": {"type": "event", "sub": "0", "event": {"type": "message_end", "session_id": "s1", "instance_id": "i1", "turn_id": "t1", "seq": 1, "data": {
        "message": {"id": "a1", "role": "assistant", "content": [{"type": "text", "text": "he"}], "stop_reason": "error"},
        "error": {"kind": "failed", "text": "aborted"}}}}},
+    {"name": "message_end of a user message of a hook", "expect": "valid",
+     "frame": {"type": "event", "sub": "0", "event": {"type": "message_end", "session_id": "s1", "instance_id": "i1", "turn_id": "t2", "seq": 1, "data": {
+       "message": {"id": "u2", "role": "user", "content": [{"type": "text", "text": "the tests fail"}], "origin": {"kind": "hook", "id": "Acme.Hook.Check"}}}}}},
+    {"name": "message_end: a user message of a hook with no id", "expect": "broken",
+     "frame": {"type": "event", "sub": "0", "event": {"type": "message_end", "session_id": "s1", "instance_id": "i1", "turn_id": "t2", "seq": 1, "data": {
+       "message": {"id": "u2", "role": "user", "content": [{"type": "text", "text": "the tests fail"}], "origin": {"kind": "hook", "id": null}}}}}},
     {"name": "message_end: a failed error with no text", "expect": "broken",
      "frame": {"type": "event", "sub": "0", "event": {"type": "message_end", "session_id": "s1", "instance_id": "i1", "turn_id": "t1", "seq": 1, "data": {
        "message": {"id": "a1", "role": "assistant", "content": [{"type": "text", "text": "he"}]},
