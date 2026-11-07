@@ -42,6 +42,14 @@ defmodule Helyx.Tool do
   only reads, for example. A call of any other tool runs alone. At most 8
   calls run at once in a turn (`docs/features/concurrent-tool-calls.md`).
 
+  A tool source exports `source/1` in place of `name/0`, `description/0`,
+  and `parameters/0`: its source process puts the tools that it learns at
+  run time (`announce/1`, `put_tools/2`, `launch/1`), and its `run/2` runs
+  each of them. The source process traps exits: it ends at an `{:EXIT, pid,
+  reason}` of a pid that is no server Task of its own, and Core kills it
+  when its hands end. Core refuses any other plugin at its start with
+  `{:invalid_tool_plugin, module}` (`docs/features/mcp-client.md`).
+
   A call can go on in the background: the tool takes a place with
   `background/0` before the external work starts, gives its start answer
   with `started/1`, and keeps running. Its return value is then the end of
@@ -61,14 +69,12 @@ defmodule Helyx.Tool do
               {:ok | :error, String.t()} | {:ok | :error, String.t(), [Helyx.UIBlock.t()]}
   @callback check() :: :ok | {:error, String.t()}
   @callback concurrent?() :: boolean()
-  @callback release(
-              handles :: [term()],
-              mode :: :deliver | :cancel,
-              deadline :: integer()
-            ) ::
+  @callback release(handles :: [term()], mode :: :deliver | :cancel, deadline :: integer()) ::
               [term()]
+  @callback source(%{core: Helyx.Core.name(), session_id: String.t(), cwd: String.t()}) :: term()
 
-  @optional_callbacks check: 0, concurrent?: 0, release: 3
+  @optional_callbacks name: 0, description: 0, parameters: 0, source: 1, check: 0
+  @optional_callbacks concurrent?: 0, release: 3
 
   @doc """
   Builds the spec of each registered tool plugin, checks it, and returns
@@ -90,7 +96,7 @@ defmodule Helyx.Tool do
           | {:error, {:bad_tool_spec, String.t()} | {:duplicate_tool_name, String.t()}}
   def specs(core, only \\ nil) do
     result =
-      Enum.reduce_while(Helyx.Core.plugins(core, __MODULE__), {:ok, []}, fn tool, {:ok, acc} ->
+      Enum.reduce_while(fixed(core), {:ok, []}, fn tool, {:ok, acc} ->
         case checked_spec(tool) do
           {:ok, spec} -> {:cont, {:ok, [{tool, spec} | acc]}}
           error -> {:halt, error}
@@ -101,6 +107,12 @@ defmodule Helyx.Tool do
          :ok <- check_unique(tools),
          do: {:ok, Enum.sort_by(keep(tools, only), fn {_tool, spec} -> spec.name end)}
   end
+
+  defp fixed(core), do: Enum.reject(Helyx.Core.plugins(core, __MODULE__), &source?/1)
+
+  @doc false
+  # Whether `plugin` is a tool source (`source/1`).
+  def source?(plugin), do: function_exported?(plugin, :source, 1)
 
   defp keep(tools, nil), do: tools
   defp keep(tools, only), do: Enum.filter(tools, fn {_tool, spec} -> spec.name in only end)
@@ -188,7 +200,8 @@ defmodule Helyx.Tool do
   # more (docs/features/mcp-client.md, decision 8).
   @name_pattern ~r/\A[A-Za-z0-9_-]{1,52}\z/
 
-  defp name?(value), do: is_binary(value) and Regex.match?(@name_pattern, value)
+  @doc false
+  def name?(value), do: is_binary(value) and Regex.match?(@name_pattern, value)
 
   defp parameters?(value) when is_map(value),
     do: Enum.all?(Map.keys(value), &is_binary/1) and Helyx.Message.encoded_size(value) != :error
@@ -240,7 +253,8 @@ defmodule Helyx.Tool do
   the tool names of the session, the name of the called tool, its call id,
   the model ref of its turn, as `provider/model`, the `:provider_opts`
   of the session (`Helyx.Session.start/2`), and its ModelContext plugin,
-  nil with none (`docs/features/session-model-context.md`). The hands set
+  nil with none (`docs/features/session-model-context.md`), and `source`,
+  the pid of the source process of a source tool, else nil. The hands set
   it when the call's Task starts, so it needs no call to them. A hook Task
   has the context of its call; a `before_settle` hook has no call, and
   its `tool` and `call_id` are nil (`docs/features/before-settle.md`).
@@ -254,7 +268,8 @@ defmodule Helyx.Tool do
           call_id: String.t() | nil,
           model: String.t(),
           provider_opts: keyword(),
-          model_context: module() | nil
+          model_context: module() | nil,
+          source: pid() | nil
         }
   def context do
     case Process.get(:helyx_call) do
@@ -381,4 +396,55 @@ defmodule Helyx.Tool do
       :no_place -> raise ArgumentError, "started/1 needs a place from background/0"
     end
   end
+
+  @doc """
+  Starts `fun` in a server Task of the hands, from a source process, and
+  returns a ref at once. The hands answer `{ref, {:ok, pid}}`, or `{ref,
+  {:error, :unconfirmed | :too_many_tasks}}` (16 server Tasks per source).
+  The Task links to its source before `fun` runs and does not trap exits;
+  its `hold/1` handles go to the plugin's `release/3` when it ends, and
+  then the source gets `{ref, :released, :ok | :unconfirmed}`. Exits
+  outside a source process (`docs/features/mcp-client.md`).
+  """
+  @spec launch((-> term())) :: reference()
+  def launch(fun) when is_function(fun, 0) do
+    source!()
+    ref = make_ref()
+    GenServer.cast(Process.get(:helyx_hands), {:source, {:launch, ref, self(), fun}})
+    ref
+  end
+
+  @doc """
+  Names every group of the calling source once, before `put_tools/2`: a
+  list of distinct strings of 1 to 64 bytes of UTF-8, each `:starting`.
+  Past 64 groups in the session the first by name order stay, and a notice
+  names the rest. A second call, a bad list, and a call outside a source
+  process exit the caller.
+  """
+  @spec announce([String.t()]) :: :ok
+  def announce(groups), do: source_call({:announce, groups})
+
+  @doc """
+  Puts a group that the source announced: `:starting`, `{:ok, entries}`,
+  or `{:error, text}`. Each replaces the group's entries; `:starting` and
+  an error leave none. An entry is `%{name:, description:, parameters:,
+  exposure: :direct}`; the session rejects one entry that breaks a bound
+  with a notice, keeps the rest, and rejects a group whole when the
+  session would hold more than 1,024 source entries. The bounds are in
+  `docs/features/mcp-client.md`, "Bounds". Any other value, a group that
+  was not kept, and a call outside a source process exit the caller.
+  """
+  @spec put_tools(String.t(), :starting | {:ok, [map()]} | {:error, String.t()}) :: :ok
+  def put_tools(group, value), do: source_call({:put_tools, group, value})
+
+  defp source_call(request) do
+    source!()
+
+    case GenServer.call(Process.get(:helyx_session), request, :infinity) do
+      :ok -> :ok
+      :error -> exit({:bad_source_call, elem(request, 0)})
+    end
+  end
+
+  defp source!, do: if(Process.get(:helyx_source), do: :ok, else: exit(:not_a_tool_source))
 end

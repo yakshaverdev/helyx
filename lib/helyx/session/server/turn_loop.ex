@@ -227,7 +227,7 @@ defmodule Helyx.Session.Server.TurnLoop do
     args = %{
       provider: turn.provider,
       model: turn.model.model,
-      tools: state.tool_specs,
+      tools: state.registry.specs,
       opts: State.init_opts(state, resumed, usage),
       session: self()
     }

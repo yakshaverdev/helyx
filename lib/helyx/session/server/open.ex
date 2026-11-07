@@ -7,7 +7,7 @@ defmodule Helyx.Session.Server.Open do
   # `Helyx.Session.Server` keeps the GenServer callbacks and calls in here.
 
   alias Helyx.Session.{Background, Hands, Id, Input, Killer, Lock, Queue, Transcript}
-  alias Helyx.Session.Server.State
+  alias Helyx.Session.Server.{Sources, State}
 
   # Starts the session process under Core for `resume/2`. `open` is nil
   # with no session file, or `{path, fun}`: the session takes the lock of
@@ -132,7 +132,7 @@ defmodule Helyx.Session.Server.Open do
     end
   end
 
-  defp start_child(%State{core: core} = state, {tools, concurrent}, start) do
+  defp start_child(%State{core: core} = state, {tools, concurrent, sources}, start) do
     # The plugin table of a Core does not change after start, so a plugin
     # resolved once here is the plugin a lookup per provider call would give.
     # Compaction and Memory are single-mode: one plugin or none (nil). The
@@ -145,12 +145,8 @@ defmodule Helyx.Session.Server.Open do
       memory: List.first(Helyx.Core.plugins(core, Helyx.Memory))
     }
 
-    session = %{
-      state
-      | plugins: plugins,
-        tool_specs: Enum.map(tools, fn {_tool, spec} -> spec end),
-        tools: Map.new(tools, fn {tool, %{name: name}} -> {name, {tool, name in concurrent}} end)
-    }
+    registry = Helyx.Session.ToolRegistry.new(tools, concurrent, sources)
+    session = %{state | plugins: plugins, registry: registry}
 
     DynamicSupervisor.start_child(
       Helyx.Core.session_supervisor(core),
@@ -186,7 +182,7 @@ defmodule Helyx.Session.Server.Open do
         after
           0 ->
             Process.demonitor(monitor, [:flush])
-            state = state |> init_hands() |> Helyx.Session.Sync.open()
+            state = state |> init_hands() |> Sources.start() |> Helyx.Session.Sync.open()
             send(caller, {ref, :ok})
             {:noreply, state}
         end
@@ -242,7 +238,7 @@ defmodule Helyx.Session.Server.Open do
         cwd: state.cwd,
         background_dir: background_dir,
         session: self(),
-        tools: Map.new(state.tools, fn {name, {tool, _concurrent?}} -> {name, tool} end),
+        tools: Helyx.Session.ToolRegistry.modules(state.registry),
         hooks: Helyx.Core.hooks(state.core)
       )
 

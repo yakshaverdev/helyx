@@ -1571,3 +1571,69 @@ defmodule Helyx.Test.PromptContext do
   defp system("raw"), do: <<255>>
   defp system(_text), do: "same"
 end
+
+defmodule Helyx.Test.Source do
+  @moduledoc false
+  # A tool source that the test drives: its source process tells the
+  # observer of its Core that it runs, then runs each function that the
+  # test sends it and answers with the result, and returns from `source/1`
+  # at `:return`.
+  # Every other message goes to the observer. A call of one of its tools
+  # answers with the called name and whether `context/0` names this source.
+  # A handle `{:test, observer, id}` is released with a message to the
+  # observer; `{:stuck, id}` is never confirmed; `{:block, observer, id}`
+  # waits for `:go` from the observer, up to its deadline.
+  @behaviour Helyx.Tool
+
+  @impl true
+  def source(info) do
+    observer = :persistent_term.get({__MODULE__, info.core})
+    send(observer, {:source_up, self(), info})
+    loop(observer)
+  end
+
+  defp loop(observer) do
+    receive do
+      {:do, from, fun} ->
+        send(from, {:done, self(), fun.()})
+        loop(observer)
+
+      :return ->
+        :returned
+
+      message ->
+        send(observer, {:source_got, self(), message})
+        loop(observer)
+    end
+  end
+
+  @impl true
+  def run(_args, _cwd) do
+    %{tool: tool, source: source} = Helyx.Tool.context()
+    {:ok, "ran #{tool} from #{inspect(source)}"}
+  end
+
+  @impl true
+  def release(handles, mode, deadline) do
+    for handle <- handles, not released?(handle, mode, deadline), do: handle
+  end
+
+  defp released?({:test, observer, id}, mode, _deadline) do
+    send(observer, {:released, id, mode})
+    true
+  end
+
+  defp released?({:block, observer, id}, mode, deadline) do
+    send(observer, {:releasing, id, self()})
+
+    receive do
+      :go -> send(observer, {:released, id, mode})
+    after
+      max(deadline - System.monotonic_time(:millisecond), 0) -> :ok
+    end
+
+    true
+  end
+
+  defp released?({:stuck, _id}, _mode, _deadline), do: false
+end

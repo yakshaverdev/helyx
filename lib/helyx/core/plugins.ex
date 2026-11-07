@@ -150,6 +150,30 @@ defmodule Helyx.Core.Plugins do
 
   defp limit?(ms), do: is_integer(ms) and ms in 1..Helyx.Hook.max_limit_ms()//1
 
+  @doc """
+  Checks each Tool plugin: a fixed tool exports `name/0`, `description/0`,
+  and `parameters/0`; a tool source exports `source/1` and none of them;
+  both export `run/2`. Any other is `{:invalid_tool_plugin, module}`
+  (`docs/features/mcp-client.md`).
+  """
+  @spec tools([module()]) :: :ok | {:error, {:invalid_tool_plugin, module()}}
+  def tools(plugins) do
+    case Enum.find(plugins, &(not tool_kind?(&1))) do
+      nil -> :ok
+      plugin -> {:error, {:invalid_tool_plugin, plugin}}
+    end
+  end
+
+  defp tool_kind?(plugin) do
+    source? = Helyx.Tool.source?(plugin)
+
+    function_exported?(plugin, :run, 2) and
+      Enum.all?(
+        [:name, :description, :parameters],
+        &(function_exported?(plugin, &1, 0) != source?)
+      )
+  end
+
   defp checked_id(plugin) do
     id = plugin.id()
     if is_binary(id), do: {:ok, id}, else: :error
