@@ -11,8 +11,9 @@ defmodule Helyx.Hook.Command do
   the point, #{@default_limit_ms} by default; and `tools`, the tool names
   that the command runs for, every tool by default. A point with no
   entry, and a tool that is not in its `tools`, get `:allow` or `:keep`
-  with no run. A config of another shape at the top, or in the entry of
-  the point, is a failed hook at that point.
+  with no run. A key that is there has a value of its type: `nil` is no
+  value. A config of another shape at the top, or in the entry of the
+  point, is a failed hook at that point.
 
   The command runs with `bash -c` in the working directory of the call, in
   its own process group under the perl watchdog, held with
@@ -33,6 +34,9 @@ defmodule Helyx.Hook.Command do
   @points [:before_tool, :after_tool]
   @point_keys [:command, :limit_ms, :tools]
 
+  # A `limit_ms` that is there is given as it is, so Core refuses a bad
+  # one, nil included, at its start; a broken top or entry gets the
+  # default here and fails at each run, where the error names its path.
   @impl true
   def limit(point) do
     env = env()
@@ -40,7 +44,7 @@ defmodule Helyx.Hook.Command do
     with true <- Keyword.keyword?(env),
          config = env[point],
          true <- Keyword.keyword?(config),
-         ms when ms != nil <- config[:limit_ms] do
+         {:ok, ms} <- Keyword.fetch(config, :limit_ms) do
       ms
     else
       _other -> @default_limit_ms
@@ -82,21 +86,30 @@ defmodule Helyx.Hook.Command do
   defp command(env, point, tool) do
     cond do
       not keyword?(env, @points) -> {:error, [:command_hook]}
-      env[point] == nil -> {:ok, nil}
-      error = point_error({point, env[point]}) -> error
+      not Keyword.has_key?(env, point) -> {:ok, nil}
+      error = point_error(point, env[point]) -> error
       tool?(env[point][:tools], tool) -> {:ok, env[point][:command]}
       true -> {:ok, nil}
     end
   end
 
-  # nil for a valid point, else `{:error, path}` of its first bad value.
-  defp point_error({point, config}) do
+  # nil for a valid entry, else `{:error, path}` of its first bad value.
+  # A key that is there has a value of its type: nil is no value.
+  defp point_error(point, config) do
     path = [:command_hook, point]
 
     cond do
-      not keyword?(config, @point_keys) -> {:error, path}
-      key = Enum.find(@point_keys, &(not valid?(&1, config[&1]))) -> {:error, path ++ [key]}
-      true -> nil
+      not keyword?(config, @point_keys) ->
+        {:error, path}
+
+      not Keyword.has_key?(config, :command) ->
+        {:error, path ++ [:command]}
+
+      key = Enum.find_value(config, fn {key, value} -> if not valid?(key, value), do: key end) ->
+        {:error, path ++ [key]}
+
+      true ->
+        nil
     end
   end
 
@@ -110,7 +123,6 @@ defmodule Helyx.Hook.Command do
       not String.contains?(command, <<0>>)
   end
 
-  defp valid?(_optional, nil), do: true
   defp valid?(:limit_ms, ms), do: is_integer(ms) and ms in 1..Helyx.Hook.max_limit_ms()//1
 
   defp valid?(:tools, tools),

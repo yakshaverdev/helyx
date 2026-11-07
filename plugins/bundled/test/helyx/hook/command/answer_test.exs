@@ -51,6 +51,12 @@ defmodule Helyx.Hook.Command.AnswerTest do
            {:deny, "the command denied the call"}},
           {~S|{"decision":"block","hookSpecificOutput":{"permissionDecision":"allow"}}|,
            {:deny, "the command denied the call"}},
+          {~S|{"decision":"block","reason":"r","hookSpecificOutput":{"permissionDecision":"deny"}}|,
+           {:deny, "r"}},
+          {~S|{"decision":"block","reason":"r","hookSpecificOutput":{"permissionDecision":"deny","permissionDecisionReason":"p"}}|,
+           {:deny, "p"}},
+          {~S|{"decision":"approve","reason":"fine","hookSpecificOutput":{"permissionDecision":"deny"}}|,
+           {:deny, "the command denied the call"}},
           {~S|{"continue":true,"systemMessage":"x","decision":null}|, :allow},
           {~S|  {"suppressOutput":true}|, :allow}
         ] do
@@ -69,7 +75,10 @@ defmodule Helyx.Hook.Command.AnswerTest do
           {~S|{"continue":false}|, "continue false asks to stop the agent, which a hook cannot"},
           {~S|{"continue":"no"}|, "continue is not a boolean"},
           {~S|{"hookSpecificOutput":[]}|, "hookSpecificOutput is not an object"},
-          {~S|{"decision":"block","reason":7}|, "reason is not a string"}
+          {~S|{"decision":"block","reason":7}|, "reason is not a string"},
+          {~S|{"decision":"allow"}|, "decision has another value"},
+          {~S|{"hookSpecificOutput":{"permissionDecision":"deny","permissionDecisionReason":[]}}|,
+           "permissionDecisionReason is not a string"}
         ] do
       test "#{stdout} fails", %{input: input} do
         assert failure(fn -> before(input, "printf '%s' '#{unquote(stdout)}'") end) ==
@@ -98,6 +107,26 @@ defmodule Helyx.Hook.Command.AnswerTest do
     test "a reason with no block, and a block with no reason, keep", %{after: input} do
       assert after_tool(input, ~S|echo '{"reason":"r"}'|) == :keep
       assert after_tool(input, ~S|echo '{"decision":"block"}'|) == :keep
+    end
+
+    for {stdout, why} <- [
+          {~S|{"decision":"block","reason":7}|, "reason is not a string"},
+          {~S|{"hookSpecificOutput":{"additionalContext":{}}}|,
+           "additionalContext is not a string"},
+          {~S|{"hookSpecificOutput":"x"}|, "hookSpecificOutput is not an object"},
+          {~S|{"continue":false,"decision":"block","reason":"r"}|,
+           "continue false asks to stop the agent, which a hook cannot"},
+          {~S|{"continue":0}|, "continue is not a boolean"}
+        ] do
+      test "#{stdout} fails", %{after: input} do
+        assert failure(fn -> after_tool(input, "printf '%s' '#{unquote(stdout)}'") end) ==
+                 "its standard output is not an answer: " <> unquote(why)
+      end
+    end
+
+    test "fields of before_tool are ignored", %{after: input} do
+      stdout = ~S|{"hookSpecificOutput":{"permissionDecision":"deny","updatedInput":{}}}|
+      assert after_tool(input, "printf '%s' '#{stdout}'") == :keep
     end
 
     test "an output replace and another decision fail", %{after: input} do

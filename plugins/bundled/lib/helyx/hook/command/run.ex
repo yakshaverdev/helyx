@@ -13,18 +13,22 @@ defmodule Helyx.Hook.Command.Run do
   # argument. It reads at most 16 times from a pipe before it checks the
   # command again, and when the command exits, it reads at most 16 more
   # times from each pipe, what the pipes hold, and exits with the
-  # command's status, 128 plus the signal for a signal death. So a child
-  # that the command left with a pipe open does not hold the hook; the
-  # release of the hands releases it. The relay's own standard error is
-  # /dev/null, so its startup warnings cannot break the frames.
+  # command's status, 128 plus the signal for a signal death. So the
+  # answer is what the command wrote before it exited: a child that the
+  # command left with a pipe open does not hold the hook, and what it
+  # writes later is not read; the release of the hands releases it. The
+  # relay's own standard error is /dev/null, so its startup warnings
+  # cannot break the frames.
   #
   # The relay is in the command's group and is the command's reaper, as
-  # the watchdog is the relay's: it ignores TERM and SIGPIPE, so the TERM
-  # of a release or of the watchdog reaches the command, which has its
-  # grace, and the relay reaps it and exits after it. TERM is blocked
-  # across its fork, so the command starts with the default. Once the port
-  # is gone, a failed write drops the rest of the output. Only a KILL ends
-  # the relay first, as it ends any parent in the group.
+  # the watchdog is the relay's: it ignores TERM, HUP, and SIGPIPE, so the
+  # TERM of a release or of the watchdog reaches the command, which has
+  # its grace, and the relay reaps it and exits after it. TERM and HUP are
+  # blocked across its fork, so the command starts with the defaults, and
+  # the relay sends one that came while they were blocked on to the
+  # command. Once the port is gone, a failed write drops the rest of the
+  # output. Only a KILL ends the relay first, as it ends any parent in the
+  # group.
   #
   # The read has no deadline of its own: the hands kill the hook Task at
   # its limit, the port closes with it, and the watchdog stops the group.
@@ -77,7 +81,10 @@ defmodule Helyx.Hook.Command.Run do
     end
   end
 
-  defp collect(port, out) do
+  @doc false
+  # Reads the frames of `port` to its exit status. Public for the direct
+  # test of a stream that is not frames.
+  def collect(port, out) do
     receive do
       {^port, {:data, data}} ->
         case frames(out.buffer <> data, out) do

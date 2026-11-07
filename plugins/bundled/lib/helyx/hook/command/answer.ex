@@ -137,9 +137,11 @@ defmodule Helyx.Hook.Command.Answer do
     end
   end
 
-  # A deny in either field wins; an allow takes the reason of its field.
-  defp permission("deny", why, _old, _reason), do: {:deny, why || @no_reason}
+  # A deny in either field wins, with the reason of the first field that
+  # denies and has one; an allow takes the reason of its field.
+  defp permission("deny", why, _old, _reason) when why != nil, do: {:deny, why}
   defp permission(_decision, _why, "block", reason), do: {:deny, reason || @no_reason}
+  defp permission("deny", _why, _old, _reason), do: {:deny, @no_reason}
   defp permission("allow", why, _old, _reason) when why != nil, do: {:allow, why}
   defp permission(_decision, _why, "approve", reason) when reason != nil, do: {:allow, reason}
   defp permission(_decision, _why, _old, _reason), do: :allow

@@ -4,6 +4,8 @@ defmodule Helyx.Hook.CommandSessionTest do
   # `:command_hook` of `helyx_plugins` is global.
   use ExUnit.Case, async: false
 
+  import Helyx.Test.OSHelpers
+
   alias Helyx.Message.ToolCall
   alias Helyx.Test.ToolRunner
 
@@ -50,11 +52,13 @@ defmodule Helyx.Hook.CommandSessionTest do
       end
     end
 
-    test "Core checks it: a bad limit_ms stops the start" do
-      put_env(after_tool: [command: "x", limit_ms: 600_001])
+    test "Core checks it: a bad limit_ms, nil included, stops the start" do
+      for ms <- [600_001, nil] do
+        put_env(after_tool: [command: "x", limit_ms: ms])
 
-      assert start_core([Helyx.Provider.Fake, Helyx.Hook.Command]) ==
-               {:error, {:invalid_hook_limit, Helyx.Hook.Command}}
+        assert start_core([Helyx.Provider.Fake, Helyx.Hook.Command]) ==
+                 {:error, {:invalid_hook_limit, Helyx.Hook.Command}}
+      end
 
       put_env(after_tool: [command: "x", limit_ms: 600_000])
       assert {:ok, pid} = start_core([Helyx.Provider.Fake, Helyx.Hook.Command])
@@ -90,28 +94,38 @@ defmodule Helyx.Hook.CommandSessionTest do
                "hi\n\n\nThe hook Helyx.Hook.Command added: checked\n"
     end
 
-    # The command's TERM cleanup takes `@cleanup_s`; the grace of the
-    # release is `Helyx.Watchdog.grace_ms/0`, 500 ms, so 300 ms of it is the
-    # margin for load. A KILL with no grace ends the command before it.
-    @cleanup_s 0.2
+    # The command's TERM cleanup must end within the grace of the release,
+    # `Helyx.Watchdog.grace_ms/0`; this much of the grace is the margin for
+    # load. A KILL with no grace ends the command before its cleanup.
+    @load_ms 300
+    @cleanup_ms Helyx.Watchdog.grace_ms() - @load_ms
+
+    # Traps TERM with the cleanup, writes its process group, and waits on a
+    # child in the group.
+    @trapped "trap 'sleep #{@cleanup_ms / 1000}; echo done > cleaned; exit 0' TERM; " <>
+               "perl -e 'print getpgrp' > pgid; sleep 30 & wait"
 
     test "at its limit the command gets the TERM grace, then its group is released",
          %{tmp_dir: dir} do
-      put_env(
-        before_tool: [
-          command:
-            "trap 'sleep #{@cleanup_s}; echo done > cleaned; exit 0' TERM; " <>
-              "echo $$ > pid; sleep 30 & wait",
-          limit_ms: 800
-        ]
-      )
-
+      put_env(before_tool: [command: @trapped, limit_ms: 800])
       result = bash(core(), dir, "echo hi")
       assert Helyx.Message.text(result) =~ "it ran past its limit of 800 ms"
       assert File.read!(Path.join(dir, "cleaned")) == "done\n"
-      pid = dir |> Path.join("pid") |> File.read!() |> String.trim()
-      assert {_, status} = System.cmd("kill", ["-0", pid], stderr_to_stdout: true)
-      assert status != 0
+      refute os_alive?("-" <> group(dir))
+    end
+
+    test "an abort gives the command its TERM grace and releases its group", %{tmp_dir: dir} do
+      put_env(before_tool: [command: @trapped])
+      call = %ToolCall{id: "c1", name: "bash", arguments: %{"command" => "touch ran"}}
+      session = ToolRunner.start_tool(core(), call, dir)
+      group = wait_for_pid(Path.join(dir, "pgid"))
+      assert os_alive?("-" <> group)
+      Helyx.Session.abort(session)
+      # The turn ends after the cancel of the hands, which released the group.
+      assert_receive {:helyx_event, %Helyx.Event{type: :turn_end}}, Helyx.Test.Events.wait_ms()
+      assert File.read!(Path.join(dir, "cleaned")) == "done\n"
+      refute os_alive?("-" <> group)
+      refute File.exists?(Path.join(dir, "ran"))
     end
 
     test "a change of the env after the start changes the command, not the limit",
@@ -126,17 +140,22 @@ defmodule Helyx.Hook.CommandSessionTest do
     end
 
     test "at its limit the command is killed and its group released", %{tmp_dir: dir} do
-      put_env(before_tool: [command: "echo $$ > pid; sleep 30", limit_ms: 800])
-      core = core()
-      result = bash(core, dir, "echo hi")
+      put_env(
+        before_tool: [
+          command: "perl -e 'print getpgrp' > pgid; sleep 30 & sleep 30",
+          limit_ms: 800
+        ]
+      )
+
+      result = bash(core(), dir, "echo hi")
 
       assert Helyx.Message.text(result) ==
                "the hook Helyx.Hook.Command failed: it ran past its limit of 800 ms; " <>
                  "the call was not run"
 
-      pid = dir |> Path.join("pid") |> File.read!() |> String.trim()
-      assert {_, status} = System.cmd("kill", ["-0", pid], stderr_to_stdout: true)
-      assert status != 0
+      refute os_alive?("-" <> group(dir))
     end
   end
+
+  defp group(dir), do: dir |> Path.join("pgid") |> File.read!()
 end

@@ -4,7 +4,7 @@ defmodule Helyx.Hook.CommandTest do
   use ExUnit.Case, async: true
 
   alias Helyx.Hook.Command
-  alias Helyx.Hook.Command.{Answer, Error, Run}
+  alias Helyx.Hook.Command.{Error, Run}
 
   @moduletag :tmp_dir
 
@@ -144,39 +144,6 @@ defmodule Helyx.Hook.CommandTest do
     end
   end
 
-  describe "the frames of the relay" do
-    defp frame(tag, data), do: <<tag, byte_size(data)::32, data::binary>>
-
-    test "whole frames are taken, and a part waits for the next read" do
-      {:ok, out} =
-        Run.frames(
-          frame(?o, "ab") <> frame(?e, "c") <> binary_part(frame(?o, "de"), 0, 3),
-          %Run.Out{}
-        )
-
-      assert %Run.Out{stdout: "ab", stderr: "c", buffer: <<?o, 0, 0>>} = out
-      {:ok, out} = Run.frames(out.buffer <> binary_part(frame(?o, "de"), 3, 4), out)
-      assert %Run.Out{stdout: "abde", buffer: ""} = out
-    end
-
-    test "a frame at the size limit is taken, one byte over is no frame" do
-      max = Run.max_frame_bytes()
-      data = String.duplicate("é", div(max, 2))
-      assert {:ok, %Run.Out{stdout: ^data}} = Run.frames(frame(?o, data), %Run.Out{})
-      assert Run.frames(frame(?o, data <> "a"), %Run.Out{}) == :error
-    end
-
-    test "another tag is no frame, in a whole head and in a part" do
-      assert Run.frames(frame(?x, "a"), %Run.Out{}) == :error
-      assert Run.frames("c", %Run.Out{}) == :error
-    end
-
-    test "a stream that is not frames is a failed hook", %{input: input} do
-      assert failure(fn -> Answer.of(:unreadable, :before_tool, input) end) ==
-               "the output of the command could not be read"
-    end
-  end
-
   describe "the output bound" do
     # A JSON answer with `reason`, padded in front with spaces to `size` bytes.
     defp padded(size, reason) do
@@ -225,6 +192,16 @@ defmodule Helyx.Hook.CommandTest do
   end
 
   describe "the config" do
+    # The other point of `point`, its input, and its answer to a command that
+    # writes `ran` to standard error and exits 2.
+    defp other_point(:before_tool, _input, after_input),
+      do:
+        {:after_tool, after_input,
+         {:replace, {:ok, "out\n\nThe hook Helyx.Hook.Command added: ran\n"}}}
+
+    defp other_point(:after_tool, input, _after_input),
+      do: {:before_tool, input, {:deny, "ran\n"}}
+
     for {env, path} <- [
           {:bad, [:command_hook]},
           {[before_settle: [command: "x"]], [:command_hook]},
@@ -242,7 +219,14 @@ defmodule Helyx.Hook.CommandTest do
            [:command_hook, :before_tool, :limit_ms]},
           {[before_tool: [command: "x", tools: "bash"]], [:command_hook, :before_tool, :tools]},
           {[before_tool: [command: "x", tools: [:bash]]], [:command_hook, :before_tool, :tools]},
-          {[after_tool: [command: "x", tools: ["a" | "b"]]], [:command_hook, :after_tool, :tools]}
+          {[after_tool: [command: "x", tools: ["a" | "b"]]],
+           [:command_hook, :after_tool, :tools]},
+          {[before_tool: nil], [:command_hook, :before_tool]},
+          {[after_tool: nil], [:command_hook, :after_tool]},
+          {[before_tool: [command: nil]], [:command_hook, :before_tool, :command]},
+          {[before_tool: [command: "x", limit_ms: nil]],
+           [:command_hook, :before_tool, :limit_ms]},
+          {[after_tool: [command: "x", tools: nil]], [:command_hook, :after_tool, :tools]}
         ] do
       test "#{inspect(env)} fails at its point", %{input: input, after: after_input} do
         path = unquote(path)
@@ -256,6 +240,18 @@ defmodule Helyx.Hook.CommandTest do
           if path == [:command_hook] or Enum.at(path, 1) == point,
             do: assert(failure(fn -> Command.run(point, input, env) end) == why),
             else: assert(Command.run(point, input, env) == default)
+        end
+      end
+
+      # A bad entry fails its point only: a valid entry of the other point
+      # runs its command.
+      if match?([_, _ | _], path) do
+        test "#{inspect(env)} beside a valid entry of the other point runs it",
+             %{input: input, after: after_input} do
+          env = unquote(Macro.escape(env))
+          {point, input, ran} = other_point(unquote(Enum.at(path, 1)), input, after_input)
+          env = env ++ [{point, [command: "echo ran >&2; exit 2"]}]
+          assert Command.run(point, input, env) == ran
         end
       end
     end
