@@ -112,7 +112,12 @@ defmodule Helyx.TUI.Link do
   # The open of a switch (`Helyx.TUI.Switch`), in the place of `session`:
   # a new session of `opts.cwd` with `opts.model`, or the resume of `id`.
   # The server saves in its own data folder.
+  # The model of the server can be any string; one over the text bound
+  # would pass the request bound of the server, which ends the connection.
   @spec open(t(), :new | {:resume, String.t()}, map()) :: {:ok, t()} | {:error, term()}
+  def open(%__MODULE__{}, :new, %{model: model}) when byte_size(model) > @max_text_bytes,
+    do: {:error, :text_too_large}
+
   def open(%__MODULE__{conn: conn}, target, opts) do
     result =
       case target do

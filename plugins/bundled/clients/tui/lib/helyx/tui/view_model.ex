@@ -6,12 +6,12 @@ defmodule Helyx.TUI.ViewModel do
   `apply/2` and the screen renders from the result, so the fold is testable
   with scripted event lists.
 
-  `cells` is the transcript: an Erlang `:array` of every cell, open or
-  closed, by position, oldest first; `cells/1` gives it as a list. `open`
-  maps a call id to a queue of the positions of its open tool cells, oldest
-  first, so a result finds its cell with no scan. Each new cell and each
-  result costs O(log n) in the cell count
-  (`docs/features/session-snapshot.md`). A cell is one of:
+  `cells` is the transcript: an Erlang `:array` of every cell, open or closed, by position,
+  oldest first; `cells/1` gives it as a list. `open` maps a call id to a queue of the positions
+  of its open tool cells, oldest first, so a result finds its cell with no scan. Each new cell
+  and each result costs O(log n) in the cell count (`docs/features/session-snapshot.md`). A
+  message in a cell keeps its first 1,024 blocks and a cut of the others
+  (`Helyx.TUI.ViewModel.Cut`). A cell is one of:
 
     * `%Helyx.Message{}` – a completed user or assistant message
     * `{:tool, call, line, result}` – a tool call of the assistant message
@@ -44,11 +44,11 @@ defmodule Helyx.TUI.ViewModel do
   client-local, like `reason`, and a session switch keeps it
   (`docs/features/tui-tool-output-toggle.md`).
 
-  `streaming` is the open assistant message as a reversed block list, newest
-  first, or nil when none is streaming. Text and thinking deltas join it
-  through `Helyx.Message.add_block/2`, the session's convention. Each tool
-  call of it is an open tool cell, so a frame does not make its line; the
-  `message_end` makes the cells of the message again from the message.
+  `streaming` is the open assistant message as a reversed block list, newest first, or nil when
+  none is streaming; a delta with no `message_start` before it starts one. Text and thinking
+  deltas join it through `Helyx.Message.add_block/2`, the session's convention. Each tool call
+  of it is an open tool cell, so a frame does not make its line; the `message_end` makes the
+  cells of the message again from the message.
 
   `usage` and `context` are the totals and the context state of the session
   that row 2 of the footer shows (`Helyx.Session.Totals`). They start from
@@ -63,16 +63,15 @@ defmodule Helyx.TUI.ViewModel do
   are those of the `:ui_block` events of the running turn
   (`Helyx.TUI.ViewModel.UIBlocks`, `docs/features/ui-blocks.md`).
 
-  `seq` is the `seq` of the snapshot or of the last event that the fold
-  applied. The fold applies an event only once, by its `seq`: an event at
-  or below it leaves the view model unchanged
-  (`docs/features/tui-attach.md`, decision 11). `Helyx.TUI` drops an event of another instance, which is
-  of a session that a switch left (`docs/features/tui-session-switch.md`).
+  `seq` is the `seq` of the snapshot or of the last event that the fold applied. The fold
+  applies an event only once, by its `seq`: an event at or below it leaves the view model
+  unchanged (`docs/features/tui-attach.md`, decision 11). `Helyx.TUI` drops an event of another
+  instance, which is of a session that a switch left (`docs/features/tui-session-switch.md`).
   """
 
   alias Helyx.{Event, Message}
   alias Helyx.Session.{Snapshot, Totals}
-  alias Helyx.TUI.{CallLine, ViewModel.UIBlocks}
+  alias Helyx.TUI.{CallLine, Footer, ViewModel.Cut, ViewModel.UIBlocks}
 
   # `cells` is set at run time in `from_snapshot/2`: an `:array` literal in
   # the struct default breaks the opaque type for Dialyzer.
@@ -192,7 +191,7 @@ defmodule Helyx.TUI.ViewModel do
 
   defp fold(vm, %Event{type: :model_change, data: data}) do
     %{model: model} = data
-    add_info(%{vm | model: model}, "model: " <> model)
+    add_info(%{vm | model: model}, "model: " <> Footer.model(model))
   end
 
   # One line per compaction: `compacted: 30k → 4k tokens`, `compacted`
@@ -335,9 +334,9 @@ defmodule Helyx.TUI.ViewModel do
   def toggle_expanded(vm), do: %{vm | expanded?: not vm.expanded?}
 
   defp stream(vm, {:tool_call, call}),
-    do: %{vm | streaming: add_streamed(vm.streaming, call, vm.session_id)}
+    do: %{vm | streaming: add_streamed(vm.streaming || [], call, vm.session_id)}
 
-  defp stream(vm, delta), do: %{vm | streaming: Message.add_block(vm.streaming, delta)}
+  defp stream(vm, delta), do: %{vm | streaming: Message.add_block(vm.streaming || [], delta)}
 
   # A block of the streaming message; a tool call is an open tool cell, not
   # the block of `Message.add_block/2`, so a frame does not make its line.
@@ -354,11 +353,12 @@ defmodule Helyx.TUI.ViewModel do
 
   # A message as a transcript cell. Each call of an assistant message gets
   # an open cell; its result comes later.
-  defp add_cells(vm, %Message{role: :user} = message), do: add_cell(vm, message)
+  defp add_cells(vm, %Message{role: :user} = message), do: add_cell(vm, Cut.message(message))
 
   defp add_cells(vm, %Message{role: :assistant, content: content} = message) do
     vm =
-      for %Message.ToolCall{id: id} = call <- content, reduce: add_cell(vm, message) do
+      for %Message.ToolCall{id: id} = call <- content,
+          reduce: add_cell(vm, Cut.message(message)) do
         vm ->
           position = :array.size(vm.cells)
           open = Map.update(vm.open, id, :queue.from_list([position]), &:queue.in(position, &1))
@@ -384,12 +384,12 @@ defmodule Helyx.TUI.ViewModel do
     open =
       if :queue.is_empty(queue), do: Map.delete(vm.open, id), else: Map.put(vm.open, id, queue)
 
-    cell = put_elem(:array.get(position, vm.cells), 3, result)
+    cell = put_elem(:array.get(position, vm.cells), 3, Cut.message(result))
     %{vm | open: open, cells: :array.set(position, cell, vm.cells)}
   end
 
   defp add_cells(vm, %Message{role: :tool_result} = result),
-    do: add_cell(vm, {:tool, nil, "a tool result with no call", result})
+    do: add_cell(vm, {:tool, nil, "a tool result with no call", Cut.message(result)})
 
   # The next free position is the array size: no cell is ever removed.
   defp add_cell(vm, cell), do: %{vm | cells: :array.set(:array.size(vm.cells), cell, vm.cells)}

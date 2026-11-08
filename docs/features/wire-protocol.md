@@ -265,7 +265,7 @@ Notes on the codec:
 - `origin` `"unknown"` is a user message of a session file from before #649. `id` is null for `"user"` and `"unknown"` (`docs/features/message-identity.md`). `"hook"` is the user message of a continue of a `before_settle` hook, with the name of the hook module as its `id` (`docs/features/before-settle.md`); a client cannot send it, as it cannot send `"user"`. Protocol 4 added it (#880).
 - `error` of `message_end`: `{kind: "aborted"}` for an aborted turn, `{kind: "failed", text}` for a failed one, where `text` is the error text of the turn (ADR 0006 §2). The two are kept apart, because a failure text can be the word "aborted".
 - `turn_end` `error` and `notice` `text` are text for a person; a client shows them as they are.
-- `arguments` of a tool call is a JSON object whose integers have at most 100 digits (`Helyx.Message.cap_integers/1`).
+- `arguments` of a tool call is a JSON object whose integers have at most 100 digits (`Helyx.Message.cap_integers/1`). The schema does not bound them, and a client takes any integer (#860).
 - A `cost` is in USD. `elapsed_ms` is by the clock of the session; a client starts its busy clock at that age.
 - The session that a tool call starts with a parent link, such as a child of the `agent` tool, has an id that a client derives from the session id and the call id: the first 9 bytes of SHA-256 of the session id followed by the call id, as URL-safe Base64 with no padding (`Helyx.Sessions.child_id/2`, `docs/features/agent-tool.md`). No frame carries it.
 
@@ -277,7 +277,7 @@ What this doc does not pin down for an implementation that does not run on the B
 
 - **The size of a message.** The byte bounds of the tail snapshot, of a `history` page, and of the replay ring count each message or event with `:erlang.external_size/1`, the size of the term in the external format of Erlang. A server on another runtime cannot compute it, and a client cannot predict where a tail ends. A portable admission rule, such as a count over the JSON text, would be a protocol change.
 - **Replay.** The replay ring is in the memory of one session instance and bounded (1,024 events and 4 MiB). A restart of the session, a new `instance_id`, or a gap in the ring gives a tail snapshot, not the missed events. Replay is not durable; a durable replay would revise ADR 0008.
-- **The form of a model ref.** The schema gives `model` as a string. The client of the TUI also checks it as a model ref, `provider/model` with no whitespace or control character (`Helyx.ModelRef`), and ends the connection on another string.
+- **The form of a model ref.** The schema gives `model` as a string. A server of this build sends a model ref, `provider/model` with no whitespace or control character (`Helyx.ModelRef`), and answers `invalid_model_ref` to another string in a request; the client of the TUI takes any string and shows it cut and cleaned (#860).
 - **A session id.** The schema gives `id` as a string. A `resume` of an id that is not 12 URL-safe characters gets `start_failed`, not `not_found`.
 - **A request id over its bound.** A `req` whose `id` is a string of more than 64 bytes gets `bad_params` ("Bounds"), and that `res` carries the same `id`, though the schema gives the `id` of a `res` as 1 to 64 bytes.
 

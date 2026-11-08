@@ -9,7 +9,7 @@ defmodule Helyx.TUI.Wire.Decode do
   # value with a broken shape raises, and each public function gives
   # `:error` for it: the connection ends on a contract break.
 
-  alias Helyx.{Event, Message, ModelRef, Usage}
+  alias Helyx.{Event, Message, Usage}
   alias Helyx.Session.File.Scan
   alias Helyx.Session.{Snapshot, Totals}
   alias Helyx.TUI.ViewModel
@@ -31,8 +31,6 @@ defmodule Helyx.TUI.Wire.Decode do
 
   @stop_reasons Map.new(Message.stop_reasons(), &{Atom.to_string(&1), &1})
   @usage_keys Map.keys(%Usage{}) -- [:__struct__]
-  @max_blocks Helyx.Session.Turn.max_message_blocks()
-  @max_result_bytes Message.max_result_bytes()
 
   defguardp count?(value) when is_integer(value) and value >= 0
   defguardp count_or_nil?(value) when is_nil(value) or count?(value)
@@ -219,17 +217,16 @@ defmodule Helyx.TUI.Wire.Decode do
          waiting: waiting
        }
 
-  # The server caps each integer of the arguments at 100 digits.
+  # An integer of any size: the call line shows it as its text, cut with
+  # the line (`Helyx.TUI.CallLine`).
   defp tool_call(%{"type" => "tool_call", "id" => id, "name" => name, "arguments" => %{} = args})
-       when is_binary(id) and is_binary(name) do
-    false = Message.big_integer?(args)
-    %Message.ToolCall{id: id, name: name, arguments: args}
-  end
+       when is_binary(id) and is_binary(name),
+       do: %Message.ToolCall{id: id, name: name, arguments: args}
 
-  # The bounds of a message of Core: its blocks (`Helyx.Session.Turn`), and
-  # the text of a tool result (`Helyx.Message.cut_result/1`).
+  # Any count of blocks: a cell keeps the first 1,024 and a cut of the
+  # others (`Helyx.TUI.ViewModel.Cut`).
   defp message!(%{"id" => id, "role" => role, "content" => content} = message)
-       when is_binary(id) and is_list(content) and length(content) <= @max_blocks do
+       when is_binary(id) and is_list(content) do
     role = role!(role)
 
     %Message{
@@ -256,25 +253,30 @@ defmodule Helyx.TUI.Wire.Decode do
   defp role!("assistant"), do: :assistant
   defp role!("tool_result"), do: :tool_result
 
-  # Only a user message has an origin. `unknown` is a user message of a
-  # file from before #649.
+  # An origin of the schema. A user message keeps one that Core makes, so
+  # it decodes as Core holds it (`unknown` is one of a file from before
+  # #649); any other is dropped, as the TUI shows no origin.
   defp origin!(_role, nil), do: nil
-  defp origin!(:user, %{"kind" => "unknown", "id" => nil}), do: %{kind: :unknown, id: nil}
 
-  defp origin!(:user, %{"kind" => kind, "id" => id}) do
+  defp origin!(role, %{"kind" => kind, "id" => id}) when is_binary(id) or is_nil(id) do
     origin = %{kind: origin_kind!(kind), id: id}
-    true = Message.origin?(origin)
-    origin
+    known? = origin == %{kind: :unknown, id: nil} or Message.origin?(origin)
+    if role == :user and known?, do: origin
   end
 
   defp origin_kind!("user"), do: :user
   defp origin_kind!("background"), do: :background
   defp origin_kind!("product"), do: :product
   defp origin_kind!("hook"), do: :hook
+  defp origin_kind!("unknown"), do: :unknown
 
-  defp block!(%{"type" => "text", "text" => text}, role)
-       when is_binary(text) and (role != :tool_result or byte_size(text) <= @max_result_bytes),
-       do: %Message.Text{text: text}
+  # A text of a tool result gets the cut of Core at each boundary of tool
+  # text (`Helyx.Message.cut_result/1`), once, so no frame draws more.
+  defp block!(%{"type" => "text", "text" => text}, :tool_result) when is_binary(text),
+    do: %Message.Text{text: Message.cut_result(text)}
+
+  defp block!(%{"type" => "text", "text" => text}, _role) when is_binary(text),
+    do: %Message.Text{text: text}
 
   defp block!(%{"type" => "thinking", "thinking" => thinking}, _role) when is_binary(thinking),
     do: %Message.Thinking{thinking: thinking}
@@ -311,11 +313,9 @@ defmodule Helyx.TUI.Wire.Decode do
   defp cost_kind!("list"), do: :list
   defp cost_kind!("billed"), do: :billed
 
-  # A model ref as Core checks it (`Helyx.ModelRef.parse/1`).
-  defp model!(model) do
-    {:ok, _ref} = ModelRef.parse(model)
-    model
-  end
+  # Any string: the footer and the line of a model change draw it cut and
+  # cleaned (`Helyx.TUI.Footer`, `Helyx.TUI.ViewModel`).
+  defp model!(model) when is_binary(model), do: model
 
   defp snapshot!(%{
          "instance_id" => instance_id,

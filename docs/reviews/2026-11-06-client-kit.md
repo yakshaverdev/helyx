@@ -308,3 +308,51 @@ The reproduction of round 1 holds fixed: an `mtime` of 2^64, 10^24, 10^1023, or 
 | 3 | failure path (judgement) | East of UTC, the last second of 9999 UTC shows as its local time, `10000-01-01 05:29:59`, and the next second shows `>9999-12-31`: the cap is set in UTC. | Recorded. No change: it renders, and the test takes a year of 4 or 5 digits. |
 
 Not reached by the budget: the gpui render of the app, deep frames over 1 MiB sent as parts through `Client::receive`, and the `history` result.
+
+# Cycle G: the checks of the TUI beyond the schema (#860, judgement of the orchestrator of 2026-11-07)
+
+Base `f289c4f8` (the branch after the rebase on `origin/master`). The judgement: "the schema is the contract" applies to the five checks of the TUI beyond the schema. Seen first, by the tests of the old rules: the TUI decode broke on a model that is not a model ref, 1,025 blocks, a tool result text of 65,537 bytes, an integer of 101 digits in a tool call, and an origin that Core does not make (`decode_test.exs` had each as `:error`). An accepted hole broke the new rule too: an `ask` of the `question` tool whose request the tool did not make crashed `Helyx.TUI.Question`; "an accepted hole may not break a written rule", so it is in this cycle. Choices, each a cut that keeps a render bound:
+
+- The model: kept whole, so `/new` sends it as it is and the server judges it (a server of this build answers `bad_params` to a null model, so leaving it out is not an option); the footer and the line of a model change show its first 256 bytes, cleaned (`Footer.model/1`).
+- Blocks: kept whole, so a call past the first 1,024 still takes its result; the rows and the search text of a message draw the first 1,024 and `[+N more blocks]` (`Transcript.Item`). The count walks the list of a message that a frame shows.
+- A tool result text: the cut of Core (`Message.cut_result/1`) once, at the decode, as at each boundary of tool text; a cut in each frame would cost O(text) in each frame.
+- An integer of any size in a tool call: shown as its text in the call line, within its cut of 8,192 bytes.
+- An origin: the TUI shows none; it keeps one that Core makes on a user message and drops any other.
+- A question ask: the picker shows only a request that the tool asks with (`Helyx.Tool.Question.request?/1`, a walk of at most 5 questions and 5 options of each); another shows no picker, as an ask of another tool.
+
+Fixtures: eight valid cases in `server_frames.json`, one for each. Probe: with the expectation of each case flipped alone, both runners fail (8 of 8 in each). The library change is 96 lines added and 42 removed, past the 100 lines of the brief; the wider scope is the picker and `request?/1`.
+
+Bounds sensor: `bounds sensor: 6 candidate functions, 1 flagged, 0 without an answer`, flag `view_model.ex:189 SIZE defp fold(vm, %Event{type: :model_change, data: data})` (the model kept whole in `vm.model`; finding 1 is the path where its size mattered).
+
+## Round 1 (full: simplify, standards, spec, failure path, Codex)
+
+Simplify renamed a helper, moved `Footer.model/1` beside `location/2`, and tidied two tests.
+
+| # | Source | Finding | Resolution |
+|---|---|---|---|
+| 1 | failure path (reproduced on a local Core and WebSocket server) | A `model_change` of 27 MiB, then `/new`: the `start` request passed the 26,214,400 bytes of the server, which closed with `4413`, and the TUI ended. | `Link.open/3` does not send a model over the text bound of 4 MiB: `could not switch: the model is over 4 MiB`; test in `link_test.exs`, which fails without the clause. |
+| 2 | failure path, spec (both reproduced) | `[+N more blocks]` counted the tool calls past 1,024, which still show as tool cells. | The cut counts only the blocks that no cell shows. |
+| 3 | Codex (high, by reading; the failure path measured 3 to 50 ms a frame for 3M blocks) | The render cut walked the whole block list in each frame (`Enum.split` and `length`). | The cut moved to the fold (`Helyx.TUI.ViewModel.Cut`): it walks the message once, when it becomes a cell, and a frame draws at most 1,025 blocks of a cell. The streaming message gets the cut in each frame, which walks its blocks as the frame did before. |
+| 4 | spec (reproduced), standards | The accepted hole "an event that the fold cannot apply … the result of a call that is not open" was stale since cycle A (an orphan cell), and hid a real crash: after a snapshot with no partial, a `message_update` with no `message_start` made the improper list `[block \| nil]`, and the render raised. | A delta with no `message_start` starts the streaming message; the hole is removed. Test in `decode_test.exs`, which raises without the fix. |
+| 5 | standards | The bounded walk of `request?/1` had no test: `length/1` in its place passed. | Tests with a list that is not a list after its fifth item. |
+| 6 | standards | The cut line of a user message and a tool result had no test. | Tests in `decode_test.exs`. |
+| 7 | spec (doc) | `tui-attach.md` still said that tool-call arguments hold no integer over 100 digits; `wire-protocol.md` stated the cap with no note. | Both say that a client takes any integer. |
+| 8 | spec (doc, from cycle F) | `coding-agent.md` said that an information cell text is at most 263 bytes; a compaction line of two counts of 1,024 digits is 2,076. | The row states 2,076, and 263 for the line of a model. |
+| 9 | spec (doc) | `client-kit.md` said that both clients take every frame that the schema allows; both keep the role of the message of an event, which the fixtures fix and the schema cannot show. | The row names the role rule of the fixtures. Not decided here whether the judgement covers it: reported. |
+| 10 | standards (doc) | Comments: "no block past the first is drawn"; the origin comment did not follow; an empty cell of the row. | Fixed; the first went with the cut in the fold. |
+| 11 | standards (judgement) | The fold calls `Footer.model/1`, a render module that matches `%ViewModel{}`; `@model_bytes 256` copies the private bound of `Helyx.ModelRef`. | Kept: a runtime call, as the fold calls `CallLine` for tool cells; the attribute names its source. `view_model.ex` is at its 400 lines. |
+
+## Round 2 (reduced: spec, failure path)
+
+The reproductions of round 1 hold fixed: the `/new` test fails without its clause, the delta test raises without its fix, and the cut tests pass at 1,024, 1,025, and a message of only calls past 1,024. Both fixture runners agree. The failure-path agent ran twice: the first run died at the usage limit and the second was stopped by a kill; its folders were removed and the third run reported. The failure-path agent also folded these event orders with no crash: `turn_end`, `message_end`, a tool-call delta, and `message_start` with no start before them; `ask_end` of an unknown ask; and `tool_execution_end` twice.
+
+Round 2 reproduced defects again, each a second finding on a mechanism that round 1 patched. The two-findings rule asks the next round to fix the mechanism, but the work of the cycle is past its 45 minutes. So the commit holds the code as round 2 reviewed it, and these stay open:
+
+| # | Source | Finding | State |
+|---|---|---|---|
+| 1 | spec (reproduced on a local server) | A resume id or an ask id of 27 MiB, which the schema allows, ends the connection with `4413` when the TUI sends it back (`Link.open/3` with `{:resume, id}`, `Link.answer/3`); by reading, the same holds for the session id of every request, the `sub` of an ack, and the `instance_id` of `after`. The same class as round 1 #1, which bounded only the model. | Open. The mechanism fix: the connection checks the size of each frame that it sends against the request bound of the server and refuses it with no send, as the Rust core does (`parts::split`, `Refusal::TooLarge`). |
+| 2 | failure path (reproduced) | The cut counts no tool call, as each has a tool cell; in a user message or a tool result a call has no cell and shows as a placeholder, so a call past 1,024 blocks there is lost with no count. `ViewModel.prompt/3` reads the cut cell of a user message, so the recall of a prompt of more than 1,024 blocks gives a shorter text. A second finding on the cut. | Open. The mechanism fix: count each block that the cell does not draw, by role, and keep the recall on the event message. Only a server of another build sends such a message: a user message of Core has one block. |
+| 3 | spec (reproduced) | `coding-agent.md` states that a notice of a failed turn is at most 4,000 bytes; the decode takes any string, and a probe made a notice of 100,007 bytes. The `text` of a `notice` and the `provider` of `resume_id` reach notices uncut too. Not new in this cycle: the decode never cut them. | Open. The fix: the cut of `Helyx.Reason.text/1` at the decode, or the row restated. |
+| 4 | spec (judgement) | The streaming message is reversed, split, and cut in each frame: O(blocks) for each frame, so a long stream of deltas costs O(n²) in all (6 ms a frame at 100,000 deltas). | Open, stated in the row of `tui-attach.md`. A count in the fold would bound it; `view_model.ex` is at its 400 lines. |
+| 5 | spec (judgement) | The cut bounds blocks, not bytes: a collapsed tool cell joins and splits each block in each frame, up to 1,024 × 64 KiB. | Within the bounds of Core: a tool result has no total bound beyond the blocks of its message (`docs/features/wire-protocol.md`, "Bounds"). Recorded. |
+| 6 | failure path (measurement) | A fold of one message of 100,000 tool calls takes about 1.1 s: one cell for each call, about 11 µs each. | No render bound covers the count of cells; the TUI cell list is unbounded by the rule of `coding-agent.md`. Recorded. |

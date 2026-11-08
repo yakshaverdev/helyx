@@ -330,6 +330,19 @@ defmodule Helyx.TUI.LinkTest do
     end
   end
 
+  test "/new does not send a model over 4 MiB, which the schema allows", c do
+    state = started(c)
+    session = %Link{conn: stub(fn _op -> {:error, :failed} end), id: state.session.id}
+    model = String.duplicate("m", Helyx.Session.max_text_bytes() + 1)
+    vm = %{state.vm | model: model}
+    state = %{state | session: session, vm: vm} |> command("/new") |> finish()
+
+    assert List.last(ViewModel.cells(state.vm)) ==
+             {:infos, ["could not switch: the model is over 4 MiB"]}
+
+    refute_received {:stub, _op}
+  end
+
   test "the id of a /resume line, from the server, gets the clean pass" do
     summary = %Scan.Summary{id: "a\e[2J\nb", cwd: "/w", model: "m", mtime: 0, prompt: "p"}
     assert SessionList.line(summary, false) =~ ~r/\Aa\?\[2J b  /

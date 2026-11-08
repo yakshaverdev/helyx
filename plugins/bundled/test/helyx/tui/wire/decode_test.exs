@@ -6,7 +6,9 @@ defmodule Helyx.TUI.Wire.DecodeTest do
   alias Helyx.Session.File.Scan
   alias Helyx.Session.{Snapshot, Totals}
   alias Helyx.Transport.WebSocket.Wire
-  alias Helyx.TUI.{Footer, ViewModel}
+  alias Helyx.TUI.{CallLine, Footer, ViewModel}
+  alias Helyx.TUI.Transcript.Item
+  alias Helyx.TUI.ViewModel.Cut
   alias Helyx.TUI.Wire.Decode
 
   @call %ToolCall{id: "c1", name: "bash", arguments: %{"command" => "ls", "n" => [1, 2.5]}}
@@ -203,7 +205,7 @@ defmodule Helyx.TUI.Wire.DecodeTest do
     end
   end
 
-  test "a partial of the turn is nil or an assistant message, and a tool call holds no integer over 100 digits" do
+  test "a partial of the turn is nil or an assistant message, and a tool call holds an integer of any size" do
     turn = %{id: "t1", partial: nil, elapsed_ms: 0}
     wire = wire(Wire.snapshot(%{snapshot_of([]) | turn: turn}))
 
@@ -216,10 +218,21 @@ defmodule Helyx.TUI.Wire.DecodeTest do
       assert Decode.result("subscribe", res) == :error, inspect(partial)
     end
 
-    at = %{"n" => 10 ** 100 - 1}
     update = &wire(Wire.event(event(:message_update, %{tool_call: %{@call | arguments: &1}})))
-    assert {:ok, %Event{data: %{tool_call: %{arguments: ^at}}}} = Decode.event(update.(at))
-    assert Decode.event(update.(%{"n" => [10 ** 100]})) == :error
+
+    # The server caps an integer at 100 digits; the schema does not, and the
+    # call line shows it as its text, within the cut of the line.
+    for {args, n} <- [
+          {%{"n" => 10 ** 100 - 1}, 10 ** 100 - 1},
+          {%{"n" => [10 ** 100]}, 10 ** 100},
+          {%{"n" => 10 ** 1_023}, 10 ** 1_023}
+        ] do
+      assert {:ok, %Event{data: %{tool_call: call}}} = Decode.event(update.(args))
+      assert call.arguments == args
+      line = CallLine.line(call)
+      assert line =~ binary_part(Integer.to_string(n), 0, 90)
+      assert byte_size(line) <= 8_192
+    end
   end
 
   # A message_end whose wire message is `fields` over the wire form of
@@ -245,33 +258,109 @@ defmodule Helyx.TUI.Wire.DecodeTest do
           %{"model" => 1},
           %{"tool_name" => false},
           %{"is_error" => "no"},
-          %{"origin" => %{"kind" => "user", "id" => nil}},
+          %{"origin" => %{"kind" => "user", "id" => 1}},
           %{"content" => [%{"type" => "image", "data" => ""}]},
-          %{"content" => [%{"type" => "text", "text" => 1}]},
-          %{"content" => List.duplicate(%{"type" => "text", "text" => "t"}, 1_025)}
+          %{"content" => [%{"type" => "text", "text" => 1}]}
         ] do
       assert Decode.event(message_end(assistant(), fields)) == :error, inspect(fields)
     end
 
-    for origin <- [
-          %{"kind" => "product", "id" => ""},
-          %{"kind" => "user", "id" => "u"},
-          %{"kind" => "unknown", "id" => "u"},
-          %{"kind" => "robot", "id" => nil},
-          "user"
-        ] do
+    for origin <- [%{"kind" => "robot", "id" => nil}, %{"kind" => "user"}, "user"] do
       assert Decode.event(message_end(user("hi"), %{"origin" => origin})) == :error
     end
+  end
 
-    blocks = List.duplicate(%Text{text: "t"}, 1_024)
-    many = %{assistant() | content: blocks}
-    assert {:ok, %Event{}} = Decode.event(message_end(many, %{}))
+  test "a frame that the schema allows past the bounds of Core is taken, and drawn within the bounds of the TUI" do
+    # An origin that Core does not make is dropped: the TUI shows none.
+    for {message, origin, kept} <- [
+          {user("hi"), %{"kind" => "product", "id" => ""}, nil},
+          {user("hi"), %{"kind" => "user", "id" => "u"}, nil},
+          {user("hi"), %{"kind" => "unknown", "id" => "u"}, nil},
+          {user("hi"), %{"kind" => "unknown", "id" => nil}, %{kind: :unknown, id: nil}},
+          {assistant(), %{"kind" => "user", "id" => nil}, nil},
+          {result(), %{"kind" => "product", "id" => "p"}, nil}
+        ] do
+      fields = %{"origin" => origin}
+      assert {:ok, %Event{data: %{message: decoded}}} = Decode.event(message_end(message, fields))
+      assert decoded.origin == kept, inspect({message.role, origin})
+    end
 
-    # The text of a tool result at the cut of Core, and one byte over it.
+    # More blocks than Core makes: the cell keeps the first 1,024 and a cut
+    # that counts the others but the calls, which have cells of their own;
+    # a call past them still takes its result.
+    call = %{@call | id: "c9"}
+    texts = List.duplicate(%Text{text: "t"}, 1_026)
+    many = %{assistant() | content: texts ++ [call]}
+    assert {:ok, %Event{} = ended} = Decode.event(message_end(many, %{}))
+    assert ended.data.message == many
+    vm = ViewModel.apply(ViewModel.from_snapshot(snapshot_of([])), ended)
+    closed = %{Message.tool_result(call, {:ok, "done"}) | id: "r9"}
+    vm = ViewModel.apply(vm, %{event(:tool_execution_end, %{message: closed}) | seq: 8})
+    assert [%Message{content: kept} = cell, {:tool, ^call, _line, ^closed}] = ViewModel.cells(vm)
+    assert kept == Enum.take(texts, 1_024) ++ [%Cut{more: 2}]
+    rows = Item.rows(cell, 40)
+    assert {_line, {0, "[+2 more blocks]"}} = Enum.at(rows, -2)
+    assert length(rows) == 1_024 + 2
+    assert Item.search_text(cell) =~ ~r/t\n\[\+2 more blocks\]\z/
+
+    # Only calls past the first 1,024: no cut line.
+    calls = for n <- 1..3, do: %{@call | id: "x#{n}"}
+
+    vm =
+      ViewModel.apply(vm, %{ended | seq: 9, data: %{message: %{many | content: texts ++ calls}}})
+
+    assert [_, _, %Message{content: kept} | _] = ViewModel.cells(vm)
+    assert kept == Enum.take(texts, 1_024) ++ [%Cut{more: 2}]
+    only_calls = %{many | id: "a5", content: Enum.take(texts, 1_024) ++ calls}
+    vm = ViewModel.apply(vm, %{ended | seq: 10, data: %{message: only_calls}})
+    assert %Message{content: content} = Enum.at(ViewModel.cells(vm), -4)
+    assert content == Enum.take(texts, 1_024)
+
+    # A user message and a tool result: the line ends their text.
+    user = %{user("hi") | content: List.duplicate(%Text{text: "u"}, 1_025)}
+    vm = ViewModel.apply(vm, %{event(:message_end, %{message: user}) | seq: 11})
+    orphan = %{result() | id: "r8", tool_call_id: "none", content: user.content}
+    vm = ViewModel.apply(vm, %{event(:tool_execution_end, %{message: orphan}) | seq: 12})
+    [user_cell, {:tool, nil, _line, orphan_cell}] = vm |> ViewModel.cells() |> Enum.take(-2)
+    assert Item.search_text(user_cell) == String.duplicate("u", 1_024) <> "\n[+1 more blocks]"
+    assert Item.search_text({:tool, nil, "l", orphan_cell}) =~ ~r/u\n\[\+1 more blocks\]\z/
+
+    # A delta with no message_start before it starts the message; the
+    # streaming message draws its first 1,024 blocks and the cut.
+    deltas =
+      for {kind, n} <-
+            Enum.with_index(Stream.cycle([:text_delta, :thinking_delta]) |> Enum.take(1_030)),
+          do: %{event(:message_update, %{kind => "d"}) | seq: 13 + n}
+
+    vm = Enum.reduce(deltas, vm, &ViewModel.apply(&2, &1))
+    screen = Helyx.TUI.Transcript.screen(vm, nil, %ExRatatui.Layout.Rect{width: 40, height: 3})
+
+    assert Enum.any?(screen, fn {_address, _line, {_column, text}} ->
+             text == "[+6 more blocks]"
+           end)
+
+    # A text of a tool result over the cut of Core gets the cut, once.
     at = String.duplicate("é", div(Message.max_result_bytes(), 2))
     result = &event(:tool_execution_end, %{message: %{result() | content: [%Text{text: &1}]}})
     assert Decode.event(wire(Wire.event(result.(at)))) == {:ok, result.(at)}
-    assert Decode.event(wire(Wire.event(result.(at <> "x")))) == :error
+    cut = Message.cut_result(at <> "x")
+    assert Decode.event(wire(Wire.event(result.(at <> "x")))) == {:ok, result.(cut)}
+    assert cut =~ ~r/\A\[cut to \d+ of 65537 bytes/
+
+    # A model that is not a model ref: the fold keeps it whole, and the line
+    # and the footer show at most 256 bytes of it, cleaned.
+    model = "a model\e[2J" <> String.duplicate("m", 500)
+
+    assert {:ok, changed} =
+             Decode.event(wire(Wire.event(event(:model_change, %{model: model}, nil))))
+
+    vm = ViewModel.apply(ViewModel.from_snapshot(snapshot_of([])), changed)
+    assert vm.model == model
+    assert [{:infos, ["model: " <> shown]}] = ViewModel.cells(vm)
+    assert shown == Footer.model(model)
+    assert byte_size(shown) == 256 and shown =~ ~r/\Aa model\?\[2Jm+\z/
+    %{text: [_row1, %{spans: spans}]} = Footer.widget("~", vm, nil, nil, nil)
+    assert Enum.map_join(spans, & &1.content) =~ shown
   end
 
   test "a missing optional key is nil or false, and the unknown usage is the usage of Core" do
@@ -348,9 +437,10 @@ defmodule Helyx.TUI.Wire.DecodeTest do
     assert line =~ "compacted: #{div(big, 1000)}k → "
 
     model = &wire(Wire.event(event(:model_change, %{model: &1}, nil)))
-    assert {:ok, %Event{}} = Decode.event(model.("p/" <> String.duplicate("m", 254)))
-    assert Decode.event(model.("p/" <> String.duplicate("m", 255))) == :error
-    assert Decode.event(model.("p/a b")) == :error
+
+    for text <- ["p/" <> String.duplicate("m", 255), "p/a b", "no-slash", ""] do
+      assert {:ok, %Event{data: %{model: ^text}}} = Decode.event(model.(text))
+    end
 
     no_call_id =
       wire(Wire.event(event(:tool_execution_end, %{message: %{result() | tool_call_id: nil}})))
@@ -408,7 +498,7 @@ defmodule Helyx.TUI.Wire.DecodeTest do
       assert Enum.map_join(spans, & &1.content) =~ ">$99999"
     end
 
-    assert subscribe(%{at | model: "no-slash"}) == :error
+    assert subscribe(%{at | model: "no-slash"}) == {:ok, {:ok, %{at | model: "no-slash"}, "1"}}
     # A result with no call before it in the snapshot is an orphan cell.
     orphan = snapshot_of([result()])
     assert subscribe(orphan) == {:ok, {:ok, orphan, "1"}}
