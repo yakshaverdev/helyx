@@ -67,7 +67,8 @@ defmodule Helyx.Provider do
       approvals"). A pending id fails the turn, and so does a Helyx tool
       request for an open call that an approval request named; an
       approval request for an open call that a Helyx tool request named
-      is denied.
+      is denied, with one accepted exception (`docs/features/hooks.md`,
+      "The owner of a call id").
 
   The types below give the requests, the actions, and the events. The
   rules of the protocol (replies, events, deadlines) and their reasons are

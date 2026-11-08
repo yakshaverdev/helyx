@@ -72,7 +72,7 @@ defmodule Helyx.Session.Server.Approvals do
       else: %{state | activity: %{turn | owners: Map.delete(owners, call_id)}}
   end
 
-  def drop(state, _call_id), do: state
+  def drop(%State{activity: %Turn{}} = state, _call_id), do: state
 
   # A request of a turn that is not current, from the provider process
   # `pid`: denied, as a late tool request gets `aborted`.

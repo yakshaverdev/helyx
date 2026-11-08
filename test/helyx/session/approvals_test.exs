@@ -6,7 +6,9 @@ defmodule Helyx.Session.ApprovalsTest do
   # approval_id, decision}`.
   use ExUnit.Case, async: true
 
-  import Helyx.Test.Events, only: [collect_until: 1, of_type: 2, snapshot: 1, wait_until: 1]
+  import Helyx.Test.Events,
+    only: [collect_until: 1, of_type: 2, snapshot: 1, wait_ms: 0, wait_until: 1]
+
   import Helyx.Test.SessionCase, only: [start_core: 1]
 
   alias Helyx.Message.ToolCall
@@ -59,7 +61,7 @@ defmodule Helyx.Session.ApprovalsTest do
     receive do
       {:conn, kind, ^pid, request} when is_map_key(kinds, kind) -> request
     after
-      5_000 -> flunk("no request of #{inspect(Map.keys(kinds))}")
+      wait_ms() -> flunk("no request of #{inspect(Map.keys(kinds))}")
     end
   end
 
@@ -423,7 +425,8 @@ defmodule Helyx.Session.ApprovalsTest do
       assert {:tool_result, ^turn_id, "c1", {:ok, "HI"}} = next_request(pid, [:tool_result])
 
       events(pid, turn_id, [{:approval, "0", "c1"}])
-      assert {:approval, ^turn_id, "0", {:deny, _reason}} = next_request(pid, [:approval])
+      assert {:approval, ^turn_id, "0", {:deny, reason}} = next_request(pid, [:approval])
+      assert reason =~ "no open call"
       refute_receive {:hook, Hook.A, :before_tool, %{provider: "conn"}}, @load_ms
     end
 
@@ -561,6 +564,26 @@ defmodule Helyx.Session.ApprovalsTest do
       refute_received {:trace, ^spid, :send, {:provider_request, _, _, {:approval, _, _, _}}, _}
 
       :erlang.trace(spid, false, [:send])
+    end
+
+    test "at the aborted results of a close the owner goes with the last open call of its id" do
+      core = core([Hook.A], [Helyx.Test.Tool.Upcase])
+      {_session, pid, turn_id} = turn(core)
+      call = %{@call | name: "upcase"}
+      events(pid, turn_id, [{:tool_call, call}, {:tool_call, call}, {:approval, "0", "i1"}])
+      assert {:approval, ^turn_id, "0", :allow} = next_request(pid, [:approval])
+
+      # The next close gives both calls of "i1" their aborted results: the
+      # owner stays at the first and goes at the second, so a tool request
+      # for the ended id runs (#369).
+      events(pid, turn_id, [
+        {:message_end, :tool_use, nil},
+        {:text_delta, "next"},
+        {:message_end, :end_turn, nil},
+        {:tool_request, "i1", "upcase", %{"text" => "hi"}}
+      ])
+
+      assert {:tool_result, ^turn_id, "i1", {:ok, "HI"}} = next_request(pid, [:tool_result])
     end
   end
 end

@@ -170,3 +170,17 @@ The first run failed in the root tests: `approvals_test.exs` "a call of a closed
 
 The second run failed in one root test from #879, unchanged by this ticket: `hooks_test.exs:741` "the hands send the answer of a hook killed while it asks with its pid, before the next record" waited 30 s for `{:asking, hook}`. `Helyx.Test.Hook.Short` has a limit of 100 ms, which counts the hook Task's wait for the session's go (`docs/features/hooks.md`); under the load of the parallel precommit the hook can be killed before its first line, so the test waits for a message that never comes. It passed 10 of 10 alone and with the seed of the run (34 of 34). The hook start of a call Task takes the same path as before the rebase (`Hands.State.chain_call/2` finds a call Task as `tool_call/2` did). Not fixed here: a test of #879 that bounds the start of a hook by wall-clock time (AGENTS.md, #193); precommit ran again.
 
+## Resolution of findings 33 to 39 (2026-11-08)
+
+Orchestrator decisions of 2026-11-08, logged for the owner: finding 33 is accepted under #369 (reused call ids are not checked) and stated in `hooks.md` beside the ended ids, with `drop/2` unchanged; findings 34 to 39 are built as proposed; no review round, the Codex gate follows.
+
+| # | Resolution |
+|---|---|
+| 33 | `hooks.md`, "The owner of a call id": the item "Reused ids, not checked (#369)" states that a reused call id can take the owner of an earlier call of the id, both ways (`drop/2` and `own/3`). |
+| 34 | The `Helyx.Provider` line names the accepted exception with a link to `hooks.md`; "no open call is both" in `hooks.md` and the `ToolRuns` comment says "apart from the accepted hole". |
+| 35 | The Bounds row of `owners`: an entry goes at its call's result or `aborted` result when no other open call keeps its id. |
+| 36 | `next_request/2` of `approvals_test.exs` waits `wait_ms()`, the single wait of `test_helper.exs`. |
+| 37 | Test "at the aborted results of a close the owner goes with the last open call of its id": two calls of one id, an allowed approval, a close that gives both their `aborted` results, then a Helyx tool request for the ended id runs; it fails when `drop/2` never drops. |
+| 38 | `drop/2` takes only a state whose activity is a turn. |
+| 39 | The test "a call that opens after its tool request" asserts the deny reason "no open call". |
+

@@ -17,4 +17,6 @@ Third cycle (2026-11-08): rebased over #880, with the approval chain in `Helyx.S
 
 Fourth cycle (2026-11-08): findings 25 to 31 resolved by the orchestrator's decisions: an owner stays while an open call keeps its id, the accepted hole of a call that opens after its answered tool request is stated as the one exception to ADR 0013 §4, the texts say "open call", and the missing tests are added. Round 1 found a reused id across messages inheriting an ended call's owner (finding 33), another defect on the binding, so the cycle stopped with findings 33 to 39 open; the decided fix is the same-message scope of `drop/2`.
 
+Findings 33 to 39 closed by the orchestrator's decisions of 2026-11-08: a reused call id taking an earlier call's owner is accepted under #369 and stated in `hooks.md`; the texts name the accepted exception, the Bounds row of `owners` names the drop rule, the approval tests wait the single test wait, and a test shows the drop at the `aborted` results of a close.
+
 The ticket has no triage comment; the decisions come from ADR 0013 and the owner's and orchestrator's answers of 2026-11-07 and 2026-11-08.
