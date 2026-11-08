@@ -262,4 +262,10 @@ defmodule Helyx.Hub.Store.SQLite.Records do
       error -> error
     end
   end
+
+  # Whether `owner` owns a "hub" record.
+  def hub_records?(db, owner) do
+    sql = "SELECT EXISTS (SELECT 1 FROM records WHERE owner = ?1 AND visibility = 'hub')"
+    with {:ok, [found]} <- one(db, sql, [owner]), do: {:ok, found == 1}
+  end
 end

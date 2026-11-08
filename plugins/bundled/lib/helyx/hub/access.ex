@@ -34,9 +34,12 @@ defmodule Helyx.Hub.Access do
                 hub.projects.create hub.projects.update hub.projects.delete)
   @bad_params {:error, "bad_params", "a param is missing, of the wrong type, or unknown"}
 
+  # The Hub call registers the connection for the closes of decision 13; a
+  # connection whose proof fails closes at once, and the Hub drops it at its
+  # `:DOWN`.
   @impl true
-  def hello(arg, %{nonce: nonce, token: token_id, proof: proof}) do
-    case Hub.call(arg.hub, {:hello, token_id}) do
+  def hello(arg, %{nonce: nonce, token: token_id, proof: proof, connection: connection}) do
+    case Hub.call(arg.hub, {:hello, token_id, connection}) do
       {:ok, found} ->
         with {:ok, key} <- key(found),
              true <- proof?(key, nonce, proof),

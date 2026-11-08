@@ -302,4 +302,6 @@ defmodule Helyx.Hub.Store.SQLite do
   defdelegate saved(db, user, cwd, cursor, limit), to: Records
   @impl true
   defdelegate newest(db, owner, cwd), to: Records
+  @impl true
+  defdelegate hub_records?(db, owner), to: Records
 end

@@ -205,4 +205,7 @@ defmodule Helyx.Hub.Store do
   @doc "The newest record of the folder `cwd` that `owner` owns."
   @callback newest(t(), owner :: String.t(), cwd :: String.t()) ::
               {:ok, record()} | {:error, :not_found | :failed}
+
+  @doc "Whether `owner` owns a \"hub\" record."
+  @callback hub_records?(t(), owner :: String.t()) :: {:ok, boolean()} | {:error, :failed}
 end
