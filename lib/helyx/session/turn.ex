@@ -20,7 +20,7 @@ defmodule Helyx.Session.Turn do
   # (`Helyx.Session.ToolQueue`), `approval_chains` the approval requests
   # of the provider for calls of its own tools
   # (`Helyx.Session.ApprovalChains`), `owners` the owner of each open call
-  # that a request named (`Helyx.Session.Server.Approvals.own/3`), `asks`
+  # that a request named (`Helyx.Session.Server.Approvals`), `asks`
   # the open asks of its calls, oldest first, and `askers` the call and
   # hook Tasks of the turn that may ask, by pid, with the session's
   # monitor and their kind (`Helyx.Session.Server.Asks`). `compact` is

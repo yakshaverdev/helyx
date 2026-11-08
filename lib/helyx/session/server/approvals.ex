@@ -2,10 +2,11 @@ defmodule Helyx.Session.Server.Approvals do
   @moduledoc false
   # The approval requests of the provider for calls of its own tools
   # (ADR 0013 §4, `docs/features/hooks.md`, "Harness approvals"): the only
-  # writer of `approval_chains` in `Helyx.Session.Turn`. A request names an
-  # open call of the turn that the provider runs itself; the `before_tool`
-  # chain of that call decides it, in a Task of the hands, and the session
-  # answers the provider with `{:approval, turn_id, approval_id, decision}`.
+  # writer of `approval_chains` and `owners` in `Helyx.Session.Turn`. A
+  # request names an open call of the turn that the provider runs itself;
+  # the `before_tool` chain of that call decides it, in a Task of the hands,
+  # and the session answers the provider with `{:approval, turn_id,
+  # approval_id, decision}`.
   # Every request of a provider process that the session did not stop gets
   # exactly one answer: the provider waits for it.
   #
@@ -14,7 +15,7 @@ defmodule Helyx.Session.Server.Approvals do
   # one whose approval chain runs or waits is the provider's own. Once Core
   # answered its request the session forgets both, so `owners` in
   # `Helyx.Session.Turn` keeps the owner of each open call that a request
-  # named (`own/3`), and `Records` drops it at the call's result.
+  # named (`own/3`), and `drop/2` drops it at the call's result.
 
   import Helyx.Session.Server.State, only: [ask: 4, tool_context: 2]
 
@@ -61,6 +62,18 @@ defmodule Helyx.Session.Server.Approvals do
       else: put_owner(state, call_id, owner)
   end
 
+  # A result of a call `call_id` joined the transcript (`Records`). Its
+  # owner goes when no open call keeps the id: two calls of one message
+  # can share an id, and a result answers the first open one.
+  def drop(%State{activity: %Turn{owners: owners} = turn} = state, call_id)
+      when is_map_key(owners, call_id) do
+    if open_call(state, call_id),
+      do: state,
+      else: %{state | activity: %{turn | owners: Map.delete(owners, call_id)}}
+  end
+
+  def drop(state, _call_id), do: state
+
   # A request of a turn that is not current, from the provider process
   # `pid`: denied, as a late tool request gets `aborted`.
   def late(state, pid, turn_id, approval_id) do
@@ -91,9 +104,9 @@ defmodule Helyx.Session.Server.Approvals do
       Enum.find(Transcript.open_calls(state.transcript), &(&1.id == call_id))
   end
 
-  # The caller found the open call `call_id`. The first owner stays.
+  # The caller found the open call `call_id`, and no other owner holds it.
   defp put_owner(%State{activity: %Turn{owners: owners} = turn} = state, call_id, owner),
-    do: %{state | activity: %{turn | owners: Map.put_new(owners, call_id, owner)}}
+    do: %{state | activity: %{turn | owners: Map.put(owners, call_id, owner)}}
 
   defp apply_step(%State{activity: turn} = state, {chains, effects}) do
     turn = %{turn | approval_chains: chains}

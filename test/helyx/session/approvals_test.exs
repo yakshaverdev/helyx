@@ -76,6 +76,14 @@ defmodule Helyx.Session.ApprovalsTest do
     end)
   end
 
+  # A hook that reports its pid and allows the call at `:go`.
+  defp gated(core, test) do
+    Hook.script(core, Hook.A, :before_tool, fn _ ->
+      send(test, {:deciding, self()})
+      receive do: (:go -> :allow)
+    end)
+  end
+
   defp hook_entries(dir) do
     [path] = Path.wildcard(Path.join([dir, "*", "*.jsonl"]))
 
@@ -100,8 +108,8 @@ defmodule Helyx.Session.ApprovalsTest do
     events(pid, turn_id, [{:tool_call, @call}, {:approval, "0", "i1"}])
 
     assert_receive {:conn, :approval, ^pid, {:approval, ^turn_id, "0", :allow}}
-    assert_received {:hook, Hook.A, :before_tool, input}
-    assert_received {:hook, Hook.B, :before_tool, _input}
+    assert_receive {:hook, Hook.A, :before_tool, input}
+    assert_receive {:hook, Hook.B, :before_tool, _input}
 
     assert %{
              tool: "fileChange",
@@ -296,7 +304,7 @@ defmodule Helyx.Session.ApprovalsTest do
     ])
 
     assert {:approval, ^turn_id, "0", :allow} = next_request(pid, [:approval])
-    assert_received {:hook, Hook.A, :before_tool, %{call_id: "i1", provider: "conn"}}
+    assert_receive {:hook, Hook.A, :before_tool, %{call_id: "i1", provider: "conn"}}
   end
 
   test "a call that is open in the tool queue is no call of the provider's own tools: denied" do
@@ -340,13 +348,7 @@ defmodule Helyx.Session.ApprovalsTest do
 
   test "a decision that comes after its turn ended is dropped: the request has one answer" do
     core = core([Hook.A])
-    test = self()
-
-    Hook.script(core, Hook.A, :before_tool, fn _ ->
-      send(test, {:deciding, self()})
-      receive do: (:go -> :allow)
-    end)
-
+    gated(core, self())
     {session, pid, turn_id} = turn(core)
     events(pid, turn_id, [{:tool_call, @call}, {:approval, "0", "i1"}])
     assert_receive {:deciding, hook}
@@ -408,13 +410,16 @@ defmodule Helyx.Session.ApprovalsTest do
 
     test "a call that opens after its tool request is the Helyx call's at the answer" do
       core = core([Hook.A], [Helyx.Test.Tool.Upcase])
+      gated(core, self())
       {_session, pid, turn_id} = turn(core)
+      events(pid, turn_id, [{:tool_request, "c1", "upcase", %{"text" => "hi"}}])
+      assert_receive {:deciding, hook}
 
-      events(pid, turn_id, [
-        {:tool_request, "c1", "upcase", %{"text" => "hi"}},
-        {:tool_call, @upcase}
-      ])
-
+      # The session emits the update after it took the call, so the call is
+      # open before the hook lets the tool run and the hands answer.
+      events(pid, turn_id, [{:tool_call, @upcase}])
+      assert_receive {:helyx_event, %{type: :message_update, data: %{tool_call: %{id: "c1"}}}}
+      send(hook, :go)
       assert {:tool_result, ^turn_id, "c1", {:ok, "HI"}} = next_request(pid, [:tool_result])
 
       events(pid, turn_id, [{:approval, "0", "c1"}])
@@ -482,6 +487,80 @@ defmodule Helyx.Session.ApprovalsTest do
       ])
 
       assert {:tool_result, ^turn_id, "i1", {:ok, "HI"}} = next_request(pid, [:tool_result])
+    end
+
+    test "two calls with one id in one message: the owner stays while the second is open" do
+      core = core([Hook.A], [Helyx.Test.Tool.Upcase])
+      {_session, pid, turn_id} = turn(core)
+
+      events(pid, turn_id, [
+        {:tool_call, @upcase},
+        {:tool_call, @upcase},
+        {:tool_request, "c1", "upcase", %{"text" => "hi"}}
+      ])
+
+      assert {:tool_result, ^turn_id, "c1", {:ok, "HI"}} = next_request(pid, [:tool_result])
+      assert_receive {:hook, Hook.A, :before_tool, %{call_id: "c1", provider: nil}}
+      events(pid, turn_id, [{:tool_result, "c1", {:ok, "HI"}}, {:approval, "0", "c1"}])
+      assert {:approval, ^turn_id, "0", {:deny, reason}} = next_request(pid, [:approval])
+      assert reason =~ "no open call"
+      refute_receive {:hook, Hook.A, :before_tool, %{provider: "conn"}}, @load_ms
+    end
+
+    test "two calls with one id in one message: a tool request after the first result of an approved call stops the provider" do
+      core = core([Hook.A])
+      {_session, pid, turn_id} = turn(core)
+      ref = Process.monitor(pid)
+      events(pid, turn_id, [{:tool_call, @call}, {:tool_call, @call}, {:approval, "0", "i1"}])
+      assert {:approval, ^turn_id, "0", :allow} = next_request(pid, [:approval])
+
+      events(pid, turn_id, [
+        {:tool_result, "i1", {:ok, "done"}},
+        {:tool_request, "i1", "fileChange", %{}}
+      ])
+
+      assert %{data: %{outcome: :error}} = List.last(collect_until(:turn_end))
+      assert_receive {:DOWN, ^ref, :process, ^pid, _reason}
+    end
+
+    test "the deny with no before_tool hook makes the call the provider's: a tool request for it stops the provider" do
+      {_session, pid, turn_id} = turn(core([]))
+      ref = Process.monitor(pid)
+      events(pid, turn_id, [{:tool_call, @call}, {:approval, "0", "i1"}])
+      assert {:approval, ^turn_id, "0", {:deny, reason}} = next_request(pid, [:approval])
+      assert reason =~ "no before_tool hook"
+
+      events(pid, turn_id, [{:tool_request, "i1", "fileChange", %{}}])
+      assert %{data: %{outcome: :error}} = List.last(collect_until(:turn_end))
+      assert_receive {:DOWN, ^ref, :process, ^pid, _reason}
+    end
+
+    # The session stops the provider process (a pending approval id), and
+    # the end of the turn denies no request to it: a send trace of the
+    # session shows what it sends.
+    test "a provider process that the session stopped gets no deny of its pending request" do
+      core = core([Hook.A])
+      blocking(core, self())
+      {session, pid, turn_id} = turn(core)
+      events(pid, turn_id, [{:tool_call, @call}, {:approval, "0", "i1"}])
+      assert_receive {:deciding, "fileChange"}
+
+      spid = Session.pid(session)
+      1 = :erlang.trace(spid, true, [:send])
+      events(pid, turn_id, [{:approval, "0", "i1"}])
+      assert %{data: %{outcome: :error}} = List.last(collect_until(:turn_end))
+      # The trace works: the session's events to this process are traced.
+      assert_receive {:trace, ^spid, :send, {:helyx_event, %{type: :turn_end}}, _to}
+
+      # A send to the dead provider process is traced as
+      # `send_to_non_existing_process`.
+      refute_receive {:trace, ^spid, :send_to_non_existing_process,
+                      {:provider_request, _, _, {:approval, _, _, _}}, _},
+                     @load_ms
+
+      refute_received {:trace, ^spid, :send, {:provider_request, _, _, {:approval, _, _, _}}, _}
+
+      :erlang.trace(spid, false, [:send])
     end
   end
 end

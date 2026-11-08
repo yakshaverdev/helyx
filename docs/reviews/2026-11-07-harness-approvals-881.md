@@ -129,3 +129,44 @@ The failure-path agent found the other paths of the mechanism held: steer, `mess
 
 The cycle ends after round 1: finding 25 is another defect on the binding. The commit holds the code as round 1 reviewed it; findings 25 to 31 are open.
 
+## Fourth cycle (2026-11-08)
+
+Orchestrator decisions of 2026-11-08, logged for the owner, on the open findings of the third cycle: 25, fix (drop an owner only when no open call keeps the id; a test of two calls with one id in one message); 26, accepted in writing as a stated hole with its reason, and `hooks.md` names it as the one exception to the deny of ADR 0013 §4; 27, keep the open-call scope, and the three texts say "open call"; 28 to 31, fixed (two tests, the "Derived" sentence, the test that relied on two senders); 32 stays rejected. Owner rule of 2026-11-08: decide from prior art without asking, take the simplest choice that keeps the written rules, and list it under "Assumptions". A further defect on the binding ends the cycle: the reviewed code is committed and reported.
+
+The change: `Approvals.drop/2` (the only writer of `owners` with `own/3`) keeps an owner while an open call keeps the id; `Records` calls it after a result joins. Tests in `approvals_test.exs`: two calls with one id in one message (both orders), the owner that the deny with no hook records, a stopped provider process gets no deny (a send trace of the session; a send to the dead process is traced as `send_to_non_existing_process`), and the test of a call that opens after its tool request is gated on the session's `message_update` event. Each new test fails without the code that it guards (checked by a one-function mutation).
+
+## Round 1 of the fourth cycle (full)
+
+Base: the merge base `9bebab64`. Bounds sensor:
+
+```text
+bounds sensor: 9 candidate functions, 2 flagged, 0 without an answer
+  lib/helyx/session/ask.ex:22  WAIT  def await_go do
+  plugins/bundled/lib/helyx/provider/codex.ex:224  SIZE  defp dispatch(%{"id" => rpc_id, "method" => "item/tool/call"
+```
+
+The failure-path agent died at the usage limit of the model account and was run again.
+
+| # | Source | Finding | Reproduced | State |
+|---|---|---|---|---|
+| 33 | Codex (high), spec (c)3 | A reused id across messages inherits an ended call's owner: an old call gets its `aborted` result at the close of the next message while that open message holds a new call with the same id, and `drop/2` keeps the owner because `open_call/2` also finds the open message's call. Then an approval request for the new call is denied as a Helyx call, or a Helyx tool request for it stops the provider as an approved call. This breaks the written ended-id rule (ADR 0013 §4, #369: an ended id is not checked) and the "Ended ids" item of `hooks.md`. Only a reused call id reaches it; no provider of the repository reuses one. | yes, spec probes P2b and P2c | **Open defect on the binding**; the cycle ends here. Decision, not built: `drop/2` keeps the owner only while another open call of the same message keeps the id (`Transcript.open_calls/1`, not the open message), so a reused id in a later message starts with no owner, as the ended-id rule says; a test of each direction. |
+| 34 | standards, spec | The `Helyx.Provider` line ("an approval request for an open call that a Helyx tool request named is denied") and "no open call is both" (`hooks.md`, the `ToolRuns` comment) state no exception; the accepted hole of finding 26 is one. | yes, spec probe P1 | Open: point to the exception in `hooks.md`. |
+| 35 | spec | The Bounds row of `owners` says "an entry goes at its call's result", without the `aborted` result and the open call that keeps the id. | n/a (text) | Open |
+| 36 | standards | `next_request/2` in `approvals_test.exs` gives up after 5,000 ms (`flunk`), a second cap beside the single wait of `test_helper.exs` (`Helyx.Test.Events.wait_ms/0`, #295, #193). From the second cycle. | n/a | Open: use `wait_ms()`. |
+| 37 | standards | No test of the drop at an `aborted` result (a close or a steer) with two calls of one id; the "Ended ids" items have probes only. | probes passed (failure path: three calls with one id, a steer) | Open |
+| 38 | standards (judgement) | `drop(state, _call_id)` also takes a state whose activity is no turn, which no caller makes (AGENTS.md: no fallback for a state that no caller can make). | n/a | Open: narrow it to `%State{activity: %Turn{}}`. |
+| 39 | spec | Test "a call that opens after its tool request" accepts any deny; `reason =~ "no open call"` would make it stricter. | n/a | Open |
+| 40 | standards (judgement) | Finding 26 of this record still said "Open question for the owner" while `hooks.md` cites the decision. | n/a | Resolved by the decisions of this cycle above. |
+
+Judgement calls, open: the open-calls lookup in both `Records.tool_result/3` and `Approvals.open_call/2`, and `drop/2` reads the open calls again for each result with an owner; "ended ids" for a call id whose request ended, not the call; the trace switched off outside `on_exit` (the session dies with the test).
+
+Failure path: no new path. Probes: three calls with one id (the owner stays to the third result), a taken steer with two open calls of one id (no owner left), a result of an earlier message's call while a new message is open, the turn end. Observations, not findings: a later call with a reused id can get the owner `:tool` at the answer of an earlier Helyx call through `own/3` (a reused id, and a deny is the safe side); at a `done` close the closed message's calls stay in `partial` until the turn becomes the `Wait`, so `drop/2` keeps their owner, and nothing reads it. Not reached: the Codex request ids, the bounds of the approval set at the limit, races of a decision with the turn end, an ask of a hook Task after its chain ended.
+
+The cycle ends after round 1: finding 33 is another defect on the binding. The commit holds the code as round 1 reviewed it; findings 33 to 39 are open.
+
+## Precommit of the fourth cycle
+
+The first run failed in the root tests: `approvals_test.exs` "a call of a closed message of the turn with no result is open" (from the second cycle) took the hook's report with `assert_received` after a provider report. The two come through two proxies, so two senders, and AGENTS.md (#592) allows no reliance on their order. Lines 111, 112, and 307 now use `assert_receive`. This test-only change came after round 1 and had no review round, because finding 33 ends the cycle; it changes no assertion, only the wait.
+
+The second run failed in one root test from #879, unchanged by this ticket: `hooks_test.exs:741` "the hands send the answer of a hook killed while it asks with its pid, before the next record" waited 30 s for `{:asking, hook}`. `Helyx.Test.Hook.Short` has a limit of 100 ms, which counts the hook Task's wait for the session's go (`docs/features/hooks.md`); under the load of the parallel precommit the hook can be killed before its first line, so the test waits for a message that never comes. It passed 10 of 10 alone and with the seed of the run (34 of 34). The hook start of a call Task takes the same path as before the rebase (`Hands.State.chain_call/2` finds a call Task as `tool_call/2` did). Not fixed here: a test of #879 that bounds the start of a hook by wall-clock time (AGENTS.md, #193); precommit ran again.
+

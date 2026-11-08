@@ -15,4 +15,6 @@ Open after review round 3, the last: an approval request for a Helyx call that C
 
 Third cycle (2026-11-08): rebased over #880, with the approval chain in `Helyx.Session.Hands.Approval` beside `Hands.Settle`. The session derives the owner of a call id where it can (tool queue, approval set, transcript) and keeps `owners` in `Helyx.Session.Turn` for the open calls whose request Core answered, which no state holds; bounded by the open calls, 2 × 1,024. Findings 21 to 24 are fixed. Round 1 found another defect on the binding (two calls with one id in one message lose their owner, finding 25), so the cycle stopped there with findings 25 to 31 open; two of them are questions for the owner (the "Not covered" case against ADR 0013 §4, and the open-call scope against "of this turn").
 
-The ticket has no triage comment; the decisions come from ADR 0013 and the owner's answers of 2026-11-07.
+Fourth cycle (2026-11-08): findings 25 to 31 resolved by the orchestrator's decisions: an owner stays while an open call keeps its id, the accepted hole of a call that opens after its answered tool request is stated as the one exception to ADR 0013 §4, the texts say "open call", and the missing tests are added. Round 1 found a reused id across messages inheriting an ended call's owner (finding 33), another defect on the binding, so the cycle stopped with findings 33 to 39 open; the decided fix is the same-message scope of `drop/2`.
+
+The ticket has no triage comment; the decisions come from ADR 0013 and the owner's and orchestrator's answers of 2026-11-07 and 2026-11-08.

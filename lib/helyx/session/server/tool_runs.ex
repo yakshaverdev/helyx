@@ -14,10 +14,10 @@ defmodule Helyx.Session.Server.ToolRuns do
 
   # A request of the current turn, of `bytes` encoded call bytes. An open
   # call id stops the provider process: `{:stop, reason}`; so does the id
-  # of a call that an approval request of the turn named as a call that
-  # the provider runs itself, pending or answered (`docs/features/hooks.md`,
+  # of an open call that an approval request named as a call that the
+  # provider runs itself, pending or answered (`docs/features/hooks.md`,
   # "The owner of a call id"), so one call id never has two chains in the
-  # hands, and no call is both.
+  # hands, and no open call is both.
   def request(%State{activity: %Turn{} = turn} = state, %ToolCall{} = call, bytes, rejection) do
     # A call of an unknown tool runs alone; the hands answer it with an error.
     concurrent? = match?({_tool, true}, state.tools[call.name])
