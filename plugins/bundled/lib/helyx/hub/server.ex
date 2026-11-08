@@ -7,7 +7,10 @@ defmodule Helyx.Hub.Server do
 
   use GenServer
 
-  alias Helyx.Hub.Rules
+  alias Helyx.Hub.{Live, Records, Rules}
+
+  # The read of the live sessions of the Core at the start (decision 14).
+  @seed_ms 5_000
 
   # The caps of the operator API (Bounds).
   @max_users 64
@@ -22,7 +25,8 @@ defmodule Helyx.Hub.Server do
     with {:ok, store} <- config.store.open(path: config.path) do
       case default_owner(config.store, store, config.default_owner) do
         {:ok, owner_id} ->
-          {:ok, Map.merge(config, %{db: store, default_owner_id: owner_id})}
+          state = Map.merge(config, %{db: store, default_owner_id: owner_id})
+          {:ok, Live.init(state), {:continue, :live}}
 
         {:error, _} = error ->
           config.store.close(store)
@@ -50,14 +54,123 @@ defmodule Helyx.Hub.Server do
     end
   end
 
+  # Every live session of the Core enters the live set once, read with a
+  # deadline; past it, or on a failed read, the set starts empty (decision
+  # 14). The read runs in a process with a monitor and no link, and gives its
+  # answer as its exit reason: the Hub, which traps exits, gets one `:DOWN`
+  # and no `:EXIT`, and a read past its deadline is killed and its `:DOWN`
+  # taken here, so no message of the read comes after the start.
   @impl true
-  def handle_call({:hub, deadline, request}, _from, state) do
+  def handle_continue(:live, state) do
+    core = state.core
+    {pid, ref} = spawn_monitor(fn -> exit({:live, live_sessions(core)}) end)
+
+    sessions =
+      receive do
+        {:DOWN, ^ref, :process, ^pid, {:live, sessions}} -> sessions
+        {:DOWN, ^ref, :process, ^pid, _reason} -> []
+      after
+        @seed_ms ->
+          Process.exit(pid, :kill)
+
+          receive do
+            {:DOWN, ^ref, :process, ^pid, _reason} -> []
+          end
+      end
+
+    {:noreply, Live.seed(state, sessions)}
+  end
+
+  defp live_sessions(core) do
+    for live <- Helyx.Sessions.list_live(core),
+        pid = Helyx.Session.pid(%Helyx.Session{id: live.id, core: core}),
+        do: {live.id, pid}
+  end
+
+  @impl true
+  def handle_call({:hub, deadline, request}, {caller, _tag}, state) do
     # A call taken at or past its deadline is dropped before it reads or
     # writes: its caller already exited on its timeout.
-    if System.monotonic_time(:millisecond) >= deadline,
-      do: {:noreply, state},
-      else: {:reply, handle(request, deadline, state), state}
+    if System.monotonic_time(:millisecond) >= deadline do
+      {:noreply, state}
+    else
+      {reply, state} = serve(request, caller, deadline, state)
+      {:reply, reply, state}
+    end
   end
+
+  # The requests that take or end a place of decision 14; the place is the
+  # caller's, the process that runs the request.
+  defp serve({:start, auth, _cwd_bytes} = request, caller, deadline, state) do
+    with :ok <- Rules.handle(request, deadline, state),
+         {:ok, state} <-
+           Live.reserve(state, auth.user, caller, auth.user != state.default_owner_id) do
+      {:ok, state}
+    else
+      error -> {error, state}
+    end
+  end
+
+  # The place comes before the touch of the record, so a resume refused at
+  # the cap moves nothing.
+  defp serve({:resume, auth, id, exists?, running?}, caller, deadline, state) do
+    with :ok <- Rules.handle({:session, auth, :resume, id, exists?, nil}, deadline, state),
+         {:ok, state} <- place(state, auth.user, caller, id, running?) do
+      touched(Rules.touch(id, {:touch, nil}, deadline, state), :ok, caller, state)
+    else
+      error -> {error, state}
+    end
+  end
+
+  # The session of the resume of a folder is known only here: whether it
+  # runs is a Registry lookup (`Helyx.Session.pid/1`), which does not wait.
+  # A derived record has no row to touch.
+  defp serve({:newest, auth, _cwd, _scanned} = request, caller, deadline, state) do
+    with {:ok, id, kind} <- Records.handle(request, deadline, state),
+         running? = Helyx.Session.pid(%Helyx.Session{id: id, core: state.core}) != nil,
+         {:ok, state} <- place(state, auth.user, caller, id, running?) do
+      touch = if kind == :stored, do: {:touch, nil}
+      touched(Rules.touch(id, touch, deadline, state), {:ok, id}, caller, state)
+    else
+      error -> {error, state}
+    end
+  end
+
+  defp serve({:started, auth, start, pid}, caller, deadline, state),
+    do:
+      {Rules.handle({:started, auth, start}, deadline, state),
+       Live.started(state, caller, start.session_id, pid)}
+
+  defp serve({:resumed, auth, id, pid}, caller, deadline, state),
+    do: {Rules.handle({:credential, auth}, deadline, state), Live.started(state, caller, id, pid)}
+
+  defp serve(:release, caller, _deadline, state), do: {:ok, Live.release(state, caller)}
+
+  defp serve(request, _caller, deadline, state), do: {handle(request, deadline, state), state}
+
+  # A resume whose touch fails is refused, and its place goes back.
+  defp touched(:ok, reply, _caller, state), do: {reply, state}
+  defp touched(error, _reply, caller, state), do: {error, Live.release(state, caller)}
+
+  # A resume of a session that runs, or whose entry of the live set already
+  # counts, attaches and needs no place.
+  defp place(state, user, caller, id, running?) do
+    if running? or Live.running?(state, id),
+      do: {:ok, state},
+      else: Live.reserve(state, user, caller, false)
+  end
+
+  @impl true
+  def handle_info({:DOWN, ref, :process, pid, _reason}, state),
+    do: {:noreply, Live.down(state, ref, pid)}
+
+  def handle_info({:place_expired, caller, monitor}, state),
+    do: {:noreply, Live.expired(state, caller, monitor)}
+
+  # Another message changes nothing (the exit of the parent of the Hub, which
+  # traps exits, stops it before this clause): a crash would lose the live
+  # set.
+  def handle_info(_message, state), do: {:noreply, state}
 
   @impl true
   def terminate(_reason, state), do: state.store.close(state.db)

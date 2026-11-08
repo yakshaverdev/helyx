@@ -5,8 +5,9 @@ defmodule Helyx.Hub.Access do
   # gives `{Helyx.Hub.Access, %{hub: hub, core: core, dir: sessions_dir,
   # default_owner: user_id}}`.
   # Each callback runs in the process of the transport that calls it, and
-  # each but `release` makes one Hub call, which first checks the
-  # credential: one that no longer holds closes the connection with 4403.
+  # makes one Hub call. Each but `release`, which only gives back a place,
+  # first checks the credential: one that no longer holds closes the
+  # connection with 4403.
 
   @behaviour Helyx.Transport.WebSocket.Authority
 
@@ -80,7 +81,7 @@ defmodule Helyx.Hub.Access do
   def check(arg, auth, "resume", %{"id" => id} = params),
     do:
       passed(
-        Hub.call(arg.hub, {:session, auth, :resume, id, found(arg, id) != nil, {:touch, nil}}),
+        Hub.call(arg.hub, {:resume, auth, id, found(arg, id) != nil, running?(arg, id)}),
         params
       )
 
@@ -108,7 +109,11 @@ defmodule Helyx.Hub.Access do
 
   # The existence check of decision 8, before the Hub call. An operation
   # that needs a running session asks the Registry.
-  defp running?(arg, id), do: Helyx.Session.pid(%Helyx.Session{id: id, core: arg.core}) != nil
+  defp running?(arg, id), do: session_pid(arg, id) != nil
+
+  # The process of a session, which the live set monitors after the start
+  # or resume that made or attached to it (decision 14).
+  defp session_pid(arg, id), do: Helyx.Session.pid(%Helyx.Session{id: id, core: arg.core})
 
   # `resume` and the record operations take the `cwd` and `model` of a
   # session that exists, or nil: the header of its file for a Core with a
@@ -321,15 +326,21 @@ defmodule Helyx.Hub.Access do
   def result(arg, auth, "start", params, %{"session" => id} = result) do
     start = %{session_id: id, cwd: params["cwd"], model: Map.get(params, "model")}
 
-    case Hub.call(arg.hub, {:started, auth, start}) do
+    case Hub.call(arg.hub, {:started, auth, start, session_pid(arg, id)}) do
       :ok -> {:ok, result}
       other -> refused(other)
     end
   end
 
-  def result(arg, auth, "resume", _params, result),
-    do: passed(Hub.call(arg.hub, {:credential, auth}), result)
+  def result(arg, auth, "resume", _params, %{"session" => id} = result),
+    do: passed(Hub.call(arg.hub, {:resumed, auth, id, session_pid(arg, id)}), result)
 
+  # The place of a start or resume whose Core call failed goes back at once
+  # (decision 14); a Hub that does not answer frees it at the `:DOWN` of the
+  # caller or after its 60,000 ms.
   @impl true
-  def release(_arg, _auth, _op, _params), do: :ok
+  def release(arg, _auth, _op, _params) do
+    _ = Hub.call(arg.hub, :release)
+    :ok
+  end
 end

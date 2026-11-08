@@ -133,6 +133,8 @@ defmodule Helyx.Hub.AccessTest do
     end
 
     test "a busy Hub and a Hub that is down close the hello with 4503", context do
+      # The Hub handled its start, so no message of it comes later.
+      :sys.get_state(context.hub)
       :erlang.suspend_process(context.hub)
       for _ <- 1..1_024, do: send(context.hub, :filler)
       socket = connect(context.port)

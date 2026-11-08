@@ -68,15 +68,17 @@ defmodule Helyx.Hub.Records do
 
   # The session of the `resume` of a folder (decision 7): the newer of the
   # newest own record of the folder and, for the default owner, the newest
-  # id of the scan with no row; its `active_at` moves as for the `resume` of
-  # its id. `scanned` maps each id of the scan to its `mtime`.
-  def handle({:newest, auth, cwd, scanned}, deadline, state) do
+  # id of the scan with no row, with its kind, `:stored` or `:derived`.
+  # `scanned` maps each id of the scan to its `mtime`. The touch of a stored
+  # winner comes after the place of the resume (`Helyx.Hub.Server`), so a
+  # resume refused at the cap moves nothing.
+  def handle({:newest, auth, cwd, scanned}, _deadline, state) do
     with :ok <- Rules.credential(auth, state),
          {:ok, derived} <- without_row(Map.keys(scanned), auth.user, state),
          {:ok, stored} <- newest_row(auth.user, cwd, state) do
       (stored ++ for(id <- derived, do: {Map.fetch!(scanned, id), id, :derived}))
       |> Enum.max_by(&Tuple.delete_at(&1, 2), fn -> nil end)
-      |> resume(deadline, state)
+      |> winner()
     end
   end
 
@@ -119,12 +121,8 @@ defmodule Helyx.Hub.Records do
     end
   end
 
-  defp resume(nil, _deadline, _state), do: {:error, :not_found}
-  defp resume({_time, id, :derived}, _deadline, _state), do: {:ok, id}
-
-  defp resume({_time, id, :stored}, deadline, %{store: mod, db: db}) do
-    with :ok <- mod.touch_record(db, id, System.os_time(:second), nil, deadline), do: {:ok, id}
-  end
+  defp winner(nil), do: {:error, :not_found}
+  defp winner({_time, id, kind}), do: {:ok, id, kind}
 
   defp unknown({:error, :not_found}), do: {:error, :unknown_project}
   defp unknown(other), do: other

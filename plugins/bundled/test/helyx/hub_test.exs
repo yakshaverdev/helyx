@@ -23,7 +23,10 @@ defmodule Helyx.HubTest do
         opts
       )
 
-    start_supervised!(Supervisor.child_spec({Hub, opts}, id: :hub))
+    hub = start_supervised!(Supervisor.child_spec({Hub, opts}, id: :hub))
+    # The Hub handled its start, so no message of it comes later.
+    :sys.get_state(hub)
+    hub
   end
 
   describe "start" do

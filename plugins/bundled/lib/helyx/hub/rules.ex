@@ -48,15 +48,13 @@ defmodule Helyx.Hub.Rules do
   end
 
   # A start of a user who is not the default owner writes a record at its
-  # result, so it needs a place among the records of its user and a `cwd`
-  # that a record holds.
-  def handle({:start, auth, cwd_bytes}, _deadline, %{store: mod, db: db} = state) do
+  # result, so it needs a `cwd` that a record holds; its place among the
+  # records of its user is a place of the start (`Helyx.Hub.Live`).
+  def handle({:start, auth, cwd_bytes}, _deadline, state) do
     with :ok <- credential(auth, state) do
-      cond do
-        auth.user == state.default_owner_id -> :ok
-        cwd_bytes not in 1..@max_cwd_bytes -> {:error, :bad_params}
-        true -> places(mod.count_records(db, auth.user))
-      end
+      if auth.user == state.default_owner_id or cwd_bytes in 1..@max_cwd_bytes,
+        do: :ok,
+        else: {:error, :bad_params}
     end
   end
 
@@ -138,10 +136,6 @@ defmodule Helyx.Hub.Rules do
   # derived record (`Helyx.Hub.Records`) checks too.
   def max_records, do: @max_records
 
-  defp places({:ok, n}) when n < @max_records, do: :ok
-  defp places({:ok, _n}), do: {:error, :too_many_records}
-  defp places(error), do: error
-
   # The access of a session: its row; for a session with no row that the
   # existence check confirmed, the derived record of the default owner
   # (decision 8); else `:missing`, which every rule refuses. `stored` tells
@@ -178,8 +172,8 @@ defmodule Helyx.Hub.Rules do
 
   # A resume or a user text that Hub authorized moves `active_at`, and the
   # first text sets `prompt` (Store schema).
-  defp touch(_session_id, nil, _deadline, _state), do: :ok
+  def touch(_session_id, nil, _deadline, _state), do: :ok
 
-  defp touch(session_id, {:touch, prompt}, deadline, %{store: mod, db: db}),
+  def touch(session_id, {:touch, prompt}, deadline, %{store: mod, db: db}),
     do: mod.touch_record(db, session_id, System.os_time(:second), prompt, deadline)
 end

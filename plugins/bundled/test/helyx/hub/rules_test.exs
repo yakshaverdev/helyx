@@ -1,7 +1,7 @@
 defmodule Helyx.Hub.RulesTest do
   use ExUnit.Case, async: true
 
-  alias Helyx.Hub.Rules
+  alias Helyx.Hub.{Live, Rules}
   alias Helyx.Hub.Store.SQLite
 
   # A Hub state on a store in memory with three users: the default owner,
@@ -74,7 +74,7 @@ defmodule Helyx.Hub.RulesTest do
              {:ok, ["SHAREDxxxxxx", "NOROWxxxxxxx"]}
   end
 
-  test "a user holds at most 10,000 records: the check of a start at 9,999 and at 10,000",
+  test "a user holds at most 10,000 records: the place of a start at 9,999 and at 10,000",
        %{state: state, db: db} do
     :ok = Exqlite.Sqlite3.execute(db, "BEGIN")
 
@@ -84,11 +84,19 @@ defmodule Helyx.Hub.RulesTest do
     :ok = Exqlite.Sqlite3.execute(db, "COMMIT")
     auth = %{user: "ann", token: nil}
 
-    assert Rules.handle({:start, auth, 10}, :infinity, state) == :ok
-    row(db, "s10000xxxxxx", "ann", "private")
-    assert Rules.handle({:start, auth, 10}, :infinity, state) == {:error, :too_many_records}
+    # The place of a start holds the cap (decision 14): at 9,999 rows a
+    # start of ann gets a place, which counts until its result; a second
+    # start finds the cap.
+    state = state |> Map.put(:max_live, 64) |> Live.init()
+    first = spawn_link(fn -> Process.sleep(:infinity) end)
+    second = spawn_link(fn -> Process.sleep(:infinity) end)
+    assert {:ok, state} = Live.reserve(state, "ann", first, true)
+    assert Live.reserve(state, "ann", second, true) == {:error, :too_many_records}
     # The default owner writes no record at a start.
-    assert Rules.handle({:start, %{auth | user: "owner"}, 10}, :infinity, state) == :ok
+    assert {:ok, _} = Live.reserve(state, "owner", second, false)
+    state = Live.release(state, first)
+    row(db, "s10000xxxxxx", "ann", "private")
+    assert Live.reserve(state, "ann", first, true) == {:error, :too_many_records}
 
     # The write of the result holds the same cap.
     start = %{session_id: "s10001xxxxxx", cwd: "/w", model: "fake/echo"}
