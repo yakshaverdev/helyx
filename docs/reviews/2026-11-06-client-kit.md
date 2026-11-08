@@ -408,3 +408,54 @@ Both agents of the first run died at the usage limit and were run again. The rep
 | 2 | spec (judgement) | A subscribe reply clears `replaced` also when it is a replay of the instance just named replaced: a reconnect whose subscribe with `after` races the `history` reply, then the end of that instance, holds the follow. It needs a race between two processes of the server. | Open; the fix of #1 closes it. |
 | 3 | spec (doc) | The Bounds row "requests that reconcile a session" leaves out the third end of a hold: a `history` reply that lifts an end. | Open, doc only. |
 | 4 | spec (doc) | `Wait::Connection` says "no connection has taken the handshake"; a connection that broke after the welcome gives it too. | Open, doc only. |
+
+# Cycle E2: the open items of cycle E (#860, judgement of the orchestrator of 2026-11-07)
+
+Base `f27afe40`. The judgement:
+
+- Item 1: a send that fails after the binary-frame mark stops the app, as the mark says.
+- Item 2: a failed pong flush keeps the buffered text frame; deliver what was read before the stop, or state why it cannot be.
+- Item 3: the doc claim of the silence row.
+
+Each defect was reproduced first, by a test that fails on the code of the base:
+
+- Item 1: the welcome and a binary frame in one write, then a subscribe of 3 MB that stalls on a stub that reads nothing until its send deadline. The app reconnected (`could not connect to …`), not stopped.
+- Item 2: a ping and a text frame from a socket whose writes fail. The read after the ping failed at the flush of the pong, and the text was lost.
+
+The cause of item 2: `tungstenite` 0.30 (`WebSocketContext::read`) flushes a pending pong before it parses, returns at a write error, and goes on at `WouldBlock`; the app ended the connection at that first error. (A first version of this record said that `tungstenite` tries the flush again at each later read; the spec review of round 1 showed by probe that it does not, so the read after the failed one gives the frames that it holds.) The mechanism is in the tap, which the app already puts under the socket and which owns both directions, so the app knows that a write failed and no read waits on a dead socket:
+
+- It keeps a write that fails, a timeout too, and gives `WouldBlock` in its place, so `tungstenite` gives the frames that it read before.
+- It fails every read after that, so the connection ends at the first read that needs the socket.
+- One function ends the connection after an error: a break when the binary mark is set, whatever error ended it (item 1), and a lost connection otherwise.
+- A failed send no longer ends the loop while the tap keeps the failure: the reads give what was read before, then end it.
+
+Item 3: the silence row says that only a whole message read moves the instant, a ping too.
+
+Tests: "a failed send after a binary frame is a break" in `app/tests/deadlines.rs`, and "a failed pong keeps the frames read before it" in the unit tests of `socket`.
+
+Bounds sensor: `bounds sensor: 0 candidate functions, 0 flagged, 0 without an answer`.
+
+## Round 1 (full: simplify, standards, spec, failure path, Codex)
+
+Simplify moved the guard of a failed write into one function of the tap, and the rule of `send` into `send`. It also noted that the first read arm took any error after a failed write, so a frame that the WebSocket refuses would end as a lost connection: the arm went, and only an I/O error of the tap ends the connection that way.
+
+| # | Source | Finding | Resolution |
+|---|---|---|---|
+| 1 | spec, failure path (both reproduced; introduced in this cycle) | A write that fails during the upgrade became `WouldBlock`, which the handshake of `tungstenite` takes for a write to try again: `open` spun with no end, at a full core, and the watchdog could not end it, since the tap no longer touched the socket. A server that resets new connections does it. | The tap keeps a failed write only after the HTTP reply of the upgrade; test "a failed write of the upgrade ends it". |
+| 2 | failure path (reproduced; also on the base) | A close and a binary frame in one read: the close ended the connection as a close, which reconnects. | A close after the mark is a break; test "a close with a binary frame is a break", which fails on the base. |
+| 3 | Codex (high, by reading) | After a failed send, `send` gave `Ok`, and the loop took the next commands of the window, whose frames went nowhere. | After a failed write, the loop takes no command, which waits for the next connection, and `send` sends no frame. This also bounds the write buffer of `tungstenite` (standards #9). |
+| 4 | standards | No test of "every later read of the tap fails": the last assert passed because the input was used up. No test of the send path: undoing it kept every test green. The test of item 1 did not prove that its send failed. | The unit test reads from a socket that has more, and checks the error of the tap; test "a failed send keeps the frames read before it" (the reply to `sessions.live` read with the welcome reaches the window; it fails on the base); the test of item 1 checks that it ended after the send wait. |
+| 5 | standards, spec (doc) | "The frames that the server sent before a failed write reach the client": only the frames that `tungstenite` read do. The record said that `tungstenite` tries the flush again at each later read: it does not (spec probe). "After the mark, any end is a break": a close was not. The silence row said "a whole frame". The module doc of `deadlines.rs`. | Fixed. |
+| 6 | standards (judgement) | The closure `lost` also gives a break. `send` swallowed any error once a write failed. | Renamed `ended`; `send` takes only the `WouldBlock` of the tap as no error. |
+
+## Round 2 (reduced: spec, failure path)
+
+The failure-path agent died once at the usage limit and was run again. The reproductions of round 1 hold fixed. The failure-path agent crossed the states of the socket with the events of the app through `run_with` against a stub. It tested eleven cells: a reset at each step it reached, a half-closed stub, the silence, no reply to the upgrade, a send that stalls with a binary frame, and two commands after a failed send. Each ended within its wait and a margin of 3 s, with the CPU time under half the wall time. No frame came twice, and the reply read before a reset reached the window in 5 of 5 runs. The spec agent also found no defect. No defect reproduced, so the loop ends. Wording and judgement:
+
+| # | Source | Finding | Resolution |
+|---|---|---|---|
+| 1 | spec (doc) | "After the mark, any end is a break": `refused` read with a binary frame keeps its own line; both stop the app. | The bullet names it. |
+| 2 | spec (judgement) | A close and a binary frame 200 ms apart reconnect, while in one read they are a break: the end depends on how TCP splits the bytes. | Recorded; the bullet says that the mark is set only by the bytes that a read took, as for a failed write. |
+| 3 | spec (doc) | Comments and the bullet still said that a frame moves the silence; the code moves it at each message. | Fixed in `socket.rs`, `net.rs`, the bullet, and the record. |
+| 4 | spec (doc) | The test bullet did not name the close test. | Named. |
+| 5 | failure path (by reading, not run) | `broken` and the path of `refused` send a close that is not under the send deadline; with a server that reads nothing, it waits for the write timeout of the socket, 5,000 ms, or the read deadline. | Bounded by the write timeout; recorded. |

@@ -52,7 +52,7 @@ pub fn live_watchdogs() -> usize {
 }
 
 /// The deadlines of one socket, as instants in milliseconds from its start:
-/// the read deadline, which only a frame read moves, and the deadline of a
+/// the read deadline, which only a message read moves, and the deadline of a
 /// batch of sends. A thread checks them every `poll` and shuts the socket
 /// down when one has passed, whatever read or write is in progress; it ends
 /// then, or within `poll` of the drop of the `Watchdog`. It sends no close
@@ -107,7 +107,7 @@ impl Watchdog {
         (self.start.elapsed() + wait).as_millis() as u64
     }
 
-    /// A frame was read: the read deadline is `wait` from now.
+    /// A message was read: the read deadline is `wait` from now.
     pub fn heard(&self, wait: Duration) {
         self.read_at.store(self.at(wait), Ordering::SeqCst);
     }
@@ -141,6 +141,13 @@ impl Drop for Watchdog {
 /// header of each frame. At the header of a binary frame it gives only the
 /// bytes before it, and every later read fails: the schema has text frames
 /// only, and the read returns before the WebSocket joins the fragments.
+///
+/// After the upgrade, a write that fails, a timeout too, is kept: the tap
+/// gives `WouldBlock` in its place, which the read of `tungstenite` takes for
+/// a pong that waits, so it still gives the frames that it read before, and
+/// every later read of the tap fails at once. So the frames that
+/// `tungstenite` read before a failed write reach the client, and the
+/// connection then ends with no wait on a dead socket.
 pub(crate) struct Tap<S = TcpStream> {
     stream: S,
     /// Until the end of the HTTP reply: whether its status line came, and
@@ -150,6 +157,7 @@ pub(crate) struct Tap<S = TcpStream> {
     /// The payload bytes of the frame that are still to come.
     skip: u64,
     binary: bool,
+    write_failed: bool,
 }
 
 impl<S> Tap<S> {
@@ -160,7 +168,32 @@ impl<S> Tap<S> {
             header: Vec::with_capacity(14),
             skip: 0,
             binary: false,
+            write_failed: false,
         }
+    }
+
+    /// A write failed: the connection ends at the next read of the socket.
+    pub fn write_failed(&self) -> bool {
+        self.write_failed
+    }
+
+    /// `write` to the stream, unless a write failed before: after the HTTP
+    /// reply of the upgrade, keeps a failed write and gives `WouldBlock` in
+    /// its place. During the upgrade the error goes on as it is: the
+    /// handshake of `tungstenite` would take `WouldBlock` for a write to try
+    /// again, with no end.
+    fn kept<T>(&mut self, write: impl FnOnce(&mut S) -> std::io::Result<T>) -> std::io::Result<T> {
+        if self.write_failed {
+            return Err(std::io::ErrorKind::WouldBlock.into());
+        }
+        let upgraded = self.http.is_none();
+        write(&mut self.stream).map_err(|error| match upgraded {
+            true => {
+                self.write_failed = true;
+                std::io::ErrorKind::WouldBlock.into()
+            }
+            false => error,
+        })
     }
 
     /// The server sent a binary frame.
@@ -215,6 +248,9 @@ impl<S: Read> Read for Tap<S> {
         if self.binary {
             return Err(binary());
         }
+        if self.write_failed {
+            return Err(std::io::Error::other("a write failed"));
+        }
         let n = self.stream.read(buf)?;
         let (mut at, mut start) = (0, 0);
         while at < n {
@@ -241,18 +277,87 @@ impl<S: Read> Read for Tap<S> {
 
 impl<S: Write> Write for Tap<S> {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        self.stream.write(buf)
+        self.kept(|stream| stream.write(buf))
     }
 
     fn flush(&mut self) -> std::io::Result<()> {
-        self.stream.flush()
+        self.kept(S::flush)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::Tap;
-    use std::io::{Cursor, Read};
+    use std::io::{Cursor, Read, Write};
+    use tungstenite::protocol::Role;
+    use tungstenite::{Message, WebSocket};
+
+    /// A socket that gives one chunk for each read and fails each write.
+    struct NoWrite(Vec<Vec<u8>>);
+
+    impl Read for NoWrite {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            match self.0.first_mut() {
+                None => Ok(0),
+                Some(chunk) => {
+                    let n = chunk.len().min(buf.len());
+                    buf[..n].copy_from_slice(&chunk[..n]);
+                    chunk.drain(..n);
+                    if chunk.is_empty() {
+                        self.0.remove(0);
+                    }
+                    Ok(n)
+                }
+            }
+        }
+    }
+
+    impl Write for NoWrite {
+        fn write(&mut self, _buf: &[u8]) -> std::io::Result<usize> {
+            Err(std::io::ErrorKind::BrokenPipe.into())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// `tungstenite` sends the pong of a ping at the start of the next read:
+    /// a pong that fails keeps the text frame that came with the ping, and
+    /// the next read of the tap fails, though the socket has more.
+    #[test]
+    fn a_failed_pong_keeps_the_frames_read_before_it() {
+        let first = vec![0x89, 0x00, 0x81, 0x02, b'h', b'i'];
+        let later = vec![0x81, 0x02, b'z', b'z'];
+        let tap = Tap {
+            http: None,
+            ..Tap::new(NoWrite(vec![first, later]))
+        };
+        let mut ws = WebSocket::from_raw_socket(tap, Role::Client, None);
+        assert_eq!(ws.read().unwrap(), Message::Ping(vec![].into()));
+        // The pong goes at the start of this read, and fails.
+        assert_eq!(ws.read().unwrap(), Message::text("hi"));
+        assert!(ws.get_ref().write_failed());
+        let Err(tungstenite::Error::Io(error)) = ws.read() else {
+            panic!("a read after a failed write")
+        };
+        assert_eq!(error.to_string(), "a write failed");
+        assert_eq!(ws.get_ref().stream.0.len(), 1);
+    }
+
+    /// During the upgrade a failed write goes on as it is, so the handshake
+    /// fails, and does not try again with no end.
+    #[test]
+    fn a_failed_write_of_the_upgrade_ends_it() {
+        let tap = Tap::new(NoWrite(vec![]));
+        let handshake = tungstenite::client::client("ws://127.0.0.1:1/", tap);
+        assert!(matches!(
+            handshake,
+            Err(tungstenite::HandshakeError::Failure(
+                tungstenite::Error::Io(_)
+            ))
+        ));
+    }
 
     /// The bytes that `tap` gives for `input`, read `chunk` bytes at a time,
     /// and whether it marked a binary frame.

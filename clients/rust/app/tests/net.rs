@@ -282,6 +282,21 @@ fn every_frame_before_a_binary_frame_is_taken() {
     }
 }
 
+/// After a binary frame, a close that came before it in the same read
+/// ends the connection as the break that the mark is.
+#[test]
+fn a_close_with_a_binary_frame_is_a_break() {
+    let line = against(|mut ws| {
+        welcome(&mut ws, "tok-q4");
+        let _live = next_text(&mut ws);
+        let bytes = [0x88, 0x02, 0x03, 0xe8, 0x02, 0x01, b'x'];
+        use std::io::Write;
+        let _ = ws.get_mut().write_all(&bytes);
+        let _ = ws.read();
+    });
+    assert_eq!(line, "the server broke the wire contract");
+}
+
 /// The line of a followed session that waits or is held says why.
 #[test]
 fn the_line_of_a_follow_says_why_it_waits() {

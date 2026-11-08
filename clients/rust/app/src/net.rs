@@ -97,7 +97,12 @@ fn connection(
     };
     shared.lock().unwrap().client.connect();
     let mut welcomed = false;
-    let lost = |welcomed: bool| {
+    // The end of the connection after an error: a break when the server
+    // sent a binary frame, whatever error ended it, else a lost connection.
+    let ended = |ws: &mut Socket, welcomed: bool| {
+        if ws.get_ref().binary() {
+            return broken(shared, ws);
+        }
         let next = shared.lock().unwrap().client.closed(None);
         let line = match (watchdog.fired(), welcomed, next) {
             (true, false, _) => format!(
@@ -110,18 +115,24 @@ fn connection(
         (next, line)
     };
     loop {
-        for command in commands.try_iter() {
+        // After a failed write, the commands wait for the next connection.
+        while !ws.get_ref().write_failed() {
+            let Ok(command) = commands.try_recv() else {
+                break;
+            };
             let frames = follow(&mut shared.lock().unwrap(), command);
             if send(&mut ws, &watchdog, waits, frames).is_err() {
-                return lost(welcomed);
+                return ended(&mut ws, welcomed);
             }
         }
+        // A binary frame at its first byte, or a write that failed: the tap
+        // gave the bytes before it, which the reads take frame by frame, and
+        // then fails the read with an I/O error, which ends the connection
+        // below; a frame that the WebSocket refuses is a break.
         let text = match ws.read() {
-            // A binary frame, at its first byte: the tap gave the frames
-            // before it, which the reads take one by one, and then fails the
-            // read.
-            Err(_) if ws.get_ref().binary() => return broken(shared, &mut ws),
             Ok(Message::Text(text)) => text,
+            // After a binary frame, a close ends the connection as a break.
+            Ok(Message::Close(_)) if ws.get_ref().binary() => return broken(shared, &mut ws),
             Ok(Message::Close(frame)) => {
                 let next = shared
                     .lock()
@@ -137,7 +148,7 @@ fn connection(
             }
             // A reset with no close frame is a lost connection, not a break.
             Err(Error::Protocol(ProtocolError::ResetWithoutClosingHandshake)) => {
-                return lost(welcomed);
+                return ended(&mut ws, welcomed);
             }
             // A binary message: the tap stops it at its first frame first.
             Ok(Message::Binary(_))
@@ -155,7 +166,7 @@ fn connection(
                 let _ = ws.flush();
                 continue;
             }
-            Err(_) => return lost(welcomed),
+            Err(_) => return ended(&mut ws, welcomed),
         };
         heard(&watchdog, welcomed, waits);
         let mut guard = shared.lock().unwrap();
@@ -199,12 +210,12 @@ fn connection(
         drop(guard);
         notify();
         if send(&mut ws, &watchdog, waits, frames).is_err() {
-            return lost(welcomed);
+            return ended(&mut ws, welcomed);
         }
     }
 }
 
-/// A frame was read: after the welcome, the silence starts again. Before
+/// A message was read: after the welcome, the silence starts again. Before
 /// it, the deadline of the welcome stands.
 fn heard(watchdog: &Watchdog, welcomed: bool, waits: Waits) {
     if welcomed {
@@ -283,23 +294,30 @@ fn follow(shared: &mut Shared, Command::Follow(session): Command) -> Vec<String>
 }
 
 /// Sends `frames` within the send wait in all. The read deadline does not
-/// move: the silence counts from the last frame read, however many frames
-/// go.
+/// move: the silence counts from the last message read, however many frames
+/// go. A write that the tap keeps is no error here: the connection ends at
+/// the next read, after the frames that `tungstenite` read before it, and
+/// no frame goes after it.
 fn send(
     ws: &mut Socket,
     watchdog: &Watchdog,
     waits: Waits,
     frames: Vec<String>,
 ) -> Result<(), Error> {
-    if frames.is_empty() {
+    if frames.is_empty() || ws.get_ref().write_failed() {
         return Ok(());
     }
     watchdog.sending(waits.send);
-    for frame in frames {
-        ws.send(Message::text(frame))?;
-    }
+    let sent = frames
+        .into_iter()
+        .try_for_each(|frame| ws.send(Message::text(frame)));
     watchdog.sent();
-    Ok(())
+    match sent {
+        Err(Error::Io(e)) if e.kind() == ErrorKind::WouldBlock && ws.get_ref().write_failed() => {
+            Ok(())
+        }
+        sent => sent,
+    }
 }
 
 fn broken(shared: &Mutex<Shared>, ws: &mut Socket) -> (Next, String) {

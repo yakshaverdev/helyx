@@ -1,6 +1,7 @@
 //! The deadlines of a connection with short waits, against a stub server on
 //! the loopback: the silence after the welcome while sends stall, the
-//! deadline of a batch of sends, and the TCP connect.
+//! deadline of a batch of sends, a send that fails after a binary frame and
+//! after a frame that the socket read, and the TCP connect.
 
 mod stub;
 
@@ -10,7 +11,7 @@ use std::net::{TcpListener, TcpStream};
 use std::sync::Mutex;
 use std::sync::mpsc::{Receiver, channel};
 use std::time::{Duration, Instant};
-use stub::{next_text, welcome};
+use stub::{LIVE, challenge, next_text, welcome};
 use tungstenite::WebSocket;
 
 /// A margin for load in a bound of elapsed time: other worktrees run tests
@@ -168,4 +169,82 @@ fn the_tcp_connect_ends_at_its_wait() {
     assert!(started.elapsed() >= waits.connect);
     assert!(started.elapsed() < waits.connect + LOAD_MARGIN);
     drop(listener);
+}
+
+/// A binary frame in the same read as the welcome marks the socket, and the
+/// welcome is taken; a send that then fails at its deadline ends as the
+/// break that the mark is, not as a lost connection that reconnects.
+#[test]
+fn a_failed_send_after_a_binary_frame_is_a_break() {
+    let waits = Waits {
+        silence: Duration::from_secs(20),
+        send: Duration::from_millis(300),
+        pause: Duration::ZERO,
+        poll: Duration::from_millis(50),
+        ..WAITS
+    };
+    let (stop, stopped) = channel::<()>();
+    let (server, stub) = stub::one(move |mut ws| {
+        challenge(&mut ws);
+        let _hello = next_text(&mut ws);
+        let welcome = br#"{"type":"welcome","protocol":3}"#;
+        let mut bytes = vec![0x81, welcome.len() as u8];
+        bytes.extend(welcome);
+        bytes.extend([0x02, 0x01, b'x']);
+        use std::io::Write;
+        ws.get_mut().write_all(&bytes).unwrap();
+        // Reads nothing more.
+        let _ = stopped.recv();
+    });
+    // A subscribe of 3 MB goes at the welcome, more than the socket takes.
+    let (send, receive) = channel();
+    send.send(Command::Follow("x".repeat(3_000_000))).unwrap();
+    let shared = Mutex::new(Shared::new("tok-q4".into()));
+    let started = Instant::now();
+    let line = net::run_with(&server, &shared, &receive, &|| {}, waits);
+    // The send failed at its deadline, not at the read of the mark.
+    assert!(started.elapsed() >= waits.send, "{:?}", started.elapsed());
+    stop.send(()).unwrap();
+    stub.join().unwrap();
+    assert_eq!(line, "the server broke the wire contract");
+}
+
+/// A send that fails keeps the frame that the socket read before it: the
+/// reply to `sessions.live` came in the same read as the welcome, and the
+/// window gets it before the connection ends.
+#[test]
+fn a_failed_send_keeps_the_frames_read_before_it() {
+    let waits = Waits {
+        silence: Duration::from_secs(20),
+        send: Duration::from_millis(300),
+        pause: Duration::ZERO,
+        poll: Duration::from_millis(50),
+        ..WAITS
+    };
+    let (stop, stopped) = channel::<()>();
+    let (server, stub) = stub::one(move |mut ws| {
+        challenge(&mut ws);
+        let _hello = next_text(&mut ws);
+        let welcome = br#"{"type":"welcome","protocol":3}"#;
+        let mut bytes = vec![0x81, welcome.len() as u8];
+        bytes.extend(welcome);
+        // The subscribe of the follow takes id 0 at the welcome, and
+        // `sessions.live` id 1.
+        let live = LIVE.replace(r#""id":"0""#, r#""id":"1""#);
+        bytes.extend([0x81, 126, (live.len() >> 8) as u8, live.len() as u8]);
+        bytes.extend(live.as_bytes());
+        use std::io::Write;
+        ws.get_mut().write_all(&bytes).unwrap();
+        // Reads nothing more.
+        let _ = stopped.recv();
+    });
+    let (send, receive) = channel();
+    send.send(Command::Follow("x".repeat(3_000_000))).unwrap();
+    let shared = Mutex::new(Shared::new("tok-q4".into()));
+    let line = net::run_with(&server, &shared, &receive, &|| {}, waits);
+    stop.send(()).unwrap();
+    stub.join().unwrap();
+    // It reconnected, and found no server.
+    assert!(line.starts_with("could not connect"), "{line}");
+    assert_eq!(shared.lock().unwrap().live.len(), 1);
 }
