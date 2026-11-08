@@ -32,7 +32,10 @@ defmodule Helyx.Session.Turn do
   # since, so a late client needs no clock of the server. `recall` is the
   # recall message of the prepared `context`, which goes last at the submit,
   # and `recall_failed` whether the turn gave its recall notice
-  # (docs/features/memory.md).
+  # (docs/features/memory.md). `ui_blocks` and `held_results` are the UI
+  # blocks of the turn, `helyx_calls` its Helyx call ids, and
+  # `helyx_calls_refused` whether a request went past their bound
+  # (`Helyx.Session.Server.UIBlocks`).
 
   alias Helyx.{Message, ModelRef}
 
@@ -58,7 +61,11 @@ defmodule Helyx.Session.Turn do
     approval_chains: %Helyx.Session.ApprovalChains{},
     owners: %{},
     asks: [],
-    askers: %{}
+    askers: %{},
+    ui_blocks: [],
+    held_results: %{},
+    helyx_calls: %{},
+    helyx_calls_refused: false
   ]
 
   @type t :: %__MODULE__{
@@ -82,7 +89,11 @@ defmodule Helyx.Session.Turn do
           approval_chains: Helyx.Session.ApprovalChains.t(),
           owners: %{String.t() => :tool | :approval},
           asks: [{String.t(), GenServer.from(), Helyx.Session.Snapshot.ask(), pid()}],
-          askers: %{pid() => {reference(), {:tool | :hook, String.t()}}}
+          askers: %{pid() => {reference(), {:tool | :hook, String.t()}}},
+          ui_blocks: [Helyx.Session.Server.UIBlocks.entry()],
+          held_results: %{String.t() => [Helyx.UIBlock.t()]},
+          helyx_calls: %{String.t() => true},
+          helyx_calls_refused: boolean()
         }
 
   # The most bytes of text, thinking, and tool calls in the open assistant

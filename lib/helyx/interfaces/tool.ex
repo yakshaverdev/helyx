@@ -7,7 +7,12 @@ defmodule Helyx.Tool do
   `parameters/0` is a JSON schema map with string keys. `run/2` gets the
   decoded argument map and the working directory, and returns the text the
   model sees. `{:error, text}` marks the result as an error; a tool that
-  raises is reported the same way. The hands make every result text valid
+  raises is reported the same way. `{:ok, text, ui_blocks}` and
+  `{:error, text, ui_blocks}` add at most
+  #{Helyx.UIBlock.max_result_blocks()} UI blocks for the clients
+  (`Helyx.UIBlock`); the model never gets them. A list that fails
+  `Helyx.UIBlock.check_list/1` is a return outside the contract
+  (`docs/features/ui-blocks.md`). The hands make every result text valid
   UTF-8 and cut a text over `Helyx.Message.max_result_bytes/0` to a notice
   line, its head, a marker line, and its tail (`Helyx.Message.cut_result/1`).
 
@@ -52,7 +57,8 @@ defmodule Helyx.Tool do
   @callback name() :: String.t()
   @callback description() :: String.t()
   @callback parameters() :: map()
-  @callback run(arguments :: map(), cwd :: String.t()) :: {:ok, String.t()} | {:error, String.t()}
+  @callback run(arguments :: map(), cwd :: String.t()) ::
+              {:ok | :error, String.t()} | {:ok | :error, String.t(), [Helyx.UIBlock.t()]}
   @callback check() :: :ok | {:error, String.t()}
   @callback concurrent?() :: boolean()
   @callback release(
@@ -260,12 +266,56 @@ defmodule Helyx.Tool do
   and `{:error, :not_running}` when the call is not a running call of the
   current turn, such as a background run, or when the caller is not the
   call's own Task, such as a hook Task or a process that the tool started
-  (`docs/features/hooks.md`). The wait has no timeout: the end of the turn
-  ends it, and the hands kill the call. Raises on any other request and
-  outside a tool call (`docs/features/question-tool.md`).
+  (`docs/features/hooks.md`), or when the call's result is already in the
+  transcript, which also ends an open ask. The wait has no timeout: the end
+  of the turn ends it, and the hands kill the call. A request with the key `"kind"` is
+  an input UI block, such as a `form`: it must also pass
+  `Helyx.UIBlock.envelope?/1`. Raises on any other request and
+  outside a tool call (`docs/features/question-tool.md`,
+  `docs/features/ui-blocks.md`).
   """
   @spec ask(map()) :: {:ok, map()} | {:error, :no_client | :not_running}
   def ask(request), do: Helyx.Session.Ask.ask(:tool, request)
+
+  @doc """
+  Shows a UI block during the calling tool call: the session emits it in a
+  `:ui_block` event with the call id and `key`, valid UTF-8 of 1 to 64
+  bytes. A later block with the same key replaces it; a client drops the
+  blocks of the call at its result. The block is checked here with
+  `Helyx.UIBlock.check/1`, and one over the bound is cut. Waits for the
+  session: `:ok`; `{:error, :not_running}` when the caller is not the
+  call's own Task of a running call of the current turn (a background run,
+  a hook Task, or a process that the tool started), or when the call's
+  result is already in the transcript; `{:error, :too_many_blocks}` for a
+  new block when the turn holds #{Helyx.UIBlock.max_turn_blocks()} blocks, and
+  for a call whose request came past the Helyx call ids of the turn.
+  Raises on a bad key or block, on a new key past
+  #{Helyx.UIBlock.max_keys()} for the call, and outside a tool call
+  (`docs/features/ui-blocks.md`).
+  """
+  @spec show(String.t(), Helyx.UIBlock.t()) :: :ok | {:error, :not_running | :too_many_blocks}
+  def show(key, block) do
+    %{core: core, session_id: id, call_id: call_id} = context()
+
+    if not Helyx.UIBlock.key?(key),
+      do: raise(ArgumentError, "a UI block key is valid UTF-8 of 1 to 64 bytes")
+
+    block =
+      case Helyx.UIBlock.check(block) do
+        {:ok, block} -> block
+        :error -> raise ArgumentError, "show/2 needs a UI block"
+      end
+
+    request = {:ui_block, call_id, key, block}
+
+    case GenServer.call(Helyx.Session.Server.via(core, id), request, :infinity) do
+      :too_many ->
+        raise ArgumentError, "a call shows at most #{Helyx.UIBlock.max_keys()} UI blocks"
+
+      reply ->
+        reply
+    end
+  end
 
   @doc """
   Returns the messages of the session that runs the calling Task of the

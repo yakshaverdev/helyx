@@ -1,23 +1,29 @@
 defmodule Helyx.Session.Hands.Run do
   @moduledoc false
   # The run of one tool call or one hook in its Task of
-  # `Helyx.Session.Hands`: the return checked against its contract, and a
-  # raise, a throw, or an exit caught. The log gets the kind of the term.
+  # `Helyx.Session.Hands`: the return checked against its contract, the UI
+  # blocks of a tool's return with `Helyx.UIBlock.check_list/1`
+  # (docs/features/ui-blocks.md), and a raise, a throw, or an exit caught.
+  # The log gets the kind of the term.
 
   alias Helyx.Message.ToolCall
 
-  @spec tool(module(), ToolCall.t(), String.t()) :: {:ok | :error, String.t()}
+  @spec tool(module(), ToolCall.t(), String.t()) ::
+          {:ok | :error, String.t()} | {:ok | :error, String.t(), [Helyx.UIBlock.t()]}
   def tool(tool, %ToolCall{} = call, cwd) do
     case tool.run(call.arguments, cwd) do
-      {:ok, text} when is_binary(text) ->
-        {:ok, text}
+      {status, text} = result when status in [:ok, :error] and is_binary(text) ->
+        result
 
-      {:error, text} when is_binary(text) ->
-        {:error, text}
+      {status, text, blocks} = other when status in [:ok, :error] and is_binary(text) ->
+        case Helyx.UIBlock.check_list(blocks) do
+          {:ok, []} -> {status, text}
+          {:ok, blocks} -> {status, text, blocks}
+          :error -> outside(call, other)
+        end
 
       other ->
-        Helyx.Reason.log("tool #{call.name} returned a value outside its contract", other)
-        {:error, "the tool returned a value outside its contract"}
+        outside(call, other)
     end
   catch
     kind, reason ->
@@ -63,6 +69,11 @@ defmodule Helyx.Session.Hands.Run do
   defp answer?(_point, _answer), do: false
 
   defp text?(value), do: is_binary(value) and String.valid?(value)
+
+  defp outside(call, other) do
+    Helyx.Reason.log("tool #{call.name} returned a value outside its contract", other)
+    {:error, "the tool returned a value outside its contract"}
+  end
 
   # A raise is a crash, which gives the message of its exception; a throw
   # or an exit gives its kind and its value.

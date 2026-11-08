@@ -6,7 +6,7 @@ defmodule Helyx.Session.Server.Calls do
 
   alias Helyx.{Message, ModelRef}
   alias Helyx.Session.{History, Input}
-  alias Helyx.Session.Server.{Asks, Compaction, Events, Records, State, TurnLoop}
+  alias Helyx.Session.Server.{Asks, Compaction, Events, Records, State, TurnLoop, UIBlocks}
 
   require Logger
 
@@ -44,6 +44,10 @@ defmodule Helyx.Session.Server.Calls do
   # The caller waits for the answer (`Asks.ask/5`).
   def handle({:ask, kind, call_id, tool, request}, from, %State{} = state),
     do: {:noreply, Asks.ask(state, from, {kind, call_id}, tool, request)}
+
+  # A UI block of a running call (`Helyx.Tool.show/2`).
+  def handle({:ui_block, call_id, key, block}, {pid, _tag}, %State{} = state),
+    do: UIBlocks.tool_block(state, pid, call_id, key, block)
 
   def handle({:answer, ask_id, answer}, _from, %State{} = state) do
     {reply, state} = Asks.answer(state, ask_id, answer)

@@ -16,7 +16,8 @@ defmodule Helyx.Session.Hands.Chain do
 
   # `hooks` is `%{point => [{module, limit_ms}]}`. Returns the result for
   # the hands to deliver.
-  @spec run(module(), ToolCall.t(), String.t(), String.t(), map()) :: {:ok | :error, String.t()}
+  @spec run(module(), ToolCall.t(), String.t(), String.t(), map()) ::
+          {:ok | :error, String.t()} | {:ok | :error, String.t(), [Helyx.UIBlock.t()]}
   def run(tool, %ToolCall{} = call, cwd, _turn_id, hooks)
       when not is_map_key(hooks, :before_tool) and not is_map_key(hooks, :after_tool),
       do: Run.tool(tool, call, cwd)
@@ -100,13 +101,22 @@ defmodule Helyx.Session.Hands.Chain do
 
   defp after_each([], _input, _record, result), do: result
 
+  # A hook gets a result as `{status, text}`, the result of
+  # docs/features/hooks.md: the UI blocks of a tool are for the clients.
+  # A `:keep` keeps them; a replace gives a result with none
+  # (docs/features/ui-blocks.md).
   defp after_each([{module, ms} | rest], input, record, result) do
-    case step(module, ms, :after_tool, Map.put(input, :result, result), record) do
+    seen = text_result(result)
+
+    case step(module, ms, :after_tool, Map.put(input, :result, seen), record) do
       {:answer, :keep} -> after_each(rest, input, record, result)
       {:answer, {:replace, replaced}} -> after_each(rest, input, nil, replaced)
       {:failed, _how} -> after_each(rest, input, nil, result)
     end
   end
+
+  defp text_result({status, text, _blocks}), do: {status, text}
+  defp text_result(result), do: result
 
   # The `before_settle` hooks in plugin order, from the chain Task
   # (`Helyx.Session.Hands.Settle`): the first continue ends the chain; a

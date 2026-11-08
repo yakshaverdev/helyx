@@ -58,7 +58,9 @@ defmodule Helyx.TUI.ViewModel do
 
   `asks` are the open asks of tool calls, oldest first, as the snapshot
   and the `:ask` and `:ask_end` events give them; `Helyx.TUI.Question`
-  shows the oldest of the `question` tool (`docs/features/question-tool.md`).
+  shows the oldest `form` (`docs/features/question-tool.md`). `ui_blocks`
+  are those of the `:ui_block` events of the running turn
+  (`Helyx.TUI.ViewModel.UIBlocks`, `docs/features/ui-blocks.md`).
 
   `seq` is the `seq` of the snapshot or of the last event that the fold
   applied. The fold applies an event only once, by its `seq`: an event at
@@ -69,7 +71,7 @@ defmodule Helyx.TUI.ViewModel do
 
   alias Helyx.{Event, Message}
   alias Helyx.Session.{Snapshot, Totals}
-  alias Helyx.TUI.CallLine
+  alias Helyx.TUI.{CallLine, ViewModel.UIBlocks}
 
   # `cells` is set at run time in `from_snapshot/2`: an `:array` literal in
   # the struct default breaks the opaque type for Dialyzer.
@@ -85,6 +87,7 @@ defmodule Helyx.TUI.ViewModel do
             usage: %Totals{},
             context: nil,
             asks: [],
+            ui_blocks: [],
             seq: 0
 
   @type tool_cell :: {:tool, Message.ToolCall.t(), String.t(), Message.t() | nil}
@@ -114,6 +117,7 @@ defmodule Helyx.TUI.ViewModel do
           usage: Totals.t(),
           context: Totals.context() | nil,
           asks: [Snapshot.ask()],
+          ui_blocks: [Snapshot.ui_block()],
           seq: non_neg_integer()
         }
 
@@ -139,7 +143,7 @@ defmodule Helyx.TUI.ViewModel do
   defp fold(vm, %Event{type: :turn_start}), do: %{vm | running?: true}
 
   defp fold(vm, %Event{type: :turn_end, data: data}) do
-    vm = %{vm | running?: false}
+    vm = %{vm | running?: false, ui_blocks: []}
 
     case data do
       %{outcome: :done} -> vm
@@ -179,8 +183,8 @@ defmodule Helyx.TUI.ViewModel do
 
   # A result of another role would leave its cell open, so it crashes.
   defp fold(vm, %Event{type: :tool_execution_end, data: data}) do
-    %{message: %Message{role: :tool_result} = result} = data
-    add_message(vm, result)
+    %{message: %Message{role: :tool_result, tool_call_id: id} = result} = data
+    add_message(%{vm | ui_blocks: UIBlocks.drop_call(vm.ui_blocks, id)}, result)
   end
 
   defp fold(vm, %Event{type: :queue_update, data: data}), do: %{vm | queue: queue(data)}
@@ -227,6 +231,9 @@ defmodule Helyx.TUI.ViewModel do
     %{vm | asks: Enum.reject(vm.asks, &(&1.ask_id == id))}
   end
 
+  defp fold(vm, %Event{type: :ui_block, data: data}),
+    do: %{vm | ui_blocks: UIBlocks.put(vm.ui_blocks, data)}
+
   # A type that this client does not know.
   defp fold(vm, %Event{}), do: vm
 
@@ -262,6 +269,7 @@ defmodule Helyx.TUI.ViewModel do
       usage: snapshot.usage,
       context: snapshot.context,
       asks: snapshot.asks,
+      ui_blocks: snapshot.ui_blocks,
       seq: snapshot.seq
     }
 

@@ -19,18 +19,8 @@ defmodule Helyx.Session.HooksTest do
   # process stays free for a gate (`Helyx.Test.Gate.open/0`).
   defp core(hooks, tools \\ @tools) do
     core = start_core([Helyx.Test.Provider | tools ++ hooks])
-    test = self()
-    proxy = spawn_link(fn -> forward(test) end)
-    Process.register(proxy, Hook.test_name(core))
+    Hook.proxy(core, self())
     core
-  end
-
-  defp forward(pid) do
-    receive do
-      message -> send(pid, message)
-    end
-
-    forward(pid)
   end
 
   defp run(core, model, opts \\ []) do

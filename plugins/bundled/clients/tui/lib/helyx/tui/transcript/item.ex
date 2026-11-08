@@ -1,8 +1,11 @@
 defmodule Helyx.TUI.Transcript.Item do
   @moduledoc false
   # One item of `Helyx.TUI.Transcript`: a cell, such as a run of
-  # information lines `{:infos, texts}`, or a tool cell with `true` at its
-  # end when the Ctrl+O toggle is on. It owns the look of the rows of an item, the
+  # information lines `{:infos, texts}`, a tool cell with `true` at its end
+  # when the Ctrl+O toggle is on, an open tool cell with the toggle and the
+  # UI blocks of its running call at its end, or `{:ui_blocks, blocks,
+  # expanded?}`, the UI blocks of the running turn that no cell shows
+  # (`docs/features/ui-blocks.md`). It owns the look of the rows of an item, the
   # search text of each row, the signs of the row left out
   # (`docs/features/tui-search.md`, "The search rows"), and the text of a
   # drawn row for a selection, the bar left out.
@@ -43,10 +46,17 @@ defmodule Helyx.TUI.Transcript.Item do
 
   def search_text(%Message{} = message), do: shown_text(message)
   def search_text({:tool, _call, line, nil}), do: line
-  def search_text({:tool, _call, line, result}), do: line <> "\n" <> shown_text(result)
+
+  def search_text({:tool, _call, line, result}),
+    do: line <> "\n" <> shown_text(result) <> ui_text(result.ui_blocks)
 
   def search_text({:tool, call, line, result, true}),
     do: search_text({:tool, call, line, result})
+
+  def search_text({:tool, call, line, result, _expanded?, blocks}),
+    do: search_text({:tool, call, line, result}) <> ui_text(blocks)
+
+  def search_text({:ui_blocks, blocks, _expanded?}), do: ui_text(blocks)
 
   def search_text({:notice, text}), do: text
   def search_text({:stop, reason}), do: stop_text(reason)
@@ -103,8 +113,18 @@ defmodule Helyx.TUI.Transcript.Item do
     do: cell_rows({:tool, call, line, result, false}, width)
 
   defp cell_rows({:tool, _call, line, result, expanded?}, width) do
-    styled_rows(line, width, @tool) ++ result_rows(result, expanded?, width)
+    blocks = if result, do: result.ui_blocks, else: []
+
+    styled_rows(line, width, @tool) ++
+      result_rows(result, expanded?, width) ++ ui_rows(blocks, expanded?, width)
   end
+
+  defp cell_rows({:tool, call, line, result, expanded?, blocks}, width),
+    do:
+      cell_rows({:tool, call, line, result, expanded?}, width) ++
+        ui_rows(blocks, expanded?, width)
+
+  defp cell_rows({:ui_blocks, blocks, expanded?}, width), do: ui_rows(blocks, expanded?, width)
 
   defp cell_rows({:notice, text}, width), do: signed("✕ ", text, width, @bad)
   defp cell_rows({:stop, reason}, width), do: cell_rows({:notice, stop_text(reason)}, width)
@@ -147,9 +167,37 @@ defmodule Helyx.TUI.Transcript.Item do
   # Ctrl+O shows all lines.
   defp result_rows(%Message{} = result, expanded?, width) do
     style = if result.is_error, do: @bad, else: @dim
-    lines = result |> shown_text() |> String.trim_trailing("\n") |> String.split("\n")
+    result |> shown_text() |> text_rows(expanded?, width, style, {"  ", "  "})
+  end
+
+  # The TUI renders no display kind of UI block yet, so each block shows its
+  # fallback text as a tool result shows its text, with the four lines of the
+  # short form, and a mark when it was cut. The text comes from a tool or a
+  # provider, so it gets the clean pass of `signed/4`.
+  defp ui_rows(blocks, expanded?, width) do
+    Enum.flat_map(blocks, fn %{"text" => text} = block ->
+      rows = text_rows(text, expanded?, width, @dim, {"  ▪ ", "    "})
+
+      if block["cut"] == true,
+        do: rows ++ sign_rows(styled_rows("    [cut]", width, @dim)),
+        else: rows
+    end)
+  end
+
+  defp ui_text(blocks), do: Enum.map_join(blocks, &("\n" <> &1["text"]))
+
+  # The lines of `text`, the first with the sign `first` and the others with
+  # `sign`: all of them with the toggle on, else four and a hint row.
+  defp text_rows(text, expanded?, width, style, {first, sign}) do
+    lines = text |> String.trim_trailing("\n") |> String.split("\n")
     kept = if expanded?, do: lines, else: Enum.take(lines, 4)
-    shown = Enum.flat_map(kept, &signed("  ", &1, width, style))
+
+    shown =
+      kept
+      |> Enum.with_index()
+      |> Enum.flat_map(fn {line, at} ->
+        signed(if(at == 0, do: first, else: sign), line, width, style)
+      end)
 
     case length(lines) - length(kept) do
       hidden when hidden > 0 ->

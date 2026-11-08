@@ -89,7 +89,7 @@ defmodule Helyx.Transport.WebSocketAnswerTest do
              "ask_id" => id,
              "call_id" => "q1",
              "tool" => "question",
-             "request" => %{"questions" => @questions}
+             "request" => %{"kind" => "form", "text" => "1 question", "questions" => @questions}
            }
 
     assert event(watcher, watch, "ask")["data"] == ask

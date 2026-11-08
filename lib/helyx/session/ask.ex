@@ -43,6 +43,11 @@ defmodule Helyx.Session.Ask do
     if Helyx.Session.Input.json_object(request, @max_request_bytes) != :ok,
       do: raise(ArgumentError, "an ask request is a JSON object of at most 64 KiB")
 
+    # A request with a kind is an input UI block (docs/features/ui-blocks.md);
+    # the walk above checked UTF-8, the digits, and the size.
+    if is_map_key(request, "kind") and not Helyx.UIBlock.envelope?(request),
+      do: raise(ArgumentError, "an ask request with a kind is a UI block")
+
     GenServer.call(
       Helyx.Session.Server.via(core, id),
       {:ask, kind, call_id, tool, request},

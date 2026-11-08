@@ -97,6 +97,7 @@ defmodule Helyx.Provider do
           | {:tool_request, call_id :: String.t(), name :: String.t(),
              arguments :: map() | String.t()}
           | {:approval, approval_id :: String.t(), call_id :: String.t()}
+          | {:ui_block, call_id :: String.t() | nil, key :: String.t(), Helyx.UIBlock.t()}
           | :turn_start
 
   @typedoc "The ref of a request from Core, for its reply."
