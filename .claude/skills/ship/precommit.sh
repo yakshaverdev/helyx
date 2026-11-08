@@ -11,10 +11,12 @@
 # On the host, the runs wait in a queue (#330). Each run holds a flock on
 # ~/.helyx-precommit.lock, so only one run at a time loads the host. A run
 # that must wait writes a line to precommit.log when the wait starts. Each
-# run writes the wait in seconds when it gets the lock. The wait is
-# unbounded, and accepted. The tests of the run that holds the lock have
+# run writes the wait in seconds. flock buffers that line, so it comes at
+# the end of the run, and a killed run has none. The wait is unbounded,
+# and accepted. The end of this script or of its ssh ends its run on the
+# host, at any stage. The tests of the run that holds the lock have
 # timeouts, but a hung compile or Dialyzer step of that run blocks the
-# queue. A local run has no queue.
+# queue until its caller ends. A local run has no queue.
 set -uo pipefail
 
 root=$(git rev-parse --show-toplevel) || exit 1
@@ -71,12 +73,26 @@ slow=0
 # The run has its own PID namespace, as the host user again, so a signal
 # to -1 or to a wrong group from a test reaches only the run, never the
 # other processes of the host (on 2026-09-30 one froze them all). The
-# first process of the namespace is a root sh that only waits: it never
-# changes its user, so the SIGKILL that unshare sets for it when the outer
-# unshare dies stays set, and its end ends every process of the run. The
-# run needs sudo without a password on the host; without it the run fails
-# and does not run outside the namespace.
-isolate="sudo -n unshare --pid --fork --mount-proc --kill-child=SIGKILL sh -c '\"\$@\"; exit \$?' pid1 setpriv --reuid=\$(id -u) --regid=\$(id -g) --init-groups env HOME=\"\$HOME\" LANG=C.UTF-8 HELYX_SLOW=$slow"
+# first process of the namespace is a root sh that never changes its user,
+# so the SIGKILL that unshare sets for it when the outer unshare dies stays
+# set, and its end ends every process of the run. The run needs sudo
+# without a password on the host; without it the run fails and does not
+# run outside the namespace.
+# The first process starts the run in the background, with stdin on
+# /dev/null, and a watcher on the stdin of the ssh channel, which nothing
+# writes. A background job of sh gets stdin on /dev/null, so the channel
+# is kept on fd 3 for the watcher. The end of that input makes the watcher
+# send HUP to the first process only ($$ is 1 in the namespace), and its
+# trap exits it, which ends the namespace. sh cannot trap a signal that it
+# starts with ignored, and it starts a background job with INT and QUIT
+# ignored, so env sets HUP to the default for the first process, and INT
+# and QUIT for the run, as for a local run. A host that
+# loses the network with no close of the connection ends the run when TCP
+# gives up: about 15 min after the first unanswered write, or about 2 h 11
+# min for a run that waits for the lock and writes nothing (keepalive of
+# the host on 2026-11-08: 7200 s, then 9 probes of 75 s). Accepted.
+pid1='trap "exit 129" HUP; exec 3<&0; "$@" </dev/null 3<&- & run=$!; { cat >/dev/null; kill -s HUP $$; } <&3 & exec 3<&-; wait "$run"'
+isolate="sudo -n unshare --pid --fork --mount-proc --kill-child=SIGKILL env --default-signal=HUP sh -c '$pid1' pid1 setpriv --reuid=\$(id -u) --regid=\$(id -g) --init-groups env --default-signal=INT,QUIT HOME=\"\$HOME\" LANG=C.UTF-8 HELYX_SLOW=$slow"
 # The lock is taken inside the namespace, and the run inherits it. So flock,
 # mise and the Mix VM hold it. The end of the namespace ends them all. A
 # `kill -1` from a test cannot free the lock while the run goes on. A signal
@@ -85,8 +101,18 @@ isolate="sudo -n unshare --pid --fork --mount-proc --kill-child=SIGKILL sh -c '\
 # --verbose writes the real wait in seconds.
 lock="~/.helyx-precommit.lock"
 announce="{ flock -n $lock true || echo 'precommit: waiting for the host lock'; }"
-ssh -o BatchMode=yes "$host" "cd '$dir' && $sources > .before && $announce && $isolate flock --verbose $lock bash .claude/skills/ship/precommit-run.sh" > precommit.log 2>&1
+# The ssh reads a FIFO whose only writer is fd 3 of this script. Nothing
+# writes it, and the end of this script, by any signal, closes it. The
+# read-write open of fd 3 does not wait for a reader. It comes first, so
+# the read-only open of fd 4 does not wait for a writer. A kill before the
+# rm leaves the empty FIFO in a temp folder; no run has started (accepted).
+fifo_dir=$(mktemp -d) || exit 1
+mkfifo "$fifo_dir/stdin" || { rm -r "$fifo_dir"; exit 1; }
+exec 3<>"$fifo_dir/stdin" 4<"$fifo_dir/stdin"
+rm -r "$fifo_dir"
+ssh -o BatchMode=yes "$host" "cd '$dir' && $sources > .before && $announce && $isolate flock --verbose $lock bash .claude/skills/ship/precommit-run.sh" <&4 3>&- 4<&- > precommit.log 2>&1
 status=$?
+exec 3>&- 4<&-
 
 # md5sum -c exits 1 on a changed file. Only status 0, or 1 with a
 # FAILED line for each changed file and nothing else, is a clean check.
