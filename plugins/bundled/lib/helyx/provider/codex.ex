@@ -7,9 +7,9 @@ defmodule Helyx.Provider.Codex do
   One program serves the session's provider process. `init/3` returns when it answered
   `initialize`. The first request opens the thread with the turn's system prompt as
   `baseInstructions`: `thread/resume` with `:resume_id`, or `thread/start`; a later prompt
-  change starts a new program that resumes the thread, or with `persist: false` starts a new
-  ephemeral thread with the replay. A `{:turn, ...}` is `turn/start`, a steer is `turn/steer`,
-  and an interrupt is `turn/interrupt`, or `{:error, :command_running}` or
+  change starts a new program that resumes the thread; other tools, or `persist: false`,
+  start one with a fresh thread and the replay. A `{:turn, ...}` is `turn/start`, a steer is
+  `turn/steer`, and an interrupt is `turn/interrupt`, or `{:error, :command_running}` or
   `{:error, :agent_running}` when open work would outlive it. The session's tools go to the
   thread as `dynamicTools`, and the user's config is off where the program lets it be. The
   options `codex_sandbox` and `codex_approval_policy` are the thread's sandbox and approval
@@ -74,13 +74,13 @@ defmodule Helyx.Provider.Codex do
 
   @impl true
   def request(
-        {:turn, turn_id, %Helyx.Context{messages: messages, system: system}},
+        {:turn, turn_id, %Helyx.Context{messages: messages, system: system, tools: tools}},
         from,
         %State{turn_id: nil} = state
       ) do
     {prompt, history} = HarnessIO.split_prompt(messages)
     state = %{state | turn_id: turn_id, from: from, prompt: prompt, history: history}
-    actions(thread(state, system || ""))
+    actions(thread(state, system || "", tools))
   end
 
   # A compaction is `thread/compact/start`; its turn id comes with `turn/started` (`turn`
@@ -92,7 +92,7 @@ defmodule Helyx.Provider.Codex do
 
   def request({:compact, turn_id, _text}, from, %State{turn_id: nil} = state) do
     state = %{state | turn_id: turn_id, from: from, turn: :compact}
-    actions(thread(state, state.system || ""))
+    actions(thread(state, state.system || "", state.tools.specs))
   end
 
   # An open command, and a child thread's work, outlive `turn/interrupt`
@@ -413,13 +413,13 @@ defmodule Helyx.Provider.Codex do
 
   # Input
 
-  # The thread of a request runs with the prompt `system`
-  # (`docs/features/provider-parity.md`).
-  defp thread(%State{thread: nil} = state, system),
+  # The thread of a request runs with its prompt and its tools
+  # (`docs/features/provider-parity.md`, `mcp-client.md` decision 10).
+  defp thread(%State{thread: nil, tools: %{specs: specs}} = state, system, specs),
     do: Program.open_thread(%{state | system: system})
 
-  defp thread(%State{system: system} = state, system), do: opened(state)
-  defp thread(state, system), do: Program.replace(state, system)
+  defp thread(%{system: system, tools: %{specs: specs}} = state, system, specs), do: opened(state)
+  defp thread(state, system, specs), do: Program.replace(state, system, specs)
 
   # The thread is open: the waiting request goes on.
   defp opened(%State{turn: :compact, fresh?: true} = state) do

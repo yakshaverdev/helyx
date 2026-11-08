@@ -246,3 +246,31 @@ The reproduction of round 3 passes. The worst case that a source controls alone 
 | 4 | spec | No test of the worst case with 10 match lines | probed by both agents (47,952 and 48,078 bytes) | none |
 
 The loop ended: three rounds and the small-fix round.
+
+## Slice 6: harness providers follow the active set
+
+Invariant: at each turn start a harness provider compares the turn's `context.tools` (the exact list of specs, sorted by name by the session) with the tools of its running program; other tools replace the program, Claude Code with a resume of its harness session whose MCP server lists and admits the new tools, Codex with a new program whose `initialize` fits the tools and a fresh thread with the new `dynamicTools`, the replay, and a stored id of their digest, never a resume of a thread of other tools; a first Codex turn with other tools than `init/3` does the same; the same tools and prompt keep the program; a compaction keeps the running program's tools.
+
+Base `ebf617ea` (slice 5, rebased on master `b8cf9d96`; the rebase merged the source clauses of `hands.ex` and `server.ex` with master's approvals). Bounds sensor:
+
+```
+bounds sensor: 1 candidate functions, 0 flagged, 0 without an answer
+```
+
+Decided inside the doc's design (no new concept), stated in decision 10 and in provider-parity.md, "The prompt": the comparison is of the exact list of specs, so a changed schema or description is a change; a first Codex turn with other tools than `init/3` replaces the program. The tests of both providers that started a provider with tools and sent turns with none now send the provider's tools in each turn, as a session does.
+
+### Round 1 (full)
+
+Simplify: `Program.compaction/1` beside `turn/2`, with `ensure/4` private; `thread/3` in Codex takes the prompt and the specs; `replace/3` compares with `===`, as the match of `thread/3`; `answer/1` of the Codex tests in `CodexFake`; agent-self-knowledge.md named the stale `ensure/2`. `claude_code.ex` stays at 507 lines and `codex.ex` at 481.
+
+| # | Source | Finding | Check | Resolution |
+| - | ------ | ------- | ----- | ---------- |
+| 1 | Codex | The changed branch of `ensure/4` calls `replace/2` without `tools`, so the new program keeps the old tools | read: both branches pass `tools: tools`, and the test "a turn with other tools resumes the harness session in a new program that lists them" asserts that program 2's `tools/list` lists the added tool | rejected |
+| 2 | failure path, spec | On Codex a tools change after a native compaction starts a fresh thread with the replay of the Helyx transcript, which holds no compaction summary, so the compaction and the history past the replay cut (400,000 bytes) are gone; harness-compaction.md said the history and its summary stay in the program | reproduced with the fakes | follows from decision 10, which the owner accepted (a thread's tools are fixed at `thread/start`): stated as an accepted hole in mcp-client.md and in provider-parity.md, and harness-compaction.md names the exception. Reported to the orchestrator |
+| 3 | standards, spec | No test of "a compaction keeps the tools", of a prompt and a tools change together, or of a changed description on Codex | read; probes passed | a test each: `claude_code/compact_test.exs` and `codex/compact_test.exs` (each fails when the compaction passes no tools), "another prompt and other tools together give one new program with both", "a changed description is other tools, and with another prompt one new program has both" |
+| 4 | standards | Decision 10 cited `codex/program.ex:96-105` and said "today" | read | it names `init/3` and `open_thread/1` and says "before slice 6" |
+| 5 | spec | provider-parity.md "Bounds" and "Ownership", long-lived-harness.md (the relaunch row and Codex "Connect"), and the `codex.ex` moduledoc named only the prompt relaunch | read | each names the tools change; the moduledoc keeps its line count |
+| 6 | standards | agent-self-knowledge.md: "only when the system prompt or the tools change" leaves out the Claude relaunch around a compaction | read | it names it |
+| 7 | standards | `system`, `commands?`, `tools` travel together in `ensure/4`; `%{system: ...}` in place of `%State{}` in one clause of `thread/3`; `tools_turn/1` beside `tools_run/3`; the provider-parity bullet's `tools` is `tools.specs` on Codex | judgement | the field is named; the rest kept: the bare map keeps `codex.ex` at its count, and the three values are the launch of one program |
+
+The failure-path agent reproduced no defect of the code: a tools change after a lost harness session or with no stored state, a compaction after a tools change, a steer without an answer (`{:error, :restarted}`), tools A, B, A (no resume, the stored id of A), and an error answer to `thread/start` in the new program (the generic failure path). No round reproduced a defect, so the loop ended.

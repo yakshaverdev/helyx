@@ -151,6 +151,9 @@ defmodule Helyx.Test.CodexFake do
   def reply(tid, text),
     do: message(tid, "msg_1", text) ++ [usage(tid), turn_end(tid, "completed")]
 
+  # The session's message of a reply's text, for a replay.
+  def answer(text), do: %Message{role: :assistant, content: [%Message.Text{text: text}]}
+
   def stdin(bin, n) do
     bin
     |> Path.join("stdin.#{n}")
@@ -198,8 +201,11 @@ defmodule Helyx.Test.CodexFake do
     {from, actions, state}
   end
 
-  def turn_on(state, id \\ "t1"),
-    do: ask(state, {:turn, id, %Helyx.Context{messages: [Message.user("go")]}})
+  # A turn with the tools of the provider, as a session's turn has.
+  def turn_on(state, id \\ "t1") do
+    context = %Helyx.Context{messages: [Message.user("go")], tools: state.tools.specs}
+    ask(state, {:turn, id, context})
+  end
 
   def turn_ended?(actions) do
     Enum.any?(actions, fn

@@ -12,8 +12,6 @@ defmodule Helyx.Provider.Codex.NoStateTest do
   @moduletag :tmp_dir
   setup {Helyx.Test.CodexFake, :setup_fake}
 
-  defp answer(text), do: %Message{role: :assistant, content: [%Message.Text{text: text}]}
-
   # Run `n` as `fresh/4`, with a thread that the program reports as
   # ephemeral.
   defp ephemeral(bin, n, lines) do
