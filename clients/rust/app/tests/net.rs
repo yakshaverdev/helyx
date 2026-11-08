@@ -281,3 +281,43 @@ fn every_frame_before_a_binary_frame_is_taken() {
         assert_eq!(shared.live.len(), 1);
     }
 }
+
+/// The line of a followed session that waits or is held says why.
+#[test]
+fn the_line_of_a_follow_says_why_it_waits() {
+    use helyx_client_core::client::{Follow, Hold, Wait};
+    let places = Follow::Waiting(Wait::Places {
+        unwanted: vec!["s05".into()],
+    });
+    let line = net::follow_line("a", &places).unwrap();
+    assert!(
+        line.contains("16 subscriptions") && line.contains("s05"),
+        "{line}"
+    );
+    let none = Follow::Waiting(Wait::Places { unwanted: vec![] });
+    assert_eq!(
+        net::follow_line("a", &none).as_deref(),
+        Some("a waits for a free place of the 16 subscriptions")
+    );
+    assert_eq!(
+        net::follow_line("a", &Follow::Held(Hold::Ended)).as_deref(),
+        Some("a ended")
+    );
+    let requests = Follow::Waiting(Wait::Requests);
+    assert!(
+        net::follow_line("a", &requests)
+            .unwrap()
+            .contains("16 requests")
+    );
+    // These keep the line of the connection, or of `Output::Failed`.
+    for quiet in [
+        Follow::Live,
+        Follow::Subscribing,
+        Follow::Unwanted,
+        Follow::Held(Hold::Refused),
+        Follow::Waiting(Wait::Connection),
+        Follow::Waiting(Wait::Ending),
+    ] {
+        assert_eq!(net::follow_line("a", &quiet), None);
+    }
+}

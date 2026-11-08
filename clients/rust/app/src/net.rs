@@ -7,7 +7,7 @@
 
 use crate::settings::Server;
 use crate::socket::{Tap, WAITS, Waits, Watchdog};
-use helyx_client_core::client::{Client, Next, Output};
+use helyx_client_core::client::{Client, Follow, Hold, Next, Output, Wait};
 use helyx_client_core::frame::{LiveSession, Reply};
 use helyx_client_core::json::object;
 use helyx_client_core::parts::FRAME_BYTES;
@@ -243,6 +243,29 @@ fn open(server: &Server, waits: Waits) -> Result<(Socket, Watchdog), String> {
                 });
             }
         }
+    }
+}
+
+/// The line of the followed `session` while it waits for a place or its
+/// session ended, from the state of its follow (`Client::follow`). A
+/// refusal keeps the line of its `Output::Failed`, which names the error; a
+/// wait for the connection or for the end of an old subscription keeps the
+/// line of the connection.
+pub fn follow_line(session: &str, follow: &Follow) -> Option<String> {
+    let places = "waits for a free place of the 16 subscriptions";
+    match follow {
+        Follow::Waiting(Wait::Places { unwanted }) if unwanted.is_empty() => {
+            Some(format!("{session} {places}"))
+        }
+        Follow::Waiting(Wait::Places { unwanted }) => Some(format!(
+            "{session} {places}, held by {} that the window does not follow",
+            unwanted.join(", ")
+        )),
+        Follow::Waiting(Wait::Requests) => Some(format!(
+            "{session} waits for a free place of the 16 requests"
+        )),
+        Follow::Held(Hold::Ended) => Some(format!("{session} ended")),
+        _ => None,
     }
 }
 

@@ -356,3 +356,55 @@ Round 2 reproduced defects again, each a second finding on a mechanism that roun
 | 4 | spec (judgement) | The streaming message is reversed, split, and cut in each frame: O(blocks) for each frame, so a long stream of deltas costs O(n²) in all (6 ms a frame at 100,000 deltas). | Open, stated in the row of `tui-attach.md`. A count in the fold would bound it; `view_model.ex` is at its 400 lines. |
 | 5 | spec (judgement) | The cut bounds blocks, not bytes: a collapsed tool cell joins and splits each block in each frame, up to 1,024 × 64 KiB. | Within the bounds of Core: a tool result has no total bound beyond the blocks of its message (`docs/features/wire-protocol.md`, "Bounds"). Recorded. |
 | 6 | failure path (measurement) | A fold of one message of 100,000 tool calls takes about 1.1 s: one cell for each call, about 11 µs each. | No render bound covers the count of cells; the TUI cell list is unbounded by the rule of `coding-agent.md`. Recorded. |
+
+# Cycle D2: the follow intent, the open items of cycle D (#860, judgement of the orchestrator of 2026-11-07)
+
+Base `e97b3917`. The judgement: fix item 1 (a `busy` answer after the `session_end` must not hold a follow stated after the end) and item 2 (a wanted session that waits for a free place of the 16 is reported to the host as waiting, with its reason), and the doc claim of item 3 (the server never gives a sub id again). The mechanism had findings in all three rounds of cycle D, so first the check that the judgement asked for: is the follow state derived from the intent of the host and the frames of the server only? It was not. `Session::renew` was a flag that a `history` reply set and a later end or subscribe reply took, and `Connection::held` was a map that six paths set and cleared: an end, an error answer, a renewal, `forget`, a request too large, and the restatement of the host. Item 1 lived there: a late `busy` wrote a hold after the host had stated its intent again.
+
+The mechanism now:
+
+- The session keeps the intent of the host and the count of its statements.
+- The connection keeps facts of the server: the last refusal or end of each session, with the statement that it answered, and the instance that a `history` reply said was replaced.
+- A hold is derived on read (`Connection::hold`): an answer holds only while it answers the last statement, and an end only while its instance is not replaced.
+
+A late answer to an older statement therefore holds nothing and is not told (item 1). The rule "a `session_end` keeps a refused hold" of cycle D round 2 went with it: under the derivation a session has both only while the host does not follow it, when no subscribe goes either way.
+
+Item 2: `Client::follow` gives the state of a follow, derived on read, and a wait for a place names the sessions that hold one that the host does not follow; the app shows a wait or a hold in its status line (`net::follow_line`). Chosen as a query, not an event: a wait starts and ends with no frame of its own, and an event would need a stored "told" flag.
+
+Item 3: the doc states that a server never gives a sub id again on a connection. The guard that let a reused id stay live is removed: a reuse is a contract break, and the next frame of the sub is a break.
+
+Tests, in `tests/client.rs`:
+
+- "a late refusal holds no follow stated after it", the case of item 1, with the sub ended and with it still live;
+- "a sub id given again is a contract break";
+- "follow tells why a followed session has no subscription";
+- "a forgotten session gets no hold", now with no report.
+
+In `tests/net.rs`: "the line of a follow says why it waits". Two tests of cycle D encoded the old behaviour and changed: "a session_end keeps a refused hold" (the late `busy` held the follow, which is item 1) and "a late unsubscribe reply leaves a sub id of another session" (a reuse, which is item 3).
+
+Bounds sensor: `bounds sensor: 0 candidate functions, 0 flagged, 0 without an answer`.
+
+## Round 1 (full: simplify, standards, spec, failure path, Codex)
+
+Simplify made the request parameters plain, shortened `Client::follow`, and dropped unused derives. It also flagged a weak test of mine, which is removed: "a renewal does not lift a refused hold" now asserts the state of the follow. The standards agent judged that the state now holds the rule of the judgement: the session stores only `wanted` and the number of its statement, and the connection only server facts.
+
+| # | Source | Finding | Resolution |
+|---|---|---|---|
+| 1 | failure path, spec (both reproduced) | `forget` restarted the count of statements, so a later statement of the session took the number of a request still in flight, and its late `busy` held the new follow and was told. | Each statement of the host, for any session, takes the next number of the client (`Client::statements`); test "a late answer to a forgotten session holds no new follow". |
+| 2 | spec, failure path (both reproduced) | After a renewal, the subscribe reply dropped `replaced`, and the end that it had lifted held the live follow again: `Held(Ended)` while subscribed. No request went wrong; the state that the host reads did. | A subscribe reply clears the last answer of the session: it is the newest fact of the server; test "a subscription after a renewal is live". |
+| 3 | spec, standards (both reproduced) | `Wait::Places` named only the live subs of unfollowed sessions, not their subscribes in flight; its doc also said that each named session had an `unsubscribe` in flight or refused, which is not so when the requests are full. | It names both; the doc says what the client does with each; test "a wait for a place names the unfollowed subscribes in flight". |
+| 4 | Codex (high, an inference by its own words) | A `session_end` that comes after the host followed the session again, while the old `unsubscribe` waits, holds the new statement. | Judged, no change: the end tells that the session stopped, a fact newer than the statement, so a subscribe would find none; the host states it again to try once. The doc states it. |
+| 5 | standards, spec (doc) | `Output::Ended` still said "unless it renews"; `Follow::Held` did not say that a `history` reply ends an end; the doc said that the app shows every wait and hold, and the app line replaced the line of `Output::Failed`, which names the error. | Fixed; the app shows a wait for a place and an end, and a refusal keeps its `Failed` line. |
+| 6 | standards (judgement) | `Stop::Ended(Option<String>)` allowed a state that no path makes; `stated: 0` stood for none. | `Stop::Ended(String)`, with an `expect` at the one place that makes it; `Request::stated` is an `Option`. |
+| 7 | spec (doc) | No tests for: an error to a subscribe of an older statement, `forget` dropping `replaced`, the byte order of `Places`, two lines of the app, and the hold of a sub id over the request size. | Tests for each; the last joins a reply of 26 MiB from parts, about 5 s in a debug build. |
+
+## Round 2 (reduced: spec, failure path)
+
+Both agents of the first run died at the usage limit and were run again. The reproductions of round 1 hold fixed. The failure-path agent ran two random walks against the public `Client` API, 200 seeds each of 4 and of 20 sessions, one with frames at once and one with an outbox in any order within one subscription. It checked `Client::follow` against a model at each step, no request while held, one refusal at most for each statement, the bounds of 16, and no entry of a forgotten session: it found nothing. It notes that its model copies the rule of the "last answer" of the code. The spec agent reproduced a defect on the renewal, a second finding on that mechanism (round 1 #2). The work of the cycle is at its 45 minutes, so the commit holds the code as round 2 reviewed it, and these stay open:
+
+| # | Source | Finding | State |
+|---|---|---|---|
+| 1 | spec (reproduced) | Each `history` reply of `instance_changed` overwrites `replaced`, so the reply of a page of an older instance erases the newer one: with a live sub of i1, the replies of `history(i1)` and `history(i0)`, then the end of i1, hold the follow; in the other order, `follow` gives `Held(Ended)` while the subscribe is in flight. Round 1 dropped the filter of cycle D that took only a page of the instance of the state. | Open. The mechanism fix: record a replaced instance only when it is the instance of the state, and keep it at a subscribe reply: an instance that the server replaced never serves again. |
+| 2 | spec (judgement) | A subscribe reply clears `replaced` also when it is a replay of the instance just named replaced: a reconnect whose subscribe with `after` races the `history` reply, then the end of that instance, holds the follow. It needs a race between two processes of the server. | Open; the fix of #1 closes it. |
+| 3 | spec (doc) | The Bounds row "requests that reconcile a session" leaves out the third end of a hold: a `history` reply that lifts an end. | Open, doc only. |
+| 4 | spec (doc) | `Wait::Connection` says "no connection has taken the handshake"; a connection that broke after the welcome gives it too. | Open, doc only. |

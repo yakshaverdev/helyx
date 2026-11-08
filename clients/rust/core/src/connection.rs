@@ -4,6 +4,7 @@
 //! frames; `Client` keeps what outlives the connection.
 
 use crate::check::{Broken, Checked};
+use crate::follow::Hold;
 use crate::handshake::{Handshake, Token};
 use crate::json::{self, Json, Limits, object};
 use crate::parts::{self, FRAME_BYTES, Joiner, TooLarge};
@@ -29,13 +30,19 @@ pub enum Refusal {
     Subscription,
 }
 
-/// Why a session is held.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Hold {
-    /// Its subscription ended with `session_end`: a renewal ends the hold.
-    Ended,
-    /// The server answered a request that reconciles it with an error, or no
-    /// request of it fits the request size.
+/// The last answer of the server that stops the reconciling of a session on
+/// one connection, and the statement of the host that it answered.
+#[derive(Debug)]
+pub(crate) struct Answer {
+    pub stop: Stop,
+    pub stated: u64,
+}
+
+#[derive(Debug)]
+pub(crate) enum Stop {
+    /// A `session_end` of a subscription of the instance.
+    Ended(String),
+    /// An error answer, or a request that does not fit the request size.
     Refused,
 }
 
@@ -46,6 +53,9 @@ pub(crate) struct Request {
     pub session: Option<String>,
     /// The subscription that an `unsubscribe` ends.
     pub sub: Option<String>,
+    /// The statement of the host that a subscribe or an `unsubscribe` of the
+    /// session reconciles; none for another request.
+    pub stated: Option<u64>,
     /// The `instance_id` that a request names, as a `history` page does.
     pub instance: Option<String>,
 }
@@ -68,9 +78,13 @@ pub(crate) struct Connection {
     pub requests: HashMap<String, Request>,
     /// The session of each live subscription.
     pub subs: HashMap<String, String>,
-    /// The sessions that the client sends no request for on this connection
-    /// until the host states its intent again, and why.
-    pub held: HashMap<String, Hold>,
+    /// The last answer of the server that stops the reconciling of each
+    /// session, a refusal or an end (`hold`).
+    pub answers: HashMap<String, Answer>,
+    /// The instance of each session that a `history` reply of
+    /// `instance_changed` says the session replaced, until a subscribe reply
+    /// tells the current one.
+    pub replaced: HashMap<String, String>,
     /// The subscriptions that an `unsubscribe` got `unknown_sub` for: the
     /// server holds none of them. A frame of one that was on the way is
     /// dropped.
@@ -87,7 +101,8 @@ impl Connection {
             next_id: 0,
             requests: HashMap::new(),
             subs: HashMap::new(),
-            held: HashMap::new(),
+            answers: HashMap::new(),
+            replaced: HashMap::new(),
             gone: HashSet::new(),
         }
     }
@@ -153,6 +168,30 @@ impl Connection {
         self.next_id += 1;
         self.requests.insert(id.clone(), request);
         Ok((id, frames))
+    }
+
+    /// Why `session` is held for the statement `stated` of the host, derived
+    /// from the last answer of the server that stops it: one that answered
+    /// that statement, and an end only while its instance is not replaced.
+    pub fn hold(&self, session: &str, stated: u64) -> Option<Hold> {
+        let answer = self.answers.get(session).filter(|a| a.stated == stated)?;
+        match &answer.stop {
+            Stop::Refused => Some(Hold::Refused),
+            Stop::Ended(instance) if self.replaced.get(session) == Some(instance) => None,
+            Stop::Ended(_) => Some(Hold::Ended),
+        }
+    }
+
+    /// The answer of the server that stops `session`, which answered the
+    /// statement `stated` of the host.
+    pub fn stop(&mut self, session: String, stop: Stop, stated: u64) {
+        self.answers.insert(session, Answer { stop, stated });
+    }
+
+    /// Drops what the connection keeps of a session that the client forgot.
+    pub fn forget(&mut self, session: &str) {
+        self.answers.remove(session);
+        self.replaced.remove(session);
     }
 
     /// The live subscription of `session`.

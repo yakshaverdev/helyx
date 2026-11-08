@@ -7,7 +7,7 @@
 //! client reconciles the two (`reconcile`).
 
 use crate::check::{Broken, Checked};
-use crate::connection::{Connection, Decoded, Hold, Request};
+use crate::connection::{Connection, Decoded, Request, Stop};
 use crate::fold::{State, ack};
 use crate::follow::Session;
 use crate::frame::{self, Reply, ServerFrame, Subscribed};
@@ -18,6 +18,7 @@ use crate::seq::Seq;
 use std::collections::HashMap;
 
 pub use crate::connection::{MAX_IN_FLIGHT, Refusal};
+pub use crate::follow::{Follow, Hold, Wait};
 
 /// What the client tells the host.
 #[derive(Debug, Clone, PartialEq)]
@@ -35,14 +36,16 @@ pub enum Output {
     },
     /// The state of this session changed.
     Changed(String),
-    /// The session ended; its state stays, and unless it renews, no subscribe
-    /// for it goes on this connection until the host states its intent again.
+    /// The session ended; its state stays, and no subscribe for it goes on
+    /// this connection until the host states its intent again or a `history`
+    /// reply says that the instance that ended was replaced (`Follow::Held`).
     Ended { session: String, crashed: bool },
     /// The server answered a request that reconciles the intent of the
     /// host for `session` (`op` is `subscribe` or `unsubscribe`) with this
-    /// error. The intent stays as the host stated it; `Client::subscribed`
-    /// gives whether a subscription lives. The client sends no request for
-    /// the session on this connection until the host states it again.
+    /// error, an answer to the last statement of the host. The intent stays
+    /// as the host stated it; `Client::subscribed` gives whether a
+    /// subscription lives. The client sends no request for the session on
+    /// this connection until the host states it again (`Follow::Held`).
     Failed {
         session: String,
         op: &'static str,
@@ -66,6 +69,9 @@ pub struct Client {
     token: Option<Token>,
     limits: Limits,
     pub(crate) sessions: HashMap<String, Session>,
+    /// The statements of the host, for all sessions: each takes the next
+    /// number, so no two share one, those of a forgotten session neither.
+    statements: u64,
     pub(crate) connection: Option<Connection>,
 }
 
@@ -81,6 +87,7 @@ impl Client {
             token: token.map(Token::new),
             limits,
             sessions: HashMap::new(),
+            statements: 0,
             connection: None,
         }
     }
@@ -99,7 +106,7 @@ impl Client {
         if idle {
             self.sessions.remove(session);
             if let Some(c) = self.connection.as_mut() {
-                c.held.remove(session);
+                c.forget(session);
             }
         }
         idle
@@ -132,8 +139,10 @@ impl Client {
         if !subscribe_fits(session) {
             return Err(Refusal::TooLarge);
         }
-        self.sessions.entry(session.to_owned()).or_default().want();
-        Ok(self.restate(session))
+        self.statements += 1;
+        let s = self.sessions.entry(session.to_owned()).or_default();
+        s.state_intent(true, self.statements);
+        Ok(self.pump())
     }
 
     /// The host stops following `session`: the frames that reconcile it, an
@@ -142,8 +151,9 @@ impl Client {
     pub fn unsubscribe(&mut self, session: &str) -> Vec<String> {
         match self.sessions.get_mut(session) {
             Some(s) => {
-                s.unwant();
-                self.restate(session)
+                self.statements += 1;
+                s.state_intent(false, self.statements);
+                self.pump()
             }
             None => vec![],
         }
@@ -152,6 +162,42 @@ impl Client {
     /// Whether a subscription of `session` lives on the connection.
     pub fn subscribed(&self, session: &str) -> bool {
         self.live_sub(session).is_some()
+    }
+
+    /// The state of the following of `session`, when the client holds it,
+    /// derived from the intent of the host and the frames of the server: for
+    /// a followed session, why no subscription of it lives.
+    pub fn follow(&self, session: &str) -> Option<Follow> {
+        let s = self.sessions.get(session)?;
+        if !s.wanted() {
+            return Some(Follow::Unwanted);
+        }
+        let Some(c) = self.connection.as_ref().filter(|c| c.ready()) else {
+            return Some(Follow::Waiting(Wait::Connection));
+        };
+        Some(if let Some(hold) = c.hold(session, s.stated()) {
+            Follow::Held(hold)
+        } else if c.in_flight(session, &["unsubscribe"]) {
+            Follow::Waiting(Wait::Ending)
+        } else if c.live_sub(session).is_some() {
+            Follow::Live
+        } else if c.in_flight(session, &["subscribe"]) {
+            Follow::Subscribing
+        } else if c.subscriptions() >= MAX_IN_FLIGHT {
+            // `forget` keeps the state of a session with a live sub or a
+            // subscribe in flight: each place is of a session that it keeps.
+            let subscribing = (c.requests.values())
+                .filter(|r| r.op == "subscribe")
+                .filter_map(|r| r.session.as_ref());
+            let mut unwanted: Vec<String> = (c.subs.values().chain(subscribing))
+                .filter(|id| !self.sessions[*id].wanted())
+                .cloned()
+                .collect();
+            unwanted.sort();
+            Follow::Waiting(Wait::Places { unwanted })
+        } else {
+            Follow::Waiting(Wait::Requests)
+        })
     }
 
     /// A request of `op` with `params`: its id and its frames. Use
@@ -168,15 +214,18 @@ impl Client {
             .get("session")
             .and_then(Json::as_str)
             .map(str::to_owned);
-        self.send(op, params, session, None)
+        self.send(op, params, session, None, None)
     }
 
+    /// A request of `op`, with the session and the sub that it names and the
+    /// statement of the host that it reconciles.
     pub(crate) fn send(
         &mut self,
         op: &'static str,
         params: Json,
         session: Option<String>,
         sub: Option<String>,
+        stated: Option<u64>,
     ) -> Result<(String, Vec<String>), Refusal> {
         let instance = params
             .get("instance_id")
@@ -190,6 +239,7 @@ impl Client {
                 op,
                 session,
                 sub,
+                stated,
                 instance,
             },
         )
@@ -287,17 +337,15 @@ impl Client {
                     .subs
                     .remove(&sub)
                     .ok_or(Broken("end of no subscription"))?;
-                let s = self
-                    .sessions
-                    .get_mut(&session)
-                    .expect("a subscribed session");
+                let s = &self.sessions[&session];
                 // The session stopped: a subscribe would find none, so the
-                // following is held until the host states it again, unless
-                // the session started again (a renewal). A `Refused` hold
-                // stays as it is.
-                if s.ended() {
-                    c.held.entry(session.clone()).or_insert(Hold::Ended);
-                }
+                // end holds the following of this statement of the host,
+                // unless a `history` reply says that the instance was
+                // replaced (`Connection::hold`).
+                // A sub lives only after a subscribe reply, which gives the
+                // state its instance.
+                let instance = s.state.instance_id.clone().expect("a subscribed state");
+                c.stop(session.clone(), Stop::Ended(instance), s.stated());
                 Ok(vec![Output::Ended { session, crashed }])
             }
         }
@@ -321,7 +369,10 @@ impl Client {
                     .sessions
                     .get_mut(&session)
                     .expect("a session with a subscribe");
-                s.subscribed();
+                // The reply is the last answer of the server for the session:
+                // it serves it, at its current instance.
+                c.answers.remove(&session);
+                c.replaced.remove(&session);
                 let snapshot = matches!(subscribed, Subscribed::Snapshot(_));
                 let from = s.state.seq.clone();
                 s.state.subscribed(subscribed)?;
@@ -332,30 +383,25 @@ impl Client {
                 outputs.push(Output::Changed(session));
                 Ok(outputs)
             }
-            ("subscribe", Some(session), Err((code, text))) => {
-                c.held.insert(session.clone(), Hold::Refused);
-                Ok(vec![Output::Failed {
-                    session,
-                    op: "subscribe",
-                    code,
-                    text,
-                }])
+            ("subscribe", Some(session), Err(error)) => {
+                let stated = request.stated.expect("a subscribe names its statement");
+                Ok(self.refused(session, "subscribe", error, stated))
             }
             // `reconcile::Client::unsubscribed`.
             ("unsubscribe", session, result) => {
                 let sub = request.sub.expect("an unsubscribe names its sub");
                 let session = session.expect("an unsubscribe names its session");
-                Ok(self.unsubscribed(session, sub, result))
+                let stated = request.stated.expect("an unsubscribe names its statement");
+                Ok(self.unsubscribed(session, sub, stated, result))
             }
-            // The session started again (`follow::Session::instance_changed`).
+            // The session started again: the instance that the page named
+            // was replaced, so an end of it holds no more.
             ("history", Some(session), Err((code, text))) if code == "instance_changed" => {
-                // A renewal ends the hold of an ended subscription.
-                let renews = self
-                    .sessions
-                    .get_mut(&session)
-                    .is_some_and(|s| s.instance_changed(request.instance.as_deref()));
-                if renews && c.held.get(&session) == Some(&Hold::Ended) {
-                    c.held.remove(&session);
+                if let Some(instance) = request
+                    .instance
+                    .filter(|_| self.sessions.contains_key(&session))
+                {
+                    c.replaced.insert(session, instance);
                 }
                 Ok(vec![Output::Reply {
                     id,

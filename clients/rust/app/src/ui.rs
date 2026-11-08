@@ -150,10 +150,16 @@ impl Render for Desktop {
                 .followed
                 .as_deref()
                 .and_then(|s| shared.client.state(s));
+            // A follow that waits or is held says why, derived on read.
+            let line = shared
+                .followed
+                .as_deref()
+                .and_then(|s| net::follow_line(s, &shared.client.follow(s)?))
+                .unwrap_or_else(|| shared.line.clone());
             (
                 shared.live.clone(),
                 shared.followed.clone(),
-                shared.line.clone(),
+                line,
                 state.is_some_and(|s| s.running),
             )
         };
