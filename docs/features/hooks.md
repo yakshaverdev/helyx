@@ -19,6 +19,7 @@ A product or a user adds a check before and after each Helyx tool call without a
 ```
 
 - `call()` is a map: `tool` (name), `arguments` (as Core checked them), `cwd`, `session_id`, `turn_id`, `call_id`, and `provider`, which is nil for a Helyx tool call. `after_tool` gets the same map with `result`, `{:ok | :error, text}`, the result before the hands cut it.
+- `before_settle` (`docs/features/before-settle.md`) gets `settle()`, a map: `session_id`, `turn_id`, `stop_reason`, and `cwd`, the session's folder, the same folder as the `cwd` of a call.
 - `Helyx.Hook.ask/1` asks the clients from a hook Task, with the request rules, the event, and the answers of `Helyx.Tool.ask/1`.
 
 ### Core start

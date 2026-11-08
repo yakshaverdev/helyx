@@ -33,7 +33,9 @@ Core knows the points and the answers below, and names no tool, no rule, and no 
 |---|---|---|---|
 | `before_tool` | before a Helyx tool call runs, and when a provider asks for a decision on a call of a tool of its own (§4) | the tool name, the arguments as Core checked them, the cwd, the session id, the turn id, the call id, and `provider`: nil for a Helyx tool, or the id of the provider whose own tool it is | `:allow`, `{:allow, reason}`, or `{:deny, reason}` |
 | `after_tool` | after a Helyx tool call returned its result, before the hands cut it and deliver it | the same as `before_tool` with `provider: nil`, and the result `{:ok \| :error, text}` | `:keep`, or `{:replace, {:ok \| :error, text}}` |
-| `before_settle` | after a turn ended with a stop reason that the provider gave (not `:aborted`, not `:error`, and not a compaction turn), before the session takes its queues | the session id, the turn id, and the stop reason | `:settle`, or `{:continue, text}` |
+| `before_settle` | after a turn ended with a stop reason that the provider gave (not `:aborted`, not `:error`, and not a compaction turn), before the session takes its queues | the session id, the turn id, the stop reason, and the cwd (update of 2026-11-08) | `:settle`, or `{:continue, text}` |
+
+Update of 2026-11-08 (#883, a decision of the orchestrator, logged for the owner): `before_settle` also gets the cwd, the session's folder, so a command hook runs its check, such as a test command, in the project. Prior art cited with the decision: Claude Code passes `cwd` in every hook input, `Stop` included.
 
 - A `reason` and a `text` are strings of valid UTF-8. The model reads a deny as the error result of the call: the hook named and its reason, cut as any result (`Helyx.Message.cut_result/1`). A replaced result is cut the same way, so a hook cannot pass the result bound.
 - Arguments are not changed by a hook. A hook that changed them would change what an earlier hook of the chain allowed.

@@ -1,0 +1,209 @@
+defmodule Helyx.Hook.CommandSessionTest do
+  # `Helyx.Hook.Command` read from its env and run by a session
+  # (docs/features/command-hook.md). Not async: the env key
+  # `:command_hook` of `helyx_plugins` is global.
+  use ExUnit.Case, async: false
+
+  import Helyx.Test.Events, only: [collect_until: 1, messages: 1]
+  import Helyx.Test.OSHelpers
+
+  alias Helyx.Message
+  alias Helyx.Message.ToolCall
+  alias Helyx.Provider.Fake
+  alias Helyx.Test.ToolRunner
+
+  @moduletag :tmp_dir
+
+  setup do
+    on_exit(fn -> Application.delete_env(:helyx_plugins, :command_hook) end)
+  end
+
+  defp put_env(env), do: Application.put_env(:helyx_plugins, :command_hook, env)
+
+  defp start_core(plugins) do
+    Helyx.Core.start_link(
+      name: :"command_hook_#{System.unique_integer([:positive])}",
+      plugins: plugins
+    )
+  end
+
+  defp core do
+    core = :"command_hook_#{System.unique_integer([:positive])}"
+
+    start_supervised!(
+      {Helyx.Core,
+       name: core, plugins: [Helyx.Provider.Fake, Helyx.Tool.Bash, Helyx.Hook.Command]}
+    )
+
+    core
+  end
+
+  defp bash(core, dir, command) do
+    call = %ToolCall{id: "c1", name: "bash", arguments: %{"command" => command}}
+    ToolRunner.run_tool(core, call, dir)
+  end
+
+  describe "limit/1" do
+    test "the limit_ms of the point, else 60,000" do
+      put_env(before_tool: [command: "x", limit_ms: 1_500])
+      assert Helyx.Hook.Command.limit(:before_tool) == 1_500
+      assert Helyx.Hook.Command.limit(:after_tool) == 60_000
+      put_env(before_settle: [command: "x", limit_ms: 2_000])
+      assert Helyx.Hook.Command.limit(:before_settle) == 2_000
+      assert Helyx.Hook.Command.limit(:before_tool) == 60_000
+
+      for env <- [nil, :bad, [before_tool: :bad], [before_tool: [command: "x"]]] do
+        put_env(env)
+        assert Helyx.Hook.Command.limit(:before_tool) == 60_000
+      end
+    end
+
+    test "Core checks it: a bad limit_ms, nil included, stops the start" do
+      for ms <- [600_001, nil] do
+        put_env(after_tool: [command: "x", limit_ms: ms])
+
+        assert start_core([Helyx.Provider.Fake, Helyx.Hook.Command]) ==
+                 {:error, {:invalid_hook_limit, Helyx.Hook.Command}}
+      end
+
+      put_env(after_tool: [command: "x", limit_ms: 600_000])
+      assert {:ok, pid} = start_core([Helyx.Provider.Fake, Helyx.Hook.Command])
+      Supervisor.stop(pid)
+    end
+  end
+
+  describe "in a session" do
+    test "exit 2 denies the call with standard error, and the call does not run",
+         %{tmp_dir: dir} do
+      put_env(before_tool: [command: "echo not here >&2; exit 2"])
+      result = bash(core(), dir, "touch ran")
+      assert result.is_error
+
+      assert Helyx.Message.text(result) ==
+               "the hook Helyx.Hook.Command denied the call: not here\n"
+
+      refute File.exists?(Path.join(dir, "ran"))
+    end
+
+    test "a failure denies the call, and an after_tool exit 2 adds to the result",
+         %{tmp_dir: dir} do
+      put_env(before_tool: [command: "exit 1"])
+      core = core()
+
+      assert Helyx.Message.text(bash(core, dir, "echo hi")) ==
+               "the hook Helyx.Hook.Command failed: the command exited with status 1; " <>
+                 "the call was not run"
+
+      put_env(after_tool: [command: "echo checked >&2; exit 2"])
+
+      assert Helyx.Message.text(bash(core, dir, "echo hi")) ==
+               "hi\n\n\nThe hook Helyx.Hook.Command added: checked\n"
+    end
+
+    # The command's TERM cleanup must end within the grace of the release,
+    # `Helyx.Watchdog.grace_ms/0`; this much of the grace is the margin for
+    # load. A KILL with no grace ends the command before its cleanup.
+    @load_ms 300
+    @cleanup_ms Helyx.Watchdog.grace_ms() - @load_ms
+
+    # Traps TERM with the cleanup, writes its process group, and waits on a
+    # child in the group.
+    @trapped "trap 'sleep #{@cleanup_ms / 1000}; echo done > cleaned; exit 0' TERM; " <>
+               "perl -e 'print getpgrp' > pgid; sleep 30 & wait"
+
+    test "at its limit the command gets the TERM grace, then its group is released",
+         %{tmp_dir: dir} do
+      put_env(before_tool: [command: @trapped, limit_ms: 800])
+      result = bash(core(), dir, "echo hi")
+      assert Helyx.Message.text(result) =~ "it ran past its limit of 800 ms"
+      assert File.read!(Path.join(dir, "cleaned")) == "done\n"
+      refute os_alive?("-" <> group(dir))
+    end
+
+    test "an abort gives the command its TERM grace and releases its group", %{tmp_dir: dir} do
+      put_env(before_tool: [command: @trapped])
+      call = %ToolCall{id: "c1", name: "bash", arguments: %{"command" => "touch ran"}}
+      session = ToolRunner.start_tool(core(), call, dir)
+      group = wait_for_pid(Path.join(dir, "pgid"))
+      assert os_alive?("-" <> group)
+      Helyx.Session.abort(session)
+      # The turn ends after the cancel of the hands, which released the group.
+      assert_receive {:helyx_event, %Helyx.Event{type: :turn_end}}, Helyx.Test.Events.wait_ms()
+      assert File.read!(Path.join(dir, "cleaned")) == "done\n"
+      refute os_alive?("-" <> group)
+      refute File.exists?(Path.join(dir, "ran"))
+    end
+
+    test "a change of the env after the start changes the command, not the limit",
+         %{tmp_dir: dir} do
+      put_env(before_tool: [command: "exit 0", limit_ms: 5_000])
+      core = core()
+      # 300 ms of work against a limit of 100 in the env and 5,000 in Core.
+      put_env(before_tool: [command: "sleep 0.3; exit 2", limit_ms: 100])
+
+      assert Helyx.Message.text(bash(core, dir, "echo hi")) ==
+               "the hook Helyx.Hook.Command denied the call: the command exited with status 2"
+    end
+
+    test "at its limit the command is killed and its group released", %{tmp_dir: dir} do
+      put_env(
+        before_tool: [
+          command: "perl -e 'print getpgrp' > pgid; sleep 30 & sleep 30",
+          limit_ms: 800
+        ]
+      )
+
+      result = bash(core(), dir, "echo hi")
+
+      assert Helyx.Message.text(result) ==
+               "the hook Helyx.Hook.Command failed: it ran past its limit of 800 ms; " <>
+                 "the call was not run"
+
+      refute os_alive?("-" <> group(dir))
+    end
+  end
+
+  describe "before_settle in a session" do
+    # A session of the Fake provider that answers `turns` in turn.
+    defp settle_session(core, dir, turns) do
+      model = "settle_#{System.unique_integer([:positive])}"
+      :ok = Fake.script(core, model, turns)
+      {:ok, session} = Helyx.Session.start(core, model: "fake/#{model}", cwd: dir)
+      {:ok, _, _} = Helyx.Session.subscribe(session)
+      :ok = Helyx.Session.prompt(session, "go")
+      session
+    end
+
+    test "exit 2 starts one more turn with standard error, in the session's folder",
+         %{tmp_dir: dir} do
+      put_env(
+        before_settle: [
+          command: "if [ -f once ]; then exit 0; fi; touch once; echo the tests fail >&2; exit 2"
+        ]
+      )
+
+      settle_session(core(), dir, [["Done."], ["Fixed."]])
+      collect_until(:turn_end)
+      second = collect_until(:turn_end)
+
+      assert [%Message{origin: %{kind: :hook, id: "Helyx.Hook.Command"}} = user] =
+               for(%Message{role: :user} = m <- messages(second), do: m)
+
+      assert Message.text(user) == "the tests fail\n"
+      assert File.exists?(Path.join(dir, "once"))
+    end
+
+    test "an abort gives the command its TERM grace and releases its group", %{tmp_dir: dir} do
+      put_env(before_settle: [command: @trapped])
+      session = settle_session(core(), dir, [["Done."]])
+      group = wait_for_pid(Path.join(dir, "pgid"))
+      assert os_alive?("-" <> group)
+      # The abort returns once the cancel of the hands released the group.
+      assert Helyx.Session.abort(session) == :ok
+      assert File.read!(Path.join(dir, "cleaned")) == "done\n"
+      refute os_alive?("-" <> group)
+    end
+  end
+
+  defp group(dir), do: dir |> Path.join("pgid") |> File.read!()
+end

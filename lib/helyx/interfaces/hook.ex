@@ -27,7 +27,9 @@ defmodule Helyx.Hook do
   keeps the result and the session emits a `:notice`.
 
   `before_settle` runs after a turn that ended `done`, not a compaction,
-  before the session takes its queues; the first continue ends its chain.
+  before the session takes its queues, with the session id, the turn id,
+  the stop reason, and `cwd`, the session's folder; the first continue
+  ends its chain.
   A continue starts the next turn with `text` as a user message whose
   origin is `%{kind: :hook, id: inspect(module)}`. A failed hook there is
   a `:notice`, and the chain goes on with the next hook; with no continue
@@ -60,7 +62,8 @@ defmodule Helyx.Hook do
   @type settle :: %{
           session_id: String.t(),
           turn_id: String.t(),
-          stop_reason: Helyx.Message.stop_reason()
+          stop_reason: Helyx.Message.stop_reason(),
+          cwd: String.t()
         }
 
   @callback before_tool(call()) :: :allow | {:allow, String.t()} | {:deny, String.t()}

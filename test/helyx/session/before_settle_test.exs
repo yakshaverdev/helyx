@@ -69,12 +69,20 @@ defmodule Helyx.Session.BeforeSettleTest do
     test "starts the next turn with the hook's message, and is recorded", %{tmp_dir: dir} do
       core = core([Hook.SettleA])
       answers(core, Hook.SettleA, [{:continue, "the tests fail"}])
-      session = run(core, "ok", sessions_dir: dir)
+      cwd = Path.join(dir, "work")
+      File.mkdir_p!(cwd)
+      session = run(core, "ok", sessions_dir: dir, cwd: cwd)
 
       first = collect_until(:turn_end)
       turn_id = List.last(first).turn_id
       assert_receive {:hook, Hook.SettleA, :before_settle, input}
-      assert input == %{session_id: session.id, turn_id: turn_id, stop_reason: :end_turn}
+
+      assert input == %{
+               session_id: session.id,
+               turn_id: turn_id,
+               stop_reason: :end_turn,
+               cwd: cwd
+             }
 
       second = collect_until(:turn_end)
       assert [%{origin: %{kind: :hook, id: "Helyx.Test.Hook.SettleA"}} = user] = users(second)
@@ -102,7 +110,7 @@ defmodule Helyx.Session.BeforeSettleTest do
 
       # The message of the continue reads back with its origin.
       stop_session(session, &GenServer.stop/1)
-      {:ok, resumed} = Session.resume(core, sessions_dir: dir)
+      {:ok, resumed} = Session.resume(core, sessions_dir: dir, cwd: cwd)
       {:ok, snapshot, _ref} = Session.subscribe(resumed)
 
       assert [_go, %{origin: %{kind: :hook, id: "Helyx.Test.Hook.SettleA"}}] =
