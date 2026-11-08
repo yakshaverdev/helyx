@@ -54,7 +54,11 @@ defmodule Helyx.Hook.Command.RelayTest do
     for {signal, status} <- [{"TERM", 143}, {"HUP", 129}] do
       test "a #{signal} pending at the fork is sent on to the command" do
         relay = File.read!(Path.expand("../../../../lib/helyx/hook/command/relay.pl", __DIR__))
-        pending = "use POSIX; sigprocmask(SIG_BLOCK, POSIX::SigSet->new(SIG#{unquote(signal)}));"
+        # The default first: Helyx can run with the signal ignored, and an
+        # ignored signal is dropped.
+        pending =
+          "use POSIX; $SIG{#{unquote(signal)}} = 'DEFAULT'; " <>
+            "sigprocmask(SIG_BLOCK, POSIX::SigSet->new(SIG#{unquote(signal)}));"
 
         port =
           Port.open({:spawn_executable, System.find_executable("perl")}, [
@@ -63,6 +67,26 @@ defmodule Helyx.Hook.Command.RelayTest do
             args:
               ["-e", pending <> " kill #{unquote(signal)} => $$; exec @ARGV", "perl"] ++
                 ["-e", relay, "--", "65536", "bash", "-c", "sleep 5; echo ran"]
+          ])
+
+        assert Run.collect(port, %Run.Out{}) == {:exit, unquote(status), "", false, ""}
+      end
+    end
+
+    # Helyx can run with TERM or HUP ignored (a server under `nohup`); the
+    # relay gives the command the default of each all the same.
+    for {signal, status} <- [{"TERM", 143}, {"HUP", 129}] do
+      test "a #{signal} that Helyx ignores still ends the command" do
+        relay = File.read!(Path.expand("../../../../lib/helyx/hook/command/relay.pl", __DIR__))
+
+        port =
+          Port.open({:spawn_executable, System.find_executable("perl")}, [
+            :binary,
+            :exit_status,
+            args:
+              ["-e", "$SIG{TERM} = $SIG{HUP} = 'IGNORE'; exec @ARGV", "perl"] ++
+                ["-e", relay, "--", "65536", "bash", "-c"] ++
+                ["kill -#{unquote(signal)} $$; sleep 5; echo ran"]
           ])
 
         assert Run.collect(port, %Run.Out{}) == {:exit, unquote(status), "", false, ""}

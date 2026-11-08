@@ -204,7 +204,7 @@ defmodule Helyx.Hook.CommandTest do
 
     for {env, path} <- [
           {:bad, [:command_hook]},
-          {[before_settle: [command: "x"]], [:command_hook]},
+          {[before_compact: [command: "x"]], [:command_hook]},
           {[{nil, [command: "x"]}], [:command_hook]},
           {[before_tool: [{false, 1}, command: "x"]], [:command_hook, :before_tool]},
           {[before_tool: [command: "x"], before_tool: [command: "y"]], [:command_hook]},

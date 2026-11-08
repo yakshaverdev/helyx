@@ -3,6 +3,10 @@ use Fcntl;
 my $max = shift @ARGV;
 pipe(my $or, my $ow) or exit 125;
 pipe(my $er, my $ew) or exit 125;
+# An ignored signal is dropped even while blocked, so the defaults come
+# first, also when Helyx runs with one ignored; the command inherits them.
+$SIG{TERM} = "DEFAULT";
+$SIG{HUP} = "DEFAULT";
 my $held = POSIX::SigSet->new(SIGTERM, SIGHUP);
 sigprocmask(SIG_BLOCK, $held);
 my $child = fork() // exit 125;

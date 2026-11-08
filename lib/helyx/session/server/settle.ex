@@ -24,8 +24,8 @@ defmodule Helyx.Session.Server.Settle do
 
   # The wait that `turn` ended at `outcome` (`Wait.finish/2`). After a done
   # turn that is not a compaction the chain is due, when a hook is on the
-  # point: the input of the hooks, and the context of a call of the turn
-  # with no tool.
+  # point: the input of the hooks, with the session's folder, and the
+  # context of a call of the turn with no tool.
   @spec finish(State.t(), Turn.t(), term()) :: State.t()
   def finish(%State{activity: %Wait{} = wait} = state, turn, {:done, stop_reason, _usage}) do
     if turn.compact == nil and is_map_key(Helyx.Core.hooks(state.core), :before_settle) do
@@ -36,7 +36,13 @@ defmodule Helyx.Session.Server.Settle do
         model_context: state.plugins.model_context
       }
 
-      input = %{session_id: state.id, turn_id: turn.id, stop_reason: stop_reason}
+      input = %{
+        session_id: state.id,
+        turn_id: turn.id,
+        stop_reason: stop_reason,
+        cwd: state.cwd
+      }
+
       %{state | activity: %{wait | settle: {:due, input, context}}}
     else
       state

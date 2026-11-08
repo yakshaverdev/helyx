@@ -4,9 +4,12 @@ defmodule Helyx.Hook.CommandSessionTest do
   # `:command_hook` of `helyx_plugins` is global.
   use ExUnit.Case, async: false
 
+  import Helyx.Test.Events, only: [collect_until: 1, messages: 1]
   import Helyx.Test.OSHelpers
 
+  alias Helyx.Message
   alias Helyx.Message.ToolCall
+  alias Helyx.Provider.Fake
   alias Helyx.Test.ToolRunner
 
   @moduletag :tmp_dir
@@ -45,6 +48,9 @@ defmodule Helyx.Hook.CommandSessionTest do
       put_env(before_tool: [command: "x", limit_ms: 1_500])
       assert Helyx.Hook.Command.limit(:before_tool) == 1_500
       assert Helyx.Hook.Command.limit(:after_tool) == 60_000
+      put_env(before_settle: [command: "x", limit_ms: 2_000])
+      assert Helyx.Hook.Command.limit(:before_settle) == 2_000
+      assert Helyx.Hook.Command.limit(:before_tool) == 60_000
 
       for env <- [nil, :bad, [before_tool: :bad], [before_tool: [command: "x"]]] do
         put_env(env)
@@ -154,6 +160,48 @@ defmodule Helyx.Hook.CommandSessionTest do
                  "the call was not run"
 
       refute os_alive?("-" <> group(dir))
+    end
+  end
+
+  describe "before_settle in a session" do
+    # A session of the Fake provider that answers `turns` in turn.
+    defp settle_session(core, dir, turns) do
+      model = "settle_#{System.unique_integer([:positive])}"
+      :ok = Fake.script(core, model, turns)
+      {:ok, session} = Helyx.Session.start(core, model: "fake/#{model}", cwd: dir)
+      {:ok, _, _} = Helyx.Session.subscribe(session)
+      :ok = Helyx.Session.prompt(session, "go")
+      session
+    end
+
+    test "exit 2 starts one more turn with standard error, in the session's folder",
+         %{tmp_dir: dir} do
+      put_env(
+        before_settle: [
+          command: "if [ -f once ]; then exit 0; fi; touch once; echo the tests fail >&2; exit 2"
+        ]
+      )
+
+      settle_session(core(), dir, [["Done."], ["Fixed."]])
+      collect_until(:turn_end)
+      second = collect_until(:turn_end)
+
+      assert [%Message{origin: %{kind: :hook, id: "Helyx.Hook.Command"}} = user] =
+               for(%Message{role: :user} = m <- messages(second), do: m)
+
+      assert Message.text(user) == "the tests fail\n"
+      assert File.exists?(Path.join(dir, "once"))
+    end
+
+    test "an abort gives the command its TERM grace and releases its group", %{tmp_dir: dir} do
+      put_env(before_settle: [command: @trapped])
+      session = settle_session(core(), dir, [["Done."]])
+      group = wait_for_pid(Path.join(dir, "pgid"))
+      assert os_alive?("-" <> group)
+      # The abort returns once the cancel of the hands released the group.
+      assert Helyx.Session.abort(session) == :ok
+      assert File.read!(Path.join(dir, "cleaned")) == "done\n"
+      refute os_alive?("-" <> group)
     end
   end
 

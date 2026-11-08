@@ -86,6 +86,31 @@ defmodule Helyx.Hook.Command.AnswerTest do
       end
     end
 
+    # What JavaScript's `trim()` drops before the `{`, as Claude Code reads
+    # its hook output: the byte-order mark, form feed, vertical tab, a
+    # no-break space, the line separator. NUL is not dropped: plain text.
+    test "white space of JavaScript's trim() around an object is dropped", %{input: input} do
+      json = ~S|{"decision":"block","reason":"no"}|
+
+      for space <- ["\uFEFF", "\f", "\v", "\u00A0", "\u2028", " \n"] do
+        File.write!(Path.join(input.cwd, "out"), space <> json <> space)
+        assert before(input, "cat out") == {:deny, "no"}
+      end
+
+      File.write!(Path.join(input.cwd, "out"), <<0>> <> json)
+      assert before(input, "cat out") == :allow
+    end
+
+    test "an object with a repeated key fails, whichever value it repeats", %{input: input} do
+      for stdout <- [
+            ~S|{"decision":"approve","decision":"block","reason":"no"}|,
+            ~S|{"hookSpecificOutput":{"permissionDecision":"deny","permissionDecision":"allow"}}|
+          ] do
+        assert failure(fn -> before(input, "printf '%s' '#{stdout}'") end) ==
+                 "its standard output repeats a key in an object"
+      end
+    end
+
     test "an object that does not decode fails", %{input: input} do
       assert failure(fn -> before(input, "echo '{\"a\":'") end) ==
                "its standard output is not a JSON object"

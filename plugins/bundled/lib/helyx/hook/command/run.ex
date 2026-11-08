@@ -23,12 +23,13 @@ defmodule Helyx.Hook.Command.Run do
   # The relay is in the command's group and is the command's reaper, as
   # the watchdog is the relay's: it ignores TERM, HUP, and SIGPIPE, so the
   # TERM of a release or of the watchdog reaches the command, which has
-  # its grace, and the relay reaps it and exits after it. TERM and HUP are
-  # blocked across its fork, so the command starts with the defaults, and
-  # the relay sends one that came while they were blocked on to the
-  # command. Once the port is gone, a failed write drops the rest of the
-  # output. Only a KILL ends the relay first, as it ends any parent in the
-  # group.
+  # its grace, and the relay reaps it and exits after it. The relay sets
+  # TERM and HUP to their default action at its start, also when Helyx
+  # runs with one ignored, and blocks them across its fork, so the command
+  # starts with the defaults, and the relay sends one that came while they
+  # were blocked on to the command. Once the port is gone, a failed write
+  # drops the rest of the output. Only a KILL ends the relay first, as it
+  # ends any parent in the group.
   #
   # The read has no deadline of its own: the hands kill the hook Task at
   # its limit, the port closes with it, and the watchdog stops the group.

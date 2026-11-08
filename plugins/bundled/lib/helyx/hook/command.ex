@@ -6,33 +6,34 @@ defmodule Helyx.Hook.Command do
   (`docs/features/command-hook.md`, ADR 0013 §8).
 
   The config is the env key `:command_hook` of `helyx_plugins`: a keyword
-  list of the points `:before_tool` and `:after_tool`, each a keyword
-  list of `command`, a string, required; `limit_ms`, the hook's limit at
-  the point, #{@default_limit_ms} by default; and `tools`, the tool names
-  that the command runs for, every tool by default. A point with no
-  entry, and a tool that is not in its `tools`, get `:allow` or `:keep`
-  with no run. A key that is there has a value of its type: `nil` is no
-  value. A config of another shape at the top, or in the entry of the
-  point, is a failed hook at that point.
+  list of the points `:before_tool`, `:after_tool`, and `:before_settle`,
+  each a keyword list of `command`, a string, required; `limit_ms`, the
+  hook's limit at the point, #{@default_limit_ms} by default; and, at the
+  two tool points, `tools`, the tool names that the command runs for,
+  every tool by default. A point with no entry, and a tool that is not in
+  its `tools`, get `:allow`, `:keep`, or `:settle` with no run. A key that
+  is there has a value of its type: `nil` is no value. A config of another
+  shape at the top, or in the entry of the point, is a failed hook at that
+  point.
 
-  The command runs with `bash -c` in the working directory of the call, in
-  its own process group under the perl watchdog, held with
-  `Helyx.Tool.hold/1`. It gets the call as JSON on standard input, in the
-  field names of the Claude Code hook format. Exit 0 is `:allow` or
-  `:keep`, or the answer of a JSON object on standard output. Exit 2 is a
-  deny at `before_tool`, with standard error as the reason, and at
-  `after_tool` the result with standard error added. Any other exit is a
-  failed hook: `before_tool` denies the call. At most
-  #{Helyx.Hook.Command.Run.max_output_bytes()} bytes of each of standard
-  output and standard error are kept.
+  The command runs with `bash -c` in the `cwd` of its input, the session's
+  folder, in its own process group under the perl watchdog, held with
+  `Helyx.Tool.hold/1`. It gets the call, or at `before_settle` the ended
+  turn, as JSON on standard input, in the field names of the Claude Code
+  hook format where it has the field. Exit 0 is the default answer, or the answer of a JSON
+  object on standard output. Exit 2 is a deny at `before_tool`, with
+  standard error as the reason; at `after_tool` the result with standard
+  error added; and at `before_settle` a continue with standard error as
+  its text. Any other exit is a failed hook: `before_tool` denies the
+  call. At most #{Helyx.Hook.Command.Run.max_output_bytes()} bytes of each
+  of standard output and standard error are kept.
   """
 
   @behaviour Helyx.Hook
 
   alias Helyx.Hook.Command.{Answer, Run}
 
-  @points [:before_tool, :after_tool]
-  @point_keys [:command, :limit_ms, :tools]
+  @points [:before_tool, :after_tool, :before_settle]
 
   # A `limit_ms` that is there is given as it is, so Core refuses a bad
   # one, nil included, at its start; a broken top or entry gets the
@@ -58,6 +59,9 @@ defmodule Helyx.Hook.Command do
   def after_tool(input), do: run(:after_tool, input, env())
 
   @impl true
+  def before_settle(input), do: run(:before_settle, input, env())
+
+  @impl true
   defdelegate release(handles, mode, deadline), to: Helyx.Watchdog.Group
 
   defp env, do: Application.get_env(:helyx_plugins, :command_hook)
@@ -66,7 +70,7 @@ defmodule Helyx.Hook.Command do
   # The run of `point` on `input` with the config `env`; public for the
   # tests, which pass the config and run in the fake hands.
   def run(point, input, env) do
-    case command(env, point, input.tool) do
+    case command(env, point, input) do
       {:ok, nil} ->
         Answer.default(point)
 
@@ -81,14 +85,14 @@ defmodule Helyx.Hook.Command do
   # The config is a boundary (AGENTS.md): at each run, the top and the
   # entry of the point are checked, the smallest unit that the run reads,
   # and the error names the path of the first bad value.
-  defp command(nil, _point, _tool), do: {:ok, nil}
+  defp command(nil, _point, _input), do: {:ok, nil}
 
-  defp command(env, point, tool) do
+  defp command(env, point, input) do
     cond do
       not keyword?(env, @points) -> {:error, [:command_hook]}
       not Keyword.has_key?(env, point) -> {:ok, nil}
       error = point_error(point, env[point]) -> error
-      tool?(env[point][:tools], tool) -> {:ok, env[point][:command]}
+      tool?(env[point][:tools], input) -> {:ok, env[point][:command]}
       true -> {:ok, nil}
     end
   end
@@ -99,7 +103,7 @@ defmodule Helyx.Hook.Command do
     path = [:command_hook, point]
 
     cond do
-      not keyword?(config, @point_keys) ->
+      not keyword?(config, keys(point)) ->
         {:error, path}
 
       not Keyword.has_key?(config, :command) ->
@@ -112,6 +116,10 @@ defmodule Helyx.Hook.Command do
         nil
     end
   end
+
+  # A `before_settle` runs for no tool, so its entry has no `tools`.
+  defp keys(:before_settle), do: [:command, :limit_ms]
+  defp keys(_tool_point), do: [:command, :limit_ms, :tools]
 
   # A proper keyword list of the known keys, each at most once: `--`
   # removes one of each known key, so a key left over is unknown or repeated.
@@ -128,6 +136,7 @@ defmodule Helyx.Hook.Command do
   defp valid?(:tools, tools),
     do: is_list(tools) and not List.improper?(tools) and Enum.all?(tools, &is_binary/1)
 
-  defp tool?(nil, _tool), do: true
-  defp tool?(tools, tool), do: tool in tools
+  # Only the entry of a tool point has `tools`, and its input names the tool.
+  defp tool?(nil, _input), do: true
+  defp tool?(tools, input), do: input.tool in tools
 end

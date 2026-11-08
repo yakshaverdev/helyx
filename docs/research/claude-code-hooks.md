@@ -26,6 +26,9 @@ Each of these names occurs in the binary; the number is the count of lines that 
 | `"continue"` | 84 |
 | `"ask"` | 274 |
 | `"defer"` | 24 |
+| `stop_hook_active` | 6 (counted 2026-11-08) |
+
+The function that reads the standard output of a hook as JSON trims it and checks for `{`: `resultStdout?.trim();return n!==void 0&&n.startsWith("{")` occurs once in the binary (`grep -c -a -F`, 2026-11-08; found by a review agent near byte 270,158,000). The caller that parses the result was not read.
 
 The string `Whether Claude should continue after hook (default: true)` occurs in the binary (`grep -a -o -F`), the description of a schema field; which field it describes was not read from the code around it.
 
