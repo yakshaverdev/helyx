@@ -180,7 +180,7 @@ defmodule Helyx.Session.ToolActivationTest do
     assert :ok = put(src, "g", [deferred("g__a")])
     {view, _events} = in_call(session, fn -> Helyx.Tool.deferred(0, 30_000) end)
 
-    assert %{version: 2, pending: [], groups: [%{group: "g", state: :ready}]} = view
+    assert %{version: 2, pending: [], groups: [%{group: "g", state: :ready, tools: 1}]} = view
     assert [%{name: "g__a", group: "g", description: "d"}] = view.entries
   end
 

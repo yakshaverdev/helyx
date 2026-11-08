@@ -323,14 +323,15 @@ defmodule Helyx.Session.ToolRegistry do
   end
 
   # The answer of `Helyx.Tool.deferred/2`: the version, the deferred entries
-  # with their groups, the activated names, the state of each group, and
-  # the label of each source that has not announced (`pending`).
+  # with their groups, the activated names, the state and the tool count of
+  # each group, and the label of each source that has not announced
+  # (`pending`).
   def view(%__MODULE__{} = registry, pending) do
     entries = for {_name, entry} <- deferred(registry), do: Map.delete(entry, :exposure)
 
     groups =
-      for {{_source, group}, %{state: state}} <- Enum.sort(registry.groups),
-          do: %{group: group, state: state}
+      for {{_source, group}, %{state: state, entries: tools}} <- Enum.sort(registry.groups),
+          do: %{group: group, state: state, tools: length(tools)}
 
     %{
       version: registry.version,

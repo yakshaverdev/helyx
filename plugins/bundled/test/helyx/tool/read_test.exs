@@ -24,6 +24,8 @@ defmodule Helyx.Tool.ReadTest do
       for module <- modules,
           Code.ensure_loaded!(module),
           Helyx.Tool in Helyx.Interface.implemented_by(module),
+          # The fixed tools: a tool source has no name.
+          function_exported?(module, :name, 0),
           do: {module, %{name: module.name()}}
 
     names = MapSet.new(tools, fn {_module, spec} -> spec.name end)

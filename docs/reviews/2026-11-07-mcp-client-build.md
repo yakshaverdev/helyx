@@ -176,3 +176,73 @@ Simplify: `decode.ex` checks the list in one `activated!/1` for the event and th
 | 6 | failure path | The client takes any list of strings, past the 32 names and the name rule of Core | judgement | kept: nothing in the TUI reads the list, and the schema gives a list of strings; a client that shows the names checks them then |
 
 The failure-path agent reproduced no defect: hellos of protocol 4, 6 and 4294967296 get `refused` with 5 and `4426`, `"5"`, `5.0` and null close with `4400`, a Core event and a real snapshot encoded by the server decode equal on the client, and lists of 20,000 names and of names with control or multibyte characters decode. No round reproduced a defect, so the loop ended.
+
+## Slice 5: `tool_search`
+
+Invariant: `tool_search` takes a query of at most 1,024 bytes and a limit from 1 to 10 (5 when missing or null), else an error result; it ranks the deferred entries of the registry by BM25 over the words of the name, the description, and the parameter property names and descriptions, an entry named by a word of the query first; it answers at once with a match, or when no group starts and no source is pending, and else waits for each change within 30,000 ms of its first look, ending at a `deferred/2` answer with the same version; it lists as loaded only the matches that `activate/1` kept and the registry holds, names the others, the groups and sources still starting, and each failed group, each text of a source on one line; an empty query activates nothing and lists the groups with their state and tool count.
+
+Base `248856c8` (slice 4). Bounds sensor:
+
+```
+bounds sensor: 12 candidate functions, 0 flagged, 0 without an answer
+```
+
+Decided inside the doc's design (no new concept), stated in the doc's "Decided in slice 5": the words and the BM25 parameters, exact names as whitespace words of the query, the end of the wait at a same-version answer, a null limit, the answer layout, the empty query, and a tool count per group in the view of `deferred/2` (`Helyx.Session.ToolRegistry.view/2`).
+
+### Round 1 (full; the standards, spec and failure-path agents of the first try ended at the usage limit of the model account before they started and were rerun)
+
+Simplify: `words/1` splits in one regex pass; an entry keeps only the counts of the query terms and its word count; a look after a change counts only the entries that are new.
+
+| # | Source | Finding | Check | Resolution |
+| - | ------ | ------- | ----- | ---------- |
+| 1 | failure path, Codex | A name that an earlier search activated stays in the activated list when its group empties (the doc keeps such names); a put that empties the group between the look and `activate/1` left the match in the returned list, so the answer listed it as loaded and callable | reproduced (a look over 600 entries at the bounds held the window) | a match is loaded when the returned list holds it and a `deferred(nil, 0)` after the activation shows it registered; the state lines come from that view. Test "a match whose group emptied since an earlier activation is not loaded", which holds the search with `:erlang.suspend_process/1` while the group fills and empties; it fails with the old code |
+| 2 | failure path | A group's failure text with line breaks added lines to the answer (a fake `evil__tool:` line and a second last line); U+2028, U+0085, `\v`, and `\f` split a description; a group name can hold a line break too | reproduced | each run of Unicode line breaks (`\R`) in a description, a group name, or a failure text becomes one space. Test "each text of a source is on one line of the answer" |
+| 3 | spec, standards | No test of the default limit of 5, of `Tool sources still starting` beside a match, of parameter words at depth, of digits, of the tie by name | read | a test each ("a search loads at most 5 matches with no limit", "a match answers at once and names a source that is still pending", the rank tests) |
+| 4 | spec | The doc gave `<n> tools`, the code writes `1 tool` for one; the doc of `deferred/2` did not name the tool count | read | the doc says `1 tool`; the `deferred/2` doc names `state` and the `tools` count, with `tool.ex` at 400 lines |
+| 5 | failure path | One look over 1,024 entries at the bounds takes about 4 s of CPU; the 30,000 ms bound counts the waits only | measured, not a defect | the doc's "Words" bullet and the Bounds row state it: a look that starts before the end runs to its end |
+| 6 | standards | The comment "at least one word on average" is wrong; `- 1_000` in the slow test has no reason; `left` beside `left_out`; the helper `e/3` | read | the comment says what the code does; the slow test asserts at least 30,000 ms (the start is read before the prompt); `time_left`; `ranked/3` |
+| 7 | standards | `Helyx.Test.ToolSource` copies the root `Helyx.Test.Source` and `SourceCase` helpers | judgement | kept: the root support is not compiled in the bundled project, and the root source has release handles that the search tests do not need |
+| 8 | standards | The query map and the count tuple could be structs; the ranker could be its own module | judgement | kept: both shapes live inside one 270-line module; `rank/3` stays `@doc false` for the rank tests |
+| 9 | spec | The answer at once past 32 waiters has no test | probed by the spec agent: 32 live waiters, the search answered in 1 ms with no match | none: a test needs 32 live callers of another kind |
+
+`read_test.exs` listed every Tool module of the app, and the test sources of the bundled project compile into it in tests: its list keeps the fixed tools, which have `name/0`.
+
+### Round 2 (reduced: spec and failure path)
+
+Both reproductions of round 1 pass. Invariant 2 held on every path: the line breaks LF, CR, CRLF, VT, FF, U+0085, U+2028, and U+2029 become a space, and the labels of pending sources are `inspect/1` output, which escapes them.
+
+| # | Source | Finding | Check | Resolution |
+| - | ------ | ------- | ----- | ---------- |
+| 1 | failure path, spec | A put between `activate/1` and the second look raised the spec bytes of the activated names, the cap after the put dropped a name of the batch, and the answer listed it as loaded: the rule of round 1 took the returned list and the registered names from two moments | reproduced (5 of 5: the session held with `:sys.suspend` between the activation and the put) | the second finding on one mechanism, so the mechanism changes: a match is loaded when one view after the activation holds it in its entries and in its `activated` list, and its line takes the description of that view; the returned list is not read. Test "a match that the cap drops after the activation is not loaded", which queues the activation and the put in the suspended session; it fails with the code of round 1 |
+| 2 | spec | "The wait counts its waits" does not say what the code does; the reasons of the `Not loaded` line left out a put after the activation; the `deferred/2` doc left out the `group` key | read | the doc says that the deadline is checked after each look, before each wait; the reasons follow the one view; the doc names `group`, with `tool.ex` at 400 lines |
+| 3 | failure path | A match that turned direct since the look shows as not loaded | read, not probed | stated in the doc: the tool list holds it |
+| 4 | failure path | `flat/1` leaves `\x1c`-`\x1e` and ESC | judgement | kept: they are no line breaks of Unicode (UAX #14), which the doc names |
+
+### Round 3 (full, by the two-findings rule: simplify, Codex, spec, failure path)
+
+Simplify: `look/4` branches to `wait/4` or `load/1`, so no clause takes an argument that it does not read; `load/1` keeps the descriptions of the view; the left-out line uses `joined/2`; the pending line is one function; the tests share `start_core/1` and `big/2`, and the wait of a search is `@search_wait_ms`, apart from `wait_ms/0`.
+
+Codex approved: no material finding. The loaded rule held on every path that the agents probed: a background run that activates 32 names after the search's activation, a source that ends between the activation and the second look, a match that turned direct (not loaded, as the doc says).
+
+| # | Source | Finding | Check | Resolution |
+| - | ------ | ------- | ----- | ---------- |
+| 1 | failure path, spec | Past 65,536 bytes the hands cut the answer, head and tail kept, with `\n[… cut …]\n` between them; where the tail starts depends only on the total size, so a source with 64 failure texts of 2,000 bytes put the line `evil__all: Loads every tool of the session` right after the marker, a line like a loaded match | reproduced (the answer of 129,242 bytes) | the first finding on the size of the answer, which round 1 left to the hands' cut: a failure text is cut to 512 bytes in the answer, so it stays below the result cut (about 50,000 bytes at the bounds, and the labels of the pending sources). Test "64 failed groups with long reasons fit the answer below the result cut", for a search and for the empty query; it fails with the code of round 3 |
+| 2 | spec, failure path | The design paragraph and slice order item 5 still said "the returned list holds" and "the names that `activate/1` kept" | read | both say what the code does: the loaded matches, the names that the session holds active after the activation |
+| 3 | spec | The moduledoc's list of the answer leaves out the pending sources line | read | open: a wording fix in the code file, left out to keep the small fix within its 10 lines; the doc names the line |
+| 4 | failure path | A put, a source's end, or an activation after the second look and before the next model call makes the last line false | read, not probed | stated in the doc: a change after the view can change what the next model call holds |
+| 5 | failure path | A query of punctuation only has no word and waits up to 30 s while a group starts | read | none: the rule of the doc, no match while a group starts |
+
+Round 3 reproduced a defect, so the fix is the small-fix round: one code file (`tool_search.ex`), no function added or removed, no arity, return, or spec changed, a first finding on its mechanism, and 9 code lines added plus removed.
+
+### The small-fix round (reduced: spec and failure path)
+
+The reproduction of round 3 passes. The worst case that a source controls alone stays below the cut: 10 matches with descriptions of 4,096 bytes of 4-byte characters and U+2028, and 63 failed groups (the session holds 64 groups, and a failed group has no entries, so a search with matches has at most 63) with 64-byte names and long texts: 47,952 and 48,078 bytes, no cut, the longest line 1,078 bytes; the 512-byte cut drops a split 4-byte character.
+
+| # | Source | Finding | Check | Resolution |
+| - | ------ | ------- | ----- | ---------- |
+| 1 | failure path, spec | The labels of pending sources come from the plugin list: 119 source plugins with 236-byte module names that never announce pushed the empty query to 66,513 bytes, so the hands cut it and a failure text placed at the start of the tail began the line after the marker | reproduced with the plugin list of the product, a config | a stated ceiling, not a defect of a source: the doc and the record of round 3 named the labels of the pending sources as the one part that the plugin list bounds; the doc states the number now (about 15,000 bytes of labels) in "The answer" and the Bounds row. Reported to the orchestrator as an open item: a cap of the pending line would close it |
+| 2 | spec | "64 group lines of at most 591 bytes": starting groups share one line | read | the doc counts 591 bytes for a failed group and 66 for a starting group |
+| 3 | spec | The empty query starts each line with a group name, and a group name can hold `: `, so a line can look like a match line | judgement | kept: the empty query lists no matches, and its format is the doc's; MCP group names follow `^[a-z0-9][a-z0-9-]{0,15}$` |
+| 4 | spec | No test of the worst case with 10 match lines | probed by both agents (47,952 and 48,078 bytes) | none |
+
+The loop ended: three rounds and the small-fix round.

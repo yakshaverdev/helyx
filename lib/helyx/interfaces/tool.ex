@@ -404,11 +404,11 @@ defmodule Helyx.Tool do
   def put_tools(group, value), do: source_call({:put_tools, group, value})
 
   @doc """
-  From a tool call or a hook: a map of the `version` of the tools of the
-  sources, their deferred `entries` (`name`, `description`, `parameters`,
-  `group`), the `activated` names, the `groups`, and the `pending` sources.
-  At once when the version is past `version` or it is nil, or 32 callers
-  wait; else at the next change, or after `wait_ms`, at most 30,000.
+  From a tool call or a hook: the sources' tools `version`, their deferred
+  `entries` (`name`, `description`, `parameters`, `group`), the `activated`
+  names, the `groups` (`group`, `state`, `tools` count), and the `pending`
+  sources. At once when the version is past `version`, it is nil, or 32
+  callers wait; else at the next change, or after `wait_ms`, at most 30,000.
   """
   @spec deferred(non_neg_integer() | nil, non_neg_integer()) :: map()
   def deferred(version, wait_ms)
