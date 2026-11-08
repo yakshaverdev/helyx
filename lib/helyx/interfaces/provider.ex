@@ -56,6 +56,19 @@ defmodule Helyx.Provider do
       in any other, with nil for a count that it does not know. A
       provider that keeps no history answers `:unsupported`
       (`docs/features/harness-compaction.md`).
+    * A provider that asks for a decision on a call of its own tools gives
+      `{:approval, approval_id, call_id}`: `approval_id` is its own id of
+      the request, 1 to 256 bytes of valid UTF-8, and unique among its
+      pending requests of the turn; `call_id` names an open call of the
+      turn that it runs itself. The session answers each request at most
+      once, with `{:approval, turn_id, approval_id, :allow | {:deny,
+      reason}}`, and answers every request of a provider process that it
+      did not stop (ADR 0013 §4, `docs/features/hooks.md`, "Harness
+      approvals"). A pending id fails the turn, and so does a Helyx tool
+      request for an open call that an approval request named; an
+      approval request for an open call that a Helyx tool request named
+      is denied, with one accepted exception (`docs/features/hooks.md`,
+      "The owner of a call id").
 
   The types below give the requests, the actions, and the events. The
   rules of the protocol (replies, events, deadlines) and their reasons are
@@ -83,6 +96,7 @@ defmodule Helyx.Provider do
              tokens_after :: non_neg_integer() | nil}
           | {:tool_request, call_id :: String.t(), name :: String.t(),
              arguments :: map() | String.t()}
+          | {:approval, approval_id :: String.t(), call_id :: String.t()}
           | :turn_start
 
   @typedoc "The ref of a request from Core, for its reply."
@@ -96,6 +110,8 @@ defmodule Helyx.Provider do
           | {:tool_result, turn_id :: String.t(), call_id :: String.t(),
              {:ok | :error, String.t()}}
           | {:context, turn_id :: String.t(), {:ok, Helyx.Context.t()} | {:error, term()}}
+          | {:approval, turn_id :: String.t(), approval_id :: String.t(),
+             :allow | {:deny, reason :: String.t()}}
           | :close
           | :idle_close
 

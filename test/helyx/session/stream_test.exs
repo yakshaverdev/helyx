@@ -117,6 +117,22 @@ defmodule Helyx.Session.StreamTest do
     end
   end
 
+  test "an approval passes with an id of 1 to 256 bytes of valid UTF-8, any other is malformed" do
+    id256 = String.duplicate("é", 128)
+
+    for id <- ["0", id256] do
+      assert {:send, {:approval, ^id, "i1"}, nil} = SessionStream.check({:approval, id, "i1"})
+    end
+
+    for id <- ["", id256 <> "x", <<0xFF>>, 0, nil] do
+      event = {:approval, id, "i1"}
+      assert {:bad, {:error, {:bad_stream_event, ^event}}} = SessionStream.check(event)
+    end
+
+    event = {:approval, "0", 1}
+    assert {:bad, {:error, {:bad_stream_event, ^event}}} = SessionStream.check(event)
+  end
+
   test "a resume_id event passes" do
     event = {:resume_id, "a", 0}
     assert {:send, ^event, nil} = SessionStream.check(event)

@@ -24,7 +24,7 @@ defmodule Helyx.Provider.Codex do
   @behaviour Helyx.Provider
 
   alias Helyx.{HarnessIO, Message, ModelInfo, ProviderError}
-  alias Helyx.Provider.Codex.{Check, Items, Program, Replay, State, Tools}
+  alias Helyx.Provider.Codex.{Approvals, Check, Items, Program, Replay, State, Tools}
 
   import Helyx.Provider.Codex.Wire
 
@@ -149,6 +149,9 @@ defmodule Helyx.Provider.Codex do
     actions(reply(%{state | tools: %{state.tools | requests: requests}}, from, :ok))
   end
 
+  def request({:approval, _turn_id, approval_id, decision}, from, state),
+    do: actions(reply(Approvals.answer(state, approval_id, decision), from, :ok))
+
   def request(:close, from, state), do: actions(HarnessIO.close(state, from))
 
   @impl true
@@ -226,12 +229,9 @@ defmodule Helyx.Provider.Codex do
     end
   end
 
-  # A request of the server (it has an id and a method) gets an error. Codex 0.157.1 took it
-  # as the decline of an approval (docs/research/codex-app-server.md, "Approvals").
-  defp dispatch(%{"id" => id, "method" => _method}, state) do
-    send_line(state, %{id: id, error: %{code: -32_601, message: "not supported by Helyx"}})
-    {[], state}
-  end
+  # A request of the server (it has an id and a method): an approval goes to Core (`Approvals`).
+  defp dispatch(%{"id" => _, "method" => _} = request, state),
+    do: Approvals.dispatch(request, state)
 
   defp dispatch(%{"id" => id} = response, %State{due: due} = state) when is_map_key(due, id) do
     {method, due} = Map.pop(due, id)

@@ -175,6 +175,17 @@ defmodule Helyx.Session.Server.State do
   # The options of every plugin call of the session.
   def base_opts(state), do: [core: state.core, session_id: state.id, cwd: state.cwd]
 
+  # The context of a call or an approval chain (`Helyx.Tool.context/0`):
+  # the model is the one of its turn, not of a later switch.
+  def tool_context(state, model) do
+    %{
+      session_id: state.id,
+      model: Helyx.ModelRef.to_string(model),
+      provider_opts: state.init.provider_opts,
+      model_context: state.plugins.model_context
+    }
+  end
+
   # The options of a provider's `init/3`: those of Core first, so a
   # provider option of the same name does not change one.
   def init_opts(state, resume_id, resume_usage) do

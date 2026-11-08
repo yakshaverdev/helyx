@@ -315,6 +315,36 @@ From `codex app-server generate-json-schema --out <dir>` of codex-cli 0.163.0 at
 
 ### Not run
 
-- A thread with `sandbox` `read-only` on 0.163.0 and an `apply_patch` of the model under it. The 0.157.1 runs of "Approvals" in "Long-lived use" are the last observed approvals.
+- A thread with `sandbox` `read-only` on 0.163.0 and an `apply_patch` of the model under it. Run on 0.166.0 with a stub model on 2026-11-07, see "An `apply_patch` approval under `untrusted` and `read-only`".
 - The answer of the program to an error answer for `item/permissions/requestApproval`, `item/tool/requestUserInput`, and `mcpServer/elicitation/request`.
 - A `thread/start` or `thread/resume` with `approvalsReviewer` on a live program, on 0.163.0 or an older version.
+
+## An `apply_patch` approval under `untrusted` and `read-only` (2026-11-07, #881)
+
+Five runs on 2026-11-07 with `codex-cli 0.166.0` at `~/.bun/bin/codex`, one for each answer below and the error answer a second time, for ticket #881 (ADR 0013 §4). A Python script drove `codex app-server --disable shell_tool --disable unified_exec --disable apps --disable plugins --disable hooks` over stdio, in a new session (its own process group), in an empty temporary directory. `CODEX_HOME` was a new empty temporary directory with no `auth.json`. Its `config.toml` set the model `gpt-6-luna` and a model provider `stub` with `base_url` `http://127.0.0.1:<port>/v1` and `wire_api` `responses`. The script served that address itself: a stub of the Responses API, not a model, because the worker brief of the run allows no request to a real network service (owner decision of 2026-11-07: the stub stays). Its first answer was a `custom_tool_call` named `apply_patch` with `call_id` `call_1` and the patch `*** Begin Patch` / `*** Add File: made.txt` / `+hi` / `*** End Patch`. Its second answer was a message `done`. The stub logged two `POST /v1/responses` in each run that reached the second model call, and no other request. `initialize` set `experimentalApi`; `thread/start` had `approvalPolicy` `untrusted`, `sandbox` `read-only`, and `approvalsReviewer` `user`; `turn/start` had one text input. The source was not read for this section.
+
+A first try with the model id `gpt-5-codex` got the warning ``Model metadata for `gpt-5-codex` not found``. The program sent the stub no `apply_patch` tool, and it answered the stub's call with the output `unsupported custom tool call: apply_patch`, with no item and no approval request. The five runs below used `gpt-6-luna`, an id of `model/list`.
+
+### The request (observed, 5 runs)
+
+- `item/started` of a `fileChange` item comes first. Its `id` is the model's `call_id` (`call_1`); it has `changes` (`path`, absolute; `kind` `{"type":"add"}`; `diff` `hi\n`) and `status` `inProgress`.
+- Then the server request: `{"method":"item/fileChange/requestApproval","id":0,"params":{"threadId","turnId","itemId":"call_1","startedAtMs","reason":null,"grantRoot":null}}`. The request has no diff. Its JSON-RPC `id` was the integer `0` in all five runs; the client had sent the ids `1` to `3` on the same connection.
+
+### The answers (observed, 1 run each, the error answer 2 runs)
+
+| Answer of the script | Lines after it | The output that the model read | `made.txt` |
+| --- | --- | --- | --- |
+| `{"id":0,"result":{"decision":"decline"}}` | `serverRequest/resolved` (`requestId` 0), `item/completed` with `status` `declined`, then the message and `turn/completed` `completed` | `patch rejected by user` | not written |
+| `{"id":0,"result":{"decision":"accept"}}` | `serverRequest/resolved`, `item/completed` with `status` `completed`, `turn/diff/updated`, then the message and `turn/completed` `completed` | `Exit code: 0`, `Success. Updated the following files:`, `A made.txt` | written, in a `read-only` thread |
+| `{"id":0,"error":{"code":-32601,"message":"not supported by Helyx"}}` | `serverRequest/resolved`, `item/completed` with `status` `declined`, then the message and `turn/completed` `completed`; stderr logged `request failed with client error` | `approval request failed` | not written |
+| no answer; `turn/interrupt` of the turn | the answer `{}` of the interrupt, then `turn/completed` with `status` `interrupted`; no `serverRequest/resolved` and no `item/completed` of the `fileChange` item | none: no second model call | not written |
+
+- An error answer still ends the item as `declined` on 0.166.0, as on 0.157.1, but the model reads a different text from the one it reads for a `decline`.
+- An interrupt with an approval open leaves the `fileChange` item with no `item/completed` before `turn/completed`.
+
+### Not run
+
+- `item/commandExecution/requestApproval` on 0.166.0: the shell is off in Helyx's arguments, and these runs had it off too.
+- A real model in place of the stub, and a `workspace-write` thread.
+- An answer of `acceptForSession` or `cancel`, and a second approval request for the same item.
+- An answer that comes after `turn/interrupt`.

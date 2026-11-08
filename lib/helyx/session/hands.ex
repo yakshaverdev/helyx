@@ -52,7 +52,7 @@ defmodule Helyx.Session.Hands do
 
   alias Helyx.Message.ToolCall
   alias Helyx.Session.Background
-  alias Helyx.Session.Hands.{Chain, Hooks, Outcome, Release, Settle, State}
+  alias Helyx.Session.Hands.{Approval, Chain, Hooks, Outcome, Release, Settle, State}
 
   @doc """
   Starts the hands for a session. Takes `core:`, `cwd:`,
@@ -169,7 +169,7 @@ defmodule Helyx.Session.Hands do
   # runs are the other Tasks with a place: a second call of the Task keeps
   # its own place, so the limit does not count it.
   defp call(:background, {pid, _tag}, state) do
-    with {ref, entry} <- tool_call(state, pid),
+    with {ref, entry} <- State.tool_call(state, pid),
          live = Enum.count(state.tasks, fn {r, e} -> r != ref and elem(e, 4) != nil end),
          {:ok, id} <- Background.reserve(state.background, live, state.background_dir) do
       tasks = Map.put(state.tasks, ref, put_elem(entry, 4, id))
@@ -184,7 +184,7 @@ defmodule Helyx.Session.Hands do
   # Task leaves the turn. Any other caller gets `:no_place`; a Task that a
   # cancel killed gets no reply.
   defp call({:started, {status, text}}, {pid, _tag}, state) do
-    case tool_call(state, pid) do
+    case State.tool_call(state, pid) do
       {ref, {task, turn_id, call_id, tool, id}} when id != nil ->
         result = {:started, {status, Background.start(id, text)}, pid}
         send(state.session, Outcome.of(turn_id, call_id, result))
@@ -280,6 +280,9 @@ defmodule Helyx.Session.Hands do
   defp cast({:settle, _ref, _turn_id, _input, _context} = request, state),
     do: {:noreply, Settle.start(state, request)}
 
+  defp cast({:approve, _turn_id, _call, _context, _provider} = request, state),
+    do: {:noreply, Approval.start(state, request)}
+
   defp cast({:taken, id}, state),
     do: {:noreply, %{state | background: Background.taken(state.background, id)}}
 
@@ -320,7 +323,7 @@ defmodule Helyx.Session.Hands do
 
   defp deliver(ref, result, state) do
     {_task, turn_id, call_id, _tool, _place} = Map.fetch!(state.tasks, ref)
-    state = Hooks.orphans(state, turn_id, call_id)
+    state = Hooks.orphans(state, turn_id, State.chain_id(call_id))
     {{task, ^turn_id, ^call_id, tool, _place}, tasks} = Map.pop!(state.tasks, ref)
     {handles, held} = Map.pop(state.held, task.pid, [])
     left = Release.run(%{tool => handles}, :deliver, state.release_ms, state.core)
@@ -360,9 +363,10 @@ defmodule Helyx.Session.Hands do
   end
 
   @doc false
-  # `id` is the call id, `{:hook, id}`, `{:settle, ref}`, or `:provider`;
-  # `module` is the tool, the hook, or the provider whose `release/3` gets
-  # the Task's handles, or nil for a chain Task, which holds none.
+  # `id` is the call id, `{:hook, id}`, `{:settle, ref}`, `{:approval,
+  # call_id}`, or `:provider`; `module` is the tool, the hook, or the
+  # provider whose `release/3` gets the Task's handles, or nil for a chain
+  # Task, which holds none.
   def spawn_task(state, turn_id, id, module, fun) do
     hands = self()
     session = state.session
@@ -386,14 +390,5 @@ defmodule Helyx.Session.Hands do
   defp answer(state, turn_id, id, text) do
     send(state.session, Outcome.of(turn_id, id, {:error, text}))
     state
-  end
-
-  @doc false
-  # The entry of the turn Task `pid` of a tool call, or nil: a hook Task
-  # is no tool call.
-  def tool_call(state, pid) do
-    Enum.find(state.tasks, fn {_ref, {task, turn_id, id, _tool, _place}} ->
-      task.pid == pid and turn_id != nil and is_binary(id)
-    end)
   end
 end

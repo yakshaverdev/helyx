@@ -14,7 +14,7 @@ defmodule Helyx.Session.Server.Records do
 
   alias Helyx.{Message, ModelRef, Session}
   alias Helyx.Session.{HookEntry, Id, Transcript, Turn}
-  alias Helyx.Session.Server.{ProviderConn, Settle, State}
+  alias Helyx.Session.Server.{Approvals, ProviderConn, Settle, State}
 
   # A user message that Core made at its admission, with its id and origin.
   def append_user(state, %Message{role: :user} = user) do
@@ -236,10 +236,15 @@ defmodule Helyx.Session.Server.Records do
   defp close_if(state, _block?), do: state
 
   # Appends the tool result message to the transcript and emits
-  # tool_execution_end.
+  # tool_execution_end. The call is no longer open, so its owner can go
+  # (`Approvals.drop/2`).
   defp record_result(call, result, state) do
     message = %{Message.tool_result(call, result) | id: Id.new()}
-    emit(append_message(state, message), :tool_execution_end, %{message: message})
+
+    state
+    |> append_message(message)
+    |> Approvals.drop(call.id)
+    |> emit(:tool_execution_end, %{message: message})
   end
 
   # Each open call (`Transcript.open_calls/1`) gets an `aborted` error

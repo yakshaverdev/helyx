@@ -43,7 +43,7 @@ defmodule Helyx.Session.ToolQueue do
           {:ok, step()} | :open
   def request(%__MODULE__{} = tools, %ToolCall{id: id} = call, bytes, rejection, concurrent?) do
     cond do
-      is_map_key(tools.running, id) or Enum.any?(tools.waiting, &(id(&1) == id)) ->
+      open?(tools, id) ->
         :open
 
       # An integer over the digit limit, or arguments that are not a JSON object.
@@ -62,6 +62,11 @@ defmodule Helyx.Session.ToolQueue do
         {:ok, {tools, [{:result, id, {:error, @too_many}}]}}
     end
   end
+
+  # Whether the call `id` runs or waits.
+  @spec open?(t(), String.t()) :: boolean()
+  def open?(%__MODULE__{} = tools, id),
+    do: is_map_key(tools.running, id) or Enum.any?(tools.waiting, &(id(&1) == id))
 
   # The hands' result of the running call `id`. Then the waiting calls
   # that may start run.

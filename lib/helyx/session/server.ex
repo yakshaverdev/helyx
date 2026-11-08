@@ -7,9 +7,10 @@ defmodule Helyx.Session.Server do
   # the docs of the behaviour are in `Helyx.Session`.
 
   alias Helyx.Reason
-  alias Helyx.Session.{Lock, Turn}
-  alias Helyx.Session.Server.{Asks, Calls, Events, Open, ProviderConn, Records, State, Steering}
-  alias Helyx.Session.Server.{Settle, Stop, Summary, ToolRuns, TurnLoop, Wait}
+  alias Helyx.Session.{ApprovalChains, Lock, Turn}
+  alias Helyx.Session.Server.{Approvals, Asks, Calls, Events, Open, ProviderConn, Records}
+  alias Helyx.Session.Server.{Settle, State, Steering}
+  alias Helyx.Session.Server.{Stop, Summary, ToolRuns, TurnLoop, Wait}
 
   use GenServer, restart: :temporary, shutdown: Stop.shutdown_ms()
 
@@ -118,6 +119,34 @@ defmodule Helyx.Session.Server do
 
   defp info({:tool_request, pid, turn_id, call, _bytes, _rejection}, state),
     do: {:noreply, ToolRuns.late(state, pid, turn_id, call.id)}
+
+  # An approval request of the provider process `pid` for a call of its
+  # own tools (`Approvals`). One of a turn that is not current is denied.
+  defp info(
+         {:approval, _pid, turn_id, approval_id, call_id},
+         %State{activity: %Turn{id: turn_id}} = state
+       ) do
+    case Approvals.request(state, approval_id, call_id) do
+      {:ok, state} -> {:noreply, state}
+      {:stop, reason} -> {:noreply, TurnLoop.stop_provider(state, reason)}
+    end
+  end
+
+  defp info({:approval, pid, turn_id, approval_id, _call_id}, state),
+    do: {:noreply, Approvals.late(state, pid, turn_id, approval_id)}
+
+  # The decision of the chain of a running approval request; one of a
+  # turn that ended is dropped: the turn's end denied its request.
+  defp info(
+         {:approval_result, turn_id, call_id, decision},
+         %State{activity: %Turn{id: turn_id, approval_chains: chains}} = state
+       ) do
+    if ApprovalChains.running?(chains, call_id),
+      do: {:noreply, Approvals.result(state, call_id, decision)},
+      else: {:noreply, state}
+  end
+
+  defp info({:approval_result, _turn_id, _call_id, _decision}, state), do: {:noreply, state}
 
   # A resume id of the session's live provider process, for its turn or
   # for the turn that the current wait ended (#518). An ended process,
