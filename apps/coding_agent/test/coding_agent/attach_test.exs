@@ -296,9 +296,16 @@ defmodule CodingAgent.AttachTest do
   # the wait of the client is a line too: the client is held while the
   # server stops, before its first welcome.
   test "a server of this VM that stops during the wait gives a line", %{sessions: sessions} do
+    data_folder(sessions)
+    # Until the client is held, the lock keeps the server from writing its
+    # file, so the client cannot attach and stop the server first. The
+    # margin for load is `Serve.wait_ms/0`: the server waits that long for
+    # the lock, and the client for the server, up to its resume.
+    lock = hold_lock(sessions)
     client = Task.async(fn -> Attach.serve(sessions, "fake/echo", & &1) end)
     wait_until(fn -> Process.whereis(Serve) != nil end)
     :erlang.suspend_process(client.pid)
+    Lock.release(lock)
     :ok = Task.Supervisor.terminate_child(CodingAgent.Servers, Process.whereis(Serve))
     true = :erlang.resume_process(client.pid)
 
