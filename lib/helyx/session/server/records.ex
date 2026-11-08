@@ -236,9 +236,11 @@ defmodule Helyx.Session.Server.Records do
   defp close_if(state, _block?), do: state
 
   # Appends the tool result message to the transcript and emits
-  # tool_execution_end.
+  # tool_execution_end. The call is no longer open, so its owner goes
+  # (`Turn.owners`).
   defp record_result(call, result, state) do
     message = %{Message.tool_result(call, result) | id: Id.new()}
+    state = update_in(state.activity.owners, &Map.delete(&1, call.id))
     emit(append_message(state, message), :tool_execution_end, %{message: message})
   end
 

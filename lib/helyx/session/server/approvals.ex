@@ -6,8 +6,15 @@ defmodule Helyx.Session.Server.Approvals do
   # open call of the turn that the provider runs itself; the `before_tool`
   # chain of that call decides it, in a Task of the hands, and the session
   # answers the provider with `{:approval, turn_id, approval_id, decision}`.
-  # Every request gets exactly one answer, as long as the provider process
-  # lives: the provider waits for it.
+  # Every request of a provider process that the session did not stop gets
+  # exactly one answer: the provider waits for it.
+  #
+  # The owner of a call id (`docs/features/hooks.md`, "The owner of a call
+  # id"): a call that runs or waits in the tool queue is a Helyx call, and
+  # one whose approval chain runs or waits is the provider's own. Once Core
+  # answered its request the session forgets both, so `owners` in
+  # `Helyx.Session.Turn` keeps the owner of each open call that a request
+  # named (`own/3`), and `Records` drops it at the call's result.
 
   import Helyx.Session.Server.State, only: [ask: 4, tool_context: 2]
 
@@ -31,15 +38,27 @@ defmodule Helyx.Session.Server.Approvals do
       ApprovalChains.pending?(chains, approval_id) ->
         {:stop, {:bad_action, {:event, turn.id, {:approval, approval_id, call_id}}}}
 
-      call == nil ->
+      call == nil or ToolQueue.open?(turn.tool_queue, call_id) or turn.owners[call_id] == :tool ->
         {:ok, answer(state, turn.id, approval_id, {:deny, @no_call})}
 
       Map.get(Helyx.Core.hooks(state.core), :before_tool, []) == [] ->
+        state = put_owner(state, call_id, :approval)
         {:ok, answer(state, turn.id, approval_id, {:deny, @no_hook})}
 
       true ->
+        state = put_owner(state, call_id, :approval)
         {:ok, apply_step(state, ApprovalChains.request(chains, approval_id, call))}
     end
+  end
+
+  # The owner of the call `call_id` when it is an open call of the turn:
+  # `:tool` for a Helyx tool request, `:approval` for an approval request.
+  # The first owner stays: a request that names a call of the other owner
+  # is denied or stops the provider before it gets here.
+  def own(%State{activity: %Turn{owners: owners}} = state, call_id, owner) do
+    if is_map_key(owners, call_id) or open_call(state, call_id) == nil,
+      do: state,
+      else: put_owner(state, call_id, owner)
   end
 
   # A request of a turn that is not current, from the provider process
@@ -64,15 +83,17 @@ defmodule Helyx.Session.Server.Approvals do
 
   def end_turn(state, _turn), do: state
 
-  # An open call of the turn that the provider runs itself: a call of the
-  # open assistant message, or of a closed message of the turn with no
-  # result yet, that is no Helyx tool request of the tool queue.
-  defp open_call(%State{activity: %Turn{partial: partial, tool_queue: queue}} = state, call_id) do
-    calls = Enum.filter(partial || [], &match?(%Message.ToolCall{}, &1))
-    calls = calls ++ Transcript.open_calls(state.transcript)
-
-    if ToolQueue.open?(queue, call_id), do: nil, else: Enum.find(calls, &(&1.id == call_id))
+  # An open call of the turn: a call of the open assistant message, or of
+  # the last closed message with no result yet (`Transcript.open_calls/1`).
+  # The transcript is read only when the open message has no such call.
+  defp open_call(%State{activity: %Turn{partial: partial}} = state, call_id) do
+    Enum.find(partial || [], &match?(%Message.ToolCall{id: ^call_id}, &1)) ||
+      Enum.find(Transcript.open_calls(state.transcript), &(&1.id == call_id))
   end
+
+  # The caller found the open call `call_id`. The first owner stays.
+  defp put_owner(%State{activity: %Turn{owners: owners} = turn} = state, call_id, owner),
+    do: %{state | activity: %{turn | owners: Map.put_new(owners, call_id, owner)}}
 
   defp apply_step(%State{activity: turn} = state, {chains, effects}) do
     turn = %{turn | approval_chains: chains}

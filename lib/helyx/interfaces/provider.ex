@@ -65,7 +65,8 @@ defmodule Helyx.Provider do
       reason}}`, and answers every request of a provider process that it
       did not stop (ADR 0013 §4, `docs/features/hooks.md`, "Harness
       approvals"). A pending id fails the turn, and so does a Helyx tool
-      request for a call with a pending request.
+      request for a call that an approval request of the turn named; an
+      approval request for a Helyx call of the turn is denied.
 
   The types below give the requests, the actions, and the events. The
   rules of the protocol (replies, events, deadlines) and their reasons are

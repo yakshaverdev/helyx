@@ -92,3 +92,40 @@ Not reached: the background-run variant of finding 21, an approval in a compacti
 
 The loop ends here: round 3 reproduced defects whose fix does not meet the conditions of the small-fix round. The commit holds the code as rounds 2 and 3 reviewed it; findings 21 to 24 are open.
 
+## Third cycle (2026-11-08): the owner of a call id
+
+Owner decisions of 2026-11-07: findings 21 and 22 are defects (21 breaks ADR 0013 §4), the third finding on the call-id binding. The owner of a call id is derived from the state that the session and the hands hold; a store only where a case cannot be derived, bounded by the turn's existing bounds. Finding 23 is fixed and the two tests of finding 24 are added. If a round finds another defect on this binding, the reviewed code is committed and reported.
+
+Before the change, the branch was rebased over #880 (`before_settle`): `Helyx.Session.Hands.Approval` follows the shape of `Hands.Settle` (request, start), `tool_call/2` moved from `Hands` to `Hands.State` with `chain_call/2` and `chain_id/1`, which also take the settle chain Task, and the unused `Settle.chain/2` went. `hands.ex` keeps master's moduledoc and has 394 lines.
+
+The change: `owners` in `Helyx.Session.Turn`, the owner (`:tool` or `:approval`) of each open call that a request named, set by `Helyx.Session.Server.Approvals.own/3` and dropped by `Records` at the call's result. Derived with no store: a call that runs or waits in the tool queue, a call whose approval chain runs or waits, a call with its result. Not derivable: a Helyx call that Core answered before the provider's result (the session drops the ref of the result request, `ProviderRequest.ask/3` arms only a kill, the hands drop the Task), and an answered approval (`ApprovalChains.result/3` drops it). Bound: an entry only for an open call, at most 2 × 1,024 (`Turn` `@max_message_blocks`). Tests: `approvals_test.exs` "the owner of a call id" (the three for findings 21 and 22 fail without the checks), and the two of finding 24.
+
+## Round 1 of the third cycle (full)
+
+Base: the merge base `9bebab64` (both commits after the rebase and the uncommitted change). Bounds sensor:
+
+```text
+bounds sensor: 9 candidate functions, 2 flagged, 0 without an answer
+  lib/helyx/session/ask.ex:22  WAIT  def await_go do
+  plugins/bundled/lib/helyx/provider/codex.ex:224  SIZE  defp dispatch(%{"id" => rpc_id, "method" => "item/tool/call"
+```
+
+The first launch of the three agents died with a killed session; they were run again. The Codex review had ended before the kill.
+
+| # | Source | Finding | Reproduced | State |
+|---|---|---|---|---|
+| 25 | failure path | Two calls with one id in one assistant message: `Records.record_result/3` drops `owners[id]` at the result of the first, and the second stays open with no owner. Then an approval for a Helyx call runs its chain, or a Helyx tool request for a call that an approval named runs. `Records` takes such ids on purpose ("a result goes to the first open call with its id"); `Helyx.Provider.Loop` rejects a repeated id, and Codex item ids are unique. Two chains never run at once (the tool queue and the approval set still catch it). | yes, `Helyx.Test.Connected`, both orders | **Open defect on the binding**, so the cycle stops here (owner decision). Proposed fix: drop the owner only when no open call keeps the id. |
+| 26 | spec | The "Not covered" case of `hooks.md` (a call that opens only after Core answered its Helyx tool request, then an approval for it runs the chain) breaks ADR 0013 §4 ("a request whose call id names no open harness call of the turn ... gets `{:deny, reason}` at once"), so it cannot be an accepted hole. No provider of the repository reaches it: `Helyx.Provider.Loop` and Codex send the call before its tool request (`loop.ex`, `codex/tools.ex`), and Claude Code sends no approval request. | yes, spec probe P1 | **Open question for the owner.** A contract rule "a Helyx tool request follows its call" would close it with no store; Claude Code's order is not verified, and a Claude Code sub-agent's calls never join the transcript, so the rule cannot be checked for every provider. |
+| 27 | spec | The owner's rule says "an answered approval of this turn" and "a Helyx call of this turn (running, waiting, or answered)"; the code covers them while the call is open. After the call's result its id is an ended id, and `owners` drops it, so a Helyx tool request for a call whose approval was answered runs once the call has its result (test "after its result a call id is an ended id"), and an approval for a reused id of an answered Helyx call runs (spec probe P3), as does a tool request for a call that opened after an approval for it was denied (P2). The `Helyx.Provider` line, the hooks.md clause "(... or it was answered)", and the `ToolRuns` comment say "of the turn". | yes, P2 and P3; the test | **Open, question for the owner:** "of this turn" needs a store of every call id that a request named in the turn, and a turn has no bound on its calls, so it cannot be bounded by the turn's existing bounds; the code keeps the open-call scope, which ADR 0013 §4 and #369 leave unchecked after the end. The texts must then say "open call". |
+| 28 | standards | No test that a provider process that the session stopped (`:ending`) gets no deny (`Approvals.end_turn/2`). | n/a (test) | Open |
+| 29 | standards | No test of the owner that the deny with no `before_tool` hook records (a Helyx tool request after it). | n/a (test) | Open |
+| 30 | standards | The "Derived, with no store" item of `hooks.md` says a pending request needs no store, but `owners` also records it at the request; the next item says so. | n/a (text) | Open |
+| 31 | spec | The test "a call that opens after its tool request" relies on the session taking the provider's `tool_call` before the hands' result: two senders (AGENTS.md, #592). | n/a (test) | Open: gate the hook until the snapshot shows the call. |
+| 32 | Codex (high) | An immediate error result of a Helyx tool request (arguments rejected, the byte bound, past the 16 waiting) records the call as Helyx's, so a later approval for it is denied. | n/a | **Rejected:** the provider named the call as a Helyx call, and an error result is Core's answer, so the call is an answered Helyx call by the owner's rule; the deny fails closed. |
+
+Judgement calls of the standards review, open: `Map.put_new` in `put_owner/3` where every caller checks first; `owners` also holds the derivable pending requests, so each check is written twice; two writers of `owners` (`Approvals`, `Records`); the context merge of a call in three places of the hands; `turn.approval_chains.running` read in `Wait`; the names `@second`, `chains?`, `kind_name`; the unused `approval_id` of the `{:run, ...}` effect; `Message.approval_id?/1` on the bound of an origin id.
+
+The failure-path agent found the other paths of the mechanism held: steer, `message_end`, results of an earlier message, a compaction, a program turn, a new turn, the bound, background runs, and the settle chain after the rebase. Not reached: the Codex fake end to end, a hands refusal while a chain runs, a suspended window between a decision and the turn end, a session stop with pending requests.
+
+The cycle ends after round 1: finding 25 is another defect on the binding. The commit holds the code as round 1 reviewed it; findings 25 to 31 are open.
+

@@ -10,20 +10,22 @@ defmodule Helyx.Session.Server.ToolRuns do
   alias Helyx.Message.ToolCall
   alias Helyx.Session
   alias Helyx.Session.{ApprovalChains, Hands, ToolQueue, Turn}
-  alias Helyx.Session.Server.{Asks, ProviderConn, State}
+  alias Helyx.Session.Server.{Approvals, Asks, ProviderConn, State}
 
   # A request of the current turn, of `bytes` encoded call bytes. An open
   # call id stops the provider process: `{:stop, reason}`; so does the id
-  # of a call with a pending approval request, which the provider named
-  # as a call that it runs itself (`docs/features/hooks.md`, "Harness
-  # approvals"), so one call id never has two chains in the hands.
+  # of a call that an approval request of the turn named as a call that
+  # the provider runs itself, pending or answered (`docs/features/hooks.md`,
+  # "The owner of a call id"), so one call id never has two chains in the
+  # hands, and no call is both.
   def request(%State{activity: %Turn{} = turn} = state, %ToolCall{} = call, bytes, rejection) do
     # A call of an unknown tool runs alone; the hands answer it with an error.
     concurrent? = match?({_tool, true}, state.tools[call.name])
 
     with false <- ApprovalChains.pending_call?(turn.approval_chains, call.id),
+         false <- turn.owners[call.id] == :approval,
          {:ok, step} <- ToolQueue.request(turn.tool_queue, call, bytes, rejection, concurrent?) do
-      {:ok, apply_step(state, step)}
+      {:ok, state |> Approvals.own(call.id, :tool) |> apply_step(step)}
     else
       _open -> {:stop, {:bad_action, {:event, turn.id, {:tool_request, call}}}}
     end
@@ -45,9 +47,13 @@ defmodule Helyx.Session.Server.ToolRuns do
   def end_turn(state, _turn), do: state
 
   # The hands' result of the running call `id`; an ask of the call ends
-  # with it.
-  def result(%State{activity: %Turn{tool_queue: queue}} = state, id, result),
-    do: state |> Asks.call_end(id) |> apply_step(ToolQueue.result(queue, id, result))
+  # with it. A call that opened after its request gets its owner now.
+  def result(%State{activity: %Turn{tool_queue: queue}} = state, id, result) do
+    state
+    |> Asks.call_end(id)
+    |> Approvals.own(id, :tool)
+    |> apply_step(ToolQueue.result(queue, id, result))
+  end
 
   defp apply_step(%State{activity: turn} = state, {queue, effects}) do
     state = %{state | activity: %{turn | tool_queue: queue}}

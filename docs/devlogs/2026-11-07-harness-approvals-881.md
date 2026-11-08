@@ -13,4 +13,6 @@ Second cycle (owner decisions of 2026-11-07, after the first commit): the Codex 
 
 Open after review round 3, the last: an approval request for a Helyx call that Core answered, and a tool request for a call whose approval request was answered, are not caught, because the session keeps no owner of a call id once its tool request or approval ended (review record, findings 21 and 22). The first breaks ADR 0013 §4. The fix is one map for each turn from call id to its owner; it is a mechanism change past the small-fix round, so it is not in this commit.
 
+Third cycle (2026-11-08): rebased over #880, with the approval chain in `Helyx.Session.Hands.Approval` beside `Hands.Settle`. The session derives the owner of a call id where it can (tool queue, approval set, transcript) and keeps `owners` in `Helyx.Session.Turn` for the open calls whose request Core answered, which no state holds; bounded by the open calls, 2 × 1,024. Findings 21 to 24 are fixed. Round 1 found another defect on the binding (two calls with one id in one message lose their owner, finding 25), so the cycle stopped there with findings 25 to 31 open; two of them are questions for the owner (the "Not covered" case against ADR 0013 §4, and the open-call scope against "of this turn").
+
 The ticket has no triage comment; the decisions come from ADR 0013 and the owner's answers of 2026-11-07.

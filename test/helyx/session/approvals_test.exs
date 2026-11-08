@@ -385,4 +385,103 @@ defmodule Helyx.Session.ApprovalsTest do
     assert_receive {:DOWN, ^ref, :process, ^pid, _reason}
     refute_receive {:deciding, _tool}, @load_ms
   end
+
+  # docs/features/hooks.md, "The owner of a call id".
+  describe "the owner of a call id" do
+    test "an approval for a Helyx call that Core answered, before the provider's result, is denied" do
+      core = core([Hook.A], [Helyx.Test.Tool.Upcase])
+      {_session, pid, turn_id} = turn(core)
+
+      events(pid, turn_id, [
+        {:tool_call, @upcase},
+        {:tool_request, "c1", "upcase", %{"text" => "hi"}}
+      ])
+
+      assert {:tool_result, ^turn_id, "c1", {:ok, "HI"}} = next_request(pid, [:tool_result])
+      assert_receive {:hook, Hook.A, :before_tool, %{call_id: "c1", provider: nil}}
+
+      events(pid, turn_id, [{:approval, "0", "c1"}])
+      assert {:approval, ^turn_id, "0", {:deny, reason}} = next_request(pid, [:approval])
+      assert reason =~ "no open call"
+      refute_receive {:hook, Hook.A, :before_tool, %{provider: "conn"}}, @load_ms
+    end
+
+    test "a call that opens after its tool request is the Helyx call's at the answer" do
+      core = core([Hook.A], [Helyx.Test.Tool.Upcase])
+      {_session, pid, turn_id} = turn(core)
+
+      events(pid, turn_id, [
+        {:tool_request, "c1", "upcase", %{"text" => "hi"}},
+        {:tool_call, @upcase}
+      ])
+
+      assert {:tool_result, ^turn_id, "c1", {:ok, "HI"}} = next_request(pid, [:tool_result])
+
+      events(pid, turn_id, [{:approval, "0", "c1"}])
+      assert {:approval, ^turn_id, "0", {:deny, _reason}} = next_request(pid, [:approval])
+      refute_receive {:hook, Hook.A, :before_tool, %{provider: "conn"}}, @load_ms
+    end
+
+    test "a tool request for a call whose approval Core answered stops the provider, and the turn fails" do
+      core = core([Hook.A])
+      {_session, pid, turn_id} = turn(core)
+      ref = Process.monitor(pid)
+      events(pid, turn_id, [{:tool_call, @call}, {:approval, "0", "i1"}])
+      assert {:approval, ^turn_id, "0", :allow} = next_request(pid, [:approval])
+
+      events(pid, turn_id, [{:tool_request, "i1", "fileChange", %{}}])
+      assert %{data: %{outcome: :error, error: error}} = List.last(collect_until(:turn_end))
+      assert error =~ "tool_request"
+      assert_receive {:DOWN, ^ref, :process, ^pid, _reason}
+    end
+
+    test "a tool request for a call whose approval chain waits stops the provider" do
+      core = core([Hook.A])
+      blocking(core, self())
+      {_session, pid, turn_id} = turn(core)
+      ref = Process.monitor(pid)
+      calls = for n <- 1..9, do: %{@call | id: "i#{n}"}
+      approvals = for n <- 1..9, do: {:approval, "#{n}", "i#{n}"}
+      events(pid, turn_id, Enum.map(calls, &{:tool_call, &1}) ++ approvals)
+      for _ <- 1..8, do: assert_receive({:deciding, "fileChange"})
+
+      events(pid, turn_id, [{:tool_request, "i9", "fileChange", %{}}])
+      assert %{data: %{outcome: :error}} = List.last(collect_until(:turn_end))
+      assert_receive {:DOWN, ^ref, :process, ^pid, _reason}
+    end
+
+    test "an approval for a call that waits in the tool queue is denied, and no chain runs" do
+      core = core([Hook.A], [Helyx.Test.Tool.Upcase])
+      blocking(core, self())
+      {_session, pid, turn_id} = turn(core)
+      c2 = %{@upcase | id: "c2"}
+
+      events(pid, turn_id, [
+        {:tool_call, @upcase},
+        {:tool_call, c2},
+        {:tool_request, "c1", "upcase", %{"text" => "hi"}},
+        {:tool_request, "c2", "upcase", %{"text" => "hi"}}
+      ])
+
+      assert_receive {:deciding, "upcase"}
+      events(pid, turn_id, [{:approval, "0", "c2"}])
+      assert {:approval, ^turn_id, "0", {:deny, reason}} = next_request(pid, [:approval])
+      assert reason =~ "no open call"
+      refute_receive {:deciding, _tool}, @load_ms
+    end
+
+    test "after its result a call id is an ended id: a tool request for it is not checked (#369)" do
+      core = core([Hook.A], [Helyx.Test.Tool.Upcase])
+      {_session, pid, turn_id} = turn(core)
+      events(pid, turn_id, [{:tool_call, %{@call | name: "upcase"}}, {:approval, "0", "i1"}])
+      assert {:approval, ^turn_id, "0", :allow} = next_request(pid, [:approval])
+
+      events(pid, turn_id, [
+        {:tool_result, "i1", {:ok, "done"}},
+        {:tool_request, "i1", "upcase", %{"text" => "hi"}}
+      ])
+
+      assert {:tool_result, ^turn_id, "i1", {:ok, "HI"}} = next_request(pid, [:tool_result])
+    end
+  end
 end
