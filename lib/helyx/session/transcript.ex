@@ -1,6 +1,7 @@
 defmodule Helyx.Session.Transcript do
   @moduledoc false
-  # Queries over a session transcript, a list of `Helyx.Message` in order.
+  # Queries over a session transcript, a list of `Helyx.Message` in order,
+  # some with the open assistant content of the running turn.
 
   alias Helyx.{Message, ModelRef}
 
@@ -29,6 +30,24 @@ defmodule Helyx.Session.Transcript do
       _other ->
         []
     end
+  end
+
+  # Whether `call_id` names an open call: a call of the open assistant
+  # content `partial` (a reversed block list, or nil), or one of
+  # `open_calls/1`. O(n).
+  @spec open_call?([Message.t()], [Message.block()] | nil, String.t()) :: boolean()
+  def open_call?(transcript, partial, call_id) do
+    Enum.any?(partial || [], &match?(%Message.ToolCall{id: ^call_id}, &1)) or
+      Enum.any?(open_calls(transcript), &(&1.id == call_id))
+  end
+
+  # Whether the transcript holds a result of `call_id` and the call is not
+  # open again: a request that names it runs once more (#369), but the call
+  # is answered. O(n).
+  @spec answered?([Message.t()], [Message.block()] | nil, String.t()) :: boolean()
+  def answered?(transcript, partial, call_id) do
+    Enum.any?(transcript, &match?(%Message{role: :tool_result, tool_call_id: ^call_id}, &1)) and
+      not open_call?(transcript, partial, call_id)
   end
 
   # Pairs the calls of `message` with `results`, the tool results right after

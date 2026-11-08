@@ -5,7 +5,8 @@ defmodule Helyx.Session.Hands do
   and addresses it by pid.
 
   The result of a call goes to the session as `{:tool_result, turn_id,
-  call_id, {:ok, text} | {:error, text}}`. A Task that dies without a
+  call_id, {status, text}}`, or `{status, text, ui_blocks}` with the UI
+  blocks of the tool (`docs/features/ui-blocks.md`). A Task that dies without a
   result gives an error result, unless a cancel request killed it. An
   unknown tool gives an error result and starts no Task. The hands do not
   check the working directory: a tool fails at its own use of a missing

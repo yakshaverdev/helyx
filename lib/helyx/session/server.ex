@@ -10,7 +10,7 @@ defmodule Helyx.Session.Server do
   alias Helyx.Session.{ApprovalChains, Lock, Turn}
   alias Helyx.Session.Server.{Approvals, Asks, Calls, Events, Open, ProviderConn, Records}
   alias Helyx.Session.Server.{Settle, State, Steering}
-  alias Helyx.Session.Server.{Stop, Summary, ToolRuns, TurnLoop, Wait}
+  alias Helyx.Session.Server.{Stop, Summary, ToolRuns, TurnLoop, UIBlocks, Wait}
 
   use GenServer, restart: :temporary, shutdown: Stop.shutdown_ms()
 
@@ -94,6 +94,18 @@ defmodule Helyx.Session.Server do
          %State{activity: %Turn{id: turn_id}} = state
        ),
        do: {:noreply, Records.tool_result(state, call_id, result)}
+
+  # A UI block of the provider (`UIBlocks.provider_block/4`): a new key
+  # past the count stops the provider process.
+  defp info(
+         {:stream_event, turn_id, {:ui_block, call_id, key, block}},
+         %State{activity: %Turn{id: turn_id}} = state
+       ) do
+    case UIBlocks.provider_block(state, call_id, key, block) do
+      {:ok, state} -> {:noreply, state}
+      {:error, reason} -> {:noreply, TurnLoop.stop_provider(state, reason)}
+    end
+  end
 
   # The provider took a steer of this turn: its text, the one the session
   # checked at the client call, joins the transcript here (see

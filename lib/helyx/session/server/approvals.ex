@@ -21,7 +21,7 @@ defmodule Helyx.Session.Server.Approvals do
 
   alias Helyx.Message
   alias Helyx.Session.{ApprovalChains, Hands, ToolQueue, Transcript, Turn}
-  alias Helyx.Session.Server.{ProviderConn, State}
+  alias Helyx.Session.Server.{ProviderConn, State, UIBlocks}
 
   @no_hook "no before_tool hook decides a call of the provider's own tools"
   @no_call "the approval request names no open call of the provider's own tools in the turn"
@@ -30,7 +30,9 @@ defmodule Helyx.Session.Server.Approvals do
   # A request of the current turn. A pending approval id stops the
   # provider process: `{:stop, reason}`. A request with no open call that
   # the provider runs itself, or with no `before_tool` hook, is denied at
-  # once, with no entry (ADR 0013 §6).
+  # once, with no entry (ADR 0013 §6). A call id that a Helyx tool request
+  # of the turn named is a Helyx call (`UIBlocks.helyx_call?/2`), also when
+  # the call opened after Core answered the request.
   def request(%State{activity: %Turn{} = turn} = state, approval_id, call_id) do
     chains = turn.approval_chains
     call = open_call(state, call_id)
@@ -39,7 +41,8 @@ defmodule Helyx.Session.Server.Approvals do
       ApprovalChains.pending?(chains, approval_id) ->
         {:stop, {:bad_action, {:event, turn.id, {:approval, approval_id, call_id}}}}
 
-      call == nil or ToolQueue.open?(turn.tool_queue, call_id) or turn.owners[call_id] == :tool ->
+      call == nil or ToolQueue.open?(turn.tool_queue, call_id) or turn.owners[call_id] == :tool or
+          UIBlocks.helyx_call?(turn, call_id) ->
         {:ok, answer(state, turn.id, approval_id, {:deny, @no_call})}
 
       Map.get(Helyx.Core.hooks(state.core), :before_tool, []) == [] ->

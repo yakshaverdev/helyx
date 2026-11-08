@@ -1,10 +1,13 @@
 defmodule Helyx.TUI.Question do
   @moduledoc false
-  # The picker of the `question` tool in the place of the composer
-  # (docs/features/question-tool.md, "The TUI picker"). It shows the oldest
-  # open ask of the tool, one question at a time, and sends the answers
-  # with `Helyx.TUI.Link.answer/3` after the last one. The request comes
-  # from the bundled tool, which checked its shape. `ask_end` closes it.
+  # The picker of a `form` UI block in the place of the composer
+  # (docs/features/question-tool.md, "The TUI picker";
+  # docs/features/ui-blocks.md). It shows the oldest open ask whose request
+  # is a form, or that has no kind and comes from the `question` tool, one
+  # question at a time, and sends the answers with `Helyx.TUI.Link.answer/3`
+  # after the last one, when `picker?/1` can read its fields. `ask_end`
+  # closes it. The transcript shows the text of
+  # an ask of another kind (`Helyx.TUI.ViewModel.UIBlocks`).
 
   alias ExRatatui.Event.{Key, Paste}
   alias ExRatatui.Style
@@ -55,13 +58,45 @@ defmodule Helyx.TUI.Question do
   defguard handles?(question, event)
            when question != nil and (is_struct(event, Key) or is_struct(event, Paste))
 
-  # The picker of the oldest ask of the tool in the view model: the one
-  # that shows keeps its progress, and none shows when no ask is open.
+  # The picker of the oldest ask of a form in the view model: the one that
+  # shows keeps its progress, and none shows when no such ask is open.
   @spec sync(map()) :: map()
   def sync(%{vm: %ViewModel{asks: asks}, question: question} = state) do
-    ask = Enum.find(asks, &(&1.tool == "question"))
+    ask = Enum.find(asks, &picker?/1)
     %{state | question: picker(question, ask)}
   end
+
+  # Whether the picker shows the ask: by the kind of its request, and by the
+  # tool name for a request with no kind (ADR 0011 §4), when the TUI can
+  # read its fields. Any tool can send a form, so the fields are checked
+  # here against the `form` entry of `docs/features/ui-blocks.md`, its
+  # bounds too: the picker renders them. A form that fails shows its text.
+  @spec picker?(Helyx.Session.Snapshot.ask()) :: boolean()
+  def picker?(%{request: %{"kind" => "form"} = request}), do: form?(request)
+  def picker?(%{request: %{"kind" => _kind}}), do: false
+  def picker?(%{tool: "question", request: request}), do: form?(request)
+  def picker?(_ask), do: false
+
+  defp form?(%{"questions" => questions}) when is_list(questions) and questions != [],
+    do: length(questions) <= 4 and Enum.all?(questions, &question?/1)
+
+  defp form?(_request), do: false
+
+  defp question?(%{"question" => text, "header" => header, "options" => options} = item)
+       when is_list(options) do
+    bytes?(text, 1, 1_000) and bytes?(header, 1, 48) and length(String.to_charlist(header)) <= 12 and
+      Map.get(item, "multi_select", false) in [true, false] and length(options) in 2..4 and
+      Enum.all?(options, &option?/1) and Enum.uniq_by(options, & &1["label"]) == options
+  end
+
+  defp question?(_item), do: false
+
+  defp option?(%{"label" => label, "description" => text}),
+    do: bytes?(label, 1, 60) and bytes?(text, 0, 300)
+
+  defp option?(_option), do: false
+
+  defp bytes?(text, min, max), do: is_binary(text) and byte_size(text) in min..max
 
   defp picker(_question, nil), do: nil
   defp picker(%__MODULE__{ask_id: id} = question, %{ask_id: id}), do: question

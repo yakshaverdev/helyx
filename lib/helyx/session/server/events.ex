@@ -10,7 +10,7 @@ defmodule Helyx.Session.Server.Events do
 
   alias Helyx.{Event, ModelRef}
   alias Helyx.Session.{History, Queue, Ring, Snapshot, Totals, Turn}
-  alias Helyx.Session.Server.{Asks, State, Wait}
+  alias Helyx.Session.Server.{Asks, State, UIBlocks, Wait}
 
   # The unacked events of one subscriber (ADR 0008 §5).
   @credits 16_384
@@ -84,7 +84,8 @@ defmodule Helyx.Session.Server.Events do
       persisting: state.file != nil,
       usage: usage,
       context: context,
-      asks: Asks.snapshot(state)
+      asks: Asks.snapshot(state),
+      ui_blocks: UIBlocks.snapshot(state)
     }
   end
 

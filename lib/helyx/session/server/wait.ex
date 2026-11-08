@@ -10,8 +10,10 @@ defmodule Helyx.Session.Server.Wait do
   # deadlines, a reply by its armed kill. `callers` are the abort callers,
   # who get their reply at the end. `turn` is the id of the turn that the
   # wait ended, or nil, and `turn_end` the data of its `turn_end` while that
-  # event waits for the hands, with `started_ms` of that turn. `settle` is
-  # the `before_settle` chain, due or running, the last part
+  # event waits for the hands, with `started_ms` of that turn and the UI
+  # blocks that the turn still shows (`ui_blocks`, as in
+  # `Helyx.Session.Turn`), which its `turn_end` drops. `settle` is the
+  # `before_settle` chain, due or running, the last part
   # (`Helyx.Session.Server.Settle`). Every message of a client queues until
   # the end.
   # `Helyx.Session.Server.TurnLoop` matches the inputs and ends the wait
@@ -27,7 +29,7 @@ defmodule Helyx.Session.Server.Wait do
   alias Helyx.Session.Server.{Approvals, Asks, ProviderConn, Records, Settle, State, Steering}
   alias Helyx.Session.Server.{Summary, ToolRuns}
 
-  defstruct [:hands, :reply, :turn, :turn_end, :started_ms, :settle, callers: []]
+  defstruct [:hands, :reply, :turn, :turn_end, :started_ms, :settle, callers: [], ui_blocks: []]
 
   @type t :: %__MODULE__{
           hands: :gen_server.request_id() | nil,
@@ -36,7 +38,8 @@ defmodule Helyx.Session.Server.Wait do
           turn_end: map() | nil,
           started_ms: integer() | nil,
           settle: {:due, Helyx.Hook.settle(), map()} | reference() | nil,
-          callers: [GenServer.from()]
+          callers: [GenServer.from()],
+          ui_blocks: [Helyx.Session.Server.UIBlocks.entry()]
         }
 
   # The end of the turn, at `outcome`: `{:done, stop_reason, usage}`,
@@ -76,8 +79,17 @@ defmodule Helyx.Session.Server.Wait do
     chains? = turn.approval_chains.running != %{}
     hands = if !done? or running? or chains?, do: Hands.request_cancel(state.hands, turn.id)
     wait = if outcome == :aborted, do: interrupt(state, turn), else: %__MODULE__{}
-    turn_end = if running?, do: data
-    wait = %{wait | hands: hands, turn: turn.id, turn_end: turn_end, started_ms: turn.started_ms}
+    {turn_end, blocks} = if running?, do: {data, state.activity.ui_blocks}, else: {nil, []}
+
+    wait = %{
+      wait
+      | hands: hands,
+        turn: turn.id,
+        turn_end: turn_end,
+        started_ms: turn.started_ms,
+        ui_blocks: blocks
+    }
+
     Settle.finish(%{state | activity: wait}, turn, outcome)
   end
 

@@ -22,3 +22,7 @@ Capabilities removed: a file with two branches is rejected, not partly read. A f
 ## Update 2026-11-06: delete and removal (#833)
 
 A session still only appends. Two calls of `Helyx.Sessions` change a saved file while no session holds it: `delete/2` removes it, and `remove_message/3` replaces it with a copy without one message and the messages that pair with it, relinked to one chain. Each holds the writer lock and refuses a session that runs. The rules are in `docs/features/session-edit.md`.
+
+## Update 2026-11-06: UI blocks on a tool result (#878)
+
+A tool result message gets the field `ui_blocks`, a list of UI blocks for the clients (ADR 0011, `docs/features/ui-blocks.md`), empty by default. It is not a content block: the model and the providers never see it, so the three content blocks stay. The session file entry of a tool result has the key `ui_blocks` when the list is not empty, and the wire `message` has the same shape. The reader keeps the message and rejects the smallest unit: a block that fails the check is dropped, a block over the bound is cut, the blocks past the count are dropped, and a `ui_blocks` that is not a list, or that is on a message that is not a tool result, is dropped whole. Each drop is logged. A file from before #878 has no key and reads as no blocks.

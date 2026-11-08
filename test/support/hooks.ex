@@ -16,6 +16,21 @@ defmodule Helyx.Test.Hook do
 
   def test_name(core), do: Module.concat(core, Test)
 
+  # Registers as `<core>.Test` a proxy, linked to the caller, that forwards
+  # each message to `pid`: for a test process that holds another name.
+  def proxy(core, pid) do
+    proxy = spawn_link(fn -> forward(pid) end)
+    Process.register(proxy, test_name(core))
+  end
+
+  defp forward(pid) do
+    receive do
+      message -> send(pid, message)
+    end
+
+    forward(pid)
+  end
+
   defmacro __using__(opts) do
     limit = Keyword.get(opts, :limit, 2_000)
 

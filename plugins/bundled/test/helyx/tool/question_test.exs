@@ -108,7 +108,9 @@ defmodule Helyx.Tool.QuestionTest do
     assert error(["Which one?"]) =~ "needs question, header, and options"
   end
 
-  test "the largest request is under the bound of an ask" do
+  # The form that the tool sends passed `Helyx.Tool.ask/1`, the check of its
+  # envelope and of its 65,536 bytes of JSON, when the session emits it.
+  test "the largest request is a form under the bound of an ask", %{core: core} do
     # Each byte a control character, six bytes of JSON.
     c = <<1>>
     labels = for x <- ~w(a b c d), do: String.duplicate(c, 59) <> x
@@ -121,9 +123,17 @@ defmodule Helyx.Tool.QuestionTest do
       "multi_select" => false
     }
 
-    assert check([question]) == :passes
-    size = byte_size(JSON.encode!(%{"questions" => List.duplicate(question, 4)}))
+    questions = List.duplicate(question, 4)
+    session = run(core, %{"questions" => questions}, answers: true)
+    [ask] = of_type(collect_until(:ask), :ask)
+
+    assert ask.request == %{"kind" => "form", "text" => "4 questions", "questions" => questions}
+    assert Helyx.UIBlock.envelope?(ask.request)
+    size = byte_size(JSON.encode!(ask.request))
     assert size > 50_000 and size < 65_536
+
+    :ok = Session.abort(session)
+    collect_until(:turn_end)
   end
 
   defp run(core, arguments, subscribe_opts) do
@@ -149,6 +159,8 @@ defmodule Helyx.Tool.QuestionTest do
     assert ask.tool == "question"
 
     assert ask.request == %{
+             "kind" => "form",
+             "text" => "2 questions",
              "questions" => [
                Map.put(item(), "multi_select", false),
                Map.delete(multi, "extra")
@@ -168,6 +180,14 @@ defmodule Helyx.Tool.QuestionTest do
              {false,
               "The user answered:\n\nQ: Which one?\nA: other: neither\n\n" <>
                 "Q: Which ones?\nA: a, b; other: and c"}
+  end
+
+  test "the form of one question says 1 question", %{core: core} do
+    session = run(core, %{"questions" => [item()]}, answers: true)
+    [ask] = of_type(collect_until(:ask), :ask)
+    assert %{"kind" => "form", "text" => "1 question"} = ask.request
+    :ok = Session.abort(session)
+    collect_until(:turn_end)
   end
 
   test "with no client the tool tells the model to decide", %{core: core} do

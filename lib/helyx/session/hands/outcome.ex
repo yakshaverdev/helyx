@@ -61,4 +61,7 @@ defmodule Helyx.Session.Hands.Outcome do
 
   # The ok, error, crash, refusal, and catch paths alike.
   defp checked({status, text}), do: {status, Helyx.Message.cut_result(text)}
+
+  # A result with the UI blocks of the tool (docs/features/ui-blocks.md).
+  defp checked({status, text, blocks}), do: {status, Helyx.Message.cut_result(text), blocks}
 end

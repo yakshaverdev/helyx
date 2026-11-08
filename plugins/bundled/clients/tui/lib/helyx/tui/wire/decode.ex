@@ -15,10 +15,11 @@ defmodule Helyx.TUI.Wire.Decode do
   alias Helyx.Session.File.Scan
   alias Helyx.Session.{Snapshot, Totals}
   alias Helyx.TUI.ViewModel
+  alias Helyx.TUI.Wire.UIBlocks
 
   @event_types ~w(turn_start message_start message_update message_end tool_execution_end
                   turn_end queue_update queue_dropped model_change resume_id
-                  steer_unconfirmed compaction notice ask ask_end)a
+                  steer_unconfirmed compaction notice ask ask_end ui_block)a
   @types Map.new(@event_types, &{Atom.to_string(&1), &1})
 
   @error_codes ~w(unknown_op bad_params busy timeout failed session_not_found
@@ -180,6 +181,8 @@ defmodule Helyx.TUI.Wire.Decode do
   defp data(:ask_end, %{"ask_id" => id, "outcome" => outcome}) when is_binary(id),
     do: %{ask_id: id, outcome: ask_outcome(outcome)}
 
+  defp data(:ui_block, data), do: UIBlocks.shown!(data)
+
   defp turn_origin(nil), do: %{}
   defp turn_origin("provider"), do: %{origin: :provider}
   defp turn_origin("compaction"), do: %{origin: :compaction}
@@ -203,7 +206,7 @@ defmodule Helyx.TUI.Wire.Decode do
          "request" => %{} = request
        })
        when is_binary(ask_id) and is_binary(call_id) and is_binary(tool),
-       do: %{ask_id: ask_id, call_id: call_id, tool: tool, request: request}
+       do: %{ask_id: ask_id, call_id: call_id, tool: tool, request: UIBlocks.request!(request)}
 
   defp queue(%{
          "steers" => steers,
@@ -245,7 +248,8 @@ defmodule Helyx.TUI.Wire.Decode do
       tool_call_id: optional!(message["tool_call_id"]),
       tool_name: optional!(message["tool_name"]),
       is_error: flag!(message["is_error"]),
-      usage: usage!(message["usage"])
+      usage: usage!(message["usage"]),
+      ui_blocks: UIBlocks.message!(role, message["ui_blocks"])
     }
   end
 
@@ -330,10 +334,11 @@ defmodule Helyx.TUI.Wire.Decode do
          "persisting" => persisting,
          "usage" => usage,
          "context" => context,
-         "asks" => asks
+         "asks" => asks,
+         "ui_blocks" => ui_blocks
        })
        when is_binary(instance_id) and count?(seq) and is_list(messages) and is_boolean(more) and
-              is_boolean(persisting) and is_list(asks) do
+              is_boolean(persisting) and is_list(asks) and is_list(ui_blocks) do
     snapshot = %Snapshot{
       instance_id: instance_id,
       seq: seq,
@@ -345,7 +350,8 @@ defmodule Helyx.TUI.Wire.Decode do
       persisting: persisting,
       usage: totals(usage),
       context: context(context),
-      asks: Enum.map(asks, &ask/1)
+      asks: Enum.map(asks, &ask/1),
+      ui_blocks: Enum.map(ui_blocks, &UIBlocks.shown!/1)
     }
 
     # The fold pairs each tool result with an earlier call; a snapshot that

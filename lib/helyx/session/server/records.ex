@@ -14,7 +14,7 @@ defmodule Helyx.Session.Server.Records do
 
   alias Helyx.{Message, ModelRef, Session}
   alias Helyx.Session.{HookEntry, Id, Transcript, Turn}
-  alias Helyx.Session.Server.{Approvals, ProviderConn, Settle, State}
+  alias Helyx.Session.Server.{Approvals, Asks, ProviderConn, Settle, State, UIBlocks}
 
   # A user message that Core made at its admission, with its id and origin.
   def append_user(state, %Message{role: :user} = user) do
@@ -58,7 +58,7 @@ defmodule Helyx.Session.Server.Records do
 
     case Enum.find(Transcript.open_calls(state.transcript), &(&1.id == call_id)) do
       nil -> state
-      call -> record_result(call, result, state)
+      call -> record_result(call, result, state, UIBlocks.result_blocks(state, call_id))
     end
   end
 
@@ -235,13 +235,18 @@ defmodule Helyx.Session.Server.Records do
 
   defp close_if(state, _block?), do: state
 
-  # Appends the tool result message to the transcript and emits
-  # tool_execution_end. The call is no longer open, so its owner can go
-  # (`Approvals.drop/2`).
-  defp record_result(call, result, state) do
-    message = %{Message.tool_result(call, result) | id: Id.new()}
+  # Appends the tool result message to the transcript, with the UI blocks
+  # of a Helyx tool's result, and emits tool_execution_end. The UI blocks
+  # of the call leave the turn (`UIBlocks.call_end/2`), and the records of
+  # its Tasks end with their asks (`Asks.result_joined/2`): no block or ask
+  # of the call comes after its result. The call is no longer open, so its
+  # owner can go (`Approvals.drop/2`).
+  defp record_result(call, result, state, blocks \\ []) do
+    message = %{Message.tool_result(call, result) | id: Id.new(), ui_blocks: blocks}
 
     state
+    |> UIBlocks.call_end(call.id)
+    |> Asks.result_joined(call.id)
     |> append_message(message)
     |> Approvals.drop(call.id)
     |> emit(:tool_execution_end, %{message: message})

@@ -39,7 +39,7 @@ User stories:
 
    The Elixir API of Hub for a product and for the tools of #859 (`start_session/3`, `authorize/4`, Interface changes) runs the same `check`, Core call, and `result` as the wire, so a start through a tool meets the same caps.
 
-6. **The `hub.*` operations.** One namespace on the same wire (ADR 0010 §3), protocol 5. The codec is under "Interface changes". Hub answers a session that the user may not read with `session_not_found`, as a session that does not exist, and a write to a session that the user may read but does not own with `forbidden`: such a user already sees the session, so the code tells nothing new. Records, projects, tokens, and the user are the ops of #869; schedules are the ops of #870.
+6. **The `hub.*` operations.** One namespace on the same wire (ADR 0010 §3), protocol 6. The codec is under "Interface changes". Hub answers a session that the user may not read with `session_not_found`, as a session that does not exist, and a write to a session that the user may read but does not own with `forbidden`: such a user already sees the session, so the code tells nothing new. Records, projects, tokens, and the user are the ops of #869; schedules are the ops of #870.
 
 7. **The session operations under a Hub.** They keep their codec. Access as decision 4:
 
@@ -200,13 +200,13 @@ A user removed takes its tokens, projects, records, labels, and schedules with i
 
 ### Transport
 
-- `Helyx.Transport.WebSocket`: the option `:authority`, and `close/2` (decision 5). With an authority, `sessions.saved` goes to `run` with the deadline of 15,000 ms in place of the 10,000 ms of the Core call (decision 7), and takes the encoder slot as before. The protocol number goes to 4, and the schema of `wire-protocol.md` gets the lines below.
+- `Helyx.Transport.WebSocket`: the option `:authority`, and `close/2` (decision 5). With an authority, `sessions.saved` goes to `run` with the deadline of 15,000 ms in place of the 10,000 ms of the Core call (decision 7), and takes the encoder slot as before. The protocol number goes to 6, and the schema of `wire-protocol.md` gets the lines below.
 - `Helyx.Transport.WebSocket.Authority` (new): the behaviour of decision 5.
 - New close codes: `4403`, the access of the user changed (decision 13), also a credential that no longer holds at a `check`, `run`, or `result`; `4503`, the authority gave no answer to the `hello`: its Hub call exited (5,000 ms, or a Hub that is down) or got `busy`.
 
-### Wire schema additions (protocol 4)
+### Wire schema additions (protocol 6)
 
-#869 puts these lines in the schema of `wire-protocol.md`, with its SHA-256, but the lines and the alternatives marked `#870`: the three `hub.schedules.*` ops, the codes `too_many_schedules` and `unknown_schedule`, their params and results, and `schedule`. #870 adds them with protocol 5, by the rule of ADR 0008 §7.
+#869 puts these lines in the schema of `wire-protocol.md`, with its SHA-256, but the lines and the alternatives marked `#870`: the three `hub.schedules.*` ops, the codes `too_many_schedules` and `unknown_schedule`, their params and results, and `schedule`. #870 adds them with protocol 7, by the rule of ADR 0008 §7.
 
 ```text
 hello = {type: "hello", protocol: int, proof?: base64, token?: id}
@@ -285,7 +285,7 @@ The authorization of a connection, when the transport has an authority. A transp
 1. **The proof of one server token at `hello`, then every operation and subscription open** (ADR 0008 §6, `Connection.proof?/3` in `plugins/bundled/lib/helyx/transport/web_socket/connection.ex`). Replaced by the `hello` callback, which proves a user (decision 3), and the `check` before every `req` and `subscribe` (decision 5). The `challenge`, the nonce, the HMAC, the constant-time compare, the close `4401`, the auth wait of 5,000 ms, and the rule that no frame holds a secret stay. The server token moves from the transport to Hub, in a closure.
 2. **`sessions.live`, `sessions.saved`, and `resume` `{cwd}` over every session of the Core.** Under a Hub they reach only what the user may read or owns (decision 7). A client of one user under `helyx serve` sees no change: the default owner owns every session with no record.
 3. **The deadlines of the operations.** They stay; the calls of the authority add their own bound around them (decision 5).
-4. **The protocol number** goes up by one, from 4 to 5 (protocol 4 came with the origin kind `"hook"`, #880). A client of protocol 4 gets `refused` with `4426`, by ADR 0008 §7. The TUI of the same build speaks 5.
+4. **The protocol number** goes up by one, from 5 to 6 (protocol 4 came with the origin kind `"hook"`, #880, and protocol 5 with UI blocks, #878). A client of protocol 5 gets `refused` with `4426`, by ADR 0008 §7. The TUI of the same build speaks 6.
 5. Tests: the tests of the proof, the auth wait, the secret in terms and logs (`plugins/bundled/test/helyx/transport/web_socket_test.exs`) keep their properties for a transport with no authority, and #869 runs the proof tests through the authority too: a `hello` with the server token, with a token id, with an unknown id, with a revoked token, with no proof.
 6. Unbounded state: none new. Every table of the store has a row bound (Bounds).
 
