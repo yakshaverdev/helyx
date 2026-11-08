@@ -58,7 +58,7 @@ defmodule Helyx.TUI.ViewModel do
 
   `asks` are the open asks of tool calls, oldest first, as the snapshot
   and the `:ask` and `:ask_end` events give them; `Helyx.TUI.Question`
-  shows the oldest `form` (`docs/features/question-tool.md`). `ui_blocks`
+  shows the oldest `form` or `approval` (`docs/features/ui-blocks.md`). `ui_blocks`
   are those of the `:ui_block` events of the running turn
   (`Helyx.TUI.ViewModel.UIBlocks`, `docs/features/ui-blocks.md`).
 

@@ -133,4 +133,4 @@ A provider asks for a decision on a call of its own tools (ADR 0013 §4); Codex 
 
 ## Out of scope
 
-The approval gate (#882), the command hook (#883). `before_settle` and the continue turn are in `docs/features/before-settle.md` (#880). The `hook` entries reach no client.
+The approval gate (#882, `docs/features/approval-gate.md`), the command hook (#883, `docs/features/command-hook.md`). `before_settle` and the continue turn are in `docs/features/before-settle.md` (#880). The `hook` entries reach no client.

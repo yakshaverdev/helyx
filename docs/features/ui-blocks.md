@@ -56,13 +56,22 @@ An input block: the request of an ask (ADR 0011 §4). The `question` tool sends 
 - Fallback: a client that cannot render a form shows `text` and gives no answer; the ask stays open for another client.
 - Answer: `%{"answers" => answers}`, one item for each question in order: `selected`, the picked labels (at most one without `multi_select`), and `other`, a text of the user, or absent; an item needs one of them (`docs/features/question-tool.md`).
 
+### `approval`
+
+An input block: the request of an ask (ADR 0011 §4). The approval gate, `Helyx.Hook.Approval`, sends it from its hook Task with `Helyx.Hook.ask/1` (#882, `docs/features/approval-gate.md`).
+
+- Fields: `tool`, the tool name of the call, a string; `provider`, nil for a Helyx tool call, or the id of the provider whose own tool it is, a string; `arguments`, the JSON text of the call's arguments, a string. The gate cuts `tool` and `provider` at 256 bytes and `arguments` at 16,384 bytes, at a character boundary, and sets `cut: true` when it cut one.
+- `text`: `allow <tool>?`, or `allow <tool> of <provider>?`.
+- Fallback: a client that cannot render an approval shows `text` and gives no answer; the ask stays open for another client, and the limit of the gate or the abort ends it.
+- Answer: `%{"decision" => "allow"}` or `%{"decision" => "deny"}`. Any other answer is a deny.
+
 ### Later kinds
 
-The candidates after `form` are `choice`, `diff`, `table`, `progress`, and `link`; `approval` comes with the approval hook (ADR 0013). Each gets its entry here with the ticket that builds it.
+The candidates after `form` and `approval` are `choice`, `diff`, `table`, `progress`, and `link`. Each gets its entry here with the ticket that builds it.
 
 ### Rendering in the TUI
 
-The TUI renders `form` with the picker of `Helyx.TUI.Question`. Every other kind shows its `text`, with a cut mark when `cut` is true, under its tool result or, for a `:ui_block` event, under its call or at the end of the turn. The text is cleaned and wrapped as a tool result text, and shows four lines and a hint row in the short form of Ctrl+O (`docs/features/tui-tool-output-toggle.md`). A block of a call shows under the oldest open cell of its call id; a block whose call has no cell in the transcript shows at the end of the turn. An ask of a kind that the TUI does not know shows the `text` of its request under its call line until its `ask_end`, and the TUI gives no answer.
+The TUI renders `form` with the picker of `Helyx.TUI.Question`, and `approval` with the picker of `Helyx.TUI.Approval` (`docs/features/approval-gate.md`, "The TUI renderer"), in the place of the composer: the oldest open ask of the two that the TUI can read. Every other kind shows its `text`, with a cut mark when `cut` is true, under its tool result or, for a `:ui_block` event, under its call or at the end of the turn. The text is cleaned and wrapped as a tool result text, and shows four lines and a hint row in the short form of Ctrl+O (`docs/features/tui-tool-output-toggle.md`). A block of a call shows under the oldest open cell of its call id; a block whose call has no cell in the transcript shows at the end of the turn. An ask of a kind that the TUI does not know shows the `text` of its request under its call line until its `ask_end`, and the TUI gives no answer.
 
 ## Replaced mechanism
 
@@ -98,4 +107,4 @@ None: a UI block holds no external resource.
 
 ## Out of scope
 
-A render tree or a layout language; styling, themes, and images; a client extension that adds a renderer; the rendering in the Rust core and the GPUI app (#885); the approval gate (#882).
+A render tree or a layout language; styling, themes, and images; a client extension that adds a renderer; the rendering in the Rust core and the GPUI app (#885). The approval gate and its `approval` kind are in `docs/features/approval-gate.md` (#882).
