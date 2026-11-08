@@ -17,8 +17,9 @@ defmodule Helyx.Session.Server.ToolRuns do
   # of an open call that an approval request named as a call that the
   # provider runs itself, pending or answered (`docs/features/hooks.md`,
   # "The owner of a call id"), so one call id never has two chains in the
-  # hands, and no open call is both, and the id of a call with UI blocks of
-  # the provider (`UIBlocks.request/2`).
+  # hands, and no open call is both, apart from the accepted hole of that
+  # section; so does the id of a call with UI blocks of the provider
+  # (`UIBlocks.request/2`).
   def request(%State{activity: %Turn{} = turn} = state, %ToolCall{} = call, bytes, rejection) do
     # A call of an unknown tool runs alone; the hands answer it with an error.
     concurrent? = match?({_tool, true}, state.tools[call.name])

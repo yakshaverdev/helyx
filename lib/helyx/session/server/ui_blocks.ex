@@ -65,6 +65,10 @@ defmodule Helyx.Session.Server.UIBlocks do
     end
   end
 
+  # Whether a Helyx tool request of the turn named `call_id`, within the
+  # bound of the set (`docs/features/hooks.md`, "The owner of a call id").
+  def helyx_call?(%Turn{helyx_calls: calls}, call_id), do: is_map_key(calls, call_id)
+
   # The result of a Helyx call from the hands, with its blocks. They wait
   # for the provider's result event when they fit the blocks of the turn,
   # else the result keeps none, as it keeps none for a call whose id is out
