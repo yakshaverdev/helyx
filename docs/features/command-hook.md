@@ -83,7 +83,7 @@ None. The plugin is new; the hands and the watchdog do not change, and Core only
 | What | Bound | Over the bound |
 | ---- | ----- | -------------- |
 | the time of a run | the hook's limit, `limit_ms`, 1 to 600,000 ms, default 60,000, checked at Core start; then the release deadline of the hands | killed by the hands, a failed hook; the group gets `:cancel` (`docs/features/hooks.md`) |
-| standard output kept | 262,144 bytes (four times the result bound, room for a reason at that bound with JSON escapes), in the hook Task | read and dropped; at exit 0, a kept head that starts an object or is only white space is a failed hook, since no answer can be read whole; a head of plain text is the default |
+| standard output kept | 262,144 bytes (four times the result bound, room for a reason at that bound with JSON escapes), in the hook Task | read and dropped; at exit 0, a kept head that starts an object, is only white space, or ends its white space with one incomplete UTF-8 sequence (a character that the cut split, which can be white space: the cut cannot tell it from another character) is a failed hook, since no answer can be read whole; a head of plain text is the default |
 | standard error kept | 262,144 bytes | read and dropped; the kept head is the reason or the added text, cut later as a result, or the text of a continue |
 | a frame of the relay | 65,536 bytes of data and 5 of head; one partial frame kept between two reads | a length over it is a failed hook |
 | the JSON on standard input | the arguments, at most the 8 MiB of an open message (`Helyx.Session.Turn`), and a result cut at 65,536 bytes, which JSON escapes can make six times larger: under the 16 MiB of unread input that the watchdog keeps (`Helyx.Watchdog`) | not reachable |

@@ -4,7 +4,7 @@ defmodule Helyx.Hook.Command.AnswerTest do
   use ExUnit.Case, async: true
 
   alias Helyx.Hook.Command
-  alias Helyx.Hook.Command.Error
+  alias Helyx.Hook.Command.{Answer, Error}
 
   @moduletag :tmp_dir
 
@@ -168,6 +168,63 @@ defmodule Helyx.Hook.Command.AnswerTest do
 
       assert after_tool(input, "echo x >&2; exit 2") ==
                {:replace, {:ok, "a�\n\nThe hook Helyx.Hook.Command added: x\n"}}
+    end
+  end
+
+  describe "a character that the output cut splits" do
+    @max Helyx.Hook.Command.Run.max_output_bytes()
+    @over "its standard output was over #{@max} bytes"
+    @json ~S|{"decision":"block","reason":"no"}|
+
+    # The multibyte characters of the white space of JavaScript's `trim()`.
+    @spaces [0xA0, 0x1680] ++
+              Enum.to_list(0x2000..0x200A) ++ [0x2028, 0x2029, 0x202F, 0x205F, 0x3000, 0xFEFF]
+
+    # The kept head of a cut: spaces, then `tail`, `@max` bytes in all, as
+    # `Helyx.Hook.Command.Run` gives it at exit 0.
+    defp cut(tail),
+      do: {:exit, 0, String.duplicate(" ", @max - byte_size(tail)) <> tail, true, ""}
+
+    defp inputs(input, after_input) do
+      settle = %{session_id: "s1", turn_id: "t1", stop_reason: :end_turn, cwd: input.cwd}
+      [before_tool: input, after_tool: after_input, before_settle: settle]
+    end
+
+    test "each split position of each multibyte white space fails at each point",
+         %{input: input, after: after_input} do
+      for space <- @spaces,
+          char = <<space::utf8>>,
+          k <- 1..(byte_size(char) - 1)//1,
+          {point, input} <- inputs(input, after_input) do
+        error =
+          assert_raise Error, fn -> Answer.of(cut(binary_part(char, 0, k)), point, input) end
+
+        assert error.message == @over, "U+#{Integer.to_string(space, 16)}, #{k} bytes, #{point}"
+      end
+    end
+
+    test "a whole white space at the cut fails; a whole other character is plain text",
+         %{input: input, after: after_input} do
+      for {point, input} <- inputs(input, after_input) do
+        assert_raise Error, @over, fn -> Answer.of(cut("\u3000"), point, input) end
+        assert Answer.of(cut("\u3001"), point, input) == Answer.default(point)
+      end
+    end
+
+    # The first two bytes of U+3001, which is no white space, are also the
+    # first two of U+3000: the cut cannot tell them apart, so they fail.
+    test "the start of another character that the cut split fails too", %{input: input} do
+      assert_raise Error, @over, fn -> Answer.of(cut(<<0xE3, 0x80>>), :before_tool, input) end
+    end
+
+    test "a command whose output the cut splits in U+3000 before an object is denied",
+         %{input: input} do
+      File.write!(
+        Path.join(input.cwd, "out"),
+        String.duplicate(" ", @max - 1) <> "\u3000" <> @json
+      )
+
+      assert failure(fn -> before(input, "cat out") end) == @over
     end
   end
 end

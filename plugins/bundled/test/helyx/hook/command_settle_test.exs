@@ -98,6 +98,15 @@ defmodule Helyx.Hook.CommandSettleTest do
     assert settle(input, "cat out") == {:continue, "x"}
   end
 
+  test "a U+FEFF that the output cut splits before an object fails", %{input: input, tmp_dir: dir} do
+    max = Helyx.Hook.Command.Run.max_output_bytes()
+    json = ~S|{"decision":"block","reason":"x"}|
+    File.write!(Path.join(dir, "out"), String.duplicate(" ", max - 2) <> "\uFEFF" <> json)
+
+    assert failure(fn -> settle(input, "cat out") end) ==
+             "its standard output was over #{max} bytes"
+  end
+
   test "an object with a repeated key fails", %{input: input} do
     stdout = ~S|{"decision":"block","reason":"x","decision":"approve"}|
 
