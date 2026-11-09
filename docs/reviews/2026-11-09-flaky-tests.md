@@ -31,3 +31,7 @@ No ticket: the owner asked for it in chat on 2026-11-09 (fast mode: one review r
 While fixing finding 1, `:erlang.trace_pattern/3` returned 0 in a run where `Helyx.Watchdog.Group` was not loaded yet. The test loads it first with `Code.ensure_loaded!/1`.
 
 The changed files passed: root, with `HELYX_SLOW=1`, `48 tests, 0 failures`; `plugins/bundled`, without the slow tests, `55 tests, 0 failures (12 excluded)`.
+
+## Precommit
+
+The precommit at the end of the branch failed on one Credo warning, `Helyx.Credo.WallClockUpperBound` at `group_test.exs:122`. The check counts `release_probed/2` as a time function, since it calls `deadline/1`, and so it read the `==` on its result, a list of handles, as an upper bound on time. The assertion is now a pattern match, `assert [command: 7] = release_probed(handles, 300)`, which is as strict for a list literal. The second run passed.

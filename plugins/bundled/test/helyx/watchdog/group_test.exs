@@ -119,7 +119,7 @@ defmodule Helyx.Watchdog.GroupTest do
 
   test "a group that stays to the deadline does not keep the handles of gone groups" do
     handles = [command: 7, watchdog: 6, command: 9, watchdog: 8, command: 11, watchdog: 10]
-    assert release_probed(handles, 300) == [command: 7]
+    assert [command: 7] = release_probed(handles, 300)
   end
 
   # A release whose first probes all ran before the deadline. A test
