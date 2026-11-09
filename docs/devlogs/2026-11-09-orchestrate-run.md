@@ -34,21 +34,20 @@ One `/orchestrate` run of about three days. On 2026-11-07 the owner fixed the sc
 | 11-08 | #897 | #878 | the UI block vocabulary, form first |
 | 11-09 | #898 | #882 | the approval gate as a hook plugin |
 | 11-09 | #899 | #860 | the client kit: Rust core, GPUI macOS app, wire fixtures |
+| 11-09 | #901 | #885 | UI block models in the Rust core and the GPUI app |
+| 11-09 | #902 | (owner request) | precommit host fixes (the host run ends with its caller, ssh keep-alive, warm builds) and five flaky tests |
+| 11-09 | #903 | #869 | Helyx.Hub, wire protocol 6 |
+| 11-09 | #904 | #870 | schedules and wake-ups, wire protocol 7 |
+| 11-09 | #905 | #492 | the MCP client, wire protocol 8 |
+| 11-09 | #906 | #859 | coordinator plugins over the Hub |
 
 All five ADR 0013 hook tickets are merged (#879 to #883).
 
 ## Open at the end of the run
 
-| Work | Branch | State |
-|---|---|---|
-| #492 MCP client build | `ticket/492-mcp-client` (pushed) | 7 commits after the design: slices 1 and 2 and later slices; slice 7 drafts were in the worker's temp folder; 1 uncommitted file in the worktree |
-| #869 Helyx.Hub | `ticket/869-hub` (pushed) | 9 commits, through "close the connections of a user when its access changes"; 9 uncommitted files in the worktree |
-| repeat-fixes (owner request) | `chore/repeat-fixes` (pushed) | 2 commits: the `attach_test.exs:298` fix and "a precommit run on the host ends with its caller"; queued and not built: warm builds for a new branch, the `Codex.PromptTest` `:epipe` flake, the ssh keep-alive in `precommit.sh` |
-| #885 | none | not started; its blockers #860 and #878 are merged, so it is ready |
-| #870, #859 | none | not started; #870 waits on #869, #859 on #870 |
-| #747 | none | on hold until a second provider exists |
+Every ticket in scope is merged. Only #747 stays open, on hold until a second provider exists.
 
-The worktrees of the open branches stay under `.claude/worktrees/`. Each worker session can be resumed with its id in `.git/orchestrate/sessions.txt`.
+After the owner's "short-circuit the workflow" of 2026-11-09, the last tickets ran in fast mode: one review round per slice (Codex and the failure-path agent), precommit once per ticket, and no separate gate round when the in-ship Codex round approved; #870 and #859 were built on top of the unmerged #869 branch. Wire protocol numbers follow the merge order: 5 (#878), 6 (#869), 7 (#870), 8 (#492).
 
 ## Incidents
 
@@ -61,7 +60,7 @@ The worktrees of the open branches stay under `.claude/worktrees/`. Each worker 
 
 ## Flaky tests seen at merge gates
 
-`apps/coding_agent` `attach_test.exs:298` (fixed on the repeat-fixes branch, not merged); `plugins/bundled` `Helyx.Provider.Codex.PromptTest` (`:epipe`), `Helyx.Watchdog.GroupTest` (a 300 ms deadline), `Helyx.Tool.BashTest` (#802 start case), `Helyx.Memory.MarkdownTest` 100,000-file recall (fixed in #891 with a stated load margin), `hooks_test.exs:741` (a 100 ms hook limit that counts the wait to start). Each passed on one rerun.
+`apps/coding_agent` `attach_test.exs:298` (fixed on the repeat-fixes branch, not merged); `plugins/bundled` `Helyx.Provider.Codex.PromptTest` (`:epipe`), `Helyx.Watchdog.GroupTest` (a 300 ms deadline), `Helyx.Tool.BashTest` (#802 start case), `Helyx.Memory.MarkdownTest` 100,000-file recall (fixed in #891 with a stated load margin), `hooks_test.exs:741` (a 100 ms hook limit that counts the wait to start). Each passed on one rerun. At the #859 gate, `Helyx.SessionsEditTest` "a removal whose lock holder ends leaves no copy after a delete, held at an append to the copy" failed once and passed on the rerun.
 
 The GPUI macOS app is built only on this Mac, never at the Linux merge gate (owner's rule); a full local build of the workspace with the app is still to run after the run.
 
@@ -115,3 +114,11 @@ The GPUI macOS app is built only on this Mac, never at the Linux merge gate (own
 - **#882 (worker):** `Helyx.Hook.Approval.asked/1` public with doc false for a test; fewer than 3 rows puts both options on one line (Codex); the picker asks for at least 5 rows.
 - **#882, Codex gate finding rejected:** a late allow after the hook's limit or an abort: since #879 the hands kill a hook Task at its limit and at an abort (an untrappable kill) and record the hook as failed, so the Task cannot return `:allow`.
 - **#860 (worker):** the core keeps one fact, that a welcome came on one of its connections; before it any end stops (as the TUI's first connect), after it every end but a break or refused reconnects, once each 1,000 ms with no limit; the network thread ends when the window is gone.
+- **Fast mode (owner, 2026-11-09):** one review round per slice or ticket (Codex and failure path), precommit once per ticket, one gate round at merge with no re-gate; #870 built on top of the #869 branch before #869 merges.
+- **#885 (worker):** the app draws form and approval asks read-only (no `answer` yet); the model is read when drawn; `multi_select` absent means single pick, null makes the form unreadable (as the TUI); an ask with no kind draws nothing; drawn text uses the TUI's limits and caps other blocks at 65,536 bytes; the redraw cost (10 to 21 ms for 200 results of 8 blocks) is accepted.
+- **#885, fast mode:** merged on the in-ship Codex approval with no separate gate round.
+- **#870 (worker):** due rows read every second, at most 64 per read; at most 4 delivery Tasks, one per session, killed after 120 s, due again 150 s after start; mid-turn or full queue retries in 30 s; 16 schedules per session, 256 per user; a previous owner's pending schedules count toward the session's 16 until their next run (accepted); the wire schema lines of `hub.schedules.*` wait for #869's schema.
+- **#859 (worker):** a tool finds its Hub through the app env key `:coordinator_hubs` (Core name to Hub); modes through `:coordinator_modes`; `Helyx.Hub.authorize/4` takes the wire params map; text sent by a tool carries a product origin derived from the coordinator session and the call id (as Hub wake-ups); all five tools may run at the same time; `schedule` takes an optional `every`; the agent tool's child-session code moved unchanged into `Helyx.Subagent`. Accepted: send, read and wait act only on running sessions; after a Hub restart a coordinator acts for no user until its user resumes it; no product registers the tools yet.
+- **#869 (worker):** the Hub lines are wire protocol 6 (master took 5 meanwhile); #870's schedules come with protocol 7; Codex claim that the TUI rejects two Hub codes rejected by test; the timing difference of a refused and a missing id is accepted.
+- **#492 build (worker):** `Helyx.Tool.notice/1` added to Core (the Bounds table has a source notice row); test-only env keys `:mcp_wait_ms`, `:mcp_call_ms`, `:mcp_watchdog_exe`; a call to a starting server waits within its own limit; server shutdown follows MCP over stdio (`notifications/cancelled`, close input, wait 1,000 ms, then signal); a 2,000 ms grace before KILL for every MCP group release; a release killed midway holds the record only until its own deadline. Not built: tests for a stalled `kill(1)` during a failed-start cleanup, a suspended server Task during an abort, and an unconfirmed group release (each needs a new test hook).
+- **Wire protocol numbers:** #869 took 6, #870 takes 7, #492 (tools_change) takes 8, in merge order.
