@@ -55,7 +55,7 @@ defmodule Helyx.Tool.Bash.PreambleTest do
   test "the close with no marker leaves no process", %{tmp_dir: dir} do
     put_env("LC_MESSAGES", String.duplicate("x", 5000))
     assert {:error, _} = Helyx.Tool.Bash.run(%{"command" => "sleep 30"}, dir)
-    assert_received {:held, {:watchdog, watchdog}}
+    assert_received {:held, {:watchdog, watchdog, _record}}
     # The watchdog reaps the child it holds before it exits.
     assert gone_within?("-#{watchdog}")
   end

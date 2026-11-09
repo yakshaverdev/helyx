@@ -90,8 +90,8 @@ defmodule Helyx.Hook.CommandTest do
                before(input, ~S|printf '{"decision":"approve","reason":"%s"}' "$(pwd)"|)
 
       assert reason == input.cwd
-      assert_received {:held, {:watchdog, _}}
-      assert_received {:held, {:command, _}}
+      assert_received {:held, {:watchdog, _, _}}
+      assert_received {:held, {:command, _, _}}
     end
   end
 
@@ -132,14 +132,14 @@ defmodule Helyx.Hook.CommandTest do
 
     test "a child that keeps the pipes open does not hold the hook", %{input: input} do
       assert before(input, "sleep 30 & exit 2") == {:deny, "the command exited with status 2"}
-      assert_received {:held, {:command, group}}
+      assert_received {:held, {:command, group, _record} = handle}
 
       try do
         # The child still runs: the hook did not wait for it.
         assert {_, 0} = System.cmd("kill", ["-0", "--", "-#{group}"], stderr_to_stdout: true)
       after
         deadline = System.monotonic_time(:millisecond) + 5_000
-        assert Command.release([{:command, group}], :deliver, deadline) == []
+        assert Command.release([handle], :deliver, deadline) == []
       end
     end
   end

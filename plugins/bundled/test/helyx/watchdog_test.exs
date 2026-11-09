@@ -149,6 +149,17 @@ defmodule Helyx.WatchdogTest do
       assert {"still\n", 0} = collect(port, rest)
     end
 
+    test "each group of a start has its own release record in its handle" do
+      Helyx.Test.Hands.fake(self())
+      assert {:started, port, "", handles} = Helyx.Watchdog.start(["true"], File.cwd!(), :open)
+      assert [{:command, group, command}, {:watchdog, os_pid, watchdog}] = handles
+      assert is_integer(group) and is_integer(os_pid)
+      assert is_reference(command) and is_reference(watchdog) and command != watchdog
+      assert_received {:held, {:watchdog, ^os_pid, ^watchdog}}
+      assert_received {:held, {:command, ^group, ^command}}
+      Helyx.Watchdog.close(port)
+    end
+
     test "open input: parts arrive until a NUL byte, then the command reads end of file" do
       argv = ["bash", "-c", "cat; echo done"]
       Helyx.Test.Hands.fake()

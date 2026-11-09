@@ -115,9 +115,9 @@ defmodule Helyx.Provider.HarnessEpipeTest do
         ClaudeCode.request({:turn, "t1", context}, make_ref(), state)
       end)
 
-    assert_receive {:"$gen_call", from, {:hold, {:watchdog, _watchdog}}}
+    assert_receive {:"$gen_call", from, {:hold, {:watchdog, _watchdog, _record}}}
     GenServer.reply(from, :ok)
-    assert_receive {:"$gen_call", _from, {:hold, {:command, group}}}
+    assert_receive {:"$gen_call", _from, {:hold, {:command, group, _record}}}
     Process.exit(pid, :shutdown)
     assert_receive {:DOWN, ^ref, :process, _pid, :shutdown}
     assert group_gone_within?(group)

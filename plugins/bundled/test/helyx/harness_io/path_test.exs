@@ -64,7 +64,7 @@ defmodule Helyx.HarnessIO.PathTest do
     assert {:error, {:not_started, "the perl watchdog gave no marker: " <> _}} =
              Codex.init("m", [], cwd: work)
 
-    assert [watchdog: group] = Helyx.Test.Hands.held()
+    assert [{:watchdog, group, _record}] = Helyx.Test.Hands.held()
     assert os_alive?("-#{group}")
     signal_group("KILL", group)
   end
@@ -79,6 +79,6 @@ defmodule Helyx.HarnessIO.PathTest do
              Codex.init("m", [], cwd: work)
 
     # No kill(1) on PATH confirms nothing, so the hold stays for the hands.
-    assert [watchdog: _] = Helyx.Test.Hands.held()
+    assert [{:watchdog, _, _}] = Helyx.Test.Hands.held()
   end
 end

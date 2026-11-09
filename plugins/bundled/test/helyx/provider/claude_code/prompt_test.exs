@@ -85,7 +85,10 @@ defmodule Helyx.Provider.ClaudeCode.PromptTest do
     state = Enum.reduce(["A", "B", "C", "D"], harness(work), &run(&2, &1, ["x"]))
     assert programs(bin) == "4"
     assert File.exists?(stuck)
-    assert [command: _, command: _, watchdog: _] = Enum.sort(Helyx.Test.Hands.held())
+
+    assert [{:command, _, _}, {:command, _, _}, {:watchdog, _, _}] =
+             Enum.sort(Helyx.Test.Hands.held())
+
     closed(state)
   end
 

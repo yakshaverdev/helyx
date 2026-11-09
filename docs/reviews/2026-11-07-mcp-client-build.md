@@ -338,3 +338,21 @@ Codex (2), standards (1 hard, 5 untested texts), spec (gaps of "one under" and f
 | 6 | failure path | A file swapped between the stat and the open (a FIFO, a group-writable file) | code reading | accepted hole, as for every bounded read of `Helyx.Text.read_file/2` |
 
 Probed with no finding: deep JSON nesting, huge numbers, lone surrogates, C1 controls and bidi characters in names (escaped), devices and symlinks, a file that grows during the read, about 8,000 random tool names (all of the rule).
+
+## Slice 8: the release record in `Helyx.Watchdog`
+
+Invariant: every group that `Helyx.Watchdog.start/4` makes has one release record, carried by every copy of its handle; `Group.release/4` takes it before any probe or signal; a record confirmed gone is never signalled again, so a number that the OS gave to a new group is never signalled by a later release of the old handle; one release at a time signals a group; copies of a handle in one release get one outcome; a release that raises or is killed leaves no record that blocks every later release for good.
+
+### Round 1 (fast mode: Codex and the failure-path agent)
+
+| # | Source | Finding | Check | Resolution |
+| - | ------ | ------- | ----- | ---------- |
+| 1 | failure path | An abort during the bash timeout release kills the release Task (linked to the call Task) after it took the record: the record stayed taken for good, every later release sent no signal and returned the handles unconfirmed, and the hands refused every call | reproduced, 3 of 3 | the taken state holds the deadline of its release as a lease (`Helyx.Watchdog.Record`): a release that finds the record taken waits for that release's outcome, or for the lease to pass and then takes it over, within its own deadline. Test "a release killed after it took the record holds it until its deadline, then the next takes over" |
+| 2 | failure path | A release that raises (a `:kill` that raises `:emfile`) left the record taken, so a one-time spawn failure lost the retry | reproduced | a probe that confirms a group gone writes gone at once; a raise writes not confirmed for each record that the release still holds, then raises again. Test "a release that raises leaves the record not confirmed, and the next tries again" |
+| 3 | Codex | The release probes and signals by number: a number reused between a probe and a signal can be signalled, and a release can write gone for it | read | rejected: the window between a probe and a signal is accepted in `tool-resource-release.md` ("the window between a probe and a signal stays, as before"); the record closes the reuse after a confirmed release, which is its stated scope |
+
+Probed with no finding: two live releases at once (the second gets the first's outcome with no signal, now by a wait, test "a release that finds the record taken waits for that release's outcome and sends no signal"), a deadline that passed (not confirmed, retried), copies of one handle, the return order (the input order), handles of other shapes (dropped, no signal).
+
+Not reached: a real kill(1) missing from PATH (the code path is the raise of item 2), the failed-start cleanup through a real `Watchdog.start/4` with a reused number, the harness providers.
+
+Accepted: an abort during a bash timeout release of a command that traps TERM waits, in the hands' release, up to the lease of the killed timeout release, at most 15,500 ms from the timeout, inside the abort's 20,000 ms release deadline (row "wait of a release for a record that another release took").

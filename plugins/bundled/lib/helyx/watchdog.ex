@@ -152,8 +152,9 @@ defmodule Helyx.Watchdog do
     watchdog =
       case Port.info(port, :os_pid) do
         {:os_pid, os_pid} ->
-          Helyx.Tool.hold({:watchdog, os_pid})
-          [{:watchdog, os_pid}]
+          handle = {:watchdog, os_pid, Helyx.Watchdog.Group.record()}
+          Helyx.Tool.hold(handle)
+          [handle]
 
         nil ->
           []
@@ -173,11 +174,12 @@ defmodule Helyx.Watchdog do
         {:error, Helyx.Text.cap(reason, @reason_max_bytes, :head)}
 
       {group, pre} ->
-        Helyx.Tool.hold({:command, group})
+        handle = {:command, group, Helyx.Watchdog.Group.record()}
+        Helyx.Tool.hold(handle)
         # A port that closed already drops the write; its exit status is in
         # the mailbox for the caller's read.
         write(port, "\n")
-        {:started, port, pre, [{:command, group} | watchdog]}
+        {:started, port, pre, [handle | watchdog]}
     end
   end
 
