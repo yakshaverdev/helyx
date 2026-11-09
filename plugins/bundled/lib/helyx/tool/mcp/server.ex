@@ -132,11 +132,9 @@ defmodule Helyx.Tool.MCP.Server do
   defp data(state, data) do
     case Lines.add(state.buffer, data) do
       {lines, buffer} -> Enum.reduce(lines, %{state | buffer: buffer}, &line/2)
-      :too_long -> too_long(state)
+      :too_long -> fail(state, "a line over #{Lines.max_bytes()} bytes")
     end
   end
-
-  defp too_long(state), do: fail(state, "a line over #{Lines.max_bytes()} bytes")
 
   # A line that is not a JSON object is skipped, as `Helyx.HarnessIO` does.
   defp line(text, state) do
@@ -153,7 +151,7 @@ defmodule Helyx.Tool.MCP.Server do
         send_json(state, %{
           jsonrpc: "2.0",
           id: id,
-          error: %{code: -32601, message: "Method not found"}
+          error: %{code: -32_601, message: "Method not found"}
         })
 
     state
@@ -330,6 +328,7 @@ defmodule Helyx.Tool.MCP.Server do
 
   # The server exited. With a call whose Task is gone, an abort's release
   # stopped it: that call ended with no response, as at a time limit.
+  @spec exited(%__MODULE__{}) :: no_return()
   defp exited(state) do
     gone =
       for {id, {:call, {pid, _ref}, _timer, _monitor}} <- state.pending,

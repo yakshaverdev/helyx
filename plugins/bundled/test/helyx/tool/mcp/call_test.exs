@@ -176,14 +176,15 @@ defmodule Helyx.Tool.MCP.CallTest do
 
   @tag timeout: 120_000
   test "the fourth call with no response fails the server", ctx do
-    Application.put_env(:helyx_plugins, :mcp_call_ms, 300)
+    # Room for each start again inside the next call's limit.
+    Application.put_env(:helyx_plugins, :mcp_call_ms, 1_500)
     spec = %{"pages" => [[tool("hang")]], "log" => ctx.log}
     script = [search("c1", "s__hang") | for(n <- 2..5, do: call("c#{n}", "s__hang"))]
     session = start(ctx, %{"s" => server(ctx.dir, spec)}, script)
     assert ready(session, "s")
     :ok = Session.prompt(session, "go")
     assert [_search | hangs] = results(5)
-    assert Enum.all?(hangs, &match?({true, "timed out after 0 s" <> _}, &1))
+    assert Enum.all?(hangs, &(&1 == {true, "timed out after 1 s; the call may have run"}))
 
     assert %{state: {:error, "did not answer a call 4 times"}} =
              group(session, "s", &match?({:error, _}, &1))

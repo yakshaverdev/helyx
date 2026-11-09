@@ -237,25 +237,24 @@ defmodule Helyx.Watchdog.GroupTest do
 
       kill = fn args ->
         send(test, {:kill, args, System.monotonic_time(:millisecond)})
-
-        case args do
-          ["-0", "--", target] ->
-            if MapSet.member?(Agent.get(agent, & &1), -String.to_integer(target)),
-              do: {"", 0},
-              else: {"kill: #{target}: No such process", 1}
-
-          [_signal, "--" | targets] ->
-            Agent.update(
-              agent,
-              &MapSet.difference(&1, MapSet.new(targets, fn t -> -String.to_integer(t) end))
-            )
-
-            {"", 0}
-        end
+        run_kill(agent, args)
       end
 
       {kill, fn group -> Agent.update(agent, &MapSet.put(&1, group)) end}
     end
+
+    defp run_kill(agent, ["-0", "--", target]) do
+      if MapSet.member?(Agent.get(agent, & &1), -String.to_integer(target)),
+        do: {"", 0},
+        else: {"kill: #{target}: No such process", 1}
+    end
+
+    defp run_kill(agent, [_signal, "--" | targets]) do
+      Agent.update(agent, &MapSet.difference(&1, groups(targets)))
+      {"", 0}
+    end
+
+    defp groups(targets), do: MapSet.new(targets, &(-String.to_integer(&1)))
 
     test "a second release of a confirmed handle never signals the number of a new group" do
       {kill, reuse} = reusable([100])
@@ -277,8 +276,7 @@ defmodule Helyx.Watchdog.GroupTest do
 
       stuck = handle(:command, 4242)
       kill = fake_kill([4242], [4242])
-      held = Group.release([stuck, stuck], :deliver, deadline(100), kill: kill)
-      assert held == [stuck, stuck]
+      assert Group.release([stuck, stuck], :deliver, deadline(100), kill: kill) == [stuck, stuck]
     end
 
     test "the abort of a call handle, then the release of the server Task's handles, signals once" do

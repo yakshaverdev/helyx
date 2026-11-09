@@ -17,11 +17,11 @@ defmodule Helyx.Tool.MCP.Lines do
     case :binary.split(data, "\n", [:global]) do
       [part] ->
         size = size + byte_size(part)
-        if size > @max_bytes, do: :too_long, else: {[], {[parts | part], size}}
+        if size > @max_bytes, do: :too_long, else: {[], {[parts, part], size}}
 
       [first | more] ->
         {lines, [rest]} = Enum.split(more, -1)
-        lines = [IO.iodata_to_binary([parts | first]) | lines]
+        lines = [IO.iodata_to_binary([parts, first]) | lines]
 
         if byte_size(rest) > @max_bytes or Enum.any?(lines, &(byte_size(&1) > @max_bytes)),
           do: :too_long,

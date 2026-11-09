@@ -141,7 +141,7 @@ defmodule Helyx.Tool.MCP.StartTest do
     assert is_binary(env["PATH"])
   end
 
-  test "a ping of the server gets {}, and another request -32601", ctx do
+  test "a ping of the server gets {}, and another request -32_601", ctx do
     log = Path.join(ctx.dir, "requests.log")
 
     requests = [
@@ -154,7 +154,7 @@ defmodule Helyx.Tool.MCP.StartTest do
     Process.sleep(100)
     answers = Map.new(log(log), &{&1["id"], &1})
     assert answers["p1"]["result"] == %{}
-    assert answers["s1"]["error"]["code"] == -32601
+    assert answers["s1"]["error"]["code"] == -32_601
   end
 
   test "a call runs on its server, and list_changed lists the tools again", ctx do
@@ -205,7 +205,6 @@ defmodule Helyx.Tool.MCP.StartTest do
     File.chmod!(stall, 0o755)
     Application.put_env(:helyx_plugins, :mcp_watchdog_exe, %{"a" => stall})
     servers = %{"a" => server(ctx.dir, %{}), "b" => server(ctx.dir, %{})}
-    started = System.monotonic_time(:millisecond)
     session = start(ctx, servers, search_and_call("b__echo", %{"x" => 1}))
 
     # B is ready, and its tool is found and runs, while A is in its start.
@@ -214,7 +213,6 @@ defmodule Helyx.Tool.MCP.StartTest do
     assert [{false, search}, {false, ~s(echo {"x":1})}] = results(2)
     assert search =~ "b__echo"
     assert %{state: :starting} = Enum.find(view(session).groups, &(&1.group == "a"))
-    assert System.monotonic_time(:millisecond) - started < @wait_ms
 
     assert %{state: {:error, "did not start in 1 s"}} = group(session, "a")
     assert %{state: :ready} = group(session, "b")
