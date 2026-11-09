@@ -82,8 +82,8 @@ pub(crate) struct Connection {
     /// session, a refusal or an end (`hold`).
     pub answers: HashMap<String, Answer>,
     /// The instance of each session that a `history` reply of
-    /// `instance_changed` says the session replaced, until a subscribe reply
-    /// tells the current one.
+    /// `instance_changed` says the session replaced, when it was the instance
+    /// of the state; it stays, for a replaced instance never serves again.
     pub replaced: HashMap<String, String>,
     /// The subscriptions that an `unsubscribe` got `unknown_sub` for: the
     /// server holds none of them. A frame of one that was on the way is

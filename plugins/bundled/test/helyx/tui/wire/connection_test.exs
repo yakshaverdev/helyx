@@ -18,7 +18,8 @@ defmodule Helyx.TUI.Wire.ConnectionTest do
   alias Helyx.Transport.WebSocket
   alias Helyx.Transport.WebSocket.Frame
   alias Helyx.Transport.WebSocket.Wire, as: ServerWire
-  alias Helyx.TUI.Wire
+  alias Helyx.TUI.{Link, Wire}
+  require Helyx.TUI.{Link, Wire}
   alias Helyx.TUI.Wire.Connection
 
   @loopback {127, 0, 0, 1}
@@ -217,6 +218,47 @@ defmodule Helyx.TUI.Wire.ConnectionTest do
 
     assert {:ok, %Snapshot{}, "x"} = Connection.subscribe(conn, "s1")
     {conn, ref}
+  end
+
+  test "a request over the request bound of the server is refused before the send" do
+    test = self()
+    {conn, _ref} = fake(fn socket -> send(test, {:frame, client_frame(socket)}) end)
+    huge = String.duplicate("s", Frame.max_request())
+    assert Connection.abort(conn, huge) == {:error, :too_large}
+    assert Connection.resume(conn, id: huge) == {:error, :too_large}
+    # The first frame that the server reads is the next request.
+    abort = Task.async(fn -> Connection.abort(conn, "s1") end)
+
+    assert_receive {:frame, %{"op" => "abort", "params" => %{"session" => "s1"}}},
+                   Helyx.Test.Events.wait_ms()
+
+    Task.shutdown(abort, :brutal_kill)
+
+    assert Link.wire_error?(:too_large) and
+             Link.error_text(:too_large) == "over the request bound"
+  end
+
+  test "the frame bound of a request and the sub id that a frame carries" do
+    frame =
+      &%{
+        "type" => "req",
+        "id" => Integer.to_string(2 ** 64 - 1),
+        "op" => "abort",
+        "params" => %{"session" => &1}
+      }
+
+    overhead = IO.iodata_length(JSON.encode_to_iodata!(frame.("")))
+    at = String.duplicate("s", Frame.max_request() - overhead)
+    assert Wire.fits?("abort", %{"session" => at})
+    refute Wire.fits?("abort", %{"session" => at <> "s"})
+
+    # The longest sub id that a frame carries, in its worst JSON form, with a
+    # seq of 1,024 digits, fits the bound; one byte more is not carried.
+    max = div(Frame.max_request() - 2_048, 6)
+    worst = String.duplicate(<<1>>, max)
+    assert Wire.carries?(worst) and not Wire.carries?(worst <> "s")
+    ack = %{"type" => "ack", "sub" => worst, "seq" => 10 ** 1_023}
+    assert IO.iodata_length(JSON.encode_to_iodata!(ack)) <= Frame.max_request()
   end
 
   test "events go to the owner as Core events, an unknown type is dropped, and session_end ends them" do

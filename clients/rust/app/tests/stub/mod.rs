@@ -38,10 +38,10 @@ pub fn welcome(ws: &mut WebSocket<TcpStream>, token: &str) {
     let expected = proof(token, &[0; 32]);
     assert_eq!(
         hello,
-        format!(r#"{{"type":"hello","protocol":3,"proof":"{expected}"}}"#)
+        format!(r#"{{"type":"hello","protocol":5,"proof":"{expected}"}}"#)
     );
     assert!(!hello.contains(token));
-    ws.send(Message::text(r#"{"type":"welcome","protocol":3}"#))
+    ws.send(Message::text(r#"{"type":"welcome","protocol":5}"#))
         .unwrap();
 }
 

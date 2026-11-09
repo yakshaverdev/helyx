@@ -26,8 +26,8 @@ fn a_nonce_has_exactly_32_bytes() {
 #[test]
 fn no_frame_of_the_handshake_follows_its_answer() {
     for answer in [
-        json!({"type": "welcome", "protocol": 3}),
-        json!({"type": "refused", "code": "protocol", "server_protocol": 4}),
+        json!({"type": "welcome", "protocol": 5}),
+        json!({"type": "refused", "code": "protocol", "server_protocol": 6}),
     ] {
         let mut handshake = Handshake::new(None);
         handshake.step(&j(&challenge(32))).unwrap();
@@ -135,7 +135,7 @@ fn a_cost_of_signed_zero_is_zero() {
 
 #[test]
 fn refused_names_another_protocol() {
-    for (server_protocol, valid) in [(2, true), (3, false), (4, true)] {
+    for (server_protocol, valid) in [(4, true), (5, false), (6, true)] {
         let mut handshake = Handshake::new(None);
         handshake.step(&j(&challenge(32))).unwrap();
         let refused =
@@ -183,11 +183,11 @@ fn a_broken_handshake_frame_ends_the_handshake() {
         (challenge(3), challenge(32)),
         (
             json!({"type": "welcome", "protocol": 2}),
-            json!({"type": "welcome", "protocol": 3}),
+            json!({"type": "welcome", "protocol": 5}),
         ),
         (
             json!({"type": "refused", "code": "x", "server_protocol": 4}),
-            json!({"type": "refused", "code": "protocol", "server_protocol": 4}),
+            json!({"type": "refused", "code": "protocol", "server_protocol": 6}),
         ),
     ];
     for (broken, good) in broken_then_good {
@@ -214,4 +214,88 @@ fn the_partial_of_a_snapshot_is_an_assistant_message() {
     assert!(snapshot("assistant").is_ok());
     assert!(snapshot("user").is_err());
     assert!(snapshot("tool_result").is_err());
+}
+
+/// A UI block of protocol 5 as the TUI checks it: the envelope, at most
+/// 65,536 bytes of JSON as the server encodes it, and integers of at most
+/// 100 digits, also nested past the depth that the decoder keeps as text.
+#[test]
+fn a_ui_block_is_checked_as_the_tui_checks_it() {
+    use helyx_client_core::json::decode;
+    use helyx_client_core::ui_block::{MAX_BYTES, block, envelope};
+    let ok = |text: &str| block(&decode(text).unwrap()).is_ok();
+    // `{"kind":"k","text":""}` is 22 bytes; a control byte is 6 of JSON.
+    let text = |n: usize| format!(r#"{{"kind":"k","text":"{}"}}"#, "a".repeat(n));
+    assert!(ok(&text(MAX_BYTES - 22)));
+    assert!(!ok(&text(MAX_BYTES - 21)));
+    // A control byte is 6 bytes of JSON in the form of the server, `\n` 2.
+    let escaped = |unit: &str, n: usize| format!(r#"{{"kind":"k","text":"{}"}}"#, unit.repeat(n));
+    assert!(ok(&escaped(r"\u0001", (MAX_BYTES - 22) / 6)));
+    assert!(!ok(&escaped(r"\u0001", (MAX_BYTES - 22) / 6 + 1)));
+    assert!(ok(&escaped(r"\n", (MAX_BYTES - 22) / 2)));
+    assert!(!ok(&escaped(r"\n", (MAX_BYTES - 22) / 2 + 1)));
+    let digits = |n: usize| format!(r#"{{"kind":"k","text":"","n":{}}}"#, "9".repeat(n));
+    assert!(ok(&digits(100)) && !ok(&digits(101)));
+    assert!(ok(&format!(
+        r#"{{"kind":"k","text":"","n":-{}}}"#,
+        "9".repeat(100)
+    )));
+    assert!(ok(&format!(
+        r#"{{"kind":"k","text":"","n":{}e5}}"#,
+        "9".repeat(200)
+    )));
+    let deep = |n: usize| {
+        format!(
+            r#"{{"kind":"k","text":"","n":{}"x",{}{}}}"#,
+            "[".repeat(80),
+            "9".repeat(n),
+            "]".repeat(80)
+        )
+    };
+    assert!(ok(&deep(100)) && !ok(&deep(101)));
+    for kind in ["", "A", "a-b", &"a".repeat(65)] {
+        assert!(!ok(&format!(r#"{{"kind":"{kind}","text":""}}"#)), "{kind}");
+    }
+    assert!(ok(r#"{"kind":"a_1","text":"","cut":true}"#));
+    assert!(!ok(r#"{"kind":"k","text":"","cut":null}"#));
+    assert!(!ok(r#"{"kind":"k","text":1}"#));
+    assert!(envelope(&decode(r#"{"kind":"form","text":"t","questions":[]}"#).unwrap()).is_ok());
+}
+
+/// The carriers of UI blocks: at most 8 on a tool result and none on
+/// another role, a key of 1 to 64 bytes, the envelope of the request of an
+/// ask with a kind, and the origin kind `hook` of protocol 4.
+#[test]
+fn the_carriers_of_ui_blocks_and_the_origin_of_a_hook() {
+    use helyx_client_core::message::Ask;
+    use helyx_client_core::ui_block::Shown;
+    let block = json!({"kind": "progress", "text": "1 of 3"});
+    let result = |n: usize, role: &str| {
+        let message = json!({"id": "r1", "role": role, "content": [], "tool_call_id": "c1",
+            "ui_blocks": vec![block.clone(); n]});
+        Message::parse(&j(&message))
+    };
+    assert_eq!(result(8, "tool_result").unwrap().ui_blocks.len(), 8);
+    assert!(result(9, "tool_result").is_err());
+    assert!(result(1, "user").is_err());
+    let none = json!({"id": "u1", "role": "user", "content": [], "ui_blocks": null});
+    assert!(Message::parse(&j(&none)).unwrap().ui_blocks.is_empty());
+    let shown =
+        |key: String| Shown::parse(&j(&json!({"call_id": null, "key": key, "block": block})));
+    assert!(shown("k".repeat(64)).is_ok());
+    assert!(shown("k".repeat(65)).is_err() && shown(String::new()).is_err());
+    let ask = |request: Value| {
+        Ask::parse(&j(
+            &json!({"ask_id": "k1", "call_id": "c1", "tool": "t", "request": request}),
+        ))
+    };
+    assert!(ask(json!({"anything": 1})).is_ok());
+    assert!(ask(json!({"kind": "form", "text": "t"})).is_ok());
+    assert!(ask(json!({"kind": "Form", "text": "t"})).is_err());
+    let hook = |id: Value| {
+        let message = json!({"id": "u1", "role": "user", "content": [],
+            "origin": {"kind": "hook", "id": id}});
+        Message::parse(&j(&message)).is_ok()
+    };
+    assert!(hook(json!("Acme.Hook.Check")) && hook(Value::Null));
 }

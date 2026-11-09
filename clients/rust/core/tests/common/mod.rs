@@ -11,7 +11,7 @@ use std::path::PathBuf;
 pub fn snapshot_json(instance_id: &str, turn: Value) -> Value {
     json!({
         "instance_id": instance_id, "seq": 4, "messages": [], "more": true, "turn": turn,
-        "model": "fake/echo", "persisting": true, "context": null, "asks": [],
+        "model": "fake/echo", "persisting": true, "context": null, "asks": [], "ui_blocks": [],
         "queue": {"steers": 0, "follow_ups": 0, "running": 0, "held": 0, "waiting": 0},
         "usage": {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0,
                   "cost": null, "unknown": false, "list": false},
@@ -103,6 +103,23 @@ pub fn observe(state: &State) -> Json {
         (
             "messages",
             strings(state.messages.iter().map(|m| m.id.clone()).collect()),
+        ),
+        (
+            "ui_blocks",
+            Json::Array(
+                (state.ui_blocks.iter())
+                    .map(|b| {
+                        object([
+                            (
+                                "call_id",
+                                b.call_id.clone().map_or(Json::Null, Json::String),
+                            ),
+                            ("key", Json::String(b.key.clone())),
+                            ("block", b.block.clone()),
+                        ])
+                    })
+                    .collect(),
+            ),
         ),
     ])
 }

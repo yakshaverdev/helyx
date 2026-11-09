@@ -22,7 +22,7 @@ defmodule Helyx.TUI.Link do
   @max_text_bytes Helyx.Session.max_text_bytes()
 
   # The errors of a request of the wire that no call of Core gives.
-  defguard wire_error?(reason) when reason in [:timeout, :busy, :closed, :failed]
+  defguard wire_error?(reason) when reason in [:timeout, :busy, :closed, :failed, :too_large]
 
   # The texts of the wire errors, at most 27 bytes: the footer shows them
   # as a reason too (docs/features/coding-agent.md, "TUI").
@@ -31,6 +31,7 @@ defmodule Helyx.TUI.Link do
   def error_text(:busy), do: "too many requests wait"
   def error_text(:closed), do: "no connection to the server"
   def error_text(:failed), do: "the server failed"
+  def error_text(:too_large), do: "over the request bound"
 
   # The TUI process takes the connection that the caller of
   # `Helyx.TUI.run/1` opened, and monitors it: its `:DOWN` ends the TUI.

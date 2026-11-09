@@ -270,6 +270,25 @@ defmodule Helyx.TUI.Wire.DecodeTest do
     end
   end
 
+  test "a text for a person that becomes a notice is cut to the 4,000 bytes of an error text" do
+    long = String.duplicate("é", 3_000)
+    cut = Helyx.Reason.text(long)
+    assert byte_size(cut) == 4_000
+
+    for {type, data, path} <- [
+          {:turn_end, %{outcome: :error, error: long}, [:error]},
+          {:notice, %{text: long}, [:text]},
+          {:resume_id, %{provider: long, resume_id: "r", lost: true, cut: 0}, [:provider]}
+        ] do
+      assert {:ok, %Event{data: decoded}} = Decode.event(wire(Wire.event(event(type, data))))
+      assert get_in(decoded, path) == cut, inspect(type)
+    end
+
+    failed = message_end(assistant(), %{})
+    failed = put_in(failed, ["data", "error"], %{"kind" => "failed", "text" => long})
+    assert {:ok, %Event{data: %{error: ^cut}}} = Decode.event(failed)
+  end
+
   test "a frame that the schema allows past the bounds of Core is taken, and drawn within the bounds of the TUI" do
     # An origin that Core does not make is dropped: the TUI shows none.
     for {message, origin, kept} <- [

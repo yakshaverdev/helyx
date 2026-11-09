@@ -1,4 +1,4 @@
-//! The events of protocol 3, the `event` of an `event` frame and of a replay:
+//! The events of protocol 5, the `event` of an `event` frame and of a replay:
 //! the envelope of every event, and the data of each type that the client
 //! knows, each checked by the schema of `docs/features/wire-protocol.md`.
 
@@ -9,6 +9,7 @@ use crate::check::{
 use crate::json::Json;
 use crate::message::{Ask, Block, Message, Queue, Role, parse_tool_call};
 use crate::seq::Seq;
+use crate::ui_block::Shown;
 
 /// What `message_end` says of a turn that did not end well.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -55,6 +56,7 @@ pub enum EventData {
         ask_id: String,
         answered: bool,
     },
+    UiBlock(Shown),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -183,6 +185,7 @@ fn parse_data(kind: &str, data: &Json) -> Checked<Option<EventData>> {
             ask_id: string(data, "ask_id", "ask_end")?.to_owned(),
             answered: one_of(data, "outcome", &["answered", "ended"], "ask_end")? == "answered",
         },
+        "ui_block" => EventData::UiBlock(Shown::parse(data)?),
         _ => return Ok(None),
     }))
 }

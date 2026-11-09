@@ -459,3 +459,34 @@ The failure-path agent died once at the usage limit and was run again. The repro
 | 3 | spec (doc) | Comments and the bullet still said that a frame moves the silence; the code moves it at each message. | Fixed in `socket.rs`, `net.rs`, the bullet, and the record. |
 | 4 | spec (doc) | The test bullet did not name the close test. | Named. |
 | 5 | failure path (by reading, not run) | `broken` and the path of `refused` send a close that is not under the send deadline; with a server that reads nothing, it waits for the write timeout of the socket, 5,000 ms, or the read deadline. | Bounded by the write timeout; recorded. |
+
+# Cycle H: the decisions of the orchestrator of 2026-11-08, and protocol 5 (#860)
+
+No review round: the Codex gate follows. Base `77d0751e`, after a rebase on `origin/master`.
+
+The rebase met #878 (UI blocks, protocol 5) and #880 (the origin kind `hook`, protocol 4). Its conflicts were resolved as follows:
+
+- The fixtures keep the cases of master and of this branch. Each snapshot case of this branch got `"ui_blocks": []`, and the case "refused: the protocol of the client" names protocol 5.
+- `tui-attach.md` keeps the edits of this branch with the wording of master ("the current protocol"), and both of its stale accepted holes stay removed.
+- `Helyx.Tool.Question.request?/1` of cycle G is dropped. The picker of #878 (`Helyx.TUI.Question.picker?/1`) already shows an ask whose form it cannot read as its text. The test of the TUI keeps the cases that the picker refuses.
+
+The core now speaks protocol 5, or its fixture runners and every connection to a server of master would fail:
+
+- `ui_block`, the check of a block as the TUI checks it, and the fold of shown blocks;
+- the snapshot field `ui_blocks`, the event `ui_block`, and the blocks of a tool result;
+- the envelope of the request of an ask with a kind;
+- the origin kind `hook`.
+
+The decisions of the orchestrator:
+
+- **G1:** every request of the TUI is checked against the request bound of the server before the send (`Helyx.TUI.Wire.fits?/2`). Over it, the request gives `{:error, :too_large}`, which its caller shows as the notice `over the request bound`. A sub id that no frame carries is not acked.
+- **G2:** each text of the wire that becomes a notice gets the cut of `Helyx.Reason.text/1` at the decode.
+- **G3:** the three accepted items are stated in `client-kit.md`, "Accepted".
+- **D2:** a replaced instance is recorded only when it is the instance of the state, and a subscribe reply keeps it. Tests: "a page of an older instance keeps the replaced one" and "a replay of a replaced instance keeps it replaced". The test "a renewal ends with its subscribe" subscribes again at a new instance, as a server does after a renewal. The two doc lines are fixed.
+- **E2:** the close frame after a break waits at most the write timeout of the socket, stated in `client-kit.md`.
+
+Assumptions, decided from prior art under the owner rule of 2026-11-08:
+
+- The fixture "message_end: a user message of a hook with no id" of #880 said `broken`, while the schema allows the frame (`id: string | null`) and the judgement of 2026-11-07 says that the TUI takes every frame that the schema allows and ignores an origin that it does not show. It now says `valid`, and both clients take it and drop the origin.
+- The reference app does not draw UI blocks; the core holds them.
+- The size of a UI block in the core counts a number at the text that the server sent, which is the form of Elixir. A block from a server of another encoder can be counted a few bytes off near the bound.

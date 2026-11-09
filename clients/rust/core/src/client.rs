@@ -370,9 +370,9 @@ impl Client {
                     .get_mut(&session)
                     .expect("a session with a subscribe");
                 // The reply is the last answer of the server for the session:
-                // it serves it, at its current instance.
+                // it serves it. A replaced instance stays replaced: an instance
+                // that the server replaced never serves again.
                 c.answers.remove(&session);
-                c.replaced.remove(&session);
                 let snapshot = matches!(subscribed, Subscribed::Snapshot(_));
                 let from = s.state.seq.clone();
                 s.state.subscribed(subscribed)?;
@@ -396,11 +396,14 @@ impl Client {
             }
             // The session started again: the instance that the page named
             // was replaced, so an end of it holds no more.
+            // Only a page of the instance of the state is recorded: a page of
+            // an older instance says nothing of the current one.
             ("history", Some(session), Err((code, text))) if code == "instance_changed" => {
-                if let Some(instance) = request
-                    .instance
-                    .filter(|_| self.sessions.contains_key(&session))
-                {
+                let current = |i: &String| {
+                    let s = self.sessions.get(&session);
+                    s.and_then(|s| s.state.instance_id.as_ref()) == Some(i)
+                };
+                if let Some(instance) = request.instance.filter(current) {
                     c.replaced.insert(session, instance);
                 }
                 Ok(vec![Output::Reply {

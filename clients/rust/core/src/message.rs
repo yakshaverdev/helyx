@@ -1,4 +1,4 @@
-//! The data shapes of protocol 3 that the fold keeps: messages, blocks, asks,
+//! The data shapes of protocol 5 that the fold keeps: messages, blocks, asks,
 //! the queue, the snapshot. Each `parse` checks a value by the schema.
 
 use crate::check::{
@@ -7,6 +7,7 @@ use crate::check::{
 };
 use crate::json::Json;
 use crate::seq::Seq;
+use crate::ui_block::{self, MAX_RESULT_BLOCKS, Shown};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Role {
@@ -39,6 +40,8 @@ pub struct Message {
     pub tool_call_id: Option<String>,
     pub tool_name: Option<String>,
     pub is_error: bool,
+    /// The UI blocks of a tool result; a message of another role has none.
+    pub ui_blocks: Vec<Json>,
 }
 
 const STOP_REASONS: &[&str] = &[
@@ -49,7 +52,7 @@ const STOP_REASONS: &[&str] = &[
     "aborted",
     "error",
 ];
-const ORIGIN_KINDS: &[&str] = &["user", "background", "product", "unknown"];
+const ORIGIN_KINDS: &[&str] = &["user", "background", "product", "hook", "unknown"];
 
 impl Message {
     pub fn parse(value: &Json) -> Checked<Message> {
@@ -78,7 +81,20 @@ impl Message {
             tool_call_id: optional_string(map, "tool_call_id")?,
             tool_name: optional_string(map, "tool_name")?,
             is_error: optional_bool(map, "is_error", "is_error")?,
+            ui_blocks: ui_blocks(map, role)?,
         })
+    }
+}
+
+/// The `ui_blocks` of a message: only a tool result has them, at most
+/// `MAX_RESULT_BLOCKS`, as the TUI checks them.
+fn ui_blocks(map: &Json, role: Role) -> Checked<Vec<Json>> {
+    match (optional(map, "ui_blocks"), role) {
+        (None, _) => Ok(vec![]),
+        (Some(Json::Array(blocks)), Role::ToolResult) if blocks.len() <= MAX_RESULT_BLOCKS => {
+            blocks.iter().map(|b| ui_block::block(b).cloned()).collect()
+        }
+        _ => Err(Broken("message ui_blocks")),
     }
 }
 
@@ -169,9 +185,19 @@ impl Ask {
             ask_id: string(map, "ask_id", "ask")?.to_owned(),
             call_id: string(map, "call_id", "ask")?.to_owned(),
             tool: string(map, "tool", "ask")?.to_owned(),
-            request: object(field(map, "request", "ask")?, "ask request")?.clone(),
+            request: request(field(map, "request", "ask")?)?.clone(),
         })
     }
+}
+
+/// The request of an ask: an object, and one with a kind is an input UI
+/// block, whose envelope is checked; its size is the ask bound of Core.
+fn request(value: &Json) -> Checked<&Json> {
+    let map = object(value, "ask request")?;
+    if map.get("kind").is_some() {
+        ui_block::envelope(map)?;
+    }
+    Ok(map)
 }
 
 /// The turn that runs at the snapshot, with its partial message.
@@ -193,6 +219,8 @@ pub struct Snapshot {
     pub queue: Queue,
     pub persisting: bool,
     pub asks: Vec<Ask>,
+    /// The UI blocks that the session shows, in their order.
+    pub ui_blocks: Vec<Shown>,
 }
 
 impl Snapshot {
@@ -237,6 +265,7 @@ impl Snapshot {
             queue: Queue::parse(field(map, "queue", "snapshot queue")?)?,
             persisting: boolean(map, "persisting", "snapshot persisting")?,
             asks: list_of(map, "asks", "snapshot asks", Ask::parse)?,
+            ui_blocks: list_of(map, "ui_blocks", "snapshot ui_blocks", Shown::parse)?,
         })
     }
 }

@@ -1,4 +1,4 @@
-//! The server frames of protocol 3 after the handshake: `res`, `event`, and
+//! The server frames of protocol 5 after the handshake: `res`, `event`, and
 //! `session_end`, each checked by the schema of `docs/features/wire-protocol.md`.
 //! A `res` is read by the op of its request, which the caller keeps by `id`.
 

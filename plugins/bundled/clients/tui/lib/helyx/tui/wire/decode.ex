@@ -137,8 +137,10 @@ defmodule Helyx.TUI.Wire.Decode do
   defp data(:turn_end, %{"outcome" => "done"}), do: %{outcome: :done}
   defp data(:turn_end, %{"outcome" => "aborted"}), do: %{outcome: :aborted}
 
+  # A text for a person that becomes a notice gets the cut of the error text of a failed turn,
+  # 4,000 bytes (`Helyx.Reason.text/1`, coding-agent.md), once.
   defp data(:turn_end, %{"outcome" => "error", "error" => error}) when is_binary(error),
-    do: %{outcome: :error, error: error}
+    do: %{outcome: :error, error: Helyx.Reason.text(error)}
 
   defp data(:queue_update, data), do: queue(data)
 
@@ -157,7 +159,7 @@ defmodule Helyx.TUI.Wire.Decode do
 
   defp data(:resume_id, %{"provider" => provider, "resume_id" => id, "lost" => lost, "cut" => cut})
        when is_binary(provider) and is_binary(id) and is_boolean(lost) and count?(cut),
-       do: %{provider: provider, resume_id: id, lost: lost, cut: cut}
+       do: %{provider: Helyx.Reason.text(provider), resume_id: id, lost: lost, cut: cut}
 
   defp data(:compaction, %{
          "trigger" => trigger,
@@ -167,7 +169,7 @@ defmodule Helyx.TUI.Wire.Decode do
        when trigger in ["manual", "auto"] and count_or_nil?(before) and count_or_nil?(after_),
        do: %{trigger: trigger(trigger), tokens_before: before, tokens_after: after_}
 
-  defp data(:notice, %{"text" => text}) when is_binary(text), do: %{text: text}
+  defp data(:notice, %{"text" => text}) when is_binary(text), do: %{text: Helyx.Reason.text(text)}
   defp data(:ask, data), do: ask(data)
 
   defp data(:ask_end, %{"ask_id" => id, "outcome" => outcome}) when is_binary(id),
@@ -183,7 +185,7 @@ defmodule Helyx.TUI.Wire.Decode do
   defp message_error(%{"kind" => "aborted"}), do: %{error: :aborted}
 
   defp message_error(%{"kind" => "failed", "text" => text}) when is_binary(text),
-    do: %{error: text}
+    do: %{error: Helyx.Reason.text(text)}
 
   defp trigger("manual"), do: :manual
   defp trigger("auto"), do: :auto

@@ -10,6 +10,7 @@ use crate::frame::Subscribed;
 use crate::json::{Json, object as obj};
 use crate::message::{Ask, Block, Message, Queue, Role};
 use crate::seq::Seq;
+use crate::ui_block::Shown;
 
 /// The client acks each event whose `seq` is a multiple of this, as the TUI
 /// does: far below the 16,384 unacked events that end a subscription (`4408`).
@@ -36,6 +37,10 @@ pub struct State {
     pub partial: Option<Message>,
     /// The notices and turn errors, for a person, oldest first.
     pub notices: Vec<String>,
+    /// The UI blocks that the session shows, in the order of the first of
+    /// each pair of call id and key; the server holds at most 72 in a turn
+    /// (`docs/features/ui-blocks.md`).
+    pub ui_blocks: Vec<Shown>,
 }
 
 impl State {
@@ -76,6 +81,7 @@ impl State {
                     more: snapshot.more,
                     partial: snapshot.turn.and_then(|turn| turn.partial),
                     notices: Vec::new(),
+                    ui_blocks: snapshot.ui_blocks,
                 };
                 Ok(())
             }
@@ -122,10 +128,15 @@ impl State {
                 }
                 Role::User => self.messages.push(message),
             },
-            EventData::ToolExecutionEnd(message) => self.messages.push(message),
+            // The result of a call drops the blocks of its call id.
+            EventData::ToolExecutionEnd(message) => {
+                self.ui_blocks.retain(|b| b.call_id != message.tool_call_id);
+                self.messages.push(message);
+            }
             EventData::TurnEnd(outcome) => {
                 self.running = false;
                 self.partial = None;
+                self.ui_blocks.clear();
                 if let TurnOutcome::Error(text) = outcome {
                     self.notices.push(text);
                 }
@@ -135,6 +146,14 @@ impl State {
             EventData::Notice(text) => self.notices.push(text),
             EventData::Ask(ask) => self.asks.push(ask),
             EventData::AskEnd { ask_id, .. } => self.asks.retain(|ask| ask.ask_id != ask_id),
+            // A block of the same call id and key replaces it in its place.
+            EventData::UiBlock(shown) => {
+                let same = |b: &Shown| b.call_id == shown.call_id && b.key == shown.key;
+                match self.ui_blocks.iter_mut().find(|b| same(b)) {
+                    Some(old) => *old = shown,
+                    None => self.ui_blocks.push(shown),
+                }
+            }
             EventData::QueueDropped(_)
             | EventData::SteerUnconfirmed(_)
             | EventData::ResumeId

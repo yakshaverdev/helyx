@@ -2,9 +2,8 @@ defmodule Helyx.TUI.ViewModel do
   @moduledoc """
   The TUI's view of a session: a pure fold over `Helyx.Event`.
 
-  The TUI holds no session state of its own. Every event goes through
-  `apply/2` and the screen renders from the result, so the fold is testable
-  with scripted event lists.
+  The TUI holds no session state of its own. Every event goes through `apply/2` and the screen
+  renders from the result, so the fold is testable with scripted event lists.
 
   `cells` is the transcript: an Erlang `:array` of every cell, open or closed, by position,
   oldest first; `cells/1` gives it as a list. `open` maps a call id to a queue of the positions
@@ -34,15 +33,13 @@ defmodule Helyx.TUI.ViewModel do
       session. A line after an information cell joins it, so each cell is
       one item of `Helyx.TUI.Transcript`
 
-  `reason` is why the client rejected the last input, or nil. It is
-  client-local, like a notice: `reject/2` sets it and `clear_reason/1`
-  clears it on the next key press, paste, or mouse press. A new reject
-  replaces it. No event changes it.
+  `reason` is why the client rejected the last input, or nil. It is client-local, like a notice:
+  `reject/2` sets it and `clear_reason/1` clears it on the next key press, paste, or mouse
+  press. A new reject replaces it. No event changes it.
 
-  `expanded?` is true while tool results show their full text, and false
-  while they show four lines (`toggle_expanded/1`, Ctrl+O). It is
-  client-local, like `reason`, and a session switch keeps it
-  (`docs/features/tui-tool-output-toggle.md`).
+  `expanded?` is true while tool results show their full text, and false while they show four
+  lines (`toggle_expanded/1`, Ctrl+O). It is client-local, like `reason`, and a session switch
+  keeps it (`docs/features/tui-tool-output-toggle.md`).
 
   `streaming` is the open assistant message as a reversed block list, newest first, or nil when
   none is streaming; a delta with no `message_start` before it starts one. Text and thinking
@@ -50,18 +47,16 @@ defmodule Helyx.TUI.ViewModel do
   of it is an open tool cell, so a frame does not make its line; the `message_end` makes the
   cells of the message again from the message.
 
-  `usage` and `context` are the totals and the context state of the session
-  that row 2 of the footer shows (`Helyx.Session.Totals`). They start from
-  the snapshot, which counts every message of the transcript, and each
-  message of the live path adds to them; a snapshot message does not. A
-  `:compaction` event changes the context state with
+  `usage` and `context` are the totals and the context state of the session that row 2 of the
+  footer shows (`Helyx.Session.Totals`). They start from the snapshot, which counts every
+  message of the transcript, and each message of the live path adds to them; a snapshot message
+  does not. A `:compaction` event changes the context state with
   `Helyx.Session.Totals.compacted/2`.
 
-  `asks` are the open asks of tool calls, oldest first, as the snapshot
-  and the `:ask` and `:ask_end` events give them; `Helyx.TUI.Question`
-  shows the oldest `form` or `approval` (`docs/features/ui-blocks.md`). `ui_blocks`
-  are those of the `:ui_block` events of the running turn
-  (`Helyx.TUI.ViewModel.UIBlocks`, `docs/features/ui-blocks.md`).
+  `asks` are the open asks of tool calls, oldest first, as the snapshot and the `:ask` and
+  `:ask_end` events give them; `Helyx.TUI.Question` shows the oldest `form` or `approval`
+  (`docs/features/ui-blocks.md`). `ui_blocks` are those of the `:ui_block` events of the
+  running turn (`Helyx.TUI.ViewModel.UIBlocks`, `docs/features/ui-blocks.md`).
 
   `seq` is the `seq` of the snapshot or of the last event that the fold applied. The fold
   applies an event only once, by its `seq`: an event at or below it leaves the view model
@@ -242,8 +237,7 @@ defmodule Helyx.TUI.ViewModel do
   defp queue(%{steers: _, follow_ups: _, running: _, held: _, waiting: _} = counts),
     do: Map.take(counts, [:steers, :follow_ups, :running, :held, :waiting])
 
-  # Integer arithmetic: a count of the schema can pass the float range, and
-  # the decode bound of 1,024 characters bounds the line.
+  # In integers: a count of the schema passes the float range (decode bound: 1,024 digits).
   defp tokens(n) when n < 1000, do: Integer.to_string(n)
   defp tokens(n), do: "#{div(n + 500, 1000)}k"
 
@@ -371,12 +365,10 @@ defmodule Helyx.TUI.ViewModel do
       else: vm
   end
 
-  # The result closes the oldest open cell with its call id, wherever it
-  # is: a notice can arrive while the tool runs. The first result answers
-  # the first of two calls with one id, as in the session. The session pairs
-  # each result with its call, so the client does not enforce it: a result
-  # with no open cell, or with no call id, is an orphan cell of its own
-  # (`docs/features/client-kit.md`, "Pairing").
+  # The result closes the oldest open cell with its call id, wherever it is: a notice can
+  # arrive while the tool runs. The first result answers the first of two calls with one id,
+  # as in the session. The session pairs each result with its call, so the client does not
+  # enforce it: a result with no open cell, or no call id, is an orphan cell (client-kit.md).
   defp add_cells(vm, %Message{role: :tool_result, tool_call_id: id} = result)
        when is_map_key(vm.open, id) do
     {{:value, position}, queue} = :queue.out(Map.fetch!(vm.open, id))

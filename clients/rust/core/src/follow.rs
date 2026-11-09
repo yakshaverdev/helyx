@@ -56,7 +56,7 @@ pub enum Follow {
 /// Why a subscribe of a followed session waits.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Wait {
-    /// No connection has taken the handshake.
+    /// No connection has taken the handshake, or the connection broke.
     Connection,
     /// Its old subscription ends: an `unsubscribe` of it is in flight.
     Ending,

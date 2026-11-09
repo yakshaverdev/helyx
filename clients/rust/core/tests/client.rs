@@ -14,7 +14,7 @@ use std::collections::HashMap;
 
 const CHALLENGE: &str =
     r#"{"type":"challenge","nonce":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="}"#;
-const WELCOME: &str = r#"{"type":"welcome","protocol":3}"#;
+const WELCOME: &str = r#"{"type":"welcome","protocol":5}"#;
 
 /// The frames that the client sends among `outputs`, decoded.
 fn sent(outputs: &[Output]) -> Vec<Value> {
@@ -31,7 +31,7 @@ fn sent(outputs: &[Output]) -> Vec<Value> {
 fn welcomed(client: &mut Client) -> Vec<Output> {
     client.connect();
     let hello = client.receive(CHALLENGE).unwrap();
-    assert_eq!(sent(&hello), [json!({"type": "hello", "protocol": 3})]);
+    assert_eq!(sent(&hello), [json!({"type": "hello", "protocol": 5})]);
     let outputs = client.receive(WELCOME).unwrap();
     assert_eq!(outputs[0], Output::Welcome);
     outputs
@@ -128,7 +128,7 @@ fn the_folds_through_connections() {
 
 fn snapshot(seq: u64) -> Value {
     json!({"instance_id": "i1", "seq": seq, "messages": [], "more": false, "turn": null,
-           "model": "fake/echo", "persisting": true, "context": null, "asks": [],
+           "model": "fake/echo", "persisting": true, "context": null, "asks": [], "ui_blocks": [],
            "queue": {"steers": 0, "follow_ups": 0, "running": 0, "held": 0, "waiting": 0},
            "usage": {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0,
                      "cost": null, "unknown": false, "list": false}})
@@ -568,34 +568,38 @@ fn forget_keeps_a_session_with_a_subscribe_on_the_way() {
     assert_eq!(sent(&outputs)[0]["params"], json!({"sub": "1"}));
 }
 
-/// `instance_changed` renews the following once: a reconnect or an
-/// unsubscribe in between does not leave it to a later `session_end`.
+/// A renewal lifts only the end of the instance that it names: the next
+/// subscription is of a new instance, and its end holds, after a reconnect
+/// and after an unsubscribe and a subscribe again.
 #[test]
 fn a_renewal_ends_with_its_subscribe() {
     let history = |client: &mut Client| {
         let (id, _) = client.request("history", history_params()).unwrap();
         client.receive(&instance_changed(&id)).unwrap();
     };
-    // A reconnect: the subscribe of the welcome renews; a later end stops.
+    let of_i2 = |seq: u64| {
+        let mut snapshot = snapshot(seq);
+        snapshot["instance_id"] = json!("i2");
+        snapshot
+    };
+    // A reconnect: the subscribe of the welcome gets the new instance, and
+    // its end holds.
     let mut client = following(4);
     history(&mut client);
     assert_eq!(client.closed(None), Next::Reconnect);
     let subscribe = sent(&welcomed(&mut client));
-    let snap = json!({"sub": "0", "snapshot": snapshot(1)});
+    let snap = json!({"sub": "0", "snapshot": of_i2(1)});
     client.receive(&res(&subscribe[0]["id"], snap)).unwrap();
     let outputs = client.receive(&stopped("0")).unwrap();
     assert!(sent(&outputs).is_empty());
-    // An unsubscribe ends the renewal.
+    // An unsubscribe and a subscribe again: the same.
     let mut client = following(4);
     history(&mut client);
     let unsubscribe = id_of(&client.unsubscribe("s1"));
     client.receive(&res(&unsubscribe, json!({}))).unwrap();
     let subscribe = id_of(&client.subscribe("s1").unwrap());
     client
-        .receive(&res(
-            &subscribe,
-            json!({"sub": "1", "snapshot": snapshot(8)}),
-        ))
+        .receive(&res(&subscribe, json!({"sub": "1", "snapshot": of_i2(8)})))
         .unwrap();
     let outputs = client.receive(&stopped("1")).unwrap();
     assert!(sent(&outputs).is_empty());
@@ -1032,7 +1036,7 @@ fn a_subscription_after_a_renewal_is_live() {
     let outputs = client.receive(&instance_changed(&history)).unwrap();
     let subscribe = &sent(&outputs)[0]["id"];
     let snap = json!({"instance_id": "i2", "seq": 1, "messages": [], "more": false,
-        "turn": null, "model": "fake/echo", "persisting": true, "context": null, "asks": [],
+        "turn": null, "model": "fake/echo", "persisting": true, "context": null, "asks": [], "ui_blocks": [],
         "queue": {"steers": 0, "follow_ups": 0, "running": 0, "held": 0, "waiting": 0},
         "usage": {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0,
                   "cost": null, "unknown": false, "list": false}});
@@ -1109,4 +1113,45 @@ fn a_sub_id_over_the_request_size_holds_with_no_frame() {
         assert!(client.subscribed("s1"));
         assert_eq!(client.follow("s1"), Some(Follow::Unwanted));
     }
+}
+
+/// A `history` reply of an older instance does not erase the replaced one:
+/// the end of the replaced instance holds nothing, in both orders.
+#[test]
+fn a_page_of_an_older_instance_keeps_the_replaced_one() {
+    let older = || decode(r#"{"session":"s1","instance_id":"i0","before":"m1"}"#).unwrap();
+    let again = json!({"session": "s1", "after": {"instance_id": "i1", "seq": 4}});
+    // The replies, then the end.
+    let mut client = following(4);
+    let (current, _) = client.request("history", history_params()).unwrap();
+    let (old, _) = client.request("history", older()).unwrap();
+    client.receive(&instance_changed(&current)).unwrap();
+    client.receive(&instance_changed(&old)).unwrap();
+    let outputs = client.receive(&stopped("0")).unwrap();
+    assert_eq!(sent(&outputs)[0]["params"], again);
+    assert_eq!(client.follow("s1"), Some(Follow::Subscribing));
+    // The end, then the replies.
+    let mut client = following(4);
+    let (current, _) = client.request("history", history_params()).unwrap();
+    let (old, _) = client.request("history", older()).unwrap();
+    client.receive(&stopped("0")).unwrap();
+    let outputs = client.receive(&instance_changed(&current)).unwrap();
+    assert_eq!(sent(&outputs)[0]["params"], again);
+    client.receive(&instance_changed(&old)).unwrap();
+    assert_eq!(client.follow("s1"), Some(Follow::Subscribing));
+}
+
+/// A replay reply of the instance that a `history` reply named replaced
+/// keeps it replaced: its end holds nothing.
+#[test]
+fn a_replay_of_a_replaced_instance_keeps_it_replaced() {
+    let mut client = following(4);
+    assert_eq!(client.closed(None), Next::Reconnect);
+    let subscribe = sent(&welcomed(&mut client));
+    let (history, _) = client.request("history", history_params()).unwrap();
+    client.receive(&instance_changed(&history)).unwrap();
+    let replay = json!({"sub": "1", "replay": []});
+    client.receive(&res(&subscribe[0]["id"], replay)).unwrap();
+    let outputs = client.receive(&stopped("1")).unwrap();
+    assert_eq!(sent(&outputs)[0]["op"], json!("subscribe"));
 }
