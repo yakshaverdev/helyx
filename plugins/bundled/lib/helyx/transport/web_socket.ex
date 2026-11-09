@@ -35,8 +35,8 @@ defmodule Helyx.Transport.WebSocket do
 
   # The protocol number and the SHA-256 of the schema in
   # `docs/features/wire-protocol.md`; a schema change needs a new number.
-  @protocol 5
-  @schema_sha256 "fd9bba7e1a0f0bce1146b60b113150f584353f65d67a64829f66c4a34d5fdae2"
+  @protocol 6
+  @schema_sha256 "d73697c6555a0ccb8921724ac91d899814a7facb240012fb017e159bee7111be"
 
   @max_connections 64
 

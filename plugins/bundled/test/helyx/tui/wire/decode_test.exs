@@ -6,10 +6,12 @@ defmodule Helyx.TUI.Wire.DecodeTest do
   alias Helyx.Session.File.Scan
   alias Helyx.Session.{Snapshot, Totals}
   alias Helyx.Transport.WebSocket.Wire
-  alias Helyx.TUI.{CallLine, Footer, ViewModel}
+  alias Helyx.TUI.{CallLine, Footer, Link, ViewModel}
   alias Helyx.TUI.Transcript.Item
   alias Helyx.TUI.ViewModel.Cut
   alias Helyx.TUI.Wire.Decode
+
+  require Link
 
   @call %ToolCall{id: "c1", name: "bash", arguments: %{"command" => "ls", "n" => [1, 2.5]}}
   @usage %Helyx.Usage{
@@ -202,6 +204,13 @@ defmodule Helyx.TUI.Wire.DecodeTest do
           {"steer", %{"ok" => "yes"}}
         ] do
       assert Decode.result(op, res) == :error, inspect(res)
+    end
+
+    # The codes of a Hub are codes of the schema (protocol 6); each has a
+    # text of the footer, at most 27 bytes.
+    for code <- ~w(forbidden too_many_records too_many_projects unknown_project unknown_token)a do
+      assert Decode.result("steer", error.(Atom.to_string(code))) == {:ok, {:error, code}}
+      assert Link.wire_error?(code) and byte_size(Link.error_text(code)) <= 27
     end
   end
 

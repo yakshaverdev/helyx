@@ -67,7 +67,7 @@ fn hello_carries_the_proof_of_the_token_and_not_the_token() {
     let proof = "4S4uSYUrpAhYdX9/8bK9oHO08/6IFKJIHMUaRdEiUyQ=";
     assert_eq!(
         s(&hello),
-        json!({"type": "hello", "protocol": 5, "proof": proof})
+        json!({"type": "hello", "protocol": 6, "proof": proof})
     );
     assert!(!hello.encode().contains("secret"));
     // A second challenge is a break of O1.
@@ -82,7 +82,7 @@ fn hello_with_no_token_has_no_proof() {
     let Ok(Step::Send(hello)) = handshake.step(&j(&challenge)) else {
         panic!()
     };
-    assert_eq!(s(&hello), json!({"type": "hello", "protocol": 5}));
+    assert_eq!(s(&hello), json!({"type": "hello", "protocol": 6}));
 }
 
 #[test]

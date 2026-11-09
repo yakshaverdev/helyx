@@ -1,4 +1,4 @@
-//! The handshake of protocol 5 (rule O1 of `docs/features/wire-protocol.md`):
+//! The handshake of protocol 6 (rule O1 of `docs/features/wire-protocol.md`):
 //! the server sends `challenge`, the client sends `hello` with the proof of its
 //! token, the server sends `welcome` or `refused`. Any other frame is a break.
 
@@ -10,7 +10,7 @@ use hmac::{Hmac, Mac};
 use sha2::{Digest, Sha256};
 
 /// The protocol number of this client.
-pub const PROTOCOL: u64 = 5;
+pub const PROTOCOL: u64 = 6;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Step {
