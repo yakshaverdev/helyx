@@ -63,8 +63,13 @@ excludes=(--exclude=.git --exclude=_build/ --exclude=deps/ --exclude=.elixir_ls/
   --exclude=target/)
 sources="find . \\( -name _build -o -name deps -o -name .scratch \\) -prune -o -type f \\( -name '*.ex' -o -name '*.exs' -o -name '*.heex' \\) -print0 | xargs -0 md5sum"
 
-ssh -o BatchMode=yes "$host" "mkdir -p '$dir'" || exit 1
-rsync -a --delete "${excludes[@]}" ./ "$host:$dir/" || exit 1
+# Each ssh, and the ssh of each rsync, ends 120 s after the host stops
+# answering (4 keepalives, 30 s apart), so a dead connection fails the run
+# and does not hang it. A live run that prints nothing, such as a wait for
+# the lock, still answers them.
+ssh_opts=(-o BatchMode=yes -o ServerAliveInterval=30 -o ServerAliveCountMax=4)
+ssh "${ssh_opts[@]}" "$host" "mkdir -p '$dir'" || exit 1
+rsync -a --delete -e "ssh ${ssh_opts[*]}" "${excludes[@]}" ./ "$host:$dir/" || exit 1
 
 # Only 0 or 1 goes into the remote command line.
 slow=0
@@ -86,11 +91,12 @@ slow=0
 # trap exits it, which ends the namespace. sh cannot trap a signal that it
 # starts with ignored, and it starts a background job with INT and QUIT
 # ignored, so env sets HUP to the default for the first process, and INT
-# and QUIT for the run, as for a local run. A host that
-# loses the network with no close of the connection ends the run when TCP
-# gives up: about 15 min after the first unanswered write, or about 2 h 11
-# min for a run that waits for the lock and writes nothing (keepalive of
-# the host on 2026-11-08: 7200 s, then 9 probes of 75 s). Accepted.
+# and QUIT for the run, as for a local run. When the network is lost with
+# no close of the connection, the local ssh ends after 120 s (ssh_opts),
+# and the run on the host ends when TCP gives up there: about 15 min after
+# the first unanswered write, or about 2 h 11 min for a run that waits for
+# the lock and writes nothing (keepalive of the host on 2026-11-08: 7200
+# s, then 9 probes of 75 s). Accepted.
 pid1='trap "exit 129" HUP; exec 3<&0; "$@" </dev/null 3<&- & run=$!; { cat >/dev/null; kill -s HUP $$; } <&3 & exec 3<&-; wait "$run"'
 isolate="sudo -n unshare --pid --fork --mount-proc --kill-child=SIGKILL env --default-signal=HUP sh -c '$pid1' pid1 setpriv --reuid=\$(id -u) --regid=\$(id -g) --init-groups env --default-signal=INT,QUIT HOME=\"\$HOME\" LANG=C.UTF-8 HELYX_SLOW=$slow"
 # The lock is taken inside the namespace, and the run inherits it. So flock,
@@ -110,13 +116,13 @@ fifo_dir=$(mktemp -d) || exit 1
 mkfifo "$fifo_dir/stdin" || { rm -r "$fifo_dir"; exit 1; }
 exec 3<>"$fifo_dir/stdin" 4<"$fifo_dir/stdin"
 rm -r "$fifo_dir"
-ssh -o BatchMode=yes "$host" "cd '$dir' && $sources > .before && $announce && $isolate flock --verbose $lock bash .claude/skills/ship/precommit-run.sh" <&4 3>&- 4<&- > precommit.log 2>&1
+ssh "${ssh_opts[@]}" "$host" "cd '$dir' && $sources > .before && $announce && $isolate flock --verbose $lock bash .claude/skills/ship/precommit-run.sh" <&4 3>&- 4<&- > precommit.log 2>&1
 status=$?
 exec 3>&- 4<&-
 
 # md5sum -c exits 1 on a changed file. Only status 0, or 1 with a
 # FAILED line for each changed file and nothing else, is a clean check.
-check=$(ssh -o BatchMode=yes "$host" "cd '$dir' && { md5sum -c --quiet .before 2>&1; echo \"md5sum status \$?\"; }") || {
+check=$(ssh "${ssh_opts[@]}" "$host" "cd '$dir' && { md5sum -c --quiet .before 2>&1; echo \"md5sum status \$?\"; }") || {
   echo "failed: cannot read the format changes on $host"
   finish 1
 }
@@ -127,7 +133,7 @@ if [ -n "$unexpected" ] || ! printf '%s\n' "$check" | grep -qE '^md5sum status [
   finish 1
 fi
 if [ -n "$changed" ]; then
-  printf '%s\n' "$changed" | rsync -a --ignore-times --files-from=- "$host:$dir/" ./ || finish 1
+  printf '%s\n' "$changed" | rsync -a --ignore-times -e "ssh ${ssh_opts[*]}" --files-from=- "$host:$dir/" ./ || finish 1
   printf 'format changed on %s and copied back:\n%s\n' "$host" "$changed"
 fi
 
