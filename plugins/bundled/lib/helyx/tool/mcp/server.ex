@@ -6,9 +6,11 @@ defmodule Helyx.Tool.MCP.Server do
   # stdio: `initialize`, `notifications/initialized`, `tools/list` with its
   # pages, then calls, the answers to the server's requests, and a listing
   # again at each `notifications/tools/list_changed`. It sends its source
-  # `{:listed, pid, entries, notices}` for each listing, and
-  # `{:failed, pid, text}` before it ends on a failure. A failure ends only
-  # this Task; the hands release its groups (decision 15).
+  # `{:handles, pid, handles}` after the start, `{:listed, pid, entries,
+  # notices}` for each listing, `{:failed, pid, text}` before it ends on a
+  # failure, and `{:restart, pid}` before it ends for a call that ended
+  # with no response (decision 14). Either end is of this Task only; the
+  # hands release its groups (decision 15).
 
   alias Helyx.Tool.MCP.{Config, Result}
 
@@ -20,7 +22,9 @@ defmodule Helyx.Tool.MCP.Server do
   @max_pages 16
   @max_tools 256
   @max_description_bytes 4_096
-  @call_ms 60_000
+  # The wait for a server's exit after the end of its input, before the
+  # signals, as `Helyx.HarnessIO` waits for a harness program.
+  @end_wait_ms 1_000
   # The least time from the start of one listing to the next.
   @list_gap_ms 1_000
   # The variables of the node that a server gets (decision 12).
@@ -31,6 +35,7 @@ defmodule Helyx.Tool.MCP.Server do
     :source,
     :port,
     :wait_ms,
+    :call_ms,
     buffer: [],
     buffered: 0,
     next_id: 1,
@@ -42,14 +47,24 @@ defmodule Helyx.Tool.MCP.Server do
   ]
 
   # The whole life of the server: start, handshake, listing, then serve.
-  # `opts`: `:wait_ms`, the bound of a start and of a listing;
+  # `opts`: `:wait_ms`, the bound of a start and of a listing; `:call_ms`,
+  # the time limit of a call, for its text;
   # `:watchdog_exe`, for tests.
   def run(%Config{} = config, source, cwd, deadline, opts) do
-    state = %__MODULE__{config: config, source: source, wait_ms: Keyword.fetch!(opts, :wait_ms)}
+    state = %__MODULE__{
+      config: config,
+      source: source,
+      wait_ms: Keyword.fetch!(opts, :wait_ms),
+      call_ms: Keyword.fetch!(opts, :call_ms)
+    }
 
     case Helyx.Watchdog.start(argv(config), cwd, :open, start_opts(config, deadline, opts)) do
-      {:started, port, _pre, _handles} -> handshake(%{state | port: port}, deadline)
-      {:error, reason} -> fail(state, "did not start: " <> reason)
+      {:started, port, _pre, handles} ->
+        send(source, {:handles, self(), handles})
+        handshake(%{state | port: port}, deadline)
+
+      {:error, reason} ->
+        fail(state, "did not start: " <> reason)
     end
   end
 
@@ -115,13 +130,16 @@ defmodule Helyx.Tool.MCP.Server do
         state |> data(data) |> serve()
 
       {port, {:exit_status, _status}} when port == state.port ->
-        fail(state, "the server exited")
+        exited(state)
 
-      {:call, from, name, args} ->
-        state |> call(from, name, args) |> serve()
+      {:call, from, name, args, deadline} ->
+        state |> call(from, name, args, deadline) |> serve()
 
       {:call_timeout, id} ->
-        state |> call_timeout(id) |> serve()
+        call_timeout(state, id)
+
+      {:DOWN, monitor, :process, _pid, _reason} ->
+        state |> caller_down(monitor) |> serve()
 
       :relist ->
         state |> relist() |> serve()
@@ -204,8 +222,9 @@ defmodule Helyx.Tool.MCP.Server do
 
   defp answer(:await, id, reply, state), do: put_in(state.pending[{:await, id}], reply)
 
-  defp answer({:call, {pid, ref}, timer}, _id, reply, state) do
+  defp answer({:call, {pid, ref}, timer, monitor}, _id, reply, state) do
     Process.cancel_timer(timer)
+    Process.demonitor(monitor, [:flush])
 
     result =
       case reply do
@@ -357,12 +376,16 @@ defmodule Helyx.Tool.MCP.Server do
 
   # Calls
 
-  defp call(state, {pid, ref} = from, name, args) do
+  # A call runs until the deadline of its call Task. The server Task
+  # monitors that Task: an abort that kills it ends the call as a time
+  # limit does.
+  defp call(state, {pid, ref} = from, name, args, deadline) do
     case Map.fetch(state.names, name) do
       {:ok, mcp_name} ->
         {id, state} = request(state, "tools/call", %{name: mcp_name, arguments: args})
-        timer = Process.send_after(self(), {:call_timeout, id}, @call_ms)
-        %{state | pending: Map.put(state.pending, id, {:call, from, timer})}
+        timer = Process.send_after(self(), {:call_timeout, id}, max(deadline - now(), 0))
+        monitor = Process.monitor(pid)
+        %{state | pending: Map.put(state.pending, id, {:call, from, timer, monitor})}
 
       :error ->
         send(pid, {ref, {:error, "the MCP server does not list #{name}"}})
@@ -370,16 +393,91 @@ defmodule Helyx.Tool.MCP.Server do
     end
   end
 
+  # The answers already in the mailbox go first: a call that the server
+  # answered by its deadline is not cancelled.
   defp call_timeout(state, id) do
+    state = drain(state)
+
     case Map.pop(state.pending, id) do
-      {{:call, {pid, ref}, _timer}, pending} ->
-        text = "timed out after #{div(@call_ms, 1000)} s; the call may have run"
+      {{:call, {pid, ref}, _timer, _monitor}, pending} ->
+        text = "timed out after #{div(state.call_ms, 1000)} s; the call may have run"
         send(pid, {ref, {:error, text}})
-        %{state | pending: pending}
+        restart(%{state | pending: pending}, id)
 
       _other ->
+        serve(state)
+    end
+  end
+
+  defp drain(state) do
+    port = state.port
+
+    receive do
+      {^port, {:data, data}} -> state |> data(data) |> drain()
+    after
+      0 -> state
+    end
+  end
+
+  defp caller_down(state, monitor) do
+    case Enum.find(state.pending, &match?({_id, {:call, _from, _timer, ^monitor}}, &1)) do
+      {id, {:call, _from, timer, _monitor}} ->
+        Process.cancel_timer(timer)
+        restart(%{state | pending: Map.delete(state.pending, id)}, id)
+
+      nil ->
         state
     end
+  end
+
+  # The server exited. With a call whose Task is gone, an abort's release
+  # stopped it: that call ended with no response, as at a time limit.
+  defp exited(state) do
+    gone =
+      for {id, {:call, {pid, _ref}, _timer, _monitor}} <- state.pending,
+          not Process.alive?(pid),
+          do: id
+
+    case gone do
+      [] -> fail(state, "the server exited")
+      [id | _more] -> restart(state, id)
+    end
+  end
+
+  # A call ended with no response (decision 14): MCP gives no confirmation
+  # that a cancelled request stopped, so the server stops, and the source
+  # starts a new one after the hands released this Task's groups. The
+  # source learns it first: the write of the cancel can end this Task with
+  # the port's `:epipe`.
+  defp restart(state, id) do
+    for {_id, {:call, {pid, ref}, _timer, _monitor}} <- state.pending,
+        do:
+          send(
+            pid,
+            {ref, {:error, "the MCP server restarts: another call ended with no response"}}
+          )
+
+    send(state.source, {:restart, self()})
+
+    send_json(state, %{
+      jsonrpc: "2.0",
+      method: "notifications/cancelled",
+      params: %{requestId: id, reason: "the call ended with no response"}
+    })
+
+    # The shutdown of MCP over stdio: the end of the server's input, a wait
+    # for its exit, then the signals, which the watchdog sends when the
+    # port closes with this Task's end.
+    Helyx.Watchdog.write(state.port, <<0>>)
+    port = state.port
+
+    receive do
+      {^port, {:exit_status, _status}} -> :ok
+    after
+      @end_wait_ms -> :ok
+    end
+
+    exit(:normal)
   end
 
   # Output
@@ -404,7 +502,7 @@ defmodule Helyx.Tool.MCP.Server do
   # The open calls get an error result; the source learns the failure, and
   # the Task ends.
   defp fail(state, text) do
-    for {_id, {:call, {pid, ref}, _timer}} <- state.pending,
+    for {_id, {:call, {pid, ref}, _timer, _monitor}} <- state.pending,
         do: send(pid, {ref, {:error, "the MCP server ended during the call: " <> text}})
 
     send(state.source, {:failed, self(), text})

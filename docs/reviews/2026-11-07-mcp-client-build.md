@@ -377,3 +377,23 @@ Built with the slice: Core `Helyx.Tool.notice/1` (the doc's "Bounds" row "a noti
 Probed with no finding: 16 pages pass and 17 fail; 300 tools keep 256 with a notice; a long multibyte description is cut on a character boundary; an `inputSchema` that is not an object is rejected by Core alone; 30 `list_changed` during the first listing give two listings 1,000 ms apart; calls run during a re-list that never answers, and the server fails at the bound; a server that exits during a call gives the error result; CRLF lines.
 
 Not built: the spec's cases of a `kill(1)` that stalls in the cleanup of a failed start (one server Task stalled while another lists; the source that dies during that stall) need a test hook of `kill(1)` inside `Helyx.Watchdog.start/4`. Each server Task runs its own start, so a stall holds only its Task, and the end of a stalled Task through its link to a dead source is tested in Core ("a source that dies ends its blocked server Task through the link").
+
+## Slice 10: MCP calls and wiring
+
+Invariant: a call holds its server's groups as `{:mcp_call, handles}`; a delivered call stops no group; an aborted call stops the server's groups before the abort returns, or leaves the handle unconfirmed; a call that ends with no response (its time limit, an abort, a server that its abort stopped) stops its server, and a new server starts only after the hands released the old one's groups, at most 3 times, the fourth failing the server; one server's failure leaves the others callable; `tool_search` and the MCP plugin are registered in the coding agent, and a child of the agent tool gets no `tool_search`.
+
+### Round 1 (fast mode: Codex and the failure-path agent)
+
+| # | Source | Finding | Check | Resolution |
+| - | ------ | ------- | ----- | ---------- |
+| 1 | failure path, Codex | A call whose time limit passes while its server starts again waited 5 s more in the source, then still went to the new server with a deadline that had passed, raced a 0 ms timer, and could restart the server and count toward the cap | reproduced (a server whose start takes 0.5 s, a limit of 300 ms) | the route wait ends at the deadline with no margin; a route that comes past it does not send the call ("the call did not run"); test "a call whose limit passes while its server starts again is not sent" |
+| 2 | Codex | At a call's deadline a response already in the mailbox lost to the timer: the server that answered was cancelled and stopped | read | the server Task reads the port data in its mailbox before it decides the time limit |
+| 3 | Codex | A waiter whose call Task ended stays in the source's list until the server is ready | read | waiters whose Task is gone leave at each new route; the list holds at most the live call Tasks |
+| 4 | Codex | A restart whose release is unconfirmed fails the server with a text that hides the cause | read | the text says the group was not confirmed gone and may still run; the hands refuse later starts by rule 6 |
+| 5 | Codex | The call Task's backstop (5 s past the deadline) can return before the server Task cancelled | read | rejected: the server Task answers at the deadline itself; the backstop only bounds a stuck server Task, and the abort's wait for the groups is the hands' release of the call handle, which does not depend on it |
+
+Probed with no finding: a server killed during a call fails with no restart; the cap counts time limits and aborts mixed; an abort while a call waits in the source returns at once, and the server comes back; the stop of the session releases the call handle and the server Task's handles in one release with nothing unconfirmed; `release/3` with `:cancel` stops the group, with `:deliver` returns `[]`; two calls in one server Task; a restart during a listing.
+
+Not reached: the `{ref, :released, :unconfirmed}` path (no way to make a group unconfirmable without changing the node's PATH); the order of the server Task's `{:handles, ...}` against the hands' `{ref, {:ok, pid}}` (two senders: a `:handles` that came first would be dropped and the call would hold `{:mcp_call, []}`, so its abort would stop no group; not reproduced). The spec's test that suspends the server Task with `:erlang.suspend_process/1` before it handles the call Task's `:DOWN` is not built: the abort's release does not wait for the server Task by design, and the test "an abort stops the server's group before it returns" checks that the group is gone when the abort returns.
+
+The coding agent's tests: `print_test.exs` fails 3 tests on this machine with the notice "15 skills were left out" (86 skills in `~/.agents/skills`), and one signal variant of `helyx.install_test.exs` failed once; neither touches this slice.

@@ -251,9 +251,11 @@ defmodule Helyx.Tool.MCP.ConfigPathTest do
   alias Helyx.Tool.MCP.Config
 
   test "the app env :mcp_config, else ~/.helyx/mcp.json" do
+    config = Application.get_env(:helyx_plugins, :mcp_config)
+    on_exit(fn -> Application.put_env(:helyx_plugins, :mcp_config, config) end)
+    Application.delete_env(:helyx_plugins, :mcp_config)
     assert Config.path() == Path.join(System.user_home!(), ".helyx/mcp.json")
     Application.put_env(:helyx_plugins, :mcp_config, "/etc/helyx/mcp.json")
-    on_exit(fn -> Application.delete_env(:helyx_plugins, :mcp_config) end)
     assert Config.path() == "/etc/helyx/mcp.json"
   end
 end

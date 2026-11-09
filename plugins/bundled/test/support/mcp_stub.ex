@@ -17,7 +17,9 @@ defmodule Helyx.Test.MCPStub do
   #   * "log": a file that gets one JSON line per answer of the client to a
   #     request of the stub, and the "env" line.
   # Calls: "echo" answers its arguments as text; "fail" answers isError;
-  # "changed" sends notifications/tools/list_changed, then answers "ok".
+  # "changed" sends notifications/tools/list_changed, then answers "ok";
+  # "hang" never answers. The log gets {"start": pid, "parent": pid of the
+  # watchdog} at each start, and each notifications/cancelled.
 
   @script ~S"""
   use strict;
@@ -36,6 +38,7 @@ defmodule Helyx.Test.MCPStub do
     print $l $json->encode($_[0]), "\n";
     close($l);
   }
+  logline({start => $$, parent => getppid()});
   if ($spec->{env}) {
     my %seen = map { $_ => (defined $ENV{$_} ? $ENV{$_} : undef) } @{$spec->{env}};
     logline({env => \%seen});
@@ -45,6 +48,7 @@ defmodule Helyx.Test.MCPStub do
     my $method = $msg->{method};
     my $id = $msg->{id};
     if (!defined $method) { logline($msg); next; }
+    if ($method eq 'notifications/cancelled') { logline($msg); next; }
     if ($method eq 'initialize') {
       out({jsonrpc => '2.0', id => $id, result => {protocolVersion => $spec->{version},
         capabilities => {tools => {listChanged => JSON::PP::true}}, serverInfo => {name => 'stub', version => '1'}}});
@@ -66,6 +70,8 @@ defmodule Helyx.Test.MCPStub do
         out({jsonrpc => '2.0', id => $id, result => {content => [{type => 'text', text => 'echo ' . $json->encode($args)}]}});
       } elsif ($name eq 'fail') {
         out({jsonrpc => '2.0', id => $id, result => {isError => JSON::PP::true, content => [{type => 'text', text => 'failed'}]}});
+      } elsif ($name eq 'hang') {
+        next;
       } elsif ($name eq 'changed') {
         out({jsonrpc => '2.0', method => 'notifications/tools/list_changed'});
         out({jsonrpc => '2.0', id => $id, result => {content => [{type => 'text', text => 'ok'}]}});

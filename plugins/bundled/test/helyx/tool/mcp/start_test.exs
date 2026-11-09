@@ -20,7 +20,11 @@ defmodule Helyx.Tool.MCP.StartTest do
   @load_ms 20_000
 
   setup %{tmp_dir: dir} do
-    for key <- [:mcp_config, :mcp_wait_ms, :mcp_watchdog_exe] do
+    # The test helper's config, which names no file, comes back after each.
+    config = Application.get_env(:helyx_plugins, :mcp_config)
+    on_exit(fn -> Application.put_env(:helyx_plugins, :mcp_config, config) end)
+
+    for key <- [:mcp_wait_ms, :mcp_watchdog_exe] do
       on_exit(fn -> Application.delete_env(:helyx_plugins, key) end)
     end
 
@@ -131,7 +135,7 @@ defmodule Helyx.Tool.MCP.StartTest do
     entry = Map.put(server(ctx.dir, %{"env" => names, "log" => log}), "env", %{"STUB_X" => "x"})
     session = start(ctx, %{"s" => entry})
     assert %{state: :ready} = group(session, "s")
-    assert [%{"env" => env}] = log(log)
+    assert env = Enum.find_value(log(log), & &1["env"])
     assert env["STUB_X"] == "x"
     assert env["HELYX_MCP_TEST_SECRET"] == nil
     assert is_binary(env["PATH"])

@@ -11,6 +11,14 @@ exclude = if slow?, do: [], else: [:slow]
 # The fast tier checks each property with fewer cases than the default 100.
 unless slow?, do: Application.put_env(:stream_data, :max_runs, 25)
 
+# No test reads the user's MCP config or starts a server that it names:
+# the file is in a folder that does not exist. The MCP tests set their own.
+Application.put_env(
+  :helyx_plugins,
+  :mcp_config,
+  Path.expand("../_build/test_no_mcp/mcp.json", __DIR__)
+)
+
 # No test fetches models.dev or reads the user's catalog cache: the lookup
 # uses the bundled snapshot. The catalog tests set their own env.
 Application.put_env(:helyx_plugins, :model_catalog,
