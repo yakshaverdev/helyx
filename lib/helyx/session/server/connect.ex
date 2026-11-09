@@ -4,10 +4,11 @@ defmodule Helyx.Session.Server.Connect do
   # runs, or the session asks the hands to start one, with the resume of the
   # messages before the turn. Their answer comes to `TurnLoop.handle/2`. A
   # process of another model was closed before
-  # (`TurnLoop.close_switched/1`), and a dying process holds a wait.
+  # (`TurnLoop.close_switched/1`), and a dying process holds a wait. Between
+  # turns a ready process arms the idle timer (`arm_idle/1`).
 
   alias Helyx.Session.{Hands, ProviderProcess, Transcript, Turn}
-  alias Helyx.Session.Server.Flow.{Connecting, Preparing, Up}
+  alias Helyx.Session.Server.Flow.{Connecting, Idle, Preparing, Up}
   alias Helyx.Session.Server.State
 
   # The state with the provider process of its turn. `:reuse` keeps a
@@ -44,4 +45,15 @@ defmodule Helyx.Session.Server.Connect do
 
     %{state | phase: %{phase | provider: provider}}
   end
+
+  # Arms the idle timer when the session holds a ready provider process
+  # with no turn and no wait. It cancels the earlier timer; a message of
+  # it that is already in the mailbox has an old ref.
+  @spec arm_idle(State.t()) :: State.t()
+  def arm_idle(%State{phase: %Idle{provider: %Up{}}} = state) do
+    if state.idle, do: :erlang.cancel_timer(state.idle)
+    %{state | idle: :erlang.start_timer(state.provider_ms.idle, self(), :idle_close)}
+  end
+
+  def arm_idle(state), do: state
 end

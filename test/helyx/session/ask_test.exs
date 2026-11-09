@@ -152,7 +152,7 @@ defmodule Helyx.Session.AskTest do
     collect_until(:ask)
     # The caller of the ask is the Task of the call.
     %{phase: %{turn: %{asks: asks}}} = :sys.get_state(Session.pid(session))
-    [{one, {task, _tag}, _ask}] = for {_, _, %{call_id: "a1"}} = entry <- asks, do: entry
+    [{one, {task, _tag}, _ask, _monitor}] = for {_, _, %{call_id: "a1"}, _} = e <- asks, do: e
     Process.exit(task, :kill)
 
     assert [%{ask_id: ^one, outcome: :ended}] = of_type(collect_until(:ask_end), :ask_end)
@@ -184,7 +184,7 @@ defmodule Helyx.Session.AskTest do
       send(test, :registered)
 
       receive do
-        {:"$gen_call", from, {:ask, "c1", "ask", request}} ->
+        {:"$gen_call", from, {:ask, :tool, "c1", "ask", request}} ->
           GenServer.reply(from, {:ok, request})
       end
     end)
@@ -198,7 +198,7 @@ defmodule Helyx.Session.AskTest do
     {:ok, session} = Session.start(core, model: "test/ask")
     {:ok, _snapshot, _ref} = Session.subscribe(session, answers: true)
 
-    assert GenServer.call(Session.pid(session), {:ask, "a1", "ask", %{}}) ==
+    assert GenServer.call(Session.pid(session), {:ask, :tool, "a1", "ask", %{}}) ==
              {:error, :not_running}
   end
 

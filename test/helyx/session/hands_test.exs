@@ -46,7 +46,7 @@ defmodule Helyx.Session.HandsTest do
         cwd: File.cwd!(),
         background_dir:
           Path.join(System.tmp_dir!(), "helyx-hands-#{System.unique_integer([:positive])}"),
-        session: self(),
+        session: Helyx.Test.FakeSession.start(),
         tools: Map.new(tools, fn {tool, spec} -> {spec.name, tool} end)
       ] ++ opts
 
@@ -363,12 +363,12 @@ defmodule Helyx.Session.HandsTest do
       :ok = run(hands, "t1", call(id, "background", args))
     end
 
-    test "the start answer is the result, the Task leaves its turn, and its end comes after",
+    test "the start answer is the result, the Task leaves the turn's cancel, and its end comes after",
          %{core: core, dir: dir, gate: gate} do
       hands = start_hands(core, background_dir: dir)
       background(hands, "c1", %{"gate" => gate, "handles" => [{:report, self()}]})
 
-      assert_receive {:tool_result, "t1", "c1", {:started, start}}
+      assert_receive {:tool_result, "t1", "c1", {:started, {:ok, start}, _pid}}
 
       [_, id, path] =
         Regex.run(
@@ -402,7 +402,7 @@ defmodule Helyx.Session.HandsTest do
          %{core: core, dir: dir, gate: gate} do
       hands = start_hands(core, background_dir: dir)
       background(hands, "c1", %{"gate" => gate, "handles" => [{:report, self()}]})
-      assert_receive {:tool_result, "t1", "c1", {:started, start}}
+      assert_receive {:tool_result, "t1", "c1", {:started, {:ok, start}, _run}}
       [_, id] = Regex.run(~r/\A<background id="(.{12})" status="started">/, start)
       assert_receive {:waiting, pid}
       ref = Process.monitor(pid)
@@ -416,14 +416,14 @@ defmodule Helyx.Session.HandsTest do
       # The place went with the Task: 16 runs can start again.
       for n <- 1..16 do
         background(hands, "d#{n}", %{"gate" => gate})
-        assert_receive {:tool_result, "t1", _, {:started, _start}}
+        assert_receive {:tool_result, "t1", _, {:started, _start, _run}}
       end
     end
 
     test "a crash of the run ends it with an error", %{core: core, dir: dir, gate: gate} do
       hands = start_hands(core, background_dir: dir)
       background(hands, "c1", %{"gate" => gate})
-      assert_receive {:tool_result, "t1", "c1", {:started, _start}}
+      assert_receive {:tool_result, "t1", "c1", {:started, _start, _pid}}
       assert_receive {:waiting, pid}
 
       {_, log} =
@@ -448,7 +448,7 @@ defmodule Helyx.Session.HandsTest do
       pids =
         for n <- 1..16 do
           background(hands, "c#{n}", %{"gate" => gate})
-          assert_receive {:tool_result, "t1", _, {:started, _start}}
+          assert_receive {:tool_result, "t1", _, {:started, _start, _pid}}
           assert_receive {:waiting, pid}
           pid
         end
@@ -472,7 +472,7 @@ defmodule Helyx.Session.HandsTest do
 
       :ok = Helyx.Session.Hands.taken(hands, finish.origin.id)
       background(hands, "c19", %{"gate" => gate})
-      assert_receive {:tool_result, "t1", "c19", {:started, _start}}
+      assert_receive {:tool_result, "t1", "c19", {:started, _start, _pid}}
     end
 
     # 15 ends wait, so one place is left. A second call of the Task that
@@ -486,14 +486,14 @@ defmodule Helyx.Session.HandsTest do
 
       for n <- 1..15 do
         background(hands, "c#{n}", %{"gate" => gate})
-        assert_receive {:tool_result, "t1", _, {:started, _start}}
+        assert_receive {:tool_result, "t1", _, {:started, _start, _pid}}
         assert_receive {:waiting, pid}
         send(pid, :go)
         assert_receive {:background_end, _finish}
       end
 
       background(hands, "c16", %{"gate" => gate, "twice" => true})
-      assert_receive {:tool_result, "t1", "c16", {:started, _start}}
+      assert_receive {:tool_result, "t1", "c16", {:started, _start, _pid}}
 
       background(hands, "c17", %{"gate" => gate})
       assert_receive {:tool_result, "t1", "c17", {:error, "16 background runs" <> _}}
@@ -512,7 +512,7 @@ defmodule Helyx.Session.HandsTest do
       # It took no place: all 16 are free.
       for n <- 1..16 do
         background(hands, "d#{n}", %{"gate" => gate})
-        assert_receive {:tool_result, "t1", _, {:started, _start}}
+        assert_receive {:tool_result, "t1", _, {:started, _start, _pid}}
       end
     end
 
@@ -527,7 +527,7 @@ defmodule Helyx.Session.HandsTest do
             {String.duplicate(<<255>>, 5000), String.duplicate("\uFFFD", 4096)}
           ] do
         background(hands, "c1", %{"gate" => gate, "start" => start})
-        assert_receive {:tool_result, "t1", "c1", {:started, answer}}
+        assert_receive {:tool_result, "t1", "c1", {:started, {:ok, answer}, _pid}}
         [id] = Regex.run(~r/\A<background id="(.{12})"/, answer, capture: :all_but_first)
         assert answer == ~s(<background id="#{id}" status="started">\n#{body}\n</background>)
         assert byte_size(body) <= 12_288
@@ -573,7 +573,7 @@ defmodule Helyx.Session.HandsTest do
 
       for n <- 1..16 do
         background(hands, "d#{n}", %{"gate" => gate})
-        assert_receive {:tool_result, "t1", _, {:started, _start}}
+        assert_receive {:tool_result, "t1", _, {:started, _start, _pid}}
       end
     end
 
@@ -584,7 +584,7 @@ defmodule Helyx.Session.HandsTest do
       hands = start_hands(core, background_dir: dir)
       ref = Process.monitor(hands)
       background(hands, "c1", %{"gate" => gate, "handles" => [{:report, self()}, :run]})
-      assert_receive {:tool_result, "t1", "c1", {:started, _start}}
+      assert_receive {:tool_result, "t1", "c1", {:started, _start, _pid}}
       assert_receive {:waiting, _pid}
 
       # A delivered call leaves its handle unconfirmed, and later calls are refused.

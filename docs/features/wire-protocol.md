@@ -120,7 +120,7 @@ The schema below is the contract. The test of #660 computes the SHA-256 of the l
 
 <!-- wire-schema:start -->
 ```text
-protocol 3
+protocol 4
 
 notation: {k: T} an object; k? may be absent (absent = null or false);
   T | U either; [T] a list; "x" that string; int a JSON integer >= 0;
@@ -230,7 +230,8 @@ message = {id: string, role: "user" | "assistant" | "tool_result",
 block     = {type: "text", text: string} | {type: "thinking", thinking: string}
           | tool_call
 tool_call = {type: "tool_call", id: string, name: string, arguments: object}
-origin    = {kind: "user" | "background" | "product" | "unknown", id: string | null}
+origin    = {kind: "user" | "background" | "product" | "hook" | "unknown",
+             id: string | null}
 stop_reason = "end_turn" | "tool_use" | "max_tokens" | "refused" | "aborted" | "error"
 usage = {input: int, output: int, cache_read: int, cache_write: int,
          cost?: number, cost_kind?: "list" | "billed",
@@ -254,7 +255,7 @@ O6 frames of two subscriptions, and a res and an event, have no order
 
 Notes on the codec:
 
-- `origin` `"unknown"` is a user message of a session file from before #649. `id` is null for `"user"` and `"unknown"` (`docs/features/message-identity.md`).
+- `origin` `"unknown"` is a user message of a session file from before #649. `id` is null for `"user"` and `"unknown"` (`docs/features/message-identity.md`). `"hook"` is the user message of a continue of a `before_settle` hook, with the name of the hook module as its `id` (`docs/features/before-settle.md`); a client cannot send it, as it cannot send `"user"`. Protocol 4 added it (#880).
 - `error` of `message_end`: `{kind: "aborted"}` for an aborted turn, `{kind: "failed", text}` for a failed one, where `text` is the error text of the turn (ADR 0006 §2). The two are kept apart, because a failure text can be the word "aborted".
 - `turn_end` `error` and `notice` `text` are text for a person; a client shows them as they are.
 - `arguments` of a tool call is a JSON object whose integers have at most 100 digits (`Helyx.Message.cap_integers/1`).
@@ -263,7 +264,7 @@ Notes on the codec:
 
 ## Conformance fixtures
 
-`test/fixtures/wire/` holds fixtures of protocol 3 as plain JSON (#855): the frames that a client sends, each with the frames and the close code of the server; the frames that a server sends, each valid, ignored, or a contract break for a client; and folds, event sequences with the state that a client holds after them. Its `README.md` states what a conforming client or server must pass and which rules are in prose only. The transport tests run the client frames against the server, and the TUI tests run the server frames and the folds against the client and its view model, so the fixtures and the Elixir code cannot drift.
+`test/fixtures/wire/` holds fixtures of protocol 4 as plain JSON (#855): the frames that a client sends, each with the frames and the close code of the server; the frames that a server sends, each valid, ignored, or a contract break for a client; and folds, event sequences with the state that a client holds after them. Its `README.md` states what a conforming client or server must pass and which rules are in prose only. The transport tests run the client frames against the server, and the TUI tests run the server frames and the folds against the client and its view model, so the fixtures and the Elixir code cannot drift.
 
 What this doc does not pin down for an implementation that does not run on the BEAM. Each is open, not decided here:
 
@@ -284,6 +285,7 @@ What this doc does not pin down for an implementation that does not run on the B
 7. Tests: no test of the old remote plan exists. `test/helyx/session/end_signal_test.exs` keeps its properties for the local end signal.
 8. **The token in `hello`** (protocol 1, #660). Replaced by `challenge` and `proof` in protocol 2 (#763): a frame held the token, and the logs of the WebSocket server that hold frame bytes or `conn` held it with the frame.
 9. **The SHA-256 of the token in the plug options and the process states** (#660). The SHA-256 of the token is now the key of the proof, so it is in a closure. The test "the connection state holds no token" is replaced by the test that inspects the state of every process of the transport and the child spec, and by the three log tests (`plugins/bundled/test/helyx/transport/web_socket_test.exs`).
+10. **Protocol 3** (#880). Protocol 4 adds the origin kind `"hook"` to `origin`; nothing else changes. A client of protocol 3 gets `refused` and the close `4426`, and the fixtures name protocol 4.
 
 ## Bounds
 

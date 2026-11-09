@@ -1,45 +1,3 @@
-defmodule Helyx.Session.Queue.Sent do
-  @moduledoc false
-  # One steer or background end that a turn sent to its provider process,
-  # in `Helyx.Session.Queue.sent` in send order, with the ref of its
-  # request in `from`.
-  #
-  # `stage` is `:in_flight` until the item joins the transcript
-  # (`:taken`), or the request ends (`:resolved`); `answer` is `:pending`
-  # until the provider answers it. `turn` is the id of the turn that sent
-  # it once that turn ended, or nil while the turn is still open.
-  defstruct [:from, :id, :item, turn: nil, stage: :in_flight, answer: :pending]
-
-  @type t :: %__MODULE__{
-          from: reference(),
-          id: String.t(),
-          item: {:steer, Helyx.Message.t()} | {:end, Helyx.Message.t()},
-          turn: String.t() | nil,
-          stage: :in_flight | :taken | :resolved,
-          answer: :pending | {:accepted, term()}
-        }
-end
-
-defmodule Helyx.Session.Queue.Ends do
-  @moduledoc false
-  # The background ends of a session: those that wait, in arrival order,
-  # the runs that are still live, whether they wake a turn, and whether an
-  # end may go as a steer (`Helyx.Session.Queue`).
-  #
-  # `wake` is `:off` from an abort, a failed turn, a resume, or an end
-  # given back with no turn open, until a turn that is not a compaction
-  # opens; `steer` is `:closed` after a rejected end until such a turn
-  # opens.
-  defstruct items: [], running: 0, wake: :on, steer: :open
-
-  @type t :: %__MODULE__{
-          items: [Helyx.Message.t()],
-          running: non_neg_integer(),
-          wake: :on | :off,
-          steer: :open | :closed
-        }
-end
-
 defmodule Helyx.Session.Queue do
   @moduledoc false
   # The steer state of a session, for its whole life: the queued steers and
@@ -82,6 +40,12 @@ defmodule Helyx.Session.Queue do
   # - `:resolved`: the steer got its notice. Its answer only ends the
   #   request.
   #
+  # `continue` is the user message of a hook's continue, which starts the
+  # next turn ahead of the queues, and `hook_turns` the turns in a row that
+  # a continue started (docs/features/before-settle.md). An abort or a
+  # failed turn drops the continue with the queues; it is no client text,
+  # so it does not go back.
+  #
   # The ledger functions return the struct with the effects for the
   # session, in order: `{:take, item}` (the steer or the end `{:end, item}`
   # joins the transcript),
@@ -93,7 +57,7 @@ defmodule Helyx.Session.Queue do
 
   @limit 32
 
-  defstruct steers: [], follow_ups: [], sent: [], ends: %Ends{}
+  defstruct steers: [], follow_ups: [], sent: [], ends: %Ends{}, continue: nil, hook_turns: 0
 
   @type item :: Helyx.Message.t()
   @type text :: item() | {:end, item()}
@@ -101,7 +65,9 @@ defmodule Helyx.Session.Queue do
           steers: [item()],
           follow_ups: [item()],
           sent: [Sent.t()],
-          ends: Ends.t()
+          ends: Ends.t(),
+          continue: item() | nil,
+          hook_turns: non_neg_integer()
         }
   @type effect ::
           {:take, text()} | {:notice, String.t(), item()} | {:dropped, [item()]}
@@ -204,9 +170,13 @@ defmodule Helyx.Session.Queue do
     }
   end
 
-  # The items of the next turn: every queued steer, or with none the first
-  # follow-up. Each follow-up is a turn of its own.
+  # The items of the next turn: a waiting continue, else every queued
+  # steer, or with none the first follow-up. Each follow-up is a turn of
+  # its own; the steers join a continue turn at its send.
   @spec drain(t()) :: {[item()], t()}
+  def drain(%__MODULE__{continue: %Helyx.Message{} = continue} = queue),
+    do: {[continue], %{queue | continue: nil}}
+
   def drain(%__MODULE__{steers: [], follow_ups: [next | rest]} = queue),
     do: {[next], %{queue | follow_ups: rest}}
 
@@ -305,8 +275,26 @@ defmodule Helyx.Session.Queue do
     {queue, notices} = settle(return_ends(queue, :all, false))
     dropped = queue.steers ++ queue.follow_ups
     effects = if dropped == [], do: notices, else: notices ++ [{:dropped, dropped}]
-    {%{queue | steers: [], follow_ups: [], ends: %{queue.ends | wake: :off}}, effects}
+
+    {%{queue | steers: [], follow_ups: [], ends: %{queue.ends | wake: :off}, continue: nil},
+     effects}
   end
+
+  # A hook's continue waits for the next turn.
+  @spec continue(t(), item()) :: t()
+  def continue(%__MODULE__{} = queue, message), do: %{queue | continue: message}
+
+  # The count at the start of a turn with the user messages `users`: a
+  # continue counts one more; a client message, the origin `:user` or
+  # `:product` of every queued text, sets it to 0; a turn with no user
+  # message (background ends) leaves it.
+  @spec count(t(), [item()]) :: t()
+  def count(queue, []), do: queue
+
+  def count(queue, [%Helyx.Message{origin: %{kind: :hook}}]),
+    do: %{queue | hook_turns: queue.hook_turns + 1}
+
+  def count(queue, _client), do: %{queue | hook_turns: 0}
 
   # The provider process ended: no request is open any more, and the steers
   # with no notice yet get it. The queues stay, also in a turn that

@@ -6,11 +6,14 @@ defmodule Helyx.Test.LostLock do
   import ExUnit.Assertions
 
   alias Helyx.Session
+  alias Helyx.Test.PerlSignal
 
   def kill(%Session{} = session, tries \\ div(Helyx.Test.Events.wait_ms(), 10)) do
     pid = Session.pid(session)
-    {:os_pid, os_pid} = Port.info(:sys.get_state(pid).lock, :os_pid)
-    {_, 0} = System.cmd("kill", ["-9", Integer.to_string(os_pid)])
+    state = :sys.get_state(pid)
+    lock_path = Path.rootname(state.file.path) <> ".lock"
+    perl = PerlSignal.pid(state.lock, lock_path)
+    PerlSignal.send!(perl, "KILL", lock_path)
     await_lost(pid, tries)
   end
 

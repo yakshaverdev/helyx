@@ -14,6 +14,9 @@ defmodule Helyx.Session.Hands.State do
   # each handle that a release left unconfirmed; the log got it then.
   # `release_ms` is the release deadline of a delivery or a cancel, and
   # `connect_ms` the armed kill of a provider process: seams for tests.
+  # `hooks` holds the hook modules and their limits of each point, and
+  # `hook_runs` each running hook by the ref of its Task
+  # (`Helyx.Session.Hands.Hooks`).
   @enforce_keys [:core, :cwd, :background_dir, :session, :tools]
 
   # The default release deadline, the one source (`Helyx.Session.Server.Stop`
@@ -28,6 +31,8 @@ defmodule Helyx.Session.Hands.State do
     :session,
     :tools,
     tasks: %{},
+    hooks: %{},
+    hook_runs: %{},
     background: %Background{},
     held: %{},
     unconfirmed: [],

@@ -6,7 +6,7 @@
 # changed on the host are copied back, the same as a local run. Nothing may
 # edit the worktree during the run: a copied-back file replaces a local edit.
 # A local run has no PID namespace. HELYX_SLOW=1 runs the slow tests too,
-# as /ship and the merge gate of /orchestrate do (#295).
+# as the merge gate of /orchestrate does; /ship runs without them (#295).
 # On the host, the runs wait in a queue (#330). Each run holds a flock on
 # ~/.helyx-precommit.lock, so only one run at a time loads the host. A run
 # that must wait writes a line to precommit.log when the wait starts. Each
@@ -32,6 +32,20 @@ finish() {
   fi
   exit "$1"
 }
+
+# A change of Markdown files only (and .gitattributes) cannot fail format,
+# compile, Credo, Dialyzer or a test, so it skips the run. The one Markdown
+# file that a test reads is the wire doc (web_socket_test.exs checks its
+# schema); a change to it runs precommit. A failed git call runs precommit.
+if base=$(git merge-base origin/master HEAD 2>/dev/null) &&
+  changed=$({ git diff --name-only "$base" && git ls-files --others --exclude-standard; } 2>/dev/null) &&
+  [ -n "$changed" ] &&
+  ! printf '%s\n' "$changed" | grep -v -E '\.md$|^\.gitattributes$' | grep -q . &&
+  ! printf '%s\n' "$changed" | grep -qx 'docs/features/wire-protocol.md'; then
+  printf 'precommit: skipped, the change is Markdown only:\n%s\n' "$changed" > precommit.log
+  echo passed
+  exit 0
+fi
 
 host=${HELYX_PRECOMMIT_HOST:-$(cat ~/.config/helyx/precommit-host 2>/dev/null)}
 

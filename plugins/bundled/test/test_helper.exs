@@ -1,6 +1,6 @@
 # `:real_claude` tests run the real program; include them by hand.
 # `:slow` tests wait real seconds or scan large spaces: `HELYX_SLOW=1`
-# includes them, as `/ship` and the merge gate do (#295).
+# includes them, as the merge gate of `/orchestrate` does (#295).
 # One cap for every wait that must happen, `assert_receive` and the support
 # helpers alike (`Helyx.Test.Events.wait_ms/0`). Only a failing test waits
 # this long, so it is far above any delay that load makes: the precommit

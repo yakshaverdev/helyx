@@ -70,6 +70,7 @@ defmodule Helyx.TUI.Wire.DecodeTest do
       event(:turn_start, %{origin: :compaction}),
       event(:message_start, %{message: user("hi")}),
       event(:message_start, %{message: Message.user("p", %{kind: :product, id: "job-1"})}),
+      event(:message_start, %{message: Message.user("h", %{kind: :hook, id: "Acme.Hook"})}),
       event(:message_update, %{text_delta: "a"}),
       event(:message_update, %{thinking_delta: "b"}),
       event(:message_update, %{tool_call: @call}),

@@ -32,7 +32,7 @@ defmodule Helyx.Session.BackgroundTest do
              "\n" <> String.duplicate("a", 4095) <> "\n"
   end
 
-  test "each start answer with no end message is lost, in start order; an error result is no start" do
+  test "each start answer with no end message is lost, in start order, an error result too: a hook can give it that status, and the run did start" do
     other = "mnopqrstuvwx"
     third = "yz0123456789"
 
@@ -44,8 +44,12 @@ defmodule Helyx.Session.BackgroundTest do
       Background.end_message(@id, {:ok, "done"})
     ]
 
-    assert [%Message{origin: %{kind: :background, id: ^other}} = lost] =
+    # An `after_tool` hook can give a start answer the error status
+    # (docs/features/hooks.md).
+    assert [%Message{origin: %{kind: :background, id: ^other}} = lost, third_lost] =
              Background.lost(transcript)
+
+    assert third_lost.origin.id == third
 
     assert Message.text(lost) ==
              ~s(<background id="#{other}" status="lost">\n) <>
@@ -54,7 +58,7 @@ defmodule Helyx.Session.BackgroundTest do
                "Check its effects before you run it again. " <>
                "Its output file was deleted with the session.\n</background>"
 
-    assert Background.lost(transcript ++ [lost]) == []
+    assert Background.lost(transcript ++ [lost, third_lost]) == []
 
     assert [first, second] = Background.lost([start_result(other), start_result(@id)])
     assert {first.origin.id, second.origin.id} == {other, @id}

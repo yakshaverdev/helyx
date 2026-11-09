@@ -89,12 +89,14 @@ defmodule Helyx.Session.Background do
 
   # The end message of each run that has a start answer in `transcript`
   # and no end message, in start order: the session stopped while it ran.
+  # A start answer can be an error result: an `after_tool` hook can give
+  # it that status (docs/features/hooks.md).
   @spec lost([Message.t()]) :: [Message.t()]
   def lost(transcript) do
     ended =
       for %Message{role: :user} = m <- transcript, {id, _} <- head(m), into: MapSet.new(), do: id
 
-    for %Message{role: :tool_result, is_error: false} = m <- transcript,
+    for %Message{role: :tool_result} = m <- transcript,
         {id, "started"} <- head(m),
         id not in ended,
         do: message(id, wrap(id, "lost", @lost))

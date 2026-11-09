@@ -575,7 +575,7 @@ defmodule Helyx.TUI.Wire.ConnectionTest do
     for task <- subscribes, do: assert(Task.await(task, 20_000) == {:error, :timeout})
 
     send(server, :reply)
-    wait_until(fn -> map_size(:sys.get_state(conn).subs) == length(ids) end)
+    wait_until(fn -> map_size(:sys.get_state(conn).subs.subs) == length(ids) end)
     # The writer sends the steer; the 15 subscribes wait for it, and no
     # unsubscribe.
     assert Process.info(writer(conn), :message_queue_len) == {:message_queue_len, length(ids)}

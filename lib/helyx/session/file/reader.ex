@@ -8,11 +8,13 @@ defmodule Helyx.Session.File.Reader do
   # a time, so only the transcript grows with the file
   # (docs/features/coding-agent.md, row "Session file on resume").
 
+  require Logger
+
   import Helyx.Usage, only: [wire_tokens?: 1]
 
   alias Helyx.Message
   alias Helyx.Session.File.{Codec, Scan}
-  alias Helyx.Session.{Id, Transcript}
+  alias Helyx.Session.{HookEntry, Id, Transcript}
 
   @no_header "the first entry is not a header"
   @max_summary_bytes Helyx.Summary.max_bytes()
@@ -82,15 +84,24 @@ defmodule Helyx.Session.File.Reader do
   defp chunk(io, partial, [chunk], n, cwd, limits, acc),
     do: more(io, partial <> chunk, n, cwd, limits, acc)
 
-  # A line over the limit is no entry that a session writes, nor a torn
-  # part of one.
-  defp line(text, n, _cwd, limits, _acc) when byte_size(text) > limits.entry,
-    do: over_entry(n, limits)
-
   defp line(text, n, cwd, limits, acc) do
+    case entry(text, n, limits) do
+      {:ok, entry} -> add(entry, n, cwd, acc)
+      :none -> {:ok, acc}
+      error -> error
+    end
+  end
+
+  # The entry of the line `text`, number `n`: `{:ok, entry}`, `:none` for a
+  # line that does not decode to an entry (a torn append, skipped), or
+  # `{:error, {:too_large, text}}` for a line over a limit. A line over the
+  # limit is no entry that a session writes, nor a torn part of one.
+  def entry(text, n, limits) when byte_size(text) > limits.entry, do: over_entry(n, limits)
+
+  def entry(text, n, limits) do
     case decode(text, limits.heap) do
       {:ok, %{"type" => _} = entry} ->
-        add(entry, n, cwd, acc)
+        {:ok, entry}
 
       :killed ->
         {:error,
@@ -99,7 +110,7 @@ defmodule Helyx.Session.File.Reader do
             "to load; start a new session"}}
 
       _not_an_entry ->
-        {:ok, acc}
+        :none
     end
   end
 
@@ -169,9 +180,10 @@ defmodule Helyx.Session.File.Reader do
   defp check_cwd(_header, _cwd), do: {:error, :not_found}
 
   # After the header the writer only produces messages, model changes,
-  # resume ids, compactions, summaries, and system prompts, every model
-  # field a string. Anything else is damage on the disk, never dropped in
-  # silence, except in a system prompt entry (see its clause).
+  # resume ids, compactions, summaries, system prompts, and hook entries,
+  # every model field a string. Anything else is damage on the disk, never
+  # dropped in silence, except in a system prompt entry (see its clause)
+  # and a hook entry (see its clause).
   # A message id is its entry id, and a client keys messages by it, so a
   # repeated one is damage, and so is an id that `Id.new/0` never makes: it
   # could hold `:`, the separator of the ids that `Transcript.repair/1`
@@ -231,6 +243,16 @@ defmodule Helyx.Session.File.Reader do
   # entry over the cap of the writer is skipped, not damage that stops the
   # resume (docs/features/turn-record.md, decisions 2 and 3).
   defp fold(%{"type" => "system_prompt"}, acc), do: {:ok, acc}
+
+  # A hook entry is a log for the user: a resume reads nothing from it. A
+  # bad one is dropped and logged, the smallest unit
+  # (docs/features/hooks.md).
+  defp fold(%{"type" => "hook"} = entry, acc) do
+    if not HookEntry.valid?(entry),
+      do: Logger.warning("a hook entry of the session file is not valid; it is skipped")
+
+    {:ok, acc}
+  end
 
   defp fold(entry, _acc),
     do: {:error, {:invalid_file, "entry the writer never produces: #{inspect(entry["type"])}"}}

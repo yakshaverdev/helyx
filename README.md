@@ -20,8 +20,8 @@ Helyx has four kinds of components.
 | Product | `<ProductName>` | Uses Helyx, selects plugins, and owns domain code. |
 
 Core stays small. It contains only plugin registration, OTP supervision, and interface dispatch.
-Everything else, including memory, tools, model context, and compaction, is a plugin.
-The interfaces are `Helyx.Provider`, `Helyx.Tool`, `Helyx.ModelContext`, `Helyx.Compaction`, and `Helyx.Memory` (`docs/adr/0009-memory-interface.md`).
+Everything else, including memory, tools, model context, compaction, and hooks, is a plugin.
+The interfaces are `Helyx.Provider`, `Helyx.Tool`, `Helyx.ModelContext`, `Helyx.Compaction`, `Helyx.Memory` (`docs/adr/0009-memory-interface.md`), and `Helyx.Hook` (`docs/adr/0013-hooks.md`, `docs/features/hooks.md`).
 A transport, such as the planned `Helyx.Transport.WebSocket`, is a client of the session API in the same node, not a plugin (`docs/adr/0008-client-server-wire.md`).
 A user interface, such as the TUI, is a client host: it uses the session API and is not registered as a Core plugin.
 

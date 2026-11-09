@@ -616,7 +616,7 @@ defmodule Helyx.Tool.BashTest do
           core: core,
           cwd: dir,
           background_dir: Path.join(dir, "background"),
-          session: self(),
+          session: Helyx.Test.FakeSession.start(),
           tools: tools
         )
 
@@ -627,7 +627,10 @@ defmodule Helyx.Tool.BashTest do
       }
 
       :ok = Helyx.Session.Hands.run(hands, "t1", call, %{})
-      assert_receive {:tool_result, "t1", "c", {:started, start}}, Helyx.Test.Events.wait_ms()
+
+      assert_receive {:tool_result, "t1", "c", {:started, {:ok, start}, _run}},
+                     Helyx.Test.Events.wait_ms()
+
       [_, id] = Regex.run(~r/\A<background id="(\S+)"/, start)
       pid = wait_for_pid(Path.join(dir, "pid"))
 

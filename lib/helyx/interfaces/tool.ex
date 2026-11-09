@@ -180,14 +180,16 @@ defmodule Helyx.Tool do
 
   @doc """
   The context of the calling tool call, with the keys of the return type
-  above. Raises in any other process (`docs/features/agent-tool.md`).
+  above. A `before_settle` hook has no call: its `tool` and `call_id` are
+  nil (`docs/features/before-settle.md`). Raises in any other process
+  (`docs/features/agent-tool.md`).
   """
   @spec context() :: %{
           core: Helyx.Core.name(),
           session_id: String.t(),
           tools: [String.t()],
-          tool: String.t(),
-          call_id: String.t(),
+          tool: String.t() | nil,
+          call_id: String.t() | nil,
           model: String.t(),
           provider_opts: keyword(),
           model_context: module() | nil
@@ -199,26 +201,17 @@ defmodule Helyx.Tool do
     end
   end
 
-  # The most bytes of the JSON of a request to `ask/1`.
-  @max_request_bytes 65_536
-
   @doc """
   Asks the clients of the session and waits for the first answer: a JSON
-  object of at most #{@max_request_bytes} bytes, emitted in an `:ask` event.
-  `{:error, :no_client}` when no subscriber can answer, and
-  `{:error, :not_running}` when the call is not a running call of the
-  current turn. Raises on any other request and outside a tool call
-  (`docs/features/question-tool.md`).
+  object of at most #{Helyx.Session.Ask.max_request_bytes()} bytes, emitted
+  in an `:ask` event. `{:error, :no_client}` when no subscriber can answer,
+  and `{:error, :not_running}` when the call is not a running call of the
+  current turn or the caller is not the call's own Task
+  (`docs/features/hooks.md`). Raises on any other request and outside a
+  tool call (`docs/features/question-tool.md`).
   """
   @spec ask(map()) :: {:ok, map()} | {:error, :no_client | :not_running}
-  def ask(request) do
-    %{core: core, session_id: id, call_id: call_id, tool: tool} = context()
-
-    if Helyx.Session.Input.json_object(request, @max_request_bytes) != :ok,
-      do: raise(ArgumentError, "an ask request is a JSON object of at most 64 KiB")
-
-    GenServer.call(Helyx.Session.Server.via(core, id), {:ask, call_id, tool, request}, :infinity)
-  end
+  def ask(request), do: Helyx.Session.Ask.ask(:tool, request)
 
   @doc """
   The messages of the session that runs the calling Task of the hands, as it
@@ -236,18 +229,32 @@ defmodule Helyx.Tool do
   (`docs/features/background-bash.md`).
   """
   @spec background() :: {:ok, %{id: String.t(), dir: String.t()}} | {:error, String.t()}
-  def background, do: GenServer.call(Process.get(:helyx_hands), :background, :infinity)
+  def background do
+    with {:ok, _place} = place <-
+           GenServer.call(Process.get(:helyx_hands), :background, :infinity) do
+      # The `after_tool` hooks of `started/1` run only with a place.
+      Process.put(:helyx_place, true)
+      place
+    end
+  end
 
   @doc """
   Gives the start answer of a background run: `text` becomes the result of
-  the call, and the Task runs on. Raises in a Task that is no tool call of a
-  turn and in a call with no place from `background/0`; exits outside the
-  hands (`docs/features/background-bash.md`).
+  the call once its `after_tool` hooks ran (`docs/features/hooks.md`), and
+  the Task runs on. It returns once the session took the start answer, so
+  an ask of the run after it gets `{:error, :not_running}`. Raises in a Task that is no tool call of a turn and in a
+  call with no place from `background/0`; exits outside the hands
+  (`docs/features/background-bash.md`).
   """
   @spec started(String.t()) :: :ok
   def started(text) when is_binary(text) do
-    case GenServer.call(Process.get(:helyx_hands), {:started, text}, :infinity) do
-      :ok -> :ok
+    # The `after_tool` hooks run on the start answer, in the call Task
+    # (docs/features/hooks.md).
+    result = Helyx.Session.Hands.Chain.after_start({:ok, text})
+
+    case GenServer.call(Process.get(:helyx_hands), {:started, result}, :infinity) do
+      # The session took the start answer before it lets the run go on.
+      :ok -> Helyx.Session.Ask.await_go()
       :no_place -> raise ArgumentError, "started/1 needs a place from background/0"
     end
   end

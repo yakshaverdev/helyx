@@ -72,6 +72,7 @@ defmodule Helyx.Session.File.Codec do
   defp decode_origin_kind("user"), do: :user
   defp decode_origin_kind("background"), do: :background
   defp decode_origin_kind("product"), do: :product
+  defp decode_origin_kind("hook"), do: :hook
 
   defp decode_role("user"), do: :user
   defp decode_role("assistant"), do: :assistant

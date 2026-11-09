@@ -16,10 +16,16 @@ defmodule Helyx.Memory.MarkdownTest do
 
   # The default `recall_ms` of `Helyx.Core`.
   @recall_ms 2_000
+  # The margin for load of the 100,000-file recall (#193, owner decision of
+  # 2026-11-07 on #492). With it the wait is 9,000 ms, the largest
+  # `recall_ms` that Core accepts (`Helyx.Core`, 1 to 9,000): a recall
+  # longer than that is cut under every Core setting, the wait that must not
+  # happen. 9,000 ms is about 105 times the 85 ms of an idle recall.
+  @load_ms 7_000
 
   # A hang guard for the concurrent writes: far above the write time, so a
   # loaded machine does not fail it.
-  @load_ms 30_000
+  @load_write_ms 30_000
 
   defp entries(messages), do: Enum.map(messages, &%{message: &1, persisted: true})
   defp opts(dir), do: [dir: dir, session_id: "s1"]
@@ -74,12 +80,12 @@ defmodule Helyx.Memory.MarkdownTest do
       1..8
       |> Task.async_stream(
         fn _ -> Markdown.sync(entries(Enum.shuffle(messages)), opts(dir)) end,
-        timeout: @load_ms,
+        timeout: @load_write_ms,
         on_timeout: :kill_task
       )
       |> Enum.map(fn
         {:ok, result} -> result
-        {:exit, :timeout} -> flunk("the concurrent sync did not finish in #{@load_ms} ms")
+        {:exit, :timeout} -> flunk("the concurrent sync did not finish in #{@load_write_ms} ms")
       end)
 
     assert Enum.uniq(results) == [:ok]
@@ -222,7 +228,7 @@ defmodule Helyx.Memory.MarkdownTest do
   @tag :slow
   @tag timeout: 600_000
   @tag :tmp_dir
-  test "recall over 100,000 log files ends within the default recall_ms and reads a new message",
+  test "recall over 100,000 log files ends within the largest recall_ms and reads a new message",
        %{tmp_dir: dir} do
     on_exit(fn -> File.rm_rf!(dir) end)
 
@@ -240,16 +246,29 @@ defmodule Helyx.Memory.MarkdownTest do
 
     :ok = Markdown.sync(entries([user("zephyr quokka new", "u-new")]), opts(dir))
 
-    # The bound is the acceptance of #852, the Core default of `recall_ms`,
-    # not a margin: the recall lists 101 bucket names and 2 buckets and reads
-    # 1,000 small files: 324 to 456 ms on a loaded laptop (2026-11-06).
-    # The load-margin rule does not apply here: a miss fails the acceptance.
+    # The acceptance of #852: the recall stays far under `recall_ms`. It lists
+    # 101 bucket names and 2 buckets and reads 1,000 small files. Measured on
+    # the idle precommit host under the precommit lock, load average 1.8
+    # (2026-11-07): five recalls of 80, 69, 85, 73 and 74 ms, 32 items each,
+    # after a setup of 1,580 ms; on a loaded laptop 324 to 456 ms (2026-11-06).
+    # Owner decision of 2026-11-07 (#492): the wait is `recall_ms` plus a
+    # margin for load (#193), because two merge-gate runs got no answer within
+    # 2,000 ms under the load of a precommit run (the tests and Dialyzer of
+    # three projects and Credo at once). The slowdowns that load gave this
+    # test so far: 4 to 6 times for the recall on a loaded laptop (above),
+    # more than 23 times in the two merge-gate runs (over 2,000 ms against
+    # 85), and about 27 times for the setup (a link about 420 µs on a loaded
+    # laptop, so about 42 s for 100,000, against 1,580 ms on the idle host;
+    # two machines, so an estimate). No loaded recall was timed to its end,
+    # so the margin of `@load_ms` is a judgement on these numbers. The bound
+    # fails a recall that hangs or that no Core setting would wait for; the
+    # acceptance of #852 is the idle measurement above.
     task = Task.async(fn -> Markdown.recall(%{text: "zephyr quokka", origin: nil}, opts(dir)) end)
-    yielded = Task.yield(task, @recall_ms)
+    yielded = Task.yield(task, @recall_ms + @load_ms)
     result = yielded || Task.shutdown(task, :brutal_kill)
 
     assert yielded != nil,
-           "recall timed out at the Core default recall_ms of #{@recall_ms} ms (#852)"
+           "recall timed out at recall_ms plus the load margin, #{@recall_ms + @load_ms} ms (#852)"
 
     assert {:ok, {:ok, [%{text: "zephyr quokka new"} | _]}} = result
   end

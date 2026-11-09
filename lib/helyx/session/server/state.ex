@@ -67,7 +67,8 @@ defmodule Helyx.Session.Server.State do
     # The turn in progress, the wait before the next turn can start, or none,
     # with the provider process of the session (`Helyx.Session.Server.Flow`).
     phase: %Flow.Idle{},
-    # The steer state: the queues and the sent steers (`Helyx.Session.Queue`).
+    # The steer state: the queues and the sent steers, and a hook's
+    # continue with the count of turns in a row (`Helyx.Session.Queue`).
     queue: %Queue{},
     # The last resume id per provider id, with the number of assistant
     # messages then.
@@ -88,7 +89,7 @@ defmodule Helyx.Session.Server.State do
     # test seam.
     deadline_ms: %{prepare: @prepare_ms, open: 25_000},
     # The current idle timer (`:erlang.start_timer/3`, see
-    # `TurnLoop.arm_idle/1`), or nil.
+    # `Connect.arm_idle/1`), or nil.
     idle: nil,
     # The instructions of a compaction that waits for the end of the wait,
     # or nil (docs/features/harness-compaction.md).

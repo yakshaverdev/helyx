@@ -2,7 +2,8 @@ defmodule Helyx.Session.Server.Wait do
   @moduledoc false
   # The turn cleanup (docs/features/session-lifecycle.md, "Turn end"):
   # the end of a turn, and the wait before the next turn. The wait holds the
-  # answer of the hands to `Hands.request_cancel/2` (`hands`) and the answer
+  # answer of the hands to `Hands.request_revoke/2` or
+  # `Hands.request_cancel/2` (`hands`) and the answer
   # of the provider process in the phase's provider to an interrupt or an
   # idle close (`reply`). A provider process that ends
   # (`Helyx.Session.Server.Flow.Dying`) also holds the wait, until the hands'
@@ -10,8 +11,10 @@ defmodule Helyx.Session.Server.Wait do
   # deadlines, a reply by its armed kill. `callers` are the abort callers,
   # who get their reply at the end. `turn` is the id of the turn that the
   # wait ended, or nil, and `turn_end` the data of its `turn_end` while that
-  # event waits for the hands, with `started_ms` of that turn. Every
-  # message of a client queues until the end.
+  # event waits for the hands, with `started_ms` of that turn. `settle` is
+  # the `before_settle` chain, due or running, the last part
+  # (`Helyx.Session.Server.Settle`). Every message of a client queues until
+  # the end.
   # `Helyx.Session.Server.TurnLoop` matches the inputs and ends the wait
   # when no part is left. `finish/2` ends a turn and makes its wait; the
   # other functions change one part of it.
@@ -22,9 +25,9 @@ defmodule Helyx.Session.Server.Wait do
   import Helyx.Session.Server.Events, only: [emit: 3, emit: 4]
 
   alias Helyx.Session.{Hands, ProviderRequest, Turn}
-  alias Helyx.Session.Server.{Asks, Flow, Records, State, Steering, Summary, ToolRuns}
+  alias Helyx.Session.Server.{Asks, Flow, Records, Settle, State, Steering, Summary, ToolRuns}
 
-  defstruct [:hands, :reply, :turn, :turn_end, :started_ms, callers: []]
+  defstruct [:hands, :reply, :turn, :turn_end, :started_ms, :settle, callers: []]
 
   @type t :: %__MODULE__{
           hands: :gen_server.request_id() | nil,
@@ -32,6 +35,7 @@ defmodule Helyx.Session.Server.Wait do
           turn: String.t() | nil,
           turn_end: map() | nil,
           started_ms: integer() | nil,
+          settle: {:due, Helyx.Hook.settle(), map()} | reference() | nil,
           callers: [GenServer.from()]
         }
 
@@ -50,7 +54,9 @@ defmodule Helyx.Session.Server.Wait do
   # runs, `turn_end` waits for their answer (`cleanup/2`): a start answer
   # that the hands took first then comes before it (#595). Only an
   # abort of a turn that sent `{:turn, ...}` gets an interrupt, after the
-  # `aborted` answers of its open tool requests.
+  # `aborted` answers of its open tool requests. `Settle.finish/3` adds the
+  # `before_settle` chain when it is due; an abort or a failure drops a
+  # waiting continue with the queues (`Queue.abort/1`).
   @spec finish(
           State.t(),
           {:done, Helyx.Message.stop_reason(), map()} | :aborted | {:error, term()}
@@ -88,7 +94,7 @@ defmodule Helyx.Session.Server.Wait do
     wait = if outcome == :aborted, do: interrupt(state, phase, provider), else: %__MODULE__{}
     turn_end = if running?, do: data
     wait = %{wait | hands: hands, turn: turn.id, turn_end: turn_end, started_ms: turn.started_ms}
-    %{state | phase: %Flow.Waiting{wait: wait, provider: provider}}
+    Settle.finish(%{state | phase: %Flow.Waiting{wait: wait, provider: provider}}, turn, outcome)
   end
 
   # The snapshot turn of a wait whose `turn_end` waits for the hands: the
@@ -170,13 +176,14 @@ defmodule Helyx.Session.Server.Wait do
 
   # An abort in a wait gives the queued texts back, like the abort that
   # started the wait (`Queue.abort/1`), and its caller gets the reply at
-  # the end of the wait. It drops a compaction that waits.
+  # the end of the wait. It drops a compaction and a continue that wait,
+  # and ends the `before_settle` chain (`Settle.abort/1`).
   @spec abort(State.t(), GenServer.from()) :: State.t()
-  def abort(%State{phase: %Flow.Waiting{wait: wait} = phase} = state, from),
-    do:
-      Steering.abort(%{
-        state
-        | pending_compact: nil,
-          phase: %{phase | wait: %{wait | callers: [from | wait.callers]}}
-      })
+  def abort(%State{phase: %Flow.Waiting{wait: wait} = phase} = state, from) do
+    wait = %{wait | callers: [from | wait.callers]}
+
+    %{state | pending_compact: nil, phase: %{phase | wait: wait}}
+    |> Steering.abort()
+    |> Settle.abort()
+  end
 end

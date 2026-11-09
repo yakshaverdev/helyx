@@ -1,23 +1,22 @@
 defmodule Helyx.Session.Server.TurnLoop do
   @moduledoc false
-  # The turn lifecycle of a session, its one owner: it matches each
-  # lifecycle input to the current phase and makes the transitions of
-  # `Helyx.Session.Server.Flow` in `Helyx.Session.Server.State`
+  # The turn lifecycle of a session: it matches each lifecycle input to the
+  # phase and makes the `Helyx.Session.Server.Flow` transitions, with the
+  # turn end in `Wait` and a compaction send in `Compaction`
   # (docs/features/session-lifecycle.md, "Turn states", "Turn end", "The
-  # wait"). The turn starts, connects its provider process, prepares its
-  # context, is submitted, and ends; the wait after it lasts until the hands,
-  # the open reply, and a provider process that ends are done. The inputs are
-  # `admit/3`, `abort/2`, and `handle/2`; a compaction is a turn too.
+  # wait"). The wait after a turn lasts until the hands, the open reply, a
+  # provider process that ends, and the `before_settle` chain are done. The
+  # inputs are `admit/3`, `abort/2`, and `handle/2`; a compaction is a turn.
 
   import Helyx.Session.Server.State, only: [ask: 4]
   import Helyx.Session.Server.Events, only: [emit: 3]
   import Helyx.Session.Server.Flow, only: [is_turn: 1]
 
   alias Helyx.Session.{Id, Queue, Turn}
-  alias Helyx.Session.Server.{Compaction, Connect, Prepare, Records, State, Steering}
+  alias Helyx.Session.Server.{Compaction, Connect, Prepare, Records, Settle, State}
   alias Helyx.Session.Server.Flow
   alias Helyx.Session.Server.Flow.{Connecting, Dying, Idle, Live, Preparing, Sending, Up, Waiting}
-  alias Helyx.Session.Server.{Summary, Wait}
+  alias Helyx.Session.Server.{Steering, Summary, Wait}
 
   # A client prompt, steer, or follow-up by phase; returns the reply and the
   # state. An abort waits for the hands: a turn that starts now could send
@@ -57,7 +56,7 @@ defmodule Helyx.Session.Server.TurnLoop do
         {:provider_ready, pid},
         %State{phase: %{provider: %Connecting{pid: pid} = provider} = phase} = state
       ),
-      do: arm_idle(submit(%{state | phase: %{phase | provider: Flow.up(provider)}}))
+      do: Connect.arm_idle(submit(%{state | phase: %{phase | provider: Flow.up(provider)}}))
 
   # The reply of the turn's running prepare Task, at the turn start
   # (`Preparing`) or for a context request (`Live`, C1-C4,
@@ -204,10 +203,11 @@ defmodule Helyx.Session.Server.TurnLoop do
       when request != nil,
       do: progress(Wait.cleanup(state, message))
 
-  # Starts a turn with the user messages, in order.
+  # Starts a turn with the user messages, in order, and counts it
+  # (`Queue.count/2`).
   defp begin_turn(%State{} = state, users) do
     turn = %Turn{id: Id.new(), model: state.model, provider: state.provider}
-    state = Steering.open(open_turn(state, turn, %{}))
+    state = Steering.open(open_turn(Steering.count(state, users), turn, %{}))
     call_provider(Enum.reduce(users, state, &Records.append_user(&2, &1)))
   end
 
@@ -318,13 +318,19 @@ defmodule Helyx.Session.Server.TurnLoop do
   # session settles too: a late `:rejected` can queue a steer. A process
   # that ends, the session's or a summary call's, holds the wait. A start
   # with no answer holds it too: the cleanup request went to the hands after
-  # it, and the hands answer in order.
+  # it, and the hands answer in order. A due `before_settle` chain is last.
   def progress(%State{phase: %Waiting{provider: %Dying{}}} = state), do: state
 
   def progress(%State{phase: %Waiting{}, summary_call: %Summary{}} = state), do: state
 
   def progress(
-        %State{phase: %Waiting{wait: %Wait{hands: nil, reply: nil} = wait} = phase} = state
+        %State{phase: %Waiting{wait: %Wait{hands: nil, reply: nil, settle: {:due, _, _}}}} = state
+      ),
+      do: Settle.start(state)
+
+  def progress(
+        %State{phase: %Waiting{wait: %Wait{hands: nil, reply: nil, settle: nil} = wait} = phase} =
+          state
       ) do
     Enum.each(wait.callers, &GenServer.reply(&1, :ok))
     settle(%{state | phase: %Idle{provider: phase.provider}})
@@ -338,7 +344,7 @@ defmodule Helyx.Session.Server.TurnLoop do
   # switch); otherwise the queues start the next turn.
   def settle(%State{phase: %Idle{}} = state) do
     with %State{phase: %Idle{}} = state <- close_switched(state) do
-      arm_idle(start_queued(state))
+      Connect.arm_idle(start_queued(state))
     end
   end
 
@@ -358,8 +364,9 @@ defmodule Helyx.Session.Server.TurnLoop do
   defp close_switched(state), do: state
 
   # A normal turn end starts the next turn: a waiting compaction, else one
-  # from the queue (`Queue.drain/1`), so each turn end starts one more while
-  # one waits. The drain event goes out between the turns, with no turn id.
+  # from the queue, a hook's continue first (`Queue.drain/1`), so each turn
+  # end starts one more while one waits. The drain event goes out between
+  # the turns, with no turn id.
   defp start_queued(%State{pending_compact: text} = state) when text != nil do
     turn = %Turn{id: Id.new(), model: state.model, provider: state.provider, compact: text}
     call_provider(open_turn(%{state | pending_compact: nil}, turn, %{origin: :compaction}))
@@ -371,16 +378,6 @@ defmodule Helyx.Session.Server.TurnLoop do
       {users, state} -> begin_turn(state, users)
     end
   end
-
-  # Arms the idle timer when the session holds a ready provider process
-  # with no turn and no wait. It cancels the earlier timer; a message of
-  # it that is already in the mailbox has an old ref.
-  defp arm_idle(%State{phase: %Idle{provider: %Up{}}} = state) do
-    if state.idle, do: :erlang.cancel_timer(state.idle)
-    %{state | idle: :erlang.start_timer(state.provider_ms.idle, self(), :idle_close)}
-  end
-
-  defp arm_idle(state), do: state
 
   # The terminal of the turn, from the provider process.
   defp end_turn({:done, %{stop_reason: stop_reason, usage: usage}}, state),
