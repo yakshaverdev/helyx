@@ -243,12 +243,6 @@ defmodule Helyx.Test.Hook.SettleB do
   use Helyx.Test.Hook, points: [:before_settle]
 end
 
-defmodule Helyx.Test.Hook.SettleShort do
-  @moduledoc false
-  # A `before_settle` hook with a limit of 100 ms.
-  use Helyx.Test.Hook, points: [:before_settle], limit: 100
-end
-
 defmodule Helyx.Test.Hook.SettleLimit do
   @moduledoc false
   # A `before_settle` hook whose limit is the value in the persistent term
