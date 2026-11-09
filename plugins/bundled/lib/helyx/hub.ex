@@ -137,6 +137,80 @@ defmodule Helyx.Hub do
   end
 
   @doc """
+  Starts a session for the user `user_id` as the `start` of the wire does:
+  the `check` with the caps of the user (`too_many_sessions`,
+  `too_many_records`), `Helyx.Sessions.start/2` with `opts`, and the
+  `result`, which writes the record of a user who is not the default owner
+  (`docs/features/hub.md`, decisions 5 and 14). `opts` needs `:cwd`, a
+  string, else `{:error, :invalid_cwd}`. A Core error comes back as Core
+  gives it; a `result` that fails stops the session and gives its code. A
+  user that no longer exists gives `{:error, :unknown_user}`, and an exit of
+  a Hub call `{:error, :timeout}`.
+  """
+  @spec start_session(hub(), String.t(), keyword()) ::
+          {:ok, Helyx.Session.t()} | {:error, atom() | term()}
+  def start_session(hub, user_id, opts) when is_binary(user_id) and is_list(opts) do
+    with {:ok, arg} <- api_arg(hub), do: Helyx.Hub.Api.start_session(arg, user_id, opts)
+  end
+
+  @doc """
+  The `check` of a session operation of the wire for the user `user_id`,
+  for a caller that then calls `Helyx.Session` itself (decision 5). `op` is
+  one of `subscribe`, `history`, `prompt`, `steer`, `follow_up`, `abort`,
+  `set_model`, `compact`, `answer`, and `stop`; `params` the params map of
+  the wire, `%{"session" => id}`, with `"text"` for the three text
+  operations, whose check moves the record as on the wire. `:ok`, or the
+  code of the wire as an atom: `:session_not_found` for a session that the
+  user may not read, as a missing one, and `:forbidden` for one that it
+  reads but does not own.
+  """
+  @spec authorize(hub(), String.t(), String.t(), map()) ::
+          :ok
+          | {:error, :session_not_found | :forbidden | :unknown_user | :busy | :timeout | :failed}
+  def authorize(hub, user_id, op, params) when is_binary(user_id) and is_map(params) do
+    with {:ok, arg} <- api_arg(hub), do: Helyx.Hub.Api.authorize(arg, user_id, op, params)
+  end
+
+  @doc """
+  The owner of a session: the owner of its record, or the default owner for
+  a session with no record that runs or has a file (decision 8). A tool
+  finds the user of its own session so. `{:error, :session_not_found}` for
+  an id with no session.
+  """
+  @spec owner(hub(), String.t()) ::
+          {:ok, String.t()} | {:error, :session_not_found | :busy | :timeout | :failed}
+  def owner(hub, session_id) when is_binary(session_id) do
+    with {:ok, arg} <- api_arg(hub), do: Helyx.Hub.Api.owner(arg, session_id)
+  end
+
+  @doc """
+  The user for whom a running session acts: the user whose start or resume
+  through Hub made or attached to its running process (`start_session/3`,
+  the wire `start` and `resume`, a wake-up), while that user exists and
+  owns the session. A session that Hub did not start or resume, one whose
+  record was deleted or whose user was removed, and one of a Hub that
+  restarted since its start give `{:error, :session_not_found}`. The
+  coordinator tools act for this user (`docs/features/coordinator.md`,
+  decision 3).
+  """
+  @spec actor(hub(), String.t()) ::
+          {:ok, String.t()} | {:error, :session_not_found | :busy | :timeout | :failed}
+  def actor(hub, session_id) when is_binary(session_id) do
+    call(hub, {:actor, session_id})
+  catch
+    :exit, _reason -> {:error, :timeout}
+  end
+
+  defp api_arg(hub) do
+    case call(hub, :authority) do
+      {:ok, config} -> {:ok, Map.put(config, :hub, hub)}
+      error -> error
+    end
+  catch
+    :exit, _reason -> {:error, :timeout}
+  end
+
+  @doc """
   The value of the option `:authority` of `Helyx.Transport.WebSocket` for
   this Hub (decision 5). It asks the Hub, so the product starts the
   transport after the Hub: a Hub that does not answer raises. Give the Hub

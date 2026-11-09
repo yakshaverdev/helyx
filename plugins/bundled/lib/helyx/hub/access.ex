@@ -115,6 +115,11 @@ defmodule Helyx.Hub.Access do
   # that needs a running session asks the Registry.
   defp running?(arg, id), do: session_pid(arg, id) != nil
 
+  # The whole check, for `Helyx.Hub.owner/2`: a session that runs, or whose
+  # file the find confirms.
+  @doc false
+  def exists?(arg, id), do: running?(arg, id) or found(arg, id) != nil
+
   # The process of a session, which the live set monitors after the start
   # or resume that made or attached to it (decision 14).
   defp session_pid(arg, id), do: Helyx.Session.pid(%Helyx.Session{id: id, core: arg.core})

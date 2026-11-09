@@ -9,14 +9,17 @@ defmodule Helyx.Hub.Live do
   # resume that `check` passed and whose `result` has not come, with a
   # monitor of the caller and a timer. A place ends at `result` (which adds
   # the session to the live set), at `release`, at the `:DOWN` of its
-  # caller, or @place_ms after its `check`.
+  # caller, or @place_ms after its `check`. `starters`: session id => the
+  # user whose start or resume through Hub made or attached to the entry of
+  # the session; the coordinator tools act for that user only
+  # (`docs/features/coordinator.md`, decision 3). A seeded entry has none.
 
   alias Helyx.Hub.Rules
 
   # The life of a reserved place (Bounds).
   @place_ms 60_000
 
-  def init(state), do: Map.merge(state, %{live: %{}, reserved: %{}})
+  def init(state), do: Map.merge(state, %{live: %{}, reserved: %{}, starters: %{}})
 
   # The sessions of the Core when Hub starts, `{session id, pid}`, read by a
   # process of `Helyx.Hub.Server` before the Hub takes any call.
@@ -70,10 +73,16 @@ defmodule Helyx.Hub.Live do
 
   # The `result` of a start or a resume: the place of the caller ends and
   # the session enters the live set.
-  def started(state, caller, session_id, pid) when is_pid(pid),
-    do: state |> release(caller) |> watch(session_id, pid)
+  def started(state, caller, session_id, pid, user) when is_pid(pid) do
+    state = state |> release(caller) |> watch(session_id, pid)
+    %{state | starters: Map.put(state.starters, session_id, user)}
+  end
 
-  def started(state, caller, _session_id, nil), do: release(state, caller)
+  def started(state, caller, _session_id, nil, _user), do: release(state, caller)
+
+  # The user of the start or resume through Hub of the running entry of a
+  # session, or nil.
+  def starter(state, session_id), do: Map.get(state.starters, session_id)
 
   def release(state, caller) do
     case Map.pop(state.reserved, caller) do
@@ -93,7 +102,7 @@ defmodule Helyx.Hub.Live do
   def down(state, ref, pid) do
     case Map.pop(state.live, ref) do
       {nil, _live} -> expired(state, pid, ref)
-      {_id, live} -> %{state | live: live}
+      {id, live} -> %{state | live: live, starters: Map.delete(state.starters, id)}
     end
   end
 
@@ -108,9 +117,15 @@ defmodule Helyx.Hub.Live do
 
   # One entry for each session: a new process of the session replaces the
   # entry of an old one whose `:DOWN` has not come yet.
+  # A new entry has no starter until `started/5` gives one.
   defp watch(state, session_id, pid) do
     {old, live} = Map.split_with(state.live, fn {_ref, id} -> id == session_id end)
     Enum.each(Map.keys(old), &Process.demonitor(&1, [:flush]))
-    %{state | live: Map.put(live, Process.monitor(pid), session_id)}
+
+    %{
+      state
+      | live: Map.put(live, Process.monitor(pid), session_id),
+        starters: Map.delete(state.starters, session_id)
+    }
   end
 end

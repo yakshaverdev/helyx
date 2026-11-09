@@ -76,6 +76,32 @@ defmodule Helyx.Hub.Rules do
     end
   end
 
+  # The owner of a session for `Helyx.Hub.owner/2`, after the existence
+  # check of the caller.
+  def handle({:owner, session_id, exists?}, _deadline, state) do
+    case access(session_id, exists?, state) do
+      {:ok, :missing} -> {:error, :session_not_found}
+      {:ok, %{owner: owner}} -> {:ok, owner}
+      error -> error
+    end
+  end
+
+  # The starter of a running session acts for it only while the starter
+  # exists and owns the session: a record delete or a remove of the user
+  # gives the session to the default owner, and the starter none of its
+  # rights (`docs/features/coordinator.md`, decision 3).
+  def handle({:actor, _session_id, nil}, _deadline, _state), do: {:error, :session_not_found}
+
+  def handle({:actor, session_id, user}, _deadline, state) do
+    with :ok <- credential(%{user: user, token: nil}, state),
+         {:ok, %{owner: ^user}} <- access(session_id, true, state) do
+      {:ok, user}
+    else
+      {:error, :failed} -> {:error, :failed}
+      _ -> {:error, :session_not_found}
+    end
+  end
+
   def handle({:started, auth, start}, deadline, state) do
     with :ok <- credential(auth, state) do
       if auth.user == state.default_owner_id,
