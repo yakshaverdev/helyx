@@ -73,6 +73,12 @@ The candidates after `form` and `approval` are `choice`, `diff`, `table`, `progr
 
 The TUI renders `form` with the picker of `Helyx.TUI.Question`, and `approval` with the picker of `Helyx.TUI.Approval` (`docs/features/approval-gate.md`, "The TUI renderer"), in the place of the composer: the oldest open ask of the two that the TUI can read. Every other kind shows its `text`, with a cut mark when `cut` is true, under its tool result or, for a `:ui_block` event, under its call or at the end of the turn. The text is cleaned and wrapped as a tool result text, and shows four lines and a hint row in the short form of Ctrl+O (`docs/features/tui-tool-output-toggle.md`). A block of a call shows under the oldest open cell of its call id; a block whose call has no cell in the transcript shows at the end of the turn. An ask of a kind that the TUI does not know shows the `text` of its request under its call line until its `ask_end`, and the TUI gives no answer.
 
+### Rendering in the client kit
+
+The Rust core of the client kit (`clients/rust/core`, #885) reads a block that it checked into a model, `vocabulary::UiBlock::read`: its `kind`, its `text`, its `cut`, and a view, `Form` or `Approval` for a known kind whose fields it can read by the entries above (the bounds of `form` as the TUI reads them: a `multi_select` that is absent is a single pick, a null one is not readable), and `Text` for any other kind or fields. `Ask::block` gives the block of an ask whose request has a `kind`; an ask with no kind gives none. `transcript::open_calls` gives the row of the oldest open call of each call id.
+
+The GPUI app draws a `form` with its questions, headers, and options (a mark for a single and a multiple pick), an `approval` within the bounds of `Helyx.TUI.Approval` (its `text` as the title, at most 1,024 bytes on one line; its tool and provider, at most 256 bytes each, the cut of the gate; and its arguments in a monospace box of at most 16,384 bytes, with a line `… more arguments` when a part is left out), and every other block as its `text`, at most 65,536 bytes, the bound of a block, since the client does not check the size of an ask request; each with a mark `[cut]` when `cut` is true or a part of the text is left out. Each cut is at a character boundary (`vocabulary::head`, with `MAX_TITLE_BYTES`, `MAX_NAME_BYTES`, and `MAX_ARGUMENTS_BYTES`). A block of a tool result draws under its result; a block of a `ui_block` event and the block of an ask draw under the oldest open call of their call id, else at the end of the turn, as in the TUI. The app sends no answer: an ask draws with the line `answer it in another client`, and stays open for another client (ADR 0011 §4). Tests: `clients/rust/core/tests/vocabulary.rs` reads every UI block of `server_frames.json`, the fields at their bounds, and the cut of a drawn text at a character boundary; `tests/transcript.rs` the placement. The window has no test: it draws the models that the core tests prove.
+
 ## Replaced mechanism
 
 One code path: the choice of the question picker in the TUI.
@@ -107,4 +113,4 @@ None: a UI block holds no external resource.
 
 ## Out of scope
 
-A render tree or a layout language; styling, themes, and images; a client extension that adds a renderer; the rendering in the Rust core and the GPUI app (#885). The approval gate and its `approval` kind are in `docs/features/approval-gate.md` (#882).
+A render tree or a layout language; styling, themes, and images; a client extension that adds a renderer; the answer of an ask in the GPUI app. The approval gate and its `approval` kind are in `docs/features/approval-gate.md` (#882).
