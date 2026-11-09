@@ -7,7 +7,7 @@ defmodule Helyx.Hub.Server do
 
   use GenServer
 
-  alias Helyx.Hub.{Connections, Live, Records, Rules}
+  alias Helyx.Hub.{Connections, Live, Records, Rules, Schedules, Wake}
 
   # The read of the live sessions of the Core at the start (decision 14).
   @seed_ms 5_000
@@ -26,7 +26,7 @@ defmodule Helyx.Hub.Server do
       case default_owner(config.store, store, config.default_owner) do
         {:ok, owner_id} ->
           state = Map.merge(config, %{db: store, default_owner_id: owner_id})
-          {:ok, state |> Live.init() |> Connections.init(), {:continue, :live}}
+          {:ok, state |> Live.init() |> Connections.init() |> Wake.init(), {:continue, :live}}
 
         {:error, _} = error ->
           config.store.close(store)
@@ -78,7 +78,8 @@ defmodule Helyx.Hub.Server do
           end
       end
 
-    {:noreply, Live.seed(state, sessions)}
+    # The first poll of the wake-ups comes at the start (decision 12).
+    {:noreply, state |> Live.seed(sessions) |> Wake.poll()}
   end
 
   defp live_sessions(core) do
@@ -171,10 +172,16 @@ defmodule Helyx.Hub.Server do
   defp serve({:remove_user, user_id} = request, _caller, deadline, %{store: mod, db: db} = state) do
     shared? = mod.hub_records?(db, user_id) != {:ok, false}
 
+    # The schedules of the user go with it; their Tasks are killed.
     case handle(request, deadline, state) do
-      :ok when shared? -> {:ok, Connections.close_others(state, [state.default_owner_id])}
-      :ok -> {:ok, Connections.close_user(state, user_id)}
-      error -> {error, state}
+      :ok when shared? ->
+        {:ok, state |> Connections.close_others([state.default_owner_id]) |> killed(user_id)}
+
+      :ok ->
+        {:ok, state |> Connections.close_user(user_id) |> killed(user_id)}
+
+      error ->
+        {error, state}
     end
   end
 
@@ -184,7 +191,41 @@ defmodule Helyx.Hub.Server do
   defp serve({:record_update, auth, id, found, _changes} = request, _caller, deadline, state),
     do: readers_change(request, auth.user, id, found != nil, deadline, state)
 
+  defp serve({op, _auth, _id, _exists?} = request, _caller, deadline, state)
+       when op == :schedule_list,
+       do: {Schedules.handle(request, deadline, state), state}
+
+  # A delete kills the Task of its schedule; a prompt that the session
+  # already took or queued still runs.
+  defp serve({:schedule_delete, _auth, id} = request, _caller, deadline, state) do
+    case Schedules.handle(request, deadline, state) do
+      :ok -> {:ok, Wake.kill(state, &(&1.schedule == id))}
+      error -> {error, state}
+    end
+  end
+
+  # A resume of a wake-up that Core answers `not_found` deletes the record of
+  # the session, as `hub.records.delete` does (decision 8).
+  defp serve({:wake_gone, row}, caller, deadline, state) do
+    {reply, state} = Wake.serve({:wake_refused, row}, caller, deadline, state)
+    id = row.session_id
+    {_, state} = readers_change({:record_gone, id}, row.owner, id, false, deadline, state)
+    {reply, state}
+  end
+
+  # The Hub calls of a delivery Task (`Helyx.Hub.Delivery`).
+  defp serve(request, caller, deadline, state)
+       when elem(request, 0) in [:wake_place, :wake_resumed, :wake_retry, :wake_refused] or
+              elem(request, 0) in [:wake_decide, :wake_outcome],
+       do: Wake.serve(request, caller, deadline, state)
+
+  defp serve({op, _auth, _id, _exists?, _fields} = request, _caller, deadline, state)
+       when op == :schedule_create,
+       do: {Schedules.handle(request, deadline, state), state}
+
   defp serve(request, _caller, deadline, state), do: {handle(request, deadline, state), state}
+
+  defp killed(state, user_id), do: Wake.kill(state, &(&1.owner == user_id))
 
   defp revoked(:ok, token_id, state), do: {:ok, Connections.close_token(state, token_id)}
   defp revoked(error, _token_id, state), do: {error, state}
@@ -236,22 +277,40 @@ defmodule Helyx.Hub.Server do
 
   @impl true
   def handle_info({:DOWN, ref, :process, pid, _reason}, state),
-    do: {:noreply, state |> Live.down(ref, pid) |> Connections.down(ref)}
+    do: {:noreply, state |> Live.down(ref, pid) |> Connections.down(ref) |> Wake.ended(ref)}
 
   def handle_info({:place_expired, caller, monitor}, state),
     do: {:noreply, Live.expired(state, caller, monitor)}
+
+  def handle_info(:wake_poll, state), do: {:noreply, Wake.poll(state)}
+  def handle_info({:wake_kill, ref}, state), do: {:noreply, Wake.expired(state, ref)}
+  # The reply of a delivery Task.
+  def handle_info({ref, _result}, state) when is_reference(ref),
+    do: {:noreply, Wake.ended(state, ref)}
 
   # Another message changes nothing (the exit of the parent of the Hub, which
   # traps exits, stops it before this clause): a crash would lose the live
   # set.
   def handle_info(_message, state), do: {:noreply, state}
 
+  # The stop kills the delivery Tasks, then closes the store (decision 16).
   @impl true
-  def terminate(_reason, state), do: state.store.close(state.db)
+  def terminate(_reason, state) do
+    Wake.stop(state)
+    state.store.close(state.db)
+  end
 
   defp handle({:add_user, name}, deadline, %{store: mod, db: db}) do
     with {:ok, id} <- insert_user(mod, db, name, deadline) do
       {:ok, %{id: id, name: name}}
+    end
+  end
+
+  # The row of a session whose file is gone; a session with none is as it is.
+  defp handle({:record_gone, id}, deadline, %{store: mod, db: db}) do
+    case mod.delete_record(db, id, deadline) do
+      {:error, :not_found} -> :ok
+      other -> other
     end
   end
 

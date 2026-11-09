@@ -12,11 +12,8 @@ defmodule Helyx.Hub.Access do
   @behaviour Helyx.Transport.WebSocket.Authority
 
   alias Helyx.Hub
-  alias Helyx.Hub.{Params, Saved}
+  alias Helyx.Hub.{Params, Saved, Schedules}
 
-  # The bound of the `prompt` of a record: the caller cuts the text, so no
-  # Hub call carries more of it (Store schema).
-  @max_prompt_bytes 1_024
   # The deadline of the find of the existence check (decision 8).
   @find_ms 5_000
   # The bounds of a stored `cwd` and `model` (Bounds).
@@ -31,7 +28,8 @@ defmodule Helyx.Hub.Access do
   @text_ops ~w(prompt steer follow_up)
   @write_ops ~w(abort set_model compact answer stop)
   @param_ops ~w(hub.records.get hub.records.update hub.records.delete hub.records.search
-                hub.projects.create hub.projects.update hub.projects.delete)
+                hub.projects.create hub.projects.update hub.projects.delete
+                hub.schedules.create hub.schedules.list hub.schedules.delete)
   @bad_params {:error, "bad_params", "a param is missing, of the wrong type, or unknown"}
 
   # The Hub call registers the connection for the closes of decision 13; a
@@ -103,7 +101,10 @@ defmodule Helyx.Hub.Access do
   def check(arg, auth, op, %{"session" => id, "text" => text} = params) when op in @text_ops,
     do:
       passed(
-        Hub.call(arg.hub, {:session, auth, :write, id, running?(arg, id), {:touch, cut(text)}}),
+        Hub.call(
+          arg.hub,
+          {:session, auth, :write, id, running?(arg, id), {:touch, Params.cut(text)}}
+        ),
         params
       )
 
@@ -165,17 +166,6 @@ defmodule Helyx.Hub.Access do
   defp refused(:revoked), do: {:close, 4403}
   defp refused({:error, code}), do: {:error, Atom.to_string(code)}
 
-  # The first 1,024 bytes of a text, cut on a UTF-8 boundary: the frame
-  # decode of the transport admits only UTF-8.
-  defp cut(text) do
-    head = binary_part(text, 0, min(byte_size(text), @max_prompt_bytes))
-    Enum.find([head | trims(head)], &String.valid?/1)
-  end
-
-  defp trims(head) do
-    for n <- 1..3, byte_size(head) > n, do: binary_part(head, 0, byte_size(head) - n)
-  end
-
   @impl true
   def run(arg, auth, "hub.me", params) when map_size(params) == 0 do
     case Hub.call(arg.hub, {:me, auth}) do
@@ -217,6 +207,7 @@ defmodule Helyx.Hub.Access do
     case Params.check(op, params) do
       {:ok, checked} -> hub_op(arg, auth, op, checked)
       :bad_params -> after_credential(arg, auth, @bad_params)
+      :text_too_large -> after_credential(arg, auth, error({:error, :text_too_large}))
     end
   end
 
@@ -269,6 +260,51 @@ defmodule Helyx.Hub.Access do
   defp hub_op(arg, auth, "hub.projects.delete", id),
     do: empty(Hub.call(arg.hub, {:project_delete, auth, id}, arg.until))
 
+  defp hub_op(arg, auth, "hub.schedules.create", {id, fields}) do
+    case create(arg, auth, id, fields) do
+      {:ok, schedule} -> {:ok, %{"schedule" => wire(schedule)}}
+      other -> error(other)
+    end
+  end
+
+  # The schedules of one session need the existence check; all need none.
+  defp hub_op(arg, auth, "hub.schedules.list", id) do
+    exists? = id != nil and found(arg, id) != nil
+
+    case Hub.call(arg.hub, {:schedule_list, auth, id, exists?}, arg.until) do
+      {:ok, rows} -> {:ok, %{"schedules" => Enum.map(rows, &wire(Schedules.view(&1)))}}
+      other -> error(other)
+    end
+  end
+
+  defp hub_op(arg, auth, "hub.schedules.delete", id),
+    do: empty(Hub.call(arg.hub, {:schedule_delete, auth, id}, arg.until))
+
+  defp create(arg, auth, id, fields) do
+    request = {:schedule_create, auth, id, found(arg, id) != nil, fields}
+
+    with {:ok, row} <- Hub.call(arg.hub, request, Map.get(arg, :until, :infinity)),
+         do: {:ok, Schedules.view(row)}
+  end
+
+  # `Helyx.Hub.schedule/3`: `hub.schedules.create` for the user `user_id`,
+  # with the same checks in the same order.
+  @doc false
+  def schedule(arg, user_id, params) do
+    case Params.check("hub.schedules.create", params) do
+      {:ok, {id, fields}} ->
+        case create(arg, %{user: user_id, token: nil}, id, fields) do
+          :revoked -> {:error, :unknown_user}
+          other -> other
+        end
+
+      code ->
+        {:error, code}
+    end
+  end
+
+  defp wire(schedule), do: Map.new(schedule, fn {key, value} -> {Atom.to_string(key), value} end)
+
   defp token(token),
     do: %{"id" => token.id, "name" => token.name, "created_at" => token.created_at}
 
@@ -302,7 +338,7 @@ defmodule Helyx.Hub.Access do
   # of the code; a name that another project of the user has is
   # `bad_params` (`hub.projects.*`).
   @codes ~w(session_not_found forbidden too_many_records too_many_projects unknown_project
-            unknown_token invalid_cwd)a
+            unknown_token invalid_cwd too_many_schedules unknown_schedule text_too_large)a
 
   defp error(:revoked), do: {:close, 4403}
   defp error({:error, :busy}), do: {:error, "busy", "too many requests in flight"}

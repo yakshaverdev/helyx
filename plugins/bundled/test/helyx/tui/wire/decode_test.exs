@@ -206,9 +206,11 @@ defmodule Helyx.TUI.Wire.DecodeTest do
       assert Decode.result(op, res) == :error, inspect(res)
     end
 
-    # The codes of a Hub are codes of the schema (protocol 6); each has a
-    # text of the footer, at most 27 bytes.
-    for code <- ~w(forbidden too_many_records too_many_projects unknown_project unknown_token)a do
+    # The codes of a Hub are codes of the schema (protocols 6 and 7); each
+    # has a text of the footer, at most 27 bytes.
+    for code <-
+          ~w(forbidden too_many_records too_many_projects unknown_project unknown_token
+             too_many_schedules unknown_schedule)a do
       assert Decode.result("steer", error.(Atom.to_string(code))) == {:ok, {:error, code}}
       assert Link.wire_error?(code) and byte_size(Link.error_text(code)) <= 27
     end

@@ -414,6 +414,12 @@ defmodule Helyx.HubTest do
     defdelegate saved(db, user, cwd, cursor, limit), to: SQLite
     defdelegate newest(db, owner, cwd), to: SQLite
     defdelegate hub_records?(db, owner), to: SQLite
+    defdelegate schedules(db, owner, session_id), to: SQLite
+    defdelegate schedule(db, id), to: SQLite
+    defdelegate put_schedule(db, schedule, per_session, per_user, deadline), to: SQLite
+    defdelegate delete_schedule(db, owner, id, deadline), to: SQLite
+    defdelegate due(db, now, limit), to: SQLite
+    defdelegate update_schedule(db, id, expect, changes, deadline), to: SQLite
 
     def add_user(db, user, max, :infinity), do: SQLite.add_user(db, user, max, :infinity)
 

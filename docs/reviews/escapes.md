@@ -379,3 +379,4 @@ One row per ticket that `/orchestrate` merged. An escape is a confirmed Codex fi
 | 2026-11-09 | #860 | cycles A to G: many rounds, each at its limit with open defects, then fixed by orchestrator decisions; see `docs/reviews/2026-11-06-client-kit.md` | gate r1 (Codex): 1 (a failed reconnect stopped the app), fixed; r2: approve | none. |
 | 2026-11-09 | #885 | fast mode, one round: Codex approve; failure path 2 (1 fixed, 1 accepted) | in-ship Codex approve (fast mode, no separate gate) | none. |
 | 2026-11-09 | #869 | slices 1 to C10, up to three rounds each before fast mode, one round each after; findings in `docs/reviews/` | in-ship Codex rounds per slice (fast mode, no separate gate) | the refusal check is the mechanical test the #868 checklist rule asked for. |
+| 2026-11-09 | #870 | fast mode, one round: 4 findings, all fixed | in-ship Codex round (fast mode, no separate gate) | none. |

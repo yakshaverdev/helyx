@@ -19,7 +19,7 @@ defmodule Helyx.Hub.Store.SQLite do
   import Helyx.Hub.Store.SQLite.Query
 
   alias Exqlite.Sqlite3
-  alias Helyx.Hub.Store.SQLite.{Disk, Projects, Records, Schema}
+  alias Helyx.Hub.Store.SQLite.{Disk, Projects, Records, Schedules, Schema}
 
   @version Schema.version()
 
@@ -304,4 +304,16 @@ defmodule Helyx.Hub.Store.SQLite do
   defdelegate newest(db, owner, cwd), to: Records
   @impl true
   defdelegate hub_records?(db, owner), to: Records
+  @impl true
+  defdelegate schedules(db, owner, session_id), to: Schedules
+  @impl true
+  defdelegate schedule(db, id), to: Schedules
+  @impl true
+  defdelegate put_schedule(db, schedule, per_session, per_user, deadline), to: Schedules
+  @impl true
+  defdelegate delete_schedule(db, owner, id, deadline), to: Schedules
+  @impl true
+  defdelegate due(db, now, limit), to: Schedules
+  @impl true
+  defdelegate update_schedule(db, id, expect, changes, deadline), to: Schedules
 end
