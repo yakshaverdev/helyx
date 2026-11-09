@@ -37,8 +37,8 @@ defmodule Helyx.Hook.CommandSettleTest do
 
     test "the command runs in the session's folder, and its group is held", %{input: input} do
       assert settle(input, "pwd >&2; exit 2") == {:continue, input.cwd <> "\n"}
-      assert_received {:held, {:watchdog, _}}
-      assert_received {:held, {:command, _}}
+      assert_received {:held, {:watchdog, _, _}}
+      assert_received {:held, {:command, _, _}}
     end
   end
 

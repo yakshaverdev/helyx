@@ -29,7 +29,15 @@ defmodule Helyx.Session.Hands.Settle do
   @doc false
   def start(state, {:settle, ref, turn_id, input, context}) do
     hooks = Map.fetch!(state.hooks, :before_settle)
-    extra = %{core: state.core, tools: Map.keys(state.tools), tool: nil, call_id: nil}
+
+    extra = %{
+      core: state.core,
+      tools: Hands.Sources.names(state),
+      tool: nil,
+      call_id: nil,
+      source: nil
+    }
+
     context = Map.merge(context, extra)
 
     {_task, state} =

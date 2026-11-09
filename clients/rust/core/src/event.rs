@@ -1,10 +1,10 @@
-//! The events of protocol 7, the `event` of an `event` frame and of a replay:
+//! The events of protocol 8, the `event` of an `event` frame and of a replay:
 //! the envelope of every event, and the data of each type that the client
 //! knows, each checked by the schema of `docs/features/wire-protocol.md`.
 
 use crate::check::{
     Broken, Checked, boolean, field, int_key, int_or_null, list_of, object, one_of, optional,
-    optional_one_of, seq_key, string, string_or_null,
+    optional_one_of, seq_key, string, string_or_null, strings,
 };
 use crate::json::Json;
 use crate::message::{Ask, Block, Message, Queue, Role, parse_tool_call};
@@ -57,6 +57,8 @@ pub enum EventData {
         answered: bool,
     },
     UiBlock(Shown),
+    /// The activated deferred tool names, in drop order.
+    ToolsChange(Vec<String>),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -186,6 +188,7 @@ fn parse_data(kind: &str, data: &Json) -> Checked<Option<EventData>> {
             answered: one_of(data, "outcome", &["answered", "ended"], "ask_end")? == "answered",
         },
         "ui_block" => EventData::UiBlock(Shown::parse(data)?),
+        "tools_change" => EventData::ToolsChange(strings(data, "activated", "tools_change")?),
         _ => return Ok(None),
     }))
 }

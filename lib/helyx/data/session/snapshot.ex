@@ -41,6 +41,8 @@ defmodule Helyx.Session.Snapshot do
       no result yet and for call id nil, each as the data of its event, in
       the order of the first event of the pair, at most
       `Helyx.UIBlock.max_turn_blocks/0` (`docs/features/ui-blocks.md`).
+    * `activated` – the activated deferred tool names, in drop order, as
+      in `:tools_change` (`docs/features/mcp-client.md`).
 
   A client works with one Helyx version and is a tolerant reader within it:
   it ignores an unknown event type and an unknown field (ADR 0006, revision
@@ -59,7 +61,7 @@ defmodule Helyx.Session.Snapshot do
     :usage,
     :context
   ]
-  defstruct @enforce_keys ++ [asks: [], ui_blocks: []]
+  defstruct @enforce_keys ++ [asks: [], ui_blocks: [], activated: []]
 
   @type ask :: %{ask_id: String.t(), call_id: String.t(), tool: String.t(), request: map()}
 
@@ -89,6 +91,7 @@ defmodule Helyx.Session.Snapshot do
           usage: Helyx.Session.Totals.t(),
           context: Helyx.Session.Totals.context() | nil,
           asks: [ask()],
-          ui_blocks: [ui_block()]
+          ui_blocks: [ui_block()],
+          activated: [String.t()]
         }
 end

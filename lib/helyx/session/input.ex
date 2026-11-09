@@ -109,6 +109,20 @@ defmodule Helyx.Session.Input do
 
   defp max_output_tokens(_limit), do: {:error, :invalid_max_output_tokens}
 
+  # The tools of a start or a resume: the checked specs of
+  # `Helyx.Tool.specs/2`, the tool sources, none with a list `only`
+  # (docs/features/mcp-client.md, decision 11), and the `check/0` of both,
+  # a source named by its module (`Helyx.Tool.check_available/1`).
+  def tools(core, only) do
+    plugins = Helyx.Core.plugins(core, Helyx.Tool)
+    sources = if only, do: [], else: Enum.filter(plugins, &Helyx.Tool.source?/1)
+    labelled = for source <- sources, do: {source, %{name: inspect(source)}}
+
+    with {:ok, tools} <- Helyx.Tool.specs(core, only),
+         :ok <- Helyx.Tool.check_available(tools ++ labelled),
+         do: {:ok, tools, sources}
+  end
+
   # A model ref string to its parsed ref and its provider plugin, for a
   # start, a resume, and a switch alike. With a limit, the provider must
   # apply it (docs/features/output-limit.md, decision 3).

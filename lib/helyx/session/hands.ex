@@ -1,22 +1,18 @@
 defmodule Helyx.Session.Hands do
   @moduledoc """
   Runs tool calls for one session in one working directory, as Tasks
-  linked to the hands (ADR 0003, ADR 0004). The session starts the hands
-  and addresses it by pid.
+  linked to the hands (ADR 0003, ADR 0004). The session addresses it by pid.
 
   The result of a call goes to the session as `{:tool_result, turn_id,
   call_id, {status, text}}`, or `{status, text, ui_blocks}` with the UI
-  blocks of the tool (`docs/features/ui-blocks.md`). A Task that dies without a
-  result gives an error result, unless a cancel request killed it. An
-  unknown tool gives an error result and starts no Task. The hands do not
-  check the working directory: a tool fails at its own use of a missing
-  path (`docs/features/tool-text-out-of-core.md`, item 4). Result text
-  leaves the hands through `Helyx.Message.cut_result/1`: valid UTF-8 and
-  at most `Helyx.Message.max_result_bytes/0` bytes, notice included. The
-  text of a tool that crashes, raises, throws, or exits is
-  `Helyx.Reason.text/1` of its reason; a return outside the contract and
-  a handle that is not released give a fixed text. The log gets the kind
-  of the term, and the term of a handle that is not released.
+  blocks of the tool (`docs/features/ui-blocks.md`). A Task that dies without a result
+  gives an error result, unless a cancel killed it; an unknown tool gives
+  one and starts no Task. The hands do not check the working directory
+  (`tool-text-out-of-core.md`). Result text leaves through `Helyx.Message.cut_result/1`.
+  The text of a tool that crashes, raises, throws, or exits is
+  `Helyx.Reason.text/1` of its reason; a return outside the contract and a
+  handle that is not released give a fixed text; the log gets the kind of a
+  return term and the term of a handle.
 
   Each hook runs in a Task of its own, released and refused as a call
   Task, from its call Task (`docs/features/hooks.md`) or from a
@@ -29,11 +25,10 @@ defmodule Helyx.Session.Hands do
   goes to the session after the release. An unconfirmed handle gets no
   second release: from then on, the hands refuse tool calls with an error
   result, and provider starts with an error.
-  `request_cancel/2` kills the Tasks of a turn and releases their handles.
-  Its answer is a fixed error text when a handle stays unconfirmed, and
-  the log names the handles. `stop/3` does the same for every Task at the
-  stop of the session and answers each unconfirmed handle. The rules and the
-  deadlines are in `docs/features/tool-resource-release.md`.
+  `request_cancel/2` kills the Tasks of a turn and releases their handles,
+  and `stop/3` every Task at the stop of the session; an unconfirmed handle
+  gives a fixed error text, and the log names it
+  (`docs/features/tool-resource-release.md`).
 
   A tool call can go on in the background (`Helyx.Tool.background/0`,
   `Helyx.Tool.started/1`): its start answer is a `{:started, result, pid}`
@@ -44,16 +39,14 @@ defmodule Helyx.Session.Hands do
 
   `start_provider/3` starts the provider process (ADR 0007) with an armed
   kill. When the provider process ends, the hands release its handles and
-  send `{:provider_down, pid, reason}`. The deadlines and the reasons are in
-  `docs/features/session-lifecycle.md`, sections "Deadlines", "Bounds",
-  and "Provider death".
+  send `{:provider_down, pid, reason}` (`session-lifecycle.md`). Tool sources: `Hands.Sources`.
   """
 
   use GenServer
 
   alias Helyx.Message.ToolCall
   alias Helyx.Session.Background
-  alias Helyx.Session.Hands.{Approval, Chain, Hooks, Outcome, Release, Settle, State}
+  alias Helyx.Session.Hands.{Approval, Chain, Hooks, Outcome, Release, Settle, Sources, State}
 
   @doc """
   Starts the hands for a session. Takes `core:`, `cwd:`,
@@ -66,11 +59,10 @@ defmodule Helyx.Session.Hands do
   def start_link(opts), do: GenServer.start_link(__MODULE__, struct!(State, opts))
 
   @doc """
-  Starts a tool call. `context` has the session id, the model, the
-  provider options, and the ModelContext plugin of `Helyx.Tool.context/0`;
-  the hands add the Core, the tool names, the name of the called tool, and
-  the call id. The result is sent to the session. A cast: a turn runs
-  Helyx tools while the hands can release its provider process.
+  Starts a tool call; `context` is that of `Helyx.Tool.context/0` but what
+  the hands add: the Core, the tool names, the called tool, its source, and
+  the call id. A cast: a turn runs Helyx tools while the hands can release
+  its provider process. The result is sent to the session.
   """
   @spec run(pid(), String.t(), ToolCall.t(), map()) :: :ok
   def run(hands, turn_id, %ToolCall{} = call, context),
@@ -284,6 +276,8 @@ defmodule Helyx.Session.Hands do
   defp cast({:approve, _turn_id, _call, _context, _provider} = request, state),
     do: {:noreply, Approval.start(state, request)}
 
+  defp cast({:source, request}, state), do: {:noreply, Sources.handle(request, state)}
+
   defp cast({:taken, id}, state),
     do: {:noreply, %{state | background: Background.taken(state.background, id)}}
 
@@ -323,6 +317,12 @@ defmodule Helyx.Session.Hands do
     do: Hooks.deliver(state, ref, result)
 
   defp deliver(ref, result, state) do
+    if Sources.task?(Map.fetch!(state.tasks, ref)),
+      do: Sources.deliver(state, ref),
+      else: deliver_call(ref, result, state)
+  end
+
+  defp deliver_call(ref, result, state) do
     {_task, turn_id, call_id, _tool, _place} = Map.fetch!(state.tasks, ref)
     state = Hooks.orphans(state, turn_id, State.chain_id(call_id))
     {{task, ^turn_id, ^call_id, tool, _place}, tasks} = Map.pop!(state.tasks, ref)
@@ -339,19 +339,20 @@ defmodule Helyx.Session.Hands do
     cwd = state.cwd
     hooks = state.hooks
 
-    context =
-      Map.merge(context, %{
-        core: state.core,
-        tools: Map.keys(state.tools),
-        tool: call.name,
-        call_id: call.id
-      })
-
-    case Map.fetch(state.tools, call.name) do
+    case Sources.lookup(state, call.name) do
       :error ->
         answer(state, turn_id, call.id, "unknown tool: #{call.name}")
 
       {:ok, tool} ->
+        context =
+          Map.merge(context, %{
+            core: state.core,
+            tools: Sources.names(state),
+            source: Map.get(state.source_pids, tool),
+            tool: call.name,
+            call_id: call.id
+          })
+
         {_task, state} =
           spawn_task(state, turn_id, call.id, tool, fn ->
             Process.put(:helyx_call, context)
@@ -365,9 +366,9 @@ defmodule Helyx.Session.Hands do
 
   @doc false
   # `id` is the call id, `{:hook, id}`, `{:settle, ref}`, `{:approval,
-  # call_id}`, or `:provider`; `module` is the tool, the hook, or the
-  # provider whose `release/3` gets the Task's handles, or nil for a chain
-  # Task, which holds none.
+  # call_id}`, `:provider`, or a source or server Task's (`Sources.task?/1`);
+  # `module` is the plugin whose `release/3` gets the Task's handles, or nil
+  # for a chain Task, which holds none.
   def spawn_task(state, turn_id, id, module, fun) do
     hands = self()
     session = state.session

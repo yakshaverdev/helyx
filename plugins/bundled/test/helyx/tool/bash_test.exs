@@ -46,6 +46,14 @@ defmodule Helyx.Tool.BashTest do
     end
   end
 
+  test "the bash tool holds its groups with their release records", %{tmp_dir: dir} do
+    Helyx.Test.Hands.fake(self())
+    assert {:ok, _text} = Helyx.Tool.Bash.run(%{"command" => "true"}, dir)
+    assert_received {:held, {:watchdog, os_pid, watchdog}} when is_integer(os_pid)
+    assert_received {:held, {:command, group, command}} when is_integer(group)
+    assert is_reference(watchdog) and is_reference(command)
+  end
+
   test "runs in the working directory and merges stderr", %{tmp_dir: dir, run: run} do
     result = run.(%{"command" => "pwd; echo err >&2"})
     refute result.is_error

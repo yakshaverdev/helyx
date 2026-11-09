@@ -6,7 +6,8 @@ defmodule Helyx.Session.Server.Calls do
 
   alias Helyx.{Message, ModelRef}
   alias Helyx.Session.{History, Input}
-  alias Helyx.Session.Server.{Asks, Compaction, Events, Records, State, TurnLoop, UIBlocks}
+  alias Helyx.Session.Server.{Asks, Compaction, Events, Records, Sources, State}
+  alias Helyx.Session.Server.{TurnLoop, UIBlocks}
 
   require Logger
 
@@ -72,6 +73,25 @@ defmodule Helyx.Session.Server.Calls do
     end
   end
 
+  # `Helyx.Tool.announce/1`, `put_tools/2`, and `notice/1`, from a source process.
+  def handle({:announce, _groups} = request, from, %State{} = state),
+    do: source_call(request, from, state)
+
+  def handle({:put_tools, _group, _value} = request, from, %State{} = state),
+    do: source_call(request, from, state)
+
+  def handle({:notice, _text} = request, from, %State{} = state),
+    do: source_call(request, from, state)
+
+  # `Helyx.Tool.deferred/2` and `activate/1`, from a tool call.
+  def handle({:deferred, version, wait_ms}, from, %State{} = state),
+    do: Sources.deferred(state, from, version, wait_ms)
+
+  def handle({:activate, names}, {pid, _tag}, %State{} = state) do
+    {activated, state} = Sources.activate(state, call_turn(state, pid), names)
+    {:reply, activated, state}
+  end
+
   # `Helyx.Tool.transcript/0`, from a Task of the hands.
   def handle(:transcript, _from, %State{} = state),
     do: {:reply, Helyx.Summary.kept(state.transcript, state.summary), state}
@@ -102,4 +122,19 @@ defmodule Helyx.Session.Server.Calls do
 
   # The stop of `Helyx.Sessions.stop/1`: `terminate/2` replies.
   def handle(:stop, from, %State{} = state), do: {:stop, :normal, %{state | stopper: from}}
+
+  defp source_call(request, {pid, _tag}, state) do
+    case Sources.call(state, pid, request) do
+      {:ok, reply, state} -> {:reply, reply, state}
+      :error -> {:reply, :error, state}
+    end
+  end
+
+  # The turn of a caller that is a running call or hook Task of it (the
+  # askers of `Asks`), else nil: a background run left its turn.
+  defp call_turn(%State{activity: %Helyx.Session.Turn{id: id, askers: askers}}, pid)
+       when is_map_key(askers, pid),
+       do: id
+
+  defp call_turn(_state, _pid), do: nil
 end

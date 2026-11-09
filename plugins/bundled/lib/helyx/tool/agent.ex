@@ -3,7 +3,7 @@ defmodule Helyx.Tool.Agent do
   Runs a task in a child session and gives its final text back: a
   subagent. The child is a normal session of the same Core, with the
   model of the parent's turn, its working folder, its `:provider_opts`,
-  its ModelContext plugin, its tools but this one and `question`, and a
+  its ModelContext plugin, its tools but this one, `question`, and `tool_search`, and a
   fresh context. Its header links the parent call, and its id is derived
   from the link (`Helyx.Sessions.child_id/2`); it is out of the session
   list. The result is the text of the child's last assistant message; a
@@ -59,8 +59,9 @@ defmodule Helyx.Tool.Agent do
       provider_opts: context.provider_opts,
       model_context: context.model_context,
       parent: %{session_id: context.session_id, call_id: context.call_id},
-      # No user watches a child, so it gets no question tool either.
-      tools: context.tools -- [name(), "question"]
+      # No user watches a child, so it gets no question tool either; it
+      # opens no tool source, so `tool_search` would find nothing.
+      tools: context.tools -- [name(), "question", "tool_search"]
     ]
 
     parent = Session.pid(%Session{id: context.session_id, core: context.core})

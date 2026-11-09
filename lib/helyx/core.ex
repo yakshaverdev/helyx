@@ -33,7 +33,9 @@ defmodule Helyx.Core do
   exports no point, with `{:invalid_hook_limit, plugin}` when a limit
   is not an integer from 1 to 600,000 (`docs/features/hooks.md`), and with
   `{:invalid_hook_name, plugin}` when a plugin on `before_settle` has a
-  name over 256 bytes (`docs/features/before-settle.md`). A plugin callback that
+  name over 256 bytes (`docs/features/before-settle.md`). A Tool plugin that
+  is neither a fixed tool nor a tool source refuses the start with
+  `{:invalid_tool_plugin, plugin}` (`docs/features/mcp-client.md`). A plugin callback that
   raises, throws, or exits at start is not contained: the error goes to the
   caller.
 
@@ -86,6 +88,7 @@ defmodule Helyx.Core do
          {:ok, ids} <- Helyx.Core.Plugins.provider_ids(providers),
          {:ok, limited} <- Helyx.Core.Plugins.limit_providers(providers),
          {:ok, hooks} <- Helyx.Core.Plugins.hooks(Map.get(table, Helyx.Hook, [])),
+         :ok <- Helyx.Core.Plugins.tools(Map.get(table, Helyx.Tool, [])),
          :ok <- check_recall_ms(recall_ms) do
       meta = [
         plugins: table,

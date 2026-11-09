@@ -43,28 +43,45 @@ defmodule Helyx.Provider.ClaudeCode.Program do
 
   def no_compaction(_state), do: HarnessIO.no_history(ClaudeCode.id())
 
-  # A program with the prompt `system` and `commands?`: the running one, or
-  # one in its place that resumes its harness session once the running one
-  # ended.
-  def ensure(%State{port: port, system: system, commands?: commands?} = state, system, commands?)
-      when port != nil,
-      do: state
+  # The program of a turn: the turn's prompt and its tools. Other tools than
+  # the running program's replace it, as another prompt does: its MCP
+  # server answers `tools/list` once, at the launch
+  # (`docs/features/mcp-client.md`, decision 10).
+  def turn(state, %Helyx.Context{system: system, tools: tools}),
+    do: ensure(state, system || "", false, tools)
+
+  # The program of a compaction keeps the prompt and the tools of the
+  # running one, and has the program commands for `/compact`.
+  def compaction(state), do: ensure(state, state.system || "", true, state.tools)
+
+  # A program with the prompt `system`, `commands?`, and `tools`: the
+  # running one, or one in its place that resumes its harness session once
+  # the running one ended.
+  defp ensure(
+         %State{port: port, system: system, commands?: commands?, tools: tools} = state,
+         system,
+         commands?,
+         tools
+       )
+       when port != nil,
+       do: state
 
   # A harness session with no stored state cannot be resumed: a fresh one
   # with a new meter takes its place, and its turn gets the replay.
-  def ensure(%State{port: nil, persist?: false, sent?: true} = state, system, commands?) do
+  defp ensure(%State{port: nil, persist?: false, sent?: true} = state, system, commands?, tools) do
     meter = Meter.start(nil, state.meter.config_window)
-    start(replace(state, meter: meter, commands?: commands?), system)
+    start(replace(state, meter: meter, commands?: commands?, tools: tools), system)
   end
 
-  def ensure(%State{port: nil} = state, system, commands?) do
+  defp ensure(%State{port: nil} = state, system, commands?, tools) do
     resume = if state.sent?, do: state.session_id, else: state.resume
-    start(replace(state, resume: resume, meter: state.meter, commands?: commands?), system)
+    fields = [resume: resume, meter: state.meter, commands?: commands?, tools: tools]
+    start(replace(state, fields), system)
   end
 
-  def ensure(state, system, commands?) do
+  defp ensure(state, system, commands?, tools) do
     case HarnessIO.finish(state) do
-      :ok -> ensure(%{state | port: nil}, system, commands?)
+      :ok -> ensure(%{state | port: nil}, system, commands?, tools)
       {:error, _reason} = error -> %{state | terminal: error}
     end
   end
@@ -84,7 +101,7 @@ defmodule Helyx.Provider.ClaudeCode.Program do
       env: state.env
     ]
 
-    struct!(State, keep ++ fields)
+    struct!(State, Keyword.merge(keep, fields))
   end
 
   # The prompt is the first line on stdin, so its size has the stdin bound

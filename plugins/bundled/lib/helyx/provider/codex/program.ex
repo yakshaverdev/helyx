@@ -2,8 +2,8 @@ defmodule Helyx.Provider.Codex.Program do
   @moduledoc false
   # The `codex app-server` program of `Helyx.Provider.Codex` and the open
   # of its thread: the flags, the thread's prompt and tools, the stored id,
-  # and the program that takes the place of one with another prompt
-  # (`docs/features/provider-parity.md`).
+  # and the program that takes the place of one with another prompt or
+  # other tools (`docs/features/provider-parity.md`).
 
   import Helyx.Provider.Codex.Wire, only: [reply: 3, rpc: 3]
 
@@ -70,20 +70,24 @@ defmodule Helyx.Provider.Codex.Program do
   # takes the new one (research note): a new program takes the place of
   # the running one and resumes the thread at its `initialize` answer. The
   # steers without an answer and the child threads end with the old
-  # program, which ends before the new one starts.
-  def replace(state, system) do
+  # program, which ends before the new one starts. A thread's tools are
+  # fixed at `thread/start`, and `initialize` depends on them: other tools
+  # give a new program and a fresh thread (`mcp-client.md`, decision 10).
+  def replace(state, system, specs) do
     state =
       Enum.reduce(state.asked, %{state | asked: %{}}, fn {_id, from}, s ->
         reply(s, from, {:error, :restarted})
       end)
 
-    # An ephemeral thread cannot be resumed: a fresh one gets the replay.
-    resume = if state.persist?, do: state.thread
-    fields = [port: nil, thread: nil, resume: resume, system: system, buffer: [], size: 0]
+    # An ephemeral thread cannot be resumed, nor one of other tools, whose
+    # digest its stored id holds: a fresh one gets the replay.
+    resume = if state.persist? and specs === state.tools.specs, do: state.thread
+    tools = %{state.tools | specs: specs}
+    fields = [port: nil, thread: nil, resume: resume, system: system, tools: tools, buffer: []]
 
     with :ok <- HarnessIO.finish(state),
          %State{terminal: nil} = state <-
-           launch(struct!(state, fields ++ [due: %{}, agents: %{}])) do
+           launch(struct!(state, fields ++ [size: 0, due: %{}, agents: %{}])) do
       state
     else
       {:error, reason} -> failed(state, reason)

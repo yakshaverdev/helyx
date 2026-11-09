@@ -1,8 +1,16 @@
 defmodule Helyx.Watchdog.Group do
   @moduledoc false
-  # The release of the handles of `Helyx.Watchdog`: `{:command, group}` for the
-  # command's process group and `{:watchdog, os_pid}` for the watchdog, which
-  # is its own group. Returns the handles whose group still has a process.
+  # The release of the handles of `Helyx.Watchdog`: `{:command, group, record}`
+  # for the command's process group and `{:watchdog, os_pid, record}` for the
+  # watchdog, which is its own group. Returns the handles whose group still
+  # has a process.
+  #
+  # Each group has one release record (`Helyx.Watchdog.Record`), which
+  # every copy of its handle carries. A release takes the record of each
+  # handle once, before any probe or signal: one that is gone is confirmed
+  # with no signal, so a number that the OS gave to a new group is never
+  # signalled; one that another release holds is waited for. A probe that
+  # confirms a group gone writes it gone; the others end not confirmed.
   #
   # Command groups go first, then the watchdogs. A watchdog is a reaper: it
   # is swept only after every command group is gone or still held, because a
@@ -20,7 +28,13 @@ defmodule Helyx.Watchdog.Group do
   # gone only when kill(1) reports "No such process". Any other failure,
   # such as a group of another user, keeps it held.
 
+  alias Helyx.Watchdog.Record
+
   @wait_ms 5_000
+
+  @doc false
+  # A new release record, for a handle of `Helyx.Watchdog.start/4`.
+  defdelegate record, to: Helyx.Watchdog.Record, as: :new
 
   @doc false
   # The longest `release/4` of a cancel with the default grace: the grace,
@@ -40,15 +54,43 @@ defmodule Helyx.Watchdog.Group do
     # `group > 1` is a deliberate safety lock: `kill -- -1` would signal
     # every process the user may signal. No caller makes such a handle
     # (`parse_marker/2` in `Helyx.Watchdog`, `Port.info(port, :os_pid)`).
-    commands = for {:command, group} when is_integer(group) and group > 1 <- handles, do: group
-    watchdogs = for {:watchdog, group} when is_integer(group) and group > 1 <- handles, do: group
+    groups =
+      for {kind, group, record} = handle <- handles,
+          kind in [:command, :watchdog] and is_integer(group) and group > 1 and
+            is_reference(record),
+          do: handle
+
+    # Copies of a handle carry one record: it is taken once, and they get
+    # its one outcome.
+    taken =
+      groups
+      |> Enum.uniq_by(&elem(&1, 2))
+      |> Enum.group_by(&Record.take(elem(&1, 2), deadline))
+
+    alive = sweep_taken(Map.get(taken, :taken, []), mode, deadline, grace, kill)
+    records = MapSet.new(alive ++ Map.get(taken, :held, []), &elem(&1, 2))
+    Enum.filter(groups, &(elem(&1, 2) in records))
+  end
+
+  # Releases the groups of the taken handles and returns the handles whose
+  # group still has a process. Each record ends gone or not confirmed, also
+  # when the release raises.
+  defp sweep_taken(taken, mode, deadline, grace, kill) do
+    commands = for {:command, _group, _record} = handle <- taken, do: handle
+    watchdogs = for {:watchdog, _group, _record} = handle <- taken, do: handle
     # A probe first: a group that stays to the deadline must not keep the
     # handles of groups that are gone already, which the waits would not
     # reach.
-    commands = alive(commands, kill)
-    watchdogs = alive(watchdogs, kill)
-    {commands, watchdogs} = sweep(commands, watchdogs, mode, deadline, grace, kill)
-    Enum.map(commands, &{:command, &1}) ++ Enum.map(watchdogs, &{:watchdog, &1})
+    {commands, watchdogs} =
+      sweep(alive(commands, kill), alive(watchdogs, kill), mode, deadline, grace, kill)
+
+    alive = commands ++ watchdogs
+    Enum.each(alive, &Record.unconfirmed(elem(&1, 2), deadline))
+    alive
+  catch
+    kind, reason ->
+      Enum.each(taken, &Record.unconfirmed(elem(&1, 2), deadline))
+      :erlang.raise(kind, reason, __STACKTRACE__)
   end
 
   defp sweep(commands, watchdogs, mode, deadline, grace, kill) do
@@ -76,13 +118,14 @@ defmodule Helyx.Watchdog.Group do
   # One kill(1) run signals the whole set.
   defp signal([], _name, _kill), do: :ok
 
-  defp signal(groups, name, kill) do
-    kill.(["-#{name}", "--" | Enum.map(groups, &"-#{&1}")])
+  defp signal(handles, name, kill) do
+    kill.(["-#{name}", "--" | Enum.map(handles, &"-#{elem(&1, 1)}")])
     :ok
   end
 
   # Polls until every group is empty or the monotonic time `until` passes.
-  # No sleep passes `until`. Returns the groups that still have a process.
+  # No sleep passes `until`. Returns the handles whose group still has a
+  # process.
   defp poll_gone(groups, until, kill) do
     case alive(groups, kill) do
       [] ->
@@ -100,7 +143,13 @@ defmodule Helyx.Watchdog.Group do
     end
   end
 
-  defp alive(groups, kill), do: Enum.reject(groups, &gone?(kill.(["-0", "--", "-#{&1}"])))
+  # The handles whose group still has a process; a group confirmed gone
+  # has its record written gone at once.
+  defp alive(handles, kill) do
+    Enum.reject(handles, fn {_kind, group, record} ->
+      gone?(kill.(["-0", "--", "-#{group}"])) and Record.gone(record) == :ok
+    end)
+  end
 
   defp gone?({text, status}) when status != 0, do: String.contains?(text, "No such process")
   defp gone?(_alive_or_skipped), do: false

@@ -32,6 +32,8 @@ defmodule Helyx.Session.Hands.State do
     tasks: %{},
     hooks: %{},
     hook_runs: %{},
+    # The pid of the source process of each tool source plugin (`Sources`).
+    source_pids: %{},
     background: %Background{},
     held: %{},
     unconfirmed: [],

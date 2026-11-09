@@ -59,7 +59,7 @@ defmodule Helyx.Provider.Codex.HelyxToolsTest do
 
     defp tools_turn(work) do
       {:ok, state} = Codex.init("m", [@spec_bash], cwd: work)
-      turn = {:turn, "t1", %Helyx.Context{messages: [Message.user("x")]}}
+      turn = {:turn, "t1", %Helyx.Context{messages: [Message.user("x")], tools: [@spec_bash]}}
       {_from, actions, state} = ask(state, turn)
       {state, actions}
     end
@@ -93,7 +93,7 @@ defmodule Helyx.Provider.Codex.HelyxToolsTest do
       fresh(bin, 1, tid(), reply(tid(), "Hi."))
       tools = @file_tools ++ [@spec_bash]
       {:ok, state} = Codex.init("m", tools, cwd: work)
-      context = %Helyx.Context{system: "Be brief.", messages: [Message.user("x")]}
+      context = %Helyx.Context{system: "Be brief.", messages: [Message.user("x")], tools: tools}
       {_from, actions, state} = ask(state, {:turn, "t1", context})
       {actions, state} = pump(Codex, state, actions, &turn_ended?/1)
       close(state)
@@ -399,6 +399,84 @@ defmodule Helyx.Provider.Codex.HelyxToolsTest do
                answers(bin, 1)
 
       GenServer.stop(Session.pid(session))
+    end
+  end
+
+  describe "a change of the tools (docs/features/mcp-client.md, decision 10)" do
+    @spec_docs %{name: "docs__search", description: "Search.", parameters: %{"type" => "object"}}
+
+    defp tools_run(state, tools, messages, system \\ nil) do
+      context = %Helyx.Context{system: system, messages: messages, tools: tools}
+      {_from, actions, state} = ask(state, {:turn, "t1", context})
+      {actions, state} = pump(Codex, state, actions, &turn_ended?/1)
+      {events(actions), state}
+    end
+
+    test "a turn with other tools starts a fresh thread with them and the replay in a new program; the same tools keep the program",
+         %{bin: bin, work: work} do
+      fresh(bin, 1, tid(), reply(tid(), "one"))
+      fresh(bin, 2, fresh_tid(), reply(fresh_tid(), "two"))
+      more = [@spec_bash, @spec_docs]
+
+      {:ok, state} = Codex.init("m", [@spec_bash], cwd: work)
+      {_events, state} = tools_run(state, [@spec_bash], [Message.user("x")])
+      history = [Message.user("x"), answer("one"), Message.user("y")]
+      {events, state} = tools_run(state, more, history)
+      {_events, state} = tools_run(state, more, history ++ [answer("two"), Message.user("z")])
+      close(state)
+
+      assert runs(bin) == "2"
+      assert request(bin, 2, "thread/resume") == nil
+      %{"params" => %{"dynamicTools" => dynamic}} = request(bin, 2, "thread/start")
+      assert Enum.map(dynamic, & &1["name"]) == ["bash", "docs__search"]
+      assert %{"params" => %{"items" => [_x, _one]}} = request(bin, 2, "thread/inject_items")
+      assert [{:resume_id, id, _cut} | _] = events
+      assert id == stored(fresh_tid(), more)
+      assert [_, _] = for(%{"method" => "turn/start"} <- stdin(bin, 2), do: :turn)
+    end
+
+    test "a first turn with other tools than the start opens no stored thread of the old tools, in a program whose initialize asks for them",
+         %{bin: bin, work: work} do
+      initialize(bin, 1)
+      fresh(bin, 2, fresh_tid(), reply(fresh_tid(), "one"))
+
+      {:ok, state} = Codex.init("m", [], cwd: work, resume_id: stored(tid()))
+      {events, state} = tools_run(state, [@spec_docs], [Message.user("x")])
+      close(state)
+
+      assert runs(bin) == "2"
+      assert request(bin, 1, "initialize")["params"]["capabilities"] == nil
+
+      assert %{"params" => %{"capabilities" => %{"experimentalApi" => true}}} =
+               request(bin, 2, "initialize")
+
+      assert request(bin, 2, "thread/resume") == nil
+
+      assert %{"params" => %{"dynamicTools" => [%{"name" => "docs__search"}]}} =
+               request(bin, 2, "thread/start")
+
+      assert [{:resume_id, id, 0} | _] = events
+      assert id == stored(fresh_tid(), [@spec_docs])
+    end
+
+    test "a changed description is other tools, and with another prompt one new program has both",
+         %{bin: bin, work: work} do
+      fresh(bin, 1, tid(), reply(tid(), "one"))
+      fresh(bin, 2, fresh_tid(), reply(fresh_tid(), "two"))
+      changed = %{@spec_docs | description: "Search the docs."}
+
+      {:ok, state} = Codex.init("m", [@spec_docs], cwd: work)
+      {_events, state} = tools_run(state, [@spec_docs], [Message.user("x")], "A")
+      history = [Message.user("x"), answer("one"), Message.user("y")]
+      {_events, state} = tools_run(state, [changed], history, "B")
+      close(state)
+
+      assert runs(bin) == "2"
+
+      assert %{"params" => %{"baseInstructions" => "B", "dynamicTools" => [tool]}} =
+               request(bin, 2, "thread/start")
+
+      assert tool["description"] == "Search the docs."
     end
   end
 end

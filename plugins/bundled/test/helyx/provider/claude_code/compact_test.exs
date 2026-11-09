@@ -81,6 +81,22 @@ defmodule Helyx.Provider.ClaudeCode.CompactTest do
     {events_of(actions), state}
   end
 
+  test "a compaction's program keeps the tools of the running program", %{bin: bin, work: work} do
+    list = mcp_request("l1", %{jsonrpc: "2.0", id: 1, method: "tools/list"})
+    tools = [%{name: "docs__search", description: "Search.", parameters: %{"type" => "object"}}]
+    turn(bin, 1, 1, reply("one"))
+    turn(bin, 2, 1, [list | compaction(9, 2)])
+    context = %Helyx.Context{messages: [Helyx.Message.user("x")], tools: tools}
+
+    {_events, state} = run(harness(work), {:turn, "t1", context})
+    assert {[{:compaction, 9, 2}, {:done, _}], state} = run(state, {:compact, "t2", ""})
+    assert state.tools == tools
+    closed(state)
+
+    assert %{"l1" => %{"result" => %{"tools" => [%{"name" => "docs__search"}]}}} =
+             answers(bin, 2)
+  end
+
   # `--disable-slash-commands` also takes out `/compact` (research note,
   # #754): the compaction resumes the harness session in a program without
   # the flag, with the prompt of the running program, and the next turn in

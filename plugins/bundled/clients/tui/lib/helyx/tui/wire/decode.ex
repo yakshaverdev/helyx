@@ -1,13 +1,11 @@
 defmodule Helyx.TUI.Wire.Decode do
   @moduledoc false
-  # The JSON values of the server as the Core values that
-  # `Helyx.TUI.ViewModel` folds (`docs/features/wire-protocol.md`,
-  # "Codec"). Each is checked strictly against the schema before it becomes
-  # a Core value (`docs/features/tui-attach.md`, decision 14); the tolerant
-  # decoder of the session file is not used. A key that it does not know is
-  # ignored, and an event of a type that it does not know is nil. A known
-  # value with a broken shape raises, and each public function gives
-  # `:error` for it: the connection ends on a contract break.
+  # The JSON values of the server as the Core values that `Helyx.TUI.ViewModel` folds
+  # (`docs/features/wire-protocol.md`, "Codec"). Each is checked strictly against the schema
+  # before it becomes a Core value (`docs/features/tui-attach.md`, decision 14); the tolerant
+  # decoder of the session file is not used. A key that it does not know is ignored, and an event
+  # of a type that it does not know is nil. A known value with a broken shape raises, and each
+  # public function gives `:error` for it: the connection ends on a contract break.
 
   alias Helyx.{Event, Message, Usage}
   alias Helyx.Session.File.Scan
@@ -17,7 +15,7 @@ defmodule Helyx.TUI.Wire.Decode do
 
   @event_types ~w(turn_start message_start message_update message_end tool_execution_end
                   turn_end queue_update queue_dropped model_change resume_id
-                  steer_unconfirmed compaction notice ask ask_end ui_block)a
+                  steer_unconfirmed compaction notice ask ask_end ui_block tools_change)a
   @types Map.new(@event_types, &{Atom.to_string(&1), &1})
 
   @error_codes ~w(unknown_op bad_params busy timeout failed session_not_found
@@ -37,17 +35,16 @@ defmodule Helyx.TUI.Wire.Decode do
   defguardp count?(value) when is_integer(value) and value >= 0
   defguardp count_or_nil?(value) when is_nil(value) or count?(value)
   defguardp cost_or_nil?(value) when is_nil(value) or (is_number(value) and value >= 0)
-  # A cost of the totals over 10^300 counts as 10^300: the footer shows
-  # `>$99999` for both, and adding a message cost of at most 10^12 to it
-  # stays in the float range (usage-and-limits.md, "session totals").
+  # A cost of the totals over 10^300 counts as 10^300: the footer shows `>$99999` for both, and
+  # adding a message cost of at most 10^12 to it stays in the float range (usage-and-limits.md,
+  # "session totals").
   @max_total_cost 1.0e300
 
   @spec event(term()) :: {:ok, Event.t() | nil} | :error
   def event(value), do: decoded(fn -> event!(value) end)
 
-  # The result of a request of `op`: `{:ok, result}` as the operation of
-  # Core gives it, or `{:error, code}`, with `{code, text}` for the codes
-  # of `@texts`.
+  # The result of a request of `op`: `{:ok, result}` as the operation of Core gives it, or
+  # `{:error, code}`, with `{code, text}` for the codes of `@texts`.
   @spec result(String.t(), term()) :: {:ok, term()} | :error
   def result(op, value), do: decoded(fn -> result!(op, value) end)
 
@@ -158,6 +155,7 @@ defmodule Helyx.TUI.Wire.Decode do
   end
 
   defp data(:model_change, %{"model" => model}), do: %{model: model!(model)}
+  defp data(:tools_change, %{"activated" => names}), do: %{activated: activated!(names)}
 
   defp data(:resume_id, %{"provider" => provider, "resume_id" => id, "lost" => lost, "cut" => cut})
        when is_binary(provider) and is_binary(id) and is_boolean(lost) and count?(cut),
@@ -221,14 +219,14 @@ defmodule Helyx.TUI.Wire.Decode do
          waiting: waiting
        }
 
-  # An integer of any size: the call line shows it as its text, cut with
-  # the line (`Helyx.TUI.CallLine`).
+  # An integer of any size: the call line shows it as its text, cut with the line
+  # (`Helyx.TUI.CallLine`).
   defp tool_call(%{"type" => "tool_call", "id" => id, "name" => name, "arguments" => %{} = args})
        when is_binary(id) and is_binary(name),
        do: %Message.ToolCall{id: id, name: name, arguments: args}
 
-  # Any count of blocks: a cell keeps the first 1,024 and a cut of the
-  # others (`Helyx.TUI.ViewModel.Cut`).
+  # Any count of blocks: a cell keeps the first 1,024 and a cut of the others
+  # (`Helyx.TUI.ViewModel.Cut`).
   defp message!(%{"id" => id, "role" => role, "content" => content} = message)
        when is_binary(id) and is_list(content) do
     role = role!(role)
@@ -257,9 +255,9 @@ defmodule Helyx.TUI.Wire.Decode do
   defp role!("assistant"), do: :assistant
   defp role!("tool_result"), do: :tool_result
 
-  # An origin of the schema. A user message keeps one that Core makes, so
-  # it decodes as Core holds it (`unknown` is one of a file from before
-  # #649); any other is dropped, as the TUI shows no origin.
+  # An origin of the schema. A user message keeps one that Core makes, so it decodes as Core holds
+  # it (`unknown` is one of a file from before #649); any other is dropped, as the TUI shows no
+  # origin.
   defp origin!(_role, nil), do: nil
 
   defp origin!(role, %{"kind" => kind, "id" => id}) when is_binary(id) or is_nil(id) do
@@ -274,8 +272,8 @@ defmodule Helyx.TUI.Wire.Decode do
   defp origin_kind!("hook"), do: :hook
   defp origin_kind!("unknown"), do: :unknown
 
-  # A text of a tool result gets the cut of Core at each boundary of tool
-  # text (`Helyx.Message.cut_result/1`), once, so no frame draws more.
+  # A text of a tool result gets the cut of Core at each boundary of tool text
+  # (`Helyx.Message.cut_result/1`), once, so no frame draws more.
   defp block!(%{"type" => "text", "text" => text}, :tool_result) when is_binary(text),
     do: %Message.Text{text: Message.cut_result(text)}
 
@@ -296,9 +294,9 @@ defmodule Helyx.TUI.Wire.Decode do
   defp flag!(nil), do: false
   defp flag!(value) when is_boolean(value), do: value
 
-  # The known keys of a usage, checked by the schema. A usage that Core
-  # would not make (`Helyx.Usage.valid?/1`) is the unknown usage `%Usage{}`,
-  # the usage of a message whose accounting is missing.
+  # The known keys of a usage, checked by the schema. A usage that Core would not make
+  # (`Helyx.Usage.valid?/1`) is the unknown usage `%Usage{}`, the usage of a message whose
+  # accounting is missing.
   defp usage!(nil), do: nil
 
   defp usage!(%{} = object) do
@@ -317,8 +315,10 @@ defmodule Helyx.TUI.Wire.Decode do
   defp cost_kind!("list"), do: :list
   defp cost_kind!("billed"), do: :billed
 
-  # Any string: the footer and the line of a model change draw it cut and
-  # cleaned (`Helyx.TUI.Footer`, `Helyx.TUI.ViewModel`).
+  defp activated!(names) when is_list(names), do: Enum.map(names, &(<<_::binary>> = &1))
+
+  # Any string: the footer and the line of a model change draw it cut and cleaned
+  # (`Helyx.TUI.Footer`, `Helyx.TUI.ViewModel`).
   defp model!(model) when is_binary(model), do: model
 
   defp snapshot!(%{
@@ -333,7 +333,8 @@ defmodule Helyx.TUI.Wire.Decode do
          "usage" => usage,
          "context" => context,
          "asks" => asks,
-         "ui_blocks" => ui_blocks
+         "ui_blocks" => ui_blocks,
+         "activated" => activated
        })
        when is_binary(instance_id) and count?(seq) and is_list(messages) and is_boolean(more) and
               is_boolean(persisting) and is_list(asks) and is_list(ui_blocks) do
@@ -349,7 +350,8 @@ defmodule Helyx.TUI.Wire.Decode do
       usage: totals(usage),
       context: context(context),
       asks: Enum.map(asks, &ask/1),
-      ui_blocks: Enum.map(ui_blocks, &UIBlocks.shown!/1)
+      ui_blocks: Enum.map(ui_blocks, &UIBlocks.shown!/1),
+      activated: activated!(activated)
     }
 
     # A snapshot that the fold cannot take raises here, not in the owner.

@@ -14,7 +14,7 @@ use std::collections::HashMap;
 
 const CHALLENGE: &str =
     r#"{"type":"challenge","nonce":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="}"#;
-const WELCOME: &str = r#"{"type":"welcome","protocol":7}"#;
+const WELCOME: &str = r#"{"type":"welcome","protocol":8}"#;
 
 /// The frames that the client sends among `outputs`, decoded.
 fn sent(outputs: &[Output]) -> Vec<Value> {
@@ -31,7 +31,7 @@ fn sent(outputs: &[Output]) -> Vec<Value> {
 fn welcomed(client: &mut Client) -> Vec<Output> {
     client.connect();
     let hello = client.receive(CHALLENGE).unwrap();
-    assert_eq!(sent(&hello), [json!({"type": "hello", "protocol": 7})]);
+    assert_eq!(sent(&hello), [json!({"type": "hello", "protocol": 8})]);
     let outputs = client.receive(WELCOME).unwrap();
     assert_eq!(outputs[0], Output::Welcome);
     outputs
@@ -128,7 +128,7 @@ fn the_folds_through_connections() {
 
 fn snapshot(seq: u64) -> Value {
     json!({"instance_id": "i1", "seq": seq, "messages": [], "more": false, "turn": null,
-           "model": "fake/echo", "persisting": true, "context": null, "asks": [], "ui_blocks": [],
+           "model": "fake/echo", "persisting": true, "context": null, "asks": [], "ui_blocks": [], "activated": [],
            "queue": {"steers": 0, "follow_ups": 0, "running": 0, "held": 0, "waiting": 0},
            "usage": {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0,
                      "cost": null, "unknown": false, "list": false}})
@@ -230,8 +230,8 @@ fn after_a_welcome_a_failed_open_reconnects() {
     assert_eq!(client.closed(None), Next::Reconnect);
     client.connect();
     client.receive(CHALLENGE).unwrap();
-    let refused = r#"{"type":"refused","code":"protocol","server_protocol":8}"#;
-    assert_eq!(client.receive(refused).unwrap(), [Output::Refused(8)]);
+    let refused = r#"{"type":"refused","code":"protocol","server_protocol":9}"#;
+    assert_eq!(client.receive(refused).unwrap(), [Output::Refused(9)]);
     assert_eq!(client.closed(Some(4426)), Next::Stop);
     let mut client = following(4);
     assert!(client.receive(&notice(9)).is_err());
@@ -1061,7 +1061,7 @@ fn a_subscription_after_a_renewal_is_live() {
     let outputs = client.receive(&instance_changed(&history)).unwrap();
     let subscribe = &sent(&outputs)[0]["id"];
     let snap = json!({"instance_id": "i2", "seq": 1, "messages": [], "more": false,
-        "turn": null, "model": "fake/echo", "persisting": true, "context": null, "asks": [], "ui_blocks": [],
+        "turn": null, "model": "fake/echo", "persisting": true, "context": null, "asks": [], "ui_blocks": [], "activated": [],
         "queue": {"steers": 0, "follow_ups": 0, "running": 0, "held": 0, "waiting": 0},
         "usage": {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0,
                   "cost": null, "unknown": false, "list": false}});

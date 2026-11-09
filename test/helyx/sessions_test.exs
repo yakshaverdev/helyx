@@ -164,7 +164,7 @@ defmodule Helyx.SessionsTest do
         send(
           test,
           {:started, self(),
-           Session.Server.start(state, {tools, Helyx.Tool.concurrent(tools)}, open)}
+           Session.Server.start(state, {tools, Helyx.Tool.concurrent(tools), []}, open)}
         )
       end)
     end

@@ -29,7 +29,10 @@ defmodule Helyx.Provider.ClaudeCode.HelyxToolsTest do
       {:ok, state} = ClaudeCode.init("haiku", [@spec_bash], cwd: work)
 
       {_from, actions, state} =
-        request(state, {:turn, "t1", %Helyx.Context{messages: [Message.user("x")]}})
+        request(
+          state,
+          {:turn, "t1", %Helyx.Context{messages: [Message.user("x")], tools: state.tools}}
+        )
 
       pump(ClaudeCode, state, actions, fn actions ->
         Enum.any?(actions, &match?({:event, _, {:tool_request, _, _, _}}, &1))
@@ -85,7 +88,10 @@ defmodule Helyx.Provider.ClaudeCode.HelyxToolsTest do
       {:ok, state} = ClaudeCode.init("haiku", @file_tools ++ [@spec_bash], cwd: work)
 
       {_from, _actions, state} =
-        request(state, {:turn, "t1", %Helyx.Context{messages: [Message.user("x")]}})
+        request(
+          state,
+          {:turn, "t1", %Helyx.Context{messages: [Message.user("x")], tools: state.tools}}
+        )
 
       closed(settle(ClaudeCode, state, &marked?/1))
 
@@ -163,7 +169,10 @@ defmodule Helyx.Provider.ClaudeCode.HelyxToolsTest do
       {:ok, state} = ClaudeCode.init("haiku", [@spec_bash], cwd: work)
 
       {_from, actions, state} =
-        request(state, {:turn, "t1", %Helyx.Context{messages: [Message.user("x")]}})
+        request(
+          state,
+          {:turn, "t1", %Helyx.Context{messages: [Message.user("x")], tools: state.tools}}
+        )
 
       {actions, state} = pump(ClaudeCode, state, actions, &ended?/1)
       closed(state)
@@ -204,7 +213,10 @@ defmodule Helyx.Provider.ClaudeCode.HelyxToolsTest do
       {:ok, state} = ClaudeCode.init("haiku", [@spec_bash], cwd: work)
 
       {_from, actions, state} =
-        request(state, {:turn, "t1", %Helyx.Context{messages: [Message.user("x")]}})
+        request(
+          state,
+          {:turn, "t1", %Helyx.Context{messages: [Message.user("x")], tools: state.tools}}
+        )
 
       {actions, state} = pump(ClaudeCode, state, actions, &ended?/1)
       closed(state)
@@ -291,6 +303,66 @@ defmodule Helyx.Provider.ClaudeCode.HelyxToolsTest do
                answers(bin, 1)
 
       assert text =~ "hello"
+    end
+  end
+
+  describe "a change of the tools (docs/features/mcp-client.md, decision 10)" do
+    @spec_docs %{name: "docs__search", description: "Search.", parameters: %{"type" => "object"}}
+
+    defp tools_run(state, tools, text, system \\ nil) do
+      context = %Helyx.Context{system: system, messages: [Message.user(text)], tools: tools}
+      {_from, actions, state} = request(state, {:turn, "t1", context})
+      {_actions, state} = pump(ClaudeCode, state, actions, &ended?/1)
+      state
+    end
+
+    test "a turn with other tools resumes the harness session in a new program that lists them; the same tools keep the program",
+         %{bin: bin, work: work} do
+      list = mcp_request("l1", %{jsonrpc: "2.0", id: 1, method: "tools/list"})
+      turn(bin, 1, 1, reply("one"))
+      turn(bin, 2, 1, [list | reply("two")])
+      turn(bin, 2, 2, reply("three"))
+
+      state = tools_run(harness(work), [@spec_bash], "x")
+      id = state.session_id
+      state = tools_run(state, [@spec_bash, @spec_docs], "y")
+      assert programs(bin) == "2"
+      assert ("--resume=" <> id) in args(bin, 2)
+
+      state = tools_run(state, [@spec_bash, @spec_docs], "z")
+      assert programs(bin) == "2"
+      closed(state)
+
+      assert %{"l1" => %{"id" => 1, "result" => %{"tools" => tools}}} = answers(bin, 2)
+      assert Enum.map(tools, & &1["name"]) == ["bash", "docs__search"]
+    end
+
+    test "a tool whose schema changed is other tools", %{bin: bin, work: work} do
+      turn(bin, 1, 1, reply("one"))
+      turn(bin, 2, 1, reply("two"))
+
+      state = tools_run(harness(work), [@spec_docs], "x")
+      changed = %{@spec_docs | parameters: %{"type" => "object", "required" => ["q"]}}
+      state = tools_run(state, [changed], "y")
+      assert programs(bin) == "2"
+      assert state.tools == [changed]
+      closed(state)
+    end
+
+    test "another prompt and other tools together give one new program with both",
+         %{bin: bin, work: work} do
+      list = mcp_request("l1", %{jsonrpc: "2.0", id: 1, method: "tools/list"})
+      turn(bin, 1, 1, reply("one"))
+      turn(bin, 2, 1, [list | reply("two")])
+
+      state = tools_run(harness(work), [@spec_bash], "x", "A")
+      state = tools_run(state, [@spec_bash, @spec_docs], "y", "B")
+      closed(state)
+
+      assert programs(bin) == "2"
+      assert initialize(bin, 2) == "B"
+      assert %{"l1" => %{"result" => %{"tools" => tools}}} = answers(bin, 2)
+      assert Enum.map(tools, & &1["name"]) == ["bash", "docs__search"]
     end
   end
 end

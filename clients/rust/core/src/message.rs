@@ -1,9 +1,9 @@
-//! The data shapes of protocol 7 that the fold keeps: messages, blocks, asks,
+//! The data shapes of protocol 8 that the fold keeps: messages, blocks, asks,
 //! the queue, the snapshot. Each `parse` checks a value by the schema.
 
 use crate::check::{
     Broken, Checked, boolean, field, int, int_key, int_or_null, list_of, number, object, one_of,
-    optional, optional_bool, optional_one_of, seq_key, string, string_or_null,
+    optional, optional_bool, optional_one_of, seq_key, string, string_or_null, strings,
 };
 use crate::json::Json;
 use crate::seq::Seq;
@@ -221,6 +221,8 @@ pub struct Snapshot {
     pub asks: Vec<Ask>,
     /// The UI blocks that the session shows, in their order.
     pub ui_blocks: Vec<Shown>,
+    /// The activated deferred tool names, in drop order.
+    pub activated: Vec<String>,
 }
 
 impl Snapshot {
@@ -266,6 +268,7 @@ impl Snapshot {
             persisting: boolean(map, "persisting", "snapshot persisting")?,
             asks: list_of(map, "asks", "snapshot asks", Ask::parse)?,
             ui_blocks: list_of(map, "ui_blocks", "snapshot ui_blocks", Shown::parse)?,
+            activated: strings(map, "activated", "snapshot activated")?,
         })
     }
 }

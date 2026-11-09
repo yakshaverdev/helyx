@@ -22,7 +22,7 @@ defmodule Helyx.Session.Server.ToolRuns do
   # (`UIBlocks.request/2`).
   def request(%State{activity: %Turn{} = turn} = state, %ToolCall{} = call, bytes, rejection) do
     # A call of an unknown tool runs alone; the hands answer it with an error.
-    concurrent? = match?({_tool, true}, state.tools[call.name])
+    concurrent? = match?({_tool, true}, state.registry.tools[call.name])
 
     with false <- ApprovalChains.pending_call?(turn.approval_chains, call.id),
          false <- turn.owners[call.id] == :approval,

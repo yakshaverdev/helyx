@@ -9,7 +9,7 @@ defmodule Helyx.Session.Server do
   alias Helyx.Reason
   alias Helyx.Session.{ApprovalChains, Lock, Turn}
   alias Helyx.Session.Server.{Approvals, Asks, Calls, Events, Open, ProviderConn, Records}
-  alias Helyx.Session.Server.{Settle, State, Steering}
+  alias Helyx.Session.Server.{Settle, Sources, State, Steering}
   alias Helyx.Session.Server.{Stop, Summary, ToolRuns, TurnLoop, UIBlocks, Wait}
 
   use GenServer, restart: :temporary, shutdown: Stop.shutdown_ms()
@@ -233,6 +233,15 @@ defmodule Helyx.Session.Server do
   # The answer of the `before_settle` chain of a wait (`Settle.answer/3`).
   defp info({:settle_answer, ref, answer}, state),
     do: {:noreply, Settle.answer(state, ref, answer)}
+
+  # A source process that the hands started, and its end
+  # (`Helyx.Session.Server.Sources`).
+  defp info({:source, pid, plugin}, state), do: {:noreply, Sources.started(state, pid, plugin)}
+  defp info({:source_down, pid}, state), do: {:noreply, Sources.down(state, pid)}
+
+  # The timer of a caller of `Helyx.Tool.deferred/2` (`Sources.deferred/4`).
+  defp info({:timeout, _timer, {:deferred, ref}}, state),
+    do: {:noreply, Sources.timeout(state, ref)}
 
   # A notice of the sync worker of this instance.
   defp info({:memory_notice, pid, text}, %State{sync: pid} = state),
