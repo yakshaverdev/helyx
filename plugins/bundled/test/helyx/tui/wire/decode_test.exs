@@ -94,7 +94,9 @@ defmodule Helyx.TUI.Wire.DecodeTest do
       event(:notice, %{text: "n"}),
       event(:ask, @ask),
       event(:ask_end, %{ask_id: "k1", outcome: :answered}),
-      event(:ask_end, %{ask_id: "k1", outcome: :ended})
+      event(:ask_end, %{ask_id: "k1", outcome: :ended}),
+      event(:tools_change, %{activated: ["fs__read", "fs__write"]}),
+      event(:tools_change, %{activated: []}, nil)
     ]
 
     for event <- events do
@@ -154,10 +156,19 @@ defmodule Helyx.TUI.Wire.DecodeTest do
       persisting: false,
       usage: %Totals{input: 1, output: 2, cache_read: 3, cache_write: 4, cost: 0.5, unknown: true},
       context: %{tokens: 10, window: 100, model: "m", bytes: 4},
-      asks: [@ask]
+      asks: [@ask],
+      activated: ["fs__read"]
     }
 
-    empty = %{snapshot | messages: [], more: false, turn: nil, context: nil, asks: []}
+    empty = %{
+      snapshot
+      | messages: [],
+        more: false,
+        turn: nil,
+        context: nil,
+        asks: [],
+        activated: []
+    }
 
     for snapshot <- [
           snapshot,
@@ -411,7 +422,7 @@ defmodule Helyx.TUI.Wire.DecodeTest do
 
     snapshot = wire(Wire.snapshot(snapshot_of([])))
 
-    for key <- ["messages", "asks"] do
+    for key <- ["messages", "asks", "activated"] do
       res = ok_res(%{"sub" => "1", "snapshot" => %{snapshot | key => %{}}})
       assert Decode.result("subscribe", res) == :error, key
     end

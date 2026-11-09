@@ -1,4 +1,4 @@
-//! The value checks of the schema of protocol 7 (`docs/features/wire-protocol.md`,
+//! The value checks of the schema of protocol 8 (`docs/features/wire-protocol.md`,
 //! "Codec"). A check returns `Err(Broken)` for a value that the schema does not
 //! allow: the frame is a contract break of the server.
 
@@ -114,6 +114,13 @@ pub(crate) fn list_of<T>(
     item: impl Fn(&Json) -> Checked<T>,
 ) -> Checked<Vec<T>> {
     list(map, key, what)?.iter().map(item).collect()
+}
+
+/// A list of strings: the `activated` names of a snapshot and of `tools_change`.
+pub(crate) fn strings(map: &Json, key: &str, what: &'static str) -> Checked<Vec<String>> {
+    list_of(map, key, what, |value| {
+        value.as_str().map(str::to_owned).ok_or(Broken(what))
+    })
 }
 
 /// The `seq` of `key`: an `int` of the schema, exact.

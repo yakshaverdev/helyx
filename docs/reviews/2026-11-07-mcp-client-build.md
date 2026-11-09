@@ -151,3 +151,28 @@ Simplify: `capped/2` encodes only the names on the list; `wake/1` builds no view
 ### Round 2 (reduced: spec and failure path; the failure-path agent of the first try ended at the usage limit of the model account and was rerun)
 
 No reproduced defect. The failure-path agent held both fixes on other paths: 32 helper processes with a copied call context fill the waiters, a 33rd answers at once, and a killed one frees its place; a helper of turn 1 that activates during turn 2 gives a nil turn id; `before_tool` and `after_tool` hooks give the current turn id and one event each; a source's end answers the waiting call. Spec findings, fixed as wording: the shorter `tool.ex` docs had lost that a failed `check/0` stops the start with a clear error, that the release deadline is on the node of the hands, that the `after_tool` hooks of `started/1` can change the status, and that the cap of 8 is of the calls of a turn; the `deferred/2` and `activate/1` docs did not name hooks or the answer at once past 32 waiters; the doc's event line did not name hooks. The loop ended.
+
+## Slice 4: the wire
+
+Invariant: the wire schema of protocol 5 holds the event `tools_change` with `data.activated`, a list of strings, and the snapshot field `activated`, the same list; `Helyx.Transport.WebSocket` speaks 5, carries the SHA-256 of that schema, and answers a `hello` of another protocol with `refused` and `4426`; the strict decoder of the TUI takes the event and requires the field, and ends the connection as a contract break on a value of another shape; the conformance fixtures name protocol 5 and hold the valid and broken cases; every doc that names the current protocol number follows (master's protocol 4 came with #880).
+
+Base `570dbe0c` (slice 3). Bounds sensor:
+
+```
+bounds sensor: 0 candidate functions, 0 flagged, 0 without an answer
+```
+
+### Round 1 (full)
+
+Simplify: `decode.ex` checks the list in one `activated!/1` for the event and the snapshot, at 400 lines; `activated` follows `asks` in the fold snapshots, as in the schema.
+
+| # | Source | Finding | Check | Resolution |
+| - | ------ | ------- | ----- | ---------- |
+| 1 | Codex | `activated: [7]` raises `FunctionClauseError` in `activated!/1`; check that the connection closes, not only the event or the request | reproduced the path, not a defect: the failure-path agent sent each broken shape (missing, null, a string, `["a", 1]`, `[["a"]]`, an object) through the real `Wire.connect` and `Connection`, and each closed the connection with `{:shutdown, :broken}`; a broken snapshot made `subscribe` give `{:error, :closed}` | none |
+| 2 | standards, spec | `docs/features/tui-attach.md` decision 13 said "pages need protocol 5": written when "protocol 4" meant the next number, now the number of this slice, which has no pages | read | "a new protocol number" |
+| 3 | standards, spec | `docs/features/hub.md` moved to 5 → 6 in item 4, but decision 6 still gave the `hub.*` ops protocol 5, the Transport line "goes to 4", and the schema heading "(protocol 4)" | read | all three say protocol 6 and point to item 4 of its Replaced mechanism |
+| 4 | standards | Item 11 of wire-protocol.md says "drop order", which only mcp-client.md defines | judgement | item 11 says what it means for a client: the first name leaves first, and a client only shows the list |
+| 5 | standards, spec | No fold case holds a known `tools_change`, and the object-in-place-of-a-list test leaves out `activated` | read | `folds.json` gets a `tools_change` with a nil turn after `turn_end`: the state moves its `seq` and keeps the rest; the decode test checks `activated` as an object |
+| 6 | failure path | The client takes any list of strings, past the 32 names and the name rule of Core | judgement | kept: nothing in the TUI reads the list, and the schema gives a list of strings; a client that shows the names checks them then |
+
+The failure-path agent reproduced no defect: hellos of protocol 4, 6 and 4294967296 get `refused` with 5 and `4426`, `"5"`, `5.0` and null close with `4400`, a Core event and a real snapshot encoded by the server decode equal on the client, and lists of 20,000 names and of names with control or multibyte characters decode. No round reproduced a defect, so the loop ended.

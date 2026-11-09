@@ -26,8 +26,8 @@ fn a_nonce_has_exactly_32_bytes() {
 #[test]
 fn no_frame_of_the_handshake_follows_its_answer() {
     for answer in [
-        json!({"type": "welcome", "protocol": 7}),
-        json!({"type": "refused", "code": "protocol", "server_protocol": 8}),
+        json!({"type": "welcome", "protocol": 8}),
+        json!({"type": "refused", "code": "protocol", "server_protocol": 9}),
     ] {
         let mut handshake = Handshake::new(None);
         handshake.step(&j(&challenge(32))).unwrap();
@@ -135,7 +135,7 @@ fn a_cost_of_signed_zero_is_zero() {
 
 #[test]
 fn refused_names_another_protocol() {
-    for (server_protocol, valid) in [(6, true), (7, false), (8, true)] {
+    for (server_protocol, valid) in [(7, true), (8, false), (9, true)] {
         let mut handshake = Handshake::new(None);
         handshake.step(&j(&challenge(32))).unwrap();
         let refused =
@@ -183,11 +183,11 @@ fn a_broken_handshake_frame_ends_the_handshake() {
         (challenge(3), challenge(32)),
         (
             json!({"type": "welcome", "protocol": 2}),
-            json!({"type": "welcome", "protocol": 7}),
+            json!({"type": "welcome", "protocol": 8}),
         ),
         (
             json!({"type": "refused", "code": "x", "server_protocol": 4}),
-            json!({"type": "refused", "code": "protocol", "server_protocol": 8}),
+            json!({"type": "refused", "code": "protocol", "server_protocol": 9}),
         ),
     ];
     for (broken, good) in broken_then_good {

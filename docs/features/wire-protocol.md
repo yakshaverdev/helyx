@@ -128,7 +128,7 @@ The schema below is the contract. The test of #660 computes the SHA-256 of the l
 
 <!-- wire-schema:start -->
 ```text
-protocol 7
+protocol 8
 
 notation: {k: T} an object; k? may be absent (absent = null or false);
   T | U either; [T] a list; "x" that string; int a JSON integer >= 0;
@@ -246,7 +246,7 @@ schedule = {id: string, session: string, at: int, every: int | null, prompt: str
 snapshot = {instance_id: string, seq: int, messages: [message], more: bool,
             turn: turn | null, model: string, queue: queue, persisting: bool,
             usage: totals, context: context | null, asks: [ask],
-            ui_blocks: [shown_block]}
+            ui_blocks: [shown_block], activated: [string]}
 ask      = {ask_id: string, call_id: string, tool: string, request: object}
 shown_block = {call_id: string | null, key: string, block: ui_block}
 turn     = {id: string, partial: message | null, elapsed_ms: int}
@@ -260,7 +260,7 @@ event = {type: event_type, session_id: string, instance_id: string,
 event_type = "turn_start" | "message_start" | "message_update" | "message_end"
            | "tool_execution_end" | "turn_end" | "queue_update" | "queue_dropped"
            | "model_change" | "resume_id" | "steer_unconfirmed" | "compaction"
-           | "notice" | "ask" | "ask_end" | "ui_block"
+           | "notice" | "ask" | "ask_end" | "ui_block" | "tools_change"
 data.turn_start         = {origin?: "provider" | "compaction"}
 data.message_start      = {message: message}
 data.message_update     = {text_delta: string} | {thinking_delta: string}
@@ -280,6 +280,7 @@ data.notice             = {text: string}
 data.ask                = ask
 data.ask_end            = {ask_id: string, outcome: "answered" | "ended"}
 data.ui_block           = shown_block
+data.tools_change       = {activated: [string]}
 
 message = {id: string, role: "user" | "assistant" | "tool_result",
            content: [block], origin?: origin, model?: string,
@@ -324,7 +325,7 @@ Notes on the codec:
 
 ## Conformance fixtures
 
-`test/fixtures/wire/` holds fixtures of protocol 7 as plain JSON (#855): the frames that a client sends, each with the frames and the close code of the server; the frames that a server sends, each valid, ignored, or a contract break for a client; and folds, event sequences with the state that a client holds after them. Its `README.md` states what a conforming client or server must pass and which rules are in prose only. The transport tests run the client frames against the server, and the TUI tests run the server frames and the folds against the client and its view model, so the fixtures and the Elixir code cannot drift.
+`test/fixtures/wire/` holds fixtures of protocol 8 as plain JSON (#855): the frames that a client sends, each with the frames and the close code of the server; the frames that a server sends, each valid, ignored, or a contract break for a client; and folds, event sequences with the state that a client holds after them. Its `README.md` states what a conforming client or server must pass and which rules are in prose only. The transport tests run the client frames against the server, and the TUI tests run the server frames and the folds against the client and its view model, so the fixtures and the Elixir code cannot drift.
 
 What this doc does not pin down for an implementation that does not run on the BEAM. Each is open, not decided here:
 
@@ -348,7 +349,8 @@ What this doc does not pin down for an implementation that does not run on the B
 10. **Protocol 3** (#880). Protocol 4 adds the origin kind `"hook"` to `origin`; nothing else changes. A client of protocol 3 gets `refused` and the close `4426`, and the fixtures named protocol 4.
 11. **Protocol 4** (#878). Protocol 5 adds UI blocks (ADR 0011, `docs/features/ui-blocks.md`): `ui_blocks` in a tool result `message`, the `ui_block` event, and the snapshot field `ui_blocks`; nothing else changes. A client of protocol 4 gets `refused` and the close `4426`, and the fixtures name protocol 5.
 12. **Protocol 5** (#869). Protocol 6 adds the Hub (ADR 0010, `docs/features/hub.md`): the `token` of `hello`, the `hub.*` operations of records, projects, tokens, and the user, their params and results, and the error codes `forbidden`, `too_many_records`, `too_many_projects`, `unknown_project`, and `unknown_token`; a server with no authority answers as protocol 5 did. A client of protocol 5 gets `refused` and the close `4426`, and the fixtures name protocol 6. The schedules of a Hub (#870) come with protocol 7.
-13. **Protocol 6** (#870). Protocol 7 adds the schedules of a Hub (`docs/features/hub.md`, decisions 11 and 12): the operations `hub.schedules.list`, `hub.schedules.create`, and `hub.schedules.delete`, their params and results, the shape `schedule`, and the error codes `too_many_schedules` and `unknown_schedule`; a server with no authority answers them with `unknown_op`, as every `hub.*` op. A client of protocol 6 gets `refused` and the close `4426`, and the fixtures name protocol 7.
+13. **Protocol 6** (#870). Protocol 7 adds the schedules of a Hub (`docs/features/hub.md`, decisions 11 and 12): the operations `hub.schedules.list`, `hub.schedules.create`, and `hub.schedules.delete`, their params and results, the shape `schedule`, and the error codes `too_many_schedules` and `unknown_schedule`; a server with no authority answers them with `unknown_op`, as every `hub.*` op. A client of protocol 6 gets `refused` and the close `4426`, and the fixtures named protocol 7.
+14. **Protocol 7** (#492, `docs/features/mcp-client.md`). Protocol 8 adds the event `tools_change` with `data.tools_change`, the activated deferred tool names in drop order (the first name leaves first when the session drops one for its cap; a client only shows the list), and the snapshot field `activated`, the same list; nothing else changes. A client of protocol 7 gets `refused` and the close `4426`, and the fixtures name protocol 8.
 
 ## Bounds
 

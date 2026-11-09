@@ -157,7 +157,8 @@ impl State {
             EventData::QueueDropped(_)
             | EventData::SteerUnconfirmed(_)
             | EventData::ResumeId
-            | EventData::Compaction => {}
+            | EventData::Compaction
+            | EventData::ToolsChange(_) => {}
         }
         Ok(())
     }
