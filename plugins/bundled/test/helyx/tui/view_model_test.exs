@@ -179,17 +179,24 @@ defmodule Helyx.TUI.ViewModelTest do
              [message, closed(call, first), message, closed(call, second)]
   end
 
-  # Every call has an open cell from its message (#385, #405), so a result
-  # with no open cell is a bug in Core (#407).
-  test "a result with no open cell crashes" do
+  # The session pairs each result with its call, so the client only shows
+  # what it gets: a result with no open cell is an orphan cell of its own
+  # (`docs/features/client-kit.md`, "Pairing"; it crashed before, #407).
+  test "a result with no open cell is an orphan cell" do
     call = %Message.ToolCall{id: "c1", name: "bash", arguments: %{}}
     first = Message.tool_result(call, {:ok, "first"})
     second = Message.tool_result(call, {:ok, "second"})
     unknown = %{first | tool_call_id: "c9"}
+    no_id = %{first | tool_call_id: nil}
+    orphan = &{:tool, nil, "a tool result with no call", &1}
 
-    assert_raise KeyError, fn -> fold([{:turn_start, %{}}, tool_end(unknown)]) end
-    assert_raise KeyError, fn -> fold([calls_end([call]), tool_end(unknown)]) end
-    assert_raise KeyError, fn -> fold([calls_end([call]), tool_end(first), tool_end(second)]) end
+    assert cells(fold([{:turn_start, %{}}, tool_end(unknown)])) == [orphan.(unknown)]
+    assert cells(fold([{:turn_start, %{}}, tool_end(no_id)])) == [orphan.(no_id)]
+
+    assert [_message, {:tool, ^call, _, ^first}, orphan_cell] =
+             cells(fold([calls_end([call]), tool_end(first), tool_end(second)]))
+
+    assert orphan_cell == orphan.(second)
   end
 
   # One pairing rule: the snapshot messages go through the live fold.

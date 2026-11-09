@@ -22,7 +22,7 @@ defmodule Helyx.TUI.Link do
   @max_text_bytes Helyx.Session.max_text_bytes()
 
   # The errors of a request of the wire that no call of Core gives.
-  defguard wire_error?(reason) when reason in [:timeout, :busy, :closed, :failed]
+  defguard wire_error?(reason) when reason in [:timeout, :busy, :closed, :failed, :too_large]
 
   # The texts of the wire errors, at most 27 bytes: the footer shows them
   # as a reason too (docs/features/coding-agent.md, "TUI").
@@ -31,6 +31,7 @@ defmodule Helyx.TUI.Link do
   def error_text(:busy), do: "too many requests wait"
   def error_text(:closed), do: "no connection to the server"
   def error_text(:failed), do: "the server failed"
+  def error_text(:too_large), do: "over the request bound"
 
   # The TUI process takes the connection that the caller of
   # `Helyx.TUI.run/1` opened, and monitors it: its `:DOWN` ends the TUI.
@@ -112,7 +113,12 @@ defmodule Helyx.TUI.Link do
   # The open of a switch (`Helyx.TUI.Switch`), in the place of `session`:
   # a new session of `opts.cwd` with `opts.model`, or the resume of `id`.
   # The server saves in its own data folder.
+  # The model of the server can be any string; one over the text bound
+  # would pass the request bound of the server, which ends the connection.
   @spec open(t(), :new | {:resume, String.t()}, map()) :: {:ok, t()} | {:error, term()}
+  def open(%__MODULE__{}, :new, %{model: model}) when byte_size(model) > @max_text_bytes,
+    do: {:error, :text_too_large}
+
   def open(%__MODULE__{conn: conn}, target, opts) do
     result =
       case target do

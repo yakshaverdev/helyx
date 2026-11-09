@@ -22,3 +22,6 @@ tmp/
 
 # Output of `mix precommit`, see AGENTS.md
 precommit.log
+
+# Cargo (clients/rust)
+target/

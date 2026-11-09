@@ -21,6 +21,28 @@ defmodule Helyx.TUI.Wire do
   """
   @type error :: {:refused, non_neg_integer()} | :broken | String.t()
 
+  # The longest id of a request: a count of the connection.
+  @longest_id Integer.to_string(2 ** 64 - 1)
+  # A server string of at most these bytes fits any frame of the TUI that
+  # carries it, in its worst JSON form (each byte 6 bytes of JSON), with a
+  # `seq` of 1,024 characters and the rest of the frame.
+  @max_carried div(Frame.max_request() - 2_048, 6)
+
+  @doc """
+  Whether the frame of a request of `op` with `params` fits the request
+  bound of the server (`Helyx.Transport.WebSocket.Frame.max_request/0`),
+  which closes the connection with `4413` over it. A request over it is
+  refused before the send (#860).
+  """
+  @spec fits?(String.t(), map()) :: boolean()
+  def fits?(op, params) do
+    frame = %{"type" => "req", "id" => @longest_id, "op" => op, "params" => params}
+    IO.iodata_length(JSON.encode_to_iodata!(frame)) <= Frame.max_request()
+  end
+
+  @doc "Whether a frame of the TUI can carry the server string `s`, a sub id of an ack."
+  defguard carries?(s) when byte_size(s) <= @max_carried
+
   @doc """
   Connects to the server at `ip` and `port`, upgrades the connection, and
   passes the handshake with the proof of the token that `token` returns,
@@ -161,7 +183,7 @@ defmodule Helyx.TUI.Wire do
         :ok
 
       {:ok, %{"type" => "refused", "code" => "protocol", "server_protocol" => server}}
-      when is_integer(server) and server >= 0 ->
+      when is_integer(server) and server >= 0 and server != protocol ->
         {:error, {:refused, server}}
 
       {:error, _} = error ->

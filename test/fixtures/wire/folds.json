@@ -86,6 +86,26 @@
       {"expect": {"seq": 9, "messages": ["u1", "a1", "r1", "r2"], "ui_blocks": [{"call_id": null, "key": "plan", "block": {"text": "a plan, done", "cut": true}}]}},
       {"server": {"type": "event", "sub": "0", "event": {"type": "turn_end", "session_id": "s1", "instance_id": "i1", "turn_id": "t2", "seq": 10, "data": {"outcome": "done"}}}},
       {"expect": {"seq": 10, "running": false, "messages": ["u1", "a1", "r1", "r2"], "ui_blocks": []}}
+     ]},
+    {"name": "a tool result with no call before it is an orphan in its place",
+     "steps": [
+      {"client": {"type": "req", "id": "1", "op": "subscribe", "params": {"session": "s1"}}},
+      {"server": {"type": "res", "id": "1", "ok": true, "result": {"sub": "0", "snapshot": {"instance_id": "i1", "seq": 4, "messages": [{"id": "u1", "role": "user", "content": [{"type": "text", "text": "hi"}], "origin": {"kind": "user", "id": null}}, {"id": "r0", "role": "tool_result", "content": [{"type": "text", "text": "old"}], "tool_call_id": "c0", "tool_name": "bash", "is_error": false}], "more": true, "turn": {"id": "t2", "partial": null, "elapsed_ms": 0}, "model": "fake/echo", "queue": {"steers": 0, "follow_ups": 0, "running": 0, "held": 0, "waiting": 0}, "persisting": true, "usage": {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0, "cost": null, "unknown": false, "list": false}, "context": null, "asks": [], "ui_blocks": []}}}},
+      {"expect": {"messages": ["u1", "r0"]}},
+      {"server": {"type": "event", "sub": "0", "event": {"type": "tool_execution_end", "session_id": "s1", "instance_id": "i1", "turn_id": "t2", "seq": 5, "data": {"message": {"id": "r1", "role": "tool_result", "content": [{"type": "text", "text": "ok"}], "tool_call_id": "c9", "tool_name": "bash", "is_error": false}}}}},
+      {"server": {"type": "event", "sub": "0", "event": {"type": "tool_execution_end", "session_id": "s1", "instance_id": "i1", "turn_id": "t2", "seq": 6, "data": {"message": {"id": "r2", "role": "tool_result", "content": [{"type": "text", "text": "ok"}], "tool_name": "bash", "is_error": false}}}}},
+      {"expect": {"seq": 6, "messages": ["u1", "r0", "r1", "r2"]}}
+     ]},
+    {"name": "a seq past 2^64 - 1 counts on, and a reconnect with after names it",
+     "steps": [
+      {"client": {"type": "req", "id": "1", "op": "subscribe", "params": {"session": "s1"}}},
+      {"server": {"type": "res", "id": "1", "ok": true, "result": {"sub": "0", "snapshot": {"instance_id": "i1", "seq": 18446744073709551615, "messages": [], "more": false, "turn": null, "model": "fake/echo", "queue": {"steers": 0, "follow_ups": 0, "running": 0, "held": 0, "waiting": 0}, "persisting": true, "usage": {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0, "cost": null, "unknown": false, "list": false}, "context": null, "asks": [], "ui_blocks": []}}}},
+      {"server": {"type": "event", "sub": "0", "event": {"type": "notice", "session_id": "s1", "instance_id": "i1", "turn_id": null, "seq": 18446744073709551616, "data": {"text": "n"}}}},
+      {"expect": {"instance_id": "i1", "seq": 18446744073709551616, "messages": []}},
+      {"close": null},
+      {"client": {"type": "req", "id": "2", "op": "subscribe", "params": {"session": "s1", "after": {"instance_id": "i1", "seq": 18446744073709551616}}}},
+      {"server": {"type": "res", "id": "2", "ok": true, "result": {"sub": "0", "replay": [{"type": "notice", "session_id": "s1", "instance_id": "i1", "turn_id": null, "seq": 18446744073709551617, "data": {"text": "n"}}]}}},
+      {"expect": {"instance_id": "i1", "seq": 18446744073709551617, "messages": []}}
      ]}
   ]
 }

@@ -13,7 +13,7 @@ defmodule Helyx.TUI.Transcript.Item do
   alias ExRatatui.Style
   alias ExRatatui.Text.{Line, Span}
   alias Helyx.Message
-  alias Helyx.TUI.{Markdown, Wrap}
+  alias Helyx.TUI.{Markdown, ViewModel.Cut, Wrap}
 
   @dim %Style{modifiers: [:dim]}
   @tool %Style{fg: :cyan}
@@ -40,6 +40,7 @@ defmodule Helyx.TUI.Transcript.Item do
     Enum.map_join(blocks, "\n", fn
       %Message.Text{text: text} -> text
       %Message.Thinking{thinking: text} -> text
+      %Cut{} = cut -> Cut.text(cut)
       _block -> ""
     end)
   end
@@ -141,16 +142,18 @@ defmodule Helyx.TUI.Transcript.Item do
       %Message.Text{text: text} -> markdown_rows(text, width)
       %Message.Thinking{thinking: text} -> styled_rows(text, width, @dim)
       %Message.ToolCall{} -> []
+      %Cut{} = cut -> cut |> Cut.text() |> styled_rows(width, @dim)
       # A kind that this client does not know. Its placeholder is a sign.
       block -> block |> placeholder() |> styled_rows(width, @dim) |> sign_rows()
     end)
   end
 
   # The text of a user message or a tool result, with a placeholder in
-  # place of each block that is not text.
+  # place of each block that is not text, and the line of a cut.
   defp shown_text(%Message{content: content}) do
     Enum.map_join(content, fn
       %Message.Text{text: text} -> text
+      %Cut{} = cut -> "\n" <> Cut.text(cut)
       block -> placeholder(block)
     end)
   end

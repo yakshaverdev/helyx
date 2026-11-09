@@ -9,9 +9,7 @@ defmodule Helyx.TUI.Wire.Decode do
   # value with a broken shape raises, and each public function gives
   # `:error` for it: the connection ends on a contract break.
 
-  import Helyx.Usage, only: [wire_tokens?: 1]
-
-  alias Helyx.{Event, Message, ModelRef, Usage}
+  alias Helyx.{Event, Message, Usage}
   alias Helyx.Session.File.Scan
   alias Helyx.Session.{Snapshot, Totals}
   alias Helyx.TUI.ViewModel
@@ -33,20 +31,14 @@ defmodule Helyx.TUI.Wire.Decode do
 
   @stop_reasons Map.new(Message.stop_reasons(), &{Atom.to_string(&1), &1})
   @usage_keys Map.keys(%Usage{}) -- [:__struct__]
-  @max_blocks Helyx.Session.Turn.max_message_blocks()
-  @max_result_bytes Message.max_result_bytes()
 
   defguardp count?(value) when is_integer(value) and value >= 0
   defguardp count_or_nil?(value) when is_nil(value) or count?(value)
-  # The bounds of Core that the fold trusts: a token count of a compaction
-  # (`Helyx.Session.Stream`). The total cost of a session is a sum of costs
-  # of at most 10^12 each, so it has no bound of its own below the float
-  # limit (usage-and-limits.md, "session totals"); 10^300 is far above any
-  # sum, and leaves the footer room for its `cost * 10_000`.
-  defguardp tokens_or_nil?(value) when is_nil(value) or wire_tokens?(value)
-
-  defguardp cost_or_nil?(value)
-            when is_nil(value) or (is_number(value) and value >= 0 and value <= 1.0e300)
+  defguardp cost_or_nil?(value) when is_nil(value) or (is_number(value) and value >= 0)
+  # A cost of the totals over 10^300 counts as 10^300: the footer shows
+  # `>$99999` for both, and adding a message cost of at most 10^12 to it
+  # stays in the float range (usage-and-limits.md, "session totals").
+  @max_total_cost 1.0e300
 
   @spec event(term()) :: {:ok, Event.t() | nil} | :error
   def event(value), do: decoded(fn -> event!(value) end)
@@ -145,8 +137,10 @@ defmodule Helyx.TUI.Wire.Decode do
   defp data(:turn_end, %{"outcome" => "done"}), do: %{outcome: :done}
   defp data(:turn_end, %{"outcome" => "aborted"}), do: %{outcome: :aborted}
 
+  # A text for a person that becomes a notice gets the cut of the error text of a failed turn,
+  # 4,000 bytes (`Helyx.Reason.text/1`, coding-agent.md), once.
   defp data(:turn_end, %{"outcome" => "error", "error" => error}) when is_binary(error),
-    do: %{outcome: :error, error: error}
+    do: %{outcome: :error, error: Helyx.Reason.text(error)}
 
   defp data(:queue_update, data), do: queue(data)
 
@@ -165,17 +159,17 @@ defmodule Helyx.TUI.Wire.Decode do
 
   defp data(:resume_id, %{"provider" => provider, "resume_id" => id, "lost" => lost, "cut" => cut})
        when is_binary(provider) and is_binary(id) and is_boolean(lost) and count?(cut),
-       do: %{provider: provider, resume_id: id, lost: lost, cut: cut}
+       do: %{provider: Helyx.Reason.text(provider), resume_id: id, lost: lost, cut: cut}
 
   defp data(:compaction, %{
          "trigger" => trigger,
          "tokens_before" => before,
          "tokens_after" => after_
        })
-       when trigger in ["manual", "auto"] and tokens_or_nil?(before) and tokens_or_nil?(after_),
+       when trigger in ["manual", "auto"] and count_or_nil?(before) and count_or_nil?(after_),
        do: %{trigger: trigger(trigger), tokens_before: before, tokens_after: after_}
 
-  defp data(:notice, %{"text" => text}) when is_binary(text), do: %{text: text}
+  defp data(:notice, %{"text" => text}) when is_binary(text), do: %{text: Helyx.Reason.text(text)}
   defp data(:ask, data), do: ask(data)
 
   defp data(:ask_end, %{"ask_id" => id, "outcome" => outcome}) when is_binary(id),
@@ -191,7 +185,7 @@ defmodule Helyx.TUI.Wire.Decode do
   defp message_error(%{"kind" => "aborted"}), do: %{error: :aborted}
 
   defp message_error(%{"kind" => "failed", "text" => text}) when is_binary(text),
-    do: %{error: text}
+    do: %{error: Helyx.Reason.text(text)}
 
   defp trigger("manual"), do: :manual
   defp trigger("auto"), do: :auto
@@ -225,17 +219,16 @@ defmodule Helyx.TUI.Wire.Decode do
          waiting: waiting
        }
 
-  # The server caps each integer of the arguments at 100 digits.
+  # An integer of any size: the call line shows it as its text, cut with
+  # the line (`Helyx.TUI.CallLine`).
   defp tool_call(%{"type" => "tool_call", "id" => id, "name" => name, "arguments" => %{} = args})
-       when is_binary(id) and is_binary(name) do
-    false = Message.big_integer?(args)
-    %Message.ToolCall{id: id, name: name, arguments: args}
-  end
+       when is_binary(id) and is_binary(name),
+       do: %Message.ToolCall{id: id, name: name, arguments: args}
 
-  # The bounds of a message of Core: its blocks (`Helyx.Session.Turn`), and
-  # the text of a tool result (`Helyx.Message.cut_result/1`).
+  # Any count of blocks: a cell keeps the first 1,024 and a cut of the
+  # others (`Helyx.TUI.ViewModel.Cut`).
   defp message!(%{"id" => id, "role" => role, "content" => content} = message)
-       when is_binary(id) and is_list(content) and length(content) <= @max_blocks do
+       when is_binary(id) and is_list(content) do
     role = role!(role)
 
     %Message{
@@ -253,13 +246,6 @@ defmodule Helyx.TUI.Wire.Decode do
     }
   end
 
-  # A tool result has the call id that the fold pairs it by.
-  defp message!(value, :tool_result) do
-    %Message{role: :tool_result, tool_call_id: id} = message = message!(value)
-    true = is_binary(id)
-    message
-  end
-
   defp message!(value, role) do
     %Message{role: ^role} = message = message!(value)
     message
@@ -269,25 +255,30 @@ defmodule Helyx.TUI.Wire.Decode do
   defp role!("assistant"), do: :assistant
   defp role!("tool_result"), do: :tool_result
 
-  # Only a user message has an origin. `unknown` is a user message of a
-  # file from before #649.
+  # An origin of the schema. A user message keeps one that Core makes, so
+  # it decodes as Core holds it (`unknown` is one of a file from before
+  # #649); any other is dropped, as the TUI shows no origin.
   defp origin!(_role, nil), do: nil
-  defp origin!(:user, %{"kind" => "unknown", "id" => nil}), do: %{kind: :unknown, id: nil}
 
-  defp origin!(:user, %{"kind" => kind, "id" => id}) do
+  defp origin!(role, %{"kind" => kind, "id" => id}) when is_binary(id) or is_nil(id) do
     origin = %{kind: origin_kind!(kind), id: id}
-    true = Message.origin?(origin)
-    origin
+    known? = origin == %{kind: :unknown, id: nil} or Message.origin?(origin)
+    if role == :user and known?, do: origin
   end
 
   defp origin_kind!("user"), do: :user
   defp origin_kind!("background"), do: :background
   defp origin_kind!("product"), do: :product
   defp origin_kind!("hook"), do: :hook
+  defp origin_kind!("unknown"), do: :unknown
 
-  defp block!(%{"type" => "text", "text" => text}, role)
-       when is_binary(text) and (role != :tool_result or byte_size(text) <= @max_result_bytes),
-       do: %Message.Text{text: text}
+  # A text of a tool result gets the cut of Core at each boundary of tool
+  # text (`Helyx.Message.cut_result/1`), once, so no frame draws more.
+  defp block!(%{"type" => "text", "text" => text}, :tool_result) when is_binary(text),
+    do: %Message.Text{text: Message.cut_result(text)}
+
+  defp block!(%{"type" => "text", "text" => text}, _role) when is_binary(text),
+    do: %Message.Text{text: text}
 
   defp block!(%{"type" => "thinking", "thinking" => thinking}, _role) when is_binary(thinking),
     do: %Message.Thinking{thinking: thinking}
@@ -303,25 +294,30 @@ defmodule Helyx.TUI.Wire.Decode do
   defp flag!(nil), do: false
   defp flag!(value) when is_boolean(value), do: value
 
-  # The known keys of a usage, as Core checks a usage (`Helyx.Usage.valid?/1`).
+  # The known keys of a usage, checked by the schema. A usage that Core
+  # would not make (`Helyx.Usage.valid?/1`) is the unknown usage `%Usage{}`,
+  # the usage of a message whose accounting is missing.
   defp usage!(nil), do: nil
 
   defp usage!(%{} = object) do
     fields = for key <- @usage_keys, do: {key, object[Atom.to_string(key)]}
     usage = struct!(Usage, Keyword.put(fields, :cost_kind, cost_kind!(object["cost_kind"])))
-    true = Usage.valid?(usage)
-    usage
+    counts = [usage.input, usage.output, usage.cache_read, usage.cache_write]
+
+    true =
+      Enum.all?(counts, &count?(&1)) and count_or_nil?(usage.context_tokens) and
+        count_or_nil?(usage.context_window) and cost_or_nil?(usage.cost)
+
+    if Usage.valid?(usage), do: usage, else: %Usage{}
   end
 
   defp cost_kind!(nil), do: nil
   defp cost_kind!("list"), do: :list
   defp cost_kind!("billed"), do: :billed
 
-  # A model ref as Core checks it (`Helyx.ModelRef.parse/1`).
-  defp model!(model) do
-    {:ok, _ref} = ModelRef.parse(model)
-    model
-  end
+  # Any string: the footer and the line of a model change draw it cut and
+  # cleaned (`Helyx.TUI.Footer`, `Helyx.TUI.ViewModel`).
+  defp model!(model) when is_binary(model), do: model
 
   defp snapshot!(%{
          "instance_id" => instance_id,
@@ -354,8 +350,7 @@ defmodule Helyx.TUI.Wire.Decode do
       ui_blocks: Enum.map(ui_blocks, &UIBlocks.shown!/1)
     }
 
-    # The fold pairs each tool result with an earlier call; a snapshot that
-    # it cannot take raises here, not in the owner.
+    # A snapshot that the fold cannot take raises here, not in the owner.
     ViewModel.from_snapshot(snapshot)
     snapshot
   end
@@ -385,7 +380,7 @@ defmodule Helyx.TUI.Wire.Decode do
       output: output,
       cache_read: cache_read,
       cache_write: cache_write,
-      cost: cost,
+      cost: cost && min(cost, @max_total_cost),
       unknown: unknown,
       list: list
     }
@@ -393,8 +388,9 @@ defmodule Helyx.TUI.Wire.Decode do
 
   defp context(nil), do: nil
 
+  # A window of 0 is no window: the footer shows no context % for it.
   defp context(%{"tokens" => tokens, "window" => window, "model" => model, "bytes" => bytes})
-       when count_or_nil?(tokens) and (is_nil(window) or (is_integer(window) and window > 0)) and
+       when count_or_nil?(tokens) and count_or_nil?(window) and
               (is_nil(model) or is_binary(model)) and count?(bytes),
-       do: %{tokens: tokens, window: window, model: model, bytes: bytes}
+       do: %{tokens: tokens, window: if(window != 0, do: window), model: model, bytes: bytes}
 end

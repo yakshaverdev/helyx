@@ -204,6 +204,20 @@ defmodule Helyx.TUI.QuestionTest do
     assert state.question == nil
   end
 
+  test "an ask of the question tool whose request the tool did not make shows no picker" do
+    vm = Helyx.Test.TUIRender.view_model([])
+    good = %{"questions" => [item("Which one?", ~w(a b))]}
+    ask = &%{ask_id: &1, call_id: "q1", tool: "question", request: &2}
+
+    for request <- [%{}, %{"questions" => [%{"question" => 1}]}, %{"questions" => "none"}] do
+      state = Question.sync(%{vm: %{vm | asks: [ask.("k1", request)]}, question: nil})
+      assert state.question == nil, inspect(request)
+      # The next ask that the tool made shows.
+      state = Question.sync(%{state | vm: %{vm | asks: [ask.("k1", request), ask.("k2", good)]}})
+      assert %Question{ask_id: "k2"} = state.question
+    end
+  end
+
   test "a second ask of the same call gets a fresh picker" do
     vm = Helyx.Test.TUIRender.view_model([])
 

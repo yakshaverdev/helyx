@@ -287,7 +287,8 @@ defmodule Helyx.TUI.Transcript do
     calls =
       for {:tool, call, _, _} = cell <- calls, do: item(cell, expanded?, placed.calls[call.id])
 
-    [%Message{role: :assistant, content: blocks} | calls] ++ turn_item(vm, placed)
+    [ViewModel.Cut.message(%Message{role: :assistant, content: blocks}) | calls] ++
+      turn_item(vm, placed)
   end
 
   defp turn_item(_vm, %{turn: []}), do: []

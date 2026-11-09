@@ -7,16 +7,14 @@ defmodule Helyx.TUI.Wire.Connection do
   decision 13), checks it strictly against the schema (decision 14), turns the events of a
   subscription into `Helyx.Event` structs, sends the acks, and answers the pings.
 
-  The process that calls `open/1` owns the connection, which ends with it;
-  `take/1` makes another process the owner. The owner gets the events of
-  its subscriptions as a client in the node gets them from
-  `Helyx.Session.subscribe/2`: `{:helyx_event, event}` for each event, then
-  `{:helyx_end, sub, reason}` at the end of the session, with `reason`
-  `:stopped` or `:crashed`. It passes each event that it applied to
-  `ack/3`. The connection ends with `{:shutdown, :broken}` at a
-  frame that the contract does not allow, and with `{:shutdown, {:closed,
-  code}}` when the server closes it, `code` nil for a close with no code:
-  a close of TCP, a close frame with no code, or a failed read or write.
+  The process that calls `open/1` owns the connection, which ends with it; `take/1` makes another
+  process the owner. The owner gets the events of its subscriptions as a client in the node gets
+  them from `Helyx.Session.subscribe/2`: `{:helyx_event, event}` for each event, then
+  `{:helyx_end, sub, reason}` at the end of the session, with `reason` `:stopped` or `:crashed`.
+  It passes each event that it applied to `ack/3`. The connection ends with `{:shutdown,
+  :broken}` at a frame that the contract does not allow, and with `{:shutdown, {:closed, code}}`
+  when the server closes it, `code` nil for a close with no code: a close of TCP, a close frame
+  with no code, or a failed read or write.
 
   An operation gives the result of the Core call of the server, or `{:error, code}` with the
   error code of the wire as an atom; for `invalid_model_ref`, `unknown_provider`, and
@@ -26,7 +24,9 @@ defmodule Helyx.TUI.Wire.Connection do
   the late reply is dropped; `start` and `resume` wait while the connection lives (decision 17).
   At most 16 requests wait for a reply, late ones too, and at most 16 request frames wait for
   the writer; one more gives `{:error, :busy}` and sends nothing. After the end of the
-  connection an operation gives `{:error, :closed}`.
+  connection an operation gives `{:error, :closed}`. A request over the request bound of the
+  server gives `{:error, :too_large}` and sends nothing; a sub id that no frame carries is not
+  acked (`Helyx.TUI.Wire`).
   """
 
   use GenServer
@@ -36,6 +36,7 @@ defmodule Helyx.TUI.Wire.Connection do
   alias Helyx.Session.Snapshot
   alias Helyx.Transport.WebSocket.{Frame, Ops}
   alias Helyx.TUI.Wire.{Decode, Reader, Writer}
+  require Helyx.TUI.Wire, as: Wire
 
   # The wait of the server for its encoder slot and the encode of a large
   # result are outside its deadline (wire-protocol.md, "Deadlines").
@@ -144,7 +145,9 @@ defmodule Helyx.TUI.Wire.Connection do
 
   defp params(opts), do: Map.new(opts, fn {key, value} -> {Atom.to_string(key), value} end)
 
-  defp request(conn, op, params), do: call(conn, {:request, op, params})
+  defp request(conn, op, params) do
+    if Wire.fits?(op, params), do: call(conn, {:request, op, params}), else: {:error, :too_large}
+  end
 
   defp call(conn, message) do
     GenServer.call(conn, message, :infinity)
@@ -154,16 +157,14 @@ defmodule Helyx.TUI.Wire.Connection do
 
   @impl true
   def init({owner, socket}) do
-    # `waiting` maps the id of a request to its op and `{from, timer}`: its
-    # caller and its deadline timer, `:late` after the timer, or
-    # `{:unsubscribe, sub}` for the end of a subscription that a late reply
-    # made; `replays` holds the id of each `subscribe` with `after`, which
-    # alone a replay answers. `subs` maps a subscription to `:live`, or to
-    # `:dropped` for one that a late reply made. `unwritten` counts the
-    # request frames that wait for the writer, and `unsubscribes` holds the
-    # `{id, sub}` of each unsubscribe that waits for a place among them;
-    # `control` is `:waiting` while a batch of a pong and acks waits for the
-    # writer, and `pong` and `acks` hold the next batch.
+    # `waiting` maps the id of a request to its op and `{from, timer}`: its caller and its
+    # deadline timer, `:late` after the timer, or `{:unsubscribe, sub}` for the end of a
+    # subscription that a late reply made; `replays` holds the id of each `subscribe` with
+    # `after`, which alone a replay answers. `subs` maps a subscription to `:live`, or to
+    # `:dropped` for one that a late reply made. `unwritten` counts the request frames that wait
+    # for the writer, and `unsubscribes` holds the `{id, sub}` of each unsubscribe that waits
+    # for a place among them; `control` is `:waiting` while a batch of a pong and acks waits for
+    # the writer, and `pong` and `acks` hold the next batch.
     {:ok,
      %{
        owner: owner,
@@ -322,9 +323,12 @@ defmodule Helyx.TUI.Wire.Connection do
        when is_map_key(state.subs, sub),
        do: broken(state)
 
-  # A late reply: its caller got `timeout`. A subscription that it made
-  # ends with `unsubscribe`, which takes the place of the reply among those
-  # that wait, and its frames are dropped.
+  # A late reply: its caller got `timeout`. A subscription that it made ends with `unsubscribe`,
+  # which takes the place of the reply among those that wait, and its frames are dropped.
+  defp reply(:late, "subscribe", {:ok, _snapshot_or_replay, sub}, state)
+       when not Wire.carries?(sub),
+       do: {:noreply, put_in(state.subs[sub], :dropped)}
+
   defp reply(:late, "subscribe", {:ok, _snapshot_or_replay, sub}, state) do
     id = Integer.to_string(state.next)
     state = register(state, id, "unsubscribe", {:unsubscribe, sub})
@@ -353,8 +357,7 @@ defmodule Helyx.TUI.Wire.Connection do
   defp register(state, id, op, caller),
     do: %{state | next: state.next + 1, waiting: Map.put(state.waiting, id, {op, caller})}
 
-  # An unsubscribe goes to the writer when a place among the 16 request
-  # frames is free.
+  # An unsubscribe goes to the writer when a place among the 16 request frames is free.
   defp unsubscribe(%{unsubscribes: [{id, sub} | rest]} = state)
        when state.unwritten < @max_waiting,
        do: write_request(%{state | unsubscribes: rest}, id, "unsubscribe", %{"sub" => sub})
@@ -371,16 +374,15 @@ defmodule Helyx.TUI.Wire.Connection do
     {:noreply, %{state | unwritten: state.unwritten + 1}}
   end
 
-  # At most one batch of a pong and acks waits for the writer, so pings
-  # and events that come faster than it writes do not grow its queue. The
-  # next batch holds the latest ping (RFC 6455, section 5.5.3) and the
-  # latest seq of each live sub: an ack covers the events before it.
+  # At most one batch of a pong and acks waits for the writer, so pings and events that come
+  # faster than it writes do not grow its queue. The next batch holds the latest ping (RFC 6455,
+  # section 5.5.3) and the latest seq of each live sub: an ack covers the events before it.
   defp control(%{control: :idle} = state) when state.pong != nil or map_size(state.acks) > 0 do
     pong = if state.pong, do: [{:pong, state.pong}], else: []
 
     acks =
       for {sub, seq} <- state.acks,
-          state.subs[sub] == :live,
+          state.subs[sub] == :live and Wire.carries?(sub),
           do: %{"type" => "ack", "sub" => sub, "seq" => seq}
 
     Writer.write(state.writer, acks ++ pong, :sent)
@@ -389,8 +391,7 @@ defmodule Helyx.TUI.Wire.Connection do
 
   defp control(state), do: {:noreply, state}
 
-  # The writer ends with the connection, also in a send: a `:normal` end
-  # does not pass the link.
+  # The writer ends with the connection, also in a send: a `:normal` end does not pass the link.
   @impl true
   def terminate(_reason, state), do: Process.exit(state.writer, :kill)
 
