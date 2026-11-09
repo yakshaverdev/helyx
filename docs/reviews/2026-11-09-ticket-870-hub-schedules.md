@@ -20,3 +20,16 @@ Bounds sensor: `8 candidate functions, 0 flagged, 0 without an answer`.
 | 4 | Codex | The Task sent even when its Hub call after the resume failed, so the session stayed out of the live set | Fixed: the Task goes on only when that call answers `:ok`; otherwise the row comes due again. The live-set gap after such a call is listed with "A Task killed in its resume" (Accepted holes). Not tested: `busy` needs 1,024 messages in the mailbox of Hub during a resume |
 
 Not reached by the failure-path budget: a session that hangs in the prompt call, a kill during `Sessions.resume/2`, a store that fails in `due/3`.
+
+## Protocol 7 (after the rebase on master with #869)
+
+The `#870` lines of the wire schema were added as protocol 7, with the SHA-256 of the block. Both clients speak 7 and take `too_many_schedules` and `unknown_schedule`: the TUI (`Helyx.TUI.Link`, `Helyx.TUI.Wire.Decode`) and the Rust core (`PROTOCOL`, `ERROR_CODES`). The fixtures move up by one protocol, and the refusal test now classes the three ops. Base: `fdfda19e`.
+
+### Round 1 (fast: Codex, failure path)
+
+| # | Source | Finding | Resolution |
+|---|---|---|---|
+| 1 | Codex | No fixture checks that a server with no authority answers the three ops with `unknown_op` | Fixed: three cases in `test/fixtures/wire/client_frames.json` |
+| 2 | Failure path, not a defect | The Bounds row of `every` ("null, or 300 to ...") reads as if it allowed a null param. The server answers `bad_params` to one, as it does for any optional key of the schema that is present with null | Doc: the row now says that `every` is absent or an integer |
+
+The failure path reproduced no defect. Every result and every error of the three ops conforms to the schema and passes the TUI decode, and the error code lists of the schema, the TUI, and the Rust core are equal. `test/helyx/tui_test.exs` has 23 failures in this environment on clean `origin/master` too: they come before this change, and the precommit host decides.

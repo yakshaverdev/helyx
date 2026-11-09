@@ -39,7 +39,7 @@ User stories:
 
    The Elixir API of Hub for a product and for the tools of #859 (`start_session/3`, `authorize/4`, Interface changes) runs the same `check`, Core call, and `result` as the wire, so a start through a tool meets the same caps.
 
-6. **The `hub.*` operations.** One namespace on the same wire (ADR 0010 §3), protocol 6. The codec is under "Interface changes". Hub answers a session that the user may not read with `session_not_found`, as a session that does not exist, and a write to a session that the user may read but does not own with `forbidden`: such a user already sees the session, so the code tells nothing new. Records, projects, tokens, and the user are the ops of #869; schedules are the ops of #870.
+6. **The `hub.*` operations.** One namespace on the same wire (ADR 0010 §3), protocols 6 and 7. The codec is under "Interface changes". Hub answers a session that the user may not read with `session_not_found`, as a session that does not exist, and a write to a session that the user may read but does not own with `forbidden`: such a user already sees the session, so the code tells nothing new. Records, projects, tokens, and the user are the ops of #869; schedules are the ops of #870.
 
 7. **The session operations under a Hub.** They keep their codec. Access as decision 4:
 
@@ -204,9 +204,9 @@ A user removed takes its tokens, projects, records, labels, and schedules with i
 - `Helyx.Transport.WebSocket.Authority` (new): the behaviour of decision 5.
 - New close codes: `4403`, the access of the user changed (decision 13), also a credential that no longer holds at a `check`, `run`, or `result`; `4503`, the authority gave no answer to the `hello`: its Hub call exited (5,000 ms, or a Hub that is down) or got `busy`.
 
-### Wire schema additions (protocol 6)
+### Wire schema additions (protocols 6 and 7)
 
-#869 puts these lines in the schema of `wire-protocol.md`, with its SHA-256, but the lines and the alternatives marked `#870`: the three `hub.schedules.*` ops, the codes `too_many_schedules` and `unknown_schedule`, their params and results, and `schedule`. #870 adds them with protocol 7, by the rule of ADR 0008 §7.
+#869 put these lines in the schema of `wire-protocol.md` with protocol 6, but the lines and the alternatives marked `#870`: the three `hub.schedules.*` ops, the codes `too_many_schedules` and `unknown_schedule`, their params and results, and `schedule`. #870 added them with protocol 7, by the rule of ADR 0008 §7.
 
 ```text
 hello = {type: "hello", protocol: int, proof?: base64, token?: id}
@@ -326,7 +326,7 @@ The authorization of a connection, when the transport has an authority. A transp
 | pending wake-ups of a Hub | 16,384: 64 users of 256 schedules | n/a | Hub (#870) |
 | schedule `prompt` | 1 to 16,384 bytes of UTF-8 | `text_too_large`; an empty one `bad_params` | Hub (#870) |
 | schedule `at` | from now to now + 31,622,400 s (366 days) | `bad_params` | Hub (#870) |
-| schedule `every` | null, or 300 to 2,678,400 s | `bad_params` | Hub (#870) |
+| schedule `every` | absent (one run), or 300 to 2,678,400 s; a key that is present is an integer, never null | `bad_params` | Hub (#870) |
 | delivery Tasks | one per session, and at most 4 in all | the others wait in the store, by `next_try_at` | Hub (#870) |
 | the poll of due wake-ups | each 1,000 ms, at most 64 rows each | the rest at the next poll | Hub (#870) |
 | the wait of a wake-up when its session is stopped | the resume, within its bound of 30,000 ms (`wire-protocol.md`, Deadlines: the lock and the load of a file of at most 64 MiB), in the delivery Task, inside its 120,000 ms; a resume that fails with an error of decision 12, step 1, tries again after 30,000 ms, within the life of the wake-up | the wake-up waits; past its life, `missed` | Hub (#870), Core |

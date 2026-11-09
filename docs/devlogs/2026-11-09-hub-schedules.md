@@ -13,6 +13,10 @@ This branch is built on `ticket/869-hub` (Hub, not merged yet).
   - the outcomes are `missed`, `refused` (which ends the schedule), `unconfirmed`, and `delivered`;
   - when the session file is gone, the record is deleted.
 
+## Protocol 7
+
+After the rebase on master, which now holds #869 with protocol 6, the `hub.schedules.*` lines went into the wire schema as protocol 7. Both clients and the fixtures follow it.
+
 ## Open
 
-- The `#870` lines of the wire schema and their protocol number wait for the `hub.*` schema lines of #869. Master is already at protocol 5, and this branch is at 3.
+- None for #870.

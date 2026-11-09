@@ -25,7 +25,8 @@ defmodule Helyx.TUI.Link do
   # the codes of a Hub (docs/features/hub.md): the TUI, the default owner,
   # gets none of these for its operations, but the schema allows them.
   @wire_errors ~w(timeout busy closed failed too_large forbidden too_many_records
-                  too_many_projects unknown_project unknown_token)a
+                  too_many_projects unknown_project unknown_token too_many_schedules
+                  unknown_schedule)a
   defguard wire_error?(reason) when reason in @wire_errors
 
   # The texts of the wire errors, at most 27 bytes: the footer shows them
@@ -41,6 +42,8 @@ defmodule Helyx.TUI.Link do
   def error_text(:too_many_projects), do: "too many projects"
   def error_text(:unknown_project), do: "no such project"
   def error_text(:unknown_token), do: "no such token"
+  def error_text(:too_many_schedules), do: "too many schedules"
+  def error_text(:unknown_schedule), do: "no such schedule"
 
   # The TUI process takes the connection that the caller of
   # `Helyx.TUI.run/1` opened, and monitors it: its `:DOWN` ends the TUI.

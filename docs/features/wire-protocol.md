@@ -75,7 +75,7 @@ Every `req` gets one `res`: `ok: true` with the result, or `ok: false` with an e
 
 Every operation can also answer `unknown_op`, `bad_params`, `busy`, `timeout`, and `failed`.
 
-Under a Hub, the `hub.*` operations and their errors are in `docs/features/hub.md`, "Wire schema additions (protocol 6)", and their bounds in its "Bounds". The session operations reach only the sessions that the user may read: a session of another user that the user may not read answers as one that does not exist, a write to a shared session that the user does not own answers `forbidden`, and a `start` over the records of the user answers `too_many_records` (`docs/features/hub.md`, decisions 6 and 7).
+Under a Hub, the `hub.*` operations and their errors are in `docs/features/hub.md`, "Wire schema additions", and their bounds in its "Bounds". The session operations reach only the sessions that the user may read: a session of another user that the user may not read answers as one that does not exist, a write to a shared session that the user does not own answers `forbidden`, and a `start` over the records of the user answers `too_many_records` (`docs/features/hub.md`, decisions 6 and 7).
 
 - `live_session` is `{id, instance_id, cwd, model, status}`. `status` is `"idle"` when the session has no turn and no wait, else `"running"`.
 - `saved_session` is `{id, cwd, model, mtime, prompt}`: `mtime` in POSIX seconds, 0 for a file time before 1970, `model` from the header, `prompt` the first user text in the head of the file (`docs/features/session-list.md`). The texts come from the file: a client cleans them before it shows them.
@@ -128,7 +128,7 @@ The schema below is the contract. The test of #660 computes the SHA-256 of the l
 
 <!-- wire-schema:start -->
 ```text
-protocol 6
+protocol 7
 
 notation: {k: T} an object; k? may be absent (absent = null or false);
   T | U either; [T] a list; "x" that string; int a JSON integer >= 0;
@@ -162,6 +162,7 @@ error_code = "unknown_op" | "bad_params" | "busy" | "timeout" | "failed"
            | "text_too_large" | "invalid_answer" | "not_waiting"
            | "forbidden" | "too_many_records" | "too_many_projects"
            | "unknown_project" | "unknown_token"
+           | "too_many_schedules" | "unknown_schedule"
 
 op = "sessions.live" | "sessions.saved" | "start" | "resume" | "subscribe"
    | "unsubscribe" | "history" | "prompt" | "steer" | "follow_up"
@@ -170,6 +171,7 @@ op = "sessions.live" | "sessions.saved" | "start" | "resume" | "subscribe"
    | "hub.records.search" | "hub.projects.list" | "hub.projects.create"
    | "hub.projects.update" | "hub.projects.delete" | "hub.tokens.list"
    | "hub.tokens.revoke"
+   | "hub.schedules.list" | "hub.schedules.create" | "hub.schedules.delete"
 
 params.sessions.live   = {}
 params.sessions.saved  = {cwd?: string, after?: string, limit?: int}
@@ -203,6 +205,9 @@ params.hub.projects.update = {project: string, name: string}
 params.hub.projects.delete = {project: string}
 params.hub.tokens.list     = {}
 params.hub.tokens.revoke   = {token: string}
+params.hub.schedules.list   = {session?: string}
+params.hub.schedules.create = {session: string, at: int, every?: int, prompt: string}
+params.hub.schedules.delete = {schedule: string}
 
 result.sessions.live  = {sessions: [live_session]}
 result.sessions.saved = {items: [saved_session], next: string | null}
@@ -219,6 +224,9 @@ result.hub.projects.list   = {projects: [project]}
 result.hub.projects.create, result.hub.projects.update = {project: project}
 result.hub.tokens.list     = {tokens: [token]}
 result.hub.records.delete, result.hub.projects.delete, result.hub.tokens.revoke = {}
+result.hub.schedules.list   = {schedules: [schedule]}
+result.hub.schedules.create = {schedule: schedule}
+result.hub.schedules.delete = {}
 
 live_session  = {id: string, instance_id: string, cwd: string, model: string,
                  status: "idle" | "running"}
@@ -231,6 +239,9 @@ record   = {session: string, owner: user, project: string | null, title: string,
             stored: bool, created_at: int | null, updated_at: int | null}
 project  = {id: string, name: string, created_at: int}
 token    = {id: string, name: string, created_at: int}
+schedule = {id: string, session: string, at: int, every: int | null, prompt: string,
+            pending: bool, last_at: int | null,
+            last_outcome: "delivered" | "missed" | "refused" | "unconfirmed" | null}
 
 snapshot = {instance_id: string, seq: int, messages: [message], more: bool,
             turn: turn | null, model: string, queue: queue, persisting: bool,
@@ -313,7 +324,7 @@ Notes on the codec:
 
 ## Conformance fixtures
 
-`test/fixtures/wire/` holds fixtures of protocol 6 as plain JSON (#855): the frames that a client sends, each with the frames and the close code of the server; the frames that a server sends, each valid, ignored, or a contract break for a client; and folds, event sequences with the state that a client holds after them. Its `README.md` states what a conforming client or server must pass and which rules are in prose only. The transport tests run the client frames against the server, and the TUI tests run the server frames and the folds against the client and its view model, so the fixtures and the Elixir code cannot drift.
+`test/fixtures/wire/` holds fixtures of protocol 7 as plain JSON (#855): the frames that a client sends, each with the frames and the close code of the server; the frames that a server sends, each valid, ignored, or a contract break for a client; and folds, event sequences with the state that a client holds after them. Its `README.md` states what a conforming client or server must pass and which rules are in prose only. The transport tests run the client frames against the server, and the TUI tests run the server frames and the folds against the client and its view model, so the fixtures and the Elixir code cannot drift.
 
 What this doc does not pin down for an implementation that does not run on the BEAM. Each is open, not decided here:
 
@@ -337,6 +348,7 @@ What this doc does not pin down for an implementation that does not run on the B
 10. **Protocol 3** (#880). Protocol 4 adds the origin kind `"hook"` to `origin`; nothing else changes. A client of protocol 3 gets `refused` and the close `4426`, and the fixtures named protocol 4.
 11. **Protocol 4** (#878). Protocol 5 adds UI blocks (ADR 0011, `docs/features/ui-blocks.md`): `ui_blocks` in a tool result `message`, the `ui_block` event, and the snapshot field `ui_blocks`; nothing else changes. A client of protocol 4 gets `refused` and the close `4426`, and the fixtures name protocol 5.
 12. **Protocol 5** (#869). Protocol 6 adds the Hub (ADR 0010, `docs/features/hub.md`): the `token` of `hello`, the `hub.*` operations of records, projects, tokens, and the user, their params and results, and the error codes `forbidden`, `too_many_records`, `too_many_projects`, `unknown_project`, and `unknown_token`; a server with no authority answers as protocol 5 did. A client of protocol 5 gets `refused` and the close `4426`, and the fixtures name protocol 6. The schedules of a Hub (#870) come with protocol 7.
+13. **Protocol 6** (#870). Protocol 7 adds the schedules of a Hub (`docs/features/hub.md`, decisions 11 and 12): the operations `hub.schedules.list`, `hub.schedules.create`, and `hub.schedules.delete`, their params and results, the shape `schedule`, and the error codes `too_many_schedules` and `unknown_schedule`; a server with no authority answers them with `unknown_op`, as every `hub.*` op. A client of protocol 6 gets `refused` and the close `4426`, and the fixtures name protocol 7.
 
 ## Bounds
 
@@ -405,7 +417,6 @@ Each numeric limit gets tests at the limit, one under, and one over, and the fra
 
 - Code: #657 to #662, and the Core bounds that they build on: #672 (a text of at most 4 MiB) and #673 (at file read, a message of at most 1,024 blocks and 8 MiB).
 - Push to an app that is closed: `Helyx.Hub` sends it, and the client host receives it (ADR 0010).
-- The schedules and wake-ups of `Helyx.Hub` (#870): the `hub.schedules.*` operations come with protocol 7 (`docs/features/hub.md`, "Wire schema additions").
 - A browser client.
 - Paging inside one message body: parts carry any size (#658).
 - stdio framing code: same frames, a later ticket when a client needs it (#660).
