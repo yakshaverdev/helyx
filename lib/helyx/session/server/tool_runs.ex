@@ -5,17 +5,22 @@ defmodule Helyx.Session.Server.ToolRuns do
   # awaited: a late reply is dropped by its ref, and a kill that fires in
   # the next turn fails that turn.
 
-  import Helyx.Session.Server.State, only: [ask: 4]
+  import Helyx.Session.Server.State, only: [ask: 4, tool_context: 2]
 
   alias Helyx.Message.ToolCall
   alias Helyx.Session
-  alias Helyx.Session.{Hands, Turn}
-  alias Helyx.Session.Server.{Asks, State}
+  alias Helyx.Session.{ApprovalChains, Hands, ToolQueue, Turn}
+  alias Helyx.Session.Server.{Approvals, Asks, State, UIBlocks}
   alias Helyx.Session.Server.Flow.Up
-  alias Helyx.Session.ToolQueue
 
   # A request of the current turn, of `bytes` encoded call bytes. An open
-  # call id stops the provider process: `{:stop, reason}`.
+  # call id stops the provider process: `{:stop, reason}`; so does the id
+  # of an open call that an approval request named as a call that the
+  # provider runs itself, pending or answered (`docs/features/hooks.md`,
+  # "The owner of a call id"), so one call id never has two chains in the
+  # hands, and no open call is both, apart from the accepted hole of that
+  # section; so does the id of a call with UI blocks of the provider
+  # (`UIBlocks.request/2`).
   def request(
         %State{phase: %{turn: %Turn{} = turn}} = state,
         %ToolCall{} = call,
@@ -23,11 +28,16 @@ defmodule Helyx.Session.Server.ToolRuns do
         rejection
       ) do
     # A call of an unknown tool runs alone; the hands answer it with an error.
-    concurrent? = match?({_tool, true}, state.tools[call.name])
+    concurrent? = match?({_tool, true}, state.registry.tools[call.name])
 
-    case ToolQueue.request(turn.tool_queue, call, bytes, rejection, concurrent?) do
-      {:ok, step} -> {:ok, apply_step(state, step)}
-      :open -> {:stop, {:bad_action, {:event, turn.id, {:tool_request, call}}}}
+    with false <- ApprovalChains.pending_call?(turn.approval_chains, call.id),
+         false <- turn.owners[call.id] == :approval,
+         {:ok, state} <- UIBlocks.request(state, call.id),
+         {:ok, step} <- ToolQueue.request(turn.tool_queue, call, bytes, rejection, concurrent?) do
+      {:ok, state |> Approvals.own(call.id, :tool) |> apply_step(step)}
+    else
+      stop when stop in [true, :shown, :open] ->
+        {:stop, {:bad_action, {:event, turn.id, {:tool_request, call}}}}
     end
   end
 
@@ -47,26 +57,29 @@ defmodule Helyx.Session.Server.ToolRuns do
   def end_turn(state, _turn), do: state
 
   # The hands' result of the running call `id`; an ask of the call ends
-  # with it.
-  def result(%State{phase: %{turn: %Turn{tool_queue: queue}}} = state, id, result),
-    do: state |> Asks.call_end(id) |> apply_step(ToolQueue.result(queue, id, result))
+  # with it. A call that opened after its request gets its owner now. Its
+  # UI blocks wait for the provider's result event (`UIBlocks.result/3`):
+  # the provider gets the text alone.
+  def result(%State{phase: %{turn: %Turn{tool_queue: queue}}} = state, id, result) do
+    {result, blocks} = text_and_blocks(result)
+
+    state
+    |> UIBlocks.result(id, blocks)
+    |> Asks.call_end(id)
+    |> Approvals.own(id, :tool)
+    |> apply_step(ToolQueue.result(queue, id, result))
+  end
+
+  defp text_and_blocks({status, text, blocks}), do: {{status, text}, blocks}
+  defp text_and_blocks(result), do: {result, []}
 
   defp apply_step(%State{phase: %{turn: turn} = phase} = state, {queue, effects}) do
     state = %{state | phase: %{phase | turn: %{turn | tool_queue: queue}}}
     Enum.reduce(effects, state, &effect(&2, turn.id, &1))
   end
 
-  # The context of the call (`Helyx.Tool.context/0`) has the model of the
-  # turn, not of a later switch.
   defp effect(%State{phase: %{turn: %Turn{model: model}}} = state, turn_id, {:run, call}) do
-    context = %{
-      session_id: state.id,
-      model: Helyx.ModelRef.to_string(model),
-      provider_opts: state.init.provider_opts,
-      model_context: state.plugins.model_context
-    }
-
-    :ok = Hands.run(state.hands, turn_id, call, context)
+    :ok = Hands.run(state.hands, turn_id, call, tool_context(state, model))
     state
   end
 

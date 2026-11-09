@@ -16,6 +16,21 @@ defmodule Helyx.Test.Hook do
 
   def test_name(core), do: Module.concat(core, Test)
 
+  # Registers as `<core>.Test` a proxy, linked to the caller, that forwards
+  # each message to `pid`: for a test process that holds another name.
+  def proxy(core, pid) do
+    proxy = spawn_link(fn -> forward(pid) end)
+    Process.register(proxy, test_name(core))
+  end
+
+  defp forward(pid) do
+    receive do
+      message -> send(pid, message)
+    end
+
+    forward(pid)
+  end
+
   defmacro __using__(opts) do
     limit = Keyword.get(opts, :limit, 2_000)
 
@@ -226,12 +241,6 @@ end
 defmodule Helyx.Test.Hook.SettleB do
   @moduledoc false
   use Helyx.Test.Hook, points: [:before_settle]
-end
-
-defmodule Helyx.Test.Hook.SettleShort do
-  @moduledoc false
-  # A `before_settle` hook with a limit of 100 ms.
-  use Helyx.Test.Hook, points: [:before_settle], limit: 100
 end
 
 defmodule Helyx.Test.Hook.SettleLimit do

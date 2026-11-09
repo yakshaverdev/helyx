@@ -208,5 +208,6 @@ defmodule Helyx.TUI.Switch do
   defp reason({:start_failed, _text}), do: "the server could not open the session"
   defp reason({:unknown_provider, _id}), do: "the model has an unknown provider"
   defp reason({:invalid_model_ref, _ref}), do: "the model ref is not valid"
+  defp reason(:text_too_large), do: "the model is over 4 MiB"
   defp reason(_other), do: "the session did not open"
 end

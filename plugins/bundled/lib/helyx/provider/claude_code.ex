@@ -168,8 +168,8 @@ defmodule Helyx.Provider.ClaudeCode do
   # harness session; a fresh one, or one with no state, has nothing to compact.
   defp program(%State{resume: nil, sent?: false} = state, :compact, _text), do: state
   defp program(%State{persist?: false} = state, :compact, _text), do: state
-  defp program(state, :compact, _text), do: Program.ensure(state, state.system || "", true)
-  defp program(state, :turn, context), do: Program.ensure(state, context.system || "", false)
+  defp program(state, :compact, _text), do: Program.compaction(state)
+  defp program(state, :turn, context), do: Program.turn(state, context)
 
   # The program of a lost session exits by itself, with nothing run (research
   # note). A fresh one takes its place, and a turn written to the lost one goes

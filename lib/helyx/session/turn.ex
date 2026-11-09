@@ -15,19 +15,25 @@ defmodule Helyx.Session.Turn do
   # Task's context. It is nil with no Task: in a context request a prepare
   # Task or a pending reply is an open request.
   # `tool_queue` holds the Helyx tool requests of the turn
-  # (`Helyx.Session.ToolQueue`), `asks` the open asks of its calls,
-  # oldest first, and `askers` the call and hook Tasks of the turn that
-  # may ask, by pid, with the session's monitor and their kind
-  # (`Helyx.Session.Server.Asks`). `compact` is nil for a
-  # turn with a prompt; for a compaction turn it is its instructions until
-  # the provider's first compaction event, then `:reported`
-  # (docs/features/harness-compaction.md). `start` is the number of
+  # (`Helyx.Session.ToolQueue`), `approval_chains` the approval requests
+  # of the provider for calls of its own tools
+  # (`Helyx.Session.ApprovalChains`), `owners` the owner of each open call
+  # that a request named (`Helyx.Session.Server.Approvals`), `asks`
+  # the open asks of its calls, oldest first, and `askers` the call and
+  # hook Tasks of the turn that may ask, by pid, with the session's
+  # monitor and their kind (`Helyx.Session.Server.Asks`). `compact` is
+  # nil for a turn with a prompt; for a compaction turn it is its
+  # instructions until the provider's first compaction event, then
+  # `:reported` (docs/features/harness-compaction.md). `start` is the number of
   # transcript messages when the turn opened, and `started_ms` the
   # monotonic time of the session's node then: a snapshot gives the time
   # since, so a late client needs no clock of the server. `recall` is the
   # recall message of the prepared `context`, which goes last at the submit,
   # and `recall_failed` whether the turn gave its recall notice
-  # (docs/features/memory.md).
+  # (docs/features/memory.md). `ui_blocks` and `held_results` are the UI
+  # blocks of the turn, `helyx_calls` its Helyx call ids, and
+  # `helyx_calls_refused` whether a request went past their bound
+  # (`Helyx.Session.Server.UIBlocks`).
 
   alias Helyx.{Message, ModelRef}
 
@@ -48,8 +54,14 @@ defmodule Helyx.Session.Turn do
     bytes: 0,
     blocks: 0,
     tool_queue: %Helyx.Session.ToolQueue{},
+    approval_chains: %Helyx.Session.ApprovalChains{},
+    owners: %{},
     asks: [],
-    askers: %{}
+    askers: %{},
+    ui_blocks: [],
+    held_results: %{},
+    helyx_calls: %{},
+    helyx_calls_refused: false
   ]
 
   @type t :: %__MODULE__{
@@ -68,8 +80,14 @@ defmodule Helyx.Session.Turn do
           bytes: non_neg_integer(),
           blocks: non_neg_integer(),
           tool_queue: Helyx.Session.ToolQueue.t(),
+          approval_chains: Helyx.Session.ApprovalChains.t(),
+          owners: %{String.t() => :tool | :approval},
           asks: [{String.t(), GenServer.from(), Helyx.Session.Snapshot.ask(), pid()}],
-          askers: %{pid() => {reference(), {:tool | :hook, String.t()}}}
+          askers: %{pid() => {reference(), {:tool | :hook, String.t()}}},
+          ui_blocks: [Helyx.Session.Server.UIBlocks.entry()],
+          held_results: %{String.t() => [Helyx.UIBlock.t()]},
+          helyx_calls: %{String.t() => true},
+          helyx_calls_refused: boolean()
         }
 
   # The most bytes of text, thinking, and tool calls in the open assistant

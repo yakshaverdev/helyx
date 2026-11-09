@@ -299,7 +299,12 @@ defmodule Helyx.TUI.WireFixturesTest do
       "running" => state.vm.running?,
       "queue" => Map.new(state.vm.queue, fn {key, count} -> {Atom.to_string(key), count} end),
       "messages" => state.vm |> ViewModel.cells() |> Enum.flat_map(&ids/1),
-      "asks" => Enum.map(state.vm.asks, & &1.ask_id)
+      "asks" => Enum.map(state.vm.asks, & &1.ask_id),
+      "ui_blocks" =>
+        Enum.map(
+          state.vm.ui_blocks,
+          &%{"call_id" => &1.call_id, "key" => &1.key, "block" => &1.block}
+        )
     }
 
     assert WireFixtures.matches?(expect, actual), "#{name}: #{inspect(actual)}"

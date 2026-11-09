@@ -29,7 +29,15 @@ defmodule Helyx.Session.Hands.Settle do
   @doc false
   def start(state, {:settle, ref, turn_id, input, context}) do
     hooks = Map.fetch!(state.hooks, :before_settle)
-    extra = %{core: state.core, tools: Map.keys(state.tools), tool: nil, call_id: nil}
+
+    extra = %{
+      core: state.core,
+      tools: Hands.Sources.names(state),
+      tool: nil,
+      call_id: nil,
+      source: nil
+    }
+
     context = Map.merge(context, extra)
 
     {_task, state} =
@@ -40,9 +48,4 @@ defmodule Helyx.Session.Hands.Settle do
 
     state
   end
-
-  @doc false
-  # The entry of the chain Task `pid` of the hands, or nil.
-  def chain(state, pid),
-    do: Enum.find(state.tasks, &match?({_ref, {%Task{pid: ^pid}, _, {:settle, _}, _, _}}, &1))
 end

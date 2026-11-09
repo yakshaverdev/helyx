@@ -9,20 +9,17 @@ defmodule Helyx.Session.Hands.Hooks do
   # answer}` or `{:failed, how}`.
 
   alias Helyx.Session.Hands
-  alias Helyx.Session.Hands.{Outcome, Release, Run, Settle}
+  alias Helyx.Session.Hands.{Outcome, Release, Run, State}
 
-  # A hook of a call Task of a turn, or of a `before_settle` chain Task
-  # (`Settle`), whose id stands for the call id. Once a handle is
-  # unconfirmed, a hook start is refused: a failed hook. A request of a
-  # Task that a cancel killed after it sent it finds no Task and gets no
-  # answer.
+  # A hook of a call Task of a turn, of the chain Task of an approval
+  # request, or of a `before_settle` chain Task (`Settle`), whose id stands
+  # for the call id. Once a handle is unconfirmed, a hook start is refused:
+  # a failed hook. A request of a Task that a cancel killed after it sent
+  # it finds no Task and gets no answer.
   def start(state, from, pid, request) do
-    case Hands.tool_call(state, pid) || Settle.chain(state, pid) do
-      nil ->
-        state
-
-      {_ref, {_task, turn_id, call_id, _module, _place}} ->
-        start(state, from, request, turn_id, call_id)
+    case State.chain_call(state, pid) do
+      nil -> state
+      {turn_id, call_id} -> start(state, from, request, turn_id, call_id)
     end
   end
 

@@ -29,7 +29,9 @@ defmodule Helyx.Transport.WebSocketTest do
 
   describe "the schema fingerprint" do
     test "the schema of the wire doc has the SHA-256 of the protocol number" do
-      assert sha256(schema(File.read!(@doc_path))) == WebSocket.schema_sha256()
+      schema = schema(File.read!(@doc_path))
+      assert sha256(schema) == WebSocket.schema_sha256()
+      assert String.starts_with?(schema, "```text\nprotocol #{WebSocket.protocol()}\n")
     end
   end
 
@@ -176,8 +178,12 @@ defmodule Helyx.Transport.WebSocketTest do
       hello = Client.hello(Client.challenge(socket), nil)
       Client.send_frame(socket, %{hello | "protocol" => 1})
 
-      assert {:frame, %{"type" => "refused", "code" => "protocol", "server_protocol" => 4}} ==
-               Client.recv(socket)
+      assert {:frame,
+              %{
+                "type" => "refused",
+                "code" => "protocol",
+                "server_protocol" => WebSocket.protocol()
+              }} == Client.recv(socket)
 
       assert {:close, 4426} = Client.recv(socket)
     end
@@ -360,6 +366,8 @@ defmodule Helyx.Transport.WebSocketTest do
     setup context, do: serve(context)
 
     test "a server with no token takes a hello with any proof", %{port: port} do
+      protocol = WebSocket.protocol()
+
       for proof <- ["fake", 7, %{}] do
         {:ok, socket} = Client.upgrade(port)
 
@@ -368,7 +376,7 @@ defmodule Helyx.Transport.WebSocketTest do
           Map.put(Client.hello(Client.challenge(socket), nil), "proof", proof)
         )
 
-        assert {:frame, %{"type" => "welcome", "protocol" => 4}} = Client.recv(socket)
+        assert {:frame, %{"type" => "welcome", "protocol" => ^protocol}} = Client.recv(socket)
       end
     end
 
@@ -650,6 +658,15 @@ defmodule Helyx.Transport.WebSocketTest do
 
     assert Ops.deadline("abort") == abort
     assert Ops.deadline("stop") == abort + Helyx.Session.Server.Stop.shutdown_ms()
+  end
+
+  # Under a Hub, `sessions.saved` is the scan and one Hub call, and a
+  # `hub.*` op one Hub call (hub.md, decisions 5 and 7).
+  test "under an authority, sessions.saved has 15,000 ms and a hub op 6,000 ms" do
+    assert Ops.deadline("sessions.saved", true) == Ops.deadline("sessions.saved") + 5_000
+    assert Ops.deadline("sessions.saved", true) == 15_000
+    assert Ops.deadline("hub.me", true) == 6_000
+    assert Ops.deadline("set_model", true) == Ops.deadline("set_model")
   end
 
   # The open deadlines of the session bound them (#834, wire-protocol.md,

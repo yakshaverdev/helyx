@@ -19,18 +19,8 @@ defmodule Helyx.Session.HooksTest do
   # process stays free for a gate (`Helyx.Test.Gate.open/0`).
   defp core(hooks, tools \\ @tools) do
     core = start_core([Helyx.Test.Provider | tools ++ hooks])
-    test = self()
-    proxy = spawn_link(fn -> forward(test) end)
-    Process.register(proxy, Hook.test_name(core))
+    Hook.proxy(core, self())
     core
-  end
-
-  defp forward(pid) do
-    receive do
-      message -> send(pid, message)
-    end
-
-    forward(pid)
   end
 
   defp run(core, model, opts \\ []) do
@@ -440,17 +430,21 @@ defmodule Helyx.Session.HooksTest do
       assert [{"c1", false, "HI"} | _] = results(collect_until(:turn_end))
     end
 
+    # The limit counts the wait of the hook for its go (hooks.md): a hook
+    # that must hold before its kill has the limit of 2,000 ms of Hook.A,
+    # the margin for load, and the wait for that kill makes the test slow.
+    @tag :slow
     test "a hook killed at its limit gets a cancel release" do
-      core = core([Hook.Short])
+      core = core([Hook.A])
       test = self()
 
-      Hook.script(core, Hook.Short, :before_tool, fn _ ->
+      Hook.script(core, Hook.A, :before_tool, fn _ ->
         :ok = Helyx.Tool.hold({test, :handle})
         Process.sleep(:infinity)
       end)
 
       run(core, "loop")
-      assert_receive {:released, Hook.Short, [{_test, :handle}], :cancel}
+      assert_receive {:released, Hook.A, [{_test, :handle}], :cancel}
       collect_until(:turn_end)
     end
 
@@ -496,14 +490,15 @@ defmodule Helyx.Session.HooksTest do
   end
 
   describe "the hands" do
+    # A limit of 2,000 ms, as in the cancel release test above.
+    @tag :slow
     test "the limit holds while the hands are busy: the hook is killed by the timer server" do
-      core = core([Hook.Short])
+      core = core([Hook.A])
       test = self()
 
-      Hook.script(core, Hook.Short, :before_tool, fn _ ->
+      Hook.script(core, Hook.A, :before_tool, fn _ ->
         send(test, {:hook_task, self()})
-        Process.sleep(300)
-        :allow
+        Process.sleep(:infinity)
       end)
 
       session = run(core, "loop")
@@ -511,12 +506,12 @@ defmodule Helyx.Session.HooksTest do
       hands = :sys.get_state(Session.pid(session)).hands
       ref = Process.monitor(hook_task)
       :erlang.suspend_process(hands)
-      # The kill at 100 ms comes from the timer server, not from the hands.
+      # The kill at 2,000 ms comes from the timer server, not from the hands.
       assert_receive {:DOWN, ^ref, :process, ^hook_task, :killed}, 5_000
       :erlang.resume_process(hands)
 
       assert [{"c1", true, text} | _] = results(collect_until(:turn_end))
-      assert text =~ "past its limit of 100 ms"
+      assert text =~ "past its limit of 2000 ms"
     end
 
     test "a call Task that dies while its hook runs takes the hook with it, released" do
@@ -592,17 +587,28 @@ defmodule Helyx.Session.HooksTest do
       assert text == "the hook Helyx.Test.Hook.A denied the call: the user said no"
     end
 
+    # The test kills the hook while it asks: a hook of 100 ms could be
+    # killed at its limit before it asks, since the limit counts its wait
+    # for its go.
+    @tag :capture_log
     test "the end of the hook Task ends its ask, so no question stays open" do
-      core = core([Hook.Short])
+      core = core([Hook.A])
+      test = self()
 
-      Hook.script(core, Hook.Short, :before_tool, fn _ -> Helyx.Hook.ask(%{"q" => 1}) end)
+      Hook.script(core, Hook.A, :before_tool, fn _ ->
+        send(test, {:asking, self()})
+        Helyx.Hook.ask(%{"q" => 1})
+      end)
+
       session = run(core, "ask")
+      assert_receive {:asking, hook}
       [%{ask_id: id}] = of_type(collect_until(:ask), :ask)
+      Process.exit(hook, :kill)
 
       assert [%{ask_id: ^id, outcome: :ended}] = of_type(collect_until(:ask_end), :ask_end)
       assert Session.answer(session, id, %{}) == {:error, :not_waiting}
       assert [{"a1", true, text}] = results(collect_until(:turn_end))
-      assert text =~ "past its limit"
+      assert text =~ "the hook Helyx.Test.Hook.A failed"
       assert snapshot(session).asks == []
     end
 
@@ -738,12 +744,14 @@ defmodule Helyx.Session.HooksTest do
       collect_until(:turn_end)
     end
 
+    # The test kills B while it asks, as in the test above.
+    @tag :capture_log
     test "the hands send the answer of a hook killed while it asks with its pid, before the next record" do
-      core = core([Hook.Short, Hook.A])
+      core = core([Hook.B, Hook.A])
       test = self()
 
       # The after_tool chain goes on past a failed hook.
-      Hook.script(core, Hook.Short, :after_tool, fn _ ->
+      Hook.script(core, Hook.B, :after_tool, fn _ ->
         send(test, {:asking, self()})
         Helyx.Hook.ask(%{"q" => 1})
       end)
@@ -753,8 +761,9 @@ defmodule Helyx.Session.HooksTest do
       assert_receive {:asking, hook}
       collect_until(:ask)
       :ok = :sys.suspend(pid)
+      Process.exit(hook, :kill)
 
-      # Short is killed at its limit; the hands answer for it, then start A.
+      # B is killed; the hands answer for it, then start A.
       next = &match?({:asker, _, _, {:hook, "c1"}}, &1)
       wait_until(fn -> mailbox_index(pid, next) != nil end)
       answer = mailbox_index(pid, &match?({:hook_answer, _, %{pid: ^hook}}, &1))

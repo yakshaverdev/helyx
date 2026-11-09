@@ -6,7 +6,10 @@ defmodule Helyx.Message do
   lists under the session file.
 
   A tool result message links to its call with `tool_call_id` and `tool_name`,
-  and flags a failed call with `is_error`.
+  and flags a failed call with `is_error`. Its `ui_blocks` are the UI blocks
+  that the tool returned for the clients (`Helyx.UIBlock`,
+  `docs/features/ui-blocks.md`); a provider never sends them to the model.
+  Every other message has none.
 
   Core sets `id` on every message that joins a session, and `origin` on
   every user message: `%{kind: :user | :background | :product | :hook, id:
@@ -54,7 +57,8 @@ defmodule Helyx.Message do
     :tool_call_id,
     :tool_name,
     :usage,
-    is_error: false
+    is_error: false,
+    ui_blocks: []
   ]
 
   @type block :: Text.t() | Thinking.t() | ToolCall.t()
@@ -77,7 +81,8 @@ defmodule Helyx.Message do
           tool_call_id: String.t() | nil,
           tool_name: String.t() | nil,
           is_error: boolean(),
-          usage: Helyx.Usage.t() | nil
+          usage: Helyx.Usage.t() | nil,
+          ui_blocks: [Helyx.UIBlock.t()]
         }
 
   @doc "Builds a user message with one text block."
@@ -165,6 +170,13 @@ defmodule Helyx.Message do
   """
   @spec hook_origin(module()) :: origin()
   def hook_origin(module), do: %{kind: :hook, id: inspect(module)}
+
+  @doc """
+  Whether `id` is a valid approval id of a provider (ADR 0013 §4): valid
+  UTF-8 of 1 to #{@origin_id_max_bytes} bytes, the bound of an origin id.
+  """
+  @spec approval_id?(term()) :: boolean()
+  def approval_id?(id), do: text_id?(id, @origin_id_max_bytes)
 
   defp text_id?(id, max), do: is_binary(id) and byte_size(id) in 1..max and String.valid?(id)
 
@@ -336,65 +348,4 @@ defmodule Helyx.Message do
 
   defp block_bytes(%ToolCall{name: name, arguments: arguments}),
     do: byte_size(name) + byte_size(JSON.encode!(arguments))
-
-  @doc false
-  # The JSON map of a message: the session file entry without its `type`, and
-  # the wire message (`docs/features/wire-protocol.md`, "Codec"). One owner
-  # for the shape, so a new field reaches both.
-  @spec to_map(t()) :: map()
-  def to_map(%__MODULE__{role: role, stop_reason: stop_reason} = message) do
-    check_stop_reason(stop_reason)
-
-    encoded =
-      %{
-        "id" => message.id,
-        "role" => Atom.to_string(role),
-        "origin" => message.origin && origin_to_map(message.origin),
-        "content" => Enum.map(message.content, &block_to_map/1),
-        "model" => message.model,
-        "stop_reason" => stop_reason && Atom.to_string(stop_reason),
-        "tool_call_id" => message.tool_call_id,
-        "tool_name" => message.tool_name,
-        "usage" => message.usage && usage_to_map(message.usage)
-      }
-      |> Map.reject(fn {_key, value} -> value in [nil, false] end)
-
-    if role == :tool_result, do: Map.put(encoded, "is_error", message.is_error), else: encoded
-  end
-
-  @doc false
-  # The JSON map of a usage: string keys, no nil field. The values keep their
-  # type; the JSON encoder writes an atom as its name.
-  @spec usage_to_map(Helyx.Usage.t()) :: map()
-  def usage_to_map(%Helyx.Usage{} = usage) do
-    for {key, value} <- Map.from_struct(usage), value != nil, into: %{} do
-      {Atom.to_string(key), value}
-    end
-  end
-
-  defp origin_to_map(%{kind: kind, id: id}),
-    do: %{"kind" => Atom.to_string(kind), "id" => id}
-
-  @doc false
-  # The JSON map of one content block. The wire sends a bare block in a
-  # `message_update` event, so the shape has one owner here.
-  @spec block_to_map(block()) :: map()
-  def block_to_map(%Text{text: text}), do: %{"type" => "text", "text" => text}
-
-  def block_to_map(%Thinking{thinking: thinking}),
-    do: %{"type" => "thinking", "thinking" => thinking}
-
-  def block_to_map(%ToolCall{id: id, name: name, arguments: arguments}),
-    do: %{"type" => "tool_call", "id" => id, "name" => name, "arguments" => arguments}
-
-  # The atoms are interned here, so a fresh VM that has loaded no provider
-  # still writes and checks a stop reason. A reason outside the set raises,
-  # so the file writer and the wire reject it instead of writing an entry
-  # that a later reader would see as no stop reason.
-  defp check_stop_reason(nil), do: :ok
-  for reason <- @stop_reasons, do: defp(check_stop_reason(unquote(reason)), do: :ok)
-
-  defp check_stop_reason(other) do
-    raise ArgumentError, "a stop reason outside the set: #{inspect(other)}"
-  end
 end

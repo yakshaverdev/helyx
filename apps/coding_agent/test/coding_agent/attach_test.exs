@@ -151,9 +151,13 @@ defmodule CodingAgent.AttachTest do
 
     wait_until(fn -> match?({:ok, "{" <> _}, File.read(file)) end)
 
-    for model <- ["older/m", "newest/m"] do
+    # The server runs a Hub, whose newest session of a folder is the newest
+    # file time, in seconds (docs/features/hub.md, decision 7): the older
+    # file is a minute older.
+    for {model, age} <- [{"older/m", 60}, {"newest/m", 0}] do
       {:ok, session} = Helyx.Session.File.create(sessions, Helyx.Session.Id.new(), dir, model)
       Helyx.Test.SessionFile.append_message(session, Helyx.Message.user("p"))
+      File.touch!(session.path, System.os_time(:second) - age)
     end
 
     # A session with no message is not picked, as for --resume.
@@ -330,9 +334,16 @@ defmodule CodingAgent.AttachTest do
   # the wait of the client is a line too: the client is held while the
   # server stops, before its first welcome.
   test "a server of this VM that stops during the wait gives a line", %{sessions: sessions} do
+    data_folder(sessions)
+    # Until the client is held, the lock keeps the server from writing its
+    # file, so the client cannot attach and stop the server first. The
+    # margin for load is `Serve.wait_ms/0`: the server waits that long for
+    # the lock, and the client for the server, up to its resume.
+    lock = hold_lock(sessions)
     client = Task.async(fn -> Attach.serve(sessions, "fake/echo", & &1) end)
     wait_until(fn -> Process.whereis(Serve) != nil end)
     :erlang.suspend_process(client.pid)
+    Lock.release(lock)
     :ok = Task.Supervisor.terminate_child(CodingAgent.Servers, Process.whereis(Serve))
     true = :erlang.resume_process(client.pid)
 

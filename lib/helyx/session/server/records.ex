@@ -14,7 +14,7 @@ defmodule Helyx.Session.Server.Records do
 
   alias Helyx.{Message, ModelRef, Session}
   alias Helyx.Session.{HookEntry, Id, Transcript, Turn}
-  alias Helyx.Session.Server.{Settle, State}
+  alias Helyx.Session.Server.{Approvals, Asks, Settle, State, UIBlocks}
 
   # A user message that Core made at its admission, with its id and origin.
   def append_user(state, %Message{role: :user} = user) do
@@ -63,7 +63,7 @@ defmodule Helyx.Session.Server.Records do
 
     case Enum.find(Transcript.open_calls(state.transcript), &(&1.id == call_id)) do
       nil -> state
-      call -> record_result(call, result, state)
+      call -> record_result(call, result, state, UIBlocks.result_blocks(state, call_id))
     end
   end
 
@@ -125,6 +125,14 @@ defmodule Helyx.Session.Server.Records do
     model = ModelRef.to_string(ref)
     state = persist(state, &Helyx.Session.File.append_model_change(&1, model))
     emit(%{state | model: ref, provider: provider}, nil, :model_change, %{model: model})
+  end
+
+  # A change of the activated tool names: the record on disk and
+  # `tools_change`, with the turn of the call that activated, or nil for the
+  # cap after a put (docs/features/mcp-client.md).
+  def tools_change(%State{} = state, turn_id, activated) do
+    state = persist(state, &Helyx.Session.File.append_tools_change(&1, activated))
+    emit(state, turn_id, :tools_change, %{activated: activated})
   end
 
   # A resume id of the provider process, with the number of assistant
@@ -255,11 +263,21 @@ defmodule Helyx.Session.Server.Records do
 
   defp close_if(state, _block?), do: state
 
-  # Appends the tool result message to the transcript and emits
-  # tool_execution_end.
-  defp record_result(call, result, state) do
-    message = %{Message.tool_result(call, result) | id: Id.new()}
-    emit(append_message(state, message), :tool_execution_end, %{message: message})
+  # Appends the tool result message to the transcript, with the UI blocks
+  # of a Helyx tool's result, and emits tool_execution_end. The UI blocks
+  # of the call leave the turn (`UIBlocks.call_end/2`), and the records of
+  # its Tasks end with their asks (`Asks.result_joined/2`): no block or ask
+  # of the call comes after its result. The call is no longer open, so its
+  # owner can go (`Approvals.drop/2`).
+  defp record_result(call, result, state, blocks \\ []) do
+    message = %{Message.tool_result(call, result) | id: Id.new(), ui_blocks: blocks}
+
+    state
+    |> UIBlocks.call_end(call.id)
+    |> Asks.result_joined(call.id)
+    |> append_message(message)
+    |> Approvals.drop(call.id)
+    |> emit(:tool_execution_end, %{message: message})
   end
 
   # Each open call (`Transcript.open_calls/1`) gets an `aborted` error

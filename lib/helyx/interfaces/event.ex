@@ -20,6 +20,8 @@ defmodule Helyx.Event do
     * `:queue_dropped` – `%{texts: [String.t()], messages: [Helyx.Message.t()]}`
     * `:model_change` – `%{model: String.t()}`; the turn id is nil, because the
       change is outside a turn
+    * `:tools_change` – `%{activated: [String.t()]}`, the activated deferred tool
+      names in drop order (`docs/features/mcp-client.md`)
     * `:resume_id` – `%{provider: String.t(), resume_id: String.t(), lost: boolean, cut: non_neg_integer}`;
       `lost` is true when the provider lost its own session, and the TUI shows its notice
     * `:steer_unconfirmed` – `%{text: String.t(), message: Helyx.Message.t()}`
@@ -27,6 +29,9 @@ defmodule Helyx.Event do
     * `:notice` – `%{text: String.t()}`, not in the transcript
     * `:ask` – `%{ask_id: String.t(), call_id: String.t(), tool: String.t(), request: map}`
     * `:ask_end` – `%{ask_id: String.t(), outcome: :answered | :ended}`
+    * `:ui_block` – `%{call_id: String.t() | nil, key: String.t(), block: Helyx.UIBlock.t()}`,
+      not in the transcript; a later block with the same call id and key replaces it
+      (`docs/features/ui-blocks.md`)
 
   The `error` of a failed turn is text for a person: Core writes it from the
   reason, valid UTF-8 of at most 4000 bytes, and logs the reason (ADR 0006 §2).
@@ -45,12 +50,14 @@ defmodule Helyx.Event do
           | :queue_update
           | :queue_dropped
           | :model_change
+          | :tools_change
           | :resume_id
           | :steer_unconfirmed
           | :compaction
           | :notice
           | :ask
           | :ask_end
+          | :ui_block
 
   @type t :: %__MODULE__{
           type: type(),

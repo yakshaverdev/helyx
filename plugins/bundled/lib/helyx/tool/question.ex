@@ -1,8 +1,10 @@
 defmodule Helyx.Tool.Question do
   @moduledoc """
   Asks the user one to four multiple-choice questions and waits for the
-  answers (`Helyx.Tool.ask/1`). The request is `%{"questions" => questions}`
-  with the checked arguments, `multi_select` filled in. A client answers
+  answers (`Helyx.Tool.ask/1`). The request is a `form` UI block,
+  `%{"kind" => "form", "text" => "<n> question(s)", "questions" => questions}`,
+  with the checked arguments, `multi_select` filled in; its `text` is the
+  count of the questions (`docs/features/ui-blocks.md`). A client answers
   with `%{"answers" => answers}`, one item for each question in order:
   `"selected"`, the picked labels (at most one without `multi_select`), and
   `"other"`, a text of the user, or absent; an item needs one of them. With
@@ -68,7 +70,7 @@ defmodule Helyx.Tool.Question do
   def run(%{"questions" => questions}, _cwd)
       when is_list(questions) and length(questions) in 1..4 do
     with {:ok, questions} <- check(questions) do
-      case Helyx.Tool.ask(%{"questions" => questions}) do
+      case Helyx.Tool.ask(form(questions)) do
         {:ok, answer} -> result(questions, answer)
         {:error, :no_client} -> {:ok, @no_client}
         {:error, :not_running} -> {:error, "question: the call no longer runs"}
@@ -77,6 +79,14 @@ defmodule Helyx.Tool.Question do
   end
 
   def run(_args, _cwd), do: {:error, "question needs questions, a list of 1 to 4 questions"}
+
+  # The text is a short line, not a copy of the questions, so the largest
+  # request stays under the ask bound.
+  defp form([_] = questions),
+    do: %{"kind" => "form", "text" => "1 question", "questions" => questions}
+
+  defp form(questions),
+    do: %{"kind" => "form", "text" => "#{length(questions)} questions", "questions" => questions}
 
   # Each question in order, or the error of the first bad one.
   defp check(questions) do

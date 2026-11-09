@@ -14,11 +14,9 @@ defmodule Helyx.Transport.WebSocket.Frame do
 
   def max_frame, do: @max_frame
 
-  # The bytes of an inbound frame joined from parts: the largest request a
-  # client may send (`docs/features/wire-protocol.md`, "Bounds").
-  @doc false
-  @spec max_inbound() :: pos_integer()
-  def max_inbound, do: elem(@bounds.inbound, 0)
+  @doc "The bytes of a request of a client, its parts joined: the inbound bound."
+  @spec max_request() :: pos_integer()
+  def max_request, do: elem(@bounds.inbound, 0)
 
   # A frame as the WebSocket texts that carry it, as iodata: one text, or
   # its parts.

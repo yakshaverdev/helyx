@@ -35,7 +35,7 @@ defmodule Helyx.Session.Server.Prepare do
   def start(%State{phase: %{turn: %Turn{id: turn_id} = turn}} = state, trigger) do
     %State{plugins: plugins, deadline_ms: %{prepare: ms}} = state
 
-    context = %Context{messages: state.transcript, tools: state.tool_specs}
+    context = %Context{messages: state.transcript, tools: state.registry.specs}
     trigger = if Helyx.Provider.Loop.loop?(turn.provider), do: trigger
 
     opts =

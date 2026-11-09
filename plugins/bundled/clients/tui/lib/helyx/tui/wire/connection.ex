@@ -7,26 +7,26 @@ defmodule Helyx.TUI.Wire.Connection do
   decision 13), checks it strictly against the schema (decision 14), turns the events of a
   subscription into `Helyx.Event` structs, sends the acks, and answers the pings.
 
-  The process that calls `open/1` owns the connection, which ends with it;
-  `take/1` makes another process the owner. The owner gets the events of
-  its subscriptions as a client in the node gets them from
-  `Helyx.Session.subscribe/2`: `{:helyx_event, event}` for each event, then
-  `{:helyx_end, sub, reason}` at the end of the session, with `reason`
-  `:stopped` or `:crashed`. It passes each event that it applied to
-  `ack/3`. The connection ends with `{:shutdown, :broken}` at a
-  frame that the contract does not allow, and with `{:shutdown, {:closed,
-  code}}` when the server closes it, `code` nil for a close with no code:
-  a close of TCP, a close frame with no code, or a failed read or write.
+  The process that calls `open/1` owns the connection, which ends with it; `take/1` makes another
+  process the owner. The owner gets the events of its subscriptions as a client in the node gets
+  them from `Helyx.Session.subscribe/2`: `{:helyx_event, event}` for each event, then
+  `{:helyx_end, sub, reason}` at the end of the session, with `reason` `:stopped` or `:crashed`.
+  It passes each event that it applied to `ack/3`. The connection ends with `{:shutdown,
+  :broken}` at a frame that the contract does not allow, and with `{:shutdown, {:closed, code}}`
+  when the server closes it, `code` nil for a close with no code: a close of TCP, a close frame
+  with no code, or a failed read or write.
 
-  An operation gives the result of the Core call of the server, or `{:error, code}` with the
-  error code of the wire as an atom; for `invalid_model_ref`, `unknown_provider`, and
-  `start_failed`, `{code, text}`. It waits for its reply at most the deadline of the server for
-  the operation and 5,000 ms more from the moment that the connection takes it, its wait for the
-  writer included (decision 15), then gives `{:error, :timeout}`: the outcome is unknown, and
-  the late reply is dropped; `start` and `resume` wait while the connection lives (decision 17).
-  At most 16 requests wait for a reply, late ones too, and at most 16 request frames wait for
-  the writer; one more gives `{:error, :busy}` and sends nothing. After the end of the
-  connection an operation gives `{:error, :closed}`.
+  An operation gives the result of the Core call of the server, or `{:error, code}` with the error
+  code of the wire as an atom; for `invalid_model_ref`, `unknown_provider`, and `start_failed`,
+  `{code, text}`. It waits for its reply at most the deadline of the server for the operation
+  under a Hub and 15,000 ms more from the moment that the connection takes it, its wait for the
+  writer included (decision 15), then gives `{:error, :timeout}`: the outcome is unknown, and the
+  late reply is dropped; `start` and `resume` wait while the connection lives (decision 17). At
+  most 16 requests wait for a reply, late ones too, and at most 16 request frames wait for the
+  writer; one more gives `{:error, :busy}` and sends nothing. After the end of the connection an
+  operation gives `{:error, :closed}`. A request over the request bound of the server gives
+  `{:error, :too_large}` and sends nothing; a sub id that no frame carries is not acked, and its
+  detach drops it with no request (`Helyx.TUI.Wire`).
   """
 
   use GenServer
@@ -35,11 +35,11 @@ defmodule Helyx.TUI.Wire.Connection do
   alias Helyx.Session.File.Scan
   alias Helyx.Session.Snapshot
   alias Helyx.Transport.WebSocket.{Frame, Ops}
+  alias Helyx.TUI.Wire
   alias Helyx.TUI.Wire.{Decode, Reader, Subscriptions, Writer}
 
-  # The wait of the server for its encoder slot and the encode of a large
-  # result are outside its deadline (wire-protocol.md, "Deadlines").
-  @margin_ms 5_000
+  # Past the server deadline: the slot wait, the encode, two Hub calls (hub.md, decision 5).
+  @margin_ms 5_000 + 2 * 5_000
   # The requests in flight of one connection of the server.
   @max_waiting 16
 
@@ -145,7 +145,9 @@ defmodule Helyx.TUI.Wire.Connection do
 
   defp params(opts), do: Map.new(opts, fn {key, value} -> {Atom.to_string(key), value} end)
 
-  defp request(conn, op, params), do: call(conn, {:request, op, params})
+  defp request(conn, op, params) do
+    if Wire.fits?(op, params), do: call(conn, {:request, op, params}), else: {:error, :too_large}
+  end
 
   defp call(conn, message) do
     GenServer.call(conn, message, :infinity)
@@ -189,14 +191,17 @@ defmodule Helyx.TUI.Wire.Connection do
   def handle_call({:request, op, params}, from, state),
     do: start_request(state, op, params, op, from)
 
-  def handle_call({:unsubscribe, _sub}, _from, state)
-      when map_size(state.waiting) >= @max_waiting,
-      do: {:reply, {:error, :busy}, state}
-
   def handle_call({:unsubscribe, sub}, from, state) do
     case Subscriptions.detach(state.subs, sub) do
+      {:ok, _op}
+      when map_size(state.waiting) >= @max_waiting or state.unwritten >= @max_waiting ->
+        {:reply, {:error, :busy}, state}
+
       {:ok, op} ->
         start_request(state, "unsubscribe", %{"sub" => sub}, op, from)
+
+      {:dropped, subs} ->
+        {:reply, :ok, %{state | subs: subs}}
 
       {:error, reason} ->
         {:reply, {:error, reason}, state}
@@ -252,8 +257,7 @@ defmodule Helyx.TUI.Wire.Connection do
 
   def handle_info(:sent, state), do: control(%{state | control: :idle})
 
-  # gen_tcp drops the bytes that wait to be read at a failed send, so a
-  # close frame that waits there has no code to give (decision 15).
+  # gen_tcp drops the bytes that wait to be read at a failed send: no close code (decision 15).
   def handle_info(:write_failed, state), do: closed(nil, state)
 
   def handle_info({:DOWN, _ref, :process, owner, _reason}, %{owner: owner} = state),
@@ -324,7 +328,7 @@ defmodule Helyx.TUI.Wire.Connection do
       {:next, subs} ->
         reply_caller(caller, result, %{state | subs: subs})
 
-      {:detached, subs} ->
+      {ended, subs} when ended in [:detached, :dropped] ->
         {:noreply, %{state | subs: subs}}
 
       {:late_subscribe, sub, subs} ->
@@ -349,12 +353,12 @@ defmodule Helyx.TUI.Wire.Connection do
   defp register(state, id, op, caller),
     do: %{state | next: state.next + 1, waiting: Map.put(state.waiting, id, {op, caller})}
 
-  # The request of an op, or of a detach, whose `pending` op is `{:unsub,
-  # sub}`. An id is never used again, so a late reply is told apart.
+  # The request of an op, or of a detach, whose `pending` op is `{:unsub, sub}`. An id is never
+  # used again, so a late reply is told apart.
   defp start_request(state, op, params, pending, from) do
     id = Integer.to_string(state.next)
     state = if params["after"], do: update_in(state.replays, &MapSet.put(&1, id)), else: state
-    timer = arm(id, Ops.deadline(op))
+    timer = arm(id, Ops.deadline(op, true))
     write_request(register(state, id, pending, {from, timer}), id, op, params)
   end
 
@@ -368,10 +372,9 @@ defmodule Helyx.TUI.Wire.Connection do
     {:noreply, %{state | unwritten: state.unwritten + 1}}
   end
 
-  # At most one batch of a pong and acks waits for the writer, so pings
-  # and events that come faster than it writes do not grow its queue. The
-  # next batch holds the latest ping (RFC 6455, section 5.5.3) and the
-  # latest seq of each live sub: an ack covers the events before it.
+  # At most one batch of a pong and acks waits for the writer, so pings and events that come
+  # faster than it writes do not grow its queue. The next batch holds the latest ping (RFC 6455,
+  # section 5.5.3) and the latest seq of each live sub: an ack covers the events before it.
   defp control(%{control: :idle} = state) do
     {acks, subs} = Subscriptions.take_acks(state.subs)
     pong = if state.pong, do: [{:pong, state.pong}], else: []
@@ -386,10 +389,10 @@ defmodule Helyx.TUI.Wire.Connection do
 
   defp control(state), do: {:noreply, state}
 
-  # The writer ends with the connection, also in a send: a `:normal` end
-  # does not pass the link.
+  # The writer ends with the connection, also in a send: a `:normal` end does not pass the link.
+  # The unlink comes first, so that the `:killed` of the writer is not the reason of the connection.
   @impl true
-  def terminate(_reason, state), do: Process.exit(state.writer, :kill)
+  def terminate(_reason, state), do: state.writer |> tap(&Process.unlink/1) |> Process.exit(:kill)
 
   defp broken(state), do: {:stop, {:shutdown, :broken}, state}
   defp closed(code, state), do: {:stop, {:shutdown, {:closed, code}}, state}

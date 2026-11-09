@@ -9,7 +9,6 @@ defmodule Helyx.TUI.Link do
   # TUI (decision 8). The TUI uses only the wire (decision 12).
 
   alias Helyx.Session.File.Scan
-  alias Helyx.Transport.WebSocket.Frame
   alias Helyx.TUI.Wire.Connection
 
   @enforce_keys [:conn, :id]
@@ -26,10 +25,14 @@ defmodule Helyx.TUI.Link do
   # such a turn late can pass it and get 4408; that is not a reason to
   # reject the text at the composer.
   @max_text_bytes Helyx.Session.max_text_bytes()
-  @max_inbound Frame.max_inbound()
 
-  # The errors of a request of the wire that no call of Core gives.
-  defguard wire_error?(reason) when reason in [:timeout, :busy, :closed, :failed]
+  # The errors of a request of the wire that no call of Core gives, with
+  # the codes of a Hub (docs/features/hub.md): the TUI, the default owner,
+  # gets none of these for its operations, but the schema allows them.
+  @wire_errors ~w(timeout busy closed failed too_large forbidden too_many_records
+                  too_many_projects unknown_project unknown_token too_many_schedules
+                  unknown_schedule)a
+  defguard wire_error?(reason) when reason in @wire_errors
 
   # The texts of the wire errors, at most 27 bytes: the footer shows them
   # as a reason too (docs/features/coding-agent.md, "TUI").
@@ -38,6 +41,14 @@ defmodule Helyx.TUI.Link do
   def error_text(:busy), do: "too many requests wait"
   def error_text(:closed), do: "no connection to the server"
   def error_text(:failed), do: "the server failed"
+  def error_text(:too_large), do: "over the request bound"
+  def error_text(:forbidden), do: "not allowed for this user"
+  def error_text(:too_many_records), do: "too many sessions of a user"
+  def error_text(:too_many_projects), do: "too many projects"
+  def error_text(:unknown_project), do: "no such project"
+  def error_text(:unknown_token), do: "no such token"
+  def error_text(:too_many_schedules), do: "too many schedules"
+  def error_text(:unknown_schedule), do: "no such schedule"
 
   # The TUI process takes the connection that the caller of
   # `Helyx.TUI.run/1` opened, and monitors it: its `:DOWN` ends the TUI.
@@ -73,7 +84,6 @@ defmodule Helyx.TUI.Link do
     result =
       cond do
         byte_size(text) > @max_text_bytes -> {:error, :text_too_large}
-        not fits_wire?(session, text) -> {:error, :wire_too_large}
         follow_up? -> Connection.follow_up(session.conn, session.id, text)
         true -> Connection.steer(session.conn, session.id, text)
       end
@@ -81,28 +91,14 @@ defmodule Helyx.TUI.Link do
     with {:error, reason} <- result, do: {:reject, not_sent(reason)}
   end
 
-  # The request as the writer encodes it, joined from its parts, under the
-  # inbound bound of the server. The id of the request is a placeholder
-  # with more digits than the connection uses: a request at the edge is
-  # refused a few bytes early, never late.
-  defp fits_wire?(%__MODULE__{id: id}, text) do
-    frame = %{
-      "type" => "req",
-      "id" => "999999",
-      "op" => "follow_up",
-      "params" => %{"session" => id, "text" => text}
-    }
-
-    IO.iodata_length(JSON.encode_to_iodata!(frame)) <= @max_inbound
-  end
-
   # ExRatatui gives event text as a Rust `String`, so the composer holds
   # only valid UTF-8 and the session never answers `:invalid_utf8`.
   defp not_sent(:queue_full), do: "not sent: the queue is full"
   # A paste has no bound of its own: `Helyx.Session.max_text_bytes/0` is
-  # the text bound of Core, and the joined request is the wire bound.
+  # the text bound of Core, and the joined request is the wire bound
+  # (`Helyx.TUI.Wire.fits?/2`, which `Connection` checks).
   defp not_sent(:text_too_large), do: "not sent: over 4 MiB"
-  defp not_sent(:wire_too_large), do: "not sent: over 25 MiB of wire text"
+  defp not_sent(:too_large), do: "not sent: over 25 MiB of wire text"
   # The end signal of the session ends the TUI next.
   defp not_sent(:session_not_found), do: "not sent: the session ended"
   defp not_sent(reason) when wire_error?(reason), do: error_text(reason)
@@ -138,7 +134,12 @@ defmodule Helyx.TUI.Link do
   # The open of a switch (`Helyx.TUI.Switch`), in the place of `session`:
   # a new session of `opts.cwd` with `opts.model`, or the resume of `id`.
   # The server saves in its own data folder.
+  # The model of the server can be any string; one over the text bound
+  # would pass the request bound of the server, which ends the connection.
   @spec open(t(), :new | {:resume, String.t()}, map()) :: {:ok, t()} | {:error, term()}
+  def open(%__MODULE__{}, :new, %{model: model}) when byte_size(model) > @max_text_bytes,
+    do: {:error, :text_too_large}
+
   def open(%__MODULE__{conn: conn}, target, opts) do
     result =
       case target do

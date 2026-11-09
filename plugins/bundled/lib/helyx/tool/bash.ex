@@ -172,7 +172,7 @@ defmodule Helyx.Tool.Bash do
          path = Path.join(dir, id <> ".out"),
          {:ok, file} <- open(path),
          {:started, port, pre, handles} <- start(command, cwd) do
-      {:command, group} = List.keyfind(handles, :command, 0)
+      {:command, group, _record} = List.keyfind(handles, :command, 0)
 
       :ok =
         Helyx.Tool.started(

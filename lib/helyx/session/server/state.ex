@@ -47,11 +47,11 @@ defmodule Helyx.Session.Server.State do
     # The registered ModelContext, Compaction, and Memory plugins by
     # interface, each nil for none.
     plugins: %{model_context: nil, compaction: nil, memory: nil},
-    # The checked tool specs of `Helyx.Tool.specs/1` at session start,
-    # which every provider call uses, and by name each tool module, for the
-    # hands, with its flag of `Helyx.Tool.concurrent/1`, for the tool queue.
-    tool_specs: [],
-    tools: %{},
+    # The tools and the tool sources of the session
+    # (`Helyx.Session.ToolRegistry`), and the source process of each
+    # source that runs, by pid (`Helyx.Session.Server.Sources`).
+    registry: %Helyx.Session.ToolRegistry{},
+    sources: %{},
     # The checked options of the start or the resume for each `init/3`
     # (`init_opts/3`): `provider_opts`, and `max_output_tokens`, the limit
     # of the start or nil (docs/features/output-limit.md).
@@ -124,9 +124,9 @@ defmodule Helyx.Session.Server.State do
           },
           sync: pid() | {:replay, [Helyx.Message.t()]} | nil,
           unsaved_from: non_neg_integer() | nil,
-          tool_specs: [Helyx.Tool.spec()],
+          registry: Helyx.Session.ToolRegistry.t(),
+          sources: %{pid() => module()},
           init: %{provider_opts: keyword(), max_output_tokens: pos_integer() | nil},
-          tools: %{String.t() => {module(), boolean()}},
           transcript: [Helyx.Message.t()],
           subscribers: %{pid() => {reference(), reference(), non_neg_integer(), boolean()}},
           ring: Helyx.Session.Ring.t(),
@@ -148,6 +148,17 @@ defmodule Helyx.Session.Server.State do
 
   # The options of every plugin call of the session.
   def base_opts(state), do: [core: state.core, session_id: state.id, cwd: state.cwd]
+
+  # The context of a call or an approval chain (`Helyx.Tool.context/0`):
+  # the model is the one of its turn, not of a later switch.
+  def tool_context(state, model) do
+    %{
+      session_id: state.id,
+      model: Helyx.ModelRef.to_string(model),
+      provider_opts: state.init.provider_opts,
+      model_context: state.plugins.model_context
+    }
+  end
 
   # The options of a provider's `init/3`: those of Core first, so a
   # provider option of the same name does not change one.

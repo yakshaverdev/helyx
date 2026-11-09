@@ -144,6 +144,11 @@ defmodule Helyx.Provider.Codex.PromptTest do
 
     {:ok, state} = connect(work, resume_id: stored_tid())
     {_from, _actions, state} = ask(state, {:compact, "t1", ""})
+    # The answer of thread/resume opens the thread, and the provider writes
+    # thread/compact/start. Taken after the close, that write could reach a
+    # watchdog that ended at the close: the port closes with :epipe, which
+    # ends this process, its owner.
+    state = settle(Codex, state, &(&1.thread != nil))
     close(state)
 
     assert %{"params" => %{"threadId" => tid(), "baseInstructions" => ""}} =

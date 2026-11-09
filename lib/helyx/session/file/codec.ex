@@ -4,11 +4,13 @@ defmodule Helyx.Session.File.Codec do
   # an entry map; `decode/1` turns an entry map into a `Message`. A bad
   # required field raises; the caller rescues it.
 
-  alias Helyx.Message
+  require Logger
+
+  alias Helyx.{Message, UIBlock}
 
   # The entry id is the message id (`Helyx.Session.File.append_message/2`).
   def encode(%Message{id: id} = message) when is_binary(id) do
-    message |> Message.to_map() |> Map.put("type", "message")
+    message |> Message.JSON.to_map() |> Map.put("type", "message")
   end
 
   # A bad value of a field that core needs (role, content, origin,
@@ -31,9 +33,48 @@ defmodule Helyx.Session.File.Codec do
       tool_call_id: optional_string(entry["tool_call_id"]),
       tool_name: optional_string(entry["tool_name"]),
       is_error: decode_is_error(entry["is_error"]),
-      usage: decode_usage(Map.fetch(entry, "usage"))
+      usage: decode_usage(Map.fetch(entry, "usage")),
+      ui_blocks: decode_ui_blocks(role, Map.fetch(entry, "ui_blocks"), entry["id"])
     }
   end
+
+  # The model never saw a UI block, so a bad one costs only itself: the
+  # first `UIBlock.max_result_blocks/0` blocks are read, each that fails
+  # the check is dropped and each over the bound is cut, and a value that
+  # is not a list, or one on a message that is not a tool result, is
+  # dropped whole (docs/features/ui-blocks.md). Each drop is logged.
+  @max_result_blocks UIBlock.max_result_blocks()
+
+  defp decode_ui_blocks(_role, :error, _id), do: []
+
+  defp decode_ui_blocks(:tool_result, {:ok, blocks}, id) when is_list(blocks) do
+    if length(blocks) > @max_result_blocks,
+      do: drop_log(id, "#{length(blocks) - @max_result_blocks} UI blocks past the count")
+
+    blocks
+    |> Enum.take(@max_result_blocks)
+    |> Enum.flat_map(fn block ->
+      case UIBlock.check(block) do
+        {:ok, block} ->
+          [block]
+
+        :error ->
+          drop_log(id, "a UI block that fails the check")
+          []
+      end
+    end)
+  end
+
+  defp decode_ui_blocks(_role, {:ok, _value}, id) do
+    drop_log(id, "a ui_blocks that is not a list of a tool result")
+    []
+  end
+
+  defp drop_log(id, what),
+    do:
+      Logger.warning(
+        "session file: message #{inspect(id, printable_limit: 64, limit: 8)}: dropped #{what}"
+      )
 
   @max_message_blocks Helyx.Session.Turn.max_message_blocks()
 
@@ -82,7 +123,7 @@ defmodule Helyx.Session.File.Codec do
   # the atoms are interned in this module: a fresh VM that has loaded no
   # provider still decodes a saved file. On decode, any value outside the
   # set, false too, is no stop reason. A stop reason outside the set raises
-  # on encode, in `Message.to_map/1`.
+  # on encode, in `Message.JSON.to_map/1`.
   for reason <- Message.stop_reasons() do
     defp decode_stop_reason(unquote(Atom.to_string(reason))), do: unquote(reason)
   end

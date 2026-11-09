@@ -80,8 +80,11 @@ defmodule Helyx.Session.Background do
 
   # The end as the user message that joins a turn, with the run id as its
   # origin id (docs/features/message-identity.md). The text of the end is
-  # `wrap/3`, the only reader of the two result shapes.
-  @spec end_message(String.t(), {:ok | :error, String.t()}) :: Message.t()
+  # `wrap/3`, the only reader of the two result shapes. A user message has no
+  # UI blocks, so those of the run's return are dropped (docs/features/ui-blocks.md).
+  @spec end_message(String.t(), {:ok | :error, String.t()} | {:ok | :error, String.t(), list()}) ::
+          Message.t()
+  def end_message(id, {status, text, _ui_blocks}), do: end_message(id, {status, text})
   def end_message(id, {:ok, text}), do: message(id, wrap(id, "done", text))
   def end_message(id, {:error, text}), do: message(id, wrap(id, "error", text))
 

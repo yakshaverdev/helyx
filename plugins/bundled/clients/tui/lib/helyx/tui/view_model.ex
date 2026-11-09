@@ -2,23 +2,23 @@ defmodule Helyx.TUI.ViewModel do
   @moduledoc """
   The TUI's view of a session: a pure fold over `Helyx.Event`.
 
-  The TUI holds no session state of its own. Every event goes through
-  `apply/2` and the screen renders from the result, so the fold is testable
-  with scripted event lists.
+  The TUI holds no session state of its own. Every event goes through `apply/2` and the screen
+  renders from the result, so the fold is testable with scripted event lists.
 
-  `cells` is the transcript: an Erlang `:array` of every cell, open or
-  closed, by position, oldest first; `cells/1` gives it as a list. `open`
-  maps a call id to a queue of the positions of its open tool cells, oldest
-  first, so a result finds its cell with no scan. Each new cell and each
-  result costs O(log n) in the cell count
-  (`docs/features/session-snapshot.md`). A cell is one of:
+  `cells` is the transcript: an Erlang `:array` of every cell, open or closed, by position,
+  oldest first; `cells/1` gives it as a list. `open` maps a call id to a queue of the positions
+  of its open tool cells, oldest first, so a result finds its cell with no scan. Each new cell
+  and each result costs O(log n) in the cell count (`docs/features/session-snapshot.md`). A
+  message in a cell keeps its first 1,024 blocks and a cut of the others
+  (`Helyx.TUI.ViewModel.Cut`). A cell is one of:
 
     * `%Helyx.Message{}` – a completed user or assistant message
     * `{:tool, call, line, result}` – a tool call of the assistant message
       before it, and its line (`Helyx.TUI.CallLine.line/2`), made with the cell, so a
       frame does not pay for the size of the call; `result` is nil until
       the tool result message comes. The message proves that the call
-      exists, not that it runs, so an open cell shows "awaiting result"
+      exists, not that it runs, so an open cell shows "awaiting result".
+      A tool result with no open call is a cell `{:tool, nil, line, result}`
     * `{:stop, reason}` – after an assistant message and its tool cells,
       when the message stopped at the token limit (`:max_tokens`) or was
       filtered or refused (`:refused`). The fold makes it from the message,
@@ -33,43 +33,40 @@ defmodule Helyx.TUI.ViewModel do
       session. A line after an information cell joins it, so each cell is
       one item of `Helyx.TUI.Transcript`
 
-  `reason` is why the client rejected the last input, or nil. It is
-  client-local, like a notice: `reject/2` sets it and `clear_reason/1`
-  clears it on the next key press, paste, or mouse press. A new reject
-  replaces it. No event changes it.
+  `reason` is why the client rejected the last input, or nil. It is client-local, like a notice:
+  `reject/2` sets it and `clear_reason/1` clears it on the next key press, paste, or mouse
+  press. A new reject replaces it. No event changes it.
 
-  `expanded?` is true while tool results show their full text, and false
-  while they show four lines (`toggle_expanded/1`, Ctrl+O). It is
-  client-local, like `reason`, and a session switch keeps it
-  (`docs/features/tui-tool-output-toggle.md`).
+  `expanded?` is true while tool results show their full text, and false while they show four
+  lines (`toggle_expanded/1`, Ctrl+O). It is client-local, like `reason`, and a session switch
+  keeps it (`docs/features/tui-tool-output-toggle.md`).
 
-  `streaming` is the open assistant message as a reversed block list, newest
-  first, or nil when none is streaming. Text and thinking deltas join it
-  through `Helyx.Message.add_block/2`, the session's convention. Each tool
-  call of it is an open tool cell, so a frame does not make its line; the
-  `message_end` makes the cells of the message again from the message.
+  `streaming` is the open assistant message as a reversed block list, newest first, or nil when
+  none is streaming; a delta with no `message_start` before it starts one. Text and thinking
+  deltas join it through `Helyx.Message.add_block/2`, the session's convention. Each tool call
+  of it is an open tool cell, so a frame does not make its line; the `message_end` makes the
+  cells of the message again from the message.
 
-  `usage` and `context` are the totals and the context state of the session
-  that row 2 of the footer shows (`Helyx.Session.Totals`). They start from
-  the snapshot, which counts every message of the transcript, and each
-  message of the live path adds to them; a snapshot message does not. A
-  `:compaction` event changes the context state with
+  `usage` and `context` are the totals and the context state of the session that row 2 of the
+  footer shows (`Helyx.Session.Totals`). They start from the snapshot, which counts every
+  message of the transcript, and each message of the live path adds to them; a snapshot message
+  does not. A `:compaction` event changes the context state with
   `Helyx.Session.Totals.compacted/2`.
 
-  `asks` are the open asks of tool calls, oldest first, as the snapshot
-  and the `:ask` and `:ask_end` events give them; `Helyx.TUI.Question`
-  shows the oldest of the `question` tool (`docs/features/question-tool.md`).
+  `asks` are the open asks of tool calls, oldest first, as the snapshot and the `:ask` and
+  `:ask_end` events give them; `Helyx.TUI.Question` shows the oldest `form` or `approval`
+  (`docs/features/ui-blocks.md`). `ui_blocks` are those of the `:ui_block` events of the
+  running turn (`Helyx.TUI.ViewModel.UIBlocks`, `docs/features/ui-blocks.md`).
 
-  `seq` is the `seq` of the snapshot or of the last event that the fold
-  applied. The fold applies an event only once, by its `seq`: an event at
-  or below it leaves the view model unchanged
-  (`docs/features/tui-attach.md`, decision 11). `Helyx.TUI` drops an event of another instance, which is
-  of a session that a switch left (`docs/features/tui-session-switch.md`).
+  `seq` is the `seq` of the snapshot or of the last event that the fold applied. The fold
+  applies an event only once, by its `seq`: an event at or below it leaves the view model
+  unchanged (`docs/features/tui-attach.md`, decision 11). `Helyx.TUI` drops an event of another
+  instance, which is of a session that a switch left (`docs/features/tui-session-switch.md`).
   """
 
   alias Helyx.{Event, Message}
   alias Helyx.Session.{Snapshot, Totals}
-  alias Helyx.TUI.CallLine
+  alias Helyx.TUI.{CallLine, Footer, ViewModel.Cut, ViewModel.UIBlocks}
 
   # `cells` is set at run time in `from_snapshot/2`: an `:array` literal in
   # the struct default breaks the opaque type for Dialyzer.
@@ -85,9 +82,10 @@ defmodule Helyx.TUI.ViewModel do
             usage: %Totals{},
             context: nil,
             asks: [],
+            ui_blocks: [],
             seq: 0
 
-  @type tool_cell :: {:tool, Message.ToolCall.t(), String.t(), Message.t() | nil}
+  @type tool_cell :: {:tool, Message.ToolCall.t() | nil, String.t(), Message.t() | nil}
   @type cell ::
           Message.t()
           | tool_cell()
@@ -114,6 +112,7 @@ defmodule Helyx.TUI.ViewModel do
           usage: Totals.t(),
           context: Totals.context() | nil,
           asks: [Snapshot.ask()],
+          ui_blocks: [Snapshot.ui_block()],
           seq: non_neg_integer()
         }
 
@@ -139,7 +138,7 @@ defmodule Helyx.TUI.ViewModel do
   defp fold(vm, %Event{type: :turn_start}), do: %{vm | running?: true}
 
   defp fold(vm, %Event{type: :turn_end, data: data}) do
-    vm = %{vm | running?: false}
+    vm = %{vm | running?: false, ui_blocks: []}
 
     case data do
       %{outcome: :done} -> vm
@@ -179,15 +178,15 @@ defmodule Helyx.TUI.ViewModel do
 
   # A result of another role would leave its cell open, so it crashes.
   defp fold(vm, %Event{type: :tool_execution_end, data: data}) do
-    %{message: %Message{role: :tool_result} = result} = data
-    add_message(vm, result)
+    %{message: %Message{role: :tool_result, tool_call_id: id} = result} = data
+    add_message(%{vm | ui_blocks: UIBlocks.drop_call(vm.ui_blocks, id)}, result)
   end
 
   defp fold(vm, %Event{type: :queue_update, data: data}), do: %{vm | queue: queue(data)}
 
   defp fold(vm, %Event{type: :model_change, data: data}) do
     %{model: model} = data
-    add_info(%{vm | model: model}, "model: " <> model)
+    add_info(%{vm | model: model}, "model: " <> Footer.model(model))
   end
 
   # One line per compaction: `compacted: 30k → 4k tokens`, `compacted`
@@ -227,6 +226,9 @@ defmodule Helyx.TUI.ViewModel do
     %{vm | asks: Enum.reject(vm.asks, &(&1.ask_id == id))}
   end
 
+  defp fold(vm, %Event{type: :ui_block, data: data}),
+    do: %{vm | ui_blocks: UIBlocks.put(vm.ui_blocks, data)}
+
   # A type that this client does not know.
   defp fold(vm, %Event{}), do: vm
 
@@ -235,23 +237,20 @@ defmodule Helyx.TUI.ViewModel do
   defp queue(%{steers: _, follow_ups: _, running: _, held: _, waiting: _} = counts),
     do: Map.take(counts, [:steers, :follow_ups, :running, :held, :waiting])
 
-  # `Helyx.Session.Stream` bounds a count to 10^9, so the line stays short.
+  # In integers: a count of the schema passes the float range (decode bound: 1,024 digits).
   defp tokens(n) when n < 1000, do: Integer.to_string(n)
-  defp tokens(n), do: "#{round(n / 1000)}k"
+  defp tokens(n), do: "#{div(n + 500, 1000)}k"
 
   @doc """
   The view model of the session `session_id` from its snapshot; the id
-  goes into the line of an agent call (`Helyx.TUI.CallLine.line/2`). The snapshot messages go
-  through the fold in order, so the live and the snapshot paths share one
-  pairing rule (ADR 0006, revision of 2026-10-03). The usage and the
-  context state come from the snapshot fields, so a message adds no usage
-  here. Notices and information cells are not in the transcript, so a
-  snapshot has none of them, but for a session that does not save: a
-  snapshot with `persisting: false` ends with the notice
-  `Helyx.Reason.text(:not_saved)`, so a stop of the saving before the
-  subscribe shows too. A tail snapshot whose `older` is not zero starts
-  with the information cell `<older> older messages`, so a client that
-  shows the tail says that the transcript goes on.
+  goes into the line of an agent call (`Helyx.TUI.CallLine.line/2`). The
+  snapshot messages go through the fold in order, so the live and the
+  snapshot paths share one pairing rule (ADR 0006, revision of
+  2026-10-03). The usage and the context state come from the snapshot
+  fields. A snapshot has no notice or information cell, as they are not
+  in the transcript, but two: a tail snapshot whose `older` is not zero
+  starts with the cell `<older> older messages`, and one with
+  `persisting: false` ends with the notice `Helyx.Reason.text(:not_saved)`.
   """
   @spec from_snapshot(Snapshot.t(), String.t() | nil) :: t()
   def from_snapshot(%Snapshot{messages: messages, turn: turn} = snapshot, session_id \\ nil) do
@@ -264,6 +263,7 @@ defmodule Helyx.TUI.ViewModel do
       usage: snapshot.usage,
       context: snapshot.context,
       asks: snapshot.asks,
+      ui_blocks: snapshot.ui_blocks,
       seq: snapshot.seq
     }
 
@@ -328,9 +328,9 @@ defmodule Helyx.TUI.ViewModel do
   def toggle_expanded(vm), do: %{vm | expanded?: not vm.expanded?}
 
   defp stream(vm, {:tool_call, call}),
-    do: %{vm | streaming: add_streamed(vm.streaming, call, vm.session_id)}
+    do: %{vm | streaming: add_streamed(vm.streaming || [], call, vm.session_id)}
 
-  defp stream(vm, delta), do: %{vm | streaming: Message.add_block(vm.streaming, delta)}
+  defp stream(vm, delta), do: %{vm | streaming: Message.add_block(vm.streaming || [], delta)}
 
   # A block of the streaming message; a tool call is an open tool cell, not
   # the block of `Message.add_block/2`, so a frame does not make its line.
@@ -347,11 +347,12 @@ defmodule Helyx.TUI.ViewModel do
 
   # A message as a transcript cell. Each call of an assistant message gets
   # an open cell; its result comes later.
-  defp add_cells(vm, %Message{role: :user} = message), do: add_cell(vm, message)
+  defp add_cells(vm, %Message{role: :user} = message), do: add_cell(vm, Cut.message(message))
 
   defp add_cells(vm, %Message{role: :assistant, content: content} = message) do
     vm =
-      for %Message.ToolCall{id: id} = call <- content, reduce: add_cell(vm, message) do
+      for %Message.ToolCall{id: id} = call <- content,
+          reduce: add_cell(vm, Cut.message(message)) do
         vm ->
           position = :array.size(vm.cells)
           open = Map.update(vm.open, id, :queue.from_list([position]), &:queue.in(position, &1))
@@ -364,19 +365,23 @@ defmodule Helyx.TUI.ViewModel do
       else: vm
   end
 
-  # The result closes the oldest open cell with its call id, wherever it
-  # is: a notice can arrive while the tool runs. The first result answers
-  # the first of two calls with one id, as in the session. A result with no
-  # open cell crashes in `Map.fetch!/2`.
-  defp add_cells(vm, %Message{role: :tool_result, tool_call_id: id} = result) do
+  # The result closes the oldest open cell with its call id, wherever it is: a notice can
+  # arrive while the tool runs. The first result answers the first of two calls with one id,
+  # as in the session. The session pairs each result with its call, so the client does not
+  # enforce it: a result with no open cell, or no call id, is an orphan cell (client-kit.md).
+  defp add_cells(vm, %Message{role: :tool_result, tool_call_id: id} = result)
+       when is_map_key(vm.open, id) do
     {{:value, position}, queue} = :queue.out(Map.fetch!(vm.open, id))
 
     open =
       if :queue.is_empty(queue), do: Map.delete(vm.open, id), else: Map.put(vm.open, id, queue)
 
-    cell = put_elem(:array.get(position, vm.cells), 3, result)
+    cell = put_elem(:array.get(position, vm.cells), 3, Cut.message(result))
     %{vm | open: open, cells: :array.set(position, cell, vm.cells)}
   end
+
+  defp add_cells(vm, %Message{role: :tool_result} = result),
+    do: add_cell(vm, {:tool, nil, "a tool result with no call", Cut.message(result)})
 
   # The next free position is the array size: no cell is ever removed.
   defp add_cell(vm, cell), do: %{vm | cells: :array.set(:array.size(vm.cells), cell, vm.cells)}

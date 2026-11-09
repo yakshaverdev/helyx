@@ -18,7 +18,8 @@ defmodule Helyx.TUI.Wire.ConnectionTest do
   alias Helyx.Transport.WebSocket
   alias Helyx.Transport.WebSocket.Frame
   alias Helyx.Transport.WebSocket.Wire, as: ServerWire
-  alias Helyx.TUI.Wire
+  alias Helyx.TUI.{Link, Wire}
+  require Helyx.TUI.{Link, Wire}
   alias Helyx.TUI.Wire.Connection
 
   @loopback {127, 0, 0, 1}
@@ -233,6 +234,77 @@ defmodule Helyx.TUI.Wire.ConnectionTest do
 
     assert {:ok, %Snapshot{}, "x"} = Connection.subscribe(conn, "s1")
     {conn, ref}
+  end
+
+  test "a request over the request bound of the server is refused before the send" do
+    test = self()
+    {conn, _ref} = fake(fn socket -> send(test, {:frame, client_frame(socket)}) end)
+    huge = String.duplicate("s", Frame.max_request())
+    assert Connection.abort(conn, huge) == {:error, :too_large}
+    assert Connection.resume(conn, id: huge) == {:error, :too_large}
+    # The first frame that the server reads is the next request.
+    abort = Task.async(fn -> Connection.abort(conn, "s1") end)
+
+    assert_receive {:frame, %{"op" => "abort", "params" => %{"session" => "s1"}}},
+                   Helyx.Test.Events.wait_ms()
+
+    Task.shutdown(abort, :brutal_kill)
+
+    assert Link.wire_error?(:too_large) and
+             Link.error_text(:too_large) == "over the request bound"
+  end
+
+  test "the frame bound of a request and the sub id that a frame carries" do
+    frame =
+      &%{
+        "type" => "req",
+        "id" => Integer.to_string(2 ** 64 - 1),
+        "op" => "abort",
+        "params" => %{"session" => &1}
+      }
+
+    overhead = IO.iodata_length(JSON.encode_to_iodata!(frame.("")))
+    at = String.duplicate("s", Frame.max_request() - overhead)
+    assert Wire.fits?("abort", %{"session" => at})
+    refute Wire.fits?("abort", %{"session" => at <> "s"})
+
+    # The longest sub id that a frame carries, in its worst JSON form, with a
+    # seq of 1,024 digits, fits the bound; one byte more is not carried.
+    max = div(Frame.max_request() - 2_048, 6)
+    worst = String.duplicate(<<1>>, max)
+    assert Wire.carries?(worst) and not Wire.carries?(worst <> "s")
+    ack = %{"type" => "ack", "sub" => worst, "seq" => 10 ** 1_023}
+    assert IO.iodata_length(JSON.encode_to_iodata!(ack)) <= Frame.max_request()
+  end
+
+  test "the detach of a sub that no frame carries drops it with no request until the server ends it" do
+    sub = String.duplicate("s", div(Frame.max_request() - 2_048, 6) + 1)
+
+    {conn, _ref} =
+      fake(fn socket ->
+        %{"id" => id, "op" => "subscribe"} = client_frame(socket)
+
+        :gen_tcp.send(
+          socket,
+          texts(res(id, %{sub: sub, snapshot: ServerWire.snapshot(snapshot())}))
+        )
+
+        # The first frame after the subscribe is the next request: the detach sent none.
+        %{"id" => id, "op" => "abort"} = client_frame(socket)
+        # The session runs on: the server sends on the sub until it ends it,
+        # and the reply comes after those frames.
+        :gen_tcp.send(socket, texts(%{type: "event", sub: sub, event: notice(1)}))
+        :gen_tcp.send(socket, texts(%{type: "session_end", sub: sub, reason: "stopped"}))
+        :gen_tcp.send(socket, text(res(id, %{})))
+        Process.sleep(:infinity)
+      end)
+
+    assert {:ok, %Snapshot{}, ^sub} = Connection.subscribe(conn, "s1")
+    assert :ok = Connection.unsubscribe(conn, sub)
+    assert {:error, :unknown_sub} = Connection.unsubscribe(conn, sub)
+    # The frames of the dropped sub reach no owner and do not break the connection.
+    assert :ok = Connection.abort(conn, "s1")
+    refute_received {:helyx_event, _}
   end
 
   test "events go to the owner as Core events, an unknown type is dropped, and session_end ends them" do
@@ -515,19 +587,27 @@ defmodule Helyx.TUI.Wire.ConnectionTest do
 
     {conn, _ref} =
       fake(fn socket ->
+        %{"id" => id, "op" => "subscribe"} = client_frame(socket)
+
+        :gen_tcp.send(
+          socket,
+          text(res(id, %{sub: "x", snapshot: ServerWire.snapshot(snapshot())}))
+        )
+
         send(test, {:server, self()})
         {1, _first_part} = client_raw(socket)
         send(test, :writing)
 
-        for _n <- 2..16,
+        for _n <- 3..17,
             do: receive(do: ({:reply, id} -> :ok = :gen_tcp.send(socket, text(res(id, %{})))))
       end)
 
+    assert {:ok, %Snapshot{}, "x"} = Connection.subscribe(conn, "s1")
     assert_receive {:server, server}
     steer = Task.async(fn -> Connection.steer(conn, "s1", String.duplicate("a", 16_777_216)) end)
     assert_receive :writing
 
-    for n <- 2..16 do
+    for n <- 3..17 do
       id = Integer.to_string(n)
       abort = Task.async(fn -> Connection.abort(conn, "s1") end)
       wait_until(fn -> Map.has_key?(:sys.get_state(conn).waiting, id) end)
@@ -536,12 +616,13 @@ defmodule Helyx.TUI.Wire.ConnectionTest do
     end
 
     assert Connection.abort(conn, "s1") == {:error, :busy}
+    assert Connection.unsubscribe(conn, "x") == {:error, :busy}
     Task.shutdown(steer, :brutal_kill)
   end
 
   # Subscribes behind a steer that the server does not read pass their
   # deadlines, the call timeout of the server, 6,000 ms, and the margin,
-  # 5,000 ms; the server then replies to them before it reads them. The
+  # 15,000 ms; the server then replies to them before it reads them. The
   # unsubscribe of each late reply waits for a place among the 16 request
   # frames, and goes out when the writer frees one.
   @tag :slow
@@ -572,7 +653,7 @@ defmodule Helyx.TUI.Wire.ConnectionTest do
     steer = Task.async(fn -> Connection.steer(conn, "s1", String.duplicate("a", 16_777_216)) end)
     assert_receive :writing
     subscribes = for _id <- ids, do: Task.async(fn -> Connection.subscribe(conn, "s1") end)
-    for task <- subscribes, do: assert(Task.await(task, 20_000) == {:error, :timeout})
+    for task <- subscribes, do: assert(Task.await(task, 30_000) == {:error, :timeout})
 
     send(server, :reply)
     wait_until(fn -> map_size(:sys.get_state(conn).subs.subs) == length(ids) end)
@@ -752,9 +833,9 @@ defmodule Helyx.TUI.Wire.ConnectionTest do
   end
 
   # The client waits for the subscribe the call timeout of the server,
-  # 6,000 ms, and its margin, 5,000 ms.
+  # 6,000 ms, and its margin, 15,000 ms.
   @tag :slow
-  @tag timeout: 30_000
+  @tag timeout: 60_000
   test "a late subscribe reply is dropped: its subscription ends with unsubscribe" do
     test = self()
 
@@ -787,7 +868,7 @@ defmodule Helyx.TUI.Wire.ConnectionTest do
   end
 
   @tag :slow
-  @tag timeout: 30_000
+  @tag timeout: 60_000
   test "a late reply of a broken shape is a contract break, a snapshot with a broken message too" do
     test = self()
     user = %{Message.user("hi", %{kind: :user, id: nil}) | id: "u1"}
@@ -815,7 +896,7 @@ defmodule Helyx.TUI.Wire.ConnectionTest do
       end
 
     for {conn, ref, server, task} <- tasks do
-      assert Task.await(task, 20_000) == {:error, :timeout}
+      assert Task.await(task, 30_000) == {:error, :timeout}
       send(server, :late)
       assert_receive {:DOWN, ^ref, :process, ^conn, {:shutdown, :broken}}
     end

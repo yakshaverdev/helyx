@@ -11,8 +11,10 @@ defmodule Helyx.Session.Server.Wait do
   # deadlines, a reply by its armed kill. `callers` are the abort callers,
   # who get their reply at the end. `turn` is the id of the turn that the
   # wait ended, or nil, and `turn_end` the data of its `turn_end` while that
-  # event waits for the hands, with `started_ms` of that turn. `settle` is
-  # the `before_settle` chain, due or running, the last part
+  # event waits for the hands, with `started_ms` of that turn and the UI
+  # blocks that the turn still shows (`ui_blocks`, as in
+  # `Helyx.Session.Turn`), which its `turn_end` drops. `settle` is the
+  # `before_settle` chain, due or running, the last part
   # (`Helyx.Session.Server.Settle`). Every message of a client queues until
   # the end.
   # `Helyx.Session.Server.TurnLoop` matches the inputs and ends the wait
@@ -25,9 +27,10 @@ defmodule Helyx.Session.Server.Wait do
   import Helyx.Session.Server.Events, only: [emit: 3, emit: 4]
 
   alias Helyx.Session.{Hands, ProviderRequest, Turn}
-  alias Helyx.Session.Server.{Asks, Flow, Records, Settle, State, Steering, Summary, ToolRuns}
+  alias Helyx.Session.Server.{Approvals, Asks, Flow, Records, Settle, State, Steering}
+  alias Helyx.Session.Server.{Summary, ToolRuns}
 
-  defstruct [:hands, :reply, :turn, :turn_end, :started_ms, :settle, callers: []]
+  defstruct [:hands, :reply, :turn, :turn_end, :started_ms, :settle, callers: [], ui_blocks: []]
 
   @type t :: %__MODULE__{
           hands: :gen_server.request_id() | nil,
@@ -36,7 +39,8 @@ defmodule Helyx.Session.Server.Wait do
           turn_end: map() | nil,
           started_ms: integer() | nil,
           settle: {:due, Helyx.Hook.settle(), map()} | reference() | nil,
-          callers: [GenServer.from()]
+          callers: [GenServer.from()],
+          ui_blocks: [Helyx.Session.Server.UIBlocks.entry()]
         }
 
   # The end of the turn, at `outcome`: `{:done, stop_reason, usage}`,
@@ -54,7 +58,9 @@ defmodule Helyx.Session.Server.Wait do
   # runs, `turn_end` waits for their answer (`cleanup/2`): a start answer
   # that the hands took first then comes before it (#595). Only an
   # abort of a turn that sent `{:turn, ...}` gets an interrupt, after the
-  # `aborted` answers of its open tool requests. `Settle.finish/3` adds the
+  # deny of its pending approval requests and the `aborted` answers of its
+  # open tool requests; the hands also release at `done` when a chain of
+  # an approval request still runs. `Settle.finish/3` adds the
   # `before_settle` chain when it is due; an abort or a failure drops a
   # waiting continue with the queues (`Queue.abort/1`).
   @spec finish(
@@ -78,22 +84,37 @@ defmodule Helyx.Session.Server.Wait do
     state = state |> Asks.finish() |> Summary.stop() |> Records.finish(outcome)
     done? = match?({:done, _stop, _usage}, outcome)
     state = Steering.end_turn(state, turn.id, done?)
-    state = if match?(%Flow.Up{}, provider), do: ToolRuns.end_turn(state, turn), else: state
+
+    state =
+      if match?(%Flow.Up{}, provider),
+        do: state |> Approvals.end_turn(turn) |> ToolRuns.end_turn(turn),
+        else: state
+
     Helyx.Session.Sync.push_turn(state)
     running? = turn.tool_queue.running != %{}
     data = end_data(outcome)
     state = if running?, do: state, else: emit(state, :turn_end, data)
+    chains? = turn.approval_chains.running != %{}
 
     hands =
       cond do
         !done? -> Hands.request_revoke(state.hands, turn.id)
-        running? -> Hands.request_cancel(state.hands, turn.id)
+        running? or chains? -> Hands.request_cancel(state.hands, turn.id)
         true -> nil
       end
 
     wait = if outcome == :aborted, do: interrupt(state, phase, provider), else: %__MODULE__{}
-    turn_end = if running?, do: data
-    wait = %{wait | hands: hands, turn: turn.id, turn_end: turn_end, started_ms: turn.started_ms}
+    {turn_end, blocks} = if running?, do: {data, state.phase.turn.ui_blocks}, else: {nil, []}
+
+    wait = %{
+      wait
+      | hands: hands,
+        turn: turn.id,
+        turn_end: turn_end,
+        started_ms: turn.started_ms,
+        ui_blocks: blocks
+    }
+
     Settle.finish(%{state | phase: %Flow.Waiting{wait: wait, provider: provider}}, turn, outcome)
   end
 

@@ -58,6 +58,8 @@ defmodule Helyx.Plugins.MixProject do
       # when #660 added Bandit.
       {:thousand_island, "~> 1.5.0"},
       {:plug, "~> 1.16"},
+      # The SQLite store of Helyx.Hub (docs/features/hub.md, decision 9).
+      {:exqlite, "~> 0.42"},
       {:stream_data, "~> 1.2", only: :test},
       {:yaml_elixir, "~> 2.12", only: :test},
       {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false}

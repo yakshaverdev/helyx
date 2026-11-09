@@ -69,12 +69,20 @@ defmodule Helyx.Session.BeforeSettleTest do
     test "starts the next turn with the hook's message, and is recorded", %{tmp_dir: dir} do
       core = core([Hook.SettleA])
       answers(core, Hook.SettleA, [{:continue, "the tests fail"}])
-      session = run(core, "ok", sessions_dir: dir)
+      cwd = Path.join(dir, "work")
+      File.mkdir_p!(cwd)
+      session = run(core, "ok", sessions_dir: dir, cwd: cwd)
 
       first = collect_until(:turn_end)
       turn_id = List.last(first).turn_id
       assert_receive {:hook, Hook.SettleA, :before_settle, input}
-      assert input == %{session_id: session.id, turn_id: turn_id, stop_reason: :end_turn}
+
+      assert input == %{
+               session_id: session.id,
+               turn_id: turn_id,
+               stop_reason: :end_turn,
+               cwd: cwd
+             }
 
       second = collect_until(:turn_end)
       assert [%{origin: %{kind: :hook, id: "Helyx.Test.Hook.SettleA"}} = user] = users(second)
@@ -102,7 +110,7 @@ defmodule Helyx.Session.BeforeSettleTest do
 
       # The message of the continue reads back with its origin.
       stop_session(session, &GenServer.stop/1)
-      {:ok, resumed} = Session.resume(core, sessions_dir: dir)
+      {:ok, resumed} = Session.resume(core, sessions_dir: dir, cwd: cwd)
       {:ok, snapshot, _ref} = Session.subscribe(resumed)
 
       assert [_go, %{origin: %{kind: :hook, id: "Helyx.Test.Hook.SettleA"}}] =
@@ -283,11 +291,15 @@ defmodule Helyx.Session.BeforeSettleTest do
              )
     end
 
+    # The limit counts the wait of the hook for its go (hooks.md): a hook
+    # that must hold before its kill has the limit of 2,000 ms of SettleA,
+    # the margin for load, and the wait for that kill makes the test slow.
+    @tag :slow
     test "a hook past its limit fails, its handles are released, and the session settles" do
-      core = core([Hook.SettleShort])
+      core = core([Hook.SettleA])
       test = self()
 
-      Hook.script(core, Hook.SettleShort, :before_settle, fn _ ->
+      Hook.script(core, Hook.SettleA, :before_settle, fn _ ->
         :ok = Helyx.Tool.hold({test, :held})
         Process.sleep(:infinity)
       end)
@@ -295,9 +307,9 @@ defmodule Helyx.Session.BeforeSettleTest do
       session = run(core, "ok")
       collect_until(:turn_end)
 
-      assert_receive {:released, Hook.SettleShort, [{^test, :held}], :cancel}
+      assert_receive {:released, Hook.SettleA, [{^test, :held}], :cancel}
       assert_receive {:helyx_event, %{type: :notice, turn_id: nil, data: %{text: notice}}}
-      assert notice =~ "it ran past its limit of 100 ms"
+      assert notice =~ "it ran past its limit of 2000 ms"
       idle(session)
     end
 

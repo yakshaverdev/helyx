@@ -33,10 +33,39 @@ defmodule Helyx.Session.Hands.State do
     tasks: %{},
     hooks: %{},
     hook_runs: %{},
+    # The pid of the source process of each tool source plugin (`Sources`).
+    source_pids: %{},
     background: %Background{},
     held: %{},
     unconfirmed: [],
     release_ms: @release_ms,
     connect_ms: 30_000
   ]
+
+  # The entry of the turn Task `pid` of a tool call, or nil: a hook Task
+  # is no tool call.
+  def tool_call(state, pid), do: find(state, pid, &is_binary/1)
+
+  # The turn Task `pid` that runs a chain, with the id that its hook Tasks
+  # stand under (`chain_id/1`), or nil: a tool call Task, the chain Task of
+  # an approval request (`Helyx.Session.Hands.Approval`), or a
+  # `before_settle` chain Task (`Helyx.Session.Hands.Settle`).
+  def chain_call(state, pid) do
+    with {_ref, {_task, turn_id, id, _module, _place}} <- find(state, pid, &chain_id?/1),
+         do: {turn_id, chain_id(id)}
+  end
+
+  # The id that the hook Tasks of a chain Task stand under: the call id of
+  # a tool call Task or an approval chain Task, and its own id
+  # `{:settle, ref}` for a `before_settle` chain Task.
+  def chain_id({:approval, call_id}), do: call_id
+  def chain_id(id), do: id
+
+  defp chain_id?(id), do: is_binary(id) or match?({kind, _} when kind in [:approval, :settle], id)
+
+  defp find(state, pid, id?) do
+    Enum.find(state.tasks, fn {_ref, {task, turn_id, id, _module, _place}} ->
+      task.pid == pid and turn_id != nil and id?.(id)
+    end)
+  end
 end

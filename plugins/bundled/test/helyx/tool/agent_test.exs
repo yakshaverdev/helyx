@@ -105,6 +105,7 @@ defmodule Helyx.Tool.AgentTest do
          Report,
          Helyx.Tool.Agent,
          Helyx.Tool.Question,
+         Helyx.Tool.ToolSearch,
          Helyx.Tool.Read,
          Helyx.Test.Tool.Block,
          Kept
@@ -189,6 +190,16 @@ defmodule Helyx.Tool.AgentTest do
 
     {:ok, path, _header} = Scan.find(dir, child_id(session, "c1"))
     assert File.read!(path) =~ "unknown tool: question"
+  end
+
+  test "a child has no tool_search: it opens no tool source", %{core: core, tmp_dir: dir} do
+    search = %ToolCall{id: "s1", name: "tool_search", arguments: %{"query" => "x"}}
+    session = parent(core, dir, [[agent("c1")], [search], ["no search"], ["Done."]])
+    [result] = results(collect_until(:turn_end))
+    assert Message.text(result) == "no search"
+
+    {:ok, path, _header} = Scan.find(dir, child_id(session, "c1"))
+    assert File.read!(path) =~ "unknown tool: tool_search"
   end
 
   # #797: the `init/3` of a child gets the provider options of the parent
@@ -363,7 +374,7 @@ defmodule Helyx.Tool.AgentTest do
     [owner] =
       for task <- Task.Supervisor.children(Helyx.Core.task_supervisor(core)),
           {:dictionary, dict} <- [Process.info(task, :dictionary)],
-          match?({Helyx.Tool.Agent, _, _}, dict[:"$initial_call"]),
+          match?({Helyx.Subagent, _, _}, dict[:"$initial_call"]),
           do: task
 
     true = :erlang.suspend_process(owner)

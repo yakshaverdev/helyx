@@ -35,6 +35,8 @@ defmodule Helyx.Provider.Codex.State do
   # its `from`; it outlives the turn, because the answer can come after
   # `turn/completed`.
   #
+  # `approvals` holds the JSON-RPC id of each approval request that waits
+  # for Core, by its approval id (`Approvals`).
   # `tools` holds the state of the Helyx tools (`Tools`). `stream` holds
   # what the provider shares with `Helyx.HarnessIO`: the port, the read
   # buffer, the terminal, the close, the held handles, and the env
@@ -63,6 +65,7 @@ defmodule Helyx.Provider.Codex.State do
     items: %Helyx.Provider.Codex.Items{},
     agents: %{},
     asked: %{},
+    approvals: %{},
     stream: %Helyx.HarnessIO.Stream{}
   ]
 end

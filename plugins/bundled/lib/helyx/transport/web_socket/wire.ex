@@ -26,20 +26,32 @@ defmodule Helyx.Transport.WebSocket.Wire do
   defp data(:message_end, %{error: text} = data) when is_binary(text),
     do: value(%{data | error: %{kind: :failed, text: text}})
 
+  defp data(:ui_block, data), do: ui_block(data)
   defp data(_type, data), do: value(data)
 
-  def snapshot(%Helyx.Session.Snapshot{} = snapshot), do: value(Map.from_struct(snapshot))
+  def snapshot(%Helyx.Session.Snapshot{ui_blocks: blocks} = snapshot) do
+    snapshot
+    |> Map.from_struct()
+    |> Map.delete(:ui_blocks)
+    |> value()
+    |> Map.put("ui_blocks", Enum.map(blocks, &ui_block/1))
+  end
+
+  # A UI block is a JSON object with string keys already (`Helyx.UIBlock`):
+  # it goes as it is.
+  defp ui_block(%{call_id: call_id, key: key, block: block}),
+    do: %{"call_id" => call_id, "key" => key, "block" => block}
 
   # The shape of a message entry of the session file without its `type`.
-  # `Helyx.Message.to_map/1` owns it. A `message_update` event carries a
+  # `Helyx.Message.JSON.to_map/1` owns it. A `message_update` event carries a
   # bare block, so the block clauses stay.
-  def value(%Message{} = message), do: Message.to_map(message)
+  def value(%Message{} = message), do: Message.JSON.to_map(message)
 
-  def value(%Message.Text{} = block), do: Message.block_to_map(block)
-  def value(%Message.Thinking{} = block), do: Message.block_to_map(block)
-  def value(%Message.ToolCall{} = block), do: Message.block_to_map(block)
+  def value(%Message.Text{} = block), do: Message.JSON.block_to_map(block)
+  def value(%Message.Thinking{} = block), do: Message.JSON.block_to_map(block)
+  def value(%Message.ToolCall{} = block), do: Message.JSON.block_to_map(block)
 
-  def value(%Helyx.Usage{} = usage), do: Message.usage_to_map(usage)
+  def value(%Helyx.Usage{} = usage), do: Message.JSON.usage_to_map(usage)
 
   def value(%_{} = struct), do: value(Map.from_struct(struct))
   def value(%{} = map), do: Map.new(map, fn {key, value} -> {to_string(key), value(value)} end)

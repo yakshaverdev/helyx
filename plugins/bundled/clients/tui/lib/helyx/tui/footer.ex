@@ -17,6 +17,8 @@ defmodule Helyx.TUI.Footer do
   alias ExRatatui.Widgets.Paragraph
   alias Helyx.TUI.ViewModel
 
+  # The bytes of a model ref (`Helyx.ModelRef`).
+  @model_bytes 256
   @dim %Style{modifiers: [:dim]}
   @bad %Style{fg: :red}
   @bold %Style{modifiers: [:bold]}
@@ -62,6 +64,13 @@ defmodule Helyx.TUI.Footer do
     suffix = if branch, do: " (#{branch})", else: ""
     clean(tilde(Path.expand(cwd)) <> suffix)
   end
+
+  @doc """
+  A model as a row shows it: the server sends any string, so the row
+  takes at most the #{@model_bytes} bytes of a model ref, cleaned.
+  """
+  @spec model(String.t()) :: String.t()
+  def model(model), do: model |> Helyx.Text.cap(@model_bytes, :head) |> clean()
 
   @doc """
   The branch that `git branch --show-current` prints in `cwd`, cut at
@@ -178,12 +187,17 @@ defmodule Helyx.TUI.Footer do
     loading = if loading, do: [{"loading the session", @bold}], else: []
 
     status =
-      (loading ++ [vm.model, run_state(busy)] ++ usage(vm) ++ queued ++ background ++ scrolled)
+      (loading ++
+         [model(vm.model), run_state(busy)] ++
+         usage(vm) ++
+         queued ++
+         background ++
+         scrolled)
       |> Enum.map(&span/1)
       |> Enum.intersperse(%Span{content: " · ", style: @dim})
 
     # The reason is a fixed text of `Helyx.TUI`, never input. It comes
-    # first: the row does not wrap, and a model ref can be 256 bytes.
+    # first: the row does not wrap, and a model can be 256 bytes.
     reason = if vm.reason, do: [%Span{content: "✕ #{vm.reason} ", style: @bad}], else: []
     hint = if hint, do: [%Span{content: "#{hint} ", style: @bold}], else: []
 

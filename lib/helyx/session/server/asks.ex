@@ -13,24 +13,37 @@ defmodule Helyx.Session.Server.Asks do
   # the Task, and the session lets the Task run once it handled it
   # (`asker/4`). The `:DOWN` of the Task, or the answer of a hook Task
   # from the hands, drops its record and ends its ask (`down/3`,
-  # `ended/2`), the end of the call ends its asks (`call_end/2`),
-  # and the end of the turn ends them all (`finish/1`), before its
-  # `turn_end`.
+  # `ended/2`), the end of the call ends its asks (`call_end/2`), the
+  # result of the call in the transcript ends the records of its Tasks and
+  # their asks (`result_joined/2`), and the end of the turn ends them all
+  # (`finish/1`), before its `turn_end`. So a Task is recorded only while
+  # its call has no result: a UI block of a call (`Helyx.Session.Server.UIBlocks`)
+  # and an ask, an input UI block, never come after the call's result
+  # (docs/features/ui-blocks.md).
 
   import Helyx.Session.Server.Events, only: [emit: 3]
 
-  alias Helyx.Session.Id
+  alias Helyx.Session.{Id, Transcript, Turn}
   alias Helyx.Session.Server.State
-  alias Helyx.Session.Turn
 
   # The record of a call or hook Task of the current turn, with a
   # monitor: at most one for each live Task of the turn. A Task of a turn
   # that is no longer current gets none: its call does not run, so it
   # cannot ask. Then the Task runs: the session sends its go after it
-  # handled the record.
-  def asker(%State{phase: %{turn: %Turn{id: turn_id} = turn}} = state, turn_id, pid, kind) do
-    askers = Map.put(turn.askers, pid, {Process.monitor(pid), kind})
-    go(put_turn(state, askers: askers), pid)
+  # handled the record. A Task of a call that the transcript answered
+  # already, a request that names an answered call (#369), gets none either.
+  def asker(
+        %State{phase: %{turn: %Turn{id: turn_id} = turn}} = state,
+        turn_id,
+        pid,
+        {_, call_id} = kind
+      ) do
+    if Transcript.answered?(state.transcript, turn.partial, call_id) do
+      go(state, pid)
+    else
+      askers = Map.put(turn.askers, pid, {Process.monitor(pid), kind})
+      go(put_turn(state, askers: askers), pid)
+    end
   end
 
   def asker(state, _turn_id, pid, _kind), do: go(state, pid)
@@ -45,26 +58,33 @@ defmodule Helyx.Session.Server.Asks do
   # (a revoke still reaches it). Then the run
   # goes on: it waits in `Helyx.Tool.started/1` for this go, so an ask of
   # the run comes after the drop.
-  def started(%State{phase: %{turn: %Turn{askers: askers}}} = state, call_id, pid) do
-    {gone, kept} = Map.split_with(askers, fn {_pid, {_ref, kind}} -> kind == {:tool, call_id} end)
-    Enum.each(gone, fn {_pid, {ref, _kind}} -> Process.demonitor(ref, [:flush]) end)
-    go(put_turn(state, askers: kept), pid)
-  end
+  def started(%State{phase: %{turn: %Turn{}}} = state, call_id, pid),
+    do: go(drop_askers(state, fn {_pid, {_ref, kind}} -> kind == {:tool, call_id} end), pid)
 
   def started(state, _call_id, pid), do: go(state, pid)
 
+  # Whether `pid` is a Task of the turn whose record has `kind`, for a call
+  # that runs, or for a hook Task whose approval chain runs: the caller
+  # check of an ask, and of a UI block of a call
+  # (`Helyx.Session.Server.UIBlocks`, which asks for `{:tool, call_id}`).
+  defguard caller?(turn, pid, kind)
+           when (is_map_key(turn.tool_queue.running, elem(kind, 1)) or
+                   (elem(kind, 0) == :hook and
+                      is_map_key(turn.approval_chains.running, elem(kind, 1)))) and
+                  elem(:erlang.map_get(pid, turn.askers), 1) == kind
+
   # An ask of a Task whose record has the kind, for a call that runs in
-  # the current turn, when a subscriber can answer. The reply waits for
-  # the answer.
+  # the tool queue of the current turn, or for a hook Task, a call whose
+  # approval chain runs in its set of approval chains, when a subscriber
+  # can answer. The reply waits for the answer.
   def ask(
-        %State{phase: %{turn: %Turn{tool_queue: %{running: running}, askers: askers}}} = state,
+        %State{phase: %{turn: %Turn{} = turn}} = state,
         {pid, _tag} = from,
-        {_kind, call_id} = kind,
+        {_kind_name, call_id} = kind,
         tool,
         request
       )
-      when is_map_key(running, call_id) and
-             elem(:erlang.map_get(pid, askers), 1) == kind do
+      when caller?(turn, pid, kind) do
     if Enum.any?(state.subscribers, fn {_pid, entry} -> elem(entry, 3) end) do
       ask = %{ask_id: Id.new(), call_id: call_id, tool: tool, request: request}
       state |> put_asks(asks(state) ++ [{ask.ask_id, from, ask, pid}]) |> emit(:ask, ask)
@@ -123,6 +143,28 @@ defmodule Helyx.Session.Server.Asks do
       Enum.split_with(asks(state), fn {_id, _from, ask, _pid} -> ask.call_id == call_id end)
 
     state |> put_asks(rest) |> end_asks(ended)
+  end
+
+  # The result of the call joined the transcript: the records of its call
+  # and hook Tasks end with their monitors, and each open ask of the call
+  # ends; its caller, a Task that can still run, as after an `aborted`
+  # result, gets `{:error, :not_running}`.
+  def result_joined(%State{phase: %{turn: %Turn{}}} = state, call_id) do
+    for {_id, from, %{call_id: ^call_id}, _pid} <- asks(state),
+        do: GenServer.reply(from, {:error, :not_running})
+
+    state |> drop_askers(&of_call?(&1, call_id)) |> call_end(call_id)
+  end
+
+  def result_joined(state, _call_id), do: state
+
+  defp of_call?({_pid, {_ref, {_kind, id}}}, call_id), do: id == call_id
+
+  # The records that `drop?` picks go, with their monitors.
+  defp drop_askers(%State{phase: %{turn: %Turn{askers: askers}}} = state, drop?) do
+    {gone, kept} = Map.split_with(askers, drop?)
+    Enum.each(gone, fn {_pid, {monitor, _kind}} -> Process.demonitor(monitor, [:flush]) end)
+    put_turn(state, askers: kept)
   end
 
   # The end of the turn: its calls get no answer, and the hands kill them.

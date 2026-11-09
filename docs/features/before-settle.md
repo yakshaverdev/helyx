@@ -11,7 +11,7 @@ A product checks the work at the end of each turn, and when the check fails the 
 ### `Helyx.Hook`
 
 ```elixir
-@type settle :: %{session_id: String.t(), turn_id: String.t(), stop_reason: Helyx.Message.stop_reason()}
+@type settle :: %{session_id: String.t(), turn_id: String.t(), stop_reason: Helyx.Message.stop_reason(), cwd: String.t()}
 @callback before_settle(settle()) :: :settle | {:continue, String.t()}
 @optional_callbacks before_tool: 1, after_tool: 1, before_settle: 1, release: 3
 ```
@@ -40,7 +40,7 @@ The chain is the last part of the wait after the turn (`docs/features/session-li
 
 The session asks the hands with a cast (`Helyx.Session.Hands.Settle.request/4`) and a ref of its own. The hands start one chain Task under the turn id of the ended turn; it runs no plugin code. For each hook in plugin order it asks the hands for a hook Task, as the call Task of a tool call does (`docs/features/hooks.md`, "Hook Tasks of the hands"), with the same limit, kill, hold, release, and refusal after an unconfirmed release. The first `{:continue, text}` ends the chain; a `:settle` and a failed hook go on to the next hook. When the chain Task ends, the hands send the session `{:settle_answer, ref, answer}`: `:settle`, or `{:continue, module, text}`.
 
-- The hook gets `%{session_id, turn_id, stop_reason}`, and its context (`Helyx.Tool.context/0`) is the one of a call of the ended turn with `tool` and `call_id` nil: the Core, the session id, the tool names, the model of the turn, the provider options, and the ModelContext plugin.
+- The hook gets `%{session_id, turn_id, stop_reason, cwd}`, where `cwd` is the session's folder, the folder of its tool calls (decision of 2026-11-08 for #883: a check such as a test command runs in the project; prior art cited with the decision: Claude Code passes `cwd` in every hook input, `Stop` included). Its context (`Helyx.Tool.context/0`) is the one of a call of the ended turn with `tool` and `call_id` nil: the Core, the session id, the tool names, the model of the turn, the provider options, and the ModelContext plugin.
 - `Helyx.Hook.ask/1` from a `before_settle` hook gets `{:error, :not_running}` (ADR 0013 §3, "a `before_settle` hook too in the first version"): the session runs no turn, and keeps no record of the Task.
 - One chain at a time: the session asks for it once per wait, and a new turn starts only after its answer or after the cancel that ends it.
 

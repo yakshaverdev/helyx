@@ -1,16 +1,20 @@
 defmodule Helyx.TUI.Question do
   @moduledoc false
-  # The picker of the `question` tool in the place of the composer
-  # (docs/features/question-tool.md, "The TUI picker"). It shows the oldest
-  # open ask of the tool, one question at a time, and sends the answers
-  # with `Helyx.TUI.Link.answer/3` after the last one. The request comes
-  # from the bundled tool, which checked its shape. `ask_end` closes it.
+  # The picker of a `form` UI block in the place of the composer
+  # (docs/features/question-tool.md, "The TUI picker";
+  # docs/features/ui-blocks.md). It shows the oldest open ask that
+  # `picker?/1` can read, until its `ask_end`: a form, or a request with no
+  # kind from the `question` tool, one question at a time, with the answers
+  # sent by `Helyx.TUI.Link.answer/3` after the last one; or an `approval`,
+  # which it hands to `Helyx.TUI.Approval` (docs/features/approval-gate.md).
+  # The transcript shows the text of an ask of another kind
+  # (`Helyx.TUI.ViewModel.UIBlocks`).
 
   alias ExRatatui.Event.{Key, Paste}
   alias ExRatatui.Style
   alias ExRatatui.Text.{Line, Span}
   alias ExRatatui.Widgets.{Block, Paragraph}
-  alias Helyx.TUI.{Composer, Link, SessionList, ViewModel, Wrap}
+  alias Helyx.TUI.{Approval, Composer, Link, SessionList, ViewModel, Wrap}
   require Link
 
   # A longer text cannot pass the answer bound of Core, so the line keeps
@@ -55,16 +59,51 @@ defmodule Helyx.TUI.Question do
   defguard handles?(question, event)
            when question != nil and (is_struct(event, Key) or is_struct(event, Paste))
 
-  # The picker of the oldest ask of the tool in the view model: the one
-  # that shows keeps its progress, and none shows when no ask is open.
+  # The picker of the oldest ask in the view model that `picker?/1` accepts:
+  # the one that shows keeps its progress, and none shows when no such ask
+  # is open.
   @spec sync(map()) :: map()
   def sync(%{vm: %ViewModel{asks: asks}, question: question} = state) do
-    ask = Enum.find(asks, &(&1.tool == "question"))
+    ask = Enum.find(asks, &picker?/1)
     %{state | question: picker(question, ask)}
   end
 
+  # Whether the picker shows the ask: by the kind of its request, and by the
+  # tool name for a request with no kind (ADR 0011 §4), when the TUI can
+  # read its fields. Any tool can send a form, so the fields are checked
+  # here against the `form` entry of `docs/features/ui-blocks.md`, its
+  # bounds too: the picker renders them. A form that fails shows its text.
+  @spec picker?(Helyx.Session.Snapshot.ask()) :: boolean()
+  def picker?(%{request: %{"kind" => "form"} = request}), do: form?(request)
+  def picker?(%{request: %{"kind" => "approval"} = request}), do: Approval.readable?(request)
+  def picker?(%{request: %{"kind" => _kind}}), do: false
+  def picker?(%{tool: "question", request: request}), do: form?(request)
+  def picker?(_ask), do: false
+
+  defp form?(%{"questions" => questions}) when is_list(questions) and questions != [],
+    do: length(questions) <= 4 and Enum.all?(questions, &question?/1)
+
+  defp form?(_request), do: false
+
+  defp question?(%{"question" => text, "header" => header, "options" => options} = item)
+       when is_list(options) do
+    bytes?(text, 1, 1_000) and bytes?(header, 1, 48) and length(String.to_charlist(header)) <= 12 and
+      Map.get(item, "multi_select", false) in [true, false] and length(options) in 2..4 and
+      Enum.all?(options, &option?/1) and Enum.uniq_by(options, & &1["label"]) == options
+  end
+
+  defp question?(_item), do: false
+
+  defp option?(%{"label" => label, "description" => text}),
+    do: bytes?(label, 1, 60) and bytes?(text, 0, 300)
+
+  defp option?(_option), do: false
+
+  defp bytes?(text, min, max), do: is_binary(text) and byte_size(text) in min..max
+
   defp picker(_question, nil), do: nil
-  defp picker(%__MODULE__{ask_id: id} = question, %{ask_id: id}), do: question
+  defp picker(%{ask_id: id} = question, %{ask_id: id}), do: question
+  defp picker(_question, %{request: %{"kind" => "approval"}} = ask), do: Approval.new(ask)
 
   # The question text gets its clean pass once, not in each frame.
   defp picker(_question, %{ask_id: id, request: %{"questions" => questions}}) do
@@ -77,6 +116,7 @@ defmodule Helyx.TUI.Question do
   # The answer of `Helyx.TUI.handle_event/2` to an event that `handles?/2`
   # accepts. After the answer went, the picker takes no other input.
   @spec handle(struct(), map()) :: {:noreply, map()}
+  def handle(event, %{question: %Approval{}} = state), do: Approval.handle(event, state)
   def handle(_event, %{question: %__MODULE__{sent?: true}} = state), do: {:noreply, state}
 
   def handle(%Key{kind: kind} = key, state) when kind in ["press", "repeat"],
@@ -209,12 +249,15 @@ defmodule Helyx.TUI.Question do
     end
   end
 
-  # The labels and the terminal give valid UTF-8, so only the size fails.
-  defp reject(:invalid_answer), do: @too_large
+  # The footer text of a rejected answer, of this picker and of
+  # `Helyx.TUI.Approval`. The labels and the terminal give valid UTF-8, so
+  # only the size fails.
+  @spec reject(term()) :: String.t()
+  def reject(:invalid_answer), do: @too_large
 
-  defp reject(:not_waiting), do: "not sent: the question is closed"
-  defp reject(:session_not_found), do: "not sent: the session ended"
-  defp reject(reason) when Link.wire_error?(reason), do: Link.error_text(reason)
+  def reject(:not_waiting), do: "not sent: the question is closed"
+  def reject(:session_not_found), do: "not sent: the session ended"
+  def reject(reason) when Link.wire_error?(reason), do: Link.error_text(reason)
 
   defp question(%__MODULE__{questions: questions, at: at}), do: Enum.at(questions, at)
 
@@ -224,7 +267,9 @@ defmodule Helyx.TUI.Question do
   # The rows of the picker with its two borders, in `room` rows by the rule
   # of the composer: the question text at `width`, the options, and the
   # "Other" line.
-  @spec rows(t(), integer(), integer()) :: pos_integer()
+  @spec rows(t() | Approval.t(), integer(), integer()) :: pos_integer()
+  def rows(%Approval{} = a, width, room), do: Approval.rows(a, width, room)
+
   def rows(%__MODULE__{} = q, width, room),
     do: Composer.fit(length(text_rows(q, width)) + length(options(q)) + 3, room)
 
@@ -236,7 +281,10 @@ defmodule Helyx.TUI.Question do
   # and the "Other" line show in the room; a row does not wrap, so a long
   # option is cut at the edge. The texts come from the model, so each gets
   # the clean pass.
-  @spec widgets(t(), ExRatatui.Layout.Rect.t()) :: [{Paragraph.t(), ExRatatui.Layout.Rect.t()}]
+  @spec widgets(t() | Approval.t(), ExRatatui.Layout.Rect.t()) ::
+          [{Paragraph.t(), ExRatatui.Layout.Rect.t()}]
+  def widgets(%Approval{} = a, area), do: Approval.widgets(a, area)
+
   def widgets(%__MODULE__{} = q, area) do
     options = options(q)
     room = max(area.height - 2 - length(options) - 1, 0)

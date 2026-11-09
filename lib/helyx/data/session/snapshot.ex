@@ -39,6 +39,13 @@ defmodule Helyx.Session.Snapshot do
     * `asks` – the open asks of tool calls of the turn, oldest first, each
       as the data of its `:ask` event (`Helyx.Event`); a client that can
       answer shows them (`docs/features/question-tool.md`).
+    * `ui_blocks` – the UI blocks of the `:ui_block` events of the running
+      turn: the newest of each pair of call id and key, for the calls with
+      no result yet and for call id nil, each as the data of its event, in
+      the order of the first event of the pair, at most
+      `Helyx.UIBlock.max_turn_blocks/0` (`docs/features/ui-blocks.md`).
+    * `activated` – the activated deferred tool names, in drop order, as
+      in `:tools_change` (`docs/features/mcp-client.md`).
 
   A client works with one Helyx version and is a tolerant reader within it:
   it ignores an unknown event type and an unknown field (ADR 0006, revision
@@ -57,9 +64,11 @@ defmodule Helyx.Session.Snapshot do
     :usage,
     :context
   ]
-  defstruct @enforce_keys ++ [asks: [], older: 0]
+  defstruct @enforce_keys ++ [asks: [], older: 0, ui_blocks: [], activated: []]
 
   @type ask :: %{ask_id: String.t(), call_id: String.t(), tool: String.t(), request: map()}
+
+  @type ui_block :: %{call_id: String.t() | nil, key: String.t(), block: Helyx.UIBlock.t()}
 
   @type turn :: %{
           id: String.t(),
@@ -85,6 +94,8 @@ defmodule Helyx.Session.Snapshot do
           persisting: boolean(),
           usage: Helyx.Session.Totals.t(),
           context: Helyx.Session.Totals.context() | nil,
-          asks: [ask()]
+          asks: [ask()],
+          ui_blocks: [ui_block()],
+          activated: [String.t()]
         }
 end

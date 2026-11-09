@@ -168,6 +168,27 @@ defmodule Helyx.Session.Stream do
     end
   end
 
+  # An approval request of the provider for its open call `call_id`. The
+  # check holds no turn state: the shape and the bytes of the id only
+  # (ADR 0013 §4). The session checks the pending ids and the call.
+  def check({:approval, approval_id, call_id} = event)
+      when is_binary(approval_id) and is_binary(call_id) do
+    if Message.approval_id?(approval_id), do: {:send, event, nil}, else: {:bad, malformed(event)}
+  end
+
+  # A UI block of the provider (docs/features/ui-blocks.md): its key and
+  # its block are checked here, and a block over the bound is cut. The
+  # session checks the call id against the open calls of the turn.
+  def check({:ui_block, call_id, key, block} = event)
+      when is_nil(call_id) or (is_binary(call_id) and call_id != "") do
+    with true <- Helyx.UIBlock.key?(key),
+         {:ok, block} <- Helyx.UIBlock.check(block) do
+      {:send, {:ui_block, call_id, key, block}, nil}
+    else
+      _ -> {:bad, malformed(event)}
+    end
+  end
+
   # A compaction of the provider's own history, with its token counts
   # before and after, each nil when the provider does not know it.
   def check({:compaction, before, after_} = event)

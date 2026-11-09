@@ -16,28 +16,44 @@ defmodule Helyx.Session.Hands.Chain do
 
   # `hooks` is `%{point => [{module, limit_ms}]}`. Returns the result for
   # the hands to deliver.
-  @spec run(module(), ToolCall.t(), String.t(), String.t(), map()) :: {:ok | :error, String.t()}
+  @spec run(module(), ToolCall.t(), String.t(), String.t(), map()) ::
+          {:ok | :error, String.t()} | {:ok | :error, String.t(), [Helyx.UIBlock.t()]}
   def run(tool, %ToolCall{} = call, cwd, _turn_id, hooks)
       when not is_map_key(hooks, :before_tool) and not is_map_key(hooks, :after_tool),
       do: Run.tool(tool, call, cwd)
 
   def run(tool, %ToolCall{} = call, cwd, turn_id, hooks) do
-    input = %{
-      tool: call.name,
-      arguments: call.arguments,
-      cwd: cwd,
-      session_id: Helyx.Tool.context().session_id,
-      turn_id: turn_id,
-      call_id: call.id,
-      provider: nil
-    }
-
+    input = input(call, cwd, turn_id, nil)
     Process.put(:helyx_chain, %{hooks: hooks, input: input, after: :pending})
 
     case before(Map.get(hooks, :before_tool, []), input, :first) do
       :allow -> after_tool(Run.tool(tool, call, cwd))
       {:error, _text} = denied -> denied
     end
+  end
+
+  # The `before_tool` chain of an approval request of the provider
+  # `provider` for its own call (ADR 0013 §4), in its chain Task: the
+  # decision, with the text of a Helyx call's deny as the reason.
+  @spec approve(ToolCall.t(), String.t(), String.t(), [{module(), pos_integer()}], String.t()) ::
+          :allow | {:deny, String.t()}
+  def approve(%ToolCall{} = call, cwd, turn_id, hooks, provider) do
+    case before(hooks, input(call, cwd, turn_id, provider), :first) do
+      :allow -> :allow
+      {:error, text} -> {:deny, text}
+    end
+  end
+
+  defp input(call, cwd, turn_id, provider) do
+    %{
+      tool: call.name,
+      arguments: call.arguments,
+      cwd: cwd,
+      session_id: Helyx.Tool.context().session_id,
+      turn_id: turn_id,
+      call_id: call.id,
+      provider: provider
+    }
   end
 
   defp before([], _input, _record), do: :allow
@@ -85,13 +101,22 @@ defmodule Helyx.Session.Hands.Chain do
 
   defp after_each([], _input, _record, result), do: result
 
+  # A hook gets a result as `{status, text}`, the result of
+  # docs/features/hooks.md: the UI blocks of a tool are for the clients.
+  # A `:keep` keeps them; a replace gives a result with none
+  # (docs/features/ui-blocks.md).
   defp after_each([{module, ms} | rest], input, record, result) do
-    case step(module, ms, :after_tool, Map.put(input, :result, result), record) do
+    seen = text_result(result)
+
+    case step(module, ms, :after_tool, Map.put(input, :result, seen), record) do
       {:answer, :keep} -> after_each(rest, input, record, result)
       {:answer, {:replace, replaced}} -> after_each(rest, input, nil, replaced)
       {:failed, _how} -> after_each(rest, input, nil, result)
     end
   end
+
+  defp text_result({status, text, _blocks}), do: {status, text}
+  defp text_result(result), do: result
 
   # The `before_settle` hooks in plugin order, from the chain Task
   # (`Helyx.Session.Hands.Settle`): the first continue ends the chain; a

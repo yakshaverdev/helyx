@@ -17,22 +17,30 @@ defmodule Helyx.Tool.ReadTest do
     }
   end
 
-  test "read and agent are the concurrent bundled tools; the tools that write are not (#734, #735)" do
+  test "read, agent, and the coordinator tools are the concurrent bundled tools; the tools that write are not (#734, #735, #859)" do
     {:ok, modules} = :application.get_key(:helyx_plugins, :modules)
 
     tools =
       for module <- modules,
           Code.ensure_loaded!(module),
           Helyx.Tool in Helyx.Interface.implemented_by(module),
+          # The fixed tools: a tool source has no name.
+          function_exported?(module, :name, 0),
           do: {module, %{name: module.name()}}
 
     names = MapSet.new(tools, fn {_module, spec} -> spec.name end)
     assert MapSet.subset?(MapSet.new(["bash", "edit", "memory_write", "read", "write"]), names)
-    assert Helyx.Tool.concurrent(tools) == MapSet.new(["agent", "read"])
+    coordinator = ~w(schedule session_create session_read session_send session_wait)
+    assert Helyx.Tool.concurrent(tools) == MapSet.new(["agent", "read" | coordinator])
 
     assert Enum.sort(for({m, _} <- tools, function_exported?(m, :concurrent?, 0), do: m)) == [
              Helyx.Tool.Agent,
-             Helyx.Tool.Read
+             Helyx.Tool.Read,
+             Helyx.Tool.Schedule,
+             Helyx.Tool.SessionCreate,
+             Helyx.Tool.SessionRead,
+             Helyx.Tool.SessionSend,
+             Helyx.Tool.SessionWait
            ]
   end
 

@@ -371,6 +371,45 @@ defmodule Helyx.Session.FileTest do
     assert resumed.model == "test/other"
   end
 
+  test "a tools change entry is written, and the last one is restored", %{tmp_dir: dir} do
+    {:ok, file} = started(dir, "sess00000001", "/repo", "test/ok")
+    assert {:ok, %{activated: []}} = SessionFile.resume(dir, "/repo")
+
+    file
+    |> Session.File.append_tools_change(["a", "b"])
+    |> Session.File.append_tools_change(["b", "c__d"])
+
+    assert {:ok, %{activated: ["b", "c__d"]}} = SessionFile.resume(dir, "/repo")
+  end
+
+  test "a tools change entry of another shape, or past 32 names, stops the resume",
+       %{tmp_dir: dir} do
+    bad = [
+      %{},
+      %{"activated" => "a"},
+      %{"activated" => [1]},
+      %{"activated" => ["a.b"]},
+      %{"activated" => ["a", "a"]},
+      %{"activated" => for(i <- 1..33, do: "n#{i}")}
+    ]
+
+    for {fields, n} <- Enum.with_index(bad) do
+      cwd = "/repo#{n}"
+      {:ok, file} = started(dir, "sess0000000#{n}", cwd, "test/ok")
+      entry = Map.merge(fields, %{"id" => "x#{n}", "type" => "tools_change"})
+      append_raw(file, JSON.encode!(entry))
+
+      assert {:error, {:invalid_file, "a tools change entry is not valid"}} =
+               SessionFile.resume(dir, cwd)
+    end
+
+    # 32 names pass.
+    {:ok, file} = started(dir, "sess00000099", "/repo99", "test/ok")
+    Session.File.append_tools_change(file, for(i <- 1..32, do: "n#{i}"))
+    assert {:ok, %{activated: activated}} = SessionFile.resume(dir, "/repo99")
+    assert length(activated) == 32
+  end
+
   test "resume id entries are written, and the last one per provider is restored with the assistant messages before it",
        %{tmp_dir: dir} do
     {:ok, file} = started(dir, "sess00000001", "/repo", "claude-code/opus")

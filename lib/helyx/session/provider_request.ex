@@ -44,7 +44,9 @@ defmodule Helyx.Session.ProviderRequest do
   or the request itself for `:close` and `:idle_close`.
   """
   @spec kind(t()) :: atom()
-  def kind({kind, _turn_id, _id, _value}) when kind in [:steer, :tool_result], do: kind
+  def kind({kind, _turn_id, _id, _value}) when kind in [:steer, :tool_result, :approval],
+    do: kind
+
   def kind({kind, _turn_id, _value}), do: kind
   def kind({kind, _turn_id}), do: kind
   def kind(close) when close in [:close, :idle_close], do: close

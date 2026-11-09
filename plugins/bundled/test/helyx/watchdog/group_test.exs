@@ -9,6 +9,15 @@ defmodule Helyx.Watchdog.GroupTest do
 
   defp deadline(ms), do: System.monotonic_time(:millisecond) + ms
 
+  # `Group.release/4` of handles given as `{kind, group}`, each with a new
+  # record, and the handles still held in the same shape.
+  defp release(groups, mode, deadline, opts \\ []) do
+    groups
+    |> Enum.map(fn {kind, group} -> {kind, group, Group.record()} end)
+    |> Group.release(mode, deadline, opts)
+    |> Enum.map(fn {kind, group, _record} -> {kind, group} end)
+  end
+
   # A kill(1) fake over a set of live groups: KILL removes a group unless it
   # is in `unkillable`, a probe checks the set. A watchdog in `reaps`, a map
   # of watchdog to command group, exits by itself once its command group is
@@ -84,7 +93,7 @@ defmodule Helyx.Watchdog.GroupTest do
     kill = fake_kill([4242], [4242])
     until = deadline(1_000)
 
-    assert Group.release([{:command, 4242}], :deliver, until, kill: kill) == [
+    assert release([{:command, 4242}], :deliver, until, kill: kill) == [
              {:command, 4242}
            ]
 
@@ -98,9 +107,7 @@ defmodule Helyx.Watchdog.GroupTest do
   test "the watchdog is KILLed only after the command group is gone" do
     kill = fake_kill([100, 200])
 
-    assert Group.release([{:watchdog, 200}, {:command, 100}], :deliver, deadline(20_000),
-             kill: kill
-           ) ==
+    assert release([{:watchdog, 200}, {:command, 100}], :deliver, deadline(20_000), kill: kill) ==
              []
 
     assert signals() == [{"-KILL", ["-100"]}, {"-KILL", ["-200"]}]
@@ -109,9 +116,7 @@ defmodule Helyx.Watchdog.GroupTest do
   test "a cancel TERMs the command group before the KILL, and never the watchdog" do
     kill = fake_kill([100, 200], [], %{200 => 100})
 
-    assert Group.release([{:command, 100}, {:watchdog, 200}], :cancel, deadline(2_000),
-             kill: kill
-           ) ==
+    assert release([{:command, 100}, {:watchdog, 200}], :cancel, deadline(2_000), kill: kill) ==
              []
 
     assert signals() == [{"-TERM", ["-100"]}, {"-KILL", ["-100"]}]
@@ -119,17 +124,28 @@ defmodule Helyx.Watchdog.GroupTest do
 
   test "a group that stays to the deadline does not keep the handles of gone groups" do
     handles = [command: 7, watchdog: 6, command: 9, watchdog: 8, command: 11, watchdog: 10]
-    kill = fake_kill([7])
+    assert [command: 7] = release_probed(handles, 300)
+  end
 
-    assert Group.release(handles, :cancel, deadline(300), grace_ms: 5_000, kill: kill) == [
-             command: 7
-           ]
+  # A release whose first probes all ran before the deadline. A test
+  # process that is late past the deadline skips them, and a skipped probe
+  # keeps its group held: that run proves nothing, so it runs again with
+  # twice the room, up to `@load_ms`.
+  defp release_probed(handles, ms) do
+    held = release(handles, :cancel, deadline(ms), grace_ms: 5_000, kill: fake_kill([7]))
+    probed = for {["-0", "--", target], _at} <- runs(), uniq: true, do: target
+
+    cond do
+      length(probed) == length(handles) -> held
+      ms < @load_ms -> release_probed(handles, ms * 2)
+      true -> flunk("the first probes did not run within #{ms} ms")
+    end
   end
 
   test "a group below 2 is never signalled" do
     kill = fake_kill([])
     handles = [{:command, 1}, {:watchdog, 0}, {:command, -1}]
-    assert Group.release(handles, :cancel, deadline(100), kill: kill) == []
+    assert release(handles, :cancel, deadline(100), kill: kill) == []
     assert signals() == []
   end
 
@@ -139,7 +155,7 @@ defmodule Helyx.Watchdog.GroupTest do
       _ -> {"", 0}
     end
 
-    assert Group.release([{:command, 340}], :deliver, deadline(100), kill: kill) == [
+    assert release([{:command, 340}], :deliver, deadline(100), kill: kill) == [
              {:command, 340}
            ]
   end
@@ -147,7 +163,7 @@ defmodule Helyx.Watchdog.GroupTest do
   test "no kill run starts after the deadline, and every group stays held" do
     kill = fake_kill([100, 200])
     handles = [{:command, 100}, {:watchdog, 200}]
-    assert Group.release(handles, :deliver, deadline(0), kill: kill) == handles
+    assert release(handles, :deliver, deadline(0), kill: kill) == handles
     refute_received {:kill, _, _}
   end
 
@@ -156,7 +172,7 @@ defmodule Helyx.Watchdog.GroupTest do
     slow = fn args -> Process.sleep(30) && kill.(args) end
     handles = [{:command, 100}, {:watchdog, 200}]
 
-    assert Group.release(handles, :cancel, deadline(50), kill: slow) == handles
+    assert release(handles, :cancel, deadline(50), kill: slow) == handles
     # Each run takes 30 ms, so a third run would start 60 ms or more after the
     # first, which is after the deadline. Load only makes the count smaller.
     assert length(runs()) <= 2
@@ -165,7 +181,7 @@ defmodule Helyx.Watchdog.GroupTest do
   test "the TERM grace is 500 ms" do
     kill = fake_kill([100])
     start = System.monotonic_time(:millisecond)
-    assert Group.release([{:command, 100}], :cancel, deadline(10_000), kill: kill) == []
+    assert release([{:command, 100}], :cancel, deadline(10_000), kill: kill) == []
     assert System.monotonic_time(:millisecond) - start >= 500
     assert_polls_within(runs(), "-TERM", 500)
   end
@@ -175,7 +191,7 @@ defmodule Helyx.Watchdog.GroupTest do
     kill = fake_kill([100])
     start = System.monotonic_time(:millisecond)
 
-    assert Group.release([{:command, 100}], :cancel, deadline(20_000),
+    assert release([{:command, 100}], :cancel, deadline(20_000),
              kill: kill,
              grace_ms: 1_000
            ) ==
@@ -192,7 +208,7 @@ defmodule Helyx.Watchdog.GroupTest do
     kill = fake_kill([4242], [4242])
     start = System.monotonic_time(:millisecond)
 
-    assert Group.release([{:command, 4242}], :deliver, deadline(20_000), kill: kill) == [
+    assert release([{:command, 4242}], :deliver, deadline(20_000), kill: kill) == [
              {:command, 4242}
            ]
 
@@ -205,14 +221,172 @@ defmodule Helyx.Watchdog.GroupTest do
   test "no wait passes the deadline" do
     kill = fake_kill([4242], [4242])
     until = deadline(50)
-    Group.release([{:command, 4242}], :cancel, until, kill: kill, grace_ms: 10_000)
+    release([{:command, 4242}], :cancel, until, kill: kill, grace_ms: 10_000)
     assert System.monotonic_time(:millisecond) - until < @load_ms
+  end
+
+  describe "the release record (docs/features/tool-resource-release.md)" do
+    # A handle with a new record.
+    defp handle(kind, group), do: {kind, group, Group.record()}
+
+    # The fake kill(1) of `fake_kill/3`, and a function that gives `group`
+    # to a new group of the OS, as a reuse of its number does.
+    defp reusable(live) do
+      {:ok, agent} = Agent.start_link(fn -> MapSet.new(live) end)
+      test = self()
+
+      kill = fn args ->
+        send(test, {:kill, args, System.monotonic_time(:millisecond)})
+        run_kill(agent, args)
+      end
+
+      {kill, fn group -> Agent.update(agent, &MapSet.put(&1, group)) end}
+    end
+
+    defp run_kill(agent, ["-0", "--", target]) do
+      if MapSet.member?(Agent.get(agent, & &1), -String.to_integer(target)),
+        do: {"", 0},
+        else: {"kill: #{target}: No such process", 1}
+    end
+
+    defp run_kill(agent, [_signal, "--" | targets]) do
+      Agent.update(agent, &MapSet.difference(&1, groups(targets)))
+      {"", 0}
+    end
+
+    defp groups(targets), do: MapSet.new(targets, &(-String.to_integer(&1)))
+
+    test "a second release of a confirmed handle never signals the number of a new group" do
+      {kill, reuse} = reusable([100])
+      command = handle(:command, 100)
+      # The bash timeout, then the delivery.
+      assert Group.release([command], :cancel, deadline(5_000), kill: kill, grace_ms: 0) == []
+      assert [{"-TERM", ["-100"]}] = signals()
+      reuse.(100)
+      assert Group.release([command], :deliver, deadline(5_000), kill: kill) == []
+      assert runs() == []
+    end
+
+    test "two handles with one record in one release take it once and get one outcome" do
+      {kill, _reuse} = reusable([100])
+      command = handle(:command, 100)
+      # The stop of the session releases a call Task and its server Task.
+      assert Group.release([command, command], :deliver, deadline(5_000), kill: kill) == []
+      assert [{"-KILL", ["-100"]}] = signals()
+
+      stuck = handle(:command, 4242)
+      kill = fake_kill([4242], [4242])
+      assert Group.release([stuck, stuck], :deliver, deadline(100), kill: kill) == [stuck, stuck]
+    end
+
+    test "the abort of a call handle, then the release of the server Task's handles, signals once" do
+      # The watchdog reaped the command and is gone at the first probe.
+      {kill, reuse} = reusable([100])
+      server = [handle(:command, 100), handle(:watchdog, 200)]
+      # The call Task holds copies of the server's handles.
+      call = server
+      assert Group.release(call, :cancel, deadline(5_000), kill: kill, grace_ms: 0) == []
+      _ = runs()
+      reuse.(100)
+      reuse.(200)
+      assert Group.release(server, :cancel, deadline(5_000), kill: kill) == []
+      assert runs() == []
+    end
+
+    test "a handle that a killed Task kept after its own confirmed release gets no signal" do
+      # The watchdog of a failed start read to its exit: gone at the probe.
+      {kill, reuse} = reusable([])
+      watchdog = handle(:watchdog, 200)
+      # The cleanup of a failed start releases, and its Task is killed
+      # before its unhold/1: the hands still hold the handle.
+      task =
+        Task.async(fn -> Group.release([watchdog], :deliver, deadline(5_000), kill: kill) end)
+
+      assert Task.await(task) == []
+      _ = runs()
+      reuse.(200)
+      assert Group.release([watchdog], :cancel, deadline(5_000), kill: kill) == []
+      assert runs() == []
+    end
+
+    test "a release killed after it took the record holds it until its deadline, then the next takes over" do
+      test = self()
+      command = handle(:command, 100)
+
+      stalled = fn args ->
+        send(test, {:stalled, args})
+        Process.sleep(:infinity)
+      end
+
+      # Its lease ends 300 ms from now.
+      pid = spawn(fn -> Group.release([command], :deliver, deadline(300), kill: stalled) end)
+      assert_receive {:stalled, ["-0" | _]}
+      ref = Process.monitor(pid)
+      Process.exit(pid, :kill)
+      assert_receive {:DOWN, ^ref, :process, ^pid, :killed}
+
+      {kill, _reuse} = reusable([100])
+      # A release whose own deadline comes first gets no turn, and no signal.
+      assert Group.release([command], :deliver, deadline(50), kill: kill) == [command]
+      assert runs() == []
+      # One with a later deadline waits for the lease, then releases.
+      assert Group.release([command], :deliver, deadline(5_000), kill: kill) == []
+      assert {"-KILL", ["-100"]} in signals()
+    end
+
+    test "a release that raises leaves the record not confirmed, and the next tries again" do
+      command = handle(:command, 100)
+      raising = fn _args -> raise ErlangError, original: :emfile end
+
+      assert_raise ErlangError, fn ->
+        Group.release([command], :deliver, deadline(5_000), kill: raising)
+      end
+
+      {kill, _reuse} = reusable([100])
+      assert Group.release([command], :deliver, deadline(5_000), kill: kill) == []
+      assert {"-KILL", ["-100"]} in signals()
+    end
+
+    test "a release that finds the record taken waits for that release's outcome and sends no signal" do
+      test = self()
+      command = handle(:command, 100)
+      {kill, _reuse} = reusable([100])
+      slow = fn args -> send(test, {:first, args}) && Process.sleep(30) && kill.(args) end
+
+      first =
+        Task.async(fn -> Group.release([command], :deliver, deadline(5_000), kill: slow) end)
+
+      assert_receive {:first, ["-0" | _]}
+
+      second = fn _args -> send(test, :second_ran) && {"", 0} end
+      assert Group.release([command], :deliver, deadline(5_000), kill: second) == []
+      assert Task.await(first) == []
+      refute_received :second_ran
+    end
+
+    test "a record of a group not confirmed gone lets the next release try again" do
+      command = handle(:command, 4242)
+      kill = fake_kill([4242], [4242])
+      assert Group.release([command], :deliver, deadline(100), kill: kill) == [command]
+      _ = runs()
+
+      {kill, _reuse} = reusable([4242])
+      assert Group.release([command], :deliver, deadline(5_000), kill: kill) == []
+      assert {"-KILL", ["-4242"]} in signals()
+    end
+
+    test "a handle of another shape is dropped with no signal" do
+      kill = fake_kill([100])
+      handles = [{:command, 100}, {:command, 100, :not_a_record}, {:other, 100, Group.record()}]
+      assert Group.release(handles, :deliver, deadline(100), kill: kill) == []
+      assert runs() == []
+    end
   end
 
   test "two real groups are both killed" do
     g1 = spawn_group()
     g2 = spawn_group()
-    assert Group.release([{:command, g1}, {:command, g2}], :deliver, deadline(5_000)) == []
+    assert release([{:command, g1}, {:command, g2}], :deliver, deadline(5_000)) == []
     assert group_gone_within?(g1, 0)
     assert group_gone_within?(g2, 0)
   end

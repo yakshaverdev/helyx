@@ -25,7 +25,9 @@ defmodule CodingAgent do
     Helyx.Tool.Write,
     Helyx.Tool.Agent,
     Helyx.Tool.Skill,
-    Helyx.Tool.Question
+    Helyx.Tool.Question,
+    Helyx.Tool.ToolSearch,
+    Helyx.Tool.MCP
   ]
 
   @doc "The plugins the agent runs with."

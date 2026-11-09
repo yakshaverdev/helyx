@@ -9,6 +9,8 @@ defmodule Helyx.TUI.Wire.Subscriptions do
   # that follows a late subscribe reply; no frame of it follows that reply
   # (wire-protocol.md, O4).
 
+  require Helyx.TUI.Wire, as: Wire
+
   alias Helyx.Event
 
   defstruct subs: %{}, acks: %{}, unsubscribes: []
@@ -45,7 +47,7 @@ defmodule Helyx.TUI.Wire.Subscriptions do
   def take_acks(state) do
     acks =
       for {sub, seq} <- state.acks,
-          live?(state, sub),
+          live?(state, sub) and Wire.carries?(sub),
           do: %{"type" => "ack", "sub" => sub, "seq" => seq}
 
     {acks, %{state | acks: %{}}}
@@ -92,19 +94,37 @@ defmodule Helyx.TUI.Wire.Subscriptions do
 
   @doc false
   # The detach of a switch: the pending op of a live sub, or `:unknown_sub`.
-  # The sub stays live until the reply, so its late events still ack.
-  @spec detach(t(), String.t()) :: {:ok, {:unsub, String.t()}} | {:error, :unknown_sub}
+  # The sub stays live until the reply, so its late events still ack. A sub
+  # that no frame carries has no `unsubscribe`: it is dropped, as a late one
+  # is, until its `session_end`, or the server's bound of unacked events,
+  # which closes the connection with `4408`.
+  @spec detach(t(), String.t()) ::
+          {:ok, {:unsub, String.t()}} | {:dropped, t()} | {:error, :unknown_sub}
   def detach(state, sub) do
-    if live?(state, sub), do: {:ok, {:unsub, sub}}, else: {:error, :unknown_sub}
+    cond do
+      not live?(state, sub) -> {:error, :unknown_sub}
+      Wire.carries?(sub) -> {:ok, {:unsub, sub}}
+      true -> {:dropped, dropped(state, sub)}
+    end
   end
 
   @doc false
   # The reply of a subscribe or a detach, and `:next` for every other op. A
   # late subscribe reply is a subscription that its caller gave up on: it
-  # is dropped, and its `unsubscribe` is due. A late detach reply ends the
-  # sub silently; a live one gives the reply of the wire to its caller.
+  # is dropped, and its `unsubscribe` is due, but for a sub that no frame of
+  # the TUI carries, which the server ends at its bound of unacked events
+  # with a `4408` close of the connection. A
+  # late detach reply ends the sub silently; a live one gives the reply of
+  # the wire to its caller.
   @spec reply(t(), term(), term(), term()) ::
-          {:next, t()} | {:detached, t()} | {:late_subscribe, String.t(), t()} | :broken
+          {:next, t()}
+          | {:detached | :dropped, t()}
+          | {:late_subscribe, String.t(), t()}
+          | :broken
+  def reply(state, :late, "subscribe", {:ok, _snapshot_or_replay, sub})
+      when not Wire.carries?(sub),
+      do: {:dropped, dropped(state, sub)}
+
   def reply(state, :late, "subscribe", {:ok, _snapshot_or_replay, sub}),
     do: {:late_subscribe, sub, state}
 

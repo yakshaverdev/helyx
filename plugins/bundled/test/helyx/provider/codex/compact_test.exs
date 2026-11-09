@@ -103,6 +103,23 @@ defmodule Helyx.Provider.Codex.CompactTest do
     assert %{"params" => %{"turnId" => "turn2"}} = request(bin, 1, "turn/interrupt")
   end
 
+  test "a compaction keeps the program and the tools of its thread", %{bin: bin, work: work} do
+    fresh(bin, 1, tid(), reply(tid(), "Hi."))
+    on(bin, 1, "thread/compact/start", [j(%{id: "@", result: %{}}) | compaction_turn()])
+    tools = [%{name: "docs__search", description: "Search.", parameters: %{"type" => "object"}}]
+
+    {:ok, state} = Codex.init("m", tools, cwd: work)
+    {_from, actions, state} = turn_on(state)
+    {_actions, state} = pump(Codex, state, actions, &turn_ended?/1)
+    {_from, actions, state} = ask(state, {:compact, "t2", ""})
+    {actions, state} = pump(Codex, state, actions, &turn_ended?/1)
+    assert {:event, "t2", {:compaction, nil, nil}} in actions
+    assert state.tools.specs == tools
+    close(state)
+
+    assert runs(bin) == "1"
+  end
+
   test "an error answer to the compaction fails it", %{bin: bin, work: work} do
     fresh(bin, 1, tid(), reply(tid(), "Hi."))
     error = %{code: -32_600, message: "no thread"}

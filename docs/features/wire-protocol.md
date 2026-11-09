@@ -24,6 +24,7 @@ User stories:
    - **Parts.** A `hello` comes in one frame: a part before `welcome` closes the connection with `4400`. So a client that did not give its proof gets no buffer of parts.
    - **Proxy.** A proxy that gives remote access to a server bound to loopback connects from loopback. Such a server has a token configured, or the proxy authenticates the remote client itself.
    - **Protocol.** A protocol number that is not the server's gets `refused` and the close `4426`. The server checks the protocol number before the proof, so a client of another protocol learns that it must update. `refused` holds only the protocol number of the server.
+   - **Authority.** A server under a Hub has an authority in place of the one token (`docs/features/hub.md`, decisions 3 and 5): the `hello` names the `token` id of a user with the proof of that token, or no `token` with the proof of the server token, and the authority checks each later request but `unsubscribe`, and each subscription. A `token` that is not an id of 1 to 64 bytes, unknown, or revoked, closes with `4401`. A server with no authority does not read `token`, and answers a `hub.*` op with `unknown_op`.
 3. The server sends `welcome`. From then on, the client sends `req` and `ack` frames, and the server sends `res`, `event`, and `session_end` frames.
 
 Over stdio, the same frames go one JSON object per line. The encoder escapes every LF inside a string, so a raw LF ends a frame, and stdout carries protocol frames only. Stdio has no `Origin` and no token: the process that starts the server owns it.
@@ -33,13 +34,15 @@ Over stdio, the same frames go one JSON object per line. The encoder escapes eve
 | Code | Meaning |
 |---|---|
 | `4400` | a frame that the contract does not allow: a text that the server cannot decode (bad JSON, a text that is not UTF-8, a float out of range, or a text over the decode bounds, see "Bounds"), an unknown `type`, a frame or a part before `welcome`, a `hello` whose `protocol` is not an integer of 0 or more, a part out of order, a request `id` whose reply was not sent, an `ack` of a `seq` that the subscription did not send |
-| `4401` | no `hello` within 5,000 ms, or a missing or wrong proof |
+| `4401` | no `hello` within 5,000 ms, or a missing or wrong proof; under a Hub also a `token` that is not an id, unknown, or revoked |
 | `4408` | a slow client: a subscription passed its credits (`:slow`), the outbound queue held more than 64 MiB when a frame was added, or no inbound frame or pong for 45,000 ms |
 | `4413` | an inbound frame joined from parts over 25 MiB |
 | `1002`, `1008` | a WebSocket frame that RFC 6455 does not allow, such as a continuation with no frame before it (`1002`) or an empty continuation that is not the last (`1008`): the WebSocket server closes |
 | `1011` | a crash of the connection process from a bug: the WebSocket server closes |
 | `1009` | an inbound WebSocket frame over 1 MiB: the WebSocket server closes with the code of RFC 6455 before it reads the payload, so the frame takes no memory |
 | `4426` | a protocol number that is not the server's, after `refused` |
+| `4403` | under a Hub: the access of the user changed (a revoked token, a removed user, a record change that takes read access), at once or at the next request or subscription (`docs/features/hub.md`, decision 13) |
+| `4503` | under a Hub: the authority gave no answer to the `hello` (its Hub call exited or got `busy`); the client connects again later |
 | `1000` | the stop of the transport: the WebSocket server closes (see "Bounds") |
 
 At each of these closes the connection process ends: the server handles no later frame of the client, and the writers of the connection end with it. A close that a subscription or a writer decides (a full outbound queue, `:slow`, an `ack` above the `seq` that the subscription sent) reaches the connection as a message, so the frames that the connection took before it run first.
@@ -58,23 +61,26 @@ Every `req` gets one `res`: `ok: true` with the result, or `ok: false` with an e
 |---|---|---|---|
 | `sessions.live` | `{}` | `{sessions: [live_session]}`, at most 64 | |
 | `sessions.saved` | `{cwd?, after?, limit?}`: `cwd` is a folder, or absent for every folder; `after` is the `next` of the page before; `limit` from 1 to 256, default 50 | `{items: [saved_session], next}`, newest first; `next` is null on the last page | `bad_params` |
-| `start` | `{cwd, model?}`; no `model` takes the default of the server | `{session}` | `invalid_cwd`, `invalid_model_ref`, `unknown_provider`, `too_many_sessions`, `start_failed` |
+| `start` | `{cwd, model?}`; no `model` takes the default of the server | `{session}` | `invalid_cwd`, `invalid_model_ref`, `unknown_provider`, `too_many_sessions`, `start_failed`, and under a Hub `too_many_records` |
 | `resume` | `{id}`, or `{cwd}` for the newest session of the folder | `{session}`; a session that runs is attached, not started again | `invalid_cwd`, `not_found`, `invalid_model_ref`, `unknown_provider`, `too_many_sessions`, `start_failed` |
 | `subscribe` | `{session, tail?, after?, answers?}`: `tail` from 1 to 1,000, default 200; `after` is `{instance_id, seq}`; `answers: true` says that this client answers asks (`docs/features/question-tool.md`) | `{sub, replay: [event]}` or `{sub, snapshot}` | `session_not_found`, `too_many_subscriptions` |
 | `unsubscribe` | `{sub}` | `{}` | `unknown_sub` |
 | `history` | `{session, instance_id, before, limit?}`: `before` is a message id; `limit` from 1 to 1,000, default 200 | `{messages: [message], more, next}`, oldest first, all older than `before`; `next` is the `before` of the page before it, null when `more` is false | `session_not_found`, `instance_changed`, `unknown_message` |
-| `prompt`, `steer`, `follow_up` | `{session, text, origin?}`; `origin` is `{kind: "product", id}` | `{}` | `session_not_found`, `text_too_large`, `invalid_utf8`, `invalid_origin`, `queue_full`, and for `prompt` also `turn_running` |
-| `abort` | `{session}` | `{}`; a failed cleanup still gives `{}`, and the `notice` event "abort cleanup failed" tells the clients. The events that the session sent before the abort still come to each subscription, then `turn_end` with `aborted`; no event of the turn follows it. The `{}` and these events have no order (O6) | `session_not_found` |
-| `set_model` | `{session, model}` | `{}`; the next turn uses it, a running turn keeps its model | `session_not_found`, `invalid_model_ref`, `unknown_provider` |
-| `compact` | `{session, text?}`: the instructions, default `""` | `{}`; a provider that keeps no history gives a `notice` event | `session_not_found`, `text_too_large`, `invalid_utf8`, `turn_running` |
-| `answer` | `{session, ask_id, answer}`: `ask_id` is the id of an `ask` event; `answer` is a JSON object of at most 16,384 bytes; a frame over the decode bounds ("Bounds") closes with `4400` before the op is known | `{}`; the first answer to an open ask goes to its call, and every client gets `ask_end`; an id that is not open gets `not_waiting` | `session_not_found`, `invalid_answer`, `not_waiting` |
-| `stop` | `{session}` | `{}` after the session ended: a running turn aborts first, as at `abort`, then the session stops and every subscription of it gets `session_end` with `stopped`. A stopped session frees its place in the live-session cap and can be resumed from its file. The answer is `{}` also when a handle of the session was not released: the wire does not carry the stop report of `Helyx.Sessions.stop/1` (#752) | `session_not_found` |
+| `prompt`, `steer`, `follow_up` | `{session, text, origin?}`; `origin` is `{kind: "product", id}` | `{}` | `session_not_found`, `text_too_large`, `invalid_utf8`, `invalid_origin`, `queue_full`, and for `prompt` also `turn_running`, and under a Hub `forbidden` |
+| `abort` | `{session}` | `{}`; a failed cleanup still gives `{}`, and the `notice` event "abort cleanup failed" tells the clients. The events that the session sent before the abort still come to each subscription, then `turn_end` with `aborted`; no event of the turn follows it. The `{}` and these events have no order (O6) | `session_not_found`, and under a Hub `forbidden` |
+| `set_model` | `{session, model}` | `{}`; the next turn uses it, a running turn keeps its model | `session_not_found`, `invalid_model_ref`, `unknown_provider`, and under a Hub `forbidden` |
+| `compact` | `{session, text?}`: the instructions, default `""` | `{}`; a provider that keeps no history gives a `notice` event | `session_not_found`, `text_too_large`, `invalid_utf8`, `turn_running`, and under a Hub `forbidden` |
+| `answer` | `{session, ask_id, answer}`: `ask_id` is the id of an `ask` event; `answer` is a JSON object of at most 16,384 bytes; a frame over the decode bounds ("Bounds") closes with `4400` before the op is known | `{}`; the first answer to an open ask goes to its call, and every client gets `ask_end`; an id that is not open gets `not_waiting` | `session_not_found`, `invalid_answer`, `not_waiting`, and under a Hub `forbidden` |
+| `stop` | `{session}` | `{}` after the session ended: a running turn aborts first, as at `abort`, then the session stops and every subscription of it gets `session_end` with `stopped`. A stopped session frees its place in the live-session cap and can be resumed from its file. The answer is `{}` also when a handle of the session was not released: the wire does not carry the stop report of `Helyx.Sessions.stop/1` (#752) | `session_not_found`, and under a Hub `forbidden` |
 
 Every operation can also answer `unknown_op`, `bad_params`, `busy`, `timeout`, and `failed`.
 
+Under a Hub, the `hub.*` operations and their errors are in `docs/features/hub.md`, "Wire schema additions", and their bounds in its "Bounds". The session operations reach only the sessions that the user may read: a session of another user that the user may not read answers as one that does not exist, a write to a shared session that the user does not own answers `forbidden`, and a `start` over the records of the user answers `too_many_records` (`docs/features/hub.md`, decisions 6 and 7).
+
 - `live_session` is `{id, instance_id, cwd, model, status}`. `status` is `"idle"` when the session has no turn and no wait, else `"running"`.
 - `saved_session` is `{id, cwd, model, mtime, prompt}`: `mtime` in POSIX seconds, 0 for a file time before 1970, `model` from the header, `prompt` the first user text in the head of the file (`docs/features/session-list.md`). The texts come from the file: a client cleans them before it shows them.
-- An `ask` event is a tool call that waits for a user: a client that subscribed with `answers: true` shows `request` and sends `answer` with its `ask_id`. The session makes the id, a new random id for each ask; one call can ask more than once, and each ask has its own id. The `request` and the `answer` of the bundled `question` tool are in `docs/features/question-tool.md`. `ask_end` ends the ask for every client: `answered` when an answer went to the call, `ended` when the call or the turn ended first. The snapshot `asks` holds the asks that wait, oldest first.
+- An `ask` event is a tool call that waits for a user: a client that subscribed with `answers: true` shows `request` and sends `answer` with its `ask_id`. The session makes the id, a new random id for each ask; one call can ask more than once, and each ask has its own id. The `request` and the `answer` of the bundled `question` tool are in `docs/features/question-tool.md`. A `request` with the key `kind` is an input UI block (`docs/features/ui-blocks.md`): it has the envelope of a UI block (`kind`, `text`, and `cut` when present), and one with `kind` and another envelope is a contract break. A client picks the renderer of an ask by its `kind`, and by the tool name for a request with no `kind`. A client that does not know the kind, or cannot read its fields, shows its `text` and gives no answer; the ask stays open for another client. `ask_end` ends the ask for every client: `answered` when an answer went to the call, `ended` when the call or the turn ended first. The snapshot `asks` holds the asks that wait, oldest first.
+- A UI block (ADR 0011, `docs/features/ui-blocks.md`) is a JSON object that a client shows: its `kind`, its fallback `text`, `cut` when it was cut, and the fields of its kind, each at most 65,536 bytes of JSON with integers of at most 100 digits. It comes in two carriers. A tool result `message` has `ui_blocks`, at most 8 blocks, left out when it has none; a client that joins later gets them with the message. A `ui_block` event shows a block during a running call (`call_id`) or a turn (`call_id` null): a later one with the same `call_id` and `key` replaces it in place, and the others show side by side. A client drops the blocks of a call at its `tool_execution_end` and every block at `turn_end`; they are not in the transcript. The snapshot `ui_blocks` holds the newest block of each `call_id` and `key` of the running turn, in the order of the first event of each pair, as the data of its event.
 - `start_failed` is any other start error of ADR 0006 §2, a lock that another OS process holds too. Its `text` is `Helyx.Reason.text/1` of the term; the log gets the term.
 - `bad_params` is a missing key, a key of the wrong type, a value out of its range, or a key that the operation does not name. The server checks every param at its entry.
 
@@ -87,9 +93,11 @@ Past its deadline, an operation answers `timeout`: the outcome is unknown. The c
 | `abort` | 46,000 ms | the hands release of the cancel, at most 20,000 ms (`Hands.State.release_ms/0`, `lib/helyx/session/hands.ex:68`, the call at `:221`); then the delivery of the provider process, which releases its handles in the same hands process, at most 20,000 ms more (`hands.ex:297`); an abort that comes during an idle close also waits for the armed kill of the close, 5,000 ms (`State.provider_close_ms/0`, `lib/helyx/session/server/state.ex:45`, `turn_loop.ex:104-112`); and a margin of 1,000 ms. `Helyx.Session.abort/1` itself waits with no timeout (`lib/helyx/session.ex:394`). A test of the transport compares the constant with the two functions. A hands process with more releases queued takes longer: the client gets `timeout`, accepted |
 | `stop` | 77,000 ms | the `abort` deadline, then the stop of the session process, at most `Stop.shutdown_ms/0`, 31,000 ms (`lib/helyx/session/server/stop.ex:24`): the close of a provider process that is left (5,000 ms), the stop of the hands, which can finish one release (22,000 ms), the release of the lock (1,000 ms, `Helyx.Session.Lock.release_ms/0`), and 3,000 ms for load. The test of the `abort` deadline compares this constant with `Stop.shutdown_ms/0` too. The Core call is `Helyx.Sessions.stop/1` (#657) |
 | `start`, `resume` | none (#834, decision of the owner of 2026-11-06) | the open is bounded in the server, by the deadlines of the session: the lock take, `deadline_ms.open` (25,000 ms), and the load, which grows with the file (`docs/features/session-lock.md`, row "wait of the caller"; `docs/features/coding-agent.md`, row "Session file on resume"). A fixed deadline here would answer `timeout` for a large file while the session still opens. So the worker waits for the Core call, `Helyx.Sessions.start/2` or `resume/2`, and the client waits for the answer while the connection lives (`docs/features/tui-attach.md`, decision 17). Before the open, the tool checks run in the worker (`Helyx.Tool.check_available/1`, no timeout of its own): accepted hole, a check that blocks holds the request until the connection closes, as it held the worker before #834. The worker counts against the 16 requests in flight until it ends. A close of the connection kills the workers, which are linked to it; a session whose caller ended during its open stops after the open (`docs/features/session-lock.md`, row "the caller dies during the open"). The protocol number does not change: a client of the same protocol that keeps a deadline of its own gives `timeout` and drops the late reply, as before, and this client gets `timeout` from an older server, an error code it knows |
-| `sessions.saved` | 10,000 ms | a scan of at most 256 file heads of 64 KiB (`lib/helyx/session/file/scan.ex:4`, `:8`) |
+| `sessions.saved` | 10,000 ms; under a Hub 15,000 ms | a scan of at most 256 file heads of 64 KiB (`lib/helyx/session/file/scan.ex:4`, `:8`); under a Hub the scan and one Hub call of 5,000 ms (`docs/features/hub.md`, decision 7) |
 | `subscribe` | the call timeout of 5,000 ms (`lib/helyx/session.ex:40`) | the subscription process answers the exit as `timeout` |
 | every other operation | 6,000 ms | an operation on one session is one session call with the call timeout of 5,000 ms, whose exit the worker answers as `timeout`; `sessions.live` (`Helyx.Sessions.list_live/1`, #657) answers within the same deadline; the 1,000 ms margin is for load |
+
+Under a Hub, a `hub.*` operation has the deadline of every other operation, 6,000 ms, which holds its one Hub call. The `check` before an operation and the `result` after it have their own bound beside the deadline: one Hub call of 5,000 ms each, and in the `check` before that call the existence check of a session with no record, a search of the data folder of at most 5,000 ms, or for a `resume` of a folder the scan of `sessions.saved`, 10,000 ms (`docs/features/hub.md`, decisions 5 and 8, and its "Bounds").
 
 ### Subscriptions
 
@@ -110,9 +118,9 @@ Past its deadline, an operation answers `timeout`: the outcome is unknown. The c
 
 ### Codec
 
-Every value is JSON. An atom is its name as a string. A message has the shape of a message entry of the session file without its `type` key (`lib/helyx/data/message.ex:333-389`): a key whose value is nil or false is left out, but for `is_error`, which a tool result always has. A reader takes a missing key as null or false.
+Every value is JSON. An atom is its name as a string. A message has the shape of a message entry of the session file without its `type` key (`lib/helyx/data/message/json.ex`): a key whose value is nil or false is left out, but for `is_error`, which a tool result always has. `ui_blocks` is on a tool result that has blocks, and left out when it has none. A reader takes a missing key as null or false, and a missing `ui_blocks` as no blocks.
 
-A client is a tolerant reader (ADR 0006, revisions of 2026-10-03 and 2026-10-16): it dispatches on the `type` of an event first, ignores an event type that it does not know and a key that it does not know, and shows a placeholder for a block kind that it does not know. A known type with a broken shape is a contract break.
+A client is a tolerant reader (ADR 0006, revisions of 2026-10-03 and 2026-10-16): it dispatches on the `type` of an event first, ignores an event type that it does not know and a key that it does not know, and shows a placeholder for a block kind that it does not know. A client shows the `text` of a UI block of a kind that it does not know, or whose fields it cannot read, with a mark when `cut` is true: the schema has the envelope of a UI block and no kind, so a new kind needs no new protocol number (ADR 0011 §5). A known type with a broken shape is a contract break.
 
 The wire leaves out two fields of Core events: `texts` of `queue_dropped` and `text` of `steer_unconfirmed`. The messages carry the same texts, so the frame is half the size.
 
@@ -120,15 +128,16 @@ The schema below is the contract. The test of #660 computes the SHA-256 of the l
 
 <!-- wire-schema:start -->
 ```text
-protocol 4
+protocol 8
 
 notation: {k: T} an object; k? may be absent (absent = null or false);
   T | U either; [T] a list; "x" that string; int a JSON integer >= 0;
   number a JSON number >= 0; id a string of 1 to 64 bytes;
-  base64 a string of RFC 4648 base64 of at most 786,000 bytes
+  base64 a string of RFC 4648 base64 of at most 786,000 bytes;
+  name a string of 1 to 64 bytes of a-z, 0-9, and _; json any JSON value
 
 # client to server
-hello   = {type: "hello", protocol: int, proof?: base64}
+hello   = {type: "hello", protocol: int, proof?: base64, token?: id}
 req     = {type: "req", id: id, op: op, params: object}
 ack     = {type: "ack", sub: string, seq: int}
 part    = {type: "part", n: int, last: bool, data: base64}
@@ -151,10 +160,18 @@ error_code = "unknown_op" | "bad_params" | "busy" | "timeout" | "failed"
            | "not_found" | "start_failed"
            | "invalid_utf8" | "invalid_origin" | "queue_full" | "turn_running"
            | "text_too_large" | "invalid_answer" | "not_waiting"
+           | "forbidden" | "too_many_records" | "too_many_projects"
+           | "unknown_project" | "unknown_token"
+           | "too_many_schedules" | "unknown_schedule"
 
 op = "sessions.live" | "sessions.saved" | "start" | "resume" | "subscribe"
    | "unsubscribe" | "history" | "prompt" | "steer" | "follow_up"
    | "abort" | "set_model" | "compact" | "stop" | "answer"
+   | "hub.me" | "hub.records.get" | "hub.records.update" | "hub.records.delete"
+   | "hub.records.search" | "hub.projects.list" | "hub.projects.create"
+   | "hub.projects.update" | "hub.projects.delete" | "hub.tokens.list"
+   | "hub.tokens.revoke"
+   | "hub.schedules.list" | "hub.schedules.create" | "hub.schedules.delete"
 
 params.sessions.live   = {}
 params.sessions.saved  = {cwd?: string, after?: string, limit?: int}
@@ -174,6 +191,23 @@ params.compact         = {session: string, text?: string}
 params.stop            = {session: string}
 params.answer          = {session: string, ask_id: string, answer: object}
 product_origin         = {kind: "product", id: string}
+params.hub.me              = {}
+params.hub.records.get     = {session: string}
+params.hub.records.update  = {session: string, title?: string, labels?: [string],
+                              visibility?: "private" | "hub", project?: string | null,
+                              archived?: bool}
+params.hub.records.delete  = {session: string}
+params.hub.records.search  = {query?: string, labels?: [string], project?: string,
+                              archived?: bool, mine?: bool, after?: string, limit?: int}
+params.hub.projects.list   = {}
+params.hub.projects.create = {name: string}
+params.hub.projects.update = {project: string, name: string}
+params.hub.projects.delete = {project: string}
+params.hub.tokens.list     = {}
+params.hub.tokens.revoke   = {token: string}
+params.hub.schedules.list   = {session?: string}
+params.hub.schedules.create = {session: string, at: int, every?: int, prompt: string}
+params.hub.schedules.delete = {schedule: string}
 
 result.sessions.live  = {sessions: [live_session]}
 result.sessions.saved = {items: [saved_session], next: string | null}
@@ -183,15 +217,38 @@ result.subscribe      = {sub: string, replay: [event]} | {sub: string, snapshot:
 result.history        = {messages: [message], more: bool, next: string | null}
 result.unsubscribe, result.prompt, result.steer, result.follow_up,
 result.abort, result.set_model, result.compact, result.stop, result.answer = {}
+result.hub.me              = {user: user}
+result.hub.records.get, result.hub.records.update = {record: record}
+result.hub.records.search  = {items: [record], next: string | null}
+result.hub.projects.list   = {projects: [project]}
+result.hub.projects.create, result.hub.projects.update = {project: project}
+result.hub.tokens.list     = {tokens: [token]}
+result.hub.records.delete, result.hub.projects.delete, result.hub.tokens.revoke = {}
+result.hub.schedules.list   = {schedules: [schedule]}
+result.hub.schedules.create = {schedule: schedule}
+result.hub.schedules.delete = {}
 
 live_session  = {id: string, instance_id: string, cwd: string, model: string,
                  status: "idle" | "running"}
 saved_session = {id: string, cwd: string, model: string, mtime: int, prompt: string}
 
+user     = {id: string, name: string}
+# project: null for a user who does not own the record (the project is the owner's)
+record   = {session: string, owner: user, project: string | null, title: string,
+            labels: [string], visibility: "private" | "hub", archived: bool,
+            stored: bool, created_at: int | null, updated_at: int | null}
+project  = {id: string, name: string, created_at: int}
+token    = {id: string, name: string, created_at: int}
+schedule = {id: string, session: string, at: int, every: int | null, prompt: string,
+            pending: bool, last_at: int | null,
+            last_outcome: "delivered" | "missed" | "refused" | "unconfirmed" | null}
+
 snapshot = {instance_id: string, seq: int, messages: [message], more: bool,
             turn: turn | null, model: string, queue: queue, persisting: bool,
-            usage: totals, context: context | null, asks: [ask]}
+            usage: totals, context: context | null, asks: [ask],
+            ui_blocks: [shown_block], activated: [string]}
 ask      = {ask_id: string, call_id: string, tool: string, request: object}
+shown_block = {call_id: string | null, key: string, block: ui_block}
 turn     = {id: string, partial: message | null, elapsed_ms: int}
 queue    = {steers: int, follow_ups: int, running: int, held: int, waiting: int}
 totals   = {input: int, output: int, cache_read: int, cache_write: int,
@@ -203,7 +260,7 @@ event = {type: event_type, session_id: string, instance_id: string,
 event_type = "turn_start" | "message_start" | "message_update" | "message_end"
            | "tool_execution_end" | "turn_end" | "queue_update" | "queue_dropped"
            | "model_change" | "resume_id" | "steer_unconfirmed" | "compaction"
-           | "notice" | "ask" | "ask_end"
+           | "notice" | "ask" | "ask_end" | "ui_block" | "tools_change"
 data.turn_start         = {origin?: "provider" | "compaction"}
 data.message_start      = {message: message}
 data.message_update     = {text_delta: string} | {thinking_delta: string}
@@ -222,11 +279,13 @@ data.compaction         = {trigger: "manual" | "auto", tokens_before: int | null
 data.notice             = {text: string}
 data.ask                = ask
 data.ask_end            = {ask_id: string, outcome: "answered" | "ended"}
+data.ui_block           = shown_block
+data.tools_change       = {activated: [string]}
 
 message = {id: string, role: "user" | "assistant" | "tool_result",
            content: [block], origin?: origin, model?: string,
            stop_reason?: stop_reason, tool_call_id?: string, tool_name?: string,
-           is_error?: bool, usage?: usage}
+           is_error?: bool, usage?: usage, ui_blocks?: [ui_block]}
 block     = {type: "text", text: string} | {type: "thinking", thinking: string}
           | tool_call
 tool_call = {type: "tool_call", id: string, name: string, arguments: object}
@@ -236,6 +295,8 @@ stop_reason = "end_turn" | "tool_use" | "max_tokens" | "refused" | "aborted" | "
 usage = {input: int, output: int, cache_read: int, cache_write: int,
          cost?: number, cost_kind?: "list" | "billed",
          context_tokens?: int, context_window?: int}
+# the envelope of a UI block; each other key is a field of its kind
+ui_block = {kind: name, text: string, cut?: bool, *: json}
 
 # order rules (a schema cannot show them; a change needs a new protocol number)
 O1 challenge is the first server frame, once; hello is the first client
@@ -258,19 +319,19 @@ Notes on the codec:
 - `origin` `"unknown"` is a user message of a session file from before #649. `id` is null for `"user"` and `"unknown"` (`docs/features/message-identity.md`). `"hook"` is the user message of a continue of a `before_settle` hook, with the name of the hook module as its `id` (`docs/features/before-settle.md`); a client cannot send it, as it cannot send `"user"`. Protocol 4 added it (#880).
 - `error` of `message_end`: `{kind: "aborted"}` for an aborted turn, `{kind: "failed", text}` for a failed one, where `text` is the error text of the turn (ADR 0006 §2). The two are kept apart, because a failure text can be the word "aborted".
 - `turn_end` `error` and `notice` `text` are text for a person; a client shows them as they are.
-- `arguments` of a tool call is a JSON object whose integers have at most 100 digits (`Helyx.Message.cap_integers/1`).
+- `arguments` of a tool call is a JSON object whose integers have at most 100 digits (`Helyx.Message.cap_integers/1`). The schema does not bound them, and a client takes any integer (#860).
 - A `cost` is in USD. `elapsed_ms` is by the clock of the session; a client starts its busy clock at that age.
 - The session that a tool call starts with a parent link, such as a child of the `agent` tool, has an id that a client derives from the session id and the call id: the first 9 bytes of SHA-256 of the session id followed by the call id, as URL-safe Base64 with no padding (`Helyx.Sessions.child_id/2`, `docs/features/agent-tool.md`). No frame carries it.
 
 ## Conformance fixtures
 
-`test/fixtures/wire/` holds fixtures of protocol 4 as plain JSON (#855): the frames that a client sends, each with the frames and the close code of the server; the frames that a server sends, each valid, ignored, or a contract break for a client; and folds, event sequences with the state that a client holds after them. Its `README.md` states what a conforming client or server must pass and which rules are in prose only. The transport tests run the client frames against the server, and the TUI tests run the server frames and the folds against the client and its view model, so the fixtures and the Elixir code cannot drift.
+`test/fixtures/wire/` holds fixtures of protocol 8 as plain JSON (#855): the frames that a client sends, each with the frames and the close code of the server; the frames that a server sends, each valid, ignored, or a contract break for a client; and folds, event sequences with the state that a client holds after them. Its `README.md` states what a conforming client or server must pass and which rules are in prose only. The transport tests run the client frames against the server, and the TUI tests run the server frames and the folds against the client and its view model, so the fixtures and the Elixir code cannot drift.
 
 What this doc does not pin down for an implementation that does not run on the BEAM. Each is open, not decided here:
 
 - **The size of a message.** The byte bounds of the tail snapshot, of a `history` page, and of the replay ring count each message or event with `:erlang.external_size/1`, the size of the term in the external format of Erlang. A server on another runtime cannot compute it, and a client cannot predict where a tail ends. A portable admission rule, such as a count over the JSON text, would be a protocol change.
 - **Replay.** The replay ring is in the memory of one session instance and bounded (1,024 events and 4 MiB). A restart of the session, a new `instance_id`, or a gap in the ring gives a tail snapshot, not the missed events. Replay is not durable; a durable replay would revise ADR 0008.
-- **The form of a model ref.** The schema gives `model` as a string. The client of the TUI also checks it as a model ref, `provider/model` with no whitespace or control character (`Helyx.ModelRef`), and ends the connection on another string.
+- **The form of a model ref.** The schema gives `model` as a string. A server of this build sends a model ref, `provider/model` with no whitespace or control character (`Helyx.ModelRef`), and answers `invalid_model_ref` to another string in a request; the client of the TUI takes any string and shows it cut and cleaned (#860).
 - **A session id.** The schema gives `id` as a string. A `resume` of an id that is not 12 URL-safe characters gets `start_failed`, not `not_found`.
 - **A request id over its bound.** A `req` whose `id` is a string of more than 64 bytes gets `bad_params` ("Bounds"), and that `res` carries the same `id`, though the schema gives the `id` of a `res` as 1 to 64 bytes.
 
@@ -285,7 +346,11 @@ What this doc does not pin down for an implementation that does not run on the B
 7. Tests: no test of the old remote plan exists. `test/helyx/session/end_signal_test.exs` keeps its properties for the local end signal.
 8. **The token in `hello`** (protocol 1, #660). Replaced by `challenge` and `proof` in protocol 2 (#763): a frame held the token, and the logs of the WebSocket server that hold frame bytes or `conn` held it with the frame.
 9. **The SHA-256 of the token in the plug options and the process states** (#660). The SHA-256 of the token is now the key of the proof, so it is in a closure. The test "the connection state holds no token" is replaced by the test that inspects the state of every process of the transport and the child spec, and by the three log tests (`plugins/bundled/test/helyx/transport/web_socket_test.exs`).
-10. **Protocol 3** (#880). Protocol 4 adds the origin kind `"hook"` to `origin`; nothing else changes. A client of protocol 3 gets `refused` and the close `4426`, and the fixtures name protocol 4.
+10. **Protocol 3** (#880). Protocol 4 adds the origin kind `"hook"` to `origin`; nothing else changes. A client of protocol 3 gets `refused` and the close `4426`, and the fixtures named protocol 4.
+11. **Protocol 4** (#878). Protocol 5 adds UI blocks (ADR 0011, `docs/features/ui-blocks.md`): `ui_blocks` in a tool result `message`, the `ui_block` event, and the snapshot field `ui_blocks`; nothing else changes. A client of protocol 4 gets `refused` and the close `4426`, and the fixtures name protocol 5.
+12. **Protocol 5** (#869). Protocol 6 adds the Hub (ADR 0010, `docs/features/hub.md`): the `token` of `hello`, the `hub.*` operations of records, projects, tokens, and the user, their params and results, and the error codes `forbidden`, `too_many_records`, `too_many_projects`, `unknown_project`, and `unknown_token`; a server with no authority answers as protocol 5 did. A client of protocol 5 gets `refused` and the close `4426`, and the fixtures name protocol 6. The schedules of a Hub (#870) come with protocol 7.
+13. **Protocol 6** (#870). Protocol 7 adds the schedules of a Hub (`docs/features/hub.md`, decisions 11 and 12): the operations `hub.schedules.list`, `hub.schedules.create`, and `hub.schedules.delete`, their params and results, the shape `schedule`, and the error codes `too_many_schedules` and `unknown_schedule`; a server with no authority answers them with `unknown_op`, as every `hub.*` op. A client of protocol 6 gets `refused` and the close `4426`, and the fixtures named protocol 7.
+14. **Protocol 7** (#492, `docs/features/mcp-client.md`). Protocol 8 adds the event `tools_change` with `data.tools_change`, the activated deferred tool names in drop order (the first name leaves first when the session drops one for its cap; a client only shows the list), and the snapshot field `activated`, the same list; nothing else changes. A client of protocol 7 gets `refused` and the close `4426`, and the fixtures name protocol 8.
 
 ## Bounds
 
@@ -321,6 +386,7 @@ What this doc does not pin down for an implementation that does not run on the B
 | `queue_dropped` | 64 messages (32 steers, 32 follow-ups, `lib/helyx/session/queue.ex:49`), each of one text of at most 4 MiB (#672). It reaches only the subscribers that are connected when the session emits it; a client that connects later gets a tail snapshot, which does not hold the texts | goes as parts | Core |
 | `answer` | a JSON object, else `bad_params`; 16,384 bytes of JSON of valid UTF-8, checked in the connection before the worker | `res` with `invalid_answer`; an answer whose frame is also over the decode bounds closes with `4400` | Core (`Helyx.Session.check_answer/1`) |
 | `request` of an `ask` | 65,536 bytes of JSON | the tool call fails | Core (`Helyx.Tool.ask/1`) |
+| a UI block, in `ui_blocks` of a message and in a `ui_block` event | 65,536 bytes of JSON, and integers of at most 100 digits; at most 8 blocks in a tool result, 8 keys of `ui_block` for one call and for `call_id` null in one turn, and 72 blocks of `ui_block` events that a turn holds, so at most 72 in the snapshot `ui_blocks` (`docs/features/ui-blocks.md`) | Core cuts a block over the byte bound to `{kind, text, cut: true}` and refuses any other break at its carrier, so a client never gets one: for a client it is a contract break | Core (`Helyx.UIBlock.check/1`) |
 | request `id` | 1 to 64 bytes | `bad_params`; with no readable `id`, close `4400` | transport |
 | `sessions.saved` page | 1 to 256 items, default 50 | `bad_params` | Core (`Helyx.Sessions.list_saved/2`) |
 | live list | 64 items | | the live-session cap |
@@ -353,9 +419,7 @@ Each numeric limit gets tests at the limit, one under, and one over, and the fra
 
 - Code: #657 to #662, and the Core bounds that they build on: #672 (a text of at most 4 MiB) and #673 (at file read, a message of at most 1,024 blocks and 8 MiB).
 - Push to an app that is closed: `Helyx.Hub` sends it, and the client host receives it (ADR 0010).
-- Users, session records, and the `hub.*` operations: `Helyx.Hub` (ADR 0010), with a new protocol number when the first `hub.*` operation is in the schema.
 - A browser client.
 - Paging inside one message body: parts carry any size (#658).
 - stdio framing code: same frames, a later ticket when a client needs it (#660).
-- UI blocks (ADR 0011, #858): `ui_blocks` in a tool result `message`, the `ui_block` event, and the snapshot field come with their build ticket and a new protocol number.
 - The `hands` role of `hello` and the `hands.*` operations and events of remote hands: decided in ADR 0012 (#856); the codec and a new protocol number come with its build ticket.

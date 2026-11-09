@@ -48,14 +48,14 @@ defmodule Helyx.Session do
   Starts a session under Core. `:model` is required, and the ref resolves as
   in `set_model/2`. `:cwd` defaults to the current directory, valid UTF-8
   with no NUL byte, else `{:error, :invalid_cwd}`. `:tools` names the tools,
-  all if nil; `:parent` links a child to a tool call
-  (`docs/features/agent-tool.md`); `:model_context` names a ModelContext
-  plugin, the first if nil (`{:error, :invalid_model_context}`);
-  `:provider_opts` is a keyword list for each `init/3`
-  (`{:error, :invalid_provider_opts}`); `:max_output_tokens` limits each
-  assistant message (`docs/features/output-limit.md`). With `:sessions_dir`
-  the session is written to disk: `{:error, {:session_locked, id}}`,
-  `{:error, {:lock_failed, text}}`, `{:error, :open_timeout}`,
+  all if nil, and with it the session opens no tool source (`mcp-client.md`);
+  `:parent` links a child to a tool call (`docs/features/agent-tool.md`);
+  `:model_context` names a ModelContext plugin, the first if nil
+  (`{:error, :invalid_model_context}`); `:provider_opts` is a keyword list
+  for each `init/3` (`{:error, :invalid_provider_opts}`); `:max_output_tokens`
+  limits each assistant message (`docs/features/output-limit.md`). With
+  `:sessions_dir` the session is written to disk: `{:error, {:session_locked,
+  id}}`, `{:error, {:lock_failed, text}}`, `{:error, :open_timeout}`,
   `{:error, {:create_failed, reason}}`, or `{:error, :too_many_sessions}`
   (`docs/features/session-lock.md`, `docs/features/server-management.md`).
   """
@@ -68,8 +68,7 @@ defmodule Helyx.Session do
          {:ok, provider_opts} <- Input.provider_opts(opts),
          {:ok, parent, only, model_context, limit} <- Input.start_options(core, opts),
          id = if(parent, do: Id.child(parent.session_id, parent.call_id), else: Id.new()),
-         {:ok, tools} <- Helyx.Tool.specs(core, only),
-         :ok <- Helyx.Tool.check_available(tools),
+         {:ok, tools, sources} <- Input.tools(core, only),
          concurrent = Helyx.Tool.concurrent(tools),
          {:ok, {ref, provider}} <- Input.model(core, Keyword.fetch!(opts, :model), limit),
          # The folders come before the lock, whose file is in them.
@@ -79,7 +78,7 @@ defmodule Helyx.Session do
 
       Server.create(
         %{state | init: init, plugins: %{state.plugins | model_context: model_context}},
-        {tools, concurrent},
+        {tools, concurrent, sources},
         Server.Open.create_spec(opts[:sessions_dir], id, cwd, ModelRef.to_string(ref), parent)
       )
     end
@@ -105,14 +104,13 @@ defmodule Helyx.Session do
 
     with {:ok, cwd} <- if(header?, do: {:ok, nil}, else: Input.cwd_option(opts)),
          {:ok, provider_opts} <- Input.provider_opts(opts),
-         {:ok, tools} <- Helyx.Tool.specs(core),
-         :ok <- Helyx.Tool.check_available(tools),
+         {:ok, tools, sources} <- Input.tools(core, nil),
          concurrent = Helyx.Tool.concurrent(tools),
          {:ok, path, cwd} <- Helyx.Session.File.pick(dir, cwd, Keyword.take(opts, [:id])) do
       id = Path.basename(path, ".jsonl")
       state = %State{id: id, core: core, model: nil, provider: nil, cwd: cwd}
       state = %{state | init: %{state.init | provider_opts: provider_opts}}
-      Server.start(state, {tools, concurrent}, {path, &Server.Open.load(&1, path)})
+      Server.start(state, {tools, concurrent, sources}, {path, &Server.Open.load(&1, path)})
     end
   end
 

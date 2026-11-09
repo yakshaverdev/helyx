@@ -16,6 +16,8 @@ defmodule Helyx.Watchdog do
   # ADR 0004 and `docs/features/tool-resource-release.md` own the reasons.
   # The nonce of the marker is random for each call and reaches the program
   # in its arguments only, so command output cannot pass for a marker.
+  alias Helyx.Watchdog.Mask
+
   @watchdog_path Path.join(__DIR__, "watchdog/watchdog.pl")
   @external_resource @watchdog_path
   @watchdog File.read!(@watchdog_path)
@@ -73,18 +75,34 @@ defmodule Helyx.Watchdog do
   # open input that the command has not read is over
   # `@stdin_max_bytes`. The option `:env` (default `[]`) is the name and
   # value pairs, valid UTF-8, that the port adds to the inherited
-  # environment. A raise of the open, such as `:emfile`, shows no options,
+  # environment, and `:unset` (default `[]`) the names that it removes from
+  # it. A raise of the open, such as `:emfile`, shows no options,
   # so no value reaches a crash report. In the `reason` of an error, each
-  # occurrence of a value is `@masked` (`mask/2`).
+  # occurrence of a value is masked (`Helyx.Watchdog.Mask`).
+  #
+  # The option `:deadline` (default none) is an absolute
+  # `System.monotonic_time(:millisecond)`: the marker read and the reason
+  # read wait only until it, and the go-ahead is not written after it.
+  # Past it the start closes the port and returns `{:error, @late}`; before
+  # the marker it lets the watchdog go as a failed start does, after the
+  # command hold it leaves both handles held for the caller's hands, and
+  # the command never ran (`docs/features/mcp-client.md`). The option
+  # `:watchdog_exe`, for tests only, runs that program in place of perl.
   def start(argv, cwd, input, opts \\ []) do
     nonce = random_word()
     grace = Keyword.get(opts, :grace_ms, @grace_ms)
     env = Keyword.get(opts, :env, [])
+    unset = for name <- Keyword.get(opts, :unset, []), do: {to_charlist(name), false}
     {exe, options} = launcher(argv, cwd, nonce, feed(input), grace)
-    options = [{:env, for({name, value} <- env, do: {to_charlist(name), chars(value)})} | options]
+    exe = Keyword.get(opts, :watchdog_exe, exe)
+    env = for({name, value} <- env, do: {to_charlist(name), chars(value)})
+    options = [{:env, unset ++ env} | options]
     port = Helyx.Reason.no_args(fn -> Port.open({:spawn_executable, exe}, options) end)
-    handshake(port, nonce, env |> Enum.map(&elem(&1, 1)) |> Enum.uniq())
+    values = opts |> Keyword.get(:env, []) |> Enum.map(&elem(&1, 1)) |> Enum.uniq()
+    handshake(port, nonce, values, Keyword.get(opts, :deadline))
   end
+
+  @late "the perl watchdog gave no marker before the deadline"
 
   # The port writes a charlist in the native name encoding of the BEAM.
   # With latin1, the BEAM of a locale that is not UTF-8, each byte of the
@@ -95,7 +113,7 @@ defmodule Helyx.Watchdog do
       else: :binary.bin_to_list(value)
   end
 
-  defp handshake(port, nonce, values) do
+  defp handshake(port, nonce, values, deadline) do
     # The runtime detaches port programs into their own process group, so
     # the port's OS pid is the watchdog's group. Held as :watchdog: the
     # release waits for it, so an abort cannot return while the command is
@@ -104,18 +122,29 @@ defmodule Helyx.Watchdog do
     watchdog =
       case Port.info(port, :os_pid) do
         {:os_pid, os_pid} ->
-          Helyx.Tool.hold({:watchdog, os_pid})
-          [{:watchdog, os_pid}]
+          handle = {:watchdog, os_pid, Helyx.Watchdog.Group.record()}
+          Helyx.Tool.hold(handle)
+          [handle]
 
         nil ->
           []
       end
 
-    case read_marker(port, nonce, "", "") do
-      {:not_started, acc} ->
-        reason = port |> read_to_exit(acc) |> mask(values)
+    case read_marker(port, nonce, "", "", deadline) do
+      :deadline ->
         let_go(port, watchdog)
-        {:error, Helyx.Text.cap(reason, @reason_max_bytes, :tail)}
+        {:error, @late}
+
+      {:not_started, acc} ->
+        case read_to_exit(port, acc, deadline) do
+          :deadline ->
+            let_go(port, watchdog)
+            {:error, @late}
+
+          reason ->
+            let_go(port, watchdog)
+            {:error, Helyx.Text.cap(Mask.mask(reason, values), @reason_max_bytes, :tail)}
+        end
 
       # Names the watchdog, not a cause: perl may be gone, fail to compile
       # the watchdog, or never run (an argv over the OS limit).
@@ -125,11 +154,24 @@ defmodule Helyx.Watchdog do
         {:error, Helyx.Text.cap(reason, @reason_max_bytes, :head)}
 
       {group, pre} ->
-        Helyx.Tool.hold({:command, group})
-        # A port that closed already drops the write; its exit status is in
-        # the mailbox for the caller's read.
-        write(port, "\n")
-        {:started, port, pre, [{:command, group} | watchdog]}
+        handle = {:command, group, Helyx.Watchdog.Group.record()}
+        Helyx.Tool.hold(handle)
+        go(port, pre, [handle | watchdog], deadline)
+    end
+  end
+
+  # The hold of the command group can wait behind the releases of the
+  # hands: past the deadline the go-ahead is not written, so the command
+  # never runs, and the hands release both groups at the end of the caller.
+  defp go(port, pre, handles, deadline) do
+    if deadline != nil and System.monotonic_time(:millisecond) >= deadline do
+      close(port)
+      {:error, @late}
+    else
+      # A port that closed already drops the write; its exit status is in
+      # the mailbox for the caller's read.
+      write(port, "\n")
+      {:started, port, pre, handles}
     end
   end
 
@@ -165,46 +207,18 @@ defmodule Helyx.Watchdog do
   # the stream where a pipe read ends, on macOS at 512 bytes (#340). The
   # watchdog writes the reason in one write, at most an error text with
   # `cwd` in it, and exits right after it, so the exit status ends the read.
-  defp read_to_exit(port, acc) do
+  defp read_to_exit(port, acc, deadline) do
     receive do
-      {^port, {:data, data}} -> read_to_exit(port, acc <> data)
+      {^port, {:data, data}} -> read_to_exit(port, acc <> data, deadline)
       {^port, {:exit_status, _status}} -> acc
+    after
+      wait_ms(deadline) -> :deadline
     end
   end
 
-  # perl's own output before the marker can quote a value of `:env`, such
-  # as a folder of PERL5LIB or the LC_ALL of a locale warning. Each
-  # occurrence of each value, also where two overlap, becomes `@masked`.
-  # The invalid bytes go first and the cut of `Helyx.Text.cap/3` after, so
-  # neither can join or leave a part of a value.
-  @masked "<env>"
-
-  defp mask(text, []), do: text
-
-  defp mask(text, values) do
-    text = String.replace_invalid(text, "")
-    spans = values |> Enum.flat_map(&spans(text, &1, 0)) |> Enum.sort() |> merge([])
-    masked(text, spans, 0)
-  end
-
-  defp spans(text, value, from) do
-    case :binary.match(text, value, scope: {from, byte_size(text) - from}) do
-      {at, size} -> [{at, at + size} | spans(text, value, at + 1)]
-      :nomatch -> []
-    end
-  end
-
-  defp merge([], acc), do: Enum.reverse(acc)
-
-  defp merge([{from, to} | rest], [{start, stop} | acc]) when from <= stop,
-    do: merge(rest, [{start, max(to, stop)} | acc])
-
-  defp merge([span | rest], acc), do: merge(rest, [span | acc])
-
-  defp masked(text, [], at), do: binary_part(text, at, byte_size(text) - at)
-
-  defp masked(text, [{from, to} | rest], at),
-    do: binary_part(text, at, from - at) <> @masked <> masked(text, rest, to)
+  # The time left to `deadline`, or `:infinity` with none.
+  defp wait_ms(nil), do: :infinity
+  defp wait_ms(deadline), do: max(deadline - System.monotonic_time(:millisecond), 0)
 
   @doc false
   # Public for the watchdog's direct tests. `feed` is the input mode, -1
@@ -273,18 +287,20 @@ defmodule Helyx.Watchdog do
   # messages. The `:no_marker` text is what had arrived by then.
   @doc false
   # Public for the direct test of the preamble limit.
-  def read_marker(port, nonce, pre, acc) do
+  def read_marker(port, nonce, pre, acc, deadline \\ nil) do
     case String.split(acc, "\n", parts: 2) do
       [line, rest] when byte_size(pre) + byte_size(line) < @max_preamble_bytes ->
         case parse_marker(line, nonce) do
-          nil -> read_marker(port, nonce, pre <> line <> "\n", rest)
+          nil -> read_marker(port, nonce, pre <> line <> "\n", rest, deadline)
           marker -> {marker, pre <> rest}
         end
 
       [_] when byte_size(pre) + byte_size(acc) < @max_preamble_bytes ->
         receive do
-          {^port, {:data, data}} -> read_marker(port, nonce, pre, acc <> data)
+          {^port, {:data, data}} -> read_marker(port, nonce, pre, acc <> data, deadline)
           {^port, {:exit_status, _status}} -> {:no_marker, pre <> acc}
+        after
+          wait_ms(deadline) -> :deadline
         end
 
       _ ->
@@ -298,7 +314,7 @@ defmodule Helyx.Watchdog do
   defp preamble(text, [_ | _]) when byte_size(text) >= @max_preamble_bytes,
     do: "perl wrote #{@max_preamble_bytes} bytes or more, not shown"
 
-  defp preamble(text, values), do: mask(text, values)
+  defp preamble(text, values), do: Mask.mask(text, values)
 
   # `kill -- -1` would signal every process the user may signal, so nothing
   # below 2 is ever accepted as a group. 0 is the watchdog's word for a

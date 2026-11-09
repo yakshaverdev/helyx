@@ -7,10 +7,22 @@ defmodule Helyx.Transport.WebSocket.Subscription do
   # `unsubscribe` reply. It writes the `subscribe` reply itself, a `timeout`
   # too.
 
-  alias Helyx.Transport.WebSocket.{Outbound, Wire}
+  alias Helyx.Transport.WebSocket.{Authorize, Outbound, Wire}
 
-  def start_link(out, sub, req_id, session, opts),
-    do: spawn_link(fn -> init(out, sub, req_id, session, opts) end)
+  # `access` is nil, or the authority and credential of the connection, the
+  # Core, and the params of the subscribe: its `check` runs before the Core
+  # call, and the subscription uses the params that it gave.
+  def start_link(out, sub, req_id, session, opts, access),
+    do: spawn_link(fn -> start(out, sub, req_id, session, opts, access) end)
+
+  defp start(out, sub, req_id, session, opts, nil), do: init(out, sub, req_id, session, opts)
+
+  defp start(out, sub, req_id, _session, _opts, {authority, core, params}) do
+    case Authorize.subscribe(authority, core, params) do
+      {:ok, session, opts} -> init(out, sub, req_id, session, opts)
+      answer -> Authorize.answer(out, req_id, "subscribe", answer)
+    end
+  end
 
   defp init(out, sub, req_id, session, opts) do
     Outbound.slot(out)

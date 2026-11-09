@@ -25,7 +25,7 @@ defmodule Helyx.Test.Hands do
     in_time? = System.monotonic_time(:millisecond) - started < Helyx.HarnessIO.let_go_ms()
     held = Enum.sort(held())
     assert held == Enum.sort(handles)
-    if in_time?, do: assert([command: _, watchdog: _] = held)
+    if in_time?, do: assert([{:command, _, _}, {:watchdog, _, _}] = held)
   end
 
   defp ack(ref, test, held) do

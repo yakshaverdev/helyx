@@ -7,10 +7,11 @@ defmodule Helyx.Session.Server do
   # the docs of the behaviour are in `Helyx.Session`.
 
   alias Helyx.Reason
-  alias Helyx.Session.{Lock, Turn}
-  alias Helyx.Session.Server.{Asks, Calls, Events, Flow, Open, Records, Settle, State}
+  alias Helyx.Session.{ApprovalChains, Lock, Turn}
+  alias Helyx.Session.Server.{Approvals, Asks, Calls, Events, Flow, Open, Records}
   alias Helyx.Session.Server.Flow.Up
-  alias Helyx.Session.Server.{Steering, Stop, Summary, ToolRuns, TurnLoop, Wait}
+  alias Helyx.Session.Server.{Settle, Sources, State, Steering}
+  alias Helyx.Session.Server.{Stop, Summary, ToolRuns, TurnLoop, UIBlocks, Wait}
 
   use GenServer, restart: :temporary, shutdown: Stop.shutdown_ms()
 
@@ -95,6 +96,18 @@ defmodule Helyx.Session.Server do
        ),
        do: {:noreply, Records.tool_result(state, call_id, result)}
 
+  # A UI block of the provider (`UIBlocks.provider_block/4`): a new key
+  # past the count stops the provider process.
+  defp info(
+         {:stream_event, turn_id, {:ui_block, call_id, key, block}},
+         %State{phase: %{turn: %Turn{id: turn_id}}} = state
+       ) do
+    case UIBlocks.provider_block(state, call_id, key, block) do
+      {:ok, state} -> {:noreply, state}
+      {:error, reason} -> {:noreply, TurnLoop.stop_provider(state, reason)}
+    end
+  end
+
   # The provider took a steer of this turn: its text, the one the session
   # checked at the client call, joins the transcript here (see
   # `Queue.take/2`).
@@ -119,6 +132,34 @@ defmodule Helyx.Session.Server do
 
   defp info({:tool_request, pid, turn_id, call, _bytes, _rejection}, state),
     do: {:noreply, ToolRuns.late(state, pid, turn_id, call.id)}
+
+  # An approval request of the provider process `pid` for a call of its
+  # own tools (`Approvals`). One of a turn that is not current is denied.
+  defp info(
+         {:approval, _pid, turn_id, approval_id, call_id},
+         %State{phase: %{turn: %Turn{id: turn_id}}} = state
+       ) do
+    case Approvals.request(state, approval_id, call_id) do
+      {:ok, state} -> {:noreply, state}
+      {:stop, reason} -> {:noreply, TurnLoop.stop_provider(state, reason)}
+    end
+  end
+
+  defp info({:approval, pid, turn_id, approval_id, _call_id}, state),
+    do: {:noreply, Approvals.late(state, pid, turn_id, approval_id)}
+
+  # The decision of the chain of a running approval request; one of a
+  # turn that ended is dropped: the turn's end denied its request.
+  defp info(
+         {:approval_result, turn_id, call_id, decision},
+         %State{phase: %{turn: %Turn{id: turn_id, approval_chains: chains}}} = state
+       ) do
+    if ApprovalChains.running?(chains, call_id),
+      do: {:noreply, Approvals.result(state, call_id, decision)},
+      else: {:noreply, state}
+  end
+
+  defp info({:approval_result, _turn_id, _call_id, _decision}, state), do: {:noreply, state}
 
   # A resume id of the session's live provider process, for its turn or
   # for the turn that the current wait ended (#518). An ended process,
@@ -192,6 +233,15 @@ defmodule Helyx.Session.Server do
   # The answer of the `before_settle` chain of a wait (`Settle.answer/3`).
   defp info({:settle_answer, ref, answer}, state),
     do: {:noreply, Settle.answer(state, ref, answer)}
+
+  # A source process that the hands started, and its end
+  # (`Helyx.Session.Server.Sources`).
+  defp info({:source, pid, plugin}, state), do: {:noreply, Sources.started(state, pid, plugin)}
+  defp info({:source_down, pid}, state), do: {:noreply, Sources.down(state, pid)}
+
+  # The timer of a caller of `Helyx.Tool.deferred/2` (`Sources.deferred/4`).
+  defp info({:timeout, _timer, {:deferred, ref}}, state),
+    do: {:noreply, Sources.timeout(state, ref)}
 
   # A notice of the sync worker of this instance.
   defp info({:memory_notice, pid, text}, %State{sync: pid} = state),
