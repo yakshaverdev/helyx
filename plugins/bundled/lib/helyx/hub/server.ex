@@ -140,10 +140,17 @@ defmodule Helyx.Hub.Server do
   defp serve({:started, auth, start, pid}, caller, deadline, state),
     do:
       {Rules.handle({:started, auth, start}, deadline, state),
-       Live.started(state, caller, start.session_id, pid)}
+       Live.started(state, caller, start.session_id, pid, auth.user)}
 
   defp serve({:resumed, auth, id, pid}, caller, deadline, state),
-    do: {Rules.handle({:credential, auth}, deadline, state), Live.started(state, caller, id, pid)}
+    do:
+      {Rules.handle({:credential, auth}, deadline, state),
+       Live.started(state, caller, id, pid, auth.user)}
+
+  # The user for whom a session acts (`Helyx.Hub.actor/2`): its starter,
+  # while the starter exists and owns the session.
+  defp serve({:actor, id}, _caller, deadline, state),
+    do: {Rules.handle({:actor, id, Live.starter(state, id)}, deadline, state), state}
 
   defp serve(:release, caller, _deadline, state), do: {:ok, Live.release(state, caller)}
 

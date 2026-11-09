@@ -182,7 +182,7 @@ defmodule Helyx.Hub.LiveTest do
     test "of a new process of a session replaces the entry of the old one", %{state: state} do
       old = spawn_link(fn -> Process.sleep(:infinity) end)
       new = spawn_link(fn -> Process.sleep(:infinity) end)
-      state = state |> Live.seed([{"s1", old}]) |> Live.started(self(), "s1", new)
+      state = state |> Live.seed([{"s1", old}]) |> Live.started(self(), "s1", new, "owner")
 
       assert Map.values(state.live) == ["s1"]
       {:monitors, monitors} = Process.info(self(), :monitors)

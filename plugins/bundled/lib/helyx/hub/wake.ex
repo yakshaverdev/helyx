@@ -142,7 +142,7 @@ defmodule Helyx.Hub.Wake do
   end
 
   def serve({:wake_resumed, row, pid}, caller, _deadline, state),
-    do: {:ok, Live.started(state, caller, row.session_id, pid)}
+    do: {:ok, Live.started(state, caller, row.session_id, pid, row.owner)}
 
   def serve({:wake_retry, row}, caller, deadline, state),
     do: {retry(state, row, deadline), Live.release(state, caller)}

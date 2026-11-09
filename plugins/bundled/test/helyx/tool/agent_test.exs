@@ -374,7 +374,7 @@ defmodule Helyx.Tool.AgentTest do
     [owner] =
       for task <- Task.Supervisor.children(Helyx.Core.task_supervisor(core)),
           {:dictionary, dict} <- [Process.info(task, :dictionary)],
-          match?({Helyx.Tool.Agent, _, _}, dict[:"$initial_call"]),
+          match?({Helyx.Subagent, _, _}, dict[:"$initial_call"]),
           do: task
 
     true = :erlang.suspend_process(owner)
