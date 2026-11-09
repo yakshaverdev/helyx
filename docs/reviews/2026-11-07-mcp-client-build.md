@@ -274,3 +274,35 @@ Simplify: `Program.compaction/1` beside `turn/2`, with `ensure/4` private; `thre
 | 7 | standards | `system`, `commands?`, `tools` travel together in `ensure/4`; `%{system: ...}` in place of `%State{}` in one clause of `thread/3`; `tools_turn/1` beside `tools_run/3`; the provider-parity bullet's `tools` is `tools.specs` on Codex | judgement | the field is named; the rest kept: the bare map keeps `codex.ex` at its count, and the three values are the launch of one program |
 
 The failure-path agent reproduced no defect of the code: a tools change after a lost harness session or with no stored state, a compaction after a tools change, a steer without an answer (`{:error, :restarted}`), tools A, B, A (no resume, the stored id of A), and an error answer to `thread/start` in the new program (the generic failure path). No round reproduced a defect, so the loop ended.
+
+## The rebase on master `77d0751e` (UI blocks, #878)
+
+Master's #878 took wire protocol 5 and grew `lib/helyx/interfaces/tool.ex` and the TUI decoder. The rebase resolved:
+
+- Slice 4 now gives protocol 6 (`@protocol 6` and the SHA-256 of the new schema, the fixtures bumped from master's protocol 5, item 12 of wire-protocol.md's Replaced mechanism, Hub from 6 to 7 in hub.md, the mcp-client.md Wire bullet). Its commit says protocol 6; the slice 4 section above, written for protocol 5, holds for 6.
+- The snapshot holds master's `ui_blocks` and `activated`; the `hands.ex`, `server.ex`, `calls.ex`, `tool.ex`, `snapshot.ex`, and `events.ex` conflicts merged both sides.
+
+The merged `tool.ex` had 449 lines and the decoder 406, over the 400 of AGENTS.md, and the `.credo.exs` list only shrinks. A separate commit fits them, through this cycle.
+
+Invariant: no behaviour changes. The bodies of `Helyx.Tool.specs/2`, `check_available/1`, `concurrent/1`, and `name?/1` move into the internal module `Helyx.Session.ToolSpecs`, which owns the checks of the fixed tools at a session start and the name rule; `Helyx.Tool` keeps their docs, specs, and delegations, as `ask/1` delegates to `Helyx.Session.Ask`, so it stays a behaviour and public API (369 lines). The decoder rewraps its comments to the formatter width, with the same text, and writes `activated!/1` on one line (400 lines).
+
+Base `HEAD` (`ca208ebb`, slice 6 rebased). Bounds sensor:
+
+```
+bounds sensor: 2 candidate functions, 0 flagged, 0 without an answer
+```
+
+### Round 1 (full)
+
+Simplify: each public function of `ToolSpecs` beside its helpers.
+
+Codex approved. The failure-path agent compared HEAD's `tool.ex`, loaded under another name, with the new code over 32 bad tools (names at 52 and 53 bytes and multibyte, bad descriptions and parameters, duplicates, bad `check/0` and `concurrent?/0` returns): every answer equal; the one difference is the module that a `FunctionClauseError` of a bad `check/0` names. The decoder takes and refuses the same `activated` values in a snapshot and an event.
+
+| # | Source | Finding | Check | Resolution |
+| - | ------ | ------- | ----- | ---------- |
+| 1 | standards | The header of `ToolSpecs` said what moved, which is history | read | it says what the module owns |
+| 2 | standards | `&(<<_::binary>> = &1)` is an idiom found nowhere else in the repo, there to save a line; it raises `MatchError` in place of `FunctionClauseError` | judgement | kept: `decoded/1` turns either into `:error`, and the line keeps the decoder at 400 |
+| 3 | standards | The decoder has no room left; its next line needs a seam | judgement | open for the next change of the decoder |
+| 4 | spec | No decode test of a non-string in `activated` | read | covered by the fixtures "tools_change: a name that is not a string" and "subscribe: activated with a name that is not a string" (`wire_fixtures_test.exs`) |
+
+No round reproduced a defect, so the loop ended.
