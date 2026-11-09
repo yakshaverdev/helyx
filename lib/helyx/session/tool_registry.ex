@@ -342,6 +342,14 @@ defmodule Helyx.Session.ToolRegistry do
     }
   end
 
+  # `Helyx.Tool.notice/1`: a text of valid UTF-8, cut, as a notice; any
+  # other value is a contract break.
+  def notice(registry, text) when is_binary(text) do
+    if String.valid?(text), do: {:ok, registry, [cap(text)], :ok}, else: :error
+  end
+
+  def notice(_registry, _text), do: :error
+
   # A notice is valid UTF-8 of at most 2,000 bytes.
   defp cap(text) do
     text = String.replace_invalid(text)

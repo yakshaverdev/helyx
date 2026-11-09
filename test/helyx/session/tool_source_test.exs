@@ -174,7 +174,9 @@ defmodule Helyx.Session.ToolSourceTest do
           end,
           fn ->
             {:ok, ["g"]} = Helyx.Tool.announce(["g"]) && Helyx.Tool.put_tools("g", {:error, :x})
-          end
+          end,
+          fn -> Helyx.Tool.notice(<<"a", 255>>) end,
+          fn -> Helyx.Tool.notice(:text) end
         ] do
       {session, src} = start(core)
       monitor = Process.monitor(src)
@@ -184,7 +186,17 @@ defmodule Helyx.Session.ToolSourceTest do
     end
   end
 
+  test "a source's notice is an event with no turn id, cut to 2,000 bytes", %{core: core} do
+    {_session, src} = start(core)
+    send(src, {:do, self(), fn -> Helyx.Tool.notice("the config was refused") end})
+    assert notice() == "the config was refused"
+    send(src, {:do, self(), fn -> Helyx.Tool.notice(String.duplicate("é", 1_500)) end})
+    text = notice()
+    assert byte_size(text) == 2_000 and String.valid?(text)
+  end
+
   test "a call outside a source process exits" do
+    assert catch_exit(Helyx.Tool.notice("x")) == :not_a_tool_source
     assert catch_exit(Helyx.Tool.announce(["g"])) == :not_a_tool_source
     assert catch_exit(Helyx.Tool.put_tools("g", :starting)) == :not_a_tool_source
     assert catch_exit(Helyx.Tool.launch(fn -> :ok end)) == :not_a_tool_source

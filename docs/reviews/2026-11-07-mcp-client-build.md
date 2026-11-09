@@ -356,3 +356,24 @@ Probed with no finding: two live releases at once (the second gets the first's o
 Not reached: a real kill(1) missing from PATH (the code path is the raise of item 2), the failed-start cleanup through a real `Watchdog.start/4` with a reused number, the harness providers.
 
 Accepted: an abort during a bash timeout release of a command that traps TERM waits, in the hands' release, up to the lease of the killed timeout release, at most 15,500 ms from the timeout, inside the abort's 20,000 ms release deadline (row "wait of a release for a record that another release took").
+
+## Slice 9: MCP start and listing
+
+Invariant: each MCP server runs in its own server Task, which starts it under the watchdog with a deadline 30 s from the launch request, speaks the handshake and the paged listing within that deadline, and puts its tools as one deferred group; a server that fails its start, its protocol, or its life is failed alone, and the others keep running; no wait of the start has no bound; the server sees only the variables of decision 12 of the node; a listing of the server never passes 16 pages or 256 tools, and a bad tool is left out alone.
+
+Built with the slice: Core `Helyx.Tool.notice/1` (the doc's "Bounds" row "a notice text from a source" had no carrier), `:deadline` and `:unset` of `Helyx.Watchdog.start/4` (with a test-only `:watchdog_exe`), and `Helyx.Watchdog.Mask` out of `watchdog.ex` to keep it at 400 lines. A basic `tools/call` with its 60 s error result is in this slice, because its tests call a tool; the cancel and the restart of decision 14 are slice 10.
+
+### Round 1 (fast mode: Codex and the failure-path agent)
+
+| # | Source | Finding | Check | Resolution |
+| - | ------ | ------- | ----- | ---------- |
+| 1 | failure path | A tool whose `execution` is not an object crashed the server Task in the task-only check, so the whole server failed | reproduced | a pattern match; test "a tool of a bad shape is left out alone" |
+| 2 | failure path | Two MCP names that map to one Helyx name: the second was dropped with no notice, where decision 8 says Core refuses it with one | reproduced | both go to Core, which keeps the first with a notice; a call goes to the first; test "two MCP names that map to one name keep the first, with a notice of Core" |
+| 3 | failure path | A `nextCursor` that is not a string ended the listing quietly | reproduced | a contract break: the server is failed; test "a nextCursor that is not a string fails the server" |
+| 4 | failure path | A finished line could pass 16 MiB by one chunk, and each chunk split the whole buffer again | code reading | only the new chunk is searched for a line end, the part before waits as iodata, and a finished line over the bound fails the server |
+| 5 | Codex | A start timer before the hands' launch answer leaves the server Task and its watchdog running | read | rejected: the source kills the Task at the hands' answer (`Source.started/3`), the closed port ends the watchdog, and the hands release the Task's handles |
+| 6 | Codex | `JSON.encode!` of a `structuredContent` can raise and strand the other calls | read | rejected: the value came from the JSON decoder, so it encodes; a crash of the Task still answers every call through its monitor and fails the server through its exit |
+
+Probed with no finding: 16 pages pass and 17 fail; 300 tools keep 256 with a notice; a long multibyte description is cut on a character boundary; an `inputSchema` that is not an object is rejected by Core alone; 30 `list_changed` during the first listing give two listings 1,000 ms apart; calls run during a re-list that never answers, and the server fails at the bound; a server that exits during a call gives the error result; CRLF lines.
+
+Not built: the spec's cases of a `kill(1)` that stalls in the cleanup of a failed start (one server Task stalled while another lists; the source that dies during that stall) need a test hook of `kill(1)` inside `Helyx.Watchdog.start/4`. Each server Task runs its own start, so a stall holds only its Task, and the end of a stalled Task through its link to a dead source is tested in Core ("a source that dies ends its blocked server Task through the link").

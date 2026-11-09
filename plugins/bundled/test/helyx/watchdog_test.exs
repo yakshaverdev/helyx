@@ -320,4 +320,84 @@ defmodule Helyx.WatchdogTest do
       end
     end
   end
+
+  describe "the deadline of a start (docs/features/mcp-client.md, slice 9)" do
+    @late "the perl watchdog gave no marker before the deadline"
+
+    # A program in place of perl that writes `line` (with `$4`, the nonce)
+    # and then waits for the end of its stdin.
+    defp stall(dir, line) do
+      path = Path.join(dir, "stall-#{System.unique_integer([:positive])}")
+      File.write!(path, "#!/bin/sh\n#{line}\nread x\n")
+      File.chmod!(path, 0o755)
+      path
+    end
+
+    defp deadline(ms), do: System.monotonic_time(:millisecond) + ms
+
+    @tag :tmp_dir
+    test "a deadline that passes in the marker read closes the port and drops the hold", %{
+      tmp_dir: dir
+    } do
+      Helyx.Test.Hands.fake()
+      exe = stall(dir, "")
+      opts = [deadline: deadline(200), watchdog_exe: exe]
+      assert Helyx.Watchdog.start(["true"], dir, :open, opts) == {:error, @late}
+      # The program read the end of its stdin and is gone: the release
+      # confirmed it, and the hold is dropped.
+      assert Helyx.Test.Hands.held() == []
+    end
+
+    @tag :tmp_dir
+    test "a deadline that passes in the reason read closes the port", %{tmp_dir: dir} do
+      Helyx.Test.Hands.fake()
+      exe = stall(dir, ~S|echo "$4 0"|)
+      opts = [deadline: deadline(200), watchdog_exe: exe]
+      assert Helyx.Watchdog.start(["true"], dir, :open, opts) == {:error, @late}
+      assert Helyx.Test.Hands.held() == []
+    end
+
+    @tag :tmp_dir
+    test "a deadline that passes during the command hold never writes the go-ahead", %{
+      tmp_dir: dir
+    } do
+      test = self()
+      until = deadline(300)
+      hands = spawn_link(fn -> slow_hands(test, until) end)
+      Process.put(:helyx_hands, hands)
+      ran = Path.join(dir, "ran")
+      argv = ["sh", "-c", "touch #{ran}"]
+      assert Helyx.Watchdog.start(argv, dir, nil, deadline: until) == {:error, @late}
+      # Both groups stay held for the hands of the caller.
+      assert_received {:held, {:watchdog, _, _}}
+      assert_received {:held, {:command, group, _}}
+      # The watchdog held the command until the go-ahead, which never came,
+      # and the closed port ended it.
+      assert group_gone_within?(group)
+      refute File.exists?(ran)
+    end
+
+    test "with no deadline a start is as before" do
+      Helyx.Test.Hands.fake()
+      assert {:started, port, "", _handles} = Helyx.Watchdog.start(["true"], File.cwd!(), nil)
+      assert {"", 0} = collect(port, "")
+    end
+
+    # Hands that hold each handle and answer the hold of the command group
+    # only after `until`.
+    defp slow_hands(test, until) do
+      receive do
+        {:"$gen_call", from, {:hold, {:command, _, _} = handle}} ->
+          Process.sleep(max(until - System.monotonic_time(:millisecond) + 50, 0))
+          send(test, {:held, handle})
+          GenServer.reply(from, :ok)
+
+        {:"$gen_call", from, {:hold, handle}} ->
+          send(test, {:held, handle})
+          GenServer.reply(from, :ok)
+      end
+
+      slow_hands(test, until)
+    end
+  end
 end

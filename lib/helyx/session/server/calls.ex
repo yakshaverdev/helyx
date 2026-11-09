@@ -73,11 +73,14 @@ defmodule Helyx.Session.Server.Calls do
     end
   end
 
-  # `Helyx.Tool.announce/1` and `put_tools/2`, from a source process.
+  # `Helyx.Tool.announce/1`, `put_tools/2`, and `notice/1`, from a source process.
   def handle({:announce, _groups} = request, from, %State{} = state),
     do: source_call(request, from, state)
 
   def handle({:put_tools, _group, _value} = request, from, %State{} = state),
+    do: source_call(request, from, state)
+
+  def handle({:notice, _text} = request, from, %State{} = state),
     do: source_call(request, from, state)
 
   # `Helyx.Tool.deferred/2` and `activate/1`, from a tool call.

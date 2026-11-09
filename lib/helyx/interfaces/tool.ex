@@ -324,6 +324,16 @@ defmodule Helyx.Tool do
   def put_tools(group, value), do: source_call({:put_tools, group, value})
 
   @doc """
+  From a source process: the session emits `text`, valid UTF-8, as a
+  `:notice` event with no turn id, cut to 2,000 bytes, for what the source
+  learns outside its groups, such as a config that it refused
+  (`mcp-client.md`). Another value, and a call outside a source process,
+  exit the caller.
+  """
+  @spec notice(String.t()) :: :ok
+  def notice(text), do: source_call({:notice, text})
+
+  @doc """
   From a tool call or a hook: the sources' tools `version`, their deferred
   `entries` (`name`, `description`, `parameters`, `group`), the `activated`
   names, the `groups` (`group`, `state`, `tools` count), and the `pending`

@@ -48,6 +48,8 @@ defmodule Helyx.Session.Server.Sources do
   defp apply_call(registry, plugin, {:put_tools, group, value}),
     do: ToolRegistry.put(registry, plugin, group, value)
 
+  defp apply_call(registry, _plugin, {:notice, text}), do: ToolRegistry.notice(registry, text)
+
   # The waiting callers of `Helyx.Tool.deferred/2`: each a live Task of
   # the hands that holds a call context, of which at most 8 calls, 8 hooks,
   # and 16 background runs live at once. A waiter whose process ended goes
