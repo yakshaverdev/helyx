@@ -306,3 +306,35 @@ Codex approved. The failure-path agent compared HEAD's `tool.ex`, loaded under a
 | 4 | spec | No decode test of a non-string in `activated` | read | covered by the fixtures "tools_change: a name that is not a string" and "subscribe: activated with a name that is not a string" (`wire_fixtures_test.exs`) |
 
 No round reproduced a defect, so the loop ended.
+
+## The rebase on master `eeccca9c` (#860 client kit, #882 approval gate)
+
+Master still spoke protocol 5, so slice 4 stays protocol 6. The rebase resolved the TUI decoder (master's `model!/1` takes any string; the comments rewrap here, so it holds 398 lines) and the conformance fixtures: master's new cases in `server_frames.json` and `folds.json` get the snapshot field `activated` and the protocol numbers of 6. The Rust client kit of #860, which reads those fixtures, now speaks protocol 6: `PROTOCOL = 6`, the event `tools_change` (`EventData::ToolsChange`, a no-op of the fold) and the snapshot field `activated` (`check::strings/3`), and its tests and the stubs of the app name protocol 6; `client-kit.md` says so. `cargo fmt`, `clippy -D warnings`, and `cargo test --locked` pass.
+
+The local run of `plugins/bundled` `mix test --stale` fails 23 tests of `test/helyx/tui_test.exs` with the notice "15 skills were left out": this machine has 86 skills in `~/.agents/skills`, which `Helyx.Skills` reads from the real home folder. Not of this branch; the precommit host has no such folder.
+
+## Slice 7: MCP config
+
+Invariant: `Helyx.Tool.MCP.Config.read/1` gives the servers that start and the notice texts, with no process; a server passes only within every row of the config part of "Bounds"; a file that fails a check starts no server and gives one notice; no notice holds an env value or a raw control character, and none passes 2,000 bytes; `tool_name/2` gives a name of the tool name rule for every MCP name of a server of the name rule.
+
+Bounds sensor: 2 candidate functions, 0 flagged, 0 without an answer.
+
+### Round 1 (full, before the fast mode of 2026-11-09)
+
+Codex (2), standards (1 hard, 5 untested texts), spec (gaps of "one under" and four untested texts); the failure-path agent of that round was stopped with the run.
+
+| # | Source | Finding | Check | Resolution |
+| - | ------ | ------- | ----- | ---------- |
+| 1 | Codex | The path went into a file notice unescaped: a newline of the app env path reached the notice | read | `inspect/1` of the path |
+| 2 | Codex | The server checks sort every server of the file, not 16 | read | bounded by the 64 KiB file: stated as an accepted hole, and at the line |
+| 3 | standards | `Config.read(dir)` expected "not a regular file", but a folder of umask 002 gets "is writable by others" first | reproduced with a 0775 folder | the test sets the folder's mode |
+| 4 | spec, standards | No test of "one under" (65,535 bytes, a 15-byte name, a 4,095-byte and a 1-byte command, 63 args, 63 env pairs, a 127-byte env name, a 51-byte tool name), of a file that is not UTF-8, of a multibyte command over the bound, of the 64-byte cut of a name in a notice, of an unknown key in a server, of `path/0` | read; probes passed | a test each; `path/0` in its own module, `async: false`, as it sets the app env |
+
+### Round 2 (fast mode: the failure-path agent only, Codex having reviewed the slice)
+
+| # | Source | Finding | Check | Resolution |
+| - | ------ | ------- | ----- | ---------- |
+| 5 | failure path | A long or escaped path (a path of 2,000 bytes, or one of about 450 bytes that is not UTF-8) pushed the reason and "no MCP server starts" past the 2,000-byte cut | reproduced | the reason comes before the path; test "the notice of a long path keeps its reason" |
+| 6 | failure path | A file swapped between the stat and the open (a FIFO, a group-writable file) | code reading | accepted hole, as for every bounded read of `Helyx.Text.read_file/2` |
+
+Probed with no finding: deep JSON nesting, huge numbers, lone surrogates, C1 controls and bidi characters in names (escaped), devices and symlinks, a file that grows during the read, about 8,000 random tool names (all of the rule).
