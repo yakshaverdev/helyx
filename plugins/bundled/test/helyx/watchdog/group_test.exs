@@ -119,11 +119,22 @@ defmodule Helyx.Watchdog.GroupTest do
 
   test "a group that stays to the deadline does not keep the handles of gone groups" do
     handles = [command: 7, watchdog: 6, command: 9, watchdog: 8, command: 11, watchdog: 10]
-    kill = fake_kill([7])
+    assert release_probed(handles, 300) == [command: 7]
+  end
 
-    assert Group.release(handles, :cancel, deadline(300), grace_ms: 5_000, kill: kill) == [
-             command: 7
-           ]
+  # A release whose first probes all ran before the deadline. A test
+  # process that is late past the deadline skips them, and a skipped probe
+  # keeps its group held: that run proves nothing, so it runs again with
+  # twice the room, up to `@load_ms`.
+  defp release_probed(handles, ms) do
+    held = Group.release(handles, :cancel, deadline(ms), grace_ms: 5_000, kill: fake_kill([7]))
+    probed = for {["-0", "--", target], _at} <- runs(), uniq: true, do: target
+
+    cond do
+      length(probed) == length(handles) -> held
+      ms < @load_ms -> release_probed(handles, ms * 2)
+      true -> flunk("the first probes did not run within #{ms} ms")
+    end
   end
 
   test "a group below 2 is never signalled" do

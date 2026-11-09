@@ -128,9 +128,34 @@ defmodule Helyx.Tool.BashTest do
     refute File.exists?(Path.join(dir, "ran"))
   end
 
+  # The start drops the watchdog hold when its release confirms the watchdog
+  # gone, so the release returns no handle. A release past its deadline
+  # (`Helyx.Watchdog.gone_ms/0`), such as one of a caller that the load
+  # made late, skips the probe and returns the handle, which stays held for
+  # the release of the hands (tool-resource-release.md). The return trace
+  # of the release gives its answer.
   test "a start that did not start the command leaves no held handle (#802)", %{tmp_dir: dir} do
+    test = self()
+    tracer = spawn_link(fn -> forward(test) end)
+    match = [{:_, [], [{:return_trace}]}]
+    Code.ensure_loaded!(Helyx.Watchdog.Group)
+    1 = :erlang.trace_pattern({Helyx.Watchdog.Group, :release, 4}, match, [:local])
+    1 = :erlang.trace(self(), true, [:call, {:tracer, tracer}])
     assert {:error, _} = Helyx.Tool.Bash.run(%{"command" => "pwd"}, Path.join(dir, "gone"))
-    assert Helyx.Test.Hands.held() == []
+    1 = :erlang.trace(self(), false, [:call])
+    :erlang.trace_pattern({Helyx.Watchdog.Group, :release, 4}, false, [:local])
+
+    assert_receive {:trace, ^test, :return_from, {Helyx.Watchdog.Group, :release, 4}, left}
+    assert Helyx.Test.Hands.held() == left
+    for {:watchdog, group} <- left, do: assert(group_gone_within?(group, 0))
+  end
+
+  defp forward(pid) do
+    receive do
+      message -> send(pid, message)
+    end
+
+    forward(pid)
   end
 
   test "an empty working directory is the same error (issue #52)" do
