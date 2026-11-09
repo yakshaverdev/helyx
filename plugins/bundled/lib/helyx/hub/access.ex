@@ -122,8 +122,9 @@ defmodule Helyx.Hub.Access do
   # session that exists, or nil: the header of its file for a Core with a
   # data folder, and the live list for a session that runs with no file, or
   # for a Core with none. A Core with a data folder runs the find for every
-  # id, and one with none reads the live list for every id, so the time of
-  # the answer does not tell a refused session from a missing one. The find
+  # id, and one with none reads the live list for every id; only a running
+  # session whose file is gone adds the read of the live list (hub.md,
+  # Accepted holes, "The time of a refusal"). The find
   # runs in a Task with a deadline, since Core bounds neither the project
   # folders nor their files: a find that does not end in time finds
   # nothing. Every value, from the disk or from Core, passes one check: a

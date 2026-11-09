@@ -136,6 +136,48 @@ defmodule Helyx.Hub.SavedTest do
     assert MapSet.new(ids) == MapSet.new(owners ++ [shared])
   end
 
+  # Access tests (hub.md): the pages of a user do not depend on the private
+  # sessions of another user. The 257 rows of ann, newer than every session
+  # of bob, are written to the store as the result of a start writes them.
+  test "the pages of a user equal its pages with no private sessions of another, every limit",
+       context do
+    [one, two] = context.folders
+    {:ok, %{id: ann}} = Hub.add_user(context.hub, "ann")
+    bob = user(context, "bob")
+    _bobs = for cwd <- [one, two, one], do: session(bob, cwd)
+
+    all_pages = fn ->
+      for extra <- [%{}, %{"cwd" => one}], limit <- 1..256, do: pages(bob, limit, extra)
+    end
+
+    before = all_pages.()
+    %{store: store, db: db} = :sys.get_state(context.hub)
+    now = System.os_time(:second)
+
+    for n <- 1..257 do
+      id = Base.url_encode64(<<n::72>>, padding: false)
+
+      row = %{
+        session_id: id,
+        owner: ann,
+        project_id: nil,
+        title: "",
+        cwd: if(rem(n, 2) == 0, do: one, else: two),
+        model: "fake/echo",
+        prompt: "",
+        active_at: now + 1_000 + n,
+        visibility: "private",
+        archived: false,
+        created_at: now,
+        updated_at: now
+      }
+
+      :ok = store.put_record(db, row, 10_000, :infinity)
+    end
+
+    assert all_pages.() == before
+  end
+
   test "resume of a folder: the newest session of the folder that the user owns", context do
     [one, two] = context.folders
     ann = user(context, "ann")
