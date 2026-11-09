@@ -351,7 +351,7 @@ defmodule Helyx.TUI do
   defp layout(_state, {:error, _reason}), do: nil
 
   defp middle_rows(%{list: %SessionList{} = list}, _width, room), do: SessionList.rows(list, room)
-  defp middle_rows(%{question: %Question{} = q}, width, room), do: Question.rows(q, width, room)
+  defp middle_rows(%{question: q}, width, room) when q != nil, do: Question.rows(q, width, room)
   defp middle_rows(%{composer: composer}, _width, room), do: Composer.rows(composer, room)
 
   # Scroll position

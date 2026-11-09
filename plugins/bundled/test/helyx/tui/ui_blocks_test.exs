@@ -197,7 +197,7 @@ defmodule Helyx.TUI.UIBlocksTest do
     end
 
     test "a kind that the TUI does not know shows its text under its call and gets no picker" do
-      unknown = ask("u", "gate", %{"kind" => "approval", "text" => "allow rm?", "action" => "rm"})
+      unknown = ask("u", "gate", %{"kind" => "confirm", "text" => "allow rm?", "action" => "rm"})
       assert picked([unknown]) == nil
       assert %Question{ask_id: "f"} = picked([unknown, ask("f", "question", form())])
 
