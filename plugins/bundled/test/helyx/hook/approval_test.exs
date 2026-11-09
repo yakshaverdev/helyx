@@ -168,6 +168,14 @@ defmodule Helyx.Hook.ApprovalTest do
       assert byte_size(request["arguments"]) == bytes
     end
 
+    test "a cut of the arguments that splits a character drops it" do
+      # `{"kk":"` is 7 bytes, so the cut at 16,384 splits an é.
+      request = Approval.request(call("t", nil, %{"kk" => String.duplicate("é", 8_200)}))
+      assert request["cut"] == true
+      assert byte_size(request["arguments"]) == Approval.max_arguments_bytes() - 1
+      assert String.valid?(request["arguments"])
+    end
+
     test "the largest request is a UI block under the bound of an ask" do
       # Each byte a control character, six bytes of JSON; each byte of the
       # arguments text a quote, two.
@@ -280,6 +288,23 @@ defmodule Helyx.Hook.ApprovalTest do
                {true,
                 "the hook Helyx.Hook.Approval failed: its config :approval_hook is invalid: " <>
                   "[:approval_hook, :default]; the call was not run"}
+    end
+  end
+
+  describe "the reply of the ask" do
+    # The session gives `:not_running` when the result of the call joins
+    # the transcript while the gate asks, as at a taken steer
+    # (docs/features/ui-blocks.md); the provider that does it is a test
+    # plugin of Core, so the answer to each reply is tested here.
+    test "each reply of Helyx.Hook.ask/1 gives its answer" do
+      assert Approval.asked({:ok, %{"decision" => "allow"}}) ==
+               {:allow, "the user allowed the call"}
+
+      assert Approval.asked({:ok, %{"decision" => "deny"}}) == {:deny, "the user denied the call"}
+      assert Approval.asked({:error, :not_running}) == {:deny, "the call no longer runs"}
+
+      assert {:deny, "no user can approve the call in this run" <> _} =
+               Approval.asked({:error, :no_client})
     end
   end
 

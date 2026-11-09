@@ -54,3 +54,22 @@ Not reached by the failure-path budget: harness approvals from the Codex or Clau
 ## State at the commit
 
 The `/ship` limit of 45 minutes of work was reached after round 1. The commit holds the code as round 1 reviewed it; no fix after round 1 is in it. Findings 1 and 3 to 11 are open for the next worker.
+
+## After round 1: the decisions of the orchestrator
+
+The orchestrator decided the open items (logged for the owner), with no review round: the Codex gate of `/orchestrate` follows.
+
+| # | Resolution |
+|---|---|
+| 1 | Fixed. `Helyx.TUI.Approval.body/3` gives the room first to the dim row and the options, then to the arguments rows, and decides the dim row after it cuts the rows to the room. `rows/3` asks for at least 5 rows. Where the layout of a short screen gives the picker fewer, the options share one line, and with one row inside the box the dim row joins it. Tests: `tui/approval_test.exs` "a short screen marks what it hides and shows both options" (the probe of round 1 at heights 5 to 12 of an 80-column screen, 80x8 included), "with 3 to 5 rows of room the picker takes 5…", "with fewer rows than 3 inside, the options share one line" |
+| 3 | Fixed. The doc names `default: :allow` with no rule as the flag of a sandboxed run; "No other flag" is gone |
+| 4 | Fixed. A bounds row for the title (1,024 bytes); tests at 1,024 and 1,025 bytes and with a split character; tests at exactly 8 and 9 rows |
+| 5 | Fixed. `Helyx.Hook.Approval.asked/1` is public (`@doc false`), and a test checks the answer to each reply, `:not_running` included. The session reaches it when the result of the call joins the transcript while the gate asks; the provider that sends such a result in tests is a test plugin of the root project, which the bundled tests cannot use |
+| 6 | Fixed. "Replaced mechanism", item 4 |
+| 7 | Fixed. "An unset env key, and a key that the list leaves out, give the default" |
+| 8 | Fixed. "at most twice that in a frame" |
+| 9 | Fixed. Tests: Escape over the approval picker, the dim row drawn for `cut: true`, a cut of the arguments that splits a character |
+| 10 | Kept, as round 1 says |
+| 11 | Fixed. The doc cites `docs/research/coding-tools.md` |
+
+One run of `mix test test/helyx/hook/ test/helyx/tui/` in `plugins/bundled` had one failure whose name the cut output did not keep; three more runs of those folders and six runs of the two approval test files had none.

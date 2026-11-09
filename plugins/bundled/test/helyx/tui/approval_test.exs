@@ -133,6 +133,32 @@ defmodule Helyx.TUI.ApprovalTest do
       assert length(rows) == 8
       state |> press("n") |> ended()
     end
+
+    # The failure-path probe of round 1: the tail of the path is shown, or
+    # the dim row marks it, and both options show, at every height.
+    test "a short screen marks what it hides and shows both options", %{core: core, tmp_dir: dir} do
+      state = asked(core, dir, String.duplicate("a", 150) <> "_TAIL_rm_rf")
+
+      # A room of 3 to 5 rows is a height of 5 to 7: the footer has 2.
+      for height <- 5..12 do
+        text = screen(state, 80, height)
+        box = text |> String.split("\n") |> Enum.filter(&(&1 =~ "│")) |> Enum.join("\n")
+        assert box =~ "Allow  (y)", "height #{height}: #{text}"
+        assert box =~ "Deny  (n)", "height #{height}: #{text}"
+        assert box =~ "_TAIL_rm_rf" or box =~ "… more arguments", "height #{height}: #{text}"
+      end
+
+      text = screen(state, 80, 8)
+      assert text =~ "… more arguments"
+      refute text =~ "│{\"path\""
+      state |> press("n") |> ended()
+    end
+
+    test "Escape aborts the turn, and the call does not run", %{core: core, tmp_dir: dir} do
+      state = asked(core, dir) |> press("esc") |> ended()
+      assert state.question == nil
+      refute result(state) =~ "the file"
+    end
   end
 
   describe "the choice of the picker" do
@@ -239,6 +265,87 @@ defmodule Helyx.TUI.ApprovalTest do
       refute shown =~ "\n"
       refute shown =~ "\e"
       assert byte_size(shown) <= 1_024
+    end
+
+    test "the title is cut at 1,024 bytes, at a character boundary" do
+      at = String.duplicate("t", 1_024)
+      assert %Approval{title: ^at} = picked([ask("x", approval(%{"text" => at}))])
+      assert %Approval{title: ^at} = picked([ask("x", approval(%{"text" => at <> "u"}))])
+
+      # 1,025 bytes whose last character the cut splits.
+      split = "t" <> String.duplicate("é", 512)
+      kept = "t" <> String.duplicate("é", 511)
+      assert %Approval{title: ^kept} = picked([ask("x", approval(%{"text" => split}))])
+    end
+  end
+
+  describe "the layout of the picker" do
+    # The picker of an approval with `arguments` drawn in a box of `width`
+    # and `height`, as text.
+    defp draw(fields, width, height) do
+      request =
+        Map.merge(
+          %{"kind" => "approval", "text" => "allow bash?", "tool" => "bash", "arguments" => ""},
+          fields
+        )
+
+      picker = Approval.new(%{ask_id: "x", request: request})
+      area = %ExRatatui.Layout.Rect{x: 0, y: 0, width: width, height: height}
+      terminal = ExRatatui.init_test_terminal(width, height)
+      :ok = ExRatatui.draw(terminal, Approval.widgets(picker, area))
+      {picker, ExRatatui.get_buffer_content(terminal)}
+    end
+
+    defp body_rows(text), do: text |> String.split("\n") |> Enum.filter(&(&1 =~ "│x"))
+
+    # The box is 80 wide, so a row holds 78 characters.
+    test "8 rows show with no dim row; 9 show 8 and the dim row" do
+      {_picker, text} = draw(%{"arguments" => String.duplicate("x", 78 * 8)}, 80, 20)
+      assert length(body_rows(text)) == 8
+      refute text =~ "… more arguments"
+
+      {_picker, text} = draw(%{"arguments" => String.duplicate("x", 78 * 8 + 1)}, 80, 20)
+      assert length(body_rows(text)) == 8
+      assert text =~ "… more arguments"
+    end
+
+    test "a request with cut true draws the dim row" do
+      {_picker, text} = draw(%{"arguments" => "x", "cut" => true}, 80, 20)
+      assert length(body_rows(text)) == 1
+      assert text =~ "… more arguments"
+    end
+
+    test "with 3 to 5 rows of room the picker takes 5: the dim row and both options" do
+      {picker, _text} = draw(%{"arguments" => String.duplicate("x", 500)}, 80, 5)
+
+      for room <- 3..5 do
+        assert Approval.rows(picker, 80, room) == 5
+      end
+
+      {_picker, text} = draw(%{"arguments" => String.duplicate("x", 500)}, 80, 5)
+      assert body_rows(text) == []
+      assert text =~ "… more arguments"
+      assert text =~ "Allow  (y)"
+      assert text =~ "Deny  (n)"
+
+      # One row that fits shows with no dim row.
+      {_picker, text} = draw(%{"arguments" => "x"}, 80, 5)
+      assert length(body_rows(text)) == 1
+      refute text =~ "… more arguments"
+    end
+
+    test "with fewer rows than 3 inside, the options share one line" do
+      {_picker, text} = draw(%{"arguments" => String.duplicate("x", 500)}, 80, 4)
+      assert text =~ "│… more arguments"
+      assert text =~ "│› Allow  (y)    Deny  (n)"
+
+      # One row that fits shows beside the options.
+      {_picker, text} = draw(%{"arguments" => "x"}, 80, 4)
+      assert length(body_rows(text)) == 1
+      refute text =~ "… more arguments"
+
+      {_picker, text} = draw(%{"arguments" => "x"}, 80, 3)
+      assert text =~ "│… more arguments  › Allow  (y)    Deny  (n)"
     end
   end
 end

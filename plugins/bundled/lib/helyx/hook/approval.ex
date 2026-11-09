@@ -86,16 +86,17 @@ defmodule Helyx.Hook.Approval do
   defp name(%{tool: tool, provider: nil}), do: tool
   defp name(%{tool: tool, provider: provider}), do: "#{tool} of #{provider}"
 
-  # The answer for the reply of `Helyx.Hook.ask/1`.
-  defp asked({:ok, answer}) when answer == %{"decision" => "allow"},
+  @doc false
+  # The answer for the reply of `Helyx.Hook.ask/1`; public for the tests.
+  def asked({:ok, answer}) when answer == %{"decision" => "allow"},
     do: {:allow, "the user allowed the call"}
 
-  defp asked({:ok, answer}) when answer == %{"decision" => "deny"},
+  def asked({:ok, answer}) when answer == %{"decision" => "deny"},
     do: {:deny, "the user denied the call"}
 
-  defp asked({:ok, _other}), do: {:deny, "the answer of the client was not an allow or a deny"}
-  defp asked({:error, :no_client}), do: {:deny, @no_client}
-  defp asked({:error, :not_running}), do: {:deny, "the call no longer runs"}
+  def asked({:ok, _other}), do: {:deny, "the answer of the client was not an allow or a deny"}
+  def asked({:error, :no_client}), do: {:deny, @no_client}
+  def asked({:error, :not_running}), do: {:deny, "the call no longer runs"}
 
   @doc false
   # The `approval` UI block of `call` (docs/features/ui-blocks.md).
