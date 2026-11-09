@@ -151,9 +151,13 @@ defmodule CodingAgent.AttachTest do
 
     wait_until(fn -> match?({:ok, "{" <> _}, File.read(file)) end)
 
-    for model <- ["older/m", "newest/m"] do
+    # The server runs a Hub, whose newest session of a folder is the newest
+    # file time, in seconds (docs/features/hub.md, decision 7): the older
+    # file is a minute older.
+    for {model, age} <- [{"older/m", 60}, {"newest/m", 0}] do
       {:ok, session} = Helyx.Session.File.create(sessions, Helyx.Session.Id.new(), dir, model)
       Helyx.Test.SessionFile.append_message(session, Helyx.Message.user("p"))
+      File.touch!(session.path, System.os_time(:second) - age)
     end
 
     # A session with no message is not picked, as for --resume.
