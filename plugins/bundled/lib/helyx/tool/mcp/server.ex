@@ -1,34 +1,23 @@
 defmodule Helyx.Tool.MCP.Server do
   @moduledoc false
   # The server Task of one MCP server (`docs/features/mcp-client.md`,
-  # "Helyx.Tool.MCP"): it starts the server under `Helyx.Watchdog` with the
-  # start deadline, owns its port, and speaks JSON-RPC 2.0 lines on its
-  # stdio: `initialize`, `notifications/initialized`, `tools/list` with its
-  # pages, then calls, the answers to the server's requests, and a listing
-  # again at each `notifications/tools/list_changed`. It sends its source
+  # "Helyx.Tool.MCP"): it starts the server (`Helyx.Tool.MCP.Launch`), owns
+  # its port, and speaks JSON-RPC 2.0 lines on its stdio: the handshake,
+  # the paged `tools/list`, calls, the answers to the server's requests,
+  # and a listing again at each `list_changed`. It sends its source
   # `{:handles, pid, handles}` after the start, `{:listed, pid, entries,
   # notices}` for each listing, `{:failed, pid, text}` before it ends on a
   # failure, and `{:restart, pid}` before it ends for a call that ended
   # with no response (decision 14). Either end is of this Task only; the
   # hands release its groups (decision 15).
 
-  alias Helyx.Tool.MCP.{Config, Result}
+  alias Helyx.Tool.MCP.{Config, Launch, Lines, Listing, Result}
 
   @protocol "2025-06-18"
   @versions ["2024-11-05", "2025-03-26", "2025-06-18", "2025-11-25"]
-  # A line from the server, as `Helyx.HarnessIO`: past it the client cannot
-  # tell which request the line answers.
-  @max_line_bytes 16 * 1024 * 1024
   @max_pages 16
-  @max_tools 256
-  @max_description_bytes 4_096
-  # The wait for a server's exit after the end of its input, before the
-  # signals, as `Helyx.HarnessIO` waits for a harness program.
-  @end_wait_ms 1_000
   # The least time from the start of one listing to the next.
   @list_gap_ms 1_000
-  # The variables of the node that a server gets (decision 12).
-  @keep ~w(HOME LOGNAME PATH SHELL TERM USER TMPDIR LANG)
 
   defstruct [
     :config,
@@ -36,8 +25,7 @@ defmodule Helyx.Tool.MCP.Server do
     :port,
     :wait_ms,
     :call_ms,
-    buffer: [],
-    buffered: 0,
+    buffer: Lines.new(),
     next_id: 1,
     pending: %{},
     list: nil,
@@ -48,8 +36,7 @@ defmodule Helyx.Tool.MCP.Server do
 
   # The whole life of the server: start, handshake, listing, then serve.
   # `opts`: `:wait_ms`, the bound of a start and of a listing; `:call_ms`,
-  # the time limit of a call, for its text;
-  # `:watchdog_exe`, for tests.
+  # the time limit of a call, for its text; `:watchdog_exe`, for tests.
   def run(%Config{} = config, source, cwd, deadline, opts) do
     state = %__MODULE__{
       config: config,
@@ -58,7 +45,7 @@ defmodule Helyx.Tool.MCP.Server do
       call_ms: Keyword.fetch!(opts, :call_ms)
     }
 
-    case Helyx.Watchdog.start(argv(config), cwd, :open, start_opts(config, deadline, opts)) do
+    case Launch.start(config, cwd, deadline, opts) do
       {:started, port, _pre, handles} ->
         send(source, {:handles, self(), handles})
         handshake(%{state | port: port}, deadline)
@@ -66,18 +53,6 @@ defmodule Helyx.Tool.MCP.Server do
       {:error, reason} ->
         fail(state, "did not start: " <> reason)
     end
-  end
-
-  defp argv(config),
-    do: ["/bin/sh", "-c", ~S(exec "$0" "$@" 2>/dev/null), config.command | config.args]
-
-  # The server gets the variables of `@keep` of the node and the `env` of
-  # its config; every other variable of the node is unset for it.
-  defp start_opts(config, deadline, opts) do
-    unset = for {name, _value} <- System.get_env(), name not in @keep, do: name
-    unset = Enum.reject(unset, &Map.has_key?(config.env, &1))
-    exe = for {:watchdog_exe, exe} <- opts, do: {:watchdog_exe, exe}
-    [env: Map.to_list(config.env), unset: unset, deadline: deadline] ++ exe
   end
 
   defp handshake(state, deadline) do
@@ -154,33 +129,16 @@ defmodule Helyx.Tool.MCP.Server do
 
   # Lines
 
-  # Only the new chunk is searched for a line end; the part of a line
-  # before it waits as iodata, so a long line costs its length once.
   defp data(state, data) do
-    case :binary.split(data, "\n", [:global]) do
-      [part] ->
-        buffered(%{
-          state
-          | buffer: [state.buffer | part],
-            buffered: state.buffered + byte_size(part)
-        })
-
-      [first | more] ->
-        {lines, [rest]} = Enum.split(more, -1)
-        first = IO.iodata_to_binary([state.buffer | first])
-        state = buffered(%{state | buffer: rest, buffered: byte_size(rest)})
-        Enum.reduce([first | lines], state, &line/2)
+    case Lines.add(state.buffer, data) do
+      {lines, buffer} -> Enum.reduce(lines, %{state | buffer: buffer}, &line/2)
+      :too_long -> too_long(state)
     end
   end
 
-  defp buffered(%{buffered: size} = state) when size > @max_line_bytes, do: too_long(state)
-  defp buffered(state), do: state
-
-  defp too_long(state), do: fail(state, "a line over #{@max_line_bytes} bytes")
+  defp too_long(state), do: fail(state, "a line over #{Lines.max_bytes()} bytes")
 
   # A line that is not a JSON object is skipped, as `Helyx.HarnessIO` does.
-  defp line(text, state) when byte_size(text) > @max_line_bytes, do: too_long(state)
-
   defp line(text, state) do
     case Helyx.JSON.decode(text) do
       {:ok, %{} = message} -> message(message, state)
@@ -207,18 +165,11 @@ defmodule Helyx.Tool.MCP.Server do
   defp message(%{"id" => id} = message, state) do
     case Map.pop(state.pending, id) do
       {nil, _pending} -> state
-      {kind, pending} -> answer(kind, id, reply(message), %{state | pending: pending})
+      {kind, pending} -> answer(kind, id, Result.reply(message), %{state | pending: pending})
     end
   end
 
   defp message(_message, state), do: state
-
-  defp reply(%{"result" => result}), do: {:ok, result}
-
-  defp reply(%{"error" => %{"message" => text}}) when is_binary(text),
-    do: {:error, Helyx.Text.cap(text, 2_000, :head)}
-
-  defp reply(_message), do: {:error, "an answer with no result"}
 
   defp answer(:await, id, reply, state), do: put_in(state.pending[{:await, id}], reply)
 
@@ -226,13 +177,7 @@ defmodule Helyx.Tool.MCP.Server do
     Process.cancel_timer(timer)
     Process.demonitor(monitor, [:flush])
 
-    result =
-      case reply do
-        {:ok, result} -> Result.text(result)
-        {:error, text} -> {:error, "the MCP server answered an error: " <> text}
-      end
-
-    send(pid, {ref, result})
+    send(pid, {ref, Result.call(reply)})
     state
   end
 
@@ -318,7 +263,7 @@ defmodule Helyx.Tool.MCP.Server do
   end
 
   defp listed(state) do
-    {entries, names, notices} = entries(state.config.name, state.list.tools)
+    {entries, names, notices} = Listing.entries(state.config.name, state.list.tools)
     send(state.source, {:listed, self(), entries, notices})
     state = %{state | list: nil, names: names}
 
@@ -326,53 +271,6 @@ defmodule Helyx.Tool.MCP.Server do
       do: queue(state, max(state.listed_at + @list_gap_ms - now(), 0)),
       else: state
   end
-
-  # The tools of a listing as entries, deferred: task-only tools left out,
-  # the first 256 by MCP name order. Two MCP names that map to one Helyx
-  # name both go to Core, which keeps the first with a notice (decision 8);
-  # a call of that name goes to the first.
-  defp entries(server, tools) do
-    tools = for %{"name" => name} = tool when is_binary(name) <- tools, do: tool
-
-    {tasks, tools} =
-      Enum.split_with(tools, &match?(%{"execution" => %{"taskSupport" => "required"}}, &1))
-
-    {kept, over} = tools |> Enum.sort_by(& &1["name"]) |> Enum.split(@max_tools)
-
-    named = Enum.map(kept, &{Config.tool_name(server, &1["name"]), &1})
-
-    entries =
-      for {name, tool} <- named do
-        %{
-          name: name,
-          description: description(tool["description"]),
-          parameters: if(is_map(tool["inputSchema"]), do: tool["inputSchema"], else: %{}),
-          exposure: :deferred
-        }
-      end
-
-    notices =
-      for {count, why} <- [
-            {length(tasks), "they need tasks"},
-            {length(over), "past #{@max_tools} tools"}
-          ],
-          count > 0,
-          do: "MCP server #{server}: #{count} tools were left out: #{why}"
-
-    names =
-      named |> Enum.uniq_by(&elem(&1, 0)) |> Map.new(fn {name, tool} -> {name, tool["name"]} end)
-
-    {entries, names, notices}
-  end
-
-  # A description at most 4,096 bytes, cut at a character boundary.
-  defp description(text) when is_binary(text),
-    do:
-      text
-      |> binary_part(0, min(byte_size(text), @max_description_bytes))
-      |> String.replace_invalid("")
-
-  defp description(_text), do: ""
 
   # Calls
 
@@ -465,18 +363,7 @@ defmodule Helyx.Tool.MCP.Server do
       params: %{requestId: id, reason: "the call ended with no response"}
     })
 
-    # The shutdown of MCP over stdio: the end of the server's input, a wait
-    # for its exit, then the signals, which the watchdog sends when the
-    # port closes with this Task's end.
-    Helyx.Watchdog.write(state.port, <<0>>)
-    port = state.port
-
-    receive do
-      {^port, {:exit_status, _status}} -> :ok
-    after
-      @end_wait_ms -> :ok
-    end
-
+    Launch.shutdown(state.port)
     exit(:normal)
   end
 

@@ -6,6 +6,18 @@ defmodule Helyx.Tool.MCP.Result do
   # block, the JSON of `structuredContent`. Blocks join with a newline.
   # `isError: true` gives `{:error, text}`. The hands cut the text.
 
+  # A JSON-RPC answer: its result, or its error text, cut.
+  def reply(%{"result" => result}), do: {:ok, result}
+
+  def reply(%{"error" => %{"message" => text}}) when is_binary(text),
+    do: {:error, Helyx.Text.cap(text, 2_000, :head)}
+
+  def reply(_message), do: {:error, "an answer with no result"}
+
+  # The result of a call from the answer to its `tools/call`.
+  def call({:ok, result}), do: text(result)
+  def call({:error, text}), do: {:error, "the MCP server answered an error: " <> text}
+
   def text(%{} = result) do
     text =
       case result["content"] do
