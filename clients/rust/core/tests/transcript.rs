@@ -3,7 +3,7 @@
 mod common;
 use common::j;
 use helyx_client_core::message::Message;
-use helyx_client_core::transcript::{Row, rows};
+use helyx_client_core::transcript::{Row, open_calls, rows};
 use serde_json::json;
 
 fn message(value: serde_json::Value) -> Message {
@@ -80,4 +80,22 @@ fn a_result_with_no_open_call_is_an_orphan() {
         shape(&messages),
         ["o:r0", "m:a1", "c:c1=r1", "o:r2", "o:r3", "o:r4"]
     );
+}
+
+#[test]
+fn a_block_of_a_call_shows_under_the_oldest_open_call_of_its_id() {
+    let assistant = |id: &str| {
+        message(json!({"id": id, "role": "assistant", "content": [call("c1"), call("c2")]}))
+    };
+    let messages = [
+        assistant("a1"),
+        result("r1", Some("c1")),
+        assistant("a2"),
+        assistant("a3"),
+    ];
+    // m:a1 c:c1=r1 c:c2=- m:a2 c:c1=- c:c2=- m:a3 c:c1=- c:c2=-
+    let open = open_calls(&rows(&messages));
+    assert_eq!(open.get("c1"), Some(&4));
+    assert_eq!(open.get("c2"), Some(&2));
+    assert_eq!(open.get("c9"), None);
 }

@@ -57,3 +57,21 @@ pub fn rows(messages: &[Message]) -> Vec<Row<'_>> {
     }
     rows
 }
+
+/// The row of the oldest open call of each call id: a call with no result.
+/// A UI block of a call, and an ask of a call, show under that row; one whose
+/// call has no open row shows at the end of the turn, as in the TUI
+/// (`docs/features/ui-blocks.md`, "Rendering in the TUI").
+pub fn open_calls<'a>(rows: &[Row<'a>]) -> HashMap<&'a str, usize> {
+    let mut open = HashMap::new();
+    for (at, row) in rows.iter().enumerate() {
+        if let Row::Call {
+            call: Block::ToolCall { id, .. },
+            result: None,
+        } = row
+        {
+            open.entry(id.as_str()).or_insert(at);
+        }
+    }
+    open
+}
