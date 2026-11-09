@@ -120,11 +120,12 @@ defmodule Helyx.Test.WireClient do
     end
   end
 
-  # Each frame of the server until a `res` with `id`.
+  # Each frame of the server until a `res` with `id`. A ping of the server,
+  # each 15,000 ms, is skipped.
   def res(socket, id) do
     case recv(socket) do
       {:frame, %{"type" => "res", "id" => ^id} = res} -> res
-      {:frame, _other} -> res(socket, id)
+      {tag, _other} when tag in [:frame, :ping] -> res(socket, id)
       other -> other
     end
   end

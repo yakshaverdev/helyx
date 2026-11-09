@@ -1,4 +1,4 @@
-//! The server frames of protocol 5 after the handshake: `res`, `event`, and
+//! The server frames of protocol 6 after the handshake: `res`, `event`, and
 //! `session_end`, each checked by the schema of `docs/features/wire-protocol.md`.
 //! A `res` is read by the op of its request, which the caller keeps by `id`.
 
@@ -112,6 +112,12 @@ const ERROR_CODES: &[&str] = &[
     "text_too_large",
     "invalid_answer",
     "not_waiting",
+    // The codes of a Hub (protocol 6, `docs/features/hub.md`).
+    "forbidden",
+    "too_many_records",
+    "too_many_projects",
+    "unknown_project",
+    "unknown_token",
 ];
 
 /// Checks a frame after `welcome`. `op_of` gives the op of the request with

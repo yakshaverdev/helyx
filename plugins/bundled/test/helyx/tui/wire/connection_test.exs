@@ -566,7 +566,7 @@ defmodule Helyx.TUI.Wire.ConnectionTest do
 
   # Subscribes behind a steer that the server does not read pass their
   # deadlines, the call timeout of the server, 6,000 ms, and the margin,
-  # 5,000 ms; the server then replies to them before it reads them. The
+  # 15,000 ms; the server then replies to them before it reads them. The
   # unsubscribe of each late reply waits for a place among the 16 request
   # frames, and goes out when the writer frees one.
   @tag :slow
@@ -597,7 +597,7 @@ defmodule Helyx.TUI.Wire.ConnectionTest do
     steer = Task.async(fn -> Connection.steer(conn, "s1", String.duplicate("a", 16_777_216)) end)
     assert_receive :writing
     subscribes = for _id <- ids, do: Task.async(fn -> Connection.subscribe(conn, "s1") end)
-    for task <- subscribes, do: assert(Task.await(task, 20_000) == {:error, :timeout})
+    for task <- subscribes, do: assert(Task.await(task, 30_000) == {:error, :timeout})
 
     send(server, :reply)
     wait_until(fn -> map_size(:sys.get_state(conn).subs) == length(ids) end)
@@ -766,9 +766,9 @@ defmodule Helyx.TUI.Wire.ConnectionTest do
   end
 
   # The client waits for the subscribe the call timeout of the server,
-  # 6,000 ms, and its margin, 5,000 ms.
+  # 6,000 ms, and its margin, 15,000 ms.
   @tag :slow
-  @tag timeout: 30_000
+  @tag timeout: 60_000
   test "a late subscribe reply is dropped: its subscription ends with unsubscribe" do
     test = self()
 
@@ -801,7 +801,7 @@ defmodule Helyx.TUI.Wire.ConnectionTest do
   end
 
   @tag :slow
-  @tag timeout: 30_000
+  @tag timeout: 60_000
   test "a late reply of a broken shape is a contract break, a snapshot with a broken message too" do
     test = self()
     user = %{Message.user("hi", %{kind: :user, id: nil}) | id: "u1"}
@@ -829,7 +829,7 @@ defmodule Helyx.TUI.Wire.ConnectionTest do
       end
 
     for {conn, ref, server, task} <- tasks do
-      assert Task.await(task, 20_000) == {:error, :timeout}
+      assert Task.await(task, 30_000) == {:error, :timeout}
       send(server, :late)
       assert_receive {:DOWN, ^ref, :process, ^conn, {:shutdown, :broken}}
     end

@@ -19,9 +19,10 @@ defmodule Helyx.TUI.Wire.Connection do
   An operation gives the result of the Core call of the server, or `{:error, code}` with the
   error code of the wire as an atom; for `invalid_model_ref`, `unknown_provider`, and
   `start_failed`, `{code, text}`. It waits for its reply at most the deadline of the server for
-  the operation and 5,000 ms more from the moment that the connection takes it, its wait for the
-  writer included (decision 15), then gives `{:error, :timeout}`: the outcome is unknown, and
-  the late reply is dropped; `start` and `resume` wait while the connection lives (decision 17).
+  the operation under a Hub and 15,000 ms more from the moment that the connection takes it,
+  its wait for the writer included (decision 15), then gives `{:error, :timeout}`: the outcome
+  is unknown, and the late reply is dropped; `start` and `resume` wait while the connection
+  lives (decision 17).
   At most 16 requests wait for a reply, late ones too, and at most 16 request frames wait for
   the writer; one more gives `{:error, :busy}` and sends nothing. After the end of the
   connection an operation gives `{:error, :closed}`. A request over the request bound of the
@@ -38,9 +39,8 @@ defmodule Helyx.TUI.Wire.Connection do
   alias Helyx.TUI.Wire.{Decode, Reader, Writer}
   require Helyx.TUI.Wire, as: Wire
 
-  # The wait of the server for its encoder slot and the encode of a large
-  # result are outside its deadline (wire-protocol.md, "Deadlines").
-  @margin_ms 5_000
+  # Past the server deadline: the slot wait, the encode, two Hub calls (hub.md, decision 5).
+  @margin_ms 5_000 + 2 * 5_000
   # The requests in flight of one connection of the server.
   @max_waiting 16
 
@@ -194,7 +194,7 @@ defmodule Helyx.TUI.Wire.Connection do
   def handle_call({:request, op, params}, from, state) do
     # An id is never used again, so a late reply is told apart.
     id = Integer.to_string(state.next)
-    timer = arm(id, Ops.deadline(op))
+    timer = arm(id, Ops.deadline(op, true))
 
     state = if params["after"], do: update_in(state.replays, &MapSet.put(&1, id)), else: state
     write_request(register(state, id, op, {from, timer}), id, op, params)

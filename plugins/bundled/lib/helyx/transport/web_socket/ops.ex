@@ -25,12 +25,46 @@ defmodule Helyx.Transport.WebSocket.Ops do
                   invalid_origin queue_full turn_running text_too_large instance_changed
                   unknown_message invalid_answer not_waiting)a
 
+  @core_codes Enum.map(@core_errors, &Atom.to_string/1)
+
   # An operation whose result can be large takes the encoder slot of the
   # connection before it reads from Core.
   def slot?(op), do: op in ~w(sessions.saved history)
 
   @spec deadline(String.t()) :: pos_integer() | :infinity
   def deadline(op), do: Map.get(@deadlines, op, @default_deadline)
+
+  # Under an authority, `sessions.saved` is the `run` of the authority: the
+  # scan of Core and one Hub call (docs/features/hub.md, decision 7).
+  @saved_run_ms 10_000 + 5_000
+  @spec deadline(String.t(), boolean()) :: pos_integer() | :infinity
+  def deadline("sessions.saved", true), do: @saved_run_ms
+  def deadline(op, _authority?), do: deadline(op)
+
+  # Runs `body` in the worker of request `id` within `ms`. The deadline of
+  # a request with a large result starts at its slot. An open has no
+  # deadline here: the session bounds it (#834).
+  def within(conn, out, id, op, ms, body) do
+    if slot?(op), do: Outbound.slot(out)
+    timer = ms != :infinity && Process.send_after(conn, {:deadline, self(), id}, ms)
+
+    try do
+      body.()
+    after
+      # The timer ends with its worker, so the timers are at most the
+      # requests in flight.
+      if timer, do: Process.cancel_timer(timer)
+    end
+  end
+
+  # The error of `code` for `op`, with the text that the op gives when Core
+  # answers it, so a refusal of the authority reads as the answer of a
+  # missing object.
+  def error(op, code) do
+    if Outbound.transport_code?(code) and (op == "subscribe" or code not in @core_codes),
+      do: Outbound.error(code),
+      else: {:error, code, String.replace(code, "_", " ")}
+  end
 
   def run(call) do
     call.() |> result()

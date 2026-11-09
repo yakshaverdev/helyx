@@ -1,7 +1,8 @@
 defmodule CodingAgent.Serve do
   @moduledoc """
-  `helyx serve`: Core with the plugins of the agent and
-  `Helyx.Transport.WebSocket`, up until the stop of the VM, which the OTP
+  `helyx serve`: Core with the plugins of the agent, `Helyx.Hub`, and
+  `Helyx.Transport.WebSocket` with the authority of the Hub, up until the
+  stop of the VM, which the OTP
   answer to SIGTERM starts; the launcher of the release sends SIGTERM for
   each signal that it catches. One server runs for each data
   folder, the sessions folder: it holds the lock `server.lock` there. When
@@ -41,7 +42,7 @@ defmodule CodingAgent.Serve do
   Runs the server until the stop of the VM, then returns `:ok`. Returns
   `{:error, text}` when a server runs in this VM already, when another
   server holds the data folder, when the start fails, or when Core, the
-  transport, or the lock ends while the server runs. The options are
+  Hub, the transport, or the lock ends while the server runs. The options are
   `:sessions_dir` (the data folder, an absolute path), `:model` (the
   default model ref), `:ip`, and `:port`. A data folder that other users
   can write is refused. The server runs under the supervisor
@@ -93,7 +94,7 @@ defmodule CodingAgent.Serve do
     :ok
   end
 
-  # The serve process traps exits: the end of Core, of the transport, or of
+  # The serve process traps exits: the end of Core, of the Hub, of the transport, or of
   # the port of the lock, and the stop of its supervisor, are messages of
   # its wait. Its name is the guard of one server in a VM, taken first and
   # held until the process ends, after its stop. The perl process that
@@ -218,10 +219,50 @@ defmodule CodingAgent.Serve do
   # Each step that fails stops the steps before it.
   defp start(lock, dir, opts) do
     case start_core(dir, opts) do
-      {:ok, core} -> listen(lock, core, dir, opts)
+      {:ok, core} -> start_hub(lock, core, dir, opts)
       error -> stop([], lock, dir, error)
     end
   end
+
+  # The Hub of the data folder, its store `hub.db` there, with the server
+  # token of this start for the default owner (docs/features/hub.md,
+  # decision 15).
+  defp start_hub(lock, core, dir, opts) do
+    token = token()
+
+    case Helyx.Hub.start_link(core: Helyx.Core, default_owner: "owner", server_token: token) do
+      {:ok, hub} -> authorize(lock, [hub, core], dir, opts, token)
+      {:error, reason} -> stop([core], lock, dir, hub_error(reason))
+    end
+  end
+
+  # The transport asks the Hub for its authority before it listens.
+  defp authorize(lock, [hub | _] = parts, dir, opts, token) do
+    case authority(hub) do
+      {:ok, authority} -> listen(lock, parts, dir, opts, token, authority)
+      {:error, reason} -> stop(parts, lock, dir, hub_error(reason))
+    end
+  end
+
+  # `Helyx.Hub.authority/1` raises when the Hub gives no answer.
+  defp authority(hub) do
+    {:ok, Helyx.Hub.authority(hub)}
+  catch
+    kind, reason when kind in [:error, :exit] -> {:error, reason}
+  end
+
+  defp hub_error(reason), do: {:error, "could not start the Hub: " <> hub_text(reason)}
+
+  # The start errors of the store of `Helyx.Hub` with a fixed text; any
+  # other, such as an exit of the authority call, as a term.
+  defp hub_text({:invalid_option, :path}),
+    do: "hub.db in the data folder is not a regular file, or it cannot be made"
+
+  defp hub_text(:store_locked), do: "another process holds hub.db in the data folder"
+  defp hub_text({:store_version, n}), do: "hub.db in the data folder has the version #{n}"
+  # SQLite could not open or write the file: not a database, or no write.
+  defp hub_text(:failed), do: "hub.db in the data folder cannot be opened as a store"
+  defp hub_text(reason), do: Helyx.Reason.text(reason)
 
   defp start_core(dir, opts) do
     with {:error, reason} <-
@@ -233,25 +274,25 @@ defmodule CodingAgent.Serve do
          do: {:error, CodingAgent.error_text(reason)}
   end
 
-  defp listen(lock, core, dir, opts) do
+  # `parts` are the parts that run, in their order of stop.
+  defp listen(lock, parts, dir, opts, token, authority) do
     ip = Keyword.fetch!(opts, :ip)
     port = Keyword.fetch!(opts, :port)
-    token = token()
 
-    case WebSocket.start_link(core: Helyx.Core, ip: ip, port: port, token: token) do
+    case WebSocket.start_link(core: Helyx.Core, ip: ip, port: port, authority: authority) do
       {:ok, transport} ->
         port = WebSocket.port(transport)
 
         with :ok <- write_file(lock, dir, ip, port, token),
              :ok <- print("helyx: serving on " <> url(ip, port)) do
-          wait(lock, core, transport, dir)
+          wait(lock, [transport | parts], dir)
         else
-          error -> stop([transport, core], lock, dir, error)
+          error -> stop([transport | parts], lock, dir, error)
         end
 
       {:error, reason} ->
         error = {:error, "could not listen on #{url(ip, port)}: " <> listen_error(reason)}
-        stop([core], lock, dir, error)
+        stop(parts, lock, dir, error)
     end
   end
 
@@ -302,7 +343,7 @@ defmodule CodingAgent.Serve do
       {:error, "could not print the address: the output is closed"}
   end
 
-  defp wait(lock, core, transport, dir) do
+  defp wait(lock, [transport, hub, core] = parts, dir) do
     {:parent, supervisor} = Process.info(self(), :parent)
 
     result =
@@ -311,7 +352,7 @@ defmodule CodingAgent.Serve do
         {:EXIT, ^lock, _reason} ->
           {:error, "the lock of the data folder is lost; the server stopped"}
 
-        {:EXIT, pid, reason} when pid in [core, transport] ->
+        {:EXIT, pid, reason} when pid in [core, hub, transport] ->
           {:error, "the server stopped: " <> Helyx.Reason.text(reason)}
 
         # The stop of the supervisor is the stop of the VM.
@@ -319,11 +360,12 @@ defmodule CodingAgent.Serve do
           :ok
       end
 
-    stop([transport, core], lock, dir, result)
+    stop(parts, lock, dir, result)
   end
 
-  # The parts stop in order, the transport before Core, so no client is
-  # served while Core stops; a part that ended already is skipped. Then the
+  # The parts stop in order, the transport, then the Hub, then Core, so no
+  # client is served while the Hub or Core stops, and no Hub call waits
+  # while the Hub stops; a part that ended already is skipped. Then the
   # holder of the lock removes the file, which a lock that ended does not
   # do, since the file can be the file of the next server, and the lock
   # goes last.

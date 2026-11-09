@@ -82,15 +82,21 @@ defmodule CodingAgent.ServeTest do
     JSON.decode!(File.read!(file))
   end
 
-  # The serve process, and the Core and the transport that it links; its
-  # other links are its supervisor and the port of the lock.
+  # The serve process, and the Core, the Hub, and the transport that it
+  # links; its other links are its supervisor and the port of the lock.
   defp parts do
     server = Process.whereis(Serve)
     core = Process.whereis(Helyx.Core)
     {:links, links} = Process.info(server, :links)
     supervisor = Process.whereis(CodingAgent.Servers)
-    [transport] = for pid <- links, is_pid(pid), pid not in [core, supervisor], do: pid
-    {server, core, transport}
+    others = for pid <- links, is_pid(pid), pid not in [core, supervisor], do: pid
+    {[hub], [transport]} = Enum.split_with(others, &hub?/1)
+    {server, core, hub, transport}
+  end
+
+  defp hub?(pid) do
+    {:dictionary, dictionary} = Process.info(pid, :dictionary)
+    dictionary[:"$initial_call"] == {Helyx.Hub.Server, :init, 1}
   end
 
   # The stop of the VM reaches the server as the stop of its supervisor,
@@ -179,46 +185,88 @@ defmodule CodingAgent.ServeTest do
     free()
   end
 
-  # A stale file goes once the lock is held, before Core and the listener;
-  # the stop runs the transport, Core, the remove of the file by the holder
-  # of the lock, and the release, in this order (docs/features/serve.md).
+  # A stale file goes once the lock is held, before Core, the Hub, and the
+  # listener; the stop runs the transport, the Hub, Core, the remove of the
+  # file by the holder of the lock, and the release, in this order
+  # (docs/features/serve.md; docs/features/hub.md, decision 15).
   test "the start and the stop run their steps in order", %{sessions: sessions, server_file: file} do
     data_folder(sessions)
     File.write!(file, "stale")
 
-    {{core, transport}, traces} =
+    {{core, hub, transport}, traces} =
       calls(
         [
           {Lock, :remove_file, 2},
           {Lock, :write_file, 3},
           {Lock, :release, 1},
           {Helyx.Core, :start_link, 1},
+          {Helyx.Hub, :start_link, 1},
+          {WebSocket, :start_link, 1},
           {Supervisor, :stop, 1}
         ],
         fn ->
           task = serve(["--model", "fake/echo"])
           ready(file)
-          {_server, core, transport} = parts()
+          {_server, core, hub, transport} = parts()
           assert {0, _out, ""} = stop(task)
-          {core, transport}
+          {core, hub, transport}
         end
       )
 
     steps =
-      for {:trace, _pid, :call, {m, f, args}} <- traces, m in [Lock, Helyx.Core, Supervisor] do
-        case {f, args} do
-          {:remove_file, [_lock, ^file]} -> :remove
-          {:write_file, [_lock, ^file, _data]} -> :write
-          {:release, [_lock]} -> :release
-          {:start_link, [_opts]} -> :core
-          {:stop, [^transport]} -> :stop_transport
-          {:stop, [^core]} -> :stop_core
+      for {:trace, _pid, :call, {m, f, args}} <- traces,
+          m in [Lock, Helyx.Core, Helyx.Hub, WebSocket, Supervisor] do
+        case {m, f, args} do
+          {Lock, :remove_file, [_lock, ^file]} -> :remove
+          {Lock, :write_file, [_lock, ^file, _data]} -> :write
+          {Lock, :release, [_lock]} -> :release
+          {Helyx.Core, :start_link, [_opts]} -> :core
+          {Helyx.Hub, :start_link, [_opts]} -> :hub
+          {WebSocket, :start_link, [_opts]} -> :transport
+          {Supervisor, :stop, [^transport]} -> :stop_transport
+          {Supervisor, :stop, [^hub]} -> :stop_hub
+          {Supervisor, :stop, [^core]} -> :stop_core
           _other -> nil
         end
       end
 
-    assert Enum.reject(steps, &is_nil/1) ==
-             [:remove, :core, :write, :stop_transport, :stop_core, :remove, :release]
+    assert Enum.reject(steps, &is_nil/1) == [
+             :remove,
+             :core,
+             :hub,
+             :transport,
+             :write,
+             :stop_transport,
+             :stop_hub,
+             :stop_core,
+             :remove,
+             :release
+           ]
+  end
+
+  # The server token of the server file proves the default owner of the
+  # Hub; a token id that the Hub does not hold closes with 4401. The store
+  # is `hub.db` in the data folder, and the next start opens it again.
+  test "serve runs a Hub: the server token is the default owner, its store in the data folder",
+       %{sessions: sessions, server_file: file} do
+    for _start <- 1..2 do
+      task = serve(["--model", "fake/echo"])
+      %{"port" => port, "token" => token} = ready(file)
+
+      socket = WireClient.open(port, token)
+
+      assert %{"ok" => true, "result" => %{"user" => %{"name" => "owner"}}} =
+               WireClient.request(socket, "1", "hub.me", %{})
+
+      {:ok, other} = WireClient.upgrade(port)
+      hello = WireClient.hello(WireClient.challenge(other), token)
+      WireClient.send_frame(other, Map.put(hello, "token", "AAAAAAAAAAAA"))
+      assert {:close, 4401} = WireClient.until_close(other)
+
+      assert (File.stat!(Path.join(sessions, "hub.db")).mode &&& 0o777) == 0o600
+      assert {0, _out, ""} = stop(task)
+      free()
+    end
   end
 
   # A second serve in another VM meets the lock: the slow test and the next
@@ -518,21 +566,23 @@ defmodule CodingAgent.ServeTest do
   # that a dependency can log). The kill of Core logs the ends of its
   # children.
   @tag capture_log: true
-  test "the end of Core or of the transport stops the server with 1; each start has a new token",
+  test "the end of Core, of the Hub, or of the transport stops the server with 1; each start has a new token",
        %{server_file: file} do
     tokens =
-      for part <- [:core, :transport] do
+      for part <- [:core, :hub, :transport] do
         task = serve(["--model", "fake/echo"])
         %{"token" => token} = ready(file)
-        {server, core, transport} = parts()
+        {server, core, hub, transport} = parts()
         {:backtrace, frames} = Process.info(server, :backtrace)
 
         # A stop of the transport ends its listener with no late crash log.
         {result, log} =
           with_log(fn ->
-            if part == :core,
-              do: Process.exit(core, :kill),
-              else: Supervisor.stop(transport, :shutdown)
+            case part do
+              :core -> Process.exit(core, :kill)
+              :hub -> Process.exit(hub, :kill)
+              :transport -> Supervisor.stop(transport, :shutdown)
+            end
 
             Task.await(task, 60_000)
           end)
@@ -544,8 +594,8 @@ defmodule CodingAgent.ServeTest do
         token
       end
 
-    assert [token, next] = tokens
-    assert next != token
+    assert [_, _, _] = tokens
+    assert tokens == Enum.uniq(tokens)
   end
 
   # The crash of the serve process ends Core and the transport, which log
@@ -554,8 +604,8 @@ defmodule CodingAgent.ServeTest do
   test "a killed serve process ends the run with 1 and frees the guard", %{server_file: file} do
     task = serve(["--model", "fake/echo"])
     ready(file)
-    {server, core, transport} = parts()
-    refs = for pid <- [core, transport], do: Process.monitor(pid)
+    {server, core, hub, transport} = parts()
+    refs = for pid <- [core, hub, transport], do: Process.monitor(pid)
     Process.exit(server, :kill)
 
     assert {1, _out, "helyx: " <> _} = Task.await(task, 60_000)
@@ -626,14 +676,13 @@ defmodule CodingAgent.ServeTest do
   # The token is in one call only, the command that writes the server file
   # in the holder of the lock, and the stack of the serve process holds it
   # at no wait for an answer of the lock. A start that fails during the
-  # write (perl cannot make the file) gives no crash report; its line and
-  # its logs hold no form of the token.
+  # write (perl cannot make the file: a folder holds its temporary name)
+  # gives no crash report; its line and its logs hold no form of the token.
+  # The folder stays writable, so Core and the Hub start.
   test "a start that fails during the write keeps the token out of every output",
-       %{sessions: sessions} do
+       %{sessions: sessions, server_file: file} do
     data_folder(sessions)
-    File.write!(Path.join(sessions, "server.lock"), "")
-    File.chmod!(sessions, 0o500)
-    on_exit(fn -> File.chmod(sessions, 0o700) end)
+    File.mkdir_p!(Path.join(file <> ".tmp", "taken"))
 
     # Each wait of the serve process for an answer of the lock sends its
     # stack; every port command shows its data.
@@ -656,7 +705,7 @@ defmodule CodingAgent.ServeTest do
         :erlang.trace_pattern({:erlang, :port_command, :_}, false, [])
       end
 
-    line = "helyx: could not write the server file: Permission denied\n"
+    line = "helyx: could not write the server file: File exists\n"
     assert {1, "", ^line} = result
 
     commands =
@@ -671,6 +720,28 @@ defmodule CodingAgent.ServeTest do
     assert length(stacks) >= 3
     assert [_] = Enum.filter(commands, &String.contains?(&1, token))
     refute_secret(Enum.join(stacks) <> line <> log, token)
+  end
+
+  # A store that the Hub cannot open ends the start after Core, before the
+  # listener: no server file, and the lock is free.
+  test "a hub.db that is not a regular file, or not a store, ends the start with 1",
+       %{sessions: sessions, server_file: file} do
+    data_folder(sessions)
+    store = Path.join(sessions, "hub.db")
+
+    for {make, text} <- [
+          {&File.mkdir_p!/1, "is not a regular file, or it cannot be made"},
+          {&File.write!(&1, String.duplicate("not sqlite ", 100)), "cannot be opened as a store"}
+        ] do
+      File.rm_rf!(store)
+      make.(store)
+      line = "helyx: could not start the Hub: hub.db in the data folder #{text}\n"
+      assert {1, "", ^line} = run(["--model", "fake/echo"])
+      refute File.exists?(file)
+      assert {:ok, lock} = Lock.take(Path.join(sessions, "server"))
+      Lock.release(lock)
+      free()
+    end
   end
 
   # The listener logs the port in use.
