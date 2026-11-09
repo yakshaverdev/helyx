@@ -60,8 +60,8 @@ fi
 dir="precommit/$(basename "$root")"
 excludes=(--exclude=.git --exclude=_build/ --exclude=deps/ --exclude=.elixir_ls/
   --exclude=.scratch/ --exclude=precommit.log --exclude=tmp/ --exclude=cover/
-  --exclude=target/)
-sources="find . \\( -name _build -o -name deps -o -name .scratch \\) -prune -o -type f \\( -name '*.ex' -o -name '*.exs' -o -name '*.heex' \\) -print0 | xargs -0 md5sum"
+  --exclude=target/ --exclude=_build.seed/ --exclude=deps.seed/ --exclude=/.built)
+sources="find . \\( -name _build -o -name deps -o -name .scratch -o -name '*.seed' \\) -prune -o -type f \\( -name '*.ex' -o -name '*.exs' -o -name '*.heex' \\) -print0 | xargs -0 md5sum"
 
 # Each ssh, and the ssh of each rsync, ends 120 s after the host stops
 # answering (4 keepalives, 30 s apart), so a dead connection fails the run
@@ -116,7 +116,45 @@ fifo_dir=$(mktemp -d) || exit 1
 mkfifo "$fifo_dir/stdin" || { rm -r "$fifo_dir"; exit 1; }
 exec 3<>"$fifo_dir/stdin" 4<"$fifo_dir/stdin"
 rm -r "$fifo_dir"
-ssh "${ssh_opts[@]}" "$host" "cd '$dir' && $sources > .before && $announce && $isolate flock --verbose $lock bash .claude/skills/ship/precommit-run.sh" <&4 3>&- 4<&- > precommit.log 2>&1
+# The run is wrapped, under the lock, so no other run writes any build.
+# A folder with no root _build, a new one, starts warm: it gets a copy of
+# _build and deps of each project from the folder of the latest run that
+# passed, the one with the newest .built and a _build. A run removes
+# .built at its start and writes it only when it passes, so a killed or
+# failed run is never a source. The project PLTs of Dialyzer are in
+# _build; the core PLTs are in the Mix home, which all folders share. A
+# copy, never a move or a link: two folders never share a build. A seed is
+# all or nothing, from one source: it first removes the _build and deps
+# of each project, copies to .seed names, and renames them into place, the
+# root _build last. A seed that fails removes them all and the run goes on
+# cold; one that dies has no root _build, so the next run seeds again. A
+# removal that fails stops the run: Mix or Credo would read what is left.
+# Only the wrapper touches .seed and .built: the rsync excludes them.
+# Mix recompiles a project in full when its manifests name another folder;
+# Dialyxir keeps a copied PLT while mix.lock and the apps are the same.
+wrap='projects() { for p in . plugins/* apps/*; do [ -d "$p" ] && echo "$p"; done; }
+clear() { for p in $(projects); do for x in $1; do rm -rf "$p/$x" || { echo "precommit: cannot remove $p/$x"; exit 1; }; done; done; }
+rm -f .built || { echo "precommit: cannot remove .built"; exit 1; }
+clear "_build.seed deps.seed"
+if [ ! -d _build ]; then
+  s=$(date +%s)
+  src=$(find .. -mindepth 2 -maxdepth 2 -name .built -printf "%T@ %h\n" | sort -rn | while read -r t d; do [ -d "$d/_build" ] && [ ! -L "$d/_build" ] && { echo "$d"; break; }; done)
+  if [ -z "$src" ]; then echo "precommit: no folder to seed from; the run is cold"
+  else
+    clear "_build deps"
+    if (for p in $(projects); do for x in _build deps; do [ ! -d "$src/$p/$x" ] || [ -L "$src/$p/$x" ] || cp -a "$src/$p/$x" "$p/$x.seed" || exit 1; done; done) &&
+      (for p in $(projects | sort -r); do for x in deps _build; do [ ! -d "$p/$x.seed" ] || mv "$p/$x.seed" "$p/$x" || exit 1; done; done); then
+      echo "precommit: seeded _build and deps from ${src#../} in $(($(date +%s) - s)) s"
+    else
+      clear "_build deps _build.seed deps.seed"
+      echo "precommit: the seed from ${src#../} failed; the run is cold"
+    fi
+  fi
+fi
+"$@"; status=$?
+[ "$status" != 0 ] || touch .built
+exit "$status"'
+ssh "${ssh_opts[@]}" "$host" "cd '$dir' && $sources > .before && $announce && $isolate flock --verbose $lock sh -c '$wrap' run bash .claude/skills/ship/precommit-run.sh" <&4 3>&- 4<&- > precommit.log 2>&1
 status=$?
 exec 3>&- 4<&-
 
