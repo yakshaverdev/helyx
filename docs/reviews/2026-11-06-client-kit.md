@@ -490,3 +490,26 @@ Assumptions, decided from prior art under the owner rule of 2026-11-08:
 - The fixture "message_end: a user message of a hook with no id" of #880 said `broken`, while the schema allows the frame (`id: string | null`) and the judgement of 2026-11-07 says that the TUI takes every frame that the schema allows and ignores an origin that it does not show. It now says `valid`, and both clients take it and drop the origin.
 - The reference app does not draw UI blocks; the core holds them.
 - The size of a UI block in the core counts a number at the text that the server sent, which is the form of Elixir. A block from a server of another encoder can be counted a few bytes off near the bound.
+
+# Gate round 1: a failed open after a welcome (#860)
+
+The Codex gate found, and the orchestrator confirmed, that `Client::closed` gave `Next::Reconnect` only when it took a ready connection. After an established connection ended, a failed `open` of the reconnect called `closed(None)` with no connection and got `Next::Stop`, so the app stopped after one refusal or outage.
+
+The fix:
+
+- The client keeps that a welcome came, a fact of the frames of the server.
+- `closed` gives `Next::Stop` for a break or a `refused`, and for any end before the first welcome, as the first connect of the TUI ends (`docs/features/tui-attach.md`, decision 10). Any other end reconnects, a failed connect or upgrade too.
+- The network thread of the app ends at the end of a connection when the window is gone. Its tests, which ended at a refused reconnect before, now drop their sender of commands.
+
+Tests:
+
+- `app/tests/net.rs`, "a failed open after a welcome reconnects": a connection ends, two connects are refused, the third subscribes again with `after`. It fails against the old `closed`: the thread stopped after one refused connect.
+- `core/tests/client.rs`, "after a welcome a failed open reconnects", and the case of a failed open before any welcome.
+
+No review round: gate round 2 follows.
+
+Assumptions:
+
+- No state of the core showed a past welcome: the connection is dropped at `closed`, and a client can follow no session. So it keeps one fact of the server's frames, that a welcome came.
+- The TUI ends after one failed reconnect (#808). The orchestrator asked the app to keep reconnecting after a welcome, so the app waits out an outage, one try each 1,000 ms, with no count bound.
+- The end of the thread when the window is gone gives the app a real end.

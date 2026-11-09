@@ -28,7 +28,8 @@ fn the_watchdog_ends_with_its_connection() {
         ..WAITS
     };
     let shared = Mutex::new(Shared::new("tok-q4".into()));
-    let (_commands, receive) = channel();
+    // The window is gone: the thread ends at the end of the connection.
+    let receive = channel::<helyx_desktop::net::Command>().1;
     net::run_with(&server, &shared, &receive, &|| {}, waits);
     let ended = Instant::now();
     stub.join().unwrap();

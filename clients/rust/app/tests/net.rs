@@ -80,27 +80,24 @@ fn a_follow_survives_a_slow_close() {
         texts.iter().any(|t| t.contains(r#""op":"sessions.live""#)),
         "{texts:?}"
     );
+    // The window is gone: the thread ends at the end of the connection.
+    drop(commands);
     drop(ws);
     drop(listener);
-
-    // The third connect is refused: the thread stops with its line.
     let line = thread.join().unwrap();
-    assert!(
-        line.starts_with("could not connect to ws://127.0.0.1:"),
-        "{line}"
-    );
+    assert_eq!(line, "reconnecting");
     let shared = shared.lock().unwrap();
     let state = shared.client.state("s1").unwrap();
     assert_eq!((state.seq.to_u64(), state.notices.len()), (Some(5), 1));
 }
 
 /// Runs the network thread against one stub connection, `serve`, and gives
-/// the line that the thread ends with and its state: no listener remains
-/// for a reconnect.
+/// the line that the thread ends with and its state. The window is gone, so
+/// the thread ends at the end of the connection.
 fn against_state(serve: impl FnOnce(WebSocket<TcpStream>) + Send + 'static) -> (String, Shared) {
     let (server, stub) = stub::one(serve);
     let shared = Mutex::new(Shared::new("tok-q4".into()));
-    let (_commands, receive) = channel();
+    let receive = channel::<Command>().1;
     let line = net::run(&server, &shared, &receive, &|| {});
     stub.join().unwrap();
     (line, shared.into_inner().unwrap())
@@ -335,4 +332,71 @@ fn the_line_of_a_follow_says_why_it_waits() {
     ] {
         assert_eq!(net::follow_line("a", &quiet), None);
     }
+}
+
+/// After a welcome, a failed open reconnects: a connection ends, the next two
+/// connects are refused, and the third subscribes again with `after` of the
+/// state. Before any welcome, a failed open stops (`net::run` of the upgrade
+/// test above), as the first connect of the TUI does.
+#[test]
+fn a_failed_open_after_a_welcome_reconnects() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let server = stub::local(port);
+    let shared = Arc::new(Mutex::new(Shared::new("tok-q4".into())));
+    let (commands, receive) = channel();
+    let (lines, notified) = channel();
+    let waits = helyx_desktop::socket::Waits {
+        pause: Duration::from_millis(50),
+        ..WAITS
+    };
+    let thread_shared = shared.clone();
+    let thread = std::thread::spawn(move || {
+        let read = thread_shared.clone();
+        let notify = move || {
+            let _ = lines.send(read.lock().unwrap().line.clone());
+        };
+        net::run_with(&server, &thread_shared, &receive, &notify, waits)
+    });
+
+    // The first connection: a follow and its snapshot, then a lost end.
+    let mut ws = accept(listener.accept().unwrap().0).unwrap();
+    welcome(&mut ws, "tok-q4");
+    let _live = next_text(&mut ws);
+    commands.send(Command::Follow("s1".into())).unwrap();
+    let _subscribe = next_text(&mut ws);
+    ws.send(Message::text(format!(
+        r#"{{"type":"res","id":"1","ok":true,"result":{{"sub":"0","snapshot":{}}}}}"#,
+        snapshot(4)
+    )))
+    .unwrap();
+    let seq = |shared: &Mutex<Shared>| {
+        let shared = shared.lock().unwrap();
+        shared.client.state("s1").and_then(|s| s.seq.to_u64())
+    };
+    while seq(&shared) != Some(4) {
+        notified.recv().unwrap();
+    }
+    drop(ws);
+    drop(listener);
+
+    // Two connects refused, with no listener on the port.
+    let mut refused = 0;
+    while refused < 2 {
+        let line = notified.recv().unwrap();
+        refused += usize::from(line.starts_with("could not connect"));
+    }
+
+    // A listener on the port again: the subscribe goes with `after`.
+    let listener = TcpListener::bind(("127.0.0.1", port)).unwrap();
+    let mut ws = accept(listener.accept().unwrap().0).unwrap();
+    welcome(&mut ws, "tok-q4");
+    let texts = [next_text(&mut ws), next_text(&mut ws)];
+    let after = r#""params":{"session":"s1","after":{"instance_id":"i1","seq":4}}"#;
+    assert!(texts.iter().any(|t| t.contains(after)), "{texts:?}");
+
+    // The window is gone: the thread ends at the end of the connection.
+    drop(commands);
+    drop(ws);
+    assert_eq!(thread.join().unwrap(), "reconnecting");
 }

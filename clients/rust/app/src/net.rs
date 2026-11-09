@@ -14,7 +14,7 @@ use helyx_client_core::parts::FRAME_BYTES;
 use std::io::ErrorKind;
 use std::net::{SocketAddr, TcpStream};
 use std::sync::Mutex;
-use std::sync::mpsc::Receiver;
+use std::sync::mpsc::{Receiver, TryRecvError};
 use tungstenite::error::ProtocolError;
 use tungstenite::protocol::WebSocketConfig;
 use tungstenite::{Error, Message, WebSocket};
@@ -49,7 +49,8 @@ impl Shared {
     }
 }
 
-/// Runs connections until one ends with `Next::Stop`, and gives its line.
+/// Runs connections until one ends with `Next::Stop`, or the window is gone
+/// at the end of one, and gives its line.
 pub fn run(
     server: &Server,
     shared: &Mutex<Shared>,
@@ -71,7 +72,7 @@ pub fn run_with(
         let (next, line) = connection(server, shared, commands, notify, waits);
         shared.lock().unwrap().line = line.clone();
         notify();
-        if next == Next::Stop {
+        if next == Next::Stop || window_gone(shared, commands) {
             return line;
         }
         std::thread::sleep(waits.pause);
@@ -277,6 +278,20 @@ pub fn follow_line(session: &str, follow: &Follow) -> Option<String> {
         )),
         Follow::Held(Hold::Ended) => Some(format!("{session} ended")),
         _ => None,
+    }
+}
+
+/// Between connections: takes the commands of the window, whose frames go
+/// at the next welcome, and gives whether the window is gone, its sender of
+/// commands dropped.
+fn window_gone(shared: &Mutex<Shared>, commands: &Receiver<Command>) -> bool {
+    loop {
+        match commands.try_recv() {
+            // No connection takes a frame: the intent goes at the welcome.
+            Ok(command) => drop(follow(&mut shared.lock().unwrap(), command)),
+            Err(TryRecvError::Empty) => return false,
+            Err(TryRecvError::Disconnected) => return true,
+        }
     }
 }
 

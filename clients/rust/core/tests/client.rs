@@ -211,6 +211,31 @@ fn a_close_before_the_welcome_or_after_a_break_stops() {
     let refused = r#"{"type":"refused","code":"protocol","server_protocol":4}"#;
     assert_eq!(client.receive(refused).unwrap(), [Output::Refused(4)]);
     assert_eq!(client.closed(Some(4426)), Next::Stop);
+    // Before any welcome, a failed open stops.
+    assert_eq!(Client::new(None).closed(None), Next::Stop);
+}
+
+/// After a welcome, every end reconnects but a break and a refusal: a
+/// failed open, with no connection, and a reconnect that ends before its
+/// own welcome; the welcome of an earlier connection is a fact that stays.
+#[test]
+fn after_a_welcome_a_failed_open_reconnects() {
+    let mut client = following(4);
+    assert_eq!(client.closed(None), Next::Reconnect);
+    for _ in 0..2 {
+        assert_eq!(client.closed(None), Next::Reconnect);
+    }
+    client.connect();
+    client.receive(CHALLENGE).unwrap();
+    assert_eq!(client.closed(None), Next::Reconnect);
+    client.connect();
+    client.receive(CHALLENGE).unwrap();
+    let refused = r#"{"type":"refused","code":"protocol","server_protocol":6}"#;
+    assert_eq!(client.receive(refused).unwrap(), [Output::Refused(6)]);
+    assert_eq!(client.closed(Some(4426)), Next::Stop);
+    let mut client = following(4);
+    assert!(client.receive(&notice(9)).is_err());
+    assert_eq!(client.closed(None), Next::Stop);
 }
 
 fn json_params() -> helyx_client_core::json::Json {

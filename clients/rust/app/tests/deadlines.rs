@@ -48,11 +48,13 @@ fn after_welcome(
     for command in commands {
         send.send(command).unwrap();
     }
+    // The window is gone: the thread ends at the end of the connection.
+    drop(send);
     let (line, elapsed) = thread.join().unwrap();
     let from_commands = sent.elapsed();
     stop.send(()).unwrap();
     stub.join().unwrap();
-    assert!(line.starts_with("could not connect"), "{line}");
+    assert_eq!(line, "reconnecting");
     (elapsed, from_commands)
 }
 
@@ -240,11 +242,12 @@ fn a_failed_send_keeps_the_frames_read_before_it() {
     });
     let (send, receive) = channel();
     send.send(Command::Follow("x".repeat(3_000_000))).unwrap();
+    // The window is gone: the thread ends at the end of the connection.
+    drop(send);
     let shared = Mutex::new(Shared::new("tok-q4".into()));
     let line = net::run_with(&server, &shared, &receive, &|| {}, waits);
     stop.send(()).unwrap();
     stub.join().unwrap();
-    // It reconnected, and found no server.
-    assert!(line.starts_with("could not connect"), "{line}");
+    assert_eq!(line, "reconnecting");
     assert_eq!(shared.lock().unwrap().live.len(), 1);
 }

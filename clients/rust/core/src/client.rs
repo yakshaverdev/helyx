@@ -59,8 +59,9 @@ pub enum Output {
 pub enum Next {
     /// Open a new connection: it subscribes again with `after`.
     Reconnect,
-    /// Stop: the connection never took the handshake, or ended by a break or
-    /// a refusal. Reconnecting would meet the same end.
+    /// Stop: no connection of the client took the handshake yet, or the
+    /// connection ended by a break or a refusal. Reconnecting would meet the
+    /// same end.
     Stop,
 }
 
@@ -73,6 +74,9 @@ pub struct Client {
     /// number, so no two share one, those of a forgotten session neither.
     statements: u64,
     pub(crate) connection: Option<Connection>,
+    /// A connection of the client took the handshake: a fact of the frames
+    /// of the server, which outlives the connection (`closed`).
+    welcomed: bool,
 }
 
 impl Client {
@@ -89,6 +93,7 @@ impl Client {
             sessions: HashMap::new(),
             statements: 0,
             connection: None,
+            welcomed: false,
         }
     }
 
@@ -117,12 +122,17 @@ impl Client {
         self.connection = Some(Connection::new(self.token.clone()));
     }
 
-    /// The socket ended, with its close code or none for a lost connection.
-    /// Any code reconnects after a welcome, `4408` (the slow end) too.
+    /// The socket ended, with its close code or none for a lost connection,
+    /// or the host could not open one (a failed connect or upgrade). Once a
+    /// connection of the client took the handshake, any end reconnects,
+    /// `4408` (the slow end) and a failed open too, but a break and a
+    /// refusal; before it, every end stops, as the first connect of the TUI
+    /// does (`docs/features/tui-attach.md`, decision 10).
     pub fn closed(&mut self, _code: Option<u16>) -> Next {
-        match self.connection.take() {
-            Some(c) if c.ready() => Next::Reconnect,
-            _ => Next::Stop,
+        let broken = self.connection.take().is_some_and(|c| c.broken);
+        match self.welcomed && !broken {
+            true => Next::Reconnect,
+            false => Next::Stop,
         }
     }
 
@@ -296,6 +306,7 @@ impl Client {
             }
             Step::Welcome => {
                 c.welcomed = true;
+                self.welcomed = true;
                 Ok(vec![Output::Welcome])
             }
         }
