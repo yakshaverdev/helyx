@@ -1,6 +1,6 @@
 defmodule Helyx.Hub.Params do
   @moduledoc false
-  # The params of the `hub.records.*` and `hub.projects.*` operations, checked
+  # The params of the `hub.records.*`, `hub.projects.*`, and `hub.schedules.*` operations, checked
   # in the caller at the entry of Hub before it reads any object that they
   # name (`docs/features/hub.md`, decision 5, "The order of the checks";
   # Bounds). `check/2` answers `{:ok, value}` or `:bad_params`.
@@ -12,6 +12,12 @@ defmodule Helyx.Hub.Params do
   @max_query_bytes 256
   @max_limit 256
   @default_limit 50
+  # The bounds of a schedule (Bounds, #870).
+  @max_schedule_prompt_bytes 16_384
+  @max_ahead_s 31_622_400
+  @every_s 300..2_678_400
+  # The bound of the `prompt` of a record (Store schema).
+  @max_record_prompt_bytes 1_024
   # The largest integer that SQLite binds.
   @max_cursor_time 2 ** 63 - 1
 
@@ -42,7 +48,45 @@ defmodule Helyx.Hub.Params do
       when map_size(params) == 1 and is_binary(id),
       do: {:ok, id}
 
+  # A schedule (decision 11): `at` from now to 366 days on, `every` absent
+  # or a period of 300 s to 31 days, and a prompt of UTF-8; one over 16,384
+  # bytes is `:text_too_large`, after every other param passed.
+  def check("hub.schedules.create", %{"session" => id, "at" => at, "prompt" => prompt} = params)
+      when is_binary(id) and is_integer(at) and is_binary(prompt) do
+    every = Map.get(params, "every")
+
+    cond do
+      not schedule?(params, at, every, prompt) -> :bad_params
+      byte_size(prompt) > @max_schedule_prompt_bytes -> :text_too_large
+      true -> {:ok, {id, %{at: at, every: every, prompt: prompt}}}
+    end
+  end
+
+  def check("hub.schedules.list", params) when map_size(params) == 0, do: {:ok, nil}
+
+  def check("hub.schedules.list", %{"session" => id} = params)
+      when map_size(params) == 1 and is_binary(id),
+      do: {:ok, id}
+
+  def check("hub.schedules.delete", %{"schedule" => id} = params)
+      when map_size(params) == 1 and is_binary(id),
+      do: {:ok, id}
+
   def check(_op, _params), do: :bad_params
+
+  defp schedule?(params, at, every, prompt) do
+    Enum.all?(Map.keys(params), &(&1 in ~w(session at every prompt))) and at?(at) and
+      every?(params, every) and prompt != "" and String.valid?(prompt)
+  end
+
+  defp at?(at) do
+    now = System.os_time(:second)
+    at >= now and at <= now + @max_ahead_s
+  end
+
+  # `every` absent, or a period; a key that is present is never null.
+  defp every?(params, every),
+    do: not Map.has_key?(params, "every") or (is_integer(every) and every in @every_s)
 
   # Each param through `check`, which answers `{:ok, field, value}` or
   # `:bad_params`, and rejects an unknown key.
@@ -101,6 +145,18 @@ defmodule Helyx.Hub.Params do
 
   defp name(name) do
     if text?(name, 1, @max_project_name_bytes), do: {:ok, name}, else: :bad_params
+  end
+
+  # The first 1,024 bytes of a text, cut on a UTF-8 boundary, for the
+  # `prompt` of a record: the caller cuts it, so no Hub call carries more of
+  # a text (Store schema).
+  def cut(text) do
+    head = binary_part(text, 0, min(byte_size(text), @max_record_prompt_bytes))
+    Enum.find([head | trims(head)], &String.valid?/1)
+  end
+
+  defp trims(head) do
+    for n <- 1..3, byte_size(head) > n, do: binary_part(head, 0, byte_size(head) - n)
   end
 
   # `min` to `max` bytes of UTF-8 with no control character (C0, DEL, C1).

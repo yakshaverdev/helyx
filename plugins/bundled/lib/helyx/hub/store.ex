@@ -208,4 +208,62 @@ defmodule Helyx.Hub.Store do
 
   @doc "Whether `owner` owns a \"hub\" record."
   @callback hub_records?(t(), owner :: String.t()) :: {:ok, boolean()} | {:error, :failed}
+
+  @typedoc """
+  A schedule row (`docs/features/hub.md`, decisions 11 and 12, "Store
+  schema"). `delivery_id`, `due_at`, and `next_try_at` are nil when the row
+  holds no pending wake-up.
+  """
+  @type schedule :: %{
+          id: String.t(),
+          owner: String.t(),
+          session_id: String.t(),
+          prompt: String.t(),
+          at: integer(),
+          every: pos_integer() | nil,
+          run: non_neg_integer(),
+          delivery_id: String.t() | nil,
+          due_at: integer() | nil,
+          next_try_at: integer() | nil,
+          last_at: integer() | nil,
+          last_outcome: String.t() | nil,
+          created_at: integer()
+        }
+
+  @doc "The schedules of `owner`, of the session `session_id` or of all when nil, oldest first."
+  @callback schedules(t(), owner :: String.t(), session_id :: String.t() | nil) ::
+              {:ok, [schedule()]} | {:error, :failed}
+
+  @doc "The schedule row of `id`."
+  @callback schedule(t(), id :: String.t()) :: {:ok, schedule()} | {:error, :not_found | :failed}
+
+  @doc """
+  Inserts a schedule unless its session holds `per_session` rows or its
+  owner `per_user` rows.
+  """
+  @callback put_schedule(
+              t(),
+              schedule(),
+              per_session :: pos_integer(),
+              per_user :: pos_integer(),
+              deadline()
+            ) :: :ok | {:error, :too_many_schedules | :timeout | :failed}
+
+  @doc "Deletes a schedule of `owner`; one of another user answers `:not_found`, as a missing one."
+  @callback delete_schedule(t(), owner :: String.t(), id :: String.t(), deadline()) ::
+              :ok | {:error, :not_found | :timeout | :failed}
+
+  @doc "The rows whose `next_try_at` is at or before `now`, oldest first, at most `limit`."
+  @callback due(t(), now :: integer(), limit :: pos_integer()) ::
+              {:ok, [schedule()]} | {:error, :failed}
+
+  @doc """
+  Sets `changes` on the row `id` only while it holds every value of
+  `expect`; both name only the columns of the pending wake-up and the last
+  outcome (`at`, `run`, `delivery_id`, `due_at`, `next_try_at`, `last_at`,
+  `last_outcome`). A row that does not hold them, or is gone, answers
+  `:stale`.
+  """
+  @callback update_schedule(t(), id :: String.t(), expect :: map(), changes :: map(), deadline()) ::
+              :ok | {:error, :stale | :timeout | :failed}
 end

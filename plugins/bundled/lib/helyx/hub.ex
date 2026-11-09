@@ -111,6 +111,32 @@ defmodule Helyx.Hub do
     do: call(hub, {:revoke_token, token_id})
 
   @doc """
+  Saves a prompt that Hub sends to a session of the user `user_id` at a
+  time, with the rules of `hub.schedules.create` (`docs/features/hub.md`,
+  decisions 11 and 12). `params` is the params map of the wire:
+  `"session"`, `"at"` (POSIX seconds, from now to now + 366 days),
+  `"every"` (optional, 300 to 2,678,400 seconds), and `"prompt"` (1 to
+  16,384 bytes of UTF-8). The user must own the session; a session that it
+  may not read gives `:session_not_found`, as a missing one.
+  """
+  @spec schedule(hub(), String.t(), map()) ::
+          {:ok, map()}
+          | {:error,
+             :bad_params
+             | :text_too_large
+             | :session_not_found
+             | :forbidden
+             | :too_many_schedules
+             | :unknown_user
+             | :busy
+             | :timeout
+             | :failed}
+  def schedule(hub, user_id, params) when is_binary(user_id) and is_map(params) do
+    with {:ok, config} <- call(hub, :authority),
+         do: Helyx.Hub.Access.schedule(Map.put(config, :hub, hub), user_id, params)
+  end
+
+  @doc """
   The value of the option `:authority` of `Helyx.Transport.WebSocket` for
   this Hub (decision 5). It asks the Hub, so the product starts the
   transport after the Hub: a Hub that does not answer raises. Give the Hub
