@@ -17,16 +17,19 @@ defmodule Helyx.Hub.Api do
     params = %{"cwd" => opts[:cwd], "model" => opts[:model]}
 
     with :ok <- cwd(opts[:cwd]),
-         :ok <- answer(safe(fn -> Access.check(arg, auth, "start", params) end)) do
-      case Helyx.Sessions.start(arg.core, opts) do
-        {:ok, session} ->
-          started(arg, auth, params, session)
+         :ok <- answer(safe(fn -> Access.check(arg, auth, "start", params) end)),
+         do: core_start(arg, auth, params, opts)
+  end
 
-        {:error, _} = error ->
-          # The place of decision 14 goes back at once.
-          _ = safe(fn -> Access.release(arg, auth, "start", params) end)
-          error
-      end
+  defp core_start(arg, auth, params, opts) do
+    case Helyx.Sessions.start(arg.core, opts) do
+      {:ok, session} ->
+        started(arg, auth, params, session)
+
+      {:error, _} = error ->
+        # The place of decision 14 goes back at once.
+        _ = safe(fn -> Access.release(arg, auth, "start", params) end)
+        error
     end
   end
 
