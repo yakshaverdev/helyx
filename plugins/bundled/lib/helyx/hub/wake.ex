@@ -39,7 +39,7 @@ defmodule Helyx.Hub.Wake do
   end
 
   # The rows whose next try has come; the next poll in 1,000 ms. A poll out
-  # of turn replaces the timer, so one poll timer runs.
+  # of turn replaces the timer, so at most one poll timer runs.
   def poll(state) do
     if state.wake.poll, do: Process.cancel_timer(state.wake.poll)
     now = System.os_time(:second)
@@ -50,7 +50,14 @@ defmodule Helyx.Hub.Wake do
         {:error, _} -> state
       end
 
-    put_in(state.wake.poll, Process.send_after(self(), :wake_poll, @poll_ms))
+    put_in(state.wake.poll, next_poll())
+  end
+
+  # The app env `:hub_poll_timer` of `helyx_plugins`, false for tests only,
+  # arms no timer: the test sends each poll.
+  defp next_poll do
+    if Application.get_env(:helyx_plugins, :hub_poll_timer) != false,
+      do: Process.send_after(self(), :wake_poll, @poll_ms)
   end
 
   defp due(row, now, state) do
