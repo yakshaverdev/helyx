@@ -110,8 +110,10 @@ defmodule Helyx.TUI.Wire.Subscriptions do
 
   @doc false
   # The reply of a subscribe or a detach, and `:next` for every other op. A
-  # late subscribe reply is a subscription that its caller gave up on: it
-  # is dropped, and its `unsubscribe` is due, but for a sub that no frame of
+  # subscribe reply whose `sub` is known is a contract break, whatever its
+  # caller is: the server makes each `sub` unique on the connection. A late
+  # subscribe reply is a subscription that its caller gave up on: it is
+  # dropped, and its `unsubscribe` is due, but for a sub that no frame of
   # the TUI carries, which the server ends at its bound of unacked events
   # with a `4408` close of the connection. A
   # late detach reply ends the sub silently; a live one gives the reply of
@@ -121,6 +123,10 @@ defmodule Helyx.TUI.Wire.Subscriptions do
           | {:detached | :dropped, t()}
           | {:late_subscribe, String.t(), t()}
           | :broken
+  def reply(%__MODULE__{subs: subs}, _caller, "subscribe", {:ok, _snapshot_or_replay, sub})
+      when is_map_key(subs, sub),
+      do: :broken
+
   def reply(state, :late, "subscribe", {:ok, _snapshot_or_replay, sub})
       when not Wire.carries?(sub),
       do: {:dropped, dropped(state, sub)}
@@ -128,10 +134,8 @@ defmodule Helyx.TUI.Wire.Subscriptions do
   def reply(state, :late, "subscribe", {:ok, _snapshot_or_replay, sub}),
     do: {:late_subscribe, sub, state}
 
-  def reply(state, _caller, "subscribe", {:ok, _snapshot_or_replay, sub}) do
-    # The server makes each `sub` unique on the connection.
-    if known?(state, sub), do: :broken, else: {:next, subscribed(state, sub, :live)}
-  end
+  def reply(state, _caller, "subscribe", {:ok, _snapshot_or_replay, sub}),
+    do: {:next, subscribed(state, sub, :live)}
 
   def reply(state, {:unsubscribe, sub}, "unsubscribe", _result),
     do: {:detached, detached(state, sub)}

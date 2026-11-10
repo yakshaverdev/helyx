@@ -867,6 +867,37 @@ defmodule Helyx.TUI.Wire.ConnectionTest do
     refute_received {:DOWN, ^ref, _, _, _}
   end
 
+  # The server makes each `sub` unique on the connection, and a reply is
+  # checked whatever its caller is: a late reply with a live `sub` breaks it.
+  @tag :slow
+  @tag timeout: 60_000
+  test "a late subscribe reply with the sub of a live subscription is a contract break" do
+    test = self()
+
+    {conn, ref} =
+      fake(fn socket ->
+        send(test, {:server, self()})
+        %{"id" => id, "op" => "subscribe"} = client_frame(socket)
+        reply = text(res(id, %{sub: "x", snapshot: ServerWire.snapshot(snapshot())}))
+        :ok = :gen_tcp.send(socket, reply)
+
+        %{"id" => late, "op" => "subscribe"} = client_frame(socket)
+        receive do: (:late -> :ok)
+
+        :ok =
+          :gen_tcp.send(
+            socket,
+            text(res(late, %{sub: "x", snapshot: ServerWire.snapshot(snapshot())}))
+          )
+      end)
+
+    assert_receive {:server, server}
+    assert {:ok, %Snapshot{}, "x"} = Connection.subscribe(conn, "s1")
+    assert Connection.subscribe(conn, "s1") == {:error, :timeout}
+    send(server, :late)
+    assert_receive {:DOWN, ^ref, :process, ^conn, {:shutdown, :broken}}
+  end
+
   @tag :slow
   @tag timeout: 60_000
   test "a late reply of a broken shape is a contract break, a snapshot with a broken message too" do
