@@ -17,8 +17,32 @@ A module that implements an interface.
 _Avoid_: extension, adapter, integration
 
 **Product**:
-Independent software built on Helyx. It selects plugins and owns its domain code.
+Independent software built on Helyx, in its own repo. It has four layers: Core, its plugins, a default agent that changes the product when its developer asks, and a template for each platform that it opts into (ADR 0015).
 _Avoid_: app, application, host
+
+**Mode**:
+A named list of plugins. Data, not an interface.
+_Avoid_: profile, preset
+
+**Template**:
+The generated code of a product for one platform, such as its iOS app: its screens, name, and icon. The product owns it after `helyx new`. Not a Core construct.
+_Avoid_: scaffold, boilerplate, skeleton
+
+**Bare layer**:
+Everything that Helyx ships to a product: Core, the transport, Hub, the bundled plugins, the default agent, the client core, and the app shell (the agent chat and rollback). A product takes it as versioned dependencies, not as source. Safe mode runs it alone.
+_Avoid_: base, core layer, runtime
+
+**Full layer**:
+What a product repo adds to the bare layer: its plugins, its template code, and the pieces it ejected.
+_Avoid_: user layer, overlay
+
+**Safe mode**:
+A start with the bare layer only: the server with no product plugins, or the app in the bare shell with no product views. The app starts in it after 2 launches that crash before it is healthy.
+_Avoid_: recovery mode, fallback
+
+**Eject**:
+Copying one piece of the bare layer into the product repo, with the developer's approval. The piece becomes product code, and safe mode no longer covers it.
+_Avoid_: fork, vendor
 
 ## Runtime
 
@@ -45,6 +69,10 @@ _Avoid_: state dump, sync
 **Hands**:
 The process that owns a working directory, runs tools for a session, and hosts the provider process. In local mode it lives on the same node as the session. It may live on another node.
 _Avoid_: sandbox, executor, worker
+
+**Runner**:
+A program outside the server, such as on a laptop or in a container, that connects to the server over the wire and runs the hands of its sessions there (ADR 0012).
+_Avoid_: agent, worker, executor
 
 **Client**:
 Anything that renders a session from its snapshot and events and sends prompts to it. A client holds only a rendered copy of the session state. A bundled client, such as the TUI, implements no interface.
