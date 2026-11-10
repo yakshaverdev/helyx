@@ -14,7 +14,9 @@ defmodule Helyx.Session.Server.Wait do
   # event waits for the hands, with `started_ms` of that turn and the UI
   # blocks that the turn still shows (`ui_blocks`, as in
   # `Helyx.Session.Turn`), which its `turn_end` drops. `settle` is the
-  # `before_settle` chain, due or running, the last part
+  # `before_settle` chain, due or running, or `:revoke`, the revoke that an
+  # abort asked for while the chain waits behind a pending hands request,
+  # the last part
   # (`Helyx.Session.Server.Settle`). Every message of a client queues until
   # the end.
   # `Helyx.Session.Server.TurnLoop` matches the inputs and ends the wait
@@ -38,7 +40,7 @@ defmodule Helyx.Session.Server.Wait do
           turn: String.t() | nil,
           turn_end: map() | nil,
           started_ms: integer() | nil,
-          settle: {:due, Helyx.Hook.settle(), map()} | reference() | nil,
+          settle: {:due, Helyx.Hook.settle(), map()} | :revoke | reference() | nil,
           callers: [GenServer.from()],
           ui_blocks: [Helyx.Session.Server.UIBlocks.entry()]
         }
@@ -198,7 +200,9 @@ defmodule Helyx.Session.Server.Wait do
   # An abort in a wait gives the queued texts back, like the abort that
   # started the wait (`Queue.abort/1`), and its caller gets the reply at
   # the end of the wait. It drops a compaction and a continue that wait,
-  # and ends the `before_settle` chain (`Settle.abort/1`).
+  # and ends the `before_settle` chain (`Settle.abort/1`). While the chain
+  # is due or runs, the abort also revokes the ended turn's Tasks and
+  # background runs.
   @spec abort(State.t(), GenServer.from()) :: State.t()
   def abort(%State{phase: %Flow.Waiting{wait: wait} = phase} = state, from) do
     wait = %{wait | callers: [from | wait.callers]}

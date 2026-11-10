@@ -36,6 +36,87 @@ defmodule Helyx.Session.BeforeSettleTest do
     session
   end
 
+  # A gate whose messages a proxy forwards to the test, so a test can open
+  # more than one (`Helyx.Test.Gate.open/0` names the test process itself).
+  defp gate do
+    gate = :"gate_#{System.unique_integer([:positive])}"
+    test = self()
+    proxy = spawn_link(fn -> forward(test) end)
+    Process.register(proxy, gate)
+    Atom.to_string(gate)
+  end
+
+  # A Core with the connected provider, the gate, background, and
+  # slow-release tools, and a controller proxy that forwards to the test.
+  defp connected(hooks) do
+    core =
+      core([
+        Helyx.Test.Connected,
+        Helyx.Test.Gate,
+        Helyx.Test.Tool.Background,
+        Helyx.Test.Tool.SlowRelease | hooks
+      ])
+
+    test = self()
+    proxy = spawn_link(fn -> forward(test) end)
+    Process.register(proxy, Helyx.Test.Connected.controller(core))
+    core
+  end
+
+  # A session of the connected provider `model`, at the request of its turn.
+  defp connect(core, model) do
+    {:ok, session} = Session.start(core, model: "conn/#{model}")
+    {:ok, _snapshot, _ref} = Session.subscribe(session, answers: true)
+    :ok = Session.prompt(session, "go")
+    assert_receive {:conn, :turn, proc, {:turn, turn_id, _}}
+    {session, proc, turn_id}
+  end
+
+  # Starts a background run of the turn at `gate`, holds `handles`, and
+  # returns the run and its id.
+  defp background(proc, turn_id, gate, handles) do
+    args = %{"gate" => gate, "handles" => handles}
+    send(proc, {:tool_request, turn_id, "bg", "background", args})
+    assert_receive {:waiting, run}
+    assert_receive {:conn, :tool_result, ^proc, {:tool_result, ^turn_id, "bg", {:ok, start}}}
+    [_, id] = Regex.run(~r/\A<background id="(\S+)"/, start)
+    {run, id}
+  end
+
+  # Starts a call whose release waits for :go from `gate`; its result waits
+  # for the release, so the call still runs. Returns the release Task.
+  defp slow_release(proc, turn_id, gate) do
+    send(proc, {:tool_request, turn_id, "slow", "slow_release", %{"gate" => gate}})
+    assert_receive {:releasing, release}
+    release
+  end
+
+  # The ends that wait for a turn.
+  defp held_ends(session),
+    do: Helyx.Session.Queue.counts(:sys.get_state(Session.pid(session)).queue).held
+
+  # Waits until the session holds a wait with a hands request pending.
+  defp wait_behind_hands(session) do
+    pid = Session.pid(session)
+
+    wait_until(fn ->
+      match?(%{phase: %{wait: %{hands: hands}}} when hands != nil, :sys.get_state(pid))
+    end)
+  end
+
+  # Waits until the session holds a wait whose turn ended at `:done`, with
+  # its hands request pending and its `before_settle` chain due.
+  defp due_chain_behind_hands(session) do
+    pid = Session.pid(session)
+
+    wait_until(fn ->
+      match?(
+        %{phase: %{wait: %{hands: hands, settle: {:due, _, _}}}} when hands != nil,
+        :sys.get_state(pid)
+      )
+    end)
+  end
+
   # `module` answers each of `answers` in turn, then settles.
   defp answers(core, module, answers) do
     {:ok, agent} = Agent.start_link(fn -> answers end)
@@ -385,6 +466,163 @@ defmodule Helyx.Session.BeforeSettleTest do
       assert_receive {:DOWN, ^ref, :process, ^hook, _reason}
       assert status(session) == :idle
       refute_receive {:helyx_event, %{type: :turn_start}}, @load_ms
+    end
+  end
+
+  describe "an abort with background runs" do
+    test "while the chain runs revokes the run of the ended turn" do
+      core = connected([Hook.SettleA])
+      proxy = Hook.test_name(core)
+      run_gate = gate()
+      release_gate = gate()
+
+      Hook.script(core, Hook.SettleA, :before_settle, fn _ ->
+        send(proxy, {:blocked, self()})
+        receive do: (:go -> {:continue, "never"})
+      end)
+
+      {session, proc, turn_id} = connect(core, "tools")
+      {run, id} = background(proc, turn_id, run_gate, [%{"gate" => release_gate}])
+      send(proc, {:finish, turn_id})
+      collect_until(:turn_end)
+      assert_receive {:blocked, _hook}
+      ref = Process.monitor(run)
+
+      abort = Task.async(fn -> Session.abort(session) end)
+      assert_receive {:waiting, releaser}
+      send(releaser, :go)
+      assert :ok = Task.await(abort)
+
+      assert_receive {:DOWN, ^ref, :process, ^run, _reason}
+      assert {:ok, %{messages: messages}, _} = Session.subscribe(session)
+
+      refute Enum.any?(
+               messages,
+               &match?(%Message{role: :user, origin: %{id: ^id}}, &1)
+             )
+
+      idle(session)
+    end
+
+    test "with the chain due and a cancel pending revokes the run after the cancel answers" do
+      core = connected([Hook.SettleA])
+      run_gate = gate()
+      cancel_gate = gate()
+      release_gate = gate()
+
+      {session, proc, turn_id} = connect(core, "tools")
+      {run, _id} = background(proc, turn_id, run_gate, [%{"gate" => release_gate}])
+      release = slow_release(proc, turn_id, cancel_gate)
+
+      send(proc, {:finish, turn_id})
+      due_chain_behind_hands(session)
+      ref = Process.monitor(run)
+      abort = Task.async(fn -> Session.abort(session) end)
+
+      wait_until(fn ->
+        match?(%{phase: %{wait: %{settle: :revoke}}}, :sys.get_state(Session.pid(session)))
+      end)
+
+      # The revoke waits for the cancel that the release holds.
+      assert Task.yield(abort, 0) == nil
+      send(release, :go)
+      assert_receive {:waiting, releaser}
+
+      # The revoke waits for the release of the run's handle.
+      assert Task.yield(abort, 0) == nil
+      send(releaser, :go)
+
+      assert_receive {:DOWN, ^ref, :process, ^run, _reason}
+      assert :ok = Task.await(abort)
+      idle(session)
+    end
+
+    test "without a chain keeps the run of the ended turn" do
+      core = connected([])
+      run_gate = gate()
+      cancel_gate = gate()
+
+      {session, proc, turn_id} = connect(core, "tools")
+      {run, id} = background(proc, turn_id, run_gate, [])
+      release = slow_release(proc, turn_id, cancel_gate)
+
+      send(proc, {:finish, turn_id})
+      wait_behind_hands(session)
+      abort = Task.async(fn -> Session.abort(session) end)
+      send(release, :go)
+      assert :ok = Task.await(abort)
+      collect_until(:turn_end)
+
+      # The done turn's run is not revoked: its end waits for the next turn.
+      assert Process.alive?(run)
+      :ok = Session.set_model(session, "test/ok")
+      send(run, :go)
+      wait_until(fn -> held_ends(session) == 1 end)
+      :ok = Session.prompt(session, "next")
+      events = collect_until(:turn_end)
+
+      assert Enum.any?(
+               messages(events),
+               &match?(%Message{role: :user, origin: %{kind: :background, id: ^id}}, &1)
+             )
+
+      idle(session)
+    end
+
+    test "a turn that fails revokes the run of its turn" do
+      core = connected([])
+      run_gate = gate()
+      release_gate = gate()
+
+      {session, proc, turn_id} = connect(core, "tools")
+      {run, id} = background(proc, turn_id, run_gate, [%{"gate" => release_gate}])
+      ref = Process.monitor(run)
+
+      send(proc, {:fail, turn_id})
+      assert [%{outcome: :error}] = of_type(collect_until(:turn_end), :turn_end)
+
+      assert_receive {:waiting, releaser}
+      send(releaser, :go)
+      assert_receive {:DOWN, ^ref, :process, ^run, _reason}
+      assert {:ok, %{messages: messages}, _} = Session.subscribe(session)
+
+      refute Enum.any?(
+               messages,
+               &match?(%Message{role: :user, origin: %{id: ^id}}, &1)
+             )
+
+      idle(session)
+    end
+
+    test "an abort drops a due chain held behind a dying provider process" do
+      core = connected([Hook.SettleA])
+      proxy = Hook.test_name(core)
+      release_gate = gate()
+
+      Hook.script(core, Hook.SettleA, :before_settle, fn _ ->
+        send(proxy, {:hook_called, self()})
+        :settle
+      end)
+
+      {session, proc, turn_id} = connect(core, "stop")
+      release = slow_release(proc, turn_id, release_gate)
+      send(proc, {:finish, turn_id})
+      due_chain_behind_hands(session)
+      send(proc, :stop)
+
+      wait_until(fn ->
+        match?(
+          %{phase: %{provider: %Helyx.Session.Server.Flow.Dying{}}},
+          :sys.get_state(Session.pid(session))
+        )
+      end)
+
+      abort = Task.async(fn -> Session.abort(session) end)
+      send(release, :go)
+
+      assert :ok = Task.await(abort)
+      idle(session)
+      refute_received {:hook_called, _hook}
     end
   end
 

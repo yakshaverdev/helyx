@@ -318,14 +318,17 @@ defmodule Helyx.Session.Server.TurnLoop do
   # session settles too: a late `:rejected` can queue a steer. A process
   # that ends, the session's or a summary call's, holds the wait. A start
   # with no answer holds it too: the cleanup request went to the hands after
-  # it, and the hands answer in order. A due `before_settle` chain is last.
+  # it, and the hands answer in order. A revoke waits, then a due chain.
   def progress(%State{phase: %Waiting{provider: %Dying{}}} = state), do: state
 
   def progress(%State{phase: %Waiting{}, summary_call: %Summary{}} = state), do: state
 
-  def progress(
-        %State{phase: %Waiting{wait: %Wait{hands: nil, reply: nil, settle: {:due, _, _}}}} = state
-      ),
+  def progress(%State{phase: %Waiting{wait: %Wait{settle: :revoke} = wait}} = state)
+      when wait.hands == nil and wait.reply == nil,
+      do: Settle.revoke(state)
+
+  def progress(%State{phase: %Waiting{wait: %Wait{settle: {:due, _, _}} = wait}} = state)
+      when wait.hands == nil and wait.reply == nil,
       do: Settle.start(state)
 
   def progress(

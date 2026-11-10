@@ -53,6 +53,14 @@ defmodule Helyx.Session.Server.Settle do
     put_wait(state, settle: ref)
   end
 
+  # The revoke that an abort asked for while another hands request of the
+  # wait was pending: after its answer, the wait revokes the Tasks and
+  # background runs of the ended turn (ADR 0014, invariant 4) before it
+  # ends.
+  @spec revoke(State.t()) :: State.t()
+  def revoke(%State{phase: %Waiting{wait: %Wait{settle: :revoke} = wait}} = state),
+    do: put_wait(state, settle: nil, hands: Hands.request_revoke(state.hands, wait.turn))
+
   # The answer of the chain of the current wait. An answer of a chain that
   # an abort cancelled finds no ref, and is dropped.
   @spec answer(State.t(), reference(), term()) :: State.t()
@@ -75,16 +83,27 @@ defmodule Helyx.Session.Server.Settle do
   defp continue(state, {:continue, module, text}),
     do: Steering.continue(state, Message.user(text, Message.hook_origin(module)))
 
-  # An abort in a wait cancels a running chain with the Tasks of the ended
-  # turn: the wait holds the answer of the hands, as at the abort of a
-  # turn. A due chain does not start. The queue dropped a waiting continue
-  # (`Queue.abort/1`).
+  # An abort in a wait ends a running chain and, while the chain is due or
+  # runs, revokes the Tasks and background runs of the ended turn (ADR
+  # 0014, invariant 4): the wait holds the answer of the hands, as at the
+  # abort of a turn. A due chain does not start. With another hands request
+  # pending, the wait revokes after its answer (`revoke/1`). A wait with no
+  # chain keeps the done turn's background runs. The queue dropped a
+  # waiting continue (`Queue.abort/1`).
   @spec abort(State.t()) :: State.t()
   def abort(%State{phase: %Waiting{wait: %Wait{settle: ref} = wait}} = state)
       when is_reference(ref),
-      do: put_wait(state, settle: nil, hands: Hands.request_cancel(state.hands, wait.turn))
+      do: put_wait(state, settle: nil, hands: Hands.request_revoke(state.hands, wait.turn))
 
-  def abort(%State{phase: %Waiting{}} = state), do: put_wait(state, settle: nil)
+  def abort(
+        %State{phase: %Waiting{wait: %Wait{settle: {:due, _, _}, hands: nil} = wait}} = state
+      ),
+      do: put_wait(state, settle: nil, hands: Hands.request_revoke(state.hands, wait.turn))
+
+  def abort(%State{phase: %Waiting{wait: %Wait{settle: {:due, _, _}}}} = state),
+    do: put_wait(state, settle: :revoke)
+
+  def abort(%State{phase: %Waiting{}} = state), do: state
 
   # A failed hook of the current chain of the turn `turn_id` gets a
   # notice; a later answer, after an abort cancelled the chain, gets none.
