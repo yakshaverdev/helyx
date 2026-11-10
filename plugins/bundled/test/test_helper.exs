@@ -26,6 +26,10 @@ Application.put_env(:helyx_plugins, :model_catalog,
   dir: Path.expand("../_build/test_model_catalog", __DIR__)
 )
 
+# No Hub polls its wake-ups by its own timer: a test sends each poll, so a
+# poll does not come between the steps of a wake test (#911).
+Application.put_env(:helyx_plugins, :hub_poll_timer, false)
+
 ExUnit.start(
   exclude: [:real_claude | exclude],
   assert_receive_timeout: 30_000,
