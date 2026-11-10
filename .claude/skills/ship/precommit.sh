@@ -16,7 +16,8 @@
 # and accepted. The end of this script or of its ssh ends its run on the
 # host, at any stage. The tests of the run that holds the lock have
 # timeouts, but a hung compile or Dialyzer step of that run blocks the
-# queue until its caller ends. A local run has no queue.
+# queue until its caller ends. A local run takes the same lock when flock
+# exists, so on the host it waits in the same queue.
 set -uo pipefail
 
 root=$(git rev-parse --show-toplevel) || exit 1
@@ -53,7 +54,26 @@ fi
 host=${HELYX_PRECOMMIT_HOST:-$(cat ~/.config/helyx/precommit-host 2>/dev/null)}
 
 if [ -z "$host" ]; then
-  bash .claude/skills/ship/precommit-run.sh > precommit.log 2>&1
+  # A local run waits in the queue of the host's runs (the same lock).
+  # Without flock (macOS) it has none. flock exits with the run's status.
+  # The wait and the run are one process group (setsid). A signal to this
+  # script sends SIGKILL to the group, as the end of the namespace does on
+  # the host: a run killed while it waits must not take the lock later, and
+  # one killed while it runs must not keep it. The trap is set before the
+  # fork and reads `$!`, empty until then; it also kills `$!` itself, a
+  # child that has not yet called setsid. A SIGKILL of this script leaves
+  # the group running (accepted). A background job starts with INT and QUIT
+  # ignored, so env sets them to the default for the run, as on the host.
+  if command -v flock > /dev/null; then
+    {
+      flock -n ~/.helyx-precommit.lock true || echo 'precommit: waiting for the host lock'
+      trap '[ -z "${!:-}" ] || kill -KILL -- "-$!" "$!" 2> /dev/null; exit 143' TERM INT HUP
+      setsid flock --verbose ~/.helyx-precommit.lock env --default-signal=INT,QUIT bash .claude/skills/ship/precommit-run.sh &
+      wait "$!"
+    } > precommit.log 2>&1
+  else
+    bash .claude/skills/ship/precommit-run.sh > precommit.log 2>&1
+  fi
   finish $?
 fi
 

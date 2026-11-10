@@ -11,6 +11,11 @@
 # step runs; the last line names each step that failed.
 set -uo pipefail
 
+# The umask of a run on the host, which starts under sudo (its default
+# umask 0022). A shell with 002 makes group-writable test folders, which the
+# Hub refuses (:unsafe_folder).
+umask 022
+
 mise=$(command -v mise || echo "$HOME/.local/bin/mise")
 failed=()
 
