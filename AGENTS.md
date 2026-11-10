@@ -108,7 +108,7 @@ Run from the repository root. The Mix projects are the root, `plugins/bundled` w
 
 ### Issue tracker
 
-Issues live in GitHub Issues for `akshaydeshraj/helyx` (via the `gh` CLI). See `docs/agents/issue-tracker.md`.
+Issues live in GitHub Issues for `yakshaverdev/helyx` (via the `gh` CLI). See `docs/agents/issue-tracker.md`.
 
 ### Triage labels
 
