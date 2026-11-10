@@ -119,6 +119,11 @@ defmodule Helyx.Coordinator do
   def text(:turn_running), do: "a turn runs; use steer or follow_up, or wait for its end"
   def text(:invalid_cwd), do: "the folder is not valid"
   def text(:too_many_schedules), do: "the session holds as many schedules as it may"
+
+  def text(:too_many_event_subscriptions),
+    do: "the session or you hold as many event subscriptions as you may"
+
+  def text(:unknown_subscription), do: "no such event subscription of yours"
   def text(:bad_params), do: "a value is out of its range"
   def text(reason), do: Helyx.Reason.text(reason)
 end

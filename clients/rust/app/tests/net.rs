@@ -131,12 +131,12 @@ fn refused_keeps_its_line() {
         challenge(&mut ws);
         next_text(&mut ws);
         ws.send(Message::text(
-            r#"{"type":"refused","code":"protocol","server_protocol":9}"#,
+            r#"{"type":"refused","code":"protocol","server_protocol":10}"#,
         ))
         .unwrap();
         let _ = ws.read();
     });
-    assert_eq!(line, "the server speaks protocol 9: update the app");
+    assert_eq!(line, "the server speaks protocol 10: update the app");
 }
 
 #[test]

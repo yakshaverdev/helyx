@@ -29,6 +29,10 @@ User stories:
 
 Over stdio, the same frames go one JSON object per line. The encoder escapes every LF inside a string, so a raw LF ends a frame, and stdout carries protocol frames only. Stdio has no `Origin` and no token: the process that starts the server owns it.
 
+### Webhook endpoint
+
+The same listener serves the webhook of an event subscription: `POST /hooks/<id>` (`docs/features/hub.md`, decision 17). It is not a frame and not a WebSocket upgrade: the server reads the body (at most 1,048,576 bytes), gives it to the authority of the transport, and answers the HTTP status that the authority decides. A transport with no authority, or with an authority that does not export `webhook/3`, answers 404 on every path under `/hooks`. The endpoint has no `Origin` check and no `hello`: the HMAC of the body with the secret of the subscription is its check, and the path itself is a secret.
+
 ### Close codes
 
 | Code | Meaning |
@@ -128,7 +132,7 @@ The schema below is the contract. The test of #660 computes the SHA-256 of the l
 
 <!-- wire-schema:start -->
 ```text
-protocol 8
+protocol 9
 
 notation: {k: T} an object; k? may be absent (absent = null or false);
   T | U either; [T] a list; "x" that string; int a JSON integer >= 0;
@@ -163,6 +167,7 @@ error_code = "unknown_op" | "bad_params" | "busy" | "timeout" | "failed"
            | "forbidden" | "too_many_records" | "too_many_projects"
            | "unknown_project" | "unknown_token"
            | "too_many_schedules" | "unknown_schedule"
+           | "too_many_event_subscriptions" | "unknown_subscription"
 
 op = "sessions.live" | "sessions.saved" | "start" | "resume" | "subscribe"
    | "unsubscribe" | "history" | "prompt" | "steer" | "follow_up"
@@ -172,6 +177,7 @@ op = "sessions.live" | "sessions.saved" | "start" | "resume" | "subscribe"
    | "hub.projects.update" | "hub.projects.delete" | "hub.tokens.list"
    | "hub.tokens.revoke"
    | "hub.schedules.list" | "hub.schedules.create" | "hub.schedules.delete"
+   | "hub.subscriptions.list" | "hub.subscriptions.create" | "hub.subscriptions.delete"
 
 params.sessions.live   = {}
 params.sessions.saved  = {cwd?: string, after?: string, limit?: int}
@@ -208,6 +214,9 @@ params.hub.tokens.revoke   = {token: string}
 params.hub.schedules.list   = {session?: string}
 params.hub.schedules.create = {session: string, at: int, every?: int, prompt: string}
 params.hub.schedules.delete = {schedule: string}
+params.hub.subscriptions.list   = {session?: string}
+params.hub.subscriptions.create = {session: string, prompt: string, label?: string}
+params.hub.subscriptions.delete = {subscription: string}
 
 result.sessions.live  = {sessions: [live_session]}
 result.sessions.saved = {items: [saved_session], next: string | null}
@@ -227,6 +236,9 @@ result.hub.records.delete, result.hub.projects.delete, result.hub.tokens.revoke 
 result.hub.schedules.list   = {schedules: [schedule]}
 result.hub.schedules.create = {schedule: schedule}
 result.hub.schedules.delete = {}
+result.hub.subscriptions.list   = {subscriptions: [subscription]}
+result.hub.subscriptions.create = {subscription: subscription, secret: string, path: string}
+result.hub.subscriptions.delete = {}
 
 live_session  = {id: string, instance_id: string, cwd: string, model: string,
                  status: "idle" | "running"}
@@ -242,6 +254,11 @@ token    = {id: string, name: string, created_at: int}
 schedule = {id: string, session: string, at: int, every: int | null, prompt: string,
             pending: bool, last_at: int | null,
             last_outcome: "delivered" | "missed" | "refused" | "unconfirmed" | null}
+# an event subscription: `path` is `/hooks/<id>`; no item of a list holds its secret
+subscription = {id: string, session: string, label: string, template: string,
+                created_at: int, pending: bool, last_at: int | null,
+                last_outcome: "delivered" | "missed" | "refused" | "unconfirmed" | null,
+                path: string}
 
 snapshot = {instance_id: string, seq: int, messages: [message], more: bool,
             turn: turn | null, model: string, queue: queue, persisting: bool,
@@ -325,7 +342,7 @@ Notes on the codec:
 
 ## Conformance fixtures
 
-`test/fixtures/wire/` holds fixtures of protocol 8 as plain JSON (#855): the frames that a client sends, each with the frames and the close code of the server; the frames that a server sends, each valid, ignored, or a contract break for a client; and folds, event sequences with the state that a client holds after them. Its `README.md` states what a conforming client or server must pass and which rules are in prose only. The transport tests run the client frames against the server, and the TUI tests run the server frames and the folds against the client and its view model, so the fixtures and the Elixir code cannot drift.
+`test/fixtures/wire/` holds fixtures of protocol 9 as plain JSON (#855): the frames that a client sends, each with the frames and the close code of the server; the frames that a server sends, each valid, ignored, or a contract break for a client; and folds, event sequences with the state that a client holds after them. Its `README.md` states what a conforming client or server must pass and which rules are in prose only. The transport tests run the client frames against the server, and the TUI tests run the server frames and the folds against the client and its view model, so the fixtures and the Elixir code cannot drift.
 
 What this doc does not pin down for an implementation that does not run on the BEAM. Each is open, not decided here:
 
@@ -351,6 +368,7 @@ What this doc does not pin down for an implementation that does not run on the B
 12. **Protocol 5** (#869). Protocol 6 adds the Hub (ADR 0010, `docs/features/hub.md`): the `token` of `hello`, the `hub.*` operations of records, projects, tokens, and the user, their params and results, and the error codes `forbidden`, `too_many_records`, `too_many_projects`, `unknown_project`, and `unknown_token`; a server with no authority answers as protocol 5 did. A client of protocol 5 gets `refused` and the close `4426`, and the fixtures name protocol 6. The schedules of a Hub (#870) come with protocol 7.
 13. **Protocol 6** (#870). Protocol 7 adds the schedules of a Hub (`docs/features/hub.md`, decisions 11 and 12): the operations `hub.schedules.list`, `hub.schedules.create`, and `hub.schedules.delete`, their params and results, the shape `schedule`, and the error codes `too_many_schedules` and `unknown_schedule`; a server with no authority answers them with `unknown_op`, as every `hub.*` op. A client of protocol 6 gets `refused` and the close `4426`, and the fixtures named protocol 7.
 14. **Protocol 7** (#492, `docs/features/mcp-client.md`). Protocol 8 adds the event `tools_change` with `data.tools_change`, the activated deferred tool names in drop order (the first name leaves first when the session drops one for its cap; a client only shows the list), and the snapshot field `activated`, the same list; nothing else changes. A client of protocol 7 gets `refused` and the close `4426`, and the fixtures name protocol 8.
+15. **Protocol 8** (#921, `docs/features/hub.md`, decision 17). Protocol 9 adds the event subscriptions of a Hub: the operations `hub.subscriptions.list`, `hub.subscriptions.create`, and `hub.subscriptions.delete`, their params and results, the shape `subscription`, and the error codes `too_many_event_subscriptions` and `unknown_subscription`; the webhook endpoint itself is HTTP beside the WebSocket upgrade and carries no frame. A client of protocol 8 gets `refused` and the close `4426`, and the fixtures name protocol 9.
 
 ## Bounds
 
@@ -390,6 +408,11 @@ What this doc does not pin down for an implementation that does not run on the B
 | request `id` | 1 to 64 bytes | `bad_params`; with no readable `id`, close `4400` | transport |
 | `sessions.saved` page | 1 to 256 items, default 50 | `bad_params` | Core (`Helyx.Sessions.list_saved/2`) |
 | live list | 64 items | | the live-session cap |
+| webhook request body | 1,048,576 bytes | HTTP 413, and the authority sees no body | transport |
+| webhook requests handled at once | 16 per server, and each holds one body of at most 1,048,576 bytes | HTTP 503 | transport (a gate of its own) |
+| webhook `id` in the path | 1 to 64 bytes; a stored id has 12 | HTTP 404 | transport (the shape), the authority (the lookup) |
+| webhook body read | 30,000 ms | HTTP 400 when the read fails | transport |
+| webhook call to the Hub | 5,000 ms (the Hub call of decision 5) | HTTP 503, and the sender tries again later | the authority |
 
 The decode bounds, measured (#787; OTP 28, Elixir 1.19.5, the dev machine; a second run of the spec review gave times up to 25% higher):
 

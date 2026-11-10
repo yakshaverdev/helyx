@@ -65,12 +65,13 @@ defmodule Helyx.Hub.Delivery do
       :ok -> Hub.call(hub, {:wake_outcome, row, {:delivered, Params.cut(row.prompt)}})
       {:error, busy} when busy in [:turn_running, :queue_full] -> back(hub, row)
       {:error, :text_too_large} -> Hub.call(hub, {:wake_outcome, row, :refused})
-      {:error, :session_not_found} -> :unconfirmed
-      :exit -> :unconfirmed
+      {:error, :session_not_found} -> unconfirmed(hub, row)
+      :exit -> unconfirmed(hub, row)
     end
   end
 
   defp back(hub, row), do: Hub.call(hub, {:wake_outcome, row, :back})
+  defp unconfirmed(hub, row), do: Hub.call(hub, {:wake_outcome, row, :unconfirmed})
 
   # The origin id is the delivery id of the pending wake-up, which names no
   # schedule and no run.

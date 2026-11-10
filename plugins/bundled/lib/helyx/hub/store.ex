@@ -212,7 +212,9 @@ defmodule Helyx.Hub.Store do
   @typedoc """
   A schedule row (`docs/features/hub.md`, decisions 11 and 12, "Store
   schema"). `delivery_id`, `due_at`, and `next_try_at` are nil when the row
-  holds no pending wake-up.
+  holds no pending wake-up. `subscription_id` is nil for a schedule and the
+  id of its event subscription for the one-run delivery of a webhook
+  (decision 17).
   """
   @type schedule :: %{
           id: String.t(),
@@ -227,7 +229,8 @@ defmodule Helyx.Hub.Store do
           next_try_at: integer() | nil,
           last_at: integer() | nil,
           last_outcome: String.t() | nil,
-          created_at: integer()
+          created_at: integer(),
+          subscription_id: String.t() | nil
         }
 
   @doc "The schedules of `owner`, of the session `session_id` or of all when nil, oldest first."
@@ -266,4 +269,80 @@ defmodule Helyx.Hub.Store do
   """
   @callback update_schedule(t(), id :: String.t(), expect :: map(), changes :: map(), deadline()) ::
               :ok | {:error, :stale | :timeout | :failed}
+
+  @typedoc """
+  An event subscription row (`docs/features/hub.md`, decision 17, "Store
+  schema"). `secret` is the 43-character base64url text of 32 random bytes; it leaves
+  the Hub process only into the webhook endpoint, which computes the HMAC of
+  a payload with it. `pending` is
+  derived: whether the subscription holds a pending delivery.
+  """
+  @type subscription :: %{
+          id: String.t(),
+          owner: String.t(),
+          session_id: String.t(),
+          template: String.t(),
+          label: String.t(),
+          secret: binary(),
+          created_at: integer(),
+          last_at: integer() | nil,
+          last_outcome: String.t() | nil,
+          pending: boolean()
+        }
+
+  @doc """
+  Inserts a subscription unless its session holds `per_session` rows or its
+  owner `per_user` rows.
+  """
+  @callback put_subscription(
+              t(),
+              subscription(),
+              per_session :: pos_integer(),
+              per_user :: pos_integer(),
+              deadline()
+            ) ::
+              :ok | {:error, :too_many_event_subscriptions | :timeout | :failed}
+
+  @doc "The subscriptions of `owner`, of one session or all, oldest first."
+  @callback subscriptions(t(), owner :: String.t(), session_id :: String.t() | nil) ::
+              {:ok, [subscription()]} | {:error, :failed}
+
+  @doc "The subscription row of `id`, whoever owns it (the webhook endpoint)."
+  @callback subscription(t(), id :: String.t()) ::
+              {:ok, subscription()} | {:error, :not_found | :failed}
+
+  @doc "Deletes a subscription of `owner` with its deliveries."
+  @callback delete_subscription(t(), owner :: String.t(), id :: String.t(), deadline()) ::
+              :ok | {:error, :not_found | :timeout | :failed}
+
+  @doc """
+  Sets the delivery state of a subscription (`last_at` and `last_outcome`)
+  from the outcome of its delivery. A subscription that is gone is left as
+  it is.
+  """
+  @callback subscription_sent(
+              t(),
+              id :: String.t(),
+              at :: integer(),
+              outcome :: String.t() | nil,
+              deadline()
+            ) :: :ok | {:error, :timeout | :failed}
+
+  @doc """
+  Inserts the one-run delivery of a webhook (`schedules` row with a
+  `subscription_id`) unless its subscription holds `per_pending` pending
+  deliveries, or accepted `per_hour` in the `window_s` seconds that end at
+  `now`. An ended delivery older than twice the window is pruned in the same
+  step, so the rows of a subscription stay bounded.
+  """
+  @callback put_delivery(
+              t(),
+              schedule(),
+              per_pending :: pos_integer(),
+              per_hour :: pos_integer(),
+              window_s :: pos_integer(),
+              now :: integer(),
+              deadline()
+            ) ::
+              :ok | {:error, :too_many_pending | :rate_limited | :timeout | :failed}
 end

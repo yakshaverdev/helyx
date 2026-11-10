@@ -20,8 +20,61 @@ defmodule Helyx.Hub.Store.SQLiteSchedulesTest do
       next_try_at: next_try_at,
       last_at: nil,
       last_outcome: nil,
-      created_at: 1
+      created_at: 1,
+      subscription_id: nil
     }
+  end
+
+  defp subscription(id, owner, session \\ "S") do
+    %{
+      id: id,
+      owner: user(owner).id,
+      session_id: session,
+      template: "{{payload}}",
+      label: "",
+      secret: "secret",
+      created_at: 1,
+      last_at: nil,
+      last_outcome: nil
+    }
+  end
+
+  defp delivery(id, subscription_id, owner, created_at) do
+    %{
+      id: id,
+      subscription_id: subscription_id,
+      owner: user(owner).id,
+      session_id: "S",
+      prompt: "p",
+      at: created_at,
+      every: nil,
+      run: 0,
+      delivery_id: "x" <> id,
+      due_at: created_at,
+      next_try_at: created_at,
+      last_at: nil,
+      last_outcome: nil,
+      created_at: created_at
+    }
+  end
+
+  defp end_delivery(db, id) do
+    :ok =
+      SQLite.update_schedule(
+        db,
+        id,
+        %{run: 0},
+        %{delivery_id: nil, due_at: nil, next_try_at: nil, last_outcome: "delivered"},
+        :infinity
+      )
+  end
+
+  defp count(db, sql, args) do
+    {:ok, stmt} = Exqlite.Sqlite3.prepare(db, sql)
+    :ok = Exqlite.Sqlite3.bind(stmt, args)
+    {:ok, [[n]]} = Exqlite.Sqlite3.fetch_all(db, stmt)
+    :ok = Exqlite.Sqlite3.release(db, stmt)
+    n
   end
 
   setup do
@@ -119,5 +172,101 @@ defmodule Helyx.Hub.Store.SQLiteSchedulesTest do
     past = System.monotonic_time(:millisecond)
     assert SQLite.update_schedule(db, "s1", %{run: 1}, %{run: 2}, past) == {:error, :timeout}
     assert {:ok, %{run: 1}} = SQLite.schedule(db, "s1")
+  end
+
+  test "put_delivery counts a delivery in flight toward the pending cap", %{db: db} do
+    :ok = SQLite.put_subscription(db, subscription("sub", "a"), 16, 256, :infinity)
+
+    for n <- 1..15 do
+      :ok =
+        SQLite.put_delivery(
+          db,
+          delivery("d#{n}", "sub", "a", 1000),
+          16,
+          60,
+          3_600,
+          1000,
+          :infinity
+        )
+    end
+
+    :ok =
+      SQLite.put_delivery(db, delivery("d16", "sub", "a", 1000), 16, 60, 3_600, 1000, :infinity)
+
+    # The decide step of decision 12: no delivery id, unconfirmed.
+    :ok =
+      SQLite.update_schedule(
+        db,
+        "d16",
+        %{run: 0},
+        %{run: 1, last_outcome: "unconfirmed", delivery_id: nil, due_at: nil, next_try_at: nil},
+        :infinity
+      )
+
+    assert SQLite.put_delivery(
+             db,
+             delivery("d17", "sub", "a", 1000),
+             16,
+             60,
+             3_600,
+             1000,
+             :infinity
+           ) ==
+             {:error, :too_many_pending}
+
+    sql =
+      "SELECT count(*) FROM schedules WHERE subscription_id = 'sub' " <>
+        "AND (last_outcome IS NULL OR last_outcome = 'unconfirmed')"
+
+    assert count(db, sql, []) == 16
+  end
+
+  test "put_delivery prunes an ended delivery older than two windows", %{db: db} do
+    :ok = SQLite.put_subscription(db, subscription("sub", "a"), 16, 256, :infinity)
+
+    :ok =
+      SQLite.put_delivery(db, delivery("d0", "sub", "a", 1000), 16, 60, 3_600, 1000, :infinity)
+
+    :ok = end_delivery(db, "d0")
+
+    :ok =
+      SQLite.put_delivery(db, delivery("d1", "sub", "a", 8201), 16, 60, 3_600, 8201, :infinity)
+
+    assert SQLite.schedule(db, "d0") == {:error, :not_found}
+    assert count(db, "SELECT count(*) FROM schedules WHERE subscription_id = 'sub'", []) == 1
+  end
+
+  test "put_delivery expires an acceptance from the rolling hour", %{db: db} do
+    :ok = SQLite.put_subscription(db, subscription("sub", "a"), 16, 256, :infinity)
+
+    for id <- ["d1", "d2"] do
+      :ok = SQLite.put_delivery(db, delivery(id, "sub", "a", 1000), 16, 2, 3_600, 1000, :infinity)
+      :ok = end_delivery(db, id)
+    end
+
+    assert SQLite.put_delivery(
+             db,
+             delivery("d3", "sub", "a", 1000),
+             16,
+             2,
+             3_600,
+             1000,
+             :infinity
+           ) ==
+             {:error, :rate_limited}
+
+    :ok = SQLite.put_delivery(db, delivery("d4", "sub", "a", 4601), 16, 2, 3_600, 4601, :infinity)
+    :ok = SQLite.put_delivery(db, delivery("d5", "sub", "a", 4601), 16, 2, 3_600, 4601, :infinity)
+
+    assert SQLite.put_delivery(
+             db,
+             delivery("d6", "sub", "a", 4601),
+             16,
+             2,
+             3_600,
+             4601,
+             :infinity
+           ) ==
+             {:error, :rate_limited}
   end
 end

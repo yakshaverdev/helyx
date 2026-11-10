@@ -7,6 +7,7 @@ defmodule Helyx.Hub.Api do
   # of a Hub call is `:timeout`, as on the wire.
 
   alias Helyx.Hub.Access
+  alias Helyx.Hub.{Params, Subscriptions}
 
   # The session operations that `authorize/4` checks, with the rules of
   # `Helyx.Hub.Access.check/4`.
@@ -58,7 +59,7 @@ defmodule Helyx.Hub.Api do
   end
 
   def schedules(arg, user_id, session_id) do
-    case safe(fn -> Access.list(arg, %{user: user_id, token: nil}, session_id) end) do
+    case safe(fn -> Access.Schedules.rows(arg, %{user: user_id, token: nil}, session_id) end) do
       {:ok, rows} -> {:ok, Enum.map(rows, &Helyx.Hub.Schedules.view/1)}
       other -> revoked(other)
     end
@@ -66,6 +67,50 @@ defmodule Helyx.Hub.Api do
 
   def delete_schedule(arg, user_id, schedule_id) do
     request = {:schedule_delete, %{user: user_id, token: nil}, schedule_id}
+    revoked(safe(fn -> Helyx.Hub.call(arg.hub, request) end))
+  end
+
+  # `Helyx.Hub.subscribe/3`: `hub.subscriptions.create` for the user
+  # `user_id`, with the same checks in the same order as the wire.
+  def subscribe(arg, user_id, params) do
+    case Params.check("hub.subscriptions.create", params) do
+      {:ok, {id, fields}} -> subscribed(arg, user_id, id, fields)
+      code -> {:error, code}
+    end
+  end
+
+  defp subscribed(arg, user_id, id, fields) do
+    request = %{user: user_id, token: nil}
+
+    case revoked(safe(fn -> Access.Subscriptions.create_row(arg, request, id, fields) end)) do
+      {:ok, row} ->
+        {:ok,
+         %{
+           subscription: Subscriptions.view(row),
+           secret: row.secret,
+           path: Subscriptions.path(row)
+         }}
+
+      other ->
+        other
+    end
+  end
+
+  # `Helyx.Hub.subscriptions/3`: `hub.subscriptions.list`.
+  def subscriptions(arg, user_id, session_id) do
+    case revoked(
+           safe(fn ->
+             Access.Subscriptions.list_rows(arg, %{user: user_id, token: nil}, session_id)
+           end)
+         ) do
+      {:ok, rows} -> {:ok, Enum.map(rows, &Subscriptions.view/1)}
+      other -> other
+    end
+  end
+
+  # `Helyx.Hub.unsubscribe/3`: `hub.subscriptions.delete`.
+  def unsubscribe(arg, user_id, subscription_id) do
+    request = {:subscription_delete, %{user: user_id, token: nil}, subscription_id}
     revoked(safe(fn -> Helyx.Hub.call(arg.hub, request) end))
   end
 

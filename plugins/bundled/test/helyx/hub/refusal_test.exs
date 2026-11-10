@@ -29,10 +29,12 @@ defmodule Helyx.Hub.RefusalTest do
                 hub.projects.create hub.tokens.list)
   @session_ops ~w(subscribe history prompt steer follow_up abort set_model compact answer stop
                   hub.records.get hub.records.update hub.records.delete
-                  hub.schedules.create hub.schedules.list)
+                  hub.schedules.create hub.schedules.list
+                  hub.subscriptions.create hub.subscriptions.list)
   @project_ops ~w(hub.projects.update hub.projects.delete hub.records.update hub.records.search)
   @token_ops ~w(hub.tokens.revoke)
   @schedule_ops ~w(hub.schedules.delete)
+  @subscription_ops ~w(hub.subscriptions.delete)
 
   # A frame of the client is at most 1 MiB; a larger request goes as parts.
   @max_frame 1_000_000
@@ -56,7 +58,9 @@ defmodule Helyx.Hub.RefusalTest do
     schema = for [_, op] <- Regex.scan(~r/"([a-z_.]+)"/, ops), into: MapSet.new(), do: op
 
     classes =
-      @no_object ++ @session_ops ++ @project_ops ++ @token_ops ++ @schedule_ops ++ ["resume"]
+      @no_object ++
+        @session_ops ++
+        @project_ops ++ @token_ops ++ @schedule_ops ++ @subscription_ops ++ ["resume"]
 
     assert MapSet.new(classes) == schema
   end
@@ -67,6 +71,7 @@ defmodule Helyx.Hub.RefusalTest do
     assert ops.(project_cases("s")) == MapSet.new(@project_ops)
     assert ops.(token_cases()) == MapSet.new(@token_ops)
     assert ops.(schedule_cases()) == MapSet.new(@schedule_ops)
+    assert ops.(subscription_cases()) == MapSet.new(@subscription_ops)
   end
 
   test "an object of another user answers as a missing one, for every op that names one",
@@ -83,6 +88,7 @@ defmodule Helyx.Hub.RefusalTest do
     {:ok, token} = Hub.create_token(context.hub, user_id(context, "ann"), "phone")
     token_id = hd(String.split(token, "."))
     schedule = schedule(ann, hd(ann_sessions))
+    subscription = subscription(ann, hd(ann_sessions))
 
     for {socket, refused} <- [{owner, ann_sessions}, {bob, ann_sessions ++ owner_sessions}] do
       own = start(socket)
@@ -108,6 +114,11 @@ defmodule Helyx.Hub.RefusalTest do
       for {op, params} <- schedule_cases() do
         refused = Map.put(params, "schedule", schedule)
         same(socket, op, refused, Map.put(params, "schedule", @missing))
+      end
+
+      for {op, params} <- subscription_cases() do
+        refused = Map.put(params, "subscription", subscription)
+        same(socket, op, refused, Map.put(params, "subscription", @missing))
       end
     end
   end
@@ -163,21 +174,41 @@ defmodule Helyx.Hub.RefusalTest do
          %{schedule_params() | "prompt" => String.duplicate("p", 16_385)}},
         {"hub.schedules.create", Map.put(schedule_params(), "every", 1)},
         {"hub.schedules.list", %{}},
-        {"hub.schedules.list", %{"x" => 1}}
+        {"hub.schedules.list", %{"x" => 1}},
+        {"hub.subscriptions.create", subscription_params()},
+        {"hub.subscriptions.create",
+         %{subscription_params() | "prompt" => String.duplicate("p", 16_385)}},
+        {"hub.subscriptions.create", Map.put(subscription_params(), "prompt", "no placeholder")},
+        {"hub.subscriptions.list", %{}},
+        {"hub.subscriptions.list", %{"x" => 1}}
       ]
   end
 
   defp schedule_params,
     do: %{"at" => System.os_time(:second) + 600, "prompt" => "hi"}
 
+  defp subscription_params, do: %{"prompt" => "a payload: {{payload}}"}
+
   defp schedule_cases,
     do: [{"hub.schedules.delete", %{}}, {"hub.schedules.delete", %{"x" => 1}}]
+
+  defp subscription_cases,
+    do: [{"hub.subscriptions.delete", %{}}, {"hub.subscriptions.delete", %{"x" => 1}}]
 
   defp schedule(socket, session) do
     params = Map.put(schedule_params(), "session", session)
 
     %{"result" => %{"schedule" => %{"id" => id}}} =
       Client.request(socket, "c", "hub.schedules.create", params)
+
+    id
+  end
+
+  defp subscription(socket, session) do
+    params = Map.put(subscription_params(), "session", session)
+
+    %{"result" => %{"subscription" => %{"id" => id}}} =
+      Client.request(socket, "c", "hub.subscriptions.create", params)
 
     id
   end

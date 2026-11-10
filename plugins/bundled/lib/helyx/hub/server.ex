@@ -7,7 +7,7 @@ defmodule Helyx.Hub.Server do
 
   use GenServer
 
-  alias Helyx.Hub.{Connections, Live, Records, Rules, Schedules, Wake}
+  alias Helyx.Hub.{Connections, Live, Records, Rules, Schedules, Subscriptions, Wake, Webhook}
 
   # The read of the live sessions of the Core at the start (decision 14).
   @seed_ms 5_000
@@ -198,18 +198,23 @@ defmodule Helyx.Hub.Server do
   defp serve({:record_update, auth, id, found, _changes} = request, _caller, deadline, state),
     do: readers_change(request, auth.user, id, found != nil, deadline, state)
 
-  defp serve({op, _auth, _id, _exists?} = request, _caller, deadline, state)
-       when op == :schedule_list,
+  defp serve(request, _caller, deadline, state)
+       when elem(request, 0) in [:schedule_list, :schedule_create],
        do: {Schedules.handle(request, deadline, state), state}
 
-  # A delete kills the Task of its schedule; a prompt that the session
-  # already took or queued still runs.
-  defp serve({:schedule_delete, _auth, id} = request, _caller, deadline, state) do
-    case Schedules.handle(request, deadline, state) do
-      :ok -> {:ok, Wake.kill(state, &(&1.schedule == id))}
-      error -> {error, state}
-    end
-  end
+  # The subscriptions of decision 17.
+  defp serve(request, _caller, deadline, state)
+       when elem(request, 0) in [:subscription_list, :subscription_create],
+       do: {Subscriptions.handle(request, deadline, state), state}
+
+  # A delete kills the Task of its schedule, or the Tasks of the deliveries
+  # of its subscription, before the reply; a prompt that the session already
+  # took or queued still runs.
+  defp serve({:schedule_delete, _auth, id} = request, _caller, deadline, state),
+    do: deleted(Schedules.handle(request, deadline, state), :schedule, id, state)
+
+  defp serve({:subscription_delete, _auth, id} = request, _caller, deadline, state),
+    do: deleted(Subscriptions.handle(request, deadline, state), :subscription, id, state)
 
   # A resume of a wake-up that Core answers `not_found` deletes the record of
   # the session, as `hub.records.delete` does (decision 8).
@@ -226,13 +231,17 @@ defmodule Helyx.Hub.Server do
               elem(request, 0) in [:wake_decide, :wake_outcome],
        do: Wake.serve(request, caller, deadline, state)
 
-  defp serve({op, _auth, _id, _exists?, _fields} = request, _caller, deadline, state)
-       when op == :schedule_create,
-       do: {Schedules.handle(request, deadline, state), state}
+  # The webhook endpoint of decision 17: the path id, the signature header,
+  # and the raw body; the answer is the HTTP status and body of the request.
+  defp serve({:webhook, id, signature, body}, _caller, deadline, state),
+    do: {Webhook.accept(id, signature, body, deadline, state), state}
 
   defp serve(request, _caller, deadline, state), do: {handle(request, deadline, state), state}
 
   defp killed(state, user_id), do: Wake.kill(state, &(&1.owner == user_id))
+
+  defp deleted(:ok, key, id, state), do: {:ok, Wake.kill(state, &(Map.fetch!(&1, key) == id))}
+  defp deleted(error, _key, _id, state), do: {error, state}
 
   defp revoked(:ok, token_id, state), do: {:ok, Connections.close_token(state, token_id)}
   defp revoked(error, _token_id, state), do: {error, state}

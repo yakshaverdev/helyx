@@ -15,6 +15,10 @@ defmodule Helyx.Hub.Params do
   # The bounds of a schedule (Bounds, #870).
   @max_schedule_prompt_bytes 16_384
   @max_ahead_s 31_622_400
+  # The bounds of an event subscription (Bounds, #921).
+  @max_template_bytes 16_384
+  @max_hook_label_bytes 64
+  @placeholder "{{payload}}"
   @every_s 300..2_678_400
   # The bound of the `prompt` of a record (Store schema).
   @max_record_prompt_bytes 1_024
@@ -72,11 +76,43 @@ defmodule Helyx.Hub.Params do
       when map_size(params) == 1 and is_binary(id),
       do: {:ok, id}
 
+  # An event subscription (decision 17): a template of 1 to 16,384 bytes of
+  # UTF-8 that holds `{{payload}}` exactly once, and an optional label of 0
+  # to 64 bytes with no control character. A template over the byte bound is
+  # `:text_too_large`; a missing or repeated placeholder is `:bad_params`.
+  def check("hub.subscriptions.create", %{"session" => id, "prompt" => template} = params)
+      when is_binary(id) and is_binary(template) do
+    label = Map.get(params, "label", "")
+
+    cond do
+      not subscription?(params, template, label) -> :bad_params
+      byte_size(template) > @max_template_bytes -> :text_too_large
+      true -> {:ok, {id, %{template: template, label: label}}}
+    end
+  end
+
+  def check("hub.subscriptions.list", params) when map_size(params) == 0, do: {:ok, nil}
+
+  def check("hub.subscriptions.list", %{"session" => id} = params)
+      when map_size(params) == 1 and is_binary(id),
+      do: {:ok, id}
+
+  def check("hub.subscriptions.delete", %{"subscription" => id} = params)
+      when map_size(params) == 1 and is_binary(id),
+      do: {:ok, id}
+
   def check(_op, _params), do: :bad_params
 
   defp schedule?(params, at, every, prompt) do
     Enum.all?(Map.keys(params), &(&1 in ~w(session at every prompt))) and at?(at) and
       every?(params, every) and prompt != "" and String.valid?(prompt)
+  end
+
+  defp subscription?(params, template, label) do
+    Enum.all?(Map.keys(params), &(&1 in ~w(session prompt label))) and
+      text?(label, 0, @max_hook_label_bytes) and
+      template != "" and String.valid?(template) and
+      length(String.split(template, @placeholder)) == 2
   end
 
   defp at?(at) do
