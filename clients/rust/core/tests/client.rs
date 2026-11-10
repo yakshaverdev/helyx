@@ -110,7 +110,7 @@ fn the_folds_through_connections() {
                 }
             } else if let Some(close) = step.get("close") {
                 let code = close.as_u64().map(|c| c as u16);
-                assert_eq!(client.closed(code), Next::Reconnect, "{name}");
+                assert_eq!(client.closed(code).next, Next::Reconnect, "{name}");
                 unsent = sent_frames(&welcomed(&mut client));
             } else {
                 let (expect, held) = (at(step, "expect"), observe(client.state("s1").unwrap()));
@@ -167,7 +167,7 @@ fn an_event_that_passes_the_cadence_sends_an_ack() {
 fn a_reconnect_after_a_slow_close_subscribes_with_after() {
     let mut client = following(4);
     client.receive(&notice(5)).unwrap();
-    assert_eq!(client.closed(Some(4408)), Next::Reconnect);
+    assert_eq!(client.closed(Some(4408)).next, Next::Reconnect);
     let resubscribe = sent(&welcomed(&mut client));
     assert_eq!(
         resubscribe,
@@ -193,7 +193,7 @@ fn a_close_before_the_welcome_or_after_a_break_stops() {
     let mut client = Client::new(None);
     client.connect();
     client.receive(CHALLENGE).unwrap();
-    assert_eq!(client.closed(None), Next::Stop);
+    assert_eq!(client.closed(None).next, Next::Stop);
 
     let mut client = following(4);
     assert!(client.receive(&notice(9)).is_err());
@@ -203,16 +203,16 @@ fn a_close_before_the_welcome_or_after_a_break_stops() {
         client.request("abort", json_params()),
         Err(Refusal::NotReady)
     );
-    assert_eq!(client.closed(Some(1000)), Next::Stop);
+    assert_eq!(client.closed(Some(1000)).next, Next::Stop);
 
     let mut client = Client::new(None);
     client.connect();
     client.receive(CHALLENGE).unwrap();
     let refused = r#"{"type":"refused","code":"protocol","server_protocol":4}"#;
     assert_eq!(client.receive(refused).unwrap(), [Output::Refused(4)]);
-    assert_eq!(client.closed(Some(4426)), Next::Stop);
+    assert_eq!(client.closed(Some(4426)).next, Next::Stop);
     // Before any welcome, a failed open stops.
-    assert_eq!(Client::new(None).closed(None), Next::Stop);
+    assert_eq!(Client::new(None).closed(None).next, Next::Stop);
 }
 
 /// After a welcome, every end reconnects but a break and a refusal: a
@@ -221,21 +221,21 @@ fn a_close_before_the_welcome_or_after_a_break_stops() {
 #[test]
 fn after_a_welcome_a_failed_open_reconnects() {
     let mut client = following(4);
-    assert_eq!(client.closed(None), Next::Reconnect);
+    assert_eq!(client.closed(None).next, Next::Reconnect);
     for _ in 0..2 {
-        assert_eq!(client.closed(None), Next::Reconnect);
+        assert_eq!(client.closed(None).next, Next::Reconnect);
     }
     client.connect();
     client.receive(CHALLENGE).unwrap();
-    assert_eq!(client.closed(None), Next::Reconnect);
+    assert_eq!(client.closed(None).next, Next::Reconnect);
     client.connect();
     client.receive(CHALLENGE).unwrap();
     let refused = r#"{"type":"refused","code":"protocol","server_protocol":10}"#;
     assert_eq!(client.receive(refused).unwrap(), [Output::Refused(10)]);
-    assert_eq!(client.closed(Some(4426)), Next::Stop);
+    assert_eq!(client.closed(Some(4426)).next, Next::Stop);
     let mut client = following(4);
     assert!(client.receive(&notice(9)).is_err());
-    assert_eq!(client.closed(None), Next::Stop);
+    assert_eq!(client.closed(None).next, Next::Stop);
 }
 
 fn json_params() -> helyx_client_core::json::Json {
@@ -262,7 +262,7 @@ fn a_session_end_ends_the_following() {
     assert!(sent(&outputs).is_empty());
     // The intent stays: a new connection subscribes it again, and the state
     // stays until the host forgets an unwanted session.
-    assert_eq!(client.closed(None), Next::Reconnect);
+    assert_eq!(client.closed(None).next, Next::Reconnect);
     let again = sent(&welcomed(&mut client));
     assert_eq!(again[0]["params"]["session"], json!("s1"));
     assert_eq!(client.state("s1").unwrap().seq, 4);
@@ -502,7 +502,7 @@ fn at_most_16_sessions_are_followed_and_each_resubscribes() {
         client.subscribe(&format!("s{n}")).unwrap();
     }
     assert_eq!(client.subscribe("s99"), Err(Refusal::TooManySubscriptions));
-    assert_eq!(client.closed(None), Next::Reconnect);
+    assert_eq!(client.closed(None).next, Next::Reconnect);
     let frames = sent(&welcomed(&mut client));
     assert_eq!(frames.len(), MAX_IN_FLIGHT);
     // A refused subscribe keeps its place; the host's unsubscribe frees it.
@@ -611,7 +611,7 @@ fn a_renewal_ends_with_its_subscribe() {
     // its end holds.
     let mut client = following(4);
     history(&mut client);
-    assert_eq!(client.closed(None), Next::Reconnect);
+    assert_eq!(client.closed(None).next, Next::Reconnect);
     let subscribe = sent(&welcomed(&mut client));
     let snap = json!({"sub": "0", "snapshot": of_i2(1)});
     client.receive(&res(&subscribe[0]["id"], snap)).unwrap();
@@ -662,7 +662,7 @@ fn a_huge_instance_id_subscribes_with_no_after() {
     for part in parts_of(res(&subscribe, json!({"sub": "1", "snapshot": big}))) {
         client.receive(&part).unwrap();
     }
-    assert_eq!(client.closed(None), Next::Reconnect);
+    assert_eq!(client.closed(None).next, Next::Reconnect);
     let frames = sent(&welcomed(&mut client));
     assert_eq!(frames[0]["params"], json!({"session": "s1"}));
 }
@@ -798,7 +798,7 @@ fn a_refused_subscribe_keeps_the_intent_and_waits_for_the_host() {
     // The host states it again: the subscribe goes.
     assert_eq!(client.subscribe("s1").unwrap().len(), 1);
     // A new connection reconciles every wanted session.
-    assert_eq!(client.closed(None), Next::Reconnect);
+    assert_eq!(client.closed(None).next, Next::Reconnect);
     assert_eq!(sent(&welcomed(&mut client)).len(), 2);
 }
 
@@ -840,7 +840,7 @@ fn a_refused_unsubscribe_reports_the_live_subscription() {
 #[test]
 fn an_unsubscribe_with_no_live_subscription_is_kept() {
     let mut client = following(4);
-    assert_eq!(client.closed(None), Next::Reconnect);
+    assert_eq!(client.closed(None).next, Next::Reconnect);
     assert!(client.unsubscribe("s1").is_empty());
     assert!(sent(&welcomed(&mut client)).is_empty());
     assert!(client.forget("s1"));
@@ -851,7 +851,7 @@ fn an_unsubscribe_with_no_live_subscription_is_kept() {
 #[test]
 fn a_renewal_does_not_lift_a_refused_hold() {
     let mut client = following(4);
-    assert_eq!(client.closed(None), Next::Reconnect);
+    assert_eq!(client.closed(None).next, Next::Reconnect);
     let again = sent(&welcomed(&mut client));
     let (history, _) = client.request("history", history_params()).unwrap();
     client.receive(&res_error(&again[0]["id"], "busy")).unwrap();
@@ -1171,7 +1171,7 @@ fn a_page_of_an_older_instance_keeps_the_replaced_one() {
 #[test]
 fn a_replay_of_a_replaced_instance_keeps_it_replaced() {
     let mut client = following(4);
-    assert_eq!(client.closed(None), Next::Reconnect);
+    assert_eq!(client.closed(None).next, Next::Reconnect);
     let subscribe = sent(&welcomed(&mut client));
     let (history, _) = client.request("history", history_params()).unwrap();
     client.receive(&instance_changed(&history)).unwrap();
