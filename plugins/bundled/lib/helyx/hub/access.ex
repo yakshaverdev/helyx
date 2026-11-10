@@ -272,11 +272,8 @@ defmodule Helyx.Hub.Access do
     end
   end
 
-  # The schedules of one session need the existence check; all need none.
   defp hub_op(arg, auth, "hub.schedules.list", id) do
-    exists? = id != nil and found(arg, id) != nil
-
-    case Hub.call(arg.hub, {:schedule_list, auth, id, exists?}, arg.until) do
+    case list(arg, auth, id) do
       {:ok, rows} -> {:ok, %{"schedules" => Enum.map(rows, &wire(Schedules.view(&1)))}}
       other -> error(other)
     end
@@ -284,6 +281,14 @@ defmodule Helyx.Hub.Access do
 
   defp hub_op(arg, auth, "hub.schedules.delete", id),
     do: empty(Hub.call(arg.hub, {:schedule_delete, auth, id}, arg.until))
+
+  # `hub.schedules.list`, also for `Helyx.Hub.schedules/3`: the schedules of
+  # one session need the existence check; all need none.
+  @doc false
+  def list(arg, auth, id) do
+    exists? = id != nil and found(arg, id) != nil
+    Hub.call(arg.hub, {:schedule_list, auth, id, exists?}, Map.get(arg, :until, :infinity))
+  end
 
   defp create(arg, auth, id, fields) do
     request = {:schedule_create, auth, id, found(arg, id) != nil, fields}

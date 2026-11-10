@@ -30,13 +30,19 @@ defmodule Helyx.Tool.ReadTest do
 
     names = MapSet.new(tools, fn {_module, spec} -> spec.name end)
     assert MapSet.subset?(MapSet.new(["bash", "edit", "memory_write", "read", "write"]), names)
-    coordinator = ~w(schedule session_create session_read session_send session_wait)
+
+    coordinator =
+      ~w(schedule schedule_delete schedule_list session_create session_read session_send
+         session_wait)
+
     assert Helyx.Tool.concurrent(tools) == MapSet.new(["agent", "read" | coordinator])
 
     assert Enum.sort(for({m, _} <- tools, function_exported?(m, :concurrent?, 0), do: m)) == [
              Helyx.Tool.Agent,
              Helyx.Tool.Read,
              Helyx.Tool.Schedule,
+             Helyx.Tool.ScheduleDelete,
+             Helyx.Tool.ScheduleList,
              Helyx.Tool.SessionCreate,
              Helyx.Tool.SessionRead,
              Helyx.Tool.SessionSend,

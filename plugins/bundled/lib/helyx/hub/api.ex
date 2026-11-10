@@ -57,6 +57,21 @@ defmodule Helyx.Hub.Api do
     safe(fn -> Helyx.Hub.call(arg.hub, {:owner, session_id, exists?}) end)
   end
 
+  def schedules(arg, user_id, session_id) do
+    case safe(fn -> Access.list(arg, %{user: user_id, token: nil}, session_id) end) do
+      {:ok, rows} -> {:ok, Enum.map(rows, &Helyx.Hub.Schedules.view/1)}
+      other -> revoked(other)
+    end
+  end
+
+  def delete_schedule(arg, user_id, schedule_id) do
+    request = {:schedule_delete, %{user: user_id, token: nil}, schedule_id}
+    revoked(safe(fn -> Helyx.Hub.call(arg.hub, request) end))
+  end
+
+  defp revoked(:revoked), do: {:error, :unknown_user}
+  defp revoked(other), do: other
+
   # Core checks the rest of the `cwd` at its start; the record needs a text.
   defp cwd(cwd) when is_binary(cwd), do: :ok
   defp cwd(_cwd), do: {:error, :invalid_cwd}

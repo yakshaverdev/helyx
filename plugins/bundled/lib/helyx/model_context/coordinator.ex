@@ -3,7 +3,8 @@ defmodule Helyx.ModelContext.Coordinator do
   The model context of the coordinator mode: a base prompt for an agent
   with no working folder that starts, steers, reads, waits for, and
   schedules other sessions with the coordinator tools (`session_create`,
-  `session_send`, `session_read`, `session_wait`, `schedule`), then a
+  `session_send`, `session_read`, `session_wait`, `schedule`,
+  `schedule_list`, `schedule_delete`), then a
   section with the modes of the product, the session id, the model, and
   the time in UTC to the minute, which `schedule` needs. It reads no
   context file. Each value is one line of at most 4,096 bytes. See
@@ -27,6 +28,8 @@ defmodule Helyx.ModelContext.Coordinator do
   - session_read reads the transcript of a session. With a question, it gives only the answer.
   - session_send sends a session a prompt, a steer into its running turn, or a follow-up.
   - schedule makes the server send a session a prompt at a time, once or each period.
+  - schedule_list lists the schedules, with the outcome of the last run of each.
+  - schedule_delete deletes a schedule. To change one, delete it and schedule it again.
 
   Give each session the whole task: it has none of this conversation. Tell the user the ids \
   of the sessions that you start, and what each one did.\
