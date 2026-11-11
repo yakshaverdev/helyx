@@ -5,7 +5,7 @@ defmodule Helyx.Text do
   # registration entry.
 
   # The cut of a tool result, in lines and in bytes of line content (50
-  # KiB): pi's read and bash defaults (`docs/research/coding-tools.md`).
+  # KiB): the defaults measured in `docs/research/coding-tools.md`.
   @max_lines 2000
   @max_bytes 51_200
   # A notice holds 79 bytes of fixed text and at most six numbers. Each is a
