@@ -178,6 +178,9 @@ defmodule Helyx.TUI.Wire.DecodeTest do
     replay = [event(:notice, %{text: "n"})]
     future = %{wire(Wire.event(event(:notice, %{text: "f"}))) | "type" => "future"}
 
+    live = %{id: "s1", instance_id: "i1", cwd: "/w", model: "fake/echo", status: :running}
+    wire_live = %{live | status: "running"}
+
     for {op, res, result} <- [
           {"steer", ok.(%{}), :ok},
           {"abort", ok.(%{"x" => 1}), :ok},
@@ -186,6 +189,8 @@ defmodule Helyx.TUI.Wire.DecodeTest do
           {"sessions.saved", ok.(%{"items" => [wire(Map.from_struct(summary))], "next" => "n"}),
            {:ok, [summary], "n"}},
           {"sessions.saved", ok.(%{"items" => [], "next" => nil}), {:ok, [], nil}},
+          {"sessions.live", ok.(%{"sessions" => [wire(wire_live)]}), {:ok, [live]}},
+          {"sessions.live", ok.(%{"sessions" => []}), {:ok, []}},
           {"stop", ok.(%{}), :ok},
           {"subscribe", ok.(%{"sub" => "2", "replay" => [wire(Wire.event(hd(replay))), future]}),
            {:ok, {:replay, replay}, "2"}},
@@ -203,6 +208,9 @@ defmodule Helyx.TUI.Wire.DecodeTest do
           {"start", ok.(%{})},
           {"subscribe", ok.(%{"sub" => 2, "replay" => []})},
           {"sessions.saved", ok.(%{"items" => [%{"id" => "s1"}], "next" => nil})},
+          {"sessions.live", ok.(%{})},
+          {"sessions.live", ok.(%{"sessions" => [Map.delete(wire_live, :cwd)]})},
+          {"sessions.live", ok.(%{"sessions" => [%{wire_live | status: "gone"}]})},
           {"steer", %{"ok" => true, "result" => []}},
           {"steer", %{"ok" => "yes"}}
         ] do

@@ -24,4 +24,23 @@ defmodule CodingAgent.Print.SignalHandlerTest do
     assert {:ok, :ok, done} = Signal.handle_call(:finish, state)
     assert done.phase == :finished
   end
+
+  # The handler calls the function that `run/5` registers once, and the
+  # halt follows it with the status of the first signal.
+  test "the first signal calls the registered end once, and halts with 143" do
+    test = self()
+    halt = &send(test, {:halt, &1})
+    {:ok, state} = Signal.init({halt, nil})
+    stop = fn -> send(test, :ended) end
+    assert {:ok, :ok, state} = Signal.handle_call({:session, stop}, state)
+
+    assert {:ok, stopped} = Signal.handle_event(:sigterm, state)
+    assert stopped.phase == {:stopping, 143}
+    assert_receive :ended
+    assert_receive {:halt, 143}
+
+    assert {:ok, ^stopped} = Signal.handle_event(:sighup, stopped)
+    refute_receive :ended
+    refute_receive {:halt, 129}
+  end
 end

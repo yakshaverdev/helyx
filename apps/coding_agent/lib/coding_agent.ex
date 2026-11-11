@@ -1,12 +1,12 @@
 defmodule CodingAgent do
   @moduledoc """
-  The terminal coding agent: the TUI over the wire on the server of the
-  data folder (`attach/2`), or print mode in the node, with Core, the
-  bundled plugins, and one session (`run/1`). Started by `CodingAgent.CLI`,
-  from the `helyx` release or `mix helyx`.
+  The terminal coding agent: the TUI and print mode, both clients of the
+  server of the data folder over the wire. `attach/3` runs the TUI
+  (`docs/features/tui-attach.md`) and `print/3` runs one prompt
+  (`docs/features/print-mode.md`). Started by `CodingAgent.CLI`, from the
+  `helyx` release or `mix helyx`. The server is `CodingAgent.Serve`.
   """
 
-  alias Helyx.Session.File.Scan
   alias Helyx.TUI.Link
   alias Helyx.TUI.Wire.Connection
 
@@ -35,57 +35,80 @@ defmodule CodingAgent do
   def plugins, do: @plugins
 
   @doc """
-  Starts Core and a session in the node, then runs print mode
-  (`CodingAgent.Print.run/2`) on the prompt `:prompt`, which is required,
-  and its exit status is the result; the TUI runs only over the wire
-  (`attach/2`). The session is written under `:sessions_dir`, which is
-  required. The skills scan and `/name` use `:home` of the `:coding_agent`
-  application, default `System.user_home!/0`. With `resume: true` the most recent session for `:cwd` that has
-  a message is resumed, and with `resume: id` the session with that id,
-  whose header must name `:cwd`. A resumed
-  session keeps its saved model. Returns `{:error, reason}` when the model
-  ref, the plugin list, the resume, or the folder of the header is rejected.
-  Core stops before `run/1` returns or raises. Print mode is in
-  `docs/features/print-mode.md`, and the order of the start checks in
-  `docs/features/server-management.md`.
+  Runs print mode over the wire (`docs/features/print-mode.md`). `socket`
+  and `ws` are from `CodingAgent.Attach.connect/1`, which the caller owns
+  and which the connection takes for this run. The options are `:prompt`,
+  which is required; `:cwd`; `:model`, optional, so that a new session
+  takes the default model of the server; and `:resume`: `false`, `true`
+  for the newest session of `:cwd`, or the id of a session. The result is
+  the exit status of `CodingAgent.Print.run/5`, or `{:error, reason}` for
+  a failed open or prompt, with the errors of the wire. A session that
+  this run opened stops at its end, also at a signal; a session that was
+  live before keeps running and only gets its turn aborted.
   """
-  @spec run(keyword()) :: CodingAgent.Print.status() | {:error, term()}
-  def run(opts) do
-    prompt = Keyword.fetch!(opts, :prompt)
+  @spec print(:gen_tcp.socket(), term(), keyword()) ::
+          CodingAgent.Print.status() | {:error, term()}
+  def print(socket, ws, opts) do
+    {:ok, conn, ref} = Connection.open(socket, ws)
 
-    with {:ok, core} <- Helyx.Core.start_link(plugins: @plugins) do
+    try do
+      run_prompt(conn, ref, opts)
+    after
+      # The connection ends with the run, as it does with the TUI (attach/3).
+      Process.exit(conn, :kill)
+      Process.demonitor(ref, [:flush])
+    end
+  end
+
+  defp run_prompt(conn, ref, opts) do
+    with {:ok, live_before} <- Connection.list_live(conn),
+         {:ok, id} <- open(conn, opts),
+         {:ok, cwd} <- session_cwd(conn, id),
+         {:ok, cwd} <- directory(cwd) do
+      # A session that was live before this run belongs to another client:
+      # it keeps running, so a print run next to a TUI joins it.
+      own? = not Enum.any?(live_before, &(&1.id == id))
+      home = Application.get_env(:coding_agent, :home, System.user_home!())
+      prompt = CodingAgent.Print.skills(Keyword.fetch!(opts, :prompt), cwd, home)
+
       try do
-        run_session(prompt, opts)
+        CodingAgent.Print.run(conn, ref, id, prompt, end_session(conn, id, own?))
       after
-        :ok = Supervisor.stop(core)
+        _ = stop_session(conn, id, own?)
       end
     end
   end
 
-  defp run_session(prompt, opts) do
-    with {:ok, session} <- start_session(opts) do
-      try do
-        home = Application.get_env(:coding_agent, :home, System.user_home!())
+  # `resume: id` takes no `:cwd`: the session runs in the folder of its
+  # header (`docs/features/session-list.md`).
+  defp open(conn, opts) do
+    case Keyword.get(opts, :resume, false) do
+      false -> Connection.start(conn, Keyword.take(opts, [:cwd, :model]))
+      true -> Connection.resume(conn, cwd: Keyword.fetch!(opts, :cwd))
+      id -> Connection.resume(conn, id: id)
+    end
+  end
 
-        with {:ok, cwd} <- session_cwd(session, opts[:cwd]),
-             do: CodingAgent.Print.run(session, CodingAgent.Print.skills(prompt, cwd, home))
-      after
-        # The abort comes before Core stops, so a turn that a signal or a
-        # failed print left open ends and the hands release its resources. A
-        # session that died returns `{:error, :session_not_found}`.
-        _ = Helyx.Session.abort(session)
+  # The folder of the session as the server has it. The session of a start
+  # or a resume may find its folder gone since.
+  defp session_cwd(conn, id) do
+    with {:ok, live} <- Connection.list_live(conn) do
+      case Enum.find(live, &(&1.id == id)) do
+        nil -> {:error, :session_not_found}
+        %{cwd: cwd} -> {:ok, cwd}
       end
     end
   end
 
-  defp session_cwd(session, nil) do
-    case Enum.find(Helyx.Sessions.list_live(session.core), &(&1.id == session.id)) do
-      nil -> {:error, :session_not_found}
-      %{cwd: cwd} -> directory(cwd)
-    end
-  end
+  # The server keeps at most 64 live sessions and evicts none, so a script
+  # that runs print mode many times must not leave one idle session for
+  # each run. A session that was live before stays.
+  defp stop_session(conn, id, true), do: Connection.stop(conn, id)
+  defp stop_session(conn, id, false), do: Connection.abort(conn, id)
 
-  defp session_cwd(_session, cwd), do: {:ok, cwd}
+  # The signal of print mode ends the session as the end of the run does.
+  defp end_session(conn, id, true), do: fn -> Connection.stop(conn, id) end
+  defp end_session(conn, id, false), do: fn -> Connection.abort(conn, id) end
 
   defp directory(cwd) do
     if Path.type(cwd) == :absolute and File.dir?(cwd),
@@ -98,14 +121,15 @@ defmodule CodingAgent do
   (`docs/features/tui-attach.md`, decisions 8 and 9). `socket` and `ws` are
   from `CodingAgent.Attach.connect/1`, which the caller owns and gives to
   the connection (`Helyx.TUI.Wire.Connection`); the TUI takes the connection
-  and ends it at its quit. The options are those of `run/1`
-  with no `:prompt`; `:model` is optional: with none, a new session gets
-  the default model of the server; `resume: id` takes no `:cwd`; and
-  `resume: :reattach` resumes the newest session of `:cwd`, or starts one
-  (decision 16). The session runs on after the quit, which aborts nothing.
-  After a lost connection the TUI connects again and subscribes with `after`
-  (decision 11). Returns `{:error, reason}` as `run/1` does, with the errors
-  of the wire.
+  and ends it at its quit. The options are `:cwd`, `:resume`, and `:model`
+  as for `print/3` with no `:prompt`; `:model` is optional: with none, a new
+  session gets the default model of the server; `resume: id` takes no
+  `:cwd`; and `resume: :reattach` resumes the newest session of `:cwd`, or
+  starts one (decision 16). `:held` is the result of the log hold of
+  `CodingAgent.LogFile.run/2`. The session runs on after the quit, which
+  aborts nothing. After a lost connection the TUI connects again and
+  subscribes with `after` (decision 11). Returns `{:error, reason}` as
+  `print/3` does, with the errors of the wire.
   """
   @spec attach(:gen_tcp.socket(), term(), keyword()) :: :ok | {:error, term()}
   def attach(socket, ws, opts) do
@@ -160,17 +184,15 @@ defmodule CodingAgent do
     end
   end
 
-  # The session over the wire, and its folder. `--session` finds the file
-  # of the id as the node does (`Scan.find/2`), so its errors are those of
-  # the node, and runs in the folder of its header, where the server
-  # resumes it. The folder is checked before the open, so no session
-  # starts in the server for a folder that the TUI refuses.
+  # The session over the wire, and its folder. `--session` resumes the id
+  # and runs in the folder that the server has for it, so the client reads
+  # no file of the data folder. The folder is checked before the TUI draws.
   defp open_remote(conn, opts) do
     case Keyword.get(opts, :resume, false) do
       id when is_binary(id) ->
-        with {:ok, _path, header} <- Scan.find(Keyword.fetch!(opts, :sessions_dir), id),
-             {:ok, cwd} <- folder(header["cwd"]),
-             {:ok, id} <- Connection.resume(conn, id: id),
+        with {:ok, id} <- Connection.resume(conn, id: id),
+             {:ok, cwd} <- session_cwd(conn, id),
+             {:ok, cwd} <- folder(cwd),
              do: {:ok, id, cwd, true}
 
       resume ->
@@ -181,7 +203,7 @@ defmodule CodingAgent do
   end
 
   # A folder that is not UTF-8 has no JSON form, and a start refuses a NUL
-  # byte: the answers of the node, in its order.
+  # byte: the answers of the wire, in its order.
   defp folder(cwd) do
     if String.valid?(cwd) and not String.contains?(cwd, <<0>>),
       do: directory(cwd),
@@ -209,15 +231,15 @@ defmodule CodingAgent do
   end
 
   @doc """
-  Returns the one line that tells the user about an error from `run/1`.
-  A session that ended while the TUI ran (`{:session_down, reason}`) gives
-  its sentence, and so does a session that another process has open
-  (`{:session_locked, id}`); any other error is a failed start, and its sentence comes
+  Returns the one line that tells the user about an error of a command. A
+  session that ended while the TUI ran (`{:session_down, reason}`) gives
+  its sentence; any other error is a failed start, and its sentence comes
   after `could not start the agent: `; `{:not_a_directory, cwd}`,
   `{:attach, text}`, and `{:connection_down, reason}` are whole lines with
-  no prefix. An error with no clause prints through `Helyx.Reason.text/1`,
-  so it holds no stacktrace. Every result gets the clean pass of
-  `clean_line/1`.
+  no prefix. The errors of the wire are texts of `Helyx.TUI.Link`, and
+  `{:start_failed, text}` is the text of the server. An error with no
+  clause prints through `Helyx.Reason.text/1`, so it holds no stacktrace.
+  Every result gets the clean pass of `clean_line/1`.
   """
   @spec error_text(term()) :: String.t()
   def error_text(reason), do: reason |> line() |> clean_line()
@@ -231,12 +253,8 @@ defmodule CodingAgent do
 
   defp line({:session_down, _reason} = reason), do: sentence(reason)
 
-  # The user opens a session that another process has open: the whole
-  # line, with no prefix (docs/features/session-lock.md).
-  defp line({:session_locked, _id} = reason), do: sentence(reason)
-
-  # The folder of a session header, as the CLI shows a directory argument
-  # that is not one.
+  # The folder of a session, as the CLI shows a directory argument that is
+  # not one.
   defp line({:not_a_directory, _cwd} = reason), do: sentence(reason)
 
   # A line of `CodingAgent.Attach.connect/1`, and the end of the connection
@@ -253,24 +271,6 @@ defmodule CodingAgent do
   defp sentence(:not_found),
     do: "no saved session for this directory; start one without --resume"
 
-  defp sentence(:not_regular), do: "the session file is not a regular file"
-  defp sentence(:invalid_id), do: "not a session id"
-  defp sentence(:duplicate_id), do: "more than one session file has this id"
-  defp sentence({:too_large, text}), do: text
-
-  # The text can be an exception message, and some of those have many lines.
-  defp sentence({:invalid_file, text}),
-    do: "the session file is damaged: " <> text
-
-  defp sentence({:unknown_version, version}),
-    do: "the session file has version #{inspect(version)}, which this build cannot read"
-
-  defp sentence({:repair_failed, reason}),
-    do: "could not repair the session file: " <> sentence(reason)
-
-  defp sentence({:create_failed, reason}),
-    do: "could not create the session file: " <> sentence(reason)
-
   # The ref stays out, as in the TUI notice: only a valid ref has a bound.
   defp sentence({:invalid_model_ref, _ref}), do: "the model ref is not valid; use provider/model"
   defp sentence({:unknown_provider, id}), do: "no provider has the id #{inspect(id)}"
@@ -281,11 +281,6 @@ defmodule CodingAgent do
     do: "the #{name} tool is not available: #{reason}"
 
   defp sentence({:terminal_init_failed, text}), do: "the terminal did not start: " <> text
-
-  # The errors of the session lock (docs/features/session-lock.md).
-  defp sentence({:session_locked, id}), do: "session #{id} is open in another process"
-  defp sentence({:lock_failed, text}), do: "could not lock the session: " <> text
-  defp sentence(:open_timeout), do: "the session file did not open in time"
 
   # The folder comes from the file, so it gets the clean pass and the width
   # of a list line.
@@ -299,8 +294,8 @@ defmodule CodingAgent do
   defp sentence({:start_failed, text}), do: text
   defp sentence(reason) when Link.wire_error?(reason), do: Link.error_text(reason)
 
-  # The exit of the TUI when its session ends (`Helyx.Session.end_reason/1`),
-  # or when the session is gone before the TUI subscribes.
+  # The exit of the TUI when its session ends, or of print mode when the
+  # session ends under it.
   defp sentence({:session_down, :crashed}), do: "the session crashed and stopped"
   # The session ended the subscription past its credits (docs/features/replay-ring.md).
   defp sentence({:session_down, :slow}), do: "the client fell behind the session events"
@@ -315,20 +310,4 @@ defmodule CodingAgent do
   end
 
   defp sentence(reason), do: Helyx.Reason.text(reason)
-
-  @doc """
-  Starts or resumes the session `run/1` uses. Public so tests can drive the
-  wiring on a Core of their own. `:core` defaults to `Helyx.Core`.
-  """
-  @spec start_session(keyword()) :: {:ok, Helyx.Session.t()} | {:error, term()}
-  def start_session(opts) do
-    core = Keyword.get(opts, :core, Helyx.Core)
-    base = [sessions_dir: Keyword.fetch!(opts, :sessions_dir)] ++ Keyword.take(opts, [:cwd])
-
-    case Keyword.get(opts, :resume, false) do
-      false -> Helyx.Session.start(core, [model: Keyword.fetch!(opts, :model)] ++ base)
-      true -> Helyx.Session.resume(core, base)
-      id -> Helyx.Session.resume(core, [id: id] ++ base)
-    end
-  end
 end

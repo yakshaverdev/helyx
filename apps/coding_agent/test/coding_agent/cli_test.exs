@@ -10,11 +10,18 @@ defmodule CodingAgent.CLITest do
   alias CodingAgent.CLI
 
   # Runs main/1 and returns its status and the one line it printed on stderr.
+  # An open that takes over 500 ms writes the line of the wait first
+  # (docs/features/tui-attach.md, decision 17).
   defp error_line(argv) do
     stderr = capture_io(:stderr, fn -> send(self(), {:status, CLI.main(argv)}) end)
     assert_received {:status, 1}
-    assert [line] = String.split(stderr, "\n", trim: true)
-    assert stderr == line <> "\n"
+
+    lines =
+      stderr
+      |> String.split("\n", trim: true)
+      |> Enum.reject(&(&1 == "helyx: loading the session..."))
+
+    assert [line] = lines
     assert "helyx: " <> text = line
     text
   end
@@ -216,12 +223,6 @@ defmodule CodingAgent.CLITest do
       {id, file.path}
     end
 
-    # Print mode, which runs in the node (docs/features/tui-attach.md, decision 12).
-    defp run_in_node(opts) do
-      sessions_dir = Application.fetch_env!(:coding_agent, :sessions_dir)
-      CodingAgent.run(opts ++ [resume: false, sessions_dir: sessions_dir, prompt: "p"])
-    end
-
     defp list(argv) do
       out = capture_io(fn -> send(self(), {:status, CLI.main(["--list" | argv])}) end)
       assert_received {:status, 0}
@@ -274,6 +275,9 @@ defmodule CodingAgent.CLITest do
                ~r/  #{Regex.escape(String.slice(dir, -80, 80))}  #{String.duplicate("m", 40)}  #{String.duplicate("é", 60)}$/
     end
 
+    # The folder of the session comes from the server (`sessions.live`), and
+    # the client reads no file of the data folder (revision of 2026-11-11,
+    # docs/features/tui-attach.md).
     test "--session checks the id and the folder of its header", %{tmp_dir: dir, sessions: s} do
       {id, _} = session(s, Path.join(dir, "gone"), 1_000, "p")
       gone = String.slice(dir <> "/gone", -80, 80)
@@ -288,15 +292,16 @@ defmodule CodingAgent.CLITest do
       {:ok, _} = Helyx.Session.File.create(s, control, "/x\t\e[2J", "fake/echo")
       assert error_line(["--session", control]) == ~s(not a directory: "/x ?[2J")
 
-      # A folder that a start rejects is rejected before the open.
+      # A folder that a start rejects is rejected by the server.
       nul = Helyx.Session.Id.new()
       {:ok, _} = Helyx.Session.File.create(s, nul, "/x\0", "fake/echo")
 
       assert error_line(["--session", nul]) ==
                "could not start the agent: the directory is not UTF-8 or holds a NUL byte"
 
-      # After "--" the words are arguments, and two files with one id fail
-      # the start.
+      # After "--" the words are arguments, and two files with one id give no
+      # session: the Hub of the server has no record of the id, and the
+      # resume of the server refuses it (docs/features/hub.md, decision 7).
       assert error_line(["--", "--session", dash]) =~ "at most one directory"
       copy = Path.join([s, "other", control <> ".jsonl"])
       File.mkdir_p!(Path.dirname(copy))
@@ -306,12 +311,14 @@ defmodule CodingAgent.CLITest do
         copy
       )
 
-      assert error_line(["--session", control]) =~ "more than one session file has this id"
+      assert error_line(["--session", control]) == ~s(no session "#{control}")
 
-      # A path in the id never reaches the filesystem.
+      # A path in the id never reaches the filesystem: the server checks the
+      # format of the id before it builds a path, and names no session.
       {_, path} = session(s, dir, 1_000, "p")
       File.cp!(path, Path.join(s, "escaped01.jsonl"))
-      assert error_line(["--session", "../escaped01"]) == ~s(not a session id: "../escaped01")
+
+      assert error_line(["--session", "../escaped01"]) == ~s(no session "../escaped01")
 
       missing = Helyx.Session.Id.new()
       assert error_line(["--session", missing]) == ~s(no session "#{missing}")
@@ -319,11 +326,10 @@ defmodule CodingAgent.CLITest do
     end
 
     # The test of the lock of the data folder needs perl
-    # (docs/features/tui-attach.md, decision 1). #765: in print mode, in
-    # the node, the find of the id comes after the tool checks, as for a
-    # start. The value of PATH is not shown on a failure.
-    test "with no perl on PATH, helyx prints the lock line, and print mode the tool error",
-         %{tmp_dir: dir, sessions: s} do
+    # (docs/features/tui-attach.md, decision 1). The folder is there, so the
+    # lock test of the client answers first. The value of PATH is not shown
+    # on a failure.
+    test "with no perl on PATH, helyx prints the lock line", %{tmp_dir: dir, sessions: s} do
       {id, file} = session(s, dir, 1_000, "p")
       before = File.read!(file)
       empty = Path.join(dir, "no-perl")
@@ -338,12 +344,8 @@ defmodule CodingAgent.CLITest do
                "could not test the lock of the data folder: perl is not on the PATH; " <>
                  "Helyx needs it to lock a session"
 
-      start = CodingAgent.error_text(elem(run_in_node(cwd: dir, model: "fake/echo"), 1))
-      assert start =~ "the bash tool is not available"
-
       for id <- [id, Helyx.Session.Id.new(), "../x"] do
         assert error_line(["--session", id]) == lock
-        assert CodingAgent.error_text(elem(run_in_node(resume: id), 1)) == start
       end
 
       assert File.read!(file) == before

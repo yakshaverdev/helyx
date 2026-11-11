@@ -56,10 +56,18 @@ defmodule CodingAgent.AttachTest do
     lock
   end
 
-  # A run of `helyx` that ends with one line on stderr and the status 1.
+  # A run of `helyx` that ends with one line on stderr and the status 1. An
+  # open that takes over 500 ms writes the line of the wait first
+  # (docs/features/tui-attach.md, decision 17).
   defp helyx(argv) do
-    assert {1, line} = with_io(:stderr, fn -> CLI.main(argv) end)
-    line
+    assert {1, stderr} = with_io(:stderr, fn -> CLI.main(argv) end)
+
+    assert [line] =
+             stderr
+             |> String.split("\n", trim: true)
+             |> Enum.reject(&(&1 == "helyx: loading the session..."))
+
+    line <> "\n"
   end
 
   test "attaches to a running server, and the socket takes requests; a stopped server is none",
@@ -97,7 +105,11 @@ defmodule CodingAgent.AttachTest do
 
     missing = Helyx.Session.Id.new()
     assert helyx(["--session", missing]) == ~s(helyx: no session "#{missing}"\n)
-    assert helyx(["--session", "../x"]) == ~s(helyx: not a session id: "../x"\n)
+
+    # The server checks the format of the id before it builds a path, and
+    # the wire has no code for it: the client names an id that no session
+    # has (docs/features/tui-attach.md, Accepted holes).
+    assert helyx(["--session", "../x"]) == ~s(helyx: no session "../x"\n)
 
     assert helyx([dir, "--model", "nope/m"]) ==
              ~s(helyx: could not start the agent: no provider has the id "nope"\n)

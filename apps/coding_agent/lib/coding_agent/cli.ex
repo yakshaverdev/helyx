@@ -17,25 +17,27 @@ defmodule CodingAgent.CLI do
 
   #{String.replace(@usage, ~r/^/m, "    ")}
   `directory` is the session's working directory and defaults to the current
-  one. `--model` defaults to `#{@default_model}`, which needs
-  `OPENCODE_API_KEY`; `fake/echo` runs without a key. `--resume` and
+  one. `--model` names the model of a new session, and a new session with no
+  `--model` takes the default model of the server, `#{@default_model}` unless a
+  `helyx serve` sets another; `fake/echo` runs without a key. `--resume` and
   `--session` keep the saved model, so they do not combine with `--model`.
-  Without `-p`, `helyx` runs the TUI over the wire when a server runs for the
-  data folder, and reattaches to the newest session of the directory, as
-  `--resume` picks it (`CodingAgent.attach/2`); `--new` and `--model` start
-  one. With no server, the `helyx` of the release starts `helyx serve` in the
-  background and attaches to it; `mix helyx` runs the server in its own VM.
-  `-p` (`--print`) runs one prompt with no TUI, and `serve` runs the headless
-  server. The design is in `docs/features/local-release.md`, and the rest in
-  `docs/features/session-list.md`, `docs/features/print-mode.md`,
+  Every command is a client of the server of the data folder. Without `-p`,
+  `helyx` runs the TUI over the wire when a server runs, and reattaches to
+  the newest session of the directory, as `--resume` picks it
+  (`CodingAgent.attach/3`); `--new` and `--model` start one. With no server,
+  the `helyx` of the release starts `helyx serve` in the background and
+  attaches to it; `mix helyx` runs the server in its own VM. `-p`
+  (`--print`) runs one prompt over the wire with no TUI, and `serve` runs the
+  headless server. The design is in `docs/features/local-release.md`, and
+  the rest in `docs/features/session-list.md`, `docs/features/print-mode.md`,
   `docs/features/serve.md`, and `docs/features/tui-attach.md`.
   """
 
   alias CodingAgent.Lease
   alias CodingAgent.Print
-  alias Helyx.Session.File.Scan
   alias Helyx.Tool.Bash
   alias Helyx.TUI.SessionList
+  alias Helyx.TUI.Wire.Connection
 
   # Each switch once, with its type, its form, and its help line: the parse,
   # the option list of an error, and `--help` read this list.
@@ -186,10 +188,10 @@ defmodule CodingAgent.CLI do
   defp command(opts, args, launcher, halt) do
     cond do
       opts[:list] ->
-        list(opts[:all], args)
+        list(opts[:all] == true, args, launcher)
 
       opts[:print] ->
-        Print.main(fn -> print(opts, args) end, halt)
+        Print.main(fn -> print(opts, args, launcher) end, halt)
 
       true ->
         with {:ok, run} <- run_opts(opts, args), do: launch(opts, run, launcher)
@@ -266,12 +268,39 @@ defmodule CodingAgent.CLI do
     if File.dir?(cwd), do: {:ok, cwd}, else: {:error, "not a directory: #{inspect(cwd)}"}
   end
 
-  defp list(all?, args) do
-    with {:ok, scope} <- if(all?, do: {:ok, :all}, else: cwd(args)) do
-      for summary <- Scan.list(sessions_dir(), scope),
-          do: IO.puts(SessionList.line(summary, all?))
+  # The list is one page of the server of the data folder: 256 is the most
+  # that a scan reads, and the largest page of the wire
+  # (docs/features/session-list.md).
+  defp list(all?, args, launcher) do
+    result =
+      with {:ok, scope} <- list_scope(all?, args),
+           {:ok, _apps} <- Application.ensure_all_started(:coding_agent) do
+        # The log of a server of this VM goes to stderr, so stdout holds
+        # only the list lines.
+        _ = log_to_stderr()
+        opts = [limit: 256] ++ if(scope == :all, do: [], else: [cwd: scope])
 
-      :ok
+        with_server([sessions_dir: sessions_dir()], launcher, fn
+          {:ok, socket, ws} -> sessions(socket, ws, opts, all?)
+          {:error, text} -> {:error, {:attach, text}}
+        end)
+      end
+
+    with {:error, reason} <- result, do: {:error, error_text(reason, nil)}
+  end
+
+  defp list_scope(true, _args), do: {:ok, :all}
+  defp list_scope(false, args), do: cwd(args)
+
+  defp sessions(socket, ws, opts, all?) do
+    {:ok, conn, ref} = Connection.open(socket, ws)
+
+    try do
+      with {:ok, items, _next} <- Connection.list_saved(conn, opts),
+           do: Enum.each(items, &IO.puts(SessionList.line(&1, all?)))
+    after
+      Process.exit(conn, :kill)
+      Process.demonitor(ref, [:flush])
     end
   end
 
@@ -280,10 +309,10 @@ defmodule CodingAgent.CLI do
     do: Application.get_env(:coding_agent, :sessions_dir) || Path.expand("~/.helyx/sessions")
 
   # The piped input is read before any application starts.
-  defp print(opts, args) do
+  defp print(opts, args, launcher) do
     with {:ok, run} <- run_opts(opts, args),
          {:ok, prompt} <- Print.prompt(opts[:print]),
-         do: launch(opts, [prompt: prompt] ++ run, nil)
+         do: launch(opts, [prompt: prompt] ++ run, launcher)
   end
 
   defp launch(opts, extra, launcher) do
@@ -299,42 +328,90 @@ defmodule CodingAgent.CLI do
     end
   end
 
-  # Print mode runs in the node. The TUI attaches to the server of the data
-  # folder when one runs (docs/features/tui-attach.md), with the model of
-  # `--model`, else the default model of the server.
+  # Both commands are clients of the server of the data folder
+  # (docs/features/tui-attach.md, and docs/features/print-mode.md).
   defp start_or_attach(opts, run, launcher) do
     if run[:prompt],
-      do: CodingAgent.run([model: Keyword.get(opts, :model, @default_model)] ++ run),
+      do: print_over_wire(opts, run, launcher),
       else: find_server(opts, run, launcher)
   end
 
-  # With no server, the launcher of the release starts one (decision 10),
-  # and with no launcher, as `mix helyx`, this VM runs one until the TUI
-  # ends (decision 12). A server needs perl, as the tools do: with none on
-  # the PATH, the line of the tool check.
+  # With no `--model`, print mode sends no model, and the server gives its
+  # default one, as for the TUI.
+  defp print_over_wire(opts, run, launcher),
+    do: with_server(run, launcher, &answer(opts, run, &1))
+
+  defp answer(opts, run, {:ok, socket, ws}),
+    do: CodingAgent.print(socket, ws, Keyword.take(opts, [:model]) ++ run)
+
+  defp answer(_opts, _run, {:error, text}), do: {:error, {:attach, text}}
+
+  # The TUI holds the log of the VM in `tui.log` while it runs, and while a
+  # server of this VM runs with it (docs/features/tui-attach.md, decisions 9
+  # and 12). The hold makes the data folder for its log file, so the look
+  # for a server, and the tool check, come first: a folder that the hold
+  # made is no evidence of a server.
   defp find_server(opts, run, launcher) do
     dir = run[:sessions_dir]
 
-    case {CodingAgent.Attach.connect(dir), launcher, Bash.check()} do
-      {:none, _launcher, {:error, reason}} ->
-        {:error, {:tool_unavailable, Bash.name(), reason}}
-
-      # One VM has one set of log handlers: the log of the VM, and of a
-      # server that it runs, goes to tui.log while the TUI runs.
-      found ->
-        CodingAgent.LogFile.run(Path.join(dir, "tui.log"), fn held ->
-          held_start(opts, [held: held] ++ run, dir, found)
-        end)
+    case connect(dir) do
+      {:error, text} -> {:error, {:attach, text}}
+      found -> with :ok <- perl(found), do: held_server(found, dir, launcher, opts, run)
     end
   end
 
-  defp held_start(opts, run, dir, {:none, nil, :ok}),
-    do: CodingAgent.Attach.serve(dir, @default_model, &attach(opts, run, &1))
+  # One VM has one set of log handlers: the log of the VM, and of a server
+  # that it runs, goes to `tui.log` while the TUI runs.
+  defp held_server(found, dir, launcher, opts, run) do
+    CodingAgent.LogFile.run(Path.join(dir, "tui.log"), fn held ->
+      server(found, dir, launcher, &attach(opts, [held: held] ++ run, &1))
+    end)
+  end
 
-  defp held_start(opts, run, dir, {:none, launcher, :ok}),
-    do: attach(opts, run, CodingAgent.Attach.start(dir, launcher))
+  # The one way to the server of the data folder for print mode and the
+  # list: a running one (decision 1), one that the launcher starts in the
+  # background (decision 10), or, with no launcher, one in this VM until
+  # `fun` returns (decision 12). `fun` gets `{:ok, socket, ws}` or
+  # `{:error, text}` and returns the result of the command.
+  defp with_server(run, launcher, fun) do
+    dir = run[:sessions_dir]
 
-  defp held_start(opts, run, _dir, {found, _launcher, _perl}), do: attach(opts, run, found)
+    case connect(dir) do
+      {:error, text} ->
+        fun.({:error, text})
+
+      found ->
+        with :ok <- perl(found), do: server(found, dir, launcher, fun)
+    end
+  end
+
+  defp connect(dir), do: CodingAgent.Attach.connect(dir)
+
+  defp server({:ok, socket, ws}, _dir, _launcher, fun), do: fun.({:ok, socket, ws})
+  defp server(:none, dir, nil, fun), do: CodingAgent.Attach.serve(dir, @default_model, fun)
+  defp server(:none, dir, launcher, fun), do: fun.(CodingAgent.Attach.start(dir, launcher))
+
+  # A server needs perl, as the tools do: with none on the PATH, no server
+  # starts and the line is that of the tool check
+  # (docs/features/tui-attach.md, decision 12). A server that runs needs no
+  # check: the start of its own process made it.
+  defp perl(:none), do: available()
+  defp perl(_found), do: :ok
+
+  defp available do
+    with {:error, reason} <- Bash.check(),
+         do: {:error, {:tool_unavailable, Bash.name(), reason}}
+  end
+
+  # The `:default` handler of a server of this VM writes on stdout, which
+  # holds only the list lines. Print mode sends the log to stderr as its
+  # first step (`CodingAgent.Print`).
+  defp log_to_stderr do
+    with {:ok, log} <- :logger.get_handler_config(:default) do
+      :ok = :logger.remove_handler(:default)
+      :ok = :logger.add_handler(:default, :logger_std_h, put_in(log.config.type, :standard_error))
+    end
+  end
 
   defp attach(opts, run, {:ok, socket, ws}),
     do: CodingAgent.attach(socket, ws, Keyword.take(opts, [:model]) ++ reattach(opts, run))
@@ -349,10 +426,7 @@ defmodule CodingAgent.CLI do
       else: Keyword.put(run, :resume, :reattach)
   end
 
-  # The find of the `--session` id names the id.
-  defp error_text(:invalid_id, id) when is_binary(id),
-    do: CodingAgent.clean_line("not a session id: #{inspect(id)}")
-
+  # A find that the server does not accept names the id on its own line.
   defp error_text(:not_found, id) when is_binary(id),
     do: CodingAgent.clean_line("no session #{inspect(id)}")
 

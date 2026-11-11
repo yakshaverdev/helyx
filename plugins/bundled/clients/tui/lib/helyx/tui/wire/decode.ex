@@ -68,12 +68,37 @@ defmodule Helyx.TUI.Wire.Decode do
        when is_list(items) and (is_binary(next) or is_nil(next)),
        do: {:ok, Enum.map(items, &saved/1), next}
 
-  defp ok(op, _empty) when op not in ["subscribe", "start", "resume", "sessions.saved"], do: :ok
+  defp ok("sessions.live", %{"sessions" => sessions}) when is_list(sessions),
+    do: {:ok, Enum.map(sessions, &live/1)}
+
+  defp ok(op, _empty)
+       when op not in ["subscribe", "start", "resume", "sessions.saved", "sessions.live"],
+       do: :ok
 
   defp saved(%{"id" => id, "cwd" => cwd, "model" => model, "mtime" => mtime, "prompt" => prompt})
        when is_binary(id) and is_binary(cwd) and is_binary(model) and count?(mtime) and
               is_binary(prompt),
        do: %Scan.Summary{id: id, cwd: cwd, model: model, mtime: mtime, prompt: prompt}
+
+  # The status is the one of the schema: the server sends no other.
+  defp live(%{
+         "id" => id,
+         "instance_id" => instance_id,
+         "cwd" => cwd,
+         "model" => model,
+         "status" => status
+       })
+       when is_binary(id) and is_binary(instance_id) and is_binary(cwd) and is_binary(model),
+       do: %{
+         id: id,
+         instance_id: instance_id,
+         cwd: cwd,
+         model: model,
+         status: live_status!(status)
+       }
+
+  defp live_status!("idle"), do: :idle
+  defp live_status!("running"), do: :running
 
   defp event!(%{
          "type" => type,

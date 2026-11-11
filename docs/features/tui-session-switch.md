@@ -37,7 +37,7 @@ Decisions (the ticket, "Decisions (orchestrator, 2026-10-17)"):
 1. The TUI held one session for its whole life, and the view model had no `instance_id` guard because the TUI subscribed once. Now `Helyx.TUI` subscribes once for each session and drops an event of another `instance_id` (`handle_info/2`). The view model stays without a guard.
 2. The end signal of the session always ended the TUI. During a switch it is kept in the switch state, and the result of the switch decides (see Goal, "Errors").
 3. The `--list` line of `CodingAgent.CLI` (`line/2`, `folder_text/1`, `take/2`, `time/1`, and the widths) moves to `Helyx.TUI.SessionList` unchanged. The tests of `--list` keep their properties.
-4. The only abort at quit was the one of `CodingAgent.run/1`. It stays, for a TUI that fails to start, and the TUI adds its own for its current session in the node; over the wire the quit aborts nothing (`docs/features/tui-attach.md`, slice 3). From #809 the TUI runs only over the wire, and `CodingAgent.run/1` runs only print mode. A known ceiling: a later client that switches sessions must abort its current session itself, because Core has no list of the sessions of a client.
+4. The only abort at quit was the one of `CodingAgent.run/1`. It stays, for a TUI that fails to start, and the TUI adds its own for its current session in the node; over the wire the quit aborts nothing (`docs/features/tui-attach.md`, slice 3). From #809 the TUI runs only over the wire. `CodingAgent.run/1` ran only print mode, and since the revision of 2026-11-11 print mode is a wire client too (`CodingAgent.print/3`). A known ceiling: a later client that switches sessions must abort its current session itself, because Core has no list of the sessions of a client.
 
 ## Bounds
 
