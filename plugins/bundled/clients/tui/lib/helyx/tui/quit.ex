@@ -1,10 +1,8 @@
 defmodule Helyx.TUI.Quit do
   @moduledoc false
-  # The double Ctrl+C of the TUI (#486). A first Ctrl+C clears the composer
-  # and arms the quit for @window_ms; a second one while armed quits. Any
-  # other key press or a paste disarms it, and so does the end of the
-  # window: the message `{Helyx.TUI.Quit, ref}` that a first Ctrl+C sends to
-  # the calling process.
+  # The double Ctrl+C of the TUI (#486, docs/features/coding-agent.md,
+  # "TUI"): a first Ctrl+C clears the composer and arms the quit for
+  # @window_ms; a second one while armed quits.
 
   alias ExRatatui.Event.{Key, Paste}
 

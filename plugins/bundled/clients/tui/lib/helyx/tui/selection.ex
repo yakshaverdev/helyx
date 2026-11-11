@@ -2,25 +2,13 @@ defmodule Helyx.TUI.Selection do
   @moduledoc """
   The mouse of the TUI: the wheel, the selection of transcript text, and
   its copy to the clipboard. `Helyx.TUI` hands each mouse event to
-  `handle/3` and returns its answer. A mouse event never reaches
-  `Helyx.TUI.Quit`, so it neither arms nor disarms the quit.
+  `handle/3`. A mouse event never reaches `Helyx.TUI.Quit`, so it neither
+  arms nor disarms the quit.
 
-  A wheel step scrolls the transcript three rows. A press of any button
-  clears the reason of the last reject, as a key press does. A left press
-  in the transcript starts a selection, a drag moves its end, and the
-  release copies the text with OSC 52. The ends are transcript addresses
-  with a column, so a scroll keeps the selected text, and a selection can
-  reach into the scrollback that the view passed during the drag. A press
-  outside the transcript, a new size, or Ctrl+O clears it. The TUI draws it in
-  reverse video until the next left press. An event that changes nothing,
-  such as a move or a wheel step at an end, draws no frame.
-
-  The copy is one write of the whole escape sequence, never a part of it.
-  The text is at most 75,000 bytes, which is 100,000 bytes of base64. A
-  longer text is not copied, and the footer says so. The write goes to
-  standard output between two frames, in the event handler. A frame that
-  the terminal draws at the same moment can show broken cells until the
-  next frame. The design is in `docs/features/coding-agent.md`, "TUI".
+  The copy is one write of the whole OSC 52 sequence, never a part of it,
+  of at most 75,000 bytes of text, which is 100,000 bytes of base64; a
+  longer text is not copied, and the footer says so. The design is in
+  `docs/features/coding-agent.md`, "TUI".
   """
 
   alias ExRatatui.Event.Mouse

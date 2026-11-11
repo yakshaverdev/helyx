@@ -12,11 +12,9 @@ defmodule Mix.Tasks.Helyx.Graph do
   as a call to the client function, not to the process that answers it.
 
   `turn` runs one scripted turn with the fake provider and the read tool in
-  a temporary directory, traces it, and prints a Mermaid sequence diagram.
-  A participant is a process, named after the first project module it runs.
-  An arrow is a message between two of them, and a note is a project
-  function the process called. It crosses the process boundaries that
-  `calls` cannot. No session file is written.
+  a temporary directory, traces it, and prints a Mermaid sequence diagram,
+  which crosses the process boundaries that `calls` cannot. No session file
+  is written.
   """
 
   use Mix.Task

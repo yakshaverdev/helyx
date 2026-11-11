@@ -1,10 +1,8 @@
 defmodule Helyx.TUI.Search do
   @moduledoc false
   # Find text in the loaded transcript (#668, docs/features/tui-search.md).
-  # Ctrl+F opens the search line in the place of the composer. `handle/3`
-  # takes its keys and pastes and moves the view to a match; `marks/3`
-  # marks the match on the screen. One match cursor: the item index of the
-  # current match.
+  # Ctrl+F opens the search line in the place of the composer, and one
+  # match cursor moves the view.
 
   alias ExRatatui.Event.{Key, Paste}
   alias ExRatatui.Layout.Rect

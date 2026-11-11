@@ -1,11 +1,7 @@
 defmodule Helyx.TUI.Approval do
   @moduledoc false
-  # The picker of an `approval` UI block in the place of the composer
-  # (docs/features/approval-gate.md, "The TUI renderer"). `Helyx.TUI.Question`
-  # picks the oldest ask that it can show, a form or an approval, and hands
-  # an approval here: the title is the text of the block, the body the
-  # arguments, and the user picks Allow or Deny. The answer goes with
-  # `Helyx.TUI.Link.answer/3`.
+  # The picker of an `approval` UI block (docs/features/approval-gate.md,
+  # "The TUI renderer").
 
   alias ExRatatui.Event.Key
   alias ExRatatui.Style

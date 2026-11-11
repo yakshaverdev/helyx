@@ -1,12 +1,10 @@
 defmodule Helyx.TUI.Link do
   @moduledoc false
-  # The session of the TUI (docs/features/tui-attach.md, slice 3): a
-  # session of the server over the wire (`Helyx.TUI.Wire.Connection`). Each
-  # operation of the TUI on its session goes through here and gives the
-  # result of the Core call of the server, with the errors of
-  # `wire_error?/1`, which `error_text/1` names. The quit aborts nothing:
-  # the session runs on in the server, and the connection ends with the
-  # TUI (decision 8). The TUI uses only the wire (decision 12).
+  # The session of the TUI over the wire
+  # (`docs/features/tui-attach.md`, slice 3): each operation of the TUI on
+  # its session goes through here and gives the result of the Core call of
+  # the server, with the errors of `wire_error?/1`, which `error_text/1`
+  # names.
 
   alias Helyx.Session.File.Scan
   alias Helyx.TUI.Wire.Connection
@@ -50,24 +48,17 @@ defmodule Helyx.TUI.Link do
   def error_text(:too_many_schedules), do: "too many schedules"
   def error_text(:unknown_schedule), do: "no such schedule"
 
-  # The TUI process takes the connection that the caller of
-  # `Helyx.TUI.run/1` opened, and monitors it: its `:DOWN` ends the TUI.
   @spec own(t()) :: t()
   def own(%__MODULE__{conn: conn} = session) do
     _ref = Connection.take(conn)
     session
   end
 
-  # The subscription with the asks: `{:ok, snapshot, sub}`. `after:` gives
-  # a replay or a snapshot (`Connection.subscribe/3`).
   @spec subscribe(t(), keyword()) ::
           {:ok, Helyx.Session.Snapshot.t() | {:replay, [Helyx.Event.t()]}, String.t()}
           | {:error, term()}
   def subscribe(%__MODULE__{conn: conn, id: id}, opts), do: Connection.subscribe(conn, id, opts)
 
-  # The session over a new connection on `socket` after a lost one, with the
-  # WebSocket state of `Helyx.TUI.Wire.connect/4`. The socket goes to the
-  # connection, which the caller owns.
   @spec reopen(t(), :gen_tcp.socket(), term()) :: t()
   def reopen(%__MODULE__{} = session, socket, ws) do
     {:ok, conn, _ref} = Connection.open(socket, ws)
@@ -131,9 +122,6 @@ defmodule Helyx.TUI.Link do
   def answer(%__MODULE__{conn: conn, id: id}, ask_id, answer),
     do: Connection.answer(conn, id, ask_id, answer)
 
-  # The open of a switch (`Helyx.TUI.Switch`), in the place of `session`:
-  # a new session of `opts.cwd` with `opts.model`, or the resume of `id`.
-  # The server saves in its own data folder.
   # The model of the server can be any string; one over the text bound
   # would pass the request bound of the server, which ends the connection.
   @spec open(t(), :new | {:resume, String.t()}, map()) :: {:ok, t()} | {:error, term()}
@@ -152,8 +140,7 @@ defmodule Helyx.TUI.Link do
 
   # The end of the session that a switch leaves: a detach, not a stop
   # (docs/features/tui-attach.md, decision 18). The session runs on for its
-  # other clients and for a later resume. A session that ended first gives
-  # `:ok` too; a wire error fails the switch.
+  # other clients and for a later resume.
   @spec unsubscribe(t(), String.t()) :: :ok | {:error, term()}
   def unsubscribe(%__MODULE__{conn: conn}, sub) do
     case Connection.unsubscribe(conn, sub) do
@@ -170,9 +157,6 @@ defmodule Helyx.TUI.Link do
          do: {:ok, items}
   end
 
-  # The line of the exit `{:connection_down, reason}` of the TUI: the end
-  # of its connection (`Helyx.TUI.Wire.Connection`), a subscribe that the
-  # wire refused (`Helyx.TUI.Switch.bind/3`), or a failed reconnect.
   @spec down_text(term()) :: String.t()
   def down_text({:shutdown, :broken}), do: "the server broke the wire contract"
   # A slow client: past its credits, its outbound queue, or its silence
@@ -183,7 +167,6 @@ defmodule Helyx.TUI.Link do
   def down_text(reason) when wire_error?(reason),
     do: "could not subscribe to the session: " <> error_text(reason)
 
-  # A lost connection whose reconnect failed: the line of the attach.
   def down_text({:reconnect, text}), do: "lost the connection to the server: " <> text
 
   # A connection that ended before the take, or crashed.

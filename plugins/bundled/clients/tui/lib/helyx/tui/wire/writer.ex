@@ -1,13 +1,11 @@
 defmodule Helyx.TUI.Wire.Writer do
   @moduledoc false
   # The writer of `Helyx.TUI.Wire.Connection` (docs/features/tui-attach.md,
-  # decision 15): it sends the frames of the connection in their order on
-  # the socket of the connection, which stays its controlling process and
-  # reads, so the connection reads while a frame goes out. It encodes each
-  # frame with `Mint.WebSocket.encode/2` and sends the bytes with
-  # `:gen_tcp.send/2`, so each send has the send timeout of the socket. It
-  # answers each batch with its `done` message, and a failed send with
-  # `:write_failed`, and then ends; the connection kills it at its own end.
+  # decision 15): it sends the frames in their order on the socket of the
+  # connection, which stays the controlling process and reads, so the
+  # connection reads while a frame goes out. It answers each batch with its
+  # `done` message, and a failed send with `:write_failed`, and then ends;
+  # the connection kills it at its own end.
 
   alias Helyx.Transport.WebSocket.Frame
 

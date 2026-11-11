@@ -9,9 +9,8 @@ defmodule Mix.Tasks.Helyx.Install do
   The build goes to `<prefix>/releases/<commit>` (default prefix
   `~/.helyx`), `<prefix>/current` points at it, and `<bin-dir>/helyx`
   (default `~/.local/bin`) starts it. An existing build folder is never
-  replaced.
-  The install keeps the build that `current` pointed at before and every
-  build that a running VM holds, and deletes the older ones. The task runs in
+  replaced, and the install keeps the build that `current` pointed at before
+  and every build that a running VM holds. The task runs in
   `prod`. The design is in `docs/features/local-release.md`.
   """
 

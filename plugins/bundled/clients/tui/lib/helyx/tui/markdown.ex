@@ -2,10 +2,9 @@ defmodule Helyx.TUI.Markdown do
   @moduledoc """
   The Markdown of an assistant reply as screen rows (#487): headings, bullet
   and numbered items, bold, italic, inline code, fenced code, and links as
-  their text and address. A row is a list of `{text, tags}`. Its text is
+  their text and address. A row is a list of `{text, tags}` whose text is
   the text of a row of `Helyx.TUI.Wrap.line_slices/2`, so the width rule holds. The
-  tag `:sign` marks the prefix of an item or a code line, and its indent on
-  the rows after the first: it is drawn, not text of the reply. Pure.
+  tag `:sign` marks the prefix of an item or a code line. Pure.
   The rules are in
   `docs/features/coding-agent.md`, "TUI".
   """

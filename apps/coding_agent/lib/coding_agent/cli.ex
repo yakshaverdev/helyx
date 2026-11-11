@@ -18,30 +18,17 @@ defmodule CodingAgent.CLI do
   #{String.replace(@usage, ~r/^/m, "    ")}
   `directory` is the session's working directory and defaults to the current
   one. `--model` defaults to `#{@default_model}`, which needs
-  `OPENCODE_API_KEY`. `fake/echo` runs without a key. `--resume` continues
-  the most recent session for the directory that has a message, and
-  `--session` the session with that id, in the folder of its header. Both
-  keep the saved model, so they do not combine with `--model`. `--list`
-  prints the sessions of the directory, or of every folder with `--all`,
-  one line each, newest first, and starts nothing. `--help` (`-h`) prints
-  the usage, the switches, and the exit statuses. `-p` (`--print`) runs
-  the one prompt with no TUI (`CodingAgent.Print`), in a new session, or
-  with `--resume` or `--session` in the session they pick. `serve`, the
-  first argument, runs the headless server (`CodingAgent.Serve`) on
-  `--host`, default 127.0.0.1, and `--port`, default a port that the OS
-  picks; `--model` is then the default model of the server. Without `-p`,
-  `helyx` runs the TUI over the wire when a server runs for the data
-  folder (`CodingAgent.attach/2`): it reattaches to the newest session of
-  the directory, as `--resume` picks it, and starts one when the directory
-  has none; `--new` and `--model` start one. A newest session that does
-  not resume gives a line that names `--new`. With no server, the `helyx`
-  of the release starts `helyx serve` in the background with its launcher
-  and attaches to it; `mix helyx`, with no launcher, runs the server in
-  its own VM until the TUI ends, and the TUI attaches to it over the
-  loopback. The design is in
-  `docs/features/local-release.md`, `docs/features/session-list.md`,
-  `docs/features/print-mode.md`, `docs/features/serve.md`, and
-  `docs/features/tui-attach.md`.
+  `OPENCODE_API_KEY`; `fake/echo` runs without a key. `--resume` and
+  `--session` keep the saved model, so they do not combine with `--model`.
+  Without `-p`, `helyx` runs the TUI over the wire when a server runs for the
+  data folder, and reattaches to the newest session of the directory, as
+  `--resume` picks it (`CodingAgent.attach/2`); `--new` and `--model` start
+  one. With no server, the `helyx` of the release starts `helyx serve` in the
+  background and attaches to it; `mix helyx` runs the server in its own VM.
+  `-p` (`--print`) runs one prompt with no TUI, and `serve` runs the headless
+  server. The design is in `docs/features/local-release.md`, and the rest in
+  `docs/features/session-list.md`, `docs/features/print-mode.md`,
+  `docs/features/serve.md`, and `docs/features/tui-attach.md`.
   """
 
   alias CodingAgent.Lease
@@ -108,10 +95,8 @@ defmodule CodingAgent.CLI do
   returns the exit status. A bad argument prints one line on stderr and
   returns 1. Without `-p`, so does a failed start or a session that stops
   while the agent runs. `--version` prints the version and returns 0, and
-  so does `--list` after its lines. `-p` runs print mode
-  (`CodingAgent.Print.main/2`) once the options and their combination are
-  checked; it checks the directory and the session of `--session`
-  itself, ends with `halt` and its status, and does not return. Tests pass their own `halt`.
+  so does `--list` after its lines. `-p` runs print mode (`CodingAgent.Print.main/2`)
+  and does not return. Tests pass their own `halt`.
   """
   @spec main([String.t()], Print.halt()) :: term()
   def main(argv, halt \\ &:erlang.halt(&1, flush: false)) do

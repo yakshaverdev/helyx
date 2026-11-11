@@ -1,14 +1,11 @@
 defmodule Helyx.TUI.Transcript.Item do
   @moduledoc false
   # One item of `Helyx.TUI.Transcript`: a cell, such as a run of
-  # information lines `{:infos, texts}`, a tool cell with `true` at its end
-  # when the Ctrl+O toggle is on, an open tool cell with the toggle and the
-  # UI blocks of its running call at its end, or `{:ui_blocks, blocks,
-  # expanded?}`, the UI blocks of the running turn that no cell shows
-  # (`docs/features/ui-blocks.md`). It owns the look of the rows of an item, the
-  # search text of each row, the signs of the row left out
-  # (`docs/features/tui-search.md`, "The search rows"), and the text of a
-  # drawn row for a selection, the bar left out.
+  # information lines `{:infos, texts}`, a tool cell, or the UI blocks of
+  # the running turn that no cell shows (`docs/features/ui-blocks.md`). It
+  # owns the look of the rows of an item, the search text of each row, the
+  # signs of the row left out (`docs/features/tui-search.md`), and the text
+  # of a drawn row for a selection.
 
   alias ExRatatui.Style
   alias ExRatatui.Text.{Line, Span}
