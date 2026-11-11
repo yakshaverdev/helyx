@@ -56,26 +56,17 @@ defmodule Helyx.Hub.Server do
 
   # Every live session of the Core enters the live set once, read with a
   # deadline; past it, or on a failed read, the set starts empty (decision
-  # 14). The read runs in a process with a monitor and no link, and gives its
-  # answer as its exit reason: the Hub, which traps exits, gets one `:DOWN`
-  # and no `:EXIT`, and a read past its deadline is killed and its `:DOWN`
-  # taken here, so no message of the read comes after the start.
+  # 14). The read is a Task with no link; a read past its deadline is
+  # killed, and its messages are flushed.
   @impl true
   def handle_continue(:live, state) do
     core = state.core
-    {pid, ref} = spawn_monitor(fn -> exit({:live, live_sessions(core)}) end)
+    task = Task.Supervisor.async_nolink(state.wake.sup, fn -> live_sessions(core) end)
 
     sessions =
-      receive do
-        {:DOWN, ^ref, :process, ^pid, {:live, sessions}} -> sessions
-        {:DOWN, ^ref, :process, ^pid, _reason} -> []
-      after
-        @seed_ms ->
-          Process.exit(pid, :kill)
-
-          receive do
-            {:DOWN, ^ref, :process, ^pid, _reason} -> []
-          end
+      case Task.yield(task, @seed_ms) || Task.shutdown(task, :brutal_kill) do
+        {:ok, sessions} -> sessions
+        _exit_or_nil -> []
       end
 
     # The first poll of the wake-ups comes at the start (decision 12).
