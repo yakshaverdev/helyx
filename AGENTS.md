@@ -72,7 +72,7 @@ Run from the repository root. The Mix projects are the root, `plugins/bundled` w
 - Remove a repeated check only when the earlier check still proves the same property. Keep a documented safety check. Check the new limits that a transformation, an accumulation, or elapsed time introduces (text that expands, a buffer that grows, a deadline that approaches).
 - Use the checked value. If an operation reads a new value, validate that value before use. A prior check of external state does not remove the need to handle a failure when the state is used.
 - Reject the smallest unit that permits safe continuation. Keep unrelated data when its validity is known. State when missing identity, damaged structure, or an unresolved resource requires a larger failure.
-- A `.ex` file has at most 400 lines (`Helyx.Credo.FileLength`, #294). A file over the limit has an entry in `.credo.exs` with its line count and a reason, and it must not grow. Split a file only where a module can own its state or its decisions. A line count alone is not a reason.
+- A `.ex` file has at most 400 lines of code; documentation, comments and blank lines do not count (`Helyx.Credo.FileLength`, #294). A file over the limit has an entry in `.credo.exs` with its line count and a reason, and it must not grow. Split a file only where a module can own its state or its decisions. A line count alone is not a reason.
 
 ## Module naming
 

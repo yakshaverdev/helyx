@@ -20,19 +20,11 @@
           # a naming strategy of the code.
           {Credo.Check.Consistency.ExceptionNames,
            files: %{excluded: ["test/", "plugins/bundled/test/"]}},
-          # A .ex file has at most 400 lines (#294). The list only shrinks: a
-          # listed file must not grow, a file under the limit loses its
-          # entry, and a file under its count lowers it.
-          {Helyx.Credo.FileLength,
-           [
-             allowed: %{
-               "plugins/bundled/lib/helyx/provider/codex.ex" =>
-                 {481,
-                  "the Codex turn, thread, interrupt, and steer state over one JSON-RPC id table"},
-               "plugins/bundled/lib/helyx/provider/claude_code.ex" =>
-                 {504, "the Claude Code program, turn, steer, and interrupt flow"}
-             }
-           ]}
+          # A .ex file has at most 400 lines of code; docs, comments and blank
+          # lines do not count (#294). The list only shrinks: a listed file
+          # must not grow, a file under the limit loses its entry, and a file
+          # under its count lowers it.
+          {Helyx.Credo.FileLength, []}
         ],
         disabled: [
           # In Helyx.Core the alias for Helyx.Core.Plugins would expand inside
