@@ -20,6 +20,8 @@ defmodule CodingAgent do
     Helyx.ModelContext.Default,
     Helyx.Compaction.Summary,
     Helyx.Tool.Read,
+    Helyx.Tool.Grep,
+    Helyx.Tool.Find,
     Helyx.Tool.Bash,
     Helyx.Tool.Edit,
     Helyx.Tool.Write,

@@ -183,4 +183,4 @@ A session file has a writer lock (#579, `docs/features/session-lock.md`): a seco
 
 ## Out of scope
 
-MCP, sub-agents, permission prompts, plan mode, todos, branching, editing queued messages, queue persistence, remote hands, packaging, Anthropic API key provider, dedicated grep, find, and ls tools, skills discovery.
+MCP, sub-agents, permission prompts, plan mode, todos, branching, editing queued messages, queue persistence, remote hands, packaging, Anthropic API key provider, a dedicated ls tool, skills discovery.
