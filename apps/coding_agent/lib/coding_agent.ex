@@ -69,7 +69,8 @@ defmodule CodingAgent do
       # it keeps running, so a print run next to a TUI joins it.
       own? = not Enum.any?(live_before, &(&1.id == id))
       home = Application.get_env(:coding_agent, :home, System.user_home!())
-      prompt = CodingAgent.Print.skills(Keyword.fetch!(opts, :prompt), cwd, home)
+      :ok = CodingAgent.Print.skill_notices(cwd, home)
+      prompt = Keyword.fetch!(opts, :prompt)
 
       try do
         CodingAgent.Print.run(conn, ref, id, prompt, end_session(conn, id, own?))

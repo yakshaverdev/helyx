@@ -122,6 +122,24 @@ defmodule Helyx.ModelContext.DefaultTest do
     assert system =~ "## #{Path.join(dir, "AGENTS.md")}\n\ntop rules"
   end
 
+  test "user_text/2 expands a skill command of a skill of cwd, and other text unchanged",
+       %{tmp_dir: dir} do
+    cwd = Path.join(dir, "proj")
+    home = Path.join(dir, "home")
+    File.mkdir_p!(Path.join(cwd, ".git"))
+    folder = Path.join(cwd, ".agents/skills/ship")
+    write!(Path.join(folder, "SKILL.md"), "---\nname: ship\ndescription: Ship it.\n---\nDo it.\n")
+
+    [skill] = Helyx.Skills.scan(cwd, home).skills
+    load = Helyx.Skills.text(skill)
+    assert folder == skill.folder
+
+    assert Default.user_text("/ship 730", cwd: cwd, home: home) == load <> "\n\n730"
+    assert Default.user_text("/ship", cwd: cwd, home: home) == load
+    assert Default.user_text("/none 730", cwd: cwd, home: home) == "/none 730"
+    assert Default.user_text("say /ship", cwd: cwd, home: home) == "say /ship"
+  end
+
   test "an unreadable context file is skipped without error", %{tmp_dir: dir} do
     cwd = Path.join(dir, "code")
     write!(Path.join(dir, "AGENTS.md"), <<0xFF, 0xFE, "not utf8">>)

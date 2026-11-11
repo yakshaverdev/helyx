@@ -1,10 +1,11 @@
 defmodule Helyx.TUI.SkillsTest do
-  # The skills in the TUI: the scan notices at mount, the `/name` command,
-  # the rule of a command over a skill, and the call line of a load.
+  # The skills in the TUI: the scan notices at mount, the rule of a command
+  # name with no separator after it, and the call line of a load. The server
+  # expands a `/name args` message (docs/features/skills.md).
   use ExUnit.Case, async: true
 
   alias ExRatatui.Event.{Key, Paste}
-  alias Helyx.{Event, Message, Skills}
+  alias Helyx.{Event, Message}
   alias Helyx.Provider.Fake
   alias Helyx.TUI
   alias Helyx.TUI.{CallLine, Command, ViewModel}
@@ -66,35 +67,30 @@ defmodule Helyx.TUI.SkillsTest do
     assert Enum.count(notices, &(&1 == "no log file for this run")) == 1
   end
 
-  test "/name args sends the load text and the arguments", %{state: state, tmp_dir: dir} do
+  test "/name args is sent as typed, and the server expands it", %{state: state} do
     {:noreply, state} = TUI.handle_event(%Paste{content: "/#{@name} 730"}, state)
 
-    {:noreply, _state} =
+    {:noreply, state} =
       TUI.handle_event(%Key{code: "enter", kind: "press", modifiers: []}, state)
 
-    [skill] = Enum.filter(Skills.scan(dir, System.user_home!()).skills, &(&1.name == @name))
-    expected = Skills.text(skill) <> "\n\n730"
+    assert ExRatatui.textarea_get_value(state.composer.input) == ""
 
     assert_receive {:helyx_event, _sub,
                     %Event{type: :message_end, data: %{message: %Message{role: :user} = user}}},
                    5_000
 
-    assert Message.text(user) == expected
+    assert Message.text(user) == "/#{@name} 730"
   end
 
-  test "a command wins over a skill of its name; a longer word is the skill" do
-    expand = fn
-      "/model" -> "skill model"
-      "/models x" -> "skill models"
-      "/" <> _ -> nil
-    end
-
-    assert Command.parse("/model", expand) == {:model, ""}
-    assert Command.parse("/model a/b", expand) == {:model, "a/b"}
-    assert Command.parse("/models x", expand) == {:message, "skill models"}
-    assert Command.parse("/newer", expand) == {:usage, :new}
-    assert Command.parse("/other", expand) == {:message, "/other"}
-    assert Command.parse("hello", fn _ -> nil end) == {:message, "hello"}
+  test "a command name with no separator after it is a message as typed" do
+    assert Command.parse("/model") == {:model, ""}
+    assert Command.parse("/model a/b") == {:model, "a/b"}
+    assert Command.parse("/new") == {:new, ""}
+    assert Command.parse("/new x") == {:usage, :new}
+    assert Command.parse("/models") == {:message, "/models"}
+    assert Command.parse("/models x") == {:message, "/models x"}
+    assert Command.parse("/newsletter") == {:message, "/newsletter"}
+    assert Command.parse("hello") == {:message, "hello"}
   end
 
   test "a call of the skill tool shows as skill: name" do

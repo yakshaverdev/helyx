@@ -225,6 +225,8 @@ defmodule Helyx.Session do
   `{:error, :queue_full}`. Its message has the origin `:user`; product code
   passes `origin: %{kind: :product, id: id}`, else `{:error, :invalid_origin}`.
   `steer/3` and `follow_up/3` take it too (docs/features/message-identity.md).
+  The ModelContext plugin of the session can replace a text of the user
+  origin (`Helyx.ModelContext.user_text/2`).
   """
   @spec prompt(t(), String.t(), keyword()) :: :ok | {:error, :turn_running | send_error()}
   def prompt(%__MODULE__{} = session, text, opts \\ []) when is_binary(text) and is_list(opts),
@@ -265,7 +267,28 @@ defmodule Helyx.Session do
 
   defp send_user(session, op, text, opts),
     do:
-      with({:ok, origin} <- Input.origin(opts), do: send_text(session, {op, text, origin}, text))
+      with(
+        {:ok, origin} <- Input.origin(opts),
+        # The plugin gets a checked text; its return gets the check again.
+        :ok <- Input.text(text),
+        {:ok, text} <- user_text(session, origin, text),
+        do: send_text(session, {op, text, origin}, text)
+      )
+
+  # The ModelContext plugin replaces the text of a user message before the
+  # checks; product code keeps its own text (`Helyx.ModelContext.user_text/2`).
+  defp user_text(_session, %{kind: :product}, text), do: {:ok, text}
+
+  defp user_text(session, %{kind: :user}, text) do
+    with {:ok, module, cwd} <- call(session, :user_text_context) do
+      if module != nil and Code.ensure_loaded?(module) and
+           function_exported?(module, :user_text, 2) do
+        {:ok, module.user_text(text, core: session.core, session_id: session.id, cwd: cwd)}
+      else
+        {:ok, text}
+      end
+    end
+  end
 
   defp send_text(session, request, text),
     do: with(:ok <- Input.text(text), do: call(session, request))
