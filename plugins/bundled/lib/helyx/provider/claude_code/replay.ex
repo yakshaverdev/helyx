@@ -1,7 +1,5 @@
 defmodule Helyx.Provider.ClaudeCode.Replay do
   @moduledoc false
-  # The stdin lines of `Helyx.Provider.ClaudeCode`: the JSON line, the
-  # user lines, and the replay of the transcript to a fresh harness session.
 
   alias Helyx.HarnessIO
   alias Helyx.Message
@@ -9,12 +7,7 @@ defmodule Helyx.Provider.ClaudeCode.Replay do
   # One line per assistant message, and one `shouldQuery: false` user line
   # for each run of user messages and tool results between them. The
   # replay may start at an assistant line or at a user line with no tool
-  # result, because the call of every kept result is then kept too. The
-  # kept lines and `last` go out in chunks, each ending at a user line; the
-  # last chunk ends with `last`. Gives {:ok, chunks, cut, replay?}, where
-  # cut is the number of messages left out and replay? says whether any line
-  # is kept; or {:error, error} when the open turn alone passes the replay
-  # bound (`Helyx.HarnessIO.cap_replay/3`).
+  # result, because the call of every kept result is then kept too.
   def chunks(history, last, provider) do
     entries =
       history

@@ -1,18 +1,12 @@
 defmodule Helyx.Provider.Codex.Replay do
   @moduledoc false
-  # The replay items of `thread/inject_items`: the transcript as Responses
-  # API items, each encoded once.
 
   alias Helyx.HarnessIO
   alias Helyx.Message
 
-  # One entry per message, with its Responses API items: an assistant
-  # message gives a message item per text and a `function_call` per tool
-  # call (thinking is not replayed), a user message a message item, and a
-  # tool result a `function_call_output`. The replay may start at any
-  # message but a tool result, so every kept result keeps its call. Gives
-  # {:ok, items, cut}, or {:error, error} when the open turn alone passes
-  # the replay bound (`Helyx.HarnessIO.cap_replay/3`).
+  # The replay may start at any message but a tool result, so every kept
+  # result keeps its call. Thinking is not replayed. An open turn that alone
+  # passes the replay bound fails (`Helyx.HarnessIO.cap_replay/3`).
   def items(history, provider) do
     entries = for message <- history, do: {message, 1, message.role != :tool_result}
 

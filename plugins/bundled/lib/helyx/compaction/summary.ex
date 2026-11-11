@@ -12,25 +12,10 @@ defmodule Helyx.Compaction.Summary do
 
   Every build puts the stored summary (`opts[:summary]`) in front of the
   messages from its first kept message on, or of all messages when the
-  ModelContext removed that message. A message before the cut that the
-  ModelContext added (no id) stays after the summary, and the summary
-  input does not hold it. With trigger `:auto` it asks
-  for a summary when the estimate is over the window minus
-  #{@reserve_tokens} tokens (clamped to the window); with `:manual` it
-  asks at once. It asks only when a cut keeps a part
-  after the summary. The estimate is the integer `context_tokens` of the
-  last usage that has them plus a quarter of the bytes after it, the
-  rule of `Helyx.Session.Totals.context/2`, or with a summary a quarter
-  of the bytes of the context to send. The window is the
-  `context_window` of the last usage of the same model, else the
-  `:models` config. An unknown window turns off `:auto`, and `:manual`
-  returns an error.
-
-  The summary keeps about #{@keep_tokens} recent tokens, cut only at a user
-  or assistant message, so a call keeps its results; the keep counts only
-  the messages since the last summary. Its input is the
-  messages since the last summary, as text with each tool result cut to
-  #{@max_result_bytes} bytes, and the last summary, which it updates.
+  ModelContext removed that message. With trigger `:auto` it asks for a
+  summary when the estimate is over the window minus #{@reserve_tokens}
+  tokens, clamped to the window; with `:manual` it asks at once. The
+  estimate, the keep, and the input of the summary call are in the doc.
   """
 
   @behaviour Helyx.Compaction
@@ -100,12 +85,9 @@ defmodule Helyx.Compaction.Summary do
     %{context | messages: [Message.user(framed) | added ++ kept]}
   end
 
-  # The index of the first message that `Helyx.Summary.kept/2` keeps.
   defp start(messages, summary),
     do: length(messages) - length(Helyx.Summary.kept(messages, summary))
 
-  # A plan for the messages from the last cut up to the new cut, or the
-  # context to send when there is nothing new to summarize.
   defp plan(messages, sent, summary, tokens, opts) do
     start = start(messages, summary)
 

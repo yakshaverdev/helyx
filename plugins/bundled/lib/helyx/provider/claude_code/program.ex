@@ -1,9 +1,5 @@
 defmodule Helyx.Provider.ClaudeCode.Program do
   @moduledoc false
-  # The `claude` program of `Helyx.Provider.ClaudeCode`: its flags, its
-  # prompt, its harness session id, and its replacement
-  # (`docs/features/provider-parity.md`). The functions take and give the
-  # provider state.
 
   alias Helyx.HarnessIO
   alias Helyx.HarnessIO.Stream
@@ -20,8 +16,6 @@ defmodule Helyx.Provider.ClaudeCode.Program do
             stream-json --permission-mode bypassPermissions --tools= --setting-sources=
             --strict-mcp-config --system-prompt= --system-prompt-snapshot=off)
 
-  # The state fields of the options of `init/3` (`HarnessIO.options/1`),
-  # and the harness session of the stored id, or nil.
   def resume(opts) do
     with {:ok, options} <- HarnessIO.options(opts),
          do: {:ok, options, HarnessIO.resumable(opts[:resume_id], @flags)}
@@ -55,9 +49,6 @@ defmodule Helyx.Provider.ClaudeCode.Program do
   # running one, and has the program commands for `/compact`.
   def compaction(state), do: ensure(state, state.system || "", true, state.tools)
 
-  # A program with the prompt `system`, `commands?`, and `tools`: the
-  # running one, or one in its place that resumes its harness session once
-  # the running one ended.
   defp ensure(
          %State{
            stream: %Stream{port: port},
@@ -97,8 +88,6 @@ defmodule Helyx.Provider.ClaudeCode.Program do
     end
   end
 
-  # A new state in place of the running program's, with that program
-  # stopped.
   def replace(state, fields) do
     if state.stream.port, do: HarnessIO.stop(state)
 

@@ -13,7 +13,6 @@ defmodule Helyx.Provider.ClaudeCode.Turn do
   alias Helyx.Provider.ClaudeCode
   alias Helyx.Provider.ClaudeCode.{Mcp, Meter}
 
-  # The turn of a `{:turn, ...}` or a `{:compact, ...}` request.
   def new(:turn, id, uuid, %Helyx.Context{messages: messages}),
     do: %__MODULE__{id: id, uuid: uuid, phase: {:queued, messages, [], false}}
 
@@ -36,9 +35,8 @@ defmodule Helyx.Provider.ClaudeCode.Turn do
   def start(%__MODULE__{phase: {:steer_wait, _ref}} = turn), do: turn
   def start(%__MODULE__{phase: {:queued, _, _, _}} = turn), do: %{turn | phase: :started}
 
-  # The turn with the steer line written. A steer during a held replay goes
-  # out after the turn's line, so it extends the last held chunk. Gives
-  # whether the line goes out at once.
+  # A steer during a held replay goes out after the turn's line, so it
+  # extends the last held chunk.
   def steer(%__MODULE__{phase: {:queued, _messages, [], _replay?}} = turn, _line),
     do: {true, turn}
 
@@ -49,8 +47,7 @@ defmodule Helyx.Provider.ClaudeCode.Turn do
 
   def steer(turn, _line), do: {true, turn}
 
-  # The start of the steer line `uuid`, one of `steers`. A pending
-  # interrupt now waits for the next `result`.
+  # A pending interrupt now waits for the next `result`.
   def steer_start(%__MODULE__{phase: :program} = turn, uuid),
     do: steer_start(turn, uuid, :program)
 
@@ -63,14 +60,12 @@ defmodule Helyx.Provider.ClaudeCode.Turn do
     {[{:user_message, steer_id}], %{turn | steers: steers, phase: phase, interrupt: interrupt}}
   end
 
-  # The turn with the pending interrupt of `from`. A turn that waits for a
-  # steer already gave its `result`.
+  # A turn that waits for a steer already gave its `result`.
   def interrupt(%__MODULE__{phase: {:steer_wait, _ref}} = turn, from),
     do: %{turn | interrupt: {:pending, from, MapSet.new([:result])}}
 
   def interrupt(turn, from), do: %{turn | interrupt: {:pending, from, MapSet.new()}}
 
-  # The turn with `key` (`:response` or `:result`) seen by its interrupt.
   def interrupt_seen(%__MODULE__{interrupt: interrupt} = turn, key),
     do: %{turn | interrupt: seen(interrupt, key)}
 
@@ -103,10 +98,8 @@ defmodule Helyx.Provider.ClaudeCode.Turn do
            when turn.phase == :started or turn.phase == :program or
                   elem(turn.phase, 0) == :steer_wait
 
-  # A `compact_boundary` gives the compaction event, in any turn. A failed
-  # compaction gives its `compact_error` on a `status` line; one in a model
-  # turn is the program's own, and the turn goes on. Every other line of a
-  # compaction turn is dropped: the summary, and the text of a failure.
+  # A `compact_boundary` gives the compaction event, in any turn
+  # (docs/features/harness-compaction.md, "Stream event").
   def compaction(turn, %{"subtype" => "compact_boundary", "compact_metadata" => %{} = meta}) do
     compact = if turn.compact, do: :compacted
     event = {:compaction, tokens(meta["pre_tokens"]), tokens(meta["post_tokens"])}

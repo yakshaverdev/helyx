@@ -1,10 +1,7 @@
 defmodule Helyx.Provider.Codex.Tools do
   @moduledoc false
-  # The Helyx tools of `Helyx.Provider.Codex`. It gives what to send, and
-  # Codex writes it.
-  #
-  # `specs` are the Helyx tool specs to offer. `requests` maps the call id
-  # of each open `item/tool/call` to its request id.
+  # `requests` maps the call id of each open `item/tool/call` to its
+  # request id.
   defstruct specs: [], requests: %{}
 
   alias Helyx.HarnessIO
@@ -34,8 +31,7 @@ defmodule Helyx.Provider.Codex.Tools do
   # the call maps to an open `dynamicToolCall` item of the running turn,
   # which puts it in the transcript, and names a tool that the program was
   # given. Core checks the arguments (`Helyx.Session.Stream.check/1`). The
-  # session owns the call ids of the turn (#369). Gives `{:ok,
-  # tool_request}` or `{:error, text}` for the error answer, and the tools.
+  # session owns the call ids of the turn (#369).
   def call(%{tools: tools} = state, rpc_id, params) do
     if tool_call?(params, state) do
       %{"callId" => call_id, "tool" => tool} = params

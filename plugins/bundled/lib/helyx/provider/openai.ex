@@ -9,30 +9,9 @@ defmodule Helyx.Provider.OpenAI do
         use Helyx.Provider.OpenAI, id: "local", base_url: "http://localhost:11434/v1"
       end
 
-  The options: `id` (the ref prefix), `base_url` (with any `/v1` prefix;
-  the engine appends `/chat/completions`), `key_env` (the variable of the
-  API key, or nil for no `Authorization` header), `headers` (`{name,
-  value}`, a value a string or `:session_id`), `catalog` (the catalog id
-  for the window and the prices, or nil), and `max_tokens_field` (the body
-  field of the session's `:max_output_tokens`: `:max_completion_tokens`,
-  the default, or `:max_tokens`; `docs/features/output-limit.md`). A bad
-  option fails the compile of the endpoint module. Every request sends
-  `User-Agent: helyx/<version>`. A key that is not set or empty fails the
-  call with `{:missing_env, name}`, and a key that is not an RFC 6750
-  bearer token with `{:bad_env, name}`. An error text is built from an HTTP
-  status and the `type` and `code` of an error object, never from its
-  message, body, or payload, so no server text carries the key into it. In
-  every other event, each byte of each copy of the key, and of its JSON
-  form with `\\/`, becomes `*`. Accepted holes there: a key in `\\uXXXX`
-  escapes, with only some of its slashes escaped, as a list of character
-  codes, or in a copy that overlaps an earlier copy is not masked.
-  `docs/features/openai-compatible.md`.
-
-  A request that fails before the stream starts runs again, at most 3
-  times: on a 408, 409, 429, or 5xx, and on a transport error. A server
-  delay over 60 s fails the call at once with `{:retry_after_over_limit,
-  status, delay_ms}`. An abort ends a wait at once. The waits and bounds:
-  `docs/features/coding-agent.md` (#479).
+  The options of `use`, the key, the mask, and the retries are in
+  `docs/features/openai-compatible.md`. A bad option fails the compile of
+  the endpoint module, and every request sends `User-Agent: helyx/<version>`.
   """
 
   alias Helyx.Provider.OpenAI.{Endpoint, ErrorText, Events}

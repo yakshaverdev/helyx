@@ -1,17 +1,9 @@
 defmodule Helyx.Provider.ClaudeCode.Meter do
   @moduledoc false
   # The usage of one `claude` program since the `result` of its last
-  # `done` (`docs/features/usage-and-limits.md`, "Per provider").
-  #
-  # `sum` adds the `usage` of every `result` line, and `known?` is false
-  # after a part whose cost is not known. `mark` is the `total_cost_usd`
-  # at the last `done`: 0 for a new program, the stored sum for a resumed
-  # one (`start/2`), nil when it was not known. `total` and `window` are
-  # of the last `result`, nil when it was bad; `config_window` is the
-  # window of config (`Helyx.ModelInfo`), for a `result` that gives none.
-  # `context` and `model` are of the last `assistant` line.
-  # A `result` with a value outside the wire bound adds nothing and makes
-  # the cost unknown.
+  # `done` (`docs/features/usage-and-limits.md`, "Per provider"). `mark` is
+  # the `total_cost_usd` at the last `done`, and `known?` is false after a
+  # part whose cost is not known.
 
   import Helyx.Usage, only: [wire_tokens?: 1, wire_cost?: 1, wire_window?: 1]
 
