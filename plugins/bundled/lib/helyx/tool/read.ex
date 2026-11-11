@@ -11,6 +11,8 @@ defmodule Helyx.Tool.Read do
 
   @behaviour Helyx.Tool
 
+  alias Helyx.Tool.Args
+
   @impl true
   def name, do: "read"
 
@@ -34,25 +36,26 @@ defmodule Helyx.Tool.Read do
           "type" => "string",
           "description" => "File path, absolute or relative to the working directory"
         },
-        "offset" => %{"type" => "integer", "description" => "First line to return, 1-based"}
+        "offset" => %{
+          "type" => "integer",
+          "minimum" => 1,
+          "default" => 1,
+          "description" => "First line to return, 1-based"
+        }
       },
       "required" => ["path"]
     }
   end
 
   @impl true
-  def run(%{"path" => path} = args, cwd) when is_binary(path) do
-    with {:ok, offset} <- offset(args["offset"]) do
+  def run(args, cwd) do
+    with {:ok, args} <- Args.check(args, parameters()) do
+      path = args["path"]
+
       case Helyx.Text.read_file(Path.expand(path, cwd)) do
-        {:ok, content} -> {:ok, Helyx.Text.truncate(content, :head, offset)}
+        {:ok, content} -> {:ok, Helyx.Text.truncate(content, :head, args["offset"])}
         {:error, reason} -> {:error, "cannot read #{path}: #{reason}"}
       end
     end
   end
-
-  def run(_args, _cwd), do: {:error, "read needs a path"}
-
-  defp offset(nil), do: {:ok, 1}
-  defp offset(n) when is_integer(n) and n > 0, do: {:ok, n}
-  defp offset(_other), do: {:error, "offset must be a positive integer (a 1-based line number)"}
 end

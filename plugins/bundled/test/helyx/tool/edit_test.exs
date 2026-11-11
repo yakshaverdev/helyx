@@ -66,7 +66,7 @@ defmodule Helyx.Tool.EditTest do
 
   test "empty old_text is an error", %{run: run} do
     assert Helyx.Message.text(run.(%{"path" => "a.txt", "old_text" => "", "new_text" => "x"})) ==
-             "old_text is empty"
+             "old_text must be a string of at least 1 byte"
   end
 
   test "a directory is an error result", %{tmp_dir: dir, run: run} do

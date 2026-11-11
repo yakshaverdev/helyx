@@ -115,7 +115,7 @@ defmodule Helyx.Provider.ConformanceTest do
       ClaudeCodeFake.turn(bin, 1, 1, claude_call(1, @ok))
       ClaudeCodeFake.turn(bin, 1, 2, claude_call(2, @bad))
       claude_after(bin, 1, 1, {"hi\n", false}, "Ran.")
-      claude_after(bin, 2, 2, {"bash needs a command", true}, "Failed.")
+      claude_after(bin, 2, 2, {"command is required", true}, "Failed.")
 
       File.write!(
         Path.join(bin, "resp.1"),
@@ -180,7 +180,7 @@ defmodule Helyx.Provider.ConformanceTest do
     test "the same events and snapshot as an API provider", %{bin: bin} = ctx do
       CodexFake.fresh(bin, 1, CodexFake.tid(), [])
       codex_turn(bin, 1, @ok, {"hi\n", false}, "Ran.")
-      codex_turn(bin, 2, @bad, {"bash needs a command", true}, "Failed.")
+      codex_turn(bin, 2, @bad, {"command is required", true}, "Failed.")
 
       harness = run(ctx, core(Codex), "codex/gpt-6-luna")
       assert shape(harness) == shape(api(ctx))

@@ -112,9 +112,7 @@ defmodule Helyx.Tool.ReadTest do
     for bad <- ["2", 2.0, 2.5, 0, -1, true, [2], %{"a" => 2}, -(10 ** 100 - 1)] do
       result = run.(%{"path" => "a.txt", "offset" => bad})
       assert result.is_error
-
-      assert Helyx.Message.text(result) ==
-               "offset must be a positive integer (a 1-based line number)"
+      assert Helyx.Message.text(result) =~ "offset must be an integer"
     end
   end
 
@@ -176,6 +174,7 @@ defmodule Helyx.Tool.ReadTest do
 
   test "missing arguments are an error result", %{run: run} do
     assert run.(%{}).is_error
-    assert Helyx.Message.text(run.(%{"path" => 1})) == "read needs a path"
+    assert Helyx.Message.text(run.(%{})) == "path is required"
+    assert Helyx.Message.text(run.(%{"path" => 1})) == "path must be a string"
   end
 end

@@ -17,6 +17,8 @@ defmodule Helyx.Tool.ToolSearch do
 
   @behaviour Helyx.Tool
 
+  alias Helyx.Tool.Args
+
   @max_query_bytes 1_024
   @max_limit 10
   @default_limit 5
@@ -47,12 +49,15 @@ defmodule Helyx.Tool.ToolSearch do
       "properties" => %{
         "query" => %{
           "type" => "string",
+          "maxLength" => @max_query_bytes,
           "description" => "Words that describe the tool, or tool names; empty to list the groups"
         },
         "limit" => %{
           "type" => "integer",
-          "description" =>
-            "The most tools to load, 1 to #{@max_limit} (default #{@default_limit})"
+          "minimum" => 1,
+          "maximum" => @max_limit,
+          "default" => @default_limit,
+          "description" => "The most tools to load, 1 to #{@max_limit}"
         }
       },
       "required" => ["query"]
@@ -60,26 +65,13 @@ defmodule Helyx.Tool.ToolSearch do
   end
 
   @impl true
-  def run(%{"query" => query} = args, _cwd) when is_binary(query) do
-    with :ok <- check_query(query),
-         {:ok, limit} <- limit(args) do
-      if String.trim(query) == "",
+  def run(args, _cwd) do
+    with {:ok, args} <- Args.check(args, parameters()) do
+      if String.trim(args["query"]) == "",
         do: {:ok, groups_text(Helyx.Tool.deferred(nil, 0))},
-        else: search(query, limit)
+        else: search(args["query"], args["limit"])
     end
   end
-
-  def run(_args, _cwd), do: {:error, "tool_search needs a query, a string"}
-
-  defp check_query(query) when byte_size(query) <= @max_query_bytes, do: :ok
-  defp check_query(_query), do: {:error, "the query has more than #{@max_query_bytes} bytes"}
-
-  defp limit(%{"limit" => limit}) when is_integer(limit) and limit in 1..@max_limit,
-    do: {:ok, limit}
-
-  defp limit(%{"limit" => nil}), do: {:ok, @default_limit}
-  defp limit(%{"limit" => _}), do: {:error, "limit is an integer from 1 to #{@max_limit}"}
-  defp limit(_args), do: {:ok, @default_limit}
 
   defp search(query, limit) do
     deadline = System.monotonic_time(:millisecond) + @wait_ms

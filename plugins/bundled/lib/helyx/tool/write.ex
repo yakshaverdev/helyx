@@ -3,6 +3,8 @@ defmodule Helyx.Tool.Write do
 
   @behaviour Helyx.Tool
 
+  alias Helyx.Tool.Args
+
   @impl true
   def name, do: "write"
 
@@ -27,24 +29,24 @@ defmodule Helyx.Tool.Write do
   end
 
   @impl true
-  def run(%{"path" => path, "content" => content}, cwd)
-      when is_binary(path) and is_binary(content) do
-    full = Path.expand(path, cwd)
+  def run(args, cwd) do
+    with {:ok, args} <- Args.check(args, parameters()) do
+      path = args["path"]
+      full = Path.expand(path, cwd)
 
-    with :ok <- regular_or_missing(full),
-         :ok <- File.mkdir_p(Path.dirname(full)),
-         :ok <- File.write(full, content) do
-      {:ok, "Wrote #{path}"}
-    else
-      {:error, {:not_regular, type}} ->
-        {:error, "cannot write #{path}: not a regular file (#{type})"}
+      with :ok <- regular_or_missing(full),
+           :ok <- File.mkdir_p(Path.dirname(full)),
+           :ok <- File.write(full, args["content"]) do
+        {:ok, "Wrote #{path}"}
+      else
+        {:error, {:not_regular, type}} ->
+          {:error, "cannot write #{path}: not a regular file (#{type})"}
 
-      {:error, reason} ->
-        {:error, "cannot write #{path}: #{:file.format_error(reason)}"}
+        {:error, reason} ->
+          {:error, "cannot write #{path}: #{:file.format_error(reason)}"}
+      end
     end
   end
-
-  def run(_args, _cwd), do: {:error, "write needs a path and content"}
 
   # The open of a FIFO or a device blocks or has side effects, so only a
   # regular file is replaced. Another error of the stat is left to the write.
