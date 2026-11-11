@@ -28,7 +28,7 @@
   ],
   "res": [
     {"name": "subscribe with a tail snapshot", "op": "subscribe", "expect": "valid",
-     "frame": {"type": "res", "id": "1", "ok": true, "result": {"sub": "0", "snapshot": {
+     "frame": {"type": "res", "id": "1", "ok": true, "result": {"sub": "0", "snapshot": {"older": 0,
        "instance_id": "i1", "seq": 4, "model": "fake/echo", "persisting": true,
        "messages": [
          {"id": "u1", "role": "user", "content": [{"type": "text", "text": "hi"}], "origin": {"kind": "user", "id": null}},
@@ -40,25 +40,25 @@
        "context": {"tokens": 12, "window": 200000, "model": "fake/echo", "bytes": 512},
        "asks": [{"ask_id": "k1", "call_id": "c1", "tool": "question", "request": {"question": "Go?"}}], "ui_blocks": [], "activated": ["fs__read"]}}}},
     {"name": "subscribe: totals and a context past the bounds of Core: a cost of 1.7e308, counts past 2^64 - 1, a window of 0", "op": "subscribe", "expect": "valid",
-     "frame": {"type": "res", "id": "1", "ok": true, "result": {"sub": "0", "snapshot": {
+     "frame": {"type": "res", "id": "1", "ok": true, "result": {"sub": "0", "snapshot": {"older": 0,
        "instance_id": "i1", "seq": 18446744073709551615, "model": "fake/echo", "persisting": true, "messages": [], "turn": null,
        "queue": {"steers": 0, "follow_ups": 0, "running": 0, "held": 0, "waiting": 0},
        "usage": {"input": 18446744073709551616, "output": 0, "cache_read": 0, "cache_write": 0, "cost": 1.7e308, "unknown": false, "list": false},
        "context": {"tokens": 18446744073709551616, "window": 0, "model": "fake/echo", "bytes": 0}, "asks": [], "ui_blocks": [], "activated": []}}}},
     {"name": "subscribe: a snapshot whose model is not a model ref", "op": "subscribe", "expect": "valid",
-     "frame": {"type": "res", "id": "1", "ok": true, "result": {"sub": "0", "snapshot": {
+     "frame": {"type": "res", "id": "1", "ok": true, "result": {"sub": "0", "snapshot": {"older": 0,
        "instance_id": "i1", "seq": 0, "model": "no-slash", "persisting": true, "messages": [], "turn": null,
        "queue": {"steers": 0, "follow_ups": 0, "running": 0, "held": 0, "waiting": 0},
        "usage": {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0, "cost": null, "unknown": false, "list": false},
        "context": null, "asks": [], "ui_blocks": [], "activated": []}}}},
     {"name": "subscribe: a snapshot with no asks", "op": "subscribe", "expect": "broken",
-     "frame": {"type": "res", "id": "1", "ok": true, "result": {"sub": "0", "snapshot": {
+     "frame": {"type": "res", "id": "1", "ok": true, "result": {"sub": "0", "snapshot": {"older": 0,
        "instance_id": "i1", "seq": 0, "model": "fake/echo", "persisting": true, "messages": [], "turn": null,
        "queue": {"steers": 0, "follow_ups": 0, "running": 0, "held": 0, "waiting": 0},
        "usage": {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0, "cost": null, "unknown": false, "list": false},
        "context": null, "activated": []}}}},
     {"name": "subscribe: a snapshot with the UI blocks of a call and of the turn", "op": "subscribe", "expect": "valid",
-     "frame": {"type": "res", "id": "1", "ok": true, "result": {"sub": "0", "snapshot": {
+     "frame": {"type": "res", "id": "1", "ok": true, "result": {"sub": "0", "snapshot": {"older": 0,
        "instance_id": "i1", "seq": 3, "model": "fake/echo", "persisting": true,
        "messages": [
          {"id": "u1", "role": "user", "content": [{"type": "text", "text": "hi"}], "origin": {"kind": "user", "id": null}},
@@ -70,25 +70,25 @@
        "ui_blocks": [{"call_id": "c1", "key": "p", "block": {"kind": "progress", "text": "1 of 3", "done": 1, "of": 3}},
                      {"call_id": null, "key": "plan", "block": {"kind": "future_kind", "text": "a plan", "cut": true, "x": [{"y": null}]}}], "activated": []}}}},
     {"name": "subscribe: a snapshot with no activated", "op": "subscribe", "expect": "broken",
-     "frame": {"type": "res", "id": "1", "ok": true, "result": {"sub": "0", "snapshot": {
+     "frame": {"type": "res", "id": "1", "ok": true, "result": {"sub": "0", "snapshot": {"older": 0,
        "instance_id": "i1", "seq": 0, "model": "fake/echo", "persisting": true, "messages": [], "turn": null,
        "queue": {"steers": 0, "follow_ups": 0, "running": 0, "held": 0, "waiting": 0},
        "usage": {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0, "cost": null, "unknown": false, "list": false},
        "context": null, "asks": [], "ui_blocks": []}}}},
     {"name": "subscribe: activated with a name that is not a string", "op": "subscribe", "expect": "broken",
-     "frame": {"type": "res", "id": "1", "ok": true, "result": {"sub": "0", "snapshot": {
+     "frame": {"type": "res", "id": "1", "ok": true, "result": {"sub": "0", "snapshot": {"older": 0,
        "instance_id": "i1", "seq": 0, "model": "fake/echo", "persisting": true, "messages": [], "turn": null,
        "queue": {"steers": 0, "follow_ups": 0, "running": 0, "held": 0, "waiting": 0},
        "usage": {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0, "cost": null, "unknown": false, "list": false},
        "context": null, "asks": [], "ui_blocks": [], "activated": [7]}}}},
     {"name": "subscribe: a snapshot with no ui_blocks", "op": "subscribe", "expect": "broken",
-     "frame": {"type": "res", "id": "1", "ok": true, "result": {"sub": "0", "snapshot": {
+     "frame": {"type": "res", "id": "1", "ok": true, "result": {"sub": "0", "snapshot": {"older": 0,
        "instance_id": "i1", "seq": 0, "model": "fake/echo", "persisting": true, "messages": [], "turn": null,
        "queue": {"steers": 0, "follow_ups": 0, "running": 0, "held": 0, "waiting": 0},
        "usage": {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0, "cost": null, "unknown": false, "list": false},
        "context": null, "asks": [], "activated": []}}}},
     {"name": "subscribe: a snapshot whose UI block has no key", "op": "subscribe", "expect": "broken",
-     "frame": {"type": "res", "id": "1", "ok": true, "result": {"sub": "0", "snapshot": {
+     "frame": {"type": "res", "id": "1", "ok": true, "result": {"sub": "0", "snapshot": {"older": 0,
        "instance_id": "i1", "seq": 0, "model": "fake/echo", "persisting": true, "messages": [], "turn": null,
        "queue": {"steers": 0, "follow_ups": 0, "running": 0, "held": 0, "waiting": 0},
        "usage": {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0, "cost": null, "unknown": false, "list": false},
