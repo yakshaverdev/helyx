@@ -180,6 +180,23 @@ defmodule Helyx.LedgerTest do
     assert ledger.sessions["session00002"].totals == add_all([m2])
   end
 
+  test "a user message of a product, a background run, or a hook is not the prompt",
+       %{tmp_dir: dir} do
+    others =
+      for {kind, n} <- Enum.with_index(~w(product background hook)) do
+        user("m#{n}", "h1", "2026-11-02T10:00:0#{n}Z", "from #{kind}")
+        |> Map.put("origin", %{"kind" => kind, "id" => "x"})
+      end
+
+    typed = user("m9", "h1", "2026-11-02T10:00:09Z", "typed")
+    write(dir, "p", "session00001", [header("h1", "/repo")] ++ others ++ [typed])
+
+    ledger = read(dir)
+
+    assert ledger.skipped_entries == 0
+    assert ledger.sessions["session00001"].prompt =~ "typed"
+  end
+
   test "an assistant with no usage adds nothing", %{tmp_dir: dir} do
     message =
       assistant("m1", "h1", "2026-11-02T10:00:00Z", "hi", nil)

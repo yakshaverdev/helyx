@@ -321,6 +321,9 @@ defmodule Helyx.Ledger do
   defp fold_message(%Message{role: :user, origin: %{kind: :user}} = message, _dt, acc),
     do: add_prompt(acc, message)
 
+  # A text of a product, a background run, or a hook is not the user's prompt.
+  defp fold_message(%Message{role: :user}, _dt, acc), do: acc
+
   defp fold_message(%Message{role: :assistant} = message, dt, acc) do
     acc = add_calls(acc, message, dt)
     if in_window?(dt, acc.ledger), do: add_assistant(acc, message, dt), else: acc
