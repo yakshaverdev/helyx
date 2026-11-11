@@ -45,7 +45,7 @@ defmodule Helyx.Hub.Server do
   end
 
   defp insert_user(mod, store, name, deadline) do
-    user = %{id: new_id(), name: name, created_at: System.os_time(:second)}
+    user = %{id: Schedules.new_id(), name: name, created_at: System.os_time(:second)}
 
     case mod.add_user(store, user, @max_users, deadline) do
       :ok -> {:ok, user.id}
@@ -345,7 +345,7 @@ defmodule Helyx.Hub.Server do
   end
 
   defp handle({:create_token, user_id, name}, deadline, %{store: mod, db: db}) do
-    id = new_id()
+    id = Schedules.new_id()
     text = id <> "." <> Base.url_encode64(:crypto.strong_rand_bytes(32), padding: false)
 
     token = %{
@@ -368,8 +368,4 @@ defmodule Helyx.Hub.Server do
 
   # The calls of the authority (`Helyx.Hub.Access`).
   defp handle(request, deadline, state), do: Rules.handle(request, deadline, state)
-
-  # The shape of a session id, the base64url of 9 random bytes (decisions 1
-  # and 2). Helyx.Session.Id is internal to Core, which Hub does not call.
-  defp new_id, do: Base.url_encode64(:crypto.strong_rand_bytes(9), padding: false)
 end
