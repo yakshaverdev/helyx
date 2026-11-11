@@ -49,7 +49,7 @@ defmodule Helyx.TUI.FooterUsageTest do
   # snapshot.
   defp resumed(messages, model) do
     decoded =
-      for m <- messages, do: %{m | id: "m1"} |> Codec.encode() |> JSON.encode!() |> JSON.decode!()
+      for m <- messages, do: %{m | id: "m1", origin: if(m.role == :user, do: %{kind: :user, id: nil})} |> Codec.encode() |> JSON.encode!() |> JSON.decode!()
 
     snapshot(Enum.map(decoded, &Codec.decode/1), model)
   end

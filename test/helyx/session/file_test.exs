@@ -131,18 +131,17 @@ defmodule Helyx.Session.FileTest do
             "role" => "user",
             "content" => [%{"type" => "text", "text" => "hi"}]
           },
-          extra
+          if(Map.has_key?(extra, "role"), do: extra, else: Map.merge(%{"origin" => %{"kind" => "user", "id" => nil}}, extra))
         )
       )
     end
 
-    test "the entry id is the message id, and a user entry with no origin reads as :unknown",
+    test "the entry id is the message id, and a user entry with no origin rejects the file",
          %{tmp_dir: dir} do
       {:ok, file} = Session.File.create(dir, "sess00000001", "/repo", "test/ok")
-      append_raw(file, user_entry("message00001", %{}))
+      append_raw(file, user_entry("message00001", %{}) |> JSON.decode!() |> Map.delete("origin") |> JSON.encode!())
 
-      assert {:ok, %{messages: [message]}} = SessionFile.resume(dir, "/repo")
-      assert %Message{id: "message00001", origin: %{kind: :unknown, id: nil}} = message
+      assert {:error, {:invalid_file, _}} = SessionFile.resume(dir, "/repo")
     end
 
     test "a malformed origin, or an origin on another role, rejects the file", %{tmp_dir: dir} do
@@ -694,9 +693,9 @@ defmodule Helyx.Session.FileTest do
         {"a tool call id with a wrong type",
          ~s({"id":"x","type":"message","role":"tool_result","tool_call_id":42,"content":[]})},
         {"a content block with a wrong field type",
-         ~s({"id":"x","type":"message","role":"user","content":[{"type":"text","text":42}]})},
+         ~s({"id":"x","type":"message","role":"user","origin":{"kind":"user","id":null},"content":[{"type":"text","text":42}]})},
         {"an image block, removed in #634",
-         ~s({"id":"x","type":"message","role":"user","content":[{"type":"image","mime_type":"image/png","data":"aGk="}]})},
+         ~s({"id":"x","type":"message","role":"user","origin":{"kind":"user","id":null},"content":[{"type":"image","mime_type":"image/png","data":"aGk="}]})},
         {"a thinking signature, removed in #634",
          ~s({"id":"x","type":"message","role":"assistant","content":[{"type":"thinking","thinking":"t","signature":"s"}]})},
         {"a compaction with no string provider", ~s({"id":"x","type":"compaction","provider":1})},
@@ -763,9 +762,9 @@ defmodule Helyx.Session.FileTest do
     # Hand-written lines: each parent_id is the id of the line above.
     lines = [
       ~s({"id":"h","parent_id":null,"ts":"t","type":"session","version":1,"cwd":"/repo","model":"test/ok"}),
-      ~s({"id":"message00001","parent_id":"h","ts":"t","type":"message","role":"user","content":[{"type":"text","text":"one"}]}),
+      ~s({"id":"message00001","parent_id":"h","ts":"t","type":"message","role":"user","origin":{"kind":"user","id":null},"content":[{"type":"text","text":"one"}]}),
       ~s({"id":"c","parent_id":"message00001","ts":"t","type":"model_change","model":"test/two"}),
-      ~s({"id":"message00002","parent_id":"c","ts":"t","type":"message","role":"user","content":[{"type":"text","text":"two"}]})
+      ~s({"id":"message00002","parent_id":"c","ts":"t","type":"message","role":"user","origin":{"kind":"user","id":null},"content":[{"type":"text","text":"two"}]})
     ]
 
     {:ok, file} = Session.File.create(dir, "old000000000", "/repo", "test/ok")
@@ -780,7 +779,7 @@ defmodule Helyx.Session.FileTest do
   test "an entry that does not continue the chain is rejected with its line, the file unchanged",
        %{tmp_dir: dir} do
     entry = fn id, parent ->
-      ~s({"id":#{id},"parent_id":#{parent},"type":"message","role":"user","content":[]})
+      ~s({"id":#{id},"parent_id":#{parent},"type":"message","role":"user","origin":{"kind":"user","id":null},"content":[]})
     end
 
     breaks = [

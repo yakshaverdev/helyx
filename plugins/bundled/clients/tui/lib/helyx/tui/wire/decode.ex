@@ -254,17 +254,16 @@ defmodule Helyx.TUI.Wire.Decode do
   defp role!(role) when role in ~w(user assistant tool_result), do: String.to_existing_atom(role)
 
   # An origin of the schema. A user message keeps one that Core makes, so it decodes as Core holds
-  # it (`unknown` is one of a file from before #649); any other is dropped, as the TUI shows no
+  # it; any other is dropped, as the TUI shows no
   # origin.
   defp origin!(_role, nil), do: nil
 
   defp origin!(role, %{"kind" => kind, "id" => id}) when is_binary(id) or is_nil(id) do
     origin = %{kind: origin_kind!(kind), id: id}
-    known? = origin == %{kind: :unknown, id: nil} or Message.origin?(origin)
-    if role == :user and known?, do: origin
+    if role == :user and Message.origin?(origin), do: origin
   end
 
-  defp origin_kind!(kind) when kind in ~w(user background product hook unknown),
+  defp origin_kind!(kind) when kind in ~w(user background product hook),
     do: String.to_existing_atom(kind)
 
   # A text of a tool result gets the cut of Core at each boundary of tool text

@@ -23,6 +23,8 @@ defmodule Helyx.Session.File.UIBlocksCodecTest do
       "content" => [%{"type" => "text", "text" => "t"}]
     }
 
+    base = if role == "user", do: Map.put(base, "origin", %{"kind" => "user", "id" => nil}), else: base
+
     extra =
       if role == "tool_result",
         do: %{"tool_call_id" => "c1", "tool_name" => "bash", "is_error" => false},

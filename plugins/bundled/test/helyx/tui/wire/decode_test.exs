@@ -105,13 +105,6 @@ defmodule Helyx.TUI.Wire.DecodeTest do
     end
   end
 
-  test "a user message of a file from before #649 keeps its unknown origin" do
-    old = %Message{role: :user, id: "u0", origin: %{kind: :unknown, id: nil}, content: []}
-    event = event(:message_end, %{message: old})
-    assert %{"origin" => %{"kind" => "unknown", "id" => nil}} = wire(Wire.value(old))
-    assert Decode.event(wire(Wire.event(event))) == {:ok, event}
-  end
-
   test "an unknown event type is nil, and an unknown key is ignored" do
     notice = wire(Wire.event(event(:notice, %{text: "n"})))
     assert Decode.event(%{notice | "type" => "future"}) == {:ok, nil}
@@ -317,8 +310,6 @@ defmodule Helyx.TUI.Wire.DecodeTest do
     for {message, origin, kept} <- [
           {user("hi"), %{"kind" => "product", "id" => ""}, nil},
           {user("hi"), %{"kind" => "user", "id" => "u"}, nil},
-          {user("hi"), %{"kind" => "unknown", "id" => "u"}, nil},
-          {user("hi"), %{"kind" => "unknown", "id" => nil}, %{kind: :unknown, id: nil}},
           {assistant(), %{"kind" => "user", "id" => nil}, nil},
           {result(), %{"kind" => "product", "id" => "p"}, nil}
         ] do

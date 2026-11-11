@@ -32,7 +32,8 @@ defmodule Helyx.SessionsEditTest do
   end
 
   defp msg(role, text, extra \\ []) do
-    struct!(Message, [role: role, id: Helyx.Session.Id.new(), content: [text(text)]] ++ extra)
+    origin = if role == :user, do: %{kind: :user, id: nil}
+    struct!(Message, [role: role, id: Helyx.Session.Id.new(), origin: origin, content: [text(text)]] ++ extra)
   end
 
   defp text(text), do: %Message.Text{text: text}
