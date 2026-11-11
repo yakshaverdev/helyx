@@ -9,6 +9,7 @@ use crate::handshake::{Handshake, Token};
 use crate::json::{self, Json, Limits, object};
 use crate::parts::{self, FRAME_BYTES, Joiner, TooLarge};
 use std::collections::{HashMap, HashSet};
+use std::time::Duration;
 
 /// The requests in flight on one connection, as the server bounds them.
 pub const MAX_IN_FLIGHT: usize = 16;
@@ -54,10 +55,15 @@ pub(crate) struct Request {
     /// The subscription that an `unsubscribe` ends.
     pub sub: Option<String>,
     /// The statement of the host that a subscribe or an `unsubscribe` of the
-    /// session reconciles; none for another request.
+    /// session reconciles; none for another request, which is one of the
+    /// host's operations and whose reply the host shows.
     pub stated: Option<u64>,
     /// The `instance_id` that a request names, as a `history` page does.
     pub instance: Option<String>,
+    /// The deadline of the server for the op from its send
+    /// (`crate::operation::deadline`); none for an op that it does not bound.
+    /// The connection keeps no timer: it holds the bound for the host.
+    pub deadline: Option<Duration>,
 }
 
 /// A server frame, decoded and joined from its parts.

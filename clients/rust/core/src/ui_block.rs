@@ -72,8 +72,9 @@ pub fn envelope(value: &Json) -> Checked<()> {
 /// `Helyx.UIBlock` counts them: a string with the escapes of the encoder of
 /// OTP, a number at the text that the server sent, and a container nested
 /// past the depth of the decoder at its text, which the server encoded.
-/// An integer of more than 100 digits is a break.
-fn size(value: &Json) -> Checked<usize> {
+/// An integer of more than 100 digits is a break. The answer of an ask
+/// counts its encode the same way (`operation::check_answer`).
+pub(crate) fn size(value: &Json) -> Checked<usize> {
     Ok(match value {
         Json::Null | Json::Bool(true) => 4,
         Json::Bool(false) => 5,

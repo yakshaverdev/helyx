@@ -5,17 +5,45 @@
 
 mod stub;
 
-use helyx_desktop::net::{self, Command, Shared};
+use helyx_client_core::json::{Json, decode};
+use helyx_desktop::net::{self, Command, RequestState, Shared};
 use helyx_desktop::settings::Server;
 use helyx_desktop::socket::WAITS;
 use std::net::{TcpListener, TcpStream};
-use std::sync::mpsc::channel;
+use std::sync::mpsc::{Receiver, channel};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use stub::{LIVE, challenge, next_text, welcome};
 use tungstenite::protocol::CloseFrame;
 use tungstenite::protocol::frame::coding::CloseCode;
 use tungstenite::{Message, WebSocket, accept};
+
+/// The next request of the client, as its frame; a response is skipped.
+fn next_request(ws: &mut WebSocket<TcpStream>) -> Json {
+    loop {
+        let text = next_text(ws);
+        let value = decode(&text).unwrap();
+        if value.get("type").and_then(Json::as_str) == Some("req") {
+            return value;
+        }
+    }
+}
+
+/// The next request of `op`, with any other request before it read and left
+/// unanswered; a test names the replies that it gives.
+fn request(ws: &mut WebSocket<TcpStream>, op: &str) -> Json {
+    loop {
+        let value = next_request(ws);
+        if value.get("op").and_then(Json::as_str) == Some(op) {
+            return value;
+        }
+    }
+}
+
+/// The `id` of a request or a reply.
+fn id_of(frame: &Json) -> &str {
+    frame.get("id").and_then(Json::as_str).unwrap()
+}
 
 fn snapshot(seq: u64) -> String {
     format!(
@@ -39,23 +67,25 @@ fn a_follow_survives_a_slow_close() {
         })
     });
 
-    // The first connection: the live list, a follow, an event, then 4408.
+    // The first connection: the live list and the saved list, a follow, an
+    // event, then 4408.
     let mut ws = accept(listener.accept().unwrap().0).unwrap();
     welcome(&mut ws, token);
-    let live = next_text(&mut ws);
-    assert!(live.contains(r#""op":"sessions.live""#), "{live}");
+    let live = request(&mut ws, "sessions.live");
+    assert_eq!(id_of(&live), "0");
     ws.send(Message::text(LIVE)).unwrap();
     while shared.lock().unwrap().live.is_empty() {
         changes.recv().unwrap();
     }
     commands.send(Command::Follow("s1".into())).unwrap();
-    let subscribe = next_text(&mut ws);
-    assert!(
-        subscribe.contains(r#""params":{"session":"s1"}"#),
-        "{subscribe}"
+    let subscribe = request(&mut ws, "subscribe");
+    assert_eq!(
+        subscribe.get("params"),
+        Some(&decode(r#"{"session":"s1"}"#).unwrap())
     );
     ws.send(Message::text(format!(
-        r#"{{"type":"res","id":"1","ok":true,"result":{{"sub":"0","snapshot":{}}}}}"#,
+        r#"{{"type":"res","id":"{}","ok":true,"result":{{"sub":"0","snapshot":{}}}}}"#,
+        id_of(&subscribe),
         snapshot(4)
     )))
     .unwrap();
@@ -362,11 +392,17 @@ fn a_failed_open_after_a_welcome_reconnects() {
     // The first connection: a follow and its snapshot, then a lost end.
     let mut ws = accept(listener.accept().unwrap().0).unwrap();
     welcome(&mut ws, "tok-q4");
-    let _live = next_text(&mut ws);
-    commands.send(Command::Follow("s1".into())).unwrap();
-    let _subscribe = next_text(&mut ws);
+    let live = request(&mut ws, "sessions.live");
     ws.send(Message::text(format!(
-        r#"{{"type":"res","id":"1","ok":true,"result":{{"sub":"0","snapshot":{}}}}}"#,
+        r#"{{"type":"res","id":"{}","ok":true,"result":{{"sessions":[]}}}}"#,
+        id_of(&live)
+    )))
+    .unwrap();
+    commands.send(Command::Follow("s1".into())).unwrap();
+    let subscribe = request(&mut ws, "subscribe");
+    ws.send(Message::text(format!(
+        r#"{{"type":"res","id":"{}","ok":true,"result":{{"sub":"0","snapshot":{}}}}}"#,
+        id_of(&subscribe),
         snapshot(4)
     )))
     .unwrap();
@@ -399,4 +435,440 @@ fn a_failed_open_after_a_welcome_reconnects() {
     drop(commands);
     drop(ws);
     assert_eq!(thread.join().unwrap(), "reconnecting");
+}
+
+/// The welcome of a stub connection, with the answers of the two requests of
+/// the first frame: the live sessions and the saved ones.
+fn start(ws: &mut WebSocket<TcpStream>, token: &str) {
+    welcome(ws, token);
+    let live = request(ws, "sessions.live");
+    ok(ws, id_of(&live), r#"{"sessions":[]}"#);
+    let saved = request(ws, "sessions.saved");
+    ok(ws, id_of(&saved), r#"{"items":[],"next":null}"#);
+}
+
+fn ok(ws: &mut WebSocket<TcpStream>, id: &str, result: &str) {
+    ws.send(Message::text(format!(
+        r#"{{"type":"res","id":"{id}","ok":true,"result":{result}}}"#
+    )))
+    .unwrap();
+}
+
+fn error(ws: &mut WebSocket<TcpStream>, id: &str, code: &str) {
+    ws.send(Message::text(format!(
+        r#"{{"type":"res","id":"{id}","ok":false,"error":{{"code":"{code}","text":"x"}}}}"#
+    )))
+    .unwrap();
+}
+
+/// Waits until the window state passes `done`, on the changes of the thread.
+fn until(changes: &Receiver<()>, shared: &Mutex<Shared>, done: impl Fn(&Shared) -> bool) {
+    while !(done)(&shared.lock().unwrap()) {
+        changes.recv().unwrap();
+    }
+}
+
+/// The network thread of a test and the channel that drives it.
+fn drive(
+    server: Server,
+    shared: Arc<Mutex<Shared>>,
+) -> (std::sync::mpsc::Sender<Command>, Receiver<()>) {
+    let (commands, receive) = channel();
+    let (changed, changes) = channel();
+    std::thread::spawn(move || {
+        net::run(&server, &shared, &receive, &|| {
+            let _ = changed.send(());
+        })
+    });
+    (commands, changes)
+}
+
+#[test]
+fn a_prompt_goes_with_its_text_and_its_reply_is_ok() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let shared = Arc::new(Mutex::new(Shared::new("tok-q4".into())));
+    let (commands, changes) = drive(stub::local(port), shared.clone());
+    let mut ws = accept(listener.accept().unwrap().0).unwrap();
+    start(&mut ws, "tok-q4");
+    commands
+        .send(Command::Operation {
+            send: Some(3),
+            operation: helyx_client_core::operation::Operation::prompt("s1", "a text").unwrap(),
+        })
+        .unwrap();
+    let prompt = request(&mut ws, "prompt");
+    assert_eq!(
+        prompt.get("params"),
+        Some(&decode(r#"{"session":"s1","text":"a text"}"#).unwrap())
+    );
+    // The line of the request waits for its reply.
+    until(&changes, &shared, |s| {
+        s.requests
+            .iter()
+            .any(|line| line.op == "prompt" && line.state == RequestState::Pending)
+    });
+    ok(&mut ws, id_of(&prompt), "{}");
+    until(&changes, &shared, |s| {
+        s.requests
+            .iter()
+            .any(|line| line.op == "prompt" && line.state == RequestState::Ok)
+    });
+    let shared = shared.lock().unwrap();
+    let line = (shared.requests.iter())
+        .find(|line| line.op == "prompt")
+        .cloned()
+        .unwrap();
+    assert_eq!(line.label, "prompt \"a text\"");
+    // The send's outcome is `ok`: the input empties its composer.
+    assert!(
+        shared
+            .outcomes
+            .iter()
+            .any(|(send, outcome)| *send == 3
+                && *outcome == helyx_desktop::composer::SendOutcome::Ok),
+        "{:?}",
+        shared.outcomes
+    );
+}
+
+#[test]
+fn an_error_of_the_server_is_its_line() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let shared = Arc::new(Mutex::new(Shared::new("tok-q4".into())));
+    let (commands, changes) = drive(stub::local(port), shared.clone());
+    let mut ws = accept(listener.accept().unwrap().0).unwrap();
+    start(&mut ws, "tok-q4");
+    commands
+        .send(Command::Operation {
+            send: None,
+            operation: helyx_client_core::operation::Operation::abort("s1"),
+        })
+        .unwrap();
+    let abort = request(&mut ws, "abort");
+    error(&mut ws, id_of(&abort), "session_not_found");
+    until(&changes, &shared, |s| {
+        (s.requests.iter()).any(|line| {
+            line.op == "abort"
+                && line.state
+                    == (RequestState::Error {
+                        code: "session_not_found".into(),
+                        text: "x".into(),
+                    })
+        })
+    });
+}
+
+#[test]
+fn a_close_with_a_request_out_takes_its_reply_as_unknown_and_never_resends() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let shared = Arc::new(Mutex::new(Shared::new("tok-q4".into())));
+    let (commands, changes) = drive(stub::local(port), shared.clone());
+    let mut ws = accept(listener.accept().unwrap().0).unwrap();
+    start(&mut ws, "tok-q4");
+    commands
+        .send(Command::Operation {
+            send: None,
+            operation: helyx_client_core::operation::Operation::abort("s1"),
+        })
+        .unwrap();
+    let _abort = request(&mut ws, "abort");
+    // The connection ends before the reply: the abort is unknown.
+    drop(ws);
+    drop(listener);
+    until(&changes, &shared, |s| {
+        (s.requests.iter()).any(|line| line.op == "abort" && line.state == RequestState::Unknown)
+    });
+    // The next connection sends no abort of its own: its first request is
+    // the live list that every welcome asks for, and the request lines still
+    // hold only the abort.
+    let listener = TcpListener::bind(("127.0.0.1", port)).unwrap();
+    let mut ws = accept(listener.accept().unwrap().0).unwrap();
+    welcome(&mut ws, "tok-q4");
+    let frame = next_request(&mut ws);
+    assert_eq!(
+        frame.get("op").and_then(Json::as_str),
+        Some("sessions.live")
+    );
+    ok(&mut ws, id_of(&frame), r#"{"sessions":[]}"#);
+    let shared = shared.lock().unwrap();
+    let ops: Vec<&str> = (shared.requests.iter()).map(|line| line.op).collect();
+    assert_eq!(
+        ops,
+        ["sessions.live", "sessions.saved", "abort", "sessions.live"]
+    );
+    let abort = (shared.requests.iter())
+        .find(|line| line.op == "abort")
+        .unwrap();
+    assert_eq!(abort.state, RequestState::Unknown);
+    let _ = commands;
+}
+
+#[test]
+fn a_lost_reply_of_a_composer_send_fails_its_outcome() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let shared = Arc::new(Mutex::new(Shared::new("tok-q4".into())));
+    let (commands, changes) = drive(stub::local(port), shared.clone());
+    let mut ws = accept(listener.accept().unwrap().0).unwrap();
+    start(&mut ws, "tok-q4");
+    commands
+        .send(Command::Operation {
+            send: Some(5),
+            operation: helyx_client_core::operation::Operation::prompt("s1", "lost").unwrap(),
+        })
+        .unwrap();
+    let _prompt = request(&mut ws, "prompt");
+    // The connection ends before the reply: the outcome is `Failed`, so the
+    // input keeps the text and the user decides whether to send it again.
+    drop(ws);
+    drop(listener);
+    until(&changes, &shared, |s| {
+        (s.outcomes.iter()).any(|(send, outcome)| {
+            *send == 5
+                && *outcome
+                    == helyx_desktop::composer::SendOutcome::Failed("the reply was lost".into())
+        })
+    });
+    let _ = commands;
+}
+
+#[test]
+fn a_start_follows_the_session_that_it_made() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let shared = Arc::new(Mutex::new(Shared::new("tok-q4".into())));
+    let (commands, changes) = drive(stub::local(port), shared.clone());
+    let mut ws = accept(listener.accept().unwrap().0).unwrap();
+    start(&mut ws, "tok-q4");
+    commands
+        .send(Command::Operation {
+            send: None,
+            operation: helyx_client_core::operation::Operation::start("/r", None).unwrap(),
+        })
+        .unwrap();
+    let start = request(&mut ws, "start");
+    assert_eq!(
+        start.get("params"),
+        Some(&decode(r#"{"cwd":"/r"}"#).unwrap())
+    );
+    ok(&mut ws, id_of(&start), r#"{"session":"s2"}"#);
+    let subscribe = request(&mut ws, "subscribe");
+    assert_eq!(
+        subscribe.get("params"),
+        Some(&decode(r#"{"session":"s2"}"#).unwrap())
+    );
+    ok(
+        &mut ws,
+        id_of(&subscribe),
+        &format!(r#"{{"sub":"0","snapshot":{}}}"#, snapshot(1)),
+    );
+    until(&changes, &shared, |s| s.followed.as_deref() == Some("s2"));
+}
+
+#[test]
+fn more_saved_sessions_append_the_next_page() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let shared = Arc::new(Mutex::new(Shared::new("tok-q4".into())));
+    let (commands, changes) = drive(stub::local(port), shared.clone());
+    let mut ws = accept(listener.accept().unwrap().0).unwrap();
+    welcome(&mut ws, "tok-q4");
+    let live = request(&mut ws, "sessions.live");
+    ok(&mut ws, id_of(&live), r#"{"sessions":[]}"#);
+    let saved = request(&mut ws, "sessions.saved");
+    let page =
+        r#"{"items":[{"id":"a","cwd":"/r","model":"m","mtime":0,"prompt":"first"}],"next":"c1"}"#;
+    ok(&mut ws, id_of(&saved), page);
+    until(&changes, &shared, |s| s.saved.len() == 1);
+    commands
+        .send(Command::Saved {
+            after: Some("c1".into()),
+        })
+        .unwrap();
+    let more = request(&mut ws, "sessions.saved");
+    assert_eq!(
+        more.get("params"),
+        Some(&decode(r#"{"after":"c1","limit":256}"#).unwrap())
+    );
+    let page =
+        r#"{"items":[{"id":"b","cwd":"/r2","model":"m","mtime":0,"prompt":"second"}],"next":null}"#;
+    ok(&mut ws, id_of(&more), page);
+    until(&changes, &shared, |s| s.saved.len() == 2);
+    let shared = shared.lock().unwrap();
+    assert_eq!(
+        shared
+            .saved
+            .iter()
+            .map(|s| s.id.as_str())
+            .collect::<Vec<_>>(),
+        ["a", "b"]
+    );
+    assert_eq!(shared.saved_next, None);
+}
+
+#[test]
+fn two_more_pages_before_a_reply_do_not_replace_the_first_page() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let shared = Arc::new(Mutex::new(Shared::new("tok-q4".into())));
+    let (commands, changes) = drive(stub::local(port), shared.clone());
+    let mut ws = accept(listener.accept().unwrap().0).unwrap();
+    welcome(&mut ws, "tok-q4");
+    let live = request(&mut ws, "sessions.live");
+    ok(&mut ws, id_of(&live), r#"{"sessions":[]}"#);
+    let saved = request(&mut ws, "sessions.saved");
+    let page =
+        r#"{"items":[{"id":"a","cwd":"/r","model":"m","mtime":0,"prompt":"first"}],"next":"c1"}"#;
+    ok(&mut ws, id_of(&saved), page);
+    until(&changes, &shared, |s| s.saved.len() == 1);
+    for _ in 0..2 {
+        commands
+            .send(Command::Saved {
+                after: Some("c1".into()),
+            })
+            .unwrap();
+    }
+    let more = request(&mut ws, "sessions.saved");
+    let page =
+        r#"{"items":[{"id":"b","cwd":"/r","model":"m","mtime":0,"prompt":"second"}],"next":null}"#;
+    ok(&mut ws, id_of(&more), page);
+    until(&changes, &shared, |s| s.saved.len() == 2);
+    let shared = shared.lock().unwrap();
+    assert_eq!(
+        (shared.saved.iter())
+            .map(|session| session.id.as_str())
+            .collect::<Vec<_>>(),
+        ["a", "b"]
+    );
+}
+
+#[test]
+fn a_refresh_then_a_more_keeps_the_first_page() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let shared = Arc::new(Mutex::new(Shared::new("tok-q4".into())));
+    let (commands, changes) = drive(stub::local(port), shared.clone());
+    let mut ws = accept(listener.accept().unwrap().0).unwrap();
+    welcome(&mut ws, "tok-q4");
+    let live = request(&mut ws, "sessions.live");
+    ok(&mut ws, id_of(&live), r#"{"sessions":[]}"#);
+    let saved = request(&mut ws, "sessions.saved");
+    let page =
+        r#"{"items":[{"id":"a","cwd":"/r","model":"m","mtime":0,"prompt":"first"}],"next":"c1"}"#;
+    ok(&mut ws, id_of(&saved), page);
+    until(&changes, &shared, |s| s.saved.len() == 1);
+    // The refresh and the more are sent before either reply.
+    commands.send(Command::Saved { after: None }).unwrap();
+    commands
+        .send(Command::Saved {
+            after: Some("c1".into()),
+        })
+        .unwrap();
+    let refresh = request(&mut ws, "sessions.saved");
+    assert!(
+        more_after(&refresh).is_none(),
+        "{:?}",
+        refresh.get("params")
+    );
+    let page = r#"{"items":[{"id":"a2","cwd":"/r","model":"m","mtime":0,"prompt":"first again"}],"next":"c1"}"#;
+    ok(&mut ws, id_of(&refresh), page);
+    until(&changes, &shared, |s| {
+        s.saved.first().is_some_and(|session| session.id == "a2")
+    });
+    assert_eq!(shared.lock().unwrap().saved.len(), 1);
+    // A later more appends at the next page.
+    commands
+        .send(Command::Saved {
+            after: Some("c1".into()),
+        })
+        .unwrap();
+    let more = request(&mut ws, "sessions.saved");
+    let page =
+        r#"{"items":[{"id":"b","cwd":"/r","model":"m","mtime":0,"prompt":"second"}],"next":null}"#;
+    ok(&mut ws, id_of(&more), page);
+    until(&changes, &shared, |s| s.saved.len() == 2);
+    let shared = shared.lock().unwrap();
+    assert_eq!(
+        (shared.saved.iter())
+            .map(|session| session.id.as_str())
+            .collect::<Vec<_>>(),
+        ["a2", "b"]
+    );
+}
+
+/// The `after` of the params of a `sessions.saved` request, if it has one.
+fn more_after(frame: &Json) -> Option<&str> {
+    frame
+        .get("params")
+        .and_then(|params| params.get("after"))
+        .and_then(Json::as_str)
+}
+
+#[test]
+fn a_send_between_connections_is_not_sent_and_its_line_stays() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let shared = Arc::new(Mutex::new(Shared::new("tok-q4".into())));
+    let (commands, changes) = drive(stub::local(port), shared.clone());
+    let mut ws = accept(listener.accept().unwrap().0).unwrap();
+    start(&mut ws, "tok-q4");
+    drop(ws);
+    drop(listener);
+    // The connection is over before the command goes: a send between
+    // connections.
+    until(&changes, &shared, |s| s.line != "connected");
+    // No connection takes it: the line is `not sent` and the composer keeps
+    // the text.
+    commands
+        .send(Command::Operation {
+            send: Some(9),
+            operation: helyx_client_core::operation::Operation::prompt("s1", "kept").unwrap(),
+        })
+        .unwrap();
+    until(&changes, &shared, |s| {
+        (s.outcomes.iter()).any(|(send, outcome)| {
+            *send == 9
+                && *outcome
+                    == helyx_desktop::composer::SendOutcome::Failed(
+                        "the connection is not ready".into(),
+                    )
+        })
+    });
+    {
+        let shared = shared.lock().unwrap();
+        let line = (shared.requests.iter())
+            .find(|line| {
+                line.state
+                    == RequestState::Error {
+                        code: "not sent".into(),
+                        text: "the connection is not ready".into(),
+                    }
+            })
+            .unwrap();
+        assert_eq!(line.op, "prompt");
+        assert_eq!(line.label, "prompt \"kept\"");
+    }
+    // The next connection does not overwrite the line.
+    let listener = TcpListener::bind(("127.0.0.1", port)).unwrap();
+    let mut ws = accept(listener.accept().unwrap().0).unwrap();
+    welcome(&mut ws, "tok-q4");
+    let live = request(&mut ws, "sessions.live");
+    ok(&mut ws, id_of(&live), r#"{"sessions":[]}"#);
+    let shared = shared.lock().unwrap();
+    assert!(
+        shared.requests.iter().any(|line| {
+            line.op == "prompt"
+                && line.state
+                    == (RequestState::Error {
+                        code: "not sent".into(),
+                        text: "the connection is not ready".into(),
+                    })
+        }),
+        "{:?}",
+        shared.requests
+    );
+    assert_eq!(shared.line, "connected");
 }

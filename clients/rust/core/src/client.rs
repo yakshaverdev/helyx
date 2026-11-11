@@ -13,9 +13,11 @@ use crate::follow::Session;
 use crate::frame::{self, Reply, ServerFrame, Subscribed};
 use crate::handshake::{Step, Token};
 use crate::json::{self, Json, Limits};
+use crate::operation::{self, Operation};
 use crate::reconcile::subscribe_fits;
 use crate::seq::Seq;
 use std::collections::HashMap;
+use std::time::Duration;
 
 pub use crate::connection::{MAX_IN_FLIGHT, Refusal};
 pub use crate::follow::{Follow, Hold, Wait};
@@ -63,6 +65,20 @@ pub enum Next {
     /// connection ended by a break or a refusal. Reconnecting would meet the
     /// same end.
     Stop,
+}
+
+/// The end of a connection, from `Client::closed`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Closed {
+    /// What the host does next.
+    pub next: Next,
+    /// The host's requests that were in flight when the connection ended, in
+    /// send order: the id and the op. Their replies are lost, so their
+    /// result is `Unknown` (ADR 0006 §4): the client never sends one of them
+    /// again, and the user decides whether to send it again. A subscribe or
+    /// an `unsubscribe` that reconciles the host's intent is not one of
+    /// them: the next connection states the intent again.
+    pub unknown: Vec<(String, &'static str)>,
 }
 
 #[derive(Debug)]
@@ -127,13 +143,22 @@ impl Client {
     /// connection of the client took the handshake, any end reconnects,
     /// `4408` (the slow end) and a failed open too, but a break and a
     /// refusal; before it, every end stops, as the first connect of the TUI
-    /// does (`docs/features/tui-attach.md`, decision 10).
-    pub fn closed(&mut self, _code: Option<u16>) -> Next {
-        let broken = self.connection.take().is_some_and(|c| c.broken);
-        match self.welcomed && !broken {
+    /// does (`docs/features/tui-attach.md`, decision 10). The host's
+    /// requests that were in flight lose their replies: they come back in
+    /// `unknown`, and none of them goes again (ADR 0006 §4).
+    pub fn closed(&mut self, _code: Option<u16>) -> Closed {
+        let connection = self.connection.take();
+        let broken = connection.as_ref().is_some_and(|c| c.broken);
+        let unknown = connection.as_ref().map_or_else(Vec::new, |c| {
+            (host_requests(c).into_iter())
+                .map(|(id, request)| (id.clone(), request.op))
+                .collect()
+        });
+        let next = match self.welcomed && !broken {
             true => Next::Reconnect,
             false => Next::Stop,
-        }
+        };
+        Closed { next, unknown }
     }
 
     /// The host follows `session`: the frames that reconcile it, a
@@ -227,6 +252,27 @@ impl Client {
         self.send(op, params, session, None, None)
     }
 
+    /// Sends an `operation` that its constructor checked: its id and its
+    /// frames. The connection keeps it with the op and the deadline of the
+    /// op until its reply, which `receive` matches by id.
+    pub fn perform(&mut self, operation: Operation) -> Result<(String, Vec<String>), Refusal> {
+        let session = operation.session().map(str::to_owned);
+        self.send(operation.name(), operation.params(), session, None, None)
+    }
+
+    /// The host's requests that wait for a reply, in the order of their ids:
+    /// the id, the op, and the deadline of the op from its send. A subscribe
+    /// or an `unsubscribe` that reconciles the intent of the host is not one
+    /// of them.
+    pub fn outstanding(&self) -> Vec<(&str, &'static str, Option<Duration>)> {
+        let Some(c) = self.connection.as_ref().filter(|c| c.ready()) else {
+            return vec![];
+        };
+        (host_requests(c).into_iter())
+            .map(|(id, request)| (id.as_str(), request.op, request.deadline))
+            .collect()
+    }
+
     /// A request of `op`, with the session and the sub that it names and the
     /// statement of the host that it reconciles.
     pub(crate) fn send(
@@ -241,6 +287,7 @@ impl Client {
             .get("instance_id")
             .and_then(Json::as_str)
             .map(str::to_owned);
+        let deadline = operation::deadline(op);
         let c = self.connection.as_mut().ok_or(Refusal::NotReady)?;
         c.request(
             op,
@@ -251,6 +298,7 @@ impl Client {
                 sub,
                 stated,
                 instance,
+                deadline,
             },
         )
     }
@@ -425,6 +473,17 @@ impl Client {
             (_, _, result) => Ok(vec![Output::Reply { id, result }]),
         }
     }
+}
+
+/// The host's requests of `c`, the ones that reconcile no statement, in the
+/// order of their ids: the ids of one connection count from 0 in decimal, so
+/// a shorter id is an older one.
+fn host_requests(c: &Connection) -> Vec<(&String, &Request)> {
+    let mut requests: Vec<_> = (c.requests.iter())
+        .filter(|(_, request)| request.stated.is_none())
+        .collect();
+    requests.sort_by_key(|(id, _)| (id.len(), id.as_str()));
+    requests
 }
 
 fn ack_output(sub: &str, from: &Seq, to: &Seq) -> Vec<Output> {

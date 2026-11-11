@@ -1,23 +1,32 @@
 //! The window of the app on macOS (`docs/features/client-kit.md`, slice 4):
-//! the live sessions of the server on the left, the transcript of the
-//! followed one on the right. The rows come from `transcript::rows`; the
-//! list draws only the rows in view. A UI block draws by its model of
-//! `vocabulary` (`docs/features/ui-blocks.md`, "Rendering in the client
-//! kit"): under its tool result, under the oldest open call of its call id,
-//! or at the end of the turn.
+//! the live and saved sessions on the left, the transcript of the followed
+//! one on the right, and the composer, the request lines, and the ask under
+//! it. The rows come from `transcript::rows`; the list draws only the rows in
+//! view. A UI block draws by its model of `vocabulary`
+//! (`docs/features/ui-blocks.md`, "Rendering in the client kit"): under its
+//! tool result, under the oldest open call of its call id, or at the end of
+//! the turn. A `form` or an `approval` of an ask is answered here
+//! (`ask::Panel`), by its keys or its buttons.
 
 use gpui::{
-    AnyElement, App, Application, Bounds, Context, FontWeight, ListAlignment, ListState,
-    SharedString, Window, WindowBounds, WindowOptions, div, list, prelude::*, px, rgb, size,
+    AnyElement, App, Application, Bounds, ClipboardItem, Context, FocusHandle, FontWeight,
+    KeyDownEvent, ListAlignment, ListState, SharedString, Window, WindowBounds, WindowOptions, div,
+    list, prelude::*, px, rgb, size,
 };
 use helyx_client_core::fold::State;
-use helyx_client_core::message::{Block, Message, Role};
+use helyx_client_core::frame::SavedSession;
+use helyx_client_core::json::Json;
+use helyx_client_core::message::{Ask, Block, Message, Role};
+use helyx_client_core::operation::Operation;
 use helyx_client_core::transcript::{Row, open_calls, rows};
 use helyx_client_core::ui_block::MAX_BYTES;
 use helyx_client_core::vocabulary::{
     Approval, Form, MAX_ARGUMENTS_BYTES, MAX_NAME_BYTES, MAX_TITLE_BYTES, UiBlock, View, head,
 };
-use helyx_desktop::net::{self, Command, Shared};
+use helyx_desktop::ask::{FormState, Kind, Outcome, Panel};
+use helyx_desktop::composer::SendId;
+use helyx_desktop::input::{Focus, Input, Intent, Press};
+use helyx_desktop::net::{self, Command, RequestLine, RequestState, Shared};
 use helyx_desktop::settings::Server;
 use std::collections::HashMap;
 use std::sync::mpsc::{Sender, channel, sync_channel};
@@ -27,16 +36,25 @@ use std::time::Duration;
 /// How often the window takes the changes of the network thread.
 const REDRAW: Duration = Duration::from_millis(50);
 const DIM: u32 = 0x9a9a9a;
+const OK: u32 = 0x8fce8f;
+const FAILED: u32 = 0xd06060;
+const UNKNOWN: u32 = 0xc0a060;
+/// The lines of the composer that the window shows, as the TUI.
+const COMPOSER_LINES: usize = 8;
+/// The request lines that the window shows; the rest are counted.
+const SHOWN_REQUESTS: usize = 4;
+/// The room of the body of an ask, in pixels, before it scrolls.
+const ASK_HEIGHT: f32 = 420.;
 
 /// One item of the transcript list.
 #[derive(Clone)]
 enum Item {
     Text(SharedString, u32),
-    /// A UI block; `ask` when it is the request of an open ask, which this
-    /// app does not answer.
+    /// A UI block, with the line of an ask: this window answers the oldest
+    /// open ask that it reads, and the others wait for it.
     Block {
         block: UiBlock,
-        ask: bool,
+        note: Option<&'static str>,
     },
 }
 
@@ -44,6 +62,9 @@ struct Desktop {
     shared: Arc<Mutex<Shared>>,
     commands: Sender<Command>,
     transcript: ListState,
+    input: Input,
+    /// The window holds the keys, so the root takes every press.
+    focus: FocusHandle,
 }
 
 /// Opens the window and runs the network thread for `server`.
@@ -64,8 +85,9 @@ pub fn run(server: Server) {
             window_bounds: Some(WindowBounds::Windowed(bounds)),
             ..Default::default()
         };
-        cx.open_window(options, |_, cx| {
-            cx.new(|cx| {
+        cx.open_window(options, |window, cx| {
+            let focus = cx.focus_handle();
+            let view = cx.new(|cx| {
                 cx.spawn(async move |this, cx| {
                     loop {
                         cx.background_executor().timer(REDRAW).await;
@@ -83,8 +105,12 @@ pub fn run(server: Server) {
                     shared,
                     commands,
                     transcript: ListState::new(0, ListAlignment::Bottom, px(500.)),
+                    input: Input::new(),
+                    focus: focus.clone(),
                 }
-            })
+            });
+            window.focus(&focus);
+            view
         })
         .expect("a window");
         cx.activate(true);
@@ -94,6 +120,8 @@ pub fn run(server: Server) {
 impl Desktop {
     /// The network thread changed the state.
     fn changed(&mut self, cx: &mut Context<Self>) {
+        self.settle();
+        self.default_cwd();
         cx.notify();
     }
 
@@ -105,14 +133,119 @@ impl Desktop {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
+    /// The session that the window follows and whether its turn runs.
+    fn followed(&self) -> (Option<String>, bool) {
+        let shared = self.shared();
+        let followed = shared.followed.clone();
+        let running = followed
+            .as_deref()
+            .and_then(|session| shared.client.state(session))
+            .is_some_and(|state| state.running);
+        (followed, running)
+    }
+
+    /// The state of the input that the network thread changed: the outcomes
+    /// of the sends that the window waits for, and the asks of the followed
+    /// session.
+    fn settle(&mut self) {
+        // The guard borrows the field of the shared state, and the input is
+        // another field, so the states go in without a copy.
+        let mut shared = self
+            .shared
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let outcomes = std::mem::take(&mut shared.outcomes);
+        let session = shared.followed.clone();
+        let asks: &[Ask] = shared
+            .followed
+            .as_deref()
+            .and_then(|session| shared.client.state(session))
+            .map_or(&[], |state| &state.asks);
+        self.input.settle_outcomes(&outcomes);
+        self.input.sync(asks, session.as_deref());
+    }
+
+    /// The folder of a new session, until the user gives one: the newest
+    /// saved session, else the first live one.
+    fn default_cwd(&mut self) {
+        let cwd = {
+            let shared = self.shared();
+            (shared.saved.first())
+                .map(|session| session.cwd.clone())
+                .or_else(|| shared.live.first().map(|session| session.cwd.clone()))
+        };
+        if let Some(cwd) = cwd {
+            self.input.default_cwd(&cwd);
+        }
+    }
+
     /// The items of the followed session.
-    fn rows(&self) -> Vec<Item> {
+    fn items(&self) -> Vec<Item> {
         let shared = self.shared();
         shared
             .followed
             .as_deref()
-            .and_then(|s| shared.client.state(s))
+            .and_then(|session| shared.client.state(session))
             .map_or_else(Vec::new, items)
+    }
+
+    /// One key of the window: the abort, the ask, or the field that the keys
+    /// act on.
+    fn key(&mut self, event: &KeyDownEvent, _window: &mut Window, cx: &mut Context<Self>) {
+        let press = Press {
+            key: &event.keystroke.key,
+            shift: event.keystroke.modifiers.shift,
+            alt: event.keystroke.modifiers.alt,
+            platform: event.keystroke.modifiers.platform,
+            control: event.keystroke.modifiers.control,
+            text: event.keystroke.key_char.as_deref(),
+        };
+        self.settle();
+        let (session, running) = self.followed();
+        match self.input.press(press, session.as_deref(), running) {
+            Intent::None => {}
+            Intent::Send { send, operation } => self.send_operation(send, operation),
+            Intent::Paste => {
+                if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
+                    self.input.paste(&text);
+                }
+            }
+            Intent::Copy => {
+                cx.write_to_clipboard(ClipboardItem::new_string(self.input.copy()));
+            }
+        }
+        cx.notify();
+    }
+
+    /// Sends an operation of the window to the network thread. `send` is the
+    /// number of a send of the composer or the answer of an ask, whose
+    /// outcome settles it. A channel that the stopped thread dropped refuses
+    /// the command: the input settles its number as failed, so the composer
+    /// edits again and the ask shows again.
+    fn send_operation(&mut self, send: Option<SendId>, operation: Operation) {
+        let sent = self.commands.send(Command::Operation { send, operation });
+        self.input.settle_refused(send, sent);
+    }
+
+    /// Sends an operation that no send of the composer numbers.
+    fn send(&mut self, operation: Operation) {
+        self.send_operation(None, operation);
+    }
+
+    /// Hands a command with no send number to the network thread, and tells
+    /// the user when the stopped thread's channel refuses it.
+    fn send_command(&mut self, command: Command) {
+        let sent = self.commands.send(command);
+        self.input.settle_refused(None, sent);
+    }
+
+    /// The answer of the open ask, from a click: the same path as the keys.
+    fn answer(&mut self, answer: Json, cx: &mut Context<Self>) {
+        let session = self.followed().0;
+        if let Intent::Send { send, operation } = self.input.answer(session.as_deref(), answer) {
+            self.send_operation(send, operation);
+        }
+        cx.notify();
     }
 }
 
@@ -131,11 +264,15 @@ fn items(state: &State) -> Vec<Item> {
     };
     for shown in &state.ui_blocks {
         let block = UiBlock::read(&shown.block).expect("the core checked the block");
-        place(shown.call_id.as_deref(), Item::Block { block, ask: false });
+        place(shown.call_id.as_deref(), Item::Block { block, note: None });
     }
+    // The window answers the oldest open ask that it reads; a later one
+    // waits for it, and one that it cannot read waits for another client.
+    let answering = Panel::answering(&state.asks);
     for ask in &state.asks {
         if let Some(block) = ask.block() {
-            place(Some(&ask.call_id), Item::Block { block, ask: true });
+            let note = Panel::note(ask, answering);
+            place(Some(&ask.call_id), Item::Block { block, note });
         }
     }
     let mut items = Vec::with_capacity(rows.len() + end.len());
@@ -148,7 +285,7 @@ fn items(state: &State) -> Vec<Item> {
         {
             items.extend(result.ui_blocks.iter().map(|value| Item::Block {
                 block: UiBlock::read(value).expect("the core checked the block"),
-                ask: false,
+                note: None,
             }));
         }
         items.extend(under.remove(&at).unwrap_or_default());
@@ -158,7 +295,7 @@ fn items(state: &State) -> Vec<Item> {
     }
     items.extend(end);
     items.extend(
-        (state.notices.iter()).map(|n| Item::Text(SharedString::from(format!("✕ {n}")), 0xd06060)),
+        (state.notices.iter()).map(|n| Item::Text(SharedString::from(format!("✕ {n}")), FAILED)),
     );
     items
 }
@@ -179,7 +316,7 @@ fn row(row: &Row<'_>) -> Item {
         Row::Call { .. } => unreachable!("a call row holds a tool call"),
         Row::Orphan(result) => Item::Text(
             format!("a tool result with no call\n{}", text(result)).into(),
-            0xc0a060,
+            UNKNOWN,
         ),
     }
 }
@@ -202,57 +339,52 @@ fn text(message: &Message) -> String {
 
 impl Render for Desktop {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let (live, followed, line, running) = {
+        self.settle();
+        self.default_cwd();
+        let (live, followed, line, running, saved, saved_next, requests) = {
             let shared = self.shared();
             let state = shared
                 .followed
                 .as_deref()
-                .and_then(|s| shared.client.state(s));
+                .and_then(|session| shared.client.state(session));
             // A follow that waits or is held says why, derived on read.
             let line = shared
                 .followed
                 .as_deref()
-                .and_then(|s| net::follow_line(s, &shared.client.follow(s)?))
+                .and_then(|session| net::follow_line(session, &shared.client.follow(session)?))
                 .unwrap_or_else(|| shared.line.clone());
             (
                 shared.live.clone(),
                 shared.followed.clone(),
                 line,
-                state.is_some_and(|s| s.running),
+                state.is_some_and(|state| state.running),
+                shared.saved.clone(),
+                shared.saved_next.clone(),
+                shared.requests.clone(),
             )
         };
         // The count of the list and the rows that it draws are one snapshot.
-        let shown = self.rows();
+        let shown = self.items();
         if shown.len() != self.transcript.item_count() {
             self.transcript.reset(shown.len());
         }
-        let sessions = live.into_iter().map(|session| {
-            let id = session.id.clone();
-            let chosen = followed.as_deref() == Some(id.as_str());
-            div()
-                .id(SharedString::from(id.clone()))
-                .p_2()
-                .when(chosen, |d| d.bg(rgb(0x3a3a4a)))
-                .child(format!("{} · {}", session.cwd, session.model))
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    let _ = this.commands.send(Command::Follow(id.clone()));
-                    cx.notify();
-                }))
-        });
+        let asked = self.input.ask.clone();
         div()
             .flex()
             .size_full()
             .bg(rgb(0x1e1e24))
             .text_color(rgb(0xdddddd))
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .w(px(280.))
-                    .border_r_1()
-                    .border_color(rgb(0x3a3a3a))
-                    .children(sessions),
+            .track_focus(&self.focus)
+            .on_key_down(
+                cx.listener(|this, event: &KeyDownEvent, window, cx| this.key(event, window, cx)),
             )
+            .child(self.sidebar(
+                &live,
+                &saved,
+                saved_next.as_deref(),
+                followed.as_deref(),
+                cx,
+            ))
             .child(
                 div()
                     .flex()
@@ -270,19 +402,417 @@ impl Render for Desktop {
                                 .text_color(rgb(*color))
                                 .child(text.clone())
                                 .into_any_element(),
-                            Item::Block { block, ask } => ui_block(block, *ask),
+                            Item::Block { block, note } => ui_block(block, *note),
                         })
                         .flex_1(),
+                    )
+                    .child(self.status(&requests))
+                    .child(match &asked {
+                        Some(panel) => self.ask_panel(panel, cx),
+                        None => self.composer(running, cx).into_any_element(),
+                    }),
+            )
+    }
+}
+
+impl Desktop {
+    fn sidebar(
+        &self,
+        live: &[helyx_client_core::frame::LiveSession],
+        saved: &[SavedSession],
+        saved_next: Option<&str>,
+        followed: Option<&str>,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let live_rows = (live.iter()).map(|session| {
+            let id = session.id.clone();
+            let chosen = followed == Some(id.as_str());
+            div()
+                .id(SharedString::from(format!("live-{id}")))
+                .p_2()
+                .when(chosen, |d| d.bg(rgb(0x3a3a4a)))
+                .child(format!("{} · {}", session.cwd, session.model))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.send_command(Command::Follow(id.clone()));
+                    cx.notify();
+                }))
+        });
+        let saved_rows = (saved.iter()).map(|session| {
+            let id = session.id.clone();
+            div()
+                .id(SharedString::from(format!("saved-{id}")))
+                .p_2()
+                .flex()
+                .flex_col()
+                .cursor_pointer()
+                .child(session.prompt.clone())
+                .child(dim(&session.cwd))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.send(Operation::resume(&id));
+                    cx.notify();
+                }))
+        });
+        let more = saved_next.map(|next| {
+            let next = next.to_owned();
+            div()
+                .id("saved-more")
+                .p_2()
+                .cursor_pointer()
+                .text_color(rgb(DIM))
+                .child("more sessions…")
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.send_command(Command::Saved {
+                        after: Some(next.clone()),
+                    });
+                    cx.notify();
+                }))
+        });
+        let cwd = self.input.cwd.display();
+        let cwd_color = match self.input.focus {
+            Focus::Cwd => 0xffffff,
+            Focus::Composer => DIM,
+        };
+        div()
+            .flex()
+            .flex_col()
+            .w(px(280.))
+            .border_r_1()
+            .border_color(rgb(0x3a3a3a))
+            .child(dim_row("live"))
+            .children(live_rows)
+            .child(dim_row("saved"))
+            .child(
+                div()
+                    .id("saved-list")
+                    .flex()
+                    .flex_col()
+                    .flex_1()
+                    .overflow_y_scroll()
+                    .children(saved_rows)
+                    .when_some(more, |d, more| d.child(more)),
+            )
+            .child(
+                div()
+                    .p_2()
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .border_t_1()
+                    .border_color(rgb(0x3a3a3a))
+                    .child(dim("new session in"))
+                    .child(
+                        div()
+                            .flex()
+                            .gap_2()
+                            .items_center()
+                            .child(
+                                div()
+                                    .id("cwd")
+                                    .flex_1()
+                                    .p_1()
+                                    .bg(rgb(0x26262e))
+                                    .text_color(rgb(cwd_color))
+                                    .font_family("Menlo")
+                                    .child(cwd)
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.input.focus = Focus::Cwd;
+                                        cx.notify();
+                                    })),
+                            )
+                            .child(
+                                div()
+                                    .id("start")
+                                    .px_2()
+                                    .py_1()
+                                    .rounded_md()
+                                    .bg(rgb(0x2f4a2f))
+                                    .cursor_pointer()
+                                    .child("start")
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        if let Some(start) = this.input.start() {
+                                            this.send(start);
+                                        }
+                                        cx.notify();
+                                    })),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .id("refresh-saved")
+                            .p_1()
+                            .cursor_pointer()
+                            .text_color(rgb(DIM))
+                            .child("refresh saved sessions")
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.send_command(Command::Saved { after: None });
+                                cx.notify();
+                            })),
                     ),
             )
+    }
+
+    fn status(&self, requests: &[RequestLine]) -> gpui::Div {
+        let shown = &requests[requests.len().saturating_sub(SHOWN_REQUESTS)..];
+        let older = requests.len() - shown.len();
+        div()
+            .flex()
+            .flex_col()
+            .gap_1()
+            .px_2()
+            .children((shown.iter()).map(|line| {
+                let color = match line.state {
+                    RequestState::Pending => DIM,
+                    RequestState::Ok => OK,
+                    RequestState::Error { .. } => FAILED,
+                    RequestState::Unknown => UNKNOWN,
+                };
+                div()
+                    .text_color(rgb(color))
+                    .text_size(px(11.))
+                    .child(line.text())
+            }))
+            .when_some(self.input.notice.as_ref(), |d, notice| {
+                d.child(
+                    div()
+                        .text_color(rgb(FAILED))
+                        .text_size(px(11.))
+                        .child(notice.clone()),
+                )
+            })
+            .when(older > 0, |d| {
+                d.child(dim(&format!("{older} earlier requests")))
+            })
+    }
+
+    /// The composer, and the abort of a running turn.
+    fn composer(&self, running: bool, cx: &mut Context<Self>) -> impl IntoElement {
+        let (text, cut) = self.input.composer.text.window(COMPOSER_LINES);
+        div()
+            .flex()
+            .flex_col()
+            .gap_1()
+            .p_2()
+            .border_t_1()
+            .border_color(rgb(0x3a3a3a))
+            .when(running, |d| {
+                d.child(
+                    div()
+                        .flex()
+                        .gap_2()
+                        .items_center()
+                        .child(dim("Enter steers · Option+Enter follows up"))
+                        .child(
+                            div()
+                                .id("abort")
+                                .px_2()
+                                .py_1()
+                                .rounded_md()
+                                .cursor_pointer()
+                                .bg(rgb(0x5a3030))
+                                .child("abort")
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    if let Some(session) = this.followed().0 {
+                                        this.send(Operation::abort(&session));
+                                    }
+                                    cx.notify();
+                                })),
+                        ),
+                )
+            })
+            .child(
+                div()
+                    .id("composer")
+                    .p_2()
+                    .rounded_md()
+                    .bg(rgb(0x26262e))
+                    .font_family("Menlo")
+                    .text_size(px(13.))
+                    .max_h(px(20. * (COMPOSER_LINES as f32 + 1.)))
+                    .overflow_hidden()
+                    .cursor_text()
+                    .when(cut, |d| d.child(dim("…")))
+                    .child(text)
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.input.focus = Focus::Composer;
+                        cx.notify();
+                    })),
+            )
+            .child(dim(if running {
+                "Shift+Enter a new line · Esc or Cmd+. aborts the turn · Cmd+V pastes"
+            } else {
+                "Enter sends · Shift+Enter a new line · Cmd+V pastes"
+            }))
+    }
+
+    /// The ask that takes the keys, in the place of the composer: a form with
+    /// its options and its Other line, or an approval with Allow and Deny.
+    fn ask_panel(&self, panel: &Panel, cx: &mut Context<Self>) -> AnyElement {
+        let body = match &panel.kind {
+            Kind::Form(form) => self.form(panel, form, cx),
+            Kind::Approval(approval) => self.approval(panel, approval, cx),
+        };
+        div()
+            .flex()
+            .flex_col()
+            .gap_1()
+            .p_2()
+            .border_t_1()
+            .border_color(rgb(0x3a3a4a))
+            .child(
+                div()
+                    .font_weight(FontWeight::BOLD)
+                    .child(head(&panel.block.text, MAX_TITLE_BYTES).0.to_owned()),
+            )
+            // A form of four questions can be taller than the window: the
+            // body scrolls, and the window keeps a row for the transcript.
+            .child(
+                div()
+                    .id("ask-body")
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .max_h(px(ASK_HEIGHT))
+                    .overflow_y_scroll()
+                    .child(body),
+            )
+            .when_some(panel.error().map(str::to_owned), |d, error| {
+                d.child(div().text_color(rgb(FAILED)).child(error))
+            })
+            .into_any_element()
+    }
+
+    fn form(&self, panel: &Panel, form: &FormState, cx: &mut Context<Self>) -> gpui::Div {
+        let current = form.current;
+        let questions: Vec<AnyElement> = (form.questions.iter().enumerate())
+            .map(|(at, question)| {
+                // The marks belong to the current question only.
+                let marks = panel.marked(at);
+                let options = (question.options.iter().enumerate()).map(|(option, choice)| {
+                    // A single pick has no mark: it is the option under the
+                    // cursor at Enter.
+                    let mark = match (question.multi_select, marks.get(option) == Some(&true)) {
+                        (true, true) => "☑",
+                        (true, false) => "☐",
+                        (false, _) => "○",
+                    };
+                    let cursor = at == current && form.option == option;
+                    div()
+                        .id(SharedString::from(format!("ask-{at}-{option}")))
+                        .flex()
+                        .gap_2()
+                        .px_1()
+                        .rounded_md()
+                        .when(cursor, |d| d.bg(rgb(0x3a3a4a)))
+                        .cursor_pointer()
+                        .child(format!("{mark} {}", choice.label))
+                        .child(dim(&choice.description))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            if let Some(panel) = this.input.ask.as_mut()
+                                && let Outcome::Answer(answer) = panel.choose(at, option)
+                            {
+                                this.answer(answer, cx);
+                            }
+                            cx.notify();
+                        }))
+                });
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .child(
+                        div()
+                            .flex()
+                            .gap_2()
+                            .child(
+                                div()
+                                    .px_1()
+                                    .bg(rgb(0x3a3a4a))
+                                    .font_weight(FontWeight::BOLD)
+                                    .child(question.header.clone()),
+                            )
+                            .child(question.question.clone())
+                            .when(at != current, |d| d.text_color(rgb(DIM))),
+                    )
+                    .children(options)
+                    .when(at == current, |d| {
+                        // The Other line is a cursor position after the
+                        // options, as in the TUI.
+                        let on_other = form.option == question.options.len();
+                        d.child(
+                            div()
+                                .flex()
+                                .gap_2()
+                                .px_1()
+                                .rounded_md()
+                                .when(on_other, |d| d.bg(rgb(0x3a3a4a)))
+                                .child(dim("other"))
+                                .child(div().font_family("Menlo").child(
+                                    panel.other().map_or(String::new(), |text| text.display()),
+                                )),
+                        )
+                    })
+                    .into_any_element()
+            })
+            .collect();
+        div()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .children(questions)
+            .child(dim(if form.current + 1 < form.questions.len() {
+                "Enter answers this question · ↑↓ move · Space marks"
+            } else {
+                "Enter sends the answers · ↑↓ move · Space marks"
+            }))
+    }
+
+    fn approval(&self, panel: &Panel, approval: &Approval, cx: &mut Context<Self>) -> gpui::Div {
+        let answer = |allow: bool| {
+            let answer = panel.approval(allow);
+            move |this: &mut Desktop,
+                  _: &gpui::ClickEvent,
+                  _: &mut Window,
+                  cx: &mut Context<Desktop>| {
+                this.answer(answer.clone(), cx);
+                cx.notify();
+            }
+        };
+        approval_body(&panel.block.text, approval).child(
+            div()
+                .flex()
+                .gap_2()
+                .child(
+                    div()
+                        .id("allow")
+                        .px_2()
+                        .py_1()
+                        .rounded_md()
+                        .bg(rgb(0x2f4a2f))
+                        .cursor_pointer()
+                        .child("Allow")
+                        .on_click(cx.listener(answer(true))),
+                )
+                .child(
+                    div()
+                        .id("deny")
+                        .px_2()
+                        .py_1()
+                        .rounded_md()
+                        .bg(rgb(0x4a2f2f))
+                        .cursor_pointer()
+                        .child("Deny")
+                        .on_click(cx.listener(answer(false))),
+                ),
+        )
     }
 }
 
 /// A UI block: a `form` and an `approval` natively, any other kind, and a
 /// known kind whose fields the app cannot read, as its fallback text; a mark
-/// when it was cut. An ask gets no answer from this app: it stays open for
-/// another client (ADR 0011 §4).
-fn ui_block(block: &UiBlock, ask: bool) -> AnyElement {
+/// when it was cut. `note` is the line of an ask: whether this window answers
+/// it now, later, or not at all, since an ask that it cannot read stays open
+/// for another client (ADR 0011 §4).
+fn ui_block(block: &UiBlock, note: Option<&'static str>) -> AnyElement {
     // The text of an ask has no size check in the client: the bound of a
     // block holds when it is drawn.
     let (text, more) = head(&block.text, MAX_BYTES);
@@ -307,7 +837,7 @@ fn ui_block(block: &UiBlock, ask: bool) -> AnyElement {
                 .text_color(rgb(0xcccccc))
                 .child(body)
                 .when(cut, |d| d.child(dim("[cut]")))
-                .when(ask, |d| d.child(dim("answer it in another client"))),
+                .when_some(note, |d, note| d.child(dim(note))),
         )
         .into_any_element()
 }
@@ -374,7 +904,14 @@ fn approval_body(title: &str, approval: &Approval) -> gpui::Div {
                 .child(arguments.to_owned()),
         )
         .when(more, |d| d.child(dim("… more arguments")))
-        .child(dim("Allow · Deny"))
+}
+
+fn dim_row(title: &str) -> gpui::Div {
+    div()
+        .px_2()
+        .pt_2()
+        .text_color(rgb(DIM))
+        .child(title.to_owned())
 }
 
 fn dim(text: &str) -> gpui::Div {

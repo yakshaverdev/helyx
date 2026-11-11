@@ -13,6 +13,7 @@ pub mod frame;
 pub mod handshake;
 pub mod json;
 pub mod message;
+pub mod operation;
 pub mod parts;
 mod reconcile;
 pub mod seq;
