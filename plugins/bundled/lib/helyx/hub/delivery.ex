@@ -57,14 +57,13 @@ defmodule Helyx.Hub.Delivery do
   # Step 3. Only `:turn_running` and `:queue_full` prove that the session
   # took nothing. `:session_not_found` and an exit of the call leave
   # `unconfirmed`: the session may have taken the prompt before it went
-  # down. `:invalid_utf8` and `:invalid_origin` cannot come (a checked
+  # down. `:text_too_large`, `:invalid_utf8` and `:invalid_origin` cannot come (a checked
   # prompt, an origin id of 12 bytes); they crash the Task, which leaves
   # `unconfirmed` too.
   defp send_prompt(hub, session, row) do
     case prompt(session, row) do
       :ok -> Hub.call(hub, {:wake_outcome, row, {:delivered, Params.cut(row.prompt)}})
       {:error, busy} when busy in [:turn_running, :queue_full] -> back(hub, row)
-      {:error, :text_too_large} -> Hub.call(hub, {:wake_outcome, row, :refused})
       {:error, :session_not_found} -> unconfirmed(hub, row)
       :exit -> unconfirmed(hub, row)
     end

@@ -223,13 +223,6 @@ defmodule Helyx.Hub.Wake do
     state.store.update_schedule(state.db, row.id, sent, changes, deadline)
   end
 
-  defp answered(state, row, sent, :refused, deadline) do
-    changes = Map.drop(refused(row, now()), [:run, :last_at])
-
-    with :ok <- state.store.update_schedule(state.db, row.id, sent, changes, deadline),
-         do: settle(state, row, "refused", now(), deadline)
-  end
-
   # The prompt call went out with no answer that proves the session took
   # nothing: the row keeps `unconfirmed`, and that final outcome moves the
   # subscription.
