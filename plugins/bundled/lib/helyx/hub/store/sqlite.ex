@@ -19,9 +19,12 @@ defmodule Helyx.Hub.Store.SQLite do
   import Helyx.Hub.Store.SQLite.Query
 
   alias Exqlite.Sqlite3
-  alias Helyx.Hub.Store.SQLite.{Disk, Projects, Records, Schedules, Schema, Subscriptions}
+  alias Helyx.Hub.Store.SQLite.{Disk, Projects, Records, Schedules, Schema, Subscriptions, Tables}
 
   @version Schema.version()
+
+  @users Tables.select_sql(:users)
+  @tokens Tables.select_sql(:tokens)
 
   # The busy wait of every query, and the time an open tries the lock (Bounds).
   @busy_ms 5_000
@@ -173,16 +176,16 @@ defmodule Helyx.Hub.Store.SQLite do
 
   @impl true
   def users(db) do
-    with {:ok, rows} <- all(db, "SELECT id, name, created_at FROM users ORDER BY name", []) do
-      {:ok, Enum.map(rows, &info/1)}
+    with {:ok, rows} <- all(db, @users <> " ORDER BY name", []) do
+      {:ok, Enum.map(rows, &Tables.row(:users, &1))}
     end
   end
 
   @impl true
   def user(db, user_id) do
-    case one(db, "SELECT id, name, created_at FROM users WHERE id = ?1", [user_id]) do
+    case one(db, @users <> " WHERE id = ?1", [user_id]) do
       {:ok, nil} -> {:error, :not_found}
-      {:ok, row} -> {:ok, info(row)}
+      {:ok, row} -> {:ok, Tables.row(:users, row)}
       {:error, _} = error -> error
     end
   end
@@ -200,8 +203,7 @@ defmodule Helyx.Hub.Store.SQLite do
   defp insert_user(_db, _row, true = _full, _taken), do: {:error, :too_many_users}
   defp insert_user(_db, _row, false, true = _taken), do: {:error, :name_taken}
 
-  defp insert_user(db, row, false, false),
-    do: run(db, "INSERT INTO users (id, name, created_at) VALUES (?1, ?2, ?3)", row)
+  defp insert_user(db, row, false, false), do: run(db, Tables.insert(:users), row)
 
   @impl true
   def remove_user(db, user_id, deadline) do
@@ -210,30 +212,23 @@ defmodule Helyx.Hub.Store.SQLite do
 
   @impl true
   def token(db, token_id) do
-    sql = "SELECT id, user_id, name, key, created_at FROM tokens WHERE id = ?1"
-
-    case one(db, sql, [token_id]) do
-      {:ok, [id, user_id, name, key, at]} ->
-        {:ok, %{id: id, user_id: user_id, name: name, key: key, created_at: at}}
-
-      {:ok, nil} ->
-        {:error, :not_found}
-
-      {:error, _} = error ->
-        error
+    case one(db, @tokens <> " WHERE id = ?1", [token_id]) do
+      {:ok, nil} -> {:error, :not_found}
+      {:ok, row} -> {:ok, Tables.row(:tokens, row)}
+      {:error, _} = error -> error
     end
   end
 
+  # The listing of a user's tokens leaves the key in the store: no listing
+  # carries it (decision 2).
   @impl true
   def tokens(db, user_id) do
-    sql = "SELECT id, name, created_at FROM tokens WHERE user_id = ?1 ORDER BY created_at, rowid"
+    sql = @tokens <> " WHERE user_id = ?1 ORDER BY created_at, rowid"
 
     with {:ok, rows} <- all(db, sql, [user_id]) do
-      {:ok, Enum.map(rows, &info/1)}
+      {:ok, Enum.map(rows, &Map.delete(Tables.row(:tokens, &1), :key))}
     end
   end
-
-  defp info([id, name, at]), do: %{id: id, name: name, created_at: at}
 
   @impl true
   def add_token(db, token, max, deadline) do
@@ -251,13 +246,8 @@ defmodule Helyx.Hub.Store.SQLite do
   defp checked_token(_db, _token, true, true = _full), do: {:error, :too_many_tokens}
   defp checked_token(db, token, true, false), do: insert_token(db, token)
 
-  defp insert_token(db, t) do
-    run(
-      db,
-      "INSERT INTO tokens (id, user_id, name, key, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
-      [t.id, t.user_id, t.name, {:blob, t.key}, t.created_at]
-    )
-  end
+  defp insert_token(db, t),
+    do: run(db, Tables.insert(:tokens), [t.id, t.user_id, t.name, {:blob, t.key}, t.created_at])
 
   @impl true
   def revoke_token(db, :any, token_id, deadline),

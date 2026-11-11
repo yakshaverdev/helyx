@@ -9,9 +9,9 @@ defmodule Helyx.Hub.Store.SQLite.Schedules do
 
   import Helyx.Hub.Store.SQLite.Query
 
-  @columns ~w(id owner session_id prompt at every run delivery_id due_at next_try_at last_at
-              last_outcome created_at subscription_id)a
-  @select "SELECT #{Enum.join(@columns, ", ")} FROM schedules"
+  alias Helyx.Hub.Store.SQLite.Tables
+
+  @select Tables.select_sql(:schedules)
 
   # The columns that a conditional write may compare and set.
   @state ~w(at run delivery_id due_at next_try_at last_at last_outcome)a
@@ -20,7 +20,7 @@ defmodule Helyx.Hub.Store.SQLite.Schedules do
   # as a multiple of the rate window.
   @prune_windows 2
 
-  defp row(values), do: @columns |> Enum.zip(values) |> Map.new()
+  defp row(values), do: Tables.row(:schedules, values)
 
   # The schedules of `owner`, of one session or all, oldest first; at most
   # 256, the cap of a user. A webhook delivery is not a schedule.
@@ -83,15 +83,13 @@ defmodule Helyx.Hub.Store.SQLite.Schedules do
 
   defp insert(_db, _schedule, false = _room), do: {:error, :too_many_schedules}
 
-  defp insert(db, schedule, true) do
-    marks = Enum.map_join(1..length(@columns), ", ", &"?#{&1}")
-
-    run(
-      db,
-      "INSERT INTO schedules (#{Enum.join(@columns, ", ")}) VALUES (#{marks})",
-      Enum.map(@columns, &Map.fetch!(schedule, &1))
-    )
-  end
+  defp insert(db, schedule, true),
+    do:
+      run(
+        db,
+        Tables.insert(:schedules),
+        Enum.map(Tables.columns(:schedules), &Map.fetch!(schedule, &1))
+      )
 
   # A delete of a schedule; a webhook delivery row has its own delete (the
   # cascade of its subscription).
