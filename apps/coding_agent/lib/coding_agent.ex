@@ -25,6 +25,7 @@ defmodule CodingAgent do
     Helyx.Tool.Bash,
     Helyx.Tool.Edit,
     Helyx.Tool.Write,
+    Helyx.Tool.WebFetch,
     Helyx.Tool.Agent,
     Helyx.Tool.Skill,
     Helyx.Tool.Question,
