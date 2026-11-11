@@ -289,21 +289,20 @@ defmodule CodingAgent.Print do
 
     @impl true
     def init({halt, _old_state}),
-      do: {:ok, %{halt: halt, session: nil, done: false, stopping: nil}}
+      do: {:ok, %{halt: halt, session: nil, phase: :running}}
 
     @impl true
-    def handle_event(signal, %{done: false} = state) when is_map_key(@statuses, signal) do
+    def handle_event(signal, %{phase: :running} = state) when is_map_key(@statuses, signal) do
       %{halt: halt, session: session} = state
       status = Map.fetch!(@statuses, signal)
       spawn(fn -> stop(session, status, halt) end)
-      {:ok, %{state | done: true, stopping: status}}
+      {:ok, %{state | phase: {:stopping, status}}}
     end
 
     # The stop owns the result. A later signal must not reach the OTP default
     # and halt the VM with its own status before the stop halts with the
     # first one.
-    def handle_event(_signal, %{stopping: status} = state) when status != nil,
-      do: {:ok, state}
+    def handle_event(_signal, %{phase: {:stopping, _status}} = state), do: {:ok, state}
 
     # A signal that print mode does not own keeps the OTP default: SIGUSR1
     # and SIGQUIT halt the VM, the rest are ignored.
@@ -317,11 +316,12 @@ defmodule CodingAgent.Print do
 
     @impl true
     def handle_call({:session, session}, state), do: {:ok, :ok, %{state | session: session}}
-    # `stopping`: a signal started the stop. `done`: the run finished first.
-    def handle_call(:finish, %{stopping: status} = state) when status != nil,
+    # `{:stopping, status}`: a signal started the stop. `:running`: the run
+    # finished first, and only one call happens.
+    def handle_call(:finish, %{phase: {:stopping, _status}} = state),
       do: {:ok, :stopping, state}
 
-    def handle_call(:finish, state), do: {:ok, :ok, %{state | done: true}}
+    def handle_call(:finish, state), do: {:ok, :ok, %{state | phase: :finished}}
 
     # The abort runs unlinked: a session that is gone, or one that does not
     # answer, holds the halt for at most the bound.
