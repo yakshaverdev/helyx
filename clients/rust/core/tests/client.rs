@@ -127,7 +127,7 @@ fn the_folds_through_connections() {
 }
 
 fn snapshot(seq: u64) -> Value {
-    json!({"instance_id": "i1", "seq": seq, "messages": [], "more": false, "turn": null,
+    json!({"instance_id": "i1", "seq": seq, "messages": [], "turn": null,
            "model": "fake/echo", "persisting": true, "context": null, "asks": [], "ui_blocks": [], "activated": [],
            "queue": {"steers": 0, "follow_ups": 0, "running": 0, "held": 0, "waiting": 0},
            "usage": {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0,
@@ -1060,7 +1060,7 @@ fn a_subscription_after_a_renewal_is_live() {
     assert_eq!(client.follow("s1"), Some(Follow::Held(Hold::Ended)));
     let outputs = client.receive(&instance_changed(&history)).unwrap();
     let subscribe = &sent(&outputs)[0]["id"];
-    let snap = json!({"instance_id": "i2", "seq": 1, "messages": [], "more": false,
+    let snap = json!({"instance_id": "i2", "seq": 1, "messages": [],
         "turn": null, "model": "fake/echo", "persisting": true, "context": null, "asks": [], "ui_blocks": [], "activated": [],
         "queue": {"steers": 0, "follow_ups": 0, "running": 0, "held": 0, "waiting": 0},
         "usage": {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0,

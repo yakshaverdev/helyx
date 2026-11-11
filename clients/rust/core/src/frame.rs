@@ -48,7 +48,8 @@ pub enum Reply {
     },
     History {
         messages: Vec<Message>,
-        more: bool,
+        /// The `before` of the page before it; `None` when older messages
+        /// exist no more (`more` of the wire).
         next: Option<String>,
     },
     Empty,
@@ -212,7 +213,6 @@ fn parse_result(op: &str, map: &Json) -> Checked<Reply> {
         },
         "history" => Reply::History {
             messages: list_of(map, "messages", "history", Message::parse)?,
-            more: boolean(map, "more", "history")?,
             next: string_or_null(map, "next", "history next")?.map(str::to_owned),
         },
         _ => Reply::Empty,
