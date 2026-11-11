@@ -9,6 +9,7 @@ defmodule Helyx.Tool.ScheduleList do
   @behaviour Helyx.Tool
 
   alias Helyx.Coordinator
+  alias Helyx.Tool.Args
 
   @impl true
   def name, do: "schedule_list"
@@ -39,23 +40,31 @@ defmodule Helyx.Tool.ScheduleList do
 
   @impl true
   def run(args, _cwd) do
-    id = Map.get(args, "id")
-
-    with :ok <- checked(args, id),
+    with {:ok, args} <- Args.check(args, parameters()),
+         :ok <- checked(args),
          {:ok, env} <- Coordinator.setup(),
-         {:ok, schedules} <- listed(Helyx.Hub.schedules(env.hub, env.user, id)) do
+         {:ok, schedules} <- listed(Helyx.Hub.schedules(env.hub, env.user, args["id"])) do
       {:ok, text(schedules)}
     else
       {:error, text} -> {:error, "schedule_list: " <> text}
     end
   end
 
-  defp checked(args, nil) when map_size(args) == 0, do: :ok
+  defp checked(args) do
+    cond do
+      Map.keys(args) -- ["id"] != [] ->
+        {:error, "it takes only the optional id of a session"}
 
-  defp checked(args, id) when map_size(args) == 1 and is_map_key(args, "id"),
-    do: if(Coordinator.id?(id), do: :ok, else: {:error, "the id must be a session id"})
+      args["id"] == nil ->
+        :ok
 
-  defp checked(_args, _id), do: {:error, "it takes only the optional id of a session"}
+      Coordinator.id?(args["id"]) ->
+        :ok
+
+      true ->
+        {:error, "the id must be a session id"}
+    end
+  end
 
   defp listed({:ok, schedules}), do: {:ok, schedules}
   defp listed({:error, reason}), do: {:error, Coordinator.text(reason)}

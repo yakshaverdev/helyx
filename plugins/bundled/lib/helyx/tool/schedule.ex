@@ -10,6 +10,7 @@ defmodule Helyx.Tool.Schedule do
   @behaviour Helyx.Tool
 
   alias Helyx.Coordinator
+  alias Helyx.Tool.Args
 
   @impl true
   def name, do: "schedule"
@@ -44,17 +45,11 @@ defmodule Helyx.Tool.Schedule do
   end
 
   @impl true
-  def run(%{"id" => id, "at" => at, "prompt" => prompt} = args, _cwd) do
-    # The Hub checks each value with the rules of `hub.schedules.create`.
-    params =
-      Map.merge(
-        %{"session" => id, "at" => at, "prompt" => prompt},
-        Map.take(args, ["every"])
-      )
-
-    with true <- Coordinator.id?(id) || {:error, "the id must be a session id"},
+  def run(args, _cwd) do
+    with {:ok, args} <- Args.check(args, parameters()),
+         true <- Coordinator.id?(args["id"]) || {:error, "the id must be a session id"},
          {:ok, env} <- Coordinator.setup(),
-         {:ok, schedule} <- made(Helyx.Hub.schedule(env.hub, env.user, params)) do
+         {:ok, schedule} <- made(Helyx.Hub.schedule(env.hub, env.user, params(args))) do
       every = if schedule.every, do: " each #{schedule.every} s", else: " once"
       {:ok, "schedule #{schedule.id}: session #{schedule.session} at #{schedule.at}#{every}"}
     else
@@ -62,7 +57,13 @@ defmodule Helyx.Tool.Schedule do
     end
   end
 
-  def run(_args, _cwd), do: {:error, "schedule needs an id, a time at, and a prompt"}
+  # The Hub checks each value with the rules of `hub.schedules.create`.
+  defp params(args) do
+    Map.merge(
+      %{"session" => args["id"], "at" => args["at"], "prompt" => args["prompt"]},
+      Map.take(args, ["every"])
+    )
+  end
 
   defp made({:ok, schedule}), do: {:ok, schedule}
 

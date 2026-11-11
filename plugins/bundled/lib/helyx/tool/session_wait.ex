@@ -12,6 +12,7 @@ defmodule Helyx.Tool.SessionWait do
   @behaviour Helyx.Tool
 
   alias Helyx.{Coordinator, Event, Session}
+  alias Helyx.Tool.Args
 
   # The ids of one wait, the Core cap of live sessions.
   @max_ids 64
@@ -40,12 +41,16 @@ defmodule Helyx.Tool.SessionWait do
         "ids" => %{
           "type" => "array",
           "items" => %{"type" => "string"},
+          "minItems" => 1,
+          "maxItems" => @max_ids,
           "description" => "The ids of the sessions, 1 to #{@max_ids}"
         },
         "deadline" => %{
           "type" => "integer",
-          "description" =>
-            "The most seconds to wait, 1 to #{@max_s}; the default is #{@default_s}"
+          "minimum" => 1,
+          "maximum" => @max_s,
+          "default" => @default_s,
+          "description" => "The most seconds to wait, 1 to #{@max_s}"
         }
       },
       "required" => ["ids"]
@@ -53,34 +58,22 @@ defmodule Helyx.Tool.SessionWait do
   end
 
   @impl true
-  def run(%{"ids" => ids} = args, _cwd) do
-    seconds = Map.get(args, "deadline", @default_s)
-
-    with :ok <- checked(ids, seconds),
+  def run(args, _cwd) do
+    with {:ok, args} <- Args.check(args, parameters()),
+         :ok <- checked(args["ids"]),
          {:ok, env} <- Coordinator.setup() do
+      seconds = args["deadline"]
       until = System.monotonic_time(:millisecond) + seconds * 1_000
-      subscribed(env, Enum.uniq(ids), seconds, until)
+      subscribed(env, Enum.uniq(args["ids"]), seconds, until)
     else
       {:error, text} -> {:error, "session_wait: " <> text}
     end
   end
 
-  def run(_args, _cwd), do: {:error, "session_wait needs ids, a list of session ids"}
-
-  defp checked(ids, seconds) do
-    cond do
-      not is_list(ids) or ids == [] or length(ids) > @max_ids ->
-        {:error, "ids must be a list of 1 to #{@max_ids} session ids"}
-
-      not Enum.all?(ids, &Coordinator.id?/1) ->
-        {:error, "each id must be a session id"}
-
-      not (is_integer(seconds) and seconds in 1..@max_s) ->
-        {:error, "the deadline must be a whole number of seconds from 1 to #{@max_s}"}
-
-      true ->
-        :ok
-    end
+  defp checked(ids) do
+    if Enum.all?(ids, &Coordinator.id?/1),
+      do: :ok,
+      else: {:error, "each id must be a session id"}
   end
 
   # Each session in turn: the check, then a subscription whose snapshot

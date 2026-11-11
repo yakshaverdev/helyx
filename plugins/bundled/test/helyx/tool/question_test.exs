@@ -48,10 +48,10 @@ defmodule Helyx.Tool.QuestionTest do
   test "1 to 4 questions" do
     assert check([item()]) == :passes
     assert check(List.duplicate(item(), 4)) == :passes
-    assert error([]) =~ "a list of 1 to 4 questions"
-    assert error(List.duplicate(item(), 5)) =~ "a list of 1 to 4 questions"
-    assert {:error, _} = Question.run(%{"questions" => "one"}, ".")
-    assert {:error, _} = Question.run(%{}, ".")
+    assert error([]) =~ "questions must be a list of 1 to 4 items"
+    assert error(List.duplicate(item(), 5)) =~ "questions must be a list of 1 to 4 items"
+    assert {:error, "questions must be a list"} = Question.run(%{"questions" => "one"}, ".")
+    assert {:error, "questions is required"} = Question.run(%{}, ".")
   end
 
   test "2 to 4 options with labels that differ" do
@@ -59,10 +59,10 @@ defmodule Helyx.Tool.QuestionTest do
     assert check([item(%{"options" => four})]) == :passes
 
     assert error([item(%{"options" => [option("a")]})]) ==
-             "question 1: options must be a list of 2 to 4 items"
+             "questions[0].options must be a list of 2 to 4 items"
 
     assert error([item(), item(%{"options" => four ++ [option("e")]})]) =~
-             "question 2: options must"
+             "questions[1].options must be a list of 2 to 4 items"
 
     assert error([item(%{"options" => [option("a"), option("a")]})]) =~ "labels must differ"
     assert error([item(%{"options" => "a, b"})]) =~ "options must be a list"
@@ -74,15 +74,15 @@ defmodule Helyx.Tool.QuestionTest do
     assert error([item(%{"question" => String.duplicate("a", 1_001)})]) =~ "1 to 1000 bytes"
     assert error([item(%{"question" => String.duplicate("é", 500) <> "a"})]) =~ "1 to 1000 bytes"
     assert error([item(%{"question" => ""})]) =~ "1 to 1000 bytes"
-    assert error([item(%{"question" => 1})]) =~ "1 to 1000 bytes"
+    assert error([item(%{"question" => 1})]) =~ "question must be a string"
   end
 
   test "a header of 1 to 12 characters" do
     assert check([item(%{"header" => String.duplicate("a", 12)})]) == :passes
     assert check([item(%{"header" => String.duplicate("😀", 12)})]) == :passes
     assert error([item(%{"header" => String.duplicate("é", 13)})]) =~ "1 to 12 characters"
-    assert error([item(%{"header" => String.duplicate("😀", 13)})]) =~ "1 to 12 characters"
-    assert error([item(%{"header" => ""})]) =~ "1 to 12 characters"
+    assert error([item(%{"header" => String.duplicate("😀", 13)})]) =~ "1 to 48 bytes"
+    assert error([item(%{"header" => ""})]) =~ "1 to 48 bytes"
   end
 
   test "a label of 1 to 60 bytes and a description of at most 300" do
@@ -97,15 +97,16 @@ defmodule Helyx.Tool.QuestionTest do
           %{"label" => "b"},
           "b"
         ] do
-      assert error([item(%{"options" => [option("a"), bad]})]) =~ "each option needs"
+      assert error([item(%{"options" => [option("a"), bad]})]) =~ "questions[0].options[1]"
     end
   end
 
   test "multi_select is a boolean, and a question needs its three keys" do
     assert check([item(%{"multi_select" => true})]) == :passes
-    assert error([item(%{"multi_select" => "yes"})]) =~ "multi_select must be a boolean"
-    assert error([Map.delete(item(), "header")]) =~ "needs question, header, and options"
-    assert error(["Which one?"]) =~ "needs question, header, and options"
+    assert check([item(%{"multi_select" => nil})]) == :passes
+    assert error([item(%{"multi_select" => "yes"})]) =~ "multi_select must be true or false"
+    assert error([Map.delete(item(), "header")]) =~ "header is required"
+    assert error(["Which one?"]) =~ "questions[0] must be an object"
   end
 
   # The form that the tool sends passed `Helyx.Tool.ask/1`, the check of its

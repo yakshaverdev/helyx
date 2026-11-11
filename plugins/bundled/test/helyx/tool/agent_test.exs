@@ -440,7 +440,7 @@ defmodule Helyx.Tool.AgentTest do
     [result] = results(collect_until(:turn_end))
 
     assert result.is_error
-    assert Message.text(result) == "agent needs a description and a prompt, both strings"
+    assert Message.text(result) == "prompt must be a string"
     assert Helyx.Sessions.list_live(core) |> Enum.map(& &1.id) == [session.id]
   end
 end

@@ -11,6 +11,7 @@ defmodule Helyx.Tool.SessionCreate do
   @behaviour Helyx.Tool
 
   alias Helyx.{Coordinator, Session}
+  alias Helyx.Tool.Args
 
   @impl true
   def name, do: "session_create"
@@ -37,6 +38,7 @@ defmodule Helyx.Tool.SessionCreate do
         },
         "prompt" => %{
           "type" => "string",
+          "maxLength" => Session.max_text_bytes(),
           "description" => "The first prompt; empty sends none"
         }
       },
@@ -45,39 +47,28 @@ defmodule Helyx.Tool.SessionCreate do
   end
 
   @impl true
-  def run(%{"mode" => mode, "folder" => folder, "prompt" => prompt}, _cwd)
-      when is_binary(mode) and is_binary(folder) and is_binary(prompt) do
-    with :ok <- folder(folder),
-         :ok <- prompt(prompt),
+  def run(args, _cwd) do
+    with {:ok, args} <- Args.check(args, parameters()),
+         :ok <- folder(args["folder"]),
          {:ok, env} <- Coordinator.setup(),
-         {:ok, mode_opts} <- Coordinator.mode(mode),
-         {:ok, session} <- start(env, folder, mode_opts) do
+         {:ok, mode_opts} <- Coordinator.mode(args["mode"]),
+         {:ok, session} <- start(env, args["folder"], mode_opts) do
       sent(
         env,
         session,
-        prompt,
-        "session #{session.id} started in #{folder} with the mode #{mode}"
+        args["prompt"],
+        "session #{session.id} started in #{args["folder"]} with the mode #{args["mode"]}"
       )
     else
       {:error, text} -> {:error, "session_create: " <> text}
     end
   end
 
-  def run(_args, _cwd),
-    do: {:error, "session_create needs a mode, a folder, and a prompt, each a string"}
-
   # A folder that the model gives: an absolute path of a folder that exists.
   defp folder(folder) do
     if Path.type(folder) == :absolute and File.dir?(folder),
       do: :ok,
       else: {:error, "the folder must be the absolute path of a folder that exists"}
-  end
-
-  # The bound of any prompt, before the session starts.
-  defp prompt(prompt) do
-    if byte_size(prompt) <= Session.max_text_bytes(),
-      do: :ok,
-      else: {:error, Coordinator.text(:text_too_large)}
   end
 
   # The model of the mode, else the model of the calling turn.

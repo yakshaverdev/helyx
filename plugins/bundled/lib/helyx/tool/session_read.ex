@@ -11,6 +11,7 @@ defmodule Helyx.Tool.SessionRead do
   @behaviour Helyx.Tool
 
   alias Helyx.{Coordinator, Message, Session}
+  alias Helyx.Tool.Args
 
   # The newest messages that a read takes, the most of a snapshot tail.
   @tail 1_000
@@ -42,6 +43,8 @@ defmodule Helyx.Tool.SessionRead do
         "id" => %{"type" => "string", "description" => "The id of the session"},
         "question" => %{
           "type" => "string",
+          "maxLength" => @max_question_bytes,
+          "default" => "",
           "description" => "Optional: what to find out from the transcript"
         }
       },
@@ -50,32 +53,26 @@ defmodule Helyx.Tool.SessionRead do
   end
 
   @impl true
-  def run(%{"id" => id} = args, cwd) do
-    question = Map.get(args, "question", "")
-
-    with :ok <- checked(id, question),
+  def run(args, cwd) do
+    with {:ok, args} <- Args.check(args, parameters()),
+         :ok <- checked(args["id"]),
          {:ok, env} <- Coordinator.setup(),
-         :ok <- authorized(env, id),
-         {:ok, text} <- read(Coordinator.session(env, id), budget(question)) do
-      answer(env, text, question, cwd)
+         :ok <- authorized(env, args["id"]),
+         {:ok, text} <- read(Coordinator.session(env, args["id"]), budget(args["question"])) do
+      answer(env, text, args["question"], cwd)
     else
       {:error, text} when is_binary(text) -> {:error, "session_read: " <> text}
     end
   end
 
-  def run(_args, _cwd), do: {:error, "session_read needs an id"}
-
   # The child stays held while its owner reports no stop (`Helyx.Subagent`).
   @impl true
   def release(children, _mode, deadline), do: Helyx.Subagent.release(children, deadline)
 
-  defp checked(id, question) do
-    cond do
-      not Coordinator.id?(id) -> {:error, "the id must be a session id"}
-      not is_binary(question) -> {:error, "the question must be a string"}
-      byte_size(question) > @max_question_bytes -> {:error, "the question is too long"}
-      true -> :ok
-    end
+  defp checked(id) do
+    if Coordinator.id?(id),
+      do: :ok,
+      else: {:error, "the id must be a session id"}
   end
 
   defp authorized(env, id) do
