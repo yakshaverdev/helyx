@@ -85,7 +85,7 @@ defmodule Helyx.Compaction.SummaryTest do
       tool_result("t1", words(25_000))
     ]
 
-    assert {:summarize, %Plan{tokens_before: tokens}} = compact(messages, trigger: :overflow)
+    assert {:summarize, %Plan{tokens_before: tokens}} = compact(messages, trigger: :manual)
     # The usage with nil context tokens keeps the estimate of a1, and the
     # call counts its name and its JSON arguments.
     bytes = byte_size("ok") + byte_size("bash") + byte_size(JSON.encode!(call.arguments))
@@ -94,7 +94,7 @@ defmodule Helyx.Compaction.SummaryTest do
     # Before such a usage the footer has no estimate, and the trigger reads
     # a quarter of the bytes of the context to send: "sys", "x", and the text.
     early = [user("u1", words(30_000)), assistant("a1", "x", usage(nil, 1_000)), user("u2", "y")]
-    assert {:summarize, %Plan{tokens_before: 30_001}} = compact(early, trigger: :overflow)
+    assert {:summarize, %Plan{tokens_before: 30_001}} = compact(early, trigger: :manual)
     assert {_totals, nil} = Helyx.Session.Totals.of(early)
   end
 
@@ -104,9 +104,6 @@ defmodule Helyx.Compaction.SummaryTest do
 
     assert {:error, "no summary: the context window of the model is unknown" <> _} =
              compact(messages, trigger: :manual)
-
-    # An overflow needs no window.
-    assert {:summarize, %Plan{}} = compact(messages, trigger: :overflow)
   end
 
   test "the cut keeps about 20,000 tokens and starts at a user or assistant message" do

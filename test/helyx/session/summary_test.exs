@@ -240,20 +240,6 @@ defmodule Helyx.Session.SummaryTest do
     assert List.last(events).data == %{outcome: :done}
   end
 
-  test "a second context request while a summary runs for the first is a bad action",
-       %{core: core} do
-    for why <- [:auto, :overflow] do
-      session = start(core)
-      :ok = Session.prompt(session, "overflow:hang")
-      wait_until(fn -> match?(%{status: :running}, state(session).summary_call) end)
-      send(state(session).phase.provider.pid, {:again, why})
-      assert %{outcome: :error, error: error} = List.last(collect_until(:turn_end)).data
-      assert error =~ "bad_action"
-      assert Process.alive?(Session.pid(session))
-      await_call_end(session)
-    end
-  end
-
   test "a /compact summarizes as a turn with no message", %{core: core} do
     session = start(core)
     turn(session, "hello")
@@ -270,20 +256,6 @@ defmodule Helyx.Session.SummaryTest do
     turn(session, "plugin_error")
     assert :ok = Session.compact(session)
     assert List.last(collect_until(:turn_end)).data == %{outcome: :error, error: "nope"}
-  end
-
-  test "a context overflow summarizes once and calls the model again", %{core: core} do
-    session = start(core)
-    events = turn(session, "overflow")
-    assert [%{trigger: :auto}] = of_type(events, :compaction)
-    assert List.last(events).data == %{outcome: :done}
-    assert final(events) == "user:S:the summary\nuser:overflow"
-
-    await_call_end(session)
-    events = turn(session, "overflow_always")
-    assert [_] = of_type(events, :compaction)
-    assert %{outcome: :error, error: error} = List.last(events).data
-    assert error =~ "context_overflow"
   end
 
   test "a provider that keeps its own history gets no trigger", %{core: core} do

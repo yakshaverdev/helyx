@@ -16,8 +16,8 @@ defmodule Helyx.Compaction.Summary do
   ModelContext added (no id) stays after the summary, and the summary
   input does not hold it. With trigger `:auto` it asks
   for a summary when the estimate is over the window minus
-  #{@reserve_tokens} tokens (clamped to the window); with `:manual` and
-  `:overflow` it asks at once. It asks only when a cut keeps a part
+  #{@reserve_tokens} tokens (clamped to the window); with `:manual` it
+  asks at once. It asks only when a cut keeps a part
   after the summary. The estimate is the integer `context_tokens` of the
   last usage that has them plus a quarter of the bytes after it, the
   rule of `Helyx.Session.Totals.context/2`, or with a summary a quarter
@@ -71,10 +71,6 @@ defmodule Helyx.Compaction.Summary do
       trigger -> triggered(trigger, context, sent, summary, opts)
     end
   end
-
-  # An overflow needs no window: the serving side said the context is over it.
-  defp triggered(:overflow, context, sent, summary, opts),
-    do: plan(context.messages, sent, summary, estimate(context, sent, summary), opts)
 
   defp triggered(trigger, context, sent, summary, opts) do
     tokens = estimate(context, sent, summary)

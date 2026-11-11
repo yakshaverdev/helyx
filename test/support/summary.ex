@@ -6,12 +6,8 @@ defmodule Helyx.Test.SummaryProvider do
   # text of exactly 65,536 bytes, "big" one byte more, "fail" an error,
   # "tool" a tool call, "empty" no text, "cut" a text cut at max_tokens,
   # "hang" a stream that blocks. Any
-  # other call streams every message of the context as "role:text" lines,
-  # unless the last user message starts with "overflow" and the context has
-  # no summary, or is "overflow_always": then the call fails with a context
-  # overflow. The message `{:again, why}` sends a second context request
-  # for the open turn. A provider option `report: pid` sends each `init/3`
-  # options to `pid`.
+  # other call streams every message of the context as "role:text" lines.
+  # A provider option `report: pid` sends each `init/3` options to `pid`.
   @behaviour Helyx.Provider
   @behaviour Helyx.Provider.Loop
 
@@ -33,8 +29,6 @@ defmodule Helyx.Test.SummaryProvider do
   defdelegate request(request, from, state), to: Helyx.Provider.Loop
 
   @impl Helyx.Provider
-  def info({:again, :auto}, state), do: {:ok, [{:need_context, state.turn}], state}
-  def info({:again, why}, state), do: {:ok, [{:need_context, state.turn, why}], state}
   def info(message, state), do: Helyx.Provider.Loop.info(message, state)
 
   @impl true
@@ -52,15 +46,8 @@ defmodule Helyx.Test.SummaryProvider do
   end
 
   def stream(_model, %Helyx.Context{messages: messages}, _opts) do
-    last = messages |> Enum.filter(&(&1.role == :user)) |> List.last() |> Helyx.Message.text()
-    summary? = Enum.any?(messages, &String.starts_with?(Helyx.Message.text(&1), "S:"))
-
-    if last == "overflow_always" or (String.starts_with?(last, "overflow") and not summary?) do
-      {:ok, [{:error, {:context_overflow, "too long"}}]}
-    else
-      lines = Enum.map_join(messages, "\n", &"#{&1.role}:#{Helyx.Message.text(&1)}")
-      {:ok, [{:text_delta, lines}, @done]}
-    end
+    lines = Enum.map_join(messages, "\n", &"#{&1.role}:#{Helyx.Message.text(&1)}")
+    {:ok, [{:text_delta, lines}, @done]}
   end
 end
 
@@ -75,9 +62,8 @@ defmodule Helyx.Test.SummaryPlugin do
   # mode as the text of the summary call. With any trigger but nil, a last
   # user message "summarize:<mode>" that no summary keeps asks with the
   # mode. Else `:manual` asks with "ok", or "fail" for the instructions
-  # "fail", and `:overflow` with "ok", or the mode of "overflow:<mode>".
-  # "summarize:again" asks with any trigger, "summarize:bad_id" names an
-  # id that no message has, and "plugin_error" returns an error at
+  # "fail". "summarize:again" asks with any trigger, "summarize:bad_id"
+  # names an id that no message has, and "plugin_error" returns an error at
   # `:manual`.
   @behaviour Helyx.Compaction
 
@@ -106,8 +92,6 @@ defmodule Helyx.Test.SummaryPlugin do
   defp mode(trigger, "summarize:" <> mode, false, _instructions) when trigger != nil, do: mode
   defp mode(:manual, _text, _kept?, "fail"), do: "fail"
   defp mode(:manual, _text, _kept?, _instructions), do: "ok"
-  defp mode(:overflow, "overflow:" <> mode, _kept?, _instructions), do: mode
-  defp mode(:overflow, _text, _kept?, _instructions), do: "ok"
   defp mode(_trigger, _text, _kept?, _instructions), do: nil
 
   defp plan(user, mode) do

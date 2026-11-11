@@ -8,8 +8,8 @@ defmodule Helyx.Compaction do
   `Helyx.ModelRef` of the turn), `:session_dir` (as for
   `Helyx.ModelContext.build/2`), `:summary` (the stored `Helyx.Summary`, or
   nil), `:instructions` (the text of a `/compact`, else `""`), and
-  `:trigger`: `:auto` before a call, `:manual` in a `/compact`, `:overflow`
-  after a context overflow, or nil when the plugin must not ask for a
+  `:trigger`: `:auto` before a call, `:manual` in a `/compact`, or nil
+  when the plugin must not ask for a
   summary (a provider that keeps its own history, or the build after a
   summary or a failed one). It also carries `:deadline`, the monotonic time
   in milliseconds at which the session kills the prepare Task, the same

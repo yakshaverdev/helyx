@@ -13,8 +13,7 @@ Decisions of the owner (ticket #490, decisions comment of 2026-10-17):
 3. **The summary call** runs in a separate provider process for the model of the turn, with no tools, no recall, no compaction, and no resume history. It never goes to the session's provider process as a `{:turn, ...}`: `Helyx.Provider.Loop` resets its turn on one. It can be aborted, it is outside the 10 s prepare kill, and it has the waits of a turn. A summary asked during a context request finishes before Core answers that request. Its output is never an assistant message of the transcript.
 4. **The entry.** A new entry in the session file, apart from the compaction entry of a harness: the summary, the id of the first kept message, and the tokens before. Messages appended while the summary runs are kept. A failed or aborted summary keeps the previous context and entry: a turn goes on with the context of the last summary after a `:notice` with the failure, and a `/compact` fails with it. A failed write keeps the summary in memory only, and nothing claims that it is saved.
 5. **The bundled plugin.** Keep 20,000 recent tokens, counted over the messages since the last summary only (#838), reserve 16,384 tokens, clamped to the window, and cut only at a user or assistant message, so a call keeps its results. Generic sections; no file lists. A summary cap of 64 KiB. A later compaction updates the previous summary.
-6. **Overflow.** Core turns a context-overflow error into one compaction and one retry. Any other failure is not retried.
-7. **`/compact` on a model provider** runs this path in place of the notice of the `:unsupported` answer.
+6. **`/compact` on a model provider** runs this path in place of the notice of the `:unsupported` answer.
 
 Decisions of this doc:
 
@@ -24,10 +23,9 @@ Decisions of this doc:
 - **Core summarizes only for a model provider.** The trigger of a provider that keeps its own history (not `Helyx.Provider.Loop`) is nil: the plugin builds the context but must not ask for a summary, and a plan is a contract break. Reason: a harness compacts its own history (`harness-compaction.md`), and two summaries of one history fight each other. Such a provider still gets the context with the summary as its replay, after a model switch or a lost thread.
 - **One summary for each context build.** After a summary, Core builds the context again with trigger nil and the new summary. A plan in that build is a contract break, and the build fails with `{:bad_context, :compaction}`. Reason: a plugin whose estimate stays over its threshold would otherwise summarize forever.
 - **The summary cap is a Core bound.** The session keeps the text of the summary call in memory and writes it to the file, so the bound must hold where the text grows: in the session, not in the plugin. 64 KiB is the number of decision 5.
-- **The overflow retry is in `Helyx.Provider.Loop`.** On a model call that fails with `{:context_overflow, detail}` before any content, the loop asks for a fresh context with the new action `{:need_context, turn_id, :overflow}` once in a turn, and calls the model again with the answer. Reason: the loop owns the held steers and the calls of the turn, and a context request keeps them. A second overflow in the turn ends the turn with the error.
-- **The event is `:compaction`.** A summary gives `%{trigger: :manual | :auto, tokens_before: n, tokens_after: nil}`; an overflow summary is `:auto`. Reason: the clients show it already, and the user sees the same line for each kind of compaction. With `tokens_after` nil, the footer of the TUI shows no context % until the next usage with `context_tokens`, because the estimate of the last usage counts the messages before the summary (`usage-and-limits.md`, "The footer", #697).
+- **The event is `:compaction`.** A summary gives `%{trigger: :manual | :auto, tokens_before: n, tokens_after: nil}`. Reason: the clients show it already, and the user sees the same line for each kind of compaction. With `tokens_after` nil, the footer of the TUI shows no context % until the next usage with `context_tokens`, because the estimate of the last usage counts the messages before the summary (`usage-and-limits.md`, "The footer", #697).
 - **The estimate of the bundled plugin.** With no summary, the estimate of #488: the `context_tokens` of the last usage whose `context_tokens` is an integer, plus a quarter of the bytes of the text, the thinking, and the tool calls (name and JSON arguments) of the messages after it; a usage with nil `context_tokens` does not start a new estimate. With no such usage, a quarter of the bytes of the context to send. The `context` field of the snapshot (`Helyx.Session.Totals.context/2`, `session-snapshot.md`, "State fields") takes the same rule, so the footer shows the tokens that the trigger reads (#698); before such a usage the footer shows no estimate. With a summary, a quarter of the bytes of the context to send: every usage in the kept messages counts the context from before the summary, and the entry does not tell which message came after it.
-- **The window of the bundled plugin.** The `context_window` of the last usage of a message of the same model (the serving side, or the catalog through the provider's `Helyx.ModelInfo` pricing), else the `:models` config entry through `Helyx.ModelInfo.lookup/4` with no catalog id, else unknown. Reason: only the provider names its catalog id; a model that has not answered yet in this session has no catalog step, and its first call can overflow into the overflow path.
+- **The window of the bundled plugin.** The `context_window` of the last usage of a message of the same model (the serving side, or the catalog through the provider's `Helyx.ModelInfo` pricing), else the `:models` config entry through `Helyx.ModelInfo.lookup/4` with no catalog id, else unknown. Reason: only the provider names its catalog id; a model that has not answered yet in this session has no catalog step, and its first call can overflow the window.
 - **The coding agent registers `Helyx.Compaction.Summary`** in place of `Helyx.Compaction.None`. `None` stays as the no-op plugin.
 
 Prior art: the cut, the keep and reserve defaults, the sections, and the update of a previous summary follow the reference agent of the ticket (checked in its source by the owner, 2026-10-04 and 2026-10-17).
@@ -46,16 +44,14 @@ Prior art: the cut, the keep and reserve defaults, the sections, and the update 
 
 - `:model`: the `Helyx.ModelRef` of the turn.
 - `:summary`: the current `Helyx.Summary`, or nil.
-- `:trigger`: `:auto` before a provider call, `:manual` in a `/compact`, `:overflow` after a context overflow, or nil for a provider that keeps its own history and for the build after a summary or a failed one (no plan allowed).
+- `:trigger`: `:auto` before a provider call, `:manual` in a `/compact`, or nil for a provider that keeps its own history and for the build after a summary or a failed one (no plan allowed).
 - `:instructions`: the text of `/compact`, else `""`.
 
 **`Helyx.Summary`** (`text`, `first_kept_id`, `tokens_before`): the stored summary. **`Helyx.Summary.Plan`** (`context`, `first_kept_id`, `tokens_before`): what the plugin asks for. Core checks a plan in `Helyx.Session.Stream.prepare/4`: a `Helyx.Context` with the checks of a built context, a `first_kept_id` that is the id of a user or assistant message of the transcript, and `tokens_before` from 0 to 10^9. Anything else is `{:bad_context, :compaction}`.
 
 **The summary call.** Core starts a provider process for the provider and model of the turn, under the hands, with no tools, no resume id, and the session as its receiver, and sends `{:turn, summary_id, context}` with the plan's context and `tools: []`. Its text deltas, in order, are the summary. Thinking and message ends are dropped. A tool call, a tool request, a context request, or any other event fails the summary, and so does a `done` with a stop reason other than `:end_turn`: a cut or refused text must not replace the messages it covers. After the `done` the session closes the process.
 
-**Provider action:** `{:need_context, turn_id, :overflow}`, which `Helyx.Provider.Loop` sends. The session answers it as `{:need_context, turn_id}`, with trigger `:overflow`; from a provider that keeps its own history the trigger is nil, as for any of its builds, so it gets a context and no summary.
-
-**Provider error:** `{:context_overflow, detail}` is the error of a model call whose context is over the window of the model. No bundled provider gives it yet: no research note records the error that the OpenCode gateways send at overflow (open, see "Out of scope").
+**Provider error:** `{:context_overflow, detail}` is the error of a model call whose context is over the window of the model. No bundled provider gives it yet: no research note records the error that the OpenCode gateways send at overflow. The loop has no path for it: an overflow is a stream error, and the turn fails with its text. A retry needs a provider that maps a real overflow response (open, see "Out of scope").
 
 **Session file:** the entry `{"type": "summary", "summary": text, "first_kept_id": id, "tokens_before": n, "last_id": id | null}`, with `last_id` as in the compaction entry (`harness-compaction.md`, #712). A resume takes the last one. A summary entry whose text is not a string of 1 byte to 64 KiB, whose `first_kept_id` is not the id of an earlier user or assistant message, or whose `tokens_before` is not an integer from 0 to 10^9, makes the file invalid, as any other damaged entry does.
 
@@ -74,7 +70,6 @@ The `:unsupported` answer to `{:compact, ...}` ended the compaction turn with a 
 | summary text in the session | 65,536 bytes | the summary fails; the previous summary stays | `Helyx.Session.Server.Summary` |
 | summary text from the disk | 65,536 bytes | the file is invalid | `Helyx.Session.File.Reader` |
 | summaries in one context build | 1 | the build fails: `{:bad_context, :compaction}` | `Helyx.Session.Stream.prepare/4` |
-| overflow retries in one turn | 1 | the turn fails with the overflow error | `Helyx.Provider.Loop` |
 | connect of the summary process | 30 s armed kill, as any provider process | the summary fails at its `provider_down` | `Helyx.Session.Hands` |
 | answer to the summary `{:turn, ...}` | 2,000 ms armed kill | the summary fails at its `provider_down` | OTP timer server |
 | the start of the summary process | the answer of the hands to `Hands.start_provider/3`, a request as at a turn start, with its bound in `docs/features/session-lifecycle.md`, "Bounds" (#677) | none: the hands' release deadlines hold it; the turn goes on, and a turn end before the answer stops the process at the answer | `Helyx.Session.Hands` |
@@ -93,7 +88,7 @@ The `:unsupported` answer to `{:compact, ...}` ended the compaction turn with a 
 
 ## Out of scope
 
-- A provider that gives `{:context_overflow, detail}`: the OpenCode gateways need an observed overflow response first. Until then the overflow path runs only with a provider that gives it.
+- A provider that gives `{:context_overflow, detail}`: the OpenCode gateways need an observed overflow response first. Until one is mapped, an overflow is a stream error, and the turn fails with its text.
 - The usage and the cost of the summary call: no message holds them.
 - The summary in the snapshot of a session, and a line for it at a resume.
 - A summary that the user can read.

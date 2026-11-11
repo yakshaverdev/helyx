@@ -183,7 +183,7 @@ defmodule Helyx.Session.Server.Records do
   # A Helyx summary (docs/features/summary-compaction.md): the record on
   # disk, the stored summary, and `:compaction`. A failed write leaves it
   # in memory only (`persist/2`). One in a compaction turn marks the turn
-  # as compacted; an overflow summary is `auto`.
+  # as compacted.
   def summary(%State{phase: %{turn: %Turn{compact: compact}}} = state, summary) do
     state = persist_compaction(state, &Helyx.Session.File.append_summary(&1, summary, &2), nil)
     state = if compact, do: put_in(state.phase.turn.compact, :reported), else: state
