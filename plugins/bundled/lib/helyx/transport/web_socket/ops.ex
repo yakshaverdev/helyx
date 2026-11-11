@@ -16,7 +16,8 @@ defmodule Helyx.Transport.WebSocket.Ops do
     "stop" => 77_000,
     "start" => :infinity,
     "resume" => :infinity,
-    "sessions.saved" => 10_000
+    "sessions.saved" => 10_000,
+    "subscribe" => 5_000
   }
   @default_deadline 6_000
   @default_tail 200
