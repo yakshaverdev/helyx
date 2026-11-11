@@ -76,46 +76,9 @@ defmodule Helyx.Session.Server do
   defp info({:stream_event, _turn_id, :turn_start} = message, state),
     do: {:noreply, TurnLoop.handle(message, state)}
 
-  defp info(
-         {:stream_event, turn_id, {:message_end, stop_reason, usage}},
-         %State{phase: %{turn: %Turn{id: turn_id}}} = state
-       ),
-       do: {:noreply, Records.end_assistant(state, stop_reason, usage)}
-
-  defp info(
-         {:stream_event, turn_id, {:compaction, before, after_}},
-         %State{phase: %{turn: %Turn{id: turn_id}}} = state
-       ),
-       do: {:noreply, Records.compaction(state, before, after_)}
-
-  # A tool result event of the provider: it closes the open message and
-  # joins its open call (`Records.tool_result/3`).
-  defp info(
-         {:stream_event, turn_id, {:tool_result, call_id, result}},
-         %State{phase: %{turn: %Turn{id: turn_id}}} = state
-       ),
-       do: {:noreply, Records.tool_result(state, call_id, result)}
-
-  # A UI block of the provider (`UIBlocks.provider_block/4`): a new key
-  # past the count stops the provider process.
-  defp info(
-         {:stream_event, turn_id, {:ui_block, call_id, key, block}},
-         %State{phase: %{turn: %Turn{id: turn_id}}} = state
-       ) do
-    case UIBlocks.provider_block(state, call_id, key, block) do
-      {:ok, state} -> {:noreply, state}
-      {:error, reason} -> {:noreply, TurnLoop.stop_provider(state, reason)}
-    end
-  end
-
-  # The provider took a steer of this turn: its text, the one the session
-  # checked at the client call, joins the transcript here (see
-  # `Queue.take/2`).
-  defp info(
-         {:stream_event, turn_id, {:user_message, steer_id}},
-         %State{phase: %{turn: %Turn{id: turn_id}}} = state
-       ),
-       do: {:noreply, Steering.take(state, steer_id)}
+  # An event of the current turn.
+  defp info({:stream_event, turn_id, event}, %State{phase: %{turn: %Turn{id: turn_id}}} = state),
+    do: {:noreply, event(state, event)}
 
   # A Helyx tool request of the provider process `pid` (`ToolRuns`). The call
   # and its result join the transcript from the provider's own events, not
@@ -178,15 +141,6 @@ defmodule Helyx.Session.Server do
        do: {:noreply, Records.resume_id(state, turn_id, id, cut)}
 
   defp info({:resume_id, _pid, _turn_id, _id, _cut}, state), do: {:noreply, state}
-
-  # An event that breaks the bound of the open message stops the provider
-  # process (`Records.delta/2`).
-  defp info({:stream_event, turn_id, event}, %State{phase: %{turn: %Turn{id: turn_id}}} = state) do
-    case Records.delta(state, event) do
-      {:ok, state} -> {:noreply, state}
-      {:error, reason, state} -> {:noreply, TurnLoop.stop_provider(state, reason)}
-    end
-  end
 
   # The hands' start answer of a background run: the run counts from here,
   # also when its call is no longer current, and its end counts down
@@ -312,4 +266,37 @@ defmodule Helyx.Session.Server do
   end
 
   def via(core, id), do: {:via, Registry, {Helyx.Core.sessions_registry(core), id}}
+
+  defp event(state, {:message_end, stop_reason, usage}),
+    do: Records.end_assistant(state, stop_reason, usage)
+
+  defp event(state, {:compaction, before, after_}), do: Records.compaction(state, before, after_)
+
+  # A tool result event of the provider: it closes the open message and
+  # joins its open call (`Records.tool_result/3`).
+  defp event(state, {:tool_result, call_id, result}),
+    do: Records.tool_result(state, call_id, result)
+
+  # A UI block of the provider (`UIBlocks.provider_block/4`): a new key
+  # past the count stops the provider process.
+  defp event(state, {:ui_block, call_id, key, block}) do
+    case UIBlocks.provider_block(state, call_id, key, block) do
+      {:ok, state} -> state
+      {:error, reason} -> TurnLoop.stop_provider(state, reason)
+    end
+  end
+
+  # The provider took a steer of this turn: its text, the one the session
+  # checked at the client call, joins the transcript here (see
+  # `Queue.take/2`).
+  defp event(state, {:user_message, steer_id}), do: Steering.take(state, steer_id)
+
+  # An event that breaks the bound of the open message stops the provider
+  # process (`Records.delta/2`).
+  defp event(state, event) do
+    case Records.delta(state, event) do
+      {:ok, state} -> state
+      {:error, reason, state} -> TurnLoop.stop_provider(state, reason)
+    end
+  end
 end
