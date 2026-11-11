@@ -226,13 +226,20 @@ defmodule Helyx.Session.Server do
   # status comes first, then the exit of the port, also of a port that
   # closed without a status. Another process can now append to the file, so
   # the session stops saving and goes on in memory (`Records.stop_saving/3`).
-  defp info({port, {:exit_status, _status}}, %State{lock: port} = state),
+  defp info({port, {:exit_status, _status}}, %State{save: {:saving, _file, port}} = state),
     do: {:noreply, state}
 
-  defp info({:EXIT, port, reason}, %State{lock: port} = state) do
-    state = %{state | lock: nil}
+  defp info({port, {:exit_status, _status}}, %State{save: {:stopped, _from, port}} = state),
+    do: {:noreply, state}
+
+  defp info({:EXIT, port, reason}, %State{save: {:saving, file, port}} = state) do
+    state = %{state | save: {:saving, file, nil}}
     {:noreply, Records.stop_saving(state, "the session lock is lost", inspect(reason))}
   end
+
+  # The lock of a session that stopped saving: its loss changes nothing.
+  defp info({:EXIT, port, _reason}, %State{save: {:stopped, from, port}} = state),
+    do: {:noreply, %{state | save: {:stopped, from, nil}}}
 
   # An exit from a linked process is vital. The hands' death takes the
   # session with it, and a session that outlived its entry in the sessions
@@ -258,7 +265,7 @@ defmodule Helyx.Session.Server do
   def terminate(_reason, state), do: Reason.no_args(fn -> stop(state) end)
 
   # A session with no hands ended in its open: it holds the lock at most.
-  defp stop(%State{hands: nil} = state), do: Lock.release(state.lock)
+  defp stop(%State{hands: nil} = state), do: Lock.release(State.lock(state))
 
   defp stop(state) do
     report = Stop.run(state)

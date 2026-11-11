@@ -32,7 +32,8 @@ defmodule Helyx.Test.SessionFile do
   # under load the lock can outlast it (#670).
   def stop(%Session{} = session) do
     pid = Session.pid(session)
-    file = :sys.get_state(pid).file
+    state = :sys.get_state(pid)
+    file = if match?({:saving, _, _}, state.save), do: elem(state.save, 1)
     :ok = GenServer.stop(pid)
     if file, do: await_lock_free(file.path)
     :ok

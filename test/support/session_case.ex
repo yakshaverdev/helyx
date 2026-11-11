@@ -64,7 +64,8 @@ defmodule Helyx.Test.SessionCase do
   # lock of its file is free: perl exits after the session (#670).
   def stop_session(session, stop) do
     pid = Session.pid(session)
-    file = :sys.get_state(pid).file
+    state = :sys.get_state(pid)
+    file = if match?({:saving, _, _}, state.save), do: elem(state.save, 1)
     ref = Process.monitor(pid)
     stop.(pid)
     assert_receive {:DOWN, ^ref, :process, ^pid, _reason}

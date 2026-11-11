@@ -154,7 +154,7 @@ defmodule Helyx.Session.TurnRecordTest do
     {:ok, session} = Session.start(core, model: "test/system")
     {:ok, _, _} = Session.subscribe(session)
     assert final_text(turn(session, "prompt:x")) == "x"
-    assert :sys.get_state(Session.pid(session)).file == nil
+    assert :sys.get_state(Session.pid(session)).save == :never
   end
 
   test "a failed write of the entry turns persistence off and keeps no hash", %{
@@ -171,7 +171,7 @@ defmodule Helyx.Session.TurnRecordTest do
     [old] = Path.wildcard(Path.join(dir, "**/#{session.id}.jsonl.old"))
     lines = String.split(File.read!(old), "\n", trim: true)
     assert [_header, %{"role" => "user"}] = Enum.map(lines, &JSON.decode!/1)
-    assert :sys.get_state(Session.pid(session)).file == nil
+    assert {:stopped, _, _} = :sys.get_state(Session.pid(session)).save
   end
 
   test "the answer to a context request writes the prompt that it sends", %{tmp_dir: dir} do

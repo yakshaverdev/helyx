@@ -521,8 +521,14 @@ defmodule Helyx.SessionsEditTest do
         {:ok, session} = Sessions.resume(core, id: id)
         pid = Session.pid(session)
         lock_path = Path.rootname(path) <> ".lock"
-        PerlSignal.send!(PerlSignal.pid(:sys.get_state(pid).lock, lock_path), "KILL", lock_path)
-        await(fn -> :sys.get_state(pid).lock == nil end, "the session to lose its lock")
+        lock = Helyx.Session.Server.State.lock(:sys.get_state(pid))
+        PerlSignal.send!(PerlSignal.pid(lock, lock_path), "KILL", lock_path)
+
+        await(
+          fn -> Helyx.Session.Server.State.lock(:sys.get_state(pid)) == nil end,
+          "the session to lose its lock"
+        )
+
         before = File.read!(path)
 
         true = :erlang.resume_process(sup)

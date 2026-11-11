@@ -11,8 +11,9 @@ defmodule Helyx.Test.LostLock do
   def kill(%Session{} = session, tries \\ div(Helyx.Test.Events.wait_ms(), 10)) do
     pid = Session.pid(session)
     state = :sys.get_state(pid)
-    lock_path = Path.rootname(state.file.path) <> ".lock"
-    perl = PerlSignal.pid(state.lock, lock_path)
+    {:saving, file, lock} = state.save
+    lock_path = Path.rootname(file.path) <> ".lock"
+    perl = PerlSignal.pid(lock, lock_path)
     PerlSignal.send!(perl, "KILL", lock_path)
     await_lost(pid, tries)
   end
@@ -20,7 +21,7 @@ defmodule Helyx.Test.LostLock do
   defp await_lost(_pid, 0), do: flunk("the session did not see the lost lock")
 
   defp await_lost(pid, tries) do
-    if :sys.get_state(pid).lock do
+    if Helyx.Session.Server.State.lock(:sys.get_state(pid)) do
       Process.sleep(10)
       await_lost(pid, tries - 1)
     end
