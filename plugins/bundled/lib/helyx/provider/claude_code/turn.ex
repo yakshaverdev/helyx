@@ -3,37 +3,10 @@ defmodule Helyx.Provider.ClaudeCode.Turn do
   # The turn of `Helyx.Provider.ClaudeCode`, and what reads and writes only
   # the turn. The functions give the turn's stream events, which the
   # provider sends with the turn id, and the new turn.
-  #
-  # `phase` says which of the turn's five states it is in, and holds the
-  # data that only that state has:
-  #
-  # - `:idle`: no turn. `id` and `uuid` are nil.
-  # - `{:queued, messages, chunks, replay?}`: the turn of a `{:turn, ...}`
-  #   or a `{:compact, ...}` request whose line the program did not start
-  #   yet. `messages` is its transcript until then: a lost session sends it
-  #   again to a fresh one. `chunks` holds the replay chunks not written
-  #   yet: each goes out at the `result` of the replayed user line that ends
-  #   the chunk before it, and the last one ends with the turn's line, then
-  #   any steers. `replay?` is true from the write of a replay before its
-  #   line.
-  # - `:started`: the program started the turn's line
-  #   (`command_lifecycle` `started`). Only from here do the turn's lines
-  #   and its `result` count (`started?/1`).
-  # - `{:steer_wait, ref}`: a `result` could not end the turn, because a
-  #   steer was unresolved; `ref` is the timer of the wait for the start of
-  #   that steer.
-  # - `:program`: a turn that the program started by itself (#240); its
-  #   `id` and `uuid` are one new UUID, and it has no `command_lifecycle`.
-  #
-  # `uuid` is the `uuid` of the turn's user line. `interrupt` is nil, or a
-  # tagged interrupt: `{:pending, from, seen}` before the write, which waits
-  # for the `init` line or the start of the turn's line, or
-  # `{:sent, from, request_id, seen}` after it. `seen` holds `:response`
-  # and `:result` when they came. `steers` holds each written steer line
-  # that the program did not start yet, by its `uuid`: its `steer_id`.
-  # `compact` is nil for a model turn; in a compaction turn it is `:asked`,
-  # then `:compacted` at its `compact_boundary`, or the `compact_error` of a
-  # failed compaction.
+  # The phases and the interrupt are in
+  # docs/features/long-lived-harness.md, "Turn phases"; the `compact` field
+  # in docs/features/harness-compaction.md. `steers` maps the `uuid` of each
+  # written steer line that the program did not start yet to its `steer_id`.
   defstruct [:id, :uuid, :interrupt, phase: :idle, steers: %{}, compact: nil]
 
   alias Helyx.{Message, ProviderError}
