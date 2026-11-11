@@ -218,21 +218,11 @@ defmodule CodingAgent do
   A session that ended while the TUI ran (`{:session_down, reason}`) gives
   its sentence, and so does a session that another process has open
   (`{:session_locked, id}`); any other error is a failed start, and its sentence comes
-  after `could not start the agent: `. There is a clause for every shape of `t:Helyx.Session.File.error/0`,
-  for the model ref and provider errors, for a bad working directory
-  (`:invalid_cwd`), for a header folder that is not a directory
-  (`{:not_a_directory, cwd}`, a whole line with no prefix), for a tool
-  that is not available, for the end of the session, and over the wire for
-  a line of the attach (`{:attach, text}`) and the end of the connection
-  (`{:connection_down, reason}`), whole lines with no prefix, for a newest
-  session that does not reattach (`{:reattach, reason}`), and for the
-  errors of the wire (`Helyx.TUI.Link.error_text/1`). The `:too_large`
-  text is a sentence already and passes unchanged. An error with no clause
-  prints through `Helyx.Reason.text/1`, so it holds no stacktrace. Every
-  result gets one clean pass: a whitespace run becomes one space, and a
-  control character or a byte that is not UTF-8 becomes `?`. The line then
-  has at most 4000 bytes of valid UTF-8, the prefix included; a character
-  cut in half is dropped.
+  after `could not start the agent: `; `{:not_a_directory, cwd}`,
+  `{:attach, text}`, and `{:connection_down, reason}` are whole lines with
+  no prefix. An error with no clause prints through `Helyx.Reason.text/1`,
+  so it holds no stacktrace. Every result gets the clean pass of
+  `clean_line/1`.
   """
   @spec error_text(term()) :: String.t()
   def error_text(reason), do: reason |> line() |> clean_line()

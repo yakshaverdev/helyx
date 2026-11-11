@@ -11,7 +11,7 @@ defmodule Helyx.TUI.Wire.Reader do
   # decode ends the messages: the call gives the messages before it as
   # `{:partial, ...}`, and the next call gives `:broken`. Mint allocates a
   # whole frame before it returns it, so the bounds are checked after the
-  # decode, not at the frame header as the hand-written parser did.
+  # decode; `@max_buffer` bounds the bytes before it.
 
   alias Helyx.Transport.WebSocket.Frame
 

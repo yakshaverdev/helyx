@@ -4,12 +4,8 @@ defmodule Helyx.TUI.Switch do
   # to another one for `/new` and `/resume`
   # (docs/features/tui-session-switch.md), and the bind again after a lost
   # connection (`reconnect/2`, docs/features/tui-attach.md, decision 11).
-  # A Task opens the new session, then detaches from the old one over the
-  # wire (`Helyx.TUI.Link`): the old session runs on, for its other
-  # clients and for a later resume (docs/features/tui-attach.md,
-  # decision 18). The new session opens first, so a failed open leaves the
-  # old one as it was. The functions take and give the state of
-  # `Helyx.TUI`.
+  # The new session opens first, so a failed open leaves the
+  # old one as it was.
 
   alias Helyx.Event
   alias Helyx.TUI.{Composer, Link, Question, ViewModel}
@@ -73,14 +69,9 @@ defmodule Helyx.TUI.Switch do
     end
   end
 
-  # The end of the connection over the wire. A lost one, a close of the
-  # server or of TCP, connects again with the `reconnect` function of the
-  # TUI, in its process, and subscribes with `after`: the instance and the
-  # seq of the last event that the fold applied. A replay gives the events
-  # that the TUI missed, which it applies as live ones; a snapshot
-  # replaces its state, as at a switch, but for the picker of an ask that
-  # is still open. A contract break, a lost connection during a switch,
-  # and a failed reconnect end the TUI.
+  # The end of the connection over the wire (decision 11). A contract
+  # break, a lost connection during a switch, and a failed reconnect end
+  # the TUI.
   @spec reconnect(map(), term()) :: map()
   def reconnect(%{switch: nil, reconnect: reconnect} = state, {:shutdown, {:closed, _}})
       when is_function(reconnect, 0) do
@@ -112,9 +103,8 @@ defmodule Helyx.TUI.Switch do
   defp busy(%{elapsed_ms: elapsed}),
     do: %{started: System.monotonic_time(:millisecond) - elapsed, elapsed: elapsed}
 
-  # Starts a switch: the Task opens `target` in the folder of the TUI, with
-  # the current model for `/new`, then detaches from the old session, which
-  # runs on (decision 18).
+  # The Task opens `target` in the folder of the TUI, with the current
+  # model for `/new`.
   @spec start(map(), target(), down()) :: map()
   def start(state, target, down \\ nil) do
     opts = %{model: state.vm.model, cwd: state.cwd}
@@ -123,9 +113,8 @@ defmodule Helyx.TUI.Switch do
     %{state | switch: %__MODULE__{task: task, target: target, down: down}}
   end
 
-  # A switch detaches from the old session and leaves it running for its
-  # other clients (`docs/features/tui-attach.md`, decision 18): the old
-  # subscription ends, so its events stop, and the session stays live.
+  # A switch detaches from the old session and leaves it running
+  # (`docs/features/tui-attach.md`, decision 18).
   defp run(target, old, opts, sub) do
     with {:ok, new} <- Link.open(old, target, opts),
          :ok <- Link.unsubscribe(old, sub),
