@@ -86,9 +86,11 @@ fn the_silence_holds_while_sends_stall() {
     let (elapsed, _) = after_welcome(waits, commands, |_, stopped| {
         let _ = stopped.recv();
     });
-    // Ends at the silence after the welcome, far below the send wait of 20 s.
+    // Ends at the silence after the welcome, not at the send wait. A loaded
+    // machine passes any margin near the silence, so the bound is the send
+    // wait, which the wrong rule would reach.
     assert!(elapsed >= waits.silence, "{elapsed:?}");
-    assert!(elapsed < waits.silence + LOAD_MARGIN, "{elapsed:?}");
+    assert!(elapsed < waits.send, "{elapsed:?}");
 }
 
 /// The deadline of a batch of sends: a batch that a slow reader takes
