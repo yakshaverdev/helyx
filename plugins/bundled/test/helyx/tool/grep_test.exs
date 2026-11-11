@@ -250,7 +250,7 @@ defmodule Helyx.Tool.GrepTest do
 
   test "a link loop does not hang", %{tmp_dir: dir} do
     write(dir, "sub/a.txt", "hit\n")
-    File.ln_s!(dir, Path.join(dir, "sub/up"))
+    loop!(dir, "sub/up")
 
     assert run(%{"pattern" => "hit"}, dir) == "sub/a.txt:1:hit"
   end
@@ -258,5 +258,13 @@ defmodule Helyx.Tool.GrepTest do
   test "a device named as the path is an error result, as read gives one", %{tmp_dir: dir} do
     assert {:error, text} = Grep.run(%{"pattern" => "hit", "path" => "/dev/null"}, dir)
     assert text == "cannot search /dev/null: not a file or a folder (device)"
+  end
+
+  # A loop that stays in the tree after the test makes the file walk of Credo
+  # hang, so the link goes at the exit.
+  defp loop!(dir, name) do
+    link = Path.join(dir, name)
+    File.ln_s!(dir, link)
+    on_exit(fn -> File.rm(link) end)
   end
 end

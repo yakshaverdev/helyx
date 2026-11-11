@@ -95,7 +95,7 @@ defmodule Helyx.Tool.FindTest do
     write(dir, "b.ex")
     File.ln_s!(Path.join(dir, "real"), Path.join(dir, "link_dir"))
     File.ln_s!(Path.join(dir, "b.ex"), Path.join(dir, "link.ex"))
-    File.ln_s!(dir, Path.join(dir, "real/up"))
+    loop!(dir, "real/up")
 
     assert run(%{"glob" => "*.ex"}, dir) == "b.ex\nlink.ex\nreal/a.ex"
   end
@@ -179,5 +179,13 @@ defmodule Helyx.Tool.FindTest do
 
     assert {:error, text} = Find.run(%{"glob" => "*", "path" => "nope"}, dir)
     assert text == "cannot search nope: no such file or directory"
+  end
+
+  # A loop that stays in the tree after the test makes the file walk of Credo
+  # hang, so the link goes at the exit.
+  defp loop!(dir, name) do
+    link = Path.join(dir, name)
+    File.ln_s!(dir, link)
+    on_exit(fn -> File.rm(link) end)
   end
 end

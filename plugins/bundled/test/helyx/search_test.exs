@@ -108,9 +108,17 @@ defmodule Helyx.SearchTest do
 
   test "a link loop does not make the walk hang", %{tmp_dir: dir} do
     write(dir, "sub/a.ex")
-    File.ln_s!(dir, Path.join(dir, "sub/up"))
+    loop!(dir, "sub/up")
 
     assert {[full], nil} = Search.walk(dir, deadline(), 100)
     assert Path.relative_to(full, dir) == "sub/a.ex"
+  end
+
+  # A loop that stays in the tree after the test makes the file walk of Credo
+  # hang, so the link goes at the exit.
+  defp loop!(dir, name) do
+    link = Path.join(dir, name)
+    File.ln_s!(dir, link)
+    on_exit(fn -> File.rm(link) end)
   end
 end
