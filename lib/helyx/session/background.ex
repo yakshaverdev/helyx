@@ -1,46 +1,42 @@
 defmodule Helyx.Session.Background do
   @moduledoc false
   # The places and the texts of the background runs of a session
-  # (docs/features/background-bash.md). The texts are the start answer,
-  # the result of its call, and the end, a user message. Both open with a
-  # fixed line that names the run, so a resume can pair them in the
-  # transcript (`lost/1`) with no record of its own.
+  # (docs/features/background-bash.md). The texts are the start answer, the
+  # result of its call, and the end, a user message. Both open with a fixed line
+  # that names the run, so a resume can pair them in the transcript (`lost/1`)
+  # with no record of its own.
 
   alias Helyx.Message
   alias Helyx.Session.Id
 
-  # The places of the runs of a session, in the hands. A live run is a Task
-  # whose entry in the hands has a place, from `Helyx.Tool.background/0` to
-  # its end. `waiting` holds the ids of the ends that no turn took yet: an
-  # end outlives its Task. Both count in `@max_places`, so the places bound
-  # the live runs and the waiting ends together (#587).
+  # The places of the runs of a session, in the hands. `waiting` holds the ids of
+  # the ends that no turn took yet: an end outlives its Task. Both count in
+  # `@max_places`, so the places bound the live runs and the waiting ends
+  # together (#587).
   defstruct waiting: []
 
   @type t :: %__MODULE__{waiting: [String.t()]}
 
   @max_places 16
 
-  # The start answer is short: an id, a path, a hint. The cap keeps the
-  # first line whole through the cut of every later boundary of tool text
-  # (`Message.cut_result/1`), which would put a notice line before it. The
-  # cap counts bytes before the UTF-8 repair of that cut, which makes each
-  # kept byte at most 3 bytes: 12,288 bytes after it.
+  # The start answer is short: an id, a path, a hint. The cap keeps the first
+  # line whole through the cut of every later boundary of tool text
+  # (`Message.cut_result/1`), which would put a notice line before it. The cap
+  # counts bytes before the UTF-8 repair of that cut: 12,288 bytes after it.
   @max_start_bytes 4_096
 
   @head ~r/\A<background id="([A-Za-z0-9_-]{12})" status="([a-z]+)">\n/
 
   # The same form as the result of an interrupted call
-  # (docs/features/interrupted-calls.md): what stopped, what may have run,
-  # and a check before a repeat.
+  # (docs/features/interrupted-calls.md).
   @lost "The session stopped while this background command ran, and its end was lost. " <>
           "The command may have run in full or in part. " <>
           "Check its effects before you run it again. " <>
           "Its output file was deleted with the session."
 
-  # A new place, with `live` runs, and the folder `dir`, made at each call:
-  # a new id, or the error text for the tool. The hands keep the id in the
-  # entry of the Task, so a second call of the Task gives a new id in the
-  # same place.
+  # A new place, with `live` runs, and the folder `dir`, made at each call: a new
+  # id, or the error text for the tool. A second call of the Task gives a new id
+  # in the same place.
   @spec reserve(t(), non_neg_integer(), String.t()) :: {:ok, String.t()} | {:error, String.t()}
   def reserve(%__MODULE__{waiting: waiting}, live, _dir)
       when live + length(waiting) >= @max_places,
@@ -49,8 +45,8 @@ defmodule Helyx.Session.Background do
          "#{@max_places} background runs are live or have an end that no turn took; " <>
            "a turn must take an end before another run starts"}
 
-  # The files can hold secrets, such as the output of a command: only the
-  # user may read them.
+  # The files can hold secrets, such as the output of a command: only the user
+  # may read them.
   def reserve(%__MODULE__{}, _live, dir) do
     case with(:ok <- File.mkdir_p(dir), do: File.chmod(dir, 0o700)) do
       :ok ->
@@ -61,27 +57,25 @@ defmodule Helyx.Session.Background do
     end
   end
 
-  # The Task with the call id `call_id` ended. A run that gave its start
-  # answer keeps its place until a turn takes its end (`taken/2`); the
-  # place of any other Task left with its entry.
+  # A run that gave its start answer keeps its place until a turn takes its end
+  # (`taken/2`); the place of any other Task left with its entry.
   @spec ended(t(), term()) :: t()
   def ended(%__MODULE__{} = places, {:background, id}),
     do: %{places | waiting: [id | places.waiting]}
 
   def ended(%__MODULE__{} = places, _call_id), do: places
 
-  # A turn took the end of the run `id`. The id of a lost run, from an
-  # earlier session, has no place here and frees nothing.
+  # The id of a lost run, from an earlier session, has no place here and frees
+  # nothing.
   @spec taken(t(), String.t()) :: t()
   def taken(%__MODULE__{} = places, id), do: %{places | waiting: List.delete(places.waiting, id)}
 
   @spec start(String.t(), String.t()) :: String.t()
   def start(id, text), do: wrap(id, "started", binary_slice(text, 0, @max_start_bytes))
 
-  # The end as the user message that joins a turn, with the run id as its
-  # origin id (docs/features/message-identity.md). The text of the end is
-  # `wrap/3`, the only reader of the two result shapes. A user message has no
-  # UI blocks, so those of the run's return are dropped (docs/features/ui-blocks.md).
+  # The end as the user message that joins a turn, with the run id as its origin
+  # id (docs/features/message-identity.md). A user message has no UI blocks, so
+  # those of the run's return are dropped (docs/features/ui-blocks.md).
   @spec end_message(String.t(), {:ok | :error, String.t()} | {:ok | :error, String.t(), list()}) ::
           Message.t()
   def end_message(id, {status, text, _ui_blocks}), do: end_message(id, {status, text})
@@ -90,10 +84,9 @@ defmodule Helyx.Session.Background do
 
   defp message(id, text), do: Message.user(text, %{kind: :background, id: id})
 
-  # The end message of each run that has a start answer in `transcript`
-  # and no end message, in start order: the session stopped while it ran.
-  # A start answer can be an error result: an `after_tool` hook can give
-  # it that status (docs/features/hooks.md).
+  # The end message of each run that has a start answer in `transcript` and no
+  # end message, in start order. A start answer can be an error result: an
+  # `after_tool` hook can give it that status (docs/features/hooks.md).
   @spec lost([Message.t()]) :: [Message.t()]
   def lost(transcript) do
     ended =
@@ -105,9 +98,8 @@ defmodule Helyx.Session.Background do
         do: message(id, wrap(id, "lost", @lost))
   end
 
-  # The id and the status of a message that opens with the fixed line.
-  # Both texts are the one text part of their message, so only the first
-  # part is read.
+  # Both texts are the one text part of their message, so only the first part is
+  # read.
   defp head(%Message{content: [%Message.Text{text: "<background " <> _ = text} | _]}),
     do: parse(text)
 

@@ -1,21 +1,19 @@
 defmodule Helyx.Session.Hands.Chain do
   @moduledoc false
-  # The chain of a Helyx tool call, in its call Task of
-  # `Helyx.Session.Hands` (docs/features/hooks.md): the `before_tool`
-  # hooks, the tool, then the `after_tool` hooks. Each hook runs in a Task
-  # of the hands of its own; the call Task waits for its answer with a call
-  # to the hands, which answer after the release of the hook's handles.
-  # The chain state is in the process dictionary of the call Task, so
-  # `Helyx.Tool.started/1` runs the `after_tool` hooks on a start answer.
-  # The `before_settle` chain runs the same way from a chain Task of its
-  # own (`settle/2`, docs/features/before-settle.md).
+  # The chain of a Helyx tool call, in its call Task of `Helyx.Session.Hands`
+  # (docs/features/hooks.md): the `before_tool` hooks, the tool, then the
+  # `after_tool` hooks. Each hook runs in a Task of the hands of its own, and
+  # the call Task waits for its answer with a call to the hands. The chain state
+  # is in the process dictionary of the call Task, so `Helyx.Tool.started/1`
+  # runs the `after_tool` hooks on a start answer. The `before_settle` chain
+  # runs the same way from a chain Task of its own (`settle/2`).
 
   alias Helyx.Message.ToolCall
   alias Helyx.Session.Hands.Run
   alias Helyx.Session.HookEntry
 
-  # `hooks` is `%{point => [{module, limit_ms}]}`. Returns the result for
-  # the hands to deliver.
+  # `hooks` is `%{point => [{module, limit_ms}]}`. Returns the result for the
+  # hands to deliver.
   @spec run(module(), ToolCall.t(), String.t(), String.t(), map()) ::
           {:ok | :error, String.t()} | {:ok | :error, String.t(), [Helyx.UIBlock.t()]}
   def run(tool, %ToolCall{} = call, cwd, _turn_id, hooks)
@@ -32,9 +30,9 @@ defmodule Helyx.Session.Hands.Chain do
     end
   end
 
-  # The `before_tool` chain of an approval request of the provider
-  # `provider` for its own call (ADR 0013 §4), in its chain Task: the
-  # decision, with the text of a Helyx call's deny as the reason.
+  # The `before_tool` chain of an approval request of the provider `provider`
+  # for its own call, in its chain Task: the decision, with the text of a Helyx
+  # call's deny as the reason (ADR 0013 §4).
   @spec approve(ToolCall.t(), String.t(), String.t(), [{module(), pos_integer()}], String.t()) ::
           :allow | {:deny, String.t()}
   def approve(%ToolCall{} = call, cwd, turn_id, hooks, provider) do
@@ -74,8 +72,8 @@ defmodule Helyx.Session.Hands.Chain do
     end
   end
 
-  # The `after_tool` hooks run once on a call: on its result, or on its
-  # start answer when it went on in the background.
+  # The `after_tool` hooks run once on a call: on its result, or on its start
+  # answer when it went on in the background.
   defp after_tool(result) do
     case Process.get(:helyx_chain) do
       %{after: :pending} = chain ->
@@ -88,11 +86,9 @@ defmodule Helyx.Session.Hands.Chain do
     end
   end
 
-  # The start answer of a background run (`Helyx.Tool.started/1`): the
-  # hooks run here, and not again on the end of the run, which is no
-  # result. A process with no chain, such as a hook Task, and a call with
-  # no place from `Helyx.Tool.background/0`, whose `started/1` raises,
-  # run no hook here.
+  # The start answer of a background run (`Helyx.Tool.started/1`): the hooks run
+  # here, and not again on the end of the run, which is no result. A process
+  # with no chain, such as a hook Task, runs no hook here.
   def after_start(result) do
     if Process.get(:helyx_chain) && Process.get(:helyx_place),
       do: after_tool(result),
@@ -101,10 +97,9 @@ defmodule Helyx.Session.Hands.Chain do
 
   defp after_each([], _input, _record, result), do: result
 
-  # A hook gets a result as `{status, text}`, the result of
-  # docs/features/hooks.md: the UI blocks of a tool are for the clients.
-  # A `:keep` keeps them; a replace gives a result with none
-  # (docs/features/ui-blocks.md).
+  # A hook gets a result as `{status, text}` (docs/features/hooks.md): the UI
+  # blocks of a tool are for the clients. A `:keep` keeps them; a replace gives
+  # a result with none (docs/features/ui-blocks.md).
   defp after_each([{module, ms} | rest], input, record, result) do
     seen = text_result(result)
 
@@ -119,8 +114,8 @@ defmodule Helyx.Session.Hands.Chain do
   defp text_result(result), do: result
 
   # The `before_settle` hooks in plugin order, from the chain Task
-  # (`Helyx.Session.Hands.Settle`): the first continue ends the chain; a
-  # settle and a failed hook go on.
+  # (`Helyx.Session.Hands.Settle`): the first continue ends the chain; a settle
+  # and a failed hook go on (docs/features/before-settle.md).
   @spec settle([{module(), pos_integer()}], Helyx.Hook.settle()) ::
           :settle | {:continue, module(), String.t()}
   def settle([], _input), do: :settle
@@ -132,8 +127,8 @@ defmodule Helyx.Session.Hands.Chain do
     end
   end
 
-  # One hook in its own Task of the hands. `record` is `:first` until the
-  # chain wrote an entry: the entry then gets the call.
+  # One hook in its own Task of the hands. `record` is `:first` until the chain
+  # wrote an entry: the entry then gets the call.
   defp step(module, ms, point, input, record) do
     request = %{
       module: module,
@@ -147,9 +142,9 @@ defmodule Helyx.Session.Hands.Chain do
     GenServer.call(Process.get(:helyx_hands), {:hook, request}, :infinity)
   end
 
-  # The call in the first entry of a chain: its tool name and the JSON of
-  # its arguments, cut at a character boundary (ADR 0013 §6). The call
-  # Task makes the copy, so the session encodes nothing large.
+  # The first entry of a chain gets the call: its tool name and the JSON of its
+  # arguments, cut at a character boundary (ADR 0013 §6). The call Task makes
+  # the copy, so the session encodes nothing large.
   defp record_call(%{tool: tool, arguments: arguments}) do
     {json, cut?} = HookEntry.cut(JSON.encode!(arguments))
     %{tool: tool, arguments: json, arguments_cut: cut?}

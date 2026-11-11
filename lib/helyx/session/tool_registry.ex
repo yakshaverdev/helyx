@@ -1,23 +1,16 @@
 defmodule Helyx.Session.ToolRegistry do
   @moduledoc false
-  # The tools of one session: its fixed tools, and the groups of entries
-  # that its tool sources put (docs/features/mcp-client.md, "Interface
-  # changes"). Pure: the session keeps it, sends the tool map to the hands,
-  # and emits the notices that each change gives.
+  # The tools of one session: its fixed tools, and the groups of entries that
+  # its tool sources put (docs/features/mcp-client.md). Pure: the session keeps
+  # it, sends the tool map to the hands, and emits the notices that each change
+  # gives.
   #
-  # `fixed` holds each fixed tool by name: its module, its spec, and its
-  # flag of `Helyx.Tool.concurrent/1`. `groups` holds each group by
-  # `{source, group}`: its state (`:starting`, `:ready`, or `{:error,
-  # text}`) and its entries. `announced` holds the groups of each source
-  # that announced and kept, sorted by name. `sources` holds the tool
-  # sources that the session starts after its hands. `activated` holds the
-  # activated deferred names in drop order: the front leaves first.
-  # `version` counts the changes of the groups (`deferred/2`), and
-  # `waiters` holds the callers of `Helyx.Tool.deferred/2` that wait for
-  # the next one, with their timers. `specs` and `tools` follow from
-  # `fixed`, `groups`, and `activated` at each change (`derive/1`): the
-  # specs that a provider call gets, and each tool by name with its module,
-  # for the hands, and its concurrent flag, for the tool queue.
+  # `fixed` holds each fixed tool by name: its module, its spec, and its flag of
+  # `Helyx.Tool.concurrent/1`. `groups` holds each group by `{source, group}`
+  # with its state and its entries. `activated` holds the activated deferred
+  # names in drop order. `version` counts the changes of the groups
+  # (`deferred/2`), and `waiters` holds the callers that wait for the next one.
+  # `specs` and `tools` follow from the rest at each change (`derive/1`).
 
   alias Helyx.Session.ToolSpecs
 
@@ -65,8 +58,8 @@ defmodule Helyx.Session.ToolRegistry do
     do: Map.new(registry.tools, fn {name, {tool, _concurrent?}} -> {name, tool} end)
 
   # The specs of the fixed tools, the direct entries, and the activated
-  # deferred entries, sorted by name, and each tool by name: a source entry
-  # runs on its source's module and is never concurrent.
+  # deferred entries, sorted by name: a source entry runs on its source's
+  # module and is never concurrent.
   defp derive(registry) do
     fixed = for {_name, {_tool, spec, _concurrent?}} <- registry.fixed, do: spec
     activated = MapSet.new(registry.activated)
@@ -91,10 +84,10 @@ defmodule Helyx.Session.ToolRegistry do
     %{registry | specs: Enum.sort_by(fixed ++ entries, & &1.name), tools: tools}
   end
 
-  # The first announce of `source`: each group starts as `:starting`. A
-  # call that is not a proper list of distinct group names of 1 to 64 bytes
-  # of UTF-8, or a second call, is a contract break: `:error`. Past the cap
-  # of the session, the first groups by name order are kept.
+  # The first announce of `source`: each group starts as `:starting`. A call
+  # that is not a proper list of distinct group names of 1 to 64 bytes of
+  # UTF-8, or a second call, is a contract break: `:error`. Past the cap of the
+  # session, the first groups by name order are kept.
   def announce(%__MODULE__{} = registry, source, groups) do
     if is_map_key(registry.announced, source) or not group_names?(groups) do
       :error
@@ -124,8 +117,8 @@ defmodule Helyx.Session.ToolRegistry do
 
   defp left_out([]), do: []
 
-  # The names that fit in the notice and a count of all: the work is
-  # bounded by the cut, not by the list.
+  # The names that fit in the notice and a count of all: the work is bounded by
+  # the cut, not by the list.
   defp left_out(groups) do
     head = "#{length(groups)} tool groups over the cap of #{@max_groups} were left out: "
     # The first name has no separator: 2 bytes of room more.
@@ -133,17 +126,17 @@ defmodule Helyx.Session.ToolRegistry do
     [cap(head <> Enum.join(fitting(groups, room, []), ", "))]
   end
 
-  # A whole name or none: the list stops at the first name that does not
-  # fit with its separator.
+  # A whole name or none: the list stops at the first name that does not fit
+  # with its separator.
   defp fitting([name | rest], room, acc) when byte_size(name) + 2 <= room,
     do: fitting(rest, room - byte_size(name) - 2, [name | acc])
 
   defp fitting(_names, _room, acc), do: Enum.reverse(acc)
 
   # A put of a group that the source announced and kept. `:starting` and
-  # `{:error, text}` remove the group's entries; `{:ok, entries}` replaces
-  # them with the entries that pass the checks. Any other value, or a group
-  # that the source did not keep, is a contract break: `:error`.
+  # `{:error, text}` remove the group's entries; `{:ok, entries}` replaces them
+  # with the entries that pass the checks. Any other value, or a group that the
+  # source did not keep, is a contract break: `:error`.
   def put(%__MODULE__{} = registry, source, group, value) do
     with true <- group in Map.get(registry.announced, source, []),
          {:ok, registry, notices} <- put_group(registry, {source, group}, value) do
@@ -195,7 +188,7 @@ defmodule Helyx.Session.ToolRegistry do
     do: Enum.sum(for {other, group} <- registry.groups, other != key, do: length(group.entries))
 
   # The names that an entry of `key` cannot take: the fixed tools and the
-  # entries of every other group. The group's own entries are replaced.
+  # entries of every other group.
   defp taken(registry, key) do
     entries =
       for {other, group} <- registry.groups, other != key, entry <- group.entries, do: entry.name
@@ -266,10 +259,9 @@ defmodule Helyx.Session.ToolRegistry do
      notices}
   end
 
-  # `names`, in rank order, best first: the registered deferred names among
-  # them move to the end of the activated list in reverse rank, so the best
-  # leaves last; then the cap. A name that is no registered deferred tool
-  # is ignored.
+  # `names`, in rank order, best first: the deferred names among them move to
+  # the end of the activated list in reverse rank, so the best leaves last; then
+  # the cap. A name that is no registered deferred tool is ignored.
   def activate(%__MODULE__{} = registry, names) do
     deferred = Map.new(deferred(registry))
     batch = names |> Enum.uniq() |> Enum.filter(&is_map_key(deferred, &1))
@@ -280,10 +272,10 @@ defmodule Helyx.Session.ToolRegistry do
   # The list of a resume: its names stay until the cap after a put.
   def restore(%__MODULE__{} = registry, activated), do: derive(%{registry | activated: activated})
 
-  # Drops from the front of `list`, the oldest first, while it holds more
-  # than 32 names or more than 65,536 bytes of the spec JSON that the
-  # registry holds for them; a name with no entry counts no byte. Only the
-  # names of `list` are encoded, not every deferred entry.
+  # Drops from the front of `list`, the oldest first, while it holds more than
+  # 32 names or more than 65,536 bytes of the spec JSON that the registry holds
+  # for them; a name with no entry counts no byte. Only the names of `list` are
+  # encoded.
   defp capped(registry, list) do
     deferred = Map.new(deferred(registry))
     sizes = Map.new(list, &{&1, spec_bytes(deferred[&1])})
@@ -313,9 +305,8 @@ defmodule Helyx.Session.ToolRegistry do
   end
 
   # The answer of `Helyx.Tool.deferred/2`: the version, the deferred entries
-  # with their groups, the activated names, the state and the tool count of
-  # each group, and the label of each source that has not announced
-  # (`pending`).
+  # with their groups, the activated names, the state and tool count of each
+  # group, and the label of each source that has not announced (`pending`).
   def view(%__MODULE__{} = registry, pending) do
     entries = for {_name, entry} <- deferred(registry), do: Map.delete(entry, :exposure)
 
@@ -332,8 +323,8 @@ defmodule Helyx.Session.ToolRegistry do
     }
   end
 
-  # `Helyx.Tool.notice/1`: a text of valid UTF-8, cut, as a notice; any
-  # other value is a contract break.
+  # `Helyx.Tool.notice/1`: a text of valid UTF-8, cut, as a notice; any other
+  # value is a contract break.
   def notice(registry, text) when is_binary(text) do
     if String.valid?(text), do: {:ok, registry, [cap(text)], :ok}, else: :error
   end

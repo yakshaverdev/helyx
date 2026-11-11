@@ -1,21 +1,17 @@
 defmodule Helyx.Session.Hands.Hooks do
   @moduledoc false
-  # The hook Tasks of `Helyx.Session.Hands` (docs/features/hooks.md): the
-  # start of a hook for the call Task that runs its chain, its limit, its
-  # release, the answer to the call Task, and the record to the session.
-  # The run of a hook is in the kind of its entry in the state
-  # (`Helyx.Session.Hands.Entry`): the caller to answer, its start, and the
-  # request (`Helyx.Session.Hands.Chain`). The answer of a hook is
-  # `{:answer, answer}` or `{:failed, how}`.
+  # The hook Tasks of `Helyx.Session.Hands` (docs/features/hooks.md): the start
+  # of a hook for the call Task that runs its chain, its limit, its release, the
+  # answer to the call Task, and the record to the session. The run of a hook is
+  # in the kind of its entry in the state (`Helyx.Session.Hands.Entry`). The
+  # answer of a hook is `{:answer, answer}` or `{:failed, how}`.
 
   alias Helyx.Session.Hands
   alias Helyx.Session.Hands.{End, Entry, Outcome, Release, Run, State}
 
-  # A hook of a call Task of a turn, of the chain Task of an approval
-  # request, or of a `before_settle` chain Task (`Settle`), whose id stands
-  # for the call id. Once a handle is unconfirmed, a hook start is refused:
-  # a failed hook. A request of a Task that a cancel killed after it sent
-  # it finds no Task and gets no answer.
+  # Once a handle is unconfirmed, a hook start is refused: a failed hook. A
+  # request of a Task that a cancel killed after it sent it finds no Task and
+  # gets no answer.
   def start(state, from, pid, request) do
     case State.chain_call(state, pid) do
       nil -> state
@@ -31,9 +27,9 @@ defmodule Helyx.Session.Hands.Hooks do
     else
       {task, state} =
         Hands.spawn_task(state, {:hook, call_id, run}, turn_id, request.module, fn ->
-          # The kill is armed at the OTP timer server as the Task's first
-          # act, so the limit holds while the hands are busy with a
-          # release; a reply that came before the kill counts.
+          # The kill is armed at the OTP timer server as the Task's first act,
+          # so the limit holds while the hands are busy with a release; a reply
+          # that came before the kill counts.
           {:ok, _tref} = :timer.kill_after(request.ms)
           Helyx.Session.Ask.await_go()
           Process.put(:helyx_call, request.context)
@@ -46,9 +42,8 @@ defmodule Helyx.Session.Hands.Hooks do
     end
   end
 
-  # The end of a hook Task, however it ended: its handles are released
-  # first, so the chain goes on only after the release. A kill at the limit
-  # releases with `:cancel`.
+  # The end of a hook Task, however it ended: its handles are released first,
+  # so the chain goes on only after the release.
   def deliver(state, ref, result) do
     %Entry{task: task, kind: {:hook, _call_id, run}} = Map.fetch!(state.tasks, ref)
     result = limit(result, run)
@@ -76,10 +71,9 @@ defmodule Helyx.Session.Hands.Hooks do
 
   defp unreleased, do: {:failed, "a resource of the hook could not be released"}
 
-  # The record goes to the session before the call Task gets the answer,
-  # and so before the record of the next hook: the session ends an ask of
-  # the ended hook Task `pid` there, by the order of the hands alone. A
-  # refused start has no Task.
+  # The record goes to the session before the call Task gets the answer, and so
+  # before the record of the next hook: the session ends an ask of the ended
+  # hook Task `pid` there. A refused start has no Task.
   defp answer(state, run, outcome) do
     if recorded?(run.point, outcome) do
       record = %{
@@ -102,15 +96,15 @@ defmodule Helyx.Session.Hands.Hooks do
   defp call_id({:settle, _ref}), do: nil
   defp call_id(call_id), do: call_id
 
-  # Every answer of a `before_tool` hook; a keep and a settle change
-  # nothing (ADR 0013 §6).
+  # Every answer of a `before_tool` hook; a keep and a settle change nothing
+  # (ADR 0013 §6).
   defp recorded?(:after_tool, {:answer, :keep}), do: false
   defp recorded?(:before_settle, {:answer, :settle}), do: false
   defp recorded?(_point, _outcome), do: true
 
-  # The call Task of `call_id` ended while its hook ran, such as by a
-  # linked process: the hook is killed and its handles released with
-  # `:cancel` before the call delivers. Its caller is gone: no answer.
+  # The call Task of `call_id` ended while its hook ran: the hook is killed and
+  # its handles released with `:cancel` before the call delivers. Its caller is
+  # gone: no answer.
   def orphans(state, turn_id, call_id) do
     refs =
       for {ref, %Entry{turn_id: ^turn_id, kind: {:hook, ^call_id, _run}}} <- state.tasks, do: ref

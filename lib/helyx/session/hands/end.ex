@@ -2,23 +2,21 @@ defmodule Helyx.Session.Hands.End do
   @moduledoc false
   # The end of a Task of `Helyx.Session.Hands`, by the kind of its entry
   # (`Helyx.Session.Hands.Entry`): the result of a call, the end of a
-  # background run, the answer of a chain, the end of the provider process,
-  # a hook, and a Task of a tool source, which have their own words for
-  # their caller (`Hooks`, `Sources`).
+  # background run, the answer of a chain, the end of the provider process, a
+  # hook, and a Task of a tool source.
   #
-  # Every end runs the same sequence (`finish/5`): the Tasks that still run
-  # are killed, the handles of each go to the `release/3` of its tool with
-  # one mode and one deadline, and each entry leaves the state with the run
-  # of its hook. The outcome of a Task leaves after the release returned, so
-  # a call that runs alone cannot overlap a dying one, and a handle that the
-  # release does not confirm refuses the next start
-  # (`docs/features/tool-resource-release.md`).
+  # Every end runs the same sequence (`finish/5`): the Tasks that still run are
+  # killed, the handles of each go to the `release/3` of its tool with one mode
+  # and one deadline, and each entry leaves the state. The outcome of a Task
+  # leaves after the release returned, and a handle that the release does not
+  # confirm refuses the next start
+  # (docs/features/tool-resource-release.md).
 
   alias Helyx.Session.Background
   alias Helyx.Session.Hands.{Entry, Hooks, Outcome, Release, Sources, State}
 
-  # A Task's result, its end, or its exit signal: each kind ends by its own
-  # path, so no path decodes the kind from the shape of a message.
+  # Each kind ends by its own path, so no path decodes the kind from the shape
+  # of a message.
   def deliver(ref, result, state) do
     %Entry{kind: kind} = entry = Map.fetch!(state.tasks, ref)
 
@@ -31,11 +29,10 @@ defmodule Helyx.Session.Hands.End do
   end
 
   @doc false
-  # The end of the Tasks of `refs`: each one is killed with `:brutal_kill`
-  # when `kill?`, which a Task that a delivery ends does not need; the
-  # handles of each go to the `release/3` of its tool with `mode`; and each
-  # entry leaves the state. Returns the handles that stay held, per tool,
-  # and the state: each of them refuses the next start.
+  # The end of the Tasks of `refs`: each one is killed with `:brutal_kill` when
+  # `kill?`, which a Task that a delivery ends does not need; the handles of
+  # each go to the `release/3` of its tool with `mode`; and each entry leaves
+  # the state. Returns the handles that stay held, per tool, and the state.
   def finish(state, refs, mode, ms, kill?) do
     {gone, tasks} = Map.split(state.tasks, refs)
 
@@ -63,9 +60,9 @@ defmodule Helyx.Session.Hands.End do
     ended(state, entry.kind)
   end
 
-  # The hook Tasks of the chain that the Task ran end with it, such as by a
-  # linked process: each hook is killed and its handles released with
-  # `:cancel` before the Task delivers (`Hooks.orphans/3`).
+  # The hook Tasks of the chain that the Task ran end with it: each hook is
+  # killed and its handles released with `:cancel` before the Task delivers
+  # (`Hooks.orphans/3`).
   defp orphans(state, %Entry{} = entry) do
     case State.chain(entry) do
       nil -> state
@@ -73,8 +70,8 @@ defmodule Helyx.Session.Hands.End do
     end
   end
 
-  # The place of a run that gave its start answer waits for a turn to take
-  # its end, so it outlives its Task (`Helyx.Session.Background`).
+  # The place of a run that gave its start answer waits for a turn to take its
+  # end, so it outlives its Task (`Helyx.Session.Background`).
   defp ended(state, {:run, id}),
     do: %{state | background: Background.ended(state.background, {:background, id})}
 

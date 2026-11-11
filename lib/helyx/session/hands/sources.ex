@@ -1,9 +1,8 @@
 defmodule Helyx.Session.Hands.Sources do
   @moduledoc false
-  # The Tasks of the tool sources in `Helyx.Session.Hands`: a source
-  # process for each tool source of the session, and the server Tasks that
-  # a source starts with `Helyx.Tool.launch/1`
-  # (docs/features/mcp-client.md, "Interface changes"). Neither is a tool
+  # The Tasks of the tool sources in `Helyx.Session.Hands`: a source process for
+  # each tool source of the session, and the server Tasks that a source starts
+  # with `Helyx.Tool.launch/1` (docs/features/mcp-client.md). Neither is a tool
   # call: no turn, no call cap, no abort. Their handles go to the plugin's
   # `release/3` when the Task ends, as a provider process's do.
 
@@ -13,15 +12,14 @@ defmodule Helyx.Session.Hands.Sources do
   # The server Tasks of one source, live at once.
   @max_server_tasks 16
 
-  # Starts the source process of `plugin`, from the session.
   def start(hands, plugin, info), do: GenServer.cast(hands, {:source, {:start, plugin, info}})
 
   # The tool map of the hands (`Helyx.Session.ToolRegistry.modules/1`): the
   # session sends each change before any context holds it.
   def tools(hands, tools), do: GenServer.cast(hands, {:source, {:tools, tools}})
 
-  # The pid of the source process of `plugin`, or nil: the tools of a
-  # source count only while it runs.
+  # The pid of the source process of `plugin`, or nil: the tools of a source
+  # count only while it runs.
   def pid(state, plugin) do
     Enum.find_value(state.tasks, fn {_ref, entry} ->
       case entry.kind do
@@ -53,10 +51,10 @@ defmodule Helyx.Session.Hands.Sources do
     end
   end
 
-  # The module of the tool `name`, or `:error`. A tool of a source counts
-  # only while that source runs: derived here at each call, whatever tool
-  # map the session sent last, which can name the tools of a source that
-  # ended before the session heard of its end.
+  # The module of the tool `name`, or `:error`. A tool of a source counts only
+  # while that source runs: derived here at each call, whatever tool map the
+  # session sent last, which can name the tools of a source that ended before
+  # the session heard of its end.
   def lookup(state, name) do
     case Map.fetch(state.tools, name) do
       {:ok, tool} -> if live?(state, tool), do: {:ok, tool}, else: :error
@@ -69,8 +67,7 @@ defmodule Helyx.Session.Hands.Sources do
 
   defp live?(state, tool), do: not Helyx.Tool.source?(tool) or pid(state, tool) != nil
 
-  # The plugin of the source process `source`, or nil: a source that ended
-  # since it sent a launch starts nothing.
+  # The plugin of the source process `source`, or nil.
   defp plugin(state, source) do
     Enum.find_value(state.tasks, fn
       {_ref, %{kind: {:source, plugin}, task: %{pid: ^source}}} -> plugin
@@ -89,12 +86,11 @@ defmodule Helyx.Session.Hands.Sources do
     end
   end
 
-  # The source traps exits, and its Task ends with `:shutdown` when
-  # `source/1` returns or calls `exit(:normal)`: a link passes no `:normal`
-  # on, and every server Task must end with its source. A trapped exit
-  # signal of the hands would be a message that plugin code may never read,
-  # so a guard kills the source when the hands end, as a kill of the hands
-  # that skips their `terminate/2` (`Stop`).
+  # The source traps exits, and its Task ends with `:shutdown` when `source/1`
+  # returns or calls `exit(:normal)`: a link passes no `:normal` on, and every
+  # server Task must end with its source. A guard kills the source when the
+  # hands end, as a kill of the hands that skips their `terminate/2` (`Stop`),
+  # so no trapped exit signal waits for plugin code that never reads it.
   defp run(plugin, info, hands) do
     source = self()
     spawn(fn -> guard(source, hands) end)
@@ -145,8 +141,8 @@ defmodule Helyx.Session.Hands.Sources do
     end
   end
 
-  # The link is the Task's first act: a source that is gone ends it here,
-  # and a later end of the source ends it however it waits.
+  # The link is the Task's first act: a source that is gone ends it here, and a
+  # later end of the source ends it however it waits.
   defp serve(source, fun) do
     Helyx.Reason.task("tool source server crashed", fn ->
       Process.link(source)
@@ -154,8 +150,7 @@ defmodule Helyx.Session.Hands.Sources do
     end)
   end
 
-  # The end of a source or server Task: the release of its handles, then
-  # the word to the session or to the source.
+  # The release of its handles, then the word to the session or to the source.
   def deliver(state, ref) do
     %Entry{task: task, kind: kind} = Map.fetch!(state.tasks, ref)
     {left, state} = End.finish(state, [ref], :deliver, state.release_ms, false)
