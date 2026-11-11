@@ -2,24 +2,28 @@ defmodule Helyx.Test.SingleA do
   @moduledoc false
   @behaviour Helyx.Compaction
   def name, do: "single-a"
+  def compact(context, _opts), do: context
 end
 
 defmodule Helyx.Test.SingleB do
   @moduledoc false
   @behaviour Helyx.Compaction
   def name, do: "single-b"
+  def compact(context, _opts), do: context
 end
 
 defmodule Helyx.Test.MultiA do
   @moduledoc false
   @behaviour Helyx.ModelContext
   def name, do: "multi-a"
+  def build(context, _opts), do: context
 end
 
 defmodule Helyx.Test.MultiB do
   @moduledoc false
   @behaviour Helyx.ModelContext
   def name, do: "multi-b"
+  def build(context, _opts), do: context
 end
 
 defmodule Helyx.Test.MultiChild do
@@ -27,6 +31,7 @@ defmodule Helyx.Test.MultiChild do
   # A plugin with a process, which Core starts under its own supervisor.
   @behaviour Helyx.ModelContext
   def name, do: "multi-child"
+  def build(context, _opts), do: context
   def child_spec(opts), do: %{id: __MODULE__, start: {Agent, :start_link, [fn -> opts end]}}
 end
 
