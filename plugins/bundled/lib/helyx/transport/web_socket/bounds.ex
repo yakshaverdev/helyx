@@ -8,7 +8,7 @@ defmodule Helyx.Transport.WebSocket.Bounds do
 
   @path Path.expand("../../../../../../test/fixtures/wire/bounds.json", __DIR__)
   @external_resource @path
-  @bounds JSON.decode!(File.read!(@path))
+  @bounds @path |> File.read!() |> Helyx.JSON.decode() |> elem(1)
   @codes Enum.map(@bounds["error_codes"], &String.to_atom/1)
 
   @spec get(String.t()) :: pos_integer()
