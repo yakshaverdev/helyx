@@ -25,17 +25,15 @@ defmodule Helyx.Session.Ask do
     end
   end
 
-  # The kind of the record of a Task of the hands with the turn and the id
-  # of `Helyx.Session.Hands.spawn_task/5`, or nil: a call Task asks with
-  # `Helyx.Tool.ask/1`, a hook Task with `Helyx.Hook.ask/1`. A Task with no
-  # turn (the provider process), a `before_settle` chain Task, and the
-  # chain Task of an approval request, which run no plugin code, have none,
-  # and wait for no go.
-  def asker(nil, _id), do: nil
-  def asker(_turn_id, {:settle, _ref}), do: nil
-  def asker(_turn_id, {:approval, _call_id}), do: nil
-  def asker(_turn_id, {:hook, call_id}), do: {:hook, call_id}
-  def asker(_turn_id, call_id), do: {:tool, call_id}
+  # The record of an ask of a Task of `kind`
+  # (`Helyx.Session.Hands.Entry`): `{:tool, call_id}` for a call Task,
+  # `{:hook, chain_id}` for a hook Task, and nil for every other kind. A
+  # Task that no turn owns (the provider process, a source, and a server
+  # Task), a `before_settle` chain Task, and the chain Task of an approval
+  # request, which run no plugin code, have none, and wait for no go.
+  def asker({:call, call_id}), do: {:tool, call_id}
+  def asker({:hook, chain_id, _run}), do: {:hook, chain_id}
+  def asker(_kind), do: nil
 
   def ask(kind, request) do
     %{core: core, session_id: id, call_id: call_id, tool: tool} = Helyx.Tool.context()

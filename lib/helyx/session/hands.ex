@@ -19,13 +19,29 @@ defmodule Helyx.Session.Hands do
   from its call Task or from a `before_settle` chain Task
   (`docs/features/hooks.md`). The start answer of a background run is a
   `{:started, result, pid}` result; the run goes on after the session's go.
+
+  Each Task is a `Helyx.Session.Hands.Entry`, and every end of a Task goes
+  through `Helyx.Session.Hands.End`.
   """
 
   use GenServer
 
   alias Helyx.Message.ToolCall
+  alias Helyx.Session.Ask
   alias Helyx.Session.Background
-  alias Helyx.Session.Hands.{Approval, Chain, Hooks, Outcome, Release, Settle, Sources, State}
+
+  alias Helyx.Session.Hands.{
+    Approval,
+    Chain,
+    End,
+    Entry,
+    Hooks,
+    Outcome,
+    Release,
+    Settle,
+    Sources,
+    State
+  }
 
   @doc """
   Starts the hands for a session. Takes `core:`, `cwd:`, `background_dir:`,
@@ -119,18 +135,15 @@ defmodule Helyx.Session.Hands do
   # A handle from a Task that was already killed is dropped: the tool frees
   # the resource when its Task dies (see `Helyx.Tool.hold/1`). A tool with
   # no `release/3` gets `:no_release`, and `Helyx.Tool.hold/1` raises in its
-  # Task.
+  # Task; a chain Task runs no plugin code, so it never holds one.
   defp call({:hold, handle}, {pid, _tag}, state) do
-    case Enum.find_value(state.tasks, fn {_ref, {task, _, _, tool, _}} ->
-           task.pid == pid && tool
-         end) do
+    case State.holding(state, pid) do
       nil ->
         {:reply, :ok, state}
 
-      tool ->
-        if function_exported?(tool, :release, 3) do
-          held = Map.update(state.held, pid, [handle], &[handle | &1])
-          {:reply, :ok, %{state | held: held}}
+      {ref, entry} ->
+        if function_exported?(entry.tool, :release, 3) do
+          {:reply, :ok, State.put(state, ref, %{entry | handles: [handle | entry.handles]})}
         else
           {:reply, :no_release, state}
         end
@@ -138,18 +151,25 @@ defmodule Helyx.Session.Hands do
   end
 
   # The caller released these handles itself (`Helyx.Tool.unhold/1`).
-  defp call({:unhold, handles}, {pid, _tag}, state),
-    do: {:reply, :ok, %{state | held: Map.replace_lazy(state.held, pid, &(&1 -- handles))}}
+  defp call({:unhold, handles}, {pid, _tag}, state) do
+    case State.task(state, pid) do
+      nil ->
+        {:reply, :ok, state}
+
+      {ref, entry} ->
+        {:reply, :ok, State.put(state, ref, %{entry | handles: entry.handles -- handles})}
+    end
+  end
 
   # A place among the background runs, for a tool call Task. The live
   # runs are the other Tasks with a place: a second call of the Task keeps
   # its own place, so the limit does not count it.
   defp call(:background, {pid, _tag}, state) do
-    with {ref, entry} <- State.tool_call(state, pid),
-         live = Enum.count(state.tasks, fn {r, e} -> r != ref and elem(e, 4) != nil end),
-         {:ok, id} <- Background.reserve(state.background, live, state.background_dir) do
-      tasks = Map.put(state.tasks, ref, put_elem(entry, 4, id))
-      {:reply, {:ok, %{id: id, dir: state.background_dir}}, %{state | tasks: tasks}}
+    with {ref, %Entry{kind: kind} = entry} <- State.tool_call(state, pid),
+         {:ok, id} <-
+           Background.reserve(state.background, State.live_runs(state, ref), state.background_dir) do
+      {:reply, {:ok, %{id: id, dir: state.background_dir}},
+       State.put(state, ref, %{entry | kind: placed(kind, id)})}
     else
       nil -> {:reply, {:error, "only a tool call can run in the background"}, state}
       error -> {:reply, error, state}
@@ -162,11 +182,10 @@ defmodule Helyx.Session.Hands do
   # a cancel killed gets no reply.
   defp call({:started, {status, text}}, {pid, _tag}, state) do
     case State.tool_call(state, pid) do
-      {ref, {task, turn_id, call_id, tool, id}} when id != nil ->
+      {ref, %Entry{kind: {:placed, _call_id, id}} = entry} ->
         result = {:started, {status, Background.start(id, text)}, pid}
-        send(state.session, Outcome.of(turn_id, call_id, result))
-        tasks = Map.put(state.tasks, ref, {task, turn_id, {:background, id}, tool, id})
-        {:reply, :ok, %{state | tasks: tasks}}
+        send(state.session, Outcome.of(entry, result))
+        {:reply, :ok, State.put(state, ref, %{entry | kind: {:run, id}})}
 
       _no_place ->
         {:reply, :no_place, state}
@@ -178,14 +197,17 @@ defmodule Helyx.Session.Hands do
   defp call({:hook, request}, {pid, _tag} = from, state),
     do: {:noreply, Hooks.start(state, from, pid, request)}
 
+  # A cancel ends the turn's call Tasks, hook Tasks and chain Tasks, and
+  # releases their handles; the background runs of the turn keep their lease
+  # for a revoke.
   defp call({:cancel, turn_id}, _from, state) do
-    {cancelled, kept} =
-      Map.split_with(state.tasks, fn {_ref, {_task, id, call_id, _tool, _place}} ->
-        id == turn_id and not background?(call_id)
-      end)
+    refs =
+      for {ref, %Entry{turn_id: ^turn_id, kind: kind}} <- state.tasks,
+          not match?({:run, _id}, kind),
+          do: ref
 
-    {error, state} = cancel(cancelled, kept, state.release_ms, state)
-    {:reply, error || :ok, state}
+    {left, state} = End.finish(state, refs, :cancel, state.release_ms, true)
+    {:reply, Release.error(left) || :ok, state}
   end
 
   # The abort or the failure of the turn revokes the lease of its background
@@ -194,46 +216,24 @@ defmodule Helyx.Session.Hands do
   # The ids are the runs that gave their start answer, the ones the session
   # counts; a Task that a release left unconfirmed is still answered.
   defp call({:revoke, turn_id}, _from, state) do
-    {cancelled, kept} =
-      Map.split_with(state.tasks, fn {_ref, {_task, id, _call_id, _tool, _place}} ->
-        id == turn_id
-      end)
-
-    ids = for {_ref, {_task, _turn_id, {:background, id}, _tool, _place}} <- cancelled, do: id
-    {error, state} = cancel(cancelled, kept, state.release_ms, state)
-    {:reply, {:revoked, ids, error}, state}
+    refs = for {ref, %Entry{turn_id: ^turn_id}} <- state.tasks, do: ref
+    ids = for {_ref, %Entry{turn_id: ^turn_id, kind: {:run, id}}} <- state.tasks, do: id
+    {left, state} = End.finish(state, refs, :cancel, state.release_ms, true)
+    {:reply, {:revoked, ids, Release.error(left)}, state}
   end
 
   # The stop of the session: no Task outlives the hands unreleased.
   defp call({:stop, deadline}, _from, state) do
     ms = max(deadline - System.monotonic_time(:millisecond), 0)
-    {_error, state} = cancel(state.tasks, %{}, ms, state)
+    {left, state} = End.finish(state, Map.keys(state.tasks), :cancel, ms, true)
+    # The log gets each handle that stays held; the stop answers them.
+    Release.error(left)
     {:stop, :shutdown, state.unconfirmed, state}
   end
 
-  # Kills the Tasks of `cancelled` and releases their handles with
-  # `:cancel` within `ms`. A Task killed here never delivers; its place
-  # leaves with its entry.
-  defp cancel(cancelled, kept, ms, state) do
-    cancelled = for {_ref, {task, _, _, tool, _}} <- cancelled, do: {task, tool}
-    Enum.each(cancelled, fn {task, _tool} -> Task.shutdown(task, :brutal_kill) end)
-    {taken, held} = Map.split(state.held, for({task, _tool} <- cancelled, do: task.pid))
-
-    by_tool =
-      Enum.reduce(cancelled, %{}, fn {task, tool}, acc ->
-        Release.add(acc, %{tool => Map.get(taken, task.pid, [])})
-      end)
-
-    left = Release.run(by_tool, :cancel, ms, state.core)
-    state = Hooks.drop(%{state | tasks: kept, held: held})
-    {Release.error(left), keep_unconfirmed(state, left)}
-  end
-
-  @doc false
-  # The handles that a release left held refuse the next start, and the
-  # stop answers them.
-  def keep_unconfirmed(state, left),
-    do: %{state | unconfirmed: state.unconfirmed ++ Enum.concat(Map.values(left))}
+  # The kind of a call Task that took its place from `background/0`.
+  defp placed({:call, call_id}, id), do: {:placed, call_id, id}
+  defp placed({:placed, call_id, _place}, id), do: {:placed, call_id, id}
 
   defp cast({:run, turn_id, call, context}, state) do
     state =
@@ -259,7 +259,7 @@ defmodule Helyx.Session.Hands do
         end
 
         {task, state} =
-          spawn_task(state, nil, :provider, provider, fn ->
+          spawn_task(state, :provider, nil, provider, fn ->
             Helyx.Reason.task("provider process crashed", body)
           end)
 
@@ -283,12 +283,12 @@ defmodule Helyx.Session.Hands do
 
   defp info({ref, result}, %State{tasks: tasks} = state) when is_map_key(tasks, ref) do
     Process.demonitor(ref, [:flush])
-    {:noreply, deliver(ref, result, state)}
+    {:noreply, End.deliver(ref, result, state)}
   end
 
   defp info({:DOWN, ref, :process, _pid, reason}, %State{tasks: tasks} = state)
        when is_map_key(tasks, ref) do
-    {:noreply, deliver(ref, {:exit, reason}, state)}
+    {:noreply, End.deliver(ref, {:exit, reason}, state)}
   end
 
   # A Task's exit signal (its reply or :DOWN carries the outcome), or a
@@ -304,34 +304,9 @@ defmodule Helyx.Session.Hands do
   @impl true
   def terminate(_reason, state) do
     Helyx.Reason.no_args(fn ->
-      for {_ref, {task, _, _, _, _}} <- state.tasks, do: Task.shutdown(task, :brutal_kill)
+      for {_ref, %Entry{task: task}} <- state.tasks, do: Task.shutdown(task, :brutal_kill)
       :ok
     end)
-  end
-
-  # No resource survives its Task: the handles are released when the result
-  # delivers, however the Task ended, and the result waits until the
-  # release returns, so a call that runs alone cannot overlap a dying one. A handle
-  # the release does not confirm makes the result an error.
-  defp deliver(ref, result, %State{hook_runs: runs} = state) when is_map_key(runs, ref),
-    do: Hooks.deliver(state, ref, result)
-
-  defp deliver(ref, result, state) do
-    if Sources.task?(Map.fetch!(state.tasks, ref)),
-      do: Sources.deliver(state, ref),
-      else: deliver_call(ref, result, state)
-  end
-
-  defp deliver_call(ref, result, state) do
-    {_task, turn_id, call_id, _tool, _place} = Map.fetch!(state.tasks, ref)
-    state = Hooks.orphans(state, turn_id, State.chain_id(call_id))
-    {{task, ^turn_id, ^call_id, tool, _place}, tasks} = Map.pop!(state.tasks, ref)
-    {handles, held} = Map.pop(state.held, task.pid, [])
-    left = Release.run(%{tool => handles}, :deliver, state.release_ms, state.core)
-
-    send(state.session, Outcome.of(turn_id, call_id, task.pid, Release.error(left) || result))
-    state = %{state | tasks: tasks, held: held}
-    keep_unconfirmed(%{state | background: Background.ended(state.background, call_id)}, left)
   end
 
   # A fixed error needs no Task: it is answered at once, as a refusal is.
@@ -348,15 +323,15 @@ defmodule Helyx.Session.Hands do
           Map.merge(context, %{
             core: state.core,
             tools: Sources.names(state),
-            source: Map.get(state.source_pids, tool),
+            source: Sources.pid(state, tool),
             tool: call.name,
             call_id: call.id
           })
 
         {_task, state} =
-          spawn_task(state, turn_id, call.id, tool, fn ->
+          spawn_task(state, {:call, call.id}, turn_id, tool, fn ->
             Process.put(:helyx_call, context)
-            Helyx.Session.Ask.await_go()
+            Ask.await_go()
             Chain.run(tool, call, cwd, turn_id, hooks)
           end)
 
@@ -365,14 +340,13 @@ defmodule Helyx.Session.Hands do
   end
 
   @doc false
-  # `id` is the call id, `{:hook, id}`, `{:settle, ref}`, `{:approval,
-  # call_id}`, `:provider`, or a source or server Task's (`Sources.task?/1`);
-  # `module` is the plugin whose `release/3` gets the Task's handles, or nil
-  # for a chain Task, which holds none.
-  def spawn_task(state, turn_id, id, module, fun) do
+  # Spawns the Task of `kind` (`Helyx.Session.Hands.Entry`) for the turn
+  # `turn_id`, which is nil for the three Tasks that no turn owns, and the
+  # plugin `tool` whose `release/3` gets its handles, which is nil for a
+  # chain Task.
+  def spawn_task(state, kind, turn_id, tool, fun) do
     hands = self()
     session = state.session
-    asker = Helyx.Session.Ask.asker(turn_id, id)
 
     task =
       Task.Supervisor.async(Helyx.Core.task_supervisor(state.core), fn ->
@@ -384,16 +358,14 @@ defmodule Helyx.Session.Hands do
 
     # A call or hook Task waits for the session's go, which the session
     # sends once it handled this record (`Helyx.Session.Ask.await_go/0`).
-    if asker, do: send(session, {:asker, turn_id, task.pid, asker})
+    if asker = Ask.asker(kind), do: send(session, {:asker, turn_id, task.pid, asker})
 
-    {task, %{state | tasks: Map.put(state.tasks, task.ref, {task, turn_id, id, module, nil})}}
+    entry = %Entry{task: task, kind: kind, turn_id: turn_id, tool: tool}
+    {task, State.put(state, task.ref, entry)}
   end
 
   defp answer(state, turn_id, id, text) do
-    send(state.session, Outcome.of(turn_id, id, {:error, text}))
+    send(state.session, Outcome.tool_result(turn_id, id, {:error, text}))
     state
   end
-
-  defp background?({:background, _id}), do: true
-  defp background?(_call_id), do: false
 end

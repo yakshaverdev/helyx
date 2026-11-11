@@ -287,7 +287,7 @@ defmodule Helyx.Session.ApprovalsTest do
     assert_receive {:hands, hands}
 
     [chain] =
-      for {_ref, {task, _turn, {:approval, "i1"}, _module, _place}} <- :sys.get_state(hands).tasks,
+      for {_ref, %{task: task, kind: {:approval, "i1"}}} <- :sys.get_state(hands).tasks,
           do: task.pid
 
     Process.exit(chain, :crash)

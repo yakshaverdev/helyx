@@ -531,7 +531,7 @@ defmodule Helyx.Session.HooksTest do
       session = run(core, "loop")
       assert_receive {:hook_task, hook_task}
       %{tasks: tasks} = :sys.get_state(:sys.get_state(Session.pid(session)).hands)
-      [call_task] = for {_ref, {task, _turn, "c1", _tool, _place}} <- tasks, do: task.pid
+      [call_task] = for {_ref, %{task: task, kind: {:call, "c1"}}} <- tasks, do: task.pid
       ref = Process.monitor(hook_task)
       Process.exit(call_task, :kill)
 

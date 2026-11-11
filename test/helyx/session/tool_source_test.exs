@@ -330,8 +330,8 @@ defmodule Helyx.Session.ToolSourceTest do
 
   test "a session that names its tools opens no source", %{core: core} do
     {:ok, session} = Session.start(core, model: "test/tools", tools: ["upcase"])
-    assert %{source_pids: sources} = :sys.get_state(hands(session))
-    assert sources == %{}
+    tasks = :sys.get_state(hands(session)).tasks
+    refute Enum.any?(tasks, fn {_ref, entry} -> match?({:source, _plugin}, entry.kind) end)
     refute_received {:source_up, _, _}
   end
 

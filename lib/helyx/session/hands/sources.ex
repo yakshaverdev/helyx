@@ -8,7 +8,7 @@ defmodule Helyx.Session.Hands.Sources do
   # `release/3` when the Task ends, as a provider process's do.
 
   alias Helyx.Session.Hands
-  alias Helyx.Session.Hands.Release
+  alias Helyx.Session.Hands.{End, Entry, Release}
 
   # The server Tasks of one source, live at once.
   @max_server_tasks 16
@@ -20,11 +20,16 @@ defmodule Helyx.Session.Hands.Sources do
   # session sends each change before any context holds it.
   def tools(hands, tools), do: GenServer.cast(hands, {:source, {:tools, tools}})
 
-  # A source or server Task: its entry has the id `{:source, plugin}` or
-  # `{:server, source, ref}`.
-  def task?({_task, nil, {:source, _plugin}, _tool, _place}), do: true
-  def task?({_task, nil, {:server, _source, _ref}, _tool, _place}), do: true
-  def task?(_entry), do: false
+  # The pid of the source process of `plugin`, or nil: the tools of a
+  # source count only while it runs.
+  def pid(state, plugin) do
+    Enum.find_value(state.tasks, fn {_ref, entry} ->
+      case entry.kind do
+        {:source, ^plugin} -> entry.task.pid
+        _kind -> nil
+      end
+    end)
+  end
 
   def handle({:tools, tools}, state), do: %{state | tools: tools}
 
@@ -34,17 +39,17 @@ defmodule Helyx.Session.Hands.Sources do
     hands = self()
 
     {task, state} =
-      Hands.spawn_task(state, nil, {:source, plugin}, plugin, body(plugin, info, hands))
+      Hands.spawn_task(state, {:source, plugin}, nil, plugin, body(plugin, info, hands))
 
     send(state.session, {:source, task.pid, plugin})
-    %{state | source_pids: Map.put(state.source_pids, plugin, task.pid)}
+    state
   end
 
   # A launch of a source that ended since it sent it starts nothing.
   def handle({:launch, ref, source, fun}, state) do
-    case Enum.find(state.source_pids, fn {_plugin, pid} -> pid == source end) do
+    case plugin(state, source) do
       nil -> state
-      {plugin, ^source} -> launch(state, ref, source, plugin, fun)
+      plugin -> launch(state, ref, source, plugin, fun)
     end
   end
 
@@ -62,7 +67,18 @@ defmodule Helyx.Session.Hands.Sources do
   # The names that `lookup/2` finds, for `Helyx.Tool.context/0`.
   def names(state), do: for({name, tool} <- state.tools, live?(state, tool), do: name)
 
-  defp live?(state, tool), do: not Helyx.Tool.source?(tool) or is_map_key(state.source_pids, tool)
+  defp live?(state, tool), do: not Helyx.Tool.source?(tool) or pid(state, tool) != nil
+
+  # The plugin of the source process `source`, or nil: a source that ended
+  # since it sent a launch starts nothing.
+  defp plugin(state, source) do
+    Enum.find_value(state.tasks, fn {_ref, entry} ->
+      case entry.kind do
+        {:source, plugin} -> if entry.task.pid == source, do: plugin
+        _kind -> nil
+      end
+    end)
+  end
 
   # The body of the source process; it never returns (`run/3`).
   @spec body(module(), map(), pid()) :: (-> no_return())
@@ -108,7 +124,7 @@ defmodule Helyx.Session.Hands.Sources do
   defp launch(state, ref, source, plugin, fun) do
     live =
       Enum.count(state.tasks, fn {_ref, entry} ->
-        match?({_, nil, {:server, ^source, _}, _, _}, entry)
+        match?({:server, ^source, _launch}, entry.kind)
       end)
 
     cond do
@@ -122,7 +138,7 @@ defmodule Helyx.Session.Hands.Sources do
 
       true ->
         {task, state} =
-          Hands.spawn_task(state, nil, {:server, source, ref}, plugin, fn ->
+          Hands.spawn_task(state, {:server, source, ref}, nil, plugin, fn ->
             serve(source, fun)
           end)
 
@@ -143,17 +159,16 @@ defmodule Helyx.Session.Hands.Sources do
   # The end of a source or server Task: the release of its handles, then
   # the word to the session or to the source.
   def deliver(state, ref) do
-    {{task, nil, id, tool, _place}, tasks} = Map.pop!(state.tasks, ref)
-    {handles, held} = Map.pop(state.held, task.pid, [])
-    left = Release.run(%{tool => handles}, :deliver, state.release_ms, state.core)
+    %Entry{task: task, kind: kind} = Map.fetch!(state.tasks, ref)
+    {left, state} = End.finish(state, [ref], :deliver, state.release_ms, false)
+    # The log gets an unconfirmed handle; the session counts the Task gone.
     Release.error(left)
-    state = Hands.keep_unconfirmed(%{state | tasks: tasks, held: held}, left)
-    ended(id, task.pid, left, state)
+    ended(kind, task.pid, left, state)
   end
 
-  defp ended({:source, plugin}, pid, _left, state) do
+  defp ended({:source, _plugin}, pid, _left, state) do
     send(state.session, {:source_down, pid})
-    %{state | source_pids: Map.delete(state.source_pids, plugin)}
+    state
   end
 
   defp ended({:server, source, ref}, _pid, left, state) do

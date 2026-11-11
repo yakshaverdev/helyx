@@ -41,7 +41,7 @@ defmodule Helyx.Session.Hands.Settle do
     context = Map.merge(context, extra)
 
     {_task, state} =
-      Hands.spawn_task(state, turn_id, {:settle, ref}, nil, fn ->
+      Hands.spawn_task(state, {:settle, ref}, turn_id, nil, fn ->
         Process.put(:helyx_call, context)
         Chain.settle(hooks, input)
       end)

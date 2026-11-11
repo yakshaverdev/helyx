@@ -36,7 +36,14 @@ defmodule Helyx.Session.SweepTest do
       assert_receive {:trace, ^hands, :receive, {:"$gen_call", {task, _}, {:hold, _}}}
       assert_receive {:trace, ^hands, :receive, {:"$gen_call", {^task, _}, {:hold, _}}}
       :erlang.trace(hands, false, [:receive])
-      assert [{^task, [_, _]}] = Map.to_list(:sys.get_state(hands).held)
+
+      assert [[_, _]] =
+               for(
+                 {_ref, entry} <- :sys.get_state(hands).tasks,
+                 entry.task.pid == task,
+                 do: entry.handles
+               )
+
       task
     end
 
