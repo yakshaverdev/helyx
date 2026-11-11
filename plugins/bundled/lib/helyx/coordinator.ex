@@ -126,4 +126,33 @@ defmodule Helyx.Coordinator do
   def text(:unknown_subscription), do: "no such event subscription of yours"
   def text(:bad_params), do: "a value is out of its range"
   def text(reason), do: Helyx.Reason.text(reason)
+
+  # The lines of `items`, under a budget below the result bound
+  # (`Helyx.Message.max_result_bytes/0`), and a last line that counts the rest.
+  @budget_bytes Helyx.Message.max_result_bytes() - 5_536
+  def lines(items, line_fun, more_text) do
+    {shown, _bytes} =
+      Enum.reduce_while(items, {[], 0}, fn item, {lines, bytes} ->
+        line = line_fun.(item)
+        bytes = bytes + byte_size(line) + 1
+
+        if bytes > @budget_bytes,
+          do: {:halt, {lines, bytes}},
+          else: {:cont, {[line | lines], bytes}}
+      end)
+
+    body = shown |> Enum.reverse() |> Enum.join("\n")
+
+    case length(items) - length(shown) do
+      0 -> body
+      rest -> body <> "\n#{rest} more not shown; " <> more_text
+    end
+  end
+
+  # `text` cut to `bytes`, quoted, and its full size when cut.
+  def excerpt(text, bytes) do
+    cut = Helyx.Text.cap(text, bytes, :head)
+    note = if cut == text, do: "", else: " (cut, #{byte_size(text)} bytes)"
+    inspect(cut, binaries: :as_strings) <> note
+  end
 end

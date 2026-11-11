@@ -11,8 +11,6 @@ defmodule Helyx.Tool.SubscriptionList do
 
   alias Helyx.Coordinator
 
-  # The text of the lines, under the result bound of 65,536 bytes.
-  @budget_bytes 60_000
   # The template bytes of one line, before `inspect` escapes them.
   @template_bytes 256
 
@@ -66,28 +64,8 @@ defmodule Helyx.Tool.SubscriptionList do
 
   defp text([]), do: "no event subscriptions"
 
-  # 256 subscriptions of a user, each with a template of 256 bytes that
-  # `inspect` with `binaries: :as_strings` can make four times longer, pass
-  # the result bound, so the lines stop at a budget below
-  # `Helyx.Message.max_result_bytes/0` and a last line counts the rest.
-  defp text(subscriptions) do
-    {shown, _bytes} =
-      Enum.reduce_while(subscriptions, {[], 0}, fn subscription, {lines, bytes} ->
-        line = line(subscription)
-        bytes = bytes + byte_size(line) + 1
-
-        if bytes > @budget_bytes,
-          do: {:halt, {lines, bytes}},
-          else: {:cont, {[line | lines], bytes}}
-      end)
-
-    body = shown |> Enum.reverse() |> Enum.join("\n")
-
-    case length(subscriptions) - length(shown) do
-      0 -> body
-      rest -> body <> "\n#{rest} more not shown; list the subscriptions of one session"
-    end
-  end
+  defp text(subscriptions),
+    do: Coordinator.lines(subscriptions, &line/1, "list the subscriptions of one session")
 
   defp line(subscription) do
     label =
@@ -102,16 +80,9 @@ defmodule Helyx.Tool.SubscriptionList do
         outcome -> "last delivery " <> outcome
       end
 
-    prompt = Helyx.Text.cap(subscription.template, @template_bytes, :head)
-
-    cut =
-      if prompt == subscription.template,
-        do: "",
-        else: " (cut, #{byte_size(subscription.template)} bytes)"
-
     "subscription #{subscription.id}: session #{subscription.session}#{label}, " <>
       "pending #{subscription.pending}, #{outcome}\n" <>
       "  endpoint: #{Helyx.Hub.Subscriptions.path(subscription)}\n" <>
-      "  prompt: #{inspect(prompt, binaries: :as_strings)}#{cut}"
+      "  prompt: #{Coordinator.excerpt(subscription.template, @template_bytes)}"
   end
 end
