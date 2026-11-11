@@ -74,11 +74,22 @@ pub(crate) enum Decoded {
     Pending,
 }
 
+/// The state of one connection's link to the server: the handshake is on, the
+/// link is open, or it ended in a break or a refusal.
+#[derive(Debug)]
+pub(crate) enum Link {
+    /// The handshake is on: each frame is one of its own until its answer.
+    Handshake(Handshake),
+    /// The server took the handshake: requests may go.
+    Open,
+    /// The connection ended with a break or a refusal: no frame is taken, and
+    /// a close stops the client.
+    Ended,
+}
+
 #[derive(Debug)]
 pub(crate) struct Connection {
-    pub handshake: Handshake,
-    pub welcomed: bool,
-    pub broken: bool,
+    pub link: Link,
     joiner: Joiner,
     next_id: u64,
     pub requests: HashMap<String, Request>,
@@ -100,9 +111,7 @@ pub(crate) struct Connection {
 impl Connection {
     pub fn new(token: Option<Token>) -> Connection {
         Connection {
-            handshake: Handshake::new(token),
-            welcomed: false,
-            broken: false,
+            link: Link::Handshake(Handshake::new(token)),
             joiner: Joiner::default(),
             next_id: 0,
             requests: HashMap::new(),
@@ -114,7 +123,7 @@ impl Connection {
     }
 
     pub fn ready(&self) -> bool {
-        self.welcomed && !self.broken
+        matches!(self.link, Link::Open)
     }
 
     /// The text of one server frame, decoded within `limits`; the parts of a
@@ -125,8 +134,11 @@ impl Connection {
             return Err(Broken("frame size"));
         }
         let value = json::decode_within(text, limits)?;
-        if !self.welcomed {
-            return Ok(Decoded::Handshake(value));
+        match self.link {
+            Link::Handshake(_) => return Ok(Decoded::Handshake(value)),
+            Link::Open => {}
+            // `Client::take` refuses a frame of an ended connection.
+            Link::Ended => return Err(Broken("no connection")),
         }
         if !is_part(&value) {
             return if self.joiner.pending() {

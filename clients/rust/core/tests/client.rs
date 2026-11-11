@@ -215,6 +215,38 @@ fn a_close_before_the_welcome_or_after_a_break_stops() {
     assert_eq!(Client::new(None).closed(None).next, Next::Stop);
 }
 
+/// O1: one `challenge`, then one `welcome` or `refused`, then no more
+/// handshake frame. A connection leaves the handshake at its answer, and a
+/// frame after the answer is a frame of the link that follows.
+#[test]
+fn no_handshake_frame_follows_its_answer() {
+    // After the welcome, a handshake frame is a frame after the handshake.
+    let mut client = following(4);
+    assert_eq!(client.receive(WELCOME), Err(Broken("frame type")));
+    // A refused handshake ends the connection.
+    let mut client = Client::new(None);
+    client.connect();
+    client.receive(CHALLENGE).unwrap();
+    let refused = r#"{"type":"refused","code":"protocol","server_protocol":10}"#;
+    assert_eq!(client.receive(refused).unwrap(), [Output::Refused(10)]);
+    assert_eq!(client.receive(WELCOME), Err(Broken("no connection")));
+    // A second challenge ends the handshake, and so does a nonce of the
+    // wrong size.
+    let mut client = Client::new(None);
+    client.connect();
+    client.receive(CHALLENGE).unwrap();
+    assert!(client.receive(CHALLENGE).is_err());
+    assert_eq!(client.receive(WELCOME), Err(Broken("no connection")));
+    let mut client = Client::new(None);
+    client.connect();
+    assert!(
+        client
+            .receive(r#"{"type":"challenge","nonce":"AAAA"}"#)
+            .is_err()
+    );
+    assert_eq!(client.receive(WELCOME), Err(Broken("no connection")));
+}
+
 /// After a welcome, every end reconnects but a break and a refusal: a
 /// failed open, with no connection, and a reconnect that ends before its
 /// own welcome; the welcome of an earlier connection is a fact that stays.

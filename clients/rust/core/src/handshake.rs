@@ -40,19 +40,18 @@ impl std::fmt::Debug for Token {
 }
 
 /// The state of one handshake: it waits for `challenge`, then for the answer.
+/// The connection leaves the handshake at that answer (`connection::Link`).
 #[derive(Debug)]
 pub struct Handshake {
     token: Option<Token>,
     phase: Phase,
 }
 
-/// O1: one `challenge`, then one `welcome` or `refused`, then no more
-/// handshake frames.
+/// O1: one `challenge`, then one `welcome` or `refused`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Phase {
     Challenge,
     Answer,
-    Done,
 }
 
 impl Handshake {
@@ -65,17 +64,9 @@ impl Handshake {
         }
     }
 
-    /// Takes the next server frame of the handshake. After a break, or after
-    /// `welcome` or `refused`, every frame is a break.
+    /// Takes the next server frame of the handshake. The connection leaves the
+    /// handshake at `welcome` or `refused`.
     pub fn step(&mut self, frame: &Json) -> Checked<Step> {
-        let step = self.take(frame);
-        if step.is_err() {
-            self.phase = Phase::Done;
-        }
-        step
-    }
-
-    fn take(&mut self, frame: &Json) -> Checked<Step> {
         let map = object(frame, "handshake frame")?;
         match (self.phase, string(map, "type", "handshake frame")?) {
             (Phase::Challenge, "challenge") => {
@@ -94,7 +85,6 @@ impl Handshake {
                 Ok(Step::Send(Json::Object(hello)))
             }
             (Phase::Answer, "welcome") if int_key(map, "protocol", "welcome")? == PROTOCOL => {
-                self.phase = Phase::Done;
                 Ok(Step::Welcome)
             }
             (Phase::Answer, "refused") => {
@@ -104,7 +94,6 @@ impl Handshake {
                 if server_protocol == PROTOCOL {
                     return Err(Broken("refused"));
                 }
-                self.phase = Phase::Done;
                 Ok(Step::Refused(server_protocol))
             }
             _ => Err(Broken("handshake order")),

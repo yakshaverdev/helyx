@@ -7,7 +7,7 @@
 //! client reconciles the two (`reconcile`).
 
 use crate::check::{Broken, Checked};
-use crate::connection::{Connection, Decoded, Request, Stop};
+use crate::connection::{Connection, Decoded, Link, Request, Stop};
 use crate::fold::{State, ack};
 use crate::follow::Session;
 use crate::frame::{self, Reply, ServerFrame, Subscribed};
@@ -148,13 +148,15 @@ impl Client {
     /// `unknown`, and none of them goes again (ADR 0006 §4).
     pub fn closed(&mut self, _code: Option<u16>) -> Closed {
         let connection = self.connection.take();
-        let broken = connection.as_ref().is_some_and(|c| c.broken);
+        let ended = connection
+            .as_ref()
+            .is_some_and(|c| matches!(c.link, Link::Ended));
         let unknown = connection.as_ref().map_or_else(Vec::new, |c| {
             (host_requests(c).into_iter())
                 .map(|(id, request)| (id.clone(), request.op))
                 .collect()
         });
-        let next = match self.welcomed && !broken {
+        let next = match self.welcomed && !ended {
             true => Next::Reconnect,
             false => Next::Stop,
         };
@@ -313,13 +315,13 @@ impl Client {
             .is_some_and(|c| c.attached(session))
     }
 
-    /// Takes one text frame of the server. A break marks the connection
-    /// broken: the host closes it, and `closed` gives `Stop`.
+    /// Takes one text frame of the server. A break ends the connection: the
+    /// host closes it, and `closed` gives `Stop`.
     pub fn receive(&mut self, text: &str) -> Checked<Vec<Output>> {
         let result = self.take(text);
         match (result, self.connection.as_mut()) {
             (Err(broken), Some(c)) => {
-                c.broken = true;
+                c.link = Link::Ended;
                 Err(broken)
             }
             (Err(broken), None) => Err(broken),
@@ -335,7 +337,7 @@ impl Client {
         let c = self
             .connection
             .as_mut()
-            .filter(|c| !c.broken)
+            .filter(|c| !matches!(c.link, Link::Ended))
             .ok_or(Broken("no connection"))?;
         match c.decode(text, limits)? {
             Decoded::Handshake(value) => self.handshake(&value),
@@ -346,14 +348,17 @@ impl Client {
 
     fn handshake(&mut self, value: &Json) -> Checked<Vec<Output>> {
         let c = self.connection.as_mut().expect("a connection");
-        match c.handshake.step(value)? {
+        let Link::Handshake(handshake) = &mut c.link else {
+            return Err(Broken("handshake"));
+        };
+        match handshake.step(value)? {
             Step::Send(hello) => Ok(vec![Output::Send(hello.encode())]),
             Step::Refused(n) => {
-                c.broken = true;
+                c.link = Link::Ended;
                 Ok(vec![Output::Refused(n)])
             }
             Step::Welcome => {
-                c.welcomed = true;
+                c.link = Link::Open;
                 self.welcomed = true;
                 Ok(vec![Output::Welcome])
             }
