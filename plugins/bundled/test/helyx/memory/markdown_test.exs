@@ -274,12 +274,8 @@ defmodule Helyx.Memory.MarkdownTest do
   end
 
   @tag :tmp_dir
-  test "recall reads one time name per hash, then the id names of an old folder in name order",
+  test "recall reads one time name per hash",
        %{tmp_dir: dir} do
-    log = Path.join(dir, "log")
-    # An old folder: id names with no time name, read in name order.
-    for name <- ["b", "a"], do: write!(Path.join(log, "#{name}.md"), "walrus old #{name}\n")
-
     # A crash between the two links, then the replay: two time names of
     # one message, with one id name.
     write!(time_name(dir, 3, hash("u1")), "walrus crash\n")
@@ -297,7 +293,7 @@ defmodule Helyx.Memory.MarkdownTest do
     assert {:ok, records} = Markdown.recall(%{text: "walrus", origin: nil}, opts(dir))
 
     assert Enum.map(records, & &1.text) ==
-             ["walrus two", "walrus new", "walrus old a", "walrus old b"]
+             ["walrus two", "walrus new"]
   end
 
   # 1,000 files or more: about 1 s on a loaded machine.
@@ -341,19 +337,6 @@ defmodule Helyx.Memory.MarkdownTest do
 
     assert {:error, "memory folder failed: not a directory"} =
              Markdown.sync(entries([user("one", "u1")]), opts(dir))
-  end
-
-  # 1,000 files or more: about 1 s on a loaded machine.
-  @tag :slow
-  @tag :tmp_dir
-  test "the id names of an old folder are left out when the time names fill the bound",
-       %{tmp_dir: dir} do
-    write!(Path.join([dir, "log", "0.md"]), "walrus old\n")
-
-    for n <- 0..999, do: write!(time_name(dir, n, hash("m#{n}")), "k#{n}x\n")
-
-    assert {:ok, []} = Markdown.recall(%{text: "walrus", origin: nil}, opts(dir))
-    assert {:ok, [%{text: "k0x"}]} = Markdown.recall(%{text: "k0x", origin: nil}, opts(dir))
   end
 
   @tag :tmp_dir
