@@ -263,9 +263,7 @@ impl Snapshot {
             instance_id: string(map, "instance_id", "snapshot")?.to_owned(),
             seq: seq_key(map, "seq", "snapshot seq")?,
             messages: list_of(map, "messages", "snapshot messages", Message::parse)?,
-            // An older server sends no `older`: it counts no message that
-            // the snapshot leaves out.
-            older: optional(map, "older").map_or(Ok(0), |value| int(value, "snapshot older"))?,
+            older: int(field(map, "older", "snapshot older")?, "snapshot older")?,
             turn,
             model: string(map, "model", "snapshot model")?.to_owned(),
             queue: Queue::parse(field(map, "queue", "snapshot queue")?)?,
