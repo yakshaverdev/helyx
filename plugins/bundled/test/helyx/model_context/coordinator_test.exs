@@ -19,6 +19,11 @@ defmodule Helyx.ModelContext.CoordinatorTest do
     Application.put_env(:helyx_plugins, :coordinator_modes, %{"review" => [], "coding" => []})
     system = build()
     assert system =~ "You are a coordinator."
+
+    for tool <- ~w(session_create session_wait session_read session_send schedule schedule_list
+                   schedule_delete),
+        do: assert(system =~ "\n- #{tool} ")
+
     assert system =~ "\nModes: coding, review\n"
     assert system =~ "\nModel: fake/echo\n"
     assert system =~ "\nSession id: abc\n"

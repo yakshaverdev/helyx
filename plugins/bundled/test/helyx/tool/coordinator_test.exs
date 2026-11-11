@@ -18,7 +18,9 @@ defmodule Helyx.Tool.CoordinatorTest do
     Helyx.Tool.SessionSend,
     Helyx.Tool.SessionRead,
     Helyx.Tool.SessionWait,
-    Helyx.Tool.Schedule
+    Helyx.Tool.Schedule,
+    Helyx.Tool.ScheduleList,
+    Helyx.Tool.ScheduleDelete
   ]
 
   setup %{tmp_dir: dir} = context do

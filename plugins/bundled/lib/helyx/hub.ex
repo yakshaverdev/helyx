@@ -137,6 +137,32 @@ defmodule Helyx.Hub do
   end
 
   @doc """
+  The schedules of the user `user_id`, all of them when `session_id` is nil
+  or only those of that session, with the rules of `hub.schedules.list`
+  (`docs/features/hub.md`, decisions 11 and 12). A session that the user may
+  not read gives `:session_not_found`, as a missing one.
+  """
+  @spec schedules(hub(), String.t(), String.t() | nil) ::
+          {:ok, [map()]}
+          | {:error, :session_not_found | :unknown_user | :busy | :timeout | :failed}
+  def schedules(hub, user_id, session_id)
+      when is_binary(user_id) and (is_nil(session_id) or is_binary(session_id)) do
+    with {:ok, arg} <- api_arg(hub), do: Helyx.Hub.Api.schedules(arg, user_id, session_id)
+  end
+
+  @doc """
+  Deletes a schedule of the user `user_id`, with the rules of
+  `hub.schedules.delete` (`docs/features/hub.md`, decisions 11 and 12). A
+  schedule of another user gives `:unknown_schedule`, as a missing one.
+  """
+  @spec delete_schedule(hub(), String.t(), String.t()) ::
+          :ok | {:error, :unknown_schedule | :unknown_user | :busy | :timeout | :failed}
+  def delete_schedule(hub, user_id, schedule_id)
+      when is_binary(user_id) and is_binary(schedule_id) do
+    with {:ok, arg} <- api_arg(hub), do: Helyx.Hub.Api.delete_schedule(arg, user_id, schedule_id)
+  end
+
+  @doc """
   Starts a session for the user `user_id` as the `start` of the wire does:
   the `check` with the caps of the user (`too_many_sessions`,
   `too_many_records`), `Helyx.Sessions.start/2` with `opts`, and the

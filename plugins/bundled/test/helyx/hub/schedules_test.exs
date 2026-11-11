@@ -22,7 +22,12 @@ defmodule Helyx.Hub.SchedulesTest do
     start_supervised!({Helyx.Core, name: core, plugins: [Fake], sessions_dir: data}, id: :core)
     hub_opts = [core: core, default_owner: "owner", server_token: fn -> @server_token end]
     hub = start_supervised!(Supervisor.child_spec({Hub, hub_opts}, id: :hub))
-    transport = start_supervised!({WebSocket, core: core, port: 0, authority: Hub.authority(hub)})
+
+    transport =
+      start_supervised!({WebSocket, core: core, port: 0, authority: Hub.authority(hub)},
+        id: :transport_of_hub
+      )
+
     %{hub: hub, core: core, port: WebSocket.port(transport)}
   end
 
@@ -203,5 +208,49 @@ defmodule Helyx.Hub.SchedulesTest do
 
     assert Hub.schedule(context.hub, owner, %{params | "prompt" => big}) ==
              {:error, :text_too_large}
+  end
+
+  test "Hub.schedules/3 and delete_schedule/3: the rules of the wire", context do
+    {:ok, %{id: ann}} = Hub.add_user(context.hub, "ann")
+    {:ok, %{id: bob}} = Hub.add_user(context.hub, "bob")
+    {:ok, one} = Hub.start_session(context.hub, ann, cwd: File.cwd!(), model: "fake/echo")
+    {:ok, two} = Hub.start_session(context.hub, ann, cwd: File.cwd!(), model: "fake/echo")
+    at = now() + 600
+
+    {:ok, first} =
+      Hub.schedule(context.hub, ann, %{"session" => one.id, "at" => at, "prompt" => "one"})
+
+    {:ok, second} =
+      Hub.schedule(context.hub, ann, %{"session" => two.id, "at" => at, "prompt" => "two"})
+
+    assert {:ok, all} = Hub.schedules(context.hub, ann, nil)
+    assert Enum.sort(Enum.map(all, & &1.id)) == Enum.sort([first.id, second.id])
+
+    assert {:ok, [only]} = Hub.schedules(context.hub, ann, one.id)
+    assert only.id == first.id
+
+    # A session that bob may not read gives the answer of a missing one.
+    assert Hub.schedules(context.hub, bob, one.id) == {:error, :session_not_found}
+    assert Hub.schedules(context.hub, bob, @missing) == {:error, :session_not_found}
+    assert Hub.schedules(context.hub, ann, @missing) == {:error, :session_not_found}
+    assert Hub.schedules(context.hub, "nobody", nil) == {:error, :unknown_user}
+    assert Hub.schedules(context.hub, bob, nil) == {:ok, []}
+
+    assert Hub.delete_schedule(context.hub, bob, first.id) == {:error, :unknown_schedule}
+    assert Hub.delete_schedule(context.hub, ann, first.id) == :ok
+    assert Hub.delete_schedule(context.hub, ann, first.id) == {:error, :unknown_schedule}
+
+    assert {:ok, [remaining]} = Hub.schedules(context.hub, ann, nil)
+    assert remaining.id == second.id
+  end
+
+  test "an exit of the Hub call of a list or a delete is a timeout", context do
+    {:ok, config} = Hub.call(context.hub, :authority)
+    arg = Map.put(config, :hub, context.hub)
+    :ok = stop_supervised(:transport_of_hub)
+    :ok = stop_supervised(:hub)
+
+    assert Helyx.Hub.Api.schedules(arg, "anyone", nil) == {:error, :timeout}
+    assert Helyx.Hub.Api.delete_schedule(arg, "anyone", @missing) == {:error, :timeout}
   end
 end
