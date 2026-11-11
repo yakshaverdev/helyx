@@ -3,17 +3,21 @@ defmodule Helyx.Transport.WebSocket.Frame do
   # The JSON codec of the wire frames and their parts
   # (`docs/features/wire-protocol.md`, "Parts").
 
-  @max_frame 1_048_576
-  @max_piece 786_000
-  @max_digits 1_024
+  alias Helyx.Transport.WebSocket.Bounds
+
+  @max_frame Bounds.get("frame_bytes")
+  @max_piece Bounds.get("part_bytes")
+  @max_digits Bounds.get("integer_chars")
   # The bytes of a frame joined from parts and its values, by the direction
   # of the frame: an inbound frame of a client, and an outbound frame of the
   # server, which a client reads (`docs/features/wire-protocol.md`, "Bounds";
   # the derivation in `docs/features/tui-attach.md`, decision 13).
-  @bounds %{inbound: {26_214_400, 65_536}, outbound: {1_611_661_312, 38_797_312}}
+  @bounds %{
+    inbound: {Bounds.get("request_bytes"), Bounds.get("request_values")},
+    outbound: {Bounds.get("server_frame_bytes"), Bounds.get("server_frame_values")}
+  }
 
   def max_frame, do: @max_frame
-  def max_piece, do: @max_piece
 
   @doc "The bytes of a request of a client, its parts joined: the inbound bound."
   @spec max_request() :: pos_integer()

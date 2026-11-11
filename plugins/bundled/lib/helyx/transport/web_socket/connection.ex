@@ -8,13 +8,13 @@ defmodule Helyx.Transport.WebSocket.Connection do
 
   @behaviour WebSock
 
-  alias Helyx.Transport.WebSocket.{Authorize, Frame, Ops, Outbound, Subscription}
+  alias Helyx.Transport.WebSocket.{Authorize, Bounds, Frame, Ops, Outbound, Subscription}
 
-  @hello_ms 5_000
-  @ping_ms 15_000
-  @idle_ms 45_000
-  @max_in_flight 16
-  @max_subscriptions 16
+  @hello_ms Bounds.get("hello_ms")
+  @ping_ms Bounds.get("ping_ms")
+  @idle_ms Bounds.get("idle_ms")
+  @max_in_flight Bounds.get("requests_in_flight")
+  @max_subscriptions Bounds.get("subscriptions")
 
   @impl true
   def init(config) do

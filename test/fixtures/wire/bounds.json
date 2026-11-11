@@ -1,10 +1,22 @@
 {
-  "protocol": 9,
+  "protocol": 10,
   "frame_bytes": 1048576,
   "part_bytes": 786000,
+  "integer_chars": 1024,
   "request_bytes": 26214400,
+  "request_values": 65536,
+  "server_frame_bytes": 1611661312,
+  "server_frame_values": 38797312,
+  "hello_ms": 5000,
+  "ping_ms": 15000,
+  "idle_ms": 45000,
+  "requests_in_flight": 16,
+  "subscriptions": 16,
+  "connections": 64,
+  "outbound_queue_bytes": 67108864,
   "deadlines_ms": {
     "default": 6000,
+    "sessions.saved": 10000,
     "subscribe": 5000,
     "abort": 46000,
     "stop": 77000

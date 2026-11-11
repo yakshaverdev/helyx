@@ -8,9 +8,8 @@ defmodule Helyx.Transport.WebSocket.Ops do
   # `{:error, code, text}`.
 
   alias Helyx.Session
-  alias Helyx.Transport.WebSocket.{Outbound, Wire}
+  alias Helyx.Transport.WebSocket.{Bounds, Outbound, Wire}
 
-  @default_deadline 6_000
   @default_tail 200
 
   @prompt_params %{
@@ -27,8 +26,8 @@ defmodule Helyx.Transport.WebSocket.Ops do
 
   # The facts of one operation of the wire: `params` is a map from a key to
   # `{required | optional, type}`, nil when the op checks its own params in
-  # its `check/3` clause; `deadline` is a row of "Deadlines", with
-  # `@default_deadline` when absent; `slot` says that the result takes the
+  # its `check/3` clause; `deadline` is `:infinity` for an op with no
+  # deadline, and the others have theirs in `Bounds.deadline/1`; `slot` says that the result takes the
   # encoder slot of the connection; `result`, `release`, and `run` are the
   # facts of an authority (`Helyx.Transport.WebSocket.Authorize`). Every
   # `hub.*` op is the `run` of an authority.
@@ -41,7 +40,6 @@ defmodule Helyx.Transport.WebSocket.Ops do
              "after" => {:optional, :string},
              "limit" => {:optional, :int}
            },
-           deadline: 10_000,
            slot: true,
            run: true
          ],
@@ -62,7 +60,6 @@ defmodule Helyx.Transport.WebSocket.Ops do
              "after" => {:optional, :after},
              "answers" => {:optional, :bool}
            },
-           deadline: 5_000,
            slot: true
          ],
          "unsubscribe" => [],
@@ -75,12 +72,12 @@ defmodule Helyx.Transport.WebSocket.Ops do
            },
            slot: true
          ],
-         "abort" => [params: %{"session" => {:required, :session}}, deadline: 46_000],
+         "abort" => [params: %{"session" => {:required, :session}}],
          "set_model" => [
            params: %{"session" => {:required, :session}, "model" => {:required, :string}}
          ],
          "compact" => [],
-         "stop" => [params: %{"session" => {:required, :session}}, deadline: 77_000],
+         "stop" => [params: %{"session" => {:required, :session}}],
          "answer" => []
        })
 
@@ -91,7 +88,7 @@ defmodule Helyx.Transport.WebSocket.Ops do
   @core_codes Enum.map(@core_errors, &Atom.to_string/1)
 
   @spec deadline(String.t()) :: pos_integer() | :infinity
-  def deadline(op), do: Keyword.get(facts(op), :deadline, @default_deadline)
+  def deadline(op), do: Keyword.get(facts(op), :deadline, Bounds.deadline(op))
 
   # An operation whose result can be large takes the encoder slot of the
   # connection before it reads from Core.

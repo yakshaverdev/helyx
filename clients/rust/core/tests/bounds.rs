@@ -1,18 +1,21 @@
-//! The client has the bounds and the error codes of
-//! `test/fixtures/wire/bounds.json`, the one file that the server tests read too.
+//! The constants of the client equal `test/fixtures/wire/bounds.json`, the one
+//! file that holds the numbers of the wire; the server reads the same file.
 
-use helyx_client_core::json::{Json, decode};
-use helyx_client_core::{frame, operation, parts};
+use helyx_client_core::json::{Json, WIRE, decode};
+use helyx_client_core::{frame, handshake, operation, parts};
 
 #[test]
 fn the_client_has_the_bounds_of_the_file() {
-    let text = include_str!("../../../../test/fixtures/wire/bounds.json");
-    let bounds = decode(text).unwrap();
+    let bounds = decode(include_str!("../../../../test/fixtures/wire/bounds.json")).unwrap();
     let int = |v: &Json, key: &str| v.get(key).and_then(Json::as_u64).unwrap();
 
+    assert_eq!(handshake::PROTOCOL, int(&bounds, "protocol"));
     assert_eq!(parts::FRAME_BYTES as u64, int(&bounds, "frame_bytes"));
     assert_eq!(parts::PART_BYTES as u64, int(&bounds, "part_bytes"));
     assert_eq!(parts::REQUEST_BYTES as u64, int(&bounds, "request_bytes"));
+    assert_eq!(WIRE.frame_bytes as u64, int(&bounds, "server_frame_bytes"));
+    assert_eq!(WIRE.values as u64, int(&bounds, "server_frame_values"));
+    assert_eq!(WIRE.integer_chars as u64, int(&bounds, "integer_chars"));
 
     let deadlines = bounds.get("deadlines_ms").unwrap();
     for (key, op) in [

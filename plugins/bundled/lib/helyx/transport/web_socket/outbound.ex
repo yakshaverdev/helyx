@@ -6,9 +6,9 @@ defmodule Helyx.Transport.WebSocket.Outbound do
   # to a queue over 64 MiB closes the connection with 4408
   # (`docs/features/wire-protocol.md`, "Bounds").
 
-  alias Helyx.Transport.WebSocket.Frame
+  alias Helyx.Transport.WebSocket.{Bounds, Frame}
 
-  @max_bytes 67_108_864
+  @max_bytes Bounds.get("outbound_queue_bytes")
 
   @enforce_keys [:conn, :bytes]
   defstruct @enforce_keys

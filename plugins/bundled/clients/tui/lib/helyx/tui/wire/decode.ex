@@ -18,14 +18,7 @@ defmodule Helyx.TUI.Wire.Decode do
                   steer_unconfirmed compaction notice ask ask_end ui_block tools_change)a
   @types Map.new(@event_types, &{Atom.to_string(&1), &1})
 
-  @error_codes ~w(unknown_op bad_params busy timeout failed session_not_found
-                  too_many_sessions too_many_subscriptions unknown_sub instance_changed
-                  unknown_message invalid_cwd invalid_model_ref unknown_provider not_found
-                  start_failed invalid_utf8 invalid_origin queue_full turn_running
-                  text_too_large invalid_answer not_waiting forbidden too_many_records
-                  too_many_projects unknown_project unknown_token too_many_schedules
-                  unknown_schedule too_many_event_subscriptions unknown_subscription)a
-  @codes Map.new(@error_codes, &{Atom.to_string(&1), &1})
+  @codes Map.new(Helyx.Transport.WebSocket.Bounds.error_codes(), &{Atom.to_string(&1), &1})
   # The codes whose text names the value: the TUI shows it.
   @texts ~w(invalid_model_ref unknown_provider start_failed)a
 
