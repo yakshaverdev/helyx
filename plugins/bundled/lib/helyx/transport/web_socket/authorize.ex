@@ -12,11 +12,6 @@ defmodule Helyx.Transport.WebSocket.Authorize do
   # The bound of the `token` field of a `hello`: an id (the frame rule).
   @max_token_bytes 64
 
-  # The ops whose result goes to `result/5`, and those that free a reserved
-  # place with `release/4` when the Core call fails.
-  @result_ops ~w(sessions.live start resume)
-  @release_ops ~w(start resume)
-
   # `{:ok, auth}`, or the close code of the connection.
   def hello({mod, arg}, nonce, hello) do
     with {:ok, token} <- field(hello["token"]),
@@ -46,16 +41,13 @@ defmodule Helyx.Transport.WebSocket.Authorize do
   # The transport checks the params of an op of Core before `check`; the
   # authority checks those of its own ops in `run`.
   def worker(conn, out, id, op, params, %{core: core, authority: authority, auth: auth}) do
-    if run?(op) do
+    if Ops.run?(op) do
       {:ok, fn -> run(conn, out, id, op, params, authority, auth) end}
     else
       with {:ok, _call} <- Ops.check(core, op, params),
            do: {:ok, fn -> checked(conn, out, id, op, params, core, authority, auth) end}
     end
   end
-
-  # Whether the authority runs `op` in place of a Core call.
-  defp run?(op), do: op == "sessions.saved" or String.starts_with?(op, "hub.")
 
   defp run(conn, out, id, op, params, {mod, arg}, auth) do
     within(conn, out, id, op, fn ->
@@ -84,15 +76,23 @@ defmodule Helyx.Transport.WebSocket.Authorize do
     Ops.run(call)
   catch
     kind, reason ->
-      if op in @release_ops, do: release(op, params, authority, auth)
+      if Ops.release?(op), do: release(op, params, authority, auth)
       :erlang.raise(kind, reason, __STACKTRACE__)
   end
 
-  defp reply(out, id, op, params, {:ok, result}, {mod, arg}, auth) when op in @result_ops,
-    do: answer(out, id, op, call(fn -> mod.result(arg, auth, op, params, result) end))
+  # The result of an op that the authority answers goes to its `result/5`;
+  # an op that reserves a place frees it when its Core call fails.
+  defp reply(out, id, op, params, {:ok, result} = ok, {mod, arg} = authority, auth) do
+    if Ops.result?(op),
+      do: answer(out, id, op, call(fn -> mod.result(arg, auth, op, params, result) end)),
+      else: plain_reply(out, id, op, params, ok, authority, auth)
+  end
 
-  defp reply(out, id, op, params, result, authority, auth) do
-    if op in @release_ops, do: release(op, params, authority, auth)
+  defp reply(out, id, op, params, result, authority, auth),
+    do: plain_reply(out, id, op, params, result, authority, auth)
+
+  defp plain_reply(out, id, op, params, result, authority, auth) do
+    if Ops.release?(op), do: release(op, params, authority, auth)
     Outbound.reply(out, id, result)
   end
 

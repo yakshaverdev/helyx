@@ -1,26 +1,88 @@
 defmodule Helyx.Transport.WebSocket.Ops do
   @moduledoc false
   # The operations of the wire on the public session and server API
-  # (`docs/features/wire-protocol.md`, "Operations", "Deadlines"). The
-  # connection checks the params with `check/3`, so a worker holds only the
-  # checked values; `run/1` runs the call in the worker of one request and
-  # returns `{:ok, result}` or `{:error, code, text}`.
+  # (`docs/features/wire-protocol.md`, "Operations", "Deadlines"). One
+  # table holds the facts of each op; `check/3` checks its params, so a
+  # worker holds only the checked values; `run/1` runs the call in the
+  # worker of one request and returns `{:ok, result}` or
+  # `{:error, code, text}`.
 
   alias Helyx.Session
   alias Helyx.Transport.WebSocket.{Outbound, Wire}
 
-  # Each deadline and its reason is in the table "Deadlines". `start` and
-  # `resume` have none: the open deadlines of the session bound them (#834).
-  @deadlines %{
-    "abort" => 46_000,
-    "stop" => 77_000,
-    "start" => :infinity,
-    "resume" => :infinity,
-    "sessions.saved" => 10_000,
-    "subscribe" => 5_000
-  }
   @default_deadline 6_000
   @default_tail 200
+
+  @prompt_params %{
+    "session" => {:required, :session},
+    "text" => {:required, :string},
+    "origin" => {:optional, :origin}
+  }
+
+  @hub_ops ~w(hub.me hub.records.get hub.records.update hub.records.delete
+              hub.records.search hub.projects.list hub.projects.create
+              hub.projects.update hub.projects.delete hub.tokens.list hub.tokens.revoke
+              hub.schedules.list hub.schedules.create hub.schedules.delete
+              hub.subscriptions.list hub.subscriptions.create hub.subscriptions.delete)
+
+  # The facts of one operation of the wire: `params` is a map from a key to
+  # `{required | optional, type}`, nil when the op checks its own params in
+  # its `check/3` clause; `deadline` is a row of "Deadlines", with
+  # `@default_deadline` when absent; `slot` says that the result takes the
+  # encoder slot of the connection; `result`, `release`, and `run` are the
+  # facts of an authority (`Helyx.Transport.WebSocket.Authorize`). Every
+  # `hub.*` op is the `run` of an authority.
+  @ops Map.new(@hub_ops, &{&1, [run: true]})
+       |> Map.merge(%{
+         "sessions.live" => [params: nil, result: true],
+         "sessions.saved" => [
+           params: %{
+             "cwd" => {:optional, :string},
+             "after" => {:optional, :string},
+             "limit" => {:optional, :int}
+           },
+           deadline: 10_000,
+           slot: true,
+           run: true
+         ],
+         "start" => [
+           params: %{"cwd" => {:required, :string}, "model" => {:optional, :string}},
+           deadline: :infinity,
+           result: true,
+           release: true
+         ],
+         "resume" => [params: nil, deadline: :infinity, result: true, release: true],
+         "prompt" => [params: @prompt_params],
+         "steer" => [params: @prompt_params],
+         "follow_up" => [params: @prompt_params],
+         "subscribe" => [
+           params: %{
+             "session" => {:required, :session},
+             "tail" => {:optional, :int},
+             "after" => {:optional, :after},
+             "answers" => {:optional, :bool}
+           },
+           deadline: 5_000,
+           slot: true
+         ],
+         "unsubscribe" => [],
+         "history" => [
+           params: %{
+             "session" => {:required, :session},
+             "instance_id" => {:required, :string},
+             "before" => {:required, :string},
+             "limit" => {:optional, :int}
+           },
+           slot: true
+         ],
+         "abort" => [params: %{"session" => {:required, :session}}, deadline: 46_000],
+         "set_model" => [
+           params: %{"session" => {:required, :session}, "model" => {:required, :string}}
+         ],
+         "compact" => [],
+         "stop" => [params: %{"session" => {:required, :session}}, deadline: 77_000],
+         "answer" => []
+       })
 
   @core_errors ~w(session_not_found too_many_sessions invalid_cwd not_found invalid_utf8
                   invalid_origin queue_full turn_running text_too_large instance_changed
@@ -28,12 +90,12 @@ defmodule Helyx.Transport.WebSocket.Ops do
 
   @core_codes Enum.map(@core_errors, &Atom.to_string/1)
 
+  @spec deadline(String.t()) :: pos_integer() | :infinity
+  def deadline(op), do: Keyword.get(facts(op), :deadline, @default_deadline)
+
   # An operation whose result can be large takes the encoder slot of the
   # connection before it reads from Core.
-  def slot?(op), do: op in ~w(sessions.saved history)
-
-  @spec deadline(String.t()) :: pos_integer() | :infinity
-  def deadline(op), do: Map.get(@deadlines, op, @default_deadline)
+  def slot?(op), do: fact(op, :slot)
 
   # Under an authority, `sessions.saved` is the `run` of the authority: the
   # scan of Core and one Hub call (docs/features/hub.md, decision 7).
@@ -41,6 +103,13 @@ defmodule Helyx.Transport.WebSocket.Ops do
   @spec deadline(String.t(), boolean()) :: pos_integer() | :infinity
   def deadline("sessions.saved", true), do: @saved_run_ms
   def deadline(op, _authority?), do: deadline(op)
+
+  # Whether the `result/5` of the authority answers the op, whether the op
+  # frees a reserved place with `release/4` when its Core call fails, and
+  # whether the authority runs the op in place of a Core call.
+  def result?(op), do: fact(op, :result)
+  def release?(op), do: fact(op, :release)
+  def run?(op), do: fact(op, :run)
 
   # Runs `body` in the worker of request `id` within `ms`. The deadline of
   # a request with a large result starts at its slot. An open has no
@@ -81,55 +150,9 @@ defmodule Helyx.Transport.WebSocket.Ops do
     end
   end
 
-  def check(core, "sessions.saved", params) do
-    with :ok <- keys(params, [], ~w(cwd after limit)),
-         {:ok, opts} <- opts(params, cwd: &is_binary/1, after: &is_binary/1, limit: &is_integer/1) do
-      {:ok, fn -> saved_page(Helyx.Sessions.list_saved(core, opts)) end}
-    end
-  end
-
-  def check(core, "start", params) do
-    with :ok <- keys(params, ~w(cwd), ~w(model)),
-         {:ok, opts} <- opts(params, cwd: &is_binary/1, model: &is_binary/1) do
-      {:ok, fn -> core |> Helyx.Sessions.start(opts) |> started() end}
-    end
-  end
-
   def check(core, "resume", params) do
     with {:ok, opts} <- resume_opts(params),
          do: {:ok, fn -> core |> Helyx.Sessions.resume(opts) |> started() end}
-  end
-
-  def check(core, op, params) when op in ~w(prompt steer follow_up) do
-    with :ok <- keys(params, ~w(session text), ~w(origin)),
-         {:ok, session} <- session(core, params),
-         {:ok, text} <- string(params["text"]),
-         {:ok, opts} <- origin(params["origin"]) do
-      {:ok, fn -> apply(Session, String.to_existing_atom(op), [session, text, opts]) end}
-    end
-  end
-
-  def check(core, "history", params) do
-    with :ok <- keys(params, ~w(session instance_id before), ~w(limit)),
-         {:ok, session} <- session(core, params),
-         {:ok, instance_id} <- string(params["instance_id"]),
-         {:ok, before} <- string(params["before"]),
-         {:ok, opts} <- opts(params, limit: &is_integer/1) do
-      {:ok, fn -> page(Session.history(session, instance_id, before, opts)) end}
-    end
-  end
-
-  def check(core, "abort", params) do
-    with :ok <- keys(params, ~w(session), []),
-         {:ok, session} <- session(core, params),
-         do: {:ok, fn -> Session.abort(session) end}
-  end
-
-  def check(core, "set_model", params) do
-    with :ok <- keys(params, ~w(session model), []),
-         {:ok, session} <- session(core, params),
-         {:ok, model} <- string(params["model"]),
-         do: {:ok, fn -> Session.set_model(session, model) end}
   end
 
   def check(core, "compact", params) do
@@ -155,33 +178,128 @@ defmodule Helyx.Transport.WebSocket.Ops do
     end
   end
 
-  def check(core, "stop", params) do
-    with :ok <- keys(params, ~w(session), []),
-         {:ok, session} <- session(core, params),
-         do: {:ok, fn -> stopped(Helyx.Sessions.stop(session)) end}
-  end
-
-  def check(_core, _op, _params), do: :unknown_op
-
-  # The session and the options of a `subscribe`, or `:bad_params`.
-  def subscribe_params(core, params) do
-    with :ok <- keys(params, ~w(session), ~w(tail after answers)),
-         {:ok, session} <- session(core, params),
-         {:ok, opts} <- opts(params, tail: &is_integer/1, answers: &is_boolean/1),
-         {:ok, after_} <- after_(params["after"]) do
-      # A subscribe with no tail gets the default tail of the wire, not the
-      # full transcript of a client in the node.
-      {:ok, session, Keyword.put_new(opts, :tail, @default_tail) ++ after_}
+  # Every other op reads its params from the table: the typed values then
+  # build its Core call.
+  def check(core, op, params) do
+    with {:ok, spec} <- params_spec(op),
+         {:ok, values} <- typed(core, spec, params) do
+      {:ok, call(core, op, values)}
     end
   end
 
-  defp after_(nil), do: {:ok, []}
+  # The session and the options of a `subscribe`, or `:bad_params`.
+  def subscribe_params(core, params) do
+    with {:ok, spec} <- params_spec("subscribe"),
+         {:ok, values} <- typed(core, spec, params) do
+      opts = values |> Map.take(["tail", "answers"]) |> keyword()
+      opts = if after_ = values["after"], do: Keyword.put(opts, :after, after_), else: opts
+      # A subscribe with no tail gets the default tail of the wire, not the
+      # full transcript of a client in the node.
+      {:ok, values["session"], Keyword.put_new(opts, :tail, @default_tail)}
+    end
+  end
 
-  defp after_(%{"instance_id" => instance_id, "seq" => seq} = after_)
+  defp call(core, "sessions.saved", values),
+    do: fn -> saved_page(Helyx.Sessions.list_saved(core, keyword(values))) end
+
+  defp call(core, "start", values),
+    do: fn -> core |> Helyx.Sessions.start(keyword(values)) |> started() end
+
+  defp call(_core, op, values) when op in ~w(prompt steer follow_up) do
+    fn ->
+      apply(Session, String.to_existing_atom(op), [
+        values["session"],
+        values["text"],
+        origin(values)
+      ])
+    end
+  end
+
+  defp call(_core, "history", values) do
+    fn ->
+      page(
+        Session.history(
+          values["session"],
+          values["instance_id"],
+          values["before"],
+          limit(values)
+        )
+      )
+    end
+  end
+
+  defp call(_core, "abort", values), do: fn -> Session.abort(values["session"]) end
+
+  defp call(_core, "set_model", values),
+    do: fn -> Session.set_model(values["session"], values["model"]) end
+
+  defp call(_core, "stop", values),
+    do: fn -> stopped(Helyx.Sessions.stop(values["session"])) end
+
+  # The params of a common op, or `:unknown_op` for an op that has none.
+  defp params_spec(op) do
+    case Map.fetch(@ops, op) do
+      {:ok, facts} ->
+        case Keyword.fetch(facts, :params) do
+          {:ok, %{} = spec} -> {:ok, spec}
+          _ -> :unknown_op
+        end
+
+      :error ->
+        :unknown_op
+    end
+  end
+
+  # The checked values of `params` for `spec`, or `:bad_params`. Every key
+  # of `spec` that is required is present, no key outside `spec` is, and
+  # each value has its type.
+  defp typed(core, spec, params) do
+    if Enum.all?(spec, fn {key, {need, _}} -> need == :optional or Map.has_key?(params, key) end) and
+         Enum.all?(Map.keys(params), &Map.has_key?(spec, &1)) do
+      Enum.reduce_while(params, {:ok, %{}}, fn {key, value}, {:ok, values} ->
+        {_need, type} = Map.fetch!(spec, key)
+
+        case cast(core, type, value) do
+          {:ok, value} -> {:cont, {:ok, Map.put(values, key, value)}}
+          :bad_params -> {:halt, :bad_params}
+        end
+      end)
+    else
+      :bad_params
+    end
+  end
+
+  defp cast(_core, :string, value) when is_binary(value), do: {:ok, value}
+  defp cast(_core, :int, value) when is_integer(value), do: {:ok, value}
+  defp cast(_core, :bool, value) when is_boolean(value), do: {:ok, value}
+  defp cast(_core, :object, value) when is_map(value), do: {:ok, value}
+
+  defp cast(core, :session, id) when is_binary(id),
+    do: {:ok, %Session{id: id, core: core}}
+
+  defp cast(_core, :origin, nil), do: {:ok, nil}
+
+  defp cast(_core, :origin, %{"kind" => "product", "id" => id} = origin)
+       when map_size(origin) == 2 and is_binary(id),
+       do: {:ok, %{kind: :product, id: id}}
+
+  defp cast(_core, :after, nil), do: {:ok, nil}
+
+  defp cast(_core, :after, %{"instance_id" => instance_id, "seq" => seq} = after_)
        when map_size(after_) == 2 and is_binary(instance_id) and is_integer(seq) and seq >= 0,
-       do: {:ok, after: {instance_id, seq}}
+       do: {:ok, {instance_id, seq}}
 
-  defp after_(_after), do: :bad_params
+  defp cast(_core, _type, _value), do: :bad_params
+
+  # The checked values as a keyword list for an option list.
+  defp keyword(values),
+    do: Enum.map(values, fn {key, value} -> {String.to_existing_atom(key), value} end)
+
+  defp origin(%{"origin" => origin}) when origin != nil, do: [origin: origin]
+  defp origin(_values), do: []
+
+  defp limit(%{"limit" => limit}), do: [limit: limit]
+  defp limit(_values), do: []
 
   defp resume_opts(%{"id" => id} = params) when map_size(params) == 1 and is_binary(id),
     do: {:ok, id: id}
@@ -199,19 +317,6 @@ defmodule Helyx.Transport.WebSocket.Ops do
        else: :bad_params
   end
 
-  # The params present, as options, each of its type.
-  defp opts(params, types) do
-    Enum.reduce_while(types, {:ok, []}, fn {key, type?}, {:ok, acc} ->
-      case Map.fetch(params, Atom.to_string(key)) do
-        :error -> {:cont, {:ok, acc}}
-        {:ok, value} -> opt(key, value, type?.(value), acc)
-      end
-    end)
-  end
-
-  defp opt(key, value, true, acc), do: {:cont, {:ok, [{key, value} | acc]}}
-  defp opt(_key, _value, false, _acc), do: {:halt, :bad_params}
-
   defp session(core, %{"session" => id}) when is_binary(id),
     do: {:ok, %Session{id: id, core: core}}
 
@@ -222,14 +327,6 @@ defmodule Helyx.Transport.WebSocket.Ops do
 
   defp object(value) when is_map(value), do: {:ok, value}
   defp object(_value), do: :bad_params
-
-  defp origin(nil), do: {:ok, []}
-
-  defp origin(%{"kind" => "product", "id" => id} = origin)
-       when map_size(origin) == 2 and is_binary(id),
-       do: {:ok, origin: %{kind: :product, id: id}}
-
-  defp origin(_origin), do: :bad_params
 
   defp started({:ok, %Session{id: id}}), do: {:ok, %{"session" => id}}
   defp started({:error, reason}) when reason in @core_errors, do: {:error, reason}
@@ -291,4 +388,7 @@ defmodule Helyx.Transport.WebSocket.Ops do
 
   defp result({:error, code}) when code in @core_errors,
     do: {:error, Atom.to_string(code), String.replace(Atom.to_string(code), "_", " ")}
+
+  defp fact(op, key), do: Keyword.get(facts(op), key, false)
+  defp facts(op), do: Map.fetch!(@ops, op)
 end
