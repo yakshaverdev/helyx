@@ -239,7 +239,8 @@ defmodule Helyx.Session.FileTest do
               "type" => "summary",
               "summary" => "s",
               "first_kept_id" => "message00001",
-              "tokens_before" => 1
+              "tokens_before" => 1,
+              "last_id" => "message00001"
             },
             extra
           )
@@ -327,10 +328,6 @@ defmodule Helyx.Session.FileTest do
         {[entry.("compaction", %{"tokens_after" => 1_000_000_001})], {"message00001", nil}},
         {[entry.("compaction", %{"tokens_after" => -1})], {"message00001", nil}},
         {[entry.("compaction", %{"tokens_after" => 4, "last_id" => nil})], nil},
-        # An entry from before #712 names no message: the one before it.
-        {[
-           ~s({"id":"old00001","type":"compaction","provider":"conn","trigger":"auto","tokens_after":4})
-         ], {"message00001", 4}},
         {[entry.("compaction", %{"tokens_after" => 4}), entry.("summary", %{})],
          {"message00001", nil}},
         {[entry.("summary", %{}), entry.("compaction", %{"tokens_after" => 4})],
@@ -343,6 +340,20 @@ defmodule Helyx.Session.FileTest do
         file = append_raw(file, user_entry("message00001", %{}))
         Enum.reduce(entries, file, &append_raw(&2, &1))
         assert {:ok, %{compacted: ^expected}} = SessionFile.resume(dir, "/repo")
+      end
+
+      # The writer always stores `last_id`: a compaction or summary entry
+      # without it is damage on the disk, not a state to repair.
+      for {type, extra} <- [
+            {"compaction", ~s(,"provider":"conn","trigger":"auto","tokens_after":4)},
+            {"summary", ~s(,"summary":"s","first_kept_id":"message00001","tokens_before":1)}
+          ] do
+        dir = Path.join(dir, "no_last_id_#{type}")
+        {:ok, file} = Session.File.create(dir, "sess00000001", "/repo", "test/ok")
+        file = append_raw(file, user_entry("message00001", %{}))
+        append_raw(file, ~s({"id":"old00001","type":"#{type}"#{extra}}))
+
+        assert {:error, {:invalid_file, _}} = SessionFile.resume(dir, "/repo")
       end
     end
   end
@@ -448,9 +459,9 @@ defmodule Helyx.Session.FileTest do
     assert [_header, user, first, _codex, _assistant, _result, last] = entries
 
     assert %{
-             "type" => "harness_session",
+             "type" => "resume_id",
              "provider" => "claude-code",
-             "harness_session_id" => "first",
+             "resume_id" => "first",
              "parent_id" => parent,
              "ts" => _
            } = first
@@ -459,27 +470,14 @@ defmodule Helyx.Session.FileTest do
     assert resumed.file.leaf == last["id"]
   end
 
-  test "an entry stored as harness_session by an older writer still resumes", %{tmp_dir: dir} do
-    # The literal line pins the stored names that session files on disk hold.
-    {:ok, file} = started(dir, "old000000000", "/old", "claude-code/opus")
-
-    append_raw(
-      file,
-      ~s({"id":"h","type":"harness_session","provider":"claude-code","harness_session_id":"h1"})
-    )
-
-    assert {:ok, %{resume_ids: %{"claude-code" => {"h1", 0, nil}}}} =
-             SessionFile.resume(dir, "/old")
-  end
-
   test "a resume id entry with a bad id removes the label of its provider",
        %{tmp_dir: dir} do
     bad = [
-      ~s({"id":"x","type":"harness_session","provider":"claude-code"}),
-      ~s({"id":"x","type":"harness_session","provider":"claude-code","harness_session_id":null}),
+      ~s({"id":"x","type":"resume_id","provider":"claude-code"}),
+      ~s({"id":"x","type":"resume_id","provider":"claude-code","resume_id":null}),
       # The id is 1 to 256 bytes; 257 bytes, multibyte, and empty are bad.
-      ~s({"id":"x","type":"harness_session","provider":"claude-code","harness_session_id":"a#{String.duplicate("é", 128)}"}),
-      ~s({"id":"x","type":"harness_session","provider":"claude-code","harness_session_id":""})
+      ~s({"id":"x","type":"resume_id","provider":"claude-code","resume_id":"a#{String.duplicate("é", 128)}"}),
+      ~s({"id":"x","type":"resume_id","provider":"claude-code","resume_id":""})
     ]
 
     for {line, n} <- Enum.with_index(bad) do
@@ -499,8 +497,8 @@ defmodule Helyx.Session.FileTest do
   test "a resume id entry with no usable provider removes every label",
        %{tmp_dir: dir} do
     bad = [
-      ~s({"id":"x","type":"harness_session","harness_session_id":"a"}),
-      ~s({"id":"x","type":"harness_session","provider":1,"harness_session_id":"a"})
+      ~s({"id":"x","type":"resume_id","resume_id":"a"}),
+      ~s({"id":"x","type":"resume_id","provider":1,"resume_id":"a"})
     ]
 
     for {line, n} <- Enum.with_index(bad) do
@@ -533,7 +531,7 @@ defmodule Helyx.Session.FileTest do
   test "a valid resume id entry after one with no provider sets a label",
        %{tmp_dir: dir} do
     {:ok, file} = started(dir, "later0000000", "/later", "test/ok")
-    line = ~s({"id":"x","type":"harness_session","harness_session_id":"a"})
+    line = ~s({"id":"x","type":"resume_id","resume_id":"a"})
 
     file
     |> append_raw(line)
