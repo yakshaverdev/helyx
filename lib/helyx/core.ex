@@ -151,7 +151,7 @@ defmodule Helyx.Core do
 
         dir ->
           [
-            Supervisor.child_spec({Helyx.Core.FolderLock, dir},
+            Supervisor.child_spec({Helyx.Core.FolderLock, {dir, name}},
               restart: :temporary,
               significant: true
             )

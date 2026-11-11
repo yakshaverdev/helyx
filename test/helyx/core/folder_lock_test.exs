@@ -103,6 +103,20 @@ defmodule Helyx.Core.FolderLockTest do
     assert Process.alive?(pid)
   end
 
+  # Core stops its sessions with a drain and a save, and the folder is free
+  # by then (docs/features/session-lock.md, decision 3).
+  test "a lost lock kills the sessions, with no drain", %{tmp_dir: dir} do
+    Process.flag(:trap_exit, true)
+    {a, _pid} = start_core_link(dir)
+    {:ok, session} = Session.start(a, model: "test/ok")
+    pid = Session.pid(session)
+    ref = Process.monitor(pid)
+
+    PerlSignal.send!(perl_of(a, dir), "KILL", lock_path(dir))
+
+    assert_receive {:DOWN, ^ref, :process, ^pid, :killed}, 5_000
+  end
+
   # The session writes only in the folder that the Core locks
   # (docs/features/session-lock.md, decision 4).
   test "a sessions_dir that is not the folder of the Core is refused, and the same folder is accepted",

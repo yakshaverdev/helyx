@@ -34,7 +34,10 @@ folder of each Core.
 3. **A lost lock stops Core.** When perl ends while Core runs, the child stops
    with `{:data_folder_lock_lost, dir}`. Its child spec is `temporary` and
    `significant`, and the Core supervisor has `auto_shutdown: :any_significant`,
-   so Core stops all its children and exits with `:shutdown`. There is no
+   so Core stops all its children and exits with `:shutdown`. Before it
+   stops, the child kills the sessions and the edit Tasks of the Core, so
+   none of them drains or saves into a folder that another Core may own.
+   There is no
    "go on unsaved" mode for this cause. The `persisting` field of the snapshot
    stays for a failed write.
 4. **A session writes only in the folder of its Core.** `:sessions_dir` of
@@ -141,10 +144,10 @@ copy commands went with the per-session lock.
   exit. An edit just after a session stop can get `:running`, and a resume just
   after the kill of an edit Task (the deadline, or a Core stop) can get
   `:editing`.
-- A lost folder lock stops Core, but until the stop ends, a session of the Core
-  can still append (a mailbox drain, then the plugin stop). For `helyx serve`
-  the hole is closed in practice: `server.lock` stays held until after the Core
-  stop.
+- A lost folder lock kills the sessions of the Core, but a write that runs at
+  that moment can still end, and a plugin can write at its stop. For
+  `helyx serve` the hole is closed in practice: `server.lock` stays held until
+  after the Core stop.
 - A removed `core.lock` lets a second Core lock a new file at the path while
   the first holds the old one. A hard link that two folders share has one lock
   for each folder, so an edit in one Core does not see a session of the other.
@@ -158,5 +161,4 @@ copy commands went with the per-session lock.
 - A cleanup of old `<id>.lock` files on disk. Nothing reads them.
 - A lock on a network filesystem.
 - A wait of the open for an edit: the open refuses with `:editing`.
-- A narrower window between a lost folder lock and the end of the Core stop.
 - A wire request for edits.
