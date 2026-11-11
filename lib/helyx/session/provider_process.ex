@@ -1,23 +1,20 @@
 defmodule Helyx.Session.ProviderProcess do
   @moduledoc false
-  # The Core loop of a provider process (ADR 0007): a long-lived Task of
-  # the hands that runs the callbacks of a provider. The loop checks every
-  # action at the boundary, sends each event and reply to the session, and
-  # ends itself on a bad action, a stop, or an error answer to
-  # `{:turn, ...}` or `{:interrupt, ...}`. It never ends
-  # with `:normal` (L1 in `docs/features/one-provider-path.md`), so every
-  # process linked to it ends with it: it exits with `{:shutdown, reason}`,
-  # and the hands report `reason` in `{:provider_down, pid, reason}` after
-  # its release. Every session request has an armed kill
-  # (`ProviderRequest`). The session owns the turn and its Helyx tool calls
-  # (`docs/features/one-provider-path.md`, "Ownership"); the loop keeps no
-  # turn state.
+  # The Core loop of a provider process (ADR 0007): a long-lived Task of the
+  # hands that runs the callbacks of a provider. The loop checks every action at
+  # the boundary, sends each event and reply to the session, and ends itself on
+  # a bad action, a stop, or an error answer to `{:turn, ...}` or
+  # `{:interrupt, ...}`. It never ends with `:normal`, so every process linked
+  # to it ends with it: it exits with `{:shutdown, reason}`, and the hands
+  # report `reason` after its release. Every session request has an armed kill
+  # (`ProviderRequest`). The session owns the turn and its Helyx tool calls; the
+  # loop keeps no turn state (docs/features/one-provider-path.md).
 
   alias Helyx.Message
   alias Helyx.Session.{ProviderRequest, Stream}
 
-  # The loop state: the provider and its state, the session, and `open`
-  # (see `loop/1`).
+  # The loop state: the provider and its state, the session, and `open` (see
+  # `loop/1`).
   @enforce_keys [:provider, :state, :session]
   defstruct [:provider, :state, :session, open: %{}]
 
@@ -30,18 +27,17 @@ defmodule Helyx.Session.ProviderProcess do
         }
 
   @doc """
-  The body of the provider process, as a fun of `tref`, the connect kill
-  that the hands armed; it is cancelled after `init/3` returns, before
-  `{:provider_ready, pid}` goes to the session. The process waits for
-  `:start` from the session before `init/3`. The fun never returns.
+  The body of the provider process, as a fun of `tref`, the connect kill that
+  the hands armed; it is cancelled after `init/3` returns, before
+  `{:provider_ready, pid}` goes to the session. The process waits for `:start`
+  from the session before `init/3`. The fun never returns.
   """
   @spec run(args()) :: (:timer.tref() -> no_return())
   @dialyzer {:nowarn_function, run: 1}
   def run(args) do
     fn tref ->
-      # The session sends `:start` once it holds this pid from the answer of
-      # the hands. `{:provider_ready, pid}` comes from this process, the
-      # answer from the hands, and two senders have no order (#677).
+      # The answer of the hands and `{:provider_ready, pid}` have two senders,
+      # so they have no order (#677).
       receive do
         :start -> :ok
       end
@@ -73,9 +69,9 @@ defmodule Helyx.Session.ProviderProcess do
     end
   end
 
-  # `open` holds the kind and the kill of each request without a reply, by
-  # its `from`. The session bounds each kind of request (`Bounds` in
-  # `docs/features/session-lifecycle.md`), so the loop does not.
+  # `open` holds the kind and the kill of each request without a reply, by its
+  # `from`. The session bounds each kind of request, so the loop does not
+  # (docs/features/session-lifecycle.md).
   defp loop(proc) do
     step =
       receive do
@@ -123,8 +119,8 @@ defmodule Helyx.Session.ProviderProcess do
 
   defp act(other, _proc), do: {:stop, {:bad_return, other}}
 
-  # A turn that the provider started by itself (#240). Its id is the
-  # provider's, with the checks of a resume id; the session opens or drops it.
+  # A turn that the provider started by itself (#240). Its id is the provider's,
+  # with the checks of a resume id; the session opens or drops it.
   defp action({:event, turn_id, :turn_start} = action, proc) do
     if Message.resume_id?(turn_id),
       do: sent(Stream.send_checked(proc.session, {:stream_event, turn_id, :turn_start}), proc),
@@ -136,13 +132,11 @@ defmodule Helyx.Session.ProviderProcess do
        when is_binary(turn_id) and kind in [:text_delta, :thinking_delta],
        do: {:ok, proc}
 
-  # An event passes the check of a provider event. A tool request goes to
-  # the session with this pid and its rejection reason, and the session
-  # answers it, also after its turn; so does an approval request. A resume
-  # id goes with this pid too: the session records it also in the wait
-  # after its turn. A terminal goes as `{:stream_end, turn_id, terminal}`,
-  # as the check returns it. A malformed event stops the loop: the
-  # provider's turn is then in an unknown state.
+  # A tool request goes to the session with this pid and its rejection reason,
+  # and the session answers it, also after its turn; so does an approval
+  # request. A resume id goes with this pid too: the session records it also in
+  # the wait after its turn. A malformed event stops the loop: the provider's
+  # turn is then in an unknown state.
   defp action({:event, turn_id, event}, proc) when is_binary(turn_id) do
     case Stream.check(event) do
       {:send, {:tool_request, call, bytes}, rejection} ->
@@ -167,8 +161,8 @@ defmodule Helyx.Session.ProviderProcess do
     end
   end
 
-  # A fresh context (C2, C3), after the events before it: the session
-  # checks the context against its turn.
+  # A fresh context, after the events before it: the session checks it against
+  # its turn (C2, C3).
   defp action({:need_context, turn_id} = action, proc) when is_binary(turn_id),
     do: sent(Stream.send_checked(proc.session, action), proc)
 

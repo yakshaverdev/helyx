@@ -1,9 +1,9 @@
 defmodule Helyx.Session.Ring do
   @moduledoc false
-  # The replay ring of a session: its newest events, at most 1,024 and
-  # 4 MiB by `:erlang.external_size/1`. `seq` is the seq of the newest
-  # event of the session, and `from` is the lowest `after` that the ring
-  # can serve (docs/features/replay-ring.md).
+  # The replay ring of a session: its newest events, at most 1,024 and 4 MiB by
+  # `:erlang.external_size/1`. `seq` is the seq of the newest event of the
+  # session, and `from` is the lowest `after` that the ring can serve
+  # (docs/features/replay-ring.md).
 
   alias Helyx.Event
 
@@ -49,8 +49,8 @@ defmodule Helyx.Session.Ring do
 
   defp trim(ring), do: ring
 
-  # The events after `seq`, oldest first, or `:error` when the ring dropped
-  # one of them. The caller checks that `seq` is not above the last event.
+  # The events after `seq`, oldest first, or `:error` when the ring dropped one
+  # of them. The caller checks that `seq` is not above the last event.
   @spec since(t(), non_neg_integer()) :: {:ok, [Event.t()]} | :error
   def since(%__MODULE__{from: from} = ring, seq) when seq >= from,
     do:

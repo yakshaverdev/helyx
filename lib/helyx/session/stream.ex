@@ -1,22 +1,20 @@
 defmodule Helyx.Session.Stream do
   @moduledoc false
-  # The boundary of provider output: the context build of the prepare Task,
-  # the check of each provider event, and the bounded send to the session.
-  # It holds no resource and makes no decision of the turn.
+  # The boundary of provider output: the context build of the prepare Task, the
+  # check of each provider event, and the bounded send to the session. It holds
+  # no resource and makes no decision of the turn.
 
   require Helyx.Usage
 
   alias Helyx.Message
 
-  # `:aborted` and `:error` are the stop reasons of a turn that the session
-  # cut; a provider does not send them.
+  # `:aborted` and `:error` are the stop reasons of a turn that the session cut;
+  # a provider does not send them.
   @stop_reasons Message.stop_reasons() -- [:aborted, :error]
 
-  # The most messages that may wait in the session mailbox before a send.
-  # A count, not bytes. Core cuts a tool result before the send
-  # (`Helyx.Message.cut_result/1`) and caps the open message that the
-  # session keeps (`Helyx.Session.Turn`), not the size of one waiting delta
-  # or tool call.
+  # The most messages that may wait in the session mailbox before a send. A
+  # count, not bytes: Core cuts a tool result before the send and caps the open
+  # message that the session keeps, not the size of one waiting delta.
   @max_session_queue 10_000
 
   # A token count of a compaction: the wire bound of a token count
@@ -28,19 +26,10 @@ defmodule Helyx.Session.Stream do
 
   @doc """
   Builds the context of one provider call with the ModelContext and the
-  Compaction plugin. The session resolved both at its
-  start; nil means none, and the context goes on unchanged. The return of
-  each plugin is checked at the boundary. Returns `{:error, {:bad_context,
-  :model_context | :compaction}}` when a plugin returns anything but a
-  `Helyx.Context` with its three fields: a system prompt that is nil or a
-  valid UTF-8 string, and two proper lists. The reason names the plugin,
-  not the value.
-
-  The Compaction plugin can also return `{:error, text}`, which is returned
-  as it is, or a `Helyx.Summary.Plan` when `opts[:trigger]` is not nil: a
-  context with the checks above, the id of a user or assistant message of
-  `context`, and a token count from 0 to 10^9. Any other plan is
-  `{:bad_context, :compaction}` (`docs/features/summary-compaction.md`).
+  Compaction plugin; nil means none. Each plugin's return is checked here
+  (`{:error, {:bad_context, :model_context | :compaction}}`). The Compaction
+  plugin can also return `{:error, text}`, or a `Helyx.Summary.Plan` when
+  `opts[:trigger]` is not nil (`docs/features/summary-compaction.md`).
   """
   @spec prepare(module() | nil, module() | nil, Helyx.Context.t(), keyword()) ::
           {:ok, Helyx.Context.t()}
@@ -78,17 +67,17 @@ defmodule Helyx.Session.Stream do
   defp compacted(context, _messages, _trigger), do: checked_context(context, :compaction)
 
   # The size check rejects a struct that a plugin forged by removing or adding
-  # keys. An improper list is rejected too: the session appends to the
-  # messages, and Core and the providers walk both lists. The elements of
-  # the lists are not checked here.
+  # keys. An improper list is rejected too: the session appends to the messages,
+  # and Core and the providers walk both lists. The elements are not checked.
   defp checked_context(
          %Helyx.Context{system: system, messages: messages, tools: tools} = context,
          plugin
        )
        when map_size(context) == 4 and (is_nil(system) or is_binary(system)) and
               is_list(messages) and is_list(tools) do
-    # The session file stores the system prompt (docs/features/turn-record.md),
-    # and its JSON encode raises on bytes that are not UTF-8.
+    # The session file stores the system prompt
+    # (docs/features/turn-record.md), and its JSON encode raises on bytes that
+    # are not UTF-8.
     if List.improper?(messages) or List.improper?(tools) or
          not (is_nil(system) or String.valid?(system)),
        do: {:error, {:bad_context, plugin}},
@@ -98,21 +87,15 @@ defmodule Helyx.Session.Stream do
   defp checked_context(_other, plugin), do: {:error, {:bad_context, plugin}}
 
   @doc """
-  Checks one event from a provider. Returns `{:send, event, rejection}`
-  for an event that passes, with the checked event and, for a call with
-  an integer over the digit limit, the reason that it must not run, or nil.
-  A checked tool call is `{:tool_call, call, bytes}`, with the bytes of
-  the JSON encode of its id, name, and arguments;
-  `{:terminal, terminal}` for a `done` or an `error` event, ready to
-  send, with an error reason as it is; and `{:bad, error}` for
-  a malformed event. Arguments that are not a plain map are malformed: the
-  session file needs a plain map. The error of a call whose arguments are
-  raw text holds `%{}` in place of the text. The usage of a `done` or a
-  `message_end` is nil or a `Helyx.Usage` within the struct bound
-  (`Helyx.Usage.valid?/1`); anything else is malformed. A delta or a tool call that is not valid UTF-8 is
-  malformed: transcript text is valid from the moment it exists, so the
-  file and the providers never see raw bytes. A tool call or a tool request with an
-  empty id is malformed: a result names its call by the id.
+  Checks one event from a provider. Returns `{:send, event, rejection}` for an
+  event that passes, with the checked event and, for a call with an integer over
+  the digit limit, the reason that it must not run, or nil. A checked tool call
+  is `{:tool_call, call, bytes}`, with the bytes of the JSON encode of its id,
+  name, and arguments; `{:terminal, terminal}` for a `done` or an `error` event;
+  and `{:bad, error}` for a malformed event. A delta or a tool call that is not
+  valid UTF-8 is malformed, and so is a call with an empty id. The usage of a
+  `done` or a `message_end` is nil or a `Helyx.Usage` within its struct bound;
+  anything else is malformed.
   """
   @spec check(term()) ::
           {:send, term(), String.t() | nil}
@@ -125,13 +108,11 @@ defmodule Helyx.Session.Stream do
 
   def check({:tool_call, call}), do: tool_call(call)
 
-  # The stop reason set is closed (`@stop_reasons`), and the session file
-  # holds only JSON. A terminal whose stop reason is outside
-  # the set, or whose usage is not within the struct bound, fails the turn
-  # here, before the message exists, instead of raising in persist and
-  # silently turning persistence off for the rest of the session. A new
-  # plain map: the pattern also matches a struct and a map with more keys,
-  # and the session needs this shape.
+  # The stop reason set is closed (`@stop_reasons`), and the session file holds
+  # only JSON. A terminal outside them fails the turn here, before the message
+  # exists, instead of raising in persist and silently turning persistence off
+  # for the rest of the session. A new plain map: the pattern also matches a
+  # struct and a map with more keys.
   def check({:done, %{stop_reason: reason, usage: usage}} = terminal)
       when reason in @stop_reasons do
     if valid_usage?(usage),
@@ -148,15 +129,13 @@ defmodule Helyx.Session.Stream do
     end
   end
 
-  # The session looks the steer up by its id and appends its own text, the
-  # text that it checked at the client call.
+  # The session looks the steer up by its id and appends its own text, the text
+  # that it checked at the client call.
   def check({:user_message, steer_id} = event) when is_binary(steer_id), do: {:send, event, nil}
 
-  # A provider asks the session to run a Helyx tool. The arguments get the
-  # checks of a tool call, and the checked call goes on as
-  # `{:tool_request, call, bytes}`, with the bytes of a tool call; a call
-  # with a rejection reason gets it, and the session answers it with an
-  # error result (`Helyx.Session.Server.ToolRuns`).
+  # A provider asks the session to run a Helyx tool. The arguments get the checks
+  # of a tool call; a call with a rejection reason gets it, and the session
+  # answers it with an error result (`Helyx.Session.Server.ToolRuns`).
   def check({:tool_request, id, name, args}) do
     case tool_call(%Message.ToolCall{id: id, name: name, arguments: args}) do
       {:send, {:tool_call, call, bytes}, rejection} ->
@@ -168,17 +147,16 @@ defmodule Helyx.Session.Stream do
     end
   end
 
-  # An approval request of the provider for its open call `call_id`. The
-  # check holds no turn state: the shape and the bytes of the id only
-  # (ADR 0013 §4). The session checks the pending ids and the call.
+  # An approval request of the provider for its open call `call_id`. The check
+  # holds no turn state: the shape and the bytes of the id only (ADR 0013 §4).
   def check({:approval, approval_id, call_id} = event)
       when is_binary(approval_id) and is_binary(call_id) do
     if Message.approval_id?(approval_id), do: {:send, event, nil}, else: {:bad, malformed(event)}
   end
 
-  # A UI block of the provider (docs/features/ui-blocks.md): its key and
-  # its block are checked here, and a block over the bound is cut. The
-  # session checks the call id against the open calls of the turn.
+  # A UI block of the provider (docs/features/ui-blocks.md): its key and its
+  # block are checked here, and a block over the bound is cut. The session checks
+  # the call id against the open calls of the turn.
   def check({:ui_block, call_id, key, block} = event)
       when is_nil(call_id) or (is_binary(call_id) and call_id != "") do
     with true <- Helyx.UIBlock.key?(key),
@@ -189,20 +167,19 @@ defmodule Helyx.Session.Stream do
     end
   end
 
-  # A compaction of the provider's own history, with its token counts
-  # before and after, each nil when the provider does not know it.
+  # A compaction of the provider's own history, with its token counts before and
+  # after, each nil when the provider does not know it.
   def check({:compaction, before, after_} = event)
       when is_token_count(before) and is_token_count(after_),
       do: {:send, event, nil}
 
   def check(other), do: {:bad, malformed(other)}
 
-  # The one place where tool call arguments enter the session from a
-  # provider (on resume, Session.File caps them). Arguments with an integer
-  # over the digit limit are found here, before the first JSON encode,
-  # which is quadratic in the digits (#79): the call goes on with `%{}` and
-  # its rejection. An empty id is malformed: the next request names a
-  # result by the id of its call.
+  # The one place where tool call arguments enter the session from a provider
+  # (on resume, Session.File caps them). Arguments with an integer over the digit
+  # limit are found here, before the first JSON encode, which is quadratic in the
+  # digits (#79). An empty id is malformed: the next request names a result by
+  # the id of its call.
   defp tool_call(%Message.ToolCall{id: id, name: name, arguments: args} = call)
        when is_binary(id) and id != "" and is_binary(name) and is_non_struct_map(args) do
     if Message.big_integer?(args) do
@@ -211,8 +188,8 @@ defmodule Helyx.Session.Stream do
       # A new struct: the pattern also matches a call with one more key.
       checked = %Message.ToolCall{id: id, name: name, arguments: args}
 
-      # The size of the encode goes with the call: the session counts it in
-      # the bound of the open message (`Helyx.Session.Turn`), with no encode.
+      # The size of the encode goes with the call: the session counts it in the
+      # bound of the open message (`Helyx.Session.Turn`), with no encode.
       case Message.encoded_size([id, name, args]) do
         {:ok, bytes} -> {:send, {:tool_call, checked, bytes}, nil}
         :error -> {:bad, malformed({:tool_call, checked})}
@@ -220,8 +197,8 @@ defmodule Helyx.Session.Stream do
     end
   end
 
-  # Arguments that did not decode to a JSON object can come as their raw
-  # text. The error drops the text, so the log and the client never get it.
+  # Arguments that did not decode to a JSON object can come as their raw text.
+  # The error drops the text, so the log and the client never get it.
   defp tool_call(%Message.ToolCall{arguments: args} = call) when is_binary(args),
     do: {:bad, malformed({:tool_call, %{call | arguments: %{}}})}
 
@@ -233,18 +210,16 @@ defmodule Helyx.Session.Stream do
          do: {:send, event, reason}
   end
 
-  # The events that close a message, carry a result, a resume id, or a
-  # taken steer. A message end is checked like the
-  # `done` terminal. A result text is made valid UTF-8 and cut to the tool
-  # result limit, so a large result never fails the turn: this is the
-  # boundary of a provider result, as the hands are for a tool of the
-  # session.
+  # The events that close a message, carry a result, a resume id, or a taken
+  # steer. A result text is made valid UTF-8 and cut to the tool result limit, so
+  # a large result never fails the turn: this is the boundary of a provider
+  # result, as the hands are for a tool of the session.
   defp provider_event({:message_end, reason, usage} = event) when reason in @stop_reasons do
     if valid_usage?(usage), do: {:ok, {:message_end, reason, usage}}, else: malformed(event)
   end
 
-  # The session uses the id only to find an open call, so an id that is
-  # not valid UTF-8 is dropped there like an unknown id.
+  # The session uses the id only to find an open call, so an id that is not
+  # valid UTF-8 is dropped there like an unknown id.
   defp provider_event({:tool_result, id, {status, text}})
        when is_binary(id) and status in [:ok, :error] and is_binary(text),
        do: {:ok, {:tool_result, id, {status, Message.cut_result(text)}}}
@@ -260,8 +235,8 @@ defmodule Helyx.Session.Stream do
 
   defp malformed(event), do: {:error, {:bad_stream_event, event}}
 
-  # Range checks only, with no encode: they also keep every integer under
-  # the digit limit of `Helyx.Message`.
+  # Range checks only, with no encode: they also keep every integer under the
+  # digit limit of `Helyx.Message`.
   defp valid_usage?(usage), do: usage == nil or Helyx.Usage.valid?(usage)
 
   @doc "The error text of a tool call that does not run, from its rejection reason."
@@ -269,14 +244,12 @@ defmodule Helyx.Session.Stream do
   def not_run(reason), do: "tool call not run: " <> reason
 
   @doc """
-  Sends a message to the session, or to a provider process. Every send of
-  a provider event to the session goes through here. The check before it
-  bounds the receiver's mailbox: the sends have no ack, so a provider that
-  is faster than the session would grow it with no limit (#197). Over #{@max_session_queue}
-  waiting messages nothing is sent, and the result is `{:error,
-  {behind, length, #{@max_session_queue}}}`. `behind` names the receiver:
-  `:session_behind`, or `:provider_behind` for the provider process that
-  a model Task of `Helyx.Provider.Loop` sends to.
+  Sends a message to the session, or to a provider process. Every send of a
+  provider event to the session goes through here. The check before it bounds
+  the receiver's mailbox: the sends have no ack, so a provider that is faster
+  than the session would grow it with no limit (#197). Over
+  #{@max_session_queue} waiting messages nothing is sent, and the result is
+  `{:error, {behind, length, #{@max_session_queue}}}`.
   """
   @spec send_checked(pid(), term(), :session_behind | :provider_behind) ::
           :ok | {:error, {:session_behind | :provider_behind, non_neg_integer(), pos_integer()}}

@@ -1,16 +1,16 @@
 defmodule Helyx.Session.Id do
   @moduledoc false
-  # One id scheme for sessions, session instances, turns, messages, asks,
-  # and session file entries.
+  # One id scheme for sessions, session instances, turns, messages, asks, and
+  # session file entries.
 
   @doc "A short random id, URL and filename safe."
   @spec new() :: String.t()
   def new, do: encode(:crypto.strong_rand_bytes(9))
 
   @doc """
-  The id of the session with the parent link of `session_id` and
-  `call_id`: derived from the link, so a client finds a child from the call
-  alone. A session id has a fixed length, so the two join with no mark.
+  The id of the session with the parent link of `session_id` and `call_id`:
+  derived from the link, so a client finds a child from the call alone. A
+  session id has a fixed length, so the two join with no mark.
   """
   @spec child(String.t(), String.t()) :: String.t()
   def child(session_id, call_id),

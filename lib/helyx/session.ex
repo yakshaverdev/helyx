@@ -1,21 +1,18 @@
 defmodule Helyx.Session do
   @moduledoc """
-  One conversation with one agent.
-
-  A session is a supervised process under Core. It owns the transcript and
-  the current turn. Clients subscribe to its events and send prompts.
+  One conversation with one agent: a supervised process under Core that owns the
+  transcript and the current turn. Clients subscribe to its events and send
+  prompts.
 
       {:ok, session} = Helyx.Session.start(core, model: "fake/echo")
       {:ok, snapshot, ref} = Helyx.Session.subscribe(session)
       :ok = Helyx.Session.prompt(session, "hello")
-      # receive {:helyx_event, %Helyx.Event{}} ...
-      # then {:DOWN, ^ref, :process, _pid, reason} when the session
-      # ends; Helyx.Session.end_reason(reason) is :stopped or :crashed
+      # then {:helyx_event, %Helyx.Event{}}, and a :DOWN at the end
 
-  The turn, the queues, the abort, the provider process, and the late calls
-  are in `docs/features/session-lifecycle.md`; the subscription is in
-  `docs/features/session-subscribers.md`. Every message has an id, and every
-  user message an origin (`docs/features/message-identity.md`).
+  The turn and the late calls are in `docs/features/session-lifecycle.md`; the
+  subscription is in `docs/features/session-subscribers.md`; every message has
+  an id and every user message an origin
+  (`docs/features/message-identity.md`).
   """
 
   alias Helyx.ModelRef
@@ -45,25 +42,27 @@ defmodule Helyx.Session do
           | {:max_output_tokens_unsupported, String.t()}
 
   @doc """
-  Starts a session under Core. `:model` is required, and the ref resolves as
-  in `set_model/2`. `:cwd` defaults to the current directory, valid UTF-8
-  with no NUL byte, else `{:error, :invalid_cwd}`. `:tools` names the tools,
-  all if nil, and with it the session opens no tool source (`mcp-client.md`);
-  `:parent` links a child to a tool call (`docs/features/agent-tool.md`);
-  `:model_context` names a ModelContext plugin, the first if nil
-  (`{:error, :invalid_model_context}`); `:provider_opts` is a keyword list
-  for each `init/3` (`{:error, :invalid_provider_opts}`); `:max_output_tokens`
-  limits each assistant message (`docs/features/output-limit.md`). With
-  `:sessions_dir` the session is written to disk: `{:error, {:session_locked,
-  id}}`, `{:error, {:lock_failed, text}}`, `{:error, :open_timeout}`,
-  `{:error, {:create_failed, reason}}`, or `{:error, :too_many_sessions}`
-  (`docs/features/session-lock.md`, `docs/features/server-management.md`).
+  Starts a session under Core. `:model` is required, and the ref resolves as in
+  `set_model/2`. `:cwd` defaults to the current directory. `:tools` names the
+  tools, all if nil; `:parent` links a child to a tool call
+  (docs/features/agent-tool.md); `:model_context` names a ModelContext plugin,
+  the first if nil; `:provider_opts` goes to each `init/3`; `:max_output_tokens`
+  limits each assistant message (docs/features/output-limit.md). With
+  `:sessions_dir` the session is written to disk
+  (docs/features/session-lock.md, docs/features/server-management.md).
+
+  Errors: `{:error, :invalid_cwd}`, `{:error, :invalid_parent}`,
+  `{:error, :invalid_tools}`, `{:error, :invalid_model_context}`,
+  `{:error, :invalid_provider_opts}`, `{:error, :invalid_max_output_tokens}`,
+  the model errors of `t:model_error/0`, `{:error, {:session_locked, id}}`,
+  `{:error, {:lock_failed, text}}`, `{:error, :open_timeout}`,
+  `{:error, {:create_failed, reason}}`, and `{:error, :too_many_sessions}`.
   """
   @spec start(Helyx.Core.name(), keyword()) :: {:ok, t()} | {:error, model_error() | term()}
   def start(core \\ Helyx.Core, opts) do
     # The file is created only after the plugins resolve, which narrows the
-    # window for an orphan file from a failed start. A crash of the
-    # session's open after the create still leaves one.
+    # window for an orphan file from a failed start. A crash of the session's
+    # open after the create still leaves one.
     with {:ok, cwd} <- Input.cwd_option(opts),
          {:ok, provider_opts} <- Input.provider_opts(opts),
          {:ok, parent, only, model_context, limit} <- Input.start_options(core, opts),
@@ -89,13 +88,11 @@ defmodule Helyx.Session do
 
   @doc """
   Resumes from `:sessions_dir` the session `Helyx.Session.File.pick/3` picks:
-  the newest of the working directory, or with `:id` that session, in the
-  folder of its header when no `:cwd` is given. `:cwd`, the tool checks, the
-  model ref, `:provider_opts`, the lock, the cap, and the read bounds are as
-  in `start/2`; a file over its bounds gives `{:error, {:too_large, text}}`
-  or `{:error, :open_timeout}`. A session that runs in this Core is attached,
-  and other `:provider_opts` give `{:error, :provider_opts_differ}`
-  (`docs/features/interrupted-calls.md`, `docs/features/server-management.md`).
+  the newest of the working directory, or with `:id` that session. `:cwd`, the
+  tool checks, the model ref, `:provider_opts`, the lock, the cap, and the read
+  bounds are as in `start/2`. A session that runs in this Core is attached, and
+  other `:provider_opts` give `{:error, :provider_opts_differ}`
+  (docs/features/server-management.md).
   """
   @spec resume(Helyx.Core.name(), keyword()) :: {:ok, t()} | {:error, model_error() | term()}
   def resume(core \\ Helyx.Core, opts) do
@@ -117,16 +114,14 @@ defmodule Helyx.Session do
   @doc """
   Subscribes the caller to the session's events, delivered as
   `{:helyx_event, event}`, and returns `{:ok, snapshot, ref}`, where `ref` is
-  the caller's monitor of the session process. With `answers: true` the
-  caller can answer asks (`answer/3`). One end signal, `{:DOWN, ref, :process,
-  pid, reason}`, follows the last event; `end_reason/1` maps it to `:stopped`
-  or `:crashed`. With `tail: n` (1 to 1,000) the snapshot holds the newest
-  messages only, and `history/4` gives the older ones. With
-  `after: {instance_id, seq}` the result is `{:ok, {:replay, events}, ref}`
-  when the replay ring serves the interval, else the snapshot. Errors:
-  `{:error, :session_not_found}`, `{:error, :invalid_after}`, and
-  `{:error, :invalid_limit}` (`docs/features/session-subscribers.md`,
-  `docs/features/replay-ring.md`, `docs/features/end-signal.md`).
+  the caller's monitor of the session process. With `answers: true` the caller
+  can answer asks (`answer/3`). One end signal, `{:DOWN, ref, :process, pid,
+  reason}`, follows the last event. With `tail: n` the snapshot holds the newest
+  messages only, and with `after: {instance_id, seq}` the result is
+  `{:ok, {:replay, events}, ref}` when the ring serves the interval, else the
+  snapshot. Errors: `{:error, :session_not_found}`, `{:error, :invalid_after}`,
+  and `{:error, :invalid_limit}` (docs/features/session-subscribers.md,
+  docs/features/replay-ring.md).
   """
   @spec subscribe(t(), keyword()) ::
           {:ok, Snapshot.t() | {:replay, [Helyx.Event.t()]}, reference()}
@@ -141,9 +136,9 @@ defmodule Helyx.Session do
 
   @doc """
   Acks every event of the caller's subscription up to `seq`; with an event in
-  place of `seq` it acks only each 1,024th `seq`. Past 16,384 unacked events
-  the session ends the subscription with `{:helyx_end, ref, :slow}`
-  (`docs/features/replay-ring.md`).
+  place of `seq` it acks only each 1,024th `seq`. Past 16,384 unacked events the
+  session ends the subscription with `{:helyx_end, ref, :slow}`
+  (docs/features/replay-ring.md).
   """
   @spec ack(t(), non_neg_integer() | Helyx.Event.t()) :: :ok
   def ack(session, %Helyx.Event{seq: seq}),
@@ -156,9 +151,8 @@ defmodule Helyx.Session do
 
   @doc """
   A page of the live transcript before the message with id `before`, oldest
-  first, `limit: n` (1 to 1,000, default 200) in place of `tail`. `next` is
-  the id to pass for the page before it, nil when `older` is 0
-  (`docs/features/session-snapshot.md`, "Tail").
+  first, `limit: n` (1 to 1,000, default 200). `next` is the id to pass for the
+  page before it, nil when `older` is 0 (docs/features/session-snapshot.md).
   """
   @spec history(t(), String.t(), String.t(), keyword()) ::
           {:ok, History.history_page()}
@@ -178,7 +172,8 @@ defmodule Helyx.Session do
   @doc """
   Gives an answer that passes `check_answer/1` to the open ask `ask_id`; the
   session emits `:ask_end`. Any other id, as of an answered ask or one whose
-  call or turn ended, gets `{:error, :not_waiting}` (`docs/features/question-tool.md`).
+  call or turn ended, gets `{:error, :not_waiting}`
+  (docs/features/question-tool.md).
   """
   @spec answer(t(), String.t(), map()) ::
           :ok | {:error, :invalid_answer | :not_waiting | :session_not_found}
@@ -187,9 +182,9 @@ defmodule Helyx.Session do
   end
 
   @doc """
-  Checks an answer with no session: a JSON object of valid UTF-8 whose JSON
-  is at most #{@max_answer_bytes} bytes. The check stops past the bound, so
-  a transport runs it before a worker holds the answer.
+  Checks an answer with no session: a JSON object of valid UTF-8 whose JSON is
+  at most #{@max_answer_bytes} bytes. The check stops past the bound, so a
+  transport runs it before a worker holds the answer.
   """
   @spec check_answer(term()) :: :ok | {:error, :invalid_answer}
   def check_answer(answer) do
@@ -200,9 +195,8 @@ defmodule Helyx.Session do
   end
 
   @doc """
-  The reason of an end signal as a client gets it: `:stopped` for an exit
-  with `:normal`, `:shutdown`, or `{:shutdown, term}`, and `:crashed` for
-  any other. The supervisor logs the full reason.
+  The reason of an end signal as a client gets it: `:stopped` for an exit with
+  `:normal`, `:shutdown`, or `{:shutdown, term}`, and `:crashed` for any other.
   """
   @spec end_reason(term()) :: :stopped | :crashed
   def end_reason(reason) when reason in [:normal, :shutdown], do: :stopped
@@ -210,8 +204,8 @@ defmodule Helyx.Session do
   def end_reason(_reason), do: :crashed
 
   @doc """
-  The result of a tool call that the session ended without a result, such
-  as at an abort. Clients match this value.
+  The result of a tool call that the session ended without a result, such as at
+  an abort. Clients match this value.
   """
   @spec aborted_result() :: {:error, String.t()}
   def aborted_result, do: {:error, "aborted"}
@@ -229,9 +223,8 @@ defmodule Helyx.Session do
   Sends a prompt. Starts a turn if none is running. Errors:
   `{:error, :text_too_large}`, `{:error, :invalid_utf8}`, and
   `{:error, :queue_full}`. Its message has the origin `:user`; product code
-  passes `origin: %{kind: :product, id: id}`, an id of 1 to 256 bytes of
-  UTF-8, unique per call, else `{:error, :invalid_origin}`. `steer/3` and
-  `follow_up/3` take it too (`docs/features/message-identity.md`).
+  passes `origin: %{kind: :product, id: id}`, else `{:error, :invalid_origin}`.
+  `steer/3` and `follow_up/3` take it too (docs/features/message-identity.md).
   """
   @spec prompt(t(), String.t(), keyword()) :: :ok | {:error, :turn_running | send_error()}
   def prompt(%__MODULE__{} = session, text, opts \\ []) when is_binary(text) and is_list(opts),
@@ -243,17 +236,17 @@ defmodule Helyx.Session do
   the open sent steers to 32 (`{:error, :queue_full}`). The text takes the
   checks of `prompt/3`. An abort or a failure gives a queued steer back in a
   `:queue_dropped` event, and an unconfirmed one gets a `:steer_unconfirmed`
-  event (`docs/features/session-lifecycle.md`, "Turn states", "Steer").
+  event (docs/features/session-lifecycle.md).
   """
   @spec steer(t(), String.t(), keyword()) :: :ok | {:error, send_error()}
   def steer(%__MODULE__{} = session, text, opts \\ []) when is_binary(text) and is_list(opts),
     do: send_user(session, :steer, text, opts)
 
   @doc """
-  Queues a follow-up prompt, which opens its own turn after the current one
-  ends normally. With no turn running it starts a turn at once. The text
-  takes the checks of `prompt/3`, and a full queue gives
-  `{:error, :queue_full}` (`docs/features/session-lifecycle.md`).
+  Queues a follow-up prompt, which opens its own turn after the current one ends
+  normally. With no turn running it starts a turn at once. The text takes the
+  checks of `prompt/3`, and a full queue gives `{:error, :queue_full}`
+  (docs/features/session-lifecycle.md).
   """
   @spec follow_up(t(), String.t(), keyword()) :: :ok | {:error, send_error()}
   def follow_up(%__MODULE__{} = session, text, opts \\ []) when is_binary(text) and is_list(opts),
@@ -261,9 +254,9 @@ defmodule Helyx.Session do
 
   @doc """
   Compacts the context as a turn with no user message, by the provider or the
-  Compaction plugin. A running turn aborts first, and a second compaction
-  before the end gives `{:error, :turn_running}`
-  (`docs/features/summary-compaction.md`).
+  Compaction plugin. A running turn aborts first, and a second compaction before
+  the end gives `{:error, :turn_running}`
+  (docs/features/summary-compaction.md).
   """
   @spec compact(t(), String.t()) ::
           :ok | {:error, :turn_running | :text_too_large | :invalid_utf8 | :session_not_found}
@@ -278,11 +271,11 @@ defmodule Helyx.Session do
     do: with(:ok <- Input.text(text), do: call(session, request))
 
   @doc """
-  Switches the session's model. The ref is parsed and its provider resolved
-  like the `:model` of `start/2`, and each error is a `t:model_error/0`: the
-  model stays as it was. The switch goes out as a `:model_change` event and
-  is written to the session file. A running turn keeps the model it started
-  with (`docs/features/output-limit.md`).
+  Switches the session's model. The ref is parsed and its provider resolved like
+  the `:model` of `start/2`, and each error is a `t:model_error/0`: the model
+  stays as it was. The switch goes out as a `:model_change` event and is written
+  to the session file. A running turn keeps the model it started with
+  (docs/features/output-limit.md).
   """
   @spec set_model(t(), String.t()) :: :ok | {:error, model_error() | :session_not_found}
   def set_model(%__MODULE__{core: core} = session, string) when is_binary(string) do
@@ -298,9 +291,8 @@ defmodule Helyx.Session do
   Aborts the turn, or the wait after it. A running turn ends at once as
   `:aborted`, each open tool call gets an `aborted` error result, and queued
   texts go back in a `:queue_dropped` event before `turn_end`; the call waits
-  until the end of the wait. An unconfirmed resource release returns `:ok`
-  and gives a `:notice` (`docs/features/session-lifecycle.md`, "Turn end",
-  "The wait").
+  until the end of the wait. An unconfirmed resource release returns `:ok` and
+  gives a `:notice` (docs/features/session-lifecycle.md).
   """
   @spec abort(t()) :: :ok | {:error, :session_not_found}
   def abort(%__MODULE__{} = session), do: call(session, :abort, :infinity)
