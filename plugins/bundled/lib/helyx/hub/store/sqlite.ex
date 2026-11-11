@@ -181,8 +181,8 @@ defmodule Helyx.Hub.Store.SQLite do
 
   defp version(db) do
     case one(db, "PRAGMA user_version", []) do
-      {:ok, [@version]} -> :ok
       {:ok, [0]} -> empty(db)
+      {:ok, [n]} when n in [2, @version] -> :ok
       {:ok, [n]} -> {:error, {:store_version, n}}
       {:error, _} = error -> error
     end
@@ -202,13 +202,22 @@ defmodule Helyx.Hub.Store.SQLite do
     case one(db, "PRAGMA user_version", []) do
       {:ok, [@version]} -> :ok
       {:ok, [0]} -> transaction(db, :infinity, fn -> create_schema(db) end)
+      {:ok, [2]} -> transaction(db, :infinity, fn -> upgrade_peers(db) end)
       {:error, _} = error -> error
     end
   end
 
   defp create_schema(db) do
-    with :ok <- exec(db, Schema.sql()), do: exec(db, "PRAGMA user_version = #{@version}")
+    with :ok <- exec(db, Schema.sql()), do: set_version(db)
   end
+
+  # Version 2 holds no peers table; the upgrade adds it and moves the
+  # version, in one step.
+  defp upgrade_peers(db) do
+    with :ok <- exec(db, Schema.peers_sql()), do: set_version(db)
+  end
+
+  defp set_version(db), do: exec(db, "PRAGMA user_version = #{@version}")
 
   @impl true
   def close(%{db: db, lock: lock}) do
@@ -360,4 +369,53 @@ defmodule Helyx.Hub.Store.SQLite do
   defdelegate delete_subscription(db, owner, id, deadline), to: Subscriptions
   @impl true
   defdelegate subscription_sent(db, id, at, outcome, deadline), to: Subscriptions
+
+  # The peers of the public listener (protocol 12).
+  @impl true
+  def peers(db) do
+    with {:ok, rows} <- all(db, Tables.select_sql(:peers) <> " ORDER BY kind, name", []) do
+      {:ok, Enum.map(rows, &Tables.row(:peers, &1))}
+    end
+  end
+
+  @impl true
+  def peer(db, kind, name) do
+    sql = Tables.select_sql(:peers) <> " WHERE kind = ?1 AND name = ?2"
+
+    case one(db, sql, [kind, name]) do
+      {:ok, nil} -> {:error, :not_found}
+      {:ok, row} -> {:ok, Tables.row(:peers, row)}
+      {:error, _} = error -> error
+    end
+  end
+
+  @impl true
+  def put_peer(db, peer, max, deadline) do
+    sql = "SELECT count(*), count(*) FILTER (WHERE kind = ?1 AND name = ?2) FROM peers"
+
+    transaction(db, deadline, fn ->
+      with {:ok, [count, taken]} <- one(db, sql, [peer.kind, peer.name]) do
+        insert_peer(db, peer, count >= max, taken > 0)
+      end
+    end)
+  end
+
+  defp insert_peer(_db, _peer, true, false), do: {:error, :too_many_peers}
+
+  # A pairing of a name that already has a row replaces its key: the new
+  # key wins, and the old connection closes (`docs/features/remote-hands.md`,
+  # "Make a link").
+  defp insert_peer(db, peer, _full, _taken) do
+    sql = """
+    INSERT INTO peers (name, kind, public_key, created_at) VALUES (?1, ?2, ?3, ?4)
+    ON CONFLICT (kind, name) DO UPDATE SET
+      public_key = excluded.public_key, created_at = excluded.created_at
+    """
+
+    run(db, sql, [peer.name, peer.kind, {:blob, peer.public_key}, peer.created_at])
+  end
+
+  @impl true
+  def delete_peer(db, kind, name, deadline),
+    do: delete(db, deadline, "DELETE FROM peers WHERE kind = ?1 AND name = ?2", [kind, name])
 end

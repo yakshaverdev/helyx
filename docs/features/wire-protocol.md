@@ -38,8 +38,8 @@ The same listener serves the webhook of an event subscription: `POST /hooks/<id>
 | Code | Meaning |
 |---|---|
 | `4400` | a frame that the contract does not allow: a text that the server cannot decode (bad JSON, a text that is not UTF-8, a float out of range, or a text over the decode bounds, see "Bounds"), an unknown `type`, a frame or a part before `welcome`, a `hello` whose `protocol` is not an integer of 0 or more, a part out of order, a request `id` whose reply was not sent, an `ack` of a `seq` that the subscription did not send |
-| `4401` | no `hello` within 5,000 ms, or a missing or wrong proof; under a Hub also a `token` that is not an id, unknown, or revoked |
-| `4408` | a slow client: a subscription passed its credits (`:slow`), the outbound queue held more than 64 MiB when a frame was added, or no inbound frame or pong for 45,000 ms |
+| `4401` | no `hello` within 5,000 ms, or a missing or wrong proof; under a Hub also a `token` that is not an id, unknown, or revoked; on the public listener the proof of the server token, a wrong pairing proof, a link that is expired or used, a wrong peer signature, and a pairing over the peer cap |
+| `4408` | a slow client: a subscription passed its credits (`:slow`), the outbound queue held more than 64 MiB when a frame was added, or no inbound frame or pong for 45,000 ms; a hands connection that answered no `hands.live` within its lease |
 | `4413` | an inbound frame joined from parts over 25 MiB |
 | `1002`, `1008` | a WebSocket frame that RFC 6455 does not allow, such as a continuation with no frame before it (`1002`) or an empty continuation that is not the last (`1008`): the WebSocket server closes |
 | `1011` | a crash of the connection process from a bug: the WebSocket server closes |
@@ -76,6 +76,21 @@ Every `req` gets one `res`: `ok: true` with the result, or `ok: false` with an e
 | `compact` | `{session, text?}`: the instructions, default `""` | `{}`; a provider that keeps no history gives a `notice` event | `session_not_found`, `text_too_large`, `invalid_utf8`, `turn_running`, and under a Hub `forbidden` |
 | `answer` | `{session, ask_id, answer}`: `ask_id` is the id of an `ask` event; `answer` is a JSON object of at most 16,384 bytes; a frame over the decode bounds ("Bounds") closes with `4400` before the op is known | `{}`; the first answer to an open ask goes to its call, and every client gets `ask_end`; an id that is not open gets `not_waiting` | `session_not_found`, `invalid_answer`, `not_waiting`, and under a Hub `forbidden` |
 | `stop` | `{session}` | `{}` after the session ended: a running turn aborts first, as at `abort`, then the session stops and every subscription of it gets `session_end` with `stopped`. A stopped session frees its place in the live-session cap and can be resumed from its file. The answer is `{}` also when a handle of the session was not released: the wire does not carry the stop report of `Helyx.Sessions.stop/1` (#752) | `session_not_found`, and under a Hub `forbidden` |
+| `pair.create` | `{kind, name}`: `kind` is `"hands"` or `"client"`, `name` a name | `{link, expires_ms}`; served only on the loopback listener, on a connection that proved the server token | `bad_params`, `too_many_links`, `no_public_listener`, `forbidden` for a user token, and `unknown_op` on the public listener |
+| `pair.revoke` | `{kind, name}` | `{}`; deletes the peer and closes its connection; served only on the loopback listener, on a connection that proved the server token | `bad_params`, `not_found`, `no_public_listener`, `forbidden` for a user token, and `unknown_op` on the public listener |
+| `pair.list` | `{}` | `{peers: [peer]}`, by kind and name; served only on the loopback listener, on a connection that proved the server token | `no_public_listener`, `forbidden` for a user token, and `unknown_op` on the public listener |
+
+A `hands.register` is a `req` of a connection whose `hello` had the role `hands`, and its result is `{lease_ms}`. Its errors are `bad_params` and `unknown_op` on a client connection. A registration with another name than the `hello`, or a `hello` that the pairing does not accept, closes with `4401`. `hands.live` is a `req` that the server sends on a hands connection; the runner answers with `{seq}`.
+
+### The public listener
+
+`helyx serve --public <host>:<port>` starts a second listener of the same wire with TLS (`docs/features/remote-hands.md`, "Pairing and the public listener"). The loopback listener and `server.json` stay as they are.
+
+- A `hello` on the public listener proves a pairing link or a paired key: `pair` with `{proof, public_key, signature}`, or `signature` of the nonce alone. It never accepts the proof of the server token: such a `hello` closes with `4401`.
+- The `challenge` and its nonce are the same as on the loopback listener. The proof of a pairing is rule O1 with the bootstrap token of the link in place of the server token, and `signature` is the Ed25519 signature of the 32 bytes of the nonce.
+- `pair.create`, `pair.revoke`, and `pair.list` answer `unknown_op` on the public listener.
+- Without `--public`, the server has one listener, and the three operations answer `no_public_listener`.
+- The pin of the certificate is the base64url, without padding, of the SHA-256 of the DER of its SubjectPublicKeyInfo. A peer accepts only that pin.
 
 Every operation can also answer `unknown_op`, `bad_params`, `busy`, `timeout`, and `failed`.
 
@@ -132,7 +147,7 @@ The schema below is the contract. The test of #660 computes the SHA-256 of the l
 
 <!-- wire-schema:start -->
 ```text
-protocol 10
+protocol 12
 
 notation: {k: T} an object; k? may be absent (absent = null or false);
   T | U either; [T] a list; "x" that string; int a JSON integer >= 0;
@@ -141,7 +156,10 @@ notation: {k: T} an object; k? may be absent (absent = null or false);
   name a string of 1 to 64 bytes of a-z, 0-9, and _; json any JSON value
 
 # client to server
-hello   = {type: "hello", protocol: int, proof?: base64, token?: id}
+hello   = {type: "hello", protocol: int, proof?: base64, token?: id,
+           role?: "client" | "hands", runner?: name,
+           pair?: {proof: base64, public_key: base64, signature: base64},
+           signature?: base64}
 req     = {type: "req", id: id, op: op, params: object}
 ack     = {type: "ack", sub: string, seq: int}
 part    = {type: "part", n: int, last: bool, data: base64}
@@ -168,10 +186,12 @@ error_code = "unknown_op" | "bad_params" | "busy" | "timeout" | "failed"
            | "unknown_project" | "unknown_token"
            | "too_many_schedules" | "unknown_schedule"
            | "too_many_event_subscriptions" | "unknown_subscription"
+           | "too_many_links" | "no_public_listener"
 
 op = "sessions.live" | "sessions.saved" | "start" | "resume" | "subscribe"
    | "unsubscribe" | "history" | "prompt" | "steer" | "follow_up"
    | "abort" | "set_model" | "compact" | "stop" | "answer"
+   | "pair.create" | "pair.revoke" | "pair.list"
    | "hub.me" | "hub.records.get" | "hub.records.update" | "hub.records.delete"
    | "hub.records.search" | "hub.projects.list" | "hub.projects.create"
    | "hub.projects.update" | "hub.projects.delete" | "hub.tokens.list"
@@ -196,6 +216,9 @@ params.set_model       = {session: string, model: string}
 params.compact         = {session: string, text?: string}
 params.stop            = {session: string}
 params.answer          = {session: string, ask_id: string, answer: object}
+params.pair.create     = {kind: "hands" | "client", name: name}
+params.pair.revoke     = {kind: "hands" | "client", name: name}
+params.pair.list       = {}
 product_origin         = {kind: "product", id: string}
 params.hub.me              = {}
 params.hub.records.get     = {session: string}
@@ -226,6 +249,9 @@ result.subscribe      = {sub: string, replay: [event]} | {sub: string, snapshot:
 result.history        = {messages: [message], older: int, next: string | null}
 result.unsubscribe, result.prompt, result.steer, result.follow_up,
 result.abort, result.set_model, result.compact, result.stop, result.answer = {}
+result.pair.create         = {link: string, expires_ms: int}
+result.pair.revoke         = {}
+result.pair.list           = {peers: [peer]}
 result.hub.me              = {user: user}
 result.hub.records.get, result.hub.records.update = {record: record}
 result.hub.records.search  = {items: [record], next: string | null}
@@ -243,6 +269,8 @@ result.hub.subscriptions.delete = {}
 live_session  = {id: string, instance_id: string, cwd: string, model: string,
                  status: "idle" | "running"}
 saved_session = {id: string, cwd: string, model: string, mtime: int, prompt: string}
+peer          = {kind: "hands" | "client", name: name, created_at: int,
+                 connected: bool}
 
 user     = {id: string, name: string}
 # project: null for a user who does not own the record (the project is the owner's)
@@ -315,6 +343,15 @@ usage = {input: int, output: int, cache_read: int, cache_write: int,
 # the envelope of a UI block; each other key is a field of its kind
 ui_block = {kind: name, text: string, cut?: bool, *: json}
 
+# on a hands connection (hello role "hands"); the ops of the hands namespace
+hands.register (client) = {type: "req", op: "hands.register",
+                           params: {runner: name, folder: string}}
+result.hands.register   = {lease_ms: int}
+# the server sends this req; the runner answers with result.hands.live
+hands.live (server)     = {type: "req", op: "hands.live",
+                           params: {seq: int, ack: int}}
+result.hands.live       = {seq: int}
+
 # order rules (a schema cannot show them; a change needs a new protocol number)
 O1 challenge is the first server frame, once; hello is the first client
    frame; the server sends nothing but challenge before hello and nothing but
@@ -342,7 +379,7 @@ Notes on the codec:
 
 ## Conformance fixtures
 
-`test/fixtures/wire/` holds fixtures of protocol 10 as plain JSON (#855): the frames that a client sends, each with the frames and the close code of the server; the frames that a server sends, each valid, ignored, or a contract break for a client; and folds, event sequences with the state that a client holds after them. Its `README.md` states what a conforming client or server must pass and which rules are in prose only. The transport tests run the client frames against the server, and the TUI tests run the server frames and the folds against the client and its view model, so the fixtures and the Elixir code cannot drift.
+`test/fixtures/wire/` holds fixtures of protocol 12 as plain JSON (#855): the frames that a client sends, each with the frames and the close code of the server; the frames that a server sends, each valid, ignored, or a contract break for a client; and folds, event sequences with the state that a client holds after them. Its `README.md` states what a conforming client or server must pass and which rules are in prose only. The transport tests run the client frames against the server, and the TUI tests run the server frames and the folds against the client and its view model, so the fixtures and the Elixir code cannot drift.
 
 What this doc does not pin down for an implementation that does not run on the BEAM. Each is open, not decided here:
 
@@ -370,6 +407,7 @@ What this doc does not pin down for an implementation that does not run on the B
 14. **Protocol 7** (#492, `docs/features/mcp-client.md`). Protocol 8 adds the event `tools_change` with `data.tools_change`, the activated deferred tool names in drop order (the first name leaves first when the session drops one for its cap; a client only shows the list), and the snapshot field `activated`, the same list; nothing else changes. A client of protocol 7 gets `refused` and the close `4426`, and the fixtures name protocol 8.
 15. **Protocol 8** (#921, `docs/features/hub.md`, decision 17). Protocol 9 adds the event subscriptions of a Hub: the operations `hub.subscriptions.list`, `hub.subscriptions.create`, and `hub.subscriptions.delete`, their params and results, the shape `subscription`, and the error codes `too_many_event_subscriptions` and `unknown_subscription`; the webhook endpoint itself is HTTP beside the WebSocket upgrade and carries no frame. A client of protocol 8 gets `refused` and the close `4426`, and the fixtures name protocol 9.
 16. **Protocol 9** (review of 2026-11-11). Protocol 10 puts `older`, the count of the messages before the first of the list, in place of `more` in the snapshot and in the result of `history`: a client derives "more" from `older > 0`. It removes the origin kind `"unknown"`, since no session file from before #649 is read. A client of protocol 9 gets `refused` and the close `4426`, and the fixtures name protocol 10. `test/fixtures/wire/bounds.json` holds the numbers of "Bounds" and the error codes once; the server reads it (`Helyx.Transport.WebSocket.Bounds`).
+17. **Protocol 12** (#927, `docs/features/remote-hands.md`). Protocol 11 belongs to a branch that merges before this one, so this number skips it and both branches keep their own. Protocol 12 adds the hands role and the pairing of a runner: the fields `role`, `runner`, `pair`, and `signature` of `hello`; the operations `pair.create`, `pair.revoke`, and `pair.list` with the shape `peer`; the hands operation `hands.register`; the server request `hands.live`; the public listener with TLS of `helyx serve --public`; and the error codes `too_many_links` and `no_public_listener`. A server with no `--public` answers the three `pair.*` operations with `no_public_listener`, and a client of protocol 10 or 11 gets `refused` and the close `4426`. The term codec of the hands namespace comes with the build ticket of ADR 0012 and does not change the schema of this doc yet.
 
 ## Bounds
 
@@ -446,4 +484,4 @@ Each numeric limit gets tests at the limit, one under, and one over, and the fra
 - A browser client.
 - Paging inside one message body: parts carry any size (#658).
 - stdio framing code: same frames, a later ticket when a client needs it (#660).
-- The `hands` role of `hello` and the `hands.*` operations and events of remote hands: decided in ADR 0012 (#856); the codec and a new protocol number come with its build ticket.
+- The `hands` role of `hello`, the pairing of a runner, and the `pair.*` and `hands.register` operations of `helyx serve --public`: the schema and protocol 12 are here, and the design is in `docs/features/remote-hands.md` (#927). The term codec of the hands namespace, the session that uses a runner, and `helyx hands` come with later slices of that doc.

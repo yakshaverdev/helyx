@@ -78,7 +78,10 @@ defmodule Helyx.Transport.WebSocket.Ops do
          ],
          "compact" => [],
          "stop" => [params: %{"session" => {:required, :session}}],
-         "answer" => []
+         "answer" => [],
+         "pair.create" => [],
+         "pair.revoke" => [],
+         "pair.list" => []
        })
 
   @core_errors ~w(session_not_found too_many_sessions invalid_cwd not_found invalid_utf8

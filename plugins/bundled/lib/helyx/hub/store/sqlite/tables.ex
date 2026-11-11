@@ -14,7 +14,8 @@ defmodule Helyx.Hub.Store.SQLite.Tables do
     labels: ~w(session_id label)a,
     schedules: ~w(id owner session_id prompt at every run delivery_id due_at next_try_at last_at
          last_outcome created_at subscription_id)a,
-    subscriptions: ~w(id owner session_id template label secret created_at last_at last_outcome)a
+    subscriptions: ~w(id owner session_id template label secret created_at last_at last_outcome)a,
+    peers: ~w(name kind public_key created_at)a
   }
 
   # The conversion of each column that the store returns as another type than

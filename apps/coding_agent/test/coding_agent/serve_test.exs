@@ -774,17 +774,72 @@ defmodule CodingAgent.ServeTest do
     for {argv, text} <- [
           {["--port", "1"], "--port needs serve"},
           {["--host", "::1", dir], "--host needs serve"},
+          {["--public", "127.0.0.1:1", dir], "--public needs serve"},
+          {["--runner", "mac", dir], "--runner needs pair"},
           {["serve", "x"], ~s(serve takes no directory argument, got: ["x"])},
           {["serve", "--port", "65536"], "--port takes 0 to 65535, got: 65536"},
           {["serve", "--port=-1"], "--port takes 0 to 65535, got: -1"},
           {["serve", "--host", "localhost"], ~s(--host takes an IP address, got: "localhost")},
+          {["serve", "--public", "nope"], ~s(--public takes host:port, got: "nope")},
+          {["serve", "--public", "127.0.0.1"], ~s(--public takes host:port, got: "127.0.0.1")},
+          {["serve", "--public", "127.0.0.1:70000"],
+           ~s(--public takes host:port, got: "127.0.0.1:70000")},
+          {["serve", "--runner", "mac"], "--runner does not combine with serve"},
           {["serve", "--resume"], "--resume does not combine with serve"},
-          {["serve", "-p", "x"], "--print does not combine with serve"}
+          {["serve", "-p", "x"], "--print does not combine with serve"},
+          {["pair"], "pair needs --runner name"},
+          {["pair", "x"], ~s(pair takes no directory argument, got: ["x"])},
+          {["pair", "--runner", "Mac"],
+           ~s(--runner takes 1 to 64 bytes of a-z, 0-9, and _, got: "Mac")},
+          {["pair", "--runner", String.duplicate("a", 65)],
+           "--runner takes a name, got: " <> inspect(String.duplicate("a", 65))},
+          {["pair", "--model", "fake/echo"], "--model does not combine with pair"}
         ] do
       assert capture_io(:stderr, fn -> assert CLI.main(argv) == 1 end) == "helyx: #{text}\n"
     end
 
     refute File.exists?(sessions)
+  end
+
+  # The second listener of the wire and the link of a runner
+  # (`docs/features/remote-hands.md`, "Pairing and the public listener").
+  test "--public starts a TLS listener, and helyx pair prints one link", %{
+    sessions: sessions,
+    server_file: file
+  } do
+    task = serve(["--model", "fake/echo", "--public", "127.0.0.1:0"])
+    _ = ready(file)
+
+    tls = Path.join(sessions, "tls")
+    assert (File.stat!(Path.join(tls, "key.pem")).mode &&& 0o777) == 0o600
+    assert File.exists?(Path.join(tls, "cert.pem"))
+
+    out = capture_io(fn -> assert CLI.main(["pair", "--runner", "mac"]) == 0 end)
+    assert [link, line] = String.split(out, "\n", trim: true)
+    assert "helyx-pair:1:" <> encoded = link
+
+    assert %{"a" => "127.0.0.1:0", "k" => "hands", "n" => "mac", "p" => pin, "t" => token} =
+             JSON.decode!(Base.url_decode64!(encoded, padding: false))
+
+    assert String.length(pin) == 43
+    assert String.length(token) == 43
+    assert line =~ "valid for 10 minutes"
+    assert {0, _out, _err} = stop(task)
+    free()
+  end
+
+  test "helyx pair with no public listener prints one line and exits 1", %{server_file: file} do
+    task = serve(["--model", "fake/echo"])
+    _ = ready(file)
+
+    {{status, out}, err} =
+      with_io(:stderr, fn -> with_io(fn -> CLI.main(["pair", "--runner", "mac"]) end) end)
+
+    assert status == 1
+    assert out == ""
+    assert err =~ "the server has no public listener"
+    assert {0, _out, _err} = stop(task)
+    free()
   end
 
   # A VM with no launcher, as `mix helyx serve`: the OTP answer to SIGTERM

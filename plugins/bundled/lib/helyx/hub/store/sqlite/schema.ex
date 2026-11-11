@@ -1,9 +1,10 @@
 defmodule Helyx.Hub.Store.SQLite.Schema do
   @moduledoc false
-  # The schema of the SQLite store, `user_version` 2 (`docs/features/hub.md`,
+  # The schema of the SQLite store, `user_version` 3 (`docs/features/hub.md`,
   # "Store schema"). A file of version 1 gets the tables and the column of
-  # the event subscriptions (decision 17); a file of another version is
-  # refused.
+  # the event subscriptions (decision 17); a file of version 2 gets the
+  # peers table of the public listener (protocol 12); a file of another
+  # version is refused.
 
   # The event subscriptions of decision 17, in a new file and in a file of
   # version 1.
@@ -23,8 +24,24 @@ defmodule Helyx.Hub.Store.SQLite.Schema do
   CREATE INDEX subscriptions_session ON subscriptions (session_id);
   """
 
+  # The peers of the public listener (protocol 12, `docs/features/
+  # remote-hands.md`, "Peers"), in a new file and in a file of version 2.
+  @peers """
+  CREATE TABLE peers (
+    name TEXT NOT NULL,
+    kind TEXT NOT NULL CHECK (kind IN ('hands', 'client')),
+    public_key BLOB NOT NULL,
+    created_at INTEGER NOT NULL,
+    PRIMARY KEY (kind, name)
+  ) STRICT;
+  """
+
   @doc false
-  def version, do: 2
+  def version, do: 3
+
+  @doc "The SQL of the peers table, for a new file and for the upgrade."
+  @spec peers_sql() :: String.t()
+  def peers_sql, do: @peers
 
   @doc false
   def sql do
@@ -78,6 +95,8 @@ defmodule Helyx.Hub.Store.SQLite.Schema do
     ) STRICT;
 
     #{@subscriptions}
+
+    #{@peers}
 
     CREATE TABLE schedules (
       id TEXT PRIMARY KEY,

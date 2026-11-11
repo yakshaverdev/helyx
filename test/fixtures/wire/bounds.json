@@ -1,5 +1,5 @@
 {
-  "protocol": 10,
+  "protocol": 12,
   "frame_bytes": 1048576,
   "part_bytes": 786000,
   "integer_chars": 1024,
@@ -53,6 +53,8 @@
     "too_many_schedules",
     "unknown_schedule",
     "too_many_event_subscriptions",
-    "unknown_subscription"
+    "unknown_subscription",
+    "too_many_links",
+    "no_public_listener"
   ]
 }

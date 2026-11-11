@@ -71,9 +71,22 @@ defmodule Helyx.TUI.Wire.Decode do
   defp ok("sessions.live", %{"sessions" => sessions}) when is_list(sessions),
     do: {:ok, Enum.map(sessions, &live/1)}
 
+  # The pairing of a peer of the public listener (`docs/features/remote-hands.md`).
+  defp ok("pair.create", %{"link" => link, "expires_ms" => expires_ms})
+       when is_binary(link) and count?(expires_ms),
+       do: {:ok, %{"link" => link, "expires_ms" => expires_ms}}
+
+  defp ok("pair.list", %{"peers" => peers}) when is_list(peers),
+    do: {:ok, %{"peers" => Enum.map(peers, &peer/1)}}
+
   defp ok(op, _empty)
        when op not in ["subscribe", "start", "resume", "sessions.saved", "sessions.live"],
        do: :ok
+
+  defp peer(%{"kind" => kind, "name" => name, "created_at" => at, "connected" => connected})
+       when kind in ["hands", "client"] and is_binary(name) and count?(at) and
+              is_boolean(connected),
+       do: %{"kind" => kind, "name" => name, "created_at" => at, "connected" => connected}
 
   defp saved(%{"id" => id, "cwd" => cwd, "model" => model, "mtime" => mtime, "prompt" => prompt})
        when is_binary(id) and is_binary(cwd) and is_binary(model) and count?(mtime) and
