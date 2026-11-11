@@ -122,10 +122,6 @@ defmodule Helyx.TUI.Wire.Connection do
   @spec abort(pid(), String.t()) :: :ok | {:error, error()}
   def abort(conn, session), do: request(conn, "abort", %{"session" => session})
 
-  @doc "Stops `session` after an abort of its turn, as `Helyx.Sessions.stop/1`."
-  @spec stop(pid(), String.t()) :: :ok | {:error, error()}
-  def stop(conn, session), do: request(conn, "stop", %{"session" => session})
-
   @doc "Ends the subscription `sub`; the session runs on (decision 18)."
   @spec unsubscribe(pid(), String.t()) :: :ok | {:error, error()}
   def unsubscribe(conn, sub), do: call(conn, {:unsubscribe, sub})

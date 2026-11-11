@@ -111,7 +111,7 @@ defmodule Helyx.TUI.Wire.ConnectionTest do
       assert {:error, :not_found} = Connection.resume(c.conn, id: "missing")
     end
 
-    test "take makes the caller the owner, and stop ends a session", c do
+    test "take makes the caller the owner", c do
       assert {:ok, id} = Connection.start(c.conn, cwd: File.cwd!(), model: "fake/echo")
       test = self()
 
@@ -125,11 +125,10 @@ defmodule Helyx.TUI.Wire.ConnectionTest do
         end)
 
       assert_receive {:sub, sub}
-      assert :ok = Connection.stop(c.conn, id)
+      :ok = Helyx.Sessions.stop(%Helyx.Session{id: id, core: c.core})
       assert_receive {:owner, {:helyx_end, ^sub, :stopped}}
       refute_received {:helyx_end, _sub, _reason}
       assert Helyx.Sessions.list_live(c.core) == []
-      assert {:error, :session_not_found} = Connection.stop(c.conn, id)
 
       # The connection ends with its new owner.
       Process.exit(owner, :kill)
