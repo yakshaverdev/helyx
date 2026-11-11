@@ -16,8 +16,8 @@ defmodule Helyx.Hub.Access do
 
   # The deadline of the find of the existence check (decision 8).
   @find_ms 5_000
-  # The bounds of a stored `cwd` and `model` (Bounds).
-  @max_cwd_bytes 4_096
+  # The bound of the `model` of a stored record (Bounds); the bound of its
+  # `cwd` is read from `Params`.
   @max_model_bytes 256
   # The deadline of a `hub.*` operation on the wire, 6,000 ms, less 500 ms
   # for the reply: a write of the op commits before it or not at all. The
@@ -27,10 +27,7 @@ defmodule Helyx.Hub.Access do
   @read_ops ~w(subscribe history)
   @text_ops ~w(prompt steer follow_up)
   @write_ops ~w(abort set_model compact answer stop)
-  @param_ops ~w(hub.records.get hub.records.update hub.records.delete hub.records.search
-                hub.projects.create hub.projects.update hub.projects.delete
-                hub.schedules.create hub.schedules.list hub.schedules.delete
-                hub.subscriptions.create hub.subscriptions.list hub.subscriptions.delete)
+  @param_ops Params.ops()
   @bad_params {:error, "bad_params", "a param is missing, of the wrong type, or unknown"}
 
   # The Hub call registers the connection for the closes of decision 13; a
@@ -165,7 +162,7 @@ defmodule Helyx.Hub.Access do
   # A `cwd` is any UTF-8 path of 1 to 4,096 bytes; a model a text of 1 to
   # 256 bytes, the bound of a model ref (Bounds).
   defp checked(%{cwd: cwd, model: model} = found) do
-    cwd? = is_binary(cwd) and byte_size(cwd) in 1..@max_cwd_bytes and String.valid?(cwd)
+    cwd? = is_binary(cwd) and byte_size(cwd) in 1..Params.max_cwd_bytes() and String.valid?(cwd)
     if cwd? and Params.text?(model, 1, @max_model_bytes), do: found
   end
 

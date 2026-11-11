@@ -5,9 +5,10 @@ defmodule Helyx.Hub.Rules do
   # request is one Hub call; each first checks that the credential of the
   # connection still holds, and answers `:revoked` when it does not.
 
-  # The caps of decision 14 and Bounds.
+  alias Helyx.Hub.Params
+
+  # The cap of the records of a user (decision 14).
   @max_records 10_000
-  @max_cwd_bytes 4_096
 
   # The key of the token of a `hello`, or the closure of the server token
   # for a `hello` with no token id, which the caller runs and checks;
@@ -52,7 +53,7 @@ defmodule Helyx.Hub.Rules do
   # records of its user is a place of the start (`Helyx.Hub.Live`).
   def handle({:start, auth, cwd_bytes}, _deadline, state) do
     with :ok <- credential(auth, state) do
-      if auth.user == state.default_owner_id or cwd_bytes in 1..@max_cwd_bytes,
+      if auth.user == state.default_owner_id or cwd_bytes in 1..Params.max_cwd_bytes(),
         do: :ok,
         else: {:error, :bad_params}
     end
