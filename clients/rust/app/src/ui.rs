@@ -190,7 +190,8 @@ impl Desktop {
         // A stop whose reply asks for a fresh live list; a pending report
         // waits, and a failed one stops the wait.
         if let Some(send) = self.stop_send
-            && let Some((_, outcome)) = outcomes.iter().find(|(id, _)| *id == send)
+            // One read can hold the pending report and the reply: the last counts.
+            && let Some((_, outcome)) = outcomes.iter().rev().find(|(id, _)| *id == send)
         {
             match outcome {
                 SendOutcome::Pending => {}
