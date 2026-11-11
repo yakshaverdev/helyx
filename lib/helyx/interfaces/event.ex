@@ -23,7 +23,7 @@ defmodule Helyx.Event do
     * `:tools_change` – `%{activated: [String.t()]}`, the activated deferred tool
       names in drop order (`docs/features/mcp-client.md`)
     * `:resume_id` – `%{provider: String.t(), resume_id: String.t(), lost: boolean, cut: non_neg_integer}`;
-      `lost` is true when the provider lost its own session, and the TUI shows its notice
+      `lost` is true when the provider lost its own session
     * `:steer_unconfirmed` – `%{message: Helyx.Message.t()}`
     * `:compaction` – `%{trigger: :manual | :auto, tokens_before: non_neg_integer | nil, tokens_after: non_neg_integer | nil}`
     * `:notice` – `%{text: String.t()}`, not in the transcript

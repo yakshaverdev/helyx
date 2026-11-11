@@ -46,51 +46,14 @@ defmodule Helyx.ModelContext.Default do
 
   @moduledoc """
   The default model context: a base prompt, the docs section, the session
-  section, the skills section, and the context files, in that order.
+  section, the skills section, and the context files, in that order. Each
+  build reads the files again. `opts` can carry `:home` and `:docs_root`,
+  for tests.
 
-  The docs section gives the paths of the Helyx docs and a map from topic to
-  file. The root is the Helyx source root at compile time; the section is
-  left out when `README.md` there is not a regular file. The session section
-  gives the working directory, the model ref (`:model`), the session id, and
-  the session directory (`:session_dir`, or `not saved`). Each value is one
-  line of at most #{@max_value_bytes} bytes: `Helyx.Text.cap/3` cuts it first,
-  then each line break becomes a space. Neither section counts toward the cap of
-  the context files. See `docs/features/agent-self-knowledge.md`.
-
-  The skills section is the catalog of `.agents/skills` from the working
-  directory up to the git root and of `~/.agents/skills`, at most
-  #{Helyx.Skills.max_catalog_bytes()} bytes, scanned at each build. It is
-  there only when the context's tools hold the skill tool and a skill was
-  found, and it does not count toward the cap of the context files. See
-  `docs/features/skills.md`.
-
-  With a summary (`opts[:summary]`), the skills that the model loaded
-  before its first kept message, and not again after it, go in one user
-  message in front of that message, so the summary plugin puts it after
-  the summary: the text that the model saw, newest first, at most 5 texts
-  and 32,768 bytes in all, and one line for each other skill while
-  the lines fit. See
-  `docs/features/skills.md`, "After a summary compaction".
-
-  The context files are the global file `~/.helyx/AGENTS.md`, then one file
-  for each folder from the filesystem root down to the working directory, in
-  that order. A folder gives the first of `AGENTS.override.md`, `AGENTS.md`,
-  and `CLAUDE.md` that is a regular file there. If `Helyx.Text.read_file/1`
-  rejects that file (including a file that is not valid UTF-8), the folder
-  gives nothing. A file reached twice, through a symlink or as the global
-  file in the chain, loads once, at its first place.
-
-  Each file follows a heading with its path, capped by `Helyx.Text.truncate/2`.
-  The text after the base prompt, headings and separators included, is at
-  most #{@max_total_bytes} bytes: the files nearest the working directory
-  come first, and from the first file that does not fit, that file and every
-  file farther away are left out. Each build finds and reads the files
-  again, so an edit to a context file takes effect at the next context
-  build, unless a cap leaves out that file or the edited part of it.
-  `opts` can carry `:home` to override the home directory and `:docs_root`
-  to override the Helyx root, for tests.
-
-  See `docs/features/context-files.md`.
+  The docs and session sections: `docs/features/agent-self-knowledge.md`.
+  The skills section and the skills carried after a summary
+  (`opts[:summary]`): `docs/features/skills.md`. The context files and
+  their caps: `docs/features/context-files.md`.
   """
 
   @behaviour Helyx.ModelContext

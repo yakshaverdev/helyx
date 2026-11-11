@@ -23,9 +23,7 @@ defmodule Helyx.Transport.WebSocket.Connection do
     Process.send_after(self(), :ping, @ping_ms)
     Process.send_after(self(), :idle, @idle_ms)
 
-    # `writers` holds one entry for each writer: its kind, the request ids
-    # whose reply was not sent, its sub id, the ack that waits for it, and
-    # its place in the one encoder slot. `waiting` is the order of the
+    # `writers` holds one entry for each writer; `waiting` is the order of the
     # writers that wait for the slot; `nonce` is the one challenge.
     nonce = :crypto.strong_rand_bytes(32)
 

@@ -3,16 +3,12 @@ defmodule CodingAgent.Lease do
   The lease that a running VM holds on its build.
 
   A release VM takes a marker in its build folder, `<build>/.helyx-lease-<os
-  pid>`, at its start, and removes it at a clean end. The marker records the
-  OS pid and the name of the build. `mix helyx.install` keeps a build that has
-  the marker of a live pid, so the modules of a running session stay in place
-  (ADR 0014, invariant 4; `docs/features/local-release.md`).
+  pid>`, at its start, and removes it at a clean end. `mix helyx.install` keeps
+  a build that has the marker of a live pid, so the modules of a running
+  session stay in place (ADR 0014, invariant 4; `docs/features/local-release.md`).
 
   Only a release takes a lease: its release script sets `RELEASE_ROOT` and
-  `RELEASE_VSN`, and `mix helyx` sets neither. A marker whose pid is gone is
-  stale, and its build may go: a SIGKILL or a crash leaves one, and the next
-  install deletes it with the build. A pid that the OS reused makes a stale
-  marker look live, and the build is kept until that process ends.
+  `RELEASE_VSN`, and `mix helyx` sets neither.
   """
 
   # The build takes one marker for each VM, so that two VMs of one build do

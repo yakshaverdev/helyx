@@ -4,17 +4,10 @@ defmodule Helyx.Provider.Codex do
   program, with its shell off, by JSON-RPC lines of `codex app-server` on stdio.
   The model ref is `codex/<model>`, where `<model>` is a model id of `codex`.
 
-  One program serves the session's provider process. `init/3` returns when it answered
-  `initialize`. The first request opens the thread with the turn's system prompt as
-  `baseInstructions`: `thread/resume` with `:resume_id`, or `thread/start`; a later prompt
-  change starts a new program that resumes the thread; other tools, or `persist: false`,
-  start one with a fresh thread and the replay. A `{:turn, ...}` is `turn/start`, a steer is
-  `turn/steer`, and an interrupt is `turn/interrupt`, or `{:error, :command_running}` or
-  `{:error, :agent_running}` when open work would outlive it. The session's tools go to the
-  thread as `dynamicTools`, and the user's config is off where the program lets it be. The
-  options `codex_sandbox` and `codex_approval_policy` are the thread's sandbox and approval
-  policy, by default `danger-full-access` and `never`. A line that fails the shape check, a
-  turn that Helyx did not ask for, and the program's exit stop the provider process.
+  One program serves the session's provider process. The first request opens
+  the thread with the turn's system prompt as `baseInstructions`, and the
+  session's tools go to it as `dynamicTools`. The user's config is off where
+  the program lets it be.
 
   The full contract is in `docs/features/long-lived-harness.md`, section
   "Codex", and `docs/features/provider-parity.md`. The protocol facts are in
@@ -83,10 +76,8 @@ defmodule Helyx.Provider.Codex do
     actions(thread(state, system || "", tools))
   end
 
-  # A compaction is `thread/compact/start`; its phase lasts until its
-  # `turn/started`, which gives the program turn id. A fresh thread has no
-  # history yet. No instructions: it keeps the thread's prompt, and a
-  # stored thread opens with the empty one.
+  # A fresh thread has no history yet. No instructions: a compaction keeps
+  # the thread's prompt, and a stored thread opens with the empty one.
   def request({:compact, id, _text}, from, %State{phase: :idle} = state)
       when state.thread == nil and state.resume == nil,
       do: {:ok, [{:reply, from, :ok}, {:event, id, HarnessIO.no_history(id())}], state}

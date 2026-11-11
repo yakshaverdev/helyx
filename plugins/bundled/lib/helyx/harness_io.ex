@@ -1,11 +1,8 @@
 defmodule Helyx.HarnessIO do
   @moduledoc false
   # What the harness providers share (ADR 0005). It is not a plugin.
-  # `state` is a provider's run state with the field `stream`
-  # (`Helyx.HarnessIO.Stream`): the port, the read buffer, the size, the
-  # terminal, the close, the handles that the provider holds for its
-  # programs, and `env` (`env/1`). Only that struct is read and written
-  # here.
+  # Only the field `stream` (`Helyx.HarnessIO.Stream`) of a provider's
+  # state is read and written here.
 
   alias Helyx.HarnessIO.Stream
 
@@ -120,7 +117,6 @@ defmodule Helyx.HarnessIO do
     end
   end
 
-  # Writes to the program's stdin through the watchdog.
   def write(%{stream: %Stream{port: port}}, data), do: Helyx.Watchdog.write(port, data)
 
   # The provider's `:close`: the NUL asks the watchdog to end the program,
@@ -141,12 +137,6 @@ defmodule Helyx.HarnessIO do
   def release(handles, mode, deadline),
     do: Helyx.Watchdog.Group.release(handles, mode, deadline, grace_ms: @term_grace_ms)
 
-  # Sorts a message for the provider process: a chunk of the port's stdout
-  # gives `{:lines, events, state}` (see `lines/3`). The port's exit gives
-  # `{:closed, from}` during a close, the end the close waits for, and
-  # `{:exit, status}` at any other time. Any other message, such as one of
-  # a closed port, is `:other`. `state.stream.closing` is the `from` of a
-  # close, or nil.
   def port_message({port, {:data, data}}, %{stream: %Stream{port: port}} = state, decode) do
     {events, state} = lines(data, state, decode)
     {:lines, events, state}
@@ -197,8 +187,6 @@ defmodule Helyx.HarnessIO do
     end
   end
 
-  # The options of `init/3` that a harness provider keeps, as the fields
-  # `persist?` and `stream` of its state. The stream starts with `env`.
   def options(opts) do
     with {:ok, persist?} <- persist(opts),
          {:ok, env} <- env(opts),
@@ -265,12 +253,8 @@ defmodule Helyx.HarnessIO do
     {Enum.reverse(prompt), Enum.reverse(history)}
   end
 
-  # Encodes entries from the newest and keeps them within the byte cap, but
-  # the cut applies to closed history only: the last entry at which the
-  # replay may start, which is the message with the open calls, and every
-  # entry after it, which holds their results, stay. The entries before it
-  # are cut from the oldest, and the kept ones drop up to the first entry at
-  # which the replay may start. An entry is {group, messages, start?};
+  # The cut of docs/features/long-lived-harness.md, "Replay". An entry is
+  # {group, messages, start?};
   # `encode` gives a group's iodata or false. Returns {:ok, kept, cut},
   # where kept is {group, iodata} for each kept iodata, oldest first, and
   # cut is the number of messages left out of `total`. When the open turn

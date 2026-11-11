@@ -1,9 +1,8 @@
 defmodule Helyx.Provider.ClaudeCode.Mcp do
   @moduledoc false
   # The SDK MCP server of the Helyx tools of `Helyx.Provider.ClaudeCode`
-  # (research note, "The SDK MCP server shapes"). It takes the provider
-  # state, writes its answers, and keeps `calls`: the open `tools/call`
-  # requests by call id, `{control request_id, JSON-RPC id}`.
+  # (research note, "The SDK MCP server shapes"). `calls` maps each open
+  # `tools/call` request by call id to `{control request_id, JSON-RPC id}`.
 
   alias Helyx.HarnessIO
   alias Helyx.Provider.ClaudeCode.Replay

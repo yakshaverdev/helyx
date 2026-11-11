@@ -1,12 +1,10 @@
 defmodule Helyx.Watchdog.Record do
   @moduledoc false
   # The release record of one group of `Helyx.Watchdog`, which every copy of
-  # its handle carries (`docs/features/tool-resource-release.md`, "The
-  # release record"): one signed `:atomics` slot. Held at the start; taken
-  # by one release, with that release's deadline as its lease; gone once a
-  # probe confirmed the group gone; not confirmed by the release that took
-  # it. A taken record holds `deadline * 4 + 1`, so it never equals a state
-  # of no release.
+  # its handle carries: one signed `:atomics` slot. Its states are in
+  # `docs/features/tool-resource-release.md`, "The release record". A taken
+  # record holds `deadline * 4 + 1`, so it never equals a state of no
+  # release.
 
   @held 0
   @gone 2
@@ -19,9 +17,7 @@ defmodule Helyx.Watchdog.Record do
 
   # Takes the record for a release with `deadline`: `:taken`, `:gone` when
   # its group was confirmed gone, or `:held` when another release holds it
-  # past `deadline`. A record that another release took is waited for: it
-  # ends gone, or not confirmed, and is taken; or its lease passes, after
-  # which that release starts no kill(1) run, and it is taken over.
+  # past `deadline`.
   def take(record, deadline) do
     case :atomics.get(record, 1) do
       @gone ->

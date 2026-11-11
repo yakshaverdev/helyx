@@ -1,13 +1,10 @@
 defmodule Helyx.Session.Server.Summary do
   @moduledoc false
-  # The summary call of a session (docs/features/summary-compaction.md),
-  # the only writer of `summary_call` in `Helyx.Session.Server.State`. A
-  # plan of the Compaction plugin starts it: a provider process of its own
-  # for the provider and model of the turn, under the hands, with no tools
-  # and no resume id, that gets one `{:turn, id, context}`. Its text deltas
-  # are the summary. The call is `:running` until its terminal or a
-  # failure, then `:ending` until the hands send its `provider_down`; the
-  # wait after a turn holds until then (`TurnLoop.progress/1`). A plan that
+  # The summary call of a session (docs/features/summary-compaction.md), the
+  # only writer of `summary_call` in `Helyx.Session.Server.State`. A plan of
+  # the Compaction plugin starts a provider process of its own, under the
+  # hands, with no tools and no resume id, that gets one
+  # `{:turn, id, context}`. Its text deltas are the summary. A plan that
   # comes while the last call ends waits in `next` for that end.
 
   import Helyx.Session.Server.Events, only: [emit: 3]
@@ -19,8 +16,8 @@ defmodule Helyx.Session.Server.Summary do
   @enforce_keys [:start, :id, :plan]
   defstruct [:pid, :start, :id, :plan, :next, text: [], bytes: 0, status: :running]
 
-  # `start` is the ref of the start request; `pid` is nil until the answer
-  # of the hands.
+  # `start` is the ref of the start request; `pid` is nil until the answer of
+  # the hands.
   @type t :: %__MODULE__{
           pid: pid() | nil,
           start: reference(),
@@ -32,8 +29,7 @@ defmodule Helyx.Session.Server.Summary do
           status: :running | :ending
         }
 
-  # Asks the hands to start the summary call of `plan` for the current
-  # turn; their answer comes to `started/2`.
+  # Their answer comes to `started/2`.
   @spec start(State.t(), Helyx.Summary.Plan.t()) :: State.t()
   def start(%State{summary_call: %__MODULE__{status: :ending} = call} = state, plan),
     do: %{state | summary_call: %{call | next: plan}}
@@ -53,9 +49,8 @@ defmodule Helyx.Session.Server.Summary do
     %{state | summary_call: %__MODULE__{start: start, id: Id.new(), plan: plan}}
   end
 
-  # The answer of the hands to the start. A call that ended before it
-  # stops its process at once, and waits for its `provider_down`. A start
-  # that fails ends the call with no process.
+  # A call that ended before the answer stops its process at once, and waits
+  # for its `provider_down`.
   @spec started(State.t(), {:ok, pid()} | {:error, String.t()}) :: State.t()
   def started(%State{summary_call: call} = state, {:ok, pid}) do
     if call.status == :ending,
@@ -74,8 +69,8 @@ defmodule Helyx.Session.Server.Summary do
   def open?(%State{summary_call: %__MODULE__{next: %Helyx.Summary.Plan{}}}), do: true
   def open?(_state), do: false
 
-  # The turn ended: a running call stops, also one whose start has no
-  # answer yet (`started/2`), and a waiting plan is dropped.
+  # A running call stops, also one whose start has no answer yet
+  # (`started/2`), and a waiting plan is dropped.
   @spec stop(State.t()) :: State.t()
   def stop(%State{summary_call: %__MODULE__{status: :running, pid: pid} = call} = state) do
     if pid, do: Process.exit(pid, {:shutdown, :aborted})
@@ -87,8 +82,8 @@ defmodule Helyx.Session.Server.Summary do
 
   def stop(state), do: state
 
-  # A message of the summary call's process: the server matched its pid or
-  # its id. Only its `provider_down` counts once the call ends.
+  # The server matched the pid or the id of the call. Only its
+  # `provider_down` counts once the call ends.
   @spec handle(term(), State.t()) :: State.t()
   def handle({:provider_down, _pid, reason}, state), do: ended(state, reason)
 
@@ -111,8 +106,8 @@ defmodule Helyx.Session.Server.Summary do
   def handle({:stream_event, _id, {:message_end, _, _}}, state), do: state
   def handle({:stream_event, _id, {:thinking_delta, _}}, state), do: state
 
-  # Only a complete answer is a summary: a cut or refused text would
-  # replace the messages that it covers.
+  # Only a complete answer is a summary: a cut or refused text would replace
+  # the messages that it covers.
   def handle(
         {:stream_end, _id, {:done, %{stop_reason: :end_turn}}},
         %State{summary_call: call} = state
@@ -128,12 +123,10 @@ defmodule Helyx.Session.Server.Summary do
 
   def handle({:stream_end, _id, {:error, reason}}, state), do: end_call(state, {:error, reason})
 
-  # A tool call, a tool request, a context request, or any other event:
-  # the summary call has no tools and no turn of the session.
+  # The summary call has no tools and no turn of the session.
   def handle(message, state), do: end_call(state, {:error, {:bad_summary_event, message}})
 
-  # The end of the call's process, or a start that failed: a running call
-  # fails, and a plan that waited starts.
+  # A running call fails, and a plan that waited starts.
   defp ended(%State{summary_call: call} = state, reason) do
     state = %{state | summary_call: nil}
     state = if call.status == :running, do: fail(state, reason), else: state
@@ -144,8 +137,8 @@ defmodule Helyx.Session.Server.Summary do
     end
   end
 
-  # The call ends: its process closes, and the turn goes on with the
-  # summary or with the failure.
+  # Its process closes, and the turn goes on with the summary or with the
+  # failure.
   defp end_call(%State{summary_call: call} = state, result) do
     ask(state, call.pid, :close, :close)
     state = %{state | summary_call: %{call | status: :ending}}
@@ -166,8 +159,7 @@ defmodule Helyx.Session.Server.Summary do
   end
 
   # A failed summary keeps the previous state: a compaction turn fails with
-  # it, and any other turn goes on with the context of the last summary,
-  # after a notice.
+  # it, and any other turn goes on with the last summary, after a notice.
   defp fail(%State{phase: %{turn: %Turn{compact: text}}} = state, reason) when is_binary(text),
     do: TurnLoop.fail_turn(failed(reason), state)
 

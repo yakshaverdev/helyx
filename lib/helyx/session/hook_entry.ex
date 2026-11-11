@@ -1,8 +1,8 @@
 defmodule Helyx.Session.HookEntry do
   @moduledoc false
-  # The `hook` entry of the session file (docs/features/hooks.md, "The
-  # `hook` entry of the session file"): its encode for the writer and its
-  # shape check for the reader. A resume reads nothing from it.
+  # The `hook` entry of the session file (docs/features/hooks.md): its encode for
+  # the writer and its shape check for the reader. A resume reads nothing from
+  # it.
 
   @points ~w(before_tool after_tool before_settle)
   @answers ~w(allow deny replace continue failed)
@@ -19,8 +19,8 @@ defmodule Helyx.Session.HookEntry do
 
   defp cut_text(text), do: text |> cut() |> elem(0)
 
-  # A valid text cut to at most #{@max_bytes} bytes at a character
-  # boundary, and whether it was cut.
+  # A valid text cut to at most #{@max_bytes} bytes at a character boundary, and
+  # whether it was cut.
   def cut(text) when byte_size(text) <= @max_bytes, do: {text, false}
   def cut(text), do: {text |> binary_part(0, @max_bytes) |> String.replace_invalid(""), true}
 

@@ -1,17 +1,14 @@
 defmodule Helyx.Tool.ToolSearch do
   @moduledoc """
-  `tool_search`: finds the deferred tools of the session's tool sources,
-  such as the tools of MCP servers, and activates the matches, so the next
-  model call can call them (`Helyx.Tool.deferred/2`, `Helyx.Tool.activate/1`).
+  `tool_search`: finds the deferred tools of the session's tool sources, such
+  as the tools of MCP servers, and activates the matches, so the next model
+  call can call them (`Helyx.Tool.deferred/2`, `Helyx.Tool.activate/1`).
 
   It ranks the deferred entries of the ready groups by BM25 over the words of
   the name, the description, and the parameter names and descriptions; an
-  entry whose name is a word of the query ranks first. An empty query
-  activates nothing and lists the groups with their state and tool count.
-  With no match while a group is starting or a source is pending, it waits
-  for each change and ranks again, at most 30,000 ms from its first look. The
-  answer names the matches that the session kept, those it left out, the
-  groups that are still starting, and the failed groups. See
+  entry whose name is a word of the query ranks first. With no match while a
+  group is starting or a source is pending, it waits for each change and
+  ranks again, at most 30,000 ms from its first look. See
   `docs/features/mcp-client.md`.
   """
 

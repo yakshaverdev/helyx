@@ -15,14 +15,9 @@ defmodule Helyx.Hub do
   `{:error, {:invalid_option, key}}`, a store file that another Hub holds
   `{:error, :store_locked}`, and a folder of the file that its group or other users can write
   `{:error, :unsafe_folder}`.
-  Every user and token function here is a Hub call: a call with a timeout of 5,000 ms, sent only
-  while the mailbox of Hub holds fewer than 1,024 messages, else `{:error, :busy}` at once
-  (decision 5). Hub drops a call that it takes at
-  or past its deadline before it reads or writes, and rolls back a write
-  that ends at or past it; the deadline is 4,000 ms after the send, and the
-  caller waits it and a margin of 1,000 ms for the answer, so a caller that got a timeout gets no late
-  change of state (a commit that takes longer than the margin is the hole,
-  `docs/features/hub.md`, Accepted holes).
+  Every user and token function here is a Hub call (decision 5): `{:error,
+  :busy}` at once when the mailbox of Hub is full, and a caller that got a
+  timeout gets no late change of state.
   """
 
   import Bitwise
@@ -111,11 +106,7 @@ defmodule Helyx.Hub do
   @doc """
   Saves a prompt that Hub sends to a session of the user `user_id` at a
   time, with the rules of `hub.schedules.create` (`docs/features/hub.md`,
-  decisions 11 and 12). `params` is the params map of the wire:
-  `"session"`, `"at"` (POSIX seconds, from now to now + 366 days),
-  `"every"` (optional, 300 to 2,678,400 seconds), and `"prompt"` (1 to
-  16,384 bytes of UTF-8). The user must own the session; a session that it
-  may not read gives `:session_not_found`, as a missing one.
+  decisions 11 and 12); `params` is the params map of the wire.
   """
   @spec schedule(hub(), String.t(), map()) ::
           {:ok, map()}

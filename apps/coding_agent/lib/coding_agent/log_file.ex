@@ -29,13 +29,12 @@ defmodule CodingAgent.LogFile do
   Runs `fun` with the log held: the file handler `:helyx_tui_log` writes
   the events to `path`, then a filter on the `:default` handler drops
   every event, and the events that `:default` has queued go to the
-  terminal before `fun` starts. With no `:default` there is no terminal
-  handler to filter or drain, and the file handler writes in the format
-  of the Elixir logger. `fun` gets `:ok`, or `{:error, notice}` when
+  terminal before `fun` starts. `fun` gets `:ok`, or `{:error, notice}` when
   `path` is there and not a regular file, or does not open: then no file
   log runs, and no line reaches the terminal either. At the end the
   filter on `:default` goes, then a filter closes the file handler, also
-  when `fun` raises; the file handler stays for the next hold. One process holds at a time. Returns the result of `fun`.
+  when `fun` raises; the file handler stays for the next hold. One process holds at a time. Returns the result of `fun`
+  (`docs/features/coding-agent.md`, "TUI").
   """
   @spec run(Path.t(), (held() -> result)) :: result when result: term()
   def run(path, fun) do

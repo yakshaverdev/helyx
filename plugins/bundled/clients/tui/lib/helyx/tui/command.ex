@@ -3,11 +3,7 @@ defmodule Helyx.TUI.Command do
   # The slash commands of the composer, in `@commands`
   # (docs/features/coding-agent.md, "TUI",
   # docs/features/harness-compaction.md, and
-  # docs/features/tui-session-switch.md). `parse/1` owns the rule of a
-  # command, `run/2` its session call and the notice of a refused one, and
-  # `help/1` the text of `/help`; `Helyx.TUI` runs `/new` and `/resume`,
-  # which switch the session, and `/help`, which holds the keys. The
-  # transcript follows the session's events, not these calls.
+  # docs/features/tui-session-switch.md).
 
   alias Helyx.TUI.Link
   require Link
@@ -30,8 +26,7 @@ defmodule Helyx.TUI.Command do
   # A command whose usage is its name alone takes no argument.
   @bare for {name, usage} <- @commands, usage == "/#{name}", do: name
 
-  # The rule is on bytes, not on looks; the feature doc's bounds table
-  # holds the rule and its limit. A paste keeps tabs and new lines, so
+  # The rule is on bytes, not on looks. A paste keeps tabs and new lines, so
   # `/model<tab>a/b` has a separator. A command name with no separator
   # after it, as in `/models`, gives its usage, unless `expand` knows the
   # word as a skill. `expand` gives the text of a skill command, or nil
@@ -60,7 +55,6 @@ defmodule Helyx.TUI.Command do
   defp skill_or_usage(nil, name), do: {:usage, name}
   defp skill_or_usage(text, _name), do: {:message, text}
 
-  # Runs a command on the session: `:ok`, or the notice of a refused one.
   @spec run(t(), Link.t()) :: :ok | {:notice, String.t()}
   def run({:usage, name}, _session), do: {:notice, "usage: " <> usage(name)}
   def run({:model, ""}, session), do: run({:usage, :model}, session)

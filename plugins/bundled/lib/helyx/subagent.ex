@@ -83,14 +83,12 @@ defmodule Helyx.Subagent do
     {owner, Process.monitor(owner)}
   end
 
-  # The owner stops the child once, at the first ask for the report, at the
-  # end of the Task, or at the end of the parent session, and answers each
-  # ask with that report. It ends when the Task returned with the report,
-  # after the ask of the release of any other end of the Task, or with the
-  # parent session. A Task that returns did not always ask: the hands turn
-  # a raise, a throw, or an exit of `run/2` into its result.
-  # The stop acts on the process that the call started, never on a later
-  # instance of its id (docs/features/agent-tool.md, "The cleanup").
+  # The child is stopped once, at the first ask for the report, at the end of
+  # the Task, or at the end of the parent session, and every ask gets that
+  # report. A Task that returns did not always ask: the hands turn a raise,
+  # a throw, or an exit of `run/2` into its result. The stop acts on the
+  # process that the call started, never on a later instance of its id
+  # (docs/features/agent-tool.md, "The cleanup").
   defp own(pid, {task, task_ref, parent_ref} = watch, report) do
     receive do
       {:report, from, ref} ->

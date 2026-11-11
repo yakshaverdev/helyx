@@ -1,15 +1,11 @@
 defmodule CodingAgent.Print do
   @moduledoc """
   Print mode, a client of one session: one prompt in, the final answer out
-  on stdout, and an exit status. A background run that is live, or its end
-  that waits for a turn, holds print mode, unless the session holds the
-  ends; the answer is the one of the last turn. The session id, the notices, and the
+  on stdout, and an exit status. The session id, the notices, and the
   errors go to stderr. Piped stdin (stdin is not a terminal) is added to
   the prompt as a block, up to 1 MiB of UTF-8. Every print run ends with a
-  halt of the VM. The first SIGTERM or SIGHUP aborts the turn, waits at
-  most `abort_ms/0` for the abort, and halts the VM with 143 or 129 and no
-  flush, whatever stdout and stderr do. The design is in
-  `docs/features/print-mode.md`.
+  halt of the VM, and the first SIGTERM or SIGHUP aborts the turn first.
+  The design is in `docs/features/print-mode.md`.
   """
 
   alias Helyx.{Event, Message, Reason, Session}
@@ -51,14 +47,9 @@ defmodule CodingAgent.Print do
   the trap stays for the life of the VM: the first of them aborts the
   session that `run/2` runs, waits at most `abort_ms/0`, and calls `halt`
   with 143 or 129; later ones are ignored, and so is every other signal while
-  the stop runs, so it cannot overwrite the first status. Outside the stop,
-  the other signals keep the OTP default (SIGQUIT and SIGUSR1 halt the VM). Then the calling process
-  only waits for the run and halts. The run, in a process of its own, sends the log to
-  stderr, so stdout holds only the answer, and calls `fun`. `fun` returns
-  the status, or `{:error, text}`, which is written as one line on stderr
-  and gives 1; a raise, throw, or exit of `fun` gives one such line and 1
-  too. Any other end of the run (a failed error line, a linked crash, a
-  kill) gives 1. When a signal came first, its stop sets the status. `halt`
+  the stop runs. The run, in a process of its own, sends the log to
+  stderr, so stdout holds only the answer, and calls `fun`. A raise, throw,
+  or exit of `fun` gives one line on stderr and 1. `halt`
   halts the VM with no flush, so output that blocks never holds the exit,
   and `main/2` does not return.
   """
@@ -163,10 +154,8 @@ defmodule CodingAgent.Print do
   Sends `prompt` to `session`, waits until the session settles, prints the
   answer of the last turn, and returns the exit status: 0 for a normal
   end, 1 for a failed or aborted turn, an answer cut at the output limit,
-  a session that stops, or background runs whose ends hold. While the
-  session counts a running background run or an end that waits for a
-  turn, a normal turn end does not end the wait: the end opens the next
-  turn (`docs/features/print-background-wait.md`). It must run inside `main/2`,
+  a session that stops, or background runs whose ends hold
+  (`docs/features/print-background-wait.md`). It must run inside `main/2`,
   which a signal uses to abort `session`. The caller aborts the turn and
   stops Core after it.
   """

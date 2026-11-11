@@ -2,13 +2,8 @@ defmodule Helyx.Hub.Params do
   @moduledoc false
   # The params of the `hub.*` operations, checked in the caller at the entry
   # of Hub before it reads any object that they name (`docs/features/hub.md`,
-  # decision 5, "The order of the checks"; Bounds). `check/2` answers
-  # `{:ok, value}`, `:bad_params`, or `:text_too_large`.
-  #
-  # Each operation is one row of `@ops`: its params with their type and their
-  # bound, and the rule of the row that a param cannot state. One check runs
-  # a param map against a row. The bounds of Hub live here, and a module that
-  # reads one asks for it.
+  # decision 5, "The order of the checks"; Bounds). The bounds of Hub live
+  # here, and a module that reads one asks for it.
 
   @max_cwd_bytes 4_096
   @max_title_bytes 256
@@ -31,16 +26,11 @@ defmodule Helyx.Hub.Params do
 
   # One row for each operation. A param is `{key, field, type, presence}`:
   # the key on the wire, the field that its checked value takes when that is
-  # not the key, its type with its bound, and `:required`, `:optional` (an
-  # absent key stays out of the checked map), or `{:default, value}`. A type
-  # is `:id`, `:labels`, `:visibility`, `:project` (an id, or nil to clear
-  # it), `:boolean`, `:limit`, `:after` (a cursor), `:at` (the next time of a
-  # schedule), `{:range, range}`, `{:bytes, max}`, `{:text, min, max}` (UTF-8
-  # of `min` to `max` bytes with no control character), or
-  # `{:long_text, min, max}` (a UTF-8 text whose bytes over `max` answer
-  # `:text_too_large`, after every other param passed). `answer` state the
-  # shape of `{:ok, value}`; `across` names the rule of the row that runs
-  # after every param passed, or nil.
+  # not the key, its type with its bound (the types are those of `value/2`),
+  # and `:required`, `:optional` (an absent key stays out of the checked
+  # map), or `{:default, value}`. `answer` states the shape of `{:ok, value}`;
+  # `across` names the rule of the row that runs after every param passed, or
+  # nil.
   @ops %{
     "hub.records.get" => %{
       params: [{"session", :session, :id, :required}],

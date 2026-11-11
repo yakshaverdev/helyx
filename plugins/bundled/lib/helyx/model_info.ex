@@ -3,14 +3,10 @@ defmodule Helyx.ModelInfo do
   # The context window and the prices of a model, by steps 2 to 4 of the
   # source rule: config, the catalog (`Helyx.ModelInfo.Catalog`), nothing.
   # The serving side (step 1) wins in the provider. Each value comes whole
-  # from the first source that has it. `docs/features/usage-and-limits.md`,
-  # "`Helyx.ModelInfo`" and "Config". The providers of `claude-code`,
-  # `codex`, and the OpenAI-compatible endpoints share it; it is not a
-  # plugin (ADR 0005). The config entry is keyed by the ref; the provider
-  # names its catalog id, or nil for no catalog step.
-  #
-  # Config is a boundary: `lookup/4` checks the entry of the ref in use and
-  # names the first bad key. A price is USD per million tokens.
+  # from the first source that has it. The providers share it; it is not a
+  # plugin (ADR 0005). Config is a boundary: `lookup/4` checks the entry of
+  # the ref in use and names the first bad key. A price is USD per million
+  # tokens (docs/features/usage-and-limits.md, "`Helyx.ModelInfo`").
 
   import Helyx.Usage, only: [wire_cost?: 1, wire_window?: 1]
 

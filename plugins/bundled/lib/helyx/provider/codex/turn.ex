@@ -1,9 +1,5 @@
 defmodule Helyx.Provider.Codex.Turn do
   @moduledoc false
-  # The turn of the program of `Helyx.Provider.Codex`: the open of its
-  # thread, the replay of a fresh one, the `turn/start` of a model turn, its
-  # interrupt, and the answers to its requests. The functions take and give
-  # the provider state.
 
   import Helyx.Provider.Codex.Wire, only: [open: 2, push: 2, reply: 3, rpc: 3, send_line: 2]
 
@@ -11,7 +7,6 @@ defmodule Helyx.Provider.Codex.Turn do
   alias Helyx.Provider.Codex
   alias Helyx.Provider.Codex.{Items, Program, Replay, State}
 
-  # The thread is open: the waiting request goes on.
   def opened(%State{phase: {:compacting, _id, from}, fresh?: true} = state) do
     # An interrupt of the compaction waits for its turn, and none comes.
     state = interrupted(push(reply(state, from, :ok), [HarnessIO.no_history(Codex.id())]))

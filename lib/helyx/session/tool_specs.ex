@@ -1,10 +1,10 @@
 defmodule Helyx.Session.ToolSpecs do
   @moduledoc false
-  # The checks of the fixed tools at a session start, their specs, `check/0`,
-  # and `concurrent?/0`, and the name rule of every tool, for
-  # `Helyx.Tool.specs/2`, `check_available/1`, `concurrent/1`, and `name?/1`.
-  # `spec_error/2` is also the check of the entries of a tool source
-  # (`Helyx.Session.ToolRegistry`): one check of a spec.
+  # The checks of the fixed tools at a session start, their specs, `check/0`, and
+  # `concurrent?/0`, and the name rule of every tool, for `Helyx.Tool.specs/2`,
+  # `check_available/1`, `concurrent/1`, and `name?/1`. `spec_error/2` is also
+  # the check of the entries of a tool source
+  # (`Helyx.Session.ToolRegistry`).
 
   alias Helyx.Session.Input
 
@@ -53,16 +53,15 @@ defmodule Helyx.Session.ToolSpecs do
 
   # The most bytes of the description and of the parameters of a spec
   # (docs/features/mcp-client.md, "Bounds"). One check for the specs of the
-  # fixed tools and of the entries of a tool source: the MCP plugin cuts the
-  # description of an entry at a character boundary before `put_tools/2`,
-  # and Core rejects a longer one.
+  # fixed tools and of the entries of a tool source; Core rejects a longer
+  # description than the MCP plugin cuts.
   @max_description_bytes 4_096
   @max_parameters_bytes 16_384
 
   @doc false
-  # The reason that the description or the parameters of a spec are outside
-  # the rule, or nil: a description of UTF-8 of at most 4,096 bytes, and
-  # parameters that are a JSON object of at most 16,384 bytes.
+  # The reason that the description or the parameters of a spec are outside the
+  # rule, or nil: a description of UTF-8 of at most 4,096 bytes, and parameters
+  # that are a JSON object of at most 16,384 bytes.
   @spec spec_error(term(), term()) :: String.t() | nil
   def spec_error(description, parameters) do
     cond do
@@ -80,9 +79,9 @@ defmodule Helyx.Session.ToolSpecs do
   defp text?(value, max),
     do: is_binary(value) and byte_size(value) <= max and String.valid?(value)
 
-  # The smallest name limit known among the providers is 64 bytes of this
-  # set, and Claude Code shows a Helyx tool as `mcp__helyx__<name>`, 12 bytes
-  # more (docs/features/mcp-client.md, decision 8).
+  # The smallest name limit known among the providers is 64 bytes of this set,
+  # and a harness shows a Helyx tool as `mcp__helyx__<name>`, 12 bytes more
+  # (docs/features/mcp-client.md, decision 8).
   @name_pattern ~r/\A[A-Za-z0-9_-]{1,52}\z/
 
   def name?(value), do: is_binary(value) and Regex.match?(@name_pattern, value)

@@ -1,26 +1,23 @@
 defmodule Helyx.TUI.Wire.Connection do
   @moduledoc """
   The wire session of the TUI (`docs/features/tui-attach.md`, decision 7): one process that owns
-  the socket of `Helyx.TUI.Wire.connect/4` after `welcome`. It sends the requests of the TUI and
-  matches their replies by id, joins the parts of a frame and decodes it with the codec of the
-  transport and the decode bounds of a frame of the server (`docs/features/tui-attach.md`,
-  decision 13), checks it strictly against the schema (decision 14), turns the events of a
-  subscription into `Helyx.Event` structs, sends the acks, and answers the pings.
+  the socket of `Helyx.TUI.Wire.connect/4` after `welcome`, sends the requests of the TUI and
+  matches their replies by id, decodes each frame with the bounds and the schema of the wire
+  (decisions 13 and 14), turns the events of a subscription into `Helyx.Event` structs, sends
+  the acks, and answers the pings.
 
   The process that calls `open/1` owns the connection, which ends with it; `take/1` makes another
   process the owner. The owner gets the events of its subscriptions as a client in the node gets
-  them from `Helyx.Session.subscribe/2`, with the sub that sent each: `{:helyx_event, sub, event}`
-  for each event, then `{:helyx_end, sub, reason}` at the end of the session, with `reason`
-  `:stopped` or `:crashed`.
-  It passes each event that it applied to `ack/3`. The connection ends with `{:shutdown,
-  :broken}` at a frame that the contract does not allow, and with `{:shutdown, {:closed, code}}`
-  when the server closes it, `code` nil for a close with no code: a close of TCP, a close frame
-  with no code, or a failed read or write.
+  them: `{:helyx_event, sub, event}` for each event, then `{:helyx_end, sub, reason}` at the end
+  of the session, with `reason` `:stopped` or `:crashed`. It passes each event that it applied to
+  `ack/3`. The connection ends with `{:shutdown, :broken}` at a frame that the contract does not
+  allow, and with `{:shutdown, {:closed, code}}` when the server closes it, `code` nil for a
+  close with no code.
 
   An operation gives the result of the Core call of the server, or `{:error, code}` with the error
   code of the wire as an atom; for `invalid_model_ref`, `unknown_provider`, and `start_failed`,
   `{code, text}`. It waits for its reply at most the deadline of the server for the operation
-  under a Hub and 15,000 ms more from the moment that the connection takes it, its wait for the
+  under a Hub and @margin_ms more from the moment that the connection takes it, its wait for the
   writer included (decision 15), then gives `{:error, :timeout}`: the outcome is unknown, and the
   late reply is dropped; `start` and `resume` wait while the connection lives (decision 17). At
   most 16 requests wait for a reply, late ones too, and at most 16 request frames wait for the
@@ -155,11 +152,9 @@ defmodule Helyx.TUI.Wire.Connection do
   @impl true
   def init({owner, socket, ws}) do
     # `waiting` maps the id of a request to its op and `{from, timer}`, or
-    # `:late` after the timer; `replays` holds the id of each `subscribe`
-    # with `after`. `subs` holds the subscriptions
-    # (`Helyx.TUI.Wire.Subscriptions`), `unwritten` counts the request
-    # frames that wait for the writer, and `control` and `pong` hold the
-    # next batch of a pong and acks.
+    # `:late` after the timer; `unwritten` counts the request frames that
+    # wait for the writer, and `control` and `pong` hold the next batch of a
+    # pong and acks.
     {:ok,
      %{
        owner: owner,
@@ -316,7 +311,6 @@ defmodule Helyx.TUI.Wire.Connection do
 
   defp frame(_frame, state), do: broken(state)
 
-  # The reply of the subscription ops; `:next` for every other op.
   defp reply(caller, op, result, state) do
     case Subscriptions.reply(state.subs, caller, op, result) do
       {:next, subs} ->

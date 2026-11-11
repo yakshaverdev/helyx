@@ -16,20 +16,15 @@ defmodule Helyx.Provider.OpenAI.Events do
   # byte count does not see, and keeps a bignum out of the keys.
   @max_call_index 10_000
 
-  # `buffer` holds a partial SSE line across chunks, `calls` assembles tool
-  # calls by index with `tool_bytes` their size, `finish` and `usage` wait
-  # for `[DONE]`, and `info` prices the usage (`Helyx.ModelInfo`). A
-  # stream with no usage chunk gives the unknown usage.
+  # `buffer` holds a partial SSE line across chunks, and `calls` assembles
+  # tool calls by index with `tool_bytes` their size. A stream with no usage
+  # chunk gives the unknown usage.
   @acc %{buffer: "", calls: %{}, tool_bytes: 0, finish: nil, usage: %Helyx.Usage{}}
 
   import Helyx.Usage, only: [wire_tokens?: 1]
 
   @doc """
   Transforms a stream of SSE body chunks into provider stream events.
-
-  `Helyx.Provider.OpenAI` calls it on the response body. Tests call it
-  directly to feed chunks split at arbitrary boundaries; the test adapter
-  delivers each recorded body as one chunk.
   """
   @spec events(Enumerable.t(), Helyx.ModelInfo.t()) :: Enumerable.t()
   def events(chunks, info) do
@@ -84,12 +79,8 @@ defmodule Helyx.Provider.OpenAI.Events do
   end
 
   # The one shape check, of the documented chunk (OpenAI chat completions
-  # streaming): the first choice with a string `finish_reason` and its
-  # delta, the delta's tool calls, each with an integer index, a string
-  # `id`, and a `function` with a string `name` and `arguments`, and a
-  # `usage` with token counts within the wire bound. Each of these can be
-  # missing or null, except the index. Core checks the text and thinking
-  # deltas. `info` prices the usage.
+  # streaming). Each field can be missing or null, except the index. Core
+  # checks the text and thinking deltas.
   defp fields(%{} = chunk, info) do
     with {:ok, choice} <- first_choice(chunk["choices"]),
          %{} = delta <- field(choice, "delta", %{}),

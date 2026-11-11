@@ -1,10 +1,9 @@
 defmodule Helyx.Session.Call do
   @moduledoc false
-  # A call of the contract of `Helyx.Session`. The session is not running
-  # when no process has the id, or when the process is dead (the Registry
-  # drops its name asynchronously) or dies during the call. A timeout still
-  # exits, also for a session that stopped with the reason `:timeout`
-  # (ADR 0006).
+  # A call of the contract of `Helyx.Session`. The session is not running when
+  # no process has the id, or when the process is dead (the Registry drops its
+  # name asynchronously) or dies during the call. A timeout still exits, also
+  # for a session that stopped with the reason `:timeout` (ADR 0006).
 
   def call(session, request, timeout) do
     case Helyx.Session.pid(session) do
@@ -23,12 +22,12 @@ defmodule Helyx.Session.Call do
       {:error, :session_not_found}
   end
 
-  # The subscribe of `Helyx.Session.subscribe/2`. The monitor comes before
-  # the call, so the real exit reason of the pid of the reply is never lost.
+  # The monitor comes before the call, so the real exit reason of the pid of the
+  # reply is never lost.
   def subscribe(pid, opts, timeout), do: subscribe(pid, opts, timeout, Process.monitor(pid))
 
-  # On a failure the unsubscribe follows the call from this process to the
-  # same pid, so a live session handles it after the subscribe.
+  # On a failure the unsubscribe follows the call from this process to the same
+  # pid, so a live session handles it after the subscribe.
   defp subscribe(pid, opts, timeout, ref) do
     case call_pid(pid, {:subscribe, self(), ref, opts}, timeout) do
       %Helyx.Session.Snapshot{} = snapshot ->
@@ -53,7 +52,8 @@ defmodule Helyx.Session.Call do
     send(pid, {:unsubscribe, self()})
   end
 
-  # The request with its deadline (session-lifecycle.md, "Late calls").
+  # The request with its deadline
+  # (docs/features/session-lifecycle.md, "Late calls").
   defp with_deadline(request, :infinity), do: request
 
   defp with_deadline(request, timeout),

@@ -1,8 +1,8 @@
 defmodule Helyx.Session.Server.State do
   @moduledoc false
   # The state of one session process, and the requests to its provider
-  # process. `Helyx.Session.Server.TurnLoop` makes the transitions of
-  # `phase` (`Helyx.Session.Server.Flow`), with the turn cleanup in
+  # process. `Helyx.Session.Server.TurnLoop` makes the transitions of `phase`
+  # (`Helyx.Session.Server.Flow`), with the turn cleanup in
   # `Helyx.Session.Server.Wait` (docs/features/session-lifecycle.md).
 
   alias Helyx.Session.{ProviderRequest, Queue}
@@ -10,8 +10,7 @@ defmodule Helyx.Session.Server.State do
 
   @enforce_keys [:id, :core, :model, :provider, :cwd]
 
-  # The armed kill of a turn, interrupt, steer, tool result, or context
-  # request: a reply takes well under 10 ms, so 2 s is the margin.
+  # A reply takes well under 10 ms, so 2 s is the margin.
   @provider_reply_ms 2_000
   # The armed kill of the prepare Task, in ms; recall counts in it
   # (`Helyx.Session.Recall`).
@@ -30,51 +29,35 @@ defmodule Helyx.Session.Server.State do
     :provider,
     :cwd,
     :hands,
-    # The folder of the background output files (`Helyx.Session.Hands`).
     :background_dir,
-    # The session file and its writer lock, as one value: `:never` before
-    # the session has a file; `{:saving, file, lock}` while an append goes
-    # to disk, with the port of the lock, or nil in the open before the
-    # take; `{:stopped, unsaved_from, lock}` after a failed write or a lost
-    # lock, with the port that a failed write still holds, or nil after the
-    # loss, and `unsaved_from`, the index of the first transcript message
-    # that the file does not hold (`Records`).
+    # The session file and its writer lock: `:never` before the session has a
+    # file; `{:saving, file, lock}` while an append goes to disk, with the
+    # port of the lock, or nil in the open before the take; `{:stopped,
+    # unsaved_from, lock}` after a failed write or a lost lock
+    # (`Records`).
     {:save, :never},
-    # The sync worker of the instance (`Helyx.Session.Sync`), or nil with
-    # no Memory plugin. Before `Sync.open/1`, nil or `{:replay, messages}`,
-    # the messages that a resume decoded (docs/features/memory.md).
+    # The sync worker of the instance (`Helyx.Session.Sync`), or nil with no
+    # Memory plugin. Before `Sync.open/1`, nil or `{:replay, messages}`.
     :sync,
-    # The registered ModelContext, Compaction, and Memory plugins by
-    # interface, each nil for none.
     plugins: %{model_context: nil, compaction: nil, memory: nil},
-    # The tools and the tool sources of the session
-    # (`Helyx.Session.ToolRegistry`), and the source process of each
-    # source that runs, by pid (`Helyx.Session.Server.Sources`).
     registry: %Helyx.Session.ToolRegistry{},
     sources: %{},
     # The checked options of the start or the resume for each `init/3`
-    # (`init_opts/3`): `provider_opts`, and `max_output_tokens`, the limit
-    # of the start or nil (docs/features/output-limit.md).
+    # (`init_opts/3`) (docs/features/output-limit.md).
     init: %{provider_opts: [], max_output_tokens: nil},
     transcript: [],
     # Each subscriber pid with the session's monitor of it, the ref of its
-    # last subscribe, the seq up to which it acked (replay-ring.md), and
-    # whether it can answer an ask.
+    # last subscribe, the seq up to which it acked
+    # (docs/features/replay-ring.md), and whether it can answer an ask.
     subscribers: %{},
-    # The seq of the newest event, and the newest events of the session
-    # (`Helyx.Session.Ring`).
     ring: %Helyx.Session.Ring{},
-    # The turn in progress, the wait before the next turn can start, or none,
-    # with the provider process of the session (`Helyx.Session.Server.Flow`).
     phase: %Flow.Idle{},
-    # The steer state: the queues and the sent steers, and a hook's
-    # continue with the count of turns in a row (`Helyx.Session.Queue`).
     queue: %Queue{},
     # The last resume id per provider id, with the number of assistant
     # messages then.
     resume_ids: %{},
     # The bounds of the requests to the provider process, in ms: the armed
-    # kills `reply` and `close` (see `Helyx.Session.ProviderProcess`), and
+    # kills `reply` and `close` (`Helyx.Session.ProviderProcess`), and
     # `idle`, the time with no turn after which the session sends
     # `:idle_close`. A test seam.
     provider_ms: %{
@@ -85,14 +68,13 @@ defmodule Helyx.Session.Server.State do
     # The deadlines of the session's own steps, in ms: `prepare`, the armed
     # kill of the prepare Task (`TurnLoop`), and `open`, the deadline of the
     # lock take and the base of the deadline of the load, which grows with
-    # the file (session-lock.md, row "wait of the caller", #665, #834). A
-    # test seam.
+    # the file (docs/features/session-lock.md). A test seam.
     deadline_ms: %{prepare: @prepare_ms, open: 25_000},
     # The current idle timer (`:erlang.start_timer/3`, see
     # `Connect.arm_idle/1`), or nil.
     idle: nil,
-    # The instructions of a compaction that waits for the end of the wait,
-    # or nil (docs/features/harness-compaction.md).
+    # The instructions of a compaction that waits for the end of the wait, or
+    # nil (docs/features/harness-compaction.md).
     pending_compact: nil,
     # The stored summary, and the summary call that runs or ends, or nil
     # (docs/features/summary-compaction.md).
@@ -101,8 +83,8 @@ defmodule Helyx.Session.Server.State do
     # The last compaction: the id of the last transcript message before it
     # and its `tokens_after`, or nil (`Helyx.Session.Totals.of/2`).
     compacted: nil,
-    # The caller of `Helyx.Sessions.stop/1`, which `terminate/2` answers
-    # with the stop report, or nil.
+    # The caller of `Helyx.Sessions.stop/1`, which `terminate/2` answers with
+    # the stop report, or nil.
     stopper: nil
   ]
 
@@ -144,12 +126,11 @@ defmodule Helyx.Session.Server.State do
           stopper: GenServer.from() | nil
         }
 
-  # Sends `request` to the provider process with the bound `key` of `provider_ms`.
   def ask(state, pid, req, key), do: ProviderRequest.ask(pid, req, state.provider_ms[key])
 
-  # The writer lock of the session file, or nil: of a saving session, and
-  # of one whose failed write still holds it. A session that never had a
-  # file, and one that lost its lock, hold none.
+  # The writer lock of the session file, or nil: of a saving session, and of
+  # one whose failed write still holds it. A session that never had a file,
+  # and one that lost its lock, hold none.
   @doc false
   def lock(%__MODULE__{save: {:saving, _file, lock}}), do: lock
   def lock(%__MODULE__{save: {:stopped, _from, lock}}), do: lock
@@ -158,8 +139,7 @@ defmodule Helyx.Session.Server.State do
   # The options of every plugin call of the session.
   def base_opts(state), do: [core: state.core, session_id: state.id, cwd: state.cwd]
 
-  # The context of a call or an approval chain (`Helyx.Tool.context/0`):
-  # the model is the one of its turn, not of a later switch.
+  # The model is the one of its turn, not of a later switch.
   def tool_context(state, model) do
     %{
       session_id: state.id,
@@ -169,8 +149,8 @@ defmodule Helyx.Session.Server.State do
     }
   end
 
-  # The options of a provider's `init/3`: those of Core first, so a
-  # provider option of the same name does not change one.
+  # Those of Core come first, so a provider option of the same name does not
+  # change one.
   def init_opts(state, resume_id, resume_usage) do
     %{provider_opts: provider_opts, max_output_tokens: limit} = state.init
 

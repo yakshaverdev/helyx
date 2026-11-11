@@ -1,24 +1,20 @@
 defmodule Helyx.Session.Ask do
   @moduledoc false
-  # The ask of `Helyx.Tool.ask/1` (`kind` `:tool`) and of
-  # `Helyx.Hook.ask/1` (`:hook`). It goes to the session, which checks the
-  # caller against the record of the Tasks that the hands started
-  # (docs/features/hooks.md, "The caller check of an ask"). A process with
-  # the call context that the hands did not start, such as one that a tool
-  # or a hook started, gets `:not_running`.
+  # The ask of `Helyx.Tool.ask/1` (`kind` `:tool`) and of `Helyx.Hook.ask/1`
+  # (`:hook`). It goes to the session, which checks the caller against the
+  # record of the Tasks that the hands started (docs/features/hooks.md). A
+  # process with the call context that the hands did not start gets
+  # `:not_running`.
 
   # The most bytes of the JSON of a request.
   @max_request_bytes 65_536
 
   def max_request_bytes, do: @max_request_bytes
 
-  # The wait of a call or hook Task, before any plugin code runs (a hook
-  # Task arms the kill of its limit first), for the session's go: the
-  # session sends it after it handled the record of the Task that the
-  # hands sent. So the session handled the record before the Task can
-  # ask, by the order of what the session itself received and sent. A
-  # background run waits for it after its start answer too
-  # (docs/features/hooks.md).
+  # The wait of a call or hook Task, before any plugin code runs, for the
+  # session's go: the session sends it after it handled the record of the Task,
+  # so the session handled the record before the Task can ask. A background run
+  # waits for it after its start answer too (docs/features/hooks.md).
   def await_go do
     receive do
       :helyx_go -> :ok
@@ -27,10 +23,8 @@ defmodule Helyx.Session.Ask do
 
   # The record of an ask of a Task of `kind`
   # (`Helyx.Session.Hands.Entry`): `{:tool, call_id}` for a call Task,
-  # `{:hook, chain_id}` for a hook Task, and nil for every other kind. A
-  # Task that no turn owns (the provider process, a source, and a server
-  # Task), a `before_settle` chain Task, and the chain Task of an approval
-  # request, which run no plugin code, have none, and wait for no go.
+  # `{:hook, chain_id}` for a hook Task, and nil for every other kind, which
+  # runs no plugin code and waits for no go.
   def asker({:call, call_id}), do: {:tool, call_id}
   def asker({:hook, chain_id, _run}), do: {:hook, chain_id}
   def asker(_kind), do: nil

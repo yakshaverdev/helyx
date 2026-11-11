@@ -4,12 +4,8 @@ defmodule Helyx.TUI.Switch do
   # to another one for `/new` and `/resume`
   # (docs/features/tui-session-switch.md), and the bind again after a lost
   # connection (`reconnect/2`, docs/features/tui-attach.md, decision 11).
-  # A Task opens the new session, then detaches from the old one over the
-  # wire (`Helyx.TUI.Link`): the old session runs on, for its other
-  # clients and for a later resume (docs/features/tui-attach.md,
-  # decision 18). The new session opens first, so a failed open leaves the
-  # old one as it was. The functions take and give the state of
-  # `Helyx.TUI`.
+  # The new session opens first, so a failed open leaves the
+  # old one as it was.
 
   alias Helyx.Event
   alias Helyx.TUI.{Composer, Link, Question, ViewModel}
@@ -31,10 +27,6 @@ defmodule Helyx.TUI.Switch do
           dropped: [Event.t()]
         }
 
-  # Subscribes to `session` and shows it from its snapshot: the history of
-  # a resumed session, and the turn a late client joins, then the
-  # information cell `info` when it is not nil. The end signal of the
-  # subscription ends the TUI (`down/2`).
   @spec bind(map(), Link.t(), String.t() | nil) :: map()
   def bind(state, session, info) do
     {snapshot, ref} = subscribe!(session, [])
@@ -73,14 +65,9 @@ defmodule Helyx.TUI.Switch do
     end
   end
 
-  # The end of the connection over the wire. A lost one, a close of the
-  # server or of TCP, connects again with the `reconnect` function of the
-  # TUI, in its process, and subscribes with `after`: the instance and the
-  # seq of the last event that the fold applied. A replay gives the events
-  # that the TUI missed, which it applies as live ones; a snapshot
-  # replaces its state, as at a switch, but for the picker of an ask that
-  # is still open. A contract break, a lost connection during a switch,
-  # and a failed reconnect end the TUI.
+  # The end of the connection over the wire (decision 11). A contract
+  # break, a lost connection during a switch, and a failed reconnect end
+  # the TUI.
   @spec reconnect(map(), term()) :: map()
   def reconnect(%{switch: nil, reconnect: reconnect} = state, {:shutdown, {:closed, _}})
       when is_function(reconnect, 0) do
@@ -112,9 +99,8 @@ defmodule Helyx.TUI.Switch do
   defp busy(%{elapsed_ms: elapsed}),
     do: %{started: System.monotonic_time(:millisecond) - elapsed, elapsed: elapsed}
 
-  # Starts a switch: the Task opens `target` in the folder of the TUI, with
-  # the current model for `/new`, then detaches from the old session, which
-  # runs on (decision 18).
+  # The Task opens `target` in the folder of the TUI, with the current
+  # model for `/new`.
   @spec start(map(), target(), down()) :: map()
   def start(state, target, down \\ nil) do
     opts = %{model: state.vm.model, cwd: state.cwd}
@@ -123,25 +109,21 @@ defmodule Helyx.TUI.Switch do
     %{state | switch: %__MODULE__{task: task, target: target, down: down}}
   end
 
-  # A switch detaches from the old session and leaves it running for its
-  # other clients (`docs/features/tui-attach.md`, decision 18): the old
-  # subscription ends, so its events stop, and the session stays live.
+  # A switch detaches from the old session and leaves it running
+  # (`docs/features/tui-attach.md`, decision 18).
   defp run(target, old, opts, sub) do
     with {:ok, new} <- Link.open(old, target, opts),
          :ok <- Link.unsubscribe(old, sub),
          do: {:ok, new}
   end
 
-  # The end signal of the session, the reason of its `session_end`. A dead
-  # session leaves nothing to render: the exit surfaces the reason through
-  # `Helyx.TUI.run/1`. During a switch, the result of the switch decides.
+  # A dead session leaves nothing to render: the exit surfaces the reason
+  # through `Helyx.TUI.run/1`. During a switch, the result of the switch decides.
   @spec down(map(), :stopped | :crashed) :: map()
   def down(%{switch: nil}, reason), do: exit({:session_down, reason})
   def down(state, reason), do: put_in(state.switch.down, {:down, reason})
 
-  # An event of the current session, live or of a replay: the ack, the
-  # fold, the question of an ask, and the composer. The fold leaves its view
-  # model unchanged for an event at or below its seq (decision 11).
+  # The fold leaves its view model unchanged for an event at or below its seq (decision 11).
   @spec apply_event(map(), Event.t()) :: map()
   def apply_event(state, event) do
     :ok = Link.ack(state.session, state.session_ref, event)
@@ -159,9 +141,6 @@ defmodule Helyx.TUI.Switch do
 
   defp event(state, _event), do: state
 
-  # The answer of the Task. A failed open keeps the current session while
-  # it runs; when it ended during the switch, a new session takes its
-  # place, and when that fails too the TUI ends.
   @spec done(map(), {:ok, Link.t()} | {:error, term()}) :: map()
   def done(%{switch: switch} = state, {:ok, session}) do
     # The old session ended in the Task; the TUI drops the `session_end` of
@@ -171,11 +150,6 @@ defmodule Helyx.TUI.Switch do
     %{state | composer: Composer.end_recall(state.composer)}
   end
 
-  # A crash of the Task is a failed open too. When the old session ends
-  # during a switch that fails, the answer can come before its
-  # `session_end`, from another process: no call tells a dead session
-  # apart, and the `session_end` that comes later ends the TUI
-  # (docs/features/tui-attach.md, Accepted holes).
   def done(%{switch: switch} = state, {:error, reason}),
     do: failed(%{state | vm: ViewModel.info(state.vm, text(reason))}, switch.target, switch.down)
 
@@ -187,8 +161,6 @@ defmodule Helyx.TUI.Switch do
   # its queue comes back, because the composer stays with the TUI.
   defp failed(state, _target, down), do: start(give_back(state), :new, down)
 
-  # The texts of the kept `queue_dropped` events go to the composer in
-  # their order, as outside a switch.
   defp give_back(%{switch: switch} = state),
     do: switch.dropped |> Enum.reverse() |> Enum.reduce(%{state | switch: nil}, &event(&2, &1))
 

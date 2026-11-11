@@ -46,7 +46,6 @@ defmodule Helyx.TUI do
   # One screen of scroll is the rows above the composer and the footer.
   @footer_rows Footer.rows()
 
-  # The empty columns on the left and on the right of every part.
   @margin 2
 
   @doc """
@@ -116,7 +115,6 @@ defmodule Helyx.TUI do
   def handle_info({:DOWN, _ref, :process, conn, reason}, %{session: %Link{conn: conn}} = state),
     do: {:noreply, settle(sync_busy(read_branch(Switch.reconnect(state, reason))))}
 
-  # An event of the current subscription; a switch drops the events of the sub it left here.
   def handle_info({:helyx_event, sub, event}, %{session_ref: sub} = state) do
     # A turn can change the branch; an event at or below the seq of the fold changes nothing.
     branch? = event.type == :turn_end and event.seq > state.vm.seq
@@ -179,7 +177,6 @@ defmodule Helyx.TUI do
     end
   end
 
-  # The open list takes the keys and a paste. Up and Down repeat.
   def handle_event(%Key{code: code, kind: kind}, %{list: %SessionList{} = list} = state)
       when kind == "press" or (kind == "repeat" and code in ["up", "down"]) do
     case SessionList.key(list, code) do
@@ -251,7 +248,6 @@ defmodule Helyx.TUI do
     end
   end
 
-  # Up and Down recall earlier prompts at the first and the last row.
   def handle_event(%Key{code: code, kind: kind, modifiers: []}, state)
       when code in ["up", "down"] and kind in ["press", "repeat"],
       do: {:noreply, edit(state, &Composer.recall(&1, state.vm, code))}
@@ -259,7 +255,6 @@ defmodule Helyx.TUI do
   # Only Ctrl+J and Shift+Enter add a line; a repeat or release of Enter does nothing.
   def handle_event(%Key{code: "enter"}, state), do: {:noreply, state}
 
-  # Every other press or repeat goes to the composer: `Composer.press/3`.
   def handle_event(%Key{kind: kind} = key, state) when kind in ["press", "repeat"],
     do: {:noreply, edit(state, &Composer.press(&1, key.code, key.modifiers))}
 
@@ -360,8 +355,6 @@ defmodule Helyx.TUI do
   defp middle_rows(_search_or_composer, state, _width, room),
     do: Composer.rows(state.composer, room)
 
-  # Scroll position
-
   # The position from the transcript rect, one row at least; with no size the view follows.
   defp on_screen(state, position) do
     case layout(state, state.terminal_size_fn.()) do
@@ -378,8 +371,6 @@ defmodule Helyx.TUI do
   defp settle(state, rule \\ &Transcript.hold/4)
   defp settle(%{scroll: nil} = state, _rule), do: state
   defp settle(state, rule), do: on_screen(state, &rule.(state.vm, state.scroll, &1, &2))
-
-  # Busy indicator
 
   # ExRatatui keeps one timer per id, armed while this list holds it: one
   # tick timer while a turn runs, and none while idle.

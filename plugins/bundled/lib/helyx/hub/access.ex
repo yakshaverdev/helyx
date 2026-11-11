@@ -1,9 +1,7 @@
 defmodule Helyx.Hub.Access do
   @moduledoc false
   # The authority of a transport for a Hub (`Helyx.Transport.WebSocket.
-  # Authority`, `docs/features/hub.md`, decision 5): `Helyx.Hub.authority/1`
-  # gives `{Helyx.Hub.Access, %{hub: hub, core: core, dir: sessions_dir,
-  # default_owner: user_id}}`.
+  # Authority`, `docs/features/hub.md`, decision 5).
   # Each callback runs in the process of the transport that calls it, and
   # makes one Hub call. Each but `release`, which only gives back a place,
   # first checks the credential: one that no longer holds closes the
@@ -128,16 +126,12 @@ defmodule Helyx.Hub.Access do
   defp session_pid(arg, id), do: Helyx.Session.pid(%Helyx.Session{id: id, core: arg.core})
 
   # `resume` and the record operations take the `cwd` and `model` of a
-  # session that exists, or nil: the header of its file for a Core with a
-  # data folder, and the live list for a session that runs with no file, or
-  # for a Core with none. A Core with a data folder runs the find for every
-  # id, and one with none reads the live list for every id; only a running
-  # session whose file is gone adds the read of the live list (hub.md,
-  # Accepted holes, "The time of a refusal"). The find
-  # runs in a Task with a deadline, since Core bounds neither the project
-  # folders nor their files: a find that does not end in time finds
-  # nothing. Every value, from the disk or from Core, passes one check: a
-  # `cwd` or `model` that a record cannot hold finds nothing.
+  # session that exists, or nil (decision 8; hub.md, Accepted holes, "The
+  # time of a refusal"). The find runs in a Task with a deadline, since Core
+  # bounds neither the project folders nor their files: a find that does not
+  # end in time finds nothing. Every value, from the disk or from Core,
+  # passes one check: a `cwd` or `model` that a record cannot hold finds
+  # nothing.
   defp found(%{dir: nil} = arg, id), do: checked(live(arg, id))
   defp found(arg, id), do: checked(file(arg.dir, id) || running(arg, id))
 

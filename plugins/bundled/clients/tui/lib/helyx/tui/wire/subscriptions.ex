@@ -2,12 +2,10 @@ defmodule Helyx.TUI.Wire.Subscriptions do
   @moduledoc false
   # The subscriptions of one connection (`docs/features/tui-attach.md`,
   # decisions 7, 11, and 18): which `sub` is live or dropped, what the owner
-  # has acked, and the reply of a subscribe or a detach. The connection owns
-  # the socket, the request ids, the waiting table, and the writer; every
-  # rule about a subscription is here. A sub ends at `session_end` or at the
-  # reply of an `unsubscribe` (a switch's detach); a sub that no frame
-  # carries is dropped, with no request, until the server ends it
-  # (wire-protocol.md, O4).
+  # has acked, and the reply of a subscribe or a detach. A sub ends at
+  # `session_end` or at the reply of an `unsubscribe` (a switch's detach); a
+  # sub that no frame carries is dropped, with no request, until the server
+  # ends it (wire-protocol.md, O4).
 
   require Helyx.TUI.Wire, as: Wire
 

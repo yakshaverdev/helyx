@@ -124,17 +124,10 @@ defmodule Helyx.TUI.Composer do
   def restore(composer), do: clear(composer)
 
   @doc """
-  Up or Down: recalls an earlier prompt of the session, the user messages
-  in `vm`, when the cursor is on the first row (Up) or the last row (Down).
-  Down past the newest prompt brings back the draft. Otherwise the key
-  moves the cursor. Up leaves the cursor at the start, Down at the end, so
-  the next Up or Down goes on through the prompts.
-
-  A key that leaves an edited recalled prompt, to another prompt or Down
-  past the newest, first makes it the draft: the draft that waits, then
-  the edit, one per new line, with the pastes of both and the cursor on
-  the same character. Then the key acts on that draft. Any other key only
-  moves the cursor, and the recall stays.
+  Up or Down: recalls an earlier prompt of the session when the cursor is on
+  the first row or the last one, and Down past the newest prompt brings back
+  the draft. Otherwise the key moves the cursor. A key that leaves an edited
+  recalled prompt first makes it the draft (`docs/features/multiline-composer.md`).
   """
   @spec recall(t(), ViewModel.t(), String.t()) :: t()
   def recall(%__MODULE__{} = composer, vm, code) when code in ["up", "down"] do
@@ -155,10 +148,9 @@ defmodule Helyx.TUI.Composer do
   end
 
   @doc """
-  Applies a session event. Only `:queue_dropped` changes the composer:
-  the texts that an abort or a failed turn gave back, in their order,
-  then the draft, then a recalled prompt that shows, edited or not, one
-  per new line, with the cursor at the end. Both keep their pastes. The
+  Applies a session event. Only `:queue_dropped` changes the composer: the
+  texts that an abort or a failed turn gave back, in their order, then the
+  draft, then a recalled prompt that shows. Both keep their pastes, and the
   paste rule cleans each text, so a text cannot forge a marker.
   """
   @spec apply(t(), Event.t()) :: t()
@@ -169,8 +161,7 @@ defmodule Helyx.TUI.Composer do
 
   @doc """
   Ends a recall and keeps what the user has: the draft that waits, then the
-  recalled prompt that shows, edited or not, one per new line, with the
-  cursor at the end. With no recall the composer does not change.
+  recalled prompt, edited or not, one per new line, with the cursor at the end.
   """
   @spec end_recall(t()) :: t()
   def end_recall(%__MODULE__{recall: nil} = composer), do: composer
@@ -189,8 +180,7 @@ defmodule Helyx.TUI.Composer do
   @doc """
   The rows of the composer in `room` rows that it shares with the
   transcript. The composer shrinks, down to one line, before the
-  transcript loses its last row. So the drawn screen is the scroll screen
-  at 4 rows of room or more.
+  transcript loses its last row.
   """
   @spec rows(t(), integer()) :: pos_integer()
   def rows(composer, room), do: fit(rows(composer), room)

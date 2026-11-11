@@ -1,11 +1,10 @@
 defmodule Helyx.Session.Server.Prepare do
   @moduledoc false
-  # The context build of a turn (docs/features/session-lifecycle.md and
+  # The context build of a turn (docs/features/session-lifecycle.md,
   # docs/features/summary-compaction.md): the prepare Task, which runs the
   # ModelContext and the Compaction plugin, and what its result starts:
-  # the submit of the turn, the answer to a context request, a summary
-  # call (`Helyx.Session.Server.Summary`), or the end of a compaction turn.
-  # `Helyx.Session.Server.TurnLoop` matches the messages and owns the turn.
+  # the submit of the turn, the answer to a context request, a summary call
+  # (`Helyx.Session.Server.Summary`), or the end of a compaction turn.
 
   import Helyx.Session.Server.State, only: [ask: 4]
 
@@ -19,15 +18,11 @@ defmodule Helyx.Session.Server.Prepare do
 
   @recall_failed "memory recall failed; the turn goes on without recall"
 
-  # The prepare Task builds the context, at the turn start, at each
-  # context request, after a summary (`trigger` nil), and in a compaction
-  # turn that the provider did not run (`:manual`). The session owns it: a
-  # child of the task supervisor, monitored before it runs, so a raise is
-  # never `:noproc` (#562), its ref and pid in `Turn.prepare` with the
-  # messages it got, killed at the turn end. Its kill at
-  # `deadline_ms.prepare` is armed before any plugin code. A compaction
-  # turn has no context at its start: it submits at once. Only a model
-  # provider gets a summary (`summary-compaction.md`).
+  # The prepare Task builds the context at the turn start, at each context
+  # request, after a summary (`trigger` nil), and in a compaction turn that
+  # the provider did not run (`:manual`). Its kill at `deadline_ms.prepare`
+  # is armed before any plugin code. A compaction turn has no context at its
+  # start: it submits at once. Only a model provider gets a summary.
   def start(%State{phase: %Preparing{turn: %Turn{compact: text}}} = state, _trigger)
       when is_binary(text),
       do: TurnLoop.submit(state)
@@ -66,8 +61,8 @@ defmodule Helyx.Session.Server.Prepare do
       result =
         Helyx.Session.Stream.prepare(plugins.model_context, plugins.compaction, context, opts)
 
-      # Recall comes after the build and the compaction, with what is
-      # left of the budget (docs/features/memory.md).
+      # Recall comes after the build and the compaction, with what is left of
+      # the budget (docs/features/memory.md).
       result =
         with {:ok, built} <- result,
              left = deadline - System.monotonic_time(:millisecond),
@@ -86,19 +81,17 @@ defmodule Helyx.Session.Server.Prepare do
     put_in(state.phase.turn.prepare, {ref, pid, context.messages})
   end
 
-  # Messages that the plugins kept go back as `:base`: the session has
-  # them (`session-lifecycle.md`). A kept list is the same term, so its
-  # match compares two pointers.
+  # Messages that the plugins kept go back as `:base`: the session has them.
+  # A kept list is the same term, so its match compares two pointers.
   defp base({:ok, %Context{messages: messages} = built, recall}, messages),
     do: {:ok, %{built | messages: :base}, recall}
 
   defp base(result, _messages), do: result
 
   # The checked context (`Stream.prepare/4`), or the error of the prepare
-  # Task: a plugin that returned anything else, or a Task that died. A
-  # plan starts the summary call. In `Preparing` an error fails the turn; a
-  # context request gets it as the answer. A compaction turn ends with the
-  # notice when the plugin made no summary.
+  # Task. A plan starts the summary call. In `Preparing` an error fails the
+  # turn; a context request gets it as the answer. A compaction turn ends
+  # with the notice when the plugin made no summary.
   def prepared(
         %State{phase: %{turn: %Turn{prepare: {_ref, _pid, messages}}}} = state,
         {:ok, %Context{messages: :base} = context, recall}
@@ -118,8 +111,8 @@ defmodule Helyx.Session.Server.Prepare do
     end
   end
 
-  # The recall message waits in the turn and goes last at the submit,
-  # after the steers that join there.
+  # The recall message waits in the turn and goes last at the submit, after
+  # the steers that join there.
   def prepared(%State{phase: %Preparing{turn: %Turn{} = turn} = phase} = state, result) do
     state = %{state | phase: %{phase | turn: %{turn | prepare: nil}}}
 
@@ -173,7 +166,6 @@ defmodule Helyx.Session.Server.Prepare do
 
   def summarized(state), do: start(state, nil)
 
-  # The reason of a prepare Task that ended before its context.
   def down_reason(:killed), do: :context_timeout
   def down_reason(reason), do: {:task_exit, reason}
 end

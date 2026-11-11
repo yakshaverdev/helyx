@@ -7,17 +7,9 @@ defmodule Helyx.Session.Totals do
 
   The four token sums count every usage that is not nil. `cost` is the sum
   of the known costs, nil when no cost is known; `unknown` is set by a usage
-  with `cost: nil`, and `list` by a known cost that is a list price.
-
-  The context state is the estimate from the last usage whose
-  `context_tokens` is an integer, nil before one: those tokens as `tokens`,
-  its `context_window` as `window`, the model of its message, and the bytes
-  of the text, the thinking, and the tool calls of the messages after it.
-  The summary compaction plugin estimates with the same rule
-  (`docs/features/summary-compaction.md`). A client sets the tokens of
-  the estimate at a compaction with `compacted/2`, and `of/2` applies the
-  last compaction after its message. The sums grow with the transcript; a
-  client shows them in capped forms.
+  with `cost: nil`, and `list` by a known cost that is a list price. The
+  context state is the estimate of `context/2` from the last usage whose
+  `context_tokens` is an integer, nil before one.
   """
 
   alias Helyx.Message

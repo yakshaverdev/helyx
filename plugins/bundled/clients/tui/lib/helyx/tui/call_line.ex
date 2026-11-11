@@ -6,15 +6,12 @@ defmodule Helyx.TUI.CallLine do
 
   alias Helyx.Message
 
-  # The cut of a tool call line (`cut_line/1`).
   @render_max_bytes 8_192
 
   @doc """
   The line of a tool call: its name, then each argument as `key=value`,
   with the key raw and the value through `inspect/1`, cut at
-  #{@render_max_bytes} bytes. The name and each key are cut before they join
-  the line, the walk over the arguments stops once the line is over the cut,
-  and the line is cut before its newlines become "␤". The fold makes the line
+  #{@render_max_bytes} bytes. The fold makes the line
   with the tool cell, and not on each frame. A call of the agent tool with a
   string `description` is `⚙ agent <child id>: <description>`, with the
   same cuts; the child id comes from the id of the session and of the call

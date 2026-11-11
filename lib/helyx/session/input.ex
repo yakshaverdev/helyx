@@ -1,11 +1,10 @@
 defmodule Helyx.Session.Input do
   @moduledoc false
-  # The checks of client input at the session API: the cwd, the model, and
-  # the provider options of a start or a resume, the other options of a
-  # start, the origin and the text of a send, and the JSON object of an
-  # answer, which also checks the request of a tool
-  # (docs/features/coding-agent.md, "Bounds"; docs/features/message-identity.md).
-  # Inner code trusts them.
+  # The checks of client input at the session API: the cwd, the model, and the
+  # provider options of a start or a resume, the other options of a start, the
+  # origin and the text of a send, and the JSON object of an answer, which also
+  # checks the request of a tool (docs/features/coding-agent.md,
+  # docs/features/message-identity.md). Inner code trusts them.
 
   alias Helyx.Message
 
@@ -15,8 +14,8 @@ defmodule Helyx.Session.Input do
   @spec max_text_bytes() :: pos_integer()
   def max_text_bytes, do: @max_text_bytes
 
-  # The cwd goes into the session file as JSON, into the system prompt, and
-  # to programs, which cut a string at a NUL byte.
+  # The cwd goes into the session file as JSON, into the system prompt, and to
+  # programs, which cut a string at a NUL byte.
   @spec cwd(term()) :: {:ok, String.t()} | {:error, :invalid_cwd}
   def cwd(cwd) when is_binary(cwd) do
     if String.valid?(cwd) and not String.contains?(cwd, <<0>>),
@@ -26,13 +25,11 @@ defmodule Helyx.Session.Input do
 
   def cwd(_cwd), do: {:error, :invalid_cwd}
 
-  # The `:cwd` of a start or a resume, the current directory by default.
   @spec cwd_option(keyword()) :: {:ok, String.t()} | {:error, :invalid_cwd}
   def cwd_option(opts), do: opts |> Keyword.get_lazy(:cwd, &File.cwd!/0) |> cwd()
 
-  # The `:provider_opts` of a start or a resume, which every `init/3` of
-  # the session gets as they are: a provider checks the keys that it reads
-  # (docs/features/harness-no-state.md).
+  # Every `init/3` of the session gets them as they are: a provider checks the
+  # keys that it reads (docs/features/harness-no-state.md).
   @spec provider_opts(keyword()) :: {:ok, keyword()} | {:error, :invalid_provider_opts}
   def provider_opts(opts) do
     provider_opts = Keyword.get(opts, :provider_opts, [])
@@ -42,12 +39,11 @@ defmodule Helyx.Session.Input do
       else: {:error, :invalid_provider_opts}
   end
 
-  # The start options that a resume does not take: `:parent`, the link to
-  # the call that started a child, for the header, `:tools`, the names of
-  # the tools that the session gets, nil for all (docs/features/agent-tool.md,
-  # "Bounds"), `:model_context`, a ModelContext plugin of the Core, nil
-  # for the first (docs/features/session-model-context.md), and
-  # `:max_output_tokens`, nil for none (docs/features/output-limit.md).
+  # The start options that a resume does not take: `:parent`, the link to the
+  # call that started a child, for the header, `:tools`, the names of the tools,
+  # nil for all (docs/features/agent-tool.md), `:model_context`, nil for the
+  # first (docs/features/session-model-context.md), and `:max_output_tokens`,
+  # nil for none (docs/features/output-limit.md).
   @spec start_options(Helyx.Core.name(), keyword()) ::
           {:ok, map() | nil, [String.t()] | nil, module() | nil, pos_integer() | nil}
           | {:error,
@@ -99,7 +95,7 @@ defmodule Helyx.Session.Input do
   end
 
   # The largest signed 32-bit integer: a server that reads the field as an
-  # integer takes it (docs/features/output-limit.md, "Bounds").
+  # integer takes it (docs/features/output-limit.md).
   @max_output_tokens 2_147_483_647
 
   defp max_output_tokens(nil), do: {:ok, nil}
@@ -109,10 +105,9 @@ defmodule Helyx.Session.Input do
 
   defp max_output_tokens(_limit), do: {:error, :invalid_max_output_tokens}
 
-  # The tools of a start or a resume: the checked specs of
-  # `Helyx.Tool.specs/2`, the tool sources, none with a list `only`
-  # (docs/features/mcp-client.md, decision 11), and the `check/0` of both,
-  # a source named by its module (`Helyx.Tool.check_available/1`).
+  # The tools of a start or a resume: the checked specs of `Helyx.Tool.specs/2`,
+  # the tool sources, none with a list `only` (docs/features/mcp-client.md), and
+  # the `check/0` of both.
   def tools(core, only) do
     plugins = Helyx.Core.plugins(core, Helyx.Tool)
     sources = if only, do: [], else: Enum.filter(plugins, &Helyx.Tool.source?/1)
@@ -123,9 +118,9 @@ defmodule Helyx.Session.Input do
          do: {:ok, tools, sources}
   end
 
-  # A model ref string to its parsed ref and its provider plugin, for a
-  # start, a resume, and a switch alike. With a limit, the provider must
-  # apply it (docs/features/output-limit.md, decision 3).
+  # A model ref string to its parsed ref and its provider plugin, for a start, a
+  # resume, and a switch alike. With a limit, the provider must apply it
+  # (docs/features/output-limit.md).
   @spec model(Helyx.Core.name(), String.t(), pos_integer() | nil) ::
           {:ok, {Helyx.ModelRef.t(), module()}} | {:error, Helyx.Session.model_error()}
   def model(core, string, limit \\ nil) do
@@ -135,8 +130,7 @@ defmodule Helyx.Session.Input do
          do: {:ok, {ref, provider}}
   end
 
-  # Whether the provider applies a limit: Core read its callback at start,
-  # so no plugin code runs here.
+  # Core read the callback at start, so no plugin code runs here.
   @spec limit_supported?(Helyx.Core.name(), module()) :: boolean()
   def limit_supported?(core, provider), do: provider in Helyx.Core.limit_providers(core)
 
@@ -160,12 +154,11 @@ defmodule Helyx.Session.Input do
   def text(text) when byte_size(text) > @max_text_bytes, do: {:error, :text_too_large}
   def text(text), do: if(String.valid?(text), do: :ok, else: {:error, :invalid_utf8})
 
-  # A JSON object as a JSON decoder gives it: string keys, and values that
-  # are strings, numbers, booleans, nil, lists, and such objects; every
-  # string valid UTF-8, and no integer over the digit limit, whose encode is
-  # quadratic. Its JSON encode is at most `max` bytes. One walk counts the
-  # bytes of the encode and stops past `max`, so a larger value costs no
-  # more than the bound (docs/features/question-tool.md, "Bounds").
+  # A JSON object as a JSON decoder gives it: string keys, values that are
+  # strings, numbers, booleans, nil, lists, and such objects, every string valid
+  # UTF-8, and no integer over the digit limit, whose encode is quadratic. Its
+  # JSON encode is at most `max` bytes. One walk counts the bytes of the encode
+  # and stops past `max` (docs/features/question-tool.md).
   @spec json_object(term(), pos_integer()) :: :ok | :error
   def json_object(value, max) when is_map(value) do
     case size(value, max) do

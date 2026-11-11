@@ -5,42 +5,19 @@ defmodule Helyx.TUI.ViewModel do
   The TUI holds no session state of its own. Every event goes through `apply/2` and the screen
   renders from the result, so the fold is testable with scripted event lists.
 
-  `cells` is the transcript, an Erlang `:array` of every cell, open or closed, by position,
-  oldest first; `cells/1` gives it as a list. A cell is a `Helyx.Message`,
-  `{:tool, call, line, result}` (a call of the message before it, and its line;
-  `result` nil until its result, and a result with no open call is `{:tool, nil, line, result}`),
-  `{:stop, :max_tokens | :refused}`, `{:notice, text}`, or `{:infos, texts}`
-  (`docs/features/session-snapshot.md`). A message keeps its first 1,024 blocks and a cut of
-  the others (`Helyx.TUI.ViewModel.Cut`).
+  `cells` is an ordered `:array` of every cell, open or closed; a cell is a message, a tool
+  cell, a stop, a notice, or a run of information lines (`docs/features/session-snapshot.md`).
+  `reason` and `expanded?` are client-local (`docs/features/tui-tool-output-toggle.md`).
+  `streaming` is the open assistant message as a reversed block list, newest first. `usage` and
+  `context` are the totals and the context state of row 2 of the footer: they start from the
+  snapshot, and each message of the live path adds to them, a snapshot message does not. `asks`
+  and `ui_blocks` are as the snapshot and the `:ask` and `:ui_block` events give them
+  (`docs/features/ui-blocks.md`).
 
-  `reason` is why the client rejected the last input, or nil. It is client-local, like a notice:
-  `reject/2` sets it and `clear_reason/1` clears it on the next press or paste. A new reject
-  replaces it. No event changes it.
-
-  `expanded?` is true while tool results show their full text, and false while they show four
-  lines (`toggle_expanded/1`, Ctrl+O). It is client-local, like `reason`, and a switch keeps it
-  (`docs/features/tui-tool-output-toggle.md`).
-
-  `streaming` is the open assistant message as a reversed block list, newest first, or nil when
-  none is streaming; a delta with no `message_start` before it starts one. Text and thinking
-  deltas join it through `Helyx.Message.add_block/2`; each tool call of it is an open tool
-  cell, and the `message_end` makes the cells of the message again from it.
-
-  `usage` and `context` are the totals and the context state of row 2 of the footer
-  (`Helyx.Session.Totals`). They start from the snapshot, which counts every message, and each
-  message of the live path adds to them; a snapshot message does not. A `:compaction` event
-  changes the context state with `Helyx.Session.Totals.compacted/2`.
-
-  `asks` are the open asks of tool calls, oldest first, as the snapshot and the `:ask` and
-  `:ask_end` events give them; `Helyx.TUI.Question` shows the oldest `form` or `approval`
-  (`docs/features/ui-blocks.md`). `ui_blocks` are those of the `:ui_block` events of the
-  running turn (`Helyx.TUI.ViewModel.UIBlocks`).
-
-  `seq` is the `seq` of the snapshot or of the last event that the fold applied. The fold
-  applies an event only once, by its `seq`: an event at or below it leaves the view model
-  unchanged (`docs/features/tui-attach.md`, decision 11). `instance_id` is the id of that
-  instance; a reconnect asks for the events after it, and `Helyx.TUI` drops an event of
-  another subscription before it reaches the fold (`docs/features/tui-session-switch.md`).
+  `seq` is the `seq` of the snapshot or of the last event that the fold applied: the fold
+  applies an event only once, by its `seq` (`docs/features/tui-attach.md`, decision 11).
+  `instance_id` is the id of that instance; a reconnect asks for the events after it, and
+  `Helyx.TUI` drops an event of another subscription before it reaches the fold.
   """
 
   alias Helyx.{Event, Message}
@@ -100,17 +77,14 @@ defmodule Helyx.TUI.ViewModel do
   @delta_keys [:text_delta, :thinking_delta, :tool_call]
 
   @doc """
-  Folds one event into the view model. The TUI is a tolerant reader of one
-  Helyx version (ADR 0006, revision of 2026-10-03). It dispatches on the
-  event type first: each known type has a clause that matches the type only
-  and checks its payload inside, so a known type with a broken payload, such
-  as a `message_start` with no message, is a bug in Core and crashes the TUI.
-  An event at or below `seq` leaves the view model unchanged. An event of
-  a type that no clause names changes only `seq`, and its payload is not
-  checked. Within a known type, a role or a delta
-  kind that the TUI does not know also crashes. A block kind that the TUI
-  does not render stays in the message, and `Helyx.TUI.Transcript` shows a
-  placeholder for it.
+  Folds one event into the view model, a tolerant reader of one Helyx
+  version (ADR 0006, revision of 2026-10-03). A known type with a broken
+  payload, such as a `message_start` with no message, and a role or a
+  delta kind that the TUI does not know, is a bug in Core and crashes the
+  TUI. An event at or below `seq` leaves the view model unchanged; an event
+  of a type that no clause names changes only `seq`. A block kind that the
+  TUI does not render stays in the message, and `Helyx.TUI.Transcript` shows
+  a placeholder for it.
   """
   @spec apply(t(), Event.t()) :: t()
   def apply(%__MODULE__{seq: last} = vm, %Event{seq: seq}) when seq <= last, do: vm
@@ -234,11 +208,9 @@ defmodule Helyx.TUI.ViewModel do
   goes into the line of an agent call (`Helyx.TUI.CallLine.line/2`). The
   snapshot messages go through the fold in order, so the live and the
   snapshot paths share one pairing rule (ADR 0006, revision of
-  2026-10-03). The usage and the context state come from the snapshot
-  fields. A snapshot has no notice or information cell, as they are not
-  in the transcript, but two: a tail snapshot whose `older` is not zero
-  starts with the cell `<older> older messages`, and one with
-  `persisting: false` ends with the notice `Helyx.Reason.text(:not_saved)`.
+  2026-10-03). A tail snapshot whose `older` is not zero starts with the
+  cell `<older> older messages`, and one with `persisting: false` ends with
+  the notice `Helyx.Reason.text(:not_saved)`.
   """
   @spec from_snapshot(Snapshot.t(), String.t() | nil) :: t()
   def from_snapshot(%Snapshot{messages: messages, turn: turn} = snapshot, session_id \\ nil) do

@@ -1,15 +1,12 @@
 defmodule Helyx.Session.Sync do
   @moduledoc false
   # The sync worker of one session instance (docs/features/memory.md): a
-  # temporary child of Core's sync supervisor that the session starts
-  # with its instance, and that monitors the session. It calls `sync/2` of the
-  # Memory plugin one chunk at a time, in the order of the batches, each
-  # call in a linked Task with a limit. A failed call drops its chunk with
-  # a notice: a log line, also sent to the session until the worker
-  # handles its end. After the session ends it drains the queue for at
-  # most `@drain_ms`, and not at all past the session cap plus
-  # `@drain_room` workers. A stop with a queue left logs the chunks it
-  # drops.
+  # temporary child of Core's sync supervisor that the session starts with its
+  # instance, and that monitors the session. It calls `sync/2` of the Memory
+  # plugin one chunk at a time, each call in a linked Task with a limit. A
+  # failed call drops its chunk with a notice. After the session ends it
+  # drains the queue for at most `@drain_ms`, within the worker cap below. A
+  # stop with a queue left logs the chunks it drops.
 
   use GenServer, restart: :temporary, shutdown: 1_000
 
@@ -19,20 +16,20 @@ defmodule Helyx.Session.Sync do
 
   @chunk_messages 64
   @chunk_bytes 1_048_576
-  # The bounds of the queue; a live batch over them is dropped, a replay
-  # never is.
+  # The bounds of the queue; a live batch over them is dropped, a replay never
+  # is.
   @max_chunks 1_024
   @max_bytes 64 * 1_048_576
   @call_ms 30_000
   @drain_ms 30_000
-  # A drain starts only while the sync supervisor runs at most the
-  # session cap plus this many workers.
+  # A drain starts only while the sync supervisor runs at most the session cap
+  # plus this many workers.
   @drain_room 64
 
   defstruct [:memory, :opts, :session, :task, queue: :queue.new(), bytes: 0]
 
-  # Starts the worker of the calling session at its instance start. The
-  # worker gets the replay of a resume first, before any turn can start.
+  # Starts the worker of the calling session at its instance start. The worker
+  # gets the replay of a resume first, before any turn can start.
   @spec open(State.t()) :: State.t()
   def open(%State{plugins: %{memory: nil}} = state), do: %{state | sync: nil}
 
@@ -75,8 +72,8 @@ defmodule Helyx.Session.Sync do
 
   def push_turn(_state), do: :ok
 
-  # The trap makes the exit of a sync Task a message, and runs
-  # `terminate/2`, which kills the Task, at a stop of the supervisor.
+  # The trap makes the exit of a sync Task a message, and runs `terminate/2`,
+  # which kills the Task, at a stop of the supervisor.
   @impl true
   def init({memory, opts, session}) do
     Process.flag(:trap_exit, true)
@@ -84,9 +81,9 @@ defmodule Helyx.Session.Sync do
     {:ok, %__MODULE__{memory: memory, opts: opts, session: session}}
   end
 
-  # Every callback but `init/1` runs in `Helyx.Reason.no_args/1`, and a
-  # crash report shows no state and no message
-  # (docs/features/session-lifecycle.md, "Log and crash reports").
+  # Every callback but `init/1` runs in `Helyx.Reason.no_args/1`, so a crash
+  # report shows no state and no message
+  # (docs/features/session-lifecycle.md).
   @impl true
   def handle_info(message, state), do: Helyx.Reason.no_args(fn -> info(message, state) end)
 
@@ -127,8 +124,8 @@ defmodule Helyx.Session.Sync do
     end
   end
 
-  # The session ended: the queue drains, within a bound of time and of
-  # draining workers.
+  # The session ended: the queue drains, within a bound of time and of draining
+  # workers.
   defp info({:DOWN, _ref, :process, pid, _reason}, %__MODULE__{session: pid} = state) do
     state = %{state | session: nil}
 
@@ -143,13 +140,13 @@ defmodule Helyx.Session.Sync do
 
   defp info(:drain_end, state), do: {:stop, :normal, state}
 
-  # The exit of a sync Task, whose `:DOWN` or reply counts, and the
-  # timer of an ended call, which is left to fire.
+  # The exit of a sync Task, whose `:DOWN` or reply counts, and the timer of an
+  # ended call, which is left to fire.
   defp info({:EXIT, _pid, _reason}, state), do: {:noreply, state}
   defp info({:call_timeout, _ref}, state), do: {:noreply, state}
 
-  # Every stop with a queue left logs it: the drain limit, the drain cap,
-  # and a Core stop.
+  # Every stop with a queue left logs it: the drain limit, the drain cap, and a
+  # Core stop.
   @impl true
   def terminate(_reason, state), do: Helyx.Reason.no_args(fn -> stop(state) end)
 
@@ -167,8 +164,8 @@ defmodule Helyx.Session.Sync do
     end
   end
 
-  # The supervisor links each child and its own parent; a call to it
-  # could wait for its stop.
+  # The supervisor links each child and its own parent; a call to it could wait
+  # for its stop.
   defp workers(state) do
     sup = Process.whereis(Helyx.Core.sync_supervisor(state.opts[:core]))
     {:links, links} = Process.info(sup, :links)
@@ -214,8 +211,8 @@ defmodule Helyx.Session.Sync do
     done(state)
   end
 
-  # The notice is always a log line, and goes to the session until the
-  # worker handles its end.
+  # The notice is always a log line, and goes to the session until the worker
+  # handles its end.
   defp notice(state, what, entries) do
     count = length(entries)
 

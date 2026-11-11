@@ -2,14 +2,10 @@ defmodule Helyx.Session.File.Edit do
   @moduledoc false
   # The delete of a saved session file and the removal of messages from it
   # (docs/features/session-edit.md). Each call takes the writer lock of the
-  # file (`Helyx.Session.Lock`), works under it, and releases it, so no
-  # session writes the file meanwhile; a held lock, or a session of the id
-  # in the Registry of the Core after the take, is `{:error, :running}`.
-  # The caller traps exits, as `Lock.take/1` needs, and owns the port:
-  # `run/3` runs each call in such a Task and derives its report. The
-  # change of the file itself, an unlink or the rename of the rewritten
-  # copy, is a command of the perl process that holds the lock, so it never
-  # happens after the lock has ended.
+  # file (`Helyx.Session.Lock`), works under it, and releases it; a held lock,
+  # or a session of the id in the Registry of the Core after the take, is
+  # `{:error, :running}`. The caller traps exits, as `Lock.take/1` needs, and
+  # owns the port.
 
   alias Helyx.Message
   alias Helyx.Session.File, as: SessionFile
@@ -18,13 +14,8 @@ defmodule Helyx.Session.File.Edit do
 
   defmodule Copy do
     @moduledoc false
-    # The state of the copy: the removed message ids, and the call ids of
-    # their tool calls and results (`calls`), the id of the last kept
-    # entry (`leaf`) and message (`last`), the removed ids that wait for the
-    # next kept user or assistant message (`pending`), and that message for
-    # each of them (`next`).
-    # `lock` writes the copy; `buffer` holds the kept lines not yet sent,
-    # reversed, `size` bytes.
+    # The state of the copy. `lock` writes the copy; `buffer` holds the kept
+    # lines not yet sent, reversed, `size` bytes.
     @enforce_keys [:removed, :calls, :lock]
     defstruct [:removed, :calls, :lock, :leaf, :last, pending: [], next: %{}, buffer: [], size: 0]
   end
@@ -34,16 +25,12 @@ defmodule Helyx.Session.File.Edit do
 
   @doc false
   # Runs `fun`, the work of a call of `Helyx.Sessions`, in a Task of `core`
-  # and gives its report. The work runs in a Task that owns the port of the lock and traps its
-  # exits, so the caller gets no message of it. With a budget, the caller
-  # arms a killer of the Task, which kills it at its deadline, also when the
-  # caller is gone: its port closes, and perl exits and frees the lock.
-  # `fun` gets the pid of the killer and disarms it before it sends the
-  # rename, so a kill of the killer never follows a sent rename. The report
-  # derives from what happened: `:timeout` only when the killer reports its
-  # own kill, and `:unknown` for any other end of the Task with no result,
-  # such as the kill of its supervisor at a Core stop, which can come after
-  # the rename was sent.
+  # that owns the port of the lock and traps its exits, and gives its report.
+  # With a budget, the killer kills the Task at its deadline, also when the
+  # caller is gone. `fun` gets the pid of the killer and disarms it before it
+  # sends the rename, so a kill never follows a sent rename. The report is
+  # `:timeout` only when the killer reports its own kill, and `:unknown` for
+  # any other end of the Task with no result.
   def run(core, budget, fun) do
     caller = self()
 
@@ -83,8 +70,7 @@ defmodule Helyx.Session.File.Edit do
 
   defp report({:exit, _reason}, nil), do: {:error, :unknown}
 
-  # The killer ends after the Task, at its kill or at the `:DOWN` of the
-  # Task.
+  # The killer ends after the Task, at its kill or at the `:DOWN` of the Task.
   defp report({:exit, _reason}, {pid, monitor}) do
     receive do
       {:DOWN, ^monitor, :process, ^pid, :fired} -> {:error, :timeout}
@@ -93,11 +79,11 @@ defmodule Helyx.Session.File.Edit do
   end
 
   @doc false
-  # Removes the file `path` of the session `id` of `core` and the copy that
-  # a removal left. The lock file stays, as at a stop: only its `flock`
-  # counts, and a removed lock file would let a second process lock a new
-  # file of that path while an older open still holds the first.
-  # The copy goes first, so an error leaves the session file and a retry.
+  # Removes the file `path` of the session `id` of `core` and the copy that a
+  # removal left. The lock file stays, as at a stop: a removed lock file would
+  # let a second process lock a new file of that path while an older open
+  # still holds the first. The copy goes first, so an error leaves the session
+  # file and a retry.
   def delete(core, id, path) do
     locked({core, id, path}, fn lock ->
       with :ok <- exists(path),
@@ -109,13 +95,10 @@ defmodule Helyx.Session.File.Edit do
   @doc false
   # Removes the message `message_id` and the messages that pair with it from
   # the file `path` of the session `id` of `core`, of the folder `cwd`, and
-  # gives their ids in file order, message ids only: no caller knows the id
-  # of another entry. The `hook` entries of their calls go too, and are not
-  # in the ids. The file is read and checked as a resume reads it, with no
-  # repair write, then copied without them to `<path>.tmp`, and the copy
-  # replaces the file by a rename. The `killer`
-  # of the deadline (`Helyx.Session.Killer`) is disarmed before the rename
-  # is sent: past that point the result is the answer of perl.
+  # gives their ids in file order: message ids only, as no caller knows the id
+  # of another entry. The `hook` entries of their calls go too, and are not in
+  # the ids. The copy replaces the file by a rename, and the `killer` of the
+  # deadline (`Helyx.Session.Killer`) is disarmed before the rename is sent.
   def remove_message({_core, _id, path} = session, cwd, message_id, killer) do
     locked(session, fn lock ->
       with :ok <- exists(path),
@@ -131,13 +114,11 @@ defmodule Helyx.Session.File.Edit do
     %Copy{removed: removed, calls: call_ids(messages, removed), lock: lock}
   end
 
-  # A session of the id in the Registry of `core` is refused after the
-  # take: one that lost its lock goes on, and one in its open takes the lock
-  # after it, so the check before the take is not enough. A session that
-  # registers after this check gets `{:session_locked, id}` at its take. A
-  # session of another Core or OS process is seen at the take while it
-  # holds the lock; one that lost its lock is not seen (session-edit.md,
-  # accepted holes).
+  # A session of the id in the Registry of `core` is refused after the take:
+  # one that lost its lock goes on, and one in its open takes the lock after
+  # it, so the check before the take is not enough. A session that registers
+  # after this check gets `{:session_locked, id}` at its take
+  # (docs/features/session-edit.md, accepted holes).
   defp locked({core, id, path}, fun) do
     case Lock.take(path) do
       {:ok, lock} ->
@@ -173,10 +154,9 @@ defmodule Helyx.Session.File.Edit do
 
   defp tmp(path), do: path <> ".tmp"
 
-  # The message and the messages that pair with it: an assistant message
-  # with the run of tool results right after it, whose calls it holds. A
-  # tool result in such a run gives the whole group; any other message is
-  # alone. So the transcript keeps complete call and result pairs.
+  # The message and the messages that pair with it: an assistant message with
+  # the run of tool results right after it, whose calls it holds. So the
+  # transcript keeps complete call and result pairs.
   defp group(messages, id) do
     {before, rest} = Enum.split_while(messages, &(&1.id != id))
 
@@ -206,8 +186,8 @@ defmodule Helyx.Session.File.Edit do
 
   defp tool_result?(message), do: message.role == :tool_result
 
-  # The call ids of the removed messages: the tool calls of a removed
-  # assistant message and the call of a removed tool result.
+  # The tool calls of a removed assistant message and the call of a removed
+  # tool result.
   defp call_ids(messages, removed) do
     for %Message{id: id} = message <- messages,
         MapSet.member?(removed, id),
@@ -224,8 +204,8 @@ defmodule Helyx.Session.File.Edit do
     tmp = tmp(path)
 
     # Every change of the copy is a command of the lock holder: after the
-    # lock has ended, perl has ended, so no byte reaches the copy, and a
-    # delete or another removal that takes the lock owns the copy's path.
+    # lock has ended, perl has ended, so no byte reaches the copy, and another
+    # removal that takes the lock owns the copy's path.
     result =
       with {:ok, %File.Stat{mode: mode}} <- File.stat(path),
            :ok <- edit_failed(Lock.create_copy(lock, tmp)),
@@ -238,10 +218,9 @@ defmodule Helyx.Session.File.Edit do
     result
   end
 
-  # The BEAM reads the session file; perl writes the copy, which it made
-  # new with `O_EXCL` and mode 0600 (`Lock.create_copy/2`), so no file or
-  # link at its path is written through and no other user reads it. The
-  # kept lines go to perl in batches of at least `@batch_bytes`.
+  # The BEAM reads the session file; perl writes the copy, which it made new
+  # with `O_EXCL` and mode 0600 (`Lock.create_copy/2`), so no file or link at
+  # its path is written through and no other user reads it.
   defp copy(state, {path, limits}) do
     result =
       File.open(path, [:read, :binary, :raw, :read_ahead], fn input ->
@@ -269,9 +248,9 @@ defmodule Helyx.Session.File.Edit do
     end
   end
 
-  # The read under the lock checked every line and the chain; the file has
-  # not changed since. A line that does not decode to an entry, a torn
-  # append, is not copied: a read skips it.
+  # The read under the lock checked every line and the chain; the file has not
+  # changed since. A line that does not decode to an entry, a torn append, is
+  # not copied: a read skips it.
   defp lines(input, n, limits, state) do
     case :file.read_line(input) do
       :eof ->
@@ -315,8 +294,7 @@ defmodule Helyx.Session.File.Edit do
   end
 
   # A summary whose first kept message is removed keeps from the next kept
-  # user or assistant message before it, and with none it goes: the resume
-  # then has the summary before it, or none.
+  # user or assistant message before it, and with none it goes.
   defp keep(%{"type" => "summary", "first_kept_id" => first} = entry, state) do
     first = if MapSet.member?(state.removed, first), do: Map.get(state.next, first), else: first
 
@@ -327,9 +305,8 @@ defmodule Helyx.Session.File.Edit do
   end
 
   # A `hook` entry of a removed call goes: it is a log of the answers about
-  # that call for the user (docs/features/hooks.md), no code reads it, and
-  # its `arguments` and `reason` can hold text of the call and its result.
-  # It goes wherever it is in the file, and by its call id alone.
+  # that call for the user (docs/features/hooks.md), and its `arguments` and
+  # `reason` can hold text of the call and its result.
   defp keep(%{"type" => "hook", "call_id" => id} = entry, state) do
     if MapSet.member?(state.calls, id),
       do: {:drop, state},

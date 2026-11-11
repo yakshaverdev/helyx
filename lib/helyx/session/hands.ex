@@ -3,25 +3,15 @@ defmodule Helyx.Session.Hands do
   Runs tool calls for one session in one working directory, as Tasks linked
   to the hands (ADR 0003, ADR 0004).
 
-  A result goes to the session as `{:tool_result, turn_id, call_id, {status,
-  text}}`, or `{status, text, ui_blocks}` with the UI blocks of the tool
-  (`docs/features/ui-blocks.md`); an unknown tool gives an error result and
-  starts no Task. The hands call the tool's `release/3` with the handles of
-  a Task when the call ends, however it ended, and an unconfirmed handle
-  refuses later calls and provider starts
-  (`docs/features/tool-resource-release.md`).
+  A result goes to the session as `{:tool_result, turn_id, call_id,
+  {status, text}}`, or `{status, text, ui_blocks}` with the UI blocks of the
+  tool (docs/features/ui-blocks.md); an unknown tool gives an error result
+  and starts no Task. The hands call the tool's `release/3` with the handles
+  of a Task when the call ends, however it ended
+  (docs/features/tool-resource-release.md).
 
   A provider start answers as `{:provider_start, ref, {:ok, pid} | {:error,
-  text}}` and its process end as `{:provider_down, pid, reason}` (ADR 0007,
-  `docs/features/session-lifecycle.md`). Tool sources: `Hands.Sources`.
-
-  Each hook runs in a Task of its own, released and refused as a call Task,
-  from its call Task or from a `before_settle` chain Task
-  (`docs/features/hooks.md`). The start answer of a background run is a
-  `{:started, result, pid}` result; the run goes on after the session's go.
-
-  Each Task is a `Helyx.Session.Hands.Entry`, and every end of a Task goes
-  through `Helyx.Session.Hands.End`.
+  text}}` and its process end as `{:provider_down, pid, reason}` (ADR 0007).
   """
 
   use GenServer
@@ -44,27 +34,26 @@ defmodule Helyx.Session.Hands do
   }
 
   @doc """
-  Starts the hands for a session. Takes `core:`, `cwd:`, `background_dir:`,
-  `session:`, `tools:`, the tool module by name, and `hooks:`, the hook
-  modules and their limits of each point (`Helyx.Core.hooks/1`).
+  Starts the hands for a session, with `core:`, `cwd:`, `background_dir:`,
+  `session:`, `tools:`, and `hooks:`, the hook modules and their limits of each
+  point (`Helyx.Core.hooks/1`).
   """
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts), do: GenServer.start_link(__MODULE__, struct!(State, opts))
 
   @doc """
-  Starts a tool call with the map of `Helyx.Tool.context/0`; the hands add
-  the Core, the tool names, the called tool, its source, and the call id. A
-  cast.
+  Starts a tool call with the map of `Helyx.Tool.context/0`; the hands add the
+  Core, the tool names, the called tool, its source, and the call id. A cast.
   """
   @spec run(pid(), String.t(), ToolCall.t(), map()) :: :ok
   def run(hands, turn_id, %ToolCall{} = call, context),
     do: GenServer.cast(hands, {:run, turn_id, call, context})
 
   @doc """
-  Starts the provider process: `fun` gets the ref of the armed connect kill
-  and runs in a Task of the hands. Returns a ref; the answer comes as
-  `{:provider_start, ref, {:ok, pid}}`, or with an error text once a handle
-  is unconfirmed.
+  Starts the provider process: `fun` gets the ref of the armed connect kill and
+  runs in a Task of the hands. The answer comes as
+  `{:provider_start, ref, {:ok, pid}}`, or with an error text once a handle is
+  unconfirmed.
   """
   @spec start_provider(pid(), module(), (:timer.tref() -> term())) :: reference()
   def start_provider(hands, provider, fun) when is_function(fun, 1) do
@@ -74,45 +63,43 @@ defmodule Helyx.Session.Hands do
   end
 
   @doc """
-  Asks the hands to cancel the turn's call Tasks and release their handles;
-  a background run of the turn is not a call Task and stays
-  (`docs/features/background-bash.md`). Returns at once; read the answer
-  with `:gen_server.check_response/2` or `:gen_server.receive_response/2`:
-  `:ok`, or an error with a fixed text when a handle stays unconfirmed.
+  Asks the hands to cancel the turn's call Tasks and release their handles; a
+  background run of the turn stays (docs/features/background-bash.md). Read the
+  answer with `:gen_server.check_response/2` or
+  `:gen_server.receive_response/2`: `:ok`, or an error with a fixed text when
+  a handle stays unconfirmed.
   """
   @spec request_cancel(pid(), String.t()) :: :gen_server.request_id()
   def request_cancel(hands, turn_id), do: :gen_server.send_request(hands, {:cancel, turn_id})
 
   @doc """
-  Asks the hands to revoke the turn: cancel its call Tasks and its
-  background runs, and release their handles. The answer is
-  `{:revoked, ids, error}`: `ids` are the runs whose start answer the
-  session counted, and `error` is nil or the fixed text of a handle that
-  stays unconfirmed (ADR 0014, invariant 4).
+  Asks the hands to revoke the turn: cancel its call Tasks and its background
+  runs, and release their handles. The answer is `{:revoked, ids, error}`
+  (ADR 0014, invariant 4).
   """
   @spec request_revoke(pid(), String.t()) :: :gen_server.request_id()
   def request_revoke(hands, turn_id), do: :gen_server.send_request(hands, {:revoke, turn_id})
 
   @doc """
-  Stops the hands with `:shutdown` at the stop of the session: every Task
-  ends, and its handles get a release with `:cancel` by `deadline` (monotonic
-  ms). The answer is every handle that a release left unconfirmed
-  (`docs/features/tool-resource-release.md`, rule 10).
+  Stops the hands with `:shutdown`: every Task ends, and its handles get a
+  release with `:cancel` by `deadline` (monotonic ms). The answer is every
+  handle that a release left unconfirmed
+  (docs/features/tool-resource-release.md).
   """
   @spec stop(pid(), integer(), timeout()) :: [term()]
   def stop(hands, deadline, timeout), do: GenServer.call(hands, {:stop, deadline}, timeout)
 
   @doc """
-  Frees the place of the background run `id`, whose end a turn took. An id
-  with no place changes nothing. A cast, as `run/4`
-  (`docs/features/background-bash.md`).
+  Frees the place of the background run `id`, whose end a turn took. An id with
+  no place changes nothing. A cast, as `run/4`
+  (docs/features/background-bash.md).
   """
   @spec taken(pid(), String.t()) :: :ok
   def taken(hands, id), do: GenServer.cast(hands, {:taken, id})
 
-  # Every callback but `init/1` runs in `Helyx.Reason.no_args/1`, and a
-  # crash report shows no state and no message
-  # (docs/features/session-lifecycle.md, "Log and crash reports").
+  # Every callback but `init/1` runs in `Helyx.Reason.no_args/1`, so a crash
+  # report shows no state and no message
+  # (docs/features/session-lifecycle.md).
   @impl true
   def init(%State{} = state) do
     Process.flag(:trap_exit, true)
@@ -132,10 +119,9 @@ defmodule Helyx.Session.Hands do
   @impl true
   def format_status(status), do: Helyx.Reason.crash_status(status)
 
-  # A handle from a Task that was already killed is dropped: the tool frees
-  # the resource when its Task dies (see `Helyx.Tool.hold/1`). A tool with
-  # no `release/3` gets `:no_release`, and `Helyx.Tool.hold/1` raises in its
-  # Task; a chain Task runs no plugin code, so it never holds one.
+  # A handle from a Task that was already killed is dropped: the tool frees the
+  # resource when its Task dies (`Helyx.Tool.hold/1`). A tool with no
+  # `release/3` gets `:no_release`, and `Helyx.Tool.hold/1` raises in its Task.
   defp call({:hold, handle}, {pid, _tag}, state) do
     case State.holding(state, pid) do
       nil ->
@@ -161,9 +147,8 @@ defmodule Helyx.Session.Hands do
     end
   end
 
-  # A place among the background runs, for a tool call Task. The live
-  # runs are the other Tasks with a place: a second call of the Task keeps
-  # its own place, so the limit does not count it.
+  # The live runs are the other Tasks with a place: a second call of the Task
+  # keeps its own place, so the limit does not count it.
   defp call(:background, {pid, _tag}, state) do
     with {ref, %Entry{kind: kind} = entry} <- State.tool_call(state, pid),
          {:ok, id} <-
@@ -177,9 +162,8 @@ defmodule Helyx.Session.Hands do
   end
 
   # The start answer of a background run: the result of its call. The Task
-  # leaves its turn, but keeps its id, so the abort or the failure of the
-  # turn can revoke the run. Any other caller gets `:no_place`; a Task that
-  # a cancel killed gets no reply.
+  # leaves its turn but keeps its id, so the abort or the failure of the turn
+  # can revoke the run. A Task that a cancel killed gets no reply.
   defp call({:started, {status, text}}, {pid, _tag}, state) do
     case State.tool_call(state, pid) do
       {ref, %Entry{kind: {:placed, _call_id, id}} = entry} ->
@@ -192,14 +176,12 @@ defmodule Helyx.Session.Hands do
     end
   end
 
-  # A hook of the chain of the calling call or chain Task (`Hooks`); the
-  # answer comes after the release of the hook's handles.
+  # A hook of the chain of the calling call or chain Task (`Hooks`); the answer
+  # comes after the release of the hook's handles.
   defp call({:hook, request}, {pid, _tag} = from, state),
     do: {:noreply, Hooks.start(state, from, pid, request)}
 
-  # A cancel ends the turn's call Tasks, hook Tasks and chain Tasks, and
-  # releases their handles; the background runs of the turn keep their lease
-  # for a revoke.
+  # The background runs of the turn keep their lease for a revoke.
   defp call({:cancel, turn_id}, _from, state) do
     refs =
       for {ref, %Entry{turn_id: ^turn_id, kind: kind}} <- state.tasks,
@@ -211,10 +193,10 @@ defmodule Helyx.Session.Hands do
   end
 
   # The abort or the failure of the turn revokes the lease of its background
-  # runs: each Task ends, its handles get a release with `:cancel`, and its
-  # end never arrives, so no later turn takes it (ADR 0014, invariant 4).
-  # The ids are the runs that gave their start answer, the ones the session
-  # counts; a Task that a release left unconfirmed is still answered.
+  # runs: each Task ends, its handles get a release with `:cancel`, and its end
+  # never arrives, so no later turn takes it (ADR 0014, invariant 4). The ids
+  # are the runs that gave their start answer, the ones the session counts; a
+  # Task that a release left unconfirmed is still answered.
   defp call({:revoke, turn_id}, _from, state) do
     refs = for {ref, %Entry{turn_id: ^turn_id}} <- state.tasks, do: ref
     ids = for {_ref, %Entry{turn_id: ^turn_id, kind: {:run, id}}} <- state.tasks, do: id
@@ -291,16 +273,15 @@ defmodule Helyx.Session.Hands do
     {:noreply, End.deliver(ref, {:exit, reason}, state)}
   end
 
-  # A Task's exit signal (its reply or :DOWN carries the outcome), or a
-  # reply or :DOWN for a Task that was already delivered. The session's exit
-  # never lands here: it is the parent, and a trapped parent exit stops the
-  # GenServer before handle_info.
+  # A Task's exit signal (its reply or :DOWN carries the outcome), or a reply or
+  # :DOWN for a Task that was already delivered. The session's exit never lands
+  # here: it is the parent, and a trapped parent exit stops the GenServer
+  # before handle_info.
   defp info(_message, state), do: {:noreply, state}
 
-  # Kills a provider Task that `Helyx.Reason.task/2` left trapping exits
-  # in its crash log; the links end every other Task. A kill of the hands
-  # skips it (docs/features/tool-resource-release.md, rule 10). Each tool
-  # frees its resources when its Task dies (see `Helyx.Tool.hold/1`).
+  # Kills a provider Task that `Helyx.Reason.task/2` left trapping exits in its
+  # crash log; the links end every other Task
+  # (docs/features/tool-resource-release.md, rule 10).
   @impl true
   def terminate(_reason, state) do
     Helyx.Reason.no_args(fn ->
@@ -342,8 +323,8 @@ defmodule Helyx.Session.Hands do
   @doc false
   # Spawns the Task of `kind` (`Helyx.Session.Hands.Entry`) for the turn
   # `turn_id`, which is nil for the three Tasks that no turn owns, and the
-  # plugin `tool` whose `release/3` gets its handles, which is nil for a
-  # chain Task.
+  # plugin `tool` whose `release/3` gets its handles, which is nil for a chain
+  # Task.
   def spawn_task(state, kind, turn_id, tool, fun) do
     hands = self()
     session = state.session
@@ -356,8 +337,8 @@ defmodule Helyx.Session.Hands do
         fun.()
       end)
 
-    # A call or hook Task waits for the session's go, which the session
-    # sends once it handled this record (`Helyx.Session.Ask.await_go/0`).
+    # A call or hook Task waits for the session's go, which the session sends
+    # once it handled this record (`Helyx.Session.Ask.await_go/0`).
     if asker = Ask.asker(kind), do: send(session, {:asker, turn_id, task.pid, asker})
 
     entry = %Entry{task: task, kind: kind, turn_id: turn_id, tool: tool}

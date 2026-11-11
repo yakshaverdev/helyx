@@ -60,9 +60,6 @@ defmodule Helyx.TUI.SessionList do
     nil
   end
 
-  # A key of the open list: Up and Down move the selection, Enter picks,
-  # Escape closes; any other key does nothing, and while the scan runs only
-  # Escape does something.
   @spec key(t(), String.t()) :: {:move, t()} | {:pick, String.t()} | :close | :none
   def key(%__MODULE__{items: nil}, code) when code != "esc", do: :none
   def key(%__MODULE__{selected: at} = list, "up"), do: {:move, %{list | selected: max(at - 1, 0)}}

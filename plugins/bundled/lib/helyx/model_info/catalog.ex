@@ -3,18 +3,6 @@ defmodule Helyx.ModelInfo.Catalog do
   # Step 3 of the source rule: the window and the prices of a model from the
   # models.dev catalog. `docs/features/usage-and-limits.md`, "The catalog",
   # "Bounds", and "Ownership". Not a plugin (ADR 0005).
-  #
-  # The data is the output of `slim/1` and lives in `:persistent_term`: the
-  # first lookup of a node loads the cache file, else the bundled snapshot.
-  # On disk it has the shape of `api.json` (`json/1`). A lookup starts a
-  # refresh at most once a day for each cache directory; no lookup waits on
-  # it, and a failed refresh keeps the last good copy.
-  #
-  # Application env of `helyx_plugins`, key `:model_catalog`: `dir`, `url`
-  # (nil turns the refresh off), `req_options`, and `fetch_ms` (the
-  # whole-fetch deadline).
-  # Each lookup checks it, so a bad value fails the provider start with its
-  # key, as a bad `:models` entry does.
 
   import Helyx.Usage, only: [wire_window?: 1]
 
@@ -101,12 +89,8 @@ defmodule Helyx.ModelInfo.Catalog do
   # The catalog ids of a models.dev `api.json`, each model with only
   # its window and its price set, each checked alone. An entry whose id is
   # not 1 to 256 bytes is dropped. A window outside the wire bound is
-  # dropped (0 is unknown). A price set that fails the check of a config
-  # price set (`ModelInfo.check_prices/1`) is dropped; the keys that Helyx
-  # has no price for are left out first, and a tier that is not of type
-  # `context` fails the check. A catalog id with no entry left is dropped,
-  # so `%{}` means no catalog. The snapshot, the cache file, and each
-  # refresh pass it.
+  # dropped (0 is unknown). A tier that is not of type `context` fails the
+  # price check.
   @spec slim(term()) :: %{String.t() => %{String.t() => Helyx.ModelInfo.t()}}
   def slim(api) when is_map(api) do
     for id <- @catalog_ids,

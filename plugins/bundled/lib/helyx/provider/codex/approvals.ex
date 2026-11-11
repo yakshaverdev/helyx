@@ -1,17 +1,10 @@
 defmodule Helyx.Provider.Codex.Approvals do
   @moduledoc false
   # The server requests of the program (ADR 0013 §4,
-  # `docs/research/codex-app-server.md`, "An `apply_patch` approval under
-  # `untrusted` and `read-only`"). An approval request of the provider's
-  # thread and its current turn, for an open item of the type that its
-  # method names, goes to Core as `{:approval, approval_id, item_id}`, and
-  # Core's answer goes back as `accept` or `decline`. Any other approval
-  # request with an integer or string id, such as one of a child thread,
-  # of an earlier turn, outside a Helyx turn, or for another item, is
-  # declined at once, with no chain: its `itemId` could name another call
-  # of the current turn, whose hooks would then decide another item. Any
-  # other server request gets the JSON-RPC error -32601, which the program
-  # took as the decline of an approval.
+  # `docs/features/long-lived-harness.md`, "Server requests"). Any approval
+  # request that is not of the provider's thread and current turn, for an
+  # open item of the type that its method names, is declined at once, with
+  # no chain: its `itemId` could name another call of the current turn.
 
   import Helyx.Provider.Codex.Wire
 

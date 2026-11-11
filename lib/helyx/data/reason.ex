@@ -3,11 +3,9 @@ defmodule Helyx.Reason do
   The one place where a term that Helyx does not control, such as an exit
   reason, a raised value, or a plugin return, becomes text that a user or
   the model reads (ADR 0006 §2). The text holds no stacktrace of the term
-  and has a bound. The log gets the kind of the term only. The crash
-  report of a session process and the log line of a crash of its plugin
-  code hold no message text, with the holes that the rules state. The
-  rules are in `docs/features/session-lifecycle.md`, "Turn end", step 5,
-  and "Log and crash reports".
+  and has a bound. The log gets the kind of the term only. The rules are in
+  `docs/features/session-lifecycle.md`, "Turn end", step 5, and "Log and
+  crash reports".
   """
 
   require Logger
@@ -106,17 +104,12 @@ defmodule Helyx.Reason do
 
   @doc """
   Runs `fun`, the body of a process that Core starts for plugin code in a
-  session. A raise, a throw, or an exit of `fun` that `Task` reports logs
-  `label` and the kind of the reason as an error. Then `task/2` turns off
-  the log of this process, and the crash goes on with its class and its
-  reason, with the arguments of each stack frame replaced by their count.
-  So the process ends with the reason of a Task crash, and `Task` logs no
-  report. An exit with `:normal`, `:shutdown`, or `{:shutdown, term}` goes
-  on with no line: `Task` does not report it. The holes: the translator of
-  Logger runs before the level filter and runs plugin code, such as the
-  `message/1` of an exception; when that code throws, exits, or does not
-  return, the raw report can reach the handlers
-  (`docs/features/session-lifecycle.md`, "Log and crash reports").
+  session. A raise, a throw, or an exit of `fun` logs `label` and the kind
+  of the reason as an error, then goes on with its class and its reason,
+  with the arguments of each stack frame replaced by their count, and with
+  no report from `Task`. An exit with `:normal`, `:shutdown`, or
+  `{:shutdown, term}` goes on with no line. The holes are in
+  `docs/features/session-lifecycle.md`, "Log and crash reports".
   """
   @spec task(String.t(), (-> result)) :: result when result: term()
   def task(label, fun) do

@@ -2,13 +2,8 @@ defmodule Helyx.TUI.Question do
   @moduledoc false
   # The picker of a `form` UI block in the place of the composer
   # (docs/features/question-tool.md, "The TUI picker";
-  # docs/features/ui-blocks.md). It shows the oldest open ask that
-  # `picker?/1` can read, until its `ask_end`: a form, or a request with no
-  # kind from the `question` tool, one question at a time, with the answers
-  # sent by `Helyx.TUI.Link.answer/3` after the last one; or an `approval`,
-  # which it hands to `Helyx.TUI.Approval` (docs/features/approval-gate.md).
-  # The transcript shows the text of an ask of another kind
-  # (`Helyx.TUI.ViewModel.UIBlocks`).
+  # docs/features/ui-blocks.md), and the handoff of an `approval` to
+  # `Helyx.TUI.Approval` (docs/features/approval-gate.md).
 
   alias ExRatatui.Event.{Key, Paste}
   alias ExRatatui.Style

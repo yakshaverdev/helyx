@@ -1,9 +1,5 @@
 defmodule Helyx.Provider.Codex.Program do
   @moduledoc false
-  # The `codex app-server` program of `Helyx.Provider.Codex` and the open
-  # of its thread: the flags, the thread's prompt and tools, the stored id,
-  # and the program that takes the place of one with another prompt or
-  # other tools (`docs/features/provider-parity.md`).
 
   import Helyx.Provider.Codex.Wire, only: [reply: 3, rpc: 3]
 

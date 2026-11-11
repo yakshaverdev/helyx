@@ -1,10 +1,9 @@
 defmodule Helyx.Session.Hands.Run do
   @moduledoc false
-  # The run of one tool call or one hook in its Task of
-  # `Helyx.Session.Hands`: the return checked against its contract, the UI
-  # blocks of a tool's return with `Helyx.UIBlock.check_list/1`
-  # (docs/features/ui-blocks.md), and a raise, a throw, or an exit caught.
-  # The log gets the kind of the term.
+  # The run of one tool call or one hook in its Task of `Helyx.Session.Hands`:
+  # the return checked against its contract, the UI blocks of a tool's return
+  # with `Helyx.UIBlock.check_list/1` (docs/features/ui-blocks.md), and a raise,
+  # a throw, or an exit caught. The log gets the kind of the term.
 
   alias Helyx.Message.ToolCall
 
@@ -59,10 +58,10 @@ defmodule Helyx.Session.Hands.Run do
   defp answer?(:after_tool, {:replace, {status, text}}) when status in [:ok, :error],
     do: text?(text)
 
-  # The text of a continue is a user message: the bound of a client text,
-  # checked before its UTF-8.
   defp answer?(:before_settle, :settle), do: true
 
+  # The text of a continue is a user message: the bound of a client text,
+  # checked before its UTF-8.
   defp answer?(:before_settle, {:continue, text}) when is_binary(text),
     do: Helyx.Session.Input.text(text) == :ok
 
@@ -75,8 +74,8 @@ defmodule Helyx.Session.Hands.Run do
     {:error, "the tool returned a value outside its contract"}
   end
 
-  # A raise is a crash, which gives the message of its exception; a throw
-  # or an exit gives its kind and its value.
+  # A raise is a crash, which gives the message of its exception; a throw or an
+  # exit gives its kind and its value.
   defp caught(:error, reason, stacktrace), do: {reason, stacktrace}
   defp caught(kind, reason, _stacktrace), do: {kind, reason}
 end

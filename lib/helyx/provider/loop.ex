@@ -22,43 +22,16 @@ defmodule Helyx.Provider.Loop do
 
   `opts` carry `:core`, `:session_id`, `:turn_id`, `:cwd`, and
   `:max_output_tokens`, the session's limit or nil: a provider that applies
-  it defines `max_output_tokens?/0` (`docs/features/output-limit.md`). The
-  model Task consumes the enumerable up to the first `done` or `error`. Any
-  other event, or a call whose id repeats in the message, ends the provider
-  process with `{:bad_stream_event, event}`; Core checks the rest as it
-  checks every provider event. A stream faster than the provider process
-  ends at over 10,000 waiting messages with `{:error, {:provider_behind,
-  length, 10_000}}`.
+  it defines `max_output_tokens?/0` (`docs/features/output-limit.md`). Any
+  event other than these, or a call whose id repeats in the message, ends
+  the provider process with `{:bad_stream_event, event}`. A stream faster
+  than the provider process ends at over 10,000 waiting messages with
+  `{:error, {:provider_behind, length, 10_000}}`.
 
-  A turn: the helper replies `:ok` to `{:turn, ...}` and calls the model
-  with the context. A done with calls sends `message_end`, then a
-  `tool_request` for every call of the message at once, in call order; the
-  session runs or rejects them. A done with calls and the stop reason
-  `:max_tokens` sends no `tool_request`: each call gets the error result
-  "tool call not run: the reply was cut at the token limit". The results
-  join the transcript as `tool_result` events in call order, each when
-  every call before it has its result. When every call has its result, the
-  held steers go out as `user_message` events, then `{:need_context,
-  turn_id}`, and the next model call gets the fresh context. A done with
-  no calls ends the turn, unless a steer is held: then the steers go out
-  and the model is called again in the same turn; the usage of that call
-  goes into the usage of the next message of the provider process
-  (`docs/features/usage-and-limits.md`, "Per provider"). A call that an
-  abort or an error ends reports no usage, so the next usage of the
-  provider process has `cost: nil`. A stream error, a stream that ends
-  with no terminal (`:stream_ended`), a model Task that raises, throws, or
-  exits (`{:task_exit, reason}`), and a context error end the turn; the
-  provider process stays. An exit signal that kills the model Task, such
-  as one from a process linked to it, ends the provider process too,
-  through the link (L4).
-
-  A steer of the live turn is held for the next model call; after the
-  terminal it gets `:rejected`. A steer held while a context is built goes
-  out when the context comes, with a new context request, before any
-  model call. An interrupt kills the model Task and waits
-  for its death before its `:ok`. A close or an idle close ends the process.
-  A compact request gets `:unsupported`.
-  A model call has no deadline: the user aborts it.
+  What the helper does for each request and message of a turn is the table
+  of the feature doc; its usage rules are in
+  `docs/features/usage-and-limits.md`, "Per provider". A compact request
+  gets `:unsupported`. A model call has no deadline: the user aborts it.
   """
 
   alias Helyx.Message
@@ -67,17 +40,8 @@ defmodule Helyx.Provider.Loop do
   @callback stream(model :: String.t(), context :: Helyx.Context.t(), opts :: keyword()) ::
               {:ok, Enumerable.t()} | {:error, term()}
 
-  # `phase` is the state of one model call at a time: `:idle` with no
-  # turn; `{:calling, turn, task, content?, calls}` with the model Task in
-  # flight, `content?` set by a text, a thinking text, or a call; `{:results,
-  # turn, calls}` while the calls wait for their results; and `{:context,
-  # turn}` while the session builds a fresh context. `calls` are the calls
-  # of the message with no result in the transcript yet, in call order, each
-  # `{call, result}` with the result nil until it comes; the call id is the
-  # request id. `steers` the ids of the held steers of the live turn.
-  # `usage` is the usage of a call that sent no `message_end`, or nil; it
-  # outlives the turn. `lost?` is the flag: a call since the last usage
-  # ended with no usage, so the next usage has no cost.
+  # The phases and the fields: docs/features/one-provider-path.md,
+  # "`Helyx.Provider.Loop`".
   @enforce_keys [:provider, :model, :opts]
   defstruct [
     :provider,
@@ -132,7 +96,6 @@ defmodule Helyx.Provider.Loop do
   def request({:turn, turn_id, context}, from, %{phase: {:context, _}} = state),
     do: {:ok, [{:reply, from, :ok}], model_call(%{state | steers: []}, context, turn_id)}
 
-  # A steer of the live turn is held for the next model call.
   def request({:steer, turn_id, steer_id, _text}, from, state) do
     if live?(state.phase, turn_id),
       do: {:ok, [{:reply, from, :ok}], %{state | steers: state.steers ++ [steer_id]}},
@@ -249,7 +212,6 @@ defmodule Helyx.Provider.Loop do
     {:ok, [{:event, turn, {:tool_call, call}}], %{state | phase: phase}}
   end
 
-  # The process ends as it ends at a malformed event of the provider.
   defp bad(event), do: exit({:shutdown, {:bad_stream_event, event}})
 
   # A usage that is not valid goes to Core in the done, which Core rejects.
@@ -265,7 +227,6 @@ defmodule Helyx.Provider.Loop do
   # A malformed done, which Core rejects.
   defp terminal({:done, _} = done, state), do: finish(done, state)
 
-  # A call that finished with a valid usage. The kept usage joins it.
   defp called(
          %{stop_reason: stop, usage: usage} = fields,
          %{phase: {:calling, turn, _, content?, calls}} = state

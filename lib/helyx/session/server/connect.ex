@@ -1,9 +1,8 @@
 defmodule Helyx.Session.Server.Connect do
   @moduledoc false
   # The provider process of the turn: a process of the turn's model already
-  # runs, or the session asks the hands to start one, with the resume of the
-  # messages before the turn. Their answer comes to `TurnLoop.handle/2`. A
-  # process of another model was closed before
+  # runs, or the hands start one with the resume of the messages before the
+  # turn. A process of another model was closed before
   # (`TurnLoop.close_switched/1`), and a dying process holds a wait. Between
   # turns a ready process arms the idle timer (`arm_idle/1`).
 
@@ -11,9 +10,9 @@ defmodule Helyx.Session.Server.Connect do
   alias Helyx.Session.Server.Flow.{Connecting, Idle, Preparing, Up}
   alias Helyx.Session.Server.State
 
-  # The state with the provider process of its turn. `:reuse` keeps a
-  # process of the turn's model that is not dying; `:restart` starts one,
-  # because the turn's process ended (`TurnLoop.provider_down/3`).
+  # `:reuse` keeps a process of the turn's model that is not dying;
+  # `:restart` starts one, because the turn's process ended
+  # (`TurnLoop.provider_down/3`).
   @spec run(State.t(), :reuse | :restart) :: State.t()
   def run(state, mode \\ :reuse)
 
@@ -46,9 +45,9 @@ defmodule Helyx.Session.Server.Connect do
     %{state | phase: %{phase | provider: provider}}
   end
 
-  # Arms the idle timer when the session holds a ready provider process
-  # with no turn and no wait. It cancels the earlier timer; a message of
-  # it that is already in the mailbox has an old ref.
+  # The timer goes only with a ready process, no turn, and no wait. An
+  # earlier timer is cancelled, and a message of it that is already in the
+  # mailbox has an old ref.
   @spec arm_idle(State.t()) :: State.t()
   def arm_idle(%State{phase: %Idle{provider: %Up{}}} = state) do
     if state.idle, do: :erlang.cancel_timer(state.idle)

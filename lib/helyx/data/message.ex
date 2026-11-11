@@ -2,14 +2,15 @@ defmodule Helyx.Message do
   @moduledoc """
   One message in a conversation: from the user, from the assistant, or a tool
   result. Content is a list of blocks. The shape is provider neutral and
-  follows ADR 0001; the field names are the ones `docs/features/coding-agent.md`
-  lists under the session file.
+  follows ADR 0001; the field names are those of the session file
+  (`docs/features/coding-agent.md`).
 
-  A tool result message links to its call with `tool_call_id` and `tool_name`,
-  and flags a failed call with `is_error`. Its `ui_blocks` are the UI blocks
-  that the tool returned for the clients (`Helyx.UIBlock`,
-  `docs/features/ui-blocks.md`); a provider never sends them to the model.
-  Every other message has none.
+  A tool result links to its call with `tool_call_id` and `tool_name`, flags
+  a failed call with `is_error`, and holds the UI blocks for the clients in
+  `ui_blocks`, never for the model (`docs/features/ui-blocks.md`). Core sets
+  `id` on every message that joins a session and `origin` on every user
+  message (`docs/features/message-identity.md`); a message that a provider
+  builds for its own wire has neither.
 
   Core sets `id` on every message that joins a session, and `origin` on
   every user message: `%{kind: :user | :background | :product | :hook, id:
@@ -18,9 +19,8 @@ defmodule Helyx.Message do
 
   The module also defines the rules of the values in a message and in a
   turn: the stop reason set, the resume id, the JSON round trip,
-  and the integer limit. It does not check input. Its callers are the
-  boundaries: the session and its stream check input against these rules,
-  and the session file reader checks the disk against them.
+  and the integer limit. It does not check input; its callers are the
+  boundaries.
   """
 
   defmodule Text do
@@ -94,9 +94,7 @@ defmodule Helyx.Message do
   @doc """
   Builds the tool result message for a call from `{:ok, text}` or
   `{:error, text}`. The text is valid UTF-8 of at most `max_result_bytes/0`
-  bytes: the hands, `Helyx.Session.Stream`, and the session file reader
-  pass every tool output through `cut_result/1`, and the session's own
-  texts are short.
+  bytes (`cut_result/1`).
   """
   @spec tool_result(ToolCall.t(), {:ok, String.t()} | {:error, String.t()}) :: t()
   def tool_result(%ToolCall{} = call, {:ok, text}), do: tool_result(call, text, false)
@@ -278,10 +276,9 @@ defmodule Helyx.Message do
   line `[… cut …]`, and its tail, where `total` is the size after the
   repair. The head and the tail each get half of the room, cut on a
   character boundary. The whole result is at most #{@max_result_bytes}
-  bytes and valid UTF-8, so a second cut does not change it. The session applies it at each boundary of
-  tool text: the hands, a provider's `tool_result`, and the session file
-  reader. A valid text within the limit, the common case, is returned
-  without a copy.
+  bytes and valid UTF-8, so a second cut does not change it. The session
+  applies it at each boundary of tool text. A valid text within the limit
+  is returned without a copy.
   """
   @spec cut_result(binary()) :: String.t()
   def cut_result(text) do

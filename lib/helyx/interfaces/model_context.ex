@@ -4,7 +4,7 @@ defmodule Helyx.ModelContext do
 
   A model context plugin implements this behaviour. The session builds a base
   `Helyx.Context` with the transcript and the tools, and `build/2` returns
-  the context to send, usually with a system prompt added. `opts` carries
+  the context to send. `opts` carries
   `:core`, `:session_id`, `:turn_id`, `:cwd`, `:model` (the
   `Helyx.ModelRef` of the turn), `:session_dir` (the folder of the
   session file, under `:sessions_dir` as the caller gave it, or nil when the
@@ -18,8 +18,7 @@ defmodule Helyx.ModelContext do
   prepare Task, 10,000 ms after its start. The build, the
   `Helyx.Compaction.compact/2` call, and the `Helyx.Memory` recall run in
   that Task and share the budget, in that order: the recall gets what is
-  left. At the kill the turn fails with `:context_timeout`, or a context
-  request of the provider gets that error
+  left. At the kill the turn fails with `:context_timeout`
   (`docs/features/session-lifecycle.md`). A plugin that calls a slow
   service sets its own limit before the deadline, with room for the steps
   after it.

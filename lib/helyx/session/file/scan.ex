@@ -1,16 +1,15 @@
 defmodule Helyx.Session.File.Scan do
-  # A session file has a header line of at most this many bytes. A scan
-  # reads no more than this of a file: the head.
+  # A session file has a header line of at most this many bytes. A scan reads
+  # no more than this of a file: the head.
   @max_header_bytes 65_536
 
   # A scan reads the head of this many files: the ones with the newest
   # modification time. Nothing deletes session files, so their count grows.
   @max_scanned_files 256
 
-  # The folder of every session with a parent link, in the sessions
-  # directory. No slug starts with `.`, and `ls/1` hides it, so it is no
-  # project folder. Its path does not depend on the cwd: one file and one
-  # lock for each child id.
+  # The folder of every session with a parent link. No slug starts with `.`,
+  # and `ls/1` hides it, so it is no project folder, and its path does not
+  # depend on the cwd.
   @children ".children"
 
   # The version of the header that this build writes and reads.
@@ -20,16 +19,14 @@ defmodule Helyx.Session.File.Scan do
   The place and the header of a session file, and the choice of a file in a
   sessions directory: the list of the sessions (`list/2`), the file of an id
   (`find/2`), and the newest session of a folder for
-  `Helyx.Session.File.pick/3`. A session lives at
-  `<dir>/<project slug>/<session id>.jsonl`, and a session with a parent
-  link at `<dir>/#{@children}/<session id>.jsonl`, where only `find/2`
-  looks; `Helyx.Session.File` owns the entries after the header.
+  `Helyx.Session.File.pick/3`. A session with a parent link is at
+  `<dir>/#{@children}/<session id>.jsonl`, where only `find/2` looks;
+  `Helyx.Session.File` owns the entries after the header.
 
-  A scan reads the first #{@max_header_bytes} bytes (the head), and one
-  byte more, of at most #{@max_scanned_files} regular files: the ones with
-  the newest modification time. An append sets that time. A file whose head
-  is the whole file and has no message is empty: the list and the newest
-  session leave it out. The rules are in
+  A scan reads the first #{@max_header_bytes} bytes (the head), and one byte
+  more, of at most #{@max_scanned_files} regular files: the ones with the
+  newest modification time. A file whose head is the whole file and has no
+  message is empty, and is left out. The rules are in
   `docs/features/session-list.md`.
   """
 
@@ -37,11 +34,11 @@ defmodule Helyx.Session.File.Scan do
 
   defmodule Summary do
     @moduledoc """
-    One session of `Helyx.Session.File.Scan.list/2`. `mtime` is the POSIX
-    time of the last change of the file, 0 for a time before 1970. `model`
-    is the model of the header. `prompt` is the text of the first message in
-    the head when that message is a user message, else `""`. The texts come
-    from the file: a client cleans them before it shows them.
+    One session of `Helyx.Session.File.Scan.list/2`. `mtime` is the POSIX time
+    of the last change of the file, 0 for a time before 1970. `prompt` is the
+    text of the first message in the head when that message is a user
+    message, else `""`. The texts come from the file: a client cleans them
+    before it shows them.
     """
     @enforce_keys [:id, :cwd, :model, :mtime, :prompt]
     defstruct @enforce_keys
@@ -58,9 +55,9 @@ defmodule Helyx.Session.File.Scan do
   @doc """
   The sessions of the folder `cwd`, or of every folder with `:all`, newest
   first by modification time. A file is left out when it is empty, when its
-  name is not a session id, or when its header does not parse, has an
-  unknown version, or has no string `cwd` and `model`. A child session is
-  in no project folder, so it is not read and is not counted.
+  name is not a session id, or when its header does not parse, has an unknown
+  version, or has no string `cwd` and `model`. A child session is in no
+  project folder, so it is not read and is not counted.
   """
   @spec list(Path.t(), Path.t() | :all) :: [Summary.t()]
   def list(dir, scope) do
@@ -72,10 +69,9 @@ defmodule Helyx.Session.File.Scan do
 
   @doc """
   The file of the session `id` and its header, under the project folders of
-  `dir` and its folder of child sessions. The id must have the format of a
-  session id; it is checked before any path is built. Two files with the
-  id give `:duplicate_id`; only a copy by hand makes them. The header has a
-  string `cwd`.
+  `dir` and its folder of child sessions. The id is checked before any path is
+  built. Two files with the id give `:duplicate_id`; only a copy by hand makes
+  them. The header has a string `cwd`.
   """
   @spec find(Path.t(), String.t()) ::
           {:ok, Path.t(), map()}
@@ -90,12 +86,12 @@ defmodule Helyx.Session.File.Scan do
   end
 
   @doc false
-  # The path of the file of the session `id` as `find/2` finds it, with no
-  # read of the file: a file whose header does not parse is found too. The
-  # id is checked before any path is built.
+  # The path of the file of the session `id` as `find/2` finds it, with no read
+  # of the file: a file whose header does not parse is found too. The id is
+  # checked before any path is built.
   def locate(dir, id) do
-    # The listed names, not a stat of a built path: a filesystem that
-    # ignores case would match an id of another case.
+    # The listed names, not a stat of a built path: a filesystem that ignores
+    # case would match an id of another case.
     if Id.valid?(id) do
       folders = [Path.join(dir, @children) | projects(dir, :all)]
       one_path(Enum.filter(jsonl_paths(folders), &(id(&1) == id)))
@@ -109,10 +105,8 @@ defmodule Helyx.Session.File.Scan do
   defp one_path(_paths), do: {:error, :duplicate_id}
 
   @doc false
-  # The most recently started session of `cwd` that `list/2` would list:
-  # not empty, a session id as file name, a known version, and a string
-  # `model`. The option `:max_scanned_files` lowers the file count for a
-  # test. It is not checked.
+  # The most recently started session of `cwd` that `list/2` would list. The
+  # option `:max_scanned_files` lowers the file count for a test.
   def most_recent(dir, cwd, opts) do
     max_files = Keyword.get(opts, :max_scanned_files, @max_scanned_files)
 
@@ -122,10 +116,9 @@ defmodule Helyx.Session.File.Scan do
     end
   end
 
-  # The files of the scan whose name is a session id, that are not empty,
-  # and whose header has a known version, a string `model`, and names
-  # `scope`, newest first. Two directories can share a slug, so the header
-  # decides.
+  # The files of the scan whose name is a session id, that are not empty, and
+  # whose header has a known version, a string `model`, and names `scope`,
+  # newest first. Two directories can share a slug, so the header decides.
   defp sessions(dir, scope, max_files) do
     for {mtime, path} <- newest(jsonl_paths(projects(dir, scope)), max_files),
         Id.valid?(id(path)),
@@ -138,12 +131,10 @@ defmodule Helyx.Session.File.Scan do
 
   defp id(path), do: Path.basename(path, ".jsonl")
 
-  # The project folder of `scope`, or every project folder with `:all`. A
-  # list, not a wildcard: the path of `dir` can hold glob characters.
+  # A list, not a wildcard: the path of `dir` can hold glob characters.
   defp projects(dir, :all), do: Enum.map(ls(dir), &Path.join(dir, &1))
   defp projects(dir, cwd), do: [project_dir(dir, cwd)]
 
-  # The `.jsonl` paths in `folders`.
   defp jsonl_paths(folders) do
     for folder <- folders,
         name <- ls(folder),
@@ -159,10 +150,9 @@ defmodule Helyx.Session.File.Scan do
     end
   end
 
-  # The `count` regular files with the newest modification time, newest
-  # first: one stat per file and no read. The time has a resolution of one
-  # second, so the path breaks a tie, and the same directory always gives
-  # the same files.
+  # The `count` regular files with the newest modification time, newest first:
+  # one stat per file and no read. The time has a resolution of one second, so
+  # the path breaks a tie.
   defp newest(paths, count) do
     stats =
       for path <- paths,
@@ -174,10 +164,10 @@ defmodule Helyx.Session.File.Scan do
     stats |> Enum.sort(:desc) |> Enum.take(count)
   end
 
-  # The header and the first prompt, or `:empty` for the prompt. A header
-  # line over the bound is cut, does not decode, and the file is not a
-  # session; so is a header with no string `cwd`. The read takes one byte
-  # past the head: a read of at most the head is the whole file.
+  # The header and the first prompt, or `:empty` for the prompt. A header line
+  # over the bound is cut, does not decode, and the file is not a session. The
+  # read takes one byte past the head: a read of at most the head is the whole
+  # file.
   defp head(path) do
     with {:ok, data} <- read_up_to(path, @max_header_bytes + 1),
          whole? = byte_size(data) <= @max_header_bytes,
@@ -185,8 +175,8 @@ defmodule Helyx.Session.File.Scan do
          [line | rest] = :binary.split(head, "\n"),
          {:ok, %{"type" => "session", "cwd" => cwd} = header} when is_binary(cwd) <-
            Helyx.JSON.decode(line) do
-      # `rest` is the rest of the head, or nothing. A lazy walk: the head
-      # as a list of 65,535 short lines is about 4 MiB of heap.
+      # `rest` is the rest of the head, or nothing. A lazy walk: the head as a
+      # list of short lines is about 4 MiB of heap.
       lines = Stream.flat_map(rest, &String.splitter(&1, "\n"))
       {:ok, header, prompt(Enum.find_value(lines, &message/1), whole?)}
     else
@@ -212,8 +202,8 @@ defmodule Helyx.Session.File.Scan do
   end
 
   @doc false
-  # The header line of a new session, with the link of a child session to
-  # the tool call that started it (docs/features/agent-tool.md).
+  # The header line of a new session, with the link of a child session to the
+  # tool call that started it (docs/features/agent-tool.md).
   def header(cwd, model, nil),
     do: %{"type" => "session", "version" => @version, "cwd" => cwd, "model" => model}
 
@@ -240,9 +230,8 @@ defmodule Helyx.Session.File.Scan do
   end
 
   @doc false
-  # The result of `fun` on a regular file opened raw for reading. A pipe or
-  # a device would block the open or never end. The fun form of File.open
-  # closes the handle on every path.
+  # A pipe or a device would block the open or never end. The fun form of
+  # File.open closes the handle on every path.
   def with_regular(path, fun) do
     with {:ok, %File.Stat{type: :regular}} <- File.stat(path),
          {:ok, result} <- File.open(path, [:read, :binary, :raw], fun) do
@@ -260,10 +249,10 @@ defmodule Helyx.Session.File.Scan do
   def folder(dir, _cwd, %{}), do: Path.join(dir, @children)
 
   @doc false
-  # The slug keeps the tail of the path, the distinctive end, and stays
-  # under the filesystem name limit: 100 characters are 100 bytes because
-  # the regex collapses every non-ASCII byte to "-". Collisions are fine:
-  # the header `cwd` decides which sessions belong to a directory.
+  # The slug keeps the tail of the path, the distinctive end, and stays under
+  # the filesystem name limit: 100 characters are 100 bytes because the regex
+  # collapses every non-ASCII byte to "-". Collisions are fine: the header
+  # `cwd` decides which sessions belong to a directory.
   def project_dir(dir, cwd) do
     Path.join(dir, cwd |> String.replace(~r/[^A-Za-z0-9]+/, "-") |> String.slice(-100, 100))
   end

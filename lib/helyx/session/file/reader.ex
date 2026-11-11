@@ -1,12 +1,11 @@
 defmodule Helyx.Session.File.Reader do
   @moduledoc false
-  # Reads an open session file as one chain (ADR 0001): the header first,
-  # then each entry with the id of the entry before it as its `parent_id`.
-  # A line that does not decode to an entry is skipped: a torn append. Any
-  # other break is `{:invalid_file, text}`. A chain error names its line,
-  # and the count includes the skipped lines. The file is read one line at
-  # a time, so only the transcript grows with the file
-  # (docs/features/coding-agent.md, row "Session file on resume").
+  # Reads an open session file as one chain (ADR 0001): the header first, then
+  # each entry with the id of the entry before it as its `parent_id`. A line
+  # that does not decode to an entry is skipped: a torn append. Any other
+  # break is `{:invalid_file, text}`, and a chain error names its line. The
+  # file is read one line at a time, so only the transcript grows with it
+  # (docs/features/coding-agent.md).
 
   require Logger
 
@@ -22,22 +21,21 @@ defmodule Helyx.Session.File.Reader do
   # One read of the file.
   @chunk_bytes 1_048_576
 
-  # A line up to this size decodes in the caller, a longer one in a
-  # process of its own with the heap cap (the heap of the caller's decode
-  # is in the row "Session file on resume").
+  # A line up to this size decodes in the caller, a longer one in a process of
+  # its own with the heap cap.
   @caller_decode_bytes 65_536
 
   defmodule Limits do
     @moduledoc false
-    # `entry`: the most bytes of one line. `heap`: the heap cap of the
-    # decode of one line.
+    # `entry`: the most bytes of one line. `heap`: the heap cap of the decode
+    # of one line.
     @enforce_keys [:entry, :heap]
     defstruct @enforce_keys
   end
 
-  # Returns the leaf, the current model, the messages, and the resume ids,
-  # and whether the file ends in a newline (`:clean` or `:no_newline`). A
-  # line over either limit is `{:too_large, text}`.
+  # Returns the leaf, the current model, the messages, and the resume ids, and
+  # whether the file ends in a newline (`:clean` or `:no_newline`). A line over
+  # either limit is `{:too_large, text}`.
   def read(io, cwd, %Limits{} = limits), do: lines(io, "", 1, cwd, limits, nil)
 
   # `buffer` holds the bytes read after the last line taken.
@@ -71,7 +69,6 @@ defmodule Helyx.Session.File.Reader do
     end
   end
 
-  # The split of a new chunk at its first newline.
   defp chunk(io, partial, [line, rest], n, cwd, limits, acc) do
     with {:ok, acc} <- line(partial <> line, n, cwd, limits, acc),
          do: lines(io, rest, n + 1, cwd, limits, acc)
@@ -92,10 +89,10 @@ defmodule Helyx.Session.File.Reader do
     end
   end
 
-  # The entry of the line `text`, number `n`: `{:ok, entry}`, `:none` for a
-  # line that does not decode to an entry (a torn append, skipped), or
-  # `{:error, {:too_large, text}}` for a line over a limit. A line over the
-  # limit is no entry that a session writes, nor a torn part of one.
+  # The entry of the line `text`, number `n`: `:none` for a line that does not
+  # decode to an entry (a torn append, skipped), or `{:error, {:too_large,
+  # text}}`. A line over the limit is no entry that a session writes, nor a
+  # torn part of one.
   def entry(text, n, limits) when byte_size(text) > limits.entry, do: over_entry(n, limits)
 
   def entry(text, n, limits) do
@@ -125,9 +122,9 @@ defmodule Helyx.Session.File.Reader do
     do: Helyx.JSON.decode(text)
 
   # The decode runs in its own process with the heap cap, so a hostile or
-  # corrupt line kills only that process. It is not linked, because the
-  # heap kill would take the caller with it. The wait has no timeout: the
-  # decode of at most `limits.entry` bytes in a capped heap is bounded work.
+  # corrupt line kills only that process. It is not linked, because the heap
+  # kill would take the caller with it. The wait has no timeout: the decode of
+  # at most `limits.entry` bytes in a capped heap is bounded work.
   defp decode(text, heap) do
     cap = %{size: div(heap, :erlang.system_info(:wordsize)), kill: true, error_logger: false}
 
@@ -146,8 +143,8 @@ defmodule Helyx.Session.File.Reader do
     end
   end
 
-  # The header: the first entry, with a string id and model, a known
-  # version, and the directory of the pick. Its own `parent_id` is not read.
+  # The header: the first entry, with a string id and model, a known version,
+  # and the directory of the pick. Its own `parent_id` is not read.
   defp add(%{"type" => "session", "id" => id, "model" => model} = header, _n, cwd, nil)
        when is_binary(id) and is_binary(model) do
     with :ok <- Scan.check_version(header),
@@ -180,16 +177,12 @@ defmodule Helyx.Session.File.Reader do
   defp check_cwd(%{"cwd" => cwd}, cwd), do: :ok
   defp check_cwd(_header, _cwd), do: {:error, :not_found}
 
-  # After the header the writer only produces messages, model changes,
-  # tools changes, resume ids, compactions, summaries, system prompts, and
-  # hook entries, every model field a string. Anything else is damage on
-  # the disk, never dropped in silence, except in a system prompt entry
-  # (see its clause) and a hook entry (see its clause).
-  # A message id is its entry id, and a client keys messages by it, so a
-  # repeated one is damage, and so is an id that `Id.new/0` never makes: it
-  # could hold `:`, the separator of the ids that `Transcript.repair/1`
-  # derives. Only message ids are kept, with the role of their message:
-  # the other entries reach no client.
+  # Anything else than the entries below is damage on the disk, never dropped
+  # in silence, apart from a system prompt entry and a hook entry. A message
+  # id is its entry id, and a client keys messages by it, so a repeated or an
+  # invalid one is damage: it could hold `:`, the separator of the ids that
+  # `Transcript.repair/1` derives. Only message ids are kept, with the role of
+  # their message.
   defp fold(%{"type" => "message", "id" => id} = entry, acc) do
     cond do
       is_map_key(acc.ids, id) ->
@@ -209,9 +202,8 @@ defmodule Helyx.Session.File.Reader do
   defp fold(%{"type" => "model_change", "model" => model}, acc) when is_binary(model),
     do: {:ok, %{acc | model: model}}
 
-  # The last tools change gives the activated tool names: distinct tool
-  # names, as many as the cap of the writer at most
-  # (docs/features/mcp-client.md).
+  # The last tools change gives the activated tool names, as many as the cap of
+  # the writer at most (docs/features/mcp-client.md).
   defp fold(%{"type" => "tools_change", "activated" => names}, acc) when is_list(names) do
     if length(names) <= ToolRegistry.max_activated() and Enum.all?(names, &Helyx.Tool.name?/1) and
          length(Enum.uniq(names)) == length(names),
@@ -225,9 +217,9 @@ defmodule Helyx.Session.File.Reader do
   defp fold(%{"type" => "resume_id"} = entry, acc),
     do: {:ok, %{acc | resume_ids: resume_id(entry, acc)}}
 
-  # A compaction of the provider after its resume id entry adds the number
-  # of assistant messages at that compaction. The `last_id` of its entry
-  # names the message before it, and the writer always stores the key.
+  # A compaction of the provider after its resume id entry adds the number of
+  # assistant messages at that compaction. The `last_id` of its entry names the
+  # message before it, and the writer always stores the key.
   defp fold(%{"type" => "compaction", "provider" => provider, "last_id" => _} = entry, acc)
        when is_binary(provider) do
     resume_ids = Transcript.compacted(acc.resume_ids, provider, acc.count)
@@ -237,9 +229,9 @@ defmodule Helyx.Session.File.Reader do
   defp fold(%{"type" => "compaction"}, _acc),
     do: {:error, {:invalid_file, "a compaction entry is not valid"}}
 
-  # A summary keeps a user or assistant message before it, has a text of
-  # 1 to `Helyx.Summary.max_bytes/0` bytes, and a token count from 0 to
-  # 10^9 (docs/features/summary-compaction.md). The last one wins.
+  # A summary keeps a user or assistant message before it, has a text of 1 to
+  # `Helyx.Summary.max_bytes/0` bytes, and a token count from 0 to 10^9
+  # (docs/features/summary-compaction.md). The last one wins.
   defp fold(
          %{
            "type" => "summary",
@@ -260,15 +252,13 @@ defmodule Helyx.Session.File.Reader do
   defp fold(%{"type" => "summary"}, _acc),
     do: {:error, {:invalid_file, "a summary entry is not valid"}}
 
-  # A system prompt entry is a record for a reader of the file, and a
-  # resume sends a fresh build: the chain check of `add/4` is all that it
-  # needs, and nothing of it is kept, whatever its fields hold. So an
-  # entry over the cap of the writer is skipped, not damage that stops the
-  # resume (docs/features/turn-record.md, decisions 2 and 3).
+  # A system prompt entry is a record for a reader of the file, and a resume
+  # sends a fresh build: the chain check of `add/4` is all that it needs, and
+  # nothing of it is kept, whatever its fields hold
+  # (docs/features/turn-record.md).
   defp fold(%{"type" => "system_prompt"}, acc), do: {:ok, acc}
 
-  # A hook entry is a log for the user: a resume reads nothing from it. A
-  # bad one is dropped and logged, the smallest unit
+  # A hook entry is a log for the user: a resume reads nothing from it
   # (docs/features/hooks.md).
   defp fold(%{"type" => "hook"} = entry, acc) do
     if not HookEntry.valid?(entry),
@@ -280,13 +270,10 @@ defmodule Helyx.Session.File.Reader do
   defp fold(entry, _acc),
     do: {:error, {:invalid_file, "entry the writer never produces: #{inspect(entry["type"])}"}}
 
-  # The last resume id entry of each provider wins: a lost resume id is
-  # followed by a new entry for the same provider. Each keeps the number of
-  # assistant messages before it (`Helyx.Session.Transcript.resumable/3`).
-  # The label is optional: with none, the provider starts fresh. A bad id
-  # removes the label of its provider, so an earlier, stale label does not
-  # come back. An entry with no usable provider removes every label,
-  # because the reader cannot know which one it replaced.
+  # The last resume id entry of each provider wins. Each keeps the number of
+  # assistant messages before it (`Helyx.Session.Transcript.resumable/3`). A
+  # bad id removes the label of its provider, so an earlier, stale label does
+  # not come back. An entry with no usable provider removes every label.
   defp resume_id(%{"provider" => provider} = entry, acc) when is_binary(provider) do
     if Message.resume_id?(entry["resume_id"]),
       do: Map.put(acc.resume_ids, provider, {entry["resume_id"], acc.count, nil}),
@@ -295,10 +282,10 @@ defmodule Helyx.Session.File.Reader do
 
   defp resume_id(_entry, _acc), do: %{}
 
-  # The last compaction or summary (`Helyx.Session.Totals.of/2`): the
-  # message id that its entry names. A `last_id` that is not a string keeps
-  # none. A `tokens_after` that is not a count from 0 to 10^9 reads as nil,
-  # and a summary has none: it changes only the estimate.
+  # The last compaction or summary (`Helyx.Session.Totals.of/2`): the message
+  # id that its entry names. A `last_id` that is not a string keeps none. A
+  # `tokens_after` that is not a count from 0 to 10^9 reads as nil, and a
+  # summary has none.
   defp compacted(%{"last_id" => id} = entry) when is_binary(id),
     do: {id, tokens_after(entry)}
 

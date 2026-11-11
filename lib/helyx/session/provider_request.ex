@@ -1,25 +1,14 @@
 defmodule Helyx.Session.ProviderRequest do
   @moduledoc false
-  # A request of Core to the provider process (ADR 0007,
-  # `docs/features/session-lifecycle.md`, "Deadlines"): its send with an armed kill, the
-  # cancel of the kill at the answer, its kind, the replies that its kind
-  # takes, and the replies that end the provider process.
-  #
-  # Every session request has a kill of the provider process armed at the
-  # OTP timer server (`ask/3`). The loop of
-  # `Helyx.Session.ProviderProcess` cancels the kill when the provider
-  # replies, and sends the reply after the cancel (`answer/5`). A callback that blocks
-  # also blocks the cancel, so a blocked loop is always killed at the bound,
-  # whatever the session and the hands do. The timer can fire during the
-  # cancel, so a reply can still be followed by the kill; the session takes
-  # the `:provider_down` as the last word.
+  # A request of Core to the provider process, with its armed kill (ADR 0007,
+  # docs/features/session-lifecycle.md, "Deadlines").
 
   @type t :: Helyx.Provider.request()
 
   @doc """
-  Sends `request` to the provider process `pid` with a kill armed at `ms`,
-  and returns the `from` ref of its reply, `{:provider_reply, from, kind,
-  value}` to the caller (see `kind/1`).
+  Sends `request` to the provider process `pid` with a kill armed at `ms`, and
+  returns the `from` ref of its reply, `{:provider_reply, from, kind, value}` to
+  the caller (see `kind/1`).
   """
   @spec ask(pid(), t(), pos_integer()) :: reference()
   def ask(pid, request, ms) do
@@ -30,8 +19,8 @@ defmodule Helyx.Session.ProviderRequest do
   end
 
   @doc """
-  Answers the request `from` of `kind` to `session` with `value`: the
-  armed kill `tref` is cancelled first.
+  Answers the request `from` of `kind` to `session` with `value`: the armed kill
+  `tref` is cancelled first.
   """
   @spec answer(pid(), reference(), :timer.tref(), atom(), term()) :: term()
   def answer(session, from, tref, kind, value) do
@@ -40,8 +29,8 @@ defmodule Helyx.Session.ProviderRequest do
   end
 
   @doc """
-  The first element of the request (`:turn`, `:steer`, `:tool_result`, ...),
-  or the request itself for `:close` and `:idle_close`.
+  The first element of the request (`:turn`, `:steer`, `:tool_result`, ...), or
+  the request itself for `:close` and `:idle_close`.
   """
   @spec kind(t()) :: atom()
   def kind({kind, _turn_id, _id, _value}) when kind in [:steer, :tool_result, :approval],
@@ -61,14 +50,12 @@ defmodule Helyx.Session.ProviderRequest do
   def reply?(_kind, _value), do: false
 
   @doc """
-  The stop of the provider process that a reply gives, or nil when the
-  process goes on.
+  The stop of the provider process that a reply gives, or nil when the process
+  goes on.
   """
-  # After an error answer to a turn, a compaction, or an interrupt Helyx does not know the
-  # state of the provider, so the loop ends and the provider process stops.
-  # An error answer to a steer leaves only that steer unknown, so the loop
-  # goes on. An idle close with `:ok` closed the provider as a close does;
-  # with `:busy` the provider stays.
+  # After an error answer to a turn, a compaction, or an interrupt Helyx does
+  # not know the state of the provider, so the loop ends. An error answer to a
+  # steer leaves only that steer unknown, so the loop goes on.
   @spec stop_after(atom(), term()) :: {:stop, term()} | nil
   def stop_after(kind, :ok) when kind in [:close, :idle_close], do: {:stop, :closed}
 

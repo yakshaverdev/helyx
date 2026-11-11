@@ -4,9 +4,7 @@ defmodule Helyx.Provider do
   ref such as `fake/echo`.
 
   The protocol is in `docs/features/one-provider-path.md`, "The provider
-  protocol", with its bounds in `docs/features/session-lifecycle.md` and
-  `docs/features/coding-agent.md`; ADR 0002 and ADR 0007 decide the provider
-  process.
+  protocol"; ADR 0002 and ADR 0007 decide the provider process.
 
   Rules that every provider follows:
 
@@ -31,8 +29,7 @@ defmodule Helyx.Provider do
       it runs itself. The session answers each request at most once, with
       `{:approval, turn_id, approval_id, :allow | {:deny, reason}}`, and
       answers every request of a provider process that it did not stop
-      (ADR 0013 §4, `docs/features/hooks.md`, "Harness approvals" and "The
-      owner of a call id").
+      (ADR 0013 §4, `docs/features/hooks.md`, "Harness approvals").
   """
 
   @type stop_reason :: Helyx.Message.stop_reason()

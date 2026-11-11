@@ -6,14 +6,10 @@ defmodule Helyx.Provider.ClaudeCode do
   --model` takes.
 
   One `claude` at a time serves the session. A turn is one user line with a
-  `uuid`, and it ends at a `result` with `queued_turn_count` 0 and no unresolved
-  steer. A steer is one more user line, and an interrupt is the control request
-  `interrupt` with `cancel_queued: true`. An `init` line with no Helyx turn
-  starts a program turn. The model gets the turn's system prompt in place of
-  the program's own, and exactly the session's tools, as an SDK MCP server
-  named `helyx`; the program's tools and the user's config are off, except
-  the managed settings (ADR 0002). A fresh harness session gets the rest of
-  the transcript as a replay before the first turn's line.
+  `uuid`, and a steer is one more user line. The model gets the turn's
+  system prompt in place of the program's own, and exactly the session's
+  tools, as an SDK MCP server named `helyx`; the program's tools and the
+  user's config are off, except the managed settings (ADR 0002).
 
   The full contract is in `docs/features/long-lived-harness.md`, section
   "Claude Code", and `docs/features/provider-parity.md`. The protocol facts
@@ -215,15 +211,10 @@ defmodule Helyx.Provider.ClaudeCode do
 
   # A fresh program lists its capabilities only in the `init` line of its
   # first query, after the start of the turn's line: the interrupt waits
-  # for it, within the interrupt bound. The line was written before the
-  # interrupt, so the program has it, queued or started, when it reads the
-  # interrupt.
-  #
-  # The replay lines are queued queries too. `cancel_queued` could drop
-  # some of them (inferred), and the program would then keep a harness
-  # session with part of the history. So after a replay the interrupt also
-  # waits for the start of the turn's line, which comes after the replay
-  # results (research note for one replay line; inferred for more).
+  # for it, within the interrupt bound. After a replay it also waits for the
+  # start of the turn's line, because `cancel_queued` could drop replay lines
+  # and leave a harness session with part of the history
+  # (docs/features/long-lived-harness.md, "The interrupt").
   defp interrupt(%State{init?: false} = state), do: {[], state}
   defp interrupt(%State{turn: %Turn{phase: {:queued, _, _, true}}} = state), do: {[], state}
 
@@ -253,7 +244,6 @@ defmodule Helyx.Provider.ClaudeCode do
       else: {[], %{state | turn: turn}}
   end
 
-  # A pending interrupt that waited for the `init` line or the start.
   defp resume_interrupt(%State{turn: %Turn{interrupt: {:pending, _from, _seen}}} = state),
     do: interrupt(state)
 
@@ -278,9 +268,7 @@ defmodule Helyx.Provider.ClaudeCode do
   # Each query of the program repeats the init line. An `init` with no
   # Helyx turn starts a program turn (#240): every user line that Helyx
   # writes belongs to a turn until its start, so the program started this
-  # query by itself. A program turn has no `command_lifecycle`, so it counts
-  # at once, and its `result` ends it as a turn's does. An `init` without
-  # `@required_caps` stops the provider process.
+  # query by itself.
   defp translate(%{"type" => "system", "subtype" => "init"} = init, state) do
     caps = if is_list(init["capabilities"]), do: init["capabilities"], else: []
     missing = @required_caps -- caps
@@ -386,8 +374,7 @@ defmodule Helyx.Provider.ClaudeCode do
   # A result before `started` of the turn's line is not the turn's: the
   # result of a replayed line, of a program turn that the program started
   # by itself, or of the turn's own line (#246). The result of a lost
-  # session comes before any `init` and before `started`. A skipped result
-  # can also write the next held replay chunk.
+  # session comes before any `init` and before `started`.
   defp translate(%{"type" => "result"} = result, state) do
     state = %{state | meter: Meter.result(state.meter, result)}
 
@@ -450,7 +437,6 @@ defmodule Helyx.Provider.ClaudeCode do
 
   defp release(_result, state), do: {[], state}
 
-  # The turn's events with its id, and the state with the new turn.
   defp emit(state, {events, turn}),
     do: {for(event <- events, do: {:event, turn.id, event}), %{state | turn: turn}}
 

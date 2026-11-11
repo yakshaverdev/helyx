@@ -43,9 +43,8 @@ defmodule CodingAgent.Attach do
   (`docs/features/tui-attach.md`, decision 10). The server runs in a
   session of its own, so no signal of the terminal reaches it, with stdin
   on `/dev/null` and its output added to `<dir>/server.log`, which must be
-  a regular file or not there. The folder is made with mode 0700 when it
-  is not there. perl must be on the PATH: `CodingAgent.CLI` checks it
-  before a start. Returns `{:ok, socket, ws}` or `{:error, text}`.
+  a regular file or not there. perl must be on the PATH: `CodingAgent.CLI`
+  checks it before a start. Returns `{:ok, socket, ws}` or `{:error, text}`.
   """
   @spec start(Path.t(), Path.t()) ::
           {:ok, :gen_tcp.socket(), term()} | {:error, String.t()}
@@ -63,11 +62,9 @@ defmodule CodingAgent.Attach do
   (`CodingAgent.Serve.start/2`), when no launcher is set, as for `mix
   helyx` (`docs/features/tui-attach.md`, decision 12). It connects to it
   as `start/2` does, then calls `fun` with `{:ok, socket, ws}` or `{:error,
-  text}`, and stops the server when `fun` returns: `fun` runs the TUI. A
-  server that ends before the attach gives `could not start a server:
-  <its line>` at the next attempt. Neither its line of the address nor
-  its log goes to the terminal, which the TUI owns: the log of the VM
-  goes to `<dir>/tui.log` until the server stops
+  text}`, and stops the server when `fun` returns: `fun` runs the TUI. Neither
+  the line of the address nor the log goes to the terminal, which the TUI
+  owns: the log of the VM goes to `<dir>/tui.log` until the server stops
   (`CodingAgent.LogFile.run/2`). Returns the result of `fun`.
   """
   @spec serve(

@@ -1,17 +1,13 @@
 defmodule Helyx.Provider.Codex.Items do
   @moduledoc false
   # The item translation of `Helyx.Provider.Codex` for the running turn.
-  #
-  # `open` maps the open tool items to their types, and `streamed` holds
-  # the ids of the messages whose text came as deltas. `usage` is the sum
-  # of the thread's model calls since the last `done`, nil before the
-  # first (`docs/features/usage-and-limits.md`, "Per provider"): it
-  # outlives a turn that ends with no `done`, and a compaction turn
-  # (`terminal/3`, `next/3`): no message holds the usage of a compaction, so
-  # it goes into the next `done` (docs/features/harness-compaction.md).
-  # `lost?` is the flag: a call since the last `done` may be in no sum, so
-  # the cost of the next `done` is nil. `info` is the config window and
-  # prices (`Helyx.ModelInfo`).
+  # `open` maps the open tool items to their types, and `streamed` holds the
+  # ids of the messages whose text came as deltas. `usage` sums the thread's
+  # model calls since the last `done` and outlives a turn that ends with no
+  # `done`, because no message holds the usage of a compaction
+  # (docs/features/usage-and-limits.md, "Per provider"). `lost?` is set when
+  # a call since the last `done` may be in no sum, so the cost of the next
+  # `done` is nil.
   defstruct open: %{},
             streamed: MapSet.new(),
             usage: nil,
@@ -74,14 +70,12 @@ defmodule Helyx.Provider.Codex.Items do
 
   def notification(_method, _params, items), do: {[], items}
 
-  # Every `thread/tokenUsage/updated` line, one after each model call. The
-  # good shape: a map `params` with a nonempty string `threadId` and a map
-  # `tokenUsage.last`. A good line of another thread is a child thread's,
-  # in no sum (the sub-agent ceiling). A line of the running turn of
-  # `thread` is priced alone and added. Any other line, a count outside
-  # the wire bound, and a cached count above the input add nothing and set
-  # the flag. Whether `inputTokens` holds the cache writes is not seen
-  # (research note), so a call with cache writes has no cost.
+  # A good line of another thread is a child thread's, in no sum (the
+  # sub-agent ceiling). A line of the running turn of `thread` is priced
+  # alone and added. Any other line, a count outside the wire bound, and a
+  # cached count above the input add nothing and set the flag. Whether
+  # `inputTokens` holds the cache writes is not seen (research note), so a
+  # call with cache writes has no cost.
   def usage(
         %{"params" => %{"threadId" => other, "tokenUsage" => %{"last" => %{}}}},
         thread,

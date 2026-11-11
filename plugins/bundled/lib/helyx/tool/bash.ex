@@ -24,22 +24,16 @@ defmodule Helyx.Tool.Bash do
   (TERM, a grace, KILL), and the result is an error with the output so far
   (`docs/features/bash-timeout.md`).
 
-  `workdir` is expanded against the session folder with `Path.expand/2`;
-  missing, `null`, or `""` is the session folder, and a value with a NUL byte
-  is an error with nothing run (`docs/features/bash-workdir.md`).
-
-  `background: true` returns at once with the process group and the output
-  file, and the end of the run arrives as a message; the file holds at most
-  #{@max_output_bytes} bytes, and its `timeout` is from 1 to
-  #{@max_background_s} s (`docs/features/background-bash.md`).
+  `workdir` is expanded against the session folder with `Path.expand/2`
+  (`docs/features/bash-workdir.md`). `background: true` returns at once with
+  the process group and the output file, and the end of the run arrives as a
+  message (`docs/features/background-bash.md`).
 
   stdout and stderr are merged, only the last #{@keep_bytes} bytes are kept,
   a non-zero exit code goes in the text, and the result is an error only when
   the command could not start or timed out. stdin is `/dev/null`, and the
   call returns when stdout closes, so a background child that keeps stdout
-  open holds the call until it exits. The command runs in its own process
-  group, held with `Helyx.Tool.hold/1` and released when the tool Task ends;
-  perl is required and `check/0` reports a system without it (ADR 0004).
+  open holds the call until it exits.
   """
 
   @behaviour Helyx.Tool
@@ -48,9 +42,6 @@ defmodule Helyx.Tool.Bash do
 
   defmodule Out do
     @moduledoc false
-    # The output of a run: the kept tail, whether its head was cut, and for
-    # a background run its file, the bytes that the command wrote, and the
-    # error that ended the writes.
     defstruct tail: "", dropped?: false, file: nil, written: 0, error: nil
   end
 

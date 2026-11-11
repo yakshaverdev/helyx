@@ -2,27 +2,15 @@ defmodule Helyx.Session.Lock do
   @moduledoc false
   # The writer lock of a file, a session file for the session server
   # (docs/features/session-lock.md): a `flock` on `<id>.lock` next to
-  # `<id>.jsonl`, held by a perl program on a port. The session server
-  # takes it with `hold/2` at its start, so it owns the port from its open,
-  # and releases it at its stop (`release/1`). When the owner of the port
-  # ends, the port closes, perl reads the end of its stdin and exits, and
-  # the kernel releases the lock.
+  # `<id>.jsonl`, held by a perl program on a port. The session server takes
+  # it with `hold/2` at its start and releases it at its stop (`release/1`).
+  # When the owner of the port ends, the port closes, perl exits, and the
+  # kernel releases the lock.
 
-  # The program writes "<nonce> ok", "<nonce> locked", or
-  # "<nonce> error <reason>" as one line. With the lock, it then reads
-  # commands on stdin until a byte that is no command or the end of stdin,
-  # and exits: `w` writes a file, `r` removes one, `m` renames one
-  # (`write_file/3`, `remove_file/2`, `rename_file/3`); `c` makes a copy
-  # file, `a` appends to it, and `k` sets its mode and closes it
-  # (`create_copy/2`, `append_copy/2`, `close_copy/2`); and each gets the
-  # line "done" or "fail <reason>". The release sends `x`. The nonce
-  # reaches it in its arguments only, so no startup warning of perl, which
-  # stderr merges in, passes for the answer; perl runs with no warnings
-  # after that. `%!` loads Errno. The open does not wait (a FIFO with no
-  # reader fails), and a file that is not regular is refused, so perl
-  # never blocks before it reads stdin. The temporary file of a write is
-  # removed first, then made with `O_EXCL|O_NOFOLLOW` and mode 0600, so no
-  # other file or link is written through.
+  # The program writes `<nonce> ok`, `<nonce> locked`, or `<nonce> error
+  # <reason>`, then reads commands on stdin and answers `done` or `fail
+  # <reason>` (docs/features/session-lock.md). The nonce reaches it in its
+  # arguments only, so no startup warning of perl passes for the answer.
   @program ~S"""
   use Fcntl qw(:DEFAULT :flock);
   my ($nonce, $path) = @ARGV;
@@ -96,8 +84,8 @@ defmodule Helyx.Session.Lock do
 
   # perl answers in a few ms; the rest is the margin for load.
   @reply_ms 5_000
-  # The output before the answer line, such as a locale warning of about
-  # 400 bytes.
+  # The output before the answer line, such as a locale warning of about 400
+  # bytes.
   @max_output_bytes 4096
   # The wait for perl's exit at a release: it exits on the byte at once.
   @release_ms 1_000
@@ -108,10 +96,9 @@ defmodule Helyx.Session.Lock do
   # the file. Returns `{:ok, lock, result}` for `{:ok, result}` of `fun`.
   # perl can end while `fun` runs, a resume read for example: the port then
   # sends its exit to the owner, which handles it as a lock lost while the
-  # session runs (session-lock.md). Any other return of `fun` releases the
-  # lock and is returned. A raise, throw, or exit of `fun` goes on: the
-  # owner of the port dies with it, and the port closes. The caller traps
-  # exits: a perl that ends with no answer is seen at the exit of its port.
+  # session runs (docs/features/session-lock.md). Any other return of `fun`
+  # releases the lock and is returned. The caller traps exits, so a perl that
+  # ends with no answer is seen at the exit of its port.
   def hold(path, fun) do
     with {:ok, lock} <- take(path) do
       case fun.() do
@@ -126,8 +113,8 @@ defmodule Helyx.Session.Lock do
   end
 
   # Takes the lock of `<path without extension>.lock` and returns the port
-  # that holds it; the caller owns the port. A product can lock a file of
-  # its own with it. The folder of the lock file must exist.
+  # that holds it; the caller owns the port. The folder of the lock file must
+  # exist.
   def take(path) do
     with {:ok, perl} <- find_perl() do
       nonce = Base.encode16(:crypto.strong_rand_bytes(8))
@@ -173,27 +160,25 @@ defmodule Helyx.Session.Lock do
   end
 
   # Writes `path` with mode 0600 through `<path>.tmp` and a rename, in the
-  # perl process that holds the lock `port`: when the lock has ended, no
-  # write happens. `data` is a closure, so its text, a secret for example,
-  # is in no frame and no argument but the one call that sends it. Returns
-  # `:ok` or `{:error, text}`. The owner traps exits, as for `take/1`.
+  # perl process that holds the lock `port`. `data` is a closure, so its
+  # text, a secret for example, is in no frame and no argument but the one
+  # call that sends it. The owner traps exits, as for `take/1`.
   def write_file(port, path, data) when is_function(data, 0),
     do: command(port, fn -> ["w", field(path), field(data.())] end)
 
-  # Removes `path` in the perl process that holds the lock `port`; a file
-  # that is not there counts as removed.
+  # Removes `path` in the perl process that holds the lock `port`; a file that
+  # is not there counts as removed.
   def remove_file(port, path), do: command(port, fn -> ["r", field(path)] end)
 
-  # Renames `from` to `to` in the perl process that holds the lock `port`,
-  # so the rename happens only while the lock is held.
+  # Renames `from` to `to` in the perl process that holds the lock `port`, so
+  # the rename happens only while the lock is held.
   def rename_file(port, from, to), do: command(port, fn -> ["m", field(from), field(to)] end)
 
   # Makes the file `path` new with mode 0600 in the perl process that holds
-  # the lock `port`, after a remove of a file at that path, and keeps it
-  # open there for `append_copy/2` and `close_copy/2`: the copy of a
-  # removal (docs/features/session-edit.md). When the lock ends, perl ends,
-  # so no byte is written to the copy after it. A second create closes the
-  # copy before.
+  # the lock `port`, and keeps it open there for `append_copy/2` and
+  # `close_copy/2` (docs/features/session-edit.md). When the lock ends, perl
+  # ends, so no byte is written to the copy after it. A second create closes
+  # the copy before.
   def create_copy(port, path), do: command(port, fn -> ["c", field(path)] end)
 
   # Appends the iodata `data`, under 4 GiB, to the open copy.
@@ -205,8 +190,8 @@ defmodule Helyx.Session.Lock do
 
   defp field(text), do: [<<IO.iodata_length(text)::32>>, text]
 
-  # The command goes in one call; a port that closed with its lock gets
-  # none. The answer has the bound and the deadline of the take.
+  # The command goes in one call; a port that closed with its lock gets none.
+  # The answer has the bound and the deadline of the take.
   defp command(port, frame) do
     if send_bytes(port, frame) do
       with {:error, text} <- read_answer(port, &reply/1),
@@ -224,11 +209,10 @@ defmodule Helyx.Session.Lock do
     do: read_answer(port, parse, "", System.monotonic_time(:millisecond) + @reply_ms)
 
   # Reads lines until the answer line that `parse` knows, within the output
-  # bound and the deadline. `pre` holds the output read past; it and the
-  # line in hand count in the bound. The last bytes of an output with no
-  # line end come after the exit status, so the read goes on to the trapped
-  # exit of the port. The deadline is checked before each receive: output
-  # that is queued already does not keep the read past it.
+  # bound and the deadline. `pre` holds the output read past, and it and the
+  # line in hand count in the bound. The last bytes of an output with no line
+  # end come after the exit status, so the read goes on to the trapped exit of
+  # the port.
   defp read_answer(port, parse, pre, deadline) do
     case deadline - System.monotonic_time(:millisecond) do
       wait when wait > 0 ->
@@ -265,9 +249,7 @@ defmodule Helyx.Session.Lock do
 
   # Sends perl the byte that ends it and waits for its exit, so the lock is
   # free when this returns, or unconfirmed past `@release_ms`: then the port
-  # closes, and perl frees it when it ends. Only the owner of the port gets its
-  # exit status. The owner is the session process, which traps exits and
-  # stops after this, so the messages of the port stay in its mailbox.
+  # closes, and perl frees it when it ends.
   def release(nil), do: :ok
 
   def release(port) do
@@ -283,16 +265,15 @@ defmodule Helyx.Session.Lock do
     :ok
   end
 
-  # A port that closed already gets nothing. The bytes come from `frame`
-  # here, and the rescue drops the stacktrace, whose top frame would hold
-  # them as an argument.
+  # A port that closed already gets nothing. The bytes come from `frame` here,
+  # and the rescue drops the stacktrace, whose top frame would hold them as an
+  # argument.
   defp send_bytes(port, frame) do
     Port.command(port, frame.())
   rescue
     ArgumentError -> false
   end
 
-  # A port that closed already is skipped.
   defp close(port) do
     Port.close(port)
   rescue

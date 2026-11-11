@@ -1,11 +1,8 @@
 defmodule Helyx.Session.Hands.Outcome do
   @moduledoc false
-  # The message to the session for the end of a Task of
-  # `Helyx.Session.Hands`: a tool result, the end of a background run, the
-  # answer of a `before_settle` chain, the decision of an approval chain, or
-  # the end of the provider process. The kind of the Task says which
-  # (`Helyx.Session.Hands.Entry`). Every result and background end leaves
-  # the hands through here, so text is made valid and cut to the limit once.
+  # The message to the session for the end of a Task of `Helyx.Session.Hands`.
+  # Every result and background end leaves the hands through here, so text is
+  # made valid and cut to the limit once.
 
   alias Helyx.Session.Background
   alias Helyx.Session.Hands.Entry
@@ -20,12 +17,9 @@ defmodule Helyx.Session.Hands.Outcome do
   def of(%Entry{kind: {:run, id}}, result),
     do: {:background_end, Background.end_message(id, checked(result))}
 
-  # The answer of a `before_settle` chain, to the request `ref` of the
-  # session (`Helyx.Session.Hands.Settle`).
   def of(%Entry{kind: {:settle, ref}}, answer), do: {:settle_answer, ref, answer}
 
-  # The decision of the chain of an approval request; a deny reason is cut
-  # as a result.
+  # A deny reason is cut as a result.
   def of(%Entry{kind: {:approval, call_id}, turn_id: turn_id}, result),
     do: {:approval_result, turn_id, call_id, decision(result)}
 
@@ -41,11 +35,10 @@ defmodule Helyx.Session.Hands.Outcome do
 
   def unreleased, do: "a resource from an earlier call could not be released"
 
-  # The reason of a provider process's end. `Helyx.Reason` caps its
-  # integers when it makes the text. A kill is the armed
-  # kill of a request that got no answer in time. The loop ends with
-  # `{:shutdown, reason}` (L1). An unconfirmed handle joins `unconfirmed`,
-  # which refuses the next start.
+  # A kill is the armed kill of a request that got no answer in time. The loop
+  # ends with `{:shutdown, reason}` (L1). An unconfirmed handle joins
+  # `unconfirmed`, which refuses the next start. `Helyx.Reason` caps the
+  # integers of the text.
   defp down_reason({:exit, :killed}), do: :provider_timeout
   defp down_reason({:exit, {:shutdown, reason}}), do: reason
   defp down_reason({:exit, reason}), do: {:task_exit, reason}
@@ -59,7 +52,8 @@ defmodule Helyx.Session.Hands.Outcome do
     decision({:deny, "the approval chain crashed: " <> Helyx.Reason.text(reason)})
   end
 
-  # A crash of the Task: the log gets the kind of its reason, the result its text.
+  # A crash of the Task: the log gets the kind of its reason, the result its
+  # text.
   defp checked({:exit, reason}) do
     Helyx.Reason.log("tool crashed", reason)
     checked({:error, "tool crashed: " <> Helyx.Reason.text(reason)})

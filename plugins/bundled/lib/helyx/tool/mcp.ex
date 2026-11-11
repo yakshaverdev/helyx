@@ -7,10 +7,8 @@ defmodule Helyx.Tool.MCP do
   Its source process reads the config at each session start and resume,
   starts each server that passes the checks over stdio under the perl
   watchdog, and puts its tools as one deferred group per server, named
-  `<server>__<tool>`; `tool_search` finds and activates them. A server
-  that does not list its tools within 30 s, exits, or breaks the protocol
-  is failed: its tools leave the session and a search names the reason.
-  `run/2` sends a call to the server of the called tool. perl is required.
+  `<server>__<tool>`; `tool_search` finds and activates them. `run/2` sends
+  a call to the server of the called tool. perl is required.
   """
 
   @behaviour Helyx.Tool

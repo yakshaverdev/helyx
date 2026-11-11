@@ -2,8 +2,8 @@ defmodule Helyx.TUI.Wire.Reader do
   @moduledoc false
   # The messages of the server in the bytes that arrive on the socket,
   # decoded by `Mint.WebSocket.decode/2`: complete texts, oldest first, and
-  # pings, pongs, and closes. Mint joins the WebSocket fragments of a text
-  # and keeps a partial frame in its state, so the caller keeps the
+  # pings, pongs, and closes. Mint joins the fragments of a text and keeps a
+  # partial frame in its state, so the caller keeps the
   # `Mint.WebSocket.t/0` that each call returns.
   #
   # A text over the frame bound of the wire, a control frame over 125 bytes
@@ -11,7 +11,7 @@ defmodule Helyx.TUI.Wire.Reader do
   # decode ends the messages: the call gives the messages before it as
   # `{:partial, ...}`, and the next call gives `:broken`. Mint allocates a
   # whole frame before it returns it, so the bounds are checked after the
-  # decode, not at the frame header as the hand-written parser did.
+  # decode; `@max_buffer` bounds the bytes before it.
 
   alias Helyx.Transport.WebSocket.Frame
 
@@ -37,9 +37,6 @@ defmodule Helyx.TUI.Wire.Reader do
     end
   end
 
-  # As `read/2`, with the bytes that the last undecoded frame already holds:
-  # `{:ok, messages, ws, pending}` keeps the count while no message is whole,
-  # and resets it when one is.
   def read(ws, bytes, pending) do
     pending = pending + byte_size(bytes)
     if pending > @max_buffer, do: :broken, else: decode(ws, bytes, pending)

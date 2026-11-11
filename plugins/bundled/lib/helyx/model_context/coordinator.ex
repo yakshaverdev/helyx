@@ -1,15 +1,11 @@
 defmodule Helyx.ModelContext.Coordinator do
   @moduledoc """
-  The model context of the coordinator mode: a base prompt for an agent
-  with no working folder that starts, steers, reads, waits for, and
-  schedules other sessions with the coordinator tools (`session_create`,
-  `session_send`, `session_read`, `session_wait`, `schedule`,
-  `schedule_list`, `schedule_delete`), and lists or deletes event
-  subscriptions (`subscription_list`, `subscription_delete`), then a
-  section with the modes of the product, the session id, the model, and
-  the time in UTC to the minute, which `schedule` needs. It reads no
-  context file. Each value is one line of at most 4,096 bytes. See
-  `docs/features/coordinator.md`.
+  The model context of the coordinator mode: a base prompt for an agent with
+  no working folder that starts, steers, reads, waits for, and schedules
+  other sessions with the coordinator tools, then a section with the modes
+  of the product, the session id, the model, and the time in UTC to the
+  minute, which `schedule` needs. It reads no context file. Each value is one
+  line of at most 4,096 bytes (`docs/features/coordinator.md`).
   """
 
   @behaviour Helyx.ModelContext

@@ -4,11 +4,7 @@ defmodule Helyx.Tool.MCP.Source do
   # it reads the config, announces one group per server that passed the
   # checks, and launches one server Task per kept server with
   # `Helyx.Tool.launch/1`. It holds no port: each server Task owns its own,
-  # so one server's failure stays with that server (decision 15). It puts
-  # each listing of a server Task, fails a server that does not list its
-  # tools within the start bound or that ends, starts a server again after
-  # a call that ended with no response, at most 3 times (decision 14), and
-  # routes the calls of its tools to the server Task of their server.
+  # so one server's failure stays with that server.
   #
   # The source traps exits. An `{:EXIT, pid, reason}` of a pid that is no
   # server Task of its own ends it, once the hands answered every open
@@ -234,10 +230,6 @@ defmodule Helyx.Tool.MCP.Source do
     end
   end
 
-  # A call of an MCP tool, in its call Task: the route from the source,
-  # the hold of the server's groups as `{:mcp_call, handles}` (an abort
-  # releases them), then the call to the server Task, which answers
-  # within the time limit.
   # Room past the call's deadline for the server Task's own answer at it.
   @answer_ms 5_000
 

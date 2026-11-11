@@ -1,39 +1,13 @@
 defmodule Helyx.Session.Turn do
   @moduledoc false
   # The turn in progress. `partial` is the assistant content so far as a
-  # reversed block list, or nil before the first stream event, `bytes`
-  # the size of its text, thinking, and tool calls, and `blocks` its block
-  # count. The open tool calls come from the transcript
-  # (`Transcript.open_calls/1`).
-  # `model` and `provider` are fixed when the turn starts, so a model switch
-  # during the turn takes effect on the next one. The turn's step is the
-  # session's phase, not a field here (`Helyx.Session.Server.Flow`): the
-  # prepared `context` is on the turn until it is sent.
-  # `prepare` is `{ref, pid, messages}`: the ref and the pid of the
-  # running prepare Task, which the session monitors and kills at the turn
-  # end, and the messages that it got. Only a reply with that ref is the
-  # Task's context. It is nil with no Task: in a context request a prepare
-  # Task or a pending reply is an open request.
-  # `tool_queue` holds the Helyx tool requests of the turn
-  # (`Helyx.Session.ToolQueue`), `approval_chains` the approval requests
-  # of the provider for calls of its own tools
-  # (`Helyx.Session.ApprovalChains`), `owners` the owner of each open call
-  # that a request named (`Helyx.Session.Server.Approvals`), `asks`
-  # the open asks of its calls, oldest first, and `askers` the call and
-  # hook Tasks of the turn that may ask, by pid, with the session's
-  # monitor and their kind (`Helyx.Session.Server.Asks`). `compact` is
-  # nil for a turn with a prompt; for a compaction turn it is its
-  # instructions until the provider's first compaction event, then
-  # `:reported` (docs/features/harness-compaction.md). `start` is the number of
-  # transcript messages when the turn opened, and `started_ms` the
-  # monotonic time of the session's node then: a snapshot gives the time
-  # since, so a late client needs no clock of the server. `recall` is the
-  # recall message of the prepared `context`, which goes last at the submit,
-  # and `recall_failed` whether the turn gave its recall notice
-  # (docs/features/memory.md). `ui_blocks` and `held_results` are the UI
-  # blocks of the turn, `helyx_calls` its Helyx call ids, and
-  # `helyx_calls_refused` whether a request went past their bound
-  # (`Helyx.Session.Server.UIBlocks`).
+  # reversed block list. `model` and `provider` are fixed when the turn starts.
+  # The turn's step is the session's phase, not a field here
+  # (`Helyx.Session.Server.Flow`).
+  #
+  # `prepare` is `{ref, pid, messages}`: the ref and the pid of the running
+  # prepare Task and the messages that it got; only a reply with that ref is the
+  # Task's context.
 
   alias Helyx.{Message, ModelRef}
 
@@ -90,20 +64,17 @@ defmodule Helyx.Session.Turn do
           helyx_calls_refused: boolean()
         }
 
-  # The most bytes of text, thinking, and tool calls in the open assistant
-  # message. The largest streamed model output that a provider allows is
-  # 128K tokens (the current Claude models and the OpenAI GPT-5 models).
-  # Text averages about 4 bytes for each token, so such a response is about
-  # 512 KiB: the margin is 16 times, and a response of 64 bytes for each
-  # token still fits.
+  # The largest streamed model output that a provider allows is 128K tokens, and
+  # text averages about 4 bytes for each token: about 512 KiB. The margin is 16
+  # times, and a response of 64 bytes for each token still fits.
   @max_message_bytes 8 * 1_048_576
 
-  # The most blocks in the open assistant message: a safety budget, not a
-  # provider limit. Without it, alternating 1-byte text and thinking deltas
-  # make about 8 million blocks within the byte bound.
+  # A safety budget, not a provider limit: without it, alternating 1-byte text
+  # and thinking deltas make about 8 million blocks within the byte bound.
   @max_message_blocks 1_024
 
-  # The bound also holds the open Helyx tool requests (`Helyx.Session.ToolQueue`).
+  # The bound also holds the open Helyx tool requests
+  # (`Helyx.Session.ToolQueue`).
   @spec max_message_bytes() :: pos_integer()
   def max_message_bytes, do: @max_message_bytes
 
@@ -111,13 +82,11 @@ defmodule Helyx.Session.Turn do
   @spec max_message_blocks() :: pos_integer()
   def max_message_blocks, do: @max_message_blocks
 
-  # Adds one stream event of `size` bytes to the partial assistant content.
-  # An event that takes the open message over `@max_message_bytes`, or a
-  # new block over `@max_message_blocks`, is a contract break:
+  # An event that takes the open message over `@max_message_bytes`, or a new
+  # block over `@max_message_blocks`, is a contract break:
   # `{:error, {:message_too_large, bytes, max}}` or
-  # `{:error, {:too_many_blocks, blocks, max}}`, and nothing is added. A
-  # delta that merges into the last block (`Message.add_block/2`) makes no
-  # new block.
+  # `{:error, {:too_many_blocks, blocks, max}}`, and nothing is added. A delta
+  # that merges into the last block (`Message.add_block/2`) makes no new block.
   @spec add_block(t(), Message.block_event(), non_neg_integer()) ::
           {:ok, t()}
           | {:error, {:message_too_large | :too_many_blocks, pos_integer(), pos_integer()}}
@@ -168,7 +137,6 @@ defmodule Helyx.Session.Turn do
   @spec elapsed_ms(integer()) :: non_neg_integer()
   def elapsed_ms(started_ms), do: System.monotonic_time(:millisecond) - started_ms
 
-  # The turn of a snapshot (`Helyx.Session.Snapshot`).
   @spec snapshot(t()) :: Helyx.Session.Snapshot.turn()
   def snapshot(%__MODULE__{} = turn) do
     partial = if turn.partial, do: assistant_message(turn, [])

@@ -5,7 +5,7 @@ defmodule Helyx.Text do
   # registration entry.
 
   # The cut of a tool result, in lines and in bytes of line content (50
-  # KiB): pi's read and bash defaults (`docs/research/coding-tools.md`).
+  # KiB): the defaults measured in `docs/research/coding-tools.md`.
   @max_lines 2000
   @max_bytes 51_200
   # A notice holds 79 bytes of fixed text and at most six numbers. Each is a
@@ -70,13 +70,10 @@ defmodule Helyx.Text do
   Caps text at #{@max_lines} lines or #{@max_bytes} bytes of line content,
   on whole lines. Each invalid UTF-8 sequence becomes U+FFFD first, so the
   caps count the bytes that the model sees. One trailing newline is a
-  terminator and does not count.
-  `:head` keeps the start and `:tail` keeps the end. A truncated result says
-  which lines it shows; a truncated `:head` result also names the offset that
-  continues the read, unless the cut line is the last line. When the line at
-  the kept edge is over the byte cap by itself, it is cut to the cap and is
-  the only line shown (see `cap/3`); the notice names that line and the
-  bytes kept of it, and no offset reaches the rest.
+  terminator and does not count. `:head` keeps the start and `:tail` keeps
+  the end; a truncated result carries a notice line that names the lines it
+  shows, and a `:head` result that has more lines names the offset that
+  continues the read.
   """
   @spec truncate(String.t(), :head | :tail) :: String.t()
   def truncate(text, :head), do: truncate(text, :head, 1)

@@ -102,6 +102,17 @@ A public adapter in Core, `lib/helyx/provider/loop.ex` (Decision Q1). An API pro
 
 The helper never sends `{:resume_id, ...}` or `:turn_start`, and it holds no handles, so it has no `release/3`.
 
+The helper holds one model call at a time in its `phase`:
+
+| Phase | Meaning |
+|---|---|
+| `:idle` | no turn |
+| `{:calling, turn, task, content?, calls}` | the model Task is in flight; `content?` is set by a text, a thinking text, or a call |
+| `{:results, turn, calls}` | the calls wait for their results |
+| `{:context, turn}` | the session builds a fresh context |
+
+`calls` are the calls of the message with no result in the transcript yet, in call order, each `{call, result}` with the result nil until it comes; the call id is the request id. `steers` holds the ids of the held steers of the live turn. `usage` is the usage of a call that sent no `message_end`, or nil, and outlives the turn. `lost?` is set when a call since the last usage ended with no usage, so the next usage has no cost.
+
 ### Process lifetime
 
 A link stops a linked process only when the other process exits with a reason other than `:normal`.

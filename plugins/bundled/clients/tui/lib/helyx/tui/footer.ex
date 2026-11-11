@@ -3,11 +3,8 @@ defmodule Helyx.TUI.Footer do
   The footer of the TUI: two dim rows under the composer, with no key
   hints but the one of a first Ctrl+C. Row 1 is the location: the working
   directory, with the home directory as `~`, and the git branch. Row 2 is
-  the model, the turn state, the usage values of the session, the queue
-  counts and the background counts (`N running`, `N held`, `N waiting`)
-  when they are not zero, and "scrolled" while the view is
-  scrolled; the reason of a rejected input comes first, in red, then the
-  Ctrl+C hint, in bold. The rules and the bounds are in
+  the model, the turn state, and the session counts, with the reason of a
+  rejected input first and in red. The rules and the bounds are in
   `docs/features/coding-agent.md`, "TUI", and the usage values and their
   capped forms in `docs/features/usage-and-limits.md`, "The footer".
   """
@@ -157,12 +154,10 @@ defmodule Helyx.TUI.Footer do
   def tick_ms, do: @tick_ms
 
   @doc """
-  The two rows: `location` from `location/2`, then the state of `vm`. The
-  turn state is "idle" for a nil `busy`, else a spinner frame and the whole
-  seconds of `busy.elapsed`. A non-nil `scroll` adds "scrolled". A true
-  `loading`, while a switch opens a session, puts "loading the session"
-  first (`docs/features/tui-attach.md`, decision 17). The `hint` text, or
-  nil, comes after the reason. A row does not wrap.
+  The two rows: `location`, then the state of `vm` and the queue counts, with
+  the `hint` after the reason. A true `loading`, while a switch opens a
+  session, puts "loading the session" first (`docs/features/tui-attach.md`,
+  decision 17). A row does not wrap.
   """
   @spec widget(
           String.t(),

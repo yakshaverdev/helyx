@@ -1,9 +1,8 @@
 defmodule Helyx.Hub.Server do
   @moduledoc false
-  # The process of a Hub (`docs/features/hub.md`): the only caller of the
-  # store, so a cap check and its insert are one step. Each request is a Hub
-  # call of `Helyx.Hub.call/2` with its deadline; a call taken at or past
-  # its deadline is dropped before it reads or writes.
+  # The process of a Hub: the only caller of the store, so a cap check and
+  # its insert are one step (`docs/features/hub.md`, decision 9). Each
+  # request is a Hub call of `Helyx.Hub.call/2` with its deadline.
 
   use GenServer
 
@@ -54,10 +53,8 @@ defmodule Helyx.Hub.Server do
     end
   end
 
-  # Every live session of the Core enters the live set once, read with a
-  # deadline; past it, or on a failed read, the set starts empty (decision
-  # 14). The read is a Task with no link; a read past its deadline is
-  # killed, and its messages are flushed.
+  # Every live session of the Core enters the live set once; past the
+  # deadline, or on a failed read, the set starts empty (decision 14).
   @impl true
   def handle_continue(:live, state) do
     core = state.core
@@ -91,8 +88,7 @@ defmodule Helyx.Hub.Server do
     end
   end
 
-  # The requests that take or end a place of decision 14; the place is the
-  # caller's, the process that runs the request.
+  # The requests that take or end a place of decision 14.
   defp serve({:start, auth, _cwd_bytes} = request, caller, deadline, state) do
     with :ok <- Rules.handle(request, deadline, state),
          {:ok, state} <-
@@ -147,9 +143,7 @@ defmodule Helyx.Hub.Server do
 
   # The connections of decision 13: a `hello` adds its connection; a revoke
   # closes the connections that proved the token, a remove those of the
-  # user, and a record change those of every user but the owner who could
-  # read the session before and cannot after (the owner keeps its
-  # connections, also when a delete takes its access).
+  # user, and a record change those that may no longer read.
   defp serve({:hello, token_id, connection}, _caller, deadline, state) do
     case Rules.handle({:hello, token_id}, deadline, state) do
       {:ok, found} = reply -> {reply, Connections.add(state, connection, found.user, found.token)}
@@ -164,9 +158,8 @@ defmodule Helyx.Hub.Server do
     do: revoked(handle(request, deadline, state), token_id, state)
 
   # A remove deletes the records of the user with it (decision 8), so the
-  # read comes first: a "hub" record among them, or a read that fails, takes
-  # read access from every user but the default owner, who owns the session
-  # then; that close takes the connections of the user too.
+  # read comes first: a "hub" record among them takes read access from every
+  # user but the default owner, who owns the session then.
   defp serve({:remove_user, user_id} = request, _caller, deadline, %{store: mod, db: db} = state) do
     shared? = mod.hub_records?(db, user_id) != {:ok, false}
 
@@ -223,7 +216,7 @@ defmodule Helyx.Hub.Server do
        do: Wake.serve(request, caller, deadline, state)
 
   # The webhook endpoint of decision 17: the path id, the signature header,
-  # and the raw body; the answer is the HTTP status and body of the request.
+  # and the raw body.
   defp serve({:webhook, id, signature, body}, _caller, deadline, state),
     do: {Webhook.accept(id, signature, body, deadline, state), state}
 
@@ -261,14 +254,11 @@ defmodule Helyx.Hub.Server do
     end
   end
 
-  # Only a "hub" record has readers besides its owner (decision 4), so only
-  # a change from "hub" takes read access from a user who is not the owner
-  # (a delete also takes the access of the owner, who keeps its connections:
-  # decision 13 closes "every user but the owner"): it closes the connections of
-  # every user but the owner after, who still reads, and the owner before,
-  # who made the change, and whose close would come before the reply of its
-  # own request. A read that fails tells nothing, so a change that then
-  # commits closes every user but the one who made it.
+  # Only a "hub" record has readers besides its owner (decision 4); the
+  # close keeps the owner before the change, who made it and whose close
+  # would come before the reply of its own request, and the owner after, who
+  # still reads. A read that fails closes every user but the one who made
+  # the change.
   defp lost_readers({:ok, %{visibility: "hub", owner: owner}}, _user, id, exists?, state) do
     case Rules.access(id, exists?, state) do
       {:ok, %{visibility: "hub"}} -> state
@@ -331,10 +321,9 @@ defmodule Helyx.Hub.Server do
     end
   end
 
-  # What the authority of the transport needs in the caller: the Core and
-  # its data folder for the existence check (decision 8), and for the scan
-  # of saved sessions (decision 7) the Core and the default owner, who alone
-  # gets that scan.
+  # What the authority of the transport needs in the caller (decisions 7 and
+  # 8): the Core and its data folder for the existence check, and for the
+  # scan of saved sessions the default owner, who alone gets that scan.
   defp handle(:authority, _deadline, state),
     do: {:ok, %{core: state.core, dir: state.sessions_dir, default_owner: state.default_owner_id}}
 

@@ -42,13 +42,12 @@ defmodule CodingAgent do
   required. The skills scan and `/name` use `:home` of the `:coding_agent`
   application, default `System.user_home!/0`. With `resume: true` the most recent session for `:cwd` that has
   a message is resumed, and with `resume: id` the session with that id,
-  whose header must name `:cwd`. With `resume: id` and no `:cwd`, the
-  session runs in the folder of its header, which must be an absolute path
-  to a directory; the resume finds the id after the tool checks
-  (`docs/features/server-management.md`, "Order of the checks"). A resumed
+  whose header must name `:cwd`. A resumed
   session keeps its saved model. Returns `{:error, reason}` when the model
   ref, the plugin list, the resume, or the folder of the header is rejected.
-  Core stops before `run/1` returns or raises.
+  Core stops before `run/1` returns or raises. Print mode is in
+  `docs/features/print-mode.md`, and the order of the start checks in
+  `docs/features/server-management.md`.
   """
   @spec run(keyword()) :: CodingAgent.Print.status() | {:error, term()}
   def run(opts) do
@@ -79,9 +78,6 @@ defmodule CodingAgent do
     end
   end
 
-  # With no `:cwd`, the folder is the one the session runs in. A folder of
-  # a header comes from the file. A session that does not answer the live
-  # list in time is left out of it.
   defp session_cwd(session, nil) do
     case Enum.find(Helyx.Sessions.list_live(session.core), &(&1.id == session.id)) do
       nil -> {:error, :session_not_found}
@@ -106,11 +102,10 @@ defmodule CodingAgent do
   with no `:prompt`; `:model` is optional: with none, a new session gets
   the default model of the server; `resume: id` takes no `:cwd`; and
   `resume: :reattach` resumes the newest session of `:cwd`, or starts one
-  when the folder has none (decision 16). The session starts or resumes in
-  the server and runs on after the quit, which aborts nothing. After a
-  lost connection the TUI connects again (`CodingAgent.Attach.connect/1`)
-  and subscribes with `after` (decision 11). Returns
-  `{:error, reason}` as `run/1` does, with the errors of the wire.
+  (decision 16). The session runs on after the quit, which aborts nothing.
+  After a lost connection the TUI connects again and subscribes with `after`
+  (decision 11). Returns `{:error, reason}` as `run/1` does, with the errors
+  of the wire.
   """
   @spec attach(:gen_tcp.socket(), term(), keyword()) :: :ok | {:error, term()}
   def attach(socket, ws, opts) do
@@ -218,21 +213,11 @@ defmodule CodingAgent do
   A session that ended while the TUI ran (`{:session_down, reason}`) gives
   its sentence, and so does a session that another process has open
   (`{:session_locked, id}`); any other error is a failed start, and its sentence comes
-  after `could not start the agent: `. There is a clause for every shape of `t:Helyx.Session.File.error/0`,
-  for the model ref and provider errors, for a bad working directory
-  (`:invalid_cwd`), for a header folder that is not a directory
-  (`{:not_a_directory, cwd}`, a whole line with no prefix), for a tool
-  that is not available, for the end of the session, and over the wire for
-  a line of the attach (`{:attach, text}`) and the end of the connection
-  (`{:connection_down, reason}`), whole lines with no prefix, for a newest
-  session that does not reattach (`{:reattach, reason}`), and for the
-  errors of the wire (`Helyx.TUI.Link.error_text/1`). The `:too_large`
-  text is a sentence already and passes unchanged. An error with no clause
-  prints through `Helyx.Reason.text/1`, so it holds no stacktrace. Every
-  result gets one clean pass: a whitespace run becomes one space, and a
-  control character or a byte that is not UTF-8 becomes `?`. The line then
-  has at most 4000 bytes of valid UTF-8, the prefix included; a character
-  cut in half is dropped.
+  after `could not start the agent: `; `{:not_a_directory, cwd}`,
+  `{:attach, text}`, and `{:connection_down, reason}` are whole lines with
+  no prefix. An error with no clause prints through `Helyx.Reason.text/1`,
+  so it holds no stacktrace. Every result gets the clean pass of
+  `clean_line/1`.
   """
   @spec error_text(term()) :: String.t()
   def error_text(reason), do: reason |> line() |> clean_line()

@@ -5,10 +5,9 @@ defmodule CodingAgent.Serve do
   stop of the VM, which the OTP
   answer to SIGTERM starts; the launcher of the release sends SIGTERM for
   each signal that it catches. One server runs for each data
-  folder, the sessions folder: it holds the lock `server.lock` there. When
-  it is ready, it writes `server.json` with mode 0600, which holds its
-  address, port, token, protocol number, and OS pid, and prints one line
-  with its address. The design is in `docs/features/serve.md`.
+  folder, the sessions folder: it holds the lock `server.lock` there and
+  writes `server.json` with mode 0600 when it is ready. The design is in
+  `docs/features/serve.md`.
   """
 
   import Bitwise
@@ -44,11 +43,9 @@ defmodule CodingAgent.Serve do
   server holds the data folder, when the start fails, or when Core, the
   Hub, the transport, or the lock ends while the server runs. The options are
   `:sessions_dir` (the data folder, an absolute path), `:model` (the
-  default model ref), `:ip`, and `:port`. A data folder that other users
-  can write is refused. The server runs under the supervisor
+  default model ref), `:ip`, and `:port`. The server runs under the supervisor
   `CodingAgent.Servers` of the application, so the stop of the VM
-  (`init:stop/0`, the OTP answer to SIGTERM) stops it in order; the
-  caller waits for its result and does not own it.
+  (`init:stop/0`, the OTP answer to SIGTERM) stops it in order.
   """
   @spec run(keyword()) :: :ok | {:error, String.t()}
   def run(opts) do
