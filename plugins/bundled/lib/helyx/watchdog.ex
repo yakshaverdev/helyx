@@ -202,8 +202,7 @@ defmodule Helyx.Watchdog do
 
   @doc false
   # Public for the watchdog's direct tests. `feed` is the input mode, -1
-  # for none or -2 for open input (see the watchdog). `grace_ms` is the
-  # TERM grace when the port closes.
+  # for none or -2 for open input (see the watchdog).
   def launcher(argv, cwd, nonce, feed, grace_ms \\ @grace_ms) do
     # No cd option: the watchdog enters `cwd`, so a failure has a signal.
     {System.find_executable("perl"),

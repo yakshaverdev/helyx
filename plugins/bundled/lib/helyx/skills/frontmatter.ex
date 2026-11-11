@@ -4,11 +4,7 @@ defmodule Helyx.Skills.Frontmatter do
   # lines, of which it reads only the top-level keys `name` and
   # `description`. It fails closed: it accepts a strict subset of YAML and
   # rejects any other text with the number of its line, so it is never
-  # wider than YAML. The value of every other key is not read, but a
-  # character that can start a YAML construct is out at the start of a
-  # word there, except a quoted scalar that starts a value and closes on
-  # its line. The time is linear in the bytes.
-  # The subset is in docs/features/skills.md.
+  # wider than YAML. The subset is in docs/features/skills.md.
 
   @keys ["name", "description"]
   @frontmatter ~r/\A---[ \t]*\r?\n((?:.*?\r?\n)?)---[ \t]*(?:\r?\n|\z)/s

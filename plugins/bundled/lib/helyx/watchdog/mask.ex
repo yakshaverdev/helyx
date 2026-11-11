@@ -1,11 +1,11 @@
 defmodule Helyx.Watchdog.Mask do
   @moduledoc false
   # The values of the `:env` of `Helyx.Watchdog.start/4` out of a start
-  # reason: perl's own output before the marker can quote a value of `:env`, such
-  # as a folder of PERL5LIB or the LC_ALL of a locale warning. Each
-  # occurrence of each value, also where two overlap, becomes `@masked`.
-  # The invalid bytes go first and the cut of `Helyx.Text.cap/3` after, so
-  # neither can join or leave a part of a value.
+  # reason: perl's own output before the marker can quote a value, such as a
+  # folder of PERL5LIB or the LC_ALL of a locale warning. Each occurrence of
+  # each value, also where two overlap, becomes `@masked`. The invalid bytes
+  # go first and the cut of `Helyx.Text.cap/3` after
+  # (`docs/features/harness-no-state.md`).
   @masked "<env>"
 
   def mask(text, []), do: text

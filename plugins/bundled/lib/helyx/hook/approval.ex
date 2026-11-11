@@ -8,23 +8,15 @@ defmodule Helyx.Hook.Approval do
   or asks the user about each tool call by a rule of its config
   (`docs/features/approval-gate.md`, ADR 0013 §7).
 
-  The config is the env key `:approval_hook` of `helyx_plugins`, a keyword
-  list: `rules`, a list of rules, `[]` by default; `default`, the action of
-  a call that no rule matches, `:ask` by default; and `limit_ms`, the
-  hook's limit, the bound of the wait for the user, #{@default_limit_ms} by
-  default. A rule is a keyword list of `tool`, a tool name, required;
-  `provider`, nil for a Helyx tool or a provider id, nil by default; and
-  `action`, `:allow`, `:deny`, or `:ask`, required. A rule matches a call
-  of its tool and provider; of the rules that match, a deny wins over an
-  ask, and an ask over an allow. A config of another shape is a failed
-  hook: the call is denied.
-
-  `:ask` asks the clients with `Helyx.Hook.ask/1` and an `approval` UI
-  block (`docs/features/ui-blocks.md`): `tool` and `provider` cut at
-  #{@max_name_bytes} bytes, `arguments` the JSON text of the arguments cut
-  at #{@max_arguments_bytes} bytes, and `cut: true` when one was cut. The
-  answer `%{"decision" => "allow"}` allows the call, and any other answer
-  denies it. With no client that can answer, the call is denied at once.
+  The config is the env key `:approval_hook` of `helyx_plugins`: `rules`, a
+  list of rules of `tool`, `provider`, and `action`; `default`; and
+  `limit_ms`. Of the rules that match, a deny wins over an ask, and an ask
+  over an allow. A config of another shape is a failed hook: the call is
+  denied. `:ask` asks the clients with `Helyx.Hook.ask/1` and an `approval`
+  UI block (`docs/features/ui-blocks.md`), its texts cut at
+  #{@max_name_bytes} and #{@max_arguments_bytes} bytes; any answer but
+  `%{"decision" => "allow"}` denies the call, and with no client that can
+  answer the call is denied at once.
   """
 
   @behaviour Helyx.Hook

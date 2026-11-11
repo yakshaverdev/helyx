@@ -7,26 +7,12 @@ defmodule Helyx.Hook.Command do
 
   The config is the env key `:command_hook` of `helyx_plugins`: a keyword
   list of the points `:before_tool`, `:after_tool`, and `:before_settle`,
-  each a keyword list of `command`, a string, required; `limit_ms`, the
-  hook's limit at the point, #{@default_limit_ms} by default; and, at the
-  two tool points, `tools`, the tool names that the command runs for,
-  every tool by default. A point with no entry, and a tool that is not in
-  its `tools`, get `:allow`, `:keep`, or `:settle` with no run. A key that
-  is there has a value of its type: `nil` is no value. A config of another
-  shape at the top, or in the entry of the point, is a failed hook at that
-  point.
-
-  The command runs with `bash -c` in the `cwd` of its input, the session's
-  folder, in its own process group under the perl watchdog, held with
-  `Helyx.Tool.hold/1`. It gets the call, or at `before_settle` the ended
-  turn, as JSON on standard input, in the field names of the Claude Code
-  hook format where it has the field. Exit 0 is the default answer, or the answer of a JSON
-  object on standard output. Exit 2 is a deny at `before_tool`, with
-  standard error as the reason; at `after_tool` the result with standard
-  error added; and at `before_settle` a continue with standard error as
-  its text. Any other exit is a failed hook: `before_tool` denies the
-  call. At most #{Helyx.Hook.Command.Run.max_output_bytes()} bytes of each
-  of standard output and standard error are kept.
+  each a keyword list of `command`, `limit_ms`, and, at the two tool points,
+  `tools`. Exit 0 is the default answer, or the answer of a JSON object on
+  standard output; exit 2 is a deny at `before_tool`, with standard error as
+  the reason; any other exit is a failed hook. At most
+  #{Helyx.Hook.Command.Run.max_output_bytes()} bytes of each of standard
+  output and standard error are kept.
   """
 
   @behaviour Helyx.Hook

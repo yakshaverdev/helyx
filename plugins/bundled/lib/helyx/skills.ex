@@ -227,11 +227,8 @@ defmodule Helyx.Skills do
   def loaded?(messages, name), do: Enum.any?(messages, &(load_name(&1) == [name]))
 
   # The text of the message that carries the skills loaded in `before`, the
-  # messages that a summary covers, and not loaded again in `kept`: newest
-  # first, at most @max_carried bodies, each the text that the model saw;
-  # every other skill gets one line. The whole text is at most
-  # @max_carried_bytes; from the first skill whose line does not fit, the
-  # rest are left out. Nil with no such skill.
+  # messages that a summary covers, and not loaded again in `kept`
+  # (`docs/features/skills.md`, "Bounds"). Nil with no such skill.
   @spec carried([Helyx.Message.t()], [Helyx.Message.t()]) :: String.t() | nil
   def carried(before, kept) do
     loads =

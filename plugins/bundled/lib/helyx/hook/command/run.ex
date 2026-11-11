@@ -26,8 +26,6 @@ defmodule Helyx.Hook.Command.Run do
 
   defmodule Out do
     @moduledoc false
-    # The kept head of each stream, whether bytes of standard output were
-    # dropped, and the part of a frame that the next read completes.
     defstruct stdout: "", stdout_cut?: false, stderr: "", buffer: ""
   end
 

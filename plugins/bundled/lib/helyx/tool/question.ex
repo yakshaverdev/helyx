@@ -4,12 +4,9 @@ defmodule Helyx.Tool.Question do
   answers (`Helyx.Tool.ask/1`). The request is a `form` UI block,
   `%{"kind" => "form", "text" => "<n> question(s)", "questions" => questions}`,
   with the checked arguments, `multi_select` filled in; its `text` is the
-  count of the questions (`docs/features/ui-blocks.md`). A client answers
-  with `%{"answers" => answers}`, one item for each question in order:
-  `"selected"`, the picked labels (at most one without `multi_select`), and
-  `"other"`, a text of the user, or absent; an item needs one of them. With
-  no client that can answer, the tool returns at once and tells the model to
-  decide. The design and the bounds are in
+  count of the questions (`docs/features/ui-blocks.md`). With no client that
+  can answer, the tool returns at once and tells the model to decide. The
+  answer shape, the design, and the bounds are in
   `docs/features/question-tool.md`.
   """
 

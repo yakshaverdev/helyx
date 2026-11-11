@@ -87,10 +87,8 @@ defmodule Helyx.Hook.Command.Answer do
 
   # Standard output at exit 0: only an object, first byte `{` after the
   # white space that JavaScript's `trim()` drops, is an answer, as Claude
-  # Code reads its hook output (docs/research/claude-code-hooks.md). The
-  # kept head shows plain text even when the rest was dropped; an object,
-  # white space, or a character that the cut split, which can be white
-  # space, with a dropped rest cannot be read whole.
+  # Code reads its hook output (docs/research/claude-code-hooks.md). A kept
+  # head whose rest was dropped cannot be read whole.
   defp stdout(stdout, cut?, point, input) do
     text = trim_leading(stdout)
 
