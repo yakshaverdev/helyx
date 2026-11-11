@@ -13,6 +13,7 @@ defmodule Helyx.Provider.ClaudeCode.State do
   # stop the program.
   # `notified?` is true from a `task_notification` line until the next
   # `init` or `:busy` answer: a program turn can follow it (#240).
+  # `turn` is the turn, and its `phase` is `:idle` between turns (`Turn`).
   # `tools` are the Helyx tool specs, and `calls` the open `tools/call`
   # requests of `Mcp`. `meter` is the usage of the program (`Meter`).
   # `stream` holds what the provider shares with `Helyx.HarnessIO`: the
@@ -30,7 +31,7 @@ defmodule Helyx.Provider.ClaudeCode.State do
     :resume,
     :session_id,
     :system,
-    :turn,
+    turn: %Helyx.Provider.ClaudeCode.Turn{},
     tools: [],
     calls: %{},
     tasks: [],

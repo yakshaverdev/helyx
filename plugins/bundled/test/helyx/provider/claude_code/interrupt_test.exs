@@ -6,13 +6,14 @@ defmodule Helyx.Provider.ClaudeCode.InterruptTest do
   import Helyx.Test.HarnessDriver
 
   alias Helyx.Provider.ClaudeCode
+  alias Helyx.Provider.ClaudeCode.Turn
 
   @moduletag :tmp_dir
 
   setup {Helyx.Test.ClaudeCodeFake, :setup_fake}
 
   describe "an interrupt" do
-    defp started?(state), do: state.turn.messages == nil and state.init?
+    defp started?(state), do: match?(%Turn{phase: :started}, state.turn) and state.init?
 
     test "answers :ok after the control response and the result", %{bin: bin, work: work} do
       turn(bin, 1, 1, begin())
@@ -27,7 +28,7 @@ defmodule Helyx.Provider.ClaudeCode.InterruptTest do
       File.write!(Path.join(bin, "out.late"), init() <> "\n")
       script(bin, "ctl.1", [interrupted(), aborted()])
 
-      state = running(work, &(&1.turn.messages == nil))
+      state = running(work, &match?(%Turn{phase: :started}, &1.turn))
       refute state.init?
       assert {:ok, _actions} = interrupt(state)
     end
@@ -44,7 +45,7 @@ defmodule Helyx.Provider.ClaudeCode.InterruptTest do
     test "of a turn that ended answers :ok and writes nothing", %{bin: bin, work: work} do
       turn(bin, 1, 1, reply("ok"))
 
-      state = running(work, &(&1.turn == nil))
+      state = running(work, &match?(%Turn{phase: :idle}, &1.turn))
       assert {from, [{:reply, from, :ok}], _state} = request(state, {:interrupt, "t1"})
       assert [%{"type" => "user"}] = stdin(bin, 1)
     end
@@ -74,7 +75,7 @@ defmodule Helyx.Provider.ClaudeCode.InterruptTest do
 
       state = settle(ClaudeCode, state, & &1.init?)
       assert {from, [], state} = request(state, {:interrupt, "t1"})
-      assert state.turn.interrupt.request_id == nil
+      assert {:pending, _from, _seen} = state.turn.interrupt
 
       File.write!(go, "")
       assert {actions, _state} = pump(ClaudeCode, state, [], replied?(from))
@@ -89,7 +90,7 @@ defmodule Helyx.Provider.ClaudeCode.InterruptTest do
       gate = ~s(while [ ! -e "#{go}" ]; do sleep 0.05; done; out out.rest\n)
       turn(bin, 1, 1, [lifecycle("started")], gate)
 
-      state = running(work, &(&1.turn.messages == nil))
+      state = running(work, &match?(%Turn{phase: :started}, &1.turn))
       assert {from, [], state} = request(state, {:interrupt, "t1"})
 
       File.write!(go, "")

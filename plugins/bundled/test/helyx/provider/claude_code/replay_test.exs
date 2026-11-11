@@ -8,6 +8,7 @@ defmodule Helyx.Provider.ClaudeCode.ReplayTest do
 
   alias Helyx.Message
   alias Helyx.Provider.ClaudeCode
+  alias Helyx.Provider.ClaudeCode.Turn
 
   @moduletag :tmp_dir
 
@@ -85,7 +86,7 @@ defmodule Helyx.Provider.ClaudeCode.ReplayTest do
       request(harness(work), {:turn, "t1", %Helyx.Context{messages: replay_history()}})
 
     {_from, more, state} = request(state, {:steer, "t1", "s1", "also"})
-    assert [_line] = state.turn.chunks
+    assert {:queued, _messages, [_line], _replay?} = state.turn.phase
     {actions, _state} = pump(ClaudeCode, state, actions ++ more, &ended?/1)
 
     assert {:user_message, "s1"} in events_of(actions)
@@ -128,13 +129,14 @@ defmodule Helyx.Provider.ClaudeCode.ReplayTest do
     gate = ~s(while [ ! -e "#{go}" ]; do sleep 0.05; done; out out.rest\n)
     turn(bin, 1, 1, [lifecycle("started")], gate)
 
-    state = running(work, &(&1.turn.messages == nil))
+    state = running(work, &match?(%Turn{phase: :started}, &1.turn))
     assert {_from, [], state} = request(state, {:interrupt, "t1"})
 
     # The delta after the result shows that the turn is still open.
     File.write!(go, "")
     state = sent_to(state, {:text_delta, "more"})
-    assert %{request_id: nil, result?: false} = state.turn.interrupt
+    assert {:pending, _from, seen} = state.turn.interrupt
+    refute :result in seen
   end
 
   test "a close while a resumed program reports its session lost starts no program",

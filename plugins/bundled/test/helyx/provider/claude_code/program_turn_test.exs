@@ -8,6 +8,7 @@ defmodule Helyx.Provider.ClaudeCode.ProgramTurnTest do
 
   alias Helyx.{Message, Session}
   alias Helyx.Provider.ClaudeCode
+  alias Helyx.Provider.ClaudeCode.Turn
 
   @moduletag :tmp_dir
 
@@ -89,7 +90,7 @@ defmodule Helyx.Provider.ClaudeCode.ProgramTurnTest do
              Enum.drop_while(actions, &(not match?({:event, _, :turn_start}, &1)))
 
     assert id =~ ~r/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
-    assert %{turn: nil, notified?: false} = state
+    assert %{turn: %Turn{phase: :idle}, notified?: false} = state
   end
 
   test "a session shows a program turn after its turn, with origin :provider",
