@@ -188,9 +188,8 @@ defmodule Helyx.Session.Server.UIBlocks do
   # turn, or of the turn whose `turn_end` waits for the hands.
   def snapshot(%State{phase: %{turn: %Turn{ui_blocks: blocks}}}), do: data(blocks)
 
-  def snapshot(%State{phase: %Flow.Waiting{wait: %Wait{turn_end: data, ui_blocks: blocks}}})
-      when data != nil,
-      do: data(blocks)
+  def snapshot(%State{phase: %Flow.Waiting{wait: %Wait{running: %{ui_blocks: blocks}}}}),
+    do: data(blocks)
 
   def snapshot(_state), do: []
 
