@@ -148,7 +148,7 @@ fn an_ack_goes_when_a_frame_passes_a_multiple_of_the_cadence() {
 #[test]
 fn a_seq_past_the_largest_u64_counts_on() {
     let mut state = State::default();
-    let snap = json!({"instance_id": "i1", "seq": u64::MAX, "messages": [],
+    let snap = json!({"instance_id": "i1", "seq": u64::MAX, "messages": [], "older": 0,
         "turn": null, "model": "fake/echo", "persisting": true, "context": null, "asks": [], "ui_blocks": [], "activated": [],
         "queue": {"steers": 0, "follow_ups": 0, "running": 0, "held": 0, "waiting": 0},
         "usage": {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0,
