@@ -26,19 +26,7 @@ defmodule Helyx.Session.Queue do
   # goes back to the front of the ends, once, and holds (`give_back/3`);
   # only a rejected one goes to the back with `steer` closed.
   #
-  # The ledger states, as `stage` and `answer` of a `%Sent{}`:
-  #
-  # - `:in_flight`, `:pending`, no `turn`: no answer and no `user_message`
-  #   yet, in the running turn.
-  # - `:in_flight`, `:pending`, `turn` set: as above, after the end of its
-  #   turn. The next turn does not wait for its answer, and the answer
-  #   decides alone: `:rejected` queues the steer again, any other answer
-  #   gives its notice, or gives an end back.
-  # - `:in_flight`, `{:accepted, reply}`, no `turn`: an answer other than
-  #   `:rejected` came in the turn, and the `user_message` is open.
-  # - `:taken`: the `user_message` came, and no answer yet.
-  # - `:resolved`: the steer got its notice. Its answer only ends the
-  #   request.
+  # The ledger states are the `status` of a `%Sent{}`.
   #
   # `continue` is the user message of a hook's continue, which starts the
   # next turn ahead of the queues, and `hook_turns` the turns in a row that
@@ -157,7 +145,7 @@ defmodule Helyx.Session.Queue do
 
     sent =
       Enum.count(queue.sent, fn
-        %Sent{item: {:end, _item}, stage: :in_flight} -> true
+        %Sent{item: {:end, _item}, status: status} when status not in [:taken, :resolved] -> true
         _other -> false
       end)
 
@@ -199,10 +187,10 @@ defmodule Helyx.Session.Queue do
   @spec take(t(), String.t()) :: {t(), [effect()]}
   def take(%__MODULE__{} = queue, steer_id) do
     case Enum.find(queue.sent, &(&1.id == steer_id)) do
-      %Sent{from: from, stage: :in_flight, turn: nil, answer: :pending} = entry ->
-        {put(queue, from, %{entry | stage: :taken}), [{:take, text(entry.item)}]}
+      %Sent{from: from, status: :pending} = entry ->
+        {put(queue, from, %{entry | status: :taken}), [{:take, text(entry.item)}]}
 
-      %Sent{from: from, stage: :in_flight, turn: nil} = entry ->
+      %Sent{from: from, status: :accepted} = entry ->
         {delete(queue, from), [{:take, text(entry.item)}]}
 
       _unknown_or_ended ->
@@ -218,22 +206,19 @@ defmodule Helyx.Session.Queue do
   @spec answer(t(), reference(), term(), boolean()) :: {t(), [effect()]}
   def answer(%__MODULE__{} = queue, from, reply, open?) do
     case Enum.find(queue.sent, &(&1.from == from)) do
-      %Sent{stage: :in_flight, answer: :pending} = entry when reply == :rejected ->
+      %Sent{status: status} = entry when reply == :rejected and status not in [:accepted, :taken, :resolved] ->
         {requeue(delete(queue, from), entry.item), []}
 
-      %Sent{stage: :in_flight, turn: nil, answer: :pending} = entry ->
-        {put(queue, from, %{entry | answer: {:accepted, reply}}), []}
+      %Sent{status: :pending} = entry ->
+        {put(queue, from, %{entry | status: :accepted}), []}
 
-      %Sent{stage: :in_flight, answer: :pending, item: {:end, text}} ->
+      %Sent{status: {:ended, _turn}, item: {:end, text}} ->
         {give_back(delete(queue, from), [text], open?), []}
 
-      %Sent{stage: :in_flight, answer: :pending, item: {:steer, text}, turn: turn} ->
+      %Sent{status: {:ended, turn}, item: {:steer, text}} ->
         {delete(queue, from), [{:notice, turn, text}]}
 
-      %Sent{stage: :taken} ->
-        {delete(queue, from), []}
-
-      %Sent{stage: :resolved} ->
+      %Sent{status: status} when status in [:taken, :resolved] ->
         {delete(queue, from), []}
 
       nil ->
@@ -248,11 +233,11 @@ defmodule Helyx.Session.Queue do
   @spec end_turn(t(), String.t(), boolean()) :: {t(), [effect()]}
   def end_turn(%__MODULE__{} = queue, turn_id, true) do
     map(return_ends(queue, :answered, false), fn
-      %Sent{stage: :in_flight, turn: nil, answer: {:accepted, _}} = entry ->
+      %Sent{status: :accepted} = entry ->
         {[], [{:notice, turn_id, text(entry.item)}]}
 
-      %Sent{stage: :in_flight, turn: nil, answer: :pending} = entry ->
-        {[%{entry | turn: turn_id}], []}
+      %Sent{status: :pending} = entry ->
+        {[%{entry | status: {:ended, turn_id}}], []}
 
       entry ->
         {[entry], []}
@@ -313,12 +298,12 @@ defmodule Helyx.Session.Queue do
   defp return_ends(%__MODULE__{} = queue, which, open?) do
     {queue, texts} =
       map(queue, fn
-        %Sent{stage: :in_flight, item: {:end, text}, answer: {:accepted, _}} ->
+        %Sent{status: :accepted, item: {:end, text}} ->
           {[], [text]}
 
-        %Sent{stage: :in_flight, item: {:end, text}, answer: :pending} = entry
-        when which == :all ->
-          {[%{entry | stage: :resolved}], [text]}
+        %Sent{status: status, item: {:end, text}} = entry
+        when which == :all and (status == :pending or is_tuple(status)) ->
+          {[%{entry | status: :resolved}], [text]}
 
         entry ->
           {[entry], []}
@@ -343,8 +328,8 @@ defmodule Helyx.Session.Queue do
   # now. Its request stays open until its answer.
   defp settle(queue) do
     map(queue, fn
-      %Sent{stage: :in_flight, turn: turn, answer: :pending} = entry when turn != nil ->
-        {[%{entry | stage: :resolved}], [{:notice, turn, text(entry.item)}]}
+      %Sent{status: {:ended, turn}} = entry ->
+        {[%{entry | status: :resolved}], [{:notice, turn, text(entry.item)}]}
 
       entry ->
         {[entry], []}
